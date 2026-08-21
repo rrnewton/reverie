@@ -25,7 +25,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::LazyLock;
 use std::sync::Mutex as StdMutex;
-#[cfg(test)]
+use std::sync::OnceLock as StdOnceLock;
 use std::sync::atomic::AtomicBool;
 #[cfg(test)]
 use std::sync::atomic::Ordering;
@@ -371,6 +371,40 @@ impl NewbornTracee {
 
     pub(crate) fn registration_error(&self) -> Option<Errno> {
         self.terminal.registration_error()
+    }
+
+    pub(crate) fn terminate_vfork_child(&self) -> Result<(), TraceError> {
+        let identity = self.identity.as_ref().ok_or(Errno::ESRCH)?;
+        match identity.send_signal(Signal::SIGKILL) {
+            Ok(()) | Err(Errno::ESRCH) => {}
+            Err(error) => return Err(error.into()),
+        }
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            if self.terminal.wait(Duration::ZERO) {
+                return Ok(());
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            let Some(reservation) = self.terminal.reserve_pending_for_cleanup(remaining) else {
+                if self.terminal.wait(Duration::ZERO) {
+                    return Ok(());
+                }
+                return Err(Errno::ETIMEDOUT.into());
+            };
+            let state = reservation.decode()?;
+            let Wait::Stopped(stopped, _) = state else {
+                reservation.commit();
+                continue;
+            };
+            reservation.commit();
+            match stopped.resume(None) {
+                Ok(_) | Err(TraceError::Died(_)) | Err(TraceError::Errno(Errno::ESRCH)) => {
+                    return Ok(());
+                }
+                Err(error) => return Err(error),
+            }
+        }
     }
 }
 
@@ -791,7 +825,19 @@ impl LiteinstTraceeCleanup {
             return Ok(());
         }
 
-        self.freeze_root_generation()?;
+        if self.identity.same_process() {
+            self.freeze_root_generation()?;
+        } else {
+            // The exact root generation is already gone, so it cannot create
+            // another descendant. Drain any child event the notifier published
+            // before terminal acknowledgment and continue with the retained
+            // generation-bound descendants; trying to freeze a completed root
+            // would only collide with its consumed exit capability.
+            if let Some(terminal) = self.terminal.as_ref() {
+                self.capture_pending_children(terminal)?;
+            }
+            self.root_frozen = true;
+        }
         #[cfg(test)]
         if self
             .force_task_scan_once
@@ -1926,7 +1972,12 @@ impl<T: Tool + 'static> TracerBuilder<T> {
     /// expected executable mapping. Distinct markers, exact return sites, and
     /// mapping generations reject accidental collisions; they are not a
     /// security boundary against arbitrary code already running in the tracee.
-    /// Dynamic mode currently fails closed if the tracee forks or adds a thread.
+    /// Dynamic mode follows threads and child processes under the ordinary
+    /// ptrace lifecycle, but hook installation is single-task only: the patch
+    /// helper runs on a process-global stack and the installer is not
+    /// re-entrant across tasks, so the hook set freezes at the first task
+    /// creation. It still fails closed on a vfork child and on an exec after
+    /// start, neither of which can preserve the preload runtime.
     // TODO-HUMAN-REVIEW(PR-270): Review dynamic LiteInst provenance API.
     pub fn liteinst_runtime(
         self,
@@ -1964,11 +2015,16 @@ impl<T: Tool + 'static> TracerBuilder<T> {
             syscall_marker,
             newborn_tracees: Arc::new(StdMutex::new(HashMap::new())),
             held_root_stop: Arc::new(StdMutex::new(None)),
+            root_tid: Arc::new(StdOnceLock::new()),
+            multi_task: Arc::new(AtomicBool::new(false)),
+            session_failure: Arc::new(StdMutex::new(None)),
             instrumentation_stats: stats_request
                 .is_enabled()
                 .then(|| Arc::new(StdMutex::new(LiteinstInstrumentationStats::default()))),
             #[cfg(test)]
             fail_preinit: false,
+            #[cfg(test)]
+            fail_new_task: false,
             #[cfg(test)]
             pause_new_task: None,
             #[cfg(test)]
@@ -2013,6 +2069,15 @@ impl<T: Tool + 'static> TracerBuilder<T> {
             .as_mut()
             .expect("LiteInst runtime must be configured before preinit failure injection")
             .fail_preinit = true;
+        self
+    }
+
+    #[cfg(test)]
+    fn fail_liteinst_new_task_for_test(mut self) -> Self {
+        self.liteinst_runtime
+            .as_mut()
+            .expect("LiteInst runtime must be configured before new-task failure injection")
+            .fail_new_task = true;
         self
     }
 
@@ -2287,6 +2352,15 @@ impl<T: Tool + 'static> TracerBuilder<T> {
 
         let mut child = command.spawn().context("Failed to spawn tracee")?;
         let guest_pid = child.id();
+        if let Some(runtime) = self.liteinst_runtime.as_ref() {
+            // Publish the session root before any task can observe the config.
+            // Everything LiteInst-root-scoped keys off this exact TID rather
+            // than the `tid == pid` shape, which a forked child also has.
+            runtime
+                .root_tid
+                .set(guest_pid)
+                .expect("LiteInst root TID is published exactly once per spawn");
+        }
         let running_child = Running::new(guest_pid);
         let liteinst_newborn_tracees = self
             .liteinst_runtime
@@ -3692,6 +3766,7 @@ mod tests {
         let tracer = TracerBuilder::<InitFailureTool>::new(clone_thread_guest_command())
             .liteinst_runtime(PathBuf::from("/not/used.so"), 1, 2, 3, 4)
             .activate_liteinst_without_handshake_for_test()
+            .fail_liteinst_new_task_for_test()
             .observe_liteinst_new_task_for_test(child_tx)
             .spawn()
             .await
@@ -3793,6 +3868,7 @@ mod tests {
         let tracer = TracerBuilder::<InitFailureTool>::new(clone_thread_guest_command())
             .liteinst_runtime(PathBuf::from("/not/used.so"), 1, 2, 3, 4)
             .activate_liteinst_without_handshake_for_test()
+            .fail_liteinst_new_task_for_test()
             .observe_liteinst_new_task_for_test(child_tx)
             .fail_liteinst_discovery_once_for_test(Arc::clone(&fail_once))
             .spawn()
@@ -3842,6 +3918,7 @@ mod tests {
         let tracer = TracerBuilder::<InitFailureTool>::new(clone_thread_guest_command())
             .liteinst_runtime(PathBuf::from("/not/used.so"), 1, 2, 3, 4)
             .activate_liteinst_without_handshake_for_test()
+            .fail_liteinst_new_task_for_test()
             .observe_liteinst_new_task_for_test(child_tx)
             .fail_liteinst_after_task_scan_once_for_test(
                 Arc::clone(&fail_once),
@@ -3890,6 +3967,7 @@ mod tests {
         let tracer = TracerBuilder::<InitFailureTool>::new(clone_parent_guest_command())
             .liteinst_runtime(PathBuf::from("/not/used.so"), 1, 2, 3, 4)
             .activate_liteinst_without_handshake_for_test()
+            .fail_liteinst_new_task_for_test()
             .observe_liteinst_new_task_for_test(child_tx)
             .spawn()
             .await
