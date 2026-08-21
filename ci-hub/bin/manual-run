@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# Kick off a GitHub Actions run BY HAND on a chosen commit (owner directive
+# 2026-08-21). See ci-hub/health/manual_run.py for why this is the only way in.
+set -euo pipefail
+ROOT=$(git -C "$(dirname -- "${BASH_SOURCE[0]}")/../.." rev-parse --show-toplevel)
+case ${1:-} in
+    help | -h | --help) exec python3 "$ROOT/ci-hub/health/manual_run.py" --help ;;
+esac
+if [[ -z ${CI_HUB_TOOL_COST_ACTIVE:-} ]]; then
+    # --wait parks on GitHub's queue, so its wall cost is the run's, not ours,
+    # and no history of manually dispatched runs is retained yet. Say unknown
+    # rather than invent a constant.
+    basis="not measured: no retained manual-dispatch history; with --wait the wall cost is the queued GitHub run's"
+    exec env CI_HUB_TOOL_COST_ACTIVE=1 "$ROOT/ci-hub/bin/tool-cost" \
+        --tool ci-hub/manual-run \
+        --estimate-unknown \
+        --basis "$basis" \
+        -- "$0" "$@"
+fi
+exec python3 "$ROOT/ci-hub/health/manual_run.py" "$@"
