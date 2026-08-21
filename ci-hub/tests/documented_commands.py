@@ -22,7 +22,7 @@ DOCS = (
     ROOT / "ci-hub/landing/README.md",
     ROOT / "ci-hub/containers/README.md",
 )
-EXPECTED_COMMANDS = 54
+EXPECTED_COMMANDS = 58
 FENCE = re.compile(r"^```(?P<language>[A-Za-z0-9_-]*)\s*$")
 FATAL_OUTPUT = (
     "gh auth login",
@@ -185,6 +185,13 @@ def _classify(text: str) -> str:
         return "parse"
     if normalized.startswith("systemctl --user status "):
         return "parse"
+    # manual-run STARTS GitHub Actions runs. Every documented form but --list
+    # would dispatch real work against a real commit, so the whole family is
+    # parse-only. --list is in the family rather than exempted as a live-read
+    # because it needs with-proxy, which a GitHub-hosted runner does not have:
+    # a probe that refuses there measures the runner, not the tool.
+    if re.match(r"^(?:\./)?ci-hub/bin/manual-run(?:\s|$)", normalized):
+        return "parse"
     raise DocsCommandError(f"unclassified shell command: {normalized}")
 
 
@@ -294,6 +301,8 @@ def _parse_probe(command: str) -> str:
         return "git fetch --help"
     if normalized.startswith('git cherry origin/main "refs/pr-drain/$PR"'):
         return "git cherry --help"
+    if re.match(r"^(?:\./)?ci-hub/bin/manual-run(?:\s|$)", normalized):
+        return "./ci-hub/bin/manual-run --help"
     return command
 
 
