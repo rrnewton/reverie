@@ -126,7 +126,9 @@ def landing_observability(landings: "Sequence[dict[str, Any]]") -> dict[str, Any
 
     `landings` is a sequence of {"sha": str, "prs": [pr, ...]} where each pr may
     carry "approved_at": [sha, ...]. Taking the association as an argument keeps
-    the arithmetic testable without a network.
+    the arithmetic testable without a network. The live collector currently
+    supplies only PR numbers, so absence of ``approved_at`` is a missing
+    measurement, not an observed zero.
 
     REFUSES AN EMPTY WINDOW. Zero commits is not zero unobserved landings; a
     check that returns a clean count over nothing is the failure this repository
@@ -140,22 +142,40 @@ def landing_observability(landings: "Sequence[dict[str, Any]]") -> dict[str, Any
     total = len(landings)
     via_pr = [l for l in landings if l.get("prs")]
     without_pr = [l for l in landings if not l.get("prs")]
+    associated_prs = [pr for landing in via_pr for pr in landing["prs"]]
+    binding_coverage_measured = all(
+        isinstance(pr.get("approved_at"), list) for pr in associated_prs
+    )
     # "carried a binding" is deliberately NOT "bound to the landed sha": a
     # squash merge gives the commit on main a different sha from the PR head it
     # came from, so requiring equality here would report every squash as
     # unbound and the line would be ignored within a week.
-    with_binding = [
-        l for l in via_pr if any(pr.get("approved_at") for pr in l["prs"])
-    ]
+    with_binding = (
+        [l for l in via_pr if any(pr["approved_at"] for pr in l["prs"])]
+        if binding_coverage_measured
+        else []
+    )
+    binding_count: int | str = (
+        len(with_binding) if binding_coverage_measured else "NOT MEASURED"
+    )
+    if binding_coverage_measured:
+        binding_summary = (
+            f"{len(via_pr)} took the PR path, of which {len(with_binding)} came "
+            "from a PR carrying an APPROVED-AT binding."
+        )
+    else:
+        binding_summary = (
+            f"{len(via_pr)} took the PR path; APPROVED-AT binding coverage is "
+            "NOT MEASURED because the collector did not populate approved_at."
+        )
     return {
         "window_commits": total,
         "landed_via_pr": len(via_pr),
         "landed_without_pr": len(without_pr),
-        "pr_landings_carrying_a_binding": len(with_binding),
+        "pr_landings_carrying_a_binding": binding_count,
         "summary": (
             f"{len(without_pr)} of {total} commits landed without a pull request, so this "
-            f"check could not observe them; {len(via_pr)} took the PR path, of which "
-            f"{len(with_binding)} came from a PR carrying an APPROVED-AT binding. "
+            f"check could not observe them; {binding_summary} "
             "This is observer coverage, not a review verdict: a landing with no PR is "
             "unobserved here, not unreviewed."
         ),

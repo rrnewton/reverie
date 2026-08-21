@@ -195,11 +195,31 @@ cases.append((r["landed_without_pr"] == 1 and r["landed_via_pr"] == 0,
               "a direct-to-main landing is reported as unobserved",
               f"without_pr={r['landed_without_pr']} via_pr={r['landed_via_pr']}"))
 
+# The live collector currently returns only PR numbers. Missing approved_at is
+# therefore a missing measurement, not evidence that zero PRs carried bindings.
+unpopulated_pr = [{"sha": "f"*40, "prs": [{"number": 6}]}]
+r = ab.landing_observability(unpopulated_pr)
+cases.append((r["pr_landings_carrying_a_binding"] == "NOT MEASURED"
+              and "APPROVED-AT binding coverage is NOT MEASURED" in r["summary"]
+              and "of which 0 came from" not in r["summary"],
+              "an unpopulated approved_at field renders NOT MEASURED, not zero",
+              r["summary"]))
+
 bound_pr = [{"sha": "b"*40, "prs": [{"number": 7, "approved_at": ["c"*40]}]}]
 r = ab.landing_observability(bound_pr)
 cases.append((r["landed_without_pr"] == 0 and r["pr_landings_carrying_a_binding"] == 1,
               "a properly bound PR landing is NOT flagged",
               f"without_pr={r['landed_without_pr']} bound={r['pr_landings_carrying_a_binding']}"))
+
+populated_unbound_pr = [
+    {"sha": "0"*40, "prs": [{"number": 8, "approved_at": []}]},
+]
+r = ab.landing_observability(populated_unbound_pr)
+cases.append((r["pr_landings_carrying_a_binding"] == 0
+              and "of which 0 came from a PR carrying" in r["summary"]
+              and "NOT MEASURED" not in r["summary"],
+              "a populated approved_at field still renders its real zero count",
+              r["summary"]))
 
 # A squash merge gives main a different sha from the PR head. Requiring equality
 # would report every squash as unbound; the binding is counted per-PR, not per-sha.
@@ -237,6 +257,16 @@ cases.append((captured.get("summary") == mixed["summary"]
               and "{summary}" not in rendered,
               "computed landing summary survives capture and renders in the live template",
               rendered[:100]))
+
+stdout = io.StringIO()
+with contextlib.redirect_stdout(stdout):
+    ab.emit_landing_observability(ab.landing_observability(unpopulated_pr), False)
+captured = parse_kv_lines(stdout.getvalue())
+rendered = render_emit(landing_reminder.emit, captured)
+cases.append(("APPROVED-AT binding coverage is NOT MEASURED" in rendered
+              and "{summary}" not in rendered,
+              "the live template emits the NOT MEASURED result rather than going quiet",
+              rendered[:140]))
 
 missing_summary_refused = False
 try:
