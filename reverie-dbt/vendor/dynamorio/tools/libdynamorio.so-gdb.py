@@ -9,12 +9,12 @@ import gdb
 import os
 import traceback
 import re
+import sys
 
 # XXX #1767: Python3 unified the int and long types. To maintain
 # compatibility with python2, we will use long and alias it to int
 # for python3.
-if sys.version_info > (3,):
-    long = int
+long: type[int] = int
 
 print('Loading gdb scripts for debugging DynamoRIO...')
 
@@ -23,23 +23,23 @@ print('Loading gdb scripts for debugging DynamoRIO...')
 # If we were sourced directly instead of auto-loaded, try to guess where DR is
 # so we can make RunDR work.  We don't need this for anything else yet.
 try:
-    DR_LIBDIR = os.path.dirname(os.path.abspath(__file__))
+    DR_LIBDIR: str | None = os.path.dirname(os.path.abspath(__file__))
 except:
     DR_LIBDIR = None
 
 
 class DROption(gdb.Parameter):
 
-    def __init__(self, dr_option, param_class):
+    def __init__(self, dr_option: str, param_class: int) -> None:
         super(DROption, self).__init__("dr-" + dr_option, gdb.COMMAND_OBSCURE,
                                        param_class)
         self.dr_option = dr_option
 
     set_doc = ("DynamoRIO option of the same name.")
     show_doc = set_doc
-    def get_set_string(self):
+    def get_set_string(self) -> str:
         return str(self.value)
-    def get_show_string(self, svalue):
+    def get_show_string(self, svalue: str) -> str:
         return svalue
 
 
@@ -47,7 +47,7 @@ class DROption(gdb.Parameter):
 # DYNAMORIO_OPTIONS without being massaged first.  We also specify
 # documentation strings for them.
 class DRClient(DROption):
-    def __init__(self):
+    def __init__(self) -> None:
         super(DRClient, self).__init__("client", gdb.PARAM_OPTIONAL_FILENAME)
 
     set_doc = ("Path to DynamoRIO client to run when invoking DR.  "
@@ -55,7 +55,7 @@ class DRClient(DROption):
     show_doc = set_doc
 
 class DRClientArgs(DROption):
-    def __init__(self):
+    def __init__(self) -> None:
         super(DRClientArgs, self).__init__("client-args", gdb.PARAM_STRING)
 
     set_doc = ("DynamoRIO client arguments.")
@@ -67,7 +67,7 @@ dr_client = DRClient()
 dr_client_args = DRClientArgs()
 
 # Other useful flags to pass to DynamoRIO.
-dr_options = [
+dr_options: list[DROption] = [
         DROption('msgbox_mask', gdb.PARAM_ZINTEGER),
         DROption('loglevel', gdb.PARAM_ZINTEGER),
         DROption('logmask', gdb.PARAM_ZINTEGER),
@@ -81,11 +81,14 @@ class RunDR(gdb.Command):
     Goes through the drrun script to avoid depending on the config file format.
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
         super(RunDR, self).__init__("rundr", gdb.COMMAND_OBSCURE)
 
-    def invoke(self, arg, from_tty):
+    def invoke(self, arg: str, from_tty: bool) -> None:
         # Find drrun.
+        if DR_LIBDIR is None:
+            print("Unable to locate the DynamoRIO library directory.")
+            return
         parts = DR_LIBDIR.split(os.sep)
         build_mode = parts[-1]
         arch = parts[-2][-2:]
@@ -118,7 +121,7 @@ class RunDR(gdb.Command):
 RunDR()
 
 
-def gdb_has_breakpoints():
+def gdb_has_breakpoints() -> bool:
     match = re.match(r'^(\d+)\.(\d+)', gdb.VERSION)
     if not match:
         # Some version strings are like this: "Fedora 7.7.1-21.fc20"
@@ -146,15 +149,15 @@ if gdb_has_breakpoints():
         DEBUG = False
         DYNAMORIO_BP = True
 
-        def __init__(self):
+        def __init__(self) -> None:
             super(PrivloadBP, self).__init__("dr_gdb_add_symbol_file",
                                              internal=not self.DEBUG)
 
-        def stop(self):
+        def stop(self) -> bool:
             try:
                 frame = gdb.newest_frame()
                 filename = frame.read_var("filename").string()
-                textaddr = long(frame.read_var("textaddr"))
+                textaddr = int(frame.read_var("textaddr"))
                 cmd = "add-symbol-file '{0}' {1}".format(filename, hex(textaddr))
                 print("Executing gdb command:", cmd)
                 # We suppress output to the screen with to_string unless we're
@@ -170,7 +173,7 @@ if gdb_has_breakpoints():
 
     # Delete all breakpoints set from previous runs and initializations and
     # replace them with new ones.
-    def remove_old_bps():
+    def remove_old_bps() -> None:
         bps = gdb.breakpoints()
         if not bps:
             return

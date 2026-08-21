@@ -50,7 +50,6 @@ from pathlib import Path
 import re
 from readline import insert_text
 from sys import argv
-from typing import List
 from enum import Enum, unique
 from io import StringIO
 
@@ -61,20 +60,20 @@ log_handler.setFormatter(Formatter('%(levelname)s: %(message)s'))
 logger.addHandler(log_handler)
 
 
-def dbg(msg, *args, **kwargs):
-    logger.debug(msg, *args, **kwargs)
+def dbg(msg: object, *args: object) -> None:
+    logger.debug(msg, *args)
 
 
-def warn(msg, *args, **kwargs):
-    logger.warning(msg, *args, **kwargs)
+def warn(msg: object, *args: object) -> None:
+    logger.warning(msg, *args)
 
 
-def info(msg, *args, **kwargs):
-    logger.info(msg, *args, **kwargs)
+def info(msg: object, *args: object) -> None:
+    logger.info(msg, *args)
 
 
-def err(msg, *args, **kwargs):
-    logger.error(msg, *args, **kwargs)
+def err(msg: object, *args: object) -> None:
+    logger.error(msg, *args)
 
 
 env_debug = getenv('DEBUG') or '0'
@@ -95,7 +94,7 @@ def count_trailing_ones(n: int) -> int:
     sn = bin(n)
     return len(sn) - len(sn.rstrip('1'))
 
-def write_if_changed(file, data):
+def write_if_changed(file: str | Path, data: str) -> None:
     try:
         if open(file, 'r').read() == data:
             return
@@ -117,8 +116,8 @@ class Field(str, Enum):
     as_decimal: bool
 
     def __new__(cls, value: int, arg_name: str, is_dest: bool, is_implicit: bool,
-                as_decimal, opsz_def: dict[str, str] | str, asm_name: str,
-                arg_cmt: str):
+                as_decimal: bool, opsz_def: dict[str, str] | str, asm_name: str,
+                arg_cmt: str) -> "Field":
         # Take str as a base object because we need a concrete class. It won't
         # be used anyway.
         obj = str.__new__(cls, str(value))
@@ -824,10 +823,11 @@ class Field(str, Enum):
         else:
             return name
 
-    def from_str(fld: str):
+    @staticmethod
+    def from_str(fld: str) -> "Field":
         return Field[fld.upper().replace("(FP)", "FP")]
 
-    def opsz(self, inst_name: str):
+    def opsz(self, inst_name: str) -> str:
         '''
         Return DynamoRIO enum representing operand size.
 
@@ -841,7 +841,7 @@ class Field(str, Enum):
         - BLT's B_IMM is OPSZ_2 because the target address must be 2-byte
           aligned.
         '''
-        if type(self.opsz_def) is str:
+        if isinstance(self.opsz_def, str):
             return self.opsz_def
         if inst_name not in self.opsz_def:
             inst_name = ''
@@ -874,12 +874,20 @@ class Format(Enum):
 
 
 class Instruction:
-    def __init__(self, name: str, fmt: str, mask: int, match: int, flds: List[str], ext: str) -> None:
+    def __init__(
+        self,
+        name: str,
+        fmt: str,
+        mask: int,
+        match: int,
+        flds: list[str],
+        ext: str,
+    ) -> None:
         self.name: str = name
         self.fmt: Format = Format[fmt.upper()]
         self.mask: int = mask
         self.match: int = match
-        self.flds: List[Field] = [
+        self.flds: list[Field] = [
             Field.from_str(f) for f in flds if len(f) > 0]
         self.ext = ext
 
@@ -912,17 +920,18 @@ class IslGenerator:
     OP_TBL_OFFSET = -1
 
     class TrieNode:
-        def __init__(self, mask: int, shift: int, index: int, ctx: str = ''):
+        def __init__(
+            self, mask: int, shift: int, index: int, ctx: str = ""
+        ) -> None:
             self.mask = mask
             self.shift = shift
             self.index = index
             self.ctx = ctx
 
     def __init__(self) -> None:
-        self.instructions: List[Instruction] = []
-        pass
+        self.instructions: list[Instruction] = []
 
-    def __fixup_compressed_inst(self, inst: Instruction):
+    def __fixup_compressed_inst(self, inst: Instruction) -> None:
         opc = (inst.match & inst.mask) & 0x3
         funct3 = (inst.match & inst.mask) >> 13
         if (opc == 0b00 or opc == 0b10) and funct3 not in [0, 0b100]:  # LOAD/STORE instructions
@@ -941,7 +950,7 @@ class IslGenerator:
             inst.flds.append(cb_imm)
             dbg(f'    -> {" " * len(inst.name)} {[f.name for f in inst.flds]}')
 
-    def __fixup_uncompressed_inst(self, inst: Instruction):
+    def __fixup_uncompressed_inst(self, inst: Instruction) -> None:
         opc = (inst.match & inst.mask) & 0x7F
         funct3 = ((inst.match & inst.mask) >> 12) & 0x7
         rs3 = ((inst.match & inst.mask) >> 27) & 0x1f
@@ -999,7 +1008,7 @@ class IslGenerator:
         # need an extra entry in the instr_infos table since NOP aliases with
         # ADDI (it's an alias).
 
-    def __fixup_instructions(self):
+    def __fixup_instructions(self) -> None:
         '''
         Fixup ISL definitions to better match DynamoRIO logic.
 
@@ -1081,7 +1090,7 @@ class IslGenerator:
         Note that compressed instructions can be duplicated and require
         validation taking the ISA + operand levels in mind.
         '''
-        inst_dict = {}
+        inst_dict: dict[int, Instruction] = {}
         for i in self.instructions:
             id = inst_dict.get(i.match)
             if id and not i.is_compressed() and id.mask == i.mask:
@@ -1090,7 +1099,7 @@ class IslGenerator:
             inst_dict[i.match] = i
         return True
 
-    def parse_isl(self, isl_path) -> bool:
+    def parse_isl(self, isl_path: str | Path) -> bool:
         '''
         Parse Instruction Set Listing files into the generator object.
 
@@ -1108,7 +1117,9 @@ class IslGenerator:
         self.__fixup_instructions()
         return res and self.__sanity_check()
 
-    def generate_opcodes(self, template_file, out_file) -> bool:
+    def generate_opcodes(
+        self, template_file: str | Path, out_file: str | Path
+    ) -> bool:
         '''
         Generate the opcode_api.h header file.
 
@@ -1136,7 +1147,7 @@ class IslGenerator:
                         warn("Starting index not found, using 0")
                     idx += 1
                     IslGenerator.OP_TBL_OFFSET = idx
-                    lines = []
+                    lines: list[str] = []
                     # Generate a list of:
                     #    OP_<opcode>,   /**< <extension> <opcode> opcode. */
                     for i in self.instructions:
@@ -1151,7 +1162,9 @@ class IslGenerator:
             err(f"{tmpl_fld} not found in {template_file}")
         return found_template_fld
 
-    def generate_instr_macros(self, template_file, out_file) -> bool:
+    def generate_instr_macros(
+        self, template_file: str | Path, out_file: str | Path
+    ) -> bool:
         '''
         Generate the instr_create_api.h header file.
 
@@ -1168,7 +1181,7 @@ class IslGenerator:
                 if tmpl_fld in line:
                     found_template_fld = True
 
-                    lines = []
+                    lines: list[str] = []
                     # Generate a list of:
                     #    #define INSTR_CREATE_<opcode>(dc, <arguments>) \
                     #      instr_create_<n_dst>dst_<n_src>src(dc, OP_<opcode>, <arguments>)
@@ -1208,7 +1221,7 @@ class IslGenerator:
             err(f"{tmpl_fld} not found in {template_file}")
         return found_template_fld
 
-    def construct_trie(self, op_offset) -> List[TrieNode]:
+    def construct_trie(self, op_offset: int) -> list["IslGenerator.TrieNode"]:
         '''
         Construct a trie lookup array for parsed non-compressed instructions.
 
@@ -1216,9 +1229,9 @@ class IslGenerator:
         with non-compressed instructions. Therefore compressed instructions will
         be handled in a separate decode/encode function.
         '''
-        trie: List[self.TrieNode] = []
+        trie: list[IslGenerator.TrieNode] = []
         trie_index = 0
-        trie_buckets: dict[int: List[Instruction]] = {
+        trie_buckets: dict[int, list[Instruction]] = {
             0: [i for i in self.instructions if not i.is_compressed()]
         }
         # XXX i#3544: There is an issue with the current construction
@@ -1244,8 +1257,9 @@ class IslGenerator:
             dbg(f'mask:        {mask:032b}')
             dbg(f'shift:       {shift}')
             dbg(f'bucket size: {bucket_size}')
-            buckets: List[List[Instruction]] = [[]
-                                                for i in range(0, bucket_size)]
+            buckets: list[list[Instruction]] = [
+                [] for _ in range(0, bucket_size)
+            ]
             # Each trie bucket contains a list of instructions sharing
             # (inst.match >> shift) & mask, where mask is a contiguous set of 1
             # bits.
@@ -1254,7 +1268,7 @@ class IslGenerator:
             # same inst.match - i.e. ori and prefetch.[irw]). In that case
             # bucket will contain exact match instructions (inst.mask == mask)
             # and ones which may have any other value across the bucket's mask.
-            non_exact_match = []
+            non_exact_match: list[Instruction] = []
             for instruction in instructions:
                 imatch = (instruction.match >> shift) & mask
                 imask = (instruction.mask >> shift) & mask
@@ -1322,7 +1336,9 @@ class IslGenerator:
             trie_index += 1
         return trie
 
-    def generate_instr_info_trie(self, out_file, op_offset) -> bool:
+    def generate_instr_info_trie(
+        self, out_file: str | Path, op_offset: int
+    ) -> bool:
         '''
         Generate the instr_info_trie.c file.
 
@@ -1337,14 +1353,13 @@ class IslGenerator:
         # Keep the order of fields here in sync with the documentation in
         # core/ir/riscv64/codec.c.
         OPND_TGT = ['dst1', 'src1', 'src2', 'src3', 'dst2']
-        instr_infos = []
-        trie = []
+        instr_infos: list[str] = []
         # Generate the rv_instr_info_t list.
         for i in self.instructions:
             flds = [f for f in i.flds]
             flds.reverse()
             asm_args = ''
-            opnds = []
+            opnds: list[str] = []
             ndst = 0
             nsrc = 0
             if len(flds) > 0:
@@ -1361,9 +1376,9 @@ class IslGenerator:
                         oidx = isrc
                         isrc += 1
                         nsrc += 1
-                    opnds += f'''
+                    opnds.append(f'''
         .{OPND_TGT[oidx]}_type = RISCV64_FLD_{f.name},
-        .{OPND_TGT[oidx]}_size = {f.opsz(i.name)},'''
+        .{OPND_TGT[oidx]}_size = {f.opsz(i.name)},''')
             instr_infos.append(f'''[OP_{i.formatted_name()}] = {{ /* {i.name}{asm_args} */
     .info = {{
         .type = OP_{i.formatted_name()},
@@ -1375,21 +1390,23 @@ class IslGenerator:
 }},''')
         # Generate the trie.
         trie = self.construct_trie(op_offset)
-        trie = [
-            f'{{.mask = {hex(t.mask)}, .shift = {t.shift}, .index = {t.index}}},{f" /* {t.ctx} */" if len(t.ctx) > 0 else ""}' for t in trie]
-        instr_infos = '\n    '.join(instr_infos)
-        trie = '\n    '.join(trie)
+        trie_lines = [
+            f'{{.mask = {hex(t.mask)}, .shift = {t.shift}, .index = {t.index}}},{f" /* {t.ctx} */" if len(t.ctx) > 0 else ""}'
+            for t in trie
+        ]
+        joined_instr_infos = '\n    '.join(instr_infos)
+        joined_trie = '\n    '.join(trie_lines)
         write_if_changed(out_file, f'''
 /* This file is generated by codec.py. */
 
 /** Instruction info array. */
 rv_instr_info_t instr_infos[] = {{
-    {instr_infos}
+    {joined_instr_infos}
 }};
 
 /** Trie lookup structure. */
 trie_node_t instr_infos_trie[] = {{
-    {trie}
+    {joined_trie}
 }};
 ''')
         return True

@@ -19,7 +19,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Never, TypedDict
 
 
 BACKENDS = ("ptrace", "kvm", "liteinst", "dbt", "sabre", "e9patch")
@@ -60,6 +60,49 @@ class Outcome:
     counter_threads: int | None
 
 
+class Probe(TypedDict):
+    workload: str
+    backend: str
+    variant: str
+    duration_ms: float
+    counter_total: int | None
+    stdout_sha256: str
+
+
+class Sample(TypedDict):
+    run_id: str
+    sequence: int
+    repetition: int
+    workload: str
+    backend: str
+    variant: str
+    iterations: int
+    syscall_stride: int
+    duration_ms: float
+    counter_total: int | None
+    counter_processes: int | None
+    counter_threads: int | None
+    stdout_sha256: str
+
+
+class SummaryRow(TypedDict):
+    workload: str
+    backend: str
+    variant: str
+    repetitions: int
+    median_ms: float
+    geomean_ms: float
+    native_median_ms: float
+    slowdown: float
+    counter_total: str
+
+
+class OverallRow(TypedDict):
+    backend: str
+    workloads: int
+    geomean_slowdown: float
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
@@ -86,7 +129,7 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def fail(message: str) -> None:
+def fail(message: str) -> Never:
     raise SystemExit(f"counter2-shootout: {message}")
 
 
@@ -424,7 +467,7 @@ def main() -> None:
             )
 
     expected: dict[tuple[str, str], bytes] = {}
-    probes: list[dict[str, Any]] = []
+    probes: list[Probe] = []
     print("PROBE: validating every known-green cell before timing", flush=True)
     for execution in executions:
         command = command_for(execution, artifacts, root, target)
@@ -472,7 +515,7 @@ def main() -> None:
         for execution in executions
     ]
     random.Random(args.seed).shuffle(schedule)
-    samples: list[dict[str, Any]] = []
+    samples: list[Sample] = []
     sample_path = output / "samples.jsonl"
     with sample_path.open("w") as stream:
         for index, (repetition, execution) in enumerate(schedule, 1):
@@ -483,7 +526,7 @@ def main() -> None:
                 root,
             )
             check_outcome(execution, outcome, expected[(execution.workload, execution.variant)])
-            sample = {
+            sample: Sample = {
                 "run_id": run_id,
                 "sequence": index,
                 "repetition": repetition,
@@ -507,17 +550,17 @@ def main() -> None:
                 flush=True,
             )
 
-    groups: dict[tuple[str, str, str], list[dict[str, Any]]] = {}
+    groups: dict[tuple[str, str, str], list[Sample]] = {}
     for sample in samples:
-        key = (sample["workload"], sample["backend"], sample["variant"])
-        groups.setdefault(key, []).append(sample)
+        group_key = (sample["workload"], sample["backend"], sample["variant"])
+        groups.setdefault(group_key, []).append(sample)
     native_medians = {
         (workload, variant): statistics.median(item["duration_ms"] for item in group)
         for (workload, backend, variant), group in groups.items()
         if backend == "native"
     }
 
-    summary_rows: list[dict[str, Any]] = []
+    summary_rows: list[SummaryRow] = []
     for (workload, backend, variant), group in sorted(groups.items()):
         durations = [item["duration_ms"] for item in group]
         native_median = native_medians[(workload, variant)]
@@ -544,7 +587,7 @@ def main() -> None:
         writer.writeheader()
         writer.writerows(summary_rows)
 
-    overall_rows = []
+    overall_rows: list[OverallRow] = []
     for backend in selected:
         backend_rows = [row for row in summary_rows if row["backend"] == backend]
         overall_rows.append(
@@ -605,13 +648,15 @@ def main() -> None:
             "| --- | --- | --- | ---: | ---: | ---: | ---: |",
         ]
     )
-    for row in summary_rows:
-        if row["backend"] == "native":
+    for summary_row in summary_rows:
+        if summary_row["backend"] == "native":
             continue
         lines.append(
-            f"| {row['workload']} | {row['backend']} | {row['variant']} | "
-            f"{row['median_ms']:.1f} | {row['native_median_ms']:.1f} | "
-            f"{row['slowdown']:.3f}x | {row['counter_total']} |"
+            f"| {summary_row['workload']} | {summary_row['backend']} | "
+            f"{summary_row['variant']} | {summary_row['median_ms']:.1f} | "
+            f"{summary_row['native_median_ms']:.1f} | "
+            f"{summary_row['slowdown']:.3f}x | "
+            f"{summary_row['counter_total']} |"
         )
     report = "\n".join(lines) + "\n"
     (output / "report.md").write_text(report)

@@ -19,10 +19,9 @@ Examples:
 import argparse
 import ctypes
 import sys
-from typing import List, Optional
 
 
-def dump_vdso() -> list[ctypes.c_ubyte] | None:
+def dump_vdso() -> bytes:
     """
     Returns a list containing the VDSO.
     """
@@ -31,7 +30,8 @@ def dump_vdso() -> list[ctypes.c_ubyte] | None:
             if "[vdso]" in line:
                 start, end = (int(x, 16) for x in line.split(" ")[0].split("-"))
                 length = end - start
-                return (ctypes.c_ubyte * length).from_address(start)
+                return ctypes.string_at(start, length)
+    raise RuntimeError("the current process has no [vdso] mapping")
 
 
 def main() -> int:
@@ -54,4 +54,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

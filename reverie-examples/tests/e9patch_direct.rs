@@ -1,3 +1,4 @@
+#![deny(warnings)]
 use std::ffi::OsString;
 use std::path::PathBuf;
 use std::process::Command as ProcessCommand;

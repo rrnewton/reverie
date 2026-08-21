@@ -1,3 +1,4 @@
+#![deny(warnings)]
 use core::arch::global_asm;
 use std::ffi::CStr;
 

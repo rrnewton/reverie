@@ -1,5 +1,7 @@
 import subprocess
 
+import gdb
+
 # Make a ~/.gdbinit file and add:
 # source ~/SaBRe/debug-tools/gdb-symbol-loader.py
 # Invoke from GDB as: sbr-sym and sbr-src
@@ -16,11 +18,10 @@ import subprocess
 
 class AddSaBReSymbols(gdb.Command):
     @staticmethod
-    def get_offsets(path):
-        text_offset, bss_offset, rodata_offset = 0, 0, 0
-        output = subprocess.check_output(["readelf", "-WS", path])
+    def get_offsets(path: str) -> tuple[str, str, str]:
+        text_offset, bss_offset, rodata_offset = "0x0", "0x0", ""
+        output = subprocess.check_output(["readelf", "-WS", path], text=True)
         for line in output.splitlines():
-            line = str(line)
             if "] .text " in line:
                 text_offset = "0x" + line.split()[5]
             if "] .bss " in line:
@@ -30,7 +31,7 @@ class AddSaBReSymbols(gdb.Command):
         return text_offset, bss_offset, rodata_offset
 
     @staticmethod
-    def run_add_symbol_file(from_tty, lib, addr_start):
+    def run_add_symbol_file(from_tty: bool, lib: str, addr_start: str) -> None:
         text_offset, bss_offset, rodata_offset = AddSaBReSymbols.get_offsets(lib)
 
         gdb_cmd = (
@@ -43,11 +44,11 @@ class AddSaBReSymbols(gdb.Command):
         print(gdb_cmd)
         gdb.execute(gdb_cmd, from_tty)
 
-    def __init__(self):
+    def __init__(self) -> None:
         super(AddSaBReSymbols, self).__init__("sbr-sym", gdb.COMMAND_USER)
         self.dont_repeat()
 
-    def invoke(self, args, from_tty):
+    def invoke(self, args: str, from_tty: bool) -> None:
         pagination = gdb.parameter("pagination")
         if pagination:
             gdb.execute("set pagination off")
@@ -61,8 +62,8 @@ class AddSaBReSymbols(gdb.Command):
                 print(f"Loading user provided target: {target}")
                 for line in maplines:
                     if target in line:
-                        line = line.strip().split()
-                        addr_start, lib = line[0], line[4]
+                        fields = line.strip().split()
+                        addr_start, lib = fields[0], fields[4]
                         self.run_add_symbol_file(from_tty, lib, addr_start)
                         # TODO: We just add the first occurrence of a lib for
                         # now.
@@ -72,13 +73,17 @@ class AddSaBReSymbols(gdb.Command):
 
             # Find all libs that have an offset of 0x1000 and an empty mapping
             # just before.
-            mremap_libs = []
+            mremap_libs: list[tuple[str, str]] = []
             for i, line in enumerate(maplines[1:], start=1):
                 prev_line = maplines[i - 1].strip().split()
-                line = line.strip().split()
+                fields = line.strip().split()
 
-                if len(line) == 5 and line[3] == "0x1000" and len(prev_line) == 4:
-                    mremap_libs.append((f"{line[0]}-0x1000", line[4]))
+                if (
+                    len(fields) == 5
+                    and fields[3] == "0x1000"
+                    and len(prev_line) == 4
+                ):
+                    mremap_libs.append((f"{fields[0]}-0x1000", fields[4]))
 
             for addr_start, lib in mremap_libs:
                 self.run_add_symbol_file(from_tty, lib, addr_start)

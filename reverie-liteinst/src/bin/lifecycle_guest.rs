@@ -1,3 +1,4 @@
+#![deny(warnings)]
 use core::arch::global_asm;
 use std::path::Path;
 use std::sync::atomic::AtomicBool;
