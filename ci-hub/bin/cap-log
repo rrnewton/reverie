@@ -43,6 +43,40 @@ conclude the run stopped where the file stops. So truncation is recorded
 The in-file marker is written INSIDE the budget -- writing stops early enough to
 leave room -- so the file never exceeds --max-bytes. A cap that overshoots to
 report itself is not a cap.
+
+WHICH BOUND A CALLER SHOULD REACH FOR, AND WHEN
+===============================================
+Three choices, and most callers correctly want the third. The project already
+applies this distinction by habit; it is written here because habit is not
+inheritable and an audit that does not know the rule counts every unwrapped
+invocation as a gap.
+
+  NEITHER, and this is the common case. A caller whose guest is FIXED IN THE
+  FILE and terminates -- demos/01 runs a two-shell race script, demos/02 runs
+  /bin/echo -- cannot produce a runaway, because the runaway property is a guest
+  that never exits. Adding a bound there buys nothing and costs a wrapper in the
+  read path of a demo whose job is to be read. If such a caller ever takes a
+  guest from its own caller, it moves to one of the two below at that moment.
+
+  cap-log, when the caller NEEDS THE RUN'S RESULT and the guest may be slow or
+  hang. It drains: past the cap bytes are counted and dropped, the child runs to
+  completion, and its exit status is propagated unchanged. Nothing is killed, so
+  a legitimately long run -- a nested QEMU boot, a full-corpus sweep -- still
+  produces its answer. This is the right choice for exactly the callers a lethal
+  cap would break.
+
+  bin/safehermit, when the caller WANTS A RUNAWAY DEAD. It bounds the same bytes
+  with a cgroup and reaps the run at the cap, exiting 125 with the reason
+  printed. Correct for a sweep or an unattended job where a wedged run is a
+  failure rather than a slow success.
+
+AND A BYTE CEILING IS NOT A SUBSTITUTE FOR A WALL-CLOCK BOUND. A hermit whose
+sink stops accepting bytes blocks at ZERO CPU, so a CPU-time limit never fires
+on it and cap-log by itself will happily drain a wedged run forever. Callers
+that can hang need a deadline and a process-group kill as well; the QEMU boot
+tests under experiments/ do this with their own deadline loop plus setsid, which
+is why they are bounded despite invoking hermit at --log=info with no `timeout`
+in front of them.
 """
 
 from __future__ import annotations
