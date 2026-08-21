@@ -183,6 +183,18 @@ jobs:
 
           dispatch_file="${RUNNER_TEMP:-/tmp}/reverie-gate-redispatch-${GATE_RUN_ID}.tsv"
           : >"$dispatch_file"
+          # A NO_RESULT gate deliberately reports `cancelled` so it cannot be
+          # mistaken for a FAILED one. But `cancelled` on its own says nothing
+          # about WHY, so a reader who samples the PR before CI finishes sees a
+          # bare cancelled required check and cannot tell "waiting, a refire is
+          # coming" from "stuck" or "broken". Measured on this repository:
+          # 26 cancelled gates in 6.4 hours across 10 branches, every recoverable
+          # one followed by a success. The state is common, correct, and
+          # currently illegible. Accumulate the reason here and publish it to the
+          # step summary before the run is cancelled, so the cancelled check
+          # carries its own explanation.
+          pending_file="${RUNNER_TEMP:-/tmp}/reverie-gate-pending-${GATE_RUN_ID}.md"
+          : >"$pending_file"
           no_result=0
 
           queue_retry() {
@@ -211,8 +223,39 @@ jobs:
             done
           }
 
+          publish_no_result_reason() {
+            # Written BEFORE the force-cancel: a cancelled run keeps the step
+            # summary and annotations it already emitted, so this is the one
+            # window in which the cancelled check can be made to explain itself.
+            echo "::notice title=merge-gate-v2 NO_RESULT (not a failure)::Required CI has not reported yet; this gate cancelled itself deliberately so NO_RESULT cannot be read as FAILED. It re-evaluates automatically when CI completes -- marking the PR ready for review is NOT required."
+            if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+              {
+                echo "## merge-gate-v2: NO_RESULT, not a failure"
+                echo
+                echo "This run **cancelled itself on purpose**. A cancelled gate means"
+                echo "*required CI has not reported yet*, which is different from a gate that"
+                echo "FAILED. Do not read this as a red, and do not mark the pull request"
+                echo "ready for review to \"unstick\" it -- readiness is not what re-fires the"
+                echo "gate."
+                echo
+                echo "### Waiting on"
+                echo
+                cat "$pending_file"
+                echo
+                echo "### What happens next, with no action from you"
+                echo
+                echo "When the \`Rust\` workflow completes, its \`workflow_run\` event runs"
+                echo "\`refire-on-ci-completion\`, which re-dispatches this gate at the same"
+                echo "head. A later \`merge-gate-v2\` run then reports the real verdict."
+                echo
+                echo "**Land on a later SUCCESS, never on this cancelled run.**"
+              } >>"$GITHUB_STEP_SUMMARY"
+            fi
+          }
+
           cancel_no_result_gate() {
             echo "NO_RESULT blocks landing but is not a failure; cancelling gate run $GATE_RUN_ID after re-dispatch."
+            publish_no_result_reason
             gh api --method POST \
               "repos/${REPO}/actions/runs/${GATE_RUN_ID}/force-cancel" --silent
             for _ in {1..60}; do sleep 5; done
@@ -339,6 +382,13 @@ jobs:
               echo "Both authoritative CI jobs PASSED for PR #${pr_number} at $head_sha: $url"
             else
               echo "CI has NO_RESULT for PR #${pr_number} at $head_sha: regular=$regular_status/${regular_conclusion:-none} host=$host_status/${host_conclusion:-none}; blocking without reporting failure."
+              # Name the specific leg that has not reported, so the summary says
+              # WHICH check is outstanding rather than only that something is.
+              printf -- '- PR #%s at `%s`\n  - `Regular tests (GitHub-hosted)`: %s/%s\n  - `Host-dependent tests (self-hosted)`: %s/%s\n  - CI run: %s\n' \
+                "$pr_number" "$head_sha" \
+                "$regular_status" "${regular_conclusion:-none}" \
+                "$host_status" "${host_conclusion:-none}" \
+                "${url:-no run URL}" >>"$pending_file"
               queue_retry "$status" "$run_id" "$pr_number" "$head_sha"
             fi
           done < <(jq -r '
