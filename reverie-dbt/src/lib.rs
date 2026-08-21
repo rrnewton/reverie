@@ -46,6 +46,7 @@ pub use evidence::decode_evidence;
 // TODO-HUMAN-REVIEW(PR-134): Review the native bootstrap failure ABI export.
 pub use launcher::CLIENT_THREAD_START_FAILURE_EXIT_CODE;
 pub use launcher::DbtRunner;
+pub use launcher::OutputWithDiagnostics;
 use reverie::Backtrace;
 use reverie::Error;
 use reverie::ExitStatus;
