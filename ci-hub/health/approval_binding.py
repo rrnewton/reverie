@@ -201,6 +201,23 @@ def gh_json(args: list[str]) -> Any:
         ) from error
 
 
+def github_actions_enabled(repo: str) -> bool:
+    """Return the repository's live Actions precondition, or refuse.
+
+    ``runs_at_head == 0`` means a head was not evaluated only while Actions are
+    enabled.  When Actions are disabled repository-wide, zero is expected and
+    cannot support the stronger APPROVED + UNEVALUATED claim.  Do not infer the
+    precondition from the run count itself: GitHub exposes it directly.
+    """
+    permissions = gh_json(["api", f"repos/{repo}/actions/permissions"])
+    enabled = permissions.get("enabled") if isinstance(permissions, dict) else None
+    if type(enabled) is not bool:
+        raise GitHubUnavailable(
+            f"repos/{repo}/actions/permissions did not return boolean enabled"
+        )
+    return enabled
+
+
 def lane_shas(
     comments: list[dict[str, Any]],
     lane: str,
@@ -482,10 +499,25 @@ def collect_fixture(
     malformed: list[tuple[str, str]],
     malformed_prs: dict[tuple[str, str], int],
     pr_number: int | None = None,
-) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
+) -> tuple[list[dict[str, Any]], dict[str, Any] | None, bool]:
     rows = []
     selected = None
-    for pr in json.load(open(path)):
+    fixture = json.load(open(path))
+    if isinstance(fixture, dict):
+        prs = fixture.get("prs")
+        actions_enabled = fixture.get("actions_enabled")
+        if not isinstance(prs, list) or type(actions_enabled) is not bool:
+            raise ValueError(
+                "fixture object requires prs list and boolean actions_enabled"
+            )
+    elif isinstance(fixture, list):
+        # Historical fixtures model the ordinary Actions-enabled case.  This
+        # preserves their positive zero-run escalation coverage.
+        prs = fixture
+        actions_enabled = True
+    else:
+        raise ValueError("fixture must be a PR list or an object with prs")
+    for pr in prs:
         if pr_number is not None and pr["number"] != pr_number:
             continue
         comments = [
@@ -538,7 +570,16 @@ def collect_fixture(
                     "mergeable": pr.get("mergeable"),
                 }
             )
-    return rows, selected
+    return rows, selected, actions_enabled
+
+
+def unevaluated_binding_rows(
+    rows: list[dict[str, Any]], actions_enabled: bool
+) -> list[dict[str, Any]]:
+    """Rows whose zero workflow-run count supports an unevaluated claim."""
+    if not actions_enabled:
+        return []
+    return [row for row in rows if row["runs_at_head"] == 0]
 
 
 def report_landing_observability(
@@ -669,11 +710,15 @@ def main() -> int:
     malformed: list[tuple[str, str]] = []
     malformed_pr_by_source: dict[tuple[str, str], int] = {}
     try:
-        rows, selected = (
-            collect_fixture(a.fixture, malformed, malformed_pr_by_source, a.pr)
-            if a.fixture
-            else collect_live(a.repo, malformed, malformed_pr_by_source, a.pr)
-        )
+        if a.fixture:
+            rows, selected, actions_enabled = collect_fixture(
+                a.fixture, malformed, malformed_pr_by_source, a.pr
+            )
+        else:
+            rows, selected = collect_live(
+                a.repo, malformed, malformed_pr_by_source, a.pr
+            )
+            actions_enabled = github_actions_enabled(a.repo)
     except GitHubUnavailable as error:
         summary = (
             "approval binding could not be determined: "
@@ -721,13 +766,14 @@ def main() -> int:
     }
     # The composed state: a review/local-validation cache that no longer holds,
     # on a head nothing evaluated.
-    combined = [r for r in bad if r["runs_at_head"] == 0]
+    combined = unevaluated_binding_rows(bad, actions_enabled)
     approved_and_unevaluated = [
         r for r in combined if r["label"].startswith("passed-review-")
     ]
 
     if a.as_json:
         print(json.dumps({"approvals": len(approval_rows),
+                          "actions_enabled": actions_enabled,
                           "binding_labels": len(rows),
                           "authoritative": authoritative,
                           "approval_set_missing": approval_set_missing,
@@ -753,6 +799,12 @@ def main() -> int:
                           ],
                           "rows": rows}, indent=2))
     else:
+        print(f"actions_enabled={str(actions_enabled).lower()}")
+        if not actions_enabled:
+            print(
+                "runs_at_head_zero=expected while GitHub Actions are disabled; "
+                "zero workflow runs are not classified as unevaluated"
+            )
         print(f"inspected {len(rows)} passed-review-* / locally-validated label(s); bound to current head: "
               f"{authoritative}; authority absent: {len(bad)}; "
               f"passed-review-* / locally-validated AND unevaluated: {len(combined)}")
@@ -765,7 +817,7 @@ def main() -> int:
                 bound = "<no locally-validated receipt marker>"
             else:
                 bound = "<no APPROVED-AT binding>"
-            if r["runs_at_head"] == 0:
+            if r in combined:
                 flag = (
                     "  *** LOCALLY-VALIDATED + UNEVALUATED ***"
                     if r["label"] == LOCALLY_VALIDATED_LABEL

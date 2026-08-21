@@ -240,6 +240,17 @@ cases.append(("unobserved" in mixed["summary"] and "unreviewed" in mixed["summar
               "the wording says unobserved and explicitly disclaims unreviewed",
               "summary carries the disclaimer"))
 
+# A zero workflow-run count only establishes "unevaluated" while Actions are
+# enabled.  Bracket both directions so accounting for the precondition cannot
+# silently turn into disabling the escalation.
+zero_run_row = {"number": 7, "runs_at_head": 0}
+cases.append((ab.unevaluated_binding_rows([zero_run_row], False) == [],
+              "zero runs do not mean unevaluated while Actions are disabled",
+              "disabled precondition produces no unevaluated row"))
+cases.append((ab.unevaluated_binding_rows([zero_run_row], True) == [zero_run_row],
+              "zero runs still mean unevaluated while Actions are enabled",
+              "enabled precondition preserves the escalation"))
+
 # The production tick path is capture -> interpolate. The reporter used to
 # print `landing-observability: ...`, which computed the right value but gave
 # parse_kv_lines no `summary` field, so the renderer correctly refused the

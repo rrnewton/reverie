@@ -234,6 +234,23 @@ grep -q "APPROVED + UNEVALUATED" <<<"$out" \
 grep -q "passed-review-\* / locally-validated AND unevaluated: 1" <<<"$out" \
   && ok "reports the crossed count with its population" || bad "no crossed count: $out"
 
+# The same zero cannot support that claim when GitHub Actions are disabled.
+# Use an UNDETERMINED row so --gate-on superseded has no other reason to page;
+# this proves the precondition changes the classification, not the row set.
+cat >"$tmp/actions-disabled-zero.json" <<JSON
+{"actions_enabled":false,"prs":[
+  {"number":1865,"head":"$CUR","labels":["passed-review-codex"],
+   "lane_shas":{},"runs_at_head":0,"mergeable":"MERGEABLE"}
+]}
+JSON
+out="$(run "$tmp/actions-disabled-zero.json" --gate --gate-on superseded)"; rc=$?
+[[ $rc -eq 0 ]] \
+  && grep -q '^actions_enabled=false$' <<<"$out" \
+  && grep -q '^runs_at_head_zero=expected while GitHub Actions are disabled;' <<<"$out" \
+  && ! grep -q 'APPROVED + UNEVALUATED' <<<"$out" \
+  && ok "Actions disabled: a genuine zero is explicit and does NOT escalate as unevaluated" \
+  || bad "Actions-disabled zero was hidden or escalated (rc=$rc): $out"
+
 # --- Nothing is deleted ------------------------------------------------------
 # Match an actual deletion CALL, not the word. The first version of this
 # assertion grepped for /DELETE/ and fired on the tool's own docstring, which
@@ -258,7 +275,9 @@ out="$(run "$tmp/superseded.json" --gate --gate-on superseded)"; rc=$?
 [[ $rc -eq 1 ]] && ok "--gate-on superseded: a genuinely superseded approval STILL pages" \
   || bad "--gate-on superseded failed to page on superseded (rc=$rc)"
 out="$(run "$tmp/combined.json" --gate --gate-on superseded)"; rc=$?
-[[ $rc -eq 1 ]] && ok "--gate-on superseded: the combined approved+unevaluated state STILL pages" \
+[[ $rc -eq 1 ]] \
+  && grep -q '^actions_enabled=true$' <<<"$out" \
+  && ok "Actions enabled: the combined approved+unevaluated state STILL pages" \
   || bad "--gate-on superseded missed the combined state (rc=$rc)"
 out="$(run "$tmp/unbound.json" --gate --gate-on unverifiable)"; rc=$?
 [[ $rc -eq 1 ]] && ok "--gate-on unverifiable: the standing condition pages on its own daily entry" \
