@@ -34,6 +34,7 @@
 #include "drreg.h"
 #include "drwrap.h"
 #include "drx.h"
+#include "virtual_identity.h"
 
 #ifndef X86_64
 #error "The Reverie DynamoRIO prototype currently requires x86-64"
@@ -109,11 +110,6 @@ typedef struct {
 #define DBT_DIAGNOSTIC_FD 198
 #define VIRTUAL_IDENTITY_MAGIC UINT64_C(0x5245565049443033)
 #define MAX_VIRTUAL_IDENTITIES 8192
-
-typedef struct {
-  int32_t host;
-  int32_t virtual_id;
-} virtual_identity_t;
 
 typedef struct {
   uint64_t magic;
@@ -1111,19 +1107,14 @@ static bool lookup_virtual_identity(int32_t host, int32_t *virtual_id) {
 }
 
 static int32_t host_identity_for_guest(int32_t identity) {
-  int32_t result = -1;
-  size_t i;
+  int32_t result;
   if (identity <= 0)
     return identity;
 
   virtual_identity_lock();
-  for (i = 0; i < virtual_identity_state->count; ++i) {
-    if (virtual_identity_state->identities[i].virtual_id == identity ||
-        virtual_identity_state->identities[i].host == identity) {
-      result = virtual_identity_state->identities[i].host;
-      break;
-    }
-  }
+  result = host_identity_for_guest_entries(virtual_identity_state->identities,
+                                           virtual_identity_state->count,
+                                           identity);
   virtual_identity_unlock();
   return result;
 }
@@ -1559,6 +1550,9 @@ static bool translate_identity_arguments(int sysnum, uint64_t *args) {
   // TODO-HUMAN-REVIEW(PR-259): Review virtual get_robust_list target translation.
   case SYS_get_robust_list:
   case SYS_kill:
+  // AUTONOMOUS-BOT-IMPLEMENTED
+  // TODO-HUMAN-REVIEW(PR-453): Review virtual pidfd_open target translation.
+  case SYS_pidfd_open:
   case SYS_tkill:
   case SYS_wait4:
   case SYS_getpgid:
@@ -1589,7 +1583,27 @@ static bool translate_identity_arguments(int sysnum, uint64_t *args) {
   }
 }
 
-static int64_t unknown_identity_error(int sysnum) {
+static int64_t unknown_identity_error(uintptr_t context, int sysnum,
+                                      const uint64_t *args) {
+  if (sysnum == SYS_pidfd_open) {
+    uint64_t validation_args[6];
+    int64_t result;
+    memcpy(validation_args, args, sizeof(validation_args));
+    // AUTONOMOUS-BOT-IMPLEMENTED
+    // TODO-HUMAN-REVIEW(PR-453): Preserve Linux pidfd_open validation order.
+    // INT32_MAX is outside Linux's PID range. Asking the running kernel to
+    // validate the original flags against that impossible PID preserves its
+    // EINVAL-before-ESRCH order without passing an unknown virtual PID through
+    // to a potentially unrelated host process.
+    validation_args[0] = INT32_MAX;
+    result = invoke_raw_syscall(context, SYS_pidfd_open, validation_args);
+    if (result >= 0) {
+      uint64_t close_args[6] = {(uint64_t)result, 0, 0, 0, 0, 0};
+      (void)invoke_raw_syscall(context, SYS_close, close_args);
+      return -ESRCH;
+    }
+    return result;
+  }
   return sysnum == SYS_wait4 || sysnum == SYS_waitid ? -ECHILD : -ESRCH;
 }
 
@@ -2059,7 +2073,7 @@ static int64_t invoke_syscall(uintptr_t context, int64_t sysnum,
     return result;
   memcpy(translated, args, sizeof(translated));
   if (!translate_identity_arguments((int)sysnum, translated))
-    return unknown_identity_error((int)sysnum);
+    return unknown_identity_error(context, (int)sysnum, args);
 
   if (sysnum == SYS_getpid)
     return pending_identity_is_process(counters)
@@ -2764,7 +2778,8 @@ static bool prepare_original_identity_syscall(void *drcontext,
   int i;
   memcpy(translated, args, sizeof(translated));
   if (!translate_identity_arguments(sysnum, translated)) {
-    dr_syscall_set_result(drcontext, (reg_t)unknown_identity_error(sysnum));
+    dr_syscall_set_result(drcontext, (reg_t)unknown_identity_error(
+                                         (uintptr_t)drcontext, sysnum, args));
     return false;
   }
   for (i = 0; i != 6; ++i) {
