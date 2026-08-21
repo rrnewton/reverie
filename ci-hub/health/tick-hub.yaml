@@ -158,6 +158,32 @@ reminders:
         component: ledger-publish-sweep
       title: "ledger publish sweep: {summary}"
 
+  # KEEPS THE OBJECTS THE ABOVE GATE READS FROM DISAPPEARING. The ledger records a
+  # validate run against an exact commit, and nothing kept those objects reachable:
+  # an off-main commit that was validated and then squashed or abandoned is present
+  # but reachable from no ref, and `git gc --prune=now` deletes it. That is what made
+  # validate_wall_regression refuse on every tick of 2026-08-20 and emit no verdict
+  # at all. Measured on a faithful copy of the hermit checkout: a real
+  # `git gc --prune=now` destroyed 115 of 303 ledger-named commits with no pins, and
+  # 0 of them with pins.
+  #
+  # Runs every 6h rather than per-tick: it is cheap (0.9s for 327 refs) but it is
+  # maintenance, not an alarm. It fires only when it CANNOT do its job -- a missing
+  # checkout or a failed update-ref -- because "0 pinned" and "no checkout" otherwise
+  # read identically.
+  - name: ledger_referenced_objects
+    cadence_secs: 21600
+    gate:
+      cmd: python3 ci-hub/health/ledger_referenced_objects.py
+      when: failure
+      capture: true
+    emit:
+      kind: action
+      skill: hard-warn-coordinator
+      fields:
+        component: ledger-referenced-objects
+      title: "ledger-referenced git objects are not being kept reachable: {summary}"
+
   # Emits ONLY a supportable verdict. Today the series cannot support one
   # (retention 3.91d < 90d; conditioning 4/26 = 15% < 90%), so this HOLDS at rc=0
   # and says so on stdout rather than claiming "no regression". Wiring
