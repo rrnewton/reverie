@@ -105,6 +105,20 @@ def gh_json(args: list[str]):
     return json.loads(out) if out.strip() else None
 
 
+def gh_scalar(args: list[str], *, allow_fail: bool = False) -> str | None:
+    """A `--jq` read of a single field.
+
+    `gh --jq` prints the value RAW -- a string comes back unquoted, so feeding
+    it to json.loads raises "Expecting value" on the first character. Measured
+    the hard way; scalar reads go through here instead.
+    """
+    rc, out, _ = gh(args, allow_fail=allow_fail)
+    if rc != 0:
+        return None
+    out = out.strip()
+    return out or None
+
+
 # --------------------------------------------------------------------------
 # Pure helpers (unit-tested; no network).
 # --------------------------------------------------------------------------
@@ -276,18 +290,20 @@ def resolve_commit(repo: str, commit: str | None, branch: str) -> tuple[str, str
     created for the common case of "run current main". Anything else gets a
     tag, because the API does not accept a bare SHA.
     """
-    tip = gh_json(["api", f"repos/{repo}/commits/{branch}", "--jq", ".sha"])
-    if not isinstance(tip, str):
+    tip = gh_scalar(["api", f"repos/{repo}/commits/{branch}", "--jq", ".sha"])
+    if not tip:
         raise ManualRunError(f"{repo} does not resolve branch {branch!r}")
     if commit is None:
         return tip, branch
-    full = gh_json(["api", f"repos/{repo}/commits/{commit}", "--jq", ".sha"])
-    if not isinstance(full, str):
+    full = gh_scalar(["api", f"repos/{repo}/commits/{commit}", "--jq", ".sha"],
+                     allow_fail=True)
+    if not full:
         raise ManualRunError(f"{repo} does not resolve commit {commit!r}")
     if full == tip:
         return full, branch
     tag = tag_for(full)
-    existing = gh_json(["api", f"repos/{repo}/git/ref/tags/{tag}", "--jq", ".object.sha"])
+    existing = gh_scalar(["api", f"repos/{repo}/git/ref/tags/{tag}",
+                          "--jq", ".object.sha"], allow_fail=True)
     if existing != full:
         rc, _, err = gh(
             ["api", "-X", "POST", f"repos/{repo}/git/refs",
@@ -526,8 +542,9 @@ def main(argv: list[str] | None = None) -> int:
     try:
         repo = parse_repo(args.repo)
         if args.delete_tag:
-            full = gh_json(["api", f"repos/{repo}/commits/{args.delete_tag}", "--jq", ".sha"])
-            tag = tag_for(full if isinstance(full, str) else args.delete_tag)
+            full = gh_scalar(["api", f"repos/{repo}/commits/{args.delete_tag}",
+                              "--jq", ".sha"], allow_fail=True)
+            tag = tag_for(full or args.delete_tag)
             gh(["api", "-X", "DELETE", f"repos/{repo}/git/refs/tags/{tag}"])
             print(f"deleted tag {tag} in {repo}")
             return 0

@@ -47,6 +47,21 @@ CI_HUB_DOCS_PARSE_ONLY=1 ./ci-hub/landing/land-pr.sh \
 ./ci-hub/ci-hub inherit-obligations --agent hermit-lander --session "$HOSTNAME:$$"
 ./ci-hub/ci-hub watch-obligations --once
 
+# Start GitHub CI BY HAND on a chosen commit, and read the result. NOTHING on
+# GitHub starts by itself any more: owner directive 2026-08-21 keeps CI "disabled
+# in the sense that it does not run automatically", so every workflow in this
+# repository is workflow_dispatch and nothing else, and this is the only way in.
+# It reports; it gates nothing (owner directive 2026-08-17).
+./ci-hub/bin/manual-run --list                 # triggers per workflow; names any automatic one
+./ci-hub/bin/manual-run --workflow portability.yml --wait
+./ci-hub/bin/manual-run --commit b540dbec9585 --workflow dev-hermit-ci.yml --wait
+./ci-hub/bin/manual-run --repo rrnewton/hermit --list
+# A commit that is not the branch tip is dispatched on a `manual-run/<sha12>` tag
+# the tool creates, because the dispatch API takes a branch or a tag, never a SHA.
+# It refuses while the repository Actions switch is off: a dispatch then returns
+# SUCCESS and creates a run with ZERO JOBS that never runs and can never be
+# cancelled or deleted.
+
 # Incrementally refresh the local GitHub/local-run history store.
 ./ci-hub/ci-hub refresh-history
 
