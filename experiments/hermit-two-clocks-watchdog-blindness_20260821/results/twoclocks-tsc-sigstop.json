@@ -1,0 +1,29 @@
+[
+  {
+    "mode": "kvm",
+    "requested_clocksource": "tsc",
+    "hold_seconds": 30.0,
+    "pause_mode": "sigstop",
+    "cpus": 1,
+    "numa_nodes": 1,
+    "clocksource_in_use": "tsc",
+    "bytes_emitted_while_paused": 0,
+    "samples_total": 610,
+    "samples_before_drain": 238,
+    "pause_at_sample": 237,
+    "large_steps_in_run": 1,
+    "sched_clock_across_pause": 30.558766,
+    "clocksource_across_pause": 30.56,
+    "sampling_period_median_seconds": 0.021286,
+    "mechanisms": [
+      "RCU stall detector"
+    ],
+    "complaints": [
+      {
+        "mechanism": "RCU stall detector",
+        "line": "[   36.925245] rcu: INFO: rcu_sched self-detected stall on CPU"
+      }
+    ],
+    "ok": true
+  }
+]

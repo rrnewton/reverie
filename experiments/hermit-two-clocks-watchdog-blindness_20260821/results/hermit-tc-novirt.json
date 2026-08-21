@@ -1,0 +1,36 @@
+[
+  {
+    "run_dir": "/home/newton/work/dev-hermit/ignored/pause-sweep-cloudlint/runs/hermit-tc-nv/no-virtualize-time-30s-smp1",
+    "hold_seconds": 30.0,
+    "cpus": 1,
+    "hermit_flags": "--no-virtualize-time --no-virtualize-metadata --no-rcb-time --target-timeslice 100000 --max-timeslice disabled",
+    "qemu_icount": "shift=0,sleep=off",
+    "pause_mode": "sigstop",
+    "clocksource_in_use": "tsc-early",
+    "clocksources_available": "tsc-early hpet acpi_pm",
+    "bytes_emitted_while_paused": 0,
+    "samples_total": 191,
+    "pause_at_sample": 9,
+    "large_steps_in_run": 0,
+    "sched_clock_across_pause": 0.022083,
+    "clocksource_across_pause": 0.03,
+    "sampling_period_median_seconds": 0.022993,
+    "soft_lockup_lines": [],
+    "rcu_stall_lines": [],
+    "mechanisms": [],
+    "ok": true,
+    "profile": "no-virtualize-time"
+  },
+  {
+    "run_dir": "/home/newton/work/dev-hermit/ignored/pause-sweep-cloudlint/runs/hermit-tc-nv/no-virtualize-time-no-icount-30s-smp1",
+    "hold_seconds": 30.0,
+    "cpus": 1,
+    "hermit_flags": "--no-virtualize-time --no-virtualize-metadata --no-rcb-time --target-timeslice 100000 --max-timeslice disabled",
+    "qemu_icount": "",
+    "pause_mode": "sigstop",
+    "ok": false,
+    "error": "TimeoutError: fewer than 40 paired samples in 900s",
+    "tail": "are name: QEMU Standard PC (Q35 + ICH9, 2009), BIOS 1.16.3-5.el9 11/05/2023\r\n[    0.001000] Call Trace:\r\n[    0.001000]  <TASK>\r\n[    0.001000]  dump_stack_lvl+0x3b/0xa0\r\n[    0.001000]  vpanic+0xbd/0x2d0\r\n[    0.001000]  panic+0x4f/0x50\r\n[    0.001000]  check_timer+0x225/0x390\r\n[    0.001000]  setup_IO_APIC+0x12b/0x130\r\n[    0.001000]  apic_bsp_setup+0x45/0x50\r\n[    0.001000]  x86_late_time_init+0x30/0x50\r\n[    0.001000]  start_kernel+0x308/0x3c0\r\n[    0.001000]  x86_64_start_reservations+0x24/0x30\r\n[    0.001000]  x86_64_start_kernel+0x141/0x150\r\n[    0.001000]  common_startup_64+0x13e/0x140\r\n[    0.001000]  </TASK>\r\n[    0.001000] ---[ end Kernel panic - not syncing: IO-APIC + timer doesn't work!  Boot with apic=debug and send a report.  Then try booting with the 'noapic' option. ]---\r\n",
+    "profile": "no-virtualize-time-no-icount"
+  }
+]

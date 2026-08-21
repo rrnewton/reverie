@@ -1,0 +1,155 @@
+[
+  {
+    "mode": "kvm",
+    "requested_clocksource": "(default)",
+    "hold_seconds": 30.0,
+    "pause_mode": "sigstop",
+    "cpus": 4,
+    "numa_nodes": 2,
+    "clocksource_in_use": "kvm-clock",
+    "bytes_emitted_while_paused": 7648,
+    "samples_before": 223,
+    "sched_clock_across_pause": 0.02126,
+    "clocksource_across_pause": 0.02,
+    "sched_clock_last_before": 6.418072,
+    "sched_clock_first_after": 6.439332,
+    "clocksource_last_before": 6.16,
+    "clocksource_first_after": 6.18,
+    "sampling_period_median_seconds": 0.023005,
+    "mechanisms": [],
+    "complaints": [],
+    "ok": true
+  },
+  {
+    "mode": "kvm",
+    "requested_clocksource": "(default)",
+    "hold_seconds": 30.0,
+    "pause_mode": "sigstop",
+    "cpus": 4,
+    "numa_nodes": 2,
+    "clocksource_in_use": "kvm-clock",
+    "bytes_emitted_while_paused": 7592,
+    "samples_before": 223,
+    "sched_clock_across_pause": 0.022225,
+    "clocksource_across_pause": 0.02,
+    "sched_clock_last_before": 6.502084,
+    "sched_clock_first_after": 6.524309,
+    "clocksource_last_before": 6.23,
+    "clocksource_first_after": 6.25,
+    "sampling_period_median_seconds": 0.022995,
+    "mechanisms": [],
+    "complaints": [],
+    "ok": true
+  },
+  {
+    "mode": "tcg",
+    "requested_clocksource": "(default)",
+    "hold_seconds": 30.0,
+    "pause_mode": "sigstop",
+    "cpus": 4,
+    "numa_nodes": 2,
+    "clocksource_in_use": "hpet",
+    "bytes_emitted_while_paused": 11370,
+    "samples_before": 177,
+    "sched_clock_across_pause": 30.529718,
+    "clocksource_across_pause": 30.53,
+    "sched_clock_last_before": 8.504918,
+    "sched_clock_first_after": 39.034636,
+    "clocksource_last_before": 8.46,
+    "clocksource_first_after": 38.99,
+    "sampling_period_median_seconds": 0.033738,
+    "mechanisms": [
+      "RCU stall detector",
+      "soft-lockup detector"
+    ],
+    "complaints": [
+      {
+        "mechanism": "soft-lockup detector",
+        "line": "[   39.012785] watchdog: BUG: soft lockup - CPU#1 stuck for 32s! [sh:133]"
+      },
+      {
+        "mechanism": "soft-lockup detector",
+        "line": "[   39.012822] watchdog: BUG: soft lockup - CPU#2 stuck for 32s! [sh:132]"
+      },
+      {
+        "mechanism": "RCU stall detector",
+        "line": "[    8.510490] rcu: INFO: rcu_sched self-detected stall on CPU"
+      }
+    ],
+    "ok": true
+  },
+  {
+    "mode": "tcg",
+    "requested_clocksource": "(default)",
+    "hold_seconds": 30.0,
+    "pause_mode": "sigstop",
+    "cpus": 4,
+    "numa_nodes": 2,
+    "clocksource_in_use": "hpet",
+    "bytes_emitted_while_paused": 8550,
+    "samples_before": 169,
+    "sched_clock_across_pause": 30.526699,
+    "clocksource_across_pause": 30.53,
+    "sched_clock_last_before": 8.665025,
+    "sched_clock_first_after": 39.191724,
+    "clocksource_last_before": 8.62,
+    "clocksource_first_after": 39.15,
+    "sampling_period_median_seconds": 0.036003,
+    "mechanisms": [
+      "soft-lockup detector"
+    ],
+    "complaints": [
+      {
+        "mechanism": "soft-lockup detector",
+        "line": "[   39.176011] watchdog: BUG: soft lockup - CPU#0 stuck for 29s! [sh:131]"
+      },
+      {
+        "mechanism": "soft-lockup detector",
+        "line": "[   39.176027] watchdog: BUG: soft lockup - CPU#2 stuck for 32s! [sh:130]"
+      }
+    ],
+    "ok": true
+  },
+  {
+    "mode": "icount",
+    "requested_clocksource": "(default)",
+    "hold_seconds": 30.0,
+    "pause_mode": "sigstop",
+    "cpus": 4,
+    "numa_nodes": 2,
+    "clocksource_in_use": "hpet",
+    "bytes_emitted_while_paused": 2232,
+    "samples_before": 94,
+    "sched_clock_across_pause": 0.112011,
+    "clocksource_across_pause": 0.12,
+    "sched_clock_last_before": 22.069907,
+    "sched_clock_first_after": 22.181918,
+    "clocksource_last_before": 22.04,
+    "clocksource_first_after": 22.16,
+    "sampling_period_median_seconds": 0.11305,
+    "mechanisms": [],
+    "complaints": [],
+    "ok": true
+  },
+  {
+    "mode": "icount",
+    "requested_clocksource": "(default)",
+    "hold_seconds": 30.0,
+    "pause_mode": "sigstop",
+    "cpus": 4,
+    "numa_nodes": 2,
+    "clocksource_in_use": "hpet",
+    "bytes_emitted_while_paused": 2376,
+    "samples_before": 100,
+    "sched_clock_across_pause": 0.098378,
+    "clocksource_across_pause": 0.1,
+    "sched_clock_last_before": 22.538896,
+    "sched_clock_first_after": 22.637274,
+    "clocksource_last_before": 22.52,
+    "clocksource_first_after": 22.62,
+    "sampling_period_median_seconds": 0.102443,
+    "mechanisms": [],
+    "complaints": [],
+    "ok": true
+  }
+]

@@ -1,0 +1,20 @@
+hermit-tc4/demo-30s-smp4/serial.log                        n= 157  AT THE PAUSE: sched_clock +0.033  clocksource +0.040   (large steps in run: 0)
+runs/hermit-tc4/demo-no-icount-30s-smp4/serial.log         only 0 samples
+runs/hermit-tc-nv/demo-no-icount-30s-smp1/serial.log       only 0 samples
+hermit-tc-nv/no-virtualize-time-30s-smp1/serial.log        n= 191  AT THE PAUSE: sched_clock +0.022  clocksource +0.030   (large steps in run: 0)
+runs/hermit-tc-nv/no-virtualize-time-no-icount-30s-smp1/serial.log only 0 samples
+hermit-twoclocks/demo-30s-smp1/serial.log                  n= 189  AT THE PAUSE: sched_clock +0.023  clocksource +0.030   (large steps in run: 0)
+hermit-twoclocks/demo-multiplier-1000-30s-smp1/serial.log  n= 118  AT THE PAUSE: sched_clock +0.022  clocksource +0.030   (large steps in run: 0)
+runs/hermit-twoclocks/demo-no-icount-30s-smp1/serial.log   only 0 samples
+runs/hermit-twoclocks/no-virtualize-time-30s-smp1/serial.log only 0 samples
+tc1/kvm-default-qmp-30s/serial.log                         n= 609  AT THE PAUSE: sched_clock +0.022  clocksource +0.030   (large steps in run: 0)
+tc1/kvm-tsc-qmp-30s/serial.log                             n= 611  AT THE PAUSE: sched_clock +0.006  clocksource +30.510   (large steps in run: 1)
+tc4sig/icount-default-sigstop-30s/serial.log               n= 199  AT THE PAUSE: sched_clock +0.147  clocksource +0.150   (large steps in run: 0)
+tc4sig/kvm-default-sigstop-30s/serial.log                  n= 540  AT THE PAUSE: sched_clock +30.757  clocksource +30.760   (large steps in run: 1)
+tc4sig/tcg-default-sigstop-30s/serial.log                  n= 396  AT THE PAUSE: sched_clock +30.527  clocksource +30.530   (large steps in run: 1)
+tcbig/kvm-tsc-qmp-125s/serial.log                          n=1206  AT THE PAUSE: sched_clock +0.020  clocksource +125.520   (large steps in run: 1)
+tcbig/kvm-tsc-qmp-300s/serial.log                          n=2553  AT THE PAUSE: sched_clock +0.017  clocksource +300.520   (large steps in run: 1)
+tcbig/kvm-tsc-qmp-30s/serial.log                           n= 614  AT THE PAUSE: sched_clock +0.019  clocksource +30.520   (large steps in run: 1)
+tcsig1/kvm-tsc-sigstop-30s/serial.log                      n= 610  AT THE PAUSE: sched_clock +30.559  clocksource +30.560   (large steps in run: 1)
+twoclocks/kvm-default-qmp-30s/serial.log                   n= 606  AT THE PAUSE: sched_clock +0.025  clocksource +0.030   (large steps in run: 0)
+twoclocks/kvm-tsc-qmp-30s/serial.log                       n=7793  AT THE PAUSE: sched_clock +0.023  clocksource +0.030   (large steps in run: 0)
