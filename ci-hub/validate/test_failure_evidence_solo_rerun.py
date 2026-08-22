@@ -103,6 +103,30 @@ def test_only_matching_solo_j4_run_confirms() -> None:
     )["solo_rerun_confirmation"] is False
 
 
+def test_current_outer_gate_shape_confirms_by_its_gate_name() -> None:
+    old = prior(
+        gates=[
+            {
+                "name": "test.command_strict_verify",
+                "result": "fail",
+                "failure_origin": "outer_gate",
+                "failed_substeps": [],
+            }
+        ]
+    )
+
+    evidence = MODULE.build_evidence(
+        log_text=LOG,
+        registry={"test.command_strict_verify"},
+        prior=[old],
+        commit=COMMIT,
+        dag_jobs=4,
+        concurrent_validates=0,
+    )
+
+    assert evidence["solo_rerun_confirmation"] is True
+
+
 def test_different_commit_or_cell_never_confirms() -> None:
     rows = [prior(commit="b" * 40), prior(gates=[{"failed_substeps": ["test.other"]}])]
     evidence = MODULE.build_evidence(
@@ -113,4 +137,50 @@ def test_different_commit_or_cell_never_confirms() -> None:
         dag_jobs=4,
         concurrent_validates=0,
     )
+    assert evidence["solo_rerun_confirmation"] is False
+
+
+def test_surviving_preclassification_log_can_confirm_first_solo_rerun(
+    tmp_path: Path,
+) -> None:
+    prior_log = tmp_path / "wide.log"
+    prior_log.write_text(LOG)
+    old = prior(
+        known_flaky_failure=None,
+        gates=[{"name": "test.command_strict_verify", "result": "fail"}],
+        log_file=str(prior_log),
+    )
+
+    evidence = MODULE.build_evidence(
+        log_text=LOG,
+        registry={"test.command_strict_verify"},
+        prior=[old],
+        commit=COMMIT,
+        dag_jobs=4,
+        concurrent_validates=0,
+    )
+
+    assert evidence["solo_rerun_confirmation"] is True
+    assert evidence["solo_rerun_of"] == {
+        "finished_at": None,
+        "log_file": str(prior_log),
+    }
+
+
+def test_missing_prior_log_cannot_confirm_a_solo_rerun(tmp_path: Path) -> None:
+    old = prior(
+        known_flaky_failure=None,
+        gates=[{"name": "test.command_strict_verify", "result": "fail"}],
+        log_file=str(tmp_path / "missing.log"),
+    )
+
+    evidence = MODULE.build_evidence(
+        log_text=LOG,
+        registry={"test.command_strict_verify"},
+        prior=[old],
+        commit=COMMIT,
+        dag_jobs=4,
+        concurrent_validates=0,
+    )
+
     assert evidence["solo_rerun_confirmation"] is False

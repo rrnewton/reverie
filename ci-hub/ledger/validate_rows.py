@@ -16,6 +16,7 @@ invent another source of truth.
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import os
 import hashlib
@@ -251,6 +252,103 @@ def _require_cell_results(row: dict, root: Path) -> None:
         raise ValueError("cell_results artifact cells differ from receipt summary")
 
 
+def _is_failed_gate(gate: object) -> bool:
+    return (
+        isinstance(gate, dict)
+        and gate.get("aborted") is not True
+        and str(gate.get("result") or gate.get("kind") or "")
+        in {"fail", "failed", "timeout"}
+    )
+
+
+def _enrich_failure_classification(row: dict, root: Path) -> None:
+    """Bind a completed red row to the failure facts in its own durable log.
+
+    ``validate-status`` intentionally refuses a bare red: it needs an observed
+    failure origin, the measured flake classification, and the solo-rerun
+    relationship.  The Rust validation driver already supplies the exact log,
+    commit, scheduler width, and peer count, but historically the canonical
+    ledger adapter journaled those values without running the classifier.  The
+    resulting row could only request the same solo rerun forever.
+
+    Missing or unreadable inputs remain missing.  In particular, this helper
+    never manufactures ``known_flaky_failure=false`` from an absent log; such a
+    row continues to receive NEEDS-RERUN.  Existing producer-supplied evidence
+    is preserved.
+    """
+    if str(row.get("result") or "") not in {"fail", "failed", "timeout"}:
+        return
+    gates = row.get("gates")
+    if not isinstance(gates, list):
+        return
+    failed_gates = [gate for gate in gates if _is_failed_gate(gate)]
+    if not failed_gates:
+        return
+    log_file = row.get("log_file")
+    dag_jobs = row.get("dag_jobs")
+    concurrent = row.get("concurrent_validates")
+    if (
+        not isinstance(log_file, str)
+        or not log_file
+        or not Path(log_file).is_file()
+        or not isinstance(dag_jobs, int)
+        or isinstance(dag_jobs, bool)
+        or (
+            concurrent is not None
+            and (not isinstance(concurrent, int) or isinstance(concurrent, bool))
+        )
+    ):
+        return
+
+    validate_dir = Path(__file__).resolve().parents[1] / "validate"
+    if str(validate_dir) not in sys.path:
+        sys.path.insert(0, str(validate_dir))
+    import failure_evidence  # noqa: PLC0415
+
+    try:
+        evidence = failure_evidence.build_evidence(
+            log_text=Path(log_file).read_text(errors="replace"),
+            registry=failure_evidence.flaky_cells(failure_evidence.DEFAULT_REGISTRY),
+            prior=rows(root=root),
+            commit=str(row.get("commit") or ""),
+            dag_jobs=dag_jobs,
+            concurrent_validates=concurrent,
+        )
+    except (OSError, ValueError, json.JSONDecodeError):
+        return
+
+    failed_nodes = {
+        str(node) for node in evidence.get("failed_substeps", []) if node
+    }
+    if not failed_nodes:
+        return
+    for key in (
+        "failed_substeps",
+        "failed_substep_classes",
+        "first_error_line",
+        "flaky_failed_substeps",
+        "known_flaky_failure",
+        "solo_rerun_confirmation",
+        "solo_rerun_of",
+    ):
+        if row.get(key) is None:
+            row[key] = evidence.get(key)
+
+    unmatched = failed_nodes.difference(
+        str(gate.get("name") or "") for gate in failed_gates
+    )
+    for gate in failed_gates:
+        if gate.get("failure_origin") is not None:
+            continue
+        name = str(gate.get("name") or "")
+        if name in failed_nodes:
+            gate["failure_origin"] = "outer_gate"
+            gate.setdefault("failed_substeps", [])
+        elif len(failed_gates) == 1 and unmatched:
+            gate["failure_origin"] = "lane_substep"
+            gate["failed_substeps"] = sorted(unmatched)
+
+
 def _event_for_row(row: dict, root: Path) -> dict:
     record_id = str(row.get("record_id") or "")
     if not record_id:
@@ -311,11 +409,13 @@ def record(row: dict, *, root: Path | None = None) -> dict:
     """Append one observed row before any Git operation can block or tear it."""
     production_root = repository_root().resolve()
     root = (root or production_root).resolve()
+    row = copy.deepcopy(row)
     if root == production_root and _is_acceptance_fixture_row(row):
         raise ValueError(
             "acceptance fixture producer is not allowed in the production ledger"
         )
     _require_local_commit(row)
+    _enrich_failure_classification(row, root)
     _require_cell_results(row, root)
     event = _event_for_row(row, root)
     target = spool(live_spool_dir(root), event["team"], event["host"], [event])

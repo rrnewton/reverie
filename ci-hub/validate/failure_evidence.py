@@ -696,10 +696,43 @@ def row_failed_substeps(row: Mapping[str, object]) -> set[str]:
     for gate in gates:
         if not isinstance(gate, Mapping):
             continue
+        # A current Rust-driver row records each DAG node as an outer gate.  Its
+        # name is therefore the failure identity; ``failed_substeps`` is only
+        # required for the older aggregate-lane shape.  Preserve both forms so
+        # a later solo run can match the earlier red without pretending an
+        # aborted sibling was itself a failure.
+        if (
+            gate.get("failure_origin") == "outer_gate"
+            and gate.get("aborted") is not True
+            and str(gate.get("result") or "") in {"fail", "failed", "timeout"}
+            and gate.get("name")
+        ):
+            result.add(str(gate["name"]))
         substeps = gate.get("failed_substeps")
         if isinstance(substeps, list):
             result.update(str(value) for value in substeps if value)
     return result
+
+
+def observed_failed_substeps(row: Mapping[str, object]) -> set[str]:
+    """Read bound failure identities, or recover them from a surviving log.
+
+    Rows written before failure classification was connected to the canonical
+    ledger have neither ``failure_origin`` nor ``failed_substeps``.  A readable
+    row-bound log is still direct evidence for that exact run.  Using it here
+    lets the first compliant solo rerun confirm an older wide/contended red;
+    an absent or unreadable log remains unknown and cannot confirm anything.
+    """
+    bound = row_failed_substeps(row)
+    if bound:
+        return bound
+    log_file = row.get("log_file")
+    if not isinstance(log_file, str) or not log_file:
+        return set()
+    try:
+        return set(failed_substeps(Path(log_file).read_text(errors="replace")))
+    except OSError:
+        return set()
 
 
 def prior_requires_rerun(row: Mapping[str, object]) -> bool:
@@ -751,7 +784,7 @@ def build_evidence(
             for row in prior
             if str(row.get("commit") or "") == commit
             and prior_requires_rerun(row)
-            and not cell_set.isdisjoint(row_failed_substeps(row))
+            and not cell_set.isdisjoint(observed_failed_substeps(row))
         ]
         if candidates:
             confirmation_row = max(

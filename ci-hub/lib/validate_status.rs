@@ -243,8 +243,12 @@ pub enum FailureDisposition {
 }
 
 fn gate_is_red(gate: &crate::records::GateHistoryRow) -> bool {
-    matches!(gate.result.as_deref(), Some("fail" | "failed" | "timeout"))
-        || matches!(gate.kind.as_deref(), Some("fail" | "failed" | "timeout"))
+    gate.extra
+        .get("aborted")
+        .and_then(serde_json::Value::as_bool)
+        != Some(true)
+        && (matches!(gate.result.as_deref(), Some("fail" | "failed" | "timeout"))
+            || matches!(gate.kind.as_deref(), Some("fail" | "failed" | "timeout")))
 }
 
 /// The shell's exit code for "command not found" — a gate at this code never ran
@@ -989,6 +993,40 @@ mod tests {
 
         flaky.solo_rerun_confirmation = Some(true);
         assert_eq!(assess(&[flaky], PASS_SHA).verdict, Verdict::FailedOnRecord);
+    }
+
+    #[test]
+    fn aborted_siblings_do_not_block_a_durable_failure() {
+        let mut durable = complete_failure(PASS_SHA);
+        let mut aborted = row(
+            r#"{"gates":[{"name":"test.aborted","result":"fail","exit_code":-15,
+                "aborted":true,"reason":"eager-exit after another step failed"}]}"#,
+        );
+        durable.gates.push(aborted.gates.remove(0));
+        durable.gates_run = Some(6);
+        durable.gates_expected = Some(6);
+        assert_eq!(
+            assess(&[durable], PASS_SHA).verdict,
+            Verdict::FailedOnRecord,
+            "an aborted sibling is not another unbound product failure",
+        );
+    }
+
+    #[test]
+    fn non_aborted_sibling_still_requires_bound_failure_origin() {
+        let mut unbound = complete_failure(PASS_SHA);
+        let mut genuine = row(
+            r#"{"gates":[{"name":"test.second","result":"fail","exit_code":1,
+                "aborted":false,"reason":"a second completed failure"}]}"#,
+        );
+        unbound.gates.push(genuine.gates.remove(0));
+        unbound.gates_run = Some(6);
+        unbound.gates_expected = Some(6);
+        assert_eq!(
+            assess(&[unbound], PASS_SHA).verdict,
+            Verdict::NeedsRerun,
+            "excluding aborted work must not excuse a second genuine unbound failure",
+        );
     }
 
     #[test]

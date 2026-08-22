@@ -483,3 +483,101 @@ def test_incomplete_row_is_refused_without_creating_an_alternate_ledger(
     with pytest.raises(ValueError):
         validate_rows.record(source, root=tmp_path)
     assert not (tmp_path / "ledger").exists()
+
+
+def failed_row(
+    root: Path,
+    *,
+    record_id: str,
+    jobs: int,
+    concurrent: int,
+    node: str = "e2e.manifest_c_programs",
+) -> dict:
+    source = row(root, record_id=record_id)
+    log = root / "ignored" / "validate" / f"{record_id}.log"
+    log.parent.mkdir(parents=True, exist_ok=True)
+    log.write_text(
+        f"[{node}] ✗ FAIL   fixture failure\n"
+        f"[{node}] error: deterministic fixture failure\n"
+    )
+    source.update(
+        {
+            "result": "fail",
+            "raw_result": "fail",
+            "exit_code": 1,
+            "checks": 28,
+            "failures": 1,
+            "gates_run": 28,
+            "gates_expected": None,
+            "executed_tests": 271,
+            "filtered_tests": 2,
+            "dag_jobs": jobs,
+            "concurrent_validates": concurrent,
+            "log_file": str(log),
+            "gates": [
+                {
+                    "name": node,
+                    "result": "fail",
+                    "exit_code": 1,
+                    "aborted": False,
+                    "real_seconds": 117.0,
+                },
+                {
+                    "name": "test.aborted",
+                    "result": "fail",
+                    "exit_code": -15,
+                    "aborted": True,
+                    "reason": "eager-exit after another step failed",
+                },
+            ],
+        }
+    )
+    return source
+
+
+def test_failed_solo_row_carries_durable_failure_classification(tmp_path: Path):
+    source = failed_row(
+        tmp_path, record_id="solo-failure", jobs=4, concurrent=0
+    )
+
+    validate_rows.record(source, root=tmp_path)
+    [recorded] = validate_rows.rows(root=tmp_path)
+
+    assert recorded["known_flaky_failure"] is False
+    assert recorded["solo_rerun_confirmation"] is False
+    assert recorded["failed_substeps"] == ["e2e.manifest_c_programs"]
+    assert recorded["first_error_line"] == "error: deterministic fixture failure"
+    assert recorded["gates"][0]["failure_origin"] == "outer_gate"
+    assert recorded["gates"][0]["failed_substeps"] == []
+    assert "failure_origin" not in recorded["gates"][1]
+
+
+def test_contended_row_carries_evidence_but_still_requires_solo_confirmation(
+    tmp_path: Path,
+):
+    source = failed_row(
+        tmp_path, record_id="contended-failure", jobs=16, concurrent=1
+    )
+
+    validate_rows.record(source, root=tmp_path)
+    [recorded] = validate_rows.rows(root=tmp_path)
+
+    assert recorded["known_flaky_failure"] is False
+    assert recorded["solo_rerun_confirmation"] is False
+    assert recorded["dag_jobs"] == 16
+    assert recorded["concurrent_validates"] == 1
+
+
+def test_missing_failure_log_stays_unclassified_and_cannot_look_durable(
+    tmp_path: Path,
+):
+    source = failed_row(
+        tmp_path, record_id="missing-log", jobs=4, concurrent=0
+    )
+    Path(source["log_file"]).unlink()
+
+    validate_rows.record(source, root=tmp_path)
+    [recorded] = validate_rows.rows(root=tmp_path)
+
+    assert "known_flaky_failure" not in recorded
+    assert "failure_origin" not in recorded["gates"][0]
