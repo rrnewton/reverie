@@ -20,7 +20,7 @@ SUBMODULE_GIT = $(SUBMODULE_PROXY) git
 # which is named and justified there rather than being an unexplained absence.
 SHELLCHECK_TARGETS = $$(scripts/list-shell-scripts.sh)
 
-.PHONY: build build-full build-hermit check-agent-utils-pin check-claude-md-size check-codex-setup check-compat-envelope-tests check-deps check-harness-help check-portability check-primary-freshness check-rust-error-string-proxies clean \
+.PHONY: build build-full build-hermit check-agent-utils-pin check-hermit-agent-utils-pin check-claude-md-size check-codex-setup check-compat-envelope-tests check-deps check-harness-help check-portability check-primary-freshness check-rust-error-string-proxies clean \
 	restore-primary-freshness \
 	check-submodules checkout-all checkout-e9patch checkout-fresh checkout-optional-submodules checkout-sabre submodules \
 	compat-envelope compat-envelope-full compat-envelope-fullcorpus \
@@ -159,6 +159,9 @@ check-rust-error-string-proxies: ## Reject Rust control flow that classifies typ
 check-agent-utils-pin: ## Fetch and require exact Hermit-nested agent-utils pin equality; canonical checkout stays on main, isolated clones may be clean+detached
 	@scripts/check-agent-utils-pin.rs
 
+check-hermit-agent-utils-pin: ## Bound how far HERMIT's own recorded agent-utils gitlink trails agent-utils main
+	@scripts/check_hermit_agent_utils_pin.py
+
 # Keep the root policy compact even though `.codex/config.toml` raises Codex's
 # instruction-chain limit. Stock Codex defaults to 32768 bytes and would truncate
 # this file; `check-codex-setup` verifies the explicit project override. Policy is
@@ -292,6 +295,7 @@ lint: ## Lint parent-repository scripts, tests, paths, and submodule policy
 	gate error-proxies   '$(MAKE) --no-print-directory check-rust-error-string-proxies'; \
 	gate gitmodules      'scripts/check-parent-gitmodules.sh'; \
 	gate agent-utils-pin 'scripts/check-agent-utils-pin.rs'; \
+	gate hermit-au-pin   'scripts/check_hermit_agent_utils_pin.py'; \
 	gate primary-fresh   'scripts/primary_checkout.py check'; \
 	gate reset-cas       '.githooks/tests/test-reset-cas-guard.sh'; \
 	gate codex-setup     '$(MAKE) --no-print-directory check-codex-setup'; \
@@ -406,6 +410,7 @@ help:
 	@echo "make check-deps           Verify required native pkg-config modules"
 	@echo "make check-portability  Reject owner-specific paths in build/run files"
 	@echo "make check-agent-utils-pin  Require Hermit's nested pin and resolved agent-utils checkout at origin/main"
+	@echo "make check-hermit-agent-utils-pin  Bound how far hermit's own agent-utils gitlink trails main"
 	@echo "make list-rust-scripts Inventory executable Rust and rust-script source files"
 	@echo "make single-submodule-bump  Plan/run one isolated parent product gitlink A→B verification"
 	@echo "make lint               Lint parent scripts, tests, paths, and submodule policy"
