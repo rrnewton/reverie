@@ -1,0 +1,101 @@
+[
+  {
+    "ok": true,
+    "wall_seconds": 0.01,
+    "rows": 4,
+    "monotonic_ns": 5445552,
+    "tsc_delta": 8428978,
+    "monotonic_seconds": 0.005445552,
+    "implied_hz": 1547864752.737647,
+    "environment": "native",
+    "repeat": 0
+  },
+  {
+    "ok": true,
+    "wall_seconds": 0.01,
+    "rows": 4,
+    "monotonic_ns": 5269629,
+    "tsc_delta": 8156224,
+    "monotonic_seconds": 0.005269629,
+    "implied_hz": 1547779549.566013,
+    "environment": "native",
+    "repeat": 1
+  },
+  {
+    "ok": true,
+    "wall_seconds": 0.01,
+    "rows": 4,
+    "monotonic_ns": 5224532,
+    "tsc_delta": 8086427,
+    "monotonic_seconds": 0.005224532,
+    "implied_hz": 1547780164.8071063,
+    "environment": "native",
+    "repeat": 2
+  },
+  {
+    "ok": true,
+    "wall_seconds": 0.01,
+    "rows": 4,
+    "monotonic_ns": 5130981,
+    "tsc_delta": 7941099,
+    "monotonic_seconds": 0.005130981,
+    "implied_hz": 1547676555.4189346,
+    "environment": "native",
+    "repeat": 3
+  },
+  {
+    "ok": true,
+    "wall_seconds": 0.01,
+    "rows": 4,
+    "monotonic_ns": 5188647,
+    "tsc_delta": 8030829,
+    "monotonic_seconds": 0.005188647,
+    "implied_hz": 1547769389.5923157,
+    "environment": "native",
+    "repeat": 4
+  },
+  {
+    "ok": true,
+    "wall_seconds": 0.09,
+    "rows": 4,
+    "monotonic_ns": 151562605,
+    "tsc_delta": 150062605,
+    "monotonic_seconds": 0.151562605,
+    "implied_hz": 990103099.6399145,
+    "environment": "hermit",
+    "multiplier": 1.0
+  },
+  {
+    "ok": true,
+    "wall_seconds": 0.17,
+    "rows": 4,
+    "monotonic_ns": 304125210,
+    "tsc_delta": 300125210,
+    "monotonic_seconds": 0.30412521,
+    "implied_hz": 986847522.4398531,
+    "environment": "hermit",
+    "multiplier": 2.0
+  },
+  {
+    "ok": true,
+    "wall_seconds": 0.75,
+    "rows": 4,
+    "monotonic_ns": 1550626050,
+    "tsc_delta": 1500626050,
+    "monotonic_seconds": 1.55062605,
+    "implied_hz": 967754959.3598018,
+    "environment": "hermit",
+    "multiplier": 10.0
+  },
+  {
+    "ok": true,
+    "wall_seconds": 7.48,
+    "rows": 4,
+    "monotonic_ns": 18906260500,
+    "tsc_delta": 15006260500,
+    "monotonic_seconds": 18.9062605,
+    "implied_hz": 793719122.8270657,
+    "environment": "hermit",
+    "multiplier": 100.0
+  }
+]

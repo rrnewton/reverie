@@ -1,0 +1,42 @@
+[
+  {
+    "arm": "kvm",
+    "repeat": 0,
+    "run_dir": "/home/newton/work/dev-hermit/ignored/clockdiverge-cloudlint/runs/qemu/kvm-0",
+    "ok": true,
+    "rows": 4,
+    "monotonic_ns": 7128597,
+    "tsc_cycles": 11032854,
+    "implied_tsc_hz": 1547689398.068091
+  },
+  {
+    "arm": "kvm",
+    "repeat": 1,
+    "run_dir": "/home/newton/work/dev-hermit/ignored/clockdiverge-cloudlint/runs/qemu/kvm-1",
+    "ok": true,
+    "rows": 4,
+    "monotonic_ns": 7218242,
+    "tsc_cycles": 11171594,
+    "implied_tsc_hz": 1547689035.6405342
+  },
+  {
+    "arm": "tcg",
+    "repeat": 0,
+    "run_dir": "/home/newton/work/dev-hermit/ignored/clockdiverge-cloudlint/runs/qemu/tcg-0",
+    "ok": true,
+    "rows": 4,
+    "monotonic_ns": 34558810,
+    "tsc_cycles": 53510697,
+    "implied_tsc_hz": 1548395242.7760098
+  },
+  {
+    "arm": "tcg",
+    "repeat": 1,
+    "run_dir": "/home/newton/work/dev-hermit/ignored/clockdiverge-cloudlint/runs/qemu/tcg-1",
+    "ok": true,
+    "rows": 4,
+    "monotonic_ns": 35132827,
+    "tsc_cycles": 54397870,
+    "implied_tsc_hz": 1548348785.0266078
+  }
+]

@@ -1,0 +1,200 @@
+[
+  {
+    "ok": true,
+    "wall_seconds": 0.09,
+    "monotonic_seconds": 0.151562605,
+    "tsc_seconds": 0.150062605,
+    "implied_ghz": 0.9901030996399145,
+    "error_parts_per_million": 9896.900360085503,
+    "build": "baseline",
+    "read_order": "rdtsc-first",
+    "multiplier": 1.0
+  },
+  {
+    "ok": true,
+    "wall_seconds": 0.8,
+    "monotonic_seconds": 1.55062605,
+    "tsc_seconds": 1.50062605,
+    "implied_ghz": 0.9677549593598017,
+    "error_parts_per_million": 32245.040640198175,
+    "build": "baseline",
+    "read_order": "rdtsc-first",
+    "multiplier": 10.0
+  },
+  {
+    "ok": true,
+    "wall_seconds": 7.39,
+    "monotonic_seconds": 18.9062605,
+    "tsc_seconds": 15.0062605,
+    "implied_ghz": 0.7937191228270657,
+    "error_parts_per_million": 206280.8771729343,
+    "build": "baseline",
+    "read_order": "rdtsc-first",
+    "multiplier": 100.0
+  },
+  {
+    "ok": true,
+    "wall_seconds": 0.1,
+    "monotonic_seconds": 0.151562605,
+    "tsc_seconds": 0.150062605,
+    "implied_ghz": 0.9901030996399145,
+    "error_parts_per_million": 9896.900360085503,
+    "build": "baseline",
+    "read_order": "rdtsc-after-syscall",
+    "multiplier": 1.0
+  },
+  {
+    "ok": true,
+    "wall_seconds": 0.75,
+    "monotonic_seconds": 1.55062605,
+    "tsc_seconds": 1.50062605,
+    "implied_ghz": 0.9677549593598017,
+    "error_parts_per_million": 32245.040640198175,
+    "build": "baseline",
+    "read_order": "rdtsc-after-syscall",
+    "multiplier": 10.0
+  },
+  {
+    "ok": true,
+    "wall_seconds": 7.49,
+    "monotonic_seconds": 18.9062605,
+    "tsc_seconds": 15.0062605,
+    "implied_ghz": 0.7937191228270657,
+    "error_parts_per_million": 206280.8771729343,
+    "build": "baseline",
+    "read_order": "rdtsc-after-syscall",
+    "multiplier": 100.0
+  },
+  {
+    "ok": true,
+    "wall_seconds": 0.1,
+    "monotonic_seconds": 0.151562605,
+    "tsc_seconds": 0.151562605,
+    "implied_ghz": 1.0000000000000002,
+    "error_parts_per_million": 0.0,
+    "build": "fix-a-rdtsc-reads-global",
+    "read_order": "rdtsc-first",
+    "multiplier": 1.0
+  },
+  {
+    "ok": true,
+    "wall_seconds": 0.79,
+    "monotonic_seconds": 1.55062605,
+    "tsc_seconds": 1.55062605,
+    "implied_ghz": 1.0,
+    "error_parts_per_million": 0.0,
+    "build": "fix-a-rdtsc-reads-global",
+    "read_order": "rdtsc-first",
+    "multiplier": 10.0
+  },
+  {
+    "ok": true,
+    "wall_seconds": 0.14,
+    "monotonic_seconds": 0.151562605,
+    "tsc_seconds": 0.151562605,
+    "implied_ghz": 1.0000000000000002,
+    "error_parts_per_million": 0.0,
+    "build": "fix-a-rdtsc-reads-global",
+    "read_order": "rdtsc-after-syscall",
+    "multiplier": 1.0
+  },
+  {
+    "ok": true,
+    "wall_seconds": 0.75,
+    "monotonic_seconds": 1.55062605,
+    "tsc_seconds": 1.55062605,
+    "implied_ghz": 1.0,
+    "error_parts_per_million": 0.0,
+    "build": "fix-a-rdtsc-reads-global",
+    "read_order": "rdtsc-after-syscall",
+    "multiplier": 10.0
+  },
+  {
+    "ok": true,
+    "wall_seconds": 7.62,
+    "monotonic_seconds": 18.9062605,
+    "tsc_seconds": 18.9062605,
+    "implied_ghz": 1.0000000000000002,
+    "error_parts_per_million": 0.0,
+    "build": "fix-a-rdtsc-reads-global",
+    "read_order": "rdtsc-after-syscall",
+    "multiplier": 100.0
+  },
+  {
+    "ok": true,
+    "wall_seconds": 0.1,
+    "monotonic_seconds": 0.154562605,
+    "tsc_seconds": 0.153062605,
+    "implied_ghz": 0.9902951946235637,
+    "error_parts_per_million": 9704.805376436254,
+    "build": "fix-b-thread-absorbs-sched",
+    "read_order": "rdtsc-first",
+    "multiplier": 1.0
+  },
+  {
+    "ok": true,
+    "wall_seconds": 0.69,
+    "monotonic_seconds": 1.61562605,
+    "tsc_seconds": 1.56562605,
+    "implied_ghz": 0.9690522444844214,
+    "error_parts_per_million": 30947.7555155786,
+    "build": "fix-b-thread-absorbs-sched",
+    "read_order": "rdtsc-first",
+    "multiplier": 10.0
+  },
+  {
+    "ok": true,
+    "wall_seconds": 7.38,
+    "monotonic_seconds": 23.1062605,
+    "tsc_seconds": 19.1062605,
+    "implied_ghz": 0.8268867435299623,
+    "error_parts_per_million": 173113.25647003762,
+    "build": "fix-b-thread-absorbs-sched",
+    "read_order": "rdtsc-first",
+    "multiplier": 100.0
+  },
+  {
+    "ok": true,
+    "wall_seconds": 0.09,
+    "monotonic_seconds": 0.154562605,
+    "tsc_seconds": 0.154562605,
+    "implied_ghz": 1.0,
+    "error_parts_per_million": 0.0,
+    "build": "fix-b-thread-absorbs-sched",
+    "read_order": "rdtsc-after-syscall",
+    "multiplier": 1.0
+  },
+  {
+    "ok": true,
+    "wall_seconds": 0.7,
+    "monotonic_seconds": 1.61562605,
+    "tsc_seconds": 1.61562605,
+    "implied_ghz": 1.0,
+    "error_parts_per_million": 0.0,
+    "build": "fix-b-thread-absorbs-sched",
+    "read_order": "rdtsc-after-syscall",
+    "multiplier": 10.0
+  },
+  {
+    "ok": true,
+    "wall_seconds": 7.22,
+    "monotonic_seconds": 23.1062605,
+    "tsc_seconds": 23.1062605,
+    "implied_ghz": 1.0,
+    "error_parts_per_million": 0.0,
+    "build": "fix-b-thread-absorbs-sched",
+    "read_order": "rdtsc-after-syscall",
+    "multiplier": 100.0
+  },
+  {
+    "build": "fix-a-rdtsc-reads-global",
+    "read_order": "rdtsc-first",
+    "multiplier": 100.0,
+    "ok": true,
+    "retry_of_transient_short_capture": true,
+    "monotonic_seconds": 18.9062605,
+    "tsc_seconds": 18.9062605,
+    "implied_ghz": 1.0000000000000002,
+    "error_parts_per_million": 0.0
+  }
+]

@@ -1,0 +1,68 @@
+[
+  {
+    "ok": true,
+    "wall_seconds": 0.01,
+    "rows": 4,
+    "monotonic_ns": 5293854,
+    "tsc_delta": 8194230,
+    "monotonic_seconds": 0.005293854,
+    "implied_hz": 1547876084.2289946,
+    "environment": "native",
+    "repeat": 0
+  },
+  {
+    "ok": true,
+    "wall_seconds": 0.01,
+    "rows": 4,
+    "monotonic_ns": 5197560,
+    "tsc_delta": 8044670,
+    "monotonic_seconds": 0.00519756,
+    "implied_hz": 1547778188.2267833,
+    "environment": "native",
+    "repeat": 1
+  },
+  {
+    "ok": true,
+    "wall_seconds": 0.1,
+    "rows": 4,
+    "monotonic_ns": 151562605,
+    "tsc_delta": 151562605,
+    "monotonic_seconds": 0.151562605,
+    "implied_hz": 1000000000.0000001,
+    "environment": "hermit",
+    "multiplier": 1.0
+  },
+  {
+    "ok": true,
+    "wall_seconds": 0.17,
+    "rows": 4,
+    "monotonic_ns": 304125210,
+    "tsc_delta": 304125210,
+    "monotonic_seconds": 0.30412521,
+    "implied_hz": 1000000000.0000001,
+    "environment": "hermit",
+    "multiplier": 2.0
+  },
+  {
+    "ok": true,
+    "wall_seconds": 0.77,
+    "rows": 4,
+    "monotonic_ns": 1550626050,
+    "tsc_delta": 1550626050,
+    "monotonic_seconds": 1.55062605,
+    "implied_hz": 1000000000.0,
+    "environment": "hermit",
+    "multiplier": 10.0
+  },
+  {
+    "ok": true,
+    "wall_seconds": 7.65,
+    "rows": 4,
+    "monotonic_ns": 18906260500,
+    "tsc_delta": 18906260500,
+    "monotonic_seconds": 18.9062605,
+    "implied_hz": 1000000000.0000001,
+    "environment": "hermit",
+    "multiplier": 100.0
+  }
+]

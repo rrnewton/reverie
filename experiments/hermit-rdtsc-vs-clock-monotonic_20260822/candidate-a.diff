@@ -1,0 +1,65 @@
+diff --git a/detcore/src/lib.rs b/detcore/src/lib.rs
+index 47d2201a06..9d33e608f1 100644
+--- a/detcore/src/lib.rs
++++ b/detcore/src/lib.rs
+@@ -254,6 +254,7 @@ use crate::syscall_classification::is_unsupported_async_ipc_syscall;
+ use crate::syscall_classification::is_zero_copy_pipe_syscall;
+ use crate::syscalls::helpers::with_guest_rip;
+ use crate::syscalls::helpers::with_guest_time;
++use crate::syscalls::time::guest_clock_time;
+ use crate::tool_global::resource_request;
+ use crate::tool_global::trace_schedevent;
+ use crate::tool_global::unrecoverable_shutdown;
+@@ -1225,13 +1226,20 @@ impl<T: RecordOrReplay> Tool for Detcore<T> {
+                 );
+                 trace_schedevent(guest, ev, true).await;
+             }
+-            // TODO: use global time for rdtsc:
++            // rdtsc reads the SAME clock clock_gettime does.
++            //
++            // These used to differ: rdtsc returned this thread's local logical
++            // time while clock_gettime returned global virtual time. Only
++            // global time is charged NANOS_PER_SCHED per scheduler turn
++            // (GlobalTime::add_scheduler_time), so the two drifted apart by
++            // the whole scheduler bill. The gap grows with the SQUARE of the
++            // clock multiplier, because the timeslice is denominated in
++            // virtual nanoseconds and converted to an RCB budget by dividing
++            // by the multiplier, so the turn count itself grows with it.
++            let tsc = guest_clock_time(guest).await.as_nanos();
+             Ok(RdtscResult {
+-                tsc: guest
+-                    .thread_state()
+-                    .thread_logical_time
+-                    .as_nanos()
+-                    .as_nanos(), // We treat virtual cycles as equivalent to virtual nanoseconds.
++                // We treat virtual cycles as equivalent to virtual nanoseconds.
++                tsc,
+                 aux: None,
+             })
+         } else {
+diff --git a/detcore/src/syscalls.rs b/detcore/src/syscalls.rs
+index d19bcde6fe..ab3c5e97bd 100644
+--- a/detcore/src/syscalls.rs
++++ b/detcore/src/syscalls.rs
+@@ -18,7 +18,7 @@ mod signal;
+ pub(crate) mod socket_timestamp_ioctl;
+ mod sysinfo;
+ mod threads;
+-mod time;
++pub(crate) mod time;
+ 
+ use crate::consts::DET_SPECIAL_INODE_OFFSET;
+ use crate::types::DetInode;
+diff --git a/detcore/src/syscalls/time.rs b/detcore/src/syscalls/time.rs
+index 71cd7a5085..c0cb78d0f9 100644
+--- a/detcore/src/syscalls/time.rs
++++ b/detcore/src/syscalls/time.rs
+@@ -93,7 +93,7 @@ fn deterministic_timex(now: Timespec) -> libc::timex {
+ 
+ // AUTONOMOUS-BOT-IMPLEMENTED
+ // TODO-HUMAN-REVIEW(PR-845): Review SaBRe thread-local guest clock reads.
+-async fn guest_clock_time<G, T>(guest: &mut G) -> LogicalTime
++pub(crate) async fn guest_clock_time<G, T>(guest: &mut G) -> LogicalTime
+ where
+     G: Guest<Detcore<T>>,
+     T: RecordOrReplay,

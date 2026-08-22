@@ -1,0 +1,53 @@
+[
+  {
+    "multiplier": 1.0,
+    "max_timeslice": "200000000",
+    "wall_seconds": 0.1,
+    "exit_code": 0,
+    "command": "/home/newton/work/dev-hermit/hermit/target/release/hermit run --clock-multiplier 1.0 --max-timeslice 200000000 -- /home/newton/scratch-relaxcheck/clockprobe 4 5000000",
+    "monotonic": 0.15179967880249023,
+    "realtime": 0.15179967880249023,
+    "process_cpu": 0.15179967880249023,
+    "tsc_raw": 150301205,
+    "rusage": 0.150301,
+    "samples": 4,
+    "ok": true,
+    "tsc_seconds": 0.150301205,
+    "excess_seconds": 0.001498473802490241,
+    "ratio": 1.0099698056478672
+  },
+  {
+    "multiplier": 10.0,
+    "max_timeslice": "2000000000",
+    "wall_seconds": 0.1,
+    "exit_code": 0,
+    "command": "/home/newton/work/dev-hermit/hermit/target/release/hermit run --clock-multiplier 10.0 --max-timeslice 2000000000 -- /home/newton/scratch-relaxcheck/clockprobe 4 5000000",
+    "monotonic": 1.5179932117462158,
+    "realtime": 1.5179929733276367,
+    "process_cpu": 1.5179932117462158,
+    "tsc_raw": 1503008350,
+    "rusage": 1.5030000000000001,
+    "samples": 4,
+    "ok": true,
+    "tsc_seconds": 1.50300835,
+    "excess_seconds": 0.014984861746215827,
+    "ratio": 1.0099699125066177
+  },
+  {
+    "multiplier": 100.0,
+    "max_timeslice": "20000000000",
+    "wall_seconds": 0.1,
+    "exit_code": 0,
+    "command": "/home/newton/work/dev-hermit/hermit/target/release/hermit run --clock-multiplier 100.0 --max-timeslice 20000000000 -- /home/newton/scratch-relaxcheck/clockprobe 4 5000000",
+    "monotonic": 15.180022478103638,
+    "realtime": 15.180022478103638,
+    "process_cpu": 15.180022478103638,
+    "tsc_raw": 15030175500,
+    "rusage": 15.030100000000001,
+    "samples": 4,
+    "ok": true,
+    "tsc_seconds": 15.0301755,
+    "excess_seconds": 0.14984697810363734,
+    "ratio": 1.0099697424094374
+  }
+]
