@@ -57,8 +57,8 @@ git submodule update --init --recursive
 ### Submodule checkout policy
 
 All product and backend source submodules are checked out by default. Recursive
-initialization gets Hermit, Reverie, LiteInst2, and Reverie's pinned DynamoRIO,
-e9patch, and SaBRe sources; those nested backend entries all use
+initialization gets Hermit, Hermit's pinned agent-utils, Reverie, LiteInst2, and
+Reverie's pinned DynamoRIO, e9patch, and SaBRe sources; those nested entries all
 `update = checkout`. No per-backend update override or `--force` is needed.
 
 The normal `make`, `make build`, and `make build-full` entry points also run the
@@ -68,9 +68,20 @@ that initialization explicitly. These Make targets use `with-proxy`
 automatically when the wrapper is installed and fall back to plain `git`
 elsewhere.
 
-The parent `agent-utils` submodule is separate on-demand tooling, not a product
-or backend source dependency. It stays out of ordinary recursive initialization
-and is materialized by the scripts that require it.
+The parent path `agent-utils` is a tracked symlink to `hermit/agent-utils`, not a
+second submodule. This keeps existing commands and imports at `agent-utils/...`
+working while Hermit owns the only recorded agent-utils pin. In a fresh clone
+without `--recurse-submodules`, that symlink is intentionally dangling until
+Hermit and then its nested dependency are initialized:
+
+```bash
+git submodule update --init -- hermit
+git -C hermit submodule update --init -- agent-utils
+```
+
+`git submodule update --init --recursive` and `make checkout-all` perform both
+steps automatically. The attach-preserving helper keeps agent-utils on demand:
+run `make submodules ARGS=--with-agent-utils` when parent tooling needs it.
 
 `WORKTREES.md` explains the optional paired-worktree layout for working on
 several changes concurrently. Whichever layout you use, do not develop directly

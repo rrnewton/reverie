@@ -66,7 +66,8 @@ jobs:
           # file's cases collapse into 37 StopIteration errors + 2 verdict
           # failures. That is what made this shard red from 62bfc534 onward
           # while the same file was 15/15 green locally.
-          git -c submodule.agent-utils.update=none submodule update --init --depth 1 -- hermit reverie liteinst2
+          git submodule update --init --depth 1 -- hermit reverie liteinst2
+          git -C hermit submodule update --init --depth 1 -- agent-utils
           timeout --signal=KILL 3m python3 -m unittest discover -s scripts -p "test_*.py"
           timeout --signal=KILL 2m scripts/lint-rust-error-string-proxies.py . hermit reverie liteinst2
 
@@ -194,8 +195,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          git -c submodule.agent-utils.update=checkout \
-            submodule update --init --checkout -- agent-utils
+          git submodule update --init --checkout -- hermit
+          git -C hermit submodule update --init --checkout -- agent-utils
           python3 -m pip install --disable-pip-version-check PyYAML
           mkdir -p "$RUNNER_TEMP/bin"
           printf '%s\n' '#!/usr/bin/env bash' 'exec "$@"' \

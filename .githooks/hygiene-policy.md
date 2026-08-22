@@ -148,8 +148,10 @@ override it.
 
 **The reachable-accident root shape is documented, not yet normalized.**
 `hermit/.git` is an in-tree repository directory hosting ~126 worktrees, with no
-`.git/modules/hermit` — unlike `reverie`, `liteinst2` and `agent-utils`, which
-use the standard gitfile + `.git/modules/<name>` layout and have never drifted.
+`.git/modules/hermit` — unlike the parent `reverie` and `liteinst2` submodules,
+which use the standard gitfile + `.git/modules/<name>` layout and have never
+drifted. The parent `agent-utils` path is a symlink to the nested checkout in
+Hermit, not a fourth parent submodule.
 Until that is normalized, the guard above is what re-asserts `core.bare=false`.
 
 ## The shared index: never `git commit` bare in the parent

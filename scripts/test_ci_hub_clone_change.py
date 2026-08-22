@@ -67,9 +67,52 @@ class Fixture(unittest.TestCase):
             "esac\n"
         )
         (self.seed / "scripts/parent-main-write").chmod(0o755)
+
+        self.agent_utils_remote = self.root / "agent-utils-remote.git"
+        self.agent_utils_seed = self.root / "agent-utils-seed"
+        command("git", "init", "--bare", str(self.agent_utils_remote))
+        command("git", "init", "-b", "main", str(self.agent_utils_seed))
+        git(self.agent_utils_seed, "config", "user.name", "Test Agent")
+        git(self.agent_utils_seed, "config", "user.email", "test@example.invalid")
+        (self.agent_utils_seed / "payload.txt").write_text("from hermit agent-utils\n")
+        git(self.agent_utils_seed, "add", "payload.txt")
+        git(self.agent_utils_seed, "commit", "-m", "agent-utils seed")
+        git(self.agent_utils_seed, "remote", "add", "origin", str(self.agent_utils_remote))
+        git(self.agent_utils_seed, "push", "-u", "origin", "main")
+
+        self.hermit_remote = self.root / "hermit-remote.git"
+        self.hermit_seed = self.root / "hermit-seed"
+        command("git", "init", "--bare", str(self.hermit_remote))
+        command("git", "init", "-b", "main", str(self.hermit_seed))
+        git(self.hermit_seed, "config", "user.name", "Test Agent")
+        git(self.hermit_seed, "config", "user.email", "test@example.invalid")
+        (self.hermit_seed / "README").write_text("hermit fixture\n")
+        git(self.hermit_seed, "add", "README")
+        git(self.hermit_seed, "commit", "-m", "hermit seed")
+        env = {**os.environ, **self.FILE_PROTOCOL_ENV}
+        added = subprocess.run(
+            ["git", "-C", str(self.hermit_seed), "submodule", "add",
+             str(self.agent_utils_remote), "agent-utils"],
+            capture_output=True, text=True, env=env,
+        )
+        self.assertEqual(added.returncode, 0, added.stderr)
+        git(self.hermit_seed, "commit", "-m", "add agent-utils")
+        git(self.hermit_seed, "remote", "add", "origin", str(self.hermit_remote))
+        git(self.hermit_seed, "push", "-u", "origin", "main")
+        command("git", "--git-dir", str(self.hermit_remote), "symbolic-ref",
+                "HEAD", "refs/heads/main")
+
+        added = subprocess.run(
+            ["git", "-C", str(self.seed), "submodule", "add",
+             str(self.hermit_remote), "hermit"],
+            capture_output=True, text=True, env=env,
+        )
+        self.assertEqual(added.returncode, 0, added.stderr)
+        (self.seed / "agent-utils").symlink_to("hermit/agent-utils")
         git(
             self.seed,
             "add",
+            "agent-utils",
             "ci-hub/bin/tool",
             "outside.txt",
             "scripts/setup-hooks.sh",
@@ -143,6 +186,14 @@ class Fixture(unittest.TestCase):
             env={**os.environ, **self.FILE_PROTOCOL_ENV, **(env or {})},
         )
 
+    def publish_hermit_change(self) -> None:
+        git(self.hermit_seed, "push", "origin", "main")
+        git(self.seed / "hermit", "fetch", "origin", "main")
+        git(self.seed / "hermit", "checkout", "--detach", "origin/main")
+        git(self.seed, "add", "hermit")
+        git(self.seed, "commit", "-m", "advance hermit")
+        git(self.seed, "push", "origin", "main")
+
     def test_create_checks_out_submodules_so_the_repo_tests_can_run(self) -> None:
         self.add_submodule()
         result = self.create_clone("with-sub")
@@ -152,8 +203,13 @@ class Fixture(unittest.TestCase):
         self.assertTrue((path / "sub" / "payload.txt").is_file())
         self.assertEqual((path / "sub" / "payload.txt").read_text(), "from the submodule\n")
         self.assertEqual(TOOL.uninitialized_submodules(path), [])
-        # `create` refuses an unclean fresh clone, so recursion must not dirty it.
+        self.assertTrue((path / "agent-utils").is_symlink())
+        self.assertTrue((path / "agent-utils" / "payload.txt").is_file())
+        self.assertEqual(TOOL.hermit_agent_utils_problem(path), None)
+        # `create` refuses an unclean fresh clone, so the targeted nested update
+        # must not dirty either the parent or Hermit.
         self.assertTrue(TOOL.is_clean(path))
+        self.assertEqual(git(path / "hermit", "status", "--porcelain"), "")
 
     def test_create_refuses_rather_than_producing_a_clone_missing_a_submodule(self) -> None:
         """The failure that "stops erroring" would hide: a silently absent submodule.
@@ -181,6 +237,45 @@ class Fixture(unittest.TestCase):
         self.assertIn("sub", result.stderr)
         # The clone git did produce is missing exactly what the tests import.
         self.assertFalse((self.root / "no-sub" / "sub" / "payload.txt").is_file())
+
+    def test_create_refuses_when_nested_agent_utils_is_silently_skipped(self) -> None:
+        git(
+            self.hermit_seed,
+            "config",
+            "-f",
+            ".gitmodules",
+            "submodule.agent-utils.update",
+            "none",
+        )
+        git(self.hermit_seed, "add", ".gitmodules")
+        git(self.hermit_seed, "commit", "-m", "silently skip nested agent-utils")
+        self.publish_hermit_change()
+
+        result = self.create_clone("nested-skip")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("hermit/agent-utils unavailable", result.stderr)
+        self.assertIn("uninitialized", result.stderr)
+        self.assertIn("exposes no files", result.stderr)
+        clone = self.root / "nested-skip"
+        self.assertTrue((clone / "agent-utils").is_symlink())
+        self.assertFalse((clone / "agent-utils" / "payload.txt").is_file())
+        self.assertFalse((clone / "hermit" / "agent-utils" / "payload.txt").is_file())
+
+    def test_create_refuses_a_wrong_parent_agent_utils_symlink(self) -> None:
+        link = self.seed / "agent-utils"
+        link.unlink()
+        link.symlink_to("hermit/not-agent-utils")
+        git(self.seed, "add", "agent-utils")
+        git(self.seed, "commit", "-m", "break agent-utils symlink")
+        git(self.seed, "push", "origin", "main")
+
+        result = self.create_clone("dangling-link")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("invalid agent-utils path", result.stderr)
+        self.assertIn("not 'hermit/agent-utils'", result.stderr)
+        clone = self.root / "dangling-link"
+        self.assertTrue((clone / "agent-utils").is_symlink())
+        self.assertFalse((clone / "agent-utils").exists())
 
     def test_uninitialized_submodules_reads_the_status_prefix(self) -> None:
         self.add_submodule()

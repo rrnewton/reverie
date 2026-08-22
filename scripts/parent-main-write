@@ -149,6 +149,8 @@ verify_published_attribution() {
 }
 
 is_sensitive_path() {
+  # agent-utils remains sensitive because changing the parent symlink changes
+  # which shared tooling path callers execute; it is not a parent gitlink.
   case "$1" in
     hermit|reverie|liteinst2|agent-utils|.githooks/*|scripts/parent-main-write|scripts/setup-hooks.sh)
       return 0 ;;
@@ -751,7 +753,7 @@ classify_published_residue() {
     # A GITLINK IS NOT WORKING-TREE CONTENT. Decided FIRST and by MODE, because
     # every other test below gives the right answer for the wrong reason:
     #   * `git cat-file -e "$target:$path"` FAILS for a gitlink (rc 1, measured
-    #     on the live parent for both `hermit` and `agent-utils`) -- the
+    #     on the live parent for its product submodules) -- the
     #     submodule's commit object lives in the submodule's own store, not the
     #     superproject's -- so a gitlink used to exit through the arm labelled
     #     "absent from the target tree (a deletion)", which it is not; and

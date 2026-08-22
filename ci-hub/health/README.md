@@ -11,7 +11,7 @@ health polling. Project policy stays in this repository:
 - `ci-hub/health/tick-hub-state.yaml` is the versioned runtime policy.
 - `ci-hub/health/operational_health.py` implements project-specific probes.
 - `ci-hub/bin/health-tick` uses `ci-hub/bin/agent-tool` to materialize the exact
-  `agent-utils` gitlink on
+  agent-utils commit pinned by the nested `agent-utils` gitlink in Hermit on
   demand, provisions the pinned Python runtime dependency into the ignored
   `.tick-hub/venv` when needed, then invokes the real tick-hub CLI.
 - `.orc/plugins/hermit-dev/index.ts` is the outer five-minute scheduler and
@@ -161,9 +161,16 @@ Run and persist due times:
 HERMIT_AGENT_SNAPSHOT_JSON='[]' ./ci-hub/bin/health-tick --flush --no-header
 ```
 
-`agent-utils` uses `update = none`, so ordinary recursive submodule checkout
-does not fetch it. The runner checks out the exact pinned commit on first use
-and fails rather than overwriting a dirty checkout.
+The parent `agent-utils` path is a symlink to `hermit/agent-utils`. A recursive
+checkout initializes that nested submodule. For a selective checkout, initialize
+Hermit first and then run:
+
+```bash
+git -C hermit submodule update --init --checkout -- agent-utils
+```
+
+The runner checks out the exact nested pin from Hermit on first use and fails
+rather than overwriting a dirty checkout.
 
 ## Gate-runner presence (`gate_runner_presence.py`) — certification condition 9
 

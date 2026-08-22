@@ -1,6 +1,6 @@
 # Single-variable submodule bumps
 
-Every parent gitlink advance is an A/B experiment:
+Every parent product gitlink advance is an A/B experiment:
 
 1. **A is known green.** Record a durable evidence file containing the full
    parent A SHA. For determinism-related subjects, A needs a powered repeated
@@ -19,7 +19,7 @@ Use a clean isolated parent bump branch/worktree. Inspect without mutation:
 
 ```bash
 make single-submodule-bump ARGS='plan \
-  --submodule agent-utils \
+  --submodule reverie \
   --base <40-hex-known-green-parent-A> \
   --base-evidence <evidence-containing-A>'
 ```
@@ -28,7 +28,7 @@ Execute only after the plan passes and a verification argv is selected:
 
 ```bash
 make single-submodule-bump ARGS='run \
-  --submodule agent-utils \
+  --submodule reverie \
   --base <40-hex-known-green-parent-A> \
   --base-evidence <evidence-containing-A> \
   -- <verification-program> <arg> ...'
@@ -68,18 +68,13 @@ must never be recorded as a green determinism result.
 `parent_a`/`parent_b` are stable joins for the local/GitHub commit-history
 store. Full-state results are never overwritten.
 
-## Current gate and first queued instance (2026-08-03)
+## Agent-utils updates
 
-Do **not** run a real bump yet:
+The parent `agent-utils` path is a symlink to `hermit/agent-utils`, not an
+independently pinned parent submodule. This tool therefore accepts only the
+parent product gitlinks: `hermit`, `reverie`, and `liteinst2`.
 
-- Hermit main is not a valid green A. The calibrated matched-load experiment
-  measures `test.detcore_misc` vfork/reap hangs at 16-23% under load. Establish
-  A only after Reverie PR #355 lands, Hermit's Reverie pin includes it, and the
-  same matched-load probe confirms the repaired baseline.
-- Agent-utils has no A→B today: parent pin, checkout, and `origin/main` are all
-  `1c0e9c3c4928dac192e0115291f114863bc03a0d` (zero commits behind).
-
-The first queued execution is agent-utils PR #5, branch
-`codex/cpu-time-timeout` at
-`f43c3ea96ac1286cfebefae263834b20d30d53de`. It becomes eligible only after
-that commit merges to agent-utils `main` and a real green parent A exists.
+An agent-utils update changes the nested gitlink in Hermit, commits and verifies
+that change there, and then advances the parent `hermit` gitlink with the
+ordinary A/B procedure above. Do not point the parent symlink at a separate
+checkout or try to record an `agent-utils` parent gitlink bump.

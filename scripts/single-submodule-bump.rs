@@ -1,5 +1,5 @@
 #!/usr/bin/env rust-script
-//! Prepare or execute one-variable submodule bumps with A/B verification.
+//! Prepare or execute one-variable parent product submodule bumps with A/B verification.
 //!
 //! ```cargo
 //! [dependencies]
@@ -30,7 +30,7 @@ const SCHEMA_VERSION: u32 = 1;
 #[derive(Parser, Debug)]
 #[command(
     name = "single-submodule-bump",
-    about = "Isolate one submodule bump between known-green A and verified B",
+    about = "Isolate one parent product submodule bump between known-green A and verified B",
     version
 )]
 struct Cli {
@@ -92,7 +92,6 @@ struct RunArgs {
 #[derive(Clone, Copy, Debug, Serialize, ValueEnum)]
 #[serde(rename_all = "kebab-case")]
 enum ManagedSubmodule {
-    AgentUtils,
     Hermit,
     Reverie,
     Liteinst2,
@@ -101,7 +100,6 @@ enum ManagedSubmodule {
 impl ManagedSubmodule {
     fn path(self) -> &'static str {
         match self {
-            Self::AgentUtils => "agent-utils",
             Self::Hermit => "hermit",
             Self::Reverie => "reverie",
             Self::Liteinst2 => "liteinst2",
@@ -859,9 +857,25 @@ mod tests {
 
     #[test]
     fn accepts_only_one_expected_path() {
-        assert!(require_only_path("agent-utils\n", "agent-utils", "test").is_ok());
-        assert!(require_only_path("agent-utils\nhermit\n", "agent-utils", "test").is_err());
-        assert!(require_only_path("", "agent-utils", "test").is_err());
+        assert!(require_only_path("hermit\n", "hermit", "test").is_ok());
+        assert!(require_only_path("hermit\nreverie\n", "hermit", "test").is_err());
+        assert!(require_only_path("", "hermit", "test").is_err());
+    }
+
+    #[test]
+    fn rejects_agent_utils_as_an_independent_parent_bump() {
+        let error = Cli::try_parse_from([
+            "single-submodule-bump",
+            "plan",
+            "--submodule",
+            "agent-utils",
+            "--base",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "--base-evidence",
+            "baseline.json",
+        ])
+        .unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::InvalidValue);
     }
 
     #[test]
@@ -938,7 +952,7 @@ mod tests {
             record_type: "single-submodule-bump",
             recorded_at: "2026-08-03T00:00:00Z".into(),
             run_id: "test-run".into(),
-            submodule: ManagedSubmodule::AgentUtils,
+            submodule: ManagedSubmodule::Hermit,
             parent_a: "a".repeat(40),
             parent_b: "b".repeat(40),
             submodule_a: "c".repeat(40),

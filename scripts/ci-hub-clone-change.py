@@ -386,6 +386,39 @@ def uninitialized_submodules(repo: Path) -> list[str]:
     return missing
 
 
+def hermit_agent_utils_problem(repo: Path) -> str | None:
+    """Why Hermit's one required nested submodule is unavailable, or None.
+
+    The parent update deliberately remains non-recursive: Hermit's other nested
+    submodules are product/backend inputs that this tool's tests do not need.
+    agent-utils is the one exception because the parent `agent-utils` path is a
+    symlink to it and the parent test suites import through that path.
+    """
+    link = repo / "agent-utils"
+    if not link.is_symlink():
+        return "agent-utils is not the required symlink to hermit/agent-utils"
+    target = os.readlink(link)
+    if target != "hermit/agent-utils":
+        return f"agent-utils points to {target!r}, not 'hermit/agent-utils'"
+
+    hermit = repo / "hermit"
+    result = run(
+        ("git", "-C", str(hermit), "submodule", "status", "--", "agent-utils"),
+        check=False,
+    )
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout).strip()
+        return f"cannot inspect hermit/agent-utils: {detail or 'git submodule status failed'}"
+    entries = [line for line in result.stdout.splitlines() if line.strip()]
+    if len(entries) != 1:
+        return "hermit records no single agent-utils submodule"
+    if entries[0].startswith("-"):
+        return "hermit/agent-utils is uninitialized; parent agent-utils exposes no files"
+    if not link.is_dir():
+        return "parent agent-utils symlink is dangling after hermit/agent-utils initialization"
+    return None
+
+
 def command_create(args: argparse.Namespace) -> None:
     destination = Path(args.clone).expanduser().resolve()
     if destination.exists() or destination.is_symlink():
@@ -420,22 +453,37 @@ def command_create(args: argparse.Namespace) -> None:
     # `test_merge_gate_authority.py` failed 7 of 11 without
     # `hermit/scripts/configure-merge-gate-ruleset.sh`, and passed 11 with it.
     #
-    # Two mechanisms reach the same four submodules with identical test results,
-    # and they do NOT cost the same. `git clone --recurse-submodules` produced a
-    # 566M clone in 34s; clone-then-update produced 212M in 11s, most of the
-    # difference being reverie's object store at 178M versus 14M. Hence this
-    # shape. Over the no-submodule clone (3s, 100M) the cost is about +8s and
-    # +112M.
+    # Before the parent agent-utils gitlink was collapsed into Hermit's, two
+    # mechanisms reached the same four top-level submodules and did NOT cost the
+    # same. `git clone --recurse-submodules` produced a 566M clone in 34s;
+    # clone-then-update produced 212M in 11s, most of the difference being
+    # reverie's object store at 178M versus 14M. Hence the non-recursive parent
+    # update remains. Over the no-submodule clone (3s, 100M) its measured cost
+    # was about +8s and +112M.
     #
-    # All four rather than only the two the current tests need: +3s and +62M
-    # buys the next test that reaches for `reverie` or `liteinst2` not failing
-    # this same way.
+    # All three parent product submodules rather than only the ones the current
+    # tests need: the small extra cost buys the next test that reaches for
+    # `reverie` or `liteinst2` not failing this same way. Hermit's agent-utils is
+    # initialized separately below; recursion would also fetch every unrelated
+    # nested backend source.
     network_git(destination, "submodule", "update", "--init")
     uninitialized = uninitialized_submodules(destination)
     if uninitialized:
         raise Refusal(
             "clone left submodule(s) uninitialized, so this clone cannot run the "
             "repository's own tests: " + ", ".join(uninitialized)
+        )
+    link_problem = hermit_agent_utils_problem(destination)
+    if link_problem and "uninitialized" not in link_problem:
+        raise Refusal(f"clone has an invalid agent-utils path: {link_problem}")
+    network_git(
+        destination / "hermit", "submodule", "update", "--init", "--", "agent-utils"
+    )
+    link_problem = hermit_agent_utils_problem(destination)
+    if link_problem:
+        raise Refusal(
+            "clone left hermit/agent-utils unavailable, so this clone cannot run "
+            f"the repository's own tests: {link_problem}"
         )
     base = git(destination, "rev-parse", "HEAD^{commit}")
     remote = git(destination, "rev-parse", "refs/remotes/origin/main^{commit}")

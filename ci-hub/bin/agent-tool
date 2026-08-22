@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
-# Run a tool from the exact agent-utils commit pinned by dev-hermit.
+# Run a tool from the exact agent-utils commit pinned by dev-hermit's Hermit pin.
 set -euo pipefail
 
 ROOT=$(git -C "$(dirname -- "${BASH_SOURCE[0]}")/../.." rev-parse --show-toplevel)
+HERMIT="$ROOT/hermit"
 AGENT_UTILS="$ROOT/agent-utils"
-EXPECTED=$(git -C "$ROOT" rev-parse :agent-utils)
+AGENT_UTILS_LINK_TARGET="hermit/agent-utils"
 TOOL=${1:-}
 
 case "$TOOL" in
@@ -15,6 +16,55 @@ case "$TOOL" in
         ;;
 esac
 shift
+
+die() {
+    echo "agent-tool: $*" >&2
+    exit 1
+}
+
+run_networked() {
+    if command -v with-proxy >/dev/null 2>&1; then
+        with-proxy "$@"
+    else
+        "$@"
+    fi
+}
+
+gitlink_at() {
+    local repo=$1 tree=$2 path=$3 description=$4 entry mode kind object entry_path extra
+    if ! entry=$(git -C "$repo" ls-tree "$tree" -- "$path" 2>/dev/null); then
+        die "cannot inspect $description for $path"
+    fi
+    read -r mode kind object entry_path extra <<<"$entry"
+    if [[ $mode != 160000 || $kind != commit || $entry_path != "$path" || -n ${extra:-} \
+          || ! $object =~ ^[0-9a-f]{40}$ ]]; then
+        die "$description has no gitlink at $path (got ${entry:-no entry})"
+    fi
+    printf '%s\n' "$object"
+}
+
+if [[ ! -L $AGENT_UTILS ]]; then
+    die "$AGENT_UTILS is not the tracked compatibility symlink; expected 'agent-utils -> $AGENT_UTILS_LINK_TARGET'"
+fi
+ACTUAL_LINK=$(readlink "$AGENT_UTILS")
+if [[ $ACTUAL_LINK != "$AGENT_UTILS_LINK_TARGET" ]]; then
+    die "$AGENT_UTILS points to '$ACTUAL_LINK'; expected exact relative target '$AGENT_UTILS_LINK_TARGET'"
+fi
+
+PARENT_HERMIT=$(gitlink_at "$ROOT" HEAD hermit "parent HEAD")
+if [[ ! -e $HERMIT/.git ]]; then
+    update_hermit=(git -C "$ROOT" submodule update --init --checkout -- hermit)
+    run_networked "${update_hermit[@]}" \
+        || die "could not initialize parent-recorded Hermit checkout; rerun '${update_hermit[*]}'"
+fi
+if [[ ! -e $HERMIT/.git ]]; then
+    die "$HERMIT is not initialized; run 'git -C $ROOT submodule update --init --checkout -- hermit'"
+fi
+if ! git -C "$HERMIT" cat-file -e "$PARENT_HERMIT^{commit}" 2>/dev/null; then
+    die "$HERMIT does not contain parent-recorded commit $PARENT_HERMIT; run 'git -C $HERMIT fetch origin main' through with-proxy, then rerun"
+fi
+EXPECTED=$(gitlink_at "$HERMIT" "$PARENT_HERMIT" agent-utils \
+    "parent-recorded Hermit commit $PARENT_HERMIT")
 
 # REPORTERS DEGRADE, ACTORS REFUSE.
 #
@@ -76,23 +126,32 @@ if [[ "$ACTUAL" != "$EXPECTED" ]]; then
     if [[ -n "$ACTUAL" ]] && [[ -n $(git -C "$AGENT_UTILS" status --porcelain) ]]; then
         agent_utils_dirt "at $ACTUAL; expected pinned $EXPECTED"
     fi
-    update=(
-        git -C "$ROOT"
+    CURRENT_PIN=$(gitlink_at "$HERMIT" HEAD agent-utils "checked-out Hermit commit")
+    if [[ $CURRENT_PIN != "$EXPECTED" ]]; then
+        die "checked-out Hermit records agent-utils $CURRENT_PIN, but parent-recorded Hermit $PARENT_HERMIT records $EXPECTED; reconcile the Hermit checkout before materializing agent-utils"
+    fi
+    update_agent_utils=(
+        git -C "$HERMIT"
         -c submodule.agent-utils.update=checkout
         submodule update --init --checkout -- agent-utils
     )
-    if command -v with-proxy >/dev/null 2>&1; then
-        with-proxy "${update[@]}"
-    else
-        "${update[@]}"
-    fi
+    run_networked "${update_agent_utils[@]}" \
+        || die "could not initialize $AGENT_UTILS; rerun '${update_agent_utils[*]}'"
 fi
 
-ACTUAL=$(git -C "$AGENT_UTILS" rev-parse HEAD)
+if [[ ! -e $AGENT_UTILS/.git ]]; then
+    die "$AGENT_UTILS is not initialized through $AGENT_UTILS_LINK_TARGET; run 'git -C $HERMIT submodule update --init --checkout -- agent-utils'"
+fi
+ACTUAL=$(git -C "$AGENT_UTILS" rev-parse HEAD 2>/dev/null) \
+    || die "cannot read agent-utils checkout at $AGENT_UTILS"
 if [[ "$ACTUAL" != "$EXPECTED" ]]; then
     echo "agent-tool: agent-utils is at $ACTUAL; expected $EXPECTED" >&2
     exit 1
 fi
+# This front door proves the reviewed PIN, not remote freshness. A local
+# origin/main is a mutable transport cache and may be stale; making reporters
+# depend on it would violate the fail-open reporting contract. The separate
+# check-agent-utils-pin gate fetches origin and enforces exact main equality.
 if [[ -n $(git -C "$AGENT_UTILS" status --porcelain) ]]; then
     agent_utils_dirt "at pinned commit $EXPECTED"
 fi

@@ -1,8 +1,10 @@
 #!/usr/bin/env rust-script
 //! Verify that agent-utils is cleanly pegged to its fetched origin/main commit.
 //!
-//! The check compares the parent HEAD gitlink, the initialized checkout, and
-//! `origin/main`, then finds commits unreachable from every fetched origin ref.
+//! The check follows the parent-recorded Hermit commit to its agent-utils
+//! gitlink, then compares that pin with the initialized checkout and
+//! `origin/main`. The parent compatibility path must be the tracked
+//! `agent-utils -> hermit/agent-utils` symlink.
 //! By default it fetches and prunes origin through `with-proxy` before deciding.
 //!
 //! Unpushed commits are SPLIT rather than counted together, because one number cannot
@@ -25,6 +27,10 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, ExitStatus};
+
+const AGENT_UTILS_LINK: &str = "agent-utils";
+const AGENT_UTILS_LINK_TARGET: &str = "hermit/agent-utils";
+const HERMIT_PATH: &str = "hermit";
 
 #[derive(Debug)]
 struct Options {
@@ -143,7 +149,8 @@ fn print_help() {
         "Usage: scripts/check-agent-utils-pin.rs [--no-fetch] [--root PATH]\n\
          \n\
          Fetch agent-utils origin, then require:\n\
-           * parent HEAD gitlink == checkout HEAD == origin/main\n\
+           * agent-utils is the exact symlink hermit/agent-utils\n\
+           * parent-recorded Hermit pin's agent-utils gitlink == checkout HEAD == origin/main\n\
            * canonical ~/work/dev-hermit checkout branch is main\n\
            * any other (isolated-clone) checkout is clean; detached HEAD is allowed\n\
            * no local commit is STRANDED: unreachable from every origin/* ref\n\
@@ -226,11 +233,22 @@ fn run_costed(root: &Path, original_args: &[OsString]) -> Result<ExitStatus, Che
 }
 
 fn check(root: &Path, fetch: bool) -> Result<bool, CheckError> {
-    let checkout = root.join("agent-utils");
+    let checkout = validate_compat_link(root)?;
+    let hermit = root.join(HERMIT_PATH);
+    if !hermit.join(".git").exists() {
+        return Err(CheckError::InvalidOutput(format!(
+            "{} is not initialized; run `git -C {} submodule update --init --checkout -- hermit`",
+            hermit.display(),
+            root.display()
+        )));
+    }
+    let (parent_hermit, expected_pin) = expected_agent_utils_pin(root, &hermit)?;
     if !checkout.join(".git").exists() {
         return Err(CheckError::InvalidOutput(format!(
-            "{} is not initialized",
-            checkout.display()
+            "{} is not initialized through {}; run `git -C {} submodule update --init --checkout -- agent-utils`",
+            checkout.display(),
+            AGENT_UTILS_LINK_TARGET,
+            hermit.display()
         )));
     }
 
@@ -244,12 +262,11 @@ fn check(root: &Path, fetch: bool) -> Result<bool, CheckError> {
     }
 
     let mode = checkout_mode(root)?;
-    let parent_pin = git(root, ["rev-parse", "HEAD:agent-utils"])?;
     let checkout_head = git(&checkout, ["rev-parse", "HEAD"])?;
     let origin_main = git(&checkout, ["rev-parse", "origin/main"])?;
     let branch = git(&checkout, ["branch", "--show-current"])?;
     let (checkout_ahead, checkout_behind) = divergence(&checkout, "HEAD", "origin/main")?;
-    let (pin_ahead, pin_behind) = divergence(&checkout, &parent_pin, "origin/main")?;
+    let (pin_ahead, pin_behind) = divergence(&checkout, &expected_pin, "origin/main")?;
     let unpushed = git_lines(
         &checkout,
         [
@@ -288,7 +305,8 @@ fn check(root: &Path, fetch: bool) -> Result<bool, CheckError> {
 
     println!("agent-utils drift check");
     println!("  checkout_mode={mode}");
-    println!("  parent_gitlink={parent_pin}");
+    println!("  parent_hermit_gitlink={parent_hermit}");
+    println!("  hermit_agent_utils_gitlink={expected_pin}");
     println!("  checkout_head={checkout_head}");
     println!("  origin_main={origin_main}");
     println!("  checkout_branch={branch}");
@@ -315,7 +333,7 @@ fn check(root: &Path, fetch: bool) -> Result<bool, CheckError> {
         mode,
         &branch,
         dirty,
-        &parent_pin,
+        &expected_pin,
         &checkout_head,
         &origin_main,
         checkout_ahead,
@@ -388,7 +406,7 @@ fn pin_state_failures(
     mode: CheckoutMode,
     branch: &str,
     dirty: bool,
-    parent_pin: &str,
+    expected_pin: &str,
     checkout_head: &str,
     origin_main: &str,
     checkout_ahead: u64,
@@ -413,17 +431,113 @@ fn pin_state_failures(
             "checkout is not exactly origin/main (ahead={checkout_ahead}, behind={checkout_behind})"
         ));
     }
-    if parent_pin != checkout_head {
+    if expected_pin != checkout_head {
         failures.push(format!(
-            "parent gitlink {parent_pin} does not match checkout {checkout_head}"
+            "parent-recorded Hermit agent-utils gitlink {expected_pin} does not match checkout {checkout_head}"
         ));
     }
-    if parent_pin != origin_main || pin_ahead != 0 || pin_behind != 0 {
+    if expected_pin != origin_main || pin_ahead != 0 || pin_behind != 0 {
         failures.push(format!(
-            "parent gitlink is not exactly origin/main (ahead={pin_ahead}, behind={pin_behind})"
+            "parent-recorded Hermit agent-utils gitlink is not exactly origin/main (ahead={pin_ahead}, behind={pin_behind})"
         ));
     }
     failures
+}
+
+fn validate_compat_link(root: &Path) -> Result<PathBuf, CheckError> {
+    let link = root.join(AGENT_UTILS_LINK);
+    let metadata = fs::symlink_metadata(&link).map_err(|source| {
+        if source.kind() == io::ErrorKind::NotFound {
+            CheckError::InvalidOutput(format!(
+                "{} is missing; restore the tracked `{} -> {}` compatibility symlink",
+                link.display(),
+                AGENT_UTILS_LINK,
+                AGENT_UTILS_LINK_TARGET
+            ))
+        } else {
+            CheckError::Io {
+                tool: format!("inspect compatibility path {}", link.display()),
+                source,
+            }
+        }
+    })?;
+    if !metadata.file_type().is_symlink() {
+        return Err(CheckError::InvalidOutput(format!(
+            "{} is not a symlink; expected `{} -> {}`",
+            link.display(),
+            AGENT_UTILS_LINK,
+            AGENT_UTILS_LINK_TARGET
+        )));
+    }
+    let target = fs::read_link(&link).map_err(|source| CheckError::Io {
+        tool: format!("read compatibility symlink {}", link.display()),
+        source,
+    })?;
+    if target != Path::new(AGENT_UTILS_LINK_TARGET) {
+        return Err(CheckError::InvalidOutput(format!(
+            "{} points to {:?}; expected exact relative target {:?}",
+            link.display(),
+            target,
+            Path::new(AGENT_UTILS_LINK_TARGET)
+        )));
+    }
+    Ok(link)
+}
+
+fn expected_agent_utils_pin(root: &Path, hermit: &Path) -> Result<(String, String), CheckError> {
+    let parent_hermit_entry = git(root, ["ls-tree", "HEAD", "--", HERMIT_PATH])?;
+    let parent_hermit = parse_gitlink_entry(&parent_hermit_entry, HERMIT_PATH)?;
+    let commit = format!("{parent_hermit}^{{commit}}");
+    if !git_object_exists(hermit, &commit)? {
+        return Err(CheckError::InvalidOutput(format!(
+            "{} does not contain parent-recorded Hermit commit {}; fetch it with `git -C {} fetch origin main`, then rerun",
+            hermit.display(),
+            parent_hermit,
+            hermit.display()
+        )));
+    }
+    let nested_entry = git(hermit, ["ls-tree", &parent_hermit, "--", AGENT_UTILS_LINK])?;
+    let expected_pin = parse_gitlink_entry(&nested_entry, AGENT_UTILS_LINK).map_err(|_| {
+        CheckError::InvalidOutput(format!(
+            "parent-recorded Hermit commit {} has no agent-utils gitlink at {}; update the Hermit pin or repair that commit before rerunning",
+            parent_hermit,
+            AGENT_UTILS_LINK
+        ))
+    })?;
+    Ok((parent_hermit, expected_pin))
+}
+
+fn parse_gitlink_entry(output: &str, expected_path: &str) -> Result<String, CheckError> {
+    let mut fields = output.split_whitespace();
+    let mode = fields.next();
+    let kind = fields.next();
+    let object = fields.next();
+    let path = fields.next();
+    if fields.next().is_some()
+        || mode != Some("160000")
+        || kind != Some("commit")
+        || path != Some(expected_path)
+        || !object.is_some_and(|value| {
+            value.len() == 40 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+        })
+    {
+        return Err(CheckError::InvalidOutput(format!(
+            "expected one gitlink entry for {expected_path}, got {output:?}"
+        )));
+    }
+    Ok(object.expect("validated above").to_string())
+}
+
+fn git_object_exists(repo: &Path, object: &str) -> Result<bool, CheckError> {
+    let mut command = Command::new("git");
+    command.arg("-C").arg(repo).args(["cat-file", "-e", object]);
+    command
+        .output()
+        .map(|output| output.status.success())
+        .map_err(|source| CheckError::Io {
+            tool: format!("git -C {} cat-file -e {object}", repo.display()),
+            source,
+        })
 }
 
 fn divergence(repo: &Path, left: &str, right: &str) -> Result<(u64, u64), CheckError> {
@@ -640,6 +754,35 @@ fn exit_code(status: ExitStatus) -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::fs::symlink;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    struct TestDir(PathBuf);
+
+    impl TestDir {
+        fn new(label: &str) -> Self {
+            let nonce = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system time before epoch")
+                .as_nanos();
+            let path = env::temp_dir().join(format!(
+                "check-agent-utils-pin-{label}-{}-{nonce}",
+                std::process::id()
+            ));
+            fs::create_dir_all(&path).expect("create test directory");
+            Self(path)
+        }
+
+        fn path(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TestDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
 
     fn exact_pin_failures(mode: CheckoutMode, branch: &str, dirty: bool) -> Vec<String> {
         pin_state_failures(mode, branch, dirty, "same", "same", "same", 0, 0, 0, 0)
@@ -795,6 +938,56 @@ mod tests {
     }
 
     #[test]
+    fn parses_only_the_expected_gitlink_entry() {
+        let sha = "0123456789abcdef0123456789abcdef01234567";
+        assert_eq!(
+            parse_gitlink_entry(
+                &format!("160000 commit {sha}\tagent-utils\n"),
+                "agent-utils"
+            )
+            .unwrap(),
+            sha
+        );
+        assert!(
+            parse_gitlink_entry(&format!("120000 blob {sha}\tagent-utils\n"), "agent-utils")
+                .is_err()
+        );
+        assert!(
+            parse_gitlink_entry(&format!("160000 commit {sha}\tother\n"), "agent-utils").is_err()
+        );
+    }
+
+    #[test]
+    fn compatibility_path_requires_the_exact_relative_symlink() {
+        let temp = TestDir::new("compat-link");
+        fs::create_dir_all(temp.path().join(AGENT_UTILS_LINK_TARGET))
+            .expect("create symlink target");
+        symlink(AGENT_UTILS_LINK_TARGET, temp.path().join(AGENT_UTILS_LINK))
+            .expect("create compatibility symlink");
+
+        assert_eq!(
+            validate_compat_link(temp.path()).unwrap(),
+            temp.path().join(AGENT_UTILS_LINK)
+        );
+    }
+
+    #[test]
+    fn missing_or_wrong_compatibility_path_is_actionable() {
+        let missing = TestDir::new("missing-link");
+        let error = validate_compat_link(missing.path())
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("restore the tracked `agent-utils -> hermit/agent-utils`"));
+
+        let wrong = TestDir::new("wrong-link");
+        symlink("elsewhere", wrong.path().join(AGENT_UTILS_LINK))
+            .expect("create wrong compatibility symlink");
+        let error = validate_compat_link(wrong.path()).unwrap_err().to_string();
+        assert!(error.contains("expected exact relative target"));
+        assert!(error.contains("hermit/agent-utils"));
+    }
+
+    #[test]
     fn canonical_path_and_other_clone_select_different_modes() {
         let canonical = Path::new("/home/test/work/dev-hermit");
         assert_eq!(
@@ -848,9 +1041,8 @@ mod tests {
         assert!(failures
             .iter()
             .any(|failure| failure.contains("does not match checkout")));
-        assert!(failures
-            .iter()
-            .any(|failure| failure.contains("parent gitlink is not exactly origin/main")));
+        assert!(failures.iter().any(|failure| failure
+            .contains("parent-recorded Hermit agent-utils gitlink is not exactly origin/main")));
     }
 
     #[test]

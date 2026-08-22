@@ -27,16 +27,18 @@
 #                               its upstream unless --no-pull
 #   * dirty                  -> WARNED and SKIPPED, never reset/cleaned/stashed
 #
-# It is deliberately NON-recursive (heavy/optional nested submodules such as
-# e9patch and SaBRe are provisioned on demand by
-# scripts/checkout-optional-submodules.rs) and it NEVER edits .gitmodules.
+# It is deliberately NON-recursive for product initialization (heavy/optional
+# nested submodules such as e9patch and SaBRe are provisioned on demand by
+# scripts/checkout-optional-submodules.rs). With --with-agent-utils it makes the
+# one explicit exception required by the parent symlink: initialize hermit
+# first, then hermit's pinned agent-utils submodule. It NEVER edits .gitmodules.
 #
 # Usage:
 #   scripts/submodules.sh [--no-pull] [--with-agent-utils] [--products a,b,c]
 #
 #   --no-pull            init/reattach only; do not fast-forward to upstream.
-#   --with-agent-utils   also init agent-utils (declared update = none; skipped
-#                        by default because it is on-demand shared tooling).
+#   --with-agent-utils   also initialize hermit/agent-utils; the parent path
+#                        agent-utils is a symlink to that one checkout.
 #   --products LIST      comma-separated subset of hermit,reverie,liteinst2.
 #
 # Networked git runs through `with-proxy` when available; set
@@ -77,6 +79,20 @@ done
 
 if [[ ${#products[@]} -eq 0 ]]; then
     products=("${default_products[@]}")
+fi
+
+# The only agent-utils checkout lives below hermit. If a caller selected a
+# narrower product set, initialize/attach hermit before trying to initialize its
+# nested submodule. Keep the ordering explicit so a fresh clone never follows a
+# dangling parent agent-utils symlink and accidentally asks Git about the parent.
+if [[ $with_agent_utils -eq 1 ]]; then
+    has_hermit=0
+    for product in "${products[@]}"; do
+        if [[ "$product" == hermit ]]; then
+            has_hermit=1
+        fi
+    done
+    [[ $has_hermit -eq 1 ]] || products=(hermit "${products[@]}")
 fi
 
 # Resolve the network proxy once (with-proxy in Meta environments).
@@ -187,11 +203,15 @@ for product in "${products[@]}"; do
 done
 
 if [[ $with_agent_utils -eq 1 ]]; then
-    if [[ ! -e "$root/agent-utils/.git" ]]; then
-        echo "== agent-utils: on-demand init =="
-        "${proxy[@]}" git -c submodule.agent-utils.update=checkout submodule update --init -- agent-utils
+    if [[ ! -e "$root/hermit/agent-utils/.git" ]]; then
+        echo "== hermit/agent-utils: on-demand init =="
+        "${proxy[@]}" git -C "$root/hermit" submodule update --init --checkout -- agent-utils
     fi
-    summary[agent-utils]="present @ $(git -C "$root/agent-utils" rev-parse --short HEAD 2>/dev/null || echo missing)"
+    if [[ ! -L "$root/agent-utils" ]] || [[ "$(readlink "$root/agent-utils")" != "hermit/agent-utils" ]]; then
+        echo "ERROR: parent agent-utils must be the tracked symlink hermit/agent-utils." >&2
+        exit 1
+    fi
+    summary[agent-utils]="hermit/agent-utils @ $(git -C "$root/agent-utils" rev-parse --short HEAD 2>/dev/null || echo missing)"
 fi
 
 echo

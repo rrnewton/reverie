@@ -245,8 +245,11 @@ automatically without changing callers.
 
 ## Shared agent-utils boundary
 
-The `agent-utils` gitlink is a hard dependency, not a source to copy. The
-single `bin/agent-tool` adapter materializes the exact pinned commit and runs:
+The parent `agent-utils` path is a symlink to the nested
+`hermit/agent-utils` checkout. The nested gitlink in Hermit is the authoritative
+pin; the path is a hard dependency, not a source to copy or an independently
+bumpable parent submodule. The single `bin/agent-tool` adapter materializes the
+exact nested pin and runs:
 
 - `pr-landing-planner`: open-PR workflow collection/classification. `health/pr_status.py`
   only combines its JSON for the Hermit and Reverie forks; the retired parent

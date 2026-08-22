@@ -30,8 +30,9 @@ if ! cd "$ROOT" 2>/dev/null; then
     exit 126
 fi
 
-# health-tick self-gates on agent-utils pin drift (exits non-zero without
-# advancing fired-state); that is a real health signal, recorded here.
+# health-tick self-gates when the checkout reached through the parent
+# agent-utils symlink drifts from the nested pin in Hermit (exits non-zero
+# without advancing fired-state); that is a real health signal, recorded here.
 out="$(with-proxy ./ci-hub/bin/health-tick --flush --no-header 2>&1)"
 rc=$?
 

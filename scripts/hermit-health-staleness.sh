@@ -25,10 +25,11 @@
 #
 #   PRODUCTIVE = ~/work/dev-hermit/.tick-hub/fired-state
 #       mtime bumps ONLY on a productive rc=0 tick. It freezes for a LEGITIMATE
-#       external reason (agent-utils pin drift gates health-tick to rc=1) while
-#       the monitor is perfectly alive. Paging on THIS alone screams forever
-#       and gets muted — as useless as never firing. So a frozen PRODUCTIVE
-#       signal, when the HEARTBEAT is fresh, is classified, named, and (for the
+#       external reason (the nested agent-utils pin in Hermit gates
+#       health-tick to rc=1) while the monitor is perfectly alive. Paging on
+#       THIS alone screams forever and gets muted — as useless as never firing.
+#       So a frozen PRODUCTIVE signal, when the HEARTBEAT is fresh, is
+#       classified, named, and (for the
 #       known pin-drift gate) NOT paged as a dead timer.
 # ---------------------------------------------------------------------------
 # WHAT THIS ALARM CANNOT SEE (stated plainly, not left implied).
@@ -246,10 +247,11 @@ if printf '%s' "$last_line" | grep -q 'rc=1 advanced=no' \
    && printf '%s' "$last_line" | grep -qi 'agent-utils.*dirty'; then
     # KNOWN pin-drift gate — EXCLUDED BY NAME. Not a stopped monitor; the tick
     # fires every ~${INTERVAL_MIN}min but self-gates on another agent's dirty
-    # agent-utils checkout. Nag at most once per day so it is not forgotten,
-    # but never the loud hourly "timer dead" page.
+    # checkout reached through the parent agent-utils symlink. Nag at most once
+    # per day so it is not forgotten, but never the loud hourly "timer dead"
+    # page.
     page "$GATED_STAMP" "$GATED_NAG" \
-        "WORK-GATED (agent-utils pin drift): tick heartbeat is FRESH (last ${hb_age}s ago, timer healthy) but productive fired-state is ${pr_min}min stale because health-tick self-gates at the agent-utils pin guard (rc=1 advanced=no). NOT a stopped monitor. Resolve by reconciling canonical agent-utils to the parent pin (owner of the dirty checkout). Last heartbeat: ${last_line}"
+        "WORK-GATED (agent-utils pin drift): tick heartbeat is FRESH (last ${hb_age}s ago, timer healthy) but productive fired-state is ${pr_min}min stale because health-tick self-gates at the agent-utils pin guard (rc=1 advanced=no). NOT a stopped monitor. Resolve by reconciling the checkout reached through the parent agent-utils symlink to the nested pin in Hermit (owner of the dirty checkout). Last heartbeat: ${last_line}"
     exit 0
 fi
 

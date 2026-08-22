@@ -9,7 +9,7 @@ for arg in "$@"; do
 check-parent-gitmodules.sh — verify .gitmodules matches the pinned parent submodule policy
 
 USAGE:
-  scripts/check-parent-gitmodules.sh            check hermit/reverie/liteinst2/agent-utils entries
+  scripts/check-parent-gitmodules.sh            check three product gitlinks and agent-utils symlink
   scripts/check-parent-gitmodules.sh -h|--help  show this help and exit (no side effects)
 
 Exit 0 when policy holds, 1 on any mismatch. Takes no other arguments.
@@ -26,7 +26,6 @@ expected=(
     "hermit|hermit|https://github.com/rrnewton/hermit.git|checkout"
     "reverie|reverie|https://github.com/rrnewton/reverie.git|checkout"
     "liteinst2|liteinst2|https://github.com/rrnewton/liteinst2.git|checkout"
-    "agent-utils|agent-utils|https://github.com/rrnewton/agent-utils.git|checkout"
 )
 
 mapfile -t configured < <(git config -f .gitmodules --get-regexp '^submodule\..*\.path$')
@@ -60,4 +59,24 @@ for spec in "${expected[@]}"; do
     }
 done
 
-echo "Parent submodule policy is valid: product and shared-tool gitlinks use checkout."
+agent_utils_mode=$(git ls-files --stage -- agent-utils | awk 'NR == 1 { print $1 }')
+agent_utils_target=$(git cat-file -p :agent-utils 2>/dev/null || true)
+
+[[ "$agent_utils_mode" == 120000 ]] || {
+    echo "ERROR: agent-utils must be recorded as a symlink, not a parent gitlink." >&2
+    exit 1
+}
+[[ "$agent_utils_target" == "hermit/agent-utils" ]] || {
+    echo "ERROR: agent-utils must point exactly to hermit/agent-utils, got '$agent_utils_target'." >&2
+    exit 1
+}
+[[ -L agent-utils ]] || {
+    echo "ERROR: the agent-utils working-tree path is not a symlink." >&2
+    exit 1
+}
+[[ "$(readlink agent-utils)" == "hermit/agent-utils" ]] || {
+    echo "ERROR: the agent-utils working-tree symlink does not point to hermit/agent-utils." >&2
+    exit 1
+}
+
+echo "Parent submodule policy is valid: three product gitlinks plus agent-utils -> hermit/agent-utils."

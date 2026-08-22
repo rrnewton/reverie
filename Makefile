@@ -92,7 +92,7 @@ checkout-fresh: ## Refresh clean primaries and publish one coherent parent snaps
 check-submodules: checkout-all
 	@status="$$($(SUBMODULE_GIT) submodule status --recursive)"; \
 		printf '%s\n' "$$status"; \
-		if printf '%s\n' "$$status" | awk '$$2 != "agent-utils"' | grep -Eq '^[-+U]'; then \
+		if printf '%s\n' "$$status" | grep -Eq '^[-+U]'; then \
 			echo 'ERROR: a required submodule is missing or not at its pinned revision.' >&2; \
 			exit 1; \
 		fi
@@ -156,7 +156,7 @@ restore-primary-freshness: ## Repair only the unambiguous drift (an accidental c
 check-rust-error-string-proxies: ## Reject Rust control flow that classifies typed errors by display strings
 	@scripts/lint-rust-error-string-proxies.py . hermit reverie liteinst2
 
-check-agent-utils-pin: ## Fetch and require exact agent-utils pin equality; canonical checkout stays on main, isolated clones may be clean+detached
+check-agent-utils-pin: ## Fetch and require exact Hermit-nested agent-utils pin equality; canonical checkout stays on main, isolated clones may be clean+detached
 	@scripts/check-agent-utils-pin.rs
 
 # Keep the root policy compact even though `.codex/config.toml` raises Codex's
@@ -210,7 +210,7 @@ check-codex-setup: ## Verify stock-Codex instruction and skill discovery
 list-rust-scripts: ## Inventory executable Rust and rust-script source files
 	@scripts/list-rust-scripts.rs
 
-single-submodule-bump: ## Plan/run one isolated gitlink A→B verification (ARGS='...')
+single-submodule-bump: ## Plan/run one isolated parent product gitlink A→B verification (ARGS='...')
 	@scripts/single-submodule-bump.rs $(ARGS)
 
 lint: ## Lint parent-repository scripts, tests, paths, and submodule policy
@@ -405,9 +405,9 @@ help:
 	@echo "make doctor-{core,full,qemu}  Check one dependency profile"
 	@echo "make check-deps           Verify required native pkg-config modules"
 	@echo "make check-portability  Reject owner-specific paths in build/run files"
-	@echo "make check-agent-utils-pin  Require parent pin and checkout at agent-utils origin/main"
+	@echo "make check-agent-utils-pin  Require Hermit's nested pin and resolved agent-utils checkout at origin/main"
 	@echo "make list-rust-scripts Inventory executable Rust and rust-script source files"
-	@echo "make single-submodule-bump  Plan/run one isolated gitlink A→B verification"
+	@echo "make single-submodule-bump  Plan/run one isolated parent product gitlink A→B verification"
 	@echo "make lint               Lint parent scripts, tests, paths, and submodule policy"
 	@echo "make compat-envelope    Cross-backend compat regression gate (ptrace+DBI, portable CI lane)"
 	@echo "make compat-envelope-full  Privileged superset (adds SaBRe + KVM/reverie, privileged CI lane)"

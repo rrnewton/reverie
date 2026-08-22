@@ -156,20 +156,20 @@ fn main() {
             }
             if !path.is_dir() {
                 let rel = path.strip_prefix(&root).unwrap_or(&path).display();
-                // A bridge into the agent-utils submodule that has not been
-                // materialised is STILL A FAILURE -- the check stays strict, because
+                // A bridge into Hermit's nested agent-utils submodule that has not
+                // been materialised is STILL A FAILURE -- the check stays strict, because
                 // accepting an unresolvable bridge would trade a false failure for a
                 // weaker check. What changes is that the message names the remedy.
                 // Measured 2026-08-11: a plain `git clone` of the parent fails this
-                // lint, because clone does not initialise submodules, and the old text
-                // ("unsupported canonical skill entry") named a SKILL PACKAGE and said
+                // lint, because clone does not initialise nested submodules, and the
+                // old text ("unsupported canonical skill entry") named a SKILL PACKAGE and said
                 // nothing about submodules -- so a reader goes hunting for a missing
                 // skill instead of running one command. An agent searches for the
                 // symptom it is seeing, not for the cause it has not found yet.
                 if let Some(target) = absent_submodule_bridge_target(&path) {
                     problems.push(format!(
                         "PACKAGE {rel}: bridge target absent ({target}); \
-                         run `git submodule update --init agent-utils`"
+                         run `git -C hermit submodule update --init --checkout -- agent-utils`"
                     ));
                 } else {
                     problems.push(format!("PACKAGE {rel}: unsupported canonical skill entry"));
