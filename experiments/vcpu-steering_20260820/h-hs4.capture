@@ -1,0 +1,4 @@
+advance 1000000
+ADVANCE-START ncpu=2 k=1000000
+ADVANCE R1 me=1000000 other=0 other_started=0 oncpu=1
+ADVANCE-FIRST-DONE

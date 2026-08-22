@@ -1,0 +1,9 @@
+grep -E "^LOC" /proc/interrupts; cat /proc/uptime; order; grep -E "^LOC" /pr
+oc/interrupts; cat /proc/uptime; echo TICK"DONE"
+LOC:       1310       1098   Local timer interrupts
+8.09 9.22
+ORDER slots=2000 A=1000 B=1000 switches=1 head=BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB
+LOC:       1311       1098   Local timer interrupts
+8.88 9.77
+TICKDONE
+~ # 

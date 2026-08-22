@@ -1,0 +1,3 @@
+ADMISSION {"other_agents_orphans": ["writeup:592293(qemu-system-x86)", "writeup:608568(qemu-system-x86)", "writeup:623768(qemu-system-x86)", "writeup:630026(qemu-system-x86)", "ratchet-kvm:899610(hermit-clean-48)", "ops:981560(qemu-system-x86)", "ops:983858(qemu-system-x86)", "timeouts:3089765(hermit)"], "seconds": 204.8, "background_cores": 0.0, "load_before": ["15.06", "23.45", "25.43"], "load_after": ["13.53", "18.59", "23.11"], "n_background": 8}
+  REJECT: new scan errors: 0 -> 4
+VERDICT: REJECT

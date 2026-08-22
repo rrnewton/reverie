@@ -1,0 +1,6 @@
+tag	ts_ns	placement	win_s	t11_in	t13_in	vcpu_turns_per_s	t3_in	t11_all	t13_all
+uA	default	same	24.66	13	7	0.81	7	149	118
+uC	20000000	same	2.78	16	7	8.27	7	245	255
+uD	5000000	same	21.80	98	88	8.53	88	552	487
+uB	2000000	same	60.17	397	274	11.15	274	1171	1000
+uD2	5000000	same	24.23	106	109	8.87	109	451	586

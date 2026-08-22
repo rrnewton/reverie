@@ -1,0 +1,91 @@
+[    4.722983] clocksource: Long readout interval, skipping watchdog check: cs_nsec: 515331223 wd_nsec: 2584115810
+[    6.161407] clocksource: timekeeping watchdog on CPU0: Marking clocksource 'tsc' as unstable because the skew is too large:
+[    6.163790] clocksource:                       'hpet' wd_nsec: 633375520 wd_now: 3140e01e wd_last: 2d7a6bce mask: ffffffff
+[    6.165343] clocksource:                       'tsc' cs_nsec: 690851650 cs_now: 440b8f351 cs_last: 400fe12ff mask: ffffffffffffffff
+[    6.166935] clocksource:                       Clocksource 'tsc' skewed 57476130 ns (57 ms) over watchdog 'hpet' interval of 633375520 ns (633 ms)
+[    6.168790] clocksource:                       'tsc' is current clocksource.
+[    6.170707] tsc: Marking TSC unstable due to clocksource watchdog
+[    6.177293] TSC found unstable after boot, most likely due to broken BIOS. Use 'tsc=unstable'.
+[    6.178501] sched_clock: Marking unstable (6111011416, 65961478)<-(6186961107, -9952676)
+[   10.665441] clocksource: Checking clocksource tsc synchronization from CPU 1 to CPUs 0.
+[   15.769472] smp: csd: Detected non-responsive CSD lock (#1) on CPU#1, waiting 5000013770 ns for CPU#00 do_sync_core+0x0/0x40(0x0).
+[   15.769472] smp: 	csd: CSD lock (#1) unresponsive.
+[   15.769472] Sending NMI from CPU 1 to CPUs 0:
+[   26.985259] nmi_backtrace_stall_check: CPU 0: NMIs are not reaching exc_nmi() handler (CPU was never in an NMI handler function)
+[   26.985259] nmi_backtrace_stall_check: last activity: 4294694092 jiffies ago.
+[   26.985259] smp: csd: Re-sending CSD lock (#1) IPI from CPU#01 to CPU#00
+[   26.985259] CPU: 1 UID: 0 PID: 88 Comm: kworker/u8:7 Not tainted 6.17.13-0_fbk0_crackerjackhost_0_g2b4321c50d79 #1 NONE 
+[   26.985259] Hardware name: QEMU Standard PC (Q35 + ICH9, 2009), BIOS 1.16.3-5.el9 11/05/2023
+[   26.985259] Workqueue: events_unbound toggle_allocation_gate
+[   26.985259] Call Trace:
+[   26.985259]  <TASK>
+[   26.985259]  dump_stack_lvl+0x3b/0xa0
+[   26.985259]  __csd_lock_wait+0x297/0x320
+[   26.985259]  smp_call_function_many_cond+0x3b6/0x510
+[   26.985259]  ? smp_text_poke_sync_each_cpu+0x30/0x30
+[   26.985259]  on_each_cpu_cond_mask+0x1a/0x20
+[   26.985259]  smp_text_poke_batch_finish+0xe4/0x300
+[   26.985259]  ? arch_jump_label_transform_queue+0x4d/0x70
+[   26.985259]  arch_jump_label_transform_apply+0x1a/0x30
+[   26.985259]  static_key_enable_cpuslocked+0x4d/0x90
+[   26.985259]  static_key_enable+0x1a/0x20
+[   26.985259]  toggle_allocation_gate+0x44/0xf0
+[   26.985259]  process_scheduled_works+0x1ac/0x370
+[   26.985259]  worker_thread+0x294/0x370
+[   26.985259]  kthread+0x1de/0x200
+[   26.985259]  ? pr_cont_work+0x1c0/0x1c0
+[   26.985259]  ? kthread_blkcg+0x40/0x40
+[   26.985259]  ret_from_fork+0x99/0xf0
+[   26.985259]  ? kthread_blkcg+0x40/0x40
+[   26.985259]  ret_from_fork_asm+0x11/0x20
+[   26.985259]  </TASK>
+[   26.985259] smp: csd: Continued non-responsive CSD lock (#1) on CPU#1, waiting 20625170930 ns for CPU#00 do_sync_core+0x0/0x40(0x0).
+[   26.985259] smp: 	csd: CSD lock (#1) unresponsive.
+[   26.985259] smp: csd: Re-sending CSD lock (#1) IPI from CPU#01 to CPU#00
+[   11.671013] NMI backtrace for cpu 0
+[   11.671013] CPU: 0 UID: 0 PID: 0 Comm: swapper/0 Not tainted 6.17.13-0_fbk0_crackerjackhost_0_g2b4321c50d79 #1 NONE 
+[   11.671013] Hardware name: QEMU Standard PC (Q35 + ICH9, 2009), BIOS 1.16.3-5.el9 11/05/2023
+[   11.671013] RIP: 0010:read_hpet+0x35/0xf0
+[   11.671013] Code: ec 18 65 48 8b 05 ab 04 2e 03 48 89 44 24 10 65 8b 05 af 04 2e 03 a9 00 00 f0 00 74 2c 48 8b 05 39 f5 32 03 8b 80 f0 00 00 00 <65> 48 8b 0d 83 04 2e 03 48 3b 4c 24 10 0f 85 a1 00 00 00 89 c0 48
+[   11.671013] RSP: 0018:ffa0000000003f78 EFLAGS: 00010087
+[   11.671013] RAX: 0000000009eb305e RBX: 0000000000000b26 RCX: 000000007d5b041d
+[   11.671013] RDX: 0000000000000000 RSI: 0000000000000000 RDI: ffffffff834428c8
+[   11.671013] RBP: 0000000000000001 R08: 0000000000000000 R09: 0000000000000000
+[   11.671013] R10: 0000000000000000 R11: ffffffff8128bb60 R12: 0000000000000000
+[   11.671013] R13: 0000000000000000 R14: 000000029519693a R15: 0000000000000000
+[   11.671013] FS:  0000000000000000(0000) GS:ff1100009acac000(0000) knlGS:0000000000000000
+[   11.671013] CS:  0010 DS: 0000 ES: 0000 CR0: 0000000080050033
+[   11.671013] CR2: 0000000000536480 CR3: 0000000003432000 CR4: 0000000000751ef0
+[   11.671013] PKRU: 55555554
+[   11.671013] Call Trace:
+[   11.671013]  <IRQ>
+[   11.671013]  ktime_get+0x3f/0xd0
+[   11.671013]  tick_irq_enter+0x40/0xf0
+[   11.671013]  irq_enter_rcu+0x46/0x60
+[   11.671013]  sysvec_call_function_single+0x64/0x80
+[   11.671013]  </IRQ>
+[   11.671013]  <TASK>
+[   11.671013]  asm_sysvec_call_function_single+0x1a/0x20
+[   11.671013] RIP: 0010:pv_native_safe_halt+0x13/0x20
+[   11.671013] Code: 8f 1b 02 e8 2f 00 00 00 48 2b 05 f8 94 73 00 c3 cc cc cc cc cc cc cc f3 0f 1e fa eb 07 0f 00 2d 3d 3f 06 00 f3 0f 1e fa fb f4 <c3> cc cc cc cc cc cc cc cc cc cc cc cc 66 0f 1f 00 50 8b 37 83 e6
+[   11.671013] RSP: 0018:ffffffff83403ea0 EFLAGS: 00010202
+[   11.671013] RAX: ff1100009acac000 RBX: ffffffff834134c0 RCX: 4000000000000000
+[   11.671013] RDX: 0000000000000000 RSI: 0000000000000000 RDI: 000000000019f4d4
+[   11.671013] RBP: ffffffff83403eb8 R08: 0000000000000000 R09: 0000000000000000
+[   11.671013] R10: 0000000002520000 R11: ffffffff8127da20 R12: 0000000000000000
+[   11.671013] R13: 0000000000000000 R14: 0000000000000000 R15: 0000000000000000
+[   11.671013]  ? apic_is_clustered_box+0x40/0x40
+[   11.671013]  default_idle+0x9/0x20
+[   11.671013]  default_idle_call+0x3b/0x60
+[   11.671013]  do_idle+0xcd/0x210
+[   11.671013]  cpu_startup_entry+0x2a/0x30
+[   11.671013]  rest_init+0xaa/0xb0
+[   11.671013]  start_kernel+0x394/0x3c0
+[   11.671013]  x86_64_start_reservations+0x24/0x30
+[   11.671013]  x86_64_start_kernel+0x141/0x150
+[   11.671013]  common_startup_64+0x13e/0x140
+[   11.671013]  </TASK>
+[   11.671013] INFO: NMI handler (nmi_cpu_backtrace_handler) took too long to run: 41.691 msecs
+[   56.741317] smp: csd: Continued non-responsive CSD lock (#1) on CPU#1, waiting 45050439580 ns for CPU#00 do_sync_core+0x0/0x40(0x0).
+[   56.742182] smp: 	csd: CSD lock (#1) unresponsive.
+[   56.742182] smp: csd: Re-sending CSD lock (#1) IPI from CPU#01 to CPU#00

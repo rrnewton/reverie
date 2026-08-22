@@ -1,0 +1,20 @@
+WARNING: /usr/bin/qemu-system-x86_64 looks like a hardware emulator (VMM). Hermit's host-time virtualization exposes mutually inconsistent clock sources (a synthetic RDTSC versus a virtualized clock_gettime) to the emulated guest, which can corrupt its clock calibration (for example "Unable to calibrate against PIT", TSC marked unstable, or "No current clocksource") and stall boot. If the nested guest misbehaves, either disable Hermit's virtual clock with --no-virtualize-time --no-virtualize-metadata, or make the emulator use a single instruction-derived clock (for QEMU: -icount shift=0,sleep=off). See docs/QEMU_BOOT.md.
+2026-08-20T04:02:02.412707Z ERROR reverie_ptrace::lifecycle: guest terminated by signal tid=11 pid=3 signal=SIGKILL core_dumped=false
+2026-08-20T04:02:02.412800Z ERROR reverie_ptrace::lifecycle: guest terminated by signal tid=13 pid=3 signal=SIGKILL core_dumped=false
+2026-08-20T04:02:02.412849Z ERROR reverie_ptrace::lifecycle: guest terminated by signal tid=9 pid=3 signal=SIGKILL core_dumped=false
+Deadlock detected: thread(s) waiting on futex, but no runnable threads left.
+  turn 40690, committed time 1_767_225_700.042_175_870s
+  run queue: 0 runnable
+  threads (2), by dettid:
+    dtid 3: FutexWait: R
+    dtid 5: FutexWait: R
+  futex waiters (2), by futex:
+    private MmId { creator: DetPid(3), generation: 1 } address 0x5555570c8ec0: dtid 3 (bitset 0xffffffff)
+    private MmId { creator: DetPid(3), generation: 1 } address 0x5555570f6708: dtid 5 (bitset 0xffffffff)
+  timed-out futex waiters: none
+  timed waiters: none
+  external IO blockers: none
+  sigchld deferred: none; sigchld ready: none
+
+Error: Sandbox container exited unexpectedly
+     > Process exited with code: Exited(1)

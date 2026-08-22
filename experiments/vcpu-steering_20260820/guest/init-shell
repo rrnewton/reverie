@@ -1,0 +1,10 @@
+#!/bin/busybox sh
+/bin/busybox --install -s /bin 2>/dev/null
+mount -t proc none /proc 2>/dev/null
+mount -t sysfs none /sys 2>/dev/null
+mount -t devtmpfs none /dev 2>/dev/null || mount -t tmpfs none /dev 2>/dev/null
+[ -c /dev/ttyS0 ] || mknod /dev/ttyS0 c 4 64 2>/dev/null
+echo "VS-GUEST-READY cpus=$(nproc)"
+# Interactive shell on the console so the resume phase can drive the workload,
+# exactly as experiments/cc-repro_20260818/guest/init does.
+exec setsid sh -c 'exec sh </dev/ttyS0 >/dev/ttyS0 2>&1'

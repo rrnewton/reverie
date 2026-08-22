@@ -1,0 +1,6 @@
+WARNING: /usr/bin/qemu-system-x86_64 looks like a hardware emulator (VMM). Hermit's host-time virtualization exposes mutually inconsistent clock sources (a synthetic RDTSC versus a virtualized clock_gettime) to the emulated guest, which can corrupt its clock calibration (for example "Unable to calibrate against PIT", TSC marked unstable, or "No current clocksource") and stall boot. If the nested guest misbehaves, either disable Hermit's virtual clock with --no-virtualize-time --no-virtualize-metadata, or make the emulator use a single instruction-derived clock (for QEMU: -icount shift=0,sleep=off). See docs/QEMU_BOOT.md.
+2026-08-20T10:46:50.866578Z ERROR reverie_ptrace::lifecycle: guest terminated by signal tid=9 pid=3 signal=SIGSTKFLT core_dumped=false
+2026-08-20T10:46:50.866731Z ERROR reverie_ptrace::lifecycle: guest terminated by signal tid=5 pid=3 signal=SIGSTKFLT core_dumped=false
+2026-08-20T10:46:50.866876Z ERROR reverie_ptrace::lifecycle: guest terminated by signal tid=13 pid=3 signal=SIGSTKFLT core_dumped=false
+2026-08-20T10:46:50.930471Z ERROR reverie_ptrace::lifecycle: guest terminated by signal tid=3 pid=3 signal=SIGSTKFLT core_dumped=false
+2026-08-20T10:46:50.930540Z ERROR reverie_ptrace::lifecycle: guest terminated by signal tid=11 pid=3 signal=SIGSTKFLT core_dumped=false

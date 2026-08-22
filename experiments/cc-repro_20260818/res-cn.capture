@@ -1,0 +1,4 @@
+echo cpus=$(nproc) online=$(cat /sys/devices/system/cpu/online) ; echo DONE"
+MARK"
+cpus=2 online=0-1
+DONEMARK

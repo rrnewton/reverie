@@ -1,0 +1,3 @@
+actuator=hermit extra='--sched-heuristic StickyRandom --sched-sticky-random-param 0.9 --sched-seed 3' k=30000000
+tag=k3 hermit_pid=3127894 qemu_hostpid=3127907 vcpu0_tid=3127920 vcpu1_tid=3127922 (qmp said [11, 13])
+WINDOW none (workload never announced itself)

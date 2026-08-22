@@ -216,3 +216,67 @@ experiments/*/pn
 
 # Runtime marker written by ci-hub validate-lock on release; never durable state.
 .validate-lock.released
+
+# ---- 2026-08-22 parent-cleanup: compiled experiment output ----
+# Adding experiments/ to version control surfaced 80 extensionless ELF files
+# totalling 596 MB against 13 MB of durable text across the same 2,227 files.
+# The rules below exclude exactly those binaries. Everything else in each
+# experiment -- README, scripts, *.c/*.rs sources, JSON/CSV/TSV results -- stays
+# tracked, which is what makes the experiment repeatable.
+
+# Eight ~59 MiB copies of the hermit executable kept as A/B comparison subjects,
+# 472 MB and nothing else in that directory. The experiment records the SHAs they
+# were built from, so they are reproducible without being stored.
+/experiments/first-divergence_20260820/bin2/
+
+# 38 byte-identical copies of one compiled test fixture, one per run directory in
+# the KVM measurement's replay tree.
+/experiments/kvm-canonical-measurement-2026-08-17/**/fixtures/program
+
+# Extensionless ELF fixtures built beside their own checked-in sources. Almost
+# every line here has a *.c or *.rs sibling that stays tracked; only the build
+# output is excluded. Written as exact paths rather than a name wildcard so that
+# a future *text* file called e.g. `probe` or `racer` is not silently dropped.
+/experiments/cc-repro_20260818/guest/order
+/experiments/cc-repro_20260818/guest/order_cpu
+/experiments/cc-repro_20260818/guest/order_long
+/experiments/cc-repro_20260818/guest/order_same
+/experiments/cc-repro_20260818/guest/racer
+/experiments/chaos-seed-repro_20260818/spin6
+/experiments/chaos-seed-repro_20260818/tickwait
+/experiments/chaos-wedge_20260818/busywork
+/experiments/chaos-wedge_20260818/tickwait
+/experiments/detcore-partial-determinism_20260819/repro/extclock
+/experiments/detcore-partial-determinism_20260819/repro/extclock2
+/experiments/detcore-partial-determinism_20260819/repro/pollclock
+/experiments/detcore-partial-determinism_20260819/repro/threadclock
+/experiments/first-divergence_20260820/price/hashcost
+/experiments/first-divergence_20260820/price/hashcost2
+/experiments/first-divergence_20260820/price/netlink_buf
+/experiments/first-divergence_20260820/price/netlink_where
+/experiments/first-divergence_20260820/price/syscost
+/experiments/netlink-audit_20260820/hashorder
+/experiments/netlink-audit_20260820/hermit-sorted
+/experiments/netlink-audit_20260820/hermit-unsorted
+/experiments/netlink-audit_20260820/nlab_generic
+/experiments/netlink-audit_20260820/nlab_route
+/experiments/netlink-audit_20260820/nlab_usersock
+/experiments/qemu-coherent-timebase_20260818/rdtsc_cost
+/experiments/qemu-coherent-timebase_20260818/twodomain
+/experiments/qemu-coherent-timebase_20260818/twodomainN
+/experiments/skidrepro/raceprobe
+/experiments/window-law_20260820/guest/racer_p0
+/experiments/window-law_20260820/guest/racer_p15
+/experiments/window-law_20260820/guest/racer_p5
+/experiments/zen5-pmi/pmiskid
+/experiments/zen5-rcb/cbr
+/experiments/zen5-rcb/mix
+
+
+# Raw QEMU interrupt-trace dumps from the window-law experiment: six files,
+# 8.8k-18k lines each, 4.4 MB total, one full register dump per interrupt
+# ("Servicing hardware INT=0x22" followed by RAX/RBX/... lines). One of them,
+# r-w15.int at 1057 KiB, trips the 1024 KiB pre-commit hygiene limit. These are
+# raw dumps rather than a report -- the experiment's build.sh, reps.sh, guest
+# sources and *.capture summaries stay tracked.
+/experiments/window-law_20260820/*.int

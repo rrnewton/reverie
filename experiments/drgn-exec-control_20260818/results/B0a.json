@@ -1,0 +1,15 @@
+{
+  "advance_serial_bytes": 123,
+  "advance_serial_digest": "b7b6898519efd655",
+  "after_digest": "18b058891bccacc5",
+  "after_tasks": 85,
+  "before_digest": "81779c19a80f9b5f",
+  "before_tasks": 83,
+  "dwell_seconds": 0.0,
+  "label": "B0a",
+  "ok": true,
+  "pause_after_bytes": null,
+  "paused": false,
+  "startup_seconds": 1.7,
+  "total_seconds": 2.5
+}

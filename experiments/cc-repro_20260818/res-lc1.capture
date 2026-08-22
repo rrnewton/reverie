@@ -1,0 +1,108 @@
+order_long
+[   14.271886] smp: csd: Detected non-responsive CSD lock (#1) on CPU#0, waiting 6740267610 ns for CPU#01 do_sync_core+0x0/0x40(0x0).
+[   14.302396] smp: 	csd: CSD lock (#1) unresponsive.
+[   14.304001] Sending NMI from CPU 0 to CPUs 1:
+[   20.694301] NMI backtrace for cpu 1
+[   20.706150] CPU: 1 UID: 0 PID: 0 Comm: swapper/1 Not tainted 6.17.13-0_fbk0_crackerjackhost_0_g2b4321c50d79 #1 NONE 
+[   20.707971] Hardware name: QEMU Standard PC (Q35 + ICH9, 2009), BIOS 1.16.3-5.el9 11/05/2023
+[   20.709292] RIP: 0010:pv_native_safe_halt+0x13/0x20
+[   20.715190] Code: 8f 1b 02 e8 2f 00 00 00 48 2b 05 f8 94 73 00 c3 cc cc cc cc cc cc cc f3 0f 1e fa eb 07 0f 00 2d 3d 3f 06 00 f3 0f 1e fa fb f4 <c3> cc cc cc cc cc cc cc cc cc cc cc cc 66 0f 1f 00 50 8b 37 83 e6
+[   20.716454] RSP: 0018:ffa00000000b3ee0 EFLAGS: 00010206
+[   20.720018] RAX: ff1100009adac000 RBX: ff110000053b8000 RCX: 4000000000000000
+[   20.720113] RDX: 0000000000000002 RSI: 0000000000000001 RDI: 0000000000004f54
+[   20.720615] RBP: ffa00000000b3ef8 R08: 0000000000000004 R09: 0000000000000004
+[   20.720707] R10: ffffffff8346bd48 R11: ffffffff8124dc50 R12: 0000000000000000
+[   20.720829] R13: 0000000000000000 R14: 0000000000000001 R15: 0000000000000000
+[   20.721120] FS:  0000000000000000(0000) GS:ff1100009adac000(0000) knlGS:0000000000000000
+[   20.721299] CS:  0010 DS: 0000 ES: 0000 CR0: 0000000080050033
+[   20.721383] CR2: 00007fd5aad53000 CR3: 0000000003432000 CR4: 0000000000751ef0
+[   20.721754] PKRU: 55555554
+[   20.722032] Call Trace:
+[   20.725858]  <TASK>
+[   20.726992]  default_idle+0x9/0x20
+[   20.727697]  default_idle_call+0x3b/0x60
+[   20.727744]  do_idle+0xcd/0x210
+[   20.729383]  cpu_startup_entry+0x2a/0x30
+[   20.729435]  start_secondary+0x95/0xa0
+[   20.729502]  common_startup_64+0x13e/0x140
+[   20.729864]  </TASK>
+[   20.731288] INFO: NMI handler (nmi_cpu_backtrace_handler) took too long to run: 38.411 msecs
+[   20.742126] smp: csd: Re-sending CSD lock (#1) IPI from CPU#00 to CPU#01
+[   20.761837] CPU: 0 UID: 0 PID: 79 Comm: kworker/u8:5 Not tainted 6.17.13-0_fbk0_crackerjackhost_0_g2b4321c50d79 #1 NONE 
+[   20.763049] Hardware name: QEMU Standard PC (Q35 + ICH9, 2009), BIOS 1.16.3-5.el9 11/05/2023
+[   20.764624] Workqueue: events_unbound toggle_allocation_gate
+[   20.768507] Call Trace:
+[   20.768990]  <TASK>
+[   20.769659]  dump_stack_lvl+0x3b/0xa0
+[   20.770240]  __csd_lock_wait+0x297/0x320
+[   20.770325]  smp_call_function_many_cond+0x3b6/0x510
+[   20.770376]  ? smp_text_poke_sync_each_cpu+0x30/0x30
+[   20.770470]  on_each_cpu_cond_mask+0x1a/0x20
+[   20.770516]  smp_text_poke_batch_finish+0x285/0x300
+[   20.770602]  arch_jump_label_transform_apply+0x1a/0x30
+[   20.770653]  static_key_disable_cpuslocked+0x46/0x90
+[   20.770727]  static_key_disable+0x1a/0x20
+[   20.770789]  toggle_allocation_gate+0xa0/0xf0
+[   20.770850]  ? wake_bit_function+0x60/0x60
+[   20.770909]  process_scheduled_works+0x1ac/0x370
+[   20.770991]  worker_thread+0x294/0x370
+[   20.771064]  kthread+0x1de/0x200
+[   20.771112]  ? pr_cont_work+0x1c0/0x1c0
+[   20.771196]  ? kthread_blkcg+0x40/0x40
+[   20.771244]  ret_from_fork+0x99/0xf0
+[   20.771300]  ? kthread_blkcg+0x40/0x40
+[   20.771347]  ret_from_fork_asm+0x11/0x20
+[   20.771603]  </TASK>
+[   20.772232] smp: csd: CSD lock (#1) got unstuck on CPU#00, CPU#01 released the lock.
+[   43.451946] smp: csd: Detected non-responsive CSD lock (#2) on CPU#1, waiting 5000000814 ns for CPU#00 do_sync_core+0x0/0x40(0x0).
+[   43.453456] smp: 	csd: CSD lock (#2) unresponsive.
+[   43.454064] Sending NMI from CPU 1 to CPUs 0:
+[   50.222899] NMI backtrace for cpu 0
+[   50.222960] CPU: 0 UID: 0 PID: 101 Comm: order_long Not tainted 6.17.13-0_fbk0_crackerjackhost_0_g2b4321c50d79 #1 NONE 
+[   50.223022] Hardware name: QEMU Standard PC (Q35 + ICH9, 2009), BIOS 1.16.3-5.el9 11/05/2023
+[   50.223055] RIP: 0033:0x401143
+[   50.224796] Code: 00 00 0f 05 48 83 fd 01 b9 41 00 00 00 80 d1 00 ba 10 27 00 00 eb 2e c7 44 24 04 00 00 00 00 8b 44 24 04 3d 1f 4e 00 00 7f 16 <8b> 44 24 04 83 c0 01 89 44 24 04 8b 44 24 04 3d 1f 4e 00 00 7e ea
+[   50.224837] RSP: 002b:00007ffd97cd26e8 EFLAGS: 00010297
+[   50.224879] RAX: 0000000000002ff6 RBX: 00007fd5aad51000 RCX: 0000000000000041
+[   50.224911] RDX: 000000000000037a RSI: 0000000000000008 RDI: 0000000000000000
+[   50.224942] RBP: 0000000000000066 R08: 00007fd5aad51000 R09: 0000000000000000
+[   50.224974] R10: 0000000000000021 R11: 0000000000000202 R12: 0000000000000000
+[   50.225007] R13: 0000000000000000 R14: 0000000000000000 R15: 0000000000000000
+[   50.225173] FS:  0000000000000000 GS:  0000000000000000
+[   50.226506] rcu: INFO: rcu_sched self-detected stall on CPU
+[   50.245148] rcu: 	0-...!: (1 ticks this GP) idle=34a4/1/0x4000000000000000 softirq=767/767 fqs=0
+[   50.247280] rcu: 	(t=23927 jiffies g=-903 q=1 ncpus=2)
+[   50.248373] rcu: rcu_sched kthread timer wakeup didn't happen for 23924 jiffies! g-903 f0x0 RCU_GP_WAIT_FQS(5) ->state=0x402
+[   50.249739] rcu: 	Possible timer handling issue on cpu=0 timer-softirq=155
+[   50.250906] rcu: rcu_sched kthread starved for 23927 jiffies! g-903 f0x0 RCU_GP_WAIT_FQS(5) ->state=0x402 ->cpu=0
+[   50.252170] rcu: 	Unless rcu_sched kthread gets sufficient CPU time, OOM is now expected behavior.
+[   50.253237] rcu: RCU grace-period kthread stack dump:
+[   50.254254] task:rcu_sched       state:I stack:0     pid:16    tgid:16    ppid:2      task_flags:0x208040 flags:0x00004000
+[   50.257632] Call Trace:
+[   50.258541]  <TASK>
+[   50.258850]  __schedule+0x58b/0x1400
+[   50.259387]  ? dequeue_entity+0x15c/0x600
+[   50.259997]  schedule+0x59/0xc0
+[   50.260424]  schedule_timeout+0x7e/0x100
+[   50.260953]  ? hrtimer_wakeup+0x30/0x30
+[   50.261473]  rcu_gp_fqs_loop+0x198/0x6d0
+[   50.262040]  rcu_gp_kthread+0x21/0x190
+[   50.262557]  kthread+0x1de/0x200
+[   50.262995]  ? param_get_do_rcu_barrier+0x20/0x20
+[   50.263644]  ? kthread_blkcg+0x40/0x40
+[   50.264134]  ret_from_fork+0x99/0xf0
+[   50.264621]  ? kthread_blkcg+0x40/0x40
+[   50.265111]  ret_from_fork_asm+0x11/0x20
+[   50.265687]  </TASK>
+[   50.268735] CPU: 0 UID: 0 PID: 101 Comm: order_long Not tainted 6.17.13-0_fbk0_crackerjackhost_0_g2b4321c50d79 #1 NONE 
+[   50.268800] Hardware name: QEMU Standard PC (Q35 + ICH9, 2009), BIOS 1.16.3-5.el9 11/05/2023
+[   50.268827] RIP: 0033:0x401143
+[   50.268865] Code: 00 00 0f 05 48 83 fd 01 b9 41 00 00 00 80 d1 00 ba 10 27 00 00 eb 2e c7 44 24 04 00 00 00 00 8b 44 24 04 3d 1f 4e 00 00 7f 16 <8b> 44 24 04 83 c0 01 89 44 24 04 8b 44 24 04 3d 1f 4e 00 00 7e ea
+[   50.268906] RSP: 002b:00007ffd97cd26e8 EFLAGS: 00010297
+[   50.268945] RAX: 0000000000002ff6 RBX: 00007fd5aad51000 RCX: 0000000000000041
+[   50.268975] RDX: 000000000000037a RSI: 0000000000000008 RDI: 0000000000000000
+[   50.269005] RBP: 0000000000000066 R08: 00007fd5aad51000 R09: 0000000000000000
+[   50.269035] R10: 0000000000000021 R11: 0000000000000202 R12: 0000000000000000
+[   50.269064] R13: 0000000000000000 R14: 0000000000000000 R15: 0000000000000000
+[   50.269094] FS:  0000000000000000 GS:  0000000000000000
+ORDER slots=20000 A=10000 B=10000 switches=1 head=BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB

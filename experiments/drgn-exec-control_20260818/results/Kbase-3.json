@@ -1,0 +1,21 @@
+{
+  "advance_serial_bytes": 267,
+  "advance_serial_digest": "109f19b6d5281ed8",
+  "after_digest": "18b058891bccacc5",
+  "after_tasks": 85,
+  "before_digest": "81779c19a80f9b5f",
+  "before_tasks": 83,
+  "dwell_seconds": 0.0,
+  "guest_seconds_across_pause": 0.002796,
+  "guest_uptimes": [
+    1.91
+  ],
+  "kmsg_a": 1.91142,
+  "kmsg_b": 1.914216,
+  "label": "Kbase-3",
+  "ok": true,
+  "pause_after_bytes": null,
+  "paused": false,
+  "startup_seconds": 1.8,
+  "total_seconds": 2.7
+}

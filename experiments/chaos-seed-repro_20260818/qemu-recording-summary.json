@@ -1,0 +1,64 @@
+{
+ "note": "structural summary of the 583,561,705-byte recording; full files deleted after hashing",
+ "threads": 3,
+ "preemption_points": {
+  "3": 11,
+  "5": 0,
+  "7": 6437
+ },
+ "preemption_rcbs_first8": {
+  "3": [
+   3775540,
+   22612190,
+   24148485,
+   29319158,
+   29902917,
+   30063408,
+   47808533,
+   65337183
+  ],
+  "5": [],
+  "7": [
+   12741169,
+   32586469,
+   36422998,
+   56296698,
+   76282298,
+   82574629,
+   87578067,
+   107578067
+  ]
+ },
+ "global_sched_events": 5564357,
+ "global_first3": [
+  {
+   "dettid": 3,
+   "op": "Branch",
+   "count": 49,
+   "start_rip": null,
+   "end_rip": null,
+   "end_time": 490
+  },
+  {
+   "dettid": 3,
+   "op": "OtherInstructions",
+   "count": 1,
+   "start_rip": null,
+   "end_rip": null,
+   "end_time": 490
+  },
+  {
+   "dettid": 3,
+   "op": {
+    "Syscall": [
+     59,
+     "Prehook"
+    ]
+   },
+   "count": 1,
+   "start_rip": null,
+   "end_rip": null,
+   "end_time": 490
+  }
+ ]
+}

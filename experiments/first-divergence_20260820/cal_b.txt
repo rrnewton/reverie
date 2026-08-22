@@ -1,0 +1,5 @@
+/home/newton/work/dev-hermit/experiments/first-divergence_20260820/runs/b01 rc=0 wall=50.565874683
+
+real	0m50.585s
+user	0m25.942s
+sys	0m24.594s

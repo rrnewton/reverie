@@ -1,0 +1,6 @@
+order_cp[    4.995258] clocksource: Long readout interval, skipping watchdog check: cs_nsec: 805145860 wd_nsec: 1930155260
+u
+[    8.890197] clocksource: Long readout interval, skipping watchdog check: cs_nsec: 3898335208 wd_nsec: 6064962400
+[   11.015148] smp: csd: Detected non-responsive CSD lock (#1) on CPU#1, waiting 5000000549 ns for CPU#00 do_sync_core+0x0/0x40(0x0).
+[   11.023960] smp: 	csd: CSD lock (#1) unresponsive.
+[   11.025527] Sending NMI from CPU 1 to CPUs 0:

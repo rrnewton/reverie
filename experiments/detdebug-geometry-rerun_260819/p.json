@@ -1,0 +1,34 @@
+{
+  "sched_turns": 269,
+  "schedevent_replayed": 0,
+  "schedevent_recorded": 0,
+  "schedevent_desynced": 0,
+  "desync_descrip": null,
+  "reprio_descrip": null,
+  "threads_descrip": "[3]",
+  "num_processes": 1,
+  "num_threads": 1,
+  "virttime_elapsed": 1950137665,
+  "virttime_final": 1767225601950137665,
+  "realtime_elapsed": {
+    "secs": 1,
+    "nanos": 131271834
+  },
+  "timeslice_stats": {
+    "count": 10,
+    "sum_ns": 1815637665,
+    "min_ns": 15637670,
+    "max_ns": 200000000
+  },
+  "per_thread_timeslice": [
+    [
+      3,
+      {
+        "count": 10,
+        "sum_ns": 1815637665,
+        "min_ns": 15637670,
+        "max_ns": 200000000
+      }
+    ]
+  ]
+}

@@ -1,0 +1,9 @@
+actuator=hermit extra='--sched-heuristic Random --sched-seed 3' k=500000
+  NSPID host_tid=3783109 NSpid:	3783109	3
+  NSPID host_tid=3783126 NSpid:	3783126	5
+  NSPID host_tid=3783138 NSpid:	3783138	7
+  NSPID host_tid=3783140 NSpid:	3783140	9
+  NSPID host_tid=3783142 NSpid:	3783142	11
+  NSPID host_tid=3783145 NSpid:	3783145	13
+tag=t-r3 hermit_pid=3783096 qemu_hostpid=3783109 vcpu0_tid=3783142 vcpu1_tid=3783145 (qmp said [11, 13])
+WINDOW none (workload never announced itself)

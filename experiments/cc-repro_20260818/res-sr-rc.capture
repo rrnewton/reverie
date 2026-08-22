@@ -1,0 +1,4 @@
+racer
+[    6.183206] clocksource: Long readout interval, skipping watchdog check: cs_nsec: 1993122378 wd_nsec: 3548825370
+RACER shared=10000000 expected=10000000 lost=0
+~ # 

@@ -1,0 +1,11 @@
+arm	tag	win_s	t11_in	t13_in	t11_all	t13_all	first	other
+only-cpu0	w0-2	3.61	2	3	106	65	0	0
+only-cpu0	w0-3	31.67	7	6	113	68	0	0
+only-cpu1	w1-2	3.56	1	1	104	60	1	0
+only-cpu1	w1-3	0.50	1	2	105	62	1	0
+both-strict	wb1	0.02	0	0	62	66	0	0
+both-strict	wb2	0.02	0	0	58	58	0	0
+both-strict	wb3	4.94	1	1	56	58	0	0
+both-random-s1	wr1	0.04	0	0	130	59	0	0
+both-random-s2	wr2	0.00	0	0	137	54	1	0
+WSWEEPDONE

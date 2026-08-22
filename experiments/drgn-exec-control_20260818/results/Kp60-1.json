@@ -1,0 +1,29 @@
+{
+  "advance_serial_bytes": 271,
+  "advance_serial_digest": "f3c597ec25d9ff05",
+  "after_digest": "18b058891bccacc5",
+  "after_tasks": 85,
+  "at_stop_digest": "81779c19a80f9b5f",
+  "at_stop_physical_reads": 6919,
+  "at_stop_qemu_state": "t",
+  "at_stop_serial_delta": 0,
+  "at_stop_tasks": 83,
+  "at_stop_tracer_state": "T",
+  "before_digest": "81779c19a80f9b5f",
+  "before_tasks": 83,
+  "dwell_seconds": 60.0,
+  "guest_seconds_across_pause": 0.002824,
+  "guest_uptimes": [
+    1.9
+  ],
+  "kmsg_a": 1.903043,
+  "kmsg_b": 1.905867,
+  "label": "Kp60-1",
+  "ok": true,
+  "pause_after_bytes": 8,
+  "paused": true,
+  "serial_bytes_before_pause": 24,
+  "startup_seconds": 1.7,
+  "stop_held_seconds": 60.03,
+  "total_seconds": 62.6
+}

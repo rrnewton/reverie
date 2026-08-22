@@ -1,0 +1,175 @@
+order_cpu[    5.021525] clocksource: Long readout interval, skipping watchdog check: cs_nsec: 831421945 wd_nsec: 1439223420
+
+[    5.621280] clocksource: timekeeping watchdog on CPU1: Marking clocksource 'tsc' as unstable because the skew is too large:
+[    5.623675] clocksource:                       'hpet' wd_nsec: 511247070 wd_now: 23aabd32 wd_last: 209ea34f mask: ffffffff
+[    5.625230] clocksource:                       'tsc' cs_nsec: 603004100 cs_now: 41326683d cs_last: 3db861a81 mask: ffffffffffffffff
+[    5.626834] clocksource:                       Clocksource 'tsc' skewed 91757030 ns (91 ms) over watchdog 'hpet' interval of 511247070 ns (511 ms)
+[    5.628684] clocksource:                       'tsc' is current clocksource.
+[    5.630176] tsc: Marking TSC unstable due to clocksource watchdog
+[    6.219193] TSC found unstable after boot, most likely due to broken BIOS. Use 'tsc=unstable'.
+[    6.220435] sched_clock: Marking unstable (6170402806, 48458559)<-(6231040497, -12143563)
+[    8.290905] clocksource: Checking clocksource tsc synchronization from CPU 0 to CPUs 1.
+[    9.003511] smp: csd: Detected non-responsive CSD lock (#1) on CPU#1, waiting 5000011990 ns for CPU#00 do_sync_core+0x0/0x40(0x0).
+[    9.003511] smp: 	csd: CSD lock (#1) unresponsive.
+[    9.003511] Sending NMI from CPU 1 to CPUs 0:
+[    9.004238] NMI backtrace for cpu 0
+[    9.004238] CPU: 0 UID: 0 PID: 19 Comm: migration/0 Not tainted 6.17.13-0_fbk0_crackerjackhost_0_g2b4321c50d79 #1 NONE 
+[    9.004238] Hardware name: QEMU Standard PC (Q35 + ICH9, 2009), BIOS 1.16.3-5.el9 11/05/2023
+[    9.004238] Stopper: multi_cpu_stop+0x0/0x120 <- stop_machine+0x6f/0xd0
+[    9.004238] RIP: 0010:rcu_momentary_eqs+0x0/0x80
+[    9.004238] Code: cc 83 e0 f8 48 8b 0c cd d0 f2 ae 82 8b 89 90 23 58 84 83 e1 fc 39 c8 0f 94 c0 c3 cc cc cc cc cc 66 2e 0f 1f 84 00 00 00 00 00 <f3> 0f 1e fa 41 56 53 65 c6 05 0d a5 21 03 00 65 48 8b 05 91 e4 1e
+[    9.004238] RSP: 0018:ffa00000000a3df0 EFLAGS: 00010002
+[    9.004238] RAX: ff1100009acac000 RBX: ffa0000000757de8 RCX: 00000000000211a4
+[    9.004238] RDX: 0000000000000118 RSI: 0000000000000086 RDI: 0000000000000000
+[    9.004238] RBP: 0000000000000000 R08: 0000000000000009 R09: 003b9aca00000000
+[    9.004238] R10: 0000000000a568e4 R11: 0000000000000000 R12: ffa0000000757d01
+[    9.004238] R13: 0000000000000003 R14: ffffffff83d59bf8 R15: 0000000000000003
+[    9.004238] FS:  0000000000000000(0000) GS:ff1100009acac000(0000) knlGS:0000000000000000
+[    9.004238] CS:  0010 DS: 0000 ES: 0000 CR0: 0000000080050033
+[    9.004238] CR2: 00007ffe6fb0e579 CR3: 0000000006ddd000 CR4: 0000000000751ef0
+[    9.004238] PKRU: 55555554
+[    9.004238] Call Trace:
+[    9.004238]  <TASK>
+[    9.004238]  multi_cpu_stop+0xa9/0x120
+[    9.004238]  ? stop_two_cpus+0x290/0x290
+[    9.004238]  cpu_stopper_thread+0x94/0x120
+[    9.004238]  smpboot_thread_fn+0x11a/0x1d0
+[    9.004238]  kthread+0x1de/0x200
+[    9.004238]  ? smpboot_unregister_percpu_thread+0xd0/0xd0
+[    9.004238]  ? kthread_blkcg+0x40/0x40
+[    9.004238]  ret_from_fork+0x99/0xf0
+[    9.004238]  ? kthread_blkcg+0x40/0x40
+[    9.004238]  ret_from_fork_asm+0x11/0x20
+[    9.004238]  </TASK>
+[    9.004238] INFO: NMI handler (nmi_cpu_backtrace_handler) took too long to run: 2819.335 msecs
+[   14.976794] smp: csd: Re-sending CSD lock (#1) IPI from CPU#01 to CPU#00
+[   14.976794] CPU: 1 UID: 0 PID: 35 Comm: kworker/u8:2 Not tainted 6.17.13-0_fbk0_crackerjackhost_0_g2b4321c50d79 #1 NONE 
+[   14.976794] Hardware name: QEMU Standard PC (Q35 + ICH9, 2009), BIOS 1.16.3-5.el9 11/05/2023
+[   14.976794] Workqueue: events_unbound toggle_allocation_gate
+[   14.976794] Call Trace:
+[   14.976794]  <TASK>
+[   15.035057] clocksource: Switched to clocksource hpet
+[   14.976794]  dump_stack_lvl+0x3b/0xa0
+[   14.976794]  __csd_lock_wait+0x297/0x320
+[   14.976794]  smp_call_function_many_cond+0x3b6/0x510
+[   14.976794]  ? smp_text_poke_sync_each_cpu+0x30/0x30
+[   14.976794]  on_each_cpu_cond_mask+0x1a/0x20
+[   14.976794]  smp_text_poke_batch_finish+0xe4/0x300
+[   14.976794]  ? arch_jump_label_transform_queue+0x4d/0x70
+[   14.976794]  arch_jump_label_transform_apply+0x1a/0x30
+[   14.976794]  static_key_disable_cpuslocked+0x46/0x90
+[   14.976794]  static_key_disable+0x1a/0x20
+[   14.976794]  toggle_allocation_gate+0xa0/0xf0
+[   14.976794]  process_scheduled_works+0x1ac/0x370
+[   14.976794]  worker_thread+0x294/0x370
+[   14.976794]  kthread+0x1de/0x200
+[   14.976794]  ? pr_cont_work+0x1c0/0x1c0
+[   14.976794]  ? kthread_blkcg+0x40/0x40
+[   14.976794]  ret_from_fork+0x99/0xf0
+[   14.976794]  ? kthread_blkcg+0x40/0x40
+[   14.976794]  ret_from_fork_asm+0x11/0x20
+[   14.976794]  </TASK>
+[   15.095703] smp: csd: CSD lock (#1) got unstuck on CPU#01, CPU#00 released the lock.
+[   15.096305] smp: csd: Detected non-responsive CSD lock (#2) on CPU#1, waiting 5000005460 ns for CPU#00 do_sync_core+0x0/0x40(0x0).
+[   15.096305] smp: 	csd: CSD lock (#2) unresponsive.
+[   15.096305] Sending NMI from CPU 1 to CPUs 0:
+[   15.035057] NMI backtrace for cpu 0
+[   15.035057] CPU: 0 UID: 0 PID: 9 Comm: kworker/0:0 Not tainted 6.17.13-0_fbk0_crackerjackhost_0_g2b4321c50d79 #1 NONE 
+[   15.035057] Hardware name: QEMU Standard PC (Q35 + ICH9, 2009), BIOS 1.16.3-5.el9 11/05/2023
+[   15.035057] Workqueue:  0x0 (mm_percpu_wq)
+[   15.035057] RIP: 0010:task_dead_fair+0xb5/0x130
+[   15.035057] Code: e8 60 d8 09 01 4c 8b bb 60 01 00 00 49 8b bf 80 00 00 00 4c 89 f6 e8 4a a2 00 00 4d 8d b7 c0 00 00 00 4c 89 f7 e8 7b d7 09 01 <41> ff 87 c4 00 00 00 48 8b 8b b0 01 00 00 49 01 8f d0 00 00 00 48
+[   15.035057] RSP: 0018:ffa0000000053cf8 EFLAGS: 00010086
+[   15.035057] RAX: 0000000000000286 RBX: ff11000005050000 RCX: 0000000000000001
+[   15.035057] RDX: 0000000000000000 RSI: ff110000050500c0 RDI: ff1100001f242f80
+[   15.035057] RBP: ffa0000000053d60 R08: 000000038028c4d3 R09: 0000000000000110
+[   15.035057] R10: ffffffff8346bd48 R11: ffffffff81326a80 R12: ff110000052d8018
+[   15.035057] R13: 0000000000000080 R14: ff1100001f242f80 R15: ff1100001f242ec0
+[   15.035057] FS:  0000000000000000(0000) GS:ff1100009acac000(0000) knlGS:0000000000000000
+[   15.035057] CS:  0010 DS: 0000 ES: 0000 CR0: 0000000080050033
+[   15.035057] CR2: 00007ff20c217000 CR3: 0000000006ddd000 CR4: 0000000000751ef0
+[   15.035057] PKRU: 55555554
+[   15.035057] Call Trace:
+[   15.035057]  <TASK>
+[   15.035057]  finish_task_switch+0x1c5/0x300
+[   15.035057]  __schedule+0x593/0x1400
+[   15.035057]  ? add_timer_on+0x152/0x1b0
+[   15.035057]  schedule+0x59/0xc0
+[   15.035057]  worker_thread+0x2df/0x370
+[   15.035057]  kthread+0x1de/0x200
+[   15.035057]  ? pr_cont_work+0x1c0/0x1c0
+[   15.035057]  ? kthread_blkcg+0x40/0x40
+[   15.035057]  ret_from_fork+0x99/0xf0
+[   15.035057]  ? kthread_blkcg+0x40/0x40
+[   15.035057]  ret_from_fork_asm+0x11/0x20
+[   15.035057]  </TASK>
+[   20.394909] smp: csd: Re-sending CSD lock (#2) IPI from CPU#01 to CPU#00
+[   20.394909] CPU: 1 UID: 0 PID: 35 Comm: kworker/u8:2 Not tainted 6.17.13-0_fbk0_crackerjackhost_0_g2b4321c50d79 #1 NONE 
+[   20.394909] Hardware name: QEMU Standard PC (Q35 + ICH9, 2009), BIOS 1.16.3-5.el9 11/05/2023
+[   20.394909] Workqueue: events_unbound toggle_allocation_gate
+[   20.394909] Call Trace:
+[   20.394909]  <TASK>
+[   20.394909]  dump_stack_lvl+0x3b/0xa0
+[   20.394909]  __csd_lock_wait+0x297/0x320
+[   20.394909]  smp_call_function_many_cond+0x3b6/0x510
+[   20.394909]  ? smp_text_poke_sync_each_cpu+0x30/0x30
+[   20.394909]  on_each_cpu_cond_mask+0x1a/0x20
+[   20.394909]  smp_text_poke_batch_finish+0x1f0/0x300
+[   20.394909]  arch_jump_label_transform_apply+0x1a/0x30
+[   20.394909]  static_key_disable_cpuslocked+0x46/0x90
+[   20.394909]  static_key_disable+0x1a/0x20
+[   20.394909]  toggle_allocation_gate+0xa0/0xf0
+[   20.394909]  process_scheduled_works+0x1ac/0x370
+[   20.394909]  worker_thread+0x294/0x370
+[   20.394909]  kthread+0x1de/0x200
+[   20.394909]  ? pr_cont_work+0x1c0/0x1c0
+[   20.394909]  ? kthread_blkcg+0x40/0x40
+[   20.394909]  ret_from_fork+0x99/0xf0
+[   20.394909]  ? kthread_blkcg+0x40/0x40
+[   20.394909]  ret_from_fork_asm+0x11/0x20
+[   20.394909]  </TASK>
+[   20.394909] smp: csd: CSD lock (#2) got unstuck on CPU#01, CPU#00 released the lock.
+[   20.866678] smp: csd: Detected non-responsive CSD lock (#3) on CPU#0, waiting 5000014700 ns for CPU#01 do_sync_core+0x0/0x40(0x0).
+[   20.866678] smp: 	csd: CSD lock (#3) unresponsive.
+[   20.866678] Sending NMI from CPU 0 to CPUs 1:
+[   20.866678] NMI backtrace for cpu 1
+[   20.866678] CPU: 1 UID: 0 PID: 105 Comm: order_cpu Not tainted 6.17.13-0_fbk0_crackerjackhost_0_g2b4321c50d79 #1 NONE 
+[   20.866678] Hardware name: QEMU Standard PC (Q35 + ICH9, 2009), BIOS 1.16.3-5.el9 11/05/2023
+[   20.866678] RIP: 0033:0x401164
+[   20.866678] Code: 7c 24 04 ba 00 00 00 00 b8 35 01 00 00 48 89 d6 0f 05 ba e8 03 00 00 eb 29 c7 04 24 00 00 00 00 8b 04 24 3d 9f 0f 00 00 7f 13 <8b> 04 24 83 c0 01 89 04 24 8b 04 24 3d 9f 0f 00 00 7e ed 83 ea 01
+[   20.866678] RSP: 002b:00007ffe6fb0e368 EFLAGS: 00010297
+[   20.866678] RAX: 00000000000008f8 RBX: 00007ff20c217000 RCX: 000000000040114c
+[   20.866678] RDX: 0000000000000166 RSI: 0000000000000000 RDI: 00007ffe6fb0e36c
+[   20.866678] RBP: 0000000000000000 R08: 00007ff20c217000 R09: 0000000000000042
+[   20.866678] R10: 0000000000000021 R11: 0000000000000206 R12: 0000000000000000
+[   20.866678] R13: 0000000000000000 R14: 0000000000000000 R15: 0000000000000000
+[   20.866678] FS:  0000000000000000 GS:  0000000000000000
+[   20.866678] smp: csd: Re-sending CSD lock (#3) IPI from CPU#00 to CPU#01
+[   20.866678] CPU: 0 UID: 0 PID: 35 Comm: kworker/u8:2 Not tainted 6.17.13-0_fbk0_crackerjackhost_0_g2b4321c50d79 #1 NONE 
+[   20.866678] Hardware name: QEMU Standard PC (Q35 + ICH9, 2009), BIOS 1.16.3-5.el9 11/05/2023
+[   20.866678] Workqueue: events_unbound toggle_allocation_gate
+[   20.866678] Call Trace:
+[   20.866678]  <TASK>
+[   20.866678]  dump_stack_lvl+0x3b/0xa0
+[   20.866678]  __csd_lock_wait+0x297/0x320
+[   20.866678]  smp_call_function_many_cond+0x3b6/0x510
+[   20.866678]  ? smp_text_poke_sync_each_cpu+0x30/0x30
+[   20.866678]  on_each_cpu_cond_mask+0x1a/0x20
+[   20.866678]  smp_text_poke_batch_finish+0xe4/0x300
+[   20.866678]  ? arch_jump_label_transform_queue+0x4d/0x70
+[   20.866678]  arch_jump_label_transform_apply+0x1a/0x30
+[   20.866678]  static_key_enable_cpuslocked+0x4d/0x90
+[   20.866678]  static_key_enable+0x1a/0x20
+[   20.866678]  toggle_allocation_gate+0x44/0xf0
+[   20.866678]  process_scheduled_works+0x1ac/0x370
+[   20.866678]  worker_thread+0x294/0x370
+[   20.866678]  kthread+0x1de/0x200
+[   20.866678]  ? pr_cont_work+0x1c0/0x1c0
+[   20.866678]  ? kthread_blkcg+0x40/0x40
+[   20.866678]  ret_from_fork+0x99/0xf0
+[   20.866678]  ? kthread_blkcg+0x40/0x40
+[   20.866678]  ret_from_fork_asm+0x11/0x20
+[   20.866678]  </TASK>
+[   20.866678] smp: csd: CSD lock (#3) got unstuck on CPU#00, CPU#01 released the lock.
+AFF rc=0 parent_cpu=0
+ORDER slots=2000 A=1000 B=1000 switches=9 head=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA

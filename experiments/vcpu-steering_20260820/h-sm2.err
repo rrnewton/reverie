@@ -1,0 +1,3 @@
+2026-08-20T10:47:22.609910Z ERROR detcore: [detcore, dtid 3] inbound syscall: gettimeofday(0x7fffffffaf20, NULL) = ?
+Error: Sandbox container exited unexpectedly
+     > Process exited with code: Exited(1)

@@ -1,0 +1,133 @@
+hermit log-diff: identical so far over 0 records (left has 0 | right has 0)
+hermit log-diff: identical so far over 1707 records (left has 1707 | right has 1761)
+hermit log-diff: identical so far over 4043 records (left has 4043 | right has 4192)
+Logs contain 4043 | 4043 messages total
+Logs contain 4043 | 4043 detcore-specific messages
+Logs contain 4043 | 4043 INFO messages
+Logs contain 2451 | 2451 DETLOG & scheduler COMMIT messages
+Canonicalizing host addresses (ordinal by first appearance); comparing everything else exactly...
+  Comparing INFO messages...
+
+(INFO) Mismatch at log messages 2475 (run 1) and 2475 (run 2): [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore: DETLOG [syscall][detcore, dtid 7] finish syscall #697: clock_gettime(CLOCK_MONOTONIC, 0x7fffffffa9f0 -> { tv_sec: 1767225600, tv_nsec: 186446[0m[1;48;5;52;31m9[0m[31m80 }) = Ok(0)"[0m
+[32m>"INFO detcore: DETLOG [syscall][detcore, dtid 7] finish syscall #697: clock_gettime(CLOCK_MONOTONIC, 0x7fffffffa9f0 -> { tv_sec: 1767225600, tv_nsec: 186446[0m[1;48;5;22;32m3[0m[32m80 }) = Ok(0)"[0m
+(INFO) Original entries before normalization: [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore: DETLOG [syscall][detcore, dtid 7] finish syscall #697: clock_gettime(CLOCK_MONOTONIC, 0x7fffffffa9f0 -> { tv_sec: 1767225600, tv_nsec: 186446[0m[1;48;5;52;31m9[0m[31m80 }) = Ok(0)"[0m
+[32m>"INFO detcore: DETLOG [syscall][detcore, dtid 7] finish syscall #697: clock_gettime(CLOCK_MONOTONIC, 0x7fffffffa9f0 -> { tv_sec: 1767225600, tv_nsec: 186446[0m[1;48;5;22;32m3[0m[32m80 }) = Ok(0)"[0m
+(INFO) Mismatch at log messages 2477 (run 1) and 2477 (run 2): [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore::scheduler: [sched-step5] >>>>>>>\n\n COMMIT turn 67, dettid 7 using resources {Device(ContainerStdout): W}, on previously committed 1_767_225_600.186_96[0m[1;48;5;52;31m2[0m[31m_[0m[1;48;5;52;31m4[0m[31m00s"[0m
+[32m>"INFO detcore::scheduler: [sched-step5] >>>>>>>\n\n COMMIT turn 67, dettid 7 using resources {Device(ContainerStdout): W}, on previously committed 1_767_225_600.186_96[0m[1;48;5;22;32m1[0m[32m_[0m[1;48;5;22;32m8[0m[32m00s"[0m
+(INFO) Original entries before normalization: [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore::scheduler: [sched-step5] >>>>>>>\n\n COMMIT turn 67, dettid 7 using resources {Device(ContainerStdout): W}, on previously committed 1_767_225_600.186_96[0m[1;48;5;52;31m2[0m[31m_[0m[1;48;5;52;31m4[0m[31m00s"[0m
+[32m>"INFO detcore::scheduler: [sched-step5] >>>>>>>\n\n COMMIT turn 67, dettid 7 using resources {Device(ContainerStdout): W}, on previously committed 1_767_225_600.186_96[0m[1;48;5;22;32m1[0m[32m_[0m[1;48;5;22;32m8[0m[32m00s"[0m
+(INFO) Mismatch at log messages 2480 (run 1) and 2480 (run 2): [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore::scheduler: [sched-step5] >>>>>>>\n\n COMMIT turn 68, dettid 7 using resources {Device(ContainerStdout): W}, on previously committed 1_767_225_600.187_475_[0m[1;48;5;52;31m7[0m[31m90s"[0m
+[32m>"INFO detcore::scheduler: [sched-step5] >>>>>>>\n\n COMMIT turn 68, dettid 7 using resources {Device(ContainerStdout): W}, on previously committed 1_767_225_600.187_475_[0m[1;48;5;22;32m1[0m[32m90s"[0m
+(INFO) Original entries before normalization: [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore::scheduler: [sched-step5] >>>>>>>\n\n COMMIT turn 68, dettid 7 using resources {Device(ContainerStdout): W}, on previously committed 1_767_225_600.187_475_[0m[1;48;5;52;31m7[0m[31m90s"[0m
+[32m>"INFO detcore::scheduler: [sched-step5] >>>>>>>\n\n COMMIT turn 68, dettid 7 using resources {Device(ContainerStdout): W}, on previously committed 1_767_225_600.187_475_[0m[1;48;5;22;32m1[0m[32m90s"[0m
+(INFO) Mismatch at log messages 2483 (run 1) and 2483 (run 2): [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore: DETLOG [syscall][detcore, dtid 7] finish syscall #700: clock_gettime(CLOCK_MONOTONIC, 0x7fffffffab40 -> { tv_sec: 1767225600, tv_nsec: 187490[0m[1;48;5;52;31m9[0m[31m80 }) = Ok(0)"[0m
+[32m>"INFO detcore: DETLOG [syscall][detcore, dtid 7] finish syscall #700: clock_gettime(CLOCK_MONOTONIC, 0x7fffffffab40 -> { tv_sec: 1767225600, tv_nsec: 187490[0m[1;48;5;22;32m3[0m[32m80 }) = Ok(0)"[0m
+(INFO) Original entries before normalization: [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore: DETLOG [syscall][detcore, dtid 7] finish syscall #700: clock_gettime(CLOCK_MONOTONIC, 0x7fffffffab40 -> { tv_sec: 1767225600, tv_nsec: 187490[0m[1;48;5;52;31m9[0m[31m80 }) = Ok(0)"[0m
+[32m>"INFO detcore: DETLOG [syscall][detcore, dtid 7] finish syscall #700: clock_gettime(CLOCK_MONOTONIC, 0x7fffffffab40 -> { tv_sec: 1767225600, tv_nsec: 187490[0m[1;48;5;22;32m3[0m[32m80 }) = Ok(0)"[0m
+(INFO) Mismatch at log messages 2485 (run 1) and 2485 (run 2): [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore::scheduler: [scheduler] >>>>>>>\n\n NONCOMMIT turn 69, SKIP dettid 7 which wanted resource SleepUntil(LogicalTime(1767225600267490[0m[1;48;5;52;31m9[0m[31m80)) (blocking)"[0m
+[32m>"INFO detcore::scheduler: [scheduler] >>>>>>>\n\n NONCOMMIT turn 69, SKIP dettid 7 which wanted resource SleepUntil(LogicalTime(1767225600267490[0m[1;48;5;22;32m3[0m[32m80)) (blocking)"[0m
+(INFO) Original entries before normalization: [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore::scheduler: [scheduler] >>>>>>>\n\n NONCOMMIT turn 69, SKIP dettid 7 which wanted resource SleepUntil(LogicalTime(1767225600267490[0m[1;48;5;52;31m9[0m[31m80)) (blocking)"[0m
+[32m>"INFO detcore::scheduler: [scheduler] >>>>>>>\n\n NONCOMMIT turn 69, SKIP dettid 7 which wanted resource SleepUntil(LogicalTime(1767225600267490[0m[1;48;5;22;32m3[0m[32m80)) (blocking)"[0m
+(INFO) Mismatch at log messages 2487 (run 1) and 2487 (run 2): [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore::scheduler: [sched-step5] >>>>>>>\n\n COMMIT turn 70, dettid 3 using resources {BlockedExternalContinue(ExternalOpId { tid: DetPid(3), sequence: 417 }): RW}, on previously committed 1_767_225_600.187_99[0m[1;48;5;52;31m7[0m[31m_[0m[1;48;5;52;31m5[0m[31m70s"[0m
+[32m>"INFO detcore::scheduler: [sched-step5] >>>>>>>\n\n COMMIT turn 70, dettid 3 using resources {BlockedExternalContinue(ExternalOpId { tid: DetPid(3), sequence: 417 }): RW}, on previously committed 1_767_225_600.187_99[0m[1;48;5;22;32m6[0m[32m_[0m[1;48;5;22;32m9[0m[32m70s"[0m
+(INFO) Original entries before normalization: [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore::scheduler: [sched-step5] >>>>>>>\n\n COMMIT turn 70, dettid 3 using resources {BlockedExternalContinue(ExternalOpId { tid: DetPid(3), sequence: 417 }): RW}, on previously committed 1_767_225_600.187_99[0m[1;48;5;52;31m7[0m[31m_[0m[1;48;5;52;31m5[0m[31m70s"[0m
+[32m>"INFO detcore::scheduler: [sched-step5] >>>>>>>\n\n COMMIT turn 70, dettid 3 using resources {BlockedExternalContinue(ExternalOpId { tid: DetPid(3), sequence: 417 }): RW}, on previously committed 1_767_225_600.187_99[0m[1;48;5;22;32m6[0m[32m_[0m[1;48;5;22;32m9[0m[32m70s"[0m
+(INFO) Mismatch at log messages 2546 (run 1) and 2546 (run 2): [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore::scheduler: [sched-step5] >>>>>>>\n\n COMMIT turn 71, dettid 3 using resources {InternalIOPolling: W}, on previously committed 1_767_225_600.188_786_[0m[1;48;5;52;31m8[0m[31m80s"[0m
+[32m>"INFO detcore::scheduler: [sched-step5] >>>>>>>\n\n COMMIT turn 71, dettid 3 using resources {InternalIOPolling: W}, on previously committed 1_767_225_600.188_786_[0m[1;48;5;22;32m2[0m[32m80s"[0m
+(INFO) Original entries before normalization: [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore::scheduler: [sched-step5] >>>>>>>\n\n COMMIT turn 71, dettid 3 using resources {InternalIOPolling: W}, on previously committed 1_767_225_600.188_786_[0m[1;48;5;52;31m8[0m[31m80s"[0m
+[32m>"INFO detcore::scheduler: [sched-step5] >>>>>>>\n\n COMMIT turn 71, dettid 3 using resources {InternalIOPolling: W}, on previously committed 1_767_225_600.188_786_[0m[1;48;5;22;32m2[0m[32m80s"[0m
+(INFO) Mismatch at log messages 2548 (run 1) and 2548 (run 2): [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore::scheduler: [sched-step5] >>>>>>>\n\n COMMIT turn 73, dettid 3 using resources {InternalIOPolling: W}, on previously committed 1_767_225_600.189_286_[0m[1;48;5;52;31m8[0m[31m80s"[0m
+[32m>"INFO detcore::scheduler: [sched-step5] >>>>>>>\n\n COMMIT turn 73, dettid 3 using resources {InternalIOPolling: W}, on previously committed 1_767_225_600.189_286_[0m[1;48;5;22;32m2[0m[32m80s"[0m
+(INFO) Original entries before normalization: [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore::scheduler: [sched-step5] >>>>>>>\n\n COMMIT turn 73, dettid 3 using resources {InternalIOPolling: W}, on previously committed 1_767_225_600.189_286_[0m[1;48;5;52;31m8[0m[31m80s"[0m
+[32m>"INFO detcore::scheduler: [sched-step5] >>>>>>>\n\n COMMIT turn 73, dettid 3 using resources {InternalIOPolling: W}, on previously committed 1_767_225_600.189_286_[0m[1;48;5;22;32m2[0m[32m80s"[0m
+(INFO) Mismatch at log messages 2550 (run 1) and 2550 (run 2): [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore::scheduler: [sched-step5] >>>>>>>\n\n COMMIT turn 75, dettid 3 using resources {InternalIOPolling: W}, on previously committed 1_767_225_600.189_786_[0m[1;48;5;52;31m8[0m[31m80s"[0m
+[32m>"INFO detcore::scheduler: [sched-step5] >>>>>>>\n\n COMMIT turn 75, dettid 3 using resources {InternalIOPolling: W}, on previously committed 1_767_225_600.189_786_[0m[1;48;5;22;32m2[0m[32m80s"[0m
+(INFO) Original entries before normalization: [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore::scheduler: [sched-step5] >>>>>>>\n\n COMMIT turn 75, dettid 3 using resources {InternalIOPolling: W}, on previously committed 1_767_225_600.189_786_[0m[1;48;5;52;31m8[0m[31m80s"[0m
+[32m>"INFO detcore::scheduler: [sched-step5] >>>>>>>\n\n COMMIT turn 75, dettid 3 using resources {InternalIOPolling: W}, on previously committed 1_767_225_600.189_786_[0m[1;48;5;22;32m2[0m[32m80s"[0m
+(INFO) Mismatch at log messages 2552 (run 1) and 2552 (run 2): [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore::scheduler: [sched-step5] >>>>>>>\n\n COMMIT turn 77, dettid 3 using resources {InternalIOPolling: W}, on previously committed 1_767_225_600.190_286_[0m[1;48;5;52;31m8[0m[31m80s"[0m
+[32m>"INFO detcore::scheduler: [sched-step5] >>>>>>>\n\n COMMIT turn 77, dettid 3 using resources {InternalIOPolling: W}, on previously committed 1_767_225_600.190_286_[0m[1;48;5;22;32m2[0m[32m80s"[0m
+(INFO) Original entries before normalization: [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore::scheduler: [sched-step5] >>>>>>>\n\n COMMIT turn 77, dettid 3 using resources {InternalIOPolling: W}, on previously committed 1_767_225_600.190_286_[0m[1;48;5;52;31m8[0m[31m80s"[0m
+[32m>"INFO detcore::scheduler: [sched-step5] >>>>>>>\n\n COMMIT turn 77, dettid 3 using resources {InternalIOPolling: W}, on previously committed 1_767_225_600.190_286_[0m[1;48;5;22;32m2[0m[32m80s"[0m
+(INFO) Mismatch at log messages 2554 (run 1) and 2554 (run 2): [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore::scheduler: [sched-step5] >>>>>>>\n\n COMMIT turn 79, dettid 3 using resources {InternalIOPolling: W}, on previously committed 1_767_225_600.190_786_[0m[1;48;5;52;31m8[0m[31m80s"[0m
+[32m>"INFO detcore::scheduler: [sched-step5] >>>>>>>\n\n COMMIT turn 79, dettid 3 using resources {InternalIOPolling: W}, on previously committed 1_767_225_600.190_786_[0m[1;48;5;22;32m2[0m[32m80s"[0m
+(INFO) Original entries before normalization: [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore::scheduler: [sched-step5] >>>>>>>\n\n COMMIT turn 79, dettid 3 using resources {InternalIOPolling: W}, on previously committed 1_767_225_600.190_786_[0m[1;48;5;52;31m8[0m[31m80s"[0m
+[32m>"INFO detcore::scheduler: [sched-step5] >>>>>>>\n\n COMMIT turn 79, dettid 3 using resources {InternalIOPolling: W}, on previously committed 1_767_225_600.190_786_[0m[1;48;5;22;32m2[0m[32m80s"[0m
+(INFO) Mismatch at log messages 2556 (run 1) and 2556 (run 2): [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore::scheduler: [sched-step5] >>>>>>>\n\n COMMIT turn 81, dettid 3 using resources {InternalIOPolling: W}, on previously committed 1_767_225_600.191_286_[0m[1;48;5;52;31m8[0m[31m80s"[0m
+[32m>"INFO detcore::scheduler: [sched-step5] >>>>>>>\n\n COMMIT turn 81, dettid 3 using resources {InternalIOPolling: W}, on previously committed 1_767_225_600.191_286_[0m[1;48;5;22;32m2[0m[32m80s"[0m
+(INFO) Original entries before normalization: [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore::scheduler: [sched-step5] >>>>>>>\n\n COMMIT turn 81, dettid 3 using resources {InternalIOPolling: W}, on previously committed 1_767_225_600.191_286_[0m[1;48;5;52;31m8[0m[31m80s"[0m
+[32m>"INFO detcore::scheduler: [sched-step5] >>>>>>>\n\n COMMIT turn 81, dettid 3 using resources {InternalIOPolling: W}, on previously committed 1_767_225_600.191_286_[0m[1;48;5;22;32m2[0m[32m80s"[0m
+(INFO) Mismatch at log messages 2558 (run 1) and 2558 (run 2): [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore::scheduler: [sched-step5] >>>>>>>\n\n COMMIT turn 83, dettid 3 using resources {InternalIOPolling: W}, on previously committed 1_767_225_600.191_786_[0m[1;48;5;52;31m8[0m[31m80s"[0m
+[32m>"INFO detcore::scheduler: [sched-step5] >>>>>>>\n\n COMMIT turn 83, dettid 3 using resources {InternalIOPolling: W}, on previously committed 1_767_225_600.191_786_[0m[1;48;5;22;32m2[0m[32m80s"[0m
+(INFO) Original entries before normalization: [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore::scheduler: [sched-step5] >>>>>>>\n\n COMMIT turn 83, dettid 3 using resources {InternalIOPolling: W}, on previously committed 1_767_225_600.191_786_[0m[1;48;5;52;31m8[0m[31m80s"[0m
+[32m>"INFO detcore::scheduler: [sched-step5] >>>>>>>\n\n COMMIT turn 83, dettid 3 using resources {InternalIOPolling: W}, on previously committed 1_767_225_600.191_786_[0m[1;48;5;22;32m2[0m[32m80s"[0m
+(INFO) Mismatch at log messages 2560 (run 1) and 2560 (run 2): [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore::scheduler: [sched-step5] >>>>>>>\n\n COMMIT turn 85, dettid 3 using resources {InternalIOPolling: W}, on previously committed 1_767_225_600.192_286_[0m[1;48;5;52;31m8[0m[31m80s"[0m
+[32m>"INFO detcore::scheduler: [sched-step5] >>>>>>>\n\n COMMIT turn 85, dettid 3 using resources {InternalIOPolling: W}, on previously committed 1_767_225_600.192_286_[0m[1;48;5;22;32m2[0m[32m80s"[0m
+(INFO) Original entries before normalization: [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore::scheduler: [sched-step5] >>>>>>>\n\n COMMIT turn 85, dettid 3 using resources {InternalIOPolling: W}, on previously committed 1_767_225_600.192_286_[0m[1;48;5;52;31m8[0m[31m80s"[0m
+[32m>"INFO detcore::scheduler: [sched-step5] >>>>>>>\n\n COMMIT turn 85, dettid 3 using resources {InternalIOPolling: W}, on previously committed 1_767_225_600.192_286_[0m[1;48;5;22;32m2[0m[32m80s"[0m
+(INFO) Mismatch at log messages 2562 (run 1) and 2562 (run 2): [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore::scheduler: [sched-step5] >>>>>>>\n\n COMMIT turn 87, dettid 3 using resources {InternalIOPolling: W}, on previously committed 1_767_225_600.192_786_[0m[1;48;5;52;31m8[0m[31m80s"[0m
+[32m>"INFO detcore::scheduler: [sched-step5] >>>>>>>\n\n COMMIT turn 87, dettid 3 using resources {InternalIOPolling: W}, on previously committed 1_767_225_600.192_786_[0m[1;48;5;22;32m2[0m[32m80s"[0m
+(INFO) Original entries before normalization: [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore::scheduler: [sched-step5] >>>>>>>\n\n COMMIT turn 87, dettid 3 using resources {InternalIOPolling: W}, on previously committed 1_767_225_600.192_786_[0m[1;48;5;52;31m8[0m[31m80s"[0m
+[32m>"INFO detcore::scheduler: [sched-step5] >>>>>>>\n\n COMMIT turn 87, dettid 3 using resources {InternalIOPolling: W}, on previously committed 1_767_225_600.192_786_[0m[1;48;5;22;32m2[0m[32m80s"[0m
+(INFO) Mismatch at log messages 2564 (run 1) and 2564 (run 2): [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore::scheduler: [sched-step5] >>>>>>>\n\n COMMIT turn 89, dettid 3 using resources {InternalIOPolling: W}, on previously committed 1_767_225_600.193_286_[0m[1;48;5;52;31m8[0m[31m80s"[0m
+[32m>"INFO detcore::scheduler: [sched-step5] >>>>>>>\n\n COMMIT turn 89, dettid 3 using resources {InternalIOPolling: W}, on previously committed 1_767_225_600.193_286_[0m[1;48;5;22;32m2[0m[32m80s"[0m
+(INFO) Original entries before normalization: [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore::scheduler: [sched-step5] >>>>>>>\n\n COMMIT turn 89, dettid 3 using resources {InternalIOPolling: W}, on previously committed 1_767_225_600.193_286_[0m[1;48;5;52;31m8[0m[31m80s"[0m
+[32m>"INFO detcore::scheduler: [sched-step5] >>>>>>>\n\n COMMIT turn 89, dettid 3 using resources {InternalIOPolling: W}, on previously committed 1_767_225_600.193_286_[0m[1;48;5;22;32m2[0m[32m80s"[0m
+(INFO) Mismatch at log messages 2566 (run 1) and 2566 (run 2): [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore::scheduler: [sched-step5] >>>>>>>\n\n COMMIT turn 91, dettid 3 using resources {InternalIOPolling: W}, on previously committed 1_767_225_600.193_786_[0m[1;48;5;52;31m8[0m[31m80s"[0m
+[32m>"INFO detcore::scheduler: [sched-step5] >>>>>>>\n\n COMMIT turn 91, dettid 3 using resources {InternalIOPolling: W}, on previously committed 1_767_225_600.193_786_[0m[1;48;5;22;32m2[0m[32m80s"[0m
+(INFO) Original entries before normalization: [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore::scheduler: [sched-step5] >>>>>>>\n\n COMMIT turn 91, dettid 3 using resources {InternalIOPolling: W}, on previously committed 1_767_225_600.193_786_[0m[1;48;5;52;31m8[0m[31m80s"[0m
+[32m>"INFO detcore::scheduler: [sched-step5] >>>>>>>\n\n COMMIT turn 91, dettid 3 using resources {InternalIOPolling: W}, on previously committed 1_767_225_600.193_786_[0m[1;48;5;22;32m2[0m[32m80s"[0m
+(INFO) Mismatch at log messages 2568 (run 1) and 2568 (run 2): [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore::scheduler: [sched-step5] >>>>>>>\n\n COMMIT turn 93, dettid 3 using resources {InternalIOPolling: W}, on previously committed 1_767_225_600.194_286_[0m[1;48;5;52;31m8[0m[31m80s"[0m
+[32m>"INFO detcore::scheduler: [sched-step5] >>>>>>>\n\n COMMIT turn 93, dettid 3 using resources {InternalIOPolling: W}, on previously committed 1_767_225_600.194_286_[0m[1;48;5;22;32m2[0m[32m80s"[0m
+(INFO) Original entries before normalization: [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore::scheduler: [sched-step5] >>>>>>>\n\n COMMIT turn 93, dettid 3 using resources {InternalIOPolling: W}, on previously committed 1_767_225_600.194_286_[0m[1;48;5;52;31m8[0m[31m80s"[0m
+[32m>"INFO detcore::scheduler: [sched-step5] >>>>>>>\n\n COMMIT turn 93, dettid 3 using resources {InternalIOPolling: W}, on previously committed 1_767_225_600.194_286_[0m[1;48;5;22;32m2[0m[32m80s"[0m
+(INFO) Mismatch at log messages 2570 (run 1) and 2570 (run 2): [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore::scheduler: [sched-step5] >>>>>>>\n\n COMMIT turn 95, dettid 3 using resources {InternalIOPolling: W}, on previously committed 1_767_225_600.194_786_[0m[1;48;5;52;31m8[0m[31m80s"[0m
+[32m>"INFO detcore::scheduler: [sched-step5] >>>>>>>\n\n COMMIT turn 95, dettid 3 using resources {InternalIOPolling: W}, on previously committed 1_767_225_600.194_786_[0m[1;48;5;22;32m2[0m[32m80s"[0m
+(INFO) Original entries before normalization: [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore::scheduler: [sched-step5] >>>>>>>\n\n COMMIT turn 95, dettid 3 using resources {InternalIOPolling: W}, on previously committed 1_767_225_600.194_786_[0m[1;48;5;52;31m8[0m[31m80s"[0m
+[32m>"INFO detcore::scheduler: [sched-step5] >>>>>>>\n\n COMMIT turn 95, dettid 3 using resources {InternalIOPolling: W}, on previously committed 1_767_225_600.194_786_[0m[1;48;5;22;32m2[0m[32m80s"[0m
+(INFO) Mismatch at log messages 2572 (run 1) and 2572 (run 2): [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore::scheduler: [sched-step5] >>>>>>>\n\n COMMIT turn 97, dettid 3 using resources {InternalIOPolling: W}, on previously committed 1_767_225_600.195_286_[0m[1;48;5;52;31m8[0m[31m80s"[0m
+[32m>"INFO detcore::scheduler: [sched-step5] >>>>>>>\n\n COMMIT turn 97, dettid 3 using resources {InternalIOPolling: W}, on previously committed 1_767_225_600.195_286_[0m[1;48;5;22;32m2[0m[32m80s"[0m
+(INFO) Original entries before normalization: [1mDiff[0m [31m< left[0m / [32mright >[0m :
+[31m<"INFO detcore::scheduler: [sched-step5] >>>>>>>\n\n COMMIT turn 97, dettid 3 using resources {InternalIOPolling: W}, on previously committed 1_767_225_600.195_286_[0m[1;48;5;52;31m8[0m[31m80s"[0m
+[32m>"INFO detcore::scheduler: [sched-step5] >>>>>>>\n\n COMMIT turn 97, dettid 3 using resources {InternalIOPolling: W}, on previously committed 1_767_225_600.195_286_[0m[1;48;5;22;32m2[0m[32m80s"[0m
+More than 20 differences, eliding the rest...
+Done processing logs, differences found.
+hermit log-diff: DIVERGED at record 2475 of 4043 compared

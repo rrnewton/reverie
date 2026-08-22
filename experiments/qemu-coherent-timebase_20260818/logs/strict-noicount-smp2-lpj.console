@@ -1,0 +1,1202 @@
+[    0.000000] Linux version 6.17.13-0_fbk0_crackerjackhost_0_g2b4321c50d79 (root@8799-0fd3-0004-0000.twshared50661.04.nha2.tw.fbinfra.net) (clang version 19.1.7 (CentOS 19.1.7-1.el9), LLD 19.1.7) #1 SMP Thu Dec 18 12:27:13 PST 2025
+[    0.000000] Command line: console=ttyS0 panic=-1 rdinit=/init no_timer_check lpj=999964
+[    0.000000] KERNEL supported cpus:
+[    0.000000]   Intel GenuineIntel
+[    0.000000]   AMD AuthenticAMD
+[    0.000000] BIOS-provided physical RAM map:
+[    0.000000] BIOS-e820: [mem 0x0000000000000000-0x000000000009fbff] usable
+[    0.000000] BIOS-e820: [mem 0x000000000009fc00-0x000000000009ffff] reserved
+[    0.000000] BIOS-e820: [mem 0x00000000000f0000-0x00000000000fffff] reserved
+[    0.000000] BIOS-e820: [mem 0x0000000000100000-0x000000000ffdffff] usable
+[    0.000000] BIOS-e820: [mem 0x000000000ffe0000-0x000000000fffffff] reserved
+[    0.000000] BIOS-e820: [mem 0x00000000b0000000-0x00000000bfffffff] reserved
+[    0.000000] BIOS-e820: [mem 0x00000000fed1c000-0x00000000fed1ffff] reserved
+[    0.000000] BIOS-e820: [mem 0x00000000fffc0000-0x00000000ffffffff] reserved
+[    0.000000] BIOS-e820: [mem 0x000000fd00000000-0x000000ffffffffff] reserved
+[    0.000000] NX (Execute Disable) protection: active
+[    0.000000] APIC: Static calls initialized
+[    0.000000] SMBIOS 2.8 present.
+[    0.000000] DMI: QEMU Standard PC (Q35 + ICH9, 2009), BIOS 1.16.3-5.el9 11/05/2023
+[    0.000000] DMI: Memory slots populated: 1/1
+[    0.000000] tsc: Fast TSC calibration failed
+[    0.000000] last_pfn = 0xffe0 max_arch_pfn = 0x10000000000
+[    0.000000] MTRR map: 4 entries (3 fixed + 1 variable; max 19), built from 8 variable MTRRs
+[    0.000000] x86/PAT: Configuration [0-7]: WB  WC  UC- UC  WB  WP  UC- WT  
+[    0.000000] Using GB pages for direct mapping
+[    0.000000] RAMDISK: [mem 0x0ff25000-0x0ffdffff]
+[    0.000000] ACPI: Early table checksum verification disabled
+[    0.000000] ACPI: RSDP 0x00000000000F52E0 000014 (v00 BOCHS )
+[    0.000000] ACPI: RSDT 0x000000000FFE233B 000038 (v01 BOCHS  BXPC     00000001 BXPC 00000001)
+[    0.000000] ACPI: FACP 0x000000000FFE212B 0000F4 (v03 BOCHS  BXPC     00000001 BXPC 00000001)
+[    0.000000] ACPI: DSDT 0x000000000FFE0040 0020EB (v01 BOCHS  BXPC     00000001 BXPC 00000001)
+[    0.000000] ACPI: FACS 0x000000000FFE0000 000040
+[    0.000000] ACPI: APIC 0x000000000FFE221F 000080 (v03 BOCHS  BXPC     00000001 BXPC 00000001)
+[    0.000000] ACPI: HPET 0x000000000FFE229F 000038 (v01 BOCHS  BXPC     00000001 BXPC 00000001)
+[    0.000000] ACPI: MCFG 0x000000000FFE22D7 00003C (v01 BOCHS  BXPC     00000001 BXPC 00000001)
+[    0.000000] ACPI: WAET 0x000000000FFE2313 000028 (v01 BOCHS  BXPC     00000001 BXPC 00000001)
+[    0.000000] ACPI: Reserving FACP table memory at [mem 0xffe212b-0xffe221e]
+[    0.000000] ACPI: Reserving DSDT table memory at [mem 0xffe0040-0xffe212a]
+[    0.000000] ACPI: Reserving FACS table memory at [mem 0xffe0000-0xffe003f]
+[    0.000000] ACPI: Reserving APIC table memory at [mem 0xffe221f-0xffe229e]
+[    0.000000] ACPI: Reserving HPET table memory at [mem 0xffe229f-0xffe22d6]
+[    0.000000] ACPI: Reserving MCFG table memory at [mem 0xffe22d7-0xffe2312]
+[    0.000000] ACPI: Reserving WAET table memory at [mem 0xffe2313-0xffe233a]
+[    0.000000] No NUMA configuration found
+[    0.000000] Faking a node at [mem 0x0000000000000000-0x000000000ffdffff]
+[    0.000000] NODE_DATA(0) allocated [mem 0x0ff22500-0x0ff24fff]
+[    0.000000] Zone ranges:
+[    0.000000]   DMA      [mem 0x0000000000001000-0x0000000000ffffff]
+[    0.000000]   DMA32    [mem 0x0000000001000000-0x000000000ffdffff]
+[    0.000000]   Normal   empty
+[    0.000000]   Device   empty
+[    0.000000] Movable zone start for each node
+[    0.000000] Early memory node ranges
+[    0.000000]   node   0: [mem 0x0000000000001000-0x000000000009efff]
+[    0.000000]   node   0: [mem 0x0000000000100000-0x000000000ffdffff]
+[    0.000000] Initmem setup node 0 [mem 0x0000000000001000-0x000000000ffdffff]
+[    0.000000] On node 0, zone DMA: 1 pages in unavailable ranges
+[    0.000000] On node 0, zone DMA: 97 pages in unavailable ranges
+[    0.000000] On node 0, zone DMA32: 32 pages in unavailable ranges
+[    0.000000] ACPI: PM-Timer IO Port: 0x608
+[    0.000000] ACPI: LAPIC_NMI (acpi_id[0xff] dfl dfl lint[0x1])
+[    0.000000] IOAPIC[0]: apic_id 0, version 32, address 0xfec00000, GSI 0-23
+[    0.000000] ACPI: INT_SRC_OVR (bus 0 bus_irq 0 global_irq 2 dfl dfl)
+[    0.000000] ACPI: INT_SRC_OVR (bus 0 bus_irq 5 global_irq 5 high level)
+[    0.000000] ACPI: INT_SRC_OVR (bus 0 bus_irq 9 global_irq 9 high level)
+[    0.000000] ACPI: INT_SRC_OVR (bus 0 bus_irq 10 global_irq 10 high level)
+[    0.000000] ACPI: INT_SRC_OVR (bus 0 bus_irq 11 global_irq 11 high level)
+[    0.000000] ACPI: Using ACPI (MADT) for SMP configuration information
+[    0.000000] ACPI: HPET id: 0x8086a201 base: 0xfed00000
+[    0.000000] CPU topo: Max. logical packages:   1
+[    0.000000] CPU topo: Max. logical dies:       1
+[    0.000000] CPU topo: Max. dies per package:   1
+[    0.000000] CPU topo: Max. threads per core:   1
+[    0.000000] CPU topo: Num. cores per package:     2
+[    0.000000] CPU topo: Num. threads per package:   2
+[    0.000000] CPU topo: Allowing 2 present CPUs plus 0 hotplug CPUs
+[    0.000000] [mem 0x10000000-0xafffffff] available for PCI devices
+[    0.000000] Booting paravirtualized kernel on bare hardware
+[    0.000000] clocksource: refined-jiffies: mask: 0xffffffff max_cycles: 0xffffffff, max_idle_ns: 1910969940391419 ns
+[    0.000000] Load bootconfig: 23 bytes 3 nodes
+[    0.000000] setup_percpu: NR_CPUS:512 nr_cpumask_bits:2 nr_cpu_ids:2 nr_node_ids:1
+[    0.000000] percpu: Embedded 79 pages/cpu s286720 r8192 d28672 u1048576
+[    0.000000] Kernel command line: csdlock_debug=1 console=ttyS0 panic=-1 rdinit=/init no_timer_check lpj=999964
+[    0.000000] random: crng init done
+[    0.000000] printk: log buffer data + meta data: 2097152 + 7340032 = 9437184 bytes
+[    0.000000] Dentry cache hash table entries: 32768 (order: 6, 262144 bytes, linear)
+[    0.000000] Inode-cache hash table entries: 16384 (order: 5, 131072 bytes, linear)
+[    0.000000] Fallback order for Node 0: 0 
+[    0.000000] Built 1 zonelists, mobility grouping on.  Total pages: 65406
+[    0.000000] Policy zone: DMA32
+[    0.000000] mem auto-init: stack:off, heap alloc:off, heap free:off
+[    0.000000] SLUB: HWalign=64, Order=0-3, MinObjects=0, CPUs=2, Nodes=1
+[    0.000000] ftrace: allocating 58796 entries in 232 pages
+[    0.000000] ftrace: allocated 232 pages with 4 groups
+[    0.000000] rcu: Hierarchical RCU implementation.
+[    0.000000] rcu: 	RCU restricting CPUs from NR_CPUS=512 to nr_cpu_ids=2.
+[    0.000000] 	Rude variant of Tasks RCU enabled.
+[    0.000000] 	Tracing variant of Tasks RCU enabled.
+[    0.000000] rcu: RCU calculated value of scheduler-enlistment delay is 100 jiffies.
+[    0.000000] rcu: Adjusting geometry for rcu_fanout_leaf=16, nr_cpu_ids=2
+[    0.000000] RCU Tasks Rude: Setting shift to 1 and lim to 1 rcu_task_cb_adjust=1 rcu_task_cpu_ids=2.
+[    0.000000] RCU Tasks Trace: Setting shift to 1 and lim to 1 rcu_task_cb_adjust=1 rcu_task_cpu_ids=2.
+[    0.000000] NR_IRQS: 33024, nr_irqs: 440, preallocated irqs: 16
+[    0.000000] rcu: srcu_init: Setting srcu_struct sizes based on contention.
+[    0.000000] kfence: initialized - using 2097152 bytes for 255 objects at 0x(____ptrval____)-0x(____ptrval____)
+[    0.000000] Console: colour *CGA 80x25
+[    0.000000] printk: legacy console [ttyS0] enabled
+[    0.000000] ACPI: Core revision 20250404
+[    0.000000] clocksource: hpet: mask: 0xffffffff max_cycles: 0xffffffff, max_idle_ns: 19112604467 ns
+[    0.001000] APIC: Switch to symmetric I/O mode setup
+[    0.001000] x2apic: IRQ remapping doesn't support X2APIC mode
+[    0.001000] ..TIMER: vector=0x30 apic1=0 pin1=2 apic2=-1 pin2=-1
+[    0.001000] tsc: Unable to calibrate against PIT
+[    0.001000] tsc: using HPET reference calibration
+[    0.001000] tsc: Detected 999.965 MHz processor
+[    0.004439] clocksource: tsc-early: mask: 0xffffffffffffffff max_cycles: 0x1cd3ebf4f53, max_idle_ns: 881590451058 ns
+[    0.009453] Calibrating delay loop (skipped) preset value.. 1999.92 BogoMIPS (lpj=999964)
+[    0.009453] x86/cpu: User Mode Instruction Prevention (UMIP) activated
+[    0.009453] Last level iTLB entries: 4KB 0, 2MB 0, 4MB 0
+[    0.009453] Last level dTLB entries: 4KB 0, 2MB 0, 4MB 0, 1GB 0
+[    0.009453] mitigations: Enabled attack vectors: user_kernel, user_user, guest_host, guest_guest, SMT mitigations: auto
+[    0.009453] Speculative Store Bypass: Vulnerable
+[    0.009453] Spectre V2 : Mitigation: Retpolines
+[    0.009453] Spectre V1 : Mitigation: usercopy/swapgs barriers and __user pointer sanitization
+[    0.009453] Spectre V2 : Spectre v2 / SpectreRSB: Filling RSB on context switch and VMEXIT
+[    0.009453] x86/fpu: Supporting XSAVE feature 0x001: 'x87 floating point registers'
+[    0.009453] x86/fpu: Supporting XSAVE feature 0x002: 'SSE registers'
+[    0.009453] x86/fpu: Supporting XSAVE feature 0x004: 'AVX registers'
+[    0.009453] x86/fpu: Supporting XSAVE feature 0x008: 'MPX bounds registers'
+[    0.009453] x86/fpu: Supporting XSAVE feature 0x010: 'MPX CSR'
+[    0.009453] x86/fpu: Supporting XSAVE feature 0x200: 'Protection Keys User registers'
+[    0.009453] x86/fpu: xstate_offset[2]:  576, xstate_sizes[2]:  256
+[    0.009453] x86/fpu: xstate_offset[3]:  960, xstate_sizes[3]:   64
+[    0.009453] x86/fpu: xstate_offset[4]: 1024, xstate_sizes[4]:   64
+[    0.009453] x86/fpu: xstate_offset[9]: 2688, xstate_sizes[9]:    8
+[    0.009453] x86/fpu: Enabled xstate features 0x21f, context size is 2696 bytes, using 'standard' format.
+[    0.017453] Freeing SMP alternatives memory: 60K
+[    0.017453] pid_max: default: 32768 minimum: 301
+[    0.017453] LSM: initializing lsm=capability,bpf,ima
+[    0.018453] LSM support for eBPF active
+[    0.018453] Mount-cache hash table entries: 512 (order: 0, 4096 bytes, linear)
+[    0.018453] Mountpoint-cache hash table entries: 512 (order: 0, 4096 bytes, linear)
+[    0.020453] smpboot: CPU0: AMD QEMU TCG CPU version 2.5+ (family: 0x6, model: 0x6, stepping: 0x3)
+[    0.021453] Performance Events: PMU not available due to virtualization, using software events only.
+[    0.021453] signal: max sigframe size: 3632
+[    0.021453] rcu: Hierarchical SRCU implementation.
+[    0.021453] rcu: 	Max phase no-delay instances is 400.
+[    0.021453] Timer migration: 1 hierarchy levels; 8 children per group; 1 crossnode level
+[    0.021453] NMI watchdog: Perf NMI watchdog permanently disabled
+[    0.021453] smp: Bringing up secondary CPUs ...
+[    0.021453] smpboot: x86: Booting SMP configuration:
+[    0.021453] .... node  #0, CPUs:      #1
+[    0.029453] smp: Brought up 1 node, 2 CPUs
+[    0.029453] smpboot: Total of 2 processors activated (3999.85 BogoMIPS)
+[    0.032453] Memory: 185244K/261624K available (20273K kernel code, 9610K rwdata, 15088K rodata, 2512K init, 6488K bss, 72408K reserved, 0K cma-reserved)
+[    0.033453] devtmpfs: initialized
+[    0.033453] x86/mm: Memory block size: 128MB
+[    0.034453] clocksource: jiffies: mask: 0xffffffff max_cycles: 0xffffffff, max_idle_ns: 1911260446275000 ns
+[    0.034453] posixtimers hash table entries: 1024 (order: 2, 16384 bytes, linear)
+[    0.034453] futex hash table entries: 512 (32768 bytes on 1 NUMA nodes, total 32 KiB, linear).
+[    0.038453] NET: Registered PF_NETLINK/PF_ROUTE protocol family
+[    0.038453] DMA: preallocated 128 KiB GFP_KERNEL pool for atomic allocations
+[    0.038453] DMA: preallocated 128 KiB GFP_KERNEL|GFP_DMA pool for atomic allocations
+[    0.038453] DMA: preallocated 128 KiB GFP_KERNEL|GFP_DMA32 pool for atomic allocations
+[    0.038453] audit: initializing netlink subsys (disabled)
+[    0.039453] thermal_sys: Registered thermal governor 'step_wise'
+[    0.039453] thermal_sys: Registered thermal governor 'user_space'
+[    0.039453] audit: type=2000 audit(1767225658.031:1): state=initialized audit_enabled=0 res=1
+[    0.039453] cpuidle: using governor menu
+[    0.039453] dca service started, version 1.12.1
+[    0.039453] PCI: ECAM [mem 0xb0000000-0xbfffffff] (base 0xb0000000) for domain 0000 [bus 00-ff]
+[    0.039453] PCI: Using configuration type 1 for base access
+[    0.039453] mtrr: your CPUs had inconsistent fixed MTRR settings
+[    0.039453] mtrr: your CPUs had inconsistent variable MTRR settings
+[    0.039453] mtrr: your CPUs had inconsistent MTRRdefType settings
+[    0.039453] mtrr: probably your BIOS does not setup all CPUs.
+[    0.039453] mtrr: corrected configuration.
+[    0.041453] kprobes: kprobe jump-optimization is enabled. All kprobes are optimized if possible.
+[    0.048453] HugeTLB: registered 1.00 GiB page size, pre-allocated 0 pages
+[    0.048453] HugeTLB: 16380 KiB vmemmap can be freed for a 1.00 GiB page
+[    0.048453] HugeTLB: registered 2.00 MiB page size, pre-allocated 0 pages
+[    0.048453] HugeTLB: 28 KiB vmemmap can be freed for a 2.00 MiB page
+[    0.246675] raid6: avx2x4   gen() 14106 MB/s
+[    0.264096] raid6: avx2x2   gen() 14910 MB/s
+[    0.281369] raid6: avx2x1   gen() 14613 MB/s
+[    0.281453] raid6: using algorithm avx2x2 gen() 14910 MB/s
+[    0.298102] raid6: .... xor() 8376 MB/s, rmw enabled
+[    0.298453] raid6: using avx2x2 recovery algorithm
+[    0.298453] ACPI: Added _OSI(Module Device)
+[    0.298453] ACPI: Added _OSI(Processor Device)
+[    0.298453] ACPI: Added _OSI(Processor Aggregator Device)
+[    0.298453] ACPI: 1 ACPI AML tables successfully acquired and loaded
+[    0.302453] ACPI: Interpreter enabled
+[    0.302453] ACPI: PM: (supports S0 S5)
+[    0.302453] ACPI: Using IOAPIC for interrupt routing
+[    0.302453] PCI: Using host bridge windows from ACPI; if necessary, use "pci=nocrs" and report a bug
+[    0.302453] PCI: Ignoring E820 reservations for host bridge windows
+[    0.302453] ACPI: Enabled 2 GPEs in block 00 to 3F
+[    0.302453] ACPI: PCI Root Bridge [PCI0] (domain 0000 [bus 00-ff])
+[    0.302453] acpi PNP0A08:00: _OSC: OS supports [ExtendedConfig ASPM ClockPM Segments MSI EDR HPX-Type3]
+[    0.302453] acpi PNP0A08:00: _OSC: platform does not support [PCIeHotplug LTR DPC]
+[    0.302453] acpi PNP0A08:00: _OSC: OS now controls [PME AER PCIeCapability]
+[    0.302453] PCI host bridge to bus 0000:00
+[    0.302453] pci_bus 0000:00: root bus resource [io  0x0000-0x0cf7 window]
+[    0.302453] pci_bus 0000:00: root bus resource [io  0x0d00-0xffff window]
+[    0.302453] pci_bus 0000:00: root bus resource [mem 0x000a0000-0x000bffff window]
+[    0.302453] pci_bus 0000:00: root bus resource [mem 0x10000000-0xafffffff window]
+[    0.302453] pci_bus 0000:00: root bus resource [mem 0xc0000000-0xfebfffff window]
+[    0.302453] pci_bus 0000:00: root bus resource [mem 0x100000000-0x8ffffffff window]
+[    0.302453] pci_bus 0000:00: root bus resource [bus 00-ff]
+[    0.302453] pci 0000:00:00.0: [8086:29c0] type 00 class 0x060000 conventional PCI endpoint
+[    0.302453] pci 0000:00:1f.0: [8086:2918] type 00 class 0x060100 conventional PCI endpoint
+[    0.302453] pci 0000:00:1f.0: quirk: [io  0x0600-0x067f] claimed by ICH6 ACPI/GPIO/TCO
+[    0.302453] pci 0000:00:1f.2: [8086:2922] type 00 class 0x010601 conventional PCI endpoint
+[    0.302453] pci 0000:00:1f.2: BAR 4 [io  0xc040-0xc05f]
+[    0.302453] pci 0000:00:1f.2: BAR 5 [mem 0xfebff000-0xfebfffff]
+[    0.302453] pci 0000:00:1f.3: [8086:2930] type 00 class 0x0c0500 conventional PCI endpoint
+[    0.302453] pci 0000:00:1f.3: BAR 4 [io  0x0700-0x073f]
+[    0.302453] ACPI: PCI: Interrupt link LNKA configured for IRQ 10
+[    0.302453] ACPI: PCI: Interrupt link LNKB configured for IRQ 10
+[    0.302453] ACPI: PCI: Interrupt link LNKC configured for IRQ 11
+[    0.302453] ACPI: PCI: Interrupt link LNKD configured for IRQ 11
+[    0.302453] ACPI: PCI: Interrupt link LNKE configured for IRQ 10
+[    0.302453] ACPI: PCI: Interrupt link LNKF configured for IRQ 10
+[    0.302453] ACPI: PCI: Interrupt link LNKG configured for IRQ 11
+[    0.302453] ACPI: PCI: Interrupt link LNKH configured for IRQ 11
+[    0.302453] ACPI: PCI: Interrupt link GSIA configured for IRQ 16
+[    0.302453] ACPI: PCI: Interrupt link GSIB configured for IRQ 17
+[    0.302453] ACPI: PCI: Interrupt link GSIC configured for IRQ 18
+[    0.302453] ACPI: PCI: Interrupt link GSID configured for IRQ 19
+[    0.302453] ACPI: PCI: Interrupt link GSIE configured for IRQ 20
+[    0.302453] ACPI: PCI: Interrupt link GSIF configured for IRQ 21
+[    0.302453] ACPI: PCI: Interrupt link GSIG configured for IRQ 22
+[    0.302453] ACPI: PCI: Interrupt link GSIH configured for IRQ 23
+[    0.303453] iommu: Default domain type: Translated
+[    0.303453] iommu: DMA domain TLB invalidation policy: lazy mode
+[    0.305453] SCSI subsystem initialized
+[    0.305453] ACPI: bus type USB registered
+[    0.305453] usbcore: registered new interface driver usbfs
+[    0.305453] usbcore: registered new interface driver hub
+[    0.305453] usbcore: registered new device driver usb
+[    0.305453] pps_core: LinuxPPS API ver. 1 registered
+[    0.305453] pps_core: Software ver. 5.3.6 - Copyright 2005-2007 Rodolfo Giometti <giometti@linux.it>
+[    0.305453] PTP clock support registered
+[    0.307453] EDAC MC: Ver: 3.0.0
+[    0.308453] PCI: Using ACPI for IRQ routing
+[    0.309453] hpet0: at MMIO 0xfed00000, IRQs 2, 8, 0
+[    0.309453] hpet0: 3 comparators, 64-bit 100.000000 MHz counter
+[    2.715910] clocksource: Switched to clocksource tsc-early
+[    2.715910] VFS: Disk quotas dquot_6.6.0
+[    2.715910] VFS: Dquot-cache hash table entries: 512 (order 0, 4096 bytes)
+[    2.715910] pnp: PnP ACPI init
+[    2.715910] system 00:04: [mem 0xb0000000-0xbfffffff window] has been reserved
+[    2.715910] pnp: PnP ACPI: found 5 devices
+[    2.715910] clocksource: acpi_pm: mask: 0xffffff max_cycles: 0xffffff, max_idle_ns: 2085701024 ns
+[    2.913551] NET: Registered PF_INET protocol family
+[    2.913551] IP idents hash table entries: 4096 (order: 3, 32768 bytes, linear)
+[   11.172319] sched: DL replenish lagged too much
+[   22.763853] tcp_listen_portaddr_hash hash table entries: 256 (order: 0, 4096 bytes, linear)
+[   22.763853] Table-perturb hash table entries: 65536 (order: 6, 262144 bytes, linear)
+[   22.763853] TCP established hash table entries: 2048 (order: 2, 16384 bytes, linear)
+[   22.763853] TCP bind hash table entries: 2048 (order: 4, 65536 bytes, linear)
+[   22.763853] TCP: Hash tables configured (established 2048 bind 2048)
+[   22.763853] MPTCP token hash table entries: 256 (order: 1, 6144 bytes, linear)
+[   22.763853] UDP hash table entries: 256 (order: 2, 16384 bytes, linear)
+[   22.763853] UDP-Lite hash table entries: 256 (order: 2, 16384 bytes, linear)
+[   22.763853] NET: Registered PF_UNIX/PF_LOCAL protocol family
+[   22.763853] NET: Registered PF_XDP protocol family
+[   22.763853] pci_bus 0000:00: resource 4 [io  0x0000-0x0cf7 window]
+[   22.763853] pci_bus 0000:00: resource 5 [io  0x0d00-0xffff window]
+[   22.763853] pci_bus 0000:00: resource 6 [mem 0x000a0000-0x000bffff window]
+[   22.763853] pci_bus 0000:00: resource 7 [mem 0x10000000-0xafffffff window]
+[   22.763853] pci_bus 0000:00: resource 8 [mem 0xc0000000-0xfebfffff window]
+[   22.763853] pci_bus 0000:00: resource 9 [mem 0x100000000-0x8ffffffff window]
+[   22.763853] PCI: CLS 0 bytes, default 64
+[   22.900064] Trying to unpack rootfs image as initramfs...
+[   27.044818] Freeing initrd memory: 748K
+[   54.527293] Initialise system trusted keyrings
+[   59.371901] workingset: timestamp_bits=43 max_order=16 bucket_order=0
+[   64.083906] fuse: init (API version 7.44)
+[   73.540755] SGI XFS with ACLs, security attributes, realtime, quota, no debug enabled
+[   78.538189] cryptd: max_cpu_qlen set to 1000
+[   87.938918] NET: Registered PF_ALG protocol family
+[   87.938918] xor: automatically using best checksumming function   avx       
+[   87.938918] Key type asymmetric registered
+[   87.938918] Asymmetric key parser 'x509' registered
+[   87.938918] Block layer SCSI generic (bsg) driver version 0.4 loaded (major 245)
+[   96.111454] io scheduler mq-deadline registered
+[   96.111454] io scheduler kyber registered
+[  100.152980] Memory allocation profiling is not supported!
+[  108.254178] ioatdma: Intel(R) QuickData Technology Driver 5.00
+[  108.254178] Serial: 8250/16550 driver, 16 ports, IRQ sharing enabled
+[  108.254178] 00:02: ttyS0 at I/O 0x3f8 (irq = 4, base_baud = 115200) is a 16550A
+[  139.626919] brd: module loaded
+[  158.443843] ACPI: \_SB_.GSIA: Enabled at IRQ 16
+[  158.443843] ahci 0000:00:1f.2: AHCI vers 0001.0000, 32 command slots, 1.5 Gbps, SATA mode
+[  158.443843] ahci 0000:00:1f.2: 6/6 ports implemented (port mask 0x3f)
+[  158.443843] ahci 0000:00:1f.2: flags: 64bit ncq only 
+[  166.573488] scsi host0: ahci
+[  166.573488] scsi host1: ahci
+[  166.573488] scsi host2: ahci
+[  166.573488] scsi host3: ahci
+[  166.573488] scsi host4: ahci
+[  166.573488] scsi host5: ahci
+[  166.573488] ata1: SATA max UDMA/133 abar m4096@0xfebff000 port 0xfebff100 irq 24 lpm-pol 1
+[  166.573488] ata2: SATA max UDMA/133 abar m4096@0xfebff000 port 0xfebff180 irq 24 lpm-pol 1
+[  166.573488] ata3: SATA max UDMA/133 abar m4096@0xfebff000 port 0xfebff200 irq 24 lpm-pol 1
+[  166.573488] ata4: SATA max UDMA/133 abar m4096@0xfebff000 port 0xfebff280 irq 24 lpm-pol 1
+[  166.573488] ata5: SATA max UDMA/133 abar m4096@0xfebff000 port 0xfebff300 irq 24 lpm-pol 1
+[  166.573488] ata6: SATA max UDMA/133 abar m4096@0xfebff000 port 0xfebff380 irq 24 lpm-pol 1
+[  166.573488] wireguard: WireGuard 1.0.0 loaded. See www.wireguard.com for information.
+[  166.573488] wireguard: Copyright (C) 2015-2019 Jason A. Donenfeld <Jason@zx2c4.com>. All Rights Reserved.
+[  170.540169] igb: Intel(R) Gigabit Ethernet Network Driver
+[  170.540169] igb: Copyright (c) 2007-2014 Intel Corporation.
+[  170.540169] ixgbe: Intel(R) 10 Gigabit PCI Express Network Driver
+[  170.540169] ixgbe: Copyright (c) 1999-2016 Intel Corporation.
+[  170.540169] usbcore: registered new interface driver ark3116
+[  170.540169] usbserial: USB Serial support registered for ark3116
+[  170.540169] usbcore: registered new interface driver pl2303
+[  170.540169] usbserial: USB Serial support registered for pl2303
+[  170.540169] i8042: PNP: PS/2 Controller [PNP0303:KBD,PNP0f13:MOU] at 0x60,0x64 irq 1,12
+[  170.540169] serio: i8042 KBD port at 0x60,0x64 irq 1
+[  170.540169] serio: i8042 AUX port at 0x60,0x64 irq 12
+[  170.540169] rtc_cmos 00:03: RTC can wake from S4
+[  170.540169] rtc_cmos 00:03: registered as rtc0
+[  170.540169] rtc_cmos 00:03: setting system clock to 2026-01-01T00:03:57 UTC (1767225837)
+[  170.540169] rtc_cmos 00:03: alarms up to one day, y3k, 242 bytes nvram
+[  170.540169] i2c_dev: i2c /dev entries driver
+[  170.540169] device-mapper: core: CONFIG_IMA_DISABLE_HTABLE is disabled. Duplicate IMA measurements will not be recorded in the IMA log.
+[  170.540169] device-mapper: ioctl: 4.50.0-ioctl (2025-04-28) initialised: dm-devel@lists.linux.dev
+[  170.540169] amd_pstate: the _CPC object is not present in SBIOS or ACPI disabled
+[  170.540169] usbcore: registered new interface driver usbhid
+[  170.540169] usbhid: USB HID core driver
+[  170.540169] Initializing XFRM netlink socket
+[  170.540169] NET: Registered PF_INET6 protocol family
+[  170.540169] Segment Routing with IPv6
+[  170.540169] In-situ OAM (IOAM) with IPv6
+[  170.540169] NET: Registered PF_PACKET protocol family
+[  170.540169] Key type dns_resolver registered
+[  170.540169] NET: Registered PF_VSOCK protocol family
+[  184.472767] IPI shorthand broadcast: enabled
+[  184.472767] sched_clock: Marking stable (184464313757, 7453955)->(8995072387587, -8810600619875)
+[  191.866338] registered taskstats version 1
+[  191.891895] Loading compiled-in X.509 certificates
+[  193.668053] input: AT Translated Set 2 keyboard as /devices/platform/i8042/serio0/input/input0
+[  204.421845] Loaded X.509 cert 'Build time autogenerated kernel key: f6dfbbfd890fcc62dc7a9694aa194ccefbcceb25'
+[  204.436086] Loaded X.509 cert 'Facebook, Inc.: 5a72a683c8fca25b0231d7422a1ed5a038ff5fd9'
+[  204.634943] Demotion targets for Node 0: null
+[  207.903650] Btrfs loaded, zoned=no, fsverity=yes
+[  207.921738] ima: No TPM chip found, activating TPM-bypass!
+[  207.923538] ima: Allocated hash algorithm: sha256
+[  207.949475] ima: No architecture policies found
+[  211.318263] netconsole: network logging started
+[  213.475871] clk: Disabling unused clocks
+[ 1350.758178] ata4: SATA link down (SStatus 0 SControl 300)
+[ 1355.165987] ata3: SATA link down (SStatus 0 SControl 300)
+[ 1355.168552] ata2: SATA link down (SStatus 0 SControl 300)
+[ 1355.170064] ata1: SATA link down (SStatus 0 SControl 300)
+[ 1355.174215] ata5: SATA link down (SStatus 0 SControl 300)
+[ 1359.571278] ata6: SATA link down (SStatus 0 SControl 300)
+[ 1396.279784] smp: csd: Detected non-responsive CSD lock (#1) on CPU#1, waiting 5994567847 ns for CPU#00 do_flush_tlb_all+0x0/0x20(0x0).
+[ 1396.287083] smp: 	csd: CSD lock (#1) unresponsive.
+[ 1396.289138] Sending NMI from CPU 1 to CPUs 0:
+[ 1396.683145] NMI backtrace for cpu 0
+[ 1396.701614] CPU: 0 UID: 0 PID: 0 Comm: swapper/0 Not tainted 6.17.13-0_fbk0_crackerjackhost_0_g2b4321c50d79 #1 NONE 
+[ 1396.704435] Hardware name: QEMU Standard PC (Q35 + ICH9, 2009), BIOS 1.16.3-5.el9 11/05/2023
+[ 1396.706151] RIP: 0010:native_apic_mem_eoi+0xd/0x20
+[ 1396.715119] Code: 48 8b 89 40 cb 56 84 48 85 c9 74 05 f0 48 0f b3 01 31 c0 c3 cc cc cc cc cc cc cc cc cc f3 0f 1e fa 31 c0 89 04 25 b0 d0 5f ff <c3> cc cc cc cc cc 66 66 66 66 2e 0f 1f 84 00 00 00 00 00 f3 0f 1e
+[ 1396.717093] RSP: 0018:ffa0000000003fe8 EFLAGS: 00010046
+[ 1396.722623] RAX: 0000000000000000 RBX: ffffffff83403df8 RCX: 000000014ee40ff3
+[ 1396.723350] RDX: 00000000000004aa RSI: 000009472b840c27 RDI: ffffffff83403df8
+[ 1396.723494] RBP: 0000000000000001 R08: 0000000000000000 R09: 0000000000000000
+[ 1396.723635] R10: 0000000000000000 R11: ffffffff8124dc50 R12: 0000000000000000
+[ 1396.723824] R13: 0000000000000000 R14: 0000000000000000 R15: 0000000000000000
+[ 1396.724270] FS:  0000000000000000(0000) GS:ff1100008b0ac000(0000) knlGS:0000000000000000
+[ 1396.724549] CS:  0010 DS: 0000 ES: 0000 CR0: 0000000080050033
+[ 1396.724736] CR2: 00007ffd11f44ff8 CR3: 0000000003432000 CR4: 0000000000751ef0
+[ 1396.725313] PKRU: 55555554
+[ 1396.725743] Call Trace:
+[ 1396.732022]  <IRQ>
+[ 1396.733788]  __sysvec_call_function_single+0xe/0x90
+[ 1396.734686]  sysvec_call_function_single+0x6c/0x80
+[ 1396.738385]  </IRQ>
+[ 1396.738549]  <TASK>
+[ 1396.738592]  asm_sysvec_call_function_single+0x1a/0x20
+[ 1396.739572] RIP: 0010:pv_native_safe_halt+0x13/0x20
+[ 1396.739668] Code: 8f 1b 02 e8 2f 00 00 00 48 2b 05 f8 94 73 00 c3 cc cc cc cc cc cc cc f3 0f 1e fa eb 07 0f 00 2d 3d 3f 06 00 f3 0f 1e fa fb f4 <c3> cc cc cc cc cc cc cc cc cc cc cc cc 66 0f 1f 00 50 8b 37 83 e6
+[ 1396.739728] RSP: 0018:ffffffff83403ea0 EFLAGS: 00010216
+[ 1396.739789] RAX: ff1100008b0ac000 RBX: ffffffff834134c0 RCX: 4000000000000000
+[ 1396.739839] RDX: 00000000000004a9 RSI: 0000000000000000 RDI: 000000000020bbac
+[ 1396.739885] RBP: ffffffff83403eb8 R08: 0000000000000000 R09: 0000000000000000
+[ 1396.739931] R10: ffffffff8346bd48 R11: ffffffff8124dc50 R12: 0000000000000000
+[ 1396.739979] R13: 0000000000000000 R14: 0000000000000000 R15: 0000000000000000
+[ 1396.740294]  ? __set_cyc2ns_scale+0x140/0x140
+[ 1396.740505]  default_idle+0x9/0x20
+[ 1396.740795]  default_idle_call+0x3b/0x60
+[ 1396.740869]  do_idle+0xcd/0x210
+[ 1396.740988]  cpu_startup_entry+0x2a/0x30
+[ 1396.741065]  rest_init+0xaa/0xb0
+[ 1396.741139]  start_kernel+0x394/0x3c0
+[ 1396.741878]  x86_64_start_reservations+0x24/0x30
+[ 1396.741980]  x86_64_start_kernel+0x141/0x150
+[ 1396.742073]  common_startup_64+0x13e/0x140
+[ 1396.742518]  </TASK>
+[ 1396.744673] INFO: NMI handler (nmi_cpu_backtrace_handler) took too long to run: 64.119 msecs
+[ 1402.677820] smp: csd: Re-sending CSD lock (#1) IPI from CPU#01 to CPU#00
+[ 1408.660987] CPU: 1 UID: 0 PID: 1 Comm: swapper/0 Not tainted 6.17.13-0_fbk0_crackerjackhost_0_g2b4321c50d79 #1 NONE 
+[ 1408.661793] Hardware name: QEMU Standard PC (Q35 + ICH9, 2009), BIOS 1.16.3-5.el9 11/05/2023
+[ 1408.663775] Call Trace:
+[ 1408.664525]  <TASK>
+[ 1408.665567]  dump_stack_lvl+0x3b/0xa0
+[ 1408.666425]  __csd_lock_wait+0x297/0x320
+[ 1408.666559]  smp_call_function_many_cond+0x3b6/0x510
+[ 1408.666639]  ? flush_tlb_all+0x50/0x50
+[ 1408.666781]  on_each_cpu_cond_mask+0x1a/0x20
+[ 1408.666852]  flush_tlb_kernel_range+0x13c/0x150
+[ 1408.666940]  __purge_vmap_area_lazy+0x213/0x3f0
+[ 1408.667133]  _vm_unmap_aliases+0x27e/0x2d0
+[ 1408.667264]  change_page_attr_set_clr+0xf9/0x1d0
+[ 1408.667425]  set_memory_nx+0x46/0x70
+[ 1408.667523]  free_init_pages+0x51/0x90
+[ 1408.667626]  ? rest_init+0xb0/0xb0
+[ 1408.667714]  free_initmem+0x13/0x30
+[ 1408.667793]  kernel_init+0x3f/0x1b0
+[ 1408.667869]  ret_from_fork+0x99/0xf0
+[ 1408.667963]  ? rest_init+0xb0/0xb0
+[ 1408.668040]  ret_from_fork_asm+0x11/0x20
+[ 1408.668437]  </TASK>
+[ 1408.669407] smp: csd: CSD lock (#1) got unstuck on CPU#01, CPU#00 released the lock.
+[ 1415.329022] smp: csd: Detected non-responsive CSD lock (#2) on CPU#1, waiting 6632848717 ns for CPU#00 do_flush_tlb_all+0x0/0x20(0x0).
+[ 1415.331731] smp: 	csd: CSD lock (#2) unresponsive.
+[ 1415.332784] Sending NMI from CPU 1 to CPUs 0:
+[ 1415.528955] NMI backtrace for cpu 0
+[ 1415.529060] CPU: 0 UID: 0 PID: 0 Comm: swapper/0 Not tainted 6.17.13-0_fbk0_crackerjackhost_0_g2b4321c50d79 #1 NONE 
+[ 1415.529155] Hardware name: QEMU Standard PC (Q35 + ICH9, 2009), BIOS 1.16.3-5.el9 11/05/2023
+[ 1415.529206] RIP: 0010:pv_native_safe_halt+0x13/0x20
+[ 1415.529348] Code: 8f 1b 02 e8 2f 00 00 00 48 2b 05 f8 94 73 00 c3 cc cc cc cc cc cc cc f3 0f 1e fa eb 07 0f 00 2d 3d 3f 06 00 f3 0f 1e fa fb f4 <c3> cc cc cc cc cc cc cc cc cc cc cc cc 66 0f 1f 00 50 8b 37 83 e6
+[ 1415.529410] RSP: 0018:ffffffff83403ea0 EFLAGS: 00010216
+[ 1415.529477] RAX: ff1100008b0ac000 RBX: ffffffff834134c0 RCX: 4000000000000000
+[ 1415.529528] RDX: 00000000000004ac RSI: 0000000000000000 RDI: 000000000020bbdc
+[ 1415.529577] RBP: ffffffff83403eb8 R08: 0000000000000000 R09: 0000000000000000
+[ 1415.529625] R10: ffffffff8346bd48 R11: ffffffff8124dc50 R12: 0000000000000000
+[ 1415.529679] R13: 0000000000000000 R14: 0000000000000000 R15: 0000000000000000
+[ 1415.529727] FS:  0000000000000000(0000) GS:ff1100008b0ac000(0000) knlGS:0000000000000000
+[ 1415.529785] CS:  0010 DS: 0000 ES: 0000 CR0: 0000000080050033
+[ 1415.529836] CR2: 00007ffd11f44ff8 CR3: 0000000003432000 CR4: 0000000000751ef0
+[ 1415.529886] PKRU: 55555554
+[ 1415.529916] Call Trace:
+[ 1415.529973]  <TASK>
+[ 1415.530016]  default_idle+0x9/0x20
+[ 1415.530092]  default_idle_call+0x3b/0x60
+[ 1415.530164]  do_idle+0xcd/0x210
+[ 1415.530312]  cpu_startup_entry+0x2a/0x30
+[ 1415.530389]  rest_init+0xaa/0xb0
+[ 1415.530463]  start_kernel+0x394/0x3c0
+[ 1415.530603]  x86_64_start_reservations+0x24/0x30
+[ 1415.530703]  x86_64_start_kernel+0x141/0x150
+[ 1415.530795]  common_startup_64+0x13e/0x140
+[ 1415.530992]  </TASK>
+[ 1422.050371] smp: csd: Re-sending CSD lock (#2) IPI from CPU#01 to CPU#00
+[ 1428.600159] CPU: 1 UID: 0 PID: 1 Comm: swapper/0 Not tainted 6.17.13-0_fbk0_crackerjackhost_0_g2b4321c50d79 #1 NONE 
+[ 1428.600252] Hardware name: QEMU Standard PC (Q35 + ICH9, 2009), BIOS 1.16.3-5.el9 11/05/2023
+[ 1428.600308] Call Trace:
+[ 1428.600374]  <TASK>
+[ 1428.600434]  dump_stack_lvl+0x3b/0xa0
+[ 1428.600565]  __csd_lock_wait+0x297/0x320
+[ 1428.600697]  smp_call_function_many_cond+0x3b6/0x510
+[ 1428.600778]  ? flush_tlb_all+0x50/0x50
+[ 1428.600918]  on_each_cpu_cond_mask+0x1a/0x20
+[ 1428.600990]  __change_page_attr_set_clr+0x899/0xfa0
+[ 1428.601183]  ? _vm_unmap_aliases+0x2a1/0x2d0
+[ 1428.601320]  change_page_attr_set_clr+0x13d/0x1d0
+[ 1428.601479]  set_memory_nx+0x46/0x70
+[ 1428.601574]  free_init_pages+0x51/0x90
+[ 1428.601677]  ? rest_init+0xb0/0xb0
+[ 1428.601764]  free_initmem+0x13/0x30
+[ 1428.601843]  kernel_init+0x3f/0x1b0
+[ 1428.601917]  ret_from_fork+0x99/0xf0
+[ 1428.602010]  ? rest_init+0xb0/0xb0
+[ 1428.602087]  ret_from_fork_asm+0x11/0x20
+[ 1428.602248]  </TASK>
+[ 1428.602288] smp: csd: CSD lock (#2) got unstuck on CPU#01, CPU#00 released the lock.
+[ 1435.539329] Freeing unused decrypted memory: 2036K
+[ 1444.800486] watchdog: BUG: soft lockup - CPU#0 stuck for 21s! [swapper/0:0]
+[ 1444.800865] CPU#0 Utilization every 4s during lockup:
+[ 1444.801113] 	#1:   0% system,	  0% softirq,	  0% hardirq,	  0% idle
+[ 1444.801588] 	#2:   0% system,	  0% softirq,	153% hardirq,	  0% idle
+[ 1444.801881] 	#3:   0% system,	  0% softirq,	149% hardirq,	  0% idle
+[ 1444.802161] 	#4:   0% system,	  0% softirq,	  0% hardirq,	  0% idle
+[ 1444.802440] 	#5:   0% system,	  0% softirq,	164% hardirq,	  0% idle
+[ 1444.804448] CPU#0 Detect HardIRQ Time exceeds 50%. Most frequent HardIRQs:
+[ 1444.804999] Modules linked in:
+[ 1444.805581] CPU: 0 UID: 0 PID: 0 Comm: swapper/0 Not tainted 6.17.13-0_fbk0_crackerjackhost_0_g2b4321c50d79 #1 NONE 
+[ 1444.805680] Hardware name: QEMU Standard PC (Q35 + ICH9, 2009), BIOS 1.16.3-5.el9 11/05/2023
+[ 1444.806110] RIP: 0010:pv_native_safe_halt+0x13/0x20
+[ 1444.807558] Code: 8f 1b 02 e8 2f 00 00 00 48 2b 05 f8 94 73 00 c3 cc cc cc cc cc cc cc f3 0f 1e fa eb 07 0f 00 2d 3d 3f 06 00 f3 0f 1e fa fb f4 <c3> cc cc cc cc cc cc cc cc cc cc cc cc 66 0f 1f 00 50 8b 37 83 e6
+[ 1444.808337] RSP: 0018:ffffffff83403ea0 EFLAGS: 00010202
+[ 1444.808621] RAX: ff1100008b0ac000 RBX: ffffffff834134c0 RCX: 4000000000000000
+[ 1444.808767] RDX: 00000000000004ae RSI: 0000000000000000 RDI: 000000000020bc14
+[ 1444.808912] RBP: ffffffff83403eb8 R08: 0000000000000000 R09: 0000000000000000
+[ 1444.809054] R10: ffffffff8346bd48 R11: ffffffff8124dc50 R12: 0000000000000000
+[ 1444.809243] R13: 0000000000000000 R14: 0000000000000000 R15: 0000000000000000
+[ 1444.809673] FS:  0000000000000000(0000) GS:ff1100008b0ac000(0000) knlGS:0000000000000000
+[ 1444.809891] CS:  0010 DS: 0000 ES: 0000 CR0: 0000000080050033
+[ 1444.810028] CR2: 00007ffd11f44ff8 CR3: 0000000003432000 CR4: 0000000000751ef0
+[ 1444.810594] PKRU: 55555554
+[ 1444.810749] Call Trace:
+[ 1444.811358]  <TASK>
+[ 1444.811418]  default_idle+0x9/0x20
+[ 1444.811526]  default_idle_call+0x3b/0x60
+[ 1444.811603]  do_idle+0xcd/0x210
+[ 1444.811780]  cpu_startup_entry+0x2a/0x30
+[ 1444.811871]  rest_init+0xaa/0xb0
+[ 1444.811958]  start_kernel+0x394/0x3c0
+[ 1444.812125]  x86_64_start_reservations+0x24/0x30
+[ 1444.812251]  x86_64_start_kernel+0x141/0x150
+[ 1444.812375]  common_startup_64+0x13e/0x140
+[ 1444.812600]  </TASK>
+[ 1453.313452] smp: csd: Detected non-responsive CSD lock (#3) on CPU#1, waiting 9511712086 ns for CPU#00 do_flush_tlb_all+0x0/0x20(0x0).
+[ 1453.316235] smp: 	csd: CSD lock (#3) unresponsive.
+[ 1453.317337] Sending NMI from CPU 1 to CPUs 0:
+[ 1453.713310] NMI backtrace for cpu 0
+[ 1453.714555] CPU: 0 UID: 0 PID: 0 Comm: swapper/0 Tainted: G             L      6.17.13-0_fbk0_crackerjackhost_0_g2b4321c50d79 #1 NONE 
+[ 1453.715396] Tainted: [L]=SOFTLOCKUP
+[ 1453.715482] Hardware name: QEMU Standard PC (Q35 + ICH9, 2009), BIOS 1.16.3-5.el9 11/05/2023
+[ 1453.715543] RIP: 0010:pv_native_safe_halt+0x13/0x20
+[ 1453.715694] Code: 8f 1b 02 e8 2f 00 00 00 48 2b 05 f8 94 73 00 c3 cc cc cc cc cc cc cc f3 0f 1e fa eb 07 0f 00 2d 3d 3f 06 00 f3 0f 1e fa fb f4 <c3> cc cc cc cc cc cc cc cc cc cc cc cc 66 0f 1f 00 50 8b 37 83 e6
+[ 1453.715761] RSP: 0018:ffffffff83403ea0 EFLAGS: 00010216
+[ 1453.715828] RAX: ff1100008b0ac000 RBX: ffffffff834134c0 RCX: 4000000000000000
+[ 1453.715880] RDX: 00000000000004b0 RSI: 0000000000000000 RDI: 000000000020bc3c
+[ 1453.715928] RBP: ffffffff83403eb8 R08: 0000000000000000 R09: 0000000000000000
+[ 1453.715977] R10: ffffffff8346bd48 R11: ffffffff8124dc50 R12: 0000000000000000
+[ 1453.716030] R13: 0000000000000000 R14: 0000000000000000 R15: 0000000000000000
+[ 1453.716082] FS:  0000000000000000(0000) GS:ff1100008b0ac000(0000) knlGS:0000000000000000
+[ 1453.716141] CS:  0010 DS: 0000 ES: 0000 CR0: 0000000080050033
+[ 1453.716195] CR2: 00007ffd11f44ff8 CR3: 0000000003432000 CR4: 0000000000751ef0
+[ 1453.716248] PKRU: 55555554
+[ 1453.716282] Call Trace:
+[ 1453.716340]  <TASK>
+[ 1453.716399]  default_idle+0x9/0x20
+[ 1453.716503]  default_idle_call+0x3b/0x60
+[ 1453.716576]  do_idle+0xcd/0x210
+[ 1453.716738]  cpu_startup_entry+0x2a/0x30
+[ 1453.716829]  rest_init+0xaa/0xb0
+[ 1453.716906]  start_kernel+0x394/0x3c0
+[ 1453.717067]  x86_64_start_reservations+0x24/0x30
+[ 1453.717188]  x86_64_start_kernel+0x141/0x150
+[ 1453.717306]  common_startup_64+0x13e/0x140
+[ 1453.717519]  </TASK>
+[ 1462.571674] smp: csd: Re-sending CSD lock (#3) IPI from CPU#01 to CPU#00
+[ 1462.606205] CPU: 1 UID: 0 PID: 1 Comm: swapper/0 Tainted: G             L      6.17.13-0_fbk0_crackerjackhost_0_g2b4321c50d79 #1 NONE 
+[ 1462.606603] Tainted: [L]=SOFTLOCKUP
+[ 1462.606692] Hardware name: QEMU Standard PC (Q35 + ICH9, 2009), BIOS 1.16.3-5.el9 11/05/2023
+[ 1462.606757] Call Trace:
+[ 1462.606832]  <TASK>
+[ 1462.606917]  dump_stack_lvl+0x3b/0xa0
+[ 1462.607105]  __csd_lock_wait+0x297/0x320
+[ 1462.607266]  smp_call_function_many_cond+0x3b6/0x510
+[ 1462.607374]  ? flush_tlb_all+0x50/0x50
+[ 1462.607543]  on_each_cpu_cond_mask+0x1a/0x20
+[ 1462.607645]  cpa_flush+0x66/0x310
+[ 1462.607809]  change_page_attr_set_clr+0x19f/0x1d0
+[ 1462.607985]  ? orc_lookup_end+0xa48/0xa48
+[ 1462.608136]  ? orc_lookup_end+0xa48/0xa48
+[ 1462.608262]  set_memory_nx+0x46/0x70
+[ 1462.608393]  ? orc_lookup_end+0xa48/0xa48
+[ 1462.608534]  free_kernel_image_pages+0x5a/0xc0
+[ 1462.608686]  ? rest_init+0xb0/0xb0
+[ 1462.608809]  kernel_init+0x3f/0x1b0
+[ 1462.608914]  ret_from_fork+0x99/0xf0
+[ 1462.609041]  ? rest_init+0xb0/0xb0
+[ 1462.609156]  ret_from_fork_asm+0x11/0x20
+[ 1462.609353]  </TASK>
+[ 1462.609409] smp: csd: CSD lock (#3) got unstuck on CPU#01, CPU#00 released the lock.
+[ 1502.706757] watchdog: BUG: soft lockup - CPU#1 stuck for 105s! [swapper/0:1]
+[ 1502.706874] CPU#1 Utilization every 4s during lockup:
+[ 1502.706927] 	#1:   0% system,	  0% softirq,	  0% hardirq,	  0% idle
+[ 1502.706996] 	#2:   0% system,	  0% softirq,	  0% hardirq,	  0% idle
+[ 1502.707064] 	#3:   0% system,	  0% softirq,	  0% hardirq,	  0% idle
+[ 1502.707132] 	#4:   0% system,	  0% softirq,	  0% hardirq,	  0% idle
+[ 1502.707199] 	#5:   0% system,	  0% softirq,	  0% hardirq,	  0% idle
+[ 1502.707271] Modules linked in:
+[ 1502.707390] CPU: 1 UID: 0 PID: 1 Comm: swapper/0 Tainted: G             L      6.17.13-0_fbk0_crackerjackhost_0_g2b4321c50d79 #1 NONE 
+[ 1502.707521] Tainted: [L]=SOFTLOCKUP
+[ 1502.707560] Hardware name: QEMU Standard PC (Q35 + ICH9, 2009), BIOS 1.16.3-5.el9 11/05/2023
+[ 1502.707635] RIP: 0010:memset+0x11/0x20
+[ 1502.707774] Code: 54 17 fe eb 0c 48 83 fa 01 72 06 44 8a 1e 44 88 1f c3 cc cc cc cc cc cc cc f3 0f 1e fa 66 90 49 89 f9 40 88 f0 48 89 d1 f3 aa <4c> 89 c8 c3 cc cc cc cc 0f 1f 80 00 00 00 00 49 89 fa 40 0f b6 ce
+[ 1502.707852] RSP: 0018:ffa0000000013ea0 EFLAGS: 00010286
+[ 1502.707928] RAX: ff110000000000cc RBX: ffd400000010d640 RCX: 0000000000000000
+[ 1502.707983] RDX: 0000000000001000 RSI: 00000000000000cc RDI: ff1100000435a000
+[ 1502.708040] RBP: 0000000004359000 R08: 0000000000000000 R09: ff11000004359000
+[ 1502.708092] R10: 00000000000004a6 R11: 00000000000000f8 R12: 0000000000000032
+[ 1502.708146] R13: 00000000000000c8 R14: 00000000000000cc R15: ffffffff84359000
+[ 1502.708198] FS:  0000000000000000(0000) GS:ff1100008b1ac000(0000) knlGS:0000000000000000
+[ 1502.708261] CS:  0010 DS: 0000 ES: 0000 CR0: 0000000080050033
+[ 1502.708322] CR2: 0000000000000000 CR3: 0000000003432000 CR4: 0000000000751ef0
+[ 1502.708375] PKRU: 55555554
+[ 1502.708410] Call Trace:
+[ 1502.708472]  <TASK>
+[ 1502.708539]  free_reserved_area+0xe0/0x120
+[ 1502.708752]  ? orc_lookup_end+0xa48/0xa48
+[ 1502.708912]  ? orc_lookup_end+0xa48/0xa48
+[ 1502.709043]  free_kernel_image_pages+0x77/0xc0
+[ 1502.709211]  ? rest_init+0xb0/0xb0
+[ 1502.709333]  kernel_init+0x3f/0x1b0
+[ 1502.709443]  ret_from_fork+0x99/0xf0
+[ 1502.709579]  ? rest_init+0xb0/0xb0
+[ 1502.709700]  ret_from_fork_asm+0x11/0x20
+[ 1502.709916]  </TASK>
+[ 1525.437960] watchdog: BUG: soft lockup - CPU#0 stuck for 21s! [swapper/0:0]
+[ 1525.438058] CPU#0 Utilization every 4s during lockup:
+[ 1525.438100] 	#1:   0% system,	  0% softirq,	  2% hardirq,	  1% idle
+[ 1525.438167] 	#2:   0% system,	  0% softirq,	  0% hardirq,	  0% idle
+[ 1525.438235] 	#3:   0% system,	  0% softirq,	  0% hardirq,	  0% idle
+[ 1525.438300] 	#4:   0% system,	  0% softirq,	  0% hardirq,	  0% idle
+[ 1525.438364] 	#5:   0% system,	  0% softirq,	  0% hardirq,	  0% idle
+[ 1525.438433] Modules linked in:
+[ 1525.438537] CPU: 0 UID: 0 PID: 0 Comm: swapper/0 Tainted: G             L      6.17.13-0_fbk0_crackerjackhost_0_g2b4321c50d79 #1 NONE 
+[ 1525.438663] Tainted: [L]=SOFTLOCKUP
+[ 1525.438699] Hardware name: QEMU Standard PC (Q35 + ICH9, 2009), BIOS 1.16.3-5.el9 11/05/2023
+[ 1525.438761] RIP: 0010:pv_native_safe_halt+0x13/0x20
+[ 1525.438912] Code: 8f 1b 02 e8 2f 00 00 00 48 2b 05 f8 94 73 00 c3 cc cc cc cc cc cc cc f3 0f 1e fa eb 07 0f 00 2d 3d 3f 06 00 f3 0f 1e fa fb f4 <c3> cc cc cc cc cc cc cc cc cc cc cc cc 66 0f 1f 00 50 8b 37 83 e6
+[ 1525.438984] RSP: 0018:ffffffff83403ea0 EFLAGS: 00010212
+[ 1525.439049] RAX: ff1100008b0ac000 RBX: ffffffff834134c0 RCX: 4000000000000000
+[ 1525.439101] RDX: 00000000000004b7 RSI: 0000000000000000 RDI: 000000000020bc9c
+[ 1525.439151] RBP: ffffffff83403eb8 R08: 0000000000000000 R09: 0000000000000000
+[ 1525.439201] R10: ffffffff8346bd48 R11: ffffffff8124dc50 R12: 0000000000000000
+[ 1525.439261] R13: 0000000000000000 R14: 0000000000000000 R15: 0000000000000000
+[ 1525.439310] FS:  0000000000000000(0000) GS:ff1100008b0ac000(0000) knlGS:0000000000000000
+[ 1525.439425] CS:  0010 DS: 0000 ES: 0000 CR0: 0000000080050033
+[ 1525.439479] CR2: 00007ffd11f44ff8 CR3: 0000000003432000 CR4: 0000000000751ef0
+[ 1525.439529] PKRU: 55555554
+[ 1525.439563] Call Trace:
+[ 1525.439630]  <TASK>
+[ 1525.439689]  default_idle+0x9/0x20
+[ 1525.439796]  default_idle_call+0x3b/0x60
+[ 1525.439871]  do_idle+0xcd/0x210
+[ 1525.440043]  cpu_startup_entry+0x2a/0x30
+[ 1525.440136]  rest_init+0xaa/0xb0
+[ 1525.440214]  start_kernel+0x394/0x3c0
+[ 1525.440379]  x86_64_start_reservations+0x24/0x30
+[ 1525.440503]  x86_64_start_kernel+0x141/0x150
+[ 1525.440625]  common_startup_64+0x13e/0x140
+[ 1525.440853]  </TASK>
+[ 1540.366590] Freeing unused kernel image (initmem) memory: 2512K
+[ 1555.333641] Write protecting the kernel read-only data: 36864k
+[ 1570.853235] smp: csd: Detected non-responsive CSD lock (#4) on CPU#1, waiting 15516617685 ns for CPU#00 do_flush_tlb_all+0x0/0x20(0x0).
+[ 1570.855986] smp: 	csd: CSD lock (#4) unresponsive.
+[ 1570.857065] Sending NMI from CPU 1 to CPUs 0:
+[ 1571.252907] NMI backtrace for cpu 0
+[ 1571.253022] CPU: 0 UID: 0 PID: 0 Comm: swapper/0 Tainted: G             L      6.17.13-0_fbk0_crackerjackhost_0_g2b4321c50d79 #1 NONE 
+[ 1571.253145] Tainted: [L]=SOFTLOCKUP
+[ 1571.253175] Hardware name: QEMU Standard PC (Q35 + ICH9, 2009), BIOS 1.16.3-5.el9 11/05/2023
+[ 1571.253232] RIP: 0010:pv_native_safe_halt+0x13/0x20
+[ 1571.253370] Code: 8f 1b 02 e8 2f 00 00 00 48 2b 05 f8 94 73 00 c3 cc cc cc cc cc cc cc f3 0f 1e fa eb 07 0f 00 2d 3d 3f 06 00 f3 0f 1e fa fb f4 <c3> cc cc cc cc cc cc cc cc cc cc cc cc 66 0f 1f 00 50 8b 37 83 e6
+[ 1571.253432] RSP: 0018:ffffffff83403ea0 EFLAGS: 00010206
+[ 1571.253498] RAX: ff1100008b0ac000 RBX: ffffffff834134c0 RCX: 4000000000000000
+[ 1571.253550] RDX: 00000000000004bd RSI: 0000000000000000 RDI: 000000000020bcc4
+[ 1571.253598] RBP: ffffffff83403eb8 R08: 0000000000000000 R09: 0000000000000000
+[ 1571.253646] R10: ffffffff8346bd48 R11: ffffffff8124dc50 R12: 0000000000000000
+[ 1571.253699] R13: 0000000000000000 R14: 0000000000000000 R15: 0000000000000000
+[ 1571.253747] FS:  0000000000000000(0000) GS:ff1100008b0ac000(0000) knlGS:0000000000000000
+[ 1571.253806] CS:  0010 DS: 0000 ES: 0000 CR0: 0000000080050033
+[ 1571.253859] CR2: 00007ffd11f44ff8 CR3: 0000000003432000 CR4: 0000000000751ef0
+[ 1571.253911] PKRU: 55555554
+[ 1571.253941] Call Trace:
+[ 1571.253998]  <TASK>
+[ 1571.254042]  default_idle+0x9/0x20
+[ 1571.254125]  default_idle_call+0x3b/0x60
+[ 1571.254199]  do_idle+0xcd/0x210
+[ 1571.254347]  cpu_startup_entry+0x2a/0x30
+[ 1571.254429]  rest_init+0xaa/0xb0
+[ 1571.254503]  start_kernel+0x394/0x3c0
+[ 1571.254642]  x86_64_start_reservations+0x24/0x30
+[ 1571.254748]  x86_64_start_kernel+0x141/0x150
+[ 1571.254842]  common_startup_64+0x13e/0x140
+[ 1571.255042]  </TASK>
+[ 1586.894905] smp: csd: Re-sending CSD lock (#4) IPI from CPU#01 to CPU#00
+[ 1586.896457] CPU: 1 UID: 0 PID: 1 Comm: swapper/0 Tainted: G             L      6.17.13-0_fbk0_crackerjackhost_0_g2b4321c50d79 #1 NONE 
+[ 1586.896581] Tainted: [L]=SOFTLOCKUP
+[ 1586.896612] Hardware name: QEMU Standard PC (Q35 + ICH9, 2009), BIOS 1.16.3-5.el9 11/05/2023
+[ 1586.896669] Call Trace:
+[ 1586.896742]  <TASK>
+[ 1586.896819]  dump_stack_lvl+0x3b/0xa0
+[ 1586.896981]  __csd_lock_wait+0x297/0x320
+[ 1586.897123]  smp_call_function_many_cond+0x3b6/0x510
+[ 1586.897204]  ? flush_tlb_all+0x50/0x50
+[ 1586.897356]  on_each_cpu_cond_mask+0x1a/0x20
+[ 1586.897432]  cpa_flush+0x66/0x310
+[ 1586.897569]  change_page_attr_set_clr+0x19f/0x1d0
+[ 1586.897714]  ? _printk+0x5c/0x80
+[ 1586.897804]  ? 0xffffffff81000000
+[ 1586.897936]  set_memory_ro+0x35/0x60
+[ 1586.898035]  ? 0xffffffff81000000
+[ 1586.898103]  mark_rodata_ro+0x76/0xe0
+[ 1586.898225]  ? rest_init+0xb0/0xb0
+[ 1586.898326]  kernel_init+0x5b/0x1b0
+[ 1586.898405]  ret_from_fork+0x99/0xf0
+[ 1586.898507]  ? rest_init+0xb0/0xb0
+[ 1586.898590]  ret_from_fork_asm+0x11/0x20
+[ 1586.898762]  </TASK>
+[ 1586.898812] smp: csd: CSD lock (#4) got unstuck on CPU#01, CPU#00 released the lock.
+[ 1603.298519] smp: csd: Detected non-responsive CSD lock (#5) on CPU#1, waiting 16377917195 ns for CPU#00 do_flush_tlb_all+0x0/0x20(0x0).
+[ 1603.301275] smp: 	csd: CSD lock (#5) unresponsive.
+[ 1603.302339] Sending NMI from CPU 1 to CPUs 0:
+[ 1603.698536] NMI backtrace for cpu 0
+[ 1603.698658] CPU: 0 UID: 0 PID: 0 Comm: swapper/0 Tainted: G             L      6.17.13-0_fbk0_crackerjackhost_0_g2b4321c50d79 #1 NONE 
+[ 1603.698775] Tainted: [L]=SOFTLOCKUP
+[ 1603.698807] Hardware name: QEMU Standard PC (Q35 + ICH9, 2009), BIOS 1.16.3-5.el9 11/05/2023
+[ 1603.698865] RIP: 0010:pv_native_safe_halt+0x13/0x20
+[ 1603.699003] Code: 8f 1b 02 e8 2f 00 00 00 48 2b 05 f8 94 73 00 c3 cc cc cc cc cc cc cc f3 0f 1e fa eb 07 0f 00 2d 3d 3f 06 00 f3 0f 1e fa fb f4 <c3> cc cc cc cc cc cc cc cc cc cc cc cc 66 0f 1f 00 50 8b 37 83 e6
+[ 1603.699066] RSP: 0018:ffffffff83403ea0 EFLAGS: 00010212
+[ 1603.699131] RAX: ff1100008b0ac000 RBX: ffffffff834134c0 RCX: 4000000000000000
+[ 1603.699182] RDX: 00000000000004bf RSI: 0000000000000000 RDI: 000000000020bcfc
+[ 1603.699230] RBP: ffffffff83403eb8 R08: 0000000000000000 R09: 0000000000000000
+[ 1603.699278] R10: ffffffff8346bd48 R11: ffffffff8124dc50 R12: 0000000000000000
+[ 1603.699331] R13: 0000000000000000 R14: 0000000000000000 R15: 0000000000000000
+[ 1603.699379] FS:  0000000000000000(0000) GS:ff1100008b0ac000(0000) knlGS:0000000000000000
+[ 1620.102239] CS:  0010 DS: 0000 ES: 0000 CR0: 0000000080050033
+[ 1636.904946] CR2: 00007ffd11f44ff8 CR3: 0000000003432000 CR4: 0000000000751ef0
+[ 1636.904995] PKRU: 55555554
+[ 1636.905025] Call Trace:
+[ 1636.905082]  <TASK>
+[ 1636.905125]  default_idle+0x9/0x20
+[ 1636.905201]  default_idle_call+0x3b/0x60
+[ 1636.905274]  do_idle+0xcd/0x210
+[ 1636.905424]  cpu_startup_entry+0x2a/0x30
+[ 1636.905501]  rest_init+0xaa/0xb0
+[ 1636.905575]  start_kernel+0x394/0x3c0
+[ 1636.905713]  x86_64_start_reservations+0x24/0x30
+[ 1636.905813]  x86_64_start_kernel+0x141/0x150
+[ 1636.905906]  common_startup_64+0x13e/0x140
+[ 1636.906101]  </TASK>
+[ 1636.906220] INFO: NMI handler (nmi_cpu_backtrace_handler) took too long to run: 33207.642 msecs
+[ 1653.704727] smp: csd: Re-sending CSD lock (#5) IPI from CPU#01 to CPU#00
+[ 1670.515177] CPU: 1 UID: 0 PID: 1 Comm: swapper/0 Tainted: G             L      6.17.13-0_fbk0_crackerjackhost_0_g2b4321c50d79 #1 NONE 
+[ 1670.515299] Tainted: [L]=SOFTLOCKUP
+[ 1670.515329] Hardware name: QEMU Standard PC (Q35 + ICH9, 2009), BIOS 1.16.3-5.el9 11/05/2023
+[ 1670.515386] Call Trace:
+[ 1670.515452]  <TASK>
+[ 1670.515516]  dump_stack_lvl+0x3b/0xa0
+[ 1670.515662]  __csd_lock_wait+0x297/0x320
+[ 1670.515793]  smp_call_function_many_cond+0x3b6/0x510
+[ 1670.515878]  ? flush_tlb_all+0x50/0x50
+[ 1670.516017]  on_each_cpu_cond_mask+0x1a/0x20
+[ 1670.516089]  __change_page_attr_set_clr+0x899/0xfa0
+[ 1670.516242]  ? xt_register_matches+0x30/0x80
+[ 1670.516364]  ? _vm_unmap_aliases+0x2a1/0x2d0
+[ 1670.516499]  change_page_attr_set_clr+0x13d/0x1d0
+[ 1670.516626]  ? _printk+0x5c/0x80
+[ 1670.516707]  ? 0xffffffff81000000
+[ 1670.516782]  set_memory_nx+0x46/0x70
+[ 1670.516882]  mark_rodata_ro+0xa8/0xe0
+[ 1670.516989]  ? rest_init+0xb0/0xb0
+[ 1670.517073]  kernel_init+0x5b/0x1b0
+[ 1670.517151]  ret_from_fork+0x99/0xf0
+[ 1670.517246]  ? rest_init+0xb0/0xb0
+[ 1670.517323]  ret_from_fork_asm+0x11/0x20
+[ 1670.517485]  </TASK>
+[ 1670.517528] smp: csd: CSD lock (#5) got unstuck on CPU#01, CPU#00 released the lock.
+[ 1688.094446] smp: csd: Detected non-responsive CSD lock (#6) on CPU#1, waiting 17542277907 ns for CPU#00 do_flush_tlb_all+0x0/0x20(0x0).
+[ 1688.097170] smp: 	csd: CSD lock (#6) unresponsive.
+[ 1688.098230] Sending NMI from CPU 1 to CPUs 0:
+[ 1688.494370] NMI backtrace for cpu 0
+[ 1688.494482] CPU: 0 UID: 0 PID: 0 Comm: swapper/0 Tainted: G             L      6.17.13-0_fbk0_crackerjackhost_0_g2b4321c50d79 #1 NONE 
+[ 1688.494599] Tainted: [L]=SOFTLOCKUP
+[ 1688.494629] Hardware name: QEMU Standard PC (Q35 + ICH9, 2009), BIOS 1.16.3-5.el9 11/05/2023
+[ 1688.494679] RIP: 0010:pv_native_safe_halt+0x13/0x20
+[ 1688.494814] Code: 8f 1b 02 e8 2f 00 00 00 48 2b 05 f8 94 73 00 c3 cc cc cc cc cc cc cc f3 0f 1e fa eb 07 0f 00 2d 3d 3f 06 00 f3 0f 1e fa fb f4 <c3> cc cc cc cc cc cc cc cc cc cc cc cc 66 0f 1f 00 50 8b 37 83 e6
+[ 1688.494877] RSP: 0018:ffffffff83403ea0 EFLAGS: 00010212
+[ 1688.494942] RAX: ff1100008b0ac000 RBX: ffffffff834134c0 RCX: 4000000000000000
+[ 1688.494993] RDX: 00000000000004cb RSI: 0000000000000000 RDI: 000000000020bd2c
+[ 1688.495041] RBP: ffffffff83403eb8 R08: 0000000000000000 R09: 0000000000000000
+[ 1688.495089] R10: ffffffff8346bd48 R11: ffffffff8124dc50 R12: 0000000000000000
+[ 1688.495142] R13: 0000000000000000 R14: 0000000000000000 R15: 0000000000000000
+[ 1688.495190] FS:  0000000000000000(0000) GS:ff1100008b0ac000(0000) knlGS:0000000000000000
+[ 1688.495248] CS:  0010 DS: 0000 ES: 0000 CR0: 0000000080050033
+[ 1688.495299] CR2: 00007ffd11f44ff8 CR3: 0000000003432000 CR4: 0000000000751ef0
+[ 1688.495348] PKRU: 55555554
+[ 1688.495378] Call Trace:
+[ 1688.495435]  <TASK>
+[ 1688.495476]  default_idle+0x9/0x20
+[ 1688.495552]  default_idle_call+0x3b/0x60
+[ 1688.495624]  do_idle+0xcd/0x210
+[ 1688.495770]  cpu_startup_entry+0x2a/0x30
+[ 1688.495847]  rest_init+0xaa/0xb0
+[ 1688.495921]  start_kernel+0x394/0x3c0
+[ 1688.496058]  x86_64_start_reservations+0x24/0x30
+[ 1688.496160]  x86_64_start_kernel+0x141/0x150
+[ 1688.496253]  common_startup_64+0x13e/0x140
+[ 1688.496449]  </TASK>
+[ 1706.088181] smp: csd: Re-sending CSD lock (#6) IPI from CPU#01 to CPU#00
+[ 1706.089701] CPU: 1 UID: 0 PID: 1 Comm: swapper/0 Tainted: G             L      6.17.13-0_fbk0_crackerjackhost_0_g2b4321c50d79 #1 NONE 
+[ 1706.089824] Tainted: [L]=SOFTLOCKUP
+[ 1706.089854] Hardware name: QEMU Standard PC (Q35 + ICH9, 2009), BIOS 1.16.3-5.el9 11/05/2023
+[ 1706.089911] Call Trace:
+[ 1706.089977]  <TASK>
+[ 1706.090037]  dump_stack_lvl+0x3b/0xa0
+[ 1706.090173]  __csd_lock_wait+0x297/0x320
+[ 1706.090307]  smp_call_function_many_cond+0x3b6/0x510
+[ 1706.090391]  ? flush_tlb_all+0x50/0x50
+[ 1706.090531]  on_each_cpu_cond_mask+0x1a/0x20
+[ 1706.090603]  cpa_flush+0x66/0x310
+[ 1706.090735]  change_page_attr_set_clr+0x19f/0x1d0
+[ 1706.090861]  ? _printk+0x5c/0x80
+[ 1706.090942]  ? 0xffffffff81000000
+[ 1706.091020]  set_memory_nx+0x46/0x70
+[ 1706.091116]  mark_rodata_ro+0xa8/0xe0
+[ 1706.091224]  ? rest_init+0xb0/0xb0
+[ 1706.091314]  kernel_init+0x5b/0x1b0
+[ 1706.091394]  ret_from_fork+0x99/0xf0
+[ 1706.091487]  ? rest_init+0xb0/0xb0
+[ 1706.091565]  ret_from_fork_asm+0x11/0x20
+[ 1706.091727]  </TASK>
+[ 1706.091769] smp: csd: CSD lock (#6) got unstuck on CPU#01, CPU#00 released the lock.
+[ 1726.236184] watchdog: BUG: soft lockup - CPU#0 stuck for 35s! [swapper/0:0]
+[ 1726.236283] CPU#0 Utilization every 4s during lockup:
+[ 1726.236324] 	#1:   0% system,	  0% softirq,	  0% hardirq,	  0% idle
+[ 1726.236389] 	#2:   0% system,	  0% softirq,	  1% hardirq,	  0% idle
+[ 1726.236453] 	#3:   0% system,	  0% softirq,	166% hardirq,	  0% idle
+[ 1726.236518] 	#4:   0% system,	  0% softirq,	  0% hardirq,	  0% idle
+[ 1726.236581] 	#5:   0% system,	  0% softirq,	  1% hardirq,	  0% idle
+[ 1726.236648] Modules linked in:
+[ 1726.236736] CPU: 0 UID: 0 PID: 0 Comm: swapper/0 Tainted: G             L      6.17.13-0_fbk0_crackerjackhost_0_g2b4321c50d79 #1 NONE 
+[ 1726.236852] Tainted: [L]=SOFTLOCKUP
+[ 1726.236884] Hardware name: QEMU Standard PC (Q35 + ICH9, 2009), BIOS 1.16.3-5.el9 11/05/2023
+[ 1726.236938] RIP: 0010:pv_native_safe_halt+0x13/0x20
+[ 1726.237078] Code: 8f 1b 02 e8 2f 00 00 00 48 2b 05 f8 94 73 00 c3 cc cc cc cc cc cc cc f3 0f 1e fa eb 07 0f 00 2d 3d 3f 06 00 f3 0f 1e fa fb f4 <c3> cc cc cc cc cc cc cc cc cc cc cc cc 66 0f 1f 00 50 8b 37 83 e6
+[ 1726.237140] RSP: 0018:ffffffff83403ea0 EFLAGS: 00010206
+[ 1726.237203] RAX: ff1100008b0ac000 RBX: ffffffff834134c0 RCX: 4000000000000000
+[ 1726.237253] RDX: 00000000000004cd RSI: 0000000000000000 RDI: 000000000020bd64
+[ 1726.237301] RBP: ffffffff83403eb8 R08: 0000000000000000 R09: 0000000000000000
+[ 1726.237349] R10: ffffffff8346bd48 R11: ffffffff8124dc50 R12: 0000000000000000
+[ 1726.237402] R13: 0000000000000000 R14: 0000000000000000 R15: 0000000000000000
+[ 1726.237448] FS:  0000000000000000(0000) GS:ff1100008b0ac000(0000) knlGS:0000000000000000
+[ 1726.237509] CS:  0010 DS: 0000 ES: 0000 CR0: 0000000080050033
+[ 1726.237559] CR2: 00007ffd11f44ff8 CR3: 0000000003432000 CR4: 0000000000751ef0
+[ 1726.237608] PKRU: 55555554
+[ 1726.237637] Call Trace:
+[ 1726.237696]  <TASK>
+[ 1726.237737]  default_idle+0x9/0x20
+[ 1726.237813]  default_idle_call+0x3b/0x60
+[ 1726.237886]  do_idle+0xcd/0x210
+[ 1726.238038]  cpu_startup_entry+0x2a/0x30
+[ 1726.238119]  rest_init+0xaa/0xb0
+[ 1726.238192]  start_kernel+0x394/0x3c0
+[ 1726.238334]  x86_64_start_reservations+0x24/0x30
+[ 1726.238435]  x86_64_start_kernel+0x141/0x150
+[ 1726.238529]  common_startup_64+0x13e/0x140
+[ 1726.238735]  </TASK>
+[ 1745.590894] Freeing unused kernel image (text/rodata gap) memory: 204K
+[ 1765.988749] smp: csd: Detected non-responsive CSD lock (#7) on CPU#1, waiting 20395843869 ns for CPU#00 do_flush_tlb_all+0x0/0x20(0x0).
+[ 1765.991751] smp: 	csd: CSD lock (#7) unresponsive.
+[ 1765.992947] Sending NMI from CPU 1 to CPUs 0:
+[ 1766.188734] NMI backtrace for cpu 0
+[ 1766.188808] CPU: 0 UID: 0 PID: 0 Comm: swapper/0 Tainted: G             L      6.17.13-0_fbk0_crackerjackhost_0_g2b4321c50d79 #1 NONE 
+[ 1766.188923] Tainted: [L]=SOFTLOCKUP
+[ 1766.188952] Hardware name: QEMU Standard PC (Q35 + ICH9, 2009), BIOS 1.16.3-5.el9 11/05/2023
+[ 1766.188998] RIP: 0010:native_apic_mem_eoi+0xd/0x20
+[ 1766.189109] Code: 48 8b 89 40 cb 56 84 48 85 c9 74 05 f0 48 0f b3 01 31 c0 c3 cc cc cc cc cc cc cc cc cc f3 0f 1e fa 31 c0 89 04 25 b0 d0 5f ff <c3> cc cc cc cc cc 66 66 66 66 2e 0f 1f 84 00 00 00 00 00 f3 0f 1e
+[ 1766.189169] RSP: 0018:ffa0000000003fe8 EFLAGS: 00010046
+[ 1766.189232] RAX: 0000000000000000 RBX: ffffffff83403df8 RCX: 00000004a27dda15
+[ 1766.189279] RDX: 00000000000004d3 RSI: 00000999f1822bce RDI: ffffffff83403df8
+[ 1766.189328] RBP: 0000000000000001 R08: 0000000000000000 R09: 0000000000000000
+[ 1766.189373] R10: 0000000000000000 R11: ffffffff8124dc50 R12: 0000000000000000
+[ 1766.189422] R13: 0000000000000000 R14: 0000000000000000 R15: 0000000000000000
+[ 1766.189467] FS:  0000000000000000(0000) GS:ff1100008b0ac000(0000) knlGS:0000000000000000
+[ 1766.189525] CS:  0010 DS: 0000 ES: 0000 CR0: 0000000080050033
+[ 1766.189575] CR2: 00007ffd11f44ff8 CR3: 0000000003432000 CR4: 0000000000751ef0
+[ 1766.189623] PKRU: 55555554
+[ 1766.189653] Call Trace:
+[ 1766.189700]  <IRQ>
+[ 1766.189736]  __sysvec_call_function_single+0xe/0x90
+[ 1766.189839]  sysvec_call_function_single+0x6c/0x80
+[ 1766.189957]  </IRQ>
+[ 1766.189986]  <TASK>
+[ 1766.190026]  asm_sysvec_call_function_single+0x1a/0x20
+[ 1766.190114] RIP: 0010:pv_native_safe_halt+0x13/0x20
+[ 1766.190211] Code: 8f 1b 02 e8 2f 00 00 00 48 2b 05 f8 94 73 00 c3 cc cc cc cc cc cc cc f3 0f 1e fa eb 07 0f 00 2d 3d 3f 06 00 f3 0f 1e fa fb f4 <c3> cc cc cc cc cc cc cc cc cc cc cc cc 66 0f 1f 00 50 8b 37 83 e6
+[ 1766.190270] RSP: 0018:ffffffff83403ea0 EFLAGS: 00010212
+[ 1766.190330] RAX: ff1100008b0ac000 RBX: ffffffff834134c0 RCX: 4000000000000000
+[ 1766.190378] RDX: 00000000000004d1 RSI: 0000000000000000 RDI: 000000000020bd8c
+[ 1766.190423] RBP: ffffffff83403eb8 R08: 0000000000000000 R09: 0000000000000000
+[ 1766.190468] R10: ffffffff8346bd48 R11: ffffffff8124dc50 R12: 0000000000000000
+[ 1766.190516] R13: 0000000000000000 R14: 0000000000000000 R15: 0000000000000000
+[ 1766.190590]  ? __set_cyc2ns_scale+0x140/0x140
+[ 1766.190739]  default_idle+0x9/0x20
+[ 1766.190809]  default_idle_call+0x3b/0x60
+[ 1766.190881]  do_idle+0xcd/0x210
+[ 1766.190989]  cpu_startup_entry+0x2a/0x30
+[ 1766.191066]  rest_init+0xaa/0xb0
+[ 1766.191140]  start_kernel+0x394/0x3c0
+[ 1766.191264]  x86_64_start_reservations+0x24/0x30
+[ 1766.191362]  x86_64_start_kernel+0x141/0x150
+[ 1766.191456]  common_startup_64+0x13e/0x140
+[ 1766.191639]  </TASK>
+[ 1786.190913] smp: csd: Re-sending CSD lock (#7) IPI from CPU#01 to CPU#00
+[ 1786.241999] CPU: 1 UID: 0 PID: 1 Comm: swapper/0 Tainted: G             L      6.17.13-0_fbk0_crackerjackhost_0_g2b4321c50d79 #1 NONE 
+[ 1786.242115] Tainted: [L]=SOFTLOCKUP
+[ 1786.242145] Hardware name: QEMU Standard PC (Q35 + ICH9, 2009), BIOS 1.16.3-5.el9 11/05/2023
+[ 1786.242202] Call Trace:
+[ 1786.242268]  <TASK>
+[ 1786.242335]  dump_stack_lvl+0x3b/0xa0
+[ 1786.242466]  __csd_lock_wait+0x297/0x320
+[ 1786.242599]  smp_call_function_many_cond+0x3b6/0x510
+[ 1786.242678]  ? flush_tlb_all+0x50/0x50
+[ 1786.242817]  on_each_cpu_cond_mask+0x1a/0x20
+[ 1786.242888]  __change_page_attr_set_clr+0x899/0xfa0
+[ 1786.243082]  ? _vm_unmap_aliases+0x2a1/0x2d0
+[ 1786.243219]  change_page_attr_set_clr+0x13d/0x1d0
+[ 1786.243378]  set_memory_rw+0x35/0x60
+[ 1786.243473]  free_kernel_image_pages+0x64/0xc0
+[ 1786.243583]  ? rest_init+0xb0/0xb0
+[ 1786.243673]  kernel_init+0x5b/0x1b0
+[ 1786.243752]  ret_from_fork+0x99/0xf0
+[ 1786.243844]  ? rest_init+0xb0/0xb0
+[ 1786.243921]  ret_from_fork_asm+0x11/0x20
+[ 1786.244083]  </TASK>
+[ 1786.244126] smp: csd: CSD lock (#7) got unstuck on CPU#01, CPU#00 released the lock.
+[ 1827.582790] smp: csd: Detected non-responsive CSD lock (#8) on CPU#1, waiting 20992701826 ns for CPU#00 do_flush_tlb_all+0x0/0x20(0x0).
+[ 1827.585543] smp: 	csd: CSD lock (#8) unresponsive.
+[ 1827.586609] Sending NMI from CPU 1 to CPUs 0:
+[ 1827.982807] NMI backtrace for cpu 0
+[ 1827.982925] CPU: 0 UID: 0 PID: 0 Comm: swapper/0 Tainted: G             L      6.17.13-0_fbk0_crackerjackhost_0_g2b4321c50d79 #1 NONE 
+[ 1827.983052] Tainted: [L]=SOFTLOCKUP
+[ 1827.983083] Hardware name: QEMU Standard PC (Q35 + ICH9, 2009), BIOS 1.16.3-5.el9 11/05/2023
+[ 1827.983143] RIP: 0010:pv_native_safe_halt+0x13/0x20
+[ 1827.983294] Code: 8f 1b 02 e8 2f 00 00 00 48 2b 05 f8 94 73 00 c3 cc cc cc cc cc cc cc f3 0f 1e fa eb 07 0f 00 2d 3d 3f 06 00 f3 0f 1e fa fb f4 <c3> cc cc cc cc cc cc cc cc cc cc cc cc 66 0f 1f 00 50 8b 37 83 e6
+[ 1827.983358] RSP: 0018:ffffffff83403ea0 EFLAGS: 00010212
+[ 1827.983428] RAX: ff1100008b0ac000 RBX: ffffffff834134c0 RCX: 4000000000000000
+[ 1827.983480] RDX: 00000000000004d1 RSI: 0000000000000000 RDI: 000000000020bdbc
+[ 1827.983529] RBP: ffffffff83403eb8 R08: 0000000000000000 R09: 0000000000000000
+[ 1827.983580] R10: ffffffff8346bd48 R11: ffffffff8124dc50 R12: 0000000000000000
+[ 1827.983634] R13: 0000000000000000 R14: 0000000000000000 R15: 0000000000000000
+[ 1827.983683] FS:  0000000000000000(0000) GS:ff1100008b0ac000(0000) knlGS:0000000000000000
+[ 1827.983742] CS:  0010 DS: 0000 ES: 0000 CR0: 0000000080050033
+[ 1827.983796] CR2: 00007ffd11f44ff8 CR3: 0000000003432000 CR4: 0000000000751ef0
+[ 1827.983850] PKRU: 55555554
+[ 1827.983883] Call Trace:
+[ 1827.983942]  <TASK>
+[ 1827.983996]  default_idle+0x9/0x20
+[ 1827.984094]  default_idle_call+0x3b/0x60
+[ 1827.984168]  do_idle+0xcd/0x210
+[ 1827.984326]  cpu_startup_entry+0x2a/0x30
+[ 1827.984413]  rest_init+0xaa/0xb0
+[ 1827.984495]  start_kernel+0x394/0x3c0
+[ 1827.984647]  x86_64_start_reservations+0x24/0x30
+[ 1827.984768]  x86_64_start_kernel+0x141/0x150
+[ 1827.984885]  common_startup_64+0x13e/0x140
+[ 1827.985093]  </TASK>
+[ 1848.978594] smp: csd: Re-sending CSD lock (#8) IPI from CPU#01 to CPU#00
+[ 1848.980117] CPU: 1 UID: 0 PID: 1 Comm: swapper/0 Tainted: G             L      6.17.13-0_fbk0_crackerjackhost_0_g2b4321c50d79 #1 NONE 
+[ 1848.980237] Tainted: [L]=SOFTLOCKUP
+[ 1848.980267] Hardware name: QEMU Standard PC (Q35 + ICH9, 2009), BIOS 1.16.3-5.el9 11/05/2023
+[ 1848.980324] Call Trace:
+[ 1848.980390]  <TASK>
+[ 1848.980454]  dump_stack_lvl+0x3b/0xa0
+[ 1848.980597]  __csd_lock_wait+0x297/0x320
+[ 1848.980728]  smp_call_function_many_cond+0x3b6/0x510
+[ 1848.980814]  ? flush_tlb_all+0x50/0x50
+[ 1848.980954]  on_each_cpu_cond_mask+0x1a/0x20
+[ 1848.981026]  cpa_flush+0x66/0x310
+[ 1848.981158]  change_page_attr_set_clr+0x19f/0x1d0
+[ 1848.981319]  set_memory_rw+0x35/0x60
+[ 1848.981415]  free_kernel_image_pages+0x64/0xc0
+[ 1848.981526]  ? rest_init+0xb0/0xb0
+[ 1848.981617]  kernel_init+0x5b/0x1b0
+[ 1848.981697]  ret_from_fork+0x99/0xf0
+[ 1848.981796]  ? rest_init+0xb0/0xb0
+[ 1848.981875]  ret_from_fork_asm+0x11/0x20
+[ 1848.982038]  </TASK>
+[ 1848.982079] smp: csd: CSD lock (#8) got unstuck on CPU#01, CPU#00 released the lock.
+[ 1849.031287] Freeing unused kernel image (rodata/data gap) memory: 1296K
+[ 1849.034847] Run /init as init process
+[ 1870.111231] watchdog: BUG: soft lockup - CPU#0 stuck for 39s! [swapper/0:0]
+[ 1870.111332] CPU#0 Utilization every 4s during lockup:
+[ 1870.111372] 	#1:   0% system,	  0% softirq,	166% hardirq,	  0% idle
+[ 1870.111439] 	#2:   0% system,	  0% softirq,	  0% hardirq,	  0% idle
+[ 1870.111503] 	#3:   0% system,	  0% softirq,	  1% hardirq,	  0% idle
+[ 1870.111566] 	#4:   0% system,	  0% softirq,	247% hardirq,	  0% idle
+[ 1870.111631] 	#5:   0% system,	  0% softirq,	  1% hardirq,	  0% idle
+[ 1870.111697] Modules linked in:
+[ 1870.111781] CPU: 0 UID: 0 PID: 0 Comm: swapper/0 Tainted: G             L      6.17.13-0_fbk0_crackerjackhost_0_g2b4321c50d79 #1 NONE 
+[ 1870.111895] Tainted: [L]=SOFTLOCKUP
+[ 1870.111927] Hardware name: QEMU Standard PC (Q35 + ICH9, 2009), BIOS 1.16.3-5.el9 11/05/2023
+[ 1870.111979] RIP: 0010:pv_native_safe_halt+0x13/0x20
+[ 1870.112117] Code: 8f 1b 02 e8 2f 00 00 00 48 2b 05 f8 94 73 00 c3 cc cc cc cc cc cc cc f3 0f 1e fa eb 07 0f 00 2d 3d 3f 06 00 f3 0f 1e fa fb f4 <c3> cc cc cc cc cc cc cc cc cc cc cc cc 66 0f 1f 00 50 8b 37 83 e6
+[ 1870.112181] RSP: 0018:ffffffff83403ea0 EFLAGS: 00010212
+[ 1870.112243] RAX: ff1100008b0ac000 RBX: ffffffff834134c0 RCX: 4000000000000000
+[ 1870.112294] RDX: 00000000000004df RSI: 0000000000000000 RDI: 000000000020bdfc
+[ 1870.112342] RBP: ffffffff83403eb8 R08: 0000000000000000 R09: 0000000000000000
+[ 1870.112390] R10: ffffffff8346bd48 R11: ffffffff8124dc50 R12: 0000000000000000
+[ 1870.112442] R13: 0000000000000000 R14: 0000000000000000 R15: 0000000000000000
+[ 1870.112489] FS:  0000000000000000(0000) GS:ff1100008b0ac000(0000) knlGS:0000000000000000
+[ 1870.112549] CS:  0010 DS: 0000 ES: 0000 CR0: 0000000080050033
+[ 1870.112599] CR2: 0000000000539050 CR3: 0000000006afe000 CR4: 0000000000751ef0
+[ 1870.112648] PKRU: 55555554
+[ 1870.112677] Call Trace:
+[ 1870.112730]  <TASK>
+[ 1870.112773]  default_idle+0x9/0x20
+[ 1870.112856]  default_idle_call+0x3b/0x60
+[ 1870.112930]  do_idle+0xcd/0x210
+[ 1870.113079]  cpu_startup_entry+0x2a/0x30
+[ 1870.113158]  rest_init+0xaa/0xb0
+[ 1870.113239]  start_kernel+0x394/0x3c0
+[ 1870.113381]  x86_64_start_reservations+0x24/0x30
+[ 1870.113486]  x86_64_start_kernel+0x141/0x150
+[ 1870.113581]  common_startup_64+0x13e/0x140
+[ 1870.113784]  </TASK>
+HERMIT-QEMU-BUSYBOX-START
+Linux (none) 6.17.13-0_fbk0_crackerjackhost_0_g2b4321c50d79 #1 SMP Thu Dec 18 12:27:13 PST 2025 x86_64 x86_64 x86_64 GNU/Linux
+--- root filesystem ---
+[ 1973.420401] watchdog: BUG: soft lockup - CPU#0 stuck for 38s! [swapper/0:0]
+[ 1973.420499] CPU#0 Utilization every 4s during lockup:
+[ 1973.420540] 	#1:   0% system,	  0% softirq,	  1% hardirq,	  0% idle
+[ 1973.420605] 	#2:   0% system,	  0% softirq,	  2% hardirq,	  0% idle
+[ 1973.420669] 	#3:   0% system,	  0% softirq,	  0% hardirq,	  0% idle
+[ 1973.420733] 	#4:   0% system,	  0% softirq,	  0% hardirq,	  0% idle
+[ 1973.420796] 	#5:   0% system,	  0% softirq,	  0% hardirq,	  0% idle
+[ 1973.420863] Modules linked in:
+[ 1973.420947] CPU: 0 UID: 0 PID: 0 Comm: swapper/0 Tainted: G             L      6.17.13-0_fbk0_crackerjackhost_0_g2b4321c50d79 #1 NONE 
+[ 1973.421061] Tainted: [L]=SOFTLOCKUP
+[ 1973.421092] Hardware name: QEMU Standard PC (Q35 + ICH9, 2009), BIOS 1.16.3-5.el9 11/05/2023
+[ 1973.421147] RIP: 0010:pv_native_safe_halt+0x13/0x20
+[ 1973.421289] Code: 8f 1b 02 e8 2f 00 00 00 48 2b 05 f8 94 73 00 c3 cc cc cc cc cc cc cc f3 0f 1e fa eb 07 0f 00 2d 3d 3f 06 00 f3 0f 1e fa fb f4 <c3> cc cc cc cc cc cc cc cc cc cc cc cc 66 0f 1f 00 50 8b 37 83 e6
+[ 1973.421358] RSP: 0018:ffffffff83403ea0 EFLAGS: 00010202
+[ 1973.421429] RAX: ff1100008b0ac000 RBX: ffffffff834134c0 RCX: 4000000000000000
+[ 1973.421486] RDX: 00000000000004eb RSI: 0000000000000000 RDI: 000000000020be44
+[ 1973.421539] RBP: ffffffff83403eb8 R08: 0000000000000000 R09: 0000000000000000
+[ 1973.421593] R10: ffffffff8346bd48 R11: ffffffff8124dc50 R12: 0000000000000000
+[ 1973.421651] R13: 0000000000000000 R14: 0000000000000000 R15: 0000000000000000
+[ 1973.421703] FS:  0000000000000000(0000) GS:ff1100008b0ac000(0000) knlGS:0000000000000000
+[ 1973.421770] CS:  0010 DS: 0000 ES: 0000 CR0: 0000000080050033
+[ 1973.421826] CR2: 0000000000539050 CR3: 0000000006afe000 CR4: 0000000000751ef0
+[ 1973.421880] PKRU: 55555554
+[ 1973.421914] Call Trace:
+[ 1973.421973]  <TASK>
+[ 1973.422023]  default_idle+0x9/0x20
+[ 1973.422109]  default_idle_call+0x3b/0x60
+[ 1973.422188]  do_idle+0xcd/0x210
+[ 1973.422338]  cpu_startup_entry+0x2a/0x30
+[ 1973.422426]  rest_init+0xaa/0xb0
+[ 1973.422507]  start_kernel+0x394/0x3c0
+[ 1973.422652]  x86_64_start_reservations+0x24/0x30
+[ 1973.422763]  x86_64_start_kernel+0x141/0x150
+[ 1973.422862]  common_startup_64+0x13e/0x140
+[ 1973.423074]  </TASK>
+[ 1993.480171] smp: csd: Detected non-responsive CSD lock (#9) on CPU#0, waiting 20014299602 ns for CPU#01 flush_tlb_func+0x0/0x260(0xff1100000f642140).
+[ 1993.483157] smp: 	csd: CSD lock (#9) unresponsive.
+[ 1993.484237] Sending NMI from CPU 0 to CPUs 1:
+[ 2013.228676] NMI backtrace for cpu 1
+[ 2013.228792] CPU: 1 UID: 0 PID: 0 Comm: swapper/1 Tainted: G             L      6.17.13-0_fbk0_crackerjackhost_0_g2b4321c50d79 #1 NONE 
+[ 2013.228914] Tainted: [L]=SOFTLOCKUP
+[ 2013.228945] Hardware name: QEMU Standard PC (Q35 + ICH9, 2009), BIOS 1.16.3-5.el9 11/05/2023
+[ 2013.229000] RIP: 0010:pv_native_safe_halt+0x13/0x20
+[ 2013.229139] Code: 8f 1b 02 e8 2f 00 00 00 48 2b 05 f8 94 73 00 c3 cc cc cc cc cc cc cc f3 0f 1e fa eb 07 0f 00 2d 3d 3f 06 00 f3 0f 1e fa fb f4 <c3> cc cc cc cc cc cc cc cc cc cc cc cc 66 0f 1f 00 50 8b 37 83 e6
+[ 2013.229205] RSP: 0018:ffa00000000b3ee0 EFLAGS: 00010206
+[ 2013.229273] RAX: ff1100008b1ac000 RBX: ff11000005398000 RCX: 4000000000000000
+[ 2013.229326] RDX: 00000000000004f0 RSI: 0000000000000001 RDI: 00000000000e1d64
+[ 2013.229377] RBP: ffa00000000b3ef8 R08: 0000000000000000 R09: 0000000000000000
+[ 2013.229427] R10: ffffffff8346bd48 R11: ffffffff8124dc50 R12: 0000000000000000
+[ 2013.229483] R13: 0000000000000000 R14: 0000000000000001 R15: 0000000000000000
+[ 2013.229532] FS:  0000000000000000(0000) GS:ff1100008b1ac000(0000) knlGS:0000000000000000
+[ 2013.229594] CS:  0010 DS: 0000 ES: 0000 CR0: 0000000080050033
+[ 2013.229648] CR2: 000000000051f820 CR3: 0000000003432000 CR4: 0000000000751ef0
+[ 2013.229700] PKRU: 55555554
+[ 2013.229732] Call Trace:
+[ 2013.229787]  <TASK>
+[ 2013.229836]  default_idle+0x9/0x20
+[ 2013.229917]  default_idle_call+0x3b/0x60
+[ 2013.229995]  do_idle+0xcd/0x210
+[ 2013.230143]  cpu_startup_entry+0x2a/0x30
+[ 2013.230224]  start_secondary+0x95/0xa0
+[ 2013.230328]  common_startup_64+0x13e/0x140
+[ 2013.230523]  </TASK>
+[ 2013.260792] smp: csd: Re-sending CSD lock (#9) IPI from CPU#00 to CPU#01
+[ 2013.262490] CPU: 0 UID: 0 PID: 99 Comm: init Tainted: G             L      6.17.13-0_fbk0_crackerjackhost_0_g2b4321c50d79 #1 NONE 
+[ 2013.262613] Tainted: [L]=SOFTLOCKUP
+[ 2013.262643] Hardware name: QEMU Standard PC (Q35 + ICH9, 2009), BIOS 1.16.3-5.el9 11/05/2023
+[ 2013.262698] Call Trace:
+[ 2013.262763]  <TASK>
+[ 2013.262822]  dump_stack_lvl+0x3b/0xa0
+[ 2013.262956]  __csd_lock_wait+0x297/0x320
+[ 2013.263090]  smp_call_function_many_cond+0x3b6/0x510
+[ 2013.263171]  ? native_flush_tlb_multi+0x100/0x100
+[ 2013.263317]  on_each_cpu_cond_mask+0x1a/0x20
+[ 2013.263390]  flush_tlb_mm_range+0x1ee/0x4f0
+[ 2013.263507]  tlb_flush_mmu+0x7e/0x1c0
+[ 2013.263635]  tlb_finish_mmu+0x44/0x80
+[ 2013.263728]  exit_mmap+0x1f0/0x3f0
+[ 2013.263945]  __mmput+0x43/0x110
+[ 2013.264025]  exec_mmap+0x239/0x270
+[ 2013.264148]  begin_new_exec+0x4bb/0x730
+[ 2013.264243]  ? load_elf_phdrs+0x7e/0x110
+[ 2013.264365]  load_elf_binary+0x233/0xda0
+[ 2013.264482]  ? __kernel_read+0x16d/0x270
+[ 2013.264611]  ? load_misc_binary+0x71/0x2e0
+[ 2013.264696]  ? ima_bprm_check+0x54/0x80
+[ 2013.264831]  bprm_execve+0x276/0x460
+[ 2013.264967]  do_execveat_common+0x2cd/0x370
+[ 2013.265105]  __x64_sys_execve+0x3c/0x50
+[ 2013.265209]  do_syscall_64+0x62/0x160
+[ 2013.265314]  ? exc_page_fault+0x61/0xa0
+[ 2013.265425]  entry_SYSCALL_64_after_hwframe+0x6c/0x74
+[ 2013.266395] RIP: 0033:0x4bd630
+[ 2013.267717] Code: Unable to access opcode bytes at 0x4bd606.
+[ 2013.267779] RSP: 002b:00007ffef6ddfb60 EFLAGS: 00000246 ORIG_RAX: 000000000000003b
+[ 2013.267901] RAX: ffffffffffffffda RBX: 0000000000539480 RCX: 00000000004bd630
+[ 2013.267951] RDX: 00000000005394a8 RSI: 0000000000539480 RDI: 00000000005394d0
+[ 2013.267999] RBP: 00007ffef6ddfb60 R08: fefefefefefefeff R09: ff776e6178727461
+[ 2013.268049] R10: 0000000000000008 R11: 0000000000000246 R12: 00000000005394a8
+[ 2013.268099] R13: 0000000000539480 R14: 00000000005394a8 R15: 0000000000000000
+[ 2013.268422]  </TASK>
+[ 2013.268459] smp: csd: CSD lock (#9) got unstuck on CPU#00, CPU#01 released the lock.
+[1;34mbin[m
+[1;34mdev[m
+[1;34metc[m
+[1;34mhome[m
+[1;32minit[m
+[1;36mlinuxrc[m
+[1;34mproc[m
+[1;34mroot[m
+[1;34msbin[m
+[1;34msys[m
+[1;34mtmp[m
+[1;34musr[m
+--- four-stage pipeline ---
+[ 2051.781210] smp: csd: Detected non-responsive CSD lock (#10) on CPU#0, waiting 19127243880 ns for CPU#01 flush_tlb_func+0x0/0x260(0xff1100000f642140).
+[ 2051.784207] smp: 	csd: CSD lock (#10) unresponsive.
+[ 2051.785297] Sending NMI from CPU 0 to CPUs 1:
+[ 2070.771794] NMI backtrace for cpu 1
+[ 2070.771910] CPU: 1 UID: 0 PID: 0 Comm: swapper/1 Tainted: G             L      6.17.13-0_fbk0_crackerjackhost_0_g2b4321c50d79 #1 NONE 
+[ 2070.772027] Tainted: [L]=SOFTLOCKUP
+[ 2070.772057] Hardware name: QEMU Standard PC (Q35 + ICH9, 2009), BIOS 1.16.3-5.el9 11/05/2023
+[ 2070.772111] RIP: 0010:pv_native_safe_halt+0x13/0x20
+[ 2070.772247] Code: 8f 1b 02 e8 2f 00 00 00 48 2b 05 f8 94 73 00 c3 cc cc cc cc cc cc cc f3 0f 1e fa eb 07 0f 00 2d 3d 3f 06 00 f3 0f 1e fa fb f4 <c3> cc cc cc cc cc cc cc cc cc cc cc cc 66 0f 1f 00 50 8b 37 83 e6
+[ 2070.772309] RSP: 0018:ffa00000000b3ee0 EFLAGS: 00010206
+[ 2070.772375] RAX: ff1100008b1ac000 RBX: ff11000005398000 RCX: 4000000000000000
+[ 2070.772426] RDX: 00000000000004f7 RSI: 0000000000000001 RDI: 00000000000e1dc4
+[ 2070.772473] RBP: ffa00000000b3ef8 R08: 0000000000000000 R09: 0000000000000000
+[ 2070.772522] R10: ffffffff8346bd48 R11: ffffffff8124dc50 R12: 0000000000000000
+[ 2070.772575] R13: 0000000000000000 R14: 0000000000000001 R15: 0000000000000000
+[ 2070.772622] FS:  0000000000000000(0000) GS:ff1100008b1ac000(0000) knlGS:0000000000000000
+[ 2070.772680] CS:  0010 DS: 0000 ES: 0000 CR0: 0000000080050033
+[ 2070.772731] CR2: 000000000051fe58 CR3: 0000000003432000 CR4: 0000000000751ef0
+[ 2070.772780] PKRU: 55555554
+[ 2070.772810] Call Trace:
+[ 2070.772864]  <TASK>
+[ 2070.772908]  default_idle+0x9/0x20
+[ 2070.772988]  default_idle_call+0x3b/0x60
+[ 2070.773061]  do_idle+0xcd/0x210
+[ 2070.773207]  cpu_startup_entry+0x2a/0x30
+[ 2070.773285]  start_secondary+0x95/0xa0
+[ 2070.773388]  common_startup_64+0x13e/0x140
+[ 2070.773580]  </TASK>
+[ 2070.803711] smp: csd: Re-sending CSD lock (#10) IPI from CPU#00 to CPU#01
+[ 2070.805236] CPU: 0 UID: 0 PID: 102 Comm: init Tainted: G             L      6.17.13-0_fbk0_crackerjackhost_0_g2b4321c50d79 #1 NONE 
+[ 2070.805352] Tainted: [L]=SOFTLOCKUP
+[ 2070.805381] Hardware name: QEMU Standard PC (Q35 + ICH9, 2009), BIOS 1.16.3-5.el9 11/05/2023
+[ 2070.805433] Call Trace:
+[ 2070.805497]  <TASK>
+[ 2070.805554]  dump_stack_lvl+0x3b/0xa0
+[ 2070.805688]  __csd_lock_wait+0x297/0x320
+[ 2070.805819]  smp_call_function_many_cond+0x3b6/0x510
+[ 2070.805898]  ? native_flush_tlb_multi+0x100/0x100
+[ 2070.806043]  on_each_cpu_cond_mask+0x1a/0x20
+[ 2070.806115]  flush_tlb_mm_range+0x1ee/0x4f0
+[ 2070.806230]  tlb_flush_mmu+0x7e/0x1c0
+[ 2070.806353]  tlb_finish_mmu+0x44/0x80
+[ 2070.806447]  exit_mmap+0x1f0/0x3f0
+[ 2070.806663]  __mmput+0x43/0x110
+[ 2070.806742]  exec_mmap+0x239/0x270
+[ 2070.806865]  begin_new_exec+0x4bb/0x730
+[ 2070.806955]  ? load_elf_phdrs+0x7e/0x110
+[ 2070.807077]  load_elf_binary+0x233/0xda0
+[ 2070.807193]  ? __kernel_read+0x16d/0x270
+[ 2070.807325]  ? load_misc_binary+0x71/0x2e0
+[ 2070.807410]  ? ima_bprm_check+0x54/0x80
+[ 2070.807544]  bprm_execve+0x276/0x460
+[ 2070.807680]  do_execveat_common+0x2cd/0x370
+[ 2070.807818]  __x64_sys_execve+0x3c/0x50
+[ 2070.807922]  do_syscall_64+0x62/0x160
+[ 2070.808032]  ? exc_page_fault+0x61/0xa0
+[ 2070.808145]  entry_SYSCALL_64_after_hwframe+0x6c/0x74
+[ 2070.808231] RIP: 0033:0x4bd630
+[ 2070.808351] Code: Unable to access opcode bytes at 0x4bd606.
+[ 2070.808390] RSP: 002b:00007ffef6ddfa40 EFLAGS: 00000246 ORIG_RAX: 000000000000003b
+[ 2070.808465] RAX: ffffffffffffffda RBX: 000000000053a558 RCX: 00000000004bd630
+[ 2070.808514] RDX: 000000000053a580 RSI: 000000000053a558 RDI: 000000000053a5a8
+[ 2070.808563] RBP: 00007ffef6ddfa40 R08: fefefefefefefeff R09: ff776e6178727461
+[ 2070.808612] R10: 0000000000000008 R11: 0000000000000246 R12: 000000000053a580
+[ 2070.808663] R13: 000000000053a558 R14: 000000000053a580 R15: 0000000000000000
+[ 2070.808800]  </TASK>
+[ 2070.808839] smp: csd: CSD lock (#10) got unstuck on CPU#00, CPU#01 released the lock.
+3eca7ea48b0da0ad30bee679c92c7b68d487547068b6914d10a64e8cedb03f51  -
+--- pi (bc -l, scale=10) ---
+3.1415926532
+--- busybox sha256 ---
+e35db14651077c08598fbc3259609b2db398e5b7dcf07b28f1f3156118bcc081  /bin/busybox
+HERMIT-QEMU-BUSYBOX-PASS
+[ 2186.237084] ACPI: PM: Preparing to enter system sleep state S5
+[ 2186.244007] reboot: Power down

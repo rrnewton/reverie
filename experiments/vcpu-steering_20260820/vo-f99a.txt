@@ -1,0 +1,9 @@
+actuator=hermit extra='--no-virtualize-time --no-virtualize-metadata --max-timeslice 2000000 --sched-heuristic StickyRandom --sched-sticky-random-param 0.99 --sched-seed 1' k=1000000
+  NSPID host_tid=2675242 NSpid:	2675242	3
+  NSPID host_tid=2675354 NSpid:	2675354	5
+  NSPID host_tid=2675514 NSpid:	2675514	7
+  NSPID host_tid=2675516 NSpid:	2675516	9
+  NSPID host_tid=2675649 NSpid:	2675649	11
+  NSPID host_tid=2675685 NSpid:	2675685	13
+tag=f99a hermit_pid=2675234 qemu_hostpid=2675242 vcpu0_tid=2675649 vcpu1_tid=2675685 (qmp said [11, 13])
+ADV-RUN wall=25.92s

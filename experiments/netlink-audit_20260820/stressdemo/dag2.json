@@ -1,0 +1,12 @@
+{
+  "steps": [
+    {
+      "group": "demo",
+      "job": "repeat_boot",
+      "desc": "One hermit run, writing a log named by the copy index",
+      "cmd": "hermit --log info --log-file /home/newton/work/dev-hermit/experiments/netlink-audit_20260820/stressdemo/out2/run-${SAFE_CI_DAG_RUNNER_COPY:-single}.log run --strict --detlog-stack -- /bin/true",
+      "timeout": 120,
+      "hint": {"est_duration_s": 5, "rss_baseline_bytes": 268435456, "hard_mem_max_bytes": 1073741824, "classification": "light"}
+    }
+  ]
+}

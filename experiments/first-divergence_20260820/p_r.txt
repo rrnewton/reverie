@@ -1,0 +1,1 @@
+c1r	wall=56.458704527	syscalls=632229	commits=191796	logbytes=361347276	flags=--detlog-regs

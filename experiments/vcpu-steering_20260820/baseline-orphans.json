@@ -1,0 +1,89 @@
+{
+ "t": 1787229132.431867,
+ "procs": {
+  "592293:58477089": {
+   "pid": 592293,
+   "comm": "qemu-system-x86",
+   "state": "S",
+   "ppid": 1,
+   "cpu_ticks": 30123,
+   "uid": 212630,
+   "agent": "writeup"
+  },
+  "608568:58480773": {
+   "pid": 608568,
+   "comm": "qemu-system-x86",
+   "state": "S",
+   "ppid": 1,
+   "cpu_ticks": 30661,
+   "uid": 212630,
+   "agent": "writeup"
+  },
+  "623768:58484423": {
+   "pid": 623768,
+   "comm": "qemu-system-x86",
+   "state": "S",
+   "ppid": 1,
+   "cpu_ticks": 30631,
+   "uid": 212630,
+   "agent": "writeup"
+  },
+  "630026:58486254": {
+   "pid": 630026,
+   "comm": "qemu-system-x86",
+   "state": "S",
+   "ppid": 1,
+   "cpu_ticks": 30686,
+   "uid": 212630,
+   "agent": "writeup"
+  },
+  "899610:40075935": {
+   "pid": 899610,
+   "comm": "hermit-clean-48",
+   "state": "S",
+   "ppid": 1,
+   "cpu_ticks": 397,
+   "uid": 212630,
+   "agent": "ratchet-kvm"
+  },
+  "981560:58557216": {
+   "pid": 981560,
+   "comm": "qemu-system-x86",
+   "state": "S",
+   "ppid": 1,
+   "cpu_ticks": 128,
+   "uid": 212630,
+   "agent": "ops"
+  },
+  "983858:58557717": {
+   "pid": 983858,
+   "comm": "qemu-system-x86",
+   "state": "S",
+   "ppid": 1,
+   "cpu_ticks": 122,
+   "uid": 212630,
+   "agent": "ops"
+  },
+  "3089765:56853020": {
+   "pid": 3089765,
+   "comm": "hermit",
+   "state": "S",
+   "ppid": 1,
+   "cpu_ticks": 78,
+   "uid": 212630,
+   "agent": "timeouts"
+  }
+ },
+ "load": [
+  "21.39",
+  "28.30",
+  "23.58"
+ ],
+ "pressure": "some avg10=0.00 avg60=0.23 avg300=1.04 total=15890654072",
+ "kernel_warn_lines": 0,
+ "scan_errors": [
+  "2213925:FileNotFoundError",
+  "2213927:FileNotFoundError"
+ ],
+ "total_cpu_ticks": 122826
+}

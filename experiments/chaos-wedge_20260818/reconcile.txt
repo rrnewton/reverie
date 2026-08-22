@@ -1,0 +1,8 @@
+rec-compat-q35-demo                prof=compat mach=q35     kern=demo rc=0    wall=  19.3s bytes=26578   pass=1 panic=0
+rec-compat-q35-boot                prof=compat mach=q35     kern=boot rc=0    wall=  18.0s bytes=26670   pass=1 panic=0
+rec-compat-default-demo            prof=compat mach=default kern=demo rc=0    wall=  17.9s bytes=23232   pass=1 panic=0
+rec-compat-default-boot            prof=compat mach=default kern=boot rc=0    wall=  18.2s bytes=23249   pass=1 panic=0
+rec-strict-q35-demo                prof=strict mach=q35     kern=demo rc=0    wall=  60.5s bytes=9233    pass=0 panic=1
+rec-strict-q35-boot                prof=strict mach=q35     kern=boot rc=0    wall=  54.9s bytes=9441    pass=0 panic=1
+rec-strict-default-demo            prof=strict mach=default kern=demo rc=0    wall=  95.1s bytes=8745    pass=0 panic=1
+rec-strict-default-boot            prof=strict mach=default kern=boot rc=0    wall=  52.5s bytes=8953    pass=0 panic=1

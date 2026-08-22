@@ -1,0 +1,2 @@
+./run.sh: line 45: 754939 Killed                  timeout --signal=KILL "${tmo}s" "$H/target/release/hermit" "${hermit_args[@]}" -- "$QEMU" "${qemu_args[@]}" > "$OUT/$label.console" 2> "$OUT/$label.stderr"
+v2-s999                      rc=137  bytes=13165   pass=0 last_guest_t=0.443204

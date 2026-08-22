@@ -1,0 +1,22 @@
+{
+  "after_digest": "18b058891bccacc5",
+  "after_tasks": 85,
+  "at_stop_bytes": 18919646,
+  "at_stop_digest": "18b058891bccacc5",
+  "at_stop_reads": 6999,
+  "at_stop_tasks": 85,
+  "before_digest": "81779c19a80f9b5f",
+  "before_tasks": 83,
+  "dwell_seconds": 0.0,
+  "hermit_gdbserver_port": 33273,
+  "label": "F100a",
+  "ok": true,
+  "qemu_pid": 988326,
+  "qemu_state_at_stop": "t",
+  "seconds_until_stop": 0.32,
+  "serial_bytes": 123,
+  "serial_digest": "b7b6898519efd655",
+  "startup_seconds": 2.6,
+  "stop_at_console_byte": 100,
+  "total_seconds": 3.7
+}

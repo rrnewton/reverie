@@ -1,0 +1,5 @@
+RESUME tag=ab-old seed=1 wall=805.1s found=False | 01 do_sync_core+0x0/0x40(0x0).
+[  221.041959] smp: 	csd: CSD lock (#6) unresponsive.
+[  221.042536] smp: csd: Re-sending CSD lock (#6) IPI from CPU#00 to CPU#01
+LOC:       1298       1105   Local timer interrupts
+56.72 49.62

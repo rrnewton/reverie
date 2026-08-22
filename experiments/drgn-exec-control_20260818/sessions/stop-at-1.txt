@@ -1,0 +1,36 @@
+========================================================================
+Stop Linux under Hermit at a chosen point, inspect it, resume
+========================================================================
+hermit    : /home/newton/work/dev-hermit/worktrees/hermit-pinbump/target/release/hermit
+scheduler : --strict --no-rcb-time --target-timeslice 100000 --max-timeslice disabled
+debugger  : hermit run --gdbserver --gdbserver-port 33311
+stop point: breakpoint on writev, 1th guest console byte
+            (QEMU emits guest console output one byte per writev)
+
+[1] Linux running under Hermit
+    demo-5 boot snapshot restored in 2.3s, QEMU pid 1126600
+
+[2] guest resumed, running: for n in 1 2; do sleep 1000 & done; usleep 1000; echo __HERMIT_EXEC_CONTROL_"DONE__"
+    Hermit's breakpoint stopped it after 0.04s
+    QEMU process state = 't' (t = ptrace-stop; executes nothing)
+
+[3] drgn reads real kernel state at that stop
+  task_struct.tasks walk: 83 tasks
+    pid 0     swapper/0          state R (running)
+    pid 1     sh                 state R (running)
+    pid 2     kthreadd           state S (sleeping)
+    pid 3     pool_workqueue_    state S (sleeping)
+    pid 4     kworker/R-rcu_g    state I (idle kthread)
+    pid 5     kworker/R-sync_    state I (idle kthread)
+    ... 77 more
+  by state: I (idle kthread) x58, R (running) x2, S (sleeping) x19, raw 8193 x4
+  tasks named 'sleep': 0
+  served by 7392 physical reads (23043630 bytes) of /proc/1126600/mem
+  guest console bytes emitted during the read: 0
+  STATE DIGEST: 2b2855580df35cf6
+
+[4] resumed
+    guest ran on and printed its completion marker
+    kernel state after: 85 tasks, 2 named 'sleep'
+
+SUMMARY  stop_at=1  tasks_at_stop=83  sleepers_at_stop=0  state_digest=2b2855580df35cf6  total=3.3s

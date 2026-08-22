@@ -1,0 +1,5 @@
+HERMIT_SKID_OVERSHOOT rcb_actual=2179586 rcb_target=2179516 skid_margin=1000 overshoot=70
+
+thread 'main' (1) panicked at /home/newton/.cargo/git/checkouts/reverie-2fc770f7a9c80803/c261050/reverie-ptrace/src/timer.rs:982:9:
+Clock perf counter exceeds target value at start of attempted single-step: 2179586 > 2179516. Consider increasing skid margin for this CPU.
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace

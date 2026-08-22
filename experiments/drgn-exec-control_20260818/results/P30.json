@@ -1,0 +1,23 @@
+{
+  "advance_serial_bytes": 123,
+  "advance_serial_digest": "b7b6898519efd655",
+  "after_digest": "18b058891bccacc5",
+  "after_tasks": 85,
+  "at_stop_digest": "81779c19a80f9b5f",
+  "at_stop_physical_reads": 6919,
+  "at_stop_qemu_state": "t",
+  "at_stop_serial_delta": 0,
+  "at_stop_tasks": 83,
+  "at_stop_tracer_state": "T",
+  "before_digest": "81779c19a80f9b5f",
+  "before_tasks": 83,
+  "dwell_seconds": 30.0,
+  "label": "P30",
+  "ok": true,
+  "pause_after_bytes": 8,
+  "paused": true,
+  "serial_bytes_before_pause": 8,
+  "startup_seconds": 1.7,
+  "stop_held_seconds": 30.03,
+  "total_seconds": 32.5
+}

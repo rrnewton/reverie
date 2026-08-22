@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="hermit-e2e" tests="1" failures="1" errors="0">
+  <testcase classname="language-runtimes" name="language-runtimes/example-python-random/verify/kvm" time="16.215"><failure>canonical verification did not match: verified=false verdict=diverged bitwise_parity=false</failure></testcase>
+</testsuite>

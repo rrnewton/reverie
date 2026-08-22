@@ -1,0 +1,27 @@
+HERMIT_SKID_OVERSHOOT rcb_actual=14526440 rcb_target=14526016 skid_margin=1000 overshoot=424
+
+thread 'main' (1) panicked at /home/newton/.cargo/git/checkouts/reverie-2fc770f7a9c80803/c261050/reverie-ptrace/src/timer.rs:982:9:
+Clock perf counter exceeds target value at start of attempted single-step: 14526440 > 14526016. Consider increasing skid margin for this CPU.
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+thread 'main' (1) panicked at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/core/src/panicking.rs:225:5:
+panic in a function that cannot unwind
+stack backtrace:
+   0:     0x5590ba1cba41 - <<std[74eb2aff46e51e81]::sys::backtrace::BacktraceLock>::print::DisplayBacktrace as core[7aff35c028b048a4]::fmt::Display>::fmt
+   1:     0x5590ba1e667a - core[7aff35c028b048a4]::fmt::write
+   2:     0x5590ba1d313c - <std[74eb2aff46e51e81]::sys::stdio::unix::Stderr as core[7aff35c028b048a4]::io::write::Write>::write_fmt
+   3:     0x5590ba1a1706 - std[74eb2aff46e51e81]::panicking::default_hook::{closure#0}
+   4:     0x5590ba1c0881 - std[74eb2aff46e51e81]::panicking::default_hook
+   5:     0x5590ba1c0bab - std[74eb2aff46e51e81]::panicking::panic_with_hook
+   6:     0x5590ba1a17e4 - std[74eb2aff46e51e81]::panicking::panic_handler::{closure#0}
+   7:     0x5590ba198f39 - std[74eb2aff46e51e81]::sys::backtrace::__rust_end_short_backtrace::<std[74eb2aff46e51e81]::panicking::panic_handler::{closure#0}, !>
+   8:     0x5590ba1a278d - __rustc[49844a0cf2bb6b0d]::rust_begin_unwind
+   9:     0x5590ba1e6d1d - core[7aff35c028b048a4]::panicking::panic_nounwind_fmt
+  10:     0x5590ba1e6c9b - core[7aff35c028b048a4]::panicking::panic_nounwind
+  11:     0x5590ba1e6e27 - core[7aff35c028b048a4]::panicking::panic_cannot_unwind
+  12:     0x5590b9ff8116 - reverie_process[15baadc2ad0e7c60]::clone::clone_with_stack::callback
+  13:     0x7f85ad50fac4 - __clone
+  14:                0x0 - <unknown>
+thread caused non-unwinding panic. aborting.
+Error: Sandbox container exited unexpectedly
+     > Process exited with code: Signaled(SIGSEGV, true)
