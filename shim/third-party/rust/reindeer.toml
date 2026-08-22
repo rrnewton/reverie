@@ -14,7 +14,7 @@
 # Parse Rust code to work out the precise set of source files for each crate.
 precise_srcs = true
 
-# hermit's root Cargo.toml is a virtual manifest -- a workspace with no package
+# Reverie's root Cargo.toml is a virtual manifest -- a workspace with no package
 # of its own -- so there is no top-level target to include. Its members carry
 # hand-written BUCK files in this tree, so they are not generated either.
 include_top_level = false

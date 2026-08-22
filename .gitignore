@@ -1,5 +1,4 @@
 target/
-Cargo.lock
 
 # Local backup and Python cache files.
 *.orig
@@ -8,3 +7,11 @@ Cargo.lock
 
 # buck2 build output
 buck-out/
+
+# Reindeer-generated dependency output. These patterns live at the repository
+# root rather than shim/.gitignore: Reindeer reads ignore files only through
+# the shim cell root, so the root rules keep Git clean without filtering the
+# source files that Reindeer materializes.
+/shim/third-party/rust/.cargo/
+/shim/third-party/rust/BUCK
+/shim/third-party/rust/vendor/

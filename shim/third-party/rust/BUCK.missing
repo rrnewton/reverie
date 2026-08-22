@@ -11,7 +11,11 @@ You need to generate BUCK dependencies from Cargo.toml using reindeer!
 
 Try this:
 
-    ./bootstrap/reindeer --third-party-dir shim/third-party/rust buckify
+    ./bootstrap/regenerate-rust-deps
+
+This builds the pinned Reindeer revision and generates from the repository's
+authoritative Cargo.toml and Cargo.lock. See docs/BUCK2_OSS.md for the complete
+cold-checkout procedure and pinned Buck2 revision.
 
 See the following links for more information:
 
