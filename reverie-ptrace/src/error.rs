@@ -65,6 +65,10 @@ pub(crate) enum LiteinstActivationFailureReason {
     ExitedBeforePostExecTrap,
     InstallExecutableEntryGuard,
     TerminatedBeforeHandshake,
+    /// A newborn tracee could not be bound to the fail-closed cleanup guard.
+    NewbornTraceeRegistration,
+    /// A `vfork` child was refused because `exec` cannot preserve the preload.
+    UnsupportedVforkChild,
 }
 
 impl LiteinstActivationFailureReason {

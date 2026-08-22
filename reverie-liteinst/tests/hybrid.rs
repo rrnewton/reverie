@@ -887,22 +887,23 @@ async fn hybrid_follows_a_grandchild() {
     run_multi_task_fixture::<PassthroughGetpid>("hybrid_fork_tree.c", "fork-tree-followed\n").await;
 }
 
-/// A child that execs fails the whole session; the root must not report the
-/// success it would otherwise reach.
+/// The exact text the root emits when it refuses to report success over a
+/// fail-closed refusal raised by a non-root task.
 ///
-/// Exec after start cannot preserve the preload runtime, and that refusal now
-/// happens in a task with no outer cleanup guard of its own. Two distinct
-/// regressions are covered, and they fail in different ways:
+/// Asserting on this string rather than on the refusal's own wording is what
+/// makes the assertions below discriminating: this sentence can only be
+/// produced by the session-failure slot being written by the non-root task and
+/// then read by the root. A refusal that returned the same `Errno` without
+/// recording it -- which is what the pre-change code did -- cannot satisfy it.
+const SESSION_FAILURE: &str = "LiteInst session failed closed in a non-root task";
+
+/// Runs a multi-task fixture whose NON-root task is expected to fail closed,
+/// and returns the session error text.
 ///
-/// * without the session-wide failure record the root reaches its own clean
-///   exit and this run returns `Ok` -- a SILENT GREEN over a child that was
-///   released untraced, which is strictly worse than the refusal it replaced;
-/// * without releasing the failed non-root task from the tool, the
-///   deterministic scheduler waits forever for a thread whose tracee the error
-///   path already detached, and this test hangs rather than fails.
-#[tokio::test(flavor = "current_thread")]
-async fn a_child_that_execs_fails_the_session_instead_of_reporting_success() {
-    let (_directory, guest) = compile_fixture("hybrid_fork_exec.c");
+/// Fails the test on the two ways this can go wrong other than by returning an
+/// error: a silent green, and a hang.
+async fn session_failure_from_multi_task_fixture(fixture: &str) -> String {
+    let (_directory, guest) = compile_fixture(fixture);
     let name = format!("li{:x}", std::process::id());
     let pid_directory = tempfile::tempdir().unwrap();
     let pid_file = pid_directory.path().join("root.pid");
@@ -917,20 +918,17 @@ async fn a_child_that_execs_fails_the_session_instead_of_reporting_success() {
         ),
     )
     .await
-    .expect("a failed non-root task was never released from the tool: the session hung");
+    .unwrap_or_else(|_| {
+        panic!("a failed non-root task was never released from the tool: {fixture} hung")
+    });
 
     let error = match result {
         Ok((output, _global)) => panic!(
-            "SILENT GREEN: the session reported success over a child that could not be \
-             followed through exec: {output:?}"
+            "SILENT GREEN: the session reported success over a non-root task that failed \
+             closed in {fixture}: {output:?}"
         ),
         Err(error) => error,
     };
-    let text = error.to_string();
-    assert!(
-        text.contains("exec") || text.contains("ENOTSUPP"),
-        "session failure did not name the unsupported exec: {text}"
-    );
     let root_pid: u32 = fs::read_to_string(&pid_file)
         .unwrap()
         .trim()
@@ -940,6 +938,59 @@ async fn a_child_that_execs_fails_the_session_instead_of_reporting_success() {
     assert!(
         processes_named(&name).is_empty(),
         "failed LiteInst root/child remains stopped or as a zombie"
+    );
+    error.to_string()
+}
+
+/// A child that execs fails the whole session; the root must not report the
+/// success it would otherwise reach.
+///
+/// Exec after start cannot preserve the preload runtime, and that refusal
+/// happens in a task with no outer cleanup guard of its own.
+///
+/// COVERED, ablation-checked: deleting the root's consult of the session-failure
+/// slot makes this run return `Ok` -- a SILENT GREEN over a child that was
+/// released untraced, strictly worse than the refusal it replaced.
+///
+/// NOT COVERED: releasing a failed non-root task from the tool. An earlier
+/// revision claimed this test hangs without that release; it does not (the
+/// ablation leaves the suite green in 3.06s, per the PR #430 ablation table),
+/// because this fixture's root `waitpid`s the child and so the child's failure
+/// is already complete before the root exits. The `Duration::from_secs(60)`
+/// timeout is a liveness guard, not evidence.
+#[tokio::test(flavor = "current_thread")]
+async fn a_child_that_execs_fails_the_session_instead_of_reporting_success() {
+    let text = session_failure_from_multi_task_fixture("hybrid_fork_exec.c").await;
+    assert!(
+        text.contains(SESSION_FAILURE),
+        "the root did not refuse over the non-root refusal: {text}"
+    );
+    assert!(
+        text.contains("exec"),
+        "session failure did not name the unsupported exec: {text}"
+    );
+}
+
+/// A `vfork` inside a forked child fails the whole session.
+///
+/// `vfork` is still refused, and in a forked child that refusal is raised by a
+/// NON-root task whose `Err` is discarded by the `spawn_local` closure. This is
+/// the shape `system()`, `popen()` and `posix_spawn()` take.
+///
+/// COVERED, ablation-checked: removing the `record_liteinst_failure` call from
+/// the `vfork` refusal makes this run return `Ok` with the guest's own
+/// `fork-vfork-root-finished` marker -- the refusal happens, the grandchild is
+/// released untraced, and nothing reports it.
+#[tokio::test(flavor = "current_thread")]
+async fn a_vfork_in_a_forked_child_fails_the_session_instead_of_reporting_success() {
+    let text = session_failure_from_multi_task_fixture("hybrid_fork_vfork.c").await;
+    assert!(
+        text.contains(SESSION_FAILURE),
+        "the root did not refuse over the non-root vfork refusal: {text}"
+    );
+    assert!(
+        text.contains("vfork"),
+        "session failure did not name the refused vfork: {text}"
     );
 }
 

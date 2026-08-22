@@ -4133,20 +4133,60 @@ impl<L: Tool + 'static> TracedTask<L> {
         context: Option<libc::user_regs_struct>,
         child_context: Option<libc::user_regs_struct>,
     ) -> Result<Wait, TraceError> {
-        if let Some(runtime) = self.global_state.liteinst_runtime.as_ref() {
-            runtime.multi_task.store(true, Ordering::Release);
-            let newborn_tracees = Arc::clone(&runtime.newborn_tracees);
+        if self.global_state.liteinst_runtime.is_some() {
+            // Every fail-closed refusal below routes through
+            // `record_liteinst_failure`, the sole writer of the session-failure
+            // slot. That is load bearing rather than tidy: when this task is
+            // NOT the session root its `Err` is only logged by the
+            // `spawn_local` closure, which yields `ExitStatus` and not
+            // `Result`, so a refusal that skips the slot is a silent green over
+            // a tracee that was released untraced.
+            let newborn_tracees = {
+                let runtime = self
+                    .global_state
+                    .liteinst_runtime
+                    .as_ref()
+                    .expect("LiteInst runtime presence was checked immediately above");
+                runtime.multi_task.store(true, Ordering::Release);
+                Arc::clone(&runtime.newborn_tracees)
+            };
             let child_pid = child.pid();
-            if let Some(error) = newborn_tracees
+            let registration_error = newborn_tracees
                 .lock()
                 .unwrap()
                 .get(&child_pid)
                 .expect("stored child event ownership must remain registered")
-                .registration_error()
-            {
+                .registration_error();
+            if let Some(error) = registration_error {
+                self.record_liteinst_failure(
+                    LiteinstActivationFailureReason::NewbornTraceeRegistration,
+                    Error::runtime(
+                        self.tid(),
+                        "register a newborn LiteInst tracee",
+                        format!(
+                            "child {child_pid} could not be bound to the fail-closed cleanup guard: {error}"
+                        ),
+                    ),
+                );
                 return Err(error.into());
             }
-            let child_identity = TraceeIdentity::capture_event_child(child_pid, parent.pid(), op)?;
+            let child_identity =
+                match TraceeIdentity::capture_event_child(child_pid, parent.pid(), op) {
+                    Ok(identity) => identity,
+                    Err(error) => {
+                        self.record_liteinst_failure(
+                            LiteinstActivationFailureReason::NewbornTraceeRegistration,
+                            Error::runtime(
+                                self.tid(),
+                                "capture a newborn LiteInst tracee identity",
+                                format!(
+                                    "child {child_pid} identity could not be captured for the fail-closed cleanup guard: {error}"
+                                ),
+                            ),
+                        );
+                        return Err(error.into());
+                    }
+                };
             newborn_tracees
                 .lock()
                 .unwrap()
@@ -4170,8 +4210,17 @@ impl<L: Tool + 'static> TracedTask<L> {
                     future::pending::<()>().await;
                 }
             }
+            // Deliberately NOT recorded in the session-failure slot: this
+            // injection reproduces the pre-change unconditional refusal exactly
+            // as it was, so its four consumers keep exercising the old cleanup
+            // path rather than the new session-failure path.
             #[cfg(test)]
-            if runtime.fail_new_task {
+            if self
+                .global_state
+                .liteinst_runtime
+                .as_ref()
+                .is_some_and(|runtime| runtime.fail_new_task)
+            {
                 return Err(Errno::ENOTSUPP.into());
             }
             if op == ChildOp::Vfork {
@@ -4181,6 +4230,22 @@ impl<L: Tool + 'static> TracedTask<L> {
                 // keeps the refusal on the root, where the cleanup guard owns
                 // teardown; letting the child through only moves the same
                 // refusal into a task whose parent is frozen behind it.
+                //
+                // A NON-root task can reach this too -- `system()`,
+                // `popen()` and `posix_spawn()` in a forked child all use
+                // `CLONE_VFORK` -- and there the returned `Err` is swallowed,
+                // so the refusal must be recorded before it is returned.
+                self.record_liteinst_failure(
+                    LiteinstActivationFailureReason::UnsupportedVforkChild,
+                    Error::runtime(
+                        self.tid(),
+                        "reject LiteInst vfork child",
+                        format!(
+                            "vfork child {child_pid} cannot be followed: the preload runtime \
+                             cannot be preserved across the exec it suspends its parent for"
+                        ),
+                    ),
+                );
                 return Err(Errno::ENOTSUPP.into());
             }
             // Any other new task proceeds under the ordinary ptrace lifecycle.
@@ -4713,7 +4778,7 @@ impl<L: Tool + 'static> TracedTask<L> {
                 exit_status = run_loop => exit_status,
             }
         };
-        let (exit_status, failure) = match (outcome, self.liteinst_failure.take()) {
+        let (exit_status, mut failure) = match (outcome, self.liteinst_failure.take()) {
             (_, Some(original)) => (
                 None,
                 Some(reverie::Error::from(anyhow::Error::new(original))),
@@ -4721,6 +4786,31 @@ impl<L: Tool + 'static> TracedTask<L> {
             (Ok(exit_status), None) => (Some(exit_status), None),
             (Err(error), _) => (None, Some(error)),
         };
+        // A tracee that exited before completing the preload handshake is a
+        // fail-closed refusal like any other, so it belongs on the shared
+        // failure path below rather than in an early return underneath it. As
+        // an early return it wrote neither the session-failure slot (leaving a
+        // non-root refusal invisible to the root) nor released a failed
+        // non-root task from the tool.
+        if failure.is_none() && self.global_state.liteinst_runtime.is_some() {
+            let phase = self.liteinst_runtime.lock().unwrap().phase;
+            if phase != LiteinstRuntimePhase::Ready {
+                self.record_liteinst_failure(
+                    LiteinstActivationFailureReason::TerminatedBeforeHandshake,
+                    Error::runtime(
+                        self.tid(),
+                        "verify LiteInst runtime activation",
+                        format!(
+                            "tracee terminated before the required preload handshake completed (phase {phase:?})"
+                        ),
+                    ),
+                );
+                failure = self
+                    .liteinst_failure
+                    .take()
+                    .map(|original| reverie::Error::from(anyhow::Error::new(original)));
+            }
+        }
         if let Some(failure) = failure {
             // A failed task skips the normal `tool_exit` bookkeeping below, so
             // a deterministic scheduler keeps waiting for a thread whose tracee
@@ -4745,42 +4835,34 @@ impl<L: Tool + 'static> TracedTask<L> {
             return Err(failure);
         }
         let exit_status = exit_status.expect("a task without a failure has an exit status");
-        if self.global_state.liteinst_runtime.is_some() {
-            let phase = self.liteinst_runtime.lock().unwrap().phase;
-            if phase != LiteinstRuntimePhase::Ready {
-                return Err(anyhow::Error::new(LiteinstActivationFailure::new(
-                    LiteinstActivationStage::PreReady,
-                    LiteinstActivationFailureReason::TerminatedBeforeHandshake,
-                    Error::runtime(
-                        self.tid(),
-                        "verify LiteInst runtime activation",
-                        format!(
-                            "tracee terminated before the required preload handshake completed (phase {phase:?})"
-                        ),
-                    ),
-                ))
-                .into());
-            }
-        }
 
         // A fail-closed refusal raised by a non-root task cannot reach the
         // root's cleanup guard, and that task's tracee was released so the rest
-        // of the guest could finish. Refuse to report success over it.
-        if let Some(runtime) = self.global_state.liteinst_runtime.as_ref()
-            && self.liteinst_root_config().is_some()
-            && let Some(message) = runtime.session_failure.lock().unwrap().clone()
-        {
-            return Err(anyhow::anyhow!(
-                "LiteInst session failed closed in a non-root task: {message}"
-            )
-            .into());
-        }
+        // of the guest could finish. The root must refuse to report success
+        // over it -- but only AFTER `tool_exit` below, which is where the root
+        // joins its children. Consulting the slot before that join can only see
+        // refusals that happened to be raised before the root's own guest
+        // exited, so a child that fails during the join is missed and the
+        // session still reports the success this check exists to prevent.
+        // `tool_exit` consumes `self`, so capture the slot first.
+        let session_failure = self
+            .liteinst_root_config()
+            .map(|runtime| Arc::clone(&runtime.session_failure));
 
         if let Some(stats) = &self.global_state.backend_stats {
             stats.record_tracee_exit();
         }
         log_guest_exit(self.tid(), self.pid(), exit_status);
         self.tool_exit(exit_status).await?;
+
+        if let Some(session_failure) = session_failure
+            && let Some(message) = session_failure.lock().unwrap().clone()
+        {
+            return Err(anyhow::anyhow!(
+                "LiteInst session failed closed in a non-root task: {message}"
+            )
+            .into());
+        }
 
         Ok(exit_status)
     }
