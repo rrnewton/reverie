@@ -1,0 +1,49 @@
+All runs on devbig014, hermit 0.2.0 (2026-08-21, g3b6cd503ccd8) unless noted.
+Candidate A = /tmp/hermit-fix-a (branch cloudlint/fix-a-rdtsc-global @ 7872ab507d)
+Candidate B = /tmp/hermit-fix-b (branch cloudlint/fix-b-thread-absorbs-sched @ 64a5794dab)
+
+=== threadclock: identical per-thread work, varying thread count ===
+native (real hardware reference)
+threads 1 monotonic_delta 0.001189596 tsc_delta 1839772
+threads 2 monotonic_delta 0.001246642 tsc_delta 1928076
+threads 4 monotonic_delta 0.001553532 tsc_delta 2403228
+threads 8 monotonic_delta 0.001412039 tsc_delta 2183811
+
+hermit baseline (SUM, rdtsc thread-local)
+threads 1 monotonic_delta 0.030043364 tsc_delta 30033425
+threads 2 monotonic_delta 0.063764811 tsc_delta 30313155
+threads 4 monotonic_delta 0.131008387 tsc_delta 30857605
+threads 8 monotonic_delta 0.268791914 tsc_delta 31978535
+
+candidate A (rdtsc reads global)
+threads 1 monotonic_delta 0.030043364 tsc_delta 30033425
+threads 2 monotonic_delta 0.063764811 tsc_delta 63754685
+threads 4 monotonic_delta 0.131008387 tsc_delta 130998315
+threads 8 monotonic_delta 0.268791914 tsc_delta 268782015
+
+candidate B (thread absorbs scheduler time)
+threads 1 monotonic_delta 0.031543493 tsc_delta 30033425
+threads 2 monotonic_delta 0.066764593 tsc_delta 30313155
+threads 4 monotonic_delta 0.137008429 tsc_delta 30857605
+threads 8 monotonic_delta 0.280791998 tsc_delta 31978535
+
+=== sleepscale: one thread sleeps 50ms while N-1 spin ===
+native
+threads 1 slept_ms 50 global_delta 0.050060942 own_tsc_delta 77475340
+threads 4 slept_ms 50 global_delta 0.050070336 own_tsc_delta 77490452
+
+hermit baseline (SUM)
+threads 1 slept_ms 50 global_delta 0.050015211 own_tsc_delta 5055
+threads 2 slept_ms 50 global_delta 0.201015234 own_tsc_delta 5115
+threads 4 slept_ms 50 global_delta 0.602015257 own_tsc_delta 5115
+threads 8 slept_ms 50 global_delta 1.404015303 own_tsc_delta 5115
+
+=== overshoot vs --max-timeslice, 4 threads, 50ms sleep ===
+predicted overshoot = (N-1) x max_timeslice
+  max_timeslice=50000000     global_delta 0.152014971   (3T = 0.150, residual 0.002)
+  max_timeslice=100000000    global_delta 0.302015305   (3T = 0.300, residual 0.002)
+  max_timeslice=200000000    global_delta 0.602015257   (3T = 0.600, residual 0.002)
+  max_timeslice=400000000    global_delta 1.202015162   (3T = 1.200, residual 0.002)
+
+=== reproducibility ===
+8 threads, 50ms sleep, two independent runs: 1.404015303 both times.
