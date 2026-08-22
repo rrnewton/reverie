@@ -36,6 +36,17 @@ static inline bool lookup_virtual_identity_entries(
   return false;
 }
 
+static inline int32_t virtual_identity_for_host_entries(
+    const virtual_identity_t *identities, size_t count, int32_t host) {
+  int32_t result = host;
+
+  if (host <= 0)
+    return host;
+
+  (void)lookup_virtual_identity_entries(identities, count, host, &result);
+  return result;
+}
+
 static inline bool update_virtual_identity_entries(
     virtual_identity_t *identities, size_t count, int32_t host,
     int32_t virtual_id) {
@@ -52,6 +63,11 @@ static inline bool update_virtual_identity_entries(
   return false;
 }
 
+static inline bool clone_identity_mapping_ready(uint64_t pending_thread_clones,
+                                                bool mapping_found) {
+  return pending_thread_clones == 0 && mapping_found;
+}
+
 static inline int32_t host_identity_for_guest_entries(
     const virtual_identity_t *identities, size_t count, int32_t identity) {
   size_t i;
@@ -59,15 +75,11 @@ static inline int32_t host_identity_for_guest_entries(
   if (identity <= 0)
     return identity;
 
-  /* A guest virtual ID wins even when an earlier entry has the same numeric
-   * host ID. */
+  /* Tool and guest syscall arguments are guest-visible identities.  Resolve
+   * only that namespace: accepting a numerically equal host ID here makes the
+   * result depend on host PID allocation and is ambiguous at collisions. */
   for (i = 0; i < count; ++i) {
     if (identities[i].virtual_id == identity)
-      return identities[i].host;
-  }
-
-  for (i = 0; i < count; ++i) {
-    if (identities[i].host == identity)
       return identities[i].host;
   }
 

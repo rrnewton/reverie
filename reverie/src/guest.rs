@@ -39,9 +39,8 @@ pub enum DetlogRegionKind {
 ///
 /// The `[start, end)` bounds are guest virtual addresses readable through
 /// [`Guest::memory`]. This exists for out-of-process backends (for example the
-/// KVM backend) where [`Guest::pid`] is the host VMM process rather than a
-/// process whose `/proc/<pid>/maps` describes the guest's own address space, so
-/// the default `/proc`-based enumeration would read the wrong process.
+/// KVM backend) where no host process's `/proc/<pid>/maps` describes the
+/// guest's own address space.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DetlogMemoryRegion {
     /// Which logical region this is.
@@ -61,11 +60,18 @@ pub trait Guest<T: Tool>: Send + GlobalRPC<T::GlobalState> {
     /// Access to guest stack
     type Stack: Send + Stack;
 
-    /// Thread ID of the guest task.
+    /// Guest-visible thread ID of the guest task.
     fn tid(&self) -> Pid;
 
-    /// Process ID of the process containing the guest task.
+    /// Guest-visible process ID of the process containing the guest task.
     fn pid(&self) -> Pid;
+
+    /// Host process ID whose process state represents this guest, when the
+    /// backend exposes one. Out-of-process backends whose guest memory does not
+    /// correspond to one host process return `None`.
+    fn host_pid(&self) -> Option<Pid> {
+        None
+    }
 
     /// Process ID of the parent process. Returns `None` if this is the root of
     /// the traced process tree. A return value of `None` does not necessarily
@@ -93,7 +99,10 @@ pub trait Guest<T: Tool>: Send + GlobalRPC<T::GlobalState> {
 
     /// Reads and returns the auxv table for this process.
     fn auxv(&self) -> Auxv {
-        Auxv::new(self.pid()).expect("failed to read auxv table")
+        // Existing in-process backends use the guest PID as the host PID. A
+        // backend that separates them supplies `host_pid`; out-of-process
+        // backends override `auxv` with guest-memory-backed entries.
+        Auxv::new(self.host_pid().unwrap_or_else(|| self.pid())).expect("failed to read auxv table")
     }
 
     /// Returns a representation of the address space associated with this guest
@@ -307,17 +316,16 @@ pub trait Guest<T: Tool>: Send + GlobalRPC<T::GlobalState> {
     }
 
     /// Returns the guest-address memory regions this backend wants hashed for
-    /// deterministic memory-map logging, or `None` to fall back to reading
-    /// `/proc/<pid>/maps` for the process returned by [`Guest::pid`].
+    /// deterministic memory-map logging, or `None` when it has no
+    /// backend-specific region source.
     ///
     /// The default is `None`, which preserves the historical behavior used by
     /// the ptrace backend, where `pid()` is the guest process and its
     /// `/proc/<pid>/maps` correctly describes the guest address space.
     ///
-    /// Out-of-process backends whose `pid()` is not the guest (for example the
-    /// KVM backend, where it is the host VMM process) override this to return
-    /// real guest stack/heap ranges readable through [`Guest::memory`], so the
-    /// determinism engine hashes the guest's memory instead of the VMM's.
+    /// Out-of-process backends override this to return real guest stack/heap
+    /// ranges readable through [`Guest::memory`], so the determinism engine
+    /// does not inspect an unrelated host process.
     fn detlog_memory_regions(&self) -> Option<Vec<DetlogMemoryRegion>> {
         None
     }
@@ -381,6 +389,10 @@ where
         self.inner.pid()
     }
 
+    fn host_pid(&self) -> Option<Pid> {
+        self.inner.host_pid()
+    }
+
     fn ppid(&self) -> Option<Pid> {
         self.inner.ppid()
     }
@@ -399,6 +411,10 @@ where
 
     fn memory(&self) -> Self::Memory {
         self.inner.memory()
+    }
+
+    fn auxv(&self) -> Auxv {
+        self.inner.auxv()
     }
 
     fn thread_state_mut(&mut self) -> &mut L::ThreadState {
