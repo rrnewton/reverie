@@ -11,7 +11,7 @@ EVALUATED_FAIL, conflating supersession (a hole) with a real failure.
 Supersession itself is CORRECT and is not what is being fixed -- cancelling an
 obsolete run in favour of a newer one is right. Only the naming was wrong.
 """
-import contextlib, importlib.util, io, sys, time
+import base64, contextlib, importlib.util, io, sys, time
 
 spec = importlib.util.spec_from_file_location("uh", "ci-hub/health/unevaluated_head.py")
 uh = importlib.util.module_from_spec(spec); spec.loader.exec_module(uh)
@@ -104,6 +104,111 @@ cases.append(("cause is NOT established" in enabled_mergeable
               and "REMEDY: dispatch" in enabled_mergeable,
               "Actions on: mergeable NEVER_RAN remains actionable",
               enabled_mergeable))
+manual_only = {
+    "active_workflows": 9,
+    "manual_only": True,
+    "automatic_triggers": [],
+    "no_active_workflows": False,
+}
+manual_only_mergeable = uh.likely_reason(
+    {"mergeable": "MERGEABLE"}, uh.NEVER_RAN, False,
+    actions_enabled=True, workflow_triggers=manual_only,
+)
+cases.append(("manual-only" in manual_only_mergeable
+              and "all 9 active workflow(s)" in manual_only_mergeable
+              and "This remains a hole, not green" in manual_only_mergeable
+              and "REMEDY: dispatch" in manual_only_mergeable
+              and "cause is NOT established" not in manual_only_mergeable,
+              "manual-only configuration names the known cause without hiding the hole",
+              manual_only_mergeable))
+automatic_present = uh.likely_reason(
+    {"mergeable": "MERGEABLE"}, uh.NEVER_RAN, False,
+    actions_enabled=True,
+    workflow_triggers={"active_workflows": 2, "manual_only": False,
+                       "automatic_triggers": ["pull_request"]},
+)
+cases.append(("cause is NOT established" in automatic_present
+              and "REMEDY: dispatch" in automatic_present,
+              "automatic trigger present: unexplained NEVER_RAN stays unexplained",
+              automatic_present))
+unreadable_triggers = uh.likely_reason(
+    {"mergeable": "MERGEABLE"}, uh.NEVER_RAN, False,
+    actions_enabled=True,
+    workflow_triggers={"error": "workflow configuration HTTP 503"},
+)
+cases.append(("NOT DETERMINABLE" in unreadable_triggers
+              and "workflow configuration HTTP 503" in unreadable_triggers
+              and "manual-only" not in unreadable_triggers
+              and "This remains a hole, not green" in unreadable_triggers,
+              "unreadable trigger configuration is distinct from manual-only and unexplained",
+              unreadable_triggers))
+
+def encoded(text):
+    return {"encoding": "base64",
+            "content": base64.b64encode(text.encode()).decode()}
+
+registry = {
+    "total_count": 3,
+    "workflows": [
+        {"id": 1, "path": ".github/workflows/a.yml", "state": "active"},
+        {"id": 2, "path": ".github/workflows/b.yml", "state": "active"},
+        {"id": 3, "path": ".github/workflows/deleted.yml", "state": "active"},
+    ],
+}
+directory = [
+    {"path": ".github/workflows/a.yml", "type": "file"},
+    {"path": ".github/workflows/b.yml", "type": "file"},
+]
+manual_evidence = uh._workflow_trigger_evidence(
+    registry, directory,
+    {"workflow:.github/workflows/a.yml":
+         encoded("on:\n  workflow_dispatch:\njobs:\n"),
+     "workflow:.github/workflows/b.yml":
+         encoded("on:\n  workflow_dispatch:\njobs:\n")},
+)
+cases.append((manual_evidence == manual_only | {"active_workflows": 2},
+              "workflow reader proves checked-in active files are manual-only and ignores a deleted registry row",
+              str(manual_evidence)))
+automatic_evidence = uh._workflow_trigger_evidence(
+    registry, directory,
+    {"workflow:.github/workflows/a.yml":
+         encoded("on:\n  workflow_dispatch:\njobs:\n"),
+     "workflow:.github/workflows/b.yml":
+         encoded("on:\n  pull_request:\n  workflow_dispatch:\njobs:\n")},
+)
+cases.append((automatic_evidence["manual_only"] is False
+              and automatic_evidence["automatic_triggers"] == ["pull_request"],
+              "workflow reader preserves a real automatic trigger",
+              str(automatic_evidence)))
+
+old_batch = uh.gh_json_batch
+try:
+    def workflow_batches(requests, deadline=None):
+        if "workflow-registry" in requests:
+            return {"workflow-registry": registry,
+                    "workflow-directory": directory}
+        return {
+            "workflow:.github/workflows/a.yml":
+                encoded("on:\n  workflow_dispatch:\njobs:\n"),
+            "workflow:.github/workflows/b.yml":
+                encoded("on:\n  workflow_dispatch:\njobs:\n"),
+        }
+    uh.gh_json_batch = workflow_batches
+    live_manual_evidence = uh.read_workflow_trigger_evidence("rrnewton/hermit")
+
+    uh.gh_json_batch = lambda requests, deadline=None: (_ for _ in ()).throw(
+        uh.GitHubUnavailable("workflow API HTTP 503")
+    )
+    live_unreadable_evidence = uh.read_workflow_trigger_evidence("rrnewton/hermit")
+finally:
+    uh.gh_json_batch = old_batch
+cases.append((live_manual_evidence["manual_only"] is True
+              and live_manual_evidence["active_workflows"] == 2,
+              "live workflow reader observes manual-only configuration",
+              str(live_manual_evidence)))
+cases.append((live_unreadable_evidence == {"error": "workflow API HTTP 503"},
+              "live workflow read failure becomes NOT-DETERMINABLE evidence",
+              str(live_unreadable_evidence)))
 
 old_gh_json = uh.gh_json
 try:
@@ -160,7 +265,11 @@ def collect_with(fake):
         return result
     uh.gh_json_batch = fake_batch
     try:
-        return uh.collect_live("rrnewton/hermit", 1, actions_enabled=True)[0]
+        return uh.collect_live(
+            "rrnewton/hermit", 1, actions_enabled=True,
+            workflow_triggers={"active_workflows": 1, "manual_only": False,
+                               "automatic_triggers": ["pull_request"]},
+        )[0]
     finally:
         uh.gh_json = old
         uh.gh_json_batch = old_batch
@@ -264,7 +373,9 @@ try:
         return {}
     uh.gh_json_batch = enrichment_failure
     enrichment_row = uh.collect_live(
-        "rrnewton/hermit", 1, actions_enabled=True
+        "rrnewton/hermit", 1, actions_enabled=True,
+        workflow_triggers={"active_workflows": 1, "manual_only": False,
+                           "automatic_triggers": ["pull_request"]},
     )[0]
 finally:
     uh.gh_json_batch = old_batch
@@ -301,7 +412,11 @@ try:
                 result[key] = {"workflow_runs": [{"conclusion": "success"}]}
         return result
     uh.gh_json_batch = many_batch
-    many_rows = uh.collect_live("rrnewton/hermit", 40, actions_enabled=True)
+    many_rows = uh.collect_live(
+        "rrnewton/hermit", 40, actions_enabled=True,
+        workflow_triggers={"active_workflows": 1, "manual_only": False,
+                           "automatic_triggers": ["pull_request"]},
+    )
 finally:
     uh.gh_json, uh.gh_json_batch = old_gh_json, old_batch
 cases.append((len(many_rows) == 40 and len(batch_calls) == 2

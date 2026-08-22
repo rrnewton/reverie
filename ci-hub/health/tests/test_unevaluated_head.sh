@@ -132,6 +132,45 @@ grep -q "cause is NOT established" <<<"$out" \
   && ok "mergeable-but-unevaluated says the cause is NOT established rather than blaming conflict" \
   || bad "invented a cause for a non-conflicting unevaluated head: $out"
 
+# --- KNOWN CAUSE: manual-only stays an actionable, counted hole -------------
+cat >"$tmp/manual-only.json" <<'JSON'
+{"actions_enabled": true,
+ "workflow_triggers": {"active_workflows": 9, "manual_only": true,
+                       "automatic_triggers": [], "no_active_workflows": false},
+ "prs": [
+   {"number": 10, "head": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+    "mergeable": "MERGEABLE", "runs": []}
+ ]}
+JSON
+out="$(python3 "$tool" --from-json "$tmp/manual-only.json" --gate 2>&1)"; rc=$?
+if [[ $rc -eq 1 ]]; then ok "manual-only NEVER_RAN remains an actionable hole"; else bad "manual-only hole was silenced: rc=$rc out=$out"; fi
+grep -q "current workflow configuration is manual-only" <<<"$out" \
+  && grep -q "no automatic trigger" <<<"$out" \
+  && ok "manual-only cause is emitted positively" \
+  || bad "manual-only cause missing: $out"
+grep -q "^not_evaluated=1$" <<<"$out" \
+  && grep -q "^actionable_not_evaluated=1$" <<<"$out" \
+  && grep -q "^expected_not_evaluated=0$" <<<"$out" \
+  && ok "manual-only changes no hole counter" \
+  || bad "manual-only changed the hole counters: $out"
+
+# --- THIRD OUTCOME: unreadable trigger configuration is not a cause ---------
+cat >"$tmp/unreadable-triggers.json" <<'JSON'
+{"actions_enabled": true,
+ "workflow_triggers": {"error": "workflow configuration HTTP 503"},
+ "prs": [
+   {"number": 11, "head": "ffffffffffffffffffffffffffffffffffffffff",
+    "mergeable": "MERGEABLE", "runs": []}
+ ]}
+JSON
+out="$(python3 "$tool" --from-json "$tmp/unreadable-triggers.json" --gate 2>&1)"; rc=$?
+if [[ $rc -eq 1 ]]; then ok "unreadable trigger configuration remains an actionable hole"; else bad "unreadable config silenced the hole: rc=$rc out=$out"; fi
+grep -q "NOT DETERMINABLE" <<<"$out" \
+  && grep -q "workflow configuration HTTP 503" <<<"$out" \
+  && ! grep -q "configuration is manual-only" <<<"$out" \
+  && ok "unreadable configuration is distinct from manual-only" \
+  || bad "unreadable configuration was mislabelled: $out"
+
 echo "======================================================================"
 echo "flagged-when-it-should:     1 case   (zero runs)"
 echo "not-flagged-when-it-should: 2 cases  (all-success, and a genuine red)"

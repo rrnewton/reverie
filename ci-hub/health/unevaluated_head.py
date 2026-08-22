@@ -63,6 +63,7 @@ in the CAUSE rather than the STATE.
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import os
 import re
@@ -73,6 +74,12 @@ import sys
 from datetime import datetime
 from typing import Any
 from urllib.parse import quote
+
+HEALTH_DIR = os.path.dirname(os.path.abspath(__file__))
+if HEALTH_DIR not in sys.path:
+    sys.path.insert(0, HEALTH_DIR)
+
+from manual_run import automatic_triggers, triggers_of  # noqa: E402
 
 # FIVE STATES, AND ONLY ONE IS GOOD NEWS. Three was not enough, and the two it
 # was missing were both being reported as the good one or as the wrong bad one:
@@ -135,6 +142,7 @@ class GitHubUnavailable(RuntimeError):
 
 
 _GH_TOKEN: str | None = None
+_WORKFLOW_TRIGGERS_UNSET = object()
 
 
 def _resolve(fn, run):
@@ -218,7 +226,8 @@ def classify(
 def likely_reason(pr: dict[str, Any], state: str, stale: bool,
                   ev: dict[str, Any] | None = None,
                   actions_enabled: bool = True,
-                  actions_disabled_directive: str | None = None) -> str:
+                  actions_disabled_directive: str | None = None,
+                  workflow_triggers: dict[str, Any] | None = None) -> str:
     """Named state -> cause -> remedy, with the CAUSE GRADED BY EVIDENCE.
 
     Shape copied from github_main_health's `stale-pending` emitter. The grading
@@ -269,6 +278,28 @@ def likely_reason(pr: dict[str, Any], state: str, stale: bool,
         if (pr.get("mergeable") or "").upper() == "CONFLICTING":
             return ("no run was ever created; the PR conflicts with its base so GitHub cannot "
                     "build refs/pull/N/merge. REMEDY: resolve the conflict; a dispatch also works")
+        if workflow_triggers and workflow_triggers.get("error"):
+            return (
+                "no run was ever created; whether the current workflow configuration "
+                "provides an automatic trigger is NOT DETERMINABLE "
+                f"({workflow_triggers['error']}). This remains a hole, not green. "
+                "REMEDY: inspect the workflow configuration, then dispatch the gate at "
+                "this head"
+            )
+        if workflow_triggers and workflow_triggers.get("manual_only") is True:
+            count = workflow_triggers.get("active_workflows", 0)
+            return (
+                f"no run was ever created; the current workflow configuration is "
+                f"manual-only: all {count} active workflow(s) declare workflow_dispatch "
+                "and no automatic trigger. This remains a hole, not green. REMEDY: "
+                "dispatch the gate at this head"
+            )
+        if workflow_triggers and workflow_triggers.get("no_active_workflows") is True:
+            return (
+                "no run was ever created; the repository currently has no active "
+                "workflow, so no automatic run can be created. This remains a hole, "
+                "not green. REMEDY: inspect the workflow configuration"
+            )
         return ("no run was ever created and the cause is NOT established for a mergeable PR. "
                 "REMEDY: dispatch the gate at this head -- proven to work on #1918 -- and report "
                 "that triggering, not the workflow, is what failed")
@@ -418,6 +449,135 @@ def actions_policy(repo: str) -> tuple[bool, str | None]:
     return enabled, directive
 
 
+def _workflow_trigger_evidence(
+    registry: dict[str, Any], directory: list[dict[str, Any]],
+    contents: dict[str, Any]
+) -> dict[str, Any]:
+    """Describe current active-workflow triggers without guessing through gaps."""
+    workflows = registry.get("workflows")
+    if not isinstance(workflows, list):
+        raise ValueError("workflow registry did not return a workflows list")
+    if any(not isinstance(workflow, dict) for workflow in workflows):
+        raise ValueError("workflow registry contained a non-object row")
+    total = registry.get("total_count")
+    if isinstance(total, int) and total > len(workflows):
+        raise ValueError(
+            f"workflow registry was truncated ({len(workflows)} of {total})"
+        )
+
+    by_path = {workflow.get("path"): workflow for workflow in workflows}
+    files = [
+        item for item in directory
+        if isinstance(item, dict)
+        and item.get("type") == "file"
+        and str(item.get("path") or "").endswith((".yml", ".yaml"))
+    ]
+    active = []
+    for item in files:
+        path = item.get("path")
+        registered = by_path.get(path)
+        if not isinstance(registered, dict):
+            raise ValueError(f"workflow registry had no row for {path}")
+        state = registered.get("state")
+        if state == "active":
+            active.append(item)
+        elif not isinstance(state, str) or not state.startswith("disabled"):
+            raise ValueError(f"workflow state was not classifiable for {path}: {state}")
+    if not active:
+        return {
+            "active_workflows": 0,
+            "manual_only": False,
+            "automatic_triggers": [],
+            "no_active_workflows": True,
+        }
+
+    automatic: set[str] = set()
+    for workflow in active:
+        path = workflow.get("path")
+        if not isinstance(path, str) or not path:
+            raise ValueError("active workflow file lacked a path")
+        payload = contents.get(f"workflow:{path}")
+        if not isinstance(payload, dict):
+            raise ValueError(f"workflow configuration was unavailable for {path}")
+        if (payload.get("encoding") != "base64"
+                or not isinstance(payload.get("content"), str)):
+            raise ValueError(f"workflow configuration was not base64 content for {path}")
+        try:
+            encoded = "".join(payload["content"].split())
+            text = base64.b64decode(encoded, validate=True).decode("utf-8")
+        except (ValueError, UnicodeDecodeError) as error:
+            raise ValueError(f"workflow configuration was unreadable for {path}") from error
+        triggers = triggers_of(text)
+        if not triggers:
+            raise ValueError(f"workflow trigger configuration was unreadable for {path}")
+        named_automatic = automatic_triggers(triggers)
+        unclassified = sorted(
+            trigger for trigger in triggers
+            if trigger != "workflow_dispatch" and trigger not in named_automatic
+        )
+        if unclassified:
+            raise ValueError(
+                f"workflow trigger configuration was not classifiable for {path}: "
+                + ",".join(unclassified)
+            )
+        automatic.update(named_automatic)
+
+    return {
+        "active_workflows": len(active),
+        "manual_only": not automatic,
+        "automatic_triggers": sorted(automatic),
+        "no_active_workflows": False,
+    }
+
+
+def read_workflow_trigger_evidence(
+    repo: str, deadline: float | None = None
+) -> dict[str, Any]:
+    """Read current workflow files; failure is evidence unavailable, not absence."""
+    local_deadline = (
+        time.monotonic() + 6.0 if deadline is None
+        else min(deadline, time.monotonic() + 6.0)
+    )
+    try:
+        inventory = gh_json_batch(
+            {
+                "workflow-registry": f"repos/{repo}/actions/workflows?per_page=100",
+                "workflow-directory": f"repos/{repo}/contents/.github/workflows",
+            },
+            local_deadline,
+        )
+        registry_payload = inventory.get("workflow-registry")
+        directory_payload = inventory.get("workflow-directory")
+        if not isinstance(registry_payload, dict):
+            raise ValueError("workflow registry response was not an object")
+        if not isinstance(directory_payload, list):
+            raise ValueError("workflow directory response was not a list")
+        registry_by_path = {
+            workflow.get("path"): workflow
+            for workflow in registry_payload.get("workflows", [])
+            if isinstance(workflow, dict)
+        }
+        active = [
+            item for item in directory_payload
+            if isinstance(item, dict)
+            and item.get("type") == "file"
+            and str(item.get("path") or "").endswith((".yml", ".yaml"))
+            and (registry_by_path.get(item.get("path")) or {}).get("state") == "active"
+        ]
+        requests = {
+            f"workflow:{workflow['path']}":
+                f"repos/{repo}/contents/{quote(workflow['path'], safe='/')}"
+            for workflow in active
+            if isinstance(workflow.get("path"), str)
+        }
+        contents = gh_json_batch(requests, local_deadline) if requests else {}
+        return _workflow_trigger_evidence(
+            registry_payload, directory_payload, contents
+        )
+    except (GitHubUnavailable, ValueError, TypeError) as error:
+        return {"error": " ".join(str(error).split())[:300]}
+
+
 def canonical_head_sha(
     repo: str, pr: dict[str, Any], live: dict[str, Any] | None = None
 ) -> str:
@@ -448,7 +608,9 @@ def canonical_head_sha(
 
 def collect_live(repo: str, limit: int,
                  actions_enabled: bool | None = None,
-                 actions_disabled_directive: str | None = None) -> list[dict[str, Any]]:
+                 actions_disabled_directive: str | None = None,
+                 workflow_triggers: dict[str, Any] | None | object =
+                 _WORKFLOW_TRIGGERS_UNSET) -> list[dict[str, Any]]:
     deadline = time.monotonic() + 27.0
     if limit < 1:
         return []
@@ -584,6 +746,12 @@ def collect_live(repo: str, limit: int,
         if mergeability_error:
             pr["mergeability_error"] = mergeability_error
 
+    if workflow_triggers is _WORKFLOW_TRIGGERS_UNSET:
+        workflow_triggers = (
+            read_workflow_trigger_evidence(repo, deadline)
+            if actions_enabled and no_evidence_prs else None
+        )
+
     cancelled = [
         run
         for runs in runs_by_pr.values()
@@ -622,6 +790,7 @@ def collect_live(repo: str, limit: int,
             "check_run_count": len(check_runs),
             "actions_enabled": actions_enabled,
             "actions_disabled_directive": actions_disabled_directive,
+            "workflow_triggers": workflow_triggers,
             "mergeability_error": pr.get("mergeability_error"),
         }
         def successor_of(run: dict[str, Any]):
@@ -655,7 +824,8 @@ def collect_live(repo: str, limit: int,
                 }
         row["state"], row["stale"], row["evidence"] = st, stale, ev
         row["reason"] = likely_reason(
-            pr, st, stale, ev, actions_enabled, actions_disabled_directive
+            pr, st, stale, ev, actions_enabled, actions_disabled_directive,
+            workflow_triggers if isinstance(workflow_triggers, dict) else None,
         )
         rows.append(row)
     # Deterministic order regardless of completion order, so tick output is
@@ -670,14 +840,18 @@ def collect_fixture(path: str) -> list[dict[str, Any]]:
         prs = data
         actions_enabled = True
         actions_disabled_directive = None
+        workflow_triggers = None
     elif isinstance(data, dict):
         prs = data.get("prs")
         actions_enabled = data.get("actions_enabled")
         actions_disabled_directive = data.get("actions_disabled_directive")
+        workflow_triggers = data.get("workflow_triggers")
         if not isinstance(prs, list) or type(actions_enabled) is not bool:
             raise RuntimeError(
                 "fixture object requires prs list and boolean actions_enabled"
             )
+        if workflow_triggers is not None and not isinstance(workflow_triggers, dict):
+            raise RuntimeError("fixture workflow_triggers must be an object")
     else:
         raise RuntimeError("fixture must be a PR list or a repository-state object")
     rows = []
@@ -691,12 +865,14 @@ def collect_fixture(path: str) -> list[dict[str, Any]]:
             "run_count": len(runs),
             "actions_enabled": actions_enabled,
             "actions_disabled_directive": actions_disabled_directive,
+            "workflow_triggers": workflow_triggers,
         }
         st, stale, ev = classify(runs, now=pr.get("now"), jobs_of=pr.get("jobs_of"),
                                  successor_of=pr.get("successor_of"))
         row["state"], row["stale"], row["evidence"] = st, stale, ev
         row["reason"] = likely_reason(
-            pr, st, stale, ev, actions_enabled, actions_disabled_directive
+            pr, st, stale, ev, actions_enabled, actions_disabled_directive,
+            workflow_triggers,
         )
         rows.append(row)
     return rows
@@ -757,10 +933,40 @@ def main() -> int:
                 "inspect the unresolved run or verify why Actions are disabled; no "
                 "Actions dispatch is permitted while disabled"
             )
+        trigger_evidence = next(
+            (r.get("workflow_triggers") for r in holes
+             if isinstance(r.get("workflow_triggers"), dict)),
+            None,
+        )
+        if trigger_evidence and trigger_evidence.get("error"):
+            trigger_summary = (
+                "workflow trigger configuration is NOT DETERMINABLE: "
+                + trigger_evidence["error"]
+            )
+        elif trigger_evidence and trigger_evidence.get("manual_only") is True:
+            trigger_summary = (
+                f"current workflow configuration is manual-only across "
+                f"{trigger_evidence.get('active_workflows', 0)} active workflow(s); "
+                "no automatic trigger exists"
+            )
+        elif trigger_evidence and trigger_evidence.get("no_active_workflows") is True:
+            trigger_summary = "the repository has no active workflow"
+        elif trigger_evidence and trigger_evidence.get("automatic_triggers"):
+            trigger_summary = (
+                "current workflow configuration includes automatic trigger(s) "
+                + ",".join(trigger_evidence["automatic_triggers"])
+                + "; cause remains not established for mergeable rows"
+            )
+        else:
+            trigger_summary = (
+                "workflow trigger configuration was not inspected; cause remains "
+                "not established for mergeable rows"
+            )
         tick_summary = (
             f"{len(no_verdict)}/{len(rows)} inspected open PR heads carry NO VERDICT; "
             f"affected={affected_prs}; actionable holes={len(holes)}; "
-            f"expected under owner directive={len(expected_no_verdict)}; this is a "
+            f"expected under owner directive={len(expected_no_verdict)}; "
+            f"cause: {trigger_summary}; this is a "
             f"hole, not green; remedy: {'; '.join(remedies)}"
         )
     elif expected_no_verdict:
