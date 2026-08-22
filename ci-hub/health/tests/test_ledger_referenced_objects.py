@@ -29,15 +29,15 @@ def git(repo: Path, *args: str, stdin: str | None = None) -> str:
     return proc.stdout
 
 
-def make_repo(path: Path) -> list[str]:
-    """A repo with one commit on main and two commits reachable from no ref."""
+def make_repo(path: Path, count: int = 2) -> list[str]:
+    """A repo with one commit on main and `count` commits reachable from no ref."""
     path.mkdir(parents=True, exist_ok=True)
     git(path.parent, "init", "-q", path.name)
     cfg = ["-c", "user.email=t@example.invalid", "-c", "user.name=t"]
     subprocess.run(["git", "-C", str(path), *cfg, "commit", "-q", "--allow-empty",
                     "-m", "base"], check=True)
     orphans = []
-    for n in (1, 2):
+    for n in range(1, count + 1):
         subprocess.run(["git", "-C", str(path), *cfg, "checkout", "-q", "-b", f"side{n}"],
                        check=True)
         subprocess.run(["git", "-C", str(path), *cfg, "commit", "-q", "--allow-empty",
@@ -52,6 +52,17 @@ def write_ledger(path: Path, commits: list[str], repo: str = "hermit") -> Path:
     path.write_text("".join(
         json.dumps({"commit": c, "repo": repo, "result": "pass"}) + "\n"
         for c in commits))
+    return path
+
+
+def write_ledger_rows(path: Path, rows: list[tuple[str, str | None]]) -> Path:
+    encoded = []
+    for commit, repo in rows:
+        row = {"commit": commit, "result": "pass"}
+        if repo is not None:
+            row["repo"] = repo
+        encoded.append(json.dumps(row) + "\n")
+    path.write_text("".join(encoded))
     return path
 
 
@@ -143,3 +154,150 @@ def test_missing_checkout_is_reported_not_silently_zero(tmp_path):
     ledger = write_ledger(tmp_path / "ledger", ["b" * 40])
     rc = lro.main(["--root", str(tmp_path / "nowhere"), "--ledger", str(ledger)])
     assert rc == 1
+
+
+def test_source_counts_are_separate_from_checkout_union():
+    legacy_hermit = {f"{number:040x}" for number in range(3000, 3299)}
+    hermit = {f"{number:040x}" for number in range(317)}
+    reverie = {f"{number:040x}" for number in range(1000, 1031)}
+    canonical_reverie = set(sorted(reverie)[:4])
+
+    grouped = {
+        None: legacy_hermit,
+        "hermit": hermit,
+        "reverie": reverie,
+        "rrnewton/reverie": canonical_reverie,
+    }
+    combined, source_counts, unknown = lro.commits_by_checkout(grouped)
+    sources = {source["repo"]: source for source in lro.source_repo_results(grouped)}
+
+    assert unknown == []
+    assert len(combined["hermit"]) == 299 + 317
+    assert len(combined["reverie"]) == 31
+    assert canonical_reverie <= combined["reverie"]
+    assert source_counts == {"hermit": 299 + 317, "reverie": 31 + 4}
+    assert sources[None]["ledger_commits"] == 299
+    assert sources["hermit"]["ledger_commits"] == 317
+    assert sources["reverie"]["ledger_commits"] == 31
+    assert sources["rrnewton/reverie"]["ledger_commits"] == 4
+    assert sum(sources[repo]["ledger_commits"] for repo in (
+        "hermit", "reverie", "rrnewton/reverie")) == 317 + 31 + 4
+
+
+def test_overlapping_canonical_reverie_rows_reach_one_checkout_sync(tmp_path, capsys):
+    root = tmp_path / "root"
+    root.mkdir()
+    make_repo(root / "hermit")
+    reverie_commits = make_repo(root / "reverie", count=5)
+    canonical_reverie = reverie_commits[1:]
+    ledger = write_ledger_rows(
+        tmp_path / "ledger",
+        [(commit, "reverie") for commit in reverie_commits]
+        + [(commit, "rrnewton/reverie") for commit in canonical_reverie],
+    )
+
+    rc = lro.main(["--root", str(root), "--ledger", str(ledger), "--json"])
+
+    assert rc == 0
+    assert len(canonical_reverie) == 4
+    assert set(canonical_reverie) <= pinned(root / "reverie")
+    assert pinned(root / "reverie") == set(reverie_commits)
+    report = json.loads(capsys.readouterr().out)
+    sources = {source["repo"]: source for source in report["sources"]}
+    reverie = next(repo for repo in report["repos"] if repo["repo"] == "reverie")
+    assert sources["reverie"]["ledger_commits"] == 5
+    assert sources["rrnewton/reverie"]["ledger_commits"] == 4
+    assert reverie["source_commits"] == 5 + 4
+    assert reverie["ledger_commits"] == 5
+
+
+def test_missing_repo_defaults_to_hermit_and_pins_present_objects(workspace, tmp_path, capsys):
+    root, orphans = workspace
+    absent = "a" * 40
+    ledger = write_ledger_rows(
+        tmp_path / "ledger",
+        [(orphans[0], None), (orphans[1], None), (absent, None)],
+    )
+
+    rc = lro.main(["--root", str(root), "--ledger", str(ledger), "--json"])
+
+    assert rc == 0
+    assert pinned(root / "hermit") == set(orphans)
+    report = json.loads(capsys.readouterr().out)
+    missing = next(source for source in report["sources"] if source["repo"] is None)
+    hermit = next(repo for repo in report["repos"] if repo["repo"] == "hermit")
+    assert missing == {"checkout_repo": "hermit", "ledger_commits": 3, "repo": None}
+    assert hermit["ledger_commits"] == 3
+    assert hermit["present"] == 2
+    assert hermit["absent"] == 1
+
+
+def test_missing_repo_pin_is_removed_when_ledger_stops_naming_it(workspace, tmp_path):
+    root, orphans = workspace
+    ledger = write_ledger_rows(tmp_path / "ledger", [(orphans[0], None)])
+
+    assert lro.main(["--root", str(root), "--ledger", str(ledger)]) == 0
+    assert pinned(root / "hermit") == {orphans[0]}
+
+    write_ledger_rows(ledger, [])
+    assert lro.main(["--root", str(root), "--ledger", str(ledger)]) == 0
+    assert pinned(root / "hermit") == set()
+
+
+def test_unknown_repo_value_refuses_before_writing_refs(tmp_path, capsys):
+    root = tmp_path / "root"
+    root.mkdir()
+    commits = make_repo(root / "hermit")
+    make_repo(root / "reverie")
+    ledger = write_ledger(tmp_path / "ledger", [commits[0]], repo="unknown/repo")
+
+    rc = lro.main(["--root", str(root), "--ledger", str(ledger), "--json"])
+
+    assert rc == 1
+    report = json.loads(capsys.readouterr().out)
+    assert report["failures"] == ["unsupported ledger repo value(s): 'unknown/repo'"]
+    assert report["repos"] == []
+    assert report["sources"] == [{
+        "checkout_repo": None,
+        "ledger_commits": 1,
+        "repo": "unknown/repo",
+    }]
+    assert pinned(root / "hermit") == set()
+    assert pinned(root / "reverie") == set()
+
+
+def test_unknown_repo_value_with_invalid_commit_is_still_visible(tmp_path, capsys):
+    root = tmp_path / "root"
+    root.mkdir()
+    make_repo(root / "hermit")
+    make_repo(root / "reverie")
+    ledger = write_ledger(tmp_path / "ledger", ["not-a-commit"], repo="unknown/repo")
+
+    rc = lro.main(["--root", str(root), "--ledger", str(ledger)])
+
+    assert rc == 1
+    assert "unsupported ledger repo value(s): 'unknown/repo'" in capsys.readouterr().out
+
+
+def test_non_string_repo_value_refuses_before_writing_refs(tmp_path, capsys):
+    root = tmp_path / "root"
+    root.mkdir()
+    commits = make_repo(root / "hermit")
+    make_repo(root / "reverie")
+    ledger = tmp_path / "ledger"
+    ledger.write_text(json.dumps({
+        "commit": commits[0],
+        "repo": {"owner": "unknown"},
+        "result": "pass",
+    }) + "\n")
+
+    rc = lro.main(["--root", str(root), "--ledger", str(ledger), "--json"])
+
+    assert rc == 1
+    report = json.loads(capsys.readouterr().out)
+    assert report["failures"] == [
+        "ledger repo value is not a string or null: {'owner': 'unknown'}"
+    ]
+    assert report["repos"] == []
+    assert pinned(root / "hermit") == set()
+    assert pinned(root / "reverie") == set()

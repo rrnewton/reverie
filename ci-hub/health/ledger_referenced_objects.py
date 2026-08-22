@@ -90,25 +90,82 @@ from qualified_rows import load_rows  # noqa: E402
 # obvious from `git for-each-ref` without consulting anything.
 REF_PREFIX = "refs/ledger-referenced"
 
-# Ledger `repo` values mapped to the checkout that should hold their objects.
+# Canonical checkout identities and their paths below the workspace root.
 DEFAULT_CHECKOUTS = {"hermit": "hermit", "reverie": "reverie"}
 
+# Every repository spelling currently present in the canonical ledger. Aliases
+# are combined before syncing because sync() makes one checkout's ref namespace
+# equal to the supplied set; syncing aliases separately would let the second
+# spelling remove the first spelling's pins.
+LEDGER_REPO_CHECKOUT = {
+    None: "hermit",
+    "hermit": "hermit",
+    "reverie": "reverie",
+    "rrnewton/reverie": "reverie",
+}
 
-def ledger_commits(path: Path) -> dict[str, set[str]]:
+
+def ledger_commits(path: Path) -> dict[str | None, set[str]]:
     """Distinct commit IDs the ledger names, grouped by its `repo` column."""
     rows, _malformed = load_rows(path)
-    grouped: dict[str, set[str]] = {}
+    grouped: dict[str | None, set[str]] = {}
     for row in rows:
         commit = row.get("commit")
         repo = row.get("repo")
-        if not commit or not repo:
+        # Canonical aggregate semantics: validation rows written before the
+        # repository column existed came only from Hermit, so a missing/empty
+        # value routes to Hermit while remaining a separate source group for
+        # reporting. A nonempty unknown spelling must remain visible below.
+        if repo is None or repo == "":
+            repo = None
+        elif not isinstance(repo, str):
+            raise ValueError(
+                f"ledger repo value is not a string or null: {repo!r}"
+            )
+        # Retain every repository spelling even when all of its commit fields
+        # are malformed. Unknown values are a routing failure and must remain
+        # visible rather than disappearing with an invalid commit.
+        commits = grouped.setdefault(repo, set())
+        if not commit:
             continue
         if not isinstance(commit, str) or len(commit) != 40:
             continue
         if any(c not in "0123456789abcdef" for c in commit):
             continue
-        grouped.setdefault(repo, set()).add(commit)
+        commits.add(commit)
     return grouped
+
+
+def commits_by_checkout(
+    grouped: dict[str | None, set[str]],
+) -> tuple[dict[str, set[str]], dict[str, int], list[str]]:
+    """Combine source groups by checkout, retaining pre-union source counts."""
+    combined: dict[str, set[str]] = {}
+    source_counts: dict[str, int] = {}
+    unknown = []
+    for ledger_repo, commits in grouped.items():
+        checkout_repo = LEDGER_REPO_CHECKOUT.get(ledger_repo)
+        if checkout_repo is None:
+            assert ledger_repo is not None
+            unknown.append(ledger_repo)
+            continue
+        combined.setdefault(checkout_repo, set()).update(commits)
+        source_counts[checkout_repo] = source_counts.get(checkout_repo, 0) + len(commits)
+    return combined, source_counts, sorted(unknown)
+
+
+def source_repo_results(grouped: dict[str | None, set[str]]) -> list[dict]:
+    """Report every ledger spelling before checkout-level deduplication."""
+    return [
+        {
+            "repo": repo,
+            "checkout_repo": LEDGER_REPO_CHECKOUT.get(repo),
+            "ledger_commits": len(commits),
+        }
+        for repo, commits in sorted(
+            grouped.items(), key=lambda item: (item[0] is not None, str(item[0]))
+        )
+    ]
 
 
 def _git(checkout: Path, *args: str, stdin: str | None = None) -> subprocess.CompletedProcess:
@@ -202,9 +259,47 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
 
     root = Path(args.root)
-    grouped = ledger_commits(Path(args.ledger))
+    try:
+        source_groups = ledger_commits(Path(args.ledger))
+    except ValueError as error:
+        failures = [str(error)]
+        summary = "; ".join(failures) + " | ref synchronization not attempted"
+        if args.json:
+            print(json.dumps({"state": "failed", "summary": summary, "sources": [],
+                              "repos": [], "failures": failures}, indent=2,
+                             sort_keys=True))
+        else:
+            print("state=failed")
+            print(f"summary={summary}")
+        return 1
+    source_repos = source_repo_results(source_groups)
+    grouped, source_counts, unknown_repos = commits_by_checkout(source_groups)
     results = []
     failures = []
+    if unknown_repos:
+        failures.append(
+            "unsupported ledger repo value(s): " + ", ".join(repr(repo) for repo in unknown_repos)
+        )
+
+    # An unknown repository has no authoritative checkout. Refuse before any
+    # update-ref call rather than partially syncing the values we happened to
+    # recognize and silently leaving the rest unprotected.
+    if failures:
+        state = "failed"
+        summary = "; ".join(failures) + " | ref synchronization not attempted"
+        if args.json:
+            print(json.dumps({"state": state, "summary": summary, "sources": source_repos,
+                              "repos": results, "failures": failures},
+                             indent=2, sort_keys=True))
+        else:
+            print(f"state={state}")
+            print(f"summary={summary}")
+            for source in source_repos:
+                source_name = source["repo"] if source["repo"] is not None else "(missing)"
+                print(f"source_repo={source_name} checkout:{source['checkout_repo']} "
+                      f"ledger:{source['ledger_commits']}")
+        return 1
+
     for repo, relative in sorted(DEFAULT_CHECKOUTS.items()):
         checkout = root / relative
         if not (checkout / ".git").exists() and not (checkout / "HEAD").exists():
@@ -213,8 +308,11 @@ def main(argv: list[str] | None = None) -> int:
             failures.append(f"{repo}: no checkout at {checkout}")
             continue
         try:
-            results.append({"repo": repo, **sync(checkout, grouped.get(repo, set()),
-                                                 apply=not args.dry_run)})
+            results.append({
+                "repo": repo,
+                "source_commits": source_counts.get(repo, 0),
+                **sync(checkout, grouped.get(repo, set()), apply=not args.dry_run),
+            })
         except (RuntimeError, OSError, subprocess.SubprocessError) as error:
             failures.append(f"{repo}: {error}")
 
@@ -232,13 +330,19 @@ def main(argv: list[str] | None = None) -> int:
         summary = "; ".join(failures) + " | " + summary
 
     if args.json:
-        print(json.dumps({"state": state, "summary": summary, "repos": results,
-                          "failures": failures}, indent=2, sort_keys=True))
+        print(json.dumps({"state": state, "summary": summary, "sources": source_repos,
+                          "repos": results, "failures": failures},
+                         indent=2, sort_keys=True))
     else:
         print(f"state={state}")
         print(f"summary={summary}")
+        for source in source_repos:
+            source_name = source["repo"] if source["repo"] is not None else "(missing)"
+            print(f"source_repo={source_name} checkout:{source['checkout_repo']} "
+                  f"ledger:{source['ledger_commits']}")
         for r in results:
-            print(f"{r['repo']}=ledger:{r['ledger_commits']} present:{r['present']} "
+            print(f"{r['repo']}=source:{r['source_commits']} "
+                  f"ledger:{r['ledger_commits']} present:{r['present']} "
                   f"pinned:{r['pinned_after']} created:{r['created']} "
                   f"removed:{r['removed']} absent:{r['absent']}")
     return 1 if failures else 0
