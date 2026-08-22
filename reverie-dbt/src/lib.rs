@@ -31,6 +31,7 @@ use std::pin::pin;
 use std::sync::Arc;
 use std::sync::LazyLock;
 use std::sync::Mutex;
+use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicI32;
 use std::sync::atomic::AtomicU16;
 use std::sync::atomic::AtomicU64;
@@ -61,7 +62,6 @@ use reverie::syscalls::FcntlCmd;
 use reverie::syscalls::PathPtr;
 use reverie::syscalls::ReadAddr;
 use reverie::syscalls::Syscall;
-#[cfg(any(feature = "prototype-runtime", test))]
 use reverie::syscalls::SyscallArgs;
 use reverie::syscalls::SyscallInfo;
 use reverie::syscalls::Sysno;
@@ -141,6 +141,7 @@ where
     context: usize,
     tid: Pid,
     pid: Pid,
+    host_pid: Option<Pid>,
     ppid: Option<Pid>,
     branch_count: u64,
     thread_state: &'a mut T::ThreadState,
@@ -176,6 +177,7 @@ where
             context,
             tid,
             pid,
+            host_pid: None,
             ppid,
             branch_count,
             thread_state,
@@ -194,6 +196,13 @@ where
     /// Uses DynamoRIO's fault-safe application-memory reader for guest inspection.
     pub fn with_memory_reader(mut self, read_memory: MemoryReader) -> Self {
         self.read_memory = Some(read_memory);
+        self
+    }
+
+    /// Supplies the host process identity used for host process inspection.
+    /// Syscall-facing [`Guest::tid`] and [`Guest::pid`] remain guest-visible.
+    pub fn with_host_pid(mut self, host_pid: Pid) -> Self {
+        self.host_pid = Some(host_pid);
         self
     }
 }
@@ -285,17 +294,16 @@ where
         self.pid
     }
 
+    fn host_pid(&self) -> Option<Pid> {
+        self.host_pid
+    }
+
     // AUTONOMOUS-BOT-IMPLEMENTED
     // TODO-HUMAN-REVIEW(PR-ratchet11): Review the DBT in-tree parent surface.
     fn ppid(&self) -> Option<Pid> {
-        // The real in-tree parent pid, or `None` for the root of the traced
-        // tree, matching `pid()`/`tid()` reporting real host ids. The native
-        // client already tracks the process tree across `clone`/`fork` (it
-        // follows children with `-follow_children`) and supplies this value at
-        // thread initialization via `current_ppid`; the tree root reports `None`
-        // because its real parent is the out-of-tree launcher. This also makes
-        // the `is_root_process` default (`ppid().is_none()`) correct for forked
-        // children, which previously always looked like roots.
+        // The in-tree parent identity, or `None` for the root of the traced
+        // tree. The native client supplies the guest-visible identity at thread
+        // initialization; host IDs remain private to native syscall injection.
         self.ppid
     }
 
@@ -646,6 +654,22 @@ pub struct PrototypeCounters {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct PrototypeTool;
 
+const TEST_GUEST_ID_TARGETS_ENV: &str = "HERMIT_DBT_TEST_GUEST_ID_TARGETS";
+const TEST_GUEST_ID_SENTINEL: u32 = i32::MAX as u32 - 1;
+const TEST_GUEST_ID_RESULT: i32 = i32::MAX - 2;
+static TEST_GUEST_ID_TARGETS_ENABLED: LazyLock<bool> = LazyLock::new(|| {
+    std::env::var_os(TEST_GUEST_ID_TARGETS_ENV).is_some_and(|value| {
+        !value.is_empty()
+            && value != std::ffi::OsStr::new("0")
+            && value != std::ffi::OsStr::new("false")
+    })
+});
+static TEST_GUEST_ID_RESULT_ARMED: AtomicBool = AtomicBool::new(false);
+
+fn test_guest_id_targets_enabled() -> bool {
+    *TEST_GUEST_ID_TARGETS_ENABLED
+}
+
 #[reverie::tool]
 impl Tool for PrototypeTool {
     type GlobalState = ();
@@ -747,6 +771,67 @@ impl Tool for PrototypeTool {
                 Ok(result)
             }
             Syscall::Sysinfo(call) => deterministic_sysinfo(guest, call),
+            // AUTONOMOUS-BOT-IMPLEMENTED
+            // TODO-HUMAN-REVIEW(PR-453): Exercise suppressed identity results.
+            Syscall::Wait4(call)
+                if test_guest_id_targets_enabled()
+                    && call.pid() == TEST_GUEST_ID_SENTINEL as i32 =>
+            {
+                TEST_GUEST_ID_RESULT_ARMED.store(true, Ordering::SeqCst);
+                Ok(0)
+            }
+            // AUTONOMOUS-BOT-IMPLEMENTED
+            // TODO-HUMAN-REVIEW(PR-453): Refuse result retranslation after suppression.
+            Syscall::Getpid(_)
+                if test_guest_id_targets_enabled()
+                    && TEST_GUEST_ID_RESULT_ARMED.swap(false, Ordering::SeqCst) =>
+            {
+                Ok(TEST_GUEST_ID_RESULT as i64)
+            }
+            // AUTONOMOUS-BOT-IMPLEMENTED
+            // TODO-HUMAN-REVIEW(PR-453): Exercise Tool-created pidfd targets.
+            Syscall::PidfdOpen(call)
+                if test_guest_id_targets_enabled()
+                    && call.flags() == 0
+                    && call.pid() == TEST_GUEST_ID_SENTINEL =>
+            {
+                let target = guest.pid().as_raw() as usize;
+                let injected = Syscall::from_raw(
+                    Sysno::pidfd_open,
+                    SyscallArgs::new(target, call.flags() as usize, 0, 0, 0, 0),
+                );
+                Ok(guest.inject(injected).await?)
+            }
+            // AUTONOMOUS-BOT-IMPLEMENTED
+            // TODO-HUMAN-REVIEW(PR-453): Exercise Tool-created queued-signal targets.
+            Syscall::RtSigqueueinfo(call)
+                if test_guest_id_targets_enabled()
+                    && call.tgid() == TEST_GUEST_ID_SENTINEL as i32 =>
+            {
+                let target = guest.pid().as_raw() as usize;
+                let info = call.siginfo().map_or(0, |address| address.as_raw());
+                let injected = Syscall::from_raw(
+                    Sysno::rt_sigqueueinfo,
+                    SyscallArgs::new(target, call.sig() as usize, info, 0, 0, 0),
+                );
+                Ok(guest.inject(injected).await?)
+            }
+            // AUTONOMOUS-BOT-IMPLEMENTED
+            // TODO-HUMAN-REVIEW(PR-453): Exercise Tool-created queued-thread targets.
+            Syscall::RtTgsigqueueinfo(call)
+                if test_guest_id_targets_enabled()
+                    && call.tgid() == TEST_GUEST_ID_SENTINEL as i32
+                    && call.tid() == TEST_GUEST_ID_SENTINEL as i32 =>
+            {
+                let target_pid = guest.pid().as_raw() as usize;
+                let target_tid = guest.tid().as_raw() as usize;
+                let info = call.siginfo().map_or(0, |address| address.as_raw());
+                let injected = Syscall::from_raw(
+                    Sysno::rt_tgsigqueueinfo,
+                    SyscallArgs::new(target_pid, target_tid, call.sig() as usize, info, 0, 0),
+                );
+                Ok(guest.inject(injected).await?)
+            }
             syscall => Ok(guest.inject(syscall).await?),
         }
     }
@@ -967,6 +1052,20 @@ fn deterministic_sysinfo<G: Guest<PrototypeTool>>(
 
 #[cfg(any(feature = "prototype-runtime", test))]
 fn should_rewrite_syscall(sysnum: i64) -> bool {
+    // AUTONOMOUS-BOT-IMPLEMENTED
+    // TODO-HUMAN-REVIEW(PR-453): Review test-only guest identity dispatch.
+    if test_guest_id_targets_enabled()
+        && [
+            libc::SYS_wait4,
+            libc::SYS_getpid,
+            libc::SYS_pidfd_open,
+            libc::SYS_rt_sigqueueinfo,
+            libc::SYS_rt_tgsigqueueinfo,
+        ]
+        .contains(&sysnum)
+    {
+        return true;
+    }
     [
         libc::SYS_write,
         libc::SYS_uname,
@@ -1117,6 +1216,7 @@ pub fn run_tool_thread_start<T: Tool>(
     read_registers: RegisterReader,
     write_registers: RegisterWriter,
 ) -> Result<(), Error> {
+    let host_pid = current_host_pid();
     let mut guest = DbtGuest::new(
         context,
         tid,
@@ -1129,7 +1229,8 @@ pub fn run_tool_thread_start<T: Tool>(
         invoke_syscall,
         read_registers,
         write_registers,
-    );
+    )
+    .with_host_pid(host_pid);
     let tail_result = Arc::clone(&guest.tail_inject_result);
     run_ready(tool.handle_thread_start(&mut guest), &tail_result)
         .expect("thread-start handler unexpectedly tail-injected")
@@ -1150,6 +1251,7 @@ pub fn run_tool_post_exec<T: Tool>(
     read_registers: RegisterReader,
     write_registers: RegisterWriter,
 ) -> Result<(), Errno> {
+    let host_pid = current_host_pid();
     let mut guest = DbtGuest::new(
         context,
         tid,
@@ -1162,7 +1264,8 @@ pub fn run_tool_post_exec<T: Tool>(
         invoke_syscall,
         read_registers,
         write_registers,
-    );
+    )
+    .with_host_pid(host_pid);
     let tail_result = Arc::clone(&guest.tail_inject_result);
     run_ready(tool.handle_post_exec(&mut guest), &tail_result)
         .expect("post-exec handler unexpectedly tail-injected")
@@ -1261,11 +1364,48 @@ pub fn run_tool_syscall<T: Tool>(
     read_registers: RegisterReader,
     write_registers: RegisterWriter,
 ) -> Result<DbtSyscallOutcome, Error> {
+    let host_pid = current_host_pid();
+    run_tool_syscall_with_host_pid(
+        tool,
+        context,
+        tid,
+        pid,
+        host_pid,
+        branch_count,
+        thread_state,
+        global_state,
+        config,
+        syscall,
+        invoke_syscall,
+        read_registers,
+        write_registers,
+    )
+}
+
+/// Drives one syscall through a tool while retaining distinct guest-visible
+/// and host task identities.
+#[allow(clippy::too_many_arguments)]
+fn run_tool_syscall_with_host_pid<T: Tool>(
+    tool: &T,
+    context: usize,
+    tid: Pid,
+    pid: Pid,
+    host_pid: Pid,
+    branch_count: u64,
+    thread_state: &mut T::ThreadState,
+    global_state: &T::GlobalState,
+    config: &<T::GlobalState as GlobalTool>::Config,
+    syscall: Syscall,
+    invoke_syscall: SyscallInvoker,
+    read_registers: RegisterReader,
+    write_registers: RegisterWriter,
+) -> Result<DbtSyscallOutcome, Error> {
     run_tool_syscall_inner(
         tool,
         context,
         tid,
         pid,
+        host_pid,
         branch_count,
         thread_state,
         global_state,
@@ -1297,11 +1437,57 @@ pub fn run_tool_syscall_with_memory_reader<T: Tool>(
     write_registers: RegisterWriter,
     read_memory: MemoryReader,
 ) -> Result<DbtSyscallOutcome, Error> {
+    let host_pid = current_host_pid();
+    run_tool_syscall_with_memory_reader_and_host_pid(
+        tool,
+        context,
+        tid,
+        pid,
+        host_pid,
+        branch_count,
+        thread_state,
+        global_state,
+        config,
+        syscall,
+        invoke_syscall,
+        read_registers,
+        write_registers,
+        read_memory,
+    )
+}
+
+fn current_host_pid() -> Pid {
+    // DbtGuest executes in the instrumented process. These libc calls run from
+    // the native client and identify the host task whose `/proc` state backs
+    // the guest adapter; syscall-facing identities are supplied separately.
+    Pid::from_raw(unsafe { libc::getpid() })
+}
+
+/// Drives one syscall through a tool with fault-safe memory reads and distinct
+/// guest-visible and host task identities.
+#[allow(clippy::too_many_arguments)]
+fn run_tool_syscall_with_memory_reader_and_host_pid<T: Tool>(
+    tool: &T,
+    context: usize,
+    tid: Pid,
+    pid: Pid,
+    host_pid: Pid,
+    branch_count: u64,
+    thread_state: &mut T::ThreadState,
+    global_state: &T::GlobalState,
+    config: &<T::GlobalState as GlobalTool>::Config,
+    syscall: Syscall,
+    invoke_syscall: SyscallInvoker,
+    read_registers: RegisterReader,
+    write_registers: RegisterWriter,
+    read_memory: MemoryReader,
+) -> Result<DbtSyscallOutcome, Error> {
     run_tool_syscall_inner(
         tool,
         context,
         tid,
         pid,
+        host_pid,
         branch_count,
         thread_state,
         global_state,
@@ -1320,6 +1506,7 @@ fn run_tool_syscall_inner<T: Tool>(
     context: usize,
     tid: Pid,
     pid: Pid,
+    host_pid: Pid,
     branch_count: u64,
     thread_state: &mut T::ThreadState,
     global_state: &T::GlobalState,
@@ -1342,7 +1529,8 @@ fn run_tool_syscall_inner<T: Tool>(
         invoke_syscall,
         read_registers,
         write_registers,
-    );
+    )
+    .with_host_pid(host_pid);
     if let Some(read_memory) = read_memory {
         guest = guest.with_memory_reader(read_memory);
     }
@@ -1378,8 +1566,7 @@ pub fn native_client_source_dir() -> &'static Path {
 /// Sentinel stored in [`PROCESS_PPID`] meaning "no in-tree parent" — this
 /// process is the root of the traced tree, so [`Guest::ppid`] reports `None`.
 const PPID_NONE: i32 = -1;
-
-/// The current process's real in-tree parent pid, supplied once by the native
+/// The current process's guest-visible in-tree parent pid, supplied once by the native
 /// client during thread initialization (see `in_tree_parent_pid` in
 /// `native/client.c`), or [`PPID_NONE`] for the tree root. It is a per-process
 /// constant — every thread of the process shares one parent — so it is written
@@ -1389,7 +1576,7 @@ const PPID_NONE: i32 = -1;
 /// previous behaviour of reporting no parent rather than a bogus pid.
 static PROCESS_PPID: AtomicI32 = AtomicI32::new(PPID_NONE);
 
-/// The in-tree parent pid recorded for this process, or `None` for the tree
+/// The guest-visible in-tree parent pid recorded for this process, or `None` for the tree
 /// root. Threaded into every [`DbtGuest`] so `Guest::ppid` (and the
 /// `is_root_process` default built on it) reflect the real process tree that the
 /// native client follows across `clone`/`fork`.
@@ -1444,7 +1631,9 @@ pub unsafe extern "C" fn reverie_dbt_runtime_thread_init(
     _read_registers: RegisterReader,
     _write_registers: RegisterWriter,
 ) -> i32 {
-    // Record this process's real in-tree parent (or `PPID_NONE` for the tree
+    // Capture test-only routing before guest code can mutate its environment.
+    LazyLock::force(&TEST_GUEST_ID_TARGETS_ENABLED);
+    // Record this process's guest-visible in-tree parent (or `PPID_NONE` for the tree
     // root) so every `DbtGuest` built afterwards reports it through
     // `Guest::ppid`. A per-process constant; each thread writes the same value.
     PROCESS_PPID.store(in_tree_ppid, Ordering::Relaxed);
@@ -1528,6 +1717,7 @@ pub extern "C" fn reverie_dbt_runtime_copied_syscall(_sysnum: i64, _args: *const
 }
 
 // TODO-HUMAN-REVIEW(PR-154): Review the deferred lifecycle syscall callback ABI.
+#[cfg(any(feature = "prototype-runtime", test))]
 unsafe fn write_deferred_syscall(syscall: Syscall, number: *mut i64, args: *mut u64) {
     let (sysno, syscall_args) = syscall.into_parts();
     unsafe { number.write(sysno.id() as i64) };
@@ -1561,8 +1751,8 @@ unsafe fn write_deferred_syscall(syscall: Syscall, number: *mut i64, args: *mut 
 pub unsafe extern "C" fn reverie_dbt_runtime_pre_syscall(
     context: *mut c_void,
     counters: *mut PrototypeCounters,
-    tid: i32,
-    pid: i32,
+    virtual_tid: i32,
+    virtual_pid: i32,
     _image_generation: u64,
     sysnum: i64,
     args: *const u64,
@@ -1610,8 +1800,8 @@ pub unsafe extern "C" fn reverie_dbt_runtime_pre_syscall(
             let outcome = run_tool_syscall(
                 tools::counter1_exact_tool(),
                 context as usize,
-                Pid::from_raw(tid),
-                Pid::from_raw(pid),
+                Pid::from_raw(virtual_tid),
+                Pid::from_raw(virtual_pid),
                 branches,
                 &mut thread_state,
                 tools::counter1_exact_global(),
@@ -1659,8 +1849,8 @@ pub unsafe extern "C" fn reverie_dbt_runtime_pre_syscall(
             let outcome = run_tool_syscall(
                 tools::counter2_exact_tool(),
                 context as usize,
-                Pid::from_raw(tid),
-                Pid::from_raw(pid),
+                Pid::from_raw(virtual_tid),
+                Pid::from_raw(virtual_pid),
                 branches,
                 &mut counters.observed_syscalls,
                 tools::counter2_exact_global(),
@@ -1698,8 +1888,8 @@ pub unsafe extern "C" fn reverie_dbt_runtime_pre_syscall(
         // supersedes the built-in determinism policy.
         if let Some(outcome) = tools::run_active_tool(
             context as usize,
-            tid,
-            pid,
+            virtual_tid,
+            virtual_pid,
             sysnum,
             raw_args,
             branches,
@@ -1736,10 +1926,11 @@ pub unsafe extern "C" fn reverie_dbt_runtime_pre_syscall(
                 raw_args[5] as usize,
             ),
         );
+        let host_pid = current_host_pid();
         let mut guest = DbtGuest::new(
             context as usize,
-            Pid::from_raw(tid),
-            Pid::from_raw(pid),
+            Pid::from_raw(virtual_tid),
+            Pid::from_raw(virtual_pid),
             current_ppid(),
             branches,
             counters,
@@ -1748,7 +1939,8 @@ pub unsafe extern "C" fn reverie_dbt_runtime_pre_syscall(
             invoke_syscall,
             read_registers,
             write_registers,
-        );
+        )
+        .with_host_pid(host_pid);
         // Clear any stale tail-inject result before polling; `tail_inject`
         // records a fresh one just before it suspends.
         let tail_result = Arc::clone(&guest.tail_inject_result);
@@ -1805,12 +1997,12 @@ pub unsafe extern "C" fn reverie_dbt_runtime_background_init(argument: *mut c_vo
 /// Handles process exit for the built-in synchronous prototype runtime.
 #[cfg(feature = "prototype-runtime")]
 #[unsafe(no_mangle)]
-pub extern "C" fn reverie_dbt_runtime_process_exit() {
+pub extern "C" fn reverie_dbt_runtime_process_exit(virtual_pid: i32) {
     if tools::counter1_exact_enabled() {
         tools::emit_counter1_exact_summary();
     }
     if tools::counter2_exact_enabled() {
-        let pid = Pid::from_raw(unsafe { libc::getpid() });
+        let pid = Pid::from_raw(virtual_pid);
         let _ = run_tool_process_exit(
             tools::counter2_exact_tool().clone(),
             pid,
@@ -2432,9 +2624,33 @@ mod tests {
     }
 
     #[test]
+    fn guest_and_host_process_identities_remain_distinct() {
+        let mut counters = PrototypeCounters::default();
+        let guest: DbtGuest<'_, PrototypeTool> = DbtGuest::new(
+            0,
+            Pid::from_raw(4),
+            Pid::from_raw(3),
+            Some(Pid::from_raw(1)),
+            0,
+            &mut counters,
+            &GLOBAL_STATE,
+            &CONFIG,
+            invoke,
+            read_regs,
+            write_regs_noop,
+        )
+        .with_host_pid(Pid::from_raw(4));
+
+        assert_eq!(guest.tid(), Pid::from_raw(4));
+        assert_eq!(guest.pid(), Pid::from_raw(3));
+        assert_eq!(guest.host_pid(), Some(Pid::from_raw(4)));
+        assert_eq!(guest.ppid(), Some(Pid::from_raw(1)));
+    }
+
+    #[test]
     fn ppid_reflects_constructed_parent_and_root_status() {
         let mut counters = PrototypeCounters::default();
-        // A forked child has a real in-tree parent, so it is not a root and its
+        // A forked child has a guest-visible in-tree parent, so it is not a root and its
         // `is_root_process` (built on `ppid`) must be false.
         let child: DbtGuest<'_, PrototypeTool> = DbtGuest::new(
             0,
@@ -2540,7 +2756,7 @@ mod tests {
         // parallel test execution.
         let mut counters = PrototypeCounters::default();
 
-        // A positive in-tree parent pid surfaces as a real parent.
+        // A positive in-tree parent pid surfaces as the guest-visible parent.
         let init = unsafe {
             reverie_dbt_runtime_thread_init(
                 &mut counters,

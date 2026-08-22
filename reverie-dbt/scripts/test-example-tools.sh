@@ -36,6 +36,8 @@ ppid_guest="$tmpdir/ppid-probe"
 backtrace_guest="$tmpdir/backtrace-probe"
 identity_policy_guest="$tmpdir/identity-policy"
 fork_pthread_guest="$tmpdir/fork-pthread-identity"
+reused_tid_guest="$tmpdir/reused-tid-start"
+thread_clone_process_exit_guest="$tmpdir/thread-clone-process-exit"
 fork_clock_resource_guest="$tmpdir/fork-clock-resource"
 blocked_exit_guest="$tmpdir/blocked-exit-group"
 simultaneous_exit_guest="$tmpdir/simultaneous-exit-group"
@@ -58,6 +60,11 @@ chaos_data="$tmpdir/chaos-data.txt"
   "$crate_dir/tests/fixtures/identity_policy.c" -o "$identity_policy_guest"
 "${CC:-cc}" -O2 -g -std=c11 -Wall -Wextra -Werror -pthread \
   "$crate_dir/tests/fixtures/fork_pthread_identity.c" -o "$fork_pthread_guest"
+"${CC:-cc}" -O2 -g -std=c11 -Wall -Wextra -Werror -pthread \
+  "$crate_dir/tests/fixtures/reused_tid_start.c" -o "$reused_tid_guest"
+"${CC:-cc}" -O2 -g -std=c11 -Wall -Wextra -Werror -pthread \
+  "$crate_dir/tests/fixtures/thread_clone_process_exit.c" \
+  -o "$thread_clone_process_exit_guest"
 "${CC:-cc}" -O2 -g -std=c11 -Wall -Wextra -Werror \
   "$crate_dir/tests/fixtures/fork_clock_resource.c" -o "$fork_clock_resource_guest"
 "${CC:-cc}" -O2 -g -std=c11 -D_GNU_SOURCE -Wall -Wextra -Werror \
@@ -152,14 +159,34 @@ grep -Eq '^BACKTRACE ok=1 frames=[0-9]+ top=0x[0-9a-f]+$' "$tmpdir/err" \
 echo "PASS: backtrace (in-process frame-pointer walk of the guest stack at getpid)"
 
 run_tool HERMIT_DBT_NOOP "$identity_policy_guest"
-grep -q '^pid=3 ppid=1 tid=3 identity_fd=open$' "$tmpdir/out" \
+grep -q '^pid=3 ppid=1 tid=3 identity_fd=open pidfd=ok queued_signal=ok$' "$tmpdir/out" \
   || fail "noop: deferred syscall bypassed virtual identity or private descriptor policy"
 echo "PASS: deferred syscall preserves virtual identity and private descriptors"
+
+HERMIT_DBT_TEST_GUEST_ID_TARGETS=1 run_default_runtime "$identity_policy_guest"
+grep -q '^pid=3 ppid=1 tid=3 identity_fd=open pidfd=ok queued_signal=ok result_identity=ok$' "$tmpdir/out" \
+  || fail "Tool target or result identity was not guest-visible"
+echo "PASS: Tool target and result identities remain guest-visible"
 
 run_tool HERMIT_DBT_NOOP "$fork_pthread_guest"
 grep -q '^fork-pthread-race=64$' "$tmpdir/out" \
   || fail "noop: pthread consumed a concurrent process-clone identity"
 echo "PASS: process-clone identity handoff excludes concurrent pthreads"
+
+HERMIT_DBT_TEST_REUSED_TID=1 run_tool HERMIT_DBT_NOOP "$reused_tid_guest"
+grep -q '^reused-tid-start=ok tid=4$' "$tmpdir/out" \
+  || fail "thread startup accepted a retained host-TID mapping"
+grep -q '^REUSED_TID_TEST exercised=1$' "$tmpdir/err" \
+  || fail "reused host-TID startup bracket did not execute"
+echo "PASS: thread startup requires the parent-allocated virtual identity"
+
+HERMIT_DBT_TEST_THREAD_CLONE_PROCESS_EXIT=1 \
+  run_tool HERMIT_DBT_NOOP "$thread_clone_process_exit_guest"
+grep -q '^thread-clone-process-exit=ok tid=6$' "$tmpdir/out" \
+  || fail "a process-local pending thread clone blocked the surviving process"
+grep -q '^THREAD_CLONE_PROCESS_EXIT_TEST exercised=1$' "$tmpdir/err" \
+  || fail "thread-clone process-exit bracket did not execute"
+echo "PASS: a process exit cannot block another process's thread startup"
 
 # Copied children (forked processes) run no Rust Tool, so the native virtual
 # clock / virtual resource policy is their only determinism layer. Under the
