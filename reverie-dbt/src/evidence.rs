@@ -1557,6 +1557,27 @@ mod tests {
     }
 
     #[test]
+    fn process_clone_result_callback_runs_after_the_kernel_result() {
+        let source = include_str!("../native/client.c");
+        let post = source
+            .split_once("static void post_syscall(void *drcontext, int sysnum) {")
+            .unwrap()
+            .1
+            .split_once("static bool pre_syscall")
+            .unwrap()
+            .0;
+        let result = post.find("dr_syscall_get_result(drcontext)").unwrap();
+        let callback = post
+            .find("reverie_dbt_runtime_process_clone_result(counters, host_syscall_result)")
+            .unwrap();
+        let identity = post
+            .find("complete_clone_identity(counters, syscall_result)")
+            .unwrap();
+        assert!(result < callback);
+        assert!(callback < identity);
+    }
+
+    #[test]
     fn native_runtime_callbacks_are_page_isolated_and_sealed_before_use() {
         let source = include_str!("../native/client.c");
         assert!(source.contains(
