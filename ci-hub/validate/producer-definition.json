@@ -202,27 +202,29 @@
     }
   ],
   "transition": {
-    "id": "rrnewton-hermit-pr-2305",
-    "registered_at": "044fa335c18dbff47aca022d057a1a9b280d1ac3",
+    "id": "rrnewton-hermit-pr-2375",
+    "registered_at": "ca764b0266b789d4276ab73941318a0c6e5747a7",
     "provenance": {
       "repository": "rrnewton/hermit",
-      "pull_request": 2305,
-      "head": "044fa335c18dbff47aca022d057a1a9b280d1ac3"
+      "pull_request": 2375,
+      "head": "ca764b0266b789d4276ab73941318a0c6e5747a7"
     },
-    "finalize_after": "2026-08-17T16:46:09Z",
-    "expires_at": "2026-08-18T16:46:09Z",
+    "finalize_after": "2026-08-23T21:32:04Z",
+    "expires_at": "2026-08-24T21:32:04Z",
     "candidate_coverage_status": "complete",
     "added_paths": [
-      "scripts/lib/validate_plan.rs"
+      "scripts/lib/validate_plan.rs",
+      "scripts/lib/validate_runtime.rs"
     ],
     "candidate": {
       ".config/nextest.toml": "ec47795a8289a1f3ea62424b686217c942427b18",
-      ".github/workflows/ci-portable.yml": "f9f63f1d5188e0ad52974cddea1dc2e1424cf245",
+      ".github/workflows/ci-portable.yml": "76f36a751302aaed0eb721970efaab5c915b7370",
       "ci/run-nextest-counted.sh": "1268ba21f7916f8b6269f059726c7edbce2ef0d2",
       "scripts/lib/validate_history.rs": "0255c492791fba04aa9000efb18ec3f57dd6a8ad",
-      "scripts/lib/validate_plan.rs": "ff3734569b4d28599d9563bdd5e68a6dd3ba22c1",
+      "scripts/lib/validate_plan.rs": "37fef2cd948c3bec1bf533bd5abf74c03d343ca6",
       "scripts/lib/validate_receipt.rs": "465f6c7e1f027ba81daf09f5011f84ebdd08deb0",
-      "scripts/validate.rs": "a4b6e00c0a0aed9daa6e8f32d85b1fad4f924502"
+      "scripts/lib/validate_runtime.rs": "33fa5a529a1cac8adc4b19333fa6c627df8176e6",
+      "scripts/validate.rs": "e91c0cd306d8a8cdd83fe3cd015fc037a7bfb41e"
     }
   }
 }

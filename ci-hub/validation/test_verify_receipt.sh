@@ -199,7 +199,7 @@ write_comments() {
 # normalized. So the anchor compares CANONICAL CONTENT (`jq -S -c`), which is
 # what "the mutation changed the receipt" actually means.
 mutation_anchor_failures=0
-mutation_anchors_total=29
+mutation_anchors_total=32
 assert_mutated() { # assert_mutated <base> <mutant> <label>
     local a b
     a=$(jq -S -c . "$1" 2>/dev/null) || a="<unparseable:$1>"

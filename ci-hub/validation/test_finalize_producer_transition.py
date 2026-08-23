@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timezone
 import importlib.util
 import json
 from pathlib import Path
@@ -51,6 +52,58 @@ TRANSITION = {
     "finalizable": True,
     "registry_sha256": "a" * 64,
 }
+
+LIVE_REGISTRY = MODULE.parents[1] / "validate" / "producer-definition.json"
+LIVE_PRIMARY = {
+    ".config/nextest.toml": "ec47795a8289a1f3ea62424b686217c942427b18",
+    ".github/workflows/ci-portable.yml": "8f56ca222078f831e85c86ec743cb3feacb0381a",
+    "ci/run-nextest-counted.sh": "5fcfc77bb7264f9631312ebb4f24f635e464364c",
+    "scripts/lib/validate_history.rs": "0255c492791fba04aa9000efb18ec3f57dd6a8ad",
+    "scripts/lib/validate_receipt.rs": "465f6c7e1f027ba81daf09f5011f84ebdd08deb0",
+    "scripts/validate.rs": "4eb0538868c13f9d5545a09d31dbd80cbae7d6e0",
+}
+LIVE_CANDIDATE = {
+    ".config/nextest.toml": "ec47795a8289a1f3ea62424b686217c942427b18",
+    ".github/workflows/ci-portable.yml": "76f36a751302aaed0eb721970efaab5c915b7370",
+    "ci/run-nextest-counted.sh": "1268ba21f7916f8b6269f059726c7edbce2ef0d2",
+    "scripts/lib/validate_history.rs": "0255c492791fba04aa9000efb18ec3f57dd6a8ad",
+    "scripts/lib/validate_plan.rs": "37fef2cd948c3bec1bf533bd5abf74c03d343ca6",
+    "scripts/lib/validate_receipt.rs": "465f6c7e1f027ba81daf09f5011f84ebdd08deb0",
+    "scripts/lib/validate_runtime.rs": "33fa5a529a1cac8adc4b19333fa6c627df8176e6",
+    "scripts/validate.rs": "e91c0cd306d8a8cdd83fe3cd015fc037a7bfb41e",
+}
+
+
+def test_live_registry_replaces_expired_transition_without_advancing_primary():
+    registry = json.loads(LIVE_REGISTRY.read_text())
+    transition = registry["transition"]
+
+    assert registry["registered_at"] == "1f4e430c135204591daa0c0cba84f77dae679a78"
+    assert registry["registered_coverage_status"] == "complete"
+    assert registry["registered"] == LIVE_PRIMARY
+
+    assert transition["id"] == "rrnewton-hermit-pr-2375"
+    assert transition["registered_at"] == "ca764b0266b789d4276ab73941318a0c6e5747a7"
+    assert transition["provenance"] == {
+        "repository": "rrnewton/hermit",
+        "pull_request": 2375,
+        "head": "ca764b0266b789d4276ab73941318a0c6e5747a7",
+    }
+    assert transition["candidate_coverage_status"] == "complete"
+    assert transition["added_paths"] == [
+        "scripts/lib/validate_plan.rs",
+        "scripts/lib/validate_runtime.rs",
+    ]
+    assert transition["candidate"] == LIVE_CANDIDATE
+    assert set(LIVE_CANDIDATE) == set(LIVE_PRIMARY) | set(transition["added_paths"])
+
+    finalize_after = datetime.strptime(
+        transition["finalize_after"], "%Y-%m-%dT%H:%M:%SZ"
+    ).replace(tzinfo=timezone.utc)
+    expires_at = datetime.strptime(
+        transition["expires_at"], "%Y-%m-%dT%H:%M:%SZ"
+    ).replace(tzinfo=timezone.utc)
+    assert (expires_at - finalize_after).total_seconds() == 24 * 60 * 60
 
 
 def landing_payload(*, head: str = HEAD) -> dict[str, object]:
