@@ -1557,6 +1557,52 @@ mod tests {
     }
 
     #[test]
+    fn process_clone_result_callback_runs_after_the_kernel_result() {
+        let source = include_str!("../native/client.c");
+        let post = source
+            .split_once("static void post_syscall(void *drcontext, int sysnum) {")
+            .unwrap()
+            .1
+            .split_once("static bool pre_syscall")
+            .unwrap()
+            .0;
+        let result = post.find("dr_syscall_get_result(drcontext)").unwrap();
+        let callback = post
+            .find("reverie_dbt_runtime_process_clone_result(counters, host_syscall_result)")
+            .unwrap();
+        let identity = post
+            .find("complete_clone_identity(counters, syscall_result)")
+            .unwrap();
+        assert!(result < callback);
+        assert!(callback < identity);
+    }
+
+    #[test]
+    fn vfork_child_uses_the_copied_syscall_path_instead_of_a_result_callback() {
+        let source = include_str!("../native/client.c");
+        let complete = source
+            .split_once("static int32_t complete_clone_identity")
+            .unwrap()
+            .1
+            .split_once("static bool pending_identity_is_process")
+            .unwrap()
+            .0;
+        assert!(complete.contains("flags & CLONE_VFORK"));
+        assert!(complete.contains("atomic_store_explicit(&copied_vfork_pid"));
+        let pre = source
+            .split_once("static bool pre_syscall(void *drcontext, int sysnum) {")
+            .unwrap()
+            .1
+            .split_once("static void thread_init")
+            .unwrap()
+            .0;
+        assert!(pre.contains("pending_identity_is_process(counters)"));
+        assert!(pre.contains("counters->pending_clone_flags & CLONE_VFORK"));
+        assert!(pre.contains("(has_copied_runtime() && !runtime_uses_external_global()) ||"));
+        assert!(pre.contains("copied_vfork) {"));
+    }
+
+    #[test]
     fn native_runtime_callbacks_are_page_isolated_and_sealed_before_use() {
         let source = include_str!("../native/client.c");
         assert!(source.contains(
