@@ -190,7 +190,7 @@ static const cpuid_result_t extended_cpuid[] = {
 // exit, and app-level writes re-enter the syscall interception path.
 typedef void (*reverie_emit_fn_t)(const char *buf, size_t len);
 typedef void (*reverie_idle_fn_t)(void);
-#define REVERIE_DBT_RUNTIME_ABI_VERSION 2u
+#define REVERIE_DBT_RUNTIME_ABI_VERSION 3u
 // TODO-HUMAN-REVIEW(PR-162): Review the additive stdout-emit runtime callback ABI.
 typedef struct {
   reverie_emit_fn_t emit;
@@ -251,6 +251,8 @@ extern void reverie_dbt_runtime_thread_exit(prototype_counters_t *counters,
 extern uint64_t reverie_dbt_runtime_image_init(void);
 extern void reverie_dbt_runtime_exec_failed(prototype_counters_t *counters,
                                             int32_t pid);
+extern void reverie_dbt_runtime_process_clone_result(
+    prototype_counters_t *counters, int64_t result);
 extern void reverie_dbt_runtime_background_init_v2(void *argument);
 extern int32_t reverie_dbt_runtime_ready(uint64_t image_generation);
 extern void reverie_dbt_runtime_process_exit(void);
@@ -2806,6 +2808,15 @@ static void post_syscall(void *drcontext, int sysnum) {
   // range with DynamoRIO's residue. `stack_scrub_marker.c` is the bracket.
   if (is_clone_syscall(sysnum))
     atomic_store_explicit(&guest_stack_scrubbed, 0, memory_order_release);
+
+  /* DynamoRIO reports post-syscall in both branches for fork, clone, and
+   * clone3, but only in the parent for vfork. No runtime callback runs in the
+   * vfork child before it execs or exits. */
+  if (pending_identity_is_process(counters)) {
+    evidence_callback_enter();
+    reverie_dbt_runtime_process_clone_result(counters, host_syscall_result);
+    evidence_callback_leave();
+  }
 
   if (counters->pending_virtual_child != 0 && is_clone_syscall(sysnum)) {
     int32_t virtual_child = complete_clone_identity(counters, syscall_result);
