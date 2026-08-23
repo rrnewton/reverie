@@ -190,7 +190,7 @@ static const cpuid_result_t extended_cpuid[] = {
 // exit, and app-level writes re-enter the syscall interception path.
 typedef void (*reverie_emit_fn_t)(const char *buf, size_t len);
 typedef void (*reverie_idle_fn_t)(void);
-#define REVERIE_DBT_RUNTIME_ABI_VERSION 2u
+#define REVERIE_DBT_RUNTIME_ABI_VERSION 3u
 // TODO-HUMAN-REVIEW(PR-162): Review the additive stdout-emit runtime callback ABI.
 typedef struct {
   reverie_emit_fn_t emit;
@@ -251,13 +251,15 @@ extern void reverie_dbt_runtime_thread_exit(prototype_counters_t *counters,
 extern uint64_t reverie_dbt_runtime_image_init(void);
 extern void reverie_dbt_runtime_exec_failed(prototype_counters_t *counters,
                                             int32_t pid);
+extern void reverie_dbt_runtime_process_clone_result(
+    prototype_counters_t *counters, int64_t result);
 extern void reverie_dbt_runtime_background_init_v2(void *argument);
 extern int32_t reverie_dbt_runtime_ready(uint64_t image_generation);
 extern void reverie_dbt_runtime_process_exit(void);
 // AUTONOMOUS-BOT-IMPLEMENTED
 // TODO-HUMAN-REVIEW(PR-219): Review copied-child argument and errno policy ABI.
-extern int32_t reverie_dbt_runtime_copied_syscall(int64_t sysnum,
-                                                  const uint64_t *args);
+extern int32_t reverie_dbt_runtime_copied_syscall(
+    int64_t sysnum, const uint64_t *args, int32_t copied_vfork);
 // TODO-HUMAN-REVIEW(PR-154): Review the deferred lifecycle syscall callback ABI.
 extern int32_t reverie_dbt_runtime_pre_syscall(
     void *context, prototype_counters_t *counters, int32_t tid, int32_t pid,
@@ -1721,6 +1723,10 @@ static int32_t complete_clone_identity(prototype_counters_t *counters,
       remember_virtual_identity((int32_t)result, virtual_child);
   } else if (result == 0) {
     int32_t host_tid = (int32_t)dr_get_thread_id(dr_get_current_drcontext());
+    if ((flags & CLONE_VFORK) != 0)
+      atomic_store_explicit(&copied_vfork_pid,
+                            (int32_t)dr_get_process_id(),
+                            memory_order_release);
     if ((flags & CLONE_THREAD) == 0)
       evidence_count_fork_child_thread(counters);
     if ((flags & CLONE_THREAD) != 0 &&
@@ -2807,6 +2813,15 @@ static void post_syscall(void *drcontext, int sysnum) {
   if (is_clone_syscall(sysnum))
     atomic_store_explicit(&guest_stack_scrubbed, 0, memory_order_release);
 
+  /* DynamoRIO reports post-syscall in both branches for fork, clone, and
+   * clone3, but only in the parent for vfork. The vfork child is identified on
+   * its next intercepted syscall by copied_vfork below. */
+  if (pending_identity_is_process(counters)) {
+    evidence_callback_enter();
+    reverie_dbt_runtime_process_clone_result(counters, host_syscall_result);
+    evidence_callback_leave();
+  }
+
   if (counters->pending_virtual_child != 0 && is_clone_syscall(sysnum)) {
     int32_t virtual_child = complete_clone_identity(counters, syscall_result);
     completed_virtual_child = virtual_child;
@@ -2896,6 +2911,15 @@ static bool is_copied_vfork_process(void) {
   return has_copied_runtime() &&
          atomic_load_explicit(&copied_vfork_pid, memory_order_acquire) ==
              (int32_t)dr_get_process_id();
+}
+
+static bool is_pending_vfork_child(void) {
+  int32_t creator = atomic_load_explicit(
+      &pending_clone_creator_pid, memory_order_acquire);
+  uint64_t flags =
+      atomic_load_explicit(&pending_clone_flags, memory_order_acquire);
+  return creator != 0 && creator != (int32_t)dr_get_process_id() &&
+         (flags & CLONE_VFORK) != 0;
 }
 
 static void finalize_runtime_process(void) {
@@ -3389,8 +3413,13 @@ static bool pre_syscall(void *drcontext, int sysnum) {
 
   // AUTONOMOUS-BOT-IMPLEMENTED
   // TODO-HUMAN-REVIEW(PR-255): Review copied-process Detcore state rebasing.
+  bool copied_vfork = is_copied_vfork_process() ||
+                      is_pending_vfork_child() ||
+                      (pending_identity_is_process(counters) &&
+                       (counters->pending_clone_flags & CLONE_VFORK) != 0);
+
   if (has_copied_runtime() && runtime_uses_external_global() &&
-      !is_copied_vfork_process() &&
+      !copied_vfork &&
       copied_process_runtime_pid != dr_get_process_id()) {
     evidence_callback_enter();
     int32_t initialized = reverie_dbt_runtime_thread_init(
@@ -3408,8 +3437,8 @@ static bool pre_syscall(void *drcontext, int sysnum) {
     copied_process_runtime_pid = dr_get_process_id();
   }
 
-  if (has_copied_runtime() &&
-      (!runtime_uses_external_global() || is_copied_vfork_process())) {
+  if ((has_copied_runtime() && !runtime_uses_external_global()) ||
+      copied_vfork) {
     // Record this copied child's virtual identity before any refusal so the
     // shared host<->virtual map stays coherent even when the syscall is later
     // rejected by the fail-closed unsupported-syscall policy below.
@@ -3422,7 +3451,7 @@ static bool pre_syscall(void *drcontext, int sysnum) {
     }
     evidence_callback_enter();
     int32_t copied_action =
-        reverie_dbt_runtime_copied_syscall((int64_t)sysnum, args);
+        reverie_dbt_runtime_copied_syscall((int64_t)sysnum, args, copied_vfork);
     evidence_callback_leave();
     // Negative actions are deterministic errno values synthesized by the
     // copied-child policy. They avoid executing a host-dependent syscall while
