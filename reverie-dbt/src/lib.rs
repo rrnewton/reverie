@@ -106,11 +106,12 @@ pub type RuntimeIdler = unsafe extern "C" fn();
 ///
 /// An external runtime used with this native client must export
 /// `reverie_dbt_runtime_abi_version`, `reverie_dbt_runtime_callbacks_size`,
-/// `reverie_dbt_runtime_thread_created_v2`, and
+/// `reverie_dbt_runtime_thread_created_v2`,
+/// `reverie_dbt_runtime_process_clone_result`, and
 /// `reverie_dbt_runtime_background_init_v2`. Advancing a consumer's Reverie
 /// revision without those matching exports is an incomplete cross-repository
 /// update and fails at link or at the pre-callback ABI check.
-pub const DBT_RUNTIME_ABI_VERSION: u32 = 2;
+pub const DBT_RUNTIME_ABI_VERSION: u32 = 3;
 
 #[repr(C)]
 struct DbtRuntimeCallbacksV1 {
@@ -1609,12 +1610,34 @@ pub unsafe extern "C" fn reverie_dbt_runtime_exec_failed(
 ) {
 }
 
+/// Reports the native result of a process-creating clone-family syscall.
+///
+/// This callback runs in both the parent and child only after the kernel has
+/// returned. External runtimes use it for state that must change after a
+/// successful process clone but must remain untouched when the syscall fails.
+///
+/// # Safety
+///
+/// `counters` must be the pointer initialized for the current application
+/// thread.
+#[cfg(feature = "prototype-runtime")]
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn reverie_dbt_runtime_process_clone_result(
+    _counters: *mut PrototypeCounters,
+    _result: i64,
+) {
+}
+
 /// Applies copied-child syscall policy for the built-in prototype runtime.
 #[cfg(feature = "prototype-runtime")]
 // AUTONOMOUS-BOT-IMPLEMENTED
 // TODO-HUMAN-REVIEW(PR-219): Review copied-child argument and errno policy ABI.
 #[unsafe(no_mangle)]
-pub extern "C" fn reverie_dbt_runtime_copied_syscall(_sysnum: i64, _args: *const u64) -> i32 {
+pub extern "C" fn reverie_dbt_runtime_copied_syscall(
+    _sysnum: i64,
+    _args: *const u64,
+    _copied_vfork: i32,
+) -> i32 {
     0
 }
 
