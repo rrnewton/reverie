@@ -175,5 +175,70 @@ grep -q "^overlapping 3" "$t/9.out" && grep -q "^serial 1" "$t/9.out" \
   && ok "peak overlap is measured from stamps (3 concurrent, 1 serial, None unknown)" \
   || no "peak overlap" "got: $(cat "$t/9.out")"
 
+# T10 PREFLIGHT REFUSES IN ~ONE RUN, NOT N. An owner asked for -n 200 against a
+# build with no SaBRe backend; all 200 failed identically and the run cost 200
+# node-times to learn a build was missing a backend. One real run of the real
+# guest answers that first. Asserts BOTH that it refuses and that it is fast --
+# a preflight that took the whole sweep to refuse would be pointless.
+s=$(date +%s)
+"$HR" -n 200 --deadline 60 --out "$t/pf" -- /no/such/guest >"$t/10.out" 2>&1; rc=$?
+e=$(( $(date +%s) - s ))
+if [ "$e" -ge 60 ]; then
+    no "preflight speed" "took ${e}s; it did not short-circuit the sweep"
+else
+    [ $rc -eq 2 ] && grep -q "REFUSED" "$t/10.out" \
+      && grep -q "CONFIGURATION ERROR" "$t/10.out" \
+      && ok "preflight refuses a bad configuration in ${e}s with exit 2, not after 200 runs" \
+      || no "preflight refusal" "rc=$rc in ${e}s; $(grep -c REFUSED "$t/10.out") REFUSED lines, $(grep -c 'CONFIGURATION ERROR' "$t/10.out") config-error lines"
+fi
+
+# T11 --no-preflight still runs, and THE LAST LINE IS THE VERDICT. This is the
+# defect the owner reported: the no-divergence-point section was correct but the
+# report ended on a tip about run modes, so a reader of the tail learned nothing.
+"$HR" -n 3 --deadline 60 --no-preflight --out "$t/allfail" -- /no/such/guest >"$t/11.out" 2>&1; rc=$?
+last=$(grep '^hermit-repeat: ' "$t/11.out" | tail -5 | head -1)
+[ $rc -eq 3 ] && printf '%s' "$last" | grep -q "ALL 3 RUNS FAILED" \
+  && ok "an all-failed sweep exits 3 and its final lines say ALL FAILED with the cause" \
+  || no "terminal verdict" "rc=$rc, final verdict line was: $last"
+
+# T12 the reported cause is the line that NAMES the problem, not the wrapped
+# errno continuation under it.
+grep -q "Program /no/such/guest does not exist" "$t/11.out" \
+  && ! grep -qE '^hermit-repeat:\s+> No such file' "$t/11.out" \
+  && ok "the grouped cause is hermit's Error: line, not its '> errno' continuation" \
+  || no "cause selection" "got: $(grep -A2 'single cause' "$t/11.out" | tail -1)"
+
+# T13 the verdict text is generated in ONE place, so the report's last section
+# and the process's final stderr lines cannot disagree.
+python3 - "$HR" <<'PY' >"$t/13.out" 2>&1
+from importlib.machinery import SourceFileLoader
+import importlib.util, sys
+loader = SourceFileLoader("hr", sys.argv[1])
+spec = importlib.util.spec_from_loader("hr", loader)
+mod = importlib.util.module_from_spec(spec); sys.modules["hr"] = mod; loader.exec_module(mod)
+def mk(name, cat, tail=(), why="w"):
+    r = mod.RunResult(index=0, name=name, dir="", category=cat, why=why)
+    r.error_tail = list(tail); return r
+meta = {"mode": "concurrent"}
+same = [mk(f"r{i}", "failed", ["Error: backend `sabre` is unavailable: SaBRe support was not included in this build"]) for i in range(200)]
+v = mod.verdict_lines(meta, same)
+print("homogeneous_head:", v[0])
+print("homogeneous_config:", "CONFIGURATION ERROR" in " ".join(v))
+mixed = [mk("a", "failed", ["Error: one thing"]), mk("b", "failed", ["Error: another thing"])]
+print("mixed_head:", mod.verdict_lines(meta, mixed)[0])
+print("mixed_not_config:", "CONFIGURATION ERROR" not in " ".join(mod.verdict_lines(meta, mixed)))
+allclean = [mk(f"c{i}", "clean") for i in range(20)]
+print("clean_head:", mod.verdict_lines(meta, allclean)[0])
+mix2 = [mk("d", "diverged"), mk("e", "clean"), mk("f", "failed", ["Error: x"])]
+print("partial_head:", mod.verdict_lines(meta, mix2)[0])
+PY
+grep -q "^homogeneous_head: VERDICT: ALL 200 RUNS FAILED" "$t/13.out" \
+  && grep -q "^homogeneous_config: True" "$t/13.out" \
+  && grep -q "^mixed_not_config: True" "$t/13.out" \
+  && grep -q "^clean_head: VERDICT: all 20 runs clean" "$t/13.out" \
+  && grep -q "^partial_head: VERDICT: 1 diverged, 1 clean, and 1 of 3 produced NO" "$t/13.out" \
+  && ok "verdict: 200 identical failures are ONE config error; mixed causes are not labelled config" \
+  || no "verdict lines" "got: $(cat "$t/13.out")"
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

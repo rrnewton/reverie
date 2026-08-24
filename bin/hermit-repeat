@@ -29,7 +29,7 @@ verify pair has identical argv by construction, so it measures the guest.
 
 HOW IT RUNS THEM
 ================
-N DISCONNECTED nodes in a safe-ci-dag-runner DAG -- not a bespoke parallel
+N DISCONNECTED nodes in a dagrun (formerly safe-ci-dag-runner) DAG -- not a
 runner. That reuses the existing scheduler, its two-level cgroup boxing and its
 resource accounting instead of inventing a second mechanism that would drift
 from it. Each node's command is `bin/safehermit`, so the easy path is the boxed
@@ -308,7 +308,11 @@ def build_dag(args, hermit_bin: str, out: Path, guest: list[str]) -> dict:
         # exactly that, and the divergence rate would then be a property of this
         # harness. Each node gets its own empty directory, created now and never
         # written to again.
-        (d / "cwd").mkdir(parents=True, exist_ok=True)
+        if args.cwd:
+            node_cwd = os.path.abspath(args.cwd)
+        else:
+            node_cwd = str(d / "cwd")
+            (d / "cwd").mkdir(parents=True, exist_ok=True)
         # safehermit's own report goes to a FILE, never to the shared stderr:
         # six of its lines embed a per-run id, and demo comparators that line-diff
         # hermit's stderr fail on that difference for a reason unrelated to hermit.
@@ -350,7 +354,7 @@ def build_dag(args, hermit_bin: str, out: Path, guest: list[str]) -> dict:
             # outside anything this tool bounds or reads, so the artefact cap
             # would not see it and a failure's stderr would not reach the report.
             f"export SAFEHERMIT_LOG_ROOT={shlex.quote(str(d / 'safehermit-logs'))}\n"
-            f"cd {shlex.quote(str(d / 'cwd'))} || exit 70\n"
+            f"cd {shlex.quote(node_cwd)} || exit 70\n"
             f"date +%s.%N > {shlex.quote(str(d / 'started'))}\n"
             f"{' '.join(shlex.quote(a) for a in inner)}\n"
             "rc=$?\n"
@@ -803,6 +807,27 @@ def write_report(args, meta: dict, results: list[RunResult], fh):
     w(f"disk bound       : {meta['disk_bound']}")
     w(f"wall clock       : {meta['wall_s']:.1f}s")
     w()
+    pre = meta.get("preflight")
+    if pre:
+        w("-" * 78)
+        w("PREFLIGHT (1 real run of the real guest, before the sweep)")
+        w("-" * 78)
+        coords = (
+            f"info_record {pre['info_record']}  sched_turn {pre['sched_turn']}  "
+            f"virtual_ns {pre['virtual_ns']}"
+            if pre["category"] == "diverged"
+            else pre["why"]
+        )
+        w(f"  {pre['category'].upper()}: {coords}")
+        for line in _wrap(
+            "It ran SOLO before the sweep, so under --mode concurrent it belongs to a "
+            "different population than the N nodes below and is NOT counted in any "
+            "ratio there. It is reported because it is a real verdict, not because it "
+            "is part of the distribution.",
+            74,
+        ):
+            w(f"  {line}")
+        w()
     w("-" * 78)
     w("OUTCOME CATEGORIES (every run is in exactly one; they sum to N)")
     w("-" * 78)
@@ -972,7 +997,7 @@ def write_report(args, meta: dict, results: list[RunResult], fh):
         w()
 
     w("-" * 78)
-    w("PER-NODE RESOURCE FACTS (from safe-ci-dag-runner's own step CSV)")
+    w("PER-NODE RESOURCE FACTS (from the DAG runner's own step CSV)")
     w("-" * 78)
     w("  A divergence distribution collected under accidental oversubscription")
     w("  measures the harness. These are what each node ACTUALLY got.")
@@ -1002,8 +1027,14 @@ def write_report(args, meta: dict, results: list[RunResult], fh):
     ):
         w(f"  {line}")
     w()
-    w("  APPLIED: each node runs with cwd set to its own empty, quiescent")
-    w("  <node>/cwd/ directory, created before the sweep and never written again.")
+    if meta["shared_cwd"]:
+        w(f"  *** NOT APPLIED, BY REQUEST: --cwd {meta['shared_cwd']}")
+        w("  Every node shares that directory. If anything writes there during the")
+        w("  sweep -- including another node -- the divergence rate below is partly")
+        w("  a property of this harness and the box, not of the cell.")
+    else:
+        w("  APPLIED: each node runs with cwd set to its own empty, quiescent")
+        w("  <node>/cwd/ directory, created before the sweep and never written again.")
     w("  NOT APPLIED: the shared ancestors ($HOME, the checkout root, ignored/)")
     w("  are still visible to the guest and are still written by other agents on")
     w("  this box. A divergence whose first record is a newfstatat on one of")
@@ -1013,7 +1044,64 @@ def write_report(args, meta: dict, results: list[RunResult], fh):
     other = "concurrent" if meta["mode"] == "sequential" else "sequential"
     w(f"THE OTHER MODE MEASURES SOMETHING ELSE. Re-run with --mode {other} to get")
     w(f"the {'contention-exposed' if other == 'concurrent' else 'quiet-box baseline'} population; do not merge the two histograms.")
+    w()
+    # THE LAST LINE IS A VERDICT, ALWAYS, AND IT MUST AGREE WITH THE BODY.
+    # An owner ran -n 200 where all 200 failed on a missing backend. The
+    # no-divergence-point section said so correctly, but the report ended on a
+    # tip about run modes, so 200 runs were spent learning that a build lacked
+    # SaBRe. A reader who reads only the last line must not be misled by it.
     w("=" * 78)
+    for line in verdict_lines(meta, results):
+        w(line)
+    w("=" * 78)
+
+
+def verdict_lines(meta: dict, results: list[RunResult]) -> list[str]:
+    """The terminal verdict. Returned as lines so the report and the process's
+    own final stderr line are generated from ONE place and cannot drift."""
+    by = lambda c: [r for r in results if r.category == c]
+    diverged, clean = by("diverged"), by("clean")
+    nores = by("failed") + by("no_result") + by("not_run")
+    n = len(results)
+    measured = len(diverged) + len(clean)
+    if measured == 0:
+        cause = homogeneous_failure_cause(nores)
+        head = f"VERDICT: ALL {n} RUNS FAILED. NO DISTRIBUTION WAS MEASURED."
+        if cause and looks_like_config_error(cause):
+            return [
+                head,
+                "This is a CONFIGURATION ERROR, not data: every run failed the same",
+                "way, so there is nothing here about the cell. The single cause was:",
+                f"    {cause[:200]}",
+                "Fix that and re-run. Nothing below or above this line is a measurement.",
+            ]
+        if cause:
+            return [
+                head,
+                f"Every run failed identically, so this is ONE failure observed {n} times,",
+                "not a distribution. The single cause was:",
+                f"    {cause[:200]}",
+            ]
+        return [
+            head,
+            f"{len(nores)} runs produced no verdict, with more than one distinct cause;",
+            "see the no-divergence-point section above. This is not a distribution.",
+        ]
+    lines = []
+    if nores:
+        lines.append(
+            f"VERDICT: {len(diverged)} diverged, {len(clean)} clean, and {len(nores)} of {n} produced NO"
+        )
+        lines.append(
+            f"verdict -- every rate above is out of {measured}, not {n}. Read the failures."
+        )
+    elif diverged:
+        lines.append(
+            f"VERDICT: {len(diverged)} of {n} runs DIVERGED ({100*len(diverged)//n}%), {len(clean)} clean. Not L4."
+        )
+    else:
+        lines.append(f"VERDICT: all {n} runs clean, none diverged, mode={meta['mode']}.")
+    return lines
 
 
 CHECK_KIND_MEANING = {
@@ -1051,12 +1139,67 @@ def _check_kind(check: str | None) -> str:
     return head if head in CHECK_KIND_MEANING else "NONE"
 
 
+def best_cause_line(r: "RunResult") -> str:
+    """The most informative line of a failed run's output.
+
+    NOT simply the last line. hermit prints its diagnosis on an `Error:` line and
+    then a wrapped `     > errno` continuation, so taking the tail yields
+    "> No such file or directory (os error 2)" -- true, and useless without the
+    line above it that names the program."""
+    for line in reversed(r.error_tail):
+        stripped = line.strip()
+        if stripped.startswith(("Error:", "error:", "hermit:")) and len(stripped) > 12:
+            return stripped
+    for line in reversed(r.error_tail):
+        stripped = line.strip()
+        if stripped and not stripped.startswith(">"):
+            return stripped
+    return r.why
+
+
+def homogeneous_failure_cause(runs: list[RunResult]) -> str | None:
+    """The single cause when EVERY non-measuring run failed the same way.
+
+    N identical failures are one configuration error observed N times, not a
+    distribution of anything. Reported as a cause, not as data."""
+    if not runs:
+        return None
+    causes = {best_cause_line(r) for r in runs}
+    return causes.pop() if len(causes) == 1 else None
+
+
+CONFIG_ERROR_MARKERS = (
+    # backend not compiled in / prerequisites unmet
+    #   hermit-cli/src/lib.rs: "backend `sabre` is unavailable: SaBRe support was
+    #   not included in this build"
+    "is unavailable:",
+    "was not included in this build",
+    # guest not reachable
+    "is not visible through the configured guest mounts",
+    "does not exist or is not accessible",
+    "is under host /tmp",
+    "No such file or directory",
+    "command not found",
+    "Permission denied",
+    # harness could not produce the guest at all
+    "prebuilt fixture is missing",
+    "compiled guest is missing or not executable",
+)
+
+
+def looks_like_config_error(cause: str | None) -> bool:
+    """Whether a cause is the environment being wrong rather than the cell being
+    flaky. Deliberately a small, literal list: guessing wider would relabel real
+    product failures as the user's fault."""
+    return bool(cause) and any(m in cause for m in CONFIG_ERROR_MARKERS)
+
+
 def _summarize_failures(runs: list[RunResult], w):
     """Group identical failure tails. With 20 nodes, 20 copies of one message is
     one finding, and printing it 20 times hides that."""
     groups: dict[str, list[str]] = {}
     for r in runs:
-        key = r.error_tail[-1] if r.error_tail else r.why
+        key = best_cause_line(r)
         groups.setdefault(key, []).append(r.name)
     w("  GROUPED BY LAST LINE:")
     for key, names in sorted(groups.items(), key=lambda kv: -len(kv[1])):
@@ -1119,6 +1262,18 @@ def main() -> int:
     p.add_argument("--max-total-mb", type=int, default=4096, help="abort the run if artefacts exceed this many MB (default 4096)")
     p.add_argument("--node-rss-bytes", type=int, default=2 * 1024**3, help="planner hint: expected RSS per node (default 2 GiB)")
     p.add_argument("--node-mem-max-bytes", type=int, default=8 * 1024**3, help="hard cgroup memory cap per node (default 8 GiB)")
+    p.add_argument(
+        "--cwd",
+        help=(
+            "run EVERY node with this SHARED working directory instead of each node's "
+            "own private empty one. This is a measurement knob for studying the cwd "
+            "as a nondeterminism source, not a normal option: on btrfs a directory's "
+            "st_size changes on every entry added or removed, so a shared, live "
+            "directory makes the divergence rate a property of whatever else is "
+            "writing there. Named in the report when set."
+        ),
+    )
+    p.add_argument("--no-preflight", action="store_true", help="skip the single probe run that checks this configuration can produce a verdict at all; use when a genuinely flaky cell fails the probe")
     p.add_argument("--dry-run", action="store_true", help="print the generated DAG and the exact per-node command, run nothing")
     p.add_argument("-v", "--verbose", action="store_true", help="echo the runner's whole stream; it is written to <out>/runner.log either way")
     p.add_argument("--selftest", action="store_true", help="check the log-coordinate parsing against built-in fixtures and exit")
@@ -1135,9 +1290,22 @@ def main() -> int:
     if args.runs < 1:
         die(f"--runs must be >= 1 (got {args.runs})")
 
-    runner = ROOT / "agent-utils/common/bin/safe-ci-dag-runner"
-    if not runner.exists():
-        die(f"safe-ci-dag-runner not found at {runner}")
+    # BOTH NAMES. agent-utils renamed the DAG runner (rs/safe-ci-dag-runner ->
+    # rs/dagrun, executable -> dagrun, profile store .safe-ci-dag-runner/profiles
+    # -> .dagrun/profiles) and hermit main already pins the renamed agent-utils,
+    # so this checkout will flip under us. Resolve whichever is present and NAME
+    # the one that won, rather than hardcoding a name that is on its way out.
+    candidates = [
+        ROOT / "agent-utils/common/bin/dagrun",
+        ROOT / "agent-utils/common/bin/safe-ci-dag-runner",
+    ]
+    runner = next((c for c in candidates if c.exists()), None)
+    if runner is None:
+        die(
+            "no DAG runner found. Looked for, in order:\n  "
+            + "\n  ".join(str(c) for c in candidates)
+            + "\nIs the agent-utils submodule checked out?"
+        )
     if not (ROOT / "bin/safehermit").exists():
         die(f"bin/safehermit not found at {ROOT / 'bin/safehermit'}")
 
@@ -1166,6 +1334,54 @@ def main() -> int:
         print(f"{PROG}: runner command:\n  {runner} run --dag {dag_path} -j {jobs} "
               f"--keep-going --run-timeout {run_timeout} --perf-dir {perf_dir}")
         return 0
+
+    preflight_result: RunResult | None = None
+    # ---------------------------------------------------------------- preflight
+    # ONE RUN BEFORE N. An owner spent 200 runs discovering that the build had no
+    # SaBRe backend. Every one of those failures was identical and none of them
+    # was a measurement. A single real run of the real guest with the real flags
+    # answers "can this configuration produce a verdict at all" in the time one
+    # node takes, and refuses in seconds instead of after the whole sweep.
+    if not args.no_preflight:
+        pre_args = argparse.Namespace(**vars(args))
+        pre_args.runs = 1
+        pre_dir = out / "preflight"
+        pre_dir.mkdir(parents=True, exist_ok=True)
+        pre_dag = build_dag(pre_args, hermit_bin, pre_dir, guest)
+        pre_dag_path = pre_dir / "dag.json"
+        pre_dag_path.write_text(json.dumps(pre_dag, indent=2))
+        say(f"{PROG}: preflight -- one run of the real guest before all {args.runs}")
+        subprocess.run(
+            [str(runner), "run", "--dag", str(pre_dag_path), "-j", "1", "--keep-going",
+             "--run-timeout", str(args.deadline + 120), "--no-profile"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False,
+        )
+        probe = RunResult(index=1, name="run1", dir=str(pre_dir / "runs" / "run1"))
+        collect_one(probe, hermit_bin, keep=False)
+        if probe.category not in ("diverged", "clean"):
+            say("")
+            say(f"{PROG}: REFUSED -- the preflight run produced no verdict, so all "
+                f"{args.runs} runs would fail the same way.")
+            say(f"{PROG}:   category : {probe.category}")
+            say(f"{PROG}:   why      : {probe.why}")
+            for line in probe.error_tail:
+                say(f"{PROG}:   | {line}")
+            cause = best_cause_line(probe)
+            if looks_like_config_error(cause):
+                say(f"{PROG}: This reads as a CONFIGURATION ERROR (backend, binary or "
+                    f"guest), not a flaky cell. Fix it and re-run.")
+            say(f"{PROG}: If you believe this is a flake rather than a configuration "
+                f"error, re-run with --no-preflight.")
+            say(f"{PROG}: artefacts: {pre_dir}")
+            return 2
+        say(f"{PROG}: preflight OK ({probe.category}) -- running all {args.runs}")
+        # KEEP IT. The probe is a real verify pair on the real guest, so its
+        # verdict is a data point and throwing it away wastes evidence. It is
+        # NOT merged into the distribution: it ran SOLO, before the sweep, so
+        # under --mode concurrent it belongs to a different population than the
+        # N nodes it precedes -- which is the exact conflation this tool refuses
+        # to make elsewhere. Reported on its own line instead.
+        preflight_result = probe
 
     cmd = [
         str(runner), "run",
@@ -1198,7 +1414,7 @@ def main() -> int:
         proc_holder["p"] = proc
         for line in proc.stdout:
             lf.write(line)
-            if args.verbose or line.startswith("safe-ci-dag-runner") or " FAIL " in line:
+            if args.verbose or line.startswith((runner.name, "safe-ci-dag-runner", "dagrun")) or " FAIL " in line:
                 sys.stderr.write(line)
         runner_rc = proc.wait()
     wall = time.time() - started
@@ -1245,7 +1461,7 @@ def main() -> int:
         ),
         "mode": args.mode,
         "mode_meaning": mode_meaning,
-        "runner": "safe-ci-dag-runner (cgroup-boxed, two-level)",
+        "runner": f"{runner.name} (cgroup-boxed, two-level) at {runner}",
         "jobs": jobs,
         "peak_overlap": peak if peak is not None else "NOT_MEASURED (no start/end stamps)",
         "boxing": "bin/safehermit per node; its APPLIED/NOT_APPLIED report is at "
@@ -1256,6 +1472,22 @@ def main() -> int:
         ),
         "disk_bound": disk_bound,
         "wall_s": wall,
+        "shared_cwd": os.path.abspath(args.cwd) if args.cwd else None,
+        "preflight": (
+            None
+            if preflight_result is None
+            else {
+                "category": preflight_result.category,
+                "why": preflight_result.why,
+                "info_record": preflight_result.info_record,
+                "sched_turn": preflight_result.sched_turn,
+                "virtual_ns": preflight_result.virtual_ns,
+                "syscall_ordinal": preflight_result.syscall_ordinal,
+                "syscall_dtid": preflight_result.syscall_dtid,
+                "ran": "SOLO, before the sweep -- a different population from the "
+                       "N nodes, so deliberately NOT merged into the distribution",
+            }
+        ),
         "out_dir": str(out),
         "runner_exit": runner_rc,
         "runner_exit_label": {0: "PASS (exit 0)", 1: "a node failed (exit 1)",
@@ -1269,15 +1501,20 @@ def main() -> int:
     with open(report_path, "w") as fh:
         write_report(args, meta, results, fh)
     sys.stdout.write(report_path.read_text())
-    say(f"{PROG}: report also written to {report_path}")
 
-    payload = {"meta": meta, "runs": [asdict(r) for r in results]}
+    payload = {"meta": meta, "runs": [asdict(r) for r in results],
+               "verdict": verdict_lines(meta, results)}
     (out / "result.json").write_text(json.dumps(payload, indent=2))
     if args.json:
         Path(args.json).write_text(json.dumps(payload, indent=2))
 
     diverged = [r for r in results if r.category == "diverged"]
     clean = [r for r in results if r.category == "clean"]
+    # The LAST thing on stderr is the verdict, from the same generator the report
+    # ends with, so the two can never disagree. The artefact path goes above it.
+    say(f"{PROG}: report {report_path}")
+    for line in verdict_lines(meta, results):
+        say(f"{PROG}: {line}")
     if not diverged and not clean:
         return 3
     return 1 if diverged else 0
