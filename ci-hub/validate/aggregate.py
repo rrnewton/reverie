@@ -90,6 +90,14 @@ def iso(ts: float) -> str:
 PRUNE = {"target", ".git", "node_modules", ".cargo", "incremental", "deps",
          "build", ".venv", "__pycache__"}
 
+# The runner's per-checkout profile store, in both spellings. agent-utils renamed
+# it .safe-ci-dag-runner/profiles -> .dagrun/profiles, and this parent reads
+# checkouts on BOTH sides of that rename (current main pins the new name; an
+# older commit or unrebased PR head pins the old one; a bisect walks across the
+# boundary). Matching only one name silently yields zero profile rows, which
+# reads as "this run recorded no profiling" rather than as a lookup that missed.
+PROFILE_STORE_DIRS = (".dagrun", ".safe-ci-dag-runner")
+
 
 def walk_pruned(root: str, want, max_depth: int = 6):
     """Yield files matching predicate `want(name)`, skipping heavy build dirs.
@@ -103,9 +111,10 @@ def walk_pruned(root: str, want, max_depth: int = 6):
         depth = dirpath.rstrip("/").count("/") - base_depth
         if depth >= max_depth:
             dirnames[:] = []
-        # Prune heavy dirs in place (but keep .safe-ci-dag-runner).
+        # Prune heavy dirs in place (but keep the runner profile stores).
         dirnames[:] = [d for d in dirnames
-                       if d not in PRUNE and not d.startswith(".safe-ci-dag-runner.")]
+                       if d not in PRUNE
+                       and not any(d.startswith(s + ".") for s in PROFILE_STORE_DIRS)]
         for fn in filenames:
             if want(fn):
                 yield os.path.join(dirpath, fn)
@@ -383,14 +392,17 @@ def discover_profiles(parent: str) -> list[dict]:
         return (fn.endswith(".csv") and not fn.startswith("step_profiles_"))
 
     for path in walk_pruned(parent, is_agg_csv):
-        if "/.safe-ci-dag-runner/profiles/" not in path:
+        store = next((s for s in PROFILE_STORE_DIRS
+                      if f"/{s}/profiles/" in path), None)
+        if store is None:
             continue
-        checkout = path.split("/.safe-ci-dag-runner/")[0]
+        checkout = path.split(f"/{store}/")[0]
         checkout_repo = "reverie" if checkout.rstrip("/").endswith("/reverie") else "hermit"
         try:
             with open(path, errors="replace") as fh:
                 for row in csvmod.DictReader(fh):
                     row["_checkout"] = checkout
+                    row["_store"] = store
                     row["_slot"] = slot_from_cwd(checkout + "/")
                     row["_repo"] = checkout_repo
                     row["_file"] = path
@@ -652,7 +664,10 @@ def main() -> int:
             ts = sorted({r.get("timestamp") for r in rows})
             print(f"  {slot_from_cwd(ckt + '/'):20} runs={len(ts):3}  "
                   f"first={ts[0]}  last={ts[-1]}")
-            print(f"      dir: {ckt}/.safe-ci-dag-runner/profiles/")
+            stores = sorted({r["_store"] for r in rows})
+            print(f"      dir: {ckt}/{{{','.join(stores)}}}/profiles/"
+                  if len(stores) > 1
+                  else f"      dir: {ckt}/{stores[0]}/profiles/")
         print(f"\n  total profiling rows: {len(profiles)} across {len(by_ckt)} checkouts")
         return 0
 

@@ -228,12 +228,28 @@ def prepare_fresh_checkout(
     # or an unrebased PR head pins the old one, and a bisect walks across the
     # rename. Requiring one exact path made every target on the other side of
     # that boundary unlaunchable.
+    #
+    # The RUNNER EXECUTABLE is required too, and its absence is precisely what
+    # took main down at 4b9a56bfc2. The crate-path check above proves the SOURCE
+    # is present; it says nothing about whether ci/run-dag.sh can find something
+    # to execute. When the rename landed without its hermit half, every lane
+    # exited on "safe-ci-dag-runner not found" -- an environmental refusal that
+    # produced no result at all. Proving the executable here turns that into an
+    # honest, named precondition failure at launch instead of a lane that starts
+    # and immediately gives up. Either spelling satisfies it, for the same
+    # both-sides-of-the-rename reason as the crate path.
     alternatives: tuple[tuple[str, ...], ...] = (
         (
             ("scripts/validate.rs",),
             (
                 "agent-utils/rs/dagrun/Cargo.toml",
                 "agent-utils/rs/safe-ci-dag-runner/Cargo.toml",
+            ),
+            (
+                "agent-utils/common/bin/dagrun",
+                "agent-utils/common/bin/safe-ci-dag-runner",
+                "agent-utils/py/bin/dagrun",
+                "agent-utils/py/bin/safe-ci-dag-runner",
             ),
         )
         if repo == "rrnewton/hermit"
@@ -707,8 +723,21 @@ def build_systemd_command(
             [
                 "--setenv",
                 f"E2E_RESULT_ROOT={e2e_result_root}",
+                # BOTH spellings, deliberately. agent-utils renamed the runner's
+                # log-dir variable SAFE_CI_DAG_RUNNER_LOG_DIR -> DAGRUN_LOG_DIR,
+                # and this parent drives hermit checkouts on BOTH sides of that
+                # rename: current main pins the new name, an older commit or an
+                # unrebased pull-request head pins the old one, and a bisect
+                # walks across the boundary. Sending only one name silently
+                # loses the runner logs for every target on the other side --
+                # silently, because an unread variable raises nothing and the
+                # receipt still prints a RUNNER_LOGS path that stays empty.
+                # The unrecognised name is ignored by whichever runner receives
+                # it, so setting both is safe in both directions.
                 "--setenv",
                 f"SAFE_CI_DAG_RUNNER_LOG_DIR={runner_log_dir}",
+                "--setenv",
+                f"DAGRUN_LOG_DIR={runner_log_dir}",
             ]
         )
 

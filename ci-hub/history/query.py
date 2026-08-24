@@ -172,6 +172,14 @@ GREEN_TIME_DEFINITION_DATE = "2026-08-07"
 PRUNE = {"target", ".git", "node_modules", ".cargo", "incremental", "deps",
          "build", ".venv", "__pycache__"}
 
+# The runner's per-checkout profile store, in both spellings. agent-utils renamed
+# it .safe-ci-dag-runner/profiles -> .dagrun/profiles, and this parent reads
+# checkouts on BOTH sides of that rename (current main pins the new name; an
+# older commit or unrebased PR head pins the old one; a bisect walks across the
+# boundary). Matching only one name silently yields zero profile rows, which
+# reads as "this run recorded no profiling" rather than as a lookup that missed.
+PROFILE_STORE_DIRS = (".dagrun", ".safe-ci-dag-runner")
+
 
 def parent_root() -> str:
     env = os.environ.get("DEV_HERMIT_PARENT")
@@ -239,7 +247,8 @@ def walk_pruned(root: str, want, max_depth: int = 8):
         if depth >= max_depth:
             dirnames[:] = []
         dirnames[:] = [d for d in dirnames
-                       if d not in PRUNE and not d.startswith(".safe-ci-dag-runner.")]
+                       if d not in PRUNE
+                       and not any(d.startswith(s + ".") for s in PROFILE_STORE_DIRS)]
         for fn in filenames:
             if want(fn):
                 yield os.path.join(dirpath, fn)
@@ -276,7 +285,7 @@ def discover_step_profiles(parent: str, repo: str | None) -> list[dict]:
 
     # Local safe-ci-dag-runner profiling under any checkout.
     for path in walk_pruned(parent, is_step_csv):
-        if "/.safe-ci-dag-runner/profiles/" not in path:
+        if not any(f"/{s}/profiles/" in path for s in PROFILE_STORE_DIRS):
             continue
         _read_step_csv(path, rows, origin="local")
 
