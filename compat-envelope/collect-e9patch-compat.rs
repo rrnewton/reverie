@@ -55,11 +55,16 @@ const RUN_MODE: &str = "e9patch";
 const BUCKET: &str = "e9patch-corpus";
 // Single mode token: "run the freestanding raw-syscall guest under strict verify".
 const MODE: &str = "verify";
-const FREESTANDING_FLAGS: &[&str] =
-    &["-nostdlib", "-static", "-ffreestanding", "-O0", "-fno-pie", "-no-pie"];
+const FREESTANDING_FLAGS: &[&str] = &[
+    "-nostdlib",
+    "-static",
+    "-ffreestanding",
+    "-O0",
+    "-fno-pie",
+    "-no-pie",
+];
 const L2_NEEDLE: &str = "Determinism verified";
-const PINNED_GUEST_ENV_ARGS: &[&str] =
-    &["--base-env", "minimal", "-e", "LC_ALL=C", "-e", "TZ=UTC"];
+const PINNED_GUEST_ENV_ARGS: &[&str] = &["--base-env", "minimal", "-e", "LC_ALL=C", "-e", "TZ=UTC"];
 
 fn die(msg: &str) -> ! {
     eprintln!("collect-e9patch-compat: {msg}");
@@ -74,7 +79,12 @@ fn script_dir() -> PathBuf {
 }
 
 fn git(dir: &Path, args: &[&str]) -> Option<String> {
-    let out = Command::new("git").arg("-C").arg(dir).args(args).output().ok()?;
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .output()
+        .ok()?;
     if !out.status.success() {
         return None;
     }
@@ -126,7 +136,14 @@ fn run_timed(cmd_argv: &[String], timeout: Duration) -> Run {
     let mut child = match cmd.spawn() {
         Ok(c) => c,
         Err(_) => {
-            return Run { exit: 127, wedged: false, stdout: Vec::new(), l2_verified: false, reach: None, duration_ms: 0 }
+            return Run {
+                exit: 127,
+                wedged: false,
+                stdout: Vec::new(),
+                l2_verified: false,
+                reach: None,
+                duration_ms: 0,
+            }
         }
     };
     let pid = child.id() as i32;
@@ -137,7 +154,9 @@ fn run_timed(cmd_argv: &[String], timeout: Duration) -> Run {
             Ok(None) => {
                 if t0.elapsed() >= timeout {
                     // SIGKILL the whole group, then reap.
-                    unsafe { libc::kill(-pid, libc::SIGKILL); }
+                    unsafe {
+                        libc::kill(-pid, libc::SIGKILL);
+                    }
                     let _ = child.wait();
                     wedged = true;
                     break 124;
@@ -155,7 +174,14 @@ fn run_timed(cmd_argv: &[String], timeout: Duration) -> Run {
     let err_text = String::from_utf8_lossy(&stderr);
     let l2_verified = err_text.contains(L2_NEEDLE);
     let reach = parse_reach(&err_text);
-    Run { exit, wedged, stdout, l2_verified, reach, duration_ms: dur }
+    Run {
+        exit,
+        wedged,
+        stdout,
+        l2_verified,
+        reach,
+        duration_ms: dur,
+    }
 }
 
 /// Parse `candidate_sites=N; mapped_sites=M` out of the e9patch backend banner.
@@ -293,7 +319,12 @@ mod guest_env_pin_tests {
 
     fn has_exact_pin(argv: &[String]) -> bool {
         projected_env_args(argv)
-            == Some(PINNED_GUEST_ENV_ARGS.iter().map(|arg| (*arg).to_string()).collect())
+            == Some(
+                PINNED_GUEST_ENV_ARGS
+                    .iter()
+                    .map(|arg| (*arg).to_string())
+                    .collect(),
+            )
     }
 
     fn actual_argv() -> Vec<String> {
@@ -313,7 +344,10 @@ mod guest_env_pin_tests {
     #[test]
     fn a_mutated_value_is_refused() {
         let mut argv = actual_argv();
-        *argv.iter_mut().find(|arg| arg.as_str() == "TZ=UTC").unwrap() = "TZ=localtime".into();
+        *argv
+            .iter_mut()
+            .find(|arg| arg.as_str() == "TZ=UTC")
+            .unwrap() = "TZ=localtime".into();
         assert!(!has_exact_pin(&argv));
     }
 
@@ -440,23 +474,52 @@ fn main() {
     while let Some(a) = it.next() {
         match a.as_str() {
             "--lane" => lane = it.next().unwrap_or_else(|| die("--lane needs a value")),
-            "--csv" => csv = Some(PathBuf::from(it.next().unwrap_or_else(|| die("--csv needs a path")))),
-            "--hermit" => hermit_arg = Some(PathBuf::from(it.next().unwrap_or_else(|| die("--hermit needs a path")))),
-            "--corpus" => corpus_arg = Some(PathBuf::from(it.next().unwrap_or_else(|| die("--corpus needs a path")))),
-            "--run-id" => run_id_arg = Some(it.next().unwrap_or_else(|| die("--run-id needs a value"))),
+            "--csv" => {
+                csv = Some(PathBuf::from(
+                    it.next().unwrap_or_else(|| die("--csv needs a path")),
+                ))
+            }
+            "--hermit" => {
+                hermit_arg = Some(PathBuf::from(
+                    it.next().unwrap_or_else(|| die("--hermit needs a path")),
+                ))
+            }
+            "--corpus" => {
+                corpus_arg = Some(PathBuf::from(
+                    it.next().unwrap_or_else(|| die("--corpus needs a path")),
+                ))
+            }
+            "--run-id" => {
+                run_id_arg = Some(it.next().unwrap_or_else(|| die("--run-id needs a value")))
+            }
             "--only" => only = Some(it.next().unwrap_or_else(|| die("--only needs a substring"))),
             "--limit" => limit = it.next().and_then(|s| s.parse().ok()),
-            "--strict-timeout" => strict_to = it.next().and_then(|s| s.parse().ok()).unwrap_or(strict_to),
-            "--verify-timeout" => verify_to = it.next().and_then(|s| s.parse().ok()).unwrap_or(verify_to),
-            "--verify-retries" => verify_retries = it.next().and_then(|s| s.parse().ok()).unwrap_or(verify_retries),
+            "--strict-timeout" => {
+                strict_to = it.next().and_then(|s| s.parse().ok()).unwrap_or(strict_to)
+            }
+            "--verify-timeout" => {
+                verify_to = it.next().and_then(|s| s.parse().ok()).unwrap_or(verify_to)
+            }
+            "--verify-retries" => {
+                verify_retries = it
+                    .next()
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(verify_retries)
+            }
             "--dry-run" => dry_run = true,
             "--assert-green" => assert_green = true,
             "-h" | "--help" => {
-                eprintln!("collect-e9patch-compat.rs [--lane L] [--csv F] [--hermit BIN] [--corpus DIR]");
+                eprintln!(
+                    "collect-e9patch-compat.rs [--lane L] [--csv F] [--hermit BIN] [--corpus DIR]"
+                );
                 eprintln!("    [--run-id ID] [--only SUBSTR] [--limit N] [--strict-timeout S]");
-                eprintln!("    [--verify-timeout S] [--verify-retries N] [--dry-run] [--assert-green]");
+                eprintln!(
+                    "    [--verify-timeout S] [--verify-retries N] [--dry-run] [--assert-green]"
+                );
                 eprintln!("Measures e9patch preprocessing-invariance (golden ptrace vs e9-rewritten ptrace),");
-                eprintln!("honest L1 (strict) vs L2 (strict --verify), into e9patch-scorecard.csv.");
+                eprintln!(
+                    "honest L1 (strict) vs L2 (strict --verify), into e9patch-scorecard.csv."
+                );
                 exit(0);
             }
             other => die(&format!("unknown argument {other}")),
@@ -467,25 +530,41 @@ fn main() {
     let csv_path = csv.unwrap_or_else(|| here.join("e9patch-scorecard.csv"));
 
     // Locate the e9patch-feature hermit worktree + its reverie (for e9tool paths).
-    let parent = here.parent().map(Path::to_path_buf).unwrap_or_else(|| here.clone());
+    let parent = here
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| here.clone());
     let e9_hermit = parent.join("worktrees/e9patch/hermit");
     let e9_reverie = parent.join("worktrees/e9patch/reverie");
-    let hermit_bin = hermit_arg
-        .unwrap_or_else(|| e9_hermit.join("target/debug/hermit"));
+    let hermit_bin = hermit_arg.unwrap_or_else(|| e9_hermit.join("target/debug/hermit"));
     if !hermit_bin.is_file() {
-        die(&format!("hermit binary not found: {} (build --features e9patch or pass --hermit)", hermit_bin.display()));
+        die(&format!(
+            "hermit binary not found: {} (build --features e9patch or pass --hermit)",
+            hermit_bin.display()
+        ));
     }
-    let corpus_dir = corpus_arg
-        .unwrap_or_else(|| e9_hermit.join("tests/backend-parity/e9patch_corpus"));
+    let corpus_dir =
+        corpus_arg.unwrap_or_else(|| e9_hermit.join("tests/backend-parity/e9patch_corpus"));
     if !corpus_dir.is_dir() {
-        die(&format!("corpus dir not found: {} (pass --corpus)", corpus_dir.display()));
+        die(&format!(
+            "corpus dir not found: {} (pass --corpus)",
+            corpus_dir.display()
+        ));
     }
 
     // e9tool / e9patch backend env (required for the e9 arm).
-    let e9tool = env::var("HERMIT_E9TOOL")
-        .unwrap_or_else(|_| e9_reverie.join("third-party/e9patch/e9tool").to_string_lossy().into_owned());
-    let e9patch = env::var("HERMIT_E9PATCH_BACKEND")
-        .unwrap_or_else(|_| e9_reverie.join("third-party/e9patch/e9patch").to_string_lossy().into_owned());
+    let e9tool = env::var("HERMIT_E9TOOL").unwrap_or_else(|_| {
+        e9_reverie
+            .join("third-party/e9patch/e9tool")
+            .to_string_lossy()
+            .into_owned()
+    });
+    let e9patch = env::var("HERMIT_E9PATCH_BACKEND").unwrap_or_else(|_| {
+        e9_reverie
+            .join("third-party/e9patch/e9patch")
+            .to_string_lossy()
+            .into_owned()
+    });
     if !Path::new(&e9tool).is_file() || !Path::new(&e9patch).is_file() {
         die(&format!("e9tool/e9patch not found ({e9tool} / {e9patch}); set HERMIT_E9TOOL + HERMIT_E9PATCH_BACKEND"));
     }
@@ -512,12 +591,17 @@ fn main() {
     }
 
     let cc = env::var("CC").unwrap_or_else(|_| "cc".into());
-    let now = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
     let run_id = run_id_arg.unwrap_or_else(|| format!("e9patch-{now}"));
     let run_utc = format!("@{now}");
     let hermit_sha = git(&e9_hermit, &["rev-parse", "HEAD"]).unwrap_or_else(|| "unknown".into());
     let reverie_sha = git(&e9_reverie, &["rev-parse", "HEAD"]).unwrap_or_else(|| "unknown".into());
-    let dirty = git(&e9_hermit, &["status", "--porcelain"]).map(|s| !s.is_empty()).unwrap_or(false);
+    let dirty = git(&e9_hermit, &["status", "--porcelain"])
+        .map(|s| !s.is_empty())
+        .unwrap_or(false);
 
     eprintln!(
         "collect-e9patch-compat: hermit={} guests={} strict_to={}s verify_to={}s retries={}",
@@ -529,7 +613,10 @@ fn main() {
     );
 
     if dry_run {
-        eprintln!("(dry-run) would measure {} guests x 2 arms; CSV untouched", guests.len());
+        eprintln!(
+            "(dry-run) would measure {} guests x 2 arms; CSV untouched",
+            guests.len()
+        );
         for g in &guests {
             eprintln!("  {g}");
         }
@@ -537,7 +624,8 @@ fn main() {
     }
 
     if !csv_path.exists() {
-        fs::write(&csv_path, format!("{HEADER}\n")).unwrap_or_else(|e| die(&format!("create CSV: {e}")));
+        fs::write(&csv_path, format!("{HEADER}\n"))
+            .unwrap_or_else(|e| die(&format!("create CSV: {e}")));
     } else {
         let existing_header = fs::read_to_string(&csv_path)
             .ok()
@@ -575,8 +663,25 @@ fn main() {
         let compiled = comp.map(|o| o.status.success()).unwrap_or(false);
         if !compiled {
             for backend in ["ptrace", "e9patch"] {
-                rows.push(row(&run_id, &run_utc, &hermit_sha, &reverie_sha, dirty, &lane, g,
-                    backend, "enabled", "fail", None, None, "", "", 0, "compile failed", None));
+                rows.push(row(
+                    &run_id,
+                    &run_utc,
+                    &hermit_sha,
+                    &reverie_sha,
+                    dirty,
+                    &lane,
+                    g,
+                    backend,
+                    "enabled",
+                    "fail",
+                    None,
+                    None,
+                    "",
+                    "",
+                    0,
+                    "compile failed",
+                    None,
+                ));
             }
             *tally.entry("compile-fail").or_default() += 1;
             eprintln!("[{}/{}] {g}: COMPILE-FAIL", i + 1, guests.len());
@@ -584,9 +689,23 @@ fn main() {
         }
 
         // Golden reference arm (un-rewritten ptrace).
-        let golden = measure_arm(&hermit_bin, false, &elf, strict_to, verify_to, verify_retries);
+        let golden = measure_arm(
+            &hermit_bin,
+            false,
+            &elf,
+            strict_to,
+            verify_to,
+            verify_retries,
+        );
         // e9-rewritten arm (ptrace + e9tool AOT rewrite).
-        let e9 = measure_arm(&hermit_bin, true, &elf, strict_to, verify_to, verify_retries);
+        let e9 = measure_arm(
+            &hermit_bin,
+            true,
+            &elf,
+            strict_to,
+            verify_to,
+            verify_retries,
+        );
 
         let gref_hash = sha256(&golden.strict_stdout);
         let e9_hash = sha256(&e9.strict_stdout);
@@ -597,9 +716,25 @@ fn main() {
 
         // ---- ptrace (golden reference) cell ----
         let (g_out, g_det, g_reason) = arm_cell(&golden, None);
-        rows.push(row(&run_id, &run_utc, &hermit_sha, &reverie_sha, dirty, &lane, g,
-            "ptrace", "enabled", g_out, g_det, None, &gref_hash, &gref_hash, golden.duration_ms, &g_reason,
-            None));
+        rows.push(row(
+            &run_id,
+            &run_utc,
+            &hermit_sha,
+            &reverie_sha,
+            dirty,
+            &lane,
+            g,
+            "ptrace",
+            "enabled",
+            g_out,
+            g_det,
+            None,
+            &gref_hash,
+            &gref_hash,
+            golden.duration_ms,
+            &g_reason,
+            None,
+        ));
 
         // ---- e9patch (rewritten variant) cell ----
         let (e_out_raw, e_det, e_reason_raw) = arm_cell(&e9, Some(parity));
@@ -609,10 +744,30 @@ fn main() {
         let (e_out, e_reason) = apply_reach_gate("e9patch", e9.reach, e_out_raw, &e_reason_raw);
         // Parity is withheld too: reporting stdout_parity=1 beside
         // outcome=not-exercised would re-manufacture the score the gate removes.
-        let e_parity = if matches!(e9.reach, Some((_, m)) if m > 0) { Some(parity) } else { None };
-        rows.push(row(&run_id, &run_utc, &hermit_sha, &reverie_sha, dirty, &lane, g,
-            "e9patch", "enabled", &e_out, e_det, e_parity, &e9_hash, &gref_hash, e9.duration_ms, &e_reason,
-            e9.reach));
+        let e_parity = if matches!(e9.reach, Some((_, m)) if m > 0) {
+            Some(parity)
+        } else {
+            None
+        };
+        rows.push(row(
+            &run_id,
+            &run_utc,
+            &hermit_sha,
+            &reverie_sha,
+            dirty,
+            &lane,
+            g,
+            "e9patch",
+            "enabled",
+            &e_out,
+            e_det,
+            e_parity,
+            &e9_hash,
+            &gref_hash,
+            e9.duration_ms,
+            &e_reason,
+            e9.reach,
+        ));
 
         // Tally by the honest per-guest outcome (e9 arm is the interesting one).
         // Order matters: real defects are only reachable once BOTH arms cleared
@@ -638,13 +793,18 @@ fn main() {
         if bucket == "parity-diverge" {
             regressions.push(format!("{g} [e9patch] -> parity diverge ({e_reason})"));
         } else if bucket == "run-fail" {
-            regressions.push(format!("{g} -> run failure (golden:{g_reason} | e9:{e_reason})"));
+            regressions.push(format!(
+                "{g} -> run failure (golden:{g_reason} | e9:{e_reason})"
+            ));
         }
 
         eprintln!(
             "[{}/{}] {g}: golden {} | e9 {} | parity={} => {bucket}",
-            i + 1, guests.len(),
-            level_str(&golden), level_str(&e9), parity
+            i + 1,
+            guests.len(),
+            level_str(&golden),
+            level_str(&e9),
+            parity
         );
     }
 
@@ -661,14 +821,21 @@ fn main() {
     fs::write(&csv_path, buf).unwrap_or_else(|e| die(&format!("write CSV: {e}")));
     let _ = fs::remove_dir_all(&tmp);
 
-    eprintln!("\ncollect-e9patch-compat: wrote {} rows to {} (run_id={run_id})", rows.len(), csv_path.display());
+    eprintln!(
+        "\ncollect-e9patch-compat: wrote {} rows to {} (run_id={run_id})",
+        rows.len(),
+        csv_path.display()
+    );
     eprintln!("Honest per-guest tally (of {} guests):", guests.len());
     for (k, v) in &tally {
         eprintln!("  {k}: {v}");
     }
 
     if assert_green && !regressions.is_empty() {
-        eprintln!("collect-e9patch-compat: REGRESSION — {} real defect(s) (env wedges excluded):", regressions.len());
+        eprintln!(
+            "collect-e9patch-compat: REGRESSION — {} real defect(s) (env wedges excluded):",
+            regressions.len()
+        );
         for r in &regressions {
             eprintln!("  FAIL {r}");
         }
@@ -698,13 +865,25 @@ fn arm_cell(a: &Arm, parity: Option<bool>) -> (&'static str, Option<bool>, Strin
                 "level=none; strict leg wedged on every retry (PMU env, not measured)".to_string(),
             );
         }
-        return ("fail", Some(false), format!("strict failed: exit={}", a.strict_exit));
+        return (
+            "fail",
+            Some(false),
+            format!("strict failed: exit={}", a.strict_exit),
+        );
     }
     // L1 established. L2?
     if a.l2 {
         match parity {
-            Some(false) => ("diverge", Some(true), "level=L2; parity diverges from golden".to_string()),
-            _ => ("pass", Some(true), "level=L2 (Determinism verified)".to_string()),
+            Some(false) => (
+                "diverge",
+                Some(true),
+                "level=L2; parity diverges from golden".to_string(),
+            ),
+            _ => (
+                "pass",
+                Some(true),
+                "level=L2 (Determinism verified)".to_string(),
+            ),
         }
     } else {
         // L1 only.
@@ -759,7 +938,9 @@ fn row(
     reason: &str,
     reach: Option<(u64, u64)>,
 ) -> String {
-    let det = deterministic.map(|b| if b { "1" } else { "0" }).unwrap_or("");
+    let det = deterministic
+        .map(|b| if b { "1" } else { "0" })
+        .unwrap_or("");
     // Historical e9 parity lacks the complete profile/population receipt.  Keep
     // the observation in the explicit legacy field; never publish it as a
     // qualified stdout comparison.
@@ -820,9 +1001,9 @@ fn row(
         // narrower than its header and each trailing value is read from the
         // wrong column. Blank is also the correct VALUE -- no producer computes
         // any of the three, and scorecard-schema.json refuses a non-blank one.
-        String::new(), // exit_code_parity
-        String::new(), // detlog_parity
-        String::new(), // oracle_verdict
+        String::new(),   // exit_code_parity
+        String::new(),   // detlog_parity
+        String::new(),   // oracle_verdict
         "0".to_string(), // stack_parity: this new run did not request L3
         "0".to_string(), // heap_parity: this new run did not request L3
     ]

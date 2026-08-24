@@ -85,7 +85,12 @@ fn csv_field(s: &str) -> String {
 }
 
 fn git(repo: &Path, args: &[&str]) -> Option<String> {
-    let out = Command::new("git").arg("-C").arg(repo).args(args).output().ok()?;
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(args)
+        .output()
+        .ok()?;
     if !out.status.success() {
         return None;
     }
@@ -105,11 +110,17 @@ fn locked_reverie_sha(repo: &Path) -> Option<String> {
 
 fn locked_reverie_sha_from_lock(lock: &str) -> Option<String> {
     let mut revisions = BTreeSet::new();
-    for line in lock.lines().filter(|line| line.contains("github.com/rrnewton/reverie.git")) {
+    for line in lock
+        .lines()
+        .filter(|line| line.contains("github.com/rrnewton/reverie.git"))
+    {
         let Some((_, suffix)) = line.rsplit_once('#') else {
             continue;
         };
-        let sha: String = suffix.chars().take_while(|c| c.is_ascii_hexdigit()).collect();
+        let sha: String = suffix
+            .chars()
+            .take_while(|c| c.is_ascii_hexdigit())
+            .collect();
         if exact_sha(&sha) {
             revisions.insert(sha.to_ascii_lowercase());
         }
@@ -119,8 +130,17 @@ fn locked_reverie_sha_from_lock(lock: &str) -> Option<String> {
 
 fn default_csv_path() -> PathBuf {
     let source = PathBuf::from(file!());
-    let source = if source.is_absolute() { source } else { std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")).join(source) };
-    source.parent().unwrap_or_else(|| Path::new("compat-envelope")).join(DEFAULT_CSV_TEMPLATE)
+    let source = if source.is_absolute() {
+        source
+    } else {
+        std::env::current_dir()
+            .unwrap_or_else(|_| PathBuf::from("."))
+            .join(source)
+    };
+    source
+        .parent()
+        .unwrap_or_else(|| Path::new("compat-envelope"))
+        .join(DEFAULT_CSV_TEMPLATE)
 }
 
 fn box_run_bin() -> PathBuf {
@@ -130,12 +150,25 @@ fn box_run_bin() -> PathBuf {
         }
     }
     let source = PathBuf::from(file!());
-    let source = if source.is_absolute() { source } else { std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")).join(source) };
-    source.parent().and_then(Path::parent).unwrap_or_else(|| Path::new(".")).join("scripts/hermit-box-run")
+    let source = if source.is_absolute() {
+        source
+    } else {
+        std::env::current_dir()
+            .unwrap_or_else(|_| PathBuf::from("."))
+            .join(source)
+    };
+    source
+        .parent()
+        .and_then(Path::parent)
+        .unwrap_or_else(|| Path::new("."))
+        .join("scripts/hermit-box-run")
 }
 
 fn box_timed_out(rc: i32, diagnostics: &str) -> bool {
-    rc == 137 && diagnostics.lines().any(|line| line.contains("CPU-TIMEOUT:") || line.contains("WALL-TIMEOUT:"))
+    rc == 137
+        && diagnostics
+            .lines()
+            .any(|line| line.contains("CPU-TIMEOUT:") || line.contains("WALL-TIMEOUT:"))
 }
 
 fn box_refused(rc: i32, diagnostics: &str) -> bool {
@@ -162,7 +195,13 @@ fn hermit_bin(repo: &Path) -> PathBuf {
 /// LC_ALL and TZ are re-added explicitly because the corpus relies on them and
 /// an unset TZ falls back to host `/etc/localtime`.
 fn hermit_argv(hermit: &Path, backend: &str, verify: bool, guest: &[String]) -> Vec<String> {
-    let mut argv = vec![hermit.to_string_lossy().into_owned(), "run".into(), "--backend".into(), backend.into(), "--strict".into()];
+    let mut argv = vec![
+        hermit.to_string_lossy().into_owned(),
+        "run".into(),
+        "--backend".into(),
+        backend.into(),
+        "--strict".into(),
+    ];
     if verify {
         argv.push("--verify".into());
     }
@@ -192,7 +231,10 @@ mod guest_env_pin_tests {
                     projected.push(argv[index + 1].clone());
                     index += 2;
                 }
-                arg if arg.starts_with("--base-env=") || arg.starts_with("--env=") || (arg.starts_with("-e") && arg.len() > 2) => {
+                arg if arg.starts_with("--base-env=")
+                    || arg.starts_with("--env=")
+                    || (arg.starts_with("-e") && arg.len() > 2) =>
+                {
                     projected.push(arg.to_string());
                     index += 1;
                 }
@@ -203,7 +245,13 @@ mod guest_env_pin_tests {
     }
 
     fn has_exact_pin(argv: &[String]) -> bool {
-        projected_env_args(argv) == Some(PINNED_GUEST_ENV_ARGS.iter().map(|arg| (*arg).to_string()).collect())
+        projected_env_args(argv)
+            == Some(
+                PINNED_GUEST_ENV_ARGS
+                    .iter()
+                    .map(|arg| (*arg).to_string())
+                    .collect(),
+            )
     }
 
     fn actual_argv() -> Vec<String> {
@@ -214,7 +262,12 @@ mod guest_env_pin_tests {
     fn every_backend_and_level_carries_the_exact_pin_before_the_guest() {
         for backend in ["ptrace", "dbi"] {
             for verify in [false, true] {
-                let argv = hermit_argv(Path::new("/hermit"), backend, verify, &["/guest".to_string()]);
+                let argv = hermit_argv(
+                    Path::new("/hermit"),
+                    backend,
+                    verify,
+                    &["/guest".to_string()],
+                );
                 assert!(has_exact_pin(&argv), "missing pin in {argv:?}");
             }
         }
@@ -223,7 +276,10 @@ mod guest_env_pin_tests {
     #[test]
     fn a_mutated_value_is_refused() {
         let mut argv = actual_argv();
-        *argv.iter_mut().find(|arg| arg.as_str() == "TZ=UTC").unwrap() = "TZ=localtime".into();
+        *argv
+            .iter_mut()
+            .find(|arg| arg.as_str() == "TZ=UTC")
+            .unwrap() = "TZ=localtime".into();
         assert!(!has_exact_pin(&argv));
     }
 
@@ -247,18 +303,30 @@ mod guest_env_pin_tests {
     #[test]
     fn locked_reverie_revision_is_unique_and_exact() {
         let sha = "0123456789abcdef0123456789abcdef01234567";
-        let lock = format!("source = \"git+https://github.com/rrnewton/reverie.git?branch=main#{sha}\"\n");
+        let lock =
+            format!("source = \"git+https://github.com/rrnewton/reverie.git?branch=main#{sha}\"\n");
         assert_eq!(locked_reverie_sha_from_lock(&lock).as_deref(), Some(sha));
         let ambiguous = format!("{lock}source = \"git+https://github.com/rrnewton/reverie.git#aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"\n");
         assert_eq!(locked_reverie_sha_from_lock(&ambiguous), None);
-        assert_eq!(locked_reverie_sha_from_lock("source = \"registry+reverie\""), None);
+        assert_eq!(
+            locked_reverie_sha_from_lock("source = \"registry+reverie\""),
+            None
+        );
     }
 
     #[test]
     fn default_scorecard_path_is_anchored_beside_the_collector() {
         let path = default_csv_path();
-        assert_eq!(path.file_name().and_then(|name| name.to_str()), Some("dbi-scorecard.csv"));
-        assert_eq!(path.parent().and_then(Path::file_name).and_then(|name| name.to_str()), Some("compat-envelope"));
+        assert_eq!(
+            path.file_name().and_then(|name| name.to_str()),
+            Some("dbi-scorecard.csv")
+        );
+        assert_eq!(
+            path.parent()
+                .and_then(Path::file_name)
+                .and_then(|name| name.to_str()),
+            Some("compat-envelope")
+        );
     }
 
     #[test]
@@ -267,8 +335,14 @@ mod guest_env_pin_tests {
         assert!(box_timed_out(137, "[hermit-box-run] CPU-TIMEOUT: planted"));
         assert!(!box_timed_out(137, "ordinary SIGKILL"));
         assert!(!box_timed_out(1, "WALL-TIMEOUT: stale"));
-        assert!(box_refused(3, "[hermit-box-run] cgroup boxing unavailable — Refusing (exit 3).",));
-        assert!(box_refused(3, "ERROR: could not resolve scope cgroup for planted.scope"));
+        assert!(box_refused(
+            3,
+            "[hermit-box-run] cgroup boxing unavailable — Refusing (exit 3).",
+        ));
+        assert!(box_refused(
+            3,
+            "ERROR: could not resolve scope cgroup for planted.scope"
+        ));
         assert!(!box_refused(3, "guest returned three"));
     }
 
@@ -303,8 +377,8 @@ struct RunOutcome {
     rc: i32,
     timed_out: bool,
     infrastructure_refused: bool,
-    ran: bool,             // the guest actually launched (no spawn error)
-    hash: String,          // SHA-256 of guest stdout (always computed)
+    ran: bool,    // the guest actually launched (no spawn error)
+    hash: String, // SHA-256 of guest stdout (always computed)
     duration_ms: i64,
     stderr_tail: String,
 }
@@ -318,11 +392,29 @@ struct RunOutcome {
 /// stdout internally (emits 0 bytes to the parent) while DBI passes it through,
 /// so a cross-backend `--verify` stdout comparison is a plumbing artifact, not a
 /// real divergence. At L1 both backends pass guest stdout through unchanged.
-fn run_guest(repo: &Path, backend: &str, verify: bool, guest: &[String], timeout_s: u64) -> RunOutcome {
+fn run_guest(
+    repo: &Path,
+    backend: &str,
+    verify: bool,
+    guest: &[String],
+    timeout_s: u64,
+) -> RunOutcome {
     let hermit = hermit_bin(repo);
-    let out_path = std::env::temp_dir().join(format!("dbi-corpus-{}-{}.out", std::process::id(), rand_token()));
-    let err_path = std::env::temp_dir().join(format!("dbi-corpus-{}-{}.err", std::process::id(), rand_token()));
-    let diag_path = std::env::temp_dir().join(format!("dbi-corpus-{}-{}.box.log", std::process::id(), rand_token()));
+    let out_path = std::env::temp_dir().join(format!(
+        "dbi-corpus-{}-{}.out",
+        std::process::id(),
+        rand_token()
+    ));
+    let err_path = std::env::temp_dir().join(format!(
+        "dbi-corpus-{}-{}.err",
+        std::process::id(),
+        rand_token()
+    ));
+    let diag_path = std::env::temp_dir().join(format!(
+        "dbi-corpus-{}-{}.box.log",
+        std::process::id(),
+        rand_token()
+    ));
     let mut cmd = Command::new(box_run_bin());
     cmd.args([
         "--passthrough",
@@ -331,7 +423,10 @@ fn run_guest(repo: &Path, backend: &str, verify: bool, guest: &[String], timeout
         "--wall",
         &timeout_s.to_string(),
         "--label",
-        &format!("compat.dbi-{backend}-{}", if verify { "verify" } else { "run" }),
+        &format!(
+            "compat.dbi-{backend}-{}",
+            if verify { "verify" } else { "run" }
+        ),
         "--diag-log",
     ])
     .arg(&diag_path)
@@ -347,9 +442,19 @@ fn run_guest(repo: &Path, backend: &str, verify: bool, guest: &[String], timeout
     // cannot escape cgroup membership. The wrapper reaps cgroup.kill-first on
     // CPU/wall expiry and refuses before launch when boxing is unavailable.
     let (Ok(out_file), Ok(err_file)) = (File::create(&out_path), File::create(&err_path)) else {
-        return RunOutcome { rc: -1, timed_out: false, infrastructure_refused: true, ran: false, hash: String::new(), duration_ms: 0, stderr_tail: "could not create temp capture files".to_string() };
+        return RunOutcome {
+            rc: -1,
+            timed_out: false,
+            infrastructure_refused: true,
+            ran: false,
+            hash: String::new(),
+            duration_ms: 0,
+            stderr_tail: "could not create temp capture files".to_string(),
+        };
     };
-    cmd.stdout(Stdio::from(out_file)).stderr(Stdio::from(err_file)).stdin(Stdio::null());
+    cmd.stdout(Stdio::from(out_file))
+        .stderr(Stdio::from(err_file))
+        .stdin(Stdio::null());
     let start = Instant::now();
     let spawned = cmd.spawn();
     let mut child = match spawned {
@@ -358,7 +463,15 @@ fn run_guest(repo: &Path, backend: &str, verify: bool, guest: &[String], timeout
             let _ = std::fs::remove_file(&out_path);
             let _ = std::fs::remove_file(&err_path);
             let _ = std::fs::remove_file(&diag_path);
-            return RunOutcome { rc: -1, timed_out: false, infrastructure_refused: true, ran: false, hash: String::new(), duration_ms: 0, stderr_tail: format!("spawn failed: {e}") };
+            return RunOutcome {
+                rc: -1,
+                timed_out: false,
+                infrastructure_refused: true,
+                ran: false,
+                hash: String::new(),
+                duration_ms: 0,
+                stderr_tail: format!("spawn failed: {e}"),
+            };
         }
     };
     let status = child.wait();
@@ -374,16 +487,38 @@ fn run_guest(repo: &Path, backend: &str, verify: bool, guest: &[String], timeout
     let rc = status.ok().and_then(|s| s.code()).unwrap_or(-1);
     let timed_out = box_timed_out(rc, &diagnostics);
     let refused = box_refused(rc, &diagnostics);
-    let diagnostic_tail = diagnostics.lines().rev().find(|line| !line.trim().is_empty()).unwrap_or("");
-    let stderr_tail: String = stderr_text.lines().rev().find(|l| !l.trim().is_empty()).unwrap_or(diagnostic_tail).chars().take(200).collect();
+    let diagnostic_tail = diagnostics
+        .lines()
+        .rev()
+        .find(|line| !line.trim().is_empty())
+        .unwrap_or("");
+    let stderr_tail: String = stderr_text
+        .lines()
+        .rev()
+        .find(|l| !l.trim().is_empty())
+        .unwrap_or(diagnostic_tail)
+        .chars()
+        .take(200)
+        .collect();
     let mut h = Sha256::new();
     h.update(&stdout_bytes);
-    RunOutcome { rc, timed_out, infrastructure_refused: refused, ran: !timed_out && !refused, hash: format!("{:x}", h.finalize()), duration_ms, stderr_tail }
+    RunOutcome {
+        rc,
+        timed_out,
+        infrastructure_refused: refused,
+        ran: !timed_out && !refused,
+        hash: format!("{:x}", h.finalize()),
+        duration_ms,
+        stderr_tail,
+    }
 }
 
 /// Cheap unique-ish token for temp file names (Math.random / SystemTime-based).
 fn rand_token() -> String {
-    let n = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.subsec_nanos()).unwrap_or(0);
+    let n = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.subsec_nanos())
+        .unwrap_or(0);
     format!("{n:x}")
 }
 
@@ -423,15 +558,32 @@ fn guest_command(repo: &Path, docs: &Value, test_id: &str) -> Option<Vec<String>
 /// per-test temp binary under the repo target tree (NOT /tmp, which hermit
 /// isolates). Returns None on any compile failure so the caller records the cell
 /// as unmeasured rather than a false parity 0.
-fn build_compiled_fixture(repo: &Path, test_id: &str, prog: &str, build: Option<&Value>) -> Option<Vec<String>> {
+fn build_compiled_fixture(
+    repo: &Path,
+    test_id: &str,
+    prog: &str,
+    build: Option<&Value>,
+) -> Option<Vec<String>> {
     let src = repo.join(prog);
     if !src.exists() {
         return None;
     }
-    let dir = repo.join("ignored/compat-envelope-parity").join(test_id.replace('/', "_"));
+    let dir = repo
+        .join("ignored/compat-envelope-parity")
+        .join(test_id.replace('/', "_"));
     std::fs::create_dir_all(&dir).ok()?;
     let bin = dir.join("program");
-    let extra = |key: &str| -> Vec<String> { build.and_then(|b| b.get(key)).and_then(Value::as_array).map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect()).unwrap_or_default() };
+    let extra = |key: &str| -> Vec<String> {
+        build
+            .and_then(|b| b.get(key))
+            .and_then(Value::as_array)
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
     let ok = if prog.ends_with(".c") {
         let mut c = Command::new("cc");
         c.args(["-std=c11", "-O2", "-g", "-Wall", "-Wextra", "-Werror"]);
@@ -503,7 +655,11 @@ fn push_row(
         Some(_) => "unqualified-stdout-only",
         None => "unqualified-no-comparison",
     };
-    let dur = if duration_ms > 0 { duration_ms.to_string() } else { String::new() };
+    let dur = if duration_ms > 0 {
+        duration_ms.to_string()
+    } else {
+        String::new()
+    };
     let exit_par = match exit_code_parity {
         Some(true) => "1",
         Some(false) => "0",
@@ -537,14 +693,30 @@ fn push_row(
         dur,
         String::new(),
         reason.to_string(),
-        if has_parity { "stdout-sha256-exact-v1".to_string() } else { String::new() },
+        if has_parity {
+            "stdout-sha256-exact-v1".to_string()
+        } else {
+            String::new()
+        },
         String::new(),
         String::new(),
-        if has_parity { "B4".to_string() } else { String::new() },
+        if has_parity {
+            "B4".to_string()
+        } else {
+            String::new()
+        },
         String::new(),
         ref_output_hash.to_string(),
-        if has_parity { "stdout-sha256-exact-v1".to_string() } else { String::new() },
-        if has_parity { "stdout-exact".to_string() } else { String::new() },
+        if has_parity {
+            "stdout-sha256-exact-v1".to_string()
+        } else {
+            String::new()
+        },
+        if has_parity {
+            "stdout-exact".to_string()
+        } else {
+            String::new()
+        },
         profile_flags,
         String::new(), // population_id: filled after every selected row is known
         String::new(), // selected_count
@@ -565,7 +737,16 @@ fn population_id(rows: &[Vec<String>]) -> String {
     // Must stay identical to check-scorecard-provenance.py's
     // scorecard-population-v2 identity over run_mode/lane/bucket/test/backend.
     const FIELDS: [usize; 7] = [5, 6, 7, 8, 9, 10, 11];
-    let mut keys: Vec<String> = rows.iter().map(|row| FIELDS.iter().map(|&i| row[i].as_str()).collect::<Vec<_>>().join("\t")).collect();
+    let mut keys: Vec<String> = rows
+        .iter()
+        .map(|row| {
+            FIELDS
+                .iter()
+                .map(|&i| row[i].as_str())
+                .collect::<Vec<_>>()
+                .join("\t")
+        })
+        .collect();
     keys.sort();
     let mut digest = Sha256::new();
     digest.update(b"scorecard-population-v2\n");
@@ -579,7 +760,10 @@ fn population_id(rows: &[Vec<String>]) -> String {
 fn finalize_rows(rows: &mut [Vec<String>], executed: usize) {
     let population = population_id(rows);
     let selected = rows.len();
-    let evidence = rows.iter().filter(|row| matches!(row[14].as_str(), "0" | "1")).count();
+    let evidence = rows
+        .iter()
+        .filter(|row| matches!(row[14].as_str(), "0" | "1"))
+        .count();
     for row in rows {
         row[28] = population.clone();
         row[29] = selected.to_string();
@@ -589,7 +773,15 @@ fn finalize_rows(rows: &mut [Vec<String>], executed: usize) {
 }
 
 fn encode_rows(rows: &[Vec<String>]) -> String {
-    rows.iter().map(|row| row.iter().map(|field| csv_field(field)).collect::<Vec<_>>().join(",")).collect::<Vec<_>>().join("\n")
+    rows.iter()
+        .map(|row| {
+            row.iter()
+                .map(|field| csv_field(field))
+                .collect::<Vec<_>>()
+                .join(",")
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn main() {
@@ -614,13 +806,40 @@ fn main() {
     let mut it = std::env::args().skip(1);
     while let Some(a) = it.next() {
         match a.as_str() {
-            "--repo" => repo = PathBuf::from(it.next().unwrap_or_else(|| die("--repo needs a path"))),
-            "--manifest" => manifest = Some(PathBuf::from(it.next().unwrap_or_else(|| die("--manifest needs a path")))),
+            "--repo" => {
+                repo = PathBuf::from(it.next().unwrap_or_else(|| die("--repo needs a path")))
+            }
+            "--manifest" => {
+                manifest = Some(PathBuf::from(
+                    it.next().unwrap_or_else(|| die("--manifest needs a path")),
+                ))
+            }
             "--run-id" => run_id = it.next().unwrap_or_else(|| die("--run-id needs a value")),
             "--csv" => csv = PathBuf::from(it.next().unwrap_or_else(|| die("--csv needs a path"))),
-            "--timeout" => timeout_s = it.next().and_then(|v| v.parse().ok()).unwrap_or_else(|| die("--timeout needs secs")),
-            "--tests" => tests_filter = Some(it.next().unwrap_or_else(|| die("--tests needs a list")).split(',').map(|s| s.trim().to_string()).collect()),
-            "--buckets" => buckets_filter = Some(it.next().unwrap_or_else(|| die("--buckets needs a list")).split(',').map(|s| s.trim().to_string()).collect()),
+            "--timeout" => {
+                timeout_s = it
+                    .next()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or_else(|| die("--timeout needs secs"))
+            }
+            "--tests" => {
+                tests_filter = Some(
+                    it.next()
+                        .unwrap_or_else(|| die("--tests needs a list"))
+                        .split(',')
+                        .map(|s| s.trim().to_string())
+                        .collect(),
+                )
+            }
+            "--buckets" => {
+                buckets_filter = Some(
+                    it.next()
+                        .unwrap_or_else(|| die("--buckets needs a list"))
+                        .split(',')
+                        .map(|s| s.trim().to_string())
+                        .collect(),
+                )
+            }
             "--limit" => limit = it.next().and_then(|v| v.parse().ok()),
             "--stdout" => to_stdout = true,
             "--emit-ptrace-ref" => emit_ptrace_ref = true,
@@ -634,25 +853,42 @@ fn main() {
 
     // Load manifest docs (from file, or by invoking hermit-manifest-plan).
     let docs: Value = if let Some(mpath) = &manifest {
-        let text = std::fs::read_to_string(mpath).unwrap_or_else(|e| die(&format!("cannot read manifest {}: {e}", mpath.display())));
+        let text = std::fs::read_to_string(mpath)
+            .unwrap_or_else(|e| die(&format!("cannot read manifest {}: {e}", mpath.display())));
         serde_json::from_str(&text).unwrap_or_else(|e| die(&format!("bad manifest json: {e}")))
     } else {
         let out = Command::new("cargo")
-            .args(["run", "--quiet", "-p", "hermit-manifest-plan", "--", "--format", "harness-json"])
+            .args([
+                "run",
+                "--quiet",
+                "-p",
+                "hermit-manifest-plan",
+                "--",
+                "--format",
+                "harness-json",
+            ])
             .current_dir(&repo)
             .output()
             .unwrap_or_else(|e| die(&format!("cannot run hermit-manifest-plan: {e}")));
         if !out.status.success() {
-            die(&format!("hermit-manifest-plan failed: {}", String::from_utf8_lossy(&out.stderr)));
+            die(&format!(
+                "hermit-manifest-plan failed: {}",
+                String::from_utf8_lossy(&out.stderr)
+            ));
         }
-        serde_json::from_slice(&out.stdout).unwrap_or_else(|e| die(&format!("bad manifest json: {e}")))
+        serde_json::from_slice(&out.stdout)
+            .unwrap_or_else(|e| die(&format!("bad manifest json: {e}")))
     };
 
     // Flatten (bucket, test_id) in manifest order.
     let mut tests: Vec<(String, String)> = Vec::new();
     if let Some(arr) = docs.as_array() {
         for doc in arr {
-            let bucket = doc.get("bucket").and_then(Value::as_str).unwrap_or("").to_string();
+            let bucket = doc
+                .get("bucket")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string();
             if let Some(ts) = doc.get("test").and_then(Value::as_array) {
                 for t in ts {
                     if let Some(id) = t.get("id").and_then(Value::as_str) {
@@ -662,7 +898,10 @@ fn main() {
             }
         }
     }
-    tests.retain(|(b, id)| buckets_filter.as_ref().map_or(true, |f| f.contains(b)) && tests_filter.as_ref().map_or(true, |f| f.contains(id)));
+    tests.retain(|(b, id)| {
+        buckets_filter.as_ref().map_or(true, |f| f.contains(b))
+            && tests_filter.as_ref().map_or(true, |f| f.contains(id))
+    });
     if let Some(n) = limit {
         tests.truncate(n);
     }
@@ -672,13 +911,29 @@ fn main() {
 
     let hermit_sha = git(&repo, &["rev-parse", "HEAD"]).unwrap_or_else(|| "unknown".to_string());
     let reverie_sha = locked_reverie_sha(&repo).unwrap_or_else(|| "unknown".to_string());
-    let dirty = git(&repo, &["status", "--porcelain"]).map(|s| !s.is_empty()).unwrap_or(false);
+    let dirty = git(&repo, &["status", "--porcelain"])
+        .map(|s| !s.is_empty())
+        .unwrap_or(false);
     if !exact_sha(&hermit_sha) || !exact_sha(&reverie_sha) || dirty {
         die(&format!("qualifying DBI parity requires clean exact provenance; hermit_sha={hermit_sha:?} reverie_sha={reverie_sha:?} dirty={dirty}"));
     }
-    let run_utc = format!("@{}", SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0));
+    let run_utc = format!(
+        "@{}",
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0)
+    );
 
-    eprintln!("collect-dbi-corpus: {} tests, hermit {}, reverie {}, dirty={}, timeout={}s, bin={}", tests.len(), hermit_sha, reverie_sha, dirty, timeout_s, hermit_bin(&repo).display());
+    eprintln!(
+        "collect-dbi-corpus: {} tests, hermit {}, reverie {}, dirty={}, timeout={}s, bin={}",
+        tests.len(),
+        hermit_sha,
+        reverie_sha,
+        dirty,
+        timeout_s,
+        hermit_bin(&repo).display()
+    );
 
     let mut rows: Vec<Vec<String>> = Vec::new();
     let mut executed_count = 0usize;
@@ -689,7 +944,10 @@ fn main() {
         let guest = match guest_command(&repo, &docs, test_id) {
             Some(g) => g,
             None => {
-                eprintln!("[{}/{total}] {test_id}: SKIP (unreconstructable/build-failed)", i + 1);
+                eprintln!(
+                    "[{}/{total}] {test_id}: SKIP (unreconstructable/build-failed)",
+                    i + 1
+                );
                 push_row(
                     &mut rows,
                     &run_id,
@@ -729,7 +987,16 @@ fn main() {
         let db2 = if db1.ran {
             run_guest(&repo, "dbi", true, &guest, timeout_s)
         } else {
-            RunOutcome { rc: db1.rc, timed_out: db1.timed_out, infrastructure_refused: db1.infrastructure_refused, ran: false, hash: String::new(), duration_ms: 0, stderr_tail: "L2 --verify not attempted: DBI L1 --strict did not complete".to_string() }
+            RunOutcome {
+                rc: db1.rc,
+                timed_out: db1.timed_out,
+                infrastructure_refused: db1.infrastructure_refused,
+                ran: false,
+                hash: String::new(),
+                duration_ms: 0,
+                stderr_tail: "L2 --verify not attempted: DBI L1 --strict did not complete"
+                    .to_string(),
+            }
         };
 
         // Determinism (L2): DBI's --verify double-run passed. NOTE: for a guest
@@ -741,19 +1008,38 @@ fn main() {
         // Parity (L1, guest-visible): DBI guest stdout == ptrace guest stdout, AND
         // matching exit codes. Unmeasured (blank) if the ptrace reference or the
         // DBI L1 run did not launch.
-        let stdout_parity: Option<bool> = if pt1.ran && db1.ran { Some(pt1.hash == db1.hash) } else { None };
-        let exit_code_parity: Option<bool> = if pt1.ran && db1.ran { Some(pt1.rc == db1.rc) } else { None };
-        let parity = stdout_parity.zip(exit_code_parity).map(|(stdout, exit)| stdout && exit);
+        let stdout_parity: Option<bool> = if pt1.ran && db1.ran {
+            Some(pt1.hash == db1.hash)
+        } else {
+            None
+        };
+        let exit_code_parity: Option<bool> = if pt1.ran && db1.ran {
+            Some(pt1.rc == db1.rc)
+        } else {
+            None
+        };
+        let parity = stdout_parity
+            .zip(exit_code_parity)
+            .map(|(stdout, exit)| stdout && exit);
 
         // Outcome ranks the DBI cell. Parity is the B-level goal; determinism is
         // necessary but not sufficient. Honest gap taxonomy, never a false pass.
         let (outcome, reason) = if !db1.ran {
             if db1.infrastructure_refused {
-                ("unavailable", format!("DBI L1 not attempted: containment infrastructure refused execution: {}", db1.stderr_tail))
+                (
+                    "unavailable",
+                    format!(
+                        "DBI L1 not attempted: containment infrastructure refused execution: {}",
+                        db1.stderr_tail
+                    ),
+                )
             } else if db1.timed_out {
                 ("gap", format!("DBI L1 (--strict) timed out after {timeout_s}s (likely no-preemption hang or DR stall)"))
             } else {
-                ("gap", format!("DBI L1 (--strict) did not launch: {}", db1.stderr_tail))
+                (
+                    "gap",
+                    format!("DBI L1 (--strict) did not launch: {}", db1.stderr_tail),
+                )
             }
         } else {
             match (parity, dbi_det) {
@@ -777,10 +1063,18 @@ fn main() {
             test_id,
             "dbi",
             outcome,
-            if db1.infrastructure_refused { None } else { Some(dbi_det) },
+            if db1.infrastructure_refused {
+                None
+            } else {
+                Some(dbi_det)
+            },
             stdout_parity,
             &db1.hash,
-            if stdout_parity.is_some() { &pt1.hash } else { "" },
+            if stdout_parity.is_some() {
+                &pt1.hash
+            } else {
+                ""
+            },
             exit_code_parity,
             db1.duration_ms,
             &reason,
@@ -792,15 +1086,45 @@ fn main() {
                 executed_count += 1;
             }
             let (pt_outcome, pt_reason) = if pt1.ran {
-                ("pass", "ptrace L1 golden reference: guest ran under --strict".to_string())
+                (
+                    "pass",
+                    "ptrace L1 golden reference: guest ran under --strict".to_string(),
+                )
             } else if pt1.infrastructure_refused {
-                ("unavailable", format!("ptrace L1 not attempted: containment infrastructure refused execution: {}", pt1.stderr_tail))
+                (
+                    "unavailable",
+                    format!(
+                        "ptrace L1 not attempted: containment infrastructure refused execution: {}",
+                        pt1.stderr_tail
+                    ),
+                )
             } else if pt1.timed_out {
                 ("gap", format!("ptrace L1 timed out after {timeout_s}s"))
             } else {
-                ("gap", format!("ptrace L1 did not launch: {}", pt1.stderr_tail))
+                (
+                    "gap",
+                    format!("ptrace L1 did not launch: {}", pt1.stderr_tail),
+                )
             };
-            push_row(&mut rows, &run_id, &run_utc, &hermit_sha, &reverie_sha, dirty, bucket, test_id, "ptrace-ref", pt_outcome, None, None, &pt1.hash, "", None, pt1.duration_ms, &pt_reason);
+            push_row(
+                &mut rows,
+                &run_id,
+                &run_utc,
+                &hermit_sha,
+                &reverie_sha,
+                dirty,
+                bucket,
+                test_id,
+                "ptrace-ref",
+                pt_outcome,
+                None,
+                None,
+                &pt1.hash,
+                "",
+                None,
+                pt1.duration_ms,
+                &pt_reason,
+            );
         }
 
         eprintln!("[{}/{total}] {test_id}: dbi={outcome} (det={dbi_det} parity={:?}) pt_rc={} db_rc={} {}ms", i + 1, parity, pt1.rc, db1.rc, db1.duration_ms + db2.duration_ms);
@@ -820,7 +1144,14 @@ fn main() {
         let _ = std::fs::create_dir_all(parent);
     }
     let body = format!("{HEADER}\n{lines}\n");
-    std::fs::write(&csv, body).unwrap_or_else(|e| die(&format!("cannot write {}: {e}", csv.display())));
-    eprintln!("collect-dbi-corpus: wrote {} selected rows to {}", rows.len(), csv.display());
-    eprintln!("DBI remains a separately rendered population; do not concatenate it into scorecard.csv");
+    std::fs::write(&csv, body)
+        .unwrap_or_else(|e| die(&format!("cannot write {}: {e}", csv.display())));
+    eprintln!(
+        "collect-dbi-corpus: wrote {} selected rows to {}",
+        rows.len(),
+        csv.display()
+    );
+    eprintln!(
+        "DBI remains a separately rendered population; do not concatenate it into scorecard.csv"
+    );
 }

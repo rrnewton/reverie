@@ -110,7 +110,11 @@ fn population_id(applets: &[Vec<String>], lane: &str) -> String {
         for tool in TOOLS {
             for argv in applets {
                 let slug = argv.join("-").replace('/', "_");
-                let slug = if slug.is_empty() { "noargs".to_string() } else { slug };
+                let slug = if slug.is_empty() {
+                    "noargs".to_string()
+                } else {
+                    slug
+                };
                 let test_id = format!("{}-{slug}", tool.name);
                 keys.push(format!(
                     "reverie\t{}\t{}\t{}\t{}\t{}\tenabled",
@@ -196,7 +200,12 @@ fn script_dir() -> PathBuf {
 }
 
 fn git(dir: &Path, args: &[&str]) -> Option<String> {
-    let out = Command::new("git").arg("-C").arg(dir).args(args).output().ok()?;
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .output()
+        .ok()?;
     if !out.status.success() {
         return None;
     }
@@ -211,7 +220,11 @@ fn exact_sha(value: &str) -> bool {
 /// counter1: `counter1-global syscalls=N`
 /// counter2: ` [counter tool] Total system calls in process tree: N, ...`
 fn parse_syscalls(tool: &str, text: &str) -> Option<u64> {
-    let needle = if tool == "counter2" { "process tree: " } else { "syscalls=" };
+    let needle = if tool == "counter2" {
+        "process tree: "
+    } else {
+        "syscalls="
+    };
     for line in text.lines() {
         if let Some(pos) = line.find(needle) {
             let rest = &line[pos + needle.len()..];
@@ -250,9 +263,17 @@ fn resolve_cell(
     kvm_present: bool,
 ) -> (String, &'static str, String) {
     if !KNOWN_BACKENDS.contains(&backend) {
-        return ("".into(), ABSENCE_UNSUPPORTED, format!("unknown backend {backend}"));
+        return (
+            "".into(),
+            ABSENCE_UNSUPPORTED,
+            format!("unknown backend {backend}"),
+        );
     }
-    let bin = tool.launchers.iter().find(|(b, _)| *b == backend).map(|(_, n)| *n);
+    let bin = tool
+        .launchers
+        .iter()
+        .find(|(b, _)| *b == backend)
+        .map(|(_, n)| *n);
     let Some(bin) = bin else {
         return (
             "".into(),
@@ -268,7 +289,11 @@ fn resolve_cell(
         );
     }
     if backend == "kvm" && !kvm_present {
-        return (bin.to_string(), ABSENCE_UNAVAILABLE, "no /dev/kvm".to_string());
+        return (
+            bin.to_string(),
+            ABSENCE_UNAVAILABLE,
+            "no /dev/kvm".to_string(),
+        );
     }
     (bin.to_string(), "", String::new())
 }
@@ -291,19 +316,44 @@ fn main() {
     while let Some(a) = it.next() {
         match a.as_str() {
             "--lane" => lane = it.next().unwrap_or_else(|| die("--lane needs a value")),
-            "--csv" => csv = Some(PathBuf::from(it.next().unwrap_or_else(|| die("--csv needs a path")))),
-            "--repo" => repo = Some(PathBuf::from(it.next().unwrap_or_else(|| die("--repo needs a path")))),
-            "--run-id" => run_id_arg = Some(it.next().unwrap_or_else(|| die("--run-id needs a value"))),
-            "--run-utc" => run_utc_arg = Some(it.next().unwrap_or_else(|| die("--run-utc needs a value"))),
-            "--guest" => guest_path = Some(it.next().unwrap_or_else(|| die("--guest needs a path"))),
-            "--applets" => applets_arg = Some(it.next().unwrap_or_else(|| die("--applets needs a list"))),
-            "--backends" => backends_arg = Some(it.next().unwrap_or_else(|| die("--backends needs a list"))),
-            "--reps" => reps = it.next().and_then(|s| s.parse().ok()).unwrap_or_else(|| die("--reps needs an int")),
+            "--csv" => {
+                csv = Some(PathBuf::from(
+                    it.next().unwrap_or_else(|| die("--csv needs a path")),
+                ))
+            }
+            "--repo" => {
+                repo = Some(PathBuf::from(
+                    it.next().unwrap_or_else(|| die("--repo needs a path")),
+                ))
+            }
+            "--run-id" => {
+                run_id_arg = Some(it.next().unwrap_or_else(|| die("--run-id needs a value")))
+            }
+            "--run-utc" => {
+                run_utc_arg = Some(it.next().unwrap_or_else(|| die("--run-utc needs a value")))
+            }
+            "--guest" => {
+                guest_path = Some(it.next().unwrap_or_else(|| die("--guest needs a path")))
+            }
+            "--applets" => {
+                applets_arg = Some(it.next().unwrap_or_else(|| die("--applets needs a list")))
+            }
+            "--backends" => {
+                backends_arg = Some(it.next().unwrap_or_else(|| die("--backends needs a list")))
+            }
+            "--reps" => {
+                reps = it
+                    .next()
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or_else(|| die("--reps needs an int"))
+            }
             "--dry-run" => dry_run = true,
             "--assert-green" => assert_green = true,
             "--append" => append = true,
             "-h" | "--help" => {
-                eprintln!("collect-reverie-compat.rs [--lane L] [--csv F] [--repo hermit] [--run-id ID]");
+                eprintln!(
+                    "collect-reverie-compat.rs [--lane L] [--csv F] [--repo hermit] [--run-id ID]"
+                );
                 eprintln!("    [--run-utc @EPOCH] [--guest STATIC_ELF] [--applets 'a;b;c']");
                 eprintln!("    [--backends ptrace,kvm,dbt,sabre,liteinst] [--reps N]");
                 eprintln!("    [--dry-run] [--assert-green] [--append]");
@@ -331,10 +381,17 @@ fn main() {
             let c = here.join("..").join("hermit");
             c.is_dir().then_some(c)
         })
-        .or_else(|| env::var("DEV_HERMIT").ok().map(|d| PathBuf::from(d).join("hermit")))
+        .or_else(|| {
+            env::var("DEV_HERMIT")
+                .ok()
+                .map(|d| PathBuf::from(d).join("hermit"))
+        })
         .unwrap_or_else(|| die("could not locate hermit checkout; pass --repo"));
     let repo = fs::canonicalize(&repo).unwrap_or(repo);
-    let parent = repo.parent().map(Path::to_path_buf).unwrap_or_else(|| here.clone());
+    let parent = repo
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| here.clone());
     let reverie = parent.join("reverie");
     let bindir = reverie.join("target").join("debug");
 
@@ -373,7 +430,9 @@ fn main() {
         })
         .collect();
     for a in &aliased {
-        eprintln!("collect-reverie-compat: legacy backend name {a} (canonical vocabulary is `dbt`)");
+        eprintln!(
+            "collect-reverie-compat: legacy backend name {a} (canonical vocabulary is `dbt`)"
+        );
     }
     for r in &requested {
         if !KNOWN_BACKENDS.contains(&r.as_str()) {
@@ -387,7 +446,10 @@ fn main() {
 
     let kvm_present = Path::new("/dev/kvm").exists();
 
-    let now = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
     let run_id = run_id_arg.unwrap_or_else(|| now.to_string());
     let run_utc = run_utc_arg.unwrap_or_else(|| format!("@{now}"));
     let hermit_sha = git(&repo, &["rev-parse", "HEAD"]).unwrap_or_else(|| "unknown".into());
@@ -419,7 +481,9 @@ fn main() {
 
     if dry_run {
         let cells = TOOLS.len() * applets.len() * KNOWN_BACKENDS.len();
-        eprintln!("(dry-run) would emit {cells} rows (every tool x guest x KNOWN backend); CSV untouched");
+        eprintln!(
+            "(dry-run) would emit {cells} rows (every tool x guest x KNOWN backend); CSV untouched"
+        );
         for t in TOOLS {
             for b in KNOWN_BACKENDS {
                 let (_, absence, detail) = resolve_cell(t, b, &requested, kvm_present);
@@ -449,18 +513,40 @@ fn main() {
         for tool in TOOLS {
             for argv in &applets {
                 let slug = argv.join("-").replace('/', "_");
-                let slug = if slug.is_empty() { "noargs".to_string() } else { slug };
+                let slug = if slug.is_empty() {
+                    "noargs".to_string()
+                } else {
+                    slug
+                };
                 let test_id = format!("{}-{}", tool.name, slug);
 
-                let (bin_name, absence, detail) = resolve_cell(tool, backend, &requested, kvm_present);
+                let (bin_name, absence, detail) =
+                    resolve_cell(tool, backend, &requested, kvm_present);
 
                 if !absence.is_empty() {
                     // Typed non-measurement. Never faked, never blank.
                     rows.push(row(
-                        &run_id, &run_utc, &hermit_sha, &reverie_sha, dirty, &lane, &test_id,
-                        MODE, backend, "enabled", "skip", None, None, "", "",
-                        &profile_flags(None, &[], tool.name, reps), &population_id,
-                        0, &detail, absence, reps,
+                        &run_id,
+                        &run_utc,
+                        &hermit_sha,
+                        &reverie_sha,
+                        dirty,
+                        &lane,
+                        &test_id,
+                        MODE,
+                        backend,
+                        "enabled",
+                        "skip",
+                        None,
+                        None,
+                        "",
+                        "",
+                        &profile_flags(None, &[], tool.name, reps),
+                        &population_id,
+                        0,
+                        &detail,
+                        absence,
+                        reps,
                     ));
                     continue;
                 }
@@ -468,11 +554,27 @@ fn main() {
                 let bin = bindir.join(&bin_name);
                 if !bin.exists() {
                     rows.push(row(
-                        &run_id, &run_utc, &hermit_sha, &reverie_sha, dirty, &lane, &test_id,
-                        MODE, backend, "enabled", "skip", None, None, "", "",
-                        &profile_flags(None, &[], tool.name, reps), &population_id, 0,
+                        &run_id,
+                        &run_utc,
+                        &hermit_sha,
+                        &reverie_sha,
+                        dirty,
+                        &lane,
+                        &test_id,
+                        MODE,
+                        backend,
+                        "enabled",
+                        "skip",
+                        None,
+                        None,
+                        "",
+                        "",
+                        &profile_flags(None, &[], tool.name, reps),
+                        &population_id,
+                        0,
                         &format!("launcher not built: {}", bin.display()),
-                        ABSENCE_UNAVAILABLE, reps,
+                        ABSENCE_UNAVAILABLE,
+                        reps,
                     ));
                     continue;
                 }
@@ -501,9 +603,17 @@ fn main() {
                     if let Some(c) = count {
                         ref_counts.insert((tool.name.to_string(), slug.clone()), c);
                     }
-                    (None, count.map(|c| format!("ref syscalls={c}")).unwrap_or_else(|| "no count parsed".into()))
+                    (
+                        None,
+                        count
+                            .map(|c| format!("ref syscalls={c}"))
+                            .unwrap_or_else(|| "no count parsed".into()),
+                    )
                 } else {
-                    match (count, ref_counts.get(&(tool.name.to_string(), slug.clone()))) {
+                    match (
+                        count,
+                        ref_counts.get(&(tool.name.to_string(), slug.clone())),
+                    ) {
                         (Some(c), Some(&r)) => {
                             let p = c == r;
                             (Some(p), format!("syscalls={c} vs ptrace {r}"))
@@ -515,13 +625,23 @@ fn main() {
 
                 // A launcher that ran but yielded no parseable count is a
                 // no_result, not a pass and not a failure of the backend.
-                let absence_after_run = if count.is_none() { ABSENCE_NO_RESULT } else { "" };
+                let absence_after_run = if count.is_none() {
+                    ABSENCE_NO_RESULT
+                } else {
+                    ""
+                };
 
                 // Cell outcome (for the scorecard): pass = ran deterministically
                 // AND (is the reference OR parity holds). Parity-diverge cells
                 // render honestly as 0% parity / N% determinism.
                 let pass = deterministic && (*backend == "ptrace" || parity == Some(true));
-                let outcome = if pass { "pass" } else if all_ok { "diverge" } else { "fail" };
+                let outcome = if pass {
+                    "pass"
+                } else if all_ok {
+                    "diverge"
+                } else {
+                    "fail"
+                };
 
                 // Regression gate (--assert-green) tracks the DETERMINISM
                 // invariant, NOT parity. KVM parity is a known B1.5 Guest-contract
@@ -532,10 +652,16 @@ fn main() {
                 // deterministic.
                 let regressed = !all_ok || !deterministic;
                 if regressed {
-                    let why = if !all_ok { "run failed" } else { "non-deterministic" };
+                    let why = if !all_ok {
+                        "run failed"
+                    } else {
+                        "non-deterministic"
+                    };
                     regressions.push(format!("{test_id} [{backend}] -> {why} ({reason})"));
                 }
-                let output_hash = count.map(|c| sha256_text(&c.to_string())).unwrap_or_default();
+                let output_hash = count
+                    .map(|c| sha256_text(&c.to_string()))
+                    .unwrap_or_default();
                 let ref_output_hash = if *backend == "ptrace" {
                     output_hash.clone()
                 } else {
@@ -550,10 +676,27 @@ fn main() {
                 let profile = profile_flags(Some(&bin), &guest_argv, tool.name, reps);
 
                 rows.push(row(
-                    &run_id, &run_utc, &hermit_sha, &reverie_sha, dirty, &lane, &test_id,
-                    MODE, backend, "enabled", outcome, Some(deterministic), parity,
-                    &output_hash, &ref_output_hash, &profile, &population_id,
-                    total_ms, &reason, absence_after_run, reps,
+                    &run_id,
+                    &run_utc,
+                    &hermit_sha,
+                    &reverie_sha,
+                    dirty,
+                    &lane,
+                    &test_id,
+                    MODE,
+                    backend,
+                    "enabled",
+                    outcome,
+                    Some(deterministic),
+                    parity,
+                    &output_hash,
+                    &ref_output_hash,
+                    &profile,
+                    &population_id,
+                    total_ms,
+                    &reason,
+                    absence_after_run,
+                    reps,
                 ));
             }
         }
@@ -569,7 +712,13 @@ fn main() {
     let target_header: Vec<String> = if existing.trim().is_empty() {
         HEADER.split(',').map(String::from).collect()
     } else {
-        existing.lines().next().unwrap_or("").split(',').map(String::from).collect()
+        existing
+            .lines()
+            .next()
+            .unwrap_or("")
+            .split(',')
+            .map(String::from)
+            .collect()
     };
     for required in HEADER.split(',') {
         if !target_header.iter().any(|column| column == required) {
@@ -609,7 +758,10 @@ fn main() {
             ("executed_count", executed_count.to_string()),
             ("evidence_count", evidence_count.to_string()),
         ] {
-            let index = names.iter().position(|candidate| *candidate == name).unwrap();
+            let index = names
+                .iter()
+                .position(|candidate| *candidate == name)
+                .unwrap();
             row[index] = value;
         }
         let projected = target_header
@@ -676,7 +828,9 @@ fn row(
     absence_reason: &str,
     reps: u32,
 ) -> Vec<String> {
-    let det = deterministic.map(|b| if b { "1" } else { "0" }).unwrap_or("");
+    let det = deterministic
+        .map(|b| if b { "1" } else { "0" })
+        .unwrap_or("");
     // WHAT THIS COLLECTOR ACTUALLY COMPARED, carried with the verdict.
     //
     // `counter` mode runs each cell `reps` times and asserts the syscall counter is
@@ -685,7 +839,11 @@ fn row(
     // integer, not stdout and not a log. Naming it keeps it from ever being read as
     // a DETLOG or even a guest-visible claim.
     let (verify_compare, tier, compared) = if deterministic.is_some() {
-        ("syscall-count-across-reps", "counter", format!("{reps}|{reps}"))
+        (
+            "syscall-count-across-reps",
+            "counter",
+            format!("{reps}|{reps}"),
+        )
     } else {
         ("", "", String::new())
     };

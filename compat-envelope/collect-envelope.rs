@@ -101,7 +101,12 @@ struct Meta {
 }
 
 fn git(repo: &Path, args: &[&str]) -> Option<String> {
-    let out = Command::new("git").arg("-C").arg(repo).args(args).output().ok()?;
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(args)
+        .output()
+        .ok()?;
     if out.status.success() {
         Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
     } else {
@@ -120,9 +125,17 @@ fn exact_sha(value: &str) -> bool {
 fn locked_reverie_sha(repo: &Path) -> Option<String> {
     let lock = fs::read_to_string(repo.join("Cargo.lock")).ok()?;
     let mut revisions = BTreeSet::new();
-    for line in lock.lines().filter(|line| line.contains("github.com/rrnewton/reverie.git")) {
-        let Some((_, suffix)) = line.rsplit_once('#') else { continue };
-        let sha: String = suffix.chars().take_while(|c| c.is_ascii_hexdigit()).collect();
+    for line in lock
+        .lines()
+        .filter(|line| line.contains("github.com/rrnewton/reverie.git"))
+    {
+        let Some((_, suffix)) = line.rsplit_once('#') else {
+            continue;
+        };
+        let sha: String = suffix
+            .chars()
+            .take_while(|c| c.is_ascii_hexdigit())
+            .collect();
         if sha.len() == 40 {
             revisions.insert(sha.to_ascii_lowercase());
         }
@@ -151,7 +164,11 @@ fn population_id(cells: &[PlanCell], mode: &str, lane: &str) -> String {
 }
 
 fn profile_flags(lane: &str, bucket: &str, backend: &str, mode: &str) -> String {
-    let harness_mode = if mode == "regression" { "--ci-only" } else { "--include-manual" };
+    let harness_mode = if mode == "regression" {
+        "--ci-only"
+    } else {
+        "--include-manual"
+    };
     let mut comparison = vec![
         "run".to_string(),
         "--backend".to_string(),
@@ -200,8 +217,12 @@ fn main() {
             }
             "--mode" => mode = Some(it.next().unwrap_or_else(|| die("--mode needs a value"))),
             "--lane" => lane = it.next().unwrap_or_else(|| die("--lane needs a value")),
-            "--buckets" => buckets_arg = Some(it.next().unwrap_or_else(|| die("--buckets needs a list"))),
-            "--backends" => backends_arg = Some(it.next().unwrap_or_else(|| die("--backends needs a list"))),
+            "--buckets" => {
+                buckets_arg = Some(it.next().unwrap_or_else(|| die("--buckets needs a list")))
+            }
+            "--backends" => {
+                backends_arg = Some(it.next().unwrap_or_else(|| die("--backends needs a list")))
+            }
             "--self-check" => std::process::exit(self_check()),
             // Score a REAL `--verify-json` file through the same parser the
             // collector uses. The self-check exercises that parser against
@@ -209,8 +230,14 @@ fn main() {
             // shape drift in hermit's verdict is observable rather than
             // silently degrading every row to the uncounted fallback.
             "--verdict-file" => {
-                let path = it.next().unwrap_or_else(|| die("--verdict-file needs a path"));
-                match fs::read_to_string(&path).ok().as_deref().and_then(verify_tier_from_json) {
+                let path = it
+                    .next()
+                    .unwrap_or_else(|| die("--verdict-file needs a path"));
+                match fs::read_to_string(&path)
+                    .ok()
+                    .as_deref()
+                    .and_then(verify_tier_from_json)
+                {
                     Some(v) => {
                         println!(
                             "tier={} verify_compare={} bitwise_parity={} compared_log_messages={}",
@@ -225,9 +252,19 @@ fn main() {
                 }
             }
             "--with-parity" => with_parity = true,
-            "--csv" => csv = Some(PathBuf::from(it.next().unwrap_or_else(|| die("--csv needs a path")))),
-            "--repo" => repo = Some(PathBuf::from(it.next().unwrap_or_else(|| die("--repo needs a path")))),
-            "--run-id" => run_id_arg = Some(it.next().unwrap_or_else(|| die("--run-id needs a value"))),
+            "--csv" => {
+                csv = Some(PathBuf::from(
+                    it.next().unwrap_or_else(|| die("--csv needs a path")),
+                ))
+            }
+            "--repo" => {
+                repo = Some(PathBuf::from(
+                    it.next().unwrap_or_else(|| die("--repo needs a path")),
+                ))
+            }
+            "--run-id" => {
+                run_id_arg = Some(it.next().unwrap_or_else(|| die("--run-id needs a value")))
+            }
             "--dry-run" => dry_run = true,
             "--assert-green" => assert_green = true,
             other => die(&format!("unknown argument {other}")),
@@ -244,16 +281,25 @@ fn main() {
             let candidate = here.join("..").join("hermit");
             candidate.is_dir().then(|| candidate)
         })
-        .or_else(|| env::var("DEV_HERMIT").ok().map(|d| PathBuf::from(d).join("hermit")))
+        .or_else(|| {
+            env::var("DEV_HERMIT")
+                .ok()
+                .map(|d| PathBuf::from(d).join("hermit"))
+        })
         .unwrap_or_else(|| die("could not locate hermit checkout; pass --repo"));
     let repo = fs::canonicalize(&repo).unwrap_or(repo);
-    let now = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
     let meta = Meta {
         run_id: run_id_arg.unwrap_or_else(|| now.to_string()),
         run_utc: format!("@{now}"),
         hermit_sha: git(&repo, &["rev-parse", "HEAD"]).unwrap_or_else(|| "unknown".into()),
         reverie_sha: locked_reverie_sha(&repo).unwrap_or_else(|| "unknown".into()),
-        dirty: git(&repo, &["status", "--porcelain"]).map(|s| !s.is_empty()).unwrap_or(false),
+        dirty: git(&repo, &["status", "--porcelain"])
+            .map(|s| !s.is_empty())
+            .unwrap_or(false),
     };
     let explicit_csv = csv.is_some();
     let csv_path = csv.unwrap_or_else(|| {
@@ -268,8 +314,7 @@ fn main() {
     if requested_resolved == canonical_resolved {
         die("refusing to append the tracked current scorecard; publish a reviewed per-run artifact through publish-scorecard.py");
     }
-    if with_parity
-        && (!exact_sha(&meta.hermit_sha) || !exact_sha(&meta.reverie_sha) || meta.dirty)
+    if with_parity && (!exact_sha(&meta.hermit_sha) || !exact_sha(&meta.reverie_sha) || meta.dirty)
     {
         die(&format!(
             "parity requires clean exact code provenance; hermit_sha={:?} reverie_sha={:?} dirty={}",
@@ -286,8 +331,16 @@ fn main() {
     let plan = enumerate_plan(&repo, &lane, &mode);
     let cells: Vec<PlanCell> = plan
         .into_iter()
-        .filter(|c| buckets_filter.as_ref().map_or(true, |b| b.contains(&c.bucket)))
-        .filter(|c| backends_filter.as_ref().map_or(true, |b| b.contains(&c.backend)))
+        .filter(|c| {
+            buckets_filter
+                .as_ref()
+                .map_or(true, |b| b.contains(&c.bucket))
+        })
+        .filter(|c| {
+            backends_filter
+                .as_ref()
+                .map_or(true, |b| b.contains(&c.backend))
+        })
         .collect();
     let population_id = population_id(&cells, &mode, &lane);
     let planned_count = cells.len();
@@ -317,7 +370,8 @@ fn main() {
             fs::create_dir_all(parent)
                 .unwrap_or_else(|e| die(&format!("cannot create observation directory: {e}")));
         }
-        fs::write(&csv_path, format!("{HEADER}\n")).unwrap_or_else(|e| die(&format!("cannot create CSV: {e}")));
+        fs::write(&csv_path, format!("{HEADER}\n"))
+            .unwrap_or_else(|e| die(&format!("cannot create CSV: {e}")));
     }
     // BIND TO THE FILE'S SCHEMA, not to ours.
     //
@@ -338,23 +392,41 @@ fn main() {
     // omitted it.  Dropping one would recreate the exact condition/value split
     // this producer is responsible for repairing.
     for required in [
-        "run_id", "run_utc", "hermit_sha", "reverie_sha", "test_id", "backend",
-        "outcome", "deterministic", "ref_output_hash", "parity_comparator",
-        "parity_tier", "profile_flags", "population_id", "selected_count",
-        "executed_count", "evidence_count", "comparison_tier",
+        "run_id",
+        "run_utc",
+        "hermit_sha",
+        "reverie_sha",
+        "test_id",
+        "backend",
+        "outcome",
+        "deterministic",
+        "ref_output_hash",
+        "parity_comparator",
+        "parity_tier",
+        "profile_flags",
+        "population_id",
+        "selected_count",
+        "executed_count",
+        "evidence_count",
+        "comparison_tier",
     ] {
         if !target_header.iter().any(|c| c == required) {
             die(&format!(
                 "scorecard {} is missing the required column {required:?}; its header has {} \
                  column(s): {}",
-                csv_path.display(), target_header.len(), target_header.join(",")
+                csv_path.display(),
+                target_header.len(),
+                target_header.join(",")
             ));
         }
     }
     // Run each (bucket,backend) group through the harness and read its JSONL.
     let mut groups: BTreeMap<(String, String), Vec<PlanCell>> = BTreeMap::new();
     for c in cells {
-        groups.entry((c.bucket.clone(), c.backend.clone())).or_default().push(c);
+        groups
+            .entry((c.bucket.clone(), c.backend.clone()))
+            .or_default()
+            .push(c);
     }
 
     // Probe backend availability once so an absent backend binary (e.g. SaBRe
@@ -548,7 +620,11 @@ fn main() {
             } else {
                 ""
             };
-            let parity_tier = if has_parity_evidence { "stdout-exact" } else { "" };
+            let parity_tier = if has_parity_evidence {
+                "stdout-exact"
+            } else {
+                ""
+            };
             let profile_flags = profile_flags(&lane, bucket, backend, &mode);
             let row = vec![
                 meta.run_id.clone(),
@@ -564,9 +640,18 @@ fn main() {
                 backend.clone(),
                 c.cell_state.clone(),
                 outcome,
-                deterministic.map(|b| if b { "1" } else { "0" }).unwrap_or("").to_string(),
-                parity.map(|b| if b { "1" } else { "0" }).unwrap_or("").to_string(),
-                parity_exercised.map(|b| if b { "1" } else { "0" }).unwrap_or("").to_string(),
+                deterministic
+                    .map(|b| if b { "1" } else { "0" })
+                    .unwrap_or("")
+                    .to_string(),
+                parity
+                    .map(|b| if b { "1" } else { "0" })
+                    .unwrap_or("")
+                    .to_string(),
+                parity_exercised
+                    .map(|b| if b { "1" } else { "0" })
+                    .unwrap_or("")
+                    .to_string(),
                 // THE COUNT TRAVELS WITH THE CELL. Blank means no counter was found
                 // for this backend, which is not the same as zero and must not be read
                 // as engagement.
@@ -602,8 +687,14 @@ fn main() {
             pending_rows.push((row, executed, has_parity_evidence));
         }
     }
-    let executed_count = pending_rows.iter().filter(|(_, executed, _)| *executed).count();
-    let evidence_count = pending_rows.iter().filter(|(_, _, evidence)| *evidence).count();
+    let executed_count = pending_rows
+        .iter()
+        .filter(|(_, executed, _)| *executed)
+        .count();
+    let evidence_count = pending_rows
+        .iter()
+        .filter(|(_, _, evidence)| *evidence)
+        .count();
     if pending_rows.len() != planned_count {
         die(&format!(
             "selected population changed while running: planned={planned_count} rows={}",
@@ -629,7 +720,11 @@ fn main() {
         let line = target_header
             .iter()
             .map(|col| {
-                let want: &str = if col == "parity" { "stdout_parity" } else { col.as_str() };
+                let want: &str = if col == "parity" {
+                    "stdout_parity"
+                } else {
+                    col.as_str()
+                };
                 match names.iter().position(|name| *name == want) {
                     Some(index) => csv_field(&row[index]),
                     None => String::new(),
@@ -697,7 +792,12 @@ fn enumerate_plan(repo: &Path, lane: &str, mode: &str) -> Vec<PlanCell> {
     let mut cells = Vec::new();
     let harness = repo.join("ci/test_harness.sh");
     let run = |args: &[&str]| -> Option<Value> {
-        let out = Command::new("bash").arg(&harness).args(args).current_dir(repo).output().ok()?;
+        let out = Command::new("bash")
+            .arg(&harness)
+            .args(args)
+            .current_dir(repo)
+            .output()
+            .ok()?;
         if !out.status.success() {
             eprintln!(
                 "warn: harness {:?} failed: {}",
@@ -711,10 +811,26 @@ fn enumerate_plan(repo: &Path, lane: &str, mode: &str) -> Vec<PlanCell> {
     if let Some(Value::Array(rows)) = run(&["plan", "--lane", lane, "--format", "json"]) {
         for r in rows {
             cells.push(PlanCell {
-                bucket: r.get("category").and_then(Value::as_str).unwrap_or("").to_string(),
-                test: r.get("test").and_then(Value::as_str).unwrap_or("").to_string(),
-                mode: r.get("mode").and_then(Value::as_str).unwrap_or("").to_string(),
-                backend: r.get("backend").and_then(Value::as_str).unwrap_or("native").to_string(),
+                bucket: r
+                    .get("category")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string(),
+                test: r
+                    .get("test")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string(),
+                mode: r
+                    .get("mode")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string(),
+                backend: r
+                    .get("backend")
+                    .and_then(Value::as_str)
+                    .unwrap_or("native")
+                    .to_string(),
                 cell_state: "enabled".to_string(),
             });
         }
@@ -722,14 +838,30 @@ fn enumerate_plan(repo: &Path, lane: &str, mode: &str) -> Vec<PlanCell> {
     if mode == "expansion" {
         if let Some(Value::Array(rows)) = run(&["audit-gaps", "--lane", lane, "--format", "json"]) {
             for r in rows {
-                let backend = r.get("backend").and_then(Value::as_str).unwrap_or("").to_string();
+                let backend = r
+                    .get("backend")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string();
                 if backend.is_empty() || backend == "native" {
                     continue;
                 }
                 cells.push(PlanCell {
-                    bucket: r.get("category").and_then(Value::as_str).unwrap_or("").to_string(),
-                    test: r.get("test").and_then(Value::as_str).unwrap_or("").to_string(),
-                    mode: r.get("mode").and_then(Value::as_str).unwrap_or("").to_string(),
+                    bucket: r
+                        .get("category")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_string(),
+                    test: r
+                        .get("test")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_string(),
+                    mode: r
+                        .get("mode")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                        .to_string(),
                     backend,
                     cell_state: "disabled".to_string(),
                 });
@@ -741,9 +873,18 @@ fn enumerate_plan(repo: &Path, lane: &str, mode: &str) -> Vec<PlanCell> {
 }
 
 /// Run one (bucket,backend) group and parse the results JSONL.
-fn run_group(repo: &Path, lane: &str, bucket: &str, backend: &str, mode: &str) -> Vec<HarnessResult> {
+fn run_group(
+    repo: &Path,
+    lane: &str,
+    bucket: &str,
+    backend: &str,
+    mode: &str,
+) -> Vec<HarnessResult> {
     let harness = repo.join("ci/test_harness.sh");
-    let results_dir = repo.join("ignored/e2e/compat-envelope").join(lane).join(bucket);
+    let results_dir = repo
+        .join("ignored/e2e/compat-envelope")
+        .join(lane)
+        .join(bucket);
     let _ = fs::create_dir_all(&results_dir);
     let results = results_dir.join(format!("{backend}.jsonl"));
     let mut args: Vec<String> = vec![
@@ -776,13 +917,31 @@ fn run_group(repo: &Path, lane: &str, bucket: &str, backend: &str, mode: &str) -
             if line.trim().is_empty() {
                 continue;
             }
-            let Ok(v): Result<Value, _> = serde_json::from_str(line) else { continue };
+            let Ok(v): Result<Value, _> = serde_json::from_str(line) else {
+                continue;
+            };
             out.push(HarnessResult {
-                test: v.get("test").and_then(Value::as_str).unwrap_or("").to_string(),
-                mode: v.get("mode").and_then(Value::as_str).unwrap_or("").to_string(),
-                outcome: v.get("outcome").and_then(Value::as_str).unwrap_or("").to_lowercase(),
+                test: v
+                    .get("test")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string(),
+                mode: v
+                    .get("mode")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string(),
+                outcome: v
+                    .get("outcome")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_lowercase(),
                 duration_ms: v.get("duration_ms").and_then(Value::as_i64).unwrap_or(0),
-                reason: v.get("reason").and_then(Value::as_str).unwrap_or("").to_string(),
+                reason: v
+                    .get("reason")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string(),
             });
         }
     }
@@ -851,7 +1010,9 @@ fn verify_tier_from_json(text: &str) -> Option<VerifyVerdict> {
         Some(_) => {}
     }
     let comparison = record.get("comparison").and_then(Value::as_object);
-    let counts = record.get("compared_log_messages").and_then(Value::as_object);
+    let counts = record
+        .get("compared_log_messages")
+        .and_then(Value::as_object);
     let left = counts.and_then(|c| c.get("left")).and_then(Value::as_i64);
     let right = counts.and_then(|c| c.get("right")).and_then(Value::as_i64);
     let compared = match (left, right) {
@@ -863,8 +1024,14 @@ fn verify_tier_from_json(text: &str) -> Option<VerifyVerdict> {
         .and_then(Value::as_str)
         .unwrap_or("")
         .to_string();
-    let verified = record.get("verified").and_then(Value::as_bool).unwrap_or(false);
-    let bitwise = record.get("bitwise_parity").and_then(Value::as_bool).unwrap_or(false)
+    let verified = record
+        .get("verified")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let bitwise = record
+        .get("bitwise_parity")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
         && left.unwrap_or(0) != 0
         && right.unwrap_or(0) != 0;
     let compare_logs = comparison
@@ -884,7 +1051,11 @@ fn verify_tier_from_json(text: &str) -> Option<VerifyVerdict> {
     Some(VerifyVerdict {
         tier: tier.to_string(),
         verify_compare: strictness,
-        bitwise_parity: if bitwise { "1".to_string() } else { "0".to_string() },
+        bitwise_parity: if bitwise {
+            "1".to_string()
+        } else {
+            "0".to_string()
+        },
         compared_log_messages: compared,
     })
 }
@@ -939,7 +1110,8 @@ fn capture_verify_verdict(
         .arg("-e")
         .arg("TZ=UTC");
     if lane == "portable" {
-        cmd.arg("--no-virtualize-cpuid").arg("--max-timeslice=disabled");
+        cmd.arg("--no-virtualize-cpuid")
+            .arg("--max-timeslice=disabled");
     }
     cmd.arg("--");
     for g in &guest {
@@ -960,7 +1132,15 @@ fn capture_parity(
     lane: &str,
     cell: &PlanCell,
     backend: &str,
-) -> (Option<bool>, Option<bool>, String, String, String, Option<i64>, String) {
+) -> (
+    Option<bool>,
+    Option<bool>,
+    String,
+    String,
+    String,
+    Option<i64>,
+    String,
+) {
     let Some(guest) = guest_command(repo, &cell.test) else {
         return (
             None,
@@ -1002,7 +1182,9 @@ fn capture_parity(
             ref_hash.clone().unwrap_or_default(),
             engaged,
             match (ref_hash.is_some(), this_hash.is_some()) {
-                (false, false) => "stdout comparison produced neither reference nor candidate operand",
+                (false, false) => {
+                    "stdout comparison produced neither reference nor candidate operand"
+                }
                 (false, true) => "stdout comparison produced no reference operand",
                 (true, false) => "stdout comparison produced no candidate operand",
                 (true, true) => unreachable!(),
@@ -1040,7 +1222,15 @@ fn run_native_and_hash(repo: &Path, guest: &[String]) -> Option<String> {
 fn guest_command(repo: &Path, test_id: &str) -> Option<Vec<String>> {
     let harness = repo.join("ci/test_harness.sh");
     let out = Command::new("cargo")
-        .args(["run", "--quiet", "-p", "hermit-manifest-plan", "--", "--format", "harness-json"])
+        .args([
+            "run",
+            "--quiet",
+            "-p",
+            "hermit-manifest-plan",
+            "--",
+            "--format",
+            "harness-json",
+        ])
         .current_dir(repo)
         .output()
         .ok()?;
@@ -1058,7 +1248,10 @@ fn guest_command(repo: &Path, test_id: &str) -> Option<Vec<String>> {
             }
             if let Some(prog) = t.get("program").and_then(Value::as_str) {
                 if prog.ends_with(".sh") {
-                    return Some(vec![repo.join(prog).to_string_lossy().into_owned(), "--run".into()]);
+                    return Some(vec![
+                        repo.join(prog).to_string_lossy().into_owned(),
+                        "--run".into(),
+                    ]);
                 }
                 if prog.ends_with(".c") || prog.ends_with(".rs") {
                     // Compiled fixtures: replicate the harness build step
@@ -1166,7 +1359,11 @@ fn build_compiled_fixture(
         build
             .and_then(|b| b.get(key))
             .and_then(Value::as_array)
-            .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str().map(String::from))
+                    .collect()
+            })
             .unwrap_or_default()
     };
     let ok = if prog.ends_with(".c") {
@@ -1222,7 +1419,10 @@ fn backend_engagement(backend: &str, text: &str) -> Option<i64> {
         _ => return None,
     };
     let start = text.find(key)? + key.len();
-    let digits: String = text[start..].chars().take_while(|c| c.is_ascii_digit()).collect();
+    let digits: String = text[start..]
+        .chars()
+        .take_while(|c| c.is_ascii_digit())
+        .collect();
     digits.parse().ok()
 }
 
@@ -1274,7 +1474,9 @@ fn self_check() -> i32 {
         }
     }
     // The discrimination itself, stated as a property rather than left implicit.
-    if backend_engagement("e9patch", "mapped_sites=0") == backend_engagement("e9patch", "mapped_sites=2") {
+    if backend_engagement("e9patch", "mapped_sites=0")
+        == backend_engagement("e9patch", "mapped_sites=2")
+    {
         println!("SELF-CHECK FAIL: parser does not discriminate zero from nonzero");
         failures += 1;
     }
@@ -1354,7 +1556,10 @@ fn self_check() -> i32 {
             println!("SELF-CHECK FAIL verdict/{name}: expected {expected:?} got {got_ref:?}");
             failures += 1;
         } else {
-            println!("self-check ok  verdict/{name:<22} {}", got_ref.unwrap_or("no-verdict"));
+            println!(
+                "self-check ok  verdict/{name:<22} {}",
+                got_ref.unwrap_or("no-verdict")
+            );
         }
     }
     // The discrimination that matters, stated as a property: identical parity
@@ -1402,14 +1607,27 @@ fn engagement_counter_name(backend: &str) -> &'static str {
 fn parse_scheduler_turns(text: &str) -> Option<i64> {
     let marker = "hermit scheduler ran ";
     let start = text.find(marker)? + marker.len();
-    let digits: String = text[start..].chars().take_while(|c| c.is_ascii_digit()).collect();
+    let digits: String = text[start..]
+        .chars()
+        .take_while(|c| c.is_ascii_digit())
+        .collect();
     digits.parse().ok()
 }
 
-fn run_and_hash(repo: &Path, lane: &str, backend: &str, guest: &[String]) -> Option<(String, Option<i64>)> {
+fn run_and_hash(
+    repo: &Path,
+    lane: &str,
+    backend: &str,
+    guest: &[String],
+) -> Option<(String, Option<i64>)> {
     let hermit = hermit_bin(repo);
     let mut cmd = Command::new("timeout");
-    cmd.arg("120s").arg(&hermit).arg("run").arg("--backend").arg(backend).arg("--strict");
+    cmd.arg("120s")
+        .arg(&hermit)
+        .arg("run")
+        .arg("--backend")
+        .arg(backend)
+        .arg("--strict");
     // Pin the GUEST environment. `--base-env` defaults to `host`, which passes every one of
     // hermit's own variables through to the guest. The kernel builds the initial stack from
     // argv/envp/auxv, so the size of that block decides where the stack sits: a collector run
@@ -1430,7 +1648,8 @@ fn run_and_hash(repo: &Path, lane: &str, backend: &str, guest: &[String]) -> Opt
     // PATH, HOSTNAME, HOME (hermit `minimal`) + LC_ALL=C + TZ=UTC. Nothing else reaches the guest.
     cmd.arg("-e").arg("LC_ALL=C").arg("-e").arg("TZ=UTC");
     if lane == "portable" {
-        cmd.arg("--no-virtualize-cpuid").arg("--max-timeslice=disabled");
+        cmd.arg("--no-virtualize-cpuid")
+            .arg("--max-timeslice=disabled");
     }
     cmd.arg("--");
     for g in guest {
