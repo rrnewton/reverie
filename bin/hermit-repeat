@@ -747,18 +747,66 @@ def stats(values: list[int]) -> str:
     return f"min {s[0]}  max {s[-1]}  distinct {uniq}"
 
 
-def wilson95(k: int, n: int) -> tuple[float, float]:
+# The runs inside one CONCURRENT sweep are not independent, and the binomial
+# interval assumes they are.
+#
+# MEASURED, not assumed (experiments/race-oracle-repeat-variance_20260824, 800
+# runs, 40 sweeps, one arm held fixed, modes interleaved):
+#
+#   sequential  75/400 = 18.8%   dispersion 0.96   chi-square 18.3 / 19 df
+#   concurrent 144/400 = 36.0%   dispersion 2.64   chi-square 50.2 / 19 df
+#
+# Sequential is binomial to three digits. Concurrent is not: its sweep-to-sweep
+# variance is 2.64x what independence predicts, it tracks host load (r = +0.549
+# against +0.155 for sequential), and dropping the three highest-load sweeps
+# collapses it to 1.38. The extra variance enters through CONTENTION -- every
+# run in a concurrent sweep shares one contention episode -- not through the
+# oracle, which is why the correction belongs to the mode and not to the tool.
+#
+# WHY THIS IS NOT COSMETIC. On that data the naive interval declares two sweeps
+# of the IDENTICAL arm to be different in 15 of 190 pairs, 7.9%. Every one of
+# those is a false positive, against a nominal rate under 1% for non-overlapping
+# 95% intervals. Applying the correction takes it to 0 of 190. Sequential was
+# already 0 of 190 and is deliberately left uncorrected: widening an interval
+# that is already right would only hide real differences.
+#
+# A SINGLE SWEEP CANNOT ESTIMATE ITS OWN DESIGN EFFECT. The overdispersion is
+# BETWEEN sweeps, and one sweep has one contention episode, so there is nothing
+# to compare within it -- no N, however large, fixes that, because growing N
+# grows the episode rather than replicating it. Estimating it needs replicate
+# sweeps: R>=10 of them, roughly R x the wall cost of one sweep. Until a caller
+# does that, this measured constant is the honest default, and --design-effect
+# overrides it for anyone who has measured their own.
+CONCURRENT_DESIGN_EFFECT = 2.64
+SEQUENTIAL_DESIGN_EFFECT = 1.0
+
+
+def wilson95(k: int, n: int, deff: float = 1.0) -> tuple[float, float]:
     """Wilson score interval for a proportion. Used instead of the normal
     approximation because it stays inside [0,1] and behaves at k=0 and k=n,
-    which is exactly where a 20-run sweep lands."""
+    which is exactly where a 20-run sweep lands.
+
+    `deff` is the design effect: the factor by which the true variance exceeds
+    the binomial variance. deff=1 is the ordinary Wilson interval. Larger values
+    widen it by sqrt(deff), which is the standard survey-sampling correction for
+    observations that are not independent."""
     if n == 0:
         return (0.0, 1.0)
-    z = 1.959963984540054
+    z = 1.959963984540054 * (deff ** 0.5)
     p = k / n
     denom = 1 + z * z / n
     centre = (p + z * z / (2 * n)) / denom
     half = z * ((p * (1 - p) / n + z * z / (4 * n * n)) ** 0.5) / denom
     return (max(0.0, centre - half), min(1.0, centre + half))
+
+
+def design_effect_for(mode: str, override: float | None) -> float:
+    """The design effect this mode's interval must carry. An explicit override
+    always wins, including an override of 1.0, which is how a caller who has
+    measured a quiet box asks for the uncorrected interval."""
+    if override is not None:
+        return override
+    return CONCURRENT_DESIGN_EFFECT if mode == "concurrent" else SEQUENTIAL_DESIGN_EFFECT
 
 
 def histogram(values: list[int]) -> list[tuple[int, int]]:
@@ -846,7 +894,8 @@ def write_report(args, meta: dict, results: list[RunResult], fh):
     measured = len(diverged) + len(clean)
     if measured:
         w()
-        lo, hi = wilson95(len(diverged), measured)
+        deff = design_effect_for(meta["mode"], getattr(args, "design_effect", None))
+        lo, hi = wilson95(len(diverged), measured, deff)
         w(f"  divergence rate: {len(diverged)}/{measured} = {100*len(diverged)/measured:.0f}% of the runs that "
           f"produced a verdict")
         # A BARE RATIO AT N=20 INVITES OVER-READING. Measured on sabre +
@@ -854,9 +903,22 @@ def write_report(args, meta: dict, results: list[RunResult], fh):
         # 7/20 sequential -- a 20-point gap whose intervals overlap heavily. Two
         # single sweeps cannot establish that difference, and the interval is
         # printed so nobody reports one from them.
-        w(f"                   95% interval {100*lo:.0f}%-{100*hi:.0f}% (Wilson, n={measured}). "
-          f"Two sweeps whose")
+        w(f"                   95% interval {100*lo:.0f}%-{100*hi:.0f}% (Wilson, n={measured}"
+          f"{'' if deff == 1.0 else f', design effect {deff:g}'}). Two sweeps whose")
         w(f"                   intervals overlap have not shown a difference.")
+        if deff != 1.0:
+            # The uncorrected number is shown so the correction is auditable
+            # rather than a figure the reader has to take on trust -- and so the
+            # size of it is visible, which is the part that argues for itself.
+            nlo, nhi = wilson95(len(diverged), measured, 1.0)
+            w(f"                   BINOMIAL-ONLY interval would be "
+              f"{100*nlo:.0f}%-{100*nhi:.0f}%, and is TOO NARROW here: runs in one")
+            w(f"                   {meta['mode']} sweep share a contention episode, so they are not")
+            w(f"                   independent. Measured dispersion {deff:g}x binomial over 20 replicate")
+            w(f"                   sweeps; on that data the uncorrected interval called two sweeps of")
+            w(f"                   the SAME arm different in 15 of 190 pairs (7.9%), the corrected one")
+            w(f"                   in 0 of 190. See experiments/race-oracle-repeat-variance_20260824.")
+            w(f"                   Override with --design-effect if you have measured your own.")
         # Say what this means in the project's own vocabulary rather than
         # leaving the reader to translate a ratio into an assurance claim.
         bitwise = all(
@@ -1273,6 +1335,22 @@ def main() -> int:
             "writing there. Named in the report when set."
         ),
     )
+    p.add_argument(
+        "--design-effect",
+        type=float,
+        default=None,
+        metavar="D",
+        help=(
+            "override the design effect used to widen the reported interval. "
+            f"Default: {CONCURRENT_DESIGN_EFFECT:g} in concurrent mode and "
+            f"{SEQUENTIAL_DESIGN_EFFECT:g} in sequential, both MEASURED over 20 "
+            "replicate sweeps (experiments/race-oracle-repeat-variance_20260824). "
+            "Runs inside one concurrent sweep share a contention episode and are "
+            "not independent, so the binomial interval is too narrow there. Pass 1 "
+            "for the uncorrected binomial interval, or your own measured value; a "
+            "single sweep CANNOT estimate this, it needs replicate sweeps"
+        ),
+    )
     p.add_argument("--no-preflight", action="store_true", help="skip the single probe run that checks this configuration can produce a verdict at all; use when a genuinely flaky cell fails the probe")
     p.add_argument("--dry-run", action="store_true", help="print the generated DAG and the exact per-node command, run nothing")
     p.add_argument("-v", "--verbose", action="store_true", help="echo the runner's whole stream; it is written to <out>/runner.log either way")
@@ -1502,6 +1580,31 @@ def main() -> int:
         write_report(args, meta, results, fh)
     sys.stdout.write(report_path.read_text())
 
+    # The interval goes in the JSON too. A machine consumer that recomputed it
+    # from k and n would get the binomial one and lose the correction silently,
+    # which is the same defect in a different place.
+    _div = sum(1 for r in results if r.category == "diverged")
+    _measured = _div + sum(1 for r in results if r.category == "clean")
+    _deff = design_effect_for(meta["mode"], args.design_effect)
+    _lo, _hi = wilson95(_div, _measured, _deff)
+    _nlo, _nhi = wilson95(_div, _measured, 1.0)
+    meta["design_effect"] = _deff
+    meta["design_effect_source"] = (
+        "explicit --design-effect" if args.design_effect is not None
+        else f"measured default for mode={meta['mode']} "
+             "(experiments/race-oracle-repeat-variance_20260824)"
+    )
+    meta["divergence_rate"] = {
+        "diverged": _div,
+        "measured": _measured,
+        "rate": (_div / _measured) if _measured else None,
+        "wilson95": [_lo, _hi] if _measured else None,
+        "wilson95_binomial_only": [_nlo, _nhi] if _measured else None,
+        "note": (
+            "wilson95 carries the design effect; wilson95_binomial_only assumes "
+            "independence, which concurrent mode does not have"
+        ),
+    }
     payload = {"meta": meta, "runs": [asdict(r) for r in results],
                "verdict": verdict_lines(meta, results)}
     (out / "result.json").write_text(json.dumps(payload, indent=2))
@@ -1566,6 +1669,41 @@ def _selftest() -> int:
     check("ns from bare ns", parse_virtual_ns("1767225600069347500", None),
           1767225600069347500)
     check("ns rejects fractional bare", parse_virtual_ns("1.5", None), None)
+
+    # --- interval and design effect -------------------------------------
+    # The property that matters is not a magic number but the DIRECTION and the
+    # SELECTION: the correction must widen, only in concurrent mode, and an
+    # explicit override must beat the default in both directions.
+    check("mode picks the measured default: concurrent",
+          design_effect_for("concurrent", None), CONCURRENT_DESIGN_EFFECT)
+    check("mode picks the measured default: sequential",
+          design_effect_for("sequential", None), SEQUENTIAL_DESIGN_EFFECT)
+    check("sequential is left uncorrected", design_effect_for("sequential", None), 1.0)
+    check("explicit override beats the default",
+          design_effect_for("concurrent", 1.0), 1.0)
+    check("explicit override applies in sequential too",
+          design_effect_for("sequential", 4.0), 4.0)
+
+    naive = wilson95(7, 20, 1.0)
+    corrected = wilson95(7, 20, CONCURRENT_DESIGN_EFFECT)
+    check("deff=1 reproduces the plain Wilson interval", wilson95(7, 20), naive)
+    check("the correction WIDENS the interval",
+          (corrected[0] < naive[0], corrected[1] > naive[1]), (True, True))
+    check("the interval stays inside [0,1] at k=0", wilson95(0, 20, 4.0)[0], 0.0)
+    check("the interval stays inside [0,1] at k=n", wilson95(20, 20, 4.0)[1], 1.0)
+    check("n=0 is unresolved, not a point estimate", wilson95(0, 0, 2.64), (0.0, 1.0))
+
+    # THE REGRESSION THIS EXISTS TO CATCH, from the measured data: 2/20 against
+    # 13/20 are disjoint under the binomial interval and overlap once the
+    # measured design effect is applied. If a future edit drops the correction,
+    # this pair silently starts reporting a difference between two sweeps of the
+    # SAME arm again.
+    a_naive, b_naive = wilson95(2, 20, 1.0), wilson95(13, 20, 1.0)
+    a_corr, b_corr = wilson95(2, 20, CONCURRENT_DESIGN_EFFECT), wilson95(13, 20, CONCURRENT_DESIGN_EFFECT)
+    check("2/20 vs 13/20 read as DIFFERENT under the binomial interval",
+          a_naive[1] < b_naive[0], True)
+    check("2/20 vs 13/20 read as INDISTINGUISHABLE once corrected",
+          a_corr[1] >= b_corr[0], True)
 
     for f in failures:
         print(f"{PROG}: SELFTEST FAIL {f}", file=sys.stderr)

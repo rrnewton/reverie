@@ -81,3 +81,12 @@ quote a max/min ratio across small-n sweeps as evidence of instrument noise.
 
 `sweeps.csv` 40 sweeps · `runs.csv` 800 runs · `results.txt` full output ·
 `drive.sh` the driver · `analyze*.py` the analysis.
+
+## Applied
+
+`bin/hermit-repeat` now carries this correction: `CONCURRENT_DESIGN_EFFECT =
+2.64` widens the reported interval in concurrent mode only, sequential is left
+uncorrected at 1.0, and `--design-effect` overrides both. The measured
+false-positive rate above — 15 of 190 identical-arm pairs reading as different,
+0 of 190 after correction — is the regression that the tool's `--selftest` now
+pins via the 2/20-versus-13/20 pair.
