@@ -6,7 +6,7 @@
  * This source code is licensed under the BSD-style license found in the
  * LICENSE file in the root directory of this source tree.
  */
-//! Verify that Claude and stock Codex discover the same Reverie product skills.
+//! Verify Reverie's intentional skill-bankruptcy boundary and active LiteInst skills.
 
 use std::collections::BTreeSet;
 use std::env;
@@ -97,6 +97,27 @@ fn require_real_directory(path: &Path, root: &Path) -> Result<(), String> {
     }
     canonical_within(path, root)?;
     Ok(())
+}
+
+fn require_regular_file(path: &Path, root: &Path) -> Result<(), String> {
+    let metadata = fs::symlink_metadata(path)
+        .map_err(|error| format!("cannot inspect {}: {error}", path.display()))?;
+    if !metadata.is_file() || metadata.file_type().is_symlink() {
+        return Err(format!("{} must be a regular file", path.display()));
+    }
+    canonical_within(path, root)?;
+    Ok(())
+}
+
+fn require_absent(path: &Path) -> Result<(), String> {
+    match fs::symlink_metadata(path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!("cannot inspect {}: {error}", path.display())),
+        Ok(_) => Err(format!(
+            "{} must remain absent while its policy surface is quarantined",
+            path.display()
+        )),
+    }
 }
 
 fn frontmatter<'a>(contents: &'a str, path: &Path) -> Result<&'a str, String> {
@@ -274,6 +295,12 @@ fn filesystem_regression_tests() -> Result<(), String> {
     if require_internal_symlink(&root.join("dangling"), Path::new("missing"), &root).is_ok() {
         return Err("filesystem regression accepted a dangling discovery link".to_owned());
     }
+    if require_absent(&root.join("dangling")).is_ok() {
+        return Err("filesystem regression accepted a retired dangling adapter".to_owned());
+    }
+    fs::remove_file(root.join("dangling"))
+        .map_err(|error| format!("cannot remove dangling fixture: {error}"))?;
+    require_absent(&root.join("dangling"))?;
 
     fs::write(outside.join("target"), "outside\n")
         .map_err(|error| format!("cannot write escaping fixture: {error}"))?;
@@ -310,6 +337,30 @@ fn entry_names(path: &Path) -> Result<BTreeSet<String>, String> {
         .collect()
 }
 
+fn require_empty_or_absent_directory(path: &Path, root: &Path) -> Result<(), String> {
+    match fs::symlink_metadata(path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!("cannot inspect {}: {error}", path.display())),
+        Ok(metadata) => {
+            if !metadata.is_dir() || metadata.file_type().is_symlink() {
+                return Err(format!(
+                    "{} must be absent or an empty real directory",
+                    path.display()
+                ));
+            }
+            canonical_within(path, root)?;
+            let entries = entry_names(path)?;
+            if !entries.is_empty() {
+                return Err(format!(
+                    "retired discovery entries remain in {}: {entries:?}",
+                    path.display()
+                ));
+            }
+            Ok(())
+        }
+    }
+}
+
 fn expected_names(skills: &[&str], suffix: &str, readme: bool) -> BTreeSet<String> {
     let mut names: BTreeSet<String> = skills
         .iter()
@@ -321,15 +372,12 @@ fn expected_names(skills: &[&str], suffix: &str, readme: bool) -> BTreeSet<Strin
     names
 }
 
-fn check_group(
+fn check_canonical_group(
     root: &Path,
     canonical_root: &Path,
-    codex_root: &Path,
     skills: &[&str],
-    target_root: &str,
 ) -> Result<(), String> {
     require_real_directory(canonical_root, root)?;
-    require_real_directory(codex_root, root)?;
 
     let actual_canonical = entry_names(canonical_root)?;
     let expected_canonical = expected_names(skills, "", false);
@@ -339,6 +387,29 @@ fn check_group(
             canonical_root.display()
         ));
     }
+
+    for name in skills {
+        let canonical_dir = canonical_root.join(name);
+        require_real_directory(&canonical_dir, root)?;
+        let canonical_path = canonical_dir.join("SKILL.md");
+        require_regular_file(&canonical_path, root)?;
+        let canonical = fs::read_to_string(&canonical_path)
+            .map_err(|error| format!("cannot read {}: {error}", canonical_path.display()))?;
+        checked_frontmatter(&canonical, &canonical_path, name)?;
+    }
+
+    Ok(())
+}
+
+fn check_group(
+    root: &Path,
+    canonical_root: &Path,
+    codex_root: &Path,
+    skills: &[&str],
+    target_root: &str,
+) -> Result<(), String> {
+    check_canonical_group(root, canonical_root, skills)?;
+    require_real_directory(codex_root, root)?;
 
     let actual_codex = entry_names(codex_root)?;
     let expected_codex = expected_names(skills, "", true);
@@ -351,21 +422,6 @@ fn check_group(
 
     for name in skills {
         let canonical_dir = canonical_root.join(name);
-        require_real_directory(&canonical_dir, root)?;
-        let canonical_path = canonical_dir.join("SKILL.md");
-        let canonical_file_metadata = fs::symlink_metadata(&canonical_path)
-            .map_err(|error| format!("cannot inspect {}: {error}", canonical_path.display()))?;
-        if !canonical_file_metadata.is_file() || canonical_file_metadata.file_type().is_symlink() {
-            return Err(format!(
-                "{} must be a regular file",
-                canonical_path.display()
-            ));
-        }
-        canonical_within(&canonical_path, root)?;
-        let canonical = fs::read_to_string(&canonical_path)
-            .map_err(|error| format!("cannot read {}: {error}", canonical_path.display()))?;
-        checked_frontmatter(&canonical, &canonical_path, name)?;
-
         let entry = codex_root.join(name);
         require_internal_symlink(
             &entry,
@@ -399,23 +455,30 @@ fn check_group(
 }
 
 fn check(root: &Path) -> Result<(), String> {
-    require_internal_symlink(&root.join("CLAUDE.md"), Path::new("AGENTS.md"), root)?;
-    require_internal_symlink(
-        &root.join(".llms/skills"),
-        Path::new("../.claude/skills"),
-        root,
-    )?;
-    check_group(
-        root,
-        &root.join(".claude/skills"),
-        &root.join(".agents/skills"),
-        ROOT_SKILLS,
-        "../../.claude/skills",
-    )?;
+    require_absent(&root.join("AGENTS.md"))?;
+    require_absent(&root.join("CLAUDE.md"))?;
+    require_absent(&root.join(".claude/skills"))?;
+    require_absent(&root.join(".llms/skills"))?;
+    require_empty_or_absent_directory(&root.join(".agents/skills"), root)?;
+
+    let quarantine = root.join(".skill_reset_20260816");
+    require_real_directory(&quarantine, root)?;
+    require_regular_file(&quarantine.join("AGENTS.md"), root)?;
+    require_internal_symlink(&quarantine.join("CLAUDE.md"), Path::new("AGENTS.md"), root)?;
+    check_canonical_group(root, &quarantine.join("skills"), ROOT_SKILLS)?;
 
     let liteinst = root.join("reverie-liteinst");
     require_real_directory(&liteinst, root)?;
-    require_internal_symlink(&liteinst.join("CLAUDE.md"), Path::new("AGENTS.md"), root)?;
+    require_absent(&liteinst.join("AGENTS.md"))?;
+    require_absent(&liteinst.join("CLAUDE.md"))?;
+    let liteinst_quarantine = quarantine.join("reverie-liteinst");
+    require_real_directory(&liteinst_quarantine, root)?;
+    require_regular_file(&liteinst_quarantine.join("AGENTS.md"), root)?;
+    require_internal_symlink(
+        &liteinst_quarantine.join("CLAUDE.md"),
+        Path::new("AGENTS.md"),
+        root,
+    )?;
     require_internal_symlink(
         &liteinst.join(".claude/skills"),
         Path::new("../.llms/skills"),
@@ -455,7 +518,7 @@ fn main() {
         std::process::exit(1);
     }
     println!(
-        "check-skill-discovery: PASS ({} root packages, {} LiteInst packages)",
+        "check-skill-discovery: PASS ({} quarantined root packages, {} active LiteInst packages)",
         ROOT_SKILLS.len(),
         LITEINST_SKILLS.len()
     );
