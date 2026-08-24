@@ -493,18 +493,27 @@ def checkout_root(log_text: str) -> Path | None:
     return Path(root) if root else None
 
 
+# The runner's per-checkout profile store, in both spellings. agent-utils
+# renamed it .safe-ci-dag-runner/profiles -> .dagrun/profiles, and this parent
+# reads checkouts on both sides of that rename, so it must look in both. Reading
+# only one name yields an empty row set, which is indistinguishable from "the run
+# recorded no profiles" and quietly drops the evidence rather than failing.
+PROFILE_STORE_DIRS = (".dagrun", ".safe-ci-dag-runner")
+
+
 def _profile_rows(root: Path) -> list[dict[str, str]]:
     """Read every step-profile row in a checkout's own runner profile store."""
-    profiles = root / ".safe-ci-dag-runner" / "profiles"
     rows: list[dict[str, str]] = []
-    if not profiles.is_dir():
-        return rows
-    for path in sorted(profiles.glob("step_profiles_*.csv")):
-        try:
-            with path.open(newline="", errors="replace") as handle:
-                rows.extend(dict(r) for r in csv.DictReader(handle))
-        except OSError:
+    for store in PROFILE_STORE_DIRS:
+        profiles = root / store / "profiles"
+        if not profiles.is_dir():
             continue
+        for path in sorted(profiles.glob("step_profiles_*.csv")):
+            try:
+                with path.open(newline="", errors="replace") as handle:
+                    rows.extend(dict(r) for r in csv.DictReader(handle))
+            except OSError:
+                continue
     return rows
 
 
