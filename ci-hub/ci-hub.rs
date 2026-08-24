@@ -5269,27 +5269,71 @@ fn recent_row_verdict(row: &HistoryRow, repo: &str) -> &'static str {
 }
 
 fn recent_row_summary(row: &HistoryRow, verdict: &str) -> String {
-    let failed = row
+    // ⚠️ AN ABORTED NODE IS A CONSEQUENCE, A FAILED NODE IS A CAUSE, AND THIS
+    // SUMMARY USED TO MERGE THEM. Both carry `result: "fail"`, so filtering on
+    // `result` alone put ten eager-exit victims and the one real failure into
+    // one list, then printed the FIRST TWO IN ARRAY ORDER. On main's
+    // dee8cf49ce6a that printed "failed: lint.clippy, test.hermit_integration
+    // (+9 more)" while the node that actually failed --
+    // `e2e.manifest_applications`, the only one with `aborted: false` and
+    // `reason: "exit 1"` -- was not among the names shown at all.
+    //
+    // The cost was not cosmetic: those names were quoted to the owner as main's
+    // failure list, a P0 was filed titled after them, and an agent was sent to
+    // investigate a build script on the strength of the clippy name, which was
+    // a downstream abort. A summary that names consequences and hides the cause
+    // sends every reader to the wrong place.
+    // Reuses `validate_status::gate_is_red` -- the predicate this codebase
+    // already uses for "failed on its own account" -- rather than a second copy
+    // that could drift from it. The `aborted` flag lives in the row's flattened
+    // `extra`, and moving it to a typed field would silently blind every
+    // existing reader of that map; I tried it and broke five tests.
+    let is_unsuccessful = |gate: &&records::GateHistoryRow| {
+        matches!(gate.result.as_deref(), Some("fail" | "failed" | "timeout"))
+            || matches!(gate.kind.as_deref(), Some("fail" | "failed" | "timeout"))
+    };
+    let (failed, aborted): (Vec<_>, Vec<_>) = row
         .gates
         .iter()
-        .filter(|gate| {
-            matches!(gate.result.as_deref(), Some("fail" | "failed" | "timeout"))
-                || matches!(gate.kind.as_deref(), Some("fail" | "failed" | "timeout"))
-        })
-        .map(|gate| gate.name.as_str())
-        .collect::<Vec<_>>();
+        .filter(is_unsuccessful)
+        .partition(|gate| validate_status::gate_is_red(gate));
+    let aborted_note = if aborted.is_empty() {
+        String::new()
+    } else {
+        format!("; {} aborted", aborted.len())
+    };
     if !failed.is_empty() {
         let shown = failed
             .iter()
             .take(2)
-            .copied()
+            .map(|gate| gate.name.as_str())
             .collect::<Vec<_>>()
             .join(", ");
         return if failed.len() > 2 {
-            format!("failed: {shown} (+{} more)", failed.len() - 2)
+            format!(
+                "failed: {shown} (+{} more){aborted_note}",
+                failed.len() - 2
+            )
         } else {
-            format!("failed: {shown}")
+            format!("failed: {shown}{aborted_note}")
         };
+    }
+    // Every unsuccessful node was an abort and none of them is the cause. Say
+    // that, rather than promoting an arbitrary victim to "failed" -- which is
+    // exactly the wrong answer this function used to give.
+    if !aborted.is_empty() {
+        let shown = aborted
+            .iter()
+            .take(2)
+            .map(|gate| gate.name.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let more = if aborted.len() > 2 {
+            format!(" (+{} more)", aborted.len() - 2)
+        } else {
+            String::new()
+        };
+        return format!("no failing node recorded; {} aborted: {shown}{more}", aborted.len());
     }
     match verdict {
         "VALIDATED" => "passed".into(),
@@ -6895,6 +6939,76 @@ mod tests {
     use super::*;
 
     const RECEIPT_SHA: &str = "630f44aab7fdf4ee52e572c38ae09818e92271b2";
+
+    /// THE SUMMARY MUST NAME THE CAUSE, NOT THE CONSEQUENCES.
+    ///
+    /// Reproduces the exact shape of main's dee8cf49ce6a receipt: one node that
+    /// failed on its own account plus several stopped by the runner's eager
+    /// exit, all carrying `result: "fail"`. Before this fix the summary printed
+    /// the first two IN ARRAY ORDER -- both aborts -- and omitted the real
+    /// failure entirely, which is how ten downstream victims came to be quoted
+    /// as main's failure list.
+    ///
+    /// Deliberately ORDERED WITH THE ABORTS FIRST, because array order is what
+    /// the old code keyed on: if the fix ever regresses to taking the head of
+    /// the list, this test sees it.
+    #[test]
+    fn the_summary_names_the_failing_node_and_only_counts_the_aborted_ones() {
+        let row: HistoryRow = serde_json::from_str(
+            r#"{"gates":[
+                {"name":"lint.clippy","result":"fail","aborted":true,
+                 "reason":"ABORTED (eager-exit after another step failed)"},
+                {"name":"test.hermit_integration","result":"fail","aborted":true,
+                 "reason":"ABORTED (eager-exit after another step failed)"},
+                {"name":"e2e.manifest_applications","result":"fail","aborted":false,
+                 "reason":"exit 1"},
+                {"name":"test.rr_suite_contract","result":"fail","aborted":true,
+                 "reason":"ABORTED (eager-exit after another step failed)"},
+                {"name":"build.workspace","result":"pass"}
+            ]}"#,
+        )
+        .expect("fixture row parses");
+
+        let summary = recent_row_summary(&row, "NEEDS-RERUN");
+        assert_eq!(summary, "failed: e2e.manifest_applications; 3 aborted");
+        assert!(
+            !summary.contains("lint.clippy"),
+            "an aborted node must not be presented as the failure: {summary}"
+        );
+    }
+
+    /// A run where EVERYTHING unsuccessful was an abort has no cause among its
+    /// gates, and must say so instead of promoting an arbitrary victim.
+    #[test]
+    fn a_run_with_only_aborted_nodes_reports_no_failing_node() {
+        let row: HistoryRow = serde_json::from_str(
+            r#"{"gates":[
+                {"name":"lint.clippy","result":"fail","aborted":true,"reason":"ABORTED"},
+                {"name":"test.cli","result":"fail","aborted":true,"reason":"ABORTED"}
+            ]}"#,
+        )
+        .expect("fixture row parses");
+
+        let summary = recent_row_summary(&row, "NEEDS-RERUN");
+        assert!(
+            summary.starts_with("no failing node recorded; 2 aborted:"),
+            "an all-aborted run must not claim a failure: {summary}"
+        );
+    }
+
+    /// An ordinary failure with no aborts keeps the original wording, so the
+    /// fix does not churn the common case.
+    #[test]
+    fn a_plain_failure_is_unchanged_by_the_abort_split() {
+        let row: HistoryRow = serde_json::from_str(
+            r#"{"gates":[{"name":"e2e.manifest_backend_parity_c","result":"fail"}]}"#,
+        )
+        .expect("fixture row parses");
+        assert_eq!(
+            recent_row_summary(&row, "NEEDS-RERUN"),
+            "failed: e2e.manifest_backend_parity_c"
+        );
+    }
 
     #[test]
     fn local_label_reconcile_preserves_or_adds_a_validated_head() {
