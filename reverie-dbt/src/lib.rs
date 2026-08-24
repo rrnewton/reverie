@@ -32,7 +32,6 @@ use std::pin::pin;
 use std::sync::Arc;
 use std::sync::LazyLock;
 use std::sync::Mutex;
-use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicI32;
 use std::sync::atomic::AtomicU16;
 use std::sync::atomic::AtomicU64;
@@ -395,6 +394,10 @@ where
             args.arg4 as u64,
             args.arg5 as u64,
         ];
+        // The native bridge classifies this as an injected syscall: clone
+        // identity bookkeeping still completes synchronously, while the
+        // original-syscall post-event latch remains disarmed because the raw
+        // result is returned directly to this Tool call.
         let result =
             unsafe { (self.invoke_syscall)(self.context, number.id() as i64, args.as_ptr()) };
         Errno::from_ret(result as usize).map(|value| value as i64)
@@ -1459,9 +1462,6 @@ static TOTAL_SYSCALLS: AtomicU64 = AtomicU64::new(0);
 static TOTAL_REWRITTEN: AtomicU64 = AtomicU64::new(0);
 #[cfg(feature = "prototype-runtime")]
 static IMAGE_GENERATION: AtomicU64 = AtomicU64::new(0);
-#[cfg(feature = "prototype-runtime")]
-static PROCESS_CLONE_RESULT_PROBE: AtomicBool = AtomicBool::new(false);
-
 /// Begins a new DynamoRIO application image and returns its generation.
 #[cfg(feature = "prototype-runtime")]
 #[unsafe(no_mangle)]
@@ -1613,15 +1613,48 @@ pub unsafe extern "C" fn reverie_dbt_runtime_exec_failed(
 ) {
 }
 
-/// Reports a delivered native result of a process-creating clone-family syscall.
+/// Reports a delivered native result of an application-originated,
+/// process-creating clone-family syscall.
 ///
 /// DynamoRIO delivers the post-syscall event in both parent and child for `fork`
 /// and separate-VM `clone` and `clone3`. A `clone(CLONE_VM)` process and `vfork`
 /// deliver only the parent result; no runtime callback runs in the vfork child
-/// before it execs or exits. External runtimes use this
-/// result callback for state that must change after a successful delivered process
-/// clone result but remain untouched when the syscall fails. A runtime that cannot
-/// allow unmediated vfork-child behavior must reject that vfork before execution.
+/// before it execs or exits. Parent and child callbacks run in different processes,
+/// and their relative arrival order is unspecified. ABI v3 passes `result` as the
+/// signed native/DynamoRIO syscall result before virtual identity normalization: a
+/// successful parent sees the raw positive host child ID, a delivered child branch
+/// sees zero, and a failure sees the raw negative Linux error value (for example,
+/// `-EINVAL`), not libc's `-1` with `errno` stored separately.
+///
+/// The parent-side invocation runs immediately in the runtime that issued the
+/// syscall. For a separate-VM child result, the native client first latches the
+/// zero result without entering Rust. It invokes this callback at the child's first
+/// pre-syscall safe point. An external-global runtime is reinitialized first, so
+/// the callback updates newly initialized child state rather than raw inherited
+/// parent state. Delivery always precedes readiness handling and that syscall's
+/// normal [`Tool`] policy. Parent and child callbacks run in different processes
+/// and no cross-process arrival order is promised.
+///
+/// This callback is a notification-only, process-local state transition. It must be
+/// bounded and nonblocking. It must not inject a guest syscall, re-enter Reverie,
+/// wait for a peer or for process/runtime readiness, emit diagnostics or evidence,
+/// or mutate shared cross-process state. External runtimes use it only for
+/// process-local state that changes after a delivered process clone result and
+/// remains untouched when the syscall fails. A runtime that cannot allow
+/// unmediated vfork-child behavior must reject that vfork before execution.
+///
+/// The native client fails closed when the callback reaches the existing guest
+/// syscall-injection, syscall-entry, guest-register, guest-memory, diagnostic,
+/// stdout, readiness-idle, or protected-evidence entry points, and asserts the
+/// fresh-child/existing-parent environment at delivery. These guards cover
+/// same-thread calls through the native callbacks. No current ABI mechanism can
+/// detect work offloaded to another thread, an arbitrary CPU loop, a host-library
+/// block, a direct host syscall or RPC, or arbitrary memory writes performed wholly
+/// inside an external runtime; those remain implementation obligations and are
+/// pinned by source-audit coverage.
+/// A clone issued synchronously through [`Guest::inject`] returns its backend/API
+/// result, including existing virtual-child identity normalization, directly to
+/// the Tool and does not also enter this post-event callback.
 ///
 /// # Safety
 ///
@@ -1631,14 +1664,9 @@ pub unsafe extern "C" fn reverie_dbt_runtime_exec_failed(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn reverie_dbt_runtime_process_clone_result(
     _counters: *mut PrototypeCounters,
-    sysnum: i64,
-    result: i64,
+    _sysnum: i64,
+    _result: i64,
 ) {
-    if PROCESS_CLONE_RESULT_PROBE.load(Ordering::Acquire) {
-        tools::emit_line(&format!(
-            "reverie-dbt-test: process-clone-result sysnum={sysnum} result={result}"
-        ));
-    }
 }
 
 /// Applies copied-child syscall policy for the built-in prototype runtime.
@@ -1920,10 +1948,6 @@ pub unsafe extern "C" fn reverie_dbt_runtime_background_init_v2(argument: *mut c
     if !argument.is_null() {
         let callbacks = unsafe { &*(argument as *const DbtRuntimeCallbacks) };
         tools::set_stdout_emitter(callbacks.emit_stdout);
-        PROCESS_CLONE_RESULT_PROBE.store(
-            std::env::var_os("REVERIE_DBT_TEST_PROCESS_CLONE_RESULTS").is_some(),
-            Ordering::Release,
-        );
     }
 }
 
