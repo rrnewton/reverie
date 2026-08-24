@@ -248,8 +248,11 @@ for pr in "${prs[@]}"; do
   # the exact gitlink rather than depending on cache history from an older run.
   note "PR #$pr: initializing the exact agent-utils validation dependency"
   with-proxy git -C "$repo" submodule update --init --checkout -- agent-utils
-  [[ -f $repo/agent-utils/rs/safe-ci-dag-runner/Cargo.toml ]] || \
-    die "PR #$pr: safe-ci-dag-runner dependency is not materialized"
+  # The crate was renamed in agent-utils (rs/safe-ci-dag-runner -> rs/dagrun);
+  # accept either so heads on both sides of the rename stay checkoutable.
+  [[ -f $repo/agent-utils/rs/dagrun/Cargo.toml || \
+     -f $repo/agent-utils/rs/safe-ci-dag-runner/Cargo.toml ]] || \
+    die "PR #$pr: the DAG-runner path dependency (rs/dagrun or rs/safe-ci-dag-runner) is not materialized"
 
   mapfile -t pin_paths < <(git -C "$repo" diff --name-only "$pin_base" -- \
     | rg '(^|/)Cargo\.(toml|lock)$')
