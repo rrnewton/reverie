@@ -5,7 +5,8 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  RUSTFLAGS: -C link-arg=-llzma
+  RUSTFLAGS: -D warnings -C link-arg=-llzma
+  RUSTDOCFLAGS: -D warnings
 
 jobs:
   regular:
@@ -60,7 +61,7 @@ jobs:
     - name: Documentation tests
       run: cargo test --workspace --doc
     - name: Clippy
-      run: cargo clippy --workspace --all-targets --all-features
+      run: cargo clippy --workspace --all-targets --all-features -- -D warnings
     - name: Format
       run: cargo fmt --all -- --check
 
