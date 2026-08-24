@@ -242,7 +242,12 @@ pub enum FailureDisposition {
     Failed,
 }
 
-fn gate_is_red(gate: &crate::records::GateHistoryRow) -> bool {
+/// A gate that failed ON ITS OWN ACCOUNT: unsuccessful AND not aborted.
+///
+/// `pub(crate)` so the recent-row summary uses THIS predicate rather than a
+/// second copy. Both callers need the same distinction -- an abort is a
+/// consequence, a failure is a cause -- and two definitions of that would drift.
+pub(crate) fn gate_is_red(gate: &crate::records::GateHistoryRow) -> bool {
     gate.extra
         .get("aborted")
         .and_then(serde_json::Value::as_bool)
