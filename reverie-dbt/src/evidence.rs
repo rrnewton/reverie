@@ -1569,8 +1569,120 @@ mod tests {
     }
 
     #[test]
-    fn process_clone_result_callback_runs_after_the_kernel_result() {
+    fn pidfd_open_translates_only_its_pid_through_both_native_execution_paths() {
         let source = include_str!("../native/client.c");
+        let flag_check = source
+            .split_once("static bool pidfd_open_flags_are_known(")
+            .unwrap()
+            .1
+            .split_once("static int64_t invoke_raw_syscall")
+            .unwrap()
+            .0;
+        assert!(flag_check.contains("O_NONBLOCK"));
+        assert!(flag_check.contains("O_EXCL"));
+        assert!(flag_check.contains("return ((uint32_t)flags & ~known) == 0;"));
+
+        let translation = source
+            .split_once("static bool translate_identity_arguments(")
+            .unwrap()
+            .1
+            .split_once("static int64_t unknown_identity_error")
+            .unwrap()
+            .0;
+        let pidfd_group = translation
+            .split_once("case SYS_pidfd_open:")
+            .unwrap()
+            .1
+            .split_once("case SYS_get_robust_list:")
+            .unwrap()
+            .0;
+        let flags = pidfd_group
+            .find("if (!pidfd_open_flags_are_known(args[1]))")
+            .unwrap();
+        let kernel = pidfd_group.find("return true;").unwrap();
+        let identity = pidfd_group
+            .find("return translate_identity_argument(&args[0]);")
+            .unwrap();
+        assert!(flags < kernel);
+        assert!(kernel < identity);
+        assert!(pidfd_group.contains("return translate_identity_argument(&args[0]);"));
+
+        let injected = source
+            .rsplit_once("static int64_t invoke_syscall(uintptr_t context")
+            .unwrap()
+            .1
+            .split_once("static int32_t read_registers")
+            .unwrap()
+            .0;
+        let injected_translation = injected.find("translate_identity_arguments").unwrap();
+        let injected_kernel = injected.find("invoke_raw_syscall").unwrap();
+        assert!(injected_translation < injected_kernel);
+
+        let original = source
+            .split_once("static bool prepare_original_identity_syscall(")
+            .unwrap()
+            .1
+            .split_once("static void post_syscall")
+            .unwrap()
+            .0;
+        let original_translation = original.find("translate_identity_arguments").unwrap();
+        let original_kernel_args = original.find("dr_syscall_set_param").unwrap();
+        assert!(original_translation < original_kernel_args);
+        assert!(
+            source
+                .contains("return sysnum == SYS_wait4 || sysnum == SYS_waitid ? -ECHILD : -ESRCH;")
+        );
+        let fixture = include_str!("../tests/fixtures/pidfd_identity.c");
+        assert!(fixture.contains("syscall(SYS_pidfd_open, virtual_self, UINT_MAX)"));
+        assert!(fixture.contains("syscall(SYS_pidfd_open, INT_MAX, 0)"));
+        assert!(fixture.contains("syscall(SYS_pidfd_open, INT_MAX, UINT_MAX)"));
+        assert!(fixture.contains("syscall(SYS_pidfd_open, virtual_self, 0)"));
+        assert!(fixture.contains("syscall(SYS_pidfd_open, virtual_child, 0)"));
+    }
+
+    #[test]
+    fn process_clone_result_callback_uses_native_result_before_identity_normalization() {
+        let source = include_str!("../native/client.c");
+        let invoke = source
+            .rsplit_once("static int64_t invoke_syscall(uintptr_t context")
+            .unwrap()
+            .1
+            .split_once("static int32_t read_registers")
+            .unwrap()
+            .0;
+        assert!(invoke.contains("CLONE_SYSCALL_INJECTED"));
+        assert!(!invoke.contains("CLONE_SYSCALL_ORIGINAL"));
+
+        let original = source
+            .split_once("static bool prepare_original_identity_syscall(")
+            .unwrap()
+            .1
+            .split_once("static void post_syscall")
+            .unwrap()
+            .0;
+        assert!(original.contains("CLONE_SYSCALL_ORIGINAL"));
+
+        let prepare = source
+            .split_once("static bool prepare_clone_identity(")
+            .unwrap()
+            .1
+            .split_once("static int32_t complete_clone_identity")
+            .unwrap()
+            .0;
+        let defensive_stale = prepare
+            .find("fail_if_process_clone_result_pending(counters, sysnum)")
+            .unwrap();
+        let clone3_decode = prepare.find("clone_identity_flags(sysnum, args").unwrap();
+        let original_origin = prepare.find("origin == CLONE_SYSCALL_ORIGINAL").unwrap();
+        let arm = prepare.find("PROCESS_CLONE_RESULT_AWAITING_POST").unwrap();
+        let armed_sysnum = prepare
+            .find("pending_process_clone_sysnum = sysnum")
+            .unwrap();
+        assert!(defensive_stale < clone3_decode);
+        assert!(clone3_decode < original_origin);
+        assert!(original_origin < arm);
+        assert!(arm < armed_sysnum);
+
         let post = source
             .split_once("static void post_syscall(void *drcontext, int sysnum) {")
             .unwrap()
@@ -1578,27 +1690,406 @@ mod tests {
             .split_once("static bool pre_syscall")
             .unwrap()
             .0;
-        let result = post.find("dr_syscall_get_result(drcontext)").unwrap();
-        let invariant = post
-            .find("if (!is_clone_syscall(sysnum) &&\n      counters->pending_process_clone_result != 0)")
+        let result = post
+            .find("ptr_int_t syscall_result = (ptr_int_t)dr_syscall_get_result(drcontext);")
             .unwrap();
-        let guard = post
-            .find("if (is_clone_syscall(sysnum) &&\n      counters->pending_process_clone_result != 0)")
+        let host_result = post
+            .find("ptr_int_t host_syscall_result = syscall_result;")
             .unwrap();
-        let consumed = post
-            .find("counters->pending_process_clone_result = 0;")
+        let raw_child = post
+            .find("if (host_syscall_result == 0 && is_clone_syscall(sysnum) &&")
             .unwrap();
-        let callback = post
-            .find("reverie_dbt_runtime_process_clone_result(counters, (int64_t)sysnum,")
+        let deferred = post[raw_child..]
+            .find("PROCESS_CLONE_RESULT_DEFERRED_CHILD")
+            .map(|offset| raw_child + offset)
             .unwrap();
+        let raw_return = post[deferred..]
+            .find("return;")
+            .map(|offset| deferred + offset + "return;".len())
+            .unwrap();
+        let raw_child_end = post.find("if (reject_opened_proc_mem(").unwrap();
+        let consumed = post.find("clear_process_clone_result(counters)").unwrap();
+        let callback = post.find("PROCESS_CLONE_PROBE_PARENT_POST").unwrap();
+        let invariant = post.find("if (!is_clone_syscall(sysnum) &&").unwrap();
+        let guard = post.find("if (is_clone_syscall(sysnum) &&").unwrap();
         let identity = post
             .find("complete_clone_identity(counters, syscall_result)")
             .unwrap();
-        assert!(result < invariant);
+        assert!(result < host_result);
+        assert!(host_result < raw_child);
+        assert!(raw_child < deferred);
+        assert!(deferred < raw_return);
+        assert!(raw_return < raw_child_end);
+        let raw_child_path = &post[raw_child..raw_child_end];
+        assert!(raw_child_path.contains("return;\n  }"));
+        assert!(raw_child_path.contains("atomic_store_explicit(&guest_stack_scrubbed"));
+        assert!(!raw_child_path.contains("deliver_process_clone_result"));
+        assert!(!raw_child_path.contains("complete_clone_identity"));
+        assert!(!raw_child_path.contains("reverie_dbt_runtime_"));
+        assert!(!raw_child_path.contains("dr_mutex"));
+        assert!(!raw_child_path.contains("malloc"));
+        assert!(!raw_child_path.contains("dr_fprintf"));
+        assert!(raw_return < invariant);
         assert!(invariant < guard);
         assert!(guard < consumed);
         assert!(consumed < callback);
         assert!(callback < identity);
+        assert!(post[consumed..identity].contains("host_syscall_result"));
+
+        let delivery = source
+            .split_once("static void deliver_process_clone_result(")
+            .unwrap()
+            .1
+            .split_once("// TODO-HUMAN-REVIEW(PR-66): Confirm wait-result normalization")
+            .unwrap()
+            .0;
+        assert!(
+            delivery
+                .contains("reverie_dbt_runtime_process_clone_result(counters, (int64_t)sysnum,")
+        );
+        assert!(delivery.contains("native_result);"));
+
+        let pre = source
+            .split_once("static bool pre_syscall(void *drcontext, int sysnum) {")
+            .unwrap()
+            .1
+            .split_once("static void thread_init")
+            .unwrap()
+            .0;
+        let initial_probe = pre
+            .find("emit_process_clone_result_probe(counters, sysnum)")
+            .unwrap();
+        let stale = pre
+            .find("fail_if_process_clone_result_pending(counters, sysnum)")
+            .unwrap();
+        let scrub = pre.find("scrub_guest_stack_residue(drcontext)").unwrap();
+        let deferred_state = pre
+            .find(
+                "if (counters->pending_process_clone_result ==\n      PROCESS_CLONE_RESULT_DEFERRED_CHILD)",
+            )
+            .unwrap();
+        let identity = pre.find("complete_clone_identity(counters, 0)").unwrap();
+        let runtime_init = pre.find("reverie_dbt_runtime_thread_init(").unwrap();
+        let runtime_initialized = pre
+            .find("copied_process_runtime_pid = dr_get_process_id();")
+            .unwrap();
+        let child_callback = pre.find("PROCESS_CLONE_PROBE_CHILD_PRE").unwrap();
+        let arguments = pre.find("dr_syscall_get_param(drcontext, i)").unwrap();
+        let clone_metadata = pre.find("thread_clone_metadata(drcontext").unwrap();
+        let callback = pre.find("reverie_dbt_runtime_pre_syscall(").unwrap();
+        let suppressed = pre.find("if (action == 1)").unwrap();
+        let deferred_action = pre.find("if (action == 2)").unwrap();
+        let original = pre.find("prepare_original_identity_syscall(").unwrap();
+        assert!(initial_probe < stale);
+        assert!(stale < scrub);
+        assert!(scrub < deferred_state);
+        assert!(deferred_state < identity);
+        assert!(identity < runtime_init);
+        assert!(runtime_init < runtime_initialized);
+        assert!(runtime_initialized < child_callback);
+        assert!(child_callback < arguments);
+        assert!(stale < arguments);
+        assert!(stale < clone_metadata);
+        assert!(stale < callback);
+        assert!(stale < suppressed);
+        assert!(stale < deferred_action);
+        assert!(stale < original);
+    }
+
+    #[test]
+    fn process_clone_result_callback_is_notification_only_and_precedes_child_runtime_policy() {
+        let source = include_str!("../native/client.c");
+        let delivery = source
+            .split_once("static void deliver_process_clone_result(")
+            .unwrap()
+            .1
+            .split_once("// TODO-HUMAN-REVIEW(PR-66): Confirm wait-result normalization")
+            .unwrap()
+            .0;
+        let active = delivery
+            .find("process_clone_result_callback_depth = 1;")
+            .unwrap();
+        let callback = delivery
+            .find("reverie_dbt_runtime_process_clone_result(")
+            .unwrap();
+        let inactive = delivery
+            .find("process_clone_result_callback_depth = 0;")
+            .unwrap();
+        assert!(active < callback);
+        assert!(callback < inactive);
+        assert!(!delivery.contains("evidence_callback_enter();"));
+        assert!(delivery.contains("site == PROCESS_CLONE_PROBE_CHILD_PRE"));
+        assert!(delivery.contains("native_result != 0"));
+        assert!(delivery.contains("!has_copied_runtime()"));
+        assert!(delivery.contains("copied_process_runtime_pid != process"));
+        assert!(delivery.contains("site == PROCESS_CLONE_PROBE_PARENT_POST"));
+        assert!(delivery.contains("runtime_uses_external_global()"));
+        assert!(delivery.contains("test_process_clone_result_reentrant_syscall"));
+        assert!(delivery.contains("test_process_clone_result_diagnostic"));
+        assert!(delivery.contains("test_process_clone_result_stdout"));
+        assert!(delivery.contains("test_process_clone_result_readiness"));
+        assert!(delivery.contains("test_process_clone_result_evidence"));
+
+        let record_probe = source
+            .split_once("static void record_process_clone_result_probe(")
+            .unwrap()
+            .1
+            .split_once("static bool emit_process_clone_result_probe")
+            .unwrap()
+            .0;
+        assert!(!record_probe.contains("dr_get_process_id"));
+        assert!(!record_probe.contains("dr_fprintf"));
+        assert!(!record_probe.contains("reverie_dbt_emit"));
+        assert!(!record_probe.contains("malloc"));
+
+        let injected = source
+            .rsplit_once("static int64_t invoke_syscall(uintptr_t context")
+            .unwrap()
+            .1
+            .split_once("static int32_t read_registers")
+            .unwrap()
+            .0;
+        assert!(
+            injected.contains("reject_process_clone_result_operation(\"guest syscall injection\")")
+        );
+        for operation in [
+            "guest register read",
+            "guest register write",
+            "guest memory read",
+            "guest memory write",
+        ] {
+            assert!(source.contains(&format!(
+                "reject_process_clone_result_operation(\"{operation}\")"
+            )));
+        }
+
+        let diagnostic = source
+            .split_once("static void reverie_dbt_emit(const char *buf, size_t len) {")
+            .unwrap()
+            .1
+            .split_once("static void reverie_dbt_emit_stdout")
+            .unwrap()
+            .0;
+        assert!(
+            diagnostic.contains("reject_process_clone_result_operation(\"diagnostic emission\")")
+        );
+        let stdout = source
+            .split_once("static void reverie_dbt_emit_stdout(const char *buf, size_t len) {")
+            .unwrap()
+            .1
+            .split_once("static void reverie_dbt_emit_evidence")
+            .unwrap()
+            .0;
+        assert!(stdout.contains("reject_process_clone_result_operation(\"stdout emission\")"));
+
+        let pre = source
+            .split_once("static bool pre_syscall(void *drcontext, int sysnum) {")
+            .unwrap()
+            .1
+            .split_once("static void thread_init")
+            .unwrap()
+            .0;
+        let reentry = pre
+            .find("reject_process_clone_result_operation(\"syscall re-entry\")")
+            .unwrap();
+        let child_identity = pre.find("complete_clone_identity(counters, 0)").unwrap();
+        let copied_init = pre.find("reverie_dbt_runtime_thread_init(").unwrap();
+        let initialized = pre
+            .find("copied_process_runtime_pid = dr_get_process_id();")
+            .unwrap();
+        let child_delivery = pre.find("PROCESS_CLONE_PROBE_CHILD_PRE").unwrap();
+        let child_probe = pre[child_delivery..]
+            .find("emit_process_clone_result_probe(counters, sysnum)")
+            .map(|offset| child_delivery + offset)
+            .unwrap();
+        let readiness = pre.find("while (!reverie_dbt_runtime_ready(").unwrap();
+        let tool_entry = pre
+            .find("emit_process_clone_tool_entry(counters, sysnum)")
+            .unwrap();
+        let tool_callback = pre.find("reverie_dbt_runtime_pre_syscall(").unwrap();
+        assert!(reentry < child_identity);
+        assert!(child_identity < copied_init);
+        assert!(copied_init < initialized);
+        assert!(initialized < child_delivery);
+        assert!(child_delivery < child_probe);
+        assert!(child_probe < readiness);
+        assert!(readiness < tool_entry);
+        assert!(tool_entry < tool_callback);
+
+        let evidence = source
+            .rsplit_once("static void reverie_dbt_emit_evidence(")
+            .unwrap()
+            .1
+            .split_once("static void require_evidence_child")
+            .unwrap()
+            .0;
+        let evidence_refusal = evidence
+            .find("reject_process_clone_result_operation(\"protected evidence emission\")")
+            .unwrap();
+        let evidence_fallback = evidence.find("if (!evidence_is_enabled())").unwrap();
+        assert!(evidence_refusal < evidence_fallback);
+        let main = source
+            .split_once("DR_EXPORT void dr_client_main")
+            .unwrap()
+            .1;
+        assert!(
+            main.contains(
+                "runtime_callbacks_page.value.emit_evidence = reverie_dbt_emit_evidence;"
+            )
+        );
+
+        let idle = source
+            .split_once("static void runtime_idle(void) {")
+            .unwrap()
+            .1
+            .split_once("static void runtime_background_init")
+            .unwrap()
+            .0;
+        let wait_refusal = idle
+            .find("reject_process_clone_result_operation(\"readiness wait\")")
+            .unwrap();
+        let sleep = idle.find("dr_sleep(1);").unwrap();
+        assert!(wait_refusal < sleep);
+
+        let post = source
+            .split_once("static void post_syscall(void *drcontext, int sysnum) {")
+            .unwrap()
+            .1
+            .split_once("static bool pre_syscall")
+            .unwrap()
+            .0;
+        let raw_child = post
+            .find("if (host_syscall_result == 0 && is_clone_syscall(sysnum) &&")
+            .unwrap();
+        let proc_mem_guard = post.find("if (reject_opened_proc_mem(").unwrap();
+        let raw_return = post[raw_child..]
+            .find("return;")
+            .map(|offset| raw_child + offset + "return;".len())
+            .unwrap();
+        assert!(raw_return < proc_mem_guard);
+        let raw_child_path = &post[raw_child..proc_mem_guard];
+        assert!(raw_child_path.contains("return;\n  }"));
+        assert!(raw_child_path.contains("PROCESS_CLONE_RESULT_DEFERRED_CHILD"));
+        assert!(raw_child_path.contains("PROCESS_CLONE_RESULT_INVALID"));
+        assert!(!raw_child_path.contains("deliver_process_clone_result"));
+        assert!(!raw_child_path.contains("complete_clone_identity"));
+        assert!(!raw_child_path.contains("reverie_dbt_runtime_"));
+        assert!(!raw_child_path.contains("dr_mutex"));
+        assert!(!raw_child_path.contains("malloc"));
+        assert!(!raw_child_path.contains("dr_fprintf"));
+        assert!(raw_return < proc_mem_guard);
+        let delivery_call = post.find("PROCESS_CLONE_PROBE_PARENT_POST").unwrap();
+        let normalization = post
+            .find("complete_clone_identity(counters, syscall_result)")
+            .unwrap();
+        let copied_suppression = post.find("if (has_copied_runtime()").unwrap();
+        assert!(delivery_call < normalization);
+        assert!(normalization < copied_suppression);
+
+        let public_contract = include_str!("lib.rs");
+        assert!(public_contract.contains("native client first latches the"));
+        assert!(public_contract.contains("An external-global runtime is reinitialized first"));
+        assert!(public_contract.contains("notification-only, process-local state transition"));
+        assert!(public_contract.contains("must not inject a guest syscall, re-enter Reverie"));
+        assert!(public_contract.contains("emit diagnostics or evidence"));
+        assert!(public_contract.contains("same-thread calls through the native callbacks"));
+        assert!(public_contract.contains("No current ABI mechanism can"));
+        assert!(public_contract.contains("detect work offloaded to another thread"));
+        assert!(public_contract.contains("a direct host syscall or"));
+        assert!(public_contract.contains("RPC, or arbitrary memory writes"));
+
+        let prototype_callback = public_contract
+            .split_once("pub unsafe extern \"C\" fn reverie_dbt_runtime_process_clone_result(")
+            .unwrap()
+            .1
+            .split_once("/// Applies copied-child syscall policy")
+            .unwrap()
+            .0;
+        assert!(!prototype_callback.contains("getpid"));
+        assert!(!prototype_callback.contains("format!"));
+        assert!(!prototype_callback.contains("Vec"));
+        assert!(!prototype_callback.contains("emit_line"));
+    }
+
+    #[test]
+    fn deferred_process_clone_state_is_one_shot_and_cleaned_on_failure_or_exit() {
+        let source = include_str!("../native/client.c");
+        let identity_completion = source
+            .split_once("static int32_t complete_clone_identity(")
+            .unwrap()
+            .1
+            .split_once("static bool pending_identity_is_process")
+            .unwrap()
+            .0;
+        assert!(
+            identity_completion
+                .contains("if ((flags & CLONE_VM) != 0)\n        return virtual_child;")
+        );
+
+        let pre = source
+            .split_once("static bool pre_syscall(void *drcontext, int sysnum) {")
+            .unwrap()
+            .1
+            .split_once("static void thread_init")
+            .unwrap()
+            .0;
+        let deferred = pre
+            .find(
+                "if (counters->pending_process_clone_result ==\n      PROCESS_CLONE_RESULT_DEFERRED_CHILD)",
+            )
+            .unwrap();
+        let identity = pre.find("complete_clone_identity(counters, 0)").unwrap();
+        let initialized = pre
+            .find("copied_process_runtime_pid = dr_get_process_id();")
+            .unwrap();
+        let clear = pre[initialized..]
+            .find("clear_process_clone_result(counters);")
+            .map(|offset| initialized + offset)
+            .unwrap();
+        let callback = pre.find("PROCESS_CLONE_PROBE_CHILD_PRE").unwrap();
+        assert!(deferred < identity);
+        assert!(identity < initialized);
+        assert!(initialized < clear);
+        assert!(clear < callback);
+
+        let init_failure = pre
+            .split_once("if (initialized != 0) {")
+            .unwrap()
+            .1
+            .split_once("copied_process_runtime_pid = dr_get_process_id();")
+            .unwrap()
+            .0;
+        assert!(init_failure.contains("clear_process_clone_result(counters);"));
+        assert!(init_failure.contains("pending_process_clone_tool_entry = 0;"));
+
+        let thread_exit = source
+            .split_once("static void thread_exit(void *drcontext) {")
+            .unwrap()
+            .1
+            .split_once("// Wire-v1 stats record layout")
+            .unwrap()
+            .0;
+        assert!(thread_exit.contains("release_clone_identity_handoff"));
+        assert!(thread_exit.contains("clear_process_clone_result(counters);"));
+        assert!(thread_exit.contains("pending_process_clone_probe = 0;"));
+        assert!(thread_exit.contains("pending_process_clone_tool_entry = 0;"));
+
+        let ownership = source
+            .split_once("static bool owns_initialized_runtime_state(void) {")
+            .unwrap()
+            .1
+            .split_once("static void finalize_runtime_process")
+            .unwrap()
+            .0;
+        assert!(ownership.contains("copied_process_runtime_pid == dr_get_process_id()"));
+        let finalizer = source
+            .split_once("static void finalize_runtime_process(void) {")
+            .unwrap()
+            .1
+            .split_once("static bool evidence_current_process_finalized")
+            .unwrap()
+            .0;
+        assert!(finalizer.contains("if (owns_initialized_runtime_state())"));
     }
 
     #[test]
