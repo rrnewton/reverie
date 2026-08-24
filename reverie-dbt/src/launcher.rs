@@ -688,17 +688,7 @@ impl DbtRunner {
             }
         };
         let evidence = self.finish_evidence(status.is_ok());
-        match (status, evidence) {
-            (Ok(status), Ok(())) => Ok(status),
-            (Err(error), _) => Err(error),
-            (Ok(status), Err(error)) => Err(io::Error::new(
-                error.kind(),
-                format!(
-                    "DBT guest exited with status {:?} while protected evidence failed: {error}",
-                    status.code()
-                ),
-            )),
-        }
+        combine_status_and_evidence(status, evidence)
     }
 
     fn wait_with_output(&self, mut child: Child) -> io::Result<Output> {
@@ -890,6 +880,52 @@ impl DbtRunner {
             });
         }
         command
+    }
+}
+
+/// Combine the guest's exit status with the evidence-session outcome.
+///
+/// Pulled out of `wait_for_status` as a free function ON PURPOSE: the contract
+/// below is about ERROR KINDS, and every other evidence test in this file needs a
+/// real DynamoRIO run to reach the code it checks. A contract that can only be
+/// exercised end-to-end is a contract that stops being exercised. This one is
+/// pure, so the regression test costs nothing and always runs.
+///
+/// THE CONTRACT: when the guest produced an exit status, THE GUEST RAN -- a
+/// process that never launched cannot produce one -- so the resulting error must
+/// not carry a kind a caller can read as a spawn failure.
+///
+/// This used to re-emit `error.kind()`, and the evidence layer produces
+/// spawn-shaped kinds after the guest is already running: `PermissionDenied` from
+/// its peer-credential checks (see `evidence.rs::handle_connection`, and
+/// `protected_evidence_refuses_a_valid_frame_from_outside_the_guest_tree`, which
+/// asserts exactly that kind), and `NotFound` from a bare `?` on
+/// `/proc/<pid>/stat` when the peer exits before it is read.
+///
+/// Downstream that was not cosmetic. hermit's `dbt_run_error` discriminates on
+/// `ErrorKind` to decide whether to say "failed to launch drrun", so a
+/// post-launch `NotFound` was reported as a missing binary -- a hunt for a 737 KB
+/// drrun that was correct and working, twice. The `NotFound` case is the perverse
+/// one: that pid exists ONLY because the guest launched, so the error that most
+/// conclusively proves a successful launch was the one blamed on the binary.
+///
+/// `other` is the honest kind: the failure is in evidence finalization, which is
+/// not an `io::ErrorKind` any caller should branch on. The underlying error is
+/// preserved verbatim in the message, which is where the cause has always been
+/// read.
+fn combine_status_and_evidence(
+    status: io::Result<ExitStatus>,
+    evidence: io::Result<()>,
+) -> io::Result<ExitStatus> {
+    match (status, evidence) {
+        (Ok(status), Ok(())) => Ok(status),
+        // A launch/wait failure keeps its own kind: there is no exit status, so
+        // nothing here contradicts a caller reading it as a spawn failure.
+        (Err(error), _) => Err(error),
+        (Ok(status), Err(error)) => Err(io::Error::other(format!(
+            "DBT guest exited with status {:?} while protected evidence failed: {error}",
+            status.code()
+        ))),
     }
 }
 
@@ -1859,6 +1895,79 @@ mod tests {
 
         let error = sink.drain().unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::Other);
+    }
+
+    /// A post-launch evidence failure must NOT surface a spawn-shaped kind.
+    ///
+    /// hermit's `dbt_run_error` decides whether to print "failed to launch
+    /// drrun" by matching `ErrorKind`. Before this, the evidence layer's own
+    /// `NotFound` and `PermissionDenied` reached it verbatim, so a run whose
+    /// guest had already exited was reported as a missing binary -- twice, at
+    /// the cost of a hunt for a drrun that was correct. `NotFound` is the case
+    /// that matters most: the pid it comes from exists only because the guest
+    /// launched.
+    ///
+    /// NOT `#[ignore]`, unlike every other evidence test here: those need built
+    /// DynamoRIO and so only run when someone asks for them. This contract is
+    /// about error kinds, not about DynamoRIO, and it runs on every `cargo test`.
+    #[test]
+    fn a_post_launch_evidence_failure_never_reports_a_spawn_kind() {
+        use std::os::unix::process::ExitStatusExt;
+
+        let exited = ExitStatus::from_raw(0x100); // exit code 1
+        for kind in [
+            io::ErrorKind::NotFound,
+            io::ErrorKind::PermissionDenied,
+            io::ErrorKind::ExecutableFileBusy,
+            io::ErrorKind::InvalidData,
+            io::ErrorKind::TimedOut,
+        ] {
+            let error = combine_status_and_evidence(
+                Ok(exited),
+                Err(io::Error::new(kind, "evidence collector said no")),
+            )
+            .unwrap_err();
+            assert_eq!(
+                error.kind(),
+                io::ErrorKind::Other,
+                "a post-launch failure must not surface {kind:?} to a caller that branches on the kind to blame the binary"
+            );
+            // The cause must survive verbatim; truncating it is what cost the
+            // original investigation its answer.
+            assert!(
+                error.to_string().contains("evidence collector said no"),
+                "underlying cause lost: {error}"
+            );
+            assert!(
+                error.to_string().contains("DBT guest exited with status"),
+                "the message must say the guest ran: {error}"
+            );
+        }
+    }
+
+    /// The other direction, so the fix above cannot be over-applied. A launch or
+    /// wait failure has NO exit status, so nothing contradicts a caller reading
+    /// its kind as a spawn failure -- and hermit relies on exactly that to still
+    /// say "failed to launch" when drrun really is missing.
+    #[test]
+    fn a_launch_failure_keeps_its_own_kind() {
+        for kind in [io::ErrorKind::NotFound, io::ErrorKind::PermissionDenied] {
+            let error =
+                combine_status_and_evidence(Err(io::Error::new(kind, "no such file")), Ok(()))
+                    .unwrap_err();
+            assert_eq!(
+                error.kind(),
+                kind,
+                "a spawn failure must keep its kind so the binary can still be blamed"
+            );
+        }
+        // An evidence failure alongside a launch failure must not mask it.
+        let error = combine_status_and_evidence(
+            Err(io::Error::new(io::ErrorKind::NotFound, "no such file")),
+            Err(io::Error::other("evidence also failed")),
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::NotFound);
     }
 
     #[test]
