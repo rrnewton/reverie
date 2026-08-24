@@ -46,12 +46,13 @@ Recorded here so a future searcher gets a hit instead of silence, and so nobody
 | per-process `cc1plus` peak RSS | ~522 MiB | 2026-08-04 | **UNRECOVERABLE.** Quoted in three dispatches, never written to a task or artifact. Verified 2026-08-05: no artifact under `experiments/` or `ai_docs/` contains it (all `522` hits are unrelated — dpkg file lists and regex benchmarks at 522 MB/s). **Do not cite it as measured. Re-measure and file it.** |
 
 
-## Index (374 experiment directories)
+## Index (375 experiment directories)
 
 date | slug | what | headline | how | who | artifacts
 --- | --- | --- | --- | --- | --- | ---
 2026-08-24 | skidrepro | (undocumented) | (no headline result in README) | unstated | Ryan Newton | none
-2026-08-24 | race-oracle-repeat-variance_20260824 | Does the race oracle's repeat variance survive at high N? | pooled 144/400 = 36.0% 75/400 = 18.8% | recorded,observed,sampled | unknown | README
+2026-08-24 | race-oracle-repeat-variance_20260824 | Does the race oracle's repeat variance survive at high N? | pooled 144/400 = 36.0% 75/400 = 18.8% | recorded,observed,sampled | Ryan Newton | README
+2026-08-24 | pr2384-liteinst-strict-blast-radius_20260824 | What does test.liteinststrict do under hermit2384? | tests run passed failed exit | recorded,observed | unknown | README
 2026-08-24 | nightly-rust-necessity_20260824 | Do we still need nightly Rust? — measurement, 2026-08-24 | (no headline result in README) | observed | unknown | README
 2026-08-24 | ledger-unparseable-lines_20260824 | (undocumented) | (no headline result in README) | unstated | unknown | none
 2026-08-22 | hermit-rdtsc-vs-clock-monotonic_20260822 | (undocumented) | (no headline result in README) | unstated | Ryan Newton | none

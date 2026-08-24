@@ -1,0 +1,7 @@
+base_BUILD_EXIT=0
+base_STAGE_EXIT=0
+base_TEST_EXIT=0
+head_BUILD_EXIT=0
+head_STAGE_EXIT=0
+head_TEST_EXIT=100
+DONE
