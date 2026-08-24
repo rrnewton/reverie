@@ -218,7 +218,7 @@ The land sequence itself lives here too, not only in `scratch/`:
 
 | script | role |
 | --- | --- |
-| `ci-hub/landing/land-pr.sh <PR> <BRANCH> --checkout <reviewer-hermit-slot> [--union\|--no-rebase]` | reviewer-owned, detached-by-default single-PR lander: self-wraps in `land-lock run --child-deadline`, follows skill `hermit-validation-authority`, requires either current-head review authority or an empty range-diff proving a mechanical replay of the reviewed patch series, performs a head-matched merge, and proves ancestry. |
+| `ci-hub/landing/land-pr.sh <PR> <BRANCH> [--repo rrnewton/hermit\|rrnewton/reverie] --checkout <reviewer-repo-slot> [--union\|--no-rebase]` | reviewer-owned, detached-by-default single-PR lander: validates that the checkout origin matches the selected repository, self-wraps in `land-lock run --child-deadline`, follows that repository's validation authority, requires applicable exact-review evidence, performs a head-matched merge, and proves ancestry. The repository defaults to `rrnewton/hermit`; `--union` remains Hermit-only. |
 | `ci-hub/landing/union-rebase.sh <hermit-wt> <BRANCH> [--push]` | authoritative additive union-rebase of the shared manifest registries (`*.toml` by `[[test]]` id, `test-files.json` by path, `matrix.tsv` by row); the derived `ci/expected-e2e-plan.json` is regenerated, never hand-unioned |
 
 ### Reviewer lands or bounces

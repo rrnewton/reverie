@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Owner-authorized exact-head landing authority: counted local OR versioned
 # hosted, with any genuine red blocking. The landing consumer may select one
-# authority explicitly: ordinary Hermit changes use --local-only, while a
-# scripts/validate.rs producer change uses --hosted-only because candidate code
-# cannot vouch for its own receipt. Labels and copied statuses are never inputs.
+# authority explicitly: ordinary Hermit and Reverie changes use --local-only,
+# while a Hermit scripts/validate.rs producer change uses --hosted-only because
+# candidate code cannot vouch for its own receipt. Labels and copied statuses
+# are never inputs.
 set -uo pipefail
 
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
@@ -46,8 +47,8 @@ if [[ -n $comments && ! -r $comments ]]; then
     echo "exact-head authority comments file is unreadable: $comments" >&2
     exit 2
 fi
-if [[ $local_only -eq 1 && $repo != rrnewton/hermit ]]; then
-    echo "exact-head authority --local-only is defined only for rrnewton/hermit" >&2
+if [[ $local_only -eq 1 && $repo != rrnewton/hermit && $repo != rrnewton/reverie ]]; then
+    echo "exact-head authority --local-only requires rrnewton/hermit or rrnewton/reverie" >&2
     exit 2
 fi
 if [[ $hosted_only -eq 1 && $repo != rrnewton/hermit ]]; then
@@ -215,23 +216,33 @@ if [[ $local_state == green && -n $comments ]]; then
     fi
 fi
 
-# Hermit's owner-authorized landing policy is local-ledger only. Keep this
-# mode ahead of every hosted query: hosted green must not authorize and hosted
-# red or unavailability must not veto a qualifying local receipt. The broader
-# evaluator remains available for historical/remediation consumers and
-# Reverie's separately versioned hosted authority.
+# The owner-authorized landing policy is local-ledger only for both product
+# repositories. Keep this mode ahead of every hosted query: hosted green must
+# not authorize and hosted red or unavailability must not veto a qualifying
+# local receipt. The broader evaluator remains available for historical and
+# remediation consumers.
 if [[ $local_only -eq 1 ]]; then
+    case "$repo" in
+        rrnewton/hermit)
+            local_coverage=portable+privileged
+            required_coverage=local:portable+privileged
+            ;;
+        rrnewton/reverie)
+            local_coverage=full-six-gate
+            required_coverage=local:full-six-gate
+            ;;
+    esac
     case $local_state in
         green)
-            printf 'AUTHORITY=local LOCAL=green HOSTED=not_consulted LOCAL_COVERAGE=portable+privileged HOSTED_COVERAGE=none REQUIRED_COVERAGE=local:portable+privileged SHA=%s\n' "$sha"
+            printf 'AUTHORITY=local LOCAL=green HOSTED=not_consulted LOCAL_COVERAGE=%s HOSTED_COVERAGE=none REQUIRED_COVERAGE=%s SHA=%s\n' "$local_coverage" "$required_coverage" "$sha"
             exit 0
             ;;
         red)
-            printf 'AUTHORITY=refused LOCAL=red HOSTED=not_consulted LOCAL_COVERAGE=none HOSTED_COVERAGE=none REQUIRED_COVERAGE=local:portable+privileged SHA=%s\n' "$sha"
+            printf 'AUTHORITY=refused LOCAL=red HOSTED=not_consulted LOCAL_COVERAGE=none HOSTED_COVERAGE=none REQUIRED_COVERAGE=%s SHA=%s\n' "$required_coverage" "$sha"
             exit 3
             ;;
         *)
-            printf 'AUTHORITY=no_result LOCAL=no_result HOSTED=not_consulted LOCAL_COVERAGE=none HOSTED_COVERAGE=none REQUIRED_COVERAGE=local:portable+privileged SHA=%s\n' "$sha"
+            printf 'AUTHORITY=no_result LOCAL=no_result HOSTED=not_consulted LOCAL_COVERAGE=none HOSTED_COVERAGE=none REQUIRED_COVERAGE=%s SHA=%s\n' "$required_coverage" "$sha"
             exit 4
             ;;
     esac

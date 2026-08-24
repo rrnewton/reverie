@@ -29,14 +29,18 @@ if [[ $command == validate-status ]]; then
     case ${LOCAL_STATE:-no_result} in
         green)
             qualifying_count=${LOCAL_COUNT:-1}
-            if [[ ${LOCAL_COVERAGE:-full} == partial ]]; then
-                planned=19
-                executed_nodes=18
+            if [[ $repo == rrnewton/reverie ]]; then
+                planned=2
+                executed_nodes=2
+                gates='[{"name":"Cross-client skill discovery","result":"pass"},{"name":"Build workspace","result":"pass"},{"name":"Test regular workspace cases","result":"pass"},{"name":"Documentation tests","result":"pass"},{"name":"Clippy","result":"pass"},{"name":"Rustfmt","result":"pass"}]'
             else
                 planned=19
                 executed_nodes=19
+                gates='[{"name":"test.strict_compat","result":"pass"},{"name":"e2e.metadata","result":"pass"}]'
             fi
-            gates='[{"name":"test.strict_compat","result":"pass"},{"name":"e2e.metadata","result":"pass"}]'
+            if [[ ${LOCAL_COVERAGE:-full} == partial ]]; then
+                executed_nodes=$((planned - 1))
+            fi
             printf '{"repo":"%s","sha":"%s","verdict":"VALIDATED","exit_code":0,"qualifying_count":%s,"newest_qualifying":{"sha":"%s","profile":"full","selection_mode":"full","coverage_satisfied":true,"coverage_status":"satisfied","coverage":{"planned_test_nodes":%s,"executed_test_nodes":%s,"absent_nodes":[],"zero_executed_nodes":[]},"gates":%s,"failures":0,"executed_tests":862,"filtered_tests":350}}\n' "$repo" "$observed_sha" "$qualifying_count" "$observed_sha" "$planned" "$executed_nodes" "$gates"
             exit 0 ;;
         red)
@@ -125,6 +129,21 @@ run_local_only_case() {
     output=$(env CI_HUB_BIN="$tmp/ci-hub" VERIFY_RECEIPT_BIN="$tmp/verify-receipt" \
         EXACT_HEAD_GH_BIN="$tmp/gh-api" EXPECTED_SHA="$sha" \
         "$@" "$authority" --local-only --repo rrnewton/hermit --sha "$sha") || rc=$?
+    if [[ $rc -ne $expected ]]; then
+        printf 'FAIL: %s expected rc=%s got rc=%s output=%s\n' \
+            "$label" "$expected" "$rc" "$output" >&2
+        exit 1
+    fi
+    last_output=$output
+}
+
+run_reverie_local_only_case() {
+    local expected=$1 label=$2
+    shift 2
+    local rc=0 output
+    output=$(env CI_HUB_BIN="$tmp/ci-hub" VERIFY_RECEIPT_BIN="$tmp/verify-receipt" \
+        EXACT_HEAD_GH_BIN="$tmp/gh-api" EXPECTED_SHA="$sha" \
+        "$@" "$authority" --local-only --repo rrnewton/reverie --sha "$sha") || rc=$?
     if [[ $rc -ne $expected ]]; then
         printf 'FAIL: %s expected rc=%s got rc=%s output=%s\n' \
             "$label" "$expected" "$rc" "$output" >&2
@@ -223,6 +242,20 @@ env CI_HUB_BIN="$tmp/ci-hub" VERIFY_RECEIPT_BIN="$tmp/verify-receipt" \
     >"$tmp/local-only-unbound" || rc=$?
 [[ $rc -eq 4 ]] || { echo "FAIL: local-only accepted an unbound receipt via hosted fallback" >&2; exit 1; }
 
+# Reverie's centralized full-profile row is likewise the exact-head landing
+# authority. Hosted state is diagnostic and never a fallback or veto here.
+run_reverie_local_only_case 0 "Reverie local-only admits qualifying six-gate row" \
+    env LOCAL_STATE=green HOSTED_STATE=red
+[[ $last_output == *"AUTHORITY=local "* && \
+   $last_output == *"LOCAL_COVERAGE=full-six-gate"* && \
+   $last_output == *"HOSTED=not_consulted"* ]] || {
+    echo "FAIL: Reverie local-only green did not select its six-gate authority" >&2; exit 1;
+}
+run_reverie_local_only_case 4 "Reverie local-only refuses hosted-only green" \
+    env LOCAL_STATE=no_result HOSTED_STATE=green
+run_reverie_local_only_case 3 "Reverie local-only preserves genuine ledger red" \
+    env LOCAL_STATE=red HOSTED_STATE=green
+
 # The producer exception is the inverse selector: only registered hosted
 # evidence decides, and candidate-produced local evidence is not consulted.
 run_hosted_only_case 0 "hosted-only admits registered portable green despite local red" \
@@ -244,4 +277,4 @@ env CI_HUB_BIN="$tmp/ci-hub" VERIFY_RECEIPT_BIN="$tmp/verify-receipt" \
     >/dev/null 2>&1 || rc=$?
 [[ $rc -eq 2 ]] || { echo "FAIL: mutually exclusive authority selectors were accepted" >&2; exit 1; }
 
-echo "PASS: historical local/hosted OR positives=5; local-only positive=1; local-only negatives=3; hosted-only positive=1; hosted-only negatives=4; cancellation no-results=2; red/partial/stale/unbound/count/coverage/policy negatives=14"
+echo "PASS: historical local/hosted OR positives=5; Hermit local-only positive=1 negatives=3; Reverie local-only positive=1 negatives=2; hosted-only positive=1 negatives=4; cancellation no-results=2; red/partial/stale/unbound/count/coverage/policy negatives=14"

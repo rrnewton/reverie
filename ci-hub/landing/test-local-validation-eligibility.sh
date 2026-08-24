@@ -41,9 +41,11 @@ producer_registry=$root/ci-hub/validate/producer-definition.json
 producer_repo=$root/hermit
 HEAD_SHA=$(jq -er .registered_at "$producer_registry")
 HEAD_TREE=$(git -C "$producer_repo" rev-parse "$HEAD_SHA^{tree}")
-# OTHER and THIRD stand for stale foreign receipts and remain obviously fake.
-OTHER_SHA=cccccccccccccccccccccccccccccccccccccccc
-THIRD_SHA=dddddddddddddddddddddddddddddddddddddddd
+# OTHER and THIRD stand for stale receipts. The canonical row store now proves
+# that every named commit exists in row.cwd, so use real ancestors rather than
+# syntactically valid but nonexistent fixture hashes.
+OTHER_SHA=$(git -C "$producer_repo" rev-parse "$HEAD_SHA^")
+THIRD_SHA=$(git -C "$producer_repo" rev-parse "$HEAD_SHA^^")
 
 neg_refused=0
 neg_total=0
@@ -86,8 +88,9 @@ pass_row() {
 # named red gate with bound origin, solo and non-flaky. This is the only shape
 # that reaches KNOWN_FAILED (rc 3) rather than a re-measurement request.
 fail_row() {
-  jq -cn --arg c "$1" '{
-    schema_version: 5, commit: $c, commit_anchored: true, tree_dirty: false,
+  jq -cn --arg c "$1" --arg cwd "$producer_repo" --arg tree "$HEAD_TREE" '{
+    schema_version: 5, repo: "hermit", commit: $c, tree: $tree, cwd: $cwd,
+    commit_anchored: true, tree_dirty: false,
     profile: "full", selection_mode: "full", result: "fail",
     executed_tests: 100, filtered_tests: 0, failures: 1,
     gates_run: 5, gates_expected: 5,
@@ -261,13 +264,15 @@ audit() { # audit <description> <ok|bad>
 # after JIT, after push, and immediately before merge. The consumer, not this
 # shell entrypoint, selects hard- or soft-green under hermit-validation-authority.
 mapfile -t authority_lines < <(grep -n 'validation_landability "\$' "$lander" || true)
-if [ "${#authority_lines[@]}" -eq 4 ] &&
+# Four logical boundaries produce five textual calls because the final boundary
+# has mutually exclusive Hermit receipt-comment and Reverie local-row arms.
+if [ "${#authority_lines[@]}" -eq 5 ] &&
    [ "$(grep -c 'VRC=\$?' "$lander")" -ge 2 ] &&
    grep -Fq 'receipt_rc=$?' "$lander" &&
    grep -Fq 'rebase_wrapper.py" authorize' "$lander"; then
-  audit "land-pr.sh: 4 validation-landability boundaries include the post-JIT recheck" ok
+  audit "land-pr.sh: 4 logical validation-landability boundaries include the post-JIT recheck" ok
 else
-  audit "land-pr.sh: expected 4 captured landability boundaries, found ${#authority_lines[@]}" bad
+  audit "land-pr.sh: expected 5 repository-routed call sites, found ${#authority_lines[@]}" bad
 fi
 if grep -Fq '[ "$plain_rebase" -eq 1 ] && [ "$HEAD" != "$ORIG" ]' "$lander" &&
    grep -Fq 'rebase_wrapper.py" record' "$lander"; then
@@ -288,7 +293,7 @@ fi
 
 if grep -Fq 'validation_landability "$HEAD" "$current_base"' "$lander" &&
    grep -Fq -- '--current-reverie-base "$current_reverie_base"' "$lander" &&
-   grep -Fq -- '--reverie-checkout "$ROOT/reverie"' "$lander" &&
+   grep -Fq -- '--reverie-checkout "$reverie_checkout"' "$lander" &&
    grep -Fq -- '--repo-checkout "$WT"' "$lander"; then
   audit "final authority call carries both freshly resolved bases into the shared verifier" ok
 else

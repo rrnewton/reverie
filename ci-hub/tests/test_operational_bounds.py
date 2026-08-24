@@ -739,7 +739,7 @@ class OperationalBoundsTest(unittest.TestCase):
         )
         self.assertIn('--comments "$receipt_comments"', script)
         self.assertIn('--current-reverie-base "$current_reverie_base"', script)
-        self.assertIn('--reverie-checkout "$ROOT/reverie"', script)
+        self.assertIn('--reverie-checkout "$reverie_checkout"', script)
         self.assertIn('rm -f -- "$receipt_comments"', script)
         self.assertIn('--match-head-commit "$HEAD"', script)
         self.assertNotIn(
@@ -847,13 +847,12 @@ class OperationalBoundsTest(unittest.TestCase):
             text=True,
             timeout=WALL_SECONDS,
         )
-        self.assertIn("local-only positive=1", result.stdout)
+        self.assertIn("Hermit local-only positive=1 negatives=3", result.stdout)
         self.assertIn(
-            "local-only negatives=3",
+            "Reverie local-only positive=1 negatives=2",
             result.stdout,
         )
-        self.assertIn("hosted-only positive=1", result.stdout)
-        self.assertIn("hosted-only negatives=4", result.stdout)
+        self.assertIn("hosted-only positive=1 negatives=4", result.stdout)
 
     def test_gate_rotation_is_absent_from_reviewer_landing(self) -> None:
         script = (ROOT / "ci-hub/landing/land-pr.sh").read_text()

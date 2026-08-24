@@ -28,9 +28,12 @@
 # `land-lock run` wrapper releases the lock so the next FIFO waiter proceeds.
 #
 # Usage:
-#   ci-hub/landing/land-pr.sh <PR> <BRANCH> [--union|--no-rebase] [--agent NAME]
+#   ci-hub/landing/land-pr.sh <PR> <BRANCH> [--repo OWNER/REPO]
+#                             [--union|--no-rebase] [--agent NAME]
 #                             [--gate-deadline SECS] [--child-deadline SECS]
-#                             [--checkout HERMIT_SLOT] [--team TEAM] [--foreground]
+#                             [--checkout REPO_SLOT] [--team TEAM] [--foreground]
+#   --repo OWNER/REPO supported repository (rrnewton/hermit by default, or
+#                    rrnewton/reverie). The checkout origin must match it.
 #   --union          use the additive manifest union-rebase (union-rebase.sh);
 #                    default is a plain `git rebase origin/main`.
 #   --no-rebase      OPT-IN. Skip step 2 (the local rebase + force-push) and
@@ -39,8 +42,8 @@
 #                    see the step-2 comment. Default behaviour is UNCHANGED.
 #   --agent NAME     reviewer + lock-holder identity (default: DG_AGENT_NAME).
 #   --team TEAM      reviewer disclosure team (default: hermit2).
-#   --checkout PATH  reviewer's Hermit slot. When omitted, use the current
-#                    directory only if it is an rrnewton/hermit checkout.
+#   --checkout PATH  reviewer's slot for --repo. When omitted, use the current
+#                    directory only if its origin matches --repo.
 #   --gate-deadline  compatibility bound retained for callers and for sizing the
 #                    default whole-child deadline; no GH Actions poll waits on it.
 #   --child-deadline hard ceiling for the whole land subtree (default: twice the
@@ -61,7 +64,7 @@ set -uo pipefail
 # this repo legitimately sets either for the lander.
 unset CI_HUB_VALIDATE_STATUS_BIN
 
-PR=""; BR=""; UNION=0; NO_REBASE=0; INNER=0; DETACHED_CHILD=0; FOREGROUND=0
+PR=""; BR=""; R=rrnewton/hermit; UNION=0; NO_REBASE=0; INNER=0; DETACHED_CHILD=0; FOREGROUND=0
 AGENT="${DG_AGENT_NAME:-hermit-lander}"
 TEAM="hermit2"
 CHECKOUT=""
@@ -72,6 +75,9 @@ GATE_DEADLINE=1080
 CHILD_DEADLINE=""
 while [ $# -gt 0 ]; do
   case "$1" in
+    --repo)
+      [ "$#" -ge 2 ] || { echo "land-pr: --repo requires OWNER/REPO" >&2; exit 2; }
+      R=$2; shift ;;
     --union) UNION=1 ;;
     --no-rebase) NO_REBASE=1 ;;
     --agent) AGENT="$2"; shift ;;
@@ -89,15 +95,26 @@ while [ $# -gt 0 ]; do
   shift
 done
 if [ -z "$PR" ] || [ -z "$BR" ]; then
-  echo "usage: land-pr.sh <PR> <BRANCH> [--union|--no-rebase] [--agent NAME] [--gate-deadline S] [--child-deadline S]" >&2
+  echo "usage: land-pr.sh <PR> <BRANCH> [--repo OWNER/REPO] [--union|--no-rebase] [--agent NAME] [--gate-deadline S] [--child-deadline S]" >&2
   exit 2
 fi
+case "$R" in
+  rrnewton/hermit|rrnewton/reverie) ;;
+  *)
+    echo "land-pr: unsupported --repo '$R' (expected rrnewton/hermit or rrnewton/reverie)" >&2
+    exit 2
+    ;;
+esac
 # --union IS a rebase driver (union-rebase.sh rewrites and pushes the branch), so
 # asking for both is incoherent rather than merely redundant. Refuse instead of
 # silently picking one: a lander that thinks it skipped the rewrite while the
 # union driver performed it is exactly the failure this flag exists to prevent.
 if [ "$UNION" -eq 1 ] && [ "$NO_REBASE" -eq 1 ]; then
   echo "land-pr: --union and --no-rebase are mutually exclusive (--union rebases by definition)" >&2
+  exit 2
+fi
+if [ "$UNION" -eq 1 ] && [ "$R" != rrnewton/hermit ]; then
+  echo "land-pr: --union is defined only for rrnewton/hermit" >&2
   exit 2
 fi
 case "$GATE_DEADLINE" in ''|*[!0-9]*|0) echo "land-pr: gate deadline must be positive seconds" >&2; exit 2 ;; esac
@@ -110,8 +127,8 @@ if [ "$CHILD_DEADLINE" -le "$GATE_DEADLINE" ]; then
   exit 2
 fi
 if [ -n "${CI_HUB_DOCS_PARSE_ONLY:-}" ]; then
-  printf 'DOCS PARSE OK: land-pr.sh pr=%s branch=%s union=%s no_rebase=%s agent=%s team=%s checkout=%s\n' \
-    "$PR" "$BR" "$UNION" "$NO_REBASE" "$AGENT" "$TEAM" "${CHECKOUT:-current-directory}"
+  printf 'DOCS PARSE OK: land-pr.sh repo=%s pr=%s branch=%s union=%s no_rebase=%s agent=%s team=%s checkout=%s\n' \
+    "$R" "$PR" "$BR" "$UNION" "$NO_REBASE" "$AGENT" "$TEAM" "${CHECKOUT:-current-directory}"
   exit 0
 fi
 
@@ -125,30 +142,30 @@ if [ -n "$CHECKOUT" ]; then
 else
   WT=$PWD
 fi
+normalize_github_remote(){
+  local url=$1 path
+  case "$url" in
+    https://github.com/*) path=${url#https://github.com/} ;;
+    git@github.com:*) path=${url#git@github.com:} ;;
+    ssh://git@github.com/*) path=${url#ssh://git@github.com/} ;;
+    *) return 1 ;;
+  esac
+  path=${path%.git}
+  [[ $path =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || return 1
+  printf '%s\n' "$path"
+}
 remote_url=$(git -C "$WT" remote get-url origin 2>/dev/null || true)
-case "$remote_url" in
-  *github.com/rrnewton/hermit.git|*github.com/rrnewton/hermit|\
-  *github.com:rrnewton/hermit.git|*github.com:rrnewton/hermit) ;;
-  *)
-    echo "land-pr: reviewer must run from an rrnewton/hermit slot or pass --checkout" >&2
-    exit 2
-    ;;
-esac
-R=rrnewton/hermit
-say(){ echo "[land#$PR] $*"; }
+checkout_repo=$(normalize_github_remote "$remote_url") || checkout_repo=
+if [ "$checkout_repo" != "$R" ]; then
+  echo "land-pr: checkout origin '$remote_url' does not match --repo $R" >&2
+  exit 2
+fi
+say(){ echo "[land $R#$PR] $*"; }
 
 # BIND THE PR TO ITS REPOSITORY BEFORE DEREFERENCING ANY AUTHORITY.
-# `R` is hard-coded to rrnewton/hermit and there is no --repo option, so invoking
-# this with a PR number from another repository silently resolves the SAME NUMBER
-# in hermit and validates against a completely unrelated commit. Observed
-# 2026-08-08: `land-pr.sh 409 policy/commit-message-role-team-tag` for
-# rrnewton/reverie#409 reported "exact-head authority green for 18758e9a" -- the
-# head of hermit#1911 -- and dereferenced a hermit merge-gate run for it. It
-# abandoned only because head resolution happened to fail further down; nothing
-# had checked that PR 409 was a hermit PR at all.
-#
-# A PR number is not an identity. Refuse unless the number resolves in THIS
-# repository to a PR whose head branch is the branch the caller named.
+# A PR number is not an identity. The validated --repo, matching checkout
+# origin, and named head branch are one tuple; refuse before reading authority
+# unless the live PR resolves to that exact repository/branch pair.
 verify_pr_belongs_to_repo(){
   local actual
   actual=$(with-proxy gh pr view "$PR" -R "$R" --json headRefName -q .headRefName 2>/dev/null) || {
@@ -161,9 +178,8 @@ verify_pr_belongs_to_repo(){
   fi
   if [ "$actual" != "$BR" ]; then
     echo "land-pr: REFUSE: $R#$PR has head branch '$actual', but '$BR' was named." >&2
-    echo "land-pr:   This lander only lands $R. If #$PR belongs to another" >&2
-    echo "land-pr:   repository, it CANNOT be landed here -- the same number in $R" >&2
-    echo "land-pr:   is a different pull request and its green is not your evidence." >&2
+    echo "land-pr:   A same-number PR or same-name branch in another repository" >&2
+    echo "land-pr:   is a different object and cannot supply this landing's evidence." >&2
     exit 2
   fi
 }
@@ -190,12 +206,12 @@ if [ "$INNER" -eq 0 ] && [ "$DETACHED_CHILD" -eq 0 ] && [ "$FOREGROUND" -eq 0 ];
   log_dir="${CI_HUB_LANDING_LOG_DIR:-$ROOT/ignored/ci-hub/landing}"
   log="$log_dir/land-pr${safe_pr}-${stamp}-$$.log"
   mkdir -p "$log_dir"
-  detached_args=(--_detached "$PR" "$BR" --agent "$AGENT" --team "$TEAM" --checkout "$WT" \
+  detached_args=(--_detached "$PR" "$BR" --repo "$R" --agent "$AGENT" --team "$TEAM" --checkout "$WT" \
     --gate-deadline "$GATE_DEADLINE" --child-deadline "$CHILD_DEADLINE")
   [ "$UNION" -eq 1 ] && detached_args+=(--union)
   [ "$NO_REBASE" -eq 1 ] && detached_args+=(--no-rebase)
-  printf 'DETACHED LAND START pr=%s branch=%s agent=%s started_at=%s\n' \
-    "$PR" "$BR" "$AGENT" "$stamp" >"$log"
+  printf 'DETACHED LAND START repo=%s pr=%s branch=%s agent=%s started_at=%s\n' \
+    "$R" "$PR" "$BR" "$AGENT" "$stamp" >"$log"
   nohup setsid "$0" "${detached_args[@]}" </dev/null >>"$log" 2>&1 &
   detached_pid=$!
   printf 'DETACHED LAND PID pid=%s\n' "$detached_pid" >>"$log"
@@ -212,7 +228,7 @@ if [ "$INNER" -eq 0 ]; then
   # the obligation remains open until the repair SHA is explicitly resolved.
   "$ROOT/ci-hub/ci-hub" inherit-obligations --agent "$AGENT" \
     --session "${ORC_AGENT_SESSION_ID:-${HOSTNAME:-unknown}:$$}"
-  args=(--_inner "$PR" "$BR" --agent "$AGENT" --team "$TEAM" --checkout "$WT" --gate-deadline "$GATE_DEADLINE")
+  args=(--_inner "$PR" "$BR" --repo "$R" --agent "$AGENT" --team "$TEAM" --checkout "$WT" --gate-deadline "$GATE_DEADLINE")
   [ "$UNION" -eq 1 ] && args+=(--union)
   [ "$NO_REBASE" -eq 1 ] && args+=(--no-rebase)
   "$ROOT/ci-hub/ci-hub" land-lock run --agent "$AGENT" --pr "$PR" \
@@ -271,8 +287,9 @@ with-proxy git -C "$WT" fetch -q origin main || abandon "fetch origin/main faile
 with-proxy git -C "$WT" fetch -q origin "$BR" 2>/dev/null || true
 
 # 1b. Validation landability is defined only by the tracked
-# hermit-validation-authority skill. This entrypoint calls its consumer; it does
-# not restate hard/soft-green policy. Re-check after every SHA-changing rebase.
+# repository-specific validation-authority skill. This entrypoint calls its
+# consumer; it does not restate hard/soft-green policy. Re-check after every
+# SHA-changing rebase.
 verify_pr_belongs_to_repo
 ORIG=$(git -C "$WT" rev-parse "origin/$BR" 2>/dev/null) || abandon "cannot resolve origin/$BR head for eligibility gate" 4
 authority_mode=local-only
@@ -293,7 +310,7 @@ say "validation landability(head=$ORIG) rc=$VRC: $VS"
 # correctly refuse it. The helper re-reads the live PR head after VALIDATE, so a
 # concurrent push expires this result instead of inheriting it.
 if [ "$VRC" -ne 0 ]; then
-  existing_status=$("$ROOT/ci-hub/ci-hub" validate-status --sha "$ORIG" --json 2>&1)
+  existing_status=$("$ROOT/ci-hub/ci-hub" validate-status --repo "$R" --sha "$ORIG" --json 2>&1)
   existing_rc=$?
   if [ "$existing_rc" -eq 4 ] && \
      git -C "$WT" merge-base --is-ancestor "$eligibility_base" "$ORIG"; then
@@ -391,7 +408,7 @@ if [ "$NO_REBASE" -eq 1 ]; then
 else
   say "pushed head=$HEAD"
 fi
-if [ "$plain_rebase" -eq 1 ] && [ "$HEAD" != "$ORIG" ]; then
+if [ "$plain_rebase" -eq 1 ] && [ "$HEAD" != "$ORIG" ] && [ "$R" = rrnewton/hermit ]; then
   record_rc=0
   record_detail=$(python3 "$SCRIPT_DIR/rebase_wrapper.py" record \
     --source "$ORIG" --base "$rebase_base" --result "$HEAD" \
@@ -402,7 +419,11 @@ if [ "$plain_rebase" -eq 1 ] && [ "$HEAD" != "$ORIG" ]; then
   # A hard-green result does not need this cache.  A soft-green result will
   # fail closed in the authority consumer if recording did not succeed.
 elif [ "$plain_rebase" -eq 1 ]; then
-  say "rebase provenance unchanged: rebase did not rewrite $ORIG"
+  if [ "$HEAD" = "$ORIG" ]; then
+    say "rebase provenance unchanged: rebase did not rewrite $ORIG"
+  else
+    say "rebase rewrote $ORIG to $HEAD; $R requires fresh exact-head validation"
+  fi
 fi
 
 # 4. Re-evaluate validation landability at the pushed head through the same
@@ -417,14 +438,16 @@ fi
 # append-safe finalizer so a real green is not stranded by a producer that
 # failed to inline its counts. Best-effort: never aborts landing — eligibility
 # below remains the authoritative fail-closed gate.
-selected_row_sha256=$("$ROOT/ci-hub/validate/scan-finalize.sh" \
-  --select-candidate-sha256 --sha "$HEAD" --hermit-checkout "$WT" \
-  2>/dev/null) || selected_row_sha256=
-if [[ $selected_row_sha256 =~ ^[0-9a-f]{64}$ ]]; then
-  "$ROOT/ci-hub/validate/scan-finalize.sh" --hermit-checkout "$WT" \
-    --sha "$HEAD" --selected-row-sha256 "$selected_row_sha256" || true
-else
-  say "scan-finalize: no unique exact source row selected for $HEAD (best-effort)"
+if [ "$R" = rrnewton/hermit ]; then
+  selected_row_sha256=$("$ROOT/ci-hub/validate/scan-finalize.sh" \
+    --select-candidate-sha256 --sha "$HEAD" --hermit-checkout "$WT" \
+    2>/dev/null) || selected_row_sha256=
+  if [[ $selected_row_sha256 =~ ^[0-9a-f]{64}$ ]]; then
+    "$ROOT/ci-hub/validate/scan-finalize.sh" --hermit-checkout "$WT" \
+      --sha "$HEAD" --selected-row-sha256 "$selected_row_sha256" || true
+  else
+    say "scan-finalize: no unique exact source row selected for $HEAD (best-effort)"
+  fi
 fi
 python3 "$ROOT/ci-hub/validate/attribute_reds.py" --last 0 --persist >/dev/null 2>&1 || true
 with-proxy git -C "$WT" fetch -q origin main \
@@ -480,13 +503,18 @@ fi
 # immediately before dereferencing the receipt. A stale receipt costs this gate
 # rerun, never another full validation. No ancestry-distance budget exists.
 with-proxy git -C "$WT" fetch -q origin main \
-  || abandon "could not refresh Hermit main at the final receipt boundary" 5
+  || abandon "could not refresh $R main at the final receipt boundary" 5
 current_base=$(git -C "$WT" rev-parse --verify origin/main) \
-  || abandon "could not resolve Hermit main at the final receipt boundary" 5
-with-proxy git -C "$ROOT/reverie" fetch -q origin main \
-  || abandon "could not refresh Reverie main at the final receipt boundary" 5
-current_reverie_base=$(git -C "$ROOT/reverie" rev-parse --verify origin/main) \
-  || abandon "could not resolve Reverie main at the final receipt boundary" 5
+  || abandon "could not resolve $R main at the final receipt boundary" 5
+current_reverie_base=
+reverie_checkout=
+if [ "$R" = rrnewton/hermit ]; then
+  reverie_checkout="$ROOT/reverie"
+  with-proxy git -C "$reverie_checkout" fetch -q origin main \
+    || abandon "could not refresh Reverie main at the final receipt boundary" 5
+  current_reverie_base=$(git -C "$reverie_checkout" rev-parse --verify origin/main) \
+    || abandon "could not resolve Reverie main at the final receipt boundary" 5
+fi
 live_head=$(with-proxy gh pr view "$PR" -R "$R" --json headRefOid -q .headRefOid 2>/dev/null) \
   || abandon "could not resolve the live PR head before receipt authorization" 5
 [ "$live_head" = "$HEAD" ] \
@@ -514,18 +542,25 @@ say "review applicability(head=$HEAD) rc=$review_rc: $review_detail"
 [ "$review_rc" -eq 0 ] \
   || abandon "review applicability REFUSED for $HEAD: ${review_detail:-no result}" 5
 
-receipt_comments=$(mktemp) \
-  || abandon "could not allocate the receipt-comment observation file" 5
-if ! with-proxy gh api --paginate --slurp \
-    "repos/$R/issues/$PR/comments?per_page=100" >"$receipt_comments"; then
-  printf '[]\n' >"$receipt_comments"
+if [ "$R" = rrnewton/hermit ]; then
+  receipt_comments=$(mktemp) \
+    || abandon "could not allocate the receipt-comment observation file" 5
+  if ! with-proxy gh api --paginate --slurp \
+      "repos/$R/issues/$PR/comments?per_page=100" >"$receipt_comments"; then
+    printf '[]\n' >"$receipt_comments"
+  fi
+  receipt_detail=$(validation_landability "$HEAD" "$current_base" \
+    --comments "$receipt_comments" \
+    --current-reverie-base "$current_reverie_base" \
+    --reverie-checkout "$reverie_checkout" 2>&1)
+  receipt_rc=$?
+  rm -f -- "$receipt_comments"
+else
+  # Reverie's canonical exact-head local row is the receipt authority. Its
+  # centralized producer has no Hermit-style published receipt-comment layer.
+  receipt_detail=$(validation_landability "$HEAD" "$current_base" 2>&1)
+  receipt_rc=$?
 fi
-receipt_detail=$(validation_landability "$HEAD" "$current_base" \
-  --comments "$receipt_comments" \
-  --current-reverie-base "$current_reverie_base" \
-  --reverie-checkout "$ROOT/reverie" 2>&1)
-receipt_rc=$?
-rm -f -- "$receipt_comments"
 if [ "$receipt_rc" -ne 0 ]; then
   abandon "validation landability REFUSED for $HEAD: ${receipt_detail:-no result}" 5
 fi
@@ -545,11 +580,10 @@ fi
 
 # 7. ancestry-verify: a PR-head hash is NOT a landing. Confirm the merge commit is
 # reachable from origin/main before declaring success.
-with-proxy git -C "$ROOT/hermit" fetch -q origin main 2>/dev/null \
-  || with-proxy git -C "$WT" fetch -q origin main
+with-proxy git -C "$WT" fetch -q origin main \
+  || abandon "could not refresh $R main for the ancestry proof" 7
 MC=$(with-proxy gh pr view "$PR" -R "$R" --json mergeCommit -q .mergeCommit.oid)
-GITDIR="$ROOT/hermit"; git -C "$GITDIR" cat-file -e "$MC" 2>/dev/null || GITDIR="$WT"
-if git -C "$GITDIR" merge-base --is-ancestor "$MC" origin/main 2>/dev/null; then
+if git -C "$WT" merge-base --is-ancestor "$MC" origin/main 2>/dev/null; then
   # Return to the outer process. `land-lock run` must finish its descendant
   # census and release before any durable post-land verifier is launched.
   say "MERGED UNDER LOCK:$MC; post-land obligation arming deferred until release"

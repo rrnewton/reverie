@@ -303,7 +303,9 @@ wake.
 
 ## Speculative-land obligation contract
 
-The canonical `landing/land-pr.sh` entrypoint prepares the speculative-land
+The canonical `landing/land-pr.sh` entrypoint supports `rrnewton/hermit` by
+default and explicit `--repo rrnewton/reverie`; it refuses a checkout whose
+origin does not match the selected repository. It prepares the speculative-land
 obligation before its bounded child can merge; raw `gh pr merge` is not the
 protocol. It also dereferences the final pushed head through the repository-selected
 authority immediately before a
