@@ -395,6 +395,10 @@ where
             args.arg4 as u64,
             args.arg5 as u64,
         ];
+        // The native bridge classifies this as an injected syscall: clone
+        // identity bookkeeping still completes synchronously, while the
+        // original-syscall post-event latch remains disarmed because the raw
+        // result is returned directly to this Tool call.
         let result =
             unsafe { (self.invoke_syscall)(self.context, number.id() as i64, args.as_ptr()) };
         Errno::from_ret(result as usize).map(|value| value as i64)
@@ -1613,15 +1617,27 @@ pub unsafe extern "C" fn reverie_dbt_runtime_exec_failed(
 ) {
 }
 
-/// Reports a delivered native result of a process-creating clone-family syscall.
+/// Reports a delivered native result of an application-originated,
+/// process-creating clone-family syscall.
 ///
 /// DynamoRIO delivers the post-syscall event in both parent and child for `fork`
 /// and separate-VM `clone` and `clone3`. A `clone(CLONE_VM)` process and `vfork`
 /// deliver only the parent result; no runtime callback runs in the vfork child
-/// before it execs or exits. External runtimes use this
-/// result callback for state that must change after a successful delivered process
-/// clone result but remain untouched when the syscall fails. A runtime that cannot
-/// allow unmediated vfork-child behavior must reject that vfork before execution.
+/// before it execs or exits. Parent and child callbacks run in different processes,
+/// and their relative arrival order is unspecified. ABI v3 passes `result` as the
+/// signed native/DynamoRIO syscall result before virtual identity normalization: a
+/// successful parent sees the raw positive host child ID, a delivered child branch
+/// sees zero, and a failure sees the raw negative Linux error value (for example,
+/// `-EINVAL`), not libc's `-1` with `errno` stored separately. The callback executes
+/// in the process reporting that result, so a runtime can correlate the child's host
+/// process ID with the parent's positive result without assuming either callback
+/// arrives first. External runtimes use this result callback for state that must
+/// change after a successful delivered process clone result but remain untouched
+/// when the syscall fails. A runtime that cannot allow unmediated vfork-child
+/// behavior must reject that vfork before execution.
+/// A clone issued synchronously through [`Guest::inject`] returns its backend/API
+/// result, including existing virtual-child identity normalization, directly to
+/// the Tool and does not also enter this post-event callback.
 ///
 /// # Safety
 ///
@@ -1635,8 +1651,9 @@ pub unsafe extern "C" fn reverie_dbt_runtime_process_clone_result(
     result: i64,
 ) {
     if PROCESS_CLONE_RESULT_PROBE.load(Ordering::Acquire) {
+        let pid = unsafe { libc::getpid() };
         tools::emit_line(&format!(
-            "reverie-dbt-test: process-clone-result sysnum={sysnum} result={result}"
+            "reverie-dbt-test: process-clone-result pid={pid} sysnum={sysnum} result={result}"
         ));
     }
 }

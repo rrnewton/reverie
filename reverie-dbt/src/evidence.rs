@@ -1569,8 +1569,31 @@ mod tests {
     }
 
     #[test]
-    fn process_clone_result_callback_runs_after_the_kernel_result() {
+    fn process_clone_result_callback_uses_native_result_before_identity_normalization() {
         let source = include_str!("../native/client.c");
+        let invoke = source
+            .rsplit_once("static int64_t invoke_syscall(uintptr_t context")
+            .unwrap()
+            .1
+            .split_once("static int32_t read_registers")
+            .unwrap()
+            .0;
+        assert!(invoke.contains("CLONE_SYSCALL_INJECTED"));
+        assert!(!invoke.contains("CLONE_SYSCALL_ORIGINAL"));
+        assert_eq!(
+            source.matches("pending_process_clone_result = 1;").count(),
+            1
+        );
+
+        let original = source
+            .split_once("static bool prepare_original_identity_syscall(")
+            .unwrap()
+            .1
+            .split_once("static void post_syscall")
+            .unwrap()
+            .0;
+        assert!(original.contains("CLONE_SYSCALL_ORIGINAL"));
+
         let post = source
             .split_once("static void post_syscall(void *drcontext, int sysnum) {")
             .unwrap()
@@ -1578,7 +1601,12 @@ mod tests {
             .split_once("static bool pre_syscall")
             .unwrap()
             .0;
-        let result = post.find("dr_syscall_get_result(drcontext)").unwrap();
+        let result = post
+            .find("ptr_int_t syscall_result = (ptr_int_t)dr_syscall_get_result(drcontext);")
+            .unwrap();
+        let host_result = post
+            .find("ptr_int_t host_syscall_result = syscall_result;")
+            .unwrap();
         let invariant = post
             .find("if (!is_clone_syscall(sysnum) &&\n      counters->pending_process_clone_result != 0)")
             .unwrap();
@@ -1589,16 +1617,61 @@ mod tests {
             .find("counters->pending_process_clone_result = 0;")
             .unwrap();
         let callback = post
-            .find("reverie_dbt_runtime_process_clone_result(counters, (int64_t)sysnum,")
+            .find(
+                "reverie_dbt_runtime_process_clone_result(counters, (int64_t)sysnum,\n                                             host_syscall_result);",
+            )
             .unwrap();
         let identity = post
             .find("complete_clone_identity(counters, syscall_result)")
             .unwrap();
-        assert!(result < invariant);
+        assert!(result < host_result);
+        assert!(host_result < invariant);
         assert!(invariant < guard);
         assert!(guard < consumed);
         assert!(consumed < callback);
         assert!(callback < identity);
+
+        let pre = source
+            .split_once("static bool pre_syscall(void *drcontext, int sysnum) {")
+            .unwrap()
+            .1
+            .split_once("static void thread_init")
+            .unwrap()
+            .0;
+        let stale = pre
+            .find("fail_if_process_clone_result_pending(counters, sysnum)")
+            .unwrap();
+        let scrub = pre.find("scrub_guest_stack_residue(drcontext)").unwrap();
+        let arguments = pre.find("dr_syscall_get_param(drcontext, i)").unwrap();
+        let clone_metadata = pre.find("thread_clone_metadata(drcontext").unwrap();
+        let callback = pre.find("reverie_dbt_runtime_pre_syscall(").unwrap();
+        let suppressed = pre.find("if (action == 1)").unwrap();
+        let deferred = pre.find("if (action == 2)").unwrap();
+        let original = pre.find("prepare_original_identity_syscall(").unwrap();
+        assert!(stale < scrub);
+        assert!(stale < arguments);
+        assert!(stale < clone_metadata);
+        assert!(stale < callback);
+        assert!(stale < suppressed);
+        assert!(stale < deferred);
+        assert!(stale < original);
+
+        let prepare = source
+            .split_once("static bool prepare_clone_identity(")
+            .unwrap()
+            .1
+            .split_once("static int32_t complete_clone_identity")
+            .unwrap()
+            .0;
+        let defensive_stale = prepare
+            .find("fail_if_process_clone_result_pending(counters, sysnum)")
+            .unwrap();
+        let clone3_decode = prepare.find("clone_identity_flags(sysnum, args").unwrap();
+        let original_origin = prepare.find("origin == CLONE_SYSCALL_ORIGINAL").unwrap();
+        let arm = prepare.find("pending_process_clone_result = 1;").unwrap();
+        assert!(defensive_stale < clone3_decode);
+        assert!(clone3_decode < original_origin);
+        assert!(original_origin < arm);
     }
 
     #[test]
