@@ -3,14 +3,18 @@ import hashlib
 import shutil
 import subprocess
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
+from unittest import mock
 
 import pytest
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))
+sys.path.insert(0, str(HERE.parent.parent / "validate"))
 
 import validate_rows  # noqa: E402
+import reverie_node  # noqa: E402
 
 
 def git(repo: Path, *args: str) -> subprocess.CompletedProcess[str]:
@@ -472,6 +476,63 @@ def test_ignored_ephemeral_checkout_is_redacted_without_weakening_guard(
         "{{HOME}}/.cargo/git/checkouts/reverie/file.rs:7"
     )
     assert "/home/" not in json.dumps(event)
+
+
+def test_linked_worktree_record_rows_round_trip_exact_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    primary = tmp_path / "dev-hermit"
+    repository(primary)
+    (primary / ".gitignore").write_text("/worktrees/\n")
+    ledger_tool = primary / "ci-hub/ledger/validate_rows.py"
+    ledger_tool.parent.mkdir(parents=True)
+    ledger_tool.write_text("# fixture\n")
+    git(primary, "add", ".gitignore", "ci-hub/ledger/validate_rows.py")
+    git(primary, "commit", "-qm", "add ledger fixture")
+
+    linked = primary / "worktrees/slot/dev-hermit"
+    git(primary, "worktree", "add", "--detach", str(linked), "HEAD")
+    monkeypatch.setattr(
+        validate_rows, "__file__", str(linked / "ci-hub/ledger/validate_rows.py")
+    )
+
+    log = primary / "ignored/validate/reverie.log"
+    source = {
+        "schema_version": 5,
+        "record_id": "linked-worktree-row",
+        "repo": "reverie",
+        "producer": "reverie-validate-sh",
+        "host": "hosta",
+        "started_at": "2026-08-24T14:41:55Z",
+        "finished_at": "2026-08-24T14:45:47Z",
+        "result": "pass",
+        "commit": git(linked, "rev-parse", "HEAD").stdout.strip(),
+        "cwd": str(linked),
+        "log_file": str(log),
+    }
+
+    assert validate_rows.repository_root() == primary.resolve()
+    report = validate_rows.record(source)
+
+    assert (primary / report["spool"]).is_file()
+    assert not (linked / validate_rows.LIVE_SPOOL_RELATIVE).exists()
+    round_tripped = validate_rows.rows()
+    assert round_tripped == [source]
+
+    output = "\n".join(json.dumps(item) for item in round_tripped) + "\n"
+    with mock.patch.object(
+        reverie_node,
+        "run",
+        return_value=subprocess.CompletedProcess([], 0, stdout=output, stderr=""),
+    ):
+        selected = reverie_node.load_source_row(
+            primary,
+            source["commit"],
+            linked,
+            log,
+            datetime(2026, 8, 24, 14, 41, 55, tzinfo=timezone.utc),
+        )
+    assert selected == source
 
 
 @pytest.mark.parametrize("field", ["finished_at"])

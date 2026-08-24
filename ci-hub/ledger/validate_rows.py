@@ -67,7 +67,41 @@ def repository_root() -> Path:
         test_root = os.environ.get("CI_HUB_VALIDATE_LEDGER_TEST_ROOT")
         if test_root:
             return Path(test_root)
-    return Path(__file__).resolve().parents[2]
+    checkout_root = Path(__file__).resolve().parents[2]
+    git_env = {
+        name: value for name, value in os.environ.items() if not name.startswith("GIT_")
+    }
+    git_env["GIT_CONFIG_NOSYSTEM"] = "1"
+    git_env["GIT_CONFIG_GLOBAL"] = os.devnull
+    try:
+        result = subprocess.run(
+            [
+                "git",
+                "--no-replace-objects",
+                "-C",
+                str(checkout_root),
+                "rev-parse",
+                "--path-format=absolute",
+                "--git-common-dir",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            env=git_env,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return checkout_root
+    if result.returncode != 0 or not result.stdout.strip():
+        return checkout_root
+
+    common_dir = Path(result.stdout.strip()).resolve()
+    if common_dir.name != ".git":
+        return checkout_root
+    shared_root = common_dir.parent
+    if not (shared_root / "ci-hub/ledger/validate_rows.py").is_file():
+        return checkout_root
+    return shared_root
 
 
 def short_hostname() -> str:
