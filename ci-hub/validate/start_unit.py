@@ -220,12 +220,30 @@ def prepare_fresh_checkout(
     )
     # PROVE usable, do not assume. Each of these is a thing whose absence has
     # produced a misleading fast exit rather than an honest failure.
-    required = (
-        ("scripts/validate.rs", "agent-utils/rs/safe-ci-dag-runner/Cargo.toml")
+    #
+    # The DAG-runner crate that scripts/validate.rs takes as a path dependency
+    # was renamed in agent-utils: rs/safe-ci-dag-runner became rs/dagrun. A
+    # target is validatable if it carries EITHER, because both spellings are
+    # still reachable -- current main pins the new name, while an older commit
+    # or an unrebased PR head pins the old one, and a bisect walks across the
+    # rename. Requiring one exact path made every target on the other side of
+    # that boundary unlaunchable.
+    alternatives: tuple[tuple[str, ...], ...] = (
+        (
+            ("scripts/validate.rs",),
+            (
+                "agent-utils/rs/dagrun/Cargo.toml",
+                "agent-utils/rs/safe-ci-dag-runner/Cargo.toml",
+            ),
+        )
         if repo == "rrnewton/hermit"
-        else ("validate.sh",)
+        else (("validate.sh",),)
     )
-    missing = [rel for rel in required if not (fresh / rel).exists()]
+    missing = [
+        " or ".join(group)
+        for group in alternatives
+        if not any((fresh / rel).exists() for rel in group)
+    ]
     if missing:
         raise RuntimeError(
             f"fresh checkout {fresh} is missing {', '.join(missing)}; refusing to launch a run "
