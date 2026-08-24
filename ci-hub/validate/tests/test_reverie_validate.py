@@ -95,6 +95,24 @@ test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out;
             (10, 3, [], ["Documentation tests"]),
         )
 
+    def test_current_gate_contract_refuses_retired_merge_gate(self) -> None:
+        current = [{"name": name} for name in reverie_node.EXPECTED_GATES]
+        reverie_node.require_expected_gate_set(current)
+        invalid_sets = {
+            "retired seventh gate": current[:1]
+            + [{"name": "Merge-gate policy"}]
+            + current[1:],
+            "mixed old and current names": current[:1]
+            + [{"name": "Merge-gate policy"}]
+            + current[2:],
+            "missing gate": current[:-1],
+            "reordered gates": [current[1], current[0], *current[2:]],
+        }
+        for case, gates in invalid_sets.items():
+            with self.subTest(case=case):
+                with self.assertRaisesRegex(reverie_node.Refusal, "gate set drifted"):
+                    reverie_node.require_expected_gate_set(gates)
+
     def test_safe_ci_cgroup_refuses_unboxed_and_accepts_step_scope(self) -> None:
         with mock.patch.object(Path, "read_text", return_value="0::/user.slice/agent.scope\n"):
             with self.assertRaises(reverie_node.Refusal):

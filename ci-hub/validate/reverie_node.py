@@ -15,9 +15,10 @@ from pathlib import Path
 from typing import Any
 
 
+# Local-validation v2 follows Reverie's six-gate producer after hosted
+# merge-gate policy enforcement was retired from validate.sh.
 EXPECTED_GATES = (
     "Cross-client skill discovery",
-    "Merge-gate policy",
     "Build workspace",
     "Test regular workspace cases",
     "Documentation tests",
@@ -188,6 +189,16 @@ def gate_coverage(log_text: str) -> tuple[int, int, list[str], list[str]]:
     return executed, filtered, zero, absent
 
 
+def require_expected_gate_set(gates: object) -> None:
+    gate_names = (
+        [gate.get("name") for gate in gates]
+        if isinstance(gates, list) and all(isinstance(gate, dict) for gate in gates)
+        else []
+    )
+    if gate_names != list(EXPECTED_GATES):
+        raise Refusal(f"Reverie gate set drifted: {gate_names!r}")
+
+
 def record(root: Path, row: dict[str, Any]) -> None:
     result = subprocess.run(
         [sys.executable, str(root / "ci-hub/ledger/validate_rows.py"), "record"],
@@ -244,7 +255,6 @@ def main(argv: list[str] | None = None) -> int:
         log_text = log.read_text(errors="replace")
         executed, filtered, zero, absent = gate_coverage(log_text)
         gates = source.get("gates")
-        gate_names = [gate.get("name") for gate in gates] if isinstance(gates, list) else []
         canonical = dict(source)
         canonical.update(
             {
@@ -274,14 +284,13 @@ def main(argv: list[str] | None = None) -> int:
                     "fallback_allowed": False,
                 },
                 "validate_lock_authority": authority,
-                "reverie_validation_policy": "reverie-local-validation/v1",
+                "reverie_validation_policy": "reverie-local-validation/v2",
             }
         )
         # The canonical row records even a product red. Shape failures are not
         # repaired here; the reader will refuse them rather than minting green.
         record(root, canonical)
-        if gate_names != list(EXPECTED_GATES):
-            raise Refusal(f"Reverie gate set drifted: {gate_names!r}")
+        require_expected_gate_set(gates)
         return result.returncode
     except (OSError, Refusal) as error:
         print(f"reverie-safe-validate: REFUSED: {error}", file=sys.stderr)

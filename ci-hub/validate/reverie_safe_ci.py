@@ -42,7 +42,7 @@ def main(argv: list[str] | None = None) -> int:
             {
                 "group": "validate",
                 "job": "reverie-full",
-                "desc": "Reverie full seven-gate validation",
+                "desc": "Reverie full local validation",
                 "cmd": shlex.join(node),
                 "timeout": 7200,
                 "cpu_timeout": 14400,

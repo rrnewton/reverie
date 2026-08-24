@@ -4044,9 +4044,19 @@ fn qualify_canonical_receipt(row: &HistoryRow, sha: &str) -> Option<QualifyingRe
 /// diagnostics but never qualify: only the central runner can carry both a
 /// live validate-lock ancestry proof and observed safe-ci step containment.
 fn qualify_reverie_receipt(row: &HistoryRow, sha: &str) -> Option<QualifyingReceipt> {
-    const GATES: [&str; 7] = [
+    // v1 preserves exact historical seven-gate receipts. v2 is the current
+    // six-gate contract after hosted merge-gate policy enforcement retired.
+    const V1_GATES: [&str; 7] = [
         "Cross-client skill discovery",
         "Merge-gate policy",
+        "Build workspace",
+        "Test regular workspace cases",
+        "Documentation tests",
+        "Clippy",
+        "Rustfmt",
+    ];
+    const V2_GATES: [&str; 6] = [
+        "Cross-client skill discovery",
         "Build workspace",
         "Test regular workspace cases",
         "Documentation tests",
@@ -4070,10 +4080,14 @@ fn qualify_reverie_receipt(row: &HistoryRow, sha: &str) -> Option<QualifyingRece
         || extra_str(row, "admission") != Some("ci-hub-validate-lock")
         || row.concurrent_validates != Some(0)
         || extra_str(row, "concurrency_proof") != Some("validate_lock_owner_ancestry")
-        || extra_str(row, "reverie_validation_policy") != Some("reverie-local-validation/v1")
     {
         return None;
     }
+    let gates: &[&str] = match extra_str(row, "reverie_validation_policy")? {
+        "reverie-local-validation/v1" => &V1_GATES,
+        "reverie-local-validation/v2" => &V2_GATES,
+        _ => return None,
+    };
     let tree = extra_str(row, "tree")?;
     if !is_oid(tree) {
         return None;
@@ -4081,15 +4095,20 @@ fn qualify_reverie_receipt(row: &HistoryRow, sha: &str) -> Option<QualifyingRece
     let checks = row.checks?;
     let gates_run = row.gates_run?;
     let gates_expected = row.gates_expected?;
-    if checks != 7
-        || gates_run != 7
-        || gates_expected != 7
-        || row.gates.len() != GATES.len()
-        || row.gates.iter().zip(GATES).any(|(gate, expected)| {
-            gate.name != expected
-                || gate.result.as_deref() != Some("pass")
-                || gate.exit_code != Some(0)
-        })
+    let expected_gate_count = gates.len() as u64;
+    if checks != expected_gate_count
+        || gates_run != expected_gate_count
+        || gates_expected != expected_gate_count
+        || row.gates.len() != gates.len()
+        || row
+            .gates
+            .iter()
+            .zip(gates.iter().copied())
+            .any(|(gate, expected)| {
+                gate.name != expected
+                    || gate.result.as_deref() != Some("pass")
+                    || gate.exit_code != Some(0)
+            })
     {
         return None;
     }
@@ -6971,7 +6990,6 @@ mod tests {
     fn reverie_receipt_value() -> serde_json::Value {
         let gates = [
             "Cross-client skill discovery",
-            "Merge-gate policy",
             "Build workspace",
             "Test regular workspace cases",
             "Documentation tests",
@@ -7008,9 +7026,9 @@ mod tests {
                 "zero_executed_nodes": [],
                 "absent_nodes": []
             },
-            "checks": 7,
-            "gates_run": 7,
-            "gates_expected": 7,
+            "checks": 6,
+            "gates_run": 6,
+            "gates_expected": 6,
             "failures": 0,
             "real_seconds": 60.0,
             "log_file": "/tmp/reverie-validate.log",
@@ -7031,7 +7049,7 @@ mod tests {
                 "holder": {"kind": "reverie-validate", "target": RECEIPT_SHA},
                 "owner": {"liveness": "alive"}
             },
-            "reverie_validation_policy": "reverie-local-validation/v1",
+            "reverie_validation_policy": "reverie-local-validation/v2",
             "gates": gates
         })
     }
@@ -7241,6 +7259,74 @@ mod tests {
         .unwrap();
         assert_eq!(assessment.verdict, validate_status::Verdict::Validated);
         assert_eq!(assessment.qualifying.len(), 1);
+
+        let mut retired_seventh_gate = reverie_receipt_value();
+        retired_seventh_gate["checks"] = serde_json::json!(7);
+        retired_seventh_gate["gates_run"] = serde_json::json!(7);
+        retired_seventh_gate["gates_expected"] = serde_json::json!(7);
+        retired_seventh_gate["gates"]
+            .as_array_mut()
+            .unwrap()
+            .insert(
+                1,
+                serde_json::json!({
+                    "name": "Merge-gate policy",
+                    "result": "pass",
+                    "exit_code": 0
+                }),
+            );
+        let mut legacy_seven_gate = retired_seventh_gate.clone();
+        legacy_seven_gate["reverie_validation_policy"] =
+            serde_json::json!("reverie-local-validation/v1");
+        assert!(
+            qualify_reverie_receipt(&history_row(legacy_seven_gate), RECEIPT_SHA).is_some(),
+            "historical v1 seven-gate receipt stopped qualifying"
+        );
+        assert!(
+            qualify_reverie_receipt(&history_row(retired_seventh_gate), RECEIPT_SHA).is_none(),
+            "v2 receipt accepted the retired seventh gate"
+        );
+
+        let mut mixed_version = reverie_receipt_value();
+        mixed_version["reverie_validation_policy"] =
+            serde_json::json!("reverie-local-validation/v1");
+        assert!(
+            qualify_reverie_receipt(&history_row(mixed_version), RECEIPT_SHA).is_none(),
+            "v1 policy accepted the v2 six-gate sequence"
+        );
+
+        let mut missing_gate = reverie_receipt_value();
+        missing_gate["checks"] = serde_json::json!(5);
+        missing_gate["gates_run"] = serde_json::json!(5);
+        missing_gate["gates_expected"] = serde_json::json!(5);
+        missing_gate["gates"].as_array_mut().unwrap().pop();
+        assert!(
+            qualify_reverie_receipt(&history_row(missing_gate), RECEIPT_SHA).is_none(),
+            "v2 policy accepted a missing gate"
+        );
+
+        let mut reordered_gates = reverie_receipt_value();
+        reordered_gates["gates"].as_array_mut().unwrap().swap(0, 1);
+        assert!(
+            qualify_reverie_receipt(&history_row(reordered_gates), RECEIPT_SHA).is_none(),
+            "v2 policy accepted reordered gates"
+        );
+
+        let mut failed_gate = reverie_receipt_value();
+        failed_gate["gates"][0]["result"] = serde_json::json!("fail");
+        failed_gate["gates"][0]["exit_code"] = serde_json::json!(1);
+        assert!(
+            qualify_reverie_receipt(&history_row(failed_gate), RECEIPT_SHA).is_none(),
+            "v2 policy accepted a failed gate"
+        );
+
+        let mut unknown_policy = reverie_receipt_value();
+        unknown_policy["reverie_validation_policy"] =
+            serde_json::json!("reverie-local-validation/v999");
+        assert!(
+            qualify_reverie_receipt(&history_row(unknown_policy), RECEIPT_SHA).is_none(),
+            "unknown Reverie validation policy qualified"
+        );
 
         for (name, path, replacement) in [
             (
