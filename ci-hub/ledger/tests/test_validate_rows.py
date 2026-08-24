@@ -5,7 +5,6 @@ import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from unittest import mock
 
 import pytest
 
@@ -478,25 +477,33 @@ def test_ignored_ephemeral_checkout_is_redacted_without_weakening_guard(
     assert "/home/" not in json.dumps(event)
 
 
-def test_linked_worktree_record_rows_round_trip_exact_paths(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+def test_linked_worktree_cli_filters_exact_source_row_and_refuses_ambiguity(
+    tmp_path: Path,
 ):
     primary = tmp_path / "dev-hermit"
     repository(primary)
-    (primary / ".gitignore").write_text("/worktrees/\n")
-    ledger_tool = primary / "ci-hub/ledger/validate_rows.py"
-    ledger_tool.parent.mkdir(parents=True)
-    ledger_tool.write_text("# fixture\n")
-    git(primary, "add", ".gitignore", "ci-hub/ledger/validate_rows.py")
-    git(primary, "commit", "-qm", "add ledger fixture")
+    (primary / ".gitignore").write_text("/ignored/\n/worktrees/\n")
+    fixture_files = (
+        Path("ci-hub/ledger/ledger.py"),
+        Path("ci-hub/ledger/publisher.py"),
+        Path("ci-hub/ledger/validate_rows.py"),
+        Path("ci-hub/qualifying_receipt.py"),
+        Path("ci-hub/validate/green_class.py"),
+        Path("ci-hub/validate/qualifying-receipt.json"),
+    )
+    repository_root = HERE.parents[2]
+    for relative in fixture_files:
+        destination = primary / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(repository_root / relative, destination)
+    git(primary, "add", ".gitignore", *(str(path) for path in fixture_files))
+    git(primary, "commit", "-qm", "add production ledger fixture")
 
     linked = primary / "worktrees/slot/dev-hermit"
     git(primary, "worktree", "add", "--detach", str(linked), "HEAD")
-    monkeypatch.setattr(
-        validate_rows, "__file__", str(linked / "ci-hub/ledger/validate_rows.py")
-    )
 
     log = primary / "ignored/validate/reverie.log"
+    started = datetime(2026, 8, 24, 14, 41, 55, tzinfo=timezone.utc)
     source = {
         "schema_version": 5,
         "record_id": "linked-worktree-row",
@@ -511,28 +518,67 @@ def test_linked_worktree_record_rows_round_trip_exact_paths(
         "log_file": str(log),
     }
 
-    assert validate_rows.repository_root() == primary.resolve()
-    report = validate_rows.record(source)
+    decoys = [
+        {**source, "record_id": "wrong-repo", "repo": "hermit"},
+        {**source, "record_id": "wrong-path", "cwd": str(primary)},
+        {
+            **source,
+            "record_id": "wrong-log",
+            "log_file": str(primary / "ignored/validate/other.log"),
+        },
+        {
+            **source,
+            "record_id": "too-old",
+            "started_at": "2026-08-24T14:41:54Z",
+        },
+    ]
+    ledger_tool = linked / "ci-hub/ledger/validate_rows.py"
 
-    assert (primary / report["spool"]).is_file()
+    def ledger_cli(
+        command: str, item: dict | None = None
+    ) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [sys.executable, str(ledger_tool), command],
+            cwd=linked,
+            input=(json.dumps(item, sort_keys=True) + "\n" if item else None),
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+    for item in [*decoys, source]:
+        result = ledger_cli("record", item)
+        assert result.returncode == 0, result.stderr
+
     assert not (linked / validate_rows.LIVE_SPOOL_RELATIVE).exists()
-    round_tripped = validate_rows.rows()
-    assert round_tripped == [source]
+    assert len(list((primary / validate_rows.LIVE_SPOOL_RELATIVE).glob("*.jsonl"))) == 5
+    listed = ledger_cli("rows")
+    assert listed.returncode == 0, listed.stderr
+    assert {json.loads(line)["record_id"] for line in listed.stdout.splitlines()} == {
+        source["record_id"],
+        *(item["record_id"] for item in decoys),
+    }
 
-    output = "\n".join(json.dumps(item) for item in round_tripped) + "\n"
-    with mock.patch.object(
-        reverie_node,
-        "run",
-        return_value=subprocess.CompletedProcess([], 0, stdout=output, stderr=""),
-    ):
-        selected = reverie_node.load_source_row(
-            primary,
+    selected = reverie_node.load_source_row(
+        linked,
+        source["commit"],
+        linked,
+        log,
+        started,
+    )
+    assert selected == source
+
+    duplicate = {**source, "record_id": "second-exact-match"}
+    result = ledger_cli("record", duplicate)
+    assert result.returncode == 0, result.stderr
+    with pytest.raises(reverie_node.Refusal, match="found 2"):
+        reverie_node.load_source_row(
+            linked,
             source["commit"],
             linked,
             log,
-            datetime(2026, 8, 24, 14, 41, 55, tzinfo=timezone.utc),
+            started,
         )
-    assert selected == source
 
 
 @pytest.mark.parametrize("field", ["finished_at"])
