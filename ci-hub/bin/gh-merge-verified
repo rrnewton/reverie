@@ -119,6 +119,7 @@ from __future__ import annotations
 import atexit
 import os
 import shutil
+import time
 import subprocess
 import sys
 
@@ -132,6 +133,15 @@ import sys
 # COULD NOT DETERMINE. Exit 4 was correct and the tool was honest; it just could
 # not do its job while a sibling held the ref.
 SCRATCH = f"refs/gh-merge-verified/{os.getpid()}"
+
+# How long to wait for `refs/heads/main` to advance after a merge this tool
+# performed, and how often to re-ask. Small because the remote settles in
+# well under a second in practice; the bound exists so an unresolved race
+# terminates as COULD NOT DETERMINE rather than hanging.
+# TEST-ONLY OVERRIDES, so the self-test can exercise the timeout without waiting
+# the production bound. Production callers never set these.
+MAIN_ADVANCE_TIMEOUT_S = float(os.environ.get("GH_MERGE_VERIFIED_ADVANCE_TIMEOUT_S", "30"))
+MAIN_ADVANCE_POLL_S = float(os.environ.get("GH_MERGE_VERIFIED_ADVANCE_POLL_S", "1"))
 
 # WHEN THE OLD-SCHEME REFS BECOME SAFE TO DELETE
 #
@@ -269,6 +279,18 @@ def main() -> None:
     if rc != 0 or not head:
         die(4, f"gh-merge-verified: COULD NOT DETERMINE — cannot resolve the head of PR {pr}")
 
+    # ⚠️ CAPTURE MAIN BEFORE THE MERGE, so the verification can tell "the ref has
+    # not moved yet" from "the change is not there". Without this the two are
+    # indistinguishable and the race below reads as a verdict.
+    main_before = None
+    if not verify_only:
+        rc_b, _, _ = run(["git", "fetch", "--quiet", "--force", remote_url,
+                          f"refs/heads/main:{SCRATCH}/main"])
+        if rc_b == 0:
+            rc_b, mb, _ = run(["git", "rev-parse", f"{SCRATCH}/main"])
+            if rc_b == 0:
+                main_before = mb.strip()
+
     if not verify_only:
         # NO PIPE: the status read here is `gh pr merge`'s own.
         rc, out, err = run(gh_argv(["gh", "pr", "merge", pr, "--repo", repo, *extra]))
@@ -291,12 +313,45 @@ def main() -> None:
                 "  This is the case a piped exit status hides.")
 
     # Ask the remote what main holds now.
-    rc, out, err = run(["git", "fetch", "--quiet", "--force", remote_url,
-                        f"refs/heads/main:{SCRATCH}/main"])
-    if rc != 0:
-        die(4, "gh-merge-verified: COULD NOT DETERMINE — cannot fetch main", err.strip())
-    rc, main_sha, _ = run(["git", "rev-parse", f"{SCRATCH}/main"])
-    main_sha = main_sha.strip()
+    #
+    # ⚠️ THE CHECK CAN OUTRUN THE MERGE, AND THE FALSE VERDICT IS THE WORST ONE.
+    # A single unguarded fetch here returns the PRE-MERGE main whenever GitHub has
+    # not yet advanced `refs/heads/main`. Every file then reads as ABSENT and the
+    # tool exits 3 — NOT LANDED — for a merge that succeeded. rc=3 is this tool's
+    # strongest claim ("main still holds the pre-change content"), so an agent that
+    # believes it re-lands work already on main or reopens a closed pull request.
+    #
+    # POLLING THE REF DOES NOT SOFTEN THE CONTENT CHECK. A successful merge MUST
+    # advance main past the sha captured before it, so waiting for that one fact
+    # removes the race without relaxing anything the comparison asserts.
+    #
+    # AND AN UNRESOLVED RACE IS `COULD NOT DETERMINE`, NEVER `NOT LANDED`. If main
+    # never advances within the bound we exit 4, which this file's own contract
+    # already defines as "the check did not complete ... so a broken verifier is
+    # never read as a clean landing". Reporting 3 there would be asserting a fact
+    # about the pull request from a fact about our timing.
+    deadline = time.monotonic() + MAIN_ADVANCE_TIMEOUT_S
+    waited = False
+    while True:
+        rc, out, err = run(["git", "fetch", "--quiet", "--force", remote_url,
+                            f"refs/heads/main:{SCRATCH}/main"])
+        if rc != 0:
+            die(4, "gh-merge-verified: COULD NOT DETERMINE — cannot fetch main", err.strip())
+        rc, main_sha, _ = run(["git", "rev-parse", f"{SCRATCH}/main"])
+        main_sha = main_sha.strip()
+        if main_before is None or main_sha != main_before:
+            break
+        if time.monotonic() >= deadline:
+            die(4,
+                f"gh-merge-verified: COULD NOT DETERMINE — the merge reported success but "
+                f"{remote_url} refs/heads/main has not moved from {main_before[:12]} after "
+                f"{MAIN_ADVANCE_TIMEOUT_S}s.",
+                "  THIS IS NOT A STATEMENT ABOUT THE PULL REQUEST. Nothing has been verified;"
+                " re-run with --verify-only once the remote settles.")
+        waited = True
+        time.sleep(MAIN_ADVANCE_POLL_S)
+    if waited:
+        print(f"gh-merge-verified: waited for origin main to advance past {main_before[:12]}")
 
     rc, base, _ = run(["git", "merge-base", head, main_sha])
     base = base.strip()

@@ -245,6 +245,56 @@ def unit_cases() -> None:
         )
 
 
+def race_cases() -> None:
+    """The merge succeeds but `refs/heads/main` has not advanced yet.
+
+    This is the failure agent(hermit-012) found. An unguarded fetch returns the
+    PRE-MERGE main, every file reads as ABSENT, and the tool exits 3 -- NOT
+    LANDED -- for a merge that worked. rc=3 is this tool's strongest claim, so an
+    agent that believes it re-lands work that is already on main, or reopens a
+    closed pull request.
+
+    The stub `gh` here reports a successful merge and changes nothing, which is
+    exactly what the remote looks like mid-race.
+    """
+    with tempfile.TemporaryDirectory(prefix="gh-merge-verified-race-") as tmp:
+        root = Path(tmp)
+        origin, work = build_fixture(root, "absent")
+        bindir = root / "trap"
+        bindir.mkdir()
+        gh = bindir / "gh"
+        gh.write_text("#!/bin/bash\necho 'Merged pull request'\nexit 0\n")
+        gh.chmod(0o755)
+        env = {
+            **os.environ,
+            "PATH": f"{bindir}:{os.environ.get('PATH', '')}",
+            "GH_MERGE_VERIFIED_REMOTE": str(origin),
+            "GH_MERGE_VERIFIED_ADVANCE_TIMEOUT_S": "2",
+            "GH_MERGE_VERIFIED_ADVANCE_POLL_S": "0.2",
+        }
+        code, out = run(
+            [sys.executable, str(TOOL), "1", "--repo", "fixture/repo"],
+            cwd=work,
+            env=env,
+        )
+        check(
+            "raced merge exits 4 COULD NOT DETERMINE, not 3 NOT LANDED",
+            code == 4,
+            "got exit %s; 3 would assert the change is absent when we only "
+            "outran the remote\n%s" % (code, out),
+        )
+        check(
+            "raced merge disclaims a verdict about the pull request",
+            "NOT A STATEMENT ABOUT THE PULL REQUEST" in out,
+            "output did not disclaim a verdict\n%s" % out,
+        )
+        check(
+            "raced merge names the sha main is stuck on",
+            "has not moved from" in out,
+            "output did not name the unmoved ref\n%s" % out,
+        )
+
+
 def main() -> int:
     if not TOOL.exists():
         print(f"gh-merge-verified-test: {TOOL} is missing", file=sys.stderr)
@@ -267,6 +317,7 @@ def main() -> int:
     case("arrived", 0, "VERIFIED", "a squash landing that did arrive")
 
     unit_cases()
+    race_cases()
 
     print()
     if FAILURES:
