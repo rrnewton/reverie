@@ -127,6 +127,34 @@ if ! cargo run --quiet -p hermit-manifest-plan -- --format harness-json >/dev/nu
 fi
 
 if [ "$PUSH" = "--push" ]; then
+  # REFUSE TO PUBLISH A HEAD THAT IS NOT AHEAD OF MAIN.
+  #
+  # The push below is `--force-with-lease HEAD:$BR`, and the lease only proves
+  # nobody else moved $BR -- it says NOTHING about what we are about to write.
+  # If HEAD is exactly origin/main, this force-writes main's tip over the PR
+  # branch and DESTROYS the PR's commits. GitHub then sees head == base, shows
+  # the PR with zero commits, and REFUSES to reopen it, so the work is not even
+  # recoverable through the UI.
+  #
+  # Two ways HEAD legitimately arrives at origin/main by this line: the rebase
+  # above dropped every commit as already-applied or empty, or an earlier error
+  # path called detach_home(), which checks out --detach origin/main.
+  #
+  # This is not hypothetical and it is not new. rrnewton/hermit#1812 is the same
+  # driver amending main's tip onto two PR branches, landing #1188/#1209 as
+  # semantic no-ops. It recurred on 2026-08-25 against rrnewton/hermit#2448:
+  # branch restore/stop-path-test-shard_20260824 was left pointing at
+  # f5f77abd6d4b, a commit on main, the PR closed unmerged with its content NOT
+  # on main, reopen was refused, and the reviewed head bcfd338361 survived only
+  # as a loose object. That PR carried a fix for a red `make lint`.
+  #
+  # A no-op rebase is a legitimate outcome; silently publishing it is not. Say
+  # so and let the caller decide -- land-pr.sh treats any non-CLEAN/UNIONED
+  # RESULT as an abandon, which leaves the branch INTACT for a human.
+  if [ "$(git rev-list --count origin/main..HEAD)" -eq 0 ]; then
+    detach_home
+    status "REBASE-FAIL:head-not-ahead-of-main"; exit 0
+  fi
   if ! with-proxy git push -q --force-with-lease "origin" "HEAD:$BR"; then
     detach_home
     status "REBASE-FAIL:push"; exit 0
