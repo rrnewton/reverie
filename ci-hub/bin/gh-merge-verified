@@ -144,6 +144,38 @@ EXIT
        lander does not fail -- it SKIPS the checks and reports a clean landing, which
        is indistinguishable from a checked one. `--verify-only` is exempt: it performs
        no merge and so needs no admission.
+
+WHAT A CALLER SHOULD DO WITH EACH, BECAUSE A CODE IS ONLY USEFUL IF IT IMPLIES AN ACTION
+------------------------------------------------------------------------------------
+An exit code shared by two conditions is a COLLAPSED VALUE: the caller cannot tell
+whether ITS ENVIRONMENT is wrong or THE HEAD is, and those want opposite responses.
+That was briefly true here -- a stale-TOOL refusal and a stale-LABEL refusal both
+exited 6 -- and it is the same shape as a failed F_GETFL mapped to the same zero as
+success. The codes are split now; the actions are written down so they stay split.
+
+  RETRY IS REASONABLE -- the condition is about THIS RUN, not the pull request:
+    3  re-run once. Usually the stale refs/pull/N/head race; if the verdict changes,
+       the first answer was the race. Do NOT loop -- if it persists, read it by hand.
+    4  fix the environment (proxy, credentials, connectivity) and re-run. It is the
+       ABSENCE of an answer, never permission.
+    7  refresh the checkout, or run from a current one, then re-run. Nothing about the
+       pull request is being questioned.
+
+  DO NOT RETRY -- the condition is about the PULL REQUEST; re-running changes nothing:
+    5  a reviewer refused THIS head. The head must move (push the fix) or the refusal
+       must be withdrawn in the grammar. A second APPROVED-AT does not override it.
+    6  the label is a stale cache of an approval earned at another sha. Re-request the
+       lane at the CURRENT head. Removing the label to get past this is defeating the
+       check, not satisfying it.
+
+  NEITHER -- a human reads these before anything else happens:
+    2  GitHub refused the merge: conflicts, protection, or a lost race.
+    1  usage or ref resolution. The command was wrong, not the world.
+
+THE LINE THAT MUST NOT BE CROSSED: 4 and 7 mean "this run could not establish
+something"; 5 and 6 mean "the pull request is not admissible". A caller that retries a
+5 is trying to outwait a reviewer. A caller that refuses on a 7 is blaming the pull
+request for its own stale checkout.
 """
 
 from __future__ import annotations
