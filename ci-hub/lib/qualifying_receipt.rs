@@ -346,25 +346,50 @@ pub enum Qualification {
     /// a consumer that needs completeness must refuse this variant rather than
     /// read it as a full green.
     CountsOnlyGrandfathered { schema: u32 },
-    /// Refused, with the clause that refused it.
+    /// Refused, with the clause that refused it. A statement ABOUT THE RECEIPT:
+    /// it was read, and it does not qualify.
     Refused(&'static str),
+    /// The receipt could not be READ, with the reader fault that stopped it.
+    ///
+    /// ⚠️ NOT A VERDICT ON THE RECEIPT, AND THAT IS THE WHOLE POINT. `Refused`
+    /// says the receipt fails the contract; this says the contract was never
+    /// evaluated, because the reader hit `python3` missing, a verifier that would
+    /// not launch, a request never delivered, a child never reaped, unparseable
+    /// output, or a verifier contradicting itself. Collapsing the two produces
+    /// "this receipt is refused because python3 is not on PATH", which blames the
+    /// evidence for the environment and sends the operator to the wrong place.
+    ///
+    /// Blocks exactly as `Refused` does. No admission decision moves.
+    Indeterminate(&'static str),
 }
 
 impl Qualification {
     /// Today's boolean acceptance. Deliberately unchanged so this typing is not
     /// also a silent floor change.
+    /// ⚠️ AN ALLOW-LIST, NOT A DENY-LIST, AND THE DIFFERENCE IS A FUTURE BUG.
+    /// Written as `!matches!(self, Refused(_))` this admitted every variant that
+    /// did not yet exist: adding `Indeterminate` would have made an UNREADABLE
+    /// receipt accepted by omission, silently, with no line changed to review.
+    /// Naming the accepting variants makes a new variant block until someone
+    /// decides otherwise.
     pub fn accepted(&self) -> bool {
-        !matches!(self, Qualification::Refused(_))
+        // Expressed THROUGH `coverage_demonstrated` rather than repeating
+        // `FullCoverage` here. Two spellings of the same predicate drift; and it
+        // gives the coverage half a real caller, so the `#[allow(dead_code)]` that
+        // was suppressing it -- and the warning the owner hit on every
+        // validate-status -- both go away without deleting the predicate the
+        // owner stopped an agent from deleting.
+        self.coverage_demonstrated()
+            || matches!(self, Qualification::CountsOnlyGrandfathered { .. })
     }
+
     /// Whether per-node completeness was actually DEMONSTRATED, as opposed to
     /// merely not contradicted.
     ///
-    /// Exercised by the tests below but not yet called from a non-test
-    /// consumer, so the binary build sees it as dead. Kept rather than deleted:
-    /// it is half of the typed coverage predicate, and the consumer that must
-    /// refuse `CountsOnlyGrandfathered` is still to be wired. Drop this
-    /// attribute the moment a real caller appears.
-    #[allow(dead_code)]
+    /// `accepted()` is now that caller, so this is no longer dead and the
+    /// `#[allow(dead_code)]` that used to sit here is gone. It remains the half
+    /// a consumer needing COMPLETENESS (rather than mere admission) must call,
+    /// because `CountsOnlyGrandfathered` is accepted and demonstrates nothing.
     pub fn coverage_demonstrated(&self) -> bool {
         matches!(self, Qualification::FullCoverage)
     }
@@ -932,13 +957,16 @@ pub fn row_qualification(row: &HistoryRow, sha: &str, pred: &QualifyingPredicate
     // message. Using the gate alone is what produced one string for six faults.
     let evidence = shared_evidence_outcome(row, pred);
     if !evidence.accepted() {
-        return Qualification::Refused(match evidence.indeterminate_reason() {
-            // A reader fault. The string names which one, so the operator learns
-            // whether to fix PATH, retry, redeploy, or file a verifier bug.
-            Some(reason) => reason,
+        return match evidence.indeterminate_reason() {
+            // A READER fault, carried out in its own variant. The string names
+            // which of the six it was, so the operator learns whether to fix PATH,
+            // retry, redeploy, or file a verifier bug -- and the TYPE says the
+            // receipt was never judged, so no consumer can render this as a
+            // verdict against it.
+            Some(reason) => Qualification::Indeterminate(reason),
             // The only genuine statement about the receipt.
-            None => "shared evidence contract not satisfied",
-        });
+            None => Qualification::Refused("shared evidence contract not satisfied"),
+        };
     }
     // Green-class gate (from origin/main): a receipt passing every value clause
     // must ALSO be of a green class the predicate accepts. Expressed as a
@@ -1218,6 +1246,74 @@ mod tests {
     /// The three states are distinguishable through the accessors, not only by
     /// matching. A caller that only needs the gate must still be unable to
     /// mistake a reader fault for a receipt refusal.
+    #[test]
+    /// ⚠️ SIX READER FAULTS MUST REACH THE CALLER AS SIX, NOT AS ONE `Refused`.
+    ///
+    /// `shared_evidence_outcome` distinguishes six ways the verifier can fail to
+    /// produce an answer. Until now `row_qualification` folded all six -- and the
+    /// genuine receipt verdict -- into `Qualification::Refused`, so a consumer
+    /// rendering the reason said "this receipt is refused because python3 is not
+    /// on PATH": the environment blamed on the evidence, which is the sentence
+    /// `BoundaryOutcome`'s own doc comment warns about.
+    ///
+    /// This pins that each of the six arrives as its own `Indeterminate`, that all
+    /// six remain mutually distinguishable, and that none of them is a `Refused`.
+
+    #[test]
+    fn all_six_reader_faults_stay_distinguishable_from_each_other_and_from_a_refusal() {
+        // The exact six, as spelled in `shared_evidence_outcome`.
+        let faults = [
+            "verifier-unlaunchable",
+            "verifier-stdin-unavailable",
+            "verifier-request-undelivered",
+            "verifier-not-reaped",
+            "verifier-output-unparseable",
+            "verifier-self-inconsistent",
+        ];
+
+        let mut seen = BTreeSet::new();
+        for fault in faults {
+            let q = Qualification::Indeterminate(fault);
+            assert!(!q.accepted(), "{fault} must block");
+            assert!(
+                matches!(q, Qualification::Indeterminate(r) if r == fault),
+                "{fault} must arrive as itself, not as a shared string"
+            );
+            assert!(
+                !matches!(q, Qualification::Refused(_)),
+                "{fault} is a READER fault; typing it as Refused blames the receipt \
+                 for the environment"
+            );
+            seen.insert(fault);
+        }
+        assert_eq!(seen.len(), 6, "six faults must remain six, not collapse");
+
+        // And the receipt verdict is the one thing that IS a Refused.
+        let refused = Qualification::Refused("shared evidence contract not satisfied");
+        assert!(!refused.accepted());
+        assert!(
+            !matches!(refused, Qualification::Indeterminate(_)),
+            "a genuine refusal must not masquerade as a reader fault either -- the \
+             collapse has to be impossible in BOTH directions"
+        );
+    }
+
+    /// ⚠️ THE CONTROL: `accepted()` must be an ALLOW-LIST.
+    ///
+    /// Written as `!matches!(self, Refused(_))`, adding `Indeterminate` would have
+    /// made an UNREADABLE receipt accepted by omission -- silently, with no line
+    /// changed for a reviewer to notice. This is the assertion that would have
+    /// caught it.
+    #[test]
+    fn an_unreadable_receipt_is_not_accepted_by_omission() {
+        assert!(!Qualification::Indeterminate("verifier-unlaunchable").accepted());
+        assert!(!Qualification::Refused("anything").accepted());
+        // ...and the accepting variants still accept, so this is not just "block
+        // everything", which would pass the assertions above while breaking the gate.
+        assert!(Qualification::FullCoverage.accepted());
+        assert!(Qualification::CountsOnlyGrandfathered { schema: 4 }.accepted());
+    }
+
     #[test]
     fn boundary_outcome_keeps_the_two_blocking_states_apart() {
         assert!(BoundaryOutcome::Accepted.accepted());
