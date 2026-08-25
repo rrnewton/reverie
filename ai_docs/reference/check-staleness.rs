@@ -62,7 +62,11 @@ fn main() {
             }
             "--json" => json = true,
             "--fail-on-stale" => fail_on_stale = true,
-            "--dir" => dir = Some(PathBuf::from(it.next().unwrap_or_else(|| die("--dir needs a path")))),
+            "--dir" => {
+                dir = Some(PathBuf::from(
+                    it.next().unwrap_or_else(|| die("--dir needs a path")),
+                ))
+            }
             "--today" => today = Some(it.next().unwrap_or_else(|| die("--today needs a date"))),
             other => die(&format!("unknown argument {other}")),
         }
@@ -145,7 +149,10 @@ fn main() {
         println!("{}", "-".repeat(72));
         for r in &records {
             let doc = r.get("doc").and_then(Value::as_str).unwrap_or("?");
-            let name = Path::new(doc).file_name().and_then(|s| s.to_str()).unwrap_or(doc);
+            let name = Path::new(doc)
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or(doc);
             let verdict = r.get("verdict").and_then(Value::as_str).unwrap_or("?");
             if verdict == "NO-FRONT-MATTER" {
                 println!("{verdict:<12} {:>5}  {:>4}  {name}", "-", "-");

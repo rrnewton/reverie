@@ -37,7 +37,13 @@
 // cannot be widened by a toolchain upgrade. New lints are caught instead by
 // `scripts/lint-rust-scripts.sh`, which compiles this file under `-D warnings`
 // externally, where a failure blocks a commit rather than an execution.
-#![deny(dead_code, unused_imports, unused_mut, unused_variables, unused_must_use)]
+#![deny(
+    dead_code,
+    unused_imports,
+    unused_mut,
+    unused_variables,
+    unused_must_use
+)]
 // `records.rs` is a SHARED module. Liveness of a symbol in it is a property of
 // the whole program, not of this script: this checker uses a handful of the row
 // types, `ci-hub.rs` uses the rest, and each `#[path]`-including script sees

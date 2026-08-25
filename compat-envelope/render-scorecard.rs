@@ -74,7 +74,13 @@
 // cannot be widened by a toolchain upgrade. New lints are caught instead by
 // `scripts/lint-rust-scripts.sh`, which compiles this file under `-D warnings`
 // externally, where a failure blocks a commit rather than an execution.
-#![deny(dead_code, unused_imports, unused_mut, unused_variables, unused_must_use)]
+#![deny(
+    dead_code,
+    unused_imports,
+    unused_mut,
+    unused_variables,
+    unused_must_use
+)]
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;

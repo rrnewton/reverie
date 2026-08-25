@@ -135,7 +135,11 @@ fn strip_comment(s: &str) -> String {
 }
 
 fn non_empty(s: String) -> Option<String> {
-    if s.is_empty() { None } else { Some(s) }
+    if s.is_empty() {
+        None
+    } else {
+        Some(s)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -235,7 +239,14 @@ fn co_changed(repo: &Path, commits: &[Commit]) -> Result<BTreeMap<String, usize>
     for c in commits {
         let out = git(
             repo,
-            &["show", "--name-only", "--format=", "-m", "--first-parent", &c.hash],
+            &[
+                "show",
+                "--name-only",
+                "--format=",
+                "-m",
+                "--first-parent",
+                &c.hash,
+            ],
         )?;
         let mut seen = BTreeSet::new();
         for p in out.lines().map(str::trim).filter(|l| !l.is_empty()) {
@@ -269,8 +280,7 @@ fn mod_decls(text: &str) -> Vec<String> {
 
 fn is_ident(s: &str) -> bool {
     !s.is_empty()
-        && s.chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '_')
+        && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
         && !s.chars().next().unwrap().is_ascii_digit()
 }
 
@@ -286,7 +296,10 @@ fn resolve_mod(repo: &Path, owner: &str, name: &str) -> Option<String> {
     } else {
         parent.join(stem)
     };
-    for cand in [base.join(format!("{name}.rs")), base.join(name).join("mod.rs")] {
+    for cand in [
+        base.join(format!("{name}.rs")),
+        base.join(name).join("mod.rs"),
+    ] {
         if repo.join(&cand).is_file() {
             return Some(cand.to_string_lossy().replace('\\', "/"));
         }
@@ -348,7 +361,9 @@ fn expand_watch_paths(repo: &Path, watch: &[String]) -> Vec<String> {
 }
 
 fn collect_rs(dir: &Path, repo: &Path, out: &mut Vec<String>) {
-    let Ok(entries) = fs::read_dir(dir) else { return };
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
     for e in entries.flatten() {
         let p = e.path();
         if p.is_dir() {
@@ -369,7 +384,9 @@ fn is_source_candidate(path: &str, watch_crates: &BTreeSet<String>) -> bool {
     if !path.ends_with(".rs") {
         return false;
     }
-    let Some(cr) = crate_of(path) else { return false };
+    let Some(cr) = crate_of(path) else {
+        return false;
+    };
     if !watch_crates.contains(cr) {
         return false;
     }
@@ -407,7 +424,12 @@ fn parse_args() -> Args {
             }
             "--json" => json = true,
             "--quick" => quick = true,
-            "--emit-prompt" => emit_prompt = Some(PathBuf::from(it.next().unwrap_or_else(|| die("--emit-prompt needs a path")))),
+            "--emit-prompt" => {
+                emit_prompt = Some(PathBuf::from(
+                    it.next()
+                        .unwrap_or_else(|| die("--emit-prompt needs a path")),
+                ))
+            }
             "--today" => today = Some(it.next().unwrap_or_else(|| die("--today needs a date"))),
             other if other.starts_with("--") => die(&format!("unknown flag {other}")),
             other => {
@@ -458,22 +480,35 @@ fn main() {
         exit(0);
     };
 
-    let repo_name = fm.tracks_repo.clone().unwrap_or_else(|| die("front-matter missing tracks_repo"));
-    let old_sha = fm.tracks_sha.clone().unwrap_or_else(|| die("front-matter missing tracks_sha"));
-    let last_updated = fm.last_updated.clone().unwrap_or_else(|| die("front-matter missing last_updated"));
+    let repo_name = fm
+        .tracks_repo
+        .clone()
+        .unwrap_or_else(|| die("front-matter missing tracks_repo"));
+    let old_sha = fm
+        .tracks_sha
+        .clone()
+        .unwrap_or_else(|| die("front-matter missing tracks_sha"));
+    let last_updated = fm
+        .last_updated
+        .clone()
+        .unwrap_or_else(|| die("front-matter missing last_updated"));
     if fm.watch_files.is_empty() {
         die("front-matter has an empty watch_files list");
     }
 
-    let doc_dir = args
-        .doc
-        .canonicalize()
-        .unwrap_or_else(|_| args.doc.clone());
+    let doc_dir = args.doc.canonicalize().unwrap_or_else(|_| args.doc.clone());
     let doc_dir = doc_dir.parent().unwrap_or(Path::new(".")).to_path_buf();
-    let repo = find_repo(&doc_dir, &repo_name)
-        .unwrap_or_else(|| die(&format!("could not locate '{repo_name}' checkout above {}", doc_dir.display())));
+    let repo = find_repo(&doc_dir, &repo_name).unwrap_or_else(|| {
+        die(&format!(
+            "could not locate '{repo_name}' checkout above {}",
+            doc_dir.display()
+        ))
+    });
 
-    let head = git(&repo, &["rev-parse", "HEAD"]).unwrap_or_else(|e| die(&e)).trim().to_string();
+    let head = git(&repo, &["rev-parse", "HEAD"])
+        .unwrap_or_else(|e| die(&e))
+        .trim()
+        .to_string();
     let today = today_str(&args.today);
     let days_stale = days_since(&last_updated, &today).unwrap_or_else(|e| die(&e));
 
@@ -575,7 +610,10 @@ fn main() {
             for name in mod_decls(&src) {
                 if let Some(child) = resolve_mod(&repo, f, &name) {
                     if !watch_set.contains(&child) {
-                        reasons.entry(child).or_default().insert("current-mod".into());
+                        reasons
+                            .entry(child)
+                            .or_default()
+                            .insert("current-mod".into());
                     }
                 }
             }
@@ -674,9 +712,15 @@ fn main() {
         println!("  ! tracks_sha is NOT an ancestor of HEAD — history rewrite or wrong repo; results may be partial.");
     }
     println!("- seed commits (touch watch-files): {}", seed.len());
-    println!("- light-cone commits (watch ∪ expanded): {}", relevant.len());
+    println!(
+        "- light-cone commits (watch ∪ expanded): {}",
+        relevant.len()
+    );
     println!();
-    println!("## Proposed watch-file additions ({})", proposed_watch.len());
+    println!(
+        "## Proposed watch-file additions ({})",
+        proposed_watch.len()
+    );
     if expanded.is_empty() {
         println!("(none — watch-list appears complete)");
     } else {
@@ -687,20 +731,17 @@ fn main() {
     println!();
     println!("## Relevant commits (most recent first)");
     for c in &relevant {
-        println!("  {} {}  {}", &c.hash[..c.hash.len().min(12)], c.date, c.subject);
+        println!(
+            "  {} {}  {}",
+            &c.hash[..c.hash.len().min(12)],
+            c.date,
+            c.subject
+        );
     }
     println!();
 
     let prompt = craft_prompt(
-        &args.doc,
-        &fm,
-        &repo_name,
-        &old_sha,
-        &head,
-        days_stale,
-        &today,
-        &relevant,
-        &expanded,
+        &args.doc, &fm, &repo_name, &old_sha, &head, days_stale, &today, &relevant, &expanded,
     );
     if let Some(path) = &args.emit_prompt {
         fs::write(path, &prompt).unwrap_or_else(|e| die(&format!("cannot write prompt: {e}")));
@@ -725,7 +766,10 @@ fn craft_prompt(
     commits: &[Commit],
     expanded: &[(String, Vec<String>)],
 ) -> String {
-    let subject = fm.title.clone().unwrap_or_else(|| doc.display().to_string());
+    let subject = fm
+        .title
+        .clone()
+        .unwrap_or_else(|| doc.display().to_string());
     let mut s = String::new();
     s.push_str("You are updating a durable reference document for a NEW reader.\n\n");
     s.push_str(&format!("DOCUMENT: {}\n", doc.display()));
@@ -741,10 +785,17 @@ fn craft_prompt(
     s.push_str("1. Read the whole document first.\n\n");
     s.push_str("2. Study these intervening commits (most recent first). Each may have changed\n   the design the doc describes; read the diff where the subject is unclear:\n");
     for c in commits {
-        s.push_str(&format!("     {} {}  {}\n", &c.hash[..c.hash.len().min(12)], c.date, c.subject));
+        s.push_str(&format!(
+            "     {} {}  {}\n",
+            &c.hash[..c.hash.len().min(12)],
+            c.date,
+            c.subject
+        ));
     }
     if commits.is_empty() {
-        s.push_str("     (none touched the watched code; this is an age refresh — re-verify links.)\n");
+        s.push_str(
+            "     (none touched the watched code; this is an age refresh — re-verify links.)\n",
+        );
     }
     s.push('\n');
     s.push_str("3. These source files entered or co-moved within the doc's light cone since the\n   last update. Verify which GENUINELY affect the subject and fold them in;\n   repoint any code links/permalinks to the new SHA:\n");

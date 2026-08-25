@@ -43,7 +43,11 @@ const UA: &str = "hermit-squat-drip (hermit@rrnewton.github.io)";
 fn log(msg: &str) {
     let line = format!("[{}] {}\n", stamp(), msg);
     print!("{line}");
-    if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(log_path()) {
+    if let Ok(mut f) = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log_path())
+    {
         let _ = f.write_all(line.as_bytes());
     }
 }
@@ -61,7 +65,14 @@ fn stamp() -> String {
 fn is_live(name: &str) -> bool {
     Command::new("with-proxy")
         .args([
-            "curl", "-s", "-o", "/dev/null", "-w", "%{http_code}", "-A", UA,
+            "curl",
+            "-s",
+            "-o",
+            "/dev/null",
+            "-w",
+            "%{http_code}",
+            "-A",
+            UA,
             &format!("https://crates.io/api/v1/crates/{name}"),
         ])
         .output()
@@ -72,7 +83,13 @@ fn is_live(name: &str) -> bool {
 fn publish(name: &str) -> (bool, String) {
     let manifest = format!("{}/{name}/Cargo.toml", crates_dir());
     match Command::new("with-proxy")
-        .args(["cargo", "publish", "--manifest-path", &manifest, "--allow-dirty"])
+        .args([
+            "cargo",
+            "publish",
+            "--manifest-path",
+            &manifest,
+            "--allow-dirty",
+        ])
         .output()
     {
         Ok(o) => {
@@ -87,13 +104,29 @@ fn publish(name: &str) -> (bool, String) {
 fn main() {
     // 17 remaining names (6 already live from the burst are omitted).
     let remaining = [
-        "reverie-process", "reverie-preload", "reverie-core", "reverie-ptrace",
-        "reverie-kvm", "reverie-liteinst", "reverie-dbt", "reverie-e9patch",
-        "reverie-dynamorio", "reverie-sabre", "test-allocator", "detcore-model",
-        "detcore-dbt", "hermit-resources", "hermit-verify", "hermetic-infra",
+        "reverie-process",
+        "reverie-preload",
+        "reverie-core",
+        "reverie-ptrace",
+        "reverie-kvm",
+        "reverie-liteinst",
+        "reverie-dbt",
+        "reverie-e9patch",
+        "reverie-dynamorio",
+        "reverie-sabre",
+        "test-allocator",
+        "detcore-model",
+        "detcore-dbt",
+        "hermit-resources",
+        "hermit-verify",
+        "hermetic-infra",
         "hermit-run",
     ];
-    log(&format!("=== DRIP START: {} names, {}s spacing (dbi excluded, dbt included) ===", remaining.len(), SPACING_SECS));
+    log(&format!(
+        "=== DRIP START: {} names, {}s spacing (dbi excluded, dbt included) ===",
+        remaining.len(),
+        SPACING_SECS
+    ));
 
     for name in remaining {
         if is_live(name) {
@@ -110,10 +143,21 @@ fn main() {
                 published = true;
                 break;
             }
-            let rate = out.contains("429") || low.contains("too many") || low.contains("rate limit");
+            let rate =
+                out.contains("429") || low.contains("too many") || low.contains("rate limit");
             let tail: Vec<&str> = out.lines().filter(|l| !l.trim().is_empty()).collect();
-            let tail = tail.iter().rev().take(2).rev().cloned().collect::<Vec<_>>().join(" | ");
-            log(&format!("{} {name} :: {tail}", if rate { "RATELIMIT" } else { "FAIL" }));
+            let tail = tail
+                .iter()
+                .rev()
+                .take(2)
+                .rev()
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(" | ");
+            log(&format!(
+                "{} {name} :: {tail}",
+                if rate { "RATELIMIT" } else { "FAIL" }
+            ));
             if !rate {
                 log(&format!("STOP retrying {name} (non-rate-limit error)"));
                 break;

@@ -45,18 +45,51 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.." || exit 1
 #   crates-squat-staging/     27 name-reservation stubs for crates.io, published
 #                             from their own workspace. Same reason.
 #
-# Both excluded projects have their own Cargo workspace, so `cargo fmt` inside
-# them is the right gate for their contents -- not this one.
-is_excluded() {
+# ⚠️ THE "OWN WORKSPACE" EXCLUSION IS DERIVED, NOT A DIRECTORY LIST, AND THAT
+# CHANGE HAS A MEASURED REASON. `shmem_exec_obj/` and `crates-squat-staging/` were
+# excluded whole because their CONTENTS belong to nested Cargo workspaces. That is
+# true and confirmed -- 19 and 25 tracked Cargo.toml respectively -- but the
+# justification is per-FILE while the exclusion was per-DIRECTORY, so a top-level
+# rust-script sitting BESIDE those crates was skipped too, despite belonging to no
+# workspace and so having no other gate at all. Measured 2026-08-25:
+# `crates-squat-staging/drip-squat.rs` is a live publisher tool, was outside every
+# Rust gate, and was unformatted.
+#
+# Asking the repository the real question -- "does an ancestor directory own a
+# Cargo.toml?" -- hands a file to another workspace's `cargo fmt` only when such a
+# workspace actually exists to receive it, and a new nested crate is excluded BY
+# DEFAULT without editing any list.
+crate_dirs="$(git ls-files -- '*Cargo.toml' | while IFS= read -r t; do
+    d=${t%/Cargo.toml}
+    [ "$d" = "$t" ] && d=.
+    printf '%s\n' "$d"
+done | sort -u)"
+
+owned_by_a_nested_workspace() {
+    local dir=$1
+    case "$dir" in */*) dir=${dir%/*} ;; *) return 1 ;; esac
+    while [ -n "$dir" ] && [ "$dir" != "." ]; do
+        printf '%s\n' "$crate_dirs" | grep -qxF "$dir" && return 0
+        case "$dir" in */*) dir=${dir%/*} ;; *) dir="" ;; esac
+    done
+    return 1
+}
+
+# DATED RECORDS stay excluded, but by the narrowest path that is genuinely an
+# archive. `ai_docs/` as a whole was too broad: `ai_docs/reference/` is LIVE
+# TOOLING -- a staleness dashboard and an update driver, both executable -- and
+# only `ai_docs/archived/` is a capture of what was run. Editing a capture to
+# satisfy a formatter changes the record; editing live tooling does not.
+is_dated_record() {
     case "$1" in
-        experiments/*|ai_docs/*|benchmarks/*)    return 0 ;;
-        shmem_exec_obj/*|crates-squat-staging/*) return 0 ;;
+        experiments/*|benchmarks/*|dev_transcripts/*|ai_docs/archived/*) return 0 ;;
     esac
     return 1
 }
 
 git ls-files -z -- '*.rs' | while IFS= read -r -d '' f; do
     [ -f "$f" ] || continue          # skip gitlinks (hermit, reverie, liteinst2, agent-utils)
-    is_excluded "$f" && continue
+    is_dated_record "$f" && continue
+    owned_by_a_nested_workspace "$f" && continue
     printf '%s\n' "$f"
 done | sort
