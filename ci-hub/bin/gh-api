@@ -1,0 +1,103 @@
+#!/usr/bin/env bash
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+# All rights reserved.
+#
+# This source code is licensed under the BSD-style license found in the
+# LICENSE file in the root directory of this source tree.
+#
+# Authenticated GitHub REST reads from a box with NO DIRECT EGRESS.
+#
+# WHY THIS EXISTS. On at least devbig014 there is no route to github.com at all
+# -- both github.com:443 and api.github.com:443 are unreachable. `git` still
+# works because git config carries `http.proxy = https://fwdproxy:8082`, but
+# `gh` does not read git's config, so it dials direct and dies with "network is
+# unreachable". Agents have repeatedly read that as "the API is down" or "my box
+# is broken" and handed work off at the closing step. It is neither: it is one
+# missing proxy configuration, and the proxy additionally demands a client
+# certificate (it answers HTTP 407 without one).
+#
+# ⚠️ WHY THIS IS NOT JUST `HTTPS_PROXY=... gh`. That does not work and the way it
+# fails is misleading. Measured:
+#     HTTPS_PROXY=http://fwdproxy:8082   -> malformed HTTP response "\x15\x03\x03..."
+#                                           (a TLS alert -- the proxy speaks TLS)
+#     HTTPS_PROXY=https://fwdproxy:8082  -> malformed HTTP status code "connection"
+# Go's HTTP client cannot present a proxy CLIENT CERTIFICATE from environment
+# variables, so `gh` cannot authenticate to fwdproxy however you set them. curl
+# can, which is why this wrapper shells out to curl rather than fixing `gh`.
+#
+# SCOPE, STATED PLAINLY: READS ONLY. This covers the GitHub REST API. It does
+# NOT give you `gh pr merge`, `gh pr close`, or comment writes -- those go
+# through `ci-hub/bin/gh`, which enforces the disclosure boundary and still
+# needs a box that can reach the API. On a box like this one you can still LAND,
+# because git push is proxied and works; you cannot merge or comment.
+#
+# USAGE
+#   ci-hub/bin/gh-api <path-or-url> [curl args...]
+#   ci-hub/bin/gh-api /repos/rrnewton/hermit/pulls?state=open&per_page=100
+#   ci-hub/bin/gh-api /repos/rrnewton/hermit/pulls/2276
+#
+# Exits 2 on a configuration problem it can name, so a broken setup cannot be
+# mistaken for an empty result.
+
+set -uo pipefail
+
+PROXY="${FWDPROXY_URL:-https://fwdproxy:8082}"
+PROXY_CA="${FWDPROXY_CACERT:-/etc/pki/tls/certs/fb_certs.pem}"
+IDENTITY="${FWDPROXY_IDENTITY:-/var/facebook/x509_identities/server.pem}"
+
+if (($# < 1)); then
+    sed -n '/^# USAGE/,/^#$/p' "$0" >&2
+    exit 2
+fi
+
+command -v curl >/dev/null 2>&1 || {
+    echo "gh-api: curl is required" >&2
+    exit 2
+}
+
+for f in "$PROXY_CA" "$IDENTITY"; do
+    [[ -r $f ]] || {
+        echo "gh-api: cannot read $f" >&2
+        echo "  Without it the forward proxy answers HTTP 407 and every call fails." >&2
+        echo "  Override with FWDPROXY_CACERT / FWDPROXY_IDENTITY if your box differs." >&2
+        exit 2
+    }
+done
+
+TOKEN="${GH_TOKEN:-${GITHUB_TOKEN:-$(gh auth token 2>/dev/null)}}"
+[[ -n $TOKEN ]] || {
+    echo "gh-api: no GitHub token (tried GH_TOKEN, GITHUB_TOKEN, 'gh auth token')" >&2
+    exit 2
+}
+
+path=$1
+shift
+case "$path" in
+    https://*) url=$path ;;
+    /*) url="https://api.github.com${path}" ;;
+    *) url="https://api.github.com/${path}" ;;
+esac
+
+# `-f` so an HTTP error is a nonzero exit rather than an error document printed
+# as if it were data -- a 404 body parses as perfectly good JSON and has been
+# mistaken for a real empty result before.
+curl -sS -f \
+    -x "$PROXY" \
+    --proxy-cacert "$PROXY_CA" \
+    --proxy-cert "$IDENTITY" \
+    --proxy-key "$IDENTITY" \
+    -H "Authorization: Bearer ${TOKEN}" \
+    -H "Accept: application/vnd.github+json" \
+    -H "X-GitHub-Api-Version: 2022-11-28" \
+    "$url" "$@"
+status=$?
+
+if ((status != 0)); then
+    echo "" >&2
+    echo "gh-api: request failed (curl exit $status) for $url" >&2
+    echo "  This is NOT an empty result. Distinguish before acting on it:" >&2
+    echo "    exit 22 -> HTTP error from GitHub (404/403/422): the request was delivered." >&2
+    echo "    exit 7  -> could not reach the proxy at $PROXY." >&2
+    echo "    exit 56 -> proxy refused the client certificate (the 407 case)." >&2
+fi
+exit $status
