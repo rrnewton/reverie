@@ -139,6 +139,41 @@ pub trait GlobalTool: Send + Sync + Default {
     /// It receives a shared reference to the global state object, which must
     /// manage its own synchronization.
     async fn receive_rpc(&self, _from: Tid, _message: Self::Request) -> Self::Response;
+
+    /// Reports that a backend observed a child transition that is now visible
+    /// to a parent wait syscall.
+    ///
+    /// Backends must invoke this at the waitability boundary itself, rather
+    /// than inferring it from signal delivery.
+    async fn on_backend_child_wait_event(
+        &self,
+        _event: BackendChildWaitEvent,
+    ) -> Result<(), Error> {
+        Ok(())
+    }
+}
+
+/// A child state observed by an execution backend at the point it becomes
+/// eligible for a parent wait syscall.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BackendChildWaitState {
+    /// The child terminated with this exit status.
+    Exited(ExitStatus),
+    /// The child entered a job-control stop for this signal number.
+    Stopped(i32),
+    /// A previously stopped child resumed.
+    Continued,
+}
+
+/// A backend-observed child waitability transition.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct BackendChildWaitEvent {
+    /// The process whose wait syscalls may observe the transition.
+    pub parent: Pid,
+    /// The child process that changed state.
+    pub child: Pid,
+    /// The newly waitable child state.
+    pub state: BackendChildWaitState,
 }
 
 #[async_trait]

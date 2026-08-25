@@ -20,6 +20,8 @@ use std::sync::Mutex;
 use std::sync::atomic::AtomicI32;
 use std::sync::atomic::Ordering;
 
+use reverie::ExitStatus;
+
 use crate::GuestMemory;
 use crate::SyscallRequest;
 use crate::bootstrap::BOOT_RESERVED_END;
@@ -150,7 +152,7 @@ pub(crate) enum SyscallAction {
         result: i64,
         segment: Option<(SegmentBase, u64)>,
     },
-    Exit(i32),
+    Exit(ExitStatus),
 }
 
 #[derive(Default)]
@@ -223,8 +225,14 @@ pub(crate) enum ProcessAction {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct ProcessExit {
-    pub code: i32,
+    pub status: ExitStatus,
     pub group: bool,
+}
+
+pub(crate) fn conventional_exit_code(status: ExitStatus) -> i32 {
+    status
+        .code()
+        .unwrap_or_else(|| 128 + status.signal().expect("signaled status has a signal"))
 }
 
 // Retain the audited process-syscall classification even though the root
@@ -283,7 +291,7 @@ fn execute_basic_syscall_with_output(
     let capture_output = output.is_some();
 
     if number == libc::SYS_exit as u64 || number == libc::SYS_exit_group as u64 {
-        return SyscallAction::Exit(args[0] as i32);
+        return SyscallAction::Exit(ExitStatus::Exited(args[0] as i32));
     }
 
     let result = if number == libc::SYS_write as u64 {
@@ -981,14 +989,15 @@ pub(crate) struct ElfExecutor {
     pending_processes: std::collections::BTreeMap<i32, PendingProcess>,
     process_action: Option<ProcessAction>,
     pending_segment: Option<(SegmentBase, u64)>,
-    exit_code: Option<i32>,
+    exit_status: Option<ExitStatus>,
     exit_group: bool,
     clear_child_tid: Option<u64>,
 }
 
 struct PendingProcess {
     start: Option<std::sync::mpsc::Sender<()>>,
-    handle: std::thread::JoinHandle<crate::Result<i32>>,
+    completion: Arc<Mutex<Option<ExitStatus>>>,
+    handle: std::thread::JoinHandle<crate::Result<()>>,
 }
 
 struct AddressSpaceState {
@@ -1180,7 +1189,7 @@ impl ElfExecutor {
             pending_processes: std::collections::BTreeMap::new(),
             process_action: None,
             pending_segment: None,
-            exit_code: None,
+            exit_status: None,
             exit_group: false,
             clear_child_tid: None,
         }
@@ -1518,7 +1527,7 @@ impl ElfExecutor {
             pending_processes: std::collections::BTreeMap::new(),
             process_action: None,
             pending_segment: None,
-            exit_code: None,
+            exit_status: None,
             exit_group: false,
             clear_child_tid: None,
         };
@@ -1551,7 +1560,7 @@ impl ElfExecutor {
             pending_processes: std::collections::BTreeMap::new(),
             process_action: None,
             pending_segment: None,
-            exit_code: None,
+            exit_status: None,
             exit_group: false,
             clear_child_tid: None,
         };
@@ -1576,12 +1585,14 @@ impl ElfExecutor {
         &mut self,
         pid: i32,
         start: std::sync::mpsc::Sender<()>,
-        handle: std::thread::JoinHandle<crate::Result<i32>>,
+        completion: Arc<Mutex<Option<ExitStatus>>>,
+        handle: std::thread::JoinHandle<crate::Result<()>>,
     ) {
         let previous = self.pending_processes.insert(
             pid,
             PendingProcess {
                 start: Some(start),
+                completion,
                 handle,
             },
         );
@@ -1605,10 +1616,20 @@ impl ElfExecutor {
         if let Some(start) = process.start.take() {
             let _ = start.send(());
         }
-        let code = process.handle.join().map_err(|_| {
+        process.handle.join().map_err(|_| {
             crate::Error::UnexpectedVcpuExit(format!("KVM child process {pid} panicked"))
         })??;
-        self.record_child_exit(pid, code);
+        let status = process
+            .completion
+            .lock()
+            .expect("KVM child completion lock poisoned")
+            .take()
+            .ok_or_else(|| {
+                crate::Error::UnexpectedVcpuExit(format!(
+                    "KVM child process {pid} exited without publishing its status"
+                ))
+            })?;
+        self.record_child_exit(pid, status);
         Ok(())
     }
 
@@ -1636,10 +1657,13 @@ impl ElfExecutor {
         };
         let pid = pending_pid?;
         if args[2] & libc::WNOHANG as u64 != 0
-            && self
-                .pending_processes
-                .get(&pid)
-                .is_some_and(|process| !process.handle.is_finished())
+            && self.pending_processes.get(&pid).is_some_and(|process| {
+                process
+                    .completion
+                    .lock()
+                    .expect("KVM child completion lock poisoned")
+                    .is_none()
+            })
         {
             return Some(0);
         }
@@ -1684,10 +1708,13 @@ impl ElfExecutor {
         };
         let pid = pending_pid?;
         if args[3] & libc::WNOHANG as u64 != 0
-            && self
-                .pending_processes
-                .get(&pid)
-                .is_some_and(|process| !process.handle.is_finished())
+            && self.pending_processes.get(&pid).is_some_and(|process| {
+                process
+                    .completion
+                    .lock()
+                    .expect("KVM child completion lock poisoned")
+                    .is_none()
+            })
         {
             if args[2] != 0 {
                 let mut memory = memory.clone();
@@ -1717,7 +1744,7 @@ impl ElfExecutor {
 
     // TODO-HUMAN-REVIEW(PR-156): Review non-returning exit injection state.
     pub(crate) fn has_pending_exit(&self) -> bool {
-        self.exit_code.is_some()
+        self.exit_status.is_some()
     }
 
     pub(crate) fn replace_after_exec(&mut self, state: LoadedStaticElf) {
@@ -1741,13 +1768,15 @@ impl ElfExecutor {
             .expect("KVM file-table lock poisoned") =
             FileTableState::try_from_elf(&self.state).expect("clone post-exec KVM file table");
         self.pending_segment = None;
-        self.exit_code = None;
+        self.exit_status = None;
         self.exit_group = false;
         self.clear_child_tid = None;
     }
 
-    pub(crate) fn record_child_exit(&mut self, pid: i32, code: i32) {
-        self.state.children.insert(pid, code);
+    pub(crate) fn record_child_exit(&mut self, pid: i32, status: ExitStatus) {
+        if !sigchld_auto_reaps(&self.state) {
+            self.state.children.insert(pid, status);
+        }
     }
 
     pub(crate) fn append_output(&mut self, stdout: Vec<u8>, stderr: Vec<u8>) {
@@ -1846,14 +1875,14 @@ impl ElfExecutor {
 
     /// Returns and clears a pending thread-local or group-wide exit.
     pub(crate) fn take_exit(&mut self) -> Option<ProcessExit> {
-        let code = self.exit_code.take()?;
+        let status = self.exit_status.take()?;
         self.state
             .task_lifecycle
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .remove(self.state.tid, self.task_generation);
         let group = std::mem::take(&mut self.exit_group);
-        Some(ProcessExit { code, group })
+        Some(ProcessExit { status, group })
     }
 
     pub(crate) fn take_output(&mut self) -> (Vec<u8>, Vec<u8>) {
@@ -1960,7 +1989,7 @@ impl SyscallExecutor for ElfExecutor {
                 result
             }
             SyscallAction::Exit(code) => {
-                self.exit_code = Some(code);
+                self.exit_status = Some(code);
                 self.exit_group = request.number() != libc::SYS_exit as u64;
                 0
             }
@@ -9744,6 +9773,13 @@ fn rt_sigaction(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u
     if action.is_some() && matches!(signal, libc::SIGKILL | libc::SIGSTOP) {
         return negative_errno(libc::EINVAL);
     }
+    if signal == libc::SIGCHLD
+        && action
+            .as_ref()
+            .is_some_and(|action| !matches!(kernel_sigaction_handler(action), 0 | 1))
+    {
+        return negative_errno(libc::ENOSYS);
+    }
 
     let previous = state
         .signal_actions
@@ -9904,7 +9940,7 @@ fn kill_signal(state: &mut LoadedStaticElf, number: u64, args: &[u64; 6]) -> Sys
 
     // SIGKILL can never be caught, blocked, or ignored.
     if signal == libc::SIGKILL {
-        return SyscallAction::Exit(128 + signal);
+        return SyscallAction::Exit(ExitStatus::from_raw(signal));
     }
 
     // A blocked signal becomes process-pending and wakes any matching virtual
@@ -9917,7 +9953,7 @@ fn kill_signal(state: &mut LoadedStaticElf, number: u64, args: &[u64; 6]) -> Sys
     }
 
     match signal_disposition(state, signal) {
-        SignalDisposition::Terminate => SyscallAction::Exit(128 + signal),
+        SignalDisposition::Terminate => SyscallAction::Exit(ExitStatus::from_raw(signal)),
         SignalDisposition::Ignore => continue_with(0),
         // ⚠️ TRUTHFULNESS. This guest kernel runs no user handler and models no
         // stopped state, so reporting 0 here claimed a delivery that never
@@ -9936,7 +9972,7 @@ fn kill_signal(state: &mut LoadedStaticElf, number: u64, args: &[u64; 6]) -> Sys
 /// handler before falling back to the kernel default action.
 fn signal_disposition(state: &LoadedStaticElf, signal: libc::c_int) -> SignalDisposition {
     if let Some(action) = state.signal_actions.get(&signal) {
-        let handler = u64::from_le_bytes(action[0..8].try_into().expect("8-byte handler word"));
+        let handler = kernel_sigaction_handler(action);
         const SIG_DFL: u64 = 0;
         const SIG_IGN: u64 = 1;
         match handler {
@@ -9946,6 +9982,28 @@ fn signal_disposition(state: &LoadedStaticElf, signal: libc::c_int) -> SignalDis
         }
     }
     default_signal_disposition(signal)
+}
+
+fn kernel_sigaction_handler(action: &[u8; KERNEL_SIGACTION_SIZE]) -> u64 {
+    u64::from_le_bytes(action[0..8].try_into().expect("8-byte handler word"))
+}
+
+fn kernel_sigaction_flags(action: &[u8; KERNEL_SIGACTION_SIZE]) -> u64 {
+    u64::from_le_bytes(action[8..16].try_into().expect("8-byte flags word"))
+}
+
+/// Linux discards a child's terminal wait status when the parent explicitly
+/// ignores SIGCHLD or installs SA_NOCLDWAIT. The default SIGCHLD disposition is
+/// also "ignore", but unlike an explicit SIG_IGN it still leaves a waitable
+/// zombie, so inspect the installed action rather than the effective disposition.
+fn sigchld_auto_reaps(state: &LoadedStaticElf) -> bool {
+    state
+        .signal_actions
+        .get(&libc::SIGCHLD)
+        .is_some_and(|action| {
+            kernel_sigaction_handler(action) == 1
+                || kernel_sigaction_flags(action) & libc::SA_NOCLDWAIT as u64 != 0
+        })
 }
 
 /// The kernel default action for `signal` when no handler is installed.
@@ -10116,8 +10174,8 @@ fn wait4(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6])
     let Some(child_pid) = child_pid else {
         return negative_errno(libc::ECHILD);
     };
-    let status = state.children[&child_pid] & 0xff;
-    if args[1] != 0 && memory.write(args[1], &(status << 8).to_le_bytes()).is_err() {
+    let status = state.children[&child_pid].into_raw();
+    if args[1] != 0 && memory.write(args[1], &status.to_le_bytes()).is_err() {
         return negative_errno(libc::EFAULT);
     }
     if args[3] != 0
@@ -10169,15 +10227,20 @@ fn waitid(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]
     let Some(child_pid) = child_pid else {
         return negative_errno(libc::ECHILD);
     };
-    let status = state.children[&child_pid] & 0xff;
+    let status = state.children[&child_pid];
+    let (si_code, si_status) = match status {
+        ExitStatus::Exited(code) => (libc::CLD_EXITED, code),
+        ExitStatus::Signaled(signal, true) => (libc::CLD_DUMPED, signal as libc::c_int),
+        ExitStatus::Signaled(signal, false) => (libc::CLD_KILLED, signal as libc::c_int),
+    };
     let info = GuestWaitidSiginfo {
         si_signo: libc::SIGCHLD,
         si_errno: 0,
-        si_code: libc::CLD_EXITED,
+        si_code,
         _union_alignment: 0,
         si_pid: child_pid,
         si_uid: 0,
-        si_status: status,
+        si_status,
         _clock_alignment: 0,
         si_utime: 0,
         si_stime: 0,
@@ -10588,7 +10651,7 @@ mod tests {
             } => {
                 panic!("filesystem syscall changed a segment base")
             }
-            SyscallAction::Exit(code) => panic!("filesystem syscall exited with {code}"),
+            SyscallAction::Exit(code) => panic!("filesystem syscall exited with {code:?}"),
         }
     }
 
@@ -20567,7 +20630,7 @@ mod tests {
     fn wait4_decodes_zero_extended_negative_one_and_reports_exit_status() {
         let root = TestDir::new();
         let mut state = test_state(&root.0);
-        state.children.insert(7, 3);
+        state.children.insert(7, ExitStatus::Exited(3));
         let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
         let status_address = 0x100;
 
@@ -20586,13 +20649,35 @@ mod tests {
     }
 
     #[test]
+    fn wait4_preserves_signal_termination_identity() {
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        state
+            .children
+            .insert(7, ExitStatus::from_raw(libc::SIGTERM));
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        let status_address = 0x100;
+
+        assert_eq!(
+            wait4(&mut memory, &mut state, &[7, status_address, 0, 0, 0, 0],),
+            7
+        );
+        let mut status = [0; std::mem::size_of::<libc::c_int>()];
+        memory.read(status_address, &mut status).unwrap();
+        let status = libc::c_int::from_le_bytes(status);
+        assert!(libc::WIFSIGNALED(status));
+        assert_eq!(libc::WTERMSIG(status), libc::SIGTERM);
+        assert!(!libc::WCOREDUMP(status));
+    }
+
+    #[test]
     fn waitid_reports_status_supports_wnowait_and_reaps() {
         const INFO: u64 = 0x100;
         const USAGE: u64 = 0x200;
 
         let root = TestDir::new();
         let mut state = test_state(&root.0);
-        state.children.insert(7, 3);
+        state.children.insert(7, ExitStatus::Exited(3));
         let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
         memory
             .write(USAGE, &[0xa5; std::mem::size_of::<libc::rusage>()])
@@ -20631,7 +20716,7 @@ mod tests {
         let mut usage = vec![0xff; std::mem::size_of::<libc::rusage>()];
         memory.read(USAGE, &mut usage).unwrap();
         assert!(usage.iter().all(|byte| *byte == 0));
-        assert_eq!(state.children.get(&7), Some(&3));
+        assert_eq!(state.children.get(&7), Some(&ExitStatus::Exited(3)));
 
         assert_eq!(
             waitid(
@@ -20670,13 +20755,16 @@ mod tests {
         // exits with code 9.
         let (start_sender, start_receiver) = std::sync::mpsc::channel();
         let (running_sender, running_receiver) = std::sync::mpsc::channel();
+        let completion = Arc::new(Mutex::new(None));
+        let child_completion = completion.clone();
         let handle = std::thread::spawn(move || {
             running_sender.send(()).unwrap();
             start_receiver.recv().unwrap();
-            Ok(9)
+            *child_completion.lock().unwrap() = Some(ExitStatus::Exited(9));
+            Ok(())
         });
-        executor.register_child_process(2, start_sender, handle);
-        // Guarantee the child is running (so `handle.is_finished()` is false).
+        executor.register_child_process(2, start_sender, completion, handle);
+        // Guarantee the child is running without having published completion.
         running_receiver.recv().unwrap();
 
         let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
@@ -21115,14 +21203,17 @@ mod tests {
         let (start_sender, start_receiver) = std::sync::mpsc::channel();
         let (ready_sender, ready_receiver) = std::sync::mpsc::channel();
         let (started_sender, started_receiver) = std::sync::mpsc::channel();
+        let completion = Arc::new(Mutex::new(None));
+        let child_completion = completion.clone();
         let handle = std::thread::spawn(move || {
             ready_sender.send(()).unwrap();
             start_receiver.recv().unwrap();
             started_sender.send(()).unwrap();
-            Ok(0)
+            *child_completion.lock().unwrap() = Some(ExitStatus::SUCCESS);
+            Ok(())
         });
 
-        executor.register_child_process(2, start_sender, handle);
+        executor.register_child_process(2, start_sender, completion, handle);
         ready_receiver.recv().unwrap();
         assert!(started_receiver.try_recv().is_err());
         executor.start_pending_child_processes().unwrap();
@@ -21134,6 +21225,73 @@ mod tests {
         let mut action = [0; KERNEL_SIGACTION_SIZE];
         action[0..8].copy_from_slice(&handler.to_le_bytes());
         action
+    }
+
+    fn custom_action_with_flags(handler: u64, flags: u64) -> [u8; KERNEL_SIGACTION_SIZE] {
+        let mut action = custom_action(handler);
+        action[8..16].copy_from_slice(&flags.to_le_bytes());
+        action
+    }
+
+    #[test]
+    fn sigchld_handler_registration_fails_instead_of_promising_undeliverable_signal() {
+        const ACTION: u64 = 0x100;
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        memory.write(ACTION, &custom_action(0x4321)).unwrap();
+
+        assert_eq!(
+            rt_sigaction(
+                &mut memory,
+                &mut state,
+                &[
+                    libc::SIGCHLD as u64,
+                    ACTION,
+                    0,
+                    KERNEL_SIGSET_SIZE as u64,
+                    0,
+                    0,
+                ],
+            ),
+            negative_errno(libc::ENOSYS),
+        );
+        assert!(!state.signal_actions.contains_key(&libc::SIGCHLD));
+    }
+
+    #[test]
+    fn explicit_sigchld_ignore_and_nocldwait_discard_child_status() {
+        let root = TestDir::new();
+
+        let mut default = ElfExecutor::new(test_state(&root.0), false);
+        default.record_child_exit(7, ExitStatus::Exited(3));
+        assert_eq!(
+            default.state.children.get(&7),
+            Some(&ExitStatus::Exited(3)),
+            "default SIGCHLD disposition must retain a waitable child"
+        );
+
+        let mut ignored = ElfExecutor::new(test_state(&root.0), false);
+        ignored
+            .state
+            .signal_actions
+            .insert(libc::SIGCHLD, custom_action(1));
+        ignored.record_child_exit(7, ExitStatus::Exited(3));
+        assert!(
+            ignored.state.children.is_empty(),
+            "explicit SIG_IGN must auto-reap"
+        );
+
+        let mut nocldwait = ElfExecutor::new(test_state(&root.0), false);
+        nocldwait.state.signal_actions.insert(
+            libc::SIGCHLD,
+            custom_action_with_flags(0, libc::SA_NOCLDWAIT as u64),
+        );
+        nocldwait.record_child_exit(7, ExitStatus::Exited(3));
+        assert!(
+            nocldwait.state.children.is_empty(),
+            "SA_NOCLDWAIT must auto-reap"
+        );
     }
 
     #[test]
@@ -21149,7 +21307,7 @@ mod tests {
             &[pid as u64, pid as u64, libc::SIGABRT as u64, 0, 0, 0],
         );
         match action {
-            SyscallAction::Exit(code) => assert_eq!(code, 128 + libc::SIGABRT),
+            SyscallAction::Exit(code) => assert_eq!(code, ExitStatus::from_raw(libc::SIGABRT)),
             _ => panic!("expected Exit for self-directed SIGABRT"),
         }
     }
@@ -21307,7 +21465,7 @@ mod tests {
     fn result_of(action: SyscallAction) -> i64 {
         match action {
             SyscallAction::Continue { result, .. } => result,
-            SyscallAction::Exit(code) => panic!("expected Continue, got Exit({code})"),
+            SyscallAction::Exit(code) => panic!("expected Continue, got Exit({code:?})"),
         }
     }
 
@@ -22608,7 +22766,7 @@ mod tests {
         let mut state = test_state(&dir.0);
         let mut memory = GuestMemory::new(0, 0x2000).unwrap();
         // A child (pid 9) has already exited with code 7.
-        state.children.insert(9, 7);
+        state.children.insert(9, ExitStatus::Exited(7));
 
         // wait4(-1) arrives as 0xFFFF_FFFF in a 64-bit register; the handler
         // must sign-extend it to -1 and reap the recorded child rather than
