@@ -9,6 +9,7 @@ import os
 import re
 import shlex
 import subprocess
+import tempfile
 import sys
 import time
 from collections.abc import Callable, Mapping, Sequence
@@ -211,7 +212,38 @@ def require_guest_visible_root(path: Path, *, role: str) -> Path:
 
 
 def run_command(command: Sequence[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(command, text=True, capture_output=True, **kwargs)
+    """Run a command and capture its output, waiting for THE CHILD, not for EOF.
+
+    ⚠️ `capture_output=True` GIVES THE CHILD A PIPE AND THEN READS TO EOF, and EOF
+    arrives when the LAST HOLDER closes it -- not when the child exits. Any
+    background grandchild that inherited it keeps the caller blocked after the
+    child is already gone. git's `gc --auto` is the everyday example: it defaults
+    on (gc.auto=6700) and detaches (gc.autoDetach=true), inheriting stderr.
+
+    Reproduced 2026-08-25 with a child that exits immediately leaving one
+    background grandchild: capture_output blocked indefinitely; capturing to a
+    file returned in 0.0s with the same stdout and the same exit code. A regular
+    file has no EOF-waiting semantics, so `wait()` on the child is the only thing
+    that gates the return.
+
+    ⚠️ NOT SOLVED WITH A TIMEOUT, and not by turning auto-gc off. A timeout makes
+    an unbounded wait a bounded one and still discards the reason; disabling gc
+    hides the mechanism and leaves the next background child to reproduce it. The
+    defect is waiting on the wrong thing, so this waits on the right one.
+    """
+    with tempfile.TemporaryFile("w+b") as out, tempfile.TemporaryFile("w+b") as err:
+        process = subprocess.Popen(
+            list(command), stdout=out, stderr=err, stdin=subprocess.DEVNULL, **kwargs
+        )
+        code = process.wait()
+        out.seek(0)
+        err.seek(0)
+        return subprocess.CompletedProcess(
+            list(command),
+            code,
+            out.read().decode("utf-8", "replace"),
+            err.read().decode("utf-8", "replace"),
+        )
 
 
 def checked_output(
