@@ -133,6 +133,32 @@ import sys
 # not do its job while a sibling held the ref.
 SCRATCH = f"refs/gh-merge-verified/{os.getpid()}"
 
+# WHEN THE OLD-SCHEME REFS BECOME SAFE TO DELETE
+#
+# Before this namespacing, scratch refs were FIXED names -- refs/gh-merge-verified/main
+# and refs/gh-merge-verified/<pr>. Sixteen of those were left in this repository on
+# 2026-08-25 and were DELIBERATELY NOT removed at the time: deleting a ref in a shared
+# repository can break a sibling that is between its fetch and its rev-parse, and this
+# box runs a dozen agents.
+#
+# They are distinguishable from the current scheme by SHAPE, not by guesswork:
+#     old scheme   refs/gh-merge-verified/<leaf>        exactly ONE component after the prefix
+#     this scheme  refs/gh-merge-verified/<pid>/pr      exactly TWO
+#
+# THE CONDITION UNDER WHICH DELETING THEM IS SAFE, so the next tidy-up does not have to
+# guess: nothing writes the one-component names any more, so the only hazard is a
+# process still running a copy of this tool from BEFORE this change. That is checkable
+# directly rather than inferred:
+#
+#     pgrep -f gh-merge-verified            # must return nothing
+#     git for-each-ref --format='%(refname)' refs/gh-merge-verified \
+#       | awk -F/ 'NF-2 == 1'               # exactly these, and only these
+#     ... | xargs -r -n1 git update-ref -d
+#
+# With no verifier process running, no writer of those names exists and the deletion
+# cannot race anything. With one running, wait -- a full run is seconds, not minutes.
+# Do NOT delete two-component refs: those belong to a LIVE process by construction.
+
 
 def run(args: list[str]) -> tuple[int, str, str]:
     """Run with NO shell and NO pipe, so the status is the command's own."""
