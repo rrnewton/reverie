@@ -204,6 +204,16 @@ jobs:
           chmod +x "$RUNNER_TEMP/bin/with-proxy"
           echo "$RUNNER_TEMP/bin" >>"$GITHUB_PATH"
 
+      # Keep initialization separate from observation: this gate fetches and
+      # reports drift, but never moves either the parent gitlink or checkout.
+      - name: Require the parent agent-utils pin to match current main
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          ulimit -t 120
+          timeout --signal=KILL 2m make --no-print-directory check-agent-utils-pin
+
       - name: Verify the live Claude and Codex skill topology
         if: always()
         shell: bash
