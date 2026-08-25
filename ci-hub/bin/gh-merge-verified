@@ -132,6 +132,8 @@ EXIT
        pull-ref hazard below.
     4  COULD NOT DETERMINE: the check did not complete. Distinct from 3 on
        purpose, so a broken verifier is never read as a clean landing.
+    5  REFUSED TO MERGE: a CHANGES-REQUESTED-AT names this exact head. Nothing was
+       attempted. An APPROVED-AT at the same head does not override it.
 """
 
 from __future__ import annotations
@@ -139,6 +141,7 @@ from __future__ import annotations
 import atexit
 import json
 import os
+import re
 import shutil
 import time
 import subprocess
@@ -295,6 +298,65 @@ def looks_unreachable(text: str) -> bool:
     )
 
 
+CR_AT = re.compile(r"^CHANGES-REQUESTED-AT\b[^\n]*", re.M)
+CR_WITHDRAWN = re.compile(r"^CHANGES-REQUESTED-WITHDRAWN-AT\b[^\n]*", re.M)
+
+
+def blocking_changes_requests(pr: str, repo: str, head: str) -> list[str]:
+    """Anchored refusals that name THIS head and have not been withdrawn.
+
+    WHY THIS EXISTS. A lander that greps for `APPROVED-AT` and merges when it
+    finds one is looking only for good news: it cannot see a refusal, so it
+    merges over one regardless of what any board says. Measured 2026-08-25 on
+    https://github.com/rrnewton/hermit/pull/2591 -- `CHANGES-REQUESTED-AT: claude
+    <head>` was posted in the anchored grammar at the exact head, and the merge
+    went through 3m42s later because the check never asked. Two defects reached
+    main, one a recipe that prints MERGES-CLEAN about a base it never fetched.
+
+    Of the 184 pull requests merged that day, seven carried such a marker; five
+    named an EARLIER sha, which is the correct clearing path. TWO named their
+    merged head: pull/2434 and pull/2591.
+
+    THE RULE IS EXACT-HEAD AND FAILS CLOSED:
+      * a refusal naming this head blocks even if an APPROVED-AT also names it.
+        Two reviewers disagreeing is not settled by whoever posted last -- that
+        is a coin toss -- so this stops and makes a human choose.
+      * pushing the fix moves the sha, so the refusal stops naming the head.
+        That is the ordinary way through and needs no override.
+      * CHANGES-REQUESTED-WITHDRAWN-AT at the same sha also clears it.
+    There is deliberately no --force. An override in a landing path is what
+    somebody in a hurry reaches for, and somebody in a hurry is the failure.
+
+    SHARP EDGE: the match is anchored to column 0, so quoting a marker
+    unindented -- including inside a fenced code block -- re-asserts it. Indent
+    quoted markers by one space. Erring this way is deliberate: guessing which
+    occurrences were "only quoting" is interpreting the signal, not obeying it.
+    """
+    rc, out, _ = run(gh_argv(["gh", "pr", "view", pr, "--repo", repo,
+                              "--json", "comments,reviews"]))
+    if rc != 0:
+        return ["__UNREADABLE__"]
+    try:
+        doc = json.loads(out)
+    except json.JSONDecodeError:
+        return ["__UNREADABLE__"]
+
+    bodies = [c.get("body") or "" for c in doc.get("comments", [])]
+    bodies += [r.get("body") or "" for r in doc.get("reviews", [])]
+    native = [r for r in doc.get("reviews", [])
+              if (r.get("state") or "") == "CHANGES_REQUESTED"]
+
+    blocking = []
+    for body in bodies:
+        for line in CR_AT.findall(body):
+            if head and head in line:
+                blocking.append(line.strip())
+    if any(head and head in w for body in bodies for w in CR_WITHDRAWN.findall(body)):
+        blocking = []
+    blocking += ["(GitHub review state CHANGES_REQUESTED)" for _ in native]
+    return blocking
+
+
 def parse_options(argv: list[str]):
     """Split this tool's own options from the `gh pr merge` passthrough.
 
@@ -413,6 +475,26 @@ def main() -> None:
               "corroboration; that ref lags a push. Pass --expect-head <sha> if you "
               "just pushed.")
     head = head.strip()
+
+    # ADMISSION, BEFORE ANY MERGE IS ATTEMPTED. Refuses rather than warns: a
+    # warning printed by a landing path is read AFTER the merge.
+    if not verify_only:
+        blocking = blocking_changes_requests(pr, repo, head)
+        if blocking == ["__UNREADABLE__"]:
+            die(4, "gh-merge-verified: COULD NOT DETERMINE -- could not read comments/reviews "
+                   f"for #{pr}, so a changes-request at this head cannot be ruled out.",
+                "  Nothing was merged. This is not permission; it is the absence of an answer.")
+        if blocking:
+            die(5, f"gh-merge-verified: REFUSING TO MERGE #{pr} -- a changes-request names this "
+                   f"exact head {head[:12]}.",
+                *[f"    {b}" for b in blocking],
+                "",
+                "  An APPROVED-AT at the same head does NOT override this.",
+                "  TO PROCEED: push the fix (the sha moves and the refusal stops naming the head),",
+                f"  or have the reviewer post CHANGES-REQUESTED-WITHDRAWN-AT: <family> {head}",
+                "  There is deliberately no override flag.",
+                "  FALSE POSITIVE? The match is anchored to column 0, so an unindented quotation",
+                "  of a marker re-asserts it. Indent quoted markers by one space.")
     if rc != 0 or not head:
         die(4, f"gh-merge-verified: COULD NOT DETERMINE — cannot resolve the head of PR {pr}")
 
