@@ -29,10 +29,10 @@
 
 #![recursion_limit = "256"]
 
-#[path = "lib/history_queries.rs"]
-mod history_queries;
 #[path = "lib/failure_obligations.rs"]
 mod failure_obligations;
+#[path = "lib/history_queries.rs"]
+mod history_queries;
 #[path = "lib/landing_lock.rs"]
 mod landing_lock;
 #[path = "lib/lease.rs"]
@@ -5351,10 +5351,7 @@ fn recent_row_summary(row: &HistoryRow, verdict: &str) -> String {
             .collect::<Vec<_>>()
             .join(", ");
         return if failed.len() > 2 {
-            format!(
-                "failed: {shown} (+{} more){aborted_note}",
-                failed.len() - 2
-            )
+            format!("failed: {shown} (+{} more){aborted_note}", failed.len() - 2)
         } else {
             format!("failed: {shown}{aborted_note}")
         };
@@ -5374,7 +5371,10 @@ fn recent_row_summary(row: &HistoryRow, verdict: &str) -> String {
         } else {
             String::new()
         };
-        return format!("no failing node recorded; {} aborted: {shown}{more}", aborted.len());
+        return format!(
+            "no failing node recorded; {} aborted: {shown}{more}",
+            aborted.len()
+        );
     }
     match verdict {
         "VALIDATED" => "passed".into(),
