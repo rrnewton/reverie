@@ -485,6 +485,7 @@ def post_and_record(args: list[str], task: str, actor: str) -> int:
 
 def main() -> int:
     args, supplied = disclosure_options(sys.argv[1:])
+    task = supplied.get("task")
     if is_attributed_write(args):
         claimed_agent, team, role = required_disclosure(supplied)
         disclosure = validate_disclosure(claimed_agent, team, role)

@@ -1,0 +1,89 @@
+#!/usr/bin/env python3
+"""Drive `ci-hub/bin/gh`'s ENTRY POINT, not its helpers.
+
+⚠️ WHY THIS FILE EXISTS. The `--task` coupling shipped with `task` never bound in
+`main()`, so EVERY invocation of the wrapper -- including plain reads that touch
+none of the new code -- died with `NameError: name 'task' is not defined`. It got
+through because the demonstration called `post_and_record` directly and the unit
+tests imported the grammar module; nothing executed `main()`.
+
+A test that exercises the function under test and skips the entry point around it
+proves the function, and says nothing about the tool. These cases run the script
+as a subprocess, the way a caller does.
+"""
+
+from __future__ import annotations
+
+import os
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+TOOL = Path(__file__).resolve().parent / "gh"
+FAILURES: list[str] = []
+
+
+def check(label: str, ok: bool, detail: str = "") -> None:
+    print(f"{'ok  ' if ok else 'FAIL'}  {label}")
+    if not ok:
+        FAILURES.append(f"{label}\n      {detail}")
+
+
+def run(args: list[str], env: dict) -> tuple[int, str]:
+    proc = subprocess.run(
+        [sys.executable, str(TOOL), *args], capture_output=True, text=True, env=env
+    )
+    return proc.returncode, proc.stdout + proc.stderr
+
+
+def main() -> int:
+    with tempfile.TemporaryDirectory(prefix="gh-task-") as tmp:
+        stub = Path(tmp) / "gh"
+        stub.write_text("#!/bin/bash\necho STUB_RAN \"$@\"\nexit 0\n")
+        stub.chmod(0o755)
+        env = {**os.environ, "FLEET_REAL_GH": str(stub)}
+
+        # THE REGRESSION. A read is not an attributed write, so it must reach the
+        # real binary untouched. This is the case that was broken.
+        code, out = run(["pr", "view", "2303", "--json", "number"], env)
+        check(
+            "a plain read passes through and does not raise",
+            code == 0 and "STUB_RAN" in out,
+            f"exit {code}\n{out}",
+        )
+        check(
+            "a plain read does not mention --task",
+            "task" not in out.lower() or "STUB_RAN" in out,
+            out,
+        )
+
+        # An unattributed comment write must still be refused for the ORIGINAL
+        # reason -- missing disclosure -- and not crash on the new option.
+        code, out = run(["pr", "comment", "2303", "--body", "x"], env)
+        check(
+            "an undisclosed comment write still REFUSES on disclosure",
+            code != 0 and "NameError" not in out and "Traceback" not in out,
+            f"exit {code}\n{out}",
+        )
+
+        # `--task` on a non-comment command is a caller error, reported as one.
+        code, out = run(["--task", "some_task", "repo", "view"], env)
+        check(
+            "--task outside a comment write is a clean refusal, not a traceback",
+            "Traceback" not in out,
+            f"exit {code}\n{out}",
+        )
+
+    print()
+    if FAILURES:
+        print(f"{len(FAILURES)} FAILED:")
+        for f in FAILURES:
+            print(f"  - {f}")
+        return 1
+    print("all entry-point cases passed")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
