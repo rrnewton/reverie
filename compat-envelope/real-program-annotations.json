@@ -1,0 +1,29 @@
+{
+  "schema": "real-program-annotations/v1",
+  "programs": {
+    "curl-localhost": {
+      "classes": [
+        "concurrency",
+        "server"
+      ],
+      "concurrency_kind": "multi-process",
+      "evidence": "tg:compat_add_the_missing 2026-08-10 01:46; real_compat_workload.sh backgrounds nc, connects curl over TCP, and waits for the server"
+    },
+    "node": {
+      "classes": [
+        "concurrency",
+        "managed-runtime"
+      ],
+      "concurrency_kind": "multi-threaded",
+      "evidence": "tg:compat_add_the_missing 2026-08-10 01:44; exact corpus argv /bin/node -e console.log(42) measured six clone3 calls and peak seven tasks"
+    },
+    "wget-localhost": {
+      "classes": [
+        "concurrency",
+        "server"
+      ],
+      "concurrency_kind": "multi-process",
+      "evidence": "tg:compat_add_the_missing 2026-08-10 01:46; real_compat_workload.sh backgrounds nc, connects wget over TCP, and waits for the server"
+    }
+  }
+}
