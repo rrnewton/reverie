@@ -274,9 +274,43 @@ fi
 
 # --- inner: we now hold the land-lock ----------------------------------------
 # Visible terminal ABANDON signal: stderr + role-tagged PR comment, then exit.
+# NEVER LEAVE THE WORKTREE PARKED AT origin/main ON THE WAY OUT.
+#
+# This turns a failed landing into a DESTROYED BRANCH on the next ordinary
+# command, silently and at a distance. The route, measured on
+# rrnewton/hermit#2448 which was wiped three times before anyone saw why:
+#
+#   1. the just-in-time gate fails, so the restore at the top of that block
+#      leaves HEAD detached at origin/main and `abandon` exits without
+#      touching it again;
+#   2. the shared worktree now LOOKS like a checkout of the branch and is
+#      actually main;
+#   3. the next `push --force-with-lease HEAD:$BR` -- from a later lander run,
+#      another agent, or a human in that directory -- writes main's tip over
+#      the pull request branch. `--force-with-lease` does not help: the lease
+#      only proves nobody else moved $BR, never that what we are writing is
+#      the branch's own work.
+#   4. GitHub then sees head == base, reports zero commits, and REFUSES to
+#      reopen, so the pull request cannot even be recovered through the UI.
+#
+# Parking at the pull request's OWN head instead makes step 3 idempotent: the
+# stray push writes $ORIG to $BR, which is where $BR already points. Same
+# accident, no data loss.
+#
+# Guarded three ways because `abandon` is reachable before $ORIG exists: only
+# acts when WT and ORIG are both set and ORIG still resolves. Failure to park
+# is reported, never fatal -- an abandon must still abandon.
+park_worktree_off_main(){
+  [ -n "${WT:-}" ] && [ -n "${ORIG:-}" ] || return 0
+  git -C "$WT" rev-parse --verify -q "${ORIG}^{commit}" >/dev/null 2>&1 || return 0
+  git -C "$WT" checkout -q --detach "$ORIG" 2>/dev/null \
+    || say "WARNING: could not park $WT at $ORIG; it may still be detached at main -- do not push HEAD:<branch> from it"
+}
+
 abandon(){
   local reason="$1" code="${2:-1}"
   say "ABANDON: $reason"
+  park_worktree_off_main
   comment_abandon "$reason" \
     || say "ABANDON COMMENT PUBLICATION FAILED: use the durable record printed above"
   exit "$code"
