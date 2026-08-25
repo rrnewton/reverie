@@ -107,6 +107,41 @@ def main() -> int:
     if rc_prose != gate.OK:
         silent.append("FALSE REFUSAL: prose mentioning the token blocked the head")
 
+    # ⚠️ A WITHDRAWAL CLEARS ITS OWN LANE ONLY -- THE DUAL-LANE GUARANTEE.
+    # Until 2026-08-25 `markers()` discarded the lane, so `withdrawn_at_head` was
+    # `any(...)` over every marker and ONE lane's withdrawal discharged EVERY
+    # lane's refusal. Reproduced live on hermit#2613, by accident, while its
+    # claude reviewer withdrew correctly: the gate then reported CLEAR over an
+    # unwithdrawn codex refusal. Two lanes mean nothing if the gate cannot tell
+    # them apart, so each cell below fails against the pre-fix gate.
+    refuse = lambda lane: f"CHANGES-REQUESTED-AT: {lane} {SHA}"
+    drop = lambda lane: f"CHANGES-REQUESTED-WITHDRAWN-AT: {lane} {SHA}"
+    for label, bodies, want_ok in [
+        ("both lanes refuse, neither withdraws",
+         [refuse("claude"), refuse("codex")], False),
+        ("both lanes refuse, only claude withdraws",
+         [refuse("claude"), refuse("codex"), drop("claude")], False),
+        ("both lanes refuse, only codex withdraws",
+         [refuse("claude"), refuse("codex"), drop("codex")], False),
+        ("both lanes refuse, both withdraw",
+         [refuse("claude"), refuse("codex"), drop("claude"), drop("codex")], True),
+        ("one lane refuses, the OTHER lane withdraws",
+         [refuse("claude"), drop("codex")], False),
+        ("one lane refuses, its OWN lane withdraws",
+         [refuse("claude"), drop("claude")], True),
+        # Both laneless shapes fail closed, or the unilateral clear returns
+        # through the bare spelling: a withdrawal with no lane cannot say whose
+        # refusal it discharges, and a refusal with no lane has no owner who
+        # could withdraw it.
+        ("unlaned withdrawal clears nothing",
+         [refuse("claude"), f"CHANGES-REQUESTED-WITHDRAWN-AT {SHA}"], False),
+    ]:
+        rc, _why = gate.evaluate(bodies, SHA)
+        if want_ok and rc != gate.OK:
+            silent.append(f"FALSE REFUSAL: {label}")
+        if not want_ok and rc == gate.OK:
+            silent.append(f"SILENTLY CLEARED: {label}")
+
     print(f"gate cells: {seen}    silent-or-false: {len(silent)}")
     for s in silent:
         print(f"  {s}")

@@ -524,7 +524,10 @@ def blocking_changes_requests(pr: str, repo: str, head: str) -> list[str]:
 
     grammar = _load_grammar()
 
-    blocking, withdrawn = [], False
+    # ⚠️ WITHDRAWALS ARE TRACKED PER LANE. Blocking stays lane-agnostic (see the
+    # policy note below) because that direction fails CLOSED; clearing must not,
+    # or one family discharges another's refusal. Reproduced live on hermit#2613.
+    blocking, withdrawn_lanes = [], set()
     # ⚠️ ELIGIBILITY COMES FROM THE SHARED GRAMMAR, so a line that cannot bind an
     # approval cannot trigger a refusal here either. This function's fail-closed
     # fallback matches a refusal-shaped line ANYWHERE, which is the right policy
@@ -565,16 +568,30 @@ def blocking_changes_requests(pr: str, repo: str, head: str) -> list[str]:
                     if kind == grammar.MARKER_REFUSED and not sha:
                         # A refusal we cannot bind is not a refusal that does not
                         # apply. Fail closed, same choice as the unparseable case.
-                        blocking.append(line.strip())
+                        # Lane None: no withdrawal can prove it owns this one.
+                        blocking.append((None, line.strip()))
                     continue
-                # POLICY, and it is deliberately lane-agnostic: a refusal in ANY
-                # lane stops this merge. The authority is lane-aware because a
-                # board must report per-lane; a lander only needs to know whether
-                # anybody said no.
+                # POLICY: BLOCKING is deliberately lane-agnostic -- a refusal in
+                # ANY lane stops this merge, and a lander only needs to know
+                # whether anybody said no.
+                #
+                # ⚠️ CLEARING IS NOT, AND THAT ASYMMETRY IS THE WHOLE POINT. This
+                # code destructured the lane and threw it away, so ANY lane's
+                # withdrawal discharged EVERY lane's refusal. Lane-agnostic
+                # blocking fails CLOSED and is right; lane-agnostic clearing fails
+                # OPEN and let one family retract another's block. Measured on
+                # hermit#2613: a claude withdrawal cleared an unwithdrawn codex
+                # refusal and both landers reported the head ready.
+                #
+                # A withdrawal that names no lane clears NOTHING -- it cannot say
+                # whose refusal it discharges, and honouring it hands the same
+                # unilateral clear back through the laneless spelling.
                 if kind == grammar.MARKER_WITHDRAWN:
-                    withdrawn = True
+                    if _lane:
+                        withdrawn_lanes.add(str(_lane).lower())
                 elif kind == grammar.MARKER_REFUSED:
-                    blocking.append(line.strip())
+                    blocking.append((str(_lane).lower() if _lane else None,
+                                     line.strip()))
                 continue
             # POLICY: over-block on a refusal-shaped line the grammar cannot
             # parse. For a landing guard a false negative merges over a block
@@ -617,11 +634,16 @@ def blocking_changes_requests(pr: str, repo: str, head: str) -> list[str]:
                     or near_sha.group(1).startswith(head)
                 ):
                     continue
-                blocking.append(line.strip())
-    if withdrawn:
-        blocking = []
-    blocking += ["(GitHub review state CHANGES_REQUESTED)" for _ in native]
-    return blocking
+                # Unparseable: the lane is unknown, so no withdrawal clears it.
+                blocking.append((None, line.strip()))
+    # ⚠️ EACH REFUSAL IS CLEARED ONLY BY ITS OWN LANE. A refusal whose lane could
+    # not be read is cleared by none of them -- its owner is unknown, so no lane
+    # can prove it withdrew. Both still clear the ordinary way: the author pushes
+    # and the sha stops naming the head.
+    live = [text for lane, text in blocking
+            if lane is None or lane not in withdrawn_lanes]
+    live += ["(GitHub review state CHANGES_REQUESTED)" for _ in native]
+    return live
 
 
 def stale_review_labels(pr: str, repo: str, head: str) -> list[str]:

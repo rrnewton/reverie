@@ -71,6 +71,24 @@ CASES = [
     # POLICY, over-block: unparseable but refusal-shaped, naming this head.
     ("unparseable refusal shape blocks", f"CHANGES REQUESTED for {SHA} -- see below", True),
     ("withdrawal clears", f"CHANGES-REQUESTED-AT: claude {SHA}\nCHANGES-REQUESTED-WITHDRAWN-AT: claude {SHA}", False),
+    # ⚠️ A WITHDRAWAL CLEARS ITS OWN LANE ONLY. Blocking is lane-agnostic on
+    # purpose (see "codex refusal blocks too" above) because that direction fails
+    # CLOSED. Clearing must not be, or one family discharges another's refusal --
+    # reproduced live on hermit#2613, where a claude withdrawal cleared an
+    # unwithdrawn codex refusal and both landers called the head ready. Each cell
+    # below returns the wrong answer against the pre-fix lander.
+    ("other lane's withdrawal does NOT clear",
+     f"CHANGES-REQUESTED-AT: claude {SHA}\nCHANGES-REQUESTED-WITHDRAWN-AT: codex {SHA}", True),
+    ("two lanes refuse, one withdraws, other still blocks",
+     f"CHANGES-REQUESTED-AT: claude {SHA}\nCHANGES-REQUESTED-AT: codex {SHA}\n"
+     f"CHANGES-REQUESTED-WITHDRAWN-AT: claude {SHA}", True),
+    ("two lanes refuse, both withdraw, clears",
+     f"CHANGES-REQUESTED-AT: claude {SHA}\nCHANGES-REQUESTED-AT: codex {SHA}\n"
+     f"CHANGES-REQUESTED-WITHDRAWN-AT: claude {SHA}\nCHANGES-REQUESTED-WITHDRAWN-AT: codex {SHA}", False),
+    # A withdrawal naming no lane cannot say whose refusal it discharges, so it
+    # clears nothing -- otherwise the unilateral clear returns via the bare form.
+    ("unlaned withdrawal clears nothing",
+     f"CHANGES-REQUESTED-AT: claude {SHA}\nCHANGES-REQUESTED-WITHDRAWN-AT {SHA}", True),
     ("approval alone passes", f"APPROVED-AT: claude {SHA}", False),
     ("refusal at another sha passes", f"CHANGES-REQUESTED-AT: claude {OTHER}", False),
 ]

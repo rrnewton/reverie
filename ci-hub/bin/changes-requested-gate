@@ -159,8 +159,8 @@ def gh_json(args: list[str]) -> object:
     return None
 
 
-def markers(bodies: list[str]) -> list[tuple[str, str | None]]:
-    """Every marker-shaped line, as (kind, sha-or-None), in document order.
+def markers(bodies: list[str]) -> list[tuple[str, str | None, str | None]]:
+    """Every marker-shaped line, as (kind, lane-or-None, sha-or-None), in document order.
 
     ⚠️ A WORD BEFORE THE TOKEN USED TO MAKE THE MARKER INVISIBLE, HERE AND IN EVERY
     OTHER EXTRACTOR IN USE. Found by agent(hermit-001). Stripping only markdown
@@ -217,7 +217,9 @@ def markers(bodies: list[str]) -> list[tuple[str, str | None]]:
                 m = _SHA.search(tail)
                 if m is None and _load_grammar().is_template(tail):
                     break  # a template, not a verdict
+                lane_m = _LANE.search(tail[:24])
                 found.append((REFUSAL if kind == REFUSAL_BARE else kind,
+                              lane_m.group(1).lower() if lane_m else None,
                               m.group(1) if m else None))
                 break
             else:
@@ -244,7 +246,10 @@ def markers(bodies: list[str]) -> list[tuple[str, str | None]]:
                 if _load_grammar().is_template(tail):
                     continue
                 m = _SHA.search(tail)
-                found.append((REFUSAL, m.group(1) if m else None))
+                lane_m = _LANE.search(tail[:24])
+                found.append((REFUSAL,
+                              lane_m.group(1).lower() if lane_m else None,
+                              m.group(1) if m else None))
     return found
 
 
@@ -293,8 +298,27 @@ def evaluate(bodies: list[str], head: str) -> tuple[int, str]:
         # Abbreviated shas are normal in these markers; bind by prefix, both ways.
         return bool(sha) and (head.startswith(sha) or sha.startswith(head))
 
-    withdrawn_at_head = any(k == WITHDRAWN and binds(s) for k, s in found)
-    refusals = [(k, s) for k, s in found if k == REFUSAL]
+    # ⚠️ A WITHDRAWAL CLEARS ITS OWN LANE ONLY. Until 2026-08-25 `markers()`
+    # returned (kind, sha) and discarded the lane, so `withdrawn_at_head` was
+    # `any(...)` over every marker and ONE lane's withdrawal discharged EVERY
+    # lane's refusal. Reproduced live on hermit#2613: a claude withdrawal cleared
+    # an unwithdrawn codex refusal and the gate reported CLEAR. That is the
+    # dual-lane guarantee failing silently -- two lanes mean nothing if the gate
+    # cannot tell them apart.
+    #
+    # ⚠️ AND BOTH LANELESS CASES FAIL CLOSED, because a laneless marker is exactly
+    # where the unilateral clear would come back:
+    #   * a withdrawal with no readable lane clears NOTHING -- it cannot say whose
+    #     refusal it discharges, and guessing reinstates the bug through the bare
+    #     spelling.
+    #   * a refusal with no readable lane is cleared by NO withdrawal -- its owner
+    #     is unknown, so no lane can prove it withdrew.
+    # Both still clear the ordinary way: the author pushes and the sha moves.
+    withdrawn_lanes = {
+        lane for kind, lane, sha in found
+        if kind == WITHDRAWN and lane is not None and binds(sha)
+    }
+    refusals = [(lane, sha) for kind, lane, sha in found if kind == REFUSAL]
 
     # ⚠️ A DEFINITE ANSWER OUTRANKS AN UNREADABLE ONE. Both block, so safety does
     # not depend on the order -- but reporting INDETERMINATE when a refusal is
@@ -302,19 +326,33 @@ def evaluate(bodies: list[str], head: str) -> tuple[int, str]:
     # author is then told to re-post a marker when what they actually need is a fix
     # or a withdrawal. Measured on hermit#2176: a bound refusal AND a sha-less
     # mention coexist, and checking unbindable first reported the weaker verdict.
-    bound = [s for k, s in refusals if binds(s)]
-    if bound and withdrawn_at_head:
-        return OK, f"a refusal named {head[:12]} but {WITHDRAWN} clears it at the same head"
-    if bound:
+    bound = [(lane, sha) for lane, sha in refusals if binds(sha)]
+    live = [(lane, sha) for lane, sha in bound
+            if lane is None or lane not in withdrawn_lanes]
+    cleared = len(bound) - len(live)
+
+    if bound and not live:
+        return OK, (
+            f"{cleared} refusal(s) named {head[:12]} and every refusing lane "
+            f"posted {WITHDRAWN} at the same head"
+        )
+    if live:
+        lanes = ",".join(sorted({lane or "unlaned" for lane, _ in live}))
+        note = (
+            f" ({cleared} other refusal(s) withdrawn by their own lane)"
+            if cleared else ""
+        )
         return (
             BLOCKED,
-            f"{len(bound)} refusal(s) bound to the exact head {head[:12]}. A refusal "
-            f"naming the head blocks regardless of any lane's approval. This clears "
-            f"when the AUTHOR pushes a fix (the sha moves and the refusal stops naming "
-            f"the head) or the reviewer posts {WITHDRAWN} at this sha.",
+            f"{len(live)} refusal(s) bound to the exact head {head[:12]} from "
+            f"lane(s) {lanes} that have not withdrawn{note}. A refusal naming the "
+            f"head blocks regardless of any lane's approval, and a withdrawal from "
+            f"a DIFFERENT lane does not discharge it. This clears when the AUTHOR "
+            f"pushes a fix (the sha moves and the refusal stops naming the head) or "
+            f"the refusing lane itself posts {WITHDRAWN} at this sha.",
         )
 
-    unbindable = [s for k, s in refusals if s is None]
+    unbindable = [sha for lane, sha in refusals if sha is None]
     if unbindable:
         return (
             INDETERMINATE,
@@ -324,16 +362,6 @@ def evaluate(bodies: list[str], head: str) -> tuple[int, str]:
             f"'{REFUSAL}: <lane> <40-hex>' on its own line, or withdraw it.",
         )
 
-    if bound and withdrawn_at_head:
-        return OK, f"a refusal named {head[:12]} but {WITHDRAWN} clears it at the same head"
-    if bound:
-        return (
-            BLOCKED,
-            f"{len(bound)} refusal(s) bound to the exact head {head[:12]}. A refusal "
-            f"naming the head blocks regardless of any lane's approval. This clears "
-            f"when the AUTHOR pushes a fix (the sha moves and the refusal stops naming "
-            f"the head) or the reviewer posts {WITHDRAWN} at this sha.",
-        )
     return (
         OK,
         f"{len(refusals)} refusal marker(s) present but none names {head[:12]} "
