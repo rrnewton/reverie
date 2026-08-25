@@ -16,6 +16,8 @@ use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 
 use kvm_ioctls::Kvm;
+use reverie::BackendChildWaitEvent;
+use reverie::BackendChildWaitState;
 use reverie::BackendStatsRequest;
 use reverie::BackendStatsSource;
 use reverie::ExitStatus;
@@ -2848,5 +2850,164 @@ int main(void) {
          20=pid==tid so the case is vacuous, 21=tkill(gettid()) refused, \
          22=tgkill(getpid(),gettid()) refused, 23=leader-targeted call WRONGLY \
          SUCCEEDED, 24=tkill(0) not EINVAL"
+    );
+}
+
+#[derive(Default)]
+struct ChildWaitEventLog {
+    events: Mutex<Vec<BackendChildWaitEvent>>,
+}
+
+#[reverie::global_tool]
+impl GlobalTool for ChildWaitEventLog {
+    type Request = ();
+    type Response = ();
+    type Config = ();
+
+    async fn receive_rpc(&self, _from: Pid, (): ()) {}
+
+    async fn on_backend_child_wait_event(
+        &self,
+        event: BackendChildWaitEvent,
+    ) -> Result<(), reverie::Error> {
+        self.events
+            .lock()
+            .expect("child wait-event log poisoned")
+            .push(event);
+        Ok(())
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct ChildWaitEventTool;
+
+#[reverie::tool]
+impl Tool for ChildWaitEventTool {
+    type GlobalState = ChildWaitEventLog;
+    type ThreadState = ();
+
+    fn subscriptions(_config: &()) -> Subscription {
+        let mut subscriptions = Subscription::none();
+        subscriptions.syscalls([Sysno::fork, Sysno::wait4, Sysno::rt_sigaction]);
+        subscriptions
+    }
+}
+
+#[test]
+fn child_waitability_callback_and_auto_reap_are_observed_on_real_kvm() {
+    match Kvm::new() {
+        Ok(_) => {}
+        Err(error) if kvm_is_unavailable(&error) => {
+            eprintln!("skipping KVM child-lifecycle test: cannot open /dev/kvm: {error}");
+            return;
+        }
+        Err(error) => panic!("failed to probe /dev/kvm: {error}"),
+    }
+
+    let directory = TestDirectory::new();
+    let executable = compile_c_program(
+        &directory.0,
+        "child-waitability",
+        r#"
+#include <errno.h>
+#include <signal.h>
+#include <sys/wait.h>
+#include <unistd.h>
+
+static void child_exit(int code) {
+  pid_t child = fork();
+  if (child < 0) _exit(90);
+  if (child == 0) _exit(code);
+}
+
+int main(void) {
+  struct sigaction action = {0};
+  action.sa_handler = (void (*)(int))0x4321;
+  sigemptyset(&action.sa_mask);
+  errno = 0;
+  /* Installing a real SIGCHLD handler must SUCCEED, as it does natively and under
+     ptrace. What this test is really for is unchanged below: with a real handler
+     installed SIGCHLD does not auto-reap, so the child must still be waitable.
+     (This handler address is never invoked.) */
+  if (sigaction(SIGCHLD, &action, 0) != 0) return 10;
+
+  child_exit(7);
+  int status = 0;
+  if (waitpid(-1, &status, 0) <= 0 || !WIFEXITED(status) ||
+      WEXITSTATUS(status) != 7) return 11;
+
+  action.sa_handler = SIG_IGN;
+  action.sa_flags = 0;
+  if (sigaction(SIGCHLD, &action, 0) != 0) return 12;
+  child_exit(8);
+  if (waitpid(-1, &status, 0) != -1 || errno != ECHILD) return 13;
+
+  action.sa_handler = SIG_DFL;
+  action.sa_flags = SA_NOCLDWAIT;
+  if (sigaction(SIGCHLD, &action, 0) != 0) return 14;
+  child_exit(9);
+  if (waitpid(-1, &status, 0) != -1 || errno != ECHILD) return 15;
+
+  return 0;
+}
+"#,
+    );
+    let executable = executable.to_str().unwrap();
+    let image = std::fs::read(executable).unwrap();
+    let mut backend = KvmBackend::new(256 * 1024 * 1024).unwrap();
+    backend
+        .install_static_elf_with_context(
+            &image,
+            &[executable],
+            &["PATH=/usr/bin:/bin"],
+            &directory.0,
+        )
+        .unwrap();
+
+    let (global, code, _stdout, stderr) = futures::executor::block_on(
+        backend.run_static_elf_with_tool::<ChildWaitEventTool>((), true),
+    )
+    .unwrap();
+    assert_eq!(
+        code,
+        0,
+        "child lifecycle guest failed with code {code}; stderr={}",
+        String::from_utf8_lossy(&stderr),
+    );
+
+    let events = global
+        .events
+        .lock()
+        .expect("child wait-event log poisoned")
+        .clone();
+    assert_eq!(
+        events,
+        vec![
+            BackendChildWaitEvent {
+                parent: Pid::from_raw(1),
+                child: Pid::from_raw(2),
+                state: BackendChildWaitState::Exited {
+                    status: ExitStatus::Exited(7),
+                    waitable: true
+                },
+            },
+            BackendChildWaitEvent {
+                parent: Pid::from_raw(1),
+                child: Pid::from_raw(3),
+                state: BackendChildWaitState::Exited {
+                    status: ExitStatus::Exited(8),
+                    waitable: false
+                },
+            },
+            BackendChildWaitEvent {
+                parent: Pid::from_raw(1),
+                child: Pid::from_raw(4),
+                state: BackendChildWaitState::Exited {
+                    status: ExitStatus::Exited(9),
+                    waitable: false
+                },
+            },
+        ],
+        "the backend callback must describe every real terminal waitability transition",
     );
 }

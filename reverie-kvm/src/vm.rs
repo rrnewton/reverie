@@ -26,8 +26,11 @@ use kvm_ioctls::Kvm;
 use kvm_ioctls::VcpuExit;
 use kvm_ioctls::VcpuFd;
 use kvm_ioctls::VmFd;
+use reverie::BackendChildWaitEvent;
+use reverie::BackendChildWaitState;
 use reverie::BackendStatsRequest;
 use reverie::BackendStatsSource;
+use reverie::ExitStatus;
 use reverie::GlobalTool;
 use reverie::Pid;
 use reverie::ThreadOwnership;
@@ -56,8 +59,10 @@ use crate::bootstrap::set_syscall_return_park;
 use crate::bootstrap::set_user_segment_base;
 use crate::elf::LoadedStaticElf;
 use crate::elf::load_static_elf;
+use crate::executor::ChildCompletion;
 use crate::executor::ElfExecutor;
 use crate::executor::ProcessAction;
+use crate::executor::conventional_exit_code;
 use crate::runtime::SyscallExecutor;
 use crate::runtime::ToolContext;
 use crate::stats::KvmBackendStats;
@@ -139,7 +144,7 @@ struct GuestThreadGroup {
     cancelled: AtomicBool,
     // AUTONOMOUS-BOT-IMPLEMENTED: Propagate worker exit_group to the root vCPU.
     // TODO-HUMAN-REVIEW(PR-177): Review KVM thread-group exit ordering.
-    exit_code: Mutex<Option<i32>>,
+    exit_status: Mutex<Option<ExitStatus>>,
     root: Mutex<Option<libc::pthread_t>>,
     workers: Mutex<Vec<libc::pthread_t>>,
     // AUTONOMOUS-BOT-IMPLEMENTED: Join cancelled KVM workers before root teardown returns.
@@ -149,15 +154,18 @@ struct GuestThreadGroup {
 }
 
 impl GuestThreadGroup {
-    fn exit_code(&self) -> Option<i32> {
-        *self.exit_code.lock().expect("KVM exit-group lock poisoned")
-    }
-
-    fn request_exit_group(&self, code: i32) {
-        self.exit_code
+    fn exit_status(&self) -> Option<ExitStatus> {
+        *self
+            .exit_status
             .lock()
             .expect("KVM exit-group lock poisoned")
-            .get_or_insert(code);
+    }
+
+    fn request_exit_group(&self, status: ExitStatus) {
+        self.exit_status
+            .lock()
+            .expect("KVM exit-group lock poisoned")
+            .get_or_insert(status);
         self.cancelled.store(true, Ordering::Release);
 
         if let Some(root) = *self.root.lock().expect("KVM guest root lock poisoned") {
@@ -215,7 +223,10 @@ impl GuestThreadGroup {
 
     // TODO-HUMAN-REVIEW(PR-211): Review KVM exec sibling cancellation ordering.
     fn rearm_after_exec(&self) {
-        *self.exit_code.lock().expect("KVM exit-group lock poisoned") = None;
+        *self
+            .exit_status
+            .lock()
+            .expect("KVM exit-group lock poisoned") = None;
         self.cancelled.store(false, Ordering::Release);
     }
 
@@ -832,7 +843,7 @@ impl KvmBackend {
         &mut self,
         executor: &mut ElfExecutor,
         mut child: ForkedProcess,
-        code: i32,
+        status: ExitStatus,
         stdout: Vec<u8>,
         stderr: Vec<u8>,
     ) -> Result<()> {
@@ -843,7 +854,8 @@ impl KvmBackend {
             child.executor.take_clear_child_tid(),
             0,
         );
-        executor.record_child_exit(child.pid, code);
+        let completion = executor.child_completion(status);
+        executor.record_child_completion(child.pid, completion)?;
         executor.append_output(stdout, stderr);
         configure_process_syscall_return(
             &self.memory,
@@ -1078,6 +1090,12 @@ impl KvmBackend {
                 let subscriptions = context.subscriptions;
                 let pending_child_starts = context.pending_child_starts;
                 let raw_child_pid = child.pid;
+                let parent_pid = context.pid;
+                let lifecycle_state = global_state.clone();
+                let auto_reap = executor.child_exit_policy();
+                let completion_notifier = executor.child_completion_notifier();
+                let completion = Arc::new(Mutex::new(None));
+                let child_completion = completion.clone();
                 let (start_sender, start_receiver) = std::sync::mpsc::channel();
                 let handle = std::thread::Builder::new()
                     .name(format!("reverie-kvm-process-{raw_child_pid}"))
@@ -1102,22 +1120,50 @@ impl KvmBackend {
                             ),
                         );
                         match result {
-                            Ok((code, _, _)) => {
+                            Ok((status, _, _)) => {
                                 write_tid_best_effort(
                                     &mut child.backend.memory,
                                     child.executor.take_clear_child_tid(),
                                     0,
                                 );
-                                Ok(code)
+                                let waitable = !auto_reap.load(Ordering::SeqCst);
+                                let completion =
+                                    ChildCompletion::from_waitability(status, waitable);
+                                *child_completion
+                                    .lock()
+                                    .expect("KVM child completion lock poisoned") =
+                                    Some(completion);
+                                let _ = completion_notifier.send(raw_child_pid);
+                                futures::executor::block_on(
+                                    lifecycle_state.on_backend_child_wait_event(
+                                        BackendChildWaitEvent {
+                                            parent: parent_pid,
+                                            child: child_pid,
+                                            state: BackendChildWaitState::Exited {
+                                                status,
+                                                waitable,
+                                            },
+                                        },
+                                    ),
+                                )
+                                .map_err(Error::Reverie)?;
+                                Ok(())
                             }
-                            Err(error) => Err(error),
+                            Err(error) => {
+                                *child_completion
+                                    .lock()
+                                    .expect("KVM child completion lock poisoned") =
+                                    Some(ChildCompletion::Failed);
+                                let _ = completion_notifier.send(raw_child_pid);
+                                Err(error)
+                            }
                         }
                     })?;
                 pending_child_starts
                     .lock()
                     .expect("KVM child-start lock poisoned")
                     .push(start_sender.clone());
-                executor.register_child_process(raw_child_pid, start_sender, handle);
+                executor.register_child_process(raw_child_pid, start_sender, completion, handle);
                 configure_process_syscall_return(
                     &self.memory,
                     &self.vcpu,
@@ -1363,32 +1409,33 @@ impl KvmBackend {
     pub fn run_static_elf(&mut self) -> Result<i32> {
         let loaded = self.static_elf.take().ok_or(Error::StaticElfNotInstalled)?;
         let mut executor = ElfExecutor::new(loaded, false);
-        let (code, _, _) = self.run_static_elf_process(&mut executor)?;
-        Ok(code)
+        let (status, _, _) = self.run_static_elf_process(&mut executor)?;
+        Ok(conventional_exit_code(status))
     }
 
     /// Runs the installed ELF process tree and captures its standard output streams.
     pub fn run_static_elf_captured(&mut self) -> Result<(i32, Vec<u8>, Vec<u8>)> {
         let loaded = self.static_elf.take().ok_or(Error::StaticElfNotInstalled)?;
         let mut executor = ElfExecutor::new(loaded, true);
-        self.run_static_elf_process(&mut executor)
+        let (status, stdout, stderr) = self.run_static_elf_process(&mut executor)?;
+        Ok((conventional_exit_code(status), stdout, stderr))
     }
 
     fn run_static_elf_process(
         &mut self,
         executor: &mut ElfExecutor,
-    ) -> Result<(i32, Vec<u8>, Vec<u8>)> {
+    ) -> Result<(ExitStatus, Vec<u8>, Vec<u8>)> {
         let _registration = self.register_guest_thread()?;
         loop {
-            if let Some(code) = self.guest_thread_group_exit_code() {
+            if let Some(status) = self.guest_thread_group_exit_status() {
                 if !self.is_guest_thread {
                     self.cancel_guest_threads();
                 }
                 let (stdout, stderr) = executor.take_output();
-                return Ok((code, stdout, stderr));
+                return Ok((status, stdout, stderr));
             }
             if self.is_guest_thread && self.thread_group.cancelled.load(Ordering::Acquire) {
-                return Ok((0, Vec::new(), Vec::new()));
+                return Ok((ExitStatus::SUCCESS, Vec::new(), Vec::new()));
             }
             let vcpu_exit = match self.vcpu.run() {
                 Ok(exit) => exit,
@@ -1436,13 +1483,13 @@ impl KvmBackend {
 
             if let Some(exit) = executor.take_exit() {
                 if exit.group {
-                    self.request_guest_thread_group_exit(exit.code);
+                    self.request_guest_thread_group_exit(exit.status);
                 }
                 if !self.is_guest_thread {
                     self.cancel_guest_threads();
                 }
                 let (stdout, stderr) = executor.take_output();
-                return Ok((exit.code, stdout, stderr));
+                return Ok((exit.status, stdout, stderr));
             }
         }
     }
@@ -1474,12 +1521,12 @@ impl KvmBackend {
         })
     }
 
-    pub(crate) fn guest_thread_group_exit_code(&self) -> Option<i32> {
-        self.thread_group.exit_code()
+    pub(crate) fn guest_thread_group_exit_status(&self) -> Option<ExitStatus> {
+        self.thread_group.exit_status()
     }
 
-    pub(crate) fn request_guest_thread_group_exit(&self, code: i32) {
-        self.thread_group.request_exit_group(code);
+    pub(crate) fn request_guest_thread_group_exit(&self, status: ExitStatus) {
+        self.thread_group.request_exit_group(status);
     }
 
     // TODO-HUMAN-REVIEW(PR-172): Review signal-driven KVM worker cancellation.
@@ -1741,7 +1788,7 @@ mod tests {
             }
             finished.store(true, Ordering::Release);
         }));
-        *group.exit_code.lock().unwrap() = Some(127);
+        *group.exit_status.lock().unwrap() = Some(ExitStatus::Exited(127));
 
         group.cancel_workers();
         group.join_workers();
@@ -1749,7 +1796,7 @@ mod tests {
 
         assert!(worker_finished.load(Ordering::Acquire));
         assert!(group.worker_handles.lock().unwrap().is_empty());
-        assert_eq!(group.exit_code(), None);
+        assert_eq!(group.exit_status(), None);
         assert!(!group.cancelled.load(Ordering::Acquire));
     }
 
