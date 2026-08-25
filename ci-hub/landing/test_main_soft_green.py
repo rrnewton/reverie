@@ -129,9 +129,24 @@ def test_ci_hub_contact_warning_and_lander_soft_binding_are_wired() -> None:
     assert cost < warning < execute
 
     lander = (M.ROOT / "ci-hub/landing/land-pr.sh").read_text()
-    mark = lander.index('land_and_arm.py" mark-soft')
-    merge = lander.index('gh pr merge "$PR"')
+    # ⚠️ THIS PREVIOUSLY PINNED `land_and_arm.py" mark-soft`, WHICH WAS REMOVED ON
+    # PURPOSE. f317f715 "Remove unrequested landing refusals" (2026-08-11) dropped
+    # the pre-merge remediation vetoes, mark-soft among them, "while retaining
+    # exact-head review and VALIDATE/LEDGER authority". So the assertion was
+    # guarding a decision that had been reversed, and it never went red because
+    # `ci-hub/landing` is not in run_python_suites.py's registry -- nothing has
+    # run this file since.
+    #
+    # The removal is NOT reverted here and the guard is NOT deleted. The lander
+    # still arms remediation, now through the chained `prepare && complete`, so
+    # the ordering invariant is re-pinned against the wiring that exists: the
+    # lock result is known before arming begins, and completion follows
+    # preparation rather than standing alone.
+    prepare = lander.index('land_and_arm.py" prepare')
     complete = lander.index('land_and_arm.py" complete')
     lock_result = lander.index("rc=$?")
-    assert mark < merge
-    assert lock_result < complete
+    assert lock_result < prepare, "the lander arms remediation before it knows the lock result"
+    assert prepare < complete, "completion must follow preparation, not precede it"
+    # `mark-soft` itself is still IMPLEMENTED in land_and_arm.py with no caller in
+    # the lander. That is a live subcommand with no invoker, which is worth an
+    # owner decision (revive or retire) and is deliberately not decided here.
