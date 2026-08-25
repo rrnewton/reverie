@@ -497,26 +497,21 @@ impl BoundaryOutcome {
     /// needs the gate keeps working — but it must not use this to BUILD A
     /// MESSAGE, because it cannot tell the two blocking states apart.
     ///
-    /// Exercised by the tests below but not yet called from a non-test consumer,
-    /// so the binary build sees it as dead. Kept rather than deleted: the sole
-    /// caller today matches all three variants exhaustively, which is stronger
-    /// than this and is why this is spare rather than wrong. The consumer that
-    /// wants the gate WITHOUT the message — the `shared_evidence_accepts` side,
-    /// still a `bool` — is the one to wire it to. Drop this attribute the moment
-    /// a real caller appears.
-    ///
     /// ⚠️ DO NOT DELETE TO SILENCE A WARNING. This pair is the
     /// could-not-determine state that replaced a `bool` collapsing "could not
     /// determine" into "does not qualify". Removing them to make a lint pass
-    /// would reward reintroducing that collapse.
-    #[allow(dead_code)]
+    /// would reward reintroducing that collapse. The `#[allow(dead_code)]` this
+    /// carried until 2026-08-25 was the lint correctly reporting that the repair
+    /// existed and was not installed; `shared_evidence_outcome` is now the caller
+    /// the note used to predict, so the attribute is gone rather than suppressed.
     pub fn accepted(&self) -> bool {
         matches!(self, BoundaryOutcome::Accepted)
     }
 
-    /// The reader-fault detail, when there is one. See [`BoundaryOutcome::accepted`]
-    /// for why this is retained while unwired.
-    #[allow(dead_code)]
+    /// The reader-fault detail, when there is one. Paired with
+    /// [`BoundaryOutcome::accepted`]: that answers *may I proceed*, this answers
+    /// *why not, and is it my fault or the receipt's* — which are different
+    /// questions and must not be answered by one boolean.
     pub fn indeterminate_reason(&self) -> Option<&'static str> {
         match self {
             BoundaryOutcome::Indeterminate(reason) => Some(reason),
@@ -613,7 +608,52 @@ pub fn shared_base_boundary_outcome(
 /// Exit 0/1 is a typed accept/refuse verdict. Any launch, parse, or exit-code
 /// inconsistency is a deploy defect and fails closed; a missing verifier must
 /// never make a receipt more authoritative.
-fn shared_evidence_accepts(row: &HistoryRow, pred: &QualifyingPredicate) -> bool {
+///
+/// ⚠️ WHY THIS RETURNS `BoundaryOutcome` AND NOT `bool`. It used to return
+/// `false` for six structurally different reasons, and the caller turned every
+/// one of them into the single string "shared evidence contract not satisfied" —
+/// a claim about the RECEIPT — when five of the six are facts about the READER
+/// and one is a fact about the AUTHORITY. Failing closed is right and is
+/// unchanged; reporting all six identically is not, because a caller that cannot
+/// tell which fault it has cannot react to it.
+///
+/// EACH REASON EARNS ITS OWN VALUE BY HAVING A DIFFERENT REMEDY. That is the bar:
+/// not that the causes differ, but that the response does.
+///
+///   `verifier-unlaunchable`      python3 could not be spawned. The interpreter
+///                                is missing from PATH. Fix the environment; a
+///                                retry on this box will fail identically.
+///   `verifier-stdin-unavailable` the pipe was not created despite being
+///                                requested — file-descriptor pressure, not
+///                                configuration. RETRY; it is transient, which
+///                                is exactly what the case above is not.
+///   `verifier-request-undelivered` it launched, then died or closed the pipe
+///                                before reading the request. Read the verifier's
+///                                stderr; retrying re-runs a broken verifier.
+///   `verifier-not-reaped`        `wait_with_output` failed. An OS-level fault
+///                                with the verdict possibly already produced.
+///                                RETRY, and unlike the pipe case this one may
+///                                have had side effects.
+///   `verifier-output-unparseable` it ran and answered, but the answer is not an
+///                                `AdmissionReport`. This consumer and the Python
+///                                authority have SKEWED SCHEMAS. Redeploy or fix
+///                                the pin; no number of retries converges.
+///   `verifier-self-inconsistent` it ran, answered, parsed — and its exit code
+///                                contradicts its own report body, or a status
+///                                string contradicts its boolean. A defect INSIDE
+///                                the authority. File it against
+///                                `ci-hub/qualifying_receipt.py`; the receipt is
+///                                not implicated and must not be blamed.
+///
+/// Two of these share a remedy word ("retry") and are still kept apart:
+/// `verifier-stdin-unavailable` is pure back-pressure with nothing executed,
+/// while `verifier-not-reaped` may have run the verifier to completion. A caller
+/// deciding whether a retry is idempotent needs that distinction, so sharing one
+/// value would collapse the thing it most needs to know.
+///
+/// `Refused` is reserved for the ONE case that is a fact about the receipt: the
+/// verifier ran, answered coherently, and said no.
+fn shared_evidence_outcome(row: &HistoryRow, pred: &QualifyingPredicate) -> BoundaryOutcome {
     let root = resolve_root();
     let verifier = root.join("ci-hub/qualifying_receipt.py");
     let request = serde_json::json!({
@@ -651,20 +691,20 @@ fn shared_evidence_accepts(row: &HistoryRow, pred: &QualifyingPredicate) -> bool
         .spawn()
     {
         Ok(child) => child,
-        Err(_) => return false,
+        Err(_) => return BoundaryOutcome::Indeterminate("verifier-unlaunchable"),
     };
     let Some(mut stdin) = child.stdin.take() else {
-        return false;
+        return BoundaryOutcome::Indeterminate("verifier-stdin-unavailable");
     };
     if serde_json::to_writer(&mut stdin, &request).is_err() || stdin.flush().is_err() {
-        return false;
+        return BoundaryOutcome::Indeterminate("verifier-request-undelivered");
     }
     drop(stdin);
     let Ok(output) = child.wait_with_output() else {
-        return false;
+        return BoundaryOutcome::Indeterminate("verifier-not-reaped");
     };
     let Ok(report) = serde_json::from_slice::<AdmissionReport>(&output.stdout) else {
-        return false;
+        return BoundaryOutcome::Indeterminate("verifier-output-unparseable");
     };
     let exit_matches = match output.status.code() {
         Some(0) => report.accepted,
@@ -691,12 +731,25 @@ fn shared_evidence_accepts(row: &HistoryRow, pred: &QualifyingPredicate) -> bool
         "grandfathered-unknown" => report.cell_results_satisfied.is_none(),
         _ => report.cell_results_satisfied == Some(false),
     };
-    exit_matches
+    // SELF-CONSISTENCY FIRST, AND SEPARATELY FROM THE VERDICT. Each of these
+    // compares the verifier's answer against its OWN other answer. A mismatch
+    // says the authority is broken, which is not something the receipt can be
+    // blamed for -- so it must not fall through into the `Refused` below.
+    if !(exit_matches
         && status_matches
         && base_status_matches
         && coverage_schema_status_matches
-        && cell_results_status_matches
-        && report.accepted
+        && cell_results_status_matches)
+    {
+        return BoundaryOutcome::Indeterminate("verifier-self-inconsistent");
+    }
+    // Only here is the answer both coherent and negative, which is the one
+    // reading that is a fact about the RECEIPT.
+    if report.accepted {
+        BoundaryOutcome::Accepted
+    } else {
+        BoundaryOutcome::Refused
+    }
 }
 
 /// THE qualifying-receipt predicate. Every Rust consumer routes here; the
@@ -874,8 +927,18 @@ pub fn row_qualification(row: &HistoryRow, sha: &str, pred: &QualifyingPredicate
     // schema-4 stays grandfathered only with absent/null coverage, while a
     // non-null coverage claim requires schema-5+. Admission and base evidence
     // remain in the same delegated check.
-    if !shared_evidence_accepts(row, pred) {
-        return Qualification::Refused("shared evidence contract not satisfied");
+    // BOTH halves of the pair are load-bearing here, and they answer different
+    // questions: `accepted()` is the gate, `indeterminate_reason()` is the
+    // message. Using the gate alone is what produced one string for six faults.
+    let evidence = shared_evidence_outcome(row, pred);
+    if !evidence.accepted() {
+        return Qualification::Refused(match evidence.indeterminate_reason() {
+            // A reader fault. The string names which one, so the operator learns
+            // whether to fix PATH, retry, redeploy, or file a verifier bug.
+            Some(reason) => reason,
+            // The only genuine statement about the receipt.
+            None => "shared evidence contract not satisfied",
+        });
     }
     // Green-class gate (from origin/main): a receipt passing every value clause
     // must ALSO be of a green class the predicate accepts. Expressed as a
