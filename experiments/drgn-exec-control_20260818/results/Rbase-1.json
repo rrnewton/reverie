@@ -1,0 +1,20 @@
+{
+  "advance_serial_bytes": 177,
+  "advance_serial_digest": "bca286c91f956597",
+  "after_digest": "1dbb9d8c04f17bb2",
+  "after_tasks": 85,
+  "before_digest": "81779c19a80f9b5f",
+  "before_tasks": 83,
+  "dwell_seconds": 0.0,
+  "guest_seconds_across_pause": 0.01,
+  "guest_uptimes": [
+    1.89,
+    1.9
+  ],
+  "label": "Rbase-1",
+  "ok": true,
+  "pause_after_bytes": null,
+  "paused": false,
+  "startup_seconds": 1.7,
+  "total_seconds": 2.6
+}
