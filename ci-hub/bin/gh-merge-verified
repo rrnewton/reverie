@@ -417,6 +417,18 @@ def this_tool_is_current() -> tuple[bool, str]:
     Returns (is_current, detail). A failure to determine returns False: not being
     able to prove the guard is present is not permission to proceed without it.
     """
+    # ⚠️ SCOPED TEST SEAM. The self-check is refused-by-default in production, but a
+    # harness whose `gh` is a stub performs no real merge and cannot fetch dev-hermit.
+    # This opt-out is honoured ONLY when the remote is a local path -- a fixture --
+    # so it cannot be used to bypass the check against a real forge. Measured
+    # 2026-08-25: without this, the self-check fired first and made three race cases
+    # in gh-merge-verified-test unreachable, which is a guard breaking the test that
+    # would have caught the guard.
+    if os.environ.get("GH_MERGE_VERIFIED_SELFCHECK") == "off":
+        remote = os.environ.get("GH_MERGE_VERIFIED_REMOTE", "")
+        if remote and not remote.startswith(("http://", "https://", "git@", "ssh://")):
+            return True, "self-check disabled for a local fixture remote"
+
     here = os.path.realpath(__file__)
     rel = "ci-hub/bin/gh-merge-verified"
     # ⚠️ THE TOOL LIVES IN dev-hermit, NOT IN THE REPOSITORY BEING LANDED. Deriving

@@ -264,12 +264,24 @@ def race_cases() -> None:
         bindir = root / "trap"
         bindir.mkdir()
         gh = bindir / "gh"
-        gh.write_text("#!/bin/bash\necho 'Merged pull request'\nexit 0\n")
+        # The stub must answer the ADMISSION queries with valid JSON, or the
+        # changes-request and label guards exit 4 (unreadable) before the merge and
+        # the race path below is never reached. Measured 2026-08-25: without this the
+        # race assertions passed on an exit 4 that came from the wrong branch entirely.
+        gh.write_text(
+            "#!/bin/bash\n"
+            "if [ \"$1\" = pr ] && [ \"$2\" = view ]; then\n"
+            "  echo '{\"comments\":[],\"reviews\":[],\"labels\":[],\"state\":\"OPEN\"}'\n"
+            "  exit 0\n"
+            "fi\n"
+            "echo 'Merged pull request'\nexit 0\n"
+        )
         gh.chmod(0o755)
         env = {
             **os.environ,
             "PATH": f"{bindir}:{os.environ.get('PATH', '')}",
             "GH_MERGE_VERIFIED_REMOTE": str(origin),
+            "GH_MERGE_VERIFIED_SELFCHECK": "off",
             "GH_MERGE_VERIFIED_ADVANCE_TIMEOUT_S": "2",
             "GH_MERGE_VERIFIED_ADVANCE_POLL_S": "0.2",
         }
