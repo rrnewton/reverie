@@ -117,6 +117,27 @@ if [ -z "$me" ]; then
 fi
 
 # 3a. Shared-directory staging paths must carry the agent id.
+#
+# ⚠️ THE RULE IS "NOT PREDICTABLE", AND NAMESPACING IS ONLY ONE WAY TO GET THERE.
+# What makes a shared path dangerous is that ANOTHER AGENT CAN GUESS OR REUSE IT
+# (/tmp/note.txt, /tmp/ask030.txt). Putting the agent id in the name removes that
+# because agent ids are unique. A file created by mkstemp/NamedTemporaryFile has
+# the same property MORE strongly: the name is random and the file is created
+# O_EXCL, so no other writer can have produced or collided with it.
+#
+# Testing the proxy instead of the property deadlocked the fleet. Measured
+# 2026-08-25: close-task stages its closure note through
+# tempfile.NamedTemporaryFile(suffix=".note"), which lands at /tmp/tmpXXXXXXXX.note
+# -- unpredictable, but with no agent id in it -- so this rule refused it and NO
+# TASK COULD BE CLOSED BY ANY AGENT. Both guards were individually right; the bug
+# was in how they composed.
+#
+# TG_NOTE_PRIVATE_TEMP is how a PROGRAM states "I created this file myself, just
+# now, with a random name". That is a claim only the creating process can honestly
+# make, and it is exactly the property namespacing was standing in for. It does not
+# weaken the check: a hand-written /tmp/note.txt still has no such creator and is
+# still refused, and the attribution check below applies to every path regardless.
+if [ "${TG_NOTE_PRIVATE_TEMP:-}" != "1" ]; then
 case "$src" in
     -) : ;;  # stdin: no file exists, so nothing can overwrite it
     /tmp/*|/var/tmp/*|/dev/shm/*)
@@ -144,6 +165,7 @@ case "$src" in
         fi
         ;;
 esac
+fi
 
 # Rule 1: the value travels in a variable. Never re-quoted into a command line.
 content=$(cat "$input")
