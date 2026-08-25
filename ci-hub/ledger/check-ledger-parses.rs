@@ -7,12 +7,12 @@
 //! from the type it is guarding.
 //!
 //! WHY THIS EXISTS. `ci-hub validate-status` used to print
-//! `skipped N unparseable ledger line(s)` and discard the reason. Seven
-//! receipts sat unreadable behind that count for a week — two of them
-//! `result: pass`, i.e. work that validated and no query could see. Finding out
-//! why required writing a throwaway program to re-run the parse and print the
-//! error serde had already produced and thrown away. That program should not
-//! have been a throwaway; this is it, kept.
+//! `skipped N unparseable ledger line(s)` and discard the reason. Receipts sat
+//! unreadable behind that count — including `result: pass` receipts, i.e. work
+//! that validated and no query could see. Finding out why required writing a
+//! throwaway program to re-run the parse and print the error serde had already
+//! produced and thrown away. That program should not have been a throwaway;
+//! this is it, kept.
 //!
 //! Read-only: reads the ledger through the canonical adapter and writes
 //! nothing.
@@ -83,10 +83,15 @@ fn main() {
                     .to_string()
             };
             failures.push(format!(
-                "line {}: {error}\n    commit={} run_id={} result={}",
+                "line {}: {error}\n    record_id={} commit={} run_id={} repo={} host={} producer={} started_at={} result={}",
                 index + 1,
+                field("record_id"),
                 field("commit"),
                 field("run_id"),
+                field("repo"),
+                field("host"),
+                field("producer"),
+                field("started_at"),
                 field("result"),
             ));
         }
@@ -109,7 +114,8 @@ fn main() {
     }
     eprintln!(
         "A receipt that cannot be parsed does not exist as far as any verdict is concerned. \
-         Fix the schema so the record becomes readable where it sits; do not rewrite the ledger."
+         Fix the writer or schema mismatch; do not widen the reader to assign meaning to malformed \
+         evidence, and do not rewrite the ledger."
     );
     std::process::exit(1);
 }

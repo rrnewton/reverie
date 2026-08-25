@@ -6,7 +6,7 @@
 //! commit ordering and evidence rules here prevents the two answers drifting.
 
 use crate::qualifying_receipt::{self, CoverageVerdict};
-use crate::records::{null_as_empty_vec, GateHistoryRow, HistoryRow};
+use crate::records::{GateHistoryRow, HistoryRow};
 use crate::validate_status::{assess, newest, Verdict};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -81,11 +81,9 @@ pub struct FirstBadReport {
     pub commits_between: usize,
     pub commits_without_cell_record: usize,
     pub first_bad_commit_has_mixed_outcomes: bool,
-    #[serde(default, deserialize_with = "null_as_empty_vec")]
     pub files_touched: Vec<String>,
     pub plausibility: String,
     pub source_node: Option<String>,
-    #[serde(default, deserialize_with = "null_as_empty_vec")]
     pub error_excerpt: Vec<String>,
     pub load_context: Option<String>,
 }
@@ -114,14 +112,12 @@ pub struct NewestGreenCache {
 pub struct RetainedCellEvidence {
     pub commit: String,
     pub finished_at: Option<String>,
-    #[serde(default, deserialize_with = "null_as_empty_vec")]
     pub gates: Vec<GateHistoryRow>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 pub struct CellEvidenceCache {
     pub schema_version: u32,
-    #[serde(default, deserialize_with = "null_as_empty_vec")]
     pub records: Vec<RetainedCellEvidence>,
 }
 

@@ -3582,8 +3582,8 @@ fn load_ledger_rows_reporting(
     let (rows, failures) = validate_status::parse_ledger(&buf);
     if !failures.is_empty() {
         // BE LOUD, AND SAY WHAT. The previous version printed only a count.
-        // Seven unreadable receipts in the authority ledger scrolled past
-        // behind that count for a week, and nobody could act on it because the
+        // Unreadable receipts in the authority ledger scrolled past behind that
+        // count, and nobody could act on them because the
         // reason had already been discarded inside `parse_ledger`. A reader of
         // the file that decides landing authority owes the operator the reason.
         eprintln!(
@@ -3592,21 +3592,16 @@ fn load_ledger_rows_reporting(
             failures.len() + rows.len(),
             path.display()
         );
-        // Bounded so a systemically broken ledger cannot bury the command's
-        // real output, but the cap is STATED rather than silently applied.
-        const MAX_REPORTED: usize = 10;
-        for failure in failures.iter().take(MAX_REPORTED) {
+        // Name EVERY rejected record. Reporting only a prefix recreates the
+        // original defect for every row past the cap: it is still invisible
+        // and still has no identity an operator can act on.
+        for failure in &failures {
             eprintln!("ci-hub:   {failure}");
         }
-        if failures.len() > MAX_REPORTED {
-            eprintln!(
-                "ci-hub:   ... and {} more (showing the first {MAX_REPORTED})",
-                failures.len() - MAX_REPORTED
-            );
-        }
         eprintln!(
-            "ci-hub: these records are INVISIBLE to every ledger query until they parse. \
-             A receipt that cannot be read does not exist as far as any verdict is concerned."
+            "ci-hub: these records are INVISIBLE as verdict evidence. Each is named above so the \
+             writer can be fixed and validation rerun. Do not widen the reader or rewrite the ledger: \
+             a receipt that cannot be read does not exist as far as any verdict is concerned."
         );
     }
     Ok((rows, failures))
@@ -5785,7 +5780,7 @@ fn run_validate_status(root: &Path, args: ValidateStatusArgs) -> Result<i32, CiH
                 // this tool used to do.
                 Some(LedgerFreshness::LocalRecordUnreadable { records }) => {
                     println!(
-                        "# validate LEDGER-UNREADABLE {} -- THIS RECORD IS HERE AND CANNOT BE PARSED, NOT MISSING AND NOT UNTESTED. {} ledger record(s) for this commit are present in this checkout and failed to deserialize (reasons printed on stderr above). DO NOT PULL: the upstream copy carries the same bytes. This is a schema defect in the reader or the writer; fix that and the record becomes visible where it already sits. No verdict about the commit is implied and nothing is authorized.",
+                        "# validate LEDGER-UNREADABLE {} -- THIS RECORD IS HERE AND CANNOT BE PARSED, NOT MISSING AND NOT UNTESTED. {} ledger record(s) for this commit are present in this checkout and failed to deserialize (reasons printed on stderr above). DO NOT PULL: the upstream copy carries the same bytes. Do not widen the reader or rewrite the ledger. Fix the writer and rerun validation to append a valid receipt. No verdict about the commit is implied and nothing is authorized.",
                         assessment.sha, records,
                     );
                 }
