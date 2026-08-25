@@ -53,6 +53,64 @@ class RunPythonSuitesTest(unittest.TestCase):
         self.assertIn("floor=2 discovered=1 executed=1", result.stdout)
         self.assertIn("SUITE REFUSED", result.stdout)
 
+    def test_collected_then_not_run_is_refused_and_names_the_suite(self) -> None:
+        """The defect this relation exists for.
+
+        A module-level ``sys.exit`` aborts the session after collection, so the
+        suite discovers tests and runs none. The floor alone catches this only
+        when zero happens to fall below it; the discovered-vs-executed relation
+        catches it at any floor.
+        """
+        with tempfile.TemporaryDirectory() as raw:
+            suite = Path(raw)
+            (suite / "test_real_cases.py").write_text(
+                "def test_a():\n    pass\n\n\ndef test_b():\n    pass\n"
+            )
+            (suite / "test_selfexit.py").write_text("import sys\n\nsys.exit(0)\n")
+            result = self._run(suite, 1)
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertIn("SUITE REFUSED", result.stdout)
+        self.assertIn("executed=0", result.stdout)
+        self.assertIn("unexplained=2", result.stdout)
+        # Naming the suite is the point: a reader must know WHICH one stopped.
+        self.assertIn(str(suite), result.stdout)
+        self.assertIn("collected and then not run", result.stdout)
+
+    def test_environment_declared_skips_stay_green(self) -> None:
+        """The half that stops the check being suppressed.
+
+        A bare ``executed == discovered`` would red here -- 3 of 5 run -- and a
+        check that reds on normal operation does not survive a week. Setup-phase
+        skips are ACCOUNTED FOR, so the remainder means only "not run for a
+        reason nobody declared".
+        """
+        with tempfile.TemporaryDirectory() as raw:
+            suite = Path(raw)
+            (suite / "test_mixed.py").write_text(
+                textwrap.dedent(
+                    """
+                    import pytest
+
+                    def test_one(): pass
+                    def test_two(): pass
+                    def test_three(): pass
+
+                    @pytest.mark.skipif(True, reason="requires a PMU-capable host")
+                    def test_marker_skip(): pass
+
+                    @pytest.fixture
+                    def unavailable():
+                        pytest.skip("requires /dev/kvm")
+
+                    def test_fixture_skip(unavailable): pass
+                    """
+                )
+            )
+            result = self._run(suite, 3)
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn("SUITE PASS", result.stdout)
+        self.assertIn("discovered=5 executed=3 skipped=2 unexplained=0", result.stdout)
+
     def test_importlib_mode_survives_a_legacy_basename_collision(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             component = Path(raw) / "component"

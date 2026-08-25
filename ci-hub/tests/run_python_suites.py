@@ -47,6 +47,8 @@ class Suite:
 class SuiteCounts:
     collected: list[str] = field(default_factory=list)
     executed: set[str] = field(default_factory=set)
+    skipped: set[str] = field(default_factory=set)
+    reported: set[str] = field(default_factory=set)
 
 
 def _parse_suite(value: str) -> Suite:
@@ -80,6 +82,7 @@ class CountedCoverage:
         self.suites = list(suites)
         self.counts = {suite.path: SuiteCounts() for suite in suites}
         self.unbound_items: list[str] = []
+        self._suite_by_nodeid: dict[str, Path] = {}
 
     def _suite_for(self, item: object) -> Suite | None:
         item_path = Path(item.path).resolve()  # type: ignore[attr-defined]
@@ -95,6 +98,26 @@ class CountedCoverage:
                 self.unbound_items.append(item.nodeid)
                 continue
             self.counts[suite.path].collected.append(item.nodeid)
+            self._suite_by_nodeid[item.nodeid] = suite.path
+
+    def pytest_runtest_logreport(self, report: object) -> None:
+        """Account for an environment-declared skip instead of losing it.
+
+        A test skipped during setup never reaches the call hook, so it would
+        otherwise be indistinguishable from a test that was collected and then
+        silently dropped. Counting it here is what lets the unexplained
+        remainder below mean ONLY "collected and then not run for a reason
+        nobody declared".
+        """
+        path = self._suite_by_nodeid.get(getattr(report, "nodeid", ""))
+        if path is None:
+            return
+        # ANY report is an outcome pytest already surfaces -- pass, fail, error,
+        # skip, xfail. Those are accounted for. What must not happen silently is
+        # a collected test that produces NO report at all.
+        self.counts[path].reported.add(report.nodeid)  # type: ignore[attr-defined]
+        if getattr(report, "when", None) == "setup" and getattr(report, "skipped", False):
+            self.counts[path].skipped.add(report.nodeid)  # type: ignore[attr-defined]
 
     def pytest_runtest_call(self, item: object):
         suite = self._suite_for(item)
@@ -178,12 +201,46 @@ def run(suites: Sequence[Suite]) -> int:
         counts = plugin.counts[suite.path]
         discovered = len(counts.collected)
         executed = len(counts.executed)
-        passed_floor = discovered >= suite.floor and executed >= suite.floor
+        skipped = len(counts.skipped)
+        # THE FLOOR ALONE CANNOT SEE A SUITE THAT STOPS RUNNING. It compares
+        # both numbers to a CONSTANT and never to each other, so a suite that
+        # discovers 466 and executes 92 passes a floor of 92 while 374 tests
+        # vanish. Measured 2026-08-24 across the nine default suites, 1058
+        # tests could stop executing with every suite still reporting PASS.
+        # health/tests was caught at discovered=466 executed=0 only because
+        # zero happens to fall below its floor.
+        #
+        # So relate the two numbers. Every discovered test must be accounted
+        # for: executed, or skipped for a declared reason. What is left is
+        # collected-and-then-not-run -- a module-level sys.exit aborting the
+        # session, a collection INTERNALERROR, an import failure from an
+        # uninitialised submodule. One relation catches the whole class.
+        #
+        # SKIPS ARE ACCOUNTED FOR, NOT FORBIDDEN, deliberately. A bare
+        # `executed == discovered` would red on every legitimate
+        # environment-declared skip, and a check that reds on normal operation
+        # is suppressed within a week.
+        # UNEXPLAINED means VANISHED WITHOUT TRACE: collected, then no report of
+        # any kind. A failure, an error or a skip is an outcome pytest already
+        # reports and already fails the run on; counting those here would red
+        # twice for one thing and would make this check the noisy one that gets
+        # suppressed. Only silence counts.
+        unexplained = discovered - len(counts.reported)
+        meets_floor = discovered >= suite.floor and executed >= suite.floor
+        passed_floor = meets_floor and unexplained <= 0
         status = "PASS" if passed_floor else "REFUSED"
         print(
             f"SUITE {status}: path={suite.path} floor={suite.floor} "
-            f"discovered={discovered} executed={executed}"
+            f"discovered={discovered} executed={executed} "
+            f"skipped={skipped} unexplained={unexplained}"
         )
+        if unexplained > 0:
+            print(
+                f"REFUSED: {suite.path} discovered {discovered} test(s) and ran "
+                f"{executed}; {unexplained} were collected and then not run for "
+                "any declared reason",
+                file=sys.stderr,
+            )
         floor_failed |= not passed_floor
 
     if plugin.unbound_items:
