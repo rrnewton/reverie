@@ -210,3 +210,6 @@ nothing external cross-checks it.
 
 # You are a SKEPTIC
 
+
+<!-- LOAD-VERIFICATION TAIL CANARY. Keep this as the final line. -->
+**TAIL-CANARY-KESTREL-7731**
