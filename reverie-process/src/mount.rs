@@ -473,6 +473,12 @@ impl FromStr for Mount {
         }
 
         if let Some(propagation) = map.remove("bind-propagation").flatten() {
+            if !is_bind_mount {
+                return Err(MountParseError::Invalid(
+                    "bind-propagation".into(),
+                    Some(propagation.into()),
+                ));
+            }
             let flags = match propagation {
                 "shared" => MountFlags::MS_SHARED,
                 "slave" => MountFlags::MS_SLAVE,
@@ -489,8 +495,9 @@ impl FromStr for Mount {
             };
 
             mount = mount.flags(flags);
-        } else {
-            // All mounts get these flags by default.
+        } else if is_bind_mount {
+            // Bind mounts are private by default. Propagation flags are a
+            // separate mount operation and are invalid on a fresh tmpfs mount.
             mount = mount.flags(MountFlags::MS_REC | MountFlags::MS_PRIVATE);
         }
 
@@ -533,7 +540,14 @@ mod tests {
         );
         assert_eq!(
             Mount::from_str("type=tmpfs,target=/tmp"),
-            Ok(Mount::tmpfs("/tmp").rprivate())
+            Ok(Mount::tmpfs("/tmp"))
+        );
+        assert_eq!(
+            Mount::from_str("type=tmpfs,target=/tmp,bind-propagation=rprivate"),
+            Err(MountParseError::Invalid(
+                "bind-propagation".into(),
+                Some("rprivate".into())
+            ))
         );
         assert_eq!(
             Mount::from_str("target=foo, ,,,"),
