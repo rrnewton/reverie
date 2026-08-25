@@ -515,8 +515,23 @@ def parse_marker(line: str) -> tuple[str, str, str] | None:
 # So the net is line-initial (which is what killed the prose false positives) AND
 # spans the near-miss family (which is what makes it fail closed). A verdict is
 # ASSERTED at the start of a line; prose mentions it mid-sentence.
+# ⚠️ THE TRAILING GUARD IS NOT COSMETIC: WITHOUT IT THIS FIRES ON THE GATE'S OWN
+# NAME. `changes-requested-gate` contains the token, `\b` is satisfied by the
+# hyphen, and every sentence naming the tool became an unbindable refusal. Measured
+# within minutes of shipping it, on https://github.com/rrnewton/hermit/pull/2624 --
+# a head with no refusal on it, carrying the line
+#     `changes-requested-gate` **CLEAR**; **no markers of any shape on this PR**
+# which drove the gate to INDETERMINATE and blocked the merge. A guard that cannot
+# admit a comment SAYING IT IS CLEAR is the same defect as one that blocks a pull
+# request for explaining the rule, and it was mine.
+#
+# `(?![-\w])` requires the token to END there -- a verdict is followed by a colon
+# or a space, never by `-gate`. The optional `-AT` keeps the canonical form
+# matching, and `CHANGES-REQUESTED-WITHDRAWN-AT` now correctly does NOT match,
+# since a withdrawal is not a refusal.
 _REFUSAL_NEARMISS = re.compile(
-    r"(?:CHANGES[-\s_]?REQUESTED|REQUEST(?:ING|ED)?\s+CHANGES|REJECTED)\b",
+    r"(?:CHANGES[-\s_]?REQUESTED(?:-AT)?|REQUEST(?:ING|ED)?\s+CHANGES|REJECTED)"
+    r"(?![-\w])",
     re.IGNORECASE,
 )
 

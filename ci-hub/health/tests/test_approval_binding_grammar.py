@@ -414,6 +414,32 @@ cases.append((ab.near_miss_refusal("nothing to see here") is None,
               "no match"))
 
 
+# ⚠️ THE NEAR-MISS NET MUST NOT FIRE ON THE GATE'S OWN NAME. `changes-requested-gate`
+# contains the token and `\b` was satisfied by the hyphen, so every sentence naming
+# the tool became an unbindable refusal. Measured on hermit#2624 -- a head with no
+# refusal on it -- which went INDETERMINATE and could not merge.
+for _benign in (
+    "`changes-requested-gate` **CLEAR**; no markers of any shape on this PR",
+    "the changes-requested-gate reports CLEAR",
+    "see ci-hub/bin/changes-requested-gate for the rule",
+):
+    cases.append((not ab.refusal_shaped(_benign) and ab.near_miss_refusal(_benign) is None,
+                  f"naming the gate is not a refusal: {_benign[:38]}",
+                  f"shaped={ab.refusal_shaped(_benign)}"))
+
+# A WITHDRAWAL IS NOT A REFUSAL EITHER -- the same trailing guard gives this for free.
+cases.append((not ab.refusal_shaped(f"CHANGES-REQUESTED-WITHDRAWN-AT: claude {CUR}"),
+              "a withdrawal is not refusal-shaped",
+              "withdrawn"))
+
+# ...and the forms that must still fire, so the guard cannot be over-tightened.
+for _real in (f"CHANGES-REQUESTED-AT: claude {CUR}", f"CHANGES-REQUESTED: claude {CUR}",
+              f"CHANGES REQUESTED: claude {CUR}", f"REJECTED: claude {CUR}"):
+    cases.append((ab.refusal_shaped(_real),
+                  f"a real refusal still fires: {_real[:34]}",
+                  "fires"))
+
+
 def test_approval_binding_grammar():
     """Assert the cases collected above, so pytest ENFORCES them.
 
