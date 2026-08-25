@@ -47,8 +47,10 @@ EXIT
 
 from __future__ import annotations
 
+import shutil
 import subprocess
 import sys
+from typing import NamedTuple, Optional
 
 
 def run(args: list[str]) -> tuple[int, str, str]:
@@ -140,6 +142,77 @@ def warn_shared_checkout(src: str, before: str | None) -> None:
     print("")
 
 
+class FormatVerdict(NamedTuple):
+    refused: bool
+    line: str
+
+
+def rust_files_being_pushed(src: str, before: Optional[str]) -> list[str]:
+    """The .rs files this push would publish, or [] if none."""
+    span = f"{before}..{src}" if before else src
+    rc, out, _ = run(["git", "diff", "--name-only", span])
+    if rc != 0:                      # unrelated histories, first push of a branch, etc.
+        rc, out, _ = run(["git", "show", "--name-only", "--format=", src])
+        if rc != 0:
+            return []
+    return [f for f in out.split() if f.endswith(".rs")]
+
+
+def format_gate(src: str, before: Optional[str]) -> FormatVerdict:
+    """Refuse a push that would publish misformatted Rust.
+
+    WHY THIS LIVES HERE AND NOT IN THE FULL PROFILE.
+
+    `cargo fmt --all -- --check` sits in the FULL validate profile. The
+    soft-green path exists so a landing need not wait for a full-profile
+    receipt, so it NEVER REACHES the format check -- not suppressed, not
+    silently passing, simply never on that path. Every soft-green landing has
+    that exposure, and one of them put an import-order violation on hermit main
+    on 2026-08-25 (fixed by rrnewton/hermit#2520). The agent had run cargo
+    check, cargo test and cargo build, and had verified the behaviour change
+    with before/after runs. It had not run cargo fmt, because nothing on the
+    path did.
+
+    A documented precondition was measured at 20 percent compliance tonight, so
+    this is a gate rather than a rule to remember. It costs seconds and needs no
+    receipt, lock, runner or network -- the reasons the full profile is
+    expensive do not apply to it.
+
+    ⚠️ THREE OUTCOMES, NEVER TWO. "checked and clean" and "could not check" are
+    reported differently and neither is silent. Collapsing them is exactly the
+    defect that made a merge verifier exit 0 when it could not verify at all,
+    and it is the failure mode this project has hit repeatedly tonight: an empty
+    or unrunnable check read as a pass.
+    """
+    rust = rust_files_being_pushed(src, before)
+    if not rust:
+        return FormatVerdict(False, "git-push-verified: format check SKIPPED (no .rs in this push)")
+    if shutil.which("cargo") is None:
+        return FormatVerdict(
+            False,
+            "git-push-verified: format NOT CHECKED -- cargo is absent on this box. "
+            f"{len(rust)} .rs file(s) are being pushed UNVERIFIED. This is not a pass.",
+        )
+    rc, out, err = run(["cargo", "fmt", "--all", "--", "--check"])
+    if rc == 0:
+        return FormatVerdict(False, f"git-push-verified: format CHECKED and clean ({len(rust)} .rs file(s))")
+    blob = f"{out}\n{err}"
+    if "not installed" in blob or "no such subcommand" in blob:
+        return FormatVerdict(
+            False,
+            "git-push-verified: format NOT CHECKED -- rustfmt is not installed. "
+            f"{len(rust)} .rs file(s) are being pushed UNVERIFIED. This is not a pass.",
+        )
+    offenders = sorted({
+        ln.split("Diff in ", 1)[1].rsplit(":", 2)[0]
+        for ln in blob.splitlines() if ln.startswith("Diff in ")
+    })
+    named = ", ".join(offenders) if offenders else "(rustfmt named no file; see its output above)"
+    if out.strip():
+        print(out.rstrip())
+    return FormatVerdict(True, f"git-push-verified: format CHECK FAILED in: {named}")
+
+
 def main(argv: list[str]) -> int:
     if len(argv) < 2 or ":" not in argv[1]:
         print(__doc__.strip().split("USAGE")[1], file=sys.stderr)
@@ -162,6 +235,17 @@ def main(argv: list[str]) -> int:
     print(f"git-push-verified: remote is currently {(before or '(absent)')[:12]}")
 
     warn_shared_checkout(src, before)
+
+    fmt = format_gate(src, before)
+    print(fmt.line)
+    if fmt.refused:
+        print(
+            "git-push-verified: REFUSING THE PUSH. Run `cargo fmt --all` and push again.\n"
+            "  This costs seconds and needs no receipt, lock, runner or network, which is\n"
+            "  why it runs here instead of only in the full validate profile.",
+            file=sys.stderr,
+        )
+        return 4
 
     # NO PIPE. The status below is the push's own.
     rc, out, err = run(["git", "push", remote, f"{src}:{dst}", *extra])
