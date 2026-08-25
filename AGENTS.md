@@ -53,5 +53,53 @@ Don't intruduce jargon...
 
 When a task or note cites a GitHub issue or pull request, write the FULL HYPERLINK -- `https://github.com/<owner>/<repo>/pull/<n>` -- never a bare `#1234` and never a bare `hermit#1234`. A bare number cannot be resolved from its own text once the surrounding context is gone, and the default repository is not a safe guess: references span at least hermit, agent-utils, reverie and rust-lang/rust, so assuming one silently resolves to a real but unrelated pull request. Three tasks have already been written off as permanently unmatchable for exactly this. The `task-reference-hygiene` gate reports violations; it is advisory today and grandfathers everything created before 2026-08-26.
 
+# NEVER READ `$?` AFTER A PIPE
+
+`$?` is the exit status of the LAST command in a pipeline, not the one you care
+about. `cmd | tail` reports **tail's** status, and tail almost always succeeds.
+
+This is not a hypothetical, it is not only about `make validate`, and knowing
+about it does not prevent it. Measured 2026-08-25: an agent that had read this
+rule ran
+
+```bash
+with-proxy git push origin HEAD:main 2>&1 | tail -1 ; echo "push rc=$?"
+```
+
+and printed **`push rc=0`** for a push GitHub had **rejected** as non-fast-forward.
+`rc` was `tail`'s. Nothing else in the output said "rejected" loudly enough to
+catch, and the change was briefly believed to be on `main` when it was not.
+
+**A false success from a landing command is the worst instance of this trap:
+it is how an unlanded change gets recorded as merged.**
+
+The safe idiom, and the only one to use for anything that lands, pushes,
+validates or gates:
+
+```bash
+cmd > /tmp/out 2>&1 ; rc=$?          # status captured BEFORE anything else runs
+[ "$rc" -eq 0 ] || tail -20 /tmp/out # look at the output only after deciding
+```
+
+If you must pipe in an interactive shell, `set -o pipefail` first — it is NOT
+on by default in an ad-hoc command.
+
+**Do not "fix" this by sweeping the repository for `pipefail`.** The shell
+scripts that land things — `ci-hub/landing/land-pr.sh`,
+`ci-hub/landing/union-rebase.sh`, `scripts/e2e-union-rebase.sh` — already set
+`set -uo pipefail` and are not the exposure. The exposure is the ad-hoc command
+an agent types, where nothing is set. 161 of 431 tracked `.sh` files lack
+`pipefail` and changing them would not have caught the failure above.
+
+**And verify the outcome by CONTENT, not by the command's own report.** After a
+push, read the thing back:
+
+```bash
+git fetch -q origin main && git show origin/main:path/to/file | grep -c '<the change>'
+```
+
+That is what caught the false `rc=0`, and it is the habit that makes the trap
+survivable rather than merely known.
+
 # You are a SKEPTIC
 
