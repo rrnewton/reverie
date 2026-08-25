@@ -9828,13 +9828,25 @@ enum SignalDisposition {
 /// accepted without altering control flow.
 // TODO-HUMAN-REVIEW(#95): Review self-signal termination and the default-disposition table.
 fn kill_signal(state: &mut LoadedStaticElf, number: u64, args: &[u64; 6]) -> SyscallAction {
-    // tgkill(tgid, tid, sig) carries the signal in its third argument, whereas
-    // kill(pid, sig) and tkill(tid, sig) carry it in the second.
-    let (target, raw_signal) = if number == libc::SYS_tgkill as u64 {
-        (args[1] as i64, args[2])
+    let is_kill = number == libc::SYS_kill as u64;
+    let is_tgkill = number == libc::SYS_tgkill as u64;
+
+    // ⚠️ DECODE THROUGH SIGNED `pid_t`, NOT `as i64`. The guest passes ids in
+    // 64-bit registers but they are 32-bit `pid_t`. A guest that put -1 in a
+    // 32-bit register delivers 0x00000000_FFFFFFFF here; widening that to i64
+    // yields 4294967295, which is neither -1 nor any live id, so it would fall
+    // through the id checks as an ordinary foreign positive. Truncating to
+    // `pid_t` reproduces the kernel's own read of the register.
+    let (tgid, target, raw_signal) = if is_tgkill {
+        (
+            Some(args[0] as libc::pid_t),
+            args[1] as libc::pid_t,
+            args[2],
+        )
     } else {
-        (args[0] as i64, args[1])
+        (None, args[0] as libc::pid_t, args[1])
     };
+
     let Ok(signal) = libc::c_int::try_from(raw_signal) else {
         return continue_with(negative_errno(libc::EINVAL));
     };
@@ -9842,15 +9854,49 @@ fn kill_signal(state: &mut LoadedStaticElf, number: u64, args: &[u64; 6]) -> Sys
         return continue_with(negative_errno(libc::EINVAL));
     }
 
-    // Only self-directed signals are modeled. `kill` accepts the process id, its
-    // own process group (0), or the broadcast set (-1); `tkill`/`tgkill` name
-    // the sole guest thread by its tid.
-    let targets_self = if number == libc::SYS_kill as u64 {
-        target == i64::from(state.pid) || target == 0 || target == -1
+    // ⚠️ TARGET IDENTITY IS THREAD-AWARE. A CLONE_THREAD worker built by
+    // `thread_child` keeps the leader's `state.pid` while carrying its own
+    // `state.tid`, so `pid != tid` for every worker. Validating a thread-
+    // directed signal against `state.pid` — as this handler previously did —
+    // is wrong in BOTH directions: it rejects a worker's valid
+    // `tkill(state.tid, ..)` and `tgkill(state.pid, state.tid, ..)` with ESRCH,
+    // and it accepts a LEADER-targeted request and then evaluates or mutates
+    // the WORKER's signal state. `kill` is unchanged: it names a process.
+    let targets_self = if is_kill {
+        target == state.pid || target == 0 || target == -1
     } else {
-        target == i64::from(state.pid)
+        // Linux rejects a non-positive thread id outright, before any lookup.
+        if target <= 0 {
+            return continue_with(negative_errno(libc::EINVAL));
+        }
+        if let Some(tgid) = tgid {
+            if tgid <= 0 {
+                return continue_with(negative_errno(libc::EINVAL));
+            }
+            tgid == state.pid && target == state.tid
+        } else {
+            target == state.tid
+        }
     };
+
     if !targets_self {
+        // ⚠️ A NAMED, LIVE SIBLING IS A BACKEND LIMITATION, NOT A LIE AND NOT A
+        // MUTATION. Falling through to the disposition logic below would apply
+        // another thread's signal to THIS thread's mask, pending set and
+        // disposition table. Report the limitation and change nothing.
+        if !is_kill {
+            let sibling = state
+                .task_lifecycle
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .get(target)
+                .map(|task| task.tgid);
+            if let Some(sibling_tgid) = sibling
+                && tgid.is_none_or(|tgid| tgid == sibling_tgid)
+            {
+                return continue_with(negative_errno(libc::ENOSYS));
+            }
+        }
         return continue_with(negative_errno(libc::ESRCH));
     }
 
@@ -9875,8 +9921,16 @@ fn kill_signal(state: &mut LoadedStaticElf, number: u64, args: &[u64; 6]) -> Sys
 
     match signal_disposition(state, signal) {
         SignalDisposition::Terminate => SyscallAction::Exit(128 + signal),
-        SignalDisposition::Ignore | SignalDisposition::Stop | SignalDisposition::Handled => {
-            continue_with(0)
+        SignalDisposition::Ignore => continue_with(0),
+        // ⚠️ TRUTHFULNESS. This guest kernel runs no user handler and models no
+        // stopped state, so reporting 0 here claimed a delivery that never
+        // happened — a guest that installed a handler and signalled itself saw
+        // success and then observed its handler had not run. Fail visibly
+        // instead. Ignore stays successful because "discard it" IS the
+        // delivery, and a blocked Handler/Stop is queued above and never
+        // reaches here.
+        SignalDisposition::Stop | SignalDisposition::Handled => {
+            continue_with(negative_errno(libc::ENOSYS))
         }
     }
 }
@@ -21148,6 +21202,15 @@ mod tests {
         let pid = state.pid;
 
         // A user handler that we cannot deliver must not terminate the process.
+        //
+        // ⚠️ EXPECTATION DELIBERATELY CHANGED FROM `result: 0`, and this is a
+        // behaviour change rather than a test repair. The old expectation
+        // encoded the defect: this guest kernel runs no user handler, so
+        // reporting 0 told the guest its signal had been delivered when nothing
+        // happened. What must not change is that it does not TERMINATE, which
+        // is what this test is named for and is still asserted -- the action is
+        // still `Continue`, not `Exit`. Only the reported value moves, from a
+        // false success to a visible ENOSYS.
         state
             .signal_actions
             .insert(libc::SIGTERM, custom_action(0x4000));
@@ -21157,7 +21220,7 @@ mod tests {
                 libc::SYS_kill as u64,
                 &[pid as u64, libc::SIGTERM as u64, 0, 0, 0, 0],
             ),
-            SyscallAction::Continue { result: 0, .. }
+            SyscallAction::Continue { result, .. } if result == negative_errno(libc::ENOSYS)
         ));
 
         // A blocked fatal signal stays pending rather than terminating.
@@ -21209,6 +21272,258 @@ mod tests {
             } => assert_eq!(result, negative_errno(libc::ESRCH)),
             _ => panic!("expected ESRCH continue for a foreign target"),
         }
+    }
+
+    /// Build a CLONE_THREAD worker and hand back its state, so a test can
+    /// exercise the `pid != tid` shape that every pre-existing signal test
+    /// missed by using `test_state`, where pid == tid == 1.
+    /// ⚠️ THE LEADER IS RETURNED, NOT DROPPED, AND THAT IS LOAD-BEARING.
+    /// `ElfExecutor::drop` deregisters its tid from the shared lifecycle table,
+    /// so letting the leader fall out of scope here would delete the very
+    /// sibling these tests ask the handler to find — and the leader-targeted
+    /// case would then pass for the WRONG reason, reporting ESRCH because no
+    /// such thread exists rather than ENOSYS because it exists and is not
+    /// deliverable. Holding it alive keeps the two outcomes distinguishable.
+    fn worker_state(dir: &TestDir, worker_tid: i32) -> (ElfExecutor, ElfExecutor, i32) {
+        let leader = ElfExecutor::new(test_state(&dir.0), false);
+        let leader_tid = leader.state.tid;
+        let worker = leader.thread_child(worker_tid).expect("thread_child");
+        (worker, leader, leader_tid)
+    }
+
+    fn result_of(action: SyscallAction) -> i64 {
+        match action {
+            SyscallAction::Continue { result, .. } => result,
+            SyscallAction::Exit(code) => panic!("expected Continue, got Exit({code})"),
+        }
+    }
+
+    /// The premise the rejected implementation got wrong: a worker's tid is not
+    /// its pid. If this ever fails, every assertion below is vacuous.
+    #[test]
+    fn thread_child_worker_has_pid_distinct_from_tid() {
+        let dir = TestDir::new();
+        let (worker, _leader, leader_tid) = worker_state(&dir, 7);
+        let worker = &worker.state;
+        assert_ne!(
+            worker.pid, worker.tid,
+            "worker pid must differ from its tid"
+        );
+        assert_eq!(worker.tid, 7);
+        assert_eq!(worker.pid, leader_tid, "worker keeps the leader's tgid");
+    }
+
+    /// A worker signalling ITSELF must succeed. The rejected head compared the
+    /// target against `state.pid` and returned ESRCH for both of these.
+    #[test]
+    fn worker_self_directed_probe_signals_succeed() {
+        let dir = TestDir::new();
+        let (mut worker, _leader, _) = worker_state(&dir, 7);
+        let worker = &mut worker.state;
+        let (pid, tid) = (worker.pid, worker.tid);
+        assert_eq!(
+            result_of(kill_signal(
+                worker,
+                libc::SYS_tkill as u64,
+                &[tid as u64, 0, 0, 0, 0, 0],
+            )),
+            0,
+            "tkill(gettid(), 0) from a worker"
+        );
+        assert_eq!(
+            result_of(kill_signal(
+                worker,
+                libc::SYS_tgkill as u64,
+                &[pid as u64, tid as u64, 0, 0, 0, 0],
+            )),
+            0,
+            "tgkill(getpid(), gettid(), 0) from a worker"
+        );
+    }
+
+    /// ⚠️ THE MUTATION THE REJECTION NAMED. A leader-targeted signal must not be
+    /// evaluated against, or applied to, the WORKER's signal state. This asserts
+    /// the state is untouched, not merely that the call failed.
+    #[test]
+    fn leader_targeted_signal_does_not_mutate_worker_signal_state() {
+        let dir = TestDir::new();
+        let (mut worker, _leader, leader_tid) = worker_state(&dir, 7);
+        let worker = &mut worker.state;
+        let pid = worker.pid;
+        worker
+            .signal_actions
+            .insert(libc::SIGUSR1, custom_action(0x4321));
+        let before_actions = worker.signal_actions.clone();
+        let before_mask = worker.signal_mask;
+
+        let result = result_of(kill_signal(
+            worker,
+            libc::SYS_tgkill as u64,
+            &[pid as u64, leader_tid as u64, libc::SIGUSR1 as u64, 0, 0, 0],
+        ));
+
+        assert!(
+            result < 0,
+            "a leader-targeted signal must not report success"
+        );
+        assert_eq!(
+            result,
+            negative_errno(libc::ENOSYS),
+            "a live sibling is a backend limitation, not a missing target"
+        );
+        assert_eq!(
+            worker.signal_actions, before_actions,
+            "dispositions mutated"
+        );
+        assert_eq!(worker.signal_mask, before_mask, "signal mask mutated");
+
+        // ⚠️ THE ASSERTIONS ABOVE DO NOT DISCRIMINATE ON THEIR OWN, and I proved
+        // that by mutation: restoring the rejected `state.pid` comparison makes
+        // this call target-self, and SIGUSR1's unsupported handler then returns
+        // ENOSYS anyway, so every assertion above still passes while the bug is
+        // present. A BLOCKED signal is what separates the two, because the
+        // wrong branch has a visible side effect: it QUEUES the signal into
+        // this worker's pending set. Correct behaviour queues nothing.
+        let blocked = libc::SIGUSR2;
+        let bit = (blocked - 1) as usize;
+        worker.signal_mask[bit / 8] |= 1 << (bit % 8);
+        let pending_before = worker
+            .signalfd_state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .pending
+            .clone();
+
+        let blocked_result = result_of(kill_signal(
+            worker,
+            libc::SYS_tgkill as u64,
+            &[pid as u64, leader_tid as u64, blocked as u64, 0, 0, 0],
+        ));
+
+        assert_eq!(
+            blocked_result,
+            negative_errno(libc::ENOSYS),
+            "a blocked signal aimed at the leader is still not ours to take"
+        );
+        let pending_after = worker
+            .signalfd_state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .pending
+            .clone();
+        assert_eq!(
+            pending_after, pending_before,
+            "a leader-targeted blocked signal was queued into the WORKER's pending set"
+        );
+    }
+
+    /// Zero and a raw zero-extended negative id are EINVAL, not ESRCH. Widening
+    /// with `as i64` turns 0xFFFF_FFFF into 4294967295 and hides this.
+    #[test]
+    fn nonpositive_thread_signal_ids_report_einval() {
+        let dir = TestDir::new();
+        let (mut worker, _leader, _) = worker_state(&dir, 7);
+        let worker = &mut worker.state;
+        let pid = worker.pid;
+        for (label, number, args) in [
+            (
+                "tkill(0)",
+                libc::SYS_tkill,
+                [0u64, libc::SIGUSR1 as u64, 0, 0, 0, 0],
+            ),
+            (
+                "tkill(zero-extended -1)",
+                libc::SYS_tkill,
+                [0x0000_0000_FFFF_FFFF, libc::SIGUSR1 as u64, 0, 0, 0, 0],
+            ),
+            (
+                "tgkill(tgid=0)",
+                libc::SYS_tgkill,
+                [0, 7, libc::SIGUSR1 as u64, 0, 0, 0],
+            ),
+            (
+                "tgkill(tid=zero-extended -1)",
+                libc::SYS_tgkill,
+                [
+                    pid as u64,
+                    0x0000_0000_FFFF_FFFF,
+                    libc::SIGUSR1 as u64,
+                    0,
+                    0,
+                    0,
+                ],
+            ),
+        ] {
+            assert_eq!(
+                result_of(kill_signal(worker, number as u64, &args)),
+                negative_errno(libc::EINVAL),
+                "{label} must be EINVAL"
+            );
+        }
+    }
+
+    /// A positive id that names no live task is ESRCH — distinct from the
+    /// ENOSYS a live sibling gets, so the two cases stay tellable apart.
+    #[test]
+    fn foreign_thread_id_reports_esrch_not_enosys() {
+        let dir = TestDir::new();
+        let (mut worker, _leader, _) = worker_state(&dir, 7);
+        let worker = &mut worker.state;
+        assert_eq!(
+            result_of(kill_signal(
+                worker,
+                libc::SYS_tkill as u64,
+                &[4242, libc::SIGUSR1 as u64, 0, 0, 0, 0],
+            )),
+            negative_errno(libc::ESRCH),
+        );
+    }
+
+    /// Truthfulness: an unblocked Handler or Stop is not delivered by this
+    /// guest kernel, so it must fail visibly. Ignore still succeeds, because
+    /// discarding the signal IS the delivery.
+    #[test]
+    fn unsupported_handler_and_stop_fail_visibly_while_ignore_succeeds() {
+        let dir = TestDir::new();
+        let (mut worker, _leader, _) = worker_state(&dir, 7);
+        let worker = &mut worker.state;
+        let tid = worker.tid;
+
+        worker
+            .signal_actions
+            .insert(libc::SIGUSR1, custom_action(0x4321));
+        assert_eq!(
+            result_of(kill_signal(
+                worker,
+                libc::SYS_tkill as u64,
+                &[tid as u64, libc::SIGUSR1 as u64, 0, 0, 0, 0],
+            )),
+            negative_errno(libc::ENOSYS),
+            "an installed handler cannot run here, so success would be a lie"
+        );
+
+        assert_eq!(
+            result_of(kill_signal(
+                worker,
+                libc::SYS_tkill as u64,
+                &[tid as u64, libc::SIGTSTP as u64, 0, 0, 0, 0],
+            )),
+            negative_errno(libc::ENOSYS),
+            "no stopped state is modeled"
+        );
+
+        worker
+            .signal_actions
+            .insert(libc::SIGUSR2, custom_action(1));
+        assert_eq!(
+            result_of(kill_signal(
+                worker,
+                libc::SYS_tkill as u64,
+                &[tid as u64, libc::SIGUSR2 as u64, 0, 0, 0, 0],
+            )),
+            0,
+            "SIG_IGN is a real delivery outcome",
+        );
     }
 
     #[test]
