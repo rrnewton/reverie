@@ -7905,8 +7905,23 @@ exit 0
     }
 
     // --- composite admission gate (mechanical REBASE-BEFORE-VALIDATE) ---
-    // These serialize on ENV_LOCK because they mutate a process-global env var.
-    // Bench-kind tests above never read the env, so they are unaffected.
+    // ⚠️ HOLD ENV_LOCK TO *READ* THE OVERRIDE, NOT ONLY TO WRITE IT.
+    //
+    // This comment previously said only "these serialize because they mutate a
+    // process-global env var", and that framing is what let a flake through: it
+    // names writers and it names tests that never touch the env, and it silently
+    // omits the third case — a test that READS the env without writing it. A
+    // reader without the guard is just as racy, because the value it reads may be
+    // a concurrent writer's.
+    //
+    // `LockPaths::for_workspace` reads `test_only_override(VALIDATE_LOCK_PATH_ENV)`,
+    // which under `cfg(test)` is a live `env::var_os`. So any test that calls
+    // `for_workspace` AND asserts on a field derived from `lock` (`lock`, `guard`,
+    // `queue`, `owner`, `cleanup`, `released`) must hold this. `anchor` is exempt:
+    // it is uid-derived in `LockPaths::at` and never a function of the override.
+    //
+    // `for_authority_query` is exempt by construction — it resolves the production
+    // domain without consulting any ambient override.
     static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     fn write_stub(name: &str, body: &str) -> PathBuf {
@@ -8000,6 +8015,11 @@ exit 0
 
     #[test]
     fn every_worktree_of_one_repository_shares_one_lease_file() {
+        // Held for the same reason as `a_non_repository_root_falls_back_to_itself`:
+        // the two `for_workspace` calls below READ the process-global override, so
+        // a concurrent writer makes both sides return the same planted path and the
+        // linked-worktree assertion fails for a reason it does not name.
+        let _env_guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         // THE DEFECT, at unit scale. `workspace_root()` hands `for_workspace` the
         // git toplevel of the running ci-hub.rs, so before this each linked
         // worktree derived a private `.validate-lock` and admitted independently.
@@ -8047,6 +8067,14 @@ exit 0
     fn a_non_repository_root_falls_back_to_itself() {
         // Fail-SAFE direction: without a resolvable repository identity we keep the
         // previous behaviour rather than pointing a live lease somewhere invented.
+        //
+        // ENV_LOCK IS HELD BECAUSE THIS TEST *READS* THE PROCESS-GLOBAL OVERRIDE,
+        // not because it writes one. `for_workspace` consults
+        // `test_only_override(VALIDATE_LOCK_PATH_ENV)`, which under `cfg(test)` is
+        // a live `env::var_os`. Without the guard a concurrent writer's value is
+        // read as this test's answer, and the assertion below reports the OTHER
+        // test's directory.
+        let _env_guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let root = env::temp_dir().join(format!(
             "ci-hub-vlock-norepo-{}-{}",
             std::process::id(),
