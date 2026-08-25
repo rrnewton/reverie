@@ -51,6 +51,18 @@
 //! Defaults: --repo ../worktrees/dbt-compat/hermit  --manifest <invoke cargo>  --timeout 150
 //!           --csv compat-envelope/dbi-scorecard.csv  --run-id dbi-corpus-verify
 
+// ZERO-WARNINGS, MADE INTRINSIC RATHER THAN DELEGATED TO AN EXTERNAL GATE.
+// A rust-script is invisible to `cargo clippy --workspace`, so the project rule
+// held here only for as long as something remembered to cover this file.
+//
+// ⚠️ A CLOSED, NAMED SET -- DELIBERATELY NOT `deny(warnings)`. These compile at
+// INVOCATION, so a blanket deny would let a future toolchain introducing any new
+// lint stop the script from RUNNING. That is a production break, not a build
+// break, and it would be worse than the warnings it prevents. An enumerated set
+// cannot be widened by a toolchain upgrade. New lints are caught instead by
+// `scripts/lint-rust-scripts.sh`, which compiles this file under `-D warnings`
+// externally, where a failure blocks a commit rather than an execution.
+#![deny(dead_code, unused_imports, unused_mut, unused_variables, unused_must_use)]
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};

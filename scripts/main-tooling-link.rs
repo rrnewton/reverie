@@ -52,7 +52,7 @@
 use serde::{Deserialize, Serialize};
 use std::env;
 use std::fs;
-use std::os::unix::fs::{symlink, PermissionsExt};
+use std::os::unix::fs::symlink;
 use std::path::{Path, PathBuf};
 use std::process::{exit, Command};
 
@@ -478,6 +478,9 @@ fn run() -> Result<i32, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // Only the tests set or read a file mode, so the trait belongs here rather
+    // than at module scope where the binary build sees it as unused.
+    use std::os::unix::fs::PermissionsExt;
     use std::sync::atomic::{AtomicU32, Ordering};
 
     static COUNTER: AtomicU32 = AtomicU32::new(0);

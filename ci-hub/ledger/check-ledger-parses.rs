@@ -26,6 +26,33 @@
 //! serde_json = "1"
 //! ```
 
+// ZERO-WARNINGS, MADE INTRINSIC RATHER THAN DELEGATED TO AN EXTERNAL GATE.
+// A rust-script is invisible to `cargo clippy --workspace`, so the project rule
+// held here only for as long as something remembered to cover this file.
+//
+// ⚠️ A CLOSED, NAMED SET -- DELIBERATELY NOT `deny(warnings)`. These compile at
+// INVOCATION, so a blanket deny would let a future toolchain introducing any new
+// lint stop the script from RUNNING. That is a production break, not a build
+// break, and it would be worse than the warnings it prevents. An enumerated set
+// cannot be widened by a toolchain upgrade. New lints are caught instead by
+// `scripts/lint-rust-scripts.sh`, which compiles this file under `-D warnings`
+// externally, where a failure blocks a commit rather than an execution.
+#![deny(dead_code, unused_imports, unused_mut, unused_variables, unused_must_use)]
+// `records.rs` is a SHARED module. Liveness of a symbol in it is a property of
+// the whole program, not of this script: this checker uses a handful of the row
+// types, `ci-hub.rs` uses the rest, and each `#[path]`-including script sees
+// everything it personally does not call as dead.
+//
+// ⚠️ THE ALLOW IS ON THE INCLUDE, NOT INSIDE THE MODULE, AND THAT DISTINCTION IS
+// THE POINT. Scoped here it silences only "unused FROM THIS ENTRY POINT", while
+// `ci-hub.rs` — which consumes the superset — still gates the same file under
+// `-D warnings` and would still fail on genuinely dead code. Putting the allow
+// inside `records.rs` would blind every consumer at once.
+//
+// Without this, a per-script zero-warnings gate demands deleting live shared
+// types. Measured 2026-08-25: 8 findings here, all of them symbols with 2 to 9
+// references elsewhere in ci-hub.
+#[allow(dead_code)]
 #[path = "../lib/records.rs"]
 mod records;
 

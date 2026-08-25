@@ -496,11 +496,27 @@ impl BoundaryOutcome {
     /// True only for `Accepted`. Both other states block, so a caller that only
     /// needs the gate keeps working — but it must not use this to BUILD A
     /// MESSAGE, because it cannot tell the two blocking states apart.
+    ///
+    /// Exercised by the tests below but not yet called from a non-test consumer,
+    /// so the binary build sees it as dead. Kept rather than deleted: the sole
+    /// caller today matches all three variants exhaustively, which is stronger
+    /// than this and is why this is spare rather than wrong. The consumer that
+    /// wants the gate WITHOUT the message — the `shared_evidence_accepts` side,
+    /// still a `bool` — is the one to wire it to. Drop this attribute the moment
+    /// a real caller appears.
+    ///
+    /// ⚠️ DO NOT DELETE TO SILENCE A WARNING. This pair is the
+    /// could-not-determine state that replaced a `bool` collapsing "could not
+    /// determine" into "does not qualify". Removing them to make a lint pass
+    /// would reward reintroducing that collapse.
+    #[allow(dead_code)]
     pub fn accepted(&self) -> bool {
         matches!(self, BoundaryOutcome::Accepted)
     }
 
-    /// The reader-fault detail, when there is one.
+    /// The reader-fault detail, when there is one. See [`BoundaryOutcome::accepted`]
+    /// for why this is retained while unwired.
+    #[allow(dead_code)]
     pub fn indeterminate_reason(&self) -> Option<&'static str> {
         match self {
             BoundaryOutcome::Indeterminate(reason) => Some(reason),
@@ -1134,6 +1150,26 @@ mod tests {
             BoundaryOutcome::Accepted,
             "the real Rust-to-Python merge-boundary bridge must preserve schema-4"
         );
+    }
+
+    /// The three states are distinguishable through the accessors, not only by
+    /// matching. A caller that only needs the gate must still be unable to
+    /// mistake a reader fault for a receipt refusal.
+    #[test]
+    fn boundary_outcome_keeps_the_two_blocking_states_apart() {
+        assert!(BoundaryOutcome::Accepted.accepted());
+        assert!(!BoundaryOutcome::Refused.accepted());
+        assert!(!BoundaryOutcome::Indeterminate("no python3").accepted());
+
+        // Both non-accepting states BLOCK, and that is deliberate: an
+        // unconsultable authority must never make a receipt more authoritative.
+        // What must stay distinguishable is WHY.
+        assert_eq!(BoundaryOutcome::Refused.indeterminate_reason(), None);
+        assert_eq!(
+            BoundaryOutcome::Indeterminate("no python3").indeterminate_reason(),
+            Some("no python3")
+        );
+        assert_eq!(BoundaryOutcome::Accepted.indeterminate_reason(), None);
     }
 
     /// NEGATIVE (mutation): a coverage object that OMITS a failure list must be
