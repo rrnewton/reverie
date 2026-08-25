@@ -68,8 +68,122 @@ fi
 
 [ -s "$input" ] || die "refusing to write an empty note"
 
+# ─────────────────────────────────────────────────────────────────────────────
+# RULE 3: CONTENT FIDELITY IS NOT AUTHORSHIP. The read-back proof below shows the
+# STORE matches what this tool SENT. It cannot show that the file it read is the
+# file the caller wrote. /tmp is shared by every agent on this box, and the
+# staging names are predictable -- /tmp/note.txt, /tmp/claim.txt, /tmp/ask030.txt.
+# Measured 2026-08-25 by agent(hermit-006): two agents independently chose
+# /tmp/ask030.txt for the same kind of message and one overwrote the other. That
+# time the overwrite landed after the post; had it landed a few seconds earlier
+# this tool would have stored the OTHER agent's text under the caller's name and
+# printed "STORED AND VERIFIED byte-for-byte" -- a real proof of the wrong claim.
+#
+# A misattributed note is worse than a lost one. A lost note is absent; a
+# misattributed one reads as a considered statement by an agent who never made it,
+# and if it carries an APPROVED-AT, a landing claim or a stand-down, it is acted on.
+#
+# Two independent defences, because they fail differently:
+#   3a PREVENT the collision -- a staging file in a shared directory must be
+#      namespaced to the calling agent, so two agents cannot pick the same path.
+#   3b DETECT misattribution -- if the note carries a disclosure tag naming a
+#      DIFFERENT agent, refuse regardless of how it got there.
+# Neither applies to stdin, which has no file to race and is the preferred form.
+
+# Resolve the repository from THIS SCRIPT'S OWN LOCATION, not the caller's cwd:
+# this tool is invoked by absolute path from worktrees all over the box, so a
+# cwd-relative lookup would silently find no identity and disable both checks.
+# `set -u` is on, so an undefined ROOT would abort rather than degrade -- but a
+# MISSING who-am-i must degrade openly instead, which is what the -x test does.
+SELF=$(cd "$(dirname "$0")" && pwd)
+ROOT=${SELF%/ci-hub/bin}
+
+me=""
+if [ -x "$ROOT/ci-hub/bin/who-am-i" ]; then
+    me=$("$ROOT/ci-hub/bin/who-am-i" --tag --role impl 2>/dev/null \
+         | sed 's/^\[//; s/\].*$//' | cut -d, -f2 | tr -d ' ')
+fi
+# ⚠️ AN UNRESOLVED IDENTITY DISABLES BOTH CHECKS, AND THAT MUST BE VISIBLE.
+# Failing open is right -- this tool's first job is recording notes, and a broken
+# identity lookup must not stop the fleet writing to the record. But a guard that
+# quietly stops guarding is how the `tg show` tag gate sat inert for weeks, so say
+# so on stderr every time rather than letting silence read as a pass.
+if [ -z "$me" ]; then
+    printf '%s\n' \
+"tg-note-verified: WARNING -- could not resolve this agent's identity via" \
+"  $ROOT/ci-hub/bin/who-am-i" \
+"  The staging-path and attribution checks are DISABLED for this call. The" \
+"  byte-for-byte content check below still applies." >&2
+fi
+
+# 3a. Shared-directory staging paths must carry the agent id.
+case "$src" in
+    -) : ;;  # stdin: no file exists, so nothing can overwrite it
+    /tmp/*|/var/tmp/*|/dev/shm/*)
+        base=${src##*/}
+        if [ -n "$me" ] && case "$base" in *"$me"*) false ;; *) true ;; esac; then
+            printf '%s\n' \
+"tg-note-verified: REFUSED -- unnamespaced staging path in a shared directory." \
+"" \
+"  $src" \
+"" \
+"  /tmp is shared by every agent on this box. Measured 2026-08-25: two agents both" \
+"  chose /tmp/ask030.txt for the same kind of message and one silently overwrote the" \
+"  other. If that swap lands between your write and this read, this tool stores" \
+"  SOMEONE ELSE'S TEXT UNDER YOUR NAME and truthfully reports it verified -- the" \
+"  bytes really do round-trip; they are just not your bytes." \
+"" \
+"  Put your agent id in the filename, which is already unique:" \
+"    ${src%/*}/$me-<purpose>.md" \
+"" \
+"  Or avoid the file entirely -- there is then nothing to race:" \
+"    $0 <task> <<'EOF'" \
+"    ...note text, quoted heredoc so nothing is substituted..." \
+"    EOF" >&2
+            exit 2
+        fi
+        ;;
+esac
+
 # Rule 1: the value travels in a variable. Never re-quoted into a command line.
 content=$(cat "$input")
+
+# 3b. A disclosure tag in authorship position must name the caller.
+#
+# ⚠️ MATCH THE AUTHORSHIP MARKER ONLY, NEVER A MENTION. Notes constantly and
+# legitimately name other agents -- "agent(hermit-011) landed this", "From
+# agent(hermit-001)". Refusing on any occurrence would fire on ordinary
+# coordination and be turned off within the hour. The disclosure tag on the FIRST
+# non-empty line is the one place a note states who is speaking, so that is the
+# only place this reads.
+if [ -n "$me" ]; then
+    first=$(grep -m1 -v '^[[:space:]]*$' "$input" || true)
+    case "$first" in
+        \[*,*\]*)
+            claimed=$(printf '%s' "$first" | sed 's/^\[//; s/\].*$//' | cut -d, -f2 | tr -d ' ')
+            case "$claimed" in
+                *-*)
+                    if [ "$claimed" != "$me" ]; then
+                        printf '%s\n' \
+"tg-note-verified: REFUSED -- this note is attributed to another agent." \
+"" \
+"  disclosure tag says : $claimed" \
+"  you are             : $me" \
+"" \
+"  Posting it would put ${claimed}'s words in the durable record under your name," \
+"  or yours under theirs. Content fidelity and authorship are different properties" \
+"  and the byte-for-byte check below only covers the first one." \
+"" \
+"  If a shared /tmp path was overwritten under you, re-stage to a namespaced path" \
+"  and check what you are about to post. If you are deliberately relaying another" \
+"  agent's text, quote it in the body rather than leading with their tag." >&2
+                        exit 2
+                    fi
+                    ;;
+            esac
+            ;;
+    esac
+fi
 
 # TG_NOTE_VERIFIED tells the shared shell guard that this call came through the
 # verified path. The guard refuses inline note content everywhere else, because
