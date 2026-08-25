@@ -243,3 +243,89 @@ probe root, measures the untouched hierarchy first, then deletes the
 installation while leaving the unit enabled — reproducing `UnitFileState=enabled`
 with `ExecMainStatus=203`. The live `hermit-gate-runner.service` is never
 touched. 14 assertions, both directions, plus the cadence cases.
+
+## Emitting an approval that the gate actually reads (`approval_binding.py`)
+
+⚠️ **`gh pr review --approve` is not the mechanism, and its refusal settles
+nothing.** It rejects self-approval with `Can not approve your own pull request`,
+which has been reported as "no agent on this fork can supply an approval". That
+is true of GitHub's native review state and false of the thing that decides
+landing: `approval_binding.py` never consults native review state. It derives
+authority from a line in a comment body, and `passed-review-*` is only a cache
+pointing at that line.
+
+**The one authority-bearing shape.** Anchored, whole-line, case-insensitive
+(`approval_binding.py`):
+
+```text
+APPROVED-AT: claude 45a96114aa8ce603f2d9d39d1ae3f7c92d1f8267
+```
+
+Each of these is independently fatal if wrong: the **colon**; an **explicit
+lane**; the **full 40-hex** sha (a 12-char prefix does not match); and the line
+being the **entire line** — trailing prose on it kills the binding.
+
+Valid lanes are exactly `claude` and `codex` (`LANES`). **The role tag does not
+encode the lane** — a codex review may be role-tagged with a model name — so the
+lane is what you type, not who you are.
+
+**Whole-line markdown is tolerated; inline is not.** `undecorate()` strips
+`` ` ``, `**`, `__`, `*`, `_` only when a wrapper encloses the complete line:
+
+| form | result |
+| --- | --- |
+| `**APPROVED-AT: claude <sha>**` | binds |
+| ``` `APPROVED-AT: claude <sha>` ``` | binds |
+| ``APPROVED-AT: claude `<sha>` `` | **malformed — lane reads UNDETERMINED** |
+
+That third form is not an error you will see; it is an absence.
+
+**State, and only the newest binding counts.** No binding for a lane →
+`UNDETERMINED`; the lane's **newest** binding equal to the current head →
+`BOUND_CURRENT`; otherwise `SUPERSEDED`. ⚠️ Re-posting an older line to
+"reconfirm" therefore **demotes your own lane**. A rejection
+(`CHANGES-REQUESTED-AT: <lane> <40-hex>`, or the historical lane-less
+`REQUEST CHANGES AT <40-hex>`) zeroes its whole comment even if that comment also
+carries an `APPROVED-AT` line. A verdict-ish keyword beside a 40-hex matching
+neither grammar is reported as malformed, never silently skipped.
+
+**Both lanes are required.** `core-review-protocol-lint.sh` needs at least one
+`adversarial-review-codex<N>` **and** one `adversarial-review-claude<N>` (N in
+1..4), plus **both** `passed-review-codex` and `passed-review-claude`. Emit the
+line *and* apply the label: a label with no line binds nothing, and a line with
+no label leaves the merge gate failing on a missing label. One bound lane
+unblocks half a head.
+
+**Under a rebase the binding dies — including a byte-identical one.** Any push
+that changes the head sha makes every existing binding `SUPERSEDED`. Measured on
+hermit#2478: 28 `APPROVED-AT: codex` lines in seven hours, none naming the
+current head, the last killed by a pure rebase. ⚠️ But **`main` advancing
+invalidates nothing** — only a push to the *branch* does, and a head two commits
+behind `main` can still be `mergeable_state: clean`. Conflating those two makes
+this look unsolvable. The ordering that works, with no policy change: rebase
+first while unapproved → do not chase a validate receipt → collect both lanes at
+that one sha with no push between → `gh pr merge --rebase`, which rebases
+server-side without pushing the branch, so the bindings survive the merge.
+
+### ⚠️ Self-approval is possible here and it is not legitimate
+
+There is **no independence check anywhere in the gate path**. `approval_binding.py`
+reads a line out of a comment body and cannot see who wrote it;
+`core-review-protocol-lint.sh` reads labels. An author *can* bind its own lane
+and the gate *will* pass.
+
+It is still forbidden. `post-facto-review` requires "independent exact-head
+approval from one Claude-family reviewer and one Codex-family reviewer. **Neither
+is the author.**" Native review refuses self-approval outright. So of the three
+mechanisms, the only one that cannot check independence is the one that decides
+landing — **the gate accepting it is a gap, not a permission**, and its silence
+is not consent.
+
+What this mechanism legitimately unlocks is the *other* case: a **non-author**
+agent that cannot use `gh pr review` can still supply a real approval. It does
+not let an author self-clear. Pushing a head — even a purely mechanical rebase —
+makes you an author of it for this purpose.
+
+If the fleet wants the gate to enforce what the protocol already states, the
+check is cheap: compare the comment author against the pull-request author and
+refuse a lane bound by the author.
