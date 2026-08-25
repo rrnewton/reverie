@@ -1361,20 +1361,25 @@ fn drain_unregistered_child(task: Running) -> Result<(), TraceError> {
 
 fn liteinst_pidfd_setup_error(
     pid: Pid,
-    open_error: Errno,
+    setup_error: Errno,
     kill_error: Option<Errno>,
     drain_result: Result<(), TraceError>,
 ) -> anyhow::Error {
+    let setup_failure = if setup_error == Errno::ETIMEDOUT {
+        format!(
+            "LiteInst tracee {pid} root identity did not become a stable traced thread-group leader with a pidfd within the 2,000-attempt retry budget"
+        )
+    } else {
+        format!("failed to open pidfd for LiteInst tracee {pid}: {setup_error}")
+    };
     match (kill_error, drain_result) {
         (Some(kill_error), drain_result) => anyhow::anyhow!(
-            "failed to open pidfd for LiteInst tracee {pid}: {open_error}; numeric setup-failure kill also failed: {kill_error}; drain result: {drain_result:?}"
+            "{setup_failure}; numeric setup-failure kill also failed: {kill_error}; drain result: {drain_result:?}"
         ),
-        (None, Err(drain_error)) => anyhow::anyhow!(
-            "failed to open pidfd for LiteInst tracee {pid}: {open_error}; cleanup drain also failed: {drain_error}"
-        ),
-        (None, Ok(())) => {
-            anyhow::anyhow!("failed to open pidfd for LiteInst tracee {pid}: {open_error}")
+        (None, Err(drain_error)) => {
+            anyhow::anyhow!("{setup_failure}; cleanup drain also failed: {drain_error}")
         }
+        (None, Ok(())) => anyhow::anyhow!(setup_failure),
     }
 }
 
@@ -3550,10 +3555,30 @@ mod tests {
         )
         .to_string();
         assert!(
+            message.contains("failed to open pidfd for LiteInst tracee 42"),
+            "genuine pidfd failure lost its cause: {message}"
+        );
+        assert!(
             message.contains("EMFILE"),
             "missing pidfd failure: {message}"
         );
         assert!(message.contains("EIO"), "missing drain failure: {message}");
+    }
+
+    #[test]
+    fn pidfd_setup_timeout_names_thread_group_leader_retry_exhaustion() {
+        let message = liteinst_pidfd_setup_error(Pid::from_raw(42), Errno::ETIMEDOUT, None, Ok(()))
+            .to_string();
+        assert!(
+            message.contains(
+                "root identity did not become a stable traced thread-group leader with a pidfd within the 2,000-attempt retry budget"
+            ),
+            "missing root-identity retry exhaustion: {message}"
+        );
+        assert!(
+            !message.contains("failed to open pidfd"),
+            "timeout still blames pidfd_open: {message}"
+        );
     }
 
     #[test]
