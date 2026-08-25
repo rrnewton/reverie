@@ -8191,16 +8191,13 @@ fn fcntl(memory: &GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> 
         }
         // AUTONOMOUS-BOT-IMPLEMENTED
         // TODO-HUMAN-REVIEW(rrnewton/reverie#318): Review KVM guest pipe-capacity
-        // fcntl forwarding. F_GETPIPE_SZ/F_SETPIPE_SZ read and set the capacity of
-        // the real host pipe that backs the guest pipe, so both return the exact
-        // value the golden ptrace backend returns (it performs the same syscall).
-        // The capacity is a kernel-maintained property of the backing pipe — a
-        // stable 16-page (65536-byte) default, with F_SETPIPE_SZ's power-of-two
-        // page rounding computed deterministically by the kernel — not a
-        // host-timing / pid / address quantity, so the result is reproducible and
-        // matches ptrace byte-for-byte. Without this route the executor fell
-        // through to ENOSYS, so a guest querying pipe capacity (e.g. an atomic
-        // writev sizing its fill buffer) diverged from ptrace.
+        // fcntl forwarding. F_GETPIPE_SZ/F_SETPIPE_SZ read and set the capacity
+        // of the real host pipe that backs the guest pipe, matching the golden
+        // ptrace backend's syscall behavior. Initial capacity and permission to
+        // grow are host-global properties affected by per-user pipe quotas, so
+        // deterministic tools must establish their own capacity before exposing
+        // it. Without this route the executor fell through to ENOSYS, so a guest
+        // querying or setting pipe capacity could not implement that policy.
         libc::F_GETPIPE_SZ => {
             // SAFETY: host_fd names a live descriptor; F_GETPIPE_SZ takes no third argument.
             let result = unsafe { libc::fcntl(host_fd, libc::F_GETPIPE_SZ) };
@@ -10632,6 +10629,25 @@ mod tests {
         control_message(libc::SOL_SOCKET, libc::SCM_RIGHTS, &bytes)
     }
 
+    fn assert_stream_peer_closed(peer: &UnixStream) {
+        let mut byte = 0_u8;
+        // SAFETY: peer owns a live socket and byte is writable for one byte.
+        let received = unsafe {
+            libc::recv(
+                peer.as_raw_fd(),
+                std::ptr::from_mut(&mut byte).cast(),
+                1,
+                libc::MSG_DONTWAIT,
+            )
+        };
+        assert_eq!(
+            received,
+            0,
+            "owned socket endpoint remains open: {:?}",
+            std::io::Error::last_os_error()
+        );
+    }
+
     fn control_rights(control: &[u8]) -> Vec<libc::c_int> {
         control_messages(control)
             .unwrap()
@@ -11787,9 +11803,13 @@ mod tests {
         );
         assert!(capacity > 0, "F_GETPIPE_SZ returned {capacity}");
 
-        // F_SETPIPE_SZ grows the pipe and returns the kernel-rounded actual size,
-        // which is at least the requested size; F_GETPIPE_SZ then reflects it.
-        let requested = capacity * 2;
+        // Shrinking to one page exercises F_SETPIPE_SZ without depending on the
+        // host-global per-user quota that can reject capacity growth.
+        let requested = PAGE_SIZE as i64;
+        assert!(
+            capacity >= requested,
+            "pipe capacity {capacity} is smaller than one page"
+        );
         let applied = syscall_result(
             &mut memory,
             &mut state,
@@ -11803,17 +11823,17 @@ mod tests {
                 0,
             ],
         );
-        assert!(
-            applied >= requested,
-            "F_SETPIPE_SZ returned {applied}, requested {requested}"
+        assert_eq!(
+            applied, requested,
+            "F_SETPIPE_SZ did not apply the one-page capacity"
         );
-        let grown = syscall_result(
+        let resized = syscall_result(
             &mut memory,
             &mut state,
             libc::SYS_fcntl,
             [write_fd as u64, libc::F_GETPIPE_SZ as u64, 0, 0, 0, 0],
         );
-        assert_eq!(grown, applied);
+        assert_eq!(resized, requested);
 
         // An unknown fd is still rejected with EBADF, not ENOSYS.
         assert_eq!(
@@ -14775,8 +14795,10 @@ mod tests {
             Err(negative_errno(libc::EMFILE))
         );
 
-        let file = std::fs::File::open("/dev/null").unwrap();
-        let raw_fd = file.as_raw_fd();
+        let (owned_right, peer) = UnixStream::pair().unwrap();
+        // SAFETY: into_raw_fd transfers the socket endpoint's sole ownership.
+        let file =
+            unsafe { std::fs::File::from_raw_fd(std::os::fd::IntoRawFd::into_raw_fd(owned_right)) };
         let before = state.files.keys().copied().collect::<Vec<_>>();
         let error = install_received_rights(
             &mut state,
@@ -14790,28 +14812,19 @@ mod tests {
         .unwrap_err();
         assert_eq!(error, negative_errno(libc::EINVAL));
         assert_eq!(state.files.keys().copied().collect::<Vec<_>>(), before);
-        // SAFETY: F_GETFD only probes whether rollback closed the descriptor.
-        assert_eq!(unsafe { libc::fcntl(raw_fd, libc::F_GETFD) }, -1);
-        assert_eq!(
-            std::io::Error::last_os_error().raw_os_error(),
-            Some(libc::EBADF)
-        );
+        // Observe the owned socket object, not its recyclable descriptor number.
+        assert_stream_peer_closed(&peer);
 
         // Unsupported fd-bearing ancillary data is also owned immediately and
         // closed rather than copied as an unusable host number.
-        let pidfd_file = std::fs::File::open("/dev/null").unwrap();
-        let pidfd = std::os::fd::IntoRawFd::into_raw_fd(pidfd_file);
+        let (unsupported, unsupported_peer) = UnixStream::pair().unwrap();
+        let pidfd = std::os::fd::IntoRawFd::into_raw_fd(unsupported);
         let pidfd_control = control_message(libc::SOL_SOCKET, SCM_PIDFD, &pidfd.to_ne_bytes());
         let sanitized = sanitize_received_control(&pidfd_control).unwrap();
         assert!(sanitized.stripped_unsupported);
         assert!(sanitized.bytes.is_empty());
         assert!(sanitized.rights.is_empty());
-        // SAFETY: F_GETFD verifies that sanitize_received_control closed it.
-        assert_eq!(unsafe { libc::fcntl(pidfd, libc::F_GETFD) }, -1);
-        assert_eq!(
-            std::io::Error::last_os_error().raw_os_error(),
-            Some(libc::EBADF)
-        );
+        assert_stream_peer_closed(&unsupported_peer);
     }
 
     #[test]
