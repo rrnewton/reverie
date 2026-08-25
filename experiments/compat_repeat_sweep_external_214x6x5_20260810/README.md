@@ -11,6 +11,63 @@ no verdict = 1,284 cells**. These four categories are disjoint and exhaustive;
 run `python3 verify_artifact.py` to check hashes, key uniqueness, the partition,
 and byte-for-byte regeneration of the derived files.
 
+## Correction: defects are attributed by root executable, not by label
+
+The first publication decided attribution by comparing `Path(argv[0]).name` to
+the corpus **label**. Labels are scenario names chosen by the corpus author --
+`mpstat-softirqs`, `sar-resource-tables` -- so any scenario whose name differed
+from its binary was filed as `shell-or-launcher-wrapped`, i.e. as a defect that
+could not be blamed on a named program, even though `argv[0]` named a real
+executable outright.
+
+Attribution is now taken from `argv[0]`. A root in `WRAPPER_ROOTS`
+(`bash`, `sh`, `env`) or the `real_compat_workload.sh` driver remains
+**unattributable**, because what a wrapper went on to `exec` is not recoverable
+from `argv` -- that is a genuine unknown and is reported as one.
+
+The measured cell population is unchanged: **1,284 unique cells x 5
+observations = 6,420**, and the headline partition above is unchanged. What
+moves is the stable-GAP attribution split:
+
+| stable GAP attribution | before | after |
+| --- | ---: | ---: |
+| named-program-direct | 17 | **23** |
+| shell-or-launcher-wrapped | 221 | **215** |
+| workload-script | 110 | 110 |
+| total | 348 | 348 |
+
+Exactly six cells are re-attributed, all of them stable failures that always
+named a real binary:
+
+| cell | root executable |
+| --- | --- |
+| `mpstat-softirqs` / `kvm` | `mpstat` |
+| `pidstat-disk` / `kvm` | `pidstat` |
+| `sar-resource-tables` / `liteinst` | `sar` |
+| `sar-resource-tables` / `sabre` | `sar` |
+| `sysctl-random-uuid` / `kvm` | `sysctl` |
+| `vmstat-disk` / `kvm` | `vmstat` |
+
+**The remaining 325 wrapper-attributed cells are never reported as healthy.**
+215 shell-or-launcher-wrapped plus 110 workload-script are stable failures with
+no nameable program; `wrapper_unattributable_unknown: 325` in
+`results/stability-5.json` records them as unknown, which is the honest verdict.
+Counting them as clean is the failure this correction exists to prevent.
+
+One deliberate consequence: `bash` invoked as the subject of a test is now
+unattributable, because `argv[0]` cannot distinguish it from `bash` acting as a
+launcher. The old rule special-cased it as direct; attribution by root
+executable cannot make that distinction and does not pretend to.
+
+### This tooling has a caller
+
+The analyzer and `verify_artifact.py` previously had **none** -- nothing in the
+parent invoked either, so a drifted classifier or a stale republished CSV could
+not be detected. `tools/test_analyze_repeat_stability.py` brackets the rule from
+both sides and invokes `verify_artifact.py` end to end, and the suite is
+registered in `ci-hub/tests/run_python_suites.py` with a counted floor, so the
+CI runner executes it.
+
 ## Provenance
 
 - Population ID: `compat-repeat-sweep/external-programs-v1/214x6x5`
@@ -23,9 +80,17 @@ and byte-for-byte regeneration of the derived files.
 - Matrix driver at the final attempt:
   `e68b24bdf6523e57d51ac5a6487c2a304107c686`
 - The complete file and runtime-input hashes are in `metadata.json`.
-- `provenance/producer.log` is the original producer transcript. The archived
-  `tools/run-combined-original.sh` retains the producing machine's absolute
-  paths intentionally; it is provenance, not a claim of portable execution.
+- **`provenance/producer.log` does not exist and never did.** `metadata.json`
+  listed it in `file_sha256`, so `verify_artifact.py` raised `FileNotFoundError`
+  before checking anything -- a broken verifier that read as an unrun one. It is
+  absent from every ref including the publication commit (`git log --all --
+  '*/provenance/*'` returns nothing), so there is no authoritative copy to
+  restore and none has been fabricated. The claim is removed; the removal and
+  the hash it formerly asserted are recorded in `metadata.json` under
+  `provenance_claim_correction`.
+- The archived `tools/run-combined-original.sh` retains the producing machine's
+  absolute paths intentionally; it is provenance, not a claim of portable
+  execution.
 
 This is historical, branch-specific evidence. The Hermit SHA is not an
 ancestor of current Hermit main; it is three commits after its historical base

@@ -34,6 +34,14 @@ DEFAULT_SUITES = (
     # zero call sites -- were committed, passing, and never executed by CI. Same
     # defect one level up. 145 discovered / 145 passing when added.
     ("compat-envelope", 120),
+    # The 214x6x5 compatibility artifact shipped tools/analyze_repeat_stability.py
+    # AND verify_artifact.py with NO CALLER: `grep -r` across the parent found
+    # nothing invoking either, so a regeneration drift or a stale republished CSV
+    # could not be detected by anything. Registering the bracket here is what
+    # makes the correction a correction rather than a second uncalled tool -- the
+    # same gap that let safehermit pass all its own tests while being invoked by
+    # nothing. The bracket also invokes verify_artifact.py end to end.
+    ("experiments/compat_repeat_sweep_external_214x6x5_20260810/tools", 7),
 )
 
 

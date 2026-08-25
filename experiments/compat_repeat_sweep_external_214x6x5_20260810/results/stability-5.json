@@ -32,7 +32,7 @@
     "FLAKE": 74,
     "GAP": 348
   },
-  "schema_version": 1,
+  "schema_version": 2,
   "scope": {
     "backends": 6,
     "cells": 1284,
@@ -40,11 +40,17 @@
     "programs": 214,
     "required_sweeps": 5
   },
+  "stable_gap_attribution": {
+    "named-program-direct": 23,
+    "shell-or-launcher-wrapped": 215,
+    "workload-script": 110
+  },
   "sweep_sha256s": [
     "aae44e0f87f2fc1135b31d793b4dfb6e84921bddb78cc704db87efee4f4f162c",
     "d508c88808046240d8f76663363b08e95acee3a15b8069b9bd6042f4c57f776a",
     "b5bf282eb776a38604e71f7c7cd317793922c854d56adc5f2102351fb628102d",
     "3854bbe857037d90b9191f46cd57a57609ef4b04ecf4f4b910e21770c1ca2fc8",
     "4ddf19df10482e3e9526b22e1de317933c332a0c00e2d37523e52f62d2b226aa"
-  ]
+  ],
+  "wrapper_unattributable_unknown": 325
 }

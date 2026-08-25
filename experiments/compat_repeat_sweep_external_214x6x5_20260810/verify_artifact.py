@@ -73,6 +73,40 @@ def main() -> int:
     if counts != expected_counts or sum(counts.values()) != 1284:
         raise SystemExit(f"partition mismatch: {counts} != {expected_counts}")
 
+    # The correction this artifact republishes: attribution by root executable.
+    # Assert the partition and the unknown count so a silent drift in the
+    # classifier cannot republish different numbers under the same claim.
+    summary = json.loads((ROOT / "results/stability-5.json").read_text())
+    expected_attribution = {
+        "named-program-direct": 23,
+        "shell-or-launcher-wrapped": 215,
+        "workload-script": 110,
+    }
+    if summary.get("stable_gap_attribution") != expected_attribution:
+        raise SystemExit(
+            f"stable-GAP attribution mismatch: {summary.get('stable_gap_attribution')}"
+            f" != {expected_attribution}"
+        )
+    if summary.get("wrapper_unattributable_unknown") != 325:
+        raise SystemExit(
+            "wrapper-unattributable unknown must be 325 and is "
+            f"{summary.get('wrapper_unattributable_unknown')}"
+        )
+    named = {
+        (row["program"], row["backend"])
+        for row in csv.DictReader((ROOT / "results/failure-candidates-5.csv").open(newline=""))
+        if row["classification"] == "GAP" and row["harness_form"] == "named-program-direct"
+    }
+    if len(named) != 23:
+        raise SystemExit(f"expected 23 named-direct stable GAP cells, got {len(named)}")
+    for cell in (
+        ("mpstat-softirqs", "kvm"), ("pidstat-disk", "kvm"),
+        ("sar-resource-tables", "liteinst"), ("sar-resource-tables", "sabre"),
+        ("sysctl-random-uuid", "kvm"), ("vmstat-disk", "kvm"),
+    ):
+        if cell not in named:
+            raise SystemExit(f"reattributed cell missing from named-direct set: {cell}")
+
     with tempfile.TemporaryDirectory(prefix="verify-1284-") as temp:
         command = [
             sys.executable,
@@ -88,8 +122,9 @@ def main() -> int:
             if generated.read_bytes() != published.read_bytes():
                 raise SystemExit(f"regeneration mismatch: {name}")
 
-    print("PASS hashes=13 rows=1284 unique_keys=1284 programs=214 backends=6 sweeps=5")
+    print("PASS hashes=12 rows=1284 unique_keys=1284 programs=214 backends=6 sweeps=5")
     print("PASS partition green=495 stable_fail=348 unstable=118 no_verdict=323 total=1284")
+    print("PASS stable_gap named=23 wrapper=215 workload=110 unknown=325 reattributed=6/6")
     print("PASS regenerated=3/3 byte-identical")
     return 0
 

@@ -19,17 +19,57 @@ def digest(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+# Roots that are launchers rather than the program under test. A cell whose
+# argv[0] is one of these ran the wrapper directly; whatever it went on to
+# exec is not recoverable from argv alone, so the defect CANNOT be attributed
+# to a named program and must stay unknown.
+WRAPPER_ROOTS = frozenset({"bash", "sh", "env"})
+
+# The workload driver is a wrapper too, distinguished only because it is named
+# by path rather than by basename.
+WORKLOAD_SCRIPT = "real_compat_workload.sh"
+
+
+def root_executable(program: dict[str, object]) -> str | None:
+    """The executable a cell actually launched, or None when it is a wrapper.
+
+    ATTRIBUTION IS BY argv[0], NOT BY LABEL. The label is a SCENARIO name
+    chosen by the corpus author -- `mpstat-softirqs`, `sar-resource-tables` --
+    while argv[0] names the executable that ran. The earlier rule required
+    `Path(argv[0]).name == label` and therefore filed every scenario whose name
+    differs from its binary under "shell-or-launcher-wrapped", i.e. as
+    unattributable, even though argv[0] named a real program outright. Six
+    stable-GAP cells were mis-filed that way.
+    """
+    argv = [str(item) for item in program["argv"]]
+    if WORKLOAD_SCRIPT in " ".join(argv):
+        return None
+    first = Path(argv[0]).name
+    # `[` is the test builtin invoked directly; it is a program, not a launcher.
+    if first == "[":
+        return first
+    if first in WRAPPER_ROOTS:
+        return None
+    return first
+
+
 def harness_form(program: dict[str, object]) -> str:
     argv = [str(item) for item in program["argv"]]
-    label = str(program["label"])
-    if "real_compat_workload.sh" in " ".join(argv):
+    if WORKLOAD_SCRIPT in " ".join(argv):
         return "workload-script"
-    first = Path(argv[0]).name
-    if first == label or (label == "bracket" and first == "["):
-        return "named-program-direct"
-    if label == "bash" and first == "bash":
-        return "named-program-direct"
-    return "shell-or-launcher-wrapped"
+    if root_executable(program) is None:
+        return "shell-or-launcher-wrapped"
+    return "named-program-direct"
+
+
+def named_defect_eligible(program: dict[str, object]) -> bool:
+    """A defect may be published against a named program only if one ran.
+
+    This is the property the campaign actually needs: not "is the harness
+    shaped a particular way" but "is there an executable to name". Keeping it a
+    separate predicate stops the two questions drifting apart again.
+    """
+    return root_executable(program) is not None
 
 
 def main() -> None:
@@ -71,16 +111,21 @@ def main() -> None:
     candidate_path = args.out_dir / f"failure-candidates-{len(args.sweeps)}.csv"
     summary_path = args.out_dir / f"stability-{len(args.sweeps)}.json"
     all_counts: Counter[str] = Counter()
+    stable_gap_attribution: Counter[str] = Counter()
+    # A one-element list so the writer loop can increment it without `nonlocal`.
+    wrapper_unattributable_unknown = [0]
     candidate_counts: Counter[str] = Counter()
     backend_candidate_counts: dict[str, Counter[str]] = defaultdict(Counter)
 
     fields = [
-        "program", "backend", "harness_form", "runs", "repeat_stability", "dominant_state",
+        "program", "backend", "harness_form", "root_executable",
+        "runs", "repeat_stability", "dominant_state",
         "n_pass", "n_fail", "n_timeout", "n_unqualifiable", "n_not_attempted",
         "distinct_states", "observed_sequence", "example_reason",
     ]
     candidate_fields = [
-        "program", "backend", "harness_form", "required_runs", "observed_runs",
+        "program", "backend", "harness_form", "root_executable",
+        "required_runs", "observed_runs",
         "n_pass", "n_fail", "n_timeout", "n_unqualifiable", "n_not_attempted",
         "classification", "observed_sequence", "named_defect_publishable",
         "attribution", "example_reason",
@@ -107,11 +152,13 @@ def main() -> None:
             sequence = "|".join(states)
             reason = next((row["reason"] for row in rows if row["reason"]), "")
             form = harness_form(programs[program])
+            root = root_executable(programs[program])
             all_writer.writerow(
                 {
                     "program": program,
                     "backend": backend,
                     "harness_form": form,
+                    "root_executable": root or "",
                     "runs": len(rows),
                     "repeat_stability": stability,
                     "dominant_state": dominant,
@@ -139,13 +186,18 @@ def main() -> None:
                 classification = "GAP"
             candidate_counts[classification] += 1
             backend_candidate_counts[backend][classification] += 1
-            wrapper = form != "named-program-direct"
-            publishable = classification == "GAP" and not wrapper
+            eligible = named_defect_eligible(programs[program])
+            publishable = classification == "GAP" and eligible
+            if classification == "GAP":
+                stable_gap_attribution[form] += 1
+                if not eligible:
+                    wrapper_unattributable_unknown[0] += 1
             candidate_writer.writerow(
                 {
                     "program": program,
                     "backend": backend,
                     "harness_form": form,
+                    "root_executable": root or "",
                     "required_runs": EXPECTED_RUNS,
                     "observed_runs": len(rows),
                     "n_pass": counts["PASS"],
@@ -162,7 +214,7 @@ def main() -> None:
             )
 
     summary = {
-        "schema_version": 1,
+        "schema_version": 2,
         "scope": {
             "programs": 214,
             "backends": 6,
@@ -173,6 +225,11 @@ def main() -> None:
         "sweep_sha256s": hashes,
         "all_cells": dict(sorted(all_counts.items())),
         "first_sweep_failure_candidates": dict(sorted(candidate_counts.items())),
+        "stable_gap_attribution": dict(sorted(stable_gap_attribution.items())),
+        # NEVER "healthy": these are stable failures whose root executable is a
+        # wrapper, so no named program can be blamed. Unknown is the honest
+        # verdict; counting them as clean would be the defect this corrects.
+        "wrapper_unattributable_unknown": wrapper_unattributable_unknown[0],
         "failure_candidates_by_backend": {
             backend: dict(sorted(counts.items()))
             for backend, counts in sorted(backend_candidate_counts.items())
