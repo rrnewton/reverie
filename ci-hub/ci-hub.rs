@@ -7374,7 +7374,8 @@ mod tests {
                 "result": "fail",
                 "exit_code": 1,
                 "real_seconds": 30.0,
-                "failure_origin": "outer_gate"
+                "failure_origin": "outer_gate",
+                "failed_substeps": []
             }
         ]);
         let assessment = assess_canonical_receipts(

@@ -597,7 +597,7 @@ pub fn parse_log_observations(raw: &str) -> Vec<GateHistoryRow> {
                     real_seconds: None,
                     source_node: Some(node.to_string()),
                     failure_origin: None,
-                    failed_substeps: Vec::new(),
+                    failed_substeps: None,
                     extra: BTreeMap::new(),
                 });
             }
@@ -627,7 +627,7 @@ pub fn parse_log_observations(raw: &str) -> Vec<GateHistoryRow> {
             real_seconds: None,
             source_node,
             failure_origin: None,
-            failed_substeps: Vec::new(),
+            failed_substeps: None,
             extra: BTreeMap::new(),
         });
     }
@@ -684,7 +684,7 @@ fn error_excerpt(row: &HistoryRow, query: &str) -> Vec<String> {
             real_seconds: None,
             source_node: None,
             failure_origin: None,
-            failed_substeps: Vec::new(),
+            failed_substeps: None,
             extra: BTreeMap::new(),
         });
     scoped_error_excerpt(&raw, &gate)
@@ -798,7 +798,8 @@ mod tests {
                 "name": "outer failure",
                 "result": "fail",
                 "exit_code": 1,
-                "failure_origin": "outer_gate"
+                "failure_origin": "outer_gate",
+                "failed_substeps": []
             }]);
         }
         serde_json::from_value(value).unwrap()
@@ -813,7 +814,7 @@ mod tests {
             real_seconds: None,
             source_node: None,
             failure_origin: None,
-            failed_substeps: Vec::new(),
+            failed_substeps: None,
             extra: BTreeMap::new(),
         });
         row
@@ -1207,7 +1208,7 @@ mod tests {
             real_seconds: None,
             source_node: Some("test.inner".into()),
             failure_origin: None,
-            failed_substeps: Vec::new(),
+            failed_substeps: None,
             extra: BTreeMap::new(),
         };
         cached_gate.extra.insert(

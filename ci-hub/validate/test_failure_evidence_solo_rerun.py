@@ -26,6 +26,7 @@ def prior(**updates: object) -> dict[str, object]:
         "known_flaky_failure": True,
         "gates": [
             {
+                "result": "fail",
                 "failure_origin": "lane_substep",
                 "failed_substeps": ["test.command_strict_verify"],
             }
@@ -125,6 +126,80 @@ def test_current_outer_gate_shape_confirms_by_its_gate_name() -> None:
     )
 
     assert evidence["solo_rerun_confirmation"] is True
+
+
+def test_only_coherent_failure_bindings_supply_identity() -> None:
+    invalid_gates = [
+        {
+            "name": "outer-missing",
+            "result": "fail",
+            "failure_origin": "outer_gate",
+        },
+        {
+            "name": "outer-nonempty",
+            "result": "fail",
+            "failure_origin": "outer_gate",
+            "failed_substeps": ["test.child"],
+        },
+        {
+            "name": "lane-empty",
+            "result": "fail",
+            "failure_origin": "lane_substep",
+            "failed_substeps": [],
+        },
+        {
+            "name": "lane-pass",
+            "result": "pass",
+            "failure_origin": "lane_substep",
+            "failed_substeps": ["test.child"],
+        },
+        {
+            "name": "lane-aborted",
+            "result": "fail",
+            "aborted": True,
+            "failure_origin": "lane_substep",
+            "failed_substeps": ["test.child"],
+        },
+        {
+            "name": "unbound-list",
+            "result": "fail",
+            "failed_substeps": ["test.child"],
+        },
+        {
+            "name": "aborted-outer",
+            "result": "fail",
+            "aborted": True,
+            "failure_origin": "outer_gate",
+            "failed_substeps": [],
+        },
+    ]
+    assert MODULE.row_failed_substeps({"gates": invalid_gates}) == set()
+
+    assert MODULE.row_failed_substeps(
+        {
+            "gates": [
+                {
+                    "name": "aggregate",
+                    "result": "fail",
+                    "failure_origin": "lane_substep",
+                    "failed_substeps": ["test.child"],
+                }
+            ]
+        }
+    ) == {"test.child"}
+
+    assert MODULE.row_failed_substeps(
+        {
+            "gates": [
+                {
+                    "name": "legacy-aggregate",
+                    "kind": "timeout",
+                    "failure_origin": "lane_substep",
+                    "failed_substeps": ["test.legacy-child"],
+                }
+            ]
+        }
+    ) == {"test.legacy-child"}
 
 
 def test_different_commit_or_cell_never_confirms() -> None:

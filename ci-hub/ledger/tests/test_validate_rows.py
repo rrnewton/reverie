@@ -148,6 +148,81 @@ def test_record_is_immediately_visible_through_canonical_union(tmp_path: Path):
     assert validate_rows.rows(root=tmp_path) == [source]
 
 
+@pytest.mark.parametrize(
+    "gate",
+    [
+        {
+            "name": "pass-with-null",
+            "result": "pass",
+            "failure_origin": None,
+            "failed_substeps": None,
+        },
+        {"name": "outer-missing", "result": "fail", "failure_origin": "outer_gate"},
+        {
+            "name": "outer-nonempty",
+            "result": "fail",
+            "failure_origin": "outer_gate",
+            "failed_substeps": ["test.child"],
+        },
+        {
+            "name": "lane-empty",
+            "result": "fail",
+            "failure_origin": "lane_substep",
+            "failed_substeps": [],
+        },
+        {
+            "name": "unbound-empty",
+            "result": "fail",
+            "failed_substeps": [],
+        },
+        {
+            "name": "aborted-outer",
+            "result": "fail",
+            "aborted": True,
+            "failure_origin": "outer_gate",
+            "failed_substeps": [],
+        },
+    ],
+)
+def test_record_refuses_inconsistent_gate_failure_bindings(
+    tmp_path: Path, gate: dict
+):
+    source = row(tmp_path, record_id=f"bad-{gate['name']}")
+    source.update(result="fail", exit_code=1, failures=1, gates=[gate])
+
+    with pytest.raises(ValueError, match="inconsistent failure_origin/failed_substeps"):
+        validate_rows.record(source, root=tmp_path)
+
+    assert not validate_rows.live_spool_dir(tmp_path).exists()
+
+
+@pytest.mark.parametrize(
+    "gate",
+    [
+        {"name": "unbound", "result": "fail"},
+        {
+            "name": "outer",
+            "result": "fail",
+            "failure_origin": "outer_gate",
+            "failed_substeps": [],
+        },
+        {
+            "name": "lane",
+            "result": "fail",
+            "failure_origin": "lane_substep",
+            "failed_substeps": ["test.child"],
+        },
+    ],
+)
+def test_record_preserves_valid_gate_failure_bindings(tmp_path: Path, gate: dict):
+    source = row(tmp_path, record_id=f"good-{gate['name']}")
+    source.update(result="fail", exit_code=1, failures=1, gates=[gate])
+
+    validate_rows.record(source, root=tmp_path)
+
+    assert validate_rows.rows(root=tmp_path) == [source]
+
+
 def test_canonical_reverie_repo_uses_top_level_reverie_shard(tmp_path: Path):
     source = row(tmp_path)
     source["repo"] = "rrnewton/reverie"

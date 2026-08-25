@@ -295,6 +295,43 @@ def _is_failed_gate(gate: object) -> bool:
     )
 
 
+def _require_gate_failure_bindings(row: dict) -> None:
+    """Reject contradictory or under-specified producer failure attribution.
+
+    Missing is preserved as unreported evidence. An explicit empty list is a
+    different assertion: the named outer gate itself failed and no child node
+    did. A lane-carried failure must instead name at least one exact child.
+    Explicit null is never normalized into either state.
+    """
+    gates = row.get("gates")
+    if not isinstance(gates, list):
+        return
+    for index, gate in enumerate(gates):
+        if not isinstance(gate, dict):
+            continue
+        origin = gate.get("failure_origin")
+        has_substeps = "failed_substeps" in gate
+        substeps = gate.get("failed_substeps")
+        failed = _is_failed_gate(gate)
+        valid = origin is None and not has_substeps
+        valid = valid or (
+            origin == "outer_gate" and failed and has_substeps and substeps == []
+        )
+        valid = valid or (
+            origin == "lane_substep"
+            and failed
+            and isinstance(substeps, list)
+            and bool(substeps)
+            and all(isinstance(name, str) and bool(name) for name in substeps)
+        )
+        if valid:
+            continue
+        name = str(gate.get("name") or f"index {index}")
+        raise ValueError(
+            f"gate {name!r} has inconsistent failure_origin/failed_substeps"
+        )
+
+
 def _enrich_failure_classification(row: dict, root: Path) -> None:
     """Bind a completed red row to the failure facts in its own durable log.
 
@@ -450,6 +487,7 @@ def record(row: dict, *, root: Path | None = None) -> dict:
         )
     _require_local_commit(row)
     _enrich_failure_classification(row, root)
+    _require_gate_failure_bindings(row)
     _require_cell_results(row, root)
     event = _event_for_row(row, root)
     target = spool(live_spool_dir(root), event["team"], event["host"], [event])

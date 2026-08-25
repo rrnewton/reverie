@@ -397,8 +397,13 @@ pub fn failure_disposition(row: &HistoryRow, sha: &str) -> FailureDisposition {
         && failed_gates
             .iter()
             .all(|gate| match gate.failure_origin.as_deref() {
-                Some("outer_gate") => true,
-                Some("lane_substep") => !gate.failed_substeps.is_empty(),
+                Some("outer_gate") => gate
+                    .failed_substeps
+                    .as_ref()
+                    .is_some_and(|substeps| substeps.is_empty()),
+                Some("lane_substep") => gate.failed_substeps.as_ref().is_some_and(|substeps| {
+                    !substeps.is_empty() && substeps.iter().all(|name| !name.is_empty())
+                }),
                 _ => false,
             });
     if !complete || !conditions_present || !origin_bound {
@@ -1173,11 +1178,43 @@ mod tests {
     fn complete_red_without_bound_failure_origin_needs_rerun() {
         let mut r = complete_failure(PASS_SHA);
         r.gates[0].failure_origin = None;
-        r.gates[0].failed_substeps.clear();
+        r.gates[0].failed_substeps = None;
         assert_eq!(assess(&[r.clone()], PASS_SHA).verdict, Verdict::NeedsRerun);
 
         r.gates.clear();
         assert_eq!(assess(&[r], PASS_SHA).verdict, Verdict::NeedsRerun);
+    }
+
+    #[test]
+    fn outer_gate_requires_an_explicit_empty_substep_list() {
+        let mut r = complete_failure(PASS_SHA);
+        r.gates[0].failure_origin = Some("outer_gate".into());
+
+        r.gates[0].failed_substeps = None;
+        assert_eq!(assess(&[r.clone()], PASS_SHA).verdict, Verdict::NeedsRerun);
+
+        r.gates[0].failed_substeps = Some(vec!["test.detcore_misc".into()]);
+        assert_eq!(assess(&[r.clone()], PASS_SHA).verdict, Verdict::NeedsRerun);
+
+        r.gates[0].failed_substeps = Some(Vec::new());
+        assert_eq!(assess(&[r], PASS_SHA).verdict, Verdict::FailedOnRecord);
+    }
+
+    #[test]
+    fn lane_substep_requires_an_explicit_nonempty_substep_list() {
+        let mut r = complete_failure(PASS_SHA);
+
+        r.gates[0].failed_substeps = None;
+        assert_eq!(assess(&[r.clone()], PASS_SHA).verdict, Verdict::NeedsRerun);
+
+        r.gates[0].failed_substeps = Some(Vec::new());
+        assert_eq!(assess(&[r.clone()], PASS_SHA).verdict, Verdict::NeedsRerun);
+
+        r.gates[0].failed_substeps = Some(vec![String::new()]);
+        assert_eq!(assess(&[r.clone()], PASS_SHA).verdict, Verdict::NeedsRerun);
+
+        r.gates[0].failed_substeps = Some(vec!["test.detcore_misc".into()]);
+        assert_eq!(assess(&[r], PASS_SHA).verdict, Verdict::FailedOnRecord);
     }
 
     #[test]
@@ -1208,6 +1245,7 @@ mod tests {
         r.known_flaky_failure = Some(false);
         for gate in r.gates.iter_mut().filter(|g| gate_is_red(g)) {
             gate.failure_origin = Some("outer_gate".into());
+            gate.failed_substeps = Some(Vec::new());
         }
         assert_eq!(assess(&[r], PASS_SHA).verdict, Verdict::NoResult);
     }
@@ -1615,6 +1653,27 @@ mod tests {
         let rendered = failures[0].to_string();
         assert!(rendered.contains("record_id receipt-1"));
         assert!(rendered.contains("producer hermit-validate-rs"));
+    }
+
+    #[test]
+    fn missing_and_explicit_empty_substeps_remain_distinct() {
+        let buf = format!(
+            r#"{{"record_id":"missing","commit":"{PASS_SHA}","gates":[{{"name":"old","result":"fail"}}]}}
+{{"record_id":"empty","commit":"{PASS_SHA}","gates":[{{"name":"outer","result":"fail","failure_origin":"outer_gate","failed_substeps":[]}}]}}"#
+        );
+        let (rows, failures) = parse_ledger(&buf);
+        assert!(failures.is_empty());
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].gates[0].failed_substeps, None);
+        assert_eq!(rows[1].gates[0].failed_substeps, Some(Vec::new()));
+
+        let missing = serde_json::to_value(&rows[0]).unwrap();
+        assert!(
+            missing["gates"][0].get("failed_substeps").is_none(),
+            "serializing an unreported list must not manufacture null or []"
+        );
+        let empty = serde_json::to_value(&rows[1]).unwrap();
+        assert_eq!(empty["gates"][0]["failed_substeps"], serde_json::json!([]));
     }
 
     /// A key present with `null` is not the same assertion as an empty list.

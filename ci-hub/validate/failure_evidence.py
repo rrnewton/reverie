@@ -707,18 +707,28 @@ def row_failed_substeps(row: Mapping[str, object]) -> set[str]:
             continue
         # A current Rust-driver row records each DAG node as an outer gate.  Its
         # name is therefore the failure identity; ``failed_substeps`` is only
-        # required for the older aggregate-lane shape.  Preserve both forms so
-        # a later solo run can match the earlier red without pretending an
-        # aborted sibling was itself a failure.
+        # populated for the older aggregate-lane shape. The explicit empty list
+        # distinguishes a bound outer failure from missing attribution; do not
+        # union contradictory combinations into a larger invented failure set.
+        origin = gate.get("failure_origin")
+        substeps = gate.get("failed_substeps")
+        outcome = str(gate.get("result") or gate.get("kind") or "")
         if (
-            gate.get("failure_origin") == "outer_gate"
+            origin == "outer_gate"
+            and substeps == []
             and gate.get("aborted") is not True
-            and str(gate.get("result") or "") in {"fail", "failed", "timeout"}
+            and outcome in {"fail", "failed", "timeout"}
             and gate.get("name")
         ):
             result.add(str(gate["name"]))
-        substeps = gate.get("failed_substeps")
-        if isinstance(substeps, list):
+        elif (
+            origin == "lane_substep"
+            and gate.get("aborted") is not True
+            and outcome in {"fail", "failed", "timeout"}
+            and isinstance(substeps, list)
+            and bool(substeps)
+            and all(isinstance(value, str) and bool(value) for value in substeps)
+        ):
             result.update(str(value) for value in substeps if value)
     return result
 

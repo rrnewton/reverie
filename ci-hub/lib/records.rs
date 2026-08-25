@@ -1,6 +1,6 @@
 //! Typed schemas consumed by the ci-hub front door.
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -365,12 +365,29 @@ pub struct GateHistoryRow {
     /// outer gate merely carried a failing DAG node.
     #[serde(default)]
     pub failure_origin: Option<String>,
-    /// Canonical DAG node names for a lane-carried failure. Empty is not valid
-    /// evidence when `failure_origin == lane_substep`.
-    #[serde(default)]
-    pub failed_substeps: Vec<String>,
+    /// Canonical DAG node names for a lane-carried failure.
+    ///
+    /// Missing means the producer did not bind substep evidence. `Some([])` is
+    /// a positive assertion that an `outer_gate` failure has no failing child
+    /// nodes, while `Some(nonempty)` is required for `lane_substep`. A present
+    /// JSON `null` is malformed rather than another spelling of missing.
+    #[serde(
+        default,
+        deserialize_with = "deserialize_present_failed_substeps",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub failed_substeps: Option<Vec<String>>,
     #[serde(flatten)]
     pub extra: BTreeMap<String, Value>,
+}
+
+fn deserialize_present_failed_substeps<'de, D>(
+    deserializer: D,
+) -> Result<Option<Vec<String>>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Vec::<String>::deserialize(deserializer).map(Some)
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
