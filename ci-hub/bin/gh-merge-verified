@@ -116,9 +116,21 @@ EXIT
 
 from __future__ import annotations
 
+import atexit
 import os
 import subprocess
 import sys
+
+
+# Scratch refs are namespaced PER PROCESS. A fixed name races: two agents running
+# this concurrently in one repository both fetch into refs/gh-merge-verified/main,
+# and git refuses the second with "incorrect old value provided" -- a
+# compare-and-swap failure that --force does not prevent, because the ref moved
+# between read and write rather than merely being non-fast-forward. Observed live
+# on 2026-08-25 while verifying hermit#2521, where a legitimate landing came back
+# COULD NOT DETERMINE. Exit 4 was correct and the tool was honest; it just could
+# not do its job while a sibling held the ref.
+SCRATCH = f"refs/gh-merge-verified/{os.getpid()}"
 
 
 def run(args: list[str]) -> tuple[int, str, str]:
@@ -133,7 +145,16 @@ def die(code: int, *lines: str) -> None:
     sys.exit(code)
 
 
+def cleanup_scratch() -> None:
+    """Delete this process's scratch refs. Leaking one ref per invocation would
+    grow the ref namespace without bound in a repository many agents share."""
+    for suffix in ("pr", "main"):
+        subprocess.run(["git", "update-ref", "-d", f"{SCRATCH}/{suffix}"],
+                       capture_output=True, text=True)
+
+
 def main() -> None:
+    atexit.register(cleanup_scratch)
     argv = sys.argv[1:]
     if not argv or argv[0] in {"-h", "--help"}:
         die(1, __doc__ or "")
@@ -167,12 +188,12 @@ def main() -> None:
     # Resolve the pull request head from the REMOTE. Doing this first means a
     # merge is never attempted against a number we cannot even read.
     rc, out, err = run(["git", "fetch", "--quiet", "--force", remote_url,
-                        f"refs/pull/{pr}/head:refs/gh-merge-verified/{pr}"])
+                        f"refs/pull/{pr}/head:{SCRATCH}/pr"])
     if rc != 0:
         die(4, f"gh-merge-verified: COULD NOT DETERMINE — cannot fetch refs/pull/{pr}/head from {repo}",
             "  This is NOT a statement about whether the change landed.",
             err.strip())
-    rc, head, _ = run(["git", "rev-parse", f"refs/gh-merge-verified/{pr}"])
+    rc, head, _ = run(["git", "rev-parse", f"{SCRATCH}/pr"])
     head = head.strip()
     if rc != 0 or not head:
         die(4, f"gh-merge-verified: COULD NOT DETERMINE — cannot resolve the head of PR {pr}")
@@ -188,10 +209,10 @@ def main() -> None:
 
     # Ask the remote what main holds now.
     rc, out, err = run(["git", "fetch", "--quiet", "--force", remote_url,
-                        "refs/heads/main:refs/gh-merge-verified/main"])
+                        f"refs/heads/main:{SCRATCH}/main"])
     if rc != 0:
         die(4, "gh-merge-verified: COULD NOT DETERMINE — cannot fetch main", err.strip())
-    rc, main_sha, _ = run(["git", "rev-parse", "refs/gh-merge-verified/main"])
+    rc, main_sha, _ = run(["git", "rev-parse", f"{SCRATCH}/main"])
     main_sha = main_sha.strip()
 
     rc, base, _ = run(["git", "merge-base", head, main_sha])
