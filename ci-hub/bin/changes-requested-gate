@@ -201,6 +201,31 @@ def markers(bodies: list[str]) -> list[tuple[str, str | None]]:
                     break  # a template, not a verdict
                 found.append((kind, m.group(1) if m else None))
                 break
+            else:
+                # ⚠️ NO CANONICAL TOKEN ON THIS LINE -- BUT A REFUSAL THAT OMITS THE
+                # `-AT` IS STILL A REFUSAL, AND UNTIL NOW THIS GATE COULD NOT SEE
+                # ONE. `line.find(REFUSAL)` matches the literal
+                # `CHANGES-REQUESTED-AT`, so `CHANGES-REQUESTED: claude <sha>` --
+                # which the grammar reports MALFORMED and every human reads as a
+                # block -- entered no branch here and the merge proceeded.
+                # gh-merge-verified refuses it since `7db64676`; this path did not,
+                # and this path is the one `land-pr.sh` uses. Measured on
+                # https://github.com/rrnewton/hermit/pull/2611:
+                # `CHANGES-REQUESTED: claude 7a75909c92ae` at the exact head.
+                #
+                # Same policy as above -- line-initial, or a lane close behind --
+                # and the same shared grammar decides what is refusal-shaped, so
+                # the two landers cannot drift apart on it again.
+                near = _load_grammar().near_miss_refusal(line)
+                if near is None:
+                    continue
+                tail = line[near.end():]
+                if near.start() != 0 and not _LANE.search(tail[:24]):
+                    continue
+                if _load_grammar().is_template(tail):
+                    continue
+                m = _SHA.search(tail)
+                found.append((REFUSAL, m.group(1) if m else None))
     return found
 
 

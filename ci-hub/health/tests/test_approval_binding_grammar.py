@@ -401,6 +401,19 @@ cases.append((not any(ab.refusal_shaped(l) for l in _fenced),
               f"eligible={_fenced}"))
 
 
+# The two landers must not diverge on the near-miss family a second time.
+# `ff2a3d83` narrowed it, `7db64676` restored it in `refusal_shaped()` only, and
+# `changes-requested-gate`'s own extractor still could not see a missing-`-AT`
+# line -- the permissive side being the path `land-pr.sh` uses.
+_nm = ab.near_miss_refusal(f"CHANGES-REQUESTED: claude {CUR}")
+cases.append((_nm is not None and _nm.start() == 0,
+              "near_miss_refusal locates a missing-AT refusal for BOTH landers",
+              f"match={_nm}"))
+cases.append((ab.near_miss_refusal("nothing to see here") is None,
+              "near_miss_refusal does not fire on ordinary prose",
+              "no match"))
+
+
 def test_approval_binding_grammar():
     """Assert the cases collected above, so pytest ENFORCES them.
 

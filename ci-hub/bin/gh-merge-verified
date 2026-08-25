@@ -390,6 +390,8 @@ def _load_grammar():
     return module
 
 
+_SHA_IN_LINE = re.compile(r"\b([0-9a-f]{7,40})\b")
+
 _REFUSAL_SHAPED = re.compile(r"CHANGES[-\s]?REQUESTED", re.IGNORECASE)
 
 # ⚠️ REFUSAL-SHAPED **AND A LANE NAMED NEARBY**, which is what makes the over-block
@@ -595,6 +597,25 @@ def blocking_changes_requests(pr: str, repo: str, head: str) -> list[str]:
                 # path still refused it: one rule, two homes, immediate divergence.
                 # Now shared, so they cannot disagree again.
                 if grammar.is_template(line):
+                    continue
+                # ⚠️ AND A NEAR-MISS REFUSAL THAT NAMES A SUPERSEDED SHA HAS ALREADY
+                # BEEN CLEARED THE ORDINARY WAY. This branch used to block on any
+                # refusal-shaped line whatever sha it named, so
+                # `CHANGES-REQUESTED: claude <old-sha>` refused every future head
+                # FOREVER -- the author pushes the fix, the sha moves, and the line
+                # still blocks because nothing ever compared it to the head.
+                # `changes-requested-gate` extracts the sha and binds by prefix;
+                # this now does the same, so the two agree and the ordinary clearing
+                # path works for the near-miss family too.
+                #
+                # A refusal with NO readable sha still blocks: unbindable is not
+                # inapplicable, which is the fail-closed choice this branch exists
+                # to make.
+                near_sha = _SHA_IN_LINE.search(line)
+                if near_sha and head and not (
+                    head.startswith(near_sha.group(1))
+                    or near_sha.group(1).startswith(head)
+                ):
                     continue
                 blocking.append(line.strip())
     if withdrawn:

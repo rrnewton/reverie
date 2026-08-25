@@ -521,6 +521,33 @@ _REFUSAL_NEARMISS = re.compile(
 )
 
 
+def near_miss_refusal(line: str) -> "re.Match | None":
+    """Where a NON-CANONICAL refusal token starts in `line`, if it does.
+
+    ⚠️ SHARED SO THE TWO LANDERS CANNOT DIVERGE ON IT AGAIN -- which they already
+    did once, for eleven minutes, because I fixed only one of them. `ff2a3d83`
+    narrowed the near-miss net and `7db64676` restored it, but the restoration
+    reached `refusal_shaped()` (which `gh-merge-verified` calls) and NOT
+    `changes-requested-gate`'s own `markers()`, which matches the literal
+    `CHANGES-REQUESTED-AT` and so never saw a missing-`-AT` line at all. Measured
+    on main at `82ce3ac2`:
+
+        form                          gh-merge-verified   changes-requested-gate
+        CHANGES-REQUESTED-AT: <lane>  REFUSE              REFUSE
+        CHANGES-REQUESTED: <lane>     REFUSE              allow      <- diverged
+        CHANGES REQUESTED: <lane>     REFUSE              allow      <- diverged
+        REJECTED: <lane>              REFUSE              allow      <- diverged
+
+    The permissive side was `land-pr.sh`'s, which is the path landings take.
+
+    Returns the match so a caller can apply its own policy to what follows -- the
+    gate requires a lane name nearby unless the token is line-initial, and that
+    policy stays the caller's. The GRAMMAR of "what is trying to be a refusal" is
+    here, once.
+    """
+    return _REFUSAL_NEARMISS.search(line)
+
+
 def refusal_shaped(line: str) -> bool:
     """A line that is TRYING to be a refusal, for a lander's fail-closed branch.
 
