@@ -154,6 +154,51 @@ normalize_github_remote(){
   [[ $path =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || return 1
   printf '%s\n' "$path"
 }
+
+# ⚠️ LEAVE THE CALLER'S CHECKOUT AS WE FOUND IT.
+#
+# This script detaches "$WT" at origin/main in several places -- to materialize
+# an exact head for just-in-time validation, to clean up after a conflicted
+# rebase, and after a successful push. Every one of those previously left the
+# worktree ON MAIN when the lander exited, including on the ABANDON path.
+#
+# THAT SILENTLY DESTROYS THE CALLER'S BRANCH, and by a route that does not look
+# like this script's fault. The caller hands us a worktree sitting on their
+# feature branch; a failed landing returns it on main; their next perfectly
+# ordinary `git rebase origin/main && git push --force origin HEAD:<branch>`
+# then rebases main onto main, yields a no-op head, and force-pushes that OVER
+# THE BRANCH. Measured: three branch wipes in one session, each attributed to an
+# external actor because the destructive command ran minutes later in a
+# different tool. Recovery depended entirely on the agent having kept rescue
+# refs.
+#
+# So record the entry state and restore it on EVERY exit. A branch name is
+# restored as a branch; a detached HEAD is restored detached. Restoration is
+# best-effort and never changes the exit code -- a landing verdict must not turn
+# into a different one because a checkout could not be put back -- but it warns
+# loudly rather than failing silently, because a silent failure here is exactly
+# the defect being fixed.
+ENTRY_REF=$(git -C "$WT" symbolic-ref -q --short HEAD 2>/dev/null || true)
+if [ -z "$ENTRY_REF" ]; then
+  ENTRY_REF=$(git -C "$WT" rev-parse -q --verify HEAD 2>/dev/null || true)
+  ENTRY_DETACHED=1
+else
+  ENTRY_DETACHED=0
+fi
+restore_entry_checkout(){
+  [ -n "$ENTRY_REF" ] || return 0
+  local now
+  now=$(git -C "$WT" symbolic-ref -q --short HEAD 2>/dev/null \
+        || git -C "$WT" rev-parse -q --verify HEAD 2>/dev/null || true)
+  [ "$now" = "$ENTRY_REF" ] && return 0
+  if [ "$ENTRY_DETACHED" -eq 1 ]; then
+    git -C "$WT" checkout -q --detach "$ENTRY_REF" 2>/dev/null
+  else
+    git -C "$WT" checkout -q "$ENTRY_REF" 2>/dev/null
+  fi || echo "land-pr: WARNING: could not restore $WT to $ENTRY_REF; it is left at ${now:-unknown}. Check the branch before your next force-push." >&2
+}
+trap restore_entry_checkout EXIT
+
 remote_url=$(git -C "$WT" remote get-url origin 2>/dev/null || true)
 checkout_repo=$(normalize_github_remote "$remote_url") || checkout_repo=
 if [ "$checkout_repo" != "$R" ]; then

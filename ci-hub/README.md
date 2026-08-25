@@ -301,6 +301,35 @@ lives on the obligation, so a refusal cannot be mistaken for a click-through.
 The five-minute tick and every fresh lander's startup scan recover from a lost
 wake.
 
+## The lander restores the checkout it was handed
+
+`landing/land-pr.sh` detaches the `--checkout` worktree at `origin/main` in
+several places — to materialize an exact head for just-in-time validation, to
+clean up after a conflicted rebase, and after a successful push. It now records
+the caller's entry state and restores it from an `EXIT` trap, so **every** exit
+puts the worktree back, including `abandon`. Restoration is best-effort and
+never changes the exit code, but it warns on stderr rather than failing quietly.
+
+⚠️ **Why this matters, and who it bit.** Before the trap existed, a failed
+landing returned the worktree on `main`. The caller's next entirely ordinary
+`git rebase origin/main && git push --force origin HEAD:<branch>` then rebased
+main onto main, produced a no-op head, and force-pushed it **over their own
+branch**. The destructive command is the agent's own, minutes later, in a
+different tool — which is why three wipes in one session were each attributed to
+an external actor, and why two agents and a coordinator spent time hunting a
+branch-reaping automation that does not exist.
+
+⚠️ **The exposure is the inverse of the natural guess: it only bit agents doing
+everything right.** The damaging path is the just-in-time validation branch,
+which runs *only* when the PR head already contains current `main`. An agent
+whose branch was stale abandoned earlier, before any checkout, and was never
+touched. So the agents closest to landing — freshly rebased, current, ready —
+were the ones losing branches. Anyone reasoning about who was affected will
+guess the opposite.
+
+Keep a rescue ref while landing (`refs/rescue/<agent>/<name>-<sha>`): it is
+append-only, costs nothing, and is what made the three wipes recoverable.
+
 ## Speculative-land obligation contract
 
 The canonical `landing/land-pr.sh` entrypoint supports `rrnewton/hermit` by
