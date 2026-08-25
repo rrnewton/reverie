@@ -287,6 +287,70 @@ out="$(run "$tmp/unbound.json" --gate)"; rc=$?
   || bad "default gate contract regressed (rc=$rc)"
 
 
+# --- A MALFORMED REFUSAL MUST REFUSE; A MALFORMED APPROVAL MUST NOT BIND -------
+# `CHANGES-REQUESTED:` without `-AT` -- bare line, column zero, correct lane,
+# correct 40-hex, one token wrong -- was flagged malformed and NOT HONOURED in
+# BOTH landers. changes-requested-gate returned CLEAR; approval_binding left
+# state=ok with the approval standing. hermit#2611 merged 24 minutes after a
+# block written that way.
+#
+# THE TWO ERRORS ARE NOT SYMMETRIC and both halves are asserted, because fixing
+# only the refusal half by loosening BOTH matchers is the obvious wrong edit.
+crg="$here/../../bin/changes-requested-gate"
+
+cat >"$tmp/suffixless.json" <<JSON
+[{"number":9101,"head":"$CUR","labels":["passed-review-claude"],
+  "comments":["APPROVED-AT: claude $CUR","CHANGES-REQUESTED: claude $CUR"],
+  "runs_at_head":3,"mergeable":"MERGEABLE"}]
+JSON
+out="$(run "$tmp/suffixless.json" --pr 9101 --gate)"; rc=$?
+[[ $rc -eq 1 ]] && grep -q "^state=unbound" <<<"$out" \
+  && ok "approval_binding: a suffix-less refusal CLEARS the approval (state=unbound)" \
+  || bad "approval_binding: suffix-less refusal did not clear the approval: $out"
+
+cat >"$tmp/canonrefuse.json" <<JSON
+[{"number":9102,"head":"$CUR","labels":["passed-review-claude"],
+  "comments":["APPROVED-AT: claude $CUR","CHANGES-REQUESTED-AT: claude $CUR"],
+  "runs_at_head":3,"mergeable":"MERGEABLE"}]
+JSON
+out="$(run "$tmp/canonrefuse.json" --pr 9102 --gate)"
+grep -q "^state=unbound" <<<"$out" \
+  && ok "approval_binding: canonical refusal still clears it (control)" \
+  || bad "approval_binding control broke: $out"
+
+cat >"$tmp/cleanapp.json" <<JSON
+[{"number":9103,"head":"$CUR","labels":["passed-review-claude"],
+  "comments":["APPROVED-AT: claude $CUR"],"runs_at_head":3,"mergeable":"MERGEABLE"}]
+JSON
+out="$(run "$tmp/cleanapp.json" --pr 9103 --gate)"; rc=$?
+[[ $rc -eq 0 ]] && ok "approval_binding: a clean head still merges (the negative control)" \
+  || bad "clean head no longer passes -- the fix over-blocked: $out"
+
+cat >"$tmp/malapp.json" <<JSON
+[{"number":9104,"head":"$CUR","labels":["passed-review-claude"],
+  "comments":["APPROVED: claude $CUR"],"runs_at_head":3,"mergeable":"MERGEABLE"}]
+JSON
+out="$(run "$tmp/malapp.json" --pr 9104 --gate)"
+grep -q "^state=unbound" <<<"$out" \
+  && ok "approval_binding: a suffix-less APPROVAL still does NOT bind -- the asymmetry" \
+  || bad "a malformed approval bound; loosening went the wrong way too: $out"
+
+# ---- the other lander. A fix on one is the seventh workaround. ----
+gate() { printf '%s' "$1" >"$tmp/g.json"; python3 "$crg" --repo r/r --pr 1 --head "$CUR" --from-json "$tmp/g.json" >/dev/null 2>&1; }
+gate "[\"CHANGES-REQUESTED: claude $CUR\"]" \
+  && bad "changes-requested-gate: suffix-less refusal still CLEARS (fails open)" \
+  || ok "changes-requested-gate: a suffix-less refusal BLOCKS"
+gate "[\"CHANGES-REQUESTED-AT: claude $CUR\"]" \
+  && bad "changes-requested-gate: canonical refusal stopped blocking" \
+  || ok "changes-requested-gate: canonical refusal still blocks (control)"
+gate "[\"APPROVED-AT: claude $CUR\"]" \
+  && ok "changes-requested-gate: a clean head still merges" \
+  || bad "changes-requested-gate: clean head now blocked -- over-blocking"
+gate "[\"CHANGES-REQUESTED: claude $CUR\",\"CHANGES-REQUESTED-WITHDRAWN-AT: claude $CUR\"]" \
+  && ok "changes-requested-gate: a withdrawal still clears a suffix-less refusal" \
+  || bad "withdrawal no longer clears a suffix-less refusal"
+
+
 # --- the binding GRAMMAR, including the rejection trap -----------------------
 if python3 "$here/test_approval_binding_grammar.py" >"$tmp/grammar.out" 2>&1; then
   ok "binding grammar suite: $(grep -c '^  PASS' "$tmp/grammar.out") assertions pass"

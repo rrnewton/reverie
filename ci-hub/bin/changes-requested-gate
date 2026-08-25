@@ -97,6 +97,19 @@ OK, BLOCKED, INDETERMINATE = 0, 1, 2
 
 REFUSAL = "CHANGES-REQUESTED-AT"
 WITHDRAWN = "CHANGES-REQUESTED-WITHDRAWN-AT"
+# ⚠️ THE SUFFIX-LESS SPELLING, WHICH FAILED OPEN. A reviewer who writes
+# `CHANGES-REQUESTED: claude <sha>` -- bare line, column zero, correct lane,
+# correct 40-hex, one token wrong -- was flagged malformed and NOT HONOURED: this
+# gate returned CLEAR and the lane's approval stood. hermit#1689 lost two blocking
+# reviews that way and sat 19 days; hermit#2611 merged 24 minutes after a block
+# written in this form.
+#
+# THE ASYMMETRY IS THE POINT. A malformed REFUSAL must still refuse and a
+# malformed APPROVAL must not bind, because the two errors are not symmetric:
+# someone intending to block is not a weaker signal than someone intending
+# nothing. Reading an unparseable refusal as "proceed" inverts the author's
+# stated intent; reading it as "stop" costs a re-post.
+REFUSAL_BARE = "CHANGES-REQUESTED"
 
 # Block-level decoration seen on real markers, stripped repeatedly until stable.
 _DECOR = re.compile(r"^(\s|#{1,6}\s*|>\s*|[-*+]\s+|\*{1,3}|_{1,3}|`{1,3})+")
@@ -187,7 +200,12 @@ def markers(bodies: list[str]) -> list[tuple[str, str | None]]:
     for body in bodies:
         for raw in eligible(body or ""):
             line = undecorate(raw)
-            for kind in (WITHDRAWN, REFUSAL):  # WITHDRAWN first: it contains REFUSAL
+            # Longest first: WITHDRAWN contains REFUSAL, which contains REFUSAL_BARE.
+            # A bare hit is recorded AS a refusal -- the downstream binding,
+            # withdrawal and indeterminate logic is deliberately unchanged, so the
+            # suffix-less spelling gets exactly the treatment the canonical one
+            # gets and nothing special.
+            for kind in (WITHDRAWN, REFUSAL, REFUSAL_BARE):
                 idx = line.find(kind)
                 if idx < 0:
                     continue
@@ -199,7 +217,8 @@ def markers(bodies: list[str]) -> list[tuple[str, str | None]]:
                 m = _SHA.search(tail)
                 if m is None and _load_grammar().is_template(tail):
                     break  # a template, not a verdict
-                found.append((kind, m.group(1) if m else None))
+                found.append((REFUSAL if kind == REFUSAL_BARE else kind,
+                              m.group(1) if m else None))
                 break
             else:
                 # ⚠️ NO CANONICAL TOKEN ON THIS LINE -- BUT A REFUSAL THAT OMITS THE

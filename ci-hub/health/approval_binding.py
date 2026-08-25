@@ -621,8 +621,19 @@ def lane_shas(
     reject_legacy = re.compile(
         r"^REQUEST\s+CHANGES\s+AT\s+[0-9a-f]{40}$", re.IGNORECASE
     )
+    # ⚠️ `-AT` IS OPTIONAL HERE AND DELIBERATELY NOT OPTIONAL FOR `approve` BELOW.
+    # A reviewer who wrote `CHANGES-REQUESTED: claude <sha>` -- bare line, correct
+    # lane, correct 40-hex, one token wrong -- was flagged malformed and NOT
+    # honoured: the state stayed `ok` and the approval kept standing. hermit#2611
+    # merged 24 minutes after a block in this form.
+    #
+    # THE TWO ERRORS ARE NOT SYMMETRIC, so the two matchers are not either. A
+    # malformed REFUSAL must still refuse: reading it as "proceed" inverts what its
+    # author said. A malformed APPROVAL must still fail to bind: reading it as
+    # "approved" invents authority nobody granted. Loosening both would be the
+    # obvious edit and would be wrong in one direction.
     reject_current = re.compile(
-        r"^CHANGES-REQUESTED-AT:\s*(claude|codex)\s+[0-9a-f]{40}$",
+        r"^CHANGES-REQUESTED(?:-AT)?:\s*(claude|codex)\s+[0-9a-f]{40}$",
         re.IGNORECASE,
     )
     approve = re.compile(
