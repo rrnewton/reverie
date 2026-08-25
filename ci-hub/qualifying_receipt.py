@@ -349,6 +349,17 @@ def _capture(command, **kwargs):
     NOT a timeout (bounds the wait and discards the reason) and NOT disabling
     auto-gc (hides the mechanism for the next background child).
     """
+    # ⚠️ `check` IS A `run()` KEYWORD AND `Popen` REJECTS IT, so it is honoured
+    # HERE rather than forwarded. This shim replaced `subprocess.run` to fix a
+    # capture hang, and the three existing callers all still pass `check=False`
+    # -- which `Popen` answered with
+    #     TypeError: Popen.__init__() got an unexpected keyword argument 'check'
+    # every single time. The replacement kept `run`'s SHAPE (it returns a
+    # CompletedProcess) while quietly dropping part of its CONTRACT, so callers
+    # written against `run` compile and then fail at the call. Implementing the
+    # keyword restores the contract instead of forcing every caller to know that
+    # this particular helper is only run-shaped.
+    check = kwargs.pop("check", False)
     with tempfile.TemporaryFile("w+b") as out, tempfile.TemporaryFile("w+b") as err:
         proc = subprocess.Popen(
             list(command), stdout=out, stderr=err, stdin=subprocess.DEVNULL, **kwargs
@@ -356,11 +367,16 @@ def _capture(command, **kwargs):
         code = proc.wait()
         out.seek(0)
         err.seek(0)
-        return subprocess.CompletedProcess(
+        completed = subprocess.CompletedProcess(
             list(command), code,
             out.read().decode("utf-8", "replace"),
             err.read().decode("utf-8", "replace"),
         )
+        if check and code != 0:
+            raise subprocess.CalledProcessError(
+                code, list(command), completed.stdout, completed.stderr
+            )
+        return completed
 
 
 
