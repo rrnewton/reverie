@@ -1,0 +1,130 @@
+#!/usr/bin/env python3
+"""Push, then PROVE the remote moved. Never infer a landing from a printed line.
+
+WHY THIS EXISTS
+---------------
+Two agents in one hour reported a successful push for a push that was REJECTED.
+Both wrote the shape
+
+    with-proxy git push origin HEAD:main 2>&1 | tail -2
+    rc=$?            # <-- this is tail's exit status, not the push's
+
+`$?` after a pipeline is the status of the LAST command in it. `tail` almost
+always succeeds, so a non-fast-forward rejection is reported as rc=0 and a
+change that never landed is recorded as merged.
+
+That failure mode outranks a destroyed branch. A destroyed branch survives on a
+rescue ref; an unlanded change recorded as landed is invisible, and every
+downstream decision that trusts the record inherits the error.
+
+The trap was already documented in agent-utils AGENTS.md. Two independent
+instances despite the documentation is the evidence that documentation is not
+the fix -- a rule that depends on remembering is a preference. So this is a
+tool, and it does the thing the pipeline cannot:
+
+  1. It runs `git push` with NO PIPE, so the status it reads is the push's own.
+  2. It then asks the REMOTE what the ref actually points at, and compares that
+     to the sha it meant to push. A push that "succeeded" but left the remote
+     elsewhere is reported as a failure.
+
+Step 2 matters independently of step 1. It is the only check that survives a
+future variant of the same mistake, because it verifies the outcome rather than
+the report.
+
+USAGE
+-----
+    ci-hub/bin/git-push-verified <remote> <src>:<dst> [extra git push args...]
+    ci-hub/bin/git-push-verified origin HEAD:main
+    ci-hub/bin/git-push-verified origin HEAD:refs/heads/my-branch --force-with-lease
+
+EXIT
+----
+    0  pushed AND the remote ref now equals the intended sha
+    1  usage / could not resolve the local sha or the remote ref
+    2  the push itself failed (this is the case the pipeline hid)
+    3  the push reported success but the remote ref does NOT match
+"""
+
+from __future__ import annotations
+
+import subprocess
+import sys
+
+
+def run(args: list[str]) -> tuple[int, str, str]:
+    """Run a command with NO shell and NO pipe, so the status is the command's."""
+    p = subprocess.run(args, capture_output=True, text=True)
+    return p.returncode, p.stdout, p.stderr
+
+
+def local_sha(src: str) -> str | None:
+    rc, out, _ = run(["git", "rev-parse", "--verify", "--quiet", f"{src}^{{commit}}"])
+    return out.strip() if rc == 0 and out.strip() else None
+
+
+def remote_sha(remote: str, dst: str) -> str | None:
+    """Ask the REMOTE, not the local tracking ref, which can be stale or absent."""
+    rc, out, _ = run(["git", "ls-remote", remote, dst])
+    if rc != 0:
+        return None
+    for line in out.splitlines():
+        parts = line.split()
+        if len(parts) == 2:
+            return parts[0]
+    return None
+
+
+def main(argv: list[str]) -> int:
+    if len(argv) < 2 or ":" not in argv[1]:
+        print(__doc__.strip().split("USAGE")[1], file=sys.stderr)
+        return 1
+
+    remote, refspec = argv[0], argv[1]
+    extra = argv[2:]
+    src, dst = refspec.split(":", 1)
+    src = src.lstrip("+")
+    if not dst.startswith("refs/"):
+        dst = f"refs/heads/{dst}"
+
+    intended = local_sha(src)
+    if intended is None:
+        print(f"git-push-verified: cannot resolve local '{src}'", file=sys.stderr)
+        return 1
+
+    before = remote_sha(remote, dst)
+    print(f"git-push-verified: intending {intended[:12]} -> {remote} {dst}")
+    print(f"git-push-verified: remote is currently {(before or '(absent)')[:12]}")
+
+    # NO PIPE. The status below is the push's own.
+    rc, out, err = run(["git", "push", remote, f"{src}:{dst}", *extra])
+    for stream in (out, err):
+        if stream.strip():
+            print(stream.rstrip())
+
+    if rc != 0:
+        print(
+            f"git-push-verified: PUSH FAILED, git exited {rc}. "
+            f"{remote} {dst} is unchanged at {(before or '(absent)')[:12]}. "
+            "NOTHING LANDED -- do not record this as a landing.",
+            file=sys.stderr,
+        )
+        return 2
+
+    after = remote_sha(remote, dst)
+    if after != intended:
+        print(
+            "git-push-verified: PUSH REPORTED SUCCESS BUT THE REMOTE DISAGREES.\n"
+            f"  intended {intended}\n"
+            f"  remote   {after or '(absent)'}\n"
+            "  Treat this as NOT LANDED. The push command's own status cannot be\n"
+            "  trusted here; the remote is the authority.",
+            file=sys.stderr,
+        )
+        return 3
+
+    print(f"git-push-verified: VERIFIED {remote} {dst} = {intended}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
