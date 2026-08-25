@@ -64,6 +64,33 @@ reachable as main advances, because unrelated edits push files into MOVED ON.
 That is the tool working, not failing -- but it means this belongs immediately
 after the merge, not as a later audit.
 
+WHY `gh-pr-merge-verified` WAS DELETED RATHER THAN KEPT ALONGSIDE
+----------------------------------------------------------------
+Two verifiers landed for this one gap within a short window, neither with a
+first user. Both are recorded here so the deleted one is not reintroduced by
+someone who only sees the shape of the hole.
+
+It merged with no pipe, asked GitHub for the merge commit, then fetched and
+proved that commit reachable on the base branch. That reachability check is
+STRICTLY STRONGER than what this file does: it is ancestry-exact, whereas
+content-identity is sound in one direction only -- identical files prove the
+change arrived, differing files do not prove it did not.
+
+It was deleted anyway, on one property: IT LEARNS THE MERGE COMMIT FROM THE API.
+`gh pr view --json` sits inside its verification path, so on a box where
+api.github.com is unreachable it cannot verify at all -- and that box is not
+hypothetical. On 2026-08-25 `git ls-remote` succeeded against github.com while
+`curl https://api.github.com` failed outright on the same host, and the
+condition forced two handoffs. A verifier that cannot run where the landings
+happen verifies nothing.
+
+Verification here is PURE GIT: the only `gh` invocation in this file is the
+merge itself, and `--verify-only` never reaches it. `gh-merge-verified-test`
+asserts that with a tripwire `gh` so the property cannot decay silently.
+
+The stronger ancestry check is worth having back IF it is added as an optional
+extra on top of the git-only path, never as the only way to verify.
+
 USAGE
 -----
     ci-hub/bin/gh-merge-verified <pr-number> [--repo owner/name] [--verify-only]
@@ -89,6 +116,7 @@ EXIT
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 
@@ -129,7 +157,12 @@ def main() -> None:
             extra.append(argv[i])
             i += 1
 
-    remote_url = f"https://github.com/{repo}.git"
+    # TEST-ONLY ESCAPE HATCH. The self-test needs to drive this against fixture
+    # repositories on disk, because a verifier that has only ever been run
+    # against a merge that SUCCEEDED has not been shown to refuse one that did
+    # not. Production callers never set this; if it is unset the URL is built
+    # from --repo exactly as before.
+    remote_url = os.environ.get("GH_MERGE_VERIFIED_REMOTE") or f"https://github.com/{repo}.git"
 
     # Resolve the pull request head from the REMOTE. Doing this first means a
     # merge is never attempted against a number we cannot even read.

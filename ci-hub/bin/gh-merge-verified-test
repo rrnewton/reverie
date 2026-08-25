@@ -1,0 +1,204 @@
+#!/usr/bin/env python3
+"""Self-test for `gh-merge-verified`, built around the case it must REFUSE.
+
+WHY THIS EXISTS
+---------------
+A verifier that has only ever been run against a merge that SUCCEEDED has not
+been shown to do anything. On 2026-08-25 four gates passed review in exactly
+that state -- each had seen only the passing case -- and two of them were later
+found to report nothing while reading as passing.
+
+So the load-bearing cases here are the REFUSALS. `test_arrived` exists to prove
+the tool is not simply refusing everything, which a refusal-only suite would
+also pass.
+
+HERMETIC AND OFFLINE. Every case builds throwaway git repositories under a
+temporary directory and points the tool at them through
+`GH_MERGE_VERIFIED_REMOTE`. Nothing here reaches GitHub, so it runs on a
+proxy-blocked box -- which is the same property that made `gh-merge-verified`
+the tool that was kept.
+
+`gh` IS REPLACED BY A TRIPWIRE that records any invocation and exits non-zero.
+Verification is supposed to be pure git; if a future edit reaches for the API,
+`test_verify_only_never_calls_gh` fails rather than the property quietly
+decaying.
+
+    ci-hub/bin/gh-merge-verified-test
+
+Exits 0 when every case matches its expectation, 1 otherwise.
+"""
+
+from __future__ import annotations
+
+import os
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+TOOL = Path(__file__).resolve().parent / "gh-merge-verified"
+
+FAILURES: list[str] = []
+
+
+def run(args: list[str], cwd: Path, env: dict[str, str] | None = None) -> tuple[int, str]:
+    p = subprocess.run(
+        args, cwd=cwd, capture_output=True, text=True, env=env
+    )
+    return p.returncode, p.stdout + p.stderr
+
+
+def git(cwd: Path, *args: str) -> None:
+    p = subprocess.run(
+        ["git", *args],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        env={
+            **os.environ,
+            "GIT_AUTHOR_NAME": "t",
+            "GIT_AUTHOR_EMAIL": "t@example.invalid",
+            "GIT_COMMITTER_NAME": "t",
+            "GIT_COMMITTER_EMAIL": "t@example.invalid",
+        },
+    )
+    if p.returncode != 0:
+        raise RuntimeError(f"git {' '.join(args)} failed: {p.stderr.strip()}")
+
+
+def build_fixture(root: Path, landed: str) -> tuple[Path, Path]:
+    """Build a remote carrying a base, a `refs/pull/1/head`, and a main branch.
+
+    `landed` chooses what main holds for the changed file, which is exactly the
+    three-way distinction the tool draws:
+
+        "arrived"   main holds the branch's content
+        "absent"    main still holds the base content
+        "moved_on"  main holds something else entirely
+    """
+    origin = root / "origin"
+    origin.mkdir()
+    git(origin, "init", "--quiet", "--initial-branch=main", ".")
+    (origin / "tracked.txt").write_text("base content\n")
+    git(origin, "add", "tracked.txt")
+    git(origin, "commit", "--quiet", "-m", "base")
+
+    git(origin, "checkout", "--quiet", "-b", "feature")
+    (origin / "tracked.txt").write_text("branch content\n")
+    git(origin, "commit", "--quiet", "-am", "branch change")
+    # Publish the branch tip where the tool looks for it.
+    git(origin, "update-ref", "refs/pull/1/head", "refs/heads/feature")
+
+    git(origin, "checkout", "--quiet", "main")
+    if landed == "arrived":
+        # A squash landing: same content, different sha. This is the case a
+        # sha or ancestry comparison gets WRONG and content-identity gets right.
+        (origin / "tracked.txt").write_text("branch content\n")
+        git(origin, "commit", "--quiet", "-am", "squashed landing")
+    elif landed == "moved_on":
+        (origin / "tracked.txt").write_text("something else entirely\n")
+        git(origin, "commit", "--quiet", "-am", "unrelated edit")
+    elif landed != "absent":
+        raise ValueError(landed)
+
+    # The tool runs git from the caller's cwd; give it a real checkout to sit in.
+    work = root / "work"
+    subprocess.run(
+        ["git", "clone", "--quiet", str(origin), str(work)],
+        check=True,
+        capture_output=True,
+    )
+    return origin, work
+
+
+def tripwire_dir(root: Path) -> tuple[Path, Path]:
+    """A `gh` that records any call and refuses, so an API reach cannot pass."""
+    bindir = root / "trap"
+    bindir.mkdir()
+    log = bindir / "calls.log"
+    gh = bindir / "gh"
+    gh.write_text(
+        "#!/bin/bash\n"
+        f'echo "gh $*" >> "{log}"\n'
+        "exit 99\n"
+    )
+    gh.chmod(0o755)
+    log.write_text("")
+    return bindir, log
+
+
+def check(name: str, condition: bool, detail: str) -> None:
+    if condition:
+        print(f"  OK   {name}")
+    else:
+        FAILURES.append(name)
+        print(f"  FAIL {name}: {detail}", file=sys.stderr)
+
+
+def case(landed: str, expect_code: int, expect_text: str, name: str) -> None:
+    with tempfile.TemporaryDirectory(prefix="gh-merge-verified-test-") as tmp:
+        root = Path(tmp)
+        origin, work = build_fixture(root, landed)
+        bindir, log = tripwire_dir(root)
+        env = {
+            **os.environ,
+            "PATH": f"{bindir}:{os.environ.get('PATH', '')}",
+            "GH_MERGE_VERIFIED_REMOTE": str(origin),
+        }
+        code, out = run(
+            [sys.executable, str(TOOL), "1", "--repo", "fixture/repo", "--verify-only"],
+            cwd=work,
+            env=env,
+        )
+        check(
+            f"{name}: exit {expect_code}",
+            code == expect_code,
+            f"got exit {code}\n{out}",
+        )
+        check(
+            f"{name}: says {expect_text!r}",
+            expect_text in out,
+            f"output did not contain {expect_text!r}\n{out}",
+        )
+        check(
+            f"{name}: verify-only made no gh call",
+            log.read_text().strip() == "",
+            f"gh was invoked: {log.read_text().strip()}",
+        )
+
+
+def main() -> int:
+    if not TOOL.exists():
+        print(f"gh-merge-verified-test: {TOOL} is missing", file=sys.stderr)
+        return 1
+
+    print("gh-merge-verified-test: the refusals are the point; the pass proves it can still accept")
+
+    # THE CASE THAT MUST BE REFUSED. Main still holds the pre-change content, so
+    # the change definitely did not land. Anything other than a refusal here
+    # means a merge that never happened can be recorded as a landing.
+    case("absent", 3, "NOT LANDED", "a merge that did not happen")
+
+    # Refused, but NOT as a claim that it failed to land: blobs cannot decide.
+    # Collapsing this into "not landed" is how a real landing gets re-landed.
+    case("moved_on", 3, "UNDECIDABLE", "a file that moved on")
+
+    # The accept case, so a tool that refuses everything does not pass this suite.
+    # The landing here is a SQUASH -- same content, different sha -- which is why
+    # ancestry cannot answer this question and content-identity can.
+    case("arrived", 0, "VERIFIED", "a squash landing that did arrive")
+
+    print()
+    if FAILURES:
+        print(
+            f"gh-merge-verified-test: FAIL — {len(FAILURES)} case(s): {', '.join(FAILURES)}",
+            file=sys.stderr,
+        )
+        return 1
+    print("gh-merge-verified-test: OK — refuses a merge that did not happen, "
+          "distinguishes undecidable from absent, accepts a squash landing, and never calls gh")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
