@@ -1,9 +1,44 @@
 //! Typed schemas consumed by the ci-hub front door.
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use std::path::Path;
+
+/// Accept `null` for a list-valued field as an empty list.
+///
+/// WHY THIS EXISTS, and why every `Vec<T>` in this file uses it.
+///
+/// `#[serde(default)]` fills a field only when its KEY IS ABSENT. It does
+/// nothing for a key that is PRESENT WITH VALUE `null`, which fails with
+/// `invalid type: null, expected a sequence` and — because serde aborts the
+/// whole struct — DISCARDS THE ENTIRE RECORD.
+///
+/// Measured on the live ledger 2026-08-24: seven receipts were unreadable for
+/// exactly this reason. All seven carried `gates[*].failed_substeps: null`
+/// written by `hermit-validate-rs` in a 3h24m window on 2026-08-17/18, 92 null
+/// occurrences in total. One 44-gate row was thrown away over 44 nulls. Two of
+/// the seven were `result: pass` — earned green receipts that no query could
+/// see. The tell that pins the diagnosis: `failure_origin` sits in the same
+/// gate objects, is `null` just as often, and parses fine, because it is
+/// `Option<String>`. Same writer, same null, and only the `Vec` refused it.
+///
+/// This is applied to EVERY `Vec<T>` here, not just the one field that was
+/// caught. Only `failed_substeps` is tripped by data on disk today; the others
+/// are the same latent trap waiting for a writer to emit a null, and fixing one
+/// instance while leaving its siblings is a defect shape this project keeps
+/// re-finding.
+///
+/// `Option<Vec<T>>` fields deliberately do NOT use this: there, `null` means
+/// "the producer did not report this list", which is distinct from an empty
+/// one and must stay distinct — see `CoverageRow::zero_executed_nodes`.
+pub fn null_as_empty_vec<'de, D, T>(deserializer: D) -> Result<Vec<T>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Ok(Option::<Vec<T>>::deserialize(deserializer)?.unwrap_or_default())
+}
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct ObligationRecord {
@@ -297,7 +332,7 @@ pub struct HistoryRow {
     /// a complete value by the shared qualifying-receipt predicate.
     #[serde(default)]
     pub cell_results: Option<CellResultsEvidence>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_empty_vec")]
     pub gates: Vec<GateHistoryRow>,
     #[serde(flatten)]
     pub extra: BTreeMap<String, Value>,
@@ -367,7 +402,7 @@ pub struct GateHistoryRow {
     pub failure_origin: Option<String>,
     /// Canonical DAG node names for a lane-carried failure. Empty is not valid
     /// evidence when `failure_origin == lane_substep`.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_empty_vec")]
     pub failed_substeps: Vec<String>,
     #[serde(flatten)]
     pub extra: BTreeMap<String, Value>,
@@ -407,7 +442,9 @@ pub struct ComparisonSpec {
     pub canonicalize_addresses: bool,
     pub full_trace: bool,
     pub exact_remainder: bool,
+    #[serde(default, deserialize_with = "null_as_empty_vec")]
     pub stripped_prefixes: Vec<String>,
+    #[serde(default, deserialize_with = "null_as_empty_vec")]
     pub canonicalizations: Vec<String>,
     pub ignore_lines: bool,
     pub skip_commit: bool,
@@ -499,7 +536,9 @@ pub struct CellResultsEvidence {
     /// SHA-256 over canonical JSON of the sorted `selected` identities.
     pub population_sha256: String,
     pub artifact: CellResultsArtifact,
+    #[serde(default, deserialize_with = "null_as_empty_vec")]
     pub selected: Vec<CellIdentity>,
+    #[serde(default, deserialize_with = "null_as_empty_vec")]
     pub cells: Vec<CellResult>,
 }
 

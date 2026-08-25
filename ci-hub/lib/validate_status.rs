@@ -572,25 +572,85 @@ pub fn resolve_sha(rows: &[HistoryRow], input: &str) -> Result<String, String> {
     }
 }
 
+/// A ledger line that could not be read as a `HistoryRow`, with enough context
+/// to act on it.
+///
+/// This type exists because the previous code was `Err(_) => skipped += 1`. It
+/// DISCARDED THE REASON, so the only thing any operator ever saw was a bare
+/// count on stderr, on every invocation, scrolling past. Seven records sat
+/// unreadable in the authority ledger for a week behind that count, and
+/// diagnosing them required writing a separate program to re-run the parse and
+/// print the error serde had already produced and thrown away. A reader of the
+/// file that decides landing authority must be able to say WHAT it could not
+/// read and WHY.
+///
+/// `commit` and `run_id` are recovered by a second, permissive parse as generic
+/// JSON. They are best-effort by construction: if the line is not even valid
+/// JSON there is nothing to recover, and the fields stay `None`.
+#[derive(Clone, Debug)]
+pub struct LedgerParseFailure {
+    /// 1-based line number within the buffer handed to `parse_ledger`.
+    pub line_number: usize,
+    /// The serde error, verbatim. This is the whole point of the type.
+    pub error: String,
+    pub commit: Option<String>,
+    pub run_id: Option<String>,
+}
+
+impl std::fmt::Display for LedgerParseFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "line {}: {}", self.line_number, self.error)?;
+        if let Some(commit) = &self.commit {
+            write!(f, " [commit {commit}]")?;
+        }
+        if let Some(run_id) = &self.run_id {
+            write!(f, " [run_id {run_id}]")?;
+        }
+        Ok(())
+    }
+}
+
 /// Parse an append-only validate-runs JSONL buffer into typed rows. Blank lines
-/// are skipped. A line that fails to parse is skipped and COUNTED (returned as
+/// are skipped. A line that fails to parse is skipped and REPORTED (returned as
 /// the second element) rather than aborting: the ledger is appended by many
 /// writers and one malformed line must never blind the query to every other
 /// record. Fail-closed at the predicate, tolerant at the parser.
-pub fn parse_ledger(buf: &str) -> (Vec<HistoryRow>, usize) {
+///
+/// Tolerant is not the same as silent. The failures are returned in full so a
+/// caller can name them, and so a caller that is about to answer a question
+/// ABOUT A SPECIFIC COMMIT can check whether it just stepped over a record for
+/// that very commit — which is the case where a confident answer would be
+/// wrong. See `validate-status`, which turns exactly that into a distinct
+/// verdict instead of a silent `NOT-VALIDATED`.
+pub fn parse_ledger(buf: &str) -> (Vec<HistoryRow>, Vec<LedgerParseFailure>) {
     let mut rows = Vec::new();
-    let mut skipped = 0usize;
-    for line in buf.lines() {
+    let mut failures = Vec::new();
+    for (index, line) in buf.lines().enumerate() {
         let line = line.trim();
         if line.is_empty() {
             continue;
         }
         match serde_json::from_str::<HistoryRow>(line) {
             Ok(row) => rows.push(row),
-            Err(_) => skipped += 1,
+            Err(error) => {
+                let salvaged = serde_json::from_str::<serde_json::Value>(line).ok();
+                let field = |name: &str| {
+                    salvaged
+                        .as_ref()
+                        .and_then(|value| value.get(name))
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_string)
+                };
+                failures.push(LedgerParseFailure {
+                    line_number: index + 1,
+                    error: error.to_string(),
+                    commit: field("commit"),
+                    run_id: field("run_id"),
+                });
+            }
         }
     }
-    (rows, skipped)
+    (rows, failures)
 }
 
 #[cfg(test)]
@@ -1488,9 +1548,74 @@ mod tests {
             serde_json::to_string(&clean_full_pass(PASS_SHA)).unwrap(),
             serde_json::to_string(&clean_full_pass(OTHER_SHA)).unwrap(),
         );
-        let (rows, skipped) = parse_ledger(&buf);
+        let (rows, failures) = parse_ledger(&buf);
         assert_eq!(rows.len(), 2);
-        assert_eq!(skipped, 1);
+        assert_eq!(failures.len(), 1);
+        // The reason must survive. A bare count is what hid seven unreadable
+        // receipts for a week.
+        assert_eq!(failures[0].line_number, 4);
+        assert!(
+            !failures[0].error.is_empty(),
+            "the serde error must be retained, not discarded"
+        );
+    }
+
+    /// A failure must carry the identity of the record it could not read, so a
+    /// caller can tell whether the skipped line was about the commit being
+    /// asked about. Recovered by a permissive second parse, so it works even
+    /// though the typed parse failed.
+    #[test]
+    fn parse_ledger_failure_names_the_commit_it_could_not_read() {
+        // Valid JSON, and `gates` is a list, but the gate is missing the
+        // required `name` — so the typed parse fails while the identity fields
+        // are still recoverable.
+        let buf = format!(
+            r#"{{"commit":"{PASS_SHA}","run_id":"r-1","gates":[{{"result":"pass"}}]}}"#
+        );
+        let (rows, failures) = parse_ledger(&buf);
+        assert!(rows.is_empty());
+        assert_eq!(failures.len(), 1);
+        assert_eq!(failures[0].commit.as_deref(), Some(PASS_SHA));
+        assert_eq!(failures[0].run_id.as_deref(), Some("r-1"));
+    }
+
+    /// The regression that motivated all of this: `#[serde(default)]` does not
+    /// cover a key that is PRESENT WITH VALUE `null`, and one such gate used to
+    /// discard the entire receipt. Seven live ledger records were lost to this,
+    /// two of them `result: pass`.
+    #[test]
+    fn a_null_list_does_not_discard_the_whole_receipt() {
+        let buf = format!(
+            r#"{{"commit":"{PASS_SHA}","result":"pass","gates":[{{"name":"pre.submodules","result":"pass","failed_substeps":null,"failure_origin":null}}]}}"#
+        );
+        let (rows, failures) = parse_ledger(&buf);
+        assert!(
+            failures.is_empty(),
+            "a null list must not make a receipt unreadable: {failures:?}"
+        );
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].gates.len(), 1);
+        assert!(rows[0].gates[0].failed_substeps.is_empty());
+    }
+
+    /// Every `Vec<T>` in the row schema, not just the one field that was
+    /// caught. Fixing the found instance and leaving its siblings is the shape
+    /// this project keeps re-finding.
+    #[test]
+    fn every_list_field_in_the_row_schema_tolerates_null() {
+        let buf = format!(
+            r#"{{"commit":"{PASS_SHA}","gates":null,"cell_results":{{"run_id":"r","hermit_sha":"{PASS_SHA}","source_tree_dirty":false,"selected_count":0,"recorded_count":0,"population_sha256":"x","artifact":{{"path":"p","sha256":"s","row_count":0}},"selected":null,"cells":null}}}}"#
+        );
+        let (rows, failures) = parse_ledger(&buf);
+        assert!(failures.is_empty(), "null lists must parse: {failures:?}");
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].gates.is_empty());
+        let evidence = rows[0]
+            .cell_results
+            .as_ref()
+            .expect("cell_results present");
+        assert!(evidence.selected.is_empty());
+        assert!(evidence.cells.is_empty());
     }
 
     #[test]

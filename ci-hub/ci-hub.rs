@@ -3544,7 +3544,9 @@ fn ledger_path(root: &Path) -> PathBuf {
 /// LOGICAL root, not a file: the one canonical adapter unions per-machine live
 /// journals and published shards. A file is accepted only as an explicit
 /// diagnostic/test fixture; production call sites never manufacture one.
-fn load_ledger_rows(path: &Path) -> Result<Vec<HistoryRow>, CiHubError> {
+fn load_ledger_rows_reporting(
+    path: &Path,
+) -> Result<(Vec<HistoryRow>, Vec<validate_status::LedgerParseFailure>), CiHubError> {
     let canonical = path.file_name().is_some_and(|name| name == "ledger");
     let buf = if canonical {
         let root = path.parent().unwrap_or_else(|| Path::new("."));
@@ -3577,14 +3579,44 @@ fn load_ledger_rows(path: &Path) -> Result<Vec<HistoryRow>, CiHubError> {
             }
         }
     };
-    let (rows, skipped) = validate_status::parse_ledger(&buf);
-    if skipped > 0 {
+    let (rows, failures) = validate_status::parse_ledger(&buf);
+    if !failures.is_empty() {
+        // BE LOUD, AND SAY WHAT. The previous version printed only a count.
+        // Seven unreadable receipts in the authority ledger scrolled past
+        // behind that count for a week, and nobody could act on it because the
+        // reason had already been discarded inside `parse_ledger`. A reader of
+        // the file that decides landing authority owes the operator the reason.
         eprintln!(
-            "ci-hub: validate-status: skipped {skipped} unparseable ledger line(s) in {}",
+            "ci-hub: LEDGER RECORDS UNREADABLE: {} of {} line(s) in {} could not be parsed as a validate receipt.",
+            failures.len(),
+            failures.len() + rows.len(),
             path.display()
         );
+        // Bounded so a systemically broken ledger cannot bury the command's
+        // real output, but the cap is STATED rather than silently applied.
+        const MAX_REPORTED: usize = 10;
+        for failure in failures.iter().take(MAX_REPORTED) {
+            eprintln!("ci-hub:   {failure}");
+        }
+        if failures.len() > MAX_REPORTED {
+            eprintln!(
+                "ci-hub:   ... and {} more (showing the first {MAX_REPORTED})",
+                failures.len() - MAX_REPORTED
+            );
+        }
+        eprintln!(
+            "ci-hub: these records are INVISIBLE to every ledger query until they parse. \
+             A receipt that cannot be read does not exist as far as any verdict is concerned."
+        );
     }
-    Ok(rows)
+    Ok((rows, failures))
+}
+
+/// Rows only, for call sites that do not need to reason about what was
+/// unreadable. The failures are still REPORTED by `load_ledger_rows_reporting`;
+/// this discards only the caller's handle on them, never the operator's notice.
+fn load_ledger_rows(path: &Path) -> Result<Vec<HistoryRow>, CiHubError> {
+    Ok(load_ledger_rows_reporting(path)?.0)
 }
 
 /// Read a PR's current head commit via gh (`with-proxy` when available).
@@ -5114,6 +5146,19 @@ enum LedgerFreshness {
     /// and hardening an unverifiable probe into an absence claim would rebuild
     /// the exact defect this type exists to remove.
     Unknown { reason: String },
+    /// The record for this commit IS HERE and could not be PARSED. Nothing
+    /// about the checkout's freshness is implied and pulling cannot help.
+    ///
+    /// This variant exists because the tool used to answer LEDGER-LAGGING in
+    /// exactly this situation and tell the operator to `git pull` -- a remedy
+    /// that can never terminate, because the upstream copy carries the same
+    /// unreadable bytes. Measured 2026-08-24 on commits 99e378524b9a and
+    /// 88d4d61bfa9b: both had a `result: pass` record present locally AND in
+    /// origin/main, both unreadable in both places. "Absent here, present
+    /// upstream" and "present here, unreadable" are different facts about
+    /// different subjects and must never print the same, which is the same
+    /// principle the rest of this enum already encodes.
+    LocalRecordUnreadable { records: usize },
 }
 
 /// Count records for `sha` in `git_ref`'s tracked ledger shards.
@@ -5416,7 +5461,11 @@ fn print_recent_validate_history(
 /// consumes it; the exit code stays in the refusal class where it belongs.
 fn run_validate_status(root: &Path, args: ValidateStatusArgs) -> Result<i32, CiHubError> {
     let path = ledger_path(root);
-    let rows = load_ledger_rows(&path)?;
+    // The failures are kept, not just printed: a record for THE COMMIT BEING
+    // ASKED ABOUT that we could not read is the one case where answering
+    // NOT-VALIDATED would be a confident wrong answer. See the
+    // `LocalRecordUnreadable` arm below.
+    let (rows, parse_failures) = load_ledger_rows_reporting(&path)?;
     let repo = canonical_validation_repo(&args.repo).ok_or_else(|| {
         CiHubError::ValidateStatus(format!(
             "--repo must be {CANONICAL_VALIDATE_REPO} or {CANONICAL_REVERIE_REPO}, got {}",
@@ -5453,10 +5502,29 @@ fn run_validate_status(root: &Path, args: ValidateStatusArgs) -> Result<i32, CiH
     // commit and staleness cannot be masquerading as absence, so no probe runs
     // and no network cost is paid.
     let local_records = assessment.qualifying.len() + assessment.disqualified.len();
+    // A record for this commit that is PRESENT BUT UNREADABLE is a strictly
+    // better explanation than staleness, and it is cheaper: no fetch is needed
+    // to know it. Check it FIRST, so the staleness probe never gets the chance
+    // to blame the checkout for a schema defect.
+    let unreadable_here = parse_failures
+        .iter()
+        .filter(|failure| {
+            failure
+                .commit
+                .as_deref()
+                .is_some_and(|commit| commit == assessment.sha)
+        })
+        .count();
     let freshness = if matches!(assessment.verdict, validate_status::Verdict::NotValidated)
         && local_records == 0
     {
-        Some(probe_ledger_freshness(root, &assessment.sha, repo))
+        if unreadable_here > 0 {
+            Some(LedgerFreshness::LocalRecordUnreadable {
+                records: unreadable_here,
+            })
+        } else {
+            Some(probe_ledger_freshness(root, &assessment.sha, repo))
+        }
     } else {
         None
     };
@@ -5478,12 +5546,23 @@ fn run_validate_status(root: &Path, args: ValidateStatusArgs) -> Result<i32, CiH
             "reason": reason,
             "local_absence_is_authoritative": false,
         }),
+        Some(LedgerFreshness::LocalRecordUnreadable { records }) => serde_json::json!({
+            "state": "local-record-unreadable",
+            "unreadable_local_records": records,
+            "local_absence_is_authoritative": false,
+            // Say it in the payload too. A machine consumer that retries after
+            // a pull would loop forever, because the upstream bytes are the
+            // same bytes.
+            "pull_would_help": false,
+        }),
         None => serde_json::Value::Null,
     };
-    // A lagging read is reported as its own verdict so no consumer mistakes it
-    // for a statement about the commit.
+    // A lagging read, and an unreadable local record, are each reported as
+    // their own verdict so no consumer mistakes either for a statement about
+    // the commit -- and so the two are never confused with each other.
     let reported_verdict = match &freshness {
         Some(LedgerFreshness::UpstreamHasRecord { .. }) => "LEDGER-LAGGING",
+        Some(LedgerFreshness::LocalRecordUnreadable { .. }) => "LEDGER-UNREADABLE",
         _ => assessment.verdict.as_str(),
     };
 
@@ -5593,7 +5672,18 @@ fn run_validate_status(root: &Path, args: ValidateStatusArgs) -> Result<i32, CiH
                 // demonstrably exist.
                 Some(LedgerFreshness::UpstreamHasRecord { records, git_ref }) => {
                     println!(
-                        "# validate LEDGER-LAGGING {} -- THIS CHECKOUT IS STALE, NOT THIS COMMIT UNTESTED. {} ledger record(s) for this commit exist in {git_ref} and are unreadable here; `ledger/` is tracked, so it advances only on pull. Pull, then re-run this query. No verdict about the commit is implied and nothing is authorized.",
+                        "# validate LEDGER-LAGGING {} -- THIS CHECKOUT IS STALE, NOT THIS COMMIT UNTESTED. {} ledger record(s) for this commit exist in {git_ref} and are ABSENT here; `ledger/` is tracked, so it advances only on pull. Pull, then re-run this query. No verdict about the commit is implied and nothing is authorized.",
+                        assessment.sha, records,
+                    );
+                }
+                // Present here and unreadable. Distinct from staleness, and the
+                // remedy is the opposite: pulling cannot help, because the
+                // upstream copy is the same bytes. Saying "pull" here sends an
+                // operator round a loop that never terminates, which is what
+                // this tool used to do.
+                Some(LedgerFreshness::LocalRecordUnreadable { records }) => {
+                    println!(
+                        "# validate LEDGER-UNREADABLE {} -- THIS RECORD IS HERE AND CANNOT BE PARSED, NOT MISSING AND NOT UNTESTED. {} ledger record(s) for this commit are present in this checkout and failed to deserialize (reasons printed on stderr above). DO NOT PULL: the upstream copy carries the same bytes. This is a schema defect in the reader or the writer; fix that and the record becomes visible where it already sits. No verdict about the commit is implied and nothing is authorized.",
                         assessment.sha, records,
                     );
                 }
