@@ -339,6 +339,54 @@ _REFUSAL_SHAPED = re.compile(r"CHANGES[-\s]?REQUESTED", re.IGNORECASE)
 
 
 
+def this_tool_is_current() -> tuple[bool, str]:
+    """Is the copy of this file being executed the one on origin/main?
+
+    WHY A LANDER MUST ASK THIS ABOUT ITSELF. The admission check below cannot
+    protect anyone if the copy being run predates it -- and an OLD COPY CANNOT
+    REFUSE, because the refusal is the very thing it lacks. Its landings look
+    exactly like guarded ones: same exit 0, same VERIFIED line, same receipt.
+
+    Measured 2026-08-25: the shared primary checkout at /home/newton/work/dev-hermit
+    was 250 commits behind, and its gh-merge-verified was 374 lines with ZERO
+    references to the guard while origin/main had 722 lines with it. SEVEN pull
+    requests landed from there after the guard reached main, none of them checked.
+    None happened to carry a refusal, so the realised harm was zero -- but the
+    landings were clean by luck, not by admission, and nothing in their output
+    distinguished the two.
+
+    Refreshing the checkout fixes that until it goes stale again. THE DEFECT IS A
+    GATE THAT SKIPS ITSELF WHEN ITS ENVIRONMENT IS WRONG, not the staleness, so
+    this refuses instead of warning.
+
+    Returns (is_current, detail). A failure to determine returns False: not being
+    able to prove the guard is present is not permission to proceed without it.
+    """
+    here = os.path.realpath(__file__)
+    rel = "ci-hub/bin/gh-merge-verified"
+    # ⚠️ THE TOOL LIVES IN dev-hermit, NOT IN THE REPOSITORY BEING LANDED. Deriving
+    # the remote from the pull request's repo would look for this file in `hermit`,
+    # find nothing, and refuse every landing -- fail-closed, but uselessly so.
+    tool_dir = os.path.dirname(here)
+    rc, tool_remote, _ = run(["git", "-C", tool_dir, "remote", "get-url", "origin"])
+    if rc != 0:
+        return False, "could not resolve the origin remote of this tool's own checkout"
+    rc, _, _ = run(["git", "-C", tool_dir, "fetch", "--quiet", "--force",
+                    tool_remote.strip(), f"refs/heads/main:{SCRATCH}/toolmain"])
+    if rc != 0:
+        return False, "could not fetch dev-hermit main to compare this tool against"
+    rc, blob, _ = run(["git", "-C", tool_dir, "rev-parse", f"{SCRATCH}/toolmain:{rel}"])
+    if rc != 0:
+        return False, f"could not resolve {rel} on dev-hermit main"
+    rc, mine, _ = run(["git", "-C", tool_dir, "hash-object", here])
+    if rc != 0:
+        return False, "could not hash the running copy of this tool"
+    if mine.strip() != blob.strip():
+        return False, (f"this copy is {mine.strip()[:12]}, dev-hermit main has "
+                       f"{blob.strip()[:12]}")
+    return True, "current"
+
+
 def blocking_changes_requests(pr: str, repo: str, head: str) -> list[str]:
     """Anchored refusals that name THIS head and have not been withdrawn.
 
@@ -634,6 +682,25 @@ def main() -> None:
     # ADMISSION, BEFORE ANY MERGE IS ATTEMPTED. Refuses rather than warns: a
     # warning printed by a landing path is read AFTER the merge.
     if not verify_only:
+        # ⚠️ THE GUARD MUST PROVE IT IS THE CURRENT GUARD BEFORE IT VOUCHES FOR
+        # ANYTHING. A stale copy silently has no admission check at all.
+        current, detail = this_tool_is_current()
+        if not current:
+            die(6, "gh-merge-verified: REFUSING TO MERGE -- this tool cannot prove it is "
+                   "the current version, so its admission check may not exist in this copy.",
+                f"    {detail}",
+                "",
+                "  A stale lander does not fail; it SKIPS the changes-request check and "
+                "reports a",
+                "  clean landing. That is indistinguishable from a checked one, which is why "
+                "this",
+                "  refuses rather than warning.",
+                "",
+                "  Run from a fresh checkout, or refresh this one (`make checkout-fresh` in "
+                "dev-hermit).",
+                "  Pass --verify-only to prove an already-performed merge; that path performs "
+                "no",
+                "  merge and so needs no admission check.")
         blocking = blocking_changes_requests(pr, repo, head)
         if blocking == ["__UNREADABLE__"]:
             die(4, "gh-merge-verified: COULD NOT DETERMINE -- could not read comments/reviews "
