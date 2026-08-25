@@ -1,0 +1,239 @@
+#!/usr/bin/env python3
+"""Merge a pull request, then PROVE the content reached main. Never infer a
+landing from `gh pr merge`'s output.
+
+WHY THIS EXISTS
+---------------
+`ci-hub/bin/git-push-verified` closed the same hole for direct pushes, and named
+this gap rather than claiming the class closed: it covers `git push`, but HERMIT
+LANDINGS GO THROUGH `gh pr merge`, which it cannot reach. That is where the
+traffic is -- every drain landing takes this path -- so the false-record risk
+sits almost entirely on the route nothing checks.
+
+The measured harm on the neighbouring path: three agents reported a successful
+push for a REJECTED push inside about two hours, and a fourth disclosed being one
+lapse away. All four had the trap documented. Documentation did not prevent it.
+Reading the remote afterwards did.
+
+WHY A MERGE CANNOT BE VERIFIED THE WAY A PUSH IS
+------------------------------------------------
+This is the part that makes the check non-obvious, and getting it wrong produces
+a verifier that fails on every correct landing.
+
+Merge commits are DISABLED on these repositories, so landing squashes or rebases
+and **rewrites the sha**. The pull request's head commit never appears on main.
+So the push verifier's question -- does the remote ref equal the sha I meant to
+land? -- has no answer here, and `git merge-base --is-ancestor <pr-head> main`
+is FALSE for a perfectly good landing.
+
+The sound question is about CONTENT: after the merge, is every file the pull
+request changed byte-identical on `origin/main`? That is ancestry-independent, it
+survives the sha rewrite, and it is what actually matters -- the change is
+present or it is not.
+
+⚠️ AND IT IS SCOPED TO THE FILES THE BRANCH TOUCHES, not the files the pull
+request is "about". A branch commonly carries more than its headline change --
+a formatting fix, a follow-up commit. Checking only the obvious paths reports a
+landing that dropped the rest. This walks `git diff --name-only <merge-base>..<head>`.
+
+THREE VERDICTS PER FILE, BECAUSE TWO DECAY
+------------------------------------------
+Comparing only "main == pr head" rots: the moment main edits a file for an
+unrelated reason, a landing that DID happen starts reporting as missing. Measured
+on PR 2288 -- it landed cleanly, another change edited one of its files hours
+later, and a two-state check called the whole thing unlanded. Reporting a real
+landing as absent is worse than saying nothing, because it invites someone to
+land it a second time.
+
+The merge-base blob is what discriminates:
+
+    main == pr head   ARRIVED   the change is present
+    main == base      ABSENT    main still holds the pre-change content, so this
+                                file's change definitely did not land
+    neither           MOVED ON  changed after, or instead. NOT decidable from
+                                blobs; a human must read it
+
+So exit 3 distinguishes NOT LANDED (something is ABSENT) from UNDECIDABLE
+(nothing absent, but something moved on). Only the first is a claim that the
+merge did not arrive.
+
+It also does not verify that the merge was *correct*, only that it *arrived*.
+
+⚠️ VERIFY PROMPTLY. Exit 0 is reachable right after a merge and becomes less
+reachable as main advances, because unrelated edits push files into MOVED ON.
+That is the tool working, not failing -- but it means this belongs immediately
+after the merge, not as a later audit.
+
+USAGE
+-----
+    ci-hub/bin/gh-merge-verified <pr-number> [--repo owner/name] [--verify-only]
+                                 [-- extra `gh pr merge` args...]
+
+    # merge, then prove it landed
+    ci-hub/bin/gh-merge-verified 2401 --repo rrnewton/hermit
+
+    # only prove: for a merge someone else performed, or from a box whose
+    # `gh` cannot reach the API at all (verification is pure git and needs no API)
+    ci-hub/bin/gh-merge-verified 2401 --repo rrnewton/hermit --verify-only
+
+EXIT
+----
+    0  merged AND every file the branch touches ARRIVED on origin/main
+    1  usage, or a local/remote ref could not be resolved
+    2  the `gh pr merge` command itself failed (the case output hid)
+    3  the content is NOT all on main. Prints NOT LANDED when a file is ABSENT,
+       UNDECIDABLE when files only MOVED ON. Files named either way.
+    4  COULD NOT DETERMINE: the check did not complete. Distinct from 3 on
+       purpose, so a broken verifier is never read as a clean landing.
+"""
+
+from __future__ import annotations
+
+import subprocess
+import sys
+
+
+def run(args: list[str]) -> tuple[int, str, str]:
+    """Run with NO shell and NO pipe, so the status is the command's own."""
+    p = subprocess.run(args, capture_output=True, text=True)
+    return p.returncode, p.stdout, p.stderr
+
+
+def die(code: int, *lines: str) -> None:
+    for line in lines:
+        print(line, file=sys.stderr)
+    sys.exit(code)
+
+
+def main() -> None:
+    argv = sys.argv[1:]
+    if not argv or argv[0] in {"-h", "--help"}:
+        die(1, __doc__ or "")
+
+    pr = argv[0]
+    if not pr.isdigit():
+        die(1, f"gh-merge-verified: first argument must be a pull request number, got {pr!r}")
+
+    repo = "rrnewton/hermit"
+    verify_only = False
+    extra: list[str] = []
+    i = 1
+    while i < len(argv):
+        if argv[i] == "--repo" and i + 1 < len(argv):
+            repo, i = argv[i + 1], i + 2
+        elif argv[i] == "--verify-only":
+            verify_only, i = True, i + 1
+        elif argv[i] == "--":
+            extra, i = argv[i + 1 :], len(argv)
+        else:
+            extra.append(argv[i])
+            i += 1
+
+    remote_url = f"https://github.com/{repo}.git"
+
+    # Resolve the pull request head from the REMOTE. Doing this first means a
+    # merge is never attempted against a number we cannot even read.
+    rc, out, err = run(["git", "fetch", "--quiet", "--force", remote_url,
+                        f"refs/pull/{pr}/head:refs/gh-merge-verified/{pr}"])
+    if rc != 0:
+        die(4, f"gh-merge-verified: COULD NOT DETERMINE — cannot fetch refs/pull/{pr}/head from {repo}",
+            "  This is NOT a statement about whether the change landed.",
+            err.strip())
+    rc, head, _ = run(["git", "rev-parse", f"refs/gh-merge-verified/{pr}"])
+    head = head.strip()
+    if rc != 0 or not head:
+        die(4, f"gh-merge-verified: COULD NOT DETERMINE — cannot resolve the head of PR {pr}")
+
+    if not verify_only:
+        # NO PIPE: the status read here is `gh pr merge`'s own.
+        rc, out, err = run(["gh", "pr", "merge", pr, "--repo", repo, *extra])
+        sys.stdout.write(out)
+        sys.stderr.write(err)
+        if rc != 0:
+            die(2, "", f"gh-merge-verified: the merge command FAILED (exit {rc}). Nothing was verified.",
+                "  This is the case a piped exit status hides.")
+
+    # Ask the remote what main holds now.
+    rc, out, err = run(["git", "fetch", "--quiet", "--force", remote_url,
+                        "refs/heads/main:refs/gh-merge-verified/main"])
+    if rc != 0:
+        die(4, "gh-merge-verified: COULD NOT DETERMINE — cannot fetch main", err.strip())
+    rc, main_sha, _ = run(["git", "rev-parse", "refs/gh-merge-verified/main"])
+    main_sha = main_sha.strip()
+
+    rc, base, _ = run(["git", "merge-base", head, main_sha])
+    base = base.strip()
+    if rc != 0 or not base:
+        die(4, f"gh-merge-verified: COULD NOT DETERMINE — no merge base between PR {pr} and main")
+
+    rc, names, _ = run(["git", "diff", "--name-only", f"{base}..{head}"])
+    files = [f for f in names.splitlines() if f.strip()]
+    if not files:
+        die(4, f"gh-merge-verified: COULD NOT DETERMINE — PR {pr} changes no files against its own",
+            "  merge base, so there is nothing whose presence could be checked.")
+
+    # THREE OUTCOMES PER FILE, NOT TWO. Comparing only "main == pr head" decays:
+    # once main edits a file for an unrelated reason, a landing that DID happen
+    # starts reporting as missing. Measured on PR 2288, which landed cleanly and
+    # then had one of its files edited hours later by a different change -- the
+    # two-state check called it unlanded.
+    #
+    # The base blob is what discriminates:
+    #   main == head  -> ARRIVED. The change is present.
+    #   main == base  -> ABSENT.  Main still holds the pre-change content, so
+    #                             this file's change definitely did not land.
+    #   neither       -> MOVED ON. Someone changed it after, or instead. Cannot
+    #                             be decided from blobs; a human must read it.
+    arrived: list[str] = []
+    absent: list[str] = []
+    moved: list[str] = []
+    for f in files:
+        _, a, _ = run(["git", "rev-parse", f"{head}:{f}"])
+        rc_b, b, _ = run(["git", "rev-parse", f"{main_sha}:{f}"])
+        rc_c, c, _ = run(["git", "rev-parse", f"{base}:{f}"])
+        a, b, c = a.strip(), b.strip(), c.strip()
+        if rc_b == 0 and a == b:
+            arrived.append(f)
+        elif rc_c == 0 and rc_b == 0 and b == c:
+            absent.append(f)
+        elif rc_b != 0 and rc_c != 0:
+            absent.append(f)
+        else:
+            moved.append(f)
+
+    missing = absent + moved
+    landed = len(arrived)
+    print(f"gh-merge-verified: PR {pr} ({repo})")
+    print(f"  pr head    {head}")
+    print(f"  origin/main {main_sha}")
+    print(f"  files changed by the branch: {len(files)}")
+    print(f"    arrived  (main == pr head): {len(arrived)}")
+    print(f"    absent   (main == merge base, change definitely not landed): {len(absent)}")
+    print(f"    moved on (main matches neither, undecidable from blobs): {len(moved)}")
+
+    if missing:
+        print("", file=sys.stderr)
+        verdict = "NOT LANDED" if absent else "UNDECIDABLE"
+        print(f"gh-merge-verified: REFUSED ({verdict}) — {len(missing)} of {len(files)} changed",
+              file=sys.stderr)
+        print("  file(s) are not present on origin/main:", file=sys.stderr)
+        for f in absent[:20]:
+            print(f"      ABSENT   {f}   (main still holds the pre-change content)", file=sys.stderr)
+        for f in moved[:20]:
+            print(f"      MOVED ON {f}   (changed after, or instead — read it)", file=sys.stderr)
+        if len(missing) > 40:
+            print(f"      ... and {len(missing) - 40} more", file=sys.stderr)
+        print("", file=sys.stderr)
+        print("  ⚠️ READ THIS, DO NOT AUTOMATE ON IT. Content-identity is sound in one", file=sys.stderr)
+        print("  direction only: identical files prove the change arrived, but differing", file=sys.stderr)
+        print("  files can also mean the change was amended during review, or that main", file=sys.stderr)
+        print("  moved the same lines for another reason. What is certain is that you may", file=sys.stderr)
+        print("  NOT record this as landed on the strength of the merge output alone.", file=sys.stderr)
+        sys.exit(3)
+
+    print(f"  VERIFIED: every file the branch touches is byte-identical on origin/main.")
+    sys.exit(0)
+
+
+if __name__ == "__main__":
+    main()
