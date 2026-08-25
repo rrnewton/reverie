@@ -636,7 +636,8 @@ def lane_shas(
     reject_legacy = re.compile(
         r"^REQUEST\s+CHANGES\s+AT\s+[0-9a-f]{40}$", re.IGNORECASE
     )
-    # ⚠️ `-AT` IS OPTIONAL HERE AND DELIBERATELY NOT OPTIONAL FOR `approve` BELOW.
+    # ⚠️ `-AT` IS OPTIONAL HERE AND DELIBERATELY NOT OPTIONAL FOR `approved_binding`
+    # BELOW, which takes the approval grammar from `parse_marker`.
     # A reviewer who wrote `CHANGES-REQUESTED: claude <sha>` -- bare line, correct
     # lane, correct 40-hex, one token wrong -- was flagged malformed and NOT
     # honoured: the state stayed `ok` and the approval kept standing. hermit#2611
@@ -651,9 +652,33 @@ def lane_shas(
         r"^CHANGES-REQUESTED(?:-AT)?:\s*(claude|codex)\s+[0-9a-f]{40}$",
         re.IGNORECASE,
     )
-    approve = re.compile(
-        r"^APPROVED-AT:\s*(claude|codex)\s+([0-9a-f]{40})$", re.IGNORECASE
-    )
+    # ⚠️ THE APPROVAL GRAMMAR IS NOT RESTATED HERE, AND MUST NOT BE.
+    #
+    # This function used to compile its own
+    # `^APPROVED-AT:\s*(claude|codex)\s+([0-9a-f]{40})$` -- a second, independent
+    # copy of the shape `_MARKER_RE` already defines, inside the very module that
+    # exists so that everyone reads one grammar. This module's own header records
+    # that `ci-hub/bin/gh-merge-verified` had duplicated this parsing, that there
+    # were two parsers for one grammar, and that THEY HAD ALREADY DRIFTED. A
+    # docs copy in `docs/PR_SWEEP_VERDICTS.md` had drifted four ways at once --
+    # decoration, block prefix, inner whitespace, case -- and missed seven real
+    # bindings before hermit#2610 removed it.
+    #
+    # Two copies fixed independently drift again, so this one is not repaired; it
+    # is DELETED, and the single definition is called instead. Every future
+    # tightening of what may bind a lane now lands in exactly one place.
+    #
+    # The refusal matchers above are deliberately NOT routed through
+    # `parse_marker`: `reject_current` accepts a missing `-AT` and `reject_legacy`
+    # accepts a lane-less historical form, because a malformed REFUSAL must still
+    # refuse while a malformed APPROVAL must still fail to bind. That asymmetry is
+    # POLICY and it stays here. Only the grammar moved.
+    def approved_binding(line: str) -> tuple[str, str] | None:
+        """``(lane, sha)`` when `line` is a canonical approval, else ``None``."""
+        parsed = parse_marker(line)
+        if parsed is None or parsed[0] != MARKER_APPROVED:
+            return None
+        return parsed[1], parsed[2]
     # LOUD ON THE UNKNOWN. A line that is plainly trying to be a verdict binding
     # -- a verdict-ish keyword on the same line as a 40-hex -- but which matches
     # neither grammar is reported, never ignored.
@@ -731,7 +756,14 @@ def lane_shas(
             # malformed line fails the gate -- turns a silent loss into a loud
             # refusal. Fail-closed, and the author is told to split the two
             # verdicts into two comments, where the chronology is unambiguous.
-            if any(approve.match(line) for line in lines):
+            # Any lane's approval, deliberately: this mirrors the pre-existing
+            # behaviour exactly. The finding text says "for this lane" while the
+            # test does not filter by lane, so a refusal on one lane beside an
+            # approval on the other is reported AMBIGUOUS. That is a policy
+            # question, it is not the grammar duplication this change removes,
+            # and silently narrowing it here would be a behaviour change smuggled
+            # into a refactor. Left exactly as it was and raised separately.
+            if any(approved_binding(line) for line in lines):
                 finding = (
                     c.get("html_url") or c.get("url") or "?",
                     "AMBIGUOUS: one comment carries both a CHANGES-REQUESTED-AT "
@@ -745,8 +777,8 @@ def lane_shas(
             found.clear()
             continue
         for line in lines:
-            m = approve.match(line)
-            if not m:
+            binding = approved_binding(line)
+            if binding is None:
                 if (
                     # `.search`, not `.match`: `re.match` anchors at position 0
                     # regardless of the pattern, which is the other half of the
@@ -767,7 +799,7 @@ def lane_shas(
                     if pr_number is not None and malformed_prs is not None:
                         malformed_prs[finding] = pr_number
                 continue
-            explicit_lane, sha = m.group(1), m.group(2)
+            explicit_lane, sha = binding
             if explicit_lane.lower() == lane:
                 found.append(sha)
     return found
