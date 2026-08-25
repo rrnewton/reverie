@@ -27,6 +27,58 @@ DEFAULT_SUITES = (
     # load-bearing without treating environment-declared skips as execution.
     ("ci-hub/validate", 123),
     ("ci-hub/tests", 66),
+    # ------------------------------------------------------------------
+    # EXECUTION GAP CLOSED 2026-08-25 (task make_lint_runs_no). 45 of ci-hub's
+    # 150 test files sat outside this registry across 19 directories, so their
+    # assertions ran in no CI job. `make lint`'s py-unittest gate discovers only
+    # `scripts/`, and nothing else pointed at them -- the same defect the
+    # compat-envelope entry below records, one level out.
+    #
+    # ⚠️ FLOORS ARE ~90% OF THE COUNT MEASURED AT PARENT MAIN e48cbb80, WITH THE
+    # SUBMODULES MATERIALISED THE WAY CI DOES IT (`git submodule update --init
+    # --depth 1 -- hermit`, then the same for hermit/agent-utils). That matters:
+    # without them `agent-utils` is a dangling symlink to `hermit/agent-utils`,
+    # `tick_hub` will not import, and pytest aborts collection for the WHOLE run.
+    # Counts taken in an unmaterialised tree are meaningless -- measured three
+    # different values for ci-hub/health/tests alone (519, 44, 506) depending on
+    # the checkout.
+    #
+    # The margin is deliberate. A floor at the exact count turns any legitimate
+    # variance into SUITE REFUSED, which reads identically to the suite being
+    # broken; a floor far below it -- as the older entries are, 6 against 86
+    # discovered for lib/tests -- would not notice most of the suite vanishing.
+    #
+    # Added time is 74s measured, against a step budget of 480s with a 327s
+    # baseline. All thirteen are at 0 failures.
+    ("ci-hub/landing", 142),
+    ("ci-hub/ledger/tests", 131),
+    ("ci-hub/closure", 85),
+    ("ci-hub/attribution/tests", 43),
+    ("ci-hub/pin/tests", 34),
+    ("ci-hub/main-metrics/tests", 29),
+    ("ci-hub/ratchet/tests", 20),
+    ("ci-hub/series/tests", 20),
+    ("ci-hub/stranded/tests", 19),
+    ("ci-hub/greentime/tests", 17),
+    ("ci-hub/stress", 16),
+    ("ci-hub/taskgraph/tests", 15),
+    ("ci-hub/parity/tests", 13),
+    #
+    # ⚠️ TWO DIRECTORIES ARE DELIBERATELY NOT REGISTERED, each with a live
+    # failure. Wiring them would convert a correct red into a standing red that
+    # someone eventually silences.
+    #   ci-hub/validation          3 failing. One is
+    #     test_rust_consumer_routes_rc3_to_a_loud_error_not_a_disqualified_row,
+    #     which is NOT stale: `shared_base_boundary_accepts` returns bool, so rc 3
+    #     ("cannot dereference the producer definition"), a spawn failure and a
+    #     JSON parse failure all collapse into Refused("shared evidence contract
+    #     not satisfied") -- "could not determine" filed as "determined negative",
+    #     in the path that decides landing authorisation. Filed as
+    #     shared_base_boundary_accepts; it needs an owner ruling, not a patch.
+    #   ci-hub/timeout_audit/tests 1 failing, and environment-sensitive: 3 failures
+    #     with no submodules, 1 with them, 0 in a stale checkout. Needs a clean
+    #     skip when its inputs are absent before a floor means anything.
+    # ------------------------------------------------------------------
     # compat-envelope's Python tests had no CI caller of their own: their runner
     # is `compat-envelope/tests/run-all.sh`, reachable only through `make lint`,
     # and no workflow runs `make lint`. So the guards protecting the scorecard --
