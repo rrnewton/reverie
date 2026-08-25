@@ -16,7 +16,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass
 from io import StringIO
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -1839,8 +1839,74 @@ ORDER BY local_id
     return 1 if violations else 0
 
 
+def _checkout_freshness_note() -> str:
+    """Say whether THIS checkout is behind origin/main, or that we cannot tell.
+
+    Deliberately measures rather than assumes, and reports all three outcomes
+    distinctly. Swapping an unestablished "your command is invalid" for an
+    unestablished "your checkout is stale" would be the same defect wearing a
+    friendlier message.
+
+    No fetch: this reads the last-fetched origin/main, so the distance is a
+    LOWER BOUND and the text says so. An error path is the wrong place to make
+    a network call.
+    """
+    try:
+        head = subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=ROOT, capture_output=True, text=True, timeout=10,
+        )
+        behind = subprocess.run(
+            ["git", "rev-list", "--count", "HEAD..origin/main"],
+            cwd=ROOT, capture_output=True, text=True, timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        return (
+            f"checkout freshness UNKNOWN ({error}); this may be a stale checkout "
+            "rather than a bad command -- check before concluding the gate is broken"
+        )
+    if behind.returncode != 0 or not behind.stdout.strip().isdigit():
+        detail = (behind.stderr or "no origin/main ref").strip().splitlines()[:1]
+        return (
+            f"checkout freshness UNKNOWN ({detail[0] if detail else 'unavailable'}); "
+            "this may be a stale checkout rather than a bad command"
+        )
+    count = int(behind.stdout.strip())
+    sha = head.stdout.strip() or "unknown"
+    if count == 0:
+        return (
+            f"this checkout ({sha}) is level with the last-fetched origin/main, so "
+            "the command genuinely does not exist here -- this is not staleness"
+        )
+    return (
+        f"THIS CHECKOUT IS STALE: {sha} is at least {count} commit(s) behind the "
+        "last-fetched origin/main (no fetch was made, so that is a lower bound). "
+        "A subcommand added on main does not exist in an old tree, and argparse "
+        "reports that as an invalid choice. Refresh the checkout, or run the tool "
+        "from a fresh clone, before concluding the gate is broken."
+    )
+
+
+class _FreshnessAwareParser(argparse.ArgumentParser):
+    """Argparse that will not blame the input for what may be a stale tree.
+
+    Measured 2026-08-25: running `task-reference-hygiene` from a checkout 146
+    commits behind main exited 2 with "invalid choice", which reads as a broken
+    gate. The subcommand was landed and fine; the tree was old. That is the
+    second staleness-sourced false signal of the night -- a stale test-harness
+    binary rejecting current main's manifests as corrupt was the first -- and it
+    is the same shape as a checker reporting "does not compile" for a submodule
+    that was never populated: asserting a cause it did not establish.
+    """
+
+    def error(self, message: str) -> NoReturn:  # type: ignore[override]
+        if "invalid choice" in message:
+            message = f"{message}\n{_checkout_freshness_note()}"
+        super().error(message)
+
+
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
+    parser = _FreshnessAwareParser(
         description="Run one dev-hermit operational health check."
     )
     subparsers = parser.add_subparsers(
