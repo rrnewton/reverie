@@ -115,6 +115,25 @@ REFUSAL_BARE = "CHANGES-REQUESTED"
 _DECOR = re.compile(r"^(\s|#{1,6}\s*|>\s*|[-*+]\s+|\*{1,3}|_{1,3}|`{1,3})+")
 _SHA = re.compile(r"\b([0-9a-f]{7,40})\b")
 _LANE = re.compile(r"\b(claude|codex)\b", re.I)
+
+# ⚠️ A WITHDRAWAL NAMES THE REFUSAL IT RETIRES, BY COMMENT ID.
+#
+# Ruled 2026-08-25 after a withdrawal cleared another agent's live refusal on
+# hermit#2625. Two same-lane refusals are INDEPENDENT; retiring one must not
+# retire the other.
+#
+# BY COMMENT ID AND NOT BY ISSUER, and hermit#2625 is why. The obvious cheaper
+# scheme -- read the issuer out of the `[hermit2, <agent>, ...]` disclosure tag --
+# works on invented input and FAILS ON THE REAL PAIR: of the two refusals at
+# f013ac4b, hermit-012's carries a tag and hermit-015's carries NONE. The refusal
+# that must keep binding is exactly the one with no readable issuer. A comment id
+# is assigned by GitHub and is always present, so it is the only identity that
+# cannot go missing.
+#
+# Two refusals from different agents also have BYTE-IDENTICAL marker text
+# (`CHANGES-REQUESTED-AT: claude <sha>`), so "quote the exact text" cannot
+# separate them either.
+_RETIRES = re.compile(r"\bRETIRES\s+#?(\d{6,})\b", re.I)
 # ⚠️ A DOCUMENTATION EXAMPLE IS NOT A REFUSAL, AND THIS COST A REAL LANDING.
 # Measured 2026-08-25 on hermit#2611: a comment explaining the convention contained
 #     CHANGES-REQUESTED-AT: claude <sha>   ->  refuses, clears the lane
@@ -160,6 +179,12 @@ def gh_json(args: list[str]) -> object:
 
 
 def markers(bodies: list[str]) -> list[tuple[str, str | None, str | None]]:
+    return [(k, l, sh) for k, l, sh, _cid in markers_with_ids(list(enumerate(bodies)))]
+
+
+def markers_with_ids(
+    items: list[tuple[object, str]],
+) -> list[tuple[str, str | None, str | None, object]]:
     """Every marker-shaped line, as (kind, lane-or-None, sha-or-None), in document order.
 
     ⚠️ A WORD BEFORE THE TOKEN USED TO MAKE THE MARKER INVISIBLE, HERE AND IN EVERY
@@ -197,7 +222,7 @@ def markers(bodies: list[str]) -> list[tuple[str, str | None, str | None]]:
     """
     found = []
     eligible = _load_grammar().marker_lines
-    for body in bodies:
+    for _cid, body in items:
         for raw in eligible(body or ""):
             line = undecorate(raw)
             # Longest first: WITHDRAWN contains REFUSAL, which contains REFUSAL_BARE.
@@ -220,7 +245,8 @@ def markers(bodies: list[str]) -> list[tuple[str, str | None, str | None]]:
                 lane_m = _LANE.search(tail[:24])
                 found.append((REFUSAL if kind == REFUSAL_BARE else kind,
                               lane_m.group(1).lower() if lane_m else None,
-                              m.group(1) if m else None))
+                              m.group(1) if m else None,
+                              _cid))
                 break
             else:
                 # ⚠️ NO CANONICAL TOKEN ON THIS LINE -- BUT A REFUSAL THAT OMITS THE
@@ -249,7 +275,8 @@ def markers(bodies: list[str]) -> list[tuple[str, str | None, str | None]]:
                 lane_m = _LANE.search(tail[:24])
                 found.append((REFUSAL,
                               lane_m.group(1).lower() if lane_m else None,
-                              m.group(1) if m else None))
+                              m.group(1) if m else None,
+                              _cid))
     return found
 
 
@@ -289,8 +316,39 @@ def head_is_main_equal(source: str, head: str) -> bool:
     return r.stdout.strip() == ""
 
 
-def evaluate(bodies: list[str], head: str) -> tuple[int, str]:
-    found = markers(bodies)
+def evaluate(
+    bodies: list[str],
+    head: str,
+    ids: list[object] | None = None,
+) -> tuple[int, str]:
+    # `ids` are the comment ids the bodies came from, so a withdrawal can name the
+    # refusal it retires. Optional and positional-compatible: every existing caller
+    # and test passes bodies alone and gets the previous behaviour.
+    items = list(zip(ids, bodies)) if ids is not None else list(enumerate(bodies))
+    found4 = markers_with_ids(items)
+    found = [(k, l, sh) for k, l, sh, _ in found4]
+
+    # ⚠️ A WITHDRAWAL RETIRES THE REFUSAL IT NAMES, AND ONLY THAT ONE.
+    # `RETIRES <comment-id>` in a withdrawal's body retires the refusal carried by
+    # that comment. Refusals not named by any withdrawal still bind, so two
+    # same-lane refusals from different agents are independent -- which is the
+    # ruling this implements.
+    #
+    # An UNQUOTED withdrawal keeps the previous lane-wide behaviour rather than
+    # retiring nothing. Retiring nothing is the stricter reading and it fails
+    # closed, but it would flip every live head carrying an existing unquoted
+    # withdrawal to BLOCKED at once. The lane-wide path already REPORTS a
+    # one-for-many clearance, so the ambiguous case is visible while the precise
+    # spelling is adopted.
+    retired_ids: set[str] = set()
+    by_id: dict[object, str] = {}
+    for cid, body in items:
+        by_id.setdefault(cid, body)
+    for kind, lane, sha, cid in found4:
+        if kind != WITHDRAWN:
+            continue
+        for m in _RETIRES.finditer(by_id.get(cid, "")):
+            retired_ids.add(m.group(1))
     if not found:
         return OK, "no refusal marker of any shape on this pull request"
 
@@ -373,9 +431,31 @@ def evaluate(bodies: list[str], head: str) -> tuple[int, str]:
     # author is then told to re-post a marker when what they actually need is a fix
     # or a withdrawal. Measured on hermit#2176: a bound refusal AND a sha-less
     # mention coexist, and checking unbindable first reported the weaker verdict.
-    bound = [(lane, sha) for lane, sha in refusals if binds(sha)]
-    live = [(lane, sha) for lane, sha in bound
-            if lane is None or lane not in withdrawn_lanes]
+    bound4 = [(lane, sha, cid) for kind, lane, sha, cid in found4
+              if kind == REFUSAL and binds(sha)]
+    bound = [(lane, sha) for lane, sha, _ in bound4]
+    # A refusal survives unless it was NAMED by a withdrawal, or (legacy) its lane
+    # was withdrawn by an unquoted one.
+    # ⚠️ A LANE THAT ADOPTS THE PRECISE SPELLING OPTS OUT OF THE BLUNT ONE.
+    # Otherwise the two coexist as an OR and the lane-wide clear keeps winning:
+    # naming one refusal would retire that one AND, via the old path, every other
+    # refusal in the lane -- the precise form would read as adopted while changing
+    # nothing. Once any withdrawal in a lane names a refusal, ONLY named refusals
+    # are retired in that lane.
+    precise_lanes = {
+        lane for kind, lane, sha, cid in found4
+        if kind == WITHDRAWN and lane is not None and binds(sha)
+        and _RETIRES.search(by_id.get(cid, ""))
+    }
+    live = []
+    for lane, sha, cid in bound4:
+        if str(cid) in retired_ids:
+            continue                      # named by a withdrawal: retired
+        if lane is not None and lane in precise_lanes:
+            live.append((lane, sha))      # precise lane, and this one was not named
+            continue
+        if lane is None or lane not in withdrawn_lanes:
+            live.append((lane, sha))
     cleared = len(bound) - len(live)
 
     if bound and not live:
