@@ -50,6 +50,8 @@ from pathlib import Path
 # One resolver for the TaskGraph, shared with every other ci-hub consumer.
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ci-hub" / "lib"))
 import taskgraph_db  # noqa: E402
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from provenance import query_provenance, require_fresh  # noqa: E402
 
 # The tracker is named, not discovered, because it is a single designated
 # authority. If it is ever renamed, this must fail loudly rather than silently
@@ -117,18 +119,42 @@ def tracked_refs(text: str) -> set[tuple[str, int]]:
     return refs
 
 
+OPEN_PR_LIMIT = 500
+
+
 def open_prs(owner: str, repo: str, timeout: int) -> list[dict]:
     raw = _run(
         ["with-proxy", "gh", "pr", "list", "--repo", f"{owner}/{repo}", "--state", "open",
          # An explicit limit is mandatory: gh's default of 30 silently truncates
          # and would under-report the gap as a clean-looking number.
-         "--limit", "500", "--json", "number,title,url,createdAt,isDraft"],
+         "--limit", str(OPEN_PR_LIMIT), "--json",
+         "number,title,url,createdAt,isDraft"],
         timeout,
     )
     try:
-        return json.loads(raw)
+        listed = json.loads(raw)
     except json.JSONDecodeError as exc:
         raise Unavailable(f"{owner}/{repo}: gh did not return JSON: {exc}") from exc
+
+    # ⚠️ THE EXPLICIT LIMIT MOVED THE CLIFF; IT DID NOT REMOVE IT. The comment
+    # above records why the default 30 was refused -- it "would under-report the
+    # gap as a clean-looking number" -- and 500 fails the same way, just later.
+    # `returned == limit` is the only signal a cap was hit, and nothing compared
+    # them, so at 500 open pull requests this reports a SMALLER drain gap with no
+    # error and no warning: a truncated query answering "is anything missing?"
+    # with a confident, well-formed, wrong "no".
+    #
+    # This module already states the rule for its own OUTPUT further down --
+    # "Never truncate silently: a capped list that does not say it was capped".
+    # Applying it to its own INPUT is that same rule.
+    require_fresh(
+        query_provenance(
+            f"gh pr list -R {owner}/{repo} --state open",
+            limit=OPEN_PR_LIMIT,
+            returned=len(listed),
+        )
+    )
+    return listed
 
 
 def _age_hours(created: str | None) -> float | None:

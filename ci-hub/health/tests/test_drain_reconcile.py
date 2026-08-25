@@ -15,6 +15,9 @@ from __future__ import annotations
 
 import importlib.util
 import io
+import json
+import unittest
+from unittest import mock
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -129,3 +132,56 @@ def test_terminal_status_set_is_not_inert() -> None:
     assert "CLOSED" not in dr.NONTERMINAL
     assert "IN_PROGRESS" in dr.NONTERMINAL
     assert dr.NONTERMINAL, "an empty set would make every tracker look unhealthy"
+
+
+# ---------------------------------------------------------------------------
+# ⚠️ THE CAP ON open_prs() MUST REFUSE, NOT UNDER-REPORT.
+#
+# `--limit 500` is an explicit cap, and the comment beside it records why the
+# default 30 was rejected: it "would under-report the gap as a clean-looking
+# number". 500 fails the same way, just later. `returned == limit` is the only
+# signal a cap was hit; nothing compared them until provenance.query_provenance
+# was wired in, so at 500 open pull requests this reported a smaller drain gap
+# with no error and no warning.
+#
+# This test fails BY NAME if that call is removed: without it a full page parses
+# cleanly and open_prs returns 500 rows instead of raising.
+class OpenPrCapRefuses(unittest.TestCase):
+    def _load(self):
+        import importlib.util
+        import sys
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parents[3]
+        spec = importlib.util.spec_from_file_location(
+            "drain_reconcile_cap", root / "ci-hub" / "health" / "drain_reconcile.py"
+        )
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = module
+        self.addCleanup(sys.modules.pop, spec.name, None)
+        spec.loader.exec_module(module)
+        return module
+
+    def test_a_full_page_is_refused_as_truncated_rather_than_reported(self):
+        module = self._load()
+        full_page = json.dumps(
+            [{"number": n, "title": "t", "url": "u", "createdAt": None, "isDraft": False}
+             for n in range(module.OPEN_PR_LIMIT)]
+        )
+        with mock.patch.object(module, "_run", return_value=full_page):
+            with self.assertRaises(Exception) as caught:
+                module.open_prs("rrnewton", "hermit", 30)
+        message = str(caught.exception)
+        self.assertIn("TRUNCATED", message,
+                      f"a full page must be refused as truncated, got: {message}")
+        self.assertIn("conclusion FROM ABSENCE is INVALID", message)
+
+    def test_a_short_page_is_returned_normally(self):
+        # The control. A guard that refuses everything is not a guard.
+        module = self._load()
+        short = json.dumps(
+            [{"number": 1, "title": "t", "url": "u", "createdAt": None, "isDraft": False}]
+        )
+        with mock.patch.object(module, "_run", return_value=short):
+            rows = module.open_prs("rrnewton", "hermit", 30)
+        self.assertEqual(len(rows), 1)
