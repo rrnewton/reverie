@@ -144,6 +144,20 @@ EXIT
        lander does not fail -- it SKIPS the checks and reports a clean landing, which
        is indistinguishable from a checked one. `--verify-only` is exempt: it performs
        no merge and so needs no admission.
+    8  ADMISSION COULD NOT RUN: a pre-merge check could not resolve what it needed
+       (comments, reviews or labels), so it can neither admit nor refuse. NOTHING WAS
+       ATTEMPTED.
+       ⚠️ SPLIT FROM 4 BECAUSE THEY SHARED A BOUNDARY AND NOT A MEANING. An exit code
+       passed on from an INNER call carries the inner meaning, not the outer one: the
+       admission guard could not resolve, so it said "could not determine", and the
+       caller read that as "the MERGE could not be determined". Same code, two
+       meanings, one boundary -- and the two want opposite reactions. After an 8 the
+       merge was never attempted, so re-running the whole command is safe. After a 4
+       the merge WAS attempted and may have succeeded, so re-running risks a second
+       landing; verify with --verify-only first.
+       Measured 2026-08-25: this collapse made three race cases in
+       gh-merge-verified-test pass on an exit 4 produced by the admission guard rather
+       than by the race they claimed to exercise.
 
 WHAT A CALLER SHOULD DO WITH EACH, BECAUSE A CODE IS ONLY USEFUL IF IT IMPLIES AN ACTION
 ------------------------------------------------------------------------------------
@@ -156,8 +170,12 @@ success. The codes are split now; the actions are written down so they stay spli
   RETRY IS REASONABLE -- the condition is about THIS RUN, not the pull request:
     3  re-run once. Usually the stale refs/pull/N/head race; if the verdict changes,
        the first answer was the race. Do NOT loop -- if it persists, read it by hand.
-    4  fix the environment (proxy, credentials, connectivity) and re-run. It is the
-       ABSENCE of an answer, never permission.
+    4  fix the environment and re-run -- BUT the merge was already attempted, so
+       verify with --verify-only before re-merging. It is the ABSENCE of an answer,
+       never permission.
+    8  fix API access and re-run the whole command. NOTHING WAS ATTEMPTED, so a plain
+       re-run is safe. This is the code to read when the admission check itself could
+       not resolve.
     7  refresh the checkout, or run from a current one, then re-run. Nothing about the
        pull request is being questioned.
 
@@ -768,9 +786,12 @@ def main() -> None:
                 "  merge and so needs no admission check.")
         blocking = blocking_changes_requests(pr, repo, head)
         if blocking == ["__UNREADABLE__"]:
-            die(4, "gh-merge-verified: COULD NOT DETERMINE -- could not read comments/reviews "
+            die(8, "gh-merge-verified: ADMISSION COULD NOT RUN -- could not read comments/reviews "
                    f"for #{pr}, so a changes-request at this head cannot be ruled out.",
-                "  Nothing was merged. This is not permission; it is the absence of an answer.")
+                "  NOTHING WAS ATTEMPTED. This is not permission; it is the absence of an answer.",
+                "  Distinct from exit 4 on purpose: 4 means the MERGE outcome is undetermined and "
+                "something",
+                "  may have happened. 8 means the CHECK never ran and nothing did.")
         if blocking:
             die(5, f"gh-merge-verified: REFUSING TO MERGE #{pr} -- a changes-request names this "
                    f"exact head {head[:12]}.",
@@ -784,7 +805,7 @@ def main() -> None:
                 "  of a marker re-asserts it. Indent quoted markers by one space.")
         stale = stale_review_labels(pr, repo, head)
         if stale == ["__UNREADABLE__"]:
-            die(4, "gh-merge-verified: COULD NOT DETERMINE -- could not read labels/comments "
+            die(8, "gh-merge-verified: ADMISSION COULD NOT RUN -- could not read labels/comments "
                    f"for #{pr}, so a stale review label cannot be ruled out.",
                 "  Nothing was merged. This is not permission; it is the absence of an answer.")
         if stale:

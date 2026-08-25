@@ -492,6 +492,53 @@ def argv_cases() -> None:
           f"the typo vanished instead of reaching gh: extra={extra!r}")
 
 
+def admission_unresolvable_cases() -> None:
+    """The admission guard cannot READ, so it must not borrow the merge's code.
+
+    An exit code passed on from an inner call carries the INNER meaning. The
+    admission guard could not resolve comments, said "could not determine", and a
+    caller read that as "the MERGE could not be determined" -- same code, two
+    meanings, one boundary. The two want opposite reactions: after an admission
+    failure NOTHING WAS ATTEMPTED and a plain re-run is safe; after a merge-outcome
+    failure the merge already happened and re-running risks a second landing.
+
+    Measured 2026-08-25: while they shared code 4, three race cases in this suite
+    passed on an exit 4 that the admission guard produced, not the race they named.
+    """
+    with tempfile.TemporaryDirectory(prefix="gh-merge-verified-adm-") as tmp:
+        root = Path(tmp)
+        origin, work = build_fixture(root, "arrived")
+        bindir = root / "trap"
+        bindir.mkdir()
+        gh = bindir / "gh"
+        # Answers the merge, but returns NON-JSON for the admission query, so the
+        # guard can neither admit nor refuse.
+        gh.write_text("#!/bin/bash\n"
+                      "if [ \"$1\" = pr ] && [ \"$2\" = view ]; then\n"
+                      "  echo 'not json at all'\n  exit 0\nfi\n"
+                      "echo 'Merged pull request'\nexit 0\n")
+        gh.chmod(0o755)
+        env = {
+            **os.environ,
+            "PATH": f"{bindir}:{os.environ.get('PATH', '')}",
+            "GH_MERGE_VERIFIED_REMOTE": str(origin),
+            "GH_MERGE_VERIFIED_SELFCHECK": "off",
+        }
+        code, out = run([sys.executable, str(TOOL), "1", "--repo", "fixture/repo"],
+                        cwd=work, env=env)
+        check(
+            "an unresolvable admission exits 8, NOT 4",
+            code == 8,
+            "got exit %s; 4 would say the MERGE outcome is undetermined when the "
+            "merge was never attempted\n%s" % (code, out),
+        )
+        check(
+            "it says nothing was attempted, so a plain re-run is safe",
+            "NOTHING WAS ATTEMPTED" in out,
+            "output did not say nothing was attempted\n%s" % out,
+        )
+
+
 def main() -> int:
     if not TOOL.exists():
         print(f"gh-merge-verified-test: {TOOL} is missing", file=sys.stderr)
@@ -515,6 +562,7 @@ def main() -> int:
 
     unit_cases()
     race_cases()
+    admission_unresolvable_cases()
     receipt_cases()
     argv_cases()
     expect_head_cases()
