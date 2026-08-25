@@ -109,6 +109,99 @@ if [ "${1:-}" = "update" ] && [ -z "${CLOSE_TASK_VERIFIED:-}" ]; then
     fi
 fi
 # ─────────────────────────────────────────────────────────────────────────────
+# THE SAME CLOSURE RULE, VIA `tg import`.
+#
+# ⚠️ GUARDING ONE ROUTE TO A STATE IS NOT GUARDING THE STATE. The guard above
+# covers `tg update --status closed`, which is the route CLAUDE.md documents and
+# the one every agent types. Measured 2026-08-25, immediately after installing it,
+# `tg import` still closed live tasks by two other routes and reported success:
+#
+#     {"ops":[{"close":{"id":"T"}}]}                      -> T becomes CLOSED
+#     {"ops":[{"update":{"id":"T","status":"closed"}}]}   -> T becomes CLOSED
+#
+# `tg import` also MERGES onto existing ids -- "Existing tasks (same ID) are
+# updated" -- so a `create` op carrying status=closed closes an existing task too.
+# An enforcement that covers the documented route and leaves a bulk-write route
+# open does not change the measured bypass rate; it just moves it.
+#
+# WHAT THIS REFUSES, PRECISELY: an op that would take an EXISTING, not-currently-
+# closed task to closed/resolved. Bulk CREATION of new tasks, edges, notes and
+# every other op is untouched, which matters because import is how task graphs are
+# loaded and a blanket refusal would be routed around within the hour.
+#
+# FAILS OPEN ON ANYTHING IT CANNOT PARSE. A malformed or unreadable payload is
+# `tg import`'s problem to report, not ours to guess at.
+if [ "${1:-}" = "import" ] && [ -z "${CLOSE_TASK_VERIFIED:-}" ]; then
+    _payload=""; _prev=""
+    for _a in "$@"; do
+        case "$_prev" in
+            --from-file)   [ -r "$_a" ] && _payload=$(cat "$_a" 2>/dev/null) ;;
+            --from-string) _payload=$_a ;;
+        esac
+        case "$_a" in
+            --from-file=*)   _f=${_a#*=}; [ -r "$_f" ] && _payload=$(cat "$_f" 2>/dev/null) ;;
+            --from-string=*) _payload=${_a#*=} ;;
+        esac
+        _prev=$_a
+    done
+    if [ -n "$_payload" ] && command -v python3 >/dev/null 2>&1; then
+        _hits=$(printf '%s' "$_payload" | python3 -c '
+import json,sys
+try:
+    doc = json.load(sys.stdin)
+    ops = doc.get("ops") or []
+except Exception:
+    sys.exit(0)                      # unparseable: not ours to judge
+CLOSED = {"closed", "resolved"}
+out = []
+for op in ops:
+    if not isinstance(op, dict):
+        continue
+    for kind, body in op.items():
+        if not isinstance(body, dict):
+            continue
+        tid = body.get("id")
+        if not tid:
+            continue
+        if kind == "close" or str(body.get("status", "")).lower() in CLOSED:
+            out.append(str(tid))
+print("\n".join(out))
+' 2>/dev/null)
+        if [ -n "$_hits" ]; then
+            _live=""
+            for _t in $_hits; do
+                case "$_t" in *[!A-Za-z0-9_.-]*) continue ;; esac
+                _s=$("$REAL" sql "select status from tasks where local_id='$_t'" 2>/dev/null \
+                     | sed -n '3p' | tr -d ' ')
+                # Only an EXISTING, not-already-closed task is a closure.
+                case "$_s" in ""|CLOSED) : ;; *) _live="$_live $_t($_s)" ;; esac
+            done
+            if [ -n "$_live" ]; then
+                printf '%s\n' \
+"tg: REFUSED -- this import would CLOSE live task(s), bypassing the closure verifier." \
+"" \
+"  would close:$_live" \
+"" \
+"  Measured 2026-08-25: closing via 'tg update --status closed' was already guarded," \
+"  and 'tg import' still closed live tasks by two other routes and reported success." \
+"  Guarding one route to a state is not guarding the state -- it moves the bypass" \
+"  rather than removing it, and the bypass is what the measurement counts." \
+"" \
+"  Close each task through the verifier, which records WHY it closed:" \
+"    /home/newton/work/dev-hermit/ci-hub/bin/close-task <task> \\\\" \
+"        --code <PR-or-40-hex> --repo <owner/repo> --source <checkout>" \
+"    /home/newton/work/dev-hermit/ci-hub/bin/close-task <task> \\\\" \
+"        --disposition 'superseded by hermit#1234'" \
+"" \
+"  Everything else about 'tg import' is untouched: creating tasks, edges, notes," \
+"  reopening, retagging, and any op that does not close a live task." >&2
+                exit 2
+            fi
+        fi
+    fi
+fi
+
+# ─────────────────────────────────────────────────────────────────────────────
 # OWNERSHIP GUARD: taking a task from a live owner must be deliberate.
 #
 # WHY, MEASURED 2026-08-25. Three task-id collisions between different agents in
