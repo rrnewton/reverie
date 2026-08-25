@@ -25,6 +25,43 @@ GH_BOUNDARY = Path(__file__).resolve().parent.parent / "ci-hub" / "bin" / "gh"
 COMMENT_IDENTITY = ("--who", "codex-boundary", "--team", "hermit2", "--role", "coordinator")
 
 
+class _Tag:
+    """Minimal stand-in for disclosure_tag.Disclosure; only .tag is read."""
+
+    def __init__(self, tag: str) -> None:
+        self.tag = tag
+
+
+def boundary():
+    """Import ci-hub/bin/gh as a module so its behaviour can be exercised.
+
+    It has no .py suffix, so it needs an explicit SourceFileLoader. Importing
+    is inert: the file defines functions and does not act at import time.
+    """
+    import importlib.machinery
+    import importlib.util
+    import sys
+
+    if "_gh_boundary" not in sys.modules:
+        loader = importlib.machinery.SourceFileLoader(
+            "_gh_boundary", str(GH_BOUNDARY)
+        )
+        spec = importlib.util.spec_from_loader("_gh_boundary", loader)
+        module = importlib.util.module_from_spec(spec)
+        sys.modules["_gh_boundary"] = module
+        loader.exec_module(module)
+    return sys.modules["_gh_boundary"]
+
+
+def disclosure_tag():
+    """The shared role/tag authority the boundary imports."""
+
+    boundary()  # its bootstrap puts ci-hub/lib on sys.path
+    import disclosure_tag as module
+
+    return module
+
+
 def run(script: Path, *args: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         (str(script), *args), text=True, capture_output=True, check=False
@@ -149,13 +186,38 @@ class PolicyTextTests(unittest.TestCase):
         cls.text = GH_BOUNDARY.read_text()
 
     def test_boundary_states_five_field_newline_format(self) -> None:
-        self.assertIn("[team-slug, agent-name, resolved-model, machine-shortname, role=enum]", self.text)
-        self.assertIn('return f"{disclosure.prefix}\\n{body}"', self.text)
+        """Assert the SEPARATION, not the line of source that implements it.
+
+        This used to require the literal
+        `return f"{disclosure.prefix}\\n{body}"`. Renaming that attribute from
+        `prefix` to `tag` -- a refactor with no behavioural effect -- failed
+        the test, while deleting the newline would have kept it passing as
+        long as the spelling survived. The contract is that the disclosure
+        occupies its own first line, so exercise it.
+        """
+        self.assertIn(
+            "[team-slug, agent-name, resolved-model, machine-shortname,"
+            " role=enum]",
+            self.text,
+        )
+        tag = "[hermit2, fixture-agent, opus-5, devbig014, role=impl]"
+        rendered = boundary().attributed("first body line\nsecond", _Tag(tag))
+        head, _, rest = rendered.partition("\n")
+        self.assertEqual(head, tag)
+        self.assertEqual(rest, "first body line\nsecond")
 
     def test_boundary_has_exact_closed_role_enum(self) -> None:
-        self.assertIn(
-            'ROLES = frozenset({"impl", "debugger", "reviewer", "relay", "coordinator", "human"})',
-            self.text,
+        """Assert the enum's VALUE, wherever the constant happens to live.
+
+        This used to grep ci-hub/bin/gh for the literal `ROLES = frozenset`
+        line. b2e03696 centralised the definition in
+        ci-hub/lib/disclosure_tag.py, which the boundary imports, so the roles
+        were unchanged and the test failed anyway -- it was keyed on the
+        constant's ADDRESS rather than on its contents.
+        """
+        self.assertEqual(
+            set(disclosure_tag().ROLES),
+            {"impl", "debugger", "reviewer", "relay", "coordinator", "human"},
         )
 
     def test_boundary_does_not_accept_a_model_argument(self) -> None:
