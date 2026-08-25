@@ -156,6 +156,54 @@ TERMINAL = frozenset({"CLOSED", "RESOLVED"})
 # are added in bulk, and the thing being recorded here is a DECISION.
 EXEMPTION = re.compile(r"^\s*NO-PUBLICATION:\s*(\S.*)$", re.MULTILINE)
 
+# ⚠️ THE DISPATCH TEXT QUOTES THE RULE, AND THE QUOTE WAS OPENING THE HATCH.
+# ORC's drain dispatch tells the agent what is required, in these words:
+#
+#   "it must not close without a link to the comment published on hermit#N, or a
+#    written NO-PUBLICATION: <reason>."
+#
+# That sentence lands in the task DESCRIPTION, `task_text` concatenates
+# description and notes, and `EXEMPTION.search` returns the FIRST match -- so the
+# instruction telling an agent how to claim an exemption WAS ITSELF READ AS ONE.
+#
+# Measured on the live corpus 2026-08-25, 236 drain-tagged tasks: 2 hit.
+#   drain_hermit_pr_2448 -- CLOSED, no comment link, admitted on the placeholder.
+#     A genuine exemption did exist in its notes, so the verdict was right by
+#     luck, but the reason shown to a reviewer was boilerplate rather than the
+#     real justification sitting three lines below it.
+#   drain_hermit_pr_2255 -- IN_PROGRESS, so not yet gated, but ARMED: no genuine
+#     exemption anywhere on the task. It would have closed exempt with nobody
+#     having decided anything.
+#
+# This is the hazard the structured record closes by construction -- a record
+# must be a whole note, so quoting one cannot produce one. This guard is for the
+# FALLBACK, which stays until record coverage reaches 1 and therefore stays
+# exploitable until then. It only ever rejects; no exemption that named a real
+# reason stops being honoured.
+PLACEHOLDER_REASON = re.compile(r"^<[^>]*>")
+
+# ⚠️ THE REGEX ABOVE AND EVERY PATTERN IN THIS FILE ARE NOW THE FALLBACK, NOT THE
+# RULE. `publication_record` holds the structured records that the posting path
+# writes AT POST TIME, and those are preferred wherever they exist.
+#
+# The fallback is kept deliberately. Coverage of the structured record starts at
+# zero -- nothing that has already been posted can grow one retroactively, and
+# anything written retroactively would be inference, which is the regex again
+# with better manners. Deleting the prose path today would turn every historical
+# task into an unexplained failure. It comes out when `--census` reports coverage
+# at or near 1, and not before.
+#
+# Every verdict therefore carries WHICH SOURCE ESTABLISHED IT, so the changeover
+# is a measurement rather than a belief.
+# Imported by path rather than as a package member: the test suite loads this
+# file directly with importlib, and `ci-hub/bin/gh` loads it from a sibling
+# directory, so a relative import would work in neither.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import publication_record  # noqa: E402
+
+SOURCE_RECORD = "record"
+SOURCE_REGEX = "regex"
+
 _REPO_ALT = "|".join(re.escape(r) for r in DEFAULT_REPOS)
 
 # --- subject: which ONE pull request is this task's job? ---------------------
@@ -199,6 +247,13 @@ class DrainTask:
     number: int
     links: list[str] = field(default_factory=list)
     exemption: str = ""
+    # Which mechanism established the two facts above: SOURCE_RECORD when the
+    # posting path wrote a structured record, SOURCE_REGEX when they were
+    # reconstructed from prose. Reported per task by --census; this is the number
+    # that decides when the prose path can be deleted.
+    link_source: str = SOURCE_REGEX
+    exemption_source: str = SOURCE_REGEX
+    exemption_actor: str = ""
     # Filled from GitHub. None until asked -- never defaulted to a passing value.
     merged: bool | None = None
     confirmed: list[str] = field(default_factory=list)
@@ -348,13 +403,64 @@ def collect(tasks: list[dict]) -> tuple[list[DrainTask], int]:
     for task in tasks:
         if not is_drain_task(task):
             continue
-        subject = subject_pr(task)
-        if subject is None:
-            excluded += 1
-            continue
-        repo, number = subject
+        bodies = [n.get("content", "") or "" for n in task.get("notes", [])]
+        bodies.append(task.get("desc", "") or "")
+        records, exemptions = publication_record.parse_records(bodies)
+
+        # THE SUBJECT COMES FROM THE RECORD WHEN THERE IS ONE. A record was
+        # written by the poster from the permalink GitHub returned, so it cannot
+        # name a pull request other than the one actually commented on. That
+        # closes THE FOREIGN IDENTIFIER class by construction: a bare `#N`, or a
+        # number arriving from another agent's coordination notes pasted into
+        # this task, can no longer be read as this task's subject.
+        #
+        # Records disagreeing about the subject means a rollup, which this rule
+        # still has nothing to say about -- so it falls through to the same
+        # exclusion as before rather than picking one arbitrarily.
+        subjects = {(r.repo.split("/")[-1], r.pr) for r in records}
+        if len(subjects) == 1:
+            repo, number = next(iter(subjects))
+            source = SOURCE_RECORD
+        else:
+            subject = subject_pr(task)
+            if subject is None:
+                excluded += 1
+                continue
+            repo, number = subject
+            source = SOURCE_REGEX
+
         text = task_text(task)
-        exemption = EXEMPTION.search(text)
+        own = [r for r in records if r.repo.split("/")[-1] == repo and r.pr == number]
+        if own:
+            links, link_source = [r.url for r in own], SOURCE_RECORD
+        else:
+            links, link_source = claimed_links(text, repo, number), SOURCE_REGEX
+
+        # The exemption gets the same treatment, for the same reason: a written
+        # `NO-PUBLICATION:` line is prose, and nothing stops that string appearing
+        # inside a quoted example. A structured exemption is ATTRIBUTED -- it
+        # names the agent who decided nothing was owed -- which is the property
+        # that makes it reviewable rather than merely present.
+        own_exempt = [
+            e for e in exemptions if e.repo.split("/")[-1] == repo and e.pr == number
+        ]
+        if own_exempt:
+            exemption = own_exempt[0].reason
+            exemption_source = SOURCE_RECORD
+            exemption_actor = own_exempt[0].actor
+        else:
+            # Every match is considered, not just the first, so that a genuine
+            # exemption in a note is still found when the dispatch template sits
+            # above it in the description. See PLACEHOLDER_REASON.
+            reasons = [
+                m.group(1).strip()
+                for m in EXEMPTION.finditer(text)
+                if not PLACEHOLDER_REASON.match(m.group(1).strip())
+            ]
+            exemption = reasons[0] if reasons else ""
+            exemption_source = SOURCE_REGEX
+            exemption_actor = ""
+
         scoped.append(
             DrainTask(
                 task_id=task["id"],
@@ -363,8 +469,11 @@ def collect(tasks: list[dict]) -> tuple[list[DrainTask], int]:
                 closed_at=closed_at(task),
                 repo=repo,
                 number=number,
-                links=claimed_links(text, repo, number),
-                exemption=exemption.group(1).strip() if exemption else "",
+                links=links,
+                exemption=exemption,
+                link_source=link_source,
+                exemption_source=exemption_source,
+                exemption_actor=exemption_actor,
             )
         )
     return scoped, excluded
@@ -509,6 +618,26 @@ def render_census(scoped: list[DrainTask], excluded: int, total: int, pre: bool)
     if unmerged:
         pct = 100.0 * (len(unmerged) - len(unpublished)) / len(unmerged)
         lines.append(f"coverage_of_closed_unmerged={pct:.1f}%")
+
+    # ⚠️ THIS IS THE LINE THAT RETIRES THE PROSE PATH, and the only honest way to
+    # decide when. Every task whose evidence came from a structured record needed
+    # no pattern matching at all; every task still on `regex` is one the posting
+    # path did not couple, either because it predates the coupling or because
+    # something posted without naming its task.
+    #
+    # It starts at 0/N BY CONSTRUCTION -- nothing already posted can grow a record
+    # retroactively without inventing one. A rising number here is the coupling
+    # working. Delete the regex when it reaches N, not when it feels safe.
+    evidenced = [t for t in scoped if t.links or t.exemption]
+    by_record = [
+        t
+        for t in evidenced
+        if SOURCE_RECORD in (t.link_source, t.exemption_source)
+    ]
+    lines.append(
+        f"evidence_from_structured_record={len(by_record)}/{len(evidenced)} "
+        f"evidence_from_prose_regex={len(evidenced) - len(by_record)}"
+    )
     if pre:
         lines += ["", "CLOSED WITH THE VERDICT UNPUBLISHED (oldest close first):"]
         for task in sorted(unpublished, key=lambda t: t.closed_at):

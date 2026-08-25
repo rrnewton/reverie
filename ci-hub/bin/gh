@@ -37,6 +37,14 @@ may not self-classify a write as non-critical to bypass either outcome.
 
 from __future__ import annotations
 
+import sys as _bootstrap_sys
+from pathlib import Path as _BootstrapPath
+
+# ci-hub/closure is a sibling of ci-hub/bin; the record grammar is shared with
+# the checker that reads it, so neither can drift from the other.
+_bootstrap_sys.path.insert(0, str(_BootstrapPath(__file__).resolve().parent.parent))
+from closure import publication_record  # noqa: E402
+
 import os
 import re
 import subprocess
@@ -107,7 +115,12 @@ def disclosure_options(args: list[str]) -> tuple[list[str], dict[str, str]]:
         if args[index] == "--model" or args[index].startswith("--model="):
             die("--model is process-resolved and must not be supplied by the caller")
         matched = False
-        for name, key in (("--who", "who"), ("--team", "team"), ("--role", "role")):
+        for name, key in (
+            ("--who", "who"),
+            ("--team", "team"),
+            ("--role", "role"),
+            ("--task", "task"),
+        ):
             parsed = _option_value(args, index, name)
             if parsed is None:
                 continue
@@ -385,12 +398,105 @@ def rewrite(args: list[str], disclosure: disclosure_tag.Disclosure) -> list[str]
     return args
 
 
+# ⚠️ THE COMMENT URL IS THE ONLY HONEST SOURCE FOR THIS RECORD.
+# `gh pr comment` prints the permalink of the comment it created. Everything the
+# record needs -- repo, pull request, comment id -- is IN that string, so the
+# record is derived from what the post returned and never from the arguments the
+# caller supplied. A caller can mistype `--repo`; it cannot mistype the URL
+# GitHub handed back.
+COMMENT_URL = re.compile(
+    r"https://github\.com/[^/\s]+/[^/\s]+/pull/\d+#issuecomment-\d+"
+)
+
+
+def record_publication(task: str, actor: str, stdout: str) -> None:
+    """Write the structured publication record, in the same operation as the post.
+
+    WRITTEN AT POST TIME IS THE LOAD-BEARING PART. A field populated later by
+    inference is the prose regex again with better manners: it would still be
+    reconstructing "was something published" from a description of the act rather
+    than recording the act. This function runs between the comment existing and
+    this process exiting, and it writes the id GitHub just issued.
+
+    FAILING TO RECORD MUST NOT FAIL THE POST. The comment already exists by the
+    time we get here; a non-zero exit would tell the caller the publication did
+    not happen, which is false, and false-negative is the worse error for a tool
+    whose entire job is establishing that something was published. So a failure
+    here WARNS LOUDLY on stderr and leaves the exit status alone -- the check
+    then falls back to the prose regex and reports source=regex for this task,
+    which is exactly the coverage signal that tells us the coupling has a hole.
+    """
+    match = COMMENT_URL.search(stdout or "")
+    if match is None:
+        print(
+            "gh: WARNING — comment posted but no permalink was printed, so no "
+            f"publication record was written to {task}. The publication check "
+            "will fall back to matching prose for this task.",
+            file=sys.stderr,
+        )
+        return
+    url = match.group(0)
+    parts = url.split("/")
+    repo = f"{parts[3]}/{parts[4]}"
+    pr = int(parts[6].split("#")[0])
+    body = publication_record.render_publication(repo, pr, url, actor)
+    try:
+        result = subprocess.run(
+            ["tg", "note", task, body], capture_output=True, text=True
+        )
+        if result.returncode != 0:
+            raise RuntimeError(result.stderr.strip() or f"tg note exited {result.returncode}")
+    except Exception as exc:  # noqa: BLE001 - see the docstring: never fail the post
+        # ⚠️ THE RECOVERY HINT MUST BE THE RECORD ITSELF, not the URL. A hint that
+        # says "note the link" produces PROSE, which only the fallback regex can
+        # read -- the operator would follow the instructions and still not have a
+        # record. Printing the exact body keeps the manual path and the automatic
+        # path producing the same artifact.
+        indented = "\n".join("       " + line for line in body.splitlines())
+        print(
+            f"gh: WARNING — posted {url} but could not record it on {task}: {exc}\n"
+            "     The comment is real; only its record is missing. Re-record by\n"
+            f"     passing EXACTLY this body to `tg note {task}`:\n{indented}",
+            file=sys.stderr,
+        )
+        return
+    print(f"gh: recorded publication {url} on {task}", file=sys.stderr)
+
+
+def post_and_record(args: list[str], task: str, actor: str) -> int:
+    """Run the comment write, pass its output through verbatim, then record it.
+
+    Capturing is a behaviour change and is kept as small as possible: stdout and
+    stderr are re-emitted unmodified so anything parsing this tool's output sees
+    what it saw before.
+    """
+    result = subprocess.run([real_gh(), *args], capture_output=True, text=True)
+    if result.stdout:
+        sys.stdout.write(result.stdout)
+        sys.stdout.flush()
+    if result.stderr:
+        sys.stderr.write(result.stderr)
+        sys.stderr.flush()
+    if result.returncode == 0:
+        record_publication(task, actor, result.stdout)
+    return result.returncode
+
+
+
 def main() -> int:
     args, supplied = disclosure_options(sys.argv[1:])
     if is_attributed_write(args):
         claimed_agent, team, role = required_disclosure(supplied)
         disclosure = validate_disclosure(claimed_agent, team, role)
         args = rewrite(args, disclosure)
+        # A named task is what couples the publication to its record. It is
+        # optional so that every existing caller keeps working unchanged, and
+        # `drain_publication.py` measures the resulting coverage per task rather
+        # than assuming it.
+        if task and args[:2] in (["pr", "comment"], ["issue", "comment"]):
+            return post_and_record(args, task, claimed_agent)
+    elif task:
+        die("--task only applies to a comment write")
     return subprocess.run([real_gh(), *args]).returncode
 
 

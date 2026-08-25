@@ -1,0 +1,87 @@
+#!/usr/bin/env python3
+"""Record, with attribution, that a drain task owed no published comment.
+
+WHY THIS IS A TOOL AND NOT A LINE OF PROSE
+------------------------------------------
+The publication rule has always had an escape hatch: a task that correctly
+decided nothing needed saying -- a duplicate, or a pull request whose landing
+published itself -- writes `NO-PUBLICATION: <reason>` and the check accepts it.
+
+Two things are wrong with that as the durable form. Nothing stops the string
+appearing inside a quoted example, so the hatch can open by accident; and
+nothing records WHO decided, so the hatch cannot be reviewed. An escape hatch
+whose users are anonymous is indistinguishable from a weaker rule.
+
+This writes the same decision as a structured record carrying the deciding
+agent, resolved through the same process-context authority that attributes a
+comment write. The reason is still free text, because the reason is the part a
+human has to read.
+
+  ci-hub/bin/publication-exempt <task> --repo owner/name --pr N \\
+      --reason "landing published itself at <sha>" --who <agent> --team <t> --role <r>
+
+THE EXEMPTION IS NOT A PUBLICATION and the check keeps counting the two
+separately. This tool only makes the claim attributable; it does not make it
+true, and `--census` still lists every exemption by name.
+"""
+
+from __future__ import annotations
+
+import argparse
+import subprocess
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from closure import publication_record  # noqa: E402
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
+
+
+def resolve_actor(claimed: str) -> str:
+    """Refuse unless the process context agrees the caller is who it says.
+
+    Same gate as the comment boundary, for the same reason: an attributed record
+    whose author is wrong is worse than an unattributed one, because it reads as
+    though someone accountable made the call.
+    """
+    who = Path(__file__).resolve().parent / "who-am-i"
+    proc = subprocess.run([str(who)], capture_output=True, text=True)
+    resolved = (proc.stdout or "").strip().splitlines()
+    resolved = resolved[-1].strip() if resolved else ""
+    if proc.returncode != 0 or not resolved:
+        sys.exit(
+            f"publication-exempt: REFUSING — cannot resolve the calling agent "
+            f"({(proc.stderr or '').strip()[:160]}). An exemption that cannot name "
+            "its author is the anonymous hatch this tool exists to close."
+        )
+    if claimed and resolved != claimed:
+        sys.exit(
+            f"publication-exempt: REFUSING — --who said {claimed!r} but the process "
+            f"context resolves to {resolved!r}."
+        )
+    return resolved
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("task")
+    parser.add_argument("--repo", required=True, help="owner/name")
+    parser.add_argument("--pr", required=True, type=int)
+    parser.add_argument("--reason", required=True)
+    parser.add_argument("--who", default="")
+    parser.add_argument("--team", default="")
+    parser.add_argument("--role", default="")
+    args = parser.parse_args(argv)
+
+    actor = resolve_actor(args.who)
+    body = publication_record.render_exemption(args.repo, args.pr, actor, args.reason)
+    result = subprocess.run(["tg", "note", args.task, body], capture_output=True, text=True)
+    if result.returncode != 0:
+        sys.exit(f"publication-exempt: tg note failed: {(result.stderr or '').strip()}")
+    print(f"recorded exemption for {args.repo}#{args.pr} on {args.task}, by {actor}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
