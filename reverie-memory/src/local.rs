@@ -68,11 +68,31 @@ impl MemoryAccess for LocalMemory {
         A: Into<Addr<'a, u8>>,
     {
         let addr = addr.into();
-        // Simply copy the memory starting at the address into the buffer. This
-        // is very unsafe. We need a better way to do this.
-        unsafe { ::core::ptr::copy_nonoverlapping(addr.as_ptr(), buf.as_mut_ptr(), buf.len()) };
+        #[repr(C)]
+        struct Iovec {
+            base: *mut core::ffi::c_void,
+            len: usize,
+        }
 
-        Ok(buf.len())
+        let remote = Iovec {
+            base: addr.as_raw() as *mut core::ffi::c_void,
+            len: buf.len(),
+        };
+        let local = Iovec {
+            base: buf.as_mut_ptr().cast(),
+            len: buf.len(),
+        };
+        unsafe {
+            syscalls::syscall6(
+                syscalls::Sysno::process_vm_readv,
+                std::process::id() as usize,
+                (&raw const local) as usize,
+                1,
+                (&raw const remote) as usize,
+                1,
+                0,
+            )
+        }
     }
 
     fn write(&mut self, addr: AddrMut<u8>, buf: &[u8]) -> Result<usize, Errno> {
@@ -109,6 +129,14 @@ mod tests {
         let mut buf = [0u8; 8];
         assert_eq!(m.read(addr, &mut buf).unwrap(), 8);
         assert_eq!(buf, x);
+    }
+
+    #[test]
+    fn invalid_read_returns_efault() {
+        let m = LocalMemory::new();
+        let addr = Addr::from_raw(1).expect("non-null invalid test address");
+        let mut buf = [0u8; 8];
+        assert_eq!(m.read(addr, &mut buf), Err(Errno::EFAULT));
     }
 
     #[test]
