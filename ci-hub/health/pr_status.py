@@ -695,9 +695,26 @@ def _review_protocol_status(entry: dict[str, object]) -> ReviewProtocolStatus | 
     head = str(entry.get("headRefOid") or "").lower()
     malformed: list[tuple[str, str]] = []
     has_approval: dict[str, bool] = {}
+    unlabeled_bindings: list[str] = []
     for reviewer, expected in _PASSED_REVIEW_LABELS.items():
         if expected not in labels:
             has_approval[reviewer] = False
+            # ⚠️ SAME LABEL-AS-INDEX DEFECT AS approval_binding.collect(): without
+            # this the comments are never consulted, so a correctly-formed
+            # `APPROVED-AT: <lane> <head>` on a PR nobody labelled reported
+            # exactly like a PR nobody reviewed. Measured 2026-08-25: 25 of 28
+            # open hermit PRs carried no passed-review-* label and five of those
+            # carried a binding no scanner read.
+            #
+            # has_approval STAYS FALSE. The label is still what confers authority
+            # here, and agent(hermit-030) routes off these lane counts, so
+            # flipping it would silently reroute the fleet. This only surfaces
+            # the binding as a diagnostic so the difference is visible.
+            unlabeled = approval_authority.classify_approval(
+                head, approval_authority.lane_shas(comments, reviewer, malformed)
+            )
+            if unlabeled == approval_authority.BOUND_CURRENT:
+                unlabeled_bindings.append(f"unlabeled-binding:{reviewer}")
             continue
         shas = approval_authority.lane_shas(comments, reviewer, malformed)
         binding = approval_authority.classify_approval(head, shas)
@@ -708,6 +725,10 @@ def _review_protocol_status(entry: dict[str, object]) -> ReviewProtocolStatus | 
             # present-but-unverified state.
             invalid_labels.append(f"{expected}:{binding}")
     invalid_labels.extend(f"malformed-binding:{line}" for _, line in malformed)
+    # Reported alongside the label diagnostics, and deliberately not folded into
+    # them: an unlabeled binding is a MISSING CACHE over a real review, which is a
+    # different condition from a cache that no longer holds.
+    invalid_labels.extend(unlabeled_bindings)
 
     def paired_state(values: dict[str, bool]) -> str:
         present = sum(values.values())

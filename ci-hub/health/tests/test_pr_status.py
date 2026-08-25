@@ -620,6 +620,45 @@ class ReviewProtocolClassificationTests(unittest.TestCase):
         self.assertIn("current-approval-codex", audit.missing)
         self.assertIn("passed-review-codex:UNDETERMINED", audit.invalid_labels)
 
+    def test_a_valid_binding_with_no_label_is_surfaced_not_silently_dropped(self) -> None:
+        """The label used to be the index, so no label meant the comments were
+        never read and a real review reported exactly like no review at all."""
+        audit = self.classify(
+            "post-facto-human-review",
+            "adversarial-review-claude1",
+            comments=(
+                f"[adversarial-reviewer agent, CLAUDE]\nAPPROVED-AT: claude {self.HEAD}",
+            ),
+        )
+        self.assertIn("unlabeled-binding:claude", audit.invalid_labels)
+        # AUTHORITY IS UNCHANGED. The label still confers it, and hermit-030
+        # routes off these counts, so surfacing must not silently reroute.
+        self.assertEqual(audit.current_approvals, "missing")
+        self.assertIn("current-approval-claude", audit.missing)
+
+    def test_no_binding_and_no_label_does_not_claim_one(self) -> None:
+        """Negative control: without it the assertion above would pass on a build
+        that appended the diagnostic unconditionally."""
+        audit = self.classify(
+            "post-facto-human-review",
+            "adversarial-review-claude1",
+        )
+        self.assertNotIn("unlabeled-binding:claude", audit.invalid_labels)
+        self.assertNotIn("unlabeled-binding:codex", audit.invalid_labels)
+
+    def test_a_superseded_binding_with_no_label_is_not_surfaced_as_current(self) -> None:
+        """Only a CURRENT-head binding is a missing cache over a real review; a
+        stale one is just history and must not read as review evidence."""
+        audit = self.classify(
+            "post-facto-human-review",
+            "adversarial-review-claude1",
+            comments=(
+                "[adversarial-reviewer agent, CLAUDE]\n"
+                "APPROVED-AT: claude 87f62930d3e24ab75b516d01cba106161e0cca2e",
+            ),
+        )
+        self.assertNotIn("unlabeled-binding:claude", audit.invalid_labels)
+
     def test_invalid_or_bare_round_labels_do_not_fake_review(self) -> None:
         audit = self.classify(
             "post-facto-human-review",
