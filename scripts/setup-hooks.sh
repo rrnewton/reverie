@@ -67,6 +67,21 @@ for repo in "${repos[@]}"; do
 
   if [ "$mode" = install ]; then
     git -C "$repo" config core.hooksPath "$composite"
+
+    # MAKE THE SAFE PUSH THE SHORT ONE.
+    #
+    # `git push origin HEAD:main 2>&1 | tail -2; rc=$?` reads TAIL's exit status,
+    # so a REJECTED push reports rc=0 and an unlanded change gets recorded as
+    # merged. Four agents hit that in one night against a warning that was
+    # already written down -- documentation is not the fix, and a correct tool
+    # nobody reaches for loses to plain `git push` every time. So the tool gets
+    # a caller in the tree, here, where hooks are already provisioned.
+    #
+    # `git pushv <remote> <src>:<dst>` runs the push with no pipe and then asks
+    # the REMOTE what the ref points at. The path is resolved at run time from
+    # the superproject root so this works from submodules and contains no
+    # absolute path.
+    git -C "$repo" config alias.pushv '!f() { r=$(git rev-parse --show-superproject-working-tree 2>/dev/null); [ -n "$r" ] || r=$(git rev-parse --show-toplevel); t="$r/ci-hub/bin/git-push-verified"; if [ -x "$t" ]; then "$t" "$@"; else echo "git pushv: tool missing at $t; falling back is NOT safe -- verify the remote by hand" >&2; return 1; fi; }; f'
   fi
   installed=$((installed + 1))
 done
@@ -78,3 +93,4 @@ echo "Override an oversized-but-intended file with: HERMIT_HYGIENE_OVERRIDE=1 gi
 echo "Every push polls GitHub current-main workflow truth; RED warns but does not block a fix."
 echo "Every commit warns on stale primaries/gitlinks; make checkout-fresh publishes a coherent clean snapshot."
 echo "Shared-branch rewinds are REFUSED unless you declare the tip: HERMIT_RESET_EXPECT=<sha> git reset ..."
+echo "Use 'git pushv <remote> <src>:<dst>' to push: it verifies the REMOTE moved, because a rejected push piped to tail reports success."
