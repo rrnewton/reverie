@@ -73,9 +73,15 @@ scan_file() {
                    name ~ /(^|\/)validate[.]sh$/
         }
 
+        # Files whose SUBJECT is machine attribution. They must contain a literal
+        # devbigNNN because the format they enforce requires one, so flagging them
+        # asks for a test that cannot test its own contract. This is an exact list,
+        # not a pattern: membership is "this file is about attribution", which only
+        # a reader can decide.
         function is_attribution_path(name) {
             return name == "AGENTS.md" ||
                    name == ".githooks/hygiene-policy.md" ||
+                   name == ".githooks/tests/test-commit-msg-attribution.sh" ||
                    name ~ /^scripts\/(check_commit_attribution[.]py|test_commit_attribution[.]py|test_orc_coord_attribution[.]py|test_parent_main_write[.]py|test_primary_checkout[.]py|tests\/test-parent-main-write-failure-messages[.]sh)$/
         }
 
