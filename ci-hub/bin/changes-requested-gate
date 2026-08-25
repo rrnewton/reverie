@@ -320,6 +320,53 @@ def evaluate(bodies: list[str], head: str) -> tuple[int, str]:
     }
     refusals = [(lane, sha) for kind, lane, sha in found if kind == REFUSAL]
 
+    # ⚠️ AND WITHIN A LANE, ONE WITHDRAWAL STILL CLEARS EVERY REFUSAL -- INCLUDING
+    # REFUSALS ANOTHER REVIEWER ISSUED. The fix above scopes a withdrawal to its
+    # LANE; it does not scope it to its ISSUER, because the grammar carries
+    # claude|codex and no reviewer identity. It cannot carry one from GitHub either:
+    # every agent authenticates as the same user, so the API attributes all of them
+    # to one login. Two reviewers in one lane therefore share one voice, and there
+    # is no way to say "reviewer A withdraws, reviewer B still objects".
+    #
+    # Reproduced offline against this function: two CHANGES-REQUESTED-AT in the
+    # claude lane from different agents, one CHANGES-REQUESTED-WITHDRAWN-AT, and the
+    # gate returns OK -- truthfully reporting that "every refusing LANE" withdrew,
+    # which is not the guarantee a reader takes from it.
+    #
+    # This CANNOT be fixed here by blocking, and blocking would be wrong: one
+    # reviewer who posts two refusals and withdraws once is a legitimate clear, and
+    # without issuer identity that case is indistinguishable from the unsafe one.
+    # So the collapse is made VISIBLE instead of guessed at. Scoping properly needs
+    # the marker to carry its issuer -- `agent(hermit-011)`'s work -- and this is
+    # the reader half waiting for it, deliberately reported rather than silently
+    # assumed away.
+    withdrawals_per_lane: dict[str, int] = {}
+    for kind, lane, sha in found:
+        if kind == WITHDRAWN and lane is not None and binds(sha):
+            withdrawals_per_lane[lane] = withdrawals_per_lane.get(lane, 0) + 1
+
+    def one_for_many() -> str:
+        """Lanes where fewer withdrawals cleared more refusals, named."""
+        collapses = []
+        for lane in sorted(withdrawn_lanes):
+            n_refusals = sum(
+                1 for rl, rsha in refusals if rl == lane and binds(rsha)
+            )
+            n_withdrawals = withdrawals_per_lane.get(lane, 0)
+            if n_refusals > n_withdrawals:
+                collapses.append(f"{lane}: {n_withdrawals} withdrawal(s) cleared {n_refusals} refusal(s)")
+        if not collapses:
+            return ""
+        return (
+            " ⚠️ ONE WITHDRAWAL CLEARED MORE THAN ONE REFUSAL -- "
+            + "; ".join(collapses)
+            + ". A withdrawal is scoped to its LANE, not to the reviewer who issued "
+            "it, so if those refusals came from different reviewers this discharged "
+            "an objection its author never retracted. The markers carry no issuer, "
+            "so which case this is CANNOT BE DECIDED HERE -- check the comments "
+            "before relying on this verdict."
+        )
+
     # ⚠️ A DEFINITE ANSWER OUTRANKS AN UNREADABLE ONE. Both block, so safety does
     # not depend on the order -- but reporting INDETERMINATE when a refusal is
     # demonstrably bound to this head describes the pull request wrongly, and the
@@ -334,14 +381,14 @@ def evaluate(bodies: list[str], head: str) -> tuple[int, str]:
     if bound and not live:
         return OK, (
             f"{cleared} refusal(s) named {head[:12]} and every refusing lane "
-            f"posted {WITHDRAWN} at the same head"
+            f"posted {WITHDRAWN} at the same head" + one_for_many()
         )
     if live:
         lanes = ",".join(sorted({lane or "unlaned" for lane, _ in live}))
         note = (
             f" ({cleared} other refusal(s) withdrawn by their own lane)"
             if cleared else ""
-        )
+        ) + one_for_many()
         return (
             BLOCKED,
             f"{len(live)} refusal(s) bound to the exact head {head[:12]} from "
