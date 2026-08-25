@@ -1,0 +1,14 @@
+#!/bin/busybox sh
+/bin/busybox --install -s /bin 2>/dev/null
+mount -t proc none /proc 2>/dev/null
+mount -t sysfs none /sys 2>/dev/null
+mount -t devtmpfs none /dev 2>/dev/null || mount -t tmpfs none /dev 2>/dev/null
+[ -c /dev/ttyS0 ] || mknod /dev/ttyS0 c 4 64 2>/dev/null
+echo "VS-GUEST-READY cpus=$(nproc)"
+# K comes from the kernel cmdline so a run can be resized without a rebuild.
+K=$(sed -n 's/.*vsk=\([0-9]*\).*/\1/p' /proc/cmdline)
+[ -n "$K" ] || K=30000000
+/bin/advance "$K"
+echo "VS-DONE"
+# Hold the console open so the host reads everything before the machine stops.
+exec setsid sh -c 'exec sh </dev/ttyS0 >/dev/ttyS0 2>&1'

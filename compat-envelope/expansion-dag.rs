@@ -129,8 +129,10 @@ fn main() {
     let mut repo: Option<PathBuf> = None;
     let mut lane = "portable".to_string();
     let mut buckets: Vec<String> = Vec::new();
-    let mut backends: Vec<String> =
-        ["dbi", "kvm", "sabre", "liteinst"].iter().map(|s| s.to_string()).collect();
+    let mut backends: Vec<String> = ["dbi", "kvm", "sabre", "liteinst"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
     let mut headroom = 1.5_f64;
     let mut frontier_only = false;
     let mut evidence_root: Option<PathBuf> = None;
@@ -153,14 +155,32 @@ fn main() {
             "--lane" => lane = next(&mut it, "--lane"),
             "--buckets" => buckets = split_list(&next(&mut it, "--buckets")),
             "--backends" => backends = split_list(&next(&mut it, "--backends")),
-            "--headroom" => headroom = next(&mut it, "--headroom").parse().unwrap_or_else(|_| die("--headroom must be a number")),
+            "--headroom" => {
+                headroom = next(&mut it, "--headroom")
+                    .parse()
+                    .unwrap_or_else(|_| die("--headroom must be a number"))
+            }
             "--frontier-only" => frontier_only = true,
-            "--evidence-root" => evidence_root = Some(PathBuf::from(next(&mut it, "--evidence-root"))),
-            "--keep" => keep = next(&mut it, "--keep").parse().unwrap_or_else(|_| die("--keep must be an integer")),
+            "--evidence-root" => {
+                evidence_root = Some(PathBuf::from(next(&mut it, "--evidence-root")))
+            }
+            "--keep" => {
+                keep = next(&mut it, "--keep")
+                    .parse()
+                    .unwrap_or_else(|_| die("--keep must be an integer"))
+            }
             "--run-id" => run_id = Some(next(&mut it, "--run-id")),
             "--dag-out" => dag_out = Some(PathBuf::from(next(&mut it, "--dag-out"))),
-            "--min-timeout" => min_timeout = next(&mut it, "--min-timeout").parse().unwrap_or_else(|_| die("--min-timeout must be an integer")),
-            "--min-mem-mb" => min_mem_mb = next(&mut it, "--min-mem-mb").parse().unwrap_or_else(|_| die("--min-mem-mb must be an integer")),
+            "--min-timeout" => {
+                min_timeout = next(&mut it, "--min-timeout")
+                    .parse()
+                    .unwrap_or_else(|_| die("--min-timeout must be an integer"))
+            }
+            "--min-mem-mb" => {
+                min_mem_mb = next(&mut it, "--min-mem-mb")
+                    .parse()
+                    .unwrap_or_else(|_| die("--min-mem-mb must be an integer"))
+            }
             "--dry-run" => dry_run = true,
             other => die(&format!("unknown argument {other}")),
         }
@@ -169,7 +189,10 @@ fn main() {
     let csv_path = csv.unwrap_or_else(|| script_dir().join("scorecard.csv"));
     let repo = repo.unwrap_or_else(default_repo);
     if !repo.join("ci/test_harness.sh").is_file() {
-        die(&format!("--repo {} has no ci/test_harness.sh", repo.display()));
+        die(&format!(
+            "--repo {} has no ci/test_harness.sh",
+            repo.display()
+        ));
     }
 
     // --- 1. Parse the scorecard CSV: ptrace baselines + per-backend green cells.
@@ -179,8 +202,16 @@ fn main() {
     let ratios = geomean_ratios(&baselines, &greens, &backends);
     eprintln!("expansion-dag: geomean ratios vs ptrace across green envelope:");
     for b in &backends {
-        let (rt, rm, n) = ratios.get(b).copied().unwrap_or((fallback_time_ratio(b), fallback_mem_ratio(b), 0));
-        let src = if n > 0 { format!("measured (n={n})") } else { "FALLBACK (no green overlap)".to_string() };
+        let (rt, rm, n) =
+            ratios
+                .get(b)
+                .copied()
+                .unwrap_or((fallback_time_ratio(b), fallback_mem_ratio(b), 0));
+        let src = if n > 0 {
+            format!("measured (n={n})")
+        } else {
+            "FALLBACK (no green overlap)".to_string()
+        };
         eprintln!("  {b:<10} time×{rt:.2}  mem×{rm:.2}  [{src}]");
     }
 
@@ -198,7 +229,12 @@ fn main() {
         });
     }
     cells.sort_by(|a, b| {
-        (&a.category, &a.test, &a.mode, &a.backend).cmp(&(&b.category, &b.test, &b.mode, &b.backend))
+        (&a.category, &a.test, &a.mode, &a.backend).cmp(&(
+            &b.category,
+            &b.test,
+            &b.mode,
+            &b.backend,
+        ))
     });
 
     if cells.is_empty() {
@@ -220,16 +256,29 @@ fn main() {
         .map(|c| {
             let base = baselines.get(&c.test).cloned().unwrap_or_default();
             let base_est = base.dur_ms.is_none();
-            let base_t = base.dur_ms.map(|ms| ms / 1000.0).unwrap_or(default_base_time_s);
-            let base_m = base.rss_kb.map(|kb| kb * 1024.0).unwrap_or(default_base_mem_b);
-            let (rt, rm, _) = ratios
-                .get(&c.backend)
-                .copied()
-                .unwrap_or((fallback_time_ratio(&c.backend), fallback_mem_ratio(&c.backend), 0));
+            let base_t = base
+                .dur_ms
+                .map(|ms| ms / 1000.0)
+                .unwrap_or(default_base_time_s);
+            let base_m = base
+                .rss_kb
+                .map(|kb| kb * 1024.0)
+                .unwrap_or(default_base_mem_b);
+            let (rt, rm, _) = ratios.get(&c.backend).copied().unwrap_or((
+                fallback_time_ratio(&c.backend),
+                fallback_mem_ratio(&c.backend),
+                0,
+            ));
             let est_dur_s = base_t * rt;
             let timeout_s = ((est_dur_s * headroom).ceil() as i64).max(min_timeout);
             let mem_bytes = ((base_m * rm * headroom) as i64).max(min_mem_mb * 1024 * 1024);
-            Budget { c, timeout_s, mem_bytes, est_dur_s, base_est }
+            Budget {
+                c,
+                timeout_s,
+                mem_bytes,
+                est_dur_s,
+                base_est,
+            }
         })
         .collect();
 
@@ -242,7 +291,10 @@ fn main() {
 
     if dry_run {
         println!("# expansion sweep dry-run — {} cells", budgets.len());
-        println!("# {:<48} {:<8} {:>8} {:>9}", "cell", "backend", "timeout", "mem_mb");
+        println!(
+            "# {:<48} {:<8} {:>8} {:>9}",
+            "cell", "backend", "timeout", "mem_mb"
+        );
         for b in budgets.iter().take(40) {
             println!(
                 "  {:<48} {:<8} {:>7}s {:>8}M{}",
@@ -316,7 +368,11 @@ fn main() {
     fs::write(&dag_path, &dag_json)
         .unwrap_or_else(|e| die(&format!("cannot write DAG {}: {e}", dag_path.display())));
 
-    eprintln!("expansion-dag: wrote DAG ({} steps) -> {}", budgets.len(), dag_path.display());
+    eprintln!(
+        "expansion-dag: wrote DAG ({} steps) -> {}",
+        budgets.len(),
+        dag_path.display()
+    );
     eprintln!("expansion-dag: evidence run dir -> {}", run_dir.display());
     eprintln!("expansion-dag: run it with 229's safe-ci-dag-runner, e.g.:");
     eprintln!(
@@ -331,10 +387,14 @@ fn main() {
 // ---- helpers ---------------------------------------------------------------
 
 fn next(it: &mut impl Iterator<Item = String>, flag: &str) -> String {
-    it.next().unwrap_or_else(|| die(&format!("{flag} needs a value")))
+    it.next()
+        .unwrap_or_else(|| die(&format!("{flag} needs a value")))
 }
 fn split_list(s: &str) -> Vec<String> {
-    s.split(',').map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect()
+    s.split(',')
+        .map(|x| x.trim().to_string())
+        .filter(|x| !x.is_empty())
+        .collect()
 }
 fn short(test: &str) -> &str {
     test.rsplit('/').next().unwrap_or(test)
@@ -347,7 +407,15 @@ fn cell_slug(bucket: &str, test: &str, mode: &str, backend: &str) -> String {
     sanitize(&format!("{bucket}__{t}__{mode}__{backend}"))
 }
 fn sanitize(s: &str) -> String {
-    s.chars().map(|c| if c.is_ascii_alphanumeric() || c == '-' || c == '_' { c } else { '-' }).collect()
+    s.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect()
 }
 fn shell_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', r#"'\''"#))
@@ -355,17 +423,33 @@ fn shell_quote(s: &str) -> String {
 
 /// Parse the scorecard CSV. Returns (ptrace baselines by test, all green cells,
 /// set of green cell-keys). "green" = outcome==pass.
-fn parse_csv(path: &Path, lane: &str) -> (BTreeMap<String, Baseline>, Vec<GreenCell>, std::collections::HashSet<String>) {
+fn parse_csv(
+    path: &Path,
+    lane: &str,
+) -> (
+    BTreeMap<String, Baseline>,
+    Vec<GreenCell>,
+    std::collections::HashSet<String>,
+) {
     let text = fs::read_to_string(path)
         .unwrap_or_else(|e| die(&format!("cannot read {}: {e}", path.display())));
     let mut lines = text.lines();
     let header = lines.next().unwrap_or_else(|| die("empty CSV"));
     let cols: Vec<&str> = header.split(',').collect();
-    let idx = |name: &str| cols.iter().position(|c| *c == name)
-        .unwrap_or_else(|| die(&format!("CSV missing column '{name}'")));
+    let idx = |name: &str| {
+        cols.iter()
+            .position(|c| *c == name)
+            .unwrap_or_else(|| die(&format!("CSV missing column '{name}'")))
+    };
     let (i_lane, i_bucket, i_test, i_mode, i_backend, i_outcome, i_dur, i_rss) = (
-        idx("lane"), idx("bucket"), idx("test_id"), idx("test_mode"),
-        idx("backend"), idx("outcome"), idx("duration_ms"), idx("max_rss_kb"),
+        idx("lane"),
+        idx("bucket"),
+        idx("test_id"),
+        idx("test_mode"),
+        idx("backend"),
+        idx("outcome"),
+        idx("duration_ms"),
+        idx("max_rss_kb"),
     );
 
     let mut baselines: BTreeMap<String, Baseline> = BTreeMap::new();
@@ -395,7 +479,12 @@ fn parse_csv(path: &Path, lane: &str) -> (BTreeMap<String, Baseline>, Vec<GreenC
                 e.rss_kb = Some(e.rss_kb.map_or(r, |o| o.max(r)));
             }
         }
-        greens.push(GreenCell { test, backend, dur_ms: dur, rss_kb: rss });
+        greens.push(GreenCell {
+            test,
+            backend,
+            dur_ms: dur,
+            rss_kb: rss,
+        });
     }
     (baselines, greens, green_keys)
 }
@@ -431,9 +520,25 @@ fn geomean_ratios(
                 }
             }
         }
-        let rt = if nt > 0 { (log_t / nt as f64).exp() } else { fallback_time_ratio(backend) };
-        let rm = if nm > 0 { (log_m / nm as f64).exp() } else { fallback_mem_ratio(backend) };
-        out.insert(backend.clone(), (rt, rm, nt.min(nm).max(if nt > 0 || nm > 0 { nt.max(nm) } else { 0 })));
+        let rt = if nt > 0 {
+            (log_t / nt as f64).exp()
+        } else {
+            fallback_time_ratio(backend)
+        };
+        let rm = if nm > 0 {
+            (log_m / nm as f64).exp()
+        } else {
+            fallback_mem_ratio(backend)
+        };
+        out.insert(
+            backend.clone(),
+            (
+                rt,
+                rm,
+                nt.min(nm)
+                    .max(if nt > 0 || nm > 0 { nt.max(nm) } else { 0 }),
+            ),
+        );
     }
     out
 }
@@ -454,7 +559,12 @@ fn enumerate_cells(repo: &Path, lane: &str) -> Vec<Cell> {
         let arr = json.as_array().cloned().unwrap_or_default();
         for row in arr {
             let g = |k: &str| row.get(k).and_then(Value::as_str).unwrap_or("").to_string();
-            let c = Cell { test: g("test"), category: g("category"), mode: g("mode"), backend: g("backend") };
+            let c = Cell {
+                test: g("test"),
+                category: g("category"),
+                mode: g("mode"),
+                backend: g("backend"),
+            };
             let k = cell_key(&c.category, &c.test, &c.mode, &c.backend);
             if c.backend.is_empty() || !seen.insert(k) {
                 continue;
@@ -534,8 +644,14 @@ fn default_repo() -> PathBuf {
 
 fn default_evidence_root(repo: &Path) -> PathBuf {
     // The scorecard + evidence live in the OUTER dev-hermit repo, gitignored.
-    let ws = script_dir().parent().map(Path::to_path_buf)
-        .unwrap_or_else(|| repo.parent().map(Path::to_path_buf).unwrap_or_else(|| PathBuf::from(".")));
+    let ws = script_dir()
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| {
+            repo.parent()
+                .map(Path::to_path_buf)
+                .unwrap_or_else(|| PathBuf::from("."))
+        });
     ws.join("ignored/compat-envelope")
 }
 
@@ -550,7 +666,11 @@ fn now_stamp() -> String {
 /// Keep the last K dated run dirs under `root`, remove older ones.
 fn rotate(root: &Path, keep: usize) {
     let mut dirs: Vec<PathBuf> = match fs::read_dir(root) {
-        Ok(rd) => rd.flatten().map(|e| e.path()).filter(|p| p.is_dir()).collect(),
+        Ok(rd) => rd
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.is_dir())
+            .collect(),
         Err(_) => return,
     };
     if dirs.len() <= keep {

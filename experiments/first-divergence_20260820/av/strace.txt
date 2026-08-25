@@ -1,0 +1,102 @@
+4118663 openat(AT_FDCWD, "/usr/local/fbcode/platform010/etc/ld.so.cache", O_RDONLY|O_CLOEXEC) = -1 ENOENT (No such file or directory)
+4118663 openat(AT_FDCWD, "/usr/local/fbcode/platform010/lib/glibc-hwcaps/x86-64-v4/libc.so.6", O_RDONLY|O_CLOEXEC) = -1 ENOENT (No such file or directory)
+4118663 openat(AT_FDCWD, "/usr/local/fbcode/platform010/lib/glibc-hwcaps/x86-64-v3/libc.so.6", O_RDONLY|O_CLOEXEC) = -1 ENOENT (No such file or directory)
+4118663 openat(AT_FDCWD, "/usr/local/fbcode/platform010/lib/glibc-hwcaps/x86-64-v2/libc.so.6", O_RDONLY|O_CLOEXEC) = -1 ENOENT (No such file or directory)
+4118663 openat(AT_FDCWD, "/usr/local/fbcode/platform010/lib/tls/x86_64/x86_64/libc.so.6", O_RDONLY|O_CLOEXEC) = -1 ENOENT (No such file or directory)
+4118663 openat(AT_FDCWD, "/usr/local/fbcode/platform010/lib/tls/x86_64/libc.so.6", O_RDONLY|O_CLOEXEC) = -1 ENOENT (No such file or directory)
+4118663 openat(AT_FDCWD, "/usr/local/fbcode/platform010/lib/tls/x86_64/libc.so.6", O_RDONLY|O_CLOEXEC) = -1 ENOENT (No such file or directory)
+4118663 openat(AT_FDCWD, "/usr/local/fbcode/platform010/lib/tls/libc.so.6", O_RDONLY|O_CLOEXEC) = -1 ENOENT (No such file or directory)
+4118663 openat(AT_FDCWD, "/usr/local/fbcode/platform010/lib/x86_64/x86_64/libc.so.6", O_RDONLY|O_CLOEXEC) = -1 ENOENT (No such file or directory)
+4118663 openat(AT_FDCWD, "/usr/local/fbcode/platform010/lib/x86_64/libc.so.6", O_RDONLY|O_CLOEXEC) = -1 ENOENT (No such file or directory)
+4118663 openat(AT_FDCWD, "/usr/local/fbcode/platform010/lib/x86_64/libc.so.6", O_RDONLY|O_CLOEXEC) = -1 ENOENT (No such file or directory)
+4118663 openat(AT_FDCWD, "/usr/local/fbcode/platform010/lib/libc.so.6", O_RDONLY|O_CLOEXEC) = 3
+4118663 openat(AT_FDCWD, "/usr/local/fbcode/platform010/lib/libgcc_s.so.1", O_RDONLY|O_CLOEXEC) = 3
+4118663 openat(AT_FDCWD, "/usr/local/fbcode/platform010/lib/libm.so.6", O_RDONLY|O_CLOEXEC) = 3
+4118663 openat(AT_FDCWD, "/usr/local/fbcode/platform010/lib/libstdc++.so.6", O_RDONLY|O_CLOEXEC) = 3
+4118663 openat(AT_FDCWD, "/usr/local/fbcode/platform010/lib/libcrypto.so.1.1", O_RDONLY|O_CLOEXEC) = 3
+4118663 openat(AT_FDCWD, "/usr/local/fbcode/platform010/lib/libssl.so.1.1", O_RDONLY|O_CLOEXEC) = 3
+4118663 openat(AT_FDCWD, "/usr/local/fbcode/platform010/lib/libbz2.so.1", O_RDONLY|O_CLOEXEC) = 3
+4118663 openat(AT_FDCWD, "/usr/local/fbcode/platform010/lib/libz.so.1", O_RDONLY|O_CLOEXEC) = 3
+4118663 openat(AT_FDCWD, "/proc/cpuinfo", O_RDONLY) = 3
+4118663 pipe2([3, 4], O_NONBLOCK|O_CLOEXEC) = 0
+4118663 poll([{fd=0, events=0}, {fd=1, events=0}, {fd=2, events=0}], 3, 0) = 0 (Timeout)
+4118663 openat(AT_FDCWD, "/proc/self/maps", O_RDONLY|O_CLOEXEC) = 5
+4118663 openat(AT_FDCWD, "/etc/fbpython/fbpython.json", O_RDONLY|O_CLOEXEC) = 5
+4118663 openat(AT_FDCWD, "/proc/self/cgroup", O_RDONLY|O_CLOEXEC) = 5
+4118663 openat(AT_FDCWD, "/sys/fs/cgroup/user.slice/user-212630.slice/user@212630.service/3pai_sandbox.slice/run-p2970956-i284885366.scope/cpu.max", O_RDONLY|O_CLOEXEC) = -1 ENOENT (No such file or directory)
+4118663 openat(AT_FDCWD, "/sys/fs/cgroup/user.slice/user-212630.slice/user@212630.service/3pai_sandbox.slice/cpu.max", O_RDONLY|O_CLOEXEC) = 5
+4118663 openat(AT_FDCWD, "/sys/fs/cgroup/user.slice/user-212630.slice/user@212630.service/cpu.max", O_RDONLY|O_CLOEXEC) = 5
+4118663 openat(AT_FDCWD, "/sys/fs/cgroup/user.slice/user-212630.slice/cpu.max", O_RDONLY|O_CLOEXEC) = 5
+4118663 openat(AT_FDCWD, "/sys/fs/cgroup/user.slice/cpu.max", O_RDONLY|O_CLOEXEC) = 5
+4118663 openat(AT_FDCWD, "/sys/fs/cgroup/cpu.max", O_RDONLY|O_CLOEXEC) = -1 ENOENT (No such file or directory)
+4118675 openat(AT_FDCWD, "/usr/local/fbcode/platform010/etc/ld.so.cache", O_RDONLY|O_CLOEXEC) = -1 ENOENT (No such file or directory)
+4118675 openat(AT_FDCWD, "/usr/local/fbcode/platform010/lib/glibc-hwcaps/x86-64-v4/libgcc_s.so.1", O_RDONLY|O_CLOEXEC) = -1 ENOENT (No such file or directory)
+4118675 openat(AT_FDCWD, "/usr/local/fbcode/platform010/lib/glibc-hwcaps/x86-64-v3/libgcc_s.so.1", O_RDONLY|O_CLOEXEC) = -1 ENOENT (No such file or directory)
+4118675 openat(AT_FDCWD, "/usr/local/fbcode/platform010/lib/glibc-hwcaps/x86-64-v2/libgcc_s.so.1", O_RDONLY|O_CLOEXEC) = -1 ENOENT (No such file or directory)
+4118675 openat(AT_FDCWD, "/usr/local/fbcode/platform010/lib/tls/x86_64/x86_64/libgcc_s.so.1", O_RDONLY|O_CLOEXEC) = -1 ENOENT (No such file or directory)
+4118675 openat(AT_FDCWD, "/usr/local/fbcode/platform010/lib/tls/x86_64/libgcc_s.so.1", O_RDONLY|O_CLOEXEC) = -1 ENOENT (No such file or directory)
+4118675 openat(AT_FDCWD, "/usr/local/fbcode/platform010/lib/tls/x86_64/libgcc_s.so.1", O_RDONLY|O_CLOEXEC) = -1 ENOENT (No such file or directory)
+4118675 openat(AT_FDCWD, "/usr/local/fbcode/platform010/lib/tls/libgcc_s.so.1", O_RDONLY|O_CLOEXEC) = -1 ENOENT (No such file or directory)
+4118675 openat(AT_FDCWD, "/usr/local/fbcode/platform010/lib/x86_64/x86_64/libgcc_s.so.1", O_RDONLY|O_CLOEXEC) = -1 ENOENT (No such file or directory)
+4118675 openat(AT_FDCWD, "/usr/local/fbcode/platform010/lib/x86_64/libgcc_s.so.1", O_RDONLY|O_CLOEXEC) = -1 ENOENT (No such file or directory)
+4118675 openat(AT_FDCWD, "/usr/local/fbcode/platform010/lib/x86_64/libgcc_s.so.1", O_RDONLY|O_CLOEXEC) = -1 ENOENT (No such file or directory)
+4118675 openat(AT_FDCWD, "/usr/local/fbcode/platform010/lib/libgcc_s.so.1", O_RDONLY|O_CLOEXEC) = 3
+4118675 openat(AT_FDCWD, "/usr/local/fbcode/platform010/lib/libm.so.6", O_RDONLY|O_CLOEXEC) = 3
+4118675 openat(AT_FDCWD, "/usr/local/fbcode/platform010/lib/libcrypt.so.1", O_RDONLY|O_CLOEXEC) = 3
+4118675 openat(AT_FDCWD, "/usr/local/fbcode/platform010/lib/libc.so.6", O_RDONLY|O_CLOEXEC) = 3
+4118675 openat(AT_FDCWD, "/usr/local/fbcode/platform010/lib/locale/locale-archive", O_RDONLY|O_CLOEXEC) = 3
+4118675 openat(AT_FDCWD, "/usr/local/fbcode/platform010/lib/gconv/gconv-modules.cache", O_RDONLY) = -1 ENOENT (No such file or directory)
+4118675 openat(AT_FDCWD, "/usr/local/fbcode/platform010/lib/gconv/gconv-modules", O_RDONLY|O_CLOEXEC) = 3
+4118675 openat(AT_FDCWD, "/usr/local/fbcode/platform010/lib/gconv/gconv-modules.d", O_RDONLY|O_NONBLOCK|O_CLOEXEC|O_DIRECTORY) = 3
+4118675 openat(AT_FDCWD, "/usr/local/fbcode/platform010/lib/gconv/gconv-modules.d/gconv-modules-extra.conf", O_RDONLY|O_CLOEXEC) = 4
+4118675 openat(AT_FDCWD, "/usr/local/fbcode/platform010/pyvenv.cfg", O_RDONLY) = -1 ENOENT (No such file or directory)
+4118675 openat(AT_FDCWD, "/usr/local/fbcode/platform010/bin/pyvenv.cfg", O_RDONLY) = -1 ENOENT (No such file or directory)
+4118675 openat(AT_FDCWD, "/usr/local/fbcode/platform010/bin/python3.12._pth", O_RDONLY) = -1 ENOENT (No such file or directory)
+4118675 openat(AT_FDCWD, "/usr/local/fbcode/platform010/bin/python3.12._pth", O_RDONLY) = -1 ENOENT (No such file or directory)
+4118675 openat(AT_FDCWD, "/usr/local/fbcode/platform010/bin/pybuilddir.txt", O_RDONLY) = -1 ENOENT (No such file or directory)
+4118675 openat(AT_FDCWD, "/etc/localtime", O_RDONLY|O_CLOEXEC) = 3
+4118675 openat(AT_FDCWD, "/usr/local/fbcode/platform010", O_RDONLY|O_NONBLOCK|O_CLOEXEC|O_DIRECTORY) = 3
+4118675 openat(AT_FDCWD, "/usr/local/fbcode/platform010/lib/python3.12", O_RDONLY|O_NONBLOCK|O_CLOEXEC|O_DIRECTORY) = 3
+4118675 openat(AT_FDCWD, "/usr/local/fbcode/platform010/lib/python3.12/encodings/__pycache__/__init__.cpython-312.pyc", O_RDONLY|O_CLOEXEC) = 3
+4118675 openat(AT_FDCWD, "/usr/local/fbcode/platform010/lib/python3.12/encodings", O_RDONLY|O_NONBLOCK|O_CLOEXEC|O_DIRECTORY) = 3
+4118675 openat(AT_FDCWD, "/usr/local/fbcode/platform010/lib/python3.12/encodings/__pycache__/aliases.cpython-312.pyc", O_RDONLY|O_CLOEXEC) = 3
+4118675 openat(AT_FDCWD, "/usr/local/fbcode/platform010/lib/python3.12/encodings/__pycache__/utf_8.cpython-312.pyc", O_RDONLY|O_CLOEXEC) = 3
+4118675 openat(AT_FDCWD, "/home/newton/.local/lib/python3.12/site-packages", O_RDONLY|O_NONBLOCK|O_CLOEXEC|O_DIRECTORY) = 3
+4118675 openat(AT_FDCWD, "/usr/local/fbcode/platform010/lib/python3.12/site-packages", O_RDONLY|O_NONBLOCK|O_CLOEXEC|O_DIRECTORY) = 3
+4118675 openat(AT_FDCWD, "/usr/local/fbcode/platform010/lib/python3.12/lib-dynload", O_RDONLY|O_NONBLOCK|O_CLOEXEC|O_DIRECTORY) = 3
+4118675 openat(AT_FDCWD, "/home/newton/.local/lib/python3.12/site-packages", O_RDONLY|O_NONBLOCK|O_CLOEXEC|O_DIRECTORY) = 3
+4118675 openat(AT_FDCWD, "/usr/local/fbcode/platform010/lib/python3.12/site-packages", O_RDONLY|O_NONBLOCK|O_CLOEXEC|O_DIRECTORY) = 3
+4118675 +++ exited with 0 +++
+4118663 --- SIGCHLD {si_signo=SIGCHLD, si_code=CLD_EXITED, si_pid=4118675, si_uid=212630, si_status=0, si_utime=1 /* 0.01 s */, si_stime=0} ---
+4118663 openat(AT_FDCWD, "/var/chef/slowroll/desired_versions.json", O_RDONLY|O_CLOEXEC) = 5
+4118663 poll([{fd=5, events=POLLIN|POLLERR|POLLHUP}], 1, 5000) = 1 ([{fd=5, revents=POLLIN|POLLHUP}])
+4118663 openat(AT_FDCWD, "/etc/fbwhoami", O_RDONLY|O_CLOEXEC) = 5
+4118663 openat(AT_FDCWD, "/etc/fbwhoami", O_RDONLY) = 11
+4118663 openat(AT_FDCWD, "/etc/fbwhoami", O_RDONLY) = 11
+4118663 openat(AT_FDCWD, "/var/facebook/configerator-client-system-configs/falcon/core_entities/0/33036343439323830333", O_RDONLY|O_CLOEXEC) = 11
+4118663 openat(AT_FDCWD, "/var/facebook/configerator-client-system-configs/falcon/core_entities/0/13535363237333234333", O_RDONLY|O_CLOEXEC) = 11
+4118663 openat(AT_FDCWD, "/etc/tw/api/metadata.json", O_RDONLY|O_CLOEXEC) = -1 ENOENT (No such file or directory)
+4118663 openat(AT_FDCWD, "/etc/smc.tiers", O_RDONLY) = 11
+4118663 openat(AT_FDCWD, "/var/facebook/configerator-client-system-configs/falcon/core_entities/0/43136383434343938333", O_RDONLY|O_CLOEXEC) = 16
+4118700 openat(AT_FDCWD, "/var/facebook/configerator-client-system-configs/falcon/core_entities/0/33036343439323830333", O_RDONLY|O_CLOEXEC) = 16
+4118700 openat(AT_FDCWD, "/var/facebook/configerator-client-system-configs/falcon/core_entities/0/13535363237333234333", O_RDONLY|O_CLOEXEC) = 16
+4118700 openat(AT_FDCWD, "/var/facebook/configerator-client-system-configs/falcon/core_entities/0/43136383434343938333", O_RDONLY|O_CLOEXEC) = 16
+4118691 openat(AT_FDCWD, "/proc/version", O_RDONLY|O_CLOEXEC) = 16
+4118691 openat(AT_FDCWD, "/proc/4118663/stat", O_RDONLY|O_CLOEXEC) = 16
+4118691 openat(AT_FDCWD, "/proc/4118663/status", O_RDONLY) = 19
+4118691 openat(AT_FDCWD, "/proc/4118663/environ", O_RDONLY|O_CLOEXEC) = 21
+4118691 openat(AT_FDCWD, "/proc/4118663/root/etc/twwhoami", O_RDONLY) = -1 ENOENT (No such file or directory)
+4118718 +++ exited with 0 +++
+4118717 +++ exited with 0 +++
+4118716 +++ exited with 0 +++
+4118700 +++ exited with 0 +++
+4118699 +++ exited with 0 +++
+4118691 +++ exited with 0 +++
+4118679 +++ exited with 0 +++
+4118708 +++ exited with 0 +++
+4118719 +++ exited with 0 +++
+4118701 +++ exited with 0 +++
+4118692 +++ exited with 0 +++
+4118680 +++ exited with 0 +++
+4118670 +++ exited with 0 +++
+4118663 +++ exited with 0 +++

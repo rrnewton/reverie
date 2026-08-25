@@ -1523,9 +1523,9 @@ fn warn_if_main_is_soft_green(root: &Path) {
             "ci-hub: WARNING: current-main hard/soft state is UNKNOWN: {}",
             String::from_utf8_lossy(&output.stderr).trim()
         ),
-        Err(error) => eprintln!(
-            "ci-hub: WARNING: current-main hard/soft state is UNKNOWN: {error}"
-        ),
+        Err(error) => {
+            eprintln!("ci-hub: WARNING: current-main hard/soft state is UNKNOWN: {error}")
+        }
     }
 }
 
@@ -1815,10 +1815,8 @@ fn execute(root: &Path, command: HubCommand) -> Result<i32, CiHubError> {
             run_python(root, "ci-hub/remediation/protocol.py", protocol_args)
         }
         HubCommand::AuthorizeRevert(args) => {
-            let mut protocol_args = vec![
-                OsString::from("authorize-revert"),
-                OsString::from(args.id),
-            ];
+            let mut protocol_args =
+                vec![OsString::from("authorize-revert"), OsString::from(args.id)];
             if let Some(store) = args.store {
                 push_option(&mut protocol_args, "--store", store);
             }
@@ -7122,11 +7120,7 @@ mod tests {
             "event_id": "decoy",
             "legacy_row": {"commit": other, "base_sha": target, "result": "pass"},
         });
-        std::fs::write(
-            shard.join("2026-08.jsonl"),
-            format!("{genuine}\n{decoy}\n"),
-        )
-        .unwrap();
+        std::fs::write(shard.join("2026-08.jsonl"), format!("{genuine}\n{decoy}\n")).unwrap();
         let git = |args: &[&str]| {
             let out = Command::new("git")
                 .arg("-C")
@@ -7415,8 +7409,17 @@ mod tests {
         let report = describe_receipt(&receipt);
         assert_eq!(report["gates_run"], 2);
         assert_eq!(report["gates"].as_array().unwrap().len(), 2);
-        assert_eq!(report["intentional_skipped_nodes"].as_array().unwrap().len(), 1);
-        assert_eq!(report["intentional_skipped_nodes"][0]["reason"], "empty-manifest-bucket");
+        assert_eq!(
+            report["intentional_skipped_nodes"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            report["intentional_skipped_nodes"][0]["reason"],
+            "empty-manifest-bucket"
+        );
     }
 
     #[test]
@@ -8227,14 +8230,7 @@ mod tests {
             panic!("wrong command variant")
         };
         assert!(args.all);
-        assert!(Cli::try_parse_from([
-            "ci-hub",
-            "local-history",
-            "--all",
-            "--limit",
-            "5"
-        ])
-        .is_err());
+        assert!(Cli::try_parse_from(["ci-hub", "local-history", "--all", "--limit", "5"]).is_err());
     }
 
     #[test]

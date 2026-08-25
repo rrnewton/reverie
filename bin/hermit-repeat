@@ -1,0 +1,1719 @@
+#!/usr/bin/env python3
+"""hermit-repeat -- run one guest N times and report the DISTRIBUTION of first
+divergence points.
+
+WHY THIS EXISTS
+===============
+Getting a red or yellow cell to green means running it many times and looking at
+WHERE it parts company with itself. Before this, that meant hand-writing a loop,
+a log-capture scheme and a parser per investigation, and the parsers disagreed.
+This is the one command:
+
+    bin/hermit-repeat -n 20 -- /bin/echo hello
+    bin/hermit-repeat -n 20 --mode concurrent --backend liteinst -- ./myguest
+
+WHAT ONE "RUN" IS, AND WHY IT IS A VERIFY PAIR
+==============================================
+Each of the N runs is ONE `hermit run --verify --verify-strict` invocation, which
+executes the guest TWICE from a single command line and compares the two under
+the canonical BitwiseInfoV1 envelope. So N runs give N INDEPENDENT divergence
+observations, each self-contained.
+
+This deliberately does NOT compare run 3 against run 7. `hermit log-diff --help`
+documents, with measurements, that two separately-produced runs only compare
+meaningfully when their argv AND environment are byte-identical -- one byte of
+argv moved stack addresses by 32 bytes and diverged two otherwise identical runs
+20 records in. N nodes cannot have byte-identical environments (each needs its
+own output path), so a cross-node comparison would measure this harness. A
+verify pair has identical argv by construction, so it measures the guest.
+
+HOW IT RUNS THEM
+================
+N DISCONNECTED nodes in a dagrun (formerly safe-ci-dag-runner) DAG -- not a
+runner. That reuses the existing scheduler, its two-level cgroup boxing and its
+resource accounting instead of inventing a second mechanism that would drift
+from it. Each node's command is `bin/safehermit`, so the easy path is the boxed
+path: there is now a one-line way to run an ad-hoc hermit command N times that
+cannot bypass the wrapper the way `/tmp/hermit-ers-patched run ...` did on
+2026-08-17.
+
+CONCURRENT AND SEQUENTIAL ARE DIFFERENT MEASUREMENTS
+====================================================
+`--mode concurrent` runs the N nodes at once and therefore measures the cell
+PLUS host contention; contention is itself a flake source and is often the point.
+`--mode sequential` runs them one at a time and measures the cell with the box as
+quiet as it gets. A distribution that mixes the two is two populations wearing
+one histogram, so the mode is a flag, it is printed on the report, and it is
+recorded in the JSON. The DEFAULT IS SEQUENTIAL -- not because it is faster (it
+is slower) but because a reader who did not think about the mode should get the
+number that is least likely to be attributed to the wrong cause.
+
+EXIT CODES
+  0  every run was clean (verified deterministic)
+  1  at least one run diverged
+  2  usage error, or the tool could not run the DAG at all
+  3  no run produced a verdict (all failed / no-result) -- a NON-ANSWER, which is
+     deliberately not 0 and not 1
+"""
+
+from __future__ import annotations
+
+import argparse
+import csv
+import hashlib
+import json
+import os
+import re
+import shlex
+import shutil
+import subprocess
+import sys
+import threading
+import time
+from dataclasses import dataclass, field, asdict
+from pathlib import Path
+
+PROG = "hermit-repeat"
+ROOT = Path(__file__).resolve().parent.parent
+
+# The record separator detcore's log comparator uses (detcore/src/logdiff.rs
+# RECORD_START). Our derived coordinates are only trustworthy while this matches,
+# which is why every derived value is cross-checked against hermit's own JSON
+# before it is printed -- see cross_check() below.
+RECORD_START = re.compile(
+    r"((Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) \d\d \d\d:\d\d:\d\d\.\d+"
+    r"|\d+-\d\d-\d\dT\d\d:\d\d:\d\d.\d+Z) +"
+)
+COMMIT_TURN = re.compile(r"\bCOMMIT turn ([0-9][0-9_]*)\b")
+COMMIT_TIME = re.compile(
+    r"\b(?:at time|on previously committed) ([0-9][0-9_]*(?:\.[0-9_]+)?)(ns|s)?\b"
+)
+FINISH_SYSCALL = re.compile(r"\[syscall\]\[detcore, dtid (\d+)\]\s+finish syscall #(\d+):")
+
+
+def die(msg: str, code: int = 2):
+    print(f"{PROG}: {msg}", file=sys.stderr)
+    sys.exit(code)
+
+
+def say(msg: str = ""):
+    print(msg, file=sys.stderr)
+
+
+# --------------------------------------------------------------------------- units
+UNIT_KEYSPACES = [
+    (
+        "info_record",
+        "ordinal of the record inside ONE log file, 1-based, counting every "
+        "timestamped record. NOT a text line number: a record can span several "
+        "lines, so this number is smaller than the line number and the two must "
+        "not be compared.",
+    ),
+    (
+        "sched_turn",
+        "detcore scheduler turn (`COMMIT turn N`) at or before the divergent "
+        "record. Global across threads within one run.",
+    ),
+    (
+        "virtual_ns",
+        "absolute virtual nanoseconds since hermit's fixed epoch (default "
+        "1_640_995_199_000_000_000), read off that same COMMIT. Not wall clock.",
+    ),
+    (
+        "syscall",
+        "hermit's own `finish syscall #N` counter, which is PER-THREAD (per "
+        "dtid) and not global -- the dtid is printed with it. A syscall ordinal "
+        "is NOT comparable across backends (the same getpgrp sat at DETLOG event "
+        "40 under ptrace and 39 under DBT) nor across guests. Compare only "
+        "within one backend and one guest.",
+    ),
+]
+
+
+# --------------------------------------------------------------------------- model
+@dataclass
+class RunResult:
+    index: int
+    name: str
+    dir: str
+    # exactly one of: diverged | clean | failed | no_result
+    category: str = "failed"
+    why: str = "the node produced no verdict file"
+    exit_code: int | None = None
+    guest_exit_code: int | None = None
+    started_at: float | None = None
+    ended_at: float | None = None
+    # divergence coordinates (only for category == diverged)
+    info_record: int | None = None
+    sched_turn: int | None = None
+    virtual_ns: int | None = None
+    syscall_ordinal: int | None = None
+    syscall_dtid: int | None = None
+    # Why syscall_ordinal is absent when it is. "no syscall had completed yet"
+    # and "we could not tell" are different answers and must not share a blank.
+    syscall_note: str | None = None
+    # provenance of the coordinates
+    coord_source: str | None = None
+    coord_cross_check: str | None = None
+    coord_verified: bool = False
+    turn_note: str | None = None
+    # per-node resource facts, joined from the dag runner's own step CSV
+    inner_jobs: int | None = None
+    effective_cores: float | None = None
+    peak_bytes: int | None = None
+    elapsed_s: float | None = None
+    oom_kills: int | None = None
+    timed_out: bool | None = None
+    co_tenants_start: int | None = None
+    load1_start: float | None = None
+    safehermit_bounds: dict = field(default_factory=dict)
+    # Last few lines of the node's own stderr, so a failure explains itself in
+    # the report instead of sending the reader to a log file.
+    error_tail: list = field(default_factory=list)
+
+
+# --------------------------------------------------------------------------- binary
+def resolve_hermit(explicit: str | None) -> tuple[str, str]:
+    """Resolve the hermit binary with the SAME precedence bin/safehermit uses, and
+    NAME which layer won. 'which build produced this artifact' was unanswerable
+    for most of 2026-08-19 and cost a day of rework."""
+    if explicit:
+        return os.path.abspath(explicit), "flag:--sh-bin"
+    if os.environ.get("HERMIT_BIN"):
+        return os.path.abspath(os.environ["HERMIT_BIN"]), "env:HERMIT_BIN"
+    for cand, src in (
+        (ROOT / "target/release/hermit", "default:target/release/hermit"),
+        (ROOT / "hermit/target/release/hermit", "default:hermit/target/release/hermit"),
+        (ROOT / "bin/hermit", "default:bin/hermit"),
+    ):
+        if cand.is_file() and os.access(cand, os.X_OK):
+            return str(cand.resolve()), src
+    found = shutil.which("hermit")
+    if found:
+        return found, f"path:{found}"
+    die(
+        "no hermit binary found. Pass --sh-bin PATH, set HERMIT_BIN, or build "
+        "target/release/hermit."
+    )
+
+
+def sha256_of(path: str) -> str:
+    h = hashlib.sha256()
+    try:
+        with open(path, "rb") as fh:
+            for chunk in iter(lambda: fh.read(1 << 20), b""):
+                h.update(chunk)
+    except OSError:
+        return "unavailable"
+    return h.hexdigest()
+
+
+# --------------------------------------------------------------------------- parsing
+def split_records(text: str) -> list[str]:
+    """Split a hermit log into records the way detcore's comparator does. Index 0
+    is whatever preceded the first timestamp; the comparator enumerates the split
+    the same way, so our indices line up with its `first_divergent_record`."""
+    return RECORD_START.split(text)
+
+
+def _record_at(records: list[str], index: int) -> str | None:
+    # RECORD_START has capture groups, so re.split interleaves them into the
+    # result. Rebuild the plain record list by stride.
+    return records[index] if 0 <= index < len(records) else None
+
+
+def records_by_comparator_index(text: str) -> dict[int, str]:
+    """Map comparator record index -> record text.
+
+    `re.split` with capturing groups interleaves the captures, so we cannot use
+    the raw list. Rust's `Regex::split` yields ONLY the pieces between matches,
+    which is what `extract_log_messages` enumerates. Reproduce that."""
+    pieces: list[str] = []
+    last = 0
+    for m in RECORD_START.finditer(text):
+        pieces.append(text[last : m.start()])
+        last = m.end()
+    pieces.append(text[last:])
+    return {i: p for i, p in enumerate(pieces)}
+
+
+def commit_at_or_before(pieces: dict[int, str], index: int) -> tuple[int | None, int | None]:
+    for i in range(index, -1, -1):
+        rec = pieces.get(i)
+        if not rec or " COMMIT " not in rec:
+            continue
+        m = COMMIT_TURN.search(rec)
+        if not m:
+            continue
+        turn = int(m.group(1).replace("_", ""))
+        ns = None
+        t = COMMIT_TIME.search(rec)
+        if t:
+            ns = parse_virtual_ns(t.group(1), t.group(2))
+        return turn, ns
+    return None, None
+
+
+def parse_virtual_ns(value: str, unit: str | None) -> int | None:
+    v = value.replace("_", "")
+    if unit == "s":
+        secs, _, frac = v.partition(".")
+        if len(frac) > 9 or (frac and not frac.isdigit()):
+            return None
+        try:
+            return int(secs) * 1_000_000_000 + (int(frac) * 10 ** (9 - len(frac)) if frac else 0)
+        except ValueError:
+            return None
+    if "." in v:
+        return None
+    try:
+        return int(v)
+    except ValueError:
+        return None
+
+
+def syscall_at_or_before(pieces: dict[int, str], index: int) -> tuple[int | None, int | None]:
+    """The last `finish syscall #N` at or before `index`, with its dtid.
+
+    This is hermit's OWN counter read straight out of the log, not a count we
+    recompute, so it cannot drift from what detcore believes. It is per-thread."""
+    for i in range(index, -1, -1):
+        rec = pieces.get(i)
+        if not rec or " DETLOG " not in rec:
+            continue
+        m = FINISH_SYSCALL.search(rec)
+        if m:
+            return int(m.group(2)), int(m.group(1))
+    return None, None
+
+
+# --------------------------------------------------------------------------- dag
+def build_dag(args, hermit_bin: str, out: Path, guest: list[str]) -> dict:
+    steps = []
+    per_step_timeout = args.deadline + 60
+    for i in range(1, args.runs + 1):
+        name = f"run{i:0{len(str(args.runs))}d}"
+        d = out / "runs" / name
+        (d / "logs").mkdir(parents=True, exist_ok=True)
+        # A PRIVATE, EMPTY, QUIESCENT CWD PER NODE -- and this is a correctness
+        # measure, not tidiness. Verified cells run with the launcher's cwd, and
+        # hermit makes host files outside its private /tmp visible to the guest,
+        # so a directory entry appearing or vanishing between the two verify
+        # executions changes that directory's st_size and shows up as a canonical
+        # -log divergence with both guest executions exiting zero. Measured
+        # independently on this box: a SERIAL exact-main validate diverged because
+        # newfstatat("/home/newton") returned 5788 then 5810
+        # (ai_docs/validate-concurrency-characterization-20260824.md, F-3/F-15).
+        # N concurrent nodes all writing under one directory would manufacture
+        # exactly that, and the divergence rate would then be a property of this
+        # harness. Each node gets its own empty directory, created now and never
+        # written to again.
+        if args.cwd:
+            node_cwd = os.path.abspath(args.cwd)
+        else:
+            node_cwd = str(d / "cwd")
+            (d / "cwd").mkdir(parents=True, exist_ok=True)
+        # safehermit's own report goes to a FILE, never to the shared stderr:
+        # six of its lines embed a per-run id, and demo comparators that line-diff
+        # hermit's stderr fail on that difference for a reason unrelated to hermit.
+        inner = [
+            str(ROOT / "bin/safehermit"),
+            "--sh-bin", hermit_bin,
+            "--sh-report", str(d / "safehermit.txt"),
+            "--sh-deadline", str(args.deadline),
+        ]
+        inner += args.global_arg
+        if args.backend:
+            inner += ["--backend", args.backend]
+        inner += [
+            "run",
+            "--verify",
+            "--verify-strict",
+            "--keep-logs",
+            "--verify-log-dir", str(d / "logs"),
+            "--verify-json", str(d / "verify.json"),
+        ]
+        inner += args.hermit_arg
+        inner += ["--"] + guest
+        # A SCRIPT FILE, NOT AN INLINE ONE-LINER. The first version inlined the
+        # whole thing as one `;`-separated string; the runner presents a step's
+        # cmd to the shell such that `exit $rc` came apart ("exit: too many
+        # arguments"), which made every node exit nonzero and the runner report
+        # 3 failed for three runs that had all verified clean. The report was
+        # right and the runner's verdict was wrong, which is the worse half of
+        # that failure. A file has none of that coupling.
+        #
+        # It records start/end stamps so peak overlap is MEASURED rather than
+        # assumed from -j, and re-raises the child's real exit code so the
+        # runner's verdict stays honest.
+        runner_script = d / "node.sh"
+        runner_script.write_text(
+            "#!/usr/bin/env bash\n"
+            # Keep safehermit's own captured stderr INSIDE this run's artefact
+            # tree. By default it lands in ignored/safehermit/<its run id>/,
+            # outside anything this tool bounds or reads, so the artefact cap
+            # would not see it and a failure's stderr would not reach the report.
+            f"export SAFEHERMIT_LOG_ROOT={shlex.quote(str(d / 'safehermit-logs'))}\n"
+            f"cd {shlex.quote(node_cwd)} || exit 70\n"
+            f"date +%s.%N > {shlex.quote(str(d / 'started'))}\n"
+            f"{' '.join(shlex.quote(a) for a in inner)}\n"
+            "rc=$?\n"
+            f"date +%s.%N > {shlex.quote(str(d / 'ended'))}\n"
+            f"printf '%s' \"$rc\" > {shlex.quote(str(d / 'rc'))}\n"
+            # WHAT THIS NODE'S EXIT CODE MEANS: "did this node produce a
+            # MEASUREMENT", not "did the cell pass". A diverging cell is the
+            # finding, so exiting nonzero on divergence would be wrong twice
+            # over -- and it was, measurably. `--keep-going` lets in-flight
+            # steps finish but STILL STOPS LAUNCHING NEW ONES, so in sequential
+            # mode (-j 1) the first diverging node ended the sweep: 4 of 20
+            # nodes ran and the other 16 never started. The real exit code is
+            # preserved in `rc` and is reported.
+            f"if [ -s {shlex.quote(str(d / 'verify.json'))} ]; then exit 0; fi\n"
+            "exit \"$rc\"\n"
+        )
+        runner_script.chmod(0o755)
+        script = f"bash {shlex.quote(str(runner_script))}"
+        steps.append(
+            {
+                "group": "repeat",
+                "job": name,
+                "desc": f"hermit --verify repeat {i}/{args.runs}",
+                "cmd": script,
+                "timeout": per_step_timeout,
+                "hint": {
+                    # AN HONEST PER-NODE BUDGET. hermit sequentializes guest
+                    # threads onto one logical CPU, so one node's honest width is
+                    # 1 core. Claiming more would let N nodes oversubscribe the
+                    # box and turn the contention into an artefact of this
+                    # harness rather than a property of the cell. What each node
+                    # ACTUALLY got is read back from the runner's step CSV and
+                    # printed, so the claim is checkable.
+                    "preferred_inner_jobs": 1,
+                    "classification": "cpu-bound",
+                    "rss_baseline_bytes": args.node_rss_bytes,
+                    "hard_mem_max_bytes": args.node_mem_max_bytes,
+                },
+            }
+        )
+    return {
+        "description": (
+            f"hermit-repeat: {args.runs} disconnected verify nodes for "
+            f"{' '.join(guest)}"
+        ),
+        "steps": steps,
+    }
+
+
+# --------------------------------------------------------------------------- disk guard
+class DiskGuard(threading.Thread):
+    """Bound total artefact bytes and KILL the run at the cap.
+
+    THIS CLOSES A REAL HOLE, not a tidy-up. bin/safehermit caps the child's
+    STDERR at 64 MiB and kills at the cap -- but under `--verify` hermit diverts
+    its log to files under --verify-log-dir, which that cap never sees. So the
+    thing that actually grows here is exactly the thing safehermit does not
+    bound. N nodes multiply it."""
+
+    def __init__(self, root: Path, cap_bytes: int, on_breach):
+        super().__init__(daemon=True)
+        self.root, self.cap, self.on_breach = root, cap_bytes, on_breach
+        self.stop_evt = threading.Event()
+        self.peak = 0
+        self.breached = False
+
+    def _size(self) -> int:
+        total = 0
+        for dirpath, _dirs, files in os.walk(self.root):
+            for f in files:
+                try:
+                    total += os.lstat(os.path.join(dirpath, f)).st_size
+                except OSError:
+                    pass
+        return total
+
+    def run(self):
+        while not self.stop_evt.wait(2.0):
+            n = self._size()
+            self.peak = max(self.peak, n)
+            if n > self.cap:
+                self.breached = True
+                say(
+                    f"{PROG}: DISK CAP: artefacts reached {n/1e9:.2f} GB (cap "
+                    f"{self.cap/1e9:.2f} GB). Killing the run; the results "
+                    f"collected so far are still reported."
+                )
+                self.on_breach()
+                return
+        self.peak = max(self.peak, self._size())
+
+
+# --------------------------------------------------------------------------- collect
+def read_json(p: Path):
+    try:
+        return json.loads(p.read_text())
+    except Exception:
+        return None
+
+
+def read_safehermit_bounds(p: Path) -> dict:
+    out = {}
+    try:
+        for line in p.read_text().splitlines():
+            if line.startswith("safehermit: ") and "=" in line:
+                k, _, v = line[len("safehermit: "):].partition("=")
+                out[k.strip()] = v.strip()
+    except OSError:
+        pass
+    return out
+
+
+def tail_of_stderr(node_dir: Path, lines: int = 6) -> list[str]:
+    """The tail of what the node actually printed. safehermit captures the child's
+    stderr into its own log dir, which we point INSIDE the node dir so it is both
+    covered by the artefact cap and readable here."""
+    for log in sorted(node_dir.glob("safehermit-logs/*/hermit.log")):
+        try:
+            text = log.read_text(errors="replace").rstrip().splitlines()
+        except OSError:
+            continue
+        if text:
+            return text[-lines:]
+    return []
+
+
+def collect_one(r: RunResult, hermit_bin: str, keep: bool) -> RunResult:
+    d = Path(r.dir)
+    r.safehermit_bounds = read_safehermit_bounds(d / "safehermit.txt")
+    for stamp, attr in (("started", "started_at"), ("ended", "ended_at")):
+        try:
+            setattr(r, attr, float((d / stamp).read_text().strip()))
+        except Exception:
+            pass
+    try:
+        r.exit_code = int((d / "rc").read_text().strip())
+    except Exception:
+        r.exit_code = None
+
+    verdict = read_json(d / "verify.json")
+    if verdict is None and r.started_at is None and r.exit_code is None:
+        # NEVER LAUNCHED. Distinct from "failed": the scheduler stopped starting
+        # new steps (that is what --keep-going does after any node fails), so
+        # this node has no result at all. Calling it failed would report 16
+        # nonexistent failures, which is what an earlier version of this did.
+        r.category = "not_run"
+        r.why = (
+            "the node never started -- the scheduler stopped launching new steps "
+            "after an earlier node failed. The sweep is TRUNCATED, not complete."
+        )
+        return r
+    if verdict is None:
+        r.category = "failed"
+        bounds = r.safehermit_bounds
+        detail = []
+        if r.exit_code is not None:
+            detail.append(f"exit {r.exit_code}")
+        if r.exit_code == 124:
+            detail.append("safehermit DEADLINE fired (cgroup kill)")
+        elif r.exit_code == 125:
+            detail.append("safehermit STDERR BYTE CAP fired (cgroup kill)")
+        if bounds.get("truncated") == "true":
+            detail.append("hermit stderr was truncated at the cap")
+        if not detail:
+            detail.append("no verdict file and no exit code was recorded")
+        r.why = "; ".join(detail)
+        r.error_tail = tail_of_stderr(d)
+        return r
+
+    r.guest_exit_code = verdict.get("guest_exit_code")
+    v = verdict.get("verdict")
+    if v == "matched" and verdict.get("verified"):
+        r.category = "clean"
+        r.why = (
+            "verified deterministic"
+            + (", bitwise_parity=true" if verdict.get("bitwise_parity") else
+               ", bitwise_parity=FALSE (not L2 -- KVM's output-only fallback)")
+        )
+        return r
+    if v != "diverged":
+        # HERMIT'S `no_result` COVERS TWO DIFFERENT THINGS and they must not share
+        # a bucket. "the comparison ran and selected nothing" is a no-result;
+        # "run 1 died so there was never a second run to compare" is a FAILURE.
+        # Measured: LiteInst on `sh -c 'seq | wc -l'` writes verdict=no_result
+        # with comparison=null after erroring out of run 1 -- filing that as
+        # no-result would report a hard backend failure as a measurement gap.
+        if verdict.get("comparison") is None:
+            r.category = "failed"
+            r.why = (
+                f"hermit wrote verdict={v!r} with no comparison at all"
+                + (f" (node exit {r.exit_code})" if r.exit_code is not None else "")
+                + " -- the run did not reach a second execution"
+            )
+            r.error_tail = tail_of_stderr(d)
+        else:
+            r.category = "no_result"
+            r.why = (
+                f"hermit reported verdict={v!r} -- the comparison ran but selected "
+                "nothing comparable"
+            )
+        return r
+
+    r.category = "diverged"
+    r.why = "hermit --verify reported the two executions diverged"
+    r.sched_turn = verdict.get("first_divergent_scheduler_turn")
+    r.virtual_ns = verdict.get("first_divergent_virtual_nanoseconds")
+    r.coord_source = "hermit run --verify-json"
+
+    # --verify-json does not carry first_divergent_record today (hermit#2386,
+    # which publishes it to the verify report, is NOT landed), so get it from
+    # log-diff on the two retained logs -- the same comparator, run again.
+    logs = sorted((d / "logs").glob("run1_log_*")), sorted((d / "logs").glob("run2_log_*"))
+    if not (logs[0] and logs[1]):
+        r.coord_cross_check = (
+            "UNAVAILABLE: --keep-logs did not leave a run1/run2 log pair, so "
+            "info_record and syscall could not be located"
+        )
+        r.syscall_note = "UNAVAILABLE: no retained log pair to read it from"
+        return r
+    left, right = logs[0][0], logs[1][0]
+    ldj = d / "logdiff.json"
+    try:
+        subprocess.run(
+            [hermit_bin, "log-diff", "--json", str(ldj), str(left), str(right)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=600,
+            check=False,
+        )
+    except Exception as exc:
+        r.coord_cross_check = f"UNAVAILABLE: log-diff failed to run ({exc})"
+        r.syscall_note = "UNAVAILABLE: log-diff did not run"
+        return r
+    ld = read_json(ldj)
+    if not ld or ld.get("first_divergent_record") is None:
+        r.coord_cross_check = (
+            "UNAVAILABLE: log-diff produced no first_divergent_record for this pair"
+        )
+        r.syscall_note = "UNAVAILABLE: no record index to anchor the lookup"
+        return r
+    r.info_record = ld["first_divergent_record"]
+    r.coord_source = "hermit run --verify-json + hermit log-diff --json"
+
+    # CROSS-CHECK before trusting the derived syscall ordinal. We locate the
+    # record ourselves to read the syscall counter, so we first prove our record
+    # indexing agrees with hermit's by re-deriving the turn and virtual time it
+    # already reported. If those disagree, our index is wrong and the syscall
+    # number would be confidently wrong too -- so it is withheld, not printed.
+    try:
+        pieces = records_by_comparator_index(left.read_text(errors="replace"))
+    except OSError as exc:
+        r.coord_cross_check = f"UNAVAILABLE: could not read {left} ({exc})"
+        r.syscall_note = "UNAVAILABLE: run 1's log could not be read"
+        return r
+    turn, ns = commit_at_or_before(pieces, r.info_record)
+    ld_turn = ld.get("first_divergent_scheduler_turn")
+    ld_ns = ld.get("first_divergent_virtual_nanoseconds")
+    if r.sched_turn is None:
+        r.sched_turn = ld_turn
+    if r.virtual_ns is None:
+        r.virtual_ns = ld_ns
+    if r.sched_turn is None:
+        r.turn_note = (
+            "hermit reported no scheduler turn for this divergence: no COMMIT record "
+            "precedes it in either log. `--no-sequentialize-threads` produces this, "
+            "since it removes the serialized-schedule COMMITs the coordinate is read "
+            "from. Absent, not zero."
+        )
+
+    if ld_turn is not None:
+        # A REAL CHECK: hermit already located this divergence by turn, so if our
+        # record indexing is right we must land on the same turn from the same
+        # index.
+        if turn == ld_turn and (ns == ld_ns or ld_ns is None):
+            r.coord_cross_check = (
+                "VERIFIED: reading run 1's log at record "
+                f"{r.info_record} independently reproduces hermit's turn "
+                f"({ld_turn}) and virtual time, so the record index is right"
+            )
+            r.coord_verified = True
+        else:
+            r.coord_cross_check = (
+                f"FAILED: at record {r.info_record} we read turn={turn} ns={ns} but "
+                f"hermit reported turn={ld_turn} ns={ld_ns}; the syscall ordinal is "
+                f"WITHHELD rather than reported wrong"
+            )
+            r.syscall_note = (
+                "WITHHELD: the record-index cross-check failed, so any syscall "
+                "number read at that index would be confidently wrong"
+            )
+            return r
+    else:
+        # NOT A PASS. hermit reported no turn, so comparing our None to its None
+        # would agree on nothing -- an earlier version of this code did exactly
+        # that and printed "OK". The weaker check that IS available is applied,
+        # and the result is labelled UNVERIFIED so the syscall number is read as
+        # what it is.
+        rec = pieces.get(r.info_record, "")
+        if rec.startswith("INFO "):
+            r.coord_cross_check = (
+                "UNVERIFIED: hermit published no turn for this divergence, so there "
+                "is nothing to check the record index against. The record at that "
+                "index IS an INFO record, which is necessary but not sufficient. "
+                "Treat the syscall coordinate below as indicative, not established."
+            )
+        else:
+            r.coord_cross_check = (
+                f"FAILED: record {r.info_record} of run 1's log is not an INFO record "
+                f"({rec[:40]!r}), so the index does not mean what we assumed"
+            )
+            r.syscall_note = "WITHHELD: the record index does not resolve to an INFO record"
+            return r
+
+    r.syscall_ordinal, r.syscall_dtid = syscall_at_or_before(pieces, r.info_record)
+    if r.syscall_ordinal is None:
+        r.syscall_note = (
+            "NONE_YET: no `finish syscall #N` record precedes the divergence in "
+            "run 1's log -- the two executions parted before any intercepted "
+            "syscall completed. This is a measured zero, not a gap."
+        )
+    if not keep:
+        for f in (left, right):
+            try:
+                f.unlink()
+            except OSError:
+                pass
+    return r
+
+
+def join_step_csv(results: list[RunResult], perf_dir: Path):
+    rows = {}
+    for csv_path in perf_dir.glob("step_profiles_*.csv"):
+        try:
+            with open(csv_path, newline="") as fh:
+                for row in csv.DictReader(fh):
+                    rows[row.get("step", "")] = row
+        except OSError:
+            continue
+    for r in results:
+        row = rows.get(f"repeat.{r.name}")
+        if not row:
+            continue
+
+        def num(key, cast):
+            v = row.get(key)
+            if v in (None, ""):
+                return None
+            try:
+                return cast(v)
+            except ValueError:
+                return None
+
+        r.inner_jobs = num("inner_jobs", int)
+        r.effective_cores = num("effective_cores", float)
+        r.peak_bytes = num("peak_bytes", int)
+        r.elapsed_s = num("elapsed_s", float)
+        r.oom_kills = num("oom_kills", int)
+        r.timed_out = row.get("timed_out") == "true"
+        r.co_tenants_start = num("co_tenants_start", int)
+        r.load1_start = num("load1_start", float)
+
+
+def measured_peak_overlap(results: list[RunResult]) -> int | None:
+    events = []
+    for r in results:
+        if r.started_at is None or r.ended_at is None:
+            continue
+        events.append((r.started_at, 1))
+        events.append((r.ended_at, -1))
+    if not events:
+        return None
+    events.sort()
+    cur = peak = 0
+    for _t, delta in events:
+        cur += delta
+        peak = max(peak, cur)
+    return peak
+
+
+# --------------------------------------------------------------------------- report
+def fmt(v, width, none="-"):
+    return (none if v is None else str(v)).rjust(width)
+
+
+def stats(values: list[int]) -> str:
+    if not values:
+        return "-"
+    s = sorted(values)
+    uniq = len(set(s))
+    return f"min {s[0]}  max {s[-1]}  distinct {uniq}"
+
+
+# The runs inside one CONCURRENT sweep are not independent, and the binomial
+# interval assumes they are.
+#
+# MEASURED, not assumed (experiments/race-oracle-repeat-variance_20260824, 800
+# runs, 40 sweeps, one arm held fixed, modes interleaved):
+#
+#   sequential  75/400 = 18.8%   dispersion 0.96   chi-square 18.3 / 19 df
+#   concurrent 144/400 = 36.0%   dispersion 2.64   chi-square 50.2 / 19 df
+#
+# Sequential is binomial to three digits. Concurrent is not: its sweep-to-sweep
+# variance is 2.64x what independence predicts, it tracks host load (r = +0.549
+# against +0.155 for sequential), and dropping the three highest-load sweeps
+# collapses it to 1.38. The extra variance enters through CONTENTION -- every
+# run in a concurrent sweep shares one contention episode -- not through the
+# oracle, which is why the correction belongs to the mode and not to the tool.
+#
+# WHY THIS IS NOT COSMETIC. On that data the naive interval declares two sweeps
+# of the IDENTICAL arm to be different in 15 of 190 pairs, 7.9%. Every one of
+# those is a false positive, against a nominal rate under 1% for non-overlapping
+# 95% intervals. Applying the correction takes it to 0 of 190. Sequential was
+# already 0 of 190 and is deliberately left uncorrected: widening an interval
+# that is already right would only hide real differences.
+#
+# A SINGLE SWEEP CANNOT ESTIMATE ITS OWN DESIGN EFFECT. The overdispersion is
+# BETWEEN sweeps, and one sweep has one contention episode, so there is nothing
+# to compare within it -- no N, however large, fixes that, because growing N
+# grows the episode rather than replicating it. Estimating it needs replicate
+# sweeps: R>=10 of them, roughly R x the wall cost of one sweep. Until a caller
+# does that, this measured constant is the honest default, and --design-effect
+# overrides it for anyone who has measured their own.
+CONCURRENT_DESIGN_EFFECT = 2.64
+SEQUENTIAL_DESIGN_EFFECT = 1.0
+
+
+def wilson95(k: int, n: int, deff: float = 1.0) -> tuple[float, float]:
+    """Wilson score interval for a proportion. Used instead of the normal
+    approximation because it stays inside [0,1] and behaves at k=0 and k=n,
+    which is exactly where a 20-run sweep lands.
+
+    `deff` is the design effect: the factor by which the true variance exceeds
+    the binomial variance. deff=1 is the ordinary Wilson interval. Larger values
+    widen it by sqrt(deff), which is the standard survey-sampling correction for
+    observations that are not independent."""
+    if n == 0:
+        return (0.0, 1.0)
+    z = 1.959963984540054 * (deff ** 0.5)
+    p = k / n
+    denom = 1 + z * z / n
+    centre = (p + z * z / (2 * n)) / denom
+    half = z * ((p * (1 - p) / n + z * z / (4 * n * n)) ** 0.5) / denom
+    return (max(0.0, centre - half), min(1.0, centre + half))
+
+
+def design_effect_for(mode: str, override: float | None) -> float:
+    """The design effect this mode's interval must carry. An explicit override
+    always wins, including an override of 1.0, which is how a caller who has
+    measured a quiet box asks for the uncorrected interval."""
+    if override is not None:
+        return override
+    return CONCURRENT_DESIGN_EFFECT if mode == "concurrent" else SEQUENTIAL_DESIGN_EFFECT
+
+
+def histogram(values: list[int]) -> list[tuple[int, int]]:
+    out = {}
+    for v in values:
+        out[v] = out.get(v, 0) + 1
+    return sorted(out.items())
+
+
+def write_report(args, meta: dict, results: list[RunResult], fh):
+    w = lambda s="": print(s, file=fh)
+    by = lambda c: [r for r in results if r.category == c]
+    diverged, clean, failed, noresult = (by("diverged"), by("clean"), by("failed"), by("no_result"))
+    notrun = by("not_run")
+    n = len(results)
+
+    w("=" * 78)
+    w(f"{PROG}: DISTRIBUTION OF FIRST DIVERGENCE POINTS")
+    w("=" * 78)
+    w(f"guest command    : {meta['guest_cmdline']}")
+    w(f"hermit binary    : {meta['hermit_bin']}")
+    w(f"                   sha256 {meta['hermit_sha256']}  ({meta['hermit_source']})")
+    w(f"backend          : {meta['backend']}")
+    w(f"hermit run flags : {meta['hermit_flags']}")
+    w(f"run id           : {meta['run_id']}")
+    w(f"artefacts        : {meta['out_dir']}")
+    w()
+    w("ONE RUN = one `hermit run --verify --verify-strict` invocation, i.e. TWO")
+    w("back-to-back guest executions compared against each other under the")
+    w(f"canonical BitwiseInfoV1 envelope. {n} such invocations give {n} independent")
+    w("observations. Runs are NOT compared against each other: two separately-")
+    w("produced runs need byte-identical argv and environment to be comparable")
+    w("(see `hermit log-diff --help`), and N nodes cannot have that.")
+    w()
+    w(f"MODE             : {meta['mode'].upper()} -- {meta['mode_meaning']}")
+    w(f"scheduling       : {meta['runner']}, -j {meta['jobs']}")
+    w(f"runner verdict   : {meta['runner_exit_label']}")
+    for line in _wrap(meta["runner_verdict_meaning"], 60):
+        w(f"                   {line}")
+    w(f"peak overlap     : {meta['peak_overlap']} (MEASURED from per-node start/end stamps,")
+    w("                   not inferred from -j)")
+    w(f"boxing           : {meta['boxing']}")
+    w(f"per-node budget  : declared preferred_inner_jobs=1 (hermit sequentializes")
+    w("                   guest threads onto one logical CPU). What each node")
+    w("                   actually got is in the PER-NODE column below.")
+    w(f"disk bound       : {meta['disk_bound']}")
+    w(f"wall clock       : {meta['wall_s']:.1f}s")
+    w()
+    pre = meta.get("preflight")
+    if pre:
+        w("-" * 78)
+        w("PREFLIGHT (1 real run of the real guest, before the sweep)")
+        w("-" * 78)
+        coords = (
+            f"info_record {pre['info_record']}  sched_turn {pre['sched_turn']}  "
+            f"virtual_ns {pre['virtual_ns']}"
+            if pre["category"] == "diverged"
+            else pre["why"]
+        )
+        w(f"  {pre['category'].upper()}: {coords}")
+        for line in _wrap(
+            "It ran SOLO before the sweep, so under --mode concurrent it belongs to a "
+            "different population than the N nodes below and is NOT counted in any "
+            "ratio there. It is reported because it is a real verdict, not because it "
+            "is part of the distribution.",
+            74,
+        ):
+            w(f"  {line}")
+        w()
+    w("-" * 78)
+    w("OUTCOME CATEGORIES (every run is in exactly one; they sum to N)")
+    w("-" * 78)
+    w(f"  diverged   {len(diverged):4d} / {n}   the two executions parted; a point is reported below")
+    w(f"  clean      {len(clean):4d} / {n}   verified deterministic -- a data point, not an absence")
+    w(f"  failed     {len(failed):4d} / {n}   NO verdict (crash / deadline / cap kill); NOT counted as either")
+    w(f"  no-result  {len(noresult):4d} / {n}   ran, but nothing comparable was selected")
+    w(f"  not-run    {len(notrun):4d} / {n}   never launched -- the sweep was cut short")
+    if notrun:
+        w()
+        w(f"  *** THE SWEEP IS TRUNCATED: {len(notrun)} of {n} nodes never started, so every")
+        w(f"  ratio above is out of {n - len(notrun)} actual runs, NOT {n}. The scheduler")
+        w("  stops launching new steps once a node fails. Read the failed nodes")
+        w("  below, then re-run; --mode concurrent starts every node at once and")
+        w("  so is not exposed to this.")
+    measured = len(diverged) + len(clean)
+    if measured:
+        w()
+        deff = design_effect_for(meta["mode"], getattr(args, "design_effect", None))
+        lo, hi = wilson95(len(diverged), measured, deff)
+        w(f"  divergence rate: {len(diverged)}/{measured} = {100*len(diverged)/measured:.0f}% of the runs that "
+          f"produced a verdict")
+        # A BARE RATIO AT N=20 INVITES OVER-READING. Measured on sabre +
+        # `sh -c 'seq 1 2000 | wc -l'` on 2026-08-24: 11/20 concurrent against
+        # 7/20 sequential -- a 20-point gap whose intervals overlap heavily. Two
+        # single sweeps cannot establish that difference, and the interval is
+        # printed so nobody reports one from them.
+        w(f"                   95% interval {100*lo:.0f}%-{100*hi:.0f}% (Wilson, n={measured}"
+          f"{'' if deff == 1.0 else f', design effect {deff:g}'}). Two sweeps whose")
+        w(f"                   intervals overlap have not shown a difference.")
+        if deff != 1.0:
+            # The uncorrected number is shown so the correction is auditable
+            # rather than a figure the reader has to take on trust -- and so the
+            # size of it is visible, which is the part that argues for itself.
+            nlo, nhi = wilson95(len(diverged), measured, 1.0)
+            w(f"                   BINOMIAL-ONLY interval would be "
+              f"{100*nlo:.0f}%-{100*nhi:.0f}%, and is TOO NARROW here: runs in one")
+            w(f"                   {meta['mode']} sweep share a contention episode, so they are not")
+            w(f"                   independent. Measured dispersion {deff:g}x binomial over 20 replicate")
+            w(f"                   sweeps; on that data the uncorrected interval called two sweeps of")
+            w(f"                   the SAME arm different in 15 of 190 pairs (7.9%), the corrected one")
+            w(f"                   in 0 of 190. See experiments/race-oracle-repeat-variance_20260824.")
+            w(f"                   Override with --design-effect if you have measured your own.")
+        # Say what this means in the project's own vocabulary rather than
+        # leaving the reader to translate a ratio into an assurance claim.
+        bitwise = all(
+            "bitwise_parity=true" in (r.why or "") for r in clean
+        ) if clean else False
+        if diverged or failed or noresult or notrun:
+            w(f"  assurance        : NOT L4. L4 is L2 repeated ~20x with NO divergence, and "
+              f"{len(diverged)} of {measured} diverged"
+              + (f" ({len(failed) + len(noresult) + len(notrun)} more produced no verdict)"
+                 if (failed or noresult or notrun) else "")
+              + ".")
+        elif measured >= 20 and bitwise:
+            w(f"  assurance        : L4 evidence -- {measured} L2 verify pairs, all "
+              f"bitwise_parity=true, none diverged, mode={meta['mode']}.")
+        else:
+            w(f"  assurance        : L2 x{measured}, none diverged. L4 wants ~20; "
+              f"this run has {measured}.")
+    w()
+
+    if diverged:
+        w("-" * 78)
+        w(f"FIRST DIVERGENCE POINTS ({len(diverged)} observations)")
+        w("-" * 78)
+        w(f"{'run':<8}{'info_record':>12}{'sched_turn':>12}{'virtual_ns':>22}  syscall")
+        for r in diverged:
+            sc = (
+                f"dtid {r.syscall_dtid} #{r.syscall_ordinal}"
+                + ("" if r.coord_verified else "  (?)")
+                if r.syscall_ordinal is not None
+                else (r.syscall_note or "-").split(":")[0]
+            )
+            w(
+                f"{r.name:<8}{fmt(r.info_record,12)}{fmt(r.sched_turn,12)}"
+                f"{fmt(r.virtual_ns,22)}  {sc}"
+            )
+        w()
+        for label, vals in (
+            ("info_record", [r.info_record for r in diverged if r.info_record is not None]),
+            ("sched_turn", [r.sched_turn for r in diverged if r.sched_turn is not None]),
+            ("virtual_ns", [r.virtual_ns for r in diverged if r.virtual_ns is not None]),
+            ("syscall(#)", [r.syscall_ordinal for r in diverged if r.syscall_ordinal is not None]),
+        ):
+            missing = len(diverged) - len(vals)
+            tail = f"   [{missing} of {len(diverged)} not reported]" if missing else ""
+            w(f"  {label:<12} {stats(vals)}{tail}")
+        unverified = [r.name for r in diverged if r.syscall_ordinal is not None and not r.coord_verified]
+        if unverified:
+            w(f"  (?) marks an UNVERIFIED coordinate ({len(unverified)} of {len(diverged)}): hermit")
+            w("      published no scheduler turn for that divergence, so the record index")
+            w("      this tool used to read the syscall number could not be cross-checked.")
+        notes = {}
+        for r in diverged:
+            if r.syscall_ordinal is None and r.syscall_note:
+                notes.setdefault(r.syscall_note, []).append(r.name)
+        for r in diverged:
+            if r.sched_turn is None and r.turn_note:
+                notes.setdefault(r.turn_note, []).append(r.name)
+        for note, names in notes.items():
+            w(f"    for {len(names)} run(s) ({', '.join(names[:6])}{'...' if len(names) > 6 else ''}):")
+            for line in _wrap(note, 66):
+                w(f"      {line}")
+        w()
+        for label, vals in (
+            ("info_record", [r.info_record for r in diverged if r.info_record is not None]),
+            ("sched_turn", [r.sched_turn for r in diverged if r.sched_turn is not None]),
+        ):
+            h = histogram(vals)
+            if h:
+                w(f"  {label} histogram: " + "  ".join(f"{v}x{c}" for v, c in h))
+        w()
+        w("  UNIT KEYSPACES -- these integers are NOT on the same axis. Reading one")
+        w("  against another is the misread this section exists to prevent.")
+        for name, desc in UNIT_KEYSPACES:
+            w(f"    {name}:")
+            for line in _wrap(desc, 68):
+                w(f"      {line}")
+        w()
+        w("  COORDINATE PROVENANCE -- grouped by cross-check outcome; each run's own")
+        w("  wording is in result.json")
+        prov: dict[tuple, list[str]] = {}
+        for r in diverged:
+            prov.setdefault((r.coord_source, _check_kind(r.coord_cross_check)), []).append(r.name)
+        for (source, kind), names in prov.items():
+            w(f"    {len(names)} run(s) [{kind}]: {source}")
+            for line in _wrap(CHECK_KIND_MEANING.get(kind, "(no cross-check recorded)"), 66):
+                w(f"      {line}")
+        w()
+
+    missing_units = []
+    if any(r.info_record is None for r in diverged):
+        missing_units.append(
+            "info_record is missing on some runs: `hermit run --verify-json` does not "
+            "carry first_divergent_record today (hermit#2386, which publishes it to "
+            "the verify report, is NOT landed), so it is recovered by re-running "
+            "`hermit log-diff --json` on the retained log pair -- which needs both "
+            "logs to have been kept."
+        )
+    if any(
+        r.syscall_ordinal is None and not (r.syscall_note or "").startswith("NONE_YET")
+        for r in diverged
+    ):
+        missing_units.append(
+            "syscall is missing on some runs for a reason other than 'none had "
+            "completed yet': nothing in hermit publishes a syscall coordinate for a "
+            "divergence, so this tool reads it out of the retained log at the located "
+            "record, and WITHHOLDS it whenever the record-index cross-check fails. "
+            "A NONE_YET row is a measured zero and is not in this category."
+        )
+    if missing_units:
+        w("-" * 78)
+        w("UNITS THAT ARE MISSING, AND WHY (unimplemented upstream, not absent from the data)")
+        w("-" * 78)
+        for m in missing_units:
+            for line in _wrap(m, 76):
+                w(f"  {line}")
+            w()
+
+    if failed or noresult or notrun:
+        w("-" * 78)
+        w(f"RUNS THAT PRODUCED NO DIVERGENCE POINT ({len(failed) + len(noresult) + len(notrun)})")
+        w("-" * 78)
+        w("  These are NOT clean and NOT diverged. Counting them either way would be")
+        w("  a value that reads as information and carries none.")
+        if notrun:
+            w(f"  {len(notrun)} of them NEVER RAN: " + ", ".join(r.name for r in notrun))
+        shown = failed + noresult
+        _summarize_failures(shown, w)
+        w("  FULL DETAIL for the first 3 (the rest are in result.json):")
+        for r in shown[:3]:
+            w(f"    {r.name}  [{r.category}]  {r.why}")
+            for k in ("bound.wall", "bound.bytes", "truncated"):
+                if k in r.safehermit_bounds:
+                    w(f"        safehermit {k} = {r.safehermit_bounds[k]}")
+            for line in r.error_tail:
+                w(f"        | {line}")
+        if len(shown) > 3:
+            w(f"    ... and {len(shown) - 3} more: " + ", ".join(r.name for r in shown[3:]))
+        w()
+
+    w("-" * 78)
+    w("PER-NODE RESOURCE FACTS (from the DAG runner's own step CSV)")
+    w("-" * 78)
+    w("  A divergence distribution collected under accidental oversubscription")
+    w("  measures the harness. These are what each node ACTUALLY got.")
+    w(f"  {'run':<8}{'inner_jobs':>11}{'eff_cores':>11}{'peak_MB':>10}{'elapsed_s':>11}{'oom':>5}{'co_tenants':>12}{'load1':>9}")
+    for r in results:
+        w(
+            f"  {r.name:<8}{fmt(r.inner_jobs,11)}{fmt(r.effective_cores,11)}"
+            f"{fmt(round(r.peak_bytes/1e6,1) if r.peak_bytes else None,10)}"
+            f"{fmt(r.elapsed_s,11)}{fmt(r.oom_kills,5)}{fmt(r.co_tenants_start,12)}"
+            f"{fmt(r.load1_start,9)}"
+        )
+    if all(r.inner_jobs is None for r in results):
+        w("  (all NOT_MEASURED: the runner wrote no step CSV -- was --no-profile set?)")
+    w()
+    w("-" * 78)
+    w("KNOWN CONFOUND, AND WHAT IS DONE ABOUT IT")
+    w("-" * 78)
+    for line in _wrap(
+        "Hermit makes host files outside its private /tmp visible to the guest, and a "
+        "verified cell runs with the launcher's cwd. So a directory entry appearing or "
+        "vanishing between a node's two executions changes that directory's st_size and "
+        "reads as a canonical-log divergence with both guest executions exiting zero. "
+        "Measured independently on this box, SERIALLY: a validate diverged because "
+        'newfstatat("/home/newton") returned 5788 then 5810 '
+        "(ai_docs/validate-concurrency-characterization-20260824.md, findings F-3 and F-15).",
+        76,
+    ):
+        w(f"  {line}")
+    w()
+    if meta["shared_cwd"]:
+        w(f"  *** NOT APPLIED, BY REQUEST: --cwd {meta['shared_cwd']}")
+        w("  Every node shares that directory. If anything writes there during the")
+        w("  sweep -- including another node -- the divergence rate below is partly")
+        w("  a property of this harness and the box, not of the cell.")
+    else:
+        w("  APPLIED: each node runs with cwd set to its own empty, quiescent")
+        w("  <node>/cwd/ directory, created before the sweep and never written again.")
+    w("  NOT APPLIED: the shared ancestors ($HOME, the checkout root, ignored/)")
+    w("  are still visible to the guest and are still written by other agents on")
+    w("  this box. A divergence whose first record is a newfstatat on one of")
+    w("  those is this mechanism, not the cell. Check the retained logs with")
+    w("  --keep-artifacts before believing a low-rate divergence.")
+    w()
+    other = "concurrent" if meta["mode"] == "sequential" else "sequential"
+    w(f"THE OTHER MODE MEASURES SOMETHING ELSE. Re-run with --mode {other} to get")
+    w(f"the {'contention-exposed' if other == 'concurrent' else 'quiet-box baseline'} population; do not merge the two histograms.")
+    w()
+    # THE LAST LINE IS A VERDICT, ALWAYS, AND IT MUST AGREE WITH THE BODY.
+    # An owner ran -n 200 where all 200 failed on a missing backend. The
+    # no-divergence-point section said so correctly, but the report ended on a
+    # tip about run modes, so 200 runs were spent learning that a build lacked
+    # SaBRe. A reader who reads only the last line must not be misled by it.
+    w("=" * 78)
+    for line in verdict_lines(meta, results):
+        w(line)
+    w("=" * 78)
+
+
+def verdict_lines(meta: dict, results: list[RunResult]) -> list[str]:
+    """The terminal verdict. Returned as lines so the report and the process's
+    own final stderr line are generated from ONE place and cannot drift."""
+    by = lambda c: [r for r in results if r.category == c]
+    diverged, clean = by("diverged"), by("clean")
+    nores = by("failed") + by("no_result") + by("not_run")
+    n = len(results)
+    measured = len(diverged) + len(clean)
+    if measured == 0:
+        cause = homogeneous_failure_cause(nores)
+        head = f"VERDICT: ALL {n} RUNS FAILED. NO DISTRIBUTION WAS MEASURED."
+        if cause and looks_like_config_error(cause):
+            return [
+                head,
+                "This is a CONFIGURATION ERROR, not data: every run failed the same",
+                "way, so there is nothing here about the cell. The single cause was:",
+                f"    {cause[:200]}",
+                "Fix that and re-run. Nothing below or above this line is a measurement.",
+            ]
+        if cause:
+            return [
+                head,
+                f"Every run failed identically, so this is ONE failure observed {n} times,",
+                "not a distribution. The single cause was:",
+                f"    {cause[:200]}",
+            ]
+        return [
+            head,
+            f"{len(nores)} runs produced no verdict, with more than one distinct cause;",
+            "see the no-divergence-point section above. This is not a distribution.",
+        ]
+    lines = []
+    if nores:
+        lines.append(
+            f"VERDICT: {len(diverged)} diverged, {len(clean)} clean, and {len(nores)} of {n} produced NO"
+        )
+        lines.append(
+            f"verdict -- every rate above is out of {measured}, not {n}. Read the failures."
+        )
+    elif diverged:
+        lines.append(
+            f"VERDICT: {len(diverged)} of {n} runs DIVERGED ({100*len(diverged)//n}%), {len(clean)} clean. Not L4."
+        )
+    else:
+        lines.append(f"VERDICT: all {n} runs clean, none diverged, mode={meta['mode']}.")
+    return lines
+
+
+CHECK_KIND_MEANING = {
+    "VERIFIED": (
+        "reading run 1's log at the reported record index independently "
+        "reproduces the scheduler turn and virtual time hermit itself reported, "
+        "so the index -- and the syscall coordinate read from it -- is right."
+    ),
+    "UNVERIFIED": (
+        "hermit published no scheduler turn for this divergence, so there is "
+        "nothing to check the record index against. The record at that index IS "
+        "an INFO record, which is necessary but not sufficient. Treat the "
+        "syscall coordinate as indicative, not established."
+    ),
+    "FAILED": (
+        "the record index does not mean what this tool assumed, so the syscall "
+        "coordinate was withheld rather than reported wrong."
+    ),
+    "UNAVAILABLE": (
+        "the record index could not be obtained at all (no retained log pair, or "
+        "log-diff produced none), so only the coordinates hermit published are "
+        "reported."
+    ),
+    "NONE": "no cross-check was recorded for these runs.",
+}
+
+
+def _check_kind(check: str | None) -> str:
+    """Which outcome a cross-check line reports. Grouping on the leading keyword
+    keeps identical outcomes as one entry without mangling the numbers inside the
+    sentence, which an earlier digit-substituting version did."""
+    if not check:
+        return "NONE"
+    head = check.split(":", 1)[0].strip()
+    return head if head in CHECK_KIND_MEANING else "NONE"
+
+
+def best_cause_line(r: "RunResult") -> str:
+    """The most informative line of a failed run's output.
+
+    NOT simply the last line. hermit prints its diagnosis on an `Error:` line and
+    then a wrapped `     > errno` continuation, so taking the tail yields
+    "> No such file or directory (os error 2)" -- true, and useless without the
+    line above it that names the program."""
+    for line in reversed(r.error_tail):
+        stripped = line.strip()
+        if stripped.startswith(("Error:", "error:", "hermit:")) and len(stripped) > 12:
+            return stripped
+    for line in reversed(r.error_tail):
+        stripped = line.strip()
+        if stripped and not stripped.startswith(">"):
+            return stripped
+    return r.why
+
+
+def homogeneous_failure_cause(runs: list[RunResult]) -> str | None:
+    """The single cause when EVERY non-measuring run failed the same way.
+
+    N identical failures are one configuration error observed N times, not a
+    distribution of anything. Reported as a cause, not as data."""
+    if not runs:
+        return None
+    causes = {best_cause_line(r) for r in runs}
+    return causes.pop() if len(causes) == 1 else None
+
+
+CONFIG_ERROR_MARKERS = (
+    # backend not compiled in / prerequisites unmet
+    #   hermit-cli/src/lib.rs: "backend `sabre` is unavailable: SaBRe support was
+    #   not included in this build"
+    "is unavailable:",
+    "was not included in this build",
+    # guest not reachable
+    "is not visible through the configured guest mounts",
+    "does not exist or is not accessible",
+    "is under host /tmp",
+    "No such file or directory",
+    "command not found",
+    "Permission denied",
+    # harness could not produce the guest at all
+    "prebuilt fixture is missing",
+    "compiled guest is missing or not executable",
+)
+
+
+def looks_like_config_error(cause: str | None) -> bool:
+    """Whether a cause is the environment being wrong rather than the cell being
+    flaky. Deliberately a small, literal list: guessing wider would relabel real
+    product failures as the user's fault."""
+    return bool(cause) and any(m in cause for m in CONFIG_ERROR_MARKERS)
+
+
+def _summarize_failures(runs: list[RunResult], w):
+    """Group identical failure tails. With 20 nodes, 20 copies of one message is
+    one finding, and printing it 20 times hides that."""
+    groups: dict[str, list[str]] = {}
+    for r in runs:
+        key = best_cause_line(r)
+        groups.setdefault(key, []).append(r.name)
+    w("  GROUPED BY LAST LINE:")
+    for key, names in sorted(groups.items(), key=lambda kv: -len(kv[1])):
+        w(f"    {len(names)}x  {key[:140]}")
+        w(f"          runs: {', '.join(names)}")
+    w()
+
+
+def _wrap(text: str, width: int) -> list[str]:
+    words, lines, cur = text.split(), [], ""
+    for word in words:
+        if cur and len(cur) + 1 + len(word) > width:
+            lines.append(cur)
+            cur = word
+        else:
+            cur = f"{cur} {word}".strip()
+    if cur:
+        lines.append(cur)
+    return lines
+
+
+# --------------------------------------------------------------------------- main
+def main() -> int:
+    p = argparse.ArgumentParser(
+        prog=PROG,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description=__doc__,
+        epilog=(
+            "examples\n"
+            "  bin/hermit-repeat -n 20 -- /bin/echo hello\n"
+            "  bin/hermit-repeat -n 20 --mode concurrent -- ./target/debug/mythread\n"
+            "  bin/hermit-repeat -n 20 --mode concurrent --backend liteinst -- /bin/echo hi\n"
+            "  bin/hermit-repeat -n 8 --hermit-arg=--detlog-io-buffers -- ./guest\n"
+            "\n"
+            "NOTE: --hermit-arg and --global-arg need the =VALUE form when the value\n"
+            "starts with '-', e.g. --hermit-arg=--detlog-io-buffers. Repeat the flag\n"
+            "for each extra argument.\n"
+        ),
+    )
+    p.add_argument("-n", "--runs", type=int, default=20, help="how many times to run the guest (default 20)")
+    p.add_argument(
+        "--mode",
+        choices=("sequential", "concurrent"),
+        default="sequential",
+        help=(
+            "sequential (default): one node at a time, the quiet-box baseline. "
+            "concurrent: all N at once, which measures the cell PLUS contention. "
+            "These are different populations and are labelled as such."
+        ),
+    )
+    p.add_argument("--backend", help="hermit --backend (ptrace|dbt|liteinst|sabre|kvm|e9patch)")
+    p.add_argument("--hermit-arg", action="append", default=[], help="extra arg for `hermit run`, repeatable; use the =VALUE form when it starts with '-' (--hermit-arg=--detlog-io-buffers)")
+    p.add_argument("--global-arg", action="append", default=[], help="extra hermit GLOBAL arg (before the subcommand), repeatable; same =VALUE rule")
+    p.add_argument("-j", "--jobs", type=int, help="concurrency in concurrent mode (default: N)")
+    p.add_argument("--deadline", type=int, default=900, help="per-node wall deadline in seconds, enforced by safehermit's cgroup (default 900)")
+    p.add_argument("--sh-bin", help="hermit binary to run (else HERMIT_BIN, else target/release/hermit)")
+    p.add_argument("--out", help="artefact directory (default ignored/hermit-repeat/<run-id>)")
+    p.add_argument("--json", help="also write the whole result as JSON here")
+    p.add_argument("--keep-artifacts", action="store_true", help="keep the retained verify log pairs (large); by default they are deleted once their coordinates are extracted")
+    p.add_argument("--max-total-mb", type=int, default=4096, help="abort the run if artefacts exceed this many MB (default 4096)")
+    p.add_argument("--node-rss-bytes", type=int, default=2 * 1024**3, help="planner hint: expected RSS per node (default 2 GiB)")
+    p.add_argument("--node-mem-max-bytes", type=int, default=8 * 1024**3, help="hard cgroup memory cap per node (default 8 GiB)")
+    p.add_argument(
+        "--cwd",
+        help=(
+            "run EVERY node with this SHARED working directory instead of each node's "
+            "own private empty one. This is a measurement knob for studying the cwd "
+            "as a nondeterminism source, not a normal option: on btrfs a directory's "
+            "st_size changes on every entry added or removed, so a shared, live "
+            "directory makes the divergence rate a property of whatever else is "
+            "writing there. Named in the report when set."
+        ),
+    )
+    p.add_argument(
+        "--design-effect",
+        type=float,
+        default=None,
+        metavar="D",
+        help=(
+            "override the design effect used to widen the reported interval. "
+            f"Default: {CONCURRENT_DESIGN_EFFECT:g} in concurrent mode and "
+            f"{SEQUENTIAL_DESIGN_EFFECT:g} in sequential, both MEASURED over 20 "
+            "replicate sweeps (experiments/race-oracle-repeat-variance_20260824). "
+            "Runs inside one concurrent sweep share a contention episode and are "
+            "not independent, so the binomial interval is too narrow there. Pass 1 "
+            "for the uncorrected binomial interval, or your own measured value; a "
+            "single sweep CANNOT estimate this, it needs replicate sweeps"
+        ),
+    )
+    p.add_argument("--no-preflight", action="store_true", help="skip the single probe run that checks this configuration can produce a verdict at all; use when a genuinely flaky cell fails the probe")
+    p.add_argument("--dry-run", action="store_true", help="print the generated DAG and the exact per-node command, run nothing")
+    p.add_argument("-v", "--verbose", action="store_true", help="echo the runner's whole stream; it is written to <out>/runner.log either way")
+    p.add_argument("--selftest", action="store_true", help="check the log-coordinate parsing against built-in fixtures and exit")
+    p.add_argument("guest", nargs=argparse.REMAINDER, help="-- GUEST [ARGS...]")
+
+    args = p.parse_args()
+    if args.selftest:
+        return _selftest()
+    guest = args.guest
+    if guest and guest[0] == "--":
+        guest = guest[1:]
+    if not guest:
+        die("no guest command given. Usage: hermit-repeat [options] -- GUEST [ARGS...]")
+    if args.runs < 1:
+        die(f"--runs must be >= 1 (got {args.runs})")
+
+    # BOTH NAMES. agent-utils renamed the DAG runner (rs/safe-ci-dag-runner ->
+    # rs/dagrun, executable -> dagrun, profile store .safe-ci-dag-runner/profiles
+    # -> .dagrun/profiles) and hermit main already pins the renamed agent-utils,
+    # so this checkout will flip under us. Resolve whichever is present and NAME
+    # the one that won, rather than hardcoding a name that is on its way out.
+    candidates = [
+        ROOT / "agent-utils/common/bin/dagrun",
+        ROOT / "agent-utils/common/bin/safe-ci-dag-runner",
+    ]
+    runner = next((c for c in candidates if c.exists()), None)
+    if runner is None:
+        die(
+            "no DAG runner found. Looked for, in order:\n  "
+            + "\n  ".join(str(c) for c in candidates)
+            + "\nIs the agent-utils submodule checked out?"
+        )
+    if not (ROOT / "bin/safehermit").exists():
+        die(f"bin/safehermit not found at {ROOT / 'bin/safehermit'}")
+
+    hermit_bin, hermit_source = resolve_hermit(args.sh_bin)
+    if not os.access(hermit_bin, os.X_OK):
+        die(f"not executable: {hermit_bin}")
+
+    run_id = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime()) + f"-{os.getpid()}"
+    out = Path(args.out) if args.out else ROOT / "ignored" / "hermit-repeat" / run_id
+    out.mkdir(parents=True, exist_ok=True)
+    perf_dir = out / "profiles"
+    perf_dir.mkdir(exist_ok=True)
+
+    dag = build_dag(args, hermit_bin, out, guest)
+    dag_path = out / "dag.json"
+    dag_path.write_text(json.dumps(dag, indent=2))
+
+    jobs = 1 if args.mode == "sequential" else (args.jobs or args.runs)
+    waves = (args.runs + jobs - 1) // jobs
+    run_timeout = args.deadline * waves + 300
+
+    if args.dry_run:
+        print(f"{PROG}: DAG written to {dag_path} ({args.runs} disconnected nodes)")
+        print(f"{PROG}: mode={args.mode} -j {jobs} run-timeout {run_timeout}s")
+        print(f"{PROG}: node 1 command:\n  {dag['steps'][0]['cmd']}")
+        print(f"{PROG}: runner command:\n  {runner} run --dag {dag_path} -j {jobs} "
+              f"--keep-going --run-timeout {run_timeout} --perf-dir {perf_dir}")
+        return 0
+
+    preflight_result: RunResult | None = None
+    # ---------------------------------------------------------------- preflight
+    # ONE RUN BEFORE N. An owner spent 200 runs discovering that the build had no
+    # SaBRe backend. Every one of those failures was identical and none of them
+    # was a measurement. A single real run of the real guest with the real flags
+    # answers "can this configuration produce a verdict at all" in the time one
+    # node takes, and refuses in seconds instead of after the whole sweep.
+    if not args.no_preflight:
+        pre_args = argparse.Namespace(**vars(args))
+        pre_args.runs = 1
+        pre_dir = out / "preflight"
+        pre_dir.mkdir(parents=True, exist_ok=True)
+        pre_dag = build_dag(pre_args, hermit_bin, pre_dir, guest)
+        pre_dag_path = pre_dir / "dag.json"
+        pre_dag_path.write_text(json.dumps(pre_dag, indent=2))
+        say(f"{PROG}: preflight -- one run of the real guest before all {args.runs}")
+        subprocess.run(
+            [str(runner), "run", "--dag", str(pre_dag_path), "-j", "1", "--keep-going",
+             "--run-timeout", str(args.deadline + 120), "--no-profile"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False,
+        )
+        probe = RunResult(index=1, name="run1", dir=str(pre_dir / "runs" / "run1"))
+        collect_one(probe, hermit_bin, keep=False)
+        if probe.category not in ("diverged", "clean"):
+            say("")
+            say(f"{PROG}: REFUSED -- the preflight run produced no verdict, so all "
+                f"{args.runs} runs would fail the same way.")
+            say(f"{PROG}:   category : {probe.category}")
+            say(f"{PROG}:   why      : {probe.why}")
+            for line in probe.error_tail:
+                say(f"{PROG}:   | {line}")
+            cause = best_cause_line(probe)
+            if looks_like_config_error(cause):
+                say(f"{PROG}: This reads as a CONFIGURATION ERROR (backend, binary or "
+                    f"guest), not a flaky cell. Fix it and re-run.")
+            say(f"{PROG}: If you believe this is a flake rather than a configuration "
+                f"error, re-run with --no-preflight.")
+            say(f"{PROG}: artefacts: {pre_dir}")
+            return 2
+        say(f"{PROG}: preflight OK ({probe.category}) -- running all {args.runs}")
+        # KEEP IT. The probe is a real verify pair on the real guest, so its
+        # verdict is a data point and throwing it away wastes evidence. It is
+        # NOT merged into the distribution: it ran SOLO, before the sweep, so
+        # under --mode concurrent it belongs to a different population than the
+        # N nodes it precedes -- which is the exact conflation this tool refuses
+        # to make elsewhere. Reported on its own line instead.
+        preflight_result = probe
+
+    cmd = [
+        str(runner), "run",
+        "--dag", str(dag_path),
+        "-j", str(jobs),
+        "--keep-going",
+        "--run-timeout", str(run_timeout),
+        "--perf-dir", str(perf_dir),
+    ]
+    say(f"{PROG}: {args.runs} nodes, mode={args.mode}, -j {jobs}, artefacts in {out}")
+    say(f"{PROG}: {' '.join(shlex.quote(c) for c in cmd)}")
+
+    proc_holder = {}
+
+    def kill_run():
+        proc = proc_holder.get("p")
+        if proc and proc.poll() is None:
+            proc.terminate()
+
+    guard = DiskGuard(out, args.max_total_mb * 1024 * 1024, kill_run)
+    guard.start()
+    started = time.time()
+    runner_log = out / "runner.log"
+    # EVERY line is kept; only the ECHO is filtered. 20 nodes x hermit's own
+    # per-run chatter buries the report, but a wrapper that quietly discards its
+    # child's output is how a failure goes unnoticed, so the full stream always
+    # lands in runner.log and -v echoes all of it.
+    with open(runner_log, "w") as lf:
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        proc_holder["p"] = proc
+        for line in proc.stdout:
+            lf.write(line)
+            if args.verbose or line.startswith((runner.name, "safe-ci-dag-runner", "dagrun")) or " FAIL " in line:
+                sys.stderr.write(line)
+        runner_rc = proc.wait()
+    wall = time.time() - started
+    guard.stop_evt.set()
+    guard.join(timeout=10)
+
+    width = len(str(args.runs))
+    results = [
+        RunResult(index=i, name=f"run{i:0{width}d}", dir=str(out / "runs" / f"run{i:0{width}d}"))
+        for i in range(1, args.runs + 1)
+    ]
+    for r in results:
+        collect_one(r, hermit_bin, args.keep_artifacts)
+    join_step_csv(results, perf_dir)
+
+    peak = measured_peak_overlap(results)
+    disk_bound = (
+        f"APPLIED: {args.max_total_mb} MB total artefact cap, polled every 2s "
+        f"(peak observed {guard.peak/1e6:.1f} MB)"
+        + ("  *** CAP FIRED: the run was cut short ***" if guard.breached else "")
+    )
+    disk_bound += (
+        "\n                   NOTE: safehermit's 64 MiB cap covers hermit's STDERR only; "
+        "under --verify hermit's log goes to files that cap never sees, which is why "
+        "this separate cap exists."
+    )
+    mode_meaning = (
+        f"{args.runs} disconnected DAG nodes run ONE AT A TIME; measures the cell with "
+        "the box as quiet as it gets"
+        if args.mode == "sequential"
+        else f"{args.runs} disconnected DAG nodes run AT ONCE; measures the cell PLUS "
+        "host contention, which is itself a flake source"
+    )
+
+    meta = {
+        "run_id": run_id,
+        "guest_cmdline": " ".join(shlex.quote(g) for g in guest),
+        "hermit_bin": hermit_bin,
+        "hermit_sha256": sha256_of(hermit_bin),
+        "hermit_source": hermit_source,
+        "backend": args.backend or "ptrace (hermit default; not passed explicitly)",
+        "hermit_flags": " ".join(
+            ["run", "--verify", "--verify-strict", "--keep-logs"] + args.hermit_arg
+        ),
+        "mode": args.mode,
+        "mode_meaning": mode_meaning,
+        "runner": f"{runner.name} (cgroup-boxed, two-level) at {runner}",
+        "jobs": jobs,
+        "peak_overlap": peak if peak is not None else "NOT_MEASURED (no start/end stamps)",
+        "boxing": "bin/safehermit per node; its APPLIED/NOT_APPLIED report is at "
+        "<node>/safehermit.txt",
+        "runner_verdict_meaning": (
+            "the runner's PASS/FAIL answers 'did every node produce a MEASUREMENT', "
+            "not 'did the cell pass'. A diverging node exits 0 to it on purpose."
+        ),
+        "disk_bound": disk_bound,
+        "wall_s": wall,
+        "shared_cwd": os.path.abspath(args.cwd) if args.cwd else None,
+        "preflight": (
+            None
+            if preflight_result is None
+            else {
+                "category": preflight_result.category,
+                "why": preflight_result.why,
+                "info_record": preflight_result.info_record,
+                "sched_turn": preflight_result.sched_turn,
+                "virtual_ns": preflight_result.virtual_ns,
+                "syscall_ordinal": preflight_result.syscall_ordinal,
+                "syscall_dtid": preflight_result.syscall_dtid,
+                "ran": "SOLO, before the sweep -- a different population from the "
+                       "N nodes, so deliberately NOT merged into the distribution",
+            }
+        ),
+        "out_dir": str(out),
+        "runner_exit": runner_rc,
+        "runner_exit_label": {0: "PASS (exit 0)", 1: "a node failed (exit 1)",
+                              2: "bad usage / bad DAG (exit 2)",
+                              3: "cgroup boxing unavailable (exit 3)"}.get(
+            runner_rc, f"exit {runner_rc}"),
+        "runner_log": str(runner_log),
+    }
+
+    report_path = out / "report.txt"
+    with open(report_path, "w") as fh:
+        write_report(args, meta, results, fh)
+    sys.stdout.write(report_path.read_text())
+
+    # The interval goes in the JSON too. A machine consumer that recomputed it
+    # from k and n would get the binomial one and lose the correction silently,
+    # which is the same defect in a different place.
+    _div = sum(1 for r in results if r.category == "diverged")
+    _measured = _div + sum(1 for r in results if r.category == "clean")
+    _deff = design_effect_for(meta["mode"], args.design_effect)
+    _lo, _hi = wilson95(_div, _measured, _deff)
+    _nlo, _nhi = wilson95(_div, _measured, 1.0)
+    meta["design_effect"] = _deff
+    meta["design_effect_source"] = (
+        "explicit --design-effect" if args.design_effect is not None
+        else f"measured default for mode={meta['mode']} "
+             "(experiments/race-oracle-repeat-variance_20260824)"
+    )
+    meta["divergence_rate"] = {
+        "diverged": _div,
+        "measured": _measured,
+        "rate": (_div / _measured) if _measured else None,
+        "wilson95": [_lo, _hi] if _measured else None,
+        "wilson95_binomial_only": [_nlo, _nhi] if _measured else None,
+        "note": (
+            "wilson95 carries the design effect; wilson95_binomial_only assumes "
+            "independence, which concurrent mode does not have"
+        ),
+    }
+    payload = {"meta": meta, "runs": [asdict(r) for r in results],
+               "verdict": verdict_lines(meta, results)}
+    (out / "result.json").write_text(json.dumps(payload, indent=2))
+    if args.json:
+        Path(args.json).write_text(json.dumps(payload, indent=2))
+
+    diverged = [r for r in results if r.category == "diverged"]
+    clean = [r for r in results if r.category == "clean"]
+    # The LAST thing on stderr is the verdict, from the same generator the report
+    # ends with, so the two can never disagree. The artefact path goes above it.
+    say(f"{PROG}: report {report_path}")
+    for line in verdict_lines(meta, results):
+        say(f"{PROG}: {line}")
+    if not diverged and not clean:
+        return 3
+    return 1 if diverged else 0
+
+
+def _selftest() -> int:
+    """Check the log-parsing coordinates against fixtures built here, so a
+    regression in the record indexing is caught without needing a hermit run."""
+    log = (
+        "Aug 24 19:00:00.100  INFO detcore: COMMIT turn 7, dettid 3 using resources {}, "
+        "on previously committed 1_640_995_199.000_500_000s\n"
+        "Aug 24 19:00:00.200  INFO detcore: DETLOG [syscall][detcore, dtid 3] "
+        "finish syscall #4: openat(-100, \"/x\") = Ok(3)\n"
+        "Aug 24 19:00:00.300  INFO detcore: DETLOG [syscall][detcore, dtid 3] "
+        "inbound syscall: read(3) = ?\n"
+        "  a continuation line of the record above\n"
+        "Aug 24 19:00:00.400  INFO detcore: COMMIT turn 8, dettid 5 using resources {}, "
+        "on previously committed 1_640_995_199.000_900_000s\n"
+        "Aug 24 19:00:00.500  INFO detcore: DETLOG [syscall][detcore, dtid 5]  "
+        "finish syscall #1: write(1) = Ok(2)\n"
+    )
+    pieces = records_by_comparator_index(log)
+    failures = []
+
+    def check(label, got, want):
+        if got != want:
+            failures.append(f"{label}: got {got!r}, want {want!r}")
+
+    # Record 0 is the text before the first timestamp; records are 1-based after
+    # it, exactly as detcore's comparator enumerates them.
+    check("record 0 empty", pieces[0], "")
+    # 5 timestamped records plus the empty preamble. The continuation line does
+    # NOT add a record -- that is the property this asserts.
+    check("record count", len(pieces), 6)
+    check("turn at record 1", commit_at_or_before(pieces, 1), (7, 1_640_995_199_000_500_000))
+    check("turn at record 3", commit_at_or_before(pieces, 3), (7, 1_640_995_199_000_500_000))
+    check("turn at record 4", commit_at_or_before(pieces, 4), (8, 1_640_995_199_000_900_000))
+    check("no turn before record 0", commit_at_or_before(pieces, 0), (None, None))
+    check("syscall before any", syscall_at_or_before(pieces, 1), (None, None))
+    check("syscall at record 2", syscall_at_or_before(pieces, 2), (4, 3))
+    # An `inbound syscall` record must NOT be mistaken for a completed one, and a
+    # multi-line record must count as ONE record.
+    check("syscall at record 3 (inbound only)", syscall_at_or_before(pieces, 3), (4, 3))
+    check("multi-line record stays one", "continuation line" in pieces[3], True)
+    check("syscall at record 5 (per-dtid counter resets per thread)",
+          syscall_at_or_before(pieces, 5), (1, 5))
+    check("ns from seconds form", parse_virtual_ns("1_640_995_199.000_500_000", "s"),
+          1_640_995_199_000_500_000)
+    check("ns from bare ns", parse_virtual_ns("1767225600069347500", None),
+          1767225600069347500)
+    check("ns rejects fractional bare", parse_virtual_ns("1.5", None), None)
+
+    # --- interval and design effect -------------------------------------
+    # The property that matters is not a magic number but the DIRECTION and the
+    # SELECTION: the correction must widen, only in concurrent mode, and an
+    # explicit override must beat the default in both directions.
+    check("mode picks the measured default: concurrent",
+          design_effect_for("concurrent", None), CONCURRENT_DESIGN_EFFECT)
+    check("mode picks the measured default: sequential",
+          design_effect_for("sequential", None), SEQUENTIAL_DESIGN_EFFECT)
+    check("sequential is left uncorrected", design_effect_for("sequential", None), 1.0)
+    check("explicit override beats the default",
+          design_effect_for("concurrent", 1.0), 1.0)
+    check("explicit override applies in sequential too",
+          design_effect_for("sequential", 4.0), 4.0)
+
+    naive = wilson95(7, 20, 1.0)
+    corrected = wilson95(7, 20, CONCURRENT_DESIGN_EFFECT)
+    check("deff=1 reproduces the plain Wilson interval", wilson95(7, 20), naive)
+    check("the correction WIDENS the interval",
+          (corrected[0] < naive[0], corrected[1] > naive[1]), (True, True))
+    check("the interval stays inside [0,1] at k=0", wilson95(0, 20, 4.0)[0], 0.0)
+    check("the interval stays inside [0,1] at k=n", wilson95(20, 20, 4.0)[1], 1.0)
+    check("n=0 is unresolved, not a point estimate", wilson95(0, 0, 2.64), (0.0, 1.0))
+
+    # THE REGRESSION THIS EXISTS TO CATCH, from the measured data: 2/20 against
+    # 13/20 are disjoint under the binomial interval and overlap once the
+    # measured design effect is applied. If a future edit drops the correction,
+    # this pair silently starts reporting a difference between two sweeps of the
+    # SAME arm again.
+    a_naive, b_naive = wilson95(2, 20, 1.0), wilson95(13, 20, 1.0)
+    a_corr, b_corr = wilson95(2, 20, CONCURRENT_DESIGN_EFFECT), wilson95(13, 20, CONCURRENT_DESIGN_EFFECT)
+    check("2/20 vs 13/20 read as DIFFERENT under the binomial interval",
+          a_naive[1] < b_naive[0], True)
+    check("2/20 vs 13/20 read as INDISTINGUISHABLE once corrected",
+          a_corr[1] >= b_corr[0], True)
+
+    for f in failures:
+        print(f"{PROG}: SELFTEST FAIL {f}", file=sys.stderr)
+    print(f"{PROG}: selftest {'FAILED' if failures else 'PASSED'} "
+          f"({len(failures)} failures)", file=sys.stderr)
+    return 1 if failures else 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except KeyboardInterrupt:
+        sys.exit(130)

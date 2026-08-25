@@ -359,8 +359,7 @@ pub fn failure_disposition(row: &HistoryRow, sha: &str) -> FailureDisposition {
             .zip(gates_run)
             .is_some_and(|(expected, ran)| expected > 0 && ran >= expected)
     };
-    if gates_expected.is_some_and(|expected| expected > 0)
-        && !gates_accounted
+    if gates_expected.is_some_and(|expected| expected > 0) && !gates_accounted
         || (!has_real_failure
             && (row.exit_code == Some(130) || (row.failures == Some(0) && failed_gates.is_empty())))
     {

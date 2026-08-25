@@ -1,0 +1,12 @@
+actuator=hermit extra='--sched-heuristic Random --sched-seed 1' k=500000
+  NSPID host_tid=3757797 NSpid:	3757797	3
+  NSPID host_tid=3757809 NSpid:	3757809	5
+  NSPID host_tid=3757812 NSpid:	3757812	7
+  NSPID host_tid=3757814 NSpid:	3757814	9
+  NSPID host_tid=3757816 NSpid:	3757816	11
+  NSPID host_tid=3757819 NSpid:	3757819	13
+tag=t-r1 hermit_pid=3757786 qemu_hostpid=3757797 vcpu0_tid=3757816 vcpu1_tid=3757819 (qmp said [11, 13])
+HOSTCPU window=0.00s v0_ticks=0 v1_ticks=0
+ADVANCE-START ncpu=2 k=500000
+ADVANCE R1 me=500000 other=0 other_started=0 oncpu=1
+ADVANCE-FIRST-DONE

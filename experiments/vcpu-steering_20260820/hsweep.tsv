@@ -1,0 +1,5 @@
+arm	tag	first	other	other_started	win	v0_ticks	v1_ticks
+strict	b1	1	15462539	1	10.21	408	68
+strict	b2	1	23493894	1	10.28	416	67
+strict	b3	1	25275744	1	10.77	279	223
+strict	b4	0	11680219	1	20.80	75	871

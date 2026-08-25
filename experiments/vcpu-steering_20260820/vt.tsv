@@ -1,0 +1,11 @@
+tag	p	seed	admit	win_s	g11	g13	vt_share0	t11	t13	first	other	guest_share0	warn
+f0a	0.0	1	ADMIT	24.04	0.211189	0.15801	57.2	115	97	0	0	100.0	0
+0
+f5a	0.5	1	ADMIT										0
+0
+f9a	0.9	1	REJECT	64.45	0.504206	0.704718	41.7	214	307	0	0	100.0	39
+f99a	0.99	1	ADMIT										0
+0
+g1	none	0	REJECT	15.90	0.144881	0.151464	48.9	64	67	1	897789	47.3	0
+0
+g2	none	0	ADMIT	13.76	0.13877	0.135508	50.6	60	55	0	997402	50.1	1

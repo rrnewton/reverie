@@ -1,0 +1,6 @@
+WARNING: /usr/bin/qemu-system-x86_64 looks like a hardware emulator (VMM). Hermit's host-time virtualization exposes mutually inconsistent clock sources (a synthetic RDTSC versus a virtualized clock_gettime) to the emulated guest, which can corrupt its clock calibration (for example "Unable to calibrate against PIT", TSC marked unstable, or "No current clocksource") and stall boot. If the nested guest misbehaves, either disable Hermit's virtual clock with --no-virtualize-time --no-virtualize-metadata, or make the emulator use a single instruction-derived clock (for QEMU: -icount shift=0,sleep=off). See docs/QEMU_BOOT.md.
+HERMIT_SKID_OVERSHOOT rcb_actual=65180325024 rcb_target=65180272735 skid_margin=1000 overshoot=52289
+
+thread 'main' (1) panicked at /home/newton/.cargo/git/checkouts/reverie-2fc770f7a9c80803/c261050/reverie-ptrace/src/timer.rs:982:9:
+Clock perf counter exceeds target value at start of attempted single-step: 65180325024 > 65180272735. Consider increasing skid margin for this CPU.
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace

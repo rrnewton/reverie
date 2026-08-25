@@ -1,0 +1,7 @@
+usage: cc_qemu.py [-h] [--disk DISK] [--initrd INITRD] [--name NAME]
+                  [--smp SMP] [--timeout TIMEOUT] [--settle SETTLE]
+                  [--seed SEED] [--hermit] [--hermit-extra HERMIT_EXTRA]
+                  [--tag TAG] [--command COMMAND] [--expect EXPECT]
+                  [--append-extra APPEND_EXTRA]
+                  {boot,resume}
+cc_qemu.py: error: argument --hermit-extra: expected one argument

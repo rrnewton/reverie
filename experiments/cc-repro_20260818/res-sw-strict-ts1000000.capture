@@ -1,0 +1,11 @@
+[    4.937445] clocksource: timekeeping watchdog on CPU0: Marking clocksource 'tsc' as unstable because the skew is too large:
+[    5.080562] clocksource:                       'hpet' wd_nsec: 869788040 wd_now: 1d39bf9d wd_last: 180a8ea9 mask: ffffffff
+[    5.105823] clocksource:                       'tsc' cs_nsec: 720327459 cs_now: 3d1468a65 cs_last: 38ed3934f mask: ffffffffffffffff
+[    5.107428] clocksource:                       Clocksource 'tsc' skewed -149460581 ns (-149 ms) over watchdog 'hpet' interval of 869788040 ns (869 ms)
+[    5.109351] clocksource:                       'tsc' is current clocksource.
+[    5.111112] tsc: Marking TSC unstable due to clocksource watchdog
+[    5.156619] TSC found unstable after boot, most likely due to broken BIOS. Use 'tsc=unstable'.
+[    5.157824] sched_clock: Marking unstable (5107836222, 48458559)<-(5168474035, -12143563)
+order_cpu
+[    6.804076] clocksource: Checking clocksource tsc synchronization from CPU 0 to CPUs 1.
+[    7.707078] clocksource: Switched to clocksource hpet

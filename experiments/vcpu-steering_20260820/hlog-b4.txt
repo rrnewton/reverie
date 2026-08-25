@@ -1,0 +1,6 @@
+actuator=hermit extra='' k=30000000
+tag=b4 hermit_pid=2631942 qemu_hostpid=2631951 vcpu0_tid=2631967 vcpu1_tid=2631969 (qmp said [11, 13])
+HOSTCPU window=20.80s v0_ticks=75 v1_ticks=871
+ADVANCE-START ncpu=2 k=30000000
+ADVANCE R0 me=30000000 other=11680219 other_started=1 oncpu=0
+ADVANCE-FIRST-DONE

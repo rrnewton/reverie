@@ -1,0 +1,15 @@
+actuator=hermit extra='--no-virtualize-time --no-virtualize-metadata --max-timeslice 2000000' k=1000000
+  NSPID host_tid=2755680 NSpid:	2755680	3
+  NSPID host_tid=2756885 NSpid:	2756885	5
+  NSPID host_tid=2757415 NSpid:	2757415	7
+  NSPID host_tid=2757425 NSpid:	2757425	9
+  NSPID host_tid=2757447 NSpid:	2757447	11
+  NSPID host_tid=2757494 NSpid:	2757494	13
+tag=g2 hermit_pid=2755668 qemu_hostpid=2755680 vcpu0_tid=2757447 vcpu1_tid=2757494 (qmp said [11, 13])
+WINDOW_UTC start=2026-08-20T13:02:00.955428+00:00 end=2026-08-20T13:02:14.713004+00:00
+ADV-RUN wall=150.43s
+[   85.346977] watchdog: BUG: soft lockup - CPU#0 stuck for 23s! [swapper/0:0]
+[   85.518767] CPU#0 Utilization every 4s during lockup:
+ADVANCE-START ncpu=2 k=1000000
+ADVANCE R0 me=1000000 other=997402 other_started=1 oncpu=0
+ADVANCE R1 me=1000000 other=1000000 other_started=1 oncpu=1

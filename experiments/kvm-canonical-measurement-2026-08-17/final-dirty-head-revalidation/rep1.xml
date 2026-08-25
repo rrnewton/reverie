@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="hermit-e2e" tests="18" failures="0" errors="0">
+  <testcase classname="applications" name="applications/kvm-shell-environment/verify/kvm" time="15.304"></testcase>
+  <testcase classname="backend-parity-c" name="backend-parity-c/cpu-virtualization/verify/kvm" time="15.042"></testcase>
+  <testcase classname="backend-parity-c" name="backend-parity-c/dup-shared-offset/verify/kvm" time="15.199"></testcase>
+  <testcase classname="backend-parity-c" name="backend-parity-c/fd-duplication/verify/kvm" time="15.547"></testcase>
+  <testcase classname="backend-parity-c" name="backend-parity-c/getcpu-identity/verify/kvm" time="15.216"></testcase>
+  <testcase classname="backend-parity-c" name="backend-parity-c/getpriority-identity/verify/kvm" time="15.227"></testcase>
+  <testcase classname="backend-parity-c" name="backend-parity-c/lseek-positioning/verify/kvm" time="15.275"></testcase>
+  <testcase classname="backend-parity-c" name="backend-parity-c/pidfd-open-self/verify/kvm" time="15.306"></testcase>
+  <testcase classname="backend-parity-c" name="backend-parity-c/rlimit-identity/verify/kvm" time="15.338"></testcase>
+  <testcase classname="backend-parity-c" name="backend-parity-c/sched-getaffinity-identity/verify/kvm" time="15.116"></testcase>
+  <testcase classname="c-programs" name="c-programs/epoll-determinism/verify/kvm" time="16.347"></testcase>
+  <testcase classname="c-programs" name="c-programs/madvise-determinism/verify/kvm" time="15.997"></testcase>
+  <testcase classname="c-programs" name="c-programs/mmap-determinism/verify/kvm" time="15.380"></testcase>
+  <testcase classname="c-programs" name="c-programs/netlink-autobind-generic/verify/kvm" time="15.066"></testcase>
+  <testcase classname="c-programs" name="c-programs/netlink-autobind-route/verify/kvm" time="15.249"></testcase>
+  <testcase classname="c-programs" name="c-programs/netlink-autobind-usersock/verify/kvm" time="15.153"></testcase>
+  <testcase classname="system-utils" name="system-utils/example-date/verify/kvm" time="15.619"></testcase>
+  <testcase classname="system-utils" name="system-utils/example-devrand/verify/kvm" time="15.551"></testcase>
+</testsuite>

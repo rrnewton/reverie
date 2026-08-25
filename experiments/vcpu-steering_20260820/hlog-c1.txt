@@ -1,0 +1,2 @@
+actuator=hermit extra='--chaos --seed 1 --chaos-per-thread-slowdown --chaos-slowdown-max-factor 8' k=30000000
+tag=c1 hermit_pid=2646005 qemu_hostpid=2646016 vcpu0_tid=2646199 vcpu1_tid=2646205 (qmp said [11, 13])

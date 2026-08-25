@@ -1,0 +1,15 @@
+[    5.370551] clocksource: Long readout interval, skipping watchdog check: cs_nsec: 1180453418 wd_nsec: 2571570800
+order_cpu
+[    6.213385] clocksource: timekeeping watchdog on CPU1: Marking clocksource 'tsc' as unstable because the skew is too large:
+[    6.215779] clocksource:                       'hpet' wd_nsec: 509844780 wd_now: 2a686c9f wd_last: 275e7681 mask: ffffffff
+[    6.217332] clocksource:                       'tsc' cs_nsec: 846078759 cs_now: 449c55949 cs_last: 3fbb8b0f2 mask: ffffffffffffffff
+[    6.218924] clocksource:                       Clocksource 'tsc' skewed 336233979 ns (336 ms) over watchdog 'hpet' interval of 509844780 ns (509 ms)
+[    6.220635] clocksource:                       'tsc' is current clocksource.
+[    6.222172] tsc: Marking TSC unstable due to clocksource watchdog
+[    8.808170] TSC found unstable after boot, most likely due to broken BIOS. Use 'tsc=unstable'.
+[    8.809473] sched_clock: Marking unstable (8759377482, 48458559)<-(8820015131, -12143563)
+[   11.540122] hrtimer: interrupt took 23932319 ns
+[   15.140839] clocksource: Checking clocksource tsc synchronization from CPU 1 to CPUs 0.
+AFF rc=0 parent_cpu=0
+ORDER slots=2000 A=1000 B=1000 switches=3 head=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
+~ # 

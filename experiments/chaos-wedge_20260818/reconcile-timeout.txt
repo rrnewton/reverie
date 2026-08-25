@@ -1,0 +1,9 @@
+./reconcile.sh: line 35: 346928 Killed                  timeout --signal=KILL "${tmo}s" "$H/target/release/hermit" "${hermit_args[@]}" -- "$QEMU" "${qemu_args[@]}" > "$OUT/$label.console" 2> "$OUT/$label.stderr"
+rec-strict-tmo15                   prof=strict mach=q35     kern=demo rc=137  wall=  15.0s bytes=0       pass=0 panic=0
+./reconcile.sh: line 35: 350148 Killed                  timeout --signal=KILL "${tmo}s" "$H/target/release/hermit" "${hermit_args[@]}" -- "$QEMU" "${qemu_args[@]}" > "$OUT/$label.console" 2> "$OUT/$label.stderr"
+rec-strict-tmo30                   prof=strict mach=q35     kern=demo rc=137  wall=  30.0s bytes=0       pass=0 panic=0
+./reconcile.sh: line 35: 356718 Killed                  timeout --signal=KILL "${tmo}s" "$H/target/release/hermit" "${hermit_args[@]}" -- "$QEMU" "${qemu_args[@]}" > "$OUT/$label.console" 2> "$OUT/$label.stderr"
+rec-strict-tmo45                   prof=strict mach=q35     kern=demo rc=137  wall=  45.0s bytes=0       pass=0 panic=0
+./reconcile.sh: line 35: 365373 Killed                  timeout --signal=KILL "${tmo}s" "$H/target/release/hermit" "${hermit_args[@]}" -- "$QEMU" "${qemu_args[@]}" > "$OUT/$label.console" 2> "$OUT/$label.stderr"
+rec-strict-tmo60                   prof=strict mach=q35     kern=demo rc=137  wall=  60.0s bytes=8186    pass=0 panic=0
+rec-strict-tmo90                   prof=strict mach=q35     kern=demo rc=0    wall=  61.1s bytes=9233    pass=0 panic=1

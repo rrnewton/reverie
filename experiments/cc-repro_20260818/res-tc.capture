@@ -1,0 +1,11 @@
+grep -E "^(LOC|TIMER| *0:)" /proc/interrupts; cat /proc/uptime; order; grep 
+-E "^(LOC|TIMER| *0:)" /proc/interrupts; cat /proc/uptime; echo TICK"DONE"
+  0:        363          0  IO-APIC   2-edge      timer
+LOC:       1778       1485   Local timer interrupts
+10.61 9.63
+ORDER slots=2000 A=1000 B=1000 switches=1 head=BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB
+  0:        363          0  IO-APIC   2-edge      timer
+LOC:       1778       1485   Local timer interrupts
+12.61 12.70
+TICKDONE
+~ # 

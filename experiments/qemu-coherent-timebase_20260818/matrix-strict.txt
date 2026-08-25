@@ -1,0 +1,4 @@
+noicount-smp1-strict rc=0 wall=59.4s console_bytes=9233 start_marker=0 pass_marker=0
+noicount-smp2-strict rc=0 wall=60.6s console_bytes=9233 start_marker=0 pass_marker=0
+icount-smp1-strict rc=0 wall=151.8s console_bytes=25531 start_marker=1 pass_marker=1
+icount-smp2-strict rc=1 wall=0.1s console_bytes=0 start_marker=0 pass_marker=0

@@ -1,0 +1,311 @@
+2026-08-20T02:00:08.702159Z  INFO detcore::tool_local: DETLOG USER RAND: seeding PRNG for root thread with seed 1
+2026-08-20T02:00:08.702205Z  INFO detcore::tool_local: DETLOG CHAOSRAND: seeding chaos scheduler with seed 1
+2026-08-20T02:00:08.702259Z DEBUG reverie_ptrace::timer: Setting precise_ip to false for cpu vendor AuthenticAMD family Some(26) model Some(17) stepping Some(0)
+2026-08-20T02:00:08.702376Z DEBUG reverie_ptrace::timer: Setting precise_ip to false for cpu vendor AuthenticAMD family Some(26) model Some(17) stepping Some(0)
+2026-08-20T02:00:08.702403Z DEBUG reverie_ptrace::timer: Setting precise_ip to false for cpu vendor AuthenticAMD family Some(26) model Some(17) stepping Some(0)
+2026-08-20T02:00:08.702409Z DEBUG reverie_ptrace::timer: Setting precise_ip to false for cpu vendor AuthenticAMD family Some(26) model Some(17) stepping Some(0)
+2026-08-20T02:00:08.703232Z DEBUG detcore::tool_local: [dtid 3] next timeslice (T1) final slice after recorded preemption points... setting end_of_timeslice to max 18_446_744_073.709_551_615s, final priority 7940
+2026-08-20T02:00:08.707833Z  INFO detcore::tool_local: DETLOG RNG USER RAND Generated new seed [167, 239, 37, 206, 236, 219, 185, 200, 22, 85, 122, 156, 176, 36, 100, 210]
+2026-08-20T02:00:08.707858Z  INFO detcore::tool_local: DETLOG RNG USER RAND seeding child tid 5: [167, 239, 37, 206, 233, 219, 185, 200, 22, 85, 122, 156, 176, 36, 100, 210] from parent Mcg128Xsl64 {}
+2026-08-20T02:00:08.707870Z  INFO detcore::tool_local: DETLOG RNG CHAOSRAND Generated new seed [131, 36, 239, 222, 98, 208, 81, 219, 127, 62, 43, 51, 80, 197, 54, 35]
+2026-08-20T02:00:08.707878Z  INFO detcore::tool_local: DETLOG RNG CHAOSRAND seeding child tid 5: [131, 36, 239, 222, 103, 208, 81, 219, 127, 62, 43, 51, 80, 197, 54, 35] from parent Mcg128Xsl64 {}
+2026-08-20T02:00:08.707894Z DEBUG reverie_ptrace::timer: Setting precise_ip to false for cpu vendor AuthenticAMD family Some(26) model Some(17) stepping Some(0)
+2026-08-20T02:00:08.710633Z DEBUG detcore::tool_local: [dtid 5] next timeslice (T1), set by recording to LogicalTime(1767225600189488275) (current 1_767_225_600.001_318_605s), priority 2793
+2026-08-20T02:00:08.717490Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 18816194, instr: 0 to 18817073
+2026-08-20T02:00:08.794246Z DEBUG detcore::tool_local: [dtid 5] next timeslice (T2), set by recording to LogicalTime(1767225600264232275) (current 1_767_225_600.189_489_835s), priority 3562
+2026-08-20T02:00:08.796984Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 26290571, instr: 0 to 26291473
+2026-08-20T02:00:08.876724Z DEBUG detcore::tool_local: [dtid 5] next timeslice (T3), set by recording to LogicalTime(1767225600464232275) (current 1_767_225_600.264_233_835s), priority 3743
+2026-08-20T02:00:08.883784Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 46290585, instr: 0 to 46291473
+2026-08-20T02:00:08.962440Z DEBUG detcore::tool_local: [dtid 5] next timeslice (T4), set by recording to LogicalTime(1767225600620460835) (current 1_767_225_600.464_233_835s), priority 4754
+2026-08-20T02:00:08.967936Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 61913406, instr: 0 to 61914329
+2026-08-20T02:00:09.049578Z DEBUG detcore::tool_local: [dtid 5] next timeslice (T5), set by recording to LogicalTime(1767225600633642595) (current 1_767_225_600.620_462_395s), priority 9324
+2026-08-20T02:00:09.050360Z  INFO detcore::tool_local: DETLOG RNG USER RAND Generated new seed [167, 239, 37, 206, 236, 219, 185, 200, 22, 85, 122, 156, 176, 36, 100, 210]
+2026-08-20T02:00:09.050380Z  INFO detcore::tool_local: DETLOG RNG USER RAND seeding child tid 7: [167, 239, 37, 206, 235, 219, 185, 200, 22, 85, 122, 156, 176, 36, 100, 210] from parent Mcg128Xsl64 {}
+2026-08-20T02:00:09.050389Z  INFO detcore::tool_local: DETLOG RNG CHAOSRAND Generated new seed [131, 36, 239, 222, 98, 208, 81, 219, 127, 62, 43, 51, 80, 197, 54, 35]
+2026-08-20T02:00:09.050393Z  INFO detcore::tool_local: DETLOG RNG CHAOSRAND seeding child tid 7: [131, 36, 239, 222, 101, 208, 81, 219, 127, 62, 43, 51, 80, 197, 54, 35] from parent Mcg128Xsl64 {}
+2026-08-20T02:00:09.050427Z DEBUG reverie_ptrace::timer: Setting precise_ip to false for cpu vendor AuthenticAMD family Some(26) model Some(17) stepping Some(0)
+2026-08-20T02:00:09.053788Z DEBUG detcore::tool_local: [dtid 7] next timeslice (T1), set by recording to LogicalTime(1767225600201589065) (current 1_767_225_600.001_590_625s), priority 8981
+2026-08-20T02:00:09.061179Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 19999070, instr: 0 to 19999950
+2026-08-20T02:00:09.138324Z DEBUG detcore::tool_local: [dtid 7] next timeslice (T2), set by recording to LogicalTime(1767225600362565515) (current 1_767_225_600.201_590_625s), priority 3882
+2026-08-20T02:00:09.143922Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 36096703, instr: 0 to 36097595
+2026-08-20T02:00:09.223299Z DEBUG detcore::tool_local: [dtid 7] next timeslice (T3), set by recording to LogicalTime(1767225600539878885) (current 1_767_225_600.362_567_075s), priority 2196
+2026-08-20T02:00:09.229593Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 53827997, instr: 0 to 53828932
+2026-08-20T02:00:09.313237Z DEBUG detcore::tool_local: [dtid 7] next timeslice (T4), set by recording to LogicalTime(1767225600739878885) (current 1_767_225_600.539_880_445s), priority 4435
+2026-08-20T02:00:09.320187Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 73828046, instr: 0 to 73828932
+2026-08-20T02:00:09.399103Z DEBUG detcore::tool_local: [dtid 7] next timeslice (T5), set by recording to LogicalTime(1767225600939878885) (current 1_767_225_600.739_880_445s), priority 9907
+2026-08-20T02:00:09.399638Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 63231618, instr: 0 to 63232505
+2026-08-20T02:00:09.479224Z DEBUG detcore::tool_local: [dtid 5] next timeslice (T6), set by recording to LogicalTime(1767225600833642595) (current 1_767_225_600.633_644_155s), priority 4062
+2026-08-20T02:00:09.486202Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 83231615, instr: 0 to 83232505
+2026-08-20T02:00:09.566268Z DEBUG detcore::tool_local: [dtid 5] next timeslice (T7), set by recording to LogicalTime(1767225601033642595) (current 1_767_225_600.833_644_155s), priority 6044
+2026-08-20T02:00:09.573270Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 103231614, instr: 0 to 103232505
+2026-08-20T02:00:09.654240Z DEBUG detcore::tool_local: [dtid 5] next timeslice (T8), set by recording to LogicalTime(1767225601052732645) (current 1_767_225_601.033_644_155s), priority 3462
+2026-08-20T02:00:09.655028Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 105140611, instr: 0 to 105141510
+2026-08-20T02:00:09.735328Z DEBUG detcore::tool_local: [dtid 5] next timeslice (T9), set by recording to LogicalTime(1767225601216690895) (current 1_767_225_601.052_734_205s), priority 3161
+2026-08-20T02:00:09.741138Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 121536457, instr: 0 to 121537335
+2026-08-20T02:00:09.819467Z DEBUG detcore::tool_local: [dtid 5] next timeslice (T10), set by recording to LogicalTime(1767225601416690895) (current 1_767_225_601.216_692_455s), priority 7648
+2026-08-20T02:00:09.826737Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 141536436, instr: 0 to 141537335
+2026-08-20T02:00:09.906966Z DEBUG detcore::tool_local: [dtid 5] next timeslice (T11), set by recording to LogicalTime(1767225601569305715) (current 1_767_225_601.416_692_455s), priority 1406
+2026-08-20T02:00:09.912376Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 156797940, instr: 0 to 156798817
+2026-08-20T02:00:09.990098Z DEBUG detcore::tool_local: [dtid 5] next timeslice (T12), set by recording to LogicalTime(1767225601729071515) (current 1_767_225_601.569_307_275s), priority 4663
+2026-08-20T02:00:09.995731Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 172774522, instr: 0 to 172775397
+2026-08-20T02:00:10.076916Z DEBUG detcore::tool_local: [dtid 5] next timeslice (T13), set by recording to LogicalTime(1767225601929071515) (current 1_767_225_601.729_073_075s), priority 8717
+2026-08-20T02:00:10.084323Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 192774508, instr: 0 to 192775397
+2026-08-20T02:00:10.163140Z DEBUG detcore::tool_local: [dtid 5] next timeslice (T14), set by recording to LogicalTime(1767225602129071515) (current 1_767_225_601.929_073_075s), priority 1692
+2026-08-20T02:00:10.170198Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 212774509, instr: 0 to 212775397
+2026-08-20T02:00:10.250511Z DEBUG detcore::tool_local: [dtid 5] next timeslice (T15), set by recording to LogicalTime(1767225602272285245) (current 1_767_225_602.129_073_075s), priority 9610
+2026-08-20T02:00:10.256209Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 227095883, instr: 0 to 227096770
+2026-08-20T02:00:10.334819Z DEBUG detcore::tool_local: [dtid 5] next timeslice (T16), set by recording to LogicalTime(1767225602358176625) (current 1_767_225_602.272_286_805s), priority 1364
+2026-08-20T02:00:10.337871Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 235685021, instr: 0 to 235685908
+2026-08-20T02:00:10.420052Z DEBUG detcore::tool_local: [dtid 5] next timeslice (T17), set by recording to LogicalTime(1767225602558176625) (current 1_767_225_602.358_178_185s), priority 1215
+2026-08-20T02:00:10.429116Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 255684965, instr: 0 to 255685908
+2026-08-20T02:00:10.514604Z DEBUG detcore::tool_local: [dtid 5] next timeslice (T18), set by recording to LogicalTime(1767225602558811015) (current 1_767_225_602.558_178_185s), priority 3020
+2026-08-20T02:00:10.514762Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 255748412, instr: 0 to 255749347
+2026-08-20T02:00:10.599156Z DEBUG detcore::tool_local: [dtid 5] next timeslice (T19), set by recording to LogicalTime(1767225602758811015) (current 1_767_225_602.558_812_575s), priority 192
+2026-08-20T02:00:10.606236Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 275748413, instr: 0 to 275749347
+2026-08-20T02:00:10.689484Z DEBUG detcore::tool_local: [dtid 5] next timeslice (T20), set by recording to LogicalTime(1767225602958811015) (current 1_767_225_602.758_812_575s), priority 9537
+2026-08-20T02:00:10.696555Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 295748474, instr: 0 to 295749347
+2026-08-20T02:00:10.774031Z DEBUG detcore::tool_local: [dtid 5] next timeslice (T21), set by recording to LogicalTime(1767225603072515545) (current 1_767_225_602.958_812_575s), priority 3554
+2026-08-20T02:00:10.778075Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 307118908, instr: 0 to 307119800
+2026-08-20T02:00:10.856748Z DEBUG detcore::tool_local: [dtid 5] next timeslice (T22), set by recording to LogicalTime(1767225603077019665) (current 1_767_225_603.072_517_105s), priority 888
+2026-08-20T02:00:10.856982Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 307569336, instr: 0 to 307570212
+2026-08-20T02:00:10.934267Z DEBUG detcore::tool_local: [dtid 5] next timeslice (T23), set by recording to LogicalTime(1767225603198717125) (current 1_767_225_603.077_021_225s), priority 7137
+2026-08-20T02:00:10.938528Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 319739091, instr: 0 to 319739958
+2026-08-20T02:00:11.014582Z DEBUG detcore::tool_local: [dtid 5] next timeslice (T24), set by recording to LogicalTime(1767225603262710185) (current 1_767_225_603.198_718_685s), priority 521
+2026-08-20T02:00:11.016855Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 326138382, instr: 0 to 326139264
+2026-08-20T02:00:11.094478Z DEBUG detcore::tool_local: [dtid 5] next timeslice (T25), set by recording to LogicalTime(1767225603336334605) (current 1_767_225_603.262_711_745s), priority 7112
+2026-08-20T02:00:11.097076Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 333501086, instr: 0 to 333501706
+2026-08-20T02:00:11.151667Z DEBUG detcore::tool_local: [dtid 5] next timeslice (T26), set by recording to LogicalTime(1767225603536334605) (current 1_767_225_603.336_336_165s), priority 7506
+2026-08-20T02:00:11.158684Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 353500820, instr: 0 to 353501706
+2026-08-20T02:00:11.236728Z DEBUG detcore::tool_local: [dtid 5] next timeslice (T27), set by recording to LogicalTime(1767225603736334605) (current 1_767_225_603.536_336_165s), priority 5143
+2026-08-20T02:00:11.243757Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 373500816, instr: 0 to 373501706
+2026-08-20T02:00:11.322225Z DEBUG detcore::tool_local: [dtid 5] next timeslice (T28), set by recording to LogicalTime(1767225603792372955) (current 1_767_225_603.736_336_165s), priority 1485
+2026-08-20T02:00:11.324262Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 379104656, instr: 0 to 379105541
+2026-08-20T02:00:11.401892Z DEBUG detcore::tool_local: [dtid 5] next timeslice (T29), set by recording to LogicalTime(1767225603931567515) (current 1_767_225_603.792_374_515s), priority 9324
+2026-08-20T02:00:11.406844Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 393024112, instr: 0 to 393024997
+2026-08-20T02:00:11.484772Z DEBUG detcore::tool_local: [dtid 5] next timeslice (T30), set by recording to LogicalTime(1767225604131567515) (current 1_767_225_603.931_569_075s), priority 6435
+2026-08-20T02:00:11.491703Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 413024121, instr: 0 to 413024997
+2026-08-20T02:00:11.569217Z DEBUG detcore::tool_local: [dtid 5] next timeslice (T31), set by recording to LogicalTime(1767225604320867805) (current 1_767_225_604.131_569_075s), priority 7993
+2026-08-20T02:00:11.575879Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 431954149, instr: 0 to 431955026
+2026-08-20T02:00:11.653857Z DEBUG detcore::tool_local: [dtid 5] next timeslice (T32), set by recording to LogicalTime(1767225604520867805) (current 1_767_225_604.320_869_365s), priority 499
+2026-08-20T02:00:11.660960Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 451954131, instr: 0 to 451955026
+2026-08-20T02:00:11.740348Z DEBUG detcore::tool_local: [dtid 5] next timeslice (T33), set by recording to LogicalTime(1767225604652842595) (current 1_767_225_604.520_869_365s), priority 6822
+2026-08-20T02:00:11.745022Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 465151619, instr: 0 to 465152505
+2026-08-20T02:00:11.823110Z DEBUG detcore::tool_local: [dtid 5] next timeslice (T34), set by recording to LogicalTime(1767225604852842595) (current 1_767_225_604.652_844_155s), priority 5069
+2026-08-20T02:00:11.830143Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 485151626, instr: 0 to 485152505
+2026-08-20T02:00:11.907464Z DEBUG detcore::tool_local: [dtid 5] next timeslice (T35), set by recording to LogicalTime(1767225605052842595) (current 1_767_225_604.852_844_155s), priority 9813
+2026-08-20T02:00:11.914448Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 505151929, instr: 0 to 505152505
+2026-08-20T02:00:11.965396Z DEBUG detcore::tool_local: [dtid 5] next timeslice (T36), set by recording to LogicalTime(1767225605190511165) (current 1_767_225_605.052_844_155s), priority 174
+2026-08-20T02:00:11.970169Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 518918477, instr: 0 to 518919362
+2026-08-20T02:00:12.047893Z DEBUG detcore::tool_local: [dtid 5] next timeslice (T37), set by recording to LogicalTime(1767225605193209325) (current 1_767_225_605.190_512_725s), priority 8565
+2026-08-20T02:00:12.048055Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 519188295, instr: 0 to 519189178
+2026-08-20T02:00:12.126201Z DEBUG detcore::tool_local: [dtid 5] next timeslice (T38), set by recording to LogicalTime(1767225605223834785) (current 1_767_225_605.193_210_885s), priority 4085
+2026-08-20T02:00:12.127334Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 522250836, instr: 0 to 522251724
+2026-08-20T02:00:12.205954Z DEBUG detcore::tool_local: [dtid 5] next timeslice (T39), set by recording to LogicalTime(1767225605335541765) (current 1_767_225_605.223_836_345s), priority 5167
+2026-08-20T02:00:12.209925Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 533421546, instr: 0 to 533422422
+2026-08-20T02:00:12.287049Z DEBUG detcore::tool_local: [dtid 5] next timeslice (T40), set by recording to LogicalTime(1767225605535541765) (current 1_767_225_605.335_543_325s), priority 2044
+2026-08-20T02:00:12.294052Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 553421531, instr: 0 to 553422422
+2026-08-20T02:00:12.372365Z DEBUG detcore::tool_local: [dtid 5] next timeslice (T41), set by recording to LogicalTime(1767225605735541765) (current 1_767_225_605.535_543_325s), priority 138
+2026-08-20T02:00:12.379294Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 573421466, instr: 0 to 573422422
+2026-08-20T02:00:12.463529Z DEBUG detcore::tool_local: [dtid 5] next timeslice (T42), set by recording to LogicalTime(1767225605935541765) (current 1_767_225_605.735_543_325s), priority 7523
+2026-08-20T02:00:12.470498Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 593421541, instr: 0 to 593422422
+2026-08-20T02:00:12.548017Z DEBUG detcore::tool_local: [dtid 5] next timeslice (T43), set by recording to LogicalTime(1767225606135541765) (current 1_767_225_605.935_543_325s), priority 8650
+2026-08-20T02:00:12.554957Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 613421538, instr: 0 to 613422422
+2026-08-20T02:00:12.632829Z DEBUG detcore::tool_local: [dtid 5] next timeslice (T44), set by recording to LogicalTime(1767225606335541765) (current 1_767_225_606.135_543_325s), priority 4850
+2026-08-20T02:00:12.639826Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 633421516, instr: 0 to 633422422
+2026-08-20T02:00:12.719814Z DEBUG detcore::tool_local: [dtid 5] next timeslice (T45), set by recording to LogicalTime(1767225606535541765) (current 1_767_225_606.335_543_325s), priority 7743
+2026-08-20T02:00:12.726778Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 653421539, instr: 0 to 653422422
+2026-08-20T02:00:12.804426Z DEBUG detcore::tool_local: [dtid 5] next timeslice (T46), set by recording to LogicalTime(1767225606685046565) (current 1_767_225_606.535_543_325s), priority 3916
+2026-08-20T02:00:12.809668Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 668372023, instr: 0 to 668372902
+2026-08-20T02:00:12.886859Z DEBUG detcore::tool_local: [dtid 5] next timeslice (T47), set by recording to LogicalTime(1767225606855261765) (current 1_767_225_606.685_048_125s), priority 5897
+2026-08-20T02:00:12.892764Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 685393550, instr: 0 to 685394422
+2026-08-20T02:00:12.969202Z DEBUG detcore::tool_local: [dtid 5] next timeslice (T48), set by recording to LogicalTime(1767225606893687015) (current 1_767_225_606.855_263_325s), priority 479
+2026-08-20T02:00:12.970561Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 689236056, instr: 0 to 689236947
+2026-08-20T02:00:13.048380Z DEBUG detcore::tool_local: [dtid 5] next timeslice (T49), set by recording to LogicalTime(1767225606956902405) (current 1_767_225_606.893_688_575s), priority 1436
+2026-08-20T02:00:13.050616Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 695557601, instr: 0 to 695558486
+2026-08-20T02:00:13.128015Z DEBUG detcore::tool_local: [dtid 5] next timeslice (T50), set by recording to LogicalTime(1767225606956925405) (current 1_767_225_606.956_903_965s), priority 5843
+2026-08-20T02:00:13.128069Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 695559904, instr: 0 to 695560786
+2026-08-20T02:00:13.205416Z DEBUG detcore::tool_local: [dtid 5] next timeslice (T51), set by recording to LogicalTime(1767225607156925405) (current 1_767_225_606.956_926_965s), priority 284
+2026-08-20T02:00:13.212384Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 715559885, instr: 0 to 715560786
+2026-08-20T02:00:13.292468Z DEBUG detcore::tool_local: [dtid 5] next timeslice (T52), set by recording to LogicalTime(1767225607184626545) (current 1_767_225_607.156_926_965s), priority 6982
+2026-08-20T02:00:13.293535Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 718330013, instr: 0 to 718330900
+2026-08-20T02:00:13.371845Z DEBUG detcore::tool_local: [dtid 5] next timeslice (T53), set by recording to LogicalTime(1767225607224244775) (current 1_767_225_607.184_628_105s), priority 6418
+2026-08-20T02:00:13.373307Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 722291818, instr: 0 to 722292723
+2026-08-20T02:00:13.453836Z DEBUG detcore::tool_local: [dtid 5] next timeslice (T54), set by recording to LogicalTime(1767225607348076815) (current 1_767_225_607.224_246_335s), priority 3116
+2026-08-20T02:00:13.458270Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 734675360, instr: 0 to 734675927
+2026-08-20T02:00:13.508371Z DEBUG detcore::tool_local: [dtid 5] next timeslice (T55), set by recording to LogicalTime(1767225607503001835) (current 1_767_225_607.348_078_375s), priority 6328
+2026-08-20T02:00:13.513761Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 750167545, instr: 0 to 750168429
+2026-08-20T02:00:13.591847Z DEBUG detcore::tool_local: [dtid 5] next timeslice (T56), set by recording to LogicalTime(1767225607703001835) (current 1_767_225_607.503_003_395s), priority 6116
+2026-08-20T02:00:13.598777Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 770167542, instr: 0 to 770168429
+2026-08-20T02:00:13.678905Z DEBUG detcore::tool_local: [dtid 5] next timeslice (T57), set by recording to LogicalTime(1767225607849475915) (current 1_767_225_607.703_003_395s), priority 8457
+2026-08-20T02:00:13.683981Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 784814960, instr: 0 to 784815837
+2026-08-20T02:00:13.763860Z DEBUG detcore::tool_local: [dtid 5] next timeslice (T58), set by recording to LogicalTime(1767225607932105995) (current 1_767_225_607.849_477_475s), priority 5817
+2026-08-20T02:00:13.766829Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 793077913, instr: 0 to 793078845
+2026-08-20T02:00:13.849083Z DEBUG detcore::tool_local: [dtid 5] next timeslice (T59), set by recording to LogicalTime(1767225608049295805) (current 1_767_225_607.932_107_555s), priority 8812
+2026-08-20T02:00:13.853245Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 804796942, instr: 0 to 804797826
+2026-08-20T02:00:13.931251Z DEBUG detcore::tool_local: [dtid 5] next timeslice (T60), set by recording to LogicalTime(1767225608241986115) (current 1_767_225_608.049_297_365s), priority 9220
+2026-08-20T02:00:13.937993Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 824065969, instr: 0 to 824066857
+2026-08-20T02:00:14.017590Z DEBUG detcore::tool_local: [dtid 5] next timeslice (T61), set by recording to LogicalTime(1767225608301976025) (current 1_767_225_608.241_987_675s), priority 563
+2026-08-20T02:00:14.019719Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 830064968, instr: 0 to 830065848
+2026-08-20T02:00:14.097087Z DEBUG detcore::tool_local: [dtid 5] next timeslice (T62), set by recording to LogicalTime(1767225608501976025) (current 1_767_225_608.301_977_585s), priority 5732
+2026-08-20T02:00:14.104085Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 850064958, instr: 0 to 850065848
+2026-08-20T02:00:14.182372Z DEBUG detcore::tool_local: [dtid 5] next timeslice (T63), set by recording to LogicalTime(1767225608701976025) (current 1_767_225_608.501_977_585s), priority 4794
+2026-08-20T02:00:14.189319Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 870064956, instr: 0 to 870065848
+2026-08-20T02:00:14.267713Z DEBUG detcore::tool_local: [dtid 5] next timeslice (T64), set by recording to LogicalTime(1767225608901976025) (current 1_767_225_608.701_977_585s), priority 3024
+2026-08-20T02:00:14.274728Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 890064967, instr: 0 to 890065848
+2026-08-20T02:00:14.352572Z DEBUG detcore::tool_local: [dtid 5] next timeslice (T65), set by recording to LogicalTime(1767225608935975815) (current 1_767_225_608.901_977_585s), priority 1648
+2026-08-20T02:00:14.353811Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 893465018, instr: 0 to 893465827
+2026-08-20T02:00:14.425338Z DEBUG detcore::tool_local: [dtid 5] next timeslice (T66), set by recording to LogicalTime(1767225608999140135) (current 1_767_225_608.935_977_375s), priority 5247
+2026-08-20T02:00:14.427574Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 899781331, instr: 0 to 899782259
+2026-08-20T02:00:14.510395Z DEBUG detcore::tool_local: [dtid 5] next timeslice (T67), set by recording to LogicalTime(1767225609199140135) (current 1_767_225_608.999_141_695s), priority 7901
+2026-08-20T02:00:14.517394Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 919781377, instr: 0 to 919782259
+2026-08-20T02:00:14.595967Z DEBUG detcore::tool_local: [dtid 5] next timeslice (T68), set by recording to LogicalTime(1767225609295649285) (current 1_767_225_609.199_141_695s), priority 6489
+2026-08-20T02:00:14.599366Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 929432289, instr: 0 to 929433174
+2026-08-20T02:00:14.678948Z DEBUG detcore::tool_local: [dtid 5] next timeslice (T69), set by recording to LogicalTime(1767225609388479915) (current 1_767_225_609.295_650_845s), priority 303
+2026-08-20T02:00:14.682193Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 938715348, instr: 0 to 938716237
+2026-08-20T02:00:14.760778Z DEBUG detcore::tool_local: [dtid 5] next timeslice (T70), set by recording to LogicalTime(1767225609588479915) (current 1_767_225_609.388_481_475s), priority 2958
+2026-08-20T02:00:14.767761Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 958715344, instr: 0 to 958716237
+2026-08-20T02:00:14.846474Z DEBUG detcore::tool_local: [dtid 5] next timeslice (T71), set by recording to LogicalTime(1767225609788479915) (current 1_767_225_609.588_481_475s), priority 5648
+2026-08-20T02:00:14.853455Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 978715357, instr: 0 to 978716237
+2026-08-20T02:00:14.931084Z DEBUG detcore::tool_local: [dtid 5] next timeslice (T72), set by recording to LogicalTime(1767225609932412845) (current 1_767_225_609.788_481_475s), priority 5268
+2026-08-20T02:00:14.936111Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 993108648, instr: 0 to 993109530
+2026-08-20T02:00:15.014294Z DEBUG detcore::tool_local: [dtid 5] next timeslice (T73) final slice after recorded preemption points... setting end_of_timeslice to max 18_446_744_073.709_551_615s, final priority 3403
+2026-08-20T02:00:15.024232Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 93828040, instr: 0 to 93828932
+2026-08-20T02:00:15.103215Z DEBUG detcore::tool_local: [dtid 7] next timeslice (T6), set by recording to LogicalTime(1767225601018569895) (current 1_767_225_600.939_880_445s), priority 2925
+2026-08-20T02:00:15.105987Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 101697249, instr: 0 to 101698033
+2026-08-20T02:00:15.175516Z DEBUG detcore::tool_local: [dtid 7] next timeslice (T7), set by recording to LogicalTime(1767225601218569895) (current 1_767_225_601.018_571_455s), priority 9557
+2026-08-20T02:00:15.182500Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 121697154, instr: 0 to 121698033
+2026-08-20T02:00:15.260797Z DEBUG detcore::tool_local: [dtid 7] next timeslice (T8), set by recording to LogicalTime(1767225601351864445) (current 1_767_225_601.218_571_455s), priority 6774
+2026-08-20T02:00:15.265478Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 135026598, instr: 0 to 135027488
+2026-08-20T02:00:15.344842Z DEBUG detcore::tool_local: [dtid 7] next timeslice (T9), set by recording to LogicalTime(1767225601551864445) (current 1_767_225_601.351_866_005s), priority 900
+2026-08-20T02:00:15.351805Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 155026600, instr: 0 to 155027488
+2026-08-20T02:00:15.430428Z DEBUG detcore::tool_local: [dtid 7] next timeslice (T10), set by recording to LogicalTime(1767225601750439525) (current 1_767_225_601.551_866_005s), priority 9868
+2026-08-20T02:00:15.437375Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 174884120, instr: 0 to 174884996
+2026-08-20T02:00:15.514934Z DEBUG detcore::tool_local: [dtid 7] next timeslice (T11), set by recording to LogicalTime(1767225601878634965) (current 1_767_225_601.750_441_085s), priority 940
+2026-08-20T02:00:15.519425Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 187703660, instr: 0 to 187704540
+2026-08-20T02:00:15.597164Z DEBUG detcore::tool_local: [dtid 7] next timeslice (T12), set by recording to LogicalTime(1767225602078634965) (current 1_767_225_601.878_636_525s), priority 2651
+2026-08-20T02:00:15.604114Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 207703658, instr: 0 to 207704540
+2026-08-20T02:00:15.682821Z DEBUG detcore::tool_local: [dtid 7] next timeslice (T13), set by recording to LogicalTime(1767225602195206255) (current 1_767_225_602.078_636_525s), priority 8399
+2026-08-20T02:00:15.686930Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 219360786, instr: 0 to 219361669
+2026-08-20T02:00:15.765258Z DEBUG detcore::tool_local: [dtid 7] next timeslice (T14), set by recording to LogicalTime(1767225602395206255) (current 1_767_225_602.195_207_815s), priority 5815
+2026-08-20T02:00:15.772238Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 239360797, instr: 0 to 239361669
+2026-08-20T02:00:15.849362Z DEBUG detcore::tool_local: [dtid 7] next timeslice (T15), set by recording to LogicalTime(1767225602525462375) (current 1_767_225_602.395_207_815s), priority 9797
+2026-08-20T02:00:15.853974Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 252386399, instr: 0 to 252387281
+2026-08-20T02:00:15.932464Z DEBUG detcore::tool_local: [dtid 7] next timeslice (T16), set by recording to LogicalTime(1767225602725462375) (current 1_767_225_602.525_463_935s), priority 5029
+2026-08-20T02:00:15.939435Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 272386660, instr: 0 to 272387281
+2026-08-20T02:00:15.994302Z DEBUG detcore::tool_local: [dtid 7] next timeslice (T17), set by recording to LogicalTime(1767225602751084525) (current 1_767_225_602.725_463_935s), priority 5742
+2026-08-20T02:00:15.995242Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 274948623, instr: 0 to 274949496
+2026-08-20T02:00:16.072382Z DEBUG detcore::tool_local: [dtid 7] next timeslice (T18), set by recording to LogicalTime(1767225602791413935) (current 1_767_225_602.751_086_085s), priority 2337
+2026-08-20T02:00:16.073837Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 278981684, instr: 0 to 278982437
+2026-08-20T02:00:16.140262Z DEBUG detcore::tool_local: [dtid 7] next timeslice (T19), set by recording to LogicalTime(1767225602991413935) (current 1_767_225_602.791_415_495s), priority 6439
+2026-08-20T02:00:16.147255Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 298981552, instr: 0 to 298982437
+2026-08-20T02:00:16.225362Z DEBUG detcore::tool_local: [dtid 7] next timeslice (T20), set by recording to LogicalTime(1767225603191413935) (current 1_767_225_602.991_415_495s), priority 492
+2026-08-20T02:00:16.232343Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 318981548, instr: 0 to 318982437
+2026-08-20T02:00:16.310969Z DEBUG detcore::tool_local: [dtid 7] next timeslice (T21), set by recording to LogicalTime(1767225603266671535) (current 1_767_225_603.191_415_495s), priority 6419
+2026-08-20T02:00:16.313611Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 326507311, instr: 0 to 326508197
+2026-08-20T02:00:16.392162Z DEBUG detcore::tool_local: [dtid 7] next timeslice (T22), set by recording to LogicalTime(1767225603314825875) (current 1_767_225_603.266_673_095s), priority 3666
+2026-08-20T02:00:16.393929Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 331322876, instr: 0 to 331323631
+2026-08-20T02:00:16.460088Z DEBUG detcore::tool_local: [dtid 7] next timeslice (T23), set by recording to LogicalTime(1767225603514825875) (current 1_767_225_603.314_827_435s), priority 1876
+2026-08-20T02:00:16.467091Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 351322989, instr: 0 to 351323631
+2026-08-20T02:00:16.523689Z DEBUG detcore::tool_local: [dtid 7] next timeslice (T24), set by recording to LogicalTime(1767225603608255435) (current 1_767_225_603.514_827_435s), priority 4853
+2026-08-20T02:00:16.526967Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 360665709, instr: 0 to 360666587
+2026-08-20T02:00:16.604422Z DEBUG detcore::tool_local: [dtid 7] next timeslice (T25), set by recording to LogicalTime(1767225603615674385) (current 1_767_225_603.608_256_995s), priority 1974
+2026-08-20T02:00:16.604738Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 361407670, instr: 0 to 361408482
+2026-08-20T02:00:16.676769Z DEBUG detcore::tool_local: [dtid 7] next timeslice (T26), set by recording to LogicalTime(1767225603735531885) (current 1_767_225_603.615_675_945s), priority 3501
+2026-08-20T02:00:16.680984Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 373393526, instr: 0 to 373394232
+2026-08-20T02:00:16.743720Z DEBUG detcore::tool_local: [dtid 7] next timeslice (T27), set by recording to LogicalTime(1767225603860734525) (current 1_767_225_603.735_533_445s), priority 8629
+2026-08-20T02:00:16.748142Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 385913620, instr: 0 to 385914496
+2026-08-20T02:00:16.825665Z DEBUG detcore::tool_local: [dtid 7] next timeslice (T28), set by recording to LogicalTime(1767225603954027485) (current 1_767_225_603.860_736_085s), priority 7932
+2026-08-20T02:00:16.828939Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 395242919, instr: 0 to 395243792
+2026-08-20T02:00:16.905914Z DEBUG detcore::tool_local: [dtid 7] next timeslice (T29), set by recording to LogicalTime(1767225604019987245) (current 1_767_225_603.954_029_045s), priority 4149
+2026-08-20T02:00:16.908291Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 401838912, instr: 0 to 401839768
+2026-08-20T02:00:16.983867Z DEBUG detcore::tool_local: [dtid 7] next timeslice (T30), set by recording to LogicalTime(1767225604217281385) (current 1_767_225_604.019_988_805s), priority 8013
+2026-08-20T02:00:16.990711Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 421568294, instr: 0 to 421569182
+2026-08-20T02:00:17.070120Z DEBUG detcore::tool_local: [dtid 7] next timeslice (T31), set by recording to LogicalTime(1767225604397291045) (current 1_767_225_604.217_282_945s), priority 3340
+2026-08-20T02:00:17.076402Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 439569257, instr: 0 to 439570148
+2026-08-20T02:00:17.156391Z DEBUG detcore::tool_local: [dtid 7] next timeslice (T32), set by recording to LogicalTime(1767225604597291045) (current 1_767_225_604.397_292_605s), priority 211
+2026-08-20T02:00:17.163400Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 459569267, instr: 0 to 459570148
+2026-08-20T02:00:17.243242Z DEBUG detcore::tool_local: [dtid 7] next timeslice (T33), set by recording to LogicalTime(1767225604705263335) (current 1_767_225_604.597_292_605s), priority 689
+2026-08-20T02:00:17.247074Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 470366490, instr: 0 to 470367377
+2026-08-20T02:00:17.327585Z DEBUG detcore::tool_local: [dtid 7] next timeslice (T34), set by recording to LogicalTime(1767225604824101745) (current 1_767_225_604.705_264_895s), priority 1162
+2026-08-20T02:00:17.331740Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 482250346, instr: 0 to 482251218
+2026-08-20T02:00:17.411263Z DEBUG detcore::tool_local: [dtid 7] next timeslice (T35), set by recording to LogicalTime(1767225605024101745) (current 1_767_225_604.824_103_305s), priority 9443
+2026-08-20T02:00:17.418271Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 502250330, instr: 0 to 502251218
+2026-08-20T02:00:17.498920Z DEBUG detcore::tool_local: [dtid 7] next timeslice (T36), set by recording to LogicalTime(1767225605224101745) (current 1_767_225_605.024_103_305s), priority 8824
+2026-08-20T02:00:17.505969Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 522250333, instr: 0 to 522251218
+2026-08-20T02:00:17.586379Z DEBUG detcore::tool_local: [dtid 7] next timeslice (T37), set by recording to LogicalTime(1767225605228132065) (current 1_767_225_605.224_103_305s), priority 2073
+2026-08-20T02:00:17.586611Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 522653362, instr: 0 to 522654250
+2026-08-20T02:00:17.667920Z DEBUG detcore::tool_local: [dtid 7] next timeslice (T38), set by recording to LogicalTime(1767225605329576015) (current 1_767_225_605.228_133_625s), priority 2404
+2026-08-20T02:00:17.671605Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 532797688, instr: 0 to 532798645
+2026-08-20T02:00:17.758734Z DEBUG detcore::tool_local: [dtid 7] next timeslice (T39), set by recording to LogicalTime(1767225605450938525) (current 1_767_225_605.329_577_575s), priority 4162
+2026-08-20T02:00:17.763026Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 544934011, instr: 0 to 544934896
+2026-08-20T02:00:17.843239Z DEBUG detcore::tool_local: [dtid 7] next timeslice (T40), set by recording to LogicalTime(1767225605650938525) (current 1_767_225_605.450_940_085s), priority 4228
+2026-08-20T02:00:17.850197Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 564934012, instr: 0 to 564934896
+2026-08-20T02:00:17.930634Z DEBUG detcore::tool_local: [dtid 7] next timeslice (T41), set by recording to LogicalTime(1767225605850938525) (current 1_767_225_605.650_940_085s), priority 81
+2026-08-20T02:00:17.937677Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 584934017, instr: 0 to 584934896
+2026-08-20T02:00:18.018039Z DEBUG detcore::tool_local: [dtid 7] next timeslice (T42), set by recording to LogicalTime(1767225605922212735) (current 1_767_225_605.850_940_085s), priority 3919
+2026-08-20T02:00:18.020603Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 592061441, instr: 0 to 592062317
+2026-08-20T02:00:18.097888Z DEBUG detcore::tool_local: [dtid 7] next timeslice (T43), set by recording to LogicalTime(1767225606122212735) (current 1_767_225_605.922_214_295s), priority 9540
+2026-08-20T02:00:18.104912Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 612061386, instr: 0 to 612062317
+2026-08-20T02:00:18.187454Z DEBUG detcore::tool_local: [dtid 7] next timeslice (T44), set by recording to LogicalTime(1767225606322212735) (current 1_767_225_606.122_214_295s), priority 901
+2026-08-20T02:00:18.194451Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 632061425, instr: 0 to 632062317
+2026-08-20T02:00:18.273684Z DEBUG detcore::tool_local: [dtid 7] next timeslice (T45), set by recording to LogicalTime(1767225606522212735) (current 1_767_225_606.322_214_295s), priority 434
+2026-08-20T02:00:18.280625Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 652061450, instr: 0 to 652062317
+2026-08-20T02:00:18.357981Z DEBUG detcore::tool_local: [dtid 7] next timeslice (T46), set by recording to LogicalTime(1767225606722212735) (current 1_767_225_606.522_214_295s), priority 4962
+2026-08-20T02:00:18.364922Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 672061651, instr: 0 to 672062317
+2026-08-20T02:00:18.423815Z DEBUG detcore::tool_local: [dtid 7] next timeslice (T47), set by recording to LogicalTime(1767225606881219175) (current 1_767_225_606.722_214_295s), priority 6451
+2026-08-20T02:00:18.429362Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 687962075, instr: 0 to 687962961
+2026-08-20T02:00:18.507892Z DEBUG detcore::tool_local: [dtid 7] next timeslice (T48), set by recording to LogicalTime(1767225606914698985) (current 1_767_225_606.881_220_735s), priority 5396
+2026-08-20T02:00:18.509144Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 691310048, instr: 0 to 691310942
+2026-08-20T02:00:18.588515Z DEBUG detcore::tool_local: [dtid 7] next timeslice (T49), set by recording to LogicalTime(1767225607017818415) (current 1_767_225_606.914_700_545s), priority 2717
+2026-08-20T02:00:18.592121Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 701621994, instr: 0 to 701622885
+2026-08-20T02:00:18.671850Z DEBUG detcore::tool_local: [dtid 7] next timeslice (T50), set by recording to LogicalTime(1767225607217818415) (current 1_767_225_607.017_819_975s), priority 5756
+2026-08-20T02:00:18.678852Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 721622009, instr: 0 to 721622885
+2026-08-20T02:00:18.757159Z DEBUG detcore::tool_local: [dtid 7] next timeslice (T51), set by recording to LogicalTime(1767225607417818415) (current 1_767_225_607.217_819_975s), priority 5809
+2026-08-20T02:00:18.764187Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 741622006, instr: 0 to 741622885
+2026-08-20T02:00:18.843246Z DEBUG detcore::tool_local: [dtid 7] next timeslice (T52), set by recording to LogicalTime(1767225607545266835) (current 1_767_225_607.417_819_975s), priority 4888
+2026-08-20T02:00:18.847740Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 754366833, instr: 0 to 754367727
+2026-08-20T02:00:18.927602Z DEBUG detcore::tool_local: [dtid 7] next timeslice (T53), set by recording to LogicalTime(1767225607745266835) (current 1_767_225_607.545_268_395s), priority 3813
+2026-08-20T02:00:18.934568Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 774366848, instr: 0 to 774367727
+2026-08-20T02:00:19.012495Z DEBUG detcore::tool_local: [dtid 7] next timeslice (T54), set by recording to LogicalTime(1767225607945266835) (current 1_767_225_607.745_268_395s), priority 7372
+2026-08-20T02:00:19.019542Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 794367061, instr: 0 to 794367727
+2026-08-20T02:00:19.078427Z DEBUG detcore::tool_local: [dtid 7] next timeslice (T55), set by recording to LogicalTime(1767225608065992275) (current 1_767_225_607.945_268_395s), priority 7131
+2026-08-20T02:00:19.082678Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 806439387, instr: 0 to 806440271
+2026-08-20T02:00:19.161338Z DEBUG detcore::tool_local: [dtid 7] next timeslice (T56), set by recording to LogicalTime(1767225608091832975) (current 1_767_225_608.065_993_835s), priority 3031
+2026-08-20T02:00:19.162287Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 809023455, instr: 0 to 809024341
+2026-08-20T02:00:19.241668Z DEBUG detcore::tool_local: [dtid 7] next timeslice (T57), set by recording to LogicalTime(1767225608154277555) (current 1_767_225_608.091_834_535s), priority 3011
+2026-08-20T02:00:19.243850Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 815267922, instr: 0 to 815268799
+2026-08-20T02:00:19.321358Z DEBUG detcore::tool_local: [dtid 7] next timeslice (T58), set by recording to LogicalTime(1767225608319718525) (current 1_767_225_608.154_279_115s), priority 4992
+2026-08-20T02:00:19.327173Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 831812009, instr: 0 to 831812896
+2026-08-20T02:00:19.405667Z DEBUG detcore::tool_local: [dtid 7] next timeslice (T59), set by recording to LogicalTime(1767225608519718525) (current 1_767_225_608.319_720_085s), priority 789
+2026-08-20T02:00:19.412616Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 851812010, instr: 0 to 851812896
+2026-08-20T02:00:19.490832Z DEBUG detcore::tool_local: [dtid 7] next timeslice (T60), set by recording to LogicalTime(1767225608548546885) (current 1_767_225_608.519_720_085s), priority 474
+2026-08-20T02:00:19.491902Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 854694856, instr: 0 to 854695732
+2026-08-20T02:00:19.569098Z DEBUG detcore::tool_local: [dtid 7] next timeslice (T61), set by recording to LogicalTime(1767225608671911665) (current 1_767_225_608.548_548_445s), priority 2166
+2026-08-20T02:00:19.573471Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 867031331, instr: 0 to 867032210
+2026-08-20T02:00:19.651196Z DEBUG detcore::tool_local: [dtid 7] next timeslice (T62), set by recording to LogicalTime(1767225608770458505) (current 1_767_225_608.671_913_225s), priority 6980
+2026-08-20T02:00:19.654677Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 876886012, instr: 0 to 876886894
+2026-08-20T02:00:19.732614Z DEBUG detcore::tool_local: [dtid 7] next timeslice (T63), set by recording to LogicalTime(1767225608970458505) (current 1_767_225_608.770_460_065s), priority 948
+2026-08-20T02:00:19.739552Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 896886020, instr: 0 to 896886894
+2026-08-20T02:00:19.816420Z DEBUG detcore::tool_local: [dtid 7] next timeslice (T64), set by recording to LogicalTime(1767225609100539165) (current 1_767_225_608.970_460_065s), priority 4974
+2026-08-20T02:00:19.820972Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 909894083, instr: 0 to 909894960
+2026-08-20T02:00:19.898705Z DEBUG detcore::tool_local: [dtid 7] next timeslice (T65), set by recording to LogicalTime(1767225609300539165) (current 1_767_225_609.100_540_725s), priority 2928
+2026-08-20T02:00:19.905616Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 929894070, instr: 0 to 929894960
+2026-08-20T02:00:19.984582Z DEBUG detcore::tool_local: [dtid 7] next timeslice (T66), set by recording to LogicalTime(1767225609304161045) (current 1_767_225_609.300_540_725s), priority 548
+2026-08-20T02:00:19.984774Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 930256264, instr: 0 to 930257148
+2026-08-20T02:00:20.063235Z DEBUG detcore::tool_local: [dtid 7] next timeslice (T67), set by recording to LogicalTime(1767225609358459025) (current 1_767_225_609.304_162_605s), priority 1995
+2026-08-20T02:00:20.065196Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 935686070, instr: 0 to 935686946
+2026-08-20T02:00:20.142609Z DEBUG detcore::tool_local: [dtid 7] next timeslice (T68), set by recording to LogicalTime(1767225609558459025) (current 1_767_225_609.358_460_585s), priority 8531
+2026-08-20T02:00:20.149663Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 955686054, instr: 0 to 955686946
+2026-08-20T02:00:20.228533Z DEBUG detcore::tool_local: [dtid 7] next timeslice (T69), set by recording to LogicalTime(1767225609609005055) (current 1_767_225_609.558_460_585s), priority 8498
+2026-08-20T02:00:20.230409Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 960740665, instr: 0 to 960741549
+2026-08-20T02:00:20.308680Z DEBUG detcore::tool_local: [dtid 7] next timeslice (T70), set by recording to LogicalTime(1767225609645483065) (current 1_767_225_609.609_006_615s), priority 9069
+2026-08-20T02:00:20.309991Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 964388467, instr: 0 to 964389350
+2026-08-20T02:00:20.388119Z DEBUG detcore::tool_local: [dtid 7] next timeslice (T71), set by recording to LogicalTime(1767225609669553965) (current 1_767_225_609.645_484_625s), priority 5400
+2026-08-20T02:00:20.389018Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 966795555, instr: 0 to 966796440
+2026-08-20T02:00:20.466718Z DEBUG detcore::tool_local: [dtid 7] next timeslice (T72), set by recording to LogicalTime(1767225609721557345) (current 1_767_225_609.669_555_525s), priority 8976
+2026-08-20T02:00:20.468583Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 971995902, instr: 0 to 971996778
+2026-08-20T02:00:20.546296Z DEBUG detcore::tool_local: [dtid 7] next timeslice (T73), set by recording to LogicalTime(1767225609773022165) (current 1_767_225_609.721_558_905s), priority 7462
+2026-08-20T02:00:20.548135Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 977142377, instr: 0 to 977143260
+2026-08-20T02:00:20.626280Z DEBUG detcore::tool_local: [dtid 7] next timeslice (T74), set by recording to LogicalTime(1767225609973022165) (current 1_767_225_609.773_023_725s), priority 3351
+2026-08-20T02:00:20.633263Z DEBUG reverie_ptrace::timer: Timer will single-step from ctr rcb: 997142386, instr: 0 to 997143260
+2026-08-20T02:00:20.710779Z DEBUG detcore::tool_local: [dtid 7] next timeslice (T75) final slice after recorded preemption points... setting end_of_timeslice to max 18_446_744_073.709_551_615s, final priority 7828

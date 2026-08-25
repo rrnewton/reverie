@@ -1,0 +1,8 @@
+step 1 H  pyc_recorded_mtime=1767225600  PREDICT=A  dir=mx_1
+step 2 H  pyc_recorded_mtime=1767225600  PREDICT=A  dir=mx_2
+step 3 N  (no-hermit boot)
+step 4 H  pyc_recorded_mtime=1787086777  PREDICT=B  dir=mx_4
+step 5 N  (no-hermit boot)
+step 6 N  (no-hermit boot)
+step 7 H  pyc_recorded_mtime=1787086777  PREDICT=B  dir=mx_7
+step 8 H  pyc_recorded_mtime=1767225600  PREDICT=A  dir=mx_8

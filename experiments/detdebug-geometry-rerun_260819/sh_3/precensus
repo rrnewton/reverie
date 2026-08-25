@@ -1,0 +1,6 @@
+hermit_procs=17
+qemu_procs=25
+ctrl_procs=0
+0
+loadavg=30.24 32.89 36.23
+nproc_running=28

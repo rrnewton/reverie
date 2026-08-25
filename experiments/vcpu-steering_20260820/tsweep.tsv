@@ -1,0 +1,13 @@
+arm	tag	mode	wall	first	other	t3	t11	t13	total
+orient0	o0-2	only-cpu0	50.13	0	0	19484	129	83	28931
+orient0	o0-3	only-cpu0	37.68	0	0	16960	108	66	25968
+orient1	o1-2	only-cpu1	53.15	1	0	18974	128	84	28345
+orient1	o1-3	only-cpu1	35.98	1	0	18400	120	75	27663
+strict	t-b1	both		1	0	18583	82	72	27810
+strict	t-b2	both		0	0	18122	70	67	27260
+strict	t-b3	both		0	0	17901	69	68	27001
+strict	t-b4	both		0	0	17617	66	65	26667
+random-s1	t-r1	both		1	0	15753	201	80	43392
+random-s2	t-r2	both		1	0	15811	198	82	43659
+random-s3	t-r3	both				15942	1436	1392	46401
+TSWEEPDONE

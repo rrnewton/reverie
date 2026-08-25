@@ -1,0 +1,16 @@
+t=+0.25s tag=q-N1-2 arm=N1 qpid=2297890 vcpu0_tid=2297901 vcpu1_tid=2297903 hostcpu=200 k=100000000
+bias: both vcpu threads on host cpu 200
+bias: tid 2297903 -> nice 1
+  applied tid=2297901 aff=200 sched=pid 2297901's current scheduling policy: SCHED_OTHER pid 2297901's current scheduling priority: 0 
+  applied tid=2297903 aff=200 sched=pid 2297903's current scheduling policy: SCHED_OTHER pid 2297903's current scheduling priority: 0 
+t=+0.27s bias applied
+HOSTCPU WINDOW wall=0.53s v0_ticks=27 v1_ticks=26 samples=26
+t=+9.73s workload finished
+qemu-system-x86_64: terminating on signal 15 from pid 2297883 (bash)
+--- result ---
+VS-GUEST-READY cpus=2
+ADVANCE-START ncpu=2 k=100000000
+ADVANCE R0 me=100000000 other=100000000 other_started=1 oncpu=0
+ADVANCE-FIRST-DONE
+ADVANCE R1 me=100000000 other=98478333 other_started=1 oncpu=1
+ADVANCE-END c0=100000000 c1=100000000

@@ -1,0 +1,4 @@
+ls /bin/racer_p*; echo FIN$((20+3))
+[1;32m/bin/racer_p0[m   [1;32m/bin/racer_p15[m  [1;32m/bin/racer_p5[m
+FIN23
+/ # 

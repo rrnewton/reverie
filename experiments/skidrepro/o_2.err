@@ -1,0 +1,290 @@
+2026-08-20T03:44:43.625279Z  INFO detcore::scheduler::runqueue: DETLOG SCHEDRAND: seeding scheduler runqueue with seed 2
+2026-08-20T03:44:43.626619Z  INFO detcore::scheduler: [scheduler] daemon task starting up, waiting for guest thread start..
+2026-08-20T03:44:43.626752Z  INFO detcore::tool_local: DETLOG USER RAND: seeding PRNG for root thread with seed 2
+2026-08-20T03:44:43.626760Z  INFO detcore::tool_local: DETLOG CHAOSRAND: seeding chaos scheduler with seed 2
+2026-08-20T03:44:43.627757Z  INFO detcore::tool_local: DETLOG [dtid 3] CHAOSRAND(child_priority): u64 => 12569013455718006045
+2026-08-20T03:44:43.627820Z  INFO detcore::scheduler: [scheduler] guest in queue, scheduler proceeding..
+2026-08-20T03:44:43.627847Z  INFO detcore::scheduler: [sched-step5] >>>>>>>
+
+ COMMIT turn 0, dettid 3 using resources {ParentContinue { parent: DetPid(3), child: DetPid(3) }: W}, on previously committed 1_767_225_600.000_000_000s
+2026-08-20T03:44:43.627905Z  INFO detcore::scheduler: [sched-step5] >>>>>>>
+
+ COMMIT turn 1, dettid 3 using resources {MemAddrSpace(DetPid(3)): RW}, on previously committed 1_767_225_600.000_500_000s
+2026-08-20T03:44:43.627916Z  INFO detcore::tool_global: [detcore, dtid 3] New thread given go-ahead to proceed via <ivar Go(None)>
+2026-08-20T03:44:43.627925Z  INFO detcore::tool_local: DETLOG [dtid 3] CHAOSRAND => next_rcbs = 10383804
+2026-08-20T03:44:43.629432Z  INFO detcore: DETLOG [post_exec, dtid 3] init auxv AT_RANDOM value to [29, 72, 169, 181, 18, 164, 188, 72, 96, 207, 229, 177, 137, 48, 152, 220]
+2026-08-20T03:44:43.629546Z  INFO detcore: [dtid 3] inbound rdtsc, new logical time: DetTime { syscalls: 1, syscall_nanos: Some(250000), rcbs: 49, weighted_rcbs: None, nondet_instrs: 1, extra_nanos: 0, starting_micros: 1767225600000000, multiplier: 1.0 }
+2026-08-20T03:44:43.629594Z  INFO detcore: [dtid 3] inbound rdtsc, new logical time: DetTime { syscalls: 1, syscall_nanos: Some(250000), rcbs: 408, weighted_rcbs: None, nondet_instrs: 2, extra_nanos: 0, starting_micros: 1767225600000000, multiplier: 1.0 }
+2026-08-20T03:44:43.629646Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] inbound syscall: brk(NULL) = ?
+2026-08-20T03:44:43.629684Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] finish syscall #2: brk(NULL) = Ok(4214784)
+2026-08-20T03:44:43.630194Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] inbound syscall: arch_prctl(12289, 0x7fffffffb3a0) = ?
+2026-08-20T03:44:43.630217Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] finish syscall #3: arch_prctl(12289, 0x7fffffffb3a0) = Err(Errno(EINVAL))
+2026-08-20T03:44:43.630284Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] inbound syscall: mmap(NULL, 8192, ProtFlags(PROT_READ | PROT_WRITE), MapFlags(MAP_PRIVATE | MAP_ANON), -1, 0) = ?
+2026-08-20T03:44:43.630330Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] finish syscall #4: mmap(NULL, 8192, ProtFlags(PROT_READ | PROT_WRITE), MapFlags(MAP_PRIVATE | MAP_ANON), -1, 0) = Ok(140737353850880)
+2026-08-20T03:44:43.630377Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] inbound syscall: access(0x7ffff7ff2e50 -> "/etc/ld.so.preload", Mode(S_IROTH)) = ?
+2026-08-20T03:44:43.630425Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] finish syscall #5: access(0x7ffff7ff2e50 -> "/etc/ld.so.preload", Mode(S_IROTH)) = Err(Errno(ENOENT))
+2026-08-20T03:44:43.630458Z  INFO detcore: [dtid 3] inbound rdtsc, new logical time: DetTime { syscalls: 5, syscall_nanos: Some(273250), rcbs: 31035, weighted_rcbs: None, nondet_instrs: 24, extra_nanos: 0, starting_micros: 1767225600000000, multiplier: 1.0 }
+2026-08-20T03:44:43.630498Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] inbound syscall: openat(-100, 0x7ffff7ff1266 -> "/etc/ld.so.cache", OFlag(O_CLOEXEC)) = ?
+2026-08-20T03:44:43.630535Z  INFO detcore::scheduler: [sched-step5] >>>>>>>
+
+ COMMIT turn 2, dettid 3 using resources {Path("/etc/ld.so.cache"): R}, on previously committed 1_767_225_600.001_610_550s
+2026-08-20T03:44:43.630597Z  INFO detcore::syscalls::files: Injecting additional fstat to retrieve file metadata on fd 3.
+2026-08-20T03:44:43.630705Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] finish syscall #6: openat(-100, 0x7ffff7ff1266 -> "/etc/ld.so.cache", OFlag(O_CLOEXEC)) = Ok(3)
+2026-08-20T03:44:43.630749Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] inbound syscall: fstat(3, 0x7fffffffa5d0) = ?
+2026-08-20T03:44:43.630807Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] finish syscall #7: fstat(3, 0x7fffffffa5d0) = Ok(0)
+2026-08-20T03:44:43.630839Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] inbound syscall: mmap(NULL, 28291, ProtFlags(PROT_READ), MapFlags(MAP_PRIVATE), 3, 0) = ?
+2026-08-20T03:44:43.630875Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] finish syscall #8: mmap(NULL, 28291, ProtFlags(PROT_READ), MapFlags(MAP_PRIVATE), 3, 0) = Ok(140737353822208)
+2026-08-20T03:44:43.630907Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] inbound syscall: close(3) = ?
+2026-08-20T03:44:43.630939Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] finish syscall #9: close(3) = Ok(0)
+2026-08-20T03:44:43.630980Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] inbound syscall: openat(-100, 0x7ffff7fba750 -> "/lib64/libc.so.6", OFlag(O_CLOEXEC)) = ?
+2026-08-20T03:44:43.630993Z  INFO detcore::scheduler: [sched-step5] >>>>>>>
+
+ COMMIT turn 3, dettid 3 using resources {Path("/lib64/libc.so.6"): R}, on previously committed 1_767_225_600.002_176_420s
+2026-08-20T03:44:43.631042Z  INFO detcore::syscalls::files: Injecting additional fstat to retrieve file metadata on fd 3.
+2026-08-20T03:44:43.631119Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] finish syscall #10: openat(-100, 0x7ffff7fba750 -> "/lib64/libc.so.6", OFlag(O_CLOEXEC)) = Ok(3)
+2026-08-20T03:44:43.631154Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] inbound syscall: read(3, 0x7fffffffa738, 832) = ?
+2026-08-20T03:44:43.631191Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] finish syscall #11: read(3, 0x7fffffffa738, 832) = Ok(832)
+2026-08-20T03:44:43.631222Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] inbound syscall: pread64(3, 0x7fffffffa330, 784, 64) = ?
+2026-08-20T03:44:43.631262Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] finish syscall #12: pread64(3, 0x7fffffffa330, 784, 64) = Ok(784)
+2026-08-20T03:44:43.631292Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] inbound syscall: pread64(3, 0x7fffffffa2f0, 48, 848) = ?
+2026-08-20T03:44:43.631319Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] finish syscall #13: pread64(3, 0x7fffffffa2f0, 48, 848) = Ok(48)
+2026-08-20T03:44:43.631349Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] inbound syscall: pread64(3, 0x7fffffffa2a0, 68, 896) = ?
+2026-08-20T03:44:43.631374Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] finish syscall #14: pread64(3, 0x7fffffffa2a0, 68, 896) = Ok(68)
+2026-08-20T03:44:43.631405Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] inbound syscall: fstat(3, 0x7fffffffa5d0) = ?
+2026-08-20T03:44:43.631438Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] finish syscall #15: fstat(3, 0x7fffffffa5d0) = Ok(0)
+2026-08-20T03:44:43.631467Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] inbound syscall: pread64(3, 0x7fffffffa220, 784, 64) = ?
+2026-08-20T03:44:43.631495Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] finish syscall #16: pread64(3, 0x7fffffffa220, 784, 64) = Ok(784)
+2026-08-20T03:44:43.631532Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] inbound syscall: mmap(NULL, 2138064, ProtFlags(PROT_READ), MapFlags(MAP_PRIVATE | MAP_DENYWRITE), 3, 0) = ?
+2026-08-20T03:44:43.631566Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] finish syscall #17: mmap(NULL, 2138064, ProtFlags(PROT_READ), MapFlags(MAP_PRIVATE | MAP_DENYWRITE), 3, 0) = Ok(140737349943296)
+2026-08-20T03:44:43.631597Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] inbound syscall: mmap(0x7ffff7c29000, 1527808, ProtFlags(PROT_READ | PROT_EXEC), MapFlags(MAP_PRIVATE | MAP_FIXED | MAP_DENYWRITE), 3, 167936) = ?
+2026-08-20T03:44:43.631637Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] finish syscall #18: mmap(0x7ffff7c29000, 1527808, ProtFlags(PROT_READ | PROT_EXEC), MapFlags(MAP_PRIVATE | MAP_FIXED | MAP_DENYWRITE), 3, 167936) = Ok(140737350111232)
+2026-08-20T03:44:43.631671Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] inbound syscall: mmap(0x7ffff7d9e000, 364544, ProtFlags(PROT_READ), MapFlags(MAP_PRIVATE | MAP_FIXED | MAP_DENYWRITE), 3, 1695744) = ?
+2026-08-20T03:44:43.631710Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] finish syscall #19: mmap(0x7ffff7d9e000, 364544, ProtFlags(PROT_READ), MapFlags(MAP_PRIVATE | MAP_FIXED | MAP_DENYWRITE), 3, 1695744) = Ok(140737351639040)
+2026-08-20T03:44:43.631739Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] inbound syscall: mmap(0x7ffff7df7000, 24576, ProtFlags(PROT_READ | PROT_WRITE), MapFlags(MAP_PRIVATE | MAP_FIXED | MAP_DENYWRITE), 3, 2056192) = ?
+2026-08-20T03:44:43.631776Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] finish syscall #20: mmap(0x7ffff7df7000, 24576, ProtFlags(PROT_READ | PROT_WRITE), MapFlags(MAP_PRIVATE | MAP_FIXED | MAP_DENYWRITE), 3, 2056192) = Ok(140737352003584)
+2026-08-20T03:44:43.631814Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] inbound syscall: mmap(0x7ffff7dfd000, 53200, ProtFlags(PROT_READ | PROT_WRITE), MapFlags(MAP_PRIVATE | MAP_FIXED | MAP_ANON), -1, 0) = ?
+2026-08-20T03:44:43.631843Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] finish syscall #21: mmap(0x7ffff7dfd000, 53200, ProtFlags(PROT_READ | PROT_WRITE), MapFlags(MAP_PRIVATE | MAP_FIXED | MAP_ANON), -1, 0) = Ok(140737352028160)
+2026-08-20T03:44:43.631886Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] inbound syscall: close(3) = ?
+2026-08-20T03:44:43.631913Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] finish syscall #22: close(3) = Ok(0)
+2026-08-20T03:44:43.631952Z  INFO detcore: [dtid 3] inbound rdtsc, new logical time: DetTime { syscalls: 22, syscall_nanos: Some(489250), rcbs: 32244, weighted_rcbs: None, nondet_instrs: 25, extra_nanos: 0, starting_micros: 1767225600000000, multiplier: 1.0 }
+2026-08-20T03:44:43.631993Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] inbound syscall: mmap(NULL, 12288, ProtFlags(PROT_READ | PROT_WRITE), MapFlags(MAP_PRIVATE | MAP_ANON), -1, 0) = ?
+2026-08-20T03:44:43.632023Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] finish syscall #23: mmap(NULL, 12288, ProtFlags(PROT_READ | PROT_WRITE), MapFlags(MAP_PRIVATE | MAP_ANON), -1, 0) = Ok(140737353809920)
+2026-08-20T03:44:43.632059Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] inbound syscall: arch_prctl(ARCH_SET_FS, 140737353811776) = ?
+2026-08-20T03:44:43.632087Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] finish syscall #24: arch_prctl(ARCH_SET_FS, 140737353811776) = Ok(0)
+2026-08-20T03:44:43.632120Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] inbound syscall: set_tid_address(0x7ffff7fb0a10) = ?
+2026-08-20T03:44:43.632146Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] finish syscall #25: set_tid_address(0x7ffff7fb0a10) = Ok(3)
+2026-08-20T03:44:43.632179Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] inbound syscall: set_robust_list(0x7ffff7fb0a20, 24) = ?
+2026-08-20T03:44:43.632207Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] finish syscall #26: set_robust_list(0x7ffff7fb0a20, 24) = Ok(0)
+2026-08-20T03:44:43.632238Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] inbound syscall: rseq(140737353814240, 32, 0, 1392848979, 0, 0) = ?
+2026-08-20T03:44:43.632247Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] finish syscall #27: rseq(140737353814240, 32, 0, 1392848979, 0, 0) = Err(Errno(ENOSYS))
+2026-08-20T03:44:43.632299Z  INFO detcore: [dtid 3] inbound rdtsc, new logical time: DetTime { syscalls: 27, syscall_nanos: Some(505000), rcbs: 33030, weighted_rcbs: None, nondet_instrs: 26, extra_nanos: 0, starting_micros: 1767225600000000, multiplier: 1.0 }
+2026-08-20T03:44:43.632423Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] inbound syscall: mprotect(0x7ffff7df7000, 16384, ProtFlags(PROT_READ)) = ?
+2026-08-20T03:44:43.632458Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] finish syscall #28: mprotect(0x7ffff7df7000, 16384, ProtFlags(PROT_READ)) = Ok(0)
+2026-08-20T03:44:43.632491Z  INFO detcore: [dtid 3] inbound rdtsc, new logical time: DetTime { syscalls: 28, syscall_nanos: Some(515000), rcbs: 44905, weighted_rcbs: None, nondet_instrs: 27, extra_nanos: 0, starting_micros: 1767225600000000, multiplier: 1.0 }
+2026-08-20T03:44:43.632527Z  INFO detcore: [dtid 3] inbound rdtsc, new logical time: DetTime { syscalls: 28, syscall_nanos: Some(515000), rcbs: 44905, weighted_rcbs: None, nondet_instrs: 28, extra_nanos: 0, starting_micros: 1767225600000000, multiplier: 1.0 }
+2026-08-20T03:44:43.632564Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] inbound syscall: mprotect(0x403000, 4096, ProtFlags(PROT_READ)) = ?
+2026-08-20T03:44:43.632594Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] finish syscall #29: mprotect(0x403000, 4096, ProtFlags(PROT_READ)) = Ok(0)
+2026-08-20T03:44:43.632626Z  INFO detcore: [dtid 3] inbound rdtsc, new logical time: DetTime { syscalls: 29, syscall_nanos: Some(525000), rcbs: 45291, weighted_rcbs: None, nondet_instrs: 29, extra_nanos: 0, starting_micros: 1767225600000000, multiplier: 1.0 }
+2026-08-20T03:44:43.632657Z  INFO detcore: [dtid 3] inbound rdtsc, new logical time: DetTime { syscalls: 29, syscall_nanos: Some(525000), rcbs: 45460, weighted_rcbs: None, nondet_instrs: 30, extra_nanos: 0, starting_micros: 1767225600000000, multiplier: 1.0 }
+2026-08-20T03:44:43.632689Z  INFO detcore: [dtid 3] inbound rdtsc, new logical time: DetTime { syscalls: 29, syscall_nanos: Some(525000), rcbs: 45495, weighted_rcbs: None, nondet_instrs: 31, extra_nanos: 0, starting_micros: 1767225600000000, multiplier: 1.0 }
+2026-08-20T03:44:43.632722Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] inbound syscall: mprotect(0x7ffff7ffb000, 8192, ProtFlags(PROT_READ)) = ?
+2026-08-20T03:44:43.632754Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] finish syscall #30: mprotect(0x7ffff7ffb000, 8192, ProtFlags(PROT_READ)) = Ok(0)
+2026-08-20T03:44:43.632796Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] inbound syscall: prlimit64(0, 3, NULL, 0x7fffffffb110) = ?
+2026-08-20T03:44:43.632815Z  INFO detcore::syscalls::sysinfo: DETLOG prlimit64: pid=0, resource=3, mutation=false, old=8388608:18446744073709551615
+2026-08-20T03:44:43.632822Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] finish syscall #31: prlimit64(0, 3, NULL, 0x7fffffffb110) = Ok(0)
+2026-08-20T03:44:43.632878Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] inbound syscall: munmap(0x7ffff7fb3000, 28291) = ?
+2026-08-20T03:44:43.632918Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] finish syscall #32: munmap(0x7ffff7fb3000, 28291) = Ok(0)
+2026-08-20T03:44:43.632966Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] inbound syscall: getrandom(0x7ffff7e024f8, 8, 1) = ?
+2026-08-20T03:44:43.632978Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] finish syscall #33: getrandom(0x7ffff7e024f8, 8, 1) = Ok(8)
+2026-08-20T03:44:43.633032Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] inbound syscall: brk(NULL) = ?
+2026-08-20T03:44:43.633058Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] finish syscall #34: brk(NULL) = Ok(4214784)
+2026-08-20T03:44:43.633089Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] inbound syscall: brk(0x426000) = ?
+2026-08-20T03:44:43.633116Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] finish syscall #35: brk(0x426000) = Ok(4349952)
+2026-08-20T03:44:43.633152Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] inbound syscall: rt_sigaction(33, 0x7fffffffaeb0, NULL, 8) = ?
+2026-08-20T03:44:43.633190Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] finish syscall #36: rt_sigaction(33, 0x7fffffffaeb0, NULL, 8) = Ok(0)
+2026-08-20T03:44:43.633221Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] inbound syscall: rt_sigprocmask(1, 0x7fffffffb0b8, NULL, 8) = ?
+2026-08-20T03:44:43.633254Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] finish syscall #37: rt_sigprocmask(1, 0x7fffffffb0b8, NULL, 8) = Ok(0)
+2026-08-20T03:44:43.633284Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] inbound syscall: mmap(NULL, 8392704, ProtFlags(0x0), MapFlags(MAP_PRIVATE | MAP_ANON | MAP_STACK), -1, 0) = ?
+2026-08-20T03:44:43.633316Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] finish syscall #38: mmap(NULL, 8392704, ProtFlags(0x0), MapFlags(MAP_PRIVATE | MAP_ANON | MAP_STACK), -1, 0) = Ok(140737341550592)
+2026-08-20T03:44:43.633350Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] inbound syscall: mprotect(0x7ffff7400000, 8388608, ProtFlags(PROT_READ | PROT_WRITE)) = ?
+2026-08-20T03:44:43.633384Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] finish syscall #39: mprotect(0x7ffff7400000, 8388608, ProtFlags(PROT_READ | PROT_WRITE)) = Ok(0)
+2026-08-20T03:44:43.633419Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] inbound syscall: rt_sigprocmask(0, 0x7ffff7db3820, 0x7fffffffb0b0, 8) = ?
+2026-08-20T03:44:43.633481Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] finish syscall #40: rt_sigprocmask(0, 0x7ffff7db3820, 0x7fffffffb0b0, 8) = Ok(0)
+2026-08-20T03:44:43.633520Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] inbound syscall: clone3(0x7fffffffaf70, 88) = ?
+2026-08-20T03:44:43.633842Z  INFO detcore::tool_local: DETLOG RNG USER RAND Generated new seed [81, 130, 193, 92, 122, 43, 193, 244, 4, 3, 52, 220, 107, 253, 118, 73]
+2026-08-20T03:44:43.633896Z  INFO detcore::tool_local: DETLOG RNG USER RAND seeding child tid 5: [81, 130, 193, 92, 127, 43, 193, 244, 4, 3, 52, 220, 107, 253, 118, 73] from parent Mcg128Xsl64 {}
+2026-08-20T03:44:43.633903Z  INFO detcore::tool_local: DETLOG RNG CHAOSRAND Generated new seed [169, 215, 164, 132, 12, 136, 103, 65, 181, 0, 186, 233, 211, 234, 20, 79]
+2026-08-20T03:44:43.633910Z  INFO detcore::tool_local: DETLOG RNG CHAOSRAND seeding child tid 5: [169, 215, 164, 132, 9, 136, 103, 65, 181, 0, 186, 233, 211, 234, 20, 79] from parent Mcg128Xsl64 {}
+2026-08-20T03:44:43.634000Z  INFO detcore::tool_local: DETLOG [dtid 3] CHAOSRAND(child_priority): u64 => 4712885122412894121
+2026-08-20T03:44:43.634414Z  INFO detcore::scheduler: [sched-step5] >>>>>>>
+
+ COMMIT turn 4, dettid 5 using resources {MemAddrSpace(DetPid(3)): RW}, on previously committed 1_767_225_600.004_634_170s
+2026-08-20T03:44:43.634433Z  INFO detcore::tool_global: [detcore, dtid 5] New thread given go-ahead to proceed via <ivar Go(None)>
+2026-08-20T03:44:43.634441Z  INFO detcore::tool_local: DETLOG [dtid 5] CHAOSRAND => next_rcbs = 24136483
+2026-08-20T03:44:43.634522Z  INFO detcore: DETLOG [syscall][detcore, dtid 5] inbound syscall: set_robust_list(0x7ffff7bff920, 24) = ?
+2026-08-20T03:44:43.634555Z  INFO detcore: DETLOG [syscall][detcore, dtid 5] finish syscall #1: set_robust_list(0x7ffff7bff920, 24) = Ok(0)
+2026-08-20T03:44:43.634590Z  INFO detcore: DETLOG [syscall][detcore, dtid 5] inbound syscall: rt_sigprocmask(2, 0x7ffff7bfff30, NULL, 8) = ?
+2026-08-20T03:44:43.634661Z  INFO detcore: DETLOG [syscall][detcore, dtid 5] finish syscall #2: rt_sigprocmask(2, 0x7ffff7bfff30, NULL, 8) = Ok(0)
+2026-08-20T03:44:43.756945Z  INFO detcore: [detcore, dtid 5] inbound timer preemption event
+2026-08-20T03:44:43.756971Z  INFO detcore: [detcore, dtid 5] ending timeslice T1. 2 syscalls and 0 signals this timeslice.
+2026-08-20T03:44:43.756978Z  INFO detcore::tool_local: DETLOG [dtid 5] CHAOSRAND => next_rcbs = 43547036
+2026-08-20T03:44:43.756983Z  INFO detcore::tool_local: DETLOG [dtid 5] CHAOSRAND(priority): u64 => 16246647258566524208
+2026-08-20T03:44:43.757020Z  INFO detcore::scheduler: [scheduler] >>>>>>>
+
+ NONCOMMIT turn 5, dettid 5 changed priority to 4209
+2026-08-20T03:44:43.757034Z  INFO detcore::scheduler: [sched-step5] >>>>>>>
+
+ COMMIT turn 6, dettid 5 using resources {}, on previously committed 1_767_225_600.205_134_170s
+2026-08-20T03:44:43.881346Z  INFO detcore: [detcore, dtid 5] inbound timer preemption event
+2026-08-20T03:44:43.881369Z  INFO detcore: [detcore, dtid 5] ending timeslice T2. 0 syscalls and 0 signals this timeslice.
+2026-08-20T03:44:43.881375Z  INFO detcore::tool_local: DETLOG [dtid 5] CHAOSRAND => next_rcbs = 9888358
+2026-08-20T03:44:43.881380Z  INFO detcore::tool_local: DETLOG [dtid 5] CHAOSRAND(priority): u64 => 4880337489119037475
+2026-08-20T03:44:43.881407Z  INFO detcore::scheduler: [scheduler] >>>>>>>
+
+ NONCOMMIT turn 7, dettid 5 changed priority to 7476
+2026-08-20T03:44:43.881417Z  INFO detcore::scheduler: [sched-step5] >>>>>>>
+
+ COMMIT turn 8, dettid 3 using resources {ParentContinue { parent: DetPid(3), child: DetPid(5) }: W}, on previously committed 1_767_225_600.405_634_170s
+2026-08-20T03:44:43.881459Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] finish syscall #41: clone3(0x7fffffffaf70, 88) = Ok(5)
+2026-08-20T03:44:43.881539Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] inbound syscall: rt_sigprocmask(2, 0x7fffffffb0b0, NULL, 8) = ?
+2026-08-20T03:44:43.881624Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] finish syscall #42: rt_sigprocmask(2, 0x7fffffffb0b0, NULL, 8) = Ok(0)
+2026-08-20T03:44:43.881661Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] inbound syscall: mmap(NULL, 8392704, ProtFlags(0x0), MapFlags(MAP_PRIVATE | MAP_ANON | MAP_STACK), -1, 0) = ?
+2026-08-20T03:44:43.881706Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] finish syscall #43: mmap(NULL, 8392704, ProtFlags(0x0), MapFlags(MAP_PRIVATE | MAP_ANON | MAP_STACK), -1, 0) = Ok(140737333157888)
+2026-08-20T03:44:43.881736Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] inbound syscall: mprotect(0x7ffff6bff000, 8388608, ProtFlags(PROT_READ | PROT_WRITE)) = ?
+2026-08-20T03:44:43.881773Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] finish syscall #44: mprotect(0x7ffff6bff000, 8388608, ProtFlags(PROT_READ | PROT_WRITE)) = Ok(0)
+2026-08-20T03:44:43.881813Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] inbound syscall: rt_sigprocmask(0, 0x7ffff7db3820, 0x7fffffffb0b0, 8) = ?
+2026-08-20T03:44:43.881872Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] finish syscall #45: rt_sigprocmask(0, 0x7ffff7db3820, 0x7fffffffb0b0, 8) = Ok(0)
+2026-08-20T03:44:43.881907Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] inbound syscall: clone3(0x7fffffffaf70, 88) = ?
+2026-08-20T03:44:43.882250Z  INFO detcore::tool_local: DETLOG RNG USER RAND Generated new seed [81, 130, 193, 92, 122, 43, 193, 244, 4, 3, 52, 220, 107, 253, 118, 73]
+2026-08-20T03:44:43.882262Z  INFO detcore::tool_local: DETLOG RNG USER RAND seeding child tid 7: [81, 130, 193, 92, 125, 43, 193, 244, 4, 3, 52, 220, 107, 253, 118, 73] from parent Mcg128Xsl64 {}
+2026-08-20T03:44:43.882270Z  INFO detcore::tool_local: DETLOG RNG CHAOSRAND Generated new seed [181, 0, 186, 233, 211, 234, 20, 79, 18, 207, 223, 132, 200, 30, 76, 230]
+2026-08-20T03:44:43.882275Z  INFO detcore::tool_local: DETLOG RNG CHAOSRAND seeding child tid 7: [181, 0, 186, 233, 212, 234, 20, 79, 18, 207, 223, 132, 200, 30, 76, 230] from parent Mcg128Xsl64 {}
+2026-08-20T03:44:43.885586Z  INFO detcore::tool_local: DETLOG [dtid 3] CHAOSRAND(child_priority): u64 => 5698437624410800309
+2026-08-20T03:44:43.885617Z  INFO detcore::scheduler: [sched-step5] >>>>>>>
+
+ COMMIT turn 9, dettid 7 using resources {MemAddrSpace(DetPid(3)): RW}, on previously committed 1_767_225_600.407_995_295s
+2026-08-20T03:44:43.885632Z  INFO detcore::tool_global: [detcore, dtid 7] New thread given go-ahead to proceed via <ivar Go(None)>
+2026-08-20T03:44:43.885664Z  INFO detcore::tool_local: DETLOG [dtid 7] CHAOSRAND => next_rcbs = 933052
+2026-08-20T03:44:43.885713Z  INFO detcore: DETLOG [syscall][detcore, dtid 7] inbound syscall: set_robust_list(0x7ffff73fe920, 24) = ?
+2026-08-20T03:44:43.885749Z  INFO detcore: DETLOG [syscall][detcore, dtid 7] finish syscall #1: set_robust_list(0x7ffff73fe920, 24) = Ok(0)
+2026-08-20T03:44:43.885784Z  INFO detcore: DETLOG [syscall][detcore, dtid 7] inbound syscall: rt_sigprocmask(2, 0x7ffff73fef30, NULL, 8) = ?
+2026-08-20T03:44:43.885850Z  INFO detcore: DETLOG [syscall][detcore, dtid 7] finish syscall #2: rt_sigprocmask(2, 0x7ffff73fef30, NULL, 8) = Ok(0)
+2026-08-20T03:44:43.982843Z  INFO detcore: [detcore, dtid 7] inbound timer preemption event
+2026-08-20T03:44:43.982870Z  INFO detcore: [detcore, dtid 7] ending timeslice T1. 2 syscalls and 0 signals this timeslice.
+2026-08-20T03:44:43.982876Z  INFO detcore::tool_local: DETLOG [dtid 7] CHAOSRAND => next_rcbs = 53647017
+2026-08-20T03:44:43.982880Z  INFO detcore::tool_local: DETLOG [dtid 7] CHAOSRAND(priority): u64 => 1134373850977999246
+2026-08-20T03:44:43.982918Z  INFO detcore::scheduler: [scheduler] >>>>>>>
+
+ NONCOMMIT turn 10, dettid 7 changed priority to 9247
+2026-08-20T03:44:43.982937Z  INFO detcore::scheduler: [sched-step5] >>>>>>>
+
+ COMMIT turn 11, dettid 3 using resources {ParentContinue { parent: DetPid(3), child: DetPid(7) }: W}, on previously committed 1_767_225_600.417_825_815s
+2026-08-20T03:44:43.982972Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] finish syscall #46: clone3(0x7fffffffaf70, 88) = Ok(7)
+2026-08-20T03:44:43.983029Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] inbound syscall: rt_sigprocmask(2, 0x7fffffffb0b0, NULL, 8) = ?
+2026-08-20T03:44:43.983099Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] finish syscall #47: rt_sigprocmask(2, 0x7fffffffb0b0, NULL, 8) = Ok(0)
+2026-08-20T03:44:43.983136Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] inbound syscall: futex(0x7ffff7bff910, 265, 5, NULL, NULL, -1) = ?
+2026-08-20T03:44:43.983171Z  INFO detcore::scheduler: [sched-step5] >>>>>>>
+
+ COMMIT turn 12, dettid 5 using resources {}, on previously committed 1_767_225_600.418_332_215s
+2026-08-20T03:44:43.983225Z  INFO detcore: DETLOG [syscall][detcore, dtid 5] inbound syscall: rt_sigprocmask(0, 0x7ffff7bfff30, NULL, 8) = ?
+2026-08-20T03:44:43.983276Z  INFO detcore: DETLOG [syscall][detcore, dtid 5] finish syscall #3: rt_sigprocmask(0, 0x7ffff7bfff30, NULL, 8) = Ok(0)
+2026-08-20T03:44:43.983302Z  INFO detcore: DETLOG [syscall][detcore, dtid 5] inbound syscall: madvise(0x7ffff73ff000, 8368128, 4) = ?
+2026-08-20T03:44:43.983332Z  INFO detcore: DETLOG [syscall][detcore, dtid 5] finish syscall #4: madvise(0x7ffff73ff000, 8368128, 4) = Ok(0)
+2026-08-20T03:44:43.983356Z  INFO detcore: DETLOG [syscall][detcore, dtid 5] inbound syscall: exit(0) = ?
+2026-08-20T03:44:43.983367Z  INFO detcore::scheduler: [sched-step5] >>>>>>>
+
+ COMMIT turn 13, dettid 5 using resources {Exit { group: false, process: DetPid(3), mm: MmId { creator: DetPid(3), generation: 1 } }: RW}, on previously committed 1_767_225_600.419_099_295s
+2026-08-20T03:44:43.983382Z  INFO reverie_ptrace::task: [tool] (tid 5) beginning tail_inject of syscall: exit
+2026-08-20T03:44:43.983537Z  INFO detcore::scheduler: logically_kill: Scheduler removing all knowledge of [det]tid 5 in pid 3..
+2026-08-20T03:44:43.983607Z  INFO detcore::scheduler: [sched-step5] >>>>>>>
+
+ COMMIT turn 14, dettid 3 using resources {FutexWait: R}, on previously committed 1_767_225_600.419_599_295s
+2026-08-20T03:44:43.983624Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] finish syscall #48: futex(0x7ffff7bff910, 265, 5, NULL, NULL, -1) = Ok(0)
+2026-08-20T03:44:43.983685Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] inbound syscall: futex(0x7ffff73fe910, 265, 7, NULL, NULL, -1) = ?
+2026-08-20T03:44:43.983696Z  INFO detcore::scheduler: [sched-step5] >>>>>>>
+
+ COMMIT turn 15, dettid 7 using resources {}, on previously committed 1_767_225_600.420_104_645s
+2026-08-20T03:44:44.072406Z  INFO detcore: [detcore, dtid 7] inbound timer preemption event
+2026-08-20T03:44:44.072434Z  INFO detcore: [detcore, dtid 7] ending timeslice T2. 0 syscalls and 0 signals this timeslice.
+2026-08-20T03:44:44.072442Z  INFO detcore::tool_local: DETLOG [dtid 7] CHAOSRAND => next_rcbs = 1349943
+2026-08-20T03:44:44.072447Z  INFO detcore::tool_local: DETLOG [dtid 7] CHAOSRAND(priority): u64 => 6323872611500256784
+2026-08-20T03:44:44.072476Z  INFO detcore::scheduler: [scheduler] >>>>>>>
+
+ NONCOMMIT turn 16, dettid 7 changed priority to 6785
+2026-08-20T03:44:44.072486Z  INFO detcore::scheduler: [sched-step5] >>>>>>>
+
+ COMMIT turn 17, dettid 7 using resources {}, on previously committed 1_767_225_600.620_604_645s
+2026-08-20T03:44:44.155169Z  INFO detcore: [detcore, dtid 7] inbound timer preemption event
+2026-08-20T03:44:44.155186Z  INFO detcore: [detcore, dtid 7] ending timeslice T3. 0 syscalls and 0 signals this timeslice.
+2026-08-20T03:44:44.155191Z  INFO detcore::tool_local: DETLOG [dtid 7] CHAOSRAND => next_rcbs = 8847233
+2026-08-20T03:44:44.155194Z  INFO detcore::tool_local: DETLOG [dtid 7] CHAOSRAND(priority): u64 => 4645735670414298950
+2026-08-20T03:44:44.155211Z  INFO detcore::scheduler: [scheduler] >>>>>>>
+
+ NONCOMMIT turn 18, dettid 7 changed priority to 8951
+2026-08-20T03:44:44.155228Z  INFO detcore::scheduler: [sched-step5] >>>>>>>
+
+ COMMIT turn 19, dettid 7 using resources {}, on previously committed 1_767_225_600.634_604_075s
+2026-08-20T03:44:44.240259Z  INFO detcore: [detcore, dtid 7] inbound timer preemption event
+2026-08-20T03:44:44.240273Z  INFO detcore: [detcore, dtid 7] ending timeslice T4. 0 syscalls and 0 signals this timeslice.
+2026-08-20T03:44:44.240277Z  INFO detcore::tool_local: DETLOG [dtid 7] CHAOSRAND => next_rcbs = 7860083
+2026-08-20T03:44:44.240281Z  INFO detcore::tool_local: DETLOG [dtid 7] CHAOSRAND(priority): u64 => 16690511127472178488
+2026-08-20T03:44:44.240296Z  INFO detcore::scheduler: [scheduler] >>>>>>>
+
+ NONCOMMIT turn 20, dettid 7 changed priority to 8489
+2026-08-20T03:44:44.240304Z  INFO detcore::scheduler: [sched-step5] >>>>>>>
+
+ COMMIT turn 21, dettid 7 using resources {}, on previously committed 1_767_225_600.723_576_405s
+2026-08-20T03:44:44.326767Z  INFO detcore: [detcore, dtid 7] inbound timer preemption event
+2026-08-20T03:44:44.326782Z  INFO detcore: [detcore, dtid 7] ending timeslice T5. 0 syscalls and 0 signals this timeslice.
+2026-08-20T03:44:44.326787Z  INFO detcore::tool_local: DETLOG [dtid 7] CHAOSRAND => next_rcbs = 17597422
+2026-08-20T03:44:44.326790Z  INFO detcore::tool_local: DETLOG [dtid 7] CHAOSRAND(priority): u64 => 11822668706739488487
+2026-08-20T03:44:44.326807Z  INFO detcore::scheduler: [scheduler] >>>>>>>
+
+ NONCOMMIT turn 22, dettid 7 changed priority to 8488
+2026-08-20T03:44:44.326814Z  INFO detcore::scheduler: [sched-step5] >>>>>>>
+
+ COMMIT turn 23, dettid 7 using resources {}, on previously committed 1_767_225_600.802_677_235s
+2026-08-20T03:44:44.327224Z  INFO detcore: DETLOG [syscall][detcore, dtid 7] inbound syscall: rt_sigprocmask(0, 0x7ffff73fef30, NULL, 8) = ?
+2026-08-20T03:44:44.327314Z  INFO detcore: DETLOG [syscall][detcore, dtid 7] finish syscall #3: rt_sigprocmask(0, 0x7ffff73fef30, NULL, 8) = Ok(0)
+2026-08-20T03:44:44.327348Z  INFO detcore: DETLOG [syscall][detcore, dtid 7] inbound syscall: madvise(0x7ffff6bfe000, 8368128, 4) = ?
+2026-08-20T03:44:44.327381Z  INFO detcore: DETLOG [syscall][detcore, dtid 7] finish syscall #4: madvise(0x7ffff6bfe000, 8368128, 4) = Ok(0)
+2026-08-20T03:44:44.327408Z  INFO detcore: DETLOG [syscall][detcore, dtid 7] inbound syscall: exit(0) = ?
+2026-08-20T03:44:44.327418Z  INFO detcore::scheduler: [sched-step5] >>>>>>>
+
+ COMMIT turn 24, dettid 7 using resources {Exit { group: false, process: DetPid(3), mm: MmId { creator: DetPid(3), generation: 1 } }: RW}, on previously committed 1_767_225_600.813_541_205s
+2026-08-20T03:44:44.327436Z  INFO reverie_ptrace::task: [tool] (tid 7) beginning tail_inject of syscall: exit
+2026-08-20T03:44:44.327546Z  INFO detcore::scheduler: logically_kill: Scheduler removing all knowledge of [det]tid 7 in pid 3..
+2026-08-20T03:44:44.327611Z  INFO detcore::scheduler: [sched-step5] >>>>>>>
+
+ COMMIT turn 25, dettid 3 using resources {FutexWait: R}, on previously committed 1_767_225_600.814_041_205s
+2026-08-20T03:44:44.327631Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] finish syscall #49: futex(0x7ffff73fe910, 265, 7, NULL, NULL, -1) = Ok(0)
+2026-08-20T03:44:44.327774Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] inbound syscall: fstat(1, 0x7fffffffaa10) = ?
+2026-08-20T03:44:44.327815Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] finish syscall #50: fstat(1, 0x7fffffffaa10) = Ok(0)
+2026-08-20T03:44:44.327857Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] inbound syscall: write(1, 0x405680, 95) = ?
+2026-08-20T03:44:44.327874Z  INFO detcore::scheduler: [sched-step5] >>>>>>>
+
+ COMMIT turn 26, dettid 3 using resources {Device(ContainerStdout): W}, on previously committed 1_767_225_600.814_570_095s
+2026-08-20T03:44:44.327916Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] finish syscall #51: write(1, 0x405680, 95) = Ok(95)
+2026-08-20T03:44:44.327948Z  INFO detcore: DETLOG [syscall][detcore, dtid 3] inbound syscall: exit_group(0) = ?
+2026-08-20T03:44:44.327957Z  INFO detcore::scheduler: [sched-step5] >>>>>>>
+
+ COMMIT turn 27, dettid 3 using resources {Exit { group: true, process: DetPid(3), mm: MmId { creator: DetPid(3), generation: 1 } }: RW}, on previously committed 1_767_225_600.815_320_965s
+2026-08-20T03:44:44.327972Z  INFO detcore::tool_global: Scheduler authorized an exit-group scenario, from dettid 3 / detpid 3
+2026-08-20T03:44:44.327989Z  INFO reverie_ptrace::task: [tool] (tid 3) beginning tail_inject of syscall: exit_group
+2026-08-20T03:44:44.328203Z  INFO detcore::scheduler: logically_kill: Scheduler removing all knowledge of [det]tid 3 in pid 3..
+2026-08-20T03:44:44.328261Z  INFO detcore::scheduler: scheduler (step2_process_blocked): zero threads left anywhere, fizzling.
+2026-08-20T03:44:44.328268Z  INFO detcore::scheduler: [scheduler] run queue empty, exiting sched_loop.
+2026-08-20T03:44:44.328297Z  INFO detcore::tool_global: detcore shut down, destroying global state
+2026-08-20T03:44:44.328311Z  INFO detcore::tool_global: 
+  ------------------------------ hermit run report ------------------------------
+Final thread-tree was: [3 5 7]
+There were 1 group leaders of 3 thread(s) total.
+Internally, the hermit scheduler ran 28 turns, recorded 0 events, replayed 0 events (0 desynced)
+Final virtual global (cpu) time: 1_767_225_600.815_820_965s
+Elapsed virtual global (cpu) time: 815_820_965ns
+Timeslice stats: min=267080ns max=200000000ns mean=80241477ns count=10
+  timeslice thread 3: min=1880615ns max=1880615ns mean=1880615ns count=1
+  timeslice thread 5: min=267080ns max=200000000ns mean=133422360ns count=3
+  timeslice thread 7: min=9330520ns max=200000000ns mean=66711180ns count=6
+
+2026-08-20T03:44:44.328330Z  INFO hermit::backend_stats: backend run complete backend=ptrace stats=metrics=none

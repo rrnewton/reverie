@@ -1,0 +1,82 @@
+#!/bin/busybox sh
+# Take the workload from a DISK, not from the serial port.
+#
+# The serial route typed the command into the guest at a moment set by host wall
+# time, so the guest observed a different arrival instant on every run. Here the
+# command is already on a block device when the guest resumes, so what the guest
+# does after resume is a function of (snapshot state, disk contents) only.
+#
+# iflag=direct is load-bearing. Linux caches block-device pages, so a read taken
+# BEFORE the snapshot puts the placeholder in the snapshot, and after resume a
+# cached read would return that stale placeholder forever -- a constant, which
+# looks exactly like a deterministic input until you check the value.
+/bin/busybox --install -s /bin 2>/dev/null
+mount -t proc none /proc 2>/dev/null
+mount -t sysfs none /sys 2>/dev/null
+mount -t devtmpfs none /dev 2>/dev/null || mount -t tmpfs none /dev 2>/dev/null
+[ -c /dev/ttyS0 ] || mknod /dev/ttyS0 c 4 64 2>/dev/null
+
+CMDDEV=""
+for d in /dev/vda /dev/vdb /dev/sda /dev/sdb; do [ -b "$d" ] && CMDDEV="$CMDDEV $d"; done
+echo "VS-GUEST-READY cpus=$(nproc) blockdevs=$(echo $CMDDEV)"
+
+DEV=$(echo $CMDDEV | cut -d' ' -f1)
+if [ -z "$DEV" ]; then
+  echo "VS-NO-COMMAND-DEVICE"
+  exec setsid sh -c 'exec sh </dev/ttyS0 >/dev/ttyS0 2>&1'
+fi
+echo "VS-CMD-DEV $DEV"
+
+# WHICH READ MODE, taken from the kernel command line so that BOTH arms run the
+# SAME initramfs. An earlier attempt to test the flag read the device twice in one
+# run -- once direct, once buffered -- and the buffered read returned the NEW
+# content, because an O_DIRECT read invalidates the overlapping page-cache pages.
+# The mechanism under test erased its own control. Here the direct read is either
+# present for the whole run or absent for the whole run, so there is nothing to
+# invalidate the cache in the buffered arm.
+# Default 0: the 2x2 below showed iflag=direct makes no difference in either row, so
+# the shipped path does not use it. The switch is kept so the experiment reproduces.
+DIRECT=$(sed -n 's/.*vsdirect=\([01]\).*/\1/p' /proc/cmdline)
+[ -n "$DIRECT" ] || DIRECT=0
+if [ "$DIRECT" = 1 ]; then IFLAG="iflag=direct"; else IFLAG=""; fi
+
+# HOLD THE DEVICE OPEN, or do not. This is the third arm and it is the one that
+# decides whether the flag is load-bearing or merely redundant HERE. Linux
+# invalidates a block device's buffer cache on its LAST close, and the poll loop
+# below opens and closes the device once per iteration -- so with nothing else
+# holding it open, every close drops the cache and a buffered read is fresh by
+# accident. Keeping fd 3 open means no close is ever the last one, the cache
+# survives, and a buffered read can return a stale page.
+HOLD=$(sed -n 's/.*vshold=\([01]\).*/\1/p' /proc/cmdline)
+[ -n "$HOLD" ] || HOLD=0
+if [ "$HOLD" = 1 ]; then exec 3<"$DEV"; fi
+echo "VS-READ-MODE direct=$DIRECT hold=$HOLD dd_args=[$IFLAG]"
+DDERR=$(dd if="$DEV" bs=512 count=1 $IFLAG 2>&1 >/dev/null | tr '\n' ' ')
+dd if="$DEV" bs=512 count=1 $IFLAG >/dev/null 2>/dev/null
+echo "VS-DD-PROBE rc=$? stderr=[$DDERR]"
+
+# Read until the device stops saying WAIT. Before the snapshot this spins on the
+# placeholder -- which is also what populates the page cache in the buffered arm.
+# After resume the device holds the real command; whether the guest SEES it is the
+# question this arm answers.
+n=0
+while :; do
+  CMD=$(dd if="$DEV" bs=512 count=1 $IFLAG 2>/dev/null | tr -d '\000' | head -n 1)
+  case "$CMD" in
+    ""|WAIT)
+      n=$((n+1))
+      # Report what is still being seen, so a stale read is POSITIVE evidence on
+      # the console rather than something inferred from the run hanging.
+      if [ $((n % 2000)) -eq 0 ]; then
+        S1=$(dd if="$DEV" bs=512 skip=1 count=1 $IFLAG 2>/dev/null | tr -d '\000' | head -n 1)
+        echo "VS-POLL n=$n saw=[$CMD] sector1=[$S1]"
+      fi
+      continue ;;
+  esac
+  break
+done
+NONCE=$(dd if="$DEV" bs=512 skip=1 count=1 $IFLAG 2>/dev/null | tr -d '\000' | head -n 1)
+echo "VS-CMD-READ polls=$n direct=$DIRECT hold=$HOLD cmd=[$CMD] sector1=[$NONCE]"
+$CMD
+echo "VS-CMD-DONE"
+exec setsid sh -c 'exec sh </dev/ttyS0 >/dev/ttyS0 2>&1'

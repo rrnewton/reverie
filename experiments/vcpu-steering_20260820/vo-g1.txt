@@ -1,0 +1,13 @@
+actuator=hermit extra='--no-virtualize-time --no-virtualize-metadata --max-timeslice 2000000' k=1000000
+  NSPID host_tid=2718049 NSpid:	2718049	3
+  NSPID host_tid=2719654 NSpid:	2719654	5
+  NSPID host_tid=2719829 NSpid:	2719829	7
+  NSPID host_tid=2719834 NSpid:	2719834	9
+  NSPID host_tid=2719844 NSpid:	2719844	11
+  NSPID host_tid=2719865 NSpid:	2719865	13
+tag=g1 hermit_pid=2718037 qemu_hostpid=2718049 vcpu0_tid=2719844 vcpu1_tid=2719865 (qmp said [11, 13])
+WINDOW_UTC start=2026-08-20T12:58:21.124055+00:00 end=2026-08-20T12:58:37.024899+00:00
+ADV-RUN wall=137.97s
+ADVANCE-START ncpu=2 k=1000000
+ADVANCE R1 me=1000000 other=897789 other_started=1 oncpu=1
+ADVANCE R0 me=1000000 other=1000000 other

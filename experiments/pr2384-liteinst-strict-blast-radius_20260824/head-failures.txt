@@ -1,0 +1,25 @@
+# Extracted from the full 1,940,654-byte head-test.log (not committed: repo-cleanliness
+# forbids multi-megabyte run logs). Original path /tmp/h005-lite/head-test.log.
+
+        FAIL [   0.953s] hermit::liteinst_advanced liteinst_detcore_strict_verify_micro_suite
+        FAIL [   0.978s] hermit::liteinst_advanced liteinst_strict_verify_round3_stdin_filter_utilities
+        FAIL [   0.980s] hermit::liteinst_advanced liteinst_strict_verify_round3_portable_system_utilities
+        FAIL [   0.981s] hermit::liteinst_advanced liteinst_strict_verify_round2_encoding_and_comparison_utilities
+        FAIL [   0.986s] hermit::liteinst_advanced liteinst_strict_verify_identity_utilities
+        FAIL [   0.990s] hermit::liteinst_advanced liteinst_strict_verify_virtual_identity_and_time
+        FAIL [   0.992s] hermit::liteinst_advanced liteinst_strict_verify_encoding_and_digest_utilities
+        FAIL [   0.992s] hermit::liteinst_advanced liteinst_strict_verify_file_and_text_utilities
+        FAIL [   0.995s] hermit::liteinst_advanced liteinst_strict_verify_round3_encoding_and_compression_utilities
+        FAIL [   0.996s] hermit::liteinst_advanced liteinst_strict_verify_formatting_and_sequence_utilities
+        FAIL [   0.998s] hermit::liteinst_advanced liteinst_strict_verify_path_and_language_utilities
+        FAIL [   1.016s] hermit::liteinst_advanced liteinst_strict_verify_heap_growth_avoids_trampoline_mappings
+        FAIL [   1.016s] hermit::liteinst_advanced liteinst_strict_verify_semantic_file_and_sqlite_utilities
+        FAIL [   1.034s] hermit::liteinst_advanced liteinst_strict_verify_semantic_text_utilities
+        FAIL [   1.035s] hermit::liteinst_advanced liteinst_strict_verify_round2_representation_and_path_utilities
+        FAIL [   1.074s] hermit::liteinst_advanced liteinst_strict_verify_shell_and_entropy_consumer
+        FAIL [   1.137s] hermit::liteinst_advanced liteinst_strict_verify_round2_arithmetic_and_predicate_utilities
+        FAIL [   2.174s] hermit::liteinst_advanced liteinst_strict_verify_python_entropy
+        FAIL [   2.277s] hermit::liteinst_advanced liteinst_strict_verify_python_random_example
+    Starting 23 tests across 1 binary
+     Summary [  29.457s] 23 tests run: 4 passed, 19 failed, 0 skipped
+test result: FAILED. nextest: 4 passed, 19 failed, 0 skipped; 0 filtered out

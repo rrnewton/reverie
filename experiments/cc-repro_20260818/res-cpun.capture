@@ -1,0 +1,1 @@
+echo NPROC=$(nproc) ONLINE=$(cat /sys/devices/system/cpu/online)

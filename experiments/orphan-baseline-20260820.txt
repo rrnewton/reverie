@@ -1,0 +1,11 @@
+# orphan baseline captured 2026-08-20T12:30:21Z on devbig014.atn7.facebook.com
+# btime=1786612186 CLK_TCK=100  (start_ticks is /proc/<pid>/stat field 22, boot-relative)
+PID       COMM             OWNER         START_UTC              CPU% BLOCKED_ON             START_TICKS
+592293    qemu-system-x86  writeup       2026-08-20T03:35:56Z   1.00 do_sys_poll            58477089
+608568    qemu-system-x86  writeup       2026-08-20T03:36:33Z   1.00 do_sys_poll            58480773
+623768    qemu-system-x86  writeup       2026-08-20T03:37:10Z   0.90 do_sys_poll            58484423
+630026    qemu-system-x86  writeup       2026-08-20T03:37:28Z   0.90 do_sys_poll            58486254
+981560    qemu-system-x86  ops           2026-08-20T03:49:18Z   0.00 do_sys_poll            58557216
+983858    qemu-system-x86  ops           2026-08-20T03:49:23Z   0.00 do_sys_poll            58557717
+899610    hermit-clean-48  ratchet-kvm   2026-08-18T00:29:05Z   0.00 __futex_wait           40075935
+3089765   hermit           timeouts      2026-08-19T23:05:16Z   0.00 __x64_sys_epoll_wait   56853020

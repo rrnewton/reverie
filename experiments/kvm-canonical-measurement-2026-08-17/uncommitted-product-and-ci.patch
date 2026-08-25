@@ -1,0 +1,1480 @@
+diff --git a/AGENTS.md b/AGENTS.md
+index 58739e37a5..aefbd1c0d0 100644
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -193,10 +193,10 @@ for example, "e9patch preprocessing with the ptrace backend" rather than
+ 
+ A feature is **done** only when the exact test meets its declared assurance
+ level across **all in-scope backends**. A pass on one backend is evidence for
+-that backend only, not a project-wide completion claim. KVM currently compares
+-only exit status/stdout/stderr during `--verify`; it cannot claim full L2 INFO
+-parity until internal log comparison exists. Report that gap explicitly instead
+-of weakening the definition of done.
++that backend only, not a project-wide completion claim. KVM `--verify` compares
++the same canonical INFO envelope as the other backends; report the verdict's
++`bitwise_parity` and nonzero INFO counts rather than inferring L2 from exit
++status or the success banner alone.
+ 
+ Start investigations in these locations:
+ 
+@@ -222,7 +222,7 @@ presupposes the ones below it:
+ | --- | --- | --- |
+ | L0 | Builds and unit/integration tests pass | `cargo test` exits 0 |
+ | L1 | Runs deterministically under strict mode | `hermit run --strict` |
+-| L2 | Canonical full-observation repeat parity (non-KVM) | `hermit run --strict --verify --verify-strict --verify-json <path> -- ...` and require JSON `bitwise_parity: true` |
++| L2 | Canonical full-observation repeat parity | `hermit run --strict --verify --verify-strict --verify-json <path> -- ...` and require JSON `bitwise_parity: true` with nonzero compared INFO counts |
+ | L3 | Memory determinism | Add `--detlog-heap --detlog-stack` to the L2 command |
+ | L4 | Stress-hardened | L2/L3 repeated 20x with no divergence |
+ 
+@@ -243,8 +243,7 @@ wall-clock prefix, ordinalizes host addresses while preserving identity/order/
+ aliasing, and compares the full remainder exactly. Virtual time,
+ retired-branch counts, syscall values, sizes, flags, and other numeric payloads
+ must not be stripped. State this canonical envelope rather than calling the raw
+-log files literally byte-identical. KVM's output-only fallback reports
+-`bitwise_parity: false` and is not L2.
++log files literally byte-identical.
+ 
+ ## Debugging
+ 
+diff --git a/SCORECARD.md b/SCORECARD.md
+index 07e84ae423..f4422428ec 100644
+--- a/SCORECARD.md
++++ b/SCORECARD.md
+@@ -10,21 +10,21 @@ Every selected `verify` cell, and every seed in a selected `chaos` cell, runs th
+ | --- | ---: | ---: | ---: |
+ | `ptrace` | 219 | 789 | 1008 |
+ | `dbt` | 9 | 999 | 1008 |
+-| `kvm` | 0 | 1008 | 1008 |
++| `kvm` | 18 | 990 | 1008 |
+ | `sabre` | 53 | 955 | 1008 |
+ | `liteinst` | 2 | 1006 | 1008 |
+ | `native` | 0 | 336 | 336 |
+-| **Total** | **283** | **5093** | **5376** |
++| **Total** | **301** | **5075** | **5376** |
+ 
+ The mode view makes the current order of work explicit: expand `verify` first, then `replay`, then `chaos`. Each backend cell is `green / total`; an em dash means that mode does not exist for that backend.
+ 
+ | Mode | `ptrace` | `dbt` | `kvm` | `sabre` | `liteinst` | `native` | Green | Red | Total |
+ | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+-| `verify` | 216 / 336 | 9 / 336 | 0 / 336 | 53 / 336 | 2 / 336 | — | 280 | 1400 | 1680 |
++| `verify` | 216 / 336 | 9 / 336 | 18 / 336 | 53 / 336 | 2 / 336 | — | 298 | 1382 | 1680 |
+ | `replay` | 1 / 336 | 0 / 336 | 0 / 336 | 0 / 336 | 0 / 336 | — | 1 | 1679 | 1680 |
+ | `chaos` | 2 / 336 | 0 / 336 | 0 / 336 | 0 / 336 | 0 / 336 | — | 2 | 1678 | 1680 |
+ | `naked` | — | — | — | — | — | 0 / 336 | 0 | 336 | 336 |
+-| **Total** | | | | | | | **283** | **5093** | **5376** |
++| **Total** | | | | | | | **301** | **5075** | **5376** |
+ 
+ ## Cross-backend parity
+ 
+@@ -50,4 +50,4 @@ This view uses the same Basic Sanity Milestone 1 contracts as the tables above,
+ | `system-utils` | 23 / 25 | 1 / 25 | 0 / 25 | 24 | 75 |
+ | `util-c` | 0 / 1 | 0 / 1 | 0 / 1 | 0 | 3 |
+ 
+-Ordinary full validation executes 285 selected regression cells: the 283 green compatibility cells above (including 2 chaos-mode race-exposure checks), and 2 explicit custom commands outside the comparable denominator. A passing validate must produce a fresh result for all of them; a failing green cell is a regression, not permission to move it to red.
++Ordinary full validation executes 303 selected regression cells: the 301 green compatibility cells above (including 2 chaos-mode race-exposure checks), and 2 explicit custom commands outside the comparable denominator. A passing validate must produce a fresh result for all of them; a failing green cell is a regression, not permission to move it to red.
+diff --git a/ci/compat-envelope/cells.json b/ci/compat-envelope/cells.json
+index da473ac12e..2e78e90cbe 100644
+--- a/ci/compat-envelope/cells.json
++++ b/ci/compat-envelope/cells.json
+@@ -1888,7 +1888,7 @@
+       "mode": "verify",
+       "backend": "kvm",
+       "enabled": true,
+-      "status": "red",
++      "status": "green",
+       "observations": []
+     },
+     {
+@@ -2208,7 +2208,7 @@
+       "mode": "verify",
+       "backend": "kvm",
+       "enabled": true,
+-      "status": "red",
++      "status": "green",
+       "observations": []
+     },
+     {
+@@ -3968,7 +3968,7 @@
+       "mode": "verify",
+       "backend": "kvm",
+       "enabled": true,
+-      "status": "red",
++      "status": "green",
+       "observations": []
+     },
+     {
+@@ -5088,7 +5088,7 @@
+       "mode": "verify",
+       "backend": "kvm",
+       "enabled": true,
+-      "status": "red",
++      "status": "green",
+       "observations": []
+     },
+     {
+@@ -5248,7 +5248,7 @@
+       "mode": "verify",
+       "backend": "kvm",
+       "enabled": true,
+-      "status": "red",
++      "status": "green",
+       "observations": []
+     },
+     {
+@@ -6528,7 +6528,7 @@
+       "mode": "verify",
+       "backend": "kvm",
+       "enabled": true,
+-      "status": "red",
++      "status": "green",
+       "observations": []
+     },
+     {
+@@ -9568,7 +9568,7 @@
+       "mode": "verify",
+       "backend": "kvm",
+       "enabled": true,
+-      "status": "red",
++      "status": "green",
+       "observations": []
+     },
+     {
+@@ -11648,7 +11648,7 @@
+       "mode": "verify",
+       "backend": "kvm",
+       "enabled": true,
+-      "status": "red",
++      "status": "green",
+       "observations": []
+     },
+     {
+@@ -11968,7 +11968,7 @@
+       "mode": "verify",
+       "backend": "kvm",
+       "enabled": true,
+-      "status": "red",
++      "status": "green",
+       "observations": []
+     },
+     {
+@@ -19008,7 +19008,7 @@
+       "mode": "verify",
+       "backend": "kvm",
+       "enabled": true,
+-      "status": "red",
++      "status": "green",
+       "observations": []
+     },
+     {
+@@ -23488,7 +23488,7 @@
+       "mode": "verify",
+       "backend": "kvm",
+       "enabled": true,
+-      "status": "red",
++      "status": "green",
+       "observations": []
+     },
+     {
+@@ -24608,7 +24608,7 @@
+       "mode": "verify",
+       "backend": "kvm",
+       "enabled": true,
+-      "status": "red",
++      "status": "green",
+       "observations": []
+     },
+     {
+@@ -26048,7 +26048,7 @@
+       "mode": "verify",
+       "backend": "kvm",
+       "enabled": true,
+-      "status": "red",
++      "status": "green",
+       "observations": []
+     },
+     {
+@@ -26208,7 +26208,7 @@
+       "mode": "verify",
+       "backend": "kvm",
+       "enabled": true,
+-      "status": "red",
++      "status": "green",
+       "observations": []
+     },
+     {
+@@ -26368,7 +26368,7 @@
+       "mode": "verify",
+       "backend": "kvm",
+       "enabled": true,
+-      "status": "red",
++      "status": "green",
+       "observations": []
+     },
+     {
+@@ -49888,7 +49888,7 @@
+       "mode": "verify",
+       "backend": "kvm",
+       "enabled": true,
+-      "status": "red",
++      "status": "green",
+       "observations": []
+     },
+     {
+@@ -50048,7 +50048,7 @@
+       "mode": "verify",
+       "backend": "kvm",
+       "enabled": true,
+-      "status": "red",
++      "status": "green",
+       "observations": []
+     },
+     {
+@@ -53568,7 +53568,7 @@
+       "mode": "verify",
+       "backend": "kvm",
+       "enabled": true,
+-      "status": "red",
++      "status": "green",
+       "observations": []
+     },
+     {
+diff --git a/ci/expected-e2e-plan.json b/ci/expected-e2e-plan.json
+index d79d510cc6..e13f764ae7 100644
+--- a/ci/expected-e2e-plan.json
++++ b/ci/expected-e2e-plan.json
+@@ -1994,6 +1994,132 @@
+       "lane": "portable",
+       "mode": "verify",
+       "test": "system-utils/uuidgen-random"
++    },
++    {
++      "backend": "kvm",
++      "category": "applications",
++      "lane": "privileged",
++      "mode": "verify",
++      "test": "applications/kvm-shell-environment"
++    },
++    {
++      "backend": "kvm",
++      "category": "backend-parity-c",
++      "lane": "portable",
++      "mode": "verify",
++      "test": "backend-parity-c/cpu-virtualization"
++    },
++    {
++      "backend": "kvm",
++      "category": "backend-parity-c",
++      "lane": "portable",
++      "mode": "verify",
++      "test": "backend-parity-c/dup-shared-offset"
++    },
++    {
++      "backend": "kvm",
++      "category": "backend-parity-c",
++      "lane": "portable",
++      "mode": "verify",
++      "test": "backend-parity-c/fd-duplication"
++    },
++    {
++      "backend": "kvm",
++      "category": "backend-parity-c",
++      "lane": "portable",
++      "mode": "verify",
++      "test": "backend-parity-c/getcpu-identity"
++    },
++    {
++      "backend": "kvm",
++      "category": "backend-parity-c",
++      "lane": "portable",
++      "mode": "verify",
++      "test": "backend-parity-c/getpriority-identity"
++    },
++    {
++      "backend": "kvm",
++      "category": "backend-parity-c",
++      "lane": "portable",
++      "mode": "verify",
++      "test": "backend-parity-c/lseek-positioning"
++    },
++    {
++      "backend": "kvm",
++      "category": "backend-parity-c",
++      "lane": "portable",
++      "mode": "verify",
++      "test": "backend-parity-c/pidfd-open-self"
++    },
++    {
++      "backend": "kvm",
++      "category": "backend-parity-c",
++      "lane": "portable",
++      "mode": "verify",
++      "test": "backend-parity-c/rlimit-identity"
++    },
++    {
++      "backend": "kvm",
++      "category": "backend-parity-c",
++      "lane": "portable",
++      "mode": "verify",
++      "test": "backend-parity-c/sched-getaffinity-identity"
++    },
++    {
++      "backend": "kvm",
++      "category": "c-programs",
++      "lane": "portable",
++      "mode": "verify",
++      "test": "c-programs/epoll-determinism"
++    },
++    {
++      "backend": "kvm",
++      "category": "c-programs",
++      "lane": "portable",
++      "mode": "verify",
++      "test": "c-programs/madvise-determinism"
++    },
++    {
++      "backend": "kvm",
++      "category": "c-programs",
++      "lane": "portable",
++      "mode": "verify",
++      "test": "c-programs/mmap-determinism"
++    },
++    {
++      "backend": "kvm",
++      "category": "c-programs",
++      "lane": "portable",
++      "mode": "verify",
++      "test": "c-programs/netlink-autobind-generic"
++    },
++    {
++      "backend": "kvm",
++      "category": "c-programs",
++      "lane": "portable",
++      "mode": "verify",
++      "test": "c-programs/netlink-autobind-route"
++    },
++    {
++      "backend": "kvm",
++      "category": "c-programs",
++      "lane": "portable",
++      "mode": "verify",
++      "test": "c-programs/netlink-autobind-usersock"
++    },
++    {
++      "backend": "kvm",
++      "category": "system-utils",
++      "lane": "portable",
++      "mode": "verify",
++      "test": "system-utils/example-date"
++    },
++    {
++      "backend": "kvm",
++      "category": "system-utils",
++      "lane": "portable",
++      "mode": "verify",
++      "test": "system-utils/example-devrand"
+     }
+   ],
+   "schema": 1
+diff --git a/ci/manifest-plan/src/canonical_verdict.rs b/ci/manifest-plan/src/canonical_verdict.rs
+index 15e770e53f..727cb54626 100644
+--- a/ci/manifest-plan/src/canonical_verdict.rs
++++ b/ci/manifest-plan/src/canonical_verdict.rs
+@@ -60,8 +60,8 @@ impl VerificationReport {
+     }
+ 
+     /// Admit a green only when both the canonical comparison and the match
+-    /// claim agree. `verified=true` alone is intentionally insufficient: KVM's
+-    /// output-only fallback can report it with zero compared INFO messages.
++    /// claim agree. `verified=true` alone is intentionally insufficient: an
++    /// output-only invocation can report it with zero compared INFO messages.
+     pub fn require_canonical_match(&self) -> Result<(), String> {
+         self.require_canonical_comparison()?;
+         if self.verified && self.verdict == "matched" && self.bitwise_parity {
+diff --git a/ci/manifest-plan/src/main.rs b/ci/manifest-plan/src/main.rs
+index 8741fe3eca..2aee2e777f 100644
+--- a/ci/manifest-plan/src/main.rs
++++ b/ci/manifest-plan/src/main.rs
+@@ -689,36 +689,10 @@ fn validate_mode(
+             }
+         }
+     }
+-    let ci = spec
+-        .get("ci")
+-        .and_then(Value::as_bool)
+-        .unwrap_or_else(|| die(format!("{id}: modes.{mode}.ci must be a boolean")));
+     let enabled = string_array(
+         spec.get("backends_enabled"),
+         &format!("{id}.modes.{mode}.backends_enabled"),
+     );
+-    match (ci, enabled.is_empty(), spec.get("ci_disabled_reason")) {
+-        (true, _, Some(_)) => die(format!(
+-            "{id}: modes.{mode} is CI-enabled, so it must not carry ci_disabled_reason"
+-        )),
+-        (false, false, Some(reason))
+-            if reason
+-                .as_str()
+-                .is_some_and(|reason| !reason.trim().is_empty()) => {}
+-        (false, false, _) => die(format!(
+-            "{id}: modes.{mode} enables backend cells while ci=false and must state why in a non-empty ci_disabled_reason"
+-        )),
+-        (false, true, Some(reason))
+-            if reason
+-                .as_str()
+-                .is_none_or(|reason| reason.trim().is_empty()) =>
+-        {
+-            die(format!(
+-                "{id}: modes.{mode}.ci_disabled_reason must be a non-empty string"
+-            ))
+-        }
+-        _ => {}
+-    }
+     let disabled = spec
+         .get("backends_disabled")
+         .and_then(Value::as_table)
+@@ -755,6 +729,62 @@ fn validate_mode(
+             expected
+         ));
+     }
++    let ci_value = spec
++        .get("ci")
++        .unwrap_or_else(|| die(format!("{id}: modes.{mode}.ci is required")));
++    let selected: BTreeSet<&str> = if let Some(ci) = ci_value.as_bool() {
++        if ci {
++            if enabled_set.is_empty() {
++                die(format!(
++                    "{id}: modes.{mode} is CI-enabled but has no backend"
++                ));
++            }
++            enabled_set.clone()
++        } else {
++            BTreeSet::new()
++        }
++    } else {
++        let selected = string_array(Some(ci_value), &format!("{id}.modes.{mode}.ci"));
++        let selected_set: BTreeSet<_> = selected.iter().map(String::as_str).collect();
++        if selected.is_empty()
++            || selected_set.len() != selected.len()
++            || !selected_set.is_subset(&enabled_set)
++        {
++            die(format!(
++                "{id}: modes.{mode}.ci must be a non-empty list of distinct enabled backends; selected={selected_set:?}, enabled={enabled_set:?}"
++            ));
++        }
++        // `selected` owns these strings only until this branch ends, so retain
++        // the corresponding references from `enabled` for row generation.
++        enabled_set
++            .iter()
++            .copied()
++            .filter(|backend| selected_set.contains(backend))
++            .collect()
++    };
++    let has_unselected = !enabled_set.is_subset(&selected);
++    match (has_unselected, spec.get("ci_disabled_reason")) {
++        (true, Some(reason))
++            if reason
++                .as_str()
++                .is_some_and(|reason| !reason.trim().is_empty()) => {}
++        (true, _) if !enabled.is_empty() => die(format!(
++            "{id}: modes.{mode} has enabled cells outside ci and must state why in a non-empty ci_disabled_reason"
++        )),
++        (false, Some(_)) if !enabled.is_empty() => die(format!(
++            "{id}: every enabled modes.{mode} cell is in ci, so ci_disabled_reason is stale"
++        )),
++        (_, Some(reason))
++            if reason
++                .as_str()
++                .is_none_or(|reason| reason.trim().is_empty()) =>
++        {
++            die(format!(
++                "{id}: modes.{mode}.ci_disabled_reason must be a non-empty string"
++            ))
++        }
++        _ => {}
++    }
+     if let Some(guest_args) = spec.get("guest_args") {
+         let guest_args = guest_args
+             .as_table()
+@@ -777,12 +807,7 @@ fn validate_mode(
+             }
+         }
+     }
+-    if ci && enabled.is_empty() {
+-        die(format!(
+-            "{id}: modes.{mode} is CI-enabled but has no backend"
+-        ));
+-    }
+-    if mode == "naked" && ci {
++    if mode == "naked" && !selected.is_empty() {
+         die(format!(
+             "{id}: naked is opt-in meta-CI and must set ci=false"
+         ));
+@@ -935,13 +960,14 @@ fn validate_mode(
+     }
+ 
+     let attempts = mode_attempts(id, mode, spec_value);
+-    for backend in enabled {
++    for backend in &enabled {
++        let ci = selected.contains(backend.as_str());
+         rows.push(PlanRow {
+             bucket: bucket.to_string(),
+             id: id.to_string(),
+             lane: lane.to_string(),
+             mode: mode.to_string(),
+-            backend,
++            backend: backend.clone(),
+             ci,
+             enabled: true,
+             timeout_seconds,
+@@ -955,7 +981,7 @@ fn validate_mode(
+             lane: lane.to_string(),
+             mode: mode.to_string(),
+             backend: backend.to_string(),
+-            ci,
++            ci: false,
+             enabled: false,
+             timeout_seconds,
+             attempts,
+@@ -1364,7 +1390,7 @@ liteinst = "unsupported"
+     }
+ 
+     #[test]
+-    #[should_panic(expected = "is CI-enabled, so it must not carry ci_disabled_reason")]
++    #[should_panic(expected = "every enabled modes.verify cell is in ci")]
+     fn rejects_stale_ci_disabled_reason_on_selected_cell() {
+         let spec = parse_mode(
+             r#"
+@@ -1372,6 +1398,62 @@ ci = true
+ ci_disabled_reason = "stale"
+ backends_enabled = ["ptrace"]
+ 
++[backends_disabled]
++dbt = "unsupported"
++kvm = "unsupported"
++sabre = "unsupported"
++liteinst = "unsupported"
++"#,
++        );
++        validate_mode(
++            "bucket/test",
++            "bucket",
++            "portable",
++            "verify",
++            90,
++            &spec,
++            &mut Vec::new(),
++        );
++    }
++
++    #[test]
++    fn accepts_backend_specific_ci_selection() {
++        let spec = parse_mode(
++            r#"
++ci = ["kvm"]
++ci_disabled_reason = "ptrace remains outside this measured promotion"
++backends_enabled = ["ptrace", "kvm"]
++
++[backends_disabled]
++dbt = "unsupported"
++sabre = "unsupported"
++liteinst = "unsupported"
++"#,
++        );
++        let mut rows = Vec::new();
++        validate_mode(
++            "bucket/test",
++            "bucket",
++            "portable",
++            "verify",
++            90,
++            &spec,
++            &mut rows,
++        );
++        assert!(rows.iter().any(|row| row.backend == "kvm" && row.ci));
++        assert!(rows.iter().any(|row| row.backend == "ptrace" && !row.ci));
++        assert_eq!(rows.iter().filter(|row| row.ci).count(), 1);
++    }
++
++    #[test]
++    #[should_panic(expected = "must be a non-empty list of distinct enabled backends")]
++    fn rejects_ci_selection_for_disabled_backend() {
++        let spec = parse_mode(
++            r#"
++ci = ["kvm"]
++ci_disabled_reason = "ptrace remains outside this measured promotion"
++backends_enabled = ["ptrace"]
++
+ [backends_disabled]
+ dbt = "unsupported"
+ kvm = "unsupported"
+diff --git a/ci/manifest-plan/src/runner.rs b/ci/manifest-plan/src/runner.rs
+index 02da9eb418..abb7d2f85d 100644
+--- a/ci/manifest-plan/src/runner.rs
++++ b/ci/manifest-plan/src/runner.rs
+@@ -87,7 +87,7 @@ pub struct Observation {
+ #[derive(Clone, Debug, Default, Deserialize)]
+ #[serde(deny_unknown_fields)]
+ pub struct ModeRecipe {
+-    pub ci: bool,
++    pub ci: Ci,
+     pub ci_disabled_reason: Option<String>,
+     #[serde(default)]
+     pub backends_enabled: Vec<String>,
+@@ -103,6 +103,36 @@ pub struct ModeRecipe {
+     pub args: Vec<String>,
+ }
+ 
++#[derive(Clone, Debug, Deserialize)]
++#[serde(untagged)]
++pub enum Ci {
++    All(bool),
++    Backends(Vec<String>),
++}
++
++impl Default for Ci {
++    fn default() -> Self {
++        Self::All(false)
++    }
++}
++
++impl Ci {
++    fn selects(&self, backend: &str) -> bool {
++        match self {
++            Self::All(selected) => *selected,
++            Self::Backends(backends) => backends.iter().any(|value| value == backend),
++        }
++    }
++
++    fn selected<'a>(&'a self, enabled: &'a BTreeSet<&str>) -> BTreeSet<&'a str> {
++        match self {
++            Self::All(true) => enabled.iter().copied().collect(),
++            Self::All(false) => BTreeSet::new(),
++            Self::Backends(backends) => backends.iter().map(String::as_str).collect(),
++        }
++    }
++}
++
+ #[derive(Clone, Debug, Default, Deserialize)]
+ #[serde(deny_unknown_fields)]
+ pub struct Assertions {
+@@ -219,11 +249,11 @@ impl ManifestSet {
+                     let accepted = match population {
+                         Population::Required => {
+                             enabled
+-                                && (recipe.ci
++                                && (recipe.ci.selects("native")
+                                     || selection.mode.as_deref() == Some("naked")
+                                     || selection.include_manual)
+                         }
+-                        other => population_accepts(other, recipe.ci, enabled),
++                        other => population_accepts(other, recipe.ci.selects("native"), enabled),
+                     };
+                     if selection
+                         .backend
+@@ -249,9 +279,6 @@ impl ManifestSet {
+                     Population::Disabled => recipe.backends_disabled.keys().cloned().collect(),
+                     _ => recipe.backends_enabled.clone(),
+                 };
+-                if population == Population::Required && !recipe.ci && !selection.include_manual {
+-                    continue;
+-                }
+                 for backend in backends {
+                     if selection
+                         .backend
+@@ -261,7 +288,11 @@ impl ManifestSet {
+                         continue;
+                     }
+                     let enabled = recipe.backends_enabled.contains(&backend);
+-                    if !population_accepts(population, recipe.ci, enabled) {
++                    let ci = recipe.ci.selects(&backend);
++                    if population == Population::Required && !ci && !selection.include_manual {
++                        continue;
++                    }
++                    if !population_accepts(population, ci, enabled) {
+                         continue;
+                     }
+                     cells.push(SelectedCell {
+@@ -343,22 +374,6 @@ fn validate_document(document: &ManifestDocument, stem: &str, root: &Path) -> Re
+ }
+ 
+ fn validate_mode(id: &str, mode: &str, recipe: &ModeRecipe) -> Result<(), String> {
+-    if recipe.ci_disabled_reason.is_some() && recipe.ci {
+-        return Err(format!(
+-            "{id}: {mode} is ci=true but carries ci_disabled_reason"
+-        ));
+-    }
+-    if !recipe.ci
+-        && !recipe.backends_enabled.is_empty()
+-        && recipe
+-            .ci_disabled_reason
+-            .as_deref()
+-            .is_none_or(|reason| reason.trim().is_empty())
+-    {
+-        return Err(format!(
+-            "{id}: {mode} enables cells with ci=false but has no ci_disabled_reason"
+-        ));
+-    }
+     let expected: BTreeSet<&str> = if mode == "naked" {
+         ["native"].into_iter().collect()
+     } else {
+@@ -376,6 +391,42 @@ fn validate_mode(id: &str, mode: &str, recipe: &ModeRecipe) -> Result<(), String
+     {
+         return Err(format!("{id}: {mode} does not partition {expected:?}"));
+     }
++    let selected = recipe.ci.selected(&enabled);
++    if matches!(&recipe.ci, Ci::All(true)) && enabled.is_empty() {
++        return Err(format!("{id}: {mode} is ci=true but has no enabled backend"));
++    }
++    if selected.len()
++        != match &recipe.ci {
++            Ci::All(_) => selected.len(),
++            Ci::Backends(backends) => backends.len(),
++        }
++        || !selected.is_subset(&enabled)
++    {
++        return Err(format!(
++            "{id}: {mode}.ci must name distinct enabled backends; selected={selected:?}, enabled={enabled:?}"
++        ));
++    }
++    let has_unselected = !enabled.is_subset(&selected);
++    if has_unselected
++        && recipe
++            .ci_disabled_reason
++            .as_deref()
++            .is_none_or(|reason| reason.trim().is_empty())
++    {
++        return Err(format!(
++            "{id}: {mode} has enabled cells outside ci and no ci_disabled_reason"
++        ));
++    }
++    if !has_unselected && !enabled.is_empty() && recipe.ci_disabled_reason.is_some() {
++        return Err(format!(
++            "{id}: every enabled {mode} cell is in ci, so ci_disabled_reason is stale"
++        ));
++    }
++    if mode == "naked" && !selected.is_empty() {
++        return Err(format!(
++            "{id}: naked is opt-in meta-CI and must set ci=false"
++        ));
++    }
+     if recipe
+         .backends_disabled
+         .values()
+@@ -1779,7 +1830,7 @@ mod tests {
+             ("liteinst".into(), "not qualified".into()),
+         ]);
+         let mode = ModeRecipe {
+-            ci,
++            ci: Ci::All(ci),
+             ci_disabled_reason: (!ci).then(|| "not selected yet".into()),
+             backends_enabled: vec!["ptrace".into()],
+             backends_disabled: disabled,
+@@ -1863,6 +1914,28 @@ mod tests {
+         );
+     }
+ 
++    #[test]
++    fn required_population_selects_only_declared_ci_backends() {
++        let mut test = recipe(false);
++        let mode = test.modes.get_mut("verify").unwrap();
++        mode.backends_enabled = vec!["ptrace".into(), "kvm".into()];
++        mode.backends_disabled.remove("kvm");
++        mode.ci = Ci::Backends(vec!["kvm".into()]);
++        mode.ci_disabled_reason = Some("ptrace remains outside this measured promotion".into());
++        let set = ManifestSet {
++            documents: Vec::new(),
++            tests: BTreeMap::from([(test.id.clone(), ("fixture".into(), test))]),
++        };
++        let cells = set
++            .select(&Selection {
++                population: Some(Population::Required),
++                ..Selection::default()
++            })
++            .unwrap();
++        assert_eq!(cells.len(), 1);
++        assert_eq!(cells[0].id.backend.as_deref(), Some("kvm"));
++    }
++
+     #[test]
+     fn run_spec_records_correct_policy_without_hidden_portable_flags() {
+         let test = recipe(true);
+diff --git a/hermit-cli/src/bin/hermit/run.rs b/hermit-cli/src/bin/hermit/run.rs
+index 19b907b534..266daac3d5 100644
+--- a/hermit-cli/src/bin/hermit/run.rs
++++ b/hermit-cli/src/bin/hermit/run.rs
+@@ -2867,7 +2867,6 @@ impl RunOpts {
+             );
+         }
+ 
+-        let kvm_output_only = self.selected_backend() == Backend::Kvm;
+         let outcome = compare_two_runs(
+             ComparedRun {
+                 output: &out1,
+@@ -2878,11 +2877,7 @@ impl RunOpts {
+                 log: log2_path,
+             },
+             ComparisonOptions {
+-                success_message: if kvm_output_only {
+-                    "Success: KVM guest output and exit status matched."
+-                } else {
+-                    "Success: deterministic. Determinism verified."
+-                },
++                success_message: "Success: deterministic. Determinism verified.",
+                 failure_message: "Failure: nondeterministic.",
+                 verbose: self.verify_verbose,
+                 // --verify-verbose historically implied a bitwise compare (it
+@@ -2893,7 +2888,7 @@ impl RunOpts {
+                 } else {
+                     LogCompareStrictness::Stripped
+                 },
+-                compare_logs: !kvm_output_only,
++                compare_logs: true,
+                 diagnostic_full_trace: self.verify_verbose,
+                 keep_logs: self.keep_logs,
+             },
+diff --git a/hermit-cli/src/bin/hermit/verify.rs b/hermit-cli/src/bin/hermit/verify.rs
+index 00d0d2831c..083e8846f8 100644
+--- a/hermit-cli/src/bin/hermit/verify.rs
++++ b/hermit-cli/src/bin/hermit/verify.rs
+@@ -156,10 +156,10 @@ const PARITY_CANONICALIZATIONS: &[&str] = &[CANON_ADDRESS_ORDINAL_V1];
+ pub struct ComparisonSpec {
+     /// The strictness label the comparison ran under.
+     pub strictness: LogCompareStrictness,
+-    /// Whether the internal event stream was compared at all. When
+-    /// `false` (e.g. KVM concurrent mode) only stdout/stderr/exit status were
+-    /// compared and the strictness fields describe a log comparison that did not
+-    /// run — a consumer must not read such a verdict as bitwise log parity.
++    /// Whether the internal event stream was compared at all. When `false`, only
++    /// stdout/stderr/exit status were compared and the strictness fields describe
++    /// a log comparison that did not run — a consumer must not read such a
++    /// verdict as bitwise log parity.
+     pub compare_logs: bool,
+     /// The message envelope selected from the captured log. The compared-message
+     /// counts refer exactly to this scope.
+@@ -725,9 +725,9 @@ fn compare_two_runs_with_unsupported_scan(
+         log: log2,
+     } = second;
+     let mut failed = false;
+-    // None until the log comparison actually runs; stays None on the
+-    // output-only (KVM concurrent) fallback so the report can distinguish
+-    // "compared nothing" from "compared and matched".
++    // None until the log comparison actually runs; stays None on an output-only
++    // invocation so the report can distinguish "compared nothing" from
++    // "compared and matched".
+     let mut compared_log_messages: Option<ComparedLogCounts> = None;
+     let mut first_divergent_scheduler_turn = None;
+     let mut first_divergent_virtual_nanoseconds = None;
+@@ -814,7 +814,7 @@ fn compare_two_runs_with_unsupported_scan(
+             }
+         } else {
+             eprintln!(
+-                ":: KVM concurrent mode: comparing guest output and exit status; internal syscall trace order is not deterministic"
++                ":: Captured verification logs were not compared for this invocation."
+             );
+         }
+ 
+diff --git a/hermit-cli/src/lib.rs b/hermit-cli/src/lib.rs
+index 61f999a11a..c65aa14388 100644
+--- a/hermit-cli/src/lib.rs
++++ b/hermit-cli/src/lib.rs
+@@ -1442,7 +1442,7 @@ async fn run_kvm(
+     drop(backend);
+     let teardown_finished = Instant::now();
+ 
+-    tracing::info!(
++    tracing::debug!(
+         target: "hermit::kvm",
+         prepare_us = setup_started.duration_since(dispatch_started).as_micros() as u64,
+         setup_us = execution_started.duration_since(setup_started).as_micros() as u64,
+diff --git a/hermit-cli/tests/cli.rs b/hermit-cli/tests/cli.rs
+index fef8f0a6a3..6f6c975469 100644
+--- a/hermit-cli/tests/cli.rs
++++ b/hermit-cli/tests/cli.rs
+@@ -1169,7 +1169,7 @@ fn run_kvm_awk_mincore_probe_terminates() {
+     assert_success(&output, &args);
+     assert_eq!(stdout(&output), "42\n");
+     assert!(
+-        stderr(&output).contains("Success: KVM guest output and exit status matched."),
++        stderr(&output).contains("Success: deterministic. Determinism verified."),
+         "KVM determinism confirmation missing:\n{}",
+         stderr(&output),
+     );
+@@ -1225,7 +1225,7 @@ fn run_kvm_setpriv_capability_wrapper_is_deterministic() {
+ 
+     assert_success(&output, &args);
+     assert_eq!(stdout(&output), "1767225600\n");
+-    assert!(stderr(&output).contains("Success: KVM guest output and exit status matched."));
++    assert!(stderr(&output).contains("Success: deterministic. Determinism verified."));
+ }
+ 
+ #[test]
+@@ -1277,7 +1277,7 @@ fn run_kvm_bash_process_substitution_is_deterministic() {
+ 
+     assert_success(&output, &args);
+     assert_eq!(stdout(&output), "paste-ok\n");
+-    assert!(stderr(&output).contains("Success: KVM guest output and exit status matched."));
++    assert!(stderr(&output).contains("Success: deterministic. Determinism verified."));
+ }
+ 
+ #[test]
+@@ -1333,7 +1333,7 @@ fn run_kvm_cpuid_policy_is_deterministic() {
+         stdout(&output),
+         "CPUID-SUCCESS vendor=GenuineIntel signature=00000663\n"
+     );
+-    assert!(stderr(&output).contains("Success: KVM guest output and exit status matched."));
++    assert!(stderr(&output).contains("Success: deterministic. Determinism verified."));
+ }
+ 
+ #[test]
+@@ -1513,7 +1513,7 @@ fn run_kvm_verify_f_getfl_with_isolated_standard_input() {
+ 
+     assert_success(&output, &args);
+     assert_eq!(stdout(&output), "fcntl-verify-ok\n");
+-    assert!(stderr(&output).contains("Success: KVM guest output and exit status matched."));
++    assert!(stderr(&output).contains("Success: deterministic. Determinism verified."));
+ }
+ 
+ #[test]
+diff --git a/hermit-cli/tests/madvise.rs b/hermit-cli/tests/madvise.rs
+index 65791230b5..84e2f4d16d 100644
+--- a/hermit-cli/tests/madvise.rs
++++ b/hermit-cli/tests/madvise.rs
+@@ -102,12 +102,12 @@ fn madvise_policy_verifies_in_run_record_and_kvm_modes() {
+         let output = command_output(verify, "KVM madvise verification");
+         assert_marker(
+             &output,
+-            "KVM concurrent mode: comparing guest output and exit status; internal syscall trace order is not deterministic",
++            "Comparing captured verification logs...",
+             "KVM madvise verification",
+         );
+         assert_marker(
+             &output,
+-            "Success: KVM guest output and exit status matched.",
++            "Success: deterministic. Determinism verified.",
+             "KVM madvise verification",
+         );
+     }
+diff --git a/tests/backend-parity/README.md b/tests/backend-parity/README.md
+index 01eae537c2..f9d2546725 100644
+--- a/tests/backend-parity/README.md
++++ b/tests/backend-parity/README.md
+@@ -11,7 +11,11 @@ generated TSV here. It does **not** touch the tracked
+ publisher `compat-envelope/publish-scorecard.py`, whose exact invocation the
+ runner prints at the end of the run.
+ 
+-## Current ratchet
++## Last tracked ratchet
++
++These counts predate canonical KVM log comparison. They retain the evidence
++that was actually recorded, but the KVM verification column must be rerun
++before it can describe the current product path.
+ 
+ The L1 ratchet (`--strict`, run three times, byte-identical stdout) and the
+ Stripped verification ratchet (`--strict --verify`, Hermit's double-run
+@@ -38,11 +42,10 @@ The two verification kinds are not interchangeable. **Stripped DETLOG**
+ (ptrace, DBT) means Hermit re-ran the guest and found the two normalized DETLOG
+ streams equal after stripping selected fields; it does not mean the full syscall
+ and scheduling traces were bitwise-identical and does not establish L2.
+-**guest-visible** verification (KVM) is weaker: reverie-kvm runs concurrently and
+-declares outright that its internal syscall trace order is not deterministic, so
+-`--verify` compares only guest stdout and exit status across the two runs. KVM's
+-column is therefore capped at `guest`, never `detlog`. See the verification
+-subsection below for the contract that holds at L1 but not under `--verify`.
++**guest-visible** verification is weaker because it compares only guest stdout
++and exit status across the two runs. KVM now compares captured INFO logs too;
++the retained KVM `guest` entries below describe the older measurements, not a
++backend limitation.
+ 
+ The task's pre-existing DBT-native baseline is 70/89 tests (78.7%). That number
+ measures the backend's own Reverie suite. The 23/24 number above is deliberately
+@@ -112,7 +115,7 @@ exit but does not yet synthesize an x86-64 signal frame to run the handler.
+ ## Cases
+ 
+ Each cell shows the L1 status and, after `/`, the `--verify` status: `detlog`
+-for Stripped DETLOG equality, `guest` for KVM guest-visible equality, and `gap`
++for Stripped DETLOG equality, `guest` for retained output-only evidence, and `gap`
+ where verification does not succeed. Neither successful status is an L2 claim.
+ 
+ | Test | ptrace | DBT | KVM |
+@@ -181,15 +184,16 @@ three byte-identical runs. The runner disables PMU timeslicing for portability.
+ ### Stripped verification (`--verify`)
+ 
+ Passing `--verify` adds a two-run comparison: the runner invokes
+-`hermit run --strict --verify --verify-allow both`. For ptrace and DBT, Hermit
++`hermit run --strict --verify --verify-allow both`. Hermit
+ compares DETLOG streams after Stripped normalization; this is not bitwise parity
+ and not L2. Because `--verify` diverts the guest's own stdout into per-run
+ temporary logs, this path cannot re-check stdout the way the L1 path does;
+ instead it enforces that the guest exit status matches and that Hermit's
+ double-run comparison succeeded at *at least* the verification kind expected
+-for the backend. The runner keys on two stderr witnesses: `Determinism verified`
+-(Stripped DETLOG, ptrace and DBT) and `guest output and exit status matched`
+-(KVM guest-visible). A DETLOG result satisfies a `guest` contract because it
++for the backend. The runner uses typed verdict JSON where available. Its legacy
++stderr witnesses are `Determinism verified` (a log comparison whose exact policy
++is unavailable without JSON) and `guest output and exit status matched`
++(retained output-only evidence). A DETLOG result satisfies a `guest` contract because it
+ compares more observations; the reverse fails.
+ 
+ One contract holds at L1 but not under `--verify` and is recorded as a `gap`
+diff --git a/tests/backend-parity/parity_mutation.py b/tests/backend-parity/parity_mutation.py
+index 8364fae755..dc8b99c543 100755
+--- a/tests/backend-parity/parity_mutation.py
++++ b/tests/backend-parity/parity_mutation.py
+@@ -143,10 +143,9 @@ FIXTURES: dict[str, FixtureSpec] = {
+ # is not a substitute for --verify-strict and does not reimplement it -- it
+ # applies the same idea across backends.
+ #
+-# TIER-2 corresponds to what KVM's --verify can currently assert (exit status,
+-# stdout, stderr) and TIER-3 to the full-INFO envelope, which is why the repo
+-# says KVM "cannot claim full L2 INFO parity until internal log comparison
+-# exists".
++# Product `--verify-strict` now applies the same full-INFO envelope to KVM.
++# This cross-backend harness still assigns its tier from each typed verdict;
++# it must not infer the tier from a backend name or success banner.
+ #
+ # KNOWN GAP, and it is deliberate rather than overlooked: BitwiseInfoV1 both
+ # removes the wall-clock prefix AND ordinalizes host addresses marked with the
+diff --git a/tests/backend-parity/run_matrix.py b/tests/backend-parity/run_matrix.py
+index f4005aca6f..e9443e09f7 100755
+--- a/tests/backend-parity/run_matrix.py
++++ b/tests/backend-parity/run_matrix.py
+@@ -169,7 +169,7 @@ def scorecard_fieldnames(actual_header, path):
+ # L2 (--verify) assurance kinds, ordered weakest to strongest. "gap" means the
+ # contract cannot currently be verified at L2 on that backend. "guest" is
+ # guest-visible L2: the two --verify runs produced identical stdout+exit but the
+-# internal trace is not compared (KVM concurrent mode). "detlog" is full L2: the
++# internal trace was not compared. "detlog" is full L2: the
+ # two runs produced a bitwise-identical DETLOG after normalization (ptrace, DBT).
+ #
+ # `stripped` is the rung that was missing, and its absence is what made every
+@@ -179,12 +179,12 @@ def scorecard_fieldnames(actual_header, path):
+ # identical".  `bitwise` is the real thing and is claimable only from a typed
+ # verdict (see `verify_tier_from_json`).
+ L2_RANK = {"gap": 0, "guest": 1, "stripped": 2, "bitwise": 3}
+-# Per-backend L2 values the matrix may record. KVM's concurrent verify path can
+-# never emit a DETLOG witness, so it is capped at guest-visible L2.
++# Per-backend L2 values the matrix may record. Typed verdicts, not backend
++# names, determine which value a run earned.
+ L2_ALLOWED = {
+     "ptrace": {"stripped", "bitwise"},
+     "dbt": {"stripped", "bitwise", "gap"},
+-    "kvm": {"guest", "gap"},
++    "kvm": {"guest", "stripped", "bitwise", "gap"},
+ }
+ 
+ 
+@@ -765,10 +765,8 @@ def capture_ptrace_reference(
+ #  * DETLOG-bitwise (ptrace, DBT): hermit re-runs the guest and finds the two
+ #    DETLOG streams bitwise-identical after normalization. This is full L2 -- the
+ #    internal syscall/scheduling trace is itself reproducible.
+-#  * guest-visible (KVM): reverie-kvm runs concurrently and states outright that
+-#    "internal syscall trace order is not deterministic", so `--verify` compares
+-#    only guest stdout and exit status across the two runs. That is a strictly
+-#    weaker guest-visible L2; do not report it as DETLOG determinism.
++#  * guest-visible: a legacy or explicit output-only invocation compared only
++#    guest stdout and exit status. That is strictly weaker than DETLOG parity.
+ #
+ # Recording which witness fired keeps the matrix honest about what each backend
+ # actually proves under --verify (no false parity).
+@@ -1305,11 +1303,6 @@ def append_parent_scorecard(
+         # parity boolean is derived solely from the two hashes captured above.
+         parity = stdout_evidence.get("stdout_parity", "")
+         detail = result["detail"]
+-        if verify and result["backend"] == "kvm" and passed:
+-            detail = (
+-                "L2 guest-visible only (stdout+exit compared; internal trace not "
+-                f"compared): {detail}"
+-            )
+         rows.append(
+             {
+                 "run_id": run_id,
+@@ -1541,8 +1534,8 @@ def main() -> int:
+     # now so the headline cannot overstate the corpus.
+     for backend in BACKENDS:
+         verified = baseline - sum(gap_backend == backend for gap_backend, _ in L2_GAPS)
+-        stripped = verified if backend != "kvm" else 0
+-        guest = verified if backend == "kvm" else 0
++        stripped = verified
++        guest = 0
+         print(
+             f"RATCHET-L2 {backend}: {verified}/{baseline} "
+             f"({verified / baseline:.1%}) [stripped-DETLOG={stripped} "
+diff --git a/tests/e2e/lib/system-utils/_common.sh b/tests/e2e/lib/system-utils/_common.sh
+index 2d5a603192..a378e5fc22 100755
+--- a/tests/e2e/lib/system-utils/_common.sh
++++ b/tests/e2e/lib/system-utils/_common.sh
+@@ -198,13 +198,8 @@ assert_stdout_matches() {
+ }
+ 
+ pass_test() {
+-    if [[ $SYSTEM_UTIL_BACKEND == kvm ]]; then
+-        printf 'PASS [%s/kvm]: strict --verify output/exit parity with INFO logging; internal trace comparison unavailable; relaxations=none\n' \
+-            "$SYSTEM_UTIL_TEST_NAME"
+-    else
+-        printf 'PASS [%s/%s]: L2 with INFO logging; relaxations=none\n' \
+-            "$SYSTEM_UTIL_TEST_NAME" "$SYSTEM_UTIL_BACKEND"
+-    fi
++    printf 'PASS [%s/%s]: L2 with INFO logging; relaxations=none\n' \
++        "$SYSTEM_UTIL_TEST_NAME" "$SYSTEM_UTIL_BACKEND"
+ }
+ 
+ if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
+diff --git a/tests/e2e/manifests/applications.yaml b/tests/e2e/manifests/applications.yaml
+index c3739d6255..63bf6593b6 100644
+--- a/tests/e2e/manifests/applications.yaml
++++ b/tests/e2e/manifests/applications.yaml
+@@ -94,7 +94,7 @@ test:
+           - liteinst
+         backends_disabled:
+           sabre: SaBRe does not yet determinize busy-wait polling on virtual wall-clock advancement; keep the identical example workload unqualified
+-        ci_disabled_reason: This enabled verify cell is not selected by ordinary validation; add it to ci/expected-e2e-plan.json only after repeated canonical verification qualifies every enabled backend.
++        ci_disabled_reason: 'KVM canonical verification diverged in all three repetitions at scheduler turn 32 of 195: lseek(2, 0, SEEK_CUR) returned 11 in run 1 and 22 in run 2, despite equal INFO counts of 197617/197617. The other enabled backends are unchanged by this KVM measurement.'
+       replay:
+         ci: false
+         backends_enabled: []
+@@ -145,7 +145,7 @@ test:
+         backends_disabled:
+           native: The portable Python-random test owns the native nondeterminism control
+       verify:
+-        ci: true
++        ci: false
+         backends_enabled:
+           - kvm
+         backends_disabled:
+@@ -153,6 +153,7 @@ test:
+           dbt: This test specifically asserts the KVM execution path
+           sabre: This test specifically asserts the KVM execution path
+           liteinst: This test specifically asserts the KVM execution path
++        ci_disabled_reason: 'KVM canonical verification diverged in all three repetitions at scheduler turn 45: the first mismatch was lseek(2, 0, SEEK_CUR) returning 11 versus 22, followed by differing process completion order; INFO counts were 210107/214407, 213217/213085, and 207093/211961.'
+       replay:
+         ci: false
+         backends_enabled: []
+@@ -188,7 +189,7 @@ test:
+       - x86_64
+       - kvm
+     timeout_seconds: 60
+-    occasional: true
++    occasional: false
+     program: tests/e2e/applications/kvm-shell-environment.sh
+     observation:
+       status: true
+diff --git a/tests/e2e/manifests/backend-parity-c.yaml b/tests/e2e/manifests/backend-parity-c.yaml
+index ec3e1ada59..3e03243d99 100644
+--- a/tests/e2e/manifests/backend-parity-c.yaml
++++ b/tests/e2e/manifests/backend-parity-c.yaml
+@@ -3686,8 +3686,9 @@ test:
+       artifacts: []
+     modes:
+       verify:
+-        ci: false
+-        ci_disabled_reason: 'NOT-EXERCISED (measured: ptrace passes, a non-ptrace enabled backend is red): verify PASSES on ptrace but dbi FAIL (exit 1), kvm FAIL (exit 124 = the 90s per-cell timeout, i.e. a hang, not an assertion failure). Measured 2026-08-06 at hermit 6e1b59af0b228403fb3e9bcafc63da64a531569f (debug build), twice at different concurrency with identical verdicts; host and method recorded in tests/backend-parity/measurements/README.md. The ci flag covers EVERY backend in backends_enabled, so enabling this cell would run the red backend(s) too and turn the lane red. Enable once they are qualified, or once they are deliberately demoted to backends_disabled with a reason under the task that owns those parity declarations -- do not demote them merely to buy this flip.'
++        ci:
++          - kvm
++        ci_disabled_reason: 'KVM canonical verification passed 3/3 at ba999246e1653849646cfa705745afc99bb6a0d6. The prior 2026-08-06 evidence recorded ptrace passing and DBT exiting 1; this change selects only the newly remeasured KVM cell.'
+         backends_enabled:
+           - ptrace
+           - dbt
+@@ -4009,8 +4010,9 @@ test:
+         - -D_GNU_SOURCE
+     modes:
+       verify:
+-        ci: false
+-        ci_disabled_reason: 'NOT-EXERCISED (measured: ptrace passes, a non-ptrace enabled backend is red): verify PASSES on ptrace but dbi FAIL (exit 1), kvm FAIL (exit 124 = the 90s per-cell timeout, i.e. a hang, not an assertion failure). Measured 2026-08-06 at hermit 6e1b59af0b228403fb3e9bcafc63da64a531569f (debug build), twice at different concurrency with identical verdicts; host and method recorded in tests/backend-parity/measurements/README.md. The ci flag covers EVERY backend in backends_enabled, so enabling this cell would run the red backend(s) too and turn the lane red. Enable once they are qualified, or once they are deliberately demoted to backends_disabled with a reason under the task that owns those parity declarations -- do not demote them merely to buy this flip.'
++        ci:
++          - kvm
++        ci_disabled_reason: 'KVM canonical verification passed 3/3 at ba999246e1653849646cfa705745afc99bb6a0d6. The prior 2026-08-06 evidence recorded ptrace passing and DBT exiting 1; this change selects only the newly remeasured KVM cell.'
+         backends_enabled:
+           - ptrace
+           - dbt
+@@ -4577,8 +4579,9 @@ test:
+       artifacts: []
+     modes:
+       verify:
+-        ci: false
+-        ci_disabled_reason: 'NOT-EXERCISED (measured: ptrace passes, a non-ptrace enabled backend is red): verify PASSES on ptrace but dbi FAIL (exit 1), kvm FAIL (exit 124 = the 90s per-cell timeout, i.e. a hang, not an assertion failure). Measured 2026-08-06 at hermit 6e1b59af0b228403fb3e9bcafc63da64a531569f (debug build), twice at different concurrency with identical verdicts; host and method recorded in tests/backend-parity/measurements/README.md. The ci flag covers EVERY backend in backends_enabled, so enabling this cell would run the red backend(s) too and turn the lane red. Enable once they are qualified, or once they are deliberately demoted to backends_disabled with a reason under the task that owns those parity declarations -- do not demote them merely to buy this flip.'
++        ci:
++          - kvm
++        ci_disabled_reason: 'KVM canonical verification passed 3/3 at ba999246e1653849646cfa705745afc99bb6a0d6. The prior 2026-08-06 evidence recorded ptrace passing and DBT exiting 1; this change selects only the newly remeasured KVM cell.'
+         backends_enabled:
+           - ptrace
+           - dbt
+@@ -4641,8 +4644,9 @@ test:
+       artifacts: []
+     modes:
+       verify:
+-        ci: false
+-        ci_disabled_reason: 'NOT-EXERCISED (measured: ptrace passes, a non-ptrace enabled backend is red): verify PASSES on ptrace but dbi FAIL (exit 1), kvm FAIL (exit 124 = the 90s per-cell timeout, i.e. a hang, not an assertion failure). Measured 2026-08-06 at hermit 6e1b59af0b228403fb3e9bcafc63da64a531569f (debug build), twice at different concurrency with identical verdicts; host and method recorded in tests/backend-parity/measurements/README.md. The ci flag covers EVERY backend in backends_enabled, so enabling this cell would run the red backend(s) too and turn the lane red. Enable once they are qualified, or once they are deliberately demoted to backends_disabled with a reason under the task that owns those parity declarations -- do not demote them merely to buy this flip.'
++        ci:
++          - kvm
++        ci_disabled_reason: 'KVM canonical verification passed 3/3 at ba999246e1653849646cfa705745afc99bb6a0d6. The prior 2026-08-06 evidence recorded ptrace passing and DBT exiting 1; this change selects only the newly remeasured KVM cell.'
+         backends_enabled:
+           - ptrace
+           - dbt
+@@ -4705,8 +4709,9 @@ test:
+       artifacts: []
+     modes:
+       verify:
+-        ci: false
+-        ci_disabled_reason: 'NOT-EXERCISED (measured: ptrace passes, a non-ptrace enabled backend is red): verify PASSES on ptrace but dbi FAIL (exit 1), kvm FAIL (exit 124 = the 90s per-cell timeout, i.e. a hang, not an assertion failure). Measured 2026-08-06 at hermit 6e1b59af0b228403fb3e9bcafc63da64a531569f (debug build), twice at different concurrency with identical verdicts; host and method recorded in tests/backend-parity/measurements/README.md. The ci flag covers EVERY backend in backends_enabled, so enabling this cell would run the red backend(s) too and turn the lane red. Enable once they are qualified, or once they are deliberately demoted to backends_disabled with a reason under the task that owns those parity declarations -- do not demote them merely to buy this flip.'
++        ci:
++          - kvm
++        ci_disabled_reason: 'KVM canonical verification passed 3/3 at ba999246e1653849646cfa705745afc99bb6a0d6. The prior 2026-08-06 evidence recorded ptrace passing and DBT exiting 1; this change selects only the newly remeasured KVM cell.'
+         backends_enabled:
+           - ptrace
+           - dbt
+@@ -4769,8 +4774,9 @@ test:
+       artifacts: []
+     modes:
+       verify:
+-        ci: false
+-        ci_disabled_reason: 'NOT-EXERCISED (measured: ptrace passes, a non-ptrace enabled backend is red): verify PASSES on ptrace but dbi FAIL (exit 1), kvm FAIL (exit 124 = the 90s per-cell timeout, i.e. a hang, not an assertion failure). Measured 2026-08-06 at hermit 6e1b59af0b228403fb3e9bcafc63da64a531569f (debug build), twice at different concurrency with identical verdicts; host and method recorded in tests/backend-parity/measurements/README.md. The ci flag covers EVERY backend in backends_enabled, so enabling this cell would run the red backend(s) too and turn the lane red. Enable once they are qualified, or once they are deliberately demoted to backends_disabled with a reason under the task that owns those parity declarations -- do not demote them merely to buy this flip.'
++        ci:
++          - kvm
++        ci_disabled_reason: 'KVM canonical verification passed 3/3 at ba999246e1653849646cfa705745afc99bb6a0d6. The prior 2026-08-06 evidence recorded ptrace passing and DBT exiting 1; this change selects only the newly remeasured KVM cell.'
+         backends_enabled:
+           - ptrace
+           - dbt
+@@ -4833,8 +4839,9 @@ test:
+       artifacts: []
+     modes:
+       verify:
+-        ci: false
+-        ci_disabled_reason: 'NOT-EXERCISED (measured: ptrace passes, a non-ptrace enabled backend is red): verify PASSES on ptrace but dbi FAIL (exit 1), kvm FAIL (exit 124 = the 90s per-cell timeout, i.e. a hang, not an assertion failure). Measured 2026-08-06 at hermit 6e1b59af0b228403fb3e9bcafc63da64a531569f (debug build), twice at different concurrency with identical verdicts; host and method recorded in tests/backend-parity/measurements/README.md. The ci flag covers EVERY backend in backends_enabled, so enabling this cell would run the red backend(s) too and turn the lane red. Enable once they are qualified, or once they are deliberately demoted to backends_disabled with a reason under the task that owns those parity declarations -- do not demote them merely to buy this flip.'
++        ci:
++          - kvm
++        ci_disabled_reason: 'KVM canonical verification passed 3/3 at ba999246e1653849646cfa705745afc99bb6a0d6. The prior 2026-08-06 evidence recorded ptrace passing and DBT exiting 1; this change selects only the newly remeasured KVM cell.'
+         backends_enabled:
+           - ptrace
+           - dbt
+@@ -4897,8 +4904,9 @@ test:
+       artifacts: []
+     modes:
+       verify:
+-        ci: false
+-        ci_disabled_reason: 'NOT-EXERCISED (measured: ptrace passes, a non-ptrace enabled backend is red): verify PASSES on ptrace but dbi FAIL (exit 1), kvm FAIL (exit 124 = the 90s per-cell timeout, i.e. a hang, not an assertion failure). Measured 2026-08-06 at hermit 6e1b59af0b228403fb3e9bcafc63da64a531569f (debug build), twice at different concurrency with identical verdicts; host and method recorded in tests/backend-parity/measurements/README.md. The ci flag covers EVERY backend in backends_enabled, so enabling this cell would run the red backend(s) too and turn the lane red. Enable once they are qualified, or once they are deliberately demoted to backends_disabled with a reason under the task that owns those parity declarations -- do not demote them merely to buy this flip.'
++        ci:
++          - kvm
++        ci_disabled_reason: 'KVM canonical verification passed 3/3 at ba999246e1653849646cfa705745afc99bb6a0d6. The prior 2026-08-06 evidence recorded ptrace passing and DBT exiting 1; this change selects only the newly remeasured KVM cell.'
+         backends_enabled:
+           - ptrace
+           - dbt
+@@ -4961,8 +4969,9 @@ test:
+       artifacts: []
+     modes:
+       verify:
+-        ci: false
+-        ci_disabled_reason: 'NOT-EXERCISED (measured: ptrace passes, a non-ptrace enabled backend is red): verify PASSES on ptrace but dbi FAIL (exit 1), kvm FAIL (exit 124 = the 90s per-cell timeout, i.e. a hang, not an assertion failure). Measured 2026-08-06 at hermit 6e1b59af0b228403fb3e9bcafc63da64a531569f (debug build), twice at different concurrency with identical verdicts; host and method recorded in tests/backend-parity/measurements/README.md. The ci flag covers EVERY backend in backends_enabled, so enabling this cell would run the red backend(s) too and turn the lane red. Enable once they are qualified, or once they are deliberately demoted to backends_disabled with a reason under the task that owns those parity declarations -- do not demote them merely to buy this flip.'
++        ci:
++          - kvm
++        ci_disabled_reason: 'KVM canonical verification passed 3/3 at ba999246e1653849646cfa705745afc99bb6a0d6. The prior 2026-08-06 evidence recorded ptrace passing and DBT exiting 1; this change selects only the newly remeasured KVM cell.'
+         backends_enabled:
+           - ptrace
+           - dbt
+diff --git a/tests/e2e/manifests/c-programs.yaml b/tests/e2e/manifests/c-programs.yaml
+index 6a6115d361..f7056b3b1c 100644
+--- a/tests/e2e/manifests/c-programs.yaml
++++ b/tests/e2e/manifests/c-programs.yaml
+@@ -1143,7 +1143,8 @@ test:
+         - -Wno-error=sign-compare
+     modes:
+       verify:
+-        ci: false
++        ci:
++          - kvm
+         backends_enabled:
+           - ptrace
+           - kvm
+@@ -1160,7 +1161,7 @@ test:
+             - multi
+         backends_disabled:
+           dbt: Initial C-corpus migration preserves the established ptrace baseline; qualify DBT separately
+-        ci_disabled_reason: This enabled verify cell is not selected by ordinary validation; add it to ci/expected-e2e-plan.json only after repeated canonical verification qualifies every enabled backend.
++        ci_disabled_reason: 'KVM canonical verification passed 3/3 at ba999246e1653849646cfa705745afc99bb6a0d6. This KVM evidence does not alter the existing manual status of the enabled ptrace, SaBRe, and LiteInst cells.'
+       naked:
+         ci: false
+         backends_enabled: []
+@@ -2926,7 +2927,8 @@ test:
+       artifacts: []
+     modes:
+       verify:
+-        ci: false
++        ci:
++          - kvm
+         backends_enabled:
+           - ptrace
+           - kvm
+@@ -2937,7 +2939,7 @@ test:
+         backends_disabled:
+           dbt: Initial C-corpus migration preserves the established ptrace baseline; qualify DBT separately
+           liteinst: Initial C-corpus migration preserves the established ptrace baseline; qualify LiteInst separately
+-        ci_disabled_reason: This enabled verify cell is not selected by ordinary validation; add it to ci/expected-e2e-plan.json only after repeated canonical verification qualifies every enabled backend.
++        ci_disabled_reason: 'KVM canonical verification passed 3/3 at ba999246e1653849646cfa705745afc99bb6a0d6. This KVM evidence does not alter the existing manual status of the enabled ptrace and SaBRe cells.'
+       naked:
+         ci: false
+         backends_enabled: []
+@@ -3345,7 +3347,8 @@ test:
+       artifacts: []
+     modes:
+       verify:
+-        ci: false
++        ci:
++          - kvm
+         backends_enabled:
+           - ptrace
+           - kvm
+@@ -3362,7 +3365,7 @@ test:
+             - multiple
+         backends_disabled:
+           dbt: Initial C-corpus migration preserves the established ptrace baseline; qualify DBT separately
+-        ci_disabled_reason: This enabled verify cell is not selected by ordinary validation; add it to ci/expected-e2e-plan.json only after repeated canonical verification qualifies every enabled backend.
++        ci_disabled_reason: 'KVM canonical verification passed 3/3 at ba999246e1653849646cfa705745afc99bb6a0d6. This KVM evidence does not alter the existing manual status of the enabled ptrace, SaBRe, and LiteInst cells.'
+       naked:
+         ci: false
+         backends_enabled: []
+@@ -3932,7 +3935,8 @@ test:
+       artifacts: []
+     modes:
+       verify:
+-        ci: false
++        ci:
++          - kvm
+         backends_enabled:
+           - ptrace
+           - kvm
+@@ -3940,7 +3944,7 @@ test:
+           - liteinst
+         backends_disabled:
+           dbt: Initial C-corpus migration preserves the established ptrace baseline; qualify DBT separately
+-        ci_disabled_reason: This enabled verify cell is not selected by ordinary validation; add it to ci/expected-e2e-plan.json only after repeated canonical verification qualifies every enabled backend.
++        ci_disabled_reason: 'KVM canonical verification passed 3/3 at ba999246e1653849646cfa705745afc99bb6a0d6. This KVM evidence does not alter the existing manual status of the enabled ptrace, SaBRe, and LiteInst cells.'
+       naked:
+         ci: false
+         backends_enabled: []
+@@ -3992,7 +3996,8 @@ test:
+       artifacts: []
+     modes:
+       verify:
+-        ci: false
++        ci:
++          - kvm
+         backends_enabled:
+           - ptrace
+           - kvm
+@@ -4000,7 +4005,7 @@ test:
+           - liteinst
+         backends_disabled:
+           dbt: Initial C-corpus migration preserves the established ptrace baseline; qualify DBT separately
+-        ci_disabled_reason: This enabled verify cell is not selected by ordinary validation; add it to ci/expected-e2e-plan.json only after repeated canonical verification qualifies every enabled backend.
++        ci_disabled_reason: 'KVM canonical verification passed 3/3 at ba999246e1653849646cfa705745afc99bb6a0d6. This KVM evidence does not alter the existing manual status of the enabled ptrace, SaBRe, and LiteInst cells.'
+       naked:
+         ci: false
+         backends_enabled: []
+@@ -4052,7 +4057,8 @@ test:
+       artifacts: []
+     modes:
+       verify:
+-        ci: false
++        ci:
++          - kvm
+         backends_enabled:
+           - ptrace
+           - kvm
+@@ -4060,7 +4066,7 @@ test:
+           - liteinst
+         backends_disabled:
+           dbt: Initial C-corpus migration preserves the established ptrace baseline; qualify DBT separately
+-        ci_disabled_reason: This enabled verify cell is not selected by ordinary validation; add it to ci/expected-e2e-plan.json only after repeated canonical verification qualifies every enabled backend.
++        ci_disabled_reason: 'KVM canonical verification passed 3/3 at ba999246e1653849646cfa705745afc99bb6a0d6. This KVM evidence does not alter the existing manual status of the enabled ptrace, SaBRe, and LiteInst cells.'
+       naked:
+         ci: false
+         backends_enabled: []
+@@ -9262,7 +9268,7 @@ test:
+           dbt: Initial C-corpus migration preserves the established ptrace baseline; qualify DBT separately
+           sabre: Cancellation reaches one raw libc syscall site per execution; trusted shared-object native execution is not SaBRe support
+           liteinst: Initial C-corpus migration preserves the established ptrace baseline; qualify LiteInst separately
+-        ci_disabled_reason: This enabled verify cell is not selected by ordinary validation; add it to ci/expected-e2e-plan.json only after repeated canonical verification qualifies every enabled backend.
++        ci_disabled_reason: 'KVM canonical verification passed once and diverged twice at scheduler turn 4 of 13 after the same clone3 event: the COMMIT virtual time differed by 848750 ns (2848750 versus 3697500), with INFO counts 178/178 and 178/221. The ptrace cell is unchanged by this KVM measurement.'
+       naked:
+         ci: false
+         backends_enabled: []
+diff --git a/tests/e2e/manifests/determinism-stress-c.yaml b/tests/e2e/manifests/determinism-stress-c.yaml
+index da58fb7a63..0bcfacb4c6 100644
+--- a/tests/e2e/manifests/determinism-stress-c.yaml
++++ b/tests/e2e/manifests/determinism-stress-c.yaml
+@@ -280,7 +280,7 @@ test:
+           - ptrace
+         backends_disabled:
+           dbt: DBT was observed emitting a raw host tid in DETLOG records; this fixture is the gate for enabling it
+-          kvm: KVM compares output only and cannot assert DETLOG identity yet
++          kvm: KVM was not part of the ptrace qualification evidence for this pid-identity fixture
+           sabre: Not yet qualified for the pid-identity fixture
+           liteinst: Not yet qualified for the pid-identity fixture
+       naked:
+diff --git a/tests/e2e/manifests/determinism-stress.yaml b/tests/e2e/manifests/determinism-stress.yaml
+index 45606e7c5f..17db5ff03e 100644
+--- a/tests/e2e/manifests/determinism-stress.yaml
++++ b/tests/e2e/manifests/determinism-stress.yaml
+@@ -91,7 +91,7 @@ test:
+         backends_disabled:
+           dbt: Concurrent shell stdout differed between strict verification runs
+           liteinst: The preload runtime cannot survive the shell script's post-start exec
+-        ci_disabled_reason: This enabled verify cell is not selected by ordinary validation; add it to ci/expected-e2e-plan.json only after repeated canonical verification qualifies every enabled backend.
++        ci_disabled_reason: 'KVM canonical verification diverged in all three repetitions under the concurrent shell workload: INFO counts were 16183/16017, 5821/10003, and 22469/11755, with wait4 completion versus continued InternalIOPolling at turns 12890/13059, 2694/2697, and 8628/19345 respectively. The ptrace and SaBRe cells are unchanged by this KVM measurement.'
+       replay:
+         ci: false
+         backends_enabled: []
+diff --git a/tests/e2e/manifests/language-runtimes.yaml b/tests/e2e/manifests/language-runtimes.yaml
+index 4ed0677df4..3c9aebbba1 100644
+--- a/tests/e2e/manifests/language-runtimes.yaml
++++ b/tests/e2e/manifests/language-runtimes.yaml
+@@ -219,7 +219,7 @@ test:
+           - sabre
+           - liteinst
+         backends_disabled: {}
+-        ci_disabled_reason: This enabled verify cell is not selected by ordinary validation; add it to ci/expected-e2e-plan.json only after repeated canonical verification qualifies every enabled backend.
++        ci_disabled_reason: 'KVM canonical verification diverged in all three repetitions at scheduler turn 32 of 156: lseek(2, 0, SEEK_CUR) returned 11 in run 1 and 22 in run 2. Both runs compared 3256 INFO messages in every repetition, so equal counts did not establish parity. The other enabled backends are unchanged by this KVM measurement.'
+       replay:
+         ci: false
+         backends_enabled: []
+diff --git a/tests/e2e/manifests/system-utils.yaml b/tests/e2e/manifests/system-utils.yaml
+index 511db94938..1ae57308c3 100644
+--- a/tests/e2e/manifests/system-utils.yaml
++++ b/tests/e2e/manifests/system-utils.yaml
+@@ -157,7 +157,8 @@ test:
+         backends_disabled:
+           native: The existing date-nanoseconds test owns the native-variation assertion
+       verify:
+-        ci: false
++        ci:
++          - kvm
+         backends_enabled:
+           - ptrace
+           - dbt
+@@ -165,7 +166,7 @@ test:
+           - sabre
+         backends_disabled:
+           liteinst: The preload runtime cannot survive the date script's post-start exec
+-        ci_disabled_reason: This enabled verify cell is not selected by ordinary validation; add it to ci/expected-e2e-plan.json only after repeated canonical verification qualifies every enabled backend.
++        ci_disabled_reason: 'KVM canonical verification passed 3/3 at ba999246e1653849646cfa705745afc99bb6a0d6. This KVM evidence does not alter the existing manual status of the enabled ptrace, DBT, and SaBRe cells.'
+       replay:
+         ci: false
+         backends_enabled: []
+@@ -217,7 +218,8 @@ test:
+         backends_disabled:
+           native: The existing random-device test owns the native-variation assertion
+       verify:
+-        ci: false
++        ci:
++          - kvm
+         backends_enabled:
+           - ptrace
+           - dbt
+@@ -225,7 +227,7 @@ test:
+           - sabre
+         backends_disabled:
+           liteinst: The preload runtime cannot survive the hexdump script's post-start exec
+-        ci_disabled_reason: This enabled verify cell is not selected by ordinary validation; add it to ci/expected-e2e-plan.json only after repeated canonical verification qualifies every enabled backend.
++        ci_disabled_reason: 'KVM canonical verification passed 3/3 at ba999246e1653849646cfa705745afc99bb6a0d6. This KVM evidence does not alter the existing manual status of the enabled ptrace, DBT, and SaBRe cells.'
+       replay:
+         ci: false
+         backends_enabled: []

@@ -19,6 +19,13 @@ SUBMODULE_GIT = $(SUBMODULE_PROXY) git
 # scripts/list-shell-scripts.sh owns the selection rule and the exclusions, each of
 # which is named and justified there rather than being an unexplained absence.
 SHELLCHECK_TARGETS = $$(scripts/list-shell-scripts.sh)
+#
+# Same rule, same reason, for the other two languages. `scripts/*.rs` checked 19 of
+# the 36 Rust sources this repository owns and `scripts/*.py` checked 41 of its 361
+# Python files -- including none of ci-hub/, the machinery that decides whether a
+# change may land, and none of the Python tools that carry no .py extension.
+RUSTFMT_TARGETS    = $$(scripts/list-rust-sources.sh)
+PYTHON_TARGETS     = $$(scripts/list-python-files.sh)
 
 .PHONY: build build-full build-hermit check-agent-utils-pin check-claude-md-size check-codex-setup check-compat-envelope-tests check-deps check-harness-help check-portability check-primary-freshness check-rust-error-string-proxies clean \
 	restore-primary-freshness \
@@ -285,9 +292,9 @@ lint: ## Lint parent-repository scripts, tests, paths, and submodule policy
 	    failures="$$failures $$name"; \
 	  fi; \
 	}; \
-	counted rustfmt      files 'ls scripts/*.rs 2>/dev/null | wc -l' 'rustfmt --edition 2021 --check scripts/*.rs'; \
+	counted rustfmt      files 'scripts/list-rust-sources.sh | wc -l' 'rustfmt --edition 2021 --check $(RUSTFMT_TARGETS)'; \
 	counted shellcheck   files 'scripts/list-shell-scripts.sh | wc -l' 'shellcheck --severity=warning $(SHELLCHECK_TARGETS)'; \
-	counted py-compile   files 'ls scripts/*.py 2>/dev/null | wc -l' 'python3 -m py_compile scripts/*.py'; \
+	counted py-compile   files 'scripts/list-python-files.sh | wc -l' 'python3 -m py_compile $(PYTHON_TARGETS)'; \
 	counted py-unittest  tests 'python3 -m unittest discover -s scripts -p "test_*.py" 2>&1 | sed -n "s/^Ran \([0-9]*\) test.*/\1/p"' 'python3 -m unittest discover -s scripts -p "test_*.py"'; \
 	gate error-proxies   '$(MAKE) --no-print-directory check-rust-error-string-proxies'; \
 	gate gitmodules      'scripts/check-parent-gitmodules.sh'; \

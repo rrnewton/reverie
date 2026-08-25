@@ -1,0 +1,28 @@
+WARNING: /usr/bin/qemu-system-x86_64 looks like a hardware emulator (VMM). Hermit's host-time virtualization exposes mutually inconsistent clock sources (a synthetic RDTSC versus a virtualized clock_gettime) to the emulated guest, which can corrupt its clock calibration (for example "Unable to calibrate against PIT", TSC marked unstable, or "No current clocksource") and stall boot. If the nested guest misbehaves, either disable Hermit's virtual clock with --no-virtualize-time --no-virtualize-metadata, or make the emulator use a single instruction-derived clock (for QEMU: -icount shift=0,sleep=off). See docs/QEMU_BOOT.md.
+HERMIT_SKID_OVERSHOOT rcb_actual=14130036 rcb_target=14129581 skid_margin=1000 overshoot=455
+
+thread 'main' (1) panicked at /home/newton/.cargo/git/checkouts/reverie-2fc770f7a9c80803/c261050/reverie-ptrace/src/timer.rs:982:9:
+Clock perf counter exceeds target value at start of attempted single-step: 14130036 > 14129581. Consider increasing skid margin for this CPU.
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+thread 'main' (1) panicked at /rustc/26ae60a9eeb20b4935be49d7a931a650fa1d2923/library/core/src/panicking.rs:225:5:
+panic in a function that cannot unwind
+stack backtrace:
+   0:     0x5589fa573a41 - <<std[74eb2aff46e51e81]::sys::backtrace::BacktraceLock>::print::DisplayBacktrace as core[7aff35c028b048a4]::fmt::Display>::fmt
+   1:     0x5589fa58e67a - core[7aff35c028b048a4]::fmt::write
+   2:     0x5589fa57b13c - <std[74eb2aff46e51e81]::sys::stdio::unix::Stderr as core[7aff35c028b048a4]::io::write::Write>::write_fmt
+   3:     0x5589fa549706 - std[74eb2aff46e51e81]::panicking::default_hook::{closure#0}
+   4:     0x5589fa568881 - std[74eb2aff46e51e81]::panicking::default_hook
+   5:     0x5589fa568bab - std[74eb2aff46e51e81]::panicking::panic_with_hook
+   6:     0x5589fa5497e4 - std[74eb2aff46e51e81]::panicking::panic_handler::{closure#0}
+   7:     0x5589fa540f39 - std[74eb2aff46e51e81]::sys::backtrace::__rust_end_short_backtrace::<std[74eb2aff46e51e81]::panicking::panic_handler::{closure#0}, !>
+   8:     0x5589fa54a78d - __rustc[49844a0cf2bb6b0d]::rust_begin_unwind
+   9:     0x5589fa58ed1d - core[7aff35c028b048a4]::panicking::panic_nounwind_fmt
+  10:     0x5589fa58ec9b - core[7aff35c028b048a4]::panicking::panic_nounwind
+  11:     0x5589fa58ee27 - core[7aff35c028b048a4]::panicking::panic_cannot_unwind
+  12:     0x5589fa3a0116 - reverie_process[15baadc2ad0e7c60]::clone::clone_with_stack::callback
+  13:     0x7ff1f9f0fac4 - __clone
+  14:                0x0 - <unknown>
+thread caused non-unwinding panic. aborting.
+Error: Sandbox container exited unexpectedly
+     > Process exited with code: Signaled(SIGSEGV, true)

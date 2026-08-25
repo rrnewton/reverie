@@ -1,0 +1,55 @@
+actuator=hermit extra='--no-virtualize-time --no-virtualize-metadata --max-timeslice 2000000 --sched-heuristic StickyRandom --sched-sticky-random-param 0.9 --sched-seed 1' k=1000000
+  NSPID host_tid=2534640 NSpid:	2534640	3
+  NSPID host_tid=2536075 NSpid:	2536075	5
+  NSPID host_tid=2536520 NSpid:	2536520	7
+  NSPID host_tid=2536522 NSpid:	2536522	9
+  NSPID host_tid=2537026 NSpid:	2537026	11
+  NSPID host_tid=2537042 NSpid:	2537042	13
+  NSPID host_tid=2538439 NSpid:	2538439	15
+tag=f9a hermit_pid=2534627 qemu_hostpid=2534640 vcpu0_tid=2537026 vcpu1_tid=2537042 (qmp said [11, 13])
+WINDOW_UTC start=2026-08-20T12:50:05.845685+00:00 end=2026-08-20T12:51:10.299432+00:00
+ADV-RUN wall=257.68s
+[   42.912345] watchdog: BUG: soft lockup - CPU#0 stuck for 21s! [swapper/0:0]
+[   43.026176] CPU#0 Utilization every 4s during lockup:
+[   48.548940] smp: csd: Detected non-responsive CSD lock (#1) on CPU#1, waiting 5000003070 ns for CPU#00 do_sync_core+0x0/0x40(0x0).
+[   49.445637] smp: 	csd: CSD lock (#1) unresponsive.
+[   56.055105]  ? softlockup_count_show+0x30/0x30
+[   59.205870] smp: csd: Re-sending CSD lock (#1) IPI from CPU#01 to CPU#00
+[   78.406554] smp: csd: CSD lock (#1) got unstuck on CPU#01, CPU#00 released the lock.
+[  117.126668] smp: csd: Detected non-responsive CSD lock (#2) on CPU#0, waiting 5011161036 ns for CPU#01 do_sync_core+0x0/0x40(0x0).
+[  117.189328] smp: 	csd: CSD lock (#2) unresponsive.
+[  117.516661] rcu: INFO: rcu_sched detected stalls on CPUs/tasks:
+[  126.626103] smp: csd: Re-sending CSD lock (#2) IPI from CPU#00 to CPU#01
+[  126.953541] smp: csd: CSD lock (#2) got unstuck on CPU#00, CPU#01 released the lock.
+[  133.062569] smp: csd: Detected non-responsive CSD lock (#3) on CPU#0, waiting 5094337464 ns for CPU#01 do_sync_core+0x0/0x40(0x0).
+[  133.098162] smp: 	csd: CSD lock (#3) unresponsive.
+[  143.455451] smp: csd: Re-sending CSD lock (#3) IPI from CPU#00 to CPU#01
+[  143.642752] smp: csd: CSD lock (#3) got unstuck on CPU#00, CPU#01 released the lock.
+[  196.772204] smp: csd: Detected non-responsive CSD lock (#4) on CPU#0, waiting 5003884362 ns for CPU#01 do_sync_core+0x0/0x40(0x0).
+[  196.835819] smp: 	csd: CSD lock (#4) unresponsive.
+[  201.730443] smp: csd: Re-sending CSD lock (#4) IPI from CPU#00 to CPU#01
+[  202.969797] smp: csd: CSD lock (#4) got unstuck on CPU#00, CPU#01 released the lock.
+[  208.686668] smp: csd: Detected non-responsive CSD lock (#5) on CPU#0, waiting 5010965834 ns for CPU#01 do_sync_core+0x0/0x40(0x0).
+[  208.714682] smp: 	csd: CSD lock (#5) unresponsive.
+[  212.131027] rcu: INFO: rcu_sched detected stalls on CPUs/tasks:
+[  218.766569] smp: csd: Re-sending CSD lock (#5) IPI from CPU#00 to CPU#01
+[  218.981930] smp: csd: CSD lock (#5) got unstuck on CPU#00, CPU#01 released the lock.
+ADVANCE-START ncpu=2 k=1000000
+[  229.385800] smp: csd: Detected non-responsive CSD lock (#6) on CPU#0, waiting 5017662969 ns for CPU#01 do_sync_core+0x0/0x40(0x0).
+[  229.397739] smp: 	csd: CSD lock (#6) unresponsive.
+[  232.738092] smp: csd: Re-sending CSD lock (#6) IPI from CPU#00 to CPU#01
+[  233.075998] smp: csd: CSD lock (#6) got unstuck on CPU#00, CPU#01 released the lock.
+[  252.257994] smp: csd: Detected non-responsive CSD lock (#7) on CPU#1, waiting 5010445623 ns for CPU#00 do_sync_core+0x0/0x40(0x0).
+[  252.287837] smp: 	csd: CSD lock (#7) unresponsive.
+[  255.706980] smp: csd: Re-sending CSD lock (#7) IPI from CPU#01 to CPU#00
+[  256.487876] smp: csd: CSD lock (#7) got unstuck on CPU#01, CPU#00 released the lock.
+[  262.287042] smp: csd: Detected non-responsive CSD lock (#8) on CPU#1, waiting 5035359736 ns for CPU#00 do_sync_core+0x0/0x40(0x0).
+[  262.326223] smp: 	csd: CSD lock (#8) unresponsive.
+[  262.331012] smp: csd: Re-sending CSD lock (#8) IPI from CPU#01 to CPU#00
+[  266.968618] rcu: INFO: rcu_sched detected stalls on CPUs/tasks:
+[  273.392021] smp: csd: Continued non-responsive CSD lock (#8) on CPU#1, waiting 16151179002 ns for CPU#00 do_sync_core+0x0/0x40(0x0).
+[  273.454493] smp: 	csd: CSD lock (#8) unresponsive.
+[  276.731800] smp: csd: Re-sending CSD lock (#8) IPI from CPU#01 to CPU#00
+[  276.738773] smp: csd: CSD lock (#8) got unstuck on CPU#01, CPU#00 released the lock.
+ADVANCE R0 me=1000000 other=0 other_started=0 oncpu=0
+ADVANCE-FIRST-DONE

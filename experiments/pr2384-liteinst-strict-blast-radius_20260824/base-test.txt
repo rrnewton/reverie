@@ -1,0 +1,210 @@
+   Compiling memchr v2.8.3
+   Compiling pin-project-lite v0.2.17
+   Compiling smallvec v1.15.2
+   Compiling scopeguard v1.2.0
+   Compiling lazy_static v1.5.0
+   Compiling futures-sink v0.3.33
+   Compiling futures-core v0.3.33
+   Compiling linux-raw-sys v0.12.1
+   Compiling iana-time-zone v0.1.65
+   Compiling adler2 v2.0.1
+   Compiling simd-adler32 v0.3.10
+   Compiling futures-task v0.3.33
+   Compiling futures v0.1.31
+   Compiling slab v0.4.12
+   Compiling futures-io v0.3.33
+   Compiling rand_core v0.10.1
+   Compiling regex-syntax v0.8.11
+   Compiling bitflags v1.3.2
+   Compiling unty v0.0.4
+   Compiling once_cell v1.21.4
+   Compiling twox-hash v2.1.3
+   Compiling static_assertions v1.1.0
+   Compiling typed-arena v2.0.2
+   Compiling foldhash v0.1.5
+   Compiling hex v0.4.3
+   Compiling log v0.4.33
+   Compiling rustc-demangle v0.1.28
+   Compiling fallible-iterator v0.3.0
+   Compiling gimli v0.33.0
+   Compiling byteorder v1.5.0
+   Compiling never-say-never v6.6.666
+   Compiling cpufeatures v0.3.0
+   Compiling utf8parse v0.2.2
+   Compiling anstyle v1.0.14
+   Compiling anstyle-query v1.1.5
+   Compiling is_terminal_polyfill v1.70.2
+   Compiling colorchoice v1.0.5
+   Compiling unicode-width v0.2.2
+   Compiling strsim v0.11.1
+   Compiling powerfmt v0.2.0
+   Compiling num-conv v0.2.2
+   Compiling unicase v2.9.0
+   Compiling fastrand v2.5.0
+   Compiling tap v1.0.1
+   Compiling time-core v0.1.9
+   Compiling num_threads v0.1.7
+   Compiling deranged v0.5.8
+   Compiling clap_lex v1.1.0
+   Compiling foreign-types-shared v0.3.1
+   Compiling plain v0.2.3
+   Compiling funty v2.0.0
+   Compiling nu-ansi-term v0.50.3
+   Compiling diff v0.1.13
+   Compiling bytesize v2.4.2
+   Compiling shell-words v1.1.1
+   Compiling yansi v1.0.1
+   Compiling arrayvec v0.5.2
+   Compiling option-ext v0.2.0
+   Compiling bytemuck v1.25.2
+   Compiling hermit v0.2.0 (/home/newton/work/dev-hermit/worktrees/005/depfix/hermit-cli)
+   Compiling hermit-resources v0.2.0 (/home/newton/work/dev-hermit/worktrees/005/depfix/hermit-resources)
+   Compiling symlink v0.1.0
+   Compiling sha1_smol v1.0.1
+   Compiling lock_api v0.4.14
+   Compiling futures-channel v0.3.33
+   Compiling miniz_oxide v0.8.9
+   Compiling ruzstd v0.8.3
+   Compiling twox-hash v1.6.3
+   Compiling colored v2.2.0
+   Compiling indexmap v2.14.0
+   Compiling raw-cpuid v10.7.0
+   Compiling chacha20 v0.10.1
+   Compiling anstyle-parse v1.0.0
+   Compiling thread_local v1.1.10
+   Compiling sharded-slab v0.1.7
+   Compiling iced-x86 v1.21.0
+   Compiling libc v0.2.189
+   Compiling serde_core v1.0.229
+   Compiling libm v0.2.16
+   Compiling crc32fast v1.5.0
+   Compiling tracing-core v0.1.36
+   Compiling hashbrown v0.15.5
+   Compiling anyhow v1.0.104
+   Compiling cpp_demangle v0.5.1
+   Compiling radium v0.7.0
+   Compiling wyz v0.5.1
+   Compiling crossbeam-utils v0.8.22
+   Compiling memoffset v0.9.1
+   Compiling thiserror v2.0.19
+   Compiling derive_more v1.0.0
+   Compiling scroll v0.13.0
+   Compiling foreign-types v0.5.0
+   Compiling reverie-dbt v0.2.0 (https://github.com/rrnewton/reverie.git?rev=bfbe3b14d5d4095c8d23bdb0c4ea278beca7b9c7#bfbe3b14)
+   Compiling anstream v1.0.0
+   Compiling atomic v0.6.1
+   Compiling pretty v0.12.5
+   Compiling pretty_assertions v1.4.1
+   Compiling ruzstd v0.7.3
+   Compiling aho-corasick v1.1.4
+   Compiling goblin v0.10.7
+   Compiling flate2 v1.1.9
+   Compiling tracing v0.1.44
+   Compiling tracing-log v0.2.0
+   Compiling crossbeam-channel v0.5.16
+   Compiling object v0.39.1
+   Compiling object v0.36.7
+   Compiling num-traits v0.2.19
+   Compiling parking_lot_core v0.9.12
+   Compiling errno v0.3.14
+   Compiling socket2 v0.6.5
+   Compiling mio v1.2.2
+   Compiling futures-util v0.3.33
+   Compiling memmap2 v0.9.11
+   Compiling getrandom v0.4.3
+   Compiling time v0.3.54
+   Compiling vmm-sys-util v0.15.0
+   Compiling unwind-sys v0.1.4
+   Compiling perf-event-open-sys v5.0.0
+   Compiling close-err v1.0.2
+   Compiling dirs-sys v0.5.0
+   Compiling num_cpus v1.17.0
+   Compiling unwind v0.4.2
+   Compiling signal-hook-registry v1.4.8
+   Compiling rand v0.10.2
+   Compiling regex-automata v0.4.16
+   Compiling dirs v6.0.0
+   Compiling parking_lot v0.12.5
+   Compiling kvm-bindings v0.14.1
+   Compiling rand_distr v0.6.0
+   Compiling serde v1.0.229
+   Compiling bitflags v2.13.1
+   Compiling serde_json v1.0.151
+   Compiling uuid v1.24.0
+   Compiling rustix v1.1.4
+   Compiling nix v0.30.1
+   Compiling nix v0.31.3
+   Compiling kvm-ioctls v0.25.0
+   Compiling syscalls v0.6.18
+   Compiling bytes v1.12.1
+   Compiling chrono v0.4.45
+   Compiling bincode v2.0.1
+   Compiling linked-hash-map v0.5.6
+   Compiling tracing-serde v0.2.0
+   Compiling bitvec v1.1.1
+   Compiling rand_pcg v0.10.2
+   Compiling reverie-memory v0.2.0 (https://github.com/rrnewton/reverie.git?rev=bfbe3b14d5d4095c8d23bdb0c4ea278beca7b9c7#bfbe3b14)
+   Compiling tokio v1.53.1
+   Compiling procfs-core v0.18.0
+   Compiling addr2line v0.26.1
+   Compiling futures-executor v0.3.33
+   Compiling futures v0.3.33
+   Compiling regex v1.13.1
+   Compiling matchers v0.2.0
+   Compiling tracing-subscriber v0.3.23
+   Compiling env_filter v2.0.0
+   Compiling env_logger v0.11.11
+   Compiling quickcheck v1.1.0
+   Compiling fbinit v0.2.0 (https://github.com/facebookexperimental/rust-shed.git?branch=main#84a82026)
+   Compiling terminal_size v0.4.4
+   Compiling tempfile v3.27.0
+   Compiling clap_builder v4.6.2
+   Compiling tracing-appender v0.2.5
+   Compiling procfs v0.18.0
+   Compiling reverie-syscalls v0.2.0 (https://github.com/rrnewton/reverie.git?rev=bfbe3b14d5d4095c8d23bdb0c4ea278beca7b9c7#bfbe3b14)
+   Compiling reverie-process v0.2.0 (https://github.com/rrnewton/reverie.git?rev=bfbe3b14d5d4095c8d23bdb0c4ea278beca7b9c7#bfbe3b14)
+   Compiling tokio-util v0.7.19
+   Compiling clap v4.6.4
+   Compiling tokio-stream v0.1.19
+   Compiling safeptrace v0.2.0 (https://github.com/rrnewton/reverie.git?rev=bfbe3b14d5d4095c8d23bdb0c4ea278beca7b9c7#bfbe3b14)
+   Compiling reverie-core v0.2.0 (https://github.com/rrnewton/reverie.git?rev=bfbe3b14d5d4095c8d23bdb0c4ea278beca7b9c7#bfbe3b14)
+   Compiling detcore-model v0.2.0 (/home/newton/work/dev-hermit/worktrees/005/depfix/detcore-model)
+   Compiling reverie-rpc-transport v0.2.0 (https://github.com/rrnewton/reverie.git?rev=bfbe3b14d5d4095c8d23bdb0c4ea278beca7b9c7#bfbe3b14)
+   Compiling reverie-kvm v0.2.0 (https://github.com/rrnewton/reverie.git?rev=bfbe3b14d5d4095c8d23bdb0c4ea278beca7b9c7#bfbe3b14)
+   Compiling reverie-preload v0.2.0 (https://github.com/rrnewton/reverie.git?rev=bfbe3b14d5d4095c8d23bdb0c4ea278beca7b9c7#bfbe3b14)
+   Compiling hermit-detcore v0.2.0 (/home/newton/work/dev-hermit/worktrees/005/depfix/detcore)
+   Compiling liteinst2 v0.1.0 (https://github.com/rrnewton/liteinst2?rev=95ee5e6917fa33191eb41c3f1606ea8b03c1b78c#95ee5e69)
+   Compiling reverie-ptrace v0.2.0 (https://github.com/rrnewton/reverie.git?rev=bfbe3b14d5d4095c8d23bdb0c4ea278beca7b9c7#bfbe3b14)
+   Compiling reverie-liteinst v0.2.0 (https://github.com/rrnewton/reverie.git?rev=bfbe3b14d5d4095c8d23bdb0c4ea278beca7b9c7#bfbe3b14)
+   Compiling detcore-dbt v0.2.0 (/home/newton/work/dev-hermit/worktrees/005/depfix/detcore-dbt)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 36.05s
+────────────
+ Nextest run ID 3a2e271f-aede-4eb0-92d5-155c9cc91dfd with nextest profile: default
+    Starting 23 tests across 1 binary
+        PASS [   1.162s] hermit::liteinst_advanced liteinst_abnormal_exit_after_registration_does_not_hang
+        PASS [   1.512s] hermit::liteinst_advanced liteinst_detcore_strict_verify_micro_suite
+        PASS [   5.079s] hermit::liteinst_advanced liteinst_fork_fails_closed_without_hanging
+        PASS [   0.781s] hermit::liteinst_advanced liteinst_preload_is_inert_without_host_runtime_selector
+        PASS [   2.584s] hermit::liteinst_advanced liteinst_strict_verify_encoding_and_digest_utilities
+        PASS [   2.199s] hermit::liteinst_advanced liteinst_strict_verify_file_and_text_utilities
+        PASS [   1.876s] hermit::liteinst_advanced liteinst_strict_verify_formatting_and_sequence_utilities
+        PASS [   1.382s] hermit::liteinst_advanced liteinst_strict_verify_heap_growth_avoids_trampoline_mappings
+        PASS [   1.618s] hermit::liteinst_advanced liteinst_strict_verify_identity_utilities
+        PASS [   2.212s] hermit::liteinst_advanced liteinst_strict_verify_path_and_language_utilities
+        PASS [   2.108s] hermit::liteinst_advanced liteinst_strict_verify_python_entropy
+        PASS [   2.694s] hermit::liteinst_advanced liteinst_strict_verify_python_random_example
+        PASS [   1.865s] hermit::liteinst_advanced liteinst_strict_verify_round2_arithmetic_and_predicate_utilities
+        PASS [   2.248s] hermit::liteinst_advanced liteinst_strict_verify_round2_encoding_and_comparison_utilities
+        PASS [   2.070s] hermit::liteinst_advanced liteinst_strict_verify_round2_representation_and_path_utilities
+        PASS [   1.740s] hermit::liteinst_advanced liteinst_strict_verify_round3_encoding_and_compression_utilities
+        PASS [   2.181s] hermit::liteinst_advanced liteinst_strict_verify_round3_portable_system_utilities
+        PASS [   1.503s] hermit::liteinst_advanced liteinst_strict_verify_round3_stdin_filter_utilities
+        PASS [   1.825s] hermit::liteinst_advanced liteinst_strict_verify_semantic_file_and_sqlite_utilities
+        PASS [   2.130s] hermit::liteinst_advanced liteinst_strict_verify_semantic_text_utilities
+        PASS [   1.228s] hermit::liteinst_advanced liteinst_strict_verify_shell_and_entropy_consumer
+        PASS [   1.842s] hermit::liteinst_advanced liteinst_strict_verify_virtual_identity_and_time
+        PASS [  13.491s] hermit::liteinst_advanced liteinst_thread_clone_fails_closed_without_sigsys
+────────────
+     Summary [  57.336s] 23 tests run: 23 passed, 0 skipped
+running 23 tests
+test result: ok. 23 passed; 0 failed; 0 ignored; 0 filtered out

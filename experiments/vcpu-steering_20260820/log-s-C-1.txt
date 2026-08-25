@@ -1,0 +1,13 @@
+t=+0.12s tag=s-C-1 arm=C qpid=1974218 vcpu0_tid=1974227 vcpu1_tid=1974229 hostcpu=200 k=3000000
+bias: both vcpu threads on host cpu 200
+bias: tid 1974229 -> SCHED_IDLE
+  applied tid=1974227 aff=200 sched=pid 1974227's current scheduling policy: SCHED_OTHER pid 1974227's current scheduling priority: 0 
+  applied tid=1974229 aff=200 sched=pid 1974229's current scheduling policy: SCHED_IDLE pid 1974229's current scheduling priority: 0 
+t=+0.14s bias applied
+t=+29.43s workload finished
+qemu-system-x86_64: terminating on signal 15 from pid 1974211 (bash)
+--- result ---
+VS-GUEST-READY cpus=2
+ADVANCE-START ncpu=2 k=3000000
+ADVANCE R0 me=3000000 other=0 other_started=0 oncpu=0
+ADVANCE-FIRST-DONE

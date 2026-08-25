@@ -1,0 +1,6 @@
+[reverie-ptrace] REVERIE_SKID_MARGIN_OVERRIDE=10000 active: skid margin forced to 10000 RCBs (fault injection; not for production runs)
+HERMIT_SKID_OVERSHOOT rcb_actual=718450504 rcb_target=718330900 skid_margin=10000 overshoot=119604
+
+thread 'main' (1) panicked at /home/newton/.cargo/git/checkouts/reverie-2fc770f7a9c80803/c261050/reverie-ptrace/src/timer.rs:982:9:
+Clock perf counter exceeds target value at start of attempted single-step: 718450504 > 718330900. Consider increasing skid margin for this CPU.
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace

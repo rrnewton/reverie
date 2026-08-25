@@ -1,0 +1,12 @@
+actuator=hermit extra='' k=500000
+  NSPID host_tid=3658407 NSpid:	3658407	3
+  NSPID host_tid=3658415 NSpid:	3658415	5
+  NSPID host_tid=3658425 NSpid:	3658425	7
+  NSPID host_tid=3658427 NSpid:	3658427	9
+  NSPID host_tid=3658429 NSpid:	3658429	11
+  NSPID host_tid=3658431 NSpid:	3658431	13
+tag=o1-2 hermit_pid=3658399 qemu_hostpid=3658407 vcpu0_tid=3658429 vcpu1_tid=3658431 (qmp said [11, 13])
+ORIENT loaded_guest_cpu=1 wall=53.15s v0_ticks=1971 v1_ticks=306
+ADVANCE-START ncpu=2 k=500000
+ADVANCE R1 me=500000 other=0 other_started=0 oncpu=1
+ADVANCE-ONLY-DONE cpu=1 count=500000

@@ -254,13 +254,27 @@ fn main() {
                 println!("{USAGE}");
                 exit(0);
             }
-            "--csv" => csv = Some(PathBuf::from(it.next().unwrap_or_else(|| die("--csv needs a path")))),
+            "--csv" => {
+                csv = Some(PathBuf::from(
+                    it.next().unwrap_or_else(|| die("--csv needs a path")),
+                ))
+            }
             "--run-id" => run_id = Some(it.next().unwrap_or_else(|| die("--run-id needs a value"))),
             "--latest" => latest = true,
             "--all" => all = true,
-            "--denominator" => denom_mode = it.next().unwrap_or_else(|| die("--denominator needs a mode")),
-            "--backends" => backends_arg = Some(it.next().unwrap_or_else(|| die("--backends needs a list"))),
-            "--observable" => observable = it.next().unwrap_or_else(|| die("--observable needs a value")),
+            "--denominator" => {
+                denom_mode = it
+                    .next()
+                    .unwrap_or_else(|| die("--denominator needs a mode"))
+            }
+            "--backends" => {
+                backends_arg = Some(it.next().unwrap_or_else(|| die("--backends needs a list")))
+            }
+            "--observable" => {
+                observable = it
+                    .next()
+                    .unwrap_or_else(|| die("--observable needs a value"))
+            }
             "--json" => fmt = "json",
             "--tsv" => fmt = "tsv",
             other => die(&format!("unknown argument {other}")),
@@ -276,7 +290,9 @@ fn main() {
     // run-by-run. The current view is a cache, never its own authority.
     let checker = script_dir().join("check-scorecard-provenance.py");
     let history = script_dir().join("history/scorecard-observations.csv");
-    let is_current_view = csv_path.file_name().is_some_and(|name| name == "scorecard.csv")
+    let is_current_view = csv_path
+        .file_name()
+        .is_some_and(|name| name == "scorecard.csv")
         && history.exists();
     let provenance_input = if is_current_view {
         let projection = Command::new("python3")
@@ -309,7 +325,10 @@ fn main() {
         check.arg("--run-id").arg(selected_run);
     }
     let status = check.status().unwrap_or_else(|error| {
-        die(&format!("cannot execute provenance verifier {}: {error}", checker.display()))
+        die(&format!(
+            "cannot execute provenance verifier {}: {error}",
+            checker.display()
+        ))
     });
     if !status.success() {
         die("parity provenance verifier refused this scorecard/scope");
@@ -415,7 +434,12 @@ fn main() {
         let f = split_csv_line(line);
         let get = |i: usize| f.get(i).cloned().unwrap_or_default();
         if f.len() < header.len() {
-            eprintln!("warn: row {} has {} fields (< {}); skipping", n + 2, f.len(), header.len());
+            eprintln!(
+                "warn: row {} has {} fields (< {}); skipping",
+                n + 2,
+                f.len(),
+                header.len()
+            );
             continue;
         }
         let comparison_tier = get(i_comparison_tier).trim().to_string();
@@ -453,7 +477,9 @@ fn main() {
             // evidenced -- an older row cannot retroactively acquire evidence it
             // never recorded.
             determinism_evidenced: i_comparator.map(&get).is_some_and(|v| !v.trim().is_empty())
-                || i_compared.map(&get).is_some_and(|v| nonempty_comparison(&v)),
+                || i_compared
+                    .map(&get)
+                    .is_some_and(|v| nonempty_comparison(&v)),
         });
     }
     if cells.is_empty() {
@@ -500,7 +526,9 @@ fn main() {
     let mut qualified_passes = 0usize;
     let mut highest_grade_passes = 0usize;
     for cell in &cells {
-        *tier_distribution.entry(cell.comparison_tier.clone()).or_default() += 1;
+        *tier_distribution
+            .entry(cell.comparison_tier.clone())
+            .or_default() += 1;
         if cell.outcome == "pass" {
             raw_passes += 1;
             if cell_is_green(cell) {
@@ -520,8 +548,7 @@ fn main() {
     );
     eprintln!(
         "highest-grade green={}/{} qualified green in selected scope",
-        highest_grade_passes,
-        qualified_passes,
+        highest_grade_passes, qualified_passes,
     );
 
     // Restrict the determinism denominator to the requested mode.
@@ -534,7 +561,10 @@ fn main() {
 
     let default_order = ["dbi", "kvm", "sabre", "liteinst"];
     let backend_cols: Vec<String> = if let Some(list) = backends_arg {
-        list.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect()
+        list.split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect()
     } else {
         default_order
             .iter()
@@ -548,7 +578,10 @@ fn main() {
     let mut ptrace_pass: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     for c in &denom_cells {
         if c.backend == "ptrace" && cell_is_green(c) {
-            ptrace_pass.entry(c.bucket.clone()).or_default().insert(c.test_id.clone());
+            ptrace_pass
+                .entry(c.bucket.clone())
+                .or_default()
+                .insert(c.test_id.clone());
         }
     }
 
@@ -595,10 +628,16 @@ fn main() {
         // Parity is true only when the collector recorded a bitwise match.
         let par = pass && c.observable_parity.unwrap_or(false);
         let par_measured = pass && c.observable_parity.is_some();
-        by_backend
-            .entry(c.backend.clone())
-            .or_default()
-            .insert((c.bucket.clone(), c.test_id.clone()), BCell { det, det_measured, par, par_measured, ran });
+        by_backend.entry(c.backend.clone()).or_default().insert(
+            (c.bucket.clone(), c.test_id.clone()),
+            BCell {
+                det,
+                det_measured,
+                par,
+                par_measured,
+                ran,
+            },
+        );
     }
 
     // Build per-bucket rows.
@@ -612,7 +651,10 @@ fn main() {
     let mut total = Row::default();
     for bucket in &buckets {
         let denom = ptrace_pass.get(bucket).cloned().unwrap_or_default();
-        let mut row = Row { ptrace: denom.len(), back: BTreeMap::new() };
+        let mut row = Row {
+            ptrace: denom.len(),
+            back: BTreeMap::new(),
+        };
         for b in &backend_cols {
             let mut par = 0usize;
             let mut det = 0usize;
@@ -640,7 +682,8 @@ fn main() {
                     }
                 }
             }
-            row.back.insert(b.clone(), (par, det, par_meas, ran, det_meas));
+            row.back
+                .insert(b.clone(), (par, det, par_meas, ran, det_meas));
         }
         total.ptrace += row.ptrace;
         for b in &backend_cols {
@@ -683,9 +726,7 @@ fn main() {
         // Exactly the `--denominator` values that would produce a non-empty denominator.
         let usable: BTreeSet<&str> = cells
             .iter()
-            .filter(|c| {
-                c.backend == "ptrace" && cell_is_green(c)
-            })
+            .filter(|c| c.backend == "ptrace" && cell_is_green(c))
             .map(|c| c.test_mode.as_str())
             .collect();
         let run_label = scope_run
@@ -767,7 +808,10 @@ fn main() {
                         json!((pct(p, row.ptrace) * 10.0).round() / 10.0),
                     );
                     metrics.insert("determinism_count".into(), json!(d));
-                    metrics.insert("determinism_pct".into(), json!((pct(d, row.ptrace) * 10.0).round() / 10.0));
+                    metrics.insert(
+                        "determinism_pct".into(),
+                        json!((pct(d, row.ptrace) * 10.0).round() / 10.0),
+                    );
                     metrics.insert("ran_count".into(), json!(r));
                     backs.insert(b.clone(), Value::Object(metrics));
                 }
@@ -841,7 +885,13 @@ fn main() {
                 denominator_meaning,
             );
             println!("Input CSV: {}", csv_path.display());
-            println!("Comparison-tier distribution: {:?} ({} rows); qualified green={}/{} raw passes.", tier_distribution, cells.len(), qualified_passes, raw_passes);
+            println!(
+                "Comparison-tier distribution: {:?} ({} rows); qualified green={}/{} raw passes.",
+                tier_distribution,
+                cells.len(),
+                qualified_passes,
+                raw_passes
+            );
             println!("Highest-grade green={}/{} qualified green in selected scope (requires base green plus --detlog-stack and --detlog-heap modes).", highest_grade_passes, qualified_passes);
             println!("Qualifying tiers: `{FULL_COMPARISON_TIER}` or `{SPOT_CHECK_COMPARISON_TIER}`. Explicit unqualified tiers remain non-green history.");
             println!("Each backend cell is `{parity_label}%, determinism%` of the ptrace count. The two measurements are independent.");
@@ -879,7 +929,12 @@ fn main() {
                         } else {
                             ""
                         };
-                        format!("{:.0}%{}, {:.0}%", pct(p, row.ptrace), mark, pct(d, row.ptrace))
+                        format!(
+                            "{:.0}%{}, {:.0}%",
+                            pct(p, row.ptrace),
+                            mark,
+                            pct(d, row.ptrace)
+                        )
                     };
                     line.push_str(&format!("  {:>16}", cell));
                 }

@@ -1,0 +1,3 @@
+noicount-smp1-compat rc=0 wall=19.3s console_bytes=26627 start_marker=1 pass_marker=1
+noicount-smp2-compat rc=0 wall=23.4s console_bytes=62297 start_marker=1 pass_marker=1
+icount-smp1-compat rc=0 wall=31.8s console_bytes=25531 start_marker=1 pass_marker=1
