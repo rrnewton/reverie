@@ -552,7 +552,9 @@ pub fn shared_base_boundary_outcome(
         return BoundaryOutcome::Indeterminate("merge-boundary authority stdin unavailable");
     };
     if serde_json::to_writer(&mut stdin, row).is_err() || stdin.flush().is_err() {
-        return BoundaryOutcome::Indeterminate("cannot send the row to the merge-boundary authority");
+        return BoundaryOutcome::Indeterminate(
+            "cannot send the row to the merge-boundary authority",
+        );
     }
     drop(stdin);
     let Ok(output) = child.wait_with_output() else {
@@ -570,9 +572,7 @@ pub fn shared_base_boundary_outcome(
             );
         }
         _ => {
-            return BoundaryOutcome::Indeterminate(
-                "merge-boundary authority exited abnormally",
-            );
+            return BoundaryOutcome::Indeterminate("merge-boundary authority exited abnormally");
         }
     }
     let Ok(report) = serde_json::from_slice::<BaseBoundaryReport>(&output.stdout) else {
