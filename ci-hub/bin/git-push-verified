@@ -74,6 +74,72 @@ def remote_sha(remote: str, dst: str) -> str | None:
     return None
 
 
+def warn_shared_checkout(src: str, before: str | None) -> None:
+    """Say, before the push, when this checkout is carrying other people's work.
+
+    ⚠️ THIS IS ADVISORY AND DOES NOT BLOCK. It is here because the shared parent
+    checkout is the tree every agent reaches for first, it is frequently dirty
+    with several agents' uncommitted work at once, and it drifts a long way
+    behind the remote. Committing from it is how another agent's half-finished
+    edit gets swept into an unrelated landing, and how a landing arrives on top
+    of a base nobody tested. That checkout has cost this project hours.
+
+    The remedy is one command and costs nothing:
+
+        git worktree add --detach /tmp/<name> origin/main
+
+    Then stage only the paths you own. A clean worktree at origin/main cannot
+    pick up a neighbour's edit, because the neighbour's edit is not in it.
+
+    Deliberately NOT a refusal. Several agents push concurrently and a hard stop
+    here would strand work mid-flight for a condition that is sometimes correct.
+    So it names the foreign paths rather than guessing intent.
+    """
+    rc, out, _ = run(["git", "status", "--porcelain"])
+    if rc != 0:
+        return
+    dirty = [line[3:].strip() for line in out.splitlines() if line.strip()]
+    if not dirty:
+        return
+
+    # Paths this push actually carries. Anything dirty and NOT in here is
+    # somebody else's work sitting in the same tree.
+    carried: set[str] = set()
+    if before:
+        rc, names, _ = run(["git", "diff", "--name-only", f"{before}..{src}"])
+        if rc == 0:
+            carried = {n.strip() for n in names.splitlines() if n.strip()}
+    foreign = [d for d in dirty if d not in carried]
+
+    print("")
+    print("git-push-verified: ⚠️  PUSHING FROM A CHECKOUT THAT IS NOT CLEAN")
+    print(f"  {len(dirty)} uncommitted path(s) present, {len(foreign)} of them NOT part of this push:")
+    for path in foreign[:8]:
+        print(f"      {path}")
+    if len(foreign) > 8:
+        print(f"      ... and {len(foreign) - 8} more")
+
+    if before:
+        # ⚠️ SAY SO WHEN THE DRIFT CANNOT BE MEASURED, rather than printing
+        # nothing. The remote commit is frequently absent from a checkout that is
+        # behind -- which is exactly the case this line exists to report -- so a
+        # bare `rev-list` failure would drop the warning precisely when it is
+        # most warranted, and silence would read as "not behind".
+        have_remote = run(["git", "cat-file", "-e", f"{before}^{{commit}}"])[0] == 0
+        if not have_remote:
+            print("  drift NOT MEASURED: the remote commit is not in this checkout "
+                  "(fetch to find out how far behind it is).")
+        else:
+            rc, behind, _ = run(["git", "rev-list", "--count", f"{src}..{before}"])
+            if rc == 0 and behind.strip().isdigit() and int(behind.strip()) > 0:
+                print(f"  and this checkout is {behind.strip()} commit(s) BEHIND the remote ref.")
+
+    print("  If this is the shared parent checkout, land from a clean worktree instead:")
+    print("      git worktree add --detach /tmp/<name> origin/main")
+    print("  then stage only the paths you own. Not blocking; naming it so it is a choice.")
+    print("")
+
+
 def main(argv: list[str]) -> int:
     if len(argv) < 2 or ":" not in argv[1]:
         print(__doc__.strip().split("USAGE")[1], file=sys.stderr)
@@ -94,6 +160,8 @@ def main(argv: list[str]) -> int:
     before = remote_sha(remote, dst)
     print(f"git-push-verified: intending {intended[:12]} -> {remote} {dst}")
     print(f"git-push-verified: remote is currently {(before or '(absent)')[:12]}")
+
+    warn_shared_checkout(src, before)
 
     # NO PIPE. The status below is the push's own.
     rc, out, err = run(["git", "push", remote, f"{src}:{dst}", *extra])
