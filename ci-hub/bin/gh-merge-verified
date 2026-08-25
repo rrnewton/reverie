@@ -141,7 +141,6 @@ from __future__ import annotations
 import atexit
 import json
 import os
-import re
 import shutil
 import time
 import subprocess
@@ -298,8 +297,10 @@ def looks_unreachable(text: str) -> bool:
     )
 
 
-CR_AT = re.compile(r"^CHANGES-REQUESTED-AT\b[^\n]*", re.M)
-CR_WITHDRAWN = re.compile(r"^CHANGES-REQUESTED-WITHDRAWN-AT\b[^\n]*", re.M)
+def _undecorate(line: str) -> str:
+    """Drop leading whitespace, blockquote markers and markdown emphasis."""
+    return line.lstrip().lstrip("#>*_-").lstrip()
+
 
 
 def blocking_changes_requests(pr: str, repo: str, head: str) -> list[str]:
@@ -327,10 +328,14 @@ def blocking_changes_requests(pr: str, repo: str, head: str) -> list[str]:
     There is deliberately no --force. An override in a landing path is what
     somebody in a hurry reaches for, and somebody in a hurry is the failure.
 
-    SHARP EDGE: the match is anchored to column 0, so quoting a marker
-    unindented -- including inside a fenced code block -- re-asserts it. Indent
-    quoted markers by one space. Erring this way is deliberate: guessing which
-    occurrences were "only quoting" is interpreting the signal, not obeying it.
+    SHARP EDGE, AND IT IS THE SAFE DIRECTION: leading whitespace, blockquote
+    markers and markdown emphasis are STRIPPED before matching, so a refusal
+    written as a heading or in bold still blocks -- and so does a quotation of
+    one. An earlier version matched only column 0 and FAILED OPEN on every
+    decorated marker; agent(hermit-003) found the same fail-open in the board
+    parser, where a heading-formatted refusal read as APPROVED. For a landing
+    guard a false negative merges over a block while a false positive costs one
+    push, so this over-blocks on purpose.
     """
     rc, out, _ = run(gh_argv(["gh", "pr", "view", pr, "--repo", repo,
                               "--json", "comments,reviews"]))
@@ -346,12 +351,17 @@ def blocking_changes_requests(pr: str, repo: str, head: str) -> list[str]:
     native = [r for r in doc.get("reviews", [])
               if (r.get("state") or "") == "CHANGES_REQUESTED"]
 
-    blocking = []
+    blocking, withdrawn = [], False
     for body in bodies:
-        for line in CR_AT.findall(body):
-            if head and head in line:
+        for line in body.splitlines():
+            if not head or head not in line:
+                continue
+            bare = _undecorate(line)
+            if bare.startswith("CHANGES-REQUESTED-WITHDRAWN-AT"):
+                withdrawn = True
+            elif bare.startswith("CHANGES-REQUESTED-AT"):
                 blocking.append(line.strip())
-    if any(head and head in w for body in bodies for w in CR_WITHDRAWN.findall(body)):
+    if withdrawn:
         blocking = []
     blocking += ["(GitHub review state CHANGES_REQUESTED)" for _ in native]
     return blocking
