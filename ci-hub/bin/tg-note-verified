@@ -71,7 +71,10 @@ fi
 # Rule 1: the value travels in a variable. Never re-quoted into a command line.
 content=$(cat "$input")
 
-out=$(tg note "$task" "$content" 2>&1); rc=$?
+# TG_NOTE_VERIFIED tells the shared shell guard that this call came through the
+# verified path. The guard refuses inline note content everywhere else, because
+# a safe call and a shell-mangled one are indistinguishable by then.
+out=$(TG_NOTE_VERIFIED=1 command tg note "$task" "$content" 2>&1); rc=$?
 [ "$rc" -eq 0 ] || die "tg note failed (rc=$rc): $out"
 
 # Rule 2: the confirmation must reflect the STORE, not the call. Read it back.

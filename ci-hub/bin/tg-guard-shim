@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+# All rights reserved.
+#
+# This source code is licensed under the BSD-style license found in the
+# LICENSE file in the root directory of this source tree.
+#
+# PATH shim for `tg`: refuse inline `tg note` content, require the verified path.
+#
+# INSTALLED AS A COPY at /home/newton/orc-bin/tg, which precedes /usr/local/bin
+# on PATH (position 6 vs 13). THIS FILE IS THE SOURCE OF TRUTH; refresh with
+#     cp ci-hub/bin/tg-guard-shim /home/newton/orc-bin/tg
+# and REMOVE THE ENFORCEMENT ENTIRELY with
+#     rm /home/newton/orc-bin/tg
+# A copy rather than a symlink on purpose: a dangling symlink in PATH would take
+# `tg` out for every agent at once, which is a worse failure than drift.
+#
+# WHY A PATH SHIM AND NOT A SHELL FUNCTION. Measured 2026-08-25: `~/.bashrc`
+# returns at line 4 on `[[ $- != *i* ]] && return`, and non-interactive bash does
+# not read it at all, so a `tg()` function there NEVER FIRES for the way agents
+# actually run commands. It looked installed and enforced nothing.
+#
+# WHY IT REFUSES THE FORM, NOT THE CONTENT. `tg note X "$var"` and
+# `tg note X "literal $(cmd)"` arrive here with IDENTICAL argv -- the shell
+# substituted before anything ran, so the damage is undetectable at this layer.
+# That is the same reason tg itself cannot refuse it. The only enforceable rule
+# is to refuse inline content at all.
+#
+# FAILS OPEN. Anything that is not `tg note` with content is exec'd untouched.
+REAL=/usr/local/bin/tg
+if [ "${1:-}" = "note" ] && [ "$#" -ge 3 ] && [ -z "${TG_NOTE_VERIFIED:-}" ]; then
+    printf '%s\n' \
+"tg: REFUSED -- inline note content is not allowed." \
+"" \
+"  The shell substitutes backticks, \$(...) and \$? BEFORE tg runs, so what you typed" \
+"  may not be what gets stored, and tg cannot tell the difference. Measured in this" \
+"  project's own record: a note written 'indistinguishable from \$?' is stored as" \
+"  'indistinguishable from 0' -- a different and wrong claim, confirmed as success." \
+"" \
+"  Use the verified path. It reads the note back out of the database and compares" \
+"  it byte-for-byte before confirming:" \
+"    /home/newton/work/dev-hermit/ci-hub/bin/tg-note-verified $2 --file NOTE.md" \
+"    /home/newton/work/dev-hermit/ci-hub/bin/tg-note-verified $2 <<'EOF'" \
+"    ...text, quoted heredoc so nothing is substituted..." \
+"    EOF" \
+"" \
+"  READING notes is unaffected: 'tg note $2' with no content still works." >&2
+    exit 2
+fi
+exec "$REAL" "$@"
