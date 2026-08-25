@@ -86,6 +86,21 @@ WITHDRAWN = "CHANGES-REQUESTED-WITHDRAWN-AT"
 _DECOR = re.compile(r"^(\s|#{1,6}\s*|>\s*|[-*+]\s+|\*{1,3}|_{1,3}|`{1,3})+")
 _SHA = re.compile(r"\b([0-9a-f]{7,40})\b")
 _LANE = re.compile(r"\b(claude|codex)\b", re.I)
+# ⚠️ A DOCUMENTATION EXAMPLE IS NOT A REFUSAL, AND THIS COST A REAL LANDING.
+# Measured 2026-08-25 on hermit#2611: a comment explaining the convention contained
+#     CHANGES-REQUESTED-AT: claude <sha>   ->  refuses, clears the lane
+# which is line-initial, names a lane, and carries no hex -- so the gate returned
+# INDETERMINATE and refused a head that had just been approved. That is precisely
+# the "blocks a pull request for EXPLAINING the rule" failure this gate's own
+# docstring warns gets it switched off, and it appeared in a comment posted AFTER
+# the corpus measurement that found zero false positives.
+#
+# The discriminator is narrow on purpose: an ANGLE-BRACKET PLACEHOLDER where the
+# sha belongs. A reviewer refusing a head writes a sha, or writes prose -- they do
+# not write `<sha>`. So `CHANGES-REQUESTED-AT: claude -- see above` still refuses
+# (no sha, no placeholder, genuinely unbindable), and only the template form is
+# treated as documentation.
+_PLACEHOLDER = re.compile(r"<[^>\n]{1,24}>")
 
 
 def undecorate(line: str) -> str:
@@ -164,6 +179,8 @@ def markers(bodies: list[str]) -> list[tuple[str, str | None]]:
                 if idx != 0 and not _LANE.search(tail[:24]):
                     continue
                 m = _SHA.search(tail)
+                if m is None and _PLACEHOLDER.search(tail):
+                    break  # a template, not a verdict
                 found.append((kind, m.group(1) if m else None))
                 break
     return found
