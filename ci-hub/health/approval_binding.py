@@ -499,6 +499,36 @@ def lane_shas(
             # establish authority again. Clearing rather than merely skipping
             # is load-bearing: otherwise APPROVED then CHANGES-REQUESTED reads
             # as approved forever.
+            #
+            # ⚠️ RETRACT-AND-REBIND IN ONE COMMENT IS AMBIGUOUS, AND SILENCE WAS
+            # THE WORST ANSWER. `continue` skips the WHOLE comment, so a comment
+            # carrying a refusal AND a fresh approval for the same lane cleared
+            # the accumulated approvals and never reached the approval below --
+            # binding nothing, with no malformed flag and no error. The author's
+            # text read exactly as they intended. Split across two comments the
+            # identical lines bind correctly, which is what made it invisible.
+            #
+            # It is NOT fixed by processing lines in order. The per-comment clear
+            # is deliberate and load-bearing in the other direction: a refusal
+            # comment that QUOTES the approval it supersedes must not bind as a
+            # positive. Line-order processing would reintroduce exactly that.
+            #
+            # Both readings are defensible, so this refuses to choose and says
+            # so. The comment is reported, which -- since a refusal-shaped
+            # malformed line fails the gate -- turns a silent loss into a loud
+            # refusal. Fail-closed, and the author is told to split the two
+            # verdicts into two comments, where the chronology is unambiguous.
+            if any(approve.match(line) for line in lines):
+                finding = (
+                    c.get("html_url") or c.get("url") or "?",
+                    "AMBIGUOUS: one comment carries both a CHANGES-REQUESTED-AT "
+                    "and an APPROVED-AT for this lane; post them as two comments "
+                    "so the order is unambiguous",
+                )
+                if finding not in malformed:
+                    malformed.append(finding)
+                if pr_number is not None and malformed_prs is not None:
+                    malformed_prs[finding] = pr_number
             found.clear()
             continue
         for line in lines:
