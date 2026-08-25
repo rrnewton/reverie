@@ -462,17 +462,69 @@ struct BaseBoundaryReport {
     base_status: String,
 }
 
+/// The three states a delegated boundary check can actually be in.
+///
+/// ⚠️ `bool` COULD ONLY EXPRESS TWO, so "I could not determine" and "I determined
+/// it does not qualify" shared the value `false`. Those are opposite facts: one
+/// is a verdict ABOUT THE RECEIPT, the other is a fault in the READER asking.
+/// The Python authority already separates them and says why — rc 1 is "this
+/// receipt does not qualify", rc 3 is "I could not judge it", and
+/// `qualifying_receipt.py:1336` records the harm of merging them: an actor with
+/// an incomplete checkout "disbelieve[s] every valid receipt in the fleet and
+/// blame[s] the evidence for its own missing submodule." The information existed
+/// and was discarded one layer up.
+///
+/// BOTH NON-ACCEPTING STATES STILL BLOCK, and that is why introducing this type
+/// is a repair rather than a policy change: no admission decision moves. It is
+/// already this subsystem's ruling that an unknown answer is not a permission —
+/// see `landing_lock.rs` and `validate_lock.rs`, which refuse an UNKNOWN state
+/// with the words "absence is not permission". What changes is only that a
+/// reader fault stops being reported as a verdict against the evidence.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BoundaryOutcome {
+    /// The authority judged the row and accepted it.
+    Accepted,
+    /// The authority judged the row and refused it. A fact about the RECEIPT.
+    Refused,
+    /// The authority could not be consulted, or could not judge. A fact about
+    /// the READER. Carries the specific failure so it cannot be reported as a
+    /// generic refusal.
+    Indeterminate(&'static str),
+}
+
+impl BoundaryOutcome {
+    /// True only for `Accepted`. Both other states block, so a caller that only
+    /// needs the gate keeps working — but it must not use this to BUILD A
+    /// MESSAGE, because it cannot tell the two blocking states apart.
+    pub fn accepted(&self) -> bool {
+        matches!(self, BoundaryOutcome::Accepted)
+    }
+
+    /// The reader-fault detail, when there is one.
+    pub fn indeterminate_reason(&self) -> Option<&'static str> {
+        match self {
+            BoundaryOutcome::Indeterminate(reason) => Some(reason),
+            _ => None,
+        }
+    }
+}
+
 /// Delegate final mutable-tip currency to the same Python semantic authority.
 /// Shell reaches this through `receipt-digest`; it never invokes or restates
 /// the verifier itself.
-pub fn shared_base_boundary_accepts(
+///
+/// Returns [`BoundaryOutcome`] so a reader fault is distinguishable from a
+/// verdict; see that type for why both still block.
+pub fn shared_base_boundary_outcome(
     row: &HistoryRow,
     current_base: &str,
     current_reverie_base: &str,
     repo_checkout: &Path,
     reverie_checkout: &Path,
-) -> bool {
+) -> BoundaryOutcome {
     let verifier = resolve_root().join("ci-hub/qualifying_receipt.py");
+    // Every arm below that cannot reach a verdict is INDETERMINATE, not refused.
+    // None of these says anything about the row; each says the reader failed.
     let mut child = match Command::new("python3")
         .arg(verifier)
         .arg("--merge-boundary")
@@ -490,27 +542,54 @@ pub fn shared_base_boundary_accepts(
         .spawn()
     {
         Ok(child) => child,
-        Err(_) => return false,
+        Err(_) => {
+            return BoundaryOutcome::Indeterminate(
+                "cannot spawn python3 for the merge-boundary authority",
+            );
+        }
     };
     let Some(mut stdin) = child.stdin.take() else {
-        return false;
+        return BoundaryOutcome::Indeterminate("merge-boundary authority stdin unavailable");
     };
     if serde_json::to_writer(&mut stdin, row).is_err() || stdin.flush().is_err() {
-        return false;
+        return BoundaryOutcome::Indeterminate("cannot send the row to the merge-boundary authority");
     }
     drop(stdin);
     let Ok(output) = child.wait_with_output() else {
-        return false;
+        return BoundaryOutcome::Indeterminate("merge-boundary authority did not complete");
     };
+    // rc 3 is the authority SAYING it could not judge (an undereferenceable
+    // producer definition, an incomplete checkout). rc 1 is a verdict. Any other
+    // nonzero is a crash, which is likewise not a verdict.
+    match output.status.code() {
+        Some(0) => {}
+        Some(1) => return BoundaryOutcome::Refused,
+        Some(3) => {
+            return BoundaryOutcome::Indeterminate(
+                "merge-boundary authority could not dereference the producer definition (rc 3)",
+            );
+        }
+        _ => {
+            return BoundaryOutcome::Indeterminate(
+                "merge-boundary authority exited abnormally",
+            );
+        }
+    }
     let Ok(report) = serde_json::from_slice::<BaseBoundaryReport>(&output.stdout) else {
-        return false;
+        return BoundaryOutcome::Indeterminate(
+            "merge-boundary authority emitted no parsable report",
+        );
     };
     let status_matches = match report.base_status.as_str() {
         "satisfied" => report.base_satisfied == Some(true),
         "grandfathered-unknown" => report.base_satisfied.is_none(),
         _ => false,
     };
-    output.status.code() == Some(0) && report.accepted && status_matches
+    if report.accepted && status_matches {
+        BoundaryOutcome::Accepted
+    } else {
+        BoundaryOutcome::Refused
+    }
 }
 
 /// Delegate cross-field evidence consistency to its ONE semantic implementation.
@@ -1044,14 +1123,15 @@ mod tests {
             row_qualifies(&schema4, &sha, &pred),
             "schema-4 with absent coverage must remain grandfathered"
         );
-        assert!(
-            shared_base_boundary_accepts(
+        assert_eq!(
+            shared_base_boundary_outcome(
                 &schema4,
                 &sha,
                 &sha,
                 Path::new("/nonexistent-hermit"),
                 Path::new("/nonexistent-reverie"),
             ),
+            BoundaryOutcome::Accepted,
             "the real Rust-to-Python merge-boundary bridge must preserve schema-4"
         );
     }

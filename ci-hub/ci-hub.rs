@@ -3932,16 +3932,34 @@ fn run_receipt_digest(args: ReceiptDigestArgs) -> Result<i32, CiHubError> {
         args.repo_checkout.as_deref(),
         args.reverie_checkout.as_deref(),
     ) {
-        if !crate::qualifying_receipt::shared_base_boundary_accepts(
+        // Both non-accepting states block, exactly as the previous `bool` did.
+        // They are reported differently because they are different facts: a
+        // REFUSAL is about this receipt, an INDETERMINATE is about our ability
+        // to read it. Blaming the evidence for a reader fault is what sends an
+        // actor with an incomplete checkout to disbelieve valid receipts.
+        match crate::qualifying_receipt::shared_base_boundary_outcome(
             &row,
             current_base,
             current_reverie_base,
             repo_checkout,
             reverie_checkout,
         ) {
-            return Err(CiHubError::ValidateStatus(
-                "receipt-digest HistoryRow failed final merge-boundary base verification".into(),
-            ));
+            crate::qualifying_receipt::BoundaryOutcome::Accepted => {}
+            crate::qualifying_receipt::BoundaryOutcome::Refused => {
+                return Err(CiHubError::ValidateStatus(
+                    "receipt-digest HistoryRow failed final merge-boundary base verification"
+                        .into(),
+                ));
+            }
+            crate::qualifying_receipt::BoundaryOutcome::Indeterminate(reason) => {
+                return Err(CiHubError::ValidateStatus(format!(
+                    "CANNOT DEREFERENCE PRODUCER DEFINITION: the merge-boundary authority could \
+                     not judge this receipt ({reason}). This is a READER FAULT, not a verdict \
+                     about the receipt: it still blocks, because absence is not permission, but \
+                     do not treat it as evidence that the receipt is bad. Repair the reader \
+                     (checkout completeness, python3 availability) and ask again."
+                )));
+            }
         }
     }
     let (canonical_row, digest) = canonical_row_json_and_sha256(&row).ok_or_else(|| {

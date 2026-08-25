@@ -118,12 +118,31 @@ class UndereferenceableProducerDefinitionTest(unittest.TestCase):
         `Some(1) => Ok(None)` feeds `disqualified`, which is the evidence
         verdict. rc 3 must not reach that bucket.
         """
+        # LOCATION UPDATED 2026-08-25, CONCERN UNCHANGED. The rc is now read in
+        # ci-hub/lib/qualifying_receipt.rs, which ci-hub.rs reaches through
+        # `mod qualifying_receipt`; the three literals this test used to pin were
+        # in neither file any more, so it was failing on a stale ADDRESS while the
+        # collapse it guards had moved. The assertions below pin the SAME concern
+        # -- rc 3 must not reach the verdict bucket -- at the site that now decides
+        # it. They are deliberately NOT re-pointed at a bool: a tri-state is what
+        # makes the distinction expressible at all.
+        lib = (ROOT / "ci-hub" / "lib" / "qualifying_receipt.rs").read_text()
         rust = (ROOT / "ci-hub" / "ci-hub.rs").read_text()
-        self.assertIn("Some(3) => Err(format!(", rust)
+
+        # rc 3 is a reader fault and must be typed as one.
+        self.assertIn("Some(3) =>", lib)
+        self.assertIn("BoundaryOutcome::Indeterminate", lib)
+
+        # The evidence verdict must still exist, so this did not simply delete
+        # the disqualification path.
+        self.assertIn("Some(1) => return BoundaryOutcome::Refused", lib)
+
+        # The two blocking states must be REPORTED differently at the consumer,
+        # or the type distinction dies one layer up -- which is exactly how the
+        # original collapse happened.
         self.assertIn("CANNOT DEREFERENCE PRODUCER DEFINITION", rust)
-        # And the evidence verdict must still exist, so this change did not
-        # simply delete the disqualification path.
-        self.assertIn("Some(1) => Ok(None)", rust)
+        self.assertIn("BoundaryOutcome::Refused", rust)
+        self.assertIn("BoundaryOutcome::Indeterminate", rust)
 
 
 if __name__ == "__main__":
