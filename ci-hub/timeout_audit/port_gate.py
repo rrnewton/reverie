@@ -124,7 +124,14 @@ def enforcement_paths(root: Path) -> list[PathVerdict]:
         ))
 
     # 2. The runner-invoking lanes -- but the runner skips boxing under CI.
-    cg = root / "agent-utils" / "rs" / "safe-ci-dag-runner" / "src" / "cgroup.rs"
+    runner_sources = (
+        root / "agent-utils" / "rs" / "dagrun" / "src" / "cgroup.rs",
+        root / "agent-utils" / "rs" / "safe-ci-dag-runner" / "src" / "cgroup.rs",
+    )
+    cg = next(
+        (candidate for candidate in runner_sources if candidate.is_file()),
+        runner_sources[0],
+    )
     ci_short_circuit = False
     if cg.is_file():
         src = cg.read_text(encoding="utf-8", errors="replace")

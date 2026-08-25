@@ -35,7 +35,8 @@ make_fixture() {
     "$fixture_root/scripts" "$fixture_root/bin" "$fixture_root/worktrees/$name" \
     "$fixture_root/ignored/ci-hub" "$fixture_root/proc" \
     "$fixture_root/cgroup" "$target/target/debug" \
-    "$target/.safe-ci-dag-runner/profiles" "$fixture_root/unrelated"
+    "$target/.safe-ci-dag-runner/profiles" "$target/.dagrun/profiles" \
+    "$fixture_root/unrelated"
   : >"$fixture_root/.gitmodules"
   cp "$script_dir/check-worktree-registry.rs" "$fixture_root/scripts/"
   cp "$script_dir/agent-podman.rs" "$fixture_root/scripts/"
@@ -61,6 +62,8 @@ make_fixture() {
     >"$target/target/validate-results.txt"
   printf 'timestamp,git_sha,result\nnow,deadbeef,fail\n' \
     >"$target/.safe-ci-dag-runner/profiles/run.csv"
+  printf 'timestamp,git_sha,result\nnow,feedface,fail\n' \
+    >"$target/.dagrun/profiles/run.csv"
 
   cat >"$fixture_root/worktree-state.json" <<JSON
 {
@@ -156,9 +159,12 @@ cmp "$evidence_dir/hermit/target/validate-results.txt" \
 cmp "$evidence_dir/hermit/.safe-ci-dag-runner/profiles/run.csv" \
   <(printf 'timestamp,git_sha,result\nnow,deadbeef,fail\n') \
   || fail 'profile evidence copy changed bytes'
-jq -e '.targets[0].inventory.files | length == 3 and
-       (map(select(.copied == true)) | length == 2)' "$evidence_dir/manifest.json" >/dev/null \
+jq -e '.targets[0].inventory.files | length == 4 and
+       (map(select(.copied == true)) | length == 3)' "$evidence_dir/manifest.json" >/dev/null \
   || fail 'manifest did not bind all files and copied evidence count'
+cmp "$evidence_dir/hermit/.dagrun/profiles/run.csv" \
+  <(printf 'timestamp,git_sha,result\nnow,feedface,fail\n') \
+  || fail 'renamed profile evidence copy changed bytes'
 grep -Fxq 'unrelated survives' "$fixture_root/unrelated/sentinel" \
   || fail 'positive finalization changed unrelated content'
 if ! run_finalize orphan-positive; then

@@ -3376,11 +3376,15 @@ fn sha256_bytes(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
 
+fn is_runner_profile_dir(name: &OsStr) -> bool {
+    name == OsStr::new(".dagrun") || name == OsStr::new(".safe-ci-dag-runner")
+}
+
 fn textual_evidence(relative: &Path) -> bool {
     let under_profiles = relative
         .components()
         .next()
-        .is_some_and(|component| component.as_os_str() == ".safe-ci-dag-runner");
+        .is_some_and(|component| is_runner_profile_dir(component.as_os_str()));
     let extension = relative.extension().and_then(OsStr::to_str);
     relative == Path::new("target/validate-results.txt")
         || ((under_profiles
@@ -3396,7 +3400,7 @@ fn recognized_generated_file(relative: &Path, metadata: &fs::Metadata) -> bool {
     let Some(Component::Normal(top)) = components.next() else {
         return false;
     };
-    if top == OsStr::new(".safe-ci-dag-runner") {
+    if is_runner_profile_dir(top) {
         return textual_evidence(relative);
     }
     if top != OsStr::new("target") {
@@ -3610,7 +3614,9 @@ fn residue_inventory(root: &Path, path: &Path) -> Result<ResidueInventory, Strin
             path.display()
         ));
     }
-    let allowed: BTreeSet<&str> = [".safe-ci-dag-runner", "target"].into_iter().collect();
+    let allowed: BTreeSet<&str> = [".dagrun", ".safe-ci-dag-runner", "target"]
+        .into_iter()
+        .collect();
     let mut top_entries: Vec<_> = fs::read_dir(path)
         .map_err(|error| format!("enumerate orphan residue {}: {error}", path.display()))?
         .collect::<Result<_, _>>()
@@ -3631,7 +3637,7 @@ fn residue_inventory(root: &Path, path: &Path) -> Result<ResidueInventory, Strin
             .map_err(|error| format!("inspect orphan residue entry: {error}"))?;
         if !allowed.contains(name) || !metadata.is_dir() || metadata.file_type().is_symlink() {
             return Err(format!(
-                "orphan residue contains non-generated top-level entry {}; allowed entries are target/ and .safe-ci-dag-runner/",
+                "orphan residue contains non-generated top-level entry {}; allowed entries are target/, .dagrun/, and .safe-ci-dag-runner/",
                 entry.path().display()
             ));
         }

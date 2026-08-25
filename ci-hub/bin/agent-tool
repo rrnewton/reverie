@@ -9,9 +9,9 @@ AGENT_UTILS_LINK_TARGET="hermit/agent-utils"
 TOOL=${1:-}
 
 case "$TOOL" in
-    pr-landing-planner|safe-ci-dag-runner|tick-hub) ;;
+    dagrun|pr-landing-planner|safe-ci-dag-runner|tick-hub) ;;
     *)
-        echo "usage: ci-hub/bin/agent-tool <pr-landing-planner|safe-ci-dag-runner|tick-hub> [args...]" >&2
+        echo "usage: ci-hub/bin/agent-tool <dagrun|pr-landing-planner|safe-ci-dag-runner|tick-hub> [args...]" >&2
         exit 2
         ;;
 esac
@@ -177,4 +177,19 @@ if ! "$PYTHON" -c 'import yaml' >/dev/null 2>&1; then
     fi
 fi
 
-exec "$PYTHON" "$AGENT_UTILS/py/bin/$TOOL" "$@"
+TOOL_PATH="$AGENT_UTILS/py/bin/$TOOL"
+case "$TOOL" in
+    dagrun|safe-ci-dag-runner)
+        # This parent validates targets on both sides of the runner rename. The
+        # requested spelling identifies the tool; the pinned tree decides which
+        # executable exists.
+        if [[ -f $AGENT_UTILS/py/bin/dagrun ]]; then
+            TOOL_PATH="$AGENT_UTILS/py/bin/dagrun"
+        elif [[ -f $AGENT_UTILS/py/bin/safe-ci-dag-runner ]]; then
+            TOOL_PATH="$AGENT_UTILS/py/bin/safe-ci-dag-runner"
+        else
+            die "pinned agent-utils contains neither py/bin/dagrun nor py/bin/safe-ci-dag-runner"
+        fi
+        ;;
+esac
+exec "$PYTHON" "$TOOL_PATH" "$@"

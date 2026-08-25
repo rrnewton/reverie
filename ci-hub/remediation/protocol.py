@@ -263,8 +263,8 @@ _TEST_FAILURE_MARKERS = (
     "panicked at",  # a rust test panic
 )
 _TEST_FAILURE_COUNT_RE = re.compile(r"\b([1-9]\d*)\s+failed\b")  # pytest "3 failed"
-# safe-ci-dag-runner's OWN closing summary, e.g.
-#   safe-ci-dag-runner: FAIL - 8 passed, 1 failed, 0 aborted, 39 skipped in 234.1s
+# The DAG runner's OWN closing summary, under either executable name, e.g.
+#   dagrun: FAIL - 8 passed, 1 failed, 0 aborted, 39 skipped in 234.1s
 # Its "N failed" counts DAG NODES, not tests, so _TEST_FAILURE_COUNT_RE must not
 # read it as a test verdict.  A node can be "failed" because it TIMED OUT, was
 # cancelled, or was killed -- none of which is a product test failure, and the
@@ -272,7 +272,7 @@ _TEST_FAILURE_COUNT_RE = re.compile(r"\b([1-9]\d*)\s+failed\b")  # pytest "3 fai
 # in 54-58s unfrozen.  Matched as a whole line so only the aggregate is removed;
 # genuine runner output on every other line is still read.
 _DAG_RUNNER_AGGREGATE_RE = re.compile(
-    r"(?mi)^[^\n]*\bsafe-ci-dag-runner:\s*(?:fail|ok|pass)\b[^\n]*$"
+    r"(?mi)^[^\n]*\b(?:dagrun|safe-ci-dag-runner):\s*(?:fail|ok|pass)\b[^\n]*$"
 )
 # These forms bind the failure to a product test suite rather than to the DAG's
 # aggregate ``N failed`` node count.  They are intentionally narrower than

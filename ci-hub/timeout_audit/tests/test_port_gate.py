@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import io
 import sys
+import tempfile
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
@@ -133,6 +134,18 @@ class EnforcementDetectionTest(unittest.TestCase):
         time, while --allow-cgroup-failure keeps cpu_timeout inert."""
         self.assertTrue(G.any_ci_path_routed(G._root()))
         self.assertFalse(G.any_ci_path_boxes(G._root()))
+
+    def test_reads_renamed_dagrun_cgroup_source(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            source = root / "agent-utils/rs/dagrun/src/cgroup.rs"
+            source.parent.mkdir(parents=True)
+            source.write_text('var("CI"); var("GITHUB_ACTIONS");\n')
+
+            by_name = {path.name: path for path in G.enforcement_paths(root)}
+            runner_lane = next(name for name in by_name if "run-dag.sh" in name)
+
+            self.assertIn("GITHUB_ACTIONS", by_name[runner_lane].reason)
 
 
 class JoinTest(unittest.TestCase):

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run one full Reverie validation through fail-closed safe-ci-dag-runner."""
+"""Run one full Reverie validation through the fail-closed DAG runner."""
 
 from __future__ import annotations
 
@@ -67,7 +67,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         command = [
             str(root / "ci-hub/bin/agent-tool"),
-            "safe-ci-dag-runner",
+            "dagrun",
             "run",
             "--dag",
             str(dag_path),

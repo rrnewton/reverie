@@ -4980,14 +4980,16 @@ class EnvironmentalLocalClassificationTest(unittest.TestCase):
         #
         # _has_explicit_product_test_failure already excluded this text "because
         # it may count DAG nodes"; the catch-all was re-admitting it.
-        output = (
-            "[e2e.metadata] ✗ FAIL   metadata (233s, TIMEOUT >60s)\n"
-            "safe-ci-dag-runner: FAIL - 8 passed, 1 failed, 0 aborted, "
-            "39 skipped in 234.1s\n"
-        )
-        state, reason = protocol._classify_local(1, output)
-        self.assertEqual(state, "no_result")
-        self.assertNotEqual(reason, "test-failure")
+        for runner in ("dagrun", "safe-ci-dag-runner"):
+            with self.subTest(runner=runner):
+                output = (
+                    "[e2e.metadata] ✗ FAIL   metadata (233s, TIMEOUT >60s)\n"
+                    f"{runner}: FAIL - 8 passed, 1 failed, 0 aborted, "
+                    "39 skipped in 234.1s\n"
+                )
+                state, reason = protocol._classify_local(1, output)
+                self.assertEqual(state, "no_result")
+                self.assertNotEqual(reason, "test-failure")
 
     def test_node_aggregate_strip_is_line_scoped_not_a_blanket_disable(self) -> None:
         # A fix that stopped manufacturing reds by never counting again would be

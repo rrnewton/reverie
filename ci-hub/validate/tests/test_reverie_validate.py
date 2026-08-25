@@ -73,7 +73,8 @@ class ReverieValidateTest(unittest.TestCase):
                     ]
                 )
             self.assertEqual(rc, 0)
-            self.assertIn("safe-ci-dag-runner", observed)
+            self.assertIn("dagrun", observed)
+            self.assertNotIn("safe-ci-dag-runner", observed)
             self.assertEqual(observed[observed.index("--max-steps") + 1], "1")
             self.assertEqual(observed[observed.index("--max-cpus") + 1], "8")
             self.assertNotIn("--jobs", observed)
