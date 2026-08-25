@@ -269,5 +269,117 @@ class StoreMechanics(unittest.TestCase):
             )
 
 
+class WriteBoundaryCli(unittest.TestCase):
+    """The CLI exists so a producer can CALL `validate_row` rather than
+    reimplement it in another language. These pin the properties that make
+    calling it worth more than matching it."""
+
+    SHA = "a" * 40
+    CELL = "c-programs/pipecap/verify/ptrace"
+
+    def _row(self, event_id, run_index, outcome, coordinates=None, run_id="campaign-1"):
+        payload = {
+            "cell": self.CELL, "tree": self.SHA,
+            "run_index": run_index, "outcome": outcome,
+        }
+        if coordinates is not None:
+            payload["coordinates"] = coordinates
+        return {
+            "schema": series.ENVELOPE_VERSION, "event_id": event_id,
+            "event_type": "series.cell", "emitted_at": "2026-08-25T16:00:00Z",
+            "team": "hermit", "host": "devbig014", "run_id": run_id,
+            "producer": {"source": "observed", "tool": "pressure-test", "tool_version": "1"},
+            "series": payload,
+        }
+
+    def _append(self, parent, rows):
+        import io
+        import contextlib
+        stdin = io.StringIO("\n".join(json.dumps(r) for r in rows) + "\n")
+        out, err = io.StringIO(), io.StringIO()
+        real = sys.stdin
+        sys.stdin = stdin
+        try:
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                rc = series.main(["append", "--parent", str(parent)])
+        finally:
+            sys.stdin = real
+        return rc, out.getvalue() + err.getvalue()
+
+    def _spool_lines(self, parent):
+        d = series.spool_dir(parent)
+        if not d.is_dir():
+            return []
+        return [l for f in sorted(d.glob("*.jsonl")) for l in f.read_text().splitlines() if l]
+
+    def test_appends_to_the_spool_and_never_the_tracked_shard(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as parent:
+            rc, _ = self._append(parent, [self._row("e1", 0, "passed")])
+            self.assertEqual(rc, 0)
+            self.assertEqual(len(self._spool_lines(parent)), 1)
+            # The tracked root must not be created by a producer.
+            self.assertFalse((Path(parent) / "series").exists())
+
+    def test_a_malformed_row_refuses_the_WHOLE_batch(self):
+        """Partial writes are the failure this must not have: a half-written
+        campaign reads as a complete one with fewer repetitions."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as parent:
+            self._append(parent, [self._row("good", 0, "passed")])
+            before = self._spool_lines(parent)
+            rc, text = self._append(parent, [
+                self._row("ok", 1, "diverged", {"first_divergent_record": 98}),
+                self._row("bad", 2, "passed", {"first_divergent_record": 98}),
+            ])
+            self.assertEqual(rc, 1)
+            self.assertIn("REFUSED", text)
+            self.assertEqual(self._spool_lines(parent), before,
+                             "a refused batch must leave the spool byte-identical")
+
+    def test_diverged_without_a_coordinate_is_accepted(self):
+        """diverged-unlocated is a legitimate state; a producer must never be
+        forced to invent a position it does not have."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as parent:
+            rc, _ = self._append(parent, [self._row("e1", 0, "diverged")])
+            self.assertEqual(rc, 0)
+            rows = series.union(sorted(series.spool_dir(parent).glob("*.jsonl")))
+            self.assertEqual(series.measurement_state(rows), "diverged-unlocated")
+
+    def test_a_batch_spanning_two_run_ids_is_refused(self):
+        """The batch is named after its run, so two runs in one batch would
+        silently file half of them under the other's name."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as parent:
+            rc, text = self._append(parent, [
+                self._row("e1", 0, "passed", run_id="campaign-1"),
+                self._row("e2", 0, "passed", run_id="campaign-2"),
+            ])
+            self.assertEqual(rc, 1)
+            self.assertIn("exactly one run_id", text)
+            self.assertEqual(self._spool_lines(parent), [])
+
+    def test_the_batch_name_is_stable_so_a_rerun_dedups(self):
+        """Not clock-derived: re-running one campaign must land in the same file
+        so union_events can dedup by event_id instead of double-counting."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as parent:
+            rows = [self._row("e1", 0, "passed"), self._row("e2", 1, "diverged")]
+            self._append(parent, rows)
+            self._append(parent, rows)
+            files = sorted(series.spool_dir(parent).glob("*.jsonl"))
+            self.assertEqual(len(files), 1, "a rerun must not create a second batch file")
+            unioned = series.union(files)
+            self.assertEqual(len(unioned), 2, "event_id dedup must collapse the rerun")
+
+    def test_no_rows_is_not_an_error_but_is_not_silent(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as parent:
+            rc, text = self._append(parent, [])
+            self.assertEqual(rc, 0)
+            self.assertIn("nothing appended", text)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -321,3 +321,105 @@ __all__ = [
     "validate_row",
     "verify_append_only",
 ]
+
+
+# --------------------------------------------------------------------------
+# Write-boundary CLI.
+#
+# Step 3 left this module a library with no entry point, so a producer could
+# only MATCH the contract in its own language rather than CALL it. That is the
+# duplicated-rule shape the store exists to avoid: `validate_row` is one linter,
+# and a Rust reimplementation of it would drift silently the first time a rule
+# changed on one side.
+#
+# This is deliberately the only thing the CLI does. It does not publish, it does
+# not read, and it never touches the tracked shard -- a producer writes the
+# spool and publication stays a separate, reviewed step.
+# --------------------------------------------------------------------------
+
+
+def _batch_name(rows: Sequence[dict]) -> str:
+    """Name the spool batch after the run that produced it.
+
+    Deliberately NOT a timestamp or a pid. A campaign re-run against the same
+    tree must land in the same file so `union_events` can dedup it by
+    `event_id`; a clock-derived name would turn one logical batch into two and
+    defeat the dedup this store already relies on.
+    """
+    run_ids = {str(r.get("run_id", "")) for r in rows}
+    if len(run_ids) != 1:
+        raise SeriesError(
+            f"a batch must carry exactly one run_id, got {len(run_ids)}: "
+            f"{sorted(run_ids)}"
+        )
+    run_id = run_ids.pop()
+    if not run_id or "/" in run_id or run_id in (".", ".."):
+        raise SeriesError(f"run_id must be a single path segment, got {run_id!r}")
+    return f"{run_id}.jsonl"
+
+
+def _cmd_append(argv: list[str]) -> int:
+    parent = None
+    i = 0
+    while i < len(argv):
+        if argv[i] == "--parent" and i + 1 < len(argv):
+            parent = argv[i + 1]
+            i += 2
+            continue
+        return _usage(f"unknown argument {argv[i]!r}")
+    if not parent:
+        return _usage("append requires --parent <dev-hermit root>")
+
+    rows = []
+    for number, line in enumerate(sys.stdin.read().splitlines(), 1):
+        if not line.strip():
+            continue
+        try:
+            rows.append(json.loads(line))
+        except json.JSONDecodeError as error:
+            print(f"series: stdin line {number} is not JSON: {error}", file=sys.stderr)
+            return 2
+    if not rows:
+        # Not an error, and deliberately not silent: a campaign that measured
+        # nothing must not read as a campaign that was never run.
+        print("series: no rows on stdin; nothing appended", file=sys.stderr)
+        return 0
+
+    try:
+        target = spool_dir(parent) / _batch_name(rows)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        written = append_rows(target, rows)
+    except (MalformedRow, SeriesError) as error:
+        # The batch is refused WHOLE by append_rows. Say which row so the
+        # producer can fix it rather than bisecting its own output.
+        print(f"series: REFUSED the batch, nothing was written: {error}", file=sys.stderr)
+        return 1
+    except OSError as error:
+        print(f"series: cannot write the spool: {error}", file=sys.stderr)
+        return 2
+
+    print(f"series: appended {written} row(s) to {target}")
+    return 0
+
+
+def _usage(message: str) -> int:
+    print(f"series: {message}", file=sys.stderr)
+    print(
+        "usage: series.py append --parent <dev-hermit root>  < rows.jsonl\n"
+        "  Validates every row through validate_row and appends the batch to the\n"
+        "  UNPUBLISHED spool. Refuses the whole batch if any row is malformed.",
+        file=sys.stderr,
+    )
+    return 2
+
+
+def main(argv: list[str]) -> int:
+    if not argv:
+        return _usage("a subcommand is required")
+    if argv[0] == "append":
+        return _cmd_append(argv[1:])
+    return _usage(f"unknown subcommand {argv[0]!r}")
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
