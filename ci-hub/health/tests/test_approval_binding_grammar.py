@@ -298,7 +298,20 @@ cases.append((empty_refused,
               "an empty window REFUSES instead of reporting a clean 0 of 0",
               "EmptyLandingWindow raised" if empty_refused else "returned a count over nothing"))
 
-p=sum(1 for ok,_,_ in cases if ok); f=len(cases)-p
-for ok,n,d in cases: print(f"  {'PASS' if ok else 'FAIL'}  {n}   [{d}]")
-print(f"assertions: {p} passed, {f} failed")
-sys.exit(1 if f else 0)
+def test_approval_binding_grammar():
+    """Assert the cases collected above, so pytest ENFORCES them.
+
+    This file used to end in a module-level ``sys.exit``. Under pytest that
+    raised SystemExit during collection and aborted the whole mainloop, so all
+    466 tests discovered in this directory reported zero executed. Printing a
+    tally is not a test; only an assertion is.
+    """
+    failed = [f"{n}   [{d}]" for ok, n, d in cases if not ok]
+    assert not failed, "approval-binding grammar cases failed:\n  " + "\n  ".join(failed)
+
+
+if __name__ == "__main__":
+    p=sum(1 for ok,_,_ in cases if ok); f=len(cases)-p
+    for ok,n,d in cases: print(f"  {'PASS' if ok else 'FAIL'}  {n}   [{d}]")
+    print(f"assertions: {p} passed, {f} failed")
+    sys.exit(1 if f else 0)

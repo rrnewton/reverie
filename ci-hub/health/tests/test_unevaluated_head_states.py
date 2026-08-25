@@ -455,7 +455,20 @@ cases.append((internal_deadline_closed,
               "internal budget returns NO RESULT before tick-hub's 30-second kill",
               str(internal_deadline_closed)))
 
-p = sum(1 for ok,_,_ in cases if ok); f = len(cases)-p
-for ok,n,d in cases: print(f"  {'PASS' if ok else 'FAIL'}  {n}   [{d}]")
-print(f"assertions: {p} passed, {f} failed")
-sys.exit(1 if f else 0)
+def test_unevaluated_head_states():
+    """Assert the cases collected above, so pytest ENFORCES them.
+
+    This file used to end in a module-level ``sys.exit``. Under pytest that
+    raised SystemExit during collection and aborted the whole mainloop, so all
+    466 tests discovered in this directory reported zero executed. Printing a
+    tally is not a test; only an assertion is.
+    """
+    failed = [f"{n}   [{d}]" for ok, n, d in cases if not ok]
+    assert not failed, "unevaluated-head state cases failed:\n  " + "\n  ".join(failed)
+
+
+if __name__ == "__main__":
+    p = sum(1 for ok,_,_ in cases if ok); f = len(cases)-p
+    for ok,n,d in cases: print(f"  {'PASS' if ok else 'FAIL'}  {n}   [{d}]")
+    print(f"assertions: {p} passed, {f} failed")
+    sys.exit(1 if f else 0)
