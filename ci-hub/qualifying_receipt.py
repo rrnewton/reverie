@@ -36,6 +36,7 @@ import json
 import os
 import re
 import subprocess
+import tempfile
 import sys
 from enum import Enum
 from pathlib import Path
@@ -195,9 +196,8 @@ def _checkout_holds_commit(checkout: Path, sha: str) -> bool:
     """
     try:
         return (
-            subprocess.run(
+            _capture(
                 ["git", "-C", str(checkout), "cat-file", "-e", f"{sha}^{{commit}}"],
-                capture_output=True,
                 text=True,
                 check=False,
             ).returncode
@@ -213,9 +213,8 @@ def _checkout_defect(checkout: Path) -> str:
         return "no such directory"
     if not any(checkout.iterdir()):
         return "EMPTY DIRECTORY -- uninitialized submodule"
-    inside = subprocess.run(
+    inside = _capture(
         ["git", "-C", str(checkout), "rev-parse", "--is-inside-work-tree"],
-        capture_output=True,
         text=True,
         check=False,
     )
@@ -331,6 +330,38 @@ def resolve_producer_definition(
 # of the derivation is exactly the drift this shared predicate exists to remove.
 sys.path.insert(0, str(Path(__file__).resolve().parent / "validate"))
 import green_class as _green_class  # noqa: E402
+
+def _capture(command, **kwargs):
+    """Capture output while waiting for THE CHILD, not for EOF on the pipe.
+
+    ⚠️ `capture_output=True` hands the child a PIPE and reads to EOF, and EOF
+    arrives when the LAST HOLDER closes it -- not when the child exits. A
+    background grandchild that inherited the pipe blocks the caller after the
+    child is already gone. git's `gc --auto` is the everyday trigger: on by
+    default (gc.auto=6700) and detaching by default, so it inherits stderr. Every
+    call routed through here shells out to git.
+
+    Reproduced 2026-08-25: a child exiting immediately while leaving one
+    background grandchild blocked capture_output indefinitely, while capturing to
+    a file returned in 0.0s with identical stdout and exit code. A regular file
+    has no EOF-waiting semantics, so wait() on the child is the only gate.
+
+    NOT a timeout (bounds the wait and discards the reason) and NOT disabling
+    auto-gc (hides the mechanism for the next background child).
+    """
+    with tempfile.TemporaryFile("w+b") as out, tempfile.TemporaryFile("w+b") as err:
+        proc = subprocess.Popen(
+            list(command), stdout=out, stderr=err, stdin=subprocess.DEVNULL, **kwargs
+        )
+        code = proc.wait()
+        out.seek(0)
+        err.seek(0)
+        return subprocess.CompletedProcess(
+            list(command), code,
+            out.read().decode("utf-8", "replace"),
+            err.read().decode("utf-8", "replace"),
+        )
+
 
 
 def predicate_path() -> Path:
@@ -919,9 +950,7 @@ def base_accepted(verdict: BaseVerdict) -> bool:
 
 
 def _git_output(checkout: str, *args: str) -> bytes:
-    result = subprocess.run(
-        ["git", "-C", checkout, *args], capture_output=True, check=False
-    )
+    result = _capture(["git", "-C", checkout, *args])
     if result.returncode != 0:
         detail = result.stderr.decode(errors="replace").strip() or f"exit {result.returncode}"
         raise RuntimeError(f"git -C {checkout} {' '.join(args)}: {detail}")
@@ -936,9 +965,8 @@ def git_tree(checkout: str, sha: str) -> str:
 
 
 def git_is_ancestor(checkout: str, ancestor: str, descendant: str) -> bool:
-    result = subprocess.run(
+    result = _capture(
         ["git", "-C", checkout, "merge-base", "--is-ancestor", ancestor, descendant],
-        capture_output=True,
         check=False,
     )
     if result.returncode == 0:

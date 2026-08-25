@@ -42,6 +42,7 @@ import json
 import re
 import sqlite3
 import subprocess
+import tempfile
 import sys
 from collections import Counter
 from pathlib import Path
@@ -52,6 +53,38 @@ ROOT = Path(__file__).resolve().parents[2]
 # database.  See ci-hub/lib/taskgraph_db.py.
 sys.path.insert(0, str(ROOT / "ci-hub" / "lib"))
 import taskgraph_db  # noqa: E402
+
+def _capture(command, **kwargs):
+    """Capture output while waiting for THE CHILD, not for EOF on the pipe.
+
+    ⚠️ `capture_output=True` hands the child a PIPE and reads to EOF, and EOF
+    arrives when the LAST HOLDER closes it -- not when the child exits. A
+    background grandchild that inherited the pipe blocks the caller after the
+    child is already gone. git's `gc --auto` is the everyday trigger: on by
+    default (gc.auto=6700) and detaching by default, so it inherits stderr. Every
+    call routed through here shells out to git.
+
+    Reproduced 2026-08-25: a child exiting immediately while leaving one
+    background grandchild blocked capture_output indefinitely, while capturing to
+    a file returned in 0.0s with identical stdout and exit code. A regular file
+    has no EOF-waiting semantics, so wait() on the child is the only gate.
+
+    NOT a timeout (bounds the wait and discards the reason) and NOT disabling
+    auto-gc (hides the mechanism for the next background child).
+    """
+    with tempfile.TemporaryFile("w+b") as out, tempfile.TemporaryFile("w+b") as err:
+        proc = subprocess.Popen(
+            list(command), stdout=out, stderr=err, stdin=subprocess.DEVNULL, **kwargs
+        )
+        code = proc.wait()
+        out.seek(0)
+        err.seek(0)
+        return subprocess.CompletedProcess(
+            list(command), code,
+            out.read().decode("utf-8", "replace"),
+            err.read().decode("utf-8", "replace"),
+        )
+
 
 EPHEMERAL = ("/tmp/", "scratch/", "ignored/")
 MIN_BYTES = 400
@@ -66,7 +99,7 @@ STOP = {"the", "and", "for", "with", "that", "into", "not", "are", "is", "a", "o
 
 
 def sh(*args: str, cwd: Path = ROOT) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(["git", "-C", str(cwd), *args], capture_output=True, text=True)
+    return _capture(["git", "-C", str(cwd), *args])
 
 
 def repo_for(path: str) -> tuple[Path, str]:
