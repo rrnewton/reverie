@@ -7,6 +7,7 @@ import contextlib
 import io
 import json
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -121,10 +122,39 @@ class StartUnitEnvTest(unittest.TestCase):
                 },
                 json_output=False,
             )
-        self.assertIn(f"E2E_RESULTS {artifact_root / 'e2e'}", output.getvalue())
+        # Neither directory exists in this fixture, and a path that was never
+        # created is not an artifact -- naming it sends the reader looking for
+        # output that cannot be there. Both lines are therefore suppressed; the
+        # populated and empty cases are asserted below.
+        self.assertNotIn("E2E_RESULTS", output.getvalue())
+        self.assertNotIn("RUNNER_LOGS", output.getvalue())
+
+        # ...and the report still names them once they exist.
+        (artifact_root / "e2e").mkdir(parents=True)
+        (artifact_root / "safe-ci-dag-runner").mkdir(parents=True)
+        (artifact_root / "e2e" / "row.json").write_text("{}\n")
+        present = io.StringIO()
+        with contextlib.redirect_stdout(present):
+            su.emit_report(
+                {
+                    "event": "handle",
+                    "unit": "validate-test.service",
+                    "target": TARGET,
+                    "state": "running",
+                    "e2e_result_root": str(artifact_root / "e2e"),
+                    "safe_ci_dag_runner_log_dir": str(
+                        artifact_root / "safe-ci-dag-runner"
+                    ),
+                },
+                json_output=False,
+            )
         self.assertIn(
-            f"RUNNER_LOGS {artifact_root / 'safe-ci-dag-runner'}",
-            output.getvalue(),
+            f"E2E_RESULTS {artifact_root / 'e2e'} [1 entry]",
+            present.getvalue(),
+        )
+        self.assertIn(
+            f"RUNNER_LOGS {artifact_root / 'safe-ci-dag-runner'} [empty]",
+            present.getvalue(),
         )
 
     def _emit_runner_logs(self, path, *, json_output=False) -> str:
@@ -168,12 +198,27 @@ class StartUnitEnvTest(unittest.TestCase):
         (populated / "node.log").write_text("x\n")
         absent = self.root / "never-created-2"
 
+        empty = self.root / "empty-logs-2"
+        empty.mkdir(parents=True)
+
         good = self._emit_runner_logs(populated)
         self.assertIn(f"RUNNER_LOGS {populated} [1 entry]", good)
+
+        # EMPTY IS STILL REPORTED. The run created the directory and wrote
+        # nothing into it, which is a fact the reader wants.
+        blank = self._emit_runner_logs(empty)
+        self.assertIn(f"RUNNER_LOGS {empty} [empty]", blank)
+
+        # ABSENT IS SUPPRESSED, and that is the change: for a run that refused
+        # before starting, this path never existed, and printing it sent the
+        # owner hunting for output that could not be there.
         bad = self._emit_runner_logs(absent)
-        self.assertIn(f"RUNNER_LOGS {absent} [absent]", bad)
-        # The distinction is the whole point: the two lines must differ.
+        self.assertNotIn("RUNNER_LOGS", bad)
+
+        # The three cases must still be distinguishable from one another.
+        self.assertNotEqual(good, blank)
         self.assertNotEqual(good, bad)
+        self.assertNotEqual(blank, bad)
 
     def test_json_receipt_carries_the_state_too(self) -> None:
         """The JSON receipt is what machines read, so it needs the distinction."""
@@ -277,6 +322,87 @@ class StartUnitEnvTest(unittest.TestCase):
         joined = " ".join(command)
         self.assertIn("VALIDATE_RUN_ON_DIRTY_TREE=1", joined)
         self.assertIn("with-proxy make validate", joined)
+
+
+class RelayInnerRefusalTest(unittest.TestCase):
+    """The wrapper must pass the inner run's words through, not summarise.
+
+    THE DEFECT THIS LOCKS DOWN: validate refused with exit 2, named the gate it
+    hit, gave the commit distance and printed its bypass flag -- and the
+    wrapper replaced all of that with "CANONICAL-VERDICT-UNAVAILABLE: no receipt for
+    commit". Reporting the ABSENCE of a receipt where a REASON exists describes
+    a consequence as if it were the cause.
+    """
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.addCleanup(self.tmp.cleanup)
+
+    def test_relays_the_inner_text_verbatim(self) -> None:
+        log = self.root / "run.log"
+        inner = (
+            "validate: REFUSED (exit 2) rebase-freshness: HEAD is 37\n"
+            "commits behind origin/main. Rebase first, or pass\n"
+            "--allow-stale-base to proceed.\n"
+        )
+        log.write_text(inner)
+        sink = io.StringIO()
+        self.assertTrue(su.relay_inner_output(log, out=sink))
+        shown = sink.getvalue()
+        # VERBATIM: every line the run wrote is present and unaltered.
+        for line in inner.strip().splitlines():
+            self.assertIn(line, shown)
+        self.assertIn("--allow-stale-base", shown)
+
+    def test_reports_nothing_when_there_is_nothing_to_relay(self) -> None:
+        empty = self.root / "empty.log"
+        empty.write_text("   \n")
+        self.assertFalse(su.relay_inner_output(empty, out=io.StringIO()))
+        # A log that does not exist must not raise; a validate cannot fail
+        # because its own output could not be echoed.
+        self.assertFalse(
+            su.relay_inner_output(self.root / "missing.log", out=io.StringIO())
+        )
+
+    def test_a_long_log_is_tailed_and_says_so(self) -> None:
+        log = self.root / "big.log"
+        log.write_text("filler\n" * 20000 + "THE REFUSAL LINE\n")
+        sink = io.StringIO()
+        self.assertTrue(su.relay_inner_output(log, out=sink, limit=200))
+        shown = sink.getvalue()
+        self.assertIn("THE REFUSAL LINE", shown)
+        self.assertIn("(tail)", shown)
+
+
+class LogTailTest(unittest.TestCase):
+    """The caller who started a validate should be able to watch it."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.addCleanup(self.tmp.cleanup)
+
+    def test_streams_only_what_is_new(self) -> None:
+        log = self.root / "unit.log"
+        log.write_text("first\n")
+        sink = io.StringIO()
+        tail = su.LogTail(log, out=sink)
+        tail.pump()
+        self.assertEqual(sink.getvalue(), "first\n")
+        # Appending streams only the appended bytes -- no re-printing.
+        with log.open("a") as handle:
+            handle.write("second\n")
+        tail.pump()
+        self.assertEqual(sink.getvalue(), "first\nsecond\n")
+        # A poll with nothing new adds nothing.
+        tail.pump()
+        self.assertEqual(sink.getvalue(), "first\nsecond\n")
+
+    def test_a_missing_log_is_survivable(self) -> None:
+        sink = io.StringIO()
+        su.LogTail(self.root / "not-there.log", out=sink).pump()
+        self.assertEqual(sink.getvalue(), "")
 
 
 if __name__ == "__main__":

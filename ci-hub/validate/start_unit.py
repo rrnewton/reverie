@@ -14,7 +14,7 @@ import time
 from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, TextIO
 
 import pane_lifecycle
 import pane_owner
@@ -668,7 +668,6 @@ def preflight(
         raise RuntimeError(f"validation admission refused target: {detail}")
 
 
-
 def build_systemd_command(
     *,
     root: Path,
@@ -852,6 +851,36 @@ def service_properties(
     return properties
 
 
+class LogTail:
+    """Stream a unit's log to stdout as it is appended.
+
+    The transient unit writes with `StandardOutput=append:<log>`, so without
+    this the caller who STARTED a validate cannot watch it -- the output exists
+    only in a file they have to go and find. This follows the file from the
+    offset it has already shown, so each poll prints only what is new.
+
+    IT NEVER RAISES. A validate must not fail because its own progress
+    could not be echoed; an unreadable log simply stops streaming.
+    """
+
+    def __init__(self, log: Path, *, out: TextIO | None = None) -> None:
+        self.log = log
+        self.out = out if out is not None else sys.stdout
+        self.offset = 0
+
+    def pump(self) -> None:
+        try:
+            with self.log.open("rb") as handle:
+                handle.seek(self.offset)
+                chunk = handle.read()
+                self.offset = handle.tell()
+        except OSError:
+            return
+        if chunk:
+            self.out.write(chunk.decode("utf-8", "replace"))
+            self.out.flush()
+
+
 def wait_for_unit(
     unit: str,
     record: Path,
@@ -859,10 +888,13 @@ def wait_for_unit(
     run: Runner,
     poll_seconds: float,
     sleep: Callable[[float], None] = time.sleep,
+    stream: LogTail | None = None,
 ) -> dict[str, Any]:
     seen = False
     missing = 0
     while True:
+        if stream is not None:
+            stream.pump()
         properties = service_properties(unit, run=run)
         if properties is None:
             missing += 1
@@ -908,6 +940,47 @@ def wait_for_unit(
                 "finished_at": datetime.now(timezone.utc).isoformat(),
             }
         sleep(poll_seconds)
+
+
+def relay_inner_output(
+    log: Path, *, out: TextIO | None = None, limit: int = 65536
+) -> bool:
+    """Print what the inner run said, verbatim. True if anything was shown.
+
+    ⚠️ THIS RELAYS; IT DOES NOT SUMMARISE. The wrapper used to report
+    `CANONICAL-VERDICT-UNAVAILABLE: no receipt for commit` when the inner
+    validate had already refused with exit 2, named the gate it hit, given the
+    commit distance and printed its bypass flag. Reporting the ABSENCE of a
+    receipt where a REASON exists is the same defect this project keeps finding
+    elsewhere, committed by our own tooling against its own owner.
+
+    So no parsing, no classification, no reconstruction of the inner message:
+    the bytes the run wrote are the answer, and any summary this wrapper
+    invented could disagree with them.
+    """
+    sink = out if out is not None else sys.stderr
+    try:
+        data = log.read_bytes()
+    except OSError:
+        return False
+    if not data.strip():
+        return False
+    truncated = len(data) > limit
+    if truncated:
+        data = data[-limit:]
+    print(
+        f"validate-run: the run refused. Relaying {log} verbatim"
+        + (" (tail)" if truncated else "")
+        + ":",
+        file=sink,
+    )
+    print("-" * 72, file=sink)
+    sink.write(data.decode("utf-8", "replace"))
+    if not data.endswith(b"\n"):
+        sink.write("\n")
+    print("-" * 72, file=sink)
+    sink.flush()
+    return True
 
 
 def retained_path_state(raw: str) -> str:
@@ -966,12 +1039,21 @@ def emit_report(report: Mapping[str, Any], *, json_output: bool) -> None:
         )
     if report.get("log"):
         print(f"LOG {report['log']}", flush=True)
-    if report.get("e2e_result_root"):
-        state = retained_path_state(str(report["e2e_result_root"]))
-        print(f"E2E_RESULTS {report['e2e_result_root']} [{state}]", flush=True)
-    if report.get("safe_ci_dag_runner_log_dir"):
-        state = retained_path_state(str(report["safe_ci_dag_runner_log_dir"]))
-        print(f"RUNNER_LOGS {report['safe_ci_dag_runner_log_dir']} [{state}]", flush=True)
+    # A PATH THAT WAS NEVER CREATED IS NOT AN ARTIFACT, SO DO NOT OFFER IT.
+    # `absent` means the directory does not exist -- for a run that refused
+    # before starting, both of these are absent, and printing them sent the
+    # owner looking for output that could not be there. `empty` differs and
+    # is still printed: the run DID create the directory and wrote nothing,
+    # which is a fact worth seeing.
+    for key, label in (("e2e_result_root", "E2E_RESULTS"),
+                       ("safe_ci_dag_runner_log_dir", "RUNNER_LOGS")):
+        raw = report.get(key)
+        if not raw:
+            continue
+        state = retained_path_state(str(raw))
+        if state == "absent":
+            continue
+        print(f"{label} {raw} [{state}]", flush=True)
 
 
 def attach(
@@ -1423,12 +1505,16 @@ def main(
         return 0
 
     try:
+        # TEE THE RUN. The caller started this validate; they should be able to
+        # watch it without going to find the log. Suppressed under --json so a
+        # machine reader still gets one parseable object on stdout.
         final = wait_for_unit(
             unit,
             record_path,
             run=run,
             poll_seconds=args.caller_poll_seconds,
             sleep=sleep,
+            stream=None if args.json else LogTail(log),
         )
         updated = run_registry.update_record(record_path, **final)
     except RuntimeError as error:
@@ -1455,6 +1541,31 @@ def main(
             root.resolve(), args.target, checkout, started_at, repo=repo, run=run
         )
     except RuntimeError as error:
+        # THE INNER RUN'S REASON OUTRANKS THE MISSING ROW. If validate refused,
+        # it said why -- named the gate, gave the distance, printed the bypass
+        # flag -- and that refusal is the answer. Reporting "no receipt"
+        # instead
+        # describes a CONSEQUENCE of the refusal as though it were the cause,
+        # which is how a clear message became an opaque one on the way out.
+        inner_exit = (
+            final.get("exit_code") if isinstance(final, dict) else None
+        )
+        if (
+            isinstance(inner_exit, int)
+            and inner_exit != 0
+            and relay_inner_output(log)
+        ):
+            print(
+                f"validate-run: the inner validate exited {inner_exit}; "
+                "that refusal above is the reason. No canonical receipt "
+                "was written because the run did not get far enough to "
+                "write one.",
+                file=sys.stderr,
+            )
+            if fresh_checkout is not None and source_checkout is not None:
+                remove_fresh_checkout(source_checkout, fresh_checkout, run=run)
+            remove_private_cargo_home(private_cargo_home, run=run)
+            return inner_exit
         print(f"validate-run: CANONICAL-VERDICT-UNAVAILABLE: {error}", file=sys.stderr)
         if fresh_checkout is not None and source_checkout is not None:
             # Retention is for EVIDENCE, not for every failure. Retaining
