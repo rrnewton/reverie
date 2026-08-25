@@ -5457,7 +5457,222 @@ fn short_wall(seconds: Option<f64>) -> String {
     }
 }
 
+/// COMMITS SINCE GREEN, for `validate-status`' standard output.
+///
+/// ⚠️ WHY THIS LIVES IN THE STANDARD READER AND NOT ONLY IN `newest-green`.
+/// `validate-status` is the union reader every agent and script already calls,
+/// and until now it said NOT-VALIDATED and stopped. That answer is true and
+/// carries no information: it reads identically when the last full green was one
+/// commit back and when it was three hundred. Measured 2026-08-25 on hermit
+/// `main`, the honest answer was 281 — a number nobody could see because it was
+/// only ever printed by a subcommand nobody runs. The point is that the number
+/// arrives without the reader having to know the concept exists.
+///
+/// ⚠️ DEPTH IS FIRST-PARENT DISTANCE, NEVER RECEIPT AGE. `commits_after_green`
+/// is `commits[..index].len()` over the first-parent walk, so it is a distance by
+/// construction. Ordering by `emitted_at` would be wrong in exactly the case this
+/// exists for: a full validate takes ~25 minutes against a churning `main`, so a
+/// receipt emitted LATER routinely names an OLDER commit.
+///
+/// ⚠️ AND AN ABSENCE MUST STATE ITS WINDOW. `NoneInWindow` always prints the
+/// window it searched, because "no green within N" and "no green ever" render
+/// identically once the bound is dropped — and that collapse is how a bounded
+/// search gets read as a permanent verdict. `Unverifiable` and `Unavailable` are
+/// kept distinct from both for the same reason: neither is evidence of absence,
+/// and neither may render as a green.
+///
+/// COST. Offline by construction: no fetch, no network, local refs and the local
+/// ledger only. It reuses `newest-green`'s cache, so the common case is a read.
+/// A standard reader that paid for a fetch would be a standard reader people
+/// stop calling.
+enum GreenDepth {
+    Found {
+        depth: usize,
+        sha: String,
+        window: usize,
+        no_record: usize,
+    },
+    NoneInWindow {
+        window: usize,
+        oldest: String,
+        recorded: usize,
+    },
+    Unverifiable {
+        visible_depth: usize,
+        required_depth: String,
+    },
+    /// The query could not run at all. NOT an absence, and never a green.
+    Unavailable { why: String },
+}
+
+impl GreenDepth {
+    fn line(&self) -> String {
+        match self {
+            GreenDepth::Found {
+                depth,
+                sha,
+                window,
+                no_record,
+            } => format!(
+                "COMMITS-SINCE-GREEN {depth} (last full green {} at first-parent depth {depth}; \
+                 searched {window} commits, {no_record} of them with no record at all)",
+                sha.get(..12).unwrap_or(sha)
+            ),
+            GreenDepth::NoneInWindow {
+                window,
+                oldest,
+                recorded,
+            } => format!(
+                "COMMITS-SINCE-GREEN NONE-WITHIN-{window} -- no full green in the {window} \
+                 first-parent commits back to {} ({recorded} carried any record). This is a \
+                 BOUNDED search, not a claim that no green exists; widen it with \
+                 `ci-hub newest-green`.",
+                oldest.get(..12).unwrap_or(oldest)
+            ),
+            GreenDepth::Unverifiable {
+                visible_depth,
+                required_depth,
+            } => format!(
+                "COMMITS-SINCE-GREEN UNVERIFIABLE-SHALLOW-HISTORY -- only {visible_depth} \
+                 first-parent commits visible, {required_depth} required. Deepen the checkout; \
+                 this is not an absence."
+            ),
+            GreenDepth::Unavailable { why } => format!(
+                "COMMITS-SINCE-GREEN UNAVAILABLE -- {why}. Not measured, and NOT evidence that \
+                 main is ungreen."
+            ),
+        }
+    }
+
+    fn json(&self) -> serde_json::Value {
+        match self {
+            GreenDepth::Found {
+                depth,
+                sha,
+                window,
+                no_record,
+            } => serde_json::json!({
+                "state": "found", "depth": depth, "green_sha": sha,
+                "searched_commits": window, "commits_without_record": no_record,
+                "basis": "first-parent distance",
+            }),
+            GreenDepth::NoneInWindow {
+                window,
+                oldest,
+                recorded,
+            } => serde_json::json!({
+                "state": "none-within-window", "depth": serde_json::Value::Null,
+                "searched_commits": window, "oldest_searched": oldest,
+                "commits_with_records": recorded,
+                "note": "bounded search; not a claim that no green exists",
+            }),
+            GreenDepth::Unverifiable {
+                visible_depth,
+                required_depth,
+            } => serde_json::json!({
+                "state": "unverifiable-shallow-history", "depth": serde_json::Value::Null,
+                "visible_first_parent_depth": visible_depth,
+                "required_history_depth": required_depth,
+            }),
+            GreenDepth::Unavailable { why } => serde_json::json!({
+                "state": "unavailable", "depth": serde_json::Value::Null, "reason": why,
+            }),
+        }
+    }
+}
+
+/// Compute the standard-output green depth. Never returns `Err`: a reader that
+/// dies because a side metric could not be computed is worse than one that says
+/// so, and every failure path lands in `Unavailable` with its reason.
+fn standard_green_depth(root: &Path, branch: &str) -> GreenDepth {
+    let repo = history_repo_path(root, Path::new("hermit"));
+    if !repo.join(".git").exists() {
+        return GreenDepth::Unavailable {
+            why: format!("no hermit checkout at {}", repo.display()),
+        };
+    }
+    let branch_ref = format!("origin/{branch}");
+    // Deliberately no fetch: see the cost note above.
+    let floor = match query_effective_gate_floor(root, &repo, branch) {
+        Ok(GateFloorResolution::Effective(floor)) => floor,
+        Ok(GateFloorResolution::UnverifiableShallow {
+            visible_depth,
+            required_depth,
+            ..
+        }) => {
+            return GreenDepth::Unverifiable {
+                visible_depth,
+                required_depth,
+            }
+        }
+        Err(error) => {
+            return GreenDepth::Unavailable {
+                why: format!("gate floor: {error}"),
+            }
+        }
+    };
+    let history = match branch_history(&repo, &branch_ref) {
+        Ok(history) => history,
+        Err(error) => {
+            return GreenDepth::Unavailable {
+                why: format!("{branch_ref}: {error}"),
+            }
+        }
+    };
+    let commits = match history_at_or_after_gate_floor(history, &branch_ref, &floor.sha) {
+        Ok(commits) => commits,
+        Err(error) => {
+            return GreenDepth::Unavailable {
+                why: format!("gate floor window: {error}"),
+            }
+        }
+    };
+    let ledger = ledger_path(root);
+    let mut rows = match load_ledger_rows(&ledger) {
+        Ok(rows) => rows,
+        Err(error) => {
+            return GreenDepth::Unavailable {
+                why: format!("ledger: {error}"),
+            }
+        }
+    };
+    if let Err(error) = retain_cell_evidence(root, &mut rows) {
+        return GreenDepth::Unavailable {
+            why: format!("cell evidence: {error}"),
+        };
+    }
+    let floor_policy = format!("{GATE_FLOOR_POLICY}:{}", floor.kind);
+    match HistoryQueryEngine::new(commits, rows).newest_green(
+        branch,
+        &branch_ref,
+        &floor_policy,
+        &floor.sha,
+    ) {
+        NewestGreenOutcome::Found(report) => GreenDepth::Found {
+            depth: report.commits_after_green,
+            sha: report.green.sha.clone(),
+            window: report.branch_commits_in_range,
+            no_record: report.commits_without_any_record,
+        },
+        NewestGreenOutcome::FailedOnly {
+            commits_in_range,
+            recorded,
+            ..
+        }
+        | NewestGreenOutcome::NoEvidence {
+            commits_in_range,
+            recorded,
+            ..
+        } => GreenDepth::NoneInWindow {
+            window: commits_in_range,
+            oldest: floor.sha.clone(),
+            recorded,
+        },
+    }
+}
+
 fn print_recent_validate_history(
+    root: &Path,
     rows: &[HistoryRow],
     repo: &str,
     limit: usize,
@@ -5508,15 +5723,21 @@ fn print_recent_validate_history(
         })
         .collect::<Vec<_>>();
 
+    // Computed for BOTH output modes: a number that only appears under --json
+    // is a number the humans reading the default output never see, which is the
+    // condition this metric exists to end.
+    let depth = standard_green_depth(root, "main");
+
     if json {
         println!(
             "{}",
             serde_json::to_string_pretty(&serde_json::json!({
-                "schema_version": 1,
+                "schema_version": 2,
                 "repo": repo,
                 "count": entries.len(),
                 "limit": limit,
                 "runs": entries,
+                "commits_since_green": depth.json(),
                 "ledger": ledger.display().to_string(),
             }))
             .expect("serialize recent validation history")
@@ -5524,6 +5745,9 @@ fn print_recent_validate_history(
         return Ok(0);
     }
 
+    // Printed even when there are no runs at all: "no runs" and "no green in the
+    // last N commits" are different facts and the second is the actionable one.
+    println!("{}", depth.line());
     if entries.is_empty() {
         println!("No validation runs found for {repo}.");
         return Ok(0);
@@ -5605,7 +5829,7 @@ fn run_validate_status(root: &Path, args: ValidateStatusArgs) -> Result<i32, CiH
     // both, or either together with `--pr`.
     let sha_input = args.sha.as_ref().or(args.sha_positional.as_ref());
     if sha_input.is_none() && args.pr.is_none() {
-        return print_recent_validate_history(&repo_rows, repo, args.limit, &path, args.json);
+        return print_recent_validate_history(root, &repo_rows, repo, args.limit, &path, args.json);
     }
     let sha = match (sha_input, args.pr) {
         (Some(input), None) => {
@@ -7025,6 +7249,95 @@ fn to_exit_code(code: i32) -> ExitCode {
 
 #[cfg(test)]
 mod tests {
+
+    // ---- COMMITS-SINCE-GREEN rendering -------------------------------------
+    // The rendering IS the feature: this number exists so a reader who has never
+    // heard of green depth still gets it, so what the line SAYS is the contract.
+
+    #[test]
+    fn found_states_the_depth_and_the_commit() {
+        let line = GreenDepth::Found {
+            depth: 281,
+            sha: "dee8cf49ce6a7e3e9e2c87c930f3aa55ae83da18".into(),
+            window: 544,
+            no_record: 269,
+        }
+        .line();
+        assert!(line.contains("COMMITS-SINCE-GREEN 281"), "{line}");
+        assert!(line.contains("dee8cf49ce6a"), "{line}");
+    }
+
+    #[test]
+    fn a_bounded_absence_states_its_window_and_refuses_to_generalise() {
+        // ⚠️ THE WHOLE POINT. Without the window, "no green within 200" and "no
+        // green ever" render identically and the metric is a binary again.
+        let line = GreenDepth::NoneInWindow {
+            window: 200,
+            oldest: "0123456789abcdef0123456789abcdef01234567".into(),
+            recorded: 10,
+        }
+        .line();
+        assert!(line.contains("200"), "the window must appear: {line}");
+        assert!(line.contains("BOUNDED"), "{line}");
+        assert!(
+            !line.contains("COMMITS-SINCE-GREEN NONE\n"),
+            "a bare NONE would read as no-green-ever: {line}"
+        );
+    }
+
+    #[test]
+    fn the_four_states_never_render_alike() {
+        let states = [
+            GreenDepth::Found {
+                depth: 0,
+                sha: "a".repeat(40),
+                window: 1,
+                no_record: 0,
+            },
+            GreenDepth::NoneInWindow {
+                window: 5,
+                oldest: "b".repeat(40),
+                recorded: 1,
+            },
+            GreenDepth::Unverifiable {
+                visible_depth: 3,
+                required_depth: "50".into(),
+            },
+            GreenDepth::Unavailable {
+                why: "no checkout".into(),
+            },
+        ];
+        let lines: Vec<String> = states.iter().map(GreenDepth::line).collect();
+        for i in 0..lines.len() {
+            for j in (i + 1)..lines.len() {
+                assert_ne!(lines[i], lines[j]);
+            }
+        }
+        // And only the FOUND state may carry a non-null depth.
+        for (idx, state) in states.iter().enumerate() {
+            let depth = state.json()["depth"].clone();
+            if idx == 0 {
+                assert_eq!(depth, serde_json::json!(0));
+            } else {
+                assert!(depth.is_null(), "state {idx} must not report a depth");
+            }
+        }
+    }
+
+    #[test]
+    fn a_failed_query_is_not_an_absence() {
+        // Unavailable must never be readable as "main has no green".
+        let line = GreenDepth::Unavailable {
+            why: "no hermit checkout".into(),
+        }
+        .line();
+        assert!(line.contains("UNAVAILABLE"), "{line}");
+        assert!(line.contains("NOT evidence"), "{line}");
+        assert_eq!(
+            GreenDepth::Unavailable { why: "x".into() }.json()["state"],
+            serde_json::json!("unavailable")
+        );
+    }
     use super::*;
 
     const RECEIPT_SHA: &str = "630f44aab7fdf4ee52e572c38ae09818e92271b2";
