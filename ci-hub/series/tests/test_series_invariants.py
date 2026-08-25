@@ -122,6 +122,28 @@ class RowLinter(unittest.TestCase):
             "coordinates": {k: None for k in series.COORDINATE_KEYS},
         })))
 
+    def test_allows_diverged_with_the_coordinates_key_ABSENT(self):
+        # THE SHAPE A PRODUCER ACTUALLY EMITS. The test above pins
+        # `coordinates` PRESENT and all-null; a writer with nothing to report is
+        # far likelier to omit the key entirely, and that path was accepted but
+        # undefended -- so a later change making `coordinates` mandatory would
+        # have passed the suite and silently forced producers to skip the row.
+        #
+        # ⚠️ SKIPPING IS THE FAILURE THIS GUARDS. A cell with NO rows reads
+        # `never-measured`; a cell with one coordinate-less diverged row reads
+        # `diverged-unlocated`. Those are different answers, so a producer that
+        # drops the row does not merely lose it -- it RELABELS a divergence it
+        # could not locate as a cell nobody ever ran, which is the exact
+        # under-count the store exists to make visible.
+        self.assertIsNotNone(series.validate_row(row(series={
+            "outcome": "diverged",
+        })))
+        self.assertEqual(
+            series.measurement_state([row(series={"outcome": "diverged"})]),
+            "diverged-unlocated",
+        )
+        self.assertEqual(series.measurement_state([]), "never-measured")
+
     def test_refuses_a_workspace_local_owner_path(self):
         needle = "/" + "home" + "/newton/secret"
         with self.assertRaises(series.MalformedRow):
