@@ -123,10 +123,30 @@ def classify(
         }
     if exit_code is not None:
         return {**common, "state": "completed", "result": "failure"}
+    # NO EVIDENCE AT ALL. Not a verdict -- an admission.
+    #
+    # This branch is reached when there is neither a durable inner exit in the
+    # log nor a resolvable systemd unit. The writer knows NOTHING about the
+    # outcome, and it used to answer `not-run` / `no-result`, which are POSITIVE
+    # CLAIMS THAT THE RUN NEVER HAPPENED. They are not the same statement as "I
+    # cannot tell", and readers cannot recover the difference: the honest
+    # `detail` string sat right beside a `state` that contradicted it.
+    #
+    # Measured on 2026-08-24, three times in one night, all costly:
+    #   * hermit-005's record said finished while its unit ran another 50
+    #     MINUTES. A quiet box was declared on that record and the window was
+    #     spent while the box was not quiet.
+    #   * hermit-006's earlier record said the run was dead while that unit
+    #     still held the box-global lock.
+    #   * the record for the main-tip run said `not-run` for a run whose
+    #     canonical verdict is VALIDATED.
+    # The failure ran in BOTH directions -- finished-while-running and
+    # not-run-while-passed -- so it was never lag or truncation. It was a writer
+    # reporting its own ignorance as a fact about the run.
     return {
         **common,
-        "state": "not-run",
-        "result": "no-result",
+        "state": "unknown",
+        "result": "unknown",
         "detail": "no durable inner exit and no live systemd unit identity",
     }
 
@@ -138,8 +158,16 @@ def from_log(
 
 
 def is_evidenced_terminal(record: Mapping[str, Any]) -> bool:
-    """Accept a durable terminal row only when its positive carries coverage."""
+    """Accept a durable terminal row only when its positive carries coverage.
+
+    `unknown` is deliberately NOT terminal. It is the one state that means the
+    writer could not tell, so freezing it as a durable answer is exactly the
+    defect: an ignorant row would be preserved and re-served instead of being
+    re-derived once the log or the unit can answer.
+    """
     state = record.get("state")
+    if state == "unknown":
+        return False
     if state in {"killed", "not-run", "refused"}:
         return True
     if state != "completed":

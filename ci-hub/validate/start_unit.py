@@ -829,6 +829,19 @@ def wait_for_unit(
             log = Path(raw_log) if isinstance(raw_log, str) else Path("/nonexistent")
             classified = service_result.from_log(log)
             if classified.get("exit_code") is not None or missing >= (5 if seen else 50):
+                # DO NOT STAMP AN END TIME ONTO AN ADMISSION OF IGNORANCE.
+                #
+                # This return fires when `systemctl show` stopped answering. If
+                # the log also carries no exit, `classify` yields `unknown` --
+                # the writer cannot tell what happened. Stamping `finished_at`
+                # there asserted a second thing it did not know: that the run
+                # had ENDED. That pairing is what made a live run read as a
+                # finished one; on 2026-08-24 a record claiming
+                # `finished_at 22:30:32` belonged to a unit that went on
+                # executing until 23:2x, and a quiet box was declared on it.
+                # Give up waiting, yes -- but give up saying when it stopped.
+                if classified.get("state") == "unknown":
+                    return classified
                 return {
                     **classified,
                     "finished_at": datetime.now(timezone.utc).isoformat(),

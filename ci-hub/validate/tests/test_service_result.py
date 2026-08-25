@@ -78,9 +78,42 @@ class ServiceResultTest(unittest.TestCase):
 
         result = service_result.classify(service_result.RunEvidence(), properties=properties)
 
-        self.assertEqual("not-run", result["state"])
-        self.assertEqual("no-result", result["result"])
+        # `unknown`, not `not-run`. This test's whole thesis is that a collected
+        # unit's synthetic success IS NOT EVIDENCE -- so the honest answer is
+        # that the classifier cannot tell, never a positive claim that the run
+        # did not happen.
+        self.assertEqual("unknown", result["state"])
+        self.assertEqual("unknown", result["result"])
         self.assertIsNone(result["exit_code"])
+        self.assertEqual("no-exit-evidence", result["result_source"])
+
+    def test_unknown_is_not_terminal_so_it_is_re_derived_not_frozen(self) -> None:
+        """The one state that means "I cannot tell" must never be durable.
+
+        Freezing it is the defect: an ignorant row gets preserved and re-served
+        instead of being re-derived once the log or the unit can answer.
+        """
+        unknown = service_result.classify(service_result.RunEvidence())
+
+        self.assertEqual("unknown", unknown["state"])
+        self.assertFalse(service_result.is_evidenced_terminal(unknown))
+
+    def test_a_known_zero_node_exit_zero_is_still_not_run_and_still_terminal(self) -> None:
+        """Do not overcorrect: `not-run` is right when the writer KNOWS.
+
+        exit 0 with zero executed nodes is a real observation -- the run
+        happened and did nothing. That must stay a positive, durable claim, or
+        an inert green would start reading as unknown and escape its refusal.
+        """
+        result = self.classify(
+            "   0 test(s) executed, 0 filtered\n"
+            "   nodes: 0 executed, 0 failed, 0 skipped in 0s at -j 16\n"
+            "# ci-hub/validate-lock tool COST ACTUAL wall=0.1s cpu=0.1s "
+            "cpu_user=0.1s cpu_system=0.0s exit=0\n"
+        )
+
+        self.assertEqual("not-run", result["state"])
+        self.assertTrue(service_result.is_evidenced_terminal(result))
 
     def test_loaded_systemd_signal_is_fail_closed_fallback(self) -> None:
         properties = {
