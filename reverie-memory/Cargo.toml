@@ -10,4 +10,5 @@ repository = "https://github.com/facebookexperimental/reverie"
 license = "BSD-2-Clause"
 
 [dependencies]
+libc = "0.2.186"
 syscalls = { version = "0.6.18", features = ["serde"] }
