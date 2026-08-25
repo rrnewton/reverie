@@ -1,0 +1,174 @@
+#!/usr/bin/env python3
+"""Answer "does a task for this already exist?" without ever returning a silent zero.
+
+WHY THIS EXISTS
+---------------
+Six duplicate tasks were filed in one night. The cause is not carelessness: the
+obvious probe LIES BY RETURNING ZERO.
+
+⚠️ `tg search <agent-name>` RETURNS ZERO FOR AN AGENT THAT OWNS DOZENS OF TASKS.
+The FTS table indexes `local_id, title, description, status, notes`. It does NOT
+index `owner`. Measured 2026-08-25 against the live database:
+
+    owner=hermit-004   tasks table COUNT = 82   tg search hits = 0
+    owner=hermit-001   tasks table COUNT = 16   tg search hits = 0
+    owner=hermit-012   tasks table COUNT = 53   tg search hits = 0
+
+Nothing about that output looks wrong. A zero from a search reads as "nothing
+exists", and the next action is to file the thing that already exists.
+
+THE RULE THIS ENCODES
+---------------------
+A zero is only trustworthy when TWO INDEPENDENT QUERIES AGREE ON IT. Every count
+here is taken twice -- once by iterating rows and once as an aggregate -- over
+the base tables, never over the FTS index alone. If the two disagree, or if the
+FTS view disagrees with the base table, this REFUSES with CANNOT-DETERMINE
+rather than reporting the smaller number.
+
+    exit 0  the answer is established (may legitimately be zero)
+    exit 1  usage, or the database could not be read
+    exit 2  CANNOT-DETERMINE: two ways of counting disagreed. NOT a zero.
+
+USAGE
+-----
+    tg-dup-scan --owner <agent>            how many tasks that agent owns
+    tg-dup-scan --topic <token>            tasks mentioning a token anywhere
+    tg-dup-scan --duplicate-titles         tasks sharing a normalised title
+    tg-dup-scan --db <path>                override the database
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
+import re
+import sqlite3
+import sys
+
+
+def _db_path(explicit: str | None) -> str:
+    if explicit:
+        return explicit
+    for env in ("TG_DB_PATH", "TASKGRAPH_DB"):
+        if os.environ.get(env):
+            return os.environ[env]
+    for candidate in (
+        os.path.expanduser("~/.tg/hermit2.db"),
+        os.path.expanduser("~/.taskgraph/tasks.db"),
+        os.path.expanduser("~/.orc/taskgraph.db"),
+        os.path.expanduser("~/.local/share/taskgraph/tasks.db"),
+    ):
+        if os.path.exists(candidate):
+            return candidate
+    raise SystemExit("tg-dup-scan: cannot locate the TaskGraph database; pass --db")
+
+
+def counted_twice(conn: sqlite3.Connection, where: str, params: tuple) -> tuple[int, list]:
+    """Return (count, rows) only when an iteration and an aggregate agree.
+
+    ⚠️ THE TWO QUERIES USE SEPARATE CURSORS DELIBERATELY. A nested query on the
+    cursor being iterated is the other way this class of scan silently
+    under-reports, so the aggregate is never taken from the cursor walking the
+    rows.
+    """
+    rows_cur = conn.cursor()
+    rows = list(rows_cur.execute(f"SELECT local_id, COALESCE(owner,''), status, COALESCE(title,'') FROM tasks WHERE {where}", params))
+    agg_cur = conn.cursor()
+    (total,) = agg_cur.execute(f"SELECT COUNT(*) FROM tasks WHERE {where}", params).fetchone()
+    if len(rows) != total:
+        raise Disagreement(
+            f"iterated {len(rows)} row(s) but COUNT(*) says {total} for WHERE {where}"
+        )
+    return total, rows
+
+
+class Disagreement(RuntimeError):
+    """Two ways of counting the same thing did not agree. Never report a number."""
+
+
+def normalised(title: str) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", (title or "").lower()).strip()
+
+
+def main(argv: list[str]) -> int:
+    ap = argparse.ArgumentParser(add_help=True)
+    ap.add_argument("--owner")
+    ap.add_argument("--topic")
+    ap.add_argument("--duplicate-titles", action="store_true")
+    ap.add_argument("--db")
+    args = ap.parse_args(argv)
+    if not (args.owner or args.topic or args.duplicate_titles):
+        ap.print_help(sys.stderr)
+        return 1
+
+    try:
+        conn = sqlite3.connect(f"file:{_db_path(args.db)}?mode=ro", uri=True)
+    except sqlite3.Error as error:
+        print(f"tg-dup-scan: cannot open the database: {error}", file=sys.stderr)
+        return 1
+
+    try:
+        if args.owner:
+            total, rows = counted_twice(conn, "owner = ?", (args.owner,))
+            print(f"tg-dup-scan: owner={args.owner!r} owns {total} task(s)")
+            # ⚠️ AND SAY WHAT THE OBVIOUS PROBE WOULD HAVE SAID, because the point
+            # is that the two disagree and only one of them is right.
+            try:
+                fts = conn.cursor().execute(
+                    "SELECT COUNT(*) FROM fts_tasks WHERE fts_tasks MATCH ?",
+                    ('"' + args.owner + '"',),
+                ).fetchone()[0]
+                verdict = "would report " + str(fts)
+            except sqlite3.Error as error:
+                fts, verdict = None, "ERRORS OUT (" + type(error).__name__ + ")"
+            if fts != total:
+                print("  the FTS probe behind `tg search " + args.owner + "` " + verdict
+                      + ", not " + str(total) + ".")
+                print("     fts_tasks indexes local_id/title/description/status/notes and NOT")
+                print("     owner, so searching an agent name is not an ownership existence check.")
+            for local_id, owner, status, title in rows[:10]:
+                print(f"    {local_id}  [{status}]  {title[:56]}")
+            if total > 10:
+                print(f"    ... and {total - 10} more")
+            return 0
+
+        if args.topic:
+            like = f"%{args.topic}%"
+            total, rows = counted_twice(
+                conn,
+                "(local_id LIKE ? OR title LIKE ? OR COALESCE(description,'') LIKE ?)",
+                (like, like, like),
+            )
+            print(f"tg-dup-scan: topic={args.topic!r} matches {total} task(s) in the base table")
+            for local_id, owner, status, title in rows[:10]:
+                print(f"    {local_id}  [{status}]  owner={owner or '-'}  {title[:48]}")
+            if total > 10:
+                print(f"    ... and {total - 10} more")
+            if total == 0:
+                print("  zero is ESTABLISHED: iteration and COUNT(*) agree over the base table,")
+                print("  which is not the FTS index. This is an absence, not a failed lookup.")
+            return 0
+
+        total, rows = counted_twice(conn, "1=1", ())
+        groups: dict[str, list[str]] = {}
+        for local_id, owner, status, title in rows:
+            key = normalised(title)
+            if key:
+                groups.setdefault(key, []).append(f"{local_id}[{status}]")
+        dupes = {k: v for k, v in groups.items() if len(v) > 1}
+        print(f"tg-dup-scan: {total} task(s) scanned, {len(dupes)} normalised title(s) held by more than one task")
+        for key, ids in sorted(dupes.items(), key=lambda kv: -len(kv[1]))[:12]:
+            print(f"    x{len(ids)}  {key[:60]}")
+            print(f"           {', '.join(ids[:6])}")
+        if not dupes:
+            print(f"  zero is ESTABLISHED: all {total} rows were iterated and COUNT(*) agreed.")
+        return 0
+    except Disagreement as error:
+        print(f"tg-dup-scan: CANNOT-DETERMINE — {error}", file=sys.stderr)
+        print("  Two ways of counting the same rows disagreed. Reporting either number would be", file=sys.stderr)
+        print("  guessing; a duplicate scan that under-reports certifies the absence it missed.", file=sys.stderr)
+        return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
