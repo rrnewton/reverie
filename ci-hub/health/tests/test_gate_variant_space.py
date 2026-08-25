@@ -64,11 +64,34 @@ def main() -> int:
     silent: list[str] = []
     seen = 0
     for (ln, lead), (tn, trail), (sn, sha) in itertools.product(LEADS, TRAILS, SHA_FORMS):
+        # ⚠️ A CONTEXT LINE FIRST, BECAUSE A BARE INDENTED LINE IS A CODE BLOCK.
+        # Without it the `indent` lead makes the marker the whole body, which
+        # CommonMark -- and `approval_binding.prose_lines` -- read as an indented
+        # code block, so the gate correctly declines to honour it. Asserting that
+        # such a cell must REFUSE would pin the opposite of the deliberate rule
+        # that the gate agrees with what the reader sees. Measured 2026-08-25:
+        # this bracket began failing `indent/punct/backticked` the moment the
+        # fence rule landed, and the fixture was wrong, not the rule.
+        # A real marker appears inside a comment that says something, so model that.
         line = f"{lead}CHANGES-REQUESTED-AT: claude {sha}{trail}"
-        rc, _why = gate.evaluate([approval, line], SHA)
+        body = f"My verdict on this head:\n{line}"
+        rc, _why = gate.evaluate([approval, body], SHA)
         seen += 1
         if rc == gate.OK:
             silent.append(f"refusal SILENTLY CLEARED: lead={ln} trail={tn} sha={sn}")
+
+    # ⚠️ AND PIN THE FENCE RULE ITSELF, in both directions. A marker that renders
+    # as code must NOT refuse -- otherwise every worked example in a review blocks
+    # its own head -- and a marker indented as a CONTINUATION must still refuse.
+    fenced = f"```\nCHANGES-REQUESTED-AT: claude {SHA}\n```"
+    if gate.evaluate([approval, fenced], SHA)[0] != gate.OK:
+        silent.append("FALSE REFUSAL: a marker inside a fenced code block refused")
+    blocked_indent = f"Example:\n\n    CHANGES-REQUESTED-AT: claude {SHA}"
+    if gate.evaluate([approval, blocked_indent], SHA)[0] != gate.OK:
+        silent.append("FALSE REFUSAL: a marker in an indented code block refused")
+    continuation = f"- my verdict:\n    CHANGES-REQUESTED-AT: claude {SHA}"
+    if gate.evaluate([approval, continuation], SHA)[0] == gate.OK:
+        silent.append("SILENTLY CLEARED: an indented CONTINUATION marker was not honoured")
 
     # The other direction, so the bracket cannot pass by blocking everything:
     # a refusal naming a SUPERSEDED sha must NOT block -- that is the author
