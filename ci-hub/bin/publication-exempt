@@ -28,6 +28,7 @@ true, and `--census` still lists every exemption by name.
 from __future__ import annotations
 
 import argparse
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -41,27 +42,38 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
 def resolve_actor(claimed: str) -> str:
     """Refuse unless the process context agrees the caller is who it says.
 
-    Same gate as the comment boundary, for the same reason: an attributed record
-    whose author is wrong is worse than an unattributed one, because it reads as
-    though someone accountable made the call.
+    ⚠️ READ THE TYPED FIELD, NOT THE PRINTED TAG. Bare `who-am-i` prints the
+    five-field disclosure `[team, agent, model, machine, role=...]`; comparing
+    `--who` against that whole string refuses EVERY correct caller, because the
+    tag is not the agent name. `--json` carries `agent` as its own field, and
+    `state`, which is what actually says whether the signals agree.
     """
     who = Path(__file__).resolve().parent / "who-am-i"
-    proc = subprocess.run([str(who)], capture_output=True, text=True)
-    resolved = (proc.stdout or "").strip().splitlines()
-    resolved = resolved[-1].strip() if resolved else ""
+    proc = subprocess.run([str(who), "--json"], capture_output=True, text=True)
+    try:
+        info = json.loads(proc.stdout or "{}")
+    except ValueError:
+        info = {}
+    resolved = str(info.get("agent") or "")
+    state = str(info.get("state") or "")
     if proc.returncode != 0 or not resolved:
         sys.exit(
-            f"publication-exempt: REFUSING — cannot resolve the calling agent "
-            f"({(proc.stderr or '').strip()[:160]}). An exemption that cannot name "
-            "its author is the anonymous hatch this tool exists to close."
+            f"publication-exempt: REFUSING \u2014 cannot resolve the calling agent "
+            f"({(proc.stderr or '').strip()[:160]}). "
+            "A record that cannot name its author records nothing."
+        )
+    if state != "AGREEMENT":
+        sys.exit(
+            f"publication-exempt: REFUSING \u2014 process context resolves {resolved!r} in state "
+            f"{state!r}, not AGREEMENT. An attributed record whose author is "
+            "uncertain is worse than none."
         )
     if claimed and resolved != claimed:
         sys.exit(
-            f"publication-exempt: REFUSING — --who said {claimed!r} but the process "
-            f"context resolves to {resolved!r}."
+            f"publication-exempt: REFUSING \u2014 --who said {claimed!r} but the process context "
+            f"resolves to {resolved!r}."
         )
     return resolved
-
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)

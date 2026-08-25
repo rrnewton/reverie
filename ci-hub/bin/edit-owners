@@ -1,0 +1,93 @@
+#!/usr/bin/env python3
+"""Who claimed each uncommitted change in this checkout, and which have nobody.
+
+    ci-hub/bin/edit-owners            # report
+    ci-hub/bin/edit-owners --strict   # exit 1 if any dirty path is unattributed
+
+⚠️ THE UNATTRIBUTED COUNT IS THE POINT, NOT AN ERROR IN THE TOOL. Coverage starts
+at zero on any checkout that was already dirty, BY CONSTRUCTION: nothing already
+edited can grow a claim retroactively, and manufacturing one would be the same
+after-the-fact inference that made those paths unattributable in the first place.
+A rising ratio is the mechanism working.
+
+This exists so the gap is MEASURED rather than discovered by asking every agent in
+turn. A writer that nobody invokes is inert, and the only honest way to know
+whether it is being invoked is to print the ratio on every run.
+"""
+
+from __future__ import annotations
+
+import argparse
+import subprocess
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from lib import edit_record  # noqa: E402
+
+
+def repo_root(start: Path) -> Path:
+    proc = subprocess.run(
+        ["git", "rev-parse", "--show-toplevel"],
+        cwd=str(start), capture_output=True, text=True,
+    )
+    if proc.returncode != 0:
+        sys.exit("edit-owners: not inside a git checkout")
+    return Path(proc.stdout.strip())
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--strict", action="store_true",
+                        help="exit 1 if any dirty tracked path has no claim")
+    parser.add_argument("--root", default=None)
+    args = parser.parse_args(argv)
+
+    root = Path(args.root).resolve() if args.root else repo_root(Path.cwd())
+    rows = edit_record.attribute(root)
+    if not rows:
+        print(f"edit-owners: no tracked path differs from HEAD in {root}")
+        return 0
+
+    unattributed = [r for r in rows if r.state == "UNATTRIBUTED"]
+    for row in sorted(rows, key=lambda r: (r.state != "UNATTRIBUTED", r.path)):
+        if row.state == "UNATTRIBUTED":
+            print(f"  UNATTRIBUTED           {row.path}")
+            continue
+        newest = row.claimants[-1]
+        others = ""
+        if len(row.claimants) > 1:
+            # Not a conflict. Concurrent editing is allowed; the sequence of
+            # claimants is the handover record and all of them are named.
+            names = ", ".join(dict.fromkeys(c.agent for c in row.claimants[:-1]))
+            others = f"  (also claimed by {names})"
+        print(f"  {row.state:22s} {row.path}")
+        print(f"      {newest.agent} at {newest.claimed_at}: {newest.intent}{others}")
+        if row.state == "CLAIMED-BUT-UNCHANGED":
+            print("      ^ the file is byte-identical to what this claimant found, so "
+                  "the claim does not\n        explain why the path is dirty -- the "
+                  "change may predate it and belong to someone else.")
+
+    bad = edit_record.malformed_count(root)
+    print()
+    print(f"dirty tracked paths: {len(rows)}   "
+          f"claimed: {len(rows) - len(unattributed)}   "
+          f"UNATTRIBUTED: {len(unattributed)}")
+    if bad:
+        # Say what was dropped. A silently smaller denominator reads as better
+        # coverage than was measured.
+        print(f"journal lines skipped as malformed: {bad}")
+
+    if unattributed:
+        print()
+        print("An unattributed change cannot be committed under anyone's disclosure and "
+              "cannot be\ndistinguished from a half-finished edit. Ask before "
+              "reconciling; do not infer an owner\nfrom which agent last mentioned "
+              "the file -- that inference is what failed.")
+    if args.strict and unattributed:
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

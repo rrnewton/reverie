@@ -1,0 +1,115 @@
+#!/usr/bin/env python3
+"""Record that you are about to edit a path in a shared checkout.
+
+    ci-hub/bin/claim-edit AGENTS.md --intent "fix the heredoc guidance" \\
+        --who hermit-005 --team hermit2 --role impl
+
+RUN IT BEFORE THE EDIT, NOT AFTER. The whole value is that the record exists at
+the moment the edit starts; a claim written afterwards is an assertion about the
+past, and reconstructing authorship after the fact is the thing that already
+failed -- eight paths in `dev-hermit` are unattributable today precisely because
+every available signal was a later inference.
+
+THIS IS NOT A LOCK. It refuses nothing, waits for nothing, and does not care if
+another agent claims the same path. Two claims on one path is a legitimate state
+and both are reported. Serialising the fleet would trade an attribution gap for a
+throughput collapse.
+
+The identity is resolved through the same process-context authority that
+attributes a comment write, and the tool REFUSES if `--who` disagrees with it. An
+attributed record whose author is wrong is worse than no record, because it reads
+as though someone accountable made the edit.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import subprocess
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from lib import edit_record  # noqa: E402
+
+
+def repo_root(start: Path) -> Path:
+    proc = subprocess.run(
+        ["git", "rev-parse", "--show-toplevel"],
+        cwd=str(start),
+        capture_output=True,
+        text=True,
+    )
+    if proc.returncode != 0:
+        sys.exit("claim-edit: not inside a git checkout")
+    return Path(proc.stdout.strip())
+
+
+def resolve_actor(claimed: str) -> str:
+    """Refuse unless the process context agrees the caller is who it says.
+
+    ⚠️ READ THE TYPED FIELD, NOT THE PRINTED TAG. Bare `who-am-i` prints the
+    five-field disclosure `[team, agent, model, machine, role=...]`; comparing
+    `--who` against that whole string refuses EVERY correct caller, because the
+    tag is not the agent name. `--json` carries `agent` as its own field, and
+    `state`, which is what actually says whether the signals agree.
+    """
+    who = Path(__file__).resolve().parent / "who-am-i"
+    proc = subprocess.run([str(who), "--json"], capture_output=True, text=True)
+    try:
+        info = json.loads(proc.stdout or "{}")
+    except ValueError:
+        info = {}
+    resolved = str(info.get("agent") or "")
+    state = str(info.get("state") or "")
+    if proc.returncode != 0 or not resolved:
+        sys.exit(
+            f"claim-edit: REFUSING \u2014 cannot resolve the calling agent "
+            f"({(proc.stderr or '').strip()[:160]}). "
+            "A record that cannot name its author records nothing."
+        )
+    if state != "AGREEMENT":
+        sys.exit(
+            f"claim-edit: REFUSING \u2014 process context resolves {resolved!r} in state "
+            f"{state!r}, not AGREEMENT. An attributed record whose author is "
+            "uncertain is worse than none."
+        )
+    if claimed and resolved != claimed:
+        sys.exit(
+            f"claim-edit: REFUSING \u2014 --who said {claimed!r} but the process context "
+            f"resolves to {resolved!r}."
+        )
+    return resolved
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("paths", nargs="+", help="paths you are about to edit")
+    parser.add_argument("--intent", required=True, help="what you are changing and why")
+    parser.add_argument("--who", default="")
+    parser.add_argument("--team", default="")
+    parser.add_argument("--role", default="")
+    args = parser.parse_args(argv)
+
+    root = repo_root(Path.cwd())
+    actor = resolve_actor(args.who)
+
+    rels = []
+    for raw in args.paths:
+        target = Path(raw).resolve()
+        try:
+            rels.append(str(target.relative_to(root)))
+        except ValueError:
+            sys.exit(f"claim-edit: {raw} is not inside {root}")
+
+    claims = edit_record.record_claim(
+        root, rels, actor, args.team, args.role, args.intent
+    )
+    for claim in claims:
+        seen = claim.blob_before[:12] if claim.blob_before else "absent"
+        print(f"claimed {claim.path} for {actor} (content at claim: {seen})")
+    print(f"journal: {edit_record.journal_path(root)}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

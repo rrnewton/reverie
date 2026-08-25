@@ -322,3 +322,9 @@ experiments/*/pn
 
 # Lock file for the tracked .wrkslots.yml. Zero bytes, machine-local.
 /.wrkslots.yml.lock
+
+# Working-tree edit claims (ci-hub/bin/claim-edit). Deliberately untracked: a
+# claim describes THIS checkout's dirty state and stops meaning anything once the
+# tree is reconciled. Tracking it would make the attribution record itself an
+# uncommitted change with no recorded owner, which is the defect it closes.
+.edit-claims.jsonl
