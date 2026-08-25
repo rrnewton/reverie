@@ -83,14 +83,42 @@ def main(path):
 
 import pathlib, sys
 TARGET = pathlib.Path(__file__).resolve().parent.parent / "approval_binding.py"
-for label,path in [("approval_binding", str(TARGET))]:
-    rows, bad = main(path)
-    print(f"{label}: {len(rows)-len(bad)}/{len(rows)} cells safe, {len(bad)} SILENTLY WRONG")
+
+
+def report(bad, rows):
+    """Human-readable breakdown, shared by the test and the script entry point."""
     from collections import Counter
-    byc = Counter(b[0] for b in bad); bys = Counter(b[2] for b in bad); byl = Counter(b[3] for b in bad)
-    print("  by composition:", dict(byc))
-    print("  by separator  :", dict(bys))
-    print("  by lane token :", dict(byl))
-    for b in bad[:6]: print("   SILENTLY WRONG:", b[:7], "bound=", (b[8] or "NOTHING")[:12])
+    lines = [f"{len(rows)-len(bad)}/{len(rows)} cells safe, {len(bad)} SILENTLY WRONG"]
+    if bad:
+        lines.append(f"  by composition: {dict(Counter(b[0] for b in bad))}")
+        lines.append(f"  by separator  : {dict(Counter(b[2] for b in bad))}")
+        lines.append(f"  by lane token : {dict(Counter(b[3] for b in bad))}")
+        for b in bad[:6]:
+            lines.append(f"   SILENTLY WRONG: {b[:7]} bound= {(b[8] or 'NOTHING')[:12]}")
+    return "\n".join(lines)
+
+
+# ⚠️ THIS MATRIX USED TO RUN AT IMPORT AND CALL sys.exit, WHICH COST THE WHOLE
+# SUITE. There was no `__main__` guard, so `pytest` importing this file during
+# COLLECTION raised SystemExit, pytest reported INTERNALERROR, and the run aborted
+# for the ENTIRE directory: `ci-hub/health/tests` reported discovered=218
+# executed=0 -- 218 assertions that read as coverage and had never run, including
+# the APPROVED-AT grammar brackets that decide what may bind a review lane.
+#
+# ⚠️ AND GUARDING IT ALONE WOULD HAVE BEEN THE WRONG FIX. A guard stops the abort
+# but leaves this file contributing ZERO tests to the suite it is named for, so
+# its 480 cells would still never run under the runner -- trading a loud abort for
+# a silent gap, which is the same defect wearing the opposite face. So the matrix
+# is ALSO exposed as a real test below. The script entry point is preserved
+# because the per-axis breakdown is genuinely useful when it does fail.
+def test_marker_axis_space():
+    rows, bad = main(str(TARGET))
+    assert rows, "the axis matrix generated no cells; the enumeration broke"
+    assert not bad, "approval_binding marker axis space:\n" + report(bad, rows)
+
+
+if __name__ == "__main__":
+    rows, bad = main(str(TARGET))
+    print("approval_binding: " + report(bad, rows))
     print("RESULT: " + ("PASS" if not bad else "FAIL"))
     sys.exit(1 if bad else 0)
