@@ -1038,7 +1038,7 @@ def write_report(args, meta: dict, results: list[RunResult], fh):
 
     if failed or noresult or notrun:
         w("-" * 78)
-        w(f"RUNS THAT PRODUCED NO DIVERGENCE POINT ({len(failed) + len(noresult) + len(notrun)})")
+        w(non_measurement_heading(results))
         w("-" * 78)
         w("  These are NOT clean and NOT diverged. Counting them either way would be")
         w("  a value that reads as information and carries none.")
@@ -1164,6 +1164,31 @@ def verdict_lines(meta: dict, results: list[RunResult]) -> list[str]:
     else:
         lines.append(f"VERDICT: all {n} runs clean, none diverged, mode={meta['mode']}.")
     return lines
+
+
+def non_measurement_heading(results: list[RunResult]) -> str:
+    """Name failed/non-result runs without presenting total failure as clean.
+
+    The generic "no divergence point" wording is accurate for a mixed sweep,
+    but dangerously incomplete when every run failed: in that case no
+    distribution was measured at all. Keep the two states visibly distinct.
+    """
+    failed = [r for r in results if r.category == "failed"]
+    noresult = [r for r in results if r.category == "no_result"]
+    notrun = [r for r in results if r.category == "not_run"]
+    count = len(failed) + len(noresult) + len(notrun)
+    measured = sum(r.category in ("diverged", "clean") for r in results)
+    if results and measured == 0:
+        if len(failed) == len(results):
+            return (
+                f"ALL {len(results)} RUNS FAILED; "
+                "NO DIVERGENCE DISTRIBUTION WAS MEASURED"
+            )
+        return (
+            f"NO RUN PRODUCED A VERDICT ({len(results)} RUNS); "
+            "NO DIVERGENCE DISTRIBUTION WAS MEASURED"
+        )
+    return f"RUNS THAT PRODUCED NO DIVERGENCE POINT ({count})"
 
 
 CHECK_KIND_MEANING = {
@@ -1294,10 +1319,10 @@ def main() -> int:
             "  bin/hermit-repeat -n 20 -- /bin/echo hello\n"
             "  bin/hermit-repeat -n 20 --mode concurrent -- ./target/debug/mythread\n"
             "  bin/hermit-repeat -n 20 --mode concurrent --backend liteinst -- /bin/echo hi\n"
-            "  bin/hermit-repeat -n 8 --hermit-arg=--detlog-io-buffers -- ./guest\n"
+            "  bin/hermit-repeat -n 8 --hermit-arg=--no-detlog-io-buffers -- ./guest\n"
             "\n"
             "NOTE: --hermit-arg and --global-arg need the =VALUE form when the value\n"
-            "starts with '-', e.g. --hermit-arg=--detlog-io-buffers. Repeat the flag\n"
+            "starts with '-', e.g. --hermit-arg=--no-detlog-io-buffers. Repeat the flag\n"
             "for each extra argument.\n"
         ),
     )
@@ -1313,7 +1338,7 @@ def main() -> int:
         ),
     )
     p.add_argument("--backend", help="hermit --backend (ptrace|dbt|liteinst|sabre|kvm|e9patch)")
-    p.add_argument("--hermit-arg", action="append", default=[], help="extra arg for `hermit run`, repeatable; use the =VALUE form when it starts with '-' (--hermit-arg=--detlog-io-buffers)")
+    p.add_argument("--hermit-arg", action="append", default=[], help="extra arg for `hermit run`, repeatable; use the =VALUE form when it starts with '-' (--hermit-arg=--no-detlog-io-buffers)")
     p.add_argument("--global-arg", action="append", default=[], help="extra hermit GLOBAL arg (before the subcommand), repeatable; same =VALUE rule")
     p.add_argument("-j", "--jobs", type=int, help="concurrency in concurrent mode (default: N)")
     p.add_argument("--deadline", type=int, default=900, help="per-node wall deadline in seconds, enforced by safehermit's cgroup (default 900)")
@@ -1704,6 +1729,53 @@ def _selftest() -> int:
           a_naive[1] < b_naive[0], True)
     check("2/20 vs 13/20 read as INDISTINGUISHABLE once corrected",
           a_corr[1] >= b_corr[0], True)
+
+    # --- terminal report ------------------------------------------------
+    # Two-sided bracket for the owner-visible failure: a sweep where every run
+    # errors must not wear the same "no divergence" wording as a sweep where
+    # every verify pair completed cleanly.
+    report_meta = {"mode": "sequential"}
+    all_failed = [
+        RunResult(
+            index=i,
+            name=f"run{i}",
+            dir=f"/fixture/run{i}",
+            category="failed",
+            why="hermit exited before producing a verdict",
+            error_tail=["Error: backend unavailable"],
+        )
+        for i in range(1, 4)
+    ]
+    all_clean = [
+        RunResult(
+            index=i,
+            name=f"run{i}",
+            dir=f"/fixture/run{i}",
+            category="clean",
+            why="verified=true bitwise_parity=true",
+        )
+        for i in range(1, 4)
+    ]
+    check(
+        "all-error heading names total failure",
+        non_measurement_heading(all_failed),
+        "ALL 3 RUNS FAILED; NO DIVERGENCE DISTRIBUTION WAS MEASURED",
+    )
+    check(
+        "all-error verdict names total failure",
+        verdict_lines(report_meta, all_failed)[0],
+        "VERDICT: ALL 3 RUNS FAILED. NO DISTRIBUTION WAS MEASURED.",
+    )
+    check(
+        "all-clean verdict remains no-divergence",
+        verdict_lines(report_meta, all_clean),
+        ["VERDICT: all 3 runs clean, none diverged, mode=sequential."],
+    )
+    check(
+        "all-clean verdict is not mislabeled as failure",
+        any("FAILED" in line for line in verdict_lines(report_meta, all_clean)),
+        False,
+    )
 
     for f in failures:
         print(f"{PROG}: SELFTEST FAIL {f}", file=sys.stderr)
