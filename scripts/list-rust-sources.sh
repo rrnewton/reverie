@@ -80,16 +80,13 @@ owned_by_a_nested_workspace() {
 # TOOLING -- a staleness dashboard and an update driver, both executable -- and
 # only `ai_docs/archived/` is a capture of what was run. Editing a capture to
 # satisfy a formatter changes the record; editing live tooling does not.
-is_dated_record() {
-    case "$1" in
-        experiments/*|benchmarks/*|dev_transcripts/*|ai_docs/archived/*) return 0 ;;
-    esac
-    return 1
-}
+# The dated-record rule is SHARED; see scripts/lint-exclusions.sh for why, and
+# for the two named per-language deviations.
+. "$(dirname "${BASH_SOURCE[0]}")/lint-exclusions.sh"
 
 git ls-files -z -- '*.rs' | while IFS= read -r -d '' f; do
     [ -f "$f" ] || continue          # skip gitlinks (hermit, reverie, liteinst2, agent-utils)
-    is_dated_record "$f" && continue
+    lint_is_dated_record "$f" && continue
     owned_by_a_nested_workspace "$f" && continue
     printf '%s\n' "$f"
 done | sort

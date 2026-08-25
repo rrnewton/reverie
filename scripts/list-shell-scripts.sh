@@ -50,11 +50,14 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.." || exit 1
 #                           two QEMU demos to approve a comment is not a good trade
 #                           to bundle into this change. Tracked separately; the other
 #                           12 scripts under demos/ ARE covered.
+# The dated-record rule is SHARED; see scripts/lint-exclusions.sh.
+. "$(dirname "${BASH_SOURCE[0]}")/lint-exclusions.sh"
+
 is_excluded() {
-    case "$1" in
-        experiments/*|ai_docs/*) return 0 ;;
-        demos/common.sh)         return 0 ;;
-    esac
+    lint_is_dated_record "$1" && return 0
+    # SHELL-ONLY DEVIATION, named in lint-exclusions.sh: a sourced fragment,
+    # not a script -- no shebang, no independent execution path.
+    case "$1" in demos/common.sh) return 0 ;; esac
     return 1
 }
 

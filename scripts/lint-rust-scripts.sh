@@ -47,7 +47,11 @@ fi
 # ⚠️ THE EXCLUSION IS COUNTED AND PRINTED, NEVER SILENT. A gate that quietly
 # skips part of its population reads as "covered everything" when it did not,
 # which is the shape of defect this gate was created to close.
-excluded_re='^(experiments|benchmarks)/'
+# The dated-record rule is SHARED; see scripts/lint-exclusions.sh for why, and for
+# the two named per-language deviations. This gate previously carried its own
+# two-directory list, which was the narrowest of the four and agreed with none of
+# them.
+. "$(dirname "${BASH_SOURCE[0]}")/lint-exclusions.sh"
 
 count_only=0
 if [ "${1:-}" = "--count" ]; then
@@ -69,7 +73,7 @@ else
   scripts=()
   skipped=0
   for f in "${all[@]}"; do
-    if [[ "$f" =~ $excluded_re ]]; then
+    if lint_is_dated_record "$f"; then
       skipped=$((skipped + 1))
     else
       scripts+=("$f")

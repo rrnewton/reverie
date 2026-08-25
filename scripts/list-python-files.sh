@@ -43,11 +43,14 @@ cd "$(dirname "${BASH_SOURCE[0]}")/.." || exit 1
 #   shmem_exec_obj/,          Separate projects staged in this tree with their own
 #   crates-squat-staging/     build and their own conventions; the parent lint gate
 #                             is not their owner.
+# The dated-record rule is SHARED; see scripts/lint-exclusions.sh.
+. "$(dirname "${BASH_SOURCE[0]}")/lint-exclusions.sh"
+
 is_excluded() {
-    case "$1" in
-        experiments/*|ai_docs/*|benchmarks/*|dev_transcripts/*) return 0 ;;
-        shmem_exec_obj/*|crates-squat-staging/*)                return 0 ;;
-    esac
+    lint_is_dated_record "$1" && return 0
+    # NOTE: shmem_exec_obj/ and crates-squat-staging/ are NOT excluded here.
+    # The nested-Cargo-workspace deviation is RUST ONLY -- Python in those
+    # directories has no other gate to receive it. See lint-exclusions.sh.
     return 1
 }
 
