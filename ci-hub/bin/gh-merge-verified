@@ -118,6 +118,7 @@ from __future__ import annotations
 
 import atexit
 import os
+import shutil
 import subprocess
 import sys
 
@@ -151,6 +152,50 @@ def cleanup_scratch() -> None:
     for suffix in ("pr", "main"):
         subprocess.run(["git", "update-ref", "-d", f"{SCRATCH}/{suffix}"],
                        capture_output=True, text=True)
+
+
+def gh_argv(args: list[str]) -> list[str]:
+    """Route `gh` through `with-proxy` where that wrapper exists.
+
+    ⚠️ WRAPPED HERE RATHER THAN DOCUMENTED. On a proxy-required box a bare `gh`
+    cannot reach api.github.com, so the merge dies with a network error before
+    it has said anything about the pull request -- and a tool that emits
+    "network is unreachable" reads as BROKEN rather than as correctly declining
+    to act. The condition is not rare on these hosts: measured 2026-08-25,
+    `git ls-remote` succeeded against github.com while `curl
+    https://api.github.com` failed outright on the same machine.
+
+    Telling every caller to remember a prefix is the kind of rule that depends
+    on memory, which this file's neighbour argues is a preference rather than a
+    fix. So the wrapper is applied internally, and only when it is actually
+    present, so boxes without it are unaffected.
+    """
+    return ["with-proxy", *args] if shutil.which("with-proxy") else args
+
+
+def looks_unreachable(text: str) -> bool:
+    """Does this failure say the network was never crossed?
+
+    Kept deliberately narrow. The point is to separate "GitHub REFUSED the
+    merge" -- a verdict about the pull request -- from "we never reached
+    GitHub", which is a statement about this box and must never be recorded as
+    a refusal.
+    """
+    lowered = text.lower()
+    return any(
+        marker in lowered
+        for marker in (
+            "network is unreachable",
+            "could not resolve host",
+            "connection refused",
+            "connection timed out",
+            "dial tcp",
+            "proxy",
+            "certificate",
+            "tls handshake",
+            "i/o timeout",
+        )
+    )
 
 
 def main() -> None:
@@ -200,10 +245,22 @@ def main() -> None:
 
     if not verify_only:
         # NO PIPE: the status read here is `gh pr merge`'s own.
-        rc, out, err = run(["gh", "pr", "merge", pr, "--repo", repo, *extra])
+        rc, out, err = run(gh_argv(["gh", "pr", "merge", pr, "--repo", repo, *extra]))
         sys.stdout.write(out)
         sys.stderr.write(err)
         if rc != 0:
+            # ⚠️ NEVER RECORD "we could not reach GitHub" AS "GitHub refused the
+            # merge". The first is about this box and says nothing about the
+            # pull request; the second is a verdict. Collapsing them is how an
+            # environment fault gets written down as a decision.
+            if looks_unreachable(out + err):
+                die(4, "", f"gh-merge-verified: COULD NOT DETERMINE — the merge was never attempted "
+                    f"(exit {rc}): the GitHub API was not reachable from this host.",
+                    "  THIS IS NOT A STATEMENT ABOUT THE PULL REQUEST. Nothing was merged and "
+                    "nothing was verified.",
+                    "  `with-proxy` was " + ("used" if shutil.which("with-proxy") else "NOT FOUND on PATH")
+                    + "; on a proxy-required box install or expose it, or run the merge from a host "
+                      "that can reach api.github.com.")
             die(2, "", f"gh-merge-verified: the merge command FAILED (exit {rc}). Nothing was verified.",
                 "  This is the case a piped exit status hides.")
 

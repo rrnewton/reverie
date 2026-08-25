@@ -167,6 +167,84 @@ def case(landed: str, expect_code: int, expect_text: str, name: str) -> None:
         )
 
 
+def load_tool():
+    """Import the tool as a module so its helpers can be tested directly."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_loader(
+        "gh_merge_verified_under_test",
+        importlib.machinery.SourceFileLoader("gh_merge_verified_under_test", str(TOOL)),
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def unit_cases() -> None:
+    """The proxy wrapping and the unreachable/refused split.
+
+    Both exist so an ENVIRONMENT fault is never written down as a verdict about
+    a pull request, which is the failure this whole file is shaped around.
+    """
+    import importlib.machinery  # noqa: F401 - used via load_tool
+
+    tool = load_tool()
+
+    with tempfile.TemporaryDirectory(prefix="gh-merge-verified-proxy-") as tmp:
+        root = Path(tmp)
+
+        # with-proxy present -> the gh call is routed through it.
+        fake = root / "withproxy"
+        fake.mkdir()
+        wp = fake / "with-proxy"
+        wp.write_text("#!/bin/bash\nexec \"$@\"\n")
+        wp.chmod(0o755)
+        saved = os.environ.get("PATH", "")
+        try:
+            os.environ["PATH"] = f"{fake}:{saved}"
+            argv = tool.gh_argv(["gh", "pr", "merge", "1"])
+            check(
+                "gh_argv wraps when with-proxy exists",
+                argv[0] == "with-proxy" and argv[1] == "gh",
+                f"got {argv}",
+            )
+
+            # absent -> unchanged, so boxes without the wrapper are unaffected.
+            os.environ["PATH"] = str(root / "empty")
+            argv = tool.gh_argv(["gh", "pr", "merge", "1"])
+            check(
+                "gh_argv is a no-op when with-proxy is absent",
+                argv[0] == "gh",
+                f"got {argv}",
+            )
+        finally:
+            os.environ["PATH"] = saved
+
+    # A network fault must not read as a refusal...
+    for text in (
+        "dial tcp 140.82.114.6:443: connect: network is unreachable",
+        "could not resolve host: api.github.com",
+        "Post \"https://api.github.com/graphql\": proxyconnect tcp: connection refused",
+    ):
+        check(
+            f"unreachable recognised: {text[:34]!r}",
+            tool.looks_unreachable(text),
+            "classified as a real merge refusal",
+        )
+
+    # ...and a real refusal must not be excused as a network fault.
+    for text in (
+        "Pull request is not mergeable: the merge commit cannot be cleanly created.",
+        "GraphQL: Base branch was modified. Review and try the merge again.",
+        "pull request #7 is already closed",
+    ):
+        check(
+            f"refusal NOT excused: {text[:34]!r}",
+            not tool.looks_unreachable(text),
+            "a genuine refusal was misread as a network fault, which would hide it",
+        )
+
+
 def main() -> int:
     if not TOOL.exists():
         print(f"gh-merge-verified-test: {TOOL} is missing", file=sys.stderr)
@@ -187,6 +265,8 @@ def main() -> int:
     # The landing here is a SQUASH -- same content, different sha -- which is why
     # ancestry cannot answer this question and content-identity can.
     case("arrived", 0, "VERIFIED", "a squash landing that did arrive")
+
+    unit_cases()
 
     print()
     if FAILURES:
