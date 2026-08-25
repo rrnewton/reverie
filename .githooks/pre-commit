@@ -63,6 +63,87 @@
 # Policy:   .githooks/hygiene-policy.md
 
 set -u
+
+# ---------------------------------------------------------------------------
+# SHARED-INDEX GUARD. Restored 2026-08-25; removed 2026-08-15 by 4acd425b
+# "Remove parent Git serialization blockers", which took six guards out of this
+# hook family at once. This one is not a serialization blocker: it holds no
+# lock, refuses no concurrent writer, and is about a single commit taking paths
+# that are not its author's.
+#
+# WHAT IT PREVENTS, demonstrated before restoring rather than argued: with the
+# guard absent, agent A stages mine.txt, agent B stages theirs.txt into the same
+# shared index, and A's `git commit -m ...` exits 0 having taken BOTH. AGENTS.md
+# devotes a section to exactly this ("Never commit to `dev-hermit` from the
+# shared parent checkout") and records three incidents from it. The prose
+# survived 4acd425b; the mechanism did not.
+#
+# WHY block IS THE DEFAULT AND NOT warn: .githooks/hygiene-policy.md has said
+# "blocks bare commits by default (since 2026-08-06)" continuously, including
+# every day the guard was absent. Restoring at warn would leave the same
+# policy-outlives-enforcement gap that made this invisible for ten days, so the
+# code is brought back to what the policy already claims.
+#
+# CENSUS RE-DERIVED 2026-08-25, because hygiene-policy.md records that the
+# ORIGINAL census of this was WRONG TWICE -- it counted error-message strings as
+# call sites and its grep missed the `-o`/`--only` plus separate-`--` form. Both
+# mistakes were avoided here. Every non-test site that commits in the PARENT
+# tree passes an explicit pathspec: ci-hub.rs:2355,2562; ledger/publisher.py:354,
+# 500; pin/validation_gate.py:140; single-submodule-bump.rs:458 (`--only`, the
+# form the old census missed); primary_checkout.py:975 (via the wrapper). The
+# three that looked bare are not parent commits -- main-tooling-link.rs:543 is
+# inside `#[cfg(test)]`, and checkout-hermit-pr-latest-reverie.sh:263 runs in a
+# hermit checkout. The shared index was also sampled 35 times over 105s while
+# the fleet worked: empty every time. Nothing known would be refused.
+#
+# Escape hatches unchanged: HERMIT_SHARED_INDEX_GUARD=warn (report, allow) or
+# =off (silent). Independent of HERMIT_PIN_DRIFT_OVERRIDE.
+# Evidence + harness (29 checks): experiments/shared-git-index-race_20260806/
+# ---------------------------------------------------------------------------
+shared_index_guard() {
+  [ "${HERMIT_SHARED_INDEX_GUARD:-block}" = "off" ] && return 0
+  # A pathspec commit is already safe -- git builds a temporary *next-index*
+  # for `commit -- <paths>` / `--only`, so this is how the safe form is detected.
+  case "${GIT_INDEX_FILE:-.git/index}" in *next-index*) return 0 ;; esac
+
+  local staged n
+  staged=$(git diff --cached --name-only 2>/dev/null) || return 0
+  [ -z "$staged" ] && return 0
+  n=$(printf '%s\n' "$staged" | grep -c .)
+
+  {
+    echo "----------------------------------------------------------------------"
+    echo "SHARED INDEX: this is a BARE commit, so it takes EVERYTHING staged in"
+    echo "the parent's shared index -- including any path another agent staged."
+    echo "$n path(s) staged right now; first 15:"
+    printf '%s\n' "$staged" | head -15 | sed 's/^/    /'
+    [ "$n" -gt 15 ] && echo "    ... and $((n - 15)) more (git diff --cached --name-only)"
+    echo
+    echo "If any line above is not yours, abort (Ctrl-C) and instead run:"
+    echo "      git add <your paths> && git commit -m 'msg' -- <your paths>"
+  } >&2
+
+  if [ "${HERMIT_SHARED_INDEX_GUARD:-block}" != "warn" ]; then
+    {
+      echo "BLOCKED: bare commits are refused in this shared-index repo."
+      echo "If every path above really is yours, the same commit as a pathspec is fine:"
+      echo "      git commit -m 'msg' -- <your paths>"
+      echo "Deliberate exception: HERMIT_SHARED_INDEX_GUARD=warn (or =off) git commit ..."
+      echo "----------------------------------------------------------------------"
+    } >&2
+    return 1
+  fi
+  echo "(warn mode; the default is block)" >&2
+  echo "----------------------------------------------------------------------" >&2
+  return 0
+}
+# In warn/off mode a defect in the guard must never block a commit.
+if [ "${HERMIT_SHARED_INDEX_GUARD:-block}" = "block" ]; then
+  shared_index_guard || exit 1
+else
+  shared_index_guard || true
+fi
+
 LIMIT_KB="${HERMIT_HYGIENE_MAX_KB:-1024}"
 # Per-commit growth allowance for a path that ALREADY exists in HEAD. 256 KiB is
 # ~1.7x the measured 153 KiB daily ledger import, so a normal append has room

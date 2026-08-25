@@ -305,6 +305,8 @@ lint: ## Lint parent-repository scripts, tests, paths, and submodule policy
 	gate hermit-au-pin   'scripts/check_hermit_agent_utils_pin.py'; \
 	gate primary-fresh   'scripts/primary_checkout.py check'; \
 	gate reset-cas       '.githooks/tests/test-reset-cas-guard.sh'; \
+	gate shared-index    '.githooks/tests/test-shared-index-guard.sh'; \
+	gate commit-attrib   '.githooks/tests/test-commit-msg-attribution.sh'; \
 	gate codex-setup     '$(MAKE) --no-print-directory check-codex-setup'; \
 	gate claude-md-size  '$(MAKE) --no-print-directory check-claude-md-size'; \
 	gate portability     '$(MAKE) --no-print-directory check-portability'; \
