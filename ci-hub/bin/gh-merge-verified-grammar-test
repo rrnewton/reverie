@@ -76,6 +76,43 @@ CASES = [
 ]
 
 
+STALE_HEAD = "1f4982f7ab40" + "0" * 28
+STALE_OLD = "94d9a86545d7" + "0" * 28
+
+
+def probe_labels(module, labels, comments) -> bool:
+    """True when the lander REFUSES on a stale passed-review label."""
+    module.run = lambda argv, **kw: (
+        0,
+        json.dumps({
+            "labels": [{"name": n} for n in labels],
+            "comments": [{"body": b} for b in comments],
+            "reviews": [],
+        }),
+        "",
+    )
+    return len(module.stale_review_labels("1", "o/r", STALE_HEAD)) > 0
+
+
+# A label outlives the sha it was earned at. https://github.com/rrnewton/hermit/pull/2601
+# merged with authoritative=0 because the pre-rebase passed-review-codex label
+# admitted it. The last case is the scope guard: no label, no new requirement.
+LABEL_CASES = [
+    ("stale label refuses (the #2601 shape)",
+     ["passed-review-codex"], [f"APPROVED-AT: codex {STALE_OLD}"], True),
+    ("re-bound label admits",
+     ["passed-review-codex"],
+     [f"APPROVED-AT: codex {STALE_OLD}", f"APPROVED-AT: codex {STALE_HEAD}"], False),
+    ("label with no binding at all refuses",
+     ["passed-review-codex"], ["looks good"], True),
+    ("missing lane token does not rescue a stale label",
+     ["passed-review-codex"],
+     [f"APPROVED-AT: codex {STALE_OLD}", f"APPROVED-AT {STALE_HEAD}"], True),
+    ("no passed-review label imposes no requirement",
+     [], [f"APPROVED-AT: codex {STALE_OLD}"], False),
+]
+
+
 def main() -> int:
     failures = []
     lander = load(LANDER, "lander_under_test")
@@ -110,7 +147,14 @@ def main() -> int:
     else:
         print("  PASS  authority parses a decorated refusal")
 
-    total = len(CASES) + 3
+    for name, labels, comments, want_refuse in LABEL_CASES:
+        got = probe_labels(lander, labels, comments)
+        ok = got == want_refuse
+        print(f"  {'PASS' if ok else 'FAIL'}  {name}: refuses={got} want={want_refuse}")
+        if not ok:
+            failures.append(name)
+
+    total = len(CASES) + len(LABEL_CASES) + 3
     print(f"\nassertions: {total - len(failures)} passed, {len(failures)} failed")
     if failures:
         print("RESULT: FAIL")

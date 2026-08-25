@@ -134,6 +134,11 @@ EXIT
        purpose, so a broken verifier is never read as a clean landing.
     5  REFUSED TO MERGE: a CHANGES-REQUESTED-AT names this exact head. Nothing was
        attempted. An APPROVED-AT at the same head does not override it.
+    6  REFUSED TO MERGE: a `passed-review-<lane>` label asserts an approval that is
+       NOT bound to this head -- the label outlived the sha it was earned at.
+       Nothing was attempted. Scoped narrowly: a pull request carrying no
+       passed-review label is untouched, so this imposes no new review
+       requirement; it only stops a stale cache from admitting.
 """
 
 from __future__ import annotations
@@ -417,6 +422,68 @@ def blocking_changes_requests(pr: str, repo: str, head: str) -> list[str]:
     return blocking
 
 
+def stale_review_labels(pr: str, repo: str, head: str) -> list[str]:
+    """`passed-review-<lane>` labels whose lane is NOT bound to THIS head.
+
+    ⚠️ A LABEL OUTLIVES THE SHA IT WAS EARNED AT. That is the whole defect. The
+    approval was genuine; the head then moved and the label kept saying yes.
+    Measured on https://github.com/rrnewton/hermit/pull/2601, merged
+    2026-08-25T18:57:53Z with authoritative=0: the codex lane bound at 94d9a865,
+    hermit-012 pushed a rebase to 1f4982f7 which voids the lane, and the claude
+    reviewer posted `APPROVED-AT 1f4982f7...` with NO LANE TOKEN so it parsed as
+    malformed rather than as a lane. Comment evidence was therefore empty -- and
+    the pre-rebase `passed-review-codex` label admitted the merge anyway.
+
+    THIS IS THE DANGEROUS INVERSION of the stranded-approval failure. When a
+    rebase strands approvals the binding is LOST: work stalls, visibly, and
+    somebody re-reviews. Here the binding is STALE: the merge goes through and
+    nothing says so. Same mechanism, opposite direction, and only one of them is
+    safe to get wrong.
+
+    SCOPE, deliberately narrow. This does NOT impose a review requirement on
+    pull requests that never claimed one -- a pull request with no
+    `passed-review-*` label is untouched. It refuses only when a label ASSERTS an
+    approval that the evidence no longer supports at this head. The label is a
+    cache; this makes the cache unable to outlive what it caches.
+
+    Returns the human-readable rows to print, or ``["__UNREADABLE__"]`` if the
+    state could not be established -- which is refused as an absence of an
+    answer, never treated as permission.
+    """
+    grammar = _load_grammar()
+    rc, out, _ = run(gh_argv(["gh", "pr", "view", pr, "--repo", repo,
+                              "--json", "labels,comments,reviews"]))
+    if rc != 0:
+        return ["__UNREADABLE__"]
+    try:
+        doc = json.loads(out)
+    except json.JSONDecodeError:
+        return ["__UNREADABLE__"]
+
+    labelled = {
+        (l.get("name") or "").rsplit("-", 1)[-1].lower()
+        for l in doc.get("labels", [])
+        if (l.get("name") or "").startswith("passed-review-")
+    }
+    if not labelled:
+        return []
+
+    comments = list(doc.get("comments", [])) + list(doc.get("reviews", []))
+    stale = []
+    for lane in sorted(labelled):
+        if lane not in grammar.LANES:
+            continue
+        shas = grammar.lane_shas(comments, lane, [])
+        state = grammar.classify_approval(head, shas)
+        if state != grammar.BOUND_CURRENT:
+            bound = shas[-1][:12] if shas else "nothing"
+            stale.append(
+                f"passed-review-{lane}: {state} -- newest {lane} binding is {bound}, "
+                f"head is {head[:12]}"
+            )
+    return stale
+
+
 def parse_options(argv: list[str]):
     """Split this tool's own options from the `gh pr merge` passthrough.
 
@@ -555,6 +622,25 @@ def main() -> None:
                 "  There is deliberately no override flag.",
                 "  FALSE POSITIVE? The match is anchored to column 0, so an unindented quotation",
                 "  of a marker re-asserts it. Indent quoted markers by one space.")
+        stale = stale_review_labels(pr, repo, head)
+        if stale == ["__UNREADABLE__"]:
+            die(4, "gh-merge-verified: COULD NOT DETERMINE -- could not read labels/comments "
+                   f"for #{pr}, so a stale review label cannot be ruled out.",
+                "  Nothing was merged. This is not permission; it is the absence of an answer.")
+        if stale:
+            die(6, f"gh-merge-verified: REFUSING TO MERGE #{pr} -- a passed-review label asserts "
+                   f"an approval that is not bound to this head {head[:12]}.",
+                *[f"    {s}" for s in stale],
+                "",
+                "  The label is a CACHE of a review comment; a push voids the review but not the",
+                "  label, so the cache outlives what it caches. This refuses on the evidence",
+                "  rather than on the cache.",
+                "  TO PROCEED: have the lane re-post APPROVED-AT: <lane> "
+                f"{head} at this head,",
+                "  or remove the stale label if the approval is genuinely no longer claimed.",
+                "  ⚠️ A MISSING LANE TOKEN READS AS MALFORMED, NOT AS AN APPROVAL: write",
+                "  'APPROVED-AT: claude <sha>', not 'APPROVED-AT <sha>'. That one-token typo is",
+                "  what left #2601 with zero authoritative lanes while looking reviewed.")
     if rc != 0 or not head:
         die(4, f"gh-merge-verified: COULD NOT DETERMINE — cannot resolve the head of PR {pr}")
 
