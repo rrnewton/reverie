@@ -1662,6 +1662,183 @@ def memory_skill_sync_gate() -> int:
     return 0 if healthy else 1
 
 
+# Tasks created BEFORE this date are counted and reported but NEVER fire.
+#
+# Measured 2026-08-25 across 57 open tasks: 57 unlinked references, and of the
+# 10 whose own text cites a PR or issue at all, only 2 hyperlink every one --
+# 20% compliance. A gate that hard-failed on that backlog would be switched off
+# by the first person it stopped, which is strictly worse than 20%. So the
+# backlog is grandfathered and only work created from here on is held to the
+# rule. Raise this date only to grandfather a NEW backlog, which should never
+# be necessary; lowering it retroactively gates history.
+#
+# It is the day AFTER this landed, not the day of, and that is load-bearing.
+# Set to the landing date it fired on SIX tasks created earlier the same day --
+# exactly the "hard-fails on pre-existing work" outcome this constant exists to
+# prevent. Found by running the gate, not by reading it.
+TASK_REFERENCE_GRANDFATHER_DATE = "2026-08-26"
+
+# A reference is "linked" only if a full issue/pull URL for THAT NUMBER appears
+# in the same text. Naming the repository is not enough: `hermit#2445` is
+# resolvable by someone who knows the fleet and opaque to everyone else, and it
+# is the single most common unlinked form (14 of 57 occurrences measured).
+# It is deliberately matched here -- an earlier version of this detector missed
+# it entirely, because in `hermit#2445` the `#` is preceded by a word character
+# so neither a bare-`#` nor an `owner/repo#` pattern fires. That undercount read
+# as 2 violations instead of 9.
+_TASK_REF_URL = re.compile(r"github\.com/[\w.-]+/[\w.-]+/(?:issues|pull)/(\d{1,5})")
+_TASK_REF_REPO = re.compile(r"(?<![\w/])[A-Za-z][\w.-]*(?:/[\w.-]+)?#(\d{1,5})\b")
+_TASK_REF_BARE = re.compile(r"(?<![\w/#])#(\d{1,5})\b")
+_TASK_REF_WORD = re.compile(r"\b(?:PR|pull request|issue)\s+#?(\d{2,5})\b", re.IGNORECASE)
+
+
+def unlinked_task_references(text: str) -> set[str]:
+    """Issue/PR numbers cited in `text` that carry no full hyperlink."""
+    if not text:
+        return set()
+    linked = set(_TASK_REF_URL.findall(text))
+    cited = (
+        set(_TASK_REF_BARE.findall(text))
+        | set(_TASK_REF_WORD.findall(text))
+        | set(_TASK_REF_REPO.findall(text))
+    )
+    return cited - linked
+
+
+def task_reference_hygiene_gate() -> int:
+    """Report open tasks that proxy a GitHub issue/PR without a full hyperlink.
+
+    ADVISORY BY CONSTRUCTION, in two separate ways, because the failure mode
+    being avoided is the gate getting disabled rather than the rule going
+    unmet:
+
+    1. Only tasks created on or after TASK_REFERENCE_GRANDFATHER_DATE can fire.
+       The pre-existing backlog is reported as a number and never fails.
+    2. It fires on TASK TEXT (title + description) only -- the task itself
+       proxying a PR -- never on notes. Notes are appended continuously during
+       normal work and gating them would fire on every agent that mentions a
+       number in passing.
+
+    The notes population is still COUNTED and reported, because it is where the
+    unresolvable citations actually accumulated: the three tasks written off as
+    unmatchable (#19/#25/#50/#77/#80/#82/#114/#115) carry zero bare numbers in
+    their titles or descriptions. Every one is in a note. A check that only ever
+    looked at descriptions would have caught none of them, so the number is kept
+    visible here rather than dropped for being unenforceable.
+
+    Why a check at all, when the rule already exists in writing: it already
+    exists in writing and sits at 20%. A directive at 20% is a preference.
+    """
+    sql = """
+SELECT json_object(
+  'id', local_id,
+  'created', COALESCE(created_at, ''),
+  'text', COALESCE(title, '') || '
+' || COALESCE(description, ''),
+  'notes', COALESCE((
+      SELECT group_concat(content, '
+') FROM task_notes WHERE task_notes.task_id = tasks.local_id
+    ), '')
+) AS task_json
+FROM tasks
+WHERE status IN ('OPEN', 'IN_PROGRESS')
+ORDER BY local_id
+""".strip()
+    try:
+        process = subprocess.run(
+            ["tg", "sql", sql],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            timeout=60,
+            env=taskgraph_db.child_env(taskgraph_db.resolve()),
+        )
+    except (
+        taskgraph_db.TaskGraphUnavailable,
+        FileNotFoundError,
+        OSError,
+        subprocess.TimeoutExpired,
+    ) as error:
+        # A checker that cannot run is DOWN, not clean. Say so rather than
+        # emitting a reassuring zero.
+        _emit(
+            {
+                "state": "error",
+                "open_tasks": 0,
+                "unlinked_tasks": 0,
+                "new_violations": 0,
+                "summary": f"task-reference-lint-unrunnable: {error}",
+            }
+        )
+        return 1
+    if process.returncode != 0:
+        detail = (process.stderr or process.stdout).strip() or "no diagnostic"
+        _emit(
+            {
+                "state": "error",
+                "open_tasks": 0,
+                "unlinked_tasks": 0,
+                "new_violations": 0,
+                "summary": f"task-reference-query-failed: {detail}",
+            }
+        )
+        return 1
+
+    total = 0
+    grandfathered: list[str] = []
+    violations: list[str] = []
+    notes_only = 0
+    for line in process.stdout.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        total += 1
+        bad = unlinked_task_references(row.get("text", ""))
+        if unlinked_task_references(row.get("notes", "")) and not bad:
+            notes_only += 1
+        if not bad:
+            continue
+        cited = ",".join("#" + n for n in sorted(bad, key=int)[:3])
+        entry = f"{row.get('id', '?')}({cited})"
+        if str(row.get("created", "")) >= TASK_REFERENCE_GRANDFATHER_DATE:
+            violations.append(entry)
+        else:
+            grandfathered.append(entry)
+
+    if violations:
+        summary = (
+            f"{len(violations)} task(s) created on/after "
+            f"{TASK_REFERENCE_GRANDFATHER_DATE} cite an issue/PR with no full "
+            f"hyperlink: {', '.join(sorted(violations)[:5])}"
+            + ("..." if len(violations) > 5 else "")
+            + ". Use the full https://github.com/<owner>/<repo>/pull/<n> URL; a "
+            "bare number cannot be resolved from its own text and a repo name "
+            "without a link still is not one."
+        )
+        state = "unlinked"
+    else:
+        summary = (
+            f"all {total} open task(s) clean of new unlinked issue/PR references"
+        )
+        state = "clean"
+    _emit(
+        {
+            "state": state,
+            "open_tasks": total,
+            "unlinked_tasks": len(violations) + len(grandfathered),
+            "new_violations": len(violations),
+            "grandfathered": len(grandfathered),
+            "notes_only": notes_only,
+            "summary": summary,
+        }
+    )
+    return 1 if violations else 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Run one dev-hermit operational health check."
@@ -1689,6 +1866,10 @@ def build_parser() -> argparse.ArgumentParser:
             "merge-gate-authority",
             "check whether merge-gate rules match the required authority",
         ),
+        (
+            "task-reference-hygiene",
+            "report open tasks citing an issue/PR without a full hyperlink",
+        ),
     )
     for name, description in commands:
         subparsers.add_parser(name, help=description, description=description)
@@ -1708,6 +1889,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "queue-health": queue_health_gate,
         "memory-skill-sync": memory_skill_sync_gate,
         "merge-gate-authority": merge_gate_authority_gate,
+        "task-reference-hygiene": task_reference_hygiene_gate,
     }
     return commands[parsed.command]()
 

@@ -51,5 +51,7 @@ Don't say "a flag was added", say WHICH flag.  List numbers with provenance and 
 
 Don't intruduce jargon...
 
+When a task or note cites a GitHub issue or pull request, write the FULL HYPERLINK -- `https://github.com/<owner>/<repo>/pull/<n>` -- never a bare `#1234` and never a bare `hermit#1234`. A bare number cannot be resolved from its own text once the surrounding context is gone, and the default repository is not a safe guess: references span at least hermit, agent-utils, reverie and rust-lang/rust, so assuming one silently resolves to a real but unrelated pull request. Three tasks have already been written off as permanently unmatchable for exactly this. The `task-reference-hygiene` gate reports violations; it is advisory today and grandfathers everything created before 2026-08-26.
+
 # You are a SKEPTIC
 

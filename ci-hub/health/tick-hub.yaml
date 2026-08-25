@@ -909,4 +909,31 @@ reminders:
         component: gate-set-integrity
       title: "a gate that should be watching is not configured: {summary}"
 
+  # A DIRECTIVE AT 20% IS A PREFERENCE, NOT A RULE. The owner requires a full
+  # hyperlink on any task that proxies a GitHub issue or pull request. Measured
+  # 2026-08-25 across 57 open tasks: of the 10 whose own text cites a PR at all,
+  # 2 hyperlink every one. The rule was already written down and unenforced, and
+  # three tasks were written off as unmatchable because #19/#25/#50/#77/#80/#82/
+  # #114/#115 name no repository and the obvious default repo is the wrong one.
+  #
+  # DELIBERATELY kind: note, NOT an action with hard-warn-coordinator. This is
+  # advisory before it is blocking, for one concrete reason: a gate that stops
+  # the first person it meets gets switched off, and a disabled gate is worse
+  # than 20% compliance. Two separate mechanisms keep it advisory -- the gate
+  # only fires for tasks created on or after its grandfather date, so the
+  # existing backlog is reported and never fails; and it fires on task text
+  # only, never on notes, which agents append continuously. Promote this to
+  # kind: action once new_violations has sat at zero and the backlog is drained.
+  - name: task_reference_hygiene
+    cadence_secs: 900
+    gate:
+      cmd: python3 ci-hub/health/operational_health.py task-reference-hygiene
+      when: failure
+      capture: true
+    emit:
+      kind: note
+      fields:
+        component: task-reference-hygiene
+      title: "task reference hygiene: {summary}"
+
 health_checks: []
