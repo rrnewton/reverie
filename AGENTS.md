@@ -35,6 +35,55 @@ Here are your ordered priorities:
 
 **Every task starts with an explicit write destination.** The dispatch names the repository, checkout or clone, directory tree, branch, and whether the agent may write. “No slot” is not permission to write somewhere else.
 
+## ⚠️ Never commit to `dev-hermit` from the shared parent checkout
+
+`/home/newton/work/dev-hermit` is the tree every agent reaches for first. It is
+routinely dirty with **several agents' uncommitted work at once** and drifts a
+long way behind the remote — measured on 2026-08-25: four foreign modified paths
+and **166 commits behind** `origin/main`, at the same moment three agents were
+pushing. **Three of that night's worst incidents came out of this checkout.**
+
+Committing from it is how a neighbour's half-finished edit gets swept into an
+unrelated landing, and how a landing arrives on top of a base nobody tested.
+Neither is visible in the diff you are reading.
+
+**Land from a clean detached worktree instead.** One command, no cost:
+
+```bash
+git worktree add --detach /tmp/<name> origin/main
+cd /tmp/<name>
+# make your change
+git add <only the paths you own>     # never `git add -A` in a shared tree
+git commit -F <message-file>
+ci-hub/bin/git-push-verified origin HEAD:main
+git worktree remove /tmp/<name>
+```
+
+A clean worktree at `origin/main` **cannot** pick up a neighbour's edit, because
+the neighbour's edit is not in it. You also get a current base instead of a stale
+one, and `git status` becomes a real signal again.
+
+This applies to `dev-hermit` and `agent-utils`, which are **main-only** — there is
+no pull request to catch the mistake, so the push is the whole review.
+
+`ci-hub/bin/git-push-verified` now names the condition immediately before pushing,
+listing the dirty paths that are **not part of your push**. It warns; it does not
+block, because a tree is sometimes dirty for good reasons. Treat the warning as
+the weaker instrument and use the worktree.
+
+Two related rules that fail the same way:
+
+- **`gh pr merge` has no push-verified equivalent.** After any merge, read the
+  tree: diff the files the branch touched against `origin/main` and require
+  byte-identity. `ci-hub/bin/gh-merge-verified` does this and needs no API, so it
+  works from proxy-blocked boxes. `gh-pr-merge-verified` was deleted; do not
+  reintroduce it.
+- **Check the worktree after any FAILED landing, before pushing again.** A failed
+  rebase or a `land-pr.sh` abandon can leave you on a detached HEAD, where an
+  amend silently rewrites someone else's replayed commit and the next
+  force-push overwrites your branch with a no-op head. `git branch --show-current`
+  and a check for `.git/rebase-merge` cost nothing.
+
 # Worktrees and reviews
 
 Before reviewing code or dispatching an adversarial review, follow [code-review](.skills/code-review/SKILL.md). It owns
