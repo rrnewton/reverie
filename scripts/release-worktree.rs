@@ -484,6 +484,47 @@ fn clean_targets_from_state(
     Ok(targets)
 }
 
+/// Drop the pane lease from a slot that has just been released.
+///
+/// ⚠️ A RELEASED SLOT MUST ASSERT NOTHING. `tmux_pane_id` was written at
+/// allocation and never reset, so every non-clean release left a permanent claim
+/// on a pane that would later be handed to somebody else. Measured 2026-08-25:
+/// all 16 pane-carrying agent records in the live registry sat on released
+/// slots, 16 of 16, and panes %131 and %135 were each claimed by two different
+/// released slots. One of them -- released slot `codex-cpuid2258` still recording
+/// agent `lane1` on pane `%3`, while `%3` was a live session -- made the identity
+/// resolver report DISAGREEMENT and blocked every guarded write for ~33 hours.
+///
+/// ORDER MATTERS AND THIS IS DELIBERATELY LAST. Release READS `tmux_pane_id` to
+/// know whose lease it is ending -- see the `recorded owner '{owner}' lacks
+/// tmux_pane_id lease data` refusal earlier in this file. Clearing it any sooner
+/// would break the very identification that makes release safe. Read, release,
+/// then clear.
+///
+/// BOTH COPIES OR NEITHER. `slot-owner-authority.py` requires
+/// `owner_sidecar.tmux_pane_id == agents[].tmux_pane_id` for an ORC sidecar and
+/// raises "ORC owner_sidecar disagrees with the registered pane/cgroup lease"
+/// when they differ. Clearing one and leaving the other would manufacture that
+/// error. (Released slots do not currently reach that check -- it refuses them
+/// with "expected an owner-lease lifecycle state" -- but the invariant is cheap
+/// to honour and the check may widen.)
+///
+/// `--clean` does not need this: it removes the slot from the registry outright.
+fn clear_pane_leases(slot_row: &mut Value) {
+    if let Some(agents) = slot_row.get_mut("agents").and_then(Value::as_array_mut) {
+        for agent in agents.iter_mut() {
+            if agent.get("tmux_pane_id").is_some() {
+                agent["tmux_pane_id"] = Value::Null;
+            }
+        }
+    }
+    if let Some(sidecar) = slot_row.get_mut("owner_sidecar") {
+        if sidecar.get("tmux_pane_id").is_some() {
+            sidecar["tmux_pane_id"] = Value::Null;
+        }
+    }
+}
+
 fn state_path(root: &Path) -> PathBuf {
     root.join("worktree-state.json")
 }
@@ -6176,6 +6217,7 @@ fn main() {
     } else {
         state["slots"][&slot]["status"] = json!("released");
         state["slots"][&slot]["updated"] = json!(now_iso());
+        clear_pane_leases(&mut state["slots"][&slot]);
         println!("✓ released {slot} (worktree retained; marked 'released' in state)");
         println!("  run again with --clean to remove the physical worktree");
     }
