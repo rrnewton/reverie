@@ -33,6 +33,7 @@ use reverie::Guest;
 use reverie::Never;
 use reverie::Pid;
 use reverie::Rdtsc;
+use reverie::Signal;
 use reverie::Stack;
 use reverie::TimerSchedule;
 use reverie::Tool as ReverieTool;
@@ -495,6 +496,54 @@ where
             Poll::Pending => {
                 crate::eprintln!(
                     "reverie-sabre: remote Tool::handle_rdtsc_event suspended and was dropped"
+                );
+                Err(Errno::EIO)
+            }
+        }
+    }
+
+    /// Forwards an intercepted signal through the shared tool and remote
+    /// GlobalTool, before the guest's handler runs.
+    ///
+    /// ⚠️ WHY THIS EXISTS: the remote adapter carried syscalls, RDTSC and thread
+    /// lifecycle, but NOT signals. `Tool::handle_signal_event` therefore stayed
+    /// the default no-op under this backend, so a Detcore-style tool recorded no
+    /// signal event and never made the scheduler request it needs -- its model of
+    /// the guest simply had no signals in it. The hermit-side half of this
+    /// (rrnewton/hermit#2321) has been unbuildable for want of this method.
+    ///
+    /// Returns what the tool decided: `Some(sig)` to deliver, `None` to suppress.
+    /// Suppression is reported rather than silently honoured by the caller,
+    /// because SaBRe's central handler has usually already committed to the guest
+    /// action by the time this runs.
+    pub fn handle_signal(&self, signal: Signal) -> Result<Option<Signal>, Errno> {
+        let tid = current_tid();
+        let pid = current_pid();
+        let state = self.thread_state(tid).map_err(remote_rpc_error)?;
+        let mut state = state.lock();
+        let RemoteThreadState {
+            thread_state,
+            rpc,
+            exit_handled,
+        } = &mut *state;
+        let mut guest = SabreGuest::new(
+            tid,
+            pid,
+            thread_state,
+            rpc.as_ref(),
+            Some((&self.tool, exit_handled, None)),
+            None,
+            None,
+        );
+
+        match poll_once(self.tool.handle_signal_event(&mut guest, signal)) {
+            Poll::Ready(result) => result,
+            Poll::Pending => {
+                // Same failure mode the RDTSC path guards: a tool that suspends
+                // here cannot be resumed, so say so rather than dropping the
+                // signal decision on the floor.
+                crate::eprintln!(
+                    "reverie-sabre: remote Tool::handle_signal_event suspended and was dropped"
                 );
                 Err(Errno::EIO)
             }
