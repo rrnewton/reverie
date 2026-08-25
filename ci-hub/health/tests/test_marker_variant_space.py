@@ -160,5 +160,76 @@ def main() -> int:
     return 0
 
 
+
+# ⚠️ THIS BRACKET HAD NEVER RUN, AND ITS FIRST EXECUTION WAS RED. Measured
+# 2026-08-25 at parent main 42d27103: 6 of the 72 generated refusal variants are
+# INVISIBLE to both the binding grammar and the safety net. That is a silently
+# LOST REFUSAL -- the dangerous direction, where something lands that should not.
+#
+# All six share lead=indent, and the cause is one line of markdown semantics:
+# `marker_lines` -> `prose_lines` excludes INDENTED CODE BLOCKS, so a refusal
+# indented by FOUR spaces produces zero eligible lines and is neither bound nor
+# netted. Two spaces is fine; four vanishes. Pasting a verdict with indentation is
+# ordinary, so this is reachable by accident.
+#
+# ⚠️ THE SIX ARE PINNED, NOT ACCEPTED. They are asserted as the EXACT known-red
+# set so that this bracket can start executing without reddening shared main for
+# every other agent, while ANY new invisible variant -- or the disappearance of
+# one of these -- fails loudly. Unpinning is a one-line change (drop KNOWN_RED and
+# assert the set is empty) and is the owner's call, not a decision this file
+# should make quietly.
+#
+# NOTE FOR WHOEVER FIXES IT: excluding an indented block is CORRECT for binding --
+# an indented illustration must not grant a lane. It is wrong for the NET, which
+# exists to be loud about anything verdict-shaped it cannot parse. Indentation
+# cannot distinguish an ISSUED verdict from a CITED one; only an issuer can, which
+# is task make_the_review_marker. Do not fix this by making indented lines bind.
+# Task: a_refusal_indented_by
+KNOWN_RED = {
+    "lead=indent trail=none sha=bare",
+    "lead=indent trail=none sha=backticked",
+    "lead=indent trail=prose sha=bare",
+    "lead=indent trail=prose sha=backticked",
+    "lead=indent trail=punct sha=bare",
+    "lead=indent trail=punct sha=backticked",
+}
+
+_INVISIBLE = "refusal invisible to both grammar and net: "
+
+
+def test_marker_variant_space_has_exactly_the_known_invisible_variants(capsys) -> None:
+    """Execute all 72 variants; the invisible set must be EXACTLY the pinned six."""
+    main()
+    out = capsys.readouterr().out
+    invisible = {
+        line.split(_INVISIBLE, 1)[1].strip()
+        for line in out.splitlines()
+        if _INVISIBLE in line
+    }
+    new = invisible - KNOWN_RED
+    fixed = KNOWN_RED - invisible
+    assert not new, (
+        f"NEW invisible refusal variant(s), a silently lost refusal: {sorted(new)}\n"
+        + out
+    )
+    assert not fixed, (
+        "pinned invisible variant(s) now visible -- good news, but update KNOWN_RED "
+        f"in the same change: {sorted(fixed)}\n" + out
+    )
+
+
+def test_marker_variant_space_other_assertions_hold(capsys) -> None:
+    """Everything in the bracket EXCEPT the pinned indent cells must be green."""
+    main()
+    out = capsys.readouterr().out
+    other = [
+        line.strip()
+        for line in out.splitlines()
+        if line.strip().startswith("FAIL")
+        and _INVISIBLE not in line
+        and "refusal variants are seen" not in line
+    ]
+    assert not other, "\n".join(["non-pinned assertions failed:"] + other + ["", out])
+
 if __name__ == "__main__":
     sys.exit(main())

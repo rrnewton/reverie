@@ -149,5 +149,20 @@ def main() -> int:
     return 1 if silent else 0
 
 
+
+# ⚠️ THIS WRAPPER IS WHY THE FILE RUNS AT ALL. `ci-hub/tests/run_python_suites.py`
+# executes this directory under PYTEST, and pytest runs only what it COLLECTS. A
+# `main()`-only bracket defines no test function, collects ZERO and executes in no
+# CI job -- measured 2026-08-25 at parent main 55438330, when THREE brackets over
+# the marker grammar were all inert at once. A file named test_*.py in a directory
+# with a declared execution floor then reads as coverage and carries none, which is
+# how three separate defects in that grammar survived with every gate green.
+# Task: three_marker_grammar_brackets
+def test_gate_variant_space_has_no_silent_cell(capsys) -> None:
+    """Execute the whole bracket; its own printed report is the failure message."""
+    rc = main()
+    out = capsys.readouterr().out
+    assert rc == 0, "\n" + out
+
 if __name__ == "__main__":
     raise SystemExit(main())
