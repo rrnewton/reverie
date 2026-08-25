@@ -567,6 +567,63 @@ reminders:
         component: pull-requests
       title: "open PR health is {state}: {summary}"
 
+  # A DRAIN VERDICT THAT NEVER REACHED THE PULL REQUEST. `agent(hermit-004)`
+  # analysed hermit#2304, reached a HOLD, wrote the whole thing into its task,
+  # and closed WITHOUT POSTING; the PR's newest comment was from the previous
+  # day. Found only because another agent happened to re-open the same PR. That
+  # is the third of four stranding shapes recorded on 2026-08-24/25, all ending
+  # identically -- work done, record says finished, the artifact shows nothing --
+  # because CLOSING A TASK AND PUBLISHING A VERDICT ARE SEPARATE ACTS AND ONLY
+  # ONE WAS EVER CHECKED. The rule mirrors the one `verified_close.py` already
+  # applies to landing: no closure without a reference that resolves.
+  #
+  # IT EARNS ITS PLACE UNDER THE ADMISSION TEST rather than being a TaskGraph
+  # census, which is permanently out of scope above. The fact measured is
+  # WHETHER THE PULL REQUEST CARRIES THE VERDICT -- GitHub state, which ORC
+  # cannot see. The TaskGraph is read only to know which PRs to ask about. The
+  # recorded permalink must appear in the PR's real comment set, so a plausible
+  # pasted URL does not satisfy it, and GitHub being unreachable is exit 2
+  # UNAVAILABLE, never a pass.
+  #
+  # THE CUTOVER IS LOAD-BEARING AND WAS COMPUTED, NOT GUESSED. Enumerated before
+  # enforcement: of 60 closed drain tasks against unmerged PRs, 25 recorded no
+  # comment link -- but GitHub says 16 of those 25 DID post and only failed to
+  # record the permalink. A retroactive gate would emit 25 findings, 16 of them
+  # (64%) telling an agent to re-post a verdict that is already there; it would
+  # be switched off the day it landed, exactly as drain_reconcile.py records
+  # from its own 133-finding first run. --since scores only what closes from
+  # here on, and the suppressed pre-cutover count is printed on every verdict so
+  # the backlog stays visible. The 9 genuinely-silent ones are recoverable via
+  # `--census --pre-cutover`.
+  #
+  # ⚠️ IF YOU MOVE THIS CUTOVER FORWARD you are not tightening the gate, you are
+  # blanking whatever accumulated in between. Re-run the census first.
+  #
+  # --grace-mins 15 absorbs read-after-write lag: a comment posted seconds
+  # before a tick may not be in the comment list the tick reads (the same hazard
+  # that makes refs/pull/N/head report the OLD sha right after a push, which
+  # broke two PRs on 2026-08-25). Deferral costs one tick and is COUNTED in the
+  # output, never silent.
+  - name: drain_verdict_published
+    cadence_secs: 1800
+    gate:
+      cmd: python3 ci-hub/closure/drain_publication.py --since 2026-08-25T12:00:00+00:00 --grace-mins 15
+      # Measured 2026-08-25: 25s for the full 72-task census with 67 PRs
+      # fetched. The gated path fetches only PRs drained since the cutover, so
+      # steady state is a handful -- but the cutover set grows across a drain
+      # wave, and a timeout here would blank {summary} and take the gate SILENT
+      # rather than red, which is the failure mode this whole entry exists to
+      # remove. 120s is ~5x the worst case observed.
+      timeout_secs: 120
+      when: failure
+      capture: true
+    emit:
+      kind: action
+      skill: hard-warn-coordinator
+      fields:
+        component: drain-verdict-publication
+      title: "a drain task closed with its verdict unpublished: {summary}"
+
   - name: ci_queue_health
     cadence_secs: 900
     gate:
