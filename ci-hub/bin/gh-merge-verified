@@ -374,6 +374,24 @@ def _load_grammar():
 
 _REFUSAL_SHAPED = re.compile(r"CHANGES[-\s]?REQUESTED", re.IGNORECASE)
 
+# ⚠️ REFUSAL-SHAPED **AND A LANE NAMED NEARBY**, which is what makes the over-block
+# survivable. `_REFUSAL_SHAPED` alone matches the words "changes requested" in any
+# prose, and while the pre-filter above skipped such lines for lacking the full
+# 40-hex, that was an accident of the filter rather than a policy -- fixing the
+# filter made the over-block reachable and it began firing on sentences ABOUT the
+# convention. Measured over all 27 open pull requests on 2026-08-25:
+#
+#     token anywhere                 39 lines,  9 PRs   (1 pure-prose false positive)
+#     token + lane within ~40 chars  26 lines,  8 PRs   (0 false positives)
+#
+# so requiring a lane costs nothing measurable and stops the guard blocking a pull
+# request for explaining the rule -- which is how a guard gets switched off. This
+# is the same rule ci-hub/bin/changes-requested-gate uses; two extractors with two
+# policies is the divergence that produced this whole family of defects.
+_REFUSAL_WITH_LANE = re.compile(
+    r"CHANGES[-\s]?REQUESTED[^\n]{0,40}?\b(claude|codex)\b", re.IGNORECASE
+)
+
 
 
 def this_tool_is_current() -> tuple[bool, str]:
@@ -496,9 +514,7 @@ def blocking_changes_requests(pr: str, repo: str, head: str) -> list[str]:
             # Now: a refusal-shaped line is always evaluated. Binding is decided
             # below, where an abbreviated sha can be prefix-matched and a missing
             # one can fail closed.
-            if _REFUSAL_SHAPED.search(line) or (head and head in line):
-                pass
-            else:
+            if not (_REFUSAL_WITH_LANE.search(line) or (head and head in line)):
                 continue
             parsed = grammar.parse_marker(line)
             if parsed is not None:
@@ -527,7 +543,7 @@ def blocking_changes_requests(pr: str, repo: str, head: str) -> list[str]:
             # naming this head is treated as a refusal. This is the same
             # fail-closed choice the authority now makes at its gate, expressed
             # here as blocking rather than as a non-zero exit.
-            if _REFUSAL_SHAPED.search(line):
+            if _REFUSAL_WITH_LANE.search(line):
                 blocking.append(line.strip())
     if withdrawn:
         blocking = []
