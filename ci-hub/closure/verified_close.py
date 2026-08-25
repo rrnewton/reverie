@@ -194,7 +194,17 @@ def verify_code(
     source: Path,
     target: str,
     run: Run = _run,
+    require_content: bool = True,
 ) -> Evidence:
+    """Verify `reference` landed on `target`.
+
+    `require_content=False` keeps the ancestry proof and SKIPS the content-presence
+    check. That is only correct for `--superseded-by`, where the caller's claim is
+    precisely that the content was REPLACED: demanding its survival there would
+    refuse every fix-forward, which is the bind this option exists to remove. The
+    ancestry check is NOT relaxed, so a superseding commit that never landed still
+    cannot close anything.
+    """
     result = run(
         (
             sys.executable,
@@ -218,6 +228,15 @@ def verify_code(
     state = str(payload.get("state") or "unverifiable")
     resolved = str(payload.get("resolved_sha") or "") or None
     reason = str(payload.get("reason") or state)
+    if result.returncode == CLOSED and state == "landed" and resolved and not require_content:
+        # Ancestry only: the caller is asserting the content was superseded.
+        return Evidence(
+            "verified",
+            "superseded",
+            reference,
+            resolved=f"{repo}@{resolved}",
+            landing="superseded",
+        )
     if result.returncode == CLOSED and state == "landed" and resolved:
         # ANCESTRY SAID LANDED. NOW ASK WHETHER THE CONTENT ACTUALLY SURVIVED.
         #
@@ -533,7 +552,25 @@ def verify_run(run_id: str, *, repo: str, run: Run = _run) -> Evidence:
     return Evidence("verified", "run", run_id, resolved=url)
 
 
-def close_task(task: str, evidence: Evidence, *, run: Run = _run) -> int:
+def close_task(
+    task: str, evidence: Evidence, *, run: Run = _run, dry_run: bool = False
+) -> int:
+    """Close `task` against `evidence`, or with `dry_run` predict whether it would.
+
+    ⚠️ `--check-only` RUNS THIS SAME FUNCTION, AND THAT IS THE POINT.
+    It used to return early in main(), which applied the reference checks but
+    NOT the tag gates below, so it printed `VERIFIED ... rc=0` for an operation
+    that was then REFUSED. Measured 2026-08-25 by agent(hermit-006) on
+    land_hermit_pr_2591: identical commands, opposite answers, differing only in
+    the flag whose whole purpose is to predict the other.
+
+    A dry run that answers a NARROWER question than the run it models is worse
+    than no dry run: an agent uses it to decide whether closing is safe and it
+    manufactures confidence. Sharing the function makes divergence structural
+    rather than a thing to remember -- every gate added here is automatically in
+    the preview, which is the property that failed when the disposition gate was
+    added to this function alone.
+    """
     if evidence.state != "verified" or not evidence.resolved:
         return evidence.rc
     if evidence.kind == "disposition" and task_claims_landing(task, run=run):
@@ -578,6 +615,16 @@ def close_task(task: str, evidence: Evidence, *, run: Run = _run) -> int:
         # that ci-hub/directives/tg_landed.py regexes out is unaffected.
         + (f" detail={evidence.reason}" if evidence.reason else "")
     )
+    # THE DRY RUN STOPS HERE -- after every gate, before the first mutation. Any
+    # check added above is in the preview by construction; anything below is a
+    # write and is the only thing --check-only skips.
+    if dry_run:
+        print(
+            f"VERIFIED task={task} kind={evidence.kind} "
+            f"reference={evidence.reference} resolved={evidence.resolved} "
+            f"would-record={anchor} rc=0"
+        )
+        return CLOSED
     # ⚠️ THE CLOSURE NOTE GOES THROUGH THE VERIFIED WRITER, NOT `tg note`.
     #
     # This is the single most load-bearing note in the system -- it is the only
@@ -659,6 +706,23 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     # must supply a reference. So it is an escape hatch for work that has no
     # landing, not an escape hatch from proving one.
     reference.add_argument("--disposition", metavar="REASON")
+    # ⚠️ LANDED, THEN LEGITIMATELY SUPERSEDED -- the outcome every fix-forward
+    # produces, and until now unclosable without misrepresenting something.
+    #
+    # Measured 2026-08-25 on land_hermit_pr_2591: the work landed as a5fef7ff and
+    # IS an ancestor of main, but a later fix-forward rewrote the section, so
+    #   --code a5fef7ff   -> REFUSED, CONTENT-LOST: 0 of 1 hunks present
+    #   --disposition ... -> REFUSED, the task is tagged `landed`
+    # and the tool's own advice -- drop the tag, then use --disposition -- would
+    # have meant recording a FALSEHOOD to satisfy a checker, since a5fef7ff really
+    # is on main. agent(hermit-006) left the row open rather than do that, which was
+    # the right call and is exactly the cost this option removes.
+    #
+    # The content check is deliberately NOT applied to the superseded commit: the
+    # whole claim is that the content was replaced. What IS verified is that the
+    # SUPERSEDING commit resolves and is an ancestor of freshly-fetched main -- so
+    # "superseded" cannot be used to close against a replacement that never landed.
+    reference.add_argument("--superseded-by", metavar="PR_OR_SHA")
     # Sentinel defaults so main() can tell "the caller chose hermit" from "the
     # caller said nothing and got hermit" -- the distinction that let a
     # parent-repo task close against a hermit PR.
@@ -731,6 +795,23 @@ def main(argv: Sequence[str] | None = None, *, run: Run = _run) -> int:
             resolved="no-code-reference",
             landing="none",
         )
+    elif args.superseded_by is not None:
+        if args.superseded_by.isdecimal() and not repo_was_explicit:
+            print(
+                f"REFUSED task={args.task} kind=superseded "
+                f"reference={args.superseded_by} reason=a bare PR number needs an "
+                f"explicit --repo rc={REFUSED}",
+                file=sys.stderr,
+            )
+            return REFUSED
+        evidence = verify_code(
+            args.superseded_by,
+            repo=repo,
+            source=source,
+            target=args.target,
+            run=run,
+            require_content=False,
+        )
     else:
         evidence = verify_run(args.run_id, repo=repo, run=run)
 
@@ -742,13 +823,10 @@ def main(argv: Sequence[str] | None = None, *, run: Run = _run) -> int:
             file=sys.stderr,
         )
         return evidence.rc
-    if args.check_only:
-        print(
-            f"VERIFIED task={args.task} kind={evidence.kind} "
-            f"reference={evidence.reference} resolved={evidence.resolved} rc=0"
-        )
-        return CLOSED
-    return close_task(args.task, evidence, run=run)
+    # ONE PATH. --check-only is a parameter of the real operation, not a separate
+    # early return that reimplements part of it -- see close_task()'s docstring for
+    # the measured divergence that produced this.
+    return close_task(args.task, evidence, run=run, dry_run=args.check_only)
 
 
 if __name__ == "__main__":

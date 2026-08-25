@@ -802,6 +802,113 @@ class DispositionClosesWithoutInflatingTheMetric(unittest.TestCase):
         self.assertIsNone(verified_close.read_task_tags("t'; drop table tasks--"))
 
 
+class CheckOnlyPredictsTheRealRun(unittest.TestCase):
+    """A dry run that answers a NARROWER question than the run it models is worse
+    than no dry run: an agent uses it to decide whether closing is safe, and it
+    manufactures confidence.
+
+    Measured 2026-08-25 on land_hermit_pr_2591: `--check-only --disposition` printed
+    VERIFIED rc=0 while the identical command without the flag was REFUSED on the
+    `landed` tag, because --check-only returned early in main() and never reached
+    the gates in close_task(). These tests pin the AGREEMENT, not the individual
+    answers, so a gate added in future to only one path fails here.
+    """
+
+    def _harness(self, tags: str):
+        def run(command, cwd=None, **kw):
+            import subprocess as _sp
+            if command[:2] == ("tg", "sql"):
+                return _sp.CompletedProcess(list(command), 0, f"tags\n----\n{tags}\n\n(1 row)\n", "")
+            return _sp.CompletedProcess(list(command), 0, "", "")
+        return run
+
+    def _disposition(self):
+        return verified_close.Evidence(
+            "verified", "disposition", "superseded elsewhere",
+            resolved="no-code-reference", landing="none",
+        )
+
+    def test_dry_run_and_real_run_agree_when_the_tag_gate_refuses(self) -> None:
+        run = self._harness('["landed"]')
+        dry = verified_close.close_task("t", self._disposition(), run=run, dry_run=True)
+        real = verified_close.close_task("t", self._disposition(), run=run)
+        self.assertEqual(dry, real)
+        self.assertEqual(dry, verified_close.REFUSED)
+
+    def test_dry_run_and_real_run_agree_when_it_would_succeed(self) -> None:
+        run = self._harness('["review"]')
+        dry = verified_close.close_task("t", self._disposition(), run=run, dry_run=True)
+        real = verified_close.close_task("t", self._disposition(), run=run)
+        self.assertEqual(dry, real)
+        self.assertEqual(dry, verified_close.CLOSED)
+
+    def test_the_dry_run_writes_nothing(self) -> None:
+        """It must reach every gate and stop before the first mutation."""
+        seen = []
+        def run(command, cwd=None, **kw):
+            import subprocess as _sp
+            if command[:2] == ("tg", "sql"):
+                return _sp.CompletedProcess(list(command), 0, 'tags\n----\n["review"]\n\n(1 row)\n', "")
+            seen.append(tuple(command))
+            return _sp.CompletedProcess(list(command), 0, "", "")
+        verified_close.close_task("t", self._disposition(), run=run, dry_run=True)
+        self.assertEqual(
+            [c for c in seen if c and (c[0] == "tg" or str(c[0]).endswith("tg-note-verified"))],
+            [],
+            "the preview must not write a note or change status",
+        )
+
+
+class SupersededClosesALandedThenReplacedRow(unittest.TestCase):
+    """`landed, then legitimately superseded` is what every fix-forward produces.
+
+    Before this existed the row was unclosable without misrepresenting something:
+    --code refused with CONTENT-LOST because a later commit rewrote the region, and
+    --disposition refused because the task is tagged `landed`. The tool's advice --
+    drop the tag then use --disposition -- meant recording a falsehood to satisfy a
+    checker, since the original commit really is on main.
+    """
+
+    def _run(self, tags='["landed"]'):
+        def run(command, cwd=None, **kw):
+            import subprocess as _sp
+            if command[:2] == ("tg", "sql"):
+                return _sp.CompletedProcess(list(command), 0, f"tags\n----\n{tags}\n\n(1 row)\n", "")
+            return _sp.CompletedProcess(list(command), 0, "", "")
+        return run
+
+    def test_superseded_is_not_blocked_by_the_landed_tag(self) -> None:
+        ev = verified_close.Evidence(
+            "verified", "superseded", "abc", resolved="r@abc", landing="superseded",
+        )
+        self.assertEqual(
+            verified_close.close_task("t", ev, run=self._run()), verified_close.CLOSED
+        )
+
+    def test_superseded_records_the_replacing_commit_under_CLOSURE_VERIFIED(self) -> None:
+        recorded = []
+        def run(command, cwd=None, **kw):
+            import subprocess as _sp
+            if command[:2] == ("tg", "sql"):
+                return _sp.CompletedProcess(list(command), 0, 'tags\n----\n["landed"]\n\n(1 row)\n', "")
+            if command and str(command[0]).endswith("tg-note-verified") and "--file" in command:
+                path = list(command)[list(command).index("--file") + 1]
+                with open(path, encoding="utf-8") as h:
+                    recorded.append(h.read())
+            return _sp.CompletedProcess(list(command), 0, "", "")
+        ev = verified_close.Evidence(
+            "verified", "superseded", "abc", resolved="r@abc", landing="superseded",
+        )
+        verified_close.close_task("t", ev, run=run)
+        self.assertTrue(recorded)
+        body = recorded[0]
+        # It IS verified evidence -- the replacing commit was proven to be on main --
+        # so it belongs under CLOSURE-VERIFIED, unlike a disposition.
+        self.assertIn("CLOSURE-VERIFIED", body)
+        self.assertIn("kind=superseded", body)
+        self.assertIn("landing=superseded", body)
+
+
 # THE DISPATCHER MUST BE THE LAST THING IN THE FILE. It previously sat above
 # ContentLostRefusesClosure, so running this file as a script -- which is how the seal and
 # every caller runs it -- executed unittest.main() before that class was defined and
