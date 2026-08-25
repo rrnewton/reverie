@@ -167,7 +167,22 @@ class RunPythonSuitesTest(unittest.TestCase):
 
         validate_root = RUNNER.parents[1] / "validate"
         suites = {suite.path: suite.floor for suite in module._default_suites()}
-        self.assertEqual(suites.get(validate_root.resolve()), 123)
+        # ⚠️ A RATCHET, NOT AN EQUALITY. This pinned `== 123`, which is the floor
+        # that happened to be registered when the test was written -- incidental to
+        # the property under test, which is that the validate ROOT is registered so
+        # both the root-level and the nested failure-evidence suites are covered.
+        #
+        # An equality here fails on a legitimate RAISE, so the maintenance pressure
+        # points the wrong way: the cheapest way to make it green again is to edit
+        # the number, and the second cheapest is to lower the floor. Asserting a
+        # lower bound keeps what the test is for -- deregistration and lowering both
+        # still fail -- and stops it opposing the direction the floor should move.
+        validate_floor = suites.get(validate_root.resolve())
+        self.assertIsNotNone(validate_floor, "ci-hub/validate root is not registered")
+        self.assertGreaterEqual(
+            validate_floor, 123,
+            "the validate floor was lowered; it may only rise toward the measured count",
+        )
 
         root_test = validate_root / "test_failure_evidence_solo_rerun.py"
         nested_test = validate_root / "tests" / "test_failure_evidence.py"

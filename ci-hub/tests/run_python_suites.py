@@ -13,20 +13,40 @@ from typing import Sequence
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 REQUIREMENTS = Path(__file__).with_name("requirements-workflow.txt")
+# ⚠️ FLOORS WERE RAISED 2026-08-25 (task make_lint_runs_no) TOWARD THE COUNTS
+# ACTUALLY MEASURED. Nine of the original ten sat far below the real number --
+# lib/tests declared 6 against 86 executed, directives 9 against 58, health 92
+# against 519. A floor at 6 cannot fail for the reason it names: eighty tests
+# could stop running and the suite would still report PASS.
+#
+# `meets_floor` is `discovered >= floor and executed >= floor`, so the binding
+# number is EXECUTED, the smaller of the two. Every floor here is ~90% of a
+# measured executed count and NONE exceeds one. ci-hub/validate is the case that
+# matters: discovered 587, executed 540, and 540 is the ceiling used -- the
+# 47-test gap is its current collection errors, so the floor is set against what
+# runs today rather than what would run if they were fixed.
+#
+# The 10% margin is the same one the added suites use, and for the same reason: a
+# floor at the exact count turns any legitimate variance into SUITE REFUSED,
+# which reads identically to the suite being broken.
+#
+# Measured at parent main cb9d11c1 with submodules materialised. Counts taken in
+# an unmaterialised tree are meaningless -- `agent-utils` is a symlink into
+# `hermit/agent-utils`, and without it pytest aborts collection for the whole run.
 DEFAULT_SUITES = (
-    ("ci-hub/directives/tests", 9),
-    ("ci-hub/health/tests", 92),
-    ("ci-hub/history/tests", 43),
-    ("ci-hub/lib/tests", 6),
-    ("ci-hub/remediation/tests", 87),
-    ("ci-hub/runners/tests", 51),
+    ("ci-hub/directives/tests", 52),
+    ("ci-hub/health/tests", 467),
+    ("ci-hub/history/tests", 59),
+    ("ci-hub/lib/tests", 77),
+    ("ci-hub/remediation/tests", 193),
+    ("ci-hub/runners/tests", 55),
     # Include both the legacy root-level validation tests and the nested suite.
     # Pointing only at validate/tests left six root modules outside the counted
     # gate. Preserve the existing conservative execution floor; importlib mode
     # and the real-path bracket below are what make the expanded surface
     # load-bearing without treating environment-declared skips as execution.
-    ("ci-hub/validate", 123),
-    ("ci-hub/tests", 66),
+    ("ci-hub/validate", 486),
+    ("ci-hub/tests", 159),
     # ------------------------------------------------------------------
     # EXECUTION GAP CLOSED 2026-08-25 (task make_lint_runs_no). 45 of ci-hub's
     # 150 test files sat outside this registry across 19 directories, so their
@@ -57,7 +77,7 @@ DEFAULT_SUITES = (
     ("ci-hub/pin/tests", 34),
     ("ci-hub/main-metrics/tests", 29),
     ("ci-hub/ratchet/tests", 20),
-    ("ci-hub/series/tests", 20),
+    ("ci-hub/series/tests", 27),
     ("ci-hub/stranded/tests", 19),
     ("ci-hub/greentime/tests", 17),
     ("ci-hub/stress", 16),
@@ -85,7 +105,7 @@ DEFAULT_SUITES = (
     # including the 18 tier-evidence tests written for a checker that itself had
     # zero call sites -- were committed, passing, and never executed by CI. Same
     # defect one level up. 145 discovered / 145 passing when added.
-    ("compat-envelope", 120),
+    ("compat-envelope", 183),
     # The 214x6x5 compatibility artifact shipped tools/analyze_repeat_stability.py
     # AND verify_artifact.py with NO CALLER: `grep -r` across the parent found
     # nothing invoking either, so a regeneration drift or a stale republished CSV
