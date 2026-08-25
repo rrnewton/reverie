@@ -9930,13 +9930,14 @@ fn rt_sigaction(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u
     if action.is_some() && matches!(signal, libc::SIGKILL | libc::SIGSTOP) {
         return negative_errno(libc::EINVAL);
     }
-    if signal == libc::SIGCHLD
-        && action
-            .as_ref()
-            .is_some_and(|action| !matches!(kernel_sigaction_handler(action), 0 | 1))
-    {
-        return negative_errno(libc::ENOSYS);
-    }
+    // Installing a real SIGCHLD handler is ACCEPTED, not refused. Linux implements
+    // this call and both the native host and the ptrace backend return 0; hermit's
+    // tests/c/kvm_exact_child_waits.c requires success. Recording the action is also
+    // harmless for the auto-reap decision below: `sigchld_auto_reaps` matches only
+    // SIG_IGN and SA_NOCLDWAIT, so a real handler correctly yields false and the
+    // child stays waitable. Whether KVM should additionally DELIVER that handler is
+    // a separate, still-open question; accepting the installation does not answer it
+    // and does not claim delivery.
 
     let previous = state
         .signal_actions
@@ -21709,8 +21710,13 @@ mod tests {
         action
     }
 
+    /// Installing a real SIGCHLD handler SUCCEEDS and is recorded, as it does on
+    /// Linux and under the ptrace backend. Accepting the installation is not a
+    /// promise to deliver the signal; what it must not do is change the auto-reap
+    /// decision, which is asserted here directly: a real handler must leave
+    /// `sigchld_auto_reaps` false so the child stays waitable.
     #[test]
-    fn sigchld_handler_registration_fails_instead_of_promising_undeliverable_signal() {
+    fn sigchld_handler_registration_is_accepted_and_suppresses_auto_reap() {
         const ACTION: u64 = 0x100;
         let root = TestDir::new();
         let mut state = test_state(&root.0);
@@ -21730,9 +21736,13 @@ mod tests {
                     0,
                 ],
             ),
-            negative_errno(libc::ENOSYS),
+            0,
         );
-        assert!(!state.signal_actions.contains_key(&libc::SIGCHLD));
+        assert!(state.signal_actions.contains_key(&libc::SIGCHLD));
+        assert!(
+            !sigchld_auto_reaps(&state),
+            "a real SIGCHLD handler must not auto-reap; the child stays waitable"
+        );
     }
 
     #[test]

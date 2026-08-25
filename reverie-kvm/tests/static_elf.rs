@@ -2925,7 +2925,11 @@ int main(void) {
   action.sa_handler = (void (*)(int))0x4321;
   sigemptyset(&action.sa_mask);
   errno = 0;
-  if (sigaction(SIGCHLD, &action, 0) == 0 || errno != ENOSYS) return 10;
+  /* Installing a real SIGCHLD handler must SUCCEED, as it does natively and under
+     ptrace. What this test is really for is unchanged below: with a real handler
+     installed SIGCHLD does not auto-reap, so the child must still be waitable.
+     (This handler address is never invoked.) */
+  if (sigaction(SIGCHLD, &action, 0) != 0) return 10;
 
   child_exit(7);
   int status = 0;
