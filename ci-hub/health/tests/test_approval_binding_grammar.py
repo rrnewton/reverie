@@ -298,6 +298,66 @@ cases.append((empty_refused,
               "an empty window REFUSES instead of reporting a clean 0 of 0",
               "EmptyLandingWindow raised" if empty_refused else "returned a count over nothing"))
 
+# ---------------------------------------------------------------------------
+# THE FENCE RULE. An illustration is not an instruction -- and the rule is
+# SYMMETRIC, which is the half that is easy to get wrong.
+#
+# Measured 2026-08-25 across all 28 open heads through both landed lander paths:
+# gh-merge-verified refused 12 of which SIX carried no refusal naming that head,
+# and changes-requested-gate refused 7 of which one did. hermit#2611 was refused
+# by BOTH while approved by BOTH lanes; what refused it was a fenced example in a
+# comment teaching a reviewer the grammar.
+#
+# ⚠️ AND THESE REFUSALS ARE PERMANENT. A refusal naming a sha stops naming it when
+# the author pushes. An example carrying no sha never named this head, so no
+# author action clears it.
+
+FENCE = "`" * 3
+
+# A fenced APPROVAL must not bind -- otherwise quoting the approval grammar
+# GRANTS a lane, which is a fail-open and strictly worse than the refusal side.
+# The landed parser at 32faa7e2 did bind this.
+case("a FENCED approval does not bind", C(f"see the form:\n{FENCE}\nAPPROVED-AT: claude {CUR}\n{FENCE}\n"),
+     "claude", "UNDETERMINED")
+case("a TILDE-fenced approval does not bind", C(f"~~~\nAPPROVED-AT: claude {CUR}\n~~~\n"),
+     "claude", "UNDETERMINED")
+case("an INDENTED-block approval does not bind", C(f"Example:\n\n    APPROVED-AT: claude {CUR}\n\nend\n"),
+     "claude", "UNDETERMINED")
+case("a fenced block with an info string still hides its contents",
+     C(f"{FENCE}text\nAPPROVED-AT: claude {CUR}\n{FENCE}\n"), "claude", "UNDETERMINED")
+
+# ...while an ordinary approval is untouched. Without these the fence rule could
+# pass by making the parser blind to everything.
+case("a plain approval still binds", C(f"APPROVED-AT: claude {CUR}\n"), "claude", "BOUND_CURRENT", CUR)
+case("a heading approval still binds", C(f"## APPROVED-AT: claude {CUR}\n"), "claude", "BOUND_CURRENT", CUR)
+case("an approval AFTER a closed fence still binds",
+     C(f"{FENCE}\nsome transcript\n{FENCE}\n\nAPPROVED-AT: claude {CUR}\n"), "claude", "BOUND_CURRENT", CUR)
+
+# An UNCLOSED fence runs to the end of the comment, matching what the renderer
+# shows a human. The gate must agree with the reader.
+case("an unclosed fence hides what follows it",
+     C(f"{FENCE}\nAPPROVED-AT: claude {CUR}\n"), "claude", "UNDETERMINED")
+
+# ⚠️ THE INDENT RULE NEEDS A BLANK LINE BEFORE IT, or it would eat real verdicts
+# indented under a bullet. This is the case that keeps the rule honest.
+case("an indented continuation under a bullet is NOT a code block",
+     C(f"- context here\n    APPROVED-AT: claude {CUR}\n"), "claude", "BOUND_CURRENT", CUR)
+
+_fenced_refusal = ab.marker_lines(f"{FENCE}\nCHANGES-REQUESTED-AT: claude {CUR}\n{FENCE}\n")
+cases.append((all("CHANGES-REQUESTED-AT" not in l for l in _fenced_refusal),
+              "a FENCED refusal is not an eligible marker line",
+              f"eligible={_fenced_refusal}"))
+
+_real_refusal = ab.marker_lines(f"CHANGES-REQUESTED-AT: claude {CUR}\n")
+cases.append((any("CHANGES-REQUESTED-AT" in l for l in _real_refusal),
+              "a REAL refusal is still an eligible marker line",
+              f"eligible={_real_refusal}"))
+
+cases.append((ab.is_template("<lane> <sha>") and not ab.is_template(f" claude {CUR}"),
+              "the template rule lives in the shared grammar, not in one lander",
+              "is_template"))
+
+
 def test_approval_binding_grammar():
     """Assert the cases collected above, so pytest ENFORCES them.
 

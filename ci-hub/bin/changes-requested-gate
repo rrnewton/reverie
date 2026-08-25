@@ -77,6 +77,22 @@ import re
 import subprocess
 import sys
 
+# ⚠️ THE FENCE RULE IS IMPORTED, NOT COPIED. This gate already carries its own
+# marker grammar, and that second copy is exactly what diverged from
+# gh-merge-verified: measured 2026-08-25, the two paths disagreed on 6 of 28 open
+# heads. Eligibility -- WHICH LINES may carry a verdict at all -- now has one
+# definition in ci-hub/health/approval_binding.py and both landers call it.
+# Policy still differs here (this gate fails closed on an unbindable refusal); the
+# grammar and the eligibility rule may not.
+def _load_grammar():
+    import importlib.util
+    import pathlib
+    target = pathlib.Path(__file__).resolve().parent.parent / "health" / "approval_binding.py"
+    spec = importlib.util.spec_from_file_location("approval_binding", target)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
 OK, BLOCKED, INDETERMINATE = 0, 1, 2
 
 REFUSAL = "CHANGES-REQUESTED-AT"
@@ -100,7 +116,8 @@ _LANE = re.compile(r"\b(claude|codex)\b", re.I)
 # not write `<sha>`. So `CHANGES-REQUESTED-AT: claude -- see above` still refuses
 # (no sha, no placeholder, genuinely unbindable), and only the template form is
 # treated as documentation.
-_PLACEHOLDER = re.compile(r"<[^>\n]{1,24}>")
+# The placeholder rule now lives in the shared grammar; see is_template there.
+# Kept as a name so the docstring above still reads, but sourced from one place.
 
 
 def undecorate(line: str) -> str:
@@ -166,8 +183,9 @@ def markers(bodies: list[str]) -> list[tuple[str, str | None]]:
     widest net measured to cost nothing.
     """
     found = []
+    eligible = _load_grammar().marker_lines
     for body in bodies:
-        for raw in (body or "").split("\n"):
+        for raw in eligible(body or ""):
             line = undecorate(raw)
             for kind in (WITHDRAWN, REFUSAL):  # WITHDRAWN first: it contains REFUSAL
                 idx = line.find(kind)
@@ -179,7 +197,7 @@ def markers(bodies: list[str]) -> list[tuple[str, str | None]]:
                 if idx != 0 and not _LANE.search(tail[:24]):
                     continue
                 m = _SHA.search(tail)
-                if m is None and _PLACEHOLDER.search(tail):
+                if m is None and _load_grammar().is_template(tail):
                     break  # a template, not a verdict
                 found.append((kind, m.group(1) if m else None))
                 break

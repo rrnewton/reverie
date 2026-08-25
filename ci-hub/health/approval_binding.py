@@ -365,6 +365,118 @@ def strip_decoration(line: str) -> str:
     return _undecorate_block(line)
 
 
+# ---------------------------------------------------------------------------
+# WHICH LINES OF A COMMENT MAY CARRY A VERDICT AT ALL.
+#
+# ⚠️ AN ILLUSTRATION IS NOT AN INSTRUCTION, AND TREATING IT AS ONE COST REAL
+# LANDINGS. Measured 2026-08-25 across all 28 open pull requests, at each head,
+# through both landed lander paths: `gh-merge-verified` refused 12 heads of which
+# SIX carried no refusal naming that head, and `changes-requested-gate` refused 7
+# of which one did. hermit#2611 was refused by both while approved by both lanes;
+# what refused it was a fenced example in a comment TEACHING a reviewer the
+# grammar.
+#
+# ⚠️ AND THE ORDINARY CLEARING PATH DOES NOT WORK ON THESE. A refusal naming a
+# sha stops naming it when the author pushes. An example carrying no sha, or one
+# quoting some other head's sha, never named this head and so never stops
+# applying: the refusal is PERMANENT and no author action removes it. That is why
+# this is a correctness fix and not a noise reduction.
+#
+# ⚠️ THE RULE IS SYMMETRIC, AND THAT IS THE POINT. A fenced APPROVED-AT must not
+# bind either. Excluding fenced refusals while still honouring fenced approvals
+# would swap one asymmetry for another and would newly PERMIT merges -- a comment
+# quoting the approval grammar would grant a lane. Both kinds are read from the
+# same lines, so both change together, and the direction stays conservative: this
+# makes strictly FEWER lines eligible to say anything.
+#
+# The discriminator is markdown's own, not a heuristic about wording: a verdict
+# must be asserted in prose. Fenced blocks (``` and ~~~) and indented code blocks
+# are where people put examples, transcripts and templates, and nobody records a
+# real decision inside one.
+_FENCE_RE = re.compile(r"^ {0,3}(?P<f>`{3,}|~{3,})\s*(?P<info>.*)$")
+
+
+def prose_lines(body: str) -> list[str]:
+    """The lines of ``body`` that are outside every code block.
+
+    Fenced blocks follow CommonMark closely enough for review comments: an
+    opening fence of three or more backticks or tildes, closed by a fence of the
+    SAME character and at least the same length. An unclosed fence runs to the
+    end of the comment -- deliberately, because that is how the renderer shows it
+    to a human, and the gate must agree with what the reader sees.
+
+    ⚠️ INDENTED BLOCKS REQUIRE A BLANK LINE BEFORE THEM, which is what keeps this
+    from eating real verdicts. A four-space indent is only a code block when it
+    opens one; an indented continuation inside a list item is not, and neither is
+    a marker somebody happened to indent under a bullet. Without that condition
+    this would silently stop honouring bindings that bind today.
+    """
+    out: list[str] = []
+    fence: str | None = None
+    indented = False
+    prev_blank = True
+    for raw in body.split("\n"):
+        blank = not raw.strip()
+        if fence is not None:
+            m = _FENCE_RE.match(raw)
+            if m and m.group("f")[0] == fence[0] and len(m.group("f")) >= len(fence) \
+                    and not m.group("info").strip():
+                fence = None
+            prev_blank = blank
+            continue
+        m = _FENCE_RE.match(raw)
+        if m:
+            fence = m.group("f")
+            indented = False
+            prev_blank = False
+            continue
+        if indented:
+            if blank:
+                prev_blank = True
+                continue
+            if raw.startswith("    ") or raw.startswith("\t"):
+                continue
+            indented = False
+        elif prev_blank and (raw.startswith("    ") or raw.startswith("\t")) and not blank:
+            indented = True
+            prev_blank = False
+            continue
+        out.append(raw)
+        prev_blank = blank
+    return out
+
+
+def marker_lines(body: str) -> list[str]:
+    """Every line of ``body`` that a consumer may read as a verdict.
+
+    This is the ONE place that decides eligibility. `gh-merge-verified`,
+    `changes-requested-gate` and this module's own label reader all call it, so a
+    line that cannot bind an approval also cannot trigger a refusal. Two copies of
+    this rule would drift, and the drift is what produced the 6-of-12 divergence
+    measured above.
+    """
+    return prose_lines(body)
+
+
+# ⚠️ A TEMPLATE IS NOT A VERDICT EITHER, and this rule belongs beside the fence
+# rule rather than in one lander. `agent(hermit-007)` landed it in
+# ci-hub/bin/changes-requested-gate at 32faa7e2 after a template line refused
+# hermit#2611; measured immediately afterwards, gh-merge-verified still refused
+# the same line, because the fix lived in one of the two copies. Same grammar,
+# two homes, immediate divergence -- so it moves here and both call it.
+#
+# The discriminator is narrow on purpose: an ANGLE-BRACKET PLACEHOLDER where the
+# sha belongs. A reviewer refusing a head writes a sha, or writes prose; they do
+# not write `<sha>`. So `CHANGES-REQUESTED-AT: claude -- see above` is still
+# genuinely unbindable and still fails closed.
+_PLACEHOLDER_RE = re.compile(r"<[^>\n]{1,24}>")
+
+
+def is_template(tail: str) -> bool:
+    """True when the text after a marker token is a placeholder, not a sha."""
+    return bool(_PLACEHOLDER_RE.search(tail))
+
+
 def parse_marker(line: str) -> tuple[str, str, str] | None:
     """``(kind, lane, sha)`` for a canonical marker line, else ``None``.
 
@@ -378,6 +490,24 @@ def parse_marker(line: str) -> tuple[str, str, str] | None:
     if not match:
         return None
     return match.group(1).upper(), match.group(2).lower(), match.group(3)
+
+
+
+def refusal_shaped(line: str) -> bool:
+    """A line that is TRYING to be a refusal, for a lander's fail-closed branch.
+
+    ⚠️ LINE-INITIAL AFTER DECORATION IS STRIPPED -- the discriminator
+    `changes-requested-gate` shipped, measured by `agent(hermit-007)` as "the
+    widest net measured to cost nothing". `gh-merge-verified` instead matched the
+    token ANYWHERE in the line, and that difference is the whole divergence: a
+    sentence of prose ABOUT a refusal on some other pull request refused a merge
+    here and not there. Measured 2026-08-25 on hermit#2602, whose only remaining
+    block was a sentence adjudicating hermit#2591.
+
+    A verdict is asserted, not mentioned. Somebody refusing a head puts the marker
+    at the start of a line; somebody discussing one writes a sentence around it.
+    """
+    return strip_decoration(line).upper().startswith(MARKER_REFUSED)
 
 
 def lane_shas(
@@ -483,7 +613,9 @@ def lane_shas(
         # Match on the block-normalised form. Stripping a leading marker cannot
         # invent a verdict -- the anchored grammar still has to match afterwards --
         # and refusing to strip it is what let a heading-formatted refusal fail open.
-        lines = [_undecorate_block(l) for l in body.split("\n")]
+        # Fenced and indented code blocks are excluded HERE, once, so an
+        # illustration can neither grant a lane nor refuse a merge.
+        lines = [_undecorate_block(l) for l in marker_lines(body)]
         # A rejection contributes NOTHING, even if the same comment also carries
         # an APPROVED-AT-shaped line -- a comment quoting the convention, or
         # quoting the approval it supersedes, must not bind as a positive.
@@ -579,7 +711,7 @@ def local_receipt_heads(comments: list[dict[str, Any]], repo: str) -> list[str]:
     )
     found: list[str] = []
     for comment in comments:
-        for line in (comment.get("body") or "").splitlines():
+        for line in marker_lines(comment.get("body") or ""):
             match = marker.match(line.strip())
             if match:
                 found.append(match.group("head").lower())
@@ -597,7 +729,7 @@ def critical_classes_at_head(
     """
     classes: set[str] = set()
     for comment in comments:
-        lines = [line.strip() for line in (comment.get("body") or "").splitlines()]
+        lines = [line.strip() for line in marker_lines(comment.get("body") or "")]
         if "REVIEW-DISPATCH-ATTESTATION" not in lines:
             continue
         fields: dict[str, str] = {}

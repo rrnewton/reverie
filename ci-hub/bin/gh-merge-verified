@@ -523,8 +523,15 @@ def blocking_changes_requests(pr: str, repo: str, head: str) -> list[str]:
     grammar = _load_grammar()
 
     blocking, withdrawn = [], False
+    # ⚠️ ELIGIBILITY COMES FROM THE SHARED GRAMMAR, so a line that cannot bind an
+    # approval cannot trigger a refusal here either. This function's fail-closed
+    # fallback matches a refusal-shaped line ANYWHERE, which is the right policy
+    # for a landing guard and the wrong thing to point at a fenced example: it
+    # refused 6 of the 12 heads it blocked on 2026-08-25, and because those lines
+    # name no head, pushing never cleared them.
+    eligible = grammar.marker_lines
     for body in bodies:
-        for line in body.splitlines():
+        for line in eligible(body):
             # ⚠️ THIS PRE-FILTER USED TO READ `if not head or head not in line`,
             # AND IT MADE THE FAIL-CLOSED BRANCH BELOW UNREACHABLE. Requiring the
             # full 40-hex in the raw line skipped exactly the two shapes the
@@ -573,7 +580,22 @@ def blocking_changes_requests(pr: str, repo: str, head: str) -> list[str]:
             # naming this head is treated as a refusal. This is the same
             # fail-closed choice the authority now makes at its gate, expressed
             # here as blocking rather than as a non-zero exit.
-            if _REFUSAL_WITH_LANE.search(line):
+            # ⚠️ CONVERGED ONTO THE SHARED RULE. This used to be a local regex
+            # matching the token ANYWHERE in the line, which is why a sentence
+            # discussing another pull request's refusal blocked a merge here while
+            # changes-requested-gate allowed it. One definition now, so the two
+            # landers cannot disagree about what is even refusal-shaped.
+            if grammar.refusal_shaped(line):
+                # ⚠️ EXCEPT A TEMPLATE. `CHANGES-REQUESTED-AT: <lane> <sha>` in a
+                # comment teaching the grammar is documentation, and it carries no
+                # sha -- so the ordinary clearing path (push, the sha moves, the
+                # refusal stops naming the head) can NEVER clear it. Blocking on it
+                # is a permanent refusal of a head nobody objected to.
+                # `changes-requested-gate` already skipped it at 32faa7e2 while this
+                # path still refused it: one rule, two homes, immediate divergence.
+                # Now shared, so they cannot disagree again.
+                if grammar.is_template(line):
+                    continue
                 blocking.append(line.strip())
     if withdrawn:
         blocking = []
