@@ -246,15 +246,29 @@ out=$(TG_NOTE_VERIFIED=1 command tg note "$task" "$encoded" 2>&1); rc=$?
 [ "$rc" -eq 0 ] || die "tg note failed (rc=$rc): $out"
 
 # Rule 2: the confirmation must reflect the STORE, not the call. Read it back.
-readback=$(mktemp); TMPFILES="$TMPFILES $readback $readback.raw $readback.1 $readback.in.norm $readback.rb.norm"
-tg sql "select content from task_notes where task_id='$task' order by created_at desc limit 1" \
-    2>/dev/null | sed '1,2d' > "$readback.raw" || die "could not read the note back"
-
-# `tg sql` frames rows with a header, a rule, and a trailing "(N rows)" line.
-# Strip the frame without touching content: drop the final "(N rows)" and the
-# single blank line that precedes it.
-sed -e '${/^([0-9]* rows\?)$/d}' "$readback.raw" > "$readback.1"
-sed -e '${/^$/d}' "$readback.1" > "$readback"
+#
+# ⚠️ READ BACK *OUR* NOTE, NOT "WHATEVER WAS WRITTEN LAST".
+#
+# This was `order by created_at desc limit 1`, which does not name our write --
+# it names whoever wrote most recently. Measured 2026-08-25 on
+# `a-timeout-has-no-failure-class-...`: our note stored at 23:02:33.694 (row
+# 13001) and a CLOSURE-VERIFIED note from close-task stored EIGHTY MILLISECONDS
+# later at 23:02:33.774 (row 13002). The readback returned that second note, the
+# comparison failed, and this tool withheld confirmation on a note it had stored
+# perfectly. The author's only available response -- retry -- wrote a SECOND copy
+# (row 13003).
+#
+# So a check built to protect note integrity became the proximate cause of a
+# duplicated note. The fleet writes notes concurrently and close-task writes one
+# on every close, so this is ordinary traffic, not bad luck.
+#
+# Scanning the recent notes for OUR content fixes it without weakening anything:
+# a concurrent writer moves our note DOWN A SLOT instead of making it invisible,
+# and a note whose content genuinely differs still matches nothing and is still
+# refused. That is the true positive this must keep -- it caught a note losing two
+# bytes of a regex earlier the same night, 5410 given and 5408 stored.
+readback=$(mktemp)
+TMPFILES="$TMPFILES $readback $readback.raw $readback.1 $readback.in.norm $readback.rb.norm $readback.newest $readback.newest.norm"
 
 # ⚠️ ACCOUNT FOR THE FRAMING'S TRAILING NEWLINE, AND NOTHING ELSE.
 # `tg sql` emits the row followed by a newline, so a note whose content does NOT
@@ -265,23 +279,84 @@ sed -e '${/^$/d}' "$readback.1" > "$readback"
 # exactly one newline; any other difference, including anywhere inside the
 # content, still refuses.
 normalise() { if [ -s "$1" ] && [ "$(tail -c1 "$1" | od -An -c | tr -d ' \n')" != '\n' ]; then cat "$1"; printf '\n'; else cat "$1"; fi; }
-normalise "$input"    > "$readback.in.norm"
-normalise "$readback" > "$readback.rb.norm"
+normalise "$input" > "$readback.in.norm"
 
-if diff -q "$readback.in.norm" "$readback.rb.norm" >/dev/null 2>&1; then
-    bytes=$(wc -c < "$input" | tr -d ' ')
-    lines=$(wc -l < "$input" | tr -d ' ')
+# Deep enough to absorb concurrent writers, shallow enough to stay one cheap
+# indexed query per step. Eight is far beyond the one-slot displacement observed.
+SCAN_DEPTH=8
+matched_at=-1
+rows_seen=0
+read_failed=0
+j=0
+while [ "$j" -lt "$SCAN_DEPTH" ]; do
+    if ! tg sql "select content from task_notes where task_id='$task' order by created_at desc limit 1 offset $j" \
+         2>/dev/null | sed '1,2d' > "$readback.raw"; then
+        read_failed=1
+        break
+    fi
+    # `tg sql` frames rows with a header, a rule, and a trailing "(N rows)" line.
+    # Strip the frame without touching content.
+    sed -e '${/^([0-9]* rows\?)$/d}' "$readback.raw" > "$readback.1"
+    sed -e '${/^$/d}' "$readback.1" > "$readback"
+    [ -s "$readback" ] || break
+    # Keep the NEWEST row for the diagnostic. Without this the refusal path
+    # reports the empty read that TERMINATED the scan -- "newest stored: 0 bytes"
+    # -- which is a wrong number in the one message whose job is to be exact.
+    [ "$j" -eq 0 ] && cp "$readback" "$readback.newest"
+    rows_seen=$((rows_seen + 1))
+    normalise "$readback" > "$readback.rb.norm"
+    if diff -q "$readback.in.norm" "$readback.rb.norm" >/dev/null 2>&1; then
+        matched_at=$j
+        break
+    fi
+    j=$((j + 1))
+done
+
+bytes=$(wc -c < "$input" | tr -d ' ')
+lines=$(wc -l < "$input" | tr -d ' ')
+
+if [ "$matched_at" -ge 0 ]; then
     printf 'tg-note-verified: STORED AND VERIFIED byte-for-byte (%s bytes, %s lines) on %s\n' \
         "$bytes" "$lines" "$task"
+    # Say when a concurrent write displaced us. Silence here would hide the very
+    # traffic that used to break this check.
+    if [ "$matched_at" -gt 0 ]; then
+        printf '  (found %s note(s) newer than ours -- concurrent writers, not a problem)\n' \
+            "$matched_at" >&2
+    fi
+    exit 0
+fi
+
+# ⚠️ TWO DIFFERENT ANSWERS, AND CONFLATING THEM IS WHAT CAUSED THE DUPLICATE.
+#
+#   STORED AND DIFFERENT      -- we read the notes and ours is not among them.
+#                                Something changed the content. WITHHOLD.
+#   STORED, UNCONFIRMABLE     -- we could not read the notes back at all.
+#                                The write itself reported success. SAY SO.
+#
+# The second is not a failure of the note, it is a failure of the CHECK, and
+# reporting it as "do not treat this as evidence" leaves the author with no
+# answer -- at which point retrying is the only move, and the retry duplicates.
+if [ "$read_failed" -eq 1 ] || [ "$rows_seen" -eq 0 ]; then
+    printf 'tg-note-verified: STORED, CONFIRMATION UNAVAILABLE on %s (%s bytes, %s lines)\n' \
+        "$task" "$bytes" "$lines"
+    printf '  `tg note` returned success, so THE WRITE HAPPENED. The read-back could not\n' >&2
+    printf '  be performed (%s), so this tool cannot compare what was stored.\n' \
+        "$([ "$read_failed" -eq 1 ] && echo 'the query failed' || echo 'it returned no rows')" >&2
+    printf '  ⚠️ DO NOT RETRY. A retry writes a SECOND copy; it does not confirm the first.\n' >&2
+    printf '  Verify by reading the task, or re-run the read-back alone.\n' >&2
     exit 0
 fi
 
 printf 'tg-note-verified: REFUSING TO CONFIRM -- what was stored is NOT what was given.\n' >&2
 printf '  task: %s\n' "$task" >&2
-printf '  input   : %s bytes\n' "$(wc -c < "$input" | tr -d ' ')" >&2
-printf '  stored  : %s bytes\n' "$(wc -c < "$readback" | tr -d ' ')" >&2
-printf '  first difference:\n' >&2
-diff "$readback.in.norm" "$readback.rb.norm" 2>&1 | head -6 | sed 's/^/    /' >&2
+printf '  input   : %s bytes\n' "$bytes" >&2
+printf '  scanned : %s most recent note(s); none matched\n' "$rows_seen" >&2
+printf '  newest stored: %s bytes\n' "$(wc -c < "$readback.newest" | tr -d ' ')" >&2
+printf '  first difference against the newest:\n' >&2
+normalise "$readback.newest" > "$readback.newest.norm"
+diff "$readback.in.norm" "$readback.newest.norm" 2>&1 | head -6 | sed 's/^/    /' >&2
 printf '  The note IS in the database; it is the CONFIRMATION that is withheld.\n' >&2
+printf '  ⚠️ DO NOT RETRY -- a retry adds a second copy and does not resolve the difference.\n' >&2
 printf '  Do not treat this note as evidence until the difference is explained.\n' >&2
 exit 1
