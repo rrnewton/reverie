@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -75,6 +76,14 @@ def _run(
         try:
             resolution = taskgraph_db.resolve(env=env)
             env = taskgraph_db.child_env(resolution, env=env)
+            # Mark this child as coming FROM the verifier. The `tg` PATH shim
+            # refuses `tg update --status closed` for everyone else, which is what
+            # makes the verified path the only path rather than the recommended
+            # one. Set here, at the single helper every `tg` call in this module
+            # goes through, so a future call site cannot forget it and lock the
+            # verifier out of its own closure step -- the exact regression the
+            # `tg note` guard caused when it first shipped.
+            env["CLOSE_TASK_VERIFIED"] = "1"
         except taskgraph_db.TaskGraphUnavailable as error:
             return subprocess.CompletedProcess(
                 list(command), UNVERIFIABLE, "", f"taskgraph-unavailable: {error}"
@@ -93,6 +102,44 @@ def _run(
         return subprocess.CompletedProcess(list(command), UNVERIFIABLE, "", str(error))
 
 
+_TASK_ID_OK = re.compile(r"\A[A-Za-z0-9_.-]+\Z")
+
+
+def read_task_tags(task: str, *, run: Run = _run) -> str | None:
+    """The task's tags, lowercased, or None if they could not be read.
+
+    ⚠️ READ THE DATABASE, NOT `tg show`. Both tag gates in this module used to
+    scan `tg show` output for a line starting with "tags:". `tg show` prints a
+    mission-view TREE and has no such line, so the scan never matched and both
+    gates silently answered "no tags" for every task alive -- one of them
+    over-refusing, the other (the `--disposition` gate) failing OPEN, which is
+    the direction that lets the guarded thing through. Measured 2026-08-25 by
+    the gate declining to fire on a task tagged `implemented`.
+
+    `tg sql` is read-only and returns the stored column, so it cannot drift from
+    what the tag queries themselves select on.
+    """
+    if not _TASK_ID_OK.match(task):
+        return None
+    result = run(
+        ("tg", "sql", f"select tags from tasks where local_id='{task}'"), cwd=ROOT
+    )
+    if result.returncode != 0:
+        return None
+    rows = [
+        line.strip()
+        for line in result.stdout.splitlines()
+        if line.strip()
+        and not line.startswith("tags")
+        and not set(line.strip()) <= {"-"}
+        and not re.match(r"\A\(\d+ rows?\)\Z", line.strip())
+        and "jemalloc" not in line
+    ]
+    if not rows:
+        return None
+    return rows[0].lower()
+
+
 def task_has_implemented_tag(task: str, *, run: Run = _run) -> bool:
     """Is `implemented` on the task right now?
 
@@ -102,13 +149,26 @@ def task_has_implemented_tag(task: str, *, run: Run = _run) -> bool:
     at once: not ready, not active, and not in the drain. Requiring the tag is
     what keeps "closed but not yet landed" discoverable rather than lost.
     """
-    result = run(("tg", "show", task), cwd=ROOT)
-    if result.returncode != 0:
+    tags = read_task_tags(task, run=run)
+    if tags is None:
         return False
-    for line in result.stdout.splitlines():
-        if line.strip().lower().startswith("tags:"):
-            return "implemented" in line.lower()
-    return False
+    return "implemented" in tags
+
+
+def task_claims_landing(task: str, *, run: Run = _run) -> bool:
+    """Does the task assert, by tag, that code exists or shipped?
+
+    `--disposition` closes a task with no landing to verify. A task tagged
+    `implemented` or `landed` is asserting the opposite, so letting it close by
+    disposition would let the one population this verifier exists for opt out of
+    it in a single flag. Read the tags and refuse instead.
+    """
+    tags = read_task_tags(task, run=run)
+    if tags is None:
+        # Fail CLOSED for this check: unreadable tags must not be read as
+        # "claims nothing", which would silently permit the disposition.
+        return True
+    return "implemented" in tags or "landed" in tags
 
 
 def _json_object(output: str) -> dict[str, object] | None:
@@ -468,6 +528,16 @@ def verify_run(run_id: str, *, repo: str, run: Run = _run) -> Evidence:
 def close_task(task: str, evidence: Evidence, *, run: Run = _run) -> int:
     if evidence.state != "verified" or not evidence.resolved:
         return evidence.rc
+    if evidence.kind == "disposition" and task_claims_landing(task, run=run):
+        print(
+            f"REFUSED closing by --disposition a task tagged `implemented` or "
+            f"`landed`: {task}. Those tags assert that code exists, so this "
+            f"closure has a reference to give and must give it: pass --code "
+            f"<PR-or-40-hex> --repo <owner/repo> --source <checkout>. If the tag "
+            f"is wrong, drop it and say so in a note, then close by disposition.",
+            file=sys.stderr,
+        )
+        return REFUSED
     if evidence.landing == "implemented-unlanded" and not task_has_implemented_tag(
         task, run=run
     ):
@@ -479,8 +549,15 @@ def close_task(task: str, evidence: Evidence, *, run: Run = _run) -> int:
             file=sys.stderr,
         )
         return REFUSED
+    # ⚠️ A DISPOSITION IS RECORDED, NOT VERIFIED, AND THE ANCHOR MUST SAY SO.
+    # CLOSURE-VERIFIED is what every landing-debt query and the health tick count.
+    # Writing it for a closure where nothing was resolved would make the metric
+    # rise by exactly the closures that carry no evidence -- the instrument would
+    # report improvement caused by the thing it exists to detect. Distinct anchor,
+    # so both populations stay separately countable.
+    anchor = "CLOSURE-RECORDED" if evidence.kind == "disposition" else "CLOSURE-VERIFIED"
     note = (
-        "CLOSURE-VERIFIED: "
+        f"{anchor}: "
         f"kind={evidence.kind} reference={evidence.reference} "
         f"resolved={evidence.resolved} "
         # State the landing fact explicitly. `closed` no longer implies landed,
@@ -558,6 +635,22 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     reference.add_argument("--code", metavar="PR_OR_SHA")
     reference.add_argument("--artifact", metavar="PATH_OR_URL")
     reference.add_argument("--run-id")
+    # ⚠️ THE NON-LANDING CLOSURE, AND WHY IT HAD TO EXIST BEFORE ENFORCEMENT.
+    # Measured 2026-08-25: of 477 tasks closed that day without a CLOSURE-VERIFIED
+    # note, 380 DID name a PR or 40-hex in their notes -- they could have come
+    # through this verifier and did not. But 97 named no reference at all: review
+    # lanes, coordination, duplicates, questions answered. Those have no landing to
+    # verify, so a closure path that only accepts --code/--artifact/--run-id is
+    # unusable for a fifth of real closures, and a guard built on it would simply be
+    # routed around. This option is what makes "every closure goes through the
+    # verifier" a rule that can actually be followed.
+    #
+    # It records under a DIFFERENT anchor (CLOSURE-RECORDED, not CLOSURE-VERIFIED)
+    # so it cannot inflate the landing-evidence metric, and close_task() REFUSES it
+    # on any task tagged `implemented` or `landed` -- exactly the population that
+    # must supply a reference. So it is an escape hatch for work that has no
+    # landing, not an escape hatch from proving one.
+    reference.add_argument("--disposition", metavar="REASON")
     # Sentinel defaults so main() can tell "the caller chose hermit" from "the
     # caller said nothing and got hermit" -- the distinction that let a
     # parent-repo task close against a hermit PR.
@@ -610,6 +703,26 @@ def main(argv: Sequence[str] | None = None, *, run: Run = _run) -> int:
         )
     elif args.artifact is not None:
         evidence = verify_artifact(args.artifact, run=run)
+    elif args.disposition is not None:
+        reason = args.disposition.strip()
+        if not reason:
+            print(
+                f"REFUSED task={args.task} kind=disposition "
+                f"reason=an empty disposition records nothing; say why this task is "
+                f"closing rc={REFUSED}",
+                file=sys.stderr,
+            )
+            return REFUSED
+        # Nothing is verified here and the evidence says so: `landing="none"`.
+        # close_task() branches on kind=="disposition" to write CLOSURE-RECORDED
+        # rather than CLOSURE-VERIFIED, keeping the landing-evidence metric honest.
+        evidence = Evidence(
+            state="verified",
+            kind="disposition",
+            reference=reason,
+            resolved="no-code-reference",
+            landing="none",
+        )
     else:
         evidence = verify_run(args.run_id, repo=repo, run=run)
 

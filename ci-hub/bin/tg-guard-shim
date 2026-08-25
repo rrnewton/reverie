@@ -47,4 +47,65 @@ if [ "${1:-}" = "note" ] && [ "$#" -ge 3 ] && [ -z "${TG_NOTE_VERIFIED:-}" ]; th
 "  READING notes is unaffected: 'tg note $2' with no content still works." >&2
     exit 2
 fi
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CLOSURE GUARD: `tg update <task> --status closed` must go through the verifier.
+#
+# WHY, MEASURED 2026-08-25. Of 535 tasks closed that day only 60 carried a
+# CLOSURE-VERIFIED note -- close-task was bypassed on ~89% of closures. This was
+# NOT the 18-minute close-task outage that morning: in the 44 minutes AFTER that
+# was fixed, 38 more tasks closed unverified, 10 of them tagged `landed`. And the
+# population grew WHILE it was being repaired by hand -- 530 to 535 closures, two
+# more unverified landing claims, inside six minutes. Repairing instances is a
+# treadmill; the bypass rate is the defect. A safe path that exists but is not
+# forced does not change behaviour, which is the same lesson the `tg note` guard
+# above records.
+#
+# WHY IT IS NOT SIMPLY "REQUIRE --code". Of the 477 unverified closures that day,
+# 380 named a PR or SHA in their notes and could have used the verifier -- but 97
+# named nothing, because review lanes, coordination, duplicates and answered
+# questions have no landing to prove. Refusing those would make the rule
+# unfollowable and it would be routed around. close-task therefore grew
+# `--disposition REASON`, which records CLOSURE-RECORDED (a DIFFERENT anchor, so
+# it cannot inflate the CLOSURE-VERIFIED metric) and is itself REFUSED on any task
+# tagged `implemented` or `landed`.
+#
+# FAILS OPEN, DELIBERATELY. Only `update ... --status closed|resolved` is caught.
+# Changing tags, priority, owner, or moving a task to open/in_progress is
+# untouched, and so is every other subcommand.
+if [ "${1:-}" = "update" ] && [ -z "${CLOSE_TASK_VERIFIED:-}" ]; then
+    task=${2:-<task>}; prev=""; blocked=""
+    for arg in "$@"; do
+        case "$prev" in
+            --status) case "$arg" in closed|CLOSED|resolved|RESOLVED) blocked=$arg ;; esac ;;
+        esac
+        case "$arg" in --status=*) case "${arg#--status=}" in closed|CLOSED|resolved|RESOLVED) blocked=${arg#--status=} ;; esac ;; esac
+        prev=$arg
+    done
+    if [ -n "$blocked" ]; then
+        printf '%s\n' \
+"tg: REFUSED -- closing a task directly bypasses the closure verifier." \
+"" \
+"  Measured 2026-08-25: 535 tasks closed, only 60 recorded any closure evidence." \
+"  A task closed this way keeps its landing debt invisible -- it leaves ready," \
+"  active AND the drain in one step, and no later audit can tell a landed task" \
+"  from an abandoned one. That is why this refuses rather than warns." \
+"" \
+"  IF THE WORK LANDED, name what landed:" \
+"    /home/newton/work/dev-hermit/ci-hub/bin/close-task $task \\\\" \
+"        --code <PR-or-40-hex> --repo <owner/repo> --source <checkout>" \
+"  It verifies the reference resolves and is an ancestor of freshly-fetched main," \
+"  then closes the task itself. You do not need a second command." \
+"" \
+"  IF THERE IS NOTHING TO LAND -- a review lane, a duplicate, a question answered:" \
+"    /home/newton/work/dev-hermit/ci-hub/bin/close-task $task \\\\" \
+"        --disposition 'superseded by hermit#1234'" \
+"  That records the reason instead of a reference. It is refused on tasks tagged" \
+"  \`implemented\` or \`landed\`, which have a reference to give." \
+"" \
+"  Everything else about 'tg update' still works: tags, priority, owner, and" \
+"  moving a task to open or in_progress are untouched." >&2
+        exit 2
+    fi
+fi
 exec "$REAL" "$@"

@@ -228,11 +228,44 @@ class FakeRunner:
             return completed(command, rc=self.artifact_ancestry_rc)
         if command[:4] == ("git", "-C", str(verified_close.ROOT), "rev-parse"):
             return completed(command, stdout="c" * 40 + "\n")
-        if command[:2] == ("tg", "show"):
+        if command[:2] == ("tg", "sql"):
             # A READ, not a mutation. Keeping it out of task_mutations is what
             # lets the "refused paths never touch the task" assertions stay
             # meaningful now that the gateway reads tags before closing.
-            return completed(command, stdout=f"Status:    IN_PROGRESS\nTags:      {self.tags}\n")
+            #
+            # ⚠️ THIS MIRRORS `tg sql` FRAMING, NOT A BARE VALUE. The reader under
+            # test strips a header line, a rule, and a trailing "(N rows)"; a stub
+            # that returned only the value would exercise a parser the real tool
+            # never sees. The gate this feeds previously scanned `tg show` for a
+            # "Tags:" line that its mission-view output does not contain, so it
+            # answered "no tags" for every task alive -- a stub that is too
+            # forgiving is exactly how that survived.
+            return completed(
+                command,
+                stdout=f"tags\n----\n{self.tags}\n\n(1 row)\n",
+            )
+        if command and str(command[0]).endswith("tg-note-verified"):
+            # The durable closure note is written through the verified writer, not
+            # `tg note`. It IS a mutation of the task's record, so it belongs in
+            # task_mutations alongside the status change.
+            #
+            # ⚠️ RECORD IT AS ('tg','note',task,CONTENT), reading the --file back.
+            # The content now travels as a temp-file path that close_task() unlinks
+            # in a finally block, so a stub that stored the argv verbatim would
+            # leave every "what did the note actually say" assertion inspecting a
+            # filename. Those assertions are the only thing checking that the
+            # landing state, the repository and the drift qualifier reach the
+            # durable record, so they must keep seeing the text.
+            content = ""
+            if "--file" in command:
+                path = command[command.index("--file") + 1]
+                try:
+                    with open(path, encoding="utf-8") as handle:
+                        content = handle.read()
+                except OSError:
+                    content = ""
+            self.task_mutations.append(("tg", "note", command[1], content))
+            return completed(command)
         if command and command[0] == "tg":
             self.task_mutations.append(command)
             return completed(command)
@@ -632,7 +665,20 @@ class ContentLostRefusesClosure(unittest.TestCase):
 
         def run(command, cwd=None, **kw):
             import subprocess as _sp
-            recorded.append(tuple(command))
+            # Normalise the verified writer to ('tg','note',task,CONTENT), reading
+            # the --file back before close_task() unlinks it. Without this the
+            # assertions below inspect a temp-file NAME and this test can only
+            # ever fail -- which is what it did once the closure note moved off
+            # `tg note` and onto tg-note-verified.
+            if command and str(command[0]).endswith("tg-note-verified") and "--file" in command:
+                path = list(command)[list(command).index("--file") + 1]
+                try:
+                    with open(path, encoding="utf-8") as handle:
+                        recorded.append(("tg", "note", command[1], handle.read()))
+                except OSError:
+                    recorded.append(tuple(command))
+            else:
+                recorded.append(tuple(command))
             return _sp.CompletedProcess(list(command), 0, "", "")
 
         ev = verified_close.Evidence(
@@ -648,6 +694,112 @@ class ContentLostRefusesClosure(unittest.TestCase):
         self.assertIn("detail=CONTEXT-DRIFTED", body)
         # The 40-hex must survive the append, because tg_landed.py regexes it out.
         self.assertIn(self.feature, body)
+
+
+class DispositionClosesWithoutInflatingTheMetric(unittest.TestCase):
+    """`--disposition` exists so the closure guard can be TOTAL.
+
+    Measured 2026-08-25: of 477 tasks closed that day without a CLOSURE-VERIFIED
+    note, 380 named a PR or SHA and could have used this verifier -- but 97 named
+    nothing at all, because review lanes, duplicates and answered questions have no
+    landing to prove. A verifier that only accepts --code/--artifact/--run-id is
+    unusable for a fifth of real closures, so a guard built on it gets routed
+    around rather than obeyed. These tests pin the two properties that keep the
+    escape hatch from becoming a hole.
+    """
+
+    def _harness(self, tags: str):
+        recorded: list[tuple[str, ...]] = []
+
+        def run(command, cwd=None, **kw):
+            import subprocess as _sp
+            if command[:2] == ("tg", "sql"):
+                return _sp.CompletedProcess(
+                    list(command), 0, f"tags\n----\n{tags}\n\n(1 row)\n", ""
+                )
+            if command and str(command[0]).endswith("tg-note-verified") and "--file" in command:
+                path = list(command)[list(command).index("--file") + 1]
+                with open(path, encoding="utf-8") as handle:
+                    recorded.append(("tg", "note", command[1], handle.read()))
+                return _sp.CompletedProcess(list(command), 0, "", "")
+            recorded.append(tuple(command))
+            return _sp.CompletedProcess(list(command), 0, "", "")
+
+        return recorded, run
+
+    def _disposition(self):
+        return verified_close.Evidence(
+            "verified", "disposition", "superseded by hermit#1234",
+            resolved="no-code-reference", landing="none",
+        )
+
+    def test_disposition_records_under_a_DIFFERENT_anchor(self) -> None:
+        """CLOSURE-VERIFIED must not be writable by a closure that verified nothing.
+
+        Every landing-debt query and the health tick count that exact string. If a
+        disposition wrote it, the metric would rise by precisely the closures
+        carrying no evidence -- the instrument reporting improvement caused by the
+        thing it exists to detect.
+        """
+        recorded, run = self._harness('["review"]')
+        rc = verified_close.close_task("t", self._disposition(), run=run)
+        self.assertEqual(rc, verified_close.CLOSED)
+        notes = [c for c in recorded if len(c) > 1 and c[1] == "note"]
+        self.assertTrue(notes, f"no note was written: {recorded}")
+        body = notes[0][-1]
+        self.assertIn("CLOSURE-RECORDED", body)
+        self.assertNotIn("CLOSURE-VERIFIED", body)
+        self.assertIn("kind=disposition", body)
+        self.assertIn("landing=none", body)
+        self.assertIn(("tg", "update", "t", "--status", "closed"), recorded)
+
+    def test_disposition_is_refused_on_a_task_claiming_a_landing(self) -> None:
+        """The one population this verifier exists for must not opt out in a flag."""
+        for tags in ('["implemented"]', '["landed"]', '["drain","implemented"]'):
+            with self.subTest(tags=tags):
+                recorded, run = self._harness(tags)
+                rc = verified_close.close_task("t", self._disposition(), run=run)
+                self.assertEqual(rc, verified_close.REFUSED)
+                self.assertNotIn(
+                    ("tg", "update", "t", "--status", "closed"),
+                    recorded,
+                    "a refused disposition must leave the task open",
+                )
+
+    def test_unreadable_tags_refuse_the_disposition(self) -> None:
+        """Fail CLOSED. 'I could not read the tags' must not be read as 'it claims nothing'."""
+        def run(command, cwd=None, **kw):
+            import subprocess as _sp
+            if command[:2] == ("tg", "sql"):
+                return _sp.CompletedProcess(list(command), 1, "", "db unavailable")
+            return _sp.CompletedProcess(list(command), 0, "", "")
+
+        self.assertEqual(
+            verified_close.close_task("t", self._disposition(), run=run),
+            verified_close.REFUSED,
+        )
+
+    def test_tag_reader_survives_the_tg_sql_frame(self) -> None:
+        """The gate this feeds was inert for exactly this reason.
+
+        It used to scan `tg show` for a line starting with "Tags:"; `tg show`
+        prints a mission-view tree with no such line, so it answered "no tags" for
+        every task alive. Parse the real framing or do not claim to read tags.
+        """
+        def run(command, cwd=None, **kw):
+            import subprocess as _sp
+            return _sp.CompletedProcess(
+                list(command), 0, 'tags\n----------\n["drain","landed"]\n\n(1 row)\n', ""
+            )
+
+        self.assertEqual(
+            verified_close.read_task_tags("t", run=run), '["drain","landed"]'
+        )
+        self.assertTrue(verified_close.task_claims_landing("t", run=run))
+
+    def test_a_task_id_that_is_not_an_identifier_is_refused(self) -> None:
+        """The id is interpolated into SQL, so anything unexpected reads as unreadable."""
+        self.assertIsNone(verified_close.read_task_tags("t'; drop table tasks--"))
 
 
 # THE DISPATCHER MUST BE THE LAST THING IN THE FILE. It previously sat above
