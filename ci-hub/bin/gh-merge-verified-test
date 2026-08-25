@@ -295,6 +295,83 @@ def race_cases() -> None:
         )
 
 
+def expect_head_cases() -> None:
+    """`refs/pull/N/head` lags a push, so a caller who just pushed must be able to say so.
+
+    Reading that ref once right after pushing can return the PREVIOUS head, and then
+    the merge base, the file list and every ARRIVED/ABSENT verdict are computed from
+    the wrong commit -- the tool reports VERIFIED over the old change. These cases
+    pin the three behaviours that close it.
+    """
+    with tempfile.TemporaryDirectory(prefix="gh-merge-verified-head-") as tmp:
+        root = Path(tmp)
+        origin, work = build_fixture(root, "arrived")
+        bindir, log = tripwire_dir(root)
+        env = {
+            **os.environ,
+            "PATH": f"{bindir}:{os.environ.get('PATH', '')}",
+            "GH_MERGE_VERIFIED_REMOTE": str(origin),
+            "GH_MERGE_VERIFIED_PR_HEAD_TIMEOUT_S": "2",
+            "GH_MERGE_VERIFIED_PR_HEAD_POLL_S": "0.2",
+        }
+        real_head = subprocess.run(
+            ["git", "rev-parse", "refs/pull/1/head"],
+            cwd=origin, capture_output=True, text=True,
+        ).stdout.strip()
+
+        # (1) the correct sha: converges immediately and verifies as before.
+        code, out = run(
+            [sys.executable, str(TOOL), "1", "--repo", "fixture/repo",
+             "--verify-only", "--expect-head", real_head],
+            cwd=work, env=env,
+        )
+        check(
+            "--expect-head matching the ref proceeds to a verdict",
+            code == 0 and "VERIFIED" in out,
+            f"got exit {code}\n{out}",
+        )
+
+        # (2) a sha the ref never reaches: COULD NOT DETERMINE, never a verdict.
+        wrong = "0" * 40
+        code, out = run(
+            [sys.executable, str(TOOL), "1", "--repo", "fixture/repo",
+             "--verify-only", "--expect-head", wrong],
+            cwd=work, env=env,
+        )
+        check(
+            "--expect-head that never converges exits 4, not a verdict",
+            code == 4,
+            f"got exit {code}; anything else asserts something about the change from a "
+            f"fact about timing\n{out}",
+        )
+        check(
+            "non-convergence disclaims a statement about the change",
+            "NOT A STATEMENT ABOUT THE CHANGE" in out,
+            f"output did not disclaim\n{out}",
+        )
+        check(
+            "non-convergence names both the seen and the expected sha",
+            "--expect-head said" in out,
+            f"output did not name the expectation\n{out}",
+        )
+
+        # (3) omitted: the tool must SAY it could not corroborate, not imply it did.
+        code, out = run(
+            [sys.executable, str(TOOL), "1", "--repo", "fixture/repo", "--verify-only"],
+            cwd=work, env=env,
+        )
+        check(
+            "omitting --expect-head discloses the head was uncorroborated",
+            "WITHOUT corroboration" in out,
+            f"silent about an unverified head, which reads as though it checked\n{out}",
+        )
+        check(
+            "omitting --expect-head still reaches a verdict",
+            code == 0,
+            f"got exit {code}; the disclosure must not become a refusal\n{out}",
+        )
+
+
 def main() -> int:
     if not TOOL.exists():
         print(f"gh-merge-verified-test: {TOOL} is missing", file=sys.stderr)
@@ -318,6 +395,7 @@ def main() -> int:
 
     unit_cases()
     race_cases()
+    expect_head_cases()
 
     print()
     if FAILURES:

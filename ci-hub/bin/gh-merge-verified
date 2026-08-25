@@ -111,6 +111,7 @@ extra on top of the git-only path, never as the only way to verify.
 USAGE
 -----
     ci-hub/bin/gh-merge-verified <pr-number> [--repo owner/name] [--verify-only]
+                                 [--expect-head <sha>]
                                  [-- extra `gh pr merge` args...]
 
     # merge, then prove it landed
@@ -160,6 +161,10 @@ SCRATCH = f"refs/gh-merge-verified/{os.getpid()}"
 # TEST-ONLY OVERRIDES, so the self-test can exercise the timeout without waiting
 # the production bound. Production callers never set these.
 MAIN_ADVANCE_TIMEOUT_S = float(os.environ.get("GH_MERGE_VERIFIED_ADVANCE_TIMEOUT_S", "30"))
+# Same bound, applied to `refs/pull/N/head` when the caller states which head
+# they pushed. See the --expect-head handling for why that ref needs it too.
+PR_HEAD_TIMEOUT_S = float(os.environ.get("GH_MERGE_VERIFIED_PR_HEAD_TIMEOUT_S", "30"))
+PR_HEAD_POLL_S = float(os.environ.get("GH_MERGE_VERIFIED_PR_HEAD_POLL_S", "1"))
 MAIN_ADVANCE_POLL_S = float(os.environ.get("GH_MERGE_VERIFIED_ADVANCE_POLL_S", "1"))
 
 # WHEN THE OLD-SCHEME REFS BECOME SAFE TO DELETE
@@ -265,6 +270,7 @@ def main() -> None:
 
     repo = "rrnewton/hermit"
     verify_only = False
+    expect_head = None
     extra: list[str] = []
     i = 1
     while i < len(argv):
@@ -272,6 +278,8 @@ def main() -> None:
             repo, i = argv[i + 1], i + 2
         elif argv[i] == "--verify-only":
             verify_only, i = True, i + 1
+        elif argv[i] == "--expect-head" and i + 1 < len(argv):
+            expect_head, i = argv[i + 1], i + 2
         elif argv[i] == "--":
             extra, i = argv[i + 1 :], len(argv)
         else:
@@ -287,6 +295,44 @@ def main() -> None:
 
     # Resolve the pull request head from the REMOTE. Doing this first means a
     # merge is never attempted against a number we cannot even read.
+    # ⚠️ `refs/pull/N/head` READS STALE AFTER A PUSH. GitHub updates the branch ref
+    # first and the pull-request ref a moment later, so reading it ONCE right after
+    # pushing can hand back the PREVIOUS head. Everything downstream is then
+    # computed from the wrong commit: the merge base, the file list, and every
+    # ARRIVED/ABSENT verdict. The tool reports VERIFIED over the old change.
+    #
+    # Measured tonight as a second independent instance of one root cause -- reading
+    # a moving reference once and trusting the answer -- alongside the post-merge
+    # `refs/heads/main` race fixed above.
+    #
+    # `--expect-head` is how a caller says "I just pushed THIS". When given, the ref
+    # is polled until it converges on that sha; if it never does, that is COULD NOT
+    # DETERMINE, never a verdict about the change. When absent the tool cannot know
+    # whether the ref has settled, so it says so rather than implying it checked.
+    #
+    # Deliberately NOT resolved by asking the API: verification here is pure git,
+    # which is why this tool was the one kept, and an --expect-head the caller
+    # already knows costs no network at all.
+    if expect_head:
+        pr_deadline = time.monotonic() + PR_HEAD_TIMEOUT_S
+        while True:
+            rc, out, err = run(["git", "fetch", "--quiet", "--force", remote_url,
+                                f"refs/pull/{pr}/head:{SCRATCH}/pr"])
+            if rc != 0:
+                break
+            rc_h, seen, _ = run(["git", "rev-parse", f"{SCRATCH}/pr"])
+            seen = seen.strip()
+            if rc_h == 0 and seen.startswith(expect_head) or expect_head.startswith(seen or "x"):
+                break
+            if time.monotonic() >= pr_deadline:
+                die(4,
+                    f"gh-merge-verified: COULD NOT DETERMINE — refs/pull/{pr}/head is "
+                    f"{seen[:12]} but --expect-head said {expect_head[:12]}, after "
+                    f"{PR_HEAD_TIMEOUT_S}s.",
+                    "  THIS IS NOT A STATEMENT ABOUT THE CHANGE. The pull-request ref lags a"
+                    " push; if you did not just push, the sha you expected is simply wrong.")
+            time.sleep(PR_HEAD_POLL_S)
+
     rc, out, err = run(["git", "fetch", "--quiet", "--force", remote_url,
                         f"refs/pull/{pr}/head:{SCRATCH}/pr"])
     if rc != 0:
@@ -294,6 +340,13 @@ def main() -> None:
             "  This is NOT a statement about whether the change landed.",
             err.strip())
     rc, head, _ = run(["git", "rev-parse", f"{SCRATCH}/pr"])
+    if not expect_head:
+        # Not a refusal: the tool has no way to know whether the ref has settled,
+        # so it discloses that rather than implying it checked. Silence here would
+        # be the same defect as an empty check reading as a pass.
+        print(f"gh-merge-verified: pr head taken from refs/pull/{pr}/head WITHOUT "
+              "corroboration; that ref lags a push. Pass --expect-head <sha> if you "
+              "just pushed.")
     head = head.strip()
     if rc != 0 or not head:
         die(4, f"gh-merge-verified: COULD NOT DETERMINE — cannot resolve the head of PR {pr}")
