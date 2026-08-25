@@ -388,6 +388,76 @@ if [[ -z "${APPROVAL_BINDING_MUTATION_CHILD:-}" ]]; then
   fi
 fi
 
+
+# --- THE CACHE WAS THE INDEX: an unlabeled PR with a real binding --------------
+# Rows used to be generated per passed-review-* label, so a PR carrying a
+# correctly-formed `APPROVED-AT: <lane> <head>` and NO label produced no row at
+# all and reported approvals=0 -- indistinguishable from "nobody reviewed it".
+# Measured 2026-08-25 on rrnewton/hermit: 25 of 28 open PRs had no such label and
+# five of those carried a binding nothing read.
+cat >"$tmp/unlabeled-bound.json" <<JSON
+[{"number":2608,"head":"$CUR","labels":[],
+  "lane_shas":{"claude":["$CUR"]},"runs_at_head":2,"mergeable":"MERGEABLE"}]
+JSON
+
+# 1. IT IS SEEN.
+out="$(run "$tmp/unlabeled-bound.json" --pr 2608 --gate --json)"
+grep -q '"unlabeled_bound_current": 1' <<<"$out" \
+  && ok "unlabeled PR: a canonical at-head binding is REPORTED, not silently dropped" \
+  || bad "unlabeled binding still invisible: $out"
+
+# 2. IT STILL REFUSES. This is the whole point of the restraint: the tool now
+#    sees the review, and the landing boundary has NOT moved.
+out="$(run "$tmp/unlabeled-bound.json" --pr 2608 --gate)"; rc=$?
+[[ $rc -eq 1 ]] \
+  && ok "unlabeled PR: seeing the binding does NOT make it landable (rc=1)" \
+  || bad "unlabeled binding changed the merge boundary: expected rc=1, got $rc"
+out="$(run "$tmp/unlabeled-bound.json" --pr 2608 --gate --json)"
+grep -q '"approval_set_missing": true' <<<"$out" && grep -q '"approvals": 0' <<<"$out" \
+  && ok "unlabeled PR: approval_set_missing and approvals are unchanged" \
+  || bad "unlabeled binding leaked into the headline counts: $out"
+
+# 3. THE TWO CAUSES ARE NOW DISTINGUISHABLE, which is the defect itself.
+out="$(run "$tmp/unlabeled-bound.json" --pr 2608 --gate)"
+grep -q "NOT UNREVIEWED" <<<"$out" \
+  && ok "unlabeled PR: refusal says the label is missing, not the review" \
+  || bad "refusal still cannot distinguish unreviewed from unlabeled: $out"
+cat >"$tmp/unlabeled-none.json" <<JSON
+[{"number":2609,"head":"$CUR","labels":[],
+  "lane_shas":{},"runs_at_head":2,"mergeable":"MERGEABLE"}]
+JSON
+out="$(run "$tmp/unlabeled-none.json" --pr 2609 --gate)"
+grep -q "NOT UNREVIEWED" <<<"$out" \
+  && bad "a genuinely unreviewed PR wrongly claims a binding exists: $out" \
+  || ok "genuinely unreviewed PR does NOT claim a binding (the negative control)"
+
+# 4. AN UNLABELED BINDING MUST NOT SATISFY THE CRITICAL-LANE CHECK.
+#    Counting it there would shrink critical_lanes_missing and loosen the gate.
+cat >"$tmp/unlabeled-critical.json" <<JSON
+[{"number":2610,"head":"$CUR","labels":["post-facto-human-review"],
+  "comments":["REVIEW-DISPATCH-ATTESTATION\ncritical-class: hermit-syscall\nhead: $CUR\nAPPROVED-AT: claude $CUR\nAPPROVED-AT: codex $CUR"],
+  "runs_at_head":2,"mergeable":"MERGEABLE"}]
+JSON
+out="$(run "$tmp/unlabeled-critical.json" --pr 2610 --gate --json)"
+grep -q '"critical_lanes_missing": \[' <<<"$out" \
+  && ! grep -q '"critical_lanes_missing": \[\]' <<<"$out" \
+  && ok "unlabeled binding does NOT satisfy the critical-lane requirement" \
+  || bad "unlabeled binding loosened the critical-lane gate: $out"
+
+# 5. MUTATION CONTROL for 4: delete the source guard and 4 must fail.
+mutant="$tmp/approval_binding-without-source-guard.py"
+sed 's/and row.get("source") != "comment"//' "$tool" >"$mutant"
+if ! cmp -s "$tool" "$mutant"; then
+  out="$(python3 "$mutant" --from-json "$tmp/unlabeled-critical.json" --pr 2610 --gate --json 2>&1)"
+  if grep -q '"critical_lanes_missing": \[\]' <<<"$out"; then
+    ok "mutation control: removing the source guard DOES loosen the critical gate"
+  else
+    bad "mutation control: the source guard appears to do nothing -- test 4 proves nothing"
+  fi
+else
+  bad "mutation control: could not construct the without-source-guard mutant"
+fi
+
 echo "======================================================================"
 echo "refused-when-it-should:     1 case   (selected PR with zero approvals)"
 echo "flagged-when-it-should:     4 cases  (superseded, unbound 0/1 authority, composed, malformed+lost)"

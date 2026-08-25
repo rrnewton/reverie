@@ -672,9 +672,56 @@ def collect_live(
                 {
                     "number": pr["number"],
                     "label": label,
+                    "source": "label",
                     "lane": lane,
                     "head": head,
                     "bound_to": shas[-1] if shas else None,
+                    "state": classify_approval(head, shas),
+                    "runs_at_head": len(runs),
+                    "mergeable": pr.get("mergeable"),
+                }
+            )
+        # ⚠️ A LABEL IS A CACHE, AND IT WAS ALSO THE INDEX.
+        #
+        # Rows were generated ONLY per passed-review-* label, so a PR carrying a
+        # correctly-formed `APPROVED-AT: <lane> <head>` and no label produced NO
+        # ROW AT ALL -- its comments were fetched above and then never parsed for
+        # a binding. The tool reported `approvals: 0, approval_set_missing: true`,
+        # which cannot be distinguished from "nobody reviewed it". That inverts
+        # the policy stated at the top of this file: comments are authority and
+        # labels are caches. With the cache as the index, authority was consulted
+        # only for entries the cache already contained, so a cache MISS and an
+        # authority ABSENCE produced the same number.
+        #
+        # Measured 2026-08-25 on rrnewton/hermit: of 28 open PRs, 25 carried no
+        # passed-review-* label; FIVE of those carried a well-formed binding that
+        # was never read, and TWO were bound at the current head.
+        #
+        # These rows are tagged `source: "comment"` and carry `label: None`.
+        # THEY DO NOT MOVE THE MERGE BOUNDARY -- see `approval_rows` below, which
+        # still counts label rows only, and review_rebase.py, which skips them.
+        # Whether a comment binding should be sufficient to LAND is a policy
+        # question for the owner; this change only stops the tool reporting a
+        # review it can see as a review that does not exist.
+        labelled_lanes = {
+            name.rsplit("-", 1)[-1]
+            for name in tracked
+            if name != LOCALLY_VALIDATED_LABEL
+        }
+        for lane in LANES:
+            if lane in labelled_lanes:
+                continue
+            shas = lane_shas(comments, lane, malformed, pr["number"], malformed_prs)
+            if not shas:
+                continue
+            rows.append(
+                {
+                    "number": pr["number"],
+                    "label": None,
+                    "source": "comment",
+                    "lane": lane,
+                    "head": head,
+                    "bound_to": shas[-1],
                     "state": classify_approval(head, shas),
                     "runs_at_head": len(runs),
                     "mergeable": pr.get("mergeable"),
@@ -763,9 +810,44 @@ def collect_fixture(
                 {
                     "number": pr["number"],
                     "label": label,
+                    "source": "label",
                     "lane": lane,
                     "head": pr["head"],
                     "bound_to": shas[-1] if shas else None,
+                    "state": classify_approval(pr["head"], shas),
+                    "runs_at_head": pr.get("runs_at_head", 1),
+                    "mergeable": pr.get("mergeable"),
+                }
+            )
+        # The offline twin of the comment-discovered rows in collect(). These two
+        # builders MUST stay in step: the fixture path is where every assertion in
+        # the test suite runs, so a behaviour that exists only in collect() is a
+        # behaviour no test can reach. Keeping them together is what makes
+        # `an_unlabeled_binding_is_reported_but_still_refuses` mean anything.
+        labelled_lanes = {
+            name.rsplit("-", 1)[-1]
+            for name in pr["labels"]
+            if name.startswith("passed-review-")
+        }
+        for lane in LANES:
+            if lane in labelled_lanes:
+                continue
+            if "comments" in pr:
+                shas = lane_shas(
+                    comments, lane, malformed, pr["number"], malformed_prs
+                )
+            else:
+                shas = pr.get("lane_shas", {}).get(lane, [])
+            if not shas:
+                continue
+            rows.append(
+                {
+                    "number": pr["number"],
+                    "label": None,
+                    "source": "comment",
+                    "lane": lane,
+                    "head": pr["head"],
+                    "bound_to": shas[-1],
                     "state": classify_approval(pr["head"], shas),
                     "runs_at_head": pr.get("runs_at_head", 1),
                     "mergeable": pr.get("mergeable"),
@@ -938,7 +1020,12 @@ def main() -> int:
     # defects.  Fleet-wide scans deliberately retain their historical scope:
     # they audit approval labels that exist and do not infer which open PRs
     # require review.
-    approval_rows = [row for row in rows if row["label"].startswith("passed-review-")]
+    # `or ""` is load-bearing: comment-discovered rows carry label None. Counting
+    # them here would make an unlabeled-but-approved PR satisfy the landing
+    # boundary, which is the policy change this deliberately does not make.
+    approval_rows = [
+        row for row in rows if (row["label"] or "").startswith("passed-review-")
+    ]
     approval_set_missing = a.pr is not None and not approval_rows
     selected_labels = set(selected["labels"]) if selected is not None else set()
     selected_critical_classes = (
@@ -949,33 +1036,55 @@ def main() -> int:
     # Criticality comes from the existing closed-enum review-attest record.
     critical_required = bool(selected_critical_classes)
     critical_label_missing = critical_required and POST_FACTO_LABEL not in selected_labels
+    # ⚠️ LABEL ROWS ONLY, and that is a deliberate restraint rather than an
+    # oversight. A comment-discovered binding (source "comment", label None) is
+    # real authority by this file's stated policy, so counting it here would be
+    # defensible -- and it would SHRINK critical_lanes_missing, loosening the
+    # critical-review gate for any PR whose reviewer never applied a label. That
+    # is a policy change, and the change that made those rows visible is not the
+    # place to make it. Deleting the `source` test below is the one-line switch,
+    # and `an_unlabeled_binding_does_not_satisfy_the_critical_lane_check` fails
+    # if it is deleted by accident.
     authoritative_lanes = {
         str(row["lane"])
         for row in rows
-        if row["state"] == BOUND_CURRENT and row["lane"] in LANES
+        if row["state"] == BOUND_CURRENT
+        and row["lane"] in LANES
+        and row.get("source") != "comment"
     }
     critical_lanes_missing = (
         sorted(set(LANES) - authoritative_lanes) if critical_required else []
     )
-    bad = [r for r in rows if r["state"] != BOUND_CURRENT]
-    authoritative = len(rows) - len(bad)
+    # Same population as before this change: comment-discovered rows are reported
+    # but are not folded into the headline counts, so `approvals`/`authoritative`
+    # stay comparable with every receipt already recorded against them.
+    label_rows = [r for r in rows if r.get("source") != "comment"]
+    comment_rows = [r for r in rows if r.get("source") == "comment"]
+    bad = [r for r in label_rows if r["state"] != BOUND_CURRENT]
+    authoritative = len(label_rows) - len(bad)
     malformed_prs = set(malformed_pr_by_source.values())
     malformed_affected_labels = {
         (r["number"], r["label"])
-        for r in rows
-        if r["number"] in malformed_prs and r["label"].startswith("passed-review-")
+        for r in label_rows
+        if r["number"] in malformed_prs and (r["label"] or "").startswith("passed-review-")
     }
     # The composed state: a review/local-validation cache that no longer holds,
     # on a head nothing evaluated.
     combined = unevaluated_binding_rows(bad, actions_enabled)
     approved_and_unevaluated = [
-        r for r in combined if r["label"].startswith("passed-review-")
+        r for r in combined if (r["label"] or "").startswith("passed-review-")
     ]
 
     if a.as_json:
         print(json.dumps({"approvals": len(approval_rows),
                           "actions_enabled": actions_enabled,
-                          "binding_labels": len(rows),
+                          "binding_labels": len(label_rows),
+                          # Canonical bindings found in comments on a PR carrying no
+                          # matching label. Reported, deliberately not counted above.
+                          "unlabeled_bindings": len(comment_rows),
+                          "unlabeled_bound_current": len(
+                              [r for r in comment_rows if r["state"] == BOUND_CURRENT]
+                          ),
                           "authoritative": authoritative,
                           "approval_set_missing": approval_set_missing,
                           "critical_required": critical_required,
@@ -1006,10 +1115,10 @@ def main() -> int:
                 "runs_at_head_zero=expected while GitHub Actions are disabled; "
                 "zero workflow runs are not classified as unevaluated"
             )
-        print(f"inspected {len(rows)} passed-review-* / locally-validated label(s); bound to current head: "
+        print(f"inspected {len(label_rows)} passed-review-* / locally-validated label(s); bound to current head: "
               f"{authoritative}; authority absent: {len(bad)}; "
               f"passed-review-* / locally-validated AND unevaluated: {len(combined)}")
-        for r in rows:
+        for r in label_rows:
             if r["state"] == BOUND_CURRENT:
                 continue
             if r["bound_to"]:
@@ -1028,8 +1137,29 @@ def main() -> int:
                 flag = ""
             print(f"  {r['state']:<13} PR {r['number']}  {r['label']}  "
                   f"bound-to {bound}  head {r['head'][:12]}  runs={r['runs_at_head']}{flag}")
+        for r in comment_rows:
+            print(
+                f"  {r['state']:<13} PR {r['number']}  (no label, lane {r['lane']}, "
+                f"from comment)  bound-to {r['bound_to'][:12]}  head {r['head'][:12]}"
+            )
         if approval_set_missing:
             print(f"  REQUIRED-APPROVAL-SET-MISSING  PR {a.pr} has zero passed-review labels")
+            # The distinction this tool could not previously draw. Both states
+            # print zero approvals; only one of them means nobody looked.
+            at_head = [r for r in comment_rows if r["state"] == BOUND_CURRENT]
+            if at_head:
+                print(
+                    f"    NOT UNREVIEWED: {len(at_head)} canonical binding(s) at the "
+                    f"current head in comments ("
+                    + ", ".join(sorted(r["lane"] for r in at_head))
+                    + "), with no passed-review-* label. Apply the label to make "
+                    "this landable; the review already exists."
+                )
+            elif comment_rows:
+                print(
+                    f"    {len(comment_rows)} canonical binding(s) exist in comments "
+                    "but none at the current head -- genuinely superseded."
+                )
         if critical_label_missing:
             print(
                 f"  CRITICAL-LABEL-MISSING  PR {a.pr} is classified "
@@ -1049,11 +1179,11 @@ def main() -> int:
             print(f"  MALFORMED-SOURCE-LINE  {pr_text}{line}   ({where})")
 
     if a.gate_on == "superseded":
-        gating = [r for r in rows if r["state"] == SUPERSEDED] + [
+        gating = [r for r in label_rows if r["state"] == SUPERSEDED] + [
             r for r in combined if r["state"] != SUPERSEDED
         ]
     elif a.gate_on == "unverifiable":
-        gating = [r for r in rows if r["state"] == UNDETERMINED]
+        gating = [r for r in label_rows if r["state"] == UNDETERMINED]
     else:
         gating = bad
 
@@ -1071,14 +1201,26 @@ def main() -> int:
             summary = f"PR #{a.pr} critical review protocol incomplete: {'; '.join(problems)}"
         elif approval_set_missing:
             state = "absent"
+            at_head = [r for r in comment_rows if r["state"] == BOUND_CURRENT]
             summary = (
                 f"PR #{a.pr} has zero passed-review labels; absence of review "
                 "evidence cannot satisfy the final landing boundary"
             )
+            if at_head:
+                # Same refusal, different cause, and the operator needs the
+                # difference: one says find a reviewer, the other says apply a
+                # label to a review that already happened.
+                summary = (
+                    f"PR #{a.pr} has zero passed-review labels, but "
+                    f"{len(at_head)} canonical binding(s) at the current head "
+                    "exist in comments ("
+                    + ", ".join(sorted(r["lane"] for r in at_head))
+                    + "); the review exists and the cache label does not"
+                )
         else:
             state = "unbound" if gating else "ok"
             remedies = []
-            if any(r["label"].startswith("passed-review-") for r in gating):
+            if any((r["label"] or "").startswith("passed-review-") for r in gating):
                 remedies.append(
                     "re-review the exact head and emit APPROVED-AT: <lane> <40-hex-head>"
                 )
@@ -1090,7 +1232,7 @@ def main() -> int:
             if not remedies:
                 remedies.append("no binding repair is required")
             summary = (
-                f"{len(gating)}/{len(rows)} passed-review-* / locally-validated labels fail the "
+                f"{len(gating)}/{len(label_rows)} passed-review-* / locally-validated labels fail the "
                 f"{a.gate_on} binding check; affected={affected}; they do not bind "
                 f"the current head and are not deleted; remedy: {'; '.join(remedies)}"
             )
@@ -1122,13 +1264,21 @@ def main() -> int:
     if a.gate and approval_set_missing:
         print(
             f"GATE FAIL: PR #{a.pr} has zero passed-review labels. Zero approvals "
-            "is absence of authority, not zero review problems.",
+            "is absence of authority, not zero review problems."
+            + (
+                "  NOTE: "
+                + str(len([r for r in comment_rows if r["state"] == BOUND_CURRENT]))
+                + " canonical binding(s) at the current head were found in comments; "
+                "this refuses for a missing LABEL, not a missing REVIEW."
+                if any(r["state"] == BOUND_CURRENT for r in comment_rows)
+                else ""
+            ),
             file=sys.stderr,
         )
         return 1
     if a.gate and gating:
         print(
-            f"GATE FAIL ({a.gate_on}): {len(gating)} of {len(rows)} passed-review-* / locally-validated label(s) do not bind "
+            f"GATE FAIL ({a.gate_on}): {len(gating)} of {len(label_rows)} passed-review-* / locally-validated label(s) do not bind "
             "to the current head. They are NOT deleted -- they simply must not satisfy the review "
             "or local-validation head-binding gate.",
             file=sys.stderr,

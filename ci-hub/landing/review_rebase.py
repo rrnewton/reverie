@@ -158,6 +158,13 @@ def evaluate(
 
     accepted: list[dict[str, Any]] = []
     for row in rows:
+        # Comment-discovered rows (label None) are REPORTED by approval_binding.py
+        # so an unlabeled-but-approved PR stops reading as unreviewed. They are not
+        # admission evidence here: treating one as authority would let a PR land
+        # without a passed-review-* label, which is a policy change and not this
+        # one. Skipping them keeps the landing boundary exactly where it was.
+        if row.get("source") == "comment":
+            continue
         if not isinstance(row, dict):
             raise Refused("approval-binding report contains a malformed row")
         report_head = exact_sha(row.get("head"), "approval report head")
