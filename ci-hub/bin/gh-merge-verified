@@ -36,6 +36,23 @@ request is "about". A branch commonly carries more than its headline change --
 a formatting fix, a follow-up commit. Checking only the obvious paths reports a
 landing that dropped the rest. This walks `git diff --name-only <merge-base>..<head>`.
 
+⚠️ THE STALE PULL-REF HAZARD, WHICH THIS TOOL IS EXPOSED TO BY CONSTRUCTION
+------------------------------------------------------------------------
+`refs/pull/N/head` can still read the OLD sha for a short window immediately
+after a push. Measured twice independently on 2026-08-25, and it broke two pull
+requests before it was understood.
+
+This tool resolves the head from exactly that ref, so a read inside the window
+compares main against the WRONG head and can report a landing that really
+happened as ABSENT. That is the likeliest cause of an exit 3 that surprises you.
+
+So: EXIT 3 MEANS CHECK BY HAND. Re-run after a few seconds; if the verdict
+changes, the first answer was the race. Where it matters, confirm from the
+branch ref or the API rather than the pull ref -- those converge immediately.
+It is deliberately NOT auto-retried here: silently polling would turn a
+diagnosable race into a delay nobody can see, and this tool exists to make the
+uncertain state visible rather than to paper over it.
+
 THREE VERDICTS PER FILE, BECAUSE TWO DECAY
 ------------------------------------------
 Comparing only "main == pr head" rots: the moment main edits a file for an
@@ -110,6 +127,8 @@ EXIT
     2  the `gh pr merge` command itself failed (the case output hid)
     3  the content is NOT all on main. Prints NOT LANDED when a file is ABSENT,
        UNDECIDABLE when files only MOVED ON. Files named either way.
+       ⚠️ EXIT 3 MEANS CHECK BY HAND, NOT THAT THE MERGE FAILED. See the stale
+       pull-ref hazard below.
     4  COULD NOT DETERMINE: the check did not complete. Distinct from 3 on
        purpose, so a broken verifier is never read as a clean landing.
 """
@@ -416,6 +435,14 @@ def main() -> None:
         if len(missing) > 40:
             print(f"      ... and {len(missing) - 40} more", file=sys.stderr)
         print("", file=sys.stderr)
+        print("", file=sys.stderr)
+        print("  ⚠️ AND IF YOU PUSHED SECONDS AGO, SUSPECT A STALE PULL REF FIRST.", file=sys.stderr)
+        print("  refs/pull/N/head can still read the OLD sha immediately after a push --", file=sys.stderr)
+        print("  measured twice on 2026-08-25, and it broke two pull requests. This tool", file=sys.stderr)
+        print("  reads that ref, so a stale read compares against the wrong head and can", file=sys.stderr)
+        print("  report a real landing as ABSENT. Re-run in a few seconds; if the verdict", file=sys.stderr)
+        print("  changes, the first answer was the race, not the truth.", file=sys.stderr)
+        print("  EXIT 3 THEREFORE MEANS CHECK BY HAND, NOT THAT THE MERGE FAILED.", file=sys.stderr)
         print("  ⚠️ READ THIS, DO NOT AUTOMATE ON IT. Content-identity is sound in one", file=sys.stderr)
         print("  direction only: identical files prove the change arrived, but differing", file=sys.stderr)
         print("  files can also mean the change was amended during review, or that main", file=sys.stderr)
