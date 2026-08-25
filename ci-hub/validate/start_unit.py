@@ -1143,6 +1143,39 @@ def emit_report(report: Mapping[str, Any], *, json_output: bool) -> None:
         print(f"{label} {raw} [{state}]", flush=True)
 
 
+
+def bookkeep_record(record_path, /, **fields):
+    """Update the run record, but never at the cost of the caller's verdict.
+
+    ⚠️ THIS IS THE PRIORITY INVERSION THAT HELD THE OWNER'S BOX. Both callers run
+    AFTER the run's outcome is settled: the first after `wait_for_unit` has
+    returned the terminal state, the second after the canonical verdict has been
+    read. Neither result depends on the write succeeding -- the record is a
+    handle for later readers, not the answer. Yet both took `flock(LOCK_EX)` with
+    no bound, so a contended lock stopped the wrapper delivering a verdict it had
+    already computed.
+
+    Same shape as the rest of tonight: a value produced and never delivered.
+
+    On contention the fact is REPORTED and the caller continues. The in-memory
+    fields are returned so downstream reporting is unaffected, and the record is
+    the only thing that goes stale -- which is the correct thing to sacrifice,
+    because a reader can re-derive it and the human at the terminal cannot.
+    """
+    try:
+        return run_registry.update_record(record_path, blocking=False, **fields)
+    except run_registry.RecordLocked as locked:
+        print(
+            f"validate-run: RUN-RECORD NOT UPDATED: {locked}. The verdict below is "
+            "unaffected -- this is a bookkeeping write, and it is reported rather "
+            "than waited on so a held lock cannot withhold a result that is "
+            "already known. Remedy: none required for this run; if it persists, "
+            f"find the holder with `fuser -v {record_path}.lock` or `lsof`.",
+            file=sys.stderr,
+        )
+        return dict(fields)
+
+
 def attach(
     raw_unit: str,
     *,
@@ -1170,7 +1203,7 @@ def attach(
         poll_seconds=poll_seconds,
         sleep=sleep,
     )
-    updated = run_registry.update_record(record_path, **final)
+    updated = bookkeep_record(record_path, **final)
     try:
         target = str(record["target"])
         checkout = Path(str(record["checkout"]))
@@ -1186,7 +1219,7 @@ def attach(
             f"{record.get('target', '<target>')}` and, if the ledger row is "
             "genuinely absent, re-run the validate. Do NOT read this as a failure.",
         )
-    updated = run_registry.update_record(
+    updated = bookkeep_record(
         record_path,
         canonical_verdict=canonical_verdict,
         wrapper_exit_code=canonical_exit,

@@ -26,12 +26,46 @@ def read_record(path: Path) -> dict[str, Any]:
     return value
 
 
+class RecordLocked(RuntimeError):
+    """Another process holds this record's lock and the caller would not wait.
+
+    ⚠️ RAISED ONLY WHEN THE CALLER ASKED NOT TO BLOCK. The default is unchanged
+    and still blocks, because most writers here need the read-modify-write to be
+    exclusive for correctness. This exists for the callers whose write is
+    BOOKKEEPING -- where blocking costs the user something more valuable than the
+    record is worth.
+    """
+
+
 @contextmanager
-def exclusive_record(path: Path):
+def exclusive_record(path: Path, *, blocking: bool = True):
+    """Hold this record's lock. `blocking=False` raises RecordLocked instead of waiting.
+
+    ⚠️ THE BLOCKING FORM HELD THE OWNER'S TERMINAL FOR AN UNBOUNDED TIME. `flock`
+    with LOCK_EX and no bound is correct for a writer that must not interleave,
+    and wrong for one that runs AFTER a verdict has been computed and printed:
+    the caller then has nothing left to do but say so, and it could not, because
+    it was waiting to update a file nobody was reading yet. Reproduced
+    2026-08-25: with the lock free the wrapper returned in 16.5s; with another
+    process holding it, the wrapper printed its report and then blocked
+    indefinitely, idle rather than spinning, which is why it read as a job still
+    running.
+
+    ⚠️ NOT SOLVED WITH A TIMEOUT ON PURPOSE. A timeout turns an unbounded wait
+    into a bounded one and still throws away the reason; the caller is left
+    guessing whether it waited long enough. Contention is a FACT the caller can
+    report, so it is raised as one.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
     lock_path = path.with_name(f".{path.name}.lock")
     with lock_path.open("a+") as lock:
-        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        mode = fcntl.LOCK_EX if blocking else fcntl.LOCK_EX | fcntl.LOCK_NB
+        try:
+            fcntl.flock(lock.fileno(), mode)
+        except BlockingIOError as exc:
+            raise RecordLocked(
+                f"another process holds the lock on {lock_path}"
+            ) from exc
         try:
             yield
         finally:
@@ -59,11 +93,11 @@ def write_record(path: Path, value: Mapping[str, Any]) -> None:
         _write_unlocked(path, value)
 
 
-def update_record(path: Path, **fields: Any) -> dict[str, Any]:
+def update_record(path: Path, *, blocking: bool = True, **fields: Any) -> dict[str, Any]:
     # The caller and the observer finish at nearly the same time. Serialize the
     # read-modify-write so a final exit update cannot erase cgroup evidence (or
     # vice versa) while retaining atomic replacement for readers.
-    with exclusive_record(path):
+    with exclusive_record(path, blocking=blocking):
         value = read_record(path)
         value.update(fields)
         _write_unlocked(path, value)

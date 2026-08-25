@@ -5,7 +5,9 @@ from __future__ import annotations
 
 import contextlib
 import inspect
+import fcntl
 import io
+import threading
 import json
 import sys
 import tempfile
@@ -14,6 +16,7 @@ from pathlib import Path
 
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+import run_registry  # noqa: E402
 import start_unit as su  # noqa: E402
 
 
@@ -468,6 +471,101 @@ class ThreeOutcomesTest(unittest.TestCase):
     def test_the_canonical_verdict_map_keeps_failed_separate_from_passed(self) -> None:
         self.assertEqual(su.EXIT_PASSED, su.canonical_verdict_exit_code("VALIDATED"))
         self.assertEqual(su.EXIT_FAILED, su.canonical_verdict_exit_code("FAILED"))
+
+
+def _finishes(call, seconds: float = 5.0):
+    """Run `call` in a thread; return (finished, result_or_error).
+
+    ⚠️ THE BOUND IS ON THE TEST, NOT THE PRODUCT. Without it the two contended
+    assertions below HANG under the exact mutation they exist to catch -- revert
+    the non-blocking acquire and the call never returns, so the suite stops
+    instead of going red. A test that hangs on regression is worse than one that
+    fails: CI reports nothing and a human has to guess which test. Measured while
+    writing this -- the mutant run was killed at 120s having produced no verdict.
+    The product still contains no timeout anywhere.
+    """
+    box: dict = {}
+
+    def target() -> None:
+        try:
+            box["value"] = call()
+        except BaseException as exc:  # noqa: BLE001 -- recorded and asserted on
+            box["error"] = exc
+        box["finished"] = True
+
+    thread = threading.Thread(target=target, daemon=True)
+    thread.start()
+    thread.join(seconds)
+    return box.get("finished", False), box
+
+
+class RecordLockNeverWithholdsAVerdict(unittest.TestCase):
+    """A bookkeeping write must not hold the caller's terminal.
+
+    ⚠️ REPRODUCED BEFORE FIXING. attach() updates the run record twice, both AFTER
+    the outcome is settled, and both took flock(LOCK_EX) with no bound. With
+    another process holding that lock the wrapper printed its report and then
+    blocked indefinitely -- idle in flock rather than spinning, which is why it
+    read as a job still running. That held the owner's box. Same shape as the rest
+    of tonight: a value computed and never delivered.
+    """
+
+    def setUp(self) -> None:
+        self.dir = Path(tempfile.mkdtemp())
+        self.record = self.dir / "r.json"
+        self.record.write_text(json.dumps({"schema_version": 1, "a": 1}))
+
+    def _hold(self):
+        lock = (self.dir / ".r.json.lock").open("a+")
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        return lock
+
+    def test_a_contended_bookkeeping_write_raises_instead_of_waiting(self) -> None:
+        held = self._hold()
+        try:
+            finished, box = _finishes(
+                lambda: run_registry.update_record(self.record, blocking=False, b=2)
+            )
+            self.assertTrue(finished, "contended non-blocking update DID NOT RETURN")
+            self.assertIsInstance(box.get("error"), run_registry.RecordLocked)
+        finally:
+            held.close()
+
+    def test_bookkeep_record_reports_and_returns_rather_than_raising(self) -> None:
+        held = self._hold()
+        try:
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                finished, box = _finishes(lambda: su.bookkeep_record(self.record, b=2))
+            self.assertTrue(finished, "bookkeep_record DID NOT RETURN while contended")
+            self.assertEqual({"b": 2}, box.get("value"))
+            self.assertIn("RUN-RECORD NOT UPDATED", err.getvalue())
+            self.assertIn("verdict below is unaffected", err.getvalue())
+            self.assertIn("Remedy", err.getvalue())
+        finally:
+            held.close()
+
+    def test_the_blocking_default_is_unchanged(self) -> None:
+        # The load-bearing negative: writers that need exclusivity for CORRECTNESS
+        # still block. A change making every writer non-blocking would pass every
+        # other test here.
+        for fn in (run_registry.exclusive_record, run_registry.update_record):
+            self.assertIs(
+                True, inspect.signature(fn).parameters["blocking"].default, fn.__name__
+            )
+
+    def test_an_uncontended_write_still_updates_the_record(self) -> None:
+        run_registry.update_record(self.record, blocking=False, b=2)
+        self.assertEqual(2, json.loads(self.record.read_text())["b"])
+
+    def test_bookkeep_record_is_silent_when_the_lock_is_free(self) -> None:
+        # Negative control: without it the assertion above passes on a build that
+        # prints the contention notice unconditionally.
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            su.bookkeep_record(self.record, b=3)
+        self.assertNotIn("RUN-RECORD NOT UPDATED", err.getvalue())
+        self.assertEqual(3, json.loads(self.record.read_text())["b"])
 
 
 if __name__ == "__main__":
