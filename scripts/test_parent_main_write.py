@@ -1660,7 +1660,17 @@ class LiveLedgerWriterSyncTests(unittest.TestCase):
 import json, sys, time
 from pathlib import Path
 root, ids_path = Path(sys.argv[1]), Path(sys.argv[2])
+real_commit, real_checkout = sys.argv[3], sys.argv[4]
 sys.path.insert(0, str(root / "ci-hub/ledger"))
+# THE FIXTURE COPIES THREE LEDGER FILES; validate_rows NEEDS MORE THAN THAT.
+# It does `sys.path.insert(0, parents[1]); import qualifying_receipt`, added
+# by e9d72c83, and qualifying_receipt imports green_class, which imports
+# further still. Copying that closure by hand is a treadmill: it breaks again
+# the next time anything under ci-hub grows an import. Appending the real
+# ci-hub resolves the whole chain, while validate_rows itself still comes from
+# the temp repo's copy, inserted ahead of it. Writes stay scoped by the
+# explicit root= handed to record().
+sys.path.append(sys.argv[5])
 import validate_rows
 ids_path.parent.mkdir(parents=True, exist_ok=True)
 for index in range(300):
@@ -1669,13 +1679,33 @@ for index in range(300):
         "schema_version": 5,
         "record_id": event_id,
         "repo": "hermit",
+        # NOT one of validate_rows' ACCEPTANCE_FIXTURE_PRODUCERS, and it
+        # cannot be: those are refused whenever root == production_root, and
+        # repository_root() is just "the repo you are standing in", which for
+        # a fixture in a temp clone is always true. A quarantined producer
+        # raises on the first row. Tried it; that is why this note exists.
+        #
+        # SO THE ONLY THING KEEPING THESE 300 SYNTHETIC PASS ROWS OUT OF THE
+        # REAL SHARD IS THE EXPLICIT root= BELOW. validate_rows records an
+        # incident where a live-sync probe put exactly this many rows into the
+        # production Hermit shard, append-only, still there today. This
+        # producer sits outside the quarantine set, so that guard would not
+        # catch a repeat. Do not drop the root= argument, and do not point
+        # this fixture at a real checkout.
         "producer": "parent-main-write-integration",
         "host": "devbig999",
         "started_at": "2026-08-09T12:00:00Z",
         "finished_at": "2026-08-09T12:01:00Z",
         "result": "pass",
-        "commit": "a" * 40,
-        "cwd": str(root / "worktrees/slot99/hermit"),
+        # A REAL COMMIT IN A REAL CHECKOUT, PASSED IN BY THE TEST. This row
+        # carried "a" * 40 and a worktrees/slot99/hermit path that never
+        # existed. Harmless until e9d72c83 added _require_local_commit, which
+        # resolves the cwd and runs `git cat-file -t` on the sha -- after that
+        # the synthetic row raised and killed this writer at its first
+        # record(). The subject here is sync-versus-concurrent-writes; the row
+        # only has to be valid, so it borrows the fixture's own repo.
+        "commit": real_commit,
+        "cwd": real_checkout,
     }
     validate_rows.record(row, root=root)
     with ids_path.open("a") as stream:
@@ -1683,7 +1713,8 @@ for index in range(300):
     time.sleep(0.02)
 '''
         process = subprocess.Popen(
-            [sys.executable, "-c", script, str(self.repo), str(ids_path)],
+            [sys.executable, "-c", script, str(self.repo), str(ids_path),
+             base, str(self.repo), str(SOURCE / "ci-hub")],
             cwd=self.repo,
             env=dict(os.environ),
             text=True,
@@ -1695,7 +1726,23 @@ for index in range(300):
             while time.monotonic() < deadline:
                 if ids_path.is_file() and len(ids_path.read_text().splitlines()) >= 5:
                     break
+                if process.poll() is not None:
+                    break
                 time.sleep(0.02)
+            # REPORT THE WRITER'S OWN ERROR, NOT THE ABSENCE OF ITS OUTPUT.
+            # When the writer died at startup, this loop simply spun out its
+            # ten seconds and the next line raised FileNotFoundError on the
+            # file the writer never reached. That names the symptom and throws
+            # away the cause: the traceback explaining why it died was sitting
+            # unread in the child's stderr the whole time. Recovering it cost a
+            # real diagnosis for something the test already had in hand.
+            if process.poll() is not None:
+                stdout, stderr = process.communicate()
+                self.fail(
+                    "the live writer exited before the sync boundary "
+                    f"(rc={process.returncode}); its stderr follows:\n"
+                    f"{stderr}\n{stdout}"
+                )
             before = len(ids_path.read_text().splitlines())
             self.assertGreaterEqual(before, 5)
             self.assertIsNone(process.poll(), "writer must be active before sync")
@@ -1706,7 +1753,15 @@ for index in range(300):
             self.assertEqual(target, git(self.repo, "rev-parse", "HEAD").stdout.strip())
             self.assertEqual(target, git(self.repo, "rev-parse", "origin/main").stdout.strip())
             self.assertIsNone(process.poll(), "writer must remain active after sync")
-            stdout, stderr = process.communicate(timeout=15)
+            # SIZED FROM A MEASUREMENT, NOT A GUESS. This waits for all 300
+            # rows. e9d72c83 gave record() a `git cat-file` per row, so the
+            # loop went from roughly 20ms an iteration to a measured 35.2ms
+            # plus the 0.02s sleep -- about 16.5s for the run, against a 15s
+            # budget set when the check did not exist. It failed by a second,
+            # which reads as flake and is not: it is a dependent the new check
+            # did not sweep. 60s is over 3x the measured cost, which this box
+            # needs with a dozen agents building on it.
+            stdout, stderr = process.communicate(timeout=60)
             self.assertEqual(0, process.returncode, stdout + stderr)
         finally:
             if process.poll() is None:
@@ -1721,10 +1776,14 @@ for index in range(300):
             (
                 "import json,sys; from pathlib import Path; "
                 "root=Path(sys.argv[1]); sys.path.insert(0,str(root/'ci-hub/ledger')); "
+                # Same sibling-import chain as the writer above; the reader
+                # needs the real ci-hub for exactly the same reason.
+                "sys.path.append(sys.argv[2]); "
                 "import validate_rows; "
                 "print(json.dumps([e['event_id'] for e in validate_rows.events(root=root)]))"
             ),
             str(self.repo),
+            str(SOURCE / "ci-hub"),
             cwd=self.repo,
         )
         self.assertEqual(0, union.returncode, union.stdout + union.stderr)
