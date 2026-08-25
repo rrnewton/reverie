@@ -256,6 +256,11 @@ class ActiveWorkReport:
     lifecycle_violations: tuple[TaskRecord, ...]
     stale: tuple[TaskRecord, ...]
     owned_active: tuple[TaskRecord, ...]
+    # The canonical ownership view. Unlike `actually_active`, this includes a
+    # live owner that is waiting/idle while still assigned to the exact task.
+    # It excludes stale TaskGraph owners and therefore gives queue censuses a
+    # bounded claim rather than a prose comment or an immortal owner string.
+    claimed: tuple[TaskRecord, ...]
     actually_active: tuple[TaskRecord, ...]
     orphaned: tuple[TaskRecord, ...]
     off_book: tuple[AgentRecord, ...]
@@ -279,6 +284,7 @@ class ActiveWorkReport:
             "lifecycle_violations": len(self.lifecycle_violations),
             "stale": len(self.stale),
             "owned_active": len(self.owned_active),
+            "claimed": len(self.claimed),
             "actually_active": len(self.actually_active),
             "orphaned": len(self.orphaned),
             "off_book": len(self.off_book),
@@ -1157,6 +1163,7 @@ def reconcile_active_work(
     }
 
     orphaned = tuple(task for task in owned_active if task.owner not in live_by_name)
+    claimed: list[TaskRecord] = []
     actually_active: list[TaskRecord] = []
     misrouted: set[Misroute] = set()
     for task in owned_active:
@@ -1165,6 +1172,8 @@ def reconcile_active_work(
             continue
         candidates = current_task_candidates.get(agent.name, ())
         current_task_id = candidates[0] if len(candidates) == 1 else None
+        if current_task_id == task.id:
+            claimed.append(task)
         if agent.busy and current_task_id == task.id:
             actually_active.append(task)
             continue
@@ -1222,6 +1231,7 @@ def reconcile_active_work(
         lifecycle_violations=lifecycle_violations,
         stale=stale,
         owned_active=owned_active,
+        claimed=tuple(sorted(claimed, key=lambda task: task.id)),
         actually_active=tuple(sorted(actually_active, key=lambda task: task.id)),
         orphaned=tuple(sorted(orphaned, key=lambda task: task.id)),
         off_book=tuple(sorted(off_book, key=lambda agent: agent.name)),
@@ -1279,6 +1289,7 @@ def _active_work_json(
         "awaiting_land": [asdict(task) for task in report.awaiting_land],
         "off_book": [asdict(agent) for agent in report.off_book],
         "misrouted": [asdict(item) for item in report.misrouted],
+        "claimed": [asdict(task) for task in report.claimed],
         "actually_active": [asdict(task) for task in report.actually_active],
     }
 
@@ -1328,6 +1339,7 @@ def active_work_gate(
             "summary": (
                 f"in-progress={counts['in_progress']},"
                 f"actually-active={counts['actually_active']},"
+                f"claimed={counts['claimed']},"
                 f"awaiting-land={counts['awaiting_land']},"
                 f"lifecycle-violations={counts['lifecycle_violations']},"
                 f"stale={counts['stale']},orphaned={counts['orphaned']},"

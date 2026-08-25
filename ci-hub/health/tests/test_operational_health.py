@@ -589,6 +589,7 @@ class OperationalHealthTest(unittest.TestCase):
             ],
         )
         self.assertEqual(report.counts()["in_progress"], 5)
+        self.assertEqual([item.id for item in report.claimed], ["active"])
         self.assertEqual([item.id for item in report.actually_active], ["active"])
         self.assertEqual([item.id for item in report.awaiting_land], ["await"])
         self.assertEqual([item.id for item in report.stale], ["stale"])
@@ -596,6 +597,50 @@ class OperationalHealthTest(unittest.TestCase):
         self.assertEqual([item.name for item in report.off_book], ["offbook"])
         self.assertEqual(len(report.misrouted), 2)
         self.assertGreater(report.actionable_count, 0)
+
+    def test_claim_survives_waiting_but_expires_when_assignment_moves(self) -> None:
+        task = operational_health.TaskRecord
+        agent = operational_health.AgentRecord
+
+        waiting = operational_health.reconcile_active_work(
+            [task("claimed", "Claimed", "worker", ())],
+            [agent("worker", "idle", "claimed")],
+        )
+        self.assertEqual([item.id for item in waiting.claimed], ["claimed"])
+        self.assertEqual(waiting.actually_active, ())
+
+        moved = operational_health.reconcile_active_work(
+            [
+                task("claimed", "Claimed", "worker", ()),
+                task("other", "Other", "", ()),
+            ],
+            [agent("worker", "busy", "other")],
+        )
+        self.assertEqual(moved.claimed, ())
+        self.assertIn(
+            operational_health.Misroute(
+                "worker",
+                "claimed",
+                "owner-status=busy,owner-current-task=other",
+            ),
+            moved.misrouted,
+        )
+
+    def test_terminal_owner_does_not_retain_a_claim(self) -> None:
+        report = operational_health.reconcile_active_work(
+            [
+                operational_health.TaskRecord(
+                    "claimed", "Claimed", "retired-worker", ()
+                )
+            ],
+            [
+                operational_health.AgentRecord(
+                    "retired-worker", "retired", "claimed"
+                )
+            ],
+        )
+        self.assertEqual(report.claimed, ())
+        self.assertEqual([item.id for item in report.orphaned], ["claimed"])
 
     def test_active_work_resolves_thirteen_orc_titles_without_false_pairs(
         self,
@@ -808,6 +853,7 @@ class OperationalHealthTest(unittest.TestCase):
             )
         self.assertEqual(result, 1)
         self.assertIn("state=drift", output)
+        self.assertIn("claimed=1", output)
         self.assertIn("actually_active=1", output)
         self.assertIn("stale=1", output)
         self.assertIn("detail=STALE stale", output)
@@ -992,7 +1038,7 @@ class CloseOnImplementedLifecycleTest(unittest.TestCase):
         sets."""
         r = self.report()
         debt = {"implemented-unlanded", "implemented-unlanded-2"}
-        for name in ("in_progress", "owned_active", "actually_active",
+        for name in ("in_progress", "owned_active", "claimed", "actually_active",
                      "stale", "orphaned"):
             leaked = debt & {t.id for t in getattr(r, name)}
             self.assertEqual(leaked, set(), f"landing debt leaked into {name}")

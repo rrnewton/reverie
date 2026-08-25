@@ -31,6 +31,32 @@ Here are your ordered priorities:
 3. Maintain opreational health in other ways: don't accumulate PRs, drain and land.
 4. Work from the project backlog and github issues whenever your immediate tasks are finished.
 
+# Pull-request claims
+
+TaskGraph is the only authority for who owns a pull request. A claim is one
+`IN_PROGRESS` task with an owner, and the task must contain the pull request's
+full `https://github.com/.../pull/...` URL. Use `tg claim`; do not create a
+second claim in a pull-request comment. Comments may carry findings, review
+status, or a link to the TaskGraph task, but words such as `claim`, a TTL, or a
+reviewer identity in prose neither acquire nor release ownership.
+
+Claims are bounded by live assignment rather than by an unreliably renewed
+wall-clock TTL. The machine-readable authority is `ci-hub active-work --json`:
+its `claimed` list contains exactly those owned `IN_PROGRESS` tasks whose owner
+is present in a fresh ORC snapshot and whose `current_task` resolves uniquely
+to that task. A waiting or idle live agent retains the claim; `actually_active`
+is the narrower set currently running work and is not the ownership authority.
+
+A claim expires immediately when the task leaves `IN_PROGRESS`, its owner is
+cleared, or a fresh ORC snapshot proves that the owner is gone, terminal,
+unassigned, assigned elsewhere, or ambiguously assigned. The stale TaskGraph
+row remains visible as `stale`, `orphaned`, or `misrouted` for cleanup, but it
+does not remove the pull request from the free queue. If the ORC snapshot is
+missing or older than the command's bounded freshness window (ten minutes by
+default), claim state is unknown: report a range or stop rather than calling
+the pull request free. This is expiry of the existing TaskGraph claim, not a
+third claim store.
+
 # Directory management and concurrency
 
 **Every task starts with an explicit write destination.** The dispatch names the repository, checkout or clone, directory tree, branch, and whether the agent may write. “No slot” is not permission to write somewhere else.
