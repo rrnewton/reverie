@@ -1,4 +1,9 @@
+# shellcheck shell=bash
 # Shared exclusion rule for the lint enumerators. Source, do not execute.
+#
+# The directive above rather than a shebang: this file is SOURCED and has no
+# independent execution path, so a shebang would advertise one that does not
+# exist. shellcheck needs the target shell named either way (SC2148).
 #
 # WHY THIS EXISTS
 # ===============
