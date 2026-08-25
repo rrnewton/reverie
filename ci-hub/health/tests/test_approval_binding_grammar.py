@@ -358,6 +358,49 @@ cases.append((ab.is_template("<lane> <sha>") and not ab.is_template(f" claude {C
               "is_template"))
 
 
+# ---------------------------------------------------------------------------
+# THE NEAR-MISS NET. A refusal that omits `-AT` is reported MALFORMED and does not
+# parse -- so if the landers' fail-closed branch does not catch it either, a real
+# block is invisible to both. Measured live on hermit#2611:
+# `CHANGES-REQUESTED: claude 7a75909c92ae` at the exact head, flagged, not honoured.
+#
+# ⚠️ THESE EXIST BECAUSE I NARROWED THIS NET MYSELF IN `ff2a3d83` and dropped three
+# spellings while fixing a fourth. The rows below are the ones that regressed.
+
+for _form in (
+    f"CHANGES-REQUESTED: claude {CUR}",
+    f"CHANGES REQUESTED: claude {CUR}",
+    f"REJECTED: claude {CUR}",
+    "CHANGES-REQUESTED: claude -- see above",
+):
+    cases.append((ab.refusal_shaped(_form),
+                  f"a near-miss refusal is still refusal-SHAPED: {_form[:34]}",
+                  f"refusal_shaped={ab.refusal_shaped(_form)}"))
+
+# ...and the narrowing that WAS wanted stays: prose mentioning a marker mid-line is
+# not a verdict, which is what stopped a sentence adjudicating another pull request
+# from refusing a merge.
+for _prose in (
+    f"I adjudicated hermit#2591: CHANGES-REQUESTED-AT: claude {CUR} was posted",
+    "this PR has no CHANGES-REQUESTED-AT at its head",
+    f"post CHANGES-REQUESTED-AT: <lane> {CUR} to block it",
+):
+    cases.append((not ab.refusal_shaped(_prose),
+                  f"prose mentioning a marker is NOT refusal-shaped: {_prose[:34]}",
+                  f"refusal_shaped={ab.refusal_shaped(_prose)}"))
+
+# A decorated near-miss must still be caught -- decoration is stripped first.
+cases.append((ab.refusal_shaped(f"## CHANGES-REQUESTED: claude {CUR}"),
+              "a heading-decorated near-miss refusal is refusal-shaped",
+              "heading + missing -AT"))
+
+# And a fenced one must not be, because eligibility is decided before this runs.
+_fenced = ab.marker_lines("```\n" + f"CHANGES-REQUESTED: claude {CUR}" + "\n```")
+cases.append((not any(ab.refusal_shaped(l) for l in _fenced),
+              "a FENCED near-miss refusal is not an eligible marker line",
+              f"eligible={_fenced}"))
+
+
 def test_approval_binding_grammar():
     """Assert the cases collected above, so pytest ENFORCES them.
 

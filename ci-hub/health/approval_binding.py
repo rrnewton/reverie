@@ -493,6 +493,34 @@ def parse_marker(line: str) -> tuple[str, str, str] | None:
 
 
 
+# ⚠️ LINE-INITIAL, BUT NOT ONLY THE CANONICAL TOKEN -- AND I NARROWED THIS TOO FAR
+# ONCE ALREADY. `ff2a3d83` (mine) converged this fail-closed net onto
+# `startswith(MARKER_REFUSED)`, which fixed prose-about-a-refusal blocking a merge
+# and SILENTLY DROPPED the near-miss spellings the previous regex caught. Measured
+# 2026-08-25, before and after that change:
+#
+#     form                                     pre-ff2a3d83   post-ff2a3d83
+#     CHANGES-REQUESTED-AT: claude <sha>       catches        catches
+#     CHANGES-REQUESTED: claude <sha>          catches        MISSES     <- regression
+#     CHANGES REQUESTED: claude <sha>          catches        MISSES     <- regression
+#     CHANGES-REQUESTED: claude -- see above   catches        MISSES     <- regression
+#     prose "... CHANGES-REQUESTED-AT ..."     catches        MISSES     <- the intended fix
+#
+# Only the last row was the goal. A reviewer who omits `-AT` writes a line every
+# human reads as a block, the grammar reports it MALFORMED, and with the net
+# narrowed neither lander refused it -- a real block invisible to both. Measured on
+# hermit#2611: `CHANGES-REQUESTED: claude 7a75909c92ae` at the exact head, flagged
+# and not honoured.
+#
+# So the net is line-initial (which is what killed the prose false positives) AND
+# spans the near-miss family (which is what makes it fail closed). A verdict is
+# ASSERTED at the start of a line; prose mentions it mid-sentence.
+_REFUSAL_NEARMISS = re.compile(
+    r"(?:CHANGES[-\s_]?REQUESTED|REQUEST(?:ING|ED)?\s+CHANGES|REJECTED)\b",
+    re.IGNORECASE,
+)
+
+
 def refusal_shaped(line: str) -> bool:
     """A line that is TRYING to be a refusal, for a lander's fail-closed branch.
 
@@ -507,7 +535,7 @@ def refusal_shaped(line: str) -> bool:
     A verdict is asserted, not mentioned. Somebody refusing a head puts the marker
     at the start of a line; somebody discussing one writes a sentence around it.
     """
-    return strip_decoration(line).upper().startswith(MARKER_REFUSED)
+    return bool(_REFUSAL_NEARMISS.match(strip_decoration(line)))
 
 
 def lane_shas(
