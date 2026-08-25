@@ -392,12 +392,40 @@ def blocking_changes_requests(pr: str, repo: str, head: str) -> list[str]:
     blocking, withdrawn = [], False
     for body in bodies:
         for line in body.splitlines():
-            if not head or head not in line:
+            # ⚠️ THIS PRE-FILTER USED TO READ `if not head or head not in line`,
+            # AND IT MADE THE FAIL-CLOSED BRANCH BELOW UNREACHABLE. Requiring the
+            # full 40-hex in the raw line skipped exactly the two shapes the
+            # over-block was written for, before they could reach it. Measured
+            # 2026-08-25 by calling this function directly:
+            #
+            #   CHANGES-REQUESTED-AT: claude b3ca4e15        -> []  NOT BLOCKED
+            #   CHANGES-REQUESTED-AT: claude — see above     -> []  NOT BLOCKED
+            #   CHANGES-REQUESTED-AT: claude <full 40-hex>   -> blocked
+            #
+            # Abbreviated shas are normal in these markers -- hermit#2176's own
+            # refusal is written `b3ca4e15…` -- so the common form was invisible
+            # to the guard while the docstring said it over-blocked. And `not head`
+            # skipped EVERY line when the head could not be resolved, which is the
+            # reassuring direction: unable to check read as nothing to report.
+            #
+            # Now: a refusal-shaped line is always evaluated. Binding is decided
+            # below, where an abbreviated sha can be prefix-matched and a missing
+            # one can fail closed.
+            if _REFUSAL_SHAPED.search(line) or (head and head in line):
+                pass
+            else:
                 continue
             parsed = grammar.parse_marker(line)
             if parsed is not None:
                 kind, _lane, sha = parsed
-                if sha != head:
+                # Bind by PREFIX in both directions: markers are routinely written
+                # with an abbreviated sha, and an exact-string compare against the
+                # 40-hex silently treats `b3ca4e15` as naming some other commit.
+                if not (sha and head and (head.startswith(sha) or sha.startswith(head))):
+                    if kind == grammar.MARKER_REFUSED and not sha:
+                        # A refusal we cannot bind is not a refusal that does not
+                        # apply. Fail closed, same choice as the unparseable case.
+                        blocking.append(line.strip())
                     continue
                 # POLICY, and it is deliberately lane-agnostic: a refusal in ANY
                 # lane stops this merge. The authority is lane-aware because a

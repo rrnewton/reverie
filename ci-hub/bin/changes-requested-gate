@@ -1,0 +1,211 @@
+#!/usr/bin/env python3
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+# All rights reserved.
+#
+# This source code is licensed under the BSD-style license found in the
+# LICENSE file in the root directory of this source tree.
+#
+# REFUSE a merge when a review refusal is bound to the exact head.
+#
+# ⚠️ WHY THIS EXISTS: THERE WAS NO GATE. Measured 2026-08-25, `grep -rn
+# CHANGES-REQUESTED-AT` across every .py/.sh/.rs in this repository returned hits
+# in ci-hub/health/approval_binding.py and IN ITS OWN TESTS, and nowhere else. No
+# lander, no merge gate, no workflow read a refusal marker. approval_binding.py is
+# reached only by ci-hub/health/pr_status.py, which REPORTS. The merge itself is
+# `gh pr merge` run by an agent, so the only thing between a live refusal and a
+# landing was whether that agent happened to read the comments.
+#
+# hermit#2591 is what that costs:
+#     17:55:19Z  APPROVED-AT: claude 86b76b82           (column 0)
+#     18:05:19Z  CHANGES-REQUESTED-AT: claude 86b76b82  (COLUMN 0, plain, parses)
+#     18:09:01Z  MERGED
+#     18:12:00Z  passed-review-claude labeled -- three minutes AFTER the merge
+# A plain, parseable, binding refusal was live 3m42s before the merge, and there
+# was no approval label at merge time either. Neither the marker path nor the
+# label path was consulted, because neither was wired to anything.
+#
+# ⚠️ A CONVENTION ENFORCED BY EVERY PARTICIPANT REMEMBERING IS NOT A GATE. It fails
+# the first time one participant does not. Five separate fixes on 2026-08-25 --
+# the parser fail-open, the lander refusal, the loud-on-unknown net, the fourth
+# variant, the stale label -- all made readers better at NOTICING a block. None of
+# them refuses. This one refuses.
+#
+# ⚠️ IT KEYS ON THE MARKER'S PRESENCE, NOT ON A FORM THAT PARSES. A fourth marker
+# variant already escaped both the canonical grammar and the loud-on-unknown net,
+# so requiring a parseable form reproduces the defect. The rule here is:
+#
+#     a line that, after block decoration is stripped, BEGINS with the refusal
+#     token is a marker -- whatever follows it.
+#
+# If a sha can be extracted and it names the head, REFUSE. If a sha can be
+# extracted and it names some other commit, that refusal was cleared by a later
+# push and does not bind. AND IF NO SHA CAN BE EXTRACTED AT ALL, REFUSE ANYWAY:
+# a marker whose binding cannot be determined must not be waved through, because
+# "I could not read it" is not "it does not apply". That is the case the fourth
+# variant occupied.
+#
+# WHY IT DOES NOT KEY ON BARE SUBSTRING PRESENCE. Notes and review comments discuss
+# these markers constantly -- this file's own header contains the token several
+# times. Matching anywhere in the body would block every pull request where anyone
+# explained the convention, the gate would be switched off within the hour, and we
+# would be back to a convention. Marker-shaped LINES are the narrowest rule that
+# still catches every decoration seen in the wild: `##`, `**`, backticks, `>`,
+# list bullets, and combinations.
+#
+# Usage:
+#   changes-requested-gate --repo OWNER/REPO --pr N [--head SHA]
+#
+# Exit status:
+#   0  no refusal binds this head -- the merge may proceed
+#   1  BLOCKED: a refusal is bound to this exact head
+#   2  INDETERMINATE: a marker exists that cannot be bound, or the data could not
+#      be fetched. Callers MUST treat this as blocking; it is not "no".
+import argparse
+import json
+import re
+import subprocess
+import sys
+
+OK, BLOCKED, INDETERMINATE = 0, 1, 2
+
+REFUSAL = "CHANGES-REQUESTED-AT"
+WITHDRAWN = "CHANGES-REQUESTED-WITHDRAWN-AT"
+
+# Block-level decoration seen on real markers, stripped repeatedly until stable.
+_DECOR = re.compile(r"^(\s|#{1,6}\s*|>\s*|[-*+]\s+|\*{1,3}|_{1,3}|`{1,3})+")
+_SHA = re.compile(r"\b([0-9a-f]{7,40})\b")
+
+
+def undecorate(line: str) -> str:
+    prev = None
+    out = line
+    while prev != out:
+        prev = out
+        out = _DECOR.sub("", out.strip())
+    return out
+
+
+def gh_json(args: list[str]) -> object:
+    # with-proxy is what makes gh reach the network on these hosts; without it the
+    # call fails as "network is unreachable" and would otherwise be indistinguishable
+    # from "no comments", which is exactly the fail-open this gate exists to remove.
+    for argv in (["with-proxy", "gh", *args], ["gh", *args]):
+        try:
+            r = subprocess.run(argv, capture_output=True, text=True, timeout=180)
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        if r.returncode == 0 and r.stdout.strip():
+            try:
+                return json.loads(r.stdout)
+            except json.JSONDecodeError:
+                continue
+    return None
+
+
+def markers(bodies: list[str]) -> list[tuple[str, str | None]]:
+    """Every marker-shaped line, as (kind, sha-or-None), in document order."""
+    found = []
+    for body in bodies:
+        for raw in (body or "").split("\n"):
+            line = undecorate(raw)
+            for kind in (WITHDRAWN, REFUSAL):  # WITHDRAWN first: it contains REFUSAL
+                if line.startswith(kind):
+                    m = _SHA.search(line[len(kind):])
+                    found.append((kind, m.group(1) if m else None))
+                    break
+    return found
+
+
+def evaluate(bodies: list[str], head: str) -> tuple[int, str]:
+    found = markers(bodies)
+    if not found:
+        return OK, "no refusal marker of any shape on this pull request"
+
+    def binds(sha: str | None) -> bool:
+        # Abbreviated shas are normal in these markers; bind by prefix, both ways.
+        return bool(sha) and (head.startswith(sha) or sha.startswith(head))
+
+    withdrawn_at_head = any(k == WITHDRAWN and binds(s) for k, s in found)
+    refusals = [(k, s) for k, s in found if k == REFUSAL]
+
+    unbindable = [s for k, s in refusals if s is None]
+    if unbindable:
+        return (
+            INDETERMINATE,
+            f"{len(unbindable)} refusal marker(s) carry no readable sha, so whether "
+            f"they bind {head[:12]} cannot be decided. Refusing: a marker that cannot "
+            f"be bound is not a marker that does not apply. Re-post it as "
+            f"'{REFUSAL}: <lane> <40-hex>' on its own line, or withdraw it.",
+        )
+
+    bound = [s for k, s in refusals if binds(s)]
+    if bound and withdrawn_at_head:
+        return OK, f"a refusal named {head[:12]} but {WITHDRAWN} clears it at the same head"
+    if bound:
+        return (
+            BLOCKED,
+            f"{len(bound)} refusal(s) bound to the exact head {head[:12]}. A refusal "
+            f"naming the head blocks regardless of any lane's approval. This clears "
+            f"when the AUTHOR pushes a fix (the sha moves and the refusal stops naming "
+            f"the head) or the reviewer posts {WITHDRAWN} at this sha.",
+        )
+    return (
+        OK,
+        f"{len(refusals)} refusal marker(s) present but none names {head[:12]} "
+        f"-- superseded by a later push, the correct clearing path",
+    )
+
+
+def main(argv: list[str] | None = None) -> int:
+    p = argparse.ArgumentParser(description=__doc__)
+    p.add_argument("--repo", required=True)
+    p.add_argument("--pr", required=True)
+    p.add_argument("--head")
+    p.add_argument("--from-json", help="offline: a JSON array of comment bodies")
+    args = p.parse_args(argv)
+
+    if args.from_json:
+        with open(args.from_json, encoding="utf-8") as fh:
+            bodies = json.load(fh)
+        head = args.head or ""
+    else:
+        head = args.head
+        if not head:
+            view = gh_json(["pr", "view", args.pr, "-R", args.repo, "--json", "headRefOid"])
+            head = (view or {}).get("headRefOid") if isinstance(view, dict) else None
+        if not head:
+            print(
+                f"changes-requested-gate: INDETERMINATE pr={args.pr} "
+                f"reason=could not resolve the head sha",
+                file=sys.stderr,
+            )
+            return INDETERMINATE
+        # Issue comments are where every marker observed to date lives; reviews and
+        # review comments were both EMPTY on hermit#2176, checked 2026-08-25. Read
+        # all three anyway -- a container this gate does not read is a way past it.
+        bodies = []
+        for path in (
+            f"repos/{args.repo}/issues/{args.pr}/comments?per_page=100",
+            f"repos/{args.repo}/pulls/{args.pr}/reviews?per_page=100",
+            f"repos/{args.repo}/pulls/{args.pr}/comments?per_page=100",
+        ):
+            got = gh_json(["api", path, "--paginate"])
+            if got is None:
+                print(
+                    f"changes-requested-gate: INDETERMINATE pr={args.pr} "
+                    f"reason=could not read {path.split('?')[0]}; a failed query is "
+                    f"not an empty result",
+                    file=sys.stderr,
+                )
+                return INDETERMINATE
+            bodies.extend(c.get("body") or "" for c in got if isinstance(c, dict))
+
+    rc, why = evaluate(bodies, head)
+    label = {OK: "CLEAR", BLOCKED: "BLOCKED", INDETERMINATE: "INDETERMINATE"}[rc]
+    stream = sys.stdout if rc == OK else sys.stderr
+    print(f"changes-requested-gate: {label} pr={args.pr} head={head[:12]} -- {why}", file=stream)
+    return rc
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

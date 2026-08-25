@@ -692,6 +692,29 @@ if [ "$receipt_rc" -ne 0 ]; then
 fi
 say "validation landability authorized: $receipt_detail"
 
+# 5d. ⚠️ A REVIEW REFUSAL BOUND TO THIS EXACT HEAD BLOCKS THE MERGE.
+#
+# Until 2026-08-25 nothing on any merge path read a refusal marker: `grep -rn
+# CHANGES-REQUESTED-AT` over every .py/.sh/.rs hit only ci-hub/health/
+# approval_binding.py and its own tests, and that module only REPORTS. hermit#2591
+# merged 3m42s after a plain, parseable, binding refusal was posted, and its
+# approval label was applied three minutes AFTER the merge -- neither the marker
+# path nor the label path was consulted, because neither was wired to anything.
+#
+# This runs LAST, immediately before the mutation, for the same reason the receipt
+# is dereferenced here: a refusal posted while the earlier steps ran must still
+# stop the merge. Checking it earlier would reintroduce the read-then-act window.
+#
+# rc 2 is INDETERMINATE and blocks exactly like rc 1. A marker whose binding
+# cannot be read is not a marker that does not apply -- that is the fail-open a
+# fourth marker variant already walked through tonight.
+cr_gate_out=$(python3 "$ROOT/ci-hub/bin/changes-requested-gate" \
+  --repo "$R" --pr "$PR" --head "$HEAD" 2>&1); cr_gate_rc=$?
+case "$cr_gate_rc" in
+  0) say "changes-requested gate: clear -- $cr_gate_out" ;;
+  *) abandon "REFUSING TO MERGE: $cr_gate_out" 5 ;;
+esac
+
 # 6. The merge command is the mergeability arbiter. Make exactly one attempt
 # under the final-boundary verdict above. Retrying here would let an authorization
 # age for minutes after the mutable tips were observed. A refusal reruns the gate,
