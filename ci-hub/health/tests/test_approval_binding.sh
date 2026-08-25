@@ -351,6 +351,46 @@ gate "[\"CHANGES-REQUESTED: claude $CUR\",\"CHANGES-REQUESTED-WITHDRAWN-AT: clau
   || bad "withdrawal no longer clears a suffix-less refusal"
 
 
+# --- THE ASSERTION THE MUTATION CONTROL HAS ALWAYS WAITED FOR ------------------
+# ⚠️ IT WAS NEVER WRITTEN. The control below greps the mutant run for
+#   `FAIL  current CHANGES-REQUESTED-AT revokes an earlier exact-head approval`
+# and that string appeared exactly ONCE in this file -- inside the control's own
+# grep. So the control was correct and honest: it reported that the suite could
+# not detect a broken revocation, and it reported that for months.
+#
+# What the suite did assert was that a refusal is REPORTED. Nothing asserted that
+# a refusal REVOKES. Those are different properties and only the second is the
+# one `found.clear()` implements, which is why deleting `found.clear()` changed no
+# assertion.
+#
+# ⚠️ THE FIX IS HERE, NOT IN THE CONTROL. A control tuned until it goes red proves
+# the control; an assertion that dies under the mutant proves the test. Verified
+# both ways below: this fails under the mutant and passes without it.
+cat >"$tmp/revokes.json" <<JSON
+[{"number":9201,"head":"$CUR","labels":["passed-review-claude"],
+  "comments":["APPROVED-AT: claude $CUR","CHANGES-REQUESTED-AT: claude $CUR"],
+  "runs_at_head":3,"mergeable":"MERGEABLE"}]
+JSON
+out="$(run "$tmp/revokes.json" --pr 9201 --gate --json)"
+if grep -q '"authoritative": 0' <<<"$out" && ! grep -q '"authoritative": 1' <<<"$out"; then
+  ok "current CHANGES-REQUESTED-AT revokes an earlier exact-head approval"
+else
+  bad "current CHANGES-REQUESTED-AT revokes an earlier exact-head approval"
+fi
+
+# The negative control for it. Without this, the assertion above would also pass
+# on a build where NOTHING is ever authoritative -- revocation would be
+# indistinguishable from total breakage.
+cat >"$tmp/norevoke.json" <<JSON
+[{"number":9202,"head":"$CUR","labels":["passed-review-claude"],
+  "comments":["APPROVED-AT: claude $CUR"],"runs_at_head":3,"mergeable":"MERGEABLE"}]
+JSON
+out="$(run "$tmp/norevoke.json" --pr 9202 --gate --json)"
+grep -q '"authoritative": 1' <<<"$out" \
+  && ok "an approval with no refusal REMAINS authoritative (negative control)" \
+  || bad "approvals are not authoritative even unrefused; the assertion above proves nothing: $out"
+
+
 # --- the binding GRAMMAR, including the rejection trap -----------------------
 if python3 "$here/test_approval_binding_grammar.py" >"$tmp/grammar.out" 2>&1; then
   ok "binding grammar suite: $(grep -c '^  PASS' "$tmp/grammar.out") assertions pass"
