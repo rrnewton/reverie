@@ -139,6 +139,48 @@ pub trait GlobalTool: Send + Sync + Default {
     /// It receives a shared reference to the global state object, which must
     /// manage its own synchronization.
     async fn receive_rpc(&self, _from: Tid, _message: Self::Request) -> Self::Response;
+
+    /// Reports that a backend observed a child transition and committed its
+    /// waitability for the parent process.
+    ///
+    /// Backends that model child lifecycle outside the host kernel should
+    /// invoke this at that boundary rather than inferring state from signal
+    /// delivery. Backends whose host kernel owns child waitability may retain
+    /// the default no-op.
+    async fn on_backend_child_wait_event(
+        &self,
+        _event: BackendChildWaitEvent,
+    ) -> Result<(), Error> {
+        Ok(())
+    }
+}
+
+/// A child state and waitability decision observed by an execution backend.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BackendChildWaitState {
+    /// The child terminated with this exit status.
+    Exited {
+        /// The terminal status reported by the backend.
+        status: ExitStatus,
+        /// Whether the parent may consume this status with a wait syscall.
+        /// Explicit `SIGCHLD` ignore and `SA_NOCLDWAIT` make this false.
+        waitable: bool,
+    },
+    /// The child entered a job-control stop for this signal number.
+    Stopped(i32),
+    /// A previously stopped child resumed.
+    Continued,
+}
+
+/// A backend-observed child waitability decision.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct BackendChildWaitEvent {
+    /// The process whose wait syscalls may observe the transition.
+    pub parent: Pid,
+    /// The child process that changed state.
+    pub child: Pid,
+    /// The observed child state and whether it remains waitable.
+    pub state: BackendChildWaitState,
 }
 
 #[async_trait]
