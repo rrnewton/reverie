@@ -49,6 +49,7 @@ use crate::bootstrap::configure_process_syscall_return;
 use crate::bootstrap::set_user_segment_base;
 use crate::executor::ElfExecutor;
 use crate::executor::ProcessAction;
+use crate::executor::conventional_exit_code;
 
 const STACK_CAPACITY: usize = 4096;
 const TOOL_STACK_BOTTOM: u64 = TOOL_STACK_TOP - STACK_CAPACITY as u64;
@@ -1205,8 +1206,8 @@ impl KvmBackend {
         let global_state = Arc::try_unwrap(global_state).map_err(|_| {
             Error::UnexpectedVcpuExit("KVM child retained global Tool state after exit".to_owned())
         })?;
-        let (exit_code, stdout, stderr) = result;
-        Ok((global_state, exit_code, stdout, stderr))
+        let (status, stdout, stderr) = result;
+        Ok((global_state, conventional_exit_code(status), stdout, stderr))
     }
 
     // TODO-HUMAN-REVIEW(PR-192): Review recursive KVM process Tool runtime.
@@ -1222,7 +1223,7 @@ impl KvmBackend {
         config: &<T::GlobalState as GlobalTool>::Config,
         subscriptions: &Subscription,
         initial_post_exec: bool,
-    ) -> Result<(i32, Vec<u8>, Vec<u8>)>
+    ) -> Result<(ExitStatus, Vec<u8>, Vec<u8>)>
     where
         T: Tool + 'static,
         T::ThreadState: 'static,
@@ -1282,7 +1283,7 @@ impl KvmBackend {
         auxv = executor.auxv().to_vec();
         if let Some(exit) = executor.take_exit() {
             if exit.group {
-                self.request_guest_thread_group_exit(exit.code);
+                self.request_guest_thread_group_exit(exit.status);
             }
             self.cancel_guest_threads();
             notify_tool_exit(
@@ -1292,11 +1293,11 @@ impl KvmBackend {
                 global_state.as_ref(),
                 config,
                 thread_state,
-                ExitStatus::Exited(exit.code),
+                exit.status,
             )
             .await?;
             let (stdout, stderr) = executor.take_output();
-            return Ok((exit.code, stdout, stderr));
+            return Ok((exit.status, stdout, stderr));
         }
 
         if initial_post_exec {
@@ -1324,7 +1325,7 @@ impl KvmBackend {
                 auxv = executor.auxv().to_vec();
                 if let Some(exit) = executor.take_exit() {
                     if exit.group {
-                        self.request_guest_thread_group_exit(exit.code);
+                        self.request_guest_thread_group_exit(exit.status);
                     }
                     self.cancel_guest_threads();
                     notify_tool_exit(
@@ -1334,11 +1335,11 @@ impl KvmBackend {
                         global_state.as_ref(),
                         config,
                         thread_state,
-                        ExitStatus::Exited(exit.code),
+                        exit.status,
                     )
                     .await?;
                     let (stdout, stderr) = executor.take_output();
-                    return Ok((exit.code, stdout, stderr));
+                    return Ok((exit.status, stdout, stderr));
                 }
             }
             let post_exec_error = run_post_exec_handler(
@@ -1376,7 +1377,7 @@ impl KvmBackend {
         }
         if let Some(exit) = executor.take_exit() {
             if exit.group {
-                self.request_guest_thread_group_exit(exit.code);
+                self.request_guest_thread_group_exit(exit.status);
             }
             self.cancel_guest_threads();
             notify_tool_exit(
@@ -1386,18 +1387,18 @@ impl KvmBackend {
                 global_state.as_ref(),
                 config,
                 thread_state,
-                ExitStatus::Exited(exit.code),
+                exit.status,
             )
             .await?;
             let (stdout, stderr) = executor.take_output();
-            return Ok((exit.code, stdout, stderr));
+            return Ok((exit.status, stdout, stderr));
         }
 
         // Read once so the per-syscall classifier can borrow it while `self` is
         // borrowed elsewhere in the loop body.
         let thread_ownership = self.thread_ownership;
         loop {
-            if let Some(code) = self.guest_thread_group_exit_code() {
+            if let Some(status) = self.guest_thread_group_exit_status() {
                 self.cancel_guest_threads();
                 notify_tool_exit(
                     tool,
@@ -1406,11 +1407,11 @@ impl KvmBackend {
                     global_state.as_ref(),
                     config,
                     thread_state,
-                    ExitStatus::Exited(code),
+                    status,
                 )
                 .await?;
                 let (stdout, stderr) = executor.take_output();
-                return Ok((code, stdout, stderr));
+                return Ok((status, stdout, stderr));
             }
             let vcpu_exit = match self.vcpu.run() {
                 Ok(exit) => exit,
@@ -1601,7 +1602,7 @@ impl KvmBackend {
             if let Some(exit) = pending_exit {
                 executor.join_all_child_processes()?;
                 if exit.group {
-                    self.request_guest_thread_group_exit(exit.code);
+                    self.request_guest_thread_group_exit(exit.status);
                 }
                 self.cancel_guest_threads();
                 notify_tool_exit(
@@ -1611,11 +1612,11 @@ impl KvmBackend {
                     global_state.as_ref(),
                     config,
                     thread_state,
-                    ExitStatus::Exited(exit.code),
+                    exit.status,
                 )
                 .await?;
                 let (stdout, stderr) = executor.take_output();
-                return Ok((exit.code, stdout, stderr));
+                return Ok((exit.status, stdout, stderr));
             }
         }
     }
