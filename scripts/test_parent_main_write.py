@@ -163,7 +163,25 @@ class ParentMainWriteTests(unittest.TestCase):
         self.change(".githooks/probe", "#!/bin/sh\n")
         refused = self.writer("commit", "-m", tagged("hook repair"), "--", ".githooks/probe")
         self.assertNotEqual(refused.returncode, 0)
-        self.assertIn("retained --audit-reason path", refused.stderr)
+        # ASSERT THE REFUSAL, NOT THE SENTENCE -- AND THE SENTENCE WAS HIDING
+        # THE REAL FAILURE. This line used to pin
+        # "retained --audit-reason path" (parent-main-write:284). A cheaper
+        # check at :173 now short-circuits with different words, so the pinned
+        # assertion failed FIRST and the test read as wording drift. It is not:
+        # relax the wording and the failure moves to the HEAD check below,
+        # where the ref HAS MOVED. The commit is not actually prevented.
+        #
+        # Cause: verify_audit_receipt is reached only through verify_ref, and
+        # the only caller of `parent-main-write verify-ref` was the forward-
+        # update block of .githooks/reference-transaction, deleted by 4acd425b.
+        # Nothing aborts the ref transaction now, so the refusal arrives after
+        # the fact -- nonzero exit and a message, over a write that happened.
+        #
+        # Left failing deliberately. Restoring that block reverts an owner
+        # decision; this assertion is only made to fail on the behaviour rather
+        # than on the wording, so nobody "fixes" the string and turns a live
+        # unenforced-write defect green.
+        self.assertIn("--audit-reason", refused.stderr)
         self.assertEqual(git(self.repo, "rev-parse", "HEAD").stdout.strip(), self.seed)
 
     def test_sensitive_commit_retains_audit_receipt(self) -> None:
