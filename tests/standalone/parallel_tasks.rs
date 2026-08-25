@@ -6,8 +6,6 @@
  * LICENSE file in the root directory of this source tree.
  */
 
-#![feature(get_mut_unchecked)]
-#![feature(thread_id_value)]
 use std::env;
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
@@ -36,15 +34,24 @@ fn guest_mode() {
     let shared_idx = Arc::new(AtomicUsize::new(0));
 
     let handles: Vec<thread::JoinHandle<_>> = (0..2)
-        .map(|_| {
+        .map(|rank| {
             let idx = shared_idx.clone();
-            let mut data = shared_data.clone();
+            let data = shared_data.clone();
             thread::spawn(move || {
-                let tid = thread::current().id().as_u64().get();
+                // Distinct nonzero value per worker. This used to be the thread id, but
+                // `ThreadId` has no stable numeric accessor and the switch-point count
+                // only needs the two workers to write DIFFERENT values -- it compares
+                // adjacent elements and never inspects the value itself.
+                let tid = rank as u64 + 1;
 
-                // Get a mutable reference to the data. This is unsafe, but we guarantee the
-                // threads are always accesssing unique non-overlapping indices of the array.
-                let data = unsafe { Arc::get_mut_unchecked(&mut data) };
+                // SAFETY: the workers only ever write to indices handed out by the shared
+                // atomic counter, so no two writes alias. This is the stable spelling of
+                // `Arc::get_mut_unchecked`: it rebuilds the same mutable slice, so
+                // indexing keeps its bounds check. Deliberately still a data race -- that
+                // is what this test exercises -- so do NOT "fix" it with atomics.
+                let data: &mut [u64] = unsafe {
+                    std::slice::from_raw_parts_mut(data.as_ptr() as *mut u64, NUM_ELEMENTS)
+                };
 
                 // Give each thread half of the fetch_add attempts.
                 for _ in 0..(NUM_ELEMENTS / 2) {
