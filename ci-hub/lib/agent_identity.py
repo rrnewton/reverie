@@ -540,6 +540,31 @@ def _registry_owner_matches(
     for row in registry.document["slots"].values():
         if not isinstance(row, dict):
             continue
+        # ⚠️ A RELEASED SLOT OWNS NOTHING, SO ITS RECORDS MUST NOT ANSWER AN
+        # OWNERSHIP QUESTION. This corrects WHAT the resolver reads; it does not
+        # touch HOW STRICTLY it dissents. A genuine disagreement between two live
+        # signals still refuses, and that refusal is the point of this module.
+        #
+        # Releasing a slot does not clear its `tmux_pane_id`, so a released row
+        # kept shadowing a pane that a different, live session had since been
+        # given. Measured 2026-08-25: `TMUX_PANE=%3 who-am-i` reported
+        # DISAGREEMENT because released slot `codex-cpuid2258` still recorded
+        # agent `lane1` holding `%3`, while `%3` was a live claude session. That
+        # one stale row blocked every guarded write, including posting a finished
+        # review on hermit#2376.
+        #
+        # It was not one row: ALL 16 pane-carrying agent records in the registry
+        # sat on released slots, 16 of 16, and panes %131 and %135 were each
+        # claimed by two different released slots.
+        #
+        # ONLY `released` IS SKIPPED, DELIBERATELY. The other terminal-looking
+        # states are not safe to ignore: `release-requested` may still have a
+        # live owner mid-release, and suppressing its dissent would hide a real
+        # conflict. `lease-quarantined` and `owner-lease-revoked` are likewise
+        # unmeasured here. Skipping only the state that provably owns nothing
+        # keeps this fail-closed.
+        if row.get("status") == "released":
+            continue
         for entry in row.get("agents", []):
             if not isinstance(entry, dict) or not predicate(row, entry):
                 continue

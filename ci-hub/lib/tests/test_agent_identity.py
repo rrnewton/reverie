@@ -294,6 +294,74 @@ class ResolutionTests(IdentityFixture):
         self.assertEqual("resolved", cgroup.state)
         self.assertEqual("agent-a", cgroup.agent)
 
+    def test_released_slot_pane_claim_is_ignored(self) -> None:
+        """A released slot owns nothing, so its stale pane claim must not answer.
+
+        Releasing a slot does not clear `tmux_pane_id`. Measured 2026-08-25: all
+        16 pane-carrying records in the live registry sat on released slots, and
+        one of them shadowed a pane a different live session held, which blocked
+        every guarded write.
+        """
+        document = json.loads(self.state.read_text())
+        document["slots"]["stale-slot"] = {
+            "status": "released",
+            "agents": [{"name": "ghost-agent", "tmux_pane_id": "%7"}],
+        }
+        self.state.write_text(json.dumps(document))
+        self.standard_processes()
+        result = self.resolve()
+        pane = next(signal for signal in result.signals if signal.source == "pane-owner")
+        self.assertNotIn("ghost-agent", (pane.candidates or ()))
+        self.assertEqual(
+            "resolved", pane.state, "a released slot still shadowed a live pane"
+        )
+        self.assertEqual("agent-a", pane.agent)
+        self.assertEqual("AGREEMENT", result.state)
+
+    def test_live_slot_pane_disagreement_STILL_REFUSES(self) -> None:
+        """The other direction, and the more important one.
+
+        A resolver that stops dissenting is worse than one that over-dissents.
+        Skipping released rows must not soften a genuine conflict: an ACTIVE slot
+        claiming the caller's pane for a different agent must still refuse.
+        """
+        document = json.loads(self.state.read_text())
+        document["slots"]["live-conflict"] = {
+            "status": "active",
+            "agents": [{"name": "other-agent", "tmux_pane_id": "%7"}],
+        }
+        self.state.write_text(json.dumps(document))
+        self.standard_processes()
+        result = self.resolve()
+        pane = next(signal for signal in result.signals if signal.source == "pane-owner")
+        # Two LIVE slots claim the caller's pane, so the signal is ambiguous --
+        # which is the correct form of dissent here, not a resolved rival.
+        self.assertEqual("ambiguous", pane.state)
+        self.assertIn("other-agent", pane.candidates)
+        self.assertEqual(
+            "DISAGREEMENT", result.state, "a live conflicting claim stopped dissenting"
+        )
+        self.assertIsNone(result.agent)
+
+    def test_release_requested_slot_still_dissents(self) -> None:
+        """Only `released` is skipped; a slot mid-release may still be live.
+
+        Suppressing this one would hide a real conflict, so it is asserted
+        explicitly rather than left to the reader of the filter.
+        """
+        document = json.loads(self.state.read_text())
+        document["slots"]["mid-release"] = {
+            "status": "release-requested",
+            "agents": [{"name": "departing-agent", "tmux_pane_id": "%7"}],
+        }
+        self.state.write_text(json.dumps(document))
+        self.standard_processes()
+        result = self.resolve()
+        pane = next(signal for signal in result.signals if signal.source == "pane-owner")
+        self.assertEqual("ambiguous", pane.state)
+        self.assertIn("departing-agent", pane.candidates)
+        self.assertEqual("DISAGREEMENT", result.state)
+
     def test_taskgraph_owner_mismatch_is_disagreement(self) -> None:
         connection = sqlite3.connect(self.db)
         connection.execute("UPDATE tasks SET owner='agent-b' WHERE local_id='task-a'")
