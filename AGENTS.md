@@ -101,5 +101,37 @@ git fetch -q origin main && git show origin/main:path/to/file | grep -c '<the ch
 That is what caught the false `rc=0`, and it is the habit that makes the trap
 survivable rather than merely known.
 
+# Compose multi-line notes in a quoted heredoc, never inline
+
+`tg note` is the durable record -- panes are not -- and it is **quoting-safe**:
+text handed to it is stored byte-identical, verified with `$(...)`, backticks,
+`$VAR`, `${BRACE}` and mixed quotes. **The exposure is the shell, not the tool.**
+
+    # SAFE -- the quotes on the delimiter are what disable expansion
+    cat > /tmp/note.txt <<'EOF'
+    ... your finding, containing anything at all ...
+    EOF
+    tg note <task> "$(cat /tmp/note.txt)"
+
+    # UNSAFE -- bash expands the fragment before tg ever sees it
+    tg note <task> "... inline text with a substitution in it ..."
+
+WHY THE SAFE FORM IS SAFE: bash does not re-scan the output of a command
+substitution, so `"$(cat file)"` passes the file's bytes through untouched no
+matter what they contain. The quotes on the heredoc delimiter (`<<'EOF'`, not
+`<<EOF`) are what stop expansion when the file is written.
+
+⚠️ **THE FAILURE IS SILENT AND IT DESTROYS FINDINGS.** Written inline, bash
+substitutes or executes the fragment, `tg` faithfully stores whatever survived,
+and the note reads as complete. Measured 2026-08-25: a note lost its most
+actionable line -- the one recipe another agent was waiting on -- and stored a
+blank in its place. A blank is the LUCKY case. A fragment that expands to
+different text stores a WRONG line, which no later reader can detect.
+
+Same class as the `make validate | tail` hazard in `agent-utils/AGENTS.md`: a
+mechanism producing a value that reads as information and carries none. The
+difference is that this one sits in the layer used to record everything else, so
+nothing external cross-checks it.
+
 # You are a SKEPTIC
 
