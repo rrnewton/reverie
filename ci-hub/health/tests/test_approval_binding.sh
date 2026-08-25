@@ -391,6 +391,47 @@ grep -q '"authoritative": 1' <<<"$out" \
   || bad "approvals are not authoritative even unrefused; the assertion above proves nothing: $out"
 
 
+# --- PROSE IS NOT A VERDICT, AND COUNTING IT STRANDED A HEAD ------------------
+# The near-miss net is case-insensitive and allows a SPACE, so an ordinary
+# English sentence opening a review -- "Changes requested, on the deleted value
+# pin alone." -- matched at position 0 and was accepted with NO lane and NO sha.
+# A marker with no readable sha cannot bind, so it became an UNCLEARABLE refusal:
+# rc=2 forever, and pushing does not help because the sentence never named a sha
+# to stop naming. Measured on hermit#2625 at 6457ba0acfb4, whose claude lane was
+# bound at the exact head and still could not land.
+#
+# ⚠️ THE THREE OUTCOMES MUST STAY DISTINCT, so all three are asserted here.
+gatep() { printf '%s' "$1" >"$tmp/gp.json"; python3 "$crg" --repo r/r --pr 1 --head "$CUR" --from-json "$tmp/gp.json" >/dev/null 2>&1; }
+
+gatep "[\"Changes requested, on the deleted value pin alone. Everything else here is right.\"]" \
+  && ok "prose opening a review counts as NOTHING (rc=0)" \
+  || bad "an English sentence is still treated as a refusal -- the unclearable state"
+
+gatep "[\"CHANGES-REQUESTED-AT: claude $CUR\"]" \
+  && bad "a well-formed refusal stopped blocking -- the fix went too far" \
+  || ok "a well-formed refusal still BLOCKS (control)"
+
+gatep "[\"CHANGES-REQUESTED: claude $CUR\"]" \
+  && bad "a malformed refusal carrying lane AND sha stopped blocking" \
+  || ok "a malformed refusal carrying lane+sha still BLOCKS (control)"
+
+# ⚠️ THE DISCRIMINATOR ITSELF: a near-miss with a lane but no sha is somebody
+# ATTEMPTING a verdict and getting it wrong, which must stay INDETERMINATE rather
+# than being swept into "prose". If this ever returns 0 the fix has become a way
+# to ignore real refusals.
+printf '%s' "[\"CHANGES-REQUESTED: claude please fix the thing\"]" >"$tmp/gp2.json"
+python3 "$crg" --repo r/r --pr 1 --head "$CUR" --from-json "$tmp/gp2.json" >/dev/null 2>&1
+[[ $? -eq 2 ]] \
+  && ok "a near-miss with a lane but no sha is still INDETERMINATE, not ignored" \
+  || bad "a lane-bearing refusal attempt was swallowed as prose"
+
+# The withdrawal path is deliberately untouched: widening it would let an
+# accidental sentence CLEAR a real refusal, which is the dangerous direction.
+gatep "[\"CHANGES-REQUESTED-AT: claude $CUR\",\"Withdrawing my concerns, this looks fine now.\"]" \
+  && bad "a prose sentence CLEARED a real refusal -- withdrawal was loosened" \
+  || ok "prose does NOT clear a real refusal (withdrawal untouched)"
+
+
 # --- the binding GRAMMAR, including the rejection trap -----------------------
 if python3 "$here/test_approval_binding_grammar.py" >"$tmp/grammar.out" 2>&1; then
   ok "binding grammar suite: $(grep -c '^  PASS' "$tmp/grammar.out") assertions pass"

@@ -273,6 +273,38 @@ def markers_with_ids(
                     continue
                 m = _SHA.search(tail)
                 lane_m = _LANE.search(tail[:24])
+                # ⚠️ A NEAR-MISS WITH NEITHER A LANE NOR A SHA IS PROSE, NOT A
+                # VERDICT, AND COUNTING IT STRANDED A HEAD WITH NO WAY OUT.
+                #
+                # The near-miss net is case-insensitive and allows a SPACE
+                # (`CHANGES[-\s_]?REQUESTED`), so an ordinary English sentence
+                # opening a review -- "Changes requested, on the deleted value pin
+                # alone." -- matched at position 0 and was accepted here with
+                # lane=None and sha=None. A marker with no readable sha cannot
+                # bind, so it lands in `unbindable` and the gate returns rc=2
+                # INDETERMINATE. Measured on hermit#2625 at 6457ba0acfb4: the head
+                # had its claude lane bound at the exact head and still could not
+                # land.
+                #
+                # ⚠️ AND IT WAS UNCLEARABLE, WHICH IS WHAT MAKES IT WORSE THAN THE
+                # OTHER DEFECTS. Pushing does not help -- the sentence names no
+                # sha, so it never stops naming the head. The only exits were
+                # editing someone else's comment or posting a withdrawal for a
+                # refusal nobody made.
+                #
+                # THE DISCRIMINATOR IS WHAT THE AUTHOR SUPPLIED, NOT HOW THE LINE
+                # STARTS. Somebody attempting a verdict writes a lane or a sha;
+                # somebody writing a sentence writes neither. So a near-miss still
+                # refuses when it carries either -- `CHANGES-REQUESTED: claude
+                # <sha>` blocks exactly as before -- and is ignored when it carries
+                # neither.
+                #
+                # ⚠️ NOT FIXED BY WIDENING WHAT COUNTS AS A WITHDRAWAL. That would
+                # let an accidental sentence CLEAR a real refusal, which is the
+                # dangerous direction; this narrows what counts as a refusal
+                # ATTEMPT and leaves the withdrawal path untouched.
+                if m is None and lane_m is None:
+                    continue
                 found.append((REFUSAL,
                               lane_m.group(1).lower() if lane_m else None,
                               m.group(1) if m else None,

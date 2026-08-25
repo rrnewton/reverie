@@ -391,6 +391,7 @@ def _load_grammar():
 
 
 _SHA_IN_LINE = re.compile(r"\b([0-9a-f]{7,40})\b")
+_LANE_IN_LINE = re.compile(r"\b(claude|codex)\b", re.IGNORECASE)
 
 _REFUSAL_SHAPED = re.compile(r"CHANGES[-\s]?REQUESTED", re.IGNORECASE)
 
@@ -628,6 +629,25 @@ def blocking_changes_requests(pr: str, repo: str, head: str) -> list[str]:
                 # A refusal with NO readable sha still blocks: unbindable is not
                 # inapplicable, which is the fail-closed choice this branch exists
                 # to make.
+                # ⚠️ NEITHER A LANE NOR A SHA MEANS PROSE, NOT A VERDICT. The
+                # near-miss grammar is case-insensitive and allows a space, so an
+                # ordinary sentence opening a review -- "Changes requested, on the
+                # deleted value pin alone." -- is refusal-shaped and was blocking
+                # here with no sha to ever stop naming the head. Pushing could not
+                # clear it. Same defect the sibling lander had at
+                # changes-requested-gate; fixed in both, with the same
+                # discriminator, so they cannot drift.
+                #
+                # Somebody asserting a verdict supplies a lane or a sha; somebody
+                # writing a sentence supplies neither. This narrows what counts as
+                # a refusal ATTEMPT and leaves the withdrawal path alone --
+                # widening withdrawal would let an accidental sentence CLEAR a
+                # real refusal, which is the dangerous direction.
+                if (
+                    _SHA_IN_LINE.search(line) is None
+                    and _LANE_IN_LINE.search(line) is None
+                ):
+                    continue
                 near_sha = _SHA_IN_LINE.search(line)
                 if near_sha and head and not (
                     head.startswith(near_sha.group(1))
