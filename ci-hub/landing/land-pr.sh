@@ -427,8 +427,18 @@ else
     git -C "$WT" checkout -q --detach origin/main 2>/dev/null || true
     abandon "plain rebase onto origin/main conflicted (needs owner/--union)" 3
   fi
+  # REFUSE TO PUBLISH A HEAD THAT IS NOT AHEAD OF MAIN. See the identical guard
+  # in ci-hub/landing/union-rebase.sh. Detach sites are many and this push is
+  # one of only three places in the tree that writes HEAD to a pull-request
+  # branch, so the check belongs here rather than at every checkout.
+  if [ "$(git -C "$WT" rev-list --count origin/main..HEAD)" -eq 0 ]; then
+    abandon "refusing to push a head that is not ahead of main; the worktree is at main and pushing would wipe $BR" 3
+  fi
   with-proxy git -C "$WT" push -q --force-with-lease origin "HEAD:$BR" || abandon "force-with-lease push failed" 3
-  git -C "$WT" checkout -q --detach origin/main 2>/dev/null || true
+  # Park at what we just published, NOT at main. Leaving a shared worktree on
+  # main is what converts the next ordinary force-push into a branch wipe; HEAD
+  # already equals origin/$BR here, so a stray repeat is idempotent.
+  git -C "$WT" checkout -q --detach "$(git -C "$WT" rev-parse HEAD)" 2>/dev/null || true
 fi
 
 # 3. record the head that will actually be merged. Re-fetched from the remote in

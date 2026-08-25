@@ -140,6 +140,24 @@ if ! cargo run --quiet -p hermit-manifest-plan -- --format harness-json >/dev/nu
 fi
 
 if [ "$PUSH" = "--push" ]; then
+  # REFUSE TO PUBLISH A HEAD THAT IS NOT AHEAD OF MAIN.
+  #
+  # This file is a near-duplicate of ci-hub/landing/union-rebase.sh, which got
+  # this guard in c9423a97; 72 non-comment lines differ and the guard was one
+  # of them, so the copy kept the destructive push. Unlike that driver this one
+  # has no detach_home, so it does not CREATE a detached-at-main worktree -- it
+  # inherits one from whatever ran before it and publishes it. That makes it a
+  # consumer of the bad state rather than a producer, and consumers are exactly
+  # what a producer-side fix misses.
+  #
+  # --force-with-lease is not protection: the lease proves only that nobody
+  # else moved $BR, never that what we are about to write is that branch's own
+  # work. If HEAD is main, this writes main over the pull request and GitHub
+  # then refuses to reopen it, because head == base.
+  if [ "$(git rev-list --count origin/main..HEAD)" -eq 0 ]; then
+    git checkout -q "$HOME_BRANCH" 2>/dev/null; git branch -D _union_wip >/dev/null 2>&1
+    status "REBASE-FAIL:head-not-ahead-of-main"; exit 0
+  fi
   if ! with-proxy git push -q --force-with-lease "origin" "HEAD:$BR"; then
     git checkout -q "$HOME_BRANCH"; git branch -D _union_wip >/dev/null 2>&1
     status "REBASE-FAIL:push"; exit 0
