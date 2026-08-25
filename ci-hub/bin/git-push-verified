@@ -197,6 +197,35 @@ def format_gate(src: str, before: Optional[str]) -> FormatVerdict:
     if rc == 0:
         return FormatVerdict(False, f"git-push-verified: format CHECKED and clean ({len(rust)} .rs file(s))")
     blob = f"{out}\n{err}"
+    # ⚠️ NO CARGO MANIFEST IS NOT A FORMATTING FAILURE, AND THIS REPOSITORY HAS
+    # NONE. dev-hermit is not a cargo workspace -- its `.rs` files are rust-scripts
+    # -- so `cargo fmt --all` exits non-zero with "could not find `Cargo.toml`"
+    # for reasons that say nothing about the code. That fell through to the
+    # offender branch below, which named no file and REFUSED THE PUSH with
+    # "Run `cargo fmt --all`" -- a remedy that cannot work here. Measured
+    # 2026-08-25 on the first dev-hermit push to carry a `.rs` file; earlier
+    # pushes carried none and skipped the gate, which is why it went unnoticed.
+    #
+    # Falling back to `rustfmt` directly on the files being pushed is the RIGHT
+    # tool for a rust-script, so this converts a false refusal into a real check
+    # rather than into an abstention.
+    if "could not find `Cargo.toml`" in blob or "cargo metadata` exited with an error" in blob:
+        if shutil.which("rustfmt") is None:
+            return FormatVerdict(
+                False,
+                "git-push-verified: format NOT CHECKED -- no cargo manifest and rustfmt is "
+                f"absent. {len(rust)} .rs file(s) are being pushed UNVERIFIED. This is not a pass.",
+            )
+        rc2, out2, err2 = run(["rustfmt", "--edition", "2021", "--check", *rust])
+        if rc2 == 0:
+            return FormatVerdict(
+                False,
+                "git-push-verified: format CHECKED and clean via rustfmt "
+                f"({len(rust)} .rs file(s); no cargo manifest in this repository)",
+            )
+        blob = f"{out2}\n{err2}"
+        if out2.strip():
+            print(out2.rstrip())
     if "not installed" in blob or "no such subcommand" in blob:
         return FormatVerdict(
             False,
