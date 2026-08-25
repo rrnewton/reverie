@@ -437,23 +437,6 @@ mod tests {
 
     #[tokio::test]
     async fn mount_tmpfs() {
-        let output = Command::new("ls")
-            .arg("/tmp")
-            .map_root()
-            .mount(Mount::tmpfs("/tmp"))
-            .output()
-            .await
-            .unwrap();
-
-        assert_eq!(output.status, ExitStatus::Exited(0));
-
-        // Should be totally empty since we mounted a new tmpfs.
-        assert_eq!(output.stderr, b"");
-        assert_eq!(output.stdout, b"");
-    }
-
-    #[tokio::test]
-    async fn parsed_tmpfs_mount_executes_without_bind_propagation_flags() {
         let mount = "type=tmpfs,target=/tmp"
             .parse::<Mount>()
             .expect("tmpfs mount syntax should parse");
@@ -466,6 +449,8 @@ mod tests {
             .unwrap();
 
         assert_eq!(output.status, ExitStatus::Exited(0));
+
+        // Should be totally empty since we mounted a new tmpfs.
         assert_eq!(output.stderr, b"");
         assert_eq!(output.stdout, b"");
     }
