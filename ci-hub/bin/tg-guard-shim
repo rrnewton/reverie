@@ -108,4 +108,115 @@ if [ "${1:-}" = "update" ] && [ -z "${CLOSE_TASK_VERIFIED:-}" ]; then
         exit 2
     fi
 fi
+# ─────────────────────────────────────────────────────────────────────────────
+# OWNERSHIP GUARD: taking a task from a live owner must be deliberate.
+#
+# WHY, MEASURED 2026-08-25. Three task-id collisions between different agents in
+# roughly twenty minutes, all one mechanism. `tg claim`'s own help says it: "Re-
+# claiming by another agent simply overwrites the previous agent." It warns
+# NEITHER party, so the collision is silent on both sides. Confirmed directly on a
+# probe task: owner went hermit-020 -> hermit-007 and status OPEN -> IN_PROGRESS
+# with no mention of either in the output.
+#
+# THE SECOND CAUSE IS THE ID. `tg add` PRINTS the id it created and agents were
+# CONSTRUCTING one instead -- incrementing a suffix they expected -- so
+# non_author_claude_lane_4 got claimed when tg had printed _5. A constructed id
+# that happens to exist resolves to SOMEONE ELSE'S TASK, which is the same class
+# as a plausible-but-wrong sha sending a reviewer at the wrong tree. Two answers
+# here: refuse the overwrite (below), and echo the TITLE on every successful claim
+# so a wrong id is visible immediately rather than after the work.
+#
+# THE DAMAGE IS PROVENANCE, NOT WORK. In all three cases the work was done
+# correctly by whoever thought they held the task; what broke is the record. On
+# non_author_claude_lane_4 the task said owner=hermit-030 while the PR comment said
+# hermit-020, so "who supplied that lane" has two answers and no tiebreak.
+#
+# ⚠️ THE ORCHESTRATOR SHARES THIS PATH. `tg claim` and `tg update --owner` write
+# the SAME `owner` column, so an orchestrator assigning ownership can overwrite a
+# live owner exactly as an agent can. Both forms are guarded here for that reason.
+#
+# DELIBERATE TAKEOVER IS STILL AVAILABLE: pass --steal, which this consumes.
+# REFUSES ONLY WHEN THE TASK IS IN_PROGRESS -- a started task is someone's live
+# work. An OPEN or BACKLOG task with an owner is reassignable and only warns.
+_guard_task_id_ok() { case "$1" in *[!A-Za-z0-9_.-]*|"") return 1 ;; *) return 0 ;; esac; }
+_guard_field() {
+    _guard_task_id_ok "$2" || return 1
+    "$REAL" sql "select $1 from tasks where local_id='$2'" 2>/dev/null \
+        | sed -n '3p' | sed 's/[[:space:]]*$//'
+}
+_guard_me() {
+    w=/home/newton/work/dev-hermit/ci-hub/bin/who-am-i
+    [ -x "$w" ] || return 0
+    "$w" --tag --role impl 2>/dev/null | sed 's/^\[//; s/\].*$//' | cut -d, -f2 | tr -d ' '
+}
+_guard_refuse_takeover() {  # $1=task $2=current owner $3=incoming owner $4=verb
+    printf '%s\n' \
+"tg: REFUSED -- $1 is already claimed by a live owner." \
+"" \
+"  task          : $1" \
+"  title         : $(_guard_field title "$1")" \
+"  current owner : $2   (status IN_PROGRESS)" \
+"  you           : $3" \
+"" \
+"  Measured 2026-08-25: three agents overwrote each other's live claims in twenty" \
+"  minutes because '$4' overwrites unconditionally and tells neither party. The" \
+"  work still got done each time -- what broke was the RECORD, which then named an" \
+"  agent who had not done it." \
+"" \
+"  ⚠️ CHECK THE TITLE ABOVE FIRST. Most of these were CONSTRUCTED task ids: 'tg add'" \
+"  prints the id it created and the id was retyped with a guessed suffix. If that" \
+"  title is not the work you meant to take, you have the wrong id -- use the one" \
+"  'tg add' printed." \
+"" \
+"  If the takeover is deliberate -- the owner stood down, or you are the" \
+"  orchestrator reassigning -- say so explicitly:" \
+"      tg $4 $1 --steal" \
+"  and tell $2, because they may still be working." >&2
+}
+
+if [ "${1:-}" = "claim" ] || [ "${1:-}" = "update" ]; then
+    _verb=$1; _task=""; _incoming=""; _steal=""; _prev=""; _sawowner=""
+    _fwd=(); _n=0
+    for _a in "$@"; do
+        _n=$((_n+1))
+        [ "$_n" = 1 ] && { _fwd+=("$_a"); _prev=$_a; continue; }
+        case "$_a" in
+            --steal) _steal=1; _prev=$_a; continue ;;   # consumed, never forwarded
+        esac
+        case "$_prev" in
+            --agent|--owner) _incoming=$_a ;;
+        esac
+        case "$_a" in
+            --agent=*|--owner=*) _incoming=${_a#*=}; _sawowner=1 ;;
+            --owner|--agent)     _sawowner=1 ;;
+            -*)                  : ;;
+            *)                   [ -z "$_task" ] && _task=$_a ;;
+        esac
+        _fwd+=("$_a"); _prev=$_a
+    done
+    # `tg update --status ...` with no ownership change is not our business here;
+    # the closure guard above already covers the one status that matters.
+    if [ "$_verb" = "update" ] && [ -z "$_sawowner" ]; then _task=""; fi
+    if [ -n "$_task" ] && [ -z "$_steal" ] && _guard_task_id_ok "$_task"; then
+        _cur=$(_guard_field owner "$_task")
+        _st=$(_guard_field status "$_task")
+        [ -n "$_incoming" ] || _incoming=$(_guard_me)
+        if [ -n "$_cur" ] && [ "$_cur" != "-" ] && [ -n "$_incoming" ] && [ "$_cur" != "$_incoming" ]; then
+            if [ "$_st" = "IN_PROGRESS" ]; then
+                _guard_refuse_takeover "$_task" "$_cur" "$_incoming" "$_verb"
+                exit 2
+            fi
+            printf 'tg: NOTE -- %s was owned by %s (status %s); you are taking it as %s.\n' \
+                "$_task" "$_cur" "${_st:-?}" "$_incoming" >&2
+        fi
+    fi
+    # Echo the TITLE of what was actually claimed. A constructed id that resolves
+    # to the wrong task is silent otherwise, and that silence is half this defect.
+    "$REAL" "${_fwd[@]}"; _rc=$?
+    if [ "$_rc" = 0 ] && [ "$_verb" = "claim" ] && [ -n "$_task" ]; then
+        _t=$(_guard_field title "$_task")
+        [ -n "$_t" ] && printf 'tg: claimed %s -- "%s"\n' "$_task" "$_t" >&2
+    fi
+    exit "$_rc"
+fi
 exec "$REAL" "$@"
