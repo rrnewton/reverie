@@ -94,10 +94,15 @@ class StartUnitEnvTest(unittest.TestCase):
             env["SAFE_CI_DAG_RUNNER_LOG_DIR"],
             str(artifact_root / "safe-ci-dag-runner"),
         )
+        self.assertEqual(
+            env["DAGRUN_LOG_DIR"],
+            str(artifact_root / "safe-ci-dag-runner"),
+        )
         self.assertFalse(Path(env["E2E_RESULT_ROOT"]).is_relative_to(self.root / "hermit"))
         self.assertFalse(
             Path(env["SAFE_CI_DAG_RUNNER_LOG_DIR"]).is_relative_to(self.root / "hermit")
         )
+        self.assertFalse(Path(env["DAGRUN_LOG_DIR"]).is_relative_to(self.root / "hermit"))
 
     def test_console_report_names_both_retained_paths(self) -> None:
         artifact_root = self.root / "ignored/validate/artifacts/validate-test"

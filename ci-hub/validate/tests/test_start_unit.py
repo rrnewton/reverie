@@ -35,6 +35,8 @@ class FakeRun:
         # and `ledger_rows` is what the canonical reader returns.
         self.fresh: Path | None = None
         self.fresh_complete = True
+        self.fresh_runner_name = "safe-ci-dag-runner"
+        self.fresh_runner_executable = True
         self.ledger_rows: list[str] | None = None
         self.canonical_verdict = "VALIDATED"
         self.canonical_status_rc = 0
@@ -87,9 +89,15 @@ class FakeRun:
             (self.fresh / "scripts").mkdir(parents=True, exist_ok=True)
             (self.fresh / "scripts/validate.rs").write_text("#!/usr/bin/env rust-script\n")
             if self.fresh_complete:
-                dep = self.fresh / "agent-utils/rs/safe-ci-dag-runner"
+                dep = self.fresh / "agent-utils/rs" / self.fresh_runner_name
                 dep.mkdir(parents=True, exist_ok=True)
                 (dep / "Cargo.toml").write_text("[package]\n")
+                if self.fresh_runner_executable:
+                    executable = (
+                        self.fresh / "agent-utils/common/bin" / self.fresh_runner_name
+                    )
+                    executable.parent.mkdir(parents=True, exist_ok=True)
+                    executable.write_text("#!/bin/sh\n")
             if self.plant_receipt is not None:
                 receipt = self.fresh / self.plant_receipt
                 receipt.parent.mkdir(parents=True, exist_ok=True)
@@ -779,6 +787,31 @@ class StartUnitTest(unittest.TestCase):
             ),
             "nothing may be admitted from an unusable tree",
         )
+
+    def test_new_dagrun_name_is_a_usable_fresh_checkout(self) -> None:
+        self.fake.fresh_runner_name = "dagrun"
+
+        fresh = start_unit.prepare_fresh_checkout(
+            self.checkout,
+            SHA,
+            run=self.fake,
+            parent=self.root / "ignored",
+            repo="rrnewton/hermit",
+        )
+
+        self.assertEqual(self.fake.fresh, fresh)
+
+    def test_crate_without_runner_executable_is_not_usable(self) -> None:
+        self.fake.fresh_runner_executable = False
+
+        with self.assertRaisesRegex(RuntimeError, "common/bin/dagrun"):
+            start_unit.prepare_fresh_checkout(
+                self.checkout,
+                SHA,
+                run=self.fake,
+                parent=self.root / "ignored",
+                repo="rrnewton/hermit",
+            )
 
     # ---- REQUIREMENT (a): the row must be canonically readable BEFORE delete --
 
