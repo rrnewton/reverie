@@ -17,6 +17,7 @@ from __future__ import annotations
 from io import StringIO
 from pathlib import Path
 import os
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -183,18 +184,98 @@ class RecordedPinVsCheckoutTests(PinInvariantFixture):
 
 
 class ExitCodeTests(PinInvariantFixture):
-    def test_report_mode_exits_zero_and_strict_exits_one(self) -> None:
+    def violate(self) -> None:
+        """Move reverie's main on and record it, so the manifest rev disagrees."""
         self.advance("reverie")
         git(self.root, "add", "reverie")
-        report = inv.main(["--root", str(self.root), "--offline"], out=StringIO())
-        strict = inv.main(["--root", str(self.root), "--offline", "--strict"], out=StringIO())
-        self.assertEqual(report, 0, "report mode must not fail a caller")
-        self.assertEqual(strict, 1, "--strict must fail on a violation")
 
-    def test_strict_exits_zero_when_the_invariant_holds(self) -> None:
-        # Without this, --strict returning 1 proves nothing.
+    def test_a_violation_exits_one_with_no_flag_at_all(self) -> None:
+        # The whole point. This asserted 0 until 2026-08-22, which is what let
+        # `gate pin-invariant` print VIOLATED and still record the gate OK.
+        self.violate()
+        self.assertEqual(inv.main(["--root", str(self.root), "--offline"], out=StringIO()), 1)
+
+    def test_strict_is_accepted_and_changes_nothing(self) -> None:
+        self.violate()
+        bare = inv.main(["--root", str(self.root), "--offline"], out=StringIO())
+        strict = inv.main(["--root", str(self.root), "--offline", "--strict"], out=StringIO())
+        self.assertEqual((bare, strict), (1, 1), "the verdict must not depend on --strict")
+
+    def test_report_only_exits_zero_on_a_violation(self) -> None:
+        self.violate()
+        out = StringIO()
+        self.assertEqual(
+            inv.main(["--root", str(self.root), "--offline", "--report-only"], out=out), 0)
+        self.assertIn("VIOLATED", out.getvalue(), "--report-only must still say so on stdout")
+
+    def test_exits_zero_when_the_invariant_holds(self) -> None:
+        # Without this, exiting 1 on a violation proves nothing: a check that
+        # fails on everything is not a check.
+        self.assertEqual(inv.main(["--root", str(self.root), "--offline"], out=StringIO()), 0)
         self.assertEqual(inv.main(["--root", str(self.root), "--offline", "--strict"],
                                   out=StringIO()), 0)
+
+
+class UnmeasurableTests(PinInvariantFixture):
+    """An uninitialised submodule is not a pin defect, and not a pass either."""
+
+    def blind(self) -> None:
+        """Make the recorded hermit tree unreadable, as a fresh worktree is."""
+        shutil.rmtree(self.root / "hermit" / ".git")
+
+    def test_unreadable_hermit_tree_exits_two_not_one(self) -> None:
+        self.blind()
+        self.assertEqual(inv.main(["--root", str(self.root), "--offline"], out=StringIO()), 2)
+
+    def test_unreadable_hermit_tree_is_not_counted_as_a_violation(self) -> None:
+        self.blind()
+        out = StringIO()
+        violations, unknowns = inv.check_legs(self.root, offline=True, out=out)
+        self.assertEqual(violations, [], "unmeasurable must not be reported as a disagreement")
+        self.assertEqual(unknowns, ["A internal", "B coherence"])
+        self.assertNotIn("FAIL", out.getvalue(), "an unmeasurable leg must not print as FAIL")
+
+    def test_unmeasurable_is_reported_as_such_and_not_as_holding(self) -> None:
+        self.blind()
+        out = StringIO()
+        inv.main(["--root", str(self.root), "--offline"], out=out)
+        self.assertIn("UNMEASURABLE", out.getvalue())
+        self.assertNotIn("holds on every leg", out.getvalue())
+        self.assertNotIn("VIOLATED", out.getvalue())
+
+    def test_an_uninitialised_submodule_is_not_a_currency_violation(self) -> None:
+        # Regression. `git -C <empty dir>` walks up to the enclosing repository,
+        # so origin/main was read from the PARENT and compared against reverie's
+        # gitlink -- two unrelated shas, an automatic "C currency" violation in
+        # every fresh worktree. Measured 2026-08-22: a fresh parent worktree
+        # reported C and D violated against dev-hermit's own main eea651d9.
+        # The parent must have its OWN origin for this to bite: that is the
+        # remote `git -C <empty dir>` reaches when it walks up.
+        parent_remote = Path(self.temp.name) / "parent-remote.git"
+        subprocess.run(("git", "init", "--bare", "--initial-branch=main", str(parent_remote)),
+                       check=True, capture_output=True)
+        git(self.root, "remote", "add", "origin", str(parent_remote))
+        git(self.root, "push", "origin", "main")
+        parent_main = git(self.root, "rev-parse", "HEAD")
+
+        shutil.rmtree(self.root / "reverie" / ".git")
+        out = StringIO()
+        violations, unknowns = inv.check_legs(self.root, offline=False, out=out)
+        self.assertNotIn(parent_main[:12], out.getvalue(),
+                         "reverie's currency must never be judged against the PARENT's main")
+        self.assertNotIn("C currency", violations, "a missing checkout is not a stale pin")
+        self.assertIn("C currency", unknowns)
+
+    def test_a_real_violation_still_outranks_an_unmeasurable_leg(self) -> None:
+        # Leg C is genuinely violated (reverie's main moves, the gitlink does
+        # not) while A and B are unmeasurable. The caller must hear the defect,
+        # so the exit code has to be 1, not 2.
+        self.advance("reverie")            # remote moves; gitlink stays put
+        self.blind()
+        out = StringIO()
+        self.assertEqual(inv.main(["--root", str(self.root)], out=out), 1)
+        self.assertIn("VIOLATED", out.getvalue())
+        self.assertIn("UNMEASURABLE", out.getvalue())
 
 
 class ProxyDisableFlagTests(unittest.TestCase):

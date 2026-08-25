@@ -31,9 +31,29 @@ parent commit records gitlinks; a colleague who clones and runs `git submodule
 update --init` gets the GITLINKS, not whatever happens to be checked out on this
 box. Any invariant about what others receive must read the recorded pin.
 
-    check_reverie_pin_invariant.py              # report, exit 0
-    check_reverie_pin_invariant.py --strict     # exit 1 on any violation
-    check_reverie_pin_invariant.py --offline    # skip C/D (no network)
+FAIL CLOSED, AND FAIL WITHOUT NEEDING A FLAG. This script used to end with
+`return 1 if args.strict else 0`, and the Makefile's `gate pin-invariant` line
+invoked it without `--strict`. So it printed "pin invariant VIOLATED on 2
+leg(s)" and exited 0, and `make lint` recorded the gate OK -- measured
+2026-08-22 at origin/main eea651d9. That is precisely the defect this file was
+written to replace in `primary_checkout.py`, described a few paragraphs above,
+reproduced here. A gate whose teeth depend on the caller remembering a flag is a
+gate that will eventually be invoked without it, so the verdict no longer
+depends on one: violations exit 1 on their own. `--strict` is still accepted and
+now does nothing. `--report-only` is the way to ask for the prose without a
+verdict.
+
+UNMEASURABLE IS ITS OWN ANSWER, exit 2. An uninitialised hermit submodule used
+to read as "no tracked Cargo.toml pins reverie", a violation, because "I could
+not list the tree" and "I listed it and found nothing" both arrived as an empty
+set. They are different claims and only the second is a pin defect. Exit 2 says
+the leg was not checked; it is not a pass. This matches
+`ci-hub/health/reverie_pin_lag.py` (CURRENT 0 / LAGGING 1 / UNKNOWN 2) and
+`scripts/check_hermit_agent_utils_pin.py`, which fail closed the same way.
+
+    check_reverie_pin_invariant.py                # report; 0 holds, 1 violated, 2 unmeasurable
+    check_reverie_pin_invariant.py --report-only  # print the legs, exit 0 regardless
+    check_reverie_pin_invariant.py --offline      # skip C/D (no network)
 """
 
 from __future__ import annotations
@@ -127,18 +147,24 @@ def _walk(value: object) -> list[str]:
     return pins
 
 
-def manifest_pins(hermit: Path, commit: str | None) -> tuple[set[str], int]:
+def manifest_pins(hermit: Path, commit: str | None) -> tuple[set[str], int, bool]:
     """Reverie revs in tracked hermit Cargo.toml, read AT THE RECORDED COMMIT.
 
     Reading the recorded tree rather than the working tree is deliberate: a
     colleague receives the gitlink, so the invariant must be about the gitlink's
     contents, not about another agent's uncommitted edits.
+
+    Returns (pins, entries, readable). `readable` is False when the recorded
+    tree could not be listed at all -- an uninitialised submodule, say -- and
+    that is reported separately from "listed fine, pins nothing". Both used to
+    arrive here as an empty set, so "I could not look" was indistinguishable
+    from "I looked and found none", and only the second is a pin defect.
     """
     if commit is None:
-        return set(), 0
+        return set(), 0, False
     listed = git(hermit, "ls-tree", "-r", "-z", "--name-only", commit)
     if listed.returncode != 0:
-        return set(), 0
+        return set(), 0, False
     pins: list[str] = []
     for name in filter(None, listed.stdout.split("\0")):
         if not name.endswith("Cargo.toml"):
@@ -150,7 +176,27 @@ def manifest_pins(hermit: Path, commit: str | None) -> tuple[set[str], int]:
             pins.extend(_walk(tomllib.loads(blob.stdout)))
         except tomllib.TOMLDecodeError:
             continue
-    return set(pins), len(pins)
+    return set(pins), len(pins), True
+
+
+def is_own_repo(path: Path) -> bool:
+    """Is `path` the root of its own git repository?
+
+    An uninitialised submodule is an EMPTY DIRECTORY inside the parent, and
+    `git -C` there walks up and answers about the PARENT. So
+    `remote_main(root / "reverie")` returned dev-hermit's origin/main and it was
+    compared against reverie's gitlink -- two unrelated shas, an automatic and
+    entirely bogus "currency violation". Confirming the directory is its own
+    repository root is what stops a missing checkout from being answered for by
+    the repository that contains it.
+    """
+    result = git(path, "rev-parse", "--show-toplevel")
+    if result.returncode != 0:
+        return False
+    try:
+        return Path(result.stdout.strip()).resolve() == path.resolve()
+    except OSError:
+        return False
 
 
 def remote_main(repo: Path) -> str | None:
@@ -161,9 +207,18 @@ def remote_main(repo: Path) -> str | None:
     return sha if FULL_SHA.match(sha) else None
 
 
-def check(root: Path, *, offline: bool = False, out: TextIO = sys.stdout) -> list[str]:
-    """Return a list of violations; empty means the invariant holds."""
+def check_legs(root: Path, *, offline: bool = False,
+               out: TextIO = sys.stdout) -> tuple[list[str], list[str]]:
+    """Return (violations, unmeasurable legs).
+
+    A leg is UNMEASURABLE when the inputs it needs cannot be read here -- an
+    uninitialised submodule, an unreachable remote. That is not the same claim
+    as "the pin disagrees", and collapsing the two in either direction is a
+    defect: reporting it as a violation cries wolf in every fresh worktree,
+    and reporting it as holding is the fake green this file exists to prevent.
+    """
     violations: list[str] = []
+    unknowns: list[str] = []
     hermit_link = recorded_gitlink(root, "hermit")
     reverie_link = recorded_gitlink(root, "reverie")
 
@@ -172,12 +227,20 @@ def check(root: Path, *, offline: bool = False, out: TextIO = sys.stdout) -> lis
         if not ok:
             violations.append(leg)
 
+    def unknown(leg: str, detail: str) -> None:
+        print(f"  [????] {leg}: {detail}", file=out)
+        unknowns.append(leg)
+
     print("reverie pin invariant (recorded gitlinks, not checkouts)", file=out)
 
     # A: internal consistency of the recorded hermit tree.
-    pins, count = manifest_pins(root / "hermit", hermit_link)
+    pins, count, readable = manifest_pins(root / "hermit", hermit_link)
     if hermit_link is None:
         report("A internal", False, "no recorded hermit gitlink to read manifests from")
+    elif not readable:
+        unknown("A internal", f"cannot read the recorded hermit tree at {hermit_link[:12]} "
+                              f"({root / 'hermit'} is not a readable checkout; "
+                              "run `git submodule update --init hermit`)")
     elif count == 0:
         report("A internal", False, f"no tracked Cargo.toml pins reverie at {hermit_link[:12]}")
     elif len(pins) != 1:
@@ -191,40 +254,72 @@ def check(root: Path, *, offline: bool = False, out: TextIO = sys.stdout) -> lis
         pin = next(iter(pins))
         report("B coherence", pin == reverie_link,
                f"manifest {pin[:12]} vs recorded reverie gitlink {reverie_link[:12]}")
+    elif not readable or reverie_link is None:
+        unknown("B coherence", "cannot compare: "
+                               + ("the recorded hermit tree is unreadable"
+                                  if not readable else "no recorded reverie gitlink"))
     else:
-        report("B coherence", False, "cannot compare: manifest rev or reverie gitlink unavailable")
+        report("B coherence", False,
+               "cannot compare: the recorded hermit tree does not pin exactly one rev")
 
     # C/D: currency of the recorded pins against each product's own main.
     if offline:
         print("  [skip] C currency, D currency: --offline", file=out)
-        return violations
+        return violations, unknowns
     for leg, product, link in (("C currency", "reverie", reverie_link),
                                ("D currency", "hermit", hermit_link)):
+        if link is None:
+            report(leg, False, f"{product}: no recorded gitlink")
+            continue
+        if not is_own_repo(root / product):
+            unknown(leg, f"{product}: {root / product} is not its own checkout, so its "
+                         "origin/main cannot be read here (an uninitialised submodule "
+                         "would otherwise be answered for by the parent repository)")
+            continue
         main = remote_main(root / product)
-        if link is None or main is None:
-            report(leg, False, f"{product}: gitlink or origin/main unavailable")
+        if main is None:
+            unknown(leg, f"{product}: origin/main unavailable (no network, or no such remote)")
         else:
             report(leg, link == main,
                    f"{product} gitlink {link[:12]} vs origin/main {main[:12]}")
-    return violations
+    return violations, unknowns
+
+
+def check(root: Path, *, offline: bool = False, out: TextIO = sys.stdout) -> list[str]:
+    """Return a list of violations; empty means no leg was measured as violated.
+
+    Kept for callers that only ask "did any leg disagree". It cannot answer
+    "was every leg measurable" -- use `check_legs` for that.
+    """
+    return check_legs(root, offline=offline, out=out)[0]
 
 
 def main(argv: list[str] | None = None, out: TextIO = sys.stdout) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parent.parent)
-    parser.add_argument("--strict", action="store_true", help="exit 1 on any violation")
+    parser.add_argument("--strict", action="store_true",
+                        help="accepted and ignored; violations exit 1 with or without it")
+    parser.add_argument("--report-only", action="store_true", dest="report_only",
+                        help="print the legs and exit 0 whatever they say")
     parser.add_argument("--offline", action="store_true", help="skip the networked currency legs")
     args = parser.parse_args(argv)
 
-    violations = check(args.root.resolve(), offline=args.offline, out=out)
+    violations, unknowns = check_legs(args.root.resolve(), offline=args.offline, out=out)
     print(file=out)
     if violations:
         print(f"pin invariant VIOLATED on {len(violations)} leg(s): {', '.join(violations)}", file=out)
         print("  a colleague cloning this commit and running `git submodule update --init`"
               " receives the recorded gitlinks, not this box's checkouts.", file=out)
-        return 1 if args.strict else 0
-    print("pin invariant holds on every leg.", file=out)
-    return 0
+    if unknowns:
+        print(f"pin invariant UNMEASURABLE on {len(unknowns)} leg(s): {', '.join(unknowns)}", file=out)
+        print("  this is not a clean bill of health: those legs were not checked at all.", file=out)
+    if not violations and not unknowns:
+        print("pin invariant holds on every leg.", file=out)
+    if args.report_only:
+        return 0
+    if violations:
+        return 1
+    return 2 if unknowns else 0
 
 
 if __name__ == "__main__":
