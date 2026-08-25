@@ -449,6 +449,37 @@ def receipt_cases() -> None:
         )
 
 
+def argv_cases() -> None:
+    """A flag this tool owns must not be lost, whatever its position.
+
+    ⚠️ MEASURED ON A REAL LANDING. `... --expect-head <sha> -- --squash` dropped
+    the corroboration silently: the `--` handler did `extra = argv[i+1:]`, which
+    REPLACED everything collected before it. The merge succeeded, gh saw valid
+    flags, and the head was never corroborated. A guard reported as used that had
+    not run is the exact failure this file exists to prevent, so it is pinned here
+    rather than remembered.
+    """
+    tool = load_tool()
+    for label, argv, want_head, want_extra in [
+        ("owned flag before the gh flags",
+         ["7", "--repo", "r/h", "--expect-head", "ABC", "--squash"], "ABC", ["--squash"]),
+        ("owned flag before an explicit separator",
+         ["7", "--repo", "r/h", "--expect-head", "ABC", "--", "--squash"], "ABC", ["--squash"]),
+        ("owned flag after the gh flags",
+         ["7", "--repo", "r/h", "--squash", "--expect-head", "ABC"], "ABC", ["--squash"]),
+    ]:
+        _repo, _vo, got_head, _rc, got_extra = tool.parse_options(argv)
+        check(f"position does not matter: {label}",
+              got_head == want_head and got_extra == want_extra,
+              f"expect_head={got_head!r} extra={got_extra!r}; wanted {want_head!r} / {want_extra!r}")
+
+    _r, _v, head, _rc, extra = tool.parse_options(
+        ["7", "--repo", "r/h", "--expct-head", "ABC", "--", "--squash"])
+    check("a misspelled flag before `--` is FORWARDED, never silently dropped",
+          "--expct-head" in extra and "ABC" in extra and head is None,
+          f"the typo vanished instead of reaching gh: extra={extra!r}")
+
+
 def main() -> int:
     if not TOOL.exists():
         print(f"gh-merge-verified-test: {TOOL} is missing", file=sys.stderr)
@@ -473,6 +504,7 @@ def main() -> int:
     unit_cases()
     race_cases()
     receipt_cases()
+    argv_cases()
     expect_head_cases()
 
     print()

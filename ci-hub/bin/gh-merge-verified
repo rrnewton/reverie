@@ -295,6 +295,50 @@ def looks_unreachable(text: str) -> bool:
     )
 
 
+def parse_options(argv: list[str]):
+    """Split this tool's own options from the `gh pr merge` passthrough.
+
+    ⚠️ POSITION MUST NOT MATTER FOR A FLAG THIS TOOL OWNS, AND A FLAG MUST NEVER BE
+    LOST. Both halves are measured failures, not hypotheticals.
+
+    The separator used to REPLACE the accumulated passthrough
+    (`extra = argv[i+1:]`) rather than extend it, so anything collected before `--`
+    was silently discarded. On a real landing that dropped `--expect-head <sha>`:
+    the invoked copy predated the flag, so it fell through to the passthrough, and
+    `--` then overwrote it. The merge SUCCEEDED, `gh` saw valid flags, and the head
+    was never corroborated -- a guard reported as used that had not run.
+
+    Unrecognised flags before the separator are still FORWARDED to `gh`, and that
+    is deliberate: `gh-merge-verified <pr> --repo <r> --squash --delete-branch`
+    without any `--` is the documented and widely used form. Refusing them would
+    have caught the typo case at the cost of breaking every existing caller -- so
+    the ordering is made harmless rather than policed.
+    """
+    repo = "rrnewton/hermit"
+    verify_only = False
+    expect_head = None
+    receipt_path = None
+    extra: list[str] = []
+    i = 1
+    while i < len(argv):
+        arg = argv[i]
+        if arg == "--repo" and i + 1 < len(argv):
+            repo, i = argv[i + 1], i + 2
+        elif arg == "--verify-only":
+            verify_only, i = True, i + 1
+        elif arg == "--expect-head" and i + 1 < len(argv):
+            expect_head, i = argv[i + 1], i + 2
+        elif arg == "--receipt" and i + 1 < len(argv):
+            receipt_path, i = argv[i + 1], i + 2
+        elif arg == "--":
+            extra.extend(argv[i + 1 :])
+            i = len(argv)
+        else:
+            extra.append(arg)
+            i += 1
+    return repo, verify_only, expect_head, receipt_path, extra
+
+
 def main() -> None:
     atexit.register(cleanup_scratch)
     argv = sys.argv[1:]
@@ -305,26 +349,7 @@ def main() -> None:
     if not pr.isdigit():
         die(1, f"gh-merge-verified: first argument must be a pull request number, got {pr!r}")
 
-    repo = "rrnewton/hermit"
-    verify_only = False
-    expect_head = None
-    receipt_path = None
-    extra: list[str] = []
-    i = 1
-    while i < len(argv):
-        if argv[i] == "--repo" and i + 1 < len(argv):
-            repo, i = argv[i + 1], i + 2
-        elif argv[i] == "--verify-only":
-            verify_only, i = True, i + 1
-        elif argv[i] == "--expect-head" and i + 1 < len(argv):
-            expect_head, i = argv[i + 1], i + 2
-        elif argv[i] == "--receipt" and i + 1 < len(argv):
-            receipt_path, i = argv[i + 1], i + 2
-        elif argv[i] == "--":
-            extra, i = argv[i + 1 :], len(argv)
-        else:
-            extra.append(argv[i])
-            i += 1
+    repo, verify_only, expect_head, receipt_path, extra = parse_options(argv)
 
     # TEST-ONLY ESCAPE HATCH. The self-test needs to drive this against fixture
     # repositories on disk, because a verifier that has only ever been run
