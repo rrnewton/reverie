@@ -218,6 +218,12 @@ def github_actions_enabled(repo: str) -> bool:
     return enabled
 
 
+# Leading block-level markdown that can precede an otherwise-whole-line verdict:
+# ATX headings, blockquotes, and unordered-list bullets. Bullet forms require the
+# trailing space so that `*emphasis*` is left to `undecorate`'s paired handling.
+_BLOCK_PREFIX = re.compile(r"^(?:#{1,6}\s+|>\s*|[-+*]\s+)")
+
+
 def lane_shas(
     comments: list[dict[str, Any]],
     lane: str,
@@ -292,6 +298,40 @@ def lane_shas(
             else:
                 return line
 
+    def undecorate_block(line: str) -> str:
+        """`undecorate`, plus LEADING block-level markdown: ``##``, ``>``, ``-``.
+
+        WHY THIS CANNOT MANUFACTURE A FALSE POSITIVE, which is the only reason
+        it is safe to strip more: removing a prefix does not decide anything.
+        After stripping, the strict grammar still has to match the whole
+        remaining line -- keyword, colon, lane, and a 40-hex, anchored at both
+        ends. There is no string that becomes a verdict by having ``##``
+        removed from it that was not already a verdict wearing a hat. Stripping
+        can only ever move a line from "unparsed" to "parsed as exactly what it
+        says"; it can never change what a parsed line says.
+
+        The converse is what made this necessary. `undecorate` handled paired
+        emphasis but not block-level prefixes, so a verdict written as a
+        Markdown heading fell through to silence -- and silence is not neutral
+        here. A lost APPROVED-AT reads as ABSENT (no authority granted, safe); a
+        lost CHANGES-REQUESTED-AT leaves the lane's EARLIER approval standing as
+        the newest binding, so the tool reports the lane SATISFIED while a live
+        exact-head refusal sits unparsed on the same pull request. Same cause,
+        opposite consequences, and only one of them is safe.
+
+        Measured on https://github.com/rrnewton/hermit/pull/2176: a Claude-lane
+        refusal posted as ``## CHANGES-REQUESTED-AT: claude b3ca4e15...`` did
+        not bind, and the 18:15Z approval at that same head stayed authoritative
+        for twelve days. That is the mechanism behind
+        https://github.com/rrnewton/hermit/pull/2591 merging over a valid block.
+        """
+        prev = None
+        while prev != line:
+            prev = line
+            line = _BLOCK_PREFIX.sub("", line.strip())
+            line = undecorate(line)
+        return line
+
     reject_legacy = re.compile(
         r"^REQUEST\s+CHANGES\s+AT\s+[0-9a-f]{40}$", re.IGNORECASE
     )
@@ -315,7 +355,10 @@ def lane_shas(
     found: list[str] = []
     for c in comments:
         body = c.get("body") or ""
-        lines = [undecorate(l) for l in body.split("\n")]
+        # Match on the block-normalised form. Stripping a leading marker cannot
+        # invent a verdict -- the anchored grammar still has to match afterwards --
+        # and refusing to strip it is what let a heading-formatted refusal fail open.
+        lines = [undecorate_block(l) for l in body.split("\n")]
         # A rejection contributes NOTHING, even if the same comment also carries
         # an APPROVED-AT-shaped line -- a comment quoting the convention, or
         # quoting the approval it supersedes, must not bind as a positive.
@@ -933,9 +976,89 @@ def main() -> int:
             file=sys.stderr,
         )
         return 1
-    if a.gate and malformed:
+    # SPLIT THE MALFORMED BUCKET BY POLARITY, because the two halves fail in
+    # opposite directions and only one of them is safe to advise on.
+    #
+    # An unparseable APPROVAL-shaped line (`APPROVE <sha>`, `LGTM <sha>`) cannot
+    # be a refusal, so it cannot hide one. It stays an ADVISORY: this file's
+    # long-standing and separately bracketed policy is that historical syntax
+    # debt must not turn a valid canonical BOUND_CURRENT authority into absence,
+    # and blocking on it would make every old comment a permanent gate failure.
+    #
+    # An unparseable REFUSAL-shaped line is the opposite case and must REFUSE.
+    # If it does not parse, the lane's newest parsed binding is whatever came
+    # before it -- typically an approval -- so the gate reports SATISFIED for a
+    # head a reviewer has explicitly refused. That is the mechanism behind
+    # https://github.com/rrnewton/hermit/pull/2591 merging over a valid block,
+    # and it is why "not proof that authority is absent" is beside the point: it
+    # is not proof that authority is PRESENT either, and the gate must choose.
+    # Failing closed here is wrong only in the cheap direction -- a re-post.
+    #
+    # Most such lines now parse anyway, because `undecorate_block` strips the
+    # block-level markdown that hid them. This is the backstop for the forms
+    # that convention has not anticipated yet.
+    refusalish = re.compile(
+        r"CHANGES[-\s]?REQUESTED|REQUEST\s+CHANGES|REJECT", re.IGNORECASE
+    )
+    malformed_refusals = [f for f in malformed if refusalish.search(f[1])]
+    malformed_approvals = [f for f in malformed if not refusalish.search(f[1])]
+
+    # A MARKER-SHAPED LINE THAT DOES NOT PARSE IS AN ERROR, NOT A SILENCE.
+    # It used to be an advisory returning 0, on the reasoning that "malformed
+    # syntax is not itself proof that label authority is absent". True, and
+    # beside the point: it is not proof that authority is PRESENT either, and
+    # the gate has to choose. Silence is the one answer that is wrong in both
+    # directions at once.
+    #
+    # THREE CASES, because they are genuinely different and only two are unsafe:
+    #
+    #  1. REFUSAL-shaped and unparseable -> ALWAYS REFUSE. Unparsed, it leaves
+    #     the lane's EARLIER approval standing as the newest binding, so the
+    #     gate reports SATISFIED for a head somebody explicitly blocked. This is
+    #     the mechanism behind
+    #     https://github.com/rrnewton/hermit/pull/2591 merging over a valid
+    #     block. Note it is never redundant with an approval, so the exemption
+    #     below must not reach it.
+    #
+    #  2. APPROVAL-shaped and unparseable, while some lane's authority is
+    #     ABSENT -> REFUSE. The unparsed line may BE that missing approval; a
+    #     lane lost to formatting rather than to disagreement is the other half
+    #     of the same defect. Refusing forces a re-post, which recovers it.
+    #
+    #  3. APPROVAL-shaped and unparseable, with every inspected label already
+    #     bound to the current head -> ADVISORY. Here nothing is lost: the
+    #     canonical binding is present and the malformed line is redundant
+    #     syntax debt, typically a historical `APPROVE <sha>` synonym sitting in
+    #     the same comment as its own canonical form (the #1847 shape). Failing
+    #     here would block genuinely-approved heads on an old comment's wording
+    #     and make the gate ignorable, which is a worse outcome than the debt.
+    if a.gate and malformed_refusals:
+        for _where, line in malformed_refusals:
+            print(f"  unparseable refusal-shaped line: {line}", file=sys.stderr)
         print(
-            f"GATE ADVISORY: {len(malformed)} malformed source line(s) need syntax cleanup, "
+            f"GATE FAIL: {len(malformed_refusals)} refusal-shaped line(s) could not be parsed. "
+            "An unparseable refusal is REFUSED, never ignored: unparsed, it leaves this "
+            "lane's earlier approval standing as the newest binding, so the gate would "
+            "pass a head somebody has explicitly blocked. Repost in the exact grammar "
+            "'CHANGES-REQUESTED-AT: <claude|codex> <40-hex>', then re-run.",
+            file=sys.stderr,
+        )
+        return 1
+    if a.gate and malformed_approvals and bad:
+        for _where, line in malformed_approvals:
+            print(f"  unparseable approval-shaped line: {line}", file=sys.stderr)
+        print(
+            f"GATE FAIL: {len(malformed_approvals)} approval-shaped line(s) could not be parsed "
+            f"while {len(bad)} label(s) lack authority at the current head. The unparsed line "
+            "may be the missing approval -- a lane lost to formatting rather than to "
+            "disagreement. Repost in the exact grammar "
+            "'APPROVED-AT: <claude|codex> <40-hex>', then re-run.",
+            file=sys.stderr,
+        )
+        return 1
+    if a.gate and malformed_approvals:
+        print(
+            f"GATE ADVISORY: {len(malformed_approvals)} malformed source line(s) need syntax cleanup, "
             "but malformed syntax is not itself proof that label authority is absent.",
             file=sys.stderr,
         )
