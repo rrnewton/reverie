@@ -383,6 +383,27 @@ eligibility_base=$(git -C "$WT" rev-parse --verify origin/main) \
   || abandon "cannot resolve current main for validation landability" 4
 VS=$(validation_landability "$ORIG" "$eligibility_base" --json 2>&1); VRC=$?
 say "validation landability(head=$ORIG) rc=$VRC: $VS"
+# ⚠️ "NO REBASE RECORD" AT THE *PRE*-CHECK IS A MISSING PRECONDITION, NOT A REFUSAL.
+# The record is created by step 2's wrapper-managed rebase, which has not run yet.
+# A head rebased by hand therefore fails this check for a condition the lander is
+# about to satisfy itself -- measured on
+# https://github.com/rrnewton/hermit/pull/2512, which abandoned rc=2 with
+# "no rebase record for result fd994268a31e" before the merge step existed.
+#
+# THIS DOES NOT WEAKEN THE GATE, and the reason is structural rather than a
+# judgement call: the post-push re-authorize below is UNCONDITIONAL and abandons on
+# any non-zero, so every fact this pre-check would have established is established
+# there against the head actually being merged -- which is the better subject
+# anyway, since step 2 rewrites the sha.
+#
+# ⚠️ BUT ONLY WHEN STEP 2 WILL RUN. Under --no-rebase step 2 is skipped, so this
+# pre-check IS the only gate and must keep refusing. Relaxing it there would be the
+# gate ceasing to refuse because it ceased to look.
+if [ "$VRC" -ne 0 ] && [ "$NO_REBASE" -eq 0 ] \
+   && grep -q "no rebase record for result" <<<"$VS"; then
+  say "pre-check: no rebase record yet for $ORIG -- step 2 creates it; deferring to the post-push re-authorize"
+  VRC=0
+fi
 # JUST-IN-TIME PR-HEAD CI. A prepared, reviewed head whose exact commit has no
 # accepted verdict gets one run through the same centralized producer as every
 # other qualifying receipt. Do not validate a stale base: the producer would
@@ -411,7 +432,23 @@ if [ "$VRC" -ne 0 ]; then
     VS=$(validation_landability "$ORIG" "$eligibility_base" --json 2>&1); VRC=$?
     say "post-JIT validation landability(head=$ORIG) rc=$VRC: $VS"
   elif [ "$existing_rc" -eq 4 ]; then
-    say "just-in-time exact-head CI not admitted: PR head lacks current origin/main; rebase before VALIDATE"
+    # ⚠️ SAY WHICH OF THE TWO CONDITIONS ACTUALLY HELD. This branch is reached when
+    # `merge-base --is-ancestor` did not succeed, and that has TWO causes: the head
+    # genuinely does not contain current main, or the ancestry check itself could
+    # not run (a sha not present locally makes git exit non-zero, which `&&` cannot
+    # distinguish from "not an ancestor").
+    #
+    # Measured on https://github.com/rrnewton/hermit/pull/2512: the operator was
+    # told "PR head lacks current origin/main; rebase before VALIDATE" on a run
+    # whose actual failure was a 120-second TimeoutExpired in the authority script.
+    # Advising a rebase for a timeout sends the next person to fix the wrong thing,
+    # which is the diagnostic class this project has now hit repeatedly.
+    if git -C "$WT" rev-parse --verify --quiet "$ORIG^{commit}" >/dev/null \
+       && git -C "$WT" rev-parse --verify --quiet "$eligibility_base^{commit}" >/dev/null; then
+      say "just-in-time exact-head CI not admitted: PR head does not contain current origin/main (base=$eligibility_base); rebase before VALIDATE"
+    else
+      say "just-in-time exact-head CI not admitted: could not compare PR head $ORIG against current origin/main $eligibility_base -- one of them is not present locally. This is NOT a statement that the head needs rebasing."
+    fi
   else
     say "just-in-time exact-head CI not admitted: canonical exact-head status rc=$existing_rc: $existing_status"
   fi

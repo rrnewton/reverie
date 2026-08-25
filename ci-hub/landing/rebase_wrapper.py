@@ -131,8 +131,32 @@ EXIT_OK = 0
 EXIT_REFUSED = 2
 EXIT_ERROR = 3
 
-LOCAL_TIMEOUT = 30.0
-NETWORK_TIMEOUT = 120.0
+# Subprocess budgets. OVERRIDABLE, because a fixed budget on a shared box is a
+# refusal waiting for load rather than a check.
+#
+# ⚠️ MEASURED: on https://github.com/rrnewton/hermit/pull/2512 the exact-head
+# authority exceeded the 120s network budget and the lander abandoned with a raw
+# TimeoutExpired traceback at rc=1. The same script timed at 43.9s directly on an
+# unloaded box, so the budget is not generous, it is load-dependent -- and a
+# landing path that fails when the machine is busy fails exactly when several
+# agents are landing, which is when it is most needed.
+#
+# Named and env-overridable so the next person raising them edits one place and
+# does not have to patch the file, and so the timeout message can quote the budget
+# it actually used.
+def _budget(name: str, default: float) -> float:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        return default
+    return value if value > 0 else default
+
+
+LOCAL_TIMEOUT = _budget("REBASE_WRAPPER_LOCAL_TIMEOUT_S", 30.0)
+NETWORK_TIMEOUT = _budget("REBASE_WRAPPER_NETWORK_TIMEOUT_S", 300.0)
 
 DEFAULT_CHECKOUT = gate_floors.DEFAULT_CHECKOUT
 DEFAULT_REGISTRY = gate_floors.DEFAULT_REGISTRY
@@ -226,9 +250,31 @@ class Refused(Exception):
 
 
 def _run(cmd: list[str], *, cwd: str | None = None,
-         timeout: float = LOCAL_TIMEOUT) -> subprocess.CompletedProcess:
-    return subprocess.run(cmd, cwd=cwd, capture_output=True, text=True,
-                          timeout=timeout)
+         timeout: float | None = None) -> subprocess.CompletedProcess:
+    """Run a command under a budget, reporting an overrun as an ERROR.
+
+    ⚠️ A TIMEOUT IS A `RebaseError`, NOT A BARE TRACEBACK. This file's contract
+    says a tool failure is an ERROR (exit 3) and a REFUSE is exit 2, but an
+    uncaught `TimeoutExpired` propagated out as a Python traceback the lander
+    logged verbatim and reported as rc=1 -- neither of the two, and unreadable.
+    Worse, the caller then printed advice about rebasing, because a non-zero it
+    could not classify fell through to the nearest plausible cause.
+
+    Naming the budget in the message matters: "timed out after 300s" is
+    actionable (raise it, or find why the authority is slow) in a way that a
+    stack ending in `_check_timeout` is not.
+    """
+    budget = LOCAL_TIMEOUT if timeout is None else timeout
+    try:
+        return subprocess.run(cmd, cwd=cwd, capture_output=True, text=True,
+                              timeout=budget)
+    except subprocess.TimeoutExpired as err:
+        raise RebaseError(
+            f"timed out after {budget:g}s running: {' '.join(cmd[:3])}"
+            f"{' …' if len(cmd) > 3 else ''}. This is a BUDGET overrun, not a "
+            f"verdict about the head. Raise REBASE_WRAPPER_NETWORK_TIMEOUT_S / "
+            f"REBASE_WRAPPER_LOCAL_TIMEOUT_S, or find why it is slow."
+        ) from err
 
 
 def _short(sha: str) -> str:
