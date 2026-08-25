@@ -207,10 +207,42 @@ if [ -n "$me" ]; then
     esac
 fi
 
+# ⚠️ RULE 4: THE STORAGE LAYER INTERPRETS BACKSLASH ESCAPES, SO ENCODE FOR IT.
+# The parent CLAUDE.md states that `tg note` stores text byte-identically and
+# lists `$(...)`, backticks, `$VAR`, `${BRACE}` and mixed quotes as verified.
+# Backslashes are NOT in that list and are NOT preserved. Measured 2026-08-25,
+# passing content straight through:
+#
+#     authored            stored
+#     \\        (2 chars) \          (1 char)   -- a doubled backslash collapses
+#     \n        (2 chars) <newline>             -- the escape is executed
+#     \t        (2 chars) <tab>                 -- likewise
+#     \r \x41 \b \d \s \w \.         unchanged  -- only \\, \n, \t are interpreted
+#
+# Found by agent(hermit-006) writing a note that EXPLAINED a regex double-escaping
+# bug; the storage ate the very backslash the explanation was about, and the
+# sentence stayed grammatical and stopped being true.
+#
+# THE ENCODING IS EXACT, NOT A HEURISTIC. Every literal backslash is doubled, so
+# each one arrives as `\\` and is un-escaped back to a single `\`; a `\n` in the
+# source arrives as `\\n` and is stored as the two characters `\` and `n`. Because
+# the interpreted set is exactly {`\\`, `\n`, `\t`} and all three begin with a
+# backslash, doubling every backslash makes every sequence literal -- there is no
+# sequence this misses. Verified by byte-identical round trip of a probe carrying
+# doubled backslashes, `\n`, `\t`, a Windows path and two regexes.
+#
+# ⚠️ AND THE COMPARISON BELOW IS UNAFFECTED BY THIS ENCODING, DELIBERATELY. It
+# compares the READ-BACK against "$input" -- the caller's ORIGINAL bytes on disk --
+# not against `$encoded`. If a future tg changed its escape handling, the encoding
+# would be wrong and the read-back check would catch it and refuse, rather than
+# both sides carrying the same distortion and agreeing. The encoder is an
+# optimisation of the success path; the proof of correctness is still the file.
+encoded=${content//\\/\\\\}
+
 # TG_NOTE_VERIFIED tells the shared shell guard that this call came through the
 # verified path. The guard refuses inline note content everywhere else, because
 # a safe call and a shell-mangled one are indistinguishable by then.
-out=$(TG_NOTE_VERIFIED=1 command tg note "$task" "$content" 2>&1); rc=$?
+out=$(TG_NOTE_VERIFIED=1 command tg note "$task" "$encoded" 2>&1); rc=$?
 [ "$rc" -eq 0 ] || die "tg note failed (rc=$rc): $out"
 
 # Rule 2: the confirmation must reflect the STORE, not the call. Read it back.
