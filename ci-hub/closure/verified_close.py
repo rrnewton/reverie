@@ -339,7 +339,79 @@ def verify_code(
     return Evidence("unverifiable", "code", reference, resolved=resolved, reason=reason)
 
 
+# A GitHub comment permalink carries its whole payload in the FRAGMENT, and a
+# fragment is client-side: it is never sent to the server. So `curl --fail` on
+# .../pull/2623#issuecomment-<id> fetches the PULL REQUEST PAGE and returns 200
+# whatever the id is. Measured 2026-08-25 against one real id, one typo'd id and
+# the literal 99999999999 -- all three returned 200.
+#
+# ⚠️ THAT IS A CHECK THAT CANNOT FAIL FOR THE REASON IT NAMES. It confirms the PR
+# exists, which nobody doubted, while reporting that the COMMENT was verified. A
+# closure citing a comment that never existed, one since deleted, or one with a
+# transposed digit all recorded CLOSURE-VERIFIED. I did exactly that an hour
+# before writing this, and the byte-for-byte note verifier happily stored the
+# dead link because it verifies storage, not truth.
+_COMMENT_PERMALINK = re.compile(
+    r"^https?://github\.com/(?P<owner>[\w.-]+)/(?P<repo>[\w.-]+)/pull/(?P<pr>\d+)"
+    r"#(?P<kind>issuecomment|pullrequestreview|discussion_r)-?(?P<id>\d+)$",
+    re.IGNORECASE,
+)
+
+
+def _comment_endpoint(m: "re.Match[str]") -> str:
+    """The API path that can actually answer whether this anchor exists."""
+    slug = f"{m.group('owner')}/{m.group('repo')}"
+    kind = m.group("kind").lower()
+    ident = m.group("id")
+    if kind == "issuecomment":
+        return f"repos/{slug}/issues/comments/{ident}"
+    if kind == "pullrequestreview":
+        return f"repos/{slug}/pulls/{m.group('pr')}/reviews/{ident}"
+    return f"repos/{slug}/pulls/comments/{ident}"
+
+
+def verify_comment_permalink(reference: str, *, run: Run = _run) -> Evidence | None:
+    """Resolve a comment anchor via the API. None if this is not one.
+
+    THREE OUTCOMES, AND THE THIRD IS NOT A PASS:
+      the comment resolves          -> verified
+      the API says 404              -> REFUSED. The link points at nothing, and a
+                                       citation that points at nothing is the
+                                       absence of evidence, not a weaker form of
+                                       it.
+      the API could not be asked    -> unverifiable, i.e. could-not-determine.
+                                       Distinct from 404 on purpose: "no such
+                                       comment" and "I could not look" demand
+                                       opposite reactions, and collapsing them is
+                                       the defect this module exists to remove.
+    """
+    m = _COMMENT_PERMALINK.match(reference.strip())
+    if m is None:
+        return None
+    result = run(("with-proxy", "gh", "api", _comment_endpoint(m), "--jq", ".id"), cwd=ROOT)
+    if result.returncode == 0 and (result.stdout or "").strip():
+        return Evidence("verified", "artifact", reference,
+                        resolved=f"{_comment_endpoint(m)} -> {(result.stdout or '').strip()}")
+    blob = ((result.stderr or "") + (result.stdout or "")).lower()
+    if "not found" in blob or "404" in blob:
+        return Evidence(
+            "refused", "artifact", reference,
+            reason=("the cited comment does not exist. `curl` cannot see this because a "
+                    "URL fragment is never sent to the server. Remedy: post the verdict "
+                    "and cite the id the API returns."),
+        )
+    return Evidence(
+        "unverifiable", "artifact", reference,
+        reason=("could not ask GitHub whether the cited comment exists: "
+                + ((result.stderr or "").strip()[:120] or "no detail")
+                + ". This is NOT a pass; retry when the API is reachable."),
+    )
+
+
 def verify_artifact(reference: str, *, run: Run = _run) -> Evidence:
+    anchored = verify_comment_permalink(reference, run=run)
+    if anchored is not None:
+        return anchored
     if reference.startswith(("https://", "http://")):
         result = run(
             (

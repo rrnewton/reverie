@@ -916,5 +916,77 @@ class SupersededClosesALandedThenReplacedRow(unittest.TestCase):
 # test_lossy_reconcile_is_REFUSED_by_the_closure_gateway, the consumer-level proof that
 # CONTENT-LOST actually refuses a closure. It passed as a module and was never run as a
 # script, which is the shape of a check that exists and does not fire.
+class CommentPermalinkResolution(unittest.TestCase):
+    """A comment permalink must be RESOLVED, not merely fetched.
+
+    ⚠️ THE FRAGMENT IS THE WHOLE PAYLOAD AND `curl` CANNOT SEE IT. A URL fragment
+    is never sent to the server, so `curl --fail` on
+    .../pull/2623#issuecomment-<id> retrieves the PULL REQUEST PAGE and returns
+    200 for ANY id. Measured against a real id, a typo'd id, and the literal
+    99999999999 -- all three 200. The check confirmed the pull request existed,
+    which nobody doubted, while reporting that the COMMENT was verified.
+    """
+
+    URL = "https://github.com/rrnewton/hermit/pull/2623#issuecomment-5416878194"
+
+    @staticmethod
+    def _run(rc, out="", err=""):
+        def run(cmd, cwd=None):
+            return subprocess.CompletedProcess(cmd, rc, out, err)
+        return run
+
+    def test_a_resolving_comment_verifies(self) -> None:
+        ev = verified_close.verify_comment_permalink(self.URL, run=self._run(0, "5416878194"))
+        self.assertEqual("verified", ev.state)
+
+    def test_a_comment_that_does_not_exist_is_REFUSED(self) -> None:
+        ev = verified_close.verify_comment_permalink(
+            self.URL, run=self._run(1, "", "gh: Not Found (HTTP 404)"))
+        self.assertEqual("refused", ev.state)
+        self.assertIn("does not exist", ev.reason)
+        self.assertIn("Remedy", ev.reason)
+
+    def test_could_not_ask_is_NOT_a_pass_and_NOT_a_404(self) -> None:
+        ev = verified_close.verify_comment_permalink(
+            self.URL, run=self._run(1, "", "dial tcp: network is unreachable"))
+        self.assertEqual("unverifiable", ev.state)
+        self.assertIn("NOT a pass", ev.reason)
+
+    def test_a_non_permalink_is_left_to_the_existing_path(self) -> None:
+        self.assertIsNone(verified_close.verify_comment_permalink(
+            "https://github.com/rrnewton/hermit/pull/2623", run=self._run(0)))
+
+    def test_the_resolver_is_WIRED_INTO_verify_artifact(self) -> None:
+        """⚠️ Every other test here calls the resolver DIRECTLY, so none of them
+        notice if `verify_artifact` stops calling it. Caught by mutation: replacing
+        the call with `anchored = None` -- reverting to the curl path that cannot
+        see a fragment -- left all of them green. This one enters at the real
+        entry point.
+        """
+        ev = verified_close.verify_artifact(self.URL, run=self._run(1, "", "gh: Not Found (HTTP 404)"))
+        self.assertEqual("refused", ev.state)
+        # curl would have said verified here; that is the whole regression.
+        self.assertNotEqual("verified", ev.state)
+
+    def test_verify_artifact_still_verifies_a_live_comment(self) -> None:
+        ev = verified_close.verify_artifact(self.URL, run=self._run(0, "5416878194"))
+        self.assertEqual("verified", ev.state)
+
+    def test_review_and_discussion_anchors_use_their_own_endpoints(self) -> None:
+        seen = {}
+
+        def run(cmd, cwd=None):
+            seen["ep"] = cmd[3]
+            return subprocess.CompletedProcess(cmd, 0, "1", "")
+
+        verified_close.verify_comment_permalink(
+            "https://github.com/o/r/pull/7#pullrequestreview-42", run=run)
+        self.assertEqual("repos/o/r/pulls/7/reviews/42", seen["ep"])
+        verified_close.verify_comment_permalink(
+            "https://github.com/o/r/pull/7#discussion_r99", run=run)
+        self.assertEqual("repos/o/r/pulls/comments/99", seen["ep"])
+
+
+
 if __name__ == "__main__":
     unittest.main()
