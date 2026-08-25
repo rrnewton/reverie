@@ -49,6 +49,7 @@ use crate::bootstrap::configure_process_syscall_return;
 use crate::bootstrap::set_user_segment_base;
 use crate::executor::ElfExecutor;
 use crate::executor::ProcessAction;
+use crate::executor::conventional_exit_code;
 
 const STACK_CAPACITY: usize = 4096;
 const TOOL_STACK_BOTTOM: u64 = TOOL_STACK_TOP - STACK_CAPACITY as u64;
@@ -1205,8 +1206,8 @@ impl KvmBackend {
         let global_state = Arc::try_unwrap(global_state).map_err(|_| {
             Error::UnexpectedVcpuExit("KVM child retained global Tool state after exit".to_owned())
         })?;
-        let (exit_code, stdout, stderr) = result;
-        Ok((global_state, exit_code, stdout, stderr))
+        let (status, stdout, stderr) = result;
+        Ok((global_state, conventional_exit_code(status), stdout, stderr))
     }
 
     // TODO-HUMAN-REVIEW(PR-192): Review recursive KVM process Tool runtime.
@@ -1222,7 +1223,7 @@ impl KvmBackend {
         config: &<T::GlobalState as GlobalTool>::Config,
         subscriptions: &Subscription,
         initial_post_exec: bool,
-    ) -> Result<(i32, Vec<u8>, Vec<u8>)>
+    ) -> Result<(ExitStatus, Vec<u8>, Vec<u8>)>
     where
         T: Tool + 'static,
         T::ThreadState: 'static,
@@ -1282,9 +1283,10 @@ impl KvmBackend {
         auxv = executor.auxv().to_vec();
         if let Some(exit) = executor.take_exit() {
             if exit.group {
-                self.request_guest_thread_group_exit(exit.code);
+                self.request_guest_thread_group_exit(exit.status);
             }
             self.cancel_guest_threads();
+            let status = self.guest_thread_group_exit_status().unwrap_or(exit.status);
             notify_tool_exit(
                 tool,
                 pid,
@@ -1292,11 +1294,11 @@ impl KvmBackend {
                 global_state.as_ref(),
                 config,
                 thread_state,
-                ExitStatus::Exited(exit.code),
+                status,
             )
             .await?;
             let (stdout, stderr) = executor.take_output();
-            return Ok((exit.code, stdout, stderr));
+            return Ok((status, stdout, stderr));
         }
 
         if initial_post_exec {
@@ -1324,9 +1326,10 @@ impl KvmBackend {
                 auxv = executor.auxv().to_vec();
                 if let Some(exit) = executor.take_exit() {
                     if exit.group {
-                        self.request_guest_thread_group_exit(exit.code);
+                        self.request_guest_thread_group_exit(exit.status);
                     }
                     self.cancel_guest_threads();
+                    let status = self.guest_thread_group_exit_status().unwrap_or(exit.status);
                     notify_tool_exit(
                         tool,
                         pid,
@@ -1334,11 +1337,11 @@ impl KvmBackend {
                         global_state.as_ref(),
                         config,
                         thread_state,
-                        ExitStatus::Exited(exit.code),
+                        status,
                     )
                     .await?;
                     let (stdout, stderr) = executor.take_output();
-                    return Ok((exit.code, stdout, stderr));
+                    return Ok((status, stdout, stderr));
                 }
             }
             let post_exec_error = run_post_exec_handler(
@@ -1376,9 +1379,10 @@ impl KvmBackend {
         }
         if let Some(exit) = executor.take_exit() {
             if exit.group {
-                self.request_guest_thread_group_exit(exit.code);
+                self.request_guest_thread_group_exit(exit.status);
             }
             self.cancel_guest_threads();
+            let status = self.guest_thread_group_exit_status().unwrap_or(exit.status);
             notify_tool_exit(
                 tool,
                 pid,
@@ -1386,18 +1390,18 @@ impl KvmBackend {
                 global_state.as_ref(),
                 config,
                 thread_state,
-                ExitStatus::Exited(exit.code),
+                status,
             )
             .await?;
             let (stdout, stderr) = executor.take_output();
-            return Ok((exit.code, stdout, stderr));
+            return Ok((status, stdout, stderr));
         }
 
         // Read once so the per-syscall classifier can borrow it while `self` is
         // borrowed elsewhere in the loop body.
         let thread_ownership = self.thread_ownership;
         loop {
-            if let Some(code) = self.guest_thread_group_exit_code() {
+            if let Some(status) = self.guest_thread_group_exit_status() {
                 self.cancel_guest_threads();
                 notify_tool_exit(
                     tool,
@@ -1406,11 +1410,11 @@ impl KvmBackend {
                     global_state.as_ref(),
                     config,
                     thread_state,
-                    ExitStatus::Exited(code),
+                    status,
                 )
                 .await?;
                 let (stdout, stderr) = executor.take_output();
-                return Ok((code, stdout, stderr));
+                return Ok((status, stdout, stderr));
             }
             let vcpu_exit = match self.vcpu.run() {
                 Ok(exit) => exit,
@@ -1460,65 +1464,80 @@ impl KvmBackend {
                     .iter_syscalls()
                     .any(|number| number == syscall.number());
             let (result, handler_replaced_image, handler_process_completed) = if subscribed {
-                let handler_signal = Arc::new(Mutex::new(None));
-                let pending_child_starts = Arc::new(Mutex::new(Vec::new()));
-                let mut handler_process_completed = false;
-                expose_tool_scratch(&memory)?;
-                let outcome = {
-                    let mut guest_executor = StaticElfSyscallExecutor {
-                        backend: self,
-                        executor,
-                        memory: memory.clone(),
-                        process_context: ProcessExecutionContext::SyscallBoundary(
-                            ProcessBoundary {
-                                frame_address,
-                                return_slot,
-                            },
-                        ),
-                        last_result: None,
-                        process_completed: &mut handler_process_completed,
+                // Detcore uses the kernel-private ERESTARTSYS value to ask the
+                // backend to repeat an internally polled blocking syscall. The
+                // ptrace backend has a kernel restart frame; KVM writes results
+                // directly into the guest frame, so it must repeat the Tool
+                // callback here rather than expose errno 512 to userspace.
+                loop {
+                    let handler_signal = Arc::new(Mutex::new(None));
+                    let pending_child_starts = Arc::new(Mutex::new(Vec::new()));
+                    let mut handler_process_completed = false;
+                    expose_tool_scratch(&memory)?;
+                    let outcome = {
+                        let mut guest_executor = StaticElfSyscallExecutor {
+                            backend: self,
+                            executor,
+                            memory: memory.clone(),
+                            process_context: ProcessExecutionContext::SyscallBoundary(
+                                ProcessBoundary {
+                                    frame_address,
+                                    return_slot,
+                                },
+                            ),
+                            last_result: None,
+                            process_completed: &mut handler_process_completed,
+                        };
+                        let mut guest = KvmGuest::<T>::new(
+                            pid,
+                            tid,
+                            memory.clone(),
+                            &auxv,
+                            kvm_registers(registers, request.number()),
+                            &mut thread_state,
+                            &mut guest_executor,
+                            global_state.as_ref(),
+                            Some(global_state.clone()),
+                            config,
+                            subscriptions,
+                            handler_signal.clone(),
+                            pending_child_starts.clone(),
+                            stack_checked_out.clone(),
+                        );
+                        drive_handler(
+                            tool.handle_syscall_event(&mut guest, syscall),
+                            handler_signal,
+                            pending_child_starts,
+                        )
+                        .await
                     };
-                    let mut guest = KvmGuest::<T>::new(
-                        pid,
-                        tid,
-                        memory.clone(),
-                        &auxv,
-                        kvm_registers(registers, request.number()),
-                        &mut thread_state,
-                        &mut guest_executor,
-                        global_state.as_ref(),
-                        Some(global_state.clone()),
-                        config,
-                        subscriptions,
-                        handler_signal.clone(),
-                        pending_child_starts.clone(),
-                        stack_checked_out.clone(),
-                    );
-                    drive_handler(
-                        tool.handle_syscall_event(&mut guest, syscall),
-                        handler_signal,
-                        pending_child_starts,
-                    )
-                    .await
-                };
-                executor.start_pending_child_processes()?;
-                hide_tool_scratch(&memory)?;
-                match outcome {
-                    HandlerOutcome::Returned(result) => (
-                        handler_result_to_raw(result)?,
-                        false,
-                        handler_process_completed,
-                    ),
-                    HandlerOutcome::TailInjected {
-                        result,
-                        image_replaced,
-                        ..
-                    } => (
-                        result_to_raw(result),
-                        image_replaced,
-                        handler_process_completed,
-                    ),
-                    HandlerOutcome::RuntimeError(error) => return Err(error),
+                    executor.start_pending_child_processes()?;
+                    hide_tool_scratch(&memory)?;
+                    let outcome = match outcome {
+                        HandlerOutcome::Returned(Err(error)) => match error.into_errno() {
+                            Ok(Errno::ERESTARTSYS) => continue,
+                            Ok(errno) => HandlerOutcome::Returned(Err(errno.into())),
+                            Err(error) => HandlerOutcome::Returned(Err(error)),
+                        },
+                        other => other,
+                    };
+                    break match outcome {
+                        HandlerOutcome::Returned(result) => (
+                            handler_result_to_raw(result)?,
+                            false,
+                            handler_process_completed,
+                        ),
+                        HandlerOutcome::TailInjected {
+                            result,
+                            image_replaced,
+                            ..
+                        } => (
+                            result_to_raw(result),
+                            image_replaced,
+                            handler_process_completed,
+                        ),
+                        HandlerOutcome::RuntimeError(error) => return Err(error),
+                    };
                 }
             } else {
                 (executor.execute(&request, &memory), false, false)
@@ -1601,9 +1620,10 @@ impl KvmBackend {
             if let Some(exit) = pending_exit {
                 executor.join_all_child_processes()?;
                 if exit.group {
-                    self.request_guest_thread_group_exit(exit.code);
+                    self.request_guest_thread_group_exit(exit.status);
                 }
                 self.cancel_guest_threads();
+                let status = self.guest_thread_group_exit_status().unwrap_or(exit.status);
                 notify_tool_exit(
                     tool,
                     pid,
@@ -1611,11 +1631,11 @@ impl KvmBackend {
                     global_state.as_ref(),
                     config,
                     thread_state,
-                    ExitStatus::Exited(exit.code),
+                    status,
                 )
                 .await?;
                 let (stdout, stderr) = executor.take_output();
-                return Ok((exit.code, stdout, stderr));
+                return Ok((status, stdout, stderr));
             }
         }
     }
