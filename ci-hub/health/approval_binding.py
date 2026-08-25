@@ -682,6 +682,7 @@ def lane_shas(
     malformed: list[tuple[str, str]] | None = None,
     pr_number: int | None = None,
     malformed_prs: dict[tuple[str, str], int] | None = None,
+    citations: list[tuple[str, str]] | None = None,
 ) -> list[str]:
     """SHAs a lane EXPLICITLY bound itself to, oldest first. Never inferred.
 
@@ -805,13 +806,27 @@ def lane_shas(
     # a false positive cost a re-post; a false negative loses a refusal.
     suspect = re.compile(
         r"(?:APPROV|CHANGES-REQUESTED|REQUEST\s+CHANGES|REJECT|LGTM|SIGN(?:ED)?[-\s]?OFF|ACK)"
-        r"[^\n]*\b[0-9a-f]{40}\b",
+        # ⚠️ 7-40, NOT 40. Requiring a FULL sha gave the net the same blind spot as
+        # the grammar it is netting -- the exact mistake this regex's own docstring
+        # records fixing for the ANCHORING axis, left in place on the LENGTH axis.
+        # `APPROVED-AT: claude 6457ba0acfb4` -- canonical form, own line, correct
+        # lane, merely ABBREVIATED -- bound nothing and reported nothing, so a real
+        # review was lost and nobody was told. Abbreviated shas are how these
+        # markers are written in prose all day. Over-matching is safe here by
+        # construction: this net only routes a line to `malformed`, and a citation
+        # is filtered out before it gets there.
+        r"[^\n]*\b[0-9a-f]{7,40}\b",
         re.IGNORECASE,
     )
 
     found: list[str] = []
+    # (author, kind, lane, sha) already accepted from THIS comment stream, oldest
+    # first. A verdict is issued once; a later copy of the same author's verdict is
+    # a CITATION and must neither bind nor be reported as a malformed attempt.
+    issued: list[tuple[str | None, str, str | None, str | None]] = []
     for c in comments:
         body = c.get("body") or ""
+        author = comment_author(body)
         # Match on the block-normalised form. Stripping a leading marker cannot
         # invent a verdict -- the anchored grammar still has to match afterwards --
         # and refusing to strip it is what let a heading-formatted refusal fail open.
@@ -883,6 +898,24 @@ def lane_shas(
                     and not reject_legacy.match(line)
                     and not reject_current.match(line)
                 ):
+                    # A CITATION IS NOT A FAILED ATTEMPT AT A VERDICT, so it is
+                    # not malformed either. Without this, widening the net above
+                    # to abbreviated shas would report every sentence quoting a
+                    # marker -- and a malformed REFUSAL-shaped line BLOCKS, so it
+                    # would manufacture blocks out of people explaining a refusal.
+                    _sha_m = re.search(r"\b([0-9a-f]{7,40})\b", line)
+                    _lane_m = re.search(r"\b(claude|codex)\b", line, re.I)
+                    _kind = (MARKER_REFUSED if refusal_shaped(line) or "CHANGES-REQUESTED" in line.upper()
+                             else MARKER_APPROVED)
+                    if is_citation(
+                        issued, author, _kind,
+                        _lane_m.group(1).lower() if _lane_m else None,
+                        _sha_m.group(1) if _sha_m else None,
+                    ):
+                        if citations is not None:
+                            citations.append((c.get("html_url") or c.get("url") or "?",
+                                              line[:120]))
+                        continue
                     finding = (
                         c.get("html_url") or c.get("url") or "?",
                         line[:120],
@@ -896,6 +929,17 @@ def lane_shas(
                         malformed_prs[finding] = pr_number
                 continue
             explicit_lane, sha = binding
+            # ⚠️ QUOTING AN APPROVAL MUST NOT GRANT ONE. A whole-line quotation is
+            # undecorated into a bare marker -- a leading backtick is stripped as
+            # decoration -- so `APPROVED-AT: claude <sha>` in backticks BOUND a
+            # lane nobody had granted at that moment. Formatting cannot say who is
+            # speaking; the issuer can.
+            if is_citation(issued, author, MARKER_APPROVED, explicit_lane.lower(), sha):
+                if citations is not None:
+                    citations.append((c.get("html_url") or c.get("url") or "?",
+                                      line[:120]))
+                continue
+            issued.append((author, MARKER_APPROVED, explicit_lane.lower(), sha))
             if explicit_lane.lower() == lane:
                 found.append(sha)
     return found

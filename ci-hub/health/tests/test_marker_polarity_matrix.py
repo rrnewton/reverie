@@ -102,20 +102,29 @@ PROSE = {
 EXPECTED = {
     ("CANONICAL_FULL", "APPROVED-AT"): "BINDS",
     ("CANONICAL_FULL", "CHANGES-REQUESTED-AT"): "REFUSES(claude," + FULL + ")",
-    # DEFECT an_inline_code_approved: a correctly written approval, merely
-    # abbreviated, is lost with nobody told. Operationally the worst of the three.
-    ("CANONICAL_SHORT", "APPROVED-AT"): "SILENT",
+    # FIXED: the loudness net demanded a FULL 40-hex, so a correctly written
+    # approval that merely ABBREVIATED its sha bound nothing and reported nothing --
+    # a real review lost with nobody told. The net now accepts 7-40 and this is
+    # LOUD. It still does not BIND, which is right: granting authority demands the
+    # exact form. Task an_inline_code_approved.
+    ("CANONICAL_SHORT", "APPROVED-AT"): "MALFORMED",
     ("CANONICAL_SHORT", "CHANGES-REQUESTED-AT"): "REFUSES(claude," + SHORT + ")",
-    # DEFECT quoting_a_refusal_marker (both polarities): a whole-line quotation is
-    # undecorated into a verdict, because a leading backtick is stripped as
-    # decoration. Quoting an approval GRANTS one; quoting a refusal CREATES one.
+    # A whole-line quotation is undecorated into a verdict, because a leading
+    # backtick is stripped as decoration. In a SINGLE comment that is correct --
+    # nothing earlier to cite, so it is an issuance. In a STREAM the issuer rule now
+    # suppresses the author's own re-quotation; see the issuance/citation cells
+    # below. RESIDUAL, and it needs the issuer FIELD rather than this rule: a
+    # DIFFERENT agent quoting someone else's verdict still binds, because a repeat
+    # by another author is indistinguishable from an independent second verdict
+    # without a `BY <agent-id>` on the marker. Task make_the_review_marker.
     ("INLINE_CODE_WHOLE_LINE", "APPROVED-AT"): "BINDS",
     ("INLINE_CODE_WHOLE_LINE", "CHANGES-REQUESTED-AT"): "REFUSES(claude," + FULL + ")",
     ("CITED_FULL", "APPROVED-AT"): "MALFORMED",
     # DEFECT quoting_a_refusal_marker: citing a block manufactures a block.
     ("CITED_FULL", "CHANGES-REQUESTED-AT"): "REFUSES(claude," + FULL + ")",
-    # DEFECT, the sharpest row: identical sentence, opposite treatment.
-    ("CITED_SHORT", "APPROVED-AT"): "SILENT",
+    # FIXED with the row above; was the sharpest row in the table, an identical
+    # sentence silently ignored as an approval and binding as a refusal.
+    ("CITED_SHORT", "APPROVED-AT"): "MALFORMED",
     ("CITED_SHORT", "CHANGES-REQUESTED-AT"): "REFUSES(claude," + SHORT + ")",
     # Correct in both polarities: a fenced illustration is nothing.
     ("FENCED", "APPROVED-AT"): "SILENT",
@@ -130,11 +139,11 @@ EXPECTED = {
 }
 
 DEFECT_CELLS = {
-    ("CANONICAL_SHORT", "APPROVED-AT"): "an_inline_code_approved",
+
     ("INLINE_CODE_WHOLE_LINE", "APPROVED-AT"): "quoting_a_refusal_marker",
     ("INLINE_CODE_WHOLE_LINE", "CHANGES-REQUESTED-AT"): "quoting_a_refusal_marker",
     ("CITED_FULL", "CHANGES-REQUESTED-AT"): "quoting_a_refusal_marker",
-    ("CITED_SHORT", "APPROVED-AT"): "an_inline_code_approved",
+
     ("CITED_SHORT", "CHANGES-REQUESTED-AT"): "quoting_a_refusal_marker",
     # ("PROSE", "CHANGES-REQUESTED-AT") was here and is FIXED -- see EXPECTED.
 }
@@ -341,6 +350,65 @@ def test_hermit_2615_five_markers_were_two_verdicts() -> None:
         f"see `CHANGES-REQUESTED-AT: claude {FULL[:8]}`",  # citation, abbreviated
     ]
     assert len(_refusals(stream)) == 2, _refusals(stream)
+
+
+# ---------------------------------------------------------------------------
+# THE APPROVAL SIDE: NEVER SILENT. Three outcomes are allowed and they must be
+# DISTINGUISHABLE -- it BINDS, it is reported MALFORMED, or it counts as nothing
+# and says so. Silence was a fourth, and it lost real reviews.
+# Task: an_inline_code_approved
+def _approval(bodies, agent="hermit-007"):
+    """(bound shas, malformed count, citation count) for a comment stream."""
+    mal: list = []
+    cit: list = []
+    cs = [{"body": _by(agent, b) if isinstance(b, str) else _by(b[0], b[1]),
+           "html_url": "u"} for b in bodies]
+    shas = ab.lane_shas(cs, "claude", mal, 1, {}, cit)
+    return shas, len(mal), len(cit)
+
+
+_APPR = f"APPROVED-AT: claude {FULL}"
+
+
+def test_an_abbreviated_approval_is_loud_not_silent() -> None:
+    """⚠️ THE DEFECT. Canonical form, own line, correct lane, merely abbreviated:
+    it bound nothing and reported nothing, so the reviewer believed their lane was
+    bound, the lane read unreviewed, and nothing said the review was dropped."""
+    shas, mal, _ = _approval([f"APPROVED-AT: claude {FULL[:12]}"])
+    assert shas == [] and mal == 1, (shas, mal)
+
+
+def test_an_abbreviated_approval_still_does_not_bind() -> None:
+    """Being loud is not the same as being accepted. Granting authority keeps
+    demanding the exact form; only the SILENCE was the defect."""
+    shas, _, _ = _approval([f"APPROVED-AT: claude {FULL[:12]}"])
+    assert shas == []
+
+
+def test_quoting_your_own_approval_does_not_grant_a_second_one() -> None:
+    shas, _, cit = _approval([_APPR, f"`{_APPR}`"])
+    assert shas == [FULL] and cit == 1, (shas, cit)
+
+
+def test_a_suppressed_citation_is_counted_rather_than_dropped() -> None:
+    """The third outcome has to be VISIBLE, or it is just a quieter silence."""
+    _, _, cit = _approval([_APPR, f"as I said, `{_APPR}`"])
+    assert cit == 1
+
+
+def test_a_lone_quoted_approval_is_an_issuance() -> None:
+    """Nothing earlier to cite. Same safety property as the refusal side."""
+    shas, _, _ = _approval([f"`{_APPR}`"])
+    assert shas == [FULL]
+
+
+def test_a_citation_is_not_reported_as_malformed() -> None:
+    """A citation is not a failed ATTEMPT at a verdict. Without this, widening the
+    net to abbreviated shas would report every sentence quoting a marker -- and a
+    malformed REFUSAL-shaped line BLOCKS, so it would manufacture blocks out of
+    people explaining a refusal."""
+    _, mal, cit = _approval([_APPR, f"my `APPROVED-AT: claude {FULL[:12]}` above"])
+    assert mal == 0 and cit == 1, (mal, cit)
 
 def main() -> int:
     failures: list[str] = []
