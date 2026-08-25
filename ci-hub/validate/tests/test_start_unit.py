@@ -690,7 +690,14 @@ class StartUnitTest(unittest.TestCase):
                 sleep=lambda _seconds: None,
             )
 
-        self.assertEqual(2, rc, err.getvalue())
+        # 75, not 2. This asserts the run's verdict was UNREADABLE, which is a
+        # different condition from "the command was malformed" -- both used to
+        # return 2 and a caller could not tell them apart. What this test actually
+        # defends is unchanged: an unreadable verdict must not inherit an older
+        # green, so the code must not be EXIT_PASSED.
+        self.assertEqual(start_unit.EXIT_COULD_NOT_DETERMINE, rc, err.getvalue())
+        self.assertNotEqual(start_unit.EXIT_PASSED, rc, err.getvalue())
+        self.assertNotEqual(start_unit.EXIT_REFUSED, rc, err.getvalue())
         self.assertIn("CANONICAL-VERDICT-UNAVAILABLE", err.getvalue())
         self.assertIn("an older row cannot bind this run", err.getvalue())
         self.assertFalse(any(command[0] == "systemd-run" for command in self.fake.commands))
@@ -728,7 +735,14 @@ class StartUnitTest(unittest.TestCase):
                 sleep=lambda _seconds: None,
             )
 
-        self.assertEqual(2, rc, err.getvalue())
+        # 75, not 2. This asserts the run's verdict was UNREADABLE, which is a
+        # different condition from "the command was malformed" -- both used to
+        # return 2 and a caller could not tell them apart. What this test actually
+        # defends is unchanged: an unreadable verdict must not inherit an older
+        # green, so the code must not be EXIT_PASSED.
+        self.assertEqual(start_unit.EXIT_COULD_NOT_DETERMINE, rc, err.getvalue())
+        self.assertNotEqual(start_unit.EXIT_PASSED, rc, err.getvalue())
+        self.assertNotEqual(start_unit.EXIT_REFUSED, rc, err.getvalue())
         self.assertIn("CANONICAL-VERDICT-UNAVAILABLE", err.getvalue())
         self.assertIn("refusing to inherit another run's green", err.getvalue())
 

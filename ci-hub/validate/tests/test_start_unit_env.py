@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import contextlib
+import inspect
 import io
 import json
 import sys
@@ -403,6 +404,70 @@ class LogTailTest(unittest.TestCase):
         sink = io.StringIO()
         su.LogTail(self.root / "not-there.log", out=sink).pump()
         self.assertEqual(sink.getvalue(), "")
+
+
+class ThreeOutcomesTest(unittest.TestCase):
+    """REFUSED, FAILED and COULD-NOT-DETERMINE must never share an exit code.
+
+    ⚠️ THIS EXISTS BECAUSE THEY DID. `CANONICAL-VERDICT-UNAVAILABLE` -- the run
+    happened and its verdict could not be read -- returned 2, the same code as
+    `--pr must be positive`. Three more post-run conditions did the same:
+    WAIT-INTERRUPTED, ORPHANED-RECEIPT and NO-RECEIPT-PRODUCED all reported
+    REFUSED for runs that had actually started.
+
+    Retry and investigate are opposite reactions, so a caller that cannot tell
+    them apart takes the wrong one half the time.
+    """
+
+    def test_the_three_outcomes_have_distinct_exit_codes(self) -> None:
+        codes = {su.EXIT_REFUSED, su.EXIT_FAILED, su.EXIT_COULD_NOT_DETERMINE}
+        self.assertEqual(3, len(codes), f"outcomes collapsed onto one code: {codes}")
+        self.assertNotIn(su.EXIT_PASSED, codes)
+
+    def test_a_refusal_cannot_be_written_without_a_remedy(self) -> None:
+        # Positional and required: a future refusal cannot omit it by accident.
+        params = inspect.signature(su.refuse).parameters
+        self.assertIn("remedy", params)
+        self.assertIs(inspect.Parameter.empty, params["remedy"].default)
+
+    def test_refused_says_it_never_ran_and_names_a_remedy(self) -> None:
+        sink = io.StringIO()
+        rc = su.refuse("--pr must be positive", "pass a positive number", out=sink)
+        self.assertEqual(su.EXIT_REFUSED, rc)
+        self.assertIn("NEVER RAN", sink.getvalue())
+        self.assertIn("remedy: pass a positive number", sink.getvalue())
+
+    def test_could_not_determine_is_not_reported_as_a_failure(self) -> None:
+        sink = io.StringIO()
+        rc = su.could_not_determine("verdict unreadable", "recover the receipt", out=sink)
+        self.assertEqual(su.EXIT_COULD_NOT_DETERMINE, rc)
+        self.assertNotEqual(su.EXIT_FAILED, rc)
+        self.assertNotEqual(su.EXIT_REFUSED, rc)
+        self.assertIn("NOT a failure", sink.getvalue())
+        self.assertIn("remedy: recover the receipt", sink.getvalue())
+
+    def test_each_outcome_describes_itself_differently(self) -> None:
+        seen = {
+            su.describe_outcome(code)
+            for code in (
+                su.EXIT_PASSED,
+                su.EXIT_REFUSED,
+                su.EXIT_FAILED,
+                su.EXIT_COULD_NOT_DETERMINE,
+            )
+        }
+        self.assertEqual(4, len(seen), f"two outcomes describe themselves alike: {seen}")
+        self.assertIn("NEVER RAN", su.describe_outcome(su.EXIT_REFUSED))
+        self.assertIn("RAN", su.describe_outcome(su.EXIT_FAILED))
+
+    def test_an_unmapped_code_is_named_as_a_defect_not_guessed(self) -> None:
+        # The negative control. Without it, describe_outcome could return a
+        # plausible sentence for anything and the tests above would still pass.
+        self.assertIn("UNCLASSIFIED", su.describe_outcome(99))
+
+    def test_the_canonical_verdict_map_keeps_failed_separate_from_passed(self) -> None:
+        self.assertEqual(su.EXIT_PASSED, su.canonical_verdict_exit_code("VALIDATED"))
+        self.assertEqual(su.EXIT_FAILED, su.canonical_verdict_exit_code("FAILED"))
 
 
 if __name__ == "__main__":

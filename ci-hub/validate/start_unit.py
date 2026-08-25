@@ -28,6 +28,29 @@ SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 UNIT_RE = re.compile(r"^validate-[A-Za-z0-9_.@:-]+$")
 Runner = Callable[..., subprocess.CompletedProcess[str]]
 TERMINAL_STATES = frozenset(("failed", "inactive"))
+# THE THREE OUTCOMES A CALLER MUST TELL APART, and one of them used to be
+# invisible.
+#
+# REFUSED means the validate NEVER RAN -- a bad argument, a held lock, a missing
+# precondition. FAILED means it ran and something was wrong. They demand opposite
+# reactions: retry versus investigate.
+#
+# ⚠️ COULD-NOT-DETERMINE IS THE THIRD, AND IT WAS COLLAPSED INTO REFUSED. Before
+# this, `CANONICAL-VERDICT-UNAVAILABLE` -- the run happened but its verdict could
+# not be read back -- returned 2, the same code as "you passed --pr -1". A caller
+# could not distinguish "your command was wrong" from "the run's result is
+# unreadable", and the second one is not fixed by correcting a flag.
+#
+# 75 is EX_TEMPFAIL and is this project's established spelling for a third state:
+# scripts/validate.rs reserves it as the only nonzero code that is not a product
+# failure, and ci/lint-checks-node.sh already exits 75 for its setup precondition.
+# Reused rather than inventing a fourth convention.
+EXIT_PASSED = 0
+EXIT_REFUSED = 2
+EXIT_FAILED = 3
+EXIT_REMEASURE = 4
+EXIT_COULD_NOT_DETERMINE = 75
+
 CANONICAL_TERMINAL_VERDICTS = {"VALIDATED": 0, "FAILED": 3}
 CANONICAL_REMEASUREMENT_VERDICTS = frozenset(
     ("TRUNCATED", "NEEDS-RERUN", "NO-RESULT", "NOT-VALIDATED")
@@ -63,6 +86,70 @@ def canonical_verdict_exit_code(verdict: str) -> int | None:
     if verdict in CANONICAL_REMEASUREMENT_VERDICTS:
         return 4
     return None
+
+
+
+def refuse(reason: str, remedy: str, *, out: TextIO | None = None) -> int:
+    """Report that the run NEVER STARTED, and how to make it start.
+
+    ⚠️ `remedy` IS A REQUIRED PARAMETER ON PURPOSE. A refusal that names a
+    condition and no fix reads as a dead end, and several chains stranded that way
+    -- the caller cannot tell whether they are blocked or merely holding it wrong.
+    Making it positional means a future refusal cannot be added without one.
+
+    Says NEVER RAN in words because the distinction from FAILED is the whole
+    point: there is no log to read and no result to investigate, so re-running
+    after the remedy is the correct next action.
+    """
+    stream = out if out is not None else sys.stderr
+    print(f"validate-run: REFUSED: {reason}", file=stream)
+    print("  state:  REFUSED -- the validate NEVER RAN, so there is no log and no result.", file=stream)
+    print(f"  remedy: {remedy}", file=stream)
+    return EXIT_REFUSED
+
+
+def could_not_determine(reason: str, remedy: str, *, out: TextIO | None = None) -> int:
+    """The run is not being called passed OR failed, and that is the answer.
+
+    Distinct from both. The validate may well have executed; what is missing is a
+    readable verdict, so neither "retry" nor "investigate the failure" is right
+    until the evidence is recoverable.
+    """
+    stream = out if out is not None else sys.stderr
+    print(f"validate-run: COULD-NOT-DETERMINE: {reason}", file=stream)
+    print("  state:  COULD-NOT-DETERMINE -- not a pass and NOT a failure; the verdict is unreadable.", file=stream)
+    print(f"  remedy: {remedy}", file=stream)
+    return EXIT_COULD_NOT_DETERMINE
+
+
+
+def describe_outcome(exit_code: int) -> str:
+    """One line saying which of the outcomes this is, and what to do about it.
+
+    ⚠️ EXISTS BECAUSE THE NUMBER ALONE WAS AMBIGUOUS AT THE CALLER. Retry and
+    investigate are opposite actions and the exit code was being asked to carry
+    that distinction unaided.
+    """
+    if exit_code == EXIT_PASSED:
+        return "PASSED -- the validate ran and the canonical verdict is VALIDATED"
+    if exit_code == EXIT_FAILED:
+        return (
+            "FAILED -- the validate RAN and something was wrong. Investigate the log; "
+            "do not simply retry"
+        )
+    if exit_code == EXIT_REFUSED:
+        return (
+            "REFUSED -- the validate NEVER RAN. There is no log and no result; fix the "
+            "stated condition and re-run"
+        )
+    if exit_code == EXIT_COULD_NOT_DETERMINE:
+        return (
+            "COULD-NOT-DETERMINE -- neither a pass nor a failure; the verdict could not "
+            "be read. Recover the evidence before concluding anything"
+        )
+    if exit_code == EXIT_REMEASURE:
+        return "REMEASURE -- the canonical verdict asks for another measurement"
+    return f"UNCLASSIFIED exit {exit_code} -- this is itself a defect; no outcome maps to it"
 
 
 def parse_utc_timestamp(value: object, *, role: str) -> datetime:
@@ -1093,8 +1180,12 @@ def attach(
             root, target, checkout, run_started_at, repo=repo, run=run
         )
     except (KeyError, RuntimeError, ValueError) as error:
-        print(f"validate-run: CANONICAL-VERDICT-UNAVAILABLE: {error}", file=sys.stderr)
-        return 2
+        return could_not_determine(
+            f"CANONICAL-VERDICT-UNAVAILABLE: {error}",
+            "the unit ran; re-read with `ci-hub validate-status --sha "
+            f"{record.get('target', '<target>')}` and, if the ledger row is "
+            "genuinely absent, re-run the validate. Do NOT read this as a failure.",
+        )
     updated = run_registry.update_record(
         record_path,
         canonical_verdict=canonical_verdict,
@@ -1106,6 +1197,16 @@ def attach(
             f"verdict={canonical_verdict} exit={canonical_exit}"
         )
         print(f"  {row[:160]}")
+        # WHAT RAN, WHERE ITS LOG IS, AND WHICH OF THE THREE OUTCOMES -- without a
+        # second command. Previously the caller got a verdict word and an exit
+        # number and had to know that 3 means the product failed while 2 meant
+        # either "your flag was wrong" or "the result is unreadable".
+        if canonical_exit != EXIT_PASSED:
+            print(f"  ran:    target={target} checkout={checkout} unit={unit}.service")
+            log = updated.get("log") or record.get("log")
+            if log:
+                print(f"  log:    {log}")
+            print(f"  state:  {describe_outcome(canonical_exit)}")
     emit_report(
         {**updated, "event": "finished", "unit": f"{unit}.service"},
         json_output=json_output,
@@ -1247,11 +1348,12 @@ def main(
     try:
         repo = canonical_repo(args.repo)
     except ValueError as error:
-        print(f"validate-run: REFUSED: {error}", file=sys.stderr)
-        return 2
+        return refuse(str(error), "correct the argument named above and re-run")
     if args.caller_poll_seconds <= 0:
-        print("validate-run: REFUSED: caller poll seconds must be positive", file=sys.stderr)
-        return 2
+        return refuse(
+            "caller poll seconds must be positive",
+            "pass --caller-poll-seconds with a value greater than 0, or omit it for the default",
+        )
     if args.attach:
         if any(
             (
@@ -1265,11 +1367,10 @@ def main(
                 args.dry_run,
             )
         ):
-            print(
-                "validate-run: REFUSED: --attach cannot be combined with launch arguments",
-                file=sys.stderr,
+            return refuse(
+                "--attach cannot be combined with launch arguments",
+                "attach to an existing unit with --attach ALONE, or drop --attach to launch a new run",
             )
-            return 2
         try:
             return attach(
                 args.attach,
@@ -1280,50 +1381,55 @@ def main(
                 sleep=sleep,
             )
         except (RuntimeError, ValueError) as error:
-            print(f"validate-run: REFUSED: {error}", file=sys.stderr)
-            return 2
+            return refuse(
+                str(error),
+                "list live units with `ci-hub validate-worktrees --runs 10` and attach to one of those",
+            )
     if args.checkout is None or not args.agent or not args.target:
-        print(
-            "validate-run: REFUSED: launch requires --checkout, --agent, and --target",
-            file=sys.stderr,
+        return refuse(
+            "launch requires --checkout, --agent, and --target",
+            "re-run as `ci-hub validate-run --checkout WORKTREE --agent AGENT --target SHA -- full`",
         )
-        return 2
     validate_args = list(args.validate_args)
     if validate_args[:1] == ["--"]:
         validate_args.pop(0)
     if args.make_validate and validate_args:
-        print(
-            "validate-run: REFUSED: --make-validate is the exact no-argument Make "
-            "target; do not pass validate arguments after --",
-            file=sys.stderr,
+        return refuse(
+            "--make-validate is the exact no-argument Make target; validate arguments "
+            "were passed after --",
+            "drop the arguments after -- to run the Make target, or drop --make-validate "
+            "to pass driver arguments",
         )
-        return 2
     if repo == "rrnewton/reverie" and (args.make_validate or validate_args):
-        print(
-            "validate-run: REFUSED: Reverie always runs its exact full validate.sh under "
-            "safe-ci-dag-runner; --make-validate and trailing driver arguments are unsupported",
-            file=sys.stderr,
+        return refuse(
+            "Reverie always runs its exact full validate.sh under safe-ci-dag-runner; "
+            "--make-validate and trailing driver arguments are unsupported",
+            "re-run against the Reverie checkout with no --make-validate and no trailing "
+            "driver arguments",
         )
-        return 2
     if args.allow_owner_validate_symlink and not (args.in_place and args.make_validate):
-        print(
-            "validate-run: REFUSED: --allow-owner-validate-symlink requires "
-            "--in-place and --make-validate",
-            file=sys.stderr,
+        return refuse(
+            "--allow-owner-validate-symlink requires --in-place and --make-validate",
+            "add --in-place and --make-validate, or drop --allow-owner-validate-symlink",
         )
-        return 2
     if args.pr is not None and args.pr <= 0:
-        print("validate-run: REFUSED: --pr must be positive", file=sys.stderr)
-        return 2
+        return refuse(
+            "--pr must be positive",
+            "pass the pull-request NUMBER, e.g. --pr 2614, or omit --pr entirely",
+        )
     child_deadline = args.child_deadline or (
         8000 if repo == "rrnewton/reverie" else 3600
     )
     if min(args.wait, args.hold, child_deadline) <= 0:
-        print("validate-run: REFUSED: wait/hold/child-deadline must be positive", file=sys.stderr)
-        return 2
+        return refuse(
+            "wait/hold/child-deadline must be positive",
+            "give --wait, --hold and --child-deadline values greater than 0, or omit them for defaults",
+        )
     if args.ci_dag_jobs is not None and args.ci_dag_jobs <= 0:
-        print("validate-run: REFUSED: --ci-dag-jobs must be positive", file=sys.stderr)
-        return 2
+        return refuse(
+            "--ci-dag-jobs must be positive",
+            "pass --ci-dag-jobs with a value greater than 0, or omit it to let the runner choose",
+        )
 
     fresh_checkout: Path | None = None
     source_checkout: Path | None = None
@@ -1469,8 +1575,11 @@ def main(
         if fresh_checkout is not None and source_checkout is not None:
             remove_fresh_checkout(source_checkout, fresh_checkout, run=run)
         remove_private_cargo_home(private_cargo_home, run=run)
-        print(f"validate-run: REFUSED: {error}", file=sys.stderr)
-        return 2
+        return refuse(
+            str(error),
+            "the unit did not start; check `ci-hub validate-lock status` for a held box "
+            "lock and retry once it is free",
+        )
 
     report = {
 
@@ -1525,11 +1634,13 @@ def main(
                 f"validate-run: temp checkout RETAINED at {fresh_checkout} (run continues)",
                 file=sys.stderr,
             )
-        print(
-            f"validate-run: WAIT-INTERRUPTED {unit}.service; RUN CONTINUES independently: {error}",
-            file=sys.stderr,
+        # The wait was interrupted, NOT the run. Returning REFUSED here said "it
+        # never started" about a validate that is still executing.
+        return could_not_determine(
+            f"WAIT-INTERRUPTED {unit}.service; RUN CONTINUES independently: {error}",
+            f"the run is still going; re-attach with `ci-hub validate-run --attach {unit}` "
+            "to resume watching it, or read its log directly",
         )
-        return 2
 
     # REQUIREMENT (a), and the ORDER IS THE WHOLE POINT: re-read this run's exact
     # row from the canonical ledger BEFORE the temp directory is removed. Deleting
@@ -1577,23 +1688,33 @@ def main(
                 # Could not look. A NO-RESULT must never authorize deletion.
                 orphans = [f"<scan failed: {scan_error}>"]
             if orphans:
-                print(
-                    "validate-run: ORPHANED-RECEIPT: this run wrote a receipt into "
+                # The run HAPPENED and produced evidence; it landed somewhere no
+                # reader looks. That is unreadable, not unstarted and not failed.
+                return could_not_determine(
+                    "ORPHANED-RECEIPT: this run wrote a receipt into "
                     f"{', '.join(orphans)} inside the temp checkout, where no "
                     f"consumer reads it. Temp checkout RETAINED at {fresh_checkout} "
                     "-- it is the only trace that this happened.",
-                    file=sys.stderr,
+                    f"recover the receipt from {fresh_checkout} before anything reclaims "
+                    "it; the run's result exists but no consumer can see it",
                 )
-                return 2
             print(
-                "validate-run: NO-RECEIPT-PRODUCED: the run failed before writing a "
+                "validate-run: NO-RECEIPT-PRODUCED: the run stopped before writing a "
                 "receipt anywhere, so the temp checkout holds no evidence; "
                 "reclaiming it.",
                 file=sys.stderr,
             )
             remove_fresh_checkout(source_checkout, fresh_checkout, run=run)
         remove_private_cargo_home(private_cargo_home, run=run)
-        return 2
+        # ⚠️ NOT "failed". No receipt means no verdict was ever recorded, so there
+        # is nothing to investigate as a product failure -- the previous wording
+        # said "the run failed" and the previous code said REFUSED, and neither
+        # was true.
+        return could_not_determine(
+            "the unit terminated without recording a verdict",
+            "re-run the validate; if it stops without a receipt again, the failure is "
+            "in the harness rather than in the product under test",
+        )
     updated = run_registry.update_record(
         record_path,
         canonical_verdict=canonical_verdict,
