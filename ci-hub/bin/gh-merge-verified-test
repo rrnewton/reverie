@@ -30,6 +30,7 @@ Exits 0 when every case matches its expectation, 1 otherwise.
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -372,6 +373,82 @@ def expect_head_cases() -> None:
         )
 
 
+def receipt_cases() -> None:
+    """The receipt must carry BOTH shas, and must refuse to overclaim.
+
+    ⚠️ TWO SHAS THAT AGREE ARE EVIDENCE; ONE SHA IS A NOTE. Recording only the head
+    the tool resolved leaves an auditor unable to separate a correct resolution
+    from a stale one -- which is precisely why the pull-ref audit could report no
+    more than "clean as far as recorded". The pair is what makes the record
+    load-bearing, and it is stamped at resolve time rather than rebuilt at report
+    time, because a field reconstructed later is the same guess with better
+    manners.
+    """
+    tool = load_tool()
+
+    # THE FORCED DIVERGENCE. Reaching the writer with two shas that disagree must
+    # refuse by name rather than persist a receipt an audit would count as checked.
+    with tempfile.TemporaryDirectory(prefix="gh-merge-verified-receipt-") as tmp:
+        out = Path(tmp) / "receipt.json"
+        code = None
+        try:
+            tool.write_receipt(str(out), {
+                "resolved_head": "a" * 40,
+                "corroborated_against": "b" * 40,
+                "corroborated": True,
+            })
+        except SystemExit as exc:
+            code = exc.code
+        check(
+            "a receipt whose two shas disagree is REFUSED, not written",
+            code == 4,
+            "expected exit 4 from the writer; got %r" % (code,),
+        )
+        check(
+            "the refused receipt leaves NO file behind for an audit to trust",
+            not out.exists(),
+            "a contradictory receipt was persisted at %s" % out,
+        )
+
+    # Claiming corroboration with nothing to corroborate against is the same defect.
+    code = None
+    try:
+        tool.write_receipt(None, {"resolved_head": "a" * 40,
+                                  "corroborated_against": None, "corroborated": True})
+    except SystemExit as exc:
+        code = exc.code
+    check(
+        "claiming corroboration against nothing is refused",
+        code == 4,
+        "expected exit 4; got %r" % (code,),
+    )
+
+    # THE HONEST CASES still write, and carry the pair.
+    with tempfile.TemporaryDirectory(prefix="gh-merge-verified-receipt-ok-") as tmp:
+        out = Path(tmp) / "r.json"
+        tool.write_receipt(str(out), {
+            "resolved_head": "c" * 40, "corroborated_against": "c" * 40,
+            "corroborated": True, "pr": "1",
+        })
+        rec = json.loads(out.read_text())
+        check(
+            "a corroborated receipt records BOTH shas, not just the resolved one",
+            rec["resolved_head"] == "c" * 40 and rec["corroborated_against"] == "c" * 40,
+            "receipt did not carry the pair: %s" % rec,
+        )
+        out2 = Path(tmp) / "r2.json"
+        tool.write_receipt(str(out2), {
+            "resolved_head": "d" * 40, "corroborated_against": None,
+            "corroborated": False, "pr": "1",
+        })
+        rec2 = json.loads(out2.read_text())
+        check(
+            "an uncorroborated receipt says so explicitly rather than omitting the field",
+            rec2["corroborated"] is False and rec2["corroborated_against"] is None,
+            "an audit could not tell this run was unchecked: %s" % rec2,
+        )
+
+
 def main() -> int:
     if not TOOL.exists():
         print(f"gh-merge-verified-test: {TOOL} is missing", file=sys.stderr)
@@ -395,6 +472,7 @@ def main() -> int:
 
     unit_cases()
     race_cases()
+    receipt_cases()
     expect_head_cases()
 
     print()

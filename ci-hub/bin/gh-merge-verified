@@ -137,6 +137,7 @@ EXIT
 from __future__ import annotations
 
 import atexit
+import json
 import os
 import shutil
 import time
@@ -198,6 +199,42 @@ def run(args: list[str]) -> tuple[int, str, str]:
     """Run with NO shell and NO pipe, so the status is the command's own."""
     p = subprocess.run(args, capture_output=True, text=True)
     return p.returncode, p.stdout, p.stderr
+
+
+def write_receipt(path, record: dict) -> None:
+    """Write the landing receipt, or refuse to write one that overclaims.
+
+    ⚠️ THE RECEIPT MUST NOT BE ABLE TO CLAIM MORE THAN THE RUN ESTABLISHED. A
+    record saying `corroborated: true` while its two shas disagree is worse than
+    no record: an audit reading it counts the run as checked, and the failure
+    becomes undetectable in exactly the way this field exists to prevent. So the
+    writer re-asserts the invariant it is about to persist, and dies 4 rather than
+    emit a receipt whose own fields contradict each other.
+    """
+    if record.get("corroborated"):
+        against = record.get("corroborated_against")
+        resolved = record.get("resolved_head") or ""
+        if not against:
+            die(4, "gh-merge-verified: COULD NOT DETERMINE — receipt claims corroboration "
+                   "with nothing to corroborate against; refusing to write it.")
+        if not (resolved.startswith(against) or against.startswith(resolved)):
+            die(4, "gh-merge-verified: COULD NOT DETERMINE — receipt would record a "
+                   "CORROBORATED landing whose two shas disagree; refusing to write it.",
+                f"  resolved_head        {resolved}",
+                f"  corroborated_against {against}",
+                "  A receipt claiming a check it did not pass is worse than no receipt:",
+                "  an audit would count this run as verified.",
+                "  This is NOT a statement about whether the change landed.")
+    if not path:
+        return
+    try:
+        with open(path, "w") as fh:
+            json.dump(record, fh, indent=2, sort_keys=True)
+            fh.write("\n")
+    except OSError as exc:
+        die(4, f"gh-merge-verified: COULD NOT DETERMINE — cannot write receipt {path}: {exc}",
+            "  This is NOT a statement about whether the change landed.")
+    print(f"gh-merge-verified: receipt written to {path}")
 
 
 def die(code: int, *lines: str) -> None:
@@ -271,6 +308,7 @@ def main() -> None:
     repo = "rrnewton/hermit"
     verify_only = False
     expect_head = None
+    receipt_path = None
     extra: list[str] = []
     i = 1
     while i < len(argv):
@@ -280,6 +318,8 @@ def main() -> None:
             verify_only, i = True, i + 1
         elif argv[i] == "--expect-head" and i + 1 < len(argv):
             expect_head, i = argv[i + 1], i + 2
+        elif argv[i] == "--receipt" and i + 1 < len(argv):
+            receipt_path, i = argv[i + 1], i + 2
         elif argv[i] == "--":
             extra, i = argv[i + 1 :], len(argv)
         else:
@@ -350,6 +390,29 @@ def main() -> None:
     head = head.strip()
     if rc != 0 or not head:
         die(4, f"gh-merge-verified: COULD NOT DETERMINE — cannot resolve the head of PR {pr}")
+
+    # ⚠️ STAMPED HERE, AT RESOLVE TIME, NOT RECONSTRUCTED AT REPORT TIME.
+    # TWO SHAS THAT AGREE ARE EVIDENCE; ONE SHA IS A NOTE. Recording only the head
+    # we resolved leaves an auditor unable to separate a correct resolution from a
+    # stale one, which is exactly why the pull-ref audit could report no more than
+    # "clean as far as recorded". What makes the record load-bearing is the PAIR:
+    # what we resolved, and what we checked it against.
+    #
+    # AND IT IS WRITTEN WHERE IT IS LEARNED. A field derived later from whatever the
+    # process still happens to hold is the same guess with better manners -- the
+    # explicit lesson from the drain-publication regex, which rebuilt at report time
+    # a value it could have stamped at the moment it was true.
+    resolution = {
+        "resolved_head": head,
+        "resolved_from": f"refs/pull/{pr}/head",
+        "corroborated_against": expect_head or None,
+        "corroborated": bool(expect_head),
+    }
+    if expect_head:
+        # Asserted, not inferred from the absence of a warning. Silence reading as
+        # "corroborated" is the same defect as an empty check reading as a pass.
+        print(f"gh-merge-verified: pr head {head[:12]} CORROBORATED against "
+              f"--expect-head {expect_head[:12]}")
 
     # ⚠️ CAPTURE MAIN BEFORE THE MERGE, so the verification can tell "the ref has
     # not moved yet" from "the change is not there". Without this the two are
@@ -467,8 +530,20 @@ def main() -> None:
 
     missing = absent + moved
     landed = len(arrived)
+    write_receipt(receipt_path, {
+        **resolution,
+        "pr": pr,
+        "repo": repo,
+        "main_sha": main_sha,
+        "files": files,
+        "arrived": arrived,
+        "absent": absent,
+        "moved_on": moved,
+    })
     print(f"gh-merge-verified: PR {pr} ({repo})")
-    print(f"  pr head    {head}")
+    print(f"  pr head    {head}"
+          + (f"  (corroborated against {resolution['corroborated_against'][:12]})"
+             if resolution["corroborated"] else "  (UNCORROBORATED)"))
     print(f"  origin/main {main_sha}")
     print(f"  files changed by the branch: {len(files)}")
     print(f"    arrived  (main == pr head): {len(arrived)}")
