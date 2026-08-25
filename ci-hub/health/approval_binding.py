@@ -536,6 +536,102 @@ _REFUSAL_NEARMISS = re.compile(
 )
 
 
+# ⚠️ A VERDICT IS ISSUED ONCE. EVERY LATER COPY OF IT IS A CITATION, AND CITING A
+# REFUSAL MUST NOT CREATE ONE.
+#
+# Measured 2026-08-25 on hermit#2615: the gate counted FIVE refusal markers where
+# only TWO verdicts existed. All three phantoms came from GOOD practice -- sentences
+# naming exactly which marker still stood, e.g. "my `CHANGES-REQUESTED-AT: claude
+# 072ed7b4...` above still stands" and "... is superseded". The sentence saying a
+# refusal was SUPERSEDED manufactured another refusal.
+#
+# ⚠️ AND IT FALSELY BLOCKS, it does not merely over-count. A reviewer who writes
+# "my earlier refusal is answered by the fix below" and then approves BLOCKS THE
+# HEAD THEY ARE APPROVING, because their own citation is read as a fresh refusal.
+#
+# THE RULE, and it is deliberately not a rule about characters: an issuer that is
+# not this comment's author is a CITATION, however it is written. Formatting cannot
+# express that -- a `>` catches only typographically marked quotation and misses an
+# inline paste, which is the case that actually happened; a backtick, an indent and
+# a heading are each equally silent about who is speaking. What CAN express it is
+# document order, which every consumer already has: THE FIRST OCCURRENCE OF A
+# VERDICT IS THE ISSUANCE AND EVERY LATER COPY IS A CITATION. The issuer's own
+# earlier line is what the citation points AT, so the verdict it names is still
+# counted -- from its issuance.
+#
+# ⚠️ WHY THIS CANNOT LOSE A REFUSAL, which is the only direction that matters here:
+# suppression requires an EARLIER occurrence that was itself counted. If the earlier
+# copy was invisible for any reason -- fenced, unparsed, in a container this gate
+# does not read -- then the later one is the first SEEN occurrence and remains an
+# issuance. A refusal can therefore be duplicated away only into itself.
+#
+# A shortened sha is prefix-compatible on purpose: citations abbreviate, and
+# `06c3f3735fbf` naming `06c3f3735fbf...` is the same verdict, not a second one.
+# The author is read from the disclosure tag every agent comment opens with,
+# `[team, agent, ...]`. It is the only authorship signal available: `user.login` is
+# the SHARED account on every one of these comments -- measured on hermit#2625, all
+# 24 comments are `rrnewton` -- so GitHub's own author field cannot distinguish two
+# reviewers. An `agent(name)` mention in prose is NOT the author; on #2625 it names
+# a DIFFERENT agent from the tag in 3 of 8 tagged comments, because agents refer to
+# each other constantly.
+_DISCLOSURE = re.compile(r"^\[\s*[a-z0-9]+\s*,\s*([a-z0-9][a-z0-9-]*)\s*,", re.I | re.M)
+
+
+def comment_author(body: str) -> "str | None":
+    """The agent that WROTE this comment, or None when it does not say."""
+    m = _DISCLOSURE.search(body or "")
+    return m.group(1).lower() if m else None
+
+
+def sha_names_same_head(a: "str | None", b: "str | None") -> bool:
+    """True when two shas name one head; a citation may abbreviate the issuance."""
+    if not a or not b:
+        return False
+    return a.startswith(b) or b.startswith(a)
+
+
+def _lane_agrees(a: "str | None", b: "str | None") -> bool:
+    """A citation may drop the lane; it may not CHANGE it."""
+    return a is None or b is None or a == b
+
+
+def is_citation(
+    seen: "Sequence[tuple[str | None, str, str | None, str | None]]",
+    author: "str | None",
+    kind: str,
+    lane: "str | None",
+    sha: "str | None",
+) -> bool:
+    """True when THIS AUTHOR already issued this same verdict earlier.
+
+    `seen` is every (author, kind, lane, sha) already accepted, oldest first.
+
+    ⚠️ SAME AUTHOR IS THE WHOLE RULE, AND AN EARLIER VERSION OF THIS OMITTED IT.
+    Two DIFFERENT reviewers refusing the same head in the same lane are TWO
+    verdicts, not a repeat. Dropping the author collapsed them, and the regression
+    was caught by test_withdrawal_quotes_refusal -- hermit-012 and hermit-015 both
+    refused hermit#2625 at one head, and retiring hermit-012's must leave
+    hermit-015's standing. Collapsing them let ONE withdrawal clear BOTH, which is
+    the dangerous direction and is the very defect that test exists to prevent.
+
+    Two guards keep this from ever discarding a verdict:
+      * an UNKNOWN author never matches, so a comment with no disclosure tag is
+        always an issuance. Under-suppressing costs a duplicate; over-suppressing
+        loses a refusal.
+      * a marker with NO readable sha is never a citation, since it names no head
+        and so cannot be shown to repeat one.
+    """
+    if sha is None or author is None:
+        return False
+    return any(
+        prev_author == author
+        and kind == prev_kind
+        and _lane_agrees(lane, prev_lane)
+        and sha_names_same_head(sha, prev_sha)
+        for prev_author, prev_kind, prev_lane, prev_sha in seen
+    )
+
+
 def near_miss_refusal(line: str) -> "re.Match | None":
     """Where a NON-CANONICAL refusal token starts in `line`, if it does.
 

@@ -233,6 +233,115 @@ def test_control_refusal_refuses() -> None:
     ), "the gate is not reaching its own markers(), so every cell is meaningless"
 
 
+
+# ---------------------------------------------------------------------------
+# ISSUANCE vs CITATION. The cells above feed ONE comment at a time, which is why
+# they cannot see this rule: a lone comment carrying a verdict IS its issuance,
+# whatever the formatting. The defect only exists in a STREAM, which is the real
+# case -- and it FALSELY BLOCKS rather than merely over-counting.
+#
+# Measured on hermit#2615: the gate counted FIVE refusal markers where TWO
+# verdicts existed. All three phantoms came from good practice -- sentences
+# naming which marker still stood. A reviewer writing "my earlier refusal is
+# answered by the fix below" and then approving BLOCKED THE HEAD THEY APPROVED.
+# Task: quoting_a_refusal_marker
+# Bodies carry a disclosure tag because THE AUTHOR IS THE RULE: an untagged comment
+# has no known author and is therefore always an issuance, by design.
+_TAG = "[hermit2, hermit-004, unresolved, devbig014, role=reviewer]"
+
+
+def _by(agent: str, text: str) -> str:
+    return f"[hermit2, {agent}, unresolved, devbig014, role=reviewer]\n\n{text}"
+
+
+_ISS = f"CHANGES-REQUESTED-AT: claude {FULL}"
+
+
+def _refusals(bodies, agent="hermit-004"):
+    return gate.markers([_by(agent, b) for b in bodies])
+
+
+def test_a_lone_citation_is_still_an_issuance() -> None:
+    """Nothing earlier to cite, so it counts. This is what keeps the rule safe."""
+    assert len(_refusals([f"see `{_ISS}` above"])) == 1
+
+
+def test_citing_a_refusal_does_not_create_a_second_one() -> None:
+    assert len(_refusals([_ISS, f"my `{_ISS}` above still stands"])) == 1
+
+
+def test_an_abbreviated_citation_matches_its_issuance() -> None:
+    """Citations abbreviate; 06c3f3735fbf naming 06c3f3735fbf... is one verdict."""
+    assert len(_refusals([_ISS, f"`CHANGES-REQUESTED-AT: claude {FULL[:12]}` is superseded"])) == 1
+
+
+def test_the_issuance_itself_is_the_one_that_survives() -> None:
+    got = _refusals([_ISS, f"quoting `{_ISS}`"])
+    assert got and got[0][2] == FULL, got
+
+
+def test_a_citation_is_suppressed_however_it_is_written() -> None:
+    """The rule is about WHO ISSUED IT, not about quote characters. A `>` catches
+    only typographic quotation and misses the inline paste that actually happened."""
+    for form in (
+        f"> {_ISS}",
+        f"`{_ISS}`",
+        f"    {_ISS}",
+        f"I posted {_ISS} earlier.",
+        f"## {_ISS}",
+    ):
+        assert len(_refusals([_ISS, form])) == 1, form
+
+
+def test_a_different_lane_is_not_a_citation() -> None:
+    """Two lanes refusing the same head are two verdicts, not a repeat."""
+    assert len(_refusals([_ISS, f"CHANGES-REQUESTED-AT: codex {FULL}"])) == 2
+
+
+def test_a_different_head_is_not_a_citation() -> None:
+    other = "9" * 40
+    assert len(_refusals([_ISS, f"CHANGES-REQUESTED-AT: claude {other}"])) == 2
+
+
+def test_a_marker_with_no_sha_is_never_treated_as_a_citation() -> None:
+    """It names no head, so it cannot be shown to repeat one. Guessing here would
+    discard a verdict, which is the one direction this rule must never take."""
+    seen = [("hermit-004", "CHANGES-REQUESTED-AT", "claude", FULL)]
+    assert ab.is_citation(seen, "hermit-004", "CHANGES-REQUESTED-AT", "claude", None) is False
+
+
+def test_an_unknown_author_is_always_an_issuance() -> None:
+    """No disclosure tag, no known author, so nothing can be shown to repeat.
+    Under-suppressing costs a duplicate; over-suppressing loses a refusal."""
+    seen = [("hermit-004", "CHANGES-REQUESTED-AT", "claude", FULL)]
+    assert ab.is_citation(seen, None, "CHANGES-REQUESTED-AT", "claude", FULL) is False
+
+
+def test_two_reviewers_refusing_one_head_are_two_verdicts() -> None:
+    """⚠️ THE REGRESSION THAT CAUGHT AN AUTHOR-FREE VERSION OF THIS RULE.
+    hermit-012 and hermit-015 both refused hermit#2625 at one head in one lane.
+    Collapsing them let ONE withdrawal clear BOTH -- the dangerous direction."""
+    got = gate.markers([_by("hermit-012", _ISS), _by("hermit-015", _ISS)])
+    assert len(got) == 2, got
+
+
+def test_the_same_reviewer_repeating_themselves_is_one_verdict() -> None:
+    got = gate.markers([_by("hermit-004", _ISS), _by("hermit-004", f"`{_ISS}` still stands")])
+    assert len(got) == 1, got
+
+
+def test_hermit_2615_five_markers_were_two_verdicts() -> None:
+    """The measured case, as a named regression rather than only a count."""
+    codex = f"CHANGES-REQUESTED-AT: codex {FULL}"
+    stream = [
+        _ISS,                                    # hermit-004, genuine claude
+        f"my `{_ISS}` above still stands",       # citation
+        codex,                                   # hermit-001, genuine codex
+        f"`{_ISS}` is superseded",               # citation
+        f"see `CHANGES-REQUESTED-AT: claude {FULL[:8]}`",  # citation, abbreviated
+    ]
+    assert len(_refusals(stream)) == 2, _refusals(stream)
+
 def main() -> int:
     failures: list[str] = []
     checked = 0

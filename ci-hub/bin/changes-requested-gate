@@ -221,8 +221,10 @@ def markers_with_ids(
     widest net measured to cost nothing.
     """
     found = []
+    _accepted: list[tuple] = []
     eligible = _load_grammar().marker_lines
     for _cid, body in items:
+        _author = _load_grammar().comment_author(body or "")
         for raw in eligible(body or ""):
             line = undecorate(raw)
             # Longest first: WITHDRAWN contains REFUSAL, which contains REFUSAL_BARE.
@@ -243,10 +245,20 @@ def markers_with_ids(
                 if m is None and _load_grammar().is_template(tail):
                     break  # a template, not a verdict
                 lane_m = _LANE.search(tail[:24])
-                found.append((REFUSAL if kind == REFUSAL_BARE else kind,
-                              lane_m.group(1).lower() if lane_m else None,
-                              m.group(1) if m else None,
-                              _cid))
+                triple = (REFUSAL if kind == REFUSAL_BARE else kind,
+                          lane_m.group(1).lower() if lane_m else None,
+                          m.group(1) if m else None,
+                          _cid)
+                # ⚠️ A VERDICT IS ISSUED ONCE; A LATER COPY IS A CITATION. Citing a
+                # refusal must not create one -- measured on hermit#2615, where 5
+                # markers stood for 2 verdicts and a reviewer's own "...is
+                # answered by the fix below" blocked the head they approved. The
+                # earlier occurrence is still counted, so this cannot lose a
+                # refusal; see is_citation() in the shared grammar.
+                if _load_grammar().is_citation(_accepted, _author, *triple[:3]):
+                    break
+                _accepted.append((_author, *triple[:3]))
+                found.append(triple)
                 break
             else:
                 # ⚠️ NO CANONICAL TOKEN ON THIS LINE -- BUT A REFUSAL THAT OMITS THE
@@ -305,10 +317,20 @@ def markers_with_ids(
                 # ATTEMPT and leaves the withdrawal path untouched.
                 if m is None and lane_m is None:
                     continue
-                found.append((REFUSAL,
-                              lane_m.group(1).lower() if lane_m else None,
-                              m.group(1) if m else None,
-                              _cid))
+                triple = (REFUSAL,
+                          lane_m.group(1).lower() if lane_m else None,
+                          m.group(1) if m else None,
+                          _cid)
+                # ⚠️ A VERDICT IS ISSUED ONCE; A LATER COPY IS A CITATION. Citing a
+                # refusal must not create one -- measured on hermit#2615, where 5
+                # markers stood for 2 verdicts and a reviewer's own "...is
+                # answered by the fix below" blocked the head they approved. The
+                # earlier occurrence is still counted, so this cannot lose a
+                # refusal; see is_citation() in the shared grammar.
+                if _load_grammar().is_citation(_accepted, _author, *triple[:3]):
+                    continue
+                _accepted.append((_author, *triple[:3]))
+                found.append(triple)
     return found
 
 

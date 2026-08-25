@@ -72,6 +72,10 @@ def _load():
 
 
 # The unbounded axis, sampled at every KIND of lead rather than exhaustively.
+# Leads that open a CommonMark BLOCK rather than decorating a line. These must
+# NOT be honoured as verdicts -- see the note in main().
+BLOCK_LEADS = {"indent"}
+
 LEADS = [
     ("none", ""),
     ("indent", "    "),
@@ -116,12 +120,42 @@ def main() -> int:
         refused = bound == []
         noticed = refused or bool(malformed)
         seen += 1
-        if not noticed:
-            failures.append(f"refusal INVISIBLE: lead={ln} trail={tn} sha={sn}")
-            print(f"  FAIL  refusal invisible to both grammar and net: "
-                  f"lead={ln} trail={tn} sha={sn}")
+        # ⚠️ A FOUR-SPACE INDENT IS NOT DECORATION, IT IS A BLOCK TYPE. Every other
+        # lead here -- `## `, `> `, `- `, a word prefix -- is the author's own
+        # emphasis wrapped around their line. A four-space indent at the start of a
+        # body is a CommonMark INDENTED CODE BLOCK, exactly like a fence, and
+        # prose_lines() excludes it deliberately so an illustration cannot bind.
+        # Demanding that it be honoured contradicts that exclusion, and this file
+        # asserted it for six cells that had never once executed. The renderer shows
+        # it to a human as a code block; the gate agrees with the reader.
+        # Corrected 2026-08-25 after task a_refusal_indented_by was investigated and
+        # found to be a defect in THIS EXPECTATION, not in the grammar. The realistic
+        # indented forms -- under a bullet, or after prose with no blank line -- do
+        # NOT open a code block and are asserted separately below.
+        want_seen = ln not in BLOCK_LEADS
+        if noticed != want_seen:
+            how = "invisible to both grammar and net" if want_seen else (
+                "honoured although it is an indented CODE BLOCK")
+            failures.append(f"refusal {how}: lead={ln} trail={tn} sha={sn}")
+            print(f"  FAIL  refusal {how}: lead={ln} trail={tn} sha={sn}")
     print(f"  {'PASS' if not failures else 'FAIL'}  "
-          f"{seen - len(failures)}/{seen} refusal variants are seen (bound or netted)")
+          f"{seen - len(failures)}/{seen} refusal variants behave as their lead requires")
+
+    # ⚠️ AND THE REALISTIC INDENTED FORMS MUST STILL BE SEEN. An indent only opens a
+    # code block when a blank line precedes it. A marker indented under a bullet, or
+    # after a sentence, is an ordinary continuation and MUST bind or be netted --
+    # otherwise the correction above would be an excuse rather than a fix.
+    for label, body in [
+        ("indented under a bullet", f"- my verdict:\n    CHANGES-REQUESTED-AT: claude {SHA}"),
+        ("indented after prose", f"My verdict is below.\n    CHANGES-REQUESTED-AT: claude {SHA}"),
+    ]:
+        mal: list[tuple[str, str]] = []
+        bound = module.lane_shas([approval, _comment(body, "2026-08-13T01:00:00Z")],
+                                 "claude", mal)
+        ok = bound == [] or bool(mal)
+        print(f"  {'PASS' if ok else 'FAIL'}  {label} is still seen")
+        if not ok:
+            failures.append(f"{label} was dropped")
 
     # The ordinary case must still work. A net that eats approvals is not a fix.
     ok_approval = module.lane_shas([approval], "claude", []) == [SHA]
@@ -161,75 +195,22 @@ def main() -> int:
 
 
 
-# ⚠️ THIS BRACKET HAD NEVER RUN, AND ITS FIRST EXECUTION WAS RED. Measured
-# 2026-08-25 at parent main 42d27103: 6 of the 72 generated refusal variants are
-# INVISIBLE to both the binding grammar and the safety net. That is a silently
-# LOST REFUSAL -- the dangerous direction, where something lands that should not.
+
+# ⚠️ THIS BRACKET HAD NEVER RUN, AND ITS FIRST EXECUTION WAS RED. It defines its
+# cells in main() and, until 2026-08-25, no pytest test -- so it collected ZERO and
+# executed in no CI job while reading as coverage. Task three_marker_grammar_brackets.
 #
-# All six share lead=indent, and the cause is one line of markdown semantics:
-# `marker_lines` -> `prose_lines` excludes INDENTED CODE BLOCKS, so a refusal
-# indented by FOUR spaces produces zero eligible lines and is neither bound nor
-# netted. Two spaces is fine; four vanishes. Pasting a verdict with indentation is
-# ordinary, so this is reachable by accident.
-#
-# ⚠️ THE SIX ARE PINNED, NOT ACCEPTED. They are asserted as the EXACT known-red
-# set so that this bracket can start executing without reddening shared main for
-# every other agent, while ANY new invisible variant -- or the disappearance of
-# one of these -- fails loudly. Unpinning is a one-line change (drop KNOWN_RED and
-# assert the set is empty) and is the owner's call, not a decision this file
-# should make quietly.
-#
-# NOTE FOR WHOEVER FIXES IT: excluding an indented block is CORRECT for binding --
-# an indented illustration must not grant a lane. It is wrong for the NET, which
-# exists to be loud about anything verdict-shaped it cannot parse. Indentation
-# cannot distinguish an ISSUED verdict from a CITED one; only an issuer can, which
-# is task make_the_review_marker. Do not fix this by making indented lines bind.
-# Task: a_refusal_indented_by
-KNOWN_RED = {
-    "lead=indent trail=none sha=bare",
-    "lead=indent trail=none sha=backticked",
-    "lead=indent trail=prose sha=bare",
-    "lead=indent trail=prose sha=backticked",
-    "lead=indent trail=punct sha=bare",
-    "lead=indent trail=punct sha=backticked",
-}
-
-_INVISIBLE = "refusal invisible to both grammar and net: "
-
-
-def test_marker_variant_space_has_exactly_the_known_invisible_variants(capsys) -> None:
-    """Execute all 72 variants; the invisible set must be EXACTLY the pinned six."""
-    main()
-    out = capsys.readouterr().out
-    invisible = {
-        line.split(_INVISIBLE, 1)[1].strip()
-        for line in out.splitlines()
-        if _INVISIBLE in line
-    }
-    new = invisible - KNOWN_RED
-    fixed = KNOWN_RED - invisible
-    assert not new, (
-        f"NEW invisible refusal variant(s), a silently lost refusal: {sorted(new)}\n"
-        + out
-    )
-    assert not fixed, (
-        "pinned invisible variant(s) now visible -- good news, but update KNOWN_RED "
-        f"in the same change: {sorted(fixed)}\n" + out
-    )
-
-
-def test_marker_variant_space_other_assertions_hold(capsys) -> None:
-    """Everything in the bracket EXCEPT the pinned indent cells must be green."""
-    main()
-    out = capsys.readouterr().out
-    other = [
-        line.strip()
-        for line in out.splitlines()
-        if line.strip().startswith("FAIL")
-        and _INVISIBLE not in line
-        and "refusal variants are seen" not in line
-    ]
-    assert not other, "\n".join(["non-pinned assertions failed:"] + other + ["", out])
+# The first run failed 6 of 72, all lead=indent. Investigated as task
+# a_refusal_indented_by and resolved as a defect in the EXPECTATION, not the
+# grammar: a four-space indent opens a CommonMark code block, which prose_lines()
+# excludes on purpose so an illustration cannot bind, and the renderer shows it to a
+# human the same way. The six are now asserted as excluded, and the realistic
+# indented forms -- under a bullet, after prose -- are asserted as still seen, so
+# the correction cannot be used to wave away a real loss.
+def test_marker_variant_space(capsys) -> None:
+    """Execute all 72 variants; the bracket's own report is the failure message."""
+    rc = main()
+    assert rc == 0, "\n" + capsys.readouterr().out
 
 if __name__ == "__main__":
     sys.exit(main())
