@@ -210,7 +210,36 @@ def _is_map_err_conversion(tokens: Sequence[Token], call_start: int) -> bool:
         return False
     map_index = len(window) - 1 - window[::-1].index("map_err")
     suffix = window[map_index + 1 :]
-    return suffix.count("|") >= 2 and any(_is_error_name(value) for value in suffix)
+    if suffix.count("|") < 2:
+        return False
+
+    # THE CLOSURE'S BINDING IS THE SIGNAL, NOT ITS SPELLING. This used to ask
+    # `any(_is_error_name(value) for value in suffix)`, which accepts err,
+    # error, and anything ending _err or _error -- but NOT `e`, the most
+    # ordinary name in Rust for a bound error. So `map_err(|err| ...)` was
+    # exempt and the byte-identical `map_err(|e| ...)` was reported, and a
+    # pure rename flipped the verdict with no change in behaviour.
+    #
+    # Measured 2026-08-25: that produced all 3 findings the gate had against
+    # hermit/ci/manifest-plan/src/runner.rs, none of which compares an error
+    # string -- two are `if let Some(s) = child.try_wait().map_err(|e| ...)?`
+    # and one is `if entry.file_type().map_err(|e| ...)?.is_dir()`. The `?`
+    # propagates; the branch is on Some/None and on a bool. They turned the
+    # PARENT's lint red for a submodule that had done nothing wrong.
+    #
+    # It survived because both existing exemption tests spell the binding
+    # `|error|`, so the suite only ever exercised the name the rule happened
+    # to accept.
+    first = suffix.index("|")
+    second = suffix.index("|", first + 1)
+    inner = first + 1
+    binding = [value for value in suffix[inner:second] if value.isidentifier()]
+    if binding:
+        # Exempt only when the thing rendered IS the bound error, whatever it
+        # is called. `map_err(|e| other.to_string())` still reports, because
+        # then the rendering is not the propagation conversion this allows for.
+        return binding[-1] in suffix[second + 1 :]
+    return any(_is_error_name(value) for value in suffix)
 
 
 def scan_source(source: str, path: pathlib.Path = pathlib.Path("<memory>")) -> list[Finding]:

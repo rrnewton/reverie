@@ -99,6 +99,54 @@ fn run(builder: Builder) -> i32 {
 """
         self.assertEqual(self.kinds(source), [])
 
+    def test_map_err_exemption_ignores_the_binding_name(self) -> None:
+        """A pure rename must not change the verdict.
+
+        BOTH exemption tests above spell the binding ``|error|``, which is the
+        only reason this went unnoticed: the rule accepted err, error, and
+        anything ending _err or _error, but not ``e`` -- the most ordinary Rust
+        name for a bound error. Measured before the fix, these five
+        byte-equivalent snippets split 3 reported / 2 clean purely on spelling:
+        e, ex and problem were reported, err and error were not. Renaming a
+        closure variable turned a clean file red.
+
+        That is what produced every finding the gate had against
+        hermit/ci/manifest-plan/src/runner.rs. None of them compares an error
+        string; the ``?`` propagates and the branch is on Some/None or on a
+        bool. A submodule that had done nothing wrong reddened the parent.
+        """
+        template = """
+fn walk(entry: DirEntry) -> Result<(), String> {{
+    if entry.file_type().map_err(|{name}| {name}.to_string())?.is_dir() {{
+        recurse()?;
+    }}
+    Ok(())
+}}
+"""
+        for name in ("e", "err", "error", "ex", "problem"):
+            with self.subTest(binding=name):
+                self.assertEqual(self.kinds(template.format(name=name)), [])
+
+    def test_map_err_exemption_still_reports_a_foreign_rendering(self) -> None:
+        """The exemption is for converting the BOUND error, not any rendering.
+
+        Widening it to "there is a map_err somewhere" would have been the easy
+        fix and would have blinded the gate inside every map_err closure. The
+        binding must be the thing rendered.
+        """
+        source = """
+fn walk(entry: DirEntry) -> Result<(), String> {
+    if entry.file_type().map_err(|e| other.to_string())?.is_dir() {
+        recurse()?;
+    }
+    Ok(())
+}
+"""
+        self.assertEqual(
+            self.kinds(source),
+            ["error display string used as a control-flow condition"],
+        )
+
     def test_ignores_non_error_values_comments_and_strings(self) -> None:
         source = r'''
 fn inspect(path: PathBuf) -> bool {
