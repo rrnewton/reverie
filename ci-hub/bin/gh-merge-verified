@@ -140,6 +140,8 @@ from __future__ import annotations
 
 import atexit
 import json
+import re
+import pathlib
 import os
 import shutil
 import time
@@ -297,9 +299,38 @@ def looks_unreachable(text: str) -> bool:
     )
 
 
-def _undecorate(line: str) -> str:
-    """Drop leading whitespace, blockquote markers and markdown emphasis."""
-    return line.lstrip().lstrip("#>*_-").lstrip()
+def _load_grammar():
+    """The marker grammar, from its single authority.
+
+    ⚠️ CALL, DO NOT REIMPLEMENT. This file used to carry its own copy of the
+    marker parsing. Two parsers for one grammar is the defect sweep check 14
+    names, and these two HAD already drifted: the authority anchored at column 0
+    and so failed open on a heading-formatted refusal, while this copy stripped
+    decoration and did not. A landing guard and a review board are entitled to
+    different POLICY -- everything below this function is policy, and it is
+    deliberately stricter -- but they must not disagree about what a marker line
+    SAYS.
+
+    Imported by path rather than as a package because `ci-hub/health` is not one.
+    If the authority cannot be loaded we do NOT silently fall back to a private
+    parser: a landing guard that quietly downgrades its own grammar is the exact
+    failure this refactor removes. The caller refuses instead.
+    """
+    import importlib.util
+
+    target = pathlib.Path(__file__).resolve().parent.parent / "health" / "approval_binding.py"
+    spec = importlib.util.spec_from_file_location("approval_binding", target)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"cannot load the marker grammar from {target}")
+    module = importlib.util.module_from_spec(spec)
+    try:
+        spec.loader.exec_module(module)
+    except SystemExit:  # the authority guards its own CLI entry point
+        pass
+    return module
+
+
+_REFUSAL_SHAPED = re.compile(r"CHANGES[-\s]?REQUESTED", re.IGNORECASE)
 
 
 
@@ -351,15 +382,34 @@ def blocking_changes_requests(pr: str, repo: str, head: str) -> list[str]:
     native = [r for r in doc.get("reviews", [])
               if (r.get("state") or "") == "CHANGES_REQUESTED"]
 
+    grammar = _load_grammar()
+
     blocking, withdrawn = [], False
     for body in bodies:
         for line in body.splitlines():
             if not head or head not in line:
                 continue
-            bare = _undecorate(line)
-            if bare.startswith("CHANGES-REQUESTED-WITHDRAWN-AT"):
-                withdrawn = True
-            elif bare.startswith("CHANGES-REQUESTED-AT"):
+            parsed = grammar.parse_marker(line)
+            if parsed is not None:
+                kind, _lane, sha = parsed
+                if sha != head:
+                    continue
+                # POLICY, and it is deliberately lane-agnostic: a refusal in ANY
+                # lane stops this merge. The authority is lane-aware because a
+                # board must report per-lane; a lander only needs to know whether
+                # anybody said no.
+                if kind == grammar.MARKER_WITHDRAWN:
+                    withdrawn = True
+                elif kind == grammar.MARKER_REFUSED:
+                    blocking.append(line.strip())
+                continue
+            # POLICY: over-block on a refusal-shaped line the grammar cannot
+            # parse. For a landing guard a false negative merges over a block
+            # while a false positive costs one push, so an unparseable refusal
+            # naming this head is treated as a refusal. This is the same
+            # fail-closed choice the authority now makes at its gate, expressed
+            # here as blocking rather than as a non-zero exit.
+            if _REFUSAL_SHAPED.search(line):
                 blocking.append(line.strip())
     if withdrawn:
         blocking = []

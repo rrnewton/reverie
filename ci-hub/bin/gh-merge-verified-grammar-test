@@ -1,0 +1,123 @@
+#!/usr/bin/env python3
+"""The lander must CALL the marker grammar, not carry a second copy of it.
+
+WHY THIS EXISTS. `ci-hub/health/approval_binding.py` and this lander both had to
+decide what a marker line says, and each had its own parser. Two parsers for one
+grammar is the defect sweep check 14 names, and these two HAD already drifted:
+the authority anchored at column 0 and failed open on a heading-formatted
+refusal, while the lander stripped decoration and did not. The lander being the
+stricter of the two was luck, not design -- and the next drift is not guaranteed
+to fall the safe way.
+
+WHAT IS AND IS NOT SHARED. The GRAMMAR is shared: what a marker line says. The
+POLICY is not, and should not be. A landing guard and a review board legitimately
+differ, and the lander is deliberately the stricter:
+
+    lane-agnostic          a refusal in ANY lane stops the merge; the authority
+                           is per-lane because a board must report per-lane
+    withdrawal             CHANGES-REQUESTED-WITHDRAWN-AT clears a block here
+    native review state    GitHub's own CHANGES_REQUESTED blocks here
+    over-block             a refusal-shaped line the grammar cannot parse blocks
+
+Those four are why "just call approval_binding and delete the rest" is the wrong
+refactor: every one of them would be lost, and every loss is in the merge-more
+direction. This bracket pins both halves -- one grammar, and the policy intact.
+"""
+
+from __future__ import annotations
+
+import importlib.machinery
+import importlib.util
+import json
+import pathlib
+import re
+import sys
+
+HERE = pathlib.Path(__file__).resolve().parent
+LANDER = HERE / "gh-merge-verified"
+SHA = "b3ca4e155098ad6e6f32f507ed72855da0638010"
+OTHER = "a" * 40
+
+
+def load(path: pathlib.Path, name: str):
+    loader = importlib.machinery.SourceFileLoader(name, str(path))
+    spec = importlib.util.spec_from_loader(name, loader)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    try:
+        spec.loader.exec_module(module)
+    except SystemExit:
+        pass
+    return module
+
+
+def probe(module, body: str) -> bool:
+    module.run = lambda argv, **kw: (
+        0,
+        json.dumps({"comments": [{"body": body}], "reviews": []}),
+        "",
+    )
+    return len(module.blocking_changes_requests("1", "o/r", SHA)) > 0
+
+
+CASES = [
+    ("plain refusal blocks", f"CHANGES-REQUESTED-AT: claude {SHA}", True),
+    ("heading refusal blocks", f"## CHANGES-REQUESTED-AT: claude {SHA}", True),
+    ("blockquote refusal blocks", f"> CHANGES-REQUESTED-AT: claude {SHA}", True),
+    ("bold refusal blocks", f"**CHANGES-REQUESTED-AT: claude {SHA}**", True),
+    ("list refusal blocks", f"- CHANGES-REQUESTED-AT: claude {SHA}", True),
+    # POLICY, lane-agnostic: the authority would report this as codex-only.
+    ("codex refusal blocks too", f"CHANGES-REQUESTED-AT: codex {SHA}", True),
+    # POLICY, over-block: unparseable but refusal-shaped, naming this head.
+    ("unparseable refusal shape blocks", f"CHANGES REQUESTED for {SHA} -- see below", True),
+    ("withdrawal clears", f"CHANGES-REQUESTED-AT: claude {SHA}\nCHANGES-REQUESTED-WITHDRAWN-AT: claude {SHA}", False),
+    ("approval alone passes", f"APPROVED-AT: claude {SHA}", False),
+    ("refusal at another sha passes", f"CHANGES-REQUESTED-AT: claude {OTHER}", False),
+]
+
+
+def main() -> int:
+    failures = []
+    lander = load(LANDER, "lander_under_test")
+
+    for name, body, want_block in CASES:
+        got = probe(lander, body)
+        ok = got == want_block
+        print(f"  {'PASS' if ok else 'FAIL'}  {name}: blocks={got} want={want_block}")
+        if not ok:
+            failures.append(name)
+
+    # STRUCTURAL: the grammar must come from the authority, not from here.
+    source = LANDER.read_text()
+    if "parse_marker" not in source:
+        failures.append("lander no longer calls the shared parse_marker")
+        print("  FAIL  lander does not call parse_marker")
+    else:
+        print("  PASS  lander calls the shared parse_marker")
+
+    private = re.findall(r"CHANGES-REQUESTED-AT[\"']\s*\)", source)
+    if private:
+        failures.append("lander reintroduced a private marker parser")
+        print(f"  FAIL  lander appears to parse markers privately: {private[:2]}")
+    else:
+        print("  PASS  lander carries no private marker parser")
+
+    # And the authority really is the thing being called.
+    authority = load(HERE.parent / "health" / "approval_binding.py", "authority_under_test")
+    if authority.parse_marker(f"## CHANGES-REQUESTED-AT: claude {SHA}") is None:
+        failures.append("authority cannot parse a decorated refusal")
+        print("  FAIL  authority cannot parse a decorated refusal")
+    else:
+        print("  PASS  authority parses a decorated refusal")
+
+    total = len(CASES) + 3
+    print(f"\nassertions: {total - len(failures)} passed, {len(failures)} failed")
+    if failures:
+        print("RESULT: FAIL")
+        return 1
+    print("RESULT: PASS")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

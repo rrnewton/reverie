@@ -224,6 +224,116 @@ def github_actions_enabled(repo: str) -> bool:
 _BLOCK_PREFIX = re.compile(r"^(?:#{1,6}\s+|>\s*|[-+*]\s+)")
 
 
+def _undecorate(line: str) -> str:
+    """Remove only markdown that wraps the complete verdict line.
+
+    ``str.strip("*_`")`` also removed a lone opening backtick.  That
+    promoted an inline-code quotation followed by prose into a verdict-ish
+    line, even though the comment explicitly said it was not a re-approval.
+    Whole-line emphasis is legitimate; a code span embedded in prose is
+    not a binding.
+    """
+    line = line.strip()
+    while True:
+        for wrapper in ("`", "**", "__", "*", "_"):
+            if (
+                line.startswith(wrapper)
+                and line.endswith(wrapper)
+                and len(line) > 2 * len(wrapper)
+            ):
+                line = line[len(wrapper):-len(wrapper)].strip()
+                break
+        else:
+            return line
+
+def _undecorate_block(line: str) -> str:
+    """`_undecorate`, plus LEADING block-level markdown: ``##``, ``>``, ``-``.
+
+    WHY THIS CANNOT MANUFACTURE A FALSE POSITIVE, which is the only reason
+    it is safe to strip more: removing a prefix does not decide anything.
+    After stripping, the strict grammar still has to match the whole
+    remaining line -- keyword, colon, lane, and a 40-hex, anchored at both
+    ends. There is no string that becomes a verdict by having ``##``
+    removed from it that was not already a verdict wearing a hat. Stripping
+    can only ever move a line from "unparsed" to "parsed as exactly what it
+    says"; it can never change what a parsed line says.
+
+    The converse is what made this necessary. `_undecorate` handled paired
+    emphasis but not block-level prefixes, so a verdict written as a
+    Markdown heading fell through to silence -- and silence is not neutral
+    here. A lost APPROVED-AT reads as ABSENT (no authority granted, safe); a
+    lost CHANGES-REQUESTED-AT leaves the lane's EARLIER approval standing as
+    the newest binding, so the tool reports the lane SATISFIED while a live
+    exact-head refusal sits unparsed on the same pull request. Same cause,
+    opposite consequences, and only one of them is safe.
+
+    Measured on https://github.com/rrnewton/hermit/pull/2176: a Claude-lane
+    refusal posted as ``## CHANGES-REQUESTED-AT: claude b3ca4e15...`` did
+    not bind, and the 18:15Z approval at that same head stayed authoritative
+    for twelve days. That is the mechanism behind
+    https://github.com/rrnewton/hermit/pull/2591 merging over a valid block.
+    """
+    prev = None
+    while prev != line:
+        prev = line
+        line = _BLOCK_PREFIX.sub("", line.strip())
+        line = _undecorate(line)
+    return line
+
+
+# ---------------------------------------------------------------------------
+# THE SHARED GRAMMAR. One definition, several policies.
+#
+# WHY THIS IS MODULE-LEVEL AND PUBLIC. `ci-hub/bin/gh-merge-verified` had its own
+# copy of this parsing, so there were TWO parsers for one grammar and they had
+# already drifted. Sweep check 14 is about exactly this shape, and the truncation
+# rule existing three ways is the same defect in another file. A landing guard and
+# a review board are ENTITLED to different POLICY -- the lander deliberately
+# over-blocks, honours CHANGES-REQUESTED-WITHDRAWN-AT, and respects GitHub's
+# native CHANGES_REQUESTED review state, none of which this module does -- but
+# they must not disagree about what a marker line SAYS. Policy may differ; the
+# grammar may not.
+#
+# So callers get the classification from here and apply their own policy on top.
+
+MARKER_APPROVED = "APPROVED-AT"
+MARKER_REFUSED = "CHANGES-REQUESTED-AT"
+MARKER_WITHDRAWN = "CHANGES-REQUESTED-WITHDRAWN-AT"
+
+# Longest first: CHANGES-REQUESTED-WITHDRAWN-AT must not be read as a refusal.
+_MARKER_RE = re.compile(
+    r"^(CHANGES-REQUESTED-WITHDRAWN-AT|CHANGES-REQUESTED-AT|APPROVED-AT):"
+    r"\s*(claude|codex)\s+([0-9a-f]{40})$",
+    re.IGNORECASE,
+)
+
+
+def strip_decoration(line: str) -> str:
+    """Normalise a candidate marker line: whole-line emphasis AND block prefixes.
+
+    Removing decoration cannot manufacture a false positive, which is the only
+    reason it is safe to strip: the anchored grammar still has to match the whole
+    remaining line afterwards. Nothing becomes a verdict by losing a ``##`` unless
+    it already was one.
+    """
+    return _undecorate_block(line)
+
+
+def parse_marker(line: str) -> tuple[str, str, str] | None:
+    """``(kind, lane, sha)`` for a canonical marker line, else ``None``.
+
+    `kind` is one of the ``MARKER_*`` constants, upper-cased; `lane` is
+    lower-cased. Decoration is stripped first, so a marker written as a heading,
+    a blockquote, a list item or in bold parses identically to a bare one --
+    which is the fail-open this function exists to make impossible to reintroduce
+    in one consumer but not another.
+    """
+    match = _MARKER_RE.match(strip_decoration(line))
+    if not match:
+        return None
+    return match.group(1).upper(), match.group(2).lower(), match.group(3)
+
+
 def lane_shas(
     comments: list[dict[str, Any]],
     lane: str,
@@ -276,62 +386,7 @@ def lane_shas(
     if malformed is None:
         malformed = []
 
-    def undecorate(line: str) -> str:
-        """Remove only markdown that wraps the complete verdict line.
-
-        ``str.strip("*_`")`` also removed a lone opening backtick.  That
-        promoted an inline-code quotation followed by prose into a verdict-ish
-        line, even though the comment explicitly said it was not a re-approval.
-        Whole-line emphasis is legitimate; a code span embedded in prose is
-        not a binding.
-        """
-        line = line.strip()
-        while True:
-            for wrapper in ("`", "**", "__", "*", "_"):
-                if (
-                    line.startswith(wrapper)
-                    and line.endswith(wrapper)
-                    and len(line) > 2 * len(wrapper)
-                ):
-                    line = line[len(wrapper):-len(wrapper)].strip()
-                    break
-            else:
-                return line
-
-    def undecorate_block(line: str) -> str:
-        """`undecorate`, plus LEADING block-level markdown: ``##``, ``>``, ``-``.
-
-        WHY THIS CANNOT MANUFACTURE A FALSE POSITIVE, which is the only reason
-        it is safe to strip more: removing a prefix does not decide anything.
-        After stripping, the strict grammar still has to match the whole
-        remaining line -- keyword, colon, lane, and a 40-hex, anchored at both
-        ends. There is no string that becomes a verdict by having ``##``
-        removed from it that was not already a verdict wearing a hat. Stripping
-        can only ever move a line from "unparsed" to "parsed as exactly what it
-        says"; it can never change what a parsed line says.
-
-        The converse is what made this necessary. `undecorate` handled paired
-        emphasis but not block-level prefixes, so a verdict written as a
-        Markdown heading fell through to silence -- and silence is not neutral
-        here. A lost APPROVED-AT reads as ABSENT (no authority granted, safe); a
-        lost CHANGES-REQUESTED-AT leaves the lane's EARLIER approval standing as
-        the newest binding, so the tool reports the lane SATISFIED while a live
-        exact-head refusal sits unparsed on the same pull request. Same cause,
-        opposite consequences, and only one of them is safe.
-
-        Measured on https://github.com/rrnewton/hermit/pull/2176: a Claude-lane
-        refusal posted as ``## CHANGES-REQUESTED-AT: claude b3ca4e15...`` did
-        not bind, and the 18:15Z approval at that same head stayed authoritative
-        for twelve days. That is the mechanism behind
-        https://github.com/rrnewton/hermit/pull/2591 merging over a valid block.
-        """
-        prev = None
-        while prev != line:
-            prev = line
-            line = _BLOCK_PREFIX.sub("", line.strip())
-            line = undecorate(line)
-        return line
-
+    # `_undecorate` / `_undecorate_block` are module-level so the lander shares them.
     reject_legacy = re.compile(
         r"^REQUEST\s+CHANGES\s+AT\s+[0-9a-f]{40}$", re.IGNORECASE
     )
@@ -358,7 +413,7 @@ def lane_shas(
         # Match on the block-normalised form. Stripping a leading marker cannot
         # invent a verdict -- the anchored grammar still has to match afterwards --
         # and refusing to strip it is what let a heading-formatted refusal fail open.
-        lines = [undecorate_block(l) for l in body.split("\n")]
+        lines = [_undecorate_block(l) for l in body.split("\n")]
         # A rejection contributes NOTHING, even if the same comment also carries
         # an APPROVED-AT-shaped line -- a comment quoting the convention, or
         # quoting the approval it supersedes, must not bind as a positive.
