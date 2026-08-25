@@ -709,7 +709,7 @@ say "validation landability authorized: $receipt_detail"
 # cannot be read is not a marker that does not apply -- that is the fail-open a
 # fourth marker variant already walked through tonight.
 cr_gate_out=$(python3 "$ROOT/ci-hub/bin/changes-requested-gate" \
-  --repo "$R" --pr "$PR" --head "$HEAD" 2>&1); cr_gate_rc=$?
+  --repo "$R" --pr "$PR" --head "$HEAD" --source "$WT" 2>&1); cr_gate_rc=$?
 case "$cr_gate_rc" in
   0) say "changes-requested gate: clear -- $cr_gate_out" ;;
   *) abandon "REFUSING TO MERGE: $cr_gate_out" 5 ;;

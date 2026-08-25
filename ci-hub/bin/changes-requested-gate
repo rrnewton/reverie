@@ -169,6 +169,42 @@ def markers(bodies: list[str]) -> list[tuple[str, str | None]]:
     return found
 
 
+def head_is_main_equal(source: str, head: str) -> bool:
+    """Does `head` carry nothing over origin/main in `source`?
+
+    ⚠️ A WIPED BRANCH IS NOT A CLEAN HEAD, AND IT LAUNDERS EVERY REFUSAL. Something
+    on this box closes pull requests and RESETS BRANCHES to main-equal on a ~10
+    minute cadence -- hermit#2448 four times. When that happens the head sha MOVES,
+    so every refusal naming the old sha stops binding and this gate reports its most
+    reassuring verdict: "refusal marker(s) present but none names <head> -- superseded
+    by a later push, the correct clearing path". That sentence is equally true of an
+    author pushing a fix and of a branch wiped out from under the review, and comments
+    alone cannot tell them apart.
+
+    A main-equal head also merges as a NO-OP, so the pull request closes as "merged"
+    while its content never landed -- a landing verified before a wipe looks identical
+    to one that reverted itself.
+
+    FAILS SAFE TOWARD NOT-WIPED: if git cannot answer, this returns False and the
+    verdict is unchanged, because inventing a wipe would refuse honest heads. The
+    check is skipped entirely without --source, which the caller states rather than
+    hiding. Measured 2026-08-25: 0 of 28 open heads were main-equal, so this costs
+    nothing today and exists for the state the wipe leaves behind.
+    """
+    try:
+        subprocess.run(["git", "-C", source, "fetch", "-q", "--force", "origin",
+                        "refs/heads/main:refs/tmp/crg/main"],
+                       capture_output=True, timeout=120, check=False)
+        r = subprocess.run(["git", "-C", source, "diff", "--name-only",
+                            "refs/tmp/crg/main", head],
+                           capture_output=True, text=True, timeout=120)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    if r.returncode != 0:
+        return False
+    return r.stdout.strip() == ""
+
+
 def evaluate(bodies: list[str], head: str) -> tuple[int, str]:
     found = markers(bodies)
     if not found:
@@ -231,6 +267,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--repo", required=True)
     p.add_argument("--pr", required=True)
     p.add_argument("--head")
+    p.add_argument("--source", help="a checkout, so a main-equal (wiped) head can be detected")
     p.add_argument("--from-json", help="offline: a JSON array of comment bodies")
     args = p.parse_args(argv)
 
@@ -250,6 +287,23 @@ def main(argv: list[str] | None = None) -> int:
                 file=sys.stderr,
             )
             return INDETERMINATE
+        # ⚠️ A WIPED BRANCH IS NOT A CLEAN HEAD, AND IT LAUNDERS EVERY REFUSAL.
+        # Something on this box closes pull requests and RESETS BRANCHES to
+        # main-equal on a ~10 minute cadence -- hermit#2448 four times. When that
+        # happens the head sha MOVES, so every refusal naming the old sha stops
+        # binding and this gate reports the most reassuring verdict it has:
+        # "refusal marker(s) present but none names <head> -- superseded by a later
+        # push, the correct clearing path". That sentence is true of an author
+        # pushing a fix and equally true of a branch that was wiped out from under
+        # the review, and the gate cannot tell them apart from comments alone.
+        #
+        # A main-equal head also merges as a NO-OP, so the pull request closes as
+        # "merged" while its content never landed -- a landing verified before a
+        # wipe looks identical to one that reverted itself.
+        #
+        # Cheap discriminator: if the head carries nothing over main, it is not a
+        # head worth clearing. Requires --source; without it this cannot be checked
+        # and is skipped, which is stated rather than silent.
         # Issue comments are where every marker observed to date lives; reviews and
         # review comments were both EMPTY on hermit#2176, checked 2026-08-25. Read
         # all three anyway -- a container this gate does not read is a way past it.
@@ -271,6 +325,21 @@ def main(argv: list[str] | None = None) -> int:
             bodies.extend(c.get("body") or "" for c in got if isinstance(c, dict))
 
     rc, why = evaluate(bodies, head)
+
+    # A main-equal head cannot CLEAR a pull request that carries refusal markers.
+    # Only downgrades OK -> INDETERMINATE; a BLOCKED verdict is already correct and
+    # is left alone.
+    if rc == OK and args.source and markers(bodies) and head_is_main_equal(args.source, head):
+        rc, why = (
+            INDETERMINATE,
+            f"the head {head[:12]} carries NOTHING over main, and this pull request has "
+            f"refusal marker(s) naming other shas. 'Superseded by a later push' and "
+            f"'the branch was wiped out from under the review' are the same sentence "
+            f"from comments alone, and a main-equal head merges as a no-op -- the pull "
+            f"request would close as merged with nothing landed. Refusing until the head "
+            f"carries the change again.",
+        )
+
     label = {OK: "CLEAR", BLOCKED: "BLOCKED", INDETERMINATE: "INDETERMINATE"}[rc]
     stream = sys.stdout if rc == OK else sys.stderr
     print(f"changes-requested-gate: {label} pr={args.pr} head={head[:12]} -- {why}", file=stream)
