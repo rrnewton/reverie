@@ -107,6 +107,21 @@ def test_render_states_denominators():
     rep = rr.reconcile(open_prs, [A, D], certify=lambda s: True,
                        floor=_floor(set()), repo="rrnewton/hermit")
     text = rr.render(rep)
-    assert "VALID (landable NOW, no new validate): 1 of 2" in text
-    assert "ORPHANED" in text and "1 of 2" in text
+    # ⚠️ ASSERT THE INVARIANT THIS TEST IS NAMED FOR, NOT AN INCIDENTAL LABEL.
+    # It previously pinned the exact string "VALID (landable NOW, no new
+    # validate): 1 of 2". The label was later reworded to "VALID (fixed floors;
+    # final base check required)" -- an honest weakening of the CLAIM, since a
+    # final base check is in fact required -- and this test went red. It went red
+    # unnoticed because nothing ran it: `ci-hub/landing` is not in
+    # `run_python_suites.py`'s registry.
+    #
+    # The invariant is the module's stated rule at reconcile_receipts.py:39,
+    # "Every count is stated WITH ITS DENOMINATOR". That still holds. Pinning the
+    # denominator rather than the prose keeps the guard and stops a rewording from
+    # reading as a lost invariant.
+    for state in ("VALID", "FLOOR-BLOCKED", "NOT-CERTIFIED", "ORPHANED"):
+        line = next((ln for ln in text.splitlines()
+                     if ln.strip().startswith(state) and " of " in ln), None)
+        assert line is not None, f"{state} count is missing its denominator:\n{text}"
+        assert "of 2" in line, f"{state} carries the wrong denominator: {line!r}"
     assert "50%" in text  # orphan ratio carries a denominator-derived pct
