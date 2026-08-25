@@ -1,0 +1,2 @@
+time_utc,agent,pid,verdict,command,detail,source_sha256
+2026-08-06T13:27:35Z,hermit-regress,3024086,REFUSED,"cd /home/newton/work/dev-hermit/worktrees/regress/reverie && with-proxy git push origin HEAD:refs/heads/fix/kvm-tree-root-identity-vs-guest-ppid","program 'cd' is not allowlisted. Allowed: cargo, gh, git",9caa979fd7ec6433d308f4cfdf7f02346aa0e88c707211c5a1755892c1838542
