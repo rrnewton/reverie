@@ -8,6 +8,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Sequence
@@ -63,7 +64,7 @@ def _run(
     # from a clean repository environment. The code path's independent origin
     # check remains the authority that binds the requested owner/repository.
     env = git_env.sanitized_git_env()
-    if command and command[0] == "tg":
+    if command and (command[0] == "tg" or str(command[0]).endswith("tg-note-verified")):
         # This module WRITES: it is the only producer of CLOSURE-VERIFIED, and
         # it also runs `tg note` and `tg update --status closed`. An unbound
         # `tg` silently addresses an empty default database, so a misdirected
@@ -492,7 +493,38 @@ def close_task(task: str, evidence: Evidence, *, run: Run = _run) -> int:
         # that ci-hub/directives/tg_landed.py regexes out is unaffected.
         + (f" detail={evidence.reason}" if evidence.reason else "")
     )
-    noted = run(("tg", "note", task, note), cwd=ROOT)
+    # ⚠️ THE CLOSURE NOTE GOES THROUGH THE VERIFIED WRITER, NOT `tg note`.
+    #
+    # This is the single most load-bearing note in the system -- it is the only
+    # producer of CLOSURE-VERIFIED, and `ci-hub/directives/tg_landed.py` regexes
+    # the 40-hex out of it. A note that was stored differently from what was
+    # composed would discharge landing debt against the wrong evidence.
+    # `tg-note-verified` reads the row back out of `task_notes` and compares it
+    # byte-for-byte before reporting success, so the confirmation reflects the
+    # store rather than the call.
+    #
+    # This call was never shell-unsafe -- subprocess with an argv LIST does not
+    # invoke a shell, so nothing here could be substituted. But the PATH guard
+    # that enforces the safe path cannot distinguish a safe argv from a mangled
+    # one (that is precisely why the mangling is undetectable at that layer), so
+    # it refuses the form. Routing through the verified writer satisfies the
+    # guard AND buys the read-back proof, which is strictly better than an
+    # exemption would have been.
+    with tempfile.NamedTemporaryFile(
+        "w", suffix=".note", delete=False, encoding="utf-8"
+    ) as handle:
+        handle.write(note)
+        note_path = handle.name
+    try:
+        noted = run(
+            (str(ROOT / "ci-hub" / "bin" / "tg-note-verified"), task, "--file", note_path),
+            cwd=ROOT,
+        )
+    finally:
+        try:
+            os.unlink(note_path)
+        except OSError:
+            pass
     if noted.returncode != 0:
         print(
             "UNVERIFIABLE "

@@ -78,7 +78,7 @@ out=$(TG_NOTE_VERIFIED=1 command tg note "$task" "$content" 2>&1); rc=$?
 [ "$rc" -eq 0 ] || die "tg note failed (rc=$rc): $out"
 
 # Rule 2: the confirmation must reflect the STORE, not the call. Read it back.
-readback=$(mktemp); TMPFILES="$TMPFILES $readback $readback.raw $readback.1"
+readback=$(mktemp); TMPFILES="$TMPFILES $readback $readback.raw $readback.1 $readback.in.norm $readback.rb.norm"
 tg sql "select content from task_notes where task_id='$task' order by created_at desc limit 1" \
     2>/dev/null | sed '1,2d' > "$readback.raw" || die "could not read the note back"
 
@@ -88,7 +88,19 @@ tg sql "select content from task_notes where task_id='$task' order by created_at
 sed -e '${/^([0-9]* rows\?)$/d}' "$readback.raw" > "$readback.1"
 sed -e '${/^$/d}' "$readback.1" > "$readback"
 
-if diff -q "$input" "$readback" >/dev/null 2>&1; then
+# ⚠️ ACCOUNT FOR THE FRAMING'S TRAILING NEWLINE, AND NOTHING ELSE.
+# `tg sql` emits the row followed by a newline, so a note whose content does NOT
+# end in one reads back exactly one byte longer. Measured: a 46-byte note with no
+# final newline returns 47 bytes, identical otherwise. close-task composes exactly
+# such a note, so a naive byte compare REFUSES EVERY CLOSURE -- a false refusal
+# that would have broken it again in a new way. Normalise both sides to end in
+# exactly one newline; any other difference, including anywhere inside the
+# content, still refuses.
+normalise() { if [ -s "$1" ] && [ "$(tail -c1 "$1" | od -An -c | tr -d ' \n')" != '\n' ]; then cat "$1"; printf '\n'; else cat "$1"; fi; }
+normalise "$input"    > "$readback.in.norm"
+normalise "$readback" > "$readback.rb.norm"
+
+if diff -q "$readback.in.norm" "$readback.rb.norm" >/dev/null 2>&1; then
     bytes=$(wc -c < "$input" | tr -d ' ')
     lines=$(wc -l < "$input" | tr -d ' ')
     printf 'tg-note-verified: STORED AND VERIFIED byte-for-byte (%s bytes, %s lines) on %s\n' \
@@ -101,7 +113,7 @@ printf '  task: %s\n' "$task" >&2
 printf '  input   : %s bytes\n' "$(wc -c < "$input" | tr -d ' ')" >&2
 printf '  stored  : %s bytes\n' "$(wc -c < "$readback" | tr -d ' ')" >&2
 printf '  first difference:\n' >&2
-diff "$input" "$readback" 2>&1 | head -6 | sed 's/^/    /' >&2
+diff "$readback.in.norm" "$readback.rb.norm" 2>&1 | head -6 | sed 's/^/    /' >&2
 printf '  The note IS in the database; it is the CONFIRMATION that is withheld.\n' >&2
 printf '  Do not treat this note as evidence until the difference is explained.\n' >&2
 exit 1
