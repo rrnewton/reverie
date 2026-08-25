@@ -479,6 +479,34 @@ def evaluate(
         if kind == WITHDRAWN and lane is not None and binds(sha)
         and _RETIRES.search(by_id.get(cid, ""))
     }
+    # ⚠️ AN UNQUOTED WITHDRAWAL RETIRES ONE REFUSAL, NOT EVERY REFUSAL IN ITS LANE.
+    # The choice was framed as retire-nothing versus retire-all: retire-nothing is
+    # stricter but "would flip every live head carrying an existing unquoted
+    # withdrawal to BLOCKED at once". RETIRING ONE IS THE MIDDLE PATH and it was not on
+    # the table. It flips only the heads where a lane has MORE refusals than
+    # withdrawals -- precisely where the over-clearing happens, and exactly the set
+    # `one_for_many()` already names, so the migration cost is measurable before it is
+    # taken rather than estimated.
+    #
+    # It needs no issuer, which is what made this look unfixable: it never asks WHO
+    # withdrew, only HOW MANY objections were retired.
+    #
+    # ⚠️ IT DELIBERATELY CHANGES ONE CASE: a reviewer who posts two refusals and
+    # withdraws once now leaves one live. That is right -- two objections were raised,
+    # one was retracted, and the second was never spoken to. A second withdrawal costs
+    # one line and is the only way the record distinguishes "I retract both" from
+    # "I retract one of two".
+    #
+    # Measured on the real pair from hermit#2625 -- c5417453728 and c5417519496, two
+    # SAME-LANE refusals from different agents, plus the unquoted withdrawal
+    # c5417606538 -- this returns BLOCKED where lane-wide returned CLEAR. A QUOTED
+    # withdrawal is untouched: it is handled above and stays exact.
+    unquoted_left: dict[str, int] = {}
+    for kind, lane, sha, cid in found4:
+        if (kind == WITHDRAWN and lane is not None and binds(sha)
+                and not _RETIRES.search(by_id.get(cid, ""))):
+            unquoted_left[lane] = unquoted_left.get(lane, 0) + 1
+
     live = []
     for lane, sha, cid in bound4:
         if str(cid) in retired_ids:
@@ -486,8 +514,10 @@ def evaluate(
         if lane is not None and lane in precise_lanes:
             live.append((lane, sha))      # precise lane, and this one was not named
             continue
-        if lane is None or lane not in withdrawn_lanes:
-            live.append((lane, sha))
+        if lane is not None and unquoted_left.get(lane, 0) > 0:
+            unquoted_left[lane] -= 1      # one unquoted withdrawal retires one refusal
+            continue
+        live.append((lane, sha))
     cleared = len(bound) - len(live)
 
     if bound and not live:
@@ -528,6 +558,45 @@ def evaluate(
     )
 
 
+_T_HEAD = "f013ac4b1a3155ebede568c5667f915a4c8ff6b1"
+_T_REF = f"CHANGES-REQUESTED-AT: claude {_T_HEAD}"
+_T_WD = f"CHANGES-REQUESTED-WITHDRAWN-AT: claude {_T_HEAD}"
+_T_CODEX_REF = f"CHANGES-REQUESTED-AT: codex {_T_HEAD}"
+
+
+def self_test() -> int:
+    """Bracket withdrawal scoping. Both defects it covers were live, not imagined.
+
+    ⚠️ THE MARKER LINES ARE REAL, from hermit#2625 comments c5417453728 and
+    c5417519496 (two refusals, SAME LANE, different agents) and c5417606538 (the
+    unquoted withdrawal). Same-lane is what makes it a test of the gate: a synthetic
+    pair would likely have used two lanes and passed for the wrong reason, which the
+    cross-lane fix already covers.
+    """
+    cases = [
+        ("two same-lane refusals, no withdrawal", [_T_REF, _T_REF], BLOCKED),
+        # ⚠️ MUST STAY CLEAR. It is easy to fix the next case by retiring nothing,
+        # which passes it and silently removes a reviewer's ability to retract even
+        # their own objection.
+        ("one refusal and its own withdrawal", [_T_REF, _T_WD], OK),
+        ("two same-lane refusals, ONE unquoted withdrawal", [_T_REF, _T_REF, _T_WD], BLOCKED),
+        # Guards the cross-lane fix that landed before this one.
+        ("claude withdrawal must not clear a CODEX refusal", [_T_CODEX_REF, _T_WD], BLOCKED),
+    ]
+    bad = []
+    for name, bodies, want in cases:
+        got, why = evaluate(bodies, _T_HEAD)
+        if got != want:
+            bad.append(f"{name}: got {got}, want {want} -- {why[:80]}")
+    for b in bad:
+        print(f"changes-requested-gate self-test: FAIL -- {b}", file=sys.stderr)
+    if bad:
+        return 1
+    print(f"changes-requested-gate self-test: OK -- {len(cases)} withdrawal-scoping "
+          "case(s), including the same-lane pair from hermit#2625")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--repo", required=True)
@@ -535,6 +604,12 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--head")
     p.add_argument("--source", help="a checkout, so a main-equal (wiped) head can be detected")
     p.add_argument("--from-json", help="offline: a JSON array of comment bodies")
+    p.add_argument("--self-test", action="store_true",
+                   help="exercise the withdrawal-scoping cases and exit")
+    if argv is None:
+        argv = sys.argv[1:]
+    if "--self-test" in argv:
+        return self_test()
     args = p.parse_args(argv)
 
     if args.from_json:
