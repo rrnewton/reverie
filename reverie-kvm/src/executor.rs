@@ -9930,13 +9930,14 @@ fn rt_sigaction(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u
     if action.is_some() && matches!(signal, libc::SIGKILL | libc::SIGSTOP) {
         return negative_errno(libc::EINVAL);
     }
-    if signal == libc::SIGCHLD
-        && action
-            .as_ref()
-            .is_some_and(|action| !matches!(kernel_sigaction_handler(action), 0 | 1))
-    {
-        return negative_errno(libc::ENOSYS);
-    }
+    // Installing a real SIGCHLD handler is ACCEPTED, not refused. Linux implements
+    // this call and both the native host and the ptrace backend return 0; hermit's
+    // tests/c/kvm_exact_child_waits.c requires success. Recording the action is also
+    // harmless for the auto-reap decision below: `sigchld_auto_reaps` matches only
+    // SIG_IGN and SA_NOCLDWAIT, so a real handler correctly yields false and the
+    // child stays waitable. Whether KVM should additionally DELIVER that handler is
+    // a separate, still-open question; accepting the installation does not answer it
+    // and does not claim delivery.
 
     let previous = state
         .signal_actions
