@@ -863,9 +863,47 @@ def wait_for_unit(
         sleep(poll_seconds)
 
 
+def retained_path_state(raw: str) -> str:
+    """Describe a retained artifact path so a reader can tell the cases apart.
+
+    A receipt that names a path a reader cannot use is worse than one that names
+    none, because it reads as complete. Three outcomes mean three different
+    things and only the first is ordinary: POPULATED is a normal run, EMPTY says
+    the run produced nothing there (the runner never wrote, or its output was
+    cleaned), and ABSENT says the directory was never created at all. Before
+    this, all three printed identically -- the line was emitted on the
+    truthiness of a computed path string, which is always true.
+
+    THIS NEVER RAISES AND NEVER FAILS A RUN. An empty artifact directory is not
+    necessarily an error, and turning a reporting gap into a standing red is how
+    a newly-enforcing check gets suppressed within a week. It reports the
+    distinction and leaves the judgement to the reader.
+    """
+    try:
+        path = Path(raw)
+        if not path.exists():
+            return "absent"
+        if not path.is_dir():
+            return "not a directory"
+        entries = sum(1 for _ in path.iterdir())
+    except OSError as error:
+        # Even an unreadable path must not fail the run; name it and move on.
+        return f"unreadable: {error.strerror or error}"
+    if entries == 0:
+        return "empty"
+    return f"{entries} entry" if entries == 1 else f"{entries} entries"
+
+
 def emit_report(report: Mapping[str, Any], *, json_output: bool) -> None:
     if json_output:
-        print(json.dumps(dict(report), sort_keys=True), flush=True)
+        # Additive only: existing keys keep their meaning, and a machine reader
+        # gets the same distinction the console line now carries.
+        enriched = dict(report)
+        for key in ("e2e_result_root", "safe_ci_dag_runner_log_dir"):
+            value = enriched.get(key)
+            if value:
+                enriched[f"{key}_state"] = retained_path_state(str(value))
+        print(json.dumps(enriched, sort_keys=True), flush=True)
         return
     event = report.get("event", "state").upper()
     print(
@@ -882,9 +920,11 @@ def emit_report(report: Mapping[str, Any], *, json_output: bool) -> None:
     if report.get("log"):
         print(f"LOG {report['log']}", flush=True)
     if report.get("e2e_result_root"):
-        print(f"E2E_RESULTS {report['e2e_result_root']}", flush=True)
+        state = retained_path_state(str(report["e2e_result_root"]))
+        print(f"E2E_RESULTS {report['e2e_result_root']} [{state}]", flush=True)
     if report.get("safe_ci_dag_runner_log_dir"):
-        print(f"RUNNER_LOGS {report['safe_ci_dag_runner_log_dir']}", flush=True)
+        state = retained_path_state(str(report["safe_ci_dag_runner_log_dir"]))
+        print(f"RUNNER_LOGS {report['safe_ci_dag_runner_log_dir']} [{state}]", flush=True)
 
 
 def attach(

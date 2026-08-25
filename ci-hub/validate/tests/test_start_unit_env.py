@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import contextlib
 import io
+import json
 import sys
 import unittest
 from pathlib import Path
@@ -120,6 +121,71 @@ class StartUnitEnvTest(unittest.TestCase):
             f"RUNNER_LOGS {artifact_root / 'safe-ci-dag-runner'}",
             output.getvalue(),
         )
+
+    def _emit_runner_logs(self, path, *, json_output=False) -> str:
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            su.emit_report(
+                {
+                    "event": "handle",
+                    "unit": "validate-test.service",
+                    "target": TARGET,
+                    "state": "running",
+                    "safe_ci_dag_runner_log_dir": str(path),
+                },
+                json_output=json_output,
+            )
+        return output.getvalue()
+
+    def test_retained_path_state_distinguishes_the_three_cases(self) -> None:
+        """Absent, empty and populated must not read identically.
+
+        This is the defect: the line was printed on the truthiness of a computed
+        path string, which is always true, so all three printed the same.
+        """
+        absent = self.root / "never-created"
+        empty = self.root / "empty-logs"
+        empty.mkdir(parents=True)
+        populated = self.root / "real-logs"
+        populated.mkdir(parents=True)
+        (populated / "node.log").write_text("a log line\n")
+
+        self.assertEqual(su.retained_path_state(str(absent)), "absent")
+        self.assertEqual(su.retained_path_state(str(empty)), "empty")
+        self.assertEqual(su.retained_path_state(str(populated)), "1 entry")
+        (populated / "second.log").write_text("another\n")
+        self.assertEqual(su.retained_path_state(str(populated)), "2 entries")
+
+    def test_console_line_names_the_state_both_ways(self) -> None:
+        """A populated run reports populated; an absent one says so."""
+        populated = self.root / "real-logs-2"
+        populated.mkdir(parents=True)
+        (populated / "node.log").write_text("x\n")
+        absent = self.root / "never-created-2"
+
+        good = self._emit_runner_logs(populated)
+        self.assertIn(f"RUNNER_LOGS {populated} [1 entry]", good)
+        bad = self._emit_runner_logs(absent)
+        self.assertIn(f"RUNNER_LOGS {absent} [absent]", bad)
+        # The distinction is the whole point: the two lines must differ.
+        self.assertNotEqual(good, bad)
+
+    def test_json_receipt_carries_the_state_too(self) -> None:
+        """The JSON receipt is what machines read, so it needs the distinction."""
+        empty = self.root / "empty-logs-json"
+        empty.mkdir(parents=True)
+        payload = json.loads(self._emit_runner_logs(empty, json_output=True))
+        self.assertEqual(payload["safe_ci_dag_runner_log_dir_state"], "empty")
+        # Additive: the original key keeps its exact meaning.
+        self.assertEqual(payload["safe_ci_dag_runner_log_dir"], str(empty))
+
+    def test_state_never_raises_and_never_fails_the_run(self) -> None:
+        """An unusable path is a reporting gap, not a product failure."""
+        not_a_dir = self.root / "a-file"
+        not_a_dir.write_text("not a directory\n")
+        self.assertEqual(su.retained_path_state(str(not_a_dir)), "not a directory")
+        # A path that cannot even be stat'd must still return, not raise.
+        self.assertIsInstance(su.retained_path_state("\0invalid"), str)
 
     def test_canonical_run_record_is_passed_to_validate_lock(self) -> None:
         command = build(self.root, dict(self.base_env))
