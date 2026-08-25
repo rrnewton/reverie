@@ -1,0 +1,104 @@
+#!/usr/bin/env bash
+# Copyright (c) Meta Platforms, Inc. and affiliates.
+# All rights reserved.
+#
+# This source code is licensed under the BSD-style license found in the
+# LICENSE file in the root directory of this source tree.
+#
+# Write a task note and PROVE it was stored byte-for-byte, or refuse.
+#
+# WHY THIS EXISTS, AND WHAT IT IS NOT. `tg note` is not the culprit: measured
+# 2026-08-25, tg stores exactly what reaches its argv, and a note containing
+# backticks, `$(...)`, `$?` and `$HOME` round-trips byte-identical. The loss
+# happens ONE LAYER EARLIER, in the caller's shell:
+#
+#     tg note TASK "the exit code was $?"        # bash substitutes -> "was 0"
+#     tg note TASK "run `hermit --verify`"       # bash EXECUTES the backticks
+#
+# By the time tg runs, the original text no longer exists anywhere, so tg cannot
+# detect the loss, cannot refuse it, and correctly reports success for what it
+# was actually given. A real instance, in this repository's own record: a note
+# written as "indistinguishable from $?" is stored as "indistinguishable from 0",
+# which reads as a different and wrong factual claim.
+#
+# THE TWO RULES THIS ENFORCES.
+#   1. Content NEVER appears as literal text in a command line. It comes from a
+#      file or stdin, is held in a variable, and is passed as "$var" -- bash does
+#      not re-evaluate a variable's VALUE, so backticks inside it stay literal.
+#   2. The success message is CONTINGENT ON WHAT WAS STORED. The note is read
+#      back out of the database and compared byte-for-byte with the input. If
+#      they differ, this refuses and prints the first differing line rather than
+#      reporting a success it did not establish.
+#
+# Usage:
+#   tg-note-verified TASK_ID --file PATH
+#   tg-note-verified TASK_ID < note.md
+set -uo pipefail
+
+# ⚠️ AN EXIT TRAP REPLACES THE EXIT STATUS WITH ITS OWN LAST COMMAND'S.
+# A bare `trap 'rm -f ...' EXIT` here made a REFUSAL exit 0, because `rm`
+# succeeded -- this tool reporting a success it had not established, which is
+# precisely the defect it exists to prevent. Capture the status first and
+# re-exit with it.
+TMPFILES=""
+cleanup() { local rc=$?; rm -f $TMPFILES 2>/dev/null; exit "$rc"; }
+trap cleanup EXIT
+
+die() { printf '%s\n' "tg-note-verified: $*" >&2; exit 2; }
+
+[ $# -ge 1 ] || die "usage: tg-note-verified TASK_ID [--file PATH]   (or pipe the note on stdin)"
+task=$1; shift
+
+src=""
+case "${1:-}" in
+    --file) [ $# -ge 2 ] || die "--file needs a path"; src=$2 ;;
+    "")     src="-" ;;
+    *)      die "content must come from --file or stdin, never from an argument.
+  Passing it as an argument is the defect this tool exists to prevent: the shell
+  substitutes backticks, \$(...) and \$? before the note is ever written." ;;
+esac
+
+if [ "$src" = "-" ]; then
+    input=$(mktemp); TMPFILES="$TMPFILES $input"
+    cat > "$input"
+else
+    [ -r "$src" ] || die "cannot read $src"
+    input=$src
+fi
+
+[ -s "$input" ] || die "refusing to write an empty note"
+
+# Rule 1: the value travels in a variable. Never re-quoted into a command line.
+content=$(cat "$input")
+
+out=$(tg note "$task" "$content" 2>&1); rc=$?
+[ "$rc" -eq 0 ] || die "tg note failed (rc=$rc): $out"
+
+# Rule 2: the confirmation must reflect the STORE, not the call. Read it back.
+readback=$(mktemp); TMPFILES="$TMPFILES $readback $readback.raw $readback.1"
+tg sql "select content from task_notes where task_id='$task' order by created_at desc limit 1" \
+    2>/dev/null | sed '1,2d' > "$readback.raw" || die "could not read the note back"
+
+# `tg sql` frames rows with a header, a rule, and a trailing "(N rows)" line.
+# Strip the frame without touching content: drop the final "(N rows)" and the
+# single blank line that precedes it.
+sed -e '${/^([0-9]* rows\?)$/d}' "$readback.raw" > "$readback.1"
+sed -e '${/^$/d}' "$readback.1" > "$readback"
+
+if diff -q "$input" "$readback" >/dev/null 2>&1; then
+    bytes=$(wc -c < "$input" | tr -d ' ')
+    lines=$(wc -l < "$input" | tr -d ' ')
+    printf 'tg-note-verified: STORED AND VERIFIED byte-for-byte (%s bytes, %s lines) on %s\n' \
+        "$bytes" "$lines" "$task"
+    exit 0
+fi
+
+printf 'tg-note-verified: REFUSING TO CONFIRM -- what was stored is NOT what was given.\n' >&2
+printf '  task: %s\n' "$task" >&2
+printf '  input   : %s bytes\n' "$(wc -c < "$input" | tr -d ' ')" >&2
+printf '  stored  : %s bytes\n' "$(wc -c < "$readback" | tr -d ' ')" >&2
+printf '  first difference:\n' >&2
+diff "$input" "$readback" 2>&1 | head -6 | sed 's/^/    /' >&2
+printf '  The note IS in the database; it is the CONFIRMATION that is withheld.\n' >&2
+printf '  Do not treat this note as evidence until the difference is explained.\n' >&2
+exit 1
