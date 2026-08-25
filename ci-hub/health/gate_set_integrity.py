@@ -87,6 +87,11 @@ REQUIRED: dict[str, str] = {
     "reverie_pin_lag_note": "the reverie pin falling behind and blocking snapshots",
     # A checker that can be removed without complaint is the defect it detects.
     "gate_set_integrity": "THIS CHECK -- that the watchers are still configured",
+    # A deleted tool came back UNTRACKED and merged a head before anyone noticed
+    # (gh-pr-merge-verified, 2026-08-25). Listed here because the deterrent that
+    # failed was a docstring: this entry is what makes the mechanism itself
+    # non-removable, which is the same argument as the line above.
+    "deleted_tool_absent": "deliberately-deleted tools reappearing on disk",
 }
 
 DEFAULT_CONFIG = "ci-hub/health/tick-hub.yaml"

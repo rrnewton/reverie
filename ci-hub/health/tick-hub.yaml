@@ -120,6 +120,35 @@ reminders:
       fields:
         component: slot-agent-parity
       title: "active slots have no live agent behind them: {summary}"
+  # ⚠️ A DELETED TOOL CAME BACK UNTRACKED AND MERGED A HEAD.
+  # `ci-hub/bin/gh-pr-merge-verified` was added 01:03 and deleted 01:25 on
+  # 2026-08-25 (8cc9a975) in favour of gh-merge-verified; by 04:38 it was back in
+  # the coordinator's checkout, UNTRACKED and executable, with no changes-request
+  # guard, and it merged hermit#2448 at 16:22:53Z. The deletion was already argued
+  # in gh-merge-verified's own docstring, explicitly "so the deleted one is not
+  # reintroduced by someone who only sees the shape of the hole" -- correct, and
+  # it did not work. A documented deterrent is not a mechanism.
+  #
+  # PASSES THE ADMISSION TEST: an untracked file in a checkout is LOCAL GIT STATE,
+  # which this config names as exactly what the coordinator cannot see. `git log`
+  # for the path reports only the add and the delete, so the repository actively
+  # says it is gone while it sits there running.
+  #
+  # DETECT-ONLY on purpose. It never deletes: the file came back once already, so
+  # a second silent deletion is the move that did not hold the first time, and it
+  # would destroy an agent's in-progress work without asking.
+  - name: deleted_tool_absent
+    cadence_secs: 900
+    gate:
+      cmd: python3 ci-hub/health/deleted_tool_absent.py --root .
+      when: failure
+      capture: true
+    emit:
+      kind: action
+      skill: hard-warn-coordinator
+      fields:
+        component: deleted-tool-reintroduced
+      title: "a deliberately-deleted tool is back on this disk: {summary}"
   - name: worktree_disk_residue
     cadence_secs: 900
     gate:
