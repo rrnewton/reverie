@@ -40,15 +40,67 @@ trap 'rm -rf "$TMP"' EXIT
 
 HEADER=$(head -1 "$SCHEMA_CSV")
 
-# Emit one CSV row into $1, setting only the named columns; every other column is
-# blank. Blank is meaningful here: a blank `deterministic`/parity is "unknown", which
-# is exactly the not-measured state the renderer is supposed to preserve.
+RUN=a1-fixture
+HERM_SHA=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+REV_SHA=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+OUT_SHA=dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
+
+# THE FIXTURE MUST NOW EARN ITS PASSES, and that is why this helper grew.
+#
+# These rows used to set six columns and leave the rest blank. That was correct
+# when written: a blank `deterministic`/parity means "unknown", which is exactly
+# the not-measured state the renderer preserves. But b9f20ef5 and f21dd0d1 made a
+# `pass` count as a QUALIFIED GREEN only when the row carries the evidence behind
+# it -- observable parity, a non-empty INFO comparison, exact code identity, both
+# output hashes, the comparator and tier that produced them, an explicit
+# population, and a clean tree. A six-column row cannot satisfy that, so the
+# renderer refused, and the two cases here that must RENDER (B2 and D, one of
+# them the positive control) could not.
+#
+# THAT WAS THE RENDERER BEING RIGHT. A fixture asserting "a real result still
+# scores" while carrying no evidence is asking for exactly the green-with-nothing-
+# behind-it this file polices elsewhere. So the defaults below supply real
+# evidence rather than the assertions being relaxed to accept its absence.
+#
+# The negative cases are unaffected by construction: case A still has no ptrace
+# row, case B's ptrace rows are still in the wrong mode, and case C's ptrace rows
+# still carry outcome=fail, which overrides the default. Each must still refuse,
+# and if provenance alone were enough to make them render, these tests would say
+# so.
+population_id() {
+    {
+        printf 'scorecard-population-v2\n'
+        printf '%s\n' "$@" | sort
+    } | sha256sum | cut -d' ' -f1
+}
+
+# selected/executed/evidence counts are spelled out per row because they must
+# equal the rows that run actually has; the provenance verifier re-derives them
+# and refuses a mismatch, which is the whole point of recording a population.
+
+# The population key is the identity tuple the renderer re-derives, so it must be
+# built from the same fields the rows actually carry.
+pop_key() { printf 'regression\tportable\tb1\t%s\t%s\t%s\tran' "$1" "$2" "$3"; }
+
+# Emit one CSV row into $1. Named columns override the defaults; anything not
+# named and not defaulted stays blank, which still means "unknown".
 row() {
     local out=$1; shift
-    awk -v hdr="$HEADER" -v spec="$*" '
+    awk -v hdr="$HEADER" -v spec="$*" \
+        -v herm="$HERM_SHA" -v rev="$REV_SHA" -v outhash="$OUT_SHA" '
     BEGIN {
         n = split(hdr, cols, ",")
         v["comparison_tier"] = "full-stdout-info-stack-heap"
+        v["run_utc"] = "@0"; v["hermit_sha"] = herm; v["reverie_sha"] = rev
+        v["dirty"] = "false"; v["run_mode"] = "regression"; v["lane"] = "portable"
+        v["deterministic"] = "1"; v["stdout_parity"] = "1"; v["duration_ms"] = "1"
+        v["compared_log_messages"] = "2|2"
+        v["output_hash"] = outhash; v["ref_output_hash"] = outhash
+        v["parity_comparator"] = "stdout-sha256-exact-v1"
+        v["parity_tier"] = "stdout-exact"
+        # No comma inside, so the field needs no CSV quoting.
+        v["profile_flags"] = "{\"comparison\":[\"--strict\"]}"
+        v["stack_parity"] = "1"; v["heap_parity"] = "1"
         m = split(spec, kvs, " ")
         for (i = 1; i <= m; i++) { p = index(kvs[i], "="); v[substr(kvs[i],1,p-1)] = substr(kvs[i],p+1) }
         out = ""
@@ -59,33 +111,42 @@ row() {
 
 new_csv() { echo "$HEADER" > "$1"; }
 
-RUN=a1-fixture
+# Each case declares its OWN population, because the population is the set of
+# identity tuples actually present -- A has no ptrace rows, so A's population is
+# not B's.
+A_POP=sha256:$(population_id "$(pop_key t1 strict dbi)" "$(pop_key t2 strict dbi)" "$(pop_key t3 strict dbi)")
+B_POP=sha256:$(population_id \
+    "$(pop_key t1 strict ptrace)" "$(pop_key t2 strict ptrace)" "$(pop_key t3 strict ptrace)" \
+    "$(pop_key t1 strict dbi)"    "$(pop_key t2 strict dbi)"    "$(pop_key t3 strict dbi)")
+CD_POP=sha256:$(population_id \
+    "$(pop_key t1 verify ptrace)" "$(pop_key t2 verify ptrace)" "$(pop_key t3 verify ptrace)" \
+    "$(pop_key t1 verify dbi)"    "$(pop_key t2 verify dbi)"    "$(pop_key t3 verify dbi)")
 
 # --- case A: dbi-only run, no ptrace rows in any mode -------------------------
 new_csv "$TMP/a.csv"
 for t in t1 t2 t3; do
-    row "$TMP/a.csv" run_id=$RUN bucket=b1 test_id=$t test_mode=strict backend=dbi cell_state=ran outcome=pass
+    row "$TMP/a.csv" run_id=$RUN bucket=b1 test_id=$t test_mode=strict backend=dbi cell_state=ran outcome=pass population_id=$A_POP selected_count=3 executed_count=3 evidence_count=3
 done
 
 # --- case B: ptrace passes `strict`, but the default denominator is `verify` --
 new_csv "$TMP/b.csv"
 for t in t1 t2 t3; do
-    row "$TMP/b.csv" run_id=$RUN bucket=b1 test_id=$t test_mode=strict backend=ptrace cell_state=ran outcome=pass
-    row "$TMP/b.csv" run_id=$RUN bucket=b1 test_id=$t test_mode=strict backend=dbi cell_state=ran outcome=pass
+    row "$TMP/b.csv" run_id=$RUN bucket=b1 test_id=$t test_mode=strict backend=ptrace cell_state=ran outcome=pass population_id=$B_POP selected_count=6 executed_count=6 evidence_count=6
+    row "$TMP/b.csv" run_id=$RUN bucket=b1 test_id=$t test_mode=strict backend=dbi cell_state=ran outcome=pass population_id=$B_POP selected_count=6 executed_count=6 evidence_count=6
 done
 
 # --- case C: ptrace rows present in the requested mode, none passing ----------
 new_csv "$TMP/c.csv"
 for t in t1 t2 t3; do
-    row "$TMP/c.csv" run_id=$RUN bucket=b1 test_id=$t test_mode=verify backend=ptrace cell_state=ran outcome=fail
-    row "$TMP/c.csv" run_id=$RUN bucket=b1 test_id=$t test_mode=verify backend=dbi cell_state=ran outcome=pass
+    row "$TMP/c.csv" run_id=$RUN bucket=b1 test_id=$t test_mode=verify backend=ptrace cell_state=ran outcome=fail population_id=$CD_POP selected_count=6 executed_count=6 evidence_count=6
+    row "$TMP/c.csv" run_id=$RUN bucket=b1 test_id=$t test_mode=verify backend=dbi cell_state=ran outcome=pass population_id=$CD_POP selected_count=6 executed_count=6 evidence_count=6
 done
 
 # --- case D: a real, non-empty denominator ------------------------------------
 new_csv "$TMP/d.csv"
 for t in t1 t2 t3; do
-    row "$TMP/d.csv" run_id=$RUN bucket=b1 test_id=$t test_mode=verify backend=ptrace cell_state=ran outcome=pass
-    row "$TMP/d.csv" run_id=$RUN bucket=b1 test_id=$t test_mode=verify backend=dbi cell_state=ran outcome=pass
+    row "$TMP/d.csv" run_id=$RUN bucket=b1 test_id=$t test_mode=verify backend=ptrace cell_state=ran outcome=pass population_id=$CD_POP selected_count=6 executed_count=6 evidence_count=6
+    row "$TMP/d.csv" run_id=$RUN bucket=b1 test_id=$t test_mode=verify backend=dbi cell_state=ran outcome=pass population_id=$CD_POP selected_count=6 executed_count=6 evidence_count=6
 done
 
 FAIL=0

@@ -39,14 +39,51 @@ trap 'rm -rf "$TMP"' EXIT
 
 HEADER=$(head -1 "$SCHEMA_CSV")
 
-# Emit one CSV row into $1, setting only the named columns; every other column is
-# blank (blank = "unknown", the not-measured state the renderer must preserve).
+HERM_SHA=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+REV_SHA=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+OUT_SHA=dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
+
+# THE FIXTURE MUST NOW EARN ITS PASSES. These rows used to set six columns and
+# leave the rest blank, which was right when written -- blank means "unknown",
+# the not-measured state the renderer preserves. b9f20ef5 and f21dd0d1 then made
+# a `pass` count as a QUALIFIED GREEN only when the row carries the evidence:
+# observable parity, a non-empty INFO comparison, exact code identity, both
+# output hashes, the comparator and tier that produced them, an explicit
+# population, and a clean tree. So the fixtures that must RENDER could not, and
+# the renderer was right to refuse them. The defaults below supply real evidence
+# instead of the assertions being relaxed to accept its absence.
+#
+# ⚠️ POPULATION AND COUNTS ARE PER RUN_ID, NOT PER FILE. The verifier re-derives
+# them for each run separately, so a fixture carrying two runs needs two of each;
+# using one set for the whole file is refused, and rightly -- that is the mixed-run
+# pooling this test exists to police.
+population_id() {
+    {
+        printf 'scorecard-population-v2\n'
+        printf '%s\n' "$@" | sort
+    } | sha256sum | cut -d' ' -f1
+}
+pop_key() { printf 'regression\tportable\tb1\t%s\t%s\t%s\tran' "$1" "$2" "$3"; }
+
+# Emit one CSV row into $1. Named columns override the defaults; anything not
+# named and not defaulted stays blank, which still means "unknown".
 row() {
     local out=$1; shift
-    awk -v hdr="$HEADER" -v spec="$*" '
+    awk -v hdr="$HEADER" -v spec="$*" \
+        -v herm="$HERM_SHA" -v rev="$REV_SHA" -v outhash="$OUT_SHA" '
     BEGIN {
         n = split(hdr, cols, ",")
         v["comparison_tier"] = "full-stdout-info-stack-heap"
+        v["run_utc"] = "@0"; v["hermit_sha"] = herm; v["reverie_sha"] = rev
+        v["dirty"] = "false"; v["run_mode"] = "regression"; v["lane"] = "portable"
+        v["deterministic"] = "1"; v["stdout_parity"] = "1"; v["duration_ms"] = "1"
+        v["compared_log_messages"] = "2|2"
+        v["output_hash"] = outhash; v["ref_output_hash"] = outhash
+        v["parity_comparator"] = "stdout-sha256-exact-v1"
+        v["parity_tier"] = "stdout-exact"
+        # No comma inside, so the field needs no CSV quoting.
+        v["profile_flags"] = "{\"comparison\":[\"--strict\"]}"
+        v["stack_parity"] = "1"; v["heap_parity"] = "1"
         m = split(spec, kvs, " ")
         for (i = 1; i <= m; i++) { p = index(kvs[i], "="); v[substr(kvs[i],1,p-1)] = substr(kvs[i],p+1) }
         out = ""
@@ -59,17 +96,33 @@ new_csv() { echo "$HEADER" > "$1"; }
 OLD=older-healthy-run
 NEW=newer-dbi-only-run
 
+# Per-run populations and counts, one pair per (fixture, run_id).
+MIXED_OLD=sha256:$(population_id \
+    "$(pop_key t1 verify ptrace)" "$(pop_key t2 verify ptrace)" "$(pop_key t3 verify ptrace)" \
+    "$(pop_key t1 verify dbi)"    "$(pop_key t2 verify dbi)"    "$(pop_key t3 verify dbi)")
+MIXED_NEW=sha256:$(population_id "$(pop_key t4 strict dbi)" "$(pop_key t5 strict dbi)")
+OTHER_OLD=sha256:$(population_id \
+    "$(pop_key t1 verify ptrace)" "$(pop_key t2 verify ptrace)" "$(pop_key t3 verify ptrace)")
+OTHER_NEW=sha256:$(population_id \
+    "$(pop_key t1 counter ptrace)" "$(pop_key t2 counter ptrace)" "$(pop_key t3 counter ptrace)" \
+    "$(pop_key t1 counter kvm)"    "$(pop_key t2 counter kvm)"    "$(pop_key t3 counter kvm)")
+GOOD_OLD=sha256:$(population_id \
+    "$(pop_key t1 verify ptrace)" "$(pop_key t2 verify ptrace)" "$(pop_key t3 verify ptrace)")
+GOOD_NEW=sha256:$(population_id \
+    "$(pop_key t8 verify ptrace)" "$(pop_key t9 verify ptrace)" \
+    "$(pop_key t8 verify dbi)"    "$(pop_key t9 verify dbi)")
+
 # --- fixture 1: healthy history, newest run has no ptrace reference -----------
 # Append order IS the selection input: OLD first, NEW last, so NEW is `--latest`.
 #   OLD: NUMERATOR 3 dbi-verify passes / DENOMINATOR 3 passing ptrace-verify cells
 #   NEW: NUMERATOR 2 dbi-strict passes / DENOMINATOR 0 (no ptrace rows at all)
 new_csv "$TMP/mixed.csv"
 for t in t1 t2 t3; do
-    row "$TMP/mixed.csv" run_id=$OLD bucket=b1 test_id=$t test_mode=verify backend=ptrace cell_state=ran outcome=pass
-    row "$TMP/mixed.csv" run_id=$OLD bucket=b1 test_id=$t test_mode=verify backend=dbi    cell_state=ran outcome=pass
+    row "$TMP/mixed.csv" run_id=$OLD bucket=b1 test_id=$t test_mode=verify backend=ptrace cell_state=ran outcome=pass population_id=$MIXED_OLD selected_count=6 executed_count=6 evidence_count=6
+    row "$TMP/mixed.csv" run_id=$OLD bucket=b1 test_id=$t test_mode=verify backend=dbi    cell_state=ran outcome=pass population_id=$MIXED_OLD selected_count=6 executed_count=6 evidence_count=6
 done
 for t in t4 t5; do
-    row "$TMP/mixed.csv" run_id=$NEW bucket=b1 test_id=$t test_mode=strict backend=dbi    cell_state=ran outcome=pass
+    row "$TMP/mixed.csv" run_id=$NEW bucket=b1 test_id=$t test_mode=strict backend=dbi    cell_state=ran outcome=pass population_id=$MIXED_NEW selected_count=2 executed_count=2 evidence_count=2
 done
 
 # --- fixture 2: newest run HAS ptrace, but passing a different mode -----------
@@ -78,22 +131,22 @@ done
 # DENOMINATOR 3 under the mode the remedy names.
 new_csv "$TMP/othermode.csv"
 for t in t1 t2 t3; do
-    row "$TMP/othermode.csv" run_id=$OLD bucket=b1 test_id=$t test_mode=verify  backend=ptrace cell_state=ran outcome=pass
+    row "$TMP/othermode.csv" run_id=$OLD bucket=b1 test_id=$t test_mode=verify  backend=ptrace cell_state=ran outcome=pass population_id=$OTHER_OLD selected_count=3 executed_count=3 evidence_count=3
 done
 for t in t1 t2 t3; do
-    row "$TMP/othermode.csv" run_id=$NEW bucket=b1 test_id=$t test_mode=counter backend=ptrace cell_state=ran outcome=pass
-    row "$TMP/othermode.csv" run_id=$NEW bucket=b1 test_id=$t test_mode=counter backend=kvm    cell_state=ran outcome=pass
+    row "$TMP/othermode.csv" run_id=$NEW bucket=b1 test_id=$t test_mode=counter backend=ptrace cell_state=ran outcome=pass population_id=$OTHER_NEW selected_count=6 executed_count=6 evidence_count=6
+    row "$TMP/othermode.csv" run_id=$NEW bucket=b1 test_id=$t test_mode=counter backend=kvm    cell_state=ran outcome=pass population_id=$OTHER_NEW selected_count=6 executed_count=6 evidence_count=6
 done
 
 # --- fixture 3: newest run is itself healthy (positive control) ---------------
 #   NEWEST: NUMERATOR 2 dbi-verify passes / DENOMINATOR 2 passing ptrace-verify cells
 new_csv "$TMP/goodlatest.csv"
 for t in t1 t2 t3; do
-    row "$TMP/goodlatest.csv" run_id=$OLD bucket=b1 test_id=$t test_mode=verify backend=ptrace cell_state=ran outcome=pass
+    row "$TMP/goodlatest.csv" run_id=$OLD bucket=b1 test_id=$t test_mode=verify backend=ptrace cell_state=ran outcome=pass population_id=$GOOD_OLD selected_count=3 executed_count=3 evidence_count=3
 done
 for t in t8 t9; do
-    row "$TMP/goodlatest.csv" run_id=$NEW bucket=b1 test_id=$t test_mode=verify backend=ptrace cell_state=ran outcome=pass
-    row "$TMP/goodlatest.csv" run_id=$NEW bucket=b1 test_id=$t test_mode=verify backend=dbi    cell_state=ran outcome=pass
+    row "$TMP/goodlatest.csv" run_id=$NEW bucket=b1 test_id=$t test_mode=verify backend=ptrace cell_state=ran outcome=pass population_id=$GOOD_NEW selected_count=4 executed_count=4 evidence_count=4
+    row "$TMP/goodlatest.csv" run_id=$NEW bucket=b1 test_id=$t test_mode=verify backend=dbi    cell_state=ran outcome=pass population_id=$GOOD_NEW selected_count=4 executed_count=4 evidence_count=4
 done
 
 FAIL=0

@@ -203,6 +203,8 @@
         "exit_code_parity",
         "detlog_parity",
         "oracle_verdict",
+        "stack_parity",
+        "heap_parity",
         "evaluation_state",
         "evaluation_reason",
         "evaluation_evidence",
