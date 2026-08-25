@@ -139,6 +139,11 @@ EXIT
        Nothing was attempted. Scoped narrowly: a pull request carrying no
        passed-review label is untouched, so this imposes no new review
        requirement; it only stops a stale cache from admitting.
+    7  REFUSED TO MERGE: this tool cannot prove it is the version on dev-hermit main,
+       so its own admission checks may be ABSENT from the copy being run. A stale
+       lander does not fail -- it SKIPS the checks and reports a clean landing, which
+       is indistinguishable from a checked one. `--verify-only` is exempt: it performs
+       no merge and so needs no admission.
 """
 
 from __future__ import annotations
@@ -686,7 +691,7 @@ def main() -> None:
         # ANYTHING. A stale copy silently has no admission check at all.
         current, detail = this_tool_is_current()
         if not current:
-            die(6, "gh-merge-verified: REFUSING TO MERGE -- this tool cannot prove it is "
+            die(7, "gh-merge-verified: REFUSING TO MERGE -- this tool cannot prove it is "
                    "the current version, so its admission check may not exist in this copy.",
                 f"    {detail}",
                 "",
