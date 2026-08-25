@@ -504,6 +504,25 @@ def main() -> None:
         sys.exit(3)
 
     print(f"  VERIFIED: every file the branch touches is byte-identical on origin/main.")
+    # ⚠️ THE DENOMINATOR IS DERIVED FROM THE PULL REF, SO A STALE READ MAKES THIS
+    # SENTENCE TRUE ABOUT A SUBSET NOBODY NAMED. refs/pull/N/head can read the old
+    # sha for a window after a push; everything above is derived from it — the
+    # merge base, and then the file set. A stale head yields FEWER files, they may
+    # all be on main, and this exits 0. That is a false GREEN, and unlike the
+    # false-ABSENT case it does not tell you to look.
+    #
+    # It cannot be corroborated here without breaking a deliberate property: the
+    # verify-only path makes NO gh call, which is what lets it run on boxes whose
+    # `gh` cannot reach the API. Asking the API to confirm the head would be such
+    # a call. So the count is printed and the caveat is stated, rather than a
+    # check being faked.
+    print(f"  ⚠️ over {len(files)} file(s), derived from refs/pull/{pr}/head. If this PR was",
+          file=sys.stderr)
+    print("  pushed seconds ago that ref can be STALE, making the file set too small and",
+          file=sys.stderr)
+    print("  this success true only of a subset. Confirm the count against the PR's real",
+          file=sys.stderr)
+    print("  file list, or re-run once the ref has converged.", file=sys.stderr)
     sys.exit(0)
 
 
