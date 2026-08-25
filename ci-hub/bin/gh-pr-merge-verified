@@ -1,0 +1,139 @@
+#!/usr/bin/env python3
+"""Merge a pull request, then PROVE it landed by reading the remote.
+
+WHY THIS EXISTS, AND WHY IT IS SEPARATE FROM git-push-verified
+--------------------------------------------------------------
+`git-push-verified` covers pushes to a main-only repo. It cannot reach the path
+that actually carries the drain's traffic: in `hermit`, landings go through
+
+    gh pr merge <n> --squash --delete-branch 2>&1 | tail -1
+
+which has the identical defect. `$?` after a pipeline is TAIL's status, so a
+merge that GitHub REFUSED -- conflicts, a closed pull request, a protected
+branch, a lost race with another agent -- reports success, and an unlanded
+change is recorded as merged. Four agents hit the push form of this in one
+night; every drain agent lands through the `gh` form.
+
+WHAT IT DOES THAT A PIPELINE CANNOT
+  1. Runs `gh pr merge` with NO PIPE, so the status read is gh's own.
+  2. Asks GITHUB for the pull request's state and its merge commit.
+  3. FETCHES the remote and proves that merge commit is reachable on the target
+     branch. This is the step that survives a future variant of the mistake,
+     because it verifies the OUTCOME on the remote rather than any command's
+     report of it.
+
+Step 3 is deliberately a fetch-and-check rather than trusting `state: MERGED`.
+A state field is another report; the branch is the artifact.
+
+USAGE
+-----
+    ci-hub/bin/gh-pr-merge-verified <pr-number> [--repo owner/name] [gh merge args...]
+    ci-hub/bin/gh-pr-merge-verified 2509 --repo rrnewton/hermit --squash --delete-branch
+
+EXIT
+----
+    0  merged AND the merge commit is reachable on the base branch
+    1  usage, or the state could not be established
+    2  the merge itself failed (the case the pipeline hid)
+    3  merge reported success but the remote does not carry it
+"""
+
+from __future__ import annotations
+
+import json
+import shutil
+import subprocess
+import sys
+
+
+def run(args: list[str]) -> tuple[int, str, str]:
+    """No shell, no pipe: the status returned is this command's own."""
+    p = subprocess.run(args, capture_output=True, text=True)
+    return p.returncode, p.stdout, p.stderr
+
+
+def gh_json(pr: str, repo: list[str], fields: str) -> dict | None:
+    rc, out, _ = run(["gh", "pr", "view", pr, *repo, "--json", fields])
+    if rc != 0:
+        return None
+    try:
+        return json.loads(out)
+    except json.JSONDecodeError:
+        return None
+
+
+def main(argv: list[str]) -> int:
+    if not argv or not argv[0].isdigit():
+        print(__doc__.strip().split("USAGE")[1], file=sys.stderr)
+        return 1
+    if shutil.which("gh") is None:
+        print("gh-pr-merge-verified: gh is not on PATH", file=sys.stderr)
+        return 1
+
+    pr, rest = argv[0], argv[1:]
+    repo: list[str] = []
+    if "--repo" in rest:
+        i = rest.index("--repo")
+        repo = ["--repo", rest[i + 1]]
+        rest = rest[:i] + rest[i + 2:]
+
+    before = gh_json(pr, repo, "state,baseRefName")
+    if before is None:
+        print(f"gh-pr-merge-verified: cannot read pull request #{pr}", file=sys.stderr)
+        return 1
+    base = before.get("baseRefName") or "main"
+    if before.get("state") == "MERGED":
+        print(f"gh-pr-merge-verified: #{pr} is ALREADY MERGED; not re-merging")
+    else:
+        print(f"gh-pr-merge-verified: #{pr} state={before.get('state')} base={base}")
+        # NO PIPE.
+        rc, out, err = run(["gh", "pr", "merge", pr, *repo, *rest])
+        for s in (out, err):
+            if s.strip():
+                print(s.rstrip())
+        if rc != 0:
+            print(
+                f"gh-pr-merge-verified: MERGE FAILED, gh exited {rc}. "
+                f"#{pr} did NOT land. Do not record this as a landing.",
+                file=sys.stderr,
+            )
+            return 2
+
+    after = gh_json(pr, repo, "state,mergeCommit,baseRefName")
+    if after is None:
+        print("gh-pr-merge-verified: cannot re-read the pull request", file=sys.stderr)
+        return 1
+    sha = (after.get("mergeCommit") or {}).get("oid")
+    if after.get("state") != "MERGED" or not sha:
+        print(
+            f"gh-pr-merge-verified: #{pr} is state={after.get('state')} with "
+            f"mergeCommit={sha or '(none)'}. NOT LANDED.",
+            file=sys.stderr,
+        )
+        return 3
+
+    # The branch is the artifact; `state: MERGED` is just another report.
+    remote = repo[1] if repo else None
+    url = f"https://github.com/{remote}.git" if remote else "origin"
+    rc, _, err = run(["git", "fetch", "--quiet", url, f"refs/heads/{base}"])
+    if rc != 0:
+        print(
+            f"gh-pr-merge-verified: could not fetch {url} {base} to confirm: {err.strip()}",
+            file=sys.stderr,
+        )
+        return 1
+    rc, _, _ = run(["git", "merge-base", "--is-ancestor", sha, "FETCH_HEAD"])
+    if rc != 0:
+        print(
+            f"gh-pr-merge-verified: #{pr} reports merge commit {sha[:12]} but it is NOT\n"
+            f"  reachable on {base}. Treat as NOT LANDED; the remote is the authority.",
+            file=sys.stderr,
+        )
+        return 3
+
+    print(f"gh-pr-merge-verified: VERIFIED #{pr} -> {sha} reachable on {base}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
