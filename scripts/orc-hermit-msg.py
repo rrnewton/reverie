@@ -238,6 +238,50 @@ def configured_orc_db(
     return None
 
 
+def orc_db_from_coordinator_panes(panes: list["LivePane"]) -> tuple[str, str] | None:
+    """Derive this Hermit relay's DB from what the coordinator is ACTUALLY running.
+
+    WHY THIS EXISTS, AND WHY IT IS NOT KEYED ON THE SESSION NAME.
+    `orc_db_from_active_sessions` below reads the database out of the tmux
+    SESSION NAME, which assumes the fleet's `orc-<db>` convention. That
+    convention no longer holds: the live coordinator's session is
+    `orc-d0f81544`, a hex identity, so `d0f81544` does not start with "hermit",
+    no candidate is eligible, and the legacy fallback returns "hermit" -- a
+    database that has not existed since the coordinator moved to "hermit2".
+
+    MEASURED 2026-08-24: the last acknowledged delivery on this channel was
+    2026-08-12T13:27:03-07:00. Every one of the 279 attempts since then failed,
+    181 of them with `no live Orc coordinator is running database 'hermit';
+    candidates: orc-d0f81544:orc (%0, orc) db=hermit2`. THE ANSWER WAS INSIDE
+    THE ERROR MESSAGE: the pane census already knows `db=hermit2`, because
+    `LivePane.orc_db` is parsed from the coordinator's own `--db` argument. It
+    was computed, printed, and then discarded in favour of a name from history.
+
+    Deriving from the pane's own `--db` keeps both safety properties the
+    session-name version was protecting: only the hermit family is eligible, so
+    another product's coordinator on the same socket cannot be misdelivered to;
+    and ambiguity is refused rather than guessed.
+    """
+    candidates = sorted(
+        {
+            pane.orc_db
+            for pane in panes
+            if pane.is_orc
+            and pane.orc_db
+            and pane.orc_db.startswith(DEFAULT_ORC_DB)
+        }
+    )
+    if len(candidates) == 1:
+        return candidates[0], "live coordinator pane --db"
+    if len(candidates) > 1:
+        raise OrcMessageError(
+            "cannot derive one Hermit database from live coordinator panes: "
+            + ", ".join(candidates)
+            + "; pass --orc-db or --session explicitly"
+        )
+    return None
+
+
 def orc_db_from_active_sessions(active_sessions: list[str]) -> tuple[str, str]:
     """Derive this Hermit relay's DB from live Orc session metadata.
 
@@ -245,6 +289,10 @@ def orc_db_from_active_sessions(active_sessions: list[str]) -> tuple[str, str]:
     one merely because it is the only coordinator would misdeliver Hermit
     status to it, so only the ``orc-hermit*`` family is eligible. Ambiguity is
     refused rather than guessed.
+
+    Retained as the second attempt, after `orc_db_from_coordinator_panes`: it
+    is correct whenever the `orc-<db>` session convention does hold, and it
+    needs only session names.
     """
     candidates = sorted(
         {
@@ -502,6 +550,19 @@ def parse_live_panes(panes: str, active_sessions: list[str]) -> list[LivePane]:
     return live
 
 
+def list_live_panes(socket: Path, active_sessions: list[str]) -> list[LivePane]:
+    """The live pane census for a socket. One place, so every caller agrees."""
+    panes = run_tmux(
+        socket,
+        "list-panes",
+        "-a",
+        "-F",
+        "#{session_name}\t#{window_name}\t#{pane_id}\t#{pane_dead}\t"
+        "#{pane_current_command}\t#{pane_start_command}",
+    )
+    return parse_live_panes(panes, active_sessions)
+
+
 def _render_panes(panes: list[LivePane]) -> str:
     return ", ".join(pane.render() for pane in panes) or "none"
 
@@ -558,15 +619,7 @@ def find_coordinator_pane(
             f"requested session {session_hint!r} is not present in orc tmux ls"
         )
 
-    panes = run_tmux(
-        socket,
-        "list-panes",
-        "-a",
-        "-F",
-        "#{session_name}\t#{window_name}\t#{pane_id}\t#{pane_dead}\t"
-        "#{pane_current_command}\t#{pane_start_command}",
-    )
-    live_panes = parse_live_panes(panes, active_sessions)
+    live_panes = list_live_panes(socket, active_sessions)
     orc_panes = [pane for pane in live_panes if pane.is_orc]
     hinted = [
         pane
@@ -1433,7 +1486,14 @@ def main() -> int:
                 allow_fallback=args.socket is None,
             )
             active_sessions = scan_orc_sessions_via_tmux(socket)
-            selection = orc_db_from_active_sessions(active_sessions)
+            # Ask what the coordinator is RUNNING before asking what its tmux
+            # session is CALLED. The session name is a convention that has
+            # already drifted once; `--db` on the running process has not.
+            selection = orc_db_from_coordinator_panes(
+                list_live_panes(socket, active_sessions)
+            )
+            if selection is None:
+                selection = orc_db_from_active_sessions(active_sessions)
         args.orc_db, database_source = selection
         session = args.session or f"db={args.orc_db}"
 

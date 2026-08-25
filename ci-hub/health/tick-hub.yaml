@@ -86,6 +86,40 @@ reminders:
   # qualifies, and carries the standing backlog in captured fields so a
   # permanently-on gate never gets muted. DETECT ONLY -- reclaim needs a
   # recovery SHA and stays a coordinator decision.
+  # PARITY, not capacity. worktree_disk_residue below asks "are there too many
+  # slots" against a hand-maintained cap of 12; this asks "does each active slot
+  # have anybody behind it", whose denominator is however many agents are alive
+  # right now and therefore needs no maintenance. Added 2026-08-24, when the
+  # fleet held 170 slots against 13 live agents and the gap named by
+  # ai_docs/2026-08-09-worktree-discipline-audit.md section C4 -- "Rule 6 is a
+  # parity predicate and nothing computes it" -- was still open fifteen days on.
+  #
+  # A zero-agent census is a REFUSAL inside the gate, never a pass, and every
+  # report carries live_agents_examined so a green verdict shows its
+  # denominator. It also prints per-repo git worktree counts, which no other
+  # check counts: 310 registrations in hermit alone were invisible.
+  #
+  # emit.skill stays hard-warn-coordinator, and that is NOT an endorsement. C4's
+  # remedy was to re-route to an actor with a shell -- specifically hermit-coord
+  # -- but .agents/skills/hermit-coord is a DANGLING symlink into
+  # .claude/skills, which the 2026-08-16 skills bankruptcy moved into
+  # .skill_reset_20260816/. Pointing this emit at a skill nothing can load would
+  # be worse than the actor that cannot act, so the routing debt is recorded
+  # here rather than paid with a name that resolves to nothing. All 23 emitting
+  # reminders share this one channel; the delivery repair belongs there, not in
+  # a per-reminder rename.
+  - name: slot_agent_parity
+    cadence_secs: 900
+    gate:
+      cmd: python3 ci-hub/health/slot_agent_parity.py --gate
+      when: failure
+      capture: true
+    emit:
+      kind: action
+      skill: hard-warn-coordinator
+      fields:
+        component: slot-agent-parity
+      title: "active slots have no live agent behind them: {summary}"
   - name: worktree_disk_residue
     cadence_secs: 900
     gate:

@@ -176,6 +176,38 @@ check "$([[ $out == *"WORK-GATED"* ]] && echo yes || echo no)" \
 check "$([[ $out != *"TIMER DEAD"* ]] && echo yes || echo no)" \
       "work-gated: not escalated to TIMER DEAD"
 
+# --- N. Findings lines must not displace the invocation record ----------------
+# THE DEFECT THIS PINS. hermit-health-tick.sh now also appends the untruncated
+# ACTION/NOTE text as `<stamp> finding=...` lines, because the 240-char summary
+# spent its whole budget on boilerplate and recorded ZERO of 5415 ticks' actual
+# findings. Those lines carry the same timestamp but no `rc=`, so a reader doing
+# a bare `tail -1` lands on one, fails every classification pattern, and
+# downgrades a KNOWN, named gate into "WORK-STALLED (unexpected)" -- swapping a
+# correct quiet verdict for a spurious page. The reader selects the last
+# `... rc=` record instead; these cases hold it to that.
+finding_line="$(date -u +%Y-%m-%dT%H:%M:%SZ) finding=ACTION: hard-warn-coordinator component=worktree-disk-residue title=\"ACTIVE SLOT CAP BREACH: 77 active slot(s) against cap 12\""
+
+# Findings AFTER the record (the ordering hermit-health-tick.sh avoids, but any
+# other appender could produce): classification must still hold.
+out="$(run_case 60 99999 "$(date -d @$(( $(date +%s) - 60 )))" inactive "$gated_line
+$finding_line")"
+check "$([[ $out == *"WORK-GATED"* ]] && echo yes || echo no)" \
+      "findings after record: work-gated classification survives" "got: $out"
+check "$([[ $out != *"WORK-STALLED"* ]] && echo yes || echo no)" \
+      "findings after record: not misread as WORK-STALLED" "got: $out"
+
+# Findings BEFORE the record (the ordering hermit-health-tick.sh actually uses).
+out="$(run_case 60 99999 "$(date -d @$(( $(date +%s) - 60 )))" inactive "$finding_line
+$gated_line")"
+check "$([[ $out == *"WORK-GATED"* ]] && echo yes || echo no)" \
+      "findings before record: work-gated classification survives" "got: $out"
+
+# A heartbeat of findings with NO invocation record must not read as a fresh
+# tick: no record means the start time is unknown, not recent.
+out="$(run_case 60 60 "$(date -d @$(( $(date +%s) - 60 )))" inactive "$finding_line")"
+check "$([[ $out != *"WORK-STALLED"* ]] && echo yes || echo no)" \
+      "findings-only heartbeat: no spurious WORK-STALLED" "got: $out"
+
 # --- report -------------------------------------------------------------------
 total=$(( PASS + ${#FAILURES[@]} ))
 if [ ${#FAILURES[@]} -gt 0 ]; then

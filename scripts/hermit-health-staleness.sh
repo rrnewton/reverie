@@ -122,12 +122,23 @@ service_state_text() {
     "$SYSTEMCTL" --user is-active "$SERVICE_UNIT" 2>/dev/null || echo unknown
 }
 
+# The last INVOCATION RECORD, not merely the last line. The heartbeat file also
+# carries `<stamp> finding=...` lines (the untruncated ACTION/NOTE text that
+# hermit-health-tick.sh records; see its comment on why that exists). Those are
+# stamped identically but carry no `rc=`, so a bare `tail -1` can land on one
+# and silently stop matching the classification patterns below -- turning a
+# KNOWN, named gate into "WORK-STALLED (unexpected)". Select by shape instead.
+last_invocation_record() {
+    grep -E '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z rc=' \
+        "$HEARTBEAT" 2>/dev/null | tail -n 1 || true
+}
+
 # START time of the most recent invocation LINE, as epoch seconds; 0 if none.
 # Distinct from the file mtime: the line is stamped when the tick began and
 # written when it ended, so this is "when the last COMPLETED tick started".
 last_invocation_start_epoch() {
     local line stamp
-    line="$(tail -n 1 "$HEARTBEAT" 2>/dev/null || true)"
+    line="$(last_invocation_record)"
     stamp="$(printf '%s' "$line" | grep -oE '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z' || true)"
     [ -n "$stamp" ] || { echo 0; return; }
     date -d "$stamp" +%s 2>/dev/null || echo 0
@@ -242,7 +253,7 @@ fi
 # Classify WHY from the last heartbeat line so a KNOWN, external gate is named
 # and NOT paged as a dead timer.
 pr_min=$(( pr_age / 60 ))
-last_line="$(tail -1 "$HEARTBEAT" 2>/dev/null || echo '')"
+last_line="$(last_invocation_record)"
 if printf '%s' "$last_line" | grep -q 'rc=1 advanced=no' \
    && printf '%s' "$last_line" | grep -qi 'agent-utils.*dirty'; then
     # KNOWN pin-drift gate — EXCLUDED BY NAME. Not a stopped monitor; the tick
