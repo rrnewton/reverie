@@ -445,11 +445,35 @@ def lane_shas(
     )
     # LOUD ON THE UNKNOWN. A line that is plainly trying to be a verdict binding
     # -- a verdict-ish keyword on the same line as a 40-hex -- but which matches
-    # neither grammar is reported, never ignored. Silently skipping an
-    # unrecognised variant is how variant three went unnoticed; the next one must
-    # announce itself instead.
+    # neither grammar is reported, never ignored.
+    #
+    # ⚠️ DELIBERATELY UNANCHORED, AND THAT IS THE WHOLE POINT OF THE NET.
+    # This regex used to start with ``^``, so THE NET HAD THE SAME BLIND SPOT AS
+    # THE THING IT WAS NETTING. Variant four walked through both at once:
+    #
+    #     ## CODEX-LANE CHANGES-REQUESTED-AT: codex `b3ca4e15...`
+    #
+    # `CODEX-LANE ` is a WORD prefix, not block-level markdown, so the normaliser
+    # does not strip it, the anchored grammar never sees the keyword at position
+    # zero -- and the anchored net missed it for exactly the same reason. A
+    # refusal was invisible to the binder AND to the mechanism whose docstring
+    # promised "the next one must announce itself instead".
+    #
+    # THE LESSON IS ABOUT THE SHAPE OF THE FIX, not about this variant. Leading
+    # and trailing text are UNBOUNDED axes: any words may precede a marker and
+    # any may follow it. Anchoring at either end means every new phrasing is a
+    # new hole, which is how this reached variant four one case at a time. The
+    # binding grammar stays anchored, because GRANTING authority should demand an
+    # exact form -- but the net must be a search, so that no lead-in or trailing
+    # commentary can hide a verdict-shaped line from it.
+    #
+    # Over-matching here is safe by construction: this net only ever routes a
+    # line to `malformed`, and a malformed REFUSAL-shaped line refuses while a
+    # malformed approval-shaped line cannot grant anything. Both directions of
+    # a false positive cost a re-post; a false negative loses a refusal.
     suspect = re.compile(
-        r"^(?:APPROV|CHANGES-REQUESTED|REQUEST\s+CHANGES|REJECT|LGTM|SIGN(?:ED)?[-\s]?OFF|ACK)[^\n]*\b[0-9a-f]{40}\b",
+        r"(?:APPROV|CHANGES-REQUESTED|REQUEST\s+CHANGES|REJECT|LGTM|SIGN(?:ED)?[-\s]?OFF|ACK)"
+        r"[^\n]*\b[0-9a-f]{40}\b",
         re.IGNORECASE,
     )
 
@@ -481,7 +505,10 @@ def lane_shas(
             m = approve.match(line)
             if not m:
                 if (
-                    suspect.match(line)
+                    # `.search`, not `.match`: `re.match` anchors at position 0
+                    # regardless of the pattern, which is the other half of the
+                    # same blind spot.
+                    suspect.search(line)
                     and not reject_legacy.match(line)
                     and not reject_current.match(line)
                 ):
