@@ -84,6 +84,14 @@ def _run(
             # verifier out of its own closure step -- the exact regression the
             # `tg note` guard caused when it first shipped.
             env["CLOSE_TASK_VERIFIED"] = "1"
+            # The closure note is staged through tempfile.NamedTemporaryFile, so
+            # its path is random and created O_EXCL -- no other agent can have
+            # written it. tg-note-verified otherwise refuses unnamespaced paths in
+            # /tmp, and on 2026-08-25 that composition deadlocked the fleet: both
+            # guards were individually correct and together NO task could be closed
+            # by anyone. Declaring the file's provenance is what resolves it; the
+            # attribution check still applies to this note like any other.
+            env["TG_NOTE_PRIVATE_TEMP"] = "1"
         except taskgraph_db.TaskGraphUnavailable as error:
             return subprocess.CompletedProcess(
                 list(command), UNVERIFIABLE, "", f"taskgraph-unavailable: {error}"
