@@ -267,11 +267,57 @@ def _undecorate_block(line: str) -> str:
     exact-head refusal sits unparsed on the same pull request. Same cause,
     opposite consequences, and only one of them is safe.
 
-    Measured on https://github.com/rrnewton/hermit/pull/2176: a Claude-lane
-    refusal posted as ``## CHANGES-REQUESTED-AT: claude b3ca4e15...`` did
-    not bind, and the 18:15Z approval at that same head stayed authoritative
-    for twelve days. That is the mechanism behind
-    https://github.com/rrnewton/hermit/pull/2591 merging over a valid block.
+    The heading form really did fall through, and closing it is right. But it
+    explains NEITHER incident this docstring used to attribute to it, and the
+    retracted claim is recorded here rather than deleted, because a wrong
+    explanation in the durable record is worse than none: it stops the next
+    reader looking.
+
+    ⚠️ RETRACTED, MEASURED 2026-08-25. This docstring previously said that on
+    https://github.com/rrnewton/hermit/pull/2176 a heading-form refusal did not
+    bind and "the 18:15Z approval stayed authoritative for twelve days", and
+    that this was "the mechanism behind pull/2591 merging over a valid block".
+    Three separate parts of that are false:
+
+    1. ON 2176 A PLAIN, COLUMN-0 REFUSAL EXISTS 87 SECONDS LATER. The reviewer
+       noticed the heading and re-posted it unadorned at 2026-08-13T01:28:43Z,
+       naming the same head. That form binds under the PRE-FIX grammar, so the
+       heading defect changed nothing about what was detectable there.
+
+    2. THE APPROVAL DID NOT STAY AUTHORITATIVE FOR TWELVE DAYS. From the label
+       event log, ``passed-review-claude`` and ``passed-review-codex`` were both
+       removed at 2026-08-13T05:17:57Z -- three hours forty-nine minutes after
+       the refusal, not twelve days. Detection on 2176 WORKED. The twelve days
+       is how long a correctly-blocked head has sat with nobody clearing it: the
+       head b3ca4e155098 has not moved since 2026-08-12T18:09:58Z, no fix was
+       pushed, and no CHANGES-REQUESTED-WITHDRAWN-AT was ever posted. That is an
+       unresolved block, not a missed one, and 2176 is not evidence of any
+       detection failure at all.
+
+    3. THE HEADING FORM DOES NOT EXPLAIN 2591 EITHER. Its timeline:
+           17:55:19Z  APPROVED-AT: claude 86b76b82        (column 0)
+           18:05:19Z  CHANGES-REQUESTED-AT: claude 86b76b82  (COLUMN 0, plain)
+           18:09:01Z  merged
+           18:19:11Z  a decorated refusal, AFTER the merge
+       A plain binding refusal was live 3m42s before the merge. Grammar cannot
+       account for a merge over a marker that parses.
+
+    ⚠️ THE ACTUAL MECHANISM: THIS MODULE HAS NO ENFORCING CONSUMER ON THE MERGE
+    PATH. ``grep -rn CHANGES-REQUESTED-AT`` across every .py/.sh/.rs in the
+    repository returns hits in this file and in its OWN TESTS, and nowhere else.
+    No lander, no merge gate and no workflow reads a refusal marker. This module
+    is reached only by ``ci-hub/health/pr_status.py``, which reports. The merge
+    itself is ``gh pr merge`` run by an agent, so the only thing standing between
+    a live refusal and a landing is whether that agent read the comments.
+
+    2591 confirms it from the other side: at merge time it carried NO
+    ``passed-review-claude`` label either -- that label was applied at
+    18:12:00Z, three minutes AFTER the merge. Neither the marker path nor the
+    label path was consulted.
+
+    So the grammar fix removes a real fail-open from the REPORT, and changes
+    nothing about what can be merged. Until a pre-merge caller exists, this
+    module can only observe.
     """
     prev = None
     while prev != line:
@@ -1043,9 +1089,15 @@ def main() -> int:
     # An unparseable REFUSAL-shaped line is the opposite case and must REFUSE.
     # If it does not parse, the lane's newest parsed binding is whatever came
     # before it -- typically an approval -- so the gate reports SATISFIED for a
-    # head a reviewer has explicitly refused. That is the mechanism behind
-    # https://github.com/rrnewton/hermit/pull/2591 merging over a valid block,
-    # and it is why "not proof that authority is absent" is beside the point: it
+    # head a reviewer has explicitly refused.
+    #
+    # ⚠️ THIS IS A REAL HAZARD BUT IT IS NOT WHAT HAPPENED ON pull/2591. That
+    # attribution was retracted 2026-08-25 -- see undecorate_block's docstring.
+    # 2591's refusal was PLAIN and column-0, it parsed, and the merge happened
+    # anyway 3m42s later because nothing on the merge path reads this module.
+    # Keep failing closed here on its own merits; do not cite 2591 for it.
+    #
+    # It is why "not proof that authority is absent" is beside the point: it
     # is not proof that authority is PRESENT either, and the gate must choose.
     # Failing closed here is wrong only in the cheap direction -- a re-post.
     #
@@ -1069,11 +1121,11 @@ def main() -> int:
     #
     #  1. REFUSAL-shaped and unparseable -> ALWAYS REFUSE. Unparsed, it leaves
     #     the lane's EARLIER approval standing as the newest binding, so the
-    #     gate reports SATISFIED for a head somebody explicitly blocked. This is
-    #     the mechanism behind
-    #     https://github.com/rrnewton/hermit/pull/2591 merging over a valid
-    #     block. Note it is never redundant with an approval, so the exemption
-    #     below must not reach it.
+    #     gate reports SATISFIED for a head somebody explicitly blocked. Note it
+    #     is never redundant with an approval, so the exemption below must not
+    #     reach it.
+    #     ⚠️ Formerly cited pull/2591 as the instance; retracted 2026-08-25,
+    #     because that refusal parsed. See undecorate_block's docstring.
     #
     #  2. APPROVAL-shaped and unparseable, while some lane's authority is
     #     ABSENT -> REFUSE. The unparsed line may BE that missing approval; a
