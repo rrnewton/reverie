@@ -193,22 +193,3 @@ def parse_records(notes: list[str]) -> tuple[list[Publication], list[Exemption]]
             if reason:
                 exempt.append(Exemption(repo.lower(), pr, actor, reason))
     return published, exempt
-
-
-def publications_for(
-    notes: list[str], repo: str, pr: int
-) -> list[Publication]:
-    """Records naming THIS pull request.
-
-    The subject is taken from the caller, and the record carries its own repo and
-    pr, so a number mentioned in neighbouring prose cannot become the subject.
-    That is the foreign-identifier class, closed by construction rather than by
-    a better pattern.
-    """
-    published, _ = parse_records(notes)
-    return [p for p in published if p.repo == repo.lower() and p.pr == pr]
-
-
-def exemptions_for(notes: list[str], repo: str, pr: int) -> list[Exemption]:
-    _, exempt = parse_records(notes)
-    return [e for e in exempt if e.repo == repo.lower() and e.pr == pr]
