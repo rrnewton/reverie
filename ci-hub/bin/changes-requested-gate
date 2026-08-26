@@ -514,25 +514,80 @@ def evaluate(
             withdrawals_per_lane[lane] = withdrawals_per_lane.get(lane, 0) + 1
 
     def one_for_many() -> str:
-        """Lanes where fewer withdrawals cleared more refusals, named."""
+        """Lanes where fewer withdrawals cleared more refusals, named.
+
+        ⚠️ THIS USED TO SAY THE CASE 'CANNOT BE DECIDED HERE', AND THAT IS NO
+        LONGER TRUE. The markers carry an optional issuer since dev-hermit#191,
+        and every fleet comment already carries a disclosure tag, so in the
+        ordinary case this can now name WHO withdrew and WHOSE objection is
+        still live. Saying "cannot be decided" while the answer sits in the
+        comment body is the shape that gets a gate switched off: an alarm on a
+        verdict that is in fact correct teaches the reader to skip the alarm.
+        And the verdict IS correct -- an unquoted withdrawal retires ONE refusal
+        rather than its whole lane, so the blocking decision has not depended on
+        this text since that change landed.
+
+        ⚠️ IT STILL FAILS CLOSED WHEN THE ISSUER IS UNREADABLE, and hermit#2625
+        is why: of its two same-lane refusals at f013ac4b, hermit-012's carries a
+        disclosure tag and hermit-015's carries NONE. The refusal that must keep
+        binding is exactly the one with no readable issuer, so an issuer scheme
+        that GUESSED would fail on the real pair. Unreadable keeps the original
+        warning verbatim.
+        """
         collapses = []
+        undecidable = False
         for lane in sorted(withdrawn_lanes):
-            n_refusals = sum(
-                1 for rl, rsha in refusals if rl == lane and binds(rsha)
-            )
+            lane_refusals = [
+                (rsha, cid) for rk, rl, rsha, cid in found4
+                if rk == REFUSAL and rl == lane and binds(rsha)
+            ]
+            n_refusals = len(lane_refusals)
             n_withdrawals = withdrawals_per_lane.get(lane, 0)
-            if n_refusals > n_withdrawals:
-                collapses.append(f"{lane}: {n_withdrawals} withdrawal(s) cleared {n_refusals} refusal(s)")
+            if n_refusals <= n_withdrawals:
+                continue
+            refusers = [_issuer_of_comment(by_id.get(cid, "")) for _sha, cid in lane_refusals]
+            retractors = [
+                _issuer_of_comment(by_id.get(cid, "")) for wk, wl, wsha, cid in found4
+                if wk == WITHDRAWN and wl == lane and binds(wsha)
+            ]
+            if any(who is None for who in refusers + retractors):
+                undecidable = True
+                collapses.append(
+                    f"{lane}: {n_withdrawals} withdrawal(s) cleared {n_refusals} "
+                    f"refusal(s), and at least one carries no readable issuer"
+                )
+                continue
+            unretracted = sorted({w for w in refusers if w not in set(retractors)})
+            if unretracted:
+                collapses.append(
+                    f"{lane}: withdrawn by {', '.join(sorted(set(retractors)))}; "
+                    f"still objecting: {', '.join(unretracted)}"
+                )
+            else:
+                collapses.append(
+                    f"{lane}: {', '.join(sorted(set(retractors)))} retracted "
+                    f"{n_refusals} of their own refusal(s) with {n_withdrawals} "
+                    f"withdrawal(s)"
+                )
         if not collapses:
             return ""
+        if undecidable:
+            return (
+                " ⚠️ ONE WITHDRAWAL CLEARED MORE THAN ONE REFUSAL -- "
+                + "; ".join(collapses)
+                + ". A withdrawal is scoped to its LANE, not to the reviewer who "
+                "issued it, so if those refusals came from different reviewers "
+                "this discharged an objection its author never retracted. The "
+                "issuer could not be read for at least one marker, so which case "
+                "this is CANNOT BE DECIDED HERE -- check the comments before "
+                "relying on this verdict."
+            )
         return (
-            " ⚠️ ONE WITHDRAWAL CLEARED MORE THAN ONE REFUSAL -- "
+            " ⚠️ A LANE WITHDREW FEWER TIMES THAN IT REFUSED -- "
             + "; ".join(collapses)
-            + ". A withdrawal is scoped to its LANE, not to the reviewer who issued "
-            "it, so if those refusals came from different reviewers this discharged "
-            "an objection its author never retracted. The markers carry no issuer, "
-            "so which case this is CANNOT BE DECIDED HERE -- check the comments "
-            "before relying on this verdict."
+            + ". Named from the markers' own issuers rather than guessed. An "
+            "unquoted withdrawal retires ONE refusal, so the count above is what "
+            "the verdict used; this line says whose objection it was."
         )
 
     # ⚠️ A DEFINITE ANSWER OUTRANKS AN UNREADABLE ONE. Both block, so safety does
@@ -815,6 +870,45 @@ def self_test() -> int:
         got, why = evaluate(bodies, _T_HEAD)
         if got != want:
             bad.append(f"{name}: got {got}, want {want} -- {why[:80]}")
+
+    # ⚠️ THE COLLAPSE REPORT MUST NAME THE ISSUER WHEN IT CAN, AND REFUSE TO WHEN
+    # IT CANNOT. These assert the RENDERING, not the exit code: every case here is
+    # BLOCKED either way, so a test on rc alone would pass with the report fully
+    # restored to "CANNOT BE DECIDED". That is the same trap the answered-vs-outrun
+    # cases below were written for.
+    _tag = lambda who, line: f"[hermit2, {who}, unresolved, devbig014, role=reviewer]\n{line}"
+    decidable = [
+        _tag("hermit-012", _T_REF),
+        _tag("hermit-015", _T_REF),
+        _tag("hermit-012", _T_WD),
+    ]
+    _got, why = evaluate(decidable, _T_HEAD)
+    if _got != BLOCKED:
+        bad.append(f"issuer-named collapse: got {_got}, want {BLOCKED}")
+    if "still objecting: hermit-015" not in why:
+        bad.append(
+            "issuer-named collapse: the report does not name the reviewer whose "
+            f"objection is still live -- {why[:120]}"
+        )
+    if "CANNOT BE DECIDED" in why:
+        bad.append(
+            "issuer-named collapse: reported undecidable while both issuers were "
+            "readable, which is the false alarm that gets a gate switched off"
+        )
+
+    # THE REAL hermit#2625 SHAPE: of the two same-lane refusals at f013ac4b,
+    # hermit-012's carries a disclosure tag and hermit-015's carries NONE. The one
+    # that must keep binding is exactly the one with no readable issuer, so this
+    # must fail CLOSED rather than guess.
+    unreadable = [_tag("hermit-012", _T_REF), _T_REF, _tag("hermit-012", _T_WD)]
+    _got, why = evaluate(unreadable, _T_HEAD)
+    if _got != BLOCKED:
+        bad.append(f"unreadable-issuer collapse: got {_got}, want {BLOCKED}")
+    if "CANNOT BE DECIDED" not in why:
+        bad.append(
+            "unreadable-issuer collapse: must keep the undecidable warning when an "
+            f"issuer cannot be read -- {why[:120]}"
+        )
 
     # ⚠️ ANSWERED MUST RENDER DIFFERENTLY FROM OUTRUN. Both are "no refusal binds
     # this head", both were reported as "superseded by a later push, the correct
