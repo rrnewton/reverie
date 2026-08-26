@@ -373,9 +373,10 @@ def approvals_in_order(items):
         _author = grammar.comment_author(body or "")
         for raw in eligible(body or ""):
             line = grammar.strip_decoration(raw)
-            assertion_start = grammar.marker_assertion_start(line)
-            if assertion_start is None:
+            assertion_starts = grammar.marker_assertion_starts(line)
+            if len(assertion_starts) != 1:
                 continue
+            assertion_start = assertion_starts[0]
             idx = line.upper().find(APPROVAL, assertion_start)
             if idx != assertion_start:
                 continue
@@ -415,9 +416,17 @@ def markers_with_ids(
         _author = grammar.comment_author(body or "")
         for raw in eligible(body or ""):
             line = grammar.strip_decoration(raw)
-            assertion_start = grammar.marker_assertion_start(line)
-            if assertion_start is None:
+            assertion_starts = grammar.marker_assertion_starts(line)
+            if not assertion_starts:
                 continue
+            if len(assertion_starts) != 1:
+                # More than one marker under one explicit VERDICT context is
+                # ambiguous. Refuse rather than selecting whichever happens to
+                # occur first; approval processing above grants nothing here.
+                if grammar.refusal_shaped(line):
+                    found.append((REFUSAL, None, None, _cid))
+                continue
+            assertion_start = assertion_starts[0]
             upper = line.upper()
             # Longest first: WITHDRAWN contains REFUSAL, which contains REFUSAL_BARE.
             # A bare hit is recorded AS a refusal -- the downstream binding,

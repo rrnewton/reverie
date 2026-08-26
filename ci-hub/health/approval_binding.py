@@ -515,28 +515,47 @@ _LANE_HEADING_RE = re.compile(
 _VERDICT_LEAD_RE = re.compile(r"^VERDICT:\s*", re.IGNORECASE)
 
 
-def marker_assertion_start(line: str) -> "int | None":
-    """Start of the asserted review marker in ``line``, or ``None`` for a mention."""
+def marker_occurrences(line: str) -> list[int]:
+    """Start offsets of review-marker spellings in the normalized line."""
+    normalized = strip_decoration(line)
+    return [match.start() for match in _MARKER_ASSERTION_RE.finditer(normalized)]
+
+
+def marker_assertion_starts(line: str) -> list[int]:
+    """Every review marker asserted by the line's syntactic context.
+
+    A normal line has at most one such position. ``VERDICT:`` makes marker text
+    after it an assertion, so returning every occurrence lets callers refuse an
+    ambiguous line instead of silently selecting the first marker.
+    """
     normalized = strip_decoration(line)
     if normalized.startswith(">"):
-        return None
+        return []
     match = _MARKER_ASSERTION_RE.match(normalized)
     if match is not None:
-        return match.start()
+        return [match.start()]
     lane_heading = _LANE_HEADING_RE.match(normalized)
     if lane_heading is not None:
         match = _MARKER_ASSERTION_RE.match(normalized, lane_heading.end())
-        return match.start() if match is not None else None
+        return [match.start()] if match is not None else []
     verdict = _VERDICT_LEAD_RE.match(normalized)
     if verdict is not None:
-        match = _MARKER_ASSERTION_RE.search(normalized, verdict.end())
-        return match.start() if match is not None else None
-    return None
+        return [
+            match.start()
+            for match in _MARKER_ASSERTION_RE.finditer(normalized, verdict.end())
+        ]
+    return []
+
+
+def marker_assertion_start(line: str) -> "int | None":
+    """The sole asserted marker's start, or ``None`` if absent or ambiguous."""
+    starts = marker_assertion_starts(line)
+    return starts[0] if len(starts) == 1 else None
 
 
 def marker_assertion(line: str) -> bool:
     """Whether ``line`` asserts a review marker rather than mentioning one."""
-    return marker_assertion_start(line) is not None
+    return bool(marker_assertion_starts(line))
 
 
 # ---------------------------------------------------------------------------
@@ -691,7 +710,8 @@ def parse_marker(line: str) -> tuple[str, str, str] | None:
     `kind` is one of the ``MARKER_*`` constants, upper-cased; `lane` is
     lower-cased. Decoration is stripped first. The assertion boundary decides
     whether a canonical marker at the start, after an existing lane heading, or
-    after ``VERDICT:`` is a verdict rather than a mention.
+    after ``VERDICT:`` is a verdict rather than a mention. A ``VERDICT:`` line
+    with more than one marker is deliberately not parsed.
     """
     match = _asserted_marker_match(line)
     if not match:
@@ -926,11 +946,11 @@ def refusal_shaped(line: str) -> bool:
     prose on both sides is a mention.
     """
     normalized = strip_decoration(line)
-    start = marker_assertion_start(normalized)
-    if start is None:
-        return False
-    match = near_miss_refusal(normalized, start)
-    return match is not None and match.start() == start
+    for start in marker_assertion_starts(normalized):
+        match = near_miss_refusal(normalized, start)
+        if match is not None and match.start() == start:
+            return True
+    return False
 
 
 #: Inline code with prose around it is a citation. This is retained for the
@@ -1319,6 +1339,12 @@ def lane_shas(
                             citations.append((c.get("html_url") or c.get("url") or "?",
                                               line[:120]))
                         continue
+                    if _kind == MARKER_REFUSED:
+                        # An asserted refusal that cannot be parsed must not leave
+                        # an earlier approval standing. This includes a VERDICT
+                        # line with more than one marker occurrence: choosing one
+                        # would invent which marker the author asserted.
+                        found.clear()
                     finding = (
                         c.get("html_url") or c.get("url") or "?",
                         line[:120],

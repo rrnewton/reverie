@@ -43,6 +43,11 @@ WHAT THIS BRACKET ASSERTS, over the generated cross-product:
                                                   ordinary case.
     decoration never GRANTS what was not said  -- prose naming a sha grants
                                                   nothing, in any wrapping.
+
+The original 12 x 3 x 2 single-marker matrix remains intact. Eight additional
+cases combine two marker occurrences under one VERDICT context so a parser that
+selects the first occurrence cannot pass only because every earlier case varied
+one field at a time.
 """
 
 from __future__ import annotations
@@ -148,8 +153,55 @@ def main() -> int:
                     "honoured although it is an indented CODE BLOCK")
                 failures.append(f"refusal {how}: lead={ln} trail={tn} sha={sn}")
                 print(f"  FAIL  refusal {how}: lead={ln} trail={tn} sha={sn}")
+    if seen != 72:
+        failures.append(f"original single-marker matrix generated {seen}, expected 72")
     print(f"  {'PASS' if not failures else 'FAIL'}  "
           f"{seen - len(failures)}/{seen} refusal variants behave as their lead requires")
+
+    # The 72 cells above vary one field at a time. These eight combine two
+    # marker occurrences under one explicit VERDICT context: both marker kinds,
+    # in both orders, with either kind as the requested verdict. A reader must
+    # not select whichever occurrence happens to come first. The line is
+    # malformed and grants no approval.
+    composite_seen = 0
+    composite_failures = 0
+    for requested_kind, other_kind, order in itertools.product(
+        ("APPROVED-AT", "CHANGES-REQUESTED-AT"),
+        ("APPROVED-AT", "CHANGES-REQUESTED-AT"),
+        ("before", "after"),
+    ):
+        requested = f"{requested_kind}: claude {SHA}"
+        other = f"{other_kind}: claude {SHA}"
+        line = (
+            f"VERDICT: The earlier {other} is quoted here; {requested}"
+            if order == "before"
+            else f"VERDICT: {requested}; the earlier {other} is quoted here"
+        )
+        malformed: list[tuple[str, str]] = []
+        bound = module.lane_shas(
+            [_comment(line, "2026-08-13T01:00:00Z")], "claude", malformed
+        )
+        composite_seen += 1
+        ok = bound == [] and bool(malformed)
+        if not ok:
+            composite_failures += 1
+            failures.append(
+                "multiple markers under VERDICT selected one occurrence: "
+                f"requested={requested_kind} other={other_kind} order={order}"
+            )
+            print(
+                "  FAIL  multiple markers under VERDICT selected one occurrence: "
+                f"requested={requested_kind} other={other_kind} order={order}"
+            )
+    if composite_seen != 8:
+        composite_failures += 1
+        failures.append(
+            f"multiple-marker matrix generated {composite_seen}, expected 8"
+        )
+    print(f"  {'PASS' if not composite_failures else 'FAIL'}  "
+          f"{composite_seen - composite_failures}/{composite_seen} "
+          "multiple-marker variants fail closed")
+    seen += composite_seen
 
     # ⚠️ AND THE REALISTIC INDENTED FORMS MUST STILL BE SEEN. An indent only opens a
     # code block when a blank line precedes it. A marker indented under a bullet, or

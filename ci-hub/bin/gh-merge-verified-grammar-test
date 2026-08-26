@@ -110,6 +110,11 @@ CASES = [
     ("explicit VERDICT lead-in with trailing prose blocks",
      f"VERDICT: For this head, CHANGES-REQUESTED-AT: codex {SHA} because it is blocked",
      True),
+    ("VERDICT with an approval mention before a refusal fails closed",
+     "VERDICT: The previous "
+     f"APPROVED-AT: codex {SHA} is no longer my verdict; "
+     f"CHANGES-REQUESTED-AT: codex {SHA} because this head is blocked",
+     True),
     ("full marker in prose is a mention",
      "The migration note reproduces the retired review text exactly: "
      f"CHANGES-REQUESTED-AT: codex {SHA}", False),

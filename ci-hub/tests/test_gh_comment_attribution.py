@@ -289,6 +289,28 @@ class FleetGhTest(unittest.TestCase):
         self.assertEqual(gate.markers([posted]), [(gate.REFUSAL, "codex", HEAD)])
         self.assertEqual(gate.evaluate([approval, posted], HEAD)[0], gate.BLOCKED)
 
+    def test_verdict_line_with_another_marker_is_refused(self) -> None:
+        approval = f"APPROVED-AT: codex {HEAD}"
+        refusal = f"CHANGES-REQUESTED-AT: codex {HEAD}"
+        body = (
+            f"The previous {approval} is no longer my verdict; "
+            f"{refusal} because this head is blocked."
+        )
+        result = self.run_shim(
+            *self.identity(role="reviewer"),
+            "--verdict", refusal,
+            "pr", "comment", "42", "--body", body,
+        )
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("target line must contain exactly one review marker", result.stderr)
+        self.assertFalse(self.capture.exists())
+
+        # A body produced by the previous writer must also fail closed when a
+        # reader encounters it in existing comment history.
+        gate = load_changes_requested_gate()
+        ambiguous = "VERDICT: " + body
+        self.assertEqual(gate.evaluate([approval, ambiguous], HEAD)[0], gate.INDETERMINATE)
+
     def test_verdict_requires_one_canonical_marker_line(self) -> None:
         result = self.run_shim(
             *self.identity(role="reviewer"),

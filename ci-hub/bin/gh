@@ -269,7 +269,14 @@ def with_verdict(body: str, verdict: str | None) -> str:
     if body.count(verdict) != 1 or len(candidates) != 1:
         die("--verdict marker must appear exactly once in prose in the comment body")
     target = candidates[0]
-    if grammar.marker_assertion(target):
+    target_start = grammar.strip_decoration(target).find(verdict)
+    occurrences = grammar.marker_occurrences(target)
+    if occurrences != [target_start]:
+        die(
+            "--verdict target line must contain exactly one review marker; "
+            "put mentions of other markers on separate prose lines"
+        )
+    if target_start in grammar.marker_assertion_starts(target):
         return body
     rewritten = []
     changed = False

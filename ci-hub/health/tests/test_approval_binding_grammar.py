@@ -165,6 +165,17 @@ cases.append((
     f"bound={lead_in_remaining} refused={lead_in_refused_shas} "
     f"malformed={len(lead_in_refusal)}",
 ))
+two_marker_line = (
+    f"VERDICT: The previous APPROVED-AT: codex {CUR} is no longer my verdict; "
+    f"CHANGES-REQUESTED-AT: codex {CUR} because this head is blocked"
+)
+two_marker_malformed = []
+two_marker_shas = ab.lane_shas(C(two_marker_line), "codex", two_marker_malformed)
+cases.append((
+    two_marker_shas == [] and len(two_marker_malformed) == 1,
+    "a VERDICT line with two markers grants neither occurrence",
+    f"shas={two_marker_shas} malformed={len(two_marker_malformed)}",
+))
 
 # Inline code has the same split. A whole-line code span is existing marker
 # decoration, so a missing SHA is still reported. Prose around the span makes it
