@@ -116,6 +116,44 @@ const OWNER_WATCH_VERIFIER_RELATIVE: &str = "scripts/owner-checkout-validate-wat
 /// optimization into an unbounded box-global anchor hold.
 const CURRENT_MAIN_FETCH_TIMEOUT_SECONDS: u64 = 30;
 
+/// How often a QUEUED waiter re-tests that its target still contains
+/// `origin/main`.
+///
+/// ⚠️ NOT `POLL_SECONDS`. The freshness check performs a real `git fetch`, so
+/// testing it on the 3-second queue poll would issue ~700 fetches across one
+/// 35-minute wait. Measured 2026-08-26: main merged four times in 72 minutes
+/// (11:51, 12:36, 12:47, 13:03), a ~24-minute interval, against a ~28-minute
+/// run. At 60 seconds the slot is released within a minute of the merge that
+/// doomed it, which is the whole benefit; a faster poll buys nothing because
+/// the thing being detected moves on a timescale three orders of magnitude
+/// slower.
+const CURRENT_MAIN_RECHECK_SECONDS: u64 = 60;
+
+/// Is this refusal the DEFINITE "your target is behind main", as opposed to
+/// "I could not find out"?
+///
+/// ⚠️ THIS DISTINCTION IS THE DIFFERENCE BETWEEN AN EVICTION AND A BUG.
+/// `current_main_freshness_check` returns `StaleBase` for FOUR conditions: the
+/// fetch could not run, the fetch failed, the ancestry test was unresolved, and
+/// the target genuinely does not contain main. Only the last is a property of
+/// the TARGET; the other three are properties of the network or the moment. A
+/// mid-wait eviction that fired on all four would throw a perfectly good waiter
+/// out of the queue because a fetch timed out -- an over-eager eviction is
+/// indistinguishable from a working one when you only look at the case that
+/// should evict, which is why the control test exists.
+///
+/// UNRESOLVED deliberately keeps its position. Nothing is lost by waiting: the
+/// front-of-queue check runs again with the anchor held and fails closed there,
+/// where fail-closed costs one run rather than one slot.
+fn stale_base_is_definite(error: &ValidateLockError) -> bool {
+    match error {
+        ValidateLockError::StaleBase(message) => {
+            message.contains("does not contain freshly fetched origin/main")
+        }
+        _ => false,
+    }
+}
+
 /// Read a TEST-BUILD-ONLY environment override.
 ///
 /// **AN ADMISSION GATE WHOSE VERDICT ITS CALLER CAN SET IS NOT A GATE.** Both
@@ -2524,9 +2562,13 @@ impl ValidateLock {
         owner: &ProcessOwner,
         attribution: &str,
         consume_on_acquire: bool,
+        root: &Path,
     ) -> Result<Option<BoxExclusionAnchor>, ValidateLockError> {
         let started = Instant::now();
         let mut last = String::new();
+        // The caller checked freshness immediately before entering the queue,
+        // so the clock starts now rather than at zero.
+        let mut last_freshness = Instant::now();
         loop {
             match self.try_global_turn(args, owner, attribution, consume_on_acquire)? {
                 GlobalTurn::Acquired(anchor) => return Ok(Some(anchor)),
@@ -2574,6 +2616,45 @@ impl ValidateLock {
             // here even though the payload has not been spawned yet. There is
             // no protected direct Child in this phase, so the shared full reap
             // is race-free.
+            // ⚠️ A DOOMED WAITER MUST NOT HOLD A SLOT. Freshness was true when this
+            // run entered the queue; `origin/main` can advance while it waits, and
+            // until now nothing noticed until the waiter reached the FRONT -- where
+            // the existing check refuses it having consumed the slot it was waiting
+            // for. Measured 2026-08-26: agent(hermit-107) waited 34m40s for
+            // e3dbcfcbcebf, acquired the box, and refused on freshness with ZERO
+            // nodes run, delaying every landable head behind it by that whole time.
+            //
+            // ⚠️ EVICTING EARLY IS PROVABLY SAFE BECAUSE STALENESS IS MONOTONE.
+            // `origin/main` only moves forward, so a target that has stopped
+            // containing it can never contain it again without being rebased --
+            // which produces a different target and a different run. There is no
+            // state in which waiting longer would have made this target fresh, so
+            // an early eviction cannot be premature. That property is what makes
+            // this a check rather than a policy.
+            if last_freshness.elapsed() >= Duration::from_secs(CURRENT_MAIN_RECHECK_SECONDS) {
+                last_freshness = Instant::now();
+                if let Err(error) = current_main_freshness_check(root, &args.target, args.kind) {
+                    if stale_base_is_definite(&error) {
+                        self.remove_own_global_waiter(args, owner)?;
+                        if let ValidateLockError::StaleBase(message) = &error {
+                            eprintln!("{message}");
+                        }
+                        eprintln!(
+                            "validate-lock: EVICTED agent={} target={} from the queue after {}s: origin/main advanced while it waited, so this run could never have been admitted. Slot released.",
+                            args.agent,
+                            args.target,
+                            started.elapsed().as_secs()
+                        );
+                        return Ok(None);
+                    }
+                    // UNRESOLVED keeps its position on purpose; see
+                    // `stale_base_is_definite`.
+                    eprintln!(
+                        "validate-lock: mid-wait freshness UNRESOLVED for target={}, keeping queue position: {error}",
+                        args.target
+                    );
+                }
+            }
             reap_exited_children();
             thread::sleep(Duration::from_secs(POLL_SECONDS));
         }
@@ -4302,7 +4383,7 @@ impl ValidateLock {
         // repositories it is not. Closing that needs a box-global durable record,
         // which is a different change from this one.
         let mut box_anchor =
-            match self.wait_for_global_turn(&args, &owner, &anchor_attribution, false)? {
+            match self.wait_for_global_turn(&args, &owner, &anchor_attribution, false, root)? {
                 Some(anchor) => anchor,
                 None => {
                     return Ok(REFUSED_EXIT_CODE);
@@ -4362,6 +4443,7 @@ impl ValidateLock {
                         &owner,
                         &anchor_attribution,
                         false,
+                        root,
                     )? {
                         Some(anchor) => anchor,
                         None => return Ok(REFUSED_EXIT_CODE),
@@ -8725,6 +8807,108 @@ exit 0
             Err(ValidateLockError::StaleBase(_))
         ));
         let _ = fs::remove_dir_all(paths.lock.parent().unwrap());
+    }
+
+    /// ⚠️ THE EVICTION. A waiter admitted while fresh must be thrown out of the
+    /// queue once `origin/main` advances past its target, WITHOUT waiting to reach
+    /// the front.
+    ///
+    /// Measured 2026-08-26: agent(hermit-107) entered the queue fresh for
+    /// e3dbcfcbcebf, waited 34m40s, acquired the box, and refused on freshness with
+    /// ZERO nodes run. One box and ~28-minute runs means that is not waste, it is
+    /// delay imposed on every landable head behind it.
+    ///
+    /// This drives the real predicate against a real repository and a real remote
+    /// advance -- the same scaffolding as
+    /// `reverie_freshness_brackets_fetched_current_main_ancestry` -- and then asserts
+    /// the eviction DECISION, which is `stale_base_is_definite`.
+    #[test]
+    fn a_waiter_is_evicted_once_main_advances_past_its_target() {
+        let (paths, root, seed, target) = current_main_fixture("evict-main-advanced", "hermit");
+
+        // Before: fresh, so a waiter keeps its position.
+        assert!(
+            current_main_freshness_check(&root, &target, Kind::Validate).is_ok(),
+            "the fixture must start fresh or the eviction below proves nothing"
+        );
+
+        // main advances underneath the waiter, exactly as it did four times on
+        // 2026-08-26 (11:51, 12:36, 12:47, 13:03).
+        git_success(Some(&seed), &["push", "--quiet", "origin", "main"]);
+
+        let verdict = current_main_freshness_check(&root, &target, Kind::Validate);
+        let error = verdict.expect_err("an advanced main must make the target stale");
+        assert!(
+            stale_base_is_definite(&error),
+            "a target behind main must be a DEFINITE stale base and therefore evictable, got {error:?}"
+        );
+
+        // The eviction is bounded in time by the recheck interval, which is what
+        // makes "released within one poll" a claim with a number behind it.
+        assert!(
+            CURRENT_MAIN_RECHECK_SECONDS <= 60,
+            "the recheck interval bounds how long a doomed waiter holds a slot; \
+             {CURRENT_MAIN_RECHECK_SECONDS}s is too long to call this an eviction"
+        );
+        let _ = fs::remove_dir_all(paths.lock.parent().unwrap());
+    }
+
+    /// ⚠️ THE CONTROL, AND IT IS THE HALF THAT MAKES THE OTHER ONE MEAN ANYTHING.
+    /// An eviction that fires on every recheck would pass the test above and be
+    /// catastrophic: it would empty the queue. A test that only exercises the case
+    /// which SHOULD evict cannot tell a working eviction from an over-eager one.
+    ///
+    /// So: main does NOT advance, the check runs repeatedly, and the waiter must
+    /// survive every single recheck.
+    #[test]
+    fn a_still_fresh_waiter_keeps_its_position_across_repeated_rechecks() {
+        let (paths, root, _seed, target) = current_main_fixture("evict-control-fresh", "hermit");
+
+        for attempt in 1..=3 {
+            let verdict = current_main_freshness_check(&root, &target, Kind::Validate);
+            assert!(
+                verdict.is_ok(),
+                "recheck {attempt}: a waiter whose target still contains main must KEEP its \
+                 queue position; evicting it would empty the queue of runs that can be used. \
+                 got {verdict:?}"
+            );
+        }
+        let _ = fs::remove_dir_all(paths.lock.parent().unwrap());
+    }
+
+    /// ⚠️ AN UNRESOLVED ANSWER IS NOT A STALE TARGET, AND EVICTING ON IT WOULD BE
+    /// THE OVER-EAGER BUG WEARING THE RIGHT UNIFORM.
+    ///
+    /// `current_main_freshness_check` returns `StaleBase` for FOUR conditions. Three
+    /// are properties of the network or the moment -- the fetch could not run, the
+    /// fetch failed, the ancestry test was unresolved -- and only the fourth is a
+    /// property of the TARGET. A mid-wait eviction keyed on the enum variant alone
+    /// would throw a perfectly good waiter out of the queue because a fetch timed
+    /// out. Those three keep their position and are caught by the existing
+    /// front-of-queue check, where failing closed costs one run instead of one slot.
+    #[test]
+    fn only_a_definite_stale_base_evicts_a_waiter() {
+        let definite = ValidateLockError::StaleBase(
+            "REFUSE: validation target abc does not contain freshly fetched origin/main. \
+             Rebase before validating."
+                .to_string(),
+        );
+        assert!(
+            stale_base_is_definite(&definite),
+            "the one message that names a property of the TARGET must evict"
+        );
+
+        for unresolved in [
+            "validate-lock: current origin/main fetch could not run in /x (boom); freshness for abc is UNRESOLVED.",
+            "validate-lock: current origin/main fetch failed in /x (git exit Some(128): boom); freshness for abc is UNRESOLVED.",
+            "validate-lock: current-main ancestry for abc is UNRESOLVED in /x (git exit Some(129): boom).",
+        ] {
+            let error = ValidateLockError::StaleBase(unresolved.to_string());
+            assert!(
+                !stale_base_is_definite(&error),
+                "UNRESOLVED must NOT evict -- a network blip is not a stale target: {unresolved}"
+            );
+        }
     }
 
     fn git_success(repo: Option<&Path>, args: &[&str]) -> String {
