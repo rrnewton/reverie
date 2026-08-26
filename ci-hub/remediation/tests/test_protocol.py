@@ -4141,6 +4141,132 @@ class ProtocolTest(unittest.TestCase):
 
         return clock, records, fake_poll
 
+    def test_a_quota_refusal_stops_the_sweep_instead_of_spinning_on_it(self) -> None:
+        """⚠️ THE GATE USED TO POLL HARDEST WHILE IT WAS BEING REFUSED.
+
+        A 403 returns in about 0.3s where a healthy poll takes 6.24s, so the
+        same wall budget admits an order of magnitude MORE attempts once
+        throttling starts. Measured 2026-08-25T21: 160 attempts in the hour it
+        was refused (157 errors, 3 successes) against 2-15/hour when healthy --
+        the gate spending the shared per-user quota it was starved OF, and
+        taking it from nine other agents on the same identity.
+
+        One refusal must end the sweep. The remaining rows are then reported by
+        the ordinary partial path, so stopping costs no information.
+        """
+        clock, records, _ = self._budget_fixture(5, seconds_per_poll=0.3)
+        attempts: list[str] = []
+
+        def refusing_poll(
+            obligation_id: str,
+            store_path: Path,
+            *,
+            deadline: float | None = None,
+            redispatch: bool = True,
+        ) -> dict:
+            del store_path, deadline, redispatch
+            attempts.append(obligation_id)
+            clock["t"] += 0.3
+            raise protocol.GitHubQuotaExhausted(
+                "HTTP 403: API rate limit exceeded for user ID 274582"
+            )
+
+        output = io.StringIO()
+        with mock.patch.object(protocol.time, "monotonic", lambda: clock["t"]), \
+             mock.patch.object(
+                 protocol.obligations, "latest_records",
+                 return_value={r["obligation_id"]: r for r in records},
+             ), \
+             mock.patch.object(protocol, "poll_obligation", refusing_poll), \
+             mock.patch.object(
+                 protocol.obligations, "get_record",
+                 side_effect=lambda oid, sp: {"obligation_id": oid, "overall_state": "open"},
+             ), \
+             redirect_stdout(output):
+            rc = protocol.watch(
+                store_path=self.store, obligation_id=None, once=True,
+                poll_seconds=1, budget_secs=60.0,
+            )
+        printed = output.getvalue()
+        # ⚠️ THE WHOLE POINT: ONE attempt, not five. A 60s budget would have
+        # admitted all five at 0.3s each; the sweep stopped on the first refusal.
+        self.assertEqual(
+            len(attempts), 1,
+            f"a quota refusal must stop the sweep; it made {len(attempts)} attempts",
+        )
+        self.assertEqual(rc, protocol.WATCH_EXIT_NO_RESULT)
+        self.assertIn("watch_stopped_because=github-quota", printed)
+        self.assertIn("STOPPING THE SWEEP", printed)
+        # ⚠️ FIVE, NOT FOUR. ob-0 was ATTEMPTED but yielded no verdict, so it
+        # has no fresher answer than the four never tried -- reporting it as
+        # checked would claim a measurement the refusal prevented. The attempt
+        # is still visible, on its own comment line, so the two are separable.
+        self.assertIn("watch_unchecked=5", printed)
+        self.assertIn("watch_checked=0", printed)
+        self.assertIn("# poll ob-0 quota-refused", printed)
+        self.assertIn("refused for QUOTA", printed)
+        # and the verdict still does not soften
+        self.assertIn("watch_verdict=NO-RESULT", printed)
+
+    def test_poll_obligation_turns_a_403_body_into_the_stop_signal(self) -> None:
+        """⚠️ THE RAISE SITE, WHICH MY FIRST TEST DID NOT COVER.
+
+        That test raised GitHubQuotaExhausted from its own double, so it
+        exercised the SWEEP's handling and not the CLASSIFICATION. Deleting the
+        `raise` in poll_obligation left it green -- a test asserting the half
+        that was mocked rather than the half that changed. Second time today.
+
+        This drives a real obligation and feeds `github_runs` the actual 403
+        body GitHub returns, so the classifier is what is under test.
+        """
+        self.store.unlink(missing_ok=True)
+        self.create()
+
+        def refuse(*args, **kwargs):
+            raise protocol.ProtocolError(
+                "command failed: with-proxy gh run list -R rrnewton/hermit ...: "
+                "HTTP 403: API rate limit exceeded for user ID 274582."
+            )
+
+        with mock.patch.object(protocol, "github_runs", refuse):
+            with self.assertRaises(protocol.GitHubQuotaExhausted):
+                protocol.poll_obligation(
+                    "test-obligation", self.store, redispatch=False
+                )
+        # and the refusal is still DURABLY RECORDED before the raise, so the
+        # stop does not cost the observation
+        rec = protocol.obligations.get_record("test-obligation", self.store)
+        self.assertIn("rate limit exceeded", rec["github"]["last_poll_error"])
+
+    def test_poll_obligation_does_not_stop_on_an_ordinary_failure(self) -> None:
+        """The negative arm at the same site: a non-quota error is recorded and
+        does NOT raise, so the sweep carries on to the next obligation."""
+        self.store.unlink(missing_ok=True)
+        self.create()
+
+        def refuse(*args, **kwargs):
+            raise protocol.ProtocolError("HTTP 404: Not Found")
+
+        with mock.patch.object(protocol, "github_runs", refuse):
+            protocol.poll_obligation(
+                "test-obligation", self.store, redispatch=False
+            )
+        rec = protocol.obligations.get_record("test-obligation", self.store)
+        self.assertIn("404", rec["github"]["last_poll_error"])
+
+    def test_an_ordinary_poll_failure_does_not_stop_the_sweep(self) -> None:
+        """The negative arm. Only a QUOTA refusal ends the sweep; a one-off
+        error is about that obligation and the rest must still be examined.
+        Without this the assertion above passes for a gate that stops on
+        anything."""
+        self.assertTrue(protocol._is_quota_refusal(
+            "HTTP 403: API rate limit exceeded for user ID 274582"))
+        self.assertTrue(protocol._is_quota_refusal(
+            "You have exceeded a secondary rate limit"))
+        self.assertFalse(protocol._is_quota_refusal(
+            "read tcp [::1]:39548->[::1]:1800: read: connection reset by peer"))
+        self.assertFalse(protocol._is_quota_refusal("HTTP 404: Not Found"))
+
     def test_a_truncated_sweep_names_the_obligations_it_did_not_reach(self) -> None:
         """⚠️ THE UNREACHED SET WAS ANONYMOUS, AND IT IS THE SAME SET EVERY CYCLE.
 

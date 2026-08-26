@@ -551,6 +551,39 @@ class WatchBudgetExhausted(ProtocolError):
     """The bounded one-shot watcher ran out of time, not evidence."""
 
 
+class GitHubQuotaExhausted(ProtocolError):
+    """GitHub refused the call for QUOTA, so every remaining call will fail too.
+
+    ⚠️ THE GATE USED TO SPIN FASTER ON THIS, NOT SLOWER. A 403 returns in about
+    0.3s where a healthy poll takes 6.24s, so the same wall budget admits an
+    order of magnitude MORE attempts once throttling starts -- and every one
+    spends shared quota. Measured 2026-08-25T21: 160 poll attempts in the hour
+    it was being refused (157 errors, 3 successes), against 2-15 attempts per
+    hour when healthy. The gate polled hardest exactly while it was starved,
+    consuming the budget it was starved OF.
+
+    ⚠️ AND THE POOL IS SHARED. The limit is per USER and every agent on this box
+    is user 274582, so those extra calls are taken from nine other agents'
+    interactive work as well as from the next cycle of this gate.
+
+    Raising this STOPS the sweep. The remaining obligations are then reported by
+    the ordinary partial path, which already names what it did not reach -- so
+    stopping costs no information and is a removal, not a mechanism.
+    """
+
+
+# Substring of GitHub's own 403 body. Matched on the message rather than a
+# status code because the failure arrives as a `gh` subprocess error string,
+# and `gh` prints the API body verbatim.
+_QUOTA_REFUSAL_MARKERS = ("api rate limit exceeded", "secondary rate limit")
+
+
+def _is_quota_refusal(error: object) -> bool:
+    """Whether this failure means the QUOTA is gone rather than this ONE call."""
+    text = str(error).lower()
+    return any(marker in text for marker in _QUOTA_REFUSAL_MARKERS)
+
+
 def _local_receipt_problem(
     report: object,
     *,
@@ -4685,6 +4718,11 @@ def poll_obligation(
                 {"github": {"last_poll_error": str(error)}},
                 store_path,
             )
+            # The row is recorded either way; what changes is whether the SWEEP
+            # continues. A quota refusal is not about this obligation, so trying
+            # the next one only spends more of the quota that is already gone.
+            if _is_quota_refusal(error):
+                raise GitHubQuotaExhausted(str(error)) from error
     if record["local"]["state"] in {"pending", "starting"}:
         launch = record.get("launch")
         launch = launch if isinstance(launch, Mapping) else {}
@@ -4930,6 +4968,7 @@ def _poll_within_budget(
     store_path: Path,
     deadline: float | None,
     redispatch: bool = True,
+    stop_reason: list[str] | None = None,
 ) -> tuple[list[dict[str, Any]], int, bool]:
     """Poll obligations one at a time, stopping when the wall budget is spent.
 
@@ -4959,6 +4998,20 @@ def _poll_within_budget(
                     redispatch=redispatch,
                 )
             )
+        except GitHubQuotaExhausted as error:
+            # ⚠️ STOP THE SWEEP. Every remaining call draws on the same exhausted
+            # per-user quota and would fail identically, cheaply, and at the
+            # expense of nine other agents sharing it. The row is already
+            # recorded by the raise site; the unreached tail is reported by the
+            # ordinary partial path, which names it.
+            print(f"# poll {record['obligation_id']} quota-refused: {error}")
+            print(
+                "# STOPPING THE SWEEP: the per-user GitHub quota is exhausted, "
+                "so the remaining obligations are not attempted"
+            )
+            if stop_reason is not None:
+                stop_reason.append("github-quota")
+            return updated, len(records), True
         except WatchBudgetExhausted as error:
             # The attempt is part of the reported census even though it could
             # not produce a verdict.  Re-read only the durable current row; do
@@ -5015,8 +5068,9 @@ def watch(
                 ),
             )
         )
+        stop_reason: list[str] = []
         updated, planned, timed_out = _poll_within_budget(
-            records, store_path, deadline, redispatch
+            records, store_path, deadline, redispatch, stop_reason
         )
         if timed_out:
             # TYPED, NON-CRASHING NO-RESULT. We stop under our own power and
@@ -5048,6 +5102,12 @@ def watch(
             unchecked = [
                 str(record["obligation_id"]) for record in records[len(updated):]
             ]
+            # ⚠️ WHY IT STOPPED IS NOT THE SAME QUESTION AS THAT IT STOPPED.
+            # "slow" and "refused for quota" need opposite responses -- one
+            # wants more time, the other wants FEWER CALLS -- and a bare
+            # NO-RESULT cannot tell them apart. Naming it costs a field.
+            reason = stop_reason[0] if stop_reason else "budget"
+            print(f"watch_stopped_because={reason}")
             print(f"watch_unchecked={len(unchecked)}")
             if unchecked:
                 print(f"watch_unchecked_ids={','.join(unchecked)}")
@@ -5064,8 +5124,14 @@ def watch(
             print(
                 "summary="
                 f"NO-RESULT: watch-obligations checked {len(updated)} of "
-                f"{planned} in {elapsed_ms}ms against a {bound_ms}ms budget. "
-                f"The census is INCOMPLETE, so this is not a clear. "
+                f"{planned} in {elapsed_ms}ms against a {bound_ms}ms budget"
+                + (
+                    " and STOPPED EARLY because GitHub refused for QUOTA -- the "
+                    "per-user limit is shared with every other agent, so the "
+                    "remaining calls were not attempted"
+                    if reason == "github-quota" else ""
+                )
+                + f". The census is INCOMPLETE, so this is not a clear. "
                 f"{len(unchecked)} obligation(s) were NOT examined this cycle"
                 + (f": {', '.join(unchecked)}" if unchecked else "")
             )
