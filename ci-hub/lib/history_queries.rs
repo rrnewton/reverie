@@ -139,6 +139,26 @@ pub enum NewestGreenOutcome {
 #[derive(Clone, Debug)]
 pub enum FirstBadOutcome {
     Found(Box<FirstBadReport>),
+    /// A PASS->FAIL transition exists, but NOTHING was measured between the two
+    /// endpoints, so the tool has not localized the regression to a commit.
+    ///
+    /// WHY THIS IS A SEPARATE STATE AND NOT `Found`. The endpoints are two
+    /// adjacent *runs* of this cell, not two adjacent *commits*. When
+    /// `commits_between > 0` the transition is bounded only by the run cadence,
+    /// and reporting the newer endpoint as "the first bad commit" states a
+    /// run-level fact under a cell's name. Measured on the live ledger
+    /// (2026-08-25, 372 gate names): 52 of the 98 exit-0 answers had a
+    /// non-empty window, 35 of those shared their boundary pair with at least
+    /// one other cell, and the widest window was 203 commits. Five unrelated
+    /// cells reported the same 140-commit boundary; they cannot all have
+    /// regressed at one commit.
+    ///
+    /// `bisect_probe` names the commit that halves the window, so the refusal
+    /// carries its own remedy instead of only withholding an answer.
+    Indeterminate {
+        report: Box<FirstBadReport>,
+        bisect_probe: Option<String>,
+    },
     FailureWithoutKnownGood {
         query: String,
         matched_name: String,
@@ -354,7 +374,7 @@ impl HistoryQueryEngine {
                 .filter(|item| item.0 == bad.0)
                 .filter_map(|item| item.2.result.as_deref().or(item.2.kind.as_deref()))
                 .collect();
-            return FirstBadOutcome::Found(Box::new(FirstBadReport {
+            let report = Box::new(FirstBadReport {
                 schema_version: 1,
                 branch: branch.to_string(),
                 branch_ref: branch_ref.to_string(),
@@ -371,7 +391,41 @@ impl HistoryQueryEngine {
                 source_node: bad.2.source_node.clone(),
                 error_excerpt: error_excerpt(&bad.3, &bad.2.name),
                 load_context: load_context(&bad.3),
-            }));
+            });
+            // GATE ON THE WINDOW, NOT ON THE MISSING-RECORD COUNT.
+            //
+            // `commits_without_cell_record == commits_between` is the tempting
+            // predicate and it is wrong in BOTH directions, measured over all
+            // 372 gate names in the live ledger on 2026-08-25:
+            //
+            //   * It fires on all 46 zero-window answers, where the equality is
+            //     0 == 0 and the localization is EXACT. That would convert 17
+            //     pinned regressions and 29 correctly flagged same-SHA flakes
+            //     into false INDETERMINATEs.
+            //   * It misses 3 real windows -- build.runtime_release (15/14),
+            //     check.portability_paths (33/31) and test.hermit_integration
+            //     (124/123) -- where the counter under-reports. An independent
+            //     count over both persisted observation sources found ZERO
+            //     in-window records for test.hermit_integration, so the 123 is
+            //     the counter being wrong, not evidence existing.
+            //
+            // `commits_between > 0` is exact: it selects those 52 and only
+            // those. It also cannot be defeated by a miscount, because the loop
+            // above guarantees the last PASS is the newest pass before the
+            // FAIL, so a non-empty window NEVER contains a pass/fail record for
+            // this cell no matter what the counter says.
+            if between > 0 {
+                let probe = if upper.saturating_sub(lower) >= 2 {
+                    self.commits.get(lower + (upper - lower) / 2).cloned()
+                } else {
+                    None
+                };
+                return FirstBadOutcome::Indeterminate {
+                    report,
+                    bisect_probe: probe,
+                };
+            }
+            return FirstBadOutcome::Found(report);
         }
 
         if let Some((_, sha, gate, row)) =
@@ -1037,14 +1091,97 @@ mod tests {
                 "pass",
             ),
         ];
-        let FirstBadOutcome::Found(report) =
-            HistoryQueryEngine::new(commits, rows).first_bad("cell", "main", "origin/main")
+        // One unmeasured commit sits between the endpoints, so the transition is
+        // bounded by two RUNS and not localized to a commit. It must not come
+        // back as `Found`.
+        let FirstBadOutcome::Indeterminate {
+            report,
+            bisect_probe,
+        } = HistoryQueryEngine::new(commits, rows).first_bad("cell", "main", "origin/main")
         else {
-            panic!("expected transition")
+            panic!("expected an unlocalized window, not a localized answer")
         };
         assert_eq!(report.first_bad.sha, "bad1");
         assert_eq!(report.last_good.sha, "good");
+        assert_eq!(report.commits_between, 1);
         assert_eq!(report.commits_without_cell_record, 1);
+        assert_eq!(bisect_probe.as_deref(), Some("gap"));
+    }
+
+    /// THE CONTROL. Adjacent commits, zero window: the answer IS localized and
+    /// must stay `Found`. Gating on `commits_without_cell_record ==
+    /// commits_between` instead of on the window would fire here (0 == 0) and
+    /// destroy a correct answer -- on the live ledger that mistake covered 46
+    /// of the 98 exit-0 answers. If this test ever reports Indeterminate, the
+    /// predicate has been swapped back to the vacuous one.
+    #[test]
+    fn adjacent_commits_stay_localized_and_do_not_report_indeterminate() {
+        let commits = vec!["bad".into(), "good".into()];
+        let rows = vec![
+            gate(
+                row("good", "2026-08-03T01:00:00Z", "full", "full", "pass"),
+                "cell",
+                "pass",
+            ),
+            gate(
+                row("bad", "2026-08-03T02:00:00Z", "full", "full", "fail"),
+                "cell",
+                "fail",
+            ),
+        ];
+        let outcome =
+            HistoryQueryEngine::new(commits, rows).first_bad("cell", "main", "origin/main");
+        let FirstBadOutcome::Found(report) = outcome else {
+            panic!("adjacent-commit transition must stay localized, got {outcome:?}")
+        };
+        assert_eq!(report.first_bad.sha, "bad");
+        assert_eq!(report.commits_between, 0);
+        assert_eq!(report.commits_without_cell_record, 0);
+    }
+
+    /// The shape the `no_cell_record == commits_between` predicate MISSES: a
+    /// non-empty window whose missing-record counter under-reports, because a
+    /// record for this cell exists at an in-window commit that is neither a
+    /// pass nor a fail. Three live cells had exactly this shape
+    /// (build.runtime_release 15/14, check.portability_paths 33/31,
+    /// test.hermit_integration 124/123). The window is still unlocalized -- a
+    /// record that is neither pass nor fail localizes nothing -- so the verdict
+    /// must be Indeterminate even though the two counts differ.
+    #[test]
+    fn undercounted_window_is_still_indeterminate() {
+        let commits = vec!["bad".into(), "skipped".into(), "gap".into(), "good".into()];
+        let rows = vec![
+            gate(
+                row("good", "2026-08-03T01:00:00Z", "full", "full", "pass"),
+                "cell",
+                "pass",
+            ),
+            // Neither pass nor fail: invisible to the transition walk, but it
+            // DOES count as an observed index, which is what drags
+            // `commits_without_cell_record` below `commits_between`.
+            gate(
+                row("skipped", "2026-08-03T02:00:00Z", "full", "full", "pass"),
+                "cell",
+                "skipped",
+            ),
+            gate(
+                row("bad", "2026-08-03T03:00:00Z", "full", "full", "fail"),
+                "cell",
+                "fail",
+            ),
+        ];
+        let outcome =
+            HistoryQueryEngine::new(commits, rows).first_bad("cell", "main", "origin/main");
+        let FirstBadOutcome::Indeterminate { report, .. } = outcome else {
+            panic!("an unlocalized window must not be reported as localized, got {outcome:?}")
+        };
+        assert_eq!(report.commits_between, 2);
+        // The counter under-reports here. The verdict must not depend on it.
+        assert_eq!(report.commits_without_cell_record, 1);
+        assert_ne!(
+            report.commits_between, report.commits_without_cell_record,
+            "this test is pointless unless the two counts actually disagree"
+        );
     }
 
     #[test]

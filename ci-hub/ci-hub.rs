@@ -5119,6 +5119,18 @@ fn print_first_bad(report: &history_queries::FirstBadReport, json: bool) {
     }
 }
 
+/// COULD-NOT-DETERMINE for `first-bad`, distinct from every other code this
+/// subcommand can return. It MUST NOT collide with:
+///   0  FOUND            -- a localized PASS->FAIL transition
+///   3  FAILED           -- a failure exists but no earlier PASS is retained
+///   4  NOT-VALIDATED    -- no retained record, or no transition in the records
+/// 75 is `EX_TEMPFAIL`, the same code `ci-hub/validate/start_unit.py` already
+/// uses for its could-not-determine state, so one meaning has one number across
+/// the two tools. It is deliberately NOT a failure code: an unlocalized window
+/// is missing measurement, and collapsing it into FAILED is the same loss of
+/// the third state in the opposite direction.
+const FIRST_BAD_INDETERMINATE: i32 = 75;
+
 fn run_first_bad(root: &Path, args: FirstBadArgs) -> Result<i32, CiHubError> {
     let repo = history_repo_path(root, &args.query.repo_dir);
     let branch_ref = format!("origin/{}", args.query.branch);
@@ -5147,6 +5159,84 @@ fn run_first_bad(root: &Path, args: FirstBadArgs) -> Result<i32, CiHubError> {
                 assess_diff_plausibility(&report.files_touched, report.source_node.as_deref());
             print_first_bad(&report, args.query.json);
             Ok(0)
+        }
+        FirstBadOutcome::Indeterminate {
+            mut report,
+            bisect_probe,
+        } => {
+            // Deliberately NOT `files_touched(first_bad.sha)`. Naming one
+            // commit's diff inside a window this tool just said it cannot
+            // localize is the exact false-confidence being removed here.
+            report.plausibility = "not-assessed: window is unlocalized".into();
+            if args.query.json {
+                println!(
+                    "{}",
+                    serde_json::json!({
+                        "schema_version": 1,
+                        "verdict": "INDETERMINATE",
+                        "exit_code": FIRST_BAD_INDETERMINATE,
+                        "branch": args.query.branch,
+                        "query": report.query,
+                        "matched_name": report.matched_name,
+                        "newest_known_fail": report.first_bad,
+                        "oldest_known_pass": report.last_good,
+                        "unlocalized_window_commits": report.commits_between + 1,
+                        "commits_between": report.commits_between,
+                        "commits_without_cell_record": report.commits_without_cell_record,
+                        "first_bad_commit_has_mixed_outcomes": report.first_bad_commit_has_mixed_outcomes,
+                        "bisect_probe": bisect_probe,
+                        "reason": "the two endpoints are adjacent RUNS of this cell, not adjacent commits; no commit in the window has a record for this cell, so the regression is not localized to any commit",
+                        "remedy": bisect_probe.as_deref().map(|sha| format!(
+                            "validate cell {} at {} to halve the window",
+                            report.matched_name, sha
+                        )).unwrap_or_else(|| format!(
+                            "validate cell {} at the commits inside the window",
+                            report.matched_name
+                        )),
+                    })
+                );
+                return Ok(FIRST_BAD_INDETERMINATE);
+            }
+            println!(
+                "FIRST-BAD INDETERMINATE cell={} -- a PASS-to-FAIL transition exists but is NOT localized to a commit",
+                report.matched_name
+            );
+            println!("BRANCH {} ref={}", report.branch, report.branch_ref);
+            println!(
+                "NEWEST-KNOWN-FAIL {} observed={}",
+                report.first_bad.sha,
+                report.first_bad.finished_at.as_deref().unwrap_or("unknown"),
+            );
+            println!(
+                "OLDEST-KNOWN-PASS {} observed={}",
+                report.last_good.sha,
+                report.last_good.finished_at.as_deref().unwrap_or("unknown"),
+            );
+            println!(
+                "UNLOCALIZED-WINDOW {} commits ({} between the endpoints, {} of them with no record for this cell)",
+                report.commits_between + 1,
+                report.commits_between,
+                report.commits_without_cell_record,
+            );
+            println!(
+                "WHY: those two endpoints are adjacent RUNS of this cell, not adjacent commits. Any commit in the window can carry the regression; naming the newer endpoint would state a run-level fact under this cell's name."
+            );
+            match bisect_probe.as_deref() {
+                Some(sha) => println!(
+                    "REMEDY: validate cell {} at {} to halve the window",
+                    report.matched_name, sha
+                ),
+                None => println!(
+                    "REMEDY: validate cell {} at the commits inside the window",
+                    report.matched_name
+                ),
+            }
+            if report.first_bad_commit_has_mixed_outcomes {
+                println!(
+                    "FLAKE-SIGNAL: the newest-known-fail SHA also has a PASS record for this cell"
+                );
+            }
+            Ok(FIRST_BAD_INDETERMINATE)
         }
         FirstBadOutcome::FailureWithoutKnownGood {
             query,
