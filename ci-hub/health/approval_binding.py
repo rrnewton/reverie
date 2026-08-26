@@ -762,7 +762,33 @@ _REFUSAL_NEARMISS = re.compile(
 # reviewers. An `agent(name)` mention in prose is NOT the author; on #2625 it names
 # a DIFFERENT agent from the tag in 3 of 8 tagged comments, because agents refer to
 # each other constantly.
-_DISCLOSURE = re.compile(rf"^\[\s*[a-z0-9]+\s*,\s*({_AGENT_ID})\s*,", re.I | re.M)
+# ⚠️ A ROLE TAG IN FRONT OF THE DISCLOSURE TAG USED TO LOSE THE AUTHOR ENTIRELY.
+# The team field is `[a-z0-9]+`, so `[review agent, claude-opus-5]` cannot match it
+# -- a space is not in the class -- and because the tag must start the line, a
+# comment opening `[review agent, claude-opus-5] [hermit2, hermit-016, ...]` read
+# as having NO author at all. Measured 2026-08-26: three refusals holding three
+# open pull requests (#2692, #2670 comment 5420455389, #2680 comment 5420278252)
+# were classified UNATTRIBUTED on exactly this, while naming their author in
+# plain sight. Under issuer-bound withdrawal an unattributed refusal is
+# undischargeable BY ANYONE, so a parser miss becomes a permanent block.
+#
+# ⚠️ THE LEADING GROUPS ARE SEPARATED BY `[ \t]*`, NOT `\s*`, AND THAT IS THE
+# WHOLE SAFETY ARGUMENT. `\s` matches newlines, so `\s*` would let the prefix
+# leap from a role tag on line 0 to a tag several lines below it -- including an
+# indented paste of SOMEBODY ELSE'S comment. That turns a parser fix into an
+# attribution transfer, which is the defect this file exists to prevent.
+# Restricting to same-line whitespace keeps the whole match on one line.
+#
+# ⚠️ AND THE PREFIX IS NON-GREEDY so the FIRST disclosure tag on the line wins.
+# Greedy, `[hermit2, hermit-004, ...] [hermit2, hermit-016, ...]` would attribute
+# to hermit-016 -- the last tag rather than the writer's own.
+#
+# A blockquoted or indented tag still does not match, because the line must BEGIN
+# with a bracket: `> [hermit2, ...]` and `    [hermit2, ...]` are both rejected.
+# Bracketed both ways in tests/test_disclosure_behind_role_tag.py.
+_DISCLOSURE = re.compile(
+    rf"^(?:\[[^\]\n]*\][ \t]*)*?\[\s*[a-z0-9]+\s*,\s*({_AGENT_ID})\s*,", re.I | re.M
+)
 
 
 def comment_author(body: str) -> "str | None":
