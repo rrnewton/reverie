@@ -710,14 +710,35 @@ def _review_protocol_status(entry: dict[str, object]) -> ReviewProtocolStatus | 
             # here, and agent(hermit-030) routes off these lane counts, so
             # flipping it would silently reroute the fleet. This only surfaces
             # the binding as a diagnostic so the difference is visible.
+            unlabeled_refusals: list[str] = []
             unlabeled = approval_authority.classify_approval(
-                head, approval_authority.lane_shas(comments, reviewer, malformed)
+                head,
+                approval_authority.lane_shas(
+                    comments, reviewer, malformed, refusals=unlabeled_refusals
+                ),
+                refused=bool(unlabeled_refusals),
             )
             if unlabeled == approval_authority.BOUND_CURRENT:
                 unlabeled_bindings.append(f"unlabeled-binding:{reviewer}")
+            elif unlabeled == approval_authority.REFUSED:
+                # ⚠️ A BLOCKED LANE IS NOT A MISSING ONE, and this column is what
+                # the fleet routes reviewers from. Unlabelled + refused reported
+                # as nothing at all, so a head a reviewer had BLOCKED was
+                # indistinguishable from a head nobody had opened -- and it was
+                # re-dispatched for review instead of routed back to its author.
+                # has_approval stays False either way; this only surfaces the
+                # difference, exactly as the unlabeled-binding case above does.
+                unlabeled_bindings.append(
+                    f"unlabeled-refusal:{reviewer}@{unlabeled_refusals[-1][:12]}"
+                )
             continue
-        shas = approval_authority.lane_shas(comments, reviewer, malformed)
-        binding = approval_authority.classify_approval(head, shas)
+        refusals: list[str] = []
+        shas = approval_authority.lane_shas(
+            comments, reviewer, malformed, refusals=refusals
+        )
+        binding = approval_authority.classify_approval(
+            head, shas, refused=bool(refusals)
+        )
         has_approval[reviewer] = binding == approval_authority.BOUND_CURRENT
         if not has_approval[reviewer]:
             # Keep the cache visible as a diagnostic, but give it zero current

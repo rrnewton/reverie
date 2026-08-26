@@ -287,6 +287,65 @@ out="$(run "$tmp/unbound.json" --gate)"; rc=$?
   || bad "default gate contract regressed (rc=$rc)"
 
 
+# --- A REFUSED LANE IS NOT AN UNREVIEWED LANE ---------------------------------
+# Both were UNDETERMINED, so a head two reviewers had BLOCKED read exactly like a
+# head nobody had opened -- and the wrong response follows from the wrong reading:
+# an absence invites a fresh reviewer. Measured 2026-08-26 on hermit#2655 (two
+# lanes, two refusals, two blocking findings, both lanes UNDETERMINED).
+cat >"$tmp/refused.json" <<JSON
+[{"number":2655,"head":"$CUR","labels":["passed-review-claude"],
+  "lane_shas":{},"lane_refused":{"claude":["$CUR"]},
+  "runs_at_head":4,"mergeable":"MERGEABLE"}]
+JSON
+out="$(run "$tmp/refused.json" --gate)"; rc=$?
+grep -q "REFUSED       PR 2655" <<<"$out" \
+  && ok "a refused lane reports REFUSED, distinctly from UNDETERMINED" \
+  || bad "refused lane did not report REFUSED: $out"
+# THE CONTROL THAT MAKES THE ABOVE MEAN ANYTHING: the unreviewed fixture must
+# still say UNDETERMINED. Without it, renaming every state to REFUSED would pass.
+out_unbound="$(run "$tmp/unbound.json" --gate)"
+grep -q "UNDETERMINED  PR 999" <<<"$out_unbound" \
+  && ok "control: a lane nobody bound is STILL UNDETERMINED, not REFUSED" \
+  || bad "control failed -- unreviewed lane no longer reports UNDETERMINED: $out_unbound"
+
+# ⚠️ THE PAGING HALF. Splitting REFUSED out of UNDETERMINED silently removes
+# refused heads from this selector unless it lists both -- rc 1 -> 0, a live
+# block vanishing from the report whose job is to surface it. tick-hub.yaml runs
+# exactly this selector against the live repo.
+out="$(run "$tmp/refused.json" --gate --gate-on unverifiable)"; rc=$?
+[[ $rc -eq 1 ]] \
+  && ok "--gate-on unverifiable STILL pages on a refused lane (the paging half)" \
+  || bad "REFUSED silently stopped paging on --gate-on unverifiable (rc=$rc)"
+out="$(run "$tmp/refused.json" --gate)"; rc=$?
+[[ $rc -eq 1 ]] && ok "default --gate: REFUSED is not BOUND_CURRENT, so it still refuses" \
+  || bad "a refused lane became landable (rc=$rc)"
+
+# A refusal must not outlive a later approval: REFUSED is the state only when the
+# refusal was the lane's LAST word. Same fixture shape, plus a current binding.
+cat >"$tmp/refused-then-approved.json" <<JSON
+[{"number":2656,"head":"$CUR","labels":["passed-review-claude"],
+  "lane_shas":{"claude":["$CUR"]},"lane_refused":{"claude":["$OLD"]},
+  "runs_at_head":4,"mergeable":"MERGEABLE"}]
+JSON
+out="$(run "$tmp/refused-then-approved.json" --gate)"; rc=$?
+[[ $rc -eq 0 ]] && ! grep -q "REFUSED" <<<"$out" \
+  && ok "a refusal followed by a current approval is BOUND_CURRENT, not REFUSED" \
+  || bad "REFUSED over-fired past a later approval (rc=$rc): $out"
+
+# An UNLABELLED refusal must produce a row at all. `if not shas: continue` in the
+# comment-row builder dropped it entirely -- not merely mislabelled, ABSENT from
+# the census, which is #2655's real shape (zero labels, two refusals, zero rows).
+cat >"$tmp/refused-unlabelled.json" <<JSON
+[{"number":2657,"head":"$CUR","labels":[],
+  "lane_shas":{},"lane_refused":{"codex":["$CUR"]},
+  "runs_at_head":2,"mergeable":"MERGEABLE"}]
+JSON
+out="$(run "$tmp/refused-unlabelled.json" --gate)"
+grep -q "REFUSED" <<<"$out" \
+  && ok "an unlabelled refusal appears in the census instead of vanishing" \
+  || bad "unlabelled refusal produced no row: $out"
+
+
 # --- A MALFORMED REFUSAL MUST REFUSE; A MALFORMED APPROVAL MUST NOT BIND -------
 # `CHANGES-REQUESTED:` without `-AT` -- bare line, column zero, correct lane,
 # correct 40-hex, one token wrong -- was flagged malformed and NOT HONOURED in
@@ -459,6 +518,33 @@ if [[ -z "${APPROVAL_BINDING_MUTATION_CHILD:-}" ]]; then
       ok "mutation control: full suite FAILS on #2132 when zero-approval guard is removed"
     else
       bad "mutation control did not fail on the #2132 guard (rc=$mutant_rc)"
+    fi
+  fi
+fi
+
+# ⚠️ MUTATION CONTROL FOR THE PAGING HALF. Drop REFUSED from the `unverifiable`
+# selector -- the one and only place in the tool that enumerates a state
+# POSITIVELY, and therefore the one place a new state can silently NARROW what
+# pages. Every other reader asks `== BOUND_CURRENT` and fails closed. Without
+# this control the omission is invisible: the gate just returns 0 and reports
+# nothing wrong, which is precisely how a blocked head disappears from the
+# report meant to surface it.
+if [[ -z "${APPROVAL_BINDING_MUTATION_CHILD:-}" ]]; then
+  mutant="$tmp/approval_binding-refused-not-paged.py"
+  sed 's/r\["state"\] in (UNDETERMINED, REFUSED)/r["state"] == UNDETERMINED  # MUTANT: refused no longer pages/' \
+    "$tool" >"$mutant"
+  if ! grep -q 'MUTANT: refused no longer pages' "$mutant"; then
+    bad "paging mutation control could not locate the unverifiable selector"
+  else
+    APPROVAL_BINDING_TOOL="$mutant" APPROVAL_BINDING_MUTATION_CHILD=1 \
+      bash "$0" >"$tmp/paging-mutant-suite.out" 2>&1
+    mutant_rc=$?
+    if [[ $mutant_rc -ne 0 ]] \
+      && grep -q 'FAIL  REFUSED silently stopped paging on --gate-on unverifiable' \
+        "$tmp/paging-mutant-suite.out"; then
+      ok "mutation control: suite FAILS when REFUSED stops paging on --gate-on unverifiable"
+    else
+      bad "paging mutation control did not fail (rc=$mutant_rc)"
     fi
   fi
 fi

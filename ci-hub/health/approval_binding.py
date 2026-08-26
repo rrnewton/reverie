@@ -93,20 +93,42 @@ LOCALLY_VALIDATED_LABEL = "locally-validated"
 BOUND_CURRENT = "BOUND_CURRENT"
 SUPERSEDED = "SUPERSEDED"
 UNDETERMINED = "UNDETERMINED"
+REFUSED = "REFUSED"
 
 
 class GitHubUnavailable(RuntimeError):
     """The live GitHub census did not complete; no binding verdict exists."""
 
 
-def classify_approval(head: str, comment_shas: list[str]) -> str:
+def classify_approval(
+    head: str, comment_shas: list[str], refused: bool = False
+) -> str:
     """Pure classifier: the seam the bracket drives.
 
     `comment_shas` are the head SHAs named by that lane's role-tagged review
     comments, oldest first. The NEWEST is what the lane last bound itself to.
+
+    `refused` says this lane emitted a CHANGES-REQUESTED-AT that was never
+    followed by a fresh approval. IT IS NOT DERIVABLE FROM `comment_shas`: a
+    refusal contributes no SHA and clears the ones before it, so without this
+    flag "a lane looked and said no" and "nobody in this lane has looked" are
+    BOTH the empty list. They render identically and need opposite responses --
+    an absence invites a fresh reviewer, which is exactly the wrong answer to a
+    head two reviewers already blocked. Measured 2026-08-26 on hermit#2655: two
+    lanes, two refusals, two blocking findings, and both lanes reported
+    UNDETERMINED, indistinguishable from a pull request nobody had opened.
+
+    ⚠️ THIS RENAMES A STATE, IT DOES NOT MOVE AN ADMISSION BOUNDARY. Every
+    caller that grants authority tests `== BOUND_CURRENT`, and REFUSED is not
+    BOUND_CURRENT, so nothing becomes landable that was not landable before.
+    A refusal at a stale SHA still refuses, matching the long-standing
+    `relevant_rejection` behaviour of never comparing the refused SHA to head.
     """
     if not comment_shas:
-        return UNDETERMINED
+        # Order matters: a refusal followed by a fresh approval repopulates
+        # `comment_shas`, so reaching here with `refused` set means the refusal
+        # was the lane's LAST word.
+        return REFUSED if refused else UNDETERMINED
     if comment_shas[-1] == head:
         return BOUND_CURRENT
     return SUPERSEDED
@@ -738,8 +760,16 @@ def lane_shas(
     pr_number: int | None = None,
     malformed_prs: dict[tuple[str, str], int] | None = None,
     citations: list[tuple[str, str]] | None = None,
+    refusals: list[str] | None = None,
 ) -> list[str]:
     """SHAs a lane EXPLICITLY bound itself to, oldest first. Never inferred.
+
+    `refusals` is an OUT-PARAMETER, in the style of `malformed`: when supplied,
+    every SHA this lane refused at is appended, oldest first. It exists because
+    the return value CANNOT carry that fact -- a refusal clears `found` and adds
+    nothing, so a refused lane and an unreviewed lane both return `[]`. Callers
+    that do not pass it are unaffected. Pair it with `classify_approval(...,
+    refused=bool(refusals))` to tell the two apart; see that docstring.
 
     *** THIS DELIBERATELY REFUSES TO GUESS, AND THE FIRST VERSION DID GUESS. ***
     Measured 2026-08-10 against live data, a heuristic version of this function
@@ -940,6 +970,22 @@ def lane_shas(
                     malformed.append(finding)
                 if pr_number is not None and malformed_prs is not None:
                     malformed_prs[finding] = pr_number
+            if refusals is not None:
+                # Recorded for REPORTING ONLY. Authority does not depend on this
+                # SHA and deliberately still does not: `relevant_rejection` has
+                # never compared the refused SHA to head, so a refusal at a stale
+                # SHA refuses exactly as it did before. Capturing it only lets a
+                # reader see WHICH head a lane blocked. Extracted by searching the
+                # matched line rather than by group index, so the two rejection
+                # grammars -- lane-less legacy and current -- need no special case.
+                for line in lines:
+                    if reject_legacy.match(line) or (
+                        (rejected := reject_current.match(line)) is not None
+                        and rejected.group(1).lower() == lane
+                    ):
+                        refused_sha = re.search(r"\b[0-9a-f]{40}\b", line)
+                        if refused_sha is not None:
+                            refusals.append(refused_sha.group(0).lower())
             found.clear()
             continue
         for line in lines:
@@ -1100,13 +1146,15 @@ def collect_live(
         pr, tracked, head = f["pr"], f["tracked"], f["head"]
         comments, runs = f["comments"], f["runs"]
         for label in tracked:
+            refusals: list[str] = []
             if label == LOCALLY_VALIDATED_LABEL:
                 lane = "local-validation"
                 shas = local_receipt_heads(comments, repo)
             else:
                 lane = label.rsplit("-", 1)[-1]
                 shas = lane_shas(
-                    comments, lane, malformed, pr["number"], malformed_prs
+                    comments, lane, malformed, pr["number"], malformed_prs,
+                    refusals=refusals,
                 )
             rows.append(
                 {
@@ -1116,7 +1164,8 @@ def collect_live(
                     "lane": lane,
                     "head": head,
                     "bound_to": shas[-1] if shas else None,
-                    "state": classify_approval(head, shas),
+                    "refused_at": refusals[-1] if refusals else None,
+                    "state": classify_approval(head, shas, refused=bool(refusals)),
                     "runs_at_head": len(runs),
                     "mergeable": pr.get("mergeable"),
                 }
@@ -1151,8 +1200,19 @@ def collect_live(
         for lane in LANES:
             if lane in labelled_lanes:
                 continue
-            shas = lane_shas(comments, lane, malformed, pr["number"], malformed_prs)
-            if not shas:
+            refusals = []
+            shas = lane_shas(
+                comments, lane, malformed, pr["number"], malformed_prs,
+                refusals=refusals,
+            )
+            # ⚠️ `if not shas` ALONE DROPPED EVERY UNLABELLED REFUSAL. A refusal
+            # contributes no SHA, so the row that would have carried it was
+            # skipped here and the blocked head appeared in NO row of the census
+            # -- the same cache-miss-reads-as-absence shape documented above, one
+            # layer down. Measured 2026-08-26 on hermit#2655: zero labels, two
+            # lanes refused with blocking findings, zero rows, and the head kept
+            # being re-dispatched as needing a reviewer.
+            if not shas and not refusals:
                 continue
             rows.append(
                 {
@@ -1161,8 +1221,9 @@ def collect_live(
                     "source": "comment",
                     "lane": lane,
                     "head": head,
-                    "bound_to": shas[-1],
-                    "state": classify_approval(head, shas),
+                    "bound_to": shas[-1] if shas else None,
+                    "refused_at": refusals[-1] if refusals else None,
+                    "state": classify_approval(head, shas, refused=bool(refusals)),
                     "runs_at_head": len(runs),
                     "mergeable": pr.get("mergeable"),
                 }
@@ -1234,6 +1295,7 @@ def collect_fixture(
                 "local-validation" if label == LOCALLY_VALIDATED_LABEL
                 else label.rsplit("-", 1)[-1]
             )
+            refusals = []
             if label == LOCALLY_VALIDATED_LABEL and "comments" in pr:
                 shas = local_receipt_heads(comments, pr.get("repo", "rrnewton/hermit"))
             elif "comments" in pr:
@@ -1243,9 +1305,15 @@ def collect_fixture(
                     malformed,
                     pr["number"],
                     malformed_prs,
+                    refusals=refusals,
                 )
             else:
                 shas = pr.get("lane_shas", {}).get(lane, [])
+                # Offline twin of the out-parameter. Without it no fixture can
+                # express "this lane refused", and the REFUSED state would be
+                # unreachable from the suite -- untestable, which for this file
+                # means unasserted.
+                refusals = list(pr.get("lane_refused", {}).get(lane, []))
             rows.append(
                 {
                     "number": pr["number"],
@@ -1254,7 +1322,10 @@ def collect_fixture(
                     "lane": lane,
                     "head": pr["head"],
                     "bound_to": shas[-1] if shas else None,
-                    "state": classify_approval(pr["head"], shas),
+                    "refused_at": refusals[-1] if refusals else None,
+                    "state": classify_approval(
+                        pr["head"], shas, refused=bool(refusals)
+                    ),
                     "runs_at_head": pr.get("runs_at_head", 1),
                     "mergeable": pr.get("mergeable"),
                 }
@@ -1272,13 +1343,16 @@ def collect_fixture(
         for lane in LANES:
             if lane in labelled_lanes:
                 continue
+            refusals = []
             if "comments" in pr:
                 shas = lane_shas(
-                    comments, lane, malformed, pr["number"], malformed_prs
+                    comments, lane, malformed, pr["number"], malformed_prs,
+                    refusals=refusals,
                 )
             else:
                 shas = pr.get("lane_shas", {}).get(lane, [])
-            if not shas:
+                refusals = list(pr.get("lane_refused", {}).get(lane, []))
+            if not shas and not refusals:
                 continue
             rows.append(
                 {
@@ -1287,8 +1361,11 @@ def collect_fixture(
                     "source": "comment",
                     "lane": lane,
                     "head": pr["head"],
-                    "bound_to": shas[-1],
-                    "state": classify_approval(pr["head"], shas),
+                    "bound_to": shas[-1] if shas else None,
+                    "refused_at": refusals[-1] if refusals else None,
+                    "state": classify_approval(
+                        pr["head"], shas, refused=bool(refusals)
+                    ),
                     "runs_at_head": pr.get("runs_at_head", 1),
                     "mergeable": pr.get("mergeable"),
                 }
@@ -1562,6 +1639,12 @@ def main() -> int:
                 bound = r["bound_to"][:12]
             elif r["label"] == LOCALLY_VALIDATED_LABEL:
                 bound = "<no locally-validated receipt marker>"
+            elif r.get("refused_at"):
+                # NOT "<no APPROVED-AT binding>". Both are the absence of an
+                # approval, but only one of them means a reviewer looked and said
+                # no, and the remedies are opposites: find a reviewer, versus
+                # answer the one you have.
+                bound = f"<REFUSED at {r['refused_at'][:12]}, no later approval>"
             else:
                 bound = "<no APPROVED-AT binding>"
             if r in combined:
@@ -1575,9 +1658,20 @@ def main() -> int:
             print(f"  {r['state']:<13} PR {r['number']}  {r['label']}  "
                   f"bound-to {bound}  head {r['head'][:12]}  runs={r['runs_at_head']}{flag}")
         for r in comment_rows:
+            # A refused lane binds nothing, so `bound_to` is None here and the
+            # refused SHA is what the reader needs instead: WHICH head was
+            # blocked. Report that rather than an empty column, and never index
+            # `bound_to` unconditionally -- these rows were previously
+            # unreachable without a binding.
+            if r["bound_to"] is not None:
+                where = f"bound-to {r['bound_to'][:12]}"
+            elif r["refused_at"] is not None:
+                where = f"refused-at {r['refused_at'][:12]}"
+            else:
+                where = "bound-to none"
             print(
                 f"  {r['state']:<13} PR {r['number']}  (no label, lane {r['lane']}, "
-                f"from comment)  bound-to {r['bound_to'][:12]}  head {r['head'][:12]}"
+                f"from comment)  {where}  head {r['head'][:12]}"
             )
         if approval_set_missing:
             print(f"  REQUIRED-APPROVAL-SET-MISSING  PR {a.pr} has zero passed-review labels")
@@ -1620,7 +1714,18 @@ def main() -> int:
             r for r in combined if r["state"] != SUPERSEDED
         ]
     elif a.gate_on == "unverifiable":
-        gating = [r for r in label_rows if r["state"] == UNDETERMINED]
+        # ⚠️ REFUSED MUST BE LISTED HERE, AND THIS IS THE ONLY PLACE IN THE FILE
+        # THAT ENUMERATES A STATE POSITIVELY. Every other reader asks
+        # `== BOUND_CURRENT` or `!= BOUND_CURRENT` and is therefore fail-closed
+        # under a new value. This one selects what to PAGE about, so omitting
+        # REFUSED would have made splitting it out of UNDETERMINED silently stop
+        # paging on refused-but-labelled heads: a live block disappearing from
+        # the report whose whole job is to surface it, with rc going 1 -> 0 and
+        # nothing to show anything had changed. `tick-hub.yaml` runs exactly this
+        # selector against the live repo.
+        gating = [
+            r for r in label_rows if r["state"] in (UNDETERMINED, REFUSED)
+        ]
     else:
         gating = bad
 
