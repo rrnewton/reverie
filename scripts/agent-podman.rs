@@ -1434,26 +1434,38 @@ fn load_live_agents(path: &Path) -> Result<BTreeMap<String, String>> {
         context: format!("parse agent snapshot {}", path.display()),
         source,
     })?;
-    let (agents, captured_at) = if let Some(object) = value.as_object() {
+    // ⚠️ A FILE THAT EXISTS AND PARSES READS AS FRESH, AND THAT IS THE WHOLE
+    // HAZARD HERE. The envelope form carries `captured_at` and was age-checked;
+    // the BARE-ARRAY form set `captured_at = None` and the check below was
+    // `if let Some(..)`, so a snapshot with no timestamp skipped staleness
+    // ENTIRELY and was treated as ageless. This function decides which agents are
+    // absent, and `reconcile --apply` gracefully_remove()s a container whose owner
+    // looks absent -- so an undated snapshot could authorise destroying a LIVE
+    // agent's container, and headless agents have no tmux pane to rescue them.
+    //
+    // An undated snapshot is now REFUSED rather than trusted. That is the
+    // fail-closed direction: refusing costs a red probe, trusting costs a
+    // container. The bare-array form is not otherwise supported and never had a
+    // producer -- `_persist_agent_snapshot` in
+    // `ci-hub/health/operational_health.py` always writes the envelope.
+    let agents = if let Some(object) = value.as_object() {
         let captured_at = object
             .get("captured_at")
             .and_then(Value::as_f64)
             .ok_or_else(|| AppError::Message("agent snapshot has no captured_at".to_string()))?;
-        (
-            object.get("agents").cloned().unwrap_or(Value::Null),
-            Some(captured_at),
-        )
-    } else {
-        (value, None)
-    };
-    if let Some(captured_at) = captured_at {
         let age = now_secs().saturating_sub(captured_at.max(0.0) as u64);
         if age > SNAPSHOT_MAX_AGE_SECS {
             return Err(AppError::Message(format!(
                 "agent snapshot is stale: age={age}s max={SNAPSHOT_MAX_AGE_SECS}s"
             )));
         }
-    }
+        object.get("agents").cloned().unwrap_or(Value::Null)
+    } else {
+        return Err(AppError::Message(
+            "agent snapshot has no captured_at (bare array): refusing rather than              treating an undated census as fresh -- this decides which agents are              absent, and reconcile --apply removes their containers"
+                .to_string(),
+        ));
+    };
     let array = agents
         .as_array()
         .ok_or_else(|| AppError::Message("agent snapshot is not an array".to_string()))?;
