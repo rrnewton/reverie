@@ -7,8 +7,11 @@ local-versus-GitHub boundary.
 Dev-hermit uses the pinned `agent-utils/tick-hub` engine for coordinator
 health polling. Project policy stays in this repository:
 
-- `ci-hub/health/tick-hub.yaml` defines checks, cadences, gates, and warning actions.
-- `ci-hub/health/tick-hub-state.yaml` is the versioned runtime policy.
+- `ci-hub/health/tick-hub.yaml` is versioned policy: it defines checks,
+  cadences, gates, and warning actions.
+- `.ops-state.yaml` is gitignored per-host runtime state consumed by both the
+  tick engine and project health checks. `ops/ops-state.example.yaml` is its
+  versioned schema/example; copy it rather than committing the live state.
 - `ci-hub/health/operational_health.py` implements project-specific probes.
 - `ci-hub/bin/health-tick` uses `ci-hub/bin/agent-tool` to materialize the exact
   agent-utils commit pinned by the nested `agent-utils` gitlink in Hermit on

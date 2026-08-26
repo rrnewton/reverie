@@ -1700,7 +1700,7 @@ fn execute(root: &Path, command: HubCommand) -> Result<i32, CiHubError> {
                 .args(["tick-hub", "tick", "--config"])
                 .arg(root.join("ci-hub/health/tick-hub.yaml"))
                 .arg("--state")
-                .arg(root.join("ci-hub/health/tick-hub-state.yaml"))
+                .arg(root.join(".ops-state.yaml"))
                 .arg("--fired-state")
                 .arg(root.join(".tick-hub/fired-state"))
                 .args(["--current-tick-min", "5"])

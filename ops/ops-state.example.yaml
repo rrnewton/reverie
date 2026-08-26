@@ -1,0 +1,11 @@
+# Copy this file to ../.ops-state.yaml for this host. The live file is
+# gitignored because it records local operational disposition, not repository
+# policy.
+enabled: true
+tick_frequency_min: 5
+label: dev-hermit
+flags:
+  # false means zero GitHub Actions runs are expected. Checks still inspect any
+  # runs that do exist and fail if one is red, because that contradicts this
+  # local state rather than making the failure disappear.
+  github_actions_enabled: false

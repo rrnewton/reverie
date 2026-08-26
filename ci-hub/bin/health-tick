@@ -92,7 +92,7 @@ fi
 set +e
 "$ROOT/ci-hub/bin/agent-tool" tick-hub tick \
     --config "$ROOT/ci-hub/health/tick-hub.yaml" \
-    --state "$ROOT/ci-hub/health/tick-hub-state.yaml" \
+    --state "$ROOT/.ops-state.yaml" \
     --fired-state "$ROOT/.tick-hub/fired-state" \
     --current-tick-min 5 \
     "$@" | emit_with_evaluation_provenance

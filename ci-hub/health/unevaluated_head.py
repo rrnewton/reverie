@@ -48,9 +48,11 @@ Usage:
 NEVER_RAN, SUPERSEDED, CANCELLED_UNVERIFIED, or a PENDING past the stale window.
 When GitHub Actions are deactivated by a standing owner directive, NEVER_RAN is
 reported as expected rather than actionable. It is still not a pass or failure.
-The gate is deliberately silent about EVALUATED_FAIL (a red gate is another
-check's job) and about a FRESH pending (alarming on every push is an alarm no
-coordinator can satisfy).
+The gate is normally silent about EVALUATED_FAIL because a red gate is another
+check's job. The exception is a failed run observed while the local flag says
+Actions are disabled: that is a configuration mismatch, so this gate reports
+both the real failure and the wrong flag. A FRESH pending remains non-actionable
+because alarming on every push is an alarm no coordinator can satisfy.
 
 A CAUSE IS ONLY EVER STATED AS FACT WHEN IT WAS OBSERVED. `SUPERSEDED` requires
 a visible successor run; everything else cancelled is `CANCELLED_UNVERIFIED`
@@ -72,14 +74,19 @@ import tempfile
 import time
 import sys
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
 HEALTH_DIR = os.path.dirname(os.path.abspath(__file__))
 if HEALTH_DIR not in sys.path:
     sys.path.insert(0, HEALTH_DIR)
+LIB_DIR = str(Path(HEALTH_DIR).parent / "lib")
+if LIB_DIR not in sys.path:
+    sys.path.insert(0, LIB_DIR)
 
 from manual_run import automatic_triggers, triggers_of  # noqa: E402
+import ops_state  # noqa: E402
 
 # FIVE STATES, AND ONLY ONE IS GOOD NEWS. Three was not enough, and the two it
 # was missing were both being reported as the good one or as the wrong bad one:
@@ -126,11 +133,6 @@ EVALUATED_PASS = "EVALUATED_PASS"
 EVALUATED_FAIL = "EVALUATED_FAIL"
 
 DEFAULT_PENDING_STALE_SECS = 900
-
-OWNER_DISABLED_ACTIONS = {
-    "rrnewton/hermit": "deactivate-gh-actions-on-hermit-main-and-dev-hermit-parent",
-    "rrnewton/dev-hermit": "deactivate-gh-actions-on-hermit-main-and-dev-hermit-parent",
-}
 
 # Conclusions that are a genuine negative VERDICT. `cancelled` is deliberately
 # NOT here: it is split by whether any job ran (see above).
@@ -272,6 +274,12 @@ def likely_reason(pr: dict[str, Any], state: str, stale: bool,
             "a run has not resolved within the stale window. GitHub Actions are "
             "currently deactivated; inspect the exact run because no Actions dispatch "
             "is permitted"
+        )
+    if not actions_enabled and state == EVALUATED_FAIL:
+        return (
+            "a GitHub Actions run exists and failed while .ops-state.yaml says "
+            "github_actions_enabled=false. The observed failure is still real, and "
+            "the run proves the local flag is wrong"
         )
 
     if state == NEVER_RAN:
@@ -438,15 +446,12 @@ def gh_json_batch(
 
 
 def actions_policy(repo: str) -> tuple[bool, str | None]:
-    """Read live Actions state; bind expected absence only to a known directive."""
-    payload = gh_json(["api", f"repos/{repo}/actions/permissions"]) or {}
-    enabled = payload.get("enabled")
-    if type(enabled) is not bool:
-        raise GitHubUnavailable(
-            f"repos/{repo}/actions/permissions did not return a boolean enabled field"
-        )
-    directive = OWNER_DISABLED_ACTIONS.get(repo) if not enabled else None
-    return enabled, directive
+    """Read this host's Actions policy; bind disabled state to its source."""
+    del repo
+    try:
+        return ops_state.github_actions_policy()
+    except ops_state.OpsStateError as error:
+        raise GitHubUnavailable(str(error)) from error
 
 
 def _workflow_trigger_evidence(
@@ -621,16 +626,8 @@ def collect_live(repo: str, limit: int,
         for page in range(1, pages + 1)
     }
     if actions_enabled is None:
-        initial_requests["actions-policy"] = f"repos/{repo}/actions/permissions"
+        actions_enabled, actions_disabled_directive = actions_policy(repo)
     initial = gh_json_batch(initial_requests, deadline)
-    if actions_enabled is None:
-        enabled = (initial.get("actions-policy") or {}).get("enabled")
-        if type(enabled) is not bool:
-            raise GitHubUnavailable(
-                f"repos/{repo}/actions/permissions did not return a boolean enabled field"
-            )
-        actions_enabled = enabled
-        actions_disabled_directive = OWNER_DISABLED_ACTIONS.get(repo) if not enabled else None
     raw_prs = [
         item
         for page in range(1, pages + 1)
@@ -903,11 +900,17 @@ def main() -> int:
         return 75 if a.gate else 1
     # NO VERDICT: a fresh PENDING is deliberately excluded --
     # alarming on it fires after every push and is an alarm no coordinator can
-    # satisfy. EVALUATED_FAIL is deliberately not here either: a red gate is a
-    # RESULT and another check's job.
+    # satisfy. EVALUATED_FAIL is deliberately not a NO VERDICT: it is a result.
+    # A failed run while Actions are declared disabled is separately surfaced
+    # below as a configuration mismatch rather than being hidden.
     no_verdict = [r for r in rows
                   if r["state"] in (NEVER_RAN, SUPERSEDED, CANCELLED_UNVERIFIED)
                   or (r["state"] == PENDING and r.get("stale"))]
+    disabled_failures = [
+        r for r in rows
+        if r["state"] == EVALUATED_FAIL
+        and r.get("actions_enabled") is False
+    ]
     expected_no_verdict = [
         r for r in no_verdict
         if (r["state"] == NEVER_RAN
@@ -921,8 +924,21 @@ def main() -> int:
     # tick-hub capture consumes key=value fields. Keep the human table below,
     # but also give the scheduled emitter a fully rendered one-line summary so
     # a finding can never degrade into a literal ``{summary}`` placeholder.
-    affected_prs = ",".join(f"#{r['number']}" for r in no_verdict[:8]) or "none"
-    if holes:
+    affected = holes + disabled_failures
+    affected_prs = ",".join(f"#{r['number']}" for r in affected[:8]) or "none"
+    if disabled_failures:
+        additional_holes = (
+            f"; plus {len(holes)} actionable no-verdict hole(s)"
+            if holes else ""
+        )
+        tick_summary = (
+            f"{len(disabled_failures)}/{len(rows)} inspected open PR heads have a "
+            "failing GitHub Actions run while .ops-state.yaml says "
+            "github_actions_enabled=false; affected="
+            f"{affected_prs}; the observed run proves the flag is wrong, and the "
+            f"failure remains a real failure{additional_holes}"
+        )
+    elif holes:
         remedies = []
         if any(r.get("actions_enabled") is True for r in holes):
             remedies.append("dispatch the authority only where Actions are enabled")
@@ -986,6 +1002,7 @@ def main() -> int:
         print(json.dumps({"inspected": len(rows), "not_evaluated": len(unevaluated),
                           "actionable_not_evaluated": len(holes),
                           "expected_not_evaluated": len(expected_no_verdict),
+                          "disabled_but_failed": len(disabled_failures),
                           "rows": rows}, indent=2))
     else:
         # Both terms, always: a bare count of unevaluated heads is not a
@@ -995,7 +1012,15 @@ def main() -> int:
         print(f"inspected {len(rows)} open PR head(s); NO VERDICT: {len(no_verdict)}  "
               + "  ".join(f"{k}={v}" for k, v in sorted(tally.items())))
         for r in rows:
-            if r in no_verdict:
+            if r in disabled_failures:
+                print(
+                    f"  EVALUATED_FAIL(config-mismatch) PR {r['number']}  "
+                    f"head {r['head'][:12]}  runs={r['run_count']}  "
+                    f"checks={r.get('check_run_count', 0)}  mergeable={r['mergeable']}  "
+                    "-- a workflow ran and failed while .ops-state.yaml says "
+                    "github_actions_enabled=false; the observed run proves the flag is wrong"
+                )
+            elif r in no_verdict:
                 if r in expected_no_verdict:
                     label = r["state"] + "(expected)"
                 else:
@@ -1005,19 +1030,34 @@ def main() -> int:
                     f"runs={r['run_count']}  checks={r.get('check_run_count', 0)}  "
                     f"mergeable={r['mergeable']}  -- {r['reason']}"
                 )
-        if not no_verdict:
+        if not no_verdict and not disabled_failures:
             print("  every inspected head carries a verdict")
 
         if a.gate:
-            state = "hole" if holes else ("expected" if expected_no_verdict else "ok")
+            state = (
+                "configuration-mismatch"
+                if disabled_failures
+                else "hole" if holes
+                else "expected" if expected_no_verdict
+                else "ok"
+            )
             print(f"state={state}")
             print(f"inspected={len(rows)}")
             print(f"not_evaluated={len(no_verdict)}")
             print(f"actionable_not_evaluated={len(holes)}")
             print(f"expected_not_evaluated={len(expected_no_verdict)}")
+            print(f"disabled_but_failed={len(disabled_failures)}")
             print(f"mergeability_unavailable={mergeability_unavailable}")
             print(f"summary={tick_summary}")
 
+    if a.gate and disabled_failures:
+        print(
+            f"GATE FAIL: {len(disabled_failures)} of {len(rows)} open PR head(s) have "
+            "a failing GitHub Actions run while .ops-state.yaml says "
+            "github_actions_enabled=false; the failure is real and the flag is wrong.",
+            file=sys.stderr,
+        )
+        return 1
     if a.gate and holes:
         print(
             f"GATE FAIL: {len(holes)} of {len(rows)} open PR head(s) carry NO VERDICT "

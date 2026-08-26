@@ -112,6 +112,22 @@ if [[ $rc -eq 0 ]]; then ok "failing head: gate PASSES (a red gate is another ch
 grep -q '"state": "EVALUATED_FAIL"' <<<"$out" && ok "failing head classified EVALUATED_FAIL, not NOT_EVALUATED" \
   || bad "failing head misclassified: $out"
 
+# --- ACTIONS-OFF MUST NOT HIDE A REAL FAILURE -------------------------------
+cat >"$tmp/disabled-red.json" <<'JSON'
+{"actions_enabled": false,
+ "actions_disabled_directive": ".ops-state.yaml flags.github_actions_enabled=false",
+ "prs": [{"number": 1728, "head": "59321e67e6356d3f1f26d897ef8193a21c7e28ef",
+           "mergeable": "MERGEABLE",
+           "runs": [{"conclusion": "failure"}]}]}
+JSON
+out="$(python3 "$tool" --from-json "$tmp/disabled-red.json" --gate 2>&1)"; rc=$?
+[[ $rc -eq 1 ]] \
+  && grep -q '^state=configuration-mismatch$' <<<"$out" \
+  && grep -q 'github_actions_enabled=false' <<<"$out" \
+  && grep -q 'the observed run proves the flag is wrong' <<<"$out" \
+  && ok "Actions-off still reports a real failed run and says the flag is wrong" \
+  || bad "Actions-off hid a failed run or failed to diagnose config drift: rc=$rc out=$out"
+
 # --- Mixed population: both terms reported ----------------------------------
 cat >"$tmp/mixed.json" <<'JSON'
 [{"number": 1, "head": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "mergeable": "CONFLICTING", "runs": []},

@@ -81,6 +81,7 @@ from typing import Sequence
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
 import bounded_capture  # noqa: E402
+import ops_state  # noqa: E402
 
 SHA40 = re.compile(r"\b[0-9a-f]{40}\b")
 LANES = ("claude", "codex")
@@ -290,19 +291,19 @@ def gh_json(args: list[str]) -> Any:
 
 
 def github_actions_enabled(repo: str) -> bool:
-    """Return the repository's live Actions precondition, or refuse.
+    """Return this host's configured Actions precondition, or refuse.
 
     ``runs_at_head == 0`` means a head was not evaluated only while Actions are
-    enabled.  When Actions are disabled repository-wide, zero is expected and
-    cannot support the stronger APPROVED + UNEVALUATED claim.  Do not infer the
-    precondition from the run count itself: GitHub exposes it directly.
+    enabled. When this team has deliberately disabled Actions, zero is expected
+    and cannot support the stronger APPROVED + UNEVALUATED claim. The local
+    ops-state is authoritative for that operational choice; GitHub's repository
+    permission may remain enabled while every workflow is deliberately dormant.
     """
-    permissions = gh_json(["api", f"repos/{repo}/actions/permissions"])
-    enabled = permissions.get("enabled") if isinstance(permissions, dict) else None
-    if type(enabled) is not bool:
-        raise GitHubUnavailable(
-            f"repos/{repo}/actions/permissions did not return boolean enabled"
-        )
+    del repo
+    try:
+        enabled, _directive = ops_state.github_actions_policy()
+    except ops_state.OpsStateError as error:
+        raise GitHubUnavailable(str(error)) from error
     return enabled
 
 
@@ -1785,12 +1786,9 @@ def unevaluated_binding_rows(
     ⚠️ A ZERO RUN COUNT STOPPED BEING EVIDENCE WHEN ACTIONS STOPPED BEING THE
     GATE. The owner ruled local validate canonical and hosted Actions
     supplemental, so `runs_at_head == 0` on its own says only that the thing we
-    do not gate on did not happen. Measured 2026-08-26 against the live repo:
-    `repos/rrnewton/hermit/actions/permissions` returns `enabled=true`, so
-    `github_actions_enabled` is True and every head still reports `runs=0` --
-    the guard below was structurally unreachable, and six correct at-head
-    approvals were being counted as failures on the strength of an absence that
-    is policy, not evidence.
+    do not gate on did not happen. The per-host `.ops-state.yaml` now makes that
+    operational choice explicit instead of trusting the repository permission,
+    which can remain enabled while every workflow is deliberately dormant.
 
     THE COST WAS NOT COSMETIC: `--gate-on superseded` admits every non-SUPERSEDED
     bad row that lands in this list, so the headline went 7-of-8 with the run

@@ -11,7 +11,8 @@ EVALUATED_FAIL, conflating supersession (a hole) with a real failure.
 Supersession itself is CORRECT and is not what is being fixed -- cancelling an
 obsolete run in favour of a newer one is right. Only the naming was wrong.
 """
-import base64, contextlib, importlib.util, io, sys, time
+import base64, contextlib, importlib.util, io, os, sys, tempfile, time
+from pathlib import Path
 
 spec = importlib.util.spec_from_file_location("uh", "ci-hub/health/unevaluated_head.py")
 uh = importlib.util.module_from_spec(spec); spec.loader.exec_module(uh)
@@ -210,29 +211,39 @@ cases.append((live_unreadable_evidence == {"error": "workflow API HTTP 503"},
               "live workflow read failure becomes NOT-DETERMINABLE evidence",
               str(live_unreadable_evidence)))
 
-old_gh_json = uh.gh_json
+old_state_path = os.environ.get("DEV_HERMIT_OPS_STATE")
 try:
-    uh.gh_json = lambda args: {"enabled": False}
-    disabled_policy = uh.actions_policy("rrnewton/hermit")
-    cases.append((disabled_policy == (False, DIRECTIVE),
-                  "live disabled permission binds to the standing directive",
-                  str(disabled_policy)))
-    disabled_without_directive = uh.actions_policy("rrnewton/reverie")
-    cases.append((disabled_without_directive == (False, None),
-                  "disabled permission without a named directive stays actionable",
-                  str(disabled_without_directive)))
+    with tempfile.TemporaryDirectory() as state_dir:
+        state = Path(state_dir) / ".ops-state.yaml"
+        os.environ["DEV_HERMIT_OPS_STATE"] = str(state)
 
-    uh.gh_json = lambda args: {}
-    try:
-        uh.actions_policy("rrnewton/hermit")
-        permission_failed_closed = False
-    except RuntimeError:
-        permission_failed_closed = True
-    cases.append((permission_failed_closed,
-                  "missing live permission cannot be treated as Actions off",
-                  str(permission_failed_closed)))
+        state.write_text("flags:\n  github_actions_enabled: false\n")
+        disabled_policy = uh.actions_policy("rrnewton/hermit")
+        cases.append((disabled_policy[0] is False
+                      and "github_actions_enabled=false" in (disabled_policy[1] or ""),
+                      "local ops-state false binds expected absence to its source",
+                      str(disabled_policy)))
+
+        state.write_text("flags:\n  github_actions_enabled: true\n")
+        enabled_policy = uh.actions_policy("rrnewton/hermit")
+        cases.append((enabled_policy == (True, None),
+                      "local ops-state true restores actionable zero-run warnings",
+                      str(enabled_policy)))
+
+        state.write_text("flags:\n  github_actions_enabled: disabled\n")
+        try:
+            uh.actions_policy("rrnewton/hermit")
+            invalid_failed_closed = False
+        except RuntimeError:
+            invalid_failed_closed = True
+        cases.append((invalid_failed_closed,
+                      "invalid local policy cannot be treated as Actions off",
+                      str(invalid_failed_closed)))
 finally:
-    uh.gh_json = old_gh_json
+    if old_state_path is None:
+        os.environ.pop("DEV_HERMIT_OPS_STATE", None)
+    else:
+        os.environ["DEV_HERMIT_OPS_STATE"] = old_state_path
 
 # --- live-reader brackets: absence requires TWO exact-head readers ------------
 FULL = "348a8b686262f6cb4aa4dc70c6a5e4613eb90361"
