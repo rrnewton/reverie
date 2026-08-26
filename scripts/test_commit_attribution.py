@@ -362,5 +362,137 @@ class AgentIdentityDisjointness(unittest.TestCase):
                 os.environ["DG_AGENT_NAME"] = previous
 
 
+
+class ModelFamilyIsDerivedNotTyped(unittest.TestCase):
+    """The model field was the one identity field nothing derived.
+
+    ``machine`` comes from the hostname and ``Agent:`` from ``DG_AGENT_NAME``,
+    and both are refused when retyped.  ``model`` was any bracket-free text --
+    and it is the only machine-readable discriminator between the Claude-family
+    and Codex-family approvals ``post-facto-review`` requires.
+    """
+
+    def check(self, model: str, *extra: str, env: dict[str, str] | None = None):
+        message = f"subject\n\n[impl agent, {model}] [hermit2, devbig014]\n"
+        return subprocess.run(
+            (sys.executable, str(CHECKER), "--stdin", *extra),
+            input=message,
+            text=True,
+            capture_output=True,
+            check=False,
+            cwd=ROOT,
+            env=dict(os.environ, HERMIT_COMMIT_MACHINE="devbig014", **(env or {})),
+        )
+
+    # ⚠️ THE CELL THAT MUST NOT BE DELETED, AND THE ONE THAT WOULD HAVE CAUGHT
+    # THE DEFECT I SHIPPED WHILE WRITING THIS. My first version loaded
+    # ``agent_identity`` without registering it in ``sys.modules``, so its first
+    # ``@dataclass`` raised, the deliberately-total ``except`` swallowed it, and
+    # ``detect_model_family()`` returned None -- "no family could be
+    # established".  Every mislabelled trailer PASSED and the output was
+    # indistinguishable from having no violations.  A check that cannot report
+    # its own unavailability is an assumed guard, which is worse than a missing
+    # one, because nobody looks again.
+    def test_the_derivation_resolves_on_this_host(self) -> None:
+        family = checker_module().detect_model_family()
+        self.assertIsNotNone(
+            family,
+            "the launcher family could not be derived from /proc, so the family "
+            "check is INERT here and every mislabelled trailer would pass",
+        )
+        self.assertIn(family, ("claude", "codex"))
+
+    def test_a_codex_model_from_a_claude_launcher_is_refused_by_name(self) -> None:
+        result = self.check("gpt-5.6-sol", "--expected-family", "claude")
+        self.assertEqual(1, result.returncode, result.stdout)
+        for token in ("gpt-5.6-sol", "codex family", "claude client"):
+            self.assertIn(token, result.stderr)
+
+    def test_a_claude_model_from_a_codex_launcher_is_refused_by_name(self) -> None:
+        result = self.check("claude-opus-5", "--expected-family", "codex")
+        self.assertEqual(1, result.returncode, result.stdout)
+        for token in ("claude-opus-5", "claude family", "codex client"):
+            self.assertIn(token, result.stderr)
+
+    def test_a_matching_family_is_accepted_both_ways(self) -> None:
+        for model, family in (("claude-opus-5", "claude"), ("gpt-5.6-sol", "codex")):
+            with self.subTest(model=model):
+                result = self.check(model, "--expected-family", family)
+                self.assertEqual(0, result.returncode, result.stderr)
+
+    # ⚠️ 583 OF THE LAST 3000 COMMITS CARRY ONE OF THESE, so an unrecognised
+    # model must be an ABSENCE of a claim rather than a violation.  Refusing
+    # them would stop routine work to enforce a label.
+    def test_a_model_naming_no_family_is_accepted(self) -> None:
+        for model in ("automation", "unresolved", "primary-checkout"):
+            for family in ("claude", "codex"):
+                with self.subTest(model=model, family=family):
+                    result = self.check(model, "--expected-family", family)
+                    self.assertEqual(0, result.returncode, result.stderr)
+
+    # ⚠️ NAMING BOTH IS UNRESOLVED, NOT A PICK.  Forcing one would refuse an
+    # honest commit, and a gate that refuses honest commits gets switched off.
+    def test_a_model_naming_both_families_is_accepted(self) -> None:
+        result = self.check("claude-via-gpt-bridge", "--expected-family", "claude")
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertIsNone(checker_module().declared_model_family("claude-via-gpt-bridge"))
+
+    # ⚠️ WITHOUT THE FLAG NOTHING IS CHECKED, which is what keeps this file's
+    # verdict independent of who runs it.
+    # ⚠️ A RECORDED COMMIT IS NEVER FAMILY-CHECKED, and this cell is what keeps
+    # it that way. `expected_family` is derived from THIS process's ancestry,
+    # which is the writer only while a commit is being created. Applied to a
+    # range it would compare a claude reviewer's launcher against a codex
+    # agent's commit from last week and refuse it -- the same category error as
+    # checking a hostname against somebody else's machine.
+    def test_a_recorded_commit_is_never_family_checked(self) -> None:
+        with tempfile.TemporaryDirectory() as name:
+            repo = Path(name)
+            run("git", "init", "-q", "-b", "main", cwd=repo)
+            run("git", "config", "user.name", "test", cwd=repo)
+            run("git", "config", "user.email", "test@example.com", cwd=repo)
+            (repo / "f").write_text("x")
+            run("git", "add", "f", cwd=repo)
+            run(
+                "git", "commit", "-q", "--no-verify", "-m",
+                f"subject\n\n{TRAILER_030}",
+                cwd=repo,
+            )
+            result = subprocess.run(
+                (sys.executable, str(CHECKER), "--commit", "HEAD",
+                 "--repo", str(repo), "--expected-family", "claude"),
+                text=True, capture_output=True, check=False, cwd=ROOT,
+                env=dict(os.environ, HERMIT_COMMIT_MACHINE="devbig030"),
+            )
+        self.assertEqual(0, result.returncode, result.stderr)
+
+    def test_no_flag_means_no_family_check(self) -> None:
+        result = self.check("gpt-5.6-sol")
+        self.assertEqual(0, result.returncode, result.stderr)
+
+    # ⚠️ AN EMPTY OVERRIDE DERIVES; IT DOES NOT DISABLE.  An environment
+    # variable that switches an identity check off is a bypass wearing the shape
+    # of a test hook.
+    def test_an_empty_override_does_not_disable_the_check(self) -> None:
+        result = self.check(
+            "gpt-5.6-sol", "--expected-family", "auto",
+            env={"HERMIT_COMMIT_MODEL_FAMILY": ""},
+        )
+        self.assertEqual(1, result.returncode, result.stdout)
+        self.assertIn("codex family", result.stderr)
+
+
+def checker_module():
+    import importlib.machinery
+    import importlib.util
+
+    loader = importlib.machinery.SourceFileLoader("cca_under_test", str(CHECKER))
+    spec = importlib.util.spec_from_loader("cca_under_test", loader)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["cca_under_test"] = module
+    loader.exec_module(module)
+    return module
+
+
 if __name__ == "__main__":
     unittest.main()

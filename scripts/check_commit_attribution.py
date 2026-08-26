@@ -79,6 +79,102 @@ def detect_machine() -> str:
     return match.group(1)
 
 
+# ⚠️ THE MODEL FIELD IS THE ONE LANE INDEPENDENCE RESTS ON, AND IT WAS THE ONE
+# FIELD NOTHING DERIVED. `machine` comes from the hostname and `Agent:` comes
+# from DG_AGENT_NAME -- both refused when retyped. `model` was
+# `(?P<model>[^\[\]\r\n]+)`, any text without brackets, and this module's own
+# docstring said so. `post-facto-review` requires one Claude-family AND one
+# Codex-family exact-head approval, so the gate closed the spoof on WHICH AGENT
+# and left it open on WHICH FAMILY.
+#
+# NOT HYPOTHETICAL: agent(hermit-107) was dispatched into the codex lane on
+# hermit#2694, found it was claude-opus-5 and declined to emit a codex marker.
+# That refusal was the only thing that made the empty lane visible; no tool
+# would have caught it. The same agent then typed `claude-opus-5` into its own
+# trailers from context -- honestly, and unverifiably.
+#
+# ⚠️ THE VOCABULARY IS READ OFF THE CORPUS, NOT INVENTED. Measured over the last
+# 3000 dev-hermit commits, the distinct model fields actually used were:
+#   claude side  claude-opus-5 351, opus-5 94, opus-4.8 35, CLAUDE 26, OPUS 19,
+#                claude 9, FABLE 21, claude-sonnet-4.5 2
+#   codex side   CODEX 132, gpt-5.6-sol 112, GPT-5.6-SOL 24, codex 17,
+#                GPT-5.6 12, GPT-5 12, gpt-5 7, GPT-5.6-Codex 1
+#   neither      automation 425, unresolved 114, primary-checkout 44
+# That last row is 583 commits which must NOT be refused, and is why an
+# unrecognised model is an ABSENCE rather than a violation.
+CLAUDE_MODEL_MARKERS = ("claude", "opus", "sonnet", "haiku", "fable")
+CODEX_MODEL_MARKERS = ("codex", "gpt")
+
+
+def declared_model_family(model: str) -> str | None:
+    """Which family the trailer's model string names, or None when it names none.
+
+    ⚠️ A STRING NAMING BOTH IS UNRESOLVED, NOT A PICK. `GPT-5.6-Codex` names one
+    family twice and resolves; a hypothetical `claude-via-gpt` names two and must
+    not be forced into either, because a wrong family here refuses an honest
+    commit and that is how a gate gets switched off.
+    """
+
+    lowered = model.casefold()
+    claude = any(marker in lowered for marker in CLAUDE_MODEL_MARKERS)
+    codex = any(marker in lowered for marker in CODEX_MODEL_MARKERS)
+    if claude and not codex:
+        return "claude"
+    if codex and not claude:
+        return "codex"
+    return None
+
+
+def detect_model_family() -> str | None:
+    """Return the family of the client that launched this process, from /proc.
+
+    Mirrors :func:`detect_machine` and :func:`detect_agent`: sourced from
+    something the committing model cannot author. The walk lives in
+    ``ci-hub/lib/agent_identity.py`` and is IMPORTED rather than copied -- a
+    second extractor of the same fact is what diverged in the marker grammar.
+
+    ⚠️ EVERY FAILURE PATH RETURNS None, AND THAT IS DELIBERATE. This runs in the
+    commit hook for every writer in the repository. A gate that refused a commit
+    because a library moved, or because a container hides /proc, would stop all
+    work to enforce a label -- far worse than the hole it closes. None means the
+    family could not be established, and nothing is refused on silence.
+    """
+
+    # ⚠️ AN EMPTY OVERRIDE DERIVES; IT DOES NOT DISABLE. `HERMIT_COMMIT_MACHINE`
+    # can only ever name a DIFFERENT machine, so an empty value there is
+    # meaningless. Here an empty value would switch an identity check off from
+    # the environment, which is a bypass wearing the shape of a test hook.
+    override = (os.environ.get("HERMIT_COMMIT_MODEL_FAMILY") or "").strip().casefold()
+    if override:
+        return override
+    try:
+        import importlib.util
+
+        root = Path(__file__).resolve().parent.parent
+        lib = root / "ci-hub" / "lib"
+        target = lib / "agent_identity.py"
+        if not target.is_file():
+            return None
+        if str(lib) not in sys.path:
+            sys.path.insert(0, str(lib))
+        spec = importlib.util.spec_from_file_location("agent_identity", target)
+        module = importlib.util.module_from_spec(spec)
+        # ⚠️ REGISTERED BEFORE exec_module, AND THIS EXACT OMISSION MADE THE
+        # CHECK INERT. `@dataclass` resolves annotations through
+        # `sys.modules[cls.__module__]`, so a module executed without being
+        # registered raises AttributeError on its first dataclass -- which the
+        # total `except` below then swallowed into None, i.e. into "no family
+        # could be established", i.e. into silence. Every mislabelled trailer
+        # PASSED and the output was indistinguishable from having no violations.
+        sys.modules.setdefault("agent_identity", module)
+        spec.loader.exec_module(module)
+        contexts, _error = module.process_ancestry(os.getpid(), Path("/proc"))
+        _signal, family = module.client_family_signal(contexts)
+        return family
+    except Exception:  # noqa: BLE001 -- deliberately total; see the docstring
+        return None
+
+
 def detect_agent() -> str | None:
     """Return this process's agent id from the environment, or None if absent.
 
@@ -157,6 +253,7 @@ def validate_message(
     message: str,
     expected_machine: str | None = None,
     expected_agent: str | None = None,
+    expected_family: str | None = None,
 ) -> str:
     """Validate one message and return its exact machine token.
 
@@ -190,6 +287,15 @@ def validate_message(
         raise AttributionError(
             f"commit claims machine {machine}, but this writer is {expected_machine}"
         )
+    if expected_family is not None:
+        model = match.group("model")
+        claimed_family = declared_model_family(model)
+        if claimed_family is not None and claimed_family != expected_family:
+            raise AttributionError(
+                f"commit claims model {model!r} ({claimed_family} family), but this "
+                f"writer was launched by a {expected_family} client; the model field "
+                "is derived from the launcher and must not be retyped"
+            )
     return machine
 
 
@@ -256,6 +362,17 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         ),
     )
     parser.add_argument("--detect-agent", action="store_true")
+    # ⚠️ EXPLICIT, LIKE ITS TWO SIBLINGS, AND NOT IMPLICIT FROM THE ENVIRONMENT.
+    # A family check that switched itself on whenever the process had a
+    # recognisable launcher would make every unit test's verdict depend on WHO
+    # RAN IT: this file's own fixtures carry both a codex trailer and a claude
+    # one, so an implicit check passes for a codex agent and fails for a claude
+    # one. Measured before this flag existed: 2 positive cells failed under a
+    # claude runner and a third failed once the family was pinned the other way.
+    parser.add_argument(
+        "--expected-family",
+        help="claude|codex, or 'auto' to derive it from this process's launcher",
+    )
     parser.add_argument("--quiet", action="store_true")
     args = parser.parse_args(argv)
     if args.detect_machine or args.detect_agent:
@@ -328,10 +445,31 @@ def main(argv: list[str] | None = None) -> int:
             except AttributionError as error:
                 raise AttributionError(f"{identity}: {error}") from error
 
+        # ⚠️ THE FAMILY CHECK APPLIES TO A PROPOSED MESSAGE ONLY, AND SCOPING IT
+        # ANYWHERE ELSE WOULD REFUSE HONEST WORK. `expected_family` is derived
+        # from THIS process's ancestry, which is the writer only while the commit
+        # is being created. Applied to a recorded commit or a range it would
+        # compare a claude reviewer's launcher against a codex agent's commit
+        # from last week and refuse it -- the same category error as checking a
+        # hostname against somebody else's machine. `--expected-machine` and
+        # `--expected-agent` are already passed `auto` only on the creation path
+        # for exactly this reason; this makes the scoping structural rather than
+        # dependent on how a caller spells its flags.
+        proposed = args.message_file is not None or args.stdin
+        expected_family = args.expected_family
+        if expected_family == "auto":
+            expected_family = detect_model_family()
+        elif expected_family is not None:
+            expected_family = expected_family.strip().casefold() or None
+        if not proposed:
+            expected_family = None
+
         machines: set[str] = set()
         for identity, message in records:
             try:
-                machines.add(validate_message(message, expected, expected_agent))
+                machines.add(
+                    validate_message(message, expected, expected_agent, expected_family)
+                )
             except AttributionError as error:
                 raise AttributionError(f"{identity}: {error}") from error
 

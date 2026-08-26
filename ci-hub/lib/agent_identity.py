@@ -261,6 +261,79 @@ def _explicit_models(argv: Sequence[str]) -> tuple[list[str], bool]:
     return values, malformed
 
 
+CLIENT_FAMILIES = ("claude", "codex")
+
+
+def client_family_signal(
+    contexts: Sequence[ProcessContext],
+) -> tuple[Signal, str | None]:
+    """Which model FAMILY launched this process, read from /proc, never typed.
+
+    ⚠️ THE FAMILY WAS ALREADY IN HAND AND WAS BEING THROWN AWAY.
+    :func:`_recognized_client_index` finds the `claude` or `codex` binary in the
+    ancestry and returns only its INDEX, used as an offset for scanning
+    ``--model`` flags. The basename it matched on IS the family, and the family
+    is the field review independence rests on: ``post-facto-review`` requires one
+    Claude-family and one Codex-family exact-head approval, and the only
+    machine-readable discriminator between them was a self-reported string.
+
+    ⚠️ THIS IS NOT THE MODEL SLUG AND DOES NOT REPLACE :func:`model_signal`.
+    Measured on this board 2026-08-26: every agent reports ``model=unresolved``
+    because clients are launched WITHOUT an explicit ``--model``, so the slug is
+    genuinely unavailable. The FAMILY is available on exactly the same evidence
+    -- the ancestry of agent(hermit-107) carries basenames ``['claude', 'claude']``
+    while its model resolves to ``unresolved``. A weaker fact that can be
+    established beats a stronger one that cannot.
+
+    Returns ``None`` for the family when it cannot be established, and callers
+    must treat that as an ABSENCE OF EVIDENCE rather than as a licence: refuse a
+    contradiction, never manufacture one from silence.
+
+    ⚠️ AMBIGUITY IS UNRESOLVED, NOT A GUESS. An ancestry carrying BOTH a claude
+    and a codex client -- one agent driving another -- names no single family,
+    and picking the nearest would answer a question the evidence does not settle.
+    """
+
+    seen: list[tuple[int, str]] = []
+    unreadable: list[int] = []
+    for context in contexts:
+        if context.cmdline is None:
+            unreadable.append(context.pid)
+            continue
+        index = _recognized_client_index(context.cmdline)
+        if index is None:
+            continue
+        name = Path(context.cmdline[index]).name.casefold()
+        if name in CLIENT_FAMILIES:
+            seen.append((context.pid, name))
+
+    families = tuple(sorted({family for _, family in seen}))
+    if len(families) > 1:
+        return (
+            Signal(
+                "client-family",
+                "ambiguous",
+                detail="ancestry carries more than one recognized client",
+                candidates=families,
+            ),
+            None,
+        )
+    if len(families) == 1:
+        pids = ",".join(str(pid) for pid, family in seen if family == families[0])
+        return (
+            Signal(
+                "client-family",
+                "resolved",
+                detail=f"client={families[0]} at pid(s) {pids}",
+            ),
+            families[0],
+        )
+    detail = "no recognized codex/claude client in the ancestry"
+    if unreadable:
+        detail += "; unreadable/empty cmdline pid(s) " + ",".join(map(str, unreadable))
+    return Signal("client-family", "unavailable", detail=detail), None
+
+
 def model_signal(contexts: Sequence[ProcessContext]) -> tuple[Signal, str, str | None]:
     """Resolve one explicit launch model, or report the stable unresolved value."""
 

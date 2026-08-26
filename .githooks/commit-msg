@@ -19,7 +19,8 @@ if [ "${HERMIT_MACHINE_ATTRIBUTION_CHECKED:-0}" != 1 ]; then
     echo "commit-attribution: REFUSED: checker missing at $attribution" >&2
     exit 1
   }
-  python3 "$attribution" --message-file "$1" --expected-machine auto || exit $?
+  python3 "$attribution" --message-file "$1" --expected-machine auto \
+    --expected-family auto || exit $?
 fi
 
 checker="$root/scripts/check-demo-review.sh"
