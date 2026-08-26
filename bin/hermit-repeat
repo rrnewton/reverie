@@ -136,6 +136,8 @@ class RunResult:
     index: int
     name: str
     dir: str
+    # set only for a nextest node; None for a hermit verify-pair node
+    test_id: str | None = None
     # exactly one of: diverged | clean | failed | no_result
     category: str = "failed"
     why: str = "the node produced no verdict file"
@@ -404,6 +406,78 @@ def build_dag(args, hermit_bin: str, out: Path, guest: list[str]) -> dict:
     }
 
 
+
+def build_nextest_dag(args, out: Path, test_ids: list[str]) -> dict:
+    """N boxed nodes per test id, one per repetition.
+
+    Deliberately NOT folded into build_dag(). That function builds a hermit
+    verify PAIR -- safehermit, --verify-strict, --keep-logs, a verify.json to
+    read coordinates out of -- and none of it applies here. Sharing the
+    function would mean a flag on every line of it; sharing the DAG shape,
+    the boxing, the per-node budget and the statistics is what actually
+    matters and that is what these two have in common.
+    """
+    steps = []
+    per_step_timeout = args.deadline + 60
+    width = len(str(args.runs))
+    for test_id in test_ids:
+        slug = re.sub(r"[^A-Za-z0-9]+", "-", test_id).strip("-")[:60]
+        for i in range(1, args.runs + 1):
+            name = f"{slug}-run{i:0{width}d}"
+            d = out / "runs" / name
+            d.mkdir(parents=True, exist_ok=True)
+            (d / "test-id").write_text(test_id + "\n")
+            # Run in the hermit checkout: that is where the workspace and the
+            # test live. Unlike a hermit guest, a nextest node has no private
+            # cwd to give it -- cargo needs the workspace -- so nodes of the
+            # same id DO share a directory. Recorded rather than hidden,
+            # because the private-cwd reasoning that applies to guests does
+            # not apply here and a reader should not assume it does.
+            inner = [
+                "cargo", "nextest", "run",
+                "--no-fail-fast",
+                "-E", nextest_filter_for(test_id),
+            ]
+            runner_script = d / "node.sh"
+            runner_script.write_text(
+                "#!/usr/bin/env bash\n"
+                f"cd {shlex.quote(str(ROOT / 'hermit'))} || exit 70\n"
+                f"date +%s.%N > {shlex.quote(str(d / 'started'))}\n"
+                f"{' '.join(shlex.quote(a) for a in inner)} "
+                f"> {shlex.quote(str(d / 'nextest.out'))} 2>&1\n"
+                "rc=$?\n"
+                f"date +%s.%N > {shlex.quote(str(d / 'ended'))}\n"
+                f"printf '%s' \"$rc\" > {shlex.quote(str(d / 'rc'))}\n"
+                # Same rule as the hermit nodes: this exit code answers "did
+                # this node produce a MEASUREMENT", not "did the test pass".
+                # A failing test is the finding. Exiting nonzero on it would
+                # make --keep-going stop launching the remaining repetitions
+                # and the sweep would silently become a 4-of-20.
+                f"if [ -s {shlex.quote(str(d / 'nextest.out'))} ]; then exit 0; fi\n"
+                "exit \"$rc\"\n"
+            )
+            runner_script.chmod(0o755)
+            steps.append({
+                "group": "repeat",
+                "job": name,
+                "desc": f"nextest {test_id} repeat {i}/{args.runs}",
+                "cmd": f"bash {shlex.quote(str(runner_script))}",
+                "timeout": per_step_timeout,
+                "hint": {
+                    "preferred_inner_jobs": 1,
+                    "classification": "cpu-bound",
+                    "rss_baseline_bytes": args.node_rss_bytes,
+                    "hard_mem_max_bytes": args.node_mem_max_bytes,
+                },
+            })
+    return {
+        "description": (
+            f"hermit-repeat: {args.runs} nodes x {len(test_ids)} nextest id(s)"
+        ),
+        "steps": steps,
+    }
+
+
 # --------------------------------------------------------------------------- disk guard
 class DiskGuard(threading.Thread):
     """Bound total artefact bytes and KILL the run at the cap.
@@ -480,6 +554,41 @@ def tail_of_stderr(node_dir: Path, lines: int = 6) -> list[str]:
             return text[-lines:]
     return []
 
+
+
+def collect_one_nextest(r: RunResult) -> RunResult:
+    """Fill a nextest node's verdict from its own captured output."""
+    d = Path(r.dir)
+    try:
+        r.test_id = (d / "test-id").read_text().strip()
+    except OSError:
+        r.test_id = None
+    for stamp, attr in (("started", "started_at"), ("ended", "ended_at")):
+        try:
+            setattr(r, attr, float((d / stamp).read_text().strip()))
+        except Exception:
+            pass
+    try:
+        r.exit_code = int((d / "rc").read_text().strip())
+    except Exception:
+        r.exit_code = None
+    try:
+        text = (d / "nextest.out").read_text(errors="replace")
+    except OSError:
+        text = ""
+    if not text and r.started_at is None and r.exit_code is None:
+        # Same distinction the hermit path makes: --keep-going stops LAUNCHING
+        # after a node fails, so a node with no trace at all never ran and
+        # calling it a failure would invent one.
+        r.category = "not_run"
+        r.why = ("the node never started -- the scheduler stopped launching new "
+                 "steps. The sweep is TRUNCATED, not complete.")
+        return r
+    r.category, r.why = classify_nextest_output(text, r.test_id or "?")
+    tail = [ln for ln in text.splitlines() if ln.strip()][-6:]
+    if r.category in ("failed", "no_result"):
+        r.error_tail = tail
+    return r
 
 def collect_one(r: RunResult, hermit_bin: str, keep: bool) -> RunResult:
     d = Path(r.dir)
@@ -732,6 +841,69 @@ def measured_peak_overlap(results: list[RunResult]) -> int | None:
         cur += delta
         peak = max(peak, cur)
     return peak
+
+
+
+# --------------------------------------------------------------------------- nextest ids
+NEXTEST_RESULT = re.compile(
+    r"^\s+(PASS|FAIL|LEAK|LEAK-FAIL|TIMEOUT|SLOW|TRY \d+ FAIL|TRY \d+ ERROR"
+    r"|SIGSEGV|SIGABRT|ABORT|ERROR)\s+\[\s*[0-9.]+s\]\s+(\S+)\s+(\S+)\s*$",
+    re.M,
+)
+NEXTEST_SUMMARY = re.compile(r"^\s*Summary\s+\[[^\]]*\]\s+(\d+)\s+tests?\s+run", re.M)
+NEXTEST_STARTING = re.compile(r"^\s*Starting\s+(\d+)\s+tests?\s+across", re.M)
+
+
+def nextest_filter_for(test_id: str) -> str:
+    """A nextest filterset selecting EXACTLY one test.
+
+    `test(=NAME)` is the exact-match form; `test(NAME)` is a substring match and
+    would silently pull in every id that contains this one as a prefix, which is
+    the whole liteinst_strict_verify_round2_* family for several of the ids we
+    care about. The distinction is invisible until it runs the wrong set."""
+    return f"test(={test_id})"
+
+
+def classify_nextest_output(text: str, test_id: str) -> tuple[str, str]:
+    """(category, why) for one nextest node, from its own output.
+
+    ⚠️ AN ID THAT SELECTS NOTHING MUST NOT READ AS A PASS. nextest exits 0 when a
+    filterset matches no test, so a typo, a renamed test, or a test behind a
+    cfg that is off all produce a silent green. That is the single worst input
+    here: the whole point is to decide whether a named id fails, and "no such
+    id" answered as "did not fail" is how a set gets marked as known-failing
+    while one of its members has quietly ceased to exist. Reported as its own
+    category, never as clean.
+    """
+    ran = NEXTEST_SUMMARY.search(text) or NEXTEST_STARTING.search(text)
+    verdicts = {}
+    for m in NEXTEST_RESULT.finditer(text):
+        v = m.group(1)
+        if v == "SLOW":
+            continue
+        verdicts[f"{m.group(2)}::{m.group(3)}"] = v
+
+    if ran and int(ran.group(1)) == 0:
+        return "no_result", (
+            f"the filterset {nextest_filter_for(test_id)!r} selected NO test. "
+            f"nextest exits 0 for this, so it would otherwise read as a pass. "
+            f"The id may be misspelled, renamed, or compiled out."
+        )
+    if not verdicts:
+        return "failed", (
+            "nextest produced no per-test verdict line at all -- the node did not "
+            "get as far as running a test (build failure, or killed)."
+        )
+    if len(verdicts) > 1:
+        return "no_result", (
+            f"the filterset selected {len(verdicts)} tests, not one: "
+            f"{', '.join(sorted(verdicts)[:4])}. A per-id verdict cannot be read "
+            f"from a multi-test run."
+        )
+    only = next(iter(verdicts.values()))
+    if only == "PASS":
+        return "clean", f"nextest reported PASS for {test_id}"
+    return "failed", f"nextest reported {only} for {test_id}"
 
 
 # --------------------------------------------------------------------------- report
@@ -1059,6 +1231,47 @@ def histogram(values: list[int]) -> list[tuple[int, int]]:
     return sorted(out.items())
 
 
+
+def per_id_lines(results: list) -> list[str]:
+    """One pass/fail count per test id, which is the whole point of a multi-id
+    sweep: a SET that fails every time is a different thing from a set whose
+    membership moves, and only per-id counts can tell them apart."""
+    out = []
+    ids = []
+    for r in results:
+        if r.test_id and r.test_id not in ids:
+            ids.append(r.test_id)
+    if not ids:
+        return out
+    out.append("-" * 78)
+    out.append(f"PER TEST ID ({len(ids)} ids)")
+    out.append("-" * 78)
+    out.append(f"  {'failed':>6} {'clean':>6} {'other':>6} {'runs':>5}   test id")
+    for tid in ids:
+        rs = [r for r in results if r.test_id == tid]
+        nf = sum(r.category == "failed" for r in rs)
+        nc = sum(r.category == "clean" for r in rs)
+        no = len(rs) - nf - nc
+        out.append(f"  {nf:>6} {nc:>6} {no:>6} {len(rs):>5}   {tid}")
+    out.append("")
+    out.append("  'other' is a node that produced NO verdict for the id -- an id that")
+    out.append("  selected no test, a filterset that selected several, a build failure,")
+    out.append("  or a node the scheduler never launched. It is counted separately and")
+    out.append("  NEVER folded into clean: an id that has ceased to exist must not read")
+    out.append("  as an id that did not fail.")
+    unresolved = sorted({r.test_id for r in results
+                         if r.test_id and r.category == "no_result"})
+    if unresolved:
+        out.append("")
+        out.append(f"  ⚠️ {len(unresolved)} id(s) produced NO USABLE VERDICT IN AT LEAST ONE RUN:")
+        for tid in unresolved:
+            why = next((r.why for r in results if r.test_id == tid and r.category == "no_result"), "")
+            out.append(f"     {tid}")
+            for line in _wrap(why, 64):
+                out.append(f"       {line}")
+    out.append("")
+    return out
+
 def write_report(args, meta: dict, results: list[RunResult], fh):
     w = lambda s="": print(s, file=fh)
     by = lambda c: [r for r in results if r.category == c]
@@ -1180,6 +1393,16 @@ def write_report(args, meta: dict, results: list[RunResult], fh):
             w(f"  assurance        : L2 x{measured}, none diverged. L4 wants ~20; "
               f"this run has {measured}.")
     w()
+
+    for line in per_id_lines(results):
+        w(line)
+
+    if any(r.test_id for r in results) and not diverged:
+        w("  NO DIVERGENCE SECTION: these are nextest nodes, not hermit verify pairs,")
+        w("  so there is no log pair to compare and no divergence coordinate exists.")
+        w("  Omitted rather than printed empty -- an absent section and a section of")
+        w("  dashes read very differently.")
+        w()
 
     if diverged:
         w("-" * 78)
@@ -1592,6 +1815,17 @@ def main() -> int:
              "passes today and is flaky underneath is invisible to a single run.",
     )
     p.add_argument(
+        "--test-id",
+        metavar="ID",
+        action="append",
+        default=[],
+        help="stress a NEXTEST test by id (e.g. hermit::cli::run_dbt_verifies_self_prlimit), "
+             "repeatable. Each id is run N times as its own set of boxed nodes and gets its "
+             "own pass/fail count. This is a DIFFERENT measurement from --cell: a nextest "
+             "test is not a hermit verify pair, so it yields NO divergence coordinates and "
+             "that section is omitted rather than left blank.",
+    )
+    p.add_argument(
         "--cell-backend",
         metavar="B",
         help="which enabled backend of --cell to stress; default is the cell's first",
@@ -1659,9 +1893,19 @@ def main() -> int:
         # what the cell IS. Dropping them would stress a different configuration than
         # the one the bucket runs, and the sweep would answer about something else.
         args.hermit_arg = list(cell_flags) + list(args.hermit_arg or [])
-    if not guest:
+    if args.test_id:
+        # These are different measurements and combining them in one sweep would
+        # put two populations under one set of headline ratios.
+        if guest or args.cell:
+            die("--test-id runs NEXTEST tests and cannot be combined with --cell or a "
+                "guest command line; they are different measurements. Run them separately.")
+        if args.backend or args.cell_backend:
+            die("--backend/--cell-backend do not apply to --test-id: a nextest test is "
+                "not a hermit run and chooses its own backend, if any.")
+    if not guest and not args.test_id:
         die("no guest command given. Usage: hermit-repeat [options] -- GUEST [ARGS...]\n"
-            "       or: hermit-repeat [options] --cell <manifest-id>")
+            "       or: hermit-repeat [options] --cell <manifest-id>\n"
+            "       or: hermit-repeat [options] --test-id <nextest-id> [--test-id ...]")
     if args.runs < 1:
         die(f"--runs must be >= 1 (got {args.runs})")
 
@@ -1694,16 +1938,26 @@ def main() -> int:
     perf_dir = out / "profiles"
     perf_dir.mkdir(exist_ok=True)
 
-    dag = build_dag(args, hermit_bin, out, guest)
+    dag = (build_nextest_dag(args, out, args.test_id) if args.test_id
+           else build_dag(args, hermit_bin, out, guest))
     dag_path = out / "dag.json"
     dag_path.write_text(json.dumps(dag, indent=2))
 
-    jobs = 1 if args.mode == "sequential" else (args.jobs or args.runs)
-    waves = (args.runs + jobs - 1) // jobs
+    # ⚠️ BUDGET FROM THE NODE COUNT, NOT FROM --runs. With M ids these differ by
+    # a factor of M, and the earlier version of this used --runs: a 3-id sweep at
+    # -j 1 got a third of the wall budget it needed, so the runner would have cut
+    # it off two thirds of the way through and every unreached node would have
+    # been reported `not_run`. A truncated sweep that LOOKS like a completed one
+    # is the failure this whole tool exists to avoid.
+    node_count = len(dag["steps"])
+    jobs = 1 if args.mode == "sequential" else (args.jobs or node_count)
+    waves = (node_count + jobs - 1) // jobs
     run_timeout = args.deadline * waves + 300
 
     if args.dry_run:
-        print(f"{PROG}: DAG written to {dag_path} ({args.runs} disconnected nodes)")
+        print(f"{PROG}: DAG written to {dag_path} ({node_count} disconnected nodes"
+              + (f", {len(args.test_id)} ids x {args.runs} runs" if args.test_id else "")
+              + ")")
         print(f"{PROG}: mode={args.mode} -j {jobs} run-timeout {run_timeout}s")
         print(f"{PROG}: node 1 command:\n  {dag['steps'][0]['cmd']}")
         print(f"{PROG}: runner command:\n  {runner} run --dag {dag_path} -j {jobs} "
@@ -1722,7 +1976,8 @@ def main() -> int:
         pre_args.runs = 1
         pre_dir = out / "preflight"
         pre_dir.mkdir(parents=True, exist_ok=True)
-        pre_dag = build_dag(pre_args, hermit_bin, pre_dir, guest)
+        pre_dag = (build_nextest_dag(pre_args, pre_dir, args.test_id[:1]) if args.test_id
+                   else build_dag(pre_args, hermit_bin, pre_dir, guest))
         pre_dag_path = pre_dir / "dag.json"
         pre_dag_path.write_text(json.dumps(pre_dag, indent=2))
         say(f"{PROG}: preflight -- one run of the real guest before all {args.runs}")
@@ -1731,9 +1986,18 @@ def main() -> int:
              "--run-timeout", str(args.deadline + 120), "--no-profile"],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False,
         )
-        probe = RunResult(index=1, name="run1", dir=str(pre_dir / "runs" / "run1"))
-        collect_one(probe, hermit_bin, keep=False)
-        if probe.category not in ("diverged", "clean"):
+        if args.test_id:
+            pre_name = pre_dag["steps"][0]["job"]
+            probe = RunResult(index=1, name=pre_name, dir=str(pre_dir / "runs" / pre_name))
+            collect_one_nextest(probe)
+        else:
+            probe = RunResult(index=1, name="run1", dir=str(pre_dir / "runs" / "run1"))
+            collect_one(probe, hermit_bin, keep=False)
+        # A FAILING TEST IS A MEASUREMENT, NOT A CONFIGURATION ERROR. For a
+        # nextest sweep the whole question is whether a named id fails, so
+        # `failed` must pass preflight; only "no verdict at all" may refuse.
+        ok = ("diverged", "clean", "failed") if args.test_id else ("diverged", "clean")
+        if probe.category not in ok:
             say("")
             say(f"{PROG}: REFUSED -- the preflight run produced no verdict, so all "
                 f"{args.runs} runs would fail the same way.")
@@ -1766,7 +2030,7 @@ def main() -> int:
         "--run-timeout", str(run_timeout),
         "--perf-dir", str(perf_dir),
     ]
-    say(f"{PROG}: {args.runs} nodes, mode={args.mode}, -j {jobs}, artefacts in {out}")
+    say(f"{PROG}: {node_count} nodes, mode={args.mode}, -j {jobs}, artefacts in {out}")
     say(f"{PROG}: {' '.join(shlex.quote(c) for c in cmd)}")
 
     proc_holder = {}
@@ -1797,12 +2061,22 @@ def main() -> int:
     guard.join(timeout=10)
 
     width = len(str(args.runs))
-    results = [
-        RunResult(index=i, name=f"run{i:0{width}d}", dir=str(out / "runs" / f"run{i:0{width}d}"))
-        for i in range(1, args.runs + 1)
-    ]
-    for r in results:
-        collect_one(r, hermit_bin, args.keep_artifacts)
+    if args.test_id:
+        # Names come from the DAG so the two never drift apart; deriving them a
+        # second time here is how a renamed node becomes a phantom not_run.
+        results = [
+            RunResult(index=i, name=st["job"], dir=str(out / "runs" / st["job"]))
+            for i, st in enumerate(dag["steps"], 1)
+        ]
+        for r in results:
+            collect_one_nextest(r)
+    else:
+        results = [
+            RunResult(index=i, name=f"run{i:0{width}d}", dir=str(out / "runs" / f"run{i:0{width}d}"))
+            for i in range(1, args.runs + 1)
+        ]
+        for r in results:
+            collect_one(r, hermit_bin, args.keep_artifacts)
     join_step_csv(results, perf_dir)
 
     peak = measured_peak_overlap(results)
@@ -2098,6 +2372,58 @@ def _selftest() -> int:
           "min 12  max 40  distinct 2" in lines[0], True)
     check("and it names the thread the range belongs to",
           "dtid 3" in lines[0], True)
+
+    # --- nextest ids ------------------------------------------------------
+    # ⚠️ THE ONE THAT MATTERS: nextest EXITS 0 WHEN A FILTERSET MATCHES NOTHING.
+    # A typo, a renamed test, or a test compiled out all produce a silent green.
+    # For a tool whose entire job is deciding whether a named id fails, "no such
+    # id" answered as "did not fail" is how an id gets marked known-failing after
+    # it has quietly ceased to exist.
+    empty = ("    Starting 0 tests across 0 binaries (23 skipped)\n"
+             "    Summary [   0.001s] 0 tests run: 0 passed, 0 failed\n")
+    check("an id that selects NO test is not clean",
+          classify_nextest_output(empty, "gone")[0], "no_result")
+    check("and the reason names the filterset",
+          "test(=gone)" in classify_nextest_output(empty, "gone")[1], True)
+
+    passed = ("        PASS [   0.004s] hermit::cli only_test\n"
+              "    Summary [   0.010s] 1 test run: 1 passed, 0 failed\n")
+    check("a passing id is clean", classify_nextest_output(passed, "only_test")[0], "clean")
+    failed_out = ("        FAIL [   2.304s] hermit::cli only_test\n"
+                  "    Summary [   2.400s] 1 test run: 0 passed, 1 failed\n")
+    check("a failing id is failed -- the finding, not an error",
+          classify_nextest_output(failed_out, "only_test")[0], "failed")
+
+    # A SLOW line is a progress notice; if it were counted the test would look
+    # like it produced two verdicts and be refused as ambiguous.
+    slow = ("        SLOW [  60.000s] hermit::cli only_test\n" + passed)
+    check("SLOW does not make a single test look like two",
+          classify_nextest_output(slow, "only_test")[0], "clean")
+
+    # A filterset that pulls in a FAMILY cannot yield a per-id verdict.
+    many = ("        PASS [   0.004s] hermit::cli a\n"
+            "        FAIL [   0.004s] hermit::cli b\n"
+            "    Summary [   0.010s] 2 tests run: 1 passed, 1 failed\n")
+    check("a multi-test selection is refused, not scored",
+          classify_nextest_output(many, "a")[0], "no_result")
+
+    # EXACT MATCH, not substring: test(NAME) would sweep in every id having this
+    # one as a prefix, which is a whole liteinst_strict_verify_round2_* family.
+    check("the filterset is the EXACT-match form",
+          nextest_filter_for("hermit::cli::x"), "test(=hermit::cli::x)")
+
+    # No output at all is a node that never got to a test, not a pass.
+    check("empty output is failed, not clean", classify_nextest_output("", "x")[0], "failed")
+
+    # The per-id table must never fold a no-verdict node into clean.
+    rows = [RunResult(index=1, name="n1", dir="/f/1", category="failed", why="", test_id="A"),
+            RunResult(index=2, name="n2", dir="/f/2", category="clean", why="", test_id="A"),
+            RunResult(index=3, name="n3", dir="/f/3", category="no_result", why="gone", test_id="B")]
+    table = "\n".join(per_id_lines(rows))
+    check("per-id counts are reported per id", "1      1      0     2   A" in table, True)
+    check("a no-verdict node counts as other, not clean",
+          "0      0      1     1   B" in table, True)
+    check("and the unusable id is named", "NO USABLE VERDICT" in table and "B" in table, True)
 
     # --- repo-relative guest paths ----------------------------------------
     # THE DEFECT: the bucket runs a cell with the HERMIT REPO ROOT as cwd, so a
