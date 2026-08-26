@@ -93,6 +93,24 @@ def write_record(path: Path, value: Mapping[str, Any]) -> None:
         _write_unlocked(path, value)
 
 
+def create_record(path: Path, value: Mapping[str, Any]) -> None:
+    """Create a run handle without replacing another run's identity."""
+    with exclusive_record(path):
+        if path.exists():
+            raise RuntimeError(f"validation handle already exists: {path}")
+        _write_unlocked(path, value)
+
+
+def reserve_log(path: Path) -> None:
+    """Reserve a systemd append target; a second run must not share it."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    except FileExistsError as error:
+        raise RuntimeError(f"validation log already exists: {path}") from error
+    os.close(descriptor)
+
+
 def update_record(path: Path, *, blocking: bool = True, **fields: Any) -> dict[str, Any]:
     # The caller and the observer finish at nearly the same time. Serialize the
     # read-modify-write so a final exit update cannot erase cgroup evidence (or

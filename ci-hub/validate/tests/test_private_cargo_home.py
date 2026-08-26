@@ -8,9 +8,9 @@
 """Bracket the per-run CARGO_HOME from both sides.
 
 The defect this guards (#2112): cargo serialises every cache mutation on one
-lock file, `$CARGO_HOME/.package-cache`. `validate-lock` is box-exclusive so no
-two VALIDATES collide, but nothing serialises a validate against the ~18 agents
-running ordinary `cargo build` in their own slots against the same `~/.cargo`.
+lock file, `$CARGO_HOME/.package-cache`. Nothing used to protect the seed copy
+against the ~18 agents running ordinary `cargo build` in their own slots against
+the same `~/.cargo`.
 A node that loses that race does not run slowly -- it sits in `Blocking waiting
 for file lock on package cache` until its budget kills it. Measured:
 `privileged-build.privileged_tests` has a 0.05s median across 21 passing runs
@@ -213,17 +213,18 @@ def test_command_passes_cargo_home() -> None:
 
 
 # --------------------------------------------------------------------------
-# NEGATIVE: a seed that cannot be built must say so and fall back, not pretend.
-# A silent failure here would reintroduce the contention while looking fixed.
+# A missing shared seed is not permission to use shared Cargo state: the run
+# still receives an empty private home and Cargo populates it itself.
 # --------------------------------------------------------------------------
-def test_missing_shared_home_refuses() -> None:
+def test_missing_shared_home_still_returns_private_home() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         parent = Path(tmp) / "ignored"
         parent.mkdir()
         private = start_unit.prepare_private_cargo_home(
             parent, run=real_runner, shared=Path(tmp) / "does-not-exist"
         )
-        check("NEGATIVE absent shared cache yields no private home", private is None)
+        check("POSITIVE absent seed still yields a private home", private.is_dir())
+        start_unit.remove_private_cargo_home(private, run=real_runner)
 
 
 def test_remove_is_total_and_safe() -> None:
@@ -241,7 +242,7 @@ def main() -> int:
     test_shared_cargo_home_serialises()
     test_seeds_and_returns_private_home()
     test_command_passes_cargo_home()
-    test_missing_shared_home_refuses()
+    test_missing_shared_home_still_returns_private_home()
     test_remove_is_total_and_safe()
     print()
     if FAILURES:

@@ -86,24 +86,34 @@ def lock_authority(root: Path, target: str) -> dict[str, Any]:
         authority = json.loads(result.stdout)
     except json.JSONDecodeError as error:
         raise Refusal(f"validate-lock authority returned malformed JSON: {error}") from error
-    holder = authority.get("holder")
-    owner = authority.get("owner")
-    if (
-        authority.get("schema_version") != 1
-        or authority.get("admissible") is not True
-        or not isinstance(holder, dict)
-        or holder.get("kind") != "reverie-validate"
-        or holder.get("target") != target
-        or not isinstance(owner, dict)
-        or owner.get("liveness") != "alive"
-        or authority.get("canonical_anchor_held") is not True
-    ):
-        raise Refusal(f"validate-lock authority does not bind this run: {authority!r}")
-
     owner_pid = os.environ.get("CI_HUB_VALIDATE_LOCK_OWNER_PID", "")
     owner_file = os.environ.get("CI_HUB_VALIDATE_LOCK_OWNER_FILE", "")
     if not owner_pid.isdigit() or int(owner_pid) <= 1 or not owner_file:
         raise Refusal("validate-lock owner ancestry environment is absent")
+    candidates = authority.get("authorities")
+    if not isinstance(candidates, list):
+        candidates = [authority]
+    matches = []
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            continue
+        holder = candidate.get("holder")
+        owner = candidate.get("owner")
+        if (
+            candidate.get("schema_version") == 1
+            and candidate.get("admissible") is True
+            and isinstance(holder, dict)
+            and holder.get("kind") == "reverie-validate"
+            and holder.get("target") == target
+            and isinstance(owner, dict)
+            and owner.get("liveness") == "alive"
+            and owner.get("pid") == int(owner_pid)
+            and candidate.get("canonical_anchor_held") is True
+        ):
+            matches.append(candidate)
+    if len(matches) != 1:
+        raise Refusal(f"validate-lock authority does not bind this run: {authority!r}")
+    authority = matches[0]
     try:
         observed_owner = Path(owner_file).read_text()
     except OSError as error:

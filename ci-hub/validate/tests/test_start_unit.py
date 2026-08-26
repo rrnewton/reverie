@@ -83,6 +83,10 @@ class FakeRun:
 
     def __call__(self, command: list[str], **_kwargs: object):
         self.commands.append(command)
+        if command[:2] == ["mktemp", "-d"] and "validate-cargo-" in command[2]:
+            private = Path(command[2].replace("XXXXXXXX", "abcd1234"))
+            private.mkdir(parents=True, exist_ok=True)
+            return completed(command, stdout=f"{private}\n")
         if command[:2] == ["mktemp", "-d"]:
             self.fresh = Path(command[2].replace("XXXXXXXX", "abcd1234"))
             self.fresh.mkdir(parents=True, exist_ok=True)
@@ -103,6 +107,8 @@ class FakeRun:
                 receipt.parent.mkdir(parents=True, exist_ok=True)
                 receipt.write_text(f'{{"commit": "{SHA}", "cwd": "{self.fresh}"}}\n')
             return completed(command, stdout=f"{self.fresh}\n")
+        if command[:2] == ["rm", "-rf"]:
+            return completed(command)
         if (
             self.fresh is not None
             and command[:1] == ["git"]
@@ -153,6 +159,11 @@ class FakeRun:
                     if qualifying
                     else None
                 ),
+                "qualifying_receipts": (
+                    [self.selected_receipt(row) for row in parsed_rows]
+                    if qualifying
+                    else []
+                ),
             }
             return completed(
                 command,
@@ -167,6 +178,10 @@ class FakeRun:
         if command[:4] == ["git", "-C", str(self.checkout), "rev-parse"]:
             if command[-1] == "--show-toplevel":
                 return completed(command, stdout=f"{self.checkout}\n")
+            if command[-1] == "--git-common-dir":
+                common = self.checkout / ".git"
+                common.mkdir(exist_ok=True)
+                return completed(command, stdout=f"{common}\n")
             return completed(command, stdout=f"{SHA}\n")
         if command[:4] == ["git", "-C", str(self.checkout), "status"]:
             return completed(command, stdout=self.dirty)
@@ -702,7 +717,7 @@ class StartUnitTest(unittest.TestCase):
         self.assertIn("an older row cannot bind this run", err.getvalue())
         self.assertFalse(any(command[0] == "systemd-run" for command in self.fake.commands))
 
-    def test_attach_current_row_must_be_the_selected_canonical_green(self) -> None:
+    def test_attach_current_row_may_be_older_than_another_qualifying_same_sha_run(self) -> None:
         self.fake.validate_status_calls = 1
         current = self.fake.default_ledger_row()
         old = dict(current)
@@ -735,16 +750,7 @@ class StartUnitTest(unittest.TestCase):
                 sleep=lambda _seconds: None,
             )
 
-        # 75, not 2. This asserts the run's verdict was UNREADABLE, which is a
-        # different condition from "the command was malformed" -- both used to
-        # return 2 and a caller could not tell them apart. What this test actually
-        # defends is unchanged: an unreadable verdict must not inherit an older
-        # green, so the code must not be EXIT_PASSED.
-        self.assertEqual(start_unit.EXIT_COULD_NOT_DETERMINE, rc, err.getvalue())
-        self.assertNotEqual(start_unit.EXIT_PASSED, rc, err.getvalue())
-        self.assertNotEqual(start_unit.EXIT_REFUSED, rc, err.getvalue())
-        self.assertIn("CANONICAL-VERDICT-UNAVAILABLE", err.getvalue())
-        self.assertIn("refusing to inherit another run's green", err.getvalue())
+        self.assertEqual(start_unit.EXIT_PASSED, rc, err.getvalue())
 
     # ---- fresh temp-dir checkout is the DEFAULT (owner directive #3) --------
 

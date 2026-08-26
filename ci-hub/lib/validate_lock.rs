@@ -43,9 +43,10 @@ use crate::landing_lock::census_recorded_domain;
 use crate::landing_lock::{
     box_exclusion_anchor_path as box_exclusion_anchor_at, capture_and_freeze_residuals,
     census_cleanup_domain, census_disposition, current_host, enable_child_subreaper,
-    exact_process_liveness, exit_status_code, foreign_box_claim, heartbeat_test_helper_delay,
-    print_census_recovery, print_cleanup_record, process_group_exists, process_start_ticks,
-    reap_exited_children, reap_while_supervising, register_box_claim,
+    exact_process_liveness, exit_status_code, foreign_box_claim, foreign_box_quarantine,
+    heartbeat_test_helper_delay, print_census_recovery, print_cleanup_record,
+    process_group_exists, process_start_ticks, reap_exited_children, reap_while_supervising,
+    register_box_claim,
     remove_cleanup_record_and_claim, repository_lock_root, signal_group, spawn_gated_child, suffix,
     verify_cleanup_record, write_cleanup_record, BoxAnchorObservation, BoxExclusionAnchor,
     CleanupDomain, CleanupPhase, CleanupRecord, CleanupVerification, DomainAttestation,
@@ -57,10 +58,11 @@ const DEFAULT_HOLD_SECONDS: u64 = 900;
 const POLL_SECONDS: u64 = 3;
 const GUARD_WAIT_SECONDS: u64 = 30;
 const GLOBAL_QUEUE_DECLARATION_TTL_SECONDS: i64 = 86_400;
-/// Box-exclusive cap. Raising this is UNPROVEN: detcore_misc false-FAILED
-/// residual is monotonic in load (`experiments/multisect_detcore_misc_20260803`),
-/// so >1 requires hermit-250 evidence, not a config pick.
-const BOX_EXCLUSIVE_CAP: u64 = 1;
+/// Two validation slots are available. Benchmarks still take both slots and
+/// therefore remain box-exclusive against every validation and benchmark.
+const VALIDATE_SLOT_COUNT: usize = 2;
+const VALIDATE_CONCURRENT_CAP: u64 = VALIDATE_SLOT_COUNT as u64;
+const LEGACY_ACQUIRE_CAP: u64 = 1;
 /// Hard ceiling on how long a `run` child may execute before it is killed and
 /// cleanup is proved. A complete empty-domain proof releases the box; otherwise
 /// it stays quarantined. A warm validate runs ~8-16 min; this default (3600s)
@@ -472,7 +474,7 @@ pub struct AcquireArgs {
     pub wait: u64,
     #[arg(long, default_value_t = DEFAULT_HOLD_SECONDS)]
     pub hold: u64,
-    #[arg(long, default_value_t = BOX_EXCLUSIVE_CAP)]
+    #[arg(long, default_value_t = LEGACY_ACQUIRE_CAP)]
     pub max: u64,
     /// Retained only to give old callers a named refusal. Qualifying validation
     /// can no longer bypass base admission. Historical differential debugging
@@ -521,7 +523,7 @@ pub struct RunArgs {
     /// Must be positive: unbounded box-exclusive holders are forbidden.
     #[arg(long, default_value_t = DEFAULT_CHILD_DEADLINE_SECONDS)]
     pub child_deadline: u64,
-    #[arg(long, default_value_t = BOX_EXCLUSIVE_CAP)]
+    #[arg(long, default_value_t = VALIDATE_CONCURRENT_CAP)]
     pub max: u64,
     /// Retained only to give old callers a named refusal. Qualifying validation
     /// can no longer bypass base admission. Historical differential debugging
@@ -1078,7 +1080,7 @@ pub enum ValidateLockError {
         "validate-lock: --child-deadline must be positive; unbounded lock holders are forbidden"
     )]
     UnboundedChildDeadline,
-    #[error("validate-lock: --max must be 1; box-exclusive cap >1 is unproven (detcore_misc residual is monotonic in load, experiments/multisect_detcore_misc_20260803); raising N requires hermit-250 evidence")]
+    #[error("validate-lock: unsupported --max (bare acquire requires 1; supervised run requires the fixed two-slot box policy)")]
     BadMax,
     /// Admission refused a validate whose head predates an immutable producer
     /// or merge-gate floor. Mutable-tip currency is enforced at merge time.
@@ -1190,6 +1192,44 @@ impl LockPaths {
             owner_watch_state_dir: None,
             anchor: box_exclusion_anchor_at(VALIDATE_BOX_ANCHOR),
             lock,
+        }
+    }
+
+    fn for_slot(&self, slot: usize) -> Self {
+        assert!(slot < VALIDATE_SLOT_COUNT);
+        if slot == 0 {
+            return self.clone();
+        }
+        let lock = suffix(&self.lock, &format!(".slot-{slot}"));
+        Self {
+            guard: suffix(&lock, ".guard"),
+            queue: suffix(&lock, ".queue"),
+            owner: suffix(&lock, ".owner"),
+            cleanup: suffix(&lock, ".cleanup-required"),
+            // The owner-watch boundary is global: either validate release must
+            // give it the same opportunity to run.
+            released: self.released.clone(),
+            owner_watch_verifier: self.owner_watch_verifier.clone(),
+            owner_watch_state_dir: self.owner_watch_state_dir.clone(),
+            anchor: suffix(&self.anchor, &format!(".slot-{slot}")),
+            lock,
+        }
+    }
+
+    fn global_anchor(&self) -> PathBuf {
+        let suffix = ".slot-1";
+        let text = self.anchor.to_string_lossy();
+        text.strip_suffix(suffix)
+            .map(PathBuf::from)
+            .unwrap_or_else(|| self.anchor.clone())
+    }
+
+    fn slot_anchor(&self, slot: usize) -> PathBuf {
+        assert!(slot < VALIDATE_SLOT_COUNT);
+        if slot == 0 {
+            self.global_anchor()
+        } else {
+            suffix(&self.global_anchor(), &format!(".slot-{slot}"))
         }
     }
 }
@@ -1775,7 +1815,10 @@ enum AcquireToken {
 }
 
 enum GlobalTurn {
-    Acquired(BoxExclusionAnchor),
+    Acquired {
+        anchors: Vec<BoxExclusionAnchor>,
+        slot: usize,
+    },
     WaitPriority {
         head_agent: String,
         head_priority: QueuePriority,
@@ -1793,7 +1836,7 @@ pub fn execute(root: &Path, args: ValidateLockArgs) -> Result<i32, ValidateLockE
         ValidateLockCommand::Prioritize(args) => lock.prioritize(args),
         ValidateLockCommand::RetirePriority(args) => lock.retire_priority(args),
         ValidateLockCommand::Acquire(args) => {
-            reject_bad_max(args.max)?;
+            reject_bad_acquire_max(args.max)?;
             base_admission_check(root, &args.target, args.kind, args.skip_base_check)?;
             let yield_status =
                 lock.wait_for_owner_watch_yield(&args.agent, args.wait, args.wait == 0)?;
@@ -1805,21 +1848,21 @@ pub fn execute(root: &Path, args: ValidateLockArgs) -> Result<i32, ValidateLockE
             // owns the box. `run` is the sanctioned production path
             // (ci-hub/validate/start_unit.py invokes `validate-lock run`); this
             // keeps the bare-`acquire` path from being the way around it.
-            match BoxExclusionAnchor::observe(&lock.paths.anchor) {
-                BoxAnchorObservation::Free => {}
-                BoxAnchorObservation::Held(holder) => {
-                    eprintln!(
-                        "REFUSED: box-exclusive anchor held by {holder}; this box admits one \
-                         validate or benchmark at a time across ALL checkouts and clones"
-                    );
-                    return Ok(REFUSED_EXIT_CODE);
-                }
-                BoxAnchorObservation::Unknown(reason) => {
-                    eprintln!(
-                        "REFUSED: box-exclusive anchor state UNKNOWN: {reason}; absence is not \
-                         permission"
-                    );
-                    return Ok(REFUSED_EXIT_CODE);
+            for slot in 0..VALIDATE_SLOT_COUNT {
+                match BoxExclusionAnchor::observe(&lock.paths.slot_anchor(slot)) {
+                    BoxAnchorObservation::Free => {}
+                    BoxAnchorObservation::Held(holder) => {
+                        eprintln!(
+                            "REFUSED: validation slot {slot} held by {holder}; bare acquire remains single-holder compatibility only"
+                        );
+                        return Ok(REFUSED_EXIT_CODE);
+                    }
+                    BoxAnchorObservation::Unknown(reason) => {
+                        eprintln!(
+                            "REFUSED: validation slot {slot} state UNKNOWN: {reason}; absence is not permission"
+                        );
+                        return Ok(REFUSED_EXIT_CODE);
+                    }
                 }
             }
             // The anchor is a live-process signal; this is the durable one. A
@@ -1827,22 +1870,56 @@ pub fn execute(root: &Path, args: ValidateLockArgs) -> Result<i32, ValidateLockE
             // but its quarantine record is still outstanding, and now visible from
             // here. ONE MORE necessary condition -- `require_no_cleanup` inside
             // `acquire` still runs for this repository's own record.
-            if let Some(reason) = foreign_box_claim(&lock.paths.anchor, &lock.paths.cleanup) {
+            if let Some(reason) = foreign_box_claim(&lock.paths.global_anchor(), &lock.paths.cleanup) {
                 eprintln!("REFUSED: {reason}");
                 return Ok(REFUSED_EXIT_CODE);
             }
             lock.acquire(&args.agent, args.kind, &args.target, args.wait, args.hold)
         }
         ValidateLockCommand::Renew(args) => {
-            lock.renew(&args.agent, args.hold, true)?;
+            let selected = (0..VALIDATE_SLOT_COUNT)
+                .map(|slot| ValidateLock {
+                    paths: lock.paths.for_slot(slot),
+                })
+                .find(|candidate| {
+                    candidate
+                        .read_holder()
+                        .ok()
+                        .flatten()
+                        .is_some_and(|holder| holder.agent == args.agent)
+                })
+                .unwrap_or_else(|| ValidateLock {
+                    paths: lock.paths.clone(),
+                });
+            selected.renew(&args.agent, args.hold, true)?;
             Ok(0)
         }
         ValidateLockCommand::Release(args) => {
-            lock.release(&args.agent, true)?;
+            let selected = (0..VALIDATE_SLOT_COUNT)
+                .map(|slot| ValidateLock {
+                    paths: lock.paths.for_slot(slot),
+                })
+                .find(|candidate| {
+                    candidate
+                        .read_holder()
+                        .ok()
+                        .flatten()
+                        .is_some_and(|holder| holder.agent == args.agent)
+                })
+                .unwrap_or_else(|| ValidateLock {
+                    paths: lock.paths.clone(),
+                });
+            selected.release(&args.agent, true)?;
             Ok(0)
         }
         ValidateLockCommand::Status => {
-            lock.status()?;
+            for slot in 0..VALIDATE_SLOT_COUNT {
+                println!("validation slot {slot}:");
+                ValidateLock {
+                    paths: lock.paths.for_slot(slot),
+                }
+                .status()?;
+            }
             Ok(0)
         }
         ValidateLockCommand::AuthorityStatus(args) => {
@@ -1857,15 +1934,65 @@ pub fn execute(root: &Path, args: ValidateLockArgs) -> Result<i32, ValidateLockE
             debug_assert!(args.json, "clap requires --json");
             lock.print_yield_status()
         }
-        ValidateLockCommand::ReclaimDead | ValidateLockCommand::StaleClear => lock.reclaim_dead(),
-        ValidateLockCommand::CensusOrphanedDomain(args) => lock.census_orphaned_domain(args),
+        ValidateLockCommand::ReclaimDead | ValidateLockCommand::StaleClear => {
+            let mut errors = Vec::new();
+            let mut found = false;
+            for slot in 0..VALIDATE_SLOT_COUNT {
+                let candidate = ValidateLock {
+                    paths: lock.paths.for_slot(slot),
+                };
+                if candidate.paths.lock.exists()
+                    || candidate.paths.owner.exists()
+                    || candidate.paths.cleanup.exists()
+                {
+                    found = true;
+                    if let Err(error) = candidate.reclaim_dead() {
+                        errors.push(format!("slot {slot}: {error}"));
+                    }
+                }
+            }
+            if !errors.is_empty() {
+                return Err(ValidateLockError::ReclaimNotProven(errors.join("; ")));
+            }
+            if !found {
+                eprintln!("validate-lock: reclaim-dead: no lock held");
+            }
+            Ok(0)
+        }
+        ValidateLockCommand::CensusOrphanedDomain(args) => {
+            let operation = args.operation.clone();
+            let selected = (0..VALIDATE_SLOT_COUNT)
+                .map(|slot| ValidateLock {
+                    paths: lock.paths.for_slot(slot),
+                })
+                .find(|candidate| {
+                    candidate
+                        .read_holder()
+                        .ok()
+                        .flatten()
+                        .is_some_and(|holder| {
+                            holder.agent == args.agent
+                                && format!("{}:{}", holder.kind, holder.target) == operation
+                        })
+                })
+                .unwrap_or_else(|| ValidateLock {
+                    paths: lock.paths.clone(),
+                });
+            selected.census_orphaned_domain(args)
+        }
         ValidateLockCommand::Run(args) => lock.run(args, root),
     }
 }
 
-/// "Derive don't pick": any cap other than 1 is refused before touching the lock.
-fn reject_bad_max(max: u64) -> Result<(), ValidateLockError> {
-    if max != BOX_EXCLUSIVE_CAP {
+fn reject_bad_acquire_max(max: u64) -> Result<(), ValidateLockError> {
+    if max != LEGACY_ACQUIRE_CAP {
+        return Err(ValidateLockError::BadMax);
+    }
+    Ok(())
+}
+
+fn reject_bad_run_max(max: u64, _kind: Kind) -> Result<(), ValidateLockError> {
+    if !matches!(max, LEGACY_ACQUIRE_CAP | VALIDATE_CONCURRENT_CAP) {
         return Err(ValidateLockError::BadMax);
     }
     Ok(())
@@ -2068,6 +2195,36 @@ fn current_main_freshness_check(
 
     let refspec = "refs/heads/main:refs/remotes/origin/main";
     let fetch_timeout = format!("{CURRENT_MAIN_FETCH_TIMEOUT_SECONDS}s");
+    let common = Command::new("git")
+        .arg("-C")
+        .arg(&repository)
+        .args(["rev-parse", "--path-format=absolute", "--git-common-dir"])
+        .bounded_output()
+        .map_err(|error| {
+            ValidateLockError::StaleBase(format!(
+                "validate-lock: shared Git directory is UNRESOLVED in {} ({error})",
+                repository.display()
+            ))
+        })?;
+    if !common.status.success() {
+        return Err(ValidateLockError::StaleBase(format!(
+            "validate-lock: shared Git directory is UNRESOLVED in {} (git exit {:?}: {})",
+            repository.display(),
+            common.status.code(),
+            String::from_utf8_lossy(&common.stderr).trim()
+        )));
+    }
+    let common = PathBuf::from(String::from_utf8_lossy(&common.stdout).trim());
+    let git_lock_path = common.join("ci-hub-validate.lock");
+    let git_lock = OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .open(&git_lock_path)
+        .map_err(|source| io_error("open shared Git mutation lock", &git_lock_path, source))?;
+    git_lock
+        .lock_exclusive()
+        .map_err(|source| io_error("lock shared Git metadata", &git_lock_path, source))?;
     let mut fetch = Command::new("timeout");
     fetch.args(["--signal=TERM", "--kill-after=1s"]);
     fetch.arg(&fetch_timeout);
@@ -2086,6 +2243,8 @@ fn current_main_freshness_check(
                 repository.display()
             ))
         })?;
+    FileExt::unlock(&git_lock)
+        .map_err(|source| io_error("unlock shared Git metadata", &git_lock_path, source))?;
     if !output.status.success() {
         return Err(ValidateLockError::StaleBase(format!(
             "validate-lock: current origin/main fetch failed in {} (git exit {:?}: {}); freshness for {target} is UNRESOLVED.",
@@ -2230,11 +2389,11 @@ impl ValidateLock {
     }
 
     fn global_queue_path(&self) -> PathBuf {
-        suffix(&self.paths.anchor, ".priority-queue")
+        suffix(&self.paths.global_anchor(), ".priority-queue")
     }
 
     fn global_queue_guard_path(&self) -> PathBuf {
-        suffix(&self.paths.anchor, ".priority-queue.guard")
+        suffix(&self.paths.global_anchor(), ".priority-queue.guard")
     }
 
     fn with_global_queue_guard<T>(
@@ -2291,10 +2450,12 @@ impl ValidateLock {
             .map(|(index, line)| GlobalQueueEntry::parse(line, index + 1))
             .collect::<Result<_, _>>()?;
         for (index, entry) in queue.iter().enumerate() {
-            if queue[..index]
-                .iter()
-                .any(|prior| prior.matches(&entry.agent, entry.kind, &entry.target))
-            {
+            if queue[..index].iter().any(|prior| {
+                prior.matches(&entry.agent, entry.kind, &entry.target)
+                    && (prior.owner.is_none()
+                        || entry.owner.is_none()
+                        || prior.owner == entry.owner)
+            }) {
                 return Err(ValidateLockError::InvalidState(format!(
                     "global priority queue has duplicate identity agent={} kind={} target={}; refusing ambiguous admission",
                     entry.agent,
@@ -2520,9 +2681,10 @@ impl ValidateLock {
         self.with_global_queue_guard(|| {
             let mut queue = self.read_global_queue()?;
             self.prune_and_sort_global_queue(&mut queue, now)?;
-            if let Some(entry) = queue
-                .iter_mut()
-                .find(|entry| entry.matches(&args.agent, args.kind, &args.target))
+            if let Some(entry) = queue.iter_mut().find(|entry| {
+                entry.matches(&args.agent, args.kind, &args.target)
+                    && (entry.owner.is_none() || entry.owner.as_ref() == Some(owner))
+            })
             {
                 match &entry.owner {
                     None => entry.owner = Some(owner.clone()),
@@ -2553,7 +2715,10 @@ impl ValidateLock {
             self.prune_and_sort_global_queue(&mut queue, now)?;
             let my_index = queue
                 .iter()
-                .position(|entry| entry.matches(&args.agent, args.kind, &args.target))
+                .position(|entry| {
+                    entry.matches(&args.agent, args.kind, &args.target)
+                        && entry.owner.as_ref() == Some(owner)
+                })
                 .ok_or_else(|| {
                     ValidateLockError::InvalidState(
                         "global priority queue lost the current run".into(),
@@ -2571,23 +2736,46 @@ impl ValidateLock {
                 return Ok(result);
             }
 
-            let anchor = BoxExclusionAnchor::take_attributed(&self.paths.anchor, 0, attribution)
-                .map_err(|source| {
-                    io_error("take box exclusion anchor", &self.paths.anchor, source)
-                })?;
-            match anchor {
-                Some(anchor) => {
-                    if consume_on_acquire {
-                        queue.remove(my_index);
+            let mut anchors = Vec::new();
+            let mut slot = 0usize;
+            let wanted = if args.kind == Kind::Bench || args.max == LEGACY_ACQUIRE_CAP {
+                VALIDATE_SLOT_COUNT
+            } else {
+                1
+            };
+            for candidate in 0..VALIDATE_SLOT_COUNT {
+                let path = self.paths.slot_anchor(candidate);
+                let anchor = BoxExclusionAnchor::take_attributed(&path, 0, attribution)
+                    .map_err(|source| io_error("take validation slot", &path, source))?;
+                if let Some(anchor) = anchor {
+                    if anchors.is_empty() {
+                        slot = candidate;
                     }
-                    self.write_global_queue(&queue)?;
-                    Ok(GlobalTurn::Acquired(anchor))
+                    anchors.push(anchor);
+                    if anchors.len() == wanted {
+                        break;
+                    }
+                } else if args.kind == Kind::Bench {
+                    anchors.clear();
+                    break;
                 }
-                None => {
-                    let holder = BoxExclusionAnchor::describe_holder(&self.paths.anchor);
-                    self.write_global_queue(&queue)?;
-                    Ok(GlobalTurn::Held(holder))
+            }
+            if anchors.len() == wanted {
+                if consume_on_acquire {
+                    queue.remove(my_index);
                 }
+                self.write_global_queue(&queue)?;
+                Ok(GlobalTurn::Acquired { anchors, slot })
+            } else {
+                let holders = (0..VALIDATE_SLOT_COUNT)
+                    .map(|index| {
+                        let path = self.paths.slot_anchor(index);
+                        format!("slot {index}: {}", BoxExclusionAnchor::describe_holder(&path))
+                    })
+                    .collect::<Vec<_>>()
+                    .join("; ");
+                self.write_global_queue(&queue)?;
+                Ok(GlobalTurn::Held(holders))
             }
         })
     }
@@ -2614,7 +2802,7 @@ impl ValidateLock {
         attribution: &str,
         consume_on_acquire: bool,
         root: &Path,
-    ) -> Result<Option<BoxExclusionAnchor>, ValidateLockError> {
+    ) -> Result<Option<(Vec<BoxExclusionAnchor>, usize)>, ValidateLockError> {
         let started = Instant::now();
         let mut last = String::new();
         // The caller checked freshness immediately before entering the queue,
@@ -2622,7 +2810,7 @@ impl ValidateLock {
         let mut last_freshness = Instant::now();
         loop {
             match self.try_global_turn(args, owner, attribution, consume_on_acquire)? {
-                GlobalTurn::Acquired(anchor) => return Ok(Some(anchor)),
+                GlobalTurn::Acquired { anchors, slot } => return Ok(Some((anchors, slot))),
                 GlobalTurn::WaitPriority {
                     head_agent,
                     head_priority,
@@ -2775,7 +2963,7 @@ impl ValidateLock {
             // can now see that record instead of being admitted beside the escaped
             // payload it describes.
             register_box_claim(
-                &self.paths.anchor,
+                &self.paths.global_anchor(),
                 &self.paths.cleanup,
                 agent,
                 &format!("{}:{target}", kind.as_str()),
@@ -2876,7 +3064,10 @@ impl ValidateLock {
             match self.cleanup_verification(Some(&holder)) {
                 CleanupVerification::Armed { .. } => {
                     self.assert_current_process_owner("clear unstarted run")?;
-                    remove_cleanup_record_and_claim(&self.paths.cleanup, &self.paths.anchor)
+                    remove_cleanup_record_and_claim(
+                        &self.paths.cleanup,
+                        &self.paths.global_anchor(),
+                    )
                         .map_err(|source| io_error("remove", &self.paths.cleanup, source))
                 }
                 other => Err(ValidateLockError::InvalidState(format!(
@@ -2942,7 +3133,10 @@ impl ValidateLock {
                 && capture.identities.is_empty()
                 && matches!(group, OriginalProcessGroupState::Absent(_))
             {
-                remove_cleanup_record_and_claim(&self.paths.cleanup, &self.paths.anchor)
+                remove_cleanup_record_and_claim(
+                    &self.paths.cleanup,
+                    &self.paths.global_anchor(),
+                )
                     .map_err(|source| io_error("remove", &self.paths.cleanup, source))?;
                 return Ok(RunCleanupFinalization::Released);
             }
@@ -3332,8 +3526,39 @@ impl ValidateLock {
     }
 
     fn print_authority_status(&self) -> Result<(), ValidateLockError> {
-        let status = self.with_guard(|| self.authority_status_guarded())?;
-        let json = serde_json::to_string(&status).map_err(|error| {
+        let mut statuses = Vec::new();
+        for slot in 0..VALIDATE_SLOT_COUNT {
+            let lock = ValidateLock {
+                paths: self.paths.for_slot(slot),
+            };
+            let status = lock.with_guard(|| lock.authority_status_guarded())?;
+            let mut value = serde_json::to_value(&status).map_err(|error| {
+                ValidateLockError::InvalidState(format!(
+                    "cannot serialize canonical authority slot {slot}: {error}"
+                ))
+            })?;
+            value
+                .as_object_mut()
+                .expect("AuthorityStatus serializes as an object")
+                .insert("slot".into(), serde_json::json!(slot));
+            statuses.push((status, value));
+        }
+        let primary = statuses
+            .iter()
+            .find(|(status, _)| status.admissible)
+            .or_else(|| statuses.first())
+            .ok_or_else(|| ValidateLockError::InvalidState("no validation slots".into()))?;
+        let mut output = primary.1.clone();
+        output
+            .as_object_mut()
+            .expect("authority output serializes as an object")
+            .insert(
+                "authorities".into(),
+                serde_json::Value::Array(
+                    statuses.into_iter().map(|(_, value)| value).collect(),
+                ),
+            );
+        let json = serde_json::to_string(&output).map_err(|error| {
             ValidateLockError::InvalidState(format!(
                 "cannot serialize canonical authority status: {error}"
             ))
@@ -4094,7 +4319,10 @@ impl ValidateLock {
                     )?;
                     remove_if_exists(&self.paths.lock)?;
                     remove_if_exists(&self.paths.owner)?;
-                    remove_cleanup_record_and_claim(&self.paths.cleanup, &self.paths.anchor)
+                    remove_cleanup_record_and_claim(
+                        &self.paths.cleanup,
+                        &self.paths.global_anchor(),
+                    )
                         .map_err(|source| io_error("remove", &self.paths.cleanup, source))?;
                     Ok(Some((holder.agent, holder.kind, holder.target, evidence)))
                 }
@@ -4372,7 +4600,7 @@ impl ValidateLock {
         if args.child_deadline == 0 {
             return Err(ValidateLockError::UnboundedChildDeadline);
         }
-        reject_bad_max(args.max)?;
+        reject_bad_run_max(args.max, args.kind)?;
         enable_child_subreaper().map_err(|source| {
             io_error("enable child subreaper at", Path::new("/proc/self"), source)
         })?;
@@ -4440,18 +4668,20 @@ impl ValidateLock {
         // cleanup quarantine, which is unchanged and still consulted below; ACROSS
         // repositories it is not. Closing that needs a box-global durable record,
         // which is a different change from this one.
-        let mut box_anchor =
+        let (mut box_anchors, mut slot) =
             match self.wait_for_global_turn(&args, &owner, &anchor_attribution, false, root)? {
-                Some(anchor) => anchor,
+                Some(reservation) => reservation,
                 None => {
                     return Ok(REFUSED_EXIT_CODE);
                 }
             };
         loop {
-            eprintln!(
-                "validate-lock: box-global anchor held at {}",
-                box_anchor.path().display()
-            );
+            let held = box_anchors
+                .iter()
+                .map(|anchor| anchor.path().display().to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
+            eprintln!("validate-lock: validation slot anchor(s) held at {held}");
 
             // The anchor wait may have spanned a new background release. Keep
             // this exact waiter in the global queue until the boundary is
@@ -4471,7 +4701,7 @@ impl ValidateLock {
                     run_current_main_between_checks_hook();
                     if let Err(error) = current_main_freshness_check(root, &args.target, args.kind)
                     {
-                        drop(box_anchor);
+                        drop(box_anchors);
                         self.remove_own_global_waiter(&args, &owner)?;
                         return stale_base_refusal(error);
                     }
@@ -4479,7 +4709,7 @@ impl ValidateLock {
                     break;
                 }
                 YieldState::Unknown => {
-                    drop(box_anchor);
+                    drop(box_anchors);
                     self.remove_own_global_waiter(&args, &owner)?;
                     eprintln!(
                         "REFUSED: validate yield state UNKNOWN ({}): {}; absence is not permission",
@@ -4489,33 +4719,41 @@ impl ValidateLock {
                 }
                 YieldState::Yield => {
                     eprintln!("validate-lock: YIELD for owner watch: {}", boundary.detail);
-                    drop(box_anchor);
+                    drop(box_anchors);
                     let yield_status =
                         self.wait_for_owner_watch_yield(&args.agent, args.wait, args.no_wait)?;
                     if yield_status != 0 {
                         self.remove_own_global_waiter(&args, &owner)?;
                         return Ok(yield_status);
                     }
-                    box_anchor = match self.wait_for_global_turn(
+                    (box_anchors, slot) = match self.wait_for_global_turn(
                         &args,
                         &owner,
                         &anchor_attribution,
                         false,
                         root,
                     )? {
-                        Some(anchor) => anchor,
+                        Some(reservation) => reservation,
                         None => return Ok(REFUSED_EXIT_CODE),
                     };
                 }
             }
         }
-        let _box_anchor = box_anchor;
+        let active = ValidateLock {
+            paths: self.paths.for_slot(slot),
+        };
+        let _box_anchors = box_anchors;
 
         // Durable half of box exclusion, checked WITH the anchor held so the
         // answer cannot change under us. The anchor proves no LIVE supervisor
         // holds the box; this proves no DEAD supervisor left a live payload
         // behind in some other repository.
-        if let Some(reason) = foreign_box_claim(&self.paths.anchor, &self.paths.cleanup) {
+        let foreign = if args.kind == Kind::Bench {
+            foreign_box_claim(&active.paths.global_anchor(), &active.paths.cleanup)
+        } else {
+            foreign_box_quarantine(&active.paths.global_anchor(), &active.paths.cleanup)
+        };
+        if let Some(reason) = foreign {
             eprintln!("REFUSED: {reason}");
             return Ok(REFUSED_EXIT_CODE);
         }
@@ -4523,8 +4761,13 @@ impl ValidateLock {
         // Admission: block FIFO, or refuse immediately under --no-wait. Never
         // silently admit a second box-exclusive holder.
         if args.no_wait {
-            let token = self.with_guard(|| {
-                self.try_acquire_after_global_turn(&args.agent, args.kind, &args.target, args.hold)
+            let token = active.with_guard(|| {
+                active.try_acquire_after_global_turn(
+                    &args.agent,
+                    args.kind,
+                    &args.target,
+                    args.hold,
+                )
             })?;
             match token {
                 AcquireToken::Acquired => eprintln!(
@@ -4576,7 +4819,7 @@ impl ValidateLock {
                 }
             }
         } else {
-            let acquire_status = self.acquire_after_global_turn(
+            let acquire_status = active.acquire_after_global_turn(
                 &args.agent,
                 args.kind,
                 &args.target,
@@ -4588,8 +4831,8 @@ impl ValidateLock {
             }
         }
 
-        if let Err(error) = self.with_guard(|| self.write_current_process_owner()) {
-            let _ = self.release(&args.agent, true);
+        if let Err(error) = active.with_guard(|| active.write_current_process_owner()) {
+            let _ = active.release(&args.agent, true);
             return Err(error);
         }
 
@@ -4605,7 +4848,7 @@ impl ValidateLock {
                 source,
             )
         })?;
-        self.arm_run(&args.agent, args.kind, &args.target)?;
+        active.arm_run(&args.agent, args.kind, &args.target)?;
         #[cfg(test)]
         if crate::landing_lock::take_run_crash_hook(
             &format!("{}:{}", args.kind.as_str(), args.target),
@@ -4615,7 +4858,7 @@ impl ValidateLock {
                 "test-injected supervisor crash after arm".into(),
             ));
         }
-        let owner_file = self.paths.owner.clone();
+        let owner_file = active.paths.owner.clone();
         let mut gated = match spawn_gated_child(&args.child[0], &args.child[1..], |command| {
             // The child may record `concurrent_validates=0` only when it can
             // prove it is descended from this live, process-bound lock owner.
@@ -4628,8 +4871,8 @@ impl ValidateLock {
         }) {
             Ok(gated) => gated,
             Err(source) => {
-                self.clear_unstarted_run(&args.agent, args.kind, &args.target)?;
-                self.release(&args.agent, true)?;
+                active.clear_unstarted_run(&args.agent, args.kind, &args.target)?;
+                active.release(&args.agent, true)?;
                 return Err(ValidateLockError::Io {
                     action: "launch start-gated child from",
                     path: PathBuf::from(&args.child[0]),
@@ -4646,9 +4889,9 @@ impl ValidateLock {
                 "test-injected supervisor crash after spawn".into(),
             ));
         }
-        self.publish_run(&args.agent, args.kind, &args.target, &gated)?;
+        active.publish_run(&args.agent, args.kind, &args.target, &gated)?;
         gated.release().map_err(|source| {
-            io_error("release child start gate at", &self.paths.cleanup, source)
+            io_error("release child start gate at", &active.paths.cleanup, source)
         })?;
         #[cfg(test)]
         if crate::landing_lock::take_run_crash_hook(
@@ -4661,7 +4904,7 @@ impl ValidateLock {
         }
 
         let (stop_tx, stop_rx) = mpsc::channel();
-        let heartbeat_paths = self.paths.clone();
+        let heartbeat_paths = active.paths.clone();
         let heartbeat_agent = args.agent.clone();
         let heartbeat_kind = args.kind;
         let heartbeat_target = args.target.clone();
@@ -4687,7 +4930,7 @@ impl ValidateLock {
         });
 
         let outcome = supervise_child(&mut gated.child, args.child_deadline, &args.target);
-        self.begin_run_census(&args.agent, args.kind, &args.target, &gated)?;
+        active.begin_run_census(&args.agent, args.kind, &args.target, &gated)?;
         let _ = stop_tx.send(());
         let _ = heartbeat.join();
         reap_exited_children();
@@ -4703,7 +4946,7 @@ impl ValidateLock {
                 &gated.domain_token,
             ),
         );
-        match self.finalize_run_census(
+        match active.finalize_run_census(
             &args.agent,
             args.kind,
             &args.target,
@@ -4734,7 +4977,7 @@ impl ValidateLock {
                 )));
             }
         }
-        self.release(&args.agent, true)?;
+        active.release(&args.agent, true)?;
         match outcome {
             ChildOutcome::Exited { status, pgid } => {
                 debug_assert_eq!(pgid, gated.pgid);
@@ -4847,10 +5090,17 @@ impl ValidateLock {
             attested_by: attestation.map(|value| value.attester.clone()),
             attestation_evidence: attestation.map(|value| value.evidence.clone()),
         };
-        let temporary = suffix(&self.paths.released, ".tmp");
-        write_truncated(&temporary, record.render().as_bytes())?;
-        fs::rename(&temporary, &self.paths.released)
-            .map_err(|source| io_error("replace release record", &self.paths.released, source))?;
+        self.with_global_queue_guard(|| {
+            let temporary = suffix(
+                &self.paths.released,
+                &format!(".tmp-{}-{released_at}", std::process::id()),
+            );
+            write_truncated(&temporary, record.render().as_bytes())?;
+            fs::rename(&temporary, &self.paths.released).map_err(|source| {
+                io_error("replace release record", &self.paths.released, source)
+            })?;
+            Ok(())
+        })?;
         Ok(record)
     }
 
@@ -7951,7 +8201,7 @@ exit 0
         let _ = fs::remove_dir_all(paths.lock.parent().unwrap());
     }
 
-    // 5. --max != 1 is rejected before acquiring; the box stays FREE.
+    // 5. --max outside the fixed one/two policies is rejected before acquiring.
     #[test]
     fn max_greater_than_one_rejected() {
         let paths = temp_paths("bad-max");
@@ -7969,7 +8219,7 @@ exit 0
                     wait: 0,
                     hold: 30,
                     child_deadline: 30,
-                    max: 2,
+                    max: 3,
                     skip_base_check: false,
                     child: vec![OsString::from("/bin/true")],
                 },
@@ -7981,7 +8231,7 @@ exit 0
         // The Display carries the exact unproven-cap rationale.
         assert!(error
             .to_string()
-            .contains("box-exclusive cap >1 is unproven"));
+            .contains("unsupported --max"));
         let _ = fs::remove_dir_all(paths.lock.parent().unwrap());
     }
 
@@ -8495,7 +8745,7 @@ exit 0
                 .try_global_turn(&high, &owner, "fixture=high", true)
                 .unwrap()
             {
-                GlobalTurn::Acquired(anchor) => break anchor,
+                GlobalTurn::Acquired { anchors, .. } => break anchors,
                 GlobalTurn::Held(_) if Instant::now() < deadline => {
                     thread::sleep(Duration::from_millis(10));
                 }
@@ -8533,7 +8783,7 @@ exit 0
             .try_global_turn(&routine, &owner, "fixture=routine", false)
             .unwrap()
         {
-            GlobalTurn::Acquired(anchor) => anchor,
+            GlobalTurn::Acquired { anchors, .. } => anchors,
             _ => panic!("routine waiter did not acquire the free boundary"),
         };
         assert!(lock
@@ -8556,7 +8806,7 @@ exit 0
             .try_global_turn(&watch, &owner, "fixture=watch", true)
             .unwrap()
         {
-            GlobalTurn::Acquired(anchor) => anchor,
+            GlobalTurn::Acquired { anchors, .. } => anchors,
             _ => panic!("owner watch did not jump the retained waiter"),
         };
         assert!(lock
@@ -8570,7 +8820,7 @@ exit 0
             .try_global_turn(&routine, &owner, "fixture=routine", true)
             .unwrap()
         {
-            GlobalTurn::Acquired(anchor) => anchor,
+            GlobalTurn::Acquired { anchors, .. } => anchors,
             _ => panic!("retained waiter did not resume after owner watch release"),
         };
         assert!(lock.read_global_queue().unwrap().is_empty());

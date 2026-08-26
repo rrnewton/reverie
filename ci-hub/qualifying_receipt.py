@@ -1038,6 +1038,7 @@ def admission_verdict(row: dict[str, Any], pred: dict[str, Any]) -> AdmissionVer
         return AdmissionVerdict.ADMISSION_NONCANONICAL
 
     required_concurrent = clause.get("required_concurrent_validates")
+    maximum_concurrent = clause.get("maximum_concurrent_validates")
     concurrent = row.get("concurrent_validates")
     if concurrent is None:
         return AdmissionVerdict.CONCURRENCY_MISSING
@@ -1047,11 +1048,18 @@ def admission_verdict(row: dict[str, Any], pred: dict[str, Any]) -> AdmissionVer
         or required_concurrent < 0
     ):
         return AdmissionVerdict.POLICY_UNAVAILABLE
-    if (
-        not isinstance(concurrent, int)
-        or isinstance(concurrent, bool)
-        or concurrent != required_concurrent
+    if not isinstance(concurrent, int) or isinstance(concurrent, bool):
+        return AdmissionVerdict.CONCURRENCY_INVALID
+    if maximum_concurrent is None:
+        if concurrent != required_concurrent:
+            return AdmissionVerdict.CONCURRENCY_INVALID
+    elif (
+        not isinstance(maximum_concurrent, int)
+        or isinstance(maximum_concurrent, bool)
+        or maximum_concurrent < required_concurrent
     ):
+        return AdmissionVerdict.POLICY_UNAVAILABLE
+    elif not required_concurrent <= concurrent <= maximum_concurrent:
         return AdmissionVerdict.CONCURRENCY_INVALID
 
     required_proof = clause.get("required_concurrency_proof")
@@ -1060,7 +1068,16 @@ def admission_verdict(row: dict[str, Any], pred: dict[str, Any]) -> AdmissionVer
         return AdmissionVerdict.OWNER_ANCESTRY_MISSING
     if not isinstance(required_proof, str) or not required_proof:
         return AdmissionVerdict.POLICY_UNAVAILABLE
-    if proof != required_proof:
+    accepted_proofs = clause.get("accepted_concurrency_proofs")
+    if accepted_proofs is None:
+        accepted_proofs = [required_proof]
+    if (
+        not isinstance(accepted_proofs, list)
+        or not accepted_proofs
+        or any(not isinstance(value, str) or not value for value in accepted_proofs)
+    ):
+        return AdmissionVerdict.POLICY_UNAVAILABLE
+    if proof not in accepted_proofs:
         return AdmissionVerdict.OWNER_ANCESTRY_UNPROVEN
     return AdmissionVerdict.SATISFIED
 

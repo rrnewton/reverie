@@ -103,6 +103,10 @@ pub struct AdmissionClause {
     pub required_admission: String,
     pub required_concurrent_validates: u64,
     pub required_concurrency_proof: String,
+    #[serde(default)]
+    pub maximum_concurrent_validates: Option<u64>,
+    #[serde(default)]
+    pub accepted_concurrency_proofs: Vec<String>,
     pub require_registered_producer: bool,
 }
 
@@ -673,6 +677,8 @@ fn shared_evidence_outcome(row: &HistoryRow, pred: &QualifyingPredicate) -> Boun
             "required_admission": pred.admission.required_admission,
             "required_concurrent_validates": pred.admission.required_concurrent_validates,
             "required_concurrency_proof": pred.admission.required_concurrency_proof,
+            "maximum_concurrent_validates": pred.admission.maximum_concurrent_validates,
+            "accepted_concurrency_proofs": pred.admission.accepted_concurrency_proofs,
             "require_registered_producer": pred.admission.require_registered_producer,
         },
         "base": {

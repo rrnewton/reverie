@@ -4,14 +4,17 @@
 from __future__ import annotations
 
 import argparse
+import fcntl
 import json
 import os
 import re
+import secrets
 import shlex
 import subprocess
 import tempfile
 import sys
 import time
+from contextlib import contextmanager
 from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime, timezone
 from pathlib import Path
@@ -166,16 +169,16 @@ def parse_utc_timestamp(value: object, *, role: str) -> datetime:
 
 
 def row_is_selected_qualifying_receipt(
-    row: Mapping[str, Any], newest_qualifying: object
+    row: Mapping[str, Any], qualifying_receipts: object
 ) -> bool:
-    """Bind a canonical VALIDATED verdict to the exact qualifying row."""
-    if not isinstance(newest_qualifying, dict):
-        return False
-    identity = newest_qualifying.get("receipt_identity")
-    if not isinstance(identity, dict):
-        return False
-    selected = identity.get("tuple")
-    if not isinstance(selected, dict):
+    """Bind a canonical VALIDATED verdict to this exact qualifying row.
+
+    `validate-status` deliberately reports the complete qualifying set.  A
+    same-SHA validate may finish after this run and become the newest receipt
+    before this wrapper reads the ledger; requiring only that newest identity
+    makes two successful concurrent runs race each other at publication.
+    """
+    if not isinstance(qualifying_receipts, list):
         return False
     fields = {
         "sha": "commit",
@@ -185,10 +188,21 @@ def row_is_selected_qualifying_receipt(
         "slot": "slot",
         "log_file": "log_file",
     }
-    return all(
-        selected_key in selected and selected[selected_key] == row.get(row_key)
-        for selected_key, row_key in fields.items()
-    )
+    for receipt in qualifying_receipts:
+        if not isinstance(receipt, dict):
+            continue
+        identity = receipt.get("receipt_identity")
+        if not isinstance(identity, dict):
+            continue
+        selected = identity.get("tuple")
+        if not isinstance(selected, dict):
+            continue
+        if all(
+            selected_key in selected and selected[selected_key] == row.get(row_key)
+            for selected_key, row_key in fields.items()
+        ):
+            return True
+    return False
 
 
 def require_guest_visible_root(path: Path, *, role: str) -> Path:
@@ -288,12 +302,60 @@ def default_unit(agent: str, target: str) -> str:
     safe_agent = re.sub(r"[^A-Za-z0-9_.@:-]+", "-", agent).strip("-.")
     if not safe_agent:
         raise ValueError("--agent must contain at least one unit-safe character")
-    return sanitize_unit(f"validate-{safe_agent}-{target[:12]}-{int(time.time())}")
+    return sanitize_unit(
+        f"validate-{safe_agent}-{target[:12]}-{time.time_ns()}-"
+        f"{os.getpid()}-{secrets.token_hex(4)}"
+    )
 
 
 def _validate_output_paths(root: Path, unit: str) -> tuple[Path, Path]:
     base = root / "ignored/validate/artifacts" / unit
     return base / "e2e", base / "safe-ci-dag-runner"
+
+
+def prepare_runtime_root(parent: Path, unit: str) -> Path:
+    """Create the host-side temporary/cache tree owned by one validate run."""
+    runtime = parent / "validate-runtime" / unit
+    runtime.mkdir(parents=True, mode=0o700, exist_ok=False)
+    for name in ("tmp", "cache", "python-cache", "hermit-data"):
+        (runtime / name).mkdir(mode=0o700)
+    return runtime
+
+
+def remove_runtime_root(runtime: Path | None, *, run: Runner) -> None:
+    if runtime is not None:
+        run(["rm", "-rf", str(runtime)], check=False)
+
+
+def git_common_dir(source: Path, *, run: Runner) -> Path:
+    return Path(
+        checked_output(
+            [
+                "git",
+                "-C",
+                str(source),
+                "rev-parse",
+                "--path-format=absolute",
+                "--git-common-dir",
+            ],
+            run=run,
+            purpose="cannot resolve shared Git directory",
+        )
+    )
+
+
+@contextmanager
+def git_mutation_lock(source: Path, *, run: Runner):
+    """Serialize worktree/fetch metadata mutation in the shared Git directory."""
+    common = git_common_dir(source, run=run)
+    common.mkdir(parents=True, exist_ok=True)
+    path = common / "ci-hub-validate.lock"
+    with path.open("a+") as lock:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
 
 
 # The row lookup below goes through the canonical union command. This module
@@ -341,21 +403,22 @@ def prepare_fresh_checkout(
     # A worktree, not a clone: it shares the source object store, so this costs
     # no object copy. It does register in the source repo, which is why the
     # caller removes it explicitly rather than just unlinking the directory.
-    run(
-        ["git", "-C", str(source), "worktree", "add", "--detach", str(fresh), target],
-        check=True,
-    )
-    head = checked_output(
-        ["git", "-C", str(fresh), "rev-parse", "HEAD^{commit}"],
-        run=run,
-        purpose="cannot resolve fresh checkout HEAD",
-    )
-    if head != target:
-        raise RuntimeError(f"fresh checkout resolved to {head}, not requested target {target}")
-    run(
-        ["git", "-C", str(fresh), "submodule", "update", "--init", "--recursive"],
-        check=False,
-    )
+    with git_mutation_lock(source, run=run):
+        run(
+            ["git", "-C", str(source), "worktree", "add", "--detach", str(fresh), target],
+            check=True,
+        )
+        head = checked_output(
+            ["git", "-C", str(fresh), "rev-parse", "HEAD^{commit}"],
+            run=run,
+            purpose="cannot resolve fresh checkout HEAD",
+        )
+        if head != target:
+            raise RuntimeError(f"fresh checkout resolved to {head}, not requested target {target}")
+        run(
+            ["git", "-C", str(fresh), "submodule", "update", "--init", "--recursive"],
+            check=False,
+        )
     # PROVE usable, do not assume. Each of these is a thing whose absence has
     # produced a misleading fast exit rather than an honest failure.
     #
@@ -409,8 +472,12 @@ def prepare_fresh_checkout(
 
 def remove_fresh_checkout(source: Path, fresh: Path, *, run: Runner) -> None:
     """Remove the temp worktree AND deregister it. Best-effort, never fatal."""
-    run(["git", "-C", str(source), "worktree", "remove", "--force", str(fresh)], check=False)
-    run(["git", "-C", str(source), "worktree", "prune"], check=False)
+    try:
+        with git_mutation_lock(source, run=run):
+            run(["git", "-C", str(source), "worktree", "remove", "--force", str(fresh)], check=False)
+            run(["git", "-C", str(source), "worktree", "prune"], check=False)
+    except RuntimeError as error:
+        print(f"validate-run: could not lock shared Git metadata for cleanup: {error}", file=sys.stderr)
 
 
 # Seeded from the shared cache rather than started empty, and seeded with these
@@ -422,7 +489,7 @@ CARGO_SEED_SUBTREES: tuple[tuple[str, str], ...] = (
 )
 
 
-def prepare_private_cargo_home(parent: Path, *, run: Runner, shared: Path) -> Path | None:
+def prepare_private_cargo_home(parent: Path, *, run: Runner, shared: Path) -> Path:
     """Give this validate its own CARGO_HOME, seeded by reflink from the shared one.
 
     WHY. Cargo serialises every cache mutation on one lock file,
@@ -450,55 +517,54 @@ def prepare_private_cargo_home(parent: Path, *, run: Runner, shared: Path) -> Pa
     is 10.4s and reproduces the warm behaviour: the reflink is copy-on-write on
     btrfs, so it also costs no real space.
 
-    Returns the new CARGO_HOME, or None if it could not be built -- in which
-    case the caller MUST fall back to the shared cache loudly. Degrading in
-    silence would reintroduce the contention while looking fixed.
+    The private home is mandatory.  Missing shared seed data produces an empty
+    private home; an allocation or copy error refuses the run instead of
+    silently falling back to the shared package-cache lock.
     """
+    private = Path(
+        checked_output(
+            ["mktemp", "-d", str(parent / "validate-cargo-XXXXXXXX")],
+            run=run,
+            purpose="cannot create private cargo home",
+        )
+    )
     if not shared.is_dir():
-        print(
-            f"validate-run: no shared cargo home at {shared}; leaving CARGO_HOME unset "
-            "(this run stays exposed to package-cache lock contention)",
-            file=sys.stderr,
-        )
-        return None
+        return private
+
+    package_lock = shared / ".package-cache"
     try:
-        private = Path(
-            checked_output(
-                ["mktemp", "-d", str(parent / "validate-cargo-XXXXXXXX")],
-                run=run,
-                purpose="cannot create private cargo home",
-            )
-        )
-    except (RuntimeError, ValueError) as error:
-        print(f"validate-run: private CARGO_HOME unavailable ({error}); using shared cache", file=sys.stderr)
-        return None
+        with package_lock.open("a+") as lock:
+            # Cargo mutates registry and git/db while holding this lock.  A
+            # shared lock lets two snapshot readers coexist while excluding a
+            # concurrent Cargo writer, so the reflink is one coherent seed.
+            fcntl.flock(lock.fileno(), fcntl.LOCK_SH)
+            for relative, destination in CARGO_SEED_SUBTREES:
+                source = shared / relative
+                if not source.is_dir():
+                    continue
+                target = private / destination
+                target.parent.mkdir(parents=True, exist_ok=True)
+                result = run(
+                    ["cp", "-a", "--reflink=auto", str(source), str(target)],
+                    check=False,
+                )
+                if getattr(result, "returncode", 1) != 0:
+                    raise RuntimeError(f"cannot seed {relative} into {private}")
 
-    for relative, destination in CARGO_SEED_SUBTREES:
-        source = shared / relative
-        if not source.is_dir():
-            continue
-        target = private / destination
-        target.parent.mkdir(parents=True, exist_ok=True)
-        # --reflink=auto, not =always: a non-CoW filesystem must still work,
-        # just slower. Failing here would trade a flake for an outage.
-        result = run(
-            ["cp", "-a", "--reflink=auto", str(source), str(target)],
-            check=False,
-        )
-        if getattr(result, "returncode", 1) != 0:
-            print(
-                f"validate-run: could not seed {relative} into {private}; using shared cache",
-                file=sys.stderr,
-            )
-            remove_private_cargo_home(private, run=run)
-            return None
-
-    # Registry sources and credentials live in config; without it a private home
-    # can resolve a different registry than the shared one did.
-    for name in ("config.toml", "config"):
-        candidate = shared / name
-        if candidate.is_file():
-            run(["cp", "-a", str(candidate), str(private / name)], check=False)
+            # Registry sources and credentials live in config; without it a
+            # private home can resolve a different registry than the seed did.
+            for name in ("config.toml", "config"):
+                candidate = shared / name
+                if candidate.is_file():
+                    result = run(
+                        ["cp", "-a", str(candidate), str(private / name)],
+                        check=False,
+                    )
+                    if getattr(result, "returncode", 1) != 0:
+                        raise RuntimeError(f"cannot seed {name} into {private}")
+    except Exception:
+        remove_private_cargo_home(private, run=run)
+        raise
     return private
 
 
@@ -558,7 +624,7 @@ def assert_row_readable_from_canonical_ledger(
         verdict = str(report["verdict"])
         reported_sha = str(report["sha"])
         reported_exit = int(report["exit_code"])
-        newest_qualifying = report.get("newest_qualifying")
+        qualifying_receipts = report.get("qualifying_receipts")
         receipt_count = int(report["qualifying_count"]) + int(
             report["disqualified_count"]
         )
@@ -626,11 +692,11 @@ def assert_row_readable_from_canonical_ledger(
         selected = [
             candidate
             for candidate in matched
-            if row_is_selected_qualifying_receipt(candidate[1], newest_qualifying)
+            if row_is_selected_qualifying_receipt(candidate[1], qualifying_receipts)
         ]
         if not selected:
             raise RuntimeError(
-                "canonical VALIDATED verdict selects no qualifying receipt belonging "
+                "canonical VALIDATED verdict contains no qualifying receipt belonging "
                 "to this run; refusing to inherit another run's green"
             )
         matched = selected
@@ -824,6 +890,7 @@ def build_systemd_command(
     make_validate: bool = False,
     allow_owner_validate_symlink: bool = False,
     cargo_home: Path | None = None,
+    runtime_root: Path | None = None,
     ci_dag_jobs: int | None = None,
     repo: str = "rrnewton/hermit",
 ) -> list[str]:
@@ -849,6 +916,19 @@ def build_systemd_command(
     # point is that this run does not share a package-cache lock with the box.
     if cargo_home is not None:
         build_budget_env.extend(["--setenv", f"CARGO_HOME={cargo_home}"])
+    if runtime_root is not None:
+        build_budget_env.extend(
+            [
+                "--setenv",
+                f"TMPDIR={runtime_root / 'tmp'}",
+                "--setenv",
+                f"XDG_CACHE_HOME={runtime_root / 'cache'}",
+                "--setenv",
+                f"PYTHONPYCACHEPREFIX={runtime_root / 'python-cache'}",
+                "--setenv",
+                f"HERMIT_DATA_DIR={runtime_root / 'hermit-data'}",
+            ]
+        )
     if repo == "rrnewton/reverie":
         # This is part of the Reverie producer contract, not ambient caller
         # state.  Without it KVM tests silently skip on a host where /dev/kvm
@@ -860,6 +940,8 @@ def build_systemd_command(
             [
                 "--setenv",
                 f"E2E_RESULT_ROOT={e2e_result_root}",
+                "--setenv",
+                f"E2E_RUN_ID={unit}",
                 # BOTH spellings, deliberately. agent-utils renamed the runner's
                 # log-dir variable SAFE_CI_DAG_RUNNER_LOG_DIR -> DAGRUN_LOG_DIR,
                 # and this parent drives hermit checkouts on BOTH sides of that
@@ -1518,6 +1600,7 @@ def main(
     fresh_checkout: Path | None = None
     source_checkout: Path | None = None
     private_cargo_home: Path | None = None
+    runtime_root: Path | None = None
     try:
         source_checkout = validate_checkout(
             args.checkout,
@@ -1539,12 +1622,13 @@ def main(
             )
             checkout = fresh_checkout
         preflight(root, checkout, args.target, repo=repo, run=run)
+        unit = sanitize_unit(args.unit) if args.unit else default_unit(args.agent, args.target)
+        runtime_root = prepare_runtime_root((root / "ignored").resolve(), unit)
         private_cargo_home = prepare_private_cargo_home(
             (root / "ignored").resolve(),
             run=run,
             shared=Path((environment or os.environ).get("HOME", "")) / ".cargo",
         )
-        unit = sanitize_unit(args.unit) if args.unit else default_unit(args.agent, args.target)
         log = (args.log or root / "ignored/validate" / f"{unit}.log").resolve()
         record_path = run_registry.record_path(root.resolve(), unit)
         e2e_result_root, runner_log_dir = _validate_output_paths(root.resolve(), unit)
@@ -1574,6 +1658,7 @@ def main(
             make_validate=args.make_validate,
             allow_owner_validate_symlink=args.allow_owner_validate_symlink,
             cargo_home=private_cargo_home,
+            runtime_root=runtime_root,
             ci_dag_jobs=args.ci_dag_jobs,
             repo=repo,
         )
@@ -1581,7 +1666,7 @@ def main(
             pane = None
         else:
             log.parent.mkdir(parents=True, exist_ok=True)
-            run_registry.write_record(
+            run_registry.create_record(
                 record_path,
                 {
                     "schema_version": 1,
@@ -1641,6 +1726,7 @@ def main(
                 pane_id=pane.pane_id if pane else None,
                 pane_title=pane.title if pane else None,
             )
+            run_registry.reserve_log(log)
             result = run(command, cwd=root, check=False)
             if result.returncode != 0:
                 detail = result.stderr.strip() or result.stdout.strip() or f"exit {result.returncode}"
@@ -1659,6 +1745,7 @@ def main(
         if fresh_checkout is not None and source_checkout is not None:
             remove_fresh_checkout(source_checkout, fresh_checkout, run=run)
         remove_private_cargo_home(private_cargo_home, run=run)
+        remove_runtime_root(runtime_root, run=run)
         return refuse(
             str(error),
             "the unit did not start; check `ci-hub validate-lock status` for a held box "
@@ -1695,6 +1782,7 @@ def main(
         if fresh_checkout is not None and source_checkout is not None:
             remove_fresh_checkout(source_checkout, fresh_checkout, run=run)
         remove_private_cargo_home(private_cargo_home, run=run)
+        remove_runtime_root(runtime_root, run=run)
         return 0
 
     try:
@@ -1760,6 +1848,7 @@ def main(
             if fresh_checkout is not None and source_checkout is not None:
                 remove_fresh_checkout(source_checkout, fresh_checkout, run=run)
             remove_private_cargo_home(private_cargo_home, run=run)
+            remove_runtime_root(runtime_root, run=run)
             return inner_exit
         print(f"validate-run: CANONICAL-VERDICT-UNAVAILABLE: {error}", file=sys.stderr)
         if fresh_checkout is not None and source_checkout is not None:
@@ -1790,6 +1879,7 @@ def main(
             )
             remove_fresh_checkout(source_checkout, fresh_checkout, run=run)
         remove_private_cargo_home(private_cargo_home, run=run)
+        remove_runtime_root(runtime_root, run=run)
         # ⚠️ NOT "failed". No receipt means no verdict was ever recorded, so there
         # is nothing to investigate as a product failure -- the previous wording
         # said "the run failed" and the previous code said REFUSED, and neither
@@ -1815,6 +1905,7 @@ def main(
     # The normal completion path, and the one that matters most: without this the
     # per-run cargo home leaks on EVERY successful validate.
     remove_private_cargo_home(private_cargo_home, run=run)
+    remove_runtime_root(runtime_root, run=run)
     emit_report(
         {**updated, "event": "finished", "unit": f"{unit}.service"},
         json_output=args.json,

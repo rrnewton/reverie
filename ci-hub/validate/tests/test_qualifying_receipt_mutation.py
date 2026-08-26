@@ -663,7 +663,7 @@ class QualifyingReceiptMutationTest(unittest.TestCase):
         mutations = {
             "registered-producer": ("producer", "unregistered-forged-writer"),
             "canonical-admission": ("admission", "none"),
-            "zero-concurrency": ("concurrent_validates", 1),
+            "bounded-concurrency": ("concurrent_validates", 2),
             "owner-ancestry": ("concurrency_proof", "self-declared"),
             "recorded-base": ("base_sha", None),
             "recorded-base-tree": ("base_tree", None),
@@ -686,6 +686,22 @@ class QualifyingReceiptMutationTest(unittest.TestCase):
                     len(panel),
                     f"{condition} must be load-bearing in every leg: {panel}",
                 )
+
+    def test_one_concurrent_validate_is_accepted_with_measured_proof(self) -> None:
+        row = _green_row(SHA)
+        row["concurrent_validates"] = 1
+        row["concurrency_proof"] = (
+            "validate_lock_owner_ancestry+live_flock_registry_cpu_delta"
+        )
+        # The removed exact-zero rule rejects this row, proving that the test
+        # reaches the policy collision rather than merely observing two runs
+        # that happened not to overlap.
+        self.assertNotEqual(
+            row["concurrent_validates"],
+            qualifying_receipt.active()["admission"]["required_concurrent_validates"],
+        )
+        panel = self._panel(row, predicate=None)
+        self.assertTrue(all(panel.values()), f"one admitted peer must qualify: {panel}")
 
     def test_schema4_remains_grandfathered_without_consumer_regression(self) -> None:
         """Admission tightening must not revoke counted schema-4 authority.

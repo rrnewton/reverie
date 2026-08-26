@@ -2606,6 +2606,21 @@ fn parse_claim_cleanup(body: &str) -> Option<PathBuf> {
 /// itself, it only makes a decision already recorded elsewhere visible here.
 /// Claims whose record has been cleared are pruned as they are read.
 pub(crate) fn foreign_box_claim(anchor: &Path, own_cleanup: &Path) -> Option<String> {
+    foreign_box_claim_with_active(anchor, own_cleanup, false)
+}
+
+/// Validation may deliberately coexist with one other live validation.  A
+/// published payload owned by a live supervisor is therefore not a quarantine;
+/// every other cleanup state remains a box-wide refusal.
+pub(crate) fn foreign_box_quarantine(anchor: &Path, own_cleanup: &Path) -> Option<String> {
+    foreign_box_claim_with_active(anchor, own_cleanup, true)
+}
+
+fn foreign_box_claim_with_active(
+    anchor: &Path,
+    own_cleanup: &Path,
+    allow_published: bool,
+) -> Option<String> {
     let entries = fs::read_dir(box_claim_dir(anchor)).ok()?;
     for entry in entries.flatten() {
         let claim_path = entry.path();
@@ -2628,6 +2643,12 @@ pub(crate) fn foreign_box_claim(anchor: &Path, own_cleanup: &Path) -> Option<Str
             CleanupVerification::None => {
                 // The owning repository discharged its record. Prune and move on.
                 let _ = fs::remove_file(&claim_path);
+            }
+            CleanupVerification::Active { record, .. }
+                if allow_published
+                    && matches!(record.phase, CleanupPhase::Published { .. }) =>
+            {
+                continue;
             }
             other => {
                 let detail = match &other {
