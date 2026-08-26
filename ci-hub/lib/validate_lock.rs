@@ -10,6 +10,7 @@
 //! child-deadline heartbeat) mirrors `landing_lock.rs` exactly on its own files;
 //! pure, stateless helpers are reused from that module rather than re-derived.
 
+use crate::bounded_output::BoundedOutput;
 use crate::lease::{
     self, DomainState as LeaseDomainState, HandoffState, LeaseDecision, LeaseRecord, LeaseState,
     OwnerLiveness as LeaseOwnerLiveness,
@@ -1869,7 +1870,7 @@ fn base_admission_check(
     argv.push(OsString::from(target));
 
     let (program, rest) = argv.split_first().expect("argv is never empty");
-    let output = match Command::new(program).args(rest).output() {
+    let output = match Command::new(program).args(rest).bounded_output() {
         Ok(o) => o,
         Err(err) => {
             return Err(ValidateLockError::StaleBase(format!(
@@ -1988,7 +1989,7 @@ fn current_main_freshness_check(
         .arg("-C")
         .arg(&repository)
         .args(["fetch", "--quiet", "--no-tags", "origin", refspec])
-        .output()
+        .bounded_output()
         .map_err(|error| {
             ValidateLockError::StaleBase(format!(
                 "validate-lock: current origin/main fetch could not run in {} ({error}); freshness for {target} is UNRESOLVED.",
@@ -2013,7 +2014,7 @@ fn current_main_freshness_check(
             "refs/remotes/origin/main",
             target,
         ])
-        .output()
+        .bounded_output()
         .map_err(|error| {
             ValidateLockError::StaleBase(format!(
                 "validate-lock: current-main ancestry check could not run in {} ({error}); freshness for {target} is UNRESOLVED.",
@@ -3394,7 +3395,7 @@ impl ValidateLock {
             .arg(state_dir)
             .arg("--admission-status-since")
             .arg(released_at.to_string())
-            .output()
+            .bounded_output()
             .map_err(|error| {
                 format!(
                     "cannot execute owner-watch admission verifier {}: {error}",

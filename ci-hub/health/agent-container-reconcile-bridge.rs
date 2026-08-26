@@ -30,6 +30,13 @@
     unused_variables,
     unused_must_use
 )]
+// The ONE capture wrapper, shared by path rather than copied so this script
+// cannot drift away from the fix. Only one of its two entry points is used here.
+#[allow(dead_code)]
+#[path = "../lib/bounded_output.rs"]
+mod bounded_output;
+use bounded_output::BoundedOutput;
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::env;
@@ -225,7 +232,7 @@ fn fetch_state(url: &str) -> Result<OrcState, String> {
             "15",
             url,
         ])
-        .output()
+        .bounded_output()
         .map_err(|error| format!("start curl for ORC state: {error}"))?;
     if !output.status.success() {
         return Err(format!(

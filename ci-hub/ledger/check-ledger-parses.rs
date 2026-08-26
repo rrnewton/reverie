@@ -61,6 +61,13 @@
 #[allow(dead_code)]
 #[path = "../lib/records.rs"]
 mod records;
+// Same reasoning as `records` above: the ONE capture wrapper is shared by path
+// rather than copied, so this script cannot drift away from the fix. Only one of
+// its two entry points is used here, hence the allow.
+#[allow(dead_code)]
+#[path = "../lib/bounded_output.rs"]
+mod bounded_output;
+use bounded_output::BoundedOutput;
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -84,7 +91,7 @@ fn main() {
     let output = Command::new("python3")
         .arg(root.join("ci-hub/ledger/validate_rows.py"))
         .arg("rows")
-        .output()
+        .bounded_output()
         .expect("run the canonical validate-ledger union");
     if !output.status.success() {
         eprintln!(

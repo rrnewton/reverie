@@ -45,12 +45,12 @@
 //! never silently falls through to the embed — silent fallback would mask the
 //! very drift this module exists to prevent.
 
+use crate::bounded_output::BoundedOutput;
 use crate::records::{CoverageRow, HistoryRow};
 use serde::Deserialize;
 use std::collections::BTreeSet;
-use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Command;
 use std::sync::OnceLock;
 
 /// Repo-relative path of the canonical predicate. The literal lives ONLY here.
@@ -561,7 +561,12 @@ pub fn shared_base_boundary_outcome(
     let verifier = resolve_root().join("ci-hub/qualifying_receipt.py");
     // Every arm below that cannot reach a verdict is INDETERMINATE, not refused.
     // None of these says anything about the row; each says the reader failed.
-    let mut child = match Command::new("python3")
+    let Ok(request) = serde_json::to_vec(row) else {
+        return BoundaryOutcome::Indeterminate(
+            "cannot send the row to the merge-boundary authority",
+        );
+    };
+    let Ok(output) = Command::new("python3")
         .arg(verifier)
         .arg("--merge-boundary")
         .arg("--current-base")
@@ -572,28 +577,8 @@ pub fn shared_base_boundary_outcome(
         .arg(repo_checkout)
         .arg("--reverie-checkout")
         .arg(reverie_checkout)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-    {
-        Ok(child) => child,
-        Err(_) => {
-            return BoundaryOutcome::Indeterminate(
-                "cannot spawn python3 for the merge-boundary authority",
-            );
-        }
-    };
-    let Some(mut stdin) = child.stdin.take() else {
-        return BoundaryOutcome::Indeterminate("merge-boundary authority stdin unavailable");
-    };
-    if serde_json::to_writer(&mut stdin, row).is_err() || stdin.flush().is_err() {
-        return BoundaryOutcome::Indeterminate(
-            "cannot send the row to the merge-boundary authority",
-        );
-    }
-    drop(stdin);
-    let Ok(output) = child.wait_with_output() else {
+        .bounded_output_with_input(&request)
+    else {
         return BoundaryOutcome::Indeterminate("merge-boundary authority did not complete");
     };
     // rc 3 is the authority SAYING it could not judge (an undereferenceable
@@ -707,25 +692,14 @@ fn shared_evidence_outcome(row: &HistoryRow, pred: &QualifyingPredicate) -> Boun
             "known": pred.producer.known,
         },
     });
-    let mut child = match Command::new("python3")
+    let Ok(request_bytes) = serde_json::to_vec(&request) else {
+        return BoundaryOutcome::Indeterminate("verifier-request-undelivered");
+    };
+    let Ok(output) = Command::new("python3")
         .arg(verifier)
         .arg("--evidence-only")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-    {
-        Ok(child) => child,
-        Err(_) => return BoundaryOutcome::Indeterminate("verifier-unlaunchable"),
-    };
-    let Some(mut stdin) = child.stdin.take() else {
-        return BoundaryOutcome::Indeterminate("verifier-stdin-unavailable");
-    };
-    if serde_json::to_writer(&mut stdin, &request).is_err() || stdin.flush().is_err() {
-        return BoundaryOutcome::Indeterminate("verifier-request-undelivered");
-    }
-    drop(stdin);
-    let Ok(output) = child.wait_with_output() else {
+        .bounded_output_with_input(&request_bytes)
+    else {
         return BoundaryOutcome::Indeterminate("verifier-not-reaped");
     };
     let Ok(report) = serde_json::from_slice::<AdmissionReport>(&output.stdout) else {
@@ -1046,7 +1020,7 @@ fn resolve_root() -> PathBuf {
         .arg("-C")
         .arg(&start)
         .args(["rev-parse", "--show-toplevel"])
-        .output();
+        .bounded_output();
     match output {
         Ok(out) if out.status.success() => {
             PathBuf::from(String::from_utf8_lossy(&out.stdout).trim())

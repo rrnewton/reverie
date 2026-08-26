@@ -47,6 +47,8 @@
 )]
 #![recursion_limit = "256"]
 
+#[path = "lib/bounded_output.rs"]
+mod bounded_output;
 #[path = "lib/failure_obligations.rs"]
 mod failure_obligations;
 #[path = "lib/history_queries.rs"]
@@ -69,6 +71,7 @@ mod validate_lock;
 #[path = "lib/validate_status.rs"]
 mod validate_status;
 
+use crate::bounded_output::BoundedOutput;
 use clap::error::ErrorKind;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use fs2::FileExt;
@@ -1532,7 +1535,7 @@ fn warn_if_main_is_soft_green(root: &Path) {
         .arg(root.join("ci-hub/landing/main_soft_green.py"))
         .arg("status")
         .current_dir(root)
-        .output();
+        .bounded_output();
     match output {
         Ok(output) if output.status.success() => {
             let _ = io::stderr().write_all(&output.stderr);
@@ -1560,7 +1563,7 @@ fn workspace_root() -> Result<PathBuf, CiHubError> {
         .arg("-C")
         .arg(start)
         .args(["rev-parse", "--show-toplevel"])
-        .output()
+        .bounded_output()
         .map_err(|source_error| CiHubError::Launch {
             tool: "git rev-parse".into(),
             source: source_error,
@@ -2049,7 +2052,7 @@ fn ci_mode_actor() -> String {
         .or_else(|| {
             Command::new("hostname")
                 .arg("-s")
-                .output()
+                .bounded_output()
                 .ok()
                 .filter(|out| out.status.success())
                 .map(|out| String::from_utf8_lossy(&out.stdout).trim().to_string())
@@ -2107,7 +2110,7 @@ fn read_ci_mode_variable(root: &Path, repo: &str) -> Result<Option<String>, Stri
         root,
         &["variable", "list", "--repo", repo, "--json", "name,value"],
     )
-    .output()
+    .bounded_output()
     .map_err(|source| format!("launch gh: {source}"))?;
     if !output.status.success() {
         return Err(format!(
@@ -2137,7 +2140,7 @@ fn set_ci_mode_variable(root: &Path, repo: &str, value: &str) -> Result<(), Stri
             value,
         ],
     )
-    .output()
+    .bounded_output()
     .map_err(|source| format!("launch gh: {source}"))?;
     if output.status.success() {
         Ok(())
@@ -2355,7 +2358,7 @@ fn commit_ci_mode_state(root: &Path, value: &str) -> Result<bool, String> {
         .arg("-C")
         .arg(root)
         .args(["status", "--porcelain", "--", CI_MODE_STATE_PATH])
-        .output()
+        .bounded_output()
         .map_err(|source| format!("launch git status: {source}"))?;
     if !dirty.status.success() {
         return Err(format!(
@@ -2371,7 +2374,7 @@ fn commit_ci_mode_state(root: &Path, value: &str) -> Result<bool, String> {
     let output = Command::new(root.join("scripts/parent-main-write"))
         .current_dir(root)
         .args(["commit", "-m", &message, "--", CI_MODE_STATE_PATH])
-        .output()
+        .bounded_output()
         .map_err(|source| format!("launch serialized parent-main writer: {source}"))?;
     if output.status.success() {
         Ok(true)
@@ -2401,7 +2404,7 @@ fn ci_mode_fire(root: &Path, args: CiModeFireArgs) -> Result<i32, CiHubError> {
             ".headRefName",
         ],
     )
-    .output()
+    .bounded_output()
     .map_err(|source| CiHubError::Launch {
         tool: "gh pr view".into(),
         source,
@@ -2505,7 +2508,7 @@ fn ensure_batch_label(root: &Path, repo: &str) -> Result<(), String> {
             "Current GH Actions batch: exempt from constrained-mode gate; gets GH Actions now.",
         ],
     )
-    .output()
+    .bounded_output()
     .map_err(|source| format!("launch gh label create: {source}"))?;
     if output.status.success() {
         return Ok(());
@@ -2537,7 +2540,7 @@ fn edit_batch_label(root: &Path, pr: &BatchPr, add: bool) -> Result<(), String> 
             CI_BATCH_LABEL,
         ],
     )
-    .output()
+    .bounded_output()
     .map_err(|source| format!("launch gh pr edit: {source}"))?;
     if output.status.success() {
         Ok(())
@@ -2558,7 +2561,7 @@ fn commit_batch_state(root: &Path, name: &str) -> Result<bool, String> {
         .arg("-C")
         .arg(root)
         .args(["status", "--porcelain", "--", CI_BATCH_STATE_PATH])
-        .output()
+        .bounded_output()
         .map_err(|source| format!("launch git status: {source}"))?;
     if !dirty.status.success() {
         return Err(format!(
@@ -2578,7 +2581,7 @@ fn commit_batch_state(root: &Path, name: &str) -> Result<bool, String> {
     let output = Command::new(root.join("scripts/parent-main-write"))
         .current_dir(root)
         .args(["commit", "-m", &message, "--", CI_BATCH_STATE_PATH])
-        .output()
+        .bounded_output()
         .map_err(|source| format!("launch serialized parent-main writer: {source}"))?;
     if output.status.success() {
         Ok(true)
@@ -2920,7 +2923,7 @@ fn qualify_ci_timeout(
             &limit_str,
         ],
     )
-    .output()
+    .bounded_output()
     .map_err(|source| format!("launch gh pr list: {source}"))?;
     if !output.status.success() {
         return Err(format!(
@@ -2975,7 +2978,7 @@ fn qualify_one_pr(
             "10",
         ],
     )
-    .output()
+    .bounded_output()
     .map_err(|source| format!("launch gh run list (pr #{}): {source}", pr.number))?;
     if !output.status.success() {
         return Err(format!(
@@ -3005,7 +3008,7 @@ fn qualify_one_pr(
         root,
         &["run", "view", &run_id_str, "--repo", repo, "--json", "jobs"],
     )
-    .output()
+    .bounded_output()
     .map_err(|source| format!("launch gh run view (pr #{}): {source}", pr.number))?;
     if !jobs_output.status.success() {
         return Err(format!(
@@ -3136,7 +3139,7 @@ fn ensure_fallback_label(root: &Path, repo: &str) -> Result<(), String> {
             "ci-hub cancelled this run to reroute to local validation; autoretry stands down.",
         ],
     )
-    .output()
+    .bounded_output()
     .map_err(|source| format!("launch gh label create: {source}"))?;
     if output.status.success() {
         return Ok(());
@@ -3168,7 +3171,7 @@ fn add_fallback_label(root: &Path, repo: &str, pr: u64) -> Result<(), String> {
             CI_TIMEOUT_FALLBACK_LABEL,
         ],
     )
-    .output()
+    .bounded_output()
     .map_err(|source| format!("launch gh pr edit: {source}"))?;
     if output.status.success() {
         Ok(())
@@ -3186,7 +3189,7 @@ fn add_fallback_label(root: &Path, repo: &str, pr: u64) -> Result<(), String> {
 fn cancel_run(root: &Path, repo: &str, run_id: u64) -> Result<(), String> {
     let id = run_id.to_string();
     let output = gh_command(root, &["run", "cancel", &id, "--repo", repo])
-        .output()
+        .bounded_output()
         .map_err(|source| format!("launch gh run cancel: {source}"))?;
     if output.status.success() {
         Ok(())
@@ -3535,7 +3538,7 @@ fn run_local_history(root: &Path, args: LocalHistoryArgs) -> Result<i32, CiHubEr
         let output = Command::new("python3")
             .arg(root.join("ci-hub/validate/aggregate.py"))
             .args(&forwarded)
-            .output()
+            .bounded_output()
             .map_err(|source| CiHubError::Launch {
                 tool: "local-history".into(),
                 source,
@@ -3571,7 +3574,7 @@ fn load_ledger_rows_reporting(
         let output = Command::new("python3")
             .arg(root.join("ci-hub/ledger/validate_rows.py"))
             .arg("rows")
-            .output()
+            .bounded_output()
             .map_err(|source| CiHubError::Launch {
                 tool: "canonical validate-ledger union".into(),
                 source,
@@ -3649,7 +3652,7 @@ fn gh_pr_head(root: &Path, repo: &str, pr: u64) -> Result<String, CiHubError> {
             ".headRefOid",
         ],
     )
-    .output()
+    .bounded_output()
     .map_err(|source| CiHubError::Launch {
         tool: "gh pr view".into(),
         source,
@@ -3693,7 +3696,7 @@ fn gh_pr_head_and_local_label(
             "headRefOid,labels",
         ],
     )
-    .output()
+    .bounded_output()
     .map_err(|source| CiHubError::Launch {
         tool: "gh pr view head and labels".into(),
         source,
@@ -3745,7 +3748,7 @@ fn remove_local_validation_label(root: &Path, repo: &str, pr: u64) -> Result<(),
             LOCALLY_VALIDATED_LABEL,
         ],
     )
-    .output()
+    .bounded_output()
     .map_err(|source| CiHubError::Launch {
         tool: "gh pr edit remove locally-validated".into(),
         source,
@@ -3795,7 +3798,7 @@ fn gh_open_prs(root: &Path, repo: &str) -> Result<Vec<u64>, CiHubError> {
             ".[].number",
         ],
     )
-    .output()
+    .bounded_output()
     .map_err(|source| CiHubError::Launch {
         tool: "gh pr list".into(),
         source,
@@ -4464,7 +4467,7 @@ fn fetch_history_branch(repo: &Path, branch: &str) -> Result<(), CiHubError> {
         .arg("-C")
         .arg(repo)
         .args(["fetch", "--quiet", remote, &refspec])
-        .output()
+        .bounded_output()
         .map_err(|source| CiHubError::Launch {
             tool: "git fetch main for history query".into(),
             source,
@@ -4484,7 +4487,7 @@ fn branch_history(repo: &Path, branch_ref: &str) -> Result<Vec<String>, CiHubErr
         .arg("-C")
         .arg(repo)
         .args(["rev-list", "--first-parent", branch_ref])
-        .output()
+        .bounded_output()
         .map_err(|source| CiHubError::Launch {
             tool: "git rev-list main for history query".into(),
             source,
@@ -4611,7 +4614,7 @@ fn query_effective_gate_floor(
         // --no-fetch. Derive against that exact snapshot rather than fetching
         // a second, potentially different tip inside the registry helper.
         .args(["--no-fetch", "--json"])
-        .output()
+        .bounded_output()
         .map_err(|source| CiHubError::Launch {
             tool: script.display().to_string(),
             source,
@@ -5028,7 +5031,7 @@ fn files_touched(repo: &Path, sha: &str) -> Result<Vec<String>, CiHubError> {
             "-r",
             sha,
         ])
-        .output()
+        .bounded_output()
         .map_err(|source| CiHubError::Launch {
             tool: "git diff-tree first-bad".into(),
             source,
@@ -5344,7 +5347,7 @@ fn remote_ledger_records_for(
         .arg("-C")
         .arg(root)
         .args(["ls-tree", "-r", "--name-only", git_ref, "ledger/"])
-        .output()
+        .bounded_output()
         .map_err(|source| format!("git ls-tree {git_ref} failed to launch: {source}"))?;
     if !listing.status.success() {
         return Err(format!(
@@ -5366,7 +5369,7 @@ fn remote_ledger_records_for(
             .arg("-C")
             .arg(root)
             .args(["show", &format!("{git_ref}:{shard}")])
-            .output()
+            .bounded_output()
             .map_err(|source| format!("git show {git_ref}:{shard} failed to launch: {source}"))?;
         if !blob.status.success() {
             continue;
@@ -6471,21 +6474,8 @@ fn publish_selected_receipt(
     if let Some(config_dir) = gh_config_dir() {
         command.env("GH_CONFIG_DIR", config_dir);
     }
-    let mut child = command.spawn().map_err(|source| CiHubError::Launch {
-        tool: publisher.display().to_string(),
-        source,
-    })?;
-    child
-        .stdin
-        .take()
-        .ok_or_else(|| CiHubError::ValidateStatus("publisher stdin is unavailable".into()))?
-        .write_all(selected.canonical_row_json.as_bytes())
-        .map_err(|source| CiHubError::Launch {
-            tool: "write publisher selected row".into(),
-            source,
-        })?;
-    let output = child
-        .wait_with_output()
+    let output = command
+        .bounded_output_with_input(selected.canonical_row_json.as_bytes())
         .map_err(|source| CiHubError::Launch {
             tool: publisher.display().to_string(),
             source,
@@ -6598,7 +6588,7 @@ fn parse_immutable_receipt_reference(
 fn fetch_issue_comments(root: &Path, repo: &str, pr: u64) -> Result<Vec<u8>, CiHubError> {
     let endpoint = format!("repos/{repo}/issues/{pr}/comments?per_page=100");
     let comments = gh_command(root, &["api", "--paginate", "--slurp", &endpoint])
-        .output()
+        .bounded_output()
         .map_err(|source| CiHubError::Launch {
             tool: "gh issue comments".into(),
             source,
@@ -6632,18 +6622,9 @@ fn run_immutable_receipt_verifier(
     if let Some(config_dir) = gh_config_dir() {
         command.env("GH_CONFIG_DIR", config_dir);
     }
-    let mut child = command
-        .spawn()
-        .map_err(|error| format!("cannot launch immutable receipt verifier: {error}"))?;
-    child
-        .stdin
-        .take()
-        .ok_or_else(|| "immutable receipt verifier stdin is unavailable".to_string())?
-        .write_all(&comments)
-        .map_err(|error| format!("cannot write immutable receipt comments: {error}"))?;
-    let output = child
-        .wait_with_output()
-        .map_err(|error| format!("cannot wait for immutable receipt verifier: {error}"))?;
+    let output = command
+        .bounded_output_with_input(&comments)
+        .map_err(|error| format!("cannot run the immutable receipt verifier: {error}"))?;
     if !output.status.success() {
         if exit_status_code(output.status) == 1 {
             return Ok(None);
@@ -6709,7 +6690,7 @@ fn fetch_and_verify_immutable_receipt(
             &endpoint,
         ],
     )
-    .output()
+    .bounded_output()
     .map_err(|error| format!("cannot fetch immutable receipt artifact: {error}"))?;
     if !artifact.status.success() {
         return Err(format!(
@@ -6871,7 +6852,7 @@ fn bind_verified_receipt_to_pr(
                 &body,
             ],
         )
-        .output()
+        .bounded_output()
         .map_err(|source| CiHubError::Launch {
             tool: "gh pr comment".into(),
             source,
@@ -6896,7 +6877,7 @@ fn bind_verified_receipt_to_pr(
             LOCALLY_VALIDATED_LABEL,
         ],
     )
-    .output()
+    .bounded_output()
     .map_err(|source| CiHubError::Launch {
         tool: "gh pr edit locally-validated".into(),
         source,

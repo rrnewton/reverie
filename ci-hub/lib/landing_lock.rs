@@ -1,5 +1,6 @@
 //! Typed implementation of the shared-file landing mutex.
 
+use crate::bounded_output::BoundedOutput;
 use crate::lease::{
     self, DomainState as LeaseDomainState, HandoffState, LeaseDecision, LeaseRecord, LeaseState,
     OwnerLiveness as LeaseOwnerLiveness,
@@ -2178,7 +2179,7 @@ fn parse_unsigned(name: &str, value: &str) -> Result<u64, LandLockError> {
 pub(crate) fn current_host() -> String {
     Command::new("hostname")
         .arg("-s")
-        .output()
+        .bounded_output()
         .ok()
         .filter(|output| output.status.success())
         .and_then(|output| String::from_utf8(output.stdout).ok())
@@ -3311,7 +3312,7 @@ pub(crate) fn repository_lock_root(root: &Path) -> PathBuf {
         .arg("-C")
         .arg(root)
         .args(["rev-parse", "--path-format=absolute", "--git-common-dir"])
-        .output()
+        .bounded_output()
     else {
         return root.to_path_buf();
     };
