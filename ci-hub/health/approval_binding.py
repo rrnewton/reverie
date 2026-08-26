@@ -1603,11 +1603,23 @@ def collect_fixture(
             raise ValueError(
                 "fixture object requires prs list and boolean actions_enabled"
             )
+        # ⚠️ FIXTURES SUPPLY THEIR OWN RECEIPT SET AND NEVER READ THE LIVE
+        # LEDGER. A fixture that consulted this box's ledger would pass or fail
+        # depending on what some other agent validated this afternoon -- a test
+        # whose verdict is a function of the day. Absent means "no head has a
+        # receipt", which is the historical behaviour of every existing fixture.
+        evaluated = fixture.get("evaluated_heads", [])
+        if not isinstance(evaluated, list) or not all(
+            isinstance(h, str) for h in evaluated
+        ):
+            raise ValueError("fixture evaluated_heads must be a list of strings")
+        fixture_evaluated = frozenset(h.lower() for h in evaluated)
     elif isinstance(fixture, list):
         # Historical fixtures model the ordinary Actions-enabled case.  This
         # preserves their positive zero-run escalation coverage.
         prs = fixture
         actions_enabled = True
+        fixture_evaluated = frozenset()
     else:
         raise ValueError("fixture must be a PR list or an object with prs")
     for pr in prs:
@@ -1720,16 +1732,85 @@ def collect_fixture(
                     "mergeable": pr.get("mergeable"),
                 }
             )
-    return rows, selected, actions_enabled
+    return rows, selected, actions_enabled, fixture_evaluated
+
+
+def locally_evaluated_heads(root: Path) -> frozenset[str]:
+    """Every commit the local validate ledger has a record for.
+
+    ⚠️ RECORD EXISTS, NOT RECORD PASSED, AND THE DIFFERENCE IS THE WHOLE POINT.
+    The claim this feeds is `APPROVED + UNEVALUATED` -- "a review cache on a head
+    NOTHING EVALUATED". A head whose validate ran and went RED has been
+    evaluated, loudly; calling it unevaluated is a false statement about the
+    record. Whether the head is GREEN is a different question that
+    `ci-hub validate-status` already answers and the lander already asks.
+
+    Reads the ledger rather than shelling out to `validate-status`, because that
+    tool's exit codes cannot express this predicate: measured 2026-08-26,
+    `--sha 135b3a24167f` (a completed FAILING run) and `--sha 91bae53a6f3e`
+    (no record at all) BOTH return rc=4, and the distinction survives only in
+    the prose. A predicate that has to parse a sentence is not a predicate.
+    """
+
+    heads: set[str] = set()
+    for path in sorted((root / "ledger").rglob("*.jsonl")):
+        try:
+            text = path.read_text(errors="replace")
+        except OSError:
+            continue
+        for line in text.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                # An unparseable row is not evidence of evaluation. There are
+                # twelve of these on the current ledger; they are somebody
+                # else's defect and must not silently mark a head evaluated.
+                continue
+            commit = row.get("commit") if isinstance(row, dict) else None
+            if isinstance(commit, str) and commit:
+                heads.add(commit.lower())
+    return frozenset(heads)
 
 
 def unevaluated_binding_rows(
-    rows: list[dict[str, Any]], actions_enabled: bool
+    rows: list[dict[str, Any]],
+    actions_enabled: bool,
+    evaluated_heads: "frozenset[str]" = frozenset(),
 ) -> list[dict[str, Any]]:
-    """Rows whose zero workflow-run count supports an unevaluated claim."""
+    """Rows whose head NOTHING evaluated -- no workflow run and no local receipt.
+
+    ⚠️ A ZERO RUN COUNT STOPPED BEING EVIDENCE WHEN ACTIONS STOPPED BEING THE
+    GATE. The owner ruled local validate canonical and hosted Actions
+    supplemental, so `runs_at_head == 0` on its own says only that the thing we
+    do not gate on did not happen. Measured 2026-08-26 against the live repo:
+    `repos/rrnewton/hermit/actions/permissions` returns `enabled=true`, so
+    `github_actions_enabled` is True and every head still reports `runs=0` --
+    the guard below was structurally unreachable, and six correct at-head
+    approvals were being counted as failures on the strength of an absence that
+    is policy, not evidence.
+
+    THE COST WAS NOT COSMETIC: `--gate-on superseded` admits every non-SUPERSEDED
+    bad row that lands in this list, so the headline went 7-of-8 with the run
+    count alone and 1-of-8 without it, with EVERY PER-ROW STATE IDENTICAL.
+    Reviewers who did exactly what the remedy asked saw no change, which is how
+    a gate teaches people to stop supplying approvals.
+
+    A local receipt now counts as evaluation alongside a workflow run. The other
+    half of that alarm -- `REFUSED_STALE` on a correct at-head binding, caused by
+    an un-discharged refusal at an older sha -- is UNTOUCHED here and is a
+    separate, undecided design question. Do not read this as fixing it.
+    """
     if not actions_enabled:
         return []
-    return [row for row in rows if row["runs_at_head"] == 0]
+    return [
+        row
+        for row in rows
+        if row["runs_at_head"] == 0
+        and (row.get("head") or "").lower() not in evaluated_heads
+    ]
 
 
 def report_landing_observability(
@@ -1858,7 +1939,7 @@ def main() -> int:
     malformed_pr_by_source: dict[tuple[str, str], int] = {}
     try:
         if a.fixture:
-            rows, selected, actions_enabled = collect_fixture(
+            rows, selected, actions_enabled, evaluated_heads = collect_fixture(
                 a.fixture, malformed, malformed_pr_by_source, a.pr
             )
         else:
@@ -1866,6 +1947,7 @@ def main() -> int:
                 a.repo, malformed, malformed_pr_by_source, a.pr
             )
             actions_enabled = github_actions_enabled(a.repo)
+            evaluated_heads = locally_evaluated_heads(Path(a.checkout))
     except GitHubUnavailable as error:
         summary = (
             "approval binding could not be determined: "
@@ -1934,7 +2016,7 @@ def main() -> int:
     }
     # The composed state: a review/local-validation cache that no longer holds,
     # on a head nothing evaluated.
-    combined = unevaluated_binding_rows(bad, actions_enabled)
+    combined = unevaluated_binding_rows(bad, actions_enabled, evaluated_heads)
     approved_and_unevaluated = [
         r for r in combined if (r["label"] or "").startswith("passed-review-")
     ]
@@ -2119,9 +2201,32 @@ def main() -> int:
         else:
             state = "unbound" if gating else "ok"
             remedies = []
-            if any((r["label"] or "").startswith("passed-review-") for r in gating):
+            # ⚠️ THE REMEDY IS CHOSEN BY WHY THE ROW GATES, NOT BY WHICH LABEL IT
+            # CARRIES, AND GETTING THAT WRONG COST FOUR RE-REVIEWS. A
+            # `passed-review-*` row that gates because its head was never
+            # evaluated was told to "re-review the exact head and emit
+            # APPROVED-AT" -- the action its reviewer had already performed, on a
+            # binding that was already correct. Measured 2026-08-26 on hermit#2686,
+            # #2683, #2674 and #2602: all four bound to exactly the head they sat
+            # on, all four told to re-bind.
+            superseded_review = [
+                r for r in gating
+                if (r["label"] or "").startswith("passed-review-")
+                and r["state"] == SUPERSEDED
+            ]
+            unevaluated_review = [
+                r for r in gating
+                if (r["label"] or "").startswith("passed-review-")
+                and r["state"] != SUPERSEDED
+            ]
+            if superseded_review:
                 remedies.append(
                     "re-review the exact head and emit APPROVED-AT: <lane> <40-hex-head>"
+                )
+            if unevaluated_review:
+                remedies.append(
+                    "validate the exact head -- these bindings are AT the head and "
+                    "re-reviewing them changes nothing"
                 )
             if any(r["label"] == LOCALLY_VALIDATED_LABEL for r in gating):
                 remedies.append(

@@ -293,6 +293,74 @@ out="$(run "$tmp/combined.json" --gate --gate-on superseded)"; rc=$?
   && grep -q '^actions_enabled=true$' <<<"$out" \
   && ok "Actions enabled: the combined approved+unevaluated state STILL pages" \
   || bad "--gate-on superseded missed the combined state (rc=$rc)"
+# --- A LOCAL RECEIPT IS EVALUATION, AND BOTH DIRECTIONS MUST HOLD ------------
+# The owner ruled local validate canonical and hosted Actions supplemental, and
+# `actions/permissions` reports enabled=true on the live repo -- so the
+# Actions-disabled guard above is UNREACHABLE in production and a zero run count
+# was counting correct at-head approvals as failures. Measured on the live repo
+# 2026-08-26: `--gate-on superseded` went 7-of-8 to 5-of-8 once a receipt
+# counted, with every per-row STATE unchanged.
+#
+# ⚠️ THE FIXTURE MUST BE A *BAD* ROW BOUND AT THE HEAD, WHICH IS THE ONLY SHAPE
+# THE RECEIPT CAN CHANGE. My first attempt used a BOUND_CURRENT row; it cleared
+# whether or not a receipt existed, because `combined` is computed over `bad`
+# only -- the cell passed for a reason unrelated to the change. This is the real
+# hermit#2686 shape: an approval AT the head plus an un-discharged refusal at an
+# older sha, which classifies REFUSED_STALE and lands in `bad`.
+_refusal_row () {
+  cat <<JSON
+  {"number":1866,"head":"$CUR","labels":["passed-review-claude"],
+   "comments":["CHANGES-REQUESTED-AT: claude $OLD","APPROVED-AT: claude $CUR"],
+   "runs_at_head":0,"mergeable":"MERGEABLE"}
+JSON
+}
+
+# DIRECTION 1: with a receipt for that head, it leaves the unevaluated set.
+cat >"$tmp/receipted-at-head.json" <<JSON
+{"actions_enabled":true,"evaluated_heads":["$CUR"],"prs":[
+$(_refusal_row)
+]}
+JSON
+out="$(run "$tmp/receipted-at-head.json" --gate --gate-on superseded)"; rc=$?
+[[ $rc -eq 0 ]] \
+  && ! grep -q 'APPROVED + UNEVALUATED' <<<"$out" \
+  && ok "an at-head binding whose head has a LOCAL RECEIPT stops paging" \
+  || bad "a receipted at-head binding still paged (rc=$rc): $out"
+
+# ⚠️ THE CONTROL. The identical fixture with NO receipt must still page and must
+# still carry the marker -- otherwise the cell above proves nothing.
+cat >"$tmp/unreceipted-at-head.json" <<JSON
+{"actions_enabled":true,"evaluated_heads":[],"prs":[
+$(_refusal_row)
+]}
+JSON
+out="$(run "$tmp/unreceipted-at-head.json" --gate --gate-on superseded)"; rc=$?
+[[ $rc -eq 1 ]] \
+  && grep -q 'APPROVED + UNEVALUATED' <<<"$out" \
+  && ok "the same head with NO receipt is still unevaluated and still pages" \
+  || bad "the receipt set is not what cleared it (rc=$rc): $out"
+
+# ⚠️ AND THE REMEDY MUST NAME THE RIGHT ACTION. Telling a reviewer whose binding
+# is already AT the head to "re-review the exact head" is the sentence that cost
+# four re-reviews on #2686, #2683, #2674 and #2602.
+grep -q 'validate the exact head' <<<"$out" \
+  && ok "an unevaluated at-head binding is told to VALIDATE, not to re-review" \
+  || bad "the remedy still sends an at-head binding back to re-review: $out"
+
+# DIRECTION 2: a GENUINELY STALE binding must still REFUSE even when its head
+# carries a receipt. A receipt says the head was evaluated; it says nothing
+# about which sha the reviewer looked at.
+cat >"$tmp/receipted-superseded.json" <<JSON
+{"actions_enabled":true,"evaluated_heads":["$CUR"],"prs":[
+  {"number":1867,"head":"$CUR","labels":["passed-review-codex"],
+   "lane_shas":{"codex":["$OLD"]},"runs_at_head":0,"mergeable":"MERGEABLE"}
+]}
+JSON
+out="$(run "$tmp/receipted-superseded.json" --gate --gate-on superseded)"; rc=$?
+[[ $rc -eq 1 ]] \
+  && ok "a genuinely stale binding STILL refuses, receipt or no receipt" \
+  || bad "a receipt cleared a superseded binding (rc=$rc): $out"
+
 out="$(run "$tmp/unbound.json" --gate --gate-on unverifiable)"; rc=$?
 [[ $rc -eq 1 ]] && ok "--gate-on unverifiable: the standing condition pages on its own daily entry" \
   || bad "--gate-on unverifiable did not page (rc=$rc)"
