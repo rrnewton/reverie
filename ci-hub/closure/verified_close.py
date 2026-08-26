@@ -408,11 +408,64 @@ def verify_comment_permalink(reference: str, *, run: Run = _run) -> Evidence | N
     )
 
 
+def github_object_endpoint(url: str) -> str | None:
+    """The authenticated API path for a github.com web URL that is not a comment.
+
+    ⚠️ WHY: THE GENERAL URL BRANCH BELOW USES ANONYMOUS `curl`, SO NO ARTIFACT IN
+    A PRIVATE REPOSITORY CAN BE RECORDED AS EVIDENCE. GitHub answers an
+    unauthenticated request for a private object with 404, `curl --fail` turns
+    that into a nonzero exit, and the closure is reported `unverifiable` with a
+    reason naming the URL rather than the missing credential. Measured
+    2026-08-26: `rrnewton/dev-hermit` is PRIVATE and anonymous
+    `curl --fail https://github.com/rrnewton/dev-hermit` exits 22, while
+    `gh api repos/rrnewton/dev-hermit` exits 0. `rrnewton/hermit` and
+    `rrnewton/reverie` are public and were unaffected -- which is why this
+    survived: total failure in the parent, invisible from the repositories most
+    closures cite.
+
+    `verify_comment_permalink` already does this for comment permalinks, and is
+    deliberately left alone; this is the same reasoning applied to the shapes it
+    does not cover. Unknown shapes return None and fall through to `curl`, which
+    is correct for non-GitHub hosts and no worse than today for anything else:
+    mapping fewer shapes is safe, mapping one WRONGLY would be a false verdict.
+    """
+    m = re.match(
+        r"https?://(?:www\.)?github\.com/([^/#?]+)/([^/#?]+)(/[^#?]*)?(?:\?[^#]*)?$",
+        url,
+    )
+    if m is None:
+        return None
+    owner, repo, rest = m.group(1), m.group(2).removesuffix(".git"), m.group(3) or ""
+    parts = [p for p in rest.split("/") if p]
+    if not parts:
+        return f"repos/{owner}/{repo}"
+    if len(parts) >= 2 and parts[0] in {"pull", "issues"} and parts[1].isdigit():
+        return f"repos/{owner}/{repo}/{'pulls' if parts[0] == 'pull' else 'issues'}/{parts[1]}"
+    if len(parts) >= 2 and parts[0] == "commit":
+        return f"repos/{owner}/{repo}/commits/{parts[1]}"
+    return None
+
+
 def verify_artifact(reference: str, *, run: Run = _run) -> Evidence:
     anchored = verify_comment_permalink(reference, run=run)
     if anchored is not None:
         return anchored
     if reference.startswith(("https://", "http://")):
+        endpoint = github_object_endpoint(reference)
+        if endpoint is not None:
+            # AUTHENTICATED, so a private repository is reachable at all.
+            probed = run(("with-proxy", "gh", "api", endpoint), cwd=ROOT)
+            if probed.returncode == 0:
+                return Evidence("verified", "artifact", reference, resolved=reference)
+            # ⚠️ NO ANONYMOUS FALLBACK. A private object the authenticated probe
+            # could not see is exactly the case `curl` answers WRONGLY: it 404s,
+            # and that 404 reads as absence rather than as a missing credential.
+            return Evidence(
+                "unverifiable",
+                "artifact",
+                reference,
+                reason=f"gh api {endpoint}: {(probed.stderr or 'did not resolve').strip()[:200]}",
+            )
         result = run(
             (
                 "with-proxy",

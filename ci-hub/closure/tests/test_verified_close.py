@@ -988,5 +988,75 @@ class CommentPermalinkResolution(unittest.TestCase):
 
 
 
+class PrivateRepositoryArtifactsAreReachable(unittest.TestCase):
+    """⚠️ ANONYMOUS `curl` CANNOT SEE A PRIVATE REPOSITORY AT ALL.
+
+    GitHub answers an unauthenticated request for a private object with 404 and
+    `curl --fail` turns that into a nonzero exit, so every artifact citing
+    `rrnewton/dev-hermit` -- which is private -- was `unverifiable`, with a reason
+    naming the URL rather than the missing credential. Measured 2026-08-26:
+    anonymous curl on that repository exits 22, `gh api` exits 0. The public
+    repositories were unaffected, which is why it survived.
+
+    `verify_comment_permalink` already fixed the comment shape; these cover the
+    shapes it does not.
+    """
+
+    def test_a_github_pull_url_is_probed_with_credentials(self) -> None:
+        seen = []
+
+        def record(command, **kwargs):
+            seen.append(tuple(command))
+            return subprocess.CompletedProcess(list(command), 0, "", "")
+
+        evidence = verified_close.verify_artifact(
+            "https://github.com/owner/private/pull/7", run=record
+        )
+        self.assertEqual("verified", evidence.state)
+        self.assertEqual(("with-proxy", "gh", "api", "repos/owner/private/pulls/7"), seen[0])
+        self.assertNotIn("curl", " ".join(seen[0]))
+
+    def test_a_failed_probe_does_not_retry_anonymously(self) -> None:
+        """The retry would answer WRONGLY: a private object 404s to `curl`, and
+        that 404 reads as absence rather than as a missing credential."""
+        seen = []
+
+        def failing(command, **kwargs):
+            seen.append(tuple(command))
+            return subprocess.CompletedProcess(list(command), 1, "", "gh: Not Found (HTTP 404)")
+
+        evidence = verified_close.verify_artifact(
+            "https://github.com/owner/private/pull/7", run=failing
+        )
+        self.assertEqual("unverifiable", evidence.state)
+        self.assertEqual(1, len(seen), "must not fall back to anonymous curl")
+        self.assertIn("gh api", evidence.reason)
+
+    def test_a_non_github_url_still_uses_curl(self) -> None:
+        seen = []
+
+        def record(command, **kwargs):
+            seen.append(tuple(command))
+            return subprocess.CompletedProcess(list(command), 0, "", "")
+
+        self.assertEqual(
+            "verified",
+            verified_close.verify_artifact("https://example.com/a.txt", run=record).state,
+        )
+        self.assertIn("curl", " ".join(seen[0]))
+
+    def test_mapped_shapes_are_exact_and_unknown_shapes_are_not_guessed(self) -> None:
+        for url, want in (
+            ("https://github.com/o/r", "repos/o/r"),
+            ("https://github.com/o/r/pull/9", "repos/o/r/pulls/9"),
+            ("https://github.com/o/r/issues/9", "repos/o/r/issues/9"),
+            ("https://github.com/o/r/commit/deadbeef", "repos/o/r/commits/deadbeef"),
+            ("https://github.com/o/r/blob/main/README.md", None),
+            ("https://example.com/o/r/pull/9", None),
+        ):
+            with self.subTest(url=url):
+                self.assertEqual(want, verified_close.github_object_endpoint(url))
+
+
 if __name__ == "__main__":
     unittest.main()
