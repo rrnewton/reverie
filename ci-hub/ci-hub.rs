@@ -5607,7 +5607,7 @@ impl GreenDepth {
                 window,
                 no_record,
             } => format!(
-                "COMMITS-SINCE-GREEN {depth} (last full green {} at first-parent depth {depth}; \
+                "HERMIT COMMITS-SINCE-GREEN {depth} (last full green {} at first-parent depth {depth}; \
                  searched {window} commits, {no_record} of them with no record at all)",
                 sha.get(..12).unwrap_or(sha)
             ),
@@ -5616,7 +5616,7 @@ impl GreenDepth {
                 oldest,
                 recorded,
             } => format!(
-                "COMMITS-SINCE-GREEN NONE-WITHIN-{window} -- no full green in the {window} \
+                "HERMIT COMMITS-SINCE-GREEN NONE-WITHIN-{window} -- no full green in the {window} \
                  first-parent commits back to {} ({recorded} carried any record). This is a \
                  BOUNDED search, not a claim that no green exists; widen it with \
                  `ci-hub newest-green`.",
@@ -5626,12 +5626,12 @@ impl GreenDepth {
                 visible_depth,
                 required_depth,
             } => format!(
-                "COMMITS-SINCE-GREEN UNVERIFIABLE-SHALLOW-HISTORY -- only {visible_depth} \
+                "HERMIT COMMITS-SINCE-GREEN UNVERIFIABLE-SHALLOW-HISTORY -- only {visible_depth} \
                  first-parent commits visible, {required_depth} required. Deepen the checkout; \
                  this is not an absence."
             ),
             GreenDepth::Unavailable { why } => format!(
-                "COMMITS-SINCE-GREEN UNAVAILABLE -- {why}. Not measured, and NOT evidence that \
+                "HERMIT COMMITS-SINCE-GREEN UNAVAILABLE -- {why}. Not measured, and NOT evidence that \
                  main is ungreen."
             ),
         }
@@ -5764,6 +5764,71 @@ fn standard_green_depth(root: &Path, branch: &str) -> GreenDepth {
     }
 }
 
+fn recent_row_test_counts(row: &HistoryRow) -> (String, String) {
+    let total = match (row.executed_tests, row.filtered_tests) {
+        (Some(executed), Some(filtered)) if executed >= 0 && filtered >= 0 => executed
+            .checked_add(filtered)
+            .map(|count| count.to_string())
+            .unwrap_or_else(|| "-".into()),
+        _ => "-".into(),
+    };
+    // `executed_tests` includes ignored tests when the producer saw a
+    // `running N tests` banner, so it cannot be relabelled as passed. Historical
+    // receipts have no passed count and remain visibly unknown.
+    let passed = row
+        .extra
+        .get("passed_tests")
+        .and_then(serde_json::Value::as_i64)
+        .filter(|count| *count >= 0)
+        .filter(|count| {
+            row.executed_tests
+                .is_some_and(|executed| *count <= executed)
+        })
+        .map(|count| count.to_string())
+        .unwrap_or_else(|| "-".into());
+    (total, passed)
+}
+
+fn recent_validate_history_header() -> String {
+    format!(
+        "{:<13} {:<12} {:<20} {:>7} {:>11} {:>12} {:>7} {:<24} SUMMARY",
+        "VERDICT", "SHA", "FINISHED", "NODES", "TESTS-TOTAL", "TESTS-PASSED", "WALL", "HOST/SLOT"
+    )
+}
+
+fn recent_validate_history_line(row: &HistoryRow, verdict: &str, summary: &str) -> String {
+    let sha = row.commit.as_deref().unwrap_or("?");
+    let short_sha = sha.get(..12).unwrap_or(sha);
+    let finished = row
+        .finished_at
+        .as_deref()
+        .or(row.started_at.as_deref())
+        .unwrap_or("?");
+    let nodes = match (row.gates_run.or(row.checks), row.gates_expected) {
+        (Some(run), Some(expected)) => format!("{run}/{expected}"),
+        (Some(run), None) => run.to_string(),
+        _ => "-".into(),
+    };
+    let (total, passed) = recent_row_test_counts(row);
+    let host_slot = format!(
+        "{}/{}",
+        row.host.as_deref().unwrap_or("?"),
+        row.slot.as_deref().unwrap_or("?")
+    );
+    format!(
+        "{:<13} {:<12} {:<20} {:>7} {:>11} {:>12} {:>7} {:<24} {}",
+        verdict,
+        short_sha,
+        finished,
+        nodes,
+        total,
+        passed,
+        short_wall(row.real_seconds),
+        host_slot,
+        summary,
+    )
+}
+
 fn print_recent_validate_history(
     root: &Path,
     rows: &[HistoryRow],
@@ -5845,42 +5910,15 @@ fn print_recent_validate_history(
         println!("No validation runs found for {repo}.");
         return Ok(0);
     }
-    println!(
-        "{:<13} {:<12} {:<20} {:>7} {:>7} {:>7} {:<24} SUMMARY",
-        "VERDICT", "SHA", "FINISHED", "NODES", "TESTS", "WALL", "HOST/SLOT"
-    );
+    println!("{}", recent_validate_history_header());
     for (row, entry) in recent.iter().zip(entries.iter()) {
-        let sha = row.commit.as_deref().unwrap_or("?");
-        let short_sha = sha.get(..12).unwrap_or(sha);
-        let finished = row
-            .finished_at
-            .as_deref()
-            .or(row.started_at.as_deref())
-            .unwrap_or("?");
-        let nodes = match (row.gates_run.or(row.checks), row.gates_expected) {
-            (Some(run), Some(expected)) => format!("{run}/{expected}"),
-            (Some(run), None) => run.to_string(),
-            _ => "-".into(),
-        };
-        let tests = row
-            .executed_tests
-            .map(|count| count.to_string())
-            .unwrap_or_else(|| "-".into());
-        let host_slot = format!(
-            "{}/{}",
-            row.host.as_deref().unwrap_or("?"),
-            row.slot.as_deref().unwrap_or("?")
-        );
         println!(
-            "{:<13} {:<12} {:<20} {:>7} {:>7} {:>7} {:<24} {}",
-            entry["verdict"].as_str().unwrap_or("?"),
-            short_sha,
-            finished,
-            nodes,
-            tests,
-            short_wall(row.real_seconds),
-            host_slot,
-            entry["summary"].as_str().unwrap_or("?"),
+            "{}",
+            recent_validate_history_line(
+                row,
+                entry["verdict"].as_str().unwrap_or("?"),
+                entry["summary"].as_str().unwrap_or("?"),
+            )
         );
     }
     Ok(0)
@@ -7334,8 +7372,10 @@ mod tests {
             no_record: 269,
         }
         .line();
-        assert!(line.contains("COMMITS-SINCE-GREEN 281"), "{line}");
-        assert!(line.contains("dee8cf49ce6a"), "{line}");
+        assert_eq!(
+            line,
+            "HERMIT COMMITS-SINCE-GREEN 281 (last full green dee8cf49ce6a at first-parent depth 281; searched 544 commits, 269 of them with no record at all)"
+        );
     }
 
     #[test]
@@ -7348,11 +7388,9 @@ mod tests {
             recorded: 10,
         }
         .line();
-        assert!(line.contains("200"), "the window must appear: {line}");
-        assert!(line.contains("BOUNDED"), "{line}");
-        assert!(
-            !line.contains("COMMITS-SINCE-GREEN NONE\n"),
-            "a bare NONE would read as no-green-ever: {line}"
+        assert_eq!(
+            line,
+            "HERMIT COMMITS-SINCE-GREEN NONE-WITHIN-200 -- no full green in the 200 first-parent commits back to 0123456789ab (10 carried any record). This is a BOUNDED search, not a claim that no green exists; widen it with `ci-hub newest-green`."
         );
     }
 
@@ -7379,6 +7417,7 @@ mod tests {
             },
         ];
         let lines: Vec<String> = states.iter().map(GreenDepth::line).collect();
+        assert!(lines.iter().all(|line| line.starts_with("HERMIT ")));
         for i in 0..lines.len() {
             for j in (i + 1)..lines.len() {
                 assert_ne!(lines[i], lines[j]);
@@ -7408,6 +7447,120 @@ mod tests {
             GreenDepth::Unavailable { why: "x".into() }.json()["state"],
             serde_json::json!("unavailable")
         );
+    }
+
+    #[test]
+    fn recent_history_names_total_and_passed_tests_for_a_qualifying_row() {
+        let mut value = schema4_receipt_value();
+        value["passed_tests"] = serde_json::json!(785);
+        let row = history_row(value);
+        let verdict = recent_row_verdict(&row, CANONICAL_VALIDATE_REPO);
+        let summary = recent_row_summary(&row, verdict);
+
+        assert_eq!(verdict, "VALIDATED");
+        assert_eq!(
+            recent_validate_history_header(),
+            "VERDICT       SHA          FINISHED               NODES TESTS-TOTAL TESTS-PASSED    WALL HOST/SLOT                SUMMARY"
+        );
+        assert_eq!(
+            recent_validate_history_line(&row, verdict, &summary),
+            "VALIDATED     630f44aab7fd 2026-08-01T12:01:00Z     2/2        1479          785   1m00s validation-host/lander   passed"
+        );
+    }
+
+    #[test]
+    fn recent_history_keeps_unknown_total_distinct_for_a_nonqualifying_row() {
+        let row = history_row(serde_json::json!({
+            "schema_version": 5,
+            "repo": CANONICAL_VALIDATE_REPO,
+            "commit": "0123456789abcdef0123456789abcdef01234567",
+            "finished_at": "2026-08-02T00:00:00Z",
+            "host": "runner",
+            "slot": "slot",
+            "profile": "full",
+            "selection_mode": "full",
+            "commit_anchored": true,
+            "tree_dirty": true,
+            "result": "pass",
+            "exit_code": 0,
+            "failures": 0,
+            "executed_tests": 10,
+            "filtered_tests": null,
+            "passed_tests": 10,
+            "gates_run": 1,
+            "gates_expected": 2,
+            "real_seconds": 10.0,
+            "admission": "ci-hub-validate-lock"
+        }));
+        let verdict = recent_row_verdict(&row, CANONICAL_VALIDATE_REPO);
+        let summary = recent_row_summary(&row, verdict);
+
+        assert_eq!(verdict, "NOT-VALIDATED");
+        assert_eq!(
+            recent_validate_history_line(&row, verdict, &summary),
+            "NOT-VALIDATED 0123456789ab 2026-08-02T00:00:00Z     1/2           -           10     10s runner/slot              dirty tree"
+        );
+    }
+
+    #[test]
+    fn recent_history_reads_an_explicit_passed_count_for_a_failed_row() {
+        let row = history_row(serde_json::json!({
+            "schema_version": 5,
+            "repo": CANONICAL_VALIDATE_REPO,
+            "commit": "fedcba9876543210fedcba9876543210fedcba98",
+            "finished_at": "2026-08-03T00:00:00Z",
+            "host": "runner",
+            "slot": "slot",
+            "profile": "full",
+            "selection_mode": "full",
+            "commit_anchored": true,
+            "tree_dirty": false,
+            "result": "fail",
+            "exit_code": 1,
+            "failures": 1,
+            "executed_tests": 1685,
+            "filtered_tests": 1960,
+            "passed_tests": 1678,
+            "gates_run": 64,
+            "gates_expected": 64,
+            "real_seconds": 1850.0,
+            "admission": "ci-hub-validate-lock"
+        }));
+        assert_eq!(
+            recent_validate_history_line(&row, "FAILED", "failed: test.cli"),
+            "FAILED        fedcba987654 2026-08-03T00:00:00Z   64/64        3645         1678  30m50s runner/slot              failed: test.cli"
+        );
+    }
+
+    #[test]
+    fn recent_history_does_not_relabel_executed_tests_as_passed() {
+        let mut value = schema4_receipt_value();
+        value["executed_tests"] = serde_json::json!(786);
+        value["filtered_tests"] = serde_json::json!(693);
+        let row = history_row(value);
+        assert_eq!(recent_row_test_counts(&row), ("1479".into(), "-".into()));
+    }
+
+    #[test]
+    fn recent_history_rejects_malformed_test_counts() {
+        for passed in [
+            serde_json::json!(-1),
+            serde_json::json!(787),
+            serde_json::json!(true),
+            serde_json::json!("786"),
+        ] {
+            let mut value = schema4_receipt_value();
+            value["passed_tests"] = passed;
+            let row = history_row(value);
+            assert_eq!(recent_row_test_counts(&row).1, "-");
+        }
+
+        let mut value = schema4_receipt_value();
+        value["executed_tests"] = serde_json::json!(-1);
+        value["filtered_tests"] = serde_json::json!(2);
+        value["passed_tests"] = serde_json::json!(0);
+        let row = history_row(value);
+        assert_eq!(recent_row_test_counts(&row), ("-".into(), "-".into()));
     }
     use super::*;
 
