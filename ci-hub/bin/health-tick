@@ -12,9 +12,22 @@ if [[ -z ${CI_HUB_TOOL_COST_ACTIVE:-} ]]; then
         --basis "not measured: due operational-health gates vary and tick cost history is not retained" \
         -- "$0" "$@"
 fi
-if [[ -n ${HERMIT_AGENT_SNAPSHOT_JSON:-} ]]; then
-    python3 "$ROOT/ci-hub/health/operational_health.py" cache-agents >/dev/null
-fi
+# The `cache-agents` seeding step was removed here on 2026-08-26. `e5864b405`
+# deleted that subcommand -- the cache it filled has no possible producer, so the
+# live read through `residue_sweep.read_live_fleet()` is the only honest source --
+# but this call site outlived it. Deleting the whole `if` block, not just the
+# call: an `if ... then fi` with no body is a bash syntax error, which would have
+# turned a dead gate into a dead tick.
+#
+# ⚠️ WHAT IT WAS DOING, WHICH IS WORSE THAN A DEAD GATE. `argparse` rejects an
+# unregistered subcommand with exit 2, and this script runs under `set -euo
+# pipefail`, so the tick ABORTED HERE -- before `cd "$ROOT"` and before every
+# gate. Not "one gate could not run": NO gate ran. And the guard made it invisible
+# in the obvious place, because a bare `./ci-hub/bin/health-tick` with
+# `HERMIT_AGENT_SNAPSHOT_JSON` unset skips the block entirely and looks healthy.
+# The ORC production path sets it -- `.orc/plugins/hermit-dev/index.ts:112`,
+# `HERMIT_AGENT_SNAPSHOT_JSON="$1" ./ci-hub/bin/health-tick --flush --no-header`
+# -- so the tick that actually runs is exactly the one that died.
 cd "$ROOT"
 
 # Hard Invariant 13 is an aggregate COUNT, not an idleness threshold.  The

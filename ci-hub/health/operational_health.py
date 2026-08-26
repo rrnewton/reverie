@@ -1034,8 +1034,15 @@ def live_agent_names() -> tuple[str, ...] | None:
     Measured 2026-08-26, `ignored/ci-hub/agent-snapshot.json` was 356283s -- 4.12
     days -- old against a 600s window, so `load_agent_snapshot` raised and NO
     claim on the board could be expired by the documented mechanism, however dead
-    its owner. The snapshot has consumers and no producer: `cache-agents` exists
-    but `ci-hub.rs` does not expose it and no `tick-hub.yaml` probe invokes it.
+    its owner. The snapshot has consumers and no producer.
+
+    ⚠️ THIS PARAGRAPH USED TO SAY "`cache-agents` EXISTS BUT NOTHING INVOKES IT".
+    That was true when written and was overtaken by `e5864b405`, which DELETED the
+    subcommand -- see the note at the `persist=False` call below, which has said
+    so since. The file then asserted both `exists` and `was deleted` about the same
+    symbol, and two readers reached opposite conclusions from it on 2026-08-26.
+    A stale sentence next to a correct one is worse than no sentence: it makes the
+    contradiction look like a disagreement between people rather than a diff.
 
     ⚠️ AND THE ANSWER WAS ALREADY IN THE TREE. `slot_agent_parity.py` hit the same
     file at 65.8 hours and responded by reading the census live through
