@@ -212,11 +212,39 @@ say(){ echo "[land $R#$PR] $*"; }
 # origin, and named head branch are one tuple; refuse before reading authority
 # unless the live PR resolves to that exact repository/branch pair.
 verify_pr_belongs_to_repo(){
-  local actual
-  actual=$(with-proxy gh pr view "$PR" -R "$R" --json headRefName -q .headRefName 2>/dev/null) || {
+  local meta actual state
+  # ⚠️ STATE IS PART OF THE IDENTITY, AND OMITTING IT COST A LANDING LEASE.
+  # Measured 2026-08-26: this lander ran against hermit#2647 two minutes after it
+  # merged, took the box-global FIFO lock for 51.4s, and posted an "abandoned"
+  # landing comment on a pull request that had landed successfully. It never
+  # noticed, because nothing here read `state`. The head-branch check below
+  # cannot catch it: GitHub deletes the branch on merge (404 on the ref) but
+  # `gh pr view --json headRefName` still returns the RECORDED name, so the
+  # branch comparison passes on a merged pull request.
+  #
+  # Read in the SAME call as headRefName -- one request, not two, because a
+  # per-head extra read is what trips the shared secondary rate limit. `state`
+  # is a fixed enum (OPEN/CLOSED/MERGED) with no spaces, so putting it first
+  # makes the split unambiguous for any branch name.
+  meta=$(with-proxy gh pr view "$PR" -R "$R" --json headRefName,state \
+    -q '.state + " " + .headRefName' 2>/dev/null) || {
     echo "land-pr: REFUSE: PR #$PR does not resolve in $R" >&2
     exit 2
   }
+  state=${meta%% *}
+  actual=${meta#* }
+  # ⚠️ FAIL CLOSED. An unreadable state is not an open one. This is the landing
+  # path: "I could not tell" must stop, because the alternative is acting on a
+  # pull request whose disposition we do not know.
+  if [ -z "$state" ]; then
+    echo "land-pr: REFUSE: $R#$PR state is unreadable; refusing rather than assuming OPEN" >&2
+    exit 2
+  fi
+  if [ "$state" != OPEN ]; then
+    echo "land-pr: REFUSE: $R#$PR is $state, not OPEN. A landing acts only on an open" >&2
+    echo "land-pr:   pull request; there is nothing here to land." >&2
+    exit 2
+  fi
   if [ -z "$actual" ]; then
     echo "land-pr: REFUSE: PR #$PR has no head branch in $R" >&2
     exit 2
@@ -246,6 +274,13 @@ comment_no_result(){
 # entire self-healing lock/land/arm sequence in a new session by default; the
 # timestamped log is the durable observation surface across agent recycling.
 if [ "$INNER" -eq 0 ] && [ "$DETACHED_CHILD" -eq 0 ] && [ "$FOREGROUND" -eq 0 ]; then
+  # ⚠️ REFUSE BEFORE FORKING, NOT ONLY INSIDE THE LOCK. The inner call at the
+  # bottom of this script is the authority and stays -- state can change between
+  # this check and the lock, which is exactly the race that happened (#2647
+  # merged at 23:56:00Z, the lander started 23:58:08Z). But checking only there
+  # means the caller sees "DETACHED LAND: pid=..." and has to poll a log to find
+  # out it refused, after a lease was already taken and a comment posted.
+  verify_pr_belongs_to_repo
   stamp=$(date -u +%Y%m%dT%H%M%SZ)
   safe_pr=${PR//[^A-Za-z0-9_.-]/_}
   log_dir="${CI_HUB_LANDING_LOG_DIR:-$ROOT/ignored/ci-hub/landing}"
@@ -515,6 +550,19 @@ else
   # branch, so the check belongs here rather than at every checkout.
   if [ "$(git -C "$WT" rev-list --count origin/main..HEAD)" -eq 0 ]; then
     abandon "refusing to push a head that is not ahead of main; the worktree is at main and pushing would wipe $BR" 3
+  fi
+  # ⚠️ RE-READ STATE IMMEDIATELY BEFORE WRITING TO THE BRANCH, not only at the top
+  # of the inner. `verify_pr_belongs_to_repo` ran there, but the landability
+  # evaluation and the optional just-in-time CI wait sit in between and take tens of
+  # seconds -- and a pull request can merge inside that window. That is the actual
+  # shape of this defect: hermit#2647 merged at 23:56:00Z and the lander started at
+  # 23:58:08Z. On a merged pull request GitHub has DELETED the head branch, so this
+  # push does not update a branch, it RECREATES one: a live-looking branch at a
+  # rewritten head, for a pull request that can never be landed. One read, taken only
+  # on the path that actually writes. Unreadable is treated as not-OPEN.
+  live_state=$(with-proxy gh pr view "$PR" -R "$R" --json state -q .state 2>/dev/null || true)
+  if [ "$live_state" != OPEN ]; then
+    abandon "refusing to force-push $BR: $R#$PR is ${live_state:-UNREADABLE}, not OPEN -- the branch would be recreated for a pull request that cannot be landed" 3
   fi
   with-proxy git -C "$WT" push -q --force-with-lease origin "HEAD:$BR" || abandon "force-with-lease push failed" 3
   # Park at what we just published, NOT at main. Leaving a shared worktree on
