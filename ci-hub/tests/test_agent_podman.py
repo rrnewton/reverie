@@ -250,6 +250,70 @@ class AgentPodmanTests(unittest.TestCase):
             arguments.append("--apply")
         return self.run_tool(*arguments)
 
+    def write_dated_state(self, agents: list[dict[str, Any]]) -> None:
+        """Write the ENVELOPE form, which is the only form the loader accepts.
+
+        `write_live_state` writes a bare array, and a bare array has been refused
+        since the undated-snapshot guard landed. These cases need to exercise the
+        emptiness guard specifically, so they must get PAST the undated one.
+        """
+        self.agents.write_text(
+            json.dumps({"schema_version": 1, "captured_at": time.time(), "agents": agents})
+        )
+        self.invocations.write_text(json.dumps({}))
+
+    # ⚠️ EMPTY IS NOT STALE. A census with a CURRENT timestamp and nobody live in it
+    # passes the staleness and undated guards and then tells the reclaim predicate
+    # that no agent owns anything -- which authorises removing every managed
+    # container. Measured 2026-08-26 before the guard: a fresh `agents: []` returned
+    # rc=0 `state=ok`, and it was harmless only because the box happened to hold zero
+    # managed containers that minute.
+    def test_a_fresh_but_empty_census_is_refused_rather_than_read_as_everyone_gone(
+        self,
+    ) -> None:
+        self.podman_state.write_text(
+            json.dumps([container("a" * 64, "retired", labels("hermit-old", "inv-old"))])
+        )
+        self.write_dated_state([])
+
+        result = self.reconcile()
+
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertIn("no live agents", result.stderr + result.stdout)
+        self.assertEqual(self.podman_log.read_text(), "", "a refused census removed something")
+
+    # The half a raw `array.is_empty()` check would miss: entries are present, so the
+    # array is not empty, but every one is terminal and the derived live set is.
+    def test_a_census_of_only_terminal_agents_is_refused_too(self) -> None:
+        self.podman_state.write_text(
+            json.dumps([container("a" * 64, "retired", labels("hermit-old", "inv-old"))])
+        )
+        self.write_dated_state(
+            [{"name": "hermit-901", "status": "exited"}, {"name": "hermit-902", "status": "dead"}]
+        )
+
+        result = self.reconcile()
+
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertIn("no live agents", result.stderr + result.stdout)
+        self.assertEqual(self.podman_log.read_text(), "", "a refused census removed something")
+
+    # THE NEGATIVE CONTROL, and it is the one that matters: without it the guard could
+    # be refusing everything and the two cases above would still pass.
+    def test_one_live_agent_is_enough_for_the_census_to_be_accepted(self) -> None:
+        self.podman_state.write_text(json.dumps([]))
+        self.write_dated_state(
+            [
+                {"name": "hermit-901", "status": "running", "tmux_pane_id": "%1"},
+                {"name": "hermit-902", "status": "dead"},
+            ]
+        )
+
+        result = self.reconcile()
+
+        self.assertEqual(result.returncode, 0, result.stderr + result.stdout)
+        self.assertNotIn("no live agents", result.stderr + result.stdout)
+
     def test_retired_agent_fixture_is_gracefully_reclaimed(self) -> None:
         self.podman_state.write_text(
             json.dumps([container("a" * 64, "retired", labels("hermit-old", "inv-old"), zombies=2)])

@@ -50,11 +50,28 @@ not evidence that an environment is abandoned.
 
 ## Reconciliation
 
-The five-minute operational tick runs the applying form against its fresh ORC
-agent snapshot:
+The five-minute operational tick runs the NON-applying form. `tick-hub.yaml`
+invokes exactly this, and it carries no `--apply`:
 
 ```bash
-./scripts/agent-podman.rs reconcile --agents-json ignored/ci-hub/agent-snapshot.json --apply
+./scripts/agent-podman.rs reconcile --agents-json ignored/ci-hub/agent-snapshot.json
+```
+
+⚠️ THIS PARAGRAPH USED TO SAY THE TICK RAN "the applying form against its fresh
+ORC agent snapshot", above a copy-pasteable `--apply` command. BOTH HALVES WERE
+FALSE, and together they invited a reader to paste a destructive command on the
+strength of two untrue claims. `--apply` was withdrawn from the tick (see the
+comment above `agent_container_lifecycle` in `ci-hub/health/tick-hub.yaml`), and
+the snapshot is not fresh -- measured 2026-08-26 it was over five hours old,
+because its only producer, `ci-hub/health/agent-container-reconcile-bridge.rs`,
+is scheduled by nothing.
+
+The applying form still exists and is still the right tool for reclaiming leaked
+containers, but run it deliberately rather than because this page said the tick
+does:
+
+```bash
+./scripts/agent-podman.rs reconcile --agents-json <a snapshot you trust> --apply
 ```
 
 Use `audit` for a read-only inventory. Both commands state which containers are

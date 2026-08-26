@@ -1504,6 +1504,42 @@ fn load_live_agents(path: &Path) -> Result<BTreeMap<String, String>> {
             live.insert(name.to_string(), pane);
         }
     }
+    // ⚠️ EMPTY IS NOT STALE, AND THE STALENESS GUARD ABOVE DOES NOT COVER IT.
+    //
+    // A census with a CURRENT `captured_at` and no live agents in it passes every
+    // check above and then means, to the reclaim predicate, "no agent owns
+    // anything" -- which authorises removing EVERY managed container. That is
+    // absence of evidence read as evidence of absence, and it is the one shape the
+    // dated-snapshot guard cannot catch, because the snapshot is not stale.
+    //
+    // Measured 2026-08-26: `{"schema_version":1,"captured_at":<now>,"agents":[]}`
+    // returned rc=0 `state=ok` "all 0 managed container(s) have live owners" --
+    // and it returned ok ONLY because this box happened to have zero managed
+    // containers that minute. With containers present the same input nominates all
+    // of them. Nothing currently produces an empty census, which is luck and not
+    // design: the producer is scheduled by nothing, and the day it is wired a
+    // failed fetch that yields `agents: []` becomes a fleet-wide reclaim.
+    //
+    // Same direction and same cost as the staleness guard it sits beside:
+    // refusing costs a red probe, trusting costs every container. Deliberately
+    // NOT overridable, because the staleness guard is not either, and two adjacent
+    // guards with different escape hatches is how the next reader picks the wrong
+    // one.
+    //
+    // ⚠️ IT KEYS ON THE DERIVED LIVE SET, NOT ON THE RAW ARRAY LENGTH. A snapshot
+    // listing thirty agents that are ALL terminal reduces to the same empty live
+    // set and authorises the same reclaim, so checking `array.is_empty()` would
+    // leave that half open.
+    if live.is_empty() {
+        return Err(AppError::Message(format!(
+            "agent snapshot lists no live agents ({} entr{} present, all unnamed or \
+             terminal): refusing rather than reading an empty census as \"every owner \
+             is gone\" -- this decides which agents are absent, and reconcile --apply \
+             removes their containers",
+            array.len(),
+            if array.len() == 1 { "y" } else { "ies" }
+        )));
+    }
     Ok(live)
 }
 
