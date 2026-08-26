@@ -116,6 +116,24 @@ WITHDRAWN = "CHANGES-REQUESTED-WITHDRAWN-AT"
 # someone intending to block is not a weaker signal than someone intending
 # nothing. Reading an unparseable refusal as "proceed" inverts the author's
 # stated intent; reading it as "stop" costs a re-post.
+# ⚠️ THE SUFFIX-LESS WITHDRAWAL, WHICH CREATED A BLOCK INSTEAD OF CLEARING ONE.
+# `CHANGES-REQUESTED-WITHDRAWN <sha>` -- no `-AT` -- misses WITHDRAWN, misses
+# REFUSAL, and hits REFUSAL_BARE, so a botched attempt to DISCHARGE an objection
+# was recorded as a fresh objection. Measured 2026-08-26: that line alone
+# returned BLOCKED, and posted alongside a real refusal it produced "2 refusal(s)
+# ... from lane(s) claude,unlaned". An agent following the remediation text and
+# mistyping it made the head MORE blocked.
+#
+# This is the exact asymmetry REFUSAL_BARE already exists for, in the other
+# direction: the suffix-less spelling of a token must get the same treatment as
+# the canonical one. It maps to WITHDRAWN, listed before the refusal tokens so
+# longest-first still resolves correctly.
+#
+# ⚠️ IT STILL CANNOT CLEAR ANYTHING. A withdrawal needs a readable LANE to retire
+# a refusal, and this spelling carries none, so it is inert in both directions --
+# it neither blocks nor discharges. That is the only safe polarity: an unreadable
+# withdrawal must not wave a refusal through, and must not manufacture one.
+WITHDRAWN_BARE = "CHANGES-REQUESTED-WITHDRAWN"
 REFUSAL_BARE = "CHANGES-REQUESTED"
 
 # Block-level decoration seen on real markers, stripped repeatedly until stable.
@@ -239,7 +257,7 @@ def markers_with_ids(
             # withdrawal and indeterminate logic is deliberately unchanged, so the
             # suffix-less spelling gets exactly the treatment the canonical one
             # gets and nothing special.
-            for kind in (WITHDRAWN, REFUSAL, REFUSAL_BARE):
+            for kind in (WITHDRAWN, WITHDRAWN_BARE, REFUSAL, REFUSAL_BARE):
                 idx = line.find(kind)
                 if idx < 0:
                     continue
@@ -252,7 +270,8 @@ def markers_with_ids(
                 if m is None and _load_grammar().is_template(tail):
                     break  # a template, not a verdict
                 lane_m = _LANE.search(tail[:24])
-                triple = (REFUSAL if kind == REFUSAL_BARE else kind,
+                triple = (REFUSAL if kind == REFUSAL_BARE
+                          else WITHDRAWN if kind == WITHDRAWN_BARE else kind,
                           lane_m.group(1).lower() if lane_m else None,
                           m.group(1) if m else None,
                           _cid)
@@ -939,6 +958,26 @@ def self_test() -> int:
             bad.append(f"{name}: verdict wrongly leads with {must_not_say} -- {why[:90]}")
         if rc != OK:
             bad.append(f"{name}: default rc changed to {rc}; land-pr.sh abandons on non-zero")
+
+    # ⚠️ A BOTCHED WITHDRAWAL MUST NOT MANUFACTURE A REFUSAL. The suffix-less
+    # spelling used to miss WITHDRAWN and REFUSAL and land on REFUSAL_BARE, so an
+    # agent following the remediation text and mistyping it made the head MORE
+    # blocked. Measured 2026-08-26 before the fix: the line ALONE returned
+    # BLOCKED, and beside a real refusal it produced "2 refusal(s) ... from
+    # lane(s) claude,unlaned".
+    _T_WD_BARE = f"CHANGES-REQUESTED-WITHDRAWN {_T_HEAD}"
+    if evaluate([_T_WD_BARE], _T_HEAD)[0] != OK:
+        bad.append("a botched withdrawal ALONE still blocks -- it manufactured a refusal")
+    _rc, _why = evaluate([_T_REF, _T_WD_BARE], _T_HEAD)
+    if _rc != BLOCKED:
+        bad.append("a real refusal stopped blocking when a botched withdrawal joined it")
+    if "2 refusal" in _why:
+        bad.append(f"the botched withdrawal is still counted AS a refusal -- {_why[:70]}")
+    # ⚠️ AND IT MUST NOT CLEAR EITHER. An unreadable withdrawal waving a real
+    # refusal through is the opposite failure and the more dangerous one; this
+    # spelling carries no lane, so it is inert in both directions.
+    if evaluate([_T_REF, _T_WD_BARE], _T_HEAD)[0] != BLOCKED:
+        bad.append("a botched withdrawal CLEARED a real refusal -- wrong polarity")
 
     # ⚠️ AND THE CONTROL THAT MUST FAIL. Without it the two cases above pass against
     # a gate that prints both words every time.
