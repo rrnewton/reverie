@@ -1211,6 +1211,7 @@ impl LandingLock {
             ResidualCapture {
                 complete: true,
                 identities: Vec::new(),
+                unclassifiable: Vec::new(),
             },
         )?;
         self.with_guard(|| {
@@ -1943,14 +1944,35 @@ impl LandingLock {
         let _ = heartbeat.join();
         reap_exited_children();
         let pgid = outcome.pgid();
-        let capture = capture_and_freeze_residuals(std::process::id(), gated.leader.start_ticks);
+        let capture = capture_and_freeze_residuals(
+            std::process::id(),
+            gated.leader.start_ticks,
+            &gated.domain_token,
+        );
         let domain_empty =
             !process_group_exists(pgid) && capture.complete && capture.identities.is_empty();
         if !domain_empty {
             let residual_count = capture.identities.len();
+            // Name the unclassifiable separately. An operator reading this has
+            // to be able to tell "your payload leaked N processes" from "I
+            // could not read M of them", because those need different actions
+            // and only the first is the payload's fault.
+            let unreadable = match capture.unclassifiable.len() {
+                0 => String::new(),
+                count => format!(
+                    "; {count} further descendant(s) UNCLASSIFIABLE (environment unreadable, so \
+                     membership was neither proven nor excluded): {}",
+                    capture
+                        .unclassifiable
+                        .iter()
+                        .map(|identity| identity.pid.to_string())
+                        .collect::<Vec<_>>()
+                        .join(",")
+                ),
+            };
             self.record_residuals(&args.agent, &args.pr, pgid, capture)?;
             return Err(LandLockError::CleanupQuarantined(format!(
-                "completed process group {pgid} did not yield an empty payload domain; {residual_count} exact residual identities recorded and lock retained"
+                "completed process group {pgid} did not yield an empty payload domain; {residual_count} exact residual identities recorded and lock retained{unreadable}"
             )));
         }
         self.clear_proven_run(&args.agent, &args.pr, pgid)?;
@@ -2197,31 +2219,6 @@ fn current_boot_id() -> Result<String, LandLockError> {
 
 pub(crate) fn process_start_ticks(pid: u32) -> io::Result<u64> {
     process_stat_fields(pid).map(|(_, _, start_ticks)| start_ticks)
-}
-
-/// Read a process's process-group id (field 5 of `/proc/<pid>/stat`).
-///
-/// Kept separate from [`process_stat_fields`] so the census can ask this one
-/// question without widening a signature every other caller depends on.
-fn process_group_of(pid: u32) -> io::Result<u32> {
-    let stat = fs::read_to_string(PathBuf::from(format!("/proc/{pid}/stat")))?;
-    let close = stat.rfind(')').ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::InvalidData,
-            "process stat has no closing comm",
-        )
-    })?;
-    stat[close + 1..]
-        .split_whitespace()
-        .nth(2)
-        .ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                "process stat has no process-group field",
-            )
-        })?
-        .parse()
-        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, format!("{error}")))
 }
 
 fn process_stat_fields(pid: u32) -> io::Result<(char, u32, u64)> {
@@ -2666,7 +2663,73 @@ pub(crate) struct GatedChild {
     pub(crate) child: Child,
     pub(crate) leader: ProcessIdentity,
     pub(crate) pgid: u32,
+    /// Value of [`PAYLOAD_DOMAIN_ENV`] handed to this payload. Inherited by
+    /// every descendant at fork, so the census can attribute one even after
+    /// reparenting has destroyed the PPID evidence.
+    pub(crate) domain_token: String,
     release: Option<File>,
+}
+
+/// Environment variable carrying the payload-domain token.
+///
+/// ⚠️ THIS IS THE ONLY DOMAIN EVIDENCE THAT SURVIVES ADOPTION. A subreaper's
+/// PPID walk cannot distinguish a payload descendant from an unrelated orphan
+/// the kernel reparented onto the supervisor, and neither can the process
+/// group, the start time, or -- measured 2026-08-25 -- the cgroup. Environment
+/// is inherited at fork and is unaffected by `setsid`, `setpgid`, or
+/// reparenting, which is exactly the set of things that defeat the others.
+pub(crate) const PAYLOAD_DOMAIN_ENV: &str = "CI_HUB_PAYLOAD_DOMAIN";
+
+/// Mint a token unique to one payload on one box.
+///
+/// The supervisor pid scopes it to this process, so a daemon abandoned by an
+/// EARLIER run can never match; the counter scopes it to one payload within
+/// this process, so a shared test binary's concurrent payloads stay distinct.
+fn mint_domain_token() -> String {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    format!(
+        "{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+    )
+}
+
+/// How a descendant relates to the payload domain.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum DomainMembership {
+    /// `/proc/<pid>/environ` carries this payload's token.
+    Payload,
+    /// `/proc/<pid>/environ` was readable and does NOT carry the token.
+    Foreign,
+    /// The environment could not be read. NOT evidence of either answer.
+    Unclassifiable,
+}
+
+/// Classify one descendant against the payload token.
+///
+/// ⚠️ AN UNREADABLE ENVIRONMENT IS ITS OWN ANSWER. Folding it into `Foreign`
+/// would silently discharge a real escaped payload, and folding it into
+/// `Payload` would quarantine the box on a stranger. The caller must carry it
+/// as a third state and say so.
+fn classify_membership(pid: u32, token: &str) -> DomainMembership {
+    #[cfg(test)]
+    if UNREADABLE_ENVIRON_PID.load(std::sync::atomic::Ordering::SeqCst) == pid {
+        return DomainMembership::Unclassifiable;
+    }
+    match fs::read(format!("/proc/{pid}/environ")) {
+        Ok(raw) => {
+            let needle = format!("{PAYLOAD_DOMAIN_ENV}={token}");
+            let carries = raw
+                .split(|byte| *byte == 0)
+                .any(|entry| entry == needle.as_bytes());
+            if carries {
+                DomainMembership::Payload
+            } else {
+                DomainMembership::Foreign
+            }
+        }
+        Err(_) => DomainMembership::Unclassifiable,
+    }
 }
 
 impl GatedChild {
@@ -2697,6 +2760,7 @@ pub(crate) fn spawn_gated_child(
     let release_gate = unsafe { File::from_raw_fd(pipe_fds[1]) };
     let read_fd = read_gate.as_raw_fd();
 
+    let domain_token = mint_domain_token();
     let mut command = Command::new("/bin/sh");
     command
         .arg("-c")
@@ -2706,6 +2770,11 @@ pub(crate) fn spawn_gated_child(
         .args(args)
         .process_group(0);
     configure(&mut command);
+    // Set the token AFTER `configure` so no call site can clear the domain
+    // evidence, deliberately or by calling `env_clear`. Losing it would not
+    // fail loudly -- it would make every descendant Foreign and silently
+    // discharge a real escape.
+    command.env(PAYLOAD_DOMAIN_ENV, &domain_token);
     // SAFETY: the callback uses only async-signal-safe descriptor syscalls.
     // It never waits: the execed shell performs the blocking read, so
     // `Command::spawn` can return to publish the exact identity.
@@ -2747,6 +2816,7 @@ pub(crate) fn spawn_gated_child(
         child,
         leader,
         pgid: pid,
+        domain_token,
         release: Some(release_gate),
     })
 }
@@ -2971,6 +3041,16 @@ fn scan_process_stat_fields(pid: u32) -> io::Result<(char, u32, u64)> {
 #[cfg(test)]
 static SCAN_UNREADABLE_PID: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
+/// Force one pid's membership to be unreadable, so the third state can be
+/// exercised without needing a process whose `/proc` entry we cannot read.
+#[cfg(test)]
+static UNREADABLE_ENVIRON_PID: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+#[cfg(test)]
+fn inject_unreadable_environ_pid(pid: u32) {
+    UNREADABLE_ENVIRON_PID.store(pid, std::sync::atomic::Ordering::SeqCst);
+}
+
 #[cfg(test)]
 fn inject_unreadable_scan_pid(pid: u32) {
     SCAN_UNREADABLE_PID.store(pid, std::sync::atomic::Ordering::SeqCst);
@@ -3025,7 +3105,13 @@ pub(crate) fn signal_exact_process(
 
 pub(crate) struct ResidualCapture {
     pub(crate) complete: bool,
+    /// Descendants PROVEN to carry the payload token.
     pub(crate) identities: Vec<ProcessIdentity>,
+    /// Descendants whose membership could not be read. Carried separately and
+    /// reported by name: "I could not classify this" is not "it is not there",
+    /// and collapsing it into either answer loses the only warning an operator
+    /// gets that the census was partial.
+    pub(crate) unclassifiable: Vec<ProcessIdentity>,
 }
 
 /// Enumerate and freeze the payload domain beneath `supervisor_pid`.
@@ -3050,47 +3136,68 @@ pub(crate) struct ResidualCapture {
 /// across five runs with shifting membership, because which tests fail is only
 /// which ones happen to census after the daemons arrive.
 ///
-/// A start-time floor is exact and cannot lose a real residual: every
-/// descendant of the leader necessarily starts after the leader, INCLUDING one
-/// that escapes the process group via `setsid`/`setpgid`. Filtering on process-
-/// group membership instead would be narrower than the invariant and would drop
-/// exactly those escaped payloads, which the barrier exists to catch.
+/// The start-time floor is exact and cannot lose a real residual -- every
+/// descendant of the leader necessarily starts after the leader -- but it is
+/// only a bound, not an attribution. It cannot exclude a daemon orphaned DURING
+/// the run window: measured 2026-08-25, two `scm_telem_log` daemons started 236
+/// and 245 ticks AFTER the leader, in their own process groups, and were
+/// charged to the payload.
+///
+/// ⚠️ NO TIMING, PROCESS-GROUP OR CGROUP TEST CAN CLASSIFY THAT PROCESS, and
+/// each was measured rather than assumed:
+///   - start time: it started after the leader, like a real descendant.
+///   - process group: it leads its own, like a payload that called `setsid`.
+///   - cgroup: on this box the test binary, its children and the ambient
+///     telemetry daemons all sit in ONE byte-identical scope
+///     (`.../3pai_sandbox.slice/run-p<N>-i<N>.scope`), so cgroup separates
+///     nothing here. It DOES separate in production, where `run-boxed` gives
+///     the supervisor its own `dagrun-<pid>.scope` -- which is exactly why
+///     wiring cgroup in would have looked principled and fixed nothing.
+///
+/// So attribution uses the one axis that is inherited at fork and untouched by
+/// `setsid`, `setpgid` and reparenting: [`PAYLOAD_DOMAIN_ENV`]. A descendant
+/// carrying this payload's token is ours; one whose environment is readable and
+/// lacks it is not; one whose environment cannot be read is
+/// [`DomainMembership::Unclassifiable`] and is REPORTED AS SUCH rather than
+/// omitted or guessed.
 pub(crate) fn capture_and_freeze_residuals(
     supervisor_pid: u32,
     payload_start_ticks: u64,
+    domain_token: &str,
 ) -> ResidualCapture {
-    let supervisor_group = process_group_of(supervisor_pid).ok();
     let mut prior = Vec::new();
+    let mut unclassifiable = Vec::new();
     for _ in 0..4 {
         // The supervisor is a child subreaper. A payload helper can therefore
         // become our adopted zombie after the supervised group leader has
         // already returned. Drain those exits before every sample rather than
         // turning a completed helper into durable residual ownership.
         reap_exited_children();
+        unclassifiable.clear();
         let identities = match scan_descendants(supervisor_pid) {
-            // Apply both discriminators BEFORE the freeze below: a process this
-            // payload does not own must not be SIGSTOPped by its census.
-            Ok(identities) => identities
-                .into_iter()
-                .filter(|identity| identity.start_ticks >= payload_start_ticks)
-                .filter(
-                    |identity| match (supervisor_group, process_group_of(identity.pid)) {
-                        // The payload is spawned into its own process group, so the
-                        // supervisor's group holds only the supervisor's own
-                        // siblings -- never a payload descendant.
-                        (Some(supervisor_group), Ok(group)) => group != supervisor_group,
-                        // Fail closed: an unreadable group is not evidence of
-                        // non-ownership. The `all_stopped` bookkeeping below turns a
-                        // vanished process into an incomplete census, not a silent
-                        // discharge.
-                        _ => true,
-                    },
-                )
-                .collect::<Vec<_>>(),
+            Ok(scanned) => {
+                let mut mine = Vec::new();
+                for identity in scanned {
+                    // Cheap exact bound first: nothing that predates the leader
+                    // can descend from it, so it need not be read at all.
+                    if identity.start_ticks < payload_start_ticks {
+                        continue;
+                    }
+                    // Classify BEFORE the freeze below. A process this payload
+                    // does not own must not be SIGSTOPped by its census.
+                    match classify_membership(identity.pid, domain_token) {
+                        DomainMembership::Payload => mine.push(identity),
+                        DomainMembership::Foreign => {}
+                        DomainMembership::Unclassifiable => unclassifiable.push(identity),
+                    }
+                }
+                mine
+            }
             Err(_) => {
                 return ResidualCapture {
                     complete: false,
                     identities: prior,
+                    unclassifiable,
                 }
             }
         };
@@ -3115,8 +3222,13 @@ pub(crate) fn capture_and_freeze_residuals(
         }
         if identities == prior && all_stopped {
             return ResidualCapture {
-                complete: true,
+                // An unclassifiable descendant means the domain was not fully
+                // read, so the census is NOT complete however stable the
+                // classified part looks. Reporting `complete` here would let a
+                // caller discharge on evidence that was never gathered.
+                complete: unclassifiable.is_empty(),
                 identities,
+                unclassifiable,
             };
         }
         prior = identities;
@@ -3124,6 +3236,7 @@ pub(crate) fn capture_and_freeze_residuals(
     ResidualCapture {
         complete: false,
         identities: prior,
+        unclassifiable,
     }
 }
 
@@ -4192,7 +4305,12 @@ mod tests {
     #[test]
     fn zombie_only_descendant_is_reaped_and_domain_is_empty() {
         let _domain_guard = process_domain_test_guard();
-        let zombie = Command::new("/bin/true").process_group(0).spawn().unwrap();
+        let token = mint_domain_token();
+        let zombie = Command::new("/bin/true")
+            .process_group(0)
+            .env(PAYLOAD_DOMAIN_ENV, &token)
+            .spawn()
+            .unwrap();
         let pid = zombie.id();
         let deadline = Instant::now() + Duration::from_secs(2);
         loop {
@@ -4210,7 +4328,7 @@ mod tests {
         // production would pass. That also keeps anything older than this test
         // out of the walk, which is the whole point of the floor.
         let floor = process_start_ticks(pid).unwrap();
-        let capture = capture_and_freeze_residuals(std::process::id(), floor);
+        let capture = capture_and_freeze_residuals(std::process::id(), floor, &token);
         assert!(capture.complete);
         assert!(capture.identities.is_empty());
         assert!(!process_group_exists(pid));
@@ -4221,9 +4339,11 @@ mod tests {
     #[test]
     fn live_descendant_remains_an_exact_residual() {
         let _domain_guard = process_domain_test_guard();
+        let token = mint_domain_token();
         let mut child = Command::new("/bin/sleep")
             .arg("30")
             .process_group(0)
+            .env(PAYLOAD_DOMAIN_ENV, &token)
             .spawn()
             .unwrap();
         let identity = ProcessIdentity {
@@ -4231,9 +4351,119 @@ mod tests {
             start_ticks: process_start_ticks(child.id()).unwrap(),
         };
 
-        let capture = capture_and_freeze_residuals(std::process::id(), identity.start_ticks);
+        let capture =
+            capture_and_freeze_residuals(std::process::id(), identity.start_ticks, &token);
         assert!(capture.complete);
         assert!(capture.identities.contains(&identity));
+
+        signal_exact_process(&identity, libc::SIGKILL).unwrap();
+        child.wait().unwrap();
+    }
+
+    /// REGRESSION: an orphan adopted DURING the run window is not the payload's.
+    ///
+    /// This is the case no timing, process-group or cgroup test can decide. It
+    /// starts after the leader, it leads its own process group, and on this box
+    /// it shares the test binary's cgroup byte for byte -- indistinguishable
+    /// from a genuine payload descendant that called `setsid`. Only the
+    /// inherited token separates them.
+    ///
+    /// ⚠️ THE SECOND ASSERTION IS THE CONTROL. A same-aged, same-shaped process
+    /// that DOES carry the token must still be a residual, or this test would
+    /// pass just as well if the census had stopped counting anything at all.
+    #[test]
+    fn an_orphan_adopted_during_the_run_is_not_charged_to_the_payload() {
+        let _domain_guard = process_domain_test_guard();
+        let token = mint_domain_token();
+
+        let mut foreign = Command::new("/bin/sleep")
+            .arg("30")
+            .process_group(0)
+            .env(PAYLOAD_DOMAIN_ENV, "some-other-payload-9999")
+            .spawn()
+            .unwrap();
+        let foreign_identity = ProcessIdentity {
+            pid: foreign.id(),
+            start_ticks: process_start_ticks(foreign.id()).unwrap(),
+        };
+        let mut mine = Command::new("/bin/sleep")
+            .arg("30")
+            .process_group(0)
+            .env(PAYLOAD_DOMAIN_ENV, &token)
+            .spawn()
+            .unwrap();
+        let mine_identity = ProcessIdentity {
+            pid: mine.id(),
+            start_ticks: process_start_ticks(mine.id()).unwrap(),
+        };
+
+        // Floor 0, so the floor cannot be what excludes anything here.
+        let capture = capture_and_freeze_residuals(std::process::id(), 0, &token);
+        assert!(
+            capture.identities.contains(&mine_identity),
+            "CONTROL FAILED: a token-carrying descendant must remain a residual"
+        );
+        assert!(
+            !capture.identities.contains(&foreign_identity),
+            "an orphan carrying another payload's token was charged to this one"
+        );
+        assert!(
+            !capture.unclassifiable.contains(&foreign_identity),
+            "a readable non-member is Foreign, not Unclassifiable"
+        );
+
+        signal_exact_process(&foreign_identity, libc::SIGKILL).unwrap();
+        signal_exact_process(&mine_identity, libc::SIGKILL).unwrap();
+        foreign.wait().unwrap();
+        mine.wait().unwrap();
+    }
+
+    /// A descendant we cannot classify is REPORTED, never omitted.
+    ///
+    /// Dropping it would silently discharge a real escaped payload; charging it
+    /// would quarantine the box on a stranger. It gets its own bucket and it
+    /// makes the census incomplete, so no caller can release on evidence that
+    /// was never gathered.
+    #[test]
+    fn an_unclassifiable_descendant_is_reported_and_blocks_completeness() {
+        let _domain_guard = process_domain_test_guard();
+        let token = mint_domain_token();
+        let mut child = Command::new("/bin/sleep")
+            .arg("30")
+            .process_group(0)
+            .env(PAYLOAD_DOMAIN_ENV, &token)
+            .spawn()
+            .unwrap();
+        let identity = ProcessIdentity {
+            pid: child.id(),
+            start_ticks: process_start_ticks(child.id()).unwrap(),
+        };
+
+        inject_unreadable_environ_pid(identity.pid);
+        let capture = capture_and_freeze_residuals(std::process::id(), 0, &token);
+        assert!(
+            capture.unclassifiable.contains(&identity),
+            "an unreadable descendant must be reported as unclassifiable"
+        );
+        assert!(
+            !capture.identities.contains(&identity),
+            "an unclassifiable descendant must not be asserted as a proven member"
+        );
+        assert!(
+            !capture.complete,
+            "a census that could not read part of its domain is not complete"
+        );
+
+        // CONTROL: with the injection cleared the very same process classifies,
+        // proving the bucket above came from the unreadable environment and not
+        // from the process being absent or filtered on some other axis.
+        // Assert about OUR pid, not about the whole tree: a shared test binary
+        // can always have some unrelated descendant exiting mid-scan, and
+        // `is_empty()` here would make this test fail for that instead.
+        inject_unreadable_environ_pid(0);
+        let reread = capture_and_freeze_residuals(std::process::id(), 0, &token);
+        assert!(!reread.unclassifiable.contains(&identity));
+        assert!(reread.identities.contains(&identity));
 
         signal_exact_process(&identity, libc::SIGKILL).unwrap();
         child.wait().unwrap();
@@ -4253,16 +4483,17 @@ mod tests {
     /// ⚠️ THE SECOND CENSUS IS A CONTROL AND IT MUST SEE THE OLDER PROCESS.
     /// Without it this test would pass just as well if the older process had
     /// never been in the walk at all, which would prove nothing about the floor.
-    /// Both processes lead their own group, as `spawn_gated_child` makes every
-    /// real payload do. A plain child would instead inherit the supervisor's
-    /// group and be excluded by the second discriminator, which would let this
-    /// test pass for the wrong reason.
+    /// BOTH processes carry the SAME payload token, so the token cannot be what
+    /// separates them and the floor is the only thing under test. Giving the
+    /// older one no token would let this pass for the wrong reason.
     #[test]
     fn a_process_older_than_the_payload_is_not_a_residual_of_it() {
         let _domain_guard = process_domain_test_guard();
+        let token = mint_domain_token();
         let mut older = Command::new("/bin/sleep")
             .arg("30")
             .process_group(0)
+            .env(PAYLOAD_DOMAIN_ENV, &token)
             .spawn()
             .unwrap();
         let older_identity = ProcessIdentity {
@@ -4278,6 +4509,7 @@ mod tests {
         let mut payload = Command::new("/bin/sleep")
             .arg("30")
             .process_group(0)
+            .env(PAYLOAD_DOMAIN_ENV, &token)
             .spawn()
             .unwrap();
         let payload_identity = ProcessIdentity {
@@ -4296,7 +4528,7 @@ mod tests {
         // assertion below is what keeps the negative one from passing
         // vacuously on a short or stale list.
         let floored =
-            capture_and_freeze_residuals(std::process::id(), payload_identity.start_ticks);
+            capture_and_freeze_residuals(std::process::id(), payload_identity.start_ticks, &token);
         assert!(
             floored.identities.contains(&payload_identity),
             "a descendant started after the payload must remain an exact residual"
@@ -4306,7 +4538,7 @@ mod tests {
             "a process predating the payload was charged to it as a residual"
         );
 
-        let unfloored = capture_and_freeze_residuals(std::process::id(), 0);
+        let unfloored = capture_and_freeze_residuals(std::process::id(), 0, &token);
         assert!(
             unfloored.identities.contains(&older_identity),
             "CONTROL FAILED: the older process was never in the walk, so the \
@@ -4322,9 +4554,11 @@ mod tests {
     #[test]
     fn unreadable_descendant_identity_makes_census_incomplete_then_recovers() {
         let _domain_guard = process_domain_test_guard();
+        let token = mint_domain_token();
         let mut child = Command::new("/bin/sleep")
             .arg("30")
             .process_group(0)
+            .env(PAYLOAD_DOMAIN_ENV, &token)
             .spawn()
             .unwrap();
         let identity = ProcessIdentity {
@@ -4332,17 +4566,20 @@ mod tests {
             start_ticks: process_start_ticks(child.id()).unwrap(),
         };
         inject_unreadable_scan_pid(identity.pid);
-        let incomplete = capture_and_freeze_residuals(std::process::id(), identity.start_ticks);
+        let incomplete =
+            capture_and_freeze_residuals(std::process::id(), identity.start_ticks, &token);
         assert!(!incomplete.complete);
 
         inject_unreadable_scan_pid(0);
-        let visible = capture_and_freeze_residuals(std::process::id(), identity.start_ticks);
+        let visible =
+            capture_and_freeze_residuals(std::process::id(), identity.start_ticks, &token);
         assert!(visible.complete);
         assert!(visible.identities.contains(&identity));
         signal_exact_process(&identity, libc::SIGKILL).unwrap();
         child.wait().unwrap();
         reap_exited_children();
-        let recovered = capture_and_freeze_residuals(std::process::id(), identity.start_ticks);
+        let recovered =
+            capture_and_freeze_residuals(std::process::id(), identity.start_ticks, &token);
         assert!(recovered.complete);
         assert!(recovered.identities.is_empty());
     }

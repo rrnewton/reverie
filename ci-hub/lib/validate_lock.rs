@@ -1637,6 +1637,7 @@ fn settle_empty_payload_domain(
     supervisor_pid: u32,
     pgid: u32,
     leader: &ProcessIdentity,
+    domain_token: &str,
     mut capture: ResidualCapture,
 ) -> ResidualCapture {
     let deadline = Instant::now() + Duration::from_secs(EMPTY_DOMAIN_SETTLE_SECONDS);
@@ -1654,7 +1655,7 @@ fn settle_empty_payload_domain(
         // Repeat the *whole* census, not merely the PGID probe. A helper that
         // becomes visible during the grace window must turn into an exact
         // residual and quarantine; waiting may never erase live ownership.
-        capture = capture_and_freeze_residuals(supervisor_pid, leader.start_ticks);
+        capture = capture_and_freeze_residuals(supervisor_pid, leader.start_ticks, domain_token);
     }
     capture
 }
@@ -4555,7 +4556,12 @@ impl ValidateLock {
             std::process::id(),
             pgid,
             &gated.leader,
-            capture_and_freeze_residuals(std::process::id(), gated.leader.start_ticks),
+            &gated.domain_token,
+            capture_and_freeze_residuals(
+                std::process::id(),
+                gated.leader.start_ticks,
+                &gated.domain_token,
+            ),
         );
         match self.finalize_run_census(
             &args.agent,
