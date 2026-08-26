@@ -125,6 +125,39 @@ cases.append((len(mal) == 1, "an unrecognised binding-shaped line is REPORTED, n
 ab.lane_shas(C(f"[adversarial-reviewer agent, CLAUDE]\nAPPROVED @ {CUR}\n"), "codex", mal)
 cases.append((len(mal) == 1, "one malformed source line is counted once across lanes",
               f"malformed={len(mal)}"))
+# --- A WELL-FORMED WITHDRAWAL IS NOT A MALFORMED LINE -------------------------
+# ⚠️ THE GATE PENALISED THE ONE CORRECT BEHAVIOUR. `approved_binding()` returns
+# None for a withdrawal (it is not an approval), so the line fell into the
+# near-miss branch, whose `_kind` had no withdrawn case and read any line
+# containing "CHANGES-REQUESTED" as a REFUSAL. A withdrawal contains that
+# substring by construction, so it failed the citation test and was counted
+# malformed.
+#
+# MEASURED on hermit#2672: malformed_source_lines=1, and the single detail was a
+# deliberate, correctly-spelled withdrawal used to discharge a refusal after
+# reading the delta. Letting a refusal lapse silently scored clean; withdrawing
+# it explicitly scored as a defect -- and withdrawal is the remedy for nearly
+# every way a verdict decays, so the grammar was making its own fix unusable.
+mal_wd = []
+ab.lane_shas(C(f"CHANGES-REQUESTED-WITHDRAWN-AT: claude {CUR}"), "claude", mal_wd)
+cases.append((len(mal_wd) == 0,
+              "a well-formed WITHDRAWAL is not reported as malformed",
+              f"malformed={len(mal_wd)}"))
+# ...and the same line for the OTHER lane, since the near-miss branch runs per
+# lane and the original defect counted once per scan.
+ab.lane_shas(C(f"CHANGES-REQUESTED-WITHDRAWN-AT: claude {CUR}"), "codex", mal_wd)
+cases.append((len(mal_wd) == 0,
+              "a well-formed WITHDRAWAL is not malformed on the other lane either",
+              f"malformed={len(mal_wd)}"))
+# ⚠️ THE CONTROL THAT MUST STILL FIRE. Without it, exempting withdrawals could be
+# implemented as "any line containing CHANGES-REQUESTED-WITHDRAWN is fine", which
+# would wave through a genuinely broken attempt at one.
+mal_bad_wd = []
+ab.lane_shas(C(f"CHANGES-REQUESTED-WITHDRAWN @ {CUR}"), "claude", mal_bad_wd)
+cases.append((len(mal_bad_wd) == 1,
+              "a MALFORMED withdrawal-shaped line is still REPORTED",
+              f"malformed={len(mal_bad_wd)}"))
+
 mal2 = []
 ab.lane_shas(C(f"[adversarial-reviewer agent, CLAUDE]\nAPPROVED-AT: claude {CUR}\n"), "claude", mal2)
 cases.append((len(mal2) == 0, "a WELL-FORMED binding is not reported as malformed",

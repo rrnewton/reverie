@@ -1078,6 +1078,42 @@ def lane_shas(
             raw_line = raw_lines[_idx] if _idx < len(raw_lines) else line
             binding = approved_binding(line)
             if binding is None:
+                # ⚠️ A WELL-FORMED WITHDRAWAL IS A MARKER, NOT A NEAR MISS, AND
+                # COUNTING IT AS MALFORMED PENALISES THE ONE CORRECT BEHAVIOUR.
+                # `approved_binding()` returns None here because a withdrawal is
+                # not an approval -- so the line fell through to the near-miss
+                # branch below, whose `_kind` has no withdrawn case and reads any
+                # line containing "CHANGES-REQUESTED" as a REFUSAL. A withdrawal
+                # contains that substring by construction, failed the citation
+                # test as a refusal, and was reported malformed.
+                #
+                # MEASURED on hermit#2672, 2026-08-26: `malformed_source_lines=1`,
+                # and the single detail was
+                #     CHANGES-REQUESTED-WITHDRAWN-AT: claude 6837ed241f8d...
+                # posted deliberately by agent(hermit-007) to discharge its own
+                # refusal after reading the delta -- correct token, colon, lane,
+                # full 40-hex.
+                #
+                # ⚠️ THE INCENTIVE IS WHAT MAKES THIS WORSE THAN A MISCOUNT.
+                # Letting a refusal lapse silently scored clean; withdrawing it
+                # explicitly scored as a defect. Withdrawal is the remedy for
+                # nearly every way a verdict decays -- orphaned by a new sha,
+                # outrun, superseded, approved over -- so a grammar that punishes
+                # it makes all of those unfixable.
+                #
+                # `_MARKER_RE` already lists the withdrawn token FIRST, longest
+                # first, precisely so it is not misread as a refusal. This uses
+                # that same parser rather than a second copy of the shape.
+                _withdrawn = parse_marker(line)
+                if _withdrawn is not None and _withdrawn[0] == MARKER_WITHDRAWN:
+                    # A quoted withdrawal is still a citation and is still
+                    # counted as one -- skipping it silently here would move the
+                    # miscount rather than remove it.
+                    if _is_quoted_mention(raw_line) and citations is not None:
+                        citations.append(
+                            (c.get("html_url") or c.get("url") or "?", line[:120])
+                        )
+                    continue
                 if (
                     # `.search`, not `.match`: `re.match` anchors at position 0
                     # regardless of the pattern, which is the other half of the
