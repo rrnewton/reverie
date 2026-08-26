@@ -361,7 +361,7 @@ APPROVAL = "APPROVED-AT"
 
 
 def approvals_in_order(items):
-    """Same-lane approvals, in comment order, as `(lane, sha, cid, position)`.
+    """Same-lane approvals, in comment order, as `(lane, sha, cid, position, issuer)`.
 
     ⚠️ COLLECTED SEPARATELY FROM `markers_with_ids` ON PURPOSE. That list drives
     refusal counting, `binds()`, and the withdrawal collapse logic; an APPROVED
@@ -373,6 +373,14 @@ def approvals_in_order(items):
     not infer which sha is newest -- "a marker that adopts whatever sha is newest
     is exactly how an approval outlives the code it approved", as the block above
     says. Chronology is a fact in the record; sha ordering is not.
+
+    ⚠️ THE ISSUER IS READ FROM THE APPROVAL LINE FIRST, THE COMMENT SECOND, and
+    `None` when neither says. One comment can carry an approval and a refusal with
+    different `BY` clauses, so attributing the approval to whatever the comment's
+    disclosure tag says would credit the wrong member. `None` means UNREADABLE and
+    every caller must treat it as "matches nobody" -- an unsigned approval
+    discharges no refusal, which is the same polarity as the unsigned withdrawal
+    and the unsigned refusal above.
     """
     out = []
     _accepted: list[tuple] = []
@@ -399,7 +407,8 @@ def approvals_in_order(items):
                 continue
             _accepted.append((_author, *triple))
             if triple[1] is not None and triple[2] is not None:
-                out.append((triple[1], triple[2], _cid, pos))
+                out.append((triple[1], triple[2], _cid, pos,
+                            _load_grammar().marker_issuer(line) or _author))
     return out
 
 def markers_with_ids(
@@ -1011,16 +1020,50 @@ def evaluate(
     # honestly landable either stalls real work or trains readers to skip the
     # warning, and the second is worse.
     #
-    # ⚠️ THE THREE THINGS IT MUST NOT CREDIT, each a way this could become a
+    # ⚠️ THE FOUR THINGS IT MUST NOT CREDIT, each a way this could become a
     # rubber stamp:
     #   * a DIFFERENT lane's approval -- that is the cross-lane discharge the
     #     withdrawal logic already refuses;
+    #   * a DIFFERENT MEMBER of the refusing lane -- see the block below;
     #   * an approval EARLIER in the record than the refusal -- that is the lane
     #     approving and then objecting, where the objection is the later word;
     #   * sha recency as a proxy for order. Position is comment order, which is a
     #     fact; sha ordering is not, and inferring it is how an approval outlives
     #     the code it approved.
-    answered, outrun, relaned = [], [], []
+    #
+    # ⚠️ THE DISCHARGE IS KEYED ON THE ISSUER, NOT THE LANE, AND KEYING IT ON THE
+    # LANE RE-OPENED A HOLE THIS REPOSITORY HAD ALREADY CLOSED. `b816d047e`
+    # (dev-hermit#193) made the ISSUER the authority unit in
+    # `ci-hub/health/approval_binding.py` and `gh-merge-verified`, so a refusal at
+    # an old sha followed by ANOTHER member's approval reads REFUSED there. The
+    # first cut of this feature keyed on the lane, so the same comment stream read
+    # ANSWERED here -- two landers, one question, opposite answers. Five lines
+    # below, `unquoted_left` is already keyed `(lane, issuer)` for exactly this
+    # reason.
+    #
+    # Measured 2026-08-26 on the lane-keyed code, driving `evaluate()` directly:
+    #
+    #     refusal by hermit-004, approval by hermit-004   ANSWERED   (right)
+    #     refusal by hermit-004, approval by hermit-003   ANSWERED   (wrong)
+    #     refusal by hermit-004, UNSIGNED approval        ANSWERED   (wrong)
+    #     UNSIGNED refusal, approval by hermit-003        ANSWERED   (wrong)
+    #
+    # The last two are the sharper defect: every other identity path in this file
+    # fails CLOSED when it cannot read a name -- an unsigned withdrawal clears
+    # nothing, an unsigned refusal is cleared by nothing -- and this one alone
+    # matched everybody. hermit#2625 is why that polarity is not stylistic: of its
+    # two same-lane refusals at f013ac4b, the one that must keep binding is exactly
+    # the one carrying no readable issuer.
+    #
+    # ⚠️ AND "ANOTHER MEMBER APPROVED" IS NOT "NOBODY SPOKE AGAIN" -- IT GETS ITS
+    # OWN READOUT. Folding it into OUTRUN would repeat the defect this whole family
+    # of fixes exists to remove: distinct states rendered identically, where the
+    # reading a reader takes is the benign one. OUTRUN means the sha moved and the
+    # record went quiet. COLLEAGUE-APPROVED means the lane did speak, and the
+    # member who objected was not the one speaking. Measured live on hermit#2692:
+    # agent(hermit-triage) refused on the rationale, the author fixed it, and
+    # agent(hermit-007) and agent(hermit-dbg) approved -- triage never returned.
+    answered, outrun, relaned, colleague = [], [], [], []
     for kind, lane, sha, cid in found4:
         if kind != REFUSAL:
             continue
@@ -1028,37 +1071,49 @@ def evaluate(
             k == WITHDRAWN and l == lane and l is not None and s == sha
             for k, l, s in found
         )
-        here = _pos_of_cid.get(cid, -1)
-        reapproved = lane is not None and any(
-            alane == lane and apos > here for alane, _asha, _acid, apos in _approvals
+        # A refusal whose position in the record cannot be found credits NOTHING:
+        # "later in the record" is undecidable without it, and undecidable must
+        # not read as discharged.
+        here = _pos_of_cid.get(cid)
+        refuser = _issuer_of_comment(by_id.get(cid, ""))
+        later_in_lane = [] if here is None or lane is None else [
+            (aissuer, acid) for alane, _asha, acid, apos, aissuer in _approvals
+            if alane == lane and apos > here
+        ]
+        reapproved = refuser is not None and any(
+            aissuer == refuser for aissuer, _acid in later_in_lane
         )
         if withdrew:
             answered.append((lane, sha))
         elif reapproved:
             relaned.append((lane, sha))
+        elif later_in_lane:
+            colleague.append((lane, sha, refuser,
+                              [who for who, _ in later_in_lane]))
         else:
             outrun.append((lane, sha))
 
-    if not outrun:
+    undischarged = len(outrun) + len(colleague)
+    if not undischarged:
         if relaned and not answered:
             return (
                 OK,
                 f"{len(refusals)} refusal marker(s) present, none names {head[:12]}, and "
-                f"every one was ANSWERED -- the refusing lane itself posted "
+                f"every one was ANSWERED -- the refusing MEMBER itself posted "
                 f"{APPROVAL} later in the record. That is a STRONGER clearing form "
-                f"than a withdrawal: the lane re-read a later sha and approved it, "
-                f"rather than saying never mind. It is still not evidence the finding "
-                f"was addressed -- an approval granted on a summary that drifted from "
-                f"the objection produces this exact readout.",
+                f"than a withdrawal: the member who objected re-read a later sha and "
+                f"approved it, rather than saying never mind. It is still not evidence "
+                f"the finding was addressed -- an approval granted on a summary that "
+                f"drifted from the objection produces this exact readout.",
             )
         if relaned:
             return (
                 OK,
                 f"{len(refusals)} refusal marker(s) present, none names {head[:12]}, and "
                 f"every one was ANSWERED -- {len(answered)} by a withdrawal at the sha "
-                f"refused, {len(relaned)} by the refusing lane approving later. Neither "
+                f"refused, {len(relaned)} by the refusing MEMBER approving later. Neither "
                 f"form is evidence the finding was addressed; both are evidence the "
-                f"lane spoke again.",
+                f"member who objected spoke again.",
             )
         return (
             OK,
@@ -1072,17 +1127,39 @@ def evaluate(
     detail = ", ".join(
         f"{lane or '<no lane>'}@{(sha or '<no sha>')[:12]}" for lane, sha in outrun
     )
-    verdict = (
-        f"{len(outrun)} of {len(refusals)} refusal marker(s) were OUTRUN, not answered: "
-        f"{detail}. The sha moved so they no longer name {head[:12]}, and NO withdrawal "
-        f"from the refusing lane says the objection was addressed. This gate cannot tell "
-        f"a reviewer who read the delta from an author who pushed past the objection, and "
-        f"it will not assert the benign reading. To discharge one honestly the refusing "
-        f"lane posts {WITHDRAWN} at the sha it refused."
-        + (f" {len(answered)} other refusal(s) WERE answered by a withdrawal." if answered else "")
-        + (f" {len(relaned)} were answered by the refusing lane approving a later sha."
-           if relaned else "")
-    )
+    parts = []
+    if outrun:
+        parts.append(
+            f"{len(outrun)} of {len(refusals)} refusal marker(s) were OUTRUN, not answered: "
+            f"{detail}. The sha moved so they no longer name {head[:12]}, and NO withdrawal "
+            f"from the refusing lane says the objection was addressed. This gate cannot tell "
+            f"a reviewer who read the delta from an author who pushed past the objection, and "
+            f"it will not assert the benign reading. To discharge one honestly the refusing "
+            f"lane posts {WITHDRAWN} at the sha it refused."
+        )
+    if colleague:
+        who = ", ".join(
+            f"{lane or '<no lane>'}@{(sha or '<no sha>')[:12]} refused by "
+            f"{refuser or '<unsigned>'}, approved over by "
+            f"{'/'.join(a or '<unsigned>' for a in approvers)}"
+            for lane, sha, refuser, approvers in colleague
+        )
+        parts.append(
+            f"{len(colleague)} of {len(refusals)} refusal marker(s) were APPROVED OVER BY "
+            f"ANOTHER MEMBER of the refusing lane, which is not a discharge: {who}. A lane is "
+            f"its MEMBERS, not one authority -- `approval_binding` scores this same shape "
+            f"REFUSED since dev-hermit#193, and an approval whose issuer cannot be read "
+            f"discharges nothing at all. The member who objected has not spoken again. To "
+            f"discharge one, THAT member posts {APPROVAL} at a later sha, or {WITHDRAWN} at "
+            f"the sha it refused."
+        )
+    if answered:
+        parts.append(f"{len(answered)} other refusal(s) WERE answered by a withdrawal.")
+    if relaned:
+        parts.append(
+            f"{len(relaned)} were answered by the refusing MEMBER approving a later sha."
+        )
+    verdict = " ".join(parts)
     # Reported, not blocked, by default: `land-pr.sh` abandons on any non-zero, so
     # blocking here would stop every head carrying an outrun refusal at once. Whether
     # that is the right policy is a decision for the owner, not a side effect of
@@ -1317,33 +1394,98 @@ def self_test() -> int:
     if MOOT == OK:
         bad.append("state: MOOT is zero; land-pr.sh would read a merged pr as clear")
 
-    # ⚠️ THE RE-LANE DISCHARGE, AND THE THREE THINGS IT MUST NOT CREDIT. A refusing
-    # lane that later APPROVES a newer sha has answered its own objection more
+    # ⚠️ THE RE-LANE DISCHARGE, AND THE FOUR THINGS IT MUST NOT CREDIT. A refusing
+    # MEMBER who later APPROVES a newer sha has answered their own objection more
     # strongly than a withdrawal does; scoring that as OUTRUN punished exactly the
     # re-binding behaviour the fleet was asked for. Measured on hermit#2686, where
-    # two refusals were each answered by their own lane and the gate said "2 of 2
+    # two refusals were each answered by their own reviewer and the gate said "2 of 2
     # OUTRUN, not answered".
     #
-    # The controls are the point: crediting a DIFFERENT lane would be the cross-lane
-    # discharge the withdrawal logic already refuses, and crediting an EARLIER
-    # approval would let a lane's approval outrank its own later objection.
+    # ⚠️ THE FIRST CELL HERE ASSERTED THE DEFECT, AND THIS IS A TIGHTENING OF AN
+    # ASSERTION, NOT A RELAXATION. It refused as hermit-004 and approved as
+    # hermit-003 -- two DIFFERENT members of one lane -- and required ANSWERED. That
+    # is the shape `b816d047e` (dev-hermit#193) scores REFUSED in approval_binding,
+    # so the cell pinned this gate to the opposite answer from the other lander on
+    # the same comment stream. It now refuses and approves as the SAME member, and
+    # the different-member case became a control that must NOT read ANSWERED.
+    #
+    # The controls are the point. Crediting a DIFFERENT lane would be the cross-lane
+    # discharge the withdrawal logic already refuses; crediting a DIFFERENT MEMBER
+    # would be the lane-as-one-authority hole #193 closed; crediting an EARLIER
+    # approval would let a lane's approval outrank its own later objection; and an
+    # UNREADABLE issuer on either side must match nobody, exactly as an unsigned
+    # withdrawal already clears nothing.
     _T_OTHER = "c" * 40
     _T_APP = f"APPROVED-AT: claude {_T_OTHER}"
     _T_APP_CODEX = f"APPROVED-AT: codex {_T_OTHER}"
+    _COLLEAGUE = "APPROVED OVER BY ANOTHER MEMBER"
     relane = [
-        ([_tag("hermit-004", _T_REF), _tag("hermit-003", _T_APP)], OK, "ANSWERED",
-         "same lane approving later must discharge"),
-        ([_tag("hermit-004", _T_REF), _tag("hermit-001", _T_APP_CODEX)], OK, "OUTRUN",
+        ([_tag("hermit-004", _T_REF), _tag("hermit-004", _T_APP)], OK,
+         "ANSWERED", _COLLEAGUE,
+         "the SAME member approving later must discharge"),
+        ([_tag("hermit-004", _T_REF), _tag("hermit-003", _T_APP)], OK,
+         _COLLEAGUE, "ANSWERED",
+         "a DIFFERENT member of the same lane must not discharge"),
+        ([_tag("hermit-004", _T_REF), _T_APP], OK,
+         _COLLEAGUE, "ANSWERED",
+         "an UNSIGNED approval must not discharge -- it names nobody"),
+        ([_T_REF, _tag("hermit-003", _T_APP)], OK,
+         _COLLEAGUE, "ANSWERED",
+         "an UNSIGNED refusal is discharged by no approval -- its owner is unknown"),
+        ([_tag("hermit-004", _T_REF), _tag("hermit-001", _T_APP_CODEX)], OK,
+         "OUTRUN", "ANSWERED",
          "a DIFFERENT lane's approval must not discharge"),
-        ([_tag("hermit-003", _T_APP), _tag("hermit-004", _T_REF)], OK, "OUTRUN",
+        ([_tag("hermit-003", _T_APP), _tag("hermit-004", _T_REF)], OK,
+         "OUTRUN", "ANSWERED",
          "an approval EARLIER than the refusal must not discharge"),
-        ([_tag("hermit-004", _T_REF)], OK, "OUTRUN",
+        ([_tag("hermit-004", _T_REF)], OK,
+         "OUTRUN", "ANSWERED",
          "no approval at all must remain outrun"),
+        # ⚠️ THE MARKER'S OWN `BY` OUTRANKS THE COMMENT'S DISCLOSURE TAG, BOTH WAYS.
+        # A reviewer can post on behalf of a run, and one comment can carry two
+        # markers from two members; reading the issuer off the surrounding tag
+        # would credit whoever typed the comment rather than whoever signed the
+        # verdict. Without the second cell the first passes against code that
+        # ignores `BY` and matches on the tag alone.
+        ([_tag("hermit-004", _T_REF), _tag("hermit-003", f"{_T_APP} BY hermit-004")],
+         OK, "ANSWERED", _COLLEAGUE,
+         "an approval signed BY the refusing member discharges, whoever posted it"),
+        ([_tag("hermit-004", _T_REF), _tag("hermit-004", f"{_T_APP} BY hermit-003")],
+         OK, _COLLEAGUE, "ANSWERED",
+         "an approval signed BY someone else does not discharge, whoever posted it"),
     ]
-    for bodies, want_rc, want_word, why in relane:
+    for bodies, want_rc, must_say, must_not_say, why in relane:
         rc, msg = evaluate(bodies, _T_OTHER)
-        if rc != want_rc or want_word not in msg:
-            bad.append(f"re-lane: {why} -- rc={rc} msg={msg[:90]}")
+        if rc != want_rc or must_say not in msg or must_not_say in msg:
+            bad.append(f"re-lane: {why} -- rc={rc} msg={msg[:110]}")
+
+    # ⚠️ AND THE THREE CONTROLS THAT MUST FAIL, because every cell above passes
+    # against a gate that prints all the words every time, or that blocks nothing.
+    #
+    #   1. A colleague's approval must not render like a quiet record. "Nobody spoke
+    #      again" and "the lane spoke, but not the member who objected" need
+    #      opposite responses -- one waits for the author, one waits for a named
+    #      reviewer -- and rendering them alike is the exact defect that let 23
+    #      refusals go unnoticed.
+    #   2. --require-answered must BLOCK the colleague case. If it did not, the
+    #      distinction would be decoration: the stricter policy would admit the
+    #      undischarged head it exists to stop.
+    #   3. --require-answered must still CLEAR the same-member case, or the fix
+    #      over-blocks the behaviour it was written to credit.
+    _colleague_why = evaluate(
+        [_tag("hermit-004", _T_REF), _tag("hermit-003", _T_APP)], _T_OTHER)[1]
+    _quiet_why = evaluate([_tag("hermit-004", _T_REF)], _T_OTHER)[1]
+    if _colleague_why == _quiet_why:
+        bad.append(
+            "a colleague's approval renders IDENTICALLY to a record that went quiet "
+            "-- two states needing opposite responses, one sentence"
+        )
+    if evaluate([_tag("hermit-004", _T_REF), _tag("hermit-003", _T_APP)], _T_OTHER,
+                require_answered=True)[0] != BLOCKED:
+        bad.append("--require-answered did not block a refusal only a COLLEAGUE approved over")
+    if evaluate([_tag("hermit-004", _T_REF), _tag("hermit-004", _T_APP)], _T_OTHER,
+                require_answered=True)[0] != OK:
+        bad.append("--require-answered blocked a refusal its OWN member approved later -- over-blocking")
 
     # ⚠️ ABSENCE MUST BE EXPRESSIBLE, AND A VERDICT MUST REACH STDOUT.
     #
@@ -1431,9 +1573,11 @@ def self_test() -> int:
           f"{len(state_cases)} state case(s) from hermit#2677 and their over-reach "
           f"controls, plus the two-direction guard that ANSWERED states the clearing "
           f"FORM without asserting the finding was addressed, plus "
-          f"{len(relane)} re-lane discharge case(s) from hermit#2686 and their "
-          f"cross-lane and ordering controls, plus {len(absence)} absence-is-not-a-pass "
-          f"case(s) and the four-outcome stdout invariant with its provenance stamp")
+          f"{len(relane)} issuer-scoped re-lane discharge case(s) from hermit#2686 "
+          f"and hermit#2692, their cross-lane, cross-member, unsigned and ordering "
+          f"controls and the three that must fail, plus {len(absence)} "
+          f"absence-is-not-a-pass case(s) and the four-outcome stdout invariant "
+          f"with its provenance stamp")
     return 0
 
 
