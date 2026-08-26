@@ -1,9 +1,10 @@
-//! Box-exclusive-compute admission controller: at most ONE validate OR benchmark
-//! job runs on this box at a time.
+//! Validation/benchmark admission controller: at most TWO validation jobs run
+//! on this box at a time, while a benchmark takes both validation slots.
 //!
 //! Concurrent heavy load manufactures false test FAILEDs (detcore_misc residual
 //! is monotonic in load; see `experiments/multisect_detcore_misc_20260803`), so a
-//! second box-exclusive job is never silently admitted. This is a SEPARATE lock
+//! third validation or a benchmark overlapping any validation is never silently
+//! admitted. This is a SEPARATE lock
 //! from the landing mutex (`landing_lock.rs`): a validate must never block a
 //! lander and vice versa, so they key on different lockfiles. The lease engine
 //! (guard flock + FIFO queue + evidence-based dead-owner reclaim + bounded
@@ -384,9 +385,9 @@ pub struct CensusOrphanedDomainArgs {
     pub evidence: String,
 }
 
-/// A box-exclusive job kind. ALL kinds share the ONE lock, so Hermit validation,
-/// Reverie validation, and benchmarks are mutually exclusive — the point is total box exclusivity, not
-/// per-kind exclusivity.
+/// A validation or benchmark job kind. Validation kinds share the two validation
+/// slots; a benchmark reserves both and therefore remains mutually exclusive
+/// with every validation and benchmark.
 #[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
 pub enum Kind {
     Validate,
@@ -4755,7 +4756,7 @@ impl ValidateLock {
         }
 
         // Admission: block FIFO, or refuse immediately under --no-wait. Never
-        // silently admit a second box-exclusive holder.
+        // silently admit more holders than the selected validation slots allow.
         if args.no_wait {
             let token = active.with_guard(|| {
                 active.try_acquire_after_global_turn(
@@ -6772,27 +6773,28 @@ mod tests {
         let _ = fs::remove_dir_all(paths.lock.parent().unwrap());
     }
 
-    // 3. Second box-exclusive holder is refused/queued; both kinds share the lock.
+    // 3. The legacy one-holder acquisition remains exclusive, and a benchmark
+    // request is refused while that holder is live.
     #[test]
-    fn negative_second_holder_refused_and_queued() {
+    fn negative_legacy_holder_refuses_a_second_request_and_a_benchmark() {
         let paths = temp_paths("second-holder");
         let lock = ValidateLock {
             paths: paths.clone(),
         };
-        // agent1 holds the box as a validate.
+        // agent1 holds the legacy exclusive lease as a validate.
         assert_eq!(
             lock.acquire("agent1", Kind::Validate, "sha1", 0, 60)
                 .unwrap(),
             0
         );
 
-        // (a) a second agent's try_acquire returns Held (not Acquired), naming agent1.
+        // (a) a second legacy acquisition returns Held (not Acquired), naming agent1.
         let token = lock
             .with_guard(|| lock.try_acquire("agent2", Kind::Validate, "sha2", 60))
             .unwrap();
         assert!(
             matches!(&token, AcquireToken::Held { agent, .. } if agent == "agent1"),
-            "second validate must see agent1 holding the box"
+            "second legacy acquisition must see agent1 holding the box"
         );
 
         // (b) the --no-wait refuse path returns exit code 3.
@@ -8552,7 +8554,8 @@ exit 0
             epoch_seconds().unwrap()
         ));
         fs::create_dir_all(&dir).unwrap();
-        let paths = LockPaths::at(dir.join("validate-box.lock"));
+        let mut paths = LockPaths::at(dir.join("repository-validate-lock"));
+        paths.anchor = dir.join("validate-box.lock");
 
         // Removed behavior: both validates took the one global anchor, so the
         // second acquisition deterministically collided with the first.

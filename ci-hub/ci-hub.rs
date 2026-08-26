@@ -132,7 +132,7 @@ VALIDATION ACTIONS
   Start, stop, admit, or persist validation work.
   validate-run            Launch detached validation through ci-hub admission
   validate-stop           Stop detached validate-* user units and verify termination
-  validate-lock           Box-exclusive gate: one validate/bench at a time (GRANT/QUEUE/REFUSE)
+  validate-lock           Two validation slots; benchmarks reserve both (GRANT/QUEUE/REFUSE)
   ledger                  Read or update canonical validate-ledger views
   refresh-history         Ingest fresh GitHub and local history into the local store
 
@@ -286,7 +286,7 @@ enum HubCommand {
     ReviewAttest(ReviewAttestArgs),
     /// Operate the shared-file landing mutex.
     LandLock(landing_lock::LandLockArgs),
-    /// Operate the box-exclusive-compute admission gate (one validate/bench at a time).
+    /// Operate validation admission (two validates, or one benchmark reserving both slots).
     ValidateLock(validate_lock::ValidateLockArgs),
     /// Inspect or switch the committed GH Actions-constrained mode and its GitHub projection.
     CiMode(CiModeArgs),
@@ -2888,7 +2888,7 @@ fn format_wait_hm(seconds: i64) -> String {
 
 /// Exact admission-gated local-validate enqueue command a follow-on runs; this
 /// command never runs it here (`validate-run` creates the durable identity before
-/// the validate-lock serializes box-exclusive compute).
+/// the validate-lock grants one validation slot).
 fn ci_timeout_enqueue_command(head_sha: &str, pr: u64) -> String {
     format!(
         "ci-hub validate-run --checkout \"$PWD\" --agent ci-timeout --target {head_sha} --pr {pr} -- full"

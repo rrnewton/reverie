@@ -2633,9 +2633,10 @@ pub(crate) fn foreign_box_claim(anchor: &Path, own_cleanup: &Path) -> Option<Str
     foreign_box_claim_with_active(anchor, own_cleanup, false)
 }
 
-/// Validation may deliberately coexist with one other live validation.  A
-/// published payload owned by a live supervisor is therefore not a quarantine;
-/// every other cleanup state remains a box-wide refusal.
+/// Validation may deliberately coexist with one other live validation.  An
+/// armed run has not released its start-gated child, and a published payload
+/// owned by a live supervisor is not a quarantine. Every other cleanup state
+/// remains a box-wide refusal.
 pub(crate) fn foreign_box_quarantine(anchor: &Path, own_cleanup: &Path) -> Option<String> {
     foreign_box_claim_with_active(anchor, own_cleanup, true)
 }
@@ -2682,6 +2683,7 @@ fn foreign_box_claim_with_active(
                 // The owning repository discharged its record. Prune and move on.
                 let _ = fs::remove_file(&claim_path);
             }
+            CleanupVerification::Armed { .. } if allow_published => continue,
             CleanupVerification::Active { record, .. }
                 if allow_published && matches!(record.phase, CleanupPhase::Published { .. }) =>
             {
@@ -2689,7 +2691,11 @@ fn foreign_box_claim_with_active(
             }
             other => {
                 let detail = match &other {
-                    CleanupVerification::Unknown {
+                    CleanupVerification::Armed { record: r, .. }
+                    | CleanupVerification::Active { record: r, .. }
+                    | CleanupVerification::Uncensused { record: r, .. }
+                    | CleanupVerification::Recoverable { record: r, .. }
+                    | CleanupVerification::Unknown {
                         record: Some(r), ..
                     } => {
                         format!(
@@ -6456,6 +6462,26 @@ exit 0
         assert!(
             foreign_box_claim(&anchor, &mine).is_some(),
             "benchmarks remain exclusive and must refuse the same live validation"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_armed_validation_is_allowed_only_by_the_concurrent_path() {
+        let (anchor, dir) = claim_fixture("armed-validation");
+        let theirs = dir.join("other-repo/.validate-lock.cleanup-required");
+        let mine = dir.join("my-repo/.validate-lock.slot-1.cleanup-required");
+        armed_record_at(&theirs, "first-validate", "validate:first");
+        register_box_claim(&anchor, &theirs, "first-validate", "validate:first");
+
+        assert!(
+            foreign_box_claim(&anchor, &mine).is_some(),
+            "without the concurrent-validation allowance, the armed record reproduces the refusal"
+        );
+        assert_eq!(
+            foreign_box_quarantine(&anchor, &mine),
+            None,
+            "the start gate proves that an armed validation has not started its payload"
         );
         let _ = fs::remove_dir_all(&dir);
     }

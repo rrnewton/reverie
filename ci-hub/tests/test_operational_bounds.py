@@ -671,10 +671,10 @@ class OperationalBoundsTest(unittest.TestCase):
     def test_shared_lander_preserves_recoverable_arm_and_durable_abandonment(
         self,
     ) -> None:
-        front_door = (ROOT / "ci-hub/ci-hub.rs").read_text()
-        self.assertTrue(
-            front_door.startswith("#!/usr/bin/env -S rust-script --force\n")
-        )
+        front_door = (ROOT / "ci-hub/ci-hub").read_text()
+        self.assertTrue(front_door.startswith("#!/bin/bash\n"))
+        rust_source = (ROOT / "ci-hub/ci-hub.rs").read_text()
+        self.assertTrue(rust_source.startswith("#!/usr/bin/env -S rust-script --force\n"))
         script = (ROOT / "ci-hub/landing/land-pr.sh").read_text()
         detached = script.index('nohup setsid "$0"')
         inherit = script.index('"$ROOT/ci-hub/ci-hub" inherit-obligations')

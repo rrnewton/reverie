@@ -204,6 +204,17 @@ class ParallelValidatePathTest(unittest.TestCase):
         subprocess.run(["git", "-C", str(repo), "branch", "-M", "main"], check=True)
         subprocess.run(["git", "-C", str(repo), "remote", "add", "origin", str(origin)], check=True)
         subprocess.run(["git", "-C", str(repo), "push", "--quiet", "-u", "origin", "main"], check=True)
+        updater = self.root / "updater"
+        subprocess.run(
+            ["git", "clone", "--quiet", "--branch", "main", str(origin), str(updater)],
+            check=True,
+        )
+        subprocess.run(["git", "-C", str(updater), "config", "user.email", "test@example.invalid"], check=True)
+        subprocess.run(["git", "-C", str(updater), "config", "user.name", "test"], check=True)
+        (updater / "advance").write_text("advance")
+        subprocess.run(["git", "-C", str(updater), "add", "advance"], check=True)
+        subprocess.run(["git", "-C", str(updater), "commit", "--quiet", "-m", "advance"], check=True)
+        subprocess.run(["git", "-C", str(updater), "push", "--quiet", "origin", "main"], check=True)
 
         common = Path(
             subprocess.run(
@@ -225,7 +236,8 @@ class ParallelValidatePathTest(unittest.TestCase):
             text=True,
         )
         self.assertNotEqual(old.returncode, 0)
-        self.assertIn("cannot lock ref", old.stderr)
+        self.assertIn("origin/main", old.stderr)
+        self.assertIn("failed", old.stderr)
         ref_lock.unlink()
 
         result: multiprocessing.Queue[tuple[int, str]] = multiprocessing.Queue()

@@ -1,1 +1,26 @@
-ci-hub.rs
+#!/bin/bash
+# Keep the ordinary rust-script entry point for every command except validate-run.
+# A validate launch otherwise reaches the user's one rust-script target/cache
+# before start_unit can install the run-owned XDG_CACHE_HOME for the systemd unit.
+set -uo pipefail
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+script="$script_dir/ci-hub.rs"
+
+if [[ "${1:-}" != "validate-run" ]]; then
+    exec rust-script --force "$script" "$@"
+fi
+
+runtime_parent="${XDG_RUNTIME_DIR:-/tmp}"
+private_root="$(mktemp -d "$runtime_parent/ci-hub-validate-rust-script-XXXXXXXX")" || {
+    printf '%s\n' "ci-hub: cannot create private rust-script cache under $runtime_parent" >&2
+    exit 1
+}
+cleanup() {
+    rm -rf -- "$private_root"
+}
+trap cleanup EXIT
+
+XDG_CACHE_HOME="$private_root/cache" rust-script --force "$script" "$@"
+exit_code=$?
+exit "$exit_code"

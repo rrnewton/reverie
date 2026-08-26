@@ -493,12 +493,11 @@ def prepare_private_cargo_home(parent: Path, *, run: Runner, shared: Path) -> Pa
     """Give this validate its own CARGO_HOME, seeded by reflink from the shared one.
 
     WHY. Cargo serialises every cache mutation on one lock file,
-    `$CARGO_HOME/.package-cache`. `ci-hub validate-lock` is box-exclusive, so no
-    two VALIDATES run at once -- but nothing serialises a validate against the
-    ~18 agents running ordinary `cargo build` in their own slots, and every one
-    of them inherits the same `~/.cargo`. When a validate node loses that race
-    it does not run slowly, it sits in `Blocking waiting for file lock on
-    package cache` until its node budget kills it. Measured on devbig030:
+    `$CARGO_HOME/.package-cache`. Two validations may now coexist, and neither
+    should share that lock with the other validation or with the ~18 agents
+    running ordinary `cargo build` in their own slots. When a validate node
+    loses that race it does not run slowly, it sits in `Blocking waiting for file
+    lock on package cache` until its node budget kills it. Measured on devbig030:
     `privileged-build.privileged_tests` has a median of 0.05s across 21 passing
     runs and died at its 120s budget with nothing else in its output, and 9 of
     14 node timeouts across 78 retained logs show that message.
@@ -1693,7 +1692,7 @@ def main(
             # The pane is OBSERVER-ONLY: it watches the durable log and the
             # systemd unit and never runs the driver. So a full workspace must
             # cost us the window, not the validation -- this run already holds
-            # the box-exclusive validate-lock, and killing it to protect a
+            # a validate-lock slot, and killing it to protect a
             # cosmetic cap would be the worse trade. Refuse the pane loudly,
             # keep the work.
             try:

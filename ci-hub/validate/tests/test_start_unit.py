@@ -785,8 +785,13 @@ class StartUnitTest(unittest.TestCase):
         self.assertEqual(0, rc, error)
         self.assertEqual(str(self.checkout), self._working_directory())
         self.assertFalse(
-            any(command[:2] == ["mktemp", "-d"] for command in self.fake.commands),
-            "opt-out must not build a temp checkout at all",
+            any(
+                command[:2] == ["mktemp", "-d"]
+                and len(command) > 2
+                and "validate-fresh-" in command[2]
+                for command in self.fake.commands
+            ),
+            "opt-out must not build a temp checkout",
         )
 
     def test_incomplete_fresh_checkout_refuses_before_admission(self) -> None:
