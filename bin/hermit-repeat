@@ -747,6 +747,70 @@ def stats(values: list[int]) -> str:
     return f"min {s[0]}  max {s[-1]}  distinct {uniq}"
 
 
+def syscall_range_lines(diverged: list) -> list[str]:
+    """The syscall row of the range table, which CANNOT use plain stats().
+
+    Two properties make this coordinate different from the other three, and
+    pooling it like them produced two measured falsehoods:
+
+    1. IT IS PER-THREAD. `finish syscall #N` counts within one dtid, as the
+       UNIT KEYSPACES block printed a few lines below says in as many words.
+       Pooling it across threads reports two DIFFERENT positions as one:
+       run1 at dtid 3 #12 and run2 at dtid 7 #12 rendered as
+       `min 12  max 12  distinct 1`, which is the report's own wording for
+       "the divergence point never moved". So the range is broken out per
+       dtid, and a single pooled line is emitted only when every run
+       diverged in the same thread.
+    2. IT IS THE ONLY COORDINATE GATED ON A CROSS-CHECK. `coord_verified` is
+       false when hermit published no turn to check our record index
+       against, and CHECK_KIND_MEANING calls such a value "indicative, not
+       established". Those were silently setting the published min and max:
+       a fixture with one verified 12 and one unverified 999 printed
+       `min 12  max 999  distinct 2` with nothing on the line to say the max
+       was never established. Unverified ordinals are excluded from the
+       range and DISCLOSED, in the same `[n of m]` shape the other rows use
+       for absent values -- the tool already withholds this number when the
+       cross-check FAILS, and this applies the same discipline one step
+       further out, to the aggregate a reader actually quotes.
+    """
+    label = "syscall(#)"
+    n = len(diverged)
+    usable = [r for r in diverged if r.syscall_ordinal is not None and r.coord_verified]
+    indicative = [r for r in diverged if r.syscall_ordinal is not None and not r.coord_verified]
+    absent = n - len(usable) - len(indicative)
+
+    notes = []
+    if absent:
+        notes.append(f"{absent} of {n} not reported")
+    if indicative:
+        notes.append(
+            f"{len(indicative)} of {n} EXCLUDED as unverified "
+            f"({', '.join(r.name for r in indicative[:4])}"
+            f"{'...' if len(indicative) > 4 else ''})"
+        )
+    tail = f"   [{'; '.join(notes)}]" if notes else ""
+
+    if not usable:
+        return [f"  {label:<12} -{tail}"]
+
+    dtids = sorted({r.syscall_dtid for r in usable})
+    if len(dtids) == 1:
+        vals = [r.syscall_ordinal for r in usable]
+        return [f"  {label:<12} {stats(vals)}  (all in dtid {dtids[0]}){tail}"]
+
+    out = [
+        f"  {label:<12} NOT POOLED -- these runs diverged in {len(dtids)} DIFFERENT "
+        f"threads{tail}",
+        "               and `finish syscall #N` counts per thread, so one range "
+        "across them",
+        "               would compare positions on different axes. Per dtid:",
+    ]
+    for dtid in dtids:
+        vals = [r.syscall_ordinal for r in usable if r.syscall_dtid == dtid]
+        out.append(f"                 dtid {dtid}: {stats(vals)}   [{len(vals)} of {n} runs]")
+    return out
+
+
 # The runs inside one CONCURRENT sweep are not independent, and the binomial
 # interval assumes they are.
 #
@@ -1079,11 +1143,12 @@ def write_report(args, meta: dict, results: list[RunResult], fh):
             ("info_record", [r.info_record for r in diverged if r.info_record is not None]),
             ("sched_turn", [r.sched_turn for r in diverged if r.sched_turn is not None]),
             ("virtual_ns", [r.virtual_ns for r in diverged if r.virtual_ns is not None]),
-            ("syscall(#)", [r.syscall_ordinal for r in diverged if r.syscall_ordinal is not None]),
         ):
             missing = len(diverged) - len(vals)
             tail = f"   [{missing} of {len(diverged)} not reported]" if missing else ""
             w(f"  {label:<12} {stats(vals)}{tail}")
+        for line in syscall_range_lines(diverged):
+            w(line)
         unverified = [r.name for r in diverged if r.syscall_ordinal is not None and not r.coord_verified]
         if unverified:
             w(f"  (?) marks an UNVERIFIED coordinate ({len(unverified)} of {len(diverged)}): hermit")
@@ -1924,6 +1989,63 @@ def _selftest() -> int:
         any("FAILED" in line for line in verdict_lines(report_meta, all_clean)),
         False,
     )
+
+    # --- the syscall range row --------------------------------------------
+    # TWO MEASURED FALSEHOODS THIS ROW USED TO PRINT. Both were found by
+    # rendering the report from fixtures, not by reading it: the divergence
+    # range had never been observed firing at all, because the only run that
+    # ever exercised the tool end to end had nothing diverge.
+    def sysrun(name, ordinal, dtid, verified):
+        return RunResult(
+            index=int(name[-1]), name=name, dir=f"/fixture/{name}",
+            category="diverged", why="diverged",
+            info_record=90 + int(name[-1]), sched_turn=60 + int(name[-1]),
+            virtual_ns=100 * int(name[-1]),
+            syscall_ordinal=ordinal, syscall_dtid=dtid, coord_verified=verified,
+        )
+
+    # 1. PER-THREAD COUNTER POOLED ACROSS THREADS. Two runs diverging at
+    #    ordinal 12 in dtid 3 and dtid 7 are two DIFFERENT positions, and the
+    #    old row rendered them as `min 12  max 12  distinct 1` -- this
+    #    report's own wording for a divergence point that never moved.
+    two_threads = [sysrun("run1", 12, 3, True), sysrun("run2", 12, 7, True)]
+    lines = syscall_range_lines(two_threads)
+    check("two dtids are NOT pooled into one range",
+          any("NOT POOLED" in l for l in lines), True)
+    check("two dtids never render as the old distinct-1 claim",
+          any("min 12  max 12  distinct 1" in l and "dtid" not in l for l in lines), False)
+    check("each thread gets its own range", sum("dtid " in l and "min" in l for l in lines), 2)
+
+    # 2. AN UNVERIFIED ORDINAL SETTING THE PUBLISHED MAX. CHECK_KIND_MEANING
+    #    calls such a value "indicative, not established"; the old row folded
+    #    it into min/max silently, so the max came from a number the tool
+    #    refuses to vouch for and the line said nothing.
+    mixed = [sysrun("run1", 12, 3, True), sysrun("run2", 999, 3, False)]
+    lines = syscall_range_lines(mixed)
+    check("an unverified ordinal does not set the range",
+          any("max 999" in l for l in lines), False)
+    check("the range is the verified value alone",
+          any("min 12  max 12  distinct 1" in l for l in lines), True)
+    check("excluding it is DISCLOSED, not silent",
+          any("EXCLUDED as unverified" in l and "run2" in l for l in lines), True)
+
+    # 3. THE GOOD CASE IS UNCHANGED -- a fix that suppressed the row whenever
+    #    it was awkward would pass 1 and 2 and destroy the feature.
+    same_thread = [sysrun("run1", 12, 3, True), sysrun("run2", 40, 3, True)]
+    lines = syscall_range_lines(same_thread)
+    check("one thread, all verified: a single pooled range is still reported",
+          len(lines), 1)
+    check("and it carries the real min, max and distinct",
+          "min 12  max 40  distinct 2" in lines[0], True)
+    check("and it names the thread the range belongs to",
+          "dtid 3" in lines[0], True)
+
+    # 4. NO USABLE ORDINAL IS AN ABSENCE, NOT A ZERO-WIDTH RANGE.
+    none_usable = [sysrun("run1", 999, 3, False), sysrun("run2", None, None, False)]
+    lines = syscall_range_lines(none_usable)
+    check("no verified ordinal yields no range at all", lines[0].split()[1], "-")
+    check("and says how many of each reason",
+          "1 of 2 not reported" in lines[0] and "1 of 2 EXCLUDED" in lines[0], True)
 
     for f in failures:
         print(f"{PROG}: SELFTEST FAIL {f}", file=sys.stderr)
