@@ -16,7 +16,7 @@ categories = ["development-tools::debugging", "os::linux-apis"]
 
 [dependencies]
 bitflags = { version = "2.13.1", features = ["serde"], default-features = false }
-derive_more = { version = "1.0.0", features = ["full"] }
+derive_more = { version = "2.1.1", features = ["full"] }
 libc = "0.2.186"
 linux-raw-sys = { version = "0.12.1", default-features = false, features = ["std", "general", "system", "net"] }
 nix = { version = "0.30.1", features = ["dir", "event", "hostname", "inotify", "ioctl", "mman", "mount", "net", "poll", "ptrace", "reboot", "resource", "sched", "signal", "term", "time", "user", "zerocopy"] }
