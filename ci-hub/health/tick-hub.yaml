@@ -176,6 +176,33 @@ reminders:
   # completed batch count and age of the oldest unpublished batch. This entry is
   # DETECT ONLY and stays that way; the mutation lives in its own entry below so
   # observation never shares a budget with a push (see ledger_publish_sweep).
+  # An OPEN pull request whose branch is deleted keeps rendering normally -- title,
+  # head sha, diff and comments all come from stored metadata -- while the OBJECT
+  # survives only until the remote collects it. ORC cannot see GitHub-side object
+  # retention, so this earns its place under the admission test above.
+  #
+  # ⚠️ THE NUMBER IS A LOWER BOUND, NOT A COUNT. A sweep cannot see a tip that was
+  # already collected; it counts the population standing at the moment it runs.
+  # That is exactly why this is on a clock rather than an audit -- an audit measures
+  # the survivors. Measured 2026-08-25: 27 open heads swept in 55s, 0 unreachable,
+  # while two commits had gone readable->unreadable in a ten-minute window earlier
+  # the same evening.
+  #
+  # DETECT-ONLY. It reports and never rescues: the salvage pattern is owned
+  # elsewhere, and a push behind a timer is a different and much worse thing.
+  - name: pr_tip_reachability
+    cadence_secs: 3600
+    gate:
+      cmd: python3 ci-hub/health/pr_tip_reachability.py --gate
+      when: failure
+      capture: true
+    emit:
+      kind: action
+      skill: hard-warn-coordinator
+      fields:
+        component: pr-tip-reachability
+      title: "an OPEN pull request's head commit is no longer fetchable: {summary}"
+
   - name: ledger_spool_backlog
     cadence_secs: 900
     gate:
