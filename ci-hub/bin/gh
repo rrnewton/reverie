@@ -106,6 +106,13 @@ def _option_value(args: list[str], index: int, name: str) -> tuple[str, int] | N
     return None
 
 
+#: Set only by ``--verdict``, which ONLY ``ci-hub/bin/review-attest`` passes.
+#: This is not a user-facing override: intent is declared by WHICH COMMAND you
+#: run, and an override people type routinely is a warning again, one
+#: indirection down.
+_VERDICT_INTENT = False
+
+
 def disclosure_options(args: list[str]) -> tuple[list[str], dict[str, str]]:
     """Strip leading boundary options without parsing comment body text as flags."""
 
@@ -114,6 +121,11 @@ def disclosure_options(args: list[str]) -> tuple[list[str], dict[str, str]]:
     while index < len(args):
         if args[index] == "--model" or args[index].startswith("--model="):
             die("--model is process-resolved and must not be supplied by the caller")
+        if args[index] == "--verdict":
+            global _VERDICT_INTENT
+            _VERDICT_INTENT = True
+            index += 1
+            continue
         matched = False
         for name, key in (
             ("--who", "who"),
@@ -161,7 +173,86 @@ def validate_disclosure(
         die(str(error))
 
 
+#: A VERDICT THAT CANNOT BIND MUST NOT BE POSTED SILENTLY.
+#:
+#: The first version of this guard refused any COMMENT carrying a verdict
+#: marker, exempting only `review-attest`. That was wrong, and using it proved
+#: it within a minute: `review-attest` is a COORDINATOR ATTESTATION of a
+#: DISPATCHED review -- its own help says it "does not prove the executing
+#: process family" -- so it is NOT how a reviewer publishes a verdict they
+#: reached themselves. A reviewer posts a COMMENT. Refusing that refuses the
+#: PRIMARY USE, which is the mirror failure of warning and letting everything
+#: through: both end with the check ignored.
+#:
+#: So the refusal is narrowed to the case that is SILENTLY HARMFUL. A comment
+#: carrying a marker that BINDS is a verdict and is allowed. A comment quoting
+#: a marker in prose is a citation and is allowed. What is refused is a
+#: marker-SHAPED line that will NOT bind: the reviewer believes they voted and
+#: nothing recorded it.
+#:
+#: ⚠️ THAT IS NOT HYPOTHETICAL AND IT IS THE MOST EXPENSIVE FAILURE IN THIS
+#: SYSTEM. `APPROVED-AT: claude 6457ba0acfb4` -- canonical form, own line,
+#: correct lane, merely ABBREVIATED -- bound nothing and reported nothing.
+#: hermit#1689 carried TWO blocking reviews written without the -AT suffix,
+#: neither bound, and the head sat NINETEEN DAYS while both reviewers believed
+#: they had blocked it.
+#:
+#: Refusing here costs a re-post. Not refusing costs a review.
+#:
+#: ⚠️ LIMIT, STATED SO NOBODY READS THIS AS FULL COVERAGE. It asks
+#: `approval_binding`, so it can only refuse what THAT parser cannot bind. A
+#: refusal written `CHANGES-REQUESTED: <lane> <sha>` -- no `-AT` -- IS honoured
+#: there on purpose (`reject_current` accepts the missing suffix, because a
+#: malformed refusal must still refuse), so this guard allows it. THE LANDERS
+#: USE A DIFFERENT PARSER AND DO NOT HONOUR IT, which is a separate live P0 and
+#: a fail-open on the refusal path. This guard does not and cannot close that:
+#: two parsers for one grammar is the underlying defect, and a third checker
+#: agreeing with one of them would not fix the disagreement.
+def _marker_binding(body: str) -> tuple[int, int, bool]:
+    """``(bound, unbindable, parser_can_discriminate_quotations)`` for ``body``."""
+    try:
+        sys.path.insert(0, str(ROOT / "ci-hub/health"))
+        import approval_binding as _ab  # noqa: PLC0415
+    except Exception:
+        return (0, 0, False)
+    capable = hasattr(_ab, "_is_quoted_mention")
+    bound = 0
+    unbindable: list[tuple[str, str]] = []
+    for lane in ("claude", "codex"):
+        bound += len(_ab.lane_shas([{"body": body, "html_url": "?"}], lane, unbindable))
+    return (bound, len(unbindable), capable)
+
+
+def refuse_unbindable_verdict(body: str) -> None:
+    """Refuse a body whose verdict-shaped line would NOT bind."""
+    bound, unbindable, capable = _marker_binding(body)
+    if not unbindable:
+        return
+    detail = (
+        f"body carries {unbindable} verdict-shaped line(s) that will NOT bind"
+        + (f" (and {bound} that will)" if bound else "")
+    )
+    if not capable:
+        print(
+            "fleet-gh: WARNING: " + detail + " -- NOT refusing, because this "
+            "checkout's approval_binding cannot yet tell a QUOTED marker from an "
+            "unbindable one (dev-hermit#188), so refusing would block comments "
+            "that merely discuss the grammar.",
+            file=sys.stderr,
+        )
+        return
+    die(
+        detail + ". A verdict that cannot bind is silently lost: the reviewer "
+        "believes they voted and nothing records it. Use the full 40-hex head "
+        "sha and the exact grammar, or quote the marker inside inline code with "
+        "prose around it if you are discussing rather than issuing it."
+    )
+
+
 def attributed(body: str, disclosure: disclosure_tag.Disclosure) -> str:
+    # Inside `attributed` on purpose: there are five call sites and a gate that
+    # misses one is not a gate. Every comment body passes through here.
+    refuse_unbindable_verdict(body)
     existing = DISCLOSURE_RE.match(body)
     if existing:
         if existing.group("role") not in disclosure_tag.ROLES:
