@@ -644,6 +644,37 @@ def evaluate(
     # nobody had answered. That is the reader's half of the 23 orphaned refusals --
     # they went unnoticed because this line rendered both cases identically.
     #
+    # ⚠️ AND ANSWERED IS A STATEMENT ABOUT THE RECORD'S SHAPE, NOT ABOUT THE FIX.
+    # This is the one way a verdict loses its meaning that leaves no trace here.
+    # Every other one is visible to a reader of the record: a refusal outrun by a
+    # push has no withdrawal, a stale label names an older sha, a malformed line
+    # fails to parse, a cross-lane withdrawal comes from the wrong lane. Each is an
+    # ABSENCE or a MISMATCH that something can point at.
+    #
+    # A refusal DISCHARGED BY FIXING THE WRONG THING is none of those. The refusing
+    # lane really did withdraw, at the sha it really did refuse, after a change the
+    # author really did make -- so it renders as the ideal case, and it is the
+    # strongest ANSWERED signal this gate can emit. The objection was addressed in
+    # FORM; the finding is untouched.
+    #
+    # Measured 2026-08-26 on hermit#2672: a reviewer summarising a live claude
+    # refusal described it as blocking on "the reserved LiteInst runtime", which
+    # that lane had explicitly excluded under LIMITS as a debug-profile artifact
+    # present in its own unmutated control. The actual blocker was an untested
+    # producer. Had the author fixed the LiteInst staging and the lane withdrawn on
+    # that summary, this branch would have printed the sentence above and the
+    # untested producer would have landed. It was caught only because the refusing
+    # lane re-read its own words, which is not a mechanism.
+    #
+    # NOT DETECTABLE HERE, and no check is proposed: deciding whether a delta
+    # addresses a finding is the review, and a gate that claimed to do it would be
+    # the ninth failure mode wearing a green tick. What this gate can stop doing is
+    # ASSERTING the benign reading, which is the same correction ANSWERED-vs-OUTRUN
+    # made one level up -- so the verdict above states the form and declines the
+    # inference. The reader's remedy is the cheap one: a withdrawal should quote the
+    # finding it believes was addressed, so a summary that drifted is visible next
+    # to the thing it summarised.
+    #
     # ⚠️ THE CLASSIFICATION DOES NOT INFER THE HEAD, DELIBERATELY. A marker that
     # adopts whatever sha is newest is exactly how an approval outlives the code it
     # approved. Nothing below reads `head`: a refusal is ANSWERED only when its own
@@ -665,7 +696,9 @@ def evaluate(
             OK,
             f"{len(refusals)} refusal marker(s) present, none names {head[:12]}, and "
             f"every one was ANSWERED -- its own lane withdrew at the sha it refused. "
-            f"This is the clearing path that carries evidence someone read the delta.",
+            f"That is the correct clearing FORM. It is not evidence the finding was "
+            f"addressed: a withdrawal granted for a change that answered the "
+            f"description rather than the objection produces this exact readout.",
         )
 
     detail = ", ".join(
@@ -756,6 +789,26 @@ def self_test() -> int:
     if answered_why == outrun_why:
         bad.append("answered and outrun render IDENTICALLY -- the defect is restored")
 
+    # ⚠️ AND ANSWERED MUST NOT CLAIM THE FINDING WAS ADDRESSED. A refusal discharged
+    # by fixing the WRONG THING renders here as the ideal case -- real withdrawal,
+    # real lane, real sha -- so the only thing this gate can get wrong is the
+    # sentence it adds on top. This asserts the readout states the FORM and declines
+    # the inference. Both directions, because a check on the disclaimer alone would
+    # pass against a verdict that printed the overclaim beside it.
+    if "not evidence the finding was addressed" not in answered_why:
+        bad.append(
+            "the ANSWERED readout no longer states that the clearing form is not "
+            "evidence the finding was addressed -- a refusal discharged by fixing "
+            "the wrong thing reads as fully cleared"
+        )
+    for overclaim in ("carries evidence someone read the delta",):
+        if overclaim in answered_why:
+            bad.append(
+                f"the ANSWERED readout asserts {overclaim!r} -- a same-lane "
+                f"withdrawal at the refused sha proves the form, not that anyone "
+                f"compared the delta against the objection"
+            )
+
     # The opt-in stricter rule blocks the outrun case and leaves the answered one.
     if evaluate([_T_REF], _MOVED, require_answered=True)[0] != BLOCKED:
         bad.append("--require-answered did not block an outrun refusal")
@@ -800,7 +853,9 @@ def self_test() -> int:
     print(f"changes-requested-gate self-test: OK -- {len(cases)} withdrawal-scoping "
           f"case(s) including the same-lane pair from hermit#2625, plus {len(render)} "
           f"answered-vs-outrun rendering case(s) and their identity control, plus "
-          f"{len(state_cases)} state case(s) from hermit#2677 and their over-reach controls")
+          f"{len(state_cases)} state case(s) from hermit#2677 and their over-reach "
+          f"controls, plus the two-direction guard that ANSWERED states the clearing "
+          f"FORM without asserting the finding was addressed")
     return 0
 
 
