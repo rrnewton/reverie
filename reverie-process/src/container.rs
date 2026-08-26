@@ -901,12 +901,34 @@ impl Container {
                 Err(RunError::ExitStatus(child.wait()?))
             }
             Ok(n) => {
-                // FIXME: Handle errors
-                let value: Result<T, Error> =
-                    bincode::serde::decode_from_slice(&buf[0..n], bincode::config::legacy())
-                        .unwrap()
-                        .0;
-                Ok(value.unwrap())
+                // ⚠️ THE CHILD'S ERROR IS A RESULT, NOT A PANIC. Container setup
+                // runs in the child -- mounts included -- and it reports failure
+                // by sending `Err(..)` down this pipe. Unwrapping that turned
+                // every ORDINARY, RECOVERABLE setup failure into a parent panic.
+                //
+                // Reproduced on reverie main 200439dc8de9 with a bind mount whose
+                // source does not exist, which the kernel answers with ENOENT:
+                //     Container::new()
+                //         .unshare(USER | MOUNT).map_root()
+                //         .mount(Mount::bind("/nonexistent-...", "/test"))
+                //         .run(|| 42)
+                //   panicked at reverie-process/src/container.rs:909:26
+                //
+                // `RunError::Spawn` is documented as "an error that occurred while
+                // spawning the container", and mounting IS part of that spawn, so
+                // the child's `Error` maps onto it exactly rather than needing a
+                // new variant.
+                match bincode::serde::decode_from_slice::<Result<T, Error>, _>(
+                    &buf[0..n],
+                    bincode::config::legacy(),
+                ) {
+                    Ok((value, _)) => value.map_err(RunError::Spawn),
+                    // A message we cannot decode is not a child error -- we do not
+                    // know what the child said. That is the same position as the
+                    // 0-byte case above, so it gets the same honest answer: report
+                    // how the process exited rather than inventing a cause.
+                    Err(_) => Err(RunError::ExitStatus(child.wait()?)),
+                }
             }
             Err(err) => {
                 // FIXME: Handle this error
@@ -1118,5 +1140,74 @@ mod tests {
         println!("Final table size {:?}", results.len());
         assert_eq!(results.values().fold(0, |n, v| std::cmp::max(n, *v)), 1);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod repro_child_error_panics {
+    use super::Container;
+    use super::Mount;
+    use super::Namespace;
+
+    /// A bind mount whose SOURCE DOES NOT EXIST is an ordinary recoverable
+    /// failure -- the kernel answers ENOENT. The child reports it; the parent
+    /// should return it. Today the parent unwraps it.
+    #[test]
+    fn a_recoverable_child_mount_failure_reaches_the_parent_as_an_error() {
+        let r = Container::new()
+            .unshare(Namespace::USER | Namespace::MOUNT)
+            .map_root()
+            .mount(
+                Mount::bind("/nonexistent-source-for-this-test", "/test"),
+            )
+            .run(|| 42);
+        println!("RESULT: {:?}", r);
+        assert!(r.is_err(), "expected an Err, got {:?}", r);
+    }
+}
+
+#[cfg(test)]
+mod child_errors_are_returned_not_unwrapped {
+    use super::Container;
+    use super::Mount;
+    use super::Namespace;
+    use super::RunError;
+
+    /// ⚠️ THE CONTROL, AND WITHOUT IT THE FAILURE TEST PROVES NOTHING. Returning
+    /// `Err` unconditionally would satisfy "a bad mount reports an error" and
+    /// break every container that works. `/test` must actually come up.
+    #[test]
+    fn a_good_mount_still_produces_a_working_test_directory() {
+        let r = Container::new()
+            .unshare(Namespace::USER | Namespace::MOUNT)
+            .map_root()
+            .mount(Mount::tmpfs("/test").touch_target())
+            .run(|| std::path::Path::new("/test").is_dir());
+        assert_eq!(
+            r,
+            Ok(true),
+            "/test must be mounted and visible to the child; got {:?}",
+            r
+        );
+    }
+
+    /// The child's error must arrive TYPED, not flattened. `context: Mount` and
+    /// the errno are what tell a caller which mount failed and why; a bare
+    /// "something went wrong" would be a quieter version of the panic.
+    #[test]
+    fn the_childs_error_keeps_its_errno_and_context() {
+        let r: Result<i32, RunError> = Container::new()
+            .unshare(Namespace::USER | Namespace::MOUNT)
+            .map_root()
+            .mount(Mount::bind("/nonexistent-source-for-this-test", "/test"))
+            .run(|| 42);
+        match r {
+            Err(RunError::Spawn(e)) => {
+                let s = format!("{:?}", e);
+                assert!(s.contains("ENOENT"), "errno lost: {s}");
+                assert!(s.contains("Mount"), "context lost: {s}");
+            }
+            other => panic!("expected Err(Spawn(..)) carrying the child's error, got {other:?}"),
+        }
     }
 }
