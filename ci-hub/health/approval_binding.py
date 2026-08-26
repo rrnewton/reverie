@@ -753,6 +753,36 @@ def refusal_shaped(line: str) -> bool:
     return bool(_REFUSAL_NEARMISS.match(strip_decoration(line)))
 
 
+#: A marker wholly inside ONE inline-code span, with prose outside it on the same
+#: line, is a MENTION, not a USE. ``is_citation`` already encodes that a copy of a
+#: verdict "must neither bind nor be reported as a malformed attempt", but it can
+#: only recognise a copy of something ALREADY ISSUED in this stream. A sentence
+#: quoting the grammar -- in a review discussing the convention, or in this repo's
+#: own docs -- has no prior issuance to match, so it fell through to the net and
+#: was reported malformed. Since a malformed REFUSAL-shaped line fails the gate,
+#: THAT LETS A PR BE HELD RED BY COMMENTS THAT MERELY DISCUSS THE GRAMMAR.
+#:
+#: The discriminator is typographic and narrow: the author enclosed the WHOLE
+#: marker in code and wrote prose around it. It deliberately does NOT fire when
+#: the span holds only part of the marker -- ``## CODEX-LANE CHANGES-REQUESTED-AT:
+#: codex `b3ca4e15...` `` keeps its keyword OUTSIDE the span and must stay
+#: malformed, because that is a real variant that walked through this net once.
+#: Nor when the span is the whole line: that is decoration, and it still BINDS.
+_INLINE_CODE_MARKER = re.compile(
+    r"`[^`\n]*(?:APPROVED-AT|CHANGES-REQUESTED(?:-AT)?)\s*:\s*"
+    r"(?:claude|codex)\s+[0-9a-f]{7,40}[^`\n]*`",
+    re.IGNORECASE,
+)
+
+
+def _is_quoted_mention(raw_line: str) -> bool:
+    """Whether ``raw_line`` quotes a marker inside code WITH prose around it."""
+    m = _INLINE_CODE_MARKER.search(raw_line)
+    if m is None:
+        return False
+    return bool((raw_line[: m.start()] + raw_line[m.end() :]).strip())
+
+
 def lane_shas(
     comments: list[dict[str, Any]],
     lane: str,
@@ -917,7 +947,8 @@ def lane_shas(
         # and refusing to strip it is what let a heading-formatted refusal fail open.
         # Fenced and indented code blocks are excluded HERE, once, so an
         # illustration can neither grant a lane nor refuse a merge.
-        lines = [_undecorate_block(l) for l in marker_lines(body)]
+        raw_lines = marker_lines(body)
+        lines = [_undecorate_block(l) for l in raw_lines]
         # A rejection contributes NOTHING, even if the same comment also carries
         # an APPROVED-AT-shaped line -- a comment quoting the convention, or
         # quoting the approval it supersedes, must not bind as a positive.
@@ -988,7 +1019,8 @@ def lane_shas(
                             refusals.append(refused_sha.group(0).lower())
             found.clear()
             continue
-        for line in lines:
+        for _idx, line in enumerate(lines):
+            raw_line = raw_lines[_idx] if _idx < len(raw_lines) else line
             binding = approved_binding(line)
             if binding is None:
                 if (
@@ -1008,6 +1040,11 @@ def lane_shas(
                     _lane_m = re.search(r"\b(claude|codex)\b", line, re.I)
                     _kind = (MARKER_REFUSED if refusal_shaped(line) or "CHANGES-REQUESTED" in line.upper()
                              else MARKER_APPROVED)
+                    if _is_quoted_mention(raw_line):
+                        if citations is not None:
+                            citations.append((c.get("html_url") or c.get("url") or "?",
+                                              line[:120]))
+                        continue
                     if is_citation(
                         issued, author, _kind,
                         _lane_m.group(1).lower() if _lane_m else None,
