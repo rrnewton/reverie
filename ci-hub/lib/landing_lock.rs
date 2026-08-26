@@ -2641,6 +2641,12 @@ pub(crate) fn foreign_box_quarantine(anchor: &Path, own_cleanup: &Path) -> Optio
     foreign_box_claim_with_active(anchor, own_cleanup, true)
 }
 
+fn operation_is_validation(operation: &str) -> bool {
+    operation.starts_with("validate:")
+        || operation.starts_with("reverie-validate:")
+        || operation.starts_with("frozen-validate:")
+}
+
 fn foreign_box_claim_with_active(
     anchor: &Path,
     own_cleanup: &Path,
@@ -2683,9 +2689,15 @@ fn foreign_box_claim_with_active(
                 // The owning repository discharged its record. Prune and move on.
                 let _ = fs::remove_file(&claim_path);
             }
-            CleanupVerification::Armed { .. } if allow_published => continue,
+            CleanupVerification::Armed { .. }
+                if allow_published && operation_is_validation(operation) =>
+            {
+                continue;
+            }
             CleanupVerification::Active { record, .. }
-                if allow_published && matches!(record.phase, CleanupPhase::Published { .. }) =>
+                if allow_published
+                    && operation_is_validation(operation)
+                    && matches!(record.phase, CleanupPhase::Published { .. }) =>
             {
                 continue;
             }
@@ -6483,6 +6495,33 @@ exit 0
             None,
             "the start gate proves that an armed validation has not started its payload"
         );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_published_benchmark_is_not_allowed_by_the_concurrent_validation_path() {
+        let (anchor, dir) = claim_fixture("live-benchmark");
+        let theirs = dir.join("other-repo/.validate-lock.cleanup-required");
+        let mine = dir.join("my-repo/.validate-lock.slot-1.cleanup-required");
+        let leader = ProcessIdentity {
+            pid: std::process::id(),
+            start_ticks: process_start_ticks(std::process::id()).unwrap(),
+        };
+        let pgid = unsafe { libc::getpgrp() } as u32;
+        let mut record = CleanupRecord::new(
+            "first-benchmark",
+            "bench:first",
+            CleanupPhase::Published { leader, pgid },
+        )
+        .unwrap();
+        record.domain = CleanupDomain::ProcessGroup;
+        fs::create_dir_all(theirs.parent().unwrap()).unwrap();
+        write_cleanup_record(&theirs, &record).unwrap();
+        register_box_claim(&anchor, &theirs, "first-benchmark", "bench:first");
+
+        let refusal = foreign_box_quarantine(&anchor, &mine)
+            .expect("a validation must not overlap a published benchmark payload");
+        assert!(refusal.contains("bench:first"), "{refusal}");
         let _ = fs::remove_dir_all(&dir);
     }
 
