@@ -51,6 +51,9 @@ import re
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
+import bounded_capture  # noqa: E402
 
 
 class Disposition(Enum):
@@ -252,7 +255,7 @@ def _fetch(numbers, repo: str, gh_cmd: str, wrap: str = ""):
         query_path = handle.name
     composed = f"{gh_cmd} api graphql -F query=@{query_path}"
     argv = shlex.split(wrap) + [composed] if wrap else shlex.split(composed)
-    proc = subprocess.run(argv, capture_output=True, text=True)
+    proc = bounded_capture.capture(argv)
     if proc.returncode != 0:
         raise SystemExit(
             f"coalesce-guard: cannot reach GitHub: {proc.stderr.strip()[:400]}"

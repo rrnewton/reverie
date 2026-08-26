@@ -230,7 +230,7 @@ def _run_c_fixture_under_hermit(source: Path, negative: bool) -> int:
         cc = ["gcc", "-O1", "-o", str(exe), str(source)]
         if negative:
             cc.insert(2, "-DHERMIT_TEST_ORACLE_NEGATIVE")
-        build = subprocess.run(cc, capture_output=True, text=True)
+        build = bounded_capture.capture(cc)
         if build.returncode != 0:
             raise FixtureUnavailable(
                 f"cannot compile {source.name}: {build.stderr.strip()[:300]}")

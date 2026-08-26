@@ -48,6 +48,9 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
+import bounded_capture  # noqa: E402
 
 SHA40_LEN = 40
 
@@ -213,7 +216,7 @@ def real_validator(
 
 
 def _run(cmd: list[str]) -> tuple[int, str]:
-    proc = subprocess.run(cmd, capture_output=True, text=True)
+    proc = bounded_capture.capture(cmd)
     return proc.returncode, proc.stdout
 
 

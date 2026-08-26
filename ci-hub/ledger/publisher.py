@@ -358,9 +358,8 @@ def split_published_to_match_source(
     if serialized_writer is None:
         pushed = _git(repo, "push", remote, f"HEAD:refs/heads/{branch}", check=False)
     else:
-        pushed = subprocess.run(
+        pushed = bounded_capture.capture(
             [str(serialized_writer), "publish", commit], cwd=repo,
-            capture_output=True, text=True, check=False,
         )
     if pushed.returncode != 0:
         raise PublishRefused(
@@ -504,9 +503,8 @@ def publish(
         if serialized_writer is None:
             pushed = _git(repo, "push", remote, f"HEAD:refs/heads/{branch}", check=False)
         else:
-            pushed = subprocess.run(
+            pushed = bounded_capture.capture(
                 [str(serialized_writer), "publish", commit], cwd=repo,
-                capture_output=True, text=True, check=False,
             )
         if pushed.returncode == 0:
             # Push exit status is not publication. Confirm the commit is an

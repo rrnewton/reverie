@@ -27,6 +27,8 @@ import sys
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Iterable, Sequence
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
+import bounded_capture  # noqa: E402
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -108,12 +110,9 @@ def run_checked(argv: Sequence[str]) -> subprocess.CompletedProcess[str]:
         env = taskgraph_db.child_env(taskgraph_db.resolve())
     except taskgraph_db.TaskGraphUnavailable as error:
         raise SweepUnavailable(str(error)) from error
-    return subprocess.run(
+    return bounded_capture.capture(
         argv,
         cwd=ROOT,
-        text=True,
-        capture_output=True,
-        check=False,
         env=env,
     )
 

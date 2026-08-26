@@ -22,6 +22,8 @@ import socket
 import subprocess
 import sys
 from typing import Any
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
+import bounded_capture  # noqa: E402
 
 # Stable, greppable marker meaning "this receipt's evidence lives on another
 # host", as distinct from "this receipt is malformed".  Consumers match on this
@@ -137,11 +139,9 @@ def run_producer_verifier(
     *arguments: str, input_body: str | None = None
 ) -> subprocess.CompletedProcess[str]:
     """Invoke the one semantic producer-definition authority."""
-    return subprocess.run(
+    return bounded_capture.capture(
         [str(producer_verifier_path()), *arguments],
         input=input_body,
-        text=True,
-        capture_output=True,
         env=os.environ.copy(),
     )
 
@@ -261,8 +261,8 @@ def gh(args: list[str], *, check: bool = True) -> subprocess.CompletedProcess[st
         candidate = Path.home() / ".config" / "gh"
         if (candidate / "hosts.yml").is_file():
             environment["GH_CONFIG_DIR"] = str(candidate)
-    result = subprocess.run(
-        gh_command() + args, text=True, capture_output=True, env=environment
+    result = bounded_capture.capture(
+        gh_command() + args, env=environment
     )
     if check and result.returncode:
         fail(f"{' '.join(args)} failed: {result.stderr.strip()}")

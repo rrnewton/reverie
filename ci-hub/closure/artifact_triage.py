@@ -52,10 +52,18 @@ ROOT = Path(__file__).resolve().parents[2]
 # Resolved, never hardcoded: this literal named the predecessor's frozen
 # database.  See ci-hub/lib/taskgraph_db.py.
 sys.path.insert(0, str(ROOT / "ci-hub" / "lib"))
+import bounded_capture  # noqa: E402
 import taskgraph_db  # noqa: E402
 
 def _capture(command, **kwargs):
-    """Capture output while waiting for THE CHILD, not for EOF on the pipe.
+    """Deprecated local alias for lib/bounded_capture.capture.
+
+    Kept only so this file's existing call sites read unchanged. The
+    implementation moved to ci-hub/lib/bounded_capture.py because the same
+    helper had been written independently in three files, and three copies of a
+    subtle fix drift. Prefer `bounded_capture.capture` directly in new code.
+
+    Capture output while waiting for THE CHILD, not for EOF on the pipe.
 
     ⚠️ `capture_output=True` hands the child a PIPE and reads to EOF, and EOF
     arrives when the LAST HOLDER closes it -- not when the child exits. A
@@ -72,18 +80,7 @@ def _capture(command, **kwargs):
     NOT a timeout (bounds the wait and discards the reason) and NOT disabling
     auto-gc (hides the mechanism for the next background child).
     """
-    with tempfile.TemporaryFile("w+b") as out, tempfile.TemporaryFile("w+b") as err:
-        proc = subprocess.Popen(
-            list(command), stdout=out, stderr=err, stdin=subprocess.DEVNULL, **kwargs
-        )
-        code = proc.wait()
-        out.seek(0)
-        err.seek(0)
-        return subprocess.CompletedProcess(
-            list(command), code,
-            out.read().decode("utf-8", "replace"),
-            err.read().decode("utf-8", "replace"),
-        )
+    return bounded_capture.capture(command, **kwargs)
 
 
 EPHEMERAL = ("/tmp/", "scratch/", "ignored/")

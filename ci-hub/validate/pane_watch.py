@@ -13,13 +13,16 @@ from pathlib import Path
 
 from run_registry import read_record, update_record
 import service_result
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
+import bounded_capture  # noqa: E402
 
 
 TERMINAL_STATES = frozenset(("failed", "inactive"))
 
 
 def service_properties(unit: str) -> dict[str, str] | None:
-    result = subprocess.run(
+    result = bounded_capture.capture(
         [
             "systemctl",
             "--user",
@@ -35,9 +38,6 @@ def service_properties(unit: str) -> dict[str, str] | None:
             "--property=MainPID",
             "--no-pager",
         ],
-        text=True,
-        capture_output=True,
-        check=False,
     )
     if result.returncode != 0:
         return None

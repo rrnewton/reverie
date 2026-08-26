@@ -37,27 +37,18 @@ import tempfile
 from typing import Sequence
 
 
-class CapturedProcess:
-    """The subset of `CompletedProcess` that call sites here actually use.
+class CapturedProcess(subprocess.CompletedProcess):
+    """What `capture` returns: a `CompletedProcess` produced by waiting on the child.
 
-    Deliberately not `subprocess.CompletedProcess`: this is not the result of a
-    `subprocess.run`, and a caller that reaches for an attribute this does not
-    carry should get an AttributeError rather than silently reading a default.
+    ⚠️ IT SUBCLASSES `subprocess.CompletedProcess` DELIBERATELY. This replaces
+    `subprocess.run(..., capture_output=True)` at call sites all over ci-hub, and
+    those sites carry `-> subprocess.CompletedProcess[str]` annotations, are
+    stubbed by tests, and are occasionally isinstance-checked. Returning a
+    lookalike would have made a behaviour-preserving change into a typing change,
+    so the only difference from a `run` result is HOW the output was collected.
+
+    The distinct name is kept so a traceback or repr says which path produced it.
     """
-
-    __slots__ = ("args", "returncode", "stdout", "stderr")
-
-    def __init__(self, args, returncode: int, stdout, stderr):
-        self.args = args
-        self.returncode = returncode
-        self.stdout = stdout
-        self.stderr = stderr
-
-    def check_returncode(self) -> None:
-        if self.returncode:
-            raise subprocess.CalledProcessError(
-                self.returncode, self.args, self.stdout, self.stderr
-            )
 
     def __repr__(self) -> str:  # pragma: no cover - diagnostic only
         return f"CapturedProcess(args={self.args!r}, returncode={self.returncode})"

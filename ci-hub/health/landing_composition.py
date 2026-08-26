@@ -230,9 +230,8 @@ ORDER BY t.local_id
         env = taskgraph_db.child_env(taskgraph_db.resolve())
     except taskgraph_db.TaskGraphUnavailable as error:
         raise RuntimeError(f"taskgraph query unavailable: {error}") from error
-    proc = subprocess.run(
-        ["tg", "sql", sql], cwd=root, capture_output=True, text=True, check=False,
-        env=env,
+    proc = bounded_capture.capture(
+        ["tg", "sql", sql], cwd=root, env=env,
     )
     if proc.returncode != 0:
         raise RuntimeError(f"taskgraph query failed: {proc.stderr.strip()[:200]}")

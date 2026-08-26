@@ -20,6 +20,8 @@ import re
 import subprocess
 import sys
 from typing import Any, Callable, Mapping, Sequence
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
+import bounded_capture  # noqa: E402
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -58,9 +60,8 @@ def _run(
     env: Mapping[str, str] | None = None,
     check: bool = False,
 ) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        list(command), cwd=cwd, env=env, check=check, text=True,
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+    return bounded_capture.capture(
+        list(command), cwd=cwd, env=env, check=check,
     )
 
 

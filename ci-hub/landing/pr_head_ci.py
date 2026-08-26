@@ -15,6 +15,8 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Sequence
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
+import bounded_capture  # noqa: E402
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -33,7 +35,7 @@ class PrIdentity:
 
 
 def run_command(command: Sequence[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(command, text=True, capture_output=True, **kwargs)
+    return bounded_capture.capture(command, **kwargs)
 
 
 def full_sha(value: object) -> bool:

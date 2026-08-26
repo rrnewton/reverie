@@ -110,11 +110,9 @@ def canonical_row_sha256(
     command = [ci_hub, "receipt-digest", "--sha", sha]
     if require_canonical_qualifying:
         command.append("--require-canonical-qualifying")
-    result = subprocess.run(
+    result = bounded_capture.capture(
         command,
         input=json.dumps(row, separators=(",", ":")),
-        capture_output=True,
-        text=True,
     )
     digest = result.stdout.strip()
     if result.returncode != 0 or DIGEST_RE.fullmatch(digest) is None:

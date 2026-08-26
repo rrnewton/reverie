@@ -41,6 +41,8 @@ import sys
 from enum import Enum
 from pathlib import Path
 from typing import Any
+sys.path.insert(0, str(Path(__file__).resolve().parent / "lib"))
+import bounded_capture  # noqa: E402
 
 
 U64_MAX = (1 << 64) - 1
@@ -94,11 +96,9 @@ def producer_definition_verifier_path() -> Path:
 def _run_producer_definition_verifier(
     *arguments: str, input_body: str | None = None
 ) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
+    return bounded_capture.capture(
         [str(producer_definition_verifier_path()), *arguments],
         input=input_body,
-        text=True,
-        capture_output=True,
         env=os.environ.copy(),
     )
 
@@ -332,52 +332,20 @@ sys.path.insert(0, str(Path(__file__).resolve().parent / "validate"))
 import green_class as _green_class  # noqa: E402
 
 def _capture(command, **kwargs):
-    """Capture output while waiting for THE CHILD, not for EOF on the pipe.
+    """Deprecated local alias for lib/bounded_capture.capture.
 
-    ⚠️ `capture_output=True` hands the child a PIPE and reads to EOF, and EOF
-    arrives when the LAST HOLDER closes it -- not when the child exits. A
-    background grandchild that inherited the pipe blocks the caller after the
-    child is already gone. git's `gc --auto` is the everyday trigger: on by
-    default (gc.auto=6700) and detaching by default, so it inherits stderr. Every
-    call routed through here shells out to git.
+    Kept so this file's existing call sites read unchanged. The implementation
+    moved to ci-hub/lib/bounded_capture.py because the same helper had been
+    written independently in three files, and three copies of a subtle fix
+    drift -- this copy had already drifted, having grown `check=` support that
+    the other two lacked. The shared helper implements `check` too, so nothing
+    is lost here.
 
-    Reproduced 2026-08-25: a child exiting immediately while leaving one
-    background grandchild blocked capture_output indefinitely, while capturing to
-    a file returned in 0.0s with identical stdout and exit code. A regular file
-    has no EOF-waiting semantics, so wait() on the child is the only gate.
-
-    NOT a timeout (bounds the wait and discards the reason) and NOT disabling
-    auto-gc (hides the mechanism for the next background child).
+    Capture output while waiting for THE CHILD, not for EOF on the pipe:
+    `capture_output=True` reads a pipe to EOF, and EOF arrives when the last
+    holder closes it, not when the child exits.
     """
-    # ⚠️ `check` IS A `run()` KEYWORD AND `Popen` REJECTS IT, so it is honoured
-    # HERE rather than forwarded. This shim replaced `subprocess.run` to fix a
-    # capture hang, and the three existing callers all still pass `check=False`
-    # -- which `Popen` answered with
-    #     TypeError: Popen.__init__() got an unexpected keyword argument 'check'
-    # every single time. The replacement kept `run`'s SHAPE (it returns a
-    # CompletedProcess) while quietly dropping part of its CONTRACT, so callers
-    # written against `run` compile and then fail at the call. Implementing the
-    # keyword restores the contract instead of forcing every caller to know that
-    # this particular helper is only run-shaped.
-    check = kwargs.pop("check", False)
-    with tempfile.TemporaryFile("w+b") as out, tempfile.TemporaryFile("w+b") as err:
-        proc = subprocess.Popen(
-            list(command), stdout=out, stderr=err, stdin=subprocess.DEVNULL, **kwargs
-        )
-        code = proc.wait()
-        out.seek(0)
-        err.seek(0)
-        completed = subprocess.CompletedProcess(
-            list(command), code,
-            out.read().decode("utf-8", "replace"),
-            err.read().decode("utf-8", "replace"),
-        )
-        if check and code != 0:
-            raise subprocess.CalledProcessError(
-                code, list(command), completed.stdout, completed.stderr
-            )
-        return completed
-
+    return bounded_capture.capture(command, **kwargs)
 
 
 def predicate_path() -> Path:

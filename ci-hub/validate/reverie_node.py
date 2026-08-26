@@ -13,6 +13,8 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
+import bounded_capture  # noqa: E402
 
 
 # Local-validation v2 follows Reverie's six-gate producer after hosted
@@ -46,7 +48,7 @@ def require_kvm_environment() -> None:
 
 
 def run(argv: list[str], *, cwd: Path, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(argv, cwd=cwd, env=env, text=True, capture_output=True, check=False)
+    return bounded_capture.capture(argv, cwd=cwd, env=env)
 
 
 def git(checkout: Path, *args: str) -> str:
@@ -200,13 +202,10 @@ def require_expected_gate_set(gates: object) -> None:
 
 
 def record(root: Path, row: dict[str, Any]) -> None:
-    result = subprocess.run(
+    result = bounded_capture.capture(
         [sys.executable, str(root / "ci-hub/ledger/validate_rows.py"), "record"],
         input=json.dumps(row, sort_keys=True) + "\n",
         cwd=root,
-        text=True,
-        capture_output=True,
-        check=False,
     )
     if result.returncode != 0:
         detail = result.stderr.strip() or result.stdout.strip() or f"exit {result.returncode}"

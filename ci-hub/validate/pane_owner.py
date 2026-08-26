@@ -18,6 +18,8 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
+import bounded_capture  # noqa: E402
 
 
 Runner = Callable[..., subprocess.CompletedProcess[str]]
@@ -33,7 +35,7 @@ class PaneHandle:
 
 
 def run_command(command: Sequence[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(command, text=True, capture_output=True, **kwargs)
+    return bounded_capture.capture(command, **kwargs)
 
 
 def host_command(command: Sequence[str], environment: Mapping[str, str]) -> list[str]:

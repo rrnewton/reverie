@@ -8,6 +8,9 @@ import re
 import subprocess
 import sys
 from collections.abc import Callable, Sequence
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
+import bounded_capture  # noqa: E402
 
 
 UNIT_RE = re.compile(r"^validate-[A-Za-z0-9_.@:-]+\.(?:service|scope)$")
@@ -15,7 +18,7 @@ Runner = Callable[..., subprocess.CompletedProcess[str]]
 
 
 def run_command(command: Sequence[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(command, text=True, capture_output=True, **kwargs)
+    return bounded_capture.capture(command, **kwargs)
 
 
 def require_validate_unit(unit: str) -> str:

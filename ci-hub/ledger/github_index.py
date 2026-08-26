@@ -65,6 +65,9 @@ from ledger import ENVELOPE_VERSION
 from ledger import fold
 from ledger import union_events
 from ledger import validate_event
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
+import bounded_capture  # noqa: E402
 
 #: Body prefix identifying our comments. Stable: readers filter on it, and
 #: changing it orphans every comment already published.
@@ -126,7 +129,7 @@ def gh_api(method: str, path: str, fields: dict[str, str] | None = None) -> tupl
         cmd += ["-f", f"{key}={value}"]
     if method == "GET":
         cmd.append("--paginate")
-    proc = subprocess.run(cmd, text=True, capture_output=True)
+    proc = bounded_capture.capture(cmd)
     raw = proc.stdout or proc.stderr or ""
     try:
         parsed = json.loads(raw)

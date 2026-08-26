@@ -44,6 +44,9 @@ import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Iterable
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
+import bounded_capture  # noqa: E402
 
 REVERIE_REMOTE = "https://github.com/rrnewton/reverie.git"
 MAIN_REF = "refs/heads/main"
@@ -292,7 +295,7 @@ def _apply_bump(repo: Path, target: str, entries: list[Entry]) -> None:
 
 
 def _run(cmd: list[str]) -> str:
-    proc = subprocess.run(cmd, capture_output=True, text=True)
+    proc = bounded_capture.capture(cmd)
     if proc.returncode != 0:
         raise BumpRefused(f"{' '.join(cmd[:3])}… failed rc={proc.returncode}: "
                           f"{proc.stderr.strip()[:200]}")
