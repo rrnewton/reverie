@@ -61,8 +61,16 @@ class Fixture:
         self.root = tmp / "parent"
         self.origin = tmp / "origin.git"
         (self.root / "ci-hub" / "health").mkdir(parents=True)
+        (self.root / "ci-hub" / "lib").mkdir(parents=True)
         (self.root / "agent-utils" / "bin").mkdir(parents=True)
         shutil.copy(GATE_SOURCE, self.root / "ci-hub" / "health" / GATE_SOURCE.name)
+        # The gate imports ci-hub/lib/bounded_capture, so the fixture tree has to
+        # carry it too. Without this the copy raises ModuleNotFoundError and every
+        # case here fails on import rather than on the behaviour it is testing.
+        shutil.copy(
+            REPO_ROOT / "ci-hub" / "lib" / "bounded_capture.py",
+            self.root / "ci-hub" / "lib" / "bounded_capture.py",
+        )
         self.gate = self.root / "ci-hub" / "health" / GATE_SOURCE.name
         self._write_herdr_stub(herdr_delay)
 

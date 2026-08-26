@@ -61,6 +61,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "remediation"))
 from nonzero_result import per_node_counts  # noqa: E402
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "ledger"))
 import validate_rows as canonical_ledger  # noqa: E402
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
+import bounded_capture  # noqa: E402
 
 SCHEMA_VERSION = 5
 RECEIPT_CANONICALIZATION = "serde_json::to_vec(HistoryRow)-v1"
@@ -86,9 +88,7 @@ class SelectedRowError(RuntimeError):
 
 
 def _git(checkout: str, *args: str) -> str:
-    result = subprocess.run(
-        ["git", "-C", checkout, *args], capture_output=True, text=True
-    )
+    result = bounded_capture.git(args, cwd=checkout)
     if result.returncode != 0:
         raise RuntimeError(
             result.stderr.strip() or f"git -C {checkout} {' '.join(args)} exited {result.returncode}"
@@ -243,10 +243,8 @@ def planned_test_nodes(hermit_checkout: str, sha: str) -> set[str]:
     planned: set[str] = set()
     for manifest in MANIFESTS:
         try:
-            proc = subprocess.run(
-                ["git", "-C", hermit_checkout, "show", f"{sha}:{manifest}"],
-                capture_output=True,
-                text=True,
+            proc = bounded_capture.git(
+                ["show", f"{sha}:{manifest}"], cwd=hermit_checkout
             )
         except OSError:
             continue

@@ -78,6 +78,9 @@ import sys
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 from typing import Sequence
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
+import bounded_capture  # noqa: E402
 
 SHA40 = re.compile(r"\b[0-9a-f]{40}\b")
 LANES = ("claude", "codex")
@@ -1262,10 +1265,7 @@ def report_landing_observability(
     -- the exact shape of defect this file exists to surface. Caught while
     demonstrating this function, so the guard is here rather than in a caller.
     """
-    remote = subprocess.run(
-        ["git", "-C", checkout, "remote", "get-url", "origin"],
-        capture_output=True, text=True,
-    )
+    remote = bounded_capture.git(["remote", "get-url", "origin"], cwd=checkout)
     origin = remote.stdout.strip()
     if remote.returncode != 0 or repo.lower() not in origin.lower():
         print(

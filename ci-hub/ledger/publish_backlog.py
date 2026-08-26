@@ -50,6 +50,8 @@ sys.path.insert(0, str(ROOT / "scripts"))
 from check_commit_attribution import AttributionError, detect_machine  # noqa: E402
 from ledger_spool_backlog import producing_parents  # noqa: E402
 from validate_rows import live_spool_dir  # noqa: E402
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
+import bounded_capture  # noqa: E402
 
 #: One persistent dedicated clone, reused across runs. It is NOT any parent
 #: checkout: the publisher refuses a repo equal to its source root, and refuses
@@ -69,12 +71,10 @@ def ensure_clone(clone: Path, *, net_wrapper: str) -> None:
     if (clone / ".git").is_dir():
         return
     clone.parent.mkdir(parents=True, exist_ok=True)
-    subprocess.run(
+    bounded_capture.capture(
         [net_wrapper, "git", "clone", "--quiet", "--reference", str(ROOT), ORIGIN,
          str(clone)],
         check=True,
-        capture_output=True,
-        text=True,
     )
 
 

@@ -562,6 +562,10 @@ def test_linked_worktree_cli_filters_exact_source_row_and_refuses_ambiguity(
         Path("ci-hub/ledger/ledger.py"),
         Path("ci-hub/ledger/publisher.py"),
         Path("ci-hub/ledger/validate_rows.py"),
+        # publisher.py imports ci-hub/lib/bounded_capture, so the fixture tree
+        # has to carry it or the copied script dies on import instead of
+        # exercising the behaviour under test.
+        Path("ci-hub/lib/bounded_capture.py"),
         Path("ci-hub/qualifying_receipt.py"),
         Path("ci-hub/validate/green_class.py"),
         Path("ci-hub/validate/qualifying-receipt.json"),

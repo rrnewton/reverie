@@ -84,6 +84,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "ci-hub" / "lib"))
+import bounded_capture  # noqa: E402
 import git_env  # noqa: E402
 
 ABSENT = "ABSENT"
@@ -141,13 +142,9 @@ class Presence:
         return EXIT_INDETERMINATE
 
 
-def _git(repo: Path, *args: str, text: bool = True) -> subprocess.CompletedProcess:
-    return subprocess.run(
-        ["git", "-C", str(repo), *args],
-        capture_output=True,
-        text=text,
-        check=False,
-        env=git_env.sanitized_git_env(),
+def _git(repo: Path, *args: str, text: bool = True) -> bounded_capture.CapturedProcess:
+    return bounded_capture.git(
+        args, cwd=repo, text=text, env=git_env.sanitized_git_env()
     )
 
 
@@ -287,12 +284,10 @@ def check(repo: Path, sha: str, target: str) -> Presence:
                 patch = header + hunk
                 if not patch.endswith("\n"):
                     patch += "\n"
-                rev = subprocess.run(
-                    ["git", "-C", str(wt), "apply", "--reverse", "--check", "-"],
+                rev = bounded_capture.git(
+                    ["apply", "--reverse", "--check", "-"],
+                    cwd=wt,
                     input=patch,
-                    capture_output=True,
-                    text=True,
-                    check=False,
                     env=git_env.sanitized_git_env(),
                 )
                 if rev.returncode == 0:

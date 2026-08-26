@@ -48,6 +48,9 @@ from ledger import (  # noqa: F401 - re-exported for callers
     verify_append_only,
 )
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
+import bounded_capture  # noqa: E402
+
 DEFAULT_REMOTE = "origin"
 DEFAULT_BRANCH = "main"
 #: Bounded so a genuinely wedged remote surfaces as a failure with the spool
@@ -59,10 +62,8 @@ class PublishRefused(Exception):
     """The publish would have rewritten published bytes, or the events are invalid."""
 
 
-def _git(repo: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess:
-    return subprocess.run(
-        ["git", "-C", str(repo), *args], capture_output=True, text=True, check=check
-    )
+def _git(repo: Path, *args: str, check: bool = True) -> bounded_capture.CapturedProcess:
+    return bounded_capture.git(args, cwd=repo, check=check)
 
 
 def _failure_detail(result: subprocess.CompletedProcess) -> str:

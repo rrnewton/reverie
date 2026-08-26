@@ -52,6 +52,7 @@ from pathlib import Path
 # Resolved, never hardcoded: this literal named the predecessor's frozen
 # database.  See ci-hub/lib/taskgraph_db.py.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
+import bounded_capture  # noqa: E402
 import taskgraph_db  # noqa: E402
 DEFAULT_ROOT = Path(__file__).resolve().parents[2]
 
@@ -75,11 +76,9 @@ ARTIFACT = re.compile(
 )
 
 
-def git(root: Path, repo: str, *args: str) -> subprocess.CompletedProcess[str]:
+def git(root: Path, repo: str, *args: str) -> bounded_capture.CapturedProcess:
     rel, _ = REPOS[repo]
-    return subprocess.run(
-        ["git", "-C", str(root / rel), *args], capture_output=True, text=True
-    )
+    return bounded_capture.git(args, cwd=root / rel)
 
 
 def fetch_main(root: Path, repo: str, herdr_agent: str | None) -> tuple[bool, str]:

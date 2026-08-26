@@ -21,6 +21,8 @@ import subprocess
 import sys
 from pathlib import Path
 from typing import Any
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
+import bounded_capture  # noqa: E402
 
 
 SHA40 = re.compile(r"^[0-9a-f]{40}$")
@@ -39,13 +41,8 @@ class ReviewCheckError(RuntimeError):
     """The review applicability check could not be completed."""
 
 
-def git(repo: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess[str]:
-    result = subprocess.run(
-        ["git", "-C", str(repo), *args],
-        text=True,
-        capture_output=True,
-        check=False,
-    )
+def git(repo: Path, *args: str, check: bool = True) -> bounded_capture.CapturedProcess:
+    result = bounded_capture.git(args, cwd=repo)
     if check and result.returncode != 0:
         detail = (result.stderr or result.stdout).strip() or f"exit {result.returncode}"
         raise ReviewCheckError(f"git {' '.join(args)}: {detail}")

@@ -56,6 +56,8 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
+import bounded_capture  # noqa: E402
 
 PARENT = str(Path(__file__).resolve().parents[2])
 HERDR = f"{PARENT}/agent-utils/bin/herdr-run"
@@ -72,8 +74,7 @@ RESCUE_DEADLINE_SECS = 120
 
 
 def git(*args: str, cwd: str = PARENT) -> str:
-    out = subprocess.run(["git", "-C", cwd, *args], capture_output=True, text=True)
-    return out.stdout.strip()
+    return bounded_capture.git(args, cwd=cwd).stdout.strip()
 
 
 def local_only(scope: str) -> list[dict[str, str]]:
@@ -111,10 +112,10 @@ def local_only(scope: str) -> list[dict[str, str]]:
     shas = [s for s in git("rev-list", *spec, "--not", "--remotes").splitlines() if s]
     if not shas:
         return []
-    listed = subprocess.run(
-        ["git", "-C", PARENT, "log", "--no-walk=unsorted", "--stdin",
+    listed = bounded_capture.git(
+        ["log", "--no-walk=unsorted", "--stdin",
          "--format=%H\t%h\t%an\t%ad\t%s", "--date=short"],
-        input="\n".join(shas) + "\n", capture_output=True, text=True)
+        cwd=PARENT, input="\n".join(shas) + "\n")
     rows = []
     for line in listed.stdout.splitlines():
         if not line:
@@ -127,17 +128,15 @@ def local_only(scope: str) -> list[dict[str, str]]:
 def raw_blob(rev: str, path: str) -> tuple[str, bytes]:
     """Return one exact Git blob as present/absent/error without decoding it."""
 
-    listed = subprocess.run(
-        ["git", "-C", PARENT, "ls-tree", "-z", rev, "--", path],
-        capture_output=True,
+    listed = bounded_capture.git(
+        ["ls-tree", "-z", rev, "--", path], cwd=PARENT, text=False
     )
     if listed.returncode != 0:
         return "error", b""
     if not listed.stdout:
         return "absent", b""
-    content = subprocess.run(
-        ["git", "-C", PARENT, "show", f"{rev}:{path}"],
-        capture_output=True,
+    content = bounded_capture.git(
+        ["show", f"{rev}:{path}"], cwd=PARENT, text=False
     )
     if content.returncode != 0:
         return "error", b""

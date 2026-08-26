@@ -53,6 +53,8 @@ PARENT = CI_HUB.parent
 for p in (HERE, CI_HUB, CI_HUB / "landing", CI_HUB / "timeout_audit", CI_HUB / "ledger"):
     sys.path.insert(0, str(p))
 import validate_rows as canonical_ledger  # noqa: E402
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
+import bounded_capture  # noqa: E402
 
 KILLED = "KILLED"
 SURVIVED = "SURVIVED"
@@ -205,8 +207,9 @@ def _run_c_fixture_under_hermit(source: Path, negative: bool) -> int:
         co = _hermit_checkout()
         head = "unknown"
         try:
-            head = subprocess.run(["git", "-C", str(co), "rev-parse", "--short", "HEAD"],
-                                  capture_output=True, text=True).stdout.strip() or "unknown"
+            head = bounded_capture.git(
+                ["rev-parse", "--short", "HEAD"], cwd=co
+            ).stdout.strip() or "unknown"
         except Exception:
             pass
         raise FixtureUnavailable(

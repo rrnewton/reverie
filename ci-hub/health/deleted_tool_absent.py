@@ -52,6 +52,8 @@ import json
 import subprocess
 import sys
 from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
+import bounded_capture  # noqa: E402
 
 #: Paths that were deliberately removed and must not come back. Each entry names
 #: the deleting commit so a reader can find the argument rather than re-litigate
@@ -76,11 +78,7 @@ DELETED: dict[str, dict[str, str]] = {
 
 def tracked(root: Path, rel: str) -> bool:
     """True when git has the path in its index for this checkout."""
-    done = subprocess.run(
-        ["git", "-C", str(root), "ls-files", "--error-unmatch", rel],
-        capture_output=True,
-        text=True,
-    )
+    done = bounded_capture.git(["ls-files", "--error-unmatch", rel], cwd=root)
     return done.returncode == 0
 
 

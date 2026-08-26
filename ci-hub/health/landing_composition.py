@@ -64,6 +64,7 @@ from pathlib import Path
 from typing import Iterable, Sequence
 # One resolver for the TaskGraph, shared with every other ci-hub consumer.
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ci-hub" / "lib"))
+import bounded_capture  # noqa: E402
 import taskgraph_db  # noqa: E402
 
 SHA40 = re.compile(r"\b[0-9a-f]{40}\b")
@@ -160,11 +161,9 @@ class AncestorIndex:
             repo = root / rel if rel != "." else root
             if not (repo / ".git").exists() and not (repo / "HEAD").exists():
                 continue
-            proc = subprocess.run(
-                ["git", "-C", str(repo), "rev-list", ref],
-                capture_output=True,
-                text=True,
-                check=False,
+            proc = bounded_capture.git(
+                ["rev-list", ref],
+                cwd=repo,
                 # A promisor/partial clone can lazily fetch during rev-list and stall;
                 # this keeps the index build local and bounded.
                 env={"GIT_NO_LAZY_FETCH": "1", "PATH": "/usr/bin:/bin"},

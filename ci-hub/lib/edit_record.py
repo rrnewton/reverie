@@ -62,6 +62,9 @@ import subprocess
 import time
 from pathlib import Path
 from typing import NamedTuple, Optional
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import bounded_capture  # noqa: E402
 
 SCHEMA = "edit-claim/v1"
 JOURNAL_NAME = ".edit-claims.jsonl"
@@ -91,11 +94,8 @@ def blob_id(root: Path, rel: str) -> Optional[str]:
     target = Path(root) / rel
     if not target.is_file():
         return None
-    proc = subprocess.run(
-        ["git", "hash-object", "--", str(target)],
-        cwd=str(root),
-        capture_output=True,
-        text=True,
+    proc = bounded_capture.capture(
+        ["git", "hash-object", "--", str(target)], cwd=str(root)
     )
     out = proc.stdout.strip()
     return out if proc.returncode == 0 and len(out) == 40 else None
@@ -199,11 +199,8 @@ def dirty_paths(root: Path) -> list[str]:
     destroyed by a reconciliation in the way a modified tracked file is, which is
     the harm this addresses.
     """
-    proc = subprocess.run(
-        ["git", "diff", "--name-only", "HEAD"],
-        cwd=str(root),
-        capture_output=True,
-        text=True,
+    proc = bounded_capture.capture(
+        ["git", "diff", "--name-only", "HEAD"], cwd=str(root)
     )
     if proc.returncode != 0:
         return []
