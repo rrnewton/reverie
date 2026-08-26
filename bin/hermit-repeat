@@ -420,6 +420,7 @@ def build_nextest_dag(args, out: Path, test_ids: list[str]) -> dict:
     steps = []
     per_step_timeout = args.deadline + 60
     width = len(str(args.runs))
+    workspace = os.path.abspath(args.test_workspace) if args.test_workspace else str(ROOT / "hermit")
     for test_id in test_ids:
         slug = re.sub(r"[^A-Za-z0-9]+", "-", test_id).strip("-")[:60]
         for i in range(1, args.runs + 1):
@@ -441,7 +442,7 @@ def build_nextest_dag(args, out: Path, test_ids: list[str]) -> dict:
             runner_script = d / "node.sh"
             runner_script.write_text(
                 "#!/usr/bin/env bash\n"
-                f"cd {shlex.quote(str(ROOT / 'hermit'))} || exit 70\n"
+                f"cd {shlex.quote(workspace)} || exit 70\n"
                 f"date +%s.%N > {shlex.quote(str(d / 'started'))}\n"
                 f"{' '.join(shlex.quote(a) for a in inner)} "
                 f"> {shlex.quote(str(d / 'nextest.out'))} 2>&1\n"
@@ -1355,9 +1356,14 @@ def write_report(args, meta: dict, results: list[RunResult], fh):
     w("-" * 78)
     w("OUTCOME CATEGORIES (every run is in exactly one; they sum to N)")
     w("-" * 78)
-    w(f"  diverged   {len(diverged):4d} / {n}   the two executions parted; a point is reported below")
-    w(f"  clean      {len(clean):4d} / {n}   verified deterministic -- a data point, not an absence")
-    w(f"  failed     {len(failed):4d} / {n}   NO verdict (crash / deadline / cap kill); NOT counted as either")
+    if any(r.test_id for r in results):
+        w(f"  diverged   {len(diverged):4d} / {n}   not applicable to a nextest sweep (no verify pair)")
+        w(f"  clean      {len(clean):4d} / {n}   the named test PASSED")
+        w(f"  failed     {len(failed):4d} / {n}   the named test FAILED -- the finding, not an error")
+    else:
+        w(f"  diverged   {len(diverged):4d} / {n}   the two executions parted; a point is reported below")
+        w(f"  clean      {len(clean):4d} / {n}   verified deterministic -- a data point, not an absence")
+        w(f"  failed     {len(failed):4d} / {n}   NO verdict (crash / deadline / cap kill); NOT counted as either")
     w(f"  no-result  {len(noresult):4d} / {n}   ran, but nothing comparable was selected")
     w(f"  not-run    {len(notrun):4d} / {n}   never launched -- the sweep was cut short")
     if notrun:
@@ -1561,6 +1567,19 @@ def write_report(args, meta: dict, results: list[RunResult], fh):
     if all(r.inner_jobs is None for r in results):
         w("  (all NOT_MEASURED: the runner wrote no step CSV -- was --no-profile set?)")
     w()
+    # GUEST-ONLY FROM HERE. Both the cwd confound and the concurrent/sequential
+    # advice are about a hermit verify PAIR: the confound is a directory changing
+    # between a pair's two executions, and the mode advice is about a divergence
+    # distribution. A nextest sweep has neither. Printing them anyway told the
+    # reader to re-run in the other mode "to get the contention-exposed
+    # population" of a measurement that does not exist.
+    if any(r.test_id for r in results):
+        w("=" * 78)
+        for line in verdict_lines(meta, results):
+            w(line)
+        w("=" * 78)
+        return
+
     w("-" * 78)
     w("KNOWN CONFOUND, AND WHAT IS DONE ABOUT IT")
     w("-" * 78)
@@ -1610,8 +1629,37 @@ def verdict_lines(meta: dict, results: list[RunResult]) -> list[str]:
     own final stderr line are generated from ONE place and cannot drift."""
     by = lambda c: [r for r in results if r.category == c]
     diverged, clean = by("diverged"), by("clean")
-    nores = by("failed") + by("no_result") + by("not_run")
     n = len(results)
+
+    # ⚠️ A NEXTEST SWEEP HAS DIFFERENT VOCABULARY AND THE GUEST WORDING IS WRONG
+    # FOR IT. Here `failed` means THE NAMED TEST FAILED -- which is the finding
+    # the sweep exists to produce -- not "no verdict". Measured on the first real
+    # end-to-end run: two nodes of a deliberately-failing test were reported as
+    # "2 of 4 produced NO verdict" and the process exited 0. Both statements were
+    # false; the tests failed, and they failed on purpose.
+    if any(r.test_id for r in results):
+        ids = {r.test_id for r in results if r.test_id}
+        failed_n = len(by("failed"))
+        unresolved = sorted({r.test_id for r in results if r.test_id and r.category == "no_result"})
+        notrun_n = len(by("not_run"))
+        out = []
+        if unresolved:
+            out.append(f"VERDICT: {len(unresolved)} of {len(ids)} REQUESTED IDS WERE NEVER MEASURED "
+                       f"(selected no test, or several).")
+            out.append("This run does NOT speak to them. See the per-id table.")
+            return out
+        if notrun_n:
+            out.append(f"VERDICT: TRUNCATED -- {notrun_n} of {n} nodes never launched.")
+            out.append(f"Counts below are out of {n - notrun_n}, not {n}.")
+            return out
+        if failed_n:
+            out.append(f"VERDICT: {failed_n} of {n} runs FAILED across {len(ids)} id(s); "
+                       f"{len(clean)} passed. See the per-id table for which.")
+        else:
+            out.append(f"VERDICT: all {n} runs passed across {len(ids)} id(s), mode={meta['mode']}.")
+        return out
+
+    nores = by("failed") + by("no_result") + by("not_run")
     measured = len(diverged) + len(clean)
     if measured == 0:
         cause = homogeneous_failure_cause(nores)
@@ -1847,6 +1895,14 @@ def main() -> int:
              "that section is omitted rather than left blank.",
     )
     p.add_argument(
+        "--test-workspace",
+        metavar="DIR",
+        help="cargo workspace to run --test-id in (default: the hermit checkout). "
+             "Exists so the nextest path can be exercised against a small throwaway "
+             "crate without building the whole hermit workspace -- an untestable code "
+             "path is one nobody has watched fail.",
+    )
+    p.add_argument(
         "--cell-backend",
         metavar="B",
         help="which enabled backend of --cell to stress; default is the cell's first",
@@ -1997,7 +2053,12 @@ def main() -> int:
         pre_args.runs = 1
         pre_dir = out / "preflight"
         pre_dir.mkdir(parents=True, exist_ok=True)
-        pre_dag = (build_nextest_dag(pre_args, pre_dir, args.test_id[:1]) if args.test_id
+        # ⚠️ PREFLIGHT EVERY ID, NOT JUST THE FIRST. One bad id anywhere in the
+        # list is the failure mode this guards against, and probing only
+        # args.test_id[0] would let a typo in id 9 of 12 sail through preflight
+        # and surface after the full M x N sweep. M extra single-run nodes is a
+        # trivial price for that: for 12 ids at n=20 it is 12 nodes against 240.
+        pre_dag = (build_nextest_dag(pre_args, pre_dir, args.test_id) if args.test_id
                    else build_dag(pre_args, hermit_bin, pre_dir, guest))
         pre_dag_path = pre_dir / "dag.json"
         pre_dag_path.write_text(json.dumps(pre_dag, indent=2))
@@ -2008,9 +2069,21 @@ def main() -> int:
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False,
         )
         if args.test_id:
-            pre_name = pre_dag["steps"][0]["job"]
-            probe = RunResult(index=1, name=pre_name, dir=str(pre_dir / "runs" / pre_name))
-            collect_one_nextest(probe)
+            probes = []
+            for st in pre_dag["steps"]:
+                pr = RunResult(index=1, name=st["job"], dir=str(pre_dir / "runs" / st["job"]))
+                collect_one_nextest(pr)
+                probes.append(pr)
+            # Report the WORST outcome: an unmeasurable id must not be masked by
+            # its neighbours passing.
+            bad = [pr for pr in probes if pr.category == "no_result"] or \
+                  [pr for pr in probes if pr.category == "not_run"]
+            probe = bad[0] if bad else probes[0]
+            if bad:
+                say("")
+                say(f"{PROG}: preflight found {len(bad)} of {len(probes)} id(s) UNMEASURABLE:")
+                for pr in bad:
+                    say(f"{PROG}:   {pr.test_id}")
         else:
             probe = RunResult(index=1, name="run1", dir=str(pre_dir / "runs" / "run1"))
             collect_one(probe, hermit_bin, keep=False)
@@ -2210,8 +2283,38 @@ def main() -> int:
     say(f"{PROG}: report {report_path}")
     for line in verdict_lines(meta, results):
         say(f"{PROG}: {line}")
-    if not diverged and not clean:
+    # ⚠️ A SELECTION THAT MATCHED NOTHING MUST NOT EXIT 0. With --test-id the
+    # categories mean something different from the guest path: `failed` is the
+    # FINDING (the named test failed) and `no_result` means the id was never
+    # examined -- it selected no test, or several. The old rule returned 0 as
+    # soon as ANY node was clean, so a sweep where id A passed 20/20 and id B
+    # selected nothing 20/20 exited 0 and read as a completed measurement of
+    # both. That is a check reporting success for having examined nothing, and
+    # it is the defect this project keeps finding.
+    unresolved = sorted({r.test_id for r in results
+                         if r.test_id and r.category == "no_result"})
+    if unresolved:
+        say("")
+        say(f"{PROG}: FAILED -- {len(unresolved)} of "
+            f"{len({r.test_id for r in results if r.test_id})} requested id(s) produced NO "
+            f"USABLE VERDICT. They were NOT measured; this run does not speak to them.")
+        for tid in unresolved:
+            why = next((r.why for r in results
+                        if r.test_id == tid and r.category == "no_result"), "")
+            say(f"{PROG}:   {tid}")
+            say(f"{PROG}:     {why}")
         return 3
+    if not diverged and not clean and not any(r.test_id for r in results):
+        return 3
+    if args.test_id:
+        # 0 only when every requested id passed every run. A failing named test
+        # is the finding and exits 1, the same code a divergence uses on the
+        # guest path: "something was observed", not "the tool broke".
+        if [r for r in results if r.category == "failed"]:
+            return 1
+        if not clean:
+            return 3
+        return 0
     return 1 if diverged else 0
 
 
