@@ -44,9 +44,8 @@ use crate::landing_lock::{
     box_exclusion_anchor_path as box_exclusion_anchor_at, capture_and_freeze_residuals,
     census_cleanup_domain, census_disposition, current_host, enable_child_subreaper,
     exact_process_liveness, exit_status_code, foreign_box_claim, foreign_box_quarantine,
-    heartbeat_test_helper_delay, print_census_recovery, print_cleanup_record,
-    process_group_exists, process_start_ticks, reap_exited_children, reap_while_supervising,
-    register_box_claim,
+    heartbeat_test_helper_delay, print_census_recovery, print_cleanup_record, process_group_exists,
+    process_start_ticks, reap_exited_children, reap_while_supervising, register_box_claim,
     remove_cleanup_record_and_claim, repository_lock_root, signal_group, spawn_gated_child, suffix,
     verify_cleanup_record, write_cleanup_record, BoxAnchorObservation, BoxExclusionAnchor,
     CleanupDomain, CleanupPhase, CleanupRecord, CleanupVerification, DomainAttestation,
@@ -1870,7 +1869,9 @@ pub fn execute(root: &Path, args: ValidateLockArgs) -> Result<i32, ValidateLockE
             // but its quarantine record is still outstanding, and now visible from
             // here. ONE MORE necessary condition -- `require_no_cleanup` inside
             // `acquire` still runs for this repository's own record.
-            if let Some(reason) = foreign_box_claim(&lock.paths.global_anchor(), &lock.paths.cleanup) {
+            if let Some(reason) =
+                foreign_box_claim(&lock.paths.global_anchor(), &lock.paths.cleanup)
+            {
                 eprintln!("REFUSED: {reason}");
                 return Ok(REFUSED_EXIT_CODE);
             }
@@ -3068,7 +3069,7 @@ impl ValidateLock {
                         &self.paths.cleanup,
                         &self.paths.global_anchor(),
                     )
-                        .map_err(|source| io_error("remove", &self.paths.cleanup, source))
+                    .map_err(|source| io_error("remove", &self.paths.cleanup, source))
                 }
                 other => Err(ValidateLockError::InvalidState(format!(
                     "unstarted cleanup requires armed authority, got {other:?}"
@@ -3133,10 +3134,7 @@ impl ValidateLock {
                 && capture.identities.is_empty()
                 && matches!(group, OriginalProcessGroupState::Absent(_))
             {
-                remove_cleanup_record_and_claim(
-                    &self.paths.cleanup,
-                    &self.paths.global_anchor(),
-                )
+                remove_cleanup_record_and_claim(&self.paths.cleanup, &self.paths.global_anchor())
                     .map_err(|source| io_error("remove", &self.paths.cleanup, source))?;
                 return Ok(RunCleanupFinalization::Released);
             }
@@ -3554,9 +3552,7 @@ impl ValidateLock {
             .expect("authority output serializes as an object")
             .insert(
                 "authorities".into(),
-                serde_json::Value::Array(
-                    statuses.into_iter().map(|(_, value)| value).collect(),
-                ),
+                serde_json::Value::Array(statuses.into_iter().map(|(_, value)| value).collect()),
             );
         let json = serde_json::to_string(&output).map_err(|error| {
             ValidateLockError::InvalidState(format!(
@@ -4323,7 +4319,7 @@ impl ValidateLock {
                         &self.paths.cleanup,
                         &self.paths.global_anchor(),
                     )
-                        .map_err(|source| io_error("remove", &self.paths.cleanup, source))?;
+                    .map_err(|source| io_error("remove", &self.paths.cleanup, source))?;
                     Ok(Some((holder.agent, holder.kind, holder.target, evidence)))
                 }
                 decision => Err(ValidateLockError::ReclaimNotProven(decision.to_string())),
@@ -8229,9 +8225,7 @@ exit 0
         assert!(matches!(error, ValidateLockError::BadMax));
         assert!(lock.read_holder().unwrap().is_none());
         // The Display carries the exact unproven-cap rationale.
-        assert!(error
-            .to_string()
-            .contains("unsupported --max"));
+        assert!(error.to_string().contains("unsupported --max"));
         let _ = fs::remove_dir_all(paths.lock.parent().unwrap());
     }
 
@@ -8579,11 +8573,9 @@ exit 0
         let slot_one = BoxExclusionAnchor::take(&paths.slot_anchor(1), 0)
             .unwrap()
             .expect("slot one must coexist with slot zero");
-        assert!(
-            BoxExclusionAnchor::take(&paths.slot_anchor(0), 0)
-                .unwrap()
-                .is_none()
-        );
+        assert!(BoxExclusionAnchor::take(&paths.slot_anchor(0), 0)
+            .unwrap()
+            .is_none());
         assert!(
             BoxExclusionAnchor::take(&paths.slot_anchor(1), 0)
                 .unwrap()

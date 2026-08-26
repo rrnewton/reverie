@@ -2576,7 +2576,10 @@ pub(crate) fn register_box_claim(anchor: &Path, cleanup: &Path, agent: &str, ope
         .unwrap_or_default();
     let temporary = dir.join(format!(
         ".{}.tmp-{}-{nonce}",
-        claim.file_name().and_then(|name| name.to_str()).unwrap_or("claim"),
+        claim
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("claim"),
         std::process::id()
     ));
     let published = (|| -> io::Result<()> {
@@ -2680,8 +2683,7 @@ fn foreign_box_claim_with_active(
                 let _ = fs::remove_file(&claim_path);
             }
             CleanupVerification::Active { record, .. }
-                if allow_published
-                    && matches!(record.phase, CleanupPhase::Published { .. }) =>
+                if allow_published && matches!(record.phase, CleanupPhase::Published { .. }) =>
             {
                 continue;
             }
@@ -6539,7 +6541,10 @@ exit 0
         assert_eq!(foreign_box_claim(&anchor, &mine), None);
         old_writer.write_all(b"version=1\ncleanup=lost\n").unwrap();
         old_writer.flush().unwrap();
-        assert!(!claim.exists(), "old truncate/write interleaving must lose the claim");
+        assert!(
+            !claim.exists(),
+            "old truncate/write interleaving must lose the claim"
+        );
 
         register_box_claim(&anchor, &theirs, "validate-a", "validate:one");
         let body = fs::read_to_string(&claim).unwrap();
