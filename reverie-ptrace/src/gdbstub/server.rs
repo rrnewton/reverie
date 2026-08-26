@@ -106,7 +106,11 @@ impl GdbServer {
 
 struct GdbServerImpl {
     reader: Box<dyn AsyncRead + Send + Unpin>,
-    pkt_tx: mpsc::Sender<Packet>,
+    /// ⚠️ `Option` SO THE RELAY CAN DROP IT. The session's command loop ends
+    /// only when every sender on this channel is gone; holding it in `self` for
+    /// the lifetime of [`GdbServerImpl::run`] made that impossible. See the
+    /// deadlock note on `run`.
+    pkt_tx: Option<mpsc::Sender<Packet>>,
     server_rx: Option<oneshot::Receiver<()>>,
     session: Option<Session>,
 }
@@ -171,7 +175,7 @@ impl GdbServerImpl {
 
         Ok(GdbServerImpl {
             reader: Box::new(reader),
-            pkt_tx: tx,
+            pkt_tx: Some(tx),
             server_rx: Some(server_rx),
             session: Some(session),
         })
@@ -195,7 +199,7 @@ impl GdbServerImpl {
 
         Ok(GdbServerImpl {
             reader: Box::new(reader),
-            pkt_tx: tx,
+            pkt_tx: Some(tx),
             server_rx: Some(server_rx),
             session: Some(session),
         })
@@ -218,6 +222,8 @@ impl GdbServerImpl {
 
     async fn send_packet(&mut self, packet: Packet) -> Result<(), Error> {
         self.pkt_tx
+            .as_ref()
+            .ok_or(Error::GdbServerSendPacketError)?
             .send(packet)
             .await
             .map_err(|_| Error::GdbServerSendPacketError)
@@ -233,6 +239,21 @@ impl GdbServerImpl {
                 PacketWithAck::WithAck(pkt) => self.send_packet(pkt).await?,
             }
         }
+
+        // ⚠️ THE CLIENT IS GONE, SO DROP THE SENDER. The session's command loop
+        // is `while let Some(pkt) = cmd_rx.recv().await`, which ends only when
+        // every sender is dropped. This one lived in `self` for the whole of
+        // `run`, and `run` cannot return until `try_join` below completes, and
+        // `try_join` cannot complete until the session loop ends. Holding it
+        // here made the exit condition unreachable BY CONSTRUCTION: the relay
+        // would notice the peer had closed, return `Ok(())`, and then wait
+        // forever for a session that was waiting for this sender to go away.
+        //
+        // Measured before this line existed: hermit's `record --verify-with-gdbex`
+        // never returned when its gdb exited without connecting, and still never
+        // returned once the accept was released -- the hang had simply moved
+        // here.
+        self.pkt_tx.take();
 
         // remote client closed connection.
         Ok(())
@@ -256,10 +277,69 @@ impl GdbServerImpl {
         if let Some(server_rx) = self.server_rx.take() {
             server_rx.await.map_err(|_| Error::GdbServerNotStarted)?;
             let mut session = self.session.take().ok_or(Error::SessionNotStarted)?;
+            // ⚠️ BOTH HALVES MUST BE ABLE TO END, AND ONE OF THEM COULD NOT.
+            // `relay_gdb_packets` terminates when the peer closes; `session.run`
+            // terminates when its command channel closes. The relay now drops
+            // the only sender as it leaves, so a departed client ends both and
+            // this join returns. Before that, a client that closed the
+            // connection left the session waiting on a channel whose sender was
+            // owned by the very future the join was waiting for.
             let run_session = session.run();
             let run_loop = self.relay_gdb_packets();
             future::try_join(run_session, run_loop).await?;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use tokio::sync::mpsc;
+
+    /// ⚠️ THE DEADLOCK THIS FILE SHIPPED, IN MINIATURE, AND IT IS A PROPERTY OF
+    /// OWNERSHIP RATHER THAN OF GDB.
+    ///
+    /// `GdbServerImpl::run` joins two futures: the relay, which ends when the
+    /// peer closes, and the session, whose command loop is
+    /// `while let Some(pkt) = cmd_rx.recv().await` and so ends only when every
+    /// SENDER is dropped. The sender lived in `self` for the whole of `run`, and
+    /// `run` could not return until the join completed, and the join could not
+    /// complete until the session ended. The exit condition was unreachable by
+    /// construction.
+    ///
+    /// The consequence, measured through hermit: `record --verify-with-gdbex`
+    /// never returned when its gdb exited without connecting, and STILL never
+    /// returned after the accept was released -- the hang had moved here.
+    ///
+    /// This models the two halves with a channel. It is deliberately not a gdb
+    /// test: the defect needs no protocol, no client and no inferior, which is
+    /// exactly why reading the gdb logic did not reveal it.
+    #[tokio::test]
+    async fn a_departed_peer_ends_the_session_loop_because_the_relay_drops_its_sender() {
+        let (tx, mut rx) = mpsc::channel::<u8>(1);
+
+        // The session half: ends only when every sender is gone.
+        let session = tokio::spawn(async move { while rx.recv().await.is_some() {} });
+
+        // The relay half: the peer has closed, so it drops its sender as it
+        // leaves. Holding it instead -- which is what `self.pkt_tx` did -- is
+        // the deadlock.
+        let relay = tokio::spawn(async move {
+            drop(tx);
+        });
+
+        // ⚠️ BOUNDED, so a regression FAILS rather than wedging the runner. A
+        // test for a hang that hangs reports nothing at all.
+        let joined = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            futures::future::try_join(session, relay),
+        )
+        .await;
+
+        assert!(
+            joined.is_ok(),
+            "the session loop did not end after the relay dropped its sender; that is the \
+             deadlock this fix exists to remove"
+        );
     }
 }
