@@ -793,6 +793,15 @@ class StartUnitTest(unittest.TestCase):
             ),
             "opt-out must not build a temp checkout",
         )
+        self.assertTrue(
+            any(
+                command[:2] == ["mktemp", "-d"]
+                and len(command) > 2
+                and "validate-cargo-" in command[2]
+                for command in self.fake.commands
+            ),
+            "in-place validation must still receive its private Cargo home",
+        )
 
     def test_incomplete_fresh_checkout_refuses_before_admission(self) -> None:
         """A fresh worktree starts with EMPTY submodules, agent-utils among them.
