@@ -207,6 +207,52 @@ def markers(bodies: list[str]) -> list[tuple[str, str | None, str | None]]:
     return [(k, l, sh) for k, l, sh, _cid in markers_with_ids(list(enumerate(bodies)))]
 
 
+
+APPROVAL = "APPROVED-AT"
+
+
+def approvals_in_order(items):
+    """Same-lane approvals, in comment order, as `(lane, sha, cid, position)`.
+
+    ⚠️ COLLECTED SEPARATELY FROM `markers_with_ids` ON PURPOSE. That list drives
+    refusal counting, `binds()`, and the withdrawal collapse logic; an APPROVED
+    entry leaking into it would change verdicts nowhere near this feature. This
+    reads the same bodies with the same decoration stripping and the same
+    citation suppression, and returns its own list.
+
+    ⚠️ POSITION IS COMMENT ORDER, NOT SHA RECENCY. The classification below must
+    not infer which sha is newest -- "a marker that adopts whatever sha is newest
+    is exactly how an approval outlives the code it approved", as the block above
+    says. Chronology is a fact in the record; sha ordering is not.
+    """
+    out = []
+    _accepted: list[tuple] = []
+    eligible = _load_grammar().marker_lines
+    for pos, (_cid, body) in enumerate(items):
+        _author = _load_grammar().comment_author(body or "")
+        for raw in eligible(body or ""):
+            line = undecorate(raw)
+            idx = line.find(APPROVAL)
+            if idx < 0:
+                continue
+            # A withdrawal line contains no APPROVED-AT, and a refusal line
+            # cannot: the tokens do not overlap. No longest-first needed.
+            tail = line[idx + len(APPROVAL):]
+            if idx != 0 and not _LANE.search(tail[:24]):
+                continue
+            m = _SHA.search(tail)
+            if m is None and _load_grammar().is_template(tail):
+                continue
+            lane_m = _LANE.search(tail[:24])
+            triple = (APPROVAL, lane_m.group(1).lower() if lane_m else None,
+                      m.group(1) if m else None)
+            if _load_grammar().is_citation(_accepted, _author, *triple):
+                continue
+            _accepted.append((_author, *triple))
+            if triple[1] is not None and triple[2] is not None:
+                out.append((triple[1], triple[2], _cid, pos))
+    return out
+
 def markers_with_ids(
     items: list[tuple[object, str]],
 ) -> list[tuple[str, str | None, str | None, object]]:
@@ -455,6 +501,9 @@ def evaluate(
     # and test passes bodies alone and gets the previous behaviour.
     items = list(zip(ids, bodies)) if ids is not None else list(enumerate(bodies))
     found4 = markers_with_ids(items)
+    # Same-lane approvals, and where each comment sits in the record's order.
+    _approvals = approvals_in_order(items)
+    _pos_of_cid = {cid: pos for pos, (cid, _b) in enumerate(items)}
     found = [(k, l, sh) for k, l, sh, _ in found4]
 
     # ⚠️ A WITHDRAWAL RETIRES THE REFUSAL IT NAMES, AND ONLY THAT ONE.
@@ -800,17 +849,68 @@ def evaluate(
     # lane withdrew AT THE SHA IT REFUSED, or a withdrawal named its comment id.
     # Anything else is OUTRUN -- which is a statement about what is absent from the
     # record, not a guess about what the author did.
-    answered, outrun = [], []
+    # ⚠️ A LATER APPROVAL FROM THE REFUSING LANE IS A DISCHARGE, AND TREATING IT AS
+    # "OUTRUN" PUNISHED THE BEHAVIOUR THIS GATE EXISTS TO ENCOURAGE. A withdrawal
+    # says "never mind"; the same lane posting APPROVED-AT at a LATER sha says "I
+    # read the new one and it is good". The second is the stronger statement and it
+    # was scored as though the author had walked past the objection.
+    #
+    # Measured 2026-08-26 on hermit#2686: claude refused 44f76910, claude approved
+    # 979a50b1 and again at the head; codex refused 979a50b1 and approved the head.
+    # Both refusals answered by their own lane re-reading, and the gate reported
+    # "2 of 2 OUTRUN, not answered". A warning against landing a head that is
+    # honestly landable either stalls real work or trains readers to skip the
+    # warning, and the second is worse.
+    #
+    # ⚠️ THE THREE THINGS IT MUST NOT CREDIT, each a way this could become a
+    # rubber stamp:
+    #   * a DIFFERENT lane's approval -- that is the cross-lane discharge the
+    #     withdrawal logic already refuses;
+    #   * an approval EARLIER in the record than the refusal -- that is the lane
+    #     approving and then objecting, where the objection is the later word;
+    #   * sha recency as a proxy for order. Position is comment order, which is a
+    #     fact; sha ordering is not, and inferring it is how an approval outlives
+    #     the code it approved.
+    answered, outrun, relaned = [], [], []
     for kind, lane, sha, cid in found4:
         if kind != REFUSAL:
             continue
-        confirmed = str(cid) in retired_ids or any(
+        withdrew = str(cid) in retired_ids or any(
             k == WITHDRAWN and l == lane and l is not None and s == sha
             for k, l, s in found
         )
-        (answered if confirmed else outrun).append((lane, sha))
+        here = _pos_of_cid.get(cid, -1)
+        reapproved = lane is not None and any(
+            alane == lane and apos > here for alane, _asha, _acid, apos in _approvals
+        )
+        if withdrew:
+            answered.append((lane, sha))
+        elif reapproved:
+            relaned.append((lane, sha))
+        else:
+            outrun.append((lane, sha))
 
     if not outrun:
+        if relaned and not answered:
+            return (
+                OK,
+                f"{len(refusals)} refusal marker(s) present, none names {head[:12]}, and "
+                f"every one was ANSWERED -- the refusing lane itself posted "
+                f"{APPROVAL} later in the record. That is a STRONGER clearing form "
+                f"than a withdrawal: the lane re-read a later sha and approved it, "
+                f"rather than saying never mind. It is still not evidence the finding "
+                f"was addressed -- an approval granted on a summary that drifted from "
+                f"the objection produces this exact readout.",
+            )
+        if relaned:
+            return (
+                OK,
+                f"{len(refusals)} refusal marker(s) present, none names {head[:12]}, and "
+                f"every one was ANSWERED -- {len(answered)} by a withdrawal at the sha "
+                f"refused, {len(relaned)} by the refusing lane approving later. Neither "
+                f"form is evidence the finding was addressed; both are evidence the "
+                f"lane spoke again.",
+            )
         return (
             OK,
             f"{len(refusals)} refusal marker(s) present, none names {head[:12]}, and "
@@ -830,7 +930,9 @@ def evaluate(
         f"a reviewer who read the delta from an author who pushed past the objection, and "
         f"it will not assert the benign reading. To discharge one honestly the refusing "
         f"lane posts {WITHDRAWN} at the sha it refused."
-        + (f" {len(answered)} other refusal(s) WERE answered." if answered else "")
+        + (f" {len(answered)} other refusal(s) WERE answered by a withdrawal." if answered else "")
+        + (f" {len(relaned)} were answered by the refusing lane approving a later sha."
+           if relaned else "")
     )
     # Reported, not blocked, by default: `land-pr.sh` abandons on any non-zero, so
     # blocking here would stop every head carrying an outrun refusal at once. Whether
@@ -1066,6 +1168,34 @@ def self_test() -> int:
     if MOOT == OK:
         bad.append("state: MOOT is zero; land-pr.sh would read a merged pr as clear")
 
+    # ⚠️ THE RE-LANE DISCHARGE, AND THE THREE THINGS IT MUST NOT CREDIT. A refusing
+    # lane that later APPROVES a newer sha has answered its own objection more
+    # strongly than a withdrawal does; scoring that as OUTRUN punished exactly the
+    # re-binding behaviour the fleet was asked for. Measured on hermit#2686, where
+    # two refusals were each answered by their own lane and the gate said "2 of 2
+    # OUTRUN, not answered".
+    #
+    # The controls are the point: crediting a DIFFERENT lane would be the cross-lane
+    # discharge the withdrawal logic already refuses, and crediting an EARLIER
+    # approval would let a lane's approval outrank its own later objection.
+    _T_OTHER = "c" * 40
+    _T_APP = f"APPROVED-AT: claude {_T_OTHER}"
+    _T_APP_CODEX = f"APPROVED-AT: codex {_T_OTHER}"
+    relane = [
+        ([_tag("hermit-004", _T_REF), _tag("hermit-003", _T_APP)], OK, "ANSWERED",
+         "same lane approving later must discharge"),
+        ([_tag("hermit-004", _T_REF), _tag("hermit-001", _T_APP_CODEX)], OK, "OUTRUN",
+         "a DIFFERENT lane's approval must not discharge"),
+        ([_tag("hermit-003", _T_APP), _tag("hermit-004", _T_REF)], OK, "OUTRUN",
+         "an approval EARLIER than the refusal must not discharge"),
+        ([_tag("hermit-004", _T_REF)], OK, "OUTRUN",
+         "no approval at all must remain outrun"),
+    ]
+    for bodies, want_rc, want_word, why in relane:
+        rc, msg = evaluate(bodies, _T_OTHER)
+        if rc != want_rc or want_word not in msg:
+            bad.append(f"re-lane: {why} -- rc={rc} msg={msg[:90]}")
+
     for b in bad:
         print(f"changes-requested-gate self-test: FAIL -- {b}", file=sys.stderr)
     if bad:
@@ -1075,7 +1205,9 @@ def self_test() -> int:
           f"answered-vs-outrun rendering case(s) and their identity control, plus "
           f"{len(state_cases)} state case(s) from hermit#2677 and their over-reach "
           f"controls, plus the two-direction guard that ANSWERED states the clearing "
-          f"FORM without asserting the finding was addressed")
+          f"FORM without asserting the finding was addressed, plus "
+          f"{len(relane)} re-lane discharge case(s) from hermit#2686 and their "
+          f"cross-lane and ordering controls")
     return 0
 
 
