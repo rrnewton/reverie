@@ -25,9 +25,12 @@ and have been confused before:
 
     e2e:<test>/<mode>/<backend>   an e2e manifest cell, from
                                   <unit>/e2e/*/*/results.jsonl `outcome`
-    test:<crate>::<test>          a nextest test, from the
-                                  `PASS [   0.004s] <crate> <test>` lines in
-                                  <unit>/safe-ci-dag-runner/*.log
+    test:<binary>$<test>          a nextest test, from the
+                                  `PASS [   0.004s] <binary> <test>` lines in
+                                  <unit>/safe-ci-dag-runner/*.log. `$` is
+                                  nextest's OWN separator; `::` would be
+                                  ambiguous to split back and matches nothing
+                                  as a filterset.
 
 FOUR THINGS THAT MAKE A NAIVE VERSION OF THIS LIE
 =================================================
@@ -156,7 +159,16 @@ def read_run(unit_dir: str):
                 # a progress notice, not a completion -- it is followed by a real
                 # verdict line and counting it would double-count the test
                 continue
-            ids[f"test:{crate}::{test}"] = "PASS" if verdict == "PASS" else "FAIL"
+            # ⚠️ `$`, NOT `::`. nextest prints the binary and the test name
+            # space-separated and its OWN id format joins them with `$`
+            # (`hermit::cli$run_dbt_...`). Rejoining with `::` makes a string
+            # that matches no test -- `test()` matches the test name only --
+            # and it is AMBIGUOUS to split back, because the boundary is not
+            # the last `::`: `hermit::cli` + `run_dbt_...` and
+            # `hermit-detcore` + `detlog::tests::...` are both real and both
+            # read as A::B. Emitting nextest's own form makes these ids
+            # directly pastable into `hermit-repeat --test-id`.
+            ids[f"test:{crate}${test}"] = "PASS" if verdict == "PASS" else "FAIL"
     return sha, ids
 
 
@@ -331,8 +343,8 @@ def _selftest() -> int:
     check("one pass moves an id out of the stable set", (always, moving), ([], ["a"]))
 
     # THE TWO POPULATIONS MUST NOT COLLIDE IN ONE KEYSPACE.
-    seen, _ = tally([{"ids": {"e2e:x/verify/ptrace": "FAIL", "test:c::x": "FAIL"}}])
-    check("e2e and nextest ids stay distinct", sorted(seen), ["e2e:x/verify/ptrace", "test:c::x"])
+    seen, _ = tally([{"ids": {"e2e:x/verify/ptrace": "FAIL", "test:c$x": "FAIL"}}])
+    check("e2e and nextest ids stay distinct", sorted(seen), ["e2e:x/verify/ptrace", "test:c$x"])
 
     # TRUNCATION DETECTION, on the shape a killed run actually leaves.
     import tempfile

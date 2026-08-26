@@ -857,10 +857,30 @@ NEXTEST_STARTING = re.compile(r"^\s*Starting\s+(\d+)\s+tests?\s+across", re.M)
 def nextest_filter_for(test_id: str) -> str:
     """A nextest filterset selecting EXACTLY one test.
 
-    `test(=NAME)` is the exact-match form; `test(NAME)` is a substring match and
-    would silently pull in every id that contains this one as a prefix, which is
-    the whole liteinst_strict_verify_round2_* family for several of the ids we
-    care about. The distinction is invisible until it runs the wrong set."""
+    ⚠️ WHICH NAMESPACE THIS ACCEPTS, because getting it wrong selects NOTHING and
+    nextest calls that success. nextest's own test id is `BINARY$TEST`, e.g.
+    `hermit::cli$run_dbt_verifies_self_prlimit`. Its result lines print the two
+    space-separated, `hermit::cli run_dbt_verifies_self_prlimit`, and a reader
+    who rejoins them with `::` produces a string that matches no test at all:
+    `test()` matches the TEST name only, never the binary.
+    That rejoined form is also AMBIGUOUS and cannot be split back, which is why
+    this takes `$` rather than being clever. Both of these are real ids and both
+    are `A::B`, with the boundary in different places:
+        binary hermit::cli    test run_dbt_verifies_self_prlimit
+        binary hermit-detcore test detlog::tests::detlog_observed_is_true...
+    So: `BINARY$TEST` pins both. A bare TEST with no `$` is accepted and pins
+    only the test name, which may legitimately exist in several binaries -- the
+    multi-test guard in classify_nextest_output catches that rather than
+    scoring one arbitrarily.
+
+    The EXACT-match forms `=` are deliberate throughout: `test(NAME)` is a
+    SUBSTRING match and would pull in every id having this one as a prefix,
+    which for several ids of interest is the whole
+    liteinst_strict_verify_round2_* family. Invisible until it runs the wrong set.
+    """
+    if "$" in test_id:
+        binary, _, test = test_id.partition("$")
+        return f"binary(={binary}) and test(={test})"
     return f"test(={test_id})"
 
 
@@ -1819,7 +1839,8 @@ def main() -> int:
         metavar="ID",
         action="append",
         default=[],
-        help="stress a NEXTEST test by id (e.g. hermit::cli::run_dbt_verifies_self_prlimit), "
+        help="stress a NEXTEST test by id in nextest's own BINARY$TEST form (e.g. "
+             "'hermit::cli$run_dbt_verifies_self_prlimit' -- quote it, $ is shell-special), "
              "repeatable. Each id is run N times as its own set of boxed nodes and gets its "
              "own pass/fail count. This is a DIFFERENT measurement from --cell: a nextest "
              "test is not a hermit verify pair, so it yields NO divergence coordinates and "
@@ -2410,7 +2431,19 @@ def _selftest() -> int:
     # EXACT MATCH, not substring: test(NAME) would sweep in every id having this
     # one as a prefix, which is a whole liteinst_strict_verify_round2_* family.
     check("the filterset is the EXACT-match form",
-          nextest_filter_for("hermit::cli::x"), "test(=hermit::cli::x)")
+          nextest_filter_for("x"), "test(=x)")
+    # ⚠️ THE ONE THAT WOULD HAVE WASTED THE FIRST SWEEP. nextest prints
+    # `hermit::cli run_dbt_...`; rejoining those with `::` yields a string that
+    # matches NO test, and nextest exits 0 for that. Every id would have come
+    # back "selected no test".
+    check("a BINARY$TEST id pins both halves",
+          nextest_filter_for("hermit::cli$run_dbt_verifies_self_prlimit"),
+          "binary(=hermit::cli) and test(=run_dbt_verifies_self_prlimit)")
+    # The boundary is NOT the last `::`, which is why `$` is required rather
+    # than inferred: both of these are real and split in different places.
+    check("a test name containing :: survives intact",
+          nextest_filter_for("hermit-detcore$detlog::tests::detlog_observed"),
+          "binary(=hermit-detcore) and test(=detlog::tests::detlog_observed)")
 
     # No output at all is a node that never got to a test, not a pass.
     check("empty output is failed, not clean", classify_nextest_output("", "x")[0], "failed")
