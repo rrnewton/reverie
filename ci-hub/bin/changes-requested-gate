@@ -506,6 +506,10 @@ def evaluate(
         if kind == WITHDRAWN and lane is not None and binds(sha)
     }
     refusals = [(lane, sha) for kind, lane, sha in found if kind == REFUSAL]
+    # Same set, carrying the comment id, so an UNBINDABLE refusal can still be
+    # matched against `RETIRES <comment-id>`. See the unbindable check below.
+    refusals4 = [(lane, sha, cid) for kind, lane, sha, cid in found4
+                 if kind == REFUSAL]
 
     # ⚠️ AND WITHIN A LANE, ONE WITHDRAWAL STILL CLEARS EVERY REFUSAL -- INCLUDING
     # REFUSALS ANOTHER REVIEWER ISSUED. The fix above scopes a withdrawal to its
@@ -715,14 +719,33 @@ def evaluate(
             f"the refusing lane itself posts {WITHDRAWN} at this sha.",
         )
 
-    unbindable = [sha for lane, sha in refusals if sha is None]
+    # ⚠️ A SHA-LESS REFUSAL USED TO BE UNRETIRABLE BY ANY MEANS, WHICH MADE IT A
+    # PERMANENT BLOCK. It names no sha, so pushing never stops it naming the head;
+    # and the withdrawal machinery above runs only over `bound4` -- refusals that
+    # DO name the head -- so nothing sha-less ever reached it. Measured before this
+    # change, against a bare refusal plus a withdrawal in five spellings (bare,
+    # lane-only, lane+head-sha, and an explicit `RETIRES <id>`): all five returned
+    # INDETERMINATE, while the same withdrawal cleared a well-formed refusal from
+    # BLOCKED to OK. So the remedy this very message printed -- "or withdraw it" --
+    # could not be carried out, and the only real exit was editing someone else's
+    # comment.
+    #
+    # `RETIRES <comment-id>` is honoured here and the blunt forms are NOT, on
+    # purpose. It names exactly one comment, so it cannot over-clear, and it does
+    # not depend on the disclosure tag being present -- which it is not, roughly a
+    # third of the time. A lane-wide or bare withdrawal stays powerless against a
+    # marker that never said which head it was about.
+    unbindable = [sha for lane, sha, cid in refusals4
+                  if sha is None and str(cid) not in retired_ids]
     if unbindable:
         return (
             INDETERMINATE,
             f"{len(unbindable)} refusal marker(s) carry no readable sha, so whether "
             f"they bind {head[:12]} cannot be decided. Refusing: a marker that cannot "
             f"be bound is not a marker that does not apply. Re-post it as "
-            f"'{REFUSAL}: <lane> <40-hex>' on its own line, or withdraw it.",
+            f"'{REFUSAL}: <lane> <40-hex>' on its own line, or retire it with a "
+            f"'{WITHDRAWN}' comment carrying 'RETIRES <the refusing comment id>' -- "
+            f"a bare or lane-only withdrawal CANNOT retire a marker that names no head.",
         )
 
     # ⚠️ ANSWERED AND OUTRUN ARE NOT THE SAME EVENT, AND THIS USED TO REPORT BOTH AS
