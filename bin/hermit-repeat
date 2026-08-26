@@ -809,6 +809,126 @@ def design_effect_for(mode: str, override: float | None) -> float:
     return CONCURRENT_DESIGN_EFFECT if mode == "concurrent" else SEQUENTIAL_DESIGN_EFFECT
 
 
+COMMANDS_DIR = "ignored/e2e-commands"
+
+
+def resolve_cell(cell_id: str, want_backend: str | None):
+    """A manifest cell id -> (guest argv, backend, hermit flags).
+
+    ⚠️ THE MANIFEST IS NOT RE-IMPLEMENTED HERE, DELIBERATELY. The cell's real
+    definition -- which program, which backends, which hermit flags, which
+    fixture and HOME and XDG directories -- lives in tests/e2e/manifests/*.yaml
+    and is expanded by scripts/manifest-to-commands.rs into exactly the command
+    the e2e bucket runs. A second expansion in this file would be a second
+    definition of what a cell IS, and the two would drift the first time either
+    changed. So this SHELLS OUT to that expander and reads its output.
+
+    What this means for the measurement: the sweep stresses the cell as the
+    bucket runs it, not an approximation of it. If the flags differ, the answer
+    is about a configuration nobody schedules.
+    """
+    root = ROOT
+    commands = root / COMMANDS_DIR
+    if not commands.is_dir() or not any(commands.glob("*.txt")):
+        say(f"{PROG}: " + f"expanding manifests into {COMMANDS_DIR} (scripts/manifest-to-commands.rs)")
+        r = subprocess.run(
+            [str(root / "hermit/scripts/manifest-to-commands.rs")],
+            cwd=root / "hermit", capture_output=True, text=True,
+        )
+        if r.returncode != 0:
+            die(f"manifest expansion failed ({r.returncode}): {r.stderr.strip()[:400]}")
+        commands = root / "hermit" / COMMANDS_DIR
+    if not commands.is_dir():
+        commands = root / "hermit" / COMMANDS_DIR
+
+    # Every generated line ends with `# <id> mode=<m> backend=<b>`, which is the
+    # only stable key in it; the body is one long shell pipeline.
+    hits = []
+    for f in sorted(commands.glob("*.txt")):
+        for line in f.read_text().splitlines():
+            marker = f"# {cell_id} mode="
+            if marker in line:
+                tail = line[line.index(marker) + 2:]
+                fields = dict(
+                    kv.split("=", 1) for kv in tail.split() if "=" in kv
+                )
+                hits.append((fields.get("backend", "?"), fields.get("mode", "?"), line, f.name))
+    if not hits:
+        die(f"cell {cell_id!r} is in no expanded bucket under {commands}. "
+            f"Check the id against tests/e2e/manifests/*.yaml.")
+    verify = [h for h in hits if h[1] == "verify"]
+    if not verify:
+        die(f"cell {cell_id!r} declares no `verify` mode ({', '.join(sorted({h[1] for h in hits}))} "
+            f"only). This tool measures verify pairs; there is nothing to compare otherwise.")
+    if want_backend:
+        chosen = [h for h in verify if h[0] == want_backend]
+        if not chosen:
+            die(f"cell {cell_id!r} has no verify/{want_backend}; enabled: "
+                f"{', '.join(sorted({h[0] for h in verify}))}")
+    else:
+        chosen = [verify[0]]
+        others = sorted({h[0] for h in verify}) 
+        if len(others) > 1:
+            say(f"{PROG}: cell {cell_id} has verify backends {', '.join(others)}; "
+                 f"stressing {chosen[0][0]} (pick with --cell-backend)")
+    backend, _mode, line, bucket = chosen[0]
+
+    # Run everything the cell does BEFORE hermit -- mkdir, xdg-config copy, and the
+    # ${CC} compile -- once, so the sweep's N nodes all execute the same prebuilt
+    # guest. Re-compiling per node would put the compiler in the measurement.
+    body = line.split(" # ")[0]
+    marker = ' "$hermit_bin" '
+    if marker not in body:
+        # some cells invoke hermit without the env prefix
+        marker = '"$hermit_bin" '
+        if marker not in body:
+            die(f"cannot find the hermit invocation in the expansion of {cell_id!r}; "
+                f"the generated shape changed and this resolver must be updated "
+                f"rather than guessed at.")
+    prep = body[: body.index(marker)].rstrip().rstrip("&").rstrip()
+    hermit_part = body[body.index(marker):]
+    r = subprocess.run(["bash", "-c", prep], cwd=root / "hermit",
+                       capture_output=True, text=True)
+    if r.returncode != 0:
+        die(f"cell {cell_id!r} setup/compile failed ({r.returncode}): "
+            f"{(r.stderr or r.stdout).strip()[-500:]}")
+
+    # The guest is the argument after the bare `--`, and the hermit flags are what
+    # sits between `run` and it. --verify/--verify-json/--strict are supplied by the
+    # sweep itself, so they are dropped here to avoid passing them twice.
+    toks = hermit_part.split()
+    if "--" not in toks:
+        die(f"no guest separator in the expansion of {cell_id!r}")
+    cut = toks.index("--")
+    flags, guest_toks = toks[:cut], toks[cut + 1:]
+    # --backend takes its value as a SEPARATE token. Dropping the flag alone left
+    # the bare value ("ptrace") in the carried-through flags, where hermit would
+    # have read it as a positional. Caught by the dry-run printing
+    # `flags carried through: --base-env=minimal ptrace`.
+    drop_with_value = {"--verify-json", "--log", "--backend"}
+    drop = {"--verify", "--verify-strict", "--strict", "run", '"$hermit_bin"', "$hermit_bin"}
+    keep, skip_next = [], False
+    for t in flags:
+        if skip_next:
+            skip_next = False
+            continue
+        if t in drop_with_value:
+            skip_next = True
+            continue
+        if t.split("=")[0] in drop_with_value or t in drop:
+            continue
+        if t.startswith("$run_verify_strict") or t.startswith("$record_verify_strict"):
+            continue
+        keep.append(t)
+    guest = [t.strip('"') for t in guest_toks]
+    guest = [g.replace("$cell", str((root / "hermit" / COMMANDS_DIR / "work" /
+                                     cell_id.replace("/", "-")))) for g in guest]
+    say(f"{PROG}: " + f"cell {cell_id} -> backend={backend} bucket={bucket} guest={' '.join(guest)}")
+    if keep:
+        say(f"{PROG}: " + f"cell hermit flags carried through: {' '.join(keep)}")
+    return guest, backend, keep
+
+
 def histogram(values: list[int]) -> list[tuple[int, int]]:
     out = {}
     for v in values:
@@ -1338,6 +1458,20 @@ def main() -> int:
         ),
     )
     p.add_argument("--backend", help="hermit --backend (ptrace|dbt|liteinst|sabre|kvm|e9patch)")
+    p.add_argument(
+        "--cell",
+        metavar="ID",
+        help="stress a MANIFEST CELL by id (e.g. c-programs/add-key-enosys) instead of "
+             "a guest command line. Resolves the id through scripts/manifest-to-commands.rs "
+             "-- the same expansion the e2e buckets run -- builds the cell's guest, and "
+             "feeds it to the ordinary sweep. GREEN cells are the point: a cell that "
+             "passes today and is flaky underneath is invisible to a single run.",
+    )
+    p.add_argument(
+        "--cell-backend",
+        metavar="B",
+        help="which enabled backend of --cell to stress; default is the cell's first",
+    )
     p.add_argument("--hermit-arg", action="append", default=[], help="extra arg for `hermit run`, repeatable; use the =VALUE form when it starts with '-' (--hermit-arg=--no-detlog-io-buffers)")
     p.add_argument("--global-arg", action="append", default=[], help="extra hermit GLOBAL arg (before the subcommand), repeatable; same =VALUE rule")
     p.add_argument("-j", "--jobs", type=int, help="concurrency in concurrent mode (default: N)")
@@ -1388,8 +1522,22 @@ def main() -> int:
     guest = args.guest
     if guest and guest[0] == "--":
         guest = guest[1:]
+    if args.cell:
+        if guest:
+            die("--cell and an explicit guest command are mutually exclusive; the cell "
+                "supplies the guest.")
+        guest, cell_backend, cell_flags = resolve_cell(args.cell, args.cell_backend)
+        if args.backend and args.backend != cell_backend:
+            die(f"--backend {args.backend} contradicts the cell's backend {cell_backend}; "
+                f"use --cell-backend to choose among the cell's enabled backends.")
+        args.backend = cell_backend
+        # The cell's own hermit flags (--base-env=minimal, --strict, ...) are part of
+        # what the cell IS. Dropping them would stress a different configuration than
+        # the one the bucket runs, and the sweep would answer about something else.
+        args.hermit_arg = list(cell_flags) + list(args.hermit_arg or [])
     if not guest:
-        die("no guest command given. Usage: hermit-repeat [options] -- GUEST [ARGS...]")
+        die("no guest command given. Usage: hermit-repeat [options] -- GUEST [ARGS...]\n"
+            "       or: hermit-repeat [options] --cell <manifest-id>")
     if args.runs < 1:
         die(f"--runs must be >= 1 (got {args.runs})")
 
