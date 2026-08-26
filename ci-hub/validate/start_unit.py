@@ -231,6 +231,20 @@ def run_command(command: Sequence[str], **kwargs: object) -> subprocess.Complete
     hides the mechanism and leaves the next background child to reproduce it. The
     defect is waiting on the wrong thing, so this waits on the right one.
     """
+    # ⚠️ `check` IS A `subprocess.run` PARAMETER AND `Popen` REJECTS IT. Moving to
+    # Popen (42d27103, to wait on the child rather than on EOF) kept forwarding
+    # **kwargs straight through, so every caller that passed `check=` -- 7 sites
+    # with check=False and the fresh-checkout helper with check=True -- began
+    # raising `TypeError: Popen.__init__() got an unexpected keyword argument
+    # 'check'`. That is every path through `checked_output`, which is reached
+    # before anything else a launch does, so `ci-hub validate-run` could not start
+    # a validation at all.
+    #
+    # Honour it here rather than deleting it at the call sites: the callers were
+    # written against subprocess.run semantics and check=True is load-bearing in
+    # create_fresh_checkout, where a failed `git worktree add` must raise instead
+    # of yielding an empty tree that validates fast and green.
+    check = bool(kwargs.pop("check", False))
     with tempfile.TemporaryFile("w+b") as out, tempfile.TemporaryFile("w+b") as err:
         process = subprocess.Popen(
             list(command), stdout=out, stderr=err, stdin=subprocess.DEVNULL, **kwargs
@@ -238,12 +252,17 @@ def run_command(command: Sequence[str], **kwargs: object) -> subprocess.Complete
         code = process.wait()
         out.seek(0)
         err.seek(0)
-        return subprocess.CompletedProcess(
+        completed = subprocess.CompletedProcess(
             list(command),
             code,
             out.read().decode("utf-8", "replace"),
             err.read().decode("utf-8", "replace"),
         )
+        if check and code != 0:
+            raise subprocess.CalledProcessError(
+                code, list(command), completed.stdout, completed.stderr
+            )
+        return completed
 
 
 def checked_output(
