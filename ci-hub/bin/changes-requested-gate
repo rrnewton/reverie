@@ -374,6 +374,7 @@ def evaluate(
     bodies: list[str],
     head: str,
     ids: list[object] | None = None,
+    require_answered: bool = False,
 ) -> tuple[int, str]:
     # `ids` are the comment ids the bodies came from, so a withdrawal can name the
     # refusal it retires. Optional and positional-compatible: every existing caller
@@ -573,11 +574,63 @@ def evaluate(
             f"'{REFUSAL}: <lane> <40-hex>' on its own line, or withdraw it.",
         )
 
-    return (
-        OK,
-        f"{len(refusals)} refusal marker(s) present but none names {head[:12]} "
-        f"-- superseded by a later push, the correct clearing path",
+    # ⚠️ ANSWERED AND OUTRUN ARE NOT THE SAME EVENT, AND THIS USED TO REPORT BOTH AS
+    # "superseded by a later push, the correct clearing path". That sentence is true
+    # of the MECHANISM and unsupported as a statement about any particular head:
+    # pushing is how an author addresses a refusal, and it is equally how an author
+    # walks past one. The gate knew only that the sha had moved and asserted the
+    # benign reading of an ambiguity it had not resolved.
+    #
+    # ⚠️ WHY IT MATTERS MORE THAN WORDING. The clearing rule is what makes a refusal
+    # cheap to issue. If any push discharges one, a reviewer's only durable options
+    # are to re-review every later sha forever or to stop refusing. Measured
+    # 2026-08-26 on hermit#2668: FIVE refusals were discharged by one reading, two of
+    # them substantive, and the readout distinguished none of them from a refusal
+    # nobody had answered. That is the reader's half of the 23 orphaned refusals --
+    # they went unnoticed because this line rendered both cases identically.
+    #
+    # ⚠️ THE CLASSIFICATION DOES NOT INFER THE HEAD, DELIBERATELY. A marker that
+    # adopts whatever sha is newest is exactly how an approval outlives the code it
+    # approved. Nothing below reads `head`: a refusal is ANSWERED only when its own
+    # lane withdrew AT THE SHA IT REFUSED, or a withdrawal named its comment id.
+    # Anything else is OUTRUN -- which is a statement about what is absent from the
+    # record, not a guess about what the author did.
+    answered, outrun = [], []
+    for kind, lane, sha, cid in found4:
+        if kind != REFUSAL:
+            continue
+        confirmed = str(cid) in retired_ids or any(
+            k == WITHDRAWN and l == lane and l is not None and s == sha
+            for k, l, s in found
+        )
+        (answered if confirmed else outrun).append((lane, sha))
+
+    if not outrun:
+        return (
+            OK,
+            f"{len(refusals)} refusal marker(s) present, none names {head[:12]}, and "
+            f"every one was ANSWERED -- its own lane withdrew at the sha it refused. "
+            f"This is the clearing path that carries evidence someone read the delta.",
+        )
+
+    detail = ", ".join(
+        f"{lane or '<no lane>'}@{(sha or '<no sha>')[:12]}" for lane, sha in outrun
     )
+    verdict = (
+        f"{len(outrun)} of {len(refusals)} refusal marker(s) were OUTRUN, not answered: "
+        f"{detail}. The sha moved so they no longer name {head[:12]}, and NO withdrawal "
+        f"from the refusing lane says the objection was addressed. This gate cannot tell "
+        f"a reviewer who read the delta from an author who pushed past the objection, and "
+        f"it will not assert the benign reading. To discharge one honestly the refusing "
+        f"lane posts {WITHDRAWN} at the sha it refused."
+        + (f" {len(answered)} other refusal(s) WERE answered." if answered else "")
+    )
+    # Reported, not blocked, by default: `land-pr.sh` abandons on any non-zero, so
+    # blocking here would stop every head carrying an outrun refusal at once. Whether
+    # that is the right policy is a decision for the owner, not a side effect of
+    # fixing the readout. `--require-answered` opts in to the stricter rule so the
+    # cost can be measured on real heads before it is imposed on all of them.
+    return (BLOCKED if require_answered else OK, verdict)
 
 
 _T_HEAD = "f013ac4b1a3155ebede568c5667f915a4c8ff6b1"
@@ -610,12 +663,56 @@ def self_test() -> int:
         got, why = evaluate(bodies, _T_HEAD)
         if got != want:
             bad.append(f"{name}: got {got}, want {want} -- {why[:80]}")
+
+    # ⚠️ ANSWERED MUST RENDER DIFFERENTLY FROM OUTRUN. Both are "no refusal binds
+    # this head", both were reported as "superseded by a later push, the correct
+    # clearing path", and that single sentence is why 23 orphaned refusals went
+    # unnoticed. These cases assert the DISTINCTION, not the exit code -- the codes
+    # are deliberately equal by default, so a test on rc alone would pass with the
+    # defect fully restored.
+    _MOVED = "a" * 40
+    render = [
+        (
+            "a refusal ANSWERED by its own lane at the sha it refused",
+            [_T_REF, _T_WD], "ANSWERED", "OUTRUN",
+        ),
+        (
+            "a refusal merely OUTRUN by a later push, never withdrawn",
+            [_T_REF], "OUTRUN", "ANSWERED",
+        ),
+        (
+            "a CODEX refusal outrun while a CLAUDE one was answered",
+            [_T_CODEX_REF, _T_REF, _T_WD], "OUTRUN", None,
+        ),
+    ]
+    for name, bodies, must_say, must_not_say in render:
+        rc, why = evaluate(bodies, _MOVED)
+        if must_say not in why:
+            bad.append(f"{name}: verdict does not say {must_say} -- {why[:90]}")
+        if must_not_say and must_not_say in why.split(".")[0]:
+            bad.append(f"{name}: verdict wrongly leads with {must_not_say} -- {why[:90]}")
+        if rc != OK:
+            bad.append(f"{name}: default rc changed to {rc}; land-pr.sh abandons on non-zero")
+
+    # ⚠️ AND THE CONTROL THAT MUST FAIL. Without it the two cases above pass against
+    # a gate that prints both words every time.
+    _, answered_why = evaluate([_T_REF, _T_WD], _MOVED)
+    _, outrun_why = evaluate([_T_REF], _MOVED)
+    if answered_why == outrun_why:
+        bad.append("answered and outrun render IDENTICALLY -- the defect is restored")
+
+    # The opt-in stricter rule blocks the outrun case and leaves the answered one.
+    if evaluate([_T_REF], _MOVED, require_answered=True)[0] != BLOCKED:
+        bad.append("--require-answered did not block an outrun refusal")
+    if evaluate([_T_REF, _T_WD], _MOVED, require_answered=True)[0] != OK:
+        bad.append("--require-answered blocked an ANSWERED refusal -- over-blocking")
     for b in bad:
         print(f"changes-requested-gate self-test: FAIL -- {b}", file=sys.stderr)
     if bad:
         return 1
     print(f"changes-requested-gate self-test: OK -- {len(cases)} withdrawal-scoping "
-          "case(s), including the same-lane pair from hermit#2625")
+          f"case(s) including the same-lane pair from hermit#2625, plus {len(render)} "
+          "answered-vs-outrun rendering case(s) and their identity control")
     return 0
 
 
@@ -626,6 +723,15 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--head")
     p.add_argument("--source", help="a checkout, so a main-equal (wiped) head can be detected")
     p.add_argument("--from-json", help="offline: a JSON array of comment bodies")
+    p.add_argument(
+        "--require-answered",
+        action="store_true",
+        help="BLOCK when a refusal was OUTRUN rather than answered -- i.e. the sha "
+             "moved but the refusing lane never withdrew. Off by default because "
+             "land-pr.sh abandons on any non-zero, so turning it on stops every head "
+             "carrying an outrun refusal at once; that is a policy decision, not a "
+             "side effect of reporting honestly.",
+    )
     p.add_argument("--self-test", action="store_true",
                    help="exercise the withdrawal-scoping cases and exit")
     if argv is None:
@@ -687,7 +793,7 @@ def main(argv: list[str] | None = None) -> int:
                 return INDETERMINATE
             bodies.extend(c.get("body") or "" for c in got if isinstance(c, dict))
 
-    rc, why = evaluate(bodies, head)
+    rc, why = evaluate(bodies, head, require_answered=args.require_answered)
 
     # A main-equal head cannot CLEAR a pull request that carries refusal markers.
     # Only downgrades OK -> INDETERMINATE; a BLOCKED verdict is already correct and
