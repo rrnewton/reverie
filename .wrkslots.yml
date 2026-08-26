@@ -2,7 +2,9 @@
   "default_landed_ref": "refs/remotes/origin/main",
   "default_remote": "origin",
   "heartbeat_ttl_seconds": 3600,
+  "liveness_command": "ci-hub/health/agent_liveness_probe.py",
   "machine": "devbig014",
-  "schema": 1,
+  "max_active_slots": 12,
+  "schema": 2,
   "worktrees_dir": "worktrees"
 }
