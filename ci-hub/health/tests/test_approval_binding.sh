@@ -24,6 +24,20 @@ set -uo pipefail
 
 here="$(cd "$(dirname "$0")" && pwd)"
 tool="${APPROVAL_BINDING_TOOL:-$here/../approval_binding.py}"
+# ⚠️ EVERY MUTATION CONTROL IN THIS FILE WAS DEAD WITHOUT THIS LINE, AND THEY FAIL
+# LOUDLY RATHER THAN SILENTLY, WHICH IS THE ONLY REASON IT WAS FINDABLE.
+# `approval_binding.py` reaches its sibling `bounded_capture` with
+# `sys.path.insert(0, Path(__file__).resolve().parents[1] / "lib")` -- resolved
+# from the FILE's location. Every mutation control below `sed`s the tool into
+# `$tmp` and runs the copy, where `parents[1]/lib` is `/lib`, so the copy dies at
+# import before executing a single assertion. The control then sees a nonzero
+# child and no named failure, and reports "the mutant did not fail" -- which reads
+# as "the guard is not load-bearing" when it means "the mutant never ran".
+#
+# Measured 2026-08-26 at 57a21d85: two controls (#2132 zero-approval guard, and the
+# source guard) were already failing this way on main. Exporting the lib directory
+# makes a relocated copy importable and restores all of them.
+export PYTHONPATH="$here/../../lib${PYTHONPATH:+:$PYTHONPATH}"
 tmp="$(mktemp -d "${TMPDIR:-/tmp}/approval-binding-test.XXXXXX")"
 trap 'rm -rf "$tmp"' EXIT
 
