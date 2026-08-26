@@ -1522,8 +1522,12 @@ def _run_active_work(
         # was observed in production on 2026-08-07 and again on 2026-08-08.
         # `DEV_HERMIT_PARENT` does not rescue a caller here, because
         # `DEFAULT_AGENT_SNAPSHOT` derives from `ROOT`, i.e. from `__file__`.
-        # Seeding the cache remains the job of `cache-agents` via
-        # `HERMIT_AGENT_SNAPSHOT_JSON`, which is a separate and explicit path.
+        # ⚠️ THERE IS NO LONGER A CACHE TO SEED. `cache-agents` was deleted at
+        # e5864b405: the file it filled has no possible producer, because the only
+        # live fleet source is `orc tmux ls` WINDOW NAMES and the cache promised
+        # per-agent `status`/`current_task`. Supplying a snapshot explicitly, via
+        # this argument or `HERMIT_AGENT_SNAPSHOT_JSON`, is now the ONLY way to
+        # reach the full census path.
         persist=False,
     )
 
@@ -2048,7 +2052,6 @@ def build_parser() -> argparse.ArgumentParser:
     active_work.set_defaults(_command_parser=active_work)
 
     commands = (
-        ("cache-agents", "cache the current ORC agent snapshot"),
         ("github-main", "report hosted workflow state for current main"),
         ("pull-requests", "report pull-request validation and queue health"),
         ("primary-snapshot", "refresh the primary checkout snapshot when safe"),
