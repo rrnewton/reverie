@@ -1,22 +1,26 @@
 # Stress / flakiness series store
 
-Append-only, Git-backed history of **repeated** cell measurements: one row per
-`(cell, tree, run)`.
+Append-only, Git-backed history of **repeated** cell measurements. Each row
+represents one run, or a consecutive range of equal runs when `num_runs` is
+greater than one.
 
 ```
 series/<team>/<short-host>/<YYYY>-<MM>.jsonl        tracked, published
 ignored/ci-hub/series-spool/                        live, unpublished
 ```
 
-Step 3 of the PR #2447 storage plan. Blocks steps 4, 5, 7, 8 and 9.
+Step 3 of the https://github.com/rrnewton/hermit/pull/2447 storage plan created
+this store. The validate and pressure-test writers and the history command below
+complete step 4.
 
 ## Why a second store rather than a column on the ledger
 
 The validation ledger records one event per validation **run of a whole tree**.
-This records one row per **cell per repetition**: a pressure campaign over 40
-cells at N=20 emits 800 rows against a single tree. Different cardinality,
-different lifetime. Folding them into the validate shards would make a month's
-shard unreadable for the purpose it already serves.
+This represents one observation per **cell per repetition**: a pressure campaign
+over 40 cells at N=20 represents 800 runs against a single tree, potentially in
+fewer rows after compression. Different cardinality, different lifetime.
+Folding them into the validate shards would make a month's shard unreadable for
+the purpose it already serves.
 
 ## What is reused, deliberately, and what is new
 
@@ -51,8 +55,35 @@ under `series`:
                           "first_divergent_virtual_nanoseconds":null}}}
 ```
 
-`run_index` is the repetition ordinal within one campaign against one tree. It
-is what makes this a series; `(cell, tree)` alone is not a key.
+`run_id` identifies one validate invocation or pressure-test campaign.
+`run_index` is the ordered repetition or retry ordinal for one cell in that
+run. `num_runs` defaults to one; a value greater than one represents that many
+consecutive equal executions starting at `run_index`. Only wall time is folded
+as a minimum/maximum. Outcome, coordinates, source depth, main ancestry, and
+the two Hermit executions' scheduler turns, virtual nanoseconds, and syscall
+counts must all match before rows can be combined. A failed retry followed by a
+successful retry therefore remains two ordered rows.
+
+The payload also carries the scorecard's existing source-depth shape:
+`depth.<repository>.{commits,first_parent}`. `main_ancestry` records whether the
+Hermit tree was on `origin/main` when written. The history command checks the
+current `origin/main` again, because a measured branch can land later.
+
+## One test's complete history
+
+From the dev-hermit root:
+
+```sh
+python3 ci-hub/series/series.py history \
+  --test applications/git-repository-workflow
+```
+
+This reads both published shards and the unpublished live spool, prints the
+number of stored rows and represented runs, starts with each cell's all-history
+`wall_time_min_ms` and `wall_time_max_ms`, then shows each row's source SHA,
+current/on-write main ancestry, depth, outcome, run span, `run1`/`run2`
+scheduler turns, virtual nanoseconds, syscall counts, wall-time range, producer,
+and run id. An empty result prints `no runs recorded` and exits nonzero.
 
 ## Raw positions, not bounds
 

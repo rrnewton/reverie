@@ -14,6 +14,7 @@ this repository has hit repeatedly.
 """
 
 import json
+import subprocess
 import sys
 import unittest
 from pathlib import Path
@@ -148,6 +149,44 @@ class RowLinter(unittest.TestCase):
         needle = "/" + "home" + "/newton/secret"
         with self.assertRaises(series.MalformedRow):
             series.validate_row(row(producer=needle))
+
+    def test_accepts_runtime_counts_compression_and_existing_depth_shape(self):
+        series.validate_row(row(series={
+            "num_runs": 200,
+            "main_ancestry": True,
+            "depth": {
+                "hermit": {"commits": 2031, "first_parent": 1957},
+                "reverie": {"commits": 941, "first_parent": 925},
+            },
+            "runtime": {
+                "run1": {
+                    "scheduler_turns": 1231,
+                    "virtual_nanoseconds": 1_413_842_550,
+                    "syscalls": 612,
+                },
+                "run2": {
+                    "scheduler_turns": 1231,
+                    "virtual_nanoseconds": 1_413_842_550,
+                    "syscalls": 612,
+                },
+                "wall_time_min_ms": 5_101,
+                "wall_time_max_ms": 5_285,
+            },
+        }))
+
+    def test_refuses_false_runtime_or_compression_counts(self):
+        bad_payloads = [
+            {"num_runs": 0},
+            {"num_runs": True},
+            {"main_ancestry": "yes"},
+            {"runtime": {"run1": {"scheduler_turns": -1}}},
+            {"runtime": {"run1": {"syscalls": True}}},
+            {"runtime": {"wall_time_min_ms": 10, "wall_time_max_ms": 9}},
+            {"depth": {"hermit": {"commits": 10, "first_parent": 0}}},
+        ]
+        for payload in bad_payloads:
+            with self.assertRaises(series.MalformedRow, msg=payload):
+                series.validate_row(row(series=payload))
 
 
 class DerivedViews(unittest.TestCase):
@@ -286,7 +325,7 @@ class WriteBoundaryCli(unittest.TestCase):
             payload["coordinates"] = coordinates
         return {
             "schema": series.ENVELOPE_VERSION, "event_id": event_id,
-            "event_type": "series.cell", "emitted_at": "2026-08-25T16:00:00Z",
+            "event_type": "series.observation", "emitted_at": "2026-08-25T16:00:00Z",
             "team": "hermit", "host": "devbig014", "run_id": run_id,
             "producer": {"source": "observed", "tool": "pressure-test", "tool_version": "1"},
             "series": payload,
@@ -379,6 +418,416 @@ class WriteBoundaryCli(unittest.TestCase):
             rc, text = self._append(parent, [])
             self.assertEqual(rc, 0)
             self.assertIn("nothing appended", text)
+
+
+class CellResultProjection(unittest.TestCase):
+    SHA = ""
+
+    def setUp(self):
+        import tempfile
+
+        self.temporary = tempfile.TemporaryDirectory()
+        self.parent = Path(self.temporary.name)
+        self.repo = self.parent / "hermit"
+        self.repo.mkdir()
+        subprocess.run(["git", "-C", str(self.repo), "init", "-q"], check=True)
+        subprocess.run(
+            ["git", "-C", str(self.repo), "config", "user.name", "Series Test"],
+            check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(self.repo), "config", "user.email", "series@example.invalid"],
+            check=True,
+        )
+        (self.repo / "one").write_text("one\n")
+        subprocess.run(["git", "-C", str(self.repo), "add", "one"], check=True)
+        subprocess.run(
+            ["git", "-C", str(self.repo), "commit", "-qm", "one"], check=True,
+        )
+        self.tree = subprocess.run(
+            ["git", "-C", str(self.repo), "rev-parse", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        subprocess.run(
+            [
+                "git", "-C", str(self.repo), "update-ref",
+                "refs/remotes/origin/main", self.tree,
+            ],
+            check=True,
+        )
+
+    def tearDown(self):
+        self.temporary.cleanup()
+
+    def _cell(self, run_index, outcome="PASS", duration_ms=100):
+        return {
+            "schema": 4,
+            # The raw harness uses a separate evidence id per pressure
+            # repetition. append-cells must NOT use it as the batch identity.
+            "run_id": f"cell-evidence-{run_index}",
+            "hermit_sha": self.tree,
+            "source_tree_dirty": False,
+            "test": "applications/git-repository-workflow",
+            "category": "applications",
+            "lane": "portable",
+            "mode": "verify",
+            "backend": "ptrace",
+            "classification": "required",
+            "outcome": outcome,
+            "duration_ms": duration_ms,
+            "run_index": run_index,
+            "runtime": {
+                "run1": {
+                    "scheduler_turns": 1231,
+                    "virtual_nanoseconds": 1_413_842_550,
+                    "syscalls": 612,
+                },
+                "run2": {
+                    "scheduler_turns": 1231,
+                    "virtual_nanoseconds": 1_413_842_550,
+                    "syscalls": 612,
+                },
+            },
+            "attempts": [],
+        }
+
+    def _project(self, cells):
+        return series.rows_from_cell_results(
+            cells,
+            parent=self.parent,
+            producer="pressure-test",
+            run_id="pressure-one",
+            tree=self.tree,
+            emitted_at="2026-08-26T10:00:00Z",
+        )
+
+    def test_two_hundred_raw_run_ids_become_one_batch_row(self):
+        cells = [self._cell(i, duration_ms=5_100 + i) for i in range(200)]
+        rows = self._project(cells)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["run_id"], "pressure-one")
+        self.assertEqual(rows[0]["event_type"], "series.observation")
+        self.assertEqual(rows[0]["producer"], "pressure-test")
+        payload = rows[0]["series"]
+        self.assertEqual(payload["run_index"], 0)
+        self.assertEqual(payload["num_runs"], 200)
+        self.assertEqual(payload["runtime"]["wall_time_min_ms"], 5_100)
+        self.assertEqual(payload["runtime"]["wall_time_max_ms"], 5_299)
+        self.assertEqual(payload["runtime"]["run1"]["syscalls"], 612)
+
+    def test_failed_retry_then_success_is_not_compressed_away(self):
+        rows = self._project([
+            self._cell(0, outcome="FAIL", duration_ms=90),
+            self._cell(1, outcome="PASS", duration_ms=80),
+        ])
+        self.assertEqual(
+            [(r["series"]["run_index"], r["series"]["outcome"]) for r in rows],
+            [(0, "diverged"), (1, "passed")],
+        )
+
+    def test_cell_outcome_mapping_is_closed(self):
+        expected = {
+            "PASS": "passed",
+            "FAIL": "diverged",
+            "TIMEOUT": "timeout",
+            "NO_RESULT": "no_result",
+            "ERROR": "errored",
+            "HOST-INAPPLICABLE": "skipped",
+        }
+        for raw, projected in expected.items():
+            rows = self._project([self._cell(0, outcome=raw)])
+            self.assertEqual(rows[0]["series"]["outcome"], projected)
+        with self.assertRaises(series.MalformedRow):
+            self._project([self._cell(0, outcome="SOMETHING_NEW")])
+
+    def test_projection_preserves_the_first_available_coordinate_per_axis(self):
+        cell = self._cell(0, outcome="FAIL")
+        cell["attempts"] = [
+            {
+                "first_divergent_record": None,
+                "first_divergent_syscall": 37,
+            },
+            {
+                "first_divergent_record": 98,
+                "first_divergent_syscall": 41,
+            },
+        ]
+        rows = self._project([cell])
+        self.assertEqual(
+            rows[0]["series"]["coordinates"],
+            {"first_divergent_record": 98, "first_divergent_syscall": 37},
+        )
+
+        cell["attempts"] = []
+        rows = self._project([cell])
+        self.assertNotIn("coordinates", rows[0]["series"])
+
+    def test_append_cells_uses_the_supplied_run_id_for_the_whole_batch(self):
+        import contextlib
+        import io
+
+        stdin = io.StringIO(
+            "\n".join(json.dumps(self._cell(i)) for i in range(2)) + "\n"
+        )
+        stdout = io.StringIO()
+        real_stdin = sys.stdin
+        sys.stdin = stdin
+        try:
+            with contextlib.redirect_stdout(stdout):
+                rc = series.main([
+                    "append-cells",
+                    "--parent", str(self.parent),
+                    "--producer", "pressure-test",
+                    "--run-id", "pressure-one",
+                    "--tree", self.tree,
+                    "--emitted-at", "2026-08-26T10:00:00Z",
+                ])
+        finally:
+            sys.stdin = real_stdin
+        self.assertEqual(rc, 0)
+        self.assertIn("representing 2 run(s)", stdout.getvalue())
+        files = list(series.spool_dir(self.parent).glob("*.jsonl"))
+        self.assertEqual([path.name for path in files], ["pressure-one.jsonl"])
+        stored = series.union(files)
+        self.assertEqual(len(stored), 1)
+        self.assertEqual(stored[0]["series"]["num_runs"], 2)
+
+        stdin = io.StringIO(
+            "\n".join(json.dumps(self._cell(i)) for i in range(2)) + "\n"
+        )
+        stdout = io.StringIO()
+        real_stdin = sys.stdin
+        sys.stdin = stdin
+        try:
+            with contextlib.redirect_stdout(stdout):
+                rc = series.main([
+                    "append-cells",
+                    "--parent", str(self.parent),
+                    "--producer", "pressure-test",
+                    "--run-id", "pressure-one",
+                    "--tree", self.tree,
+                    "--emitted-at", "2026-08-27T10:00:00Z",
+                ])
+        finally:
+            sys.stdin = real_stdin
+        self.assertEqual(rc, 0)
+        self.assertIn("appended 0 row(s) representing 2 run(s)", stdout.getvalue())
+        self.assertEqual(len(files[0].read_text().splitlines()), 1)
+
+        tracked = self.parent / "series/hermit/host/2026-08.jsonl"
+        tracked.parent.mkdir(parents=True)
+        files[0].replace(tracked)
+        stdin = io.StringIO(
+            "\n".join(json.dumps(self._cell(i)) for i in range(2)) + "\n"
+        )
+        stdout = io.StringIO()
+        real_stdin = sys.stdin
+        sys.stdin = stdin
+        try:
+            with contextlib.redirect_stdout(stdout):
+                rc = series.main([
+                    "append-cells",
+                    "--parent", str(self.parent),
+                    "--producer", "pressure-test",
+                    "--run-id", "pressure-one",
+                    "--tree", self.tree,
+                    "--emitted-at", "2026-08-28T10:00:00Z",
+                ])
+        finally:
+            sys.stdin = real_stdin
+        self.assertEqual(rc, 0)
+        self.assertIn("appended 0 row(s) representing 2 run(s)", stdout.getvalue())
+        self.assertFalse(files[0].exists())
+        self.assertEqual(len(tracked.read_text().splitlines()), 1)
+
+    def test_append_cells_refuses_a_changed_replay_before_writing(self):
+        import contextlib
+        import io
+
+        def append(cell):
+            real_stdin = sys.stdin
+            sys.stdin = io.StringIO(json.dumps(cell) + "\n")
+            try:
+                with contextlib.redirect_stderr(io.StringIO()):
+                    return series.main([
+                        "append-cells",
+                        "--parent", str(self.parent),
+                        "--producer", "pressure-test",
+                        "--run-id", "pressure-one",
+                        "--tree", self.tree,
+                        "--emitted-at", "2026-08-26T10:00:00Z",
+                    ])
+            finally:
+                sys.stdin = real_stdin
+
+        self.assertEqual(append(self._cell(0, duration_ms=100)), 0)
+        target = series.spool_dir(self.parent) / "pressure-one.jsonl"
+        before = target.read_bytes()
+        self.assertEqual(append(self._cell(0, duration_ms=101)), 1)
+        self.assertEqual(target.read_bytes(), before)
+
+    def test_append_cells_refuses_duplicate_run_indices_before_writing(self):
+        import contextlib
+        import io
+
+        real_stdin = sys.stdin
+        sys.stdin = io.StringIO(
+            json.dumps(self._cell(0)) + "\n" + json.dumps(self._cell(0)) + "\n"
+        )
+        try:
+            with contextlib.redirect_stderr(io.StringIO()):
+                rc = series.main([
+                    "append-cells",
+                    "--parent", str(self.parent),
+                    "--producer", "validate",
+                    "--run-id", "validate-one",
+                    "--tree", self.tree,
+                    "--emitted-at", "2026-08-26T10:00:00Z",
+                ])
+        finally:
+            sys.stdin = real_stdin
+        self.assertEqual(rc, 1)
+        self.assertFalse((series.spool_dir(self.parent) / "validate-one.jsonl").exists())
+
+    def test_an_empty_submodule_directory_does_not_resolve_to_the_parent_repo(self):
+        empty = self.repo / "reverie"
+        empty.mkdir()
+        self.assertIsNone(series.commit_depth(empty, self.tree) if series._is_checkout(empty) else None)
+        self.assertEqual(series.main_ancestry(empty, [self.tree]), {self.tree: (None, None)})
+
+
+class HistoryCli(unittest.TestCase):
+    TEST = "applications/git-repository-workflow"
+
+    def _git(self, repo, *args):
+        return subprocess.run(
+            ["git", "-C", str(repo), *args],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+
+    def test_one_command_reads_tracked_and_live_rows_for_one_exact_test(self):
+        import contextlib
+        import io
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as temporary:
+            parent = Path(temporary)
+            repo = parent / "hermit"
+            repo.mkdir()
+            self._git(repo, "init", "-q")
+            self._git(repo, "config", "user.name", "Series Test")
+            self._git(repo, "config", "user.email", "series@example.invalid")
+            (repo / "one").write_text("one\n")
+            self._git(repo, "add", "one")
+            self._git(repo, "commit", "-qm", "one")
+            tree = self._git(repo, "rev-parse", "HEAD")
+            self._git(repo, "update-ref", "refs/remotes/origin/main", tree)
+
+            first = row(
+                event_id="history-validate",
+                emitted_at="2026-08-25T03:00:00Z",
+                run_id="validate-1",
+                producer={"tool": "validate"},
+                series={
+                    "cell": f"{self.TEST}/verify/ptrace",
+                    "tree": tree,
+                    "run_index": 0,
+                    "outcome": "diverged",
+                    "num_runs": 1,
+                    "main_ancestry": True,
+                    "depth": {"hermit": {"commits": 1, "first_parent": 1}},
+                    "runtime": {
+                        "run1": {
+                            "scheduler_turns": 12,
+                            "virtual_nanoseconds": 34,
+                            "syscalls": 5,
+                        },
+                        "run2": {
+                            "scheduler_turns": 13,
+                            "virtual_nanoseconds": 35,
+                            "syscalls": 6,
+                        },
+                        "wall_time_min_ms": 90,
+                        "wall_time_max_ms": 90,
+                    },
+                },
+            )
+            second = row(
+                event_id="history-pressure",
+                emitted_at="2026-08-26T03:00:00Z",
+                run_id="pressure-1",
+                producer={"tool": "pressure-test"},
+                series={
+                    "cell": f"{self.TEST}/verify/ptrace",
+                    "tree": tree,
+                    "run_index": 0,
+                    "outcome": "passed",
+                    "num_runs": 200,
+                    "main_ancestry": True,
+                    "depth": {"hermit": {"commits": 1, "first_parent": 1}},
+                    "runtime": {
+                        "run1": {
+                            "scheduler_turns": 1231,
+                            "virtual_nanoseconds": 1_413_842_550,
+                            "syscalls": 612,
+                        },
+                        "run2": {
+                            "scheduler_turns": 1231,
+                            "virtual_nanoseconds": 1_413_842_550,
+                            "syscalls": 612,
+                        },
+                        "wall_time_min_ms": 5_101,
+                        "wall_time_max_ms": 5_285,
+                    },
+                },
+            )
+            unrelated = row(
+                event_id="history-other",
+                series={"cell": "applications/other/verify/ptrace", "tree": tree},
+            )
+            tracked = parent / "series/hermit/host/2026-08.jsonl"
+            tracked.parent.mkdir(parents=True)
+            tracked.write_text(json.dumps(first) + "\n" + json.dumps(unrelated) + "\n")
+            live = series.spool_dir(parent) / "pressure-1.jsonl"
+            live.parent.mkdir(parents=True)
+            live.write_text(json.dumps(second) + "\n")
+
+            stdout = io.StringIO()
+            with contextlib.redirect_stdout(stdout):
+                rc = series.main([
+                    "history", "--parent", str(parent), "--test", self.TEST,
+                ])
+            text = stdout.getvalue()
+            self.assertEqual(rc, 0)
+            self.assertIn(f"test={self.TEST} rows=2 runs=201", text)
+            self.assertIn(
+                f"cell={self.TEST}/verify/ptrace\truns=201\t"
+                "wall_time_min_ms=90\twall_time_max_ms=5285",
+                text,
+            )
+            self.assertIn("2026-08-25\t" + tree + "\tyes/yes\thermit:1/1", text)
+            self.assertIn("\t12/13\t34/35\t5/6\t90\tvalidate\tvalidate-1", text)
+            self.assertIn("\t0-199 (200)\t1231/1231", text)
+            self.assertIn("\t5101-5285\tpressure-test\tpressure-1", text)
+            self.assertNotIn("applications/other/verify/ptrace", text)
+
+    def test_empty_history_is_an_explicit_nonzero_result(self):
+        import contextlib
+        import io
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as temporary:
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                rc = series.main([
+                    "history", "--parent", temporary, "--test", self.TEST,
+                ])
+            self.assertEqual(rc, 1)
+            self.assertIn("no runs recorded", stderr.getvalue())
 
 
 if __name__ == "__main__":
