@@ -32,9 +32,45 @@ function classify({ timedOut, exitCode, stdout }) {
   return { outcome, remediationRequired, pollFailed };
 }
 
-// index.ts: stableAlertSignature strips ONLY lines beginning "COST ".
 function stableAlertSignature(report) {
-  return report.split("\n").filter((line) => !line.startsWith("COST ")).join("\n");
+  const lines = report.split("\n");
+  if (lines.includes("watch_status=no-result")) {
+    const stablePrefixes = [
+      "state=",
+      "verdict=",
+      "watch_status=",
+      "watch_verdict=",
+      "watch_planned=",
+      "watch_stopped_because=",
+    ];
+    return lines.filter((line) =>
+      stablePrefixes.some((prefix) => line.startsWith(prefix))
+    ).join("\n");
+  }
+  return lines.filter((line) => !line.startsWith("COST ")).join("\n");
+}
+
+function speculativeLandTimeoutReport(elapsedMs) {
+  const boundMs = SPECULATIVE_LAND_TIMEOUT_SEC * 1000;
+  return [
+    "WATCH OBLIGATIONS: NO-RESULT checked=0 planned=unknown " +
+      "elapsed_ms=" + elapsedMs + " bound_ms=" + boundMs,
+    "state=no-result",
+    "verdict=NO-RESULT",
+    "watch_status=no-result",
+    "watch_verdict=NO-RESULT",
+    "watch_planned=unknown",
+    "watch_checked=0",
+    "watch_attempted=unknown",
+    "watch_timed_out=true",
+    "watch_stopped_because=outer-timeout",
+    "elapsed_ms=" + elapsedMs,
+    "bound_ms=" + boundMs,
+    "summary=NO-RESULT: the speculative-land obligation watcher exceeded " +
+      "its " + boundMs + "ms outer bound before reporting any obligation. " +
+      "No completed obligation check was reported, so checked and clear was " +
+      "not established.",
+  ].join("\n");
 }
 
 function timingLine({ outcome, elapsedMs, exitCode }) {
@@ -70,10 +106,15 @@ function check(name, cond, detail = "") {
 
 // === 2. THE FIX: a timeout becomes a typed value, not an escaping throw =======
 {
-  const r = classify({ timedOut: true, exitCode: 3, stdout: "" });
+  const stdout = speculativeLandTimeoutReport(240011);
+  const r = classify({ timedOut: true, exitCode: 3, stdout });
   check("timeout => outcome=timeout", r.outcome === "timeout", `got ${r.outcome}`);
   check("timeout => routes to the EXISTING pollFailed branch", r.pollFailed === true);
   check("timeout => never mistaken for remediation", r.remediationRequired === false);
+  check("timeout explicitly says NO-RESULT", stdout.includes("watch_verdict=NO-RESULT"));
+  check("timeout explicitly says zero checked", stdout.includes("watch_checked=0"));
+  check("timeout names the outer bound", stdout.includes("watch_stopped_because=outer-timeout"));
+  check("timeout refuses to claim clear", stdout.includes("checked and clear was not established"));
 }
 
 // === 3. Exit 3 must not collide with remediation's exit 2 ====================
@@ -93,25 +134,53 @@ function check(name, cond, detail = "") {
 // timeout would produce a fresh signature, defeat the kvGet/kvSet dedupe, and
 // turn one repeating fault into an alert storm at the 15s tick interval.
 {
-  const report = "speculative-land poll did not complete: timed out after 240s";
-  const sigA = stableAlertSignature(report);
-  const sigB = stableAlertSignature(report);
-  check("identical failures share a signature", sigA === sigB);
-
-  // Two ticks of the SAME fault differing only in duration:
-  const bodyA = report + "\n" + timingLine({ outcome: "timeout", elapsedMs: 240011, exitCode: 3 });
-  const bodyB = report + "\n" + timingLine({ outcome: "timeout", elapsedMs: 240987, exitCode: 3 });
-  check("bodies DO differ (timing is carried to the reader)", bodyA !== bodyB);
+  const reportA = speculativeLandTimeoutReport(240011);
+  const reportB = speculativeLandTimeoutReport(240987);
+  check("timeout reports retain their actual durations", reportA !== reportB);
   check(
-    "but SIGNATURES are computed from `report`, which excludes timing",
-    stableAlertSignature(report) === stableAlertSignature(report),
+    "repeated outer timeouts share a stable signature",
+    stableAlertSignature(reportA) === stableAlertSignature(reportB),
   );
-  // The regression guard: if someone folds timing into `report`, this fires.
-  const poisoned = stableAlertSignature(bodyA) === stableAlertSignature(bodyB);
+
+  const partialA = [
+    "state=no-result",
+    "verdict=NO-RESULT",
+    "watch_status=no-result",
+    "watch_verdict=NO-RESULT",
+    "watch_planned=16",
+    "watch_checked=3",
+    "watch_rotation_next=ob-3",
+    "watch_stopped_because=budget",
+    "elapsed_ms=20001",
+    "watch_unchecked_ids=ob-3,ob-4",
+  ].join("\n");
+  const partialB = [
+    "state=no-result",
+    "verdict=NO-RESULT",
+    "watch_status=no-result",
+    "watch_verdict=NO-RESULT",
+    "watch_planned=16",
+    "watch_checked=4",
+    "watch_rotation_next=ob-7",
+    "watch_stopped_because=budget",
+    "elapsed_ms=20999",
+    "watch_unchecked_ids=ob-7,ob-8",
+  ].join("\n");
   check(
-    "REGRESSION GUARD: folding timing into the signature would break dedupe",
-    poisoned === false,
-    "signatures of two durations compared equal, which means this test's premise is wrong",
+    "rotation progress does not repeat the repair instruction every cycle",
+    stableAlertSignature(partialA) === stableAlertSignature(partialB),
+  );
+  check(
+    "a changed stop reason produces a new alert",
+    stableAlertSignature(partialA) !== stableAlertSignature(
+      partialB.replace("watch_stopped_because=budget", "watch_stopped_because=github-quota"),
+    ),
+  );
+  check(
+    "a changed planned count produces a new alert",
+    stableAlertSignature(partialA) !== stableAlertSignature(
+      partialB.replace("watch_planned=16", "watch_planned=17"),
+    ),
   );
 }
 
@@ -141,11 +210,23 @@ function check(name, cond, detail = "") {
   for (const needle of required) {
     check("index.ts still contains: " + needle, src.includes(needle));
   }
-  // The signature function must keep stripping ONLY "COST " lines; if it grows a
-  // rule, the dedupe reasoning above needs rechecking.
+  // The signature function must keep the typed NO-RESULT reason and planned
+  // count while excluding progress and timing fields.
   check(
-    "stableAlertSignature still strips only COST lines",
-    src.includes('.filter((line) => !line.startsWith("COST "))'),
+    "stableAlertSignature recognizes typed NO-RESULT",
+    src.includes('lines.includes("watch_status=no-result")'),
+  );
+  check(
+    "stableAlertSignature retains the stop reason",
+    src.includes('"watch_stopped_because="'),
+  );
+  check(
+    "outer timeout constructs a typed report",
+    src.includes("result.stdout = speculativeLandTimeoutReport(elapsedMs);"),
+  );
+  check(
+    "outer timeout reports zero checked",
+    src.includes('"watch_checked=0"'),
   );
   // `timing` must reach the wake BODY and must NOT be spliced into `report`.
   check(

@@ -4312,6 +4312,145 @@ class ProtocolTest(unittest.TestCase):
         self.assertNotIn("summary=PARTIAL", printed)
         self.assertIn("The census is INCOMPLETE, so this is not a clear.", printed)
 
+    def test_bounded_watch_rotates_and_reaches_every_obligation(self) -> None:
+        """One slow completed poll per tick reaches all four rows in four ticks.
+
+        This is the positive proof the old stable sort could never provide: the
+        starting row advances durably, and the fourth bounded invocation can
+        return a real OPEN verdict because every current obligation has been
+        examined within the stated four-cycle bound.
+        """
+        clock, records, fake_poll = self._budget_fixture(
+            4, seconds_per_poll=20.0
+        )
+        attempts: list[str] = []
+
+        def recording_poll(*args, **kwargs):
+            attempts.append(args[0])
+            return fake_poll(*args, **kwargs)
+
+        outputs: list[str] = []
+        return_codes: list[int] = []
+        with mock.patch.object(protocol.time, "monotonic", lambda: clock["t"]), \
+             mock.patch.object(
+                 protocol.obligations,
+                 "latest_records",
+                 return_value={record["obligation_id"]: record for record in records},
+             ), \
+             mock.patch.object(protocol, "poll_obligation", recording_poll):
+            for _ in range(4):
+                output = io.StringIO()
+                with redirect_stdout(output):
+                    return_codes.append(
+                        protocol.watch(
+                            store_path=self.store,
+                            obligation_id=None,
+                            once=True,
+                            poll_seconds=1,
+                            budget_secs=10.0,
+                        )
+                    )
+                outputs.append(output.getvalue())
+
+        self.assertEqual(attempts, ["ob-0", "ob-1", "ob-2", "ob-3"])
+        self.assertEqual(
+            return_codes[:3], [protocol.WATCH_EXIT_NO_RESULT] * 3
+        )
+        self.assertEqual(return_codes[3], 1)
+        self.assertIn("watch_rotation_next=ob-1", outputs[0])
+        self.assertIn("watch_rotation_next=ob-2", outputs[1])
+        self.assertIn("watch_rotation_next=ob-3", outputs[2])
+        for output in outputs[:3]:
+            self.assertIn("watch_rotation_max_cycles=4", output)
+            self.assertIn("watch_verdict=NO-RESULT", output)
+            self.assertNotIn("watch_status=complete", output)
+        self.assertIn("watch_status=complete", outputs[3])
+        self.assertIn("watch_verdict=OPEN", outputs[3])
+        self.assertIn("watch_checked=4", outputs[3])
+        self.assertIn("watch_checked_this_cycle=1", outputs[3])
+        self.assertNotIn("NO-RESULT", outputs[3])
+
+    def test_refused_attempts_rotate_but_do_not_count_as_examined(self) -> None:
+        """Advancing the starting row must not turn four refusals into a verdict."""
+        clock, records, _ = self._budget_fixture(4, seconds_per_poll=0.0)
+        attempts: list[str] = []
+
+        def refusing_poll(
+            obligation_id: str,
+            store_path: Path,
+            *,
+            deadline: float | None = None,
+            redispatch: bool = True,
+        ) -> dict:
+            del store_path, deadline, redispatch
+            attempts.append(obligation_id)
+            clock["t"] += 1.0
+            raise protocol.GitHubQuotaExhausted("API rate limit exceeded")
+
+        outputs: list[str] = []
+        with mock.patch.object(protocol.time, "monotonic", lambda: clock["t"]), \
+             mock.patch.object(
+                 protocol.obligations,
+                 "latest_records",
+                 return_value={record["obligation_id"]: record for record in records},
+             ), \
+             mock.patch.object(protocol, "poll_obligation", refusing_poll):
+            for _ in range(4):
+                output = io.StringIO()
+                with redirect_stdout(output):
+                    rc = protocol.watch(
+                        store_path=self.store,
+                        obligation_id=None,
+                        once=True,
+                        poll_seconds=1,
+                        budget_secs=10.0,
+                    )
+                self.assertEqual(rc, protocol.WATCH_EXIT_NO_RESULT)
+                outputs.append(output.getvalue())
+
+        self.assertEqual(attempts, ["ob-0", "ob-1", "ob-2", "ob-3"])
+        for output in outputs:
+            self.assertIn("watch_checked=0", output)
+            self.assertIn("watch_attempted=1", output)
+            self.assertIn("watch_examined_within_bound=0", output)
+            self.assertIn("watch_verdict=NO-RESULT", output)
+            self.assertNotIn("watch_status=complete", output)
+
+    def test_second_bounded_watch_refuses_instead_of_waiting_on_state_lock(self) -> None:
+        clock, records, _ = self._budget_fixture(2, seconds_per_poll=0.0)
+        lock_path = protocol._watch_state_lock_path(self.store)
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        output = io.StringIO()
+        with lock_path.open("a+", encoding="utf-8") as lock:
+            protocol.fcntl.flock(
+                lock.fileno(), protocol.fcntl.LOCK_EX | protocol.fcntl.LOCK_NB
+            )
+            with mock.patch.object(
+                protocol.time, "monotonic", lambda: clock["t"]
+            ), mock.patch.object(
+                protocol.obligations,
+                "latest_records",
+                return_value={record["obligation_id"]: record for record in records},
+            ), mock.patch.object(
+                protocol, "poll_obligation"
+            ) as poll_obligation, redirect_stdout(output):
+                rc = protocol.watch(
+                    store_path=self.store,
+                    obligation_id=None,
+                    once=True,
+                    poll_seconds=1,
+                    budget_secs=10.0,
+                )
+
+        self.assertEqual(rc, protocol.WATCH_EXIT_NO_RESULT)
+        poll_obligation.assert_not_called()
+        printed = output.getvalue()
+        self.assertIn("watch_stopped_because=watch-state-lock", printed)
+        self.assertIn("watch_checked=0", printed)
+        self.assertIn("watch_attempted=0", printed)
+        self.assertIn("watch_rotation_next=unknown", printed)
+        self.assertNotIn("watch_status=complete", printed)
+
     def test_a_complete_sweep_reports_nothing_unexamined(self) -> None:
         """The negative arm: when everything is reached, the field says zero and
         no row is named. Without this the assertion above passes for a gate that
@@ -4472,7 +4611,10 @@ class ProtocolTest(unittest.TestCase):
         printed = output.getvalue()
         self.assertEqual(rc, protocol.WATCH_EXIT_NO_RESULT)
         self.assertIn("WATCH OBLIGATIONS: NO-RESULT", printed)
-        self.assertIn("watch_checked=1", printed)
+        self.assertIn("watch_checked=0", printed)
+        self.assertIn("watch_attempted=1", printed)
+        self.assertIn("watch_unchecked=1", printed)
+        self.assertIn("watch_examined_within_bound=0", printed)
         self.assertIn("watch_planned=1", printed)
         self.assertIn("elapsed_ms=23000", printed)
         self.assertIn("bound_ms=25000", printed)

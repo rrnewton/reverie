@@ -188,11 +188,10 @@ const SPECULATIVE_LAND_INTERVAL_MS = 15 * 1000;
 // at ~14s. 240s is ~12x the observed maximum. The 11-19s tail is ci-hub REBUILD
 // cost, not poll cost: other agents edit ci-hub/lib/*.rs constantly and ci-hub's
 // shebang is `rust-script --force`, so every call enters Cargo.
-// Do NOT lower this to "tighten" it -- that converts ordinary rebuild ticks into
-// false failures. Do NOT raise it either; nothing observed needs more. Exactly
-// one 240s timeout exists in the whole orc log corpus, and it is still the only
-// SCRIPT-effect timeout on record (the other 72 timeouts there are `sendAgent`
-// effects at 120s and `summon` subprocesses at 15s -- different subsystems).
+// Do NOT lower this to "tighten" it -- that converts ordinary long ticks into
+// false failures. Do NOT raise it either; nothing observed needs more. If this
+// outer fallback fires, the heartbeat must report an explicit NO-RESULT with
+// zero completed obligation checks reported; silence is not a clear.
 const SPECULATIVE_LAND_TIMEOUT_SEC = 240;
 const SPECULATIVE_LAND_WORKFLOW_NAME =
   "hermit-dev-speculative-land-remediation-v1";
@@ -696,7 +695,44 @@ export async function policyReloadHeartbeat(wf: WfContext): Promise<void> {
 }
 
 function stableAlertSignature(report: string): string {
-  return report.split("\n").filter((line) => !line.startsWith("COST ")).join("\n");
+  const lines = report.split("\n");
+  if (lines.includes("watch_status=no-result")) {
+    const stablePrefixes = [
+      "state=",
+      "verdict=",
+      "watch_status=",
+      "watch_verdict=",
+      "watch_planned=",
+      "watch_stopped_because=",
+    ];
+    return lines.filter((line) =>
+      stablePrefixes.some((prefix) => line.startsWith(prefix))
+    ).join("\n");
+  }
+  return lines.filter((line) => !line.startsWith("COST ")).join("\n");
+}
+
+function speculativeLandTimeoutReport(elapsedMs: number): string {
+  const boundMs = SPECULATIVE_LAND_TIMEOUT_SEC * 1000;
+  return [
+    "WATCH OBLIGATIONS: NO-RESULT checked=0 planned=unknown " +
+      "elapsed_ms=" + elapsedMs + " bound_ms=" + boundMs,
+    "state=no-result",
+    "verdict=NO-RESULT",
+    "watch_status=no-result",
+    "watch_verdict=NO-RESULT",
+    "watch_planned=unknown",
+    "watch_checked=0",
+    "watch_attempted=unknown",
+    "watch_timed_out=true",
+    "watch_stopped_because=outer-timeout",
+    "elapsed_ms=" + elapsedMs,
+    "bound_ms=" + boundMs,
+    "summary=NO-RESULT: the speculative-land obligation watcher exceeded " +
+      "its " + boundMs + "ms outer bound before reporting any obligation. " +
+      "No completed obligation check was reported, so checked and clear was " +
+      "not established.",
+  ].join("\n");
 }
 
 function remediationAlertSignature(report: string): string {
@@ -710,12 +746,10 @@ export async function speculativeLandRemediationHeartbeat(
   wf: WfContext,
 ): Promise<void> {
   await wf.loop(async () => {
-    // A tick may exceed its effect bound. When it did (once, 2026-08-07T01:16:45Z),
-    // the throw escaped this loop body and KILLED the workflow; it survived only
-    // because HEARTBEAT_RESTARTABLE caught the corpse and restarted 5s later.
-    // That is survival by safety net, not reporting: nothing recorded that a tick
-    // had timed out, or how long it ran. Convert the throw into a typed value the
-    // existing pollFailed branch already alerts on and dedupes.
+    // A tick may exceed its effect bound. If the throw escaped this loop body it
+    // would KILL the workflow and discard every captured obligation row. That is
+    // survival by safety net, not reporting. Convert the throw into a typed value
+    // the existing pollFailed branch already alerts on and dedupes.
     const startedMs = Date.now();
     let result: { exitCode: number; stdout?: string; stderr?: string };
     let timedOut = false;
@@ -738,6 +772,9 @@ export async function speculativeLandRemediationHeartbeat(
       };
     }
     const elapsedMs = Date.now() - startedMs;
+    if (timedOut) {
+      result.stdout = speculativeLandTimeoutReport(elapsedMs);
+    }
     const exitCode = Number(result.exitCode);
     const stdout = String(result.stdout || "").trim();
     const stderr = String(result.stderr || "").trim();
@@ -794,11 +831,10 @@ export async function speculativeLandRemediationHeartbeat(
           ? ["hermit-lander"]
           : [];
         // `timing` is appended to the BODY only, never folded into `report`.
-        // `report` feeds stableAlertSignature(), which strips only "COST " lines,
-        // so an elapsed_ms embedded there would make every tick a fresh signature
-        // and defeat the dedupe entirely -- turning a repeating fault into an
-        // alert storm. The body carries the varying evidence; the signature stays
-        // keyed on the invariant part of the failure.
+        // `report` feeds stableAlertSignature(), which retains the typed reason
+        // and planned count for NO-RESULT but ignores elapsed time, checked count,
+        // and the rotating unchecked IDs. The body carries the changing evidence;
+        // the signature stays keyed on the failure that needs repair.
         await orc.sendWakeup(
           targets,
           title,

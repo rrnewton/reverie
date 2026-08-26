@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import fcntl
 import hashlib
 import json
 import math
@@ -16,6 +17,7 @@ import signal
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 import uuid
 from collections.abc import Callable, Mapping, Sequence
@@ -180,6 +182,7 @@ DEFAULT_WATCH_CANCEL_WAIT_SECS = float(
 # watcher that exhausted its bound did not complete the census, so it is a
 # NO-RESULT -- neither CLEAR nor a product/remediation failure.
 WATCH_EXIT_NO_RESULT = 3
+WATCH_STATE_SCHEMA_VERSION = 1
 TERMINAL_VERIFICATION_STATES = frozenset(("green", "red", "error"))
 # Only a genuine failing ANSWER remediates. A no_result (a cancelled hosted run,
 # an OOM-killed local validate, a lost runner, a network error reaching GitHub)
@@ -4963,12 +4966,129 @@ def _watch_complete(record: Mapping[str, Any]) -> bool:
     )
 
 
+def _watch_order_key(record: Mapping[str, Any]) -> tuple[str, str]:
+    return str(record.get("opened_at", "")), str(record["obligation_id"])
+
+
+def _watch_state_path(store_path: Path) -> Path:
+    return store_path.with_name(f".{store_path.name}.watch-state.json")
+
+
+def _watch_state_lock_path(store_path: Path) -> Path:
+    return store_path.with_name(f".{store_path.name}.watch-state.lock")
+
+
+def _empty_watch_state() -> dict[str, Any]:
+    return {
+        "schema_version": WATCH_STATE_SCHEMA_VERSION,
+        "cycle": 0,
+        "last_attempted": None,
+        "last_examined_cycle": {},
+    }
+
+
+def _load_watch_state(store_path: Path) -> dict[str, Any]:
+    path = _watch_state_path(store_path)
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return _empty_watch_state()
+    except (OSError, json.JSONDecodeError) as error:
+        raise ProtocolError(f"cannot read watch state {path}: {error}") from error
+
+    if not isinstance(document, Mapping):
+        raise ProtocolError(f"watch state {path} is not an object")
+    cycle = document.get("cycle")
+    last_attempted = document.get("last_attempted")
+    last_examined_cycle = document.get("last_examined_cycle")
+    if (
+        document.get("schema_version") != WATCH_STATE_SCHEMA_VERSION
+        or not isinstance(cycle, int)
+        or cycle < 0
+        or (
+            last_attempted is not None
+            and (
+                not isinstance(last_attempted, Mapping)
+                or not isinstance(last_attempted.get("opened_at"), str)
+                or not isinstance(last_attempted.get("obligation_id"), str)
+            )
+        )
+        or not isinstance(last_examined_cycle, Mapping)
+        or any(
+            not isinstance(obligation_id, str)
+            or not isinstance(examined_cycle, int)
+            or examined_cycle < 1
+            or examined_cycle > cycle
+            for obligation_id, examined_cycle in last_examined_cycle.items()
+        )
+    ):
+        raise ProtocolError(f"watch state {path} has an invalid schema")
+    return {
+        "schema_version": WATCH_STATE_SCHEMA_VERSION,
+        "cycle": cycle,
+        "last_attempted": (
+            None
+            if last_attempted is None
+            else {
+                "opened_at": last_attempted["opened_at"],
+                "obligation_id": last_attempted["obligation_id"],
+            }
+        ),
+        "last_examined_cycle": dict(last_examined_cycle),
+    }
+
+
+def _write_watch_state(store_path: Path, state: Mapping[str, Any]) -> None:
+    path = _watch_state_path(store_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_name: str | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w",
+            encoding="utf-8",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            delete=False,
+        ) as temporary:
+            temporary_name = temporary.name
+            json.dump(state, temporary, sort_keys=True, separators=(",", ":"))
+            temporary.write("\n")
+            temporary.flush()
+            os.fsync(temporary.fileno())
+        os.replace(temporary_name, path)
+    except OSError as error:
+        if temporary_name is not None:
+            try:
+                os.unlink(temporary_name)
+            except OSError:
+                pass
+        raise ProtocolError(f"cannot write watch state {path}: {error}") from error
+
+
+def _rotate_watch_records(
+    records: Sequence[Mapping[str, Any]], last_attempted: Mapping[str, Any] | None
+) -> list[Mapping[str, Any]]:
+    ordered = list(records)
+    if not ordered or last_attempted is None:
+        return ordered
+    cursor = (
+        str(last_attempted.get("opened_at", "")),
+        str(last_attempted.get("obligation_id", "")),
+    )
+    for index, record in enumerate(ordered):
+        if _watch_order_key(record) > cursor:
+            return [*ordered[index:], *ordered[:index]]
+    return ordered
+
+
 def _poll_within_budget(
     records: Sequence[Mapping[str, Any]],
     store_path: Path,
     deadline: float | None,
     redispatch: bool = True,
     stop_reason: list[str] | None = None,
+    attempted_ids: list[str] | None = None,
+    examined_ids: list[str] | None = None,
 ) -> tuple[list[dict[str, Any]], int, bool]:
     """Poll obligations one at a time, stopping when the wall budget is spent.
 
@@ -4987,12 +5107,15 @@ def _poll_within_budget(
     for record in records:
         if deadline is not None and time.monotonic() >= deadline:
             return updated, len(records), True
+        obligation_id = str(record["obligation_id"])
+        if attempted_ids is not None:
+            attempted_ids.append(obligation_id)
         op_wall = time.monotonic()
         op_cpu = time.process_time()
         try:
             updated.append(
                 poll_obligation(
-                    record["obligation_id"],
+                    obligation_id,
                     store_path,
                     deadline=deadline,
                     redispatch=redispatch,
@@ -5026,8 +5149,10 @@ def _poll_within_budget(
                 f"cpu={time.process_time() - op_cpu:.2f}s"
             )
             return updated, len(records), True
+        if examined_ids is not None:
+            examined_ids.append(obligation_id)
         print(
-            f"# poll {record['obligation_id']} "
+            f"# poll {obligation_id} "
             f"wall={time.monotonic() - op_wall:.2f}s "
             f"cpu={time.process_time() - op_cpu:.2f}s"
         )
@@ -5037,6 +5162,137 @@ def _poll_within_budget(
         if deadline is not None and time.monotonic() >= deadline:
             return updated, len(records), True
     return updated, len(records), False
+
+
+def _current_watch_records(store_path: Path) -> list[dict[str, Any]]:
+    return sorted(
+        (
+            record
+            for record in obligations.latest_records(store_path).values()
+            if record.get("overall_state") not in obligations.CLOSED_STATES
+            or _verification_in_flight(record)
+            or _verification_state_needs_reconcile(record)
+        ),
+        key=_watch_order_key,
+    )
+
+
+def _poll_rotating_within_budget(
+    records: Sequence[Mapping[str, Any]],
+    store_path: Path,
+    deadline: float,
+    redispatch: bool,
+) -> tuple[
+    list[Mapping[str, Any]],
+    list[dict[str, Any]],
+    list[dict[str, Any]],
+    bool,
+    list[str],
+    list[str],
+    list[str],
+    int,
+    bool,
+    int,
+]:
+    """Poll from the saved starting point and retain bounded-cycle coverage.
+
+    The lock spans one bounded pass so concurrent one-shot watchers cannot both
+    repeat the same prefix. A second watcher refuses immediately rather than
+    waiting beyond its own wall budget.
+    """
+    lock_path = _watch_state_lock_path(store_path)
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a+", encoding="utf-8") as lock:
+        try:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            current = _current_watch_records(store_path)
+            return (
+                list(records),
+                [],
+                current,
+                True,
+                ["watch-state-lock"],
+                [],
+                [],
+                len(current),
+                False,
+                0,
+            )
+        try:
+            state = _load_watch_state(store_path)
+            cycle = int(state["cycle"]) + 1
+            rotated = _rotate_watch_records(records, state["last_attempted"])
+            stop_reason: list[str] = []
+            attempted_ids: list[str] = []
+            examined_ids: list[str] = []
+            updated, _, timed_out = _poll_within_budget(
+                rotated,
+                store_path,
+                deadline,
+                redispatch,
+                stop_reason,
+                attempted_ids,
+                examined_ids,
+            )
+
+            current = _current_watch_records(store_path)
+            current_ids = {str(record["obligation_id"]) for record in current}
+            last_examined_cycle = {
+                obligation_id: examined_cycle
+                for obligation_id, examined_cycle in state[
+                    "last_examined_cycle"
+                ].items()
+                if obligation_id in current_ids
+            }
+            for examined_id in examined_ids:
+                if examined_id in current_ids:
+                    last_examined_cycle[examined_id] = cycle
+
+            last_attempted = state["last_attempted"]
+            if attempted_ids:
+                attempted_record = next(
+                    record
+                    for record in rotated
+                    if record["obligation_id"] == attempted_ids[-1]
+                )
+                opened_at, attempted_id = _watch_order_key(attempted_record)
+                last_attempted = {
+                    "opened_at": opened_at,
+                    "obligation_id": attempted_id,
+                }
+
+            max_cycles = len(current)
+            oldest_allowed_cycle = cycle - max_cycles + 1
+            examined_within_bound = sum(
+                obligation_id in last_examined_cycle
+                and last_examined_cycle[obligation_id] >= oldest_allowed_cycle
+                for obligation_id in current_ids
+            )
+            coverage_complete = examined_within_bound == len(current_ids)
+            _write_watch_state(
+                store_path,
+                {
+                    "schema_version": WATCH_STATE_SCHEMA_VERSION,
+                    "cycle": cycle,
+                    "last_attempted": last_attempted,
+                    "last_examined_cycle": last_examined_cycle,
+                },
+            )
+            return (
+                rotated,
+                updated,
+                current,
+                timed_out,
+                stop_reason,
+                attempted_ids,
+                examined_ids,
+                max_cycles,
+                coverage_complete,
+                examined_within_bound,
+            )
+        finally:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
 
 
 def watch(
@@ -5054,32 +5310,51 @@ def watch(
         records = (
             [obligations.get_record(obligation_id, store_path)]
             if obligation_id
-            else sorted(
-                (
-                    record
-                    for record in obligations.latest_records(store_path).values()
-                    if record.get("overall_state") not in obligations.CLOSED_STATES
-                    or _verification_in_flight(record)
-                    or _verification_state_needs_reconcile(record)
-                ),
-                key=lambda record: (
-                    str(record.get("opened_at", "")),
-                    record["obligation_id"],
-                ),
+            else _current_watch_records(store_path)
+        )
+        attempted_ids: list[str] = []
+        examined_ids: list[str] = []
+        max_cycles = 1
+        coverage_complete = False
+        examined_within_bound = 0
+        if obligation_id is None and deadline is not None:
+            (
+                records,
+                updated,
+                current_records,
+                timed_out,
+                stop_reason,
+                attempted_ids,
+                examined_ids,
+                max_cycles,
+                coverage_complete,
+                examined_within_bound,
+            ) = _poll_rotating_within_budget(
+                records, store_path, deadline, redispatch
             )
-        )
-        stop_reason: list[str] = []
-        updated, planned, timed_out = _poll_within_budget(
-            records, store_path, deadline, redispatch, stop_reason
-        )
-        if timed_out:
+            planned = len(current_records)
+        else:
+            stop_reason = []
+            updated, planned, timed_out = _poll_within_budget(
+                records,
+                store_path,
+                deadline,
+                redispatch,
+                stop_reason,
+                attempted_ids,
+                examined_ids,
+            )
+            current_records = updated
+            coverage_complete = not timed_out
+
+        if timed_out and not coverage_complete:
             # TYPED, NON-CRASHING NO-RESULT. We stop under our own power and
             # report what we actually checked, so the consumer can distinguish
             # an unavailable answer from CLEAR and from a completed OPEN tick.
             elapsed_ms = round((time.monotonic() - started) * 1000)
             bound_ms = round((budget_secs or 0) * 1000)
             print(
-                f"WATCH OBLIGATIONS: NO-RESULT checked={len(updated)} of "
+                f"WATCH OBLIGATIONS: NO-RESULT checked={len(examined_ids)} of "
                 f"planned={planned} elapsed_ms={elapsed_ms} bound_ms={bound_ms}"
             )
             print("state=no-result")
@@ -5087,20 +5362,48 @@ def watch(
             print("watch_status=no-result")
             print("watch_verdict=NO-RESULT")
             print(f"watch_planned={planned}")
-            print(f"watch_checked={len(updated)}")
+            print(f"watch_checked={len(examined_ids)}")
+            print(f"watch_attempted={len(attempted_ids)}")
             print("watch_timed_out=true")
+            next_start: str | None = None
+            if obligation_id is None and records:
+                print("watch_rotation=round-robin")
+                print(f"watch_rotation_max_cycles={max_cycles}")
+                print(f"watch_examined_within_bound={examined_within_bound}")
+                if "watch-state-lock" in stop_reason:
+                    print("watch_rotation_next=unknown")
+                else:
+                    next_index = len(attempted_ids) % len(records)
+                    next_start = str(records[next_index]["obligation_id"])
+                    print(f"watch_rotation_next={next_start}")
             print(f"elapsed_ms={elapsed_ms}")
             print(f"bound_ms={bound_ms}")
-            # ⚠️ NAME WHAT WAS NOT REACHED. The rows already polled were always
-            # printed below; the ones the budget never got to were ANONYMOUS. A
+            # ⚠️ NAME WHAT WAS NOT EXAMINED. The rows whose polls completed were
+            # always printed below; the rest were ANONYMOUS. A
             # reader saw "checked 5 of 16" and could not learn WHICH eleven were
             # unexamined -- nor that it is the SAME eleven every cycle, because
             # the sort is stable and the budget always expires in the same
-            # place. That is a starvation, and naming the tail is what makes it
-            # visible. `_poll_within_budget` polls in order, so the unreached
-            # set is exactly the tail. No new work: this is the discard removed.
+            # place. Naming the unchecked rows makes that visible, including an
+            # attempted row whose poll hit the deadline without returning a
+            # result. No new work: this is the discard removed.
+            current_ids = {
+                str(record["obligation_id"]) for record in current_records
+            }
+            examined_id_set = set(examined_ids)
+            ordered_current_ids = [
+                str(record["obligation_id"])
+                for record in records
+                if str(record["obligation_id"]) in current_ids
+            ]
+            ordered_current_ids.extend(
+                str(record["obligation_id"])
+                for record in current_records
+                if str(record["obligation_id"]) not in ordered_current_ids
+            )
             unchecked = [
-                str(record["obligation_id"]) for record in records[len(updated):]
+                current_id
+                for current_id in ordered_current_ids
+                if current_id not in examined_id_set
             ]
             # ⚠️ WHY IT STOPPED IS NOT THE SAME QUESTION AS THAT IT STOPPED.
             # "slow" and "refused for quota" need opposite responses -- one
@@ -5123,7 +5426,7 @@ def watch(
             # the partial information rides in its own typed fields above.
             print(
                 "summary="
-                f"NO-RESULT: watch-obligations checked {len(updated)} of "
+                f"NO-RESULT: watch-obligations checked {len(examined_ids)} of "
                 f"{planned} in {elapsed_ms}ms against a {bound_ms}ms budget"
                 + (
                     " and STOPPED EARLY because GitHub refused for QUOTA -- the "
@@ -5134,12 +5437,26 @@ def watch(
                 + f". The census is INCOMPLETE, so this is not a clear. "
                 f"{len(unchecked)} obligation(s) were NOT examined this cycle"
                 + (f": {', '.join(unchecked)}" if unchecked else "")
+                + (
+                    f". The next cycle starts at {next_start}; with at least "
+                    f"one completed poll per cycle, all {planned} current "
+                    f"obligations are examined within at most {max_cycles} cycles"
+                    if next_start is not None
+                    else ""
+                )
             )
             for record in updated:
                 print(f"  {_summary_line(record)}")
             for obligation_id in unchecked:
                 print(f"  NOT EXAMINED THIS CYCLE: {obligation_id}")
             return WATCH_EXIT_NO_RESULT
+        if timed_out:
+            print(
+                "# bounded rotation reached the wall budget after "
+                f"{len(attempted_ids)} attempt(s); every current obligation has "
+                f"a completed poll within the last {max_cycles} cycle(s)"
+            )
+            updated = current_records
         if once or all(_watch_complete(record) for record in updated):
             remediation = sum(
                 record["overall_state"] == "remediation_required" for record in updated
@@ -5159,7 +5476,12 @@ def watch(
             print(f"watch_verdict={watch_verdict}")
             print(f"watch_planned={planned}")
             print(f"watch_checked={len(updated)}")
-            print("watch_timed_out=false")
+            print(f"watch_checked_this_cycle={len(examined_ids)}")
+            print(f"watch_attempted_this_cycle={len(attempted_ids)}")
+            print(f"watch_timed_out={'true' if timed_out else 'false'}")
+            if obligation_id is None and deadline is not None:
+                print("watch_rotation=round-robin")
+                print(f"watch_rotation_max_cycles={max_cycles}")
             print(f"elapsed_ms={round((time.monotonic() - started) * 1000)}")
             print(
                 f"WATCH OBLIGATIONS: checked={len(updated)} "
