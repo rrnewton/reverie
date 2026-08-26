@@ -399,6 +399,58 @@ def strip_decoration(line: str) -> str:
 _FENCE_RE = re.compile(r"^ {0,3}(?P<f>`{3,}|~{3,})\s*(?P<info>.*)$")
 
 
+# ⚠️ AN INLINE CODE SPAN CARRYING NO SHA IS A CITATION OF THE TOKEN, NOT A VERDICT.
+# This is the fence rule at smaller scale, and it belongs beside it: a fenced
+# example teaching the convention already does not bind, and neither should
+# ``... a `CHANGES-REQUESTED-AT: codex` I prepared for #2658 ...`` written mid
+# sentence. Measured on hermit#2660, which had BOTH lanes bound at the exact head
+# by non-authors and could not land: that clause -- about a DIFFERENT pull request
+# -- parsed as (CHANGES-REQUESTED-AT, codex, None), and a refusal with no sha
+# cannot be bound, so the gate returned rc=2 INDETERMINATE.
+#
+# ⚠️ AND IT HAD NO PATH OUT, which is what makes it worse than a false positive.
+# Pushing cannot clear it: the clause names no sha, so it never stops naming the
+# head. The only exits were editing another reviewer's comment or posting a
+# withdrawal for a refusal nobody made -- recording a retraction of a verdict that
+# was never rendered. The gate's own commentary names that exit as the bad one.
+#
+# ⚠️ THE FIX IS NOT TO INFER THE HEAD. A sha-less marker that silently adopts
+# whatever sha is current is how an approval outlives the code it approved; the
+# same inference on a refusal invents an objection to a head nobody looked at. A
+# marker with no sha is MALFORMED, and stays malformed here.
+#
+# WHY THIS CANNOT LOSE A REAL REFUSAL -- the safety property, and the reason the
+# no-sha condition is load-bearing rather than decorative. A span containing a
+# 40-hex sha is left EXACTLY as written, so every marker that could bind anything
+# still binds, in backticks or out of them. What is dropped is only markers that
+# bind nothing by construction: they name no head, so no head can be cleared of
+# them and none can be blocked by them on purpose.
+#
+# Deliberately NOT keyed on the token being line-initial. That laxer form was
+# measured (see scan_markers) at 12 marker lines against 26 for the shipped
+# token-plus-lane rule at zero additional pull requests blocked, so keying on
+# position would give back the blindness the lane rule was adopted to remove.
+#
+# Symmetric by design, as the fence rule is: a sha-less ``APPROVED-AT`` inside a
+# code span stops binding too. That direction is safe -- it withholds an approval
+# rather than granting one -- and an approval with no sha could not bind a head
+# anyway.
+#
+# Spaces, not deletion: the replacement preserves the line's length so that any
+# caller reasoning about offsets on the returned line sees the same geometry.
+_CODE_SPAN_RE = re.compile(r"(?P<t>`+)(?P<c>.*?)(?P=t)")
+
+
+def redact_citation_spans(line: str) -> str:
+    """Blank inline code spans that contain no sha, leaving bindable ones intact."""
+    def _blank(m: "re.Match[str]") -> str:
+        if SHA40.search(m.group("c")):
+            return m.group(0)
+        return " " * len(m.group(0))
+
+    return _CODE_SPAN_RE.sub(_blank, line)
+
+
 def prose_lines(body: str) -> list[str]:
     """The lines of ``body`` that are outside every code block.
 
@@ -444,7 +496,7 @@ def prose_lines(body: str) -> list[str]:
             indented = True
             prev_blank = False
             continue
-        out.append(raw)
+        out.append(redact_citation_spans(raw))
         prev_blank = blank
     return out
 

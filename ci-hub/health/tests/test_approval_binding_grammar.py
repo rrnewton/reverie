@@ -439,6 +439,45 @@ for _real in (f"CHANGES-REQUESTED-AT: claude {CUR}", f"CHANGES-REQUESTED: claude
                   f"a real refusal still fires: {_real[:34]}",
                   "fires"))
 
+# --- A SHA-LESS MARKER INSIDE A CODE SPAN IS A CITATION. ----------------------
+# hermit#2660 had BOTH lanes bound at the exact head by non-authors and could not
+# land, because one clause of the codex reviewer's APPROVAL mentioned a refusal
+# prepared for a DIFFERENT pull request. It parsed as a refusal with a lane and no
+# sha, and a refusal that names no sha cannot be bound, so the gate returned rc=2.
+#
+# ⚠️ THE STRANDING IS THE DEFECT, NOT THE FALSE POSITIVE. Pushing cannot clear a
+# clause that names no sha -- it never stops naming the head -- so the only exits
+# were editing another reviewer's comment or posting a withdrawal for a refusal
+# nobody made. The remedy is NOT to bind it to the current head: a marker that
+# silently adopts whatever sha is current is how an approval outlives the code it
+# approved. It stays malformed; it just stops being read as a verdict.
+_QUOTED_NO_SHA = "have a `CHANGES-REQUESTED-AT: codex` prepared for #2658, not posted"
+cases.append(("CHANGES-REQUESTED-AT" not in "".join(ab.marker_lines(_QUOTED_NO_SHA)),
+              "a sha-less refusal in a code span is a citation, not a verdict",
+              f"lines={ab.marker_lines(_QUOTED_NO_SHA)}"))
+
+# ⚠️ THE CONTROLS THAT KEEP THIS FROM BECOMING A SILENT ADMISSION. Only markers
+# that bind NOTHING are dropped. Anything carrying a sha is left exactly as
+# written, in backticks or out of them, so no refusal that could block a head can
+# be lost by quoting it.
+_QUOTED_WITH_SHA = f"see `CHANGES-REQUESTED-AT: codex {CUR}` on the earlier head"
+cases.append((f"CHANGES-REQUESTED-AT: codex {CUR}" in "".join(ab.marker_lines(_QUOTED_WITH_SHA)),
+              "a code span CARRYING A SHA is preserved verbatim",
+              f"lines={ab.marker_lines(_QUOTED_WITH_SHA)}"))
+
+# Malformed, not inferred: a sha-less refusal written as a verdict line is still
+# seen. Dropping this one would admit a head its reviewer meant to block.
+_PLAIN_NO_SHA = "CHANGES-REQUESTED-AT: claude -- see above"
+cases.append((_PLAIN_NO_SHA in ab.marker_lines(_PLAIN_NO_SHA),
+              "a sha-less refusal in PLAIN prose is still seen",
+              f"lines={ab.marker_lines(_PLAIN_NO_SHA)}"))
+
+# Symmetric, exactly as the fence rule is: withholding an approval is the safe
+# direction, and a sha-less approval could not bind a head anyway.
+cases.append(("APPROVED-AT" not in "".join(ab.marker_lines("as `APPROVED-AT: claude` would say")),
+              "a sha-less approval in a code span does not bind either",
+              "symmetric"))
+
 
 def test_approval_binding_grammar():
     """Assert the cases collected above, so pytest ENFORCES them.
