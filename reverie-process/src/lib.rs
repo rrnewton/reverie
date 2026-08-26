@@ -603,25 +603,34 @@ mod tests {
         // Give them both time to start up.
         sleep(Duration::from_millis(100));
 
-        // Signal them to shut down. Otherwise, they will wait forever for a
-        // connection that will never come.
-        server1.signal(Signal::SIGINT).unwrap();
-        server2.signal(Signal::SIGINT).unwrap();
+        // Stop them with a signal that cannot be ignored. A test binary launched
+        // as a background shell job inherits SIGINT as ignored, and that
+        // disposition survives exec into nc.
+        server1.signal(Signal::SIGKILL).unwrap();
+        server2.signal(Signal::SIGKILL).unwrap();
 
-        let output1 = server1.wait_with_output().await.unwrap();
-        let output2 = server2.wait_with_output().await.unwrap();
+        let (output1, output2) = tokio::join!(
+            tokio::time::timeout(Duration::from_secs(1), server1.wait_with_output()),
+            tokio::time::timeout(Duration::from_secs(1), server2.wait_with_output()),
+        );
+        let output1 = output1
+            .expect("port_isolation: server 1 did not exit within 1 second after SIGKILL")
+            .unwrap();
+        let output2 = output2
+            .expect("port_isolation: server 2 did not exit within 1 second after SIGKILL")
+            .unwrap();
 
         // Without network isolation, one of the servers would exit with an
         // "Address already in use" (exit status 2) error.
         assert_eq!(
             output1.status,
-            ExitStatus::Signaled(Signal::SIGINT, false),
+            ExitStatus::Signaled(Signal::SIGKILL, false),
             "{:?}",
             output1
         );
         assert_eq!(
             output2.status,
-            ExitStatus::Signaled(Signal::SIGINT, false),
+            ExitStatus::Signaled(Signal::SIGKILL, false),
             "{:?}",
             output2
         );
