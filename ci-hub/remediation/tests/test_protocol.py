@@ -6186,3 +6186,193 @@ def test_tick_routes_decision_waits_to_note_without_repolling():
     assert "watch-obligations --once --gate" in action_block
     assert "kind: action" in action_block
     assert "skill: hard-warn-coordinator" in action_block
+
+
+class LocalRedispatchConcurrencyTest(unittest.TestCase):
+    """One sweep must not start a validate for every obligation it reaches.
+
+    Until the bound below existed, the ONLY thing limiting this was the
+    watcher's 20s wall budget cutting the sweep off at about the fifth
+    obligation. Any change that makes the census cheaper removes that accident,
+    so the bound has to be asserted, not inherited from a timing coincidence.
+    """
+
+    def setUp(self) -> None:
+        self.temporary = tempfile.TemporaryDirectory()
+        self.root = Path(self.temporary.name)
+        self.store = self.root / "obligations.jsonl"
+        self.source = self.root / "hermit"
+        self.source.mkdir()
+        for obligation_id, sha in (("ob", SHA), ("neighbour", "b" * 40)):
+            obligations.create_obligation(
+                repo="rrnewton/hermit",
+                landed_sha=sha,
+                land_mode="speculative",
+                actor="tester",
+                obligation_id=obligation_id,
+                path=self.store,
+            )
+        obligations.transition(
+            "ob",
+            "seed",
+            {
+                "local": {
+                    "state": "no_result",
+                    "exit_code": 137,
+                    "source": str(self.source),
+                    "redispatch_count": 0,
+                    "pid": None,
+                },
+                "github": {"state": "running"},
+            },
+            self.store,
+        )
+
+    def tearDown(self) -> None:
+        self.temporary.cleanup()
+
+    def _seed_neighbour(self, state: str, pid: int | None) -> None:
+        obligations.transition(
+            "neighbour",
+            "seed",
+            {"local": {"state": state, "pid": pid, "source": str(self.source)}},
+            self.store,
+        )
+
+    def _attempt(self):
+        record = obligations.get_record("ob", self.store)
+        with mock.patch.object(
+            protocol,
+            "_redispatch_watch_admission",
+            return_value=(True, "owner-watch-admitted-since-release"),
+        ), mock.patch.object(
+            protocol, "_spawn_detached", return_value=4321
+        ) as spawn, mock.patch.object(
+            protocol, "_wait_for_registration", side_effect=lambda *a, **k: record
+        ), redirect_stderr(io.StringIO()) as error:
+            result = protocol._maybe_redispatch_local("ob", record, self.store)
+        return spawn, result, error.getvalue()
+
+    def test_a_live_producer_elsewhere_defers_this_obligations_validate(self) -> None:
+        self._seed_neighbour("running", os.getpid())  # this process is alive
+        spawn, result, errors = self._attempt()
+        spawn.assert_not_called()
+        self.assertIn("LOCAL RE-DISPATCH DEFERRED", errors)
+        self.assertIn("neighbour", errors)
+        # Deferral must not consume a retry, or a busy box would silently spend
+        # the obligation's bounded attempts without ever running one.
+        self.assertEqual(result["local"]["redispatch_count"], 0)
+        self.assertEqual(result["local"]["state"], "no_result")
+
+    def test_a_dead_producer_row_does_not_block_forever(self) -> None:
+        """The bound must not be able to deadlock on a stale row.
+
+        A record left in `running` by an OOM-killed producer would, if state
+        alone were counted, block every future re-dispatch permanently and do
+        it silently. Liveness is proven by the pid, so this must still launch.
+        """
+        self._seed_neighbour("running", 999999999)  # not a live pid
+        spawn, _result, errors = self._attempt()
+        spawn.assert_called_once()
+        self.assertNotIn("LOCAL RE-DISPATCH DEFERRED", errors)
+
+    def test_no_neighbour_at_all_still_launches(self) -> None:
+        """Positive control: the bound must not refuse an idle box."""
+        spawn, _result, errors = self._attempt()
+        spawn.assert_called_once()
+        self.assertNotIn("LOCAL RE-DISPATCH DEFERRED", errors)
+
+
+class ReceiptSweepMemoTest(unittest.TestCase):
+    """Each distinct (repo, SHA) is dereferenced once per sweep, and only then."""
+
+    def test_one_sweep_asks_the_authority_once_per_distinct_sha(self) -> None:
+        calls: list[tuple[str, str]] = []
+
+        def fake_verify(repo, sha, *, timeout=None):
+            del timeout
+            calls.append((repo, sha))
+            return True, {"state": "verified", "repo": repo}
+
+        with mock.patch.object(protocol, "verify_local_receipt", fake_verify):
+            with protocol._receipt_sweep(None):
+                protocol._dereference_current_local_receipt("rrnewton/hermit", SHA)
+                protocol._dereference_current_local_receipt("rrnewton/hermit", SHA)
+                protocol._dereference_current_local_receipt("rrnewton/reverie", SHA)
+        # Two identical asks -- what `poll_obligation` and `evaluate_obligation`
+        # each make for the same obligation -- collapse to one. A different repo
+        # is a different question and is still asked.
+        self.assertEqual(
+            calls, [("rrnewton/hermit", SHA), ("rrnewton/reverie", SHA)]
+        )
+
+    def test_the_memo_does_not_survive_the_sweep(self) -> None:
+        """A verdict from an earlier census must never be readable in a later one."""
+        calls: list[str] = []
+
+        def fake_verify(repo, sha, *, timeout=None):
+            del repo, timeout
+            calls.append(sha)
+            return True, {"state": "verified"}
+
+        with mock.patch.object(protocol, "verify_local_receipt", fake_verify):
+            with protocol._receipt_sweep(None):
+                protocol._dereference_current_local_receipt("rrnewton/hermit", SHA)
+            with protocol._receipt_sweep(None):
+                protocol._dereference_current_local_receipt("rrnewton/hermit", SHA)
+            # Outside any sweep it is the unconditional call it always was.
+            protocol._dereference_current_local_receipt("rrnewton/hermit", SHA)
+        self.assertEqual(calls, [SHA, SHA, SHA])
+        self.assertIsNone(protocol._receipt_sweep_cache)
+
+    def test_a_caller_cannot_mutate_what_the_memo_returns_to_the_next(self) -> None:
+        def fake_verify(repo, sha, *, timeout=None):
+            del repo, sha, timeout
+            return True, {"state": "verified", "report": {"qualifying_count": 1}}
+
+        with mock.patch.object(protocol, "verify_local_receipt", fake_verify):
+            with protocol._receipt_sweep(None):
+                _, first = protocol._dereference_current_local_receipt(
+                    "rrnewton/hermit", SHA
+                )
+                first["report"]["qualifying_count"] = 999
+                _, second = protocol._dereference_current_local_receipt(
+                    "rrnewton/hermit", SHA
+                )
+        self.assertEqual(second["report"]["qualifying_count"], 1)
+
+    def test_the_sweep_bounds_the_local_receipt_call_by_its_own_deadline(self) -> None:
+        """The call that used to run at 120s inside a 20s budget."""
+        seen: list[float] = []
+
+        def fake_verify(repo, sha, *, timeout=None):
+            del repo, sha
+            seen.append(timeout)
+            return True, {"state": "verified"}
+
+        with mock.patch.object(protocol, "verify_local_receipt", fake_verify), \
+             mock.patch.object(protocol.time, "monotonic", lambda: 100.0):
+            with protocol._receipt_sweep(112.0):
+                protocol._dereference_current_local_receipt("rrnewton/hermit", SHA)
+        # 12s left, minus the reporting reserve -- NOT the 120s network bound.
+        self.assertEqual(
+            seen, [12.0 - protocol.WATCH_GATE_COMPLETION_RESERVE_SECS]
+        )
+        self.assertLess(seen[0], protocol.DEFAULT_NETWORK_TIMEOUT)
+
+    def test_a_spent_budget_refuses_before_launching_the_verifier(self) -> None:
+        with mock.patch.object(protocol, "verify_local_receipt") as verify, \
+             mock.patch.object(protocol.time, "monotonic", lambda: 100.0):
+            with protocol._receipt_sweep(100.0):
+                with self.assertRaises(protocol.WatchBudgetExhausted):
+                    protocol._dereference_current_local_receipt(
+                        "rrnewton/hermit", SHA
+                    )
+        verify.assert_not_called()
+
+    def test_nesting_a_sweep_is_refused_rather_than_silently_widened(self) -> None:
+        with protocol._receipt_sweep(None):
+            with self.assertRaises(protocol.ProtocolError):
+                with protocol._receipt_sweep(None):
+                    pass
+        self.assertIsNone(protocol._receipt_sweep_cache)

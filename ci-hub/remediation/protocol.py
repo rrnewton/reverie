@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
+import copy
 import fcntl
 import hashlib
 import json
@@ -167,6 +169,26 @@ DEFAULT_NETWORK_TIMEOUT = float(
 # on fast runs, with flat CPU). So the budget is not a guess about how long the
 # work takes -- it is the outer bound minus measured startup and the
 # print_status tail, and the gate reports how much of the plan it completed.
+#
+# ⚠️ 20 IS DELIBERATELY NOT RAISED TO FIT THE WHOLE POPULATION, DECIDED
+# 2026-08-26 AFTER MEASURING. It is arithmetic that a full census does not fit:
+# 16 unresolved obligations, measured over three paired runs on devbig014 at
+# load 27-33, cost 52.1s and 68.7s wall before the duplicate dereference was
+# removed and 28.0s and 29.4s after it. So even halved, exhaustive-per-tick
+# needs ~30s, and the tick already exceeds 100s of wall on a busy cycle.
+#
+# Raising the bound to fit is also unsafe rather than merely expensive. A single
+# `ci-hub` invocation costs ~1.1s when Cargo finds the build fresh and ~28-95s
+# when it does not (see `_dereference_current_local_receipt`), so per-call cost
+# is bimodal, not a distribution a budget can be fitted to. Any number chosen
+# against a warm cache is blown by one rebuild.
+#
+# The population is covered ACROSS cycles instead, by the rotation in
+# `_poll_rotating_within_budget`, and an incomplete cycle reports NO-RESULT
+# naming what it did not reach. Removing the duplicate call roughly doubles how
+# much of the population one cycle covers, which shortens the rotation rather
+# than lengthening the tick. Do not raise this without re-measuring both the
+# cached and rebuild cases.
 DEFAULT_WATCH_GATE_BUDGET_SECS = float(
     os.environ.get("CI_HUB_WATCH_GATE_BUDGET", "20")
 )
@@ -199,6 +221,29 @@ REMEDIATION_STATES = frozenset(("red",))
 _LOCAL_INFRA_EXITS = frozenset((137, 143))
 DEFAULT_LOCAL_REDISPATCH_LIMIT = int(
     os.environ.get("CI_HUB_LOCAL_REDISPATCH_LIMIT", "2")
+)
+# ⚠️ HOW MANY VALIDATES ONE SWEEP MAY HAVE RUNNING AT ONCE, AND WHY THE NUMBER
+# HAS TO EXIST AT ALL.
+#
+# `DEFAULT_LOCAL_REDISPATCH_LIMIT` above is PER OBLIGATION -- it stops one
+# obligation being re-validated forever. NOTHING bounded the number of
+# obligations being re-validated AT THE SAME TIME. With 16 unresolved
+# obligations that is a permitted 16 concurrent local validates, each estimated
+# at 1728s wall and 8471s CPU.
+#
+# What actually held that down was the watcher's 20s wall budget: the sweep was
+# cut off at about the fifth obligation, so it never reached the sixth. Measured
+# 2026-08-26 and recorded in `poll_obligation` below, a sweep given enough
+# budget to reach the seventh launched FOUR concurrent validates and took the
+# box from load 17 to 35.
+#
+# THAT IS AN ACCIDENT, NOT A GUARD, and any change that makes the census cheaper
+# removes it -- the sweep then reaches every obligation. So the bound has to be
+# stated where the launch happens, not inferred from how long the sweep is
+# allowed to take. One at a time: this is a monitoring path, and the next sweep
+# is 300s away.
+DEFAULT_LOCAL_REDISPATCH_CONCURRENCY = int(
+    os.environ.get("CI_HUB_LOCAL_REDISPATCH_CONCURRENCY", "1")
 )
 LAUNCH_REGISTRATION_TIMEOUT = float(
     os.environ.get("CI_HUB_LAUNCH_REGISTRATION_TIMEOUT", "10")
@@ -864,11 +909,92 @@ def _persisted_local_failed_receipt_problem(
     return None
 
 
+# ⚠️ EACH OBLIGATION ASKED THE SAME QUESTION TWICE, MEASURED 2026-08-26.
+#
+# Attributing every subprocess a single poll spawns (load ~45, devbig014):
+#
+#     poll 20260824-084551 total=3.15s  2 subprocesses accounted=3.09s
+#         1.76s  ci-hub validate-status --sha 7328819311861cdb... --json
+#         1.33s  ci-hub validate-status --sha 7328819311861cdb... --json
+#
+# Two IDENTICAL calls, same repo and SHA, milliseconds apart:
+# `poll_obligation` binds the local receipt authority, then calls
+# `evaluate_obligation`, which binds it again. BOTH SITES ARE CORRECT ON THEIR
+# OWN -- `evaluate_obligation` is entered directly by other callers and has to
+# bind the authority itself -- so neither can be deleted. Over 16 unresolved
+# obligations that is 32 invocations where 16 distinct questions were asked.
+#
+# The cost of an invocation is not the query. `ci-hub` is
+# `#!/usr/bin/env -S rust-script --force`, and rust-script's own help gives
+# `--force` as "Force the script to be rebuilt". When the build is fresh Cargo
+# short-circuits and the call costs ~1.1s; when it is not, the call pays a full
+# recompile. Sampled 30 times in a loop while recording whether the cached
+# binary changed: 29 cached runs at 1.07-2.76s wall and 0.75-0.82s user CPU,
+# and the one rebuild at 28.52s wall and 43.66s USER CPU. That bimodality is
+# why no single wall budget fits, and halving the invocation count halves the
+# exposure to it. The same property is recorded independently in
+# `ci-hub/health/pr_status.py`, which bypasses the front door for it.
+_receipt_sweep_cache: dict[tuple[str, str], tuple[bool, dict[str, Any]]] | None = None
+_receipt_sweep_deadline: float | None = None
+
+
+@contextlib.contextmanager
+def _receipt_sweep(deadline: float | None):
+    """Answer each distinct (repo, SHA) once, within one sweep's own bound.
+
+    Scoped to a single sweep and torn down after it, so no consumer can read a
+    receipt verdict produced by an earlier census, and so nothing outside a
+    sweep inherits the sweep's deadline.
+    """
+    global _receipt_sweep_cache, _receipt_sweep_deadline
+    if _receipt_sweep_cache is not None:
+        # Nested sweeps would share one memo across two lifetimes. Refuse
+        # rather than silently extending the outer one's scope.
+        raise ProtocolError("a local-receipt sweep memo is already active")
+    _receipt_sweep_cache = {}
+    _receipt_sweep_deadline = deadline
+    try:
+        yield _receipt_sweep_cache
+    finally:
+        _receipt_sweep_cache = None
+        _receipt_sweep_deadline = None
+
+
 def _dereference_current_local_receipt(
     repo: str, sha: str
 ) -> tuple[bool, dict[str, Any]]:
-    """Call the one canonical exact-SHA local receipt verifier."""
-    return verify_local_receipt(repo, sha)
+    """Call the one canonical exact-SHA local receipt verifier.
+
+    ⚠️ THE MEMO REMOVES A DUPLICATE CALL, NOT THE CALL. Every distinct SHA a
+    sweep asks about is still dereferenced against the canonical authority. It
+    is not a cache with a lifetime, a staleness window, or a persisted entry:
+    outside a sweep, and for every SHA not already answered inside one, this is
+    the same unconditional subprocess it has always been.
+    """
+    cache = _receipt_sweep_cache
+    if cache is None:
+        return verify_local_receipt(repo, sha)
+    key = (repo, sha)
+    if key not in cache:
+        # ⚠️ THIS IS THE CALL THAT USED TO HANG PAST THE WATCHER'S OWN BUDGET.
+        # The GitHub path has honoured the sweep deadline since
+        # `_watch_network_timeout` was added; this one did not, and ran at the
+        # flat 120s network bound -- SIX TIMES the 20s budget. The deadline is
+        # only tested BETWEEN obligations, so one slow invocation carried the
+        # sweep straight past its bound with no check in between, and two of
+        # them reached the 240s outer bound, where the process is killed and
+        # every field it would have printed is discarded. That is the
+        # difference between reporting an incomplete census and reporting
+        # nothing at all. Reusing `_watch_network_timeout` raises
+        # `WatchBudgetExhausted`, which the sweep already renders as a typed,
+        # bounded NO-RESULT naming what it did and did not reach.
+        cache[key] = verify_local_receipt(
+            repo, sha, timeout=_watch_network_timeout(_receipt_sweep_deadline)
+        )
+    accepted, evidence = cache[key]
+    # Callers embed this evidence in a transition patch. Hand out a copy so one
+    # obligation cannot mutate what the memo returns to the next.
+    return accepted, copy.deepcopy(evidence)
 
 
 def _compare_persisted_local_receipt(
@@ -948,8 +1074,15 @@ def _persisted_local_receipt_valid(evidence: object, *, repo: str, sha: str) -> 
 def verify_local_receipt(
     repo: str,
     sha: str,
+    *,
+    timeout: float = DEFAULT_NETWORK_TIMEOUT,
 ) -> tuple[bool, dict[str, Any]]:
-    """Dereference and persist the canonical counted exact-SHA receipt verdict."""
+    """Dereference and persist the canonical counted exact-SHA receipt verdict.
+
+    ⚠️ `timeout` DEFAULTS TO THE 120s NETWORK BOUND AND THAT IS SIX TIMES THE
+    WATCHER'S WHOLE BUDGET. Callers inside a bounded sweep must pass their own
+    remaining time; see `_dereference_current_local_receipt`.
+    """
     if not obligations.SHA_RE.fullmatch(sha):
         raise ProtocolError(f"invalid local receipt SHA {sha!r}")
     command = [
@@ -963,8 +1096,22 @@ def verify_local_receipt(
     ]
     checked_at = obligations.utc_now()
     try:
-        result = _run(tuple(command), check=False, timeout=DEFAULT_NETWORK_TIMEOUT)
+        result = _run(tuple(command), check=False, timeout=timeout)
     except ProtocolError as error:
+        # ⚠️ OUR OWN BUDGET RUNNING OUT IS NOT A FACT ABOUT THE RECEIPT. Every
+        # other refusal here is evidence -- the verifier ran and something was
+        # wrong. A timeout is the opposite: the verifier may be perfectly
+        # healthy and simply slower than the time WE had left, so recording
+        # `state: error` would attribute our shortage to the authority and
+        # persist it. The same distinction the sweep already draws for GitHub,
+        # where a budget timeout raises rather than manufacturing a state.
+        if timeout < DEFAULT_NETWORK_TIMEOUT and isinstance(
+            error.__cause__, subprocess.TimeoutExpired
+        ):
+            raise WatchBudgetExhausted(
+                f"canonical local receipt call for {sha[:12]} exhausted the "
+                f"watch budget after {timeout:.1f}s"
+            ) from error
         return False, {
             "state": "error",
             "authority": "ci-hub-validate-status",
@@ -4780,6 +4927,39 @@ def poll_obligation(
     )
 
 
+def _live_local_producers(store_path: Path, *, exclude_id: str) -> list[str]:
+    """Obligations whose local leg has a validate ACTUALLY RUNNING right now.
+
+    ⚠️ LIVENESS IS PROVEN BY A LIVE PID, NEVER BY THE RECORDED STATE ALONE. A
+    row can sit in ``starting`` or ``running`` after its producer was
+    OOM-killed; `poll_obligation` is what later rewrites those to ``no_result``.
+    Counting such a row as live would let one dead process block every future
+    re-dispatch permanently -- the failure mode a bound like this is most likely
+    to have, and the worst one, because nothing would ever be re-validated
+    again and the symptom would be silence.
+    """
+    live: list[str] = []
+    for record in obligations.latest_records(store_path).values():
+        candidate_id = str(record.get("obligation_id", ""))
+        if candidate_id == exclude_id:
+            continue
+        local = record.get("local")
+        if not isinstance(local, Mapping) or local.get("state") not in {
+            "starting",
+            "running",
+        }:
+            continue
+        launch = record.get("launch")
+        launching = (
+            isinstance(launch, Mapping)
+            and launch.get("state") == "launching"
+            and _pid_alive(launch.get("launcher_pid"))
+        )
+        if _pid_alive(local.get("pid")) or launching:
+            live.append(candidate_id)
+    return live
+
+
 def _maybe_redispatch_local(
     obligation_id: str, record: Mapping[str, Any], store_path: Path
 ) -> dict[str, Any]:
@@ -4815,6 +4995,23 @@ def _maybe_redispatch_local(
     source = local.get("source")
     if not source or not Path(source).is_dir():
         return dict(record)  # cannot re-run without the donor checkout
+    # ⚠️ CHECKED BEFORE ADMISSION AND BEFORE THE CLONE. See
+    # DEFAULT_LOCAL_REDISPATCH_CONCURRENCY: the per-obligation guards above all
+    # pass independently for every obligation in the sweep, so without this one
+    # a cheap census starts a validate for each of them.
+    running = _live_local_producers(store_path, exclude_id=obligation_id)
+    if len(running) >= DEFAULT_LOCAL_REDISPATCH_CONCURRENCY:
+        print(
+            f"LOCAL RE-DISPATCH DEFERRED: obligation={obligation_id} "
+            f"running={len(running)} limit={DEFAULT_LOCAL_REDISPATCH_CONCURRENCY} "
+            f"holders={','.join(running)}",
+            file=sys.stderr,
+            flush=True,
+        )
+        # Deliberately NOT a retry consumed and NOT a state change: this
+        # obligation is still owed a validate, just not right now. The next
+        # sweep re-decides.
+        return dict(record)
     admitted, admission_detail = _redispatch_watch_admission()
     if not admitted:
         # Do not consume a retry or even start the clone/submodule preparation.
@@ -5317,35 +5514,39 @@ def watch(
         max_cycles = 1
         coverage_complete = False
         examined_within_bound = 0
-        if obligation_id is None and deadline is not None:
-            (
-                records,
-                updated,
-                current_records,
-                timed_out,
-                stop_reason,
-                attempted_ids,
-                examined_ids,
-                max_cycles,
-                coverage_complete,
-                examined_within_bound,
-            ) = _poll_rotating_within_budget(
-                records, store_path, deadline, redispatch
-            )
-            planned = len(current_records)
-        else:
-            stop_reason = []
-            updated, planned, timed_out = _poll_within_budget(
-                records,
-                store_path,
-                deadline,
-                redispatch,
-                stop_reason,
-                attempted_ids,
-                examined_ids,
-            )
-            current_records = updated
-            coverage_complete = not timed_out
+        # One memo per sweep, covering both the rotating and the single-record
+        # paths, so an obligation polled twice in one sweep dereferences its
+        # receipt authority once. Torn down before the next sweep begins.
+        with _receipt_sweep(deadline):
+            if obligation_id is None and deadline is not None:
+                (
+                    records,
+                    updated,
+                    current_records,
+                    timed_out,
+                    stop_reason,
+                    attempted_ids,
+                    examined_ids,
+                    max_cycles,
+                    coverage_complete,
+                    examined_within_bound,
+                ) = _poll_rotating_within_budget(
+                    records, store_path, deadline, redispatch
+                )
+                planned = len(current_records)
+            else:
+                stop_reason = []
+                updated, planned, timed_out = _poll_within_budget(
+                    records,
+                    store_path,
+                    deadline,
+                    redispatch,
+                    stop_reason,
+                    attempted_ids,
+                    examined_ids,
+                )
+                current_records = updated
+                coverage_complete = not timed_out
 
         if timed_out and not coverage_complete:
             # TYPED, NON-CRASHING NO-RESULT. We stop under our own power and
