@@ -94,10 +94,22 @@ BOUND_CURRENT = "BOUND_CURRENT"
 SUPERSEDED = "SUPERSEDED"
 UNDETERMINED = "UNDETERMINED"
 REFUSED = "REFUSED"
+REFUSED_STALE = "REFUSED_STALE"
 
 
 class GitHubUnavailable(RuntimeError):
     """The live GitHub census did not complete; no binding verdict exists."""
+
+
+def _refusal_is_stale(head: str, refused_at: str | None) -> bool:
+    """Did the refusal name a SHA that the head has since moved past?
+
+    Conservative on purpose: an unknown or unparsed `refused_at` is NOT stale, so
+    a caller that cannot say which SHA was refused gets the blocking state rather
+    than the softer one. Absence of evidence must not read as evidence of
+    staleness in the direction that unblocks.
+    """
+    return refused_at is not None and refused_at.lower() != head.lower()
 
 
 def classify_approval(
@@ -105,6 +117,7 @@ def classify_approval(
     comment_shas: list[str],
     refused: bool = False,
     unanswered: bool = False,
+    refused_at: str | None = None,
 ) -> str:
     """Pure classifier: the seam the bracket drives.
 
@@ -129,11 +142,30 @@ def classify_approval(
     lanes, two refusals, two blocking findings, and both lanes reported
     UNDETERMINED, indistinguishable from a pull request nobody had opened.
 
+    `refused_at` is the SHA the refusal named. When it is not the current head
+    the state is `REFUSED_STALE` instead of `REFUSED`.
+
+    ⚠️ `REFUSED_STALE` STILL BLOCKS, AND THAT IS THE POINT OF SPELLING IT OUT.
+    It reports that the head moved after the refusal was written, NOT that the
+    refusal stopped applying. Making a stale refusal stop blocking would hand
+    every author a one-commit bypass: push anything, and the objection
+    evaporates unanswered. That is the "outrun rather than answered" failure,
+    and it is worse than the illegibility this replaces. Measured 2026-08-26 on
+    hermit#2680: a refusal at `099290c1` still suppressed the lane at
+    `642a2990` after the finding had been fixed and pushed -- correct behaviour,
+    but indistinguishable from a refusal nobody had addressed, so the head read
+    as freshly blocked and was re-dispatched as such.
+
+    WHO CLEARS IT IS UNCHANGED: its own issuer, or a later approval that
+    `unanswered` permits. A moved head is a REASON TO GO LOOK AGAIN, not a
+    discharge.
+
     ⚠️ THIS RENAMES A STATE, IT DOES NOT MOVE AN ADMISSION BOUNDARY. Every
-    caller that grants authority tests `== BOUND_CURRENT`, and REFUSED is not
-    BOUND_CURRENT, so nothing becomes landable that was not landable before.
-    A refusal at a stale SHA still refuses, matching the long-standing
-    `relevant_rejection` behaviour of never comparing the refused SHA to head.
+    caller that grants authority tests `== BOUND_CURRENT`, and neither REFUSED
+    nor REFUSED_STALE is BOUND_CURRENT, so nothing becomes landable that was not
+    landable before. `relevant_rejection` still never compares the refused SHA to
+    head when deciding whether the lane is cleared; the comparison added here is
+    for REPORTING only.
     """
     # ⚠️ CHECKED BEFORE THE SHAs, AND THAT ORDER IS THE WHOLE POINT OF
     # `unanswered`. A refusal nobody discharged outranks any number of
@@ -152,12 +184,14 @@ def classify_approval(
     # nobody overrode anything deliberately -- which is exactly why the grammar
     # has to hold the line instead of the reviewers' attention.
     if unanswered:
-        return REFUSED
+        return REFUSED_STALE if _refusal_is_stale(head, refused_at) else REFUSED
     if not comment_shas:
         # Order matters: a refusal followed by a fresh approval repopulates
         # `comment_shas`, so reaching here with `refused` set means the refusal
         # was the lane's LAST word.
-        return REFUSED if refused else UNDETERMINED
+        if refused:
+            return REFUSED_STALE if _refusal_is_stale(head, refused_at) else REFUSED
+        return UNDETERMINED
     if comment_shas[-1] == head:
         return BOUND_CURRENT
     return SUPERSEDED
@@ -1442,6 +1476,7 @@ def collect_live(
                     "refused_at": refusals[-1] if refusals else None,
                     "state": classify_approval(
                         head, shas, refused=bool(refusals),
+                        refused_at=refusals[-1] if refusals else None,
                         unanswered=bool(unanswered),
                     ),
                     "runs_at_head": len(runs),
@@ -1504,6 +1539,7 @@ def collect_live(
                     "refused_at": refusals[-1] if refusals else None,
                     "state": classify_approval(
                         head, shas, refused=bool(refusals),
+                        refused_at=refusals[-1] if refusals else None,
                         unanswered=bool(unanswered),
                     ),
                     "runs_at_head": len(runs),
@@ -1608,6 +1644,7 @@ def collect_fixture(
                     "refused_at": refusals[-1] if refusals else None,
                     "state": classify_approval(
                         pr["head"], shas, refused=bool(refusals),
+                        refused_at=refusals[-1] if refusals else None,
                         unanswered=bool(unanswered),
                     ),
                     "runs_at_head": pr.get("runs_at_head", 1),
@@ -1650,6 +1687,7 @@ def collect_fixture(
                     "refused_at": refusals[-1] if refusals else None,
                     "state": classify_approval(
                         pr["head"], shas, refused=bool(refusals),
+                        refused_at=refusals[-1] if refusals else None,
                         unanswered=bool(unanswered),
                     ),
                     "runs_at_head": pr.get("runs_at_head", 1),
@@ -2010,7 +2048,14 @@ def main() -> int:
         # nothing to show anything had changed. `tick-hub.yaml` runs exactly this
         # selector against the live repo.
         gating = [
-            r for r in label_rows if r["state"] in (UNDETERMINED, REFUSED)
+            r
+            for r in label_rows
+            # REFUSED_STALE is here for the same reason REFUSED is: it BLOCKS, so
+            # a head carrying one must keep paging. Splitting a state and not
+            # updating this line is how the split silently stops the page -- the
+            # exact regression the comment above was written about, one state
+            # later.
+            if r["state"] in (UNDETERMINED, REFUSED, REFUSED_STALE)
         ]
     else:
         gating = bad

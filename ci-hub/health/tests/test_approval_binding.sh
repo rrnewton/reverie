@@ -306,6 +306,29 @@ out="$(run "$tmp/unbound.json" --gate)"; rc=$?
 # head nobody had opened -- and the wrong response follows from the wrong reading:
 # an absence invites a fresh reviewer. Measured 2026-08-26 on hermit#2655 (two
 # lanes, two refusals, two blocking findings, both lanes UNDETERMINED).
+# --- A REFUSAL WHOSE HEAD HAS MOVED IS STILL A REFUSAL, AND SAYS SO ------------
+# ⚠️ REFUSED_STALE BLOCKS. It reports that the head moved after the refusal was
+# written, not that the refusal lapsed. Measured 2026-08-26 on hermit#2680: a
+# refusal at 099290c1 correctly suppressed the lane at 642a2990 after the finding
+# had been fixed and pushed -- the right answer, unreadable, so the head was
+# re-dispatched as if freshly blocked.
+cat >"$tmp/refused-stale.json" <<JSON
+[{"number":2680,"head":"$CUR","labels":["passed-review-claude"],
+  "lane_shas":{},"lane_refused":{"claude":["$OLD"]},
+  "runs_at_head":4,"mergeable":"MERGEABLE"}]
+JSON
+out="$(run "$tmp/refused-stale.json" --gate)"; rc=$?
+grep -q "REFUSED_STALE" <<<"$out" \
+  && ok "a refusal at a superseded sha reports REFUSED_STALE" \
+  || bad "stale refusal did not report REFUSED_STALE: $out"
+[[ $rc -eq 1 ]] \
+  && ok "REFUSED_STALE STILL BLOCKS -- default --gate refuses (no one-commit bypass)" \
+  || bad "a stale refusal became landable (rc=$rc) -- that is the outrun bypass"
+out="$(run "$tmp/refused-stale.json" --gate --gate-on unverifiable)"; rc=$?
+[[ $rc -eq 1 ]] \
+  && ok "--gate-on unverifiable STILL pages on REFUSED_STALE" \
+  || bad "REFUSED_STALE silently stopped paging (rc=$rc)"
+
 cat >"$tmp/refused.json" <<JSON
 [{"number":2655,"head":"$CUR","labels":["passed-review-claude"],
   "lane_shas":{},"lane_refused":{"claude":["$CUR"]},
@@ -640,7 +663,7 @@ fi
 # report meant to surface it.
 if [[ -z "${APPROVAL_BINDING_MUTATION_CHILD:-}" ]]; then
   mutant="$tmp/approval_binding-refused-not-paged.py"
-  sed 's/r\["state"\] in (UNDETERMINED, REFUSED)/r["state"] == UNDETERMINED  # MUTANT: refused no longer pages/' \
+  sed 's/r\["state"\] in (UNDETERMINED, REFUSED, REFUSED_STALE)/r["state"] == UNDETERMINED  # MUTANT: refused no longer pages/' \
     "$tool" >"$mutant"
   if ! grep -q 'MUTANT: refused no longer pages' "$mutant"; then
     bad "paging mutation control could not locate the unverifiable selector"
@@ -654,6 +677,30 @@ if [[ -z "${APPROVAL_BINDING_MUTATION_CHILD:-}" ]]; then
       ok "mutation control: suite FAILS when REFUSED stops paging on --gate-on unverifiable"
     else
       bad "paging mutation control did not fail (rc=$mutant_rc)"
+    fi
+  fi
+fi
+
+# ⚠️ MUTATION CONTROL FOR THE BOUNDARY THIS CHANGE DELIBERATELY DID NOT MOVE.
+# The tempting "fix" for a stale refusal is to let it lapse -- return UNDETERMINED
+# once the head moves. That is a one-commit bypass: push anything and an
+# unanswered objection evaporates. Make that edit and the suite must fail, or the
+# distinction between "reported as stale" and "stopped applying" is unguarded.
+if [[ -z "${APPROVAL_BINDING_MUTATION_CHILD:-}" ]]; then
+  mutant="$tmp/approval_binding-stale-lapses.py"
+  sed 's/            return REFUSED_STALE if _refusal_is_stale(head, refused_at) else REFUSED/            return UNDETERMINED if _refusal_is_stale(head, refused_at) else REFUSED  # MUTANT: stale refusal lapses/' \
+    "$tool" >"$mutant"
+  if ! grep -q 'MUTANT: stale refusal lapses' "$mutant"; then
+    bad "stale-lapse mutation control could not locate the classifier branch"
+  else
+    APPROVAL_BINDING_TOOL="$mutant" APPROVAL_BINDING_MUTATION_CHILD=1 \
+      bash "$0" >"$tmp/stale-mutant-suite.out" 2>&1
+    mutant_rc=$?
+    if [[ $mutant_rc -ne 0 ]] \
+      && grep -q 'FAIL  stale refusal did not report REFUSED_STALE' "$tmp/stale-mutant-suite.out"; then
+      ok "mutation control: suite FAILS when a stale refusal is allowed to lapse"
+    else
+      bad "stale-lapse mutation control did not fail (rc=$mutant_rc)"
     fi
   fi
 fi
