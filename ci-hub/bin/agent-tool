@@ -128,7 +128,37 @@ if [[ "$ACTUAL" != "$EXPECTED" ]]; then
     fi
     CURRENT_PIN=$(gitlink_at "$HERMIT" HEAD agent-utils "checked-out Hermit commit")
     if [[ $CURRENT_PIN != "$EXPECTED" ]]; then
-        die "checked-out Hermit records agent-utils $CURRENT_PIN, but parent-recorded Hermit $PARENT_HERMIT records $EXPECTED; reconcile the Hermit checkout before materializing agent-utils"
+        # ⚠️ NAME THE OBJECTS, NOT JUST THE VALUES. The old text said "parent-recorded"
+        # without saying that it is read from the parent's LOCAL HEAD -- not from
+        # origin/main -- so two people comparing the same pin got different answers
+        # and spent hours on it: `git ls-tree origin/main hermit` and this guard
+        # legitimately disagree whenever the local checkout has drifted, and the
+        # message gave no way to tell which had. It also could not distinguish "the
+        # parent is behind" from "the checkout is ahead", which are opposite repairs.
+        PARENT_HEAD=$(git -C "$ROOT" rev-parse HEAD 2>/dev/null || echo unknown)
+        PARENT_MAIN=$(git -C "$ROOT" rev-parse origin/main 2>/dev/null || echo unknown)
+        HERMIT_HEAD=$(git -C "$HERMIT" rev-parse HEAD 2>/dev/null || echo unknown)
+        drift=""
+        if [[ $PARENT_HEAD != "$PARENT_MAIN" && $PARENT_HEAD != unknown && $PARENT_MAIN != unknown ]]; then
+            behind=$(git -C "$ROOT" rev-list --count "$PARENT_HEAD..$PARENT_MAIN" 2>/dev/null || echo "?")
+            ahead=$(git -C "$ROOT" rev-list --count "$PARENT_MAIN..$PARENT_HEAD" 2>/dev/null || echo "?")
+            drift="
+  NOTE: the parent's HEAD is NOT origin/main -- $behind behind, $ahead ahead. This guard
+        reads HEAD, so a reader comparing against origin/main will see a DIFFERENT
+        expected pin and neither is wrong."
+        fi
+        die "agent-utils pin mismatch.
+  EXPECTED $EXPECTED
+    read from: gitlink 'agent-utils' at parent-recorded Hermit $PARENT_HERMIT,
+               which came from gitlink 'hermit' at the PARENT'S LOCAL HEAD $PARENT_HEAD
+               (NOT origin/main $PARENT_MAIN)
+  ACTUAL   $CURRENT_PIN
+    read from: gitlink 'agent-utils' at the CHECKED-OUT Hermit $HERMIT_HEAD
+               in $HERMIT$drift
+  Reconcile the Hermit checkout before materializing agent-utils: either move the
+  checkout to $PARENT_HERMIT, or advance the parent's hermit gitlink to $HERMIT_HEAD.
+  Reverting only the agent-utils submodule does NOT hold -- any 'submodule update' in
+  that checkout restores the value its own HEAD records."
     fi
     update_agent_utils=(
         git -C "$HERMIT"
