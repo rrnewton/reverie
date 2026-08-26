@@ -517,6 +517,22 @@ class CellResultProjection(unittest.TestCase):
         self.assertEqual(payload["runtime"]["wall_time_max_ms"], 5_299)
         self.assertEqual(payload["runtime"]["run1"]["syscalls"], 612)
 
+    def test_missing_wall_time_stays_missing_but_measured_zero_stays_zero(self):
+        not_run = self._cell(0, outcome="HOST-INAPPLICABLE")
+        not_run.pop("duration_ms")
+        not_run["runtime"] = None
+        missing = self._project([not_run])[0]["series"]["runtime"]
+        self.assertIsNone(missing["wall_time_min_ms"])
+        self.assertIsNone(missing["wall_time_max_ms"])
+        self.assertNotIn("run1", missing)
+        self.assertNotIn("run2", missing)
+
+        measured = self._cell(0, duration_ms=0)
+        measured["runtime"] = None
+        zero = self._project([measured])[0]["series"]["runtime"]
+        self.assertEqual(zero["wall_time_min_ms"], 0)
+        self.assertEqual(zero["wall_time_max_ms"], 0)
+
     def test_failed_retry_then_success_is_not_compressed_away(self):
         rows = self._project([
             self._cell(0, outcome="FAIL", duration_ms=90),
