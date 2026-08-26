@@ -876,6 +876,29 @@ def design_effect_for(mode: str, override: float | None) -> float:
 COMMANDS_DIR = "ignored/e2e-commands"
 
 
+def absolutise_repo_paths(guest: list[str], hermit_root) -> tuple[list[str], list[str]]:
+    """Rewrite repo-relative guest tokens to absolute paths under `hermit_root`.
+
+    Returns (rewritten tokens, the originals that were rewritten).
+
+    EXISTENCE IS THE DISCRIMINATOR, and it has to be. Many cells pass bare
+    selector WORDS as guest arguments -- `chaos`, `condvar`, `epoll`,
+    `pipe-order` -- and a rule that absolutised every token without a leading
+    slash would turn each of those into a path that does not exist and has
+    never been asked for. Measured over the generated commands: 27 argument
+    tokens look relative, exactly 1 is a real file.
+    """
+    out, rewritten = list(guest), []
+    for i, g in enumerate(out):
+        if g.startswith("-") or os.path.isabs(g):
+            continue
+        cand = hermit_root / g
+        if cand.exists():
+            out[i] = str(cand)
+            rewritten.append(g)
+    return out, rewritten
+
+
 def resolve_cell(cell_id: str, want_backend: str | None):
     """A manifest cell id -> (guest argv, backend, hermit flags).
 
@@ -987,6 +1010,42 @@ def resolve_cell(cell_id: str, want_backend: str | None):
     guest = [t.strip('"') for t in guest_toks]
     guest = [g.replace("$cell", str((root / "hermit" / COMMANDS_DIR / "work" /
                                      cell_id.replace("/", "-")))) for g in guest]
+
+    # ⚠️ ABSOLUTISE REPO-RELATIVE PATHS, OR 61 OF 366 CELLS CANNOT RUN AT ALL.
+    #
+    # The bucket runs the guest with the HERMIT REPO ROOT as its cwd, so a cell
+    # may name its program or its inputs relative to that root. This sweep
+    # deliberately gives every node its OWN EMPTY, QUIESCENT cwd -- without that,
+    # a directory entry appearing between a node's two executions changes
+    # st_size and reads as a divergence (measured serially: newfstatat on a
+    # shared directory returned 5788 then 5810). Both designs are right; together
+    # they broke every cell whose paths are repo-relative, in two ways:
+    #
+    #   language-runtimes/python-dict-hash-iteration -> guest PROGRAM is
+    #       `tests/e2e/language-runtimes/python-dict-hash-iteration.sh`
+    #       -> exit 127, "Could not resolve program ... in the guest PATH"
+    #   c-programs/record-replay-lseek-seek-cur      -> guest ARGV is `README.md`
+    #       -> exit 125, "open(fixture) failed: No such file or directory"
+    #
+    # Measured over the generated commands: 60 cells name a relative PROGRAM and
+    # 6 name a relative FILE ARGUMENT, 61 distinct cells in all. It is not a
+    # uniform 17% either -- every one of them is a non-C cell (system-utils 26,
+    # language-runtimes 18, data-handling 6, applications 6, determinism-stress
+    # 4), because the compiled-C shape is the one that already gets an absolute
+    # path from the $cell substitution above. So --cell worked on exactly the
+    # shape it was demonstrated on and on no other.
+    #
+    # ONLY tokens that ACTUALLY EXIST at the repo root are rewritten. Many cells
+    # pass bare selector words as arguments -- `chaos`, `condvar`, `epoll`,
+    # `pipe-order` -- and a rule that absolutised anything without a leading `/`
+    # would corrupt those into paths. Existence is the discriminator: of 27
+    # candidate relative argument tokens, exactly 1 is a real file.
+    hermit_root = (root / "hermit").resolve()
+    guest, absolutised = absolutise_repo_paths(guest, hermit_root)
+    if absolutised:
+        say(f"{PROG}: " + f"cell repo-relative path(s) resolved against {hermit_root}: "
+            f"{', '.join(absolutised)}")
+
     say(f"{PROG}: " + f"cell {cell_id} -> backend={backend} bucket={bucket} guest={' '.join(guest)}")
     if keep:
         say(f"{PROG}: " + f"cell hermit flags carried through: {' '.join(keep)}")
@@ -2039,6 +2098,33 @@ def _selftest() -> int:
           "min 12  max 40  distinct 2" in lines[0], True)
     check("and it names the thread the range belongs to",
           "dtid 3" in lines[0], True)
+
+    # --- repo-relative guest paths ----------------------------------------
+    # THE DEFECT: the bucket runs a cell with the HERMIT REPO ROOT as cwd, so a
+    # cell may name its program or inputs relative to it. This sweep gives each
+    # node its own EMPTY cwd (so a directory entry appearing between a node's
+    # two executions cannot read as a divergence), and in an empty cwd those
+    # paths resolve to nothing. Measured: 61 of 366 cells, every one of them a
+    # NON-C cell, died at exit 127 "could not resolve program" or exit 125
+    # "open(fixture) failed".
+    import tempfile as _tf
+    with _tf.TemporaryDirectory() as _d:
+        _root = Path(_d)
+        (_root / "tests").mkdir()
+        (_root / "tests" / "guest.sh").write_text("#!/bin/sh\n")
+        (_root / "README.md").write_text("x\n")
+        got, rewritten = absolutise_repo_paths(
+            ["tests/guest.sh", "--run", "README.md", "chaos", "/bin/true"], _root)
+        check("a relative PROGRAM path is absolutised",
+              got[0], str(_root / "tests/guest.sh"))
+        check("a relative FILE ARGUMENT is absolutised",
+              got[2], str(_root / "README.md"))
+        # The one that makes existence the discriminator rather than the shape.
+        check("a bare selector WORD is left alone", got[3], "chaos")
+        check("a flag is left alone", got[1], "--run")
+        check("an already-absolute path is left alone", got[4], "/bin/true")
+        check("and exactly what was rewritten is reported",
+              rewritten, ["tests/guest.sh", "README.md"])
 
     # 4. NO USABLE ORDINAL IS AN ABSENCE, NOT A ZERO-WIDTH RANGE.
     none_usable = [sysrun("run1", 999, 3, False), sysrun("run2", None, None, False)]
