@@ -756,8 +756,40 @@ say "validation landability authorized: $receipt_detail"
 # rc 2 is INDETERMINATE and blocks exactly like rc 1. A marker whose binding
 # cannot be read is not a marker that does not apply -- that is the fail-open a
 # fourth marker variant already walked through tonight.
+#
+# ⚠️ AUTHORISATION IS A VERDICT LINE **AND** A ZERO STATUS, NEVER THE STATUS ALONE.
+# A status is what a gate that RAN reports. A gate that is not on disk reports
+# nothing and cannot choose a status, so keying on `rc` alone cannot express the
+# most common failure there is: measured 2026-08-26, 49 of 76 dev-hermit checkouts
+# on this box -- including the shared primary, 334 commits behind -- have no
+# `ci-hub/bin/changes-requested-gate` at all. Here that surfaces as python3's
+# `can't open file` and rc 2, which does abandon; but one `| tail` anywhere in the
+# chain turns it into rc 0, and rc 0 is permission to merge.
+#
+# So absence is detected by the ABSENCE OF A VERDICT, which no missing file can
+# fake and no pipe can strip out of the captured text.
+#
+# ⚠ THE PATTERN IS DUPLICATED FROM `no_verdict_in()` IN THE GATE, DELIBERATELY, AND
+# THIS IS THE ONE PLACE IT MUST BE. Importing the definition would mean loading the
+# very file whose absence is being detected -- the check would be unavailable in
+# exactly the case it exists for. It is spelled the same in both homes and the
+# gate's self-test owns the meaning; if they ever disagree, this one is the copy
+# that still runs.
+#
+# ⚠ AND THE LABEL IS PART OF THE PATTERN, not decoration. The diagnostic a caller
+# gets INSTEAD of a verdict contains this tool's own name and a colon --
+# `python3: can't open file '.../changes-requested-gate': [Errno 2] ...` -- and it
+# arrives here through `2>&1`. Matching the name alone would read the operating
+# system's report that the gate is missing as the gate having spoken.
 cr_gate_out=$(python3 "$ROOT/ci-hub/bin/changes-requested-gate" \
   --repo "$R" --pr "$PR" --head "$HEAD" --source "$WT" 2>&1); cr_gate_rc=$?
+if ! grep -qE '^changes-requested-gate: (CLEAR|BLOCKED|INDETERMINATE|MOOT)\b' \
+     <<<"$cr_gate_out"; then
+  abandon "REFUSING TO MERGE: the changes-requested gate returned NO VERDICT (rc=$cr_gate_rc). \
+It did not run, so nothing was checked -- this is not a statement about $PR. \
+Confirm $ROOT/ci-hub/bin/changes-requested-gate exists and that $ROOT is current with \
+origin/main. Output was: ${cr_gate_out:-<empty>}" 5
+fi
 case "$cr_gate_rc" in
   0) say "changes-requested gate: clear -- $cr_gate_out" ;;
   *) abandon "REFUSING TO MERGE: $cr_gate_out" 5 ;;

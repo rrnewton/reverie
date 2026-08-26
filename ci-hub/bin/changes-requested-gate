@@ -55,6 +55,47 @@
 # existing admission check was found silently DISABLED by a stale primary, which
 # is the same shape as a marker that cannot be bound being read as absent.
 #
+# ⚠️ THE VERDICT IS A LINE ON STDOUT. SILENCE IS NOT CLEARANCE.
+#
+# Until 2026-08-26 only CLEAR was printed to stdout and every other verdict went
+# to stderr, so `gate ... | tail` -- the way it is actually run -- showed a line
+# for the one outcome that permits a merge and NOTHING for the three that forbid
+# one. Combined with the shell's own behaviour that made an empty stdout mean four
+# different things, three of which forbid merging:
+#
+#     gate present, CLEAR         stdout: one CLEAR line     rc 0
+#     gate present, BLOCKED       stdout: EMPTY              rc 1, eaten by the pipe
+#     gate present, MOOT/INDET    stdout: EMPTY              rc 3/2, eaten by the pipe
+#     ⚠ GATE FILE ABSENT          stdout: EMPTY              rc 0 -- tail's status
+#
+# The last row is the census result of 2026-08-26: 49 of 76 dev-hermit checkouts on
+# devbig014 -- including the shared primary at /home/newton/work/dev-hermit, 334
+# commits behind and the tree most agents reach for first -- do not contain this
+# file at all. Running it there and piping the result reports SUCCESS, and reads
+# as "no refusal, proceed". That is the CLAUDE.md `$?`-after-a-pipe trap landing
+# on the tool that decides whether a head may merge.
+#
+# THE RULE IS NOW THE OTHER WAY ROUND. Every terminal path prints exactly one
+#
+#     changes-requested-gate: <VERDICT> pr=... head=... gate=<sha12|UNKNOWN> -- ...
+#
+# line to STDOUT, including the crash handler. So a reader gets a positive
+# statement in all four cases, and an EMPTY stdout no longer means "clear" -- it
+# means the gate did not run, which is the one thing the old shape could not say.
+# `no_verdict_in()` is the caller-side spelling of that, and land-pr.sh uses it:
+# rc 0 with no verdict line is refused rather than trusted.
+#
+# ⚠️ AND EVERY VERDICT NAMES THE COPY THAT ISSUED IT. `gate=` is the ci-hub commit
+# this file was read from. A stale gate does not announce that it is stale -- it
+# emits a confident verdict in the current format, and on an OPEN pull request an
+# old copy and a new one are indistinguishable. They diverge exactly where it
+# matters: measured 2026-08-26 on six pull requests, a copy predating 8d076b4c
+# said `rc=0 CLEAR` on three MERGED ones and `rc=1 BLOCKED` on three CLOSED ones
+# with the advice "this clears when the AUTHOR pushes a fix", to branches that no
+# longer exist. Both answers are wrong the same way and only one looks wrong. Two
+# agents can run "the gate" on one pull request in the same minute and be told
+# opposite things; `gate=` is what lets a reader tell which one was old.
+#
 # Usage:
 #   changes-requested-gate --repo OWNER/REPO --pr N [--head SHA]
 #
@@ -63,6 +104,11 @@
 #   1  BLOCKED: a refusal is bound to this exact head
 #   2  INDETERMINATE: a marker exists that cannot be bound, or the data could not
 #      be fetched. Callers MUST treat this as blocking; it is not "no".
+#   3  MOOT: the pull request is not OPEN, so the question no longer applies.
+#
+#   ⚠ NO exit status means "the gate was not here". Absence is reported by the
+#   ABSENCE OF A VERDICT LINE, never by a status -- a status cannot survive a
+#   pipe and a missing file cannot choose one.
 # `from __future__ import annotations` so the PEP 604 / PEP 585 annotations below
 # do not evaluate at import time. Without it this file raises TypeError on an
 # older python3 -- measured: /usr/bin/python3 crashed at the first annotated def.
@@ -73,6 +119,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import pathlib
 import re
 import subprocess
 import sys
@@ -101,6 +148,108 @@ OK, BLOCKED, INDETERMINATE = 0, 1, 2
 # a reviewer who refused and prescribes a remedy; on a merged pull request there is
 # no reviewer to satisfy and no branch left to push to.
 MOOT = 3
+
+LABELS = {OK: "CLEAR", BLOCKED: "BLOCKED", INDETERMINATE: "INDETERMINATE", MOOT: "MOOT"}
+
+VERDICT_PREFIX = "changes-requested-gate:"
+
+# ⚠️ THE DETECTOR CANNOT BE THE TOOL'S NAME, BECAUSE ABSENCE SAYS THE TOOL'S NAME.
+# The first version of this keyed on the bare prefix, which is the string already
+# at the front of every line this tool has ever printed -- and the self-test
+# immediately rejected it, because the diagnostic the caller gets INSTEAD of a
+# verdict is
+#
+#     bash: ./ci-hub/bin/changes-requested-gate: No such file or directory
+#     python3: can't open file '.../ci-hub/bin/changes-requested-gate': [Errno 2] ...
+#
+# and both contain `changes-requested-gate:`. land-pr.sh captures the gate with
+# `2>&1`, so a prefix-only detector would have read the operating system's report
+# that THE GATE IS MISSING as proof that the gate had spoken -- the same defect
+# one layer further out, and this time announcing itself in the very text it
+# misreads. Same family as the near-miss net that had to be stopped from firing on
+# this file's own name.
+#
+# A verdict is therefore the prefix at the START of a line followed by one of the
+# four labels. The tool controls both; a path in a diagnostic satisfies neither.
+_VERDICT_LINE = re.compile(
+    r"^changes-requested-gate: (?:CLEAR|BLOCKED|INDETERMINATE|MOOT)\b", re.MULTILINE
+)
+
+
+def no_verdict_in(output: str) -> bool:
+    """Did this output contain no verdict, i.e. did the gate not run?
+
+    ⚠️ THE CALLER-SIDE HALF OF THE FIX, AND IT IS THE HALF THAT SURVIVES ABSENCE.
+    Everything else in this file can only help a reader once this file is on
+    disk. When it is not -- 49 of 76 checkouts on 2026-08-26 -- there is nothing
+    here to print anything, and the shell reports `No such file or directory` on
+    stderr and, through a pipe, status 0. A caller that keys on the status alone
+    therefore reads a MISSING GATE as permission.
+
+    So the authorising condition is two facts, not one: status 0 AND a verdict
+    line. A gate that did not run cannot produce the second, which is exactly
+    what makes absence expressible. Callers must not relax this into
+    `rc == 0`.
+    """
+    return _VERDICT_LINE.search(output or "") is None
+
+
+def gate_provenance() -> str:
+    """The ci-hub commit this file was read from -- 12 hex, or a stated reason.
+
+    ⚠️ A VERDICT THAT CANNOT NAME ITS SOURCE MUST BE TRUSTED; ONE THAT CAN, CAN BE
+    CHECKED. This is the fix for the other half of the census: 20 of 76 checkouts
+    carry an OLD copy of this gate, and an old copy is indistinguishable from a
+    current one on any OPEN pull request. Stamping the commit costs one `git`
+    invocation per run and makes "which gate said that" answerable afterwards,
+    from the transcript, without re-running anything.
+
+    Never raises and never blocks a verdict. A gate that refused to answer
+    because it could not describe itself would be a worse failure than the one
+    this repairs, so every error path returns a word instead of a sha.
+    """
+    here = pathlib.Path(__file__).resolve().parent
+    try:
+        r = subprocess.run(
+            ["git", "-C", str(here), "log", "-1", "--format=%h", "--abbrev=12", "--", str(__file__)],
+            capture_output=True, text=True, timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return "UNKNOWN"
+    sha = r.stdout.strip() if r.returncode == 0 else ""
+    if not sha:
+        return "UNKNOWN"
+    # ⚠ A DIRTY COPY IS NOT THE COMMIT IT SITS ON. Uncommitted edits to this file
+    # are how a verdict gets attributed to a landed fix that is not the code that
+    # ran. Say so in the stamp rather than printing a sha that is a near-truth.
+    try:
+        d = subprocess.run(
+            ["git", "-C", str(here), "status", "--porcelain", "--", str(__file__)],
+            capture_output=True, text=True, timeout=10,
+        )
+        if d.returncode == 0 and d.stdout.strip():
+            return f"{sha}-dirty"
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return sha
+
+
+def emit(rc: int, pr: object, head: object, why: str) -> int:
+    """Print the one verdict line, on STDOUT, and return the status.
+
+    Every terminal path goes through here. That is the invariant the self-test
+    checks: a path that prints its own verdict to stderr reintroduces the empty
+    stdout that a reader cannot tell apart from a gate that was never there.
+    """
+    shown = str(head or "????????")[:12]
+    print(
+        f"{VERDICT_PREFIX} {LABELS.get(rc, 'INDETERMINATE')} pr={pr} head={shown} "
+        f"gate={gate_provenance()} -- {why}"
+    )
+    # Unbuffered enough to survive a caller that dies right after reading us.
+    sys.stdout.flush()
+    return rc
+
 
 REFUSAL = "CHANGES-REQUESTED-AT"
 WITHDRAWN = "CHANGES-REQUESTED-WITHDRAWN-AT"
@@ -1196,6 +1345,82 @@ def self_test() -> int:
         if rc != want_rc or want_word not in msg:
             bad.append(f"re-lane: {why} -- rc={rc} msg={msg[:90]}")
 
+    # ⚠️ ABSENCE MUST BE EXPRESSIBLE, AND A VERDICT MUST REACH STDOUT.
+    #
+    # These are the cases the old shape could not state. `no_verdict_in` is the
+    # only thing standing between a caller and a missing gate, because a missing
+    # gate has no code to run: 49 of 76 checkouts measured 2026-08-26, where the
+    # shell says `No such file or directory` on stderr and, piped, exits 0.
+    #
+    # The stdout half is what makes the empty case UNAMBIGUOUS. While BLOCKED went
+    # to stderr, an empty stdout meant "clear-and-nothing-to-say", "blocked",
+    # "moot", "crashed" or "absent" -- four of which forbid the merge -- so a
+    # reader who saw nothing could not act on it. Every verdict on stdout leaves
+    # exactly one meaning for silence.
+    import contextlib
+    import io
+
+    absence = [
+        ("empty output has no verdict", "", True),
+        # ⚠ THE THREE WAYS ABSENCE ANNOUNCES ITSELF, ALL OF WHICH NAME THIS FILE.
+        # These are the cases that killed the prefix-only detector. The third puts
+        # the tool's name at column zero followed by a colon and a space -- the
+        # exact shape of a verdict line -- so only the LABEL tells them apart.
+        ("bash's absence diagnostic is not a verdict",
+         "bash: ./ci-hub/bin/changes-requested-gate: No such file or directory", True),
+        ("python3's absence diagnostic is not a verdict",
+         "python3: can't open file '/w/ci-hub/bin/changes-requested-gate': "
+         "[Errno 2] No such file or directory", True),
+        ("the tool's name at column zero without a label is not a verdict",
+         "changes-requested-gate: No such file or directory", True),
+        ("a verdict must be at the start of its line, not quoted inside prose",
+         "I ran it and it said changes-requested-gate: CLEAR, honest", True),
+        ("a real verdict line is a verdict",
+         f"{VERDICT_PREFIX} CLEAR pr=1 head=abc gate=deadbeef -- nothing binds", False),
+        ("a BLOCKED line is also a verdict, not an absence",
+         f"{VERDICT_PREFIX} BLOCKED pr=1 head=abc gate=deadbeef -- one refusal", False),
+        ("None is treated as no output rather than crashing", None, True),
+    ]
+    for name, out, want in absence:
+        if no_verdict_in(out) is not want:
+            bad.append(f"absence: {name}: no_verdict_in returned {not want}")
+
+    # EVERY rc REACHES STDOUT. The loop covers all four because the defect was
+    # per-outcome: OK was already correct and the other three were not, so a test
+    # that only exercised the clear path would have passed throughout.
+    for rc in (OK, BLOCKED, INDETERMINATE, MOOT):
+        cap_out, cap_err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(cap_out), contextlib.redirect_stderr(cap_err):
+            got_rc = emit(rc, 1, "a" * 40, "why")
+        if got_rc != rc:
+            bad.append(f"emit: rc {rc} came back as {got_rc}")
+        if no_verdict_in(cap_out.getvalue()):
+            bad.append(f"emit: {LABELS[rc]} did not reach STDOUT -- a reader piping "
+                       f"stdout sees the same nothing as a missing gate")
+        if LABELS[rc] not in cap_out.getvalue():
+            bad.append(f"emit: {LABELS[rc]} is not named in its own verdict line")
+        if cap_err.getvalue().strip():
+            bad.append(f"emit: {LABELS[rc]} also wrote to stderr; one verdict, one stream")
+
+    # ⚠ AND THE VERDICT NAMES THE COPY THAT ISSUED IT. Without this a stale gate is
+    # indistinguishable from a current one, which is the 20-of-76 half of the same
+    # census. `gate=` must never be empty and `gate_provenance` must never raise --
+    # a gate that withheld a verdict because it could not describe itself would be
+    # a worse failure than the one this repairs.
+    cap_out = io.StringIO()
+    with contextlib.redirect_stdout(cap_out):
+        emit(OK, 1, "a" * 40, "why")
+    stamp = cap_out.getvalue()
+    if " gate=" not in stamp:
+        bad.append("provenance: the verdict line carries no gate= stamp")
+    if " gate= " in stamp or stamp.rstrip().endswith("gate="):
+        bad.append("provenance: gate= is empty; UNKNOWN is the answer for 'cannot tell'")
+    try:
+        if not gate_provenance():
+            bad.append("provenance: gate_provenance returned an empty string")
+    except BaseException as exc:  # noqa: BLE001 -- the point is that it cannot
+        bad.append(f"provenance: gate_provenance raised {type(exc).__name__}: {exc}")
+
     for b in bad:
         print(f"changes-requested-gate self-test: FAIL -- {b}", file=sys.stderr)
     if bad:
@@ -1207,7 +1432,8 @@ def self_test() -> int:
           f"controls, plus the two-direction guard that ANSWERED states the clearing "
           f"FORM without asserting the finding was addressed, plus "
           f"{len(relane)} re-lane discharge case(s) from hermit#2686 and their "
-          f"cross-lane and ordering controls")
+          f"cross-lane and ordering controls, plus {len(absence)} absence-is-not-a-pass "
+          f"case(s) and the four-outcome stdout invariant with its provenance stamp")
     return 0
 
 
@@ -1258,21 +1484,11 @@ def main(argv: list[str] | None = None) -> int:
         verdict = state_verdict(view.get("state"))
         if verdict is not None:
             rc, why = verdict
-            label = {INDETERMINATE: "INDETERMINATE", MOOT: "MOOT"}[rc]
-            print(
-                f"changes-requested-gate: {label} pr={args.pr} "
-                f"head={(head or '????????')[:12]} -- {why}",
-                file=sys.stderr,
-            )
-            return rc
+            return emit(rc, args.pr, head, why)
 
         if not head:
-            print(
-                f"changes-requested-gate: INDETERMINATE pr={args.pr} "
-                f"reason=could not resolve the head sha",
-                file=sys.stderr,
-            )
-            return INDETERMINATE
+            return emit(INDETERMINATE, args.pr, None,
+                        "could not resolve the head sha")
         # ⚠️ A WIPED BRANCH IS NOT A CLEAN HEAD, AND IT LAUNDERS EVERY REFUSAL.
         # Something on this box closes pull requests and RESETS BRANCHES to
         # main-equal on a ~10 minute cadence -- hermit#2448 four times. When that
@@ -1301,13 +1517,11 @@ def main(argv: list[str] | None = None) -> int:
         ):
             got = gh_json(["api", path, "--paginate"])
             if got is None:
-                print(
-                    f"changes-requested-gate: INDETERMINATE pr={args.pr} "
-                    f"reason=could not read {path.split('?')[0]}; a failed query is "
+                return emit(
+                    INDETERMINATE, args.pr, head,
+                    f"could not read {path.split('?')[0]}; a failed query is "
                     f"not an empty result",
-                    file=sys.stderr,
                 )
-                return INDETERMINATE
             bodies.extend(c.get("body") or "" for c in got if isinstance(c, dict))
 
     rc, why = evaluate(bodies, head, require_answered=args.require_answered)
@@ -1326,11 +1540,7 @@ def main(argv: list[str] | None = None) -> int:
             f"carries the change again.",
         )
 
-    label = {OK: "CLEAR", BLOCKED: "BLOCKED", INDETERMINATE: "INDETERMINATE",
-             MOOT: "MOOT"}[rc]
-    stream = sys.stdout if rc == OK else sys.stderr
-    print(f"changes-requested-gate: {label} pr={args.pr} head={head[:12]} -- {why}", file=stream)
-    return rc
+    return emit(rc, args.pr, head, why)
 
 
 if __name__ == "__main__":
@@ -1343,7 +1553,11 @@ if __name__ == "__main__":
     except SystemExit:
         raise
     except BaseException as exc:  # noqa: BLE001 -- deliberately total
-        print(f"changes-requested-gate: INDETERMINATE -- the gate itself failed to run "
-              f"({type(exc).__name__}: {exc}). Nothing was checked; this is NOT a statement "
-              f"about the pull request.", file=sys.stderr)
+        # ⚠ ON STDOUT LIKE EVERY OTHER VERDICT. A crash that printed only to stderr
+        # left the same empty stdout as a gate that was never installed, so the two
+        # -- "it ran and broke" and "it was not here" -- rendered identically to the
+        # reader who most needed to tell them apart.
+        print(f"{VERDICT_PREFIX} INDETERMINATE pr=? head=? gate={gate_provenance()} -- "
+              f"the gate itself failed to run ({type(exc).__name__}: {exc}). Nothing was "
+              f"checked; this is NOT a statement about the pull request.")
         raise SystemExit(INDETERMINATE)
