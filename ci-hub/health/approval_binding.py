@@ -659,6 +659,32 @@ def parse_canonical_marker(line: str) -> tuple[str, str, str] | None:
     return match.group(1).upper(), match.group(2).lower(), match.group(3)
 
 
+def _asserted_marker_match(line: str) -> "re.Match[str] | None":
+    """Match a canonical marker in the syntactic context that asserts it.
+
+    A bare marker and one after a lane heading retain the existing exact-line
+    grammar.  ``VERDICT:`` is different: the writer puts that prefix on a prose
+    line precisely to say which canonical marker in the line carries the
+    decision, so surrounding prose is allowed there.
+    """
+    normalized = strip_decoration(line)
+    start = marker_assertion_start(normalized)
+    if start is None:
+        return None
+    if _VERDICT_LEAD_RE.match(normalized) is None:
+        return _MARKER_RE.match(normalized[start:])
+    match = _MARKER_PREFIX_RE.match(normalized, start)
+    if match is None:
+        return None
+    # ``BY`` starts an issuer clause.  If the optional clause did not consume
+    # it, the clause is malformed; it is not ordinary trailing prose.
+    if match.group("issuer") is None and re.match(
+        r"^\s+BY(?:\s|$)", normalized[match.end():], re.IGNORECASE
+    ):
+        return None
+    return match
+
+
 def parse_marker(line: str) -> tuple[str, str, str] | None:
     """``(kind, lane, sha)`` for a canonical marker in an assertion, else ``None``.
 
@@ -667,11 +693,7 @@ def parse_marker(line: str) -> tuple[str, str, str] | None:
     whether a canonical marker at the start, after an existing lane heading, or
     after ``VERDICT:`` is a verdict rather than a mention.
     """
-    normalized = strip_decoration(line)
-    start = marker_assertion_start(normalized)
-    if start is None:
-        return None
-    match = _MARKER_PREFIX_RE.match(normalized, start)
+    match = _asserted_marker_match(line)
     if not match:
         return None
     return match.group(1).upper(), match.group(2).lower(), match.group(3)
@@ -688,11 +710,7 @@ def marker_issuer(line: str) -> "str | None":
     the disclosure tag was inferred from the comment around it, and only the
     first survives being quoted into someone else's comment.
     """
-    normalized = strip_decoration(line)
-    start = marker_assertion_start(normalized)
-    if start is None:
-        return None
-    match = _MARKER_PREFIX_RE.match(normalized, start)
+    match = _asserted_marker_match(line)
     if not match:
         return None
     issuer = match.group("issuer")
@@ -1080,17 +1098,38 @@ def lane_shas(
     # is DELETED, and the single definition is called instead. Every future
     # tightening of what may bind a lane now lands in exactly one place.
     #
-    # The refusal matchers above are deliberately NOT routed through
-    # `parse_marker`: `reject_current` accepts a missing `-AT` and `reject_legacy`
-    # accepts a lane-less historical form, because a malformed REFUSAL must still
-    # refuse while a malformed APPROVAL must still fail to bind. That asymmetry is
-    # POLICY and it stays here. Only the grammar moved.
+    # Canonical refusals use `parse_marker`, exactly as canonical approvals do.
+    # The two refusal-only matchers remain solely for their existing fail-closed
+    # policy: `reject_current` accepts a missing `-AT`, and `reject_legacy` accepts
+    # a lane-less historical form. A malformed REFUSAL must still refuse while a
+    # malformed APPROVAL must still fail to bind.
     def approved_binding(line: str) -> tuple[str, str] | None:
         """``(lane, sha)`` when `line` is a canonical approval, else ``None``."""
         parsed = parse_marker(line)
         if parsed is None or parsed[0] != MARKER_APPROVED:
             return None
         return parsed[1], parsed[2]
+
+    def refusal_binding(line: str) -> "tuple[str | None, str] | None":
+        """``(lane-or-None, sha)`` when this line is a refusal, else ``None``."""
+        parsed = parse_marker(line)
+        if parsed is not None and parsed[0] == MARKER_REFUSED:
+            return parsed[1], parsed[2]
+        if reject_legacy.match(line):
+            matched_sha = SHA40.search(line)
+            return (None, matched_sha.group(0).lower()) if matched_sha else None
+        current = reject_current.match(line)
+        if current is None:
+            return None
+        matched_sha = SHA40.search(line)
+        return (
+            (current.group(1).lower(), matched_sha.group(0).lower())
+            if matched_sha else None
+        )
+
+    def refuses_lane(binding: "tuple[str | None, str] | None") -> bool:
+        return binding is not None and binding[0] in (None, lane)
+
     # LOUD ON THE UNKNOWN. The shared grammar decides whether the review
     # vocabulary is an ASSERTION or a MENTION before value parsing. If an
     # assertion does not parse, report it regardless of whether its SHA is full,
@@ -1124,11 +1163,8 @@ def lane_shas(
         # A rejection contributes NOTHING, even if the same comment also carries
         # an APPROVED-AT-shaped line -- a comment quoting the convention, or
         # quoting the approval it supersedes, must not bind as a positive.
-        relevant_rejection = any(reject_legacy.match(line) for line in lines)
-        relevant_rejection = relevant_rejection or any(
-            (match := reject_current.match(line)) is not None
-            and match.group(1).lower() == lane
-            for line in lines
+        relevant_rejection = any(
+            refuses_lane(refusal_binding(line)) for line in lines
         )
         # ⚠️ AN EXPLICIT WITHDRAWAL IS THE ESCAPE HATCH, AND WITHOUT IT THE
         # DISCHARGE RULE HAS NO DOOR. `CHANGES-REQUESTED-WITHDRAWN-AT` is the
@@ -1199,32 +1235,25 @@ def lane_shas(
                     malformed_prs[finding] = pr_number
             if refusals is not None:
                 # Recorded for REPORTING ONLY. Authority does not depend on this
-                # SHA and deliberately still does not: `relevant_rejection` has
-                # never compared the refused SHA to head, so a refusal at a stale
-                # SHA refuses exactly as it did before. Capturing it only lets a
-                # reader see WHICH head a lane blocked. Extracted by searching the
-                # matched line rather than by group index, so the two rejection
-                # grammars -- lane-less legacy and current -- need no special case.
+                # SHA and deliberately still does not: `relevant_rejection` does
+                # not compare the refused SHA to head, so a refusal at a stale SHA
+                # refuses exactly as it did before. Capturing it only lets a reader
+                # see WHICH head a lane blocked.
                 for line in lines:
-                    if reject_legacy.match(line) or (
-                        (rejected := reject_current.match(line)) is not None
-                        and rejected.group(1).lower() == lane
-                    ):
-                        refused_sha = re.search(r"\b[0-9a-f]{40}\b", line)
-                        if refused_sha is not None:
-                            refusals.append(refused_sha.group(0).lower())
+                    refusal = refusal_binding(line)
+                    if refuses_lane(refusal):
+                        assert refusal is not None
+                        refusals.append(refusal[1])
             # WHO refused, so a later approval can be asked whether it is the
             # same agent. Recorded on the same lines the `refusals` block reads,
             # but unconditionally -- authority must not depend on whether the
             # caller happened to pass an out-parameter.
             for line in lines:
-                if reject_legacy.match(line) or (
-                    (rejected_by := reject_current.match(line)) is not None
-                    and rejected_by.group(1).lower() == lane
-                ):
-                    refused_sha = re.search(r"\b[0-9a-f]{40}\b", line)
+                refusal = refusal_binding(line)
+                if refuses_lane(refusal):
+                    assert refusal is not None
                     outstanding.append((
-                        refused_sha.group(0).lower() if refused_sha else "",
+                        refusal[1],
                         marker_issuer(line) or author,
                     ))
             found.clear()
@@ -1270,8 +1299,7 @@ def lane_shas(
                     continue
                 if (
                     asserted
-                    and not reject_legacy.match(line)
-                    and not reject_current.match(line)
+                    and refusal_binding(line) is None
                 ):
                     # A CITATION IS NOT A FAILED ATTEMPT AT A VERDICT, so it is
                     # not malformed either. Without this, widening the net above

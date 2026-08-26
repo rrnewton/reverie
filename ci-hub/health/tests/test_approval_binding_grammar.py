@@ -143,13 +143,28 @@ cases.append((prose_mention == [],
               "prose mentioning a complete APPROVED-AT is not a malformed verdict",
               f"malformed={len(prose_mention)}"))
 lead_in_assertion = []
-ab.lane_shas(
+lead_in_shas = ab.lane_shas(
     C(f"VERDICT: APPROVED-AT: claude {CUR} because this head is ready"),
     "claude", lead_in_assertion,
 )
-cases.append((len(lead_in_assertion) == 1,
-              "an explicit VERDICT lead-in is REPORTED, not ignored",
-              f"malformed={len(lead_in_assertion)}"))
+cases.append((lead_in_shas == [CUR] and lead_in_assertion == [],
+              "an explicit VERDICT lead-in binds instead of being ignored",
+              f"shas={lead_in_shas} malformed={len(lead_in_assertion)}"))
+lead_in_refusal = []
+lead_in_refused_shas = []
+lead_in_remaining = ab.lane_shas(
+    C(f"APPROVED-AT: codex {CUR}")
+    + C(f"VERDICT: For this head, CHANGES-REQUESTED-AT: codex {CUR} because it is blocked"),
+    "codex", lead_in_refusal, refusals=lead_in_refused_shas,
+)
+cases.append((
+    lead_in_remaining == []
+    and lead_in_refused_shas == [CUR]
+    and lead_in_refusal == [],
+    "an explicit VERDICT lead-in records a refusal instead of being ignored",
+    f"bound={lead_in_remaining} refused={lead_in_refused_shas} "
+    f"malformed={len(lead_in_refusal)}",
+))
 
 # Inline code has the same split. A whole-line code span is existing marker
 # decoration, so a missing SHA is still reported. Prose around the span makes it

@@ -95,7 +95,7 @@ class FleetGhTest(unittest.TestCase):
         shutil.copy2(ROOT / "ci-hub/bin/who-am-i", self.printer)
         self.shim.chmod(0o755)
         self.printer.chmod(0o755)
-        for dependency in ("agent_identity.py", "taskgraph_db.py"):
+        for dependency in ("agent_identity.py", "ops_state.py", "taskgraph_db.py"):
             shutil.copy2(ROOT / "ci-hub/lib" / dependency, self.root / "ci-hub/lib" / dependency)
         shutil.copy2(
             ROOT / "ci-hub/lib/bounded_capture.py",
