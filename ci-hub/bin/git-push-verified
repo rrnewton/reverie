@@ -283,9 +283,36 @@ def main(argv: list[str]) -> int:
             print(stream.rstrip())
 
     if rc != 0:
+        # ⚠️ ASK THE REMOTE AGAIN RATHER THAN REPORTING THE PRE-PUSH READ.
+        # `before` was taken BEFORE the push, and the commonest reason a push is
+        # rejected is that the remote MOVED -- so the one line a reader uses to
+        # orient themselves stated a position that was already wrong, at exactly
+        # the moment they were recovering from a failed landing.
+        #
+        # Measured 2026-08-26: this printed "origin refs/heads/main is unchanged
+        # at 53eee5b02645" while git's own rejection, three lines above it, read
+        # "cannot lock ref 'refs/heads/main': is at 362fbd10305a but expected
+        # 53eee5b0264". Two contradictory locations in one failure report, and
+        # the wrong one was the sentence written to be read.
+        #
+        # The success path below has always re-read the remote before claiming
+        # anything. This one now does the same: a landing tool must not state
+        # where main is from memory.
+        after = remote_sha(remote, dst)
+        if after == before:
+            where = (
+                f"{remote} {dst} is unchanged at {(before or '(absent)')[:12]} "
+                "(re-read after the failure, not assumed)."
+            )
+        else:
+            where = (
+                f"{remote} {dst} MOVED WHILE THIS PUSH WAS IN FLIGHT: it was "
+                f"{(before or '(absent)')[:12]} when this command started and is "
+                f"now {(after or '(absent)')[:12]}. That move is why the push was "
+                "rejected. Rebase onto the new tip and push again."
+            )
         print(
-            f"git-push-verified: PUSH FAILED, git exited {rc}. "
-            f"{remote} {dst} is unchanged at {(before or '(absent)')[:12]}. "
+            f"git-push-verified: PUSH FAILED, git exited {rc}. {where} "
             "NOTHING LANDED -- do not record this as a landing.",
             file=sys.stderr,
         )
