@@ -923,6 +923,88 @@ else
   bad "mutation control: could not construct the without-source-guard mutant"
 fi
 
+
+# ⚠️ AN UNANSWERED REFUSAL THAT NAMES NO ISSUER AND ONE THAT NAMES A DEPARTED
+# AGENT LOOK IDENTICAL IN `state=REFUSED`, AND THEIR REMEDIES ARE OPPOSITE. The
+# first is retired by ANY agent via `RETIRES #<comment-id>` in
+# ci-hub/bin/changes-requested-gate; the second is retired by its issuer alone, so
+# a departed issuer leaves it retirable by nobody. Measured 2026-08-26 over 35
+# open rrnewton/hermit pull requests: 22 unanswered refusals at head, 5 naming no
+# issuer and 13 naming a departed one, and the tool's output could not tell them
+# apart -- so the census had to be rebuilt by hand before anyone could act.
+#
+# Both directions are asserted, because a counter that always says "none" and one
+# that always says "present" are each useless in a way the other's test hides.
+cat >"$tmp/refusal-unsigned.json" <<JSON
+[{"number":9301,"head":"$CUR","labels":["passed-review-claude"],
+  "comments":["[adversarial-reviewer agent, codex - dispatched by agent(hermit-004)]\nCHANGES-REQUESTED-AT: claude $CUR",
+              "[hermit2, hermit-005, unresolved, devbig014, role=reviewer]\nAPPROVED-AT: claude $CUR"],
+  "runs_at_head":3,"mergeable":"MERGEABLE"}]
+JSON
+out="$(run "$tmp/refusal-unsigned.json" --pr 9301 --gate)"
+if grep -q '^refusal_issuer_summary=1 unanswered refusal(s) at head across 1 PR(s); 0 name an issuer, 1 name none' <<<"$out"; then
+  ok "a refusal with no readable issuer is counted as naming none"
+else
+  bad "an unsigned refusal was not reported as naming no issuer: $out"
+fi
+if grep -q 'RETIRES #<comment-id>' <<<"$out"; then
+  ok "the remedy names the mechanism that can actually retire an unsigned refusal"
+else
+  bad "the remedy did not name RETIRES, so the reader is told to ask a nonexistent author"
+fi
+
+cat >"$tmp/refusal-signed.json" <<JSON
+[{"number":9302,"head":"$CUR","labels":["passed-review-claude"],
+  "comments":["[hermit2, hermit-016, unresolved, devbig014, role=reviewer]\nCHANGES-REQUESTED-AT: claude $CUR",
+              "[hermit2, hermit-005, unresolved, devbig014, role=reviewer]\nAPPROVED-AT: claude $CUR"],
+  "runs_at_head":3,"mergeable":"MERGEABLE"}]
+JSON
+out="$(run "$tmp/refusal-signed.json" --pr 9302 --gate)"
+if grep -q '^refusal_issuer_summary=1 unanswered refusal(s) at head across 1 PR(s); 1 name an issuer, 0 name none' <<<"$out"; then
+  ok "a refusal carrying a disclosure tag is counted as naming an issuer"
+else
+  bad "a signed refusal was miscounted; the split cannot separate the two remedies: $out"
+fi
+
+# The negative half. Without it the counter could report "present" unconditionally.
+cat >"$tmp/refusal-none.json" <<JSON
+[{"number":9303,"head":"$CUR","labels":["passed-review-claude"],
+  "comments":["[hermit2, hermit-005, unresolved, devbig014, role=reviewer]\nAPPROVED-AT: claude $CUR"],
+  "runs_at_head":3,"mergeable":"MERGEABLE"}]
+JSON
+out="$(run "$tmp/refusal-none.json" --pr 9303 --gate)"
+if grep -q '^refusal_issuer_state=none' <<<"$out"; then
+  ok "a head with no unanswered refusal reports refusal_issuer_state=none"
+else
+  bad "a clean head reported a refusal issuer split, so the counter is not reading refusals: $out"
+fi
+
+# ⚠️ ITS OWN MUTATION CONTROL. A split that always reports zero unsigned refusals
+# would pass the signed and the clean cases above and fail only the first, so the
+# control removes the DISCRIMINATION rather than the whole block: it drops the
+# issuer from every row, which must red the signed case.
+if [[ -z "${APPROVAL_BINDING_MUTATION_CHILD:-}" ]]; then
+  mutant="$tmp/approval_binding-without-refusal-issuers.py"
+  # ⚠️ MATCHES BOTH ROW BUILDERS. The live path keys on `head` and the fixture
+  # path on `pr["head"]`, so a pattern anchored to either one leaves the other
+  # intact -- and the fixture path is the ONLY one this inert suite exercises, so
+  # anchoring on `head` produced a mutant that ran unmutated and reported the
+  # guard as not load-bearing. That is the same "the mutant never ran" failure
+  # this file's header records, one substitution down.
+  sed 's/"refusal_issuers": \[w for _s, w in unanswered/"refusal_issuers": [None for _s, w in unanswered/g' \
+    "$tool" >"$mutant"
+  if ! grep -q '"refusal_issuers": \[None for _s, w in unanswered' "$mutant"; then
+    bad "refusal-issuer mutation control could not locate the row field"
+  else
+    mout="$(python3 "$mutant" --from-json "$tmp/refusal-signed.json" --pr 9302 --gate 2>&1)"
+    if grep -q '1 name an issuer, 0 name none' <<<"$mout"; then
+      bad "erasing every refusal issuer did not change the split -- the field is not load-bearing"
+    else
+      ok "mutation control: erasing the refusal issuer reds the signed-refusal case"
+    fi
+  fi
+fi
+
 echo "======================================================================"
 echo "refused-when-it-should:     1 case   (selected PR with zero approvals)"
 echo "flagged-when-it-should:     4 cases  (superseded, unbound 0/1 authority, composed, malformed+lost)"

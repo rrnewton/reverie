@@ -1506,6 +1506,22 @@ def collect_live(
                         refused_at=refusals[-1] if refusals else None,
                         unanswered=bool(unanswered),
                     ),
+                    # The ISSUER of every unanswered refusal at this head, in
+                    # order, with None preserved for one whose disclosure tag
+                    # cannot be read. WHY IT IS PUBLISHED RATHER THAN DERIVED BY
+                    # EACH READER: whether a refusal can be retired AT ALL depends
+                    # on this value and on nothing else in the row, and the two
+                    # cases point opposite ways. A refusal with NO readable issuer
+                    # is retired by ANY agent naming it, which
+                    # `ci-hub/bin/changes-requested-gate` has done since
+                    # 2026-08-25 via `RETIRES #<comment-id>`. A refusal whose
+                    # issuer IS named is retired by that issuer alone, so if they
+                    # have left the fleet it can be retired by nobody. Measured
+                    # 2026-08-26 across 35 open rrnewton/hermit pull requests: 22
+                    # unanswered refusals at head, 4 with a live issuer, 13 with a
+                    # departed one and 5 with none. Reading the row could not tell
+                    # those apart, so the census had to be rebuilt by hand.
+                    "refusal_issuers": [w for _s, w in unanswered if _s == head],
                     "runs_at_head": len(runs),
                     "mergeable": pr.get("mergeable"),
                 }
@@ -1569,6 +1585,22 @@ def collect_live(
                         refused_at=refusals[-1] if refusals else None,
                         unanswered=bool(unanswered),
                     ),
+                    # The ISSUER of every unanswered refusal at this head, in
+                    # order, with None preserved for one whose disclosure tag
+                    # cannot be read. WHY IT IS PUBLISHED RATHER THAN DERIVED BY
+                    # EACH READER: whether a refusal can be retired AT ALL depends
+                    # on this value and on nothing else in the row, and the two
+                    # cases point opposite ways. A refusal with NO readable issuer
+                    # is retired by ANY agent naming it, which
+                    # `ci-hub/bin/changes-requested-gate` has done since
+                    # 2026-08-25 via `RETIRES #<comment-id>`. A refusal whose
+                    # issuer IS named is retired by that issuer alone, so if they
+                    # have left the fleet it can be retired by nobody. Measured
+                    # 2026-08-26 across 35 open rrnewton/hermit pull requests: 22
+                    # unanswered refusals at head, 4 with a live issuer, 13 with a
+                    # departed one and 5 with none. Reading the row could not tell
+                    # those apart, so the census had to be rebuilt by hand.
+                    "refusal_issuers": [w for _s, w in unanswered if _s == head],
                     "runs_at_head": len(runs),
                     "mergeable": pr.get("mergeable"),
                 }
@@ -1686,6 +1718,22 @@ def collect_fixture(
                         refused_at=refusals[-1] if refusals else None,
                         unanswered=bool(unanswered),
                     ),
+                    # The ISSUER of every unanswered refusal at this head, in
+                    # order, with None preserved for one whose disclosure tag
+                    # cannot be read. WHY IT IS PUBLISHED RATHER THAN DERIVED BY
+                    # EACH READER: whether a refusal can be retired AT ALL depends
+                    # on this value and on nothing else in the row, and the two
+                    # cases point opposite ways. A refusal with NO readable issuer
+                    # is retired by ANY agent naming it, which
+                    # `ci-hub/bin/changes-requested-gate` has done since
+                    # 2026-08-25 via `RETIRES #<comment-id>`. A refusal whose
+                    # issuer IS named is retired by that issuer alone, so if they
+                    # have left the fleet it can be retired by nobody. Measured
+                    # 2026-08-26 across 35 open rrnewton/hermit pull requests: 22
+                    # unanswered refusals at head, 4 with a live issuer, 13 with a
+                    # departed one and 5 with none. Reading the row could not tell
+                    # those apart, so the census had to be rebuilt by hand.
+                    "refusal_issuers": [w for _s, w in unanswered if _s == pr["head"]],
                     "runs_at_head": pr.get("runs_at_head", 1),
                     "mergeable": pr.get("mergeable"),
                 }
@@ -1729,6 +1777,22 @@ def collect_fixture(
                         refused_at=refusals[-1] if refusals else None,
                         unanswered=bool(unanswered),
                     ),
+                    # The ISSUER of every unanswered refusal at this head, in
+                    # order, with None preserved for one whose disclosure tag
+                    # cannot be read. WHY IT IS PUBLISHED RATHER THAN DERIVED BY
+                    # EACH READER: whether a refusal can be retired AT ALL depends
+                    # on this value and on nothing else in the row, and the two
+                    # cases point opposite ways. A refusal with NO readable issuer
+                    # is retired by ANY agent naming it, which
+                    # `ci-hub/bin/changes-requested-gate` has done since
+                    # 2026-08-25 via `RETIRES #<comment-id>`. A refusal whose
+                    # issuer IS named is retired by that issuer alone, so if they
+                    # have left the fleet it can be retired by nobody. Measured
+                    # 2026-08-26 across 35 open rrnewton/hermit pull requests: 22
+                    # unanswered refusals at head, 4 with a live issuer, 13 with a
+                    # departed one and 5 with none. Reading the row could not tell
+                    # those apart, so the census had to be rebuilt by hand.
+                    "refusal_issuers": [w for _s, w in unanswered if _s == pr["head"]],
                     "runs_at_head": pr.get("runs_at_head", 1),
                     "mergeable": pr.get("mergeable"),
                 }
@@ -2255,6 +2319,51 @@ def main() -> int:
             )
         else:
             print("malformed_state=none")
+
+        # ⚠️ AN UNANSWERED REFUSAL IS NOT ONE CONDITION BUT TWO, AND THEIR
+        # REMEDIES POINT OPPOSITE WAYS -- reported here because reading
+        # `state=REFUSED` alone gave both the same answer, which is "ask the
+        # reviewer", and for one of them there is nobody to ask.
+        #
+        # A refusal that names NO issuer is the RETIRABLE one. `RETIRES
+        # #<comment-id>` in `ci-hub/bin/changes-requested-gate` has retired it for
+        # any claimant since 2026-08-25 -- see `retired()` there, which returns
+        # True when the issuer is unreadable and prints that it may not be the
+        # author. A comment id is assigned by GitHub and cannot go missing, which
+        # is why that identity was chosen over the issuer.
+        #
+        # A refusal that DOES name an issuer is retirable by that issuer ALONE. So
+        # if they have left the fleet it is retirable by nobody, in either
+        # consumer, and no amount of re-review moves it. Measured 2026-08-26
+        # across 35 open rrnewton/hermit pull requests: 22 unanswered refusals at
+        # head over 13 pull requests -- 4 issuers live, 13 departed, 5 absent. TEN
+        # of the thirteen pull requests carried at least one refusal no live agent
+        # could retire, and nothing in this tool's output said so.
+        #
+        # This reports the split. It does not retire anything and it does not read
+        # the fleet: whether a NAMED issuer is still live is a separate question
+        # with its own freshness rules, and answering it here would put a live
+        # read on the path of a verdict.
+        refusal_rows = [r for r in rows if r.get("refusal_issuers")]
+        named = sum(1 for r in refusal_rows for w in r["refusal_issuers"] if w)
+        unnamed = sum(1 for r in refusal_rows for w in r["refusal_issuers"] if not w)
+        if refusal_rows:
+            print("refusal_issuer_state=present")
+            print(
+                "refusal_issuer_summary="
+                f"{named + unnamed} unanswered refusal(s) at head across "
+                f"{len({r['number'] for r in refusal_rows})} PR(s); "
+                f"{named} name an issuer, {unnamed} name none"
+            )
+            print(
+                "refusal_issuer_remedy=a refusal naming NO issuer is retired by any "
+                "agent posting RETIRES #<comment-id>, through "
+                "ci-hub/bin/changes-requested-gate; a refusal naming an issuer is "
+                "retired by that issuer alone, so a departed issuer leaves it "
+                "retirable by nobody -- escalate rather than re-review"
+            )
+        else:
+            print("refusal_issuer_state=none")
 
     if a.gate and (critical_label_missing or critical_lanes_missing):
         print(
