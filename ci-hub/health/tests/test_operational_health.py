@@ -783,21 +783,6 @@ class OperationalHealthTest(unittest.TestCase):
                     now=1061,
                 )
 
-    def test_cache_agent_snapshot_validates_before_persisting(self) -> None:
-        snapshot = '[{"name":"worker","status":"busy","current_task":"task"}]'
-        with mock.patch.object(
-            operational_health,
-            "_persist_agent_snapshot",
-        ) as persist:
-            result, output = self.capture(
-                operational_health.cache_agent_snapshot,
-                snapshot,
-            )
-        self.assertEqual(result, 0)
-        self.assertIn("state=ok", output)
-        self.assertIn("count=1", output)
-        persist.assert_called_once()
-
     def test_taskgraph_query_parses_exact_tag_array(self) -> None:
         output = """task_json
 ---------------
@@ -832,6 +817,70 @@ class OperationalHealthTest(unittest.TestCase):
             tasks = operational_health._taskgraph_in_progress()
         self.assertEqual(len(tasks), 1)
         self.assertTrue(tasks[0].implemented)
+
+    def test_no_explicit_snapshot_goes_LIVE_and_never_reads_the_cache_file(
+        self,
+    ) -> None:
+        """⚠️ THE CACHE IS DELETED AS A DEFAULT SOURCE, AND THIS PINS THAT.
+
+        `ignored/ci-hub/agent-snapshot.json` has NO POSSIBLE PRODUCER: it carries
+        per-agent `status`/`current_task`, and the only live fleet source is
+        `orc tmux ls` WINDOW NAMES. A names-only producer would be worse than none
+        -- every agent would parse as `busy=false, current_task=null`, routing every
+        owned task to `misrouted`. So with no explicit snapshot this must go live and
+        must not touch the file, even if a plausible-looking one exists on disk.
+        """
+        tasks = (operational_health.TaskRecord("held", "Held", "ghost", ()),)
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(
+            operational_health, "_taskgraph_in_progress", return_value=tasks
+        ), mock.patch.object(
+            operational_health, "live_agent_names", return_value=("worker",)
+        ), mock.patch.object(
+            operational_health,
+            "load_agent_snapshot",
+            side_effect=AssertionError("the cache must not be read by default"),
+        ):
+            result, output = self.capture(
+                operational_health.active_work_gate,
+                snapshot_file=Path(directory) / "present-but-unused.json",
+                json_output=True,
+                now=1000,
+            )
+        payload = json.loads(output)
+        self.assertEqual(payload["census_mode"], "live-names-only")
+        self.assertEqual(payload["orphaned"], ["held"])
+        self.assertEqual(result, 1)
+
+    def test_an_explicit_snapshot_still_takes_the_full_census_path(self) -> None:
+        """The escape hatch: real ORC data, supplied deliberately, still works.
+
+        Deleting the cache must not delete the ability to answer the full census
+        when someone can actually provide `status` and `current_task`.
+        """
+        tasks = (operational_health.TaskRecord("active", "Active", "worker", ()),)
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(
+            operational_health, "_taskgraph_in_progress", return_value=tasks
+        ), mock.patch.object(
+            operational_health,
+            "live_agent_names",
+            side_effect=AssertionError("explicit snapshot must not go live"),
+        ):
+            result, output = self.capture(
+                operational_health.active_work_gate,
+                snapshot='[{"name":"worker","status":"busy","current_task":"active"}]',
+                snapshot_file=Path(directory) / "agents.json",
+                json_output=True,
+                now=1000,
+            )
+        payload = json.loads(output)
+        # No `census_mode` key at all is the marker of the FULL census path; the
+        # degraded path always sets it.
+        self.assertNotIn("census_mode", payload)
+        # A clean full census exits 0 -- one busy agent whose current_task resolves
+        # to the one owned task is `actually_active`, not drift. Asserting 1 here
+        # was my error, caught by running it: rc=0 is the correct answer and is also
+        # what distinguishes this path from the degraded one, which never returns 0.
+        self.assertEqual(result, 0)
 
     def test_a_stale_snapshot_still_expires_claims_from_a_live_name_read(self) -> None:
         """⚠️ THE AUTHORITY MUST NOT GO DARK WHEN ITS CACHE ROTS.

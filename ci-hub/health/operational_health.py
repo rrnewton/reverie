@@ -977,6 +977,54 @@ def load_agent_snapshot(
     return _parse_agents(agents_payload), float(captured_at)
 
 
+def _emit_live_names_report(
+    names: Sequence[str], *, reason: str, json_output: bool
+) -> int:
+    """Report claim EXPIRY from a name-only live fleet, and refuse the rest by name.
+
+    ⚠️ ONE OF THREE QUESTIONS. `orphaned` is exactly `owner not in live_by_name`,
+    which a name read settles. `claimed`, `actually_active` and `misrouted` each
+    need an agent's `current_task`, which a name read does not carry -- computing
+    them from names would mark EVERY LIVE agent's claim misrouted. Naming them in
+    `not_determined` beats returning a confident wrong number for them.
+    """
+    owned = [
+        task
+        for task in _taskgraph_in_progress()
+        if task.status.strip().upper() == "IN_PROGRESS"
+        and not task.implemented
+        and task.owner
+    ]
+    orphaned = sorted(task.id for task in owned if task.owner not in set(names))
+    payload = {
+        "schema_version": 1,
+        "state": "degraded",
+        "census_mode": "live-names-only",
+        "reason": reason,
+        "live_agents_examined": len(names),
+        "live_agents": list(names),
+        "orphaned": orphaned,
+        "orphaned_count": len(orphaned),
+        "not_determined": ["claimed", "actually_active", "misrouted"],
+        "summary": (
+            f"{reason}; read the fleet LIVE instead. {len(orphaned)} owned "
+            f"IN_PROGRESS task(s) have an owner absent from a {len(names)}-agent "
+            "live fleet and ARE reclaimable. claimed/actually_active/misrouted are "
+            "NOT DETERMINED in this mode: they need each agent's current_task, "
+            "which a name-only read does not carry."
+        ),
+    }
+    if json_output:
+        print(json.dumps(payload))
+    else:
+        print(payload["summary"])
+        for task_id in orphaned:
+            print(f"  ORPHANED (owner absent from live fleet): {task_id}")
+    # Non-zero: a degraded answer to one of three questions. A caller that treats
+    # 0 as "census complete" must not get it from here.
+    return 1
+
+
 def live_agent_names() -> tuple[str, ...] | None:
     """Read the fleet LIVE, by name, when the cached snapshot cannot be trusted.
 
@@ -1026,28 +1074,6 @@ def live_agent_names() -> tuple[str, ...] | None:
         return None
     names = tuple(sorted(str(name) for name in fleet))
     return names or None
-
-
-def cache_agent_snapshot(snapshot: str | None = None) -> int:
-    text = (
-        snapshot
-        if snapshot is not None
-        else os.environ.get("HERMIT_AGENT_SNAPSHOT_JSON")
-    )
-    if text is None:
-        _emit({"state": "unknown", "summary": "ORC-agent-snapshot-missing"})
-        return 1
-    try:
-        payload: object = json.loads(text)
-        agents = _parse_agents(payload)
-        _persist_agent_snapshot(
-            DEFAULT_AGENT_SNAPSHOT, payload, captured_at=time.time()
-        )
-    except (json.JSONDecodeError, OSError, RuntimeError) as error:
-        _emit({"state": "unknown", "summary": f"cannot-cache-agent-snapshot:{error}"})
-        return 1
-    _emit({"state": "ok", "count": len(agents), "summary": "agent-snapshot-cached"})
-    return 0
 
 
 def _taskgraph_in_progress() -> tuple[TaskRecord, ...]:
@@ -1355,6 +1381,32 @@ def active_work_gate(
     now: float | None = None,
     persist: bool = True,
 ) -> int:
+    # ⚠️ LIVE FIRST, AND THE CACHE IS NO LONGER CONSULTED BY DEFAULT.
+    # `ignored/ci-hub/agent-snapshot.json` HAS NO POSSIBLE PRODUCER: it carries
+    # per-agent `status` and `current_task`, and the only live fleet source is
+    # `orc tmux ls` WINDOW NAMES (via scripts/orphaned-task-detector.sh). `orc curl`
+    # is per-session and has no fleet endpoint. Measured 2026-08-26 the file was
+    # 4.12 days old, and it had been read as the authority for claim expiry that
+    # whole time.
+    #
+    # A names-only producer would be WORSE than none: `_parse_agents` gives every
+    # agent `status=""` -> `busy=false, current_task=null`, which routes EVERY owned
+    # task to `misrouted`. A fresh cache would produce a flood of false misroutes
+    # where the stale one produced an honest refusal.
+    #
+    # So the cache is not fixable where it sits, and the live path is the only
+    # honest answer. An EXPLICIT `--agent-snapshot`/`snapshot=` still takes the full
+    # census path -- that is how tests and a human supply real ORC data -- but
+    # nothing falls back to a file on disk that nothing can write.
+    explicit = snapshot is not None or os.environ.get("HERMIT_AGENT_SNAPSHOT_JSON")
+    if not explicit:
+        names = live_agent_names()
+        if names is not None:
+            return _emit_live_names_report(
+                names,
+                reason="cache deleted: agent-snapshot.json has no possible producer",
+                json_output=json_output,
+            )
     try:
         agents, captured_at = load_agent_snapshot(
             snapshot,
@@ -1374,42 +1426,9 @@ def active_work_gate(
         # name rather than by returning a wrong number for them.
         names = live_agent_names()
         if names is not None:
-            owned = [
-                task
-                for task in _taskgraph_in_progress()
-                if task.status.strip().upper() == "IN_PROGRESS"
-                and not task.implemented
-                and task.owner
-            ]
-            orphaned = sorted(task.id for task in owned if task.owner not in names)
-            payload = {
-                "schema_version": 1,
-                "state": "degraded",
-                "census_mode": "live-names-only",
-                "reason": str(error),
-                "live_agents_examined": len(names),
-                "live_agents": list(names),
-                "orphaned": orphaned,
-                "orphaned_count": len(orphaned),
-                "not_determined": ["claimed", "actually_active", "misrouted"],
-                "summary": (
-                    f"cached snapshot unusable ({error}); read the fleet LIVE instead. "
-                    f"{len(orphaned)} owned IN_PROGRESS task(s) have an owner absent "
-                    f"from a {len(names)}-agent live fleet and ARE reclaimable. "
-                    "claimed/actually_active/misrouted are NOT DETERMINED in this mode: "
-                    "they need each agent's current_task, which a name-only read does "
-                    "not carry."
-                ),
-            }
-            if json_output:
-                print(json.dumps(payload))
-            else:
-                print(payload["summary"])
-                for task_id in orphaned:
-                    print(f"  ORPHANED (owner absent from live fleet): {task_id}")
-            # Non-zero: this is a degraded answer to one of three questions, and a
-            # caller that treats 0 as "census complete" must not get it here.
-            return 1
+            return _emit_live_names_report(
+                names, reason=str(error), json_output=json_output
+            )
         if json_output:
             print(
                 json.dumps(
@@ -2055,7 +2074,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     if parsed.command == "active-work":
         return _run_active_work(parsed, parsed._command_parser)
     commands = {
-        "cache-agents": cache_agent_snapshot,
         "github-main": github_main_gate,
         "pull-requests": pull_request_gate,
         "primary-snapshot": primary_snapshot_gate,
