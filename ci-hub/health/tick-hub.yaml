@@ -190,9 +190,25 @@ reminders:
   #
   # DETECT-ONLY. It reports and never rescues: the salvage pattern is owned
   # elsewhere, and a push behind a timer is a different and much worse thing.
+  # ⚠️ BOUND DECLARED FROM MEASUREMENT (2026-08-26). Without `timeout_secs` this
+  # gate inherited tick_hub.probes.DEFAULT_GATE_TIMEOUT_SECS = 30, a constant in
+  # a DIFFERENT REPOSITORY (agent-utils) carrying no comment and derived from no
+  # gate's cost. 30 of the 35 reminders here inherit it silently.
+  #
+  # Measured end to end on a quiet box (load 17 of 316 cores), run to completion:
+  # 32.09s wall, 7.39s cpu, at 34 open pull requests. It was 7% over the bound it
+  # never declared, so it returned NO-RESULT -- the one outcome nobody reads as a
+  # failure -- rather than its answer, which was "0 of 34 unreachable".
+  #
+  # THE COST IS SERIAL NETWORK, NOT COMPUTE: two `git fetch` probes per open pull
+  # request (0.42-0.46s by sha, 0.27-0.28s by refs/pull), so ~0.9s per PR, and
+  # cpu/wall is 0.23. IT SCALES WITH THE OPEN-PR QUEUE, which is the population
+  # we are deliberately growing through: 300s covers roughly 300 open PRs and the
+  # cadence is 3600s, so the bound is not the thing to watch -- the queue is.
   - name: pr_tip_reachability
     cadence_secs: 3600
     gate:
+      timeout_secs: 300
       cmd: python3 ci-hub/health/pr_tip_reachability.py --gate
       when: failure
       capture: true
@@ -891,9 +907,20 @@ reminders:
   # canonical, and making that path harder is a policy change, not a health
   # check. The wording keeps unobserved-by-this-check apart from unreviewed,
   # because they are different claims and only the first is being made.
+  # ⚠️ BOUND DECLARED FROM MEASUREMENT (2026-08-26), same inherited-30s story as
+  # pr_tip_reachability above. Measured twice, run to completion on a quiet box:
+  # 61.26s and 60.55s wall (20.5s cpu) over a window of 124 commits. It is 2x the
+  # bound it never declared, so this gate has been emitting NO-RESULT instead of
+  # its answer.
+  #
+  # THE COST IS ONE SERIAL `gh api repos/.../commits/<sha>/pulls` PER COMMIT IN
+  # THE WINDOW, ~0.49s each; the `git log` that opens the window is ~0.1s. So IT
+  # GETS SLOWER EXACTLY WHEN WE SUCCEED -- 124 commits landed in the last day, and
+  # a better day costs more. 300s covers ~600 commits/day at a 86400s cadence.
   - name: landing_observability
     cadence_secs: 86400
     gate:
+      timeout_secs: 300
       cmd: python3 ci-hub/health/approval_binding.py --repo rrnewton/hermit --checkout hermit --landing-observability --since "1 day ago"
       when: always
       capture: true

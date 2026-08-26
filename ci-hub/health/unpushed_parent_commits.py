@@ -36,6 +36,28 @@ afterwards. The timeout killed a process that was already holding a complete
 result. **So the report is emitted BEFORE rescue is attempted.** A rescue that
 hangs, fails, or is killed can no longer discard a measurement that succeeded.
 
+⚠️ AND THE SAME DEFECT CAME BACK THROUGH ``classify_publication``, WHICH IS WHY
+IT IS NOW OPT-IN (2026-08-26). That function was added after the fix above and
+sits BETWEEN the census and the emit, so the 0.25s answer was again being
+discarded by the 30s bound. Measured on this repo at 1416 local-only commits:
+
+    git rev-list census ....................  0.25s
+    whole gate with classification .........  744.85s wall, 740.08s cpu
+                                              (cpu/wall 0.994 -- a pinned core,
+                                              NOT a blocked one)
+    per commit .............................  0.526s, essentially all of it
+                                              `git cherry <target> <sha>`
+
+That is 24.8x the 30s bound on a 900s cadence, and the gate had emitted NOTHING.
+It is also 36x MORE expensive per commit than the 14.5ms/commit form the header
+above records as removed for being too slow -- the linear-scaling defect this
+module already knew about, reintroduced one function later.
+
+⚠️ THE DECIDING NUMBER IS NOT THE COST, IT IS THAT THE COST BUYS NO DECISION.
+Classification moved 32 of 1416 rows (2.3%) out of the alarm. It fires either
+way, so 744 seconds cannot change what anyone does. So the tick takes the
+census, and ``--classify`` is there for a human who wants the split.
+
 Corollaries, each measured rather than assumed:
 
 *   Cost does NOT scale with worktree count. 47 worktrees: ``rev-list --all``
@@ -343,6 +365,11 @@ def main() -> int:
                     help="wall ceiling for the whole rescue phase; commits the "
                          "budget never reaches are reported skipped-deadline, "
                          "never verified")
+    ap.add_argument("--classify", action="store_true",
+                    help="split the census into unpublished and superseded by "
+                         "content. OFF BY DEFAULT because it costs ~0.53s per "
+                         "local-only commit and cannot change the alarm; see "
+                         "classify_publication")
     ap.add_argument("--agent", default="hermit-det2")
     ap.add_argument("--json", action="store_true")
     a = ap.parse_args()
@@ -350,28 +377,49 @@ def main() -> int:
     scan_started = time.monotonic()
     rows = local_only(a.scope)
     head_n = len(local_only("head")) if a.scope == "all" else len(rows)
-    classify_publication(rows)
+    if a.classify:
+        classify_publication(rows)
+    else:
+        # UNCLASSIFIED IS AN HONEST STATE, NOT A SILENT DEFAULT. Every row says
+        # so, and the summary below says so, because "unpublished" and "not yet
+        # asked" are different claims and only one of them is true here.
+        for row in rows:
+            row["disposition"] = "unclassified"
+            row["evidence"] = "content not compared (--classify not requested)"
     # `rows` stays the FULL census: rescue and --json must still see every
     # local-only object. Only the ALARM narrows to genuinely unpublished work.
     unpublished = [r for r in rows if r["disposition"] == "unpublished"]
     superseded = [r for r in rows if r["disposition"] == "superseded"]
+    # ⚠️ THE ALARM MUST NOT NARROW TO AN EMPTY SET WHEN NOTHING WAS CLASSIFIED.
+    # Without --classify no row is "unpublished", so keying the alarm on that
+    # list would report silence over a census of 1416 -- a fail-open that reads
+    # exactly like the healthy case. Unclassified rows alarm as themselves.
+    alarming = rows if not a.classify else unpublished
     scan_secs = time.monotonic() - scan_started
 
     def emit(published: list[dict[str, str]]) -> None:
         if a.json:
             print(json.dumps({"scope": a.scope, "count": len(rows),
-                              "unpublished_count": len(unpublished),
-                              "superseded_count": len(superseded),
+                              "classified": a.classify,
+                              "unpublished_count":
+                                  len(unpublished) if a.classify else "NOT CLASSIFIED",
+                              "superseded_count":
+                                  len(superseded) if a.classify else "NOT CLASSIFIED",
                               "head_scoped_count": head_n,
                               "scan_seconds": round(scan_secs, 3),
                               "rescued": bool(published),
                               "commits": published or rows}, indent=2), flush=True)
             return
-        # COUNT AND SUBJECTS, never a bare boolean.
+        # COUNT AND SUBJECTS, never a bare boolean. When classification was not
+        # run the two split counts read `not-classified`, never `0`: a zero here
+        # would be a measurement nobody took.
+        split = (f"unpublished={len(unpublished)} superseded={len(superseded)}"
+                 if a.classify else
+                 "unpublished=not-classified superseded=not-classified")
         print(f"unpushed-parent-commits scope={a.scope} count={len(rows)} "
-              f"unpublished={len(unpublished)} superseded={len(superseded)} "
-              f"head_scoped_count={head_n} scan_seconds={scan_secs:.2f}", flush=True)
-        for r in (published or unpublished):
+              f"{split} head_scoped_count={head_n} "
+              f"scan_seconds={scan_secs:.2f}", flush=True)
+        for r in (published or alarming):
             extra = f"  -> {r['ref']} [{r['published']}]" if "ref" in r else ""
             print(f"  {r['short']}  {r['date']}  {r['author']:<14.14}  "
                   f"{r['subject'][:72]}{extra}", flush=True)
@@ -383,6 +431,10 @@ def main() -> int:
         if not rows:
             print("  (none: every local commit is reachable from a remote ref)",
                   flush=True)
+        elif not a.classify:
+            print(f"  (content NOT compared: re-run with --classify to split "
+                  f"these {len(rows)} into unpublished and superseded; it costs "
+                  f"~0.53s per commit)", flush=True)
         elif not unpublished:
             print("  (no unpublished work: every local-only commit's content is "
                   "already on the publication target)", flush=True)
@@ -396,9 +448,15 @@ def main() -> int:
         # completed, so it never emitted anything at all. Name the subjects: an
         # alarm that omits its own subject cannot be verified.
         subjects = ", ".join(
-            f"{r['short']} {r['subject'][:40]}" for r in unpublished[:3])
-        residue = f" (+{len(unpublished) - 3} more)" if len(unpublished) > 3 else ""
-        if unpublished:
+            f"{r['short']} {r['subject'][:40]}" for r in alarming[:3])
+        residue = f" (+{len(alarming) - 3} more)" if len(alarming) > 3 else ""
+        if alarming and not a.classify:
+            # Says what it measured AND what it did not. "exist only locally" is
+            # the census claim; "hold unpublished work" is the classified claim
+            # and is NOT made here.
+            summary = (f"{len(alarming)} parent commit(s) exist ONLY LOCALLY "
+                       f"(content not compared): {subjects}{residue}")
+        elif unpublished:
             summary = (f"{len(unpublished)} parent commit(s) hold UNPUBLISHED "
                        f"work: {subjects}{residue}")
         elif superseded:
@@ -415,7 +473,7 @@ def main() -> int:
     # observation.
     emit([])
     if not a.rescue:
-        return 1 if unpublished else 0
+        return 1 if alarming else 0
 
     published = rescue(rows, a.agent, a.dry_run, a.rescue_deadline)
     verified = sum(1 for r in published if r.get("published") == "verified")
@@ -429,7 +487,7 @@ def main() -> int:
           flush=True)
     # Partial coverage is NOT success. Anything unpublished keeps the nonzero
     # exit, so a deadline or a broken transport can never read as "all clear".
-    return 1 if unpublished else 0
+    return 1 if alarming else 0
 
 
 if __name__ == "__main__":

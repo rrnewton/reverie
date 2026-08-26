@@ -469,7 +469,7 @@ class PublicationContentClassification(unittest.TestCase):
         self.assertEqual(
             "", run("git", "branch", "-r", "--contains", orphan, cwd=fx.root).strip(),
             "fixture must reproduce a genuinely local-only object")
-        rc, out, _ = fx.gate_run("--scope", "all")
+        rc, out, _ = fx.gate_run("--scope", "all", "--classify")
         self.assertEqual(rc, 0, f"a routine landing must not page:\n{out}")
         self.assertIn("unpublished=0", out, out)
         self.assertIn("superseded=1", out, out)
@@ -493,7 +493,7 @@ class PublicationContentClassification(unittest.TestCase):
                                capture_output=True)
         self.assertNotEqual(0, probe.returncode,
                             "the blob must be ABSENT from origin's object store")
-        rc, out, _ = fx.gate_run("--scope", "all")
+        rc, out, _ = fx.gate_run("--scope", "all", "--classify")
         self.assertEqual(rc, 1, f"unpublished work must page:\n{out}")
         self.assertIn("unpublished=1", out, out)
         self.assertIn(sha[:7], out, out)
@@ -503,7 +503,7 @@ class PublicationContentClassification(unittest.TestCase):
         fx = Fixture(self.tmp)
         orphan = self.routine_landing(fx)
         sha = self.plant_unpublished(fx, "precious.md", "IRREPLACEABLE\n")
-        rc, out, _ = fx.gate_run("--scope", "all")
+        rc, out, _ = fx.gate_run("--scope", "all", "--classify")
         self.assertEqual(rc, 1, out)
         self.assertIn("count=2", out, out)
         self.assertIn("unpublished=1", out, out)
@@ -536,7 +536,7 @@ class PublicationContentClassification(unittest.TestCase):
             run("git", "rev-parse", "origin/main:feature.txt", cwd=fx.root).strip(),
             "fixture must make the blob test fail, or it proves nothing")
         # ... and the gate must STILL not page, on patch-id evidence alone.
-        rc, out, _ = fx.gate_run("--scope", "all")
+        rc, out, _ = fx.gate_run("--scope", "all", "--classify")
         self.assertEqual(rc, 0, f"patch-id must still recognise this landing:\n{out}")
         self.assertIn("superseded=1", out, out)
         self.assertIn("git cherry", out, out)
@@ -551,7 +551,7 @@ class PublicationContentClassification(unittest.TestCase):
             fx, base_rows=base, head_rows=head, target_rows=target
         )
 
-        rc, out, _ = fx.gate_run("--scope", "all")
+        rc, out, _ = fx.gate_run("--scope", "all", "--classify")
 
         self.assertEqual(0, rc, out)
         self.assertIn("unpublished=0", out, out)
@@ -570,7 +570,7 @@ class PublicationContentClassification(unittest.TestCase):
             fx, base_rows=base, head_rows=head, target_rows=target
         )
 
-        rc, out, _ = fx.gate_run("--scope", "all")
+        rc, out, _ = fx.gate_run("--scope", "all", "--classify")
 
         self.assertEqual(1, rc, out)
         self.assertIn("unpublished=1", out, out)
@@ -590,7 +590,7 @@ class PublicationContentClassification(unittest.TestCase):
             fx, base_rows=base, head_rows=head, target_rows=target
         )
 
-        rc, out, _ = fx.gate_run("--scope", "all")
+        rc, out, _ = fx.gate_run("--scope", "all", "--classify")
 
         self.assertEqual(1, rc, out)
         self.assertIn("unpublished=1", out, out)
@@ -607,7 +607,7 @@ class PublicationContentClassification(unittest.TestCase):
             fx, base_rows=base, head_rows=head, target_rows=target
         )
 
-        rc, out, _ = fx.gate_run("--scope", "all")
+        rc, out, _ = fx.gate_run("--scope", "all", "--classify")
 
         self.assertEqual(1, rc, out)
         self.assertIn("unpublished=1", out, out)
@@ -626,7 +626,7 @@ class PublicationContentClassification(unittest.TestCase):
             truncate_target=True,
         )
 
-        rc, out, _ = fx.gate_run("--scope", "all")
+        rc, out, _ = fx.gate_run("--scope", "all", "--classify")
 
         self.assertEqual(1, rc, out)
         self.assertIn("unpublished=1", out, out)
@@ -641,7 +641,7 @@ class PublicationContentClassification(unittest.TestCase):
             fx, base_rows=base, head_rows=head, target_rows=target
         )
 
-        rc, out, _ = fx.gate_run("--scope", "all")
+        rc, out, _ = fx.gate_run("--scope", "all", "--classify")
 
         self.assertEqual(1, rc, out)
         self.assertIn("unpublished=1", out, out)
@@ -655,7 +655,7 @@ class PublicationContentClassification(unittest.TestCase):
             fx, base_rows=base, head_rows=head, target_rows=target
         )
 
-        rc, out, _ = fx.gate_run("--scope", "all")
+        rc, out, _ = fx.gate_run("--scope", "all", "--classify")
 
         self.assertEqual(1, rc, out)
         self.assertIn("unpublished=1", out, out)
@@ -667,7 +667,7 @@ class PublicationContentClassification(unittest.TestCase):
         fx = Fixture(self.tmp)
         orphan = self.routine_landing(fx)
         sha = self.plant_unpublished(fx, "precious.md", "IRREPLACEABLE\n")
-        rc, out, _ = fx.gate_run("--scope", "all", "--json")
+        rc, out, _ = fx.gate_run("--scope", "all", "--classify", "--json")
         payload = json.loads(out[out.index("{"):out.rindex("}") + 1])
         self.assertEqual(2, payload["count"])
         self.assertEqual(1, payload["unpublished_count"])
@@ -675,6 +675,73 @@ class PublicationContentClassification(unittest.TestCase):
         got = {c["short"]: c["disposition"] for c in payload["commits"]}
         self.assertEqual("superseded", got[orphan[:7]])
         self.assertEqual("unpublished", got[sha[:7]])
+
+class DefaultPathIsTheCensusAndSaysSo(unittest.TestCase):
+    """The path the TICK actually runs: census only, no content comparison.
+
+    Classification is opt-in since 2026-08-26 because it cost 744.85s against a
+    30s bound on this repo's 1416 local-only commits and moved 32 of them (2.3%)
+    -- it could not change the alarm, so it could not change anyone's action.
+    These tests defend the two things that removal could quietly break.
+    """
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmp.name)
+        self.addCleanup(self._tmp.cleanup)
+
+    def test_a_superseded_commit_still_alarms_and_the_line_does_not_overclaim(self):
+        """⚠️ THE FAIL-OPEN THIS GUARDS.
+
+        Without --classify no row is "unpublished". Keying the alarm on that
+        list would report SILENCE over a full census -- indistinguishable from
+        healthy. So the census itself alarms, and the wording drops to the
+        weaker claim the gate can actually support: these commits exist only
+        locally. It must NOT say they hold unpublished work, which is the
+        classified claim and was not measured.
+        """
+        fx = Fixture(self.tmp)
+        orphan = PublicationContentClassification.routine_landing(self, fx)
+        rc, out, _ = fx.gate_run("--scope", "all")
+        self.assertEqual(rc, 1, f"the census must still alarm:\n{out}")
+        self.assertIn("count=1", out, out)
+        self.assertIn(orphan[:7], out, out)
+        self.assertIn("exist ONLY LOCALLY", out, out)
+        self.assertNotIn("hold UNPUBLISHED work", out,
+                         "the unclassified path must not make the classified claim")
+
+    def test_the_split_counts_never_render_as_a_zero_nobody_measured(self):
+        """`unpublished=0` and `superseded=0` are measurements. Not asking is
+        not the same as measuring zero, and only one of them is true here."""
+        fx = Fixture(self.tmp)
+        PublicationContentClassification.plant_unpublished(
+            self, fx, "precious.md", "IRREPLACEABLE\n")
+        rc, out, _ = fx.gate_run("--scope", "all")
+        self.assertEqual(rc, 1, out)
+        self.assertIn("unpublished=not-classified", out, out)
+        self.assertIn("superseded=not-classified", out, out)
+        self.assertNotIn("unpublished=0", out, out)
+        self.assertNotIn("superseded=0", out, out)
+
+    def test_json_marks_the_counts_not_classified_rather_than_zero(self):
+        fx = Fixture(self.tmp)
+        PublicationContentClassification.plant_unpublished(
+            self, fx, "precious.md", "IRREPLACEABLE\n")
+        _, out, _ = fx.gate_run("--scope", "all", "--json")
+        payload = json.loads(out[out.index("{"):out.rindex("}") + 1])
+        self.assertEqual(1, payload["count"])
+        self.assertFalse(payload["classified"])
+        self.assertEqual("NOT CLASSIFIED", payload["unpublished_count"])
+        self.assertEqual("NOT CLASSIFIED", payload["superseded_count"])
+        self.assertEqual(
+            ["unclassified"], [c["disposition"] for c in payload["commits"]])
+
+    def test_an_empty_census_still_exits_zero(self):
+        fx = Fixture(self.tmp)
+        rc, out, _ = fx.gate_run("--scope", "all")
+        self.assertEqual(rc, 0, out)
+        self.assertIn("no local-only commits", out, out)
+
 
 if __name__ == "__main__":
     unittest.main()
