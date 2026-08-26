@@ -977,6 +977,57 @@ def load_agent_snapshot(
     return _parse_agents(agents_payload), float(captured_at)
 
 
+def live_agent_names() -> tuple[str, ...] | None:
+    """Read the fleet LIVE, by name, when the cached snapshot cannot be trusted.
+
+    ⚠️ THIS EXISTS BECAUSE THE AUTHORITY COULD NOT ANSWER ITS OWN QUESTION.
+    `CLAUDE.md` names `active-work` the machine-readable authority for claim
+    expiry: a claim expires when a fresh ORC snapshot proves its owner is gone.
+    Measured 2026-08-26, `ignored/ci-hub/agent-snapshot.json` was 356283s -- 4.12
+    days -- old against a 600s window, so `load_agent_snapshot` raised and NO
+    claim on the board could be expired by the documented mechanism, however dead
+    its owner. The snapshot has consumers and no producer: `cache-agents` exists
+    but `ci-hub.rs` does not expose it and no `tick-hub.yaml` probe invokes it.
+
+    ⚠️ AND THE ANSWER WAS ALREADY IN THE TREE. `slot_agent_parity.py` hit the same
+    file at 65.8 hours and responded by reading the census live through
+    `residue_sweep.read_live_fleet()`. This calls that same function rather than
+    inventing a second fleet source, so the two cannot disagree.
+    """
+    try:
+        import importlib.util
+
+        spec = importlib.util.spec_from_file_location(
+            "_residue_sweep", ROOT / "ci-hub" / "health" / "residue_sweep.py"
+        )
+        if spec is None or spec.loader is None:
+            return None
+        module = importlib.util.module_from_spec(spec)
+        # ⚠️ REGISTER BEFORE exec_module, AND THIS IS NOT STYLE. `dataclasses`
+        # resolves a class's annotations through `sys.modules[cls.__module__]`,
+        # so exec'ing a module that is not yet registered makes that lookup
+        # return None and every `@dataclass` in it dies with
+        # `'NoneType' object has no attribute '__dict__'`. Cost me a debugging
+        # pass: the failure surfaced as "no live read available", which reads
+        # like the fleet being unreachable rather than a loader bug here.
+        sys.modules.setdefault("_residue_sweep", module)
+        spec.loader.exec_module(module)
+        fleet, _residues = module.read_live_fleet()
+    except Exception as error:
+        # A failed live read is NOT an empty fleet. Returning () here would make
+        # every owned task look orphaned, which is the reclaim-a-live-agent's-work
+        # direction; None keeps the caller on the existing hard refusal.
+        #
+        # ⚠️ SAY WHY. A bare `return None` reported a loader bug in this very
+        # function as "the fleet is unreachable" -- indistinguishable from the
+        # condition it exists to handle, and it hid a real defect for a whole
+        # debugging pass.
+        print(f"live-fleet-read-failed:{type(error).__name__}:{error}", file=sys.stderr)
+        return None
+    names = tuple(sorted(str(name) for name in fleet))
+    return names or None
+
+
 def cache_agent_snapshot(snapshot: str | None = None) -> int:
     text = (
         snapshot
@@ -1314,6 +1365,51 @@ def active_work_gate(
         )
         report = reconcile_active_work(_taskgraph_in_progress(), agents)
     except RuntimeError as error:
+        # ⚠️ EXPIRY IS ANSWERABLE FROM NAMES ALONE; THE REST IS NOT. `orphaned` is
+        # exactly `owner not in live_by_name`, which a name-only live read
+        # settles. `claimed`, `actually_active` and `misrouted` all need each
+        # agent's `current_task`, which a name read does not carry -- computing
+        # them from names would mark EVERY live agent's claim misrouted. So this
+        # answers the expiry question, labels itself, and refuses the others by
+        # name rather than by returning a wrong number for them.
+        names = live_agent_names()
+        if names is not None:
+            owned = [
+                task
+                for task in _taskgraph_in_progress()
+                if task.status.strip().upper() == "IN_PROGRESS"
+                and not task.implemented
+                and task.owner
+            ]
+            orphaned = sorted(task.id for task in owned if task.owner not in names)
+            payload = {
+                "schema_version": 1,
+                "state": "degraded",
+                "census_mode": "live-names-only",
+                "reason": str(error),
+                "live_agents_examined": len(names),
+                "live_agents": list(names),
+                "orphaned": orphaned,
+                "orphaned_count": len(orphaned),
+                "not_determined": ["claimed", "actually_active", "misrouted"],
+                "summary": (
+                    f"cached snapshot unusable ({error}); read the fleet LIVE instead. "
+                    f"{len(orphaned)} owned IN_PROGRESS task(s) have an owner absent "
+                    f"from a {len(names)}-agent live fleet and ARE reclaimable. "
+                    "claimed/actually_active/misrouted are NOT DETERMINED in this mode: "
+                    "they need each agent's current_task, which a name-only read does "
+                    "not carry."
+                ),
+            }
+            if json_output:
+                print(json.dumps(payload))
+            else:
+                print(payload["summary"])
+                for task_id in orphaned:
+                    print(f"  ORPHANED (owner absent from live fleet): {task_id}")
+            # Non-zero: this is a degraded answer to one of three questions, and a
+            # caller that treats 0 as "census complete" must not get it here.
+            return 1
         if json_output:
             print(
                 json.dumps(

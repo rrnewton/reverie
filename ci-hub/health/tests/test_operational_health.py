@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import io
+import json
 import sys
 import tempfile
 import unittest
@@ -831,6 +832,87 @@ class OperationalHealthTest(unittest.TestCase):
             tasks = operational_health._taskgraph_in_progress()
         self.assertEqual(len(tasks), 1)
         self.assertTrue(tasks[0].implemented)
+
+    def test_a_stale_snapshot_still_expires_claims_from_a_live_name_read(self) -> None:
+        """⚠️ THE AUTHORITY MUST NOT GO DARK WHEN ITS CACHE ROTS.
+
+        Measured 2026-08-26: `ignored/ci-hub/agent-snapshot.json` was 356283s --
+        4.12 days -- old against a 600s window, so `load_agent_snapshot` raised and
+        `active-work` returned `state=unknown` for EVERY query. CLAUDE.md names this
+        the machine-readable authority for claim expiry, so no claim on the board
+        could be expired by the documented mechanism however dead its owner.
+        """
+        tasks = (
+            operational_health.TaskRecord("held-by-dead", "Held", "ghost", ()),
+            operational_health.TaskRecord("held-by-live", "Held", "worker", ()),
+        )
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(
+            operational_health, "_taskgraph_in_progress", return_value=tasks
+        ), mock.patch.object(
+            operational_health, "live_agent_names", return_value=("worker",)
+        ):
+            result, output = self.capture(
+                operational_health.active_work_gate,
+                snapshot_file=Path(directory) / "absent.json",
+                json_output=True,
+                now=1000,
+            )
+        payload = json.loads(output)
+        self.assertEqual(payload["state"], "degraded")
+        self.assertEqual(payload["census_mode"], "live-names-only")
+        # The dead owner's claim is reclaimable; the live owner's is NOT.
+        self.assertEqual(payload["orphaned"], ["held-by-dead"])
+        self.assertEqual(payload["live_agents_examined"], 1)
+        # ⚠️ AND IT MUST REFUSE THE QUESTIONS IT CANNOT ANSWER BY NAME. A name-only
+        # read carries no `current_task`, so computing `claimed`/`misrouted` from it
+        # would mark every LIVE agent's claim misrouted. Naming them beats guessing.
+        self.assertEqual(
+            payload["not_determined"], ["claimed", "actually_active", "misrouted"]
+        )
+        # Non-zero: a degraded answer to one of three questions is not a clean census.
+        self.assertEqual(result, 1)
+
+    def test_live_agent_names_returns_none_not_empty_when_the_read_fails(self) -> None:
+        """⚠️ PINS THE HELPER, NOT ONLY ITS CALLER, AND THAT DISTINCTION HAS TEETH.
+
+        The sibling control mocks `live_agent_names`, so it pins what the CALLER
+        does with `None` and says nothing about what the helper RETURNS. Mutating
+        the helper's failure path from `None` to `()` left that control green --
+        caught by running the mutation rather than reasoning about it. An empty
+        tuple is the dangerous value: it makes every owned task's owner "absent
+        from the live fleet", authorising reclamation of a LIVE agent's work.
+        """
+        with mock.patch(
+            "importlib.util.spec_from_file_location", side_effect=OSError("boom")
+        ):
+            self.assertIsNone(operational_health.live_agent_names())
+
+    def test_a_failed_live_read_keeps_the_hard_refusal_and_expires_nothing(
+        self,
+    ) -> None:
+        """⚠️ THE CONTROL, AND IT GUARDS THE DANGEROUS DIRECTION.
+
+        An empty fleet would make every owned task look orphaned -- i.e. authorise
+        reclaiming a LIVE agent's work. `live_agent_names` returns None rather than
+        `()` when the read fails, and this pins that the caller then keeps the
+        original refusal instead of inventing a zero-agent census.
+        """
+        tasks = (operational_health.TaskRecord("held", "Held", "worker", ()),)
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(
+            operational_health, "_taskgraph_in_progress", return_value=tasks
+        ), mock.patch.object(
+            operational_health, "live_agent_names", return_value=None
+        ):
+            result, output = self.capture(
+                operational_health.active_work_gate,
+                snapshot_file=Path(directory) / "absent.json",
+                json_output=True,
+                now=1000,
+            )
+        payload = json.loads(output)
+        self.assertEqual(payload["state"], "unknown")
+        self.assertNotIn("orphaned", payload)
+        self.assertEqual(result, 2)
 
     def test_active_work_gate_emits_counts_and_items(self) -> None:
         tasks = (
