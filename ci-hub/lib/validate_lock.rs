@@ -390,6 +390,35 @@ pub struct CensusOrphanedDomainArgs {
 pub enum Kind {
     Validate,
     ReverieValidate,
+    /// A validation run pinned to an EXACT sha that is deliberately NOT tracked
+    /// to current `origin/main`.
+    ///
+    /// ⚠️ THIS EXISTS BECAUSE EVIDENCE-GATHERING AND LANDING WANT OPPOSITE
+    /// THINGS FROM THE SAME BOX. A landing run must contain current main or its
+    /// receipt cannot authorize a merge, so
+    /// [`current_main_freshness_check`] evicts it the moment main advances --
+    /// measured 2026-08-26, that eviction is what stops a doomed waiter holding
+    /// a ~28-minute slot for 34m40s. An EVIDENCE run wants the opposite: freeze
+    /// the sha, answer "was THIS tree green", and accept that the answer is
+    /// about that sha and no other. With one box and main moving eight times a
+    /// day, a run that must stay current can never complete, so no evidence
+    /// about any tree could be gathered at all.
+    ///
+    /// ⚠️ IT SKIPS THE MOVING BOUNDARY, NOT THE PRODUCER FLOOR.
+    /// [`Kind::is_validation`] returns TRUE for this kind, so
+    /// [`base_admission_check`] still runs and a genuinely bad target -- a
+    /// non-sha, a head below the immutable floors -- is refused exactly as it is
+    /// for [`Kind::Validate`]. Only [`validation_repository`] short-circuits,
+    /// which is the same route [`Kind::Bench`] already takes. `Bench` skips BOTH
+    /// checks because it is not landing evidence; this kind skips only the one
+    /// that asks "is your target current".
+    ///
+    /// ⚠️ ITS RECEIPT IS NOT CANONICAL CURRENT-MAIN AUTHORITY. The holder-kind
+    /// allowlist in `canonical_authority_status` deliberately does NOT include
+    /// it, so a frozen receipt can never be read as evidence that main is green.
+    /// That exclusion is the whole safety property: the run is admitted, and its
+    /// answer is labelled for its own sha.
+    FrozenValidate,
     Bench,
 }
 
@@ -398,6 +427,7 @@ impl Kind {
         match self {
             Kind::Validate => "validate",
             Kind::ReverieValidate => "reverie-validate",
+            Kind::FrozenValidate => "frozen-validate",
             Kind::Bench => "bench",
         }
     }
@@ -406,15 +436,27 @@ impl Kind {
         match value {
             "validate" => Ok(Kind::Validate),
             "reverie-validate" => Ok(Kind::ReverieValidate),
+            "frozen-validate" => Ok(Kind::FrozenValidate),
             "bench" => Ok(Kind::Bench),
             other => Err(ValidateLockError::InvalidState(format!(
-                "unknown kind {other:?}, expected validate|reverie-validate|bench"
+                "unknown kind {other:?}, expected                  validate|reverie-validate|frozen-validate|bench"
             ))),
         }
     }
 
+    /// Does this kind produce landing-grade evidence, and therefore have to
+    /// clear the immutable producer floors?
+    ///
+    /// ⚠️ `FrozenValidate` IS INCLUDED ON PURPOSE. It skips the FRESHNESS
+    /// boundary, not the floor. Excluding it here would make
+    /// [`base_admission_check`] return early and a non-sha or below-floor target
+    /// would be ADMITTED -- turning a narrow "accept a non-current sha" into
+    /// "accept anything", which is the failure this split exists to avoid.
     fn is_validation(self) -> bool {
-        matches!(self, Kind::Validate | Kind::ReverieValidate)
+        matches!(
+            self,
+            Kind::Validate | Kind::ReverieValidate | Kind::FrozenValidate
+        )
     }
 }
 
@@ -1969,7 +2011,14 @@ fn base_admission_check(
 /// indeterminate ancestry is a stale-base refusal. An unavailable freshness
 /// authority cannot authorize scarce box time.
 fn validation_repository(root: &Path, kind: Kind) -> Result<Option<PathBuf>, ValidateLockError> {
-    if kind == Kind::Bench {
+    // ⚠️ TWO KINDS SKIP THE MOVING BOUNDARY, FOR DIFFERENT REASONS.
+    // `Bench` is not landing evidence at all. `FrozenValidate` IS a validation
+    // -- it still clears the producer floor via `base_admission_check` -- but it
+    // is deliberately pinned to one sha, so "does your target contain current
+    // main" is not a question about it. Returning None here makes
+    // `current_main_freshness_check` return Ok(()) without fetching, which is
+    // precisely the admission this kind exists to obtain.
+    if matches!(kind, Kind::Bench | Kind::FrozenValidate) {
         return Ok(None);
     }
 
@@ -1992,7 +2041,9 @@ fn validation_repository(root: &Path, kind: Kind) -> Result<Option<PathBuf>, Val
         Ok(Some(root.join(match kind {
             Kind::Validate => "hermit",
             Kind::ReverieValidate => "reverie",
-            Kind::Bench => unreachable!("bench returned above"),
+            Kind::Bench | Kind::FrozenValidate => {
+                unreachable!("bench and frozen-validate returned above")
+            }
         })))
     }
 }
@@ -3765,6 +3816,13 @@ impl ValidateLock {
                 cleanup_state,
             ));
         }
+        // ⚠️ `frozen-validate` IS DELIBERATELY ABSENT FROM THIS ALLOWLIST.
+        // A frozen run is admitted without containing current main, so its
+        // receipt is evidence about its own sha and nothing else. Admitting it
+        // here would let a receipt for a superseded tree read as canonical
+        // current-main authority -- the exact confusion the kind is designed to
+        // keep out. The list is a string allowlist, so a new kind is excluded by
+        // default; this comment records that the default is the intended answer.
         if !matches!(holder_record.kind.as_str(), "validate" | "reverie-validate") {
             return Ok(AuthorityStatus::refused(
                 AuthorityState::Held,
@@ -8806,6 +8864,87 @@ exit 0
             base_admission_check(&root, "not-a-sha", Kind::ReverieValidate, false),
             Err(ValidateLockError::StaleBase(_))
         ));
+        let _ = fs::remove_dir_all(paths.lock.parent().unwrap());
+    }
+
+    /// ⚠️ THE THIRD BRACKET: A FROZEN TARGET IS ADMITTED WHILE STAYING BEHIND
+    /// MAIN, AND A GENUINELY BAD TARGET IS STILL REFUSED. BOTH DIRECTIONS, OR
+    /// THIS KIND IS A HOLE RATHER THAN A GATE.
+    ///
+    /// The first two brackets already exist:
+    /// `reverie_freshness_brackets_fetched_current_main_ancestry` pins
+    /// fresh-is-admitted and behind-is-refused, and
+    /// `a_waiter_is_evicted_once_main_advances_past_its_target` pins that the
+    /// refusal is DEFINITE and therefore evicting. Neither says anything about a
+    /// kind that is supposed to survive the advance.
+    ///
+    /// Direction 1 -- ADMITTED AND FROZEN. The same real repository and real
+    /// remote advance the other brackets use. `Kind::Validate` must refuse after
+    /// the advance (the control -- without it, an always-admitting predicate
+    /// would satisfy direction 1 and prove nothing), and `Kind::FrozenValidate`
+    /// must admit the SAME target at the SAME moment.
+    ///
+    /// Direction 2 -- STILL REFUSED. `FrozenValidate` skips the freshness
+    /// boundary only. `is_validation()` is true for it, so
+    /// `base_admission_check` still runs and a non-sha is refused exactly as it
+    /// is for `Kind::Validate`. If someone later moves `FrozenValidate` out of
+    /// `is_validation`, THIS assertion is what fails.
+    #[test]
+    fn a_frozen_target_is_admitted_behind_main_and_a_bad_target_is_still_refused() {
+        let (paths, root, seed, target) = current_main_fixture("frozen-behind-main", "hermit");
+
+        // The fixture must start fresh, or "still admitted after the advance"
+        // would be indistinguishable from "admitted because nothing moved".
+        assert!(
+            current_main_freshness_check(&root, &target, Kind::Validate).is_ok(),
+            "the fixture must start fresh or neither direction below proves anything"
+        );
+
+        // main advances underneath the target.
+        git_success(Some(&seed), &["push", "--quiet", "origin", "main"]);
+
+        // CONTROL: a landing run must now be refused, and DEFINITELY so.
+        let landing = current_main_freshness_check(&root, &target, Kind::Validate);
+        let error = landing.expect_err("Kind::Validate must refuse a target behind main");
+        assert!(
+            stale_base_is_definite(&error),
+            "the control must be a DEFINITE stale base, or the eviction it guards is \
+             not the thing being preserved, got {error:?}"
+        );
+
+        // DIRECTION 1: the frozen kind is admitted for the SAME target at the
+        // SAME moment the landing kind is refused.
+        assert!(
+            current_main_freshness_check(&root, &target, Kind::FrozenValidate).is_ok(),
+            "a frozen target must be ADMITTED while behind main -- that is the \
+             whole reason this kind exists"
+        );
+
+        // DIRECTION 2: the producer floor still applies. A non-sha is refused
+        // for the frozen kind exactly as it is for the landing kind.
+        assert!(
+            matches!(
+                base_admission_check(&root, "not-a-sha", Kind::FrozenValidate, false),
+                Err(ValidateLockError::StaleBase(_))
+            ),
+            "a genuinely bad target must still be REFUSED for the frozen kind; \
+             skipping freshness must not become skipping the floor"
+        );
+        assert!(
+            Kind::FrozenValidate.is_validation(),
+            "FrozenValidate must remain a validation kind, or base_admission_check \
+             returns early and every bad target is admitted"
+        );
+
+        // The frozen receipt must never read as canonical current-main authority.
+        assert!(
+            !matches!(
+                Kind::FrozenValidate.as_str(),
+                "validate" | "reverie-validate"
+            ),
+            "frozen-validate must stay outside the canonical holder-kind allowlist"
+        );
+
         let _ = fs::remove_dir_all(paths.lock.parent().unwrap());
     }
 
