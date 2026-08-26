@@ -96,7 +96,20 @@ class ToolCostTest(unittest.TestCase):
             self.assertGreaterEqual(payload["actual"]["wall_seconds"], 0)
             self.assertGreaterEqual(payload["actual"]["cpu_seconds"], 0)
 
-    def test_unknown_estimate_is_explicit_and_persisted_as_null(self) -> None:
+    def test_unknown_estimate_prints_nothing_and_is_persisted_as_null(self) -> None:
+        """An unknown estimate is RECORDED and not PRINTED.
+
+        ⚠️ THIS ASSERTION WAS INVERTED DELIBERATELY, ON THE OWNER'S INSTRUCTION, and it
+        is the one place to look if the line ever comes back. It previously required
+        `# ... COST ESTIMATE wall=unknown cpu=unknown basis='not measured: ...'` on
+        stderr -- a line that printed on every tick and carried no information, which is
+        the defect class this repository spent the night removing from its own gates.
+
+        ⚠️ WHAT IS KEPT IS THE FACT, AND THE JSON ASSERTIONS BELOW ARE UNCHANGED. The
+        receipt still records `kind = "unknown"` with null wall and cpu, so "we had no
+        estimate" stays machine-readable. Deleting those would be losing the record
+        rather than the noise, and is the mistake this cell now guards against.
+        """
         with tempfile.TemporaryDirectory() as directory:
             actual_path = Path(directory) / "unknown-cost.json"
             result = self.run_tool(
@@ -105,11 +118,12 @@ class ToolCostTest(unittest.TestCase):
                 estimate_unknown=True,
             )
             self.assertEqual(result.returncode, 0)
-            self.assertIn(
-                "# test/tool tool COST ESTIMATE wall=unknown cpu=unknown",
-                result.stderr,
-            )
-            self.assertIn("basis='not measured: test has no history'", result.stderr)
+            self.assertNotIn("COST ESTIMATE", result.stderr)
+            self.assertNotIn("not measured", result.stderr)
+            # ⚠️ AND THE CONTROL: suppressing the estimate must not suppress the line
+            # that carries real numbers. `test_numeric_estimate_*` above covers the
+            # other half -- a NUMERIC estimate still prints.
+            self.assertIn("# test/tool tool COST ACTUAL ", result.stderr)
             payload = json.loads(actual_path.read_text())
             self.assertEqual(payload["estimate"]["kind"], "unknown")
             self.assertIsNone(payload["estimate"]["wall_seconds"])

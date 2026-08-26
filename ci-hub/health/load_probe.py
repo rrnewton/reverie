@@ -500,13 +500,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     self_costed = os.environ.get("CI_HUB_TOOL_COST_ACTIVE") is None
     wall_started = time.perf_counter()
     usage_started = resource.getrusage(resource.RUSAGE_SELF)
-    if self_costed:
-        print(
-            "# ci-hub/load-probe tool COST ESTIMATE wall=unknown cpu=unknown "
-            f"basis='not measured: requested sample={args.sample_seconds:.3f}s "
-            "plus /proc+cgroup scan; retained history not established'",
-            file=sys.stderr,
-        )
+    # The unknown-estimate line was removed here too: it printed on every probe and
+    # said only that nothing had been measured. See `tool_cost.print_estimate`.
     code = 2
     try:
         code, payload = run(args)

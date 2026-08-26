@@ -26,6 +26,28 @@ def _seconds(value: float | None) -> str:
 def print_estimate(
     *, tool: str, wall_seconds: float | None, cpu_seconds: float | None, basis: str
 ) -> None:
+    """Print an estimate, or print NOTHING when there is no estimate to give.
+
+    ⚠️ `wall=unknown cpu=unknown basis='not measured: ...'` IS A LINE THAT CARRIES NO
+    INFORMATION, AND IT PRINTED ON EVERY TICK. It is the defect class this repository
+    spent the night removing from its own gates -- output that reads as a measurement
+    and is not one -- sitting in the layer that reports measurements.
+
+    ⚠️ IT IS ALSO THE RESIDUE OF A CORRECT EARLIER FIX, WHICH IS WHY IT LOOKS LIKE
+    SOMETHING THAT WAS ALREADY REMOVED. `04c785fb3` ("ci-hub: reject fabricated cost
+    estimates", 2026-08-03) took out INVENTED numbers and made callers declare
+    `--estimate-unknown` instead of guessing. That was right, and it left this line
+    saying "unknown" rather than lying. The numbers were removed; the line was not.
+    Nothing reverted it and no removal was partial -- this is the second half of that
+    change, arriving three weeks later.
+
+    ⚠️ THE FACT IS KEPT, ONLY THE NOISE GOES. The JSON receipt still records
+    `estimate.kind = "unknown"` with null wall and cpu, so "we had no estimate" remains
+    machine-readable and auditable. And `COST ACTUAL` is untouched: it carries real
+    measurements and is the line worth reading.
+    """
+    if wall_seconds is None and cpu_seconds is None:
+        return
     print(
         f"# {tool} tool COST ESTIMATE "
         f"wall={_seconds(wall_seconds)} cpu={_seconds(cpu_seconds)} "
