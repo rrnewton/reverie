@@ -579,11 +579,31 @@ def evaluate(
     # SAME-LANE refusals from different agents, plus the unquoted withdrawal
     # c5417606538 -- this returns BLOCKED where lane-wide returned CLEAR. A QUOTED
     # withdrawal is untouched: it is handled above and stays exact.
-    unquoted_left: dict[str, int] = {}
+    # ⚠️ KEYED BY (LANE, ISSUER), NOT BY LANE. The lane scoping above closed the
+    # cross-family hole from hermit#2613; this closes the SAME hole one scope
+    # down, inside a lane. A lane is staffed by several agents, so a per-LANE
+    # counter let agent B's unquoted withdrawal retire agent A's refusal --
+    # measured on this function, 2026-08-26: one refusal from hermit-007 plus one
+    # withdrawal from hermit-005 returned CLEAR. `gh-merge-verified` was fixed at
+    # this scope in dev-hermit#193 and this path was not, so the two landers
+    # disagreed about the same comment stream.
+    #
+    # An issuer that cannot be READ keys as None and matches nothing, so an
+    # unsigned withdrawal retires no refusal and an unsigned refusal is retired by
+    # none -- both fail closed, exactly as the laneless spelling already does.
+    # hermit#2625 is why that matters and not a hypothetical: of its two same-lane
+    # refusals at f013ac4b, one carries a disclosure tag and one carries NONE, and
+    # the one that must keep binding is the unreadable one.
+    #
+    # The `RETIRES <comment-id>` path above is UNTOUCHED and remains the precise
+    # mechanism: a comment id is assigned by GitHub and cannot go missing, so it is
+    # a strictly stronger identity than an issuer. This only sharpens the fallback.
+    unquoted_left: dict[tuple[str, "str | None"], int] = {}
     for kind, lane, sha, cid in found4:
         if (kind == WITHDRAWN and lane is not None and binds(sha)
                 and not _RETIRES.search(by_id.get(cid, ""))):
-            unquoted_left[lane] = unquoted_left.get(lane, 0) + 1
+            key = (lane, _issuer_of_comment(by_id.get(cid, "")))
+            unquoted_left[key] = unquoted_left.get(key, 0) + 1
 
     live = []
     for lane, sha, cid in bound4:
@@ -592,8 +612,10 @@ def evaluate(
         if lane is not None and lane in precise_lanes:
             live.append((lane, sha))      # precise lane, and this one was not named
             continue
-        if lane is not None and unquoted_left.get(lane, 0) > 0:
-            unquoted_left[lane] -= 1      # one unquoted withdrawal retires one refusal
+        refuser = _issuer_of_comment(by_id.get(cid, ""))
+        key = (lane, refuser)
+        if lane is not None and refuser is not None and unquoted_left.get(key, 0) > 0:
+            unquoted_left[key] -= 1       # this issuer's own withdrawal retires it
             continue
         live.append((lane, sha))
     cleared = len(bound) - len(live)
@@ -725,6 +747,28 @@ _T_HEAD = "f013ac4b1a3155ebede568c5667f915a4c8ff6b1"
 _T_REF = f"CHANGES-REQUESTED-AT: claude {_T_HEAD}"
 _T_WD = f"CHANGES-REQUESTED-WITHDRAWN-AT: claude {_T_HEAD}"
 _T_CODEX_REF = f"CHANGES-REQUESTED-AT: codex {_T_HEAD}"
+# Two agents in ONE lane -- the shape a per-lane counter could not tell apart.
+_A1, _A2 = "hermit-012", "hermit-015"
+
+
+def _by(agent: str, marker: str) -> str:
+    """A comment body carrying a disclosure tag, so its markers have an author."""
+    return f"[hermit2, {agent}, unresolved, devbig014, role=reviewer]\n{marker}"
+
+
+def _issuer_of_comment(body: str) -> "str | None":
+    """Who wrote this comment, or None when it does not say.
+
+    A marker's own ``BY`` clause wins over the surrounding disclosure tag: it is
+    the more specific claim, and it survives being quoted into someone else's
+    comment. ``None`` means UNREADABLE, which every caller here must treat as
+    "matches nobody" rather than "matches anybody".
+    """
+    for line in (body or "").split("\n"):
+        named = _load_grammar().marker_issuer(line)
+        if named:
+            return named
+    return _load_grammar().comment_author(body or "")
 
 
 def self_test() -> int:
@@ -741,8 +785,28 @@ def self_test() -> int:
         # ⚠️ MUST STAY CLEAR. It is easy to fix the next case by retiring nothing,
         # which passes it and silently removes a reviewer's ability to retract even
         # their own objection.
-        ("one refusal and its own withdrawal", [_T_REF, _T_WD], OK),
-        ("two same-lane refusals, ONE unquoted withdrawal", [_T_REF, _T_REF, _T_WD], BLOCKED),
+        #
+        # ⚠️ THE FIXTURE NAMES A SPEAKER NOW, AND THAT IS RE-EXPRESSION, NOT
+        # RELAXATION. This cell is called "its OWN withdrawal" and an unsigned body
+        # cannot say whose it is; once retirement is keyed to the issuer, an
+        # unsigned pair legitimately clears nothing, so the cell would have failed
+        # for a reason unrelated to the property it names. The property is
+        # unchanged and still pinned here; what changed is that the fixture can now
+        # express it. The unsigned behaviour is NOT dropped -- it is pinned
+        # explicitly two cells below instead of being implied by silence.
+        ("one refusal and its own withdrawal", [_by(_A1, _T_REF), _by(_A1, _T_WD)], OK),
+        ("two same-lane refusals, ONE unquoted withdrawal",
+         [_by(_A1, _T_REF), _by(_A2, _T_REF), _by(_A1, _T_WD)], BLOCKED),
+        # ⚠️ THE HOLE THIS CHANGE CLOSES, and it is the same one hermit#2613 named
+        # a scope up: a colleague must not retire an objection they did not raise.
+        # Measured CLEAR before this change.
+        ("another issuer's withdrawal does NOT clear",
+         [_by(_A1, _T_REF), _by(_A2, _T_WD)], BLOCKED),
+        # FAIL CLOSED AT BOTH ENDS. Neither end can prove ownership, so neither
+        # retires anything. Both still clear the ordinary way -- the author pushes
+        # and the sha stops naming the head.
+        ("unsigned withdrawal clears nothing", [_by(_A1, _T_REF), _T_WD], BLOCKED),
+        ("unsigned refusal is retired by no withdrawal", [_T_REF, _by(_A1, _T_WD)], BLOCKED),
         # Guards the cross-lane fix that landed before this one.
         ("claude withdrawal must not clear a CODEX refusal", [_T_CODEX_REF, _T_WD], BLOCKED),
     ]
