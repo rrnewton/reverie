@@ -570,13 +570,145 @@ def emit_jsonl(items: Iterable[dict]) -> None:
         print(json.dumps(item, sort_keys=True, separators=(",", ":")))
 
 
+# ⚠️ A FAILURE COUNT WITHOUT ITS DENOMINATOR IS NOT A MEASUREMENT, and on this
+# project it has already been reported as one three times in a night.
+#
+#     752cbc3daef7   63 gates   9 failures
+#     4a4830af353f   67 gates   6 failures
+#     c0914b5d5e11   66 gates   9 failures
+#
+# Read as 9 -> 6 -> 9 those numbers describe almost nothing. Between the first
+# two, COVERAGE ROSE BY FOUR GATES while the count fell -- the fall was partly
+# work landing and partly nodes that had never been running starting to run.
+# Between the last two, coverage FELL BY ONE while the count rose. A red set that
+# shrinks because a gate STOPPED RUNNING reads identically, on the count alone, to
+# one that shrinks because a defect was fixed -- and the first is the opposite of
+# progress.
+#
+# ⚠️ AND THE NON-FAILURES ARE NOT ONE BUCKET EITHER. Folding them together is the
+# same error one level down, because they need different actions:
+#
+#   dependency-skipped  ran nothing because an UPSTREAM node failed. Fixing the
+#                       upstream restores it; there is nothing to fix here.
+#   never-ran           planned and absent. May never have run at all -- measured
+#                       on `test.cli_kvm`, absent from EVERY full receipt in the
+#                       retained history. This is missing coverage, not a red.
+#   no-outcome          planned, and the scheduler returned neither a result nor
+#                       a skip. THE THIRD STATE, and the only one that indicates
+#                       the instrument itself failed to account for a node.
+#   intentional-skip    excluded on purpose.
+#
+# So this function returns them as four separate keys and the renderer prints them
+# on four separate lines. There is deliberately no total.
+def summarise(row: dict) -> dict:
+    """Coverage-aware breakdown of one receipt. No conflated total, by design."""
+    coverage = row.get("coverage") or {}
+
+    def names(*keys, source=row):
+        for key in keys:
+            value = source.get(key)
+            if value:
+                return sorted(value)
+        return []
+
+    return {
+        "sha": row.get("commit"),
+        "finished_at": row.get("finished_at"),
+        "profile": row.get("profile"),
+        "selection_mode": row.get("selection_mode"),
+        "result": row.get("result"),
+        # THE DENOMINATOR. Every consumer of `failing` must carry this with it.
+        "gates_run": row.get("gates_run"),
+        "failing": names("failed_substeps"),
+        "dependency_skipped": names("dependency_skipped_nodes"),
+        "never_ran": names("absent_nodes", source=coverage),
+        "no_outcome": names("unaccounted_nodes"),
+        "intentional_skipped": names("intentional_skipped_nodes"),
+        "timed_out": names("timed_out_nodes"),
+    }
+
+
+def render_summary(s: dict) -> str:
+    """One headline that CANNOT state a failure count without its denominator."""
+    lines = [
+        f"sha      {s['sha']}",
+        f"receipt  {s['finished_at']}  profile={s['profile']}  "
+        f"selection={s['selection_mode']}  result={s['result']}",
+        "",
+        f"{len(s['failing'])} FAILING of {s['gates_run']} gates run",
+    ]
+    lines += [f"    {n}" for n in s["failing"]]
+    # Counted separately, never folded into the failing count: each wants a
+    # different action, and two of them are absences rather than failures.
+    for key, label, gloss in (
+        ("dependency_skipped", "dependency-skipped",
+         "ran nothing; an upstream node failed"),
+        ("never_ran", "never-ran", "planned and absent -- missing coverage, not a red"),
+        ("no_outcome", "NO OUTCOME",
+         "planned; scheduler returned neither a result nor a skip -- THE THIRD STATE"),
+        ("intentional_skipped", "intentional-skip", "excluded on purpose"),
+        ("timed_out", "timed-out", "killed by its own bound"),
+    ):
+        entries = s[key]
+        if not entries and key not in ("dependency_skipped", "never_ran", "no_outcome"):
+            continue
+        lines.append(f"{len(entries)} {label}  ({gloss})")
+        lines += [f"    {n}" for n in entries]
+    return "\n".join(lines)
+
+
+def latest_row(repo: str, commit: str | None, profile: str | None) -> dict | None:
+    """The newest matching receipt, or None. `commit` may be abbreviated."""
+    best = None
+    for row in rows():
+        if repo and row.get("repo") != repo:
+            continue
+        if not row.get("finished_at"):
+            continue
+        if commit and not str(row.get("commit", "")).startswith(commit):
+            continue
+        if profile and row.get("profile") != profile:
+            continue
+        if best is None or row["finished_at"] > best["finished_at"]:
+            best = row
+    return best
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("rows", description="emit the canonical HistoryRow compatibility view", help="emit the canonical HistoryRow compatibility view")
     commands.add_parser("events", description="emit the canonical event union", help="emit the canonical event union")
     commands.add_parser("record", description="read one HistoryRow JSON object from stdin and journal it", help="read one HistoryRow JSON object from stdin and journal it")
+    summary = commands.add_parser(
+        "summary",
+        description="coverage-aware breakdown of one receipt: gates_run beside the "
+        "failure count, with dependency-skipped, never-ran and no-outcome nodes "
+        "counted SEPARATELY rather than folded in",
+        help="failures BESIDE gates_run, with skips and absences counted separately",
+    )
+    summary.add_argument("--repo", default="hermit")
+    summary.add_argument("--commit", default=None,
+                         help="full or abbreviated sha; default is the newest receipt")
+    summary.add_argument("--profile", default="full",
+                         help="'full' by default; pass '' for any profile")
+    summary.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
+    if args.command == "summary":
+        row = latest_row(args.repo, args.commit, args.profile or None)
+        if row is None:
+            # ⚠️ AN ABSENT RECEIPT IS NOT A GREEN ONE. Exit 2, never 0 with an
+            # empty summary: a caller that reads rc=0 and no failing names would
+            # conclude the tree is clean when nothing was ever measured.
+            where = f"{args.repo}@{args.commit or 'latest'}"
+            profile = args.profile or "any"
+            print(f"validate-ledger: NO RECEIPT for {where} (profile={profile}) -- "
+                  "nothing was measured, which is not the same as nothing failing",
+                  file=sys.stderr)
+            return 2
+        s = summarise(row)
+        print(json.dumps(s, sort_keys=True) if args.json else render_summary(s))
+        return 0
     if args.command == "record":
         try:
             value = json.load(sys.stdin)
