@@ -1301,22 +1301,45 @@ def write_report(args, meta: dict, results: list[RunResult], fh):
     n = len(results)
 
     w("=" * 78)
-    w(f"{PROG}: DISTRIBUTION OF FIRST DIVERGENCE POINTS")
+    w(f"{PROG}: " + ("PASS/FAIL PER TEST ID, ACROSS REPEATED RUNS"
+                     if any(r.test_id for r in results)
+                     else "DISTRIBUTION OF FIRST DIVERGENCE POINTS"))
     w("=" * 78)
-    w(f"guest command    : {meta['guest_cmdline']}")
-    w(f"hermit binary    : {meta['hermit_bin']}")
-    w(f"                   sha256 {meta['hermit_sha256']}  ({meta['hermit_source']})")
-    w(f"backend          : {meta['backend']}")
-    w(f"hermit run flags : {meta['hermit_flags']}")
-    w(f"run id           : {meta['run_id']}")
-    w(f"artefacts        : {meta['out_dir']}")
-    w()
-    w("ONE RUN = one `hermit run --verify --verify-strict` invocation, i.e. TWO")
-    w("back-to-back guest executions compared against each other under the")
-    w(f"canonical BitwiseInfoV1 envelope. {n} such invocations give {n} independent")
-    w("observations. Runs are NOT compared against each other: two separately-")
-    w("produced runs need byte-identical argv and environment to be comparable")
-    w("(see `hermit log-diff --help`), and N nodes cannot have that.")
+    nx_ids = [t for t in dict.fromkeys(r.test_id for r in results if r.test_id)]
+    if nx_ids:
+        # ⚠️ NO HERMIT BINARY, NO BACKEND, NO GUEST COMMAND. These tests do NOT
+        # run under hermit, and the header used to print `backend: ptrace
+        # (hermit default; not passed explicitly)` beside them -- a reader would
+        # reasonably conclude the suite had been run under ptrace. It had not.
+        # An inherited default printed in the wrong context is an assertion.
+        w(f"test ids         : {len(nx_ids)}")
+        for t in nx_ids:
+            w(f"                   {t}")
+        w(f"workspace        : {meta.get('test_workspace', '(hermit checkout)')}")
+        w(f"runner           : cargo nextest run --no-fail-fast -E 'binary(=..) and test(=..)'")
+        w(f"run id           : {meta['run_id']}")
+        w(f"artefacts        : {meta['out_dir']}")
+        w()
+        w("ONE RUN = one `cargo nextest run` invocation selecting EXACTLY ONE test.")
+        w("N runs of each id give N independent pass/fail observations of that id.")
+        w("This is NOT a hermit verify pair: nothing is compared against anything,")
+        w("so there is no determinism claim here and no divergence coordinate.")
+    else:
+        w(f"guest command    : {meta['guest_cmdline']}")
+        w(f"hermit binary    : {meta['hermit_bin']}")
+        w(f"                   sha256 {meta['hermit_sha256']}  ({meta['hermit_source']})")
+        w(f"backend          : {meta['backend']}")
+        w(f"hermit run flags : {meta['hermit_flags']}")
+        w(f"run id           : {meta['run_id']}")
+        w(f"artefacts        : {meta['out_dir']}")
+        w()
+        w("ONE RUN = one `hermit run --verify --verify-strict` invocation, i.e. TWO")
+        w("back-to-back guest executions compared against each other under the")
+    if not nx_ids:
+        w(f"canonical BitwiseInfoV1 envelope. {n} such invocations give {n} independent")
+        w("observations. Runs are NOT compared against each other: two separately-")
+        w("produced runs need byte-identical argv and environment to be comparable")
+        w("(see `hermit log-diff --help`), and N nodes cannot have that.")
     w()
     w(f"MODE             : {meta['mode'].upper()} -- {meta['mode_meaning']}")
     w(f"scheduling       : {meta['runner']}, -j {meta['jobs']}")
@@ -1373,7 +1396,33 @@ def write_report(args, meta: dict, results: list[RunResult], fh):
         w("  stops launching new steps once a node fails. Read the failed nodes")
         w("  below, then re-run; --mode concurrent starts every node at once and")
         w("  so is not exposed to this.")
-    measured = len(diverged) + len(clean)
+    # ⚠️ A NEXTEST SWEEP GETS A FAILURE RATE, NOT A DIVERGENCE RATE, AND NO
+    # L-LEVEL AT ALL. The L2/L4 ladder is about a verify pair repeated with no
+    # divergence; applied to a nextest sweep it is a claim about a property that
+    # was never measured. Worse, the old line reported this run's two FAILED
+    # nodes as "2 more produced no verdict" -- reasserting, three lines below the
+    # per-id table, the exact confusion the table exists to prevent.
+    if any(r.test_id for r in results):
+        nx_failed = [r for r in results if r.category == "failed"]
+        nx_measured = len(nx_failed) + len(clean)
+        if nx_measured:
+            w()
+            deff = design_effect_for(meta["mode"], getattr(args, "design_effect", None))
+            lo, hi = wilson95(len(nx_failed), nx_measured, deff)
+            w(f"  failure rate     : {len(nx_failed)}/{nx_measured} = "
+              f"{100*len(nx_failed)/nx_measured:.0f}% of the runs that produced a verdict")
+            w(f"                     95% interval {100*lo:.0f}%-{100*hi:.0f}% (Wilson, "
+              f"n={nx_measured}"
+              f"{'' if deff == 1.0 else f', design effect {deff:g}'}).")
+            w(f"                     POOLED ACROSS {len({r.test_id for r in results if r.test_id})} "
+              f"ID(S) -- a pooled rate over several ids is not any one id's rate.")
+            w(f"                     The per-id table above is the number to read.")
+            unmeasured = [r for r in results if r.category in ("no_result", "not_run")]
+            if unmeasured:
+                w(f"                     {len(unmeasured)} node(s) produced no verdict and are "
+                  f"EXCLUDED from this denominator.")
+        w()
+    measured = 0 if any(r.test_id for r in results) else len(diverged) + len(clean)
     if measured:
         w()
         deff = design_effect_for(meta["mode"], getattr(args, "design_effect", None))
@@ -1531,10 +1580,21 @@ def write_report(args, meta: dict, results: list[RunResult], fh):
 
     if failed or noresult or notrun:
         w("-" * 78)
-        w(non_measurement_heading(results))
-        w("-" * 78)
-        w("  These are NOT clean and NOT diverged. Counting them either way would be")
-        w("  a value that reads as information and carries none.")
+        if any(r.test_id for r in results):
+            w(nextest_outcome_heading(results))
+            w("-" * 78)
+            w("  A FAILED run here IS a measurement: the named test ran and failed, which")
+            w("  is the finding this sweep exists to produce. It is counted in the per-id")
+            w("  table above and it is NOT an error in the tool.")
+            w("  A run that was NOT MEASURED is the opposite -- the id selected no test, or")
+            w("  several -- and nothing here speaks to that id. The two are listed together")
+            w("  only because both need their output read; they are counted separately")
+            w("  everywhere else and must not be added together.")
+        else:
+            w(non_measurement_heading(results))
+            w("-" * 78)
+            w("  These are NOT clean and NOT diverged. Counting them either way would be")
+            w("  a value that reads as information and carries none.")
         if notrun:
             w(f"  {len(notrun)} of them NEVER RAN: " + ", ".join(r.name for r in notrun))
         shown = failed + noresult
@@ -1554,8 +1614,12 @@ def write_report(args, meta: dict, results: list[RunResult], fh):
     w("-" * 78)
     w("PER-NODE RESOURCE FACTS (from the DAG runner's own step CSV)")
     w("-" * 78)
-    w("  A divergence distribution collected under accidental oversubscription")
-    w("  measures the harness. These are what each node ACTUALLY got.")
+    if any(r.test_id for r in results):
+        w("  A pass/fail rate collected under accidental oversubscription measures the")
+        w("  harness. These are what each node ACTUALLY got.")
+    else:
+        w("  A divergence distribution collected under accidental oversubscription")
+        w("  measures the harness. These are what each node ACTUALLY got.")
     w(f"  {'run':<8}{'inner_jobs':>11}{'eff_cores':>11}{'peak_MB':>10}{'elapsed_s':>11}{'oom':>5}{'co_tenants':>12}{'load1':>9}")
     for r in results:
         w(
@@ -1699,6 +1763,34 @@ def verdict_lines(meta: dict, results: list[RunResult]) -> list[str]:
     else:
         lines.append(f"VERDICT: all {n} runs clean, none diverged, mode={meta['mode']}.")
     return lines
+
+
+def nextest_outcome_heading(results: list[RunResult]) -> str:
+    """Heading for the failure-detail section of a NEXTEST sweep.
+
+    ⚠️ THE GUEST HEADING IS NOT MERELY THE WRONG WORDS HERE, IT ASSERTS THE WRONG
+    MODEL. "RUNS THAT PRODUCED NO DIVERGENCE POINT" groups a failing nextest node
+    with the runs that produced nothing -- but a nextest node that FAILED
+    produced a verdict, and that verdict is the entire finding the sweep exists
+    for. A reader who meets guest vocabulary in a nextest report will reason
+    about guests: they will look for a divergence coordinate that cannot exist,
+    and conclude the tool lost it.
+    This project has already paid for a change that preserved behaviour and
+    dropped rationale -- a later reader filed a defect that was not one, and the
+    prescribed fix would have broken verification. Wording that implies the wrong
+    model is how that starts.
+    """
+    failed = [r for r in results if r.category == "failed"]
+    unresolved = [r for r in results if r.category == "no_result"]
+    notrun = [r for r in results if r.category == "not_run"]
+    parts = []
+    if failed:
+        parts.append(f"{len(failed)} FAILED")
+    if unresolved:
+        parts.append(f"{len(unresolved)} NOT MEASURED")
+    if notrun:
+        parts.append(f"{len(notrun)} NEVER LAUNCHED")
+    return "RUN DETAIL -- " + ", ".join(parts)
 
 
 def non_measurement_heading(results: list[RunResult]) -> str:
@@ -2062,7 +2154,10 @@ def main() -> int:
                    else build_dag(pre_args, hermit_bin, pre_dir, guest))
         pre_dag_path = pre_dir / "dag.json"
         pre_dag_path.write_text(json.dumps(pre_dag, indent=2))
-        say(f"{PROG}: preflight -- one run of the real guest before all {args.runs}")
+        say(f"{PROG}: preflight -- " + (
+            f"one run of each of the {len(args.test_id)} id(s) before all {args.runs} each"
+            if args.test_id else
+            f"one run of the real guest before all {args.runs}"))
         subprocess.run(
             [str(runner), "run", "--dag", str(pre_dag_path), "-j", "1", "--keep-going",
              "--run-timeout", str(args.deadline + 120), "--no-profile"],
@@ -2203,6 +2298,7 @@ def main() -> int:
             ["run", "--verify", "--verify-strict", "--keep-logs"] + args.hermit_arg
         ),
         "mode": args.mode,
+        "test_workspace": (os.path.abspath(args.test_workspace) if args.test_workspace else str(ROOT / "hermit")),
         "mode_meaning": mode_meaning,
         "runner": f"{runner.name} (cgroup-boxed, two-level) at {runner}",
         "jobs": jobs,
@@ -2496,6 +2592,32 @@ def _selftest() -> int:
           "min 12  max 40  distinct 2" in lines[0], True)
     check("and it names the thread the range belongs to",
           "dtid 3" in lines[0], True)
+
+    # --- nextest vocabulary -----------------------------------------------
+    # The guest heading does not merely use the wrong words for a nextest sweep,
+    # it asserts the wrong MODEL: it groups a FAILING test with the runs that
+    # produced nothing, when a failing test is the finding. A reader who meets
+    # guest vocabulary in a nextest report reasons about guests -- they look for
+    # a divergence coordinate that cannot exist and conclude the tool lost it.
+    nx = [RunResult(index=1, name="n1", dir="/f/1", category="failed", why="", test_id="A"),
+          RunResult(index=2, name="n2", dir="/f/2", category="no_result", why="", test_id="B")]
+    head = nextest_outcome_heading(nx)
+    check("a nextest heading does not claim a missing DIVERGENCE POINT",
+          "DIVERGENCE" in head, False)
+    check("it separates a failure from a non-measurement",
+          head, "RUN DETAIL -- 1 FAILED, 1 NOT MEASURED")
+    check("a never-launched node is its own third thing",
+          nextest_outcome_heading(nx + [RunResult(index=3, name="n3", dir="/f/3",
+                                                  category="not_run", why="", test_id="C")]),
+          "RUN DETAIL -- 1 FAILED, 1 NOT MEASURED, 1 NEVER LAUNCHED")
+    check("all-failed reads as failures, not as an absence of measurement",
+          nextest_outcome_heading([nx[0]]), "RUN DETAIL -- 1 FAILED")
+    # The GUEST heading is untouched -- this must not have been a rename.
+    guest_only = [RunResult(index=i, name=f"r{i}", dir=f"/f/{i}", category="failed", why="")
+                  for i in (1, 2, 3)]
+    check("the guest heading is unchanged",
+          non_measurement_heading(guest_only),
+          "ALL 3 RUNS FAILED; NO DIVERGENCE DISTRIBUTION WAS MEASURED")
 
     # --- nextest ids ------------------------------------------------------
     # ⚠️ THE ONE THAT MATTERS: nextest EXITS 0 WHEN A FILTERSET MATCHES NOTHING.
