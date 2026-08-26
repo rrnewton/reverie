@@ -187,13 +187,13 @@ out="$(run "$tmp/post-facto-noncritical.json" --pr 2204 --gate)"; rc=$?
   || bad "noncritical post-facto trigger was incorrectly forced to dual review (rc=$rc): $out"
 
 # --- MALFORMED SYNTAX IS NOT LOST AUTHORITY ---------------------------------
-# Real #1847 shape: one comment says APPROVE using the historical synonym and
-# also carries the canonical exact-head binding.  The syntax debt stays loud,
+# One comment carries an incomplete marker assertion and the canonical exact-head
+# binding. The syntax debt stays loud,
 # but the authority gate must not turn it into a missing review.  Re-emitting
 # APPROVED-AT cannot repair this case because the comment already emitted it.
 cat >"$tmp/malformed-authoritative.json" <<JSON
 [{"number":1847,"head":"$CUR","labels":["passed-review-claude"],
-  "comments":["[adversarial-reviewer agent, claude-opus-5]\\nAPPROVE $CUR\\nAPPROVED-AT: claude $CUR"],
+  "comments":["[adversarial-reviewer agent, claude-opus-5]\\nAPPROVED-AT: claude\\nAPPROVED-AT: claude $CUR"],
   "runs_at_head":12,"mergeable":"MERGEABLE"}]
 JSON
 out="$(run "$tmp/malformed-authoritative.json" --gate)"; rc=$?

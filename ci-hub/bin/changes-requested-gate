@@ -30,16 +30,12 @@
 # variant, the stale label -- all made readers better at NOTICING a block. None of
 # them refuses. This one refuses.
 #
-# ⚠️ IT KEYS ON THE MARKER'S PRESENCE, NOT ON A FORM THAT PARSES. A fourth marker
-# variant already escaped both the canonical grammar and the loud-on-unknown net,
-# so requiring a parseable form reproduces the defect. The rule is:
-#
-#     the token appears in the line, AND a lane name follows it within a short
-#     window -- OR the token begins the line once decoration is stripped.
-#
-# Nothing about the separator, the ordering, the decoration or WHAT PRECEDES THE
-# TOKEN has to be canonical. See markers() for why a line-initial-only rule is
-# still a form rule, and for the measurement that chose this one.
+# ⚠️ IT KEYS ON A MARKER ASSERTION, NOT TOKEN PRESENCE. After the shared
+# Markdown normalization, the marker starts the line. Marker text inside prose is
+# a mention. A verdict carrying surrounding prose is published with ``--verdict``,
+# which adds its canonical marker as its own line. The marker may be malformed and
+# still fail closed: a full SHA in prose does not make it a verdict, and a missing
+# SHA on a standalone marker does not make it disappear.
 #
 # If a sha can be extracted and it names the head, REFUSE. If a sha can be
 # extracted and it names some other commit, that refusal was cleared by a later
@@ -285,8 +281,6 @@ WITHDRAWN = "CHANGES-REQUESTED-WITHDRAWN-AT"
 WITHDRAWN_BARE = "CHANGES-REQUESTED-WITHDRAWN"
 REFUSAL_BARE = "CHANGES-REQUESTED"
 
-# Block-level decoration seen on real markers, stripped repeatedly until stable.
-_DECOR = re.compile(r"^(\s|#{1,6}\s*|>\s*|[-*+]\s+|\*{1,3}|_{1,3}|`{1,3})+")
 _SHA = re.compile(r"\b([0-9a-f]{7,40})\b")
 _LANE = re.compile(r"\b(claude|codex)\b", re.I)
 
@@ -324,16 +318,6 @@ _RETIRES = re.compile(r"\bRETIRES\s+#?(\d{6,})\b", re.I)
 # treated as documentation.
 # The placeholder rule now lives in the shared grammar; see is_template there.
 # Kept as a name so the docstring above still reads, but sourced from one place.
-
-
-def undecorate(line: str) -> str:
-    prev = None
-    out = line
-    while prev != out:
-        prev = out
-        out = _DECOR.sub("", out.strip())
-    return out
-
 
 def gh_json(args: list[str]) -> object:
     # with-proxy is what makes gh reach the network on these hosts; without it the
@@ -384,31 +368,33 @@ def approvals_in_order(items):
     """
     out = []
     _accepted: list[tuple] = []
-    eligible = _load_grammar().marker_lines
+    grammar = _load_grammar()
+    eligible = grammar.marker_lines
     for pos, (_cid, body) in enumerate(items):
-        _author = _load_grammar().comment_author(body or "")
+        _author = grammar.comment_author(body or "")
         for raw in eligible(body or ""):
-            line = undecorate(raw)
-            idx = line.find(APPROVAL)
-            if idx < 0:
+            line = grammar.strip_decoration(raw)
+            assertion_start = grammar.marker_assertion_start(line)
+            if assertion_start is None:
+                continue
+            idx = line.upper().find(APPROVAL, assertion_start)
+            if idx != assertion_start:
                 continue
             # A withdrawal line contains no APPROVED-AT, and a refusal line
             # cannot: the tokens do not overlap. No longest-first needed.
             tail = line[idx + len(APPROVAL):]
-            if idx != 0 and not _LANE.search(tail[:24]):
-                continue
             m = _SHA.search(tail)
-            if m is None and _load_grammar().is_template(tail):
+            if m is None and grammar.is_template(tail):
                 continue
             lane_m = _LANE.search(tail[:24])
             triple = (APPROVAL, lane_m.group(1).lower() if lane_m else None,
                       m.group(1) if m else None)
-            if _load_grammar().is_citation(_accepted, _author, *triple):
+            if grammar.is_citation(_accepted, _author, *triple):
                 continue
             _accepted.append((_author, *triple))
             if triple[1] is not None and triple[2] is not None:
                 out.append((triple[1], triple[2], _cid, pos,
-                            _load_grammar().marker_issuer(line) or _author))
+                            grammar.marker_issuer(line) or _author))
     return out
 
 def markers_with_ids(
@@ -416,62 +402,35 @@ def markers_with_ids(
 ) -> list[tuple[str, str | None, str | None, object]]:
     """Every marker-shaped line, as (kind, lane-or-None, sha-or-None), in document order.
 
-    ⚠️ A WORD BEFORE THE TOKEN USED TO MAKE THE MARKER INVISIBLE, HERE AND IN EVERY
-    OTHER EXTRACTOR IN USE. Found by agent(hermit-001). Stripping only markdown
-    decoration and then requiring the line to START with the token misses all of:
-
-        VERDICT: CHANGES-REQUESTED-AT: claude <sha>
-        Posting CHANGES-REQUESTED-AT: claude <sha> now
-        **Verdict:** CHANGES-REQUESTED-AT: claude <sha>
-        1. CHANGES-REQUESTED-AT: claude <sha>
-
-    all measured CLEAR against the shipped rule. A gate keyed on the token being
-    line-initial is still keyed on a FORM, just a laxer one, so it inherits exactly
-    the blindness it was meant to remove.
-
-    THE RULE NOW: the token appears, AND a lane name follows it within a short
-    window. That is presence, not grammar -- nothing about the separator, the
-    ordering, the decoration or what precedes it has to be canonical.
-
-    WHY NOT SIMPLY "THE TOKEN APPEARS ANYWHERE", which is the purest form of
-    presence: measured on all 27 open pull requests on 2026-08-25,
-
-        rule                       marker lines    PRs blocked
-        line-initial (shipped)               12              8
-        token + lane within 24 chars         26              8
-        token anywhere                       39              9
-
-    the lane rule catches MORE THAN DOUBLE the marker lines of the shipped rule at
-    ZERO additional pull requests blocked, while matching anywhere adds one pure
-    false positive (hermit#2216, three prose sentences discussing the convention).
-    Notes discuss these markers constantly -- this docstring contains the token
-    six times -- so "anywhere" blocks pull requests for explaining the rule, the
-    gate gets switched off, and we are back to a convention. The lane rule is the
-    widest net measured to cost nothing.
+    After the shared Markdown normalization, a marker assertion starts the line.
+    Marker text inside prose is a mention. This is the same boundary used by
+    approval_binding's malformed-source report, so a full SHA no longer turns a
+    mention into a verdict and an absent SHA no longer hides a standalone assertion.
     """
     found = []
     _accepted: list[tuple] = []
-    eligible = _load_grammar().marker_lines
+    grammar = _load_grammar()
+    eligible = grammar.marker_lines
     for _cid, body in items:
-        _author = _load_grammar().comment_author(body or "")
+        _author = grammar.comment_author(body or "")
         for raw in eligible(body or ""):
-            line = undecorate(raw)
+            line = grammar.strip_decoration(raw)
+            assertion_start = grammar.marker_assertion_start(line)
+            if assertion_start is None:
+                continue
+            upper = line.upper()
             # Longest first: WITHDRAWN contains REFUSAL, which contains REFUSAL_BARE.
             # A bare hit is recorded AS a refusal -- the downstream binding,
             # withdrawal and indeterminate logic is deliberately unchanged, so the
             # suffix-less spelling gets exactly the treatment the canonical one
             # gets and nothing special.
             for kind in (WITHDRAWN, WITHDRAWN_BARE, REFUSAL, REFUSAL_BARE):
-                idx = line.find(kind)
-                if idx < 0:
+                idx = upper.find(kind, assertion_start)
+                if idx != assertion_start:
                     continue
                 tail = line[idx + len(kind):]
-                # Line-initial keeps the bare form working even with no lane named;
-                # otherwise a lane must follow closely for this to be a marker.
-                if idx != 0 and not _LANE.search(tail[:24]):
-                    continue
                 m = _SHA.search(tail)
-                if m is None and _load_grammar().is_template(tail):
+                if m is None and grammar.is_template(tail):
                     break  # a template, not a verdict
                 lane_m = _LANE.search(tail[:24])
                 triple = (REFUSAL if kind == REFUSAL_BARE
@@ -485,7 +444,7 @@ def markers_with_ids(
                 # answered by the fix below" blocked the head they approved. The
                 # earlier occurrence is still counted, so this cannot lose a
                 # refusal; see is_citation() in the shared grammar.
-                if _load_grammar().is_citation(_accepted, _author, *triple[:3]):
+                if grammar.is_citation(_accepted, _author, *triple[:3]):
                     break
                 _accepted.append((_author, *triple[:3]))
                 found.append(triple)
@@ -502,51 +461,21 @@ def markers_with_ids(
                 # https://github.com/rrnewton/hermit/pull/2611:
                 # `CHANGES-REQUESTED: claude 7a75909c92ae` at the exact head.
                 #
-                # Same policy as above -- line-initial, or a lane close behind --
-                # and the same shared grammar decides what is refusal-shaped, so
-                # the two landers cannot drift apart on it again.
-                near = _load_grammar().near_miss_refusal(line)
-                if near is None:
+                # The same shared grammar decides whether this line is asserting a
+                # marker and whether its spelling is refusal-shaped, so the two
+                # landers cannot drift apart on that boundary again.
+                near = grammar.near_miss_refusal(line, assertion_start)
+                if near is None or near.start() != assertion_start:
                     continue
                 tail = line[near.end():]
-                if near.start() != 0 and not _LANE.search(tail[:24]):
-                    continue
-                if _load_grammar().is_template(tail):
+                if grammar.is_template(tail):
                     continue
                 m = _SHA.search(tail)
                 lane_m = _LANE.search(tail[:24])
-                # ⚠️ A NEAR-MISS WITH NEITHER A LANE NOR A SHA IS PROSE, NOT A
-                # VERDICT, AND COUNTING IT STRANDED A HEAD WITH NO WAY OUT.
-                #
-                # The near-miss net is case-insensitive and allows a SPACE
-                # (`CHANGES[-\s_]?REQUESTED`), so an ordinary English sentence
-                # opening a review -- "Changes requested, on the deleted value pin
-                # alone." -- matched at position 0 and was accepted here with
-                # lane=None and sha=None. A marker with no readable sha cannot
-                # bind, so it lands in `unbindable` and the gate returns rc=2
-                # INDETERMINATE. Measured on hermit#2625 at 6457ba0acfb4: the head
-                # had its claude lane bound at the exact head and still could not
-                # land.
-                #
-                # ⚠️ AND IT WAS UNCLEARABLE, WHICH IS WHAT MAKES IT WORSE THAN THE
-                # OTHER DEFECTS. Pushing does not help -- the sentence names no
-                # sha, so it never stops naming the head. The only exits were
-                # editing someone else's comment or posting a withdrawal for a
-                # refusal nobody made.
-                #
-                # THE DISCRIMINATOR IS WHAT THE AUTHOR SUPPLIED, NOT HOW THE LINE
-                # STARTS. Somebody attempting a verdict writes a lane or a sha;
-                # somebody writing a sentence writes neither. So a near-miss still
-                # refuses when it carries either -- `CHANGES-REQUESTED: claude
-                # <sha>` blocks exactly as before -- and is ignored when it carries
-                # neither.
-                #
-                # ⚠️ NOT FIXED BY WIDENING WHAT COUNTS AS A WITHDRAWAL. That would
-                # let an accidental sentence CLEAR a real refusal, which is the
-                # dangerous direction; this narrows what counts as a refusal
-                # ATTEMPT and leaves the withdrawal path untouched.
-                if m is None and lane_m is None:
-                    continue
+                # A standalone assertion with neither lane nor SHA is still
+                # unbindable and must fail closed. Ordinary prose such as
+                # "Changes requested, on the value pin" never reaches this branch:
+                # `marker_assertion` requires the marker's own punctuation.
                 triple = (REFUSAL,
                           lane_m.group(1).lower() if lane_m else None,
                           m.group(1) if m else None,
@@ -557,7 +486,7 @@ def markers_with_ids(
                 # answered by the fix below" blocked the head they approved. The
                 # earlier occurrence is still counted, so this cannot lose a
                 # refusal; see is_citation() in the shared grammar.
-                if _load_grammar().is_citation(_accepted, _author, *triple[:3]):
+                if grammar.is_citation(_accepted, _author, *triple[:3]):
                     continue
                 _accepted.append((_author, *triple[:3]))
                 found.append(triple)

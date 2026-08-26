@@ -120,6 +120,54 @@ mal = []
 ab.lane_shas(C(f"[adversarial-reviewer agent, CLAUDE]\nAPPROVED @ {CUR}\n"), "claude", mal)
 cases.append((len(mal) == 1, "an unrecognised binding-shaped line is REPORTED, not ignored",
               f"malformed={len(mal)}"))
+legacy = []
+ab.lane_shas(C(f"APPROVE {CUR}"), "claude", legacy)
+cases.append((len(legacy) == 1,
+              "the historical one-argument APPROVE assertion is still REPORTED",
+              f"malformed={len(legacy)}"))
+# Assertion versus mention is decided by line syntax, not by whether a SHA-like
+# value happens to be present. These two directions pin the distinction: the
+# standalone marker is an attempted verdict even with its SHA missing, while the
+# same token and a full SHA inside a prose sentence are only a mention.
+missing_sha = []
+ab.lane_shas(C("APPROVED-AT: claude"), "claude", missing_sha)
+cases.append((len(missing_sha) == 1,
+              "a standalone APPROVED-AT with no SHA is REPORTED",
+              f"malformed={len(missing_sha)}"))
+prose_mention = []
+ab.lane_shas(
+    C(f"The required form is APPROVED-AT: claude {CUR}, written on its own line."),
+    "claude", prose_mention,
+)
+cases.append((prose_mention == [],
+              "prose mentioning a complete APPROVED-AT is not a malformed verdict",
+              f"malformed={len(prose_mention)}"))
+# Verdicts with a lead-in are published through ``ci-hub/bin/gh --verdict``,
+# which adds the canonical marker as its own line. The end-to-end test belongs at
+# that write boundary; asking this line-only parser to infer it from prose is the
+# same ambiguity as the mention above.
+
+# Inline code has the same split. A whole-line code span is existing marker
+# decoration, so a missing SHA is still reported. Prose around the span makes it
+# a mention and must not be flagged.
+quoted_assertion = []
+ab.lane_shas(C("`APPROVED-AT: claude`"), "claude", quoted_assertion)
+cases.append((len(quoted_assertion) == 1,
+              "a whole-line code span with a missing SHA is REPORTED",
+              f"malformed={len(quoted_assertion)}"))
+quoted_mention = []
+ab.lane_shas(C("The incomplete form is `APPROVED-AT: claude`."), "claude", quoted_mention)
+cases.append((quoted_mention == [],
+              "an inline-code mention with a missing SHA is not a malformed verdict",
+              f"malformed={len(quoted_mention)}"))
+assertion_with_mention = []
+ab.lane_shas(
+    C("APPROVED-AT: claude -- unlike `APPROVED-AT: codex`"),
+    "claude", assertion_with_mention,
+)
+cases.append((len(assertion_with_mention) == 1,
+              "a later inline-code mention cannot hide a leading assertion",
+              f"malformed={len(assertion_with_mention)}"))
 # The live collector scans one comment for each approval lane.  The same raw
 # malformed line is still one defect and must not inflate the headline count.
 ab.lane_shas(C(f"[adversarial-reviewer agent, CLAUDE]\nAPPROVED @ {CUR}\n"), "codex", mal)
@@ -174,7 +222,7 @@ mal4 = []
 mal4_prs = {}
 same_comment = C(
     f"[adversarial-reviewer agent, claude-opus-5]\n"
-    f"APPROVE {CUR}\n"
+    "APPROVED-AT: claude\n"
     f"APPROVED-AT: claude {CUR}\n"
 )
 same_comment_shas = ab.lane_shas(same_comment, "claude", mal4, 1847, mal4_prs)
@@ -472,7 +520,7 @@ for _real in (f"CHANGES-REQUESTED-AT: claude {CUR}", f"CHANGES-REQUESTED: claude
                   f"a real refusal still fires: {_real[:34]}",
                   "fires"))
 
-# --- A SHA-LESS MARKER INSIDE A CODE SPAN IS A CITATION. ----------------------
+# --- A MARKER INSIDE PROSE IS A MENTION. --------------------------------------
 # hermit#2660 had BOTH lanes bound at the exact head by non-authors and could not
 # land, because one clause of the codex reviewer's APPROVAL mentioned a refusal
 # prepared for a DIFFERENT pull request. It parsed as a refusal with a lane and no
@@ -483,31 +531,39 @@ for _real in (f"CHANGES-REQUESTED-AT: claude {CUR}", f"CHANGES-REQUESTED: claude
 # were editing another reviewer's comment or posting a withdrawal for a refusal
 # nobody made. The remedy is NOT to bind it to the current head: a marker that
 # silently adopts whatever sha is current is how an approval outlives the code it
-# approved. It stays malformed; it just stops being read as a verdict.
+# approved. The line stays available to callers, but it is not a marker assertion.
 _QUOTED_NO_SHA = "have a `CHANGES-REQUESTED-AT: codex` prepared for #2658, not posted"
-cases.append(("CHANGES-REQUESTED-AT" not in "".join(ab.marker_lines(_QUOTED_NO_SHA)),
+cases.append((not any(ab.marker_assertion(line) for line in ab.marker_lines(_QUOTED_NO_SHA)),
               "a sha-less refusal in a code span is a citation, not a verdict",
               f"lines={ab.marker_lines(_QUOTED_NO_SHA)}"))
 
-# ⚠️ THE CONTROLS THAT KEEP THIS FROM BECOMING A SILENT ADMISSION. Only markers
-# that bind NOTHING are dropped. Anything carrying a sha is left exactly as
-# written, in backticks or out of them, so no refusal that could block a head can
-# be lost by quoting it.
+# ⚠️ THE CONTROL WITH A FULL SHA. Value length does not turn a mention into an
+# assertion; the same shared boundary applies with or without the value.
 _QUOTED_WITH_SHA = f"see `CHANGES-REQUESTED-AT: codex {CUR}` on the earlier head"
-cases.append((f"CHANGES-REQUESTED-AT: codex {CUR}" in "".join(ab.marker_lines(_QUOTED_WITH_SHA)),
-              "a code span CARRYING A SHA is preserved verbatim",
+cases.append((not any(ab.marker_assertion(line) for line in ab.marker_lines(_QUOTED_WITH_SHA)),
+              "a code-span mention carrying a SHA is still not an assertion",
               f"lines={ab.marker_lines(_QUOTED_WITH_SHA)}"))
 
 # Malformed, not inferred: a sha-less refusal written as a verdict line is still
 # seen. Dropping this one would admit a head its reviewer meant to block.
 _PLAIN_NO_SHA = "CHANGES-REQUESTED-AT: claude -- see above"
-cases.append((_PLAIN_NO_SHA in ab.marker_lines(_PLAIN_NO_SHA),
+cases.append((any(ab.marker_assertion(line) for line in ab.marker_lines(_PLAIN_NO_SHA)),
               "a sha-less refusal in PLAIN prose is still seen",
               f"lines={ab.marker_lines(_PLAIN_NO_SHA)}"))
 
+_FULL_MARKER_MENTION = (
+    "The migration note reproduces the retired review text exactly: "
+    f"CHANGES-REQUESTED-AT: codex {CUR}"
+)
+cases.append((not any(ab.marker_assertion(line)
+                      for line in ab.marker_lines(_FULL_MARKER_MENTION)),
+              "a full marker in prose is a mention",
+              f"lines={ab.marker_lines(_FULL_MARKER_MENTION)}"))
+
 # Symmetric, exactly as the fence rule is: withholding an approval is the safe
 # direction, and a sha-less approval could not bind a head anyway.
-cases.append(("APPROVED-AT" not in "".join(ab.marker_lines("as `APPROVED-AT: claude` would say")),
+cases.append((not any(ab.marker_assertion(line) for line in
+                      ab.marker_lines("as `APPROVED-AT: claude` would say")),
               "a sha-less approval in a code span does not bind either",
               "symmetric"))
 

@@ -18,35 +18,21 @@ on 2026-08-25 and each looked like its own bug:
     changes_requested_gate_gh   ordinary English prose opening a comment is read
                                 as an UNCLEARABLE refusal (P0, rc=2 forever)
 
-Run the same inputs through both polarities and they collapse into one sentence:
-THE PARSER DISTINGUISHES POLARITY BUT NOT ISSUANCE FROM CITATION. The polarity
-asymmetry itself is deliberate and correct -- a malformed REFUSAL must still
-refuse while a malformed APPROVAL must still fail to bind (approval_binding.py,
-"a malformed REFUSAL must still refuse"). The defect is that the same asymmetry
-is applied to text that was never a verdict at all.
+Run the same inputs through both polarities. The polarity asymmetry itself is
+deliberate and correct -- a malformed REFUSAL must still refuse while a malformed
+APPROVAL must still fail to bind. The assertion boundary is shared: a marker at
+the start of its normalized line is a verdict; marker text inside prose is a
+mention in either polarity. A verdict carrying surrounding prose is published
+with ``ci-hub/bin/gh --verdict``, which adds its canonical marker as its own line.
 
-The sharpest row is CITED_SHORT. The identical sentence --
+The sharpest rows are CITED_FULL and CITED_SHORT. The identical sentence --
 
     I posted `<TOKEN>: claude 6457ba0acfb4` earlier.
 
--- is SILENTLY IGNORED when <TOKEN> is APPROVED-AT and is a BINDING REFUSAL when
-it is CHANGES-REQUESTED-AT. Nobody designed that; it is two independently
-hardened code paths meeting.
-
-MECHANISM, so a reader need not re-derive it:
-  - the APPROVAL side under-reads. The binder is anchored, and the loudness net
-    `suspect` demands a verdict keyword AND a FULL 40-hex on the same line, so a
-    line carrying an ABBREVIATED sha is invisible to the binder AND to the net.
-  - the REFUSAL side over-reads. It scans for the token anywhere in the line and
-    accepts a lane within a short window, and its near-miss branch accepts a hit
-    with NO lane and NO sha whenever the line is line-initial.
-
-⚠️ DO NOT "FIX" A CELL HERE ALONE. Widening the approval net to accept short shas
-also routes more lines to `malformed`, and a malformed REFUSAL-shaped line fails
-the gate -- so the obvious approval-side repair can manufacture blocks, which is
-the P0 above made worse. The durable fix needs ISSUANCE to be distinguishable
-from CITATION, which is what the issuer field in task make_the_review_marker
-provides; both nets should move together afterwards, against this table.
+-- must be a mention in both polarities. The full and abbreviated SHA rows prove
+that a value does not turn prose into a verdict. The standalone short marker rows
+prove the converse: an assertion is reported or refused even though its SHA is
+not full length.
 
 Needs no network and no build: every cell is a synthetic comment body.
 """
@@ -102,11 +88,11 @@ PROSE = {
 EXPECTED = {
     ("CANONICAL_FULL", "APPROVED-AT"): "BINDS",
     ("CANONICAL_FULL", "CHANGES-REQUESTED-AT"): "REFUSES(claude," + FULL + ")",
-    # FIXED: the loudness net demanded a FULL 40-hex, so a correctly written
+    # FIXED: the loudness net once demanded a FULL 40-hex, so a correctly written
     # approval that merely ABBREVIATED its sha bound nothing and reported nothing --
-    # a real review lost with nobody told. The net now accepts 7-40 and this is
-    # LOUD. It still does not BIND, which is right: granting authority demands the
-    # exact form. Task an_inline_code_approved.
+    # a real review lost with nobody told. An asserted marker is now loud regardless
+    # of value length. It still does not BIND, which is right: granting authority
+    # demands the exact form. Task an_inline_code_approved.
     ("CANONICAL_SHORT", "APPROVED-AT"): "MALFORMED",
     ("CANONICAL_SHORT", "CHANGES-REQUESTED-AT"): "REFUSES(claude," + SHORT + ")",
     # A whole-line quotation is undecorated into a verdict, because a leading
@@ -119,13 +105,12 @@ EXPECTED = {
     # without a `BY <agent-id>` on the marker. Task make_the_review_marker.
     ("INLINE_CODE_WHOLE_LINE", "APPROVED-AT"): "BINDS",
     ("INLINE_CODE_WHOLE_LINE", "CHANGES-REQUESTED-AT"): "REFUSES(claude," + FULL + ")",
-    ("CITED_FULL", "APPROVED-AT"): "MALFORMED",
-    # DEFECT quoting_a_refusal_marker: citing a block manufactures a block.
-    ("CITED_FULL", "CHANGES-REQUESTED-AT"): "REFUSES(claude," + FULL + ")",
-    # FIXED with the row above; was the sharpest row in the table, an identical
-    # sentence silently ignored as an approval and binding as a refusal.
-    ("CITED_SHORT", "APPROVED-AT"): "MALFORMED",
-    ("CITED_SHORT", "CHANGES-REQUESTED-AT"): "REFUSES(claude," + SHORT + ")",
+    ("CITED_FULL", "APPROVED-AT"): "SILENT",
+    ("CITED_FULL", "CHANGES-REQUESTED-AT"): "NOTHING",
+    # The abbreviated form follows the same assertion/mention boundary as the
+    # full SHA; length changes neither classification.
+    ("CITED_SHORT", "APPROVED-AT"): "SILENT",
+    ("CITED_SHORT", "CHANGES-REQUESTED-AT"): "NOTHING",
     # Correct in both polarities: a fenced illustration is nothing.
     ("FENCED", "APPROVED-AT"): "SILENT",
     ("FENCED", "CHANGES-REQUESTED-AT"): "NOTHING",
@@ -142,9 +127,8 @@ DEFECT_CELLS = {
 
     ("INLINE_CODE_WHOLE_LINE", "APPROVED-AT"): "quoting_a_refusal_marker",
     ("INLINE_CODE_WHOLE_LINE", "CHANGES-REQUESTED-AT"): "quoting_a_refusal_marker",
-    ("CITED_FULL", "CHANGES-REQUESTED-AT"): "quoting_a_refusal_marker",
-
-    ("CITED_SHORT", "CHANGES-REQUESTED-AT"): "quoting_a_refusal_marker",
+    # A marker inside prose is a mention in both polarities. Whole-line inline
+    # code remains separately pinned above because it is existing decoration.
     # ("PROSE", "CHANGES-REQUESTED-AT") was here and is FIXED -- see EXPECTED.
 }
 
@@ -270,9 +254,9 @@ def _refusals(bodies, agent="hermit-004"):
     return gate.markers([_by(agent, b) for b in bodies])
 
 
-def test_a_lone_citation_is_still_an_issuance() -> None:
-    """Nothing earlier to cite, so it counts. This is what keeps the rule safe."""
-    assert len(_refusals([f"see `{_ISS}` above"])) == 1
+def test_a_lone_mention_is_not_an_issuance() -> None:
+    """Prose around the marker makes it a mention even without an earlier copy."""
+    assert _refusals([f"see `{_ISS}` above"]) == []
 
 
 def test_citing_a_refusal_does_not_create_a_second_one() -> None:

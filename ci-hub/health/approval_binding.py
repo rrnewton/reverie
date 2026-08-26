@@ -51,9 +51,9 @@ States, three not two -- the same discipline as `unevaluated_head.py`:
                   it correctly reports that these approvals are unverifiable
                   rather than pretending to verify them.
 
-MALFORMED SOURCE LINES ARE ORTHOGONAL TO THOSE STATES. A comment may contain a
-historical ``APPROVE <sha>`` synonym and a valid canonical binding at the same
-head. The synonym remains syntax debt worth reporting, but it cannot turn the
+MALFORMED SOURCE LINES ARE ORTHOGONAL TO THOSE STATES. A comment may contain an
+incomplete ``APPROVED-AT: <lane>`` assertion and a valid canonical binding at the
+same head. The incomplete line remains syntax debt worth reporting, but it cannot turn the
 canonical BOUND_CURRENT authority into absence. Conversely, a malformed line
 with no canonical binding remains UNDETERMINED or SUPERSEDED and still fails
 the authority gate. Counts and remedies for the two conditions stay separate.
@@ -307,10 +307,12 @@ def github_actions_enabled(repo: str) -> bool:
     return enabled
 
 
-# Leading block-level markdown that can precede an otherwise-whole-line verdict:
-# ATX headings, blockquotes, and unordered-list bullets. Bullet forms require the
-# trailing space so that `*emphasis*` is left to `undecorate`'s paired handling.
-_BLOCK_PREFIX = re.compile(r"^(?:#{1,6}\s+|>\s*|[-+*]\s+)")
+# Leading block-level markdown that can decorate an otherwise-whole-line verdict:
+# ATX headings and unordered-list bullets. A blockquote is deliberately absent:
+# it attributes the line as quoted text, so it is a mention rather than this
+# comment's assertion. Bullet forms require the trailing space so that
+# `*emphasis*` is left to `undecorate`'s paired handling.
+_BLOCK_PREFIX = re.compile(r"^(?:#{1,6}\s+|[-+*]\s+)")
 
 
 def _undecorate(line: str) -> str:
@@ -456,7 +458,7 @@ _AGENT_ID = r"[a-z0-9][a-z0-9-]*"
 # read by several independent programs; there is no schema handshake and no way to
 # upgrade them together. `$` here meant a marker carrying a trailing clause matched
 # NOTHING -- and the failure was not symmetric. An approval falls through to
-# `suspect` and is reported MALFORMED, so it fails to bind: loud, and safe. A
+# the malformed-marker check and fails to bind: loud, and safe. A
 # REFUSAL that goes malformed still refuses, so it blocks a head nobody refused.
 # Emitting first would have manufactured both. Every reader tolerates the field
 # first; only then may a writer produce one.
@@ -482,6 +484,38 @@ def strip_decoration(line: str) -> str:
     it already was one.
     """
     return _undecorate_block(line)
+
+
+# A malformed marker is still an assertion when the review vocabulary starts the
+# normalized line. This is deliberately independent of SHA presence or length:
+# ``APPROVED-AT: claude`` is an incomplete assertion, while prose that mentions
+# ``APPROVED-AT: claude <sha>`` is not a verdict. A writer publishing a verdict
+# with surrounding prose adds the canonical marker as its own line; readers do
+# not guess from the prose around a token.
+_MARKER_ASSERTION_RE = re.compile(
+    r"(?:APPROVED-AT|APPROVED(?=\s+(?:@|[-—]))|"
+    r"APPROVE(?=\s+\S+\s*$)|"
+    r"CHANGES-REQUESTED(?:-WITHDRAWN)?(?:-AT)?|"
+    r"CHANGES\s+REQUESTED(?=\s*(?::|for\b))|REQUEST\s+CHANGES\s+AT|"
+    r"REJECT(?:ED)?(?=\s*:)|LGTM(?=\s+\S+\s*$)|"
+    r"SIGN(?:ED)?[-\s]?OFF(?=\s+\S+\s*$)|ACK(?=\s+\S+\s*$))"
+    r"(?![-\w])",
+    re.IGNORECASE,
+)
+
+
+def marker_assertion_start(line: str) -> "int | None":
+    """Start of the asserted review marker in ``line``, or ``None`` for a mention."""
+    normalized = strip_decoration(line)
+    if normalized.startswith(">"):
+        return None
+    match = _MARKER_ASSERTION_RE.match(normalized)
+    return match.start() if match is not None else None
+
+
+def marker_assertion(line: str) -> bool:
+    """Whether ``line`` asserts a review marker rather than mentioning one."""
+    return marker_assertion_start(line) is not None
 
 
 # ---------------------------------------------------------------------------
@@ -513,58 +547,6 @@ def strip_decoration(line: str) -> str:
 # are where people put examples, transcripts and templates, and nobody records a
 # real decision inside one.
 _FENCE_RE = re.compile(r"^ {0,3}(?P<f>`{3,}|~{3,})\s*(?P<info>.*)$")
-
-
-# ⚠️ AN INLINE CODE SPAN CARRYING NO SHA IS A CITATION OF THE TOKEN, NOT A VERDICT.
-# This is the fence rule at smaller scale, and it belongs beside it: a fenced
-# example teaching the convention already does not bind, and neither should
-# ``... a `CHANGES-REQUESTED-AT: codex` I prepared for #2658 ...`` written mid
-# sentence. Measured on hermit#2660, which had BOTH lanes bound at the exact head
-# by non-authors and could not land: that clause -- about a DIFFERENT pull request
-# -- parsed as (CHANGES-REQUESTED-AT, codex, None), and a refusal with no sha
-# cannot be bound, so the gate returned rc=2 INDETERMINATE.
-#
-# ⚠️ AND IT HAD NO PATH OUT, which is what makes it worse than a false positive.
-# Pushing cannot clear it: the clause names no sha, so it never stops naming the
-# head. The only exits were editing another reviewer's comment or posting a
-# withdrawal for a refusal nobody made -- recording a retraction of a verdict that
-# was never rendered. The gate's own commentary names that exit as the bad one.
-#
-# ⚠️ THE FIX IS NOT TO INFER THE HEAD. A sha-less marker that silently adopts
-# whatever sha is current is how an approval outlives the code it approved; the
-# same inference on a refusal invents an objection to a head nobody looked at. A
-# marker with no sha is MALFORMED, and stays malformed here.
-#
-# WHY THIS CANNOT LOSE A REAL REFUSAL -- the safety property, and the reason the
-# no-sha condition is load-bearing rather than decorative. A span containing a
-# 40-hex sha is left EXACTLY as written, so every marker that could bind anything
-# still binds, in backticks or out of them. What is dropped is only markers that
-# bind nothing by construction: they name no head, so no head can be cleared of
-# them and none can be blocked by them on purpose.
-#
-# Deliberately NOT keyed on the token being line-initial. That laxer form was
-# measured (see scan_markers) at 12 marker lines against 26 for the shipped
-# token-plus-lane rule at zero additional pull requests blocked, so keying on
-# position would give back the blindness the lane rule was adopted to remove.
-#
-# Symmetric by design, as the fence rule is: a sha-less ``APPROVED-AT`` inside a
-# code span stops binding too. That direction is safe -- it withholds an approval
-# rather than granting one -- and an approval with no sha could not bind a head
-# anyway.
-#
-# Spaces, not deletion: the replacement preserves the line's length so that any
-# caller reasoning about offsets on the returned line sees the same geometry.
-_CODE_SPAN_RE = re.compile(r"(?P<t>`+)(?P<c>.*?)(?P=t)")
-
-
-def redact_citation_spans(line: str) -> str:
-    """Blank inline code spans that contain no sha, leaving bindable ones intact."""
-    def _blank(m: "re.Match[str]") -> str:
-        if SHA40.search(m.group("c")):
-            return m.group(0)
-        return " " * len(m.group(0))
-
-    return _CODE_SPAN_RE.sub(_blank, line)
 
 
 def prose_lines(body: str) -> list[str]:
@@ -612,19 +594,19 @@ def prose_lines(body: str) -> list[str]:
             indented = True
             prev_blank = False
             continue
-        out.append(redact_citation_spans(raw))
+        out.append(raw)
         prev_blank = blank
     return out
 
 
 def marker_lines(body: str) -> list[str]:
-    """Every line of ``body`` that a consumer may read as a verdict.
+    """Every prose line of ``body`` that may contain review-marker text.
 
-    This is the ONE place that decides eligibility. `gh-merge-verified`,
-    `changes-requested-gate` and this module's own label reader all call it, so a
-    line that cannot bind an approval also cannot trigger a refusal. Two copies of
-    this rule would drift, and the drift is what produced the 6-of-12 divergence
-    measured above.
+    This excludes fenced and indented code blocks once for every consumer.
+    ``marker_assertion`` then distinguishes an asserted marker from a prose
+    mention, and ``parse_marker`` decides whether an assertion is canonical.
+    `gh-merge-verified`, `changes-requested-gate` and this module's own label
+    reader share all three steps.
     """
     return prose_lines(body)
 
@@ -653,9 +635,8 @@ def parse_marker(line: str) -> tuple[str, str, str] | None:
 
     `kind` is one of the ``MARKER_*`` constants, upper-cased; `lane` is
     lower-cased. Decoration is stripped first, so a marker written as a heading,
-    a blockquote, a list item or in bold parses identically to a bare one --
-    which is the fail-open this function exists to make impossible to reintroduce
-    in one consumer but not another.
+    a list item or in bold parses identically to a bare one. A blockquote remains
+    quoted text and does not parse as this comment's verdict.
     """
     match = _MARKER_RE.match(strip_decoration(line))
     if not match:
@@ -701,9 +682,8 @@ def marker_issuer(line: str) -> "str | None":
 # hermit#2611: `CHANGES-REQUESTED: claude 7a75909c92ae` at the exact head, flagged
 # and not honoured.
 #
-# So the net is line-initial (which is what killed the prose false positives) AND
-# spans the near-miss family (which is what makes it fail closed). A verdict is
-# ASSERTED at the start of a line; prose mentions it mid-sentence.
+# So the net shares ``marker_assertion_start`` and spans the near-miss family.
+# Prose containing the marker is a mention; a marker at the start is an assertion.
 # ⚠️ THE TRAILING GUARD IS NOT COSMETIC: WITHOUT IT THIS FIRES ON THE GATE'S OWN
 # NAME. `changes-requested-gate` contains the token, `\b` is satisfied by the
 # hyphen, and every sentence naming the tool became an unbindable refusal. Measured
@@ -719,7 +699,7 @@ def marker_issuer(line: str) -> "str | None":
 # matching, and `CHANGES-REQUESTED-WITHDRAWN-AT` now correctly does NOT match,
 # since a withdrawal is not a refusal.
 _REFUSAL_NEARMISS = re.compile(
-    r"(?:CHANGES[-\s_]?REQUESTED(?:-AT)?|REQUEST(?:ING|ED)?\s+CHANGES|REJECTED)"
+    r"(?:CHANGES[-\s_]?REQUESTED(?:-AT)?|REQUEST(?:ING|ED)?\s+CHANGES|REJECT(?:ED)?)"
     r"(?![-\w])",
     re.IGNORECASE,
 )
@@ -847,7 +827,7 @@ def is_citation(
     )
 
 
-def near_miss_refusal(line: str) -> "re.Match | None":
+def near_miss_refusal(line: str, start: int = 0) -> "re.Match | None":
     """Where a NON-CANONICAL refusal token starts in `line`, if it does.
 
     ⚠️ SHARED SO THE TWO LANDERS CANNOT DIVERGE ON IT AGAIN -- which they already
@@ -866,12 +846,12 @@ def near_miss_refusal(line: str) -> "re.Match | None":
 
     The permissive side was `land-pr.sh`'s, which is the path landings take.
 
-    Returns the match so a caller can apply its own policy to what follows -- the
-    gate requires a lane name nearby unless the token is line-initial, and that
-    policy stays the caller's. The GRAMMAR of "what is trying to be a refusal" is
-    here, once.
+    Returns the match so a caller can apply its own fail-closed policy to what
+    follows. ``marker_assertion`` decides whether the line is asserting this
+    vocabulary or merely mentioning it; this function identifies the refusal
+    spelling within an asserted line.
     """
-    return _REFUSAL_NEARMISS.search(line)
+    return _REFUSAL_NEARMISS.search(line, start)
 
 
 def refusal_shaped(line: str) -> bool:
@@ -885,36 +865,29 @@ def refusal_shaped(line: str) -> bool:
     here and not there. Measured 2026-08-25 on hermit#2602, whose only remaining
     block was a sentence adjudicating hermit#2591.
 
-    A verdict is asserted, not mentioned. Somebody refusing a head puts the marker
-    at the start of a line; somebody discussing one writes a sentence around it.
+    A verdict is asserted, not mentioned. The shared assertion boundary accepts a
+    marker at the start or after a lead-in when its own fields finish the line;
+    prose on both sides is a mention.
     """
-    return bool(_REFUSAL_NEARMISS.match(strip_decoration(line)))
+    normalized = strip_decoration(line)
+    start = marker_assertion_start(normalized)
+    if start is None:
+        return False
+    match = near_miss_refusal(normalized, start)
+    return match is not None and match.start() == start
 
 
-#: A marker wholly inside ONE inline-code span, with prose outside it on the same
-#: line, is a MENTION, not a USE. ``is_citation`` already encodes that a copy of a
-#: verdict "must neither bind nor be reported as a malformed attempt", but it can
-#: only recognise a copy of something ALREADY ISSUED in this stream. A sentence
-#: quoting the grammar -- in a review discussing the convention, or in this repo's
-#: own docs -- has no prior issuance to match, so it fell through to the net and
-#: was reported malformed. Since a malformed REFUSAL-shaped line fails the gate,
-#: THAT LETS A PR BE HELD RED BY COMMENTS THAT MERELY DISCUSS THE GRAMMAR.
-#:
-#: The discriminator is typographic and narrow: the author enclosed the WHOLE
-#: marker in code and wrote prose around it. It deliberately does NOT fire when
-#: the span holds only part of the marker -- ``## CODEX-LANE CHANGES-REQUESTED-AT:
-#: codex `b3ca4e15...` `` keeps its keyword OUTSIDE the span and must stay
-#: malformed, because that is a real variant that walked through this net once.
-#: Nor when the span is the whole line: that is decoration, and it still BINDS.
+#: Inline code with prose around it is a citation. This is retained for the
+#: citation count only; whether the line is malformed is decided by the shared
+#: assertion boundary.
 _INLINE_CODE_MARKER = re.compile(
-    r"`[^`\n]*(?:APPROVED-AT|CHANGES-REQUESTED(?:-AT)?)\s*:\s*"
-    r"(?:claude|codex)\s+[0-9a-f]{7,40}[^`\n]*`",
+    r"`[^`\n]*(?:APPROVED-AT|CHANGES-REQUESTED(?:-AT)?)(?![-\w])[^`\n]*`",
     re.IGNORECASE,
 )
 
 
 def _is_quoted_mention(raw_line: str) -> bool:
-    """Whether ``raw_line`` quotes a marker inside code WITH prose around it."""
+    """Whether ``raw_line`` quotes a marker inside code with prose around it."""
     m = _INLINE_CODE_MARKER.search(raw_line)
     if m is None:
         return False
@@ -1080,49 +1053,16 @@ def lane_shas(
         if parsed is None or parsed[0] != MARKER_APPROVED:
             return None
         return parsed[1], parsed[2]
-    # LOUD ON THE UNKNOWN. A line that is plainly trying to be a verdict binding
-    # -- a verdict-ish keyword on the same line as a 40-hex -- but which matches
-    # neither grammar is reported, never ignored.
+    # LOUD ON THE UNKNOWN. The shared grammar decides whether the review
+    # vocabulary is an ASSERTION or a MENTION before value parsing. If an
+    # assertion does not parse, report it regardless of whether its SHA is full,
+    # abbreviated or absent.
     #
-    # ⚠️ DELIBERATELY UNANCHORED, AND THAT IS THE WHOLE POINT OF THE NET.
-    # This regex used to start with ``^``, so THE NET HAD THE SAME BLIND SPOT AS
-    # THE THING IT WAS NETTING. Variant four walked through both at once:
-    #
-    #     ## CODEX-LANE CHANGES-REQUESTED-AT: codex `b3ca4e15...`
-    #
-    # `CODEX-LANE ` is a WORD prefix, not block-level markdown, so the normaliser
-    # does not strip it, the anchored grammar never sees the keyword at position
-    # zero -- and the anchored net missed it for exactly the same reason. A
-    # refusal was invisible to the binder AND to the mechanism whose docstring
-    # promised "the next one must announce itself instead".
-    #
-    # THE LESSON IS ABOUT THE SHAPE OF THE FIX, not about this variant. Leading
-    # and trailing text are UNBOUNDED axes: any words may precede a marker and
-    # any may follow it. Anchoring at either end means every new phrasing is a
-    # new hole, which is how this reached variant four one case at a time. The
-    # binding grammar stays anchored, because GRANTING authority should demand an
-    # exact form -- but the net must be a search, so that no lead-in or trailing
-    # commentary can hide a verdict-shaped line from it.
-    #
-    # Over-matching here is safe by construction: this net only ever routes a
-    # line to `malformed`, and a malformed REFUSAL-shaped line refuses while a
-    # malformed approval-shaped line cannot grant anything. Both directions of
-    # a false positive cost a re-post; a false negative loses a refusal.
-    suspect = re.compile(
-        r"(?:APPROV|CHANGES-REQUESTED|REQUEST\s+CHANGES|REJECT|LGTM|SIGN(?:ED)?[-\s]?OFF|ACK)"
-        # ⚠️ 7-40, NOT 40. Requiring a FULL sha gave the net the same blind spot as
-        # the grammar it is netting -- the exact mistake this regex's own docstring
-        # records fixing for the ANCHORING axis, left in place on the LENGTH axis.
-        # `APPROVED-AT: claude 6457ba0acfb4` -- canonical form, own line, correct
-        # lane, merely ABBREVIATED -- bound nothing and reported nothing, so a real
-        # review was lost and nobody was told. Abbreviated shas are how these
-        # markers are written in prose all day. Over-matching is safe here by
-        # construction: this net only routes a line to `malformed`, and a citation
-        # is filtered out before it gets there.
-        r"[^\n]*\b[0-9a-f]{7,40}\b",
-        re.IGNORECASE,
-    )
-
+    # The old net searched for a keyword plus 7-40 hex characters anywhere in the
+    # line. It therefore flagged prose that merely mentioned a full marker and
+    # silently dropped an asserted marker with six or zero hex characters. Moving
+    # the length floor only moved that boundary. The marker's place in the line
+    # supplies the syntactic context the value cannot.
     found: list[str] = []
     # (author, kind, lane, sha) already accepted from THIS comment stream, oldest
     # first. A verdict is issued once; a later copy of the same author's verdict is
@@ -1255,6 +1195,12 @@ def lane_shas(
             raw_line = raw_lines[_idx] if _idx < len(raw_lines) else line
             binding = approved_binding(line)
             if binding is None:
+                asserted = marker_assertion(line)
+                if not asserted:
+                    if _is_quoted_mention(raw_line) and citations is not None:
+                        citations.append((c.get("html_url") or c.get("url") or "?",
+                                          line[:120]))
+                    continue
                 # ⚠️ A WELL-FORMED WITHDRAWAL IS A MARKER, NOT A NEAR MISS, AND
                 # COUNTING IT AS MALFORMED PENALISES THE ONE CORRECT BEHAVIOUR.
                 # `approved_binding()` returns None here because a withdrawal is
@@ -1283,19 +1229,9 @@ def lane_shas(
                 # that same parser rather than a second copy of the shape.
                 _withdrawn = parse_marker(line)
                 if _withdrawn is not None and _withdrawn[0] == MARKER_WITHDRAWN:
-                    # A quoted withdrawal is still a citation and is still
-                    # counted as one -- skipping it silently here would move the
-                    # miscount rather than remove it.
-                    if _is_quoted_mention(raw_line) and citations is not None:
-                        citations.append(
-                            (c.get("html_url") or c.get("url") or "?", line[:120])
-                        )
                     continue
                 if (
-                    # `.search`, not `.match`: `re.match` anchors at position 0
-                    # regardless of the pattern, which is the other half of the
-                    # same blind spot.
-                    suspect.search(line)
+                    asserted
                     and not reject_legacy.match(line)
                     and not reject_current.match(line)
                 ):
@@ -1308,11 +1244,6 @@ def lane_shas(
                     _lane_m = re.search(r"\b(claude|codex)\b", line, re.I)
                     _kind = (MARKER_REFUSED if refusal_shaped(line) or "CHANGES-REQUESTED" in line.upper()
                              else MARKER_APPROVED)
-                    if _is_quoted_mention(raw_line):
-                        if citations is not None:
-                            citations.append((c.get("html_url") or c.get("url") or "?",
-                                              line[:120]))
-                        continue
                     if is_citation(
                         issued, author, _kind,
                         _lane_m.group(1).lower() if _lane_m else None,
@@ -2398,7 +2329,7 @@ def main() -> int:
     # SPLIT THE MALFORMED BUCKET BY POLARITY, because the two halves fail in
     # opposite directions and only one of them is safe to advise on.
     #
-    # An unparseable APPROVAL-shaped line (`APPROVE <sha>`, `LGTM <sha>`) cannot
+    # An unparseable APPROVAL-shaped line (`APPROVED-AT: <lane>`, `APPROVED @ <sha>`) cannot
     # be a refusal, so it cannot hide one. It stays an ADVISORY: this file's
     # long-standing and separately bracketed policy is that historical syntax
     # debt must not turn a valid canonical BOUND_CURRENT authority into absence,
@@ -2453,7 +2384,7 @@ def main() -> int:
     #  3. APPROVAL-shaped and unparseable, with every inspected label already
     #     bound to the current head -> ADVISORY. Here nothing is lost: the
     #     canonical binding is present and the malformed line is redundant
-    #     syntax debt, typically a historical `APPROVE <sha>` synonym sitting in
+    #     syntax debt, typically an incomplete `APPROVED-AT: <lane>` sitting in
     #     the same comment as its own canonical form (the #1847 shape). Failing
     #     here would block genuinely-approved heads on an old comment's wording
     #     and make the gate ignorable, which is a worse outcome than the debt.

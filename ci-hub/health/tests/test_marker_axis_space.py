@@ -12,7 +12,7 @@ The lesson is that "enumerate the variants" is not one matrix. A marker line has
 line-level axes AND the comment has composition axes, and a matrix over one
 family proves nothing about the other. Seven axes are enumerated here:
 
-    LEAD         nothing / heading / quote / WORD prefix / nested
+    LEAD         nothing / heading / quote / nested
     TRAIL        nothing / trailing prose
     SHA FORM     bare / backticked
     SEPARATOR    colon present / absent
@@ -20,11 +20,11 @@ family proves nothing about the other. Seven axes are enumerated here:
     WHICH SHA    current head / a stale head
     COMPOSITION  single marker / two in ONE comment / two across comments
 
-THE INVARIANT, which is weaker than "parses correctly" on purpose: no cell may be
-SILENTLY WRONG. A refusal must clear the lane or be flagged; a retract-then-rebind
-must bind at the head or be flagged. Being flagged is an acceptable outcome
-everywhere, because a flagged refusal-shaped line fails the gate -- loud and
-fail-closed. What is never acceptable is a wrong answer with no signal.
+THE INVARIANT, which is weaker than "parses correctly" on purpose: no assertion
+may be silently wrong, and no quoted mention may change review state. A refusal
+must clear the lane or be flagged; a retract-then-rebind must bind at the head or
+be flagged. Verdicts carrying surrounding prose are covered at the GitHub write
+boundary, which adds the exact canonical marker as its own line.
 
 Measured when this was written: 472/480 safe, and all 8 failures were the single
 composition class above.
@@ -42,7 +42,7 @@ def load(p):
 def c(b,t): return {"body":b,"createdAt":t,"html_url":"u"}
 
 # ---- THE AXES -------------------------------------------------------------
-LEAD   = {"none":"", "h2":"## ", "quote":"> ", "word":"CODEX-LANE ", "q+h2":"> ## "}
+LEAD   = {"none":"", "h2":"## ", "quote":"> ", "q+h2":"> ## "}
 TRAIL  = {"none":"", "prose":" -- see below"}
 SHAF   = {"bare":lambda s:s, "tick":lambda s:f"`{s}`"}
 SEP    = {"colon":":", "nocolon":""}          # axis 4: missing colon
@@ -67,8 +67,11 @@ def main(path):
         elif COMPOSE[comp]==2:    cs=[c(f"APPROVED-AT: claude {SHA}","T1"), c(ref+"\n"+app,"T2")]
         else:                     cs=[c(f"APPROVED-AT: claude {SHA}","T1"), c(ref,"T2"), c(app,"T3")]
         bound, flagged = outcome(m, cs)
-        canonical = (sep=="colon" and lane=="lane")
-        if COMPOSE[comp]==1:
+        mention = lead in {"quote", "q+h2"}
+        if mention:
+            ok = bound == SHA and not flagged
+            intent="prose mention must not change review state"
+        elif COMPOSE[comp]==1:
             # a refusal is present. Safe outcomes: cleared, or flagged.
             ok = (bound is None) or flagged
             intent="refusal must clear or be flagged"

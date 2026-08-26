@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import json
+import importlib.machinery
+import importlib.util
 import os
 import shutil
 import socket
@@ -23,6 +25,16 @@ SOURCE_DISCLOSURE = Path(
     )
 )
 TEST_AGENT = os.environ.get("DG_AGENT_NAME", "codex-boundary")
+HEAD = "b3ca4e155098ad6e6f32f507ed72855da0638010"
+
+
+def load_changes_requested_gate():
+    path = ROOT / "ci-hub/bin/changes-requested-gate"
+    loader = importlib.machinery.SourceFileLoader("gh_boundary_gate", str(path))
+    spec = importlib.util.spec_from_loader("gh_boundary_gate", loader)
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    return module
 
 
 def owner_row(agent: str = TEST_AGENT, *, sidecar: bool = True) -> dict:
@@ -74,6 +86,8 @@ class FleetGhTest(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
         (self.root / "ci-hub/bin").mkdir(parents=True)
+        (self.root / "ci-hub/closure").mkdir(parents=True)
+        (self.root / "ci-hub/health").mkdir(parents=True)
         (self.root / "ci-hub/lib").mkdir(parents=True)
         self.shim = self.root / "ci-hub/bin/gh"
         self.printer = self.root / "ci-hub/bin/who-am-i"
@@ -83,6 +97,18 @@ class FleetGhTest(unittest.TestCase):
         self.printer.chmod(0o755)
         for dependency in ("agent_identity.py", "taskgraph_db.py"):
             shutil.copy2(ROOT / "ci-hub/lib" / dependency, self.root / "ci-hub/lib" / dependency)
+        shutil.copy2(
+            ROOT / "ci-hub/lib/bounded_capture.py",
+            self.root / "ci-hub/lib/bounded_capture.py",
+        )
+        shutil.copy2(
+            ROOT / "ci-hub/health/approval_binding.py",
+            self.root / "ci-hub/health/approval_binding.py",
+        )
+        shutil.copy2(
+            ROOT / "ci-hub/closure/publication_record.py",
+            self.root / "ci-hub/closure/publication_record.py",
+        )
         shutil.copy2(SOURCE_DISCLOSURE, self.root / "ci-hub/lib/disclosure_tag.py")
 
         self.slot = self.root / "worktrees/slot01"
@@ -220,6 +246,81 @@ class FleetGhTest(unittest.TestCase):
             body,
             f"[hermit2, {TEST_AGENT}, unresolved, {machine}, role=reviewer]\nevidence",
         )
+
+    def test_full_sha_marker_in_prose_is_a_mention(self) -> None:
+        body = (
+            "The migration note reproduces the retired review text exactly: "
+            f"CHANGES-REQUESTED-AT: codex {HEAD}"
+        )
+        result = self.run_shim(
+            *self.identity(role="reviewer"),
+            "pr", "comment", "42", "--body", body,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        posted = self.captured()[self.captured().index("--body") + 1]
+        gate = load_changes_requested_gate()
+        approval = f"APPROVED-AT: codex {HEAD}"
+        self.assertEqual(gate.evaluate([approval, posted], HEAD)[0], gate.OK)
+
+    def test_standalone_sha_less_assertion_is_refused(self) -> None:
+        gate = load_changes_requested_gate()
+        approval = f"APPROVED-AT: codex {HEAD}"
+        refusal = "CHANGES-REQUESTED-AT: codex"
+        self.assertEqual(
+            gate.evaluate([approval, refusal], HEAD)[0],
+            gate.INDETERMINATE,
+        )
+
+    def test_verdict_with_lead_in_adds_marker_and_blocks(self) -> None:
+        marker = f"CHANGES-REQUESTED-AT: codex {HEAD}"
+        body = f"For this head, {marker} because the assertion still accepts prose."
+        result = self.run_shim(
+            *self.identity(role="reviewer"),
+            "--verdict", marker,
+            "pr", "comment", "42", "--body", body,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        posted = self.captured()[self.captured().index("--body") + 1]
+        self.assertEqual(posted.splitlines()[-1], marker)
+        gate = load_changes_requested_gate()
+        approval = f"APPROVED-AT: codex {HEAD}"
+        self.assertEqual(gate.evaluate([approval, posted], HEAD)[0], gate.BLOCKED)
+
+    def test_verdict_requires_one_canonical_marker_line(self) -> None:
+        result = self.run_shim(
+            *self.identity(role="reviewer"),
+            "--verdict", "CHANGES-REQUESTED-AT: codex short",
+            "pr", "comment", "42", "--body", "changes requested",
+        )
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("--verdict must be one canonical marker line", result.stderr)
+        self.assertFalse(self.capture.exists())
+
+    def test_verdict_already_on_its_own_line_is_not_duplicated(self) -> None:
+        marker = f"APPROVED-AT: codex {HEAD}"
+        result = self.run_shim(
+            *self.identity(role="coordinator"),
+            "--verdict", marker,
+            "pr", "comment", "42", "--body", f"dispatch evidence\n{marker}",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        posted = self.captured()[self.captured().index("--body") + 1]
+        self.assertEqual(posted.splitlines().count(marker), 1)
+
+    def test_verdict_inside_a_fence_does_not_suppress_the_asserted_line(self) -> None:
+        marker = f"CHANGES-REQUESTED-AT: codex {HEAD}"
+        result = self.run_shim(
+            *self.identity(role="reviewer"),
+            "--verdict", marker,
+            "pr", "comment", "42", "--body", f"Example:\n```\n{marker}\n```",
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        posted = self.captured()[self.captured().index("--body") + 1]
+        self.assertEqual(posted.splitlines()[-1], marker)
+        self.assertEqual(posted.splitlines().count(marker), 2)
+        gate = load_changes_requested_gate()
+        approval = f"APPROVED-AT: codex {HEAD}"
+        self.assertEqual(gate.evaluate([approval, posted], HEAD)[0], gate.BLOCKED)
 
     def test_pr_close_comment_without_identity_is_refused_before_write(self) -> None:
         result = self.run_shim(

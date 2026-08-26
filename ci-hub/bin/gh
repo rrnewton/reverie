@@ -24,6 +24,10 @@ an unavailable or ambiguous model is rendered literally as ``unresolved``.
 Roles are the closed owner-approved enum ``impl``, ``debugger``, ``reviewer``,
 ``relay``, ``coordinator``, and ``human``.
 
+A comment or review that carries a verdict may also supply ``--verdict`` with
+the exact canonical marker line. The boundary adds that line to the body once,
+so surrounding prose cannot make the readers mistake a verdict for a mention.
+
 A shared GitHub credential still cannot prove who typed the arguments.  The
 independent process-context comparison makes a false claim falsifiable; it does
 not turn the prefix into identity or review-family authority.
@@ -106,13 +110,6 @@ def _option_value(args: list[str], index: int, name: str) -> tuple[str, int] | N
     return None
 
 
-#: Set only by ``--verdict``, which ONLY ``ci-hub/bin/review-attest`` passes.
-#: This is not a user-facing override: intent is declared by WHICH COMMAND you
-#: run, and an override people type routinely is a warning again, one
-#: indirection down.
-_VERDICT_INTENT = False
-
-
 def disclosure_options(args: list[str]) -> tuple[list[str], dict[str, str]]:
     """Strip leading boundary options without parsing comment body text as flags."""
 
@@ -121,17 +118,13 @@ def disclosure_options(args: list[str]) -> tuple[list[str], dict[str, str]]:
     while index < len(args):
         if args[index] == "--model" or args[index].startswith("--model="):
             die("--model is process-resolved and must not be supplied by the caller")
-        if args[index] == "--verdict":
-            global _VERDICT_INTENT
-            _VERDICT_INTENT = True
-            index += 1
-            continue
         matched = False
         for name, key in (
             ("--who", "who"),
             ("--team", "team"),
             ("--role", "role"),
             ("--task", "task"),
+            ("--verdict", "verdict"),
         ):
             parsed = _option_value(args, index, name)
             if parsed is None:
@@ -208,12 +201,20 @@ def validate_disclosure(
 #: a fail-open on the refusal path. This guard does not and cannot close that:
 #: two parsers for one grammar is the underlying defect, and a third checker
 #: agreeing with one of them would not fix the disagreement.
-def _marker_binding(body: str) -> tuple[int, int, bool]:
-    """``(bound, unbindable, parser_can_discriminate_quotations)`` for ``body``."""
+def _approval_binding_module():
+    """Load the one marker parser used by the readers."""
     try:
         sys.path.insert(0, str(ROOT / "ci-hub/health"))
         import approval_binding as _ab  # noqa: PLC0415
     except Exception:
+        return None
+    return _ab
+
+
+def _marker_binding(body: str) -> tuple[int, int, bool]:
+    """``(bound, unbindable, parser_can_discriminate_quotations)`` for ``body``."""
+    _ab = _approval_binding_module()
+    if _ab is None:
         return (0, 0, False)
     capable = hasattr(_ab, "_is_quoted_mention")
     bound = 0
@@ -249,9 +250,37 @@ def refuse_unbindable_verdict(body: str) -> None:
     )
 
 
-def attributed(body: str, disclosure: disclosure_tag.Disclosure) -> str:
+def with_verdict(body: str, verdict: str | None) -> str:
+    """Append the exact canonical marker supplied by ``--verdict`` once."""
+    if verdict is None:
+        return body
+    grammar = _approval_binding_module()
+    if grammar is None:
+        die("cannot load approval_binding to verify --verdict")
+    if "\n" in verdict or "\r" in verdict or verdict.strip() != verdict \
+            or grammar.parse_marker(verdict) is None:
+        die(
+            "--verdict must be one canonical marker line with a full 40-hex SHA: "
+            "APPROVED-AT, CHANGES-REQUESTED-AT, or "
+            "CHANGES-REQUESTED-WITHDRAWN-AT"
+        )
+    if any(
+        line == verdict and grammar.marker_assertion(line)
+        for line in grammar.marker_lines(body)
+    ):
+        return body
+    separator = "" if not body or body.endswith("\n") else "\n"
+    return body + separator + verdict
+
+
+def attributed(
+    body: str,
+    disclosure: disclosure_tag.Disclosure,
+    verdict: str | None = None,
+) -> str:
     # Inside `attributed` on purpose: there are five call sites and a gate that
     # misses one is not a gate. Every comment body passes through here.
+    body = with_verdict(body, verdict)
     refuse_unbindable_verdict(body)
     existing = DISCLOSURE_RE.match(body)
     if existing:
@@ -330,19 +359,27 @@ def close_comment_option(args: list[str]) -> tuple[int, int, str] | None:
 
 
 def rewrite_body_option(
-    args: list[str], disclosure: disclosure_tag.Disclosure, *, required: bool
+    args: list[str],
+    disclosure: disclosure_tag.Disclosure,
+    *,
+    required: bool,
+    verdict: str | None = None,
 ) -> list[str]:
     found = body_option(args)
     if found is None:
         if required:
-            return args + ["--body", attributed("", disclosure)]
+            return args + ["--body", attributed("", disclosure, verdict)]
         die("command has no supported --body/--body-file argument")
     index, consumed, body = found
-    return args[:index] + ["--body", attributed(body, disclosure)] + args[index + consumed :]
+    return (
+        args[:index]
+        + ["--body", attributed(body, disclosure, verdict)]
+        + args[index + consumed :]
+    )
 
 
 def rewrite_close_comment(
-    args: list[str], disclosure: disclosure_tag.Disclosure
+    args: list[str], disclosure: disclosure_tag.Disclosure, verdict: str | None = None
 ) -> list[str]:
     found = close_comment_option(args)
     if found is None:
@@ -350,7 +387,7 @@ def rewrite_close_comment(
     index, consumed, body = found
     return (
         args[:index]
-        + ["--comment", attributed(body, disclosure)]
+        + ["--comment", attributed(body, disclosure, verdict)]
         + args[index + consumed :]
     )
 
@@ -448,7 +485,11 @@ def is_attributed_write(args: list[str]) -> bool:
     return method == "POST" and is_created_body_endpoint(endpoint)
 
 
-def rewrite_api(args: list[str], disclosure: disclosure_tag.Disclosure) -> list[str]:
+def rewrite_api(
+    args: list[str],
+    disclosure: disclosure_tag.Disclosure,
+    verdict: str | None = None,
+) -> list[str]:
     if len(args) > 1 and args[1] == "graphql":
         die("raw GraphQL comment mutations cannot be attributed safely")
     method = api_method(args)
@@ -465,28 +506,49 @@ def rewrite_api(args: list[str], disclosure: disclosure_tag.Disclosure) -> list[
             if args[index + 1].startswith("body="):
                 body = args[index + 1].split("=", 1)[1]
                 rewritten = list(args)
-                rewritten[index + 1] = f"body={attributed(body, disclosure)}"
+                rewritten[index + 1] = f"body={attributed(body, disclosure, verdict)}"
                 return rewritten
         for prefix in ("--raw-field=body=", "--field=body="):
             if arg.startswith(prefix):
                 rewritten = list(args)
-                rewritten[index] = f"{prefix}{attributed(arg[len(prefix):], disclosure)}"
+                rewritten[index] = (
+                    f"{prefix}{attributed(arg[len(prefix):], disclosure, verdict)}"
+                )
                 return rewritten
     die(f"raw API comment mutation {method} {endpoint} has no supported body field")
 
 
-def rewrite(args: list[str], disclosure: disclosure_tag.Disclosure) -> list[str]:
+def rewrite(
+    args: list[str],
+    disclosure: disclosure_tag.Disclosure,
+    verdict: str | None = None,
+) -> list[str]:
     if len(args) >= 2 and args[:2] in (["pr", "comment"], ["issue", "comment"]):
-        return rewrite_body_option(args, disclosure, required=False)
+        return rewrite_body_option(args, disclosure, required=False, verdict=verdict)
     if len(args) >= 2 and args[:2] in CREATED_BODY_COMMANDS + EDITED_BODY_COMMANDS:
-        return rewrite_body_option(args, disclosure, required=False)
+        return rewrite_body_option(args, disclosure, required=False, verdict=verdict)
     if len(args) >= 2 and args[:2] == ["pr", "review"]:
-        return rewrite_body_option(args, disclosure, required=True)
+        return rewrite_body_option(args, disclosure, required=True, verdict=verdict)
     if len(args) >= 2 and args[:2] == ["pr", "close"]:
-        return rewrite_close_comment(args, disclosure)
+        return rewrite_close_comment(args, disclosure, verdict)
     if args and args[0] == "api":
-        return rewrite_api(args, disclosure)
+        return rewrite_api(args, disclosure, verdict)
     return args
+
+
+def is_verdict_write(args: list[str]) -> bool:
+    """Whether this write creates a comment or review read by the marker grammar."""
+    if len(args) >= 2 and args[:2] in (
+        ["pr", "comment"],
+        ["issue", "comment"],
+        ["pr", "review"],
+    ):
+        return True
+    if not args or args[0] != "api":
+        return False
+    return api_method(args) in {"POST", "PATCH", "PUT"} and is_comment_endpoint(
+        api_endpoint(args)
+    )
 
 
 # ⚠️ THE COMMENT URL IS THE ONLY HONEST SOURCE FOR THIS RECORD.
@@ -577,18 +639,22 @@ def post_and_record(args: list[str], task: str, actor: str) -> int:
 def main() -> int:
     args, supplied = disclosure_options(sys.argv[1:])
     task = supplied.get("task")
+    verdict = supplied.get("verdict")
+    if verdict is not None and not is_verdict_write(args):
+        die("--verdict only applies to a comment or review write")
     if is_attributed_write(args):
         claimed_agent, team, role = required_disclosure(supplied)
         disclosure = validate_disclosure(claimed_agent, team, role)
-        args = rewrite(args, disclosure)
+        args = rewrite(args, disclosure, verdict)
         # A named task is what couples the publication to its record. It is
         # optional so that every existing caller keeps working unchanged, and
         # `drain_publication.py` measures the resulting coverage per task rather
         # than assuming it.
         if task and args[:2] in (["pr", "comment"], ["issue", "comment"]):
             return post_and_record(args, task, claimed_agent)
-    elif task:
-        die("--task only applies to a comment write")
+    elif task or verdict is not None:
+        option = "--task" if task else "--verdict"
+        die(f"{option} only applies to a comment write")
     return subprocess.run([real_gh(), *args]).returncode
 
 

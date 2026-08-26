@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Block-level markdown must not hide a verdict, and must not invent one.
+"""Markdown decoration must not hide a verdict, and quotation must not invent one.
 
 WHY THIS BRACKET EXISTS. `undecorate` stripped paired emphasis but not leading
 block-level markdown, so a verdict written as a Markdown heading fell through to
@@ -24,6 +24,10 @@ grammar still has to match the entire remaining line -- keyword, colon, lane, an
 a 40-hex. No string becomes a verdict by having `##` removed unless it was
 already a verdict wearing a hat. The `prose_mentioning_a_sha` case below is the
 standing guard on that claim.
+
+A blockquote is different from a heading or list bullet: it says the line is
+quoted from somewhere else. Stripping ``>`` turns a mention into this comment's
+assertion, so the cases below require quoted approvals and refusals to do nothing.
 """
 
 from __future__ import annotations
@@ -67,12 +71,14 @@ CASES = [
     ("plain_refusal_blocks", [APPROVAL, _later(f"CHANGES-REQUESTED-AT: claude {SHA}")], False),
     ("heading_refusal_blocks", [APPROVAL, _later(f"## CHANGES-REQUESTED-AT: claude {SHA}")], False),
     ("h1_refusal_blocks", [APPROVAL, _later(f"# CHANGES-REQUESTED-AT: claude {SHA}")], False),
-    ("blockquote_refusal_blocks", [APPROVAL, _later(f"> CHANGES-REQUESTED-AT: claude {SHA}")], False),
+    ("blockquote_refusal_is_a_mention", [APPROVAL, _later(f"> CHANGES-REQUESTED-AT: claude {SHA}")], True),
     ("list_dash_refusal_blocks", [APPROVAL, _later(f"- CHANGES-REQUESTED-AT: claude {SHA}")], False),
     ("list_star_refusal_blocks", [APPROVAL, _later(f"* CHANGES-REQUESTED-AT: claude {SHA}")], False),
     ("bold_refusal_still_blocks", [APPROVAL, _later(f"**CHANGES-REQUESTED-AT: claude {SHA}**")], False),
-    ("quoted_heading_refusal_blocks", [APPROVAL, _later(f"> ## CHANGES-REQUESTED-AT: claude {SHA}")], False),
+    ("quoted_heading_refusal_is_a_mention", [APPROVAL, _later(f"> ## CHANGES-REQUESTED-AT: claude {SHA}")], True),
     ("heading_approval_grants", [_c(f"## APPROVED-AT: claude {SHA}", "2026-08-12T18:15:20Z")], True),
+    ("blockquote_approval_grants_nothing",
+     [_c(f"> APPROVED-AT: claude {SHA}", "2026-08-12T18:15:20Z")], False),
     # The false-positive guard. Stripping markers must never turn prose into a verdict.
     ("prose_mentioning_a_sha_grants_nothing", [_c(f"we considered approving {SHA} today", "2026-08-12T18:15:20Z")], False),
     ("refusal_in_the_other_lane_leaves_claude_alone",

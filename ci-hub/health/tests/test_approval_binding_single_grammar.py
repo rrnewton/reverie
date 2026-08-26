@@ -120,12 +120,15 @@ def test_decoration_and_case_still_bind_through_the_shared_parser():
     for body in (
         f"**APPROVED-AT: claude {SHA}**",
         f"## APPROVED-AT: claude {SHA}",
-        f"> APPROVED-AT: claude {SHA}",
         f"- APPROVED-AT: claude {SHA}",
         f"approved-at: CLAUDE {SHA}",
         f"APPROVED-AT:   claude   {SHA}",
     ):
         assert ab.lane_shas(_comment(body), "claude") == [SHA], body
+
+
+def test_a_blockquote_is_a_mention_not_this_comments_approval():
+    assert ab.lane_shas(_comment(f"> APPROVED-AT: claude {SHA}"), "claude") == []
 
 
 def test_refusal_policy_did_not_move_with_the_grammar():

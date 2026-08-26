@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The pre-merge gate must see every cell of the marker variant space.
+"""The pre-merge gate must distinguish marker assertions from prose mentions.
 
 ⚠️ WHY THIS EXISTS AS ITS OWN BRACKET. `test_marker_variant_space.py` pins the
 shared GRAMMAR against these 72 cells. It says nothing about
@@ -8,21 +8,10 @@ still refuses when the authority cannot be imported. Two implementations of one
 rule is a drift risk that agent(hermit-003) named precisely, and the answer is not
 to hope: it is to run the SAME enumeration through both.
 
-Measured 2026-08-25, and this is the whole reason the bracket exists:
-
-    gate at 35505ca1 (line-initial rule)   caught 48/72, missed 24
-    gate after the presence fix            caught 72/72, missed  0
-
-The 24 were exactly the four word-bearing leads -- `CODEX-LANE `, `Codex lane: `,
-`## CODEX-LANE `, `**Codex lane** ` -- crossed with 3 trails and 2 sha forms. The
-gate RAN and REFUSED throughout; it was simply blind to a third of the space, and
-its "clear" verdict was printed into the lander log as if verified. A gate that is
-blind is worse than one that is absent, because its zero means two things and only
-one of them is good news.
-
-The invariant asserted is agent(hermit-003)'s, deliberately weaker than "parses
-correctly": NO CELL MAY BE SILENTLY WRONG. A refusal must block or be flagged --
-both are non-zero and both stop the merge. Only a silent OK is a failure here.
+The old presence rule treated prose explaining a marker as a refusal whenever it
+happened to carry a SHA. The invariant here is two-sided: a marker assertion must
+block or be flagged, and quoted text must leave the prior approval alone. Verdicts
+with surrounding prose go through the GitHub write boundary and are tested there.
 """
 from __future__ import annotations
 
@@ -40,11 +29,10 @@ SHA = "b3ca4e155098ad6e6f32f507ed72855da0638010"
 LEADS = [
     ("none", ""), ("indent", "    "), ("h2", "## "), ("h1", "# "),
     ("quote", "> "), ("dash", "- "), ("star", "* "), ("quote+h2", "> ## "),
-    ("word", "CODEX-LANE "), ("words+colon", "Codex lane: "),
-    ("h2+word", "## CODEX-LANE "), ("emphasis+word", "**Codex lane** "),
 ]
 TRAILS = [("none", ""), ("prose", " -- and it binds at the current head"), ("punct", ".")]
 SHA_FORMS = [("bare", SHA), ("backticked", f"`{SHA}`")]
+QUOTED_LEADS = {"quote", "quote+h2"}
 
 
 def _load_gate():
@@ -77,7 +65,10 @@ def main() -> int:
         body = f"My verdict on this head:\n{line}"
         rc, _why = gate.evaluate([approval, body], SHA)
         seen += 1
-        if rc == gate.OK:
+        if ln in QUOTED_LEADS:
+            if rc != gate.OK:
+                silent.append(f"FALSE REFUSAL: prose mention lead={ln} trail={tn} sha={sn}")
+        elif rc == gate.OK:
             silent.append(f"refusal SILENTLY CLEARED: lead={ln} trail={tn} sha={sn}")
 
     # ⚠️ AND PIN THE FENCE RULE ITSELF, in both directions. A marker that renders
@@ -107,6 +98,13 @@ def main() -> int:
     if rc_prose != gate.OK:
         silent.append("FALSE REFUSAL: prose mentioning the token blocked the head")
 
+    # Same marker vocabulary, opposite syntactic context. The full SHA in the
+    # mention must not matter, and the absent SHA in the assertion must not hide it.
+    mention = f"The required form is CHANGES-REQUESTED-AT: claude {SHA}, on its own line."
+    if gate.evaluate([approval, mention], SHA)[0] != gate.OK:
+        silent.append("FALSE REFUSAL: full-SHA prose mention blocked the head")
+    if gate.evaluate([approval, "CHANGES-REQUESTED-AT: claude"], SHA)[0] == gate.OK:
+        silent.append("SILENTLY CLEARED: standalone refusal with no SHA was ignored")
     # ⚠️ A WITHDRAWAL CLEARS ITS OWN LANE ONLY -- THE DUAL-LANE GUARANTEE.
     # Until 2026-08-25 `markers()` discarded the lane, so `withdrawn_at_head` was
     # `any(...)` over every marker and ONE lane's withdrawal discharged EVERY

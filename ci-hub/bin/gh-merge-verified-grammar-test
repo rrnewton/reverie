@@ -37,6 +37,12 @@ HERE = pathlib.Path(__file__).resolve().parent
 LANDER = HERE / "gh-merge-verified"
 SHA = "b3ca4e155098ad6e6f32f507ed72855da0638010"
 OTHER = "a" * 40
+MENTION_SHA = "c" * 40
+MIXED_MENTION_AND_ASSERTION = (
+    "The migration note reproduces the retired review text exactly: "
+    f"CHANGES-REQUESTED-AT: codex {MENTION_SHA}\n"
+    f"CHANGES-REQUESTED-AT: claude {SHA}"
+)
 
 
 def by(agent: str, *lines: str) -> str:
@@ -99,13 +105,19 @@ def probe(module, body: str) -> bool:
 CASES = [
     ("plain refusal blocks", f"CHANGES-REQUESTED-AT: claude {SHA}", True),
     ("heading refusal blocks", f"## CHANGES-REQUESTED-AT: claude {SHA}", True),
-    ("blockquote refusal blocks", f"> CHANGES-REQUESTED-AT: claude {SHA}", True),
+    ("full marker in prose is a mention",
+     "The migration note reproduces the retired review text exactly: "
+     f"CHANGES-REQUESTED-AT: codex {SHA}", False),
+    ("an earlier mention does not hide a later asserted refusal",
+     MIXED_MENTION_AND_ASSERTION, True),
+    ("blockquote refusal is a mention", f"> CHANGES-REQUESTED-AT: claude {SHA}", False),
     ("bold refusal blocks", f"**CHANGES-REQUESTED-AT: claude {SHA}**", True),
     ("list refusal blocks", f"- CHANGES-REQUESTED-AT: claude {SHA}", True),
     # POLICY, lane-agnostic: the authority would report this as codex-only.
     ("codex refusal blocks too", f"CHANGES-REQUESTED-AT: codex {SHA}", True),
     # POLICY, over-block: unparseable but refusal-shaped, naming this head.
     ("unparseable refusal shape blocks", f"CHANGES REQUESTED for {SHA} -- see below", True),
+    ("historical REJECT spelling blocks", f"REJECT: claude {SHA}", True),
     ("withdrawal clears",
      by("hermit-007",
         f"CHANGES-REQUESTED-AT: claude {SHA}",
@@ -236,6 +248,20 @@ def main() -> int:
     else:
         print("  PASS  authority parses a decorated refusal")
 
+    parsed_mixed = []
+    for line in authority.marker_lines(MIXED_MENTION_AND_ASSERTION):
+        if not authority.marker_assertion(line):
+            continue
+        parsed = authority.parse_marker(line)
+        if parsed is not None:
+            parsed_mixed.append(parsed)
+    expected_mixed = [(authority.MARKER_REFUSED, "claude", SHA)]
+    if parsed_mixed != expected_mixed:
+        failures.append("mixed mention and assertion did not identify only the assertion")
+        print(f"  FAIL  mixed body parsed {parsed_mixed!r}, want {expected_mixed!r}")
+    else:
+        print("  PASS  mixed body identifies only the later assertion")
+
     for name, labels, comments, want_refuse in LABEL_CASES:
         got = probe_labels(lander, labels, comments)
         ok = got == want_refuse
@@ -243,7 +269,7 @@ def main() -> int:
         if not ok:
             failures.append(name)
 
-    total = len(CASES) + len(LABEL_CASES) + 3
+    total = len(CASES) + len(LABEL_CASES) + 4
     print(f"\nassertions: {total - len(failures)} passed, {len(failures)} failed")
     if failures:
         print("RESULT: FAIL")

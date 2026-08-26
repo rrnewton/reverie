@@ -197,6 +197,7 @@ def execute(args: argparse.Namespace, runner: Runner = subprocess.run) -> int:
             f"observed {before.get('headRefOid') or 'missing'}"
         )
 
+    verdict = f"APPROVED-AT: {args.family} {args.head}"
     _run(
         runner,
         [
@@ -207,6 +208,8 @@ def execute(args: argparse.Namespace, runner: Runner = subprocess.run) -> int:
             args.team,
             "--role",
             "coordinator",
+            "--verdict",
+            verdict,
             "pr",
             "comment",
             str(args.pr),

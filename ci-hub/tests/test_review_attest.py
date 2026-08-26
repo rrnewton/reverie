@@ -78,6 +78,7 @@ def assert_positive_and_critical_paths() -> None:
     assert "APPROVED-AT: codex " + HEAD in body
     assert "dispatch attestation does not prove the executing process family" in body
     assert comment[1:7] == ["--who", "hermit-coord", "--team", "hermit2", "--role", "coordinator"]
+    assert comment[7:9] == ["--verdict", "APPROVED-AT: codex " + HEAD]
     edit = next(call for call in fake.calls if call[1:3] == ["pr", "edit"])
     assert "adversarial-review-codex1" in edit and "passed-review-codex" in edit
     assert "post-facto-human-review" not in edit
