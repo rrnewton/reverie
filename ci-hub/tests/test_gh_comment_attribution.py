@@ -271,7 +271,7 @@ class FleetGhTest(unittest.TestCase):
             gate.INDETERMINATE,
         )
 
-    def test_verdict_with_lead_in_adds_marker_and_blocks(self) -> None:
+    def test_verdict_with_lead_in_marks_that_line_and_blocks(self) -> None:
         marker = f"CHANGES-REQUESTED-AT: codex {HEAD}"
         body = f"For this head, {marker} because the assertion still accepts prose."
         result = self.run_shim(
@@ -281,9 +281,12 @@ class FleetGhTest(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         posted = self.captured()[self.captured().index("--body") + 1]
-        self.assertEqual(posted.splitlines()[-1], marker)
+        self.assertEqual(posted.splitlines()[-1], "VERDICT: " + body)
+        self.assertEqual(posted.count(marker), 1)
+        self.assertNotIn("\n" + marker, posted)
         gate = load_changes_requested_gate()
         approval = f"APPROVED-AT: codex {HEAD}"
+        self.assertEqual(gate.markers([posted]), [(gate.REFUSAL, "codex", HEAD)])
         self.assertEqual(gate.evaluate([approval, posted], HEAD)[0], gate.BLOCKED)
 
     def test_verdict_requires_one_canonical_marker_line(self) -> None:
@@ -307,20 +310,16 @@ class FleetGhTest(unittest.TestCase):
         posted = self.captured()[self.captured().index("--body") + 1]
         self.assertEqual(posted.splitlines().count(marker), 1)
 
-    def test_verdict_inside_a_fence_does_not_suppress_the_asserted_line(self) -> None:
+    def test_verdict_inside_a_fence_is_refused_instead_of_moved(self) -> None:
         marker = f"CHANGES-REQUESTED-AT: codex {HEAD}"
         result = self.run_shim(
             *self.identity(role="reviewer"),
             "--verdict", marker,
             "pr", "comment", "42", "--body", f"Example:\n```\n{marker}\n```",
         )
-        self.assertEqual(result.returncode, 0, result.stderr)
-        posted = self.captured()[self.captured().index("--body") + 1]
-        self.assertEqual(posted.splitlines()[-1], marker)
-        self.assertEqual(posted.splitlines().count(marker), 2)
-        gate = load_changes_requested_gate()
-        approval = f"APPROVED-AT: codex {HEAD}"
-        self.assertEqual(gate.evaluate([approval, posted], HEAD)[0], gate.BLOCKED)
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("exactly once in prose", result.stderr)
+        self.assertFalse(self.capture.exists())
 
     def test_pr_close_comment_without_identity_is_refused_before_write(self) -> None:
         result = self.run_shim(

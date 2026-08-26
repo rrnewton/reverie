@@ -467,10 +467,14 @@ _AGENT_ID = r"[a-z0-9][a-z0-9-]*"
 # after group 3 -- so `parse_marker`'s existing 3-tuple contract, and every consumer
 # of it, is unchanged by this edit. The issuer is read through `marker_issuer`.
 # Longest first: CHANGES-REQUESTED-WITHDRAWN-AT must not be read as a refusal.
-_MARKER_RE = re.compile(
-    r"^(CHANGES-REQUESTED-WITHDRAWN-AT|CHANGES-REQUESTED-AT|APPROVED-AT):"
+_MARKER_PATTERN = (
+    r"(CHANGES-REQUESTED-WITHDRAWN-AT|CHANGES-REQUESTED-AT|APPROVED-AT):"
     r"\s*(claude|codex)\s+([0-9a-f]{40})"
-    rf"(?:\s+BY\s+(?P<issuer>{_AGENT_ID}))?$",
+    rf"(?:\s+BY\s+(?P<issuer>{_AGENT_ID}))?"
+)
+_MARKER_RE = re.compile(rf"^{_MARKER_PATTERN}$", re.IGNORECASE)
+_MARKER_PREFIX_RE = re.compile(
+    rf"{_MARKER_PATTERN}(?=$|[\s.,;!?—-])",
     re.IGNORECASE,
 )
 
@@ -489,9 +493,10 @@ def strip_decoration(line: str) -> str:
 # A malformed marker is still an assertion when the review vocabulary starts the
 # normalized line. This is deliberately independent of SHA presence or length:
 # ``APPROVED-AT: claude`` is an incomplete assertion, while prose that mentions
-# ``APPROVED-AT: claude <sha>`` is not a verdict. A writer publishing a verdict
-# with surrounding prose adds the canonical marker as its own line; readers do
-# not guess from the prose around a token.
+# ``APPROVED-AT: claude <sha>`` is not a verdict. Existing lane headings put the
+# marker directly after the heading. A writer publishing a verdict with other
+# surrounding prose records that choice with the existing ``VERDICT:`` prefix;
+# readers do not guess from arbitrary prose around a token.
 _MARKER_ASSERTION_RE = re.compile(
     r"(?:APPROVED-AT|APPROVED(?=\s+(?:@|[-—]))|"
     r"APPROVE(?=\s+\S+\s*$)|"
@@ -503,6 +508,12 @@ _MARKER_ASSERTION_RE = re.compile(
     re.IGNORECASE,
 )
 
+_LANE_HEADING_RE = re.compile(
+    r"^(?:\*\*)?(?:claude|codex)(?:-lane|\s+lane)(?:\*\*)?:?\s+",
+    re.IGNORECASE,
+)
+_VERDICT_LEAD_RE = re.compile(r"^VERDICT:\s*", re.IGNORECASE)
+
 
 def marker_assertion_start(line: str) -> "int | None":
     """Start of the asserted review marker in ``line``, or ``None`` for a mention."""
@@ -510,7 +521,17 @@ def marker_assertion_start(line: str) -> "int | None":
     if normalized.startswith(">"):
         return None
     match = _MARKER_ASSERTION_RE.match(normalized)
-    return match.start() if match is not None else None
+    if match is not None:
+        return match.start()
+    lane_heading = _LANE_HEADING_RE.match(normalized)
+    if lane_heading is not None:
+        match = _MARKER_ASSERTION_RE.match(normalized, lane_heading.end())
+        return match.start() if match is not None else None
+    verdict = _VERDICT_LEAD_RE.match(normalized)
+    if verdict is not None:
+        match = _MARKER_ASSERTION_RE.search(normalized, verdict.end())
+        return match.start() if match is not None else None
+    return None
 
 
 def marker_assertion(line: str) -> bool:
@@ -630,15 +651,27 @@ def is_template(tail: str) -> bool:
     return bool(_PLACEHOLDER_RE.search(tail))
 
 
+def parse_canonical_marker(line: str) -> tuple[str, str, str] | None:
+    """``(kind, lane, sha)`` when the whole normalized line is canonical."""
+    match = _MARKER_RE.match(strip_decoration(line))
+    if not match:
+        return None
+    return match.group(1).upper(), match.group(2).lower(), match.group(3)
+
+
 def parse_marker(line: str) -> tuple[str, str, str] | None:
-    """``(kind, lane, sha)`` for a canonical marker line, else ``None``.
+    """``(kind, lane, sha)`` for a canonical marker in an assertion, else ``None``.
 
     `kind` is one of the ``MARKER_*`` constants, upper-cased; `lane` is
-    lower-cased. Decoration is stripped first, so a marker written as a heading,
-    a list item or in bold parses identically to a bare one. A blockquote remains
-    quoted text and does not parse as this comment's verdict.
+    lower-cased. Decoration is stripped first. The assertion boundary decides
+    whether a canonical marker at the start, after an existing lane heading, or
+    after ``VERDICT:`` is a verdict rather than a mention.
     """
-    match = _MARKER_RE.match(strip_decoration(line))
+    normalized = strip_decoration(line)
+    start = marker_assertion_start(normalized)
+    if start is None:
+        return None
+    match = _MARKER_PREFIX_RE.match(normalized, start)
     if not match:
         return None
     return match.group(1).upper(), match.group(2).lower(), match.group(3)
@@ -655,7 +688,11 @@ def marker_issuer(line: str) -> "str | None":
     the disclosure tag was inferred from the comment around it, and only the
     first survives being quoted into someone else's comment.
     """
-    match = _MARKER_RE.match(strip_decoration(line))
+    normalized = strip_decoration(line)
+    start = marker_assertion_start(normalized)
+    if start is None:
+        return None
+    match = _MARKER_PREFIX_RE.match(normalized, start)
     if not match:
         return None
     issuer = match.group("issuer")
@@ -683,7 +720,8 @@ def marker_issuer(line: str) -> "str | None":
 # and not honoured.
 #
 # So the net shares ``marker_assertion_start`` and spans the near-miss family.
-# Prose containing the marker is a mention; a marker at the start is an assertion.
+# Prose containing the marker is a mention. A marker at the start, directly after
+# an existing lane heading, or on a line beginning ``VERDICT:`` is an assertion.
 # ⚠️ THE TRAILING GUARD IS NOT COSMETIC: WITHOUT IT THIS FIRES ON THE GATE'S OWN
 # NAME. `changes-requested-gate` contains the token, `\b` is satisfied by the
 # hyphen, and every sentence naming the tool became an unbindable refusal. Measured

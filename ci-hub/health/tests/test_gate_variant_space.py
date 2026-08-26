@@ -10,8 +10,8 @@ to hope: it is to run the SAME enumeration through both.
 
 The old presence rule treated prose explaining a marker as a refusal whenever it
 happened to carry a SHA. The invariant here is two-sided: a marker assertion must
-block or be flagged, and quoted text must leave the prior approval alone. Verdicts
-with surrounding prose go through the GitHub write boundary and are tested there.
+block or be flagged, and quoted text must leave the prior approval alone. The
+existing lane-heading forms remain assertions, including with trailing prose.
 """
 from __future__ import annotations
 
@@ -29,6 +29,8 @@ SHA = "b3ca4e155098ad6e6f32f507ed72855da0638010"
 LEADS = [
     ("none", ""), ("indent", "    "), ("h2", "## "), ("h1", "# "),
     ("quote", "> "), ("dash", "- "), ("star", "* "), ("quote+h2", "> ## "),
+    ("word", "CODEX-LANE "), ("words+colon", "Codex lane: "),
+    ("h2+word", "## CODEX-LANE "), ("emphasis+word", "**Codex lane** "),
 ]
 TRAILS = [("none", ""), ("prose", " -- and it binds at the current head"), ("punct", ".")]
 SHA_FORMS = [("bare", SHA), ("backticked", f"`{SHA}`")]
@@ -105,6 +107,9 @@ def main() -> int:
         silent.append("FALSE REFUSAL: full-SHA prose mention blocked the head")
     if gate.evaluate([approval, "CHANGES-REQUESTED-AT: claude"], SHA)[0] == gate.OK:
         silent.append("SILENTLY CLEARED: standalone refusal with no SHA was ignored")
+    lead_in = f"## CODEX-LANE CHANGES-REQUESTED-AT: codex `{SHA}` -- still blocked"
+    if gate.evaluate([approval, lead_in], SHA)[0] == gate.OK:
+        silent.append("SILENTLY CLEARED: CODEX-LANE refusal with trailing prose was ignored")
     # ⚠️ A WITHDRAWAL CLEARS ITS OWN LANE ONLY -- THE DUAL-LANE GUARANTEE.
     # Until 2026-08-25 `markers()` discarded the lane, so `withdrawn_at_head` was
     # `any(...)` over every marker and ONE lane's withdrawal discharged EVERY

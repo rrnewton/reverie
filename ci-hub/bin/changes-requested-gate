@@ -31,11 +31,10 @@
 # them refuses. This one refuses.
 #
 # ⚠️ IT KEYS ON A MARKER ASSERTION, NOT TOKEN PRESENCE. After the shared
-# Markdown normalization, the marker starts the line. Marker text inside prose is
-# a mention. A verdict carrying surrounding prose is published with ``--verdict``,
-# which adds its canonical marker as its own line. The marker may be malformed and
-# still fail closed: a full SHA in prose does not make it a verdict, and a missing
-# SHA on a standalone marker does not make it disappear.
+# Markdown normalization, the marker starts the line or follows an existing lane
+# heading or ``VERDICT:`` prefix. Marker text inside arbitrary prose is a mention.
+# The marker may be malformed and still fail closed: a full SHA in prose does not
+# make it a verdict, and a missing SHA on a standalone marker does not disappear.
 #
 # If a sha can be extracted and it names the head, REFUSE. If a sha can be
 # extracted and it names some other commit, that refusal was cleared by a later
@@ -402,8 +401,9 @@ def markers_with_ids(
 ) -> list[tuple[str, str | None, str | None, object]]:
     """Every marker-shaped line, as (kind, lane-or-None, sha-or-None), in document order.
 
-    After the shared Markdown normalization, a marker assertion starts the line.
-    Marker text inside prose is a mention. This is the same boundary used by
+    After the shared Markdown normalization, a marker assertion starts the line or
+    follows an existing lane heading or ``VERDICT:`` prefix. Marker text inside
+    arbitrary prose is a mention. This is the same boundary used by
     approval_binding's malformed-source report, so a full SHA no longer turns a
     mention into a verdict and an absent SHA no longer hides a standalone assertion.
     """

@@ -105,6 +105,11 @@ def probe(module, body: str) -> bool:
 CASES = [
     ("plain refusal blocks", f"CHANGES-REQUESTED-AT: claude {SHA}", True),
     ("heading refusal blocks", f"## CHANGES-REQUESTED-AT: claude {SHA}", True),
+    ("CODEX-LANE refusal with trailing prose blocks",
+     f"## CODEX-LANE CHANGES-REQUESTED-AT: codex `{SHA}` -- still blocked", True),
+    ("explicit VERDICT lead-in with trailing prose blocks",
+     f"VERDICT: For this head, CHANGES-REQUESTED-AT: codex {SHA} because it is blocked",
+     True),
     ("full marker in prose is a mention",
      "The migration note reproduces the retired review text exactly: "
      f"CHANGES-REQUESTED-AT: codex {SHA}", False),

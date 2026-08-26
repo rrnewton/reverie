@@ -10,11 +10,11 @@ beside it:
     3  a label outliving the sha it was earned at     (not a line shape)
     4  a verdict written with surrounding prose       `## CODEX-LANE CHANGES-...`
 
-Variant four cannot be recovered from line shape without also treating prose that
-quotes the same marker as a verdict. The GitHub write boundary now takes the exact
-canonical marker through ``--verdict`` and adds it as its own line. That path is
-tested in ``test_gh_comment_attribution.py``. This matrix covers only shapes whose
-meaning is present in the line itself.
+Variant four uses the existing lane-heading vocabulary, not arbitrary prose. The
+GitHub write boundary separately records ``--verdict`` on a prose lead-in by
+putting the existing ``VERDICT:`` prefix on that same line. The distinction is
+therefore explicit in both cases and does not depend on SHA length or trailing
+text.
 
 THE AXES. A marker line decomposes as
 
@@ -22,7 +22,8 @@ THE AXES. A marker line decomposes as
 
 and only some of those axes are bounded:
 
-    LEAD     bounded    nothing / whitespace / block markdown / paired emphasis.
+    LEAD     bounded    nothing / whitespace / block markdown / paired emphasis /
+                        existing lane-heading vocabulary.
     KEYWORD  bounded    canonical three, plus historical synonyms.
     SEP      bounded    colon present or absent, whitespace variants.
     LANE     bounded    present / absent / cased.
@@ -82,6 +83,10 @@ LEADS = [
     ("dash", "- "),
     ("star", "* "),
     ("quote+h2", "> ## "),
+    ("word", "CODEX-LANE "),
+    ("words+colon", "Codex lane: "),
+    ("h2+word", "## CODEX-LANE "),
+    ("emphasis+word", "**Codex lane** "),
 ]
 TRAILS = [
     ("none", ""),
@@ -117,8 +122,8 @@ def main() -> int:
         # A four-space indent at the start of a body is a CommonMark INDENTED CODE
         # BLOCK, exactly like a fence, and prose_lines() excludes it deliberately
         # so an illustration cannot bind. A blockquote and a prose prefix are
-        # quoted text is a mention; headings, list bullets and paired emphasis
-        # are decoration.
+        # quoted text is a mention; headings, list bullets, paired emphasis and
+        # the existing lane heading are assertions.
         # Demanding that it be honoured contradicts that exclusion, and this file
         # asserted it for six cells that had never once executed. The renderer shows
         # it to a human as a code block; the gate agrees with the reader.
@@ -179,6 +184,19 @@ def main() -> int:
         if granted:
             failures.append(f"{label} granted a lane")
 
+    # Variant four exactly as found, kept as a named regression alongside the
+    # generated matrix so the report names it if it ever returns.
+    v4 = f"## CODEX-LANE CHANGES-REQUESTED-AT: codex `{SHA}`"
+    mal: list[tuple[str, str]] = []
+    codex_appr = _comment(f"APPROVED-AT: codex {SHA}", "2026-08-12T18:15:20Z")
+    bound = module.lane_shas(
+        [codex_appr, _comment(v4, "2026-08-13T01:00:00Z")], "codex", mal
+    )
+    v4_is_assertion = bound == [] or bool(mal)
+    print(f"  {'PASS' if v4_is_assertion else 'FAIL'}  CODEX-LANE refusal is seen")
+    if not v4_is_assertion:
+        failures.append("CODEX-LANE refusal was ignored")
+
     print(f"\nvariants generated: {seen}    failures: {len(failures)}")
     if failures:
         print("RESULT: FAIL")
@@ -201,7 +219,7 @@ def main() -> int:
 # indented forms -- under a bullet, after prose -- are asserted as still seen, so
 # the correction cannot be used to wave away a real loss.
 def test_marker_variant_space(capsys) -> None:
-    """Execute all 48 variants; the bracket's own report is the failure message."""
+    """Execute all 72 variants; the bracket's own report is the failure message."""
     rc = main()
     assert rc == 0, "\n" + capsys.readouterr().out
 

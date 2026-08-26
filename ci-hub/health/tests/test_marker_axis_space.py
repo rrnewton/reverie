@@ -12,7 +12,7 @@ The lesson is that "enumerate the variants" is not one matrix. A marker line has
 line-level axes AND the comment has composition axes, and a matrix over one
 family proves nothing about the other. Seven axes are enumerated here:
 
-    LEAD         nothing / heading / quote / nested
+    LEAD         nothing / heading / quote / lane heading / nested
     TRAIL        nothing / trailing prose
     SHA FORM     bare / backticked
     SEPARATOR    colon present / absent
@@ -23,8 +23,8 @@ family proves nothing about the other. Seven axes are enumerated here:
 THE INVARIANT, which is weaker than "parses correctly" on purpose: no assertion
 may be silently wrong, and no quoted mention may change review state. A refusal
 must clear the lane or be flagged; a retract-then-rebind must bind at the head or
-be flagged. Verdicts carrying surrounding prose are covered at the GitHub write
-boundary, which adds the exact canonical marker as its own line.
+be flagged. The existing lane-heading form remains an assertion with or without
+trailing prose.
 
 Measured when this was written: 472/480 safe, and all 8 failures were the single
 composition class above.
@@ -42,7 +42,7 @@ def load(p):
 def c(b,t): return {"body":b,"createdAt":t,"html_url":"u"}
 
 # ---- THE AXES -------------------------------------------------------------
-LEAD   = {"none":"", "h2":"## ", "quote":"> ", "q+h2":"> ## "}
+LEAD   = {"none":"", "h2":"## ", "quote":"> ", "word":"CODEX-LANE ", "q+h2":"> ## "}
 TRAIL  = {"none":"", "prose":" -- see below"}
 SHAF   = {"bare":lambda s:s, "tick":lambda s:f"`{s}`"}
 SEP    = {"colon":":", "nocolon":""}          # axis 4: missing colon

@@ -25,8 +25,9 @@ Roles are the closed owner-approved enum ``impl``, ``debugger``, ``reviewer``,
 ``relay``, ``coordinator``, and ``human``.
 
 A comment or review that carries a verdict may also supply ``--verdict`` with
-the exact canonical marker line. The boundary adds that line to the body once,
-so surrounding prose cannot make the readers mistake a verdict for a mention.
+the exact canonical marker line already present in its body. The boundary puts
+the existing ``VERDICT:`` prefix on that prose line when needed, so readers do
+not have to infer intent and no second marker is added.
 
 A shared GitHub credential still cannot prove who typed the arguments.  The
 independent process-context comparison makes a false claim falsifiable; it does
@@ -251,26 +252,38 @@ def refuse_unbindable_verdict(body: str) -> None:
 
 
 def with_verdict(body: str, verdict: str | None) -> str:
-    """Append the exact canonical marker supplied by ``--verdict`` once."""
+    """Mark the one prose line containing the exact ``--verdict`` value."""
     if verdict is None:
         return body
     grammar = _approval_binding_module()
     if grammar is None:
         die("cannot load approval_binding to verify --verdict")
     if "\n" in verdict or "\r" in verdict or verdict.strip() != verdict \
-            or grammar.parse_marker(verdict) is None:
+            or grammar.parse_canonical_marker(verdict) is None:
         die(
             "--verdict must be one canonical marker line with a full 40-hex SHA: "
             "APPROVED-AT, CHANGES-REQUESTED-AT, or "
             "CHANGES-REQUESTED-WITHDRAWN-AT"
         )
-    if any(
-        line == verdict and grammar.marker_assertion(line)
-        for line in grammar.marker_lines(body)
-    ):
+    candidates = [line for line in grammar.marker_lines(body) if verdict in line]
+    if body.count(verdict) != 1 or len(candidates) != 1:
+        die("--verdict marker must appear exactly once in prose in the comment body")
+    target = candidates[0]
+    if grammar.marker_assertion(target):
         return body
-    separator = "" if not body or body.endswith("\n") else "\n"
-    return body + separator + verdict
+    rewritten = []
+    changed = False
+    for raw in body.splitlines(keepends=True):
+        line = raw.rstrip("\r\n")
+        ending = raw[len(line):]
+        if not changed and line == target:
+            rewritten.append(f"VERDICT: {line}{ending}")
+            changed = True
+        else:
+            rewritten.append(raw)
+    if not changed:
+        die("--verdict marker must appear exactly once in prose in the comment body")
+    return "".join(rewritten)
 
 
 def attributed(

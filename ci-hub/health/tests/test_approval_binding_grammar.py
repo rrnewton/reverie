@@ -142,10 +142,14 @@ ab.lane_shas(
 cases.append((prose_mention == [],
               "prose mentioning a complete APPROVED-AT is not a malformed verdict",
               f"malformed={len(prose_mention)}"))
-# Verdicts with a lead-in are published through ``ci-hub/bin/gh --verdict``,
-# which adds the canonical marker as its own line. The end-to-end test belongs at
-# that write boundary; asking this line-only parser to infer it from prose is the
-# same ambiguity as the mention above.
+lead_in_assertion = []
+ab.lane_shas(
+    C(f"VERDICT: APPROVED-AT: claude {CUR} because this head is ready"),
+    "claude", lead_in_assertion,
+)
+cases.append((len(lead_in_assertion) == 1,
+              "an explicit VERDICT lead-in is REPORTED, not ignored",
+              f"malformed={len(lead_in_assertion)}"))
 
 # Inline code has the same split. A whole-line code span is existing marker
 # decoration, so a missing SHA is still reported. Prose around the span makes it
@@ -559,6 +563,11 @@ cases.append((not any(ab.marker_assertion(line)
                       for line in ab.marker_lines(_FULL_MARKER_MENTION)),
               "a full marker in prose is a mention",
               f"lines={ab.marker_lines(_FULL_MARKER_MENTION)}"))
+
+_LEAD_IN_REFUSAL = f"## CODEX-LANE CHANGES-REQUESTED-AT: codex `{CUR}` -- still blocked"
+cases.append((any(ab.marker_assertion(line) for line in ab.marker_lines(_LEAD_IN_REFUSAL)),
+              "the named CODEX-LANE refusal with trailing prose is seen",
+              f"lines={ab.marker_lines(_LEAD_IN_REFUSAL)}"))
 
 # Symmetric, exactly as the fence rule is: withholding an approval is the safe
 # direction, and a sha-less approval could not bind a head anyway.

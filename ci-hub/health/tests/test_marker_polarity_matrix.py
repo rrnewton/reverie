@@ -22,8 +22,8 @@ Run the same inputs through both polarities. The polarity asymmetry itself is
 deliberate and correct -- a malformed REFUSAL must still refuse while a malformed
 APPROVAL must still fail to bind. The assertion boundary is shared: a marker at
 the start of its normalized line is a verdict; marker text inside prose is a
-mention in either polarity. A verdict carrying surrounding prose is published
-with ``ci-hub/bin/gh --verdict``, which adds its canonical marker as its own line.
+mention in either polarity. Existing lane headings and the existing ``VERDICT:``
+prefix make a lead-in explicit without relying on the marker's value or its tail.
 
 The sharpest rows are CITED_FULL and CITED_SHORT. The identical sentence --
 
