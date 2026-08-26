@@ -283,6 +283,23 @@ pub(crate) struct LoadedStaticElf {
     pub random_device_fds: std::collections::BTreeSet<i32>,
     pub stdout_alias_fds: std::collections::BTreeSet<i32>,
     pub stderr_alias_fds: std::collections::BTreeSet<i32>,
+    /// Guest-visible file STATUS flags for the inherited standard output
+    /// streams, keyed by the canonical descriptor number (1 or 2) so every
+    /// `dup`ed alias shares one entry -- which is what sharing an open file
+    /// description means.
+    ///
+    /// The guest does not own stdout and stderr: `host_fd` resolves them to the
+    /// hermit process's own descriptors, which hermit inherited from ITS parent.
+    /// Executing the guest's `fcntl(F_SETFL)` on those would mutate an open file
+    /// description that outlives the guest, so the settable status flags are
+    /// modeled here instead. This is the same treatment `cloexec_fds` already
+    /// gives `F_GETFD`/`F_SETFD`.
+    ///
+    /// An entry is created on first observation and seeded from the host
+    /// descriptor, so the guest still sees the real nature of its stdio
+    /// (access mode, `O_LARGEFILE`, an append-mode redirect the caller chose).
+    /// Nothing the guest does changes what a later observer reads back.
+    pub standard_status_flags: std::collections::BTreeMap<i32, libc::c_int>,
     // AUTONOMOUS-BOT-IMPLEMENTED: Model guest close-on-exec state independently.
     // TODO-HUMAN-REVIEW(#86): Review descriptor and signal inheritance across exec.
     pub cloexec_fds: std::collections::BTreeSet<i32>,
@@ -386,6 +403,13 @@ impl LoadedStaticElf {
             random_device_fds: self.random_device_fds.clone(),
             stdout_alias_fds: self.stdout_alias_fds.clone(),
             stderr_alias_fds: self.stderr_alias_fds.clone(),
+            // fork(2) copies the descriptor table and SHARES the descriptions
+            // behind it. Copying the modeled flags matches what the child
+            // observes at the instant of the fork; later divergence between
+            // parent and child is a known limit of this per-process table (the
+            // same one `cloexec_fds` has) and is bounded to the three inherited
+            // standard streams.
+            standard_status_flags: self.standard_status_flags.clone(),
             cloexec_fds: self.cloexec_fds.clone(),
             closed_standard_fds: self.closed_standard_fds.clone(),
             children: std::collections::BTreeMap::new(),
@@ -460,6 +484,15 @@ impl LoadedStaticElf {
                 closed_standard_fds.insert(fd);
             }
         }
+        // execve(2) preserves file STATUS flags on every descriptor that
+        // survives the exec, so the modeled stdout/stderr flags carry across
+        // unchanged. A stream the guest marked close-on-exec is gone, and its
+        // entry goes with it.
+        let standard_status_flags: std::collections::BTreeMap<_, _> = previous
+            .standard_status_flags
+            .into_iter()
+            .filter(|(fd, _)| !closed_standard_fds.contains(fd))
+            .collect();
         let signal_actions = previous
             .signal_actions
             .into_iter()
@@ -515,6 +548,7 @@ impl LoadedStaticElf {
         self.random_device_fds = random_device_fds;
         self.stdout_alias_fds = stdout_alias_fds;
         self.stderr_alias_fds = stderr_alias_fds;
+        self.standard_status_flags = standard_status_flags;
         self.cloexec_fds = std::collections::BTreeSet::new();
         self.closed_standard_fds = closed_standard_fds;
         self.children = previous.children;
@@ -750,6 +784,7 @@ fn load_executable(
         random_device_fds: std::collections::BTreeSet::new(),
         stdout_alias_fds: std::collections::BTreeSet::new(),
         stderr_alias_fds: std::collections::BTreeSet::new(),
+        standard_status_flags: std::collections::BTreeMap::new(),
         cloexec_fds: std::collections::BTreeSet::new(),
         closed_standard_fds: std::collections::BTreeSet::new(),
         children: std::collections::BTreeMap::new(),
