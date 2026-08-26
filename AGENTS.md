@@ -178,23 +178,47 @@ survivable rather than merely known.
 
 # Compose multi-line notes in a quoted heredoc, never inline
 
-`tg note` is the durable record -- panes are not -- and it is **quoting-safe**:
-text handed to it is stored byte-identical, verified with `$(...)`, backticks,
-`$VAR`, `${BRACE}` and mixed quotes. **The exposure is the shell, not the tool.**
+`tg note` is the durable record -- panes are not -- and it is **quoting-safe for
+shell metacharacters**: text that reaches its argv survives `$(...)`, backticks,
+`$VAR`, `${BRACE}` and mixed quotes.
 
-    # SAFE -- the quotes on the delimiter are what disable expansion
+⚠️ **IT IS NOT BYTE-IDENTICAL, AND THE EXPOSURE IS NOT ONLY THE SHELL.** `tg`
+ALSO INTERPRETS BACKSLASH ESCAPES in note content: `\t`, `\n` and `\\` are each
+collapsed to the character they name. Measured 2026-08-26 against
+`fb-tg-linux:20260826-001048` (revision 19fbb4882670), written through `--file`
+so the shell never touches it: **100 bytes in, 97 stored.** Confirmed identically
+through `tg sql` and through the `tg note` display path, so it is the STORE and
+not the rendering.
+
+⚠️ **A HEREDOC DOES NOT SAVE YOU FROM THAT ONE.** It removes the shell, and the
+shell was never the whole exposure. The previous version of this section named
+the shell as the only hazard, which is why the shell-free path is the one nobody
+checked. A note documenting a regex, a tab-separated table or a Windows path is
+silently altered.
+
+    # SAFE -- reads the note back and compares it byte-for-byte, withholding
+    # the confirmation if it differs. The only form that catches BOTH hazards.
     cat > /tmp/note.txt <<'EOF'
     ... your finding, containing anything at all ...
     EOF
+    ci-hub/bin/tg-note-verified <task> --file /tmp/note.txt
+
+    # SHELL-SAFE ONLY -- stops bash expanding, but tg still collapses the
+    # escapes above and `$(...)` still eats the trailing newline
     tg note <task> "$(cat /tmp/note.txt)"
 
     # UNSAFE -- bash expands the fragment before tg ever sees it
     tg note <task> "... inline text with a substitution in it ..."
 
-WHY THE SAFE FORM IS SAFE: bash does not re-scan the output of a command
-substitution, so `"$(cat file)"` passes the file's bytes through untouched no
-matter what they contain. The quotes on the heredoc delimiter (`<<'EOF'`, not
-`<<EOF`) are what stop expansion when the file is written.
+⚠️ **AND `"$(cat file)"` DOES NOT PASS THE FILE THROUGH UNTOUCHED EITHER.**
+Command substitution STRIPS TRAILING NEWLINES. The same 100-byte probe measured
+**100 -> 96** through `"$(cat file)"` against **100 -> 97** through `--file`:
+two paths, two answers, and the one-byte gap is the final newline the shell ate
+before `tg` was reached. Bash not re-scanning the output is true and is not
+sufficient.
+
+The quotes on the heredoc delimiter (`<<'EOF'`, not `<<EOF`) are still what stop
+expansion when the file is written.
 
 ⚠️ **THE FAILURE IS SILENT AND IT DESTROYS FINDINGS.** Written inline, bash
 substitutes or executes the fragment, `tg` faithfully stores whatever survived,
@@ -206,7 +230,17 @@ different text stores a WRONG line, which no later reader can detect.
 Same class as the `make validate | tail` hazard in `agent-utils/AGENTS.md`: a
 mechanism producing a value that reads as information and carries none. The
 difference is that this one sits in the layer used to record everything else, so
-nothing external cross-checks it.
+nothing external cross-checks it -- which is why the check has to be the
+READBACK and not a rule anyone remembers to follow. Both corrections above were
+found by `tg-note-verified` refusing to confirm a note, not by reading this
+section. A guarantee stated in prose is the thing being checked, not the check.
+
+The tool is not ours to repair: `/usr/local/bin/tg` is an installed ELF binary
+from the taskgraph project with no local source. `/home/newton/orc-bin/tg` is
+only a guard shim and its own `printf` uses are `printf '%s\n'`, and
+`tg-note-verified` passes the content as a single argv element -- both clean. So
+the collapse happens inside the binary and this repository cannot reach it.
+Worth filing upstream; until then, verify the readback.
 
 # You are a SKEPTIC
 
