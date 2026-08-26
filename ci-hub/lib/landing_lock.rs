@@ -1943,7 +1943,7 @@ impl LandingLock {
         let _ = heartbeat.join();
         reap_exited_children();
         let pgid = outcome.pgid();
-        let capture = capture_and_freeze_residuals(std::process::id());
+        let capture = capture_and_freeze_residuals(std::process::id(), gated.leader.start_ticks);
         let domain_empty =
             !process_group_exists(pgid) && capture.complete && capture.identities.is_empty();
         if !domain_empty {
@@ -2197,6 +2197,31 @@ fn current_boot_id() -> Result<String, LandLockError> {
 
 pub(crate) fn process_start_ticks(pid: u32) -> io::Result<u64> {
     process_stat_fields(pid).map(|(_, _, start_ticks)| start_ticks)
+}
+
+/// Read a process's process-group id (field 5 of `/proc/<pid>/stat`).
+///
+/// Kept separate from [`process_stat_fields`] so the census can ask this one
+/// question without widening a signature every other caller depends on.
+fn process_group_of(pid: u32) -> io::Result<u32> {
+    let stat = fs::read_to_string(PathBuf::from(format!("/proc/{pid}/stat")))?;
+    let close = stat.rfind(')').ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "process stat has no closing comm",
+        )
+    })?;
+    stat[close + 1..]
+        .split_whitespace()
+        .nth(2)
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "process stat has no process-group field",
+            )
+        })?
+        .parse()
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, format!("{error}")))
 }
 
 fn process_stat_fields(pid: u32) -> io::Result<(char, u32, u64)> {
@@ -3003,7 +3028,38 @@ pub(crate) struct ResidualCapture {
     pub(crate) identities: Vec<ProcessIdentity>,
 }
 
-pub(crate) fn capture_and_freeze_residuals(supervisor_pid: u32) -> ResidualCapture {
+/// Enumerate and freeze the payload domain beneath `supervisor_pid`.
+///
+/// `payload_start_ticks` is the boot-relative start time of the payload group
+/// leader, and it is a REQUIRED FLOOR, not a hint: only processes that started
+/// at or after the leader are part of the payload domain.
+///
+/// ⚠️ WHY THE FLOOR EXISTS. `PR_SET_CHILD_SUBREAPER` is what makes the PPID
+/// walk exhaustive, but it cuts both ways: the kernel reparents ANY orphan in
+/// this process's subtree onto the supervisor, including processes this
+/// supervisor never spawned. They then appear in `scan_descendants` as payload
+/// residuals, and the census SIGSTOPs them.
+///
+/// Measured 2026-08-25 in the ci-hub unit suite: nine `scm_telem_log` daemons
+/// -- the Sapling/Mercurial telemetry helper, forked and abandoned by unrelated
+/// SCM invocations on the box -- were adopted by the test binary and recorded
+/// as residuals by SEVEN separate censuses in one run, each reporting the SAME
+/// nine identities against a DIFFERENT payload process group, every one of them
+/// alongside `original group absent`. They predated every payload they were
+/// charged to. That single adoption event surfaced as twelve failing tests
+/// across five runs with shifting membership, because which tests fail is only
+/// which ones happen to census after the daemons arrive.
+///
+/// A start-time floor is exact and cannot lose a real residual: every
+/// descendant of the leader necessarily starts after the leader, INCLUDING one
+/// that escapes the process group via `setsid`/`setpgid`. Filtering on process-
+/// group membership instead would be narrower than the invariant and would drop
+/// exactly those escaped payloads, which the barrier exists to catch.
+pub(crate) fn capture_and_freeze_residuals(
+    supervisor_pid: u32,
+    payload_start_ticks: u64,
+) -> ResidualCapture {
+    let supervisor_group = process_group_of(supervisor_pid).ok();
     let mut prior = Vec::new();
     for _ in 0..4 {
         // The supervisor is a child subreaper. A payload helper can therefore
@@ -3012,7 +3068,25 @@ pub(crate) fn capture_and_freeze_residuals(supervisor_pid: u32) -> ResidualCaptu
         // turning a completed helper into durable residual ownership.
         reap_exited_children();
         let identities = match scan_descendants(supervisor_pid) {
-            Ok(identities) => identities,
+            // Apply both discriminators BEFORE the freeze below: a process this
+            // payload does not own must not be SIGSTOPped by its census.
+            Ok(identities) => identities
+                .into_iter()
+                .filter(|identity| identity.start_ticks >= payload_start_ticks)
+                .filter(
+                    |identity| match (supervisor_group, process_group_of(identity.pid)) {
+                        // The payload is spawned into its own process group, so the
+                        // supervisor's group holds only the supervisor's own
+                        // siblings -- never a payload descendant.
+                        (Some(supervisor_group), Ok(group)) => group != supervisor_group,
+                        // Fail closed: an unreadable group is not evidence of
+                        // non-ownership. The `all_stopped` bookkeeping below turns a
+                        // vanished process into an incomplete census, not a silent
+                        // discharge.
+                        _ => true,
+                    },
+                )
+                .collect::<Vec<_>>(),
             Err(_) => {
                 return ResidualCapture {
                     complete: false,
@@ -4132,7 +4206,11 @@ mod tests {
             thread::sleep(Duration::from_millis(10));
         }
 
-        let capture = capture_and_freeze_residuals(std::process::id());
+        // The zombie IS the payload here, so its own start time is the floor
+        // production would pass. That also keeps anything older than this test
+        // out of the walk, which is the whole point of the floor.
+        let floor = process_start_ticks(pid).unwrap();
+        let capture = capture_and_freeze_residuals(std::process::id(), floor);
         assert!(capture.complete);
         assert!(capture.identities.is_empty());
         assert!(!process_group_exists(pid));
@@ -4143,13 +4221,17 @@ mod tests {
     #[test]
     fn live_descendant_remains_an_exact_residual() {
         let _domain_guard = process_domain_test_guard();
-        let mut child = Command::new("/bin/sleep").arg("30").spawn().unwrap();
+        let mut child = Command::new("/bin/sleep")
+            .arg("30")
+            .process_group(0)
+            .spawn()
+            .unwrap();
         let identity = ProcessIdentity {
             pid: child.id(),
             start_ticks: process_start_ticks(child.id()).unwrap(),
         };
 
-        let capture = capture_and_freeze_residuals(std::process::id());
+        let capture = capture_and_freeze_residuals(std::process::id(), identity.start_ticks);
         assert!(capture.complete);
         assert!(capture.identities.contains(&identity));
 
@@ -4157,26 +4239,110 @@ mod tests {
         child.wait().unwrap();
     }
 
+    /// REGRESSION: a process that PREDATES the payload is not a residual of it.
+    ///
+    /// `PR_SET_CHILD_SUBREAPER` is what makes the PPID walk exhaustive, and it
+    /// is also what makes the walk over-broad: the kernel reparents unrelated
+    /// orphans onto the supervisor, and the census then charges them to the
+    /// payload AND SIGSTOPs them. Measured 2026-08-25 in this suite: nine
+    /// `scm_telem_log` daemons were charged to seven different payload process
+    /// groups within one run, each census reporting the same nine identities
+    /// against a different pgid and every one of them alongside
+    /// `original group absent`.
+    ///
+    /// ⚠️ THE SECOND CENSUS IS A CONTROL AND IT MUST SEE THE OLDER PROCESS.
+    /// Without it this test would pass just as well if the older process had
+    /// never been in the walk at all, which would prove nothing about the floor.
+    /// Both processes lead their own group, as `spawn_gated_child` makes every
+    /// real payload do. A plain child would instead inherit the supervisor's
+    /// group and be excluded by the second discriminator, which would let this
+    /// test pass for the wrong reason.
+    #[test]
+    fn a_process_older_than_the_payload_is_not_a_residual_of_it() {
+        let _domain_guard = process_domain_test_guard();
+        let mut older = Command::new("/bin/sleep")
+            .arg("30")
+            .process_group(0)
+            .spawn()
+            .unwrap();
+        let older_identity = ProcessIdentity {
+            pid: older.id(),
+            start_ticks: process_start_ticks(older.id()).unwrap(),
+        };
+
+        // `start_ticks` has USER_HZ granularity (10ms here), so the payload has
+        // to be separated by more than one tick or the floor is only
+        // accidentally satisfied by an equal value.
+        thread::sleep(Duration::from_millis(50));
+
+        let mut payload = Command::new("/bin/sleep")
+            .arg("30")
+            .process_group(0)
+            .spawn()
+            .unwrap();
+        let payload_identity = ProcessIdentity {
+            pid: payload.id(),
+            start_ticks: process_start_ticks(payload.id()).unwrap(),
+        };
+        assert!(
+            payload_identity.start_ticks > older_identity.start_ticks,
+            "the payload must start strictly after the older process, or this \
+             test brackets nothing"
+        );
+
+        // `complete` is deliberately NOT asserted. Convergence depends on the
+        // whole descendant tree holding still, which a 32-thread test binary
+        // cannot promise; the property under test is membership. The positive
+        // assertion below is what keeps the negative one from passing
+        // vacuously on a short or stale list.
+        let floored =
+            capture_and_freeze_residuals(std::process::id(), payload_identity.start_ticks);
+        assert!(
+            floored.identities.contains(&payload_identity),
+            "a descendant started after the payload must remain an exact residual"
+        );
+        assert!(
+            !floored.identities.contains(&older_identity),
+            "a process predating the payload was charged to it as a residual"
+        );
+
+        let unfloored = capture_and_freeze_residuals(std::process::id(), 0);
+        assert!(
+            unfloored.identities.contains(&older_identity),
+            "CONTROL FAILED: the older process was never in the walk, so the \
+             assertion above did not measure the floor"
+        );
+
+        signal_exact_process(&older_identity, libc::SIGKILL).unwrap();
+        signal_exact_process(&payload_identity, libc::SIGKILL).unwrap();
+        older.wait().unwrap();
+        payload.wait().unwrap();
+    }
+
     #[test]
     fn unreadable_descendant_identity_makes_census_incomplete_then_recovers() {
         let _domain_guard = process_domain_test_guard();
-        let mut child = Command::new("/bin/sleep").arg("30").spawn().unwrap();
+        let mut child = Command::new("/bin/sleep")
+            .arg("30")
+            .process_group(0)
+            .spawn()
+            .unwrap();
         let identity = ProcessIdentity {
             pid: child.id(),
             start_ticks: process_start_ticks(child.id()).unwrap(),
         };
         inject_unreadable_scan_pid(identity.pid);
-        let incomplete = capture_and_freeze_residuals(std::process::id());
+        let incomplete = capture_and_freeze_residuals(std::process::id(), identity.start_ticks);
         assert!(!incomplete.complete);
 
         inject_unreadable_scan_pid(0);
-        let visible = capture_and_freeze_residuals(std::process::id());
+        let visible = capture_and_freeze_residuals(std::process::id(), identity.start_ticks);
         assert!(visible.complete);
         assert!(visible.identities.contains(&identity));
         signal_exact_process(&identity, libc::SIGKILL).unwrap();
         child.wait().unwrap();
         reap_exited_children();
-        let recovered = capture_and_freeze_residuals(std::process::id());
+        let recovered = capture_and_freeze_residuals(std::process::id(), identity.start_ticks);
         assert!(recovered.complete);
         assert!(recovered.identities.is_empty());
     }

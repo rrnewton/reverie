@@ -1654,7 +1654,7 @@ fn settle_empty_payload_domain(
         // Repeat the *whole* census, not merely the PGID probe. A helper that
         // becomes visible during the grace window must turn into an exact
         // residual and quarantine; waiting may never erase live ownership.
-        capture = capture_and_freeze_residuals(supervisor_pid);
+        capture = capture_and_freeze_residuals(supervisor_pid, leader.start_ticks);
     }
     capture
 }
@@ -3975,10 +3975,13 @@ impl ValidateLock {
     /// existing `reclaim-dead` path can finish.
     ///
     /// WHY THIS EXISTS. `capture_and_freeze_residuals` enumerates the payload
-    /// domain with `scan_descendants(supervisor_pid)` — a PPID-tree walk that is
-    /// only exhaustive because `run` made the supervisor a
-    /// `PR_SET_CHILD_SUBREAPER`, so even a `setsid`'d double-fork reparents back
-    /// to it. When the supervisor itself dies (e.g. systemd TERMs the whole unit
+    /// domain with `scan_descendants(supervisor_pid)`, floored at the payload
+    /// leader's start time — a PPID-tree walk that is only exhaustive because
+    /// `run` made the supervisor a `PR_SET_CHILD_SUBREAPER`, so even a `setsid`'d
+    /// double-fork reparents back to it. That same subreaper status also adopts
+    /// unrelated orphans, which is what the start-time floor excludes; see
+    /// `capture_and_freeze_residuals` for the measured incident.
+    /// When the supervisor itself dies (e.g. systemd TERMs the whole unit
     /// cgroup) that anchor is destroyed: survivors reparent to `systemd --user`
     /// or pid 1 and NO ppid walk can reconstruct the domain. So `Published` ->
     /// `Uncensused` became a one-way door — `reclaim_dead` refuses `Uncensused`
@@ -4552,7 +4555,7 @@ impl ValidateLock {
             std::process::id(),
             pgid,
             &gated.leader,
-            capture_and_freeze_residuals(std::process::id()),
+            capture_and_freeze_residuals(std::process::id(), gated.leader.start_ticks),
         );
         match self.finalize_run_census(
             &args.agent,
