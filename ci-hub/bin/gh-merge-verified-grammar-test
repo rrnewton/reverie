@@ -39,6 +39,23 @@ SHA = "b3ca4e155098ad6e6f32f507ed72855da0638010"
 OTHER = "a" * 40
 
 
+def by(agent: str, *lines: str) -> str:
+    """A comment body carrying a disclosure tag, so the markers have an AUTHOR.
+
+    ⚠️ THE FIXTURES USED TO BE UNSIGNED, AND THAT STOPPED BEING EXPRESSIVE ENOUGH.
+    Clearing is now scoped to a refusal's own ISSUER as well as its own lane, so a
+    cell that says "a withdrawal clears" has to be able to say WHOSE. An unsigned
+    body cannot, and under the fail-closed rule it clears nothing -- which made
+    two escape-hatch cells read as regressions when they are the rule working.
+    The PROPERTY those cells pin is unchanged and still pinned below; only the
+    fixture learned to name a speaker, which every real fleet comment already
+    does. The unsigned behaviour is not dropped -- it is pinned explicitly, in
+    its own cells, instead of being implied by silence.
+    """
+    tag = f"[hermit2, {agent}, unresolved, devbig014, role=reviewer]"
+    return tag + "\n\n" + "\n".join(lines)
+
+
 def load(path: pathlib.Path, name: str):
     loader = importlib.machinery.SourceFileLoader(name, str(path))
     spec = importlib.util.spec_from_loader(name, loader)
@@ -49,6 +66,25 @@ def load(path: pathlib.Path, name: str):
     except SystemExit:
         pass
     return module
+
+
+def probe_comments(module, bodies: list[str]) -> bool:
+    """Like `probe`, but the bodies are SEPARATE COMMENTS.
+
+    ⚠️ CONCATENATING TWO SIGNED BODIES INTO ONE STRING DOES NOT MAKE TWO
+    SPEAKERS, and trying it is what produced this function. `comment_author`
+    reads the FIRST disclosure tag in a body, so "hermit-007 refuses" glued to
+    "hermit-005 withdraws" is one comment that GitHub would never produce and
+    that the grammar correctly attributes entirely to hermit-007 -- the cell then
+    passes or fails for a reason unrelated to the property it names. Two authors
+    means two comments, which is also the only shape the real API returns.
+    """
+    module.run = lambda argv, **kw: (
+        0,
+        json.dumps({"comments": [{"body": b} for b in bodies], "reviews": []}),
+        "",
+    )
+    return len(module.blocking_changes_requests("1", "o/r", SHA)) > 0
 
 
 def probe(module, body: str) -> bool:
@@ -70,7 +106,10 @@ CASES = [
     ("codex refusal blocks too", f"CHANGES-REQUESTED-AT: codex {SHA}", True),
     # POLICY, over-block: unparseable but refusal-shaped, naming this head.
     ("unparseable refusal shape blocks", f"CHANGES REQUESTED for {SHA} -- see below", True),
-    ("withdrawal clears", f"CHANGES-REQUESTED-AT: claude {SHA}\nCHANGES-REQUESTED-WITHDRAWN-AT: claude {SHA}", False),
+    ("withdrawal clears",
+     by("hermit-007",
+        f"CHANGES-REQUESTED-AT: claude {SHA}",
+        f"CHANGES-REQUESTED-WITHDRAWN-AT: claude {SHA}"), False),
     # ⚠️ A WITHDRAWAL CLEARS ITS OWN LANE ONLY. Blocking is lane-agnostic on
     # purpose (see "codex refusal blocks too" above) because that direction fails
     # CLOSED. Clearing must not be, or one family discharges another's refusal --
@@ -83,8 +122,38 @@ CASES = [
      f"CHANGES-REQUESTED-AT: claude {SHA}\nCHANGES-REQUESTED-AT: codex {SHA}\n"
      f"CHANGES-REQUESTED-WITHDRAWN-AT: claude {SHA}", True),
     ("two lanes refuse, both withdraw, clears",
-     f"CHANGES-REQUESTED-AT: claude {SHA}\nCHANGES-REQUESTED-AT: codex {SHA}\n"
-     f"CHANGES-REQUESTED-WITHDRAWN-AT: claude {SHA}\nCHANGES-REQUESTED-WITHDRAWN-AT: codex {SHA}", False),
+     by("hermit-007",
+        f"CHANGES-REQUESTED-AT: claude {SHA}",
+        f"CHANGES-REQUESTED-AT: codex {SHA}",
+        f"CHANGES-REQUESTED-WITHDRAWN-AT: claude {SHA}",
+        f"CHANGES-REQUESTED-WITHDRAWN-AT: codex {SHA}"), False),
+    # ⚠️ A WITHDRAWAL CLEARS ITS OWN ISSUER'S REFUSAL ONLY, one scope narrower
+    # than the lane rule above and for the identical reason. A LANE IS STAFFED BY
+    # SEVERAL AGENTS, so lane-only clearing let agent B discharge agent A's block
+    # inside one lane. Measured 2026-08-26 by driving `blocking_changes_requests`
+    # directly: a hermit-007 refusal plus a hermit-005 withdrawal returned
+    # blocking=0. Same fail-open direction as hermit#2613's cross-lane clear.
+    # Each cell below returns the wrong answer against the pre-fix lander.
+    ("another issuer's withdrawal does NOT clear",
+     [by("hermit-007", f"CHANGES-REQUESTED-AT: claude {SHA}"),
+      by("hermit-005", f"CHANGES-REQUESTED-WITHDRAWN-AT: claude {SHA}")], True),
+    ("the issuer's own withdrawal still clears, across comments",
+     [by("hermit-007", f"CHANGES-REQUESTED-AT: claude {SHA}"),
+      by("hermit-007", f"CHANGES-REQUESTED-WITHDRAWN-AT: claude {SHA}")], False),
+    ("a later approval by another issuer does NOT clear",
+     [by("hermit-007", f"CHANGES-REQUESTED-AT: claude {SHA}"),
+      by("hermit-005", f"APPROVED-AT: claude {SHA}")], True),
+    # FAIL CLOSED AT BOTH ENDS. An unsigned withdrawal cannot say whose refusal it
+    # discharges; an unsigned refusal cannot be proven to belong to anyone, so no
+    # withdrawal can claim it. Both still clear the ordinary way -- push, and the
+    # sha stops naming the head. This is the file's declared trade: a false
+    # positive costs one push, a false negative merges over a block.
+    ("unsigned withdrawal clears nothing",
+     [by("hermit-007", f"CHANGES-REQUESTED-AT: claude {SHA}"),
+      f"CHANGES-REQUESTED-WITHDRAWN-AT: claude {SHA}"], True),
+    ("unsigned refusal is not cleared by a signed withdrawal",
+     [f"CHANGES-REQUESTED-AT: claude {SHA}",
+      by("hermit-007", f"CHANGES-REQUESTED-WITHDRAWN-AT: claude {SHA}")], True),
     # A withdrawal naming no lane cannot say whose refusal it discharges, so it
     # clears nothing -- otherwise the unilateral clear returns via the bare form.
     ("unlaned withdrawal clears nothing",
@@ -136,7 +205,9 @@ def main() -> int:
     lander = load(LANDER, "lander_under_test")
 
     for name, body, want_block in CASES:
-        got = probe(lander, body)
+        # A list is several comments by several agents; a string is one comment.
+        got = (probe_comments(lander, body) if isinstance(body, list)
+               else probe(lander, body))
         ok = got == want_block
         print(f"  {'PASS' if ok else 'FAIL'}  {name}: blocks={got} want={want_block}")
         if not ok:

@@ -451,6 +451,101 @@ else
   bad "current CHANGES-REQUESTED-AT revokes an earlier exact-head approval"
 fi
 
+# --- THE SEVENTH DECAY MODE: AN APPROVAL FROM ANOTHER ISSUER ------------------
+# ⚠️ MEASURED ON hermit#2678, NOT IMAGINED. One unmoved head, claude lane:
+#     01:52:02Z  CHANGES-REQUESTED-AT  agent(hermit-007)
+#     01:54:39Z  APPROVED-AT           a different, unsigned reviewer
+# The lane read BOUND_CURRENT and carried `passed-review-claude` while
+# hermit-007's blocking finding stood unanswered. The approving agent had not
+# seen the refusal -- their own comment says "zero comments when I started" --
+# so nobody overrode anything deliberately. That is exactly why the grammar has
+# to hold this and reviewer attention cannot.
+#
+# Three properties, and the middle one is the whole change:
+#   1. a refusal followed by ITS OWN issuer's approval clears (a reviewer may
+#      change their mind -- the chronological rule was written for this);
+#   2. a refusal followed by ANOTHER issuer's approval does NOT clear;
+#   3. an UNSIGNED approval clears nothing, because it cannot prove whose
+#      refusal it answers.
+cat >"$tmp/self-reversal.json" <<JSON
+[{"number":9210,"head":"$CUR","labels":["passed-review-claude"],
+  "comments":["[hermit2, hermit-007, unresolved, devbig014, role=reviewer]\nCHANGES-REQUESTED-AT: claude $CUR",
+              "[hermit2, hermit-007, unresolved, devbig014, role=reviewer]\nAPPROVED-AT: claude $CUR"],
+  "runs_at_head":3,"mergeable":"MERGEABLE"}]
+JSON
+out="$(run "$tmp/self-reversal.json" --pr 9210 --gate --json)"
+if grep -q '"authoritative": 1' <<<"$out"; then
+  ok "an issuer may reverse THEIR OWN refusal with a later approval"
+else
+  bad "self-reversal no longer clears -- over-blocking, a reviewer cannot change their mind"
+fi
+
+cat >"$tmp/other-issuer.json" <<JSON
+[{"number":9211,"head":"$CUR","labels":["passed-review-claude"],
+  "comments":["[hermit2, hermit-007, unresolved, devbig014, role=reviewer]\nCHANGES-REQUESTED-AT: claude $CUR",
+              "[hermit2, hermit-005, unresolved, devbig014, role=reviewer]\nAPPROVED-AT: claude $CUR"],
+  "runs_at_head":3,"mergeable":"MERGEABLE"}]
+JSON
+out="$(run "$tmp/other-issuer.json" --pr 9211 --gate --json)"
+if grep -q '"authoritative": 0' <<<"$out" && ! grep -q '"authoritative": 1' <<<"$out"; then
+  ok "another issuer's approval does NOT discharge a live refusal"
+else
+  bad "another issuer's approval discharged a live refusal -- the seventh decay mode"
+fi
+
+cat >"$tmp/unsigned-approval.json" <<JSON
+[{"number":9212,"head":"$CUR","labels":["passed-review-claude"],
+  "comments":["[hermit2, hermit-007, unresolved, devbig014, role=reviewer]\nCHANGES-REQUESTED-AT: claude $CUR",
+              "APPROVED-AT: claude $CUR"],
+  "runs_at_head":3,"mergeable":"MERGEABLE"}]
+JSON
+out="$(run "$tmp/unsigned-approval.json" --pr 9212 --gate --json)"
+if grep -q '"authoritative": 0' <<<"$out" && ! grep -q '"authoritative": 1' <<<"$out"; then
+  ok "an UNSIGNED approval discharges nothing -- it cannot say whose refusal it answers"
+else
+  bad "an unsigned approval discharged a refusal -- the unilateral clear came back by spelling"
+fi
+
+# The grammar's own escape hatch must still work, or a refusal becomes a
+# permanent park with no door. Same ownership rule: the retractor's own only.
+cat >"$tmp/withdrawn.json" <<JSON
+[{"number":9213,"head":"$CUR","labels":["passed-review-claude"],
+  "comments":["[hermit2, hermit-007, unresolved, devbig014, role=reviewer]\nCHANGES-REQUESTED-AT: claude $CUR",
+              "[hermit2, hermit-007, unresolved, devbig014, role=reviewer]\nCHANGES-REQUESTED-WITHDRAWN-AT: claude $CUR",
+              "[hermit2, hermit-005, unresolved, devbig014, role=reviewer]\nAPPROVED-AT: claude $CUR"],
+  "runs_at_head":3,"mergeable":"MERGEABLE"}]
+JSON
+out="$(run "$tmp/withdrawn.json" --pr 9213 --gate --json)"
+if grep -q '"authoritative": 1' <<<"$out"; then
+  ok "the issuer's own CHANGES-REQUESTED-WITHDRAWN-AT reopens the head"
+else
+  bad "an explicit withdrawal by the refusal's own issuer did not clear it -- no escape hatch"
+fi
+
+# ⚠️ ITS OWN MUTATION CONTROL, because the widened control above can no longer
+# speak for this half: that one removes BOTH mechanisms, so it would go red even
+# if the issuer-aware guard were deleted and `found.clear()` alone remained. This
+# removes ONLY the issuer-aware guard and asserts the other-issuer case reds.
+if [[ -z "${APPROVAL_BINDING_MUTATION_CHILD:-}" ]]; then
+  mutant="$tmp/approval_binding-without-issuer-guard.py"
+  sed 's/^    if unanswered:$/    if False:  # MUTANT: another issuer may discharge a refusal/' \
+    "$tool" >"$mutant"
+  if ! grep -q 'MUTANT: another issuer may discharge a refusal' "$mutant"; then
+    bad "issuer-guard mutation control could not locate the guard"
+  else
+    APPROVAL_BINDING_TOOL="$mutant" APPROVAL_BINDING_MUTATION_CHILD=1 \
+      bash "$0" >"$tmp/issuer-mutant-suite.out" 2>&1
+    mutant_rc=$?
+    if [[ $mutant_rc -ne 0 ]] \
+      && grep -q "FAIL  another issuer's approval discharged a live refusal" \
+        "$tmp/issuer-mutant-suite.out"; then
+      ok "mutation control: suite FAILS when another issuer may discharge a refusal"
+    else
+      bad "issuer-guard mutation control did not fail (rc=$mutant_rc)"
+    fi
+  fi
+fi
+
 # The negative control for it. Without this, the assertion above would also pass
 # on a build where NOTHING is ever authoritative -- revocation would be
 # indistinguishable from total breakage.
@@ -567,7 +662,17 @@ fi
 # because an approval followed by CHANGES-REQUESTED-AT remains authoritative.
 if [[ -z "${APPROVAL_BINDING_MUTATION_CHILD:-}" ]]; then
   mutant="$tmp/approval_binding-without-current-rejection.py"
-  sed 's/found.clear()/pass  # MUTANT: current rejection no longer revokes approval/' \
+  # ⚠️ MUTATES BOTH MECHANISMS, AND IT USED TO MUTATE ONE. Revocation is now
+  # defence in depth: `found.clear()` drops the accumulated approvals, and the
+  # issuer-aware `unanswered` guard keeps the lane REFUSED even after a later
+  # approval repopulates them. Removing only the first leaves the second holding
+  # the line, so the suite stayed GREEN and this control reported that it could
+  # no longer detect a broken revocation -- correctly. Widening it keeps the
+  # control honest about what it proves: that revocation as a WHOLE is
+  # load-bearing. The narrower property -- that the issuer-aware half is itself
+  # load-bearing -- gets its own control below, so neither hides the other.
+  sed -e 's/found.clear()/pass  # MUTANT: current rejection no longer revokes approval/' \
+      -e 's/^    if unanswered:$/    if False:  # MUTANT: unanswered refusal no longer blocks/' \
     "$tool" >"$mutant"
   if ! grep -q 'MUTANT: current rejection no longer revokes approval' "$mutant"; then
     bad "rejection mutation control could not locate the revocation"

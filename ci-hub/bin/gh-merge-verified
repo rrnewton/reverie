@@ -528,7 +528,7 @@ def blocking_changes_requests(pr: str, repo: str, head: str) -> list[str]:
     # ⚠️ WITHDRAWALS ARE TRACKED PER LANE. Blocking stays lane-agnostic (see the
     # policy note below) because that direction fails CLOSED; clearing must not,
     # or one family discharges another's refusal. Reproduced live on hermit#2613.
-    blocking, withdrawn_lanes = [], set()
+    blocking, withdrawn = [], set()
     # (kind, lane, sha) already accepted, oldest first. A verdict is issued once;
     # a later copy of it is a CITATION and must not block again.
     #
@@ -606,14 +606,29 @@ def blocking_changes_requests(pr: str, repo: str, head: str) -> list[str]:
                 # whose refusal it discharges, and honouring it hands the same
                 # unilateral clear back through the laneless spelling.
                 if kind == grammar.MARKER_WITHDRAWN:
-                    if _lane:
-                        withdrawn_lanes.add(str(_lane).lower())
+                    # ⚠️ AND BY ITS ISSUER, NOT ONLY ITS LANE. Lane-only clearing
+                    # has exactly the shape the note above rejects, one level
+                    # down: a lane is staffed by SEVERAL AGENTS, so agent B's
+                    # withdrawal discharged agent A's refusal in the same lane.
+                    # Measured 2026-08-26 by driving this function directly --
+                    # a hermit-007 refusal plus a hermit-005 withdrawal returned
+                    # blocking=0. Same defect as hermit#2613's cross-lane clear,
+                    # same fail-open direction, one scope narrower.
+                    #
+                    # An UNSIGNED withdrawal clears NOTHING, for the reason the
+                    # laneless one does not: it cannot say whose refusal it
+                    # discharges, and honouring it hands the unilateral clear
+                    # straight back through the unsigned spelling.
+                    _w = grammar.marker_issuer(line) or _author
+                    if _lane and _w:
+                        withdrawn.add((str(_lane).lower(), _w))
                 elif kind == grammar.MARKER_REFUSED:
                     _l = str(_lane).lower() if _lane else None
                     if grammar.is_citation(issued, _author, kind, _l, sha):
                         continue
                     issued.append((_author, kind, _l, sha))
-                    blocking.append((_l, line.strip()))
+                    blocking.append((_l, grammar.marker_issuer(line) or _author,
+                                     line.strip()))
                 continue
             # POLICY: over-block on a refusal-shaped line the grammar cannot
             # parse. For a landing guard a false negative merges over a block
@@ -680,13 +695,14 @@ def blocking_changes_requests(pr: str, repo: str, head: str) -> list[str]:
                 if grammar.is_citation(issued, _author, grammar.MARKER_REFUSED, None, _nsha):
                     continue
                 issued.append((_author, grammar.MARKER_REFUSED, None, _nsha))
-                blocking.append((None, line.strip()))
-    # ⚠️ EACH REFUSAL IS CLEARED ONLY BY ITS OWN LANE. A refusal whose lane could
-    # not be read is cleared by none of them -- its owner is unknown, so no lane
-    # can prove it withdrew. Both still clear the ordinary way: the author pushes
-    # and the sha stops naming the head.
-    live = [text for lane, text in blocking
-            if lane is None or lane not in withdrawn_lanes]
+                blocking.append((None, _author, line.strip()))
+    # ⚠️ EACH REFUSAL IS CLEARED ONLY BY ITS OWN LANE **AND ITS OWN ISSUER**. A
+    # refusal whose lane or issuer could not be read is cleared by nobody -- its
+    # owner is unknown, so no withdrawal can prove it owns it. All of them still
+    # clear the ordinary way: the author pushes and the sha stops naming the head.
+    live = [text for lane, issuer, text in blocking
+            if lane is None or issuer is None
+            or (lane, issuer) not in withdrawn]
     live += ["(GitHub review state CHANGES_REQUESTED)" for _ in native]
     return live
 

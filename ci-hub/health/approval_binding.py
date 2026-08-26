@@ -101,12 +101,23 @@ class GitHubUnavailable(RuntimeError):
 
 
 def classify_approval(
-    head: str, comment_shas: list[str], refused: bool = False
+    head: str,
+    comment_shas: list[str],
+    refused: bool = False,
+    unanswered: bool = False,
 ) -> str:
     """Pure classifier: the seam the bracket drives.
 
     `comment_shas` are the head SHAs named by that lane's role-tagged review
     comments, oldest first. The NEWEST is what the lane last bound itself to.
+
+    `unanswered` says this lane holds a refusal that its OWN ISSUER never
+    discharged. It outranks every approval, and it is a STRICTLY STRONGER
+    condition than `refused`: `refused` asks whether the refusal was the lane's
+    last word in time, `unanswered` asks whether the agent who wrote it ever
+    took it back. A colleague approving afterwards satisfies the first and not
+    the second. See `lane_shas`'s `unanswered` out-parameter for who is allowed
+    to discharge what.
 
     `refused` says this lane emitted a CHANGES-REQUESTED-AT that was never
     followed by a fresh approval. IT IS NOT DERIVABLE FROM `comment_shas`: a
@@ -124,6 +135,24 @@ def classify_approval(
     A refusal at a stale SHA still refuses, matching the long-standing
     `relevant_rejection` behaviour of never comparing the refused SHA to head.
     """
+    # ⚠️ CHECKED BEFORE THE SHAs, AND THAT ORDER IS THE WHOLE POINT OF
+    # `unanswered`. A refusal nobody discharged outranks any number of
+    # approvals, including approvals that name this exact head, because the
+    # approvals did not answer it -- they arrived beside it. `refused` cannot
+    # carry this: a refusal followed by a fresh approval repopulates
+    # `comment_shas`, so by the time the empty-list branch is reached the
+    # override has already happened and the lane reads BOUND_CURRENT.
+    #
+    # Measured 2026-08-26 on hermit#2678, claude lane, one unmoved head:
+    #     01:52:02Z  CHANGES-REQUESTED-AT  agent(hermit-007)
+    #     01:54:39Z  APPROVED-AT           a different, unsigned reviewer
+    # The lane read BOUND_CURRENT and carried `passed-review-claude`, while
+    # hermit-007's blocking finding stood unanswered. The approving agent said
+    # in their own comment that they saw "zero comments when I started", so
+    # nobody overrode anything deliberately -- which is exactly why the grammar
+    # has to hold the line instead of the reviewers' attention.
+    if unanswered:
+        return REFUSED
     if not comment_shas:
         # Order matters: a refusal followed by a fresh approval repopulates
         # `comment_shas`, so reaching here with `refused` set means the refusal
@@ -840,8 +869,52 @@ def lane_shas(
     citations: list[tuple[str, str]] | None = None,
     refusals: list[str] | None = None,
     issuers: list[tuple[str, "str | None"]] | None = None,
+    unanswered: list[tuple[str, "str | None"]] | None = None,
 ) -> list[str]:
     """SHAs a lane EXPLICITLY bound itself to, oldest first. Never inferred.
+
+    `unanswered` is an OUT-PARAMETER carrying the refusals in this lane that
+    their OWN ISSUER never took back, as (sha, issuer) pairs, oldest first.
+
+    ⚠️ AN APPROVAL FROM SOMEBODY ELSE DOES NOT DISCHARGE A REFUSAL, and until
+    this parameter existed it did. The clearing rule below is chronological --
+    a later approval repopulates `found` -- and its comment says it revokes
+    "this lane's earlier approval", written when a lane meant ONE REVIEWER.
+    A lane is staffed by several agents, so the same rule let agent B's
+    approval retire agent A's block with nothing recorded but a timestamp.
+    Measured on hermit#2678: hermit-007 refused at 01:52:02Z, an unsigned
+    reviewer approved the same head at 01:54:39Z, and the lane read
+    BOUND_CURRENT with `passed-review-claude` applied while the blocking
+    finding stood. The approving agent had not seen the refusal; their comment
+    says "zero comments when I started". Nobody overrode anything on purpose,
+    which is why attention cannot be the mechanism that holds this.
+
+    WHO MAY DISCHARGE WHAT, and both halves fail closed:
+      * the refusal's OWN issuer, by approving the same lane afterwards. That
+        is a reviewer changing their mind, which is what the chronological rule
+        was written for and is still honoured exactly.
+      * NOBODY ELSE. Another agent's approval is recorded, binds normally in
+        `found`, and leaves the refusal standing -- so the lane reports REFUSED
+        while showing an approval, which is the honest description of a lane
+        that disagrees with itself.
+      * an UNSIGNED approval discharges NOTHING, even if it is in fact the same
+        agent. It cannot prove whose refusal it answers, and honouring it would
+        hand the unilateral clear straight back through the unsigned spelling.
+        This mirrors `gh-merge-verified`'s rule that a withdrawal naming no lane
+        clears no lane.
+
+    An UNSIGNED REFUSAL is likewise undischargeable by an approval: nothing can
+    prove ownership of it. That fails closed and the escape hatch is the one
+    that already exists -- `CHANGES-REQUESTED-WITHDRAWN-AT`, which says in the
+    grammar what is being retracted, or a push, which moves the head.
+
+    ⚠️ AND THE COST, NAMED RATHER THAN LEFT TO BE DISCOVERED: a refusal is now
+    un-clearable by anyone but its author, so an agent that refuses and then
+    goes away parks the head until someone pushes or withdraws in the grammar.
+    That is the "answered versus abandoned" problem arriving from the other
+    side, and it is a real trade, not a free win. It is the safer direction --
+    a parked head is visible and a silently-overridden refusal is not -- but a
+    reader hitting a stuck head should know this is why.
 
     `refusals` is an OUT-PARAMETER, in the style of `malformed`: when supplied,
     every SHA this lane refused at is appended, oldest first. It exists because
@@ -994,6 +1067,11 @@ def lane_shas(
     # first. A verdict is issued once; a later copy of the same author's verdict is
     # a CITATION and must neither bind nor be reported as a malformed attempt.
     issued: list[tuple[str | None, str, str | None, str | None]] = []
+    # Refusals in THIS lane that their own issuer has not taken back, as
+    # (sha, issuer), oldest first. Maintained unconditionally rather than only
+    # when the caller asks: the discharge rule has to see every marker in order,
+    # and computing it twice is how two readers of one grammar drift apart.
+    outstanding: list[tuple[str, "str | None"]] = []
     for c in comments:
         body = c.get("body") or ""
         author = comment_author(body)
@@ -1013,6 +1091,30 @@ def lane_shas(
             and match.group(1).lower() == lane
             for line in lines
         )
+        # ⚠️ AN EXPLICIT WITHDRAWAL IS THE ESCAPE HATCH, AND WITHOUT IT THE
+        # DISCHARGE RULE HAS NO DOOR. `CHANGES-REQUESTED-WITHDRAWN-AT` is the
+        # grammar's way of saying "I take mine back", and `gh-merge-verified`
+        # has honoured it for exactly this purpose. It is handled here, before
+        # the rejection branch, because the longest-first grammar means a
+        # withdrawal is NOT a refusal and must not be counted as one.
+        #
+        # Same ownership rule as an approval, for the same reason: a withdrawal
+        # discharges only its own author's refusal, and an unsigned one
+        # discharges nothing. Otherwise the unilateral clear this change removes
+        # comes straight back through a different keyword.
+        for line in lines:
+            parsed_withdrawal = parse_marker(line)
+            if (
+                parsed_withdrawal is not None
+                and parsed_withdrawal[0] == MARKER_WITHDRAWN
+                and parsed_withdrawal[1] == lane
+            ):
+                retractor = marker_issuer(line) or author
+                if retractor is not None:
+                    outstanding[:] = [
+                        held for held in outstanding if held[1] != retractor
+                    ]
+
         if relevant_rejection:
             # Verdicts are chronological. A later exact-head request for changes
             # revokes this lane's earlier approval; a still-later approval can
@@ -1072,6 +1174,20 @@ def lane_shas(
                         refused_sha = re.search(r"\b[0-9a-f]{40}\b", line)
                         if refused_sha is not None:
                             refusals.append(refused_sha.group(0).lower())
+            # WHO refused, so a later approval can be asked whether it is the
+            # same agent. Recorded on the same lines the `refusals` block reads,
+            # but unconditionally -- authority must not depend on whether the
+            # caller happened to pass an out-parameter.
+            for line in lines:
+                if reject_legacy.match(line) or (
+                    (rejected_by := reject_current.match(line)) is not None
+                    and rejected_by.group(1).lower() == lane
+                ):
+                    refused_sha = re.search(r"\b[0-9a-f]{40}\b", line)
+                    outstanding.append((
+                        refused_sha.group(0).lower() if refused_sha else "",
+                        marker_issuer(line) or author,
+                    ))
             found.clear()
             continue
         for _idx, line in enumerate(lines):
@@ -1170,6 +1286,18 @@ def lane_shas(
                 continue
             issued.append((author, MARKER_APPROVED, explicit_lane.lower(), sha))
             if explicit_lane.lower() == lane:
+                # ⚠️ AN APPROVAL DISCHARGES ONLY ITS OWN AUTHOR'S REFUSAL. An
+                # unsigned approval (`approver is None`) discharges nothing: it
+                # cannot prove whose block it answers, and an unsigned refusal
+                # is likewise unmatchable, so both ends fail closed. Everything
+                # else about this line is unchanged -- the approval still binds
+                # in `found` exactly as before, so a lane can honestly report an
+                # approval AND a standing refusal at once.
+                approver = marker_issuer(line) or author
+                if approver is not None:
+                    outstanding[:] = [
+                        held for held in outstanding if held[1] != approver
+                    ]
                 found.append(sha)
                 # WHO BOUND THIS LANE, appended in step with `found` so the two
                 # stay index-aligned. This is the entire point of the change: the
@@ -1187,6 +1315,8 @@ def lane_shas(
                 # independence check confidently wrong instead of merely blind.
                 if issuers is not None:
                     issuers.append((sha, marker_issuer(line) or author))
+    if unanswered is not None:
+        unanswered.extend(outstanding)
     return found
 
 
@@ -1291,6 +1421,7 @@ def collect_live(
         comments, runs = f["comments"], f["runs"]
         for label in tracked:
             refusals: list[str] = []
+            unanswered: list[tuple[str, "str | None"]] = []
             if label == LOCALLY_VALIDATED_LABEL:
                 lane = "local-validation"
                 shas = local_receipt_heads(comments, repo)
@@ -1298,7 +1429,7 @@ def collect_live(
                 lane = label.rsplit("-", 1)[-1]
                 shas = lane_shas(
                     comments, lane, malformed, pr["number"], malformed_prs,
-                    refusals=refusals,
+                    refusals=refusals, unanswered=unanswered,
                 )
             rows.append(
                 {
@@ -1309,7 +1440,10 @@ def collect_live(
                     "head": head,
                     "bound_to": shas[-1] if shas else None,
                     "refused_at": refusals[-1] if refusals else None,
-                    "state": classify_approval(head, shas, refused=bool(refusals)),
+                    "state": classify_approval(
+                        head, shas, refused=bool(refusals),
+                        unanswered=bool(unanswered),
+                    ),
                     "runs_at_head": len(runs),
                     "mergeable": pr.get("mergeable"),
                 }
@@ -1345,9 +1479,10 @@ def collect_live(
             if lane in labelled_lanes:
                 continue
             refusals = []
+            unanswered: list[tuple[str, "str | None"]] = []
             shas = lane_shas(
                 comments, lane, malformed, pr["number"], malformed_prs,
-                refusals=refusals,
+                refusals=refusals, unanswered=unanswered,
             )
             # ⚠️ `if not shas` ALONE DROPPED EVERY UNLABELLED REFUSAL. A refusal
             # contributes no SHA, so the row that would have carried it was
@@ -1367,7 +1502,10 @@ def collect_live(
                     "head": head,
                     "bound_to": shas[-1] if shas else None,
                     "refused_at": refusals[-1] if refusals else None,
-                    "state": classify_approval(head, shas, refused=bool(refusals)),
+                    "state": classify_approval(
+                        head, shas, refused=bool(refusals),
+                        unanswered=bool(unanswered),
+                    ),
                     "runs_at_head": len(runs),
                     "mergeable": pr.get("mergeable"),
                 }
@@ -1440,6 +1578,7 @@ def collect_fixture(
                 else label.rsplit("-", 1)[-1]
             )
             refusals = []
+            unanswered: list[tuple[str, "str | None"]] = []
             if label == LOCALLY_VALIDATED_LABEL and "comments" in pr:
                 shas = local_receipt_heads(comments, pr.get("repo", "rrnewton/hermit"))
             elif "comments" in pr:
@@ -1449,7 +1588,7 @@ def collect_fixture(
                     malformed,
                     pr["number"],
                     malformed_prs,
-                    refusals=refusals,
+                    refusals=refusals, unanswered=unanswered,
                 )
             else:
                 shas = pr.get("lane_shas", {}).get(lane, [])
@@ -1468,7 +1607,8 @@ def collect_fixture(
                     "bound_to": shas[-1] if shas else None,
                     "refused_at": refusals[-1] if refusals else None,
                     "state": classify_approval(
-                        pr["head"], shas, refused=bool(refusals)
+                        pr["head"], shas, refused=bool(refusals),
+                        unanswered=bool(unanswered),
                     ),
                     "runs_at_head": pr.get("runs_at_head", 1),
                     "mergeable": pr.get("mergeable"),
@@ -1488,10 +1628,11 @@ def collect_fixture(
             if lane in labelled_lanes:
                 continue
             refusals = []
+            unanswered: list[tuple[str, "str | None"]] = []
             if "comments" in pr:
                 shas = lane_shas(
                     comments, lane, malformed, pr["number"], malformed_prs,
-                    refusals=refusals,
+                    refusals=refusals, unanswered=unanswered,
                 )
             else:
                 shas = pr.get("lane_shas", {}).get(lane, [])
@@ -1508,7 +1649,8 @@ def collect_fixture(
                     "bound_to": shas[-1] if shas else None,
                     "refused_at": refusals[-1] if refusals else None,
                     "state": classify_approval(
-                        pr["head"], shas, refused=bool(refusals)
+                        pr["head"], shas, refused=bool(refusals),
+                        unanswered=bool(unanswered),
                     ),
                     "runs_at_head": pr.get("runs_at_head", 1),
                     "mergeable": pr.get("mergeable"),
