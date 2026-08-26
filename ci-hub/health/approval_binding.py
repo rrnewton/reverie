@@ -371,10 +371,40 @@ MARKER_APPROVED = "APPROVED-AT"
 MARKER_REFUSED = "CHANGES-REQUESTED-AT"
 MARKER_WITHDRAWN = "CHANGES-REQUESTED-WITHDRAWN-AT"
 
+# An agent id, defined ONCE. `_DISCLOSURE` below reads this shape out of a
+# comment's `[team, agent, ...]` tag; the marker's `BY` clause reads it out of the
+# binding line itself. Those are the two identity sources this module has, and two
+# sources that disagreed about what an agent id looks like would resolve the same
+# reviewer two ways -- the exact drift this module exists to prevent. One
+# definition, so they cannot.
+_AGENT_ID = r"[a-z0-9][a-z0-9-]*"
+
+# ⚠️ `BY <agent>` IS OPTIONAL, AND THIS READER LEARNS IT BEFORE ANY WRITER EMITS IT.
+#
+# THE LANE IS NOT THE REVIEWER. `claude` and `codex` name a HARNESS FAMILY, and a
+# fleet of nineteen agents shares two lane names, so "two lanes bound this head"
+# has never been evidence that two reviewers looked at it. The same agent can bind
+# both lanes and the record reads as independent review. Nothing in the grammar
+# could contradict that, because the binding did not carry who issued it.
+#
+# ⚠️ THE ORDERING IS THE WHOLE SAFETY ARGUMENT, and it is the reason this clause
+# arrives in a commit that emits nothing. A marker is a string in a GitHub comment
+# read by several independent programs; there is no schema handshake and no way to
+# upgrade them together. `$` here meant a marker carrying a trailing clause matched
+# NOTHING -- and the failure was not symmetric. An approval falls through to
+# `suspect` and is reported MALFORMED, so it fails to bind: loud, and safe. A
+# REFUSAL that goes malformed still refuses, so it blocks a head nobody refused.
+# Emitting first would have manufactured both. Every reader tolerates the field
+# first; only then may a writer produce one.
+#
+# Group numbering is deliberately undisturbed -- the clause is a NAMED group added
+# after group 3 -- so `parse_marker`'s existing 3-tuple contract, and every consumer
+# of it, is unchanged by this edit. The issuer is read through `marker_issuer`.
 # Longest first: CHANGES-REQUESTED-WITHDRAWN-AT must not be read as a refusal.
 _MARKER_RE = re.compile(
     r"^(CHANGES-REQUESTED-WITHDRAWN-AT|CHANGES-REQUESTED-AT|APPROVED-AT):"
-    r"\s*(claude|codex)\s+([0-9a-f]{40})$",
+    r"\s*(claude|codex)\s+([0-9a-f]{40})"
+    rf"(?:\s+BY\s+(?P<issuer>{_AGENT_ID}))?$",
     re.IGNORECASE,
 )
 
@@ -569,6 +599,24 @@ def parse_marker(line: str) -> tuple[str, str, str] | None:
     return match.group(1).upper(), match.group(2).lower(), match.group(3)
 
 
+def marker_issuer(line: str) -> "str | None":
+    """The agent named in this marker's own ``BY`` clause, or ``None``.
+
+    ``None`` means the LINE does not say -- not that the issuer is unknown. A
+    caller that wants the best available answer should fall back to
+    `comment_author`, which every agent comment already supplies; `lane_shas`
+    does exactly that. Separating the two is what makes the fallback auditable:
+    an issuer read from the binding was asserted BY THE BINDING, one read from
+    the disclosure tag was inferred from the comment around it, and only the
+    first survives being quoted into someone else's comment.
+    """
+    match = _MARKER_RE.match(strip_decoration(line))
+    if not match:
+        return None
+    issuer = match.group("issuer")
+    return issuer.lower() if issuer else None
+
+
 
 # ⚠️ LINE-INITIAL, BUT NOT ONLY THE CANONICAL TOKEN -- AND I NARROWED THIS TOO FAR
 # ONCE ALREADY. `ff2a3d83` (mine) converged this fail-closed net onto
@@ -651,7 +699,7 @@ _REFUSAL_NEARMISS = re.compile(
 # reviewers. An `agent(name)` mention in prose is NOT the author; on #2625 it names
 # a DIFFERENT agent from the tag in 3 of 8 tagged comments, because agents refer to
 # each other constantly.
-_DISCLOSURE = re.compile(r"^\[\s*[a-z0-9]+\s*,\s*([a-z0-9][a-z0-9-]*)\s*,", re.I | re.M)
+_DISCLOSURE = re.compile(rf"^\[\s*[a-z0-9]+\s*,\s*({_AGENT_ID})\s*,", re.I | re.M)
 
 
 def comment_author(body: str) -> "str | None":
@@ -791,6 +839,7 @@ def lane_shas(
     malformed_prs: dict[tuple[str, str], int] | None = None,
     citations: list[tuple[str, str]] | None = None,
     refusals: list[str] | None = None,
+    issuers: list[tuple[str, "str | None"]] | None = None,
 ) -> list[str]:
     """SHAs a lane EXPLICITLY bound itself to, oldest first. Never inferred.
 
@@ -860,8 +909,14 @@ def lane_shas(
     # author said. A malformed APPROVAL must still fail to bind: reading it as
     # "approved" invents authority nobody granted. Loosening both would be the
     # obvious edit and would be wrong in one direction.
+    # The optional `BY <agent>` clause is accepted here for the same reason it is
+    # accepted in `_MARKER_RE`, and the asymmetry above says why it MUST be: an
+    # unrecognised refusal does not fall silent, it goes malformed and blocks. A
+    # refusal carrying an issuer this matcher could not read would block the head
+    # it names AND read as a defect in the reviewer's spelling.
     reject_current = re.compile(
-        r"^CHANGES-REQUESTED(?:-AT)?:\s*(claude|codex)\s+[0-9a-f]{40}$",
+        rf"^CHANGES-REQUESTED(?:-AT)?:\s*(claude|codex)\s+[0-9a-f]{{40}}"
+        rf"(?:\s+BY\s+{_AGENT_ID})?$",
         re.IGNORECASE,
     )
     # ⚠️ THE APPROVAL GRAMMAR IS NOT RESTATED HERE, AND MUST NOT BE.
@@ -1080,6 +1135,22 @@ def lane_shas(
             issued.append((author, MARKER_APPROVED, explicit_lane.lower(), sha))
             if explicit_lane.lower() == lane:
                 found.append(sha)
+                # WHO BOUND THIS LANE, appended in step with `found` so the two
+                # stay index-aligned. This is the entire point of the change: the
+                # issuer was already computed here -- `author` is read a few lines
+                # up, and the citation logic depends on it -- and then DISCARDED at
+                # the return, so no consumer could ask whether two lanes on a head
+                # were bound by two agents or by one agent twice.
+                #
+                # The binding's own `BY` wins over the surrounding comment's
+                # disclosure tag. They almost always agree; when they do not, the
+                # marker is the more specific claim and the one a reviewer wrote
+                # deliberately. `None` means neither source said -- an unsigned
+                # comment carrying a bare marker -- and it is reported as None
+                # rather than guessed, because a fabricated issuer would make an
+                # independence check confidently wrong instead of merely blind.
+                if issuers is not None:
+                    issuers.append((sha, marker_issuer(line) or author))
     return found
 
 

@@ -59,8 +59,21 @@ DISCLOSURE_RE = re.compile(
     rf"\s*(?:-|—|:)\s*(?P<detail>\S.*)\s*$",
     re.IGNORECASE,
 )
+# ⚠️ A THIRD COPY OF THE APPROVAL GRAMMAR, and the reason this clause is repeated
+# here by hand. `ci-hub/health/approval_binding.py` owns the one definition and its
+# own header records that duplicates of it HAVE ALREADY DRIFTED twice -- a copy in
+# `gh-merge-verified` and a copy in `docs/PR_SWEEP_VERDICTS.md` that had drifted
+# four ways and missed seven real bindings. This file additionally carries its own
+# `_undecorate`, so routing it through `parse_marker` also swaps its decoration
+# handling: a behaviour change, and not one to smuggle into a protocol change.
+# Tolerance now, deduplication as its own head -- but this copy is precisely why
+# "every reader tolerates the field first" had to be enumerated rather than assumed.
+#
+# `BY <agent>` is optional and ignored HERE: this consumer asks only which lanes
+# approved the head, so it must not stop matching, and it has no use for the issuer.
 APPROVAL_RE = re.compile(
-    rf"^\s*APPROVED-AT:\s*(?P<lane>claude|codex)\s+(?P<head>{SHA40})\s*$",
+    rf"^\s*APPROVED-AT:\s*(?P<lane>claude|codex)\s+(?P<head>{SHA40})"
+    rf"(?:\s+BY\s+(?P<issuer>[a-z0-9][a-z0-9-]*))?\s*$",
     re.IGNORECASE,
 )
 CONTEXT_REVIEW_RE = re.compile(
