@@ -103,6 +103,32 @@ set -e
 # itself fails, surface that only when the producer succeeded; otherwise retain
 # the producer's exact nonzero status.
 if (( pipeline_status[0] != 0 )); then
+    # ⚠️ A TICK THAT DIES BEFORE READING ITS CONFIG LOOKS EXACTLY LIKE A CLEAN ONE.
+    # Measured 2026-08-26: agent-tool refused on an agent-utils gitlink mismatch and
+    # exited 1 in 0.57s, before a single gate ran. The timer kept firing every five
+    # minutes, each run silent, and NOTHING SAID THAT 35 CHECKS HAD NOT RUN. It was
+    # found by accident. Absence of ACTION lines meant "all clear" and "nothing was
+    # looked at" at the same time, which is the one thing this tool must never do.
+    #
+    # So a nonzero producer status announces the size of what went unobserved. The
+    # count is read STRAIGHT FROM THE CONFIG with grep, deliberately not through
+    # tick-hub: the announcement has to work in exactly the case where tick-hub is
+    # the thing that is broken. An unreadable config degrades to "unknown", never to
+    # silence and never to zero -- a zero here would re-create the defect.
+    tick_config="$ROOT/ci-hub/health/tick-hub.yaml"
+    if [[ -r $tick_config ]]; then
+        not_run=$(grep -cE '^  - name:' "$tick_config" || true)
+        [[ -n $not_run ]] || not_run=unknown
+    else
+        not_run=unknown
+    fi
+    printf 'ERROR: tick exited %s before reporting; %s configured check(s) DID NOT RUN\n' \
+        "${pipeline_status[0]}" "$not_run"
+    printf 'ACTION: hard-warn-coordinator component=tick-hub-reporting outcome=NO-SIGNAL '
+    printf 'gate=ALL reason=tick-exited-before-gates detail="producer exit %s; %s configured '
+    printf 'check(s) unobserved; this is NOT a clean tick" title="NO-SIGNAL gate=ALL: the tick '
+    printf 'exited %s before running any gate; %s check(s) unobserved"\n' \
+        "${pipeline_status[0]}" "$not_run" "${pipeline_status[0]}" "$not_run"
     exit "${pipeline_status[0]}"
 fi
 exit "${pipeline_status[1]}"
