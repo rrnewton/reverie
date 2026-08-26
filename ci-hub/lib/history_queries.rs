@@ -65,7 +65,22 @@ pub struct NewestGreenReport {
     pub full_green_commits_in_range: usize,
     pub green: ValidationEvidence,
     pub commits_after_green: usize,
+    #[serde(default)]
+    pub commits_failed_on_record: usize,
+    #[serde(default)]
+    pub commits_needing_rerun: usize,
+    #[serde(default)]
+    pub commits_truncated: usize,
+    #[serde(default)]
+    pub commits_with_no_result: usize,
+    #[serde(default)]
+    pub commits_not_validated: usize,
+    #[serde(default)]
+    pub commits_with_unreadable_record: usize,
     pub commits_without_any_record: usize,
+    /// Commits with at least one readable parsed row. This is exactly the sum
+    /// of the five non-green `Verdict` counts above; unreadable rows are not
+    /// silently included in it.
     pub commits_with_records: usize,
 }
 
@@ -178,6 +193,7 @@ pub enum FirstBadOutcome {
 pub struct HistoryQueryEngine {
     commits: Vec<String>,
     rows_by_commit: BTreeMap<String, Vec<HistoryRow>>,
+    unreadable_commits: BTreeSet<String>,
 }
 
 impl HistoryQueryEngine {
@@ -199,7 +215,20 @@ impl HistoryQueryEngine {
         Self {
             commits,
             rows_by_commit,
+            unreadable_commits: BTreeSet::new(),
         }
+    }
+
+    /// Record commits for which the ledger contains a physical row that the
+    /// typed reader could not parse. A readable row takes precedence when both
+    /// forms exist for one commit, matching the exact-commit status reader.
+    pub fn with_unreadable_commits(mut self, commits: BTreeSet<String>) -> Self {
+        let main: BTreeSet<&str> = self.commits.iter().map(String::as_str).collect();
+        self.unreadable_commits = commits
+            .into_iter()
+            .filter(|commit| main.contains(commit.as_str()))
+            .collect();
+        self
     }
 
     pub fn newest_green(
@@ -253,12 +282,42 @@ impl HistoryQueryEngine {
 
         if let Some((index, sha, row)) = newest_full_green {
             let newer = &self.commits[..index];
-            let missing = newer
-                .iter()
-                .filter(|commit| !self.rows_by_commit.contains_key(*commit))
-                .count();
+            let mut commits_failed_on_record = 0usize;
+            let mut commits_needing_rerun = 0usize;
+            let mut commits_truncated = 0usize;
+            let mut commits_with_no_result = 0usize;
+            let mut commits_not_validated = 0usize;
+            let mut commits_with_unreadable_record = 0usize;
+            let mut commits_without_any_record = 0usize;
+            for commit in newer {
+                if let Some(rows) = self.rows_by_commit.get(commit) {
+                    match assess(rows, commit).verdict {
+                        Verdict::Validated => {
+                            unreachable!("a commit newer than the newest green cannot be validated")
+                        }
+                        Verdict::FailedOnRecord => commits_failed_on_record += 1,
+                        Verdict::NeedsRerun => commits_needing_rerun += 1,
+                        Verdict::Truncated => commits_truncated += 1,
+                        Verdict::NoResult => commits_with_no_result += 1,
+                        Verdict::NotValidated => commits_not_validated += 1,
+                    }
+                } else if self.unreadable_commits.contains(commit) {
+                    commits_with_unreadable_record += 1;
+                } else {
+                    commits_without_any_record += 1;
+                }
+            }
+            let commits_with_records = commits_failed_on_record
+                + commits_needing_rerun
+                + commits_truncated
+                + commits_with_no_result
+                + commits_not_validated;
+            debug_assert_eq!(
+                commits_with_records + commits_with_unreadable_record + commits_without_any_record,
+                newer.len()
+            );
             let report = NewestGreenReport {
-                schema_version: 4,
+                schema_version: 5,
                 branch: branch.to_string(),
                 branch_ref: branch_ref.to_string(),
                 branch_tip,
@@ -270,8 +329,14 @@ impl HistoryQueryEngine {
                 full_green_commits_in_range: full_green_commits,
                 green: evidence(sha, &row),
                 commits_after_green: newer.len(),
-                commits_without_any_record: missing,
-                commits_with_records: newer.len() - missing,
+                commits_failed_on_record,
+                commits_needing_rerun,
+                commits_truncated,
+                commits_with_no_result,
+                commits_not_validated,
+                commits_with_unreadable_record,
+                commits_without_any_record,
+                commits_with_records,
             };
             return NewestGreenOutcome::Found(Box::new(report));
         }
@@ -792,7 +857,7 @@ pub fn cache_matches(
     ledger_modified_ns: u128,
     producer_definition_authority: &str,
 ) -> bool {
-    cache.schema_version == 6
+    cache.schema_version == 7
         && cache.branch == branch
         && cache.branch_ref == branch_ref
         && cache.branch_tip == branch_tip
@@ -940,11 +1005,131 @@ mod tests {
         assert_eq!(report.gate_schema, "merge-gate-v2");
         assert_eq!(report.gate_schema_floor, "floor");
         assert_eq!(report.commits_after_green, 3);
+        assert_eq!(report.commits_failed_on_record, 1);
+        assert_eq!(report.commits_needing_rerun, 0);
+        assert_eq!(report.commits_truncated, 0);
+        assert_eq!(report.commits_with_no_result, 0);
+        assert_eq!(report.commits_not_validated, 1);
+        assert_eq!(report.commits_with_unreadable_record, 0);
         assert_eq!(report.commits_without_any_record, 1);
         assert_eq!(report.commits_with_records, 2);
+        assert_eq!(
+            report.commits_failed_on_record
+                + report.commits_needing_rerun
+                + report.commits_truncated
+                + report.commits_with_no_result
+                + report.commits_not_validated
+                + report.commits_with_unreadable_record
+                + report.commits_without_any_record,
+            report.commits_after_green
+        );
         assert_eq!(report.branch_commits_in_range, 4);
         assert_eq!(report.trustworthy_recorded_commits_in_range, 3);
         assert_eq!(report.full_green_commits_in_range, 1);
+    }
+
+    #[test]
+    fn newest_green_keeps_unreadable_records_separate_from_no_record() {
+        let commits = vec![
+            "readable".into(),
+            "unreadable".into(),
+            "missing".into(),
+            "full".into(),
+        ];
+        let rows = vec![
+            row(
+                "readable",
+                "2026-08-03T03:00:00Z",
+                "full",
+                "selective",
+                "pass",
+            ),
+            row("full", "2026-08-03T01:00:00Z", "full", "full", "pass"),
+        ];
+        let unreadable = BTreeSet::from(["unreadable".to_string(), "readable".to_string()]);
+        let NewestGreenOutcome::Found(report) = newest_green(
+            HistoryQueryEngine::new(commits, rows).with_unreadable_commits(unreadable),
+        ) else {
+            panic!("expected green")
+        };
+
+        assert_eq!(report.commits_not_validated, 1);
+        assert_eq!(report.commits_failed_on_record, 0);
+        assert_eq!(report.commits_with_unreadable_record, 1);
+        assert_eq!(report.commits_without_any_record, 1);
+        assert_eq!(report.commits_with_records, 1);
+        assert_eq!(
+            report.commits_with_records
+                + report.commits_with_unreadable_record
+                + report.commits_without_any_record,
+            report.commits_after_green
+        );
+    }
+
+    #[test]
+    fn newest_green_counts_each_verdict_after_green() {
+        // These are the parsed ledger rows themselves. In particular, the
+        // complete failure must remain FAILED; adding detail later from a log
+        // or cache is not part of a validate-status verdict.
+        let commits = vec![
+            "failed".into(),
+            "needs-rerun".into(),
+            "truncated".into(),
+            "no-result".into(),
+            "not-validated".into(),
+            "full".into(),
+        ];
+        let mut no_result = row("no-result", "2026-08-03T04:00:00Z", "full", "full", "fail");
+        no_result.failures = None;
+        no_result.gates.clear();
+        let rows = vec![
+            row("failed", "2026-08-03T05:00:00Z", "full", "full", "fail"),
+            row(
+                "needs-rerun",
+                "2026-08-03T04:45:00Z",
+                "full",
+                "full",
+                "needs-rerun",
+            ),
+            row(
+                "truncated",
+                "2026-08-03T04:30:00Z",
+                "full",
+                "full",
+                "truncated",
+            ),
+            no_result,
+            row(
+                "not-validated",
+                "2026-08-03T03:00:00Z",
+                "full",
+                "selective",
+                "pass",
+            ),
+            row("full", "2026-08-03T01:00:00Z", "full", "full", "pass"),
+        ];
+        let NewestGreenOutcome::Found(report) =
+            newest_green(HistoryQueryEngine::new(commits, rows))
+        else {
+            panic!("expected green")
+        };
+
+        assert_eq!(report.commits_failed_on_record, 1);
+        assert_eq!(report.commits_needing_rerun, 1);
+        assert_eq!(report.commits_truncated, 1);
+        assert_eq!(report.commits_with_no_result, 1);
+        assert_eq!(report.commits_not_validated, 1);
+        assert_eq!(report.commits_with_unreadable_record, 0);
+        assert_eq!(report.commits_without_any_record, 0);
+        assert_eq!(report.commits_with_records, 5);
+        assert_eq!(
+            report.commits_failed_on_record
+                + report.commits_needing_rerun
+                + report.commits_truncated
+                + report.commits_with_no_result
+                + report.commits_not_validated,
+            report.commits_with_records
+        );
     }
 
     #[test]
@@ -1242,7 +1427,7 @@ mod tests {
     #[test]
     fn cache_invalidates_on_branch_tip_or_ledger_change() {
         let report = NewestGreenReport {
-            schema_version: 4,
+            schema_version: 5,
             branch: "main".into(),
             branch_ref: "origin/main".into(),
             branch_tip: "tip-a".into(),
@@ -1257,11 +1442,17 @@ mod tests {
                 &row("tip-a", "2026-08-03T01:00:00Z", "full", "full", "pass"),
             ),
             commits_after_green: 0,
+            commits_failed_on_record: 0,
+            commits_needing_rerun: 0,
+            commits_truncated: 0,
+            commits_with_no_result: 0,
+            commits_not_validated: 0,
+            commits_with_unreadable_record: 0,
             commits_without_any_record: 0,
             commits_with_records: 0,
         };
         let cache = NewestGreenCache {
-            schema_version: 6,
+            schema_version: 7,
             branch: "main".into(),
             branch_ref: "origin/main".into(),
             branch_tip: "tip-a".into(),
@@ -1275,6 +1466,19 @@ mod tests {
         let path = Path::new("/tmp/ledger");
         assert!(cache_matches(
             &cache,
+            "main",
+            "origin/main",
+            "tip-a",
+            "floor",
+            path,
+            100,
+            200,
+            "producer-a"
+        ));
+        let mut old_schema = cache.clone();
+        old_schema.schema_version = 6;
+        assert!(!cache_matches(
+            &old_schema,
             "main",
             "origin/main",
             "tip-a",

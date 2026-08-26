@@ -3883,6 +3883,23 @@ fn row_matches_validation_repo(row: &HistoryRow, repo: &str) -> bool {
     }
 }
 
+fn parse_failure_matches_validation_repo(
+    failure: &validate_status::LedgerParseFailure,
+    repo: &str,
+) -> bool {
+    match canonical_validation_repo(repo) {
+        Some(CANONICAL_VALIDATE_REPO) => matches!(
+            failure.repo.as_deref(),
+            None | Some("hermit") | Some(CANONICAL_VALIDATE_REPO)
+        ),
+        Some(CANONICAL_REVERIE_REPO) => matches!(
+            failure.repo.as_deref(),
+            Some("reverie") | Some(CANONICAL_REVERIE_REPO)
+        ),
+        _ => false,
+    }
+}
+
 fn canonical_row_json_and_sha256(row: &HistoryRow) -> Option<(String, String)> {
     // Canonicalization contract v1: serde's struct field order, BTreeMap order
     // for flattened extras, and original Vec order. Any parsed receipt field,
@@ -4822,6 +4839,28 @@ fn retain_cell_evidence(root: &Path, rows: &mut [HistoryRow]) -> Result<(), CiHu
     })
 }
 
+fn newest_green_branch_line(
+    report: &history_queries::NewestGreenReport,
+    cache_hit: bool,
+) -> String {
+    format!(
+        "BRANCH {} tip={} commits-after-green={} failed={} needs-rerun={} truncated={} \
+         no-result={} not-validated={} recorded={} ledger-unreadable={} no-record={} cache={}",
+        report.branch,
+        report.branch_tip,
+        report.commits_after_green,
+        report.commits_failed_on_record,
+        report.commits_needing_rerun,
+        report.commits_truncated,
+        report.commits_with_no_result,
+        report.commits_not_validated,
+        report.commits_with_records,
+        report.commits_with_unreadable_record,
+        report.commits_without_any_record,
+        if cache_hit { "hit" } else { "miss" },
+    )
+}
+
 fn print_newest_green(report: &history_queries::NewestGreenReport, cache_hit: bool, json: bool) {
     if json {
         println!(
@@ -4875,15 +4914,7 @@ fn print_newest_green(report: &history_queries::NewestGreenReport, cache_hit: bo
             .unwrap_or_default();
         println!("PRODUCER-DEFINITION status={status} paths={paths}");
     }
-    println!(
-        "BRANCH {} tip={} commits-after-green={} recorded={} no-record={} cache={}",
-        report.branch,
-        report.branch_tip,
-        report.commits_after_green,
-        report.commits_with_records,
-        report.commits_without_any_record,
-        if cache_hit { "hit" } else { "miss" },
-    );
+    println!("{}", newest_green_branch_line(report, cache_hit));
     println!(
         "EVIDENCE-WINDOW first-parent={}..{} commits={} trustworthy-recorded={} full-green={}",
         report.range_oldest_commit,
@@ -4961,17 +4992,30 @@ fn run_newest_green(root: &Path, args: NewestGreenArgs) -> Result<i32, CiHubErro
         }
     }
 
-    let mut rows = load_ledger_rows(&ledger)?;
-    retain_cell_evidence(root, &mut rows)?;
-    match HistoryQueryEngine::new(commits, rows).newest_green(
-        &args.query.branch,
-        &branch_ref,
-        &floor_policy,
-        &effective_floor.sha,
-    ) {
+    let (rows, parse_failures) = load_ledger_rows_reporting(&ledger)?;
+    let rows = rows
+        .into_iter()
+        .filter(|row| row_matches_validation_repo(row, CANONICAL_VALIDATE_REPO))
+        .collect::<Vec<_>>();
+    let unreadable_commits = parse_failures
+        .into_iter()
+        .filter(|failure| parse_failure_matches_validation_repo(failure, CANONICAL_VALIDATE_REPO))
+        .filter_map(|failure| failure.commit)
+        .collect();
+    // Verdicts come from the ledger rows exactly as the exact-SHA
+    // validate-status path reads them. Log/cache enrichment belongs to
+    // first-bad's cell detail and must not change a commit verdict here.
+    match HistoryQueryEngine::new(commits, rows)
+        .with_unreadable_commits(unreadable_commits)
+        .newest_green(
+            &args.query.branch,
+            &branch_ref,
+            &floor_policy,
+            &effective_floor.sha,
+        ) {
         NewestGreenOutcome::Found(report) => {
             let cache = NewestGreenCache {
-                schema_version: 6,
+                schema_version: 7,
                 branch: report.branch.clone(),
                 branch_ref: report.branch_ref.clone(),
                 branch_tip: report.branch_tip.clone(),
@@ -5583,6 +5627,12 @@ enum GreenDepth {
         depth: usize,
         sha: String,
         window: usize,
+        failed_on_record: usize,
+        needs_rerun: usize,
+        truncated: usize,
+        no_result: usize,
+        not_validated: usize,
+        ledger_unreadable: usize,
         no_record: usize,
     },
     NoneInWindow {
@@ -5605,10 +5655,19 @@ impl GreenDepth {
                 depth,
                 sha,
                 window,
+                failed_on_record,
+                needs_rerun,
+                truncated,
+                no_result,
+                not_validated,
+                ledger_unreadable,
                 no_record,
             } => format!(
                 "HERMIT COMMITS-SINCE-GREEN {depth} (last full green {} at first-parent depth {depth}; \
-                 searched {window} commits, {no_record} of them with no record at all)",
+                 FAILED={failed_on_record} NEEDS-RERUN={needs_rerun} TRUNCATED={truncated} \
+                 NO-RESULT={no_result} NOT-VALIDATED={not_validated} \
+                 LEDGER-UNREADABLE={ledger_unreadable} NO-RECORD={no_record}; \
+                 searched {window} commits)",
                 sha.get(..12).unwrap_or(sha)
             ),
             GreenDepth::NoneInWindow {
@@ -5643,10 +5702,31 @@ impl GreenDepth {
                 depth,
                 sha,
                 window,
+                failed_on_record,
+                needs_rerun,
+                truncated,
+                no_result,
+                not_validated,
+                ledger_unreadable,
                 no_record,
             } => serde_json::json!({
                 "state": "found", "depth": depth, "green_sha": sha,
-                "searched_commits": window, "commits_without_record": no_record,
+                "searched_commits": window,
+                "commits_failed_on_record": failed_on_record,
+                "commits_needing_rerun": needs_rerun,
+                "commits_truncated": truncated,
+                "commits_with_no_result": no_result,
+                "commits_not_validated": not_validated,
+                "commits_with_unreadable_record": ledger_unreadable,
+                "commits_with_records": failed_on_record
+                    + needs_rerun
+                    + truncated
+                    + no_result
+                    + not_validated,
+                "commits_without_any_record": no_record,
+                // Compatibility: this key historically meant "no readable
+                // row", so an unreadable physical row remains part of it.
+                "commits_without_record": no_record + ledger_unreadable,
                 "basis": "first-parent distance",
             }),
             GreenDepth::NoneInWindow {
@@ -5721,30 +5801,40 @@ fn standard_green_depth(root: &Path, branch: &str) -> GreenDepth {
         }
     };
     let ledger = ledger_path(root);
-    let mut rows = match load_ledger_rows(&ledger) {
-        Ok(rows) => rows,
+    let (rows, parse_failures) = match load_ledger_rows_reporting(&ledger) {
+        Ok(parsed) => parsed,
         Err(error) => {
             return GreenDepth::Unavailable {
                 why: format!("ledger: {error}"),
             }
         }
     };
-    if let Err(error) = retain_cell_evidence(root, &mut rows) {
-        return GreenDepth::Unavailable {
-            why: format!("cell evidence: {error}"),
-        };
-    }
+    let rows = rows
+        .into_iter()
+        .filter(|row| row_matches_validation_repo(row, CANONICAL_VALIDATE_REPO))
+        .collect::<Vec<_>>();
+    let unreadable_commits = parse_failures
+        .into_iter()
+        .filter(|failure| parse_failure_matches_validation_repo(failure, CANONICAL_VALIDATE_REPO))
+        .filter_map(|failure| failure.commit)
+        .collect();
+    // Keep this on the same unmodified parsed rows as exact-SHA
+    // validate-status. `retain_cell_evidence` is for first-bad cell detail.
     let floor_policy = format!("{GATE_FLOOR_POLICY}:{}", floor.kind);
-    match HistoryQueryEngine::new(commits, rows).newest_green(
-        branch,
-        &branch_ref,
-        &floor_policy,
-        &floor.sha,
-    ) {
+    match HistoryQueryEngine::new(commits, rows)
+        .with_unreadable_commits(unreadable_commits)
+        .newest_green(branch, &branch_ref, &floor_policy, &floor.sha)
+    {
         NewestGreenOutcome::Found(report) => GreenDepth::Found {
             depth: report.commits_after_green,
             sha: report.green.sha.clone(),
             window: report.branch_commits_in_range,
+            failed_on_record: report.commits_failed_on_record,
+            needs_rerun: report.commits_needing_rerun,
+            truncated: report.commits_truncated,
+            no_result: report.commits_with_no_result,
+            not_validated: report.commits_not_validated,
+            ledger_unreadable: report.commits_with_unreadable_record,
             no_record: report.commits_without_any_record,
         },
         NewestGreenOutcome::FailedOnly {
@@ -5985,10 +6075,11 @@ fn run_validate_status(root: &Path, args: ValidateStatusArgs) -> Result<i32, CiH
     let unreadable_here = parse_failures
         .iter()
         .filter(|failure| {
-            failure
-                .commit
-                .as_deref()
-                .is_some_and(|commit| commit == assessment.sha)
+            parse_failure_matches_validation_repo(failure, repo)
+                && failure
+                    .commit
+                    .as_deref()
+                    .is_some_and(|commit| commit == assessment.sha)
         })
         .count();
     let freshness = if matches!(assessment.verdict, validate_status::Verdict::NotValidated)
@@ -7366,15 +7457,99 @@ mod tests {
     #[test]
     fn found_states_the_depth_and_the_commit() {
         let line = GreenDepth::Found {
-            depth: 281,
+            depth: 365,
             sha: "dee8cf49ce6a7e3e9e2c87c930f3aa55ae83da18".into(),
-            window: 544,
-            no_record: 269,
+            window: 628,
+            failed_on_record: 1,
+            needs_rerun: 18,
+            truncated: 2,
+            no_result: 0,
+            not_validated: 1,
+            ledger_unreadable: 1,
+            no_record: 342,
         }
         .line();
         assert_eq!(
             line,
-            "HERMIT COMMITS-SINCE-GREEN 281 (last full green dee8cf49ce6a at first-parent depth 281; searched 544 commits, 269 of them with no record at all)"
+            "HERMIT COMMITS-SINCE-GREEN 365 (last full green dee8cf49ce6a at first-parent depth 365; FAILED=1 NEEDS-RERUN=18 TRUNCATED=2 NO-RESULT=0 NOT-VALIDATED=1 LEDGER-UNREADABLE=1 NO-RECORD=342; searched 628 commits)"
+        );
+    }
+
+    #[test]
+    fn found_json_keeps_each_verdict_and_absence_separate() {
+        let value = GreenDepth::Found {
+            depth: 7,
+            sha: "dee8cf49ce6a7e3e9e2c87c930f3aa55ae83da18".into(),
+            window: 12,
+            failed_on_record: 1,
+            needs_rerun: 1,
+            truncated: 1,
+            no_result: 1,
+            not_validated: 1,
+            ledger_unreadable: 1,
+            no_record: 1,
+        }
+        .json();
+
+        assert_eq!(value["commits_failed_on_record"], 1);
+        assert_eq!(value["commits_needing_rerun"], 1);
+        assert_eq!(value["commits_truncated"], 1);
+        assert_eq!(value["commits_with_no_result"], 1);
+        assert_eq!(value["commits_not_validated"], 1);
+        assert_eq!(value["commits_with_unreadable_record"], 1);
+        assert_eq!(value["commits_with_records"], 5);
+        assert_eq!(value["commits_without_any_record"], 1);
+        assert_eq!(value["commits_without_record"], 2);
+    }
+
+    #[test]
+    fn newest_green_branch_output_shows_the_full_partition() {
+        let report = history_queries::NewestGreenReport {
+            schema_version: 5,
+            branch: "main".into(),
+            branch_ref: "origin/main".into(),
+            branch_tip: "f".repeat(40),
+            gate_schema: "merge-gate-v2".into(),
+            gate_schema_floor: "floor".into(),
+            range_oldest_commit: "0".repeat(40),
+            branch_commits_in_range: 628,
+            trustworthy_recorded_commits_in_range: 23,
+            full_green_commits_in_range: 1,
+            green: history_queries::ValidationEvidence {
+                sha: "d".repeat(40),
+                finished_at: Some("2026-08-26T00:00:00Z".into()),
+                profile: "full".into(),
+                selection_mode: "full".into(),
+                coverage: None,
+                coverage_satisfied: None,
+                coverage_status: "grandfathered-unknown".into(),
+                result: "pass".into(),
+                log_file: None,
+                producer_definition: None,
+            },
+            commits_after_green: 365,
+            commits_failed_on_record: 1,
+            commits_needing_rerun: 18,
+            commits_truncated: 2,
+            commits_with_no_result: 0,
+            commits_not_validated: 1,
+            commits_with_unreadable_record: 1,
+            commits_without_any_record: 342,
+            commits_with_records: 22,
+        };
+
+        assert_eq!(
+            newest_green_branch_line(&report, false),
+            format!(
+                "BRANCH main tip={} commits-after-green=365 failed=1 needs-rerun=18 truncated=2 no-result=0 not-validated=1 recorded=22 ledger-unreadable=1 no-record=342 cache=miss",
+                "f".repeat(40)
+            )
+        );
+        assert_eq!(
+            report.commits_with_records
+                + report.commits_with_unreadable_record
+                + report.commits_without_any_record,
+            report.commits_after_green
         );
     }
 
@@ -7401,6 +7576,12 @@ mod tests {
                 depth: 0,
                 sha: "a".repeat(40),
                 window: 1,
+                failed_on_record: 0,
+                needs_rerun: 0,
+                truncated: 0,
+                no_result: 0,
+                not_validated: 0,
+                ledger_unreadable: 0,
                 no_record: 0,
             },
             GreenDepth::NoneInWindow {
