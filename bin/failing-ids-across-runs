@@ -1,0 +1,446 @@
+#!/usr/bin/env python3
+"""failing-ids-across-runs -- which test ids fail EVERY time and which MOVE,
+across the validate runs already retained on disk.
+
+WHY THIS EXISTS
+===============
+Before a set of failing test ids can be marked as known failures, the set has to
+be shown STABLE across repeated runs. A set that changes between runs is
+flakiness, and marking it would hide moving red.
+
+The evidence for that usually already exists and nobody reads it: validate
+retains every run under ignored/validate/artifacts/ and nothing ever deletes
+them. This reads those artifacts and answers the question directly. IT NEVER
+RUNS A TEST and never takes the box, so it costs nothing and cannot perturb a
+live validate.
+
+    bin/failing-ids-across-runs                 # every sha with >1 retained run
+    bin/failing-ids-across-runs --sha d7413071  # one sha, full per-id table
+
+WHAT ONE OBSERVATION IS
+=======================
+One retained validate run contributes one PASS/FAIL per test id, over BOTH
+populations, each in its own namespace because the two are different keyspaces
+and have been confused before:
+
+    e2e:<test>/<mode>/<backend>   an e2e manifest cell, from
+                                  <unit>/e2e/*/*/results.jsonl `outcome`
+    test:<crate>::<test>          a nextest test, from the
+                                  `PASS [   0.004s] <crate> <test>` lines in
+                                  <unit>/safe-ci-dag-runner/*.log
+
+FOUR THINGS THAT MAKE A NAIVE VERSION OF THIS LIE
+=================================================
+1. GROUP BY SHA, AND PREFER THE ONE IN THE ROWS. Comparing runs at different
+   shas mixes "this got worse because the code changed" with "this varies run to
+   run" -- only same-sha repeats isolate the second.
+   The row sha is authoritative because it records what EXECUTED. The directory
+   name is a fallback that records what the run was LAUNCHED against, which is
+   normally but not necessarily the same, so runs placed by name are marked
+   "(name)" in the output and counted in a warning.
+   Neither source alone is enough. The hourly owner-checkout units are named
+   with a timestamp where others carry a sha, so name-only grouping drops them
+   entirely; and a unit with no e2e results carries no hermit_sha anywhere, so
+   row-only grouping drops 201 of 327 units. Measured 2026-08-26: rows alone
+   placed 29 runs across 19 shas, name alone would place 236 units but miss the
+   hourly series, and the two together are what make a 10-run group at one sha
+   visible at all.
+2. A TRUNCATED RUN MUST BE EXCLUDED, AND SAID SO. A run killed at its deadline
+   stops partway, and every id it never reached is ABSENT -- which a counter
+   that only looks at failures reads as "did not fail". Measured: one run
+   carried 1762 of 1826 ids, and its 64 missing ids would each have read as a
+   pass. Detected from the journal, not guessed.
+3. AN ANOMALOUS RUN IS NOT A TRUNCATED RUN. A completed run with an unusually
+   high failure count is DATA, not noise. Measured: a run with 31 failures
+   against 12-14 elsewhere looked like teardown collateral and was not -- its
+   journal balanced 134 step_start against 134 step_end and ended properly. Only
+   truncation is grounds for exclusion here; anything else is for a human to
+   explain, so it is reported rather than dropped.
+4. ABSENT IS NOT PASSED. Every id is counted against the number of runs that
+   ACTUALLY OBSERVED IT, and both numbers are printed, so "9 of 9" and "9 of 10"
+   can never be read as the same claim.
+
+EXIT CODES
+  0  ran and reported
+  2  usage error, or no retained runs could be read
+"""
+
+from __future__ import annotations
+
+import argparse
+import collections
+import datetime
+import glob
+import json
+import os
+import re
+import sys
+from pathlib import Path
+
+PROG = "failing-ids-across-runs"
+ROOT = Path(__file__).resolve().parent.parent
+ARTIFACTS = "ignored/validate/artifacts"
+
+# nextest's own result line. A retried test prints more than once (TRY 1 FAIL,
+# then a final line), so the LAST verdict for an id in a log is the one kept.
+NEXTEST = re.compile(
+    r"^\s+(PASS|FAIL|LEAK|LEAK-FAIL|TIMEOUT|SLOW|TRY \d+ FAIL|TRY \d+ ERROR"
+    r"|SIGSEGV|SIGABRT|ABORT|ERROR)\s+"
+    r"\[\s*[0-9]+\.[0-9]+s\]\s+(\S+)\s+(\S+)\s*$",
+    re.M,
+)
+
+
+def die(msg: str, code: int = 2):
+    print(f"{PROG}: {msg}", file=sys.stderr)
+    sys.exit(code)
+
+
+def read_journal_completeness(unit_dir: str) -> tuple[bool, str]:
+    """(completed, why). A run whose journal has an unmatched step_start, or
+    whose last event is not a step_end, stopped partway through."""
+    p = os.path.join(unit_dir, "safe-ci-dag-runner", "journal.jsonl")
+    if not os.path.exists(p):
+        return True, "no journal to check"
+    evs = []
+    try:
+        for line in open(p, errors="replace"):
+            line = line.strip()
+            if line:
+                try:
+                    evs.append(json.loads(line))
+                except ValueError:
+                    pass
+    except OSError as exc:
+        return True, f"journal unreadable ({exc})"
+    if not evs:
+        return True, "journal empty"
+    starts = sum(1 for e in evs if e.get("event") == "step_start")
+    ends = sum(1 for e in evs if e.get("event") == "step_end")
+    last = evs[-1].get("event")
+    if starts != ends:
+        return False, f"unmatched step_start ({starts} started, {ends} ended)"
+    if last != "step_end":
+        return False, f"journal ends on {last!r}, not step_end"
+    return True, f"{starts} steps started and ended"
+
+
+def read_run(unit_dir: str):
+    """-> (hermit_sha or None, {test_id: 'PASS'|'FAIL'})."""
+    ids: dict[str, str] = {}
+    sha = None
+    for f in glob.glob(os.path.join(unit_dir, "e2e", "*", "*", "results.jsonl")):
+        try:
+            fh = open(f, errors="replace")
+        except OSError:
+            continue
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                r = json.loads(line)
+            except ValueError:
+                continue
+            sha = sha or r.get("hermit_sha")
+            tid = f"e2e:{r.get('test')}/{r.get('mode')}/{r.get('backend')}"
+            ids[tid] = "PASS" if r.get("outcome") == "PASS" else "FAIL"
+    for f in sorted(glob.glob(os.path.join(unit_dir, "safe-ci-dag-runner", "*.log"))):
+        try:
+            txt = open(f, errors="replace").read()
+        except OSError:
+            continue
+        for m in NEXTEST.finditer(txt):
+            verdict, crate, test = m.group(1), m.group(2), m.group(3)
+            if verdict == "SLOW":
+                # a progress notice, not a completion -- it is followed by a real
+                # verdict line and counting it would double-count the test
+                continue
+            ids[f"test:{crate}::{test}"] = "PASS" if verdict == "PASS" else "FAIL"
+    return sha, ids
+
+
+DIRNAME_SHA = re.compile(r"^validate-.+-([0-9a-f]{12})-")
+
+
+def sha_from_dirname(name: str) -> str | None:
+    """The sha in a unit directory name, which is a WEAKER key than the one in
+    the rows and is labelled as such wherever it is used.
+
+    The name records the target the run was LAUNCHED against; the rows record
+    what actually executed. Those are normally the same and need not be -- a run
+    started with an override can be launched at one sha against a checkout that
+    is merely behind. So rows win when present, and a group resting on dirnames
+    says so rather than presenting itself as equally established.
+
+    Worth the fallback all the same: of 327 retained units, 236 carry a sha in
+    the name while only 126 carry one in their rows, because a unit with no e2e
+    results has no hermit_sha anywhere in it."""
+    m = DIRNAME_SHA.match(name)
+    return m.group(1) if m else None
+
+
+def collect(root: Path):
+    """Every retained unit that carries outcomes, grouped by sha.
+
+    Keyed on the first 12 hex characters, because the two sources supply
+    different lengths and a 40-hex key and a 12-hex prefix of the same commit
+    must not become two groups."""
+    base = root / ARTIFACTS
+    if not base.is_dir():
+        die(f"no retained artifacts at {base}")
+    by_sha = collections.defaultdict(list)
+    skipped_no_sha = 0
+    for name in sorted(os.listdir(base)):
+        d = str(base / name)
+        if not os.path.isdir(d):
+            continue
+        sha, ids = read_run(d)
+        if not ids:
+            continue
+        source = "rows"
+        if not sha:
+            sha = sha_from_dirname(name)
+            source = "dirname"
+        if not sha:
+            skipped_no_sha += 1
+            continue
+        done, why = read_journal_completeness(d)
+        by_sha[sha[:12]].append(
+            {"dir": name, "mtime": os.path.getmtime(d), "ids": ids,
+             "completed": done, "why": why, "sha": sha, "sha_source": source}
+        )
+    for runs in by_sha.values():
+        runs.sort(key=lambda r: r["mtime"])
+    return by_sha, skipped_no_sha
+
+
+def tally(runs):
+    """-> (seen, failed) counters over the COMPLETED runs only."""
+    seen, failed = collections.Counter(), collections.Counter()
+    for r in runs:
+        for tid, verdict in r["ids"].items():
+            seen[tid] += 1
+            if verdict != "PASS":
+                failed[tid] += 1
+    return seen, failed
+
+
+def classify(seen, failed, n_runs):
+    """Split ever-failing ids into those that failed in EVERY run that observed
+    them AND were observed in every run, and everything else.
+
+    Being observed in every run is part of the test on purpose: an id that
+    failed 9 times out of the 9 runs that ran it, in a corpus of 10, has NOT
+    been shown to fail every time."""
+    always = sorted(t for t in failed if failed[t] == seen[t] == n_runs)
+    moving = sorted((t for t in failed if t not in set(always)),
+                    key=lambda t: (-failed[t], t))
+    return always, moving
+
+
+def report(sha, runs, out=sys.stdout):
+    w = lambda s="": print(s, file=out)
+    complete = [r for r in runs if r["completed"]]
+    truncated = [r for r in runs if not r["completed"]]
+    w("=" * 78)
+    w(f"{PROG}: hermit_sha {sha}")
+    w("=" * 78)
+    w(f"retained runs: {len(runs)}   completed: {len(complete)}   truncated: {len(truncated)}")
+    w()
+    from_name = [r for r in runs if r["sha_source"] == "dirname"]
+    if from_name:
+        w(f"⚠️ {len(from_name)} of {len(runs)} runs are placed at this sha by their DIRECTORY")
+        w("   NAME, not by a hermit_sha in their rows -- a unit with no e2e results carries")
+        w("   no sha anywhere else. The name is the target the run was LAUNCHED against,")
+        w("   which is normally but not necessarily what executed. Marked (name) below.")
+        w()
+    for r in runs:
+        stamp = datetime.datetime.fromtimestamp(r["mtime"]).strftime("%m-%d %H:%M")
+        nfail = sum(1 for v in r["ids"].values() if v != "PASS")
+        flag = "" if r["completed"] else "   <- EXCLUDED, TRUNCATED"
+        src = " (name)" if r["sha_source"] == "dirname" else ""
+        w(f"  {stamp}  ids={len(r['ids']):5d}  failing={nfail:3d}  {r['dir'][:44]}{src}{flag}")
+        if not r["completed"]:
+            w(f"      {r['why']}")
+    if not complete:
+        w()
+        w("NO COMPLETED RUN AT THIS SHA -- nothing can be said about stability.")
+        return
+    w()
+    seen, failed = tally(complete)
+    always, moving = classify(seen, failed, len(complete))
+    w(f"distinct test ids observed: {len(seen)}")
+    w(f"ids failing in at least one completed run: {len(failed)}")
+    w()
+    w(f"FAILED IN ALL {len(complete)} COMPLETED RUNS -- candidate stable set, {len(always)} ids")
+    w("  (a set may only be marked as known failures if it is stable; these are the")
+    w("   only ids for which that has been shown at this sha)")
+    for t in always:
+        w(f"    {failed[t]}/{seen[t]}  {t}")
+    w()
+    w(f"MOVED BETWEEN RUNS -- {len(moving)} ids, NOT markable")
+    for t in moving:
+        note = "" if seen[t] == len(complete) else f"   (observed in only {seen[t]} of {len(complete)} runs)"
+        w(f"    {failed[t]}/{seen[t]}  {t}{note}")
+    if moving:
+        w()
+        concentration = collections.Counter()
+        for r in complete:
+            for t in moving:
+                if r["ids"].get(t, "PASS") != "PASS":
+                    concentration[r["dir"]] += 1
+        w("  where those moving failures occurred, per run -- a large number in ONE")
+        w("  completed run is one correlated episode to be explained, not N independent")
+        w("  flakes to be averaged:")
+        for d, c in concentration.most_common():
+            w(f"    {c:3d}  {d[:56]}")
+    w()
+    w("  ⚠️ THIS SPEAKS ONLY TO THIS SHA. Observations at different shas are not")
+    w("     comparable: mixing them conflates a regression with run-to-run variation.")
+    w(f"  ⚠️ {len(complete)} runs bounds a rate loosely. An id that never failed here still has")
+    w("     a 95% upper bound on its failure rate of roughly "
+      f"{100 * (1 - 0.05 ** (1.0 / len(complete))):.0f}%; 'not seen to fail'")
+    w("     is not 'does not fail'. The evidence for the stable set is the other")
+    w("     direction and is much stronger.")
+
+
+def _selftest() -> int:
+    failures = []
+
+    def check(label, got, want):
+        if got != want:
+            failures.append(f"{label}: got {got!r}, want {want!r}")
+
+    # ABSENT MUST NOT COUNT AS PASSED. An id seen in 2 of 3 runs and failing both
+    # times has NOT failed in all three, and must not join the markable set.
+    runs = [
+        {"ids": {"a": "FAIL", "b": "FAIL"}},
+        {"ids": {"a": "FAIL", "b": "FAIL"}},
+        {"ids": {"a": "FAIL"}},
+    ]
+    seen, failed = tally(runs)
+    always, moving = classify(seen, failed, 3)
+    check("an id failing in every run of three is stable", always, ["a"])
+    check("an id absent from one run is NOT stable", moving, ["b"])
+    check("and its true denominator is preserved", (failed["b"], seen["b"]), (2, 2))
+
+    # A PASS ANYWHERE DISQUALIFIES.
+    seen, failed = tally([{"ids": {"a": "FAIL"}}, {"ids": {"a": "PASS"}}])
+    always, moving = classify(seen, failed, 2)
+    check("one pass moves an id out of the stable set", (always, moving), ([], ["a"]))
+
+    # THE TWO POPULATIONS MUST NOT COLLIDE IN ONE KEYSPACE.
+    seen, _ = tally([{"ids": {"e2e:x/verify/ptrace": "FAIL", "test:c::x": "FAIL"}}])
+    check("e2e and nextest ids stay distinct", sorted(seen), ["e2e:x/verify/ptrace", "test:c::x"])
+
+    # TRUNCATION DETECTION, on the shape a killed run actually leaves.
+    import tempfile
+    with tempfile.TemporaryDirectory() as d:
+        j = Path(d) / "safe-ci-dag-runner"
+        j.mkdir()
+        good = ['{"event":"step_start","step":"a"}', '{"event":"step_end","step":"a"}']
+        (j / "journal.jsonl").write_text("\n".join(good) + "\n")
+        check("a balanced journal reads as completed", read_journal_completeness(d)[0], True)
+        (j / "journal.jsonl").write_text("\n".join(good + ['{"event":"step_start","step":"b"}']) + "\n")
+        done, why = read_journal_completeness(d)
+        check("an unmatched step_start reads as truncated", done, False)
+        check("and it says which", "unmatched step_start" in why, True)
+        # A run that ended on a test_end rather than a step_end also stopped early.
+        (j / "journal.jsonl").write_text("\n".join(good + ['{"event":"test_end","test":"t"}']) + "\n")
+        check("a journal not ending on step_end reads as truncated",
+              read_journal_completeness(d)[0], False)
+        # ABSENCE OF A JOURNAL IS NOT EVIDENCE OF TRUNCATION -- refusing those
+        # would silently drop every run predating the journal.
+        (j / "journal.jsonl").unlink()
+        check("no journal is not treated as truncated", read_journal_completeness(d)[0], True)
+
+    # SLOW IS A PROGRESS NOTICE, NOT A COMPLETION.
+    log = ("        SLOW [  60.000s] crate slow_test\n"
+           "        PASS [  61.000s] crate slow_test\n"
+           "        TRY 1 FAIL [   1.000s] crate retried\n"
+           "        PASS [   1.100s] crate retried\n")
+    got = {}
+    for m in NEXTEST.finditer(log):
+        if m.group(1) == "SLOW":
+            continue
+        got[f"test:{m.group(2)}::{m.group(3)}"] = "PASS" if m.group(1) == "PASS" else "FAIL"
+    check("SLOW does not become a verdict", got.get("test:crate::slow_test"), "PASS")
+    check("a retried test keeps its FINAL verdict", got.get("test:crate::retried"), "PASS")
+
+    # THE DIRNAME FALLBACK. It must find the sha in the unit-name shape and must
+    # NOT invent one from the hourly owner-checkout shape, whose matching field
+    # is a timestamp -- reading that as a sha would group unrelated runs together
+    # under a key that looks like a commit.
+    check("a sha is recovered from the unit name",
+          sha_from_dirname("validate-hermit-011-d7413071581f-1787716220"), "d7413071581f")
+    check("a timestamped owner-checkout name yields NO sha",
+          sha_from_dirname("validate-owner-checkout-20260826t072716980073z-1367756"), None)
+    check("a non-validate directory yields no sha",
+          sha_from_dirname("portable-applications-timed-progress-bar-verify-ptrace-repetition-0001"), None)
+
+    for f in failures:
+        print(f"{PROG}: SELFTEST FAIL {f}", file=sys.stderr)
+    print(f"{PROG}: selftest {'FAILED' if failures else 'PASSED'} ({len(failures)} failures)",
+          file=sys.stderr)
+    return 1 if failures else 0
+
+
+def main() -> int:
+    p = argparse.ArgumentParser(
+        prog=PROG, description="Which test ids fail every time and which move, "
+                               "across retained validate runs. Runs no tests.")
+    p.add_argument("--sha", help="report one sha in full (prefix match)")
+    p.add_argument("--min-runs", type=int, default=2,
+                   help="in the summary, only list shas with at least this many retained runs")
+    p.add_argument("--selftest", action="store_true")
+    args = p.parse_args()
+    if args.selftest:
+        return _selftest()
+
+    by_sha, no_sha = collect(ROOT)
+    if not by_sha:
+        die("no retained run carried both outcomes and a hermit_sha")
+
+    if args.sha:
+        hits = [s for s in by_sha if s.startswith(args.sha)]
+        if not hits:
+            die(f"no retained run at a sha starting {args.sha!r}; "
+                f"run without --sha to list what is available")
+        if len(hits) > 1:
+            die(f"{args.sha!r} matches {len(hits)} shas: {', '.join(h[:12] for h in hits)}")
+        report(hits[0], by_sha[hits[0]])
+        return 0
+
+    print(f"{PROG}: {sum(len(v) for v in by_sha.values())} retained runs across "
+          f"{len(by_sha)} shas"
+          + (f"; {no_sha} unit(s) carried no hermit_sha and were skipped" if no_sha else ""))
+    print()
+    rows = sorted(by_sha.items(), key=lambda kv: -len(kv[1]))
+    shown = 0
+    for sha, runs in rows:
+        if len(runs) < args.min_runs:
+            continue
+        shown += 1
+        complete = [r for r in runs if r["completed"]]
+        if complete:
+            seen, failed = tally(complete)
+            always, moving = classify(seen, failed, len(complete))
+            summary = f"stable {len(always):3d}  moving {len(moving):3d}"
+        else:
+            summary = "no completed run"
+        print(f"  {sha[:12]}  runs {len(runs):2d} (completed {len(complete):2d})  {summary}")
+    if not shown:
+        print(f"  no sha has {args.min_runs} or more retained runs; "
+              f"stability cannot be assessed from one run")
+    else:
+        print()
+        print(f"  {PROG} --sha <prefix>   for the per-id table")
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except KeyboardInterrupt:
+        sys.exit(130)
