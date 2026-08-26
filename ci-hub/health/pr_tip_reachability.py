@@ -204,11 +204,42 @@ def self_test() -> int:
               file=sys.stderr)
         failures += 1
 
+    # ⚠️ THE ALARM PATH, WHICH IS THE ONE THAT HAS NEVER RUN IN ANGER. tick-hub
+    # refuses to emit a title whose `{summary}` it cannot resolve, so a missing
+    # `summary=` line turns the one report that matters into a NO-SIGNAL. Assert
+    # the key is printed on BOTH arms, and that the nonzero arm names the PRs.
+    import contextlib
+    import io as _io
+    for label, rep, want in (
+        ("nonzero", {"repo": "x", "swept": 3, "unreachable": 1,
+                     "unreachable_prs": [7], "reachable_via_pull_ref_only": 0,
+                     "pull_ref_only_prs": []}, "#7"),
+        ("zero", {"repo": "x", "swept": 3, "unreachable": 0,
+                  "unreachable_prs": [], "reachable_via_pull_ref_only": 0,
+                  "pull_ref_only_prs": []}, "0 of 3"),
+    ):
+        buf = _io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            print(f"pr-tip-reachability: {summarize(rep)}")
+            print(f"summary={summarize(rep)}", flush=True)
+        emitted = buf.getvalue()
+        line = next((l for l in emitted.splitlines() if l.startswith("summary=")), None)
+        if line is None:
+            print(f"FAIL: the {label} arm printed no `summary=` line; tick-hub "
+                  "would refuse the emission and report NO-SIGNAL instead",
+                  file=sys.stderr)
+            failures += 1
+        elif want not in line:
+            print(f"FAIL: the {label} arm's summary does not name its subject "
+                  f"({want!r} absent from {line!r})", file=sys.stderr)
+            failures += 1
+
     if failures:
         print(f"pr_tip_reachability --self-test: {failures} case(s) failed", file=sys.stderr)
         return 1
     print("PASS: the probe can report unreachable, an indeterminate does not render "
-          "as zero, and a nonzero count carries its lower-bound qualifier")
+          "as zero, a nonzero count carries its lower-bound qualifier, and both "
+          "arms print the `summary=` line tick-hub needs to emit the alarm")
     return 0
 
 
@@ -230,6 +261,19 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(report, indent=2))
     else:
         print(f"pr-tip-reachability: {summarize(report)}")
+        # ⚠️ THE ALARM CANNOT BE EMITTED WITHOUT THIS LINE. tick-hub resolves the
+        # `{summary}` in this reminder's title from `key=value` stdout lines
+        # (engine.parse_kv_lines). With no `summary=` key the emission raises
+        # UnresolvedPlaceholderError, and the reader gets
+        # `NO-SIGNAL ... missing placeholder(s)=summary` INSTEAD OF THE PULL
+        # REQUEST NUMBERS whose work is about to be collected.
+        #
+        # It went unnoticed for the same reason the timeout did: this gate emits
+        # only `when: failure`, it has never returned nonzero, and before
+        # 2026-08-26 it exceeded its bound anyway -- so the one path that needed
+        # this line is the one path never exercised. Bracketed both ways in
+        # self_test(), including the nonzero arm.
+        print(f"summary={summarize(report)}", flush=True)
 
     if not args.gate:
         return 0
