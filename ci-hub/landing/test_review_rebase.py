@@ -137,3 +137,84 @@ def test_cli_brackets_both_directions(tmp_path: Path) -> None:
     refused = subprocess.run(command, text=True, capture_output=True, check=False)
     assert refused.returncode != 0
     assert "REFUSED" in refused.stderr or "ERROR" in refused.stderr
+
+
+def comment_row(lane: str, head: str, state: str) -> dict:
+    """A row as `approval_binding.py` reports it when no label carries it.
+
+    A refusal is the NORMAL shape here: nobody attests a `CHANGES-REQUESTED-AT`,
+    so a refusing lane has a comment row and no `passed-review-*` label.
+    """
+    return {
+        "number": 2261,
+        "label": None,
+        "source": "comment",
+        "lane": lane,
+        "head": head,
+        "bound_to": None,
+        "state": state,
+    }
+
+
+def labelled_current(head: str) -> dict:
+    fixture = report(head, head, state=R.BOUND_CURRENT)
+    fixture["rows"][0]["source"] = "label"
+    return fixture
+
+
+def test_a_comment_refusal_blocks_even_with_no_label_to_carry_it() -> None:
+    """⚠️ THE SKIP FAILED OPEN, AND ONLY IN THE PERMISSIVE DIRECTION.
+
+    Not admitting a comment APPROVAL is conservative; not honouring a comment
+    REFUSAL is permissive, and one `continue` did both. Measured 2026-08-26
+    against main 9d4c998cfa5a: hermit#2680's latest codex marker is
+    `CHANGES-REQUESTED-AT` at the CURRENT head, never withdrawn, and this gate
+    authorized the PR.
+    """
+    head = "a" * 40
+    fixture = labelled_current(head)
+    fixture["rows"].append(comment_row("codex", head, "REFUSED"))
+    try:
+        R.evaluate(fixture, Path("."), "b" * 40, head)
+    except R.Refused as error:
+        assert "codex" in str(error)
+        assert "REFUSED" in str(error)
+    else:
+        raise AssertionError("a live comment refusal must block the landing gate")
+
+
+def test_a_stale_comment_refusal_blocks_because_a_self_withdrawal_is_not_a_discharge() -> None:
+    """The hermit#2668 shape, and it defeats an anti-self-clearing rule.
+
+    Its codex refusal was withdrawn by `agent(hermit-001)` -- the PR AUTHOR.
+    `approval_binding.py` correctly refuses a withdrawal that is not the
+    refusal's own author and keeps reporting `REFUSED_STALE`; this gate skipped
+    the row and authorized anyway, so the rule it enforces was reachable around.
+    """
+    head = "a" * 40
+    fixture = labelled_current(head)
+    fixture["rows"].append(comment_row("codex", head, "REFUSED_STALE"))
+    try:
+        R.evaluate(fixture, Path("."), "b" * 40, head)
+    except R.Refused as error:
+        assert "REFUSED_STALE" in str(error)
+    else:
+        raise AssertionError("an undischarged stale refusal must block")
+
+
+def test_a_comment_approval_still_does_not_admit() -> None:
+    """The original property this skip existed for, unchanged.
+
+    A comment-sourced APPROVAL must still not be admission evidence: it is
+    reported so an unlabeled-but-approved PR stops reading as unreviewed, and
+    that is all. Only the labelled row appears in the verdict.
+    """
+    head = "a" * 40
+    fixture = labelled_current(head)
+    fixture["rows"].append(comment_row("codex", head, R.BOUND_CURRENT))
+    verdict = R.evaluate(fixture, Path("."), "b" * 40, head)
+    assert verdict["state"] == "REVIEW_APPLIES"
+    assert [a["lane"] for a in verdict["approvals"]] == ["codex"]
+    assert all(a["label"] for a in verdict["approvals"]), (
+        "an unlabelled comment row must never appear as admission evidence"
+    )
