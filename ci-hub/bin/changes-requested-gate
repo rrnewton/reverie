@@ -94,6 +94,13 @@ def _load_grammar():
     return module
 
 OK, BLOCKED, INDETERMINATE = 0, 1, 2
+# ⚠ A FOURTH OUTCOME, BECAUSE "MAY THIS MERGE?" HAS A FOURTH ANSWER: the
+# question no longer applies. Non-zero on purpose -- land-pr.sh dispatches
+# `0) clear ;; *) abandon ;;`, so MOOT abandons exactly like BLOCKED and no caller
+# can mistake it for permission. It is DISTINCT from BLOCKED because BLOCKED names
+# a reviewer who refused and prescribes a remedy; on a merged pull request there is
+# no reviewer to satisfy and no branch left to push to.
+MOOT = 3
 
 REFUSAL = "CHANGES-REQUESTED-AT"
 WITHDRAWN = "CHANGES-REQUESTED-WITHDRAWN-AT"
@@ -368,6 +375,54 @@ def head_is_main_equal(source: str, head: str) -> bool:
     if r.returncode != 0:
         return False
     return r.stdout.strip() == ""
+
+
+def state_verdict(state: str | None) -> tuple[int, str] | None:
+    """Decide from the pull request's STATE alone, before any marker is read.
+
+    Returns None when the pull request is OPEN and the marker logic should run.
+
+    ⚠ THIS GATE WAS STATE-BLIND AND SAID SO CONFIDENTLY. Measured on
+    hermit#2677: merged 2026-08-26T01:37:12Z, a claude refusal posted 01:41:15Z,
+    and the gate then reported
+
+        BLOCKED pr=2677 head=7e3004480dbd -- 1 refusal(s) bound to the exact head
+        ... This clears when the AUTHOR pushes a fix (the sha moves ...)
+
+    on a pull request that had been merged for four minutes. The remedy it
+    prescribes cannot be performed: there is no branch to push to. A lander polling
+    it would see BLOCKED forever, and -- the reason this is worse than noise -- an
+    agent citing "the gate went CLEAR then BLOCKED" as proof its marker bound gets
+    a TRUE answer about a head that can no longer change.
+
+    ⚠ AND THE CLEAR DIRECTION IS THE SAME DEFECT. A merged pull request with no
+    markers used to return CLEAR, which reads as "nothing refuses this, go ahead"
+    about something already done. Both directions are state-blindness; only one of
+    them looks alarming, which is why only one was noticed.
+
+    Same shape as the fix in `ci-hub/landing/land-pr.sh`, which reads `state`
+    beside `headRefName` in one query and refuses anything that is not OPEN --
+    including an unreadable state, because an unreadable state is not an open one.
+    """
+    if state is None or not str(state).strip():
+        return (
+            INDETERMINATE,
+            "the pull request state is unreadable, and an unreadable state is not an "
+            "OPEN one. Refusing to evaluate markers against a head whose pull request "
+            "may already be merged or closed.",
+        )
+    st = str(state).strip().upper()
+    if st == "OPEN":
+        return None
+    return (
+        MOOT,
+        f"the pull request is {st}, not OPEN, so the question this gate answers no "
+        f"longer applies. Markers are NOT evaluated: on a {st.lower()} pull request a "
+        f"refusal cannot be satisfied (there is no branch to push to) and an absence "
+        f"of refusals is not permission to merge something already resolved. If a "
+        f"finding arrived after the merge it is real but unbindable -- fix it forward "
+        f"on a new head rather than treating this verdict as a block.",
+    )
 
 
 def evaluate(
@@ -706,13 +761,46 @@ def self_test() -> int:
         bad.append("--require-answered did not block an outrun refusal")
     if evaluate([_T_REF, _T_WD], _MOVED, require_answered=True)[0] != OK:
         bad.append("--require-answered blocked an ANSWERED refusal -- over-blocking")
+    # ⚠ THE STATE GATE, BOTH DIRECTIONS. hermit#2677 merged 2026-08-26T01:37:12Z;
+    # a refusal posted 01:41:15Z made this gate print BLOCKED with a remedy nobody
+    # could perform. The MERGED cases are that defect; the OPEN case is what stops
+    # the fix from swallowing every verdict.
+    state_cases = [
+        ("OPEN falls through to the marker logic", "OPEN", None),
+        ("MERGED is MOOT", "MERGED", MOOT),
+        ("CLOSED is MOOT", "CLOSED", MOOT),
+        ("state is compared case-insensitively", "merged", MOOT),
+        ("unreadable state is INDETERMINATE, not OPEN", None, INDETERMINATE),
+        ("empty state is INDETERMINATE, not OPEN", "   ", INDETERMINATE),
+    ]
+    for name, st, want in state_cases:
+        got = state_verdict(st)
+        gotrc = None if got is None else got[0]
+        if gotrc != want:
+            bad.append(f"state: {name}: got {gotrc}, want {want}")
+
+    # ⚠ AND THE CONTROLS THAT MUST FAIL. A `state_verdict` that returned MOOT for
+    # everything would satisfy four of the six cases above, and a gate that returned
+    # MOOT before reading markers would make every BLOCKED verdict disappear -- the
+    # reassuring direction. These assert that an OPEN pull request still reaches the
+    # marker logic AND still blocks on a live refusal.
+    if state_verdict("OPEN") is not None:
+        bad.append("state: OPEN did not fall through; the marker logic would never run")
+    if evaluate([_T_REF], _T_HEAD)[0] != BLOCKED:
+        bad.append("state: an OPEN pr with a live refusal no longer BLOCKS -- the fix over-reached")
+    # land-pr.sh dispatches `0) clear ;; *) abandon ;;`, so a zero MOOT would turn a
+    # merged pull request into permission.
+    if MOOT == OK:
+        bad.append("state: MOOT is zero; land-pr.sh would read a merged pr as clear")
+
     for b in bad:
         print(f"changes-requested-gate self-test: FAIL -- {b}", file=sys.stderr)
     if bad:
         return 1
     print(f"changes-requested-gate self-test: OK -- {len(cases)} withdrawal-scoping "
           f"case(s) including the same-lane pair from hermit#2625, plus {len(render)} "
-          "answered-vs-outrun rendering case(s) and their identity control")
+          f"answered-vs-outrun rendering case(s) and their identity control, plus "
+          f"{len(state_cases)} state case(s) from hermit#2677 and their over-reach controls")
     return 0
 
 
@@ -745,10 +833,32 @@ def main(argv: list[str] | None = None) -> int:
             bodies = json.load(fh)
         head = args.head or ""
     else:
-        head = args.head
-        if not head:
-            view = gh_json(["pr", "view", args.pr, "-R", args.repo, "--json", "headRefOid"])
-            head = (view or {}).get("headRefOid") if isinstance(view, dict) else None
+        # ⚠ ONE QUERY, BOTH FACTS. `ci-hub/landing/land-pr.sh` reads `state` beside
+        # `headRefName` in a single `gh pr view` for exactly this reason: a per-head
+        # EXTRA read is what trips the shared secondary rate limit. `state` is a
+        # fixed enum with no spaces, so on the common path it costs a field rather
+        # than a round trip. When `--head` was supplied this path previously made no
+        # view call at all, so there it costs one -- accepted, because the three
+        # paginated comment reads below dwarf it and a state-blind verdict was worse
+        # than a fourth field.
+        view = gh_json(["pr", "view", args.pr, "-R", args.repo, "--json", "headRefOid,state"])
+        view = view if isinstance(view, dict) else {}
+        head = args.head or view.get("headRefOid")
+
+        # ⚠ STATE IS DECIDED BEFORE ANY MARKER IS READ, and that ordering is part of
+        # the fix. A merged pull request needs no comment scan: skipping it here also
+        # removes three paginated reads from every moot query.
+        verdict = state_verdict(view.get("state"))
+        if verdict is not None:
+            rc, why = verdict
+            label = {INDETERMINATE: "INDETERMINATE", MOOT: "MOOT"}[rc]
+            print(
+                f"changes-requested-gate: {label} pr={args.pr} "
+                f"head={(head or '????????')[:12]} -- {why}",
+                file=sys.stderr,
+            )
+            return rc
+
         if not head:
             print(
                 f"changes-requested-gate: INDETERMINATE pr={args.pr} "
@@ -809,7 +919,8 @@ def main(argv: list[str] | None = None) -> int:
             f"carries the change again.",
         )
 
-    label = {OK: "CLEAR", BLOCKED: "BLOCKED", INDETERMINATE: "INDETERMINATE"}[rc]
+    label = {OK: "CLEAR", BLOCKED: "BLOCKED", INDETERMINATE: "INDETERMINATE",
+             MOOT: "MOOT"}[rc]
     stream = sys.stdout if rc == OK else sys.stderr
     print(f"changes-requested-gate: {label} pr={args.pr} head={head[:12]} -- {why}", file=stream)
     return rc
