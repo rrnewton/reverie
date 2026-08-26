@@ -3,6 +3,7 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -13,7 +14,9 @@ from pathlib import Path
 
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 import start_unit  # noqa: E402
+import qualifying_receipt  # noqa: E402
 
 
 SHA = "a" * 40
@@ -53,6 +56,8 @@ class FakeRun:
         self.executed_nodes: int | None = 55
         self.executed_tests: int | None = 862
         self.collected_unit = False
+        self.current_main = "b" * 40
+        self.target_contains_current_main = False
 
     def default_ledger_row(self) -> dict[str, object]:
         return {
@@ -108,6 +113,8 @@ class FakeRun:
                 receipt.write_text(f'{{"commit": "{SHA}", "cwd": "{self.fresh}"}}\n')
             return completed(command, stdout=f"{self.fresh}\n")
         if command[:2] == ["rm", "-rf"]:
+            return completed(command)
+        if command[:1] == ["timeout"] and "fetch" in command:
             return completed(command)
         if (
             self.fresh is not None
@@ -175,6 +182,16 @@ class FakeRun:
             if rows is None:
                 rows = [json.dumps(self.default_ledger_row())]
             return completed(command, stdout="\n".join(rows) + ("\n" if rows else ""))
+        if (
+            command[:4] == ["git", "-C", str(self.checkout), "rev-parse"]
+            and command[-1] == "refs/remotes/origin/main^{commit}"
+        ):
+            return completed(command, stdout=f"{self.current_main}\n")
+        if (
+            command[:4] == ["git", "-C", str(self.checkout), "merge-base"]
+            and command[4] == "--is-ancestor"
+        ):
+            return completed(command, rc=0 if self.target_contains_current_main else 1)
         if command[:4] == ["git", "-C", str(self.checkout), "rev-parse"]:
             if command[-1] == "--show-toplevel":
                 return completed(command, stdout=f"{self.checkout}\n")
@@ -255,6 +272,19 @@ class FakeRun:
                 f"cpu_user=0.1s cpu_system=0.0s exit={self.actual_exit}"
             )
             Path(output).write_text("\n".join(lines) + "\n")
+            environment: dict[str, str] = {}
+            for flag, value in zip(command, command[1:]):
+                if flag == "--setenv" and "=" in value:
+                    key, _, item = value.partition("=")
+                    environment[key] = item
+            if frozen := environment.get("HERMIT_VALIDATE_LEDGER"):
+                row = self.default_ledger_row()
+                row["result"] = "pass" if self.actual_exit == 0 else "fail"
+                row["raw_result"] = row["result"]
+                row["exit_code"] = self.actual_exit
+                result_path = Path(frozen)
+                result_path.parent.mkdir(parents=True, exist_ok=True)
+                result_path.write_text(json.dumps(row) + "\n")
             return completed(command, stdout="Running as unit: validate-test.service\n")
         if command[:3] == ["systemctl", "--user", "show"]:
             if self.collected_unit:
@@ -295,6 +325,10 @@ class StartUnitTest(unittest.TestCase):
 
     def tearDown(self) -> None:
         start_unit.HOST_TMP_ROOT = self.original_host_tmp_root
+        shutil.rmtree(
+            self.root.parent / f".{self.root.name}-frozen-validate",
+            ignore_errors=True,
+        )
         self.temporary.cleanup()
 
     def invoke(self, extra: list[str] | None = None) -> tuple[int, str, str]:
@@ -474,6 +508,146 @@ class StartUnitTest(unittest.TestCase):
         )
         self.assertFalse(
             any(command[0] == "systemd-run" for command in self.fake.commands)
+        )
+
+    @mock.patch.object(start_unit.pane_owner, "create_pane", return_value=None)
+    def test_same_sha_can_run_again_after_main_moves_and_is_not_a_current_receipt(
+        self, _create_pane: mock.Mock
+    ) -> None:
+        """The named end-to-end bracket: same SHA, main advances, second run completes."""
+        self.fake.current_main = SHA
+        self.fake.target_contains_current_main = True
+        first_rc, _first_output, first_error = self.invoke(["--", "full"])
+        self.assertEqual(0, first_rc, first_error)
+
+        # The first run used ordinary current-main admission. The same target is
+        # now missing the freshly observed main represented by FakeRun's second
+        # SHA, so only the explicit frozen path may run it again.
+        self.fake.current_main = "b" * 40
+        self.fake.target_contains_current_main = False
+        self.fake.fresh = None
+        second_rc, second_output, second_error = self.invoke(
+            [
+                "--unit",
+                "validate-test-repeat",
+                "--log",
+                str(self.root / "run-repeat.log"),
+                "--frozen-validate",
+                "--",
+                "full",
+            ]
+        )
+
+        self.assertEqual(0, second_rc, second_error)
+        systemd_runs = [
+            command
+            for command in self.fake.commands
+            if command[0] == "systemd-run" and "validate-lock" in command
+        ]
+        self.assertEqual(2, len(systemd_runs))
+        self.assertEqual(
+            [SHA, SHA],
+            [command[command.index("--target") + 1] for command in systemd_runs],
+        )
+        self.assertEqual(
+            ["validate", start_unit.FROZEN_VALIDATE_KIND],
+            [command[command.index("--kind") + 1] for command in systemd_runs],
+        )
+        frozen_env = {
+            value.partition("=")[0]: value.partition("=")[2]
+            for flag, value in zip(systemd_runs[1], systemd_runs[1][1:])
+            if flag == "--setenv" and "=" in value
+        }
+        self.assertEqual("1", frozen_env["VALIDATE_RUN_ON_DIRTY_TREE"])
+        self.assertEqual("1", frozen_env["VALIDATE_IGNORE_CACHE"])
+        self.assertEqual("0", frozen_env["VALIDATE_LABEL_PR"])
+        self.assertIn("MEASURED-AGAINST-SUPERSEDED-TIP", second_output)
+        self.assertIn("qualifying_receipt=false", second_output)
+
+        record = start_unit.run_registry.read_record(
+            self.root / "ignored/validate/runs/validate-test-repeat.json"
+        )
+        self.assertEqual(start_unit.FROZEN_RESULT_ADMISSION, record["admission"])
+        self.assertEqual(start_unit.FROZEN_VALIDATE_KIND, record["validation_kind"])
+        self.assertTrue(record["measured_against_superseded_tip"])
+        self.assertFalse(record["target_contains_current_main_before_launch"])
+        self.assertFalse(record["qualifying_receipt"])
+        self.assertEqual(self.fake.current_main, record["current_main_before_launch"])
+        self.assertNotIn(self.root, Path(record["checkout"]).parents)
+
+        result_path = Path(record["result_record"])
+        frozen_row = json.loads(result_path.read_text().strip())
+        self.assertEqual(start_unit.FROZEN_RESULT_ADMISSION, frozen_row["admission"])
+        self.assertTrue(frozen_row["measured_against_superseded_tip"])
+        self.assertFalse(frozen_row["qualifying_receipt"])
+        self.assertEqual(self.fake.current_main, frozen_row["current_main_before_launch"])
+
+        # Only the ordinary first run consulted the canonical ledger. The
+        # frozen result is deliberately outside it and cannot inherit that run's
+        # VALIDATED verdict merely because both target the same SHA.
+        canonical_reads = [
+            command
+            for command in self.fake.commands
+            if command[0].endswith("ci-hub")
+            and command[1:3] == ["validate-status", "--sha"]
+        ]
+        self.assertEqual(1, len(canonical_reads))
+
+    def test_frozen_validate_refuses_a_target_that_still_contains_current_main(self) -> None:
+        self.fake.target_contains_current_main = True
+
+        rc, _output, error = self.invoke(["--frozen-validate", "--", "full"])
+
+        self.assertEqual(2, rc)
+        self.assertIn("current enough for ordinary validate-run", error)
+        self.assertFalse(
+            any(command[0] == "systemd-run" for command in self.fake.commands)
+        )
+
+    def test_frozen_validate_cannot_reenable_receipt_backed_label(self) -> None:
+        rc, _output, error = self.invoke(
+            ["--frozen-validate", "--", "full", "--label-pr"]
+        )
+
+        self.assertEqual(2, rc)
+        self.assertIn("cannot publish a receipt-backed label", error)
+        self.assertFalse(self.fake.commands)
+
+    def test_marking_frozen_result_makes_canonical_admission_reject_it(self) -> None:
+        row = {
+            **self.fake.default_ledger_row(),
+            "schema_version": 5,
+            "producer": "hermit-validate-rs",
+            "admission": "ci-hub-validate-lock",
+            "concurrent_validates": 0,
+            "concurrency_proof": "validate_lock_owner_ancestry",
+            "cwd": str(self.checkout),
+            "result": "pass",
+            "raw_result": "pass",
+            "exit_code": 0,
+        }
+        predicate = qualifying_receipt.active()
+        self.assertEqual(
+            qualifying_receipt.AdmissionVerdict.SATISFIED,
+            qualifying_receipt.admission_verdict(row, predicate),
+        )
+
+        result_path = self.root / "ignored/validate/frozen/result.jsonl"
+        result_path.parent.mkdir(parents=True)
+        result_path.write_text(json.dumps(row) + "\n")
+        start_unit.mark_and_read_frozen_result(
+            result_path,
+            SHA,
+            self.checkout,
+            "2099-01-01T00:00:00Z",
+            self.fake.current_main,
+            repo="rrnewton/hermit",
+        )
+        marked = json.loads(result_path.read_text())
+
+        self.assertEqual(
+            qualifying_receipt.AdmissionVerdict.ADMISSION_NONCANONICAL,
+            qualifying_receipt.admission_verdict(marked, predicate),
         )
 
     def test_exact_owner_validate_symlink_is_the_only_dirty_exception(self) -> None:

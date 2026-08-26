@@ -54,6 +54,9 @@ EXIT_REFUSED = 2
 EXIT_FAILED = 3
 EXIT_REMEASURE = 4
 EXIT_COULD_NOT_DETERMINE = 75
+FROZEN_VALIDATE_KIND = "frozen-validate"
+FROZEN_RESULT_ADMISSION = "frozen-validate"
+CURRENT_MAIN_FETCH_TIMEOUT_SECONDS = 30
 
 CANONICAL_TERMINAL_VERDICTS = {"VALIDATED": 0, "FAILED": 3}
 CANONICAL_REMEASUREMENT_VERDICTS = frozenset(
@@ -90,6 +93,208 @@ def canonical_verdict_exit_code(verdict: str) -> int | None:
     if verdict in CANONICAL_REMEASUREMENT_VERDICTS:
         return 4
     return None
+
+
+def frozen_result_path(root: Path, unit: str) -> Path:
+    """The durable, deliberately non-canonical record for one frozen validate."""
+    return root / "ignored" / "validate" / "frozen" / f"{unit}.jsonl"
+
+
+def frozen_checkout_parent(root: Path) -> Path:
+    """Return a guest-visible worktree parent outside the dev-hermit boundary.
+
+    Hermit's product front door correctly accepts only canonical current-tip
+    validation. A frozen validation is still box-admitted, but its result must
+    not enter that receipt path. Keeping its disposable checkout beside rather
+    than beneath dev-hermit makes the product use its standalone result writer;
+    ``HERMIT_VALIDATE_LEDGER`` below then points that writer at the durable,
+    explicitly non-canonical file owned by this run.
+    """
+    candidate = (root.parent / f".{root.name}-frozen-validate").resolve()
+    if candidate == root or root in candidate.parents:
+        raise ValueError("frozen validation checkout parent must be outside dev-hermit")
+    candidate.mkdir(parents=True, exist_ok=True)
+    return require_guest_visible_root(candidate, role="frozen validation checkout parent")
+
+
+def current_main_for_frozen_validate(
+    checkout: Path, target: str, *, run: Runner
+) -> str:
+    """Require ``target`` to omit freshly fetched main and return that main SHA.
+
+    A frozen validate is not a general freshness bypass. It is the explicit
+    path for re-running a target after main has moved beyond it. A target that
+    still contains current main belongs on the ordinary validating path, while
+    an unavailable fetch or ancestry answer refuses instead of guessing.
+    """
+    refspec = "refs/heads/main:refs/remotes/origin/main"
+    fetch = run(
+        [
+            "timeout",
+            "--signal=TERM",
+            "--kill-after=1s",
+            f"{CURRENT_MAIN_FETCH_TIMEOUT_SECONDS}s",
+            "with-proxy",
+            "git",
+            "-C",
+            str(checkout),
+            "fetch",
+            "--quiet",
+            "--no-tags",
+            "origin",
+            refspec,
+        ],
+        check=False,
+    )
+    if fetch.returncode != 0:
+        detail = fetch.stderr.strip() or fetch.stdout.strip() or f"exit {fetch.returncode}"
+        raise RuntimeError(
+            f"cannot freshly fetch origin/main for frozen validation: {detail}"
+        )
+    current_main = checked_output(
+        [
+            "git",
+            "-C",
+            str(checkout),
+            "rev-parse",
+            "--verify",
+            "refs/remotes/origin/main^{commit}",
+        ],
+        run=run,
+        purpose="cannot resolve freshly fetched origin/main for frozen validation",
+    )
+    if SHA_RE.fullmatch(current_main) is None:
+        raise RuntimeError(
+            f"freshly fetched origin/main is not an exact lowercase 40-hex SHA: {current_main!r}"
+        )
+    contains = run(
+        [
+            "git",
+            "-C",
+            str(checkout),
+            "merge-base",
+            "--is-ancestor",
+            "refs/remotes/origin/main",
+            target,
+        ],
+        check=False,
+    )
+    if contains.returncode == 0:
+        raise ValueError(
+            f"--frozen-validate requires a target that does not contain freshly "
+            f"fetched origin/main {current_main}; {target} is current enough for "
+            "ordinary validate-run"
+        )
+    if contains.returncode != 1:
+        detail = contains.stderr.strip() or contains.stdout.strip() or f"exit {contains.returncode}"
+        raise RuntimeError(
+            f"cannot establish whether {target} contains freshly fetched "
+            f"origin/main {current_main}: {detail}"
+        )
+    return current_main
+
+
+def mark_and_read_frozen_result(
+    result_path: Path,
+    target: str,
+    cwd: Path,
+    run_started_at: str,
+    current_main_before_launch: str,
+    *,
+    repo: str,
+) -> tuple[str, str, int]:
+    """Bind one completed frozen run and make its non-current status explicit.
+
+    The result lives outside the canonical ledger. Before reporting it, replace
+    the producer's ordinary admission claim with the existing frozen-validate
+    kind and record the exact main SHA the target did not contain. Even if this
+    JSONL is later copied into a canonical shard, its non-canonical admission
+    makes the shared qualifying-receipt predicate reject it.
+    """
+    try:
+        lines = result_path.read_text(encoding="utf-8").splitlines()
+    except OSError as error:
+        raise RuntimeError(f"cannot read frozen validation result {result_path}: {error}") from error
+    parsed: list[dict[str, Any]] = []
+    matches: list[int] = []
+    handle_start = parse_utc_timestamp(run_started_at, role="validate-run handle")
+    for line in lines:
+        if not line.strip():
+            continue
+        try:
+            value = json.loads(line)
+        except json.JSONDecodeError as error:
+            raise RuntimeError(
+                f"frozen validation result {result_path} has malformed JSONL: {error}"
+            ) from error
+        if not isinstance(value, dict):
+            raise RuntimeError(f"frozen validation result {result_path} has a non-object row")
+        parsed.append(value)
+        if (
+            row_matches_repo(value, repo)
+            and value.get("commit") == target
+            and value.get("cwd") == str(cwd)
+            and parse_utc_timestamp(value.get("started_at"), role="frozen validation row")
+            >= handle_start
+        ):
+            matches.append(len(parsed) - 1)
+    if len(matches) != 1:
+        raise RuntimeError(
+            f"expected exactly one frozen validation row for commit {target}, cwd {cwd}, "
+            f"at or after {run_started_at}; found {len(matches)}"
+        )
+
+    selected = parsed[matches[0]]
+    selected.update(
+        {
+            "admission": FROZEN_RESULT_ADMISSION,
+            "measured_against_superseded_tip": True,
+            "current_main_before_launch": current_main_before_launch,
+            "target_contains_current_main_before_launch": False,
+            "qualifying_receipt": False,
+        }
+    )
+    result = selected.get("result")
+    exit_code = selected.get("exit_code")
+    if result == "pass" and exit_code == 0:
+        wrapper_exit = EXIT_PASSED
+    elif result == "fail" and isinstance(exit_code, int) and exit_code != 0:
+        wrapper_exit = EXIT_FAILED
+    elif result == "no_result":
+        wrapper_exit = EXIT_REMEASURE
+    else:
+        raise RuntimeError(
+            f"frozen validation row has inconsistent result={result!r} exit_code={exit_code!r}"
+        )
+
+    result_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        descriptor, temporary = tempfile.mkstemp(
+            prefix=f".{result_path.name}.", dir=result_path.parent
+        )
+    except OSError as error:
+        raise RuntimeError(
+            f"cannot create an atomic rewrite beside frozen result {result_path}: {error}"
+        ) from error
+    try:
+        try:
+            with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+                for row in parsed:
+                    json.dump(row, stream, separators=(",", ":"))
+                    stream.write("\n")
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, result_path)
+        except OSError as error:
+            raise RuntimeError(
+                f"cannot mark frozen validation result {result_path}: {error}"
+            ) from error
+    finally:
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
+    return json.dumps(selected, separators=(",", ":")), str(result), wrapper_exit
 
 
 
@@ -892,6 +1097,8 @@ def build_systemd_command(
     runtime_root: Path | None = None,
     ci_dag_jobs: int | None = None,
     repo: str = "rrnewton/hermit",
+    frozen_validate: bool = False,
+    frozen_result: Path | None = None,
 ) -> list[str]:
     home = environment.get("HOME", "")
     path = environment.get("PATH", "")
@@ -958,6 +1165,23 @@ def build_systemd_command(
                 f"DAGRUN_LOG_DIR={runner_log_dir}",
             ]
         )
+    if frozen_validate:
+        if repo != "rrnewton/hermit":
+            raise ValueError("frozen-validate currently supports only rrnewton/hermit")
+        if frozen_result is None:
+            raise ValueError("frozen-validate requires a durable non-canonical result path")
+        build_budget_env.extend(
+            [
+                "--setenv",
+                "VALIDATE_RUN_ON_DIRTY_TREE=1",
+                "--setenv",
+                "VALIDATE_IGNORE_CACHE=1",
+                "--setenv",
+                "VALIDATE_LABEL_PR=0",
+                "--setenv",
+                f"HERMIT_VALIDATE_LEDGER={frozen_result}",
+            ]
+        )
 
     child = ["/usr/bin/env"]
     if pr is not None:
@@ -1022,7 +1246,12 @@ def build_systemd_command(
         "--agent",
         agent,
         "--kind",
-        "reverie-validate" if repo == "rrnewton/reverie" else "validate",
+        (
+            FROZEN_VALIDATE_KIND
+            if frozen_validate
+            else "reverie-validate" if repo == "rrnewton/reverie"
+            else "validate"
+        ),
         "--target",
         target,
         "--run-record",
@@ -1258,6 +1487,14 @@ def emit_report(report: Mapping[str, Any], *, json_output: bool) -> None:
         )
     if report.get("log"):
         print(f"LOG {report['log']}", flush=True)
+    if report.get("measured_against_superseded_tip") is True:
+        print(
+            "MEASURED-AGAINST-SUPERSEDED-TIP "
+            f"target={report['target']} "
+            f"current_main_before_launch={report.get('current_main_before_launch')} "
+            "qualifying_receipt=false",
+            flush=True,
+        )
     # A PATH THAT WAS NEVER CREATED IS NOT AN ARTIFACT, SO DO NOT OFFER IT.
     # `absent` means the directory does not exist -- for a run that refused
     # before starting, both of these are absent, and printing them sent the
@@ -1336,6 +1573,45 @@ def attach(
         sleep=sleep,
     )
     updated = bookkeep_record(record_path, **final)
+    if record.get("validation_kind") == FROZEN_VALIDATE_KIND:
+        try:
+            target = str(record["target"])
+            checkout = Path(str(record["checkout"]))
+            run_started_at = str(record["started_at"])
+            repo = canonical_repo(str(record.get("repo", "rrnewton/hermit")))
+            result_path = Path(str(record["result_record"]))
+            current_main = str(record["current_main_before_launch"])
+            row, measured_result, measured_exit = mark_and_read_frozen_result(
+                result_path,
+                target,
+                checkout,
+                run_started_at,
+                current_main,
+                repo=repo,
+            )
+        except (KeyError, RuntimeError, ValueError) as error:
+            return could_not_determine(
+                f"FROZEN-VALIDATE-RESULT-UNAVAILABLE: {error}",
+                f"the unit ran; inspect {record.get('result_record', '<result-record>')} "
+                "and the durable log. Do not read this as a current receipt.",
+            )
+        updated = bookkeep_record(
+            record_path,
+            measured_result=measured_result,
+            wrapper_exit_code=measured_exit,
+        )
+        if not json_output:
+            print(
+                "RESULT-RECORDED "
+                f"commit={target} cwd={checkout} result={measured_result} "
+                f"exit={measured_exit} qualifying_receipt=false"
+            )
+            print(f"  {row[:160]}")
+        emit_report(
+            {**updated, "event": "finished", "unit": f"{unit}.service"},
+            json_output=json_output,
+        )
+        return measured_exit
     try:
         target = str(record["target"])
         checkout = Path(str(record["checkout"]))
@@ -1398,8 +1674,10 @@ def parser() -> argparse.ArgumentParser:
             "\n"
             "The run is DETACHED: this returns a validate-* unit handle rather than\n"
             "running in your terminal. Reattach with --attach VALIDATE-UNIT. The result\n"
-            "is appended to ledger/<repo>/<host>/<month>.jsonl ON PARENT MAIN, so read it\n"
-            "with `git show origin/main:ledger/...`, not from your working tree."
+            "from an ordinary run is appended to ledger/<repo>/<host>/<month>.jsonl ON\n"
+            "PARENT MAIN, so read it with `git show origin/main:ledger/...`, not from\n"
+            "your working tree. A --frozen-validate result is instead written to the\n"
+            "marked non-qualifying result path printed by that run."
         ),
     )
     result.add_argument(
@@ -1425,6 +1703,16 @@ def parser() -> argparse.ArgumentParser:
             "exact target, but its ignored state (build output, caches, materialized "
             "submodules) participates in the run, so the receipt's SHA describes the "
             "commit PLUS that unrecorded local state."
+        ),
+    )
+    result.add_argument(
+        "--frozen-validate",
+        action="store_true",
+        help=(
+            "deliberately re-run an exact Hermit SHA that does not contain freshly "
+            "fetched origin/main. The run bypasses only the moving-main check, "
+            "ignores cached validation, publishes no label, and writes a marked "
+            "result outside the canonical receipt ledger"
         ),
     )
     result.add_argument(
@@ -1529,6 +1817,7 @@ def main(
                 args.unit,
                 args.log,
                 args.ci_dag_jobs,
+                args.frozen_validate,
                 args.dry_run,
             )
         ):
@@ -1558,6 +1847,21 @@ def main(
     validate_args = list(args.validate_args)
     if validate_args[:1] == ["--"]:
         validate_args.pop(0)
+    if args.frozen_validate and repo != "rrnewton/hermit":
+        return refuse(
+            "--frozen-validate currently supports only rrnewton/hermit",
+            "use ordinary validate-run for Reverie",
+        )
+    if args.frozen_validate and args.in_place:
+        return refuse(
+            "--frozen-validate cannot use --in-place",
+            "drop --in-place so the deliberately old target runs in a fresh isolated checkout",
+        )
+    if args.frozen_validate and "--label-pr" in validate_args:
+        return refuse(
+            "--frozen-validate cannot publish a receipt-backed label",
+            "drop --label-pr; this run measures a target that does not contain current main",
+        )
     if args.make_validate and validate_args:
         return refuse(
             "--make-validate is the exact no-argument Make target; validate arguments "
@@ -1600,6 +1904,8 @@ def main(
     source_checkout: Path | None = None
     private_cargo_home: Path | None = None
     runtime_root: Path | None = None
+    current_main_before_launch: str | None = None
+    frozen_result: Path | None = None
     try:
         source_checkout = validate_checkout(
             args.checkout,
@@ -1608,6 +1914,17 @@ def main(
             run=run,
             allow_owner_validate_symlink=args.allow_owner_validate_symlink,
         )
+        unit = sanitize_unit(args.unit) if args.unit else default_unit(args.agent, args.target)
+        if args.frozen_validate:
+            current_main_before_launch = current_main_for_frozen_validate(
+                source_checkout, args.target, run=run
+            )
+            frozen_result = frozen_result_path(root.resolve(), unit)
+            if frozen_result.exists():
+                raise ValueError(
+                    f"frozen validation result already exists at {frozen_result}; "
+                    "choose a different --unit so two measurements cannot share one record"
+                )
         if args.in_place:
             checkout = source_checkout
         else:
@@ -1616,12 +1933,15 @@ def main(
                 source_checkout,
                 args.target,
                 run=run,
-                parent=(root / "ignored").resolve(),
+                parent=(
+                    frozen_checkout_parent(root.resolve())
+                    if args.frozen_validate
+                    else (root / "ignored").resolve()
+                ),
                 repo=repo,
             )
             checkout = fresh_checkout
         preflight(root, checkout, args.target, repo=repo, run=run)
-        unit = sanitize_unit(args.unit) if args.unit else default_unit(args.agent, args.target)
         runtime_root = prepare_runtime_root((root / "ignored").resolve(), unit)
         private_cargo_home = prepare_private_cargo_home(
             (root / "ignored").resolve(),
@@ -1660,11 +1980,28 @@ def main(
             runtime_root=runtime_root,
             ci_dag_jobs=args.ci_dag_jobs,
             repo=repo,
+            frozen_validate=args.frozen_validate,
+            frozen_result=frozen_result,
         )
         if args.dry_run:
             pane = None
         else:
             log.parent.mkdir(parents=True, exist_ok=True)
+            if frozen_result is not None:
+                frozen_result.parent.mkdir(parents=True, exist_ok=True)
+            frozen_fields = (
+                {
+                    "admission": FROZEN_RESULT_ADMISSION,
+                    "validation_kind": FROZEN_VALIDATE_KIND,
+                    "result_record": str(frozen_result),
+                    "measured_against_superseded_tip": True,
+                    "current_main_before_launch": current_main_before_launch,
+                    "target_contains_current_main_before_launch": False,
+                    "qualifying_receipt": False,
+                }
+                if args.frozen_validate
+                else {}
+            )
             run_registry.create_record(
                 record_path,
                 {
@@ -1682,6 +2019,7 @@ def main(
                     "admission": "ci-hub validate-lock",
                     "pane_role": "observer-only",
                     **output_fields,
+                    **frozen_fields,
                     **(
                         {"dag_jobs": args.ci_dag_jobs}
                         if args.ci_dag_jobs is not None
@@ -1766,6 +2104,19 @@ def main(
         "producer": "systemd-user-v1",
         "pane_role": "observer-only",
         **output_fields,
+        **(
+            {
+                "admission": FROZEN_RESULT_ADMISSION,
+                "validation_kind": FROZEN_VALIDATE_KIND,
+                "result_record": str(frozen_result),
+                "measured_against_superseded_tip": True,
+                "current_main_before_launch": current_main_before_launch,
+                "target_contains_current_main_before_launch": False,
+                "qualifying_receipt": False,
+            }
+            if args.frozen_validate
+            else {}
+        ),
         "workspace_id": pane.workspace_id if pane else pane_owner.WORKSPACE_LABEL,
         "tab_id": pane.tab_id if pane else None,
         "pane_id": pane.pane_id if pane else None,
@@ -1812,6 +2163,72 @@ def main(
             f"the run is still going; re-attach with `ci-hub validate-run --attach {unit}` "
             "to resume watching it, or read its log directly",
         )
+
+    if args.frozen_validate:
+        try:
+            if frozen_result is None or current_main_before_launch is None:
+                raise RuntimeError("frozen validation metadata was not established before launch")
+            row, measured_result, measured_exit = mark_and_read_frozen_result(
+                frozen_result,
+                args.target,
+                checkout,
+                started_at,
+                current_main_before_launch,
+                repo=repo,
+            )
+        except (RuntimeError, ValueError) as error:
+            inner_exit = final.get("exit_code") if isinstance(final, dict) else None
+            if (
+                isinstance(inner_exit, int)
+                and inner_exit != 0
+                and relay_inner_output(log)
+            ):
+                print(
+                    f"validate-run: the inner validate exited {inner_exit}; "
+                    "that refusal above is the reason. No frozen-validation "
+                    "result was written because the run did not get far enough "
+                    "to write one.",
+                    file=sys.stderr,
+                )
+                if fresh_checkout is not None and source_checkout is not None:
+                    remove_fresh_checkout(source_checkout, fresh_checkout, run=run)
+                remove_private_cargo_home(private_cargo_home, run=run)
+                remove_runtime_root(runtime_root, run=run)
+                return inner_exit
+            if fresh_checkout is not None:
+                print(
+                    f"validate-run: fresh checkout RETAINED at {fresh_checkout} "
+                    "because the frozen-validation result is unreadable",
+                    file=sys.stderr,
+                )
+            remove_private_cargo_home(private_cargo_home, run=run)
+            remove_runtime_root(runtime_root, run=run)
+            return could_not_determine(
+                f"FROZEN-VALIDATE-RESULT-UNAVAILABLE: {error}",
+                f"inspect {frozen_result} and {log}; the run's outcome cannot be "
+                "read as either a current receipt or a product verdict",
+            )
+        updated = bookkeep_record(
+            record_path,
+            measured_result=measured_result,
+            wrapper_exit_code=measured_exit,
+        )
+        if not args.json:
+            print(
+                "RESULT-RECORDED "
+                f"commit={args.target} cwd={checkout} result={measured_result} "
+                f"exit={measured_exit} qualifying_receipt=false"
+            )
+            print(f"  {row[:160]}")
+        if fresh_checkout is not None and source_checkout is not None:
+            remove_fresh_checkout(source_checkout, fresh_checkout, run=run)
+        remove_private_cargo_home(private_cargo_home, run=run)
+        remove_runtime_root(runtime_root, run=run)
+        emit_report(
+            {**updated, "event": "finished", "unit": f"{unit}.service"},
+            json_output=args.json,
+        )
+        return measured_exit
 
     # REQUIREMENT (a), and the ORDER IS THE WHOLE POINT: re-read this run's exact
     # row from the canonical ledger BEFORE the temp directory is removed. Deleting

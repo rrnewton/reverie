@@ -24,6 +24,16 @@ and provide the independent observations used by the basic-sanity scorecard.
 The newest run does not erase older receipts; `validate-status` and
 `local-history` retain the run history.
 
+If freshly fetched `origin/main` has moved beyond that exact Hermit SHA, use
+`ci-hub validate-run --frozen-validate ...`. The ordinary path still refuses a
+target that does not contain current main. The explicit frozen path forces a
+real rerun (`--ignore-cache`), disables receipt-backed PR labeling, and writes
+its result to `ignored/validate/frozen/<unit>.jsonl` rather than the canonical
+ledger. Both the run handle and that result name the target and the current-main
+SHA observed before launch, set `measured_against_superseded_tip=true`, and set
+`qualifying_receipt=false`. It is repeatability evidence for that exact tree,
+never a claim that the current tip passed.
+
 ## Per-run output that survives the fresh checkout
 
 `ci-hub validate-run` prints `E2E_RESULTS` and `RUNNER_LOGS` paths for Hermit

@@ -410,10 +410,10 @@ pub enum Kind {
     /// [`Kind::is_validation`] returns TRUE for this kind, so
     /// [`base_admission_check`] still runs and a genuinely bad target -- a
     /// non-sha, a head below the immutable floors -- is refused exactly as it is
-    /// for [`Kind::Validate`]. Only [`validation_repository`] short-circuits,
-    /// which is the same route [`Kind::Bench`] already takes. `Bench` skips BOTH
-    /// checks because it is not landing evidence; this kind skips only the one
-    /// that asks "is your target current".
+    /// for [`Kind::Validate`]. [`current_main_freshness_check`] then requires the
+    /// opposite of the ordinary relationship: freshly fetched main must NOT be
+    /// contained by the target. `Bench` skips both checks because it is not
+    /// validation evidence; this kind changes only the moving-tip predicate.
     ///
     /// ⚠️ ITS RECEIPT IS NOT CANONICAL CURRENT-MAIN AUTHORITY. The holder-kind
     /// allowlist in `canonical_authority_status` deliberately does NOT include
@@ -2140,14 +2140,12 @@ fn base_admission_check(
 /// indeterminate ancestry is a stale-base refusal. An unavailable freshness
 /// authority cannot authorize scarce box time.
 fn validation_repository(root: &Path, kind: Kind) -> Result<Option<PathBuf>, ValidateLockError> {
-    // ⚠️ TWO KINDS SKIP THE MOVING BOUNDARY, FOR DIFFERENT REASONS.
-    // `Bench` is not landing evidence at all. `FrozenValidate` IS a validation
-    // -- it still clears the producer floor via `base_admission_check` -- but it
-    // is deliberately pinned to one sha, so "does your target contain current
-    // main" is not a question about it. Returning None here makes
-    // `current_main_freshness_check` return Ok(()) without fetching, which is
-    // precisely the admission this kind exists to obtain.
-    if matches!(kind, Kind::Bench | Kind::FrozenValidate) {
+    // Bench work is not validation evidence and has no moving-main boundary.
+    // FrozenValidate still needs this repository: it inverts the ordinary
+    // relation below and is admitted only when the exact target does NOT contain
+    // freshly fetched main. That makes the opt-in path specific to the old-SHA
+    // measurement it claims rather than a second always-open admission route.
+    if kind == Kind::Bench {
         return Ok(None);
     }
 
@@ -2168,11 +2166,9 @@ fn validation_repository(root: &Path, kind: Kind) -> Result<Option<PathBuf>, Val
     #[cfg(test)]
     {
         Ok(Some(root.join(match kind {
-            Kind::Validate => "hermit",
+            Kind::Validate | Kind::FrozenValidate => "hermit",
             Kind::ReverieValidate => "reverie",
-            Kind::Bench | Kind::FrozenValidate => {
-                unreachable!("bench and frozen-validate returned above")
-            }
+            Kind::Bench => unreachable!("bench returned above"),
         })))
     }
 }
@@ -2272,12 +2268,16 @@ fn current_main_freshness_check(
                 repository.display()
             ))
         })?;
-    match output.status.code() {
-        Some(0) => Ok(()),
-        Some(1) => Err(ValidateLockError::StaleBase(format!(
+    match (kind, output.status.code()) {
+        (Kind::FrozenValidate, Some(1)) => Ok(()),
+        (Kind::FrozenValidate, Some(0)) => Err(ValidateLockError::StaleBase(format!(
+            "REFUSE: frozen validation target {target} still contains freshly fetched origin/main. Use ordinary validate for a current target."
+        ))),
+        (_, Some(0)) => Ok(()),
+        (_, Some(1)) => Err(ValidateLockError::StaleBase(format!(
             "REFUSE: validation target {target} does not contain freshly fetched origin/main. Rebase before validating."
         ))),
-        other => Err(ValidateLockError::StaleBase(format!(
+        (_, other) => Err(ValidateLockError::StaleBase(format!(
             "validate-lock: current-main ancestry for {target} is UNRESOLVED in {} (git exit {other:?}: {}).",
             repository.display(),
             String::from_utf8_lossy(&output.stderr).trim()
@@ -9168,14 +9168,15 @@ exit 0
     /// refusal is DEFINITE and therefore evicting. Neither says anything about a
     /// kind that is supposed to survive the advance.
     ///
-    /// Direction 1 -- ADMITTED AND FROZEN. The same real repository and real
-    /// remote advance the other brackets use. `Kind::Validate` must refuse after
-    /// the advance (the control -- without it, an always-admitting predicate
-    /// would satisfy direction 1 and prove nothing), and `Kind::FrozenValidate`
-    /// must admit the SAME target at the SAME moment.
+    /// Direction 1 -- REFUSED WHILE CURRENT, THEN ADMITTED AFTER MAIN MOVES. The
+    /// same real repository and real remote advance the other brackets use.
+    /// `Kind::FrozenValidate` must not become an always-open alias for ordinary
+    /// validation; before the advance it refuses. Afterwards `Kind::Validate`
+    /// must refuse (the preserved control) and `Kind::FrozenValidate` must admit
+    /// the SAME target at the SAME moment.
     ///
-    /// Direction 2 -- STILL REFUSED. `FrozenValidate` skips the freshness
-    /// boundary only. `is_validation()` is true for it, so
+    /// Direction 2 -- STILL REFUSED. `FrozenValidate` changes the moving-main
+    /// predicate only. `is_validation()` is true for it, so
     /// `base_admission_check` still runs and a non-sha is refused exactly as it
     /// is for `Kind::Validate`. If someone later moves `FrozenValidate` out of
     /// `is_validation`, THIS assertion is what fails.
@@ -9189,6 +9190,11 @@ exit 0
             current_main_freshness_check(&root, &target, Kind::Validate).is_ok(),
             "the fixture must start fresh or neither direction below proves anything"
         );
+        assert!(matches!(
+            current_main_freshness_check(&root, &target, Kind::FrozenValidate),
+            Err(ValidateLockError::StaleBase(message))
+                if message.contains("Use ordinary validate for a current target")
+        ));
 
         // main advances underneath the target.
         git_success(Some(&seed), &["push", "--quiet", "origin", "main"]);

@@ -86,6 +86,11 @@ CI_HUB_DOCS_PARSE_ONLY=1 ./ci-hub/landing/land-pr.sh \
 ```
 
 `validate-run` and the inner `validate-lock` call the same admission mechanism.
+To deliberately repeat an older Hermit SHA after main advances, add
+`--frozen-validate` before `--`. That path still checks the immutable validation
+floors and box-exclusive lock, forces a real uncached run, and records the result
+outside the canonical receipt ledger with `qualifying_receipt=false` and the
+freshly observed current-main SHA. Ordinary validation remains freshness-gated.
 Follow skill `hermit-validation-authority` for the required base-currency check, the sole
 production path, and whether any resulting evidence qualifies. This README
 does not restate those decisions.
