@@ -2569,7 +2569,30 @@ pub(crate) fn register_box_claim(anchor: &Path, cleanup: &Path, agent: &str, ope
         operation,
         current_host()
     );
-    let _ = fs::write(box_claim_file(anchor, cleanup), body);
+    let claim = box_claim_file(anchor, cleanup);
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+    let temporary = dir.join(format!(
+        ".{}.tmp-{}-{nonce}",
+        claim.file_name().and_then(|name| name.to_str()).unwrap_or("claim"),
+        std::process::id()
+    ));
+    let published = (|| -> io::Result<()> {
+        let mut file = OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&temporary)?;
+        file.write_all(body.as_bytes())?;
+        file.sync_all()?;
+        fs::rename(&temporary, &claim)?;
+        File::open(&dir)?.sync_all()?;
+        Ok(())
+    })();
+    if published.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
 }
 
 /// Drop this repository's claim. Called wherever its cleanup record is removed;
@@ -2592,10 +2615,8 @@ pub(crate) fn remove_cleanup_record_and_claim(cleanup: &Path, anchor: &Path) -> 
     outcome
 }
 
-fn parse_claim_cleanup(body: &str) -> Option<PathBuf> {
-    body.lines()
-        .find_map(|line| line.strip_prefix("cleanup="))
-        .map(PathBuf::from)
+fn claim_field<'a>(body: &'a str, name: &str) -> Option<&'a str> {
+    body.lines().find_map(|line| line.strip_prefix(name))
 }
 
 /// Is ANOTHER repository's cleanup record still outstanding on this box?
@@ -2630,16 +2651,30 @@ fn foreign_box_claim_with_active(
         let Ok(body) = fs::read_to_string(&claim_path) else {
             continue;
         };
-        let Some(cleanup) = parse_claim_cleanup(&body) else {
+        let Some(cleanup) = claim_field(&body, "cleanup=").map(PathBuf::from) else {
             // Unparseable claim names no record, so it can never be discharged by
             // one. Drop it rather than block the box on a file nobody can clear.
             let _ = fs::remove_file(&claim_path);
             continue;
         };
+        let Some(agent) = claim_field(&body, "agent=") else {
+            return Some(format!(
+                "box-global claim {} names cleanup {} but has no agent; refusing until the claim is repaired or removed",
+                claim_path.display(),
+                cleanup.display()
+            ));
+        };
+        let Some(operation) = claim_field(&body, "operation=") else {
+            return Some(format!(
+                "box-global claim {} names cleanup {} but has no operation; refusing until the claim is repaired or removed",
+                claim_path.display(),
+                cleanup.display()
+            ));
+        };
         if cleanup == own_cleanup {
             continue; // my own repository; `require_no_cleanup` already covers it
         }
-        match verify_cleanup_record(&cleanup, None) {
+        match verify_cleanup_record(&cleanup, Some((agent, operation))) {
             CleanupVerification::None => {
                 // The owning repository discharged its record. Prune and move on.
                 let _ = fs::remove_file(&claim_path);
@@ -6384,6 +6419,46 @@ exit 0
     }
 
     #[test]
+    fn a_live_published_validation_is_allowed_only_by_the_concurrent_path() {
+        let (anchor, dir) = claim_fixture("live-validation");
+        let theirs = dir.join("other-repo/.validate-lock.cleanup-required");
+        let mine = dir.join("my-repo/.validate-lock.slot-1.cleanup-required");
+        let leader = ProcessIdentity {
+            pid: std::process::id(),
+            start_ticks: process_start_ticks(std::process::id()).unwrap(),
+        };
+        let pgid = unsafe { libc::getpgrp() } as u32;
+        let mut record = CleanupRecord::new(
+            "first-validate",
+            "validate:first",
+            CleanupPhase::Published { leader, pgid },
+        )
+        .unwrap();
+        record.domain = CleanupDomain::ProcessGroup;
+        fs::create_dir_all(theirs.parent().unwrap()).unwrap();
+        write_cleanup_record(&theirs, &record).unwrap();
+        register_box_claim(&anchor, &theirs, "first-validate", "validate:first");
+
+        // The removed implementation passed no expected agent/operation to the
+        // verifier.  That can only return Unknown, so the second validation was
+        // refused even though a second slot existed.
+        assert!(matches!(
+            verify_cleanup_record(&theirs, None),
+            CleanupVerification::Unknown { .. }
+        ));
+        assert_eq!(
+            foreign_box_quarantine(&anchor, &mine),
+            None,
+            "a live published validation must coexist with the second validation slot"
+        );
+        assert!(
+            foreign_box_claim(&anchor, &mine).is_some(),
+            "benchmarks remain exclusive and must refuse the same live validation"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn my_own_record_is_not_a_foreign_claim() {
         // This repository's own record is already enforced by `require_no_cleanup`
         // inside acquire. Counting it here too would make a repository refuse
@@ -6440,6 +6515,41 @@ exit 0
         fs::write(&junk, b"version=1\nnothing useful here\n").unwrap();
         assert_eq!(foreign_box_claim(&anchor, &dir.join("mine")), None);
         assert!(!junk.exists(), "unparseable claim must be pruned");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn atomic_claim_publication_prevents_the_old_truncate_reader_collision() {
+        let (anchor, dir) = claim_fixture("atomic-publication");
+        let theirs = dir.join("other-repo/.validate-lock.cleanup-required");
+        let mine = dir.join("my-repo/.validate-lock.cleanup-required");
+        armed_record_at(&theirs, "validate-a", "validate:one");
+        register_box_claim(&anchor, &theirs, "validate-a", "validate:one");
+        let claim = box_claim_file(&anchor, &theirs);
+
+        // Removed behavior: fs::write opens the final path with truncate before
+        // writing.  A reader in that interval sees an empty claim, prunes it,
+        // and the writer finishes into an unlinked file.  The cleanup record is
+        // then outstanding with no box-global pointer.
+        let mut old_writer = OpenOptions::new()
+            .write(true)
+            .truncate(true)
+            .open(&claim)
+            .unwrap();
+        assert_eq!(foreign_box_claim(&anchor, &mine), None);
+        old_writer.write_all(b"version=1\ncleanup=lost\n").unwrap();
+        old_writer.flush().unwrap();
+        assert!(!claim.exists(), "old truncate/write interleaving must lose the claim");
+
+        register_box_claim(&anchor, &theirs, "validate-a", "validate:one");
+        let body = fs::read_to_string(&claim).unwrap();
+        assert!(body.contains(&format!("cleanup={}\n", theirs.display())));
+        assert!(body.contains("agent=validate-a\n"));
+        assert!(body.contains("operation=validate:one\n"));
+        assert!(
+            foreign_box_claim(&anchor, &mine).is_some(),
+            "the atomically published claim must preserve the outstanding cleanup refusal"
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 

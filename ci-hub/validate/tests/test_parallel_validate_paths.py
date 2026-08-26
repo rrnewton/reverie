@@ -44,6 +44,27 @@ def enter_git_section(common: str, entered: multiprocessing.Queue[str]) -> None:
         entered.put("entered")
 
 
+def locked_fetch(repo: str, result: multiprocessing.Queue[tuple[int, str]]) -> None:
+    def runner(command: list[str], **kwargs: object):
+        return subprocess.run(command, capture_output=True, text=True, **kwargs)
+
+    source = Path(repo)
+    with start_unit.git_mutation_lock(source, run=runner):
+        completed_fetch = subprocess.run(
+            [
+                "git",
+                "-C",
+                repo,
+                "fetch",
+                "origin",
+                "main:refs/remotes/origin/main",
+            ],
+            capture_output=True,
+            text=True,
+        )
+    result.put((completed_fetch.returncode, completed_fetch.stderr))
+
+
 def seed_cargo(parent: str, shared: str, entered: multiprocessing.Queue[str]) -> None:
     def runner(command: list[str], **_kwargs: object):
         if command[:2] == ["mktemp", "-d"]:
@@ -129,6 +150,22 @@ class ParallelValidatePathTest(unittest.TestCase):
         self.assertNotIn("TMPDIR=", "\n".join(old_a))
         self.assertNotIn("TMPDIR=", "\n".join(old_b))
 
+        # Removed behavior: both units resolve the same relative cache/temp
+        # names.  The second writer replaces the first run's value at every
+        # shared root; this is the collision, not merely equal command text.
+        old_roots = {
+            "tmp": self.root / "old-tmp",
+            "cache": self.root / "old-cache",
+            "python-cache": self.root / "old-python-cache",
+            "hermit-data": self.root / "old-hermit-data",
+        }
+        for path in old_roots.values():
+            path.mkdir()
+            shared_child = path / "same-relative-name"
+            shared_child.write_text("run-a")
+            shared_child.write_text("run-b")
+            self.assertEqual(shared_child.read_text(), "run-b")
+
         runtime_a = start_unit.prepare_runtime_root(self.root, "validate-a")
         runtime_b = start_unit.prepare_runtime_root(self.root, "validate-b")
         fixed_a = start_unit.build_systemd_command(
@@ -140,6 +177,12 @@ class ParallelValidatePathTest(unittest.TestCase):
         for name in ("tmp", "cache", "python-cache", "hermit-data"):
             self.assertTrue((runtime_a / name).is_dir())
             self.assertTrue((runtime_b / name).is_dir())
+            child_a = runtime_a / name / "same-relative-name"
+            child_b = runtime_b / name / "same-relative-name"
+            child_a.write_text("run-a")
+            child_b.write_text("run-b")
+            self.assertEqual(child_a.read_text(), "run-a")
+            self.assertEqual(child_b.read_text(), "run-b")
         self.assertIn(f"TMPDIR={runtime_a / 'tmp'}", fixed_a)
         self.assertIn(f"TMPDIR={runtime_b / 'tmp'}", fixed_b)
         self.assertNotEqual(runtime_a, runtime_b)
@@ -149,31 +192,54 @@ class ParallelValidatePathTest(unittest.TestCase):
         self.assertIn("E2E_RUN_ID=validate-b", fixed_b)
 
     def test_git_mutation_old_sections_overlap_and_fixed_section_waits(self) -> None:
-        common = self.root / "common"
-        common.mkdir()
-        entered: multiprocessing.Queue[str] = multiprocessing.Queue()
+        origin = self.root / "origin.git"
+        repo = self.root / "checkout"
+        subprocess.run(["git", "init", "--bare", "--quiet", str(origin)], check=True)
+        subprocess.run(["git", "init", "--quiet", str(repo)], check=True)
+        subprocess.run(["git", "-C", str(repo), "config", "user.email", "test@example.invalid"], check=True)
+        subprocess.run(["git", "-C", str(repo), "config", "user.name", "test"], check=True)
+        (repo / "seed").write_text("seed")
+        subprocess.run(["git", "-C", str(repo), "add", "seed"], check=True)
+        subprocess.run(["git", "-C", str(repo), "commit", "--quiet", "-m", "seed"], check=True)
+        subprocess.run(["git", "-C", str(repo), "branch", "-M", "main"], check=True)
+        subprocess.run(["git", "-C", str(repo), "remote", "add", "origin", str(origin)], check=True)
+        subprocess.run(["git", "-C", str(repo), "push", "--quiet", "-u", "origin", "main"], check=True)
 
-        # Old behavior had no lock: both critical sections are entered together.
-        entered.put("old-parent")
-        child = multiprocessing.Process(target=entered.put, args=("old-child",))
-        child.start()
-        self.assertEqual(entered.get(timeout=1), "old-parent")
-        self.assertEqual(entered.get(timeout=1), "old-child")
-        child.join(timeout=2)
+        common = Path(
+            subprocess.run(
+                ["git", "-C", str(repo), "rev-parse", "--path-format=absolute", "--git-common-dir"],
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+        )
+        ref_lock = common / "refs/remotes/origin/main.lock"
+        ref_lock.parent.mkdir(parents=True, exist_ok=True)
 
-        lock_path = common / "ci-hub-validate.lock"
-        with lock_path.open("a+") as lock:
-            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
-            child = multiprocessing.Process(
-                target=enter_git_section, args=(str(common), entered)
-            )
+        # Removed behavior: a concurrent fetch reaches Git's shared ref lock and
+        # fails instead of waiting for the other validate's Git mutation.
+        ref_lock.touch(exist_ok=False)
+        old = subprocess.run(
+            ["git", "-C", str(repo), "fetch", "origin", "main:refs/remotes/origin/main"],
+            capture_output=True,
+            text=True,
+        )
+        self.assertNotEqual(old.returncode, 0)
+        self.assertIn("cannot lock ref", old.stderr)
+        ref_lock.unlink()
+
+        result: multiprocessing.Queue[tuple[int, str]] = multiprocessing.Queue()
+        with start_unit.git_mutation_lock(repo, run=lambda command, **kwargs: subprocess.run(command, capture_output=True, text=True, **kwargs)):
+            ref_lock.touch(exist_ok=False)
+            child = multiprocessing.Process(target=locked_fetch, args=(str(repo), result))
             child.start()
             with self.assertRaises(Exception):
-                entered.get(timeout=0.15)
-            fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
-        self.assertEqual(entered.get(timeout=2), "entered")
-        child.join(timeout=2)
+                result.get(timeout=0.15)
+            ref_lock.unlink()
+        rc, stderr = result.get(timeout=3)
+        child.join(timeout=3)
         self.assertEqual(child.exitcode, 0)
+        self.assertEqual(rc, 0, stderr)
 
     def test_cargo_seed_old_reader_can_overlap_writer_and_fixed_reader_waits(self) -> None:
         shared = self.root / "cargo"

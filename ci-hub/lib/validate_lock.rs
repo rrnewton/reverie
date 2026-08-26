@@ -8550,6 +8550,51 @@ exit 0
         let _ = fs::remove_dir_all(&dir);
     }
 
+    #[test]
+    fn two_validation_slots_remove_the_old_single_anchor_collision() {
+        let dir = env::temp_dir().join(format!(
+            "ci-hub-vlock-two-slots-{}-{}",
+            std::process::id(),
+            epoch_seconds().unwrap()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        let paths = LockPaths::at(dir.join("validate-box.lock"));
+
+        // Removed behavior: both validates took the one global anchor, so the
+        // second acquisition deterministically collided with the first.
+        let old_first = BoxExclusionAnchor::take(&paths.global_anchor(), 0)
+            .unwrap()
+            .expect("old first validation must acquire the single anchor");
+        assert!(
+            BoxExclusionAnchor::take(&paths.global_anchor(), 0)
+                .unwrap()
+                .is_none(),
+            "the old one-anchor path must reproduce the second-run collision"
+        );
+        drop(old_first);
+
+        let slot_zero = BoxExclusionAnchor::take(&paths.slot_anchor(0), 5)
+            .unwrap()
+            .expect("slot zero must be available");
+        let slot_one = BoxExclusionAnchor::take(&paths.slot_anchor(1), 0)
+            .unwrap()
+            .expect("slot one must coexist with slot zero");
+        assert!(
+            BoxExclusionAnchor::take(&paths.slot_anchor(0), 0)
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            BoxExclusionAnchor::take(&paths.slot_anchor(1), 0)
+                .unwrap()
+                .is_none(),
+            "a third validation must not exceed the two-slot policy"
+        );
+        drop(slot_one);
+        drop(slot_zero);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
     fn attributed_status_fixture(
         name: &str,
     ) -> (PathBuf, PathBuf, BoxExclusionAnchor, GlobalValidateHolder) {

@@ -218,6 +218,8 @@ class FakeRun:
                         }
                     ),
                 )
+            if herdr == ["herdr", "tab", "list", "--workspace", "wV"]:
+                return completed(command, stdout=json.dumps({"result": {"tabs": []}}))
             if herdr[:3] == ["herdr", "tab", "create"]:
                 return completed(
                     command,
