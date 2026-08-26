@@ -1036,6 +1036,7 @@ struct FileTableState {
     random_device_fds: std::collections::BTreeSet<i32>,
     stdout_alias_fds: std::collections::BTreeSet<i32>,
     stderr_alias_fds: std::collections::BTreeSet<i32>,
+    standard_status_flags: std::collections::BTreeMap<i32, libc::c_int>,
     cloexec_fds: std::collections::BTreeSet<i32>,
     closed_standard_fds: std::collections::BTreeSet<i32>,
     proc_files: std::collections::BTreeMap<i32, u64>,
@@ -1058,6 +1059,7 @@ impl FileTableState {
             random_device_fds: state.random_device_fds.clone(),
             stdout_alias_fds: state.stdout_alias_fds.clone(),
             stderr_alias_fds: state.stderr_alias_fds.clone(),
+            standard_status_flags: state.standard_status_flags.clone(),
             cloexec_fds: state.cloexec_fds.clone(),
             closed_standard_fds: state.closed_standard_fds.clone(),
             proc_files: state.proc_files.clone(),
@@ -1094,6 +1096,9 @@ impl FileTableState {
         state.random_device_fds.clone_from(&self.random_device_fds);
         state.stdout_alias_fds.clone_from(&self.stdout_alias_fds);
         state.stderr_alias_fds.clone_from(&self.stderr_alias_fds);
+        state
+            .standard_status_flags
+            .clone_from(&self.standard_status_flags);
         state.cloexec_fds.clone_from(&self.cloexec_fds);
         state
             .closed_standard_fds
@@ -2342,6 +2347,18 @@ fn write(
             return bytes.len() as i64;
         }
         if standard {
+            // The guest's O_NONBLOCK on an inherited stream is modeled, not
+            // applied to hermit's descriptor, so answer it here rather than
+            // asking the kernel: a zero-timeout POLLOUT is exactly the question
+            // a nonblocking write would have asked. Dropping the flag silently
+            // instead would turn a guest's EAGAIN into a hang.
+            if let Some(key) = standard_status_key(state, fd)
+                && let Ok(flags) = standard_stream_status_flags(state, key, fd)
+                && flags & libc::O_NONBLOCK != 0
+                && !host_fd_is_writable_now(fd)
+            {
+                return negative_errno(libc::EAGAIN);
+            }
             return host_write(fd, &bytes);
         }
     }
@@ -3643,6 +3660,75 @@ fn output_alias(state: &LoadedStaticElf, fd: libc::c_int) -> Option<OutputAlias>
     } else {
         None
     }
+}
+
+/// Exactly the bits `fcntl(F_SETFL)` can change. Access mode and creation flags
+/// are silently ignored by the kernel, so they are ignored here too.
+const SETTABLE_STATUS_FLAGS: libc::c_int =
+    libc::O_APPEND | libc::O_ASYNC | libc::O_DIRECT | libc::O_NOATIME | libc::O_NONBLOCK;
+
+/// Which inherited standard output stream `guest_fd` refers to, as the
+/// canonical descriptor number, or `None` for a descriptor the guest owns.
+///
+/// ⚠️ THE GUEST DOES NOT OWN STDOUT AND STDERR. `host_fd` resolves them to the
+/// hermit process's own descriptors, which hermit inherited from ITS parent, so
+/// a status-flag change executed there escapes the container: it outlives the
+/// guest, outlives hermit, and is visible to whoever invoked hermit. Under
+/// `hermit run --verify` -- two runs inside ONE hermit process -- it is also
+/// visible to the second run, which is how a guest that conditionally sets
+/// `O_APPEND` on its stderr made the KVM backend report itself
+/// nondeterministic. Those flags are modeled per guest instead; see
+/// [`LoadedStaticElf::standard_status_flags`].
+///
+/// Keying by the canonical number (not the passed fd) is what makes a `dup`ed
+/// alias share one entry, matching a shared open file description.
+fn standard_status_key(state: &LoadedStaticElf, guest_fd: libc::c_int) -> Option<i32> {
+    match output_alias(state, guest_fd) {
+        Some(OutputAlias::Stdout) => Some(libc::STDOUT_FILENO),
+        Some(OutputAlias::Stderr) => Some(libc::STDERR_FILENO),
+        None => None,
+    }
+}
+
+/// The guest-visible status flags of an inherited standard output stream,
+/// seeded from the host descriptor the first time the guest looks.
+///
+/// Seeding rather than synthesizing keeps the guest's view honest: it still
+/// sees the access mode, `O_LARGEFILE`, and an append-mode redirect the CALLER
+/// chose. What it no longer sees is anything a previous guest did, because
+/// nothing a guest does reaches the host descriptor.
+fn standard_stream_status_flags(
+    state: &mut LoadedStaticElf,
+    key: i32,
+    host_fd: RawFd,
+) -> Result<libc::c_int, i64> {
+    if let Some(&flags) = state.standard_status_flags.get(&key) {
+        return Ok(flags);
+    }
+    let flags = fd_status_flags(host_fd)?;
+    state.standard_status_flags.insert(key, flags);
+    Ok(flags)
+}
+
+/// Zero-timeout `POLLOUT`: would a nonblocking write on `fd` make progress?
+///
+/// This answers for the modeled `O_NONBLOCK` on an inherited output stream,
+/// whose flag deliberately never reaches the host descriptor. A regular file
+/// always polls writable, so an ordinary redirect is unaffected.
+fn host_fd_is_writable_now(fd: RawFd) -> bool {
+    let mut poll_fd = libc::pollfd {
+        fd,
+        events: libc::POLLOUT,
+        revents: 0,
+    };
+    // SAFETY: one initialized pollfd and a zero timeout, so poll cannot block.
+    let ready = unsafe { libc::poll(&mut poll_fd, 1, 0) };
+    if ready < 0 {
+        // A poll failure is not evidence the descriptor is full. Fall through
+        // and let the write itself report whatever is actually wrong.
+        return true;
+    }
+    ready > 0 && poll_fd.revents & libc::POLLOUT != 0
 }
 
 fn set_output_alias(state: &mut LoadedStaticElf, fd: libc::c_int, alias: Option<OutputAlias>) {
@@ -8315,9 +8401,15 @@ fn fcntl(memory: &GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> 
                 signalfd_mask: source_signalfd_mask,
             },
         ),
-        libc::F_GETFL => match fd_status_flags(host_fd) {
-            Ok(flags) => flags as i64,
-            Err(error) => error,
+        libc::F_GETFL => match standard_status_key(state, guest_fd) {
+            Some(key) => match standard_stream_status_flags(state, key, host_fd) {
+                Ok(flags) => i64::from(flags),
+                Err(error) => error,
+            },
+            None => match fd_status_flags(host_fd) {
+                Ok(flags) => flags as i64,
+                Err(error) => error,
+            },
         },
         libc::F_GETFD => {
             if state.cloexec_fds.contains(&guest_fd) {
@@ -8342,14 +8434,69 @@ fn fcntl(memory: &GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> 
         // programs that set O_NONBLOCK on a freshly created pipe (e.g. xz)
         // observe ENOSYS and abort.
         libc::F_SETFL => {
-            let settable = libc::O_APPEND
-                | libc::O_ASYNC
-                | libc::O_DIRECT
-                | libc::O_NOATIME
-                | libc::O_NONBLOCK;
-            let flags = args[2] as libc::c_int & settable;
-            // SAFETY: host_fd names a live descriptor; F_SETFL consumes one int flag word.
-            zero_or_errno(unsafe { libc::fcntl(host_fd, libc::F_SETFL, flags) })
+            let flags = args[2] as libc::c_int & SETTABLE_STATUS_FLAGS;
+            match standard_status_key(state, guest_fd) {
+                // ⚠️ NOT FORWARDED, DELIBERATELY. stdout and stderr are hermit's
+                // own descriptors; `fcntl(F_SETFL)` there mutates an open file
+                // description the guest did not create and does not outlive,
+                // which escapes the container and (under `--verify`) leaks run
+                // 1's state into run 2. Model it instead -- the same thing the
+                // F_GETFD/F_SETFD arms above already do with `cloexec_fds`.
+                Some(key) => match standard_stream_status_flags(state, key, host_fd) {
+                    Ok(current) => {
+                        // ⚠️ O_NONBLOCK IS THE ONE BIT THAT MUST STILL REACH THE
+                        // HOST DESCRIPTOR, even though the rest are modeled.
+                        //
+                        // A Reverie TOOL above this backend may keep its own
+                        // physical view of nonblocking and act on it. Detcore
+                        // does: it tracks `physically_nonblocking` for
+                        // nonblockize-and-retry, and if it forwards a guest's
+                        // O_NONBLOCK request and gets `Ok(0)` back while this
+                        // executor has quietly swallowed it, the tool believes a
+                        // blocking descriptor is nonblocking and passes the next
+                        // socket call straight through to a kernel that will
+                        // block on it.
+                        //
+                        // MEASURED, hermit 9c75b9db57 with this branch built in,
+                        // hermit's stderr an empty socketpair, guest sets
+                        // O_NONBLOCK on fd 2 then calls recv:
+                        //     --backend ptrace   EAGAIN            (correct)
+                        //     --backend kvm      HUNG, killed at 25s
+                        // With this crate at its pinned revision instead, both
+                        // return EAGAIN. So swallowing the bit is what hangs it.
+                        //
+                        // Forward the BIT, not the call: re-read the host word and
+                        // replace only O_NONBLOCK, so the append-mode or other
+                        // settable state the CALLER chose is still never touched.
+                        let requested_nonblocking = flags & libc::O_NONBLOCK;
+                        if requested_nonblocking != current & libc::O_NONBLOCK {
+                            let physical_now = match fd_status_flags(host_fd) {
+                                Ok(physical_now) => physical_now,
+                                Err(error) => return error,
+                            };
+                            let physical_next =
+                                (physical_now & !libc::O_NONBLOCK) | requested_nonblocking;
+                            // SAFETY: host_fd names a live descriptor; F_SETFL consumes one
+                            // int flag word.
+                            let applied =
+                                unsafe { libc::fcntl(host_fd, libc::F_SETFL, physical_next) };
+                            if applied < 0 {
+                                return io_error(std::io::Error::last_os_error());
+                            }
+                        }
+                        state
+                            .standard_status_flags
+                            .insert(key, (current & !SETTABLE_STATUS_FLAGS) | flags);
+                        0
+                    }
+                    Err(error) => error,
+                },
+                // A descriptor the guest opened is the guest's own; forwarding
+                // is both correct and load-bearing (O_NONBLOCK on a guest pipe
+                // has to reach the kernel for read/write to behave).
+                // SAFETY: host_fd names a live descriptor; F_SETFL consumes one int flag word.
+                None => zero_or_errno(unsafe { libc::fcntl(host_fd, libc::F_SETFL, flags) }),
+            }
         }
         // AUTONOMOUS-BOT-IMPLEMENTED
         // TODO-HUMAN-REVIEW(PR-211): Review KVM advisory-lock forwarding.
@@ -10811,6 +10958,7 @@ mod tests {
             random_device_fds: BTreeSet::new(),
             stdout_alias_fds: BTreeSet::new(),
             stderr_alias_fds: BTreeSet::new(),
+            standard_status_flags: BTreeMap::new(),
             cloexec_fds: BTreeSet::new(),
             closed_standard_fds: BTreeSet::new(),
             children: BTreeMap::new(),
@@ -11973,6 +12121,145 @@ mod tests {
                 [0, libc::F_GETFL as u64, 0, 0, 0, 0],
             ),
             negative_errno(libc::EBADF)
+        );
+    }
+
+    /// A guest `fcntl(F_SETFL)` on stderr must change what the GUEST sees and
+    /// nothing else.
+    ///
+    /// Regression for the KVM `--verify` nondeterminism: `host_fd` resolves the
+    /// guest's stderr to the hermit process's OWN descriptor, so forwarding
+    /// `F_SETFL` there mutated an open file description shared with hermit's
+    /// caller. Under `hermit run --strict --verify` both runs live in one hermit
+    /// process, so run 1 set `O_APPEND`, run 2 found it already set and skipped
+    /// the call, the syscall numbering shifted, and the comparison reported the
+    /// backend nondeterministic. Measured on hermit d7413071581f with
+    /// `/usr/bin/awk 'BEGIN { print 42 }'`: rc=125, "Failure: nondeterministic".
+    ///
+    /// The last assertion is the one that closes that loop: a SECOND, fresh
+    /// guest state -- run 2 of a verify pair -- must observe the flags the first
+    /// one started from.
+    #[test]
+    fn fcntl_setfl_on_stderr_does_not_mutate_hermits_own_descriptor() {
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+
+        let host_before = fd_status_flags(libc::STDERR_FILENO).unwrap();
+        // Ask for the OPPOSITE of whatever this process's stderr currently is,
+        // so the test is a real flip however the harness redirected it.
+        let requested = host_before ^ libc::O_APPEND;
+
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_fcntl,
+                [
+                    libc::STDERR_FILENO as u64,
+                    libc::F_SETFL as u64,
+                    requested as u64,
+                    0,
+                    0,
+                    0
+                ],
+            ),
+            0
+        );
+
+        // The guest sees its own request.
+        let guest_flags = syscall_result(
+            &mut memory,
+            &mut state,
+            libc::SYS_fcntl,
+            [libc::STDERR_FILENO as u64, libc::F_GETFL as u64, 0, 0, 0, 0],
+        );
+        assert!(guest_flags >= 0);
+        assert_eq!(
+            guest_flags as libc::c_int & libc::O_APPEND,
+            requested & libc::O_APPEND,
+            "the guest must observe the status flag it just set",
+        );
+
+        // Hermit's own descriptor is untouched: no escape from the container.
+        assert_eq!(
+            fd_status_flags(libc::STDERR_FILENO).unwrap(),
+            host_before,
+            "a guest F_SETFL on stderr must not reach the hermit process's own \
+             file description",
+        );
+
+        // Run 2 of a `--verify` pair starts from the same place run 1 did.
+        let mut second_run = test_state(&root.0);
+        let second_flags = syscall_result(
+            &mut memory,
+            &mut second_run,
+            libc::SYS_fcntl,
+            [libc::STDERR_FILENO as u64, libc::F_GETFL as u64, 0, 0, 0, 0],
+        );
+        assert!(second_flags >= 0);
+        assert_eq!(
+            second_flags as libc::c_int & libc::O_APPEND,
+            host_before & libc::O_APPEND,
+            "a second guest must not inherit the first guest's status flags",
+        );
+    }
+
+    /// `dup`ing stderr shares one open file description, so the modeled status
+    /// flags must be shared too -- keyed by the stream, not by the descriptor
+    /// number the guest happened to use.
+    #[test]
+    fn modeled_stderr_status_flags_are_shared_by_dup_aliases() {
+        let root = TestDir::new();
+        let mut state = test_state(&root.0);
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+
+        let host_before = fd_status_flags(libc::STDERR_FILENO).unwrap();
+        let requested = host_before ^ libc::O_APPEND;
+
+        let alias = syscall_result(
+            &mut memory,
+            &mut state,
+            libc::SYS_dup,
+            [libc::STDERR_FILENO as u64, 0, 0, 0, 0, 0],
+        );
+        assert!(alias >= 0, "dup(2) failed: {alias}");
+
+        // Set through the alias...
+        assert_eq!(
+            syscall_result(
+                &mut memory,
+                &mut state,
+                libc::SYS_fcntl,
+                [
+                    alias as u64,
+                    libc::F_SETFL as u64,
+                    requested as u64,
+                    0,
+                    0,
+                    0
+                ],
+            ),
+            0
+        );
+        // ...and read it back through the original.
+        let flags = syscall_result(
+            &mut memory,
+            &mut state,
+            libc::SYS_fcntl,
+            [libc::STDERR_FILENO as u64, libc::F_GETFL as u64, 0, 0, 0, 0],
+        );
+        assert!(flags >= 0);
+        assert_eq!(
+            flags as libc::c_int & libc::O_APPEND,
+            requested & libc::O_APPEND,
+            "dup'ed aliases of stderr share one file description, so they must \
+             share the modeled status flags",
+        );
+        assert_eq!(
+            fd_status_flags(libc::STDERR_FILENO).unwrap(),
+            host_before,
+            "setting flags through a dup'ed alias must not escape either",
         );
     }
 
