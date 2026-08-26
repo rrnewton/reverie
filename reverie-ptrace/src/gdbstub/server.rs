@@ -263,3 +263,74 @@ impl GdbServerImpl {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `wait_for_tcp_connection` must leave NOTHING LISTENING once it has
+    /// accepted its client.
+    ///
+    /// ⚠️ THIS IS A CROSS-REPOSITORY CONTRACT AND IT IS LOAD-BEARING IN HERMIT.
+    /// hermit's gdb-client watcher (`hermit-cli/src/bin/hermit/gdb_client.rs`)
+    /// decides whether a container was stranded waiting for a debugger that will
+    /// never come by CONNECTING TO THIS PORT after it observes its spawned `gdb`
+    /// exit; a successful connect is its evidence that an accept was still
+    /// pending. That inference is sound ONLY because this function drops its
+    /// listener the moment it returns.
+    ///
+    /// If this is ever changed to keep the listener bound -- to support
+    /// reconnect, say -- then every HEALTHY gdb session that finishes before its
+    /// container does gets reported as "the gdb client hermit spawned exited
+    /// before it finished connecting". That is hermit's defect 2 restored, and
+    /// NOTHING ON HERMIT'S SIDE CAN DETECT IT: to the watcher, a bound port plus
+    /// a dead client is indistinguishable from a stranded accept. The check has
+    /// to live here, next to the fact it depends on.
+    #[tokio::test(flavor = "current_thread")]
+    async fn the_listener_is_closed_once_the_client_is_accepted() {
+        // A port that is free right now. Bind-and-drop is the only portable way
+        // to learn one, because `wait_for_tcp_connection` insists on binding the
+        // address itself and will not take a listener we made.
+        let addr: SocketAddr = {
+            let probe = std::net::TcpListener::bind("127.0.0.1:0")
+                .expect("failed to bind a probe listener to find a free port");
+            probe
+                .local_addr()
+                .expect("probe listener has no local addr")
+        };
+
+        let server = tokio::spawn(wait_for_tcp_connection(addr));
+
+        // Connect as the real client would. Bounded, because a wedged test costs
+        // the whole run's budget while a red one names itself in a line.
+        let mut client = None;
+        for _ in 0..300 {
+            if let Ok(s) = std::net::TcpStream::connect(addr) {
+                client = Some(s);
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        let client = client.expect("could not connect to the gdbserver port within 3s");
+
+        let accepted = server
+            .await
+            .expect("the accept task panicked")
+            .expect("wait_for_tcp_connection failed");
+
+        // ⚠️ THE ASSERTION. The client is accepted and its stream is still open,
+        // so anything still answering on this port is a LISTENER, not this
+        // session. A second connection must therefore be refused.
+        let second = std::net::TcpStream::connect(addr);
+        assert!(
+            second.is_err(),
+            "the gdbserver port is STILL LISTENING after the client was accepted; \
+             hermit's watcher reads a successful connect here as proof that a container \
+             is stranded, so a healthy finished session would be reported as a client \
+             that exited before connecting"
+        );
+
+        drop(accepted);
+        drop(client);
+    }
+}
