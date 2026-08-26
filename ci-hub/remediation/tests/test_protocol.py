@@ -4131,12 +4131,147 @@ class ProtocolTest(unittest.TestCase):
             store_path: Path,
             *,
             deadline: float | None = None,
+            redispatch: bool = True,
         ) -> dict:
-            del deadline
+            # The gate passes redispatch=False; the double must accept it or the
+            # signature drift hides behind a TypeError instead of a real result.
+            del deadline, redispatch
             clock["t"] += seconds_per_poll
             return next(r for r in records if r["obligation_id"] == obligation_id)
 
         return clock, records, fake_poll
+
+    def test_a_truncated_sweep_names_the_obligations_it_did_not_reach(self) -> None:
+        """⚠️ THE UNREACHED SET WAS ANONYMOUS, AND IT IS THE SAME SET EVERY CYCLE.
+
+        The sort is stable and the budget expires in roughly the same place, so
+        `checked 3 of 5` hid a STARVATION: rows 4 and 5 are never examined, and
+        nothing in the output said which rows those were. Measured 2026-08-26 on
+        the live store, 13 of 16 obligations had gone unexamined all day.
+
+        Naming them adds no polling. It is the discard removed.
+        """
+        clock, records, fake_poll = self._budget_fixture(5, seconds_per_poll=10.0)
+        output = io.StringIO()
+        with mock.patch.object(protocol.time, "monotonic", lambda: clock["t"]), \
+             mock.patch.object(
+                 protocol.obligations,
+                 "latest_records",
+                 return_value={record["obligation_id"]: record for record in records},
+             ), \
+             mock.patch.object(protocol, "poll_obligation", fake_poll), \
+             redirect_stdout(output):
+            protocol.watch(
+                store_path=self.store,
+                obligation_id=None,
+                once=True,
+                poll_seconds=1,
+                budget_secs=25.0,
+            )
+        printed = output.getvalue()
+        self.assertIn("watch_checked=3", printed)
+        self.assertIn("watch_unchecked=2", printed)
+        self.assertIn("watch_unchecked_ids=ob-3,ob-4", printed)
+        self.assertIn("NOT EXAMINED THIS CYCLE: ob-3", printed)
+        self.assertIn("NOT EXAMINED THIS CYCLE: ob-4", printed)
+        self.assertIn("were NOT examined this cycle: ob-3, ob-4", printed)
+        # ⚠️ AND THE VERDICT MUST NOT SOFTEN. An incomplete census is more
+        # INFORMATION, not a better ANSWER. An earlier draft made the summary
+        # read "PARTIAL" while the machine fields still read NO-RESULT --
+        # improving the human line and leaving the consumed field untouched,
+        # which is the defect this whole change is about. Prose and field agree.
+        self.assertIn("watch_verdict=NO-RESULT", printed)
+        self.assertIn("state=no-result", printed)
+        self.assertIn("summary=NO-RESULT:", printed)
+        self.assertNotIn("summary=PARTIAL", printed)
+        self.assertIn("The census is INCOMPLETE, so this is not a clear.", printed)
+
+    def test_a_complete_sweep_reports_nothing_unexamined(self) -> None:
+        """The negative arm: when everything is reached, the field says zero and
+        no row is named. Without this the assertion above passes for a gate that
+        prints the unchecked list unconditionally."""
+        clock, records, fake_poll = self._budget_fixture(3, seconds_per_poll=1.0)
+        output = io.StringIO()
+        with mock.patch.object(protocol.time, "monotonic", lambda: clock["t"]), \
+             mock.patch.object(
+                 protocol.obligations,
+                 "latest_records",
+                 return_value={record["obligation_id"]: record for record in records},
+             ), \
+             mock.patch.object(protocol, "poll_obligation", fake_poll), \
+             redirect_stdout(output):
+            protocol.watch(
+                store_path=self.store,
+                obligation_id=None,
+                once=True,
+                poll_seconds=1,
+                budget_secs=60.0,
+            )
+        printed = output.getvalue()
+        self.assertNotIn("NOT EXAMINED THIS CYCLE", printed)
+        self.assertNotIn("watch_unchecked_ids=", printed)
+
+    def test_the_gate_observes_and_does_not_redispatch(self) -> None:
+        """⚠️ A 300s MONITORING PATH MUST NOT LAUNCH A 28-MINUTE JOB.
+
+        `poll_obligation` calls `_maybe_redispatch_local`, which starts a full
+        local validate estimated at 1728s wall / 8471s CPU. Measured 2026-08-26:
+        a budget large enough to reach the seventh obligation launched FOUR
+        concurrent validates and took the box from load 17 to 35. It had never
+        fired from the tick only because the 20s budget expired around the fifth
+        poll -- so the bound was accidentally the only guard, and raising it
+        would have released this.
+
+        ⚠️ THIS ASSERTS THE LAUNCHER IS NOT CALLED, NOT THAT A FLAG IS PASSED.
+        The first version of this test drove `_poll_within_budget` directly and
+        checked the kwarg it forwards -- so restoring `redispatch=True` at the
+        real call site left it GREEN. A test that checks its own plumbing
+        instead of the effect is the defect it was written to prevent.
+        """
+        calls: list[str] = []
+
+        def spy(obligation_id, record, store_path):
+            calls.append(obligation_id)
+            return dict(record)
+
+        # A REAL obligation in a real temp store: poll_obligation does durable
+        # writes before reaching the guard, so a hand-built dict cannot get
+        # there. ⚠️ AND NO try/except -- the first version swallowed the
+        # resulting StoreError, so the spy went uncalled for an unrelated reason
+        # and the test read that as "did not redispatch". A test that cannot
+        # tell its own pass from a crash is the defect it was written against.
+        for redispatch, expected in ((False, []), (True, ["test-obligation"])):
+            calls.clear()
+            self.store.unlink(missing_ok=True)
+            self.create()
+            with mock.patch.object(protocol, "_maybe_redispatch_local", spy):
+                protocol.poll_obligation(
+                    "test-obligation", self.store, redispatch=redispatch
+                )
+            self.assertEqual(
+                calls, expected,
+                f"redispatch={redispatch} must give _maybe_redispatch_local "
+                f"calls={expected}, got {calls}",
+            )
+
+    def test_the_gate_flag_reaches_the_watch_call(self) -> None:
+        """And the CLI must actually pass it: `--gate` -> redispatch=False."""
+        seen: dict = {}
+
+        def fake_watch(**kwargs):
+            seen.update(kwargs)
+            return 0
+
+        with mock.patch.object(protocol, "watch", fake_watch):
+            protocol.main([
+                "watch", "--once", "--gate", "--store", str(self.store),
+            ])
+        self.assertIs(seen.get("redispatch"), False)
+
+        seen.clear()
+        with mock.patch.object(protocol, "watch", fake_watch):
+            protocol.main(["watch", "--once", "--store", str(self.store)])
+        self.assertIs(seen.get("redispatch"), True)
 
     def test_one_shot_watch_stops_on_budget_and_keeps_partial_results(self) -> None:
         clock, records, fake_poll = self._budget_fixture(5, seconds_per_poll=10.0)
@@ -4183,7 +4318,9 @@ class ProtocolTest(unittest.TestCase):
             store_path: Path,
             *,
             deadline: float | None = None,
+            redispatch: bool = True,
         ) -> dict:
+            del redispatch
             self.assertEqual(obligation_id, "ob-0")
             self.assertEqual(store_path, self.store)
             self.assertIsNotNone(deadline)

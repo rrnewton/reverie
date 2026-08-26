@@ -4599,7 +4599,24 @@ def poll_obligation(
     store_path: Path,
     *,
     deadline: float | None = None,
+    redispatch: bool = True,
 ) -> dict[str, Any]:
+    """Observe one obligation, and OPTIONALLY act on it.
+
+    ⚠️ `redispatch=False` IS WHAT KEEPS A MONITORING PATH FROM STARTING A
+    28-MINUTE JOB. `_maybe_redispatch_local` below launches a full local
+    validate -- estimated 1728s wall and 8471s CPU -- from inside this poll.
+    The tick runs this every 300s under a 20s budget, so an observation loop
+    could launch work three orders of magnitude longer than its own bound.
+
+    Measured 2026-08-26: giving the gate a budget large enough to reach the
+    seventh obligation launched FOUR concurrent validates and took the box from
+    load 17 to 35. It had never fired from the tick only because the 20s budget
+    expired at about the fifth poll -- so the bound was accidentally the only
+    thing preventing it, and raising the bound would have released it.
+
+    Remediation still happens; it just does not happen from the health tick.
+    """
     record = obligations.get_record(obligation_id, store_path)
     if record["overall_state"] in obligations.CLOSED_STATES and not (
         record["overall_state"] == "satisfied"
@@ -4713,7 +4730,8 @@ def poll_obligation(
     # canonical exact-SHA answer before deciding whether another producer is
     # needed, so a completed validation never causes a redundant redispatch.
     record = bind_local_receipt_authority(obligation_id, store_path)
-    record = _maybe_redispatch_local(obligation_id, record, store_path)
+    if redispatch:
+        record = _maybe_redispatch_local(obligation_id, record, store_path)
     return evaluate_obligation(
         obligation_id,
         store_path=store_path,
@@ -4911,6 +4929,7 @@ def _poll_within_budget(
     records: Sequence[Mapping[str, Any]],
     store_path: Path,
     deadline: float | None,
+    redispatch: bool = True,
 ) -> tuple[list[dict[str, Any]], int, bool]:
     """Poll obligations one at a time, stopping when the wall budget is spent.
 
@@ -4934,7 +4953,10 @@ def _poll_within_budget(
         try:
             updated.append(
                 poll_obligation(
-                    record["obligation_id"], store_path, deadline=deadline
+                    record["obligation_id"],
+                    store_path,
+                    deadline=deadline,
+                    redispatch=redispatch,
                 )
             )
         except WatchBudgetExhausted as error:
@@ -4971,6 +4993,7 @@ def watch(
     once: bool,
     poll_seconds: int,
     budget_secs: float | None = None,
+    redispatch: bool = True,
 ) -> int:
     started = time.monotonic()
     deadline = None if budget_secs is None else started + budget_secs
@@ -4993,7 +5016,7 @@ def watch(
             )
         )
         updated, planned, timed_out = _poll_within_budget(
-            records, store_path, deadline
+            records, store_path, deadline, redispatch
         )
         if timed_out:
             # TYPED, NON-CRASHING NO-RESULT. We stop under our own power and
@@ -5014,13 +5037,42 @@ def watch(
             print("watch_timed_out=true")
             print(f"elapsed_ms={elapsed_ms}")
             print(f"bound_ms={bound_ms}")
+            # ⚠️ NAME WHAT WAS NOT REACHED. The rows already polled were always
+            # printed below; the ones the budget never got to were ANONYMOUS. A
+            # reader saw "checked 5 of 16" and could not learn WHICH eleven were
+            # unexamined -- nor that it is the SAME eleven every cycle, because
+            # the sort is stable and the budget always expires in the same
+            # place. That is a starvation, and naming the tail is what makes it
+            # visible. `_poll_within_budget` polls in order, so the unreached
+            # set is exactly the tail. No new work: this is the discard removed.
+            unchecked = [
+                str(record["obligation_id"]) for record in records[len(updated):]
+            ]
+            print(f"watch_unchecked={len(unchecked)}")
+            if unchecked:
+                print(f"watch_unchecked_ids={','.join(unchecked)}")
+            # ⚠️ THE VERDICT STAYS NO-RESULT, AND THE SUMMARY SAYS SO TOO.
+            # An earlier draft of this made the summary read "PARTIAL" while
+            # `state`, `verdict` and `watch_verdict` still read NO-RESULT --
+            # improving the human line and leaving the field a gate actually
+            # consumes unchanged, which is the exact defect this fix is for.
+            # The resolution is NOT a new PARTIAL verdict token: a consumer
+            # keying on NO-RESULT to detect failure would stop matching, and an
+            # incomplete census must never widen into something readable as
+            # CLEAR. So the verdict is unchanged, the prose agrees with it, and
+            # the partial information rides in its own typed fields above.
             print(
                 "summary="
-                f"NO-RESULT: watch-obligations timed out after {elapsed_ms}ms "
-                f"against {bound_ms}ms; checked {len(updated)} of {planned}"
+                f"NO-RESULT: watch-obligations checked {len(updated)} of "
+                f"{planned} in {elapsed_ms}ms against a {bound_ms}ms budget. "
+                f"The census is INCOMPLETE, so this is not a clear. "
+                f"{len(unchecked)} obligation(s) were NOT examined this cycle"
+                + (f": {', '.join(unchecked)}" if unchecked else "")
             )
             for record in updated:
                 print(f"  {_summary_line(record)}")
+            for obligation_id in unchecked:
+                print(f"  NOT EXAMINED THIS CYCLE: {obligation_id}")
             return WATCH_EXIT_NO_RESULT
         if once or all(_watch_complete(record) for record in updated):
             remediation = sum(
@@ -6059,6 +6111,8 @@ def main(argv: Sequence[str] | None = None) -> int:
                     # (no --once) is a deliberate foreground poll with no outer
                     # guillotine over it, and must not acquire one here.
                     budget_secs=args.budget_secs if args.once else None,
+                    # ⚠️ THE GATE OBSERVES; IT DOES NOT ACT. See poll_obligation.
+                    redispatch=not args.gate,
                 )
             except BaseException as error:
                 if args.launch_token is not None:
