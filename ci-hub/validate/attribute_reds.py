@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 from pathlib import Path
 import sys
 from typing import Mapping
@@ -189,6 +190,66 @@ def _failed_gate_names(row: Mapping[str, object]) -> list[str]:
     return names
 
 
+#: A DAG node id is ``group.job`` (``test.cli``, ``build.liteinst_runtime_release``).
+#: Outer gate names -- ``portable CI DAG manifest`` -- are prose and never match.
+_NODE_ID_RE = re.compile(r"^[a-z0-9_-]+\.[a-z0-9_.-]+$")
+
+
+def gate_causes(row: Mapping[str, object]) -> list[dict[str, object]]:
+    """One PER-NODE record for each failed gate, derived from the ROW, not the log.
+
+    ``classes`` is the good attribution and it requires the log. Measured
+    2026-08-25 across this ledger: 854 of 856 non-pass rows name a ``log_file``
+    under ``/tmp`` THAT NO LONGER EXISTS, and only 84 (9%) ever got a persisted
+    ``first_error_line``. For the other 91% ``classes`` is empty and the row
+    retains only ``failed_gates`` -- a FLAT LIST OF NAMES. That is an aggregate:
+    it drops which node failed how, and it is all those rows will ever have,
+    because the evidence was reaped.
+
+    The gates array is still in the row and still per-node. This turns it back
+    into per-node records carrying the exit code and duration, so a triager can
+    tell two reds apart even with no log.
+
+    ⚠️ IT DELIBERATELY CARRIES NO ``first_error_line`` AND NO ``fault_class``.
+    There is no evidence for either, and ``CONDITIONAL_COLUMNS`` exists exactly
+    so a log-evicted red can say so rather than fabricate one. ``evidence`` names
+    the provenance so a consumer never mistakes a gate-derived record for a
+    log-derived one -- weaker, and honestly labelled, beats an aggregate.
+    """
+    gates = row.get("gates")
+    out: list[dict[str, object]] = []
+    if not isinstance(gates, list):
+        return out
+    # A DAG node id is ``group.job``. An entry that is not shaped that way is an
+    # OUTER gate name, and the outer name is the aggregate this tool exists to
+    # get past -- ``portable CI DAG manifest`` alone covers ~87% of full-run
+    # failures and is PROVEN to span at least three unrelated faults. Measured
+    # on this ledger: of 722 log-less rows with derivable causes, 218 have NO
+    # entry other than that name. Emitting those as ``gate-row`` would report
+    # the aggregate under a per-node key -- reintroducing, inside the fix, the
+    # exact defect the fix exists to remove. They are labelled distinctly so a
+    # consumer can filter them out rather than be misled by them.
+    for gate in gates:
+        if not isinstance(gate, Mapping):
+            continue
+        if str(gate.get("result") or "") != "fail":
+            continue
+        name = gate.get("name")
+        if not name:
+            continue
+        text = str(name)
+        per_node = bool(_NODE_ID_RE.match(text))
+        out.append(
+            {
+                "node": text,
+                "evidence": "gate-row" if per_node else "aggregate-gate",
+                "exit_code": gate.get("exit_code"),
+                "real_seconds": gate.get("real_seconds"),
+            }
+        )
+    return out
+
+
 def attribute_row(
     row: Mapping[str, object], *, registry: set[str] | None = None
 ) -> dict[str, object]:
@@ -210,6 +271,10 @@ def attribute_row(
         "log_file": log_file,
         "log_status": "missing",
         "classes": [],
+        # Per-node fallback that does NOT need the log. Always populated, so a
+        # row whose log was reaped still says which node failed and how, rather
+        # than degrading to the flat `failed_gates` name list.
+        "gate_causes": gate_causes(row),
     }
     if isinstance(log_file, str) and log_file:
         path = Path(log_file)

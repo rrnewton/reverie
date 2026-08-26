@@ -191,3 +191,42 @@ def test_refill_is_idempotent(tmp_path):
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))
+
+
+def test_a_row_whose_log_was_reaped_still_yields_per_node_causes():
+    """A red with no log must not degrade to a flat gate-name aggregate.
+
+    Measured 2026-08-25: 854 of 856 non-pass rows name a /tmp log that no longer
+    exists and 91% carry no per-node attribution at all, leaving only
+    `failed_gates` -- which drops which node failed and how. The gates array is
+    still in the row, so per-node records are recoverable without the log.
+    """
+    from attribute_reds import attribute_row
+    row = {
+        "commit": "deadbeef",
+        "log_file": "/tmp/hermit-validate.GONE.log",
+        "gates": [
+            {"name": "portable CI DAG manifest", "result": "fail",
+             "exit_code": 1, "real_seconds": 153},
+            {"name": "Initialize repository submodules", "result": "pass"},
+            {"name": "test.cli", "result": "fail", "exit_code": 101,
+             "real_seconds": 12},
+        ],
+    }
+    rec = attribute_row(row)
+    assert rec["log_status"] == "missing"
+    assert rec["classes"] == []
+    causes = rec["gate_causes"]
+    assert [c["node"] for c in causes] == ["portable CI DAG manifest", "test.cli"], (
+        "one record per FAILED gate, passing gates excluded"
+    )
+    assert causes[1]["exit_code"] == 101 and causes[1]["real_seconds"] == 12
+    assert [c["evidence"] for c in causes] == ["aggregate-gate", "gate-row"], (
+        "an OUTER gate name is the aggregate this tool exists to get past; "
+        "emitting it as a per-node cause would reintroduce the defect inside "
+        "the fix. Only group.job ids are gate-row."
+    )
+    assert all("first_error_line" not in c for c in causes), (
+        "no error line exists for a reaped log and inventing one is the "
+        "failure this sidecar exists to avoid"
+    )

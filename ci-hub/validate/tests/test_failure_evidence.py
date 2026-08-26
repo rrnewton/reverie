@@ -790,3 +790,48 @@ def test_malformed_marker_is_ignored_not_obeyed():
     )
     [rec] = classify_failed_substeps(log)
     assert rec["fault_class"] == "code"
+
+
+# --- nextest: the orchestration line must not win over the per-case verdict ----
+
+def test_nextest_run_failed_envelope_yields_the_failing_test_not_the_orchestration_line():
+    """A nextest node must attribute to the TEST THAT FAILED.
+
+    Regression for validate 4e168f2aa5b9: of ten failing nodes, the only two with
+    an interpretable ``first_error_line`` were the two that do NOT run under
+    nextest; the other eight all read ``error: test run failed``, which names
+    nothing. Two defects compounded -- ``error: test run failed`` is error-SHAPED
+    so it outranked the harness fallback, and the per-case pattern was anchored at
+    column 0 while nextest INDENTS its verdicts, so the line naming the test was
+    unreachable. Classification of the ten was blocked on exactly this.
+    """
+    log = _fail(
+        "test.hermit_integration",
+        "    Starting 45 tests across 6 binaries",
+        "        FAIL [   0.030s] hermit-cli::signal_determinism "
+        "sigsuspend_without_signal_reports_terminal_deadlock",
+        "error: test run failed",
+    )
+    [rec] = classify_failed_substeps(log)
+    assert rec["node"] == "test.hermit_integration"
+    line = rec["first_error_line"]
+    assert "error: test run failed" != line, (
+        "the nextest orchestration envelope must not be the attribution"
+    )
+    assert "sigsuspend_without_signal_reports_terminal_deadlock" in line, (
+        f"attribution must name the failing test; got {line!r}"
+    )
+
+
+def test_a_real_compile_error_still_outranks_the_harness_verdict():
+    """The envelope change must not demote a genuine toolchain diagnostic."""
+    log = _fail(
+        "test.hermit_integration",
+        "        FAIL [   0.030s] hermit-cli::suite some_test",
+        "error[E0308]: mismatched types",
+        "error: test run failed",
+    )
+    [rec] = classify_failed_substeps(log)
+    assert "E0308" in rec["first_error_line"], (
+        f"a real compile error must still win; got {rec['first_error_line']!r}"
+    )

@@ -192,6 +192,20 @@ _ERROR_LINE_RE = re.compile(r"(?:^|[:\s])error(?:\[[^\]]*\])?:\s")
 # ``error: failed to run custom build command for <crate>``. ``first_error_line``
 # therefore skips these envelopes to reach the first SUBSTANTIVE error line,
 # falling back to the envelope only when the node emitted nothing more specific.
+# Harness ENVELOPES: the exact analogue of the cargo envelopes below, for the TEST
+# RUNNER. ``error: test run failed`` is cargo-nextest's orchestration line. It is
+# error-SHAPED, so ``_ERROR_LINE_RE`` matches it and — because a real compile/link
+# ``error:`` outranks the harness fallback — it WINS, and the row is attributed to a
+# string that names nothing. Measured 2026-08-25 on validate 4e168f2aa5b9: of ten
+# failing nodes, the only two with an interpretable ``first_error_line`` were the two
+# that do NOT run under nextest; the other EIGHT all read ``error: test run failed``.
+# Classifying those eight as bar-raise or regression was blocked on exactly this.
+# Treating it as an envelope lets ``_first_harness_failure_for`` reach the per-case
+# ``FAIL [ 0.03s] crate::suite test_name`` line beneath it, which names the test.
+_HARNESS_ENVELOPES = (
+    "error: test run failed",
+)
+
 _CARGO_ENVELOPES = (
     "error: failed to run custom build command for ",
     "error: could not compile ",
@@ -242,7 +256,13 @@ _LINKER_DIAG_SUBSTR = "undefined reference to "
 # compile/link ``error:`` always wins; and ``^FAIL[ \t]`` deliberately excludes
 # ``FAILED`` (no delimiter follows) so rust's ``test result: FAILED`` summary is
 # not mistaken for a per-case verdict.
-_HARNESS_CASE_FAIL_RE = re.compile(r"^FAIL[ \t]")
+# ``^[ \t]*`` because cargo-nextest INDENTS its per-case verdicts
+# (``        FAIL [   0.030s] crate::suite test_name``) while the manifest/parity
+# harnesses emit theirs at column 0. Anchored at column 0 this pattern could not
+# see a nextest failure at all. ``[ \t\[]`` keeps the original author's reason for
+# requiring a delimiter: ``FAILED`` still does not match, so rust's
+# ``test result: FAILED`` summary is still not mistaken for a per-case verdict.
+_HARNESS_CASE_FAIL_RE = re.compile(r"^[ \t]*FAIL[ \t\[]")
 _HARNESS_SUMMARY_MARKERS = ("✗ FAIL", "❌")
 
 # Ledger rows must stay bounded; a path- or URL-bearing error line can be long.
@@ -272,7 +292,23 @@ def _is_generic_envelope(line: str) -> bool:
     them, and used only as a last-resort fallback."""
     if any(line.startswith(env) for env in _CARGO_ENVELOPES):
         return True
+    if _is_harness_envelope(line):
+        return True
     return any(env in line for env in _LINK_ENVELOPES)
+
+
+def _is_harness_envelope(line: str) -> bool:
+    """Whether ``line`` is a TEST-RUNNER orchestration envelope.
+
+    Distinguished from the cargo and linker envelopes because it is WEAKER STILL.
+    A cargo envelope names the crate and a linker envelope names the link step --
+    weak facts, but facts, so they are worth returning when nothing better exists.
+    ``error: test run failed`` NAMES NOTHING AT ALL. Returning it is strictly worse
+    than having emitted no toolchain diagnostic, because it OUTRANKS the per-case
+    harness verdict sitting directly beneath it, which does name the failing test.
+    So this predicate is used to keep such a line from becoming the weak fallback
+    at all -- see ``_first_error_line_for``."""
+    return any(line.startswith(env) for env in _HARNESS_ENVELOPES)
 
 
 def _first_error_line_for(log_text: str, node: str) -> str | None:
@@ -304,7 +340,11 @@ def _first_error_line_for(log_text: str, node: str) -> str | None:
         line = body.strip()
         if not _is_error_diagnostic(line):
             continue
-        if fallback is None:
+        # A harness envelope must not become the fallback: it names nothing, and
+        # taking it would pre-empt `_first_harness_failure_for` below, which can
+        # name the failing test. Cargo/link envelopes still qualify -- they name
+        # a crate or the link step.
+        if fallback is None and not _is_harness_envelope(line):
             fallback = line
         if not _is_generic_envelope(line):
             return _bounded_error_line(line)
