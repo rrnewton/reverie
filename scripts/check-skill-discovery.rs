@@ -572,7 +572,10 @@ fn fixture_root(tag: &str) -> Result<FixtureRoot, String> {
         .duration_since(UNIX_EPOCH)
         .map_err(|error| format!("system clock precedes Unix epoch: {error}"))?
         .as_nanos();
-    let path = env::temp_dir().join(format!(
+    // The regression fixtures include a Unix-domain socket below this root.
+    // The centralized validator's isolated TMPDIR is longer than sun_path, so
+    // keep the nonce-qualified fixture directly under /tmp.
+    let path = Path::new("/tmp").join(format!(
         "reverie-skill-discovery-{tag}-{}-{nonce}",
         std::process::id()
     ));
