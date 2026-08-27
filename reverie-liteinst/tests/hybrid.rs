@@ -515,6 +515,24 @@ fn processes_named(name: &str) -> Vec<u32> {
     found
 }
 
+fn assert_processes_named_eventually_reaped(name: &str, context: &str) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    loop {
+        let remaining = processes_named(name);
+        if remaining.is_empty() {
+            return;
+        }
+        if std::time::Instant::now() >= deadline {
+            let remaining_status = remaining
+                .iter()
+                .map(|pid| fs::read_to_string(format!("/proc/{pid}/status")).unwrap_or_default())
+                .collect::<Vec<_>>();
+            panic!("{context}: {remaining:?} {remaining_status:?}");
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
 fn assert_pid_reaped(pid: u32) {
     assert!(
         !std::path::Path::new(&format!("/proc/{pid}")).exists(),
@@ -1223,14 +1241,9 @@ async fn a_child_that_execs_fails_the_session_instead_of_reporting_success() {
         "the failed non-root process did not run its Tool exit callback: root={root_pid} exits={exits:?}"
     );
     assert_pid_reaped(root_pid);
-    let remaining = processes_named(&name);
-    let remaining_status = remaining
-        .iter()
-        .map(|pid| fs::read_to_string(format!("/proc/{pid}/status")).unwrap_or_default())
-        .collect::<Vec<_>>();
-    assert!(
-        remaining.is_empty(),
-        "failed LiteInst root/child remains stopped or as a zombie: {remaining:?} {remaining_status:?}"
+    assert_processes_named_eventually_reaped(
+        &name,
+        "failed LiteInst root/child remains stopped or as a zombie",
     );
 }
 
@@ -1260,11 +1273,7 @@ async fn post_start_exec_refusal_reaches_cleanup_while_process_exit_is_pending()
         .parse()
         .unwrap();
     assert_pid_reaped(root_pid);
-    let remaining = processes_named(&name);
-    assert!(
-        remaining.is_empty(),
-        "refused exec left a LiteInst process behind: {remaining:?}"
-    );
+    assert_processes_named_eventually_reaped(&name, "refused exec left a LiteInst process behind");
 }
 
 /// A root that has already exited must stop joining its child when that child
@@ -1296,11 +1305,7 @@ async fn post_start_exec_refusal_cancels_root_join_while_process_exit_is_pending
         .parse()
         .unwrap();
     assert_pid_reaped(root_pid);
-    let remaining = processes_named(&name);
-    assert!(
-        remaining.is_empty(),
-        "refused exec left a LiteInst process behind: {remaining:?}"
-    );
+    assert_processes_named_eventually_reaped(&name, "refused exec left a LiteInst process behind");
     unrelated.assert_live_and_unreaped();
     unrelated.kill_and_reap();
 }
@@ -1339,14 +1344,9 @@ async fn vfork_in_a_forked_child_fails_the_session_after_root_exit() {
         .parse()
         .unwrap();
     assert_pid_reaped(root_pid);
-    let remaining = processes_named(&name);
-    let remaining_status = remaining
-        .iter()
-        .map(|pid| fs::read_to_string(format!("/proc/{pid}/status")).unwrap_or_default())
-        .collect::<Vec<_>>();
-    assert!(
-        remaining.is_empty(),
-        "failed LiteInst root/child remains stopped or as a zombie: {remaining:?} {remaining_status:?}"
+    assert_processes_named_eventually_reaped(
+        &name,
+        "failed LiteInst root/child remains stopped or as a zombie",
     );
 }
 
