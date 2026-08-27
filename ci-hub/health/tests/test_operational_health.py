@@ -823,12 +823,10 @@ class OperationalHealthTest(unittest.TestCase):
     ) -> None:
         """⚠️ THE CACHE IS DELETED AS A DEFAULT SOURCE, AND THIS PINS THAT.
 
-        `ignored/ci-hub/agent-snapshot.json` has NO POSSIBLE PRODUCER: it carries
-        per-agent `status`/`current_task`, and the only live fleet source is
-        `orc tmux ls` WINDOW NAMES. A names-only producer would be worse than none
-        -- every agent would parse as `busy=false, current_task=null`, routing every
-        owned task to `misrouted`. So with no explicit snapshot this must go live and
-        must not touch the file, even if a plausible-looking one exists on disk.
+        `ignored/ci-hub/agent-snapshot.json` has no continuously scheduled
+        producer. The compatible bridge writer is dormant, so with no explicit
+        snapshot this must go live and must not touch the file, even if a
+        plausible-looking one exists on disk.
         """
         tasks = (operational_health.TaskRecord("held", "Held", "ghost", ()),)
         with tempfile.TemporaryDirectory() as directory, mock.patch.object(
@@ -849,6 +847,8 @@ class OperationalHealthTest(unittest.TestCase):
         payload = json.loads(output)
         self.assertEqual(payload["census_mode"], "live-names-only")
         self.assertEqual(payload["orphaned"], ["held"])
+        self.assertIn("no scheduled producer", payload["summary"])
+        self.assertNotIn("no possible producer", payload["summary"])
         self.assertEqual(result, 1)
 
     def test_an_explicit_snapshot_still_takes_the_full_census_path(self) -> None:

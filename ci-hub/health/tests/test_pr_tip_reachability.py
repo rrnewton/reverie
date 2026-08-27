@@ -15,6 +15,8 @@ proves the mock says no.
 
 from __future__ import annotations
 
+import contextlib
+import io
 import sys
 from pathlib import Path
 
@@ -106,6 +108,30 @@ def test_gate_exit_codes_are_three_valued() -> None:
 
         m.sweep = lambda repo: {"indeterminate": True, "error": "no gh"}
         assert m.main(["--gate"]) == 2, "an indeterminate must not exit 0"
+    finally:
+        m.sweep = original
+
+
+def test_main_emits_the_tick_summary_key_on_both_result_arms() -> None:
+    """Exercise the production print, not a copy of it in the self-test."""
+    original = m.sweep
+    try:
+        for report, expected in (
+            ({"swept": 3, "unreachable": 1, "unreachable_prs": [7],
+              "reachable_via_pull_ref_only": 0, "pull_ref_only_prs": []}, "#7"),
+            ({"swept": 3, "unreachable": 0, "unreachable_prs": [],
+              "reachable_via_pull_ref_only": 0, "pull_ref_only_prs": []}, "0 of 3"),
+        ):
+            m.sweep = lambda _repo, value=report: value
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                assert m.main(["--repo", "x"]) == 0
+            summary_lines = [
+                line for line in output.getvalue().splitlines()
+                if line.startswith("summary=")
+            ]
+            assert len(summary_lines) == 1, output.getvalue()
+            assert expected in summary_lines[0], summary_lines[0]
     finally:
         m.sweep = original
 

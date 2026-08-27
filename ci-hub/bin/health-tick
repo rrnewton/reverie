@@ -13,11 +13,13 @@ if [[ -z ${CI_HUB_TOOL_COST_ACTIVE:-} ]]; then
         -- "$0" "$@"
 fi
 # The `cache-agents` seeding step was removed here on 2026-08-26. `e5864b405`
-# deleted that subcommand -- the cache it filled has no possible producer, so the
-# live read through `residue_sweep.read_live_fleet()` is the only honest source --
-# but this call site outlived it. Deleting the whole `if` block, not just the
-# call: an `if ... then fi` with no body is a bash syntax error, which would have
-# turned a dead gate into a dead tick.
+# deleted that subcommand. The compatible bridge writer is scheduled by nothing
+# and exits while the canonical health workflow is active, so it cannot keep the
+# cache current; the live read through `residue_sweep.read_live_fleet()` is the
+# only honest default. This call site outlived the deleted subcommand. Deleting
+# the whole `if` block, not just the call, mattered: an `if ... then fi` with no
+# body is a bash syntax error, which would have turned a dead gate into a dead
+# tick.
 #
 # ⚠️ WHAT IT WAS DOING, WHICH IS WORSE THAN A DEAD GATE. `argparse` rejects an
 # unregistered subcommand with exit 2, and this script runs under `set -euo

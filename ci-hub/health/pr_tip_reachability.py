@@ -210,29 +210,37 @@ def self_test() -> int:
     # the key is printed on BOTH arms, and that the nonzero arm names the PRs.
     import contextlib
     import io as _io
-    for label, rep, want in (
-        ("nonzero", {"repo": "x", "swept": 3, "unreachable": 1,
-                     "unreachable_prs": [7], "reachable_via_pull_ref_only": 0,
-                     "pull_ref_only_prs": []}, "#7"),
-        ("zero", {"repo": "x", "swept": 3, "unreachable": 0,
-                  "unreachable_prs": [], "reachable_via_pull_ref_only": 0,
-                  "pull_ref_only_prs": []}, "0 of 3"),
-    ):
-        buf = _io.StringIO()
-        with contextlib.redirect_stdout(buf):
-            print(f"pr-tip-reachability: {summarize(rep)}")
-            print(f"summary={summarize(rep)}", flush=True)
-        emitted = buf.getvalue()
-        line = next((l for l in emitted.splitlines() if l.startswith("summary=")), None)
-        if line is None:
-            print(f"FAIL: the {label} arm printed no `summary=` line; tick-hub "
-                  "would refuse the emission and report NO-SIGNAL instead",
-                  file=sys.stderr)
-            failures += 1
-        elif want not in line:
-            print(f"FAIL: the {label} arm's summary does not name its subject "
-                  f"({want!r} absent from {line!r})", file=sys.stderr)
-            failures += 1
+    global sweep
+    real_sweep = sweep
+    try:
+        for label, rep, want in (
+            ("nonzero", {"repo": "x", "swept": 3, "unreachable": 1,
+                         "unreachable_prs": [7], "reachable_via_pull_ref_only": 0,
+                         "pull_ref_only_prs": []}, "#7"),
+            ("zero", {"repo": "x", "swept": 3, "unreachable": 0,
+                      "unreachable_prs": [], "reachable_via_pull_ref_only": 0,
+                      "pull_ref_only_prs": []}, "0 of 3"),
+        ):
+            sweep = lambda _repo, report=rep: report
+            buf = _io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                code = main(["--repo", "x"])
+            emitted = buf.getvalue()
+            line = next((l for l in emitted.splitlines() if l.startswith("summary=")), None)
+            if code != 0:
+                print(f"FAIL: the {label} production arm exited {code}", file=sys.stderr)
+                failures += 1
+            elif line is None:
+                print(f"FAIL: the {label} production arm printed no `summary=` line; tick-hub "
+                      "would refuse the emission and report NO-SIGNAL instead",
+                      file=sys.stderr)
+                failures += 1
+            elif want not in line:
+                print(f"FAIL: the {label} production arm's summary does not name its subject "
+                      f"({want!r} absent from {line!r})", file=sys.stderr)
+                failures += 1
+    finally:
+        sweep = real_sweep
 
     if failures:
         print(f"pr_tip_reachability --self-test: {failures} case(s) failed", file=sys.stderr)
@@ -272,7 +280,8 @@ def main(argv: list[str] | None = None) -> int:
         # only `when: failure`, it has never returned nonzero, and before
         # 2026-08-26 it exceeded its bound anyway -- so the one path that needed
         # this line is the one path never exercised. Bracketed both ways in
-        # self_test(), including the nonzero arm.
+        # self_test(), including the nonzero arm, by invoking this production
+        # main path rather than printing a duplicate line inside the test.
         print(f"summary={summarize(report)}", flush=True)
 
     if not args.gate:

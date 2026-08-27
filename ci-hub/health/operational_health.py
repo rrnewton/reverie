@@ -1034,7 +1034,9 @@ def live_agent_names() -> tuple[str, ...] | None:
     Measured 2026-08-26, `ignored/ci-hub/agent-snapshot.json` was 356283s -- 4.12
     days -- old against a 600s window, so `load_agent_snapshot` raised and NO
     claim on the board could be expired by the documented mechanism, however dead
-    its owner. The snapshot has consumers and no producer.
+    its owner. The snapshot had no continuously scheduled producer: the
+    compatible bridge writer exists, but is scheduled by nothing and exits when
+    the canonical health workflow is active.
 
     ⚠️ THIS PARAGRAPH USED TO SAY "`cache-agents` EXISTS BUT NOTHING INVOKES IT".
     That was true when written and was overtaken by `e5864b405`, which DELETED the
@@ -1389,29 +1391,28 @@ def active_work_gate(
     persist: bool = True,
 ) -> int:
     # ⚠️ LIVE FIRST, AND THE CACHE IS NO LONGER CONSULTED BY DEFAULT.
-    # `ignored/ci-hub/agent-snapshot.json` HAS NO POSSIBLE PRODUCER: it carries
-    # per-agent `status` and `current_task`, and the only live fleet source is
-    # `orc tmux ls` WINDOW NAMES (via scripts/orphaned-task-detector.sh). `orc curl`
-    # is per-session and has no fleet endpoint. Measured 2026-08-26 the file was
-    # 4.12 days old, and it had been read as the authority for claim expiry that
-    # whole time.
+    # `ignored/ci-hub/agent-snapshot.json` HAS NO CONTINUOUSLY SCHEDULED PRODUCER.
+    # `agent-container-reconcile-bridge.rs` writes the exact envelope, but it is
+    # scheduled by nothing and deliberately exits while the canonical health
+    # workflow is active. Measured 2026-08-26 the file was 4.12 days old, and it
+    # had been read as the authority for claim expiry that whole time.
     #
     # A names-only producer would be WORSE than none: `_parse_agents` gives every
     # agent `status=""` -> `busy=false, current_task=null`, which routes EVERY owned
     # task to `misrouted`. A fresh cache would produce a flood of false misroutes
     # where the stale one produced an honest refusal.
     #
-    # So the cache is not fixable where it sits, and the live path is the only
-    # honest answer. An EXPLICIT `--agent-snapshot`/`snapshot=` still takes the full
-    # census path -- that is how tests and a human supply real ORC data -- but
-    # nothing falls back to a file on disk that nothing can write.
+    # So an unattended cache is not trustworthy where it sits, and the live path
+    # is the only honest default. An EXPLICIT `--agent-snapshot`/`snapshot=` still
+    # takes the full census path -- that is how tests and a human supply real ORC
+    # data -- but nothing falls back to a file no scheduled writer keeps current.
     explicit = snapshot is not None or os.environ.get("HERMIT_AGENT_SNAPSHOT_JSON")
     if not explicit:
         names = live_agent_names()
         if names is not None:
             return _emit_live_names_report(
                 names,
-                reason="cache deleted: agent-snapshot.json has no possible producer",
+                reason="cache bypassed: agent-snapshot.json has no scheduled producer",
                 json_output=json_output,
             )
     try:
@@ -1529,12 +1530,12 @@ def _run_active_work(
         # was observed in production on 2026-08-07 and again on 2026-08-08.
         # `DEV_HERMIT_PARENT` does not rescue a caller here, because
         # `DEFAULT_AGENT_SNAPSHOT` derives from `ROOT`, i.e. from `__file__`.
-        # ⚠️ THERE IS NO LONGER A CACHE TO SEED. `cache-agents` was deleted at
-        # e5864b405: the file it filled has no possible producer, because the only
-        # live fleet source is `orc tmux ls` WINDOW NAMES and the cache promised
-        # per-agent `status`/`current_task`. Supplying a snapshot explicitly, via
-        # this argument or `HERMIT_AGENT_SNAPSHOT_JSON`, is now the ONLY way to
-        # reach the full census path.
+        # ⚠️ THERE IS NO LONGER A DEFAULT CACHE-SEEDING STEP. `cache-agents` was
+        # deleted at e5864b405. A compatible bridge writer still exists, but is
+        # scheduled by nothing and exits while the canonical health workflow is
+        # active, so it cannot make this file a reliable default. Supplying a
+        # snapshot explicitly, via this argument or `HERMIT_AGENT_SNAPSHOT_JSON`,
+        # is now the ONLY way to reach the full census path.
         persist=False,
     )
 
