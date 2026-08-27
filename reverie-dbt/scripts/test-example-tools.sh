@@ -164,10 +164,14 @@ echo "PASS: process-clone identity handoff excludes concurrent pthreads"
 # Copied children (forked processes) run no Rust Tool, so the native virtual
 # clock / virtual resource policy is their only determinism layer. Exercise
 # libc's patched-vDSO path repeatedly in the parent, a forked child, an execed
-# child (new client image + vDSO module load), and the parent again. All sixteen
-# reads must be one strictly increasing 1us-stride sequence. This brackets both
-# sides: it accepts the continuous baseline, while a private child clock,
-# exec-time reset, frozen value, rounded value, or first-sample-only match fails.
+# child (new client image + vDSO module load), and the parent again. The ordered
+# reads must be one strictly increasing 1us-stride sequence. The fixture then
+# releases two execed children from a barrier and lets both read without a
+# waitpid between them. Which child receives each timestamp may vary, so the
+# combined values are sorted before checking that they are all distinct, have no
+# gaps, and retain the same 1us stride. This brackets both sides: it accepts the
+# continuous baseline, while a private child clock, exec-time reset, frozen
+# value, rounded value, duplicate value, or first-sample-only match fails.
 run_default_runtime "$fork_clock_resource_guest"
 awk -F= '
   /^(parent-before|fork-child|exec-child|parent-after)_mono_ns\[[0-3]\]=[0-9]+$/ {
@@ -186,7 +190,25 @@ grep -q '^exec-child_nofile=1048576$' "$tmpdir/out" \
   || fail "default runtime: execed child read a real host rlimit instead of the virtual limit"
 grep -q '^parent-after_nofile=1048576$' "$tmpdir/out" \
   || fail "default runtime: root process rlimit is not virtualized"
-echo "PASS: vDSO clock advances continuously across fork/exec; rlimits stay virtualized"
+[[ $(grep -Ec '^concurrent-child-a_mono_ns\[[0-3]\]=[0-9]+$' "$tmpdir/out") -eq 4 ]] \
+  || fail "default runtime: first concurrent client image did not report four clock reads"
+[[ $(grep -Ec '^concurrent-child-b_mono_ns\[[0-3]\]=[0-9]+$' "$tmpdir/out") -eq 4 ]] \
+  || fail "default runtime: second concurrent client image did not report four clock reads"
+awk -F= \
+  '/^concurrent-child-[ab]_mono_ns\[[0-3]\]=[0-9]+$/ { print $2 }' \
+  "$tmpdir/out" | sort -n >"$tmpdir/concurrent-clock-values"
+awk '
+  NR == 1 { previous = $1; count = 1; next }
+  {
+    count += 1
+    if ($1 - previous != 1000)
+      bad_delta = 1
+    previous = $1
+  }
+  END { exit !(count == 8 && bad_delta == 0) }
+' "$tmpdir/concurrent-clock-values" \
+  || fail "default runtime: concurrent client images did not share one contiguous clock"
+echo "PASS: vDSO clock advances continuously across fork/exec and concurrent client images; rlimits stay virtualized"
 
 # noop: pure passthrough — guest output must be intact, no tool output.
 run_tool HERMIT_DBT_NOOP

@@ -18,10 +18,13 @@
  * limits. This fixture reads clock_gettime through libc's vDSO path repeatedly
  * before and after two ordered children. The first child continues from fork;
  * the second execs this fixture so a new DynamoRIO client image remaps the
- * shared state and patches its newly loaded vDSO. The harness checks all
- * sixteen observations as one strictly increasing, fine-grained sequence. A
- * private COW counter, an exec-time reset, a frozen clock, or a first-read-only
- * match therefore cannot pass.
+ * shared state and patches its newly loaded vDSO. It then starts two execed
+ * children behind a pipe barrier, waits until both client images are ready, and
+ * releases them to read the clock without waiting for either child first. The
+ * harness checks the ordered lifecycle observations and the sorted union of the
+ * concurrent observations as strictly increasing, fine-grained sequences. A
+ * private COW counter, an exec-time reset, a frozen clock, duplicate values, or
+ * a first-read-only match therefore cannot pass.
  *
  *   - Virtual CLOCK_MONOTONIC advances one microsecond per read across the
  *     complete process tree; no process restarts or owns a private clock.
@@ -29,7 +32,9 @@
  */
 
 #define _GNU_SOURCE
+#include <errno.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/resource.h>
 #include <sys/syscall.h>
@@ -75,9 +80,79 @@ static int wait_for_child(pid_t child) {
   return 0;
 }
 
+static int read_byte(int fd) {
+  char value = 0;
+  ssize_t result;
+  do {
+    result = read(fd, &value, 1);
+  } while (result < 0 && errno == EINTR);
+  return result == 1 ? 0 : 1;
+}
+
+static int write_byte(int fd) {
+  const char value = 'x';
+  ssize_t result;
+  do {
+    result = write(fd, &value, 1);
+  } while (result < 0 && errno == EINTR);
+  return result == 1 ? 0 : 1;
+}
+
+static int concurrent_child(const char *who, int ready_fd, int start_fd) {
+  if (write_byte(ready_fd) != 0)
+    return 1;
+  close(ready_fd);
+  if (read_byte(start_fd) != 0)
+    return 1;
+  close(start_fd);
+  return probe(who);
+}
+
+static int run_concurrent_children(const char *self) {
+  int ready[2] = {-1, -1};
+  int start[2] = {-1, -1};
+  pid_t children[2] = {-1, -1};
+  const char *labels[2] = {"concurrent-child-a", "concurrent-child-b"};
+
+  if (pipe(ready) != 0 || pipe(start) != 0)
+    return 1;
+
+  for (int child_index = 0; child_index < 2; ++child_index) {
+    children[child_index] = fork();
+    if (children[child_index] < 0)
+      return 1;
+    if (children[child_index] == 0) {
+      char ready_fd[32];
+      char start_fd[32];
+      close(ready[0]);
+      close(start[1]);
+      snprintf(ready_fd, sizeof(ready_fd), "%d", ready[1]);
+      snprintf(start_fd, sizeof(start_fd), "%d", start[0]);
+      execl("/proc/self/exe", self, "--concurrent-child", labels[child_index],
+            ready_fd, start_fd, (char *)0);
+      syscall(SYS_exit, 1);
+    }
+  }
+
+  close(ready[1]);
+  close(start[0]);
+  if (read_byte(ready[0]) != 0 || read_byte(ready[0]) != 0 ||
+      write_byte(start[1]) != 0 || write_byte(start[1]) != 0)
+    return 1;
+  close(ready[0]);
+  close(start[1]);
+  int first_status = wait_for_child(children[0]);
+  int second_status = wait_for_child(children[1]);
+  if (first_status != 0 || second_status != 0)
+    return 1;
+  return 0;
+}
+
 int main(int argc, char **argv) {
   if (argc == 2 && strcmp(argv[1], "--exec-child") == 0)
     return probe("exec-child");
+  if (argc == 5 && strcmp(argv[1], "--concurrent-child") == 0)
+    return concurrent_child(argv[2], atoi(argv[3]), atoi(argv[4]));
 
   if (probe("parent-before") != 0)
     return 1;
@@ -112,5 +187,7 @@ int main(int argc, char **argv) {
   if (wait_for_child(child) != 0)
     return 7;
 
-  return probe("parent-after");
+  if (probe("parent-after") != 0)
+    return 8;
+  return run_concurrent_children(argv[0]) == 0 ? 0 : 9;
 }
