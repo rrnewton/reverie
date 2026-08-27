@@ -232,10 +232,41 @@ class AgentPodmanTests(unittest.TestCase):
         )
 
     def write_live_state(
-        self, agents: list[dict[str, str]], invocations: dict[str, list[str]]
+        self, agents: list[dict[str, Any]], invocations: dict[str, list[str]]
     ) -> None:
-        self.agents.write_text(json.dumps(agents))
+        """Write the census in the ENVELOPE form, which is the only form accepted.
+
+        ⚠️ THIS USED TO WRITE A BARE ARRAY, AND FIVE TESTS DIED ON IT WITHOUT EVER
+        REACHING THEIR ASSERTIONS. `load_live_agents` has refused an undated census
+        since the guard landed -- a snapshot with no `captured_at` skipped the
+        staleness check entirely and was treated as ageless, and it decides which
+        agents are absent, so `reconcile --apply` would remove a live agent's
+        containers on it.
+
+        The guard is right and these fixtures were stale: BOTH real producers write
+        the envelope -- `persist_snapshot` in
+        `ci-hub/health/agent-container-reconcile-bridge.rs` and
+        `_persist_agent_snapshot` in `ci-hub/health/operational_health.py` both emit
+        `schema_version` / `captured_at` / `agents`. The bare array was a shape no
+        producer ever wrote, so these tests were exercising an input that cannot
+        occur, and failing before the behaviour they name.
+
+        (`ci-hub active-work --agent-snapshot` DOES want a bare array. That is a
+        different tool reading the same file, and it is why the two shapes get
+        confused; it is not a reason for this one to accept the other's.)
+        """
+        self.agents.write_text(
+            json.dumps(
+                {"schema_version": 1, "captured_at": time.time(), "agents": agents}
+            )
+        )
         self.invocations.write_text(json.dumps(invocations))
+
+    # A census must contain someone live or it is refused, so a test about ONE
+    # container's owner supplies an unrelated live agent. That is also the realistic
+    # state: a fleet with nobody alive at all is not a condition these tests are
+    # about, and it was only ever incidental to them.
+    OTHER_LIVE_AGENT = [{"name": "hermit-bystander", "status": "running", "tmux_pane_id": "%7"}]
 
     def reconcile(self, *, apply: bool = True) -> subprocess.CompletedProcess[str]:
         arguments = [
@@ -250,18 +281,6 @@ class AgentPodmanTests(unittest.TestCase):
             arguments.append("--apply")
         return self.run_tool(*arguments)
 
-    def write_dated_state(self, agents: list[dict[str, Any]]) -> None:
-        """Write the ENVELOPE form, which is the only form the loader accepts.
-
-        `write_live_state` writes a bare array, and a bare array has been refused
-        since the undated-snapshot guard landed. These cases need to exercise the
-        emptiness guard specifically, so they must get PAST the undated one.
-        """
-        self.agents.write_text(
-            json.dumps({"schema_version": 1, "captured_at": time.time(), "agents": agents})
-        )
-        self.invocations.write_text(json.dumps({}))
-
     # ⚠️ EMPTY IS NOT STALE. A census with a CURRENT timestamp and nobody live in it
     # passes the staleness and undated guards and then tells the reclaim predicate
     # that no agent owns anything -- which authorises removing every managed
@@ -274,7 +293,7 @@ class AgentPodmanTests(unittest.TestCase):
         self.podman_state.write_text(
             json.dumps([container("a" * 64, "retired", labels("hermit-old", "inv-old"))])
         )
-        self.write_dated_state([])
+        self.write_live_state([], {})
 
         result = self.reconcile()
 
@@ -288,8 +307,9 @@ class AgentPodmanTests(unittest.TestCase):
         self.podman_state.write_text(
             json.dumps([container("a" * 64, "retired", labels("hermit-old", "inv-old"))])
         )
-        self.write_dated_state(
-            [{"name": "hermit-901", "status": "exited"}, {"name": "hermit-902", "status": "dead"}]
+        self.write_live_state(
+            [{"name": "hermit-901", "status": "exited"}, {"name": "hermit-902", "status": "dead"}],
+            {},
         )
 
         result = self.reconcile()
@@ -302,11 +322,12 @@ class AgentPodmanTests(unittest.TestCase):
     # be refusing everything and the two cases above would still pass.
     def test_one_live_agent_is_enough_for_the_census_to_be_accepted(self) -> None:
         self.podman_state.write_text(json.dumps([]))
-        self.write_dated_state(
+        self.write_live_state(
             [
                 {"name": "hermit-901", "status": "running", "tmux_pane_id": "%1"},
                 {"name": "hermit-902", "status": "dead"},
-            ]
+            ],
+            {},
         )
 
         result = self.reconcile()
@@ -318,7 +339,7 @@ class AgentPodmanTests(unittest.TestCase):
         self.podman_state.write_text(
             json.dumps([container("a" * 64, "retired", labels("hermit-old", "inv-old"), zombies=2)])
         )
-        self.write_live_state([], {})
+        self.write_live_state(self.OTHER_LIVE_AGENT, {})
 
         result = self.reconcile()
 
@@ -339,7 +360,7 @@ class AgentPodmanTests(unittest.TestCase):
                 [container(container_id, "slow-stop", labels("hermit-old", "inv-old"))]
             )
         )
-        self.write_live_state([], {})
+        self.write_live_state(self.OTHER_LIVE_AGENT, {})
         self.environment["FAKE_PODMAN_STOP_FAIL_AFTER_STOP"] = "1"
 
         result = self.reconcile()
@@ -354,7 +375,7 @@ class AgentPodmanTests(unittest.TestCase):
 
     def test_no_managed_container_reconcile_bootstraps_empty_authority(self) -> None:
         self.podman_state.write_text("[]")
-        self.write_live_state([], {})
+        self.write_live_state(self.OTHER_LIVE_AGENT, {})
 
         result = self.reconcile()
 
@@ -369,7 +390,7 @@ class AgentPodmanTests(unittest.TestCase):
         self.podman_state.write_text(
             json.dumps([container(container_id, "retained", labels("hermit-old", "inv-old", "task"))])
         )
-        self.write_live_state([], {})
+        self.write_live_state(self.OTHER_LIVE_AGENT, {})
 
         before = self.reconcile()
 
