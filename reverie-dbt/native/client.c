@@ -3997,6 +3997,48 @@ static void event_exit(void) {
   drmgr_exit();
 }
 
+static void virtualize_restarted_child_wait_target(dr_siginfo_t *info) {
+  unsigned char opcode[2];
+  reg_t *target;
+  int options;
+  int32_t physical_pid;
+  int32_t virtual_pid;
+
+  if (info == NULL || info->blocked || info->mcontext == NULL ||
+      !read_app(info->mcontext->pc, opcode, sizeof(opcode)) ||
+      opcode[0] != 0x0f || opcode[1] != 0x05)
+    return;
+
+  if (info->mcontext->xax == SYS_wait4) {
+    target = &info->mcontext->xdi;
+    options = (int)info->mcontext->xdx;
+    if ((int32_t)*target <= 0 ||
+        (options & (WNOHANG | WUNTRACED | WCONTINUED | __WCLONE | __WALL)) !=
+            0)
+      return;
+  } else if (info->mcontext->xax == SYS_waitid &&
+             info->mcontext->xdi == P_PID) {
+    target = &info->mcontext->xsi;
+    options = (int)info->mcontext->r10;
+    if ((int32_t)*target <= 0 || (options & WEXITED) == 0 ||
+        (options & (WNOHANG | WSTOPPED | WCONTINUED | __WCLONE | __WALL)) !=
+            0)
+      return;
+  } else {
+    return;
+  }
+
+  physical_pid = (int32_t)*target;
+  if (lookup_virtual_identity(physical_pid, &virtual_pid))
+    *target = (reg_t)(uint32_t)virtual_pid;
+}
+
+static dr_signal_action_t event_signal(void *drcontext, dr_siginfo_t *info) {
+  (void)drcontext;
+  virtualize_restarted_child_wait_target(info);
+  return DR_SIGNAL_DELIVER;
+}
+
 static void runtime_idle(void) { dr_sleep(1); }
 
 static void runtime_background_init(void *argument) {
@@ -4242,6 +4284,7 @@ DR_EXPORT void dr_client_main(client_id_t id, int argc, const char *argv[]) {
                                                instrument_instruction, NULL) ||
       !drmgr_register_filter_syscall_event(filter_syscall) ||
       !drmgr_register_pre_syscall_event(pre_syscall) ||
-      !drmgr_register_post_syscall_event(post_syscall))
+      !drmgr_register_post_syscall_event(post_syscall) ||
+      !drmgr_register_signal_event(event_signal))
     DR_ASSERT(false);
 }
