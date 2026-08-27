@@ -123,6 +123,11 @@ async fn wait_for_tcp_connection(addr: SocketAddr) -> io::Result<TcpStream> {
     // Using `std::net::TcpListener::bind` appears to avoid spawning an extra
     // tokio worker thread.
     let listener = std::net::TcpListener::bind(addr)?;
+    accept_tcp_connection(listener).await
+}
+
+/// Waits for an incoming connection on an already-bound listener.
+async fn accept_tcp_connection(listener: std::net::TcpListener) -> io::Result<TcpStream> {
     listener.set_nonblocking(true)?;
     let listener = TcpListener::from_std(listener)?;
 
@@ -421,18 +426,24 @@ mod tests {
     /// to live here, next to the fact it depends on.
     #[tokio::test(flavor = "current_thread")]
     async fn the_listener_is_closed_once_the_client_is_accepted() {
-        // A port that is free right now. Bind-and-drop is the only portable way
-        // to learn one, because `wait_for_tcp_connection` insists on binding the
-        // address itself and will not take a listener we made.
-        let addr: SocketAddr = {
-            let probe = std::net::TcpListener::bind("127.0.0.1:0")
-                .expect("failed to bind a probe listener to find a free port");
-            probe
-                .local_addr()
-                .expect("probe listener has no local addr")
-        };
+        // Keep the kernel-selected address reserved until the accept task owns
+        // its listener. Releasing it after `local_addr` and asking the server to
+        // bind it again leaves a window where an overlapping test can take it.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0")
+            .expect("failed to bind the gdbserver listener");
+        let addr = listener
+            .local_addr()
+            .expect("gdbserver listener has no local addr");
 
-        let server = tokio::spawn(wait_for_tcp_connection(addr));
+        let competing_bind = std::net::TcpListener::bind(addr)
+            .expect_err("the selected address was not reserved until the server owned it");
+        assert_eq!(
+            competing_bind.kind(),
+            io::ErrorKind::AddrInUse,
+            "binding the selected address again failed for an unexpected reason"
+        );
+
+        let server = tokio::spawn(accept_tcp_connection(listener));
 
         // Connect as the real client would. Bounded, because a wedged test costs
         // the whole run's budget while a red one names itself in a line.
