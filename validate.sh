@@ -363,6 +363,7 @@ readonly -a REGULAR_TEST_SKIP_ARGS=(
 
 run_check "Cross-client skill discovery" "$ROOT_DIR/scripts/check-skill-discovery.rs"
 run_check "Build workspace" cargo build --workspace --all-features
+run_check "Parallel tasks standalone program" cargo run --quiet -p reverie-examples --bin parallel_tasks
 run_check "Test regular workspace cases" cargo test --workspace --all-features \
     -- --test-threads=1 "${REGULAR_TEST_SKIP_ARGS[@]}"
 run_check "Documentation tests" cargo test --workspace --doc
