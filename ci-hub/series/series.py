@@ -658,10 +658,12 @@ def commit_depth(checkout: Path, tree: str) -> dict | None:
     return counts
 
 
-def source_depths(parent: Any, tree: str) -> dict[str, dict]:
+def source_depths(
+    parent: Any, tree: str, *, hermit_checkout: Any | None = None,
+) -> dict[str, dict]:
     """The scorecard's per-repository depths at write time."""
     parent = Path(parent)
-    hermit = parent / "hermit"
+    hermit = Path(hermit_checkout) if hermit_checkout is not None else parent / "hermit"
     depth = commit_depth(hermit, tree) if _is_checkout(hermit) else None
     if depth is None:
         raise SeriesError(f"cannot resolve Hermit source depth for {tree}")
@@ -804,7 +806,7 @@ def collapse_rows(rows: Sequence[dict]) -> list[dict]:
 
 def rows_from_cell_results(
     cell_results: Sequence[dict], *, parent: Any, producer: str, run_id: str,
-    tree: str, emitted_at: str,
+    tree: str, emitted_at: str, hermit_checkout: Any | None = None,
 ) -> list[dict]:
     """Convert typed harness results into validated, compressed series rows."""
     if producer not in {"validate", "pressure-test", "hermit-repeat"}:
@@ -816,10 +818,11 @@ def rows_from_cell_results(
         raise SeriesError(f"run_id must be a single path segment, got {run_id!r}")
     if _SHA_RE.fullmatch(tree) is None:
         raise MalformedRow(f"tree must be a 40-hex commit sha, got {tree!r}")
-    ancestry = main_ancestry(Path(parent) / "hermit", [tree]).get(tree, (None, None))[0]
+    source = Path(hermit_checkout) if hermit_checkout is not None else Path(parent) / "hermit"
+    ancestry = main_ancestry(source, [tree]).get(tree, (None, None))[0]
     if ancestry is None:
         raise SeriesError(f"cannot resolve whether Hermit {tree} is on origin/main ancestry")
-    depth = source_depths(parent, tree)
+    depth = source_depths(parent, tree, hermit_checkout=source)
 
     rows = []
     pressure_counts: dict[tuple[str, int], int] = {}
@@ -1049,6 +1052,7 @@ def _cmd_append(argv: list[str]) -> int:
 
 def _cmd_append_cells(argv: list[str]) -> int:
     parent = None
+    hermit_checkout = None
     producer = None
     run_id = None
     tree = None
@@ -1057,6 +1061,8 @@ def _cmd_append_cells(argv: list[str]) -> int:
     while i < len(argv):
         if argv[i] == "--parent" and i + 1 < len(argv):
             parent = argv[i + 1]
+        elif argv[i] == "--checkout" and i + 1 < len(argv):
+            hermit_checkout = argv[i + 1]
         elif argv[i] == "--producer" and i + 1 < len(argv):
             producer = argv[i + 1]
         elif argv[i] == "--run-id" and i + 1 < len(argv):
@@ -1093,6 +1099,7 @@ def _cmd_append_cells(argv: list[str]) -> int:
             run_id=str(run_id),
             tree=str(tree),
             emitted_at=emitted_at,
+            hermit_checkout=hermit_checkout,
         )
         target = spool_dir(parent) / _batch_name(series_rows)
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -1287,7 +1294,8 @@ def _usage(message: str) -> int:
         "  series.py append --parent <dev-hermit root>  < rows.jsonl\n"
         "  series.py append-cells --parent <root> "
         "--producer <validate|pressure-test|hermit-repeat>\n"
-        "      --run-id <id> --tree <sha> [--emitted-at <UTC>] < cell-results.jsonl\n"
+        "      --run-id <id> --tree <sha> [--checkout <Hermit checkout>]\n"
+        "      [--emitted-at <UTC>] < cell-results.jsonl\n"
         "  series.py history --test <test id> [--tree <sha>] [--parent <root>]\n"
         "append validates complete series rows. append-cells converts typed harness\n"
         "results, compresses consecutive equal runs, and writes the UNPUBLISHED spool.\n"

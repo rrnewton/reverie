@@ -958,6 +958,72 @@ class CellResultProjection(unittest.TestCase):
         self.assertFalse(files[0].exists())
         self.assertEqual(len(tracked.read_text().splitlines()), 1)
 
+    def test_append_cells_uses_the_producing_checkout_for_an_off_main_tree(self):
+        import contextlib
+        import io
+
+        producer = self.parent / "producer-checkout"
+        producer.mkdir()
+        subprocess.run(["git", "-C", str(producer), "init", "-q", "-b", "main"], check=True)
+        subprocess.run(
+            ["git", "-C", str(producer), "config", "user.name", "Series Test"],
+            check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(producer), "config", "user.email", "series@example.invalid"],
+            check=True,
+        )
+        (producer / "base").write_text("base\n")
+        subprocess.run(["git", "-C", str(producer), "add", "base"], check=True)
+        subprocess.run(
+            ["git", "-C", str(producer), "commit", "-qm", "base"], check=True,
+        )
+        base = subprocess.run(
+            ["git", "-C", str(producer), "rev-parse", "HEAD"],
+            check=True, capture_output=True, text=True,
+        ).stdout.strip()
+        subprocess.run(
+            ["git", "-C", str(producer), "update-ref", "refs/remotes/origin/main", base],
+            check=True,
+        )
+        (producer / "feature").write_text("feature\n")
+        subprocess.run(["git", "-C", str(producer), "add", "feature"], check=True)
+        subprocess.run(
+            ["git", "-C", str(producer), "commit", "-qm", "feature"], check=True,
+        )
+        feature = subprocess.run(
+            ["git", "-C", str(producer), "rev-parse", "HEAD"],
+            check=True, capture_output=True, text=True,
+        ).stdout.strip()
+        missing = subprocess.run(
+            ["git", "-C", str(self.repo), "cat-file", "-e", f"{feature}^{{commit}}"],
+            check=False, capture_output=True, text=True,
+        )
+        self.assertNotEqual(missing.returncode, 0)
+
+        cell = self._cell(0)
+        cell["hermit_sha"] = feature
+        real_stdin = sys.stdin
+        sys.stdin = io.StringIO(json.dumps(cell) + "\n")
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                rc = series.main([
+                    "append-cells",
+                    "--parent", str(self.parent),
+                    "--checkout", str(producer),
+                    "--producer", "pressure-test",
+                    "--run-id", "off-main-feature",
+                    "--tree", feature,
+                    "--emitted-at", "2026-08-27T10:00:00Z",
+                ])
+        finally:
+            sys.stdin = real_stdin
+        self.assertEqual(rc, 0)
+        stored = series.union(sorted(series.spool_dir(self.parent).glob("*.jsonl")))
+        self.assertEqual(len(stored), 1)
+        self.assertFalse(stored[0]["series"]["main_ancestry"])
+        self.assertEqual(stored[0]["series"]["depth"]["hermit"]["commits"], 2)
+
     def test_append_cells_refuses_a_changed_replay_before_writing(self):
         import contextlib
         import io
