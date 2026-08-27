@@ -180,14 +180,14 @@ class ExecutingCheckerProbesTest(unittest.TestCase):
         )
         namespace: dict[str, object] = {"__name__": "probe"}
         exec(compile(self.module.EXECUTING_SHELL.format(body=body), "<probe>", "exec"), namespace)
-        predicate = namespace["_looks_refused"]
+        predicate = namespace["child_hit_reentrancy_refusal"]
         self.assertTrue(
-            predicate(self.module._GENUINE, 2),  # type: ignore[operator]
+            predicate(self.module._GENUINE, 75),  # type: ignore[operator]
             "the bare-startswith probe no longer fires on a genuine refusal, so it "
             "would be refused for missing it rather than for the class it names",
         )
         self.assertTrue(
-            predicate(self.module._QUOTED_DOC, 2),  # type: ignore[operator]
+            predicate(self.module._QUOTED_DOC, 75),  # type: ignore[operator]
             "the bare-startswith probe must MISCLASSIFY the quoted-documentation "
             "line; that misclassification is the defect it exists to demonstrate",
         )

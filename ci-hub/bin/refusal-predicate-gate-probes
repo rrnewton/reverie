@@ -393,39 +393,70 @@ def run_probes(checker: Path) -> int:
 # source-matching checker refused for their spelling.
 
 EXECUTING_SHELL = """
+FINAL_VALIDATE_STATUS_PREFIX = "FINAL_VALIDATE_STATUS: "
+FINAL_VALIDATE_STATUSES = frozenset(("PASSED", "FAILED", "COULD_NOT_RUN"))
+NO_RESULT_EXIT_CODE = 75
 class ValidateChildRefused(RuntimeError):
     pass
+def final_validate_status(output):
+    matches = [
+        line.removeprefix(FINAL_VALIDATE_STATUS_PREFIX)
+        for line in output.splitlines()
+        if line.startswith(FINAL_VALIDATE_STATUS_PREFIX)
+    ]
+    if not matches:
+        return None
+    status = matches[-1]
+    if status not in FINAL_VALIDATE_STATUSES:
+        raise AssertionError("unknown final status")
+    return status
 {body}
 def wait_for_text(log, marker, proc):
-    if _looks_refused(log.read_text(), proc.returncode):
+    if child_hit_reentrancy_refusal(log.read_text(), proc.returncode):
         raise ValidateChildRefused("refused")
     raise AssertionError("ordinary failure")
 """
 
 _SUMMARY_RE = (
-    'r"\\U0001F6AB validate REFUSED \\(exit (?P<exit>[1-9][0-9]*)\\)'
-    ' \\u2014 profile .+ @ [0-9a-f]{40}"'
+    'r"\\U0001F6AB validate REFUSED \\(exit 75\\)'
+    ' \\u2014 profile .+ @ (?:[0-9a-f]{40}|unknown)"'
 )
 _GENUINE = (
-    "\U0001F6AB validate REFUSED (exit 2) \u2014 profile strict @ "
+    "\U0001F6AB validate REFUSED (exit 75) \u2014 profile strict @ "
     + "0123456789abcdef0123456789abcdef01234567\n"
-    + "   refused by: the re-entrancy guard"
+    + "   refused by: the re-entrancy guard\n"
+    + "   nodes: none executed (stopped before the DAG ran)\n"
+    + "FINAL_VALIDATE_STATUS: COULD_NOT_RUN\n"
+)
+_UNKNOWN_COMMIT = (
+    "\U0001F6AB validate REFUSED (exit 75) \u2014 profile full @ unknown\n"
+    + "   refused by: the re-entrancy guard\n"
+    + "FINAL_VALIDATE_STATUS: COULD_NOT_RUN\n"
 )
 _WRAPPED = "wrapper: " + _GENUINE
 _QUOTED_DOC = (
-    "\U0001F6AB validate REFUSED is quoted documentation, not a final summary"
+    "\U0001F6AB validate REFUSED is quoted documentation, not a final summary\n"
+    + "   refused by: the re-entrancy guard\n"
+    + "FINAL_VALIDATE_STATUS: COULD_NOT_RUN\n"
 )
 _BAD_ARGUMENTS = (
-    "\U0001F6AB validate REFUSED (exit 2) \u2014 profile full @ "
+    "\U0001F6AB validate REFUSED (exit 75) \u2014 profile full @ "
     + "0123456789abcdef0123456789abcdef01234567\n"
-    + "   refused by: argument parsing"
+    + "   refused by: argument parsing\n"
+    + "FINAL_VALIDATE_STATUS: COULD_NOT_RUN\n"
+)
+_STATUS_ONLY = "FINAL_VALIDATE_STATUS: COULD_NOT_RUN\n"
+_EARLIER_STATUS = (
+    "FINAL_VALIDATE_STATUS: COULD_NOT_RUN\n"
+    "quoted earlier\n"
+    "FINAL_VALIDATE_STATUS: FAILED\n"
 )
 
 
 def _whole_channel(collection: str, values: str) -> str:
     return (
         f"{collection} = {values}\n"
-        "def _looks_refused(output, returncode):\n"
+        "def child_hit_reentrancy_refusal(output, returncode):\n"
         f"    return any(s in output for s in {collection})"
     )
 
@@ -450,12 +481,12 @@ EXECUTING_MUST_REFUSE = (
     ("marker-named-regex-search",
      '_REFUSAL_PATTERNS under re.search, whole channel',
      'import re\n_REFUSAL_PATTERNS = ("gave up:",)\n'
-     'def _looks_refused(output, returncode):\n'
+     'def child_hit_reentrancy_refusal(output, returncode):\n'
      '    return any(re.search(p, output) for p in _REFUSAL_PATTERNS)'),
     ("marker-named-find",
      '_REFUSAL_SHAPES under output.find, whole channel',
      '_REFUSAL_SHAPES = ("skipped by policy",)\n'
-     'def _looks_refused(output, returncode):\n'
+     'def child_hit_reentrancy_refusal(output, returncode):\n'
      '    return any(output.find(s) >= 0 for s in _REFUSAL_SHAPES)'),
     # ⚠️ THIS PROBE USES THE REAL MARKER, AND THAT IS THE WHOLE POINT.
     # It previously keyed on "halted:", a string no sample contains, so it was
@@ -467,19 +498,24 @@ EXECUTING_MUST_REFUSE = (
     ("marker-named-bare-startswith",
      'startswith the real marker: anchored to the line, but not the WHOLE line',
      '_REFUSAL_SHAPES = ("\\U0001F6AB validate REFUSED",)\n'
-     'def _looks_refused(output, returncode):\n'
+     'def child_hit_reentrancy_refusal(output, returncode):\n'
      '    return any(l.startswith(s) for l in output.splitlines()'
      ' for s in _REFUSAL_SHAPES)'),
     ("space-star-indent",
      'the complete summary with optional spaces, without child status or reason',
      'import re\n_S = re.compile(r"^ *\\U0001F6AB validate REFUSED'
-     ' \\(exit [1-9][0-9]*\\) \\u2014 profile .+ @ [0-9a-f]{40}$",'
+     ' \\(exit 75\\) \\u2014 profile .+ @ (?:[0-9a-f]{40}|unknown)$",'
      ' re.MULTILINE)\n'
-     'def _looks_refused(output, returncode):\n'
+     'def child_hit_reentrancy_refusal(output, returncode):\n'
      '    return bool(_S.search(output))'),
     ("whole-channel-original-defect",
      'the original defect: refusal text anywhere in the channel',
      _whole_channel("_REFUSAL_SHAPES", '("refused by:", "validate: REFUSED")')),
+    ("final-status-only",
+     'the final could-not-run status and exit 75, without the refusal reason',
+     'def child_hit_reentrancy_refusal(output, returncode):\n'
+     '    return (final_validate_status(output) == "COULD_NOT_RUN" '
+     'and returncode == 75)'),
 )
 
 EXECUTING_MUST_PASS = (
@@ -487,50 +523,79 @@ EXECUTING_MUST_PASS = (
      'split lines, then match the summary, child exit, and following reason',
      'import re\n_S = re.compile(' + _SUMMARY_RE + ')\n'
      '_R = "   refused by: the re-entrancy guard"\n'
-     'def _looks_refused(output, returncode):\n'
+     'def child_hit_reentrancy_refusal(output, returncode):\n'
+     '    if returncode != 75 or final_validate_status(output) '
+     '!= "COULD_NOT_RUN":\n'
+     '        return False\n'
      '    lines = output.splitlines()\n'
-     '    for index, line in enumerate(lines):\n'
-     '        match = _S.fullmatch(line)\n'
-     '        if match and int(match.group("exit")) == returncode '\
-     'and lines[index + 1:index + 2] == [_R]:\n'
-     '            return True\n'
-     '    return False'),
+     '    status = max(i for i, line in enumerate(lines) '
+     'if line.startswith(FINAL_VALIDATE_STATUS_PREFIX))\n'
+     '    summaries = [i for i, line in enumerate(lines[:status]) '
+     'if _S.fullmatch(line)]\n'
+     '    return bool(summaries and lines[summaries[-1] + 1:'
+     'summaries[-1] + 2] == [_R])'),
     ("split-on-newline",
      'split on newline, then match the summary, child exit, and following reason',
      'import re\n_S = re.compile(' + _SUMMARY_RE + ')\n'
      '_R = "   refused by: the re-entrancy guard"\n'
-     'def _looks_refused(output, returncode):\n'
+     'def child_hit_reentrancy_refusal(output, returncode):\n'
+     '    if returncode != 75 or final_validate_status(output) '
+     '!= "COULD_NOT_RUN":\n'
+     '        return False\n'
      '    lines = output.split(chr(10))\n'
-     '    for index, line in enumerate(lines):\n'
-     '        match = _S.fullmatch(line)\n'
-     '        if match and int(match.group("exit")) == returncode '\
-     'and lines[index + 1:index + 2] == [_R]:\n'
-     '            return True\n'
+     '    status = max(i for i, line in enumerate(lines) '
+     'if line.startswith(FINAL_VALIDATE_STATUS_PREFIX))\n'
+     '    summaries = [i for i, line in enumerate(lines[:status]) '
+     'if _S.fullmatch(line)]\n'
+     '    return bool(summaries and lines[summaries[-1] + 1:'
+     'summaries[-1] + 2] == [_R])'),
+    ("reverse-scan",
+     'scan backward from the final status to the last complete refusal summary',
+     'import re\n_S = re.compile(' + _SUMMARY_RE + ')\n'
+     '_R = "   refused by: the re-entrancy guard"\n'
+     'def child_hit_reentrancy_refusal(output, returncode):\n'
+     '    if returncode != 75 or final_validate_status(output) '
+     '!= "COULD_NOT_RUN":\n'
+     '        return False\n'
+     '    lines = output.splitlines()\n'
+     '    status = max(i for i, line in enumerate(lines) '
+     'if line.startswith(FINAL_VALIDATE_STATUS_PREFIX))\n'
+     '    for index in range(status - 1, -1, -1):\n'
+     '        if _S.fullmatch(lines[index]):\n'
+     '            return lines[index + 1:index + 2] == [_R]\n'
      '    return False'),
-    ("multiline-summary-and-reason",
-     'a multiline regular expression binding the summary, exit, and reason',
-     'import re\n_S = re.compile(r"^\\U0001F6AB validate REFUSED'
-     ' \\(exit (?P<exit>[1-9][0-9]*)\\) \\u2014 profile .+ @ [0-9a-f]{40}$'
-     '\\n^   refused by: the re-entrancy guard$", re.MULTILINE)\n'
-     'def _looks_refused(output, returncode):\n'
-     '    match = _S.search(output)\n'
-     '    return match is not None and int(match.group("exit")) == returncode'),
 )
 
 # Both directions have to be exercised by the same samples, or a predicate that
 # never fires would look correct.
 EXECUTING_SAMPLES = (
-    (_GENUINE, 2, True),
-    (_WRAPPED, 2, False),
+    ("thread 'main' panicked at src/x.rs:9: connection refused by: peer", 1, False),
+    ("guest: server said 'refused by: firewall'", 1, False),
+    ("error: /tmp/validate: REFUSED_cases/t.rs not found", 1, False),
+    ("refused by: guest firewall policy", 1, False),
+    ("   refused by: guest firewall policy", 1, False),
+    ("validate: REFUSED_cases is a guest label", 1, False),
+    ("another validate is already running in documentation", 1, False),
+    (_WRAPPED, 75, False),
     ("thread panicked: connection refused by: peer", 1, False),
     # ⚠️ THE CASE THAT SEPARATES "starts the line" FROM "is the line". The marker
     # opens this line at column zero, so a startswith match fires, but the line is
     # documentation rather than a final summary. Without it a predicate that
     # anchors to the line start without requiring the complete summary classifies
     # every sample here correctly and reads as safe.
-    (_QUOTED_DOC, 2, False),
-    (_BAD_ARGUMENTS, 2, False),
-    (_GENUINE, 101, False),
+    (_QUOTED_DOC, 75, False),
+    (_BAD_ARGUMENTS, 75, False),
+    (_GENUINE, 1, False),
+    (_STATUS_ONLY, 75, False),
+    (_EARLIER_STATUS, 1, False),
+    (_GENUINE, 75, True),
+    (_UNKNOWN_COMMIT, 75, True),
+    (
+        "wrapper mentioned validate: REFUSED and FINAL_VALIDATE_STATUS: FAILED\n"
+        + _GENUINE,
+        75,
+        True,
+    ),
 )
 
 
@@ -539,7 +604,7 @@ def executing_behavior_errors(source: str, path: Path, wanted_correct: bool) -> 
     namespace: dict[str, object] = {"__file__": str(path), "__name__": "probe"}
     try:
         exec(compile(source, str(path), "exec"), namespace)
-        predicate = namespace["_looks_refused"]
+        predicate = namespace["child_hit_reentrancy_refusal"]
     except Exception as error:
         return [f"fixture could not load: {type(error).__name__}: {error}"]
     observed = []
