@@ -2724,6 +2724,35 @@ mod tests {
     }
 
     #[test]
+    fn copied_vfork_first_syscall_uses_the_copied_child_path() {
+        let source = include_str!("../native/client.c");
+        let pre_syscall = source
+            .split_once("static bool pre_syscall(void *drcontext, int sysnum)")
+            .expect("native pre_syscall definition")
+            .1
+            .split_once("static void thread_init")
+            .expect("end of native pre_syscall definition")
+            .0;
+        let copied_vfork = pre_syscall
+            .find("counters->pending_clone_flags & CLONE_VFORK")
+            .expect("pending copied vfork selection");
+        let rust_thread_init = pre_syscall
+            .find("int32_t initialized = reverie_dbt_runtime_thread_init(")
+            .expect("copied-process Rust thread initialization");
+
+        assert!(
+            copied_vfork < rust_thread_init,
+            "the copied vfork child must be selected before copied-process Rust initialization"
+        );
+        let copied_path = &pre_syscall[copied_vfork..rust_thread_init];
+        assert!(
+            copied_path.contains("copied_vfork_pid")
+                && copied_path.contains("release_clone_identity_handoff"),
+            "the first copied-vfork syscall must select the copied-child path and release the identity handoff"
+        );
+    }
+
+    #[test]
     fn thread_init_records_process_ppid_for_current_ppid() {
         // This is the only test that touches the process-global `PROCESS_PPID`
         // (no other test calls `reverie_dbt_runtime_thread_init` or
