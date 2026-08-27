@@ -75,15 +75,14 @@ SYSTEMCTL="${HERMIT_HEALTH_SYSTEMCTL:-systemctl}"
 TIMER_UNIT="${HERMIT_HEALTH_TIMER_UNIT:-hermit-health-tick.timer}"
 SERVICE_UNIT="${HERMIT_HEALTH_SERVICE_UNIT:-hermit-health-tick.service}"
 
-# THRESHOLD IS DERIVED, NOT PICKED. 15 min = 3 x the measured 5-min interval.
-#   INTERVAL_MIN=5 is the MEASURED tick cadence (invocation-log consecutive
-#   fires exactly 5 min apart, e.g. 00:16:37Z -> 00:21:37Z -> 00:26:38Z) AND
-#   matches config (tick_frequency_min=5 / OPERATIONAL_TICK_INTERVAL_MS).
+# THRESHOLD IS DERIVED, NOT PICKED. 180 min = 3 x the owner-directed 60-min
+# interval. INTERVAL_MIN=60 matches tick_frequency_min,
+# OPERATIONAL_TICK_INTERVAL_MS, and hermit-health-tick.timer.
 #   N=3 tolerates up to 2 consecutive MISSED ticks (one slow tick under this
 #   box's load is not a fault); the 3rd missed interval trips it.
-INTERVAL_MIN=5
+INTERVAL_MIN=60
 N=3
-THRESH=$(( INTERVAL_MIN * N * 60 ))   # 15 min = 3 x measured 5-min interval
+THRESH=$(( INTERVAL_MIN * N * 60 ))   # 180 min = 3 x 60-min interval
 COOLDOWN=$(( 60 * 60 ))               # loud pages: at most once per hour
 GATED_NAG=$(( 24 * 60 * 60 ))         # known-gated nag: at most once per day
 

@@ -530,6 +530,41 @@ const registrationSource = sourceBetween(
   "function registerPluginSurface(): void",
   "\n// --- module entry",
 );
+const gchatSafeSource = sourceBetween(
+  "  // GCHAT SAFE START.",
+  "  // GCHAT SAFE END.",
+);
+const gchatGlobals = {};
+new Function("globalThis", '"use strict";\n' + gchatSafeSource)(gchatGlobals);
+check(
+  "gchatSafe is installed before any ORC registration can fail",
+  registrationSource.indexOf('Object.defineProperty(globalThis, "gchatSafe"') >= 0 &&
+    registrationSource.indexOf('Object.defineProperty(globalThis, "gchatSafe"') <
+      registrationSource.indexOf("orc.exposeFunction"),
+);
+check("gchatSafe is callable", typeof gchatGlobals.gchatSafe === "function");
+check(
+  "gchatSafe accepts ordinary text and project acronyms",
+  gchatGlobals.gchatSafe(
+    "PR and CI use DBT with KVM or QEMU; DAP, MCP, API, CPU, GB, GIB, MB, " +
+      "TSC, ABI, URL, JSON, SHA, ORC, EOF, and README are allowed.",
+  ).clean === true,
+);
+const unsafeGchat = gchatGlobals.gchatSafe(
+  "PARTLY LANDED, MOSTLY NOT ADDRESSED. DISCIPLINE WORKED, DRAIN DID NOT.",
+);
+check(
+  "gchatSafe reports the caps runs that caused the repeated formatting failure",
+  unsafeGchat.clean === false &&
+    JSON.stringify(unsafeGchat.offenders) ===
+      JSON.stringify([
+        "PARTLY LANDED",
+        "MOSTLY NOT ADDRESSED",
+        "DISCIPLINE WORKED",
+        "DRAIN DID NOT",
+      ]),
+  JSON.stringify(unsafeGchat),
+);
 check(
   "policy activation is exposed before the reduced-context script guard",
   registrationSource.indexOf('PLUGIN_NAME + ".activate"') >= 0 &&
@@ -558,5 +593,6 @@ console.log(
   "script-arg-passing: " + passed + " checks passed " +
     "(argv round-trip through the shipped literal, off-by-one detection, " +
     "death-gate permit/refuse brackets, policy context pass/fail brackets, " +
-    "a cache-authority mutation control, and index.ts drift guards)",
+    "the persisted GChat guard, a cache-authority mutation control, and " +
+    "index.ts drift guards)",
 );

@@ -1426,7 +1426,7 @@ def active_work_gate(
     persist: bool = True,
 ) -> int:
     # The ORC production workflow supplies the full agent array to health-tick
-    # every five minutes. health-tick persists that observation through the
+    # every sixty minutes. health-tick persists that observation through the
     # explicit `cache-agents` command after validating its structure. Prefer the
     # fresh full snapshot because `claimed`, `actually_active`, and `misrouted`
     # require status and current_task; the live fallback has names only and can

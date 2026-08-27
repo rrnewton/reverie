@@ -1468,7 +1468,7 @@ fn execute(root: &Path, command: HubCommand) -> Result<i32, CiHubError> {
                 .arg(root.join(".ops-state.yaml"))
                 .arg("--fired-state")
                 .arg(root.join(".tick-hub/fired-state"))
-                .args(["--current-tick-min", "5"])
+                .args(["--current-tick-min", "60"])
                 .args(args.args);
             run_status(command, "tick-hub")
         }

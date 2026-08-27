@@ -85,20 +85,30 @@ check "$([[ $out == *"OK heartbeat_age="* ]] && echo yes || echo no)" \
       "healthy: logs OK" "got: $out"
 check "$([[ $out != *ALARM* ]] && echo yes || echo no)" "healthy: no ALARM"
 
+# The wider threshold is intentional: 179 minutes is still fewer than three
+# missed hourly ticks and must not page as a dead timer.
+near_threshold_age=10740
+near="$(date -d @$(( $(date +%s) - near_threshold_age )))"
+out="$(run_case "$near_threshold_age" "$near_threshold_age" "$near" inactive)"
+check "$([[ $out != *ALARM* ]] && echo yes || echo no)" \
+      "below three missed hourly ticks: no ALARM" "got: $out"
+
 # --- 2. GENUINE dead timer still fires (the >3x cadence gap must survive) ----
-# Heartbeat 16 min stale, nothing running, timer itself last fired 16 min ago.
-old="$(date -d @$(( $(date +%s) - 960 )))"
-out="$(run_case 960 960 "$old" inactive)"
+# Heartbeat 181 min stale, nothing running, timer itself last fired 181 min ago.
+stale_age=10860
+old="$(date -d @$(( $(date +%s) - stale_age )))"
+out="$(run_case "$stale_age" "$stale_age" "$old" inactive)"
 check "$([[ $out == *"ALARM: TIMER DEAD"* ]] && echo yes || echo no)" \
       "genuine gap: still pages TIMER DEAD" "got: $out"
 check "$([[ $out == *"last fired 9"*"s ago"* || $out == *"last fired"* ]] && echo yes || echo no)" \
       "genuine gap: names the timer's own last fire"
 
 # --- 3. THE REGRESSION: a tick is RUNNING; this must NOT read as TIMER DEAD ---
-# The exact 02:54:14Z shape: heartbeat 960s stale (last COMPLETION), but the
-# timer fired 206s ago and a tick is executing right now.
+# The same shape as the 02:54:14Z incident: heartbeat older than the current
+# threshold (last COMPLETION), but the timer fired 206s ago and a tick is
+# executing right now.
 recent="$(date -d @$(( $(date +%s) - 206 )))"
-out="$(run_case 960 960 "$recent" activating)"
+out="$(run_case "$stale_age" "$stale_age" "$recent" activating)"
 check "$([[ $out == *"TICK-RUNNING-LONG"* ]] && echo yes || echo no)" \
       "running tick: typed as TICK-RUNNING-LONG" "got: $out"
 check "$([[ $out != *"TIMER DEAD"* ]] && echo yes || echo no)" \
@@ -107,12 +117,12 @@ check "$([[ $out == *"schedule is ALIVE"* ]] && echo yes || echo no)" \
       "running tick: states the schedule is alive"
 # `activating` is the state a Type=oneshot sits in for its whole run; missing it
 # would miss the entire long-tick case.
-out2="$(run_case 960 960 "$recent" active)"
+out2="$(run_case "$stale_age" "$stale_age" "$recent" active)"
 check "$([[ $out2 == *"TICK-RUNNING-LONG"* ]] && echo yes || echo no)" \
       "running tick: 'active' also counts as running"
 
 # --- 4. Timer firing but ticks not completing is its OWN class ---------------
-out="$(run_case 960 960 "$recent" inactive)"
+out="$(run_case "$stale_age" "$stale_age" "$recent" inactive)"
 check "$([[ $out == *"TICKS NOT COMPLETING"* ]] && echo yes || echo no)" \
       "firing-but-failing: typed separately" "got: $out"
 check "$([[ $out != *"TIMER DEAD"* ]] && echo yes || echo no)" \
@@ -121,14 +131,14 @@ check "$([[ $out == *"timer is ALIVE"* ]] && echo yes || echo no)" \
       "firing-but-failing: says the timer is alive"
 
 # --- 5. Never-fired timer is still a dead timer ------------------------------
-out="$(run_case 960 960 "" inactive)"
+out="$(run_case "$stale_age" "$stale_age" "" inactive)"
 check "$([[ $out == *"TIMER DEAD"* ]] && echo yes || echo no)" \
       "never-fired timer: pages TIMER DEAD" "got: $out"
 check "$([[ $out == *"NEVER"* ]] && echo yes || echo no)" \
       "never-fired timer: says NEVER rather than a bogus age"
 
 # --- 6. Missing heartbeat log is unchanged -----------------------------------
-out="$(run_case missing 960 "$old" inactive)"
+out="$(run_case missing "$stale_age" "$old" inactive)"
 check "$([[ $out == *"heartbeat log MISSING"* ]] && echo yes || echo no)" \
       "missing heartbeat: preserved behaviour" "got: $out"
 
@@ -149,13 +159,13 @@ target="${!#}"
 if [ "${1:-}" = "-c" ] && [ "${2:-}" = "%Y" ] && [[ "$target" == *heartbeat ]]; then
   n="${HB_STAT_COUNTER:?stat shim requires HB_STAT_COUNTER}"; c=0; [ -f "$n" ] && c="$(cat "$n")"
   echo $(( c + 1 )) > "$n"
-  if [ "$c" -eq 0 ]; then echo $(( $(date +%s) - 960 )); else echo $(( $(date +%s) - 30 )); fi
+  if [ "$c" -eq 0 ]; then echo $(( $(date +%s) - 10860 )); else echo $(( $(date +%s) - 30 )); fi
   exit 0
 fi
 exec "$real" "$@"
 SHIMEOF
 chmod +x "$SHIM"
-out="$(run_case 960 60 "$recent" inactive "" "$SHIM")"
+out="$(run_case "$stale_age" 60 "$recent" inactive "" "$SHIM")"
 rm -f "$SHIM"
 check "$([[ $out == *"SELF-CORRECTED"* ]] && echo yes || echo no)" \
       "stale premise: withdrawn on re-read" "got: $out"
@@ -163,7 +173,7 @@ check "$([[ $out != *ALARM* ]] && echo yes || echo no)" \
       "stale premise: no ALARM emitted"
 
 # --- 8. Every alarm carries the full observation tuple -----------------------
-out="$(run_case 960 960 "$old" inactive)"
+out="$(run_case "$stale_age" "$stale_age" "$old" inactive)"
 for field in observed_at= cadence_s= threshold_s= last_completion= last_invocation_start= timer_last_trigger= service=; do
   check "$([[ $out == *"$field"* ]] && echo yes || echo no)" "observation tuple carries $field"
 done

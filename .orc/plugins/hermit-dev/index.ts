@@ -110,7 +110,7 @@ const OPERATIONAL_TICK_SCRIPT_NAME = "hermitOperationalTick";
 const OPERATIONAL_TICK_COMMAND =
   'cd "' + SHELL_WORKSPACE_ROOT + '" && ' +
   'HERMIT_AGENT_SNAPSHOT_JSON="$1" ./ci-hub/bin/health-tick --flush --no-header';
-const OPERATIONAL_TICK_INTERVAL_MS = 5 * 60 * 1000;
+const OPERATIONAL_TICK_INTERVAL_MS = 60 * 60 * 1000;
 const OPERATIONAL_TICK_WORKFLOW_NAME = "hermit-dev-operational-health-v1";
 // MANDATORY before close+respawn. The mission mandate authorizes replacing a
 // broken agent with no permission, which pairs an UNVERIFIED alarm with an
@@ -961,6 +961,25 @@ async function verifyScriptArgPassing(): Promise<SelfTestResult> {
 // workflow-restart context is known to serve.
 
 function registerPluginSurface(): void {
+  // GCHAT SAFE START. This guard was created in one coordinator turn with a
+  // globalThis assignment, so a config reload discarded it. Install the same
+  // guard before any ORC registration effect: if a later registration throws,
+  // messages can still be checked against the owner's no-caps rule. Keep this
+  // block plain JavaScript so the regression test can execute the shipped body.
+  Object.defineProperty(globalThis, "gchatSafe", {
+    configurable: true,
+    writable: true,
+    value: function gchatSafe(text) {
+      const offenders =
+        (text.match(/\b[A-Z][A-Z0-9]{2,}(?:[ -][A-Z0-9]{2,})*\b/g) || [])
+          .filter(function (word) {
+            return !/^(PR|CI|DBT|KVM|QEMU|DAP|MCP|API|CPU|GB|GIB|MB|TSC|ABI|URL|JSON|SHA|ORC|EOF|README)$/.test(word);
+          });
+      return { clean: offenders.length === 0, offenders };
+    },
+  });
+  // GCHAT SAFE END.
+
   // The policy reload workflow calls this existing exposed function instead of
   // capturing injectHermitDevPolicies and its helper graph in durable workflow
   // state. Register it before the reduced-context guard so module replay can
