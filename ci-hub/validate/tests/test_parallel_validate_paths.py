@@ -191,6 +191,15 @@ class ParallelValidatePathTest(unittest.TestCase):
         self.assertIn("E2E_RUN_ID=validate-a", fixed_a)
         self.assertIn("E2E_RUN_ID=validate-b", fixed_b)
 
+        # The state enforcing the DAG's resource_caps is intentionally shared:
+        # making it per run would recreate the exact cross-run over-admission
+        # it exists to prevent. Only the outputs above are per run.
+        shared_caps = (
+            f"DAGRUN_RESOURCE_CAPS_PATH={self.root / 'ignored' / 'validate' / 'resource-caps.json'}"
+        )
+        self.assertIn(shared_caps, fixed_a)
+        self.assertIn(shared_caps, fixed_b)
+
     def test_git_mutation_old_sections_overlap_and_fixed_section_waits(self) -> None:
         origin = self.root / "origin.git"
         repo = self.root / "checkout"

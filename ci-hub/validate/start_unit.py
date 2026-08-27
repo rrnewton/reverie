@@ -1285,6 +1285,7 @@ def build_systemd_command(
         build_budget_env.extend(["--setenv", "REVERIE_REQUIRE_KVM=1"])
     else:
         e2e_result_root, runner_log_dir = _validate_output_paths(root, unit)
+        resource_caps_path = root / "ignored" / "validate" / "resource-caps.json"
         build_budget_env.extend(
             [
                 "--setenv",
@@ -1306,6 +1307,13 @@ def build_systemd_command(
                 f"SAFE_CI_DAG_RUNNER_LOG_DIR={runner_log_dir}",
                 "--setenv",
                 f"DAGRUN_LOG_DIR={runner_log_dir}",
+                # Deliberately shared across top-level validates. The DAG's
+                # existing resource_caps describe scarce capacity on this
+                # machine, while the per-run runtime and output paths above do
+                # not. dagrun locks and updates this file before a step's own
+                # timeout starts.
+                "--setenv",
+                f"DAGRUN_RESOURCE_CAPS_PATH={resource_caps_path}",
             ]
         )
     if frozen_validate:
