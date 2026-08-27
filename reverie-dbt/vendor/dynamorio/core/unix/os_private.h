@@ -370,6 +370,8 @@ handle_sigprocmask(dcontext_t *dcontext, int how, kernel_sigset_t *set,
 int
 handle_post_sigprocmask(dcontext_t *dcontext, int how, kernel_sigset_t *set,
                         kernel_sigset_t *oset, size_t sigsetsize);
+int
+handle_post_sigpending(dcontext_t *dcontext, kernel_sigset_t *set, size_t sigsetsize);
 void
 handle_sigsuspend(dcontext_t *dcontext, kernel_sigset_t *set, size_t sigsetsize);
 
