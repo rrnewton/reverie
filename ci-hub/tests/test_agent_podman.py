@@ -662,6 +662,16 @@ class AgentPodmanTests(unittest.TestCase):
         target.mkdir(parents=True)
         unrelated = self.directory / "unrelated"
         unrelated.mkdir()
+        # ⚠️ A SOURCE THAT RESOLVES NOWHERE, MADE VISIBLE AS A REAL BROKEN SYMLINK
+        # rather than a string that merely happens not to exist. `canonicalize`
+        # is authority here, not enrichment -- after a path fence a dangling alias
+        # is the one thing that could erase the observable binding between a live
+        # mount and a moved worktree -- so its refusal deserves an input that a
+        # reader of the fixture can see is dangling.
+        dangling = self.directory / "dangling-mount-source"
+        dangling.symlink_to(self.directory / "no-such-worktree")
+        self.assertFalse(dangling.exists(), "the fixture symlink is not dangling")
+        self.assertTrue(dangling.is_symlink(), "the fixture did not create a symlink")
         self.registry.write_text(
             json.dumps({"schema_version": 1, "containers": {}})
         )
@@ -680,6 +690,13 @@ class AgentPodmanTests(unittest.TestCase):
             # it, and it matters here: this decides which mounts bind a container
             # to a worktree, and `..` is exactly how an alias reaches outside one.
             ({"Source": f"{target}/../hermit"}, "has non-normalized source"),
+            # ⚠️ AND THE RESOLUTION REFUSAL HAD NO INPUT EITHER. Measured
+            # 2026-08-27: every case above is a SCHEMA or LEXICAL problem, so
+            # none of them ever reached `fs::canonicalize`. This source is
+            # well-formed, absolute and normalized -- it passes every earlier
+            # check -- and resolves nowhere, which is the only way to reach the
+            # branch this test's name has always advertised as "unresolvable".
+            ({"Source": str(dangling)}, "cannot be resolved"),
         ]
         for index, (mount, expected) in enumerate(malformed):
             with self.subTest(mount=mount):
