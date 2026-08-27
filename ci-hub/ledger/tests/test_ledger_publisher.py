@@ -215,6 +215,19 @@ def test_a_genuine_clone_of_the_source_is_not_refused_by_the_identity_check(
     assert not publisher.spooled(spool_dir)
 
 
+def test_publish_uses_the_repository_author_identity(tmp_path, remote_and_clone):
+    _, clone = remote_and_clone
+    git(clone, "config", "user.name", "Configured Publisher")
+    git(clone, "config", "user.email", "configured@example.com")
+    spool_dir = tmp_path / "spool"
+    publisher.spool(spool_dir, TEAM, HOST, [ev("01A")])
+
+    publisher.publish(clone, spool_dir)
+
+    author = git(clone, "show", "-s", "--format=%an <%ae>", "HEAD").stdout.strip()
+    assert author == "Configured Publisher <configured@example.com>"
+
+
 def test_a_writer_refusal_reaches_the_caller_whole_not_as_its_last_line(
     tmp_path, remote_and_clone
 ):

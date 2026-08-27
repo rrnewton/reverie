@@ -440,12 +440,7 @@ def split_published_to_match_source(
         "ledger: preserve divergent history while adopting live shard bytes"
         f"\n\n{attribution}"
     )
-    _git(
-        repo,
-        "-c", "user.name=ledger-publisher",
-        "-c", "user.email=ledger-publisher@invalid",
-        "commit", "-q", "-m", message, "--", *written,
-    )
+    _git(repo, "commit", "-q", "-m", message, "--", *written)
     commit = _git(repo, "rev-parse", "HEAD").stdout.strip()
     if serialized_writer is None:
         pushed = _git(repo, "push", remote, f"HEAD:refs/heads/{branch}", check=False)
@@ -586,9 +581,7 @@ def publish(
         _git(repo, "add", "--", *written)
         subject = f"{store}: append {sum(len(v) for v in pending.values())} event(s)"
         message = subject if attribution is None else f"{subject}\n\n{attribution}"
-        _git(repo, "-c", "user.name=ledger-publisher",
-             "-c", "user.email=ledger-publisher@invalid",
-             "commit", "-q", "-m", message, "--", *written)
+        _git(repo, "commit", "-q", "-m", message, "--", *written)
         commit = _git(repo, "rev-parse", "HEAD").stdout.strip()
 
         if serialized_writer is None:
