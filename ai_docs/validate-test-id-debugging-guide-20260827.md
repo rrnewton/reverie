@@ -115,6 +115,23 @@ current failure happens first and should be resolved before assuming each old
 cause remains live. The current LiteInst failures likewise stop at the staged
 runtime revision check before the intended product behavior.
 
+## Resolve the earlier shared failures first
+
+Do not start by treating the six DBT entries above as six independent defects.
+Their current executions all stop at the same earlier transport/finalization
+failure. Diagnose that path once, using
+[the retained DBT diagnosis](2026-08-17-reverie-dbt-final-frame-diagnosis.md),
+and only return to an entry's older test-specific failure after the shared
+failure is gone.
+
+Do not count the current LiteInst entries as measured product failures either.
+They stop at a missing staged-runtime revision before reaching the behavior
+their names describe. This is distinct from the missing `xxd` dependency that
+blocks e9patch and SaBRe staging and is addressed by
+https://github.com/rrnewton/hermit/pull/2744. The two setup failures affect
+multiple backend measurements and review paths, but they have different causes
+and must remain separate in debugging and reporting.
+
 “Last green” below means the newest retained line for that exact nextest ID that
 says `PASS`, joined to its run record. It does not turn a run-level non-verdict
 into a green run. “Introduced” means the first commit containing the exact
