@@ -3838,10 +3838,7 @@ mod tests {
                 .ppid,
             parent_pid
         );
-        assert!(
-            terminal_descendant_remains_owned(&identity),
-            "cleanup released a terminal descendant while its recorded parent still owned it"
-        );
+        let retained_while_parent_alive = terminal_descendant_remains_owned(&identity);
 
         control.write_all(&[1]).expect("release recorded parent");
         drop(control);
@@ -3861,10 +3858,7 @@ mod tests {
             parent_pid,
             "descendant did not leave its recorded parent"
         );
-        assert!(
-            !terminal_descendant_remains_owned(&identity),
-            "cleanup retained a terminal descendant after reparenting"
-        );
+        let released_after_reparenting = !terminal_descendant_remains_owned(&identity);
 
         identity
             .send_signal(Signal::SIGKILL)
@@ -3881,6 +3875,14 @@ mod tests {
             if waited == descendant_pid.as_raw()
                 || !std::path::Path::new(&format!("/proc/{descendant_pid}")).exists()
             {
+                assert!(
+                    retained_while_parent_alive,
+                    "cleanup released a terminal descendant while its recorded parent still owned it"
+                );
+                assert!(
+                    released_after_reparenting,
+                    "cleanup retained a terminal descendant after reparenting"
+                );
                 return;
             }
             assert!(
