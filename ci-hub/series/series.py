@@ -733,10 +733,19 @@ def _cell_coordinates(row: dict) -> dict | None:
 
 def _cell_runtime(row: dict) -> dict:
     runtime = row.get("runtime")
-    runtime = dict(runtime) if isinstance(runtime, dict) else {}
+    if runtime is None:
+        runtime = {}
+    elif isinstance(runtime, dict):
+        runtime = dict(runtime)
+    else:
+        raise MalformedRow("cell result runtime must be an object or null")
     wall = row.get("duration_ms")
-    if not isinstance(wall, (int, float)) or isinstance(wall, bool) or wall < 0:
+    if wall is None:
         wall = None
+    elif not isinstance(wall, (int, float)) or isinstance(wall, bool) or wall < 0:
+        raise MalformedRow(
+            f"cell result duration_ms must be a non-negative number or null, got {wall!r}"
+        )
     runtime["wall_time_min_ms"] = wall
     runtime["wall_time_max_ms"] = wall
     return runtime
@@ -833,6 +842,15 @@ def rows_from_cell_results(
                 key = (_cell_name(cell_result), run_index)
                 pressure_counts[key] = pressure_counts.get(key, 0) + 1
     for cell_result in cell_results:
+        schema = cell_result.get("schema")
+        if not isinstance(schema, int) or isinstance(schema, bool) or schema != 4:
+            raise MalformedRow(f"cell result schema must be 4, got {schema!r}")
+        source_tree_dirty = cell_result.get("source_tree_dirty")
+        if not isinstance(source_tree_dirty, bool):
+            raise MalformedRow(
+                "cell result source_tree_dirty must be a bool, "
+                f"got {source_tree_dirty!r}"
+            )
         if cell_result.get("hermit_sha") != tree:
             raise MalformedRow(
                 f"cell result Hermit sha {cell_result.get('hermit_sha')!r} does not match {tree}"
@@ -878,7 +896,7 @@ def rows_from_cell_results(
             "main_ancestry": ancestry,
             "depth": depth,
             "runtime": _cell_runtime(cell_result),
-            "source_tree_dirty": bool(cell_result.get("source_tree_dirty", False)),
+            "source_tree_dirty": source_tree_dirty,
         }
         detcore_tree = cell_result.get("detcore_tree")
         if detcore_tree is not None:

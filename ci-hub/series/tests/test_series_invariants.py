@@ -727,6 +727,17 @@ class CellResultProjection(unittest.TestCase):
         self.assertEqual(zero["wall_time_min_ms"], 0)
         self.assertEqual(zero["wall_time_max_ms"], 0)
 
+        for key, bad in (
+            ("duration_ms", "0"),
+            ("runtime", "not-an-object"),
+            ("schema", 3),
+            ("source_tree_dirty", "false"),
+        ):
+            malformed = self._cell(0)
+            malformed[key] = bad
+            with self.assertRaises(series.MalformedRow, msg=f"accepted malformed {key}"):
+                self._project([malformed])
+
     def test_failed_retry_then_success_is_not_compressed_away(self):
         rows = series.rows_from_cell_results(
             [
