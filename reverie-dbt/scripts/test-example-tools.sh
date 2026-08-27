@@ -80,9 +80,9 @@ run_tool() {
   if (($# > 0)); then
     guest=("$@")
   fi
-  env "$env_var=1" "$drrun" -quiet -disable_rseq -stack_size 2M -c "$client" -- \
-    "${guest[@]}" \
-    >"$tmpdir/out" 2>"$tmpdir/err"
+  env "$env_var=1" "$drrun" -quiet -disable_rseq -stack_size 2M -c "$client" \
+    -diagnostic_fd 198 -- "${guest[@]}" \
+    >"$tmpdir/out" 2>"$tmpdir/err" 198>&2
 }
 
 # Run the guest under the built-in default determinism runtime (no observation
@@ -91,8 +91,8 @@ run_tool() {
 # the root's syscalls and passes them through, which deliberately bypasses that
 # native fallback; the default runtime is the mode where determinism applies.
 run_default_runtime() {
-  "$drrun" -quiet -disable_rseq -stack_size 2M -c "$client" -- "$@" \
-    >"$tmpdir/out" 2>"$tmpdir/err"
+  "$drrun" -quiet -disable_rseq -stack_size 2M -c "$client" \
+    -diagnostic_fd 198 -- "$@" >"$tmpdir/out" 2>"$tmpdir/err" 198>&2
 }
 
 run_pthread_tool() {
@@ -152,7 +152,7 @@ grep -Eq '^BACKTRACE ok=1 frames=[0-9]+ top=0x[0-9a-f]+$' "$tmpdir/err" \
 echo "PASS: backtrace (in-process frame-pointer walk of the guest stack at getpid)"
 
 run_tool HERMIT_DBT_NOOP "$identity_policy_guest"
-grep -q '^pid=3 ppid=1 tid=3 identity_fd=open$' "$tmpdir/out" \
+grep -q '^pid=3 ppid=1 tid=3 internal_fds=open$' "$tmpdir/out" \
   || fail "noop: deferred syscall bypassed virtual identity or private descriptor policy"
 echo "PASS: deferred syscall preserves virtual identity and private descriptors"
 
@@ -162,23 +162,31 @@ grep -q '^fork-pthread-race=64$' "$tmpdir/out" \
 echo "PASS: process-clone identity handoff excludes concurrent pthreads"
 
 # Copied children (forked processes) run no Rust Tool, so the native virtual
-# clock / virtual resource policy is their only determinism layer. Under the
-# default determinism runtime, verify a forked child now sees the SAME
-# virtualized view as the root: virtual CLOCK_MONOTONIC stays a small
-# single-digit tv_sec (real host uptime is orders of magnitude larger), and
-# virtual RLIMIT_NOFILE is 1048576 (distinct from a typical host soft limit).
-# Before this fix the child fell through to real host time and host rlimits
-# while the root stayed virtualized.
+# clock / virtual resource policy is their only determinism layer. Exercise
+# libc's patched-vDSO path repeatedly in the parent, a forked child, an execed
+# child (new client image + vDSO module load), and the parent again. All sixteen
+# reads must be one strictly increasing 1us-stride sequence. This brackets both
+# sides: it accepts the continuous baseline, while a private child clock,
+# exec-time reset, frozen value, rounded value, or first-sample-only match fails.
 run_default_runtime "$fork_clock_resource_guest"
-grep -Eq '^child_mono_sec=[0-9]$' "$tmpdir/out" \
-  || fail "default runtime: forked child read real host time instead of the virtual clock"
-grep -q '^child_nofile=1048576$' "$tmpdir/out" \
+awk -F= '
+  /^(parent-before|fork-child|exec-child|parent-after)_mono_ns\[[0-3]\]=[0-9]+$/ {
+    value = $2 + 0
+    count += 1
+    if (count > 1 && value - previous != 1000)
+      bad_delta = 1
+    previous = value
+  }
+  END { exit !(count == 16 && bad_delta == 0) }
+' "$tmpdir/out" \
+  || fail "default runtime: vDSO clock did not evolve continuously across fork/exec"
+grep -q '^fork-child_nofile=1048576$' "$tmpdir/out" \
   || fail "default runtime: forked child read a real host rlimit instead of the virtual limit"
-grep -Eq '^parent_mono_sec=[0-9]$' "$tmpdir/out" \
-  || fail "default runtime: root process clock is not virtualized"
-grep -q '^parent_nofile=1048576$' "$tmpdir/out" \
+grep -q '^exec-child_nofile=1048576$' "$tmpdir/out" \
+  || fail "default runtime: execed child read a real host rlimit instead of the virtual limit"
+grep -q '^parent-after_nofile=1048576$' "$tmpdir/out" \
   || fail "default runtime: root process rlimit is not virtualized"
-echo "PASS: forked child virtualizes clock and rlimits like the root process (default runtime)"
+echo "PASS: vDSO clock advances continuously across fork/exec; rlimits stay virtualized"
 
 # noop: pure passthrough — guest output must be intact, no tool output.
 run_tool HERMIT_DBT_NOOP

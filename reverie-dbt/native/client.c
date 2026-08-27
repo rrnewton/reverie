@@ -52,6 +52,12 @@
 #ifndef SHM_REMAP
 #define SHM_REMAP 040000
 #endif
+#ifndef CLOSE_RANGE_UNSHARE
+#define CLOSE_RANGE_UNSHARE (1U << 1)
+#endif
+#ifndef CLOSE_RANGE_CLOEXEC
+#define CLOSE_RANGE_CLOEXEC (1U << 2)
+#endif
 
 typedef int64_t (*syscall_invoker_t)(uintptr_t, int64_t, const uint64_t *);
 typedef int32_t (*register_reader_t)(uintptr_t, struct user_regs_struct *);
@@ -119,6 +125,13 @@ typedef struct {
   uint64_t magic;
   atomic_flag lock;
   _Atomic int32_t next_virtual_id;
+  /* One clock for the whole copied process tree. The state mapping is shared
+   * across fork/clone and its descriptor survives exec, so every client image
+   * advances the same fine-grained timeline instead of restarting a private
+   * COW copy at the fork point. */
+  // AUTONOMOUS-BOT-IMPLEMENTED
+  // TODO-HUMAN-REVIEW(PR-shared-dbi-clock): Review shared continuous DBI time.
+  _Atomic uint64_t virtual_time_ns;
   /* The launch-time descriptor identity survives exec, unlike numeric fd 0. */
   bool initial_stdin_valid;
   struct stat initial_stdin;
@@ -279,7 +292,6 @@ static _Atomic uint64_t branch_count __attribute__((aligned(64)));
 static _Atomic uint64_t stdin_read_count;
 static _Atomic uint64_t pending_thread_starts;
 static _Atomic int32_t runtime_background_state;
-static _Atomic uint64_t virtual_time_ns = UINT64_C(1000000000);
 static _Atomic uint64_t image_generation;
 static int thread_state_index;
 static int compat_gateway_index;
@@ -1009,6 +1021,8 @@ static void initialize_virtual_identity_state(bool external_global) {
   virtual_identity_state->magic = VIRTUAL_IDENTITY_MAGIC;
   atomic_flag_clear(&virtual_identity_state->lock);
   atomic_init(&virtual_identity_state->next_virtual_id, VIRTUAL_ROOT_PID + 1);
+  atomic_init(&virtual_identity_state->virtual_time_ns,
+              UINT64_C(1000000000));
   virtual_identity_state->initial_stdin_valid =
       fstat(STDIN_FILENO, &virtual_identity_state->initial_stdin) == 0;
   virtual_identity_state->external_global = external_global;
@@ -1519,19 +1533,72 @@ static int64_t invoke_raw_syscall(uintptr_t context, int64_t sysnum,
 static bool is_exec_syscall(int sysnum);
 
 // AUTONOMOUS-BOT-IMPLEMENTED
+// TODO-HUMAN-REVIEW(PR-411): Review close_range splitting around the internal
+// identity and diagnostic descriptors.
+#ifdef SYS_close_range
+static int64_t close_range_preserving_internal_descriptors(
+    uintptr_t context, const uint64_t *args) {
+  const uint32_t first = (uint32_t)args[0];
+  const uint32_t last = (uint32_t)args[1];
+  uint32_t flags = (uint32_t)args[2];
+  int64_t result;
+
+  if (first > last ||
+      (flags & ~(CLOSE_RANGE_UNSHARE | CLOSE_RANGE_CLOEXEC)) != 0)
+    return -EINVAL;
+
+  if ((flags & CLOSE_RANGE_UNSHARE) != 0) {
+    const uint64_t unshare_args[6] = {CLONE_FILES, 0, 0, 0, 0, 0};
+    result = invoke_raw_syscall(context, SYS_unshare, unshare_args);
+    if (result < 0)
+      return result;
+    flags &= ~CLOSE_RANGE_UNSHARE;
+  }
+
+  if (first < VIRTUAL_IDENTITY_FD) {
+    const uint32_t range_last =
+        last < VIRTUAL_IDENTITY_FD ? last : VIRTUAL_IDENTITY_FD - 1;
+    const uint64_t close_args[6] = {first, range_last, flags, 0, 0, 0};
+    result = invoke_raw_syscall(context, SYS_close_range, close_args);
+    if (result < 0)
+      return result;
+  }
+  if (last > DBT_DIAGNOSTIC_FD) {
+    const uint32_t range_first =
+        first > DBT_DIAGNOSTIC_FD ? first : DBT_DIAGNOSTIC_FD + 1;
+    const uint64_t close_args[6] = {range_first, last, flags, 0, 0, 0};
+    result = invoke_raw_syscall(context, SYS_close_range, close_args);
+    if (result < 0)
+      return result;
+  }
+  return 0;
+}
+#endif
+
+// AUTONOMOUS-BOT-IMPLEMENTED
 // TODO-HUMAN-REVIEW(PR-106): keep the identity memfd (fd 197) and diagnostic fd
 // (198) alive across close/fcntl(F_SETFD)/dup2/dup3 in copied children.
-// RESIDUAL: close_range is not intercepted and can still close the memfd.
 static bool preserve_internal_descriptors(uintptr_t context, int sysnum,
                                           const uint64_t *args,
                                           int64_t *result) {
   int fd = (int)args[0];
-  (void)context;
   if (sysnum == SYS_close &&
       (fd == VIRTUAL_IDENTITY_FD || fd == DBT_DIAGNOSTIC_FD)) {
     *result = 0;
     return true;
   }
+#ifdef SYS_close_range
+  // AUTONOMOUS-BOT-IMPLEMENTED
+  if (sysnum == SYS_close_range) {
+    const uint32_t first = (uint32_t)args[0];
+    const uint32_t last = (uint32_t)args[1];
+    if ((first <= VIRTUAL_IDENTITY_FD && VIRTUAL_IDENTITY_FD <= last) ||
+        (first <= DBT_DIAGNOSTIC_FD && DBT_DIAGNOSTIC_FD <= last)) {
+      *result = close_range_preserving_internal_descriptors(context, args);
+      return true;
+    }
+  }
+#endif
   if (sysnum == SYS_fcntl &&
       (fd == VIRTUAL_IDENTITY_FD || fd == DBT_DIAGNOSTIC_FD) &&
       args[1] == F_SETFD) {
@@ -2356,8 +2423,8 @@ static bool is_thread_cpu_clock(clockid_t clockid) {
 }
 
 static uint64_t observe_virtual_time(void) {
-  return atomic_fetch_add_explicit(&virtual_time_ns, UINT64_C(1000),
-                                   memory_order_seq_cst);
+  return atomic_fetch_add_explicit(&virtual_identity_state->virtual_time_ns,
+                                   UINT64_C(1000), memory_order_seq_cst);
 }
 
 static struct timespec virtual_timespec(uint64_t nanoseconds) {
@@ -2394,16 +2461,19 @@ static bool timespec_nanoseconds(const struct timespec *value,
 
 static void advance_virtual_time(uint64_t nanoseconds, bool absolute) {
   if (!absolute) {
-    atomic_fetch_add_explicit(&virtual_time_ns, nanoseconds,
+    atomic_fetch_add_explicit(&virtual_identity_state->virtual_time_ns,
+                              nanoseconds,
                               memory_order_seq_cst);
     return;
   }
 
   uint64_t current =
-      atomic_load_explicit(&virtual_time_ns, memory_order_seq_cst);
+      atomic_load_explicit(&virtual_identity_state->virtual_time_ns,
+                           memory_order_seq_cst);
   while (current < nanoseconds &&
          !atomic_compare_exchange_weak_explicit(
-             &virtual_time_ns, &current, nanoseconds, memory_order_seq_cst,
+             &virtual_identity_state->virtual_time_ns, &current, nanoseconds,
+             memory_order_seq_cst,
              memory_order_seq_cst)) {
   }
 }
@@ -2471,7 +2541,8 @@ static bool handle_virtual_clock(uintptr_t context, int sysnum,
     }
 
     uint64_t current =
-        atomic_load_explicit(&virtual_time_ns, memory_order_seq_cst);
+        atomic_load_explicit(&virtual_identity_state->virtual_time_ns,
+                             memory_order_seq_cst);
     uint64_t delay = nanoseconds > current ? nanoseconds - current : 0;
     struct timespec relative = virtual_timespec(delay);
     const uint64_t sleep_args[6] = {
