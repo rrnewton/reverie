@@ -124,7 +124,7 @@ const OPERATIONAL_TICK_WORKFLOW_NAME = "hermit-dev-operational-health-v1";
 const AGENT_LIVENESS_SCRIPT_NAME = "hermitVerifyAgentDeath";
 const AGENT_LIVENESS_COMMAND =
   'cd "' + SHELL_WORKSPACE_ROOT + '" && ' +
-  'python3 ci-hub/health/agent_liveness_probe.py "$1" --json';
+  '/usr/bin/python3 ci-hub/health/agent_liveness_probe.py "$1" --json';
 
 // ARGUMENT PASSING, measured rather than assumed -- read this before "fixing"
 // an empty `$1` again.
@@ -160,7 +160,7 @@ const ARGV_ECHO_SCRIPT_NAME = "hermitEchoScriptArgv";
 // first argument lands in `$0` and `$1` is empty) instead of merely showing
 // that something is wrong.
 const ARGV_ECHO_COMMAND =
-  "python3 -c 'import json,sys; " +
+  "/usr/bin/python3 -c 'import json,sys; " +
   'print(json.dumps({"dollar_zero": sys.argv[1], "argv": sys.argv[2:]}))\' ' +
   '"$0" "$@"';
 const LEGACY_SPECULATIVE_LAND_WORKFLOW_NAME =
@@ -670,6 +670,26 @@ interface ScriptResult {
   stderr?: string;
 }
 
+const PYTHON_ALLOCATOR_WARNING =
+  "<jemalloc>: Invalid conf pair: experimental_infallible_new:true";
+
+// Some ORC script paths merge a child's stderr into the value returned as
+// stdout. Remove only the allocator's exact startup line before a caller parses
+// JSON; every other diagnostic remains visible and therefore fail-closed.
+function stripPythonAllocatorWarning(text: unknown): string {
+  return String(text || "").split("\n")
+    .filter((line) => line !== PYTHON_ALLOCATOR_WARNING)
+    .join("\n");
+}
+
+function cleanScriptResult(result: ScriptResult): ScriptResult {
+  return {
+    ...result,
+    stdout: stripPythonAllocatorWarning(result.stdout),
+    stderr: stripPythonAllocatorWarning(result.stderr),
+  };
+}
+
 /** Call a registered script with arguments marshalled the way the runtime
  * actually wants them. THE ONE PLACE that knows the calling convention, so a
  * caller cannot reintroduce the empty-`$1` bug by guessing at the shape. */
@@ -683,7 +703,10 @@ async function callRegisteredScript(
   if (scripts) {
     const fn = scripts[name];
     if (typeof fn === "function") {
-      return await (fn as (...a: unknown[]) => Promise<ScriptResult>)(...args);
+      const result = await (fn as (...a: unknown[]) => Promise<ScriptResult>)(
+        ...args,
+      );
+      return cleanScriptResult(result);
     }
   }
   // Fallback for a build without the Proxy. `argsJson` is a JSON STRING; this
@@ -692,7 +715,9 @@ async function callRegisteredScript(
     | { result?: ScriptResult }
     | ScriptResult;
   const unwrapped = (response as { result?: ScriptResult }).result;
-  return (unwrapped === undefined ? response : unwrapped) as ScriptResult;
+  return cleanScriptResult(
+    (unwrapped === undefined ? response : unwrapped) as ScriptResult,
+  );
 }
 
 // --- the Hard-Invariant-16 death gate ----------------------------------------

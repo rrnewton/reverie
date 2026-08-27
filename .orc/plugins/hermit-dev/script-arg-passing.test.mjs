@@ -83,6 +83,12 @@ function literalFromSource(constName) {
 
 const ARGV_ECHO_COMMAND = literalFromSource("ARGV_ECHO_COMMAND");
 
+check(
+  "argv echo uses the system Python without the allocator warning",
+  ARGV_ECHO_COMMAND.startsWith("/usr/bin/python3 "),
+  ARGV_ECHO_COMMAND,
+);
+
 // Run the shipped command the way a correct runtime does: `sh -c CMD $0 args…`.
 function runEcho(args, { offByOne = false } = {}) {
   // offByOne models the classic mis-binding, where the first argument lands in
@@ -286,6 +292,11 @@ const DEAD_BODY = JSON.stringify({
     text.includes("--json"),
     text,
   );
+  check(
+    "the probe uses the system Python without the allocator warning",
+    text.includes("/usr/bin/python3 "),
+    text,
+  );
 }
 
 // === 6. Drift guard: index.ts must still do what section 4 pins ==============
@@ -299,6 +310,10 @@ const DEAD_BODY = JSON.stringify({
       /callScriptInternal\(name, JSON\.stringify\(args\)\)/],
     ["prefers the orc.scripts proxy",
       /const scripts = orc\.scripts/],
+    ["cleans the proxy result before parsing",
+      /return cleanScriptResult\(result\);/],
+    ["cleans the fallback result before parsing",
+      /return cleanScriptResult\(\s*\n?\s*\(unwrapped === undefined \? response : unwrapped\)/],
     ["refuses a blank subject",
       /agent\.trim\(\)\.length === 0/],
     ["compares the answered subject to the asked subject",
@@ -631,6 +646,40 @@ const missingNamesSource = sourceBetween(
 const missingRegisteredNames = new Function(
   '"use strict";\n' + missingNamesSource + "\nreturn missingRegisteredNames;",
 )();
+
+const allocatorWarningSource = sourceBetween(
+  "function stripPythonAllocatorWarning(",
+  "\n\nfunction cleanScriptResult",
+).replace(
+  "function stripPythonAllocatorWarning(text: unknown): string {",
+  "function stripPythonAllocatorWarning(text) {",
+);
+const allocatorWarning =
+  "<jemalloc>: Invalid conf pair: experimental_infallible_new:true";
+const stripPythonAllocatorWarning = new Function(
+  "PYTHON_ALLOCATOR_WARNING",
+  '"use strict";\n' + allocatorWarningSource +
+    "\nreturn stripPythonAllocatorWarning;",
+)(allocatorWarning);
+check(
+  "allocator warning is removed before JSON parsing",
+  stripPythonAllocatorWarning(allocatorWarning + '\n{"argv":[]}') ===
+    '{"argv":[]}',
+);
+check(
+  "allocator warning alone becomes an empty stream",
+  stripPythonAllocatorWarning(allocatorWarning) === "",
+);
+check(
+  "unrelated stderr remains visible",
+  stripPythonAllocatorWarning("real failure\n" + allocatorWarning) ===
+    "real failure",
+);
+check(
+  "similar allocator output is not hidden",
+  stripPythonAllocatorWarning(allocatorWarning + " extra") ===
+    allocatorWarning + " extra",
+);
 check(
   "registered-name check accepts the complete registry",
   missingRegisteredNames(
