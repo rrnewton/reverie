@@ -4338,6 +4338,12 @@ fn assess_canonical_receipts(
         &repo_rows,
         sha,
         &qualifying_target_rows,
+        qualifying_receipt::active()
+            .cell_results
+            .applies_at_schema_min,
+        qualifying_receipt::active()
+            .cell_results
+            .supported_schema_max,
         |ancestor, target| {
             if ancestor == target {
                 return Ok(true);

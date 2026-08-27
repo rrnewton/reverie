@@ -116,12 +116,14 @@ pub struct AdmissionClause {
 #[derive(Clone, Debug, Deserialize)]
 pub struct CellResultsClause {
     pub applies_at_schema_min: u32,
+    pub supported_schema_max: u32,
 }
 
 impl Default for CellResultsClause {
     fn default() -> Self {
         Self {
             applies_at_schema_min: u32::MAX,
+            supported_schema_max: u32::MAX,
         }
     }
 }
@@ -691,6 +693,7 @@ fn shared_evidence_outcome(row: &HistoryRow, pred: &QualifyingPredicate) -> Boun
         },
         "cell_results": {
             "applies_at_schema_min": pred.cell_results.applies_at_schema_min,
+            "supported_schema_max": pred.cell_results.supported_schema_max,
         },
         "producer": {
             "required": pred.producer.required,

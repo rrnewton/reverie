@@ -1053,6 +1053,40 @@ class QualifyingReceiptMutationTest(unittest.TestCase):
             qualifying_receipt.CellResultsVerdict.VERDICT_INVALID,
         )
 
+    def test_schema_version_bounds_cell_results_authority(self) -> None:
+        predicate = qualifying_receipt.active()
+        current = _schema6_cell_row(SHA, "compared-and-matched")
+        current["schema_version"] = predicate["cell_results"]["supported_schema_max"]
+        self.assertEqual(
+            qualifying_receipt.row_qualification(current, SHA, predicate),
+            (True, "qualifies"),
+        )
+
+        newer = copy.deepcopy(current)
+        newer["schema_version"] += 1
+        newer["cell_results"]["future_field"] = True
+        self.assertEqual(
+            qualifying_receipt.row_qualification(newer, SHA, predicate),
+            (False, "cell_results schema-unavailable"),
+        )
+        self.assertIs(
+            qualifying_receipt.cell_results_verdict(newer, predicate),
+            qualifying_receipt.CellResultsVerdict.SCHEMA_UNAVAILABLE,
+        )
+
+        malformed_supported = copy.deepcopy(current)
+        del malformed_supported["cell_results"]["cells"][0]["cell_verdict"][
+            "comparison"
+        ]["display_name"]
+        self.assertEqual(
+            qualifying_receipt.row_qualification(malformed_supported, SHA, predicate),
+            (False, "cell_results cell-verdict-invalid"),
+        )
+        self.assertIs(
+            qualifying_receipt.cell_results_verdict(malformed_supported, predicate),
+            qualifying_receipt.CellResultsVerdict.VERDICT_INVALID,
+        )
+
     def test_tier_vocabulary_is_exactly_the_four_settled_names(self) -> None:
         self.assertEqual(
             qualifying_receipt._KNOWN_COMPARISON_TIERS,

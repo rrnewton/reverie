@@ -1,7 +1,7 @@
 //! Durable per-cell requalification after a canonical divergence.
 //!
-//! Schema-6 validation rows already bind typed per-cell results to retained
-//! artifacts.  Those append-only rows are the obligation store: a canonical
+//! Supported validation rows bind typed per-cell results to retained artifacts.
+//! Those append-only rows are the obligation store: a canonical
 //! divergence opens an obligation for that exact cell, and a later commit
 //! closes it only after enough clean canonical legs have been retained to make
 //! a repeat of the measured failure rate sufficiently unlikely.
@@ -253,25 +253,36 @@ fn cell_key_nonblank(cell: &CellKey) -> bool {
         && nonblank(&cell.backend)
 }
 
-/// Validate the typed schema-6 summary before using it as repetition evidence.
+/// Validate a supported typed cell-results summary before using it as
+/// repetition evidence.
 /// The canonical ledger adapter additionally binds the retained artifact bytes;
 /// this check prevents any direct caller from bypassing the summary contract.
-fn validated_evidence(row: &HistoryRow) -> Result<Option<&CellResultsEvidence>, String> {
+fn validated_evidence(
+    row: &HistoryRow,
+    schema_min: u32,
+    schema_max: u32,
+) -> Result<Option<&CellResultsEvidence>, String> {
     let schema = row.schema_version.unwrap_or(0);
     let evidence = row.cell_results.as_ref();
-    if schema < 6 {
+    if schema < schema_min {
         return if evidence.is_none() {
             Ok(None)
         } else {
             Err("legacy row illegally claims cell_results".into())
         };
     }
-    let evidence = evidence.ok_or_else(|| "schema-6 row omits cell_results".to_string())?;
+    if schema > schema_max {
+        return Ok(None);
+    }
+    let evidence = evidence
+        .ok_or_else(|| format!("schema-{schema} row omits cell_results"))?
+        .typed()
+        .ok_or_else(|| format!("schema-{schema} row has malformed cell_results"))?;
     let run_id = row
         .run_id
         .as_deref()
         .filter(|value| nonblank(value))
-        .ok_or_else(|| "schema-6 row omits stable run_id".to_string())?;
+        .ok_or_else(|| format!("schema-{schema} row omits stable run_id"))?;
     if evidence.run_id != run_id {
         return Err("cell_results run_id differs from row run_id".into());
     }
@@ -314,7 +325,7 @@ fn validated_evidence(row: &HistoryRow) -> Result<Option<&CellResultsEvidence>, 
     if evidence.cells.iter().any(|cell| match &cell.cell_verdict {
         CellVerdict::ComparedAndMatched { .. } | CellVerdict::ComparedAndDiverged { .. } => {
             canonical_observation(cell).is_none()
-                && !comparison_without_later_fields_is_well_formed(cell)
+                && !(schema == schema_min && comparison_without_later_fields_is_well_formed(cell))
                 && matches!(
                     &cell.cell_verdict,
                     CellVerdict::ComparedAndMatched {
@@ -365,6 +376,8 @@ pub fn unresolved<F>(
     rows: &[HistoryRow],
     target_sha: &str,
     qualifying_target_rows: &[HistoryRow],
+    cell_results_schema_min: u32,
+    cell_results_schema_max: u32,
     mut is_ancestor: F,
 ) -> Result<Vec<UnresolvedFailureObligation>, String>
 where
@@ -381,7 +394,9 @@ where
         .iter()
         .filter(|row| row.commit.as_deref() == Some(target_sha))
     {
-        if let Some(evidence) = validated_evidence(row)? {
+        if let Some(evidence) =
+            validated_evidence(row, cell_results_schema_min, cell_results_schema_max)?
+        {
             target_selected.extend(evidence.selected.iter().map(CellKey::from));
         }
     }
@@ -405,10 +420,15 @@ where
         let Some(toolchain) = row.extra.get("toolchain").and_then(|value| value.as_str()) else {
             continue;
         };
-        let Some(evidence) = validated_evidence(row)? else {
+        let Some(evidence) =
+            validated_evidence(row, cell_results_schema_min, cell_results_schema_max)?
+        else {
             continue;
         };
-        let run_id = row.run_id.as_deref().expect("validated schema-6 run_id");
+        let run_id = row
+            .run_id
+            .as_deref()
+            .expect("validated cell-results run_id");
         let fingerprint = (
             commit.to_owned(),
             tree.to_owned(),
@@ -528,14 +548,16 @@ where
 mod tests {
     use super::*;
     use crate::records::{
-        CellResultsArtifact, CellResultsEvidence, ComparedLogCounts, ComparedLogScope,
-        ComparisonSpec,
+        CellResultsArtifact, CellResultsEvidence, CellResultsValue, ComparedLogCounts,
+        ComparedLogScope, ComparisonSpec,
     };
 
     const BAD: &str = "1111111111111111111111111111111111111111";
     const FIX: &str = "2222222222222222222222222222222222222222";
     const OTHER: &str = "3333333333333333333333333333333333333333";
     const OLD: &str = "0000000000000000000000000000000000000000";
+    const CELL_RESULTS_SCHEMA_MIN: u32 = 6;
+    const CELL_RESULTS_SCHEMA_MAX: u32 = 7;
 
     fn comparison() -> ComparisonSpec {
         ComparisonSpec {
@@ -625,7 +647,9 @@ mod tests {
         let evidence = row
             .cell_results
             .as_mut()
-            .expect("test row has cell evidence");
+            .expect("test row has cell evidence")
+            .typed_mut()
+            .expect("test row has typed cell evidence");
         match &mut evidence.cells[0].cell_verdict {
             CellVerdict::ComparedAndMatched { comparison, .. }
             | CellVerdict::ComparedAndDiverged { comparison, .. } => comparison,
@@ -645,7 +669,7 @@ mod tests {
 
     fn uncalibrated_row(commit: &str, ordinal: u64, matched: bool) -> HistoryRow {
         let mut value = row(commit, ordinal, matched);
-        let evidence = value.cell_results.as_mut().unwrap();
+        let evidence = value.cell_results.as_mut().unwrap().typed_mut().unwrap();
         evidence.selected[0].test = "c-programs/ordinary-cell".into();
         evidence.cells[0].test = "c-programs/ordinary-cell".into();
         evidence.population_sha256 = population_sha256(&evidence.selected);
@@ -664,7 +688,7 @@ mod tests {
         value
             .extra
             .insert("selection_mode".into(), serde_json::json!("targeted"));
-        let evidence = value.cell_results.as_mut().unwrap();
+        let evidence = value.cell_results.as_mut().unwrap().typed_mut().unwrap();
         evidence.run_id = run_id.clone();
         evidence.artifact.path = format!("ignored/validate/artifacts/{run_id}/cell-results.jsonl");
         value
@@ -675,9 +699,16 @@ mod tests {
         target: &str,
     ) -> Result<Vec<UnresolvedFailureObligation>, String> {
         let target_receipts = target_rows(rows, target);
-        unresolved(rows, target, &target_receipts, |ancestor, descendant| {
-            Ok(ancestor == descendant || (ancestor == BAD && descendant == FIX))
-        })
+        unresolved(
+            rows,
+            target,
+            &target_receipts,
+            CELL_RESULTS_SCHEMA_MIN,
+            CELL_RESULTS_SCHEMA_MAX,
+            |ancestor, descendant| {
+                Ok(ancestor == descendant || (ancestor == BAD && descendant == FIX))
+            },
+        )
     }
 
     #[test]
@@ -689,7 +720,13 @@ mod tests {
     #[test]
     fn canonical_observation_requires_the_current_verifier_evidence() {
         let current = row(FIX, 1, true);
-        let cell = &current.cell_results.as_ref().unwrap().cells[0];
+        let cell = &current
+            .cell_results
+            .as_ref()
+            .unwrap()
+            .typed()
+            .unwrap()
+            .cells[0];
         assert_eq!(
             canonical_observation(cell),
             Some(Observation {
@@ -700,29 +737,59 @@ mod tests {
 
         let mut missing_display_name = current.clone();
         row_comparison(&mut missing_display_name).display_name = None;
-        let cell = &missing_display_name.cell_results.as_ref().unwrap().cells[0];
+        let cell = &missing_display_name
+            .cell_results
+            .as_ref()
+            .unwrap()
+            .typed()
+            .unwrap()
+            .cells[0];
         assert_eq!(canonical_observation(cell), None);
 
         let mut missing_io_buffers = current.clone();
         row_comparison(&mut missing_io_buffers).compare_io_buffers = None;
-        let cell = &missing_io_buffers.cell_results.as_ref().unwrap().cells[0];
+        let cell = &missing_io_buffers
+            .cell_results
+            .as_ref()
+            .unwrap()
+            .typed()
+            .unwrap()
+            .cells[0];
         assert_eq!(canonical_observation(cell), None);
 
         let mut caller_defined = current.clone();
         row_comparison(&mut caller_defined).record_envelope = Some("caller_defined".into());
-        let cell = &caller_defined.cell_results.as_ref().unwrap().cells[0];
+        let cell = &caller_defined
+            .cell_results
+            .as_ref()
+            .unwrap()
+            .typed()
+            .unwrap()
+            .cells[0];
         assert_eq!(canonical_observation(cell), None);
 
         let mut host_time = current.clone();
         row_comparison(&mut host_time).virtualize_time = Some(false);
-        let cell = &host_time.cell_results.as_ref().unwrap().cells[0];
+        let cell = &host_time
+            .cell_results
+            .as_ref()
+            .unwrap()
+            .typed()
+            .unwrap()
+            .cells[0];
         assert_eq!(canonical_observation(cell), None);
 
         let mut extra_stripping = current.clone();
         row_comparison(&mut extra_stripping)
             .stripped_prefixes
             .push("unreviewed-prefix".into());
-        let cell = &extra_stripping.cell_results.as_ref().unwrap().cells[0];
+        let cell = &extra_stripping
+            .cell_results
+            .as_ref()
+            .unwrap()
+            .typed()
+            .unwrap()
+            .cells[0];
         assert_eq!(canonical_observation(cell), None);
     }
 
@@ -735,7 +802,13 @@ mod tests {
         comparison.record_envelope = None;
         comparison.virtualize_time = None;
 
-        let cell = &before_fields.cell_results.as_ref().unwrap().cells[0];
+        let cell = &before_fields
+            .cell_results
+            .as_ref()
+            .unwrap()
+            .typed()
+            .unwrap()
+            .cells[0];
         assert!(comparison_without_later_fields_is_well_formed(cell));
         assert_eq!(canonical_observation(cell), None);
 
@@ -753,10 +826,57 @@ mod tests {
     }
 
     #[test]
+    fn schema7_requires_the_current_exact_shape() {
+        let mut current = row(FIX, 1, true);
+        current.schema_version = Some(CELL_RESULTS_SCHEMA_MAX);
+        assert!(
+            validated_evidence(&current, CELL_RESULTS_SCHEMA_MIN, CELL_RESULTS_SCHEMA_MAX,)
+                .unwrap()
+                .is_some()
+        );
+
+        let mut missing_current_field = current;
+        row_comparison(&mut missing_current_field).display_name = None;
+        assert!(validated_evidence(
+            &missing_current_field,
+            CELL_RESULTS_SCHEMA_MIN,
+            CELL_RESULTS_SCHEMA_MAX,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn newer_cell_results_are_readable_but_have_no_observation_authority() {
+        let mut newer = row(OTHER, 1, false);
+        newer.schema_version = Some(CELL_RESULTS_SCHEMA_MAX + 1);
+        newer.cell_results = Some(CellResultsValue::Other(serde_json::json!({
+            "future_shape": true,
+        })));
+        assert!(
+            validated_evidence(&newer, CELL_RESULTS_SCHEMA_MIN, CELL_RESULTS_SCHEMA_MAX,)
+                .unwrap()
+                .is_none()
+        );
+
+        let target = row(FIX, 2, true);
+        assert!(evaluate(&[newer.clone(), target], FIX).unwrap().is_empty());
+
+        newer.schema_version = Some(CELL_RESULTS_SCHEMA_MAX);
+        assert!(
+            validated_evidence(&newer, CELL_RESULTS_SCHEMA_MIN, CELL_RESULTS_SCHEMA_MAX,).is_err()
+        );
+    }
+
+    #[test]
     fn unselected_failed_cell_does_not_slow_an_unrelated_candidate() {
         let failed = row(BAD, 1, false);
         let mut unrelated = row(FIX, 2, true);
-        let evidence = unrelated.cell_results.as_mut().unwrap();
+        let evidence = unrelated
+            .cell_results
+            .as_mut()
+            .unwrap()
+            .typed_mut()
+            .unwrap();
         evidence.selected[0].test = "unrelated-cell".into();
         evidence.cells[0].test = "unrelated-cell".into();
         evidence.population_sha256 = population_sha256(&evidence.selected);
@@ -772,9 +892,16 @@ mod tests {
         untyped_target.run_id = None;
         untyped_target.cell_results = None;
         let rows = [failed, untyped_target.clone()];
-        let obligations = unresolved(&rows, FIX, &[untyped_target], |ancestor, descendant| {
-            Ok(ancestor == descendant || (ancestor == BAD && descendant == FIX))
-        })
+        let obligations = unresolved(
+            &rows,
+            FIX,
+            &[untyped_target],
+            CELL_RESULTS_SCHEMA_MIN,
+            CELL_RESULTS_SCHEMA_MAX,
+            |ancestor, descendant| {
+                Ok(ancestor == descendant || (ancestor == BAD && descendant == FIX))
+            },
+        )
         .unwrap();
         assert_eq!(obligations.len(), 1);
         assert_eq!(obligations[0].observed_clean_legs_at_target, 0);
@@ -883,9 +1010,16 @@ mod tests {
         }
         rows.push(row(FIX, 900, true));
         let target_receipts = target_rows(&rows, FIX);
-        let obligations = unresolved(&rows, FIX, &target_receipts, |ancestor, descendant| {
-            Ok(ancestor == descendant || (ancestor == BAD && descendant == FIX))
-        })
+        let obligations = unresolved(
+            &rows,
+            FIX,
+            &target_receipts,
+            CELL_RESULTS_SCHEMA_MIN,
+            CELL_RESULTS_SCHEMA_MAX,
+            |ancestor, descendant| {
+                Ok(ancestor == descendant || (ancestor == BAD && descendant == FIX))
+            },
+        )
         .unwrap();
         assert_eq!(obligations.len(), 1);
         assert_eq!(obligations[0].observed_clean_legs_at_target, 2);
@@ -896,14 +1030,26 @@ mod tests {
         let failed = row(BAD, 1, false);
         let full_target = row(FIX, 2, true);
         let mut selective = row(FIX, 3, true);
-        let evidence = selective.cell_results.as_mut().unwrap();
+        let evidence = selective
+            .cell_results
+            .as_mut()
+            .unwrap()
+            .typed_mut()
+            .unwrap();
         evidence.selected[0].test = "unrelated-cell".into();
         evidence.cells[0].test = "unrelated-cell".into();
         evidence.population_sha256 = population_sha256(&evidence.selected);
         let rows = [failed, full_target.clone(), selective];
-        let obligations = unresolved(&rows, FIX, &[full_target], |ancestor, descendant| {
-            Ok(ancestor == descendant || (ancestor == BAD && descendant == FIX))
-        })
+        let obligations = unresolved(
+            &rows,
+            FIX,
+            &[full_target],
+            CELL_RESULTS_SCHEMA_MIN,
+            CELL_RESULTS_SCHEMA_MAX,
+            |ancestor, descendant| {
+                Ok(ancestor == descendant || (ancestor == BAD && descendant == FIX))
+            },
+        )
         .unwrap();
         assert_eq!(obligations.len(), 1);
     }
@@ -911,7 +1057,13 @@ mod tests {
     #[test]
     fn malformed_schema6_summary_is_refused() {
         let mut malformed = row(BAD, 1, false);
-        malformed.cell_results.as_mut().unwrap().run_id = "other-run".into();
+        malformed
+            .cell_results
+            .as_mut()
+            .unwrap()
+            .typed_mut()
+            .unwrap()
+            .run_id = "other-run".into();
         let target = row(FIX, 2, true);
         assert!(evaluate(&[malformed, target], FIX).is_err());
     }
@@ -927,13 +1079,18 @@ mod tests {
         for ordinal in 0..809 {
             rows.push(targeted_producer_row(FIX, 10 + ordinal, true));
         }
-        assert!(
-            unresolved(&rows, FIX, &[full_target], |ancestor, descendant| {
+        assert!(unresolved(
+            &rows,
+            FIX,
+            &[full_target],
+            CELL_RESULTS_SCHEMA_MIN,
+            CELL_RESULTS_SCHEMA_MAX,
+            |ancestor, descendant| {
                 Ok(ancestor == descendant || (ancestor == BAD && descendant == FIX))
-            })
-            .unwrap()
-            .is_empty()
-        );
+            },
+        )
+        .unwrap()
+        .is_empty());
     }
 
     #[test]
@@ -944,11 +1101,18 @@ mod tests {
         }
         let target = row(FIX, 900, true);
         rows.push(target.clone());
-        let obligations = unresolved(&rows, FIX, &[target], |ancestor, descendant| {
-            Ok(ancestor == descendant
-                || (ancestor == OLD && (descendant == BAD || descendant == FIX))
-                || (ancestor == BAD && descendant == FIX))
-        })
+        let obligations = unresolved(
+            &rows,
+            FIX,
+            &[target],
+            CELL_RESULTS_SCHEMA_MIN,
+            CELL_RESULTS_SCHEMA_MAX,
+            |ancestor, descendant| {
+                Ok(ancestor == descendant
+                    || (ancestor == OLD && (descendant == BAD || descendant == FIX))
+                    || (ancestor == BAD && descendant == FIX))
+            },
+        )
         .unwrap();
         assert_eq!(obligations.len(), 1);
     }
@@ -956,13 +1120,20 @@ mod tests {
     #[test]
     fn ancestry_lookup_error_fails_closed() {
         let rows = [row(BAD, 1, false), row(FIX, 2, true)];
-        let error = unresolved(&rows, FIX, &[rows[1].clone()], |ancestor, descendant| {
-            if ancestor == BAD && descendant == FIX {
-                Err("missing commit object".into())
-            } else {
-                Ok(ancestor == descendant)
-            }
-        })
+        let error = unresolved(
+            &rows,
+            FIX,
+            &[rows[1].clone()],
+            CELL_RESULTS_SCHEMA_MIN,
+            CELL_RESULTS_SCHEMA_MAX,
+            |ancestor, descendant| {
+                if ancestor == BAD && descendant == FIX {
+                    Err("missing commit object".into())
+                } else {
+                    Ok(ancestor == descendant)
+                }
+            },
+        )
         .unwrap_err();
         assert!(error.contains("missing commit object"));
     }

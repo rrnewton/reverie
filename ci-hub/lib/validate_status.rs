@@ -320,6 +320,21 @@ pub fn failure_disposition(row: &HistoryRow, sha: &str) -> FailureDisposition {
     {
         return FailureDisposition::NotFailure;
     }
+    let predicate = crate::qualifying_receipt::active();
+    let hermit_row = matches!(
+        row.repo.as_deref(),
+        None | Some("hermit") | Some("rrnewton/hermit")
+    );
+    if hermit_row
+        && row
+            .schema_version
+            .is_some_and(|schema| schema > predicate.cell_results.supported_schema_max)
+    {
+        // A newer writer may have changed the evidence contract. Keep the row
+        // visible and re-runnable, but do not turn an unread shape into a
+        // durable product failure.
+        return FailureDisposition::NeedsRerun;
+    }
 
     let gates_run = row.gates_run.or(row.checks);
     // Apply the schema-aware full-profile fallback so an anchored full run whose
@@ -1282,6 +1297,25 @@ mod tests {
     }
 
     #[test]
+    fn newer_hermit_failure_has_no_durable_failure_authority() {
+        let mut newer = complete_failure(PASS_SHA);
+        newer.repo = Some("hermit".into());
+        newer.schema_version = Some(
+            crate::qualifying_receipt::active()
+                .cell_results
+                .supported_schema_max
+                + 1,
+        );
+        newer.cell_results = Some(crate::records::CellResultsValue::Other(
+            serde_json::json!({"future_shape": true}),
+        ));
+        let assessment = assess(&[newer], PASS_SHA);
+        assert_eq!(assessment.verdict, Verdict::NeedsRerun);
+        assert_eq!(assessment.failed_records, 0);
+        assert_eq!(assessment.withheld_nonpass_records, 1);
+    }
+
+    #[test]
     fn mixed_command_not_found_and_genuine_red_is_not_no_result() {
         // One gate genuinely failed after running (exit 1, 45s); a second was
         // command-not-found. A real defect co-occurring with env noise must NOT be
@@ -1577,6 +1611,8 @@ mod tests {
         assert!(!pred.gate_filtered_tests);
         assert!(pred.coverage.per_node);
         assert_eq!(pred.coverage.applies_at_schema_min, COUNTS_SCHEMA);
+        assert_eq!(pred.cell_results.applies_at_schema_min, 6);
+        assert_eq!(pred.cell_results.supported_schema_max, 7);
     }
 
     #[test]
@@ -1622,6 +1658,23 @@ mod tests {
             !failures[0].error.is_empty(),
             "the serde error must be retained, not discarded"
         );
+    }
+
+    #[test]
+    fn parse_ledger_reads_outer_version_before_deciding_newer_cell_results_shape() {
+        let newer = format!(
+            r#"{{"schema_version":8,"record_id":"future-row","commit":"{OTHER_SHA}","cell_results":{{"future_field":true}}}}"#
+        );
+        let known = serde_json::to_string(&clean_full_pass(PASS_SHA)).unwrap();
+        let (rows, failures) = parse_ledger(&format!("{newer}\n{known}\n"));
+        assert!(failures.is_empty());
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].schema_version, Some(8));
+        assert!(matches!(
+            rows[0].cell_results,
+            Some(crate::records::CellResultsValue::Other(_))
+        ));
+        assert_eq!(assess(&rows, PASS_SHA).verdict, Verdict::Validated);
     }
 
     /// A failure must carry the identity of the record it could not read, so a

@@ -196,9 +196,9 @@ pub struct DispatchAcknowledgement {
 pub struct HistoryRow {
     #[serde(default)]
     pub schema_version: Option<u32>,
-    /// Stable validation-run identity. Schema-6 rows require this separately
-    /// from `record_id`, because finalization mints a correction record while
-    /// preserving the run and its per-cell evidence.
+    /// Stable validation-run identity. Rows whose schema supports cell results
+    /// require this separately from `record_id`, because finalization mints a
+    /// correction record while preserving the run and its per-cell evidence.
     #[serde(default)]
     pub run_id: Option<String>,
     #[serde(default)]
@@ -293,10 +293,11 @@ pub struct HistoryRow {
     #[serde(default)]
     pub source: Option<String>,
     /// Receipt-bound per-cell comparison evidence. Historical rows predate this
-    /// field and remain readable as `None`; schema-6 rows are required to carry
-    /// a complete value by the shared qualifying-receipt predicate.
+    /// field and remain readable as `None`. Keep an unrecognized newer value as
+    /// JSON so the outer `schema_version` can be consulted before deciding which
+    /// typed shape applies; supported schemas still require a complete value.
     #[serde(default)]
-    pub cell_results: Option<CellResultsEvidence>,
+    pub cell_results: Option<CellResultsValue>,
     #[serde(default)]
     pub gates: Vec<GateHistoryRow>,
     #[serde(flatten)]
@@ -532,6 +533,33 @@ pub struct CellResultsEvidence {
     pub cells: Vec<CellResult>,
 }
 
+/// A supported cell-results shape, or the exact JSON from a newer shape that
+/// this reader does not understand yet. The typed arm is deliberately first:
+/// supported rows must keep their established serialization and receipt digest.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(untagged)]
+pub enum CellResultsValue {
+    Typed(CellResultsEvidence),
+    Other(Value),
+}
+
+impl CellResultsValue {
+    pub fn typed(&self) -> Option<&CellResultsEvidence> {
+        match self {
+            Self::Typed(evidence) => Some(evidence),
+            Self::Other(_) => None,
+        }
+    }
+
+    #[cfg(test)]
+    pub fn typed_mut(&mut self) -> Option<&mut CellResultsEvidence> {
+        match self {
+            Self::Typed(evidence) => Some(evidence),
+            Self::Other(_) => None,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -706,5 +734,55 @@ mod tests {
             let old_tier = base.replace("execution-only-self-consistent", retired);
             assert!(serde_json::from_str::<CellVerdict>(&old_tier).is_err());
         }
+    }
+
+    #[test]
+    fn cell_results_reads_supported_shape_first_and_preserves_its_serialization() {
+        let json = serde_json::json!({
+            "run_id": "run-1",
+            "hermit_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "source_tree_dirty": false,
+            "selected_count": 1,
+            "recorded_count": 1,
+            "population_sha256": "b".repeat(64),
+            "artifact": {
+                "path": "ignored/validate/artifacts/run-1/cell-results.jsonl",
+                "sha256": "c".repeat(64),
+                "row_count": 1
+            },
+            "selected": [{
+                "lane": "portable",
+                "category": "c-programs",
+                "test": "hello",
+                "mode": "verify",
+                "backend": "ptrace"
+            }],
+            "cells": [{
+                "lane": "portable",
+                "category": "c-programs",
+                "test": "hello",
+                "mode": "verify",
+                "backend": "ptrace",
+                "cell_verdict": {
+                    "state": "unavailable-with-reason",
+                    "comparison_tier": "declared-but-unverifiable",
+                    "reason": "fixture"
+                }
+            }]
+        });
+        let evidence: CellResultsEvidence = serde_json::from_value(json.clone()).unwrap();
+        let value: CellResultsValue = serde_json::from_value(json.clone()).unwrap();
+        assert!(matches!(value, CellResultsValue::Typed(_)));
+        assert_eq!(
+            serde_json::to_vec(&value).unwrap(),
+            serde_json::to_vec(&evidence).unwrap(),
+            "the wrapper must not change canonical receipt bytes for supported rows"
+        );
+
+        let mut newer = json;
+        newer["future_field"] = serde_json::json!(true);
+        let value: CellResultsValue = serde_json::from_value(newer.clone()).unwrap();
+        assert!(matches!(value, CellResultsValue::Other(_)));
+        assert_eq!(serde_json::to_value(value).unwrap(), newer);
     }
 }

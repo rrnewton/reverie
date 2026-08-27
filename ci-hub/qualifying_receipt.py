@@ -395,7 +395,7 @@ def load() -> dict[str, Any]:
     for key in ("applies_at_schema_min", "per_node"):
         if key not in pred["coverage"]:
             raise RuntimeError(f"{path}: qualifying predicate missing coverage.{key}")
-    for key in ("applies_at_schema_min",):
+    for key in ("applies_at_schema_min", "supported_schema_max"):
         if key not in pred["cell_results"]:
             raise RuntimeError(f"{path}: qualifying predicate missing cell_results.{key}")
     for key in ("applies_at_schema_min", "branch"):
@@ -724,12 +724,20 @@ def cell_verdict_valid(value: Any) -> bool:
 def cell_results_verdict(
     row: dict[str, Any], pred: dict[str, Any]
 ) -> CellResultsVerdict:
-    """Require complete schema-6 evidence; older rows make no cell claim."""
+    """Require complete evidence at supported schemas; older rows make no claim."""
     clause = pred.get("cell_results")
     if not isinstance(clause, dict):
         return CellResultsVerdict.POLICY_UNAVAILABLE
     schema_min = clause.get("applies_at_schema_min")
-    if not isinstance(schema_min, int) or isinstance(schema_min, bool) or schema_min < 0:
+    schema_max = clause.get("supported_schema_max")
+    if (
+        not isinstance(schema_min, int)
+        or isinstance(schema_min, bool)
+        or schema_min < 0
+        or not isinstance(schema_max, int)
+        or isinstance(schema_max, bool)
+        or schema_max < schema_min
+    ):
         return CellResultsVerdict.POLICY_UNAVAILABLE
     schema = row.get("schema_version")
     if not isinstance(schema, int) or isinstance(schema, bool) or schema < 0:
@@ -741,6 +749,8 @@ def cell_results_verdict(
             if evidence is None
             else CellResultsVerdict.LEGACY_CLAIMS_CELL_RESULTS
         )
+    if schema > schema_max:
+        return CellResultsVerdict.SCHEMA_UNAVAILABLE
     if evidence is None:
         return CellResultsVerdict.MISSING
     if not isinstance(evidence, dict) or set(evidence) != {
