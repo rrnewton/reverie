@@ -9,6 +9,7 @@
 #![cfg(target_arch = "x86_64")]
 
 use std::os::unix::fs::FileTypeExt;
+use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::sync::Mutex;
 use std::sync::atomic::AtomicBool;
@@ -1773,6 +1774,76 @@ fn static_elf_executes_syscall_and_exits() {
         .unwrap();
 
     assert_eq!(backend.run_static_elf().unwrap(), 0);
+}
+
+#[test]
+fn kvm_initial_rbp_and_rflags_match_native_linux_process_entry() {
+    if !kvm_available("KVM initial-register parity test") {
+        return;
+    }
+
+    // Capture rbp and rflags before the guest makes its first syscall. The
+    // temporary stack adjustment happens only after both entry values are in
+    // callee-saved registers.
+    let code = [
+        0x9c, // pushfq
+        0x5b, // pop rbx
+        0x49, 0x89, 0xec, // mov r12, rbp
+        0x48, 0x83, 0xec, 0x10, // sub rsp, 16
+        0x4c, 0x89, 0x24, 0x24, // mov [rsp], r12
+        0x48, 0x89, 0x5c, 0x24, 0x08, // mov [rsp + 8], rbx
+        0xbf, 0x01, 0x00, 0x00, 0x00, // mov edi, 1
+        0x48, 0x89, 0xe6, // mov rsi, rsp
+        0xba, 0x10, 0x00, 0x00, 0x00, // mov edx, 16
+        0xb8, 0x01, 0x00, 0x00, 0x00, // mov eax, SYS_write
+        0x0f, 0x05, // syscall
+        0xb8, 0x3c, 0x00, 0x00, 0x00, // mov eax, SYS_exit
+        0x31, 0xff, // xor edi, edi
+        0x0f, 0x05, // syscall
+        0x0f, 0x0b, // ud2
+    ];
+    let image = static_elf(&code);
+    let executable = TestExecutable::new(&image);
+    let mut permissions = std::fs::metadata(&executable.0).unwrap().permissions();
+    permissions.set_mode(0o755);
+    std::fs::set_permissions(&executable.0, permissions).unwrap();
+
+    let native = std::process::Command::new(&executable.0).output().unwrap();
+    assert!(
+        native.status.success(),
+        "native entry-register fixture failed: {native:?}",
+    );
+
+    let mut backend = KvmBackend::new(MEMORY_SIZE).unwrap();
+    backend
+        .install_static_elf(&image, "/bin/entry-registers")
+        .unwrap();
+    let (code, kvm_stdout, kvm_stderr) = backend.run_static_elf_captured().unwrap();
+    assert_eq!(
+        code,
+        0,
+        "KVM entry-register fixture failed; stderr={}",
+        String::from_utf8_lossy(&kvm_stderr),
+    );
+
+    let decode = |label: &str, bytes: &[u8]| {
+        assert_eq!(bytes.len(), 16, "{label} emitted the wrong state size");
+        let rbp = u64::from_le_bytes(bytes[..8].try_into().unwrap());
+        let rflags = u64::from_le_bytes(bytes[8..].try_into().unwrap());
+        (rbp, rflags)
+    };
+    let native_state = decode("native", &native.stdout);
+    let kvm_state = decode("KVM", &kvm_stdout);
+
+    assert_eq!(native_state.0, 0, "native Linux did not enter with rbp=0");
+    assert_eq!(
+        native_state.1, 0x202,
+        "native Linux did not enter with reserved bit and IF set",
+    );
+    assert_eq!(
+        kvm_state, native_state,
+        "KVM must reproduce native Linux's observed rbp and rflags at _start",
+    );
 }
 
 #[test]
