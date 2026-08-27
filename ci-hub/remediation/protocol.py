@@ -5566,14 +5566,16 @@ def watch(
             print(f"watch_checked={len(examined_ids)}")
             print(f"watch_attempted={len(attempted_ids)}")
             print("watch_timed_out=true")
+            reason = stop_reason[0] if stop_reason else "budget"
             next_start: str | None = None
             if obligation_id is None and records:
                 print("watch_rotation=round-robin")
-                print(f"watch_rotation_max_cycles={max_cycles}")
                 print(f"watch_examined_within_bound={examined_within_bound}")
-                if "watch-state-lock" in stop_reason:
+                if reason == "watch-state-lock":
+                    print("watch_rotation_max_cycles=unknown")
                     print("watch_rotation_next=unknown")
                 else:
+                    print(f"watch_rotation_max_cycles={max_cycles}")
                     next_index = len(attempted_ids) % len(records)
                     next_start = str(records[next_index]["obligation_id"])
                     print(f"watch_rotation_next={next_start}")
@@ -5610,11 +5612,23 @@ def watch(
             # "slow" and "refused for quota" need opposite responses -- one
             # wants more time, the other wants FEWER CALLS -- and a bare
             # NO-RESULT cannot tell them apart. Naming it costs a field.
-            reason = stop_reason[0] if stop_reason else "budget"
             print(f"watch_stopped_because={reason}")
             print(f"watch_unchecked={len(unchecked)}")
             if unchecked:
                 print(f"watch_unchecked_ids={','.join(unchecked)}")
+            if reason == "watch-state-lock":
+                rotation_detail = (
+                    ". The rotation bound does not include this invocation "
+                    "because no poll completed and the saved cycle did not advance"
+                )
+            elif next_start is not None:
+                rotation_detail = (
+                    f". The next cycle starts at {next_start}; with at least "
+                    f"one completed poll per cycle, all {planned} current "
+                    f"obligations are examined within at most {max_cycles} cycles"
+                )
+            else:
+                rotation_detail = ""
             # ⚠️ THE VERDICT STAYS NO-RESULT, AND THE SUMMARY SAYS SO TOO.
             # An earlier draft of this made the summary read "PARTIAL" while
             # `state`, `verdict` and `watch_verdict` still read NO-RESULT --
@@ -5638,13 +5652,7 @@ def watch(
                 + f". The census is INCOMPLETE, so this is not a clear. "
                 f"{len(unchecked)} obligation(s) were NOT examined this cycle"
                 + (f": {', '.join(unchecked)}" if unchecked else "")
-                + (
-                    f". The next cycle starts at {next_start}; with at least "
-                    f"one completed poll per cycle, all {planned} current "
-                    f"obligations are examined within at most {max_cycles} cycles"
-                    if next_start is not None
-                    else ""
-                )
+                + rotation_detail
             )
             for record in updated:
                 print(f"  {_summary_line(record)}")

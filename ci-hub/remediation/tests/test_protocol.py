@@ -4449,7 +4449,69 @@ class ProtocolTest(unittest.TestCase):
         self.assertIn("watch_checked=0", printed)
         self.assertIn("watch_attempted=0", printed)
         self.assertIn("watch_rotation_next=unknown", printed)
+        self.assertIn("watch_rotation_max_cycles=unknown", printed)
+        self.assertIn(
+            "The rotation bound does not include this invocation because no "
+            "poll completed",
+            printed,
+        )
+        self.assertNotIn("with at least one completed poll per cycle", printed)
         self.assertNotIn("watch_status=complete", printed)
+
+    def test_three_state_lock_refusals_leave_the_next_watch_able_to_poll(self) -> None:
+        clock, records, fake_poll = self._budget_fixture(2, seconds_per_poll=0.0)
+        lock_path = protocol._watch_state_lock_path(self.store)
+        state_path = protocol._watch_state_path(self.store)
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        attempts: list[str] = []
+
+        def recording_poll(*args, **kwargs):
+            attempts.append(args[0])
+            return fake_poll(*args, **kwargs)
+
+        refused_outputs: list[str] = []
+        with mock.patch.object(protocol.time, "monotonic", lambda: clock["t"]), \
+             mock.patch.object(
+                 protocol.obligations,
+                 "latest_records",
+                 return_value={record["obligation_id"]: record for record in records},
+             ), \
+             mock.patch.object(protocol, "poll_obligation", recording_poll):
+            with lock_path.open("a+", encoding="utf-8") as lock:
+                protocol.fcntl.flock(
+                    lock.fileno(), protocol.fcntl.LOCK_EX | protocol.fcntl.LOCK_NB
+                )
+                for _ in range(3):
+                    output = io.StringIO()
+                    with redirect_stdout(output):
+                        rc = protocol.watch(
+                            store_path=self.store,
+                            obligation_id=None,
+                            once=True,
+                            poll_seconds=1,
+                            budget_secs=10.0,
+                        )
+                    self.assertEqual(rc, protocol.WATCH_EXIT_NO_RESULT)
+                    refused_outputs.append(output.getvalue())
+
+            attempts_while_locked = list(attempts)
+            recovered_output = io.StringIO()
+            with redirect_stdout(recovered_output):
+                recovered_rc = protocol.watch(
+                    store_path=self.store,
+                    obligation_id=None,
+                    once=True,
+                    poll_seconds=1,
+                    budget_secs=10.0,
+                )
+
+        self.assertEqual(attempts_while_locked, [])
+        self.assertEqual(len(refused_outputs), 3)
+        self.assertTrue(all("watch-state-lock" in text for text in refused_outputs))
+        self.assertEqual(attempts, ["ob-0", "ob-1"])
+        self.assertEqual(recovered_rc, 1)
+        self.assertIn("watch_status=complete", recovered_output.getvalue())
+        self.assertEqual(json.loads(state_path.read_text(encoding="utf-8"))["cycle"], 1)
 
     def test_a_complete_sweep_reports_nothing_unexamined(self) -> None:
         """The negative arm: when everything is reached, the field says zero and
