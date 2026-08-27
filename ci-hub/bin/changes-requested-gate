@@ -1086,19 +1086,49 @@ def evaluate(
     # member who objected was not the one speaking. Measured live on hermit#2692:
     # agent(hermit-triage) refused on the rationale, the author fixed it, and
     # agent(hermit-007) and agent(hermit-dbg) approved -- triage never returned.
+    # Old-head refusals use the same issuer ownership rule as exact-head
+    # refusals.  This used to test only `(lane, sha)`, so a precise withdrawal
+    # for one unsigned refusal also classified every same-lane, same-SHA
+    # refusal from another issuer as ANSWERED.  That is how hermit#2670 read
+    # CLEAR over four refusals whose departed issuers never withdrew.
+    #
+    # Keep precise `RETIRES` claims on the `retired(cid)` path above.  The
+    # fallback below is only for legacy unquoted withdrawals, counted one for
+    # one and keyed by issuer exactly like the current-head path.  A withdrawal
+    # with a `RETIRES` target must not also become a broad fallback.
+    old_unquoted_left: dict[tuple[str, str, str], int] = {}
+    for kind, lane, sha, cid in found4:
+        if (
+            kind == WITHDRAWN
+            and lane is not None
+            and sha is not None
+            and not grammar.retirement_targets(by_id.get(cid, ""))
+        ):
+            retractor = _issuer_of_comment(by_id.get(cid, ""))
+            if retractor is not None:
+                key = (lane, sha, retractor)
+                old_unquoted_left[key] = old_unquoted_left.get(key, 0) + 1
+
     answered, outrun, relaned, colleague = [], [], [], []
     for kind, lane, sha, cid in found4:
         if kind != REFUSAL:
             continue
-        withdrew = retired(cid) or any(
-            k == WITHDRAWN and l == lane and l is not None and s == sha
-            for k, l, s in found
-        )
+        refuser = _issuer_of_comment(by_id.get(cid, ""))
+        withdrew = retired(cid)
+        old_key = (lane, sha, refuser)
+        if (
+            not withdrew
+            and lane is not None
+            and sha is not None
+            and refuser is not None
+            and old_unquoted_left.get(old_key, 0) > 0
+        ):
+            old_unquoted_left[old_key] -= 1
+            withdrew = True
         # A refusal whose position in the record cannot be found credits NOTHING:
         # "later in the record" is undecidable without it, and undecidable must
         # not read as discharged.
         here = _pos_of_cid.get(cid)
-        refuser = _issuer_of_comment(by_id.get(cid, ""))
         later_in_lane = [] if here is None or lane is None else [
             (aissuer, acid) for alane, _asha, acid, apos, aissuer in _approvals
             if alane == lane and apos > here
@@ -1114,7 +1144,7 @@ def evaluate(
             colleague.append((lane, sha, refuser,
                               [who for who, _ in later_in_lane]))
         else:
-            outrun.append((lane, sha))
+            outrun.append((lane, sha, refuser))
 
     undischarged = len(outrun) + len(colleague)
     if not undischarged:
@@ -1127,7 +1157,8 @@ def evaluate(
                 f"than a withdrawal: the member who objected re-read a later sha and "
                 f"approved it, rather than saying never mind. It is still not evidence "
                 f"the finding was addressed -- an approval granted on a summary that "
-                f"drifted from the objection produces this exact readout.",
+                f"drifted from the objection produces this exact readout."
+                + retire_note(),
             )
         if relaned:
             return (
@@ -1136,7 +1167,8 @@ def evaluate(
                 f"every one was ANSWERED -- {len(answered)} by a withdrawal at the sha "
                 f"refused, {len(relaned)} by the refusing MEMBER approving later. Neither "
                 f"form is evidence the finding was addressed; both are evidence the "
-                f"member who objected spoke again.",
+                f"member who objected spoke again."
+                + retire_note(),
             )
         return (
             OK,
@@ -1144,21 +1176,25 @@ def evaluate(
             f"every one was ANSWERED -- its own lane withdrew at the sha it refused. "
             f"That is the correct clearing FORM. It is not evidence the finding was "
             f"addressed: a withdrawal granted for a change that answered the "
-            f"description rather than the objection produces this exact readout.",
+            f"description rather than the objection produces this exact readout."
+            + retire_note(),
         )
 
     detail = ", ".join(
-        f"{lane or '<no lane>'}@{(sha or '<no sha>')[:12]}" for lane, sha in outrun
+        f"{lane or '<no lane>'}@{(sha or '<no sha>')[:12]} by "
+        f"{refuser or '<unsigned>'}"
+        for lane, sha, refuser in outrun
     )
     parts = []
     if outrun:
         parts.append(
             f"{len(outrun)} of {len(refusals)} refusal marker(s) were OUTRUN, not answered: "
-            f"{detail}. The sha moved so they no longer name {head[:12]}, and NO withdrawal "
-            f"from the refusing lane says the objection was addressed. This gate cannot tell "
+            f"{detail}. The sha moved so they no longer name {head[:12]}, and NO entitled "
+            f"withdrawal says the objection was addressed. This gate cannot tell "
             f"a reviewer who read the delta from an author who pushed past the objection, and "
-            f"it will not assert the benign reading. To discharge one honestly the refusing "
-            f"lane posts {WITHDRAWN} at the sha it refused."
+            f"it will not assert the benign reading. For a named refusal, the refusing member "
+            f"posts {WITHDRAWN} at the sha it refused; an unsigned refusal is retired by an "
+            f"exact `RETIRES <comment-id>`."
         )
     if colleague:
         who = ", ".join(
@@ -1182,7 +1218,7 @@ def evaluate(
         parts.append(
             f"{len(relaned)} were answered by the refusing MEMBER approving a later sha."
         )
-    verdict = " ".join(parts)
+    verdict = " ".join(parts) + retire_note()
     # Reported, not blocked, by default: `land-pr.sh` abandons on any non-zero, so
     # blocking here would stop every head carrying an outrun refusal at once. Whether
     # that is the right policy is a decision for the owner, not a side effect of
@@ -1309,7 +1345,7 @@ def self_test() -> int:
     render = [
         (
             "a refusal ANSWERED by its own lane at the sha it refused",
-            [_T_REF, _T_WD], "ANSWERED", "OUTRUN",
+            [_by(_A1, _T_REF), _by(_A1, _T_WD)], "ANSWERED", "OUTRUN",
         ),
         (
             "a refusal merely OUTRUN by a later push, never withdrawn",
@@ -1317,7 +1353,7 @@ def self_test() -> int:
         ),
         (
             "a CODEX refusal outrun while a CLAUDE one was answered",
-            [_T_CODEX_REF, _T_REF, _T_WD], "OUTRUN", None,
+            [_T_CODEX_REF, _by(_A1, _T_REF), _by(_A1, _T_WD)], "OUTRUN", None,
         ),
     ]
     for name, bodies, must_say, must_not_say in render:
@@ -1351,7 +1387,7 @@ def self_test() -> int:
 
     # ⚠️ AND THE CONTROL THAT MUST FAIL. Without it the two cases above pass against
     # a gate that prints both words every time.
-    _, answered_why = evaluate([_T_REF, _T_WD], _MOVED)
+    _, answered_why = evaluate([_by(_A1, _T_REF), _by(_A1, _T_WD)], _MOVED)
     _, outrun_why = evaluate([_T_REF], _MOVED)
     if answered_why == outrun_why:
         bad.append("answered and outrun render IDENTICALLY -- the defect is restored")
@@ -1379,8 +1415,57 @@ def self_test() -> int:
     # The opt-in stricter rule blocks the outrun case and leaves the answered one.
     if evaluate([_T_REF], _MOVED, require_answered=True)[0] != BLOCKED:
         bad.append("--require-answered did not block an outrun refusal")
-    if evaluate([_T_REF, _T_WD], _MOVED, require_answered=True)[0] != OK:
+    if evaluate(
+        [_by(_A1, _T_REF), _by(_A1, _T_WD)],
+        _MOVED,
+        require_answered=True,
+    )[0] != OK:
         bad.append("--require-answered blocked an ANSWERED refusal -- over-blocking")
+    rc, why = evaluate([_T_REF, _T_WD], _MOVED, require_answered=True)
+    if rc != BLOCKED or "by <unsigned>" not in why:
+        bad.append(
+            "an unsigned unquoted withdrawal cleared an unsigned old-head refusal "
+            f"without a precise RETIRES -- rc={rc} msg={why[:110]}"
+        )
+
+    # The exact old-head shape that falsely cleared hermit#2670: a precise
+    # withdrawal for an unsigned refusal shares the same lane and refused SHA as
+    # a named refusal.  The precise retirement clears only its target; it must not
+    # also act as an unquoted withdrawal for the named refusal.
+    _R1_ID, _R2_ID, _W_ID = 900001, 900002, 900003
+    old_head_bodies = [
+        _by(_A1, _T_REF),
+        _T_REF,
+        _by(_A2, f"{_T_WD}\nRETIRES {_R2_ID}"),
+    ]
+    old_head_ids = [_R1_ID, _R2_ID, _W_ID]
+    rc, why = evaluate(
+        old_head_bodies,
+        _MOVED,
+        ids=old_head_ids,
+        require_answered=True,
+    )
+    if (
+        rc != BLOCKED
+        or "OUTRUN" not in why
+        or f"by {_A1}" not in why
+        or f"comment {_R2_ID} names no issuer and was retired by {_A2}" not in why
+    ):
+        bad.append(
+            "an old-head precise retirement of an unsigned refusal cleared a named "
+            f"peer at the same lane and SHA -- rc={rc} msg={why[:110]}"
+        )
+    rc, why = evaluate(
+        [_T_REF, _by(_A2, f"{_T_WD}\nRETIRES {_R2_ID}")],
+        _MOVED,
+        ids=[_R2_ID, _W_ID],
+        require_answered=True,
+    )
+    if rc != OK or "NO READABLE ISSUER WAS RETIRED" not in why:
+        bad.append(
+            "the exact unsigned old-head refusal did not retain its permitted precise "
+            f"exit -- rc={rc} msg={why[:110]}"
+        )
     # ⚠ THE STATE GATE, BOTH DIRECTIONS. hermit#2677 merged 2026-08-26T01:37:12Z;
     # a refusal posted 01:41:15Z made this gate print BLOCKED with a remedy nobody
     # could perform. The MERGED cases are that defect; the OPEN case is what stops
@@ -1643,6 +1728,8 @@ def self_test() -> int:
     print(f"changes-requested-gate self-test: OK -- {len(cases)} withdrawal-scoping "
           f"case(s) including the same-lane pair from hermit#2625, plus {len(render)} "
           f"answered-vs-outrun rendering case(s) and their identity control, plus "
+          f"the old-head unsigned-withdrawal control and two-direction precise-"
+          f"retirement case from hermit#2670, plus "
           f"{len(state_cases)} state case(s) from hermit#2677 and their over-reach "
           f"controls, plus the two-direction guard that ANSWERED states the clearing "
           f"FORM without asserting the finding was addressed, plus "

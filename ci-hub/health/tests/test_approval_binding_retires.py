@@ -11,6 +11,7 @@ HEALTH = HERE.parent.parent
 GATE = HEALTH.parent / "bin" / "changes-requested-gate"
 
 HEAD = "6457ba0acfb4eda22cf5fd617412c6b734b92801"
+MOVED_HEAD = "7457ba0acfb4eda22cf5fd617412c6b734b92802"
 REFUSAL_ID = 900001
 SECOND_REFUSAL_ID = 900002
 WITHDRAWAL_ID = 900003
@@ -54,12 +55,22 @@ def _state(comments: list[dict]) -> tuple[str, list[tuple[str, str | None]]]:
     return state, unanswered
 
 
-def _gate_state(comments: list[dict]) -> int:
+def _gate_result(
+    comments: list[dict],
+    head: str = HEAD,
+    *,
+    require_answered: bool = False,
+) -> tuple[int, str]:
     return gate.evaluate(
         [comment["body"] for comment in comments],
-        HEAD,
+        head,
         ids=[comment["id"] for comment in comments],
-    )[0]
+        require_answered=require_answered,
+    )
+
+
+def _gate_state(comments: list[dict]) -> int:
+    return _gate_result(comments)[0]
 
 
 def _approval(agent: str = "hermit-011") -> dict:
@@ -156,3 +167,51 @@ def test_retires_without_a_withdrawal_does_not_clear_the_refusal() -> None:
     )
     assert state == ab.REFUSED, (state, unanswered)
     assert unanswered == [(HEAD, None)]
+
+
+def test_old_head_retirement_of_unsigned_refusal_does_not_clear_named_peer() -> None:
+    comments = [
+        _approval(),
+        _refusal(REFUSAL_ID, "hermit-011"),
+        _refusal(SECOND_REFUSAL_ID),
+        _withdrawal("hermit-030", SECOND_REFUSAL_ID),
+    ]
+    rc, reason = _gate_result(comments, MOVED_HEAD, require_answered=True)
+    assert rc == gate.BLOCKED, reason
+    assert "OUTRUN" in reason, reason
+    assert "1 other refusal(s) WERE answered" in reason, reason
+    assert "by hermit-011" in reason, reason
+    assert "comment 900002 names no issuer and was retired by hermit-030" in reason
+
+
+def test_old_head_named_refusal_is_cleared_by_its_own_precise_retirement() -> None:
+    comments = [
+        _approval(),
+        _refusal(REFUSAL_ID, "hermit-011"),
+        _withdrawal("hermit-011", REFUSAL_ID),
+    ]
+    rc, reason = _gate_result(comments, MOVED_HEAD, require_answered=True)
+    assert rc == gate.OK, reason
+    assert "ANSWERED" in reason, reason
+
+
+def test_old_head_unsigned_refusal_keeps_its_precise_exit() -> None:
+    comments = [
+        _approval(),
+        _refusal(REFUSAL_ID),
+        _withdrawal("hermit-030", REFUSAL_ID),
+    ]
+    rc, reason = _gate_result(comments, MOVED_HEAD, require_answered=True)
+    assert rc == gate.OK, reason
+    assert "NO READABLE ISSUER WAS RETIRED" in reason, reason
+
+
+def test_old_head_unsigned_unquoted_withdrawal_clears_nothing() -> None:
+    comments = [
+        _approval(),
+        _refusal(REFUSAL_ID),
+        _withdrawal("hermit-030", None),
+    ]
+    rc, reason = _gate_result(comments, MOVED_HEAD, require_answered=True)
+    assert rc == gate.BLOCKED, reason
+    assert "by <unsigned>" in reason, reason
