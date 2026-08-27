@@ -110,7 +110,7 @@ const OPERATIONAL_TICK_SCRIPT_NAME = "hermitOperationalTick";
 const OPERATIONAL_TICK_COMMAND =
   'cd "' + SHELL_WORKSPACE_ROOT + '" && ' +
   'HERMIT_AGENT_SNAPSHOT_JSON="$1" ./ci-hub/bin/health-tick --flush --no-header';
-const OPERATIONAL_TICK_INTERVAL_MS = 5 * 60 * 1000;
+const OPERATIONAL_TICK_INTERVAL_MS = 60 * 60 * 1000;
 const OPERATIONAL_TICK_WORKFLOW_NAME = "hermit-dev-operational-health-v1";
 // MANDATORY before close+respawn. The mission mandate authorizes replacing a
 // broken agent with no permission, which pairs an UNVERIFIED alarm with an

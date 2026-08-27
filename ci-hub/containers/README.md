@@ -50,7 +50,7 @@ not evidence that an environment is abandoned.
 
 ## Reconciliation
 
-The five-minute operational tick runs the NON-applying form. `tick-hub.yaml`
+The hourly operational tick runs the NON-applying form. `tick-hub.yaml`
 invokes exactly this, and it carries no `--apply`:
 
 ```bash

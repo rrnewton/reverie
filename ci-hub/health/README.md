@@ -17,7 +17,7 @@ health polling. Project policy stays in this repository:
   agent-utils commit pinned by the nested `agent-utils` gitlink in Hermit on
   demand, provisions the pinned Python runtime dependency into the ignored
   `.tick-hub/venv` when needed, then invokes the real tick-hub CLI.
-- `.orc/plugins/hermit-dev/index.ts` is the outer five-minute scheduler and
+- `.orc/plugins/hermit-dev/index.ts` is the outer sixty-minute scheduler and
   wakeup delivery adapter.
 
 ## Timing-sensitive load precondition
@@ -39,8 +39,8 @@ was unavailable. It reports its cost directly and avoids the `rust-script`
 cache, so this is the canonical 3pai/BpfJailer entrypoint. The typed
 `./ci-hub/ci-hub load-probe` alias is also available outside that restriction.
 
-The hub checks GitHub current-main health and open-PR red counts every 15
-minutes. Every five minutes it runs the same gentle primary-refresh routine as
+The hub checks GitHub current-main health and open-PR red counts once per hour.
+On each hourly tick it runs the same gentle primary-refresh routine as
 `make checkout-fresh`. Clean product checkouts fast-forward to `main`; a
 globally consistent Hermit/Reverie/LiteInst2 gitlink snapshot is committed and
 pushed to parent `main`. A dirty checkout, detached or stale branch,

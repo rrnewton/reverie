@@ -1,7 +1,9 @@
 description: |-
   Operational health polling for the dev-hermit coordinator. The outer ORC
-  workflow runs one tick every five minutes; this config owns each check's
-  cadence and only emits actions when a hard warning is required.
+  workflow runs one tick every sixty minutes; this config owns each check's
+  cadence and only emits actions when a hard warning is required. No active
+  reminder declares a cadence below the outer interval: such a value cannot be
+  honored and would read as configuration while controlling nothing.
 
   ADMISSION TEST FOR ANY NEW REMINDER (owner directive, 2026-08-08).
   Ask: CAN ORC OBSERVE THIS DIRECTLY?
@@ -55,7 +57,7 @@ reminders:
   # exhaustive --per-pr scan found 41). A PR merely outside the sampling window is
   # never retired from the delta baseline, so window drift cannot forge new pages.
   - name: merge_gate_refire_due
-    cadence_secs: 1800
+    cadence_secs: 3600
     gate:
       cmd: python3 ci-hub/health/gate_refire.py --repo rrnewton/hermit --gate
       when: failure
@@ -109,7 +111,7 @@ reminders:
   # reminders share this one channel; the delivery repair belongs there, not in
   # a per-reminder rename.
   - name: slot_agent_parity
-    cadence_secs: 900
+    cadence_secs: 3600
     gate:
       cmd: python3 ci-hub/health/slot_agent_parity.py --gate
       when: failure
@@ -138,7 +140,7 @@ reminders:
   # a second silent deletion is the move that did not hold the first time, and it
   # would destroy an agent's in-progress work without asking.
   - name: deleted_tool_absent
-    cadence_secs: 900
+    cadence_secs: 3600
     gate:
       cmd: python3 ci-hub/health/deleted_tool_absent.py --root .
       when: failure
@@ -150,7 +152,7 @@ reminders:
         component: deleted-tool-reintroduced
       title: "a deliberately-deleted tool is back on this disk: {summary}"
   - name: worktree_disk_residue
-    cadence_secs: 900
+    cadence_secs: 3600
     gate:
       # One guarded bulk owner census replaces one subprocess/registry-lock
       # acquisition per row. Disk sizing is also incremental: at most one 5s
@@ -220,7 +222,7 @@ reminders:
       title: "an OPEN pull request's head commit is no longer fetchable: {summary}"
 
   - name: ledger_spool_backlog
-    cadence_secs: 900
+    cadence_secs: 3600
     gate:
       cmd: python3 ci-hub/health/ledger_spool_backlog.py --gate
       when: failure
@@ -233,7 +235,7 @@ reminders:
       title: "validation ledger publication is stalled: {summary}"
 
   - name: series_spool_backlog
-    cadence_secs: 900
+    cadence_secs: 3600
     gate:
       cmd: python3 ci-hub/health/ledger_spool_backlog.py --store series --gate
       when: failure
@@ -292,7 +294,7 @@ reminders:
   # parent-main-write, appends only, and drops a batch solely after the commit
   # carrying it is confirmed an ancestor of the freshly fetched remote.
   - name: ledger_publish_sweep
-    cadence_secs: 900
+    cadence_secs: 3600
     gate:
       cmd: ./ci-hub/ledger/launch_publish_backlog.sh
       when: failure
@@ -394,7 +396,7 @@ reminders:
   # editing gets ignored and is then worth nothing when the real thing happens.
   # Detect-only; repairing drift means syncing or landing, both owned decisions.
   - name: tick_code_currency
-    cadence_secs: 900
+    cadence_secs: 3600
     gate:
       cmd: ./ci-hub/health/tick_code_currency.py --gate
       when: failure
@@ -434,7 +436,7 @@ reminders:
   # question `dispose` asks so the two instruments cannot report different
   # counts for the same clones.
   - name: unpushed_change_clone_commits
-    cadence_secs: 900
+    cadence_secs: 3600
     gate:
       cmd: ./ci-hub/health/unpushed_change_clone_commits.py
       when: failure
@@ -451,7 +453,7 @@ reminders:
       title: "ci-hub change clones: {summary}"
 
   - name: unpushed_parent_commits
-    cadence_secs: 900
+    cadence_secs: 3600
     gate:
       cmd: ./ci-hub/health/unpushed_parent_commits.py --scope all
       when: failure
@@ -470,7 +472,7 @@ reminders:
   # a guarded deferral into completion. Detection is read-only; the coordinator
   # still owns inspection and activation of the dirty primary.
   - name: activation_obligations
-    cadence_secs: 300
+    cadence_secs: 3600
     gate:
       cmd: python3 scripts/ci-hub-clone-change.py activation-obligations --primary /home/newton/work/dev-hermit
       when: failure
@@ -484,7 +486,7 @@ reminders:
       title: "a published parent change is not active in the primary: {summary}"
 
   - name: primary_checkout_snapshot
-    cadence_secs: 300
+    cadence_secs: 3600
     gate:
       cmd: ./ci-hub/health/operational_health.py primary-snapshot
       when: failure
@@ -512,7 +514,7 @@ reminders:
   # An unmeasurable pin or a rewritten reverie history exits 2 in BOTH bands on
   # purpose: routing a fault to one band would let the quiet band silently own it.
   - name: reverie_pin_lag_note
-    cadence_secs: 1800
+    cadence_secs: 3600
     gate:
       cmd: ./ci-hub/health/reverie_pin_lag.py --gate --min-lag 1 --max-lag 4
       when: failure
@@ -524,7 +526,7 @@ reminders:
       title: "reverie pin is slightly behind: {summary}"
 
   - name: reverie_pin_lag_escalation
-    cadence_secs: 1800
+    cadence_secs: 3600
     gate:
       cmd: ./ci-hub/health/reverie_pin_lag.py --gate --min-lag 5
       when: failure
@@ -537,7 +539,7 @@ reminders:
       title: "reverie pin has fallen far behind and is blocking landings: {summary}"
 
   - name: github_main_health
-    cadence_secs: 900
+    cadence_secs: 3600
     gate:
       cmd: ./ci-hub/health/operational_health.py github-main
       when: failure
@@ -557,7 +559,7 @@ reminders:
   # recovery is to complete or roll back the serialized transition, never to
   # refire individual PRs until the authority is coherent again.
   - name: hermit_merge_gate_authority
-    cadence_secs: 300
+    cadence_secs: 3600
     gate:
       cmd: ./ci-hub/health/operational_health.py merge-gate-authority
       when: failure
@@ -570,7 +572,7 @@ reminders:
       title: "GLOBAL Hermit merge authority is {state}: {summary}"
 
   - name: pull_request_health
-    cadence_secs: 900
+    cadence_secs: 3600
     gate:
       cmd: ./ci-hub/health/operational_health.py pull-requests
       # 90s, against a measured 19.49s wall. Raised from the 30s
@@ -595,7 +597,7 @@ reminders:
     emit:
       # This remains a real gate and a real report; NOTE is a severity demotion,
       # not silence. Hermit landing authority is local validate + the ledger.
-      # The summary owns the census-age contract: after one 900s cadence an
+      # The summary owns the census-age contract: after one 3600s cadence an
       # all_open count is rendered AS-OF ... (STALE), and staleness itself makes
       # this gate fail, so this title can never present an hours-old count as now.
       kind: note
@@ -641,7 +643,7 @@ reminders:
   # broke two PRs on 2026-08-25). Deferral costs one tick and is COUNTED in the
   # output, never silent.
   - name: drain_verdict_published
-    cadence_secs: 1800
+    cadence_secs: 3600
     gate:
       cmd: python3 ci-hub/closure/drain_publication.py --since 2026-08-25T12:00:00+00:00 --grace-mins 15
       # Measured 2026-08-25: 25s for the full 72-task census with 67 PRs
@@ -661,7 +663,7 @@ reminders:
       title: "a drain task closed with its verdict unpublished: {summary}"
 
   - name: ci_queue_health
-    cadence_secs: 900
+    cadence_secs: 3600
     gate:
       cmd: ./ci-hub/health/operational_health.py queue-health
       when: failure
@@ -683,7 +685,7 @@ reminders:
   # `lane_health.py throttle-check` (read-only, no gh) -- it NEVER gates
   # landings, because landing is what drains the lane.
   - name: ci_lane_saturation
-    cadence_secs: 900
+    cadence_secs: 3600
     gate:
       cmd: ./ci-hub/runners/lane_health.py tick
       when: failure
@@ -743,7 +745,7 @@ reminders:
   # alone. Follow-up: rescope-agent-container-reclaim-to-process-evidence.
   # ---------------------------------------------------------------------------
   - name: agent_container_lifecycle
-    cadence_secs: 300
+    cadence_secs: 3600
     gate:
       cmd: ./ci-hub/health/bounded_gate.py --name agent_container_lifecycle --timeout-secs 45 -- ./scripts/agent-podman.rs reconcile --agents-json ignored/ci-hub/agent-snapshot.json
       timeout_secs: 55
@@ -781,7 +783,7 @@ reminders:
   #
   # >>> INACTIVE / NOT YET WIRED <<<  This reminder is committed but DISABLED.
   # Uncommenting the block below is what takes the mechanical layer LIVE: the
-  # existing operationalHealthHeartbeat re-reads this file every 5 min and will
+  # existing operationalHealthHeartbeat re-reads this file every 60 min and will
   # begin firing the hourly memory<->skill hard-warn. Activation is the owner's
   # call. TO ACTIVATE: remove the leading '# ' from the block below (no ORC
   # restart needed; the next heartbeat tick picks it up).
@@ -810,7 +812,7 @@ reminders:
   # EVALUATED_FAIL (someone else's page), and only a total absence of runs fires
   # here, so a visible failure is never laundered into an invisible one.
   - name: pr_head_never_evaluated
-    cadence_secs: 1800
+    cadence_secs: 3600
     gate:
       cmd: python3 ci-hub/health/unevaluated_head.py --repo rrnewton/hermit --limit 40 --gate
       when: failure
@@ -838,7 +840,7 @@ reminders:
   # by this check -- a superseded review or local-validation cache simply stops
   # satisfying the gate and stays visible with its exact-head evidence.
   - name: approval_no_longer_binds_to_head
-    cadence_secs: 1800
+    cadence_secs: 3600
     gate:
       cmd: python3 ci-hub/health/approval_binding.py --repo rrnewton/hermit --gate --gate-on superseded
       when: failure
@@ -933,7 +935,7 @@ reminders:
   # the unit enabled, and reproduces UnitFileState=enabled with
   # ExecMainStatus=203. Live runner untouched.
   - name: gate_runner_presence
-    cadence_secs: 900
+    cadence_secs: 3600
     gate:
       cmd: python3 ci-hub/health/gate_runner_presence.py --record .tick-hub/gate-runner-presence.json
       when: failure
@@ -984,7 +986,7 @@ reminders:
   # at/above --writer-growth-gib-per-hour (20), fails the gate on its own no
   # matter how much space remains. Verified firing at 0.36 GiB with 1007 GiB free.
   - name: btrfs_headroom
-    cadence_secs: 900
+    cadence_secs: 3600
     gate:
       # Reads ~8 small sysfs files; no subprocess, no tree walk, no root. Cost is
       # flat regardless of how full or how fragmented the filesystem is, which is
@@ -1017,7 +1019,7 @@ reminders:
   # or the config cannot be read, because an expectation list that reads as
   # satisfied because it is empty is the exact defect it exists to detect.
   - name: gate_set_integrity
-    cadence_secs: 900
+    cadence_secs: 3600
     gate:
       cmd: python3 ci-hub/health/gate_set_integrity.py
       when: failure
@@ -1045,7 +1047,7 @@ reminders:
   # only, never on notes, which agents append continuously. Promote this to
   # kind: action once new_violations has sat at zero and the backlog is drained.
   - name: task_reference_hygiene
-    cadence_secs: 900
+    cadence_secs: 3600
     gate:
       cmd: python3 ci-hub/health/operational_health.py task-reference-hygiene
       when: failure

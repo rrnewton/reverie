@@ -1,14 +1,14 @@
 [Unit]
-Description=Fire the dev-hermit operational health tick every 5 minutes
+Description=Fire the dev-hermit operational health tick every 60 minutes
 Documentation=https://github.com/rrnewton/dev-hermit/blob/main/scripts/hermit-health-tick.sh
 
 [Timer]
 OnBootSec=2min
-# 5 min is the MEASURED cadence and matches config (tick_frequency_min=5).
-# scripts/hermit-health-staleness.sh derives its 15-minute alarm threshold as
+# 60 min is the owner-directed cadence and matches config (tick_frequency_min=60).
+# scripts/hermit-health-staleness.sh derives its 180-minute alarm threshold as
 # 3x this value, so changing it here without changing INTERVAL_MIN there would
 # silently mis-scale the alarm.
-OnUnitActiveSec=5min
+OnUnitActiveSec=60min
 # Catch up a missed tick after suspend/downtime instead of silently skipping.
 Persistent=true
 AccuracySec=30s

@@ -39,7 +39,7 @@ class OperationalHealthTest(unittest.TestCase):
         reminders = {row["name"]: row for row in config["reminders"]}
         for name in ("github_main_health", "pull_request_health", "ci_queue_health"):
             row = reminders[name]
-            self.assertEqual(row["cadence_secs"], 900)
+            self.assertEqual(row["cadence_secs"], 3600)
             self.assertEqual(row["gate"]["when"], "failure")
             self.assertTrue(row["gate"]["capture"])
             self.assertEqual(row["emit"]["kind"], "note")

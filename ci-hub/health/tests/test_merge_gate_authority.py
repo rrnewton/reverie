@@ -251,7 +251,7 @@ raise SystemExit(2)
         self.assertEqual("unavailable", fields["state"])
         self.assertNotEqual("ok", fields["state"])
 
-    def test_tick_adopts_the_global_gate_at_five_minute_cadence(self) -> None:
+    def test_tick_adopts_the_global_gate_at_hourly_cadence(self) -> None:
         config = yaml.safe_load((ROOT / "ci-hub" / "health" / "tick-hub.yaml").read_text())
         gates = {gate["name"]: gate for gate in config["reminders"]}
         gate = gates["hermit_merge_gate_authority"]
@@ -259,7 +259,7 @@ raise SystemExit(2)
             "./ci-hub/health/operational_health.py merge-gate-authority",
             gate["gate"]["cmd"],
         )
-        self.assertLessEqual(gate["cadence_secs"], 300)
+        self.assertEqual(gate["cadence_secs"], 3600)
         self.assertIn("GLOBAL", gate["emit"]["title"])
         self.assertLess(
             operational_health.MERGE_GATE_AUTHORITY_TIMEOUT_SECS
