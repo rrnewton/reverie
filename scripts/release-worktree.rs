@@ -657,6 +657,110 @@ fn regen_active_md(root: &Path, state: &Value) -> bool {
     changed
 }
 
+/// Cargo's own output directories inside a `target` directory.
+///
+/// ⚠️ AN ALLOWLIST, NOT `rm -rf target`, AND THAT IS THE WHOLE POINT. A directory
+/// named `target` is not automatically regenerable. Measured across 162 slots on
+/// 2026-08-27: 65G of 1.1T sat in entries Cargo never wrote, and
+/// `cloudlint/hermit/target/relaxed-flag-matrix/` held `final.tsv` plus four
+/// `results-*.tsv` -- somebody's measurement data. Removing the directory would
+/// have destroyed it. Naming what Cargo writes means this cannot reach anything a
+/// person put there, so it needs no preservation step for anyone to forget.
+const REGENERABLE_BUILD_DIRS: &[&str] = &[
+    "debug",
+    "release",
+    "doc",
+    "nextest",
+    "package",
+    ".fingerprint",
+];
+
+/// Is any live process holding a path inside `dir`?
+///
+/// ⚠️ DELETING A TARGET MID-BUILD DESTROYS WORK RATHER THAN RECLAIMING WASTE, so
+/// this refuses rather than guesses, and an unreadable `/proc` counts as busy.
+/// One pass over `/proc` rather than `lsof`, which costs about 9.9s per call on
+/// this box because it scans every descriptor the fleet holds; at 200+
+/// directories that is half an hour to answer one question.
+fn build_output_in_use(dir: &Path) -> bool {
+    let Ok(entries) = fs::read_dir("/proc") else {
+        return true;
+    };
+    for entry in entries.flatten() {
+        let pid_dir = entry.path();
+        let is_pid = pid_dir
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()));
+        if !is_pid {
+            continue;
+        }
+        let mut probes: Vec<PathBuf> = vec![pid_dir.join("cwd"), pid_dir.join("exe")];
+        if let Ok(fds) = fs::read_dir(pid_dir.join("fd")) {
+            probes.extend(fds.flatten().map(|fd| fd.path()));
+        }
+        for probe in probes {
+            if let Ok(resolved) = fs::read_link(&probe) {
+                if resolved.starts_with(dir) {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+/// Remove Cargo's output from every `target` directory beneath `slot_dir`.
+///
+/// Returns the directories removed. This never fails the caller: reclaiming
+/// build output is opportunistic and must not block a slot release, which is
+/// also why it runs BEFORE the ownership and cleanliness checks that refuse. A
+/// slot whose record must survive still gives its disk back.
+fn scrub_build_output(slot_dir: &Path) -> Vec<PathBuf> {
+    let mut removed = Vec::new();
+    let mut queue = vec![slot_dir.to_path_buf()];
+    // Slot layouts put `target` at `<slot>/target` or `<slot>/<repo>/target`.
+    for _ in 0..3 {
+        let mut next = Vec::new();
+        for dir in queue.drain(..) {
+            let Ok(entries) = fs::read_dir(&dir) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if !entry.file_type().is_ok_and(|t| t.is_dir()) || path.is_symlink() {
+                    continue;
+                }
+                if entry.file_name() != "target" {
+                    next.push(path);
+                    continue;
+                }
+                if build_output_in_use(&path) {
+                    eprintln!(
+                        "release-worktree: leaving {} alone: a live process holds a path inside it",
+                        path.display()
+                    );
+                    continue;
+                }
+                for name in REGENERABLE_BUILD_DIRS {
+                    let victim = path.join(name);
+                    if victim.is_dir() && !victim.is_symlink() {
+                        match fs::remove_dir_all(&victim) {
+                            Ok(()) => removed.push(victim),
+                            Err(error) => eprintln!(
+                                "release-worktree: could not remove {}: {error}",
+                                victim.display()
+                            ),
+                        }
+                    }
+                }
+            }
+        }
+        queue = next;
+    }
+    removed
+}
+
 /// Enumerate the target plus every recursively initialized submodule. Git owns
 /// the recursion semantics; a malformed `.gitmodules` or any other inspection
 /// error is a hard refusal rather than an empty/clean result.
@@ -5759,6 +5863,29 @@ fn main() {
     }
 
     let root = find_root();
+
+    // ⚠️ BEFORE EVERY REFUSAL BELOW, DELIBERATELY. The owner's ruling on
+    // 2026-08-27: build output is regenerable by construction, so it can always
+    // be reclaimed even from a slot whose record must stay untouched. Those are
+    // exactly the slots that leaked -- a release refused for unpushed work or a
+    // dead record left its build output on disk forever. Running here means the
+    // disk comes back whether or not the rest of the release succeeds.
+    //
+    // A sweep is a treatment; this is the fix, because nobody has to remember it.
+    if !slot.is_empty() && valid_slot(&slot) {
+        let candidate = root.join("worktrees").join(&slot);
+        if candidate.is_dir() {
+            let removed = scrub_build_output(&candidate);
+            if !removed.is_empty() {
+                println!(
+                    "release-worktree: reclaimed {} build output director{} under slot {slot}",
+                    removed.len(),
+                    if removed.len() == 1 { "y" } else { "ies" }
+                );
+            }
+        }
+    }
+
     // slot-owner-authority takes the registry's shared lock while reading the
     // exact owner row. Run it before taking the writer lock below, then bind
     // its identity and complete lease value to the freshly reloaded state
