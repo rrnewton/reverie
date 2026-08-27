@@ -11,15 +11,20 @@
 # caught it -- a dead_code warning in ci-hub/lib/qualifying_receipt.rs reached
 # the owner because nothing was looking.
 #
-# WHY IT COMPILES RATHER THAN RUNS
-# --------------------------------
-# `rust-script --package` emits the generated Cargo package WITHOUT compiling or
-# running it; this then runs `cargo check` over that manifest. Running each
-# script instead would be wrong twice: several have real side effects (they read
-# the ledger, write artifacts, take locks), and their exit codes mean something
-# already -- `check-ledger-parses.rs` exits non-zero when it FINDS unparseable
-# rows, which is it working, not a warning. A gate must not confuse "did not
-# compile" with "compiled and reported a finding".
+# WHY IT RUNS --help
+# ------------------
+# `rust-script --package` plus `cargo check` proves that the generated package
+# type-checks, but it does not prove the script can build and start. Every
+# maintained script therefore runs its own `--help` path and must print usage.
+# That is the narrow probe the owner requested: it proves compilation, linking,
+# startup, and argument parsing. It does NOT claim to test ordinary behavior or
+# prove that every help path is side-effect-free; `check-harness-help.py` carries
+# the stronger purity checks for the entrypoints with measured exposure.
+#
+# `--force` matters for scripts that import local `#[path]` modules. rust-script's
+# ordinary cache key follows the top-level file; a shared module can change while
+# the cached binary remains stale. Every commit must compile the source present
+# in that commit, not yesterday's cached binary.
 #
 # WHY IT IS SHELL
 # ---------------
@@ -39,6 +44,22 @@ if ! command -v rust-script >/dev/null 2>&1; then
   echo "lint-rust-scripts: rust-script is not on PATH" >&2
   exit 2
 fi
+if ! command -v timeout >/dev/null 2>&1; then
+  echo "lint-rust-scripts: timeout is not on PATH" >&2
+  exit 2
+fi
+
+smoke_timeout_seconds="${RUST_SCRIPT_SMOKE_TIMEOUT_SECONDS:-300}"
+case "$smoke_timeout_seconds" in
+  '' | *[!0-9]*)
+    echo "lint-rust-scripts: RUST_SCRIPT_SMOKE_TIMEOUT_SECONDS must be a positive integer" >&2
+    exit 2
+    ;;
+  0)
+    echo "lint-rust-scripts: RUST_SCRIPT_SMOKE_TIMEOUT_SECONDS must be positive" >&2
+    exit 2
+    ;;
+esac
 
 # Frozen historical artifacts. `experiments/` and `benchmarks/` are dated
 # records of what was run at the time; they are not maintained code and holding
@@ -122,21 +143,23 @@ done
 failed=$missing_deny
 checked=0
 for script in "${scripts[@]}"; do
-  pkg="$(rust-script --package "$script" 2>/dev/null | tail -1)"
-  if [ -z "$pkg" ] || [ ! -f "$pkg/Cargo.toml" ]; then
-    echo "lint-rust-scripts: FAILED to generate a package for $script" >&2
-    failed=$((failed + 1))
-    continue
-  fi
-  out="$(RUSTFLAGS="-D warnings" cargo check --quiet --manifest-path "$pkg/Cargo.toml" 2>&1)"
+  out="$(RUSTFLAGS="-D warnings" timeout --signal=KILL "$smoke_timeout_seconds" \
+    rust-script --force "$script" --help 2>&1)"
   rc=$?
   checked=$((checked + 1))
   if [ "$rc" -ne 0 ]; then
     echo "=== $script ===" >&2
     printf '%s\n' "$out" >&2
     failed=$((failed + 1))
+  elif ! grep -qi 'usage' <<<"$out"; then
+    echo "=== $script ===" >&2
+    echo "lint-rust-scripts: --help exited 0 without printing usage" >&2
+    printf '%s\n' "$out" >&2
+    failed=$((failed + 1))
+  else
+    echo "lint-rust-scripts: OK $script --help"
   fi
 done
 
-echo "lint-rust-scripts: checked $checked script(s) under -D warnings, $failed with findings"
+echo "lint-rust-scripts: checked $checked script(s) by running --help under -D warnings, $failed with findings"
 [ "$failed" -eq 0 ] || exit 1

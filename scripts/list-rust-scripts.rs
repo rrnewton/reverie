@@ -12,6 +12,14 @@ use std::path::{Path, PathBuf};
 use std::process::{exit, Command};
 
 const REPOSITORIES: &[&str] = &[".", "hermit", "reverie", "liteinst2", "agent-utils"];
+const USAGE: &str = r#"Usage: scripts/list-rust-scripts.rs
+
+Inventory executable Rust files and source files that invoke rust-script across
+the dev-hermit parent and its canonical inner repositories.
+
+Options:
+  -h, --help  Print this help and exit
+"#;
 
 #[derive(Debug)]
 struct Entry {
@@ -22,6 +30,13 @@ struct Entry {
 }
 
 fn main() {
+    if std::env::args_os()
+        .skip(1)
+        .any(|argument| argument == "-h" || argument == "--help")
+    {
+        print!("{USAGE}");
+        return;
+    }
     if let Err(error) = run() {
         eprintln!("list-rust-scripts: {error}");
         exit(2);

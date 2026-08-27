@@ -39,6 +39,14 @@ fn log_path() -> String {
 const SPACING_SECS: u64 = 660; // ~11 min, > the 10-min new-crate replenish window
 const MAX_ATTEMPTS: u32 = 10;
 const UA: &str = "hermit-squat-drip (hermit@rrnewton.github.io)";
+const USAGE: &str = r#"Usage: crates-squat-staging/drip-squat.rs
+
+Publish the remaining Hermit/Reverie crate-name reservations at the crates.io
+rate limit.
+
+Options:
+  -h, --help  Print this help and exit
+"#;
 
 fn log(msg: &str) {
     let line = format!("[{}] {}\n", stamp(), msg);
@@ -102,6 +110,13 @@ fn publish(name: &str) -> (bool, String) {
 }
 
 fn main() {
+    if std::env::args_os()
+        .skip(1)
+        .any(|argument| argument == "-h" || argument == "--help")
+    {
+        print!("{USAGE}");
+        return;
+    }
     // 17 remaining names (6 already live from the burst are omitted).
     let remaining = [
         "reverie-process",

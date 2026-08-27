@@ -370,7 +370,7 @@ fn main() {
             "--append" => append = true,
             "-h" | "--help" => {
                 eprintln!(
-                    "collect-reverie-compat.rs [--lane L] [--csv F] [--repo hermit] [--run-id ID]"
+                    "Usage: collect-reverie-compat.rs [--lane L] [--csv F] [--repo hermit] [--run-id ID]"
                 );
                 eprintln!("    [--run-utc @EPOCH] [--guest STATIC_ELF] [--applets 'a;b;c']");
                 eprintln!("    [--backends ptrace,kvm,dbt,sabre,liteinst] [--reps N]");

@@ -72,6 +72,16 @@ use bounded_output::BoundedOutput;
 use std::path::PathBuf;
 use std::process::Command;
 
+const USAGE: &str = r#"Usage: ci-hub/ledger/check-ledger-parses.rs [--quiet]
+
+Read the canonical validation ledger and refuse any row that does not deserialize
+as the shared HistoryRow.
+
+Options:
+  --quiet      Print only failures
+  -h, --help   Print this help and exit
+"#;
+
 fn repo_root() -> PathBuf {
     // This script lives at <root>/ci-hub/ledger/, so the root is two up. Derived
     // from the script's own location rather than the cwd, so it behaves the
@@ -85,6 +95,13 @@ fn repo_root() -> PathBuf {
 }
 
 fn main() {
+    if std::env::args_os()
+        .skip(1)
+        .any(|argument| argument == "-h" || argument == "--help")
+    {
+        print!("{USAGE}");
+        return;
+    }
     let quiet = std::env::args().any(|arg| arg == "--quiet");
     let root = repo_root();
 

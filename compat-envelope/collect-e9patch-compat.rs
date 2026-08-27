@@ -528,7 +528,7 @@ fn main() {
             "--assert-green" => assert_green = true,
             "-h" | "--help" => {
                 eprintln!(
-                    "collect-e9patch-compat.rs [--lane L] [--csv F] [--hermit BIN] [--corpus DIR]"
+                    "Usage: collect-e9patch-compat.rs [--lane L] [--csv F] [--hermit BIN] [--corpus DIR]"
                 );
                 eprintln!("    [--run-id ID] [--only SUBSTR] [--limit N] [--strict-timeout S]");
                 eprintln!(

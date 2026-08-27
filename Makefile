@@ -297,6 +297,7 @@ lint: ## Lint parent-repository scripts, tests, paths, and submodule policy
 	}; \
 	counted rustfmt      files 'scripts/list-rust-sources.sh | wc -l' 'rustfmt --edition 2021 --check $(RUSTFMT_TARGETS)'; \
 	counted rust-scripts scripts 'scripts/lint-rust-scripts.sh --count' 'scripts/lint-rust-scripts.sh'; \
+	gate rust-script-smoke-tests 'scripts/test-lint-rust-scripts.sh'; \
 	counted shellcheck   files 'scripts/list-shell-scripts.sh | wc -l' 'shellcheck --severity=warning $(SHELLCHECK_TARGETS)'; \
 	counted py-compile   files 'scripts/list-python-files.sh | wc -l' 'python3 -m py_compile $(PYTHON_TARGETS)'; \
 	counted py-unittest  tests 'python3 -m unittest discover -s scripts -p "test_*.py" 2>&1 | sed -n "s/^Ran \([0-9]*\) test.*/\1/p"' 'python3 -m unittest discover -s scripts -p "test_*.py"'; \
