@@ -29,6 +29,47 @@ import service_result
 
 ROOT = Path(__file__).resolve().parents[2]
 HOST_TMP_ROOT = Path("/tmp").resolve()
+
+
+def parent_checkout_head() -> str | None:
+    """The commit of the checkout THIS TOOLING CAME FROM, for the run record.
+
+    WHY A RUN MUST RECORD THIS. Validation tooling -- this file, `validate.rs`,
+    everything under `ci-hub/` -- executes from the SHARED PARENT WORKING TREE,
+    whatever is on disk at the moment of each invocation. The parent is
+    chronically behind `origin/main`: measured 2026-08-27, main took 96 commits
+    in 12 hours and 32% of them touched a path the tick polices, so a policed
+    path is superseded roughly every 23 minutes.
+
+    A long run therefore CAN span a parent update and execute two different
+    versions of its own tooling. Recording `target` alone -- the subject being
+    validated -- cannot show that: every field of two such runs is identical, so
+    a split leaves NO TRACE and answering "did it happen" costs an investigation.
+    It cost exactly that tonight, when `ci-hub/validate/start_unit.py` was stale
+    and a headline number was briefly in doubt.
+
+    One field makes it a comparison instead. It does not prevent the split and
+    is not a lock; it makes an invisible exposure visible, which is the property
+    that holds no matter when the parent updates.
+
+    None, never a guess, when the commit cannot be established -- an unknown
+    origin must not read as a matching one.
+    """
+
+    try:
+        completed = subprocess.run(
+            ["git", "--no-optional-locks", "-C", str(ROOT), "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if completed.returncode != 0:
+        return None
+    head = completed.stdout.strip()
+    return head if SHA_RE.match(head) else None
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 UNIT_RE = re.compile(r"^validate-[A-Za-z0-9_.@:-]+$")
 Runner = Callable[..., subprocess.CompletedProcess[str]]
@@ -2159,6 +2200,9 @@ def main(
                     "agent": args.agent,
                     "pr": args.pr,
                     "started_at": started_at,
+                    # The commit this run's TOOLING came from, distinct from
+                    # `target`, which is the subject being validated.
+                    "parent_checkout_head": parent_checkout_head(),
                     "producer": "systemd-user-v1",
                     "admission": "ci-hub validate-lock",
                     "pane_role": "observer-only",
