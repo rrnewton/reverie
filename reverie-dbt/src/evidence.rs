@@ -47,6 +47,7 @@ const FRAME_EXEC_CANCEL: u8 = 4;
 const FRAME_FINAL: u8 = 5;
 const FRAME_ERROR: u8 = 6;
 const FRAME_CHILD: u8 = 7;
+const FRAME_POLICY_REFUSAL: u8 = 8;
 
 const FILE_MAGIC: &[u8; 8] = b"RVDBTEF1";
 const FILE_VERSION: u16 = 1;
@@ -54,6 +55,9 @@ const FILE_HEADER_LEN: usize = 40;
 const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
 const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
 const CANONICAL_RECORD_PREFIX: &[u8] = b"1970-01-01T00:00:00.000000Z ";
+/// Canonical record synthesized from an authenticated copied-child policy frame.
+pub const COPIED_CHILD_POLICY_REFUSAL_EVIDENCE_PREFIX: &str =
+    "1970-01-01T00:00:00.000000Z ERROR reverie_dbt::policy: copied-child policy refusal @";
 const SESSION_NEW: u8 = 0;
 const SESSION_RUNNING: u8 = 1;
 const SESSION_FINISHING: u8 = 2;
@@ -407,6 +411,7 @@ struct Collector {
     payload_bytes: u64,
     hash: u64,
     saw_start: bool,
+    policy_terminated_processes: BTreeSet<ProcessKey>,
 }
 
 impl Collector {
@@ -421,6 +426,7 @@ impl Collector {
             payload_bytes: 0,
             hash: FNV_OFFSET,
             saw_start: false,
+            policy_terminated_processes: BTreeSet::new(),
         }
     }
 
@@ -551,6 +557,37 @@ impl Collector {
                 }
                 self.expected_processes.insert(child);
             }
+            FRAME_POLICY_REFUSAL => {
+                if payload.len() != std::mem::size_of::<i64>() {
+                    return Err(invalid_data("malformed DBT evidence POLICY_REFUSAL frame"));
+                }
+                let image = self.image_for(process, sequence)?;
+                if image.pending_exec {
+                    return Err(invalid_data(
+                        "DBT evidence policy refusal arrived while exec was pending",
+                    ));
+                }
+                let sysnum = i64::from_le_bytes(payload.try_into().unwrap());
+                let record = format!("{COPIED_CHILD_POLICY_REFUSAL_EVIDENCE_PREFIX}{sysnum}\n");
+                let mut encoded = Vec::with_capacity(4 + record.len());
+                encoded.extend_from_slice(&(record.len() as u32).to_le_bytes());
+                encoded.extend_from_slice(record.as_bytes());
+                self.absorb_records(&encoded)?;
+                // The native fail-fast path kills the launch-group leader and
+                // its unannounced DynamoRIO helper processes immediately after
+                // this frame. They cannot send FINAL. An announced guest child
+                // is separate: unless it sent this policy frame, its missing
+                // FINAL remains an evidence failure.
+                self.policy_terminated_processes.extend(
+                    self.images
+                        .keys()
+                        .filter(|candidate| !self.expected_processes.contains(candidate))
+                        .copied(),
+                );
+                self.policy_terminated_processes.insert(process);
+                self.images.remove(&process);
+                self.terminal_processes.insert(process);
+            }
             _ => return Err(invalid_data("DBT evidence frame kind is unknown")),
         }
         Ok(())
@@ -654,16 +691,26 @@ impl Collector {
         if !self.saw_start {
             return Err(invalid_data("DBT evidence received no image START"));
         }
-        if !self.images.is_empty() {
+        let unfinalized = self
+            .images
+            .iter()
+            .filter(|(process, _)| !self.policy_terminated_processes.contains(process))
+            .collect::<BTreeMap<_, _>>();
+        if !unfinalized.is_empty() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!(
                     "DBT evidence is missing FINAL frames for process images {:?}",
-                    self.images
+                    unfinalized
                 ),
             ));
         }
-        if !self.expected_processes.is_subset(&self.terminal_processes) {
+        let accounted_processes = self
+            .terminal_processes
+            .union(&self.policy_terminated_processes)
+            .copied()
+            .collect::<BTreeSet<_>>();
+        if !self.expected_processes.is_subset(&accounted_processes) {
             return Err(invalid_data(
                 "DBT evidence is missing a child process START or FINAL frame",
             ));
@@ -1272,6 +1319,94 @@ mod tests {
     }
 
     #[test]
+    fn collector_policy_refusal_preserves_authoritative_record_after_tree_stop() {
+        let root = ProcessKey {
+            pid: 71,
+            start_time: 73,
+        };
+        let child = ProcessKey {
+            pid: 79,
+            start_time: 83,
+        };
+        let mut child_payload = Vec::from(child.pid.to_le_bytes());
+        child_payload.extend_from_slice(&child.start_time.to_le_bytes());
+        let sysnum = 298_i64;
+
+        let mut collector = Collector::new();
+        collector.absorb(FRAME_START, root, 0, &[]).unwrap();
+        collector
+            .absorb(FRAME_CHILD, root, 1, &child_payload)
+            .unwrap();
+        collector.absorb(FRAME_START, child, 0, &[]).unwrap();
+        collector
+            .absorb(FRAME_POLICY_REFUSAL, child, 1, &sysnum.to_le_bytes())
+            .unwrap();
+
+        let collected = collector
+            .finish()
+            .expect("authenticated policy refusal permits deliberate tree termination");
+        assert_eq!(collected.record_count, 1);
+        assert!(
+            String::from_utf8_lossy(&collected.encoded_records).contains(&format!(
+                "{COPIED_CHILD_POLICY_REFUSAL_EVIDENCE_PREFIX}{sysnum}\n"
+            ))
+        );
+    }
+
+    #[test]
+    fn collector_rejects_malformed_policy_refusal_payload() {
+        let process = ProcessKey {
+            pid: 89,
+            start_time: 97,
+        };
+        let mut collector = Collector::new();
+        collector.absorb(FRAME_START, process, 0, &[]).unwrap();
+        assert!(
+            collector
+                .absorb(FRAME_POLICY_REFUSAL, process, 1, &[0; 7])
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn collector_policy_refusal_does_not_excuse_an_unrelated_announced_child() {
+        let root = ProcessKey {
+            pid: 101,
+            start_time: 103,
+        };
+        let refusing = ProcessKey {
+            pid: 107,
+            start_time: 109,
+        };
+        let unrelated = ProcessKey {
+            pid: 113,
+            start_time: 127,
+        };
+        let mut collector = Collector::new();
+        collector.absorb(FRAME_START, root, 0, &[]).unwrap();
+        for (sequence, child) in [(1, refusing), (2, unrelated)] {
+            let mut payload = Vec::from(child.pid.to_le_bytes());
+            payload.extend_from_slice(&child.start_time.to_le_bytes());
+            collector
+                .absorb(FRAME_CHILD, root, sequence, &payload)
+                .unwrap();
+            collector.absorb(FRAME_START, child, 0, &[]).unwrap();
+        }
+        collector
+            .absorb(FRAME_POLICY_REFUSAL, refusing, 1, &298_i64.to_le_bytes())
+            .unwrap();
+
+        let error = match collector.finish() {
+            Ok(_) => panic!("unrelated missing child was incorrectly excused"),
+            Err(error) => error,
+        };
+        assert!(
+            error.to_string().contains("missing FINAL frames"),
+            "unrelated missing child was incorrectly excused: {error}"
+        );
+    }
+
+    #[test]
     fn collector_accepts_a_child_announced_after_its_final_frame() {
         let root = ProcessKey {
             pid: 83,
@@ -1544,6 +1679,32 @@ mod tests {
             .find("require_evidence_flush(EVIDENCE_FRAME_FINAL);")
             .unwrap();
         assert!(process_exit < final_frame);
+    }
+
+    #[test]
+    fn native_copied_child_policy_evidence_precedes_fail_fast_exit() {
+        let source = include_str!("../native/client.c");
+        let policy_sender = source
+            .split_once("static bool evidence_policy_refusal(int sysnum) {")
+            .unwrap()
+            .1
+            .split_once("static void require_evidence_policy_refusal")
+            .unwrap()
+            .0;
+        assert!(policy_sender.contains("sender->finalized = true;"));
+        assert!(policy_sender.contains("sender->finalization_started = true;"));
+        let copied_policy = source
+            .split_once("if (copied_action == 1) {")
+            .unwrap()
+            .1
+            .split_once("if (copied_action == 2)")
+            .unwrap()
+            .0;
+        let protected_frame = copied_policy
+            .find("require_evidence_policy_refusal(sysnum);")
+            .unwrap();
+        let tree_exit = copied_policy.find("exit_runtime_tree(101);").unwrap();
+        assert!(protected_frame < tree_exit);
     }
 
     #[test]
