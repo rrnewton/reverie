@@ -804,7 +804,23 @@ reminders:
       skill: hard-warn-coordinator
       fields:
         component: agent-container-lifecycle
-      title: "agent-owned containers need attention (REPORT-ONLY, coordinator reclaims): {summary}"
+      # ⚠️ THE TITLE USED TO ASSERT A FINDING THE CHECK HAD NOT MADE. It read
+      # "agent-owned containers need attention" for BOTH failure states, and the
+      # tool has three: `ok`, `action-required`, and `error`. `when: failure`
+      # fires on the last two alike, so a check that COULD NOT LOOK was announced
+      # in the same words as a real backlog.
+      #
+      # Measured 2026-08-27, with the agent snapshot 24929s stale against its 600s
+      # bound, the emitted line was titled "agent-owned containers need attention"
+      # while its own summary said "container lifecycle check could not complete".
+      # The state was in the fields; the TITLE is what a coordinator scanning
+      # ACTION lines reads, and it said the opposite.
+      #
+      # `{state}` is rendered by the same substitution as `{summary}` -- the
+      # memory_skill_sync block below already titles on it -- so this costs
+      # nothing and makes "we found a backlog" and "we could not look" different
+      # sentences.
+      title: "agent-owned container lifecycle is {state} (REPORT-ONLY, coordinator reclaims): {summary}"
 
   # Memory <-> skill sync: the sync/lint scripts existed but nothing invoked them,
   # so being in-sync was luck. This reminder runs the authoritative structural
