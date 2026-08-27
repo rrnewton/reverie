@@ -372,17 +372,51 @@ mod tests {
         assert_eq!(status, 0);
     }
 
+    /// ⚠️ THE DESCRIPTOR MUST STAY OPEN ACROSS THE LAST ASSERTION, AND THAT IS
+    /// THE WHOLE REASON THIS TEST IS SHAPED THIS WAY. The registry is keyed on
+    /// the descriptor NUMBER, and a number is reusable the instant it is closed.
+    ///
+    /// Written the obvious way -- protect the `File` itself, so dropping the
+    /// guard both deregisters AND closes -- this test was red about half the
+    /// time in the full suite and always green in isolation. Measured on reverie
+    /// main b181b1bb, 40 runs of `cargo test -p reverie-sabre --lib`:
+    /// 21 failed, always here, always `assertion failed: !is_protected(&fd)`.
+    ///
+    /// Traced by logging every registry insert and remove, one failing run:
+    ///
+    /// ```text
+    ///   insert fd=14 set=[13, 10, 3, 6, 7, 8, 11, 12]
+    ///   remove fd=14 set=[13, 10, 3, 6, 7, 8, 11, 12, 14]   <- this guard drops
+    ///   insert fd=14 set=[13, 10, 3, 6, 7, 8, 11, 12, 9]    <- SOMEONE ELSE takes 14
+    /// ```
+    ///
+    /// Closing the file released number 14, a concurrently running test was
+    /// handed the same number for its own descriptor and protected it, and this
+    /// test then asked whether 14 was protected. It was -- correctly, for a
+    /// different file. The registry and its lock are not implicated; the reused
+    /// identity is.
+    ///
+    /// So the guard here holds a bare `RawFd`, which has no destructor: dropping
+    /// it deregisters WITHOUT closing, `file` keeps the number allocated to this
+    /// test until the end, and no other test can be handed it in between. The
+    /// property under test is unchanged -- a registration appears with the guard
+    /// and is gone after it drops.
     #[test]
     fn protected_guard_hides_descriptor_until_drop() {
         let file = std::fs::File::open("/dev/null").unwrap();
         let fd = file.as_raw_fd();
-        let protected = protect_with(|| Ok::<_, std::convert::Infallible>(file)).unwrap();
+        let protected = protect_with(|| Ok::<RawFd, std::convert::Infallible>(fd)).unwrap();
 
         assert!(is_protected(&fd));
         assert!(uses_protected_fd(Sysno::close, fd as usize, 0));
 
         drop(protected);
-        assert!(!is_protected(&fd));
+        assert!(
+            !is_protected(&fd),
+            "the guard deregistered, so this number must not be protected; \
+             `file` still owns it, so nothing else can have taken it"
+        );
+        drop(file);
     }
 
     #[test]
