@@ -3533,6 +3533,13 @@ static bool pre_syscall(void *drcontext, int sysnum) {
   for (i = 0; i != 6; ++i)
     args[i] = (uint64_t)dr_syscall_get_param(drcontext, i);
 
+  uint64_t copied_clone_flags = 0;
+  bool copied_vfork_clone =
+      has_copied_runtime() &&
+      clone_identity_flags(sysnum, args, &copied_clone_flags) &&
+      (copied_clone_flags & CLONE_THREAD) == 0 &&
+      (copied_clone_flags & CLONE_VFORK) != 0;
+
   if (protect_evidence_socket_syscall((uintptr_t)drcontext, sysnum, args,
                                       &result)) {
     dr_syscall_set_result(drcontext, (reg_t)result);
@@ -3544,6 +3551,7 @@ static bool pre_syscall(void *drcontext, int sysnum) {
    * available before the copied-process external-runtime initialization below.
    */
   if (has_copied_runtime() && runtime_uses_external_global() &&
+      !copied_vfork_clone &&
       copied_process_runtime_pid != dr_get_process_id() &&
       counters->pending_virtual_child != 0 &&
       (counters->pending_clone_flags & CLONE_VFORK) != 0) {
@@ -3555,6 +3563,7 @@ static bool pre_syscall(void *drcontext, int sysnum) {
   // AUTONOMOUS-BOT-IMPLEMENTED
   // TODO-HUMAN-REVIEW(PR-255): Review copied-process Detcore state rebasing.
   if (has_copied_runtime() && runtime_uses_external_global() &&
+      !copied_vfork_clone &&
       !is_copied_vfork_process() &&
       copied_process_runtime_pid != dr_get_process_id()) {
     evidence_callback_enter();
@@ -3574,7 +3583,8 @@ static bool pre_syscall(void *drcontext, int sysnum) {
   }
 
   if (has_copied_runtime() &&
-      (!runtime_uses_external_global() || is_copied_vfork_process())) {
+      (!runtime_uses_external_global() || is_copied_vfork_process() ||
+       copied_vfork_clone)) {
     // Record this copied child's virtual identity before any refusal so the
     // shared host<->virtual map stays coherent even when the syscall is later
     // rejected by the fail-closed unsupported-syscall policy below.

@@ -2739,16 +2739,24 @@ mod tests {
         let rust_thread_init = pre_syscall
             .find("int32_t initialized = reverie_dbt_runtime_thread_init(")
             .expect("copied-process Rust thread initialization");
+        let copied_vfork_clone = pre_syscall
+            .find("bool copied_vfork_clone")
+            .expect("copied-process vfork selection");
 
         assert!(
-            copied_vfork < rust_thread_init,
-            "the copied vfork child must be selected before copied-process Rust initialization"
+            copied_vfork < rust_thread_init && copied_vfork_clone < rust_thread_init,
+            "the copied vfork call and child must be selected before copied-process Rust initialization"
         );
         let copied_path = &pre_syscall[copied_vfork..rust_thread_init];
         assert!(
             copied_path.contains("copied_vfork_pid")
                 && copied_path.contains("release_clone_identity_handoff"),
             "the first copied-vfork syscall must select the copied-child path and release the identity handoff"
+        );
+        assert!(
+            pre_syscall[rust_thread_init..]
+                .contains("is_copied_vfork_process() ||\n       copied_vfork_clone"),
+            "a copied process's vfork call must use the existing copied-child syscall path"
         );
     }
 
