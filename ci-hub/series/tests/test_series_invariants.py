@@ -108,6 +108,31 @@ class RowLinter(unittest.TestCase):
                 "outcome": "diverged", "coordinates": {"first_divergent_bytes": 1},
             }))
 
+    def test_accepts_first_divergent_messages_and_nonconsecutive_run_span(self):
+        series.validate_row(row(series={
+            "outcome": "diverged",
+            "num_runs": 2,
+            "last_run_index": 7,
+            "coordinates": {"first_divergent_record": 98},
+            "first_divergent_messages": {
+                "left": "INFO detcore: inbound syscall: read(3) = ?",
+                "right": "INFO detcore: finish syscall #37: read(3) = Ok(1)",
+            },
+        }))
+
+    def test_refuses_malformed_first_divergent_messages_and_run_span(self):
+        bad_payloads = [
+            {"first_divergent_messages": {"left": "only one side"}},
+            {"first_divergent_messages": {"left": None, "right": None}},
+            {"first_divergent_messages": {"left": "", "right": "right"}},
+            {"last_run_index": -1},
+            {"last_run_index": "7"},
+            {"num_runs": 3, "last_run_index": 1},
+        ]
+        for payload in bad_payloads:
+            with self.assertRaises(series.MalformedRow, msg=payload):
+                series.validate_row(row(series={"outcome": "diverged", **payload}))
+
     def test_refuses_coordinates_on_a_row_that_did_not_diverge(self):
         # THE CROSS-FIELD RULE. A passing run contributing a position would put a
         # number into a range that describes divergences.
@@ -116,6 +141,11 @@ class RowLinter(unittest.TestCase):
                 series.validate_row(row(series={
                     "outcome": outcome,
                     "coordinates": {"first_divergent_record": 98},
+                }))
+            with self.assertRaises(series.MalformedRow, msg=outcome):
+                series.validate_row(row(series={
+                    "outcome": outcome,
+                    "first_divergent_messages": {"left": "a", "right": "b"},
                 }))
 
     def test_allows_diverged_with_no_located_coordinate(self):
@@ -210,6 +240,15 @@ class DerivedViews(unittest.TestCase):
         self.assertEqual(
             series.observed_range(rows, "first_divergent_record"),
             {"earliest": 12, "latest": 250, "samples": 3},
+        )
+
+    def test_observed_range_counts_collapsed_runs(self):
+        collapsed = self._diverged(4, first_divergent_record=98)
+        collapsed["series"]["num_runs"] = 30
+        collapsed["series"]["last_run_index"] = 87
+        self.assertEqual(
+            series.observed_range([collapsed], "first_divergent_record"),
+            {"earliest": 98, "latest": 98, "samples": 30},
         )
 
     def test_a_coordinate_no_row_located_is_none_not_zero(self):
@@ -697,6 +736,29 @@ class CellResultProjection(unittest.TestCase):
         cell["attempt"] = attempt
         return cell
 
+    def _diverged_cell(
+        self,
+        run_index,
+        *,
+        record,
+        syscall,
+        scheduler_turn,
+        virtual_nanoseconds,
+        left="inbound read",
+        right="finish read",
+        duration_ms=100,
+    ):
+        cell = self._cell(run_index, outcome="FAIL", duration_ms=duration_ms)
+        cell.update({
+            "first_divergent_record": record,
+            "first_divergent_syscall": syscall,
+            "first_divergent_scheduler_turn": scheduler_turn,
+            "first_divergent_virtual_nanoseconds": virtual_nanoseconds,
+            "first_divergent_left_message": left,
+            "first_divergent_right_message": right,
+        })
+        return cell
+
     def test_two_hundred_raw_run_ids_become_one_batch_row(self):
         cells = [self._cell(i, duration_ms=5_100 + i) for i in range(200)]
         rows = self._project(cells)
@@ -710,6 +772,101 @@ class CellResultProjection(unittest.TestCase):
         self.assertEqual(payload["runtime"]["wall_time_min_ms"], 5_100)
         self.assertEqual(payload["runtime"]["wall_time_max_ms"], 5_299)
         self.assertEqual(payload["runtime"]["run1"]["syscalls"], 612)
+
+    def test_two_hundred_runs_keep_two_exact_divergence_points_and_counts(self):
+        cells = []
+        for index in range(200):
+            choice = index % 20
+            if choice < 3:
+                cells.append(self._diverged_cell(
+                    index,
+                    record=1_718,
+                    syscall=7,
+                    scheduler_turn=1_248,
+                    virtual_nanoseconds=80_000,
+                    duration_ms=4_000 + index,
+                ))
+            elif choice < 8:
+                cells.append(self._diverged_cell(
+                    index,
+                    record=1_976,
+                    syscall=7,
+                    scheduler_turn=1_248,
+                    virtual_nanoseconds=80_000,
+                    duration_ms=4_000 + index,
+                ))
+            else:
+                cells.append(self._cell(index, duration_ms=4_000 + index))
+
+        rows = self._project(cells)
+        self.assertEqual(len(rows), 3)
+        by_coordinates = {
+            json.dumps(item["series"].get("coordinates"), sort_keys=True): item["series"]
+            for item in rows
+        }
+        first = by_coordinates[json.dumps({
+            "first_divergent_record": 1_718,
+            "first_divergent_syscall": 7,
+            "first_divergent_scheduler_turn": 1_248,
+            "first_divergent_virtual_nanoseconds": 80_000,
+        }, sort_keys=True)]
+        second = by_coordinates[json.dumps({
+            "first_divergent_record": 1_976,
+            "first_divergent_syscall": 7,
+            "first_divergent_scheduler_turn": 1_248,
+            "first_divergent_virtual_nanoseconds": 80_000,
+        }, sort_keys=True)]
+        passed = by_coordinates["null"]
+        self.assertEqual(first["num_runs"], 30)
+        self.assertEqual(second["num_runs"], 50)
+        self.assertEqual(passed["num_runs"], 120)
+        self.assertEqual(first["coordinates"]["first_divergent_record"], 1_718)
+        self.assertEqual(second["coordinates"]["first_divergent_record"], 1_976)
+        self.assertEqual(first["first_divergent_messages"], {
+            "left": "inbound read",
+            "right": "finish read",
+        })
+        self.assertEqual(first["run_index"], 0)
+        self.assertEqual(first["last_run_index"], 182)
+        self.assertLess(len("\n".join(json.dumps(item) for item in rows)), 10_000)
+
+    def test_scattered_positions_remain_distinct_with_the_same_messages(self):
+        cells = [
+            self._diverged_cell(
+                index,
+                record=1_500 + index,
+                syscall=7,
+                scheduler_turn=1_248,
+                virtual_nanoseconds=80_000,
+            )
+            for index in range(200)
+        ]
+        rows = self._project(cells)
+        self.assertEqual(len(rows), 200)
+        self.assertEqual(
+            len({row["series"]["coordinates"]["first_divergent_record"] for row in rows}),
+            200,
+        )
+        self.assertTrue(all(row["series"]["num_runs"] == 1 for row in rows))
+        self.assertLess(len("\n".join(json.dumps(item) for item in rows)), 300_000)
+
+    def test_same_coordinates_with_different_messages_remain_distinct(self):
+        coordinates = {
+            "record": 1_718,
+            "syscall": 7,
+            "scheduler_turn": 1_248,
+            "virtual_nanoseconds": 80_000,
+        }
+        rows = self._project([
+            self._diverged_cell(0, **coordinates),
+            self._diverged_cell(
+                1,
+                **coordinates,
+                left="inbound write",
+                right="finish write",
+            ),
+        ])
+        self.assertEqual(len(rows), 2)
 
     def test_missing_wall_time_stays_missing_but_measured_zero_stays_zero(self):
         not_run = self._cell(0, outcome="HOST-INAPPLICABLE")
@@ -807,7 +964,14 @@ class CellResultProjection(unittest.TestCase):
             )
 
     def test_pressure_retry_retains_both_attempts_at_one_repetition(self):
-        first = self._cell(7, outcome="FAIL", duration_ms=90)
+        first = self._diverged_cell(
+            7,
+            record=1_718,
+            syscall=7,
+            scheduler_turn=1_248,
+            virtual_nanoseconds=80_000,
+            duration_ms=90,
+        )
         first["attempt"] = 1
         second = self._cell(7, outcome="PASS", duration_ms=80)
         second["attempt"] = 2
@@ -825,6 +989,14 @@ class CellResultProjection(unittest.TestCase):
             [(7, 1, "diverged"), (7, 2, "passed")],
         )
         self.assertNotEqual(rows[0]["event_id"], rows[1]["event_id"])
+        self.assertEqual(
+            rows[0]["series"]["coordinates"]["first_divergent_record"],
+            1_718,
+        )
+        self.assertEqual(
+            rows[0]["series"]["first_divergent_messages"],
+            {"left": "inbound read", "right": "finish read"},
+        )
         self.assertEqual(
             [row["series"]["attempt"] for row in series.history_rows(rows, self._cell(0)["test"])],
             [1, 2],
@@ -890,6 +1062,24 @@ class CellResultProjection(unittest.TestCase):
         cell["attempts"] = []
         rows = self._project([cell])
         self.assertNotIn("coordinates", rows[0]["series"])
+
+    def test_projection_keeps_a_message_pair_from_one_attempt(self):
+        cell = self._cell(0, outcome="FAIL")
+        cell["attempts"] = [
+            {
+                "first_divergent_left_message": "first left",
+                "first_divergent_right_message": "first right",
+            },
+            {
+                "first_divergent_left_message": "second left",
+                "first_divergent_right_message": "second right",
+            },
+        ]
+        rows = self._project([cell])
+        self.assertEqual(
+            rows[0]["series"]["first_divergent_messages"],
+            {"left": "first left", "right": "first right"},
+        )
 
     def test_append_cells_uses_the_supplied_run_id_for_the_whole_batch(self):
         import contextlib
@@ -1172,6 +1362,16 @@ class HistoryCli(unittest.TestCase):
                     "run_index": 0,
                     "outcome": "diverged",
                     "num_runs": 1,
+                    "coordinates": {
+                        "first_divergent_record": 98,
+                        "first_divergent_syscall": 37,
+                        "first_divergent_scheduler_turn": 4,
+                        "first_divergent_virtual_nanoseconds": 55,
+                    },
+                    "first_divergent_messages": {
+                        "left": "inbound read",
+                        "right": "finish read",
+                    },
                     "main_ancestry": True,
                     "depth": {"hermit": {"commits": 2, "first_parent": 2}},
                     "runtime": {
@@ -1250,9 +1450,17 @@ class HistoryCli(unittest.TestCase):
                 tree,
                 "history must refresh Hermit origin/main before labeling current ancestry",
             )
-            self.assertIn("\t12/13\t34/35\t5/6\t90\tvalidate\tvalidate-1", text)
+            self.assertIn(
+                "\t12/13\t34/35\t5/6\t90\t98\t37\t4\t55\t"
+                '{"left":"inbound read","right":"finish read"}'
+                "\tvalidate\tvalidate-1",
+                text,
+            )
             self.assertIn("\t0-199 (200)\t1231/1231", text)
-            self.assertIn("\t5101-5285\tpressure-test\tpressure-1", text)
+            self.assertIn(
+                "\t5101-5285\t-\t-\t-\t-\t-\tpressure-test\tpressure-1",
+                text,
+            )
             self.assertNotIn("applications/other/verify/ptrace", text)
 
     def test_empty_history_is_an_explicit_nonzero_result(self):

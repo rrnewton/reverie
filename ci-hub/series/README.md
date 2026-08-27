@@ -1,7 +1,7 @@
 # Stress / flakiness series store
 
 Append-only, Git-backed history of **repeated** cell measurements. Each row
-represents one run, or a consecutive range of equal runs when `num_runs` is
+represents one run, or a set of exactly equal observations when `num_runs` is
 greater than one.
 
 ```
@@ -58,7 +58,9 @@ under `series`:
            "coordinates":{"first_divergent_record":98,
                           "first_divergent_syscall":37,
                           "first_divergent_scheduler_turn":4,
-                          "first_divergent_virtual_nanoseconds":null}}}
+                          "first_divergent_virtual_nanoseconds":null},
+           "first_divergent_messages":{"left":"inbound read",
+                                       "right":"finish read"}}}
 ```
 
 `run_id` identifies one validate invocation, pressure-test campaign, or
@@ -71,11 +73,13 @@ create a scorecard observation keyed by Detcore tree. It is optional only so
 the already-published rows remain readable; a projection cannot invent it for
 an older row that omitted it.
 `num_runs` defaults to one; a value greater than one represents that many
-consecutive equal executions starting at `run_index`. Only wall time is folded
-as a minimum/maximum. Outcome, coordinates, source depth, main ancestry, and
-the two Hermit executions' scheduler turns, virtual nanoseconds, and syscall
-counts must all match before rows can be combined. A failed retry followed by a
-successful retry therefore remains two ordered rows.
+exactly equal observations between `run_index` and `last_run_index`. Only wall
+time is folded as a minimum/maximum. Outcome, all four measured divergence
+coordinates, the two compared messages, source depth, main ancestry, and the two
+Hermit executions' scheduler turns, virtual nanoseconds, and syscall counts must
+all match before rows can be combined. Rows that carry an explicit retry
+`attempt` are never combined, so a failed retry followed by a successful retry
+remains two ordered rows.
 
 The payload also carries the scorecard's existing source-depth shape:
 `depth.<repository>.{commits,first_parent}`. `main_ancestry` records whether the
@@ -106,8 +110,9 @@ unpublished and retained local spool, prints the number of stored rows and
 represented runs, starts with each cell's all-history
 `wall_time_min_ms` and `wall_time_max_ms`, then shows each row's source SHA,
 current/on-write main ancestry, depth, outcome, run span, `run1`/`run2`
-scheduler turns, virtual nanoseconds, syscall counts, wall-time range, producer,
-and run id. An empty result prints `no runs recorded` and exits nonzero.
+scheduler turns, virtual nanoseconds, syscall counts, wall-time range, all four
+divergence coordinates, the two compared messages, producer, and run id. An
+empty result prints `no runs recorded` and exits nonzero.
 
 ## Derived flaky cells
 
@@ -126,10 +131,16 @@ estimate.
 
 ## Raw positions, not bounds
 
-Coordinates are stored as **raw positions, one value per run**. `{earliest,
-latest}` is a **derived view** (`observed_range`), never a stored field — that
-is step 5, and storing the bound instead would discard the distribution the
-store exists to hold.
+Coordinates are stored as **raw measured positions**. Rows combine only when
+all four positions and the compared messages are exactly equal, so `num_runs`
+is the count at that exact point. `{earliest, latest}` is a **derived view**
+(`observed_range`), never a stored field — storing a bound instead would discard
+the distribution the store exists to hold.
+
+Distance-based collapsing is deliberately not part of the stored schema. If a
+large sample shows scatter to be the common case, a reader may later apply a
+tunable distance along one timeline dimension. The stored rows retain the
+measured points so changing that policy does not rewrite evidence.
 
 ⚠️ **The four coordinates are four different keyspaces and must never be
 compared across axes.** One real divergence was record 98, syscall 37, scheduler

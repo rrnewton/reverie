@@ -9,8 +9,8 @@
 
 WHY A SECOND STORE AND NOT A COLUMN ON THE FIRST. The validation ledger records
 one event per validation RUN of a whole tree. This represents one observation
-per CELL per REPETITION, with consecutive equal observations allowed to share
-one row, so a single pressure campaign over 40 cells at N=20 represents 800 runs
+per CELL per REPETITION, with equal observations allowed to share one row, so a
+single pressure campaign over 40 cells at N=20 represents 800 runs
 against one tree. Those are different cardinalities and different lifetimes,
 and folding them into the validate shards would make a month's shard unreadable
 for its original purpose.
@@ -85,7 +85,8 @@ ENVELOPE_KEYS = (
 #: single observation, and it is why (cell, tree) alone is not a key.
 IDENTITY_KEYS = ("cell", "tree", "run_index")
 
-#: The four divergence coordinates, stored as RAW POSITIONS, one value per run.
+#: The four divergence coordinates, stored as RAW MEASURED POSITIONS. A row may
+#: count repeated observations only when every stored position is exactly equal.
 #:
 #: ⚠️ THESE ARE FOUR DIFFERENT KEYSPACES AND MUST NEVER BE COMPARED ACROSS AXES.
 #: One real divergence was record 98, syscall 37, scheduler turn 4 -- three
@@ -98,6 +99,8 @@ COORDINATE_KEYS = (
     "first_divergent_scheduler_turn",
     "first_divergent_virtual_nanoseconds",
 )
+
+FIRST_DIVERGENT_MESSAGE_KEYS = ("left", "right")
 
 #: Runtime fields emitted by both cell producers. These are totals for one
 #: Hermit execution, not divergence positions. They intentionally live outside
@@ -268,22 +271,60 @@ def validate_row(row: Any, *, strict_paths: bool = True) -> dict:
                     f"coordinate {key} must be a non-negative int or null, got {value!r}"
                 )
 
+    messages = payload.get("first_divergent_messages")
+    if messages is not None:
+        if not isinstance(messages, dict):
+            raise MalformedRow("first_divergent_messages must be an object when present")
+        unknown = sorted(set(messages) - set(FIRST_DIVERGENT_MESSAGE_KEYS))
+        missing = sorted(set(FIRST_DIVERGENT_MESSAGE_KEYS) - set(messages))
+        if unknown or missing:
+            raise MalformedRow(
+                "first_divergent_messages must contain exactly left and right"
+            )
+        for side in FIRST_DIVERGENT_MESSAGE_KEYS:
+            value = messages[side]
+            if value is not None and (not isinstance(value, str) or not value):
+                raise MalformedRow(
+                    f"first_divergent_messages.{side} must be a nonempty string or null"
+                )
+        if all(messages[side] is None for side in FIRST_DIVERGENT_MESSAGE_KEYS):
+            raise MalformedRow("first_divergent_messages must contain at least one message")
+
     # ⚠️ THE ONE CROSS-FIELD RULE, and it is the whole point of the store.
     # 'diverged' with no located coordinate is a LEGITIMATE and distinct state --
     # the run diverged and the position could not be established -- so it is
     # allowed. What is refused is the inverse: coordinates on a row that did not
     # diverge, which would let a passing run contribute a position to a range.
-    if outcome != "diverged" and isinstance(coords, dict):
-        located = {k: v for k, v in coords.items() if v is not None}
-        if located:
+    if outcome != "diverged":
+        located = (
+            {k: v for k, v in coords.items() if v is not None}
+            if isinstance(coords, dict)
+            else {}
+        )
+        if located or messages is not None:
             raise MalformedRow(
-                f"outcome {outcome!r} must not carry located coordinates "
-                f"{sorted(located)}; only 'diverged' may"
+                f"outcome {outcome!r} must not carry divergence evidence; "
+                "only 'diverged' may"
             )
 
     num_runs = payload.get("num_runs", 1)
     if not isinstance(num_runs, int) or isinstance(num_runs, bool) or num_runs < 1:
         raise MalformedRow(f"num_runs must be a positive int, got {num_runs!r}")
+    last_run_index = payload.get("last_run_index")
+    if last_run_index is not None:
+        if (
+            not isinstance(last_run_index, int)
+            or isinstance(last_run_index, bool)
+            or last_run_index < run_index
+        ):
+            raise MalformedRow(
+                "last_run_index must be an int at least run_index, "
+                f"got {last_run_index!r}"
+            )
+        if last_run_index - run_index + 1 < num_runs:
+            raise MalformedRow(
+                "last_run_index span must contain at least num_runs observations"
+            )
 
     runtime = payload.get("runtime")
     if runtime is not None and not isinstance(runtime, dict):
@@ -379,9 +420,9 @@ def union(paths: Sequence[Any]) -> list[dict]:
 def series_for(rows: Iterable[dict], cell: str, tree: str) -> list[dict]:
     """Every repetition of one cell against one tree, in run order.
 
-    This is the READER for steps 4, 5 and 8: the stored form is one row per run,
-    and {earliest,latest} is a DERIVED view over this list rather than a stored
-    field.
+    This is the READER for steps 4, 5 and 8: a stored row may count exactly equal
+    observations, and {earliest,latest} is a DERIVED view over this list rather
+    than a stored field.
     """
     out = [
         r for r in rows
@@ -407,15 +448,26 @@ def observed_range(rows: Iterable[dict], coordinate: str) -> dict | None:
     """
     if coordinate not in COORDINATE_KEYS:
         raise SeriesError(f"unknown coordinate {coordinate!r}")
-    values = [
-        (r.get("series") or {}).get("coordinates", {}).get(coordinate)
-        for r in rows
-        if (r.get("series") or {}).get("outcome") == "diverged"
-    ]
-    located = [v for v in values if isinstance(v, int) and not isinstance(v, bool)]
-    if not located:
+    minimum = None
+    maximum = None
+    samples = 0
+    for row in rows:
+        payload = row.get("series") or {}
+        if payload.get("outcome") != "diverged":
+            continue
+        value = (payload.get("coordinates") or {}).get(coordinate)
+        if isinstance(value, int) and not isinstance(value, bool):
+            minimum = value if minimum is None else min(minimum, value)
+            maximum = value if maximum is None else max(maximum, value)
+            count = payload.get("num_runs", 1)
+            samples += (
+                count
+                if isinstance(count, int) and not isinstance(count, bool) and count > 0
+                else 1
+            )
+    if minimum is None or maximum is None:
         return None
-    return {"earliest": min(located), "latest": max(located), "samples": len(located)}
+    return {"earliest": minimum, "latest": maximum, "samples": samples}
 
 
 def measurement_state(rows: Sequence[dict]) -> str:
@@ -739,6 +791,21 @@ def _cell_coordinates(row: dict) -> dict | None:
     return located or None
 
 
+def _cell_first_divergent_messages(row: dict) -> dict | None:
+    attempts = row.get("attempts")
+    attempts = attempts if isinstance(attempts, list) else []
+    for candidate in [row, *attempts]:
+        if not isinstance(candidate, dict):
+            continue
+        left = candidate.get("first_divergent_left_message")
+        right = candidate.get("first_divergent_right_message")
+        left = left if isinstance(left, str) and left else None
+        right = right if isinstance(right, str) and right else None
+        if left is not None or right is not None:
+            return {"left": left, "right": right}
+    return None
+
+
 def _cell_runtime(row: dict) -> dict:
     runtime = row.get("runtime")
     if runtime is None:
@@ -762,6 +829,7 @@ def _cell_runtime(row: dict) -> dict:
 def _compression_key(payload: dict) -> str:
     stable = dict(payload)
     stable.pop("run_index", None)
+    stable.pop("last_run_index", None)
     stable.pop("num_runs", None)
     runtime = stable.get("runtime")
     if isinstance(runtime, dict):
@@ -772,8 +840,14 @@ def _compression_key(payload: dict) -> str:
     return json.dumps(stable, sort_keys=True, separators=(",", ":"))
 
 
+def _last_run_index(payload: dict) -> int:
+    first = int(payload["run_index"])
+    count = int(payload.get("num_runs", 1))
+    return int(payload.get("last_run_index", first + count - 1))
+
+
 def collapse_rows(rows: Sequence[dict]) -> list[dict]:
-    """Fold only consecutive equal executions, preserving retry order."""
+    """Fold exact equal executions while preserving retry rows and first-seen order."""
     ordered = sorted(
         rows,
         key=lambda row: (
@@ -783,41 +857,41 @@ def collapse_rows(rows: Sequence[dict]) -> list[dict]:
         ),
     )
     collapsed: list[dict] = []
+    collapsible: dict[tuple[str, str], int] = {}
     for row in ordered:
         payload = row["series"]
-        if collapsed:
-            previous = collapsed[-1]
+        key = (str(row.get("run_id", "")), _compression_key(payload))
+        previous_index = None if "attempt" in payload else collapsible.get(key)
+        if previous_index is not None:
+            previous = collapsed[previous_index]
             previous_payload = previous["series"]
-            previous_end = (
-                int(previous_payload["run_index"])
-                + int(previous_payload.get("num_runs", 1))
+            added_runs = int(payload.get("num_runs", 1))
+            previous_last = _last_run_index(previous_payload)
+            added_last = _last_run_index(payload)
+            previous_payload["num_runs"] = (
+                int(previous_payload.get("num_runs", 1)) + added_runs
             )
-            if (
-                previous.get("run_id") == row.get("run_id")
-                and _compression_key(previous_payload) == _compression_key(payload)
-                and previous_end == int(payload["run_index"])
-                and int(previous_payload.get("attempt", 1)) == 1
-                and int(payload.get("attempt", 1)) == 1
-            ):
-                previous_payload["num_runs"] = int(previous_payload.get("num_runs", 1)) + 1
-                previous_runtime = previous_payload.get("runtime") or {}
-                runtime = payload.get("runtime") or {}
-                walls = [
-                    previous_runtime.get("wall_time_min_ms"),
-                    previous_runtime.get("wall_time_max_ms"),
-                    runtime.get("wall_time_min_ms"),
-                    runtime.get("wall_time_max_ms"),
-                ]
-                walls = [
-                    value for value in walls
-                    if isinstance(value, (int, float)) and not isinstance(value, bool)
-                ]
-                if walls:
-                    previous_runtime["wall_time_min_ms"] = min(walls)
-                    previous_runtime["wall_time_max_ms"] = max(walls)
-                    previous_payload["runtime"] = previous_runtime
-                continue
+            previous_payload["last_run_index"] = max(previous_last, added_last)
+            previous_runtime = previous_payload.get("runtime") or {}
+            runtime = payload.get("runtime") or {}
+            walls = [
+                previous_runtime.get("wall_time_min_ms"),
+                previous_runtime.get("wall_time_max_ms"),
+                runtime.get("wall_time_min_ms"),
+                runtime.get("wall_time_max_ms"),
+            ]
+            walls = [
+                value for value in walls
+                if isinstance(value, (int, float)) and not isinstance(value, bool)
+            ]
+            if walls:
+                previous_runtime["wall_time_min_ms"] = min(walls)
+                previous_runtime["wall_time_max_ms"] = max(walls)
+                previous_payload["runtime"] = previous_runtime
+            continue
         collapsed.append(json.loads(json.dumps(row)))
+        if "attempt" not in payload:
+            collapsible[key] = len(collapsed) - 1
     return collapsed
 
 
@@ -922,6 +996,9 @@ def rows_from_cell_results(
         coordinates = _cell_coordinates(cell_result)
         if coordinates is not None and payload["outcome"] == "diverged":
             payload["coordinates"] = coordinates
+        messages = _cell_first_divergent_messages(cell_result)
+        if messages is not None and payload["outcome"] == "diverged":
+            payload["first_divergent_messages"] = messages
         envelope = {
             "schema": ENVELOPE_VERSION,
             "event_id": "",
@@ -959,6 +1036,7 @@ __all__ = [
     "COORDINATE_KEYS",
     "ENVELOPE_KEYS",
     "ENVELOPE_VERSION",
+    "FIRST_DIVERGENT_MESSAGE_KEYS",
     "IDENTITY_KEYS",
     "NON_VERDICT_OUTCOMES",
     "OUTCOMES",
@@ -1201,7 +1279,26 @@ def _run_span(payload: dict) -> str:
         return f"{first} attempt {attempt}"
     if count == 1:
         return str(first)
-    return f"{first}-{first + count - 1} ({count})"
+    last = payload.get("last_run_index", first + count - 1)
+    return f"{first}-{last} ({count})"
+
+
+def _coordinate_text(payload: dict, coordinate: str) -> str:
+    value = (payload.get("coordinates") or {}).get(coordinate)
+    if isinstance(value, int) and not isinstance(value, bool):
+        return str(value)
+    return "-"
+
+
+def _first_divergent_messages_text(payload: dict) -> str:
+    messages = payload.get("first_divergent_messages")
+    if not isinstance(messages, dict):
+        return "-"
+    return json.dumps(
+        {side: messages.get(side) for side in FIRST_DIVERGENT_MESSAGE_KEYS},
+        sort_keys=True,
+        separators=(",", ":"),
+    )
 
 
 def _cmd_history(argv: list[str]) -> int:
@@ -1278,7 +1375,9 @@ def _cmd_history(argv: list[str]) -> int:
     print(
         "day\tsha\tmain(current/recorded)\tdepth(repo:commits/first-parent)\tcell\toutcome\truns\t"
         "turns(run1/run2)\tvirtual_ns(run1/run2)\tsyscalls(run1/run2)\t"
-        "wall_ms(min-max)\tproducer\trun_id"
+        "wall_ms(min-max)\tfirst_divergent_record\tfirst_divergent_syscall\t"
+        "first_divergent_scheduler_turn\tfirst_divergent_virtual_nanoseconds\t"
+        "first_divergent_messages\tproducer\trun_id"
     )
     for row in rows:
         payload = row.get("series") or {}
@@ -1309,6 +1408,11 @@ def _cmd_history(argv: list[str]) -> int:
                 _runtime_value(runtime, "virtual_nanoseconds"),
                 _runtime_value(runtime, "syscalls"),
                 _wall_text(runtime),
+                _coordinate_text(payload, "first_divergent_record"),
+                _coordinate_text(payload, "first_divergent_syscall"),
+                _coordinate_text(payload, "first_divergent_scheduler_turn"),
+                _coordinate_text(payload, "first_divergent_virtual_nanoseconds"),
+                _first_divergent_messages_text(payload),
                 _producer_text(row.get("producer")),
                 str(row.get("run_id", "-")),
             ])
@@ -1327,7 +1431,7 @@ def _usage(message: str) -> int:
         "      [--emitted-at <UTC>] < cell-results.jsonl\n"
         "  series.py history --test <test id> [--tree <sha>] [--parent <root>]\n"
         "append validates complete series rows. append-cells converts typed harness\n"
-        "results, compresses consecutive equal runs, and writes the UNPUBLISHED spool.\n"
+        "results, compresses exact equal runs, and writes the UNPUBLISHED spool.\n"
         "history freshly reads tracked shards from parent origin/main plus that local spool.",
         file=sys.stderr,
     )
