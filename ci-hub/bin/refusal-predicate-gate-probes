@@ -1,11 +1,29 @@
 #!/usr/bin/env python3
 """Run the measured refusal-predicate cases against any Hermit revision.
 
-The checker under test lives in the Hermit repository at
-``scripts/check-refusal-predicate-anchored.py``.  This command keeps the review
-evidence outside that checker: it writes each predicate to an isolated file,
-checks that the predicate itself has the stated behavior, invokes the selected
-checker, and reports the result separately for every case.
+This command keeps the review evidence outside the checker: it writes each
+predicate to an isolated file, checks that the predicate itself has the stated
+behavior, invokes the selected checker, and reports the result separately for
+every case.
+
+Two checkers have held this line and they take different input, so the command
+resolves whichever one exists at the selected revision and runs the probe set
+that matches it.
+
+``scripts/check-refusal-predicate-anchored.py`` read the SOURCE of every Python
+file and refused predicates whose spelling looked unanchored.  It was deleted on
+https://github.com/rrnewton/hermit/pull/2702 at
+e2bcf4d1a34a142abbae5ea8cf8d162bb33a3895.  Its probes pass one file holding a
+``looks_refused`` predicate, and a directory for the wrong-corpus case.
+
+``scripts/check-validate-refusal-predicate.py`` replaced it.  It EXECUTES the
+real classification in ``scripts/test_validate_stop_paths.py`` against ten
+channel examples, so spelling no longer decides the verdict.  Its probes pass one
+file defining ``ValidateChildRefused`` and ``wait_for_text``.  It takes a file
+rather than a directory, so the wrong-corpus case becomes a target file that
+holds no classification: it must not read as a pass, which for this checker means
+a ``NO-RESULT-CASE:`` line at column zero that
+``ci/lint-checks-node.sh`` turns into a no_result, not exit 0 alone.
 """
 
 from __future__ import annotations
@@ -24,7 +42,13 @@ from typing import Iterator
 
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_HERMIT = ROOT / "hermit"
-CHECKER_RELATIVE = Path("scripts/check-refusal-predicate-anchored.py")
+# Newest first: at a revision carrying both, the executing checker is the one
+# the recipe runs.
+CHECKER_GENERATIONS = (
+    (Path("scripts/check-validate-refusal-predicate.py"), "executing"),
+    (Path("scripts/check-refusal-predicate-anchored.py"), "source-matching"),
+)
+CHECKER_RELATIVE = CHECKER_GENERATIONS[1][0]
 
 
 @dataclass(frozen=True)
@@ -358,6 +382,204 @@ def run_probes(checker: Path) -> int:
     return 0 if failures == 0 else 1
 
 
+
+# ── the executing checker's probes ────────────────────────────────────────────
+#
+# This checker loads the target module and drives its real consumer, so a probe
+# is a whole classification, not a predicate in isolation.  Every probe below was
+# measured; the eight that must be refused are the ones that turned from refused
+# to OK when marker detection moved from the collection's NAME to a list of five
+# literals, and the three that must pass are the correct predicates the
+# source-matching checker refused for their spelling.
+
+EXECUTING_SHELL = """
+class ValidateChildRefused(RuntimeError):
+    pass
+{body}
+def wait_for_text(log, marker, proc):
+    if _looks_refused(log.read_text()):
+        raise ValidateChildRefused("refused")
+    raise AssertionError("ordinary failure")
+"""
+
+_SUMMARY_RE = (
+    'r"\\U0001F6AB validate REFUSED \\(exit [1-9][0-9]*\\)'
+    ' \\u2014 profile .+ @ [0-9a-f]{40}"'
+)
+_GENUINE = (
+    "\U0001F6AB validate REFUSED (exit 2) \u2014 profile strict @ "
+    + "0123456789abcdef0123456789abcdef01234567"
+)
+_WRAPPED = "wrapper: " + _GENUINE
+
+
+def _whole_channel(collection: str, values: str) -> str:
+    return (
+        f"{collection} = {values}\n"
+        "def _looks_refused(output):\n"
+        f"    return any(s in output for s in {collection})"
+    )
+
+
+EXECUTING_MUST_REFUSE = (
+    ("marker-character-only",
+     'the refusal marker character alone, matched against the whole channel',
+     _whole_channel("_REFUSAL_SHAPES", '("\\U0001F6AB",)')),
+    ("sibling-verdict-words",
+     '("validate NO-RESULT", "INTERRUPTED (no result)"), whole channel',
+     _whole_channel("_REFUSAL_SHAPES",
+                    '("validate NO-RESULT", "INTERRUPTED (no result)")')),
+    ("restated-marker",
+     '("declined by:", "validate: DECLINED"), whole channel',
+     _whole_channel("_REFUSAL_SHAPES", '("declined by:", "validate: DECLINED")')),
+    ("decline-named-collection",
+     '_DECLINE_MARKERS = ("would not run:",), whole channel',
+     _whole_channel("_DECLINE_MARKERS", '("would not run:",)')),
+    ("verdict-named-collection",
+     'VERDICT_STRINGS = ("could not evaluate",), whole channel',
+     _whole_channel("VERDICT_STRINGS", '("could not evaluate",)')),
+    ("marker-named-regex-search",
+     '_REFUSAL_PATTERNS under re.search, whole channel',
+     'import re\n_REFUSAL_PATTERNS = ("gave up:",)\n'
+     'def _looks_refused(output):\n'
+     '    return any(re.search(p, output) for p in _REFUSAL_PATTERNS)'),
+    ("marker-named-find",
+     '_REFUSAL_SHAPES under output.find, whole channel',
+     '_REFUSAL_SHAPES = ("skipped by policy",)\n'
+     'def _looks_refused(output):\n'
+     '    return any(output.find(s) >= 0 for s in _REFUSAL_SHAPES)'),
+    ("marker-named-bare-startswith",
+     '_REFUSAL_SHAPES under bare startswith over lines',
+     '_REFUSAL_SHAPES = ("halted:",)\n'
+     'def _looks_refused(output):\n'
+     '    return any(l.startswith(s) for l in output.splitlines()'
+     ' for s in _REFUSAL_SHAPES)'),
+    ("whole-channel-original-defect",
+     'the original defect: refusal text anywhere in the channel',
+     _whole_channel("_REFUSAL_SHAPES", '("refused by:", "validate: REFUSED")')),
+)
+
+EXECUTING_MUST_PASS = (
+    ("splitlines-bound-to-a-name",
+     'lines = output.splitlines() bound to a name before iterating',
+     'import re\n_S = re.compile(' + _SUMMARY_RE + ')\n'
+     'def _looks_refused(output):\n'
+     '    lines = output.splitlines()\n'
+     '    return any(_S.fullmatch(line) for line in lines)'),
+    ("split-on-newline",
+     'output.split(chr(10)) in place of output.splitlines()',
+     'import re\n_S = re.compile(' + _SUMMARY_RE + ')\n'
+     'def _looks_refused(output):\n'
+     '    return any(_S.fullmatch(line) for line in output.split(chr(10)))'),
+    ("space-star-indent",
+     'the indent written ^ * rather than ^\\s*',
+     'import re\n_S = re.compile(r"^ *\\U0001F6AB validate REFUSED'
+     ' \\(exit [1-9][0-9]*\\) \\u2014 profile .+ @ [0-9a-f]{40}$",'
+     ' re.MULTILINE)\n'
+     'def _looks_refused(output):\n'
+     '    return bool(_S.search(output))'),
+)
+
+# Both directions have to be exercised by the same samples, or a predicate that
+# never fires would look correct.
+EXECUTING_SAMPLES = (
+    (_GENUINE, True),
+    (_WRAPPED, False),
+    ("thread panicked: connection refused by: peer", False),
+)
+
+
+def executing_behavior_errors(source: str, path: Path, wanted_correct: bool) -> list[str]:
+    """Check the fixture itself, so a mislabeled probe cannot create evidence."""
+    namespace: dict[str, object] = {"__file__": str(path), "__name__": "probe"}
+    try:
+        exec(compile(source, str(path), "exec"), namespace)
+        predicate = namespace["_looks_refused"]
+    except Exception as error:
+        return [f"fixture could not load: {type(error).__name__}: {error}"]
+    observed = []
+    for sample, wanted in EXECUTING_SAMPLES:
+        try:
+            observed.append(bool(predicate(sample)) == wanted)  # type: ignore[operator]
+        except Exception as error:
+            return [f"fixture raised {type(error).__name__}: {error}"]
+    if wanted_correct and not all(observed):
+        return ["fixture labelled correct but misclassifies its own samples"]
+    if not wanted_correct and all(observed):
+        return ["fixture labelled unsafe but classifies its own samples correctly"]
+    return []
+
+
+def run_executing_probes(checker: Path) -> int:
+    failures = 0
+    total = 0
+    with tempfile.TemporaryDirectory(prefix="refusal-predicate-gate-probes-") as raw:
+        root = Path(raw)
+
+        def one(name: str, predicate: str, body: str, expected_rc: int) -> None:
+            nonlocal failures, total
+            total += 1
+            wanted_correct = expected_rc == 0
+            expectation = "must-pass" if wanted_correct else "must-refuse"
+            case = root / f"{expectation}-{name}"
+            case.mkdir()
+            fixture = case / "test_validate_stop_paths.py"
+            source = EXECUTING_SHELL.format(body=body)
+            fixture.write_text(source, encoding="utf-8")
+            fixture_errors = executing_behavior_errors(source, fixture, wanted_correct)
+            rc, output = run_checker(checker, fixture)
+            ok = not fixture_errors and rc == expected_rc
+            print(
+                f"{'PASS' if ok else 'FAIL'} {name}: expected checker "
+                f"{'OK' if wanted_correct else 'REFUSED'} rc={expected_rc}, got "
+                f"{checker_word(rc)} rc={rc}"
+            )
+            print(f"  predicate: {predicate}")
+            for error in fixture_errors:
+                print(f"  fixture: {error}")
+            if not ok:
+                print(f"  checker: {first_output_line(output)}")
+                failures += 1
+
+        for name, predicate, body in EXECUTING_MUST_REFUSE:
+            one(name, predicate, body, 1)
+        for name, predicate, body in EXECUTING_MUST_PASS:
+            one(name, predicate, body, 0)
+
+        # ⚠️ The wrong-corpus case for this checker. It takes a file, so the
+        # equivalent of a wrong nonempty directory is a real, nonempty target that
+        # holds no classification. Exit 0 ALONE is not the question: the node
+        # reads a NO-RESULT-CASE: line at column zero and reports no_result. A
+        # bare exit 0 with no marker is the failure this probe exists for.
+        total += 1
+        absent = root / "target-without-a-classification"
+        absent.mkdir()
+        fixture = absent / "test_validate_stop_paths.py"
+        fixture.write_text("value = 1\n", encoding="utf-8")
+        rc, output = run_checker(checker, fixture)
+        marked = any(
+            line.startswith("NO-RESULT-CASE:") for line in output.splitlines()
+        )
+        ok = rc != 0 or marked
+        node = "fail" if rc != 0 else ("no_result" if marked else "pass")
+        print(
+            f"{'PASS' if ok else 'FAIL'} target-without-a-classification: expected "
+            f"the node NOT to read a pass, got node {node} (rc={rc})"
+        )
+        print(
+            "  predicate: a real, nonempty target file holding no refusal "
+            "classification at all"
+        )
+        if not ok:
+            print(f"  checker: {first_output_line(output)}")
+            failures += 1
+
+    print()
+    print(f"probes: {total}  passed: {total - failures}  failed: {failures}")
+    print("RESULT: PASS" if failures == 0 else "RESULT: FAIL")
+    return 0 if failures == 0 else 1
+
+
 def git(repo: Path, *args: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         ["git", "-C", str(repo), *args], capture_output=True, text=True, timeout=30
@@ -365,17 +587,21 @@ def git(repo: Path, *args: str) -> subprocess.CompletedProcess[str]:
 
 
 @contextlib.contextmanager
-def selected_checker(repo: Path, rev: str | None) -> Iterator[tuple[Path, str]]:
+def selected_checker(repo: Path, rev: str | None) -> Iterator[tuple[Path, str, Path, str]]:
     if rev is None:
-        checker = repo / CHECKER_RELATIVE
-        if not checker.is_file():
-            raise ValueError(f"checker not found: {checker}")
+        for relative, kind in CHECKER_GENERATIONS:
+            checker = repo / relative
+            if checker.is_file():
+                break
+        else:
+            names = ", ".join(str(r) for r, _ in CHECKER_GENERATIONS)
+            raise ValueError(f"no refusal checker found in {repo}; looked for {names}")
         resolved = git(repo, "rev-parse", "HEAD")
         identity = resolved.stdout.strip() if resolved.returncode == 0 else "working tree"
-        dirty = git(repo, "status", "--porcelain", "--", str(CHECKER_RELATIVE))
+        dirty = git(repo, "status", "--porcelain", "--", str(relative))
         if dirty.returncode == 0 and dirty.stdout.strip():
             identity += "-dirty"
-        yield checker, identity
+        yield checker, identity, relative, kind
         return
 
     resolved = git(repo, "rev-parse", "--verify", f"{rev}^{{commit}}")
@@ -384,15 +610,17 @@ def selected_checker(repo: Path, rev: str | None) -> Iterator[tuple[Path, str]]:
             f"cannot resolve Hermit revision {rev!r}: {resolved.stderr.strip()}"
         )
     exact = resolved.stdout.strip()
-    shown = git(repo, "show", f"{exact}:{CHECKER_RELATIVE.as_posix()}")
-    if shown.returncode != 0:
-        raise ValueError(
-            f"cannot read {CHECKER_RELATIVE} at {exact}: {shown.stderr.strip()}"
-        )
+    for relative, kind in CHECKER_GENERATIONS:
+        shown = git(repo, "show", f"{exact}:{relative.as_posix()}")
+        if shown.returncode == 0:
+            break
+    else:
+        names = ", ".join(str(r) for r, _ in CHECKER_GENERATIONS)
+        raise ValueError(f"no refusal checker at {exact}; looked for {names}")
     with tempfile.TemporaryDirectory(prefix="refusal-predicate-checker-") as raw:
-        checker = Path(raw) / CHECKER_RELATIVE.name
+        checker = Path(raw) / relative.name
         checker.write_text(shown.stdout, encoding="utf-8")
-        yield checker, exact
+        yield checker, exact, relative, kind
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
@@ -423,12 +651,14 @@ def main(argv: list[str] | None = None) -> int:
         print(f"refusal-predicate-gate-probes: no such Hermit repository: {repo}", file=sys.stderr)
         return 2
     try:
-        with selected_checker(repo, args.rev) as (checker, identity):
+        with selected_checker(repo, args.rev) as (checker, identity, relative, kind):
             print(f"Hermit: {repo}")
             print(f"revision: {identity}")
-            print(f"checker: {CHECKER_RELATIVE}")
+            print(f"checker: {relative}  ({kind})")
             print(f"checker sha256: {hashlib.sha256(checker.read_bytes()).hexdigest()}")
             print()
+            if kind == "executing":
+                return run_executing_probes(checker)
             return run_probes(checker)
     except (OSError, subprocess.SubprocessError, ValueError) as error:
         print(f"refusal-predicate-gate-probes: {error}", file=sys.stderr)

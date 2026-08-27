@@ -83,5 +83,86 @@ raise SystemExit(0)
             self.assertIn("RESULT: PASS", rendered)
 
 
+class ExecutingCheckerProbesTest(unittest.TestCase):
+    """The probe set for scripts/check-validate-refusal-predicate.py."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.module = load_script()
+
+    def test_names_are_unique_and_the_measured_cases_are_present(self) -> None:
+        names = [name for name, _, _ in self.module.EXECUTING_MUST_REFUSE]
+        names += [name for name, _, _ in self.module.EXECUTING_MUST_PASS]
+        self.assertEqual(len(names), len(set(names)))
+        for required in (
+            "marker-character-only",
+            "sibling-verdict-words",
+            "restated-marker",
+            "whole-channel-original-defect",
+            "splitlines-bound-to-a-name",
+            "split-on-newline",
+            "space-star-indent",
+        ):
+            self.assertIn(required, names)
+
+    def test_every_fixture_has_the_behavior_it_claims(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="refusal-exec-probe-") as raw:
+            root = Path(raw)
+            cases = [(n, b, False) for n, _, b in self.module.EXECUTING_MUST_REFUSE]
+            cases += [(n, b, True) for n, _, b in self.module.EXECUTING_MUST_PASS]
+            for name, body, correct in cases:
+                path = root / f"{name}.py"
+                source = self.module.EXECUTING_SHELL.format(body=body)
+                path.write_text(source, encoding="utf-8")
+                self.assertEqual(
+                    [],
+                    self.module.executing_behavior_errors(source, path, correct),
+                    name,
+                )
+
+    def test_an_absent_classification_without_the_marker_is_a_failure(self) -> None:
+        """Exit 0 alone must not satisfy the wrong-corpus probe."""
+        with tempfile.TemporaryDirectory(prefix="refusal-exec-checker-") as raw:
+            root = Path(raw)
+            silent = root / "silent.py"
+            silent.write_text(
+                "#!/usr/bin/env python3\n"
+                "import pathlib, sys\n"
+                "t = pathlib.Path(sys.argv[1])\n"
+                "if 'must-refuse-' in str(t):\n"
+                "    raise SystemExit(1)\n"
+                "print('PASS: nothing to check')\n"
+                "raise SystemExit(0)\n",
+                encoding="utf-8",
+            )
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                rc = self.module.run_executing_probes(silent)
+            rendered = output.getvalue()
+            self.assertEqual(1, rc, rendered)
+            self.assertIn("FAIL target-without-a-classification:", rendered)
+            self.assertIn("got node pass", rendered)
+
+            marking = root / "marking.py"
+            marking.write_text(
+                "#!/usr/bin/env python3\n"
+                "import pathlib, sys\n"
+                "t = pathlib.Path(sys.argv[1])\n"
+                "if 'must-refuse-' in str(t):\n"
+                "    raise SystemExit(1)\n"
+                "if 'target-without-a-classification' in str(t):\n"
+                "    print('NO-RESULT-CASE: nothing was evaluated')\n"
+                "raise SystemExit(0)\n",
+                encoding="utf-8",
+            )
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                rc = self.module.run_executing_probes(marking)
+            rendered = output.getvalue()
+            self.assertEqual(0, rc, rendered)
+            self.assertIn("PASS target-without-a-classification:", rendered)
+            self.assertIn("got node no_result", rendered)
+
+
 if __name__ == "__main__":
     unittest.main()
