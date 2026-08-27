@@ -110,6 +110,60 @@ should still use the shared wrapper rather than adding another timer.
   `CI_HUB_TOOL_COST_ACTIVE=1` when an already-timed parent invokes another
   wrapped ci-hub entrypoint.
 
+## The `ci-hub` front door's own cost, so it is not rediscovered again
+
+⚠️ **THIS COST HAS BEEN INDEPENDENTLY REDISCOVERED SIX TIMES AND WORKED AROUND
+LOCALLY EACH TIME** — `health/pr_status.py`, `health/tick-hub.yaml`,
+`landing/main_soft_green.py`, `tests/test_operational_bounds.py`, `health/README.md`,
+and the `validate-run` branch of the `ci-hub` shim itself. Every workaround was
+correct where it sat and left the next reader to rediscover the cause from
+scratch. The sixth finder had no way to know they were the sixth. The reason is
+written at the shebang in `ci-hub.rs`, which is not where anyone hits the cost;
+it is written here because callers hit it from the calling side.
+
+**`--force` is load-bearing and must not be removed.** Measured 2026-08-27 with a
+two-file reproduction: a `#[path]` module edited between runs is **ignored**
+without `--force` — the stale cached binary runs and prints the old value — and
+picked up with it. rust-script keys its cache on the top-level file only. Dropping
+the flag reintroduces a stale binary reporting success, which this project has
+already been bitten by.
+
+**The cost is bimodal, and the warm case is not what the workarounds assume.**
+Measured 2026-08-27 on devbig014, rust-script 0.36.0:
+
+```text
+  warm dispatch (--help, cache present)     0.05-0.06s wall   0.02-0.03s user
+  cold cache (fresh XDG_CACHE_HOME)        16.36s     wall  69.13s     user
+```
+
+⚠️ **WARM DISPATCH IS ~0.03s OF CPU AND IS NOT WORTH BYPASSING.** An earlier
+measurement recorded "29 cached runs at 1.07–2.76s wall, 0.75–0.82s user" and
+attributed that to `--force`. Re-measured against the same command, the split is:
+
+```text
+  ci-hub validate-status --sha SHA --repo rrnewton/hermit --json   1.12-1.20s user
+  ci-hub --help  (dispatch alone, same warm cache)                 0.03s      user
+```
+
+So roughly **2.6% of that figure is the front door and ~97% is the command's own
+work** — reading and parsing the ledger. A bypass built to avoid the front door
+saves the 2.6%; if the caller is slow, the ledger read is where to look.
+
+**What actually costs is a COLD cache, at 69s of CPU.** Reach for a bypass only
+when a caller genuinely faces one. Two known ways to be cold:
+
+- `ci-hub validate-run` creates a fresh `mktemp -d` cache on **every** invocation
+  (see the `ci-hub` shim), deliberately, so a validate launch cannot reach the
+  user's shared rust-script cache before the run-owned one is installed. It
+  therefore pays the cold cost every time, by construction.
+- Any caller with a different or evicted `XDG_CACHE_HOME`, and the machine-wide
+  Cargo build lock that a concurrent rebuild holds.
+
+**Before adding a seventh bypass, measure which case you are in.** `ci-hub --help`
+against your own environment separates them in one command: ~0.05s means your
+cache is warm and the front door is not your cost; tens of seconds means it is
+cold and the bypass may be justified — say which in the comment, with the number.
+
 ## Numeric claims and ratchets
 
 - Counts, percentages, and progress indicators must be computed from the data
