@@ -599,10 +599,10 @@ impl DbtRunner {
                 .map_err(|error| io::Error::other(error.to_string()))?
         })
         .await?;
-        if !connected.load(Ordering::Acquire) {
+        if missing_coordinator_connection_is_error(connected.load(Ordering::Acquire), &wait) {
             return Err(io::Error::new(
                 io::ErrorKind::ConnectionAborted,
-                "DBT guest exited before connecting to the global-state coordinator",
+                "DBT guest exited successfully without connecting to the global-state coordinator",
             ));
         }
         // AUTONOMOUS-BOT-IMPLEMENTED
@@ -991,6 +991,19 @@ enum ChildWait {
     Output(Output),
 }
 
+impl ChildWait {
+    fn status(&self) -> ExitStatus {
+        match self {
+            Self::Status(status) => *status,
+            Self::Output(output) => output.status,
+        }
+    }
+}
+
+fn missing_coordinator_connection_is_error(connected: bool, wait: &ChildWait) -> bool {
+    !connected && wait.status().success()
+}
+
 enum CoordinatedInput {
     Null,
     Inherit,
@@ -1314,8 +1327,27 @@ fn require_file(path: &Path, description: &str) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use std::io::Seek as _;
+    use std::os::unix::process::ExitStatusExt as _;
 
     use super::*;
+
+    #[test]
+    fn failed_guest_status_is_preserved_before_coordinator_connection() {
+        let bootstrap_failure = ChildWait::Status(ExitStatus::from_raw(125 << 8));
+        let other_failure = ChildWait::Status(ExitStatus::from_raw(1 << 8));
+        let success = ChildWait::Status(ExitStatus::from_raw(0));
+
+        assert!(!missing_coordinator_connection_is_error(
+            false,
+            &bootstrap_failure
+        ));
+        assert!(!missing_coordinator_connection_is_error(
+            false,
+            &other_failure
+        ));
+        assert!(missing_coordinator_connection_is_error(false, &success));
+        assert!(!missing_coordinator_connection_is_error(true, &success));
+    }
 
     fn runner() -> DbtRunner {
         DbtRunner {
