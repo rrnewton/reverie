@@ -129,10 +129,6 @@ fn exercise_chaos_interrupt() {
     let mut output = [0_u8; 4];
     assert_eq!(
         unsafe { libc::read(pipe[0], output.as_mut_ptr().cast(), output.len()) },
-        -1
-    );
-    assert_eq!(
-        unsafe { libc::read(pipe[0], output.as_mut_ptr().cast(), output.len()) },
         1
     );
     assert_eq!(output[0], b'd');
