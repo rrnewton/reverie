@@ -3240,6 +3240,80 @@ mod tests {
         }
     }
 
+    #[derive(Default)]
+    struct PreciseTimerDeliveryTool {
+        delivered: AtomicBool,
+    }
+
+    #[reverie::tool]
+    impl Tool for PreciseTimerDeliveryTool {
+        type GlobalState = ();
+        type ThreadState = ();
+
+        fn subscriptions(_config: &()) -> Subscription {
+            Subscription::none()
+        }
+
+        async fn handle_thread_start<G: Guest<Self>>(&self, guest: &mut G) -> Result<(), Error> {
+            guest
+                .set_timer_precise(reverie::TimerSchedule::Rcbs(100))
+                .expect("configure precise timer at thread start");
+            Ok(())
+        }
+
+        async fn handle_timer_event<G: Guest<Self>>(&self, _guest: &mut G) {
+            self.delivered.store(true, Ordering::SeqCst);
+        }
+
+        async fn on_exit_process<G: reverie::GlobalRPC<Self::GlobalState>>(
+            self,
+            _pid: Pid,
+            _global_state: &G,
+            _exit_status: ExitStatus,
+        ) -> Result<(), Error> {
+            assert!(
+                self.delivered.into_inner(),
+                "precise timer event did not reach the Tool"
+            );
+            Ok(())
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn precise_timer_delivery_reaches_tool() {
+        if !crate::perf::is_perf_supported() {
+            return;
+        }
+
+        let _ = reverie::take_skid_overshoot_count();
+        let tracer = spawn_fn_with_config::<PreciseTimerDeliveryTool, _>(
+            || {
+                let mut value = 0u64;
+                for i in 0..1_000_000 {
+                    value = std::hint::black_box(value.wrapping_add(i));
+                }
+                std::hint::black_box(value);
+            },
+            (),
+            false,
+        )
+        .await
+        .expect("spawn precise-timer tracee");
+        let (status, ()) = tokio::time::timeout(Duration::from_secs(5), tracer.wait())
+            .await
+            .expect("precise-timer tracee timed out")
+            .expect("wait precise-timer tracee");
+        assert_eq!(status, ExitStatus::Exited(0));
+
+        let overshoot_count = reverie::take_skid_overshoot_count();
+        if std::env::var(crate::timer::SKID_MARGIN_OVERRIDE_ENV).as_deref() == Ok("0") {
+            assert!(
+                overshoot_count > 0,
+                "zero skid margin did not exercise the overshoot path"
+            );
+        }
+    }
+
     fn root_stop_guest_command(mode: &str) -> Command {
         if mode == "timer" {
             return Command::new("/bin/true");
