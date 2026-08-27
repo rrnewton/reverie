@@ -112,7 +112,7 @@ pub type RuntimeIdler = unsafe extern "C" fn();
 /// `reverie_dbt_runtime_background_init_v2`. Advancing a consumer's Reverie
 /// revision without those matching exports is an incomplete cross-repository
 /// update and fails at link or at the pre-callback ABI check.
-pub const DBT_RUNTIME_ABI_VERSION: u32 = 3;
+pub const DBT_RUNTIME_ABI_VERSION: u32 = 4;
 
 #[repr(C)]
 struct DbtRuntimeCallbacksV1 {
@@ -1449,6 +1449,15 @@ fn current_ppid() -> Option<Pid> {
     }
 }
 
+/// Records the current process's parent within the followed process tree.
+///
+/// External runtimes call this from their thread-initialization callback before
+/// constructing a [`DbtGuest`]. Pass a positive host PID for a followed child
+/// and a nonpositive value for the root process.
+pub fn set_current_ppid(in_tree_ppid: i32) {
+    PROCESS_PPID.store(in_tree_ppid, Ordering::Relaxed);
+}
+
 #[cfg(feature = "prototype-runtime")]
 static PROTOTYPE_TOOL: PrototypeTool = PrototypeTool;
 #[cfg(feature = "prototype-runtime")]
@@ -1498,7 +1507,7 @@ pub unsafe extern "C" fn reverie_dbt_runtime_thread_init(
     // Record this process's real in-tree parent (or `PPID_NONE` for the tree
     // root) so every `DbtGuest` built afterwards reports it through
     // `Guest::ppid`. A per-process constant; each thread writes the same value.
-    PROCESS_PPID.store(in_tree_ppid, Ordering::Relaxed);
+    set_current_ppid(in_tree_ppid);
     // The native client publishes stable virtual identities in fields after
     // this public three-counter prefix before entering Rust. Reset only the
     // prototype-owned prefix: writing a fresh `PrototypeCounters` value is
@@ -1639,14 +1648,26 @@ pub unsafe extern "C" fn reverie_dbt_runtime_exec_failed(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn reverie_dbt_runtime_process_clone_result(
     _counters: *mut PrototypeCounters,
+    _context: *mut libc::c_void,
+    _parent_tid: i32,
+    _parent_pid: i32,
+    _branches: u64,
     sysnum: i64,
     result: i64,
-) {
+    _virtual_child_tid: i32,
+    _child_tid_addr: u64,
+    _flags: u64,
+    _exit_signal: i32,
+    _invoke_syscall: SyscallInvoker,
+    _read_registers: RegisterReader,
+    _write_registers: RegisterWriter,
+) -> i32 {
     if PROCESS_CLONE_RESULT_PROBE.load(Ordering::Acquire) {
         tools::emit_line(&format!(
             "reverie-dbt-test: process-clone-result sysnum={sysnum} result={result}"
         ));
     }
+    0
 }
 
 /// Applies copied-child syscall policy for the built-in prototype runtime.
