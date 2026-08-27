@@ -616,7 +616,8 @@ class StartUnitTest(unittest.TestCase):
         }
         self.assertEqual("1", frozen_env["VALIDATE_RUN_ON_DIRTY_TREE"])
         self.assertEqual("1", frozen_env["VALIDATE_IGNORE_CACHE"])
-        self.assertEqual("0", frozen_env["VALIDATE_LABEL_PR"])
+        self.assertNotIn("VALIDATE_LABEL_PR", frozen_env)
+        self.assertIn("--no-label-pr", systemd_runs[1])
         clone_index = next(
             (
                 index

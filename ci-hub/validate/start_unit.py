@@ -1279,8 +1279,6 @@ def build_systemd_command(
                 "--setenv",
                 "VALIDATE_IGNORE_CACHE=1",
                 "--setenv",
-                "VALIDATE_LABEL_PR=0",
-                "--setenv",
                 f"HERMIT_VALIDATE_LEDGER={frozen_result}",
             ]
         )
@@ -1982,6 +1980,14 @@ def main(
             "--frozen-validate cannot publish a receipt-backed label",
             "drop --label-pr; this run measures a target that does not contain current main",
         )
+    if args.frozen_validate:
+        if not validate_args:
+            validate_args.append("full")
+        # Use the CLI spelling rather than exporting VALIDATE_LABEL_PR=0. Old
+        # validate.rs self-tests intentionally parse a label-capable nested
+        # invocation; inheriting the outer environment made that negative case
+        # silently non-labeling and stopped the historical run before its matrix.
+        validate_args.append("--no-label-pr")
     if args.make_validate and validate_args:
         return refuse(
             "--make-validate is the exact no-argument Make target; validate arguments "
