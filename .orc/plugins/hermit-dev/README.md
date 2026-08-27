@@ -17,6 +17,8 @@ registers it as the `hermit-dev` skill.
 - Register the two narrow coordinator skills stored beside this file.
 - Expose `await orc.hermit-dev.activate()` and
   `orc.hermit-dev.status()`.
+- Restore `globalThis.gchatSafe` on every config load before any registration
+  effect can fail, preserving the coordinator's existing no-caps check.
 - Register the fork-safe `gh-issue-create` wrapper.
 - Run the real `agent-utils/tick-hub` operational poll every sixty minutes.
   The versioned config is `ci-hub/health/tick-hub.yaml`; the plugin only supplies the
