@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Publish ledger events to the shared Git-backed history.
+"""Publish ledger or per-test series events to shared Git-backed history.
 
 Three properties, in the order they matter:
 
-**A local event is never lost.** Every event is written to a local spool
+**A local event is never lost.** Every event is written to its local spool
 *before* any Git operation, and the spool entry is dropped only after the
 commit carrying it is confirmed to be an ancestor of the freshly-fetched remote
 branch. Push reporting success is not that confirmation — a push can succeed
@@ -29,6 +29,7 @@ extension of what is published, the publish is refused rather than forced.
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import json
 import os
 import subprocess
@@ -56,10 +57,27 @@ DEFAULT_BRANCH = "main"
 #: Bounded so a genuinely wedged remote surfaces as a failure with the spool
 #: intact, instead of spinning forever and looking healthy.
 DEFAULT_ATTEMPTS = 5
+STORES = ("ledger", "series")
 
 
 class PublishRefused(Exception):
     """The publish would have rewritten published bytes, or the events are invalid."""
+
+
+def _series_store():
+    """Load the sibling series module only for a series publication."""
+    name = "ci_hub_series_store_for_publisher"
+    existing = sys.modules.get(name)
+    if existing is not None:
+        return existing
+    path = Path(__file__).resolve().parents[1] / "series" / "series.py"
+    spec = importlib.util.spec_from_file_location(name, path)
+    if spec is None or spec.loader is None:
+        raise PublishRefused(f"cannot load series store from {path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
 
 
 def _git(repo: Path, *args: str, check: bool = True) -> bounded_capture.CapturedProcess:
@@ -158,6 +176,71 @@ def _spool_snapshot(
     return ({key: union_events(value) for key, value in pending.items()}, files)
 
 
+def _series_spool_snapshot(
+    spool_dir: str | os.PathLike[str],
+) -> tuple[dict[tuple[str, str, str], list[dict]], list[Path]]:
+    """Group stable run-id batches by the tracked shard they publish into."""
+    pending: dict[tuple[str, str, str], list[dict]] = {}
+    files: list[Path] = []
+    root = Path(spool_dir)
+    if not root.is_dir():
+        return pending, files
+    series_store = _series_store()
+    for path in sorted(root.glob("*.jsonl")):
+        events = read_shard(path)
+        for event in events:
+            try:
+                series_store.validate_row(event)
+                emitted_at = str(event.get("emitted_at", ""))
+                month = emitted_at[:7]
+                team = str(event.get("team", ""))
+                host = str(event.get("host", ""))
+                series_store.shard_path(team, host, month)
+            except series_store.SeriesError as error:
+                raise PublishRefused(f"{path}: {error}") from error
+            pending.setdefault((team, host, month), []).append(event)
+        files.append(path)
+    return ({key: union_events(value) for key, value in pending.items()}, files)
+
+
+def _store_snapshot(
+    store: str, spool_dir: str | os.PathLike[str]
+) -> tuple[dict[tuple[str, str, str], list[dict]], list[Path]]:
+    if store == "ledger":
+        return _spool_snapshot(spool_dir)
+    if store == "series":
+        return _series_spool_snapshot(spool_dir)
+    raise PublishRefused(f"unknown store {store!r}; expected one of {STORES}")
+
+
+def _store_shard(store: str, team: str, host: str, month: str) -> str:
+    if store == "ledger":
+        return f"ledger/{team}/{host}/{month}.jsonl"
+    if store == "series":
+        return _series_store().shard_path(team, host, month)
+    raise PublishRefused(f"unknown store {store!r}; expected one of {STORES}")
+
+
+def _validate_store_event(store: str, event: dict, relative: str) -> None:
+    if store == "ledger":
+        codes = validate_event(event, relative)
+        if codes:
+            raise PublishRefused(
+                f"{relative}: event {event.get('event_id')!r} violates {codes}"
+            )
+        return
+    if store == "series":
+        series_store = _series_store()
+        try:
+            series_store.validate_row(event)
+        except series_store.SeriesError as error:
+            raise PublishRefused(
+                f"{relative}: event {event.get('event_id')!r} is invalid: {error}"
+            ) from error
+        return
+    raise PublishRefused(f"unknown store {store!r}; expected one of {STORES}")
+
+
 #: Batches proven published but not yet durable in the PRODUCING checkout.
 #:
 #: Dropping a batch the instant ancestry is proven blinds its own producer:
@@ -229,16 +312,25 @@ def merge_shard(remote_text: str, events: Sequence[dict]) -> str:
     if remote_text and not remote_text.endswith("\n"):
         raise MalformedEvent("remote shard's final line is truncated; refusing to append")
     have = {ln for ln in remote_lines}
-    have_ids = set()
+    have_by_id: dict[str, dict] = {}
     for line in remote_lines:
-        have_ids.add(parse_line(line).get("event_id"))
+        event = parse_line(line)
+        have_by_id[str(event.get("event_id", ""))] = event
     additions = []
     for event in events:
         line = json.dumps(event, sort_keys=True)
-        if line in have or event.get("event_id") in have_ids:
+        event_id = str(event.get("event_id", ""))
+        prior = have_by_id.get(event_id)
+        if prior is not None:
+            if json.dumps(prior, sort_keys=True) != line:
+                raise PublishRefused(
+                    f"event_id {event_id!r} is already published with a different body"
+                )
+            continue
+        if line in have:
             continue
         have.add(line)
-        have_ids.add(event.get("event_id"))
+        have_by_id[event_id] = event
         additions.append(line)
     body = remote_lines + additions
     return "".join(line + "\n" for line in body)
@@ -394,8 +486,9 @@ def publish(
     serialized_writer: str | os.PathLike[str] | None = None,
     attribution: str | None = None,
     source_root: str | os.PathLike[str] | None = None,
+    store: str = "ledger",
 ) -> dict:
-    """Publish everything spooled; drop spool entries only once ancestry proves it.
+    """Publish one store's spool; drain only once ancestry proves it.
 
     Returns evidence, not a boolean: the commit written, how many attempts the
     push needed, and the ancestry check that authorised draining the spool.
@@ -437,9 +530,9 @@ def publish(
     # Reap first: batches the PRODUCING root can now read for itself are done
     # being retained. Doing it here means every publish run also collects what
     # the previous run left behind, with no separate schedule to forget.
-    reaped = reap_retained(spool_dir, Path(source_root)) if source_root else 0
+    reaped = reap_retained(spool_dir, Path(source_root), store=store) if source_root else 0
 
-    pending, snapshot_files = _spool_snapshot(spool_dir)
+    pending, snapshot_files = _store_snapshot(store, spool_dir)
     if not pending:
         return {
             "published": 0,
@@ -452,11 +545,9 @@ def publish(
     # Validate before touching Git. A refused batch stays spooled and visible
     # rather than being written into shared history and linted afterwards.
     for (team, host, month), events in pending.items():
-        rel = f"ledger/{team}/{host}/{month}.jsonl"
+        rel = _store_shard(store, team, host, month)
         for event in events:
-            codes = validate_event(event, rel)
-            if codes:
-                raise PublishRefused(f"{rel}: event {event.get('event_id')!r} violates {codes}")
+            _validate_store_event(store, event, rel)
 
     last_error = ""
     for attempt in range(1, attempts + 1):
@@ -466,7 +557,7 @@ def publish(
 
         written: list[str] = []
         for (team, host, month), events in sorted(pending.items()):
-            rel = f"ledger/{team}/{host}/{month}.jsonl"
+            rel = _store_shard(store, team, host, month)
             target = repo / rel
             # The PUBLISHED content, read from the remote ref -- never from the
             # working tree. A leftover file from a failed earlier attempt is our
@@ -493,7 +584,7 @@ def publish(
                     "shards": [], "note": "all events already published"}
 
         _git(repo, "add", "--", *written)
-        subject = f"ledger: append {sum(len(v) for v in pending.values())} event(s)"
+        subject = f"{store}: append {sum(len(v) for v in pending.values())} event(s)"
         message = subject if attribution is None else f"{subject}\n\n{attribution}"
         _git(repo, "-c", "user.name=ledger-publisher",
              "-c", "user.email=ledger-publisher@invalid",
@@ -556,10 +647,12 @@ def _drain(snapshot_files: Sequence[Path]) -> None:
         os.replace(path, destination / path.name)
 
 
-def _source_root_event_ids(source_root: Path) -> set[str]:
+def _source_root_event_ids(source_root: Path, *, store: str = "ledger") -> set[str]:
     """Event ids the PRODUCING checkout can itself read from tracked shards."""
     present: set[str] = set()
-    pattern = "ledger/*/*/[0-9][0-9][0-9][0-9]-[0-9][0-9].jsonl"
+    if store not in STORES:
+        raise PublishRefused(f"unknown store {store!r}; expected one of {STORES}")
+    pattern = f"{store}/*/*/[0-9][0-9][0-9][0-9]-[0-9][0-9].jsonl"
     for path in sorted(Path(source_root).glob(pattern)):
         for event in read_shard(path):
             identifier = event.get("event_id")
@@ -568,7 +661,9 @@ def _source_root_event_ids(source_root: Path) -> set[str]:
     return present
 
 
-def reap_retained(spool_dir: str | os.PathLike[str], source_root: Path) -> int:
+def reap_retained(
+    spool_dir: str | os.PathLike[str], source_root: Path, *, store: str = "ledger"
+) -> int:
     """Delete retained batches now durably readable from the source root.
 
     This is the exact condition the retention exists for: a batch may be
@@ -580,7 +675,7 @@ def reap_retained(spool_dir: str | os.PathLike[str], source_root: Path) -> int:
     directory = retained_dir(spool_dir)
     if not directory.is_dir():
         return 0
-    durable = _source_root_event_ids(Path(source_root))
+    durable = _source_root_event_ids(Path(source_root), store=store)
     reaped = 0
     for path in sorted(directory.glob("*.jsonl")):
         events = read_shard(path)
@@ -613,6 +708,7 @@ def main(argv: list[str] | None = None) -> int:
     send.add_argument("--writer", type=Path, required=True)
     send.add_argument("--attribution", required=True)
     send.add_argument("--attempts", type=int, default=DEFAULT_ATTEMPTS)
+    send.add_argument("--store", choices=STORES, default="ledger")
     split = commands.add_parser(
         "split-published-shard",
         description="preserve divergent remote bytes and make the primary match the source",
@@ -635,6 +731,7 @@ def main(argv: list[str] | None = None) -> int:
                 serialized_writer=args.writer,
                 attribution=args.attribution,
                 source_root=args.source_root,
+                store=args.store,
             )
         else:
             report = split_published_to_match_source(

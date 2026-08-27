@@ -107,6 +107,12 @@ def test_merge_is_idempotent_so_a_retry_cannot_duplicate():
     assert once == twice, "re-publishing the same batch must not append it again"
 
 
+def test_merge_refuses_the_same_event_id_with_a_different_body():
+    remote = json.dumps(ev("01R"), sort_keys=True) + "\n"
+    with pytest.raises(publisher.PublishRefused, match="different body"):
+        publisher.merge_shard(remote, [ev("01R", outcome="fail")])
+
+
 def test_merge_refuses_a_truncated_remote_rather_than_appending_after_it():
     with pytest.raises(ledger.MalformedEvent):
         publisher.merge_shard(json.dumps(ev("01R")), [ev("01L")])

@@ -18,7 +18,7 @@ TICK_CONFIG = ROOT / "ci-hub" / "health" / "tick-hub.yaml"
 
 class LedgerSpoolBacklogTest(unittest.TestCase):
     def run_gate(
-        self, spool: Path, bound: int = 60
+        self, spool: Path, bound: int = 60, store: str = "ledger"
     ) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
             [
@@ -27,6 +27,8 @@ class LedgerSpoolBacklogTest(unittest.TestCase):
                 "--gate",
                 "--spool-dir",
                 str(spool),
+                "--store",
+                store,
                 "--max-age-seconds",
                 str(bound),
             ],
@@ -88,6 +90,22 @@ class LedgerSpoolBacklogTest(unittest.TestCase):
         config = TICK_CONFIG.read_text(encoding="utf-8")
         self.assertIn("name: ledger_spool_backlog", config)
         self.assertIn("python3 ci-hub/health/ledger_spool_backlog.py --gate", config)
+        self.assertIn("name: series_spool_backlog", config)
+        self.assertIn(
+            "python3 ci-hub/health/ledger_spool_backlog.py --store series --gate",
+            config,
+        )
+
+    def test_series_backlog_names_the_store_it_measured(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            spool = Path(raw)
+            old = spool / "campaign.jsonl"
+            old.write_text("{}\n", encoding="utf-8")
+            timestamp = time.time() - 120
+            os.utime(old, (timestamp, timestamp))
+            result = self.run_gate(spool, bound=60, store="series")
+            self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+            self.assertIn("per-test series spool publication stalled", result.stdout)
 
 
 class MultiParentDiscoveryTest(unittest.TestCase):

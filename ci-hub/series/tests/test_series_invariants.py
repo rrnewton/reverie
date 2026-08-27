@@ -23,6 +23,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import series  # noqa: E402
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "ledger"))
+import publish_backlog  # noqa: E402
+import publisher  # noqa: E402
+
 
 def row(**over):
     base = {
@@ -306,6 +310,154 @@ class StoreMechanics(unittest.TestCase):
                 series.verify_append_only(before, after),
                 "an edited line must be reported, not silently accepted",
             )
+
+
+class Publication(unittest.TestCase):
+    def _git(self, repo, *args):
+        return subprocess.run(
+            ["git", "-C", str(repo), *args],
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+
+    def test_a_series_run_one_parent_writes_is_readable_by_another(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            bare = root / "origin.git"
+            producer = root / "producer"
+            publisher_clone = root / "publisher"
+            reader = root / "reader"
+            subprocess.run(
+                ["git", "init", "-q", "--bare", "-b", "main", str(bare)],
+                check=True,
+            )
+            subprocess.run(
+                ["git", "init", "-q", "-b", "main", str(producer)], check=True,
+            )
+            (producer / "README").write_text("series\n")
+            self._git(producer, "add", "README")
+            self._git(
+                producer,
+                "-c", "user.name=t",
+                "-c", "user.email=t@invalid",
+                "commit", "-q", "-m", "seed",
+            )
+            self._git(producer, "remote", "add", "origin", str(bare))
+            self._git(producer, "push", "-q", "origin", "main")
+            subprocess.run(
+                ["git", "clone", "-q", str(bare), str(publisher_clone)], check=True,
+            )
+            subprocess.run(["git", "clone", "-q", str(bare), str(reader)], check=True)
+
+            test = "backend-parity-c/flock-lifecycle"
+            observation = row(series={"cell": f"{test}/verify/ptrace"})
+            spool = series.spool_dir(producer)
+            spool.mkdir(parents=True)
+            series.append_rows(spool / "campaign-1.jsonl", [observation])
+
+            before = series.history_rows(series.union(series.store_paths(reader)), test)
+            self.assertEqual(before, [], "an independent checkout must not see local spool data")
+            self.assertEqual(set(publish_backlog.pending_stores(producer)), {"series"})
+
+            report = publisher.publish(
+                publisher_clone,
+                spool,
+                source_root=producer,
+                store="series",
+            )
+            self.assertEqual(report["published"], 1)
+            self.assertEqual(
+                report["shards"], ["series/hermit/devbig014/2026-08.jsonl"]
+            )
+            self.assertEqual(
+                len(series.history_rows(series.union(series.store_paths(producer)), test)),
+                1,
+                "the producer must retain visibility until it fetches the tracked shard",
+            )
+
+            reader_head = self._git(reader, "rev-parse", "HEAD")
+            after = series.history_rows(series.published_rows(reader), test)
+            self.assertEqual(len(after), 1)
+            self.assertEqual(after[0]["event_id"], observation["event_id"])
+            import contextlib
+            import io
+
+            stdout = io.StringIO()
+            with contextlib.redirect_stdout(stdout):
+                rc = series.main(["history", "--parent", str(reader), "--test", test])
+            self.assertEqual(rc, 0)
+            self.assertIn("rows=1 runs=1 source=parent-origin-main+local-spool", stdout.getvalue())
+            self.assertEqual(
+                self._git(reader, "rev-parse", "HEAD"),
+                reader_head,
+                "the query must read fetched parent main without moving the checkout",
+            )
+
+    def test_series_publication_refuses_a_row_the_series_linter_rejects(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            bare = root / "origin.git"
+            clone = root / "clone"
+            producer = root / "producer"
+            subprocess.run(
+                ["git", "init", "-q", "--bare", "-b", "main", str(bare)],
+                check=True,
+            )
+            subprocess.run(
+                ["git", "init", "-q", "-b", "main", str(producer)], check=True,
+            )
+            (producer / "README").write_text("series\n")
+            self._git(producer, "add", "README")
+            self._git(
+                producer,
+                "-c", "user.name=t",
+                "-c", "user.email=t@invalid",
+                "commit", "-q", "-m", "seed",
+            )
+            self._git(producer, "remote", "add", "origin", str(bare))
+            self._git(producer, "push", "-q", "origin", "main")
+            subprocess.run(["git", "clone", "-q", str(bare), str(clone)], check=True)
+
+            spool = series.spool_dir(producer)
+            spool.mkdir(parents=True)
+            invalid = row(series={"outcome": "passed", "coordinates": {
+                "first_divergent_record": 1,
+            }})
+            (spool / "invalid.jsonl").write_text(json.dumps(invalid) + "\n")
+
+            with self.assertRaises(publisher.PublishRefused):
+                publisher.publish(clone, spool, source_root=producer, store="series")
+            self.assertTrue((spool / "invalid.jsonl").exists())
+            self.assertFalse((clone / "series").exists())
+
+    def test_scheduled_sweep_passes_the_series_store_to_the_publisher(self):
+        from unittest import mock
+
+        completed = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout='{"published": 1}\n', stderr="",
+        )
+        with mock.patch.object(publish_backlog.subprocess, "run", return_value=completed) as run:
+            report = publish_backlog.publish_parent(
+                Path("/producer"),
+                Path("/publisher"),
+                store="series",
+                spool=Path("/producer/ignored/ci-hub/series-spool"),
+                timeout=60,
+                attribution="test attribution",
+            )
+        command = run.call_args.args[0]
+        self.assertEqual(command[command.index("--store") + 1], "series")
+        self.assertEqual(
+            command[command.index("--spool-dir") + 1],
+            "/producer/ignored/ci-hub/series-spool",
+        )
+        self.assertEqual(report["store"], "series")
+        self.assertEqual(report["published"], 1)
 
 
 class WriteBoundaryCli(unittest.TestCase):
@@ -725,13 +877,28 @@ class HistoryCli(unittest.TestCase):
             text=True,
         ).stdout.strip()
 
+    def _publish_parent(self, parent: Path) -> None:
+        bare = parent.parent / "parent-origin.git"
+        subprocess.run(
+            ["git", "init", "-q", "--bare", "-b", "main", str(bare)], check=True,
+        )
+        self._git(parent, "init", "-q", "-b", "main")
+        self._git(parent, "config", "user.name", "Series Test")
+        self._git(parent, "config", "user.email", "series@example.invalid")
+        self._git(parent, "remote", "add", "origin", str(bare))
+        (parent / "README").write_text("parent\n")
+        self._git(parent, "add", "-A")
+        self._git(parent, "commit", "-qm", "series")
+        self._git(parent, "push", "-q", "origin", "main")
+
     def test_one_command_reads_tracked_and_live_rows_for_one_exact_test(self):
         import contextlib
         import io
         import tempfile
 
         with tempfile.TemporaryDirectory() as temporary:
-            parent = Path(temporary)
+            parent = Path(temporary) / "parent"
+            parent.mkdir()
             repo = parent / "hermit"
             repo.mkdir()
             self._git(repo, "init", "-q")
@@ -808,6 +975,7 @@ class HistoryCli(unittest.TestCase):
             tracked = parent / "series/hermit/host/2026-08.jsonl"
             tracked.parent.mkdir(parents=True)
             tracked.write_text(json.dumps(first) + "\n" + json.dumps(unrelated) + "\n")
+            self._publish_parent(parent)
             live = series.spool_dir(parent) / "pressure-1.jsonl"
             live.parent.mkdir(parents=True)
             live.write_text(json.dumps(second) + "\n")
@@ -837,12 +1005,16 @@ class HistoryCli(unittest.TestCase):
         import tempfile
 
         with tempfile.TemporaryDirectory() as temporary:
+            parent = Path(temporary) / "parent"
+            parent.mkdir()
+            (parent / "series").mkdir()
+            self._publish_parent(parent)
             stderr = io.StringIO()
             with contextlib.redirect_stderr(stderr):
                 rc = series.main([
-                    "history", "--parent", temporary, "--test", self.TEST,
+                    "history", "--parent", str(parent), "--test", self.TEST,
                 ])
-            self.assertEqual(rc, 1)
+            self.assertEqual(rc, 1, stderr.getvalue())
             self.assertIn("no runs recorded", stderr.getvalue())
 
 

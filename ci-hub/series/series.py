@@ -34,9 +34,12 @@ the row identity, and the linter — are new.
 
 ⚠️ THE PRODUCER BOUNDARY IS THE SAME AS THE LEDGER'S, FOR THE SAME REASON.
 Live producers append to `ignored/ci-hub/series-spool/`; they never write the
-tracked shard. Readers union the spool with every tracked shard, so a row is
-visible before, during and after publication. A reader that consulted only one
-of the two would report a campaign as missing while it was being published.
+tracked shard. The scheduled parent publisher moves those rows into tracked
+`series/` shards through the serialized parent-main writer. Readers union the
+spool, batches retained until the producing checkout syncs, and every tracked
+shard, so a row is visible before, during and after publication. A reader that
+consulted only one source would report a campaign as missing while it was being
+published.
 """
 
 from __future__ import annotations
@@ -46,6 +49,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import socket
 import subprocess
 import sys
@@ -118,6 +122,11 @@ _CELL_RE = re.compile(r"^[A-Za-z0-9._/-]+/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$")
 # Built rather than written literally so this module does not itself contain the
 # owner-path needle the portability check greps tracked files for.
 _OWNER_PATH_NEEDLE = "/" + "home" + "/"
+_GIT_REPO_SCOPED_ENV = (
+    "GIT_INDEX_FILE", "GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR",
+    "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_NAMESPACE", "GIT_PREFIX", "GIT_INDEX_VERSION",
+)
 
 
 class SeriesError(LedgerError):
@@ -429,11 +438,68 @@ def append_cell_rows(parent: Any, path: Any, rows: Iterable[dict]) -> int:
 
 
 def store_paths(parent: Any) -> list[Path]:
-    """Every tracked shard and live spool batch under one dev-hermit root."""
+    """Every tracked, live, and published-but-not-yet-synced batch."""
     parent = Path(parent)
     tracked = sorted((parent / "series").glob("*/*/*.jsonl"))
-    live = sorted(spool_dir(parent).glob("*.jsonl"))
-    return tracked + live
+    spool = spool_dir(parent)
+    live = sorted(spool.glob("*.jsonl"))
+    retained = sorted((spool / "published").glob("*.jsonl"))
+    return tracked + live + retained
+
+
+def published_rows(parent: Any) -> list[dict]:
+    """Read tracked series rows from a freshly fetched parent origin/main."""
+    parent = Path(parent)
+    command = [
+        "git", "-C", str(parent), "fetch", "--quiet", "--force", "origin",
+        "refs/heads/main:refs/remotes/origin/main",
+    ]
+    proxy = shutil.which(os.environ.get("WITH_PROXY", "with-proxy"))
+    if proxy:
+        command.insert(0, proxy)
+    env = dict(os.environ)
+    for name in _GIT_REPO_SCOPED_ENV:
+        env.pop(name, None)
+    fetched = subprocess.run(
+        command, capture_output=True, text=True, timeout=60, check=False, env=env,
+    )
+    if fetched.returncode != 0:
+        detail = fetched.stderr.strip() or fetched.stdout.strip() or "no output"
+        raise SeriesError(f"cannot fetch parent origin/main: {detail}")
+
+    published_ref = "refs/remotes/origin/main"
+    listed = _git(parent, [
+        "ls-tree", "-r", "--name-only", published_ref, "--", "series",
+    ])
+    if listed.returncode != 0:
+        raise SeriesError(
+            "cannot list series shards on parent origin/main: "
+            + (listed.stderr.strip() or "no output")
+        )
+    rows: list[dict] = []
+    for relative in listed.stdout.splitlines():
+        parts = Path(relative).parts
+        if len(parts) != 4 or parts[0] != "series" or not relative.endswith(".jsonl"):
+            continue
+        shown = _git(parent, ["show", f"{published_ref}:{relative}"])
+        if shown.returncode != 0:
+            raise SeriesError(
+                f"cannot read parent origin/main:{relative}: "
+                + (shown.stderr.strip() or "no output")
+            )
+        if shown.stdout and not shown.stdout.endswith("\n"):
+            raise MalformedEvent(
+                f"parent origin/main:{relative}: final line has no newline terminator"
+            )
+        rows.extend(parse_line(line) for line in shown.stdout.splitlines() if line.strip())
+    return union_events(rows)
+
+
+def history_store_rows(parent: Any) -> list[dict]:
+    """Published parent rows plus this checkout's unpublished and retained batches."""
+    spool = spool_dir(parent)
+    local = sorted(spool.glob("*.jsonl")) + sorted((spool / "published").glob("*.jsonl"))
+    return union_events([*published_rows(parent), *union(local)])
 
 
 def test_id(row: dict) -> str | None:
@@ -462,12 +528,16 @@ def history_rows(rows: Iterable[dict], test: str, tree: str | None = None) -> li
 
 
 def _git(checkout: Path, args: Sequence[str]) -> subprocess.CompletedProcess[str]:
+    env = dict(os.environ)
+    for name in _GIT_REPO_SCOPED_ENV:
+        env.pop(name, None)
     return subprocess.run(
         ["git", "-C", str(checkout), *args],
         capture_output=True,
         text=True,
         timeout=60,
         check=False,
+        env=env,
     )
 
 
@@ -766,10 +836,12 @@ __all__ = [
     "collapse_rows",
     "commit_depth",
     "history_rows",
+    "history_store_rows",
     "main_ancestry",
     "measurement_state",
     "observed_range",
     "parse_line",
+    "published_rows",
     "row_identity",
     "rows_from_cell_results",
     "series_for",
@@ -1015,10 +1087,9 @@ def _cmd_history(argv: list[str]) -> int:
     if wanted_tree is not None and _SHA_RE.fullmatch(wanted_tree) is None:
         return _usage("history --tree must be a full lowercase 40-hex commit sha")
 
-    paths = store_paths(parent)
     try:
-        rows = history_rows(union(paths), wanted_test, wanted_tree)
-    except (MalformedEvent, SeriesError, OSError) as error:
+        rows = history_rows(history_store_rows(parent), wanted_test, wanted_tree)
+    except (MalformedEvent, SeriesError, OSError, subprocess.SubprocessError) as error:
         print(f"series: cannot read history: {error}", file=sys.stderr)
         return 2
     if not rows:
@@ -1032,7 +1103,10 @@ def _cmd_history(argv: list[str]) -> int:
     trees = [str((row.get("series") or {}).get("tree", "")) for row in rows]
     current = main_ancestry(parent / "hermit", trees)
     represented = sum(int((row.get("series") or {}).get("num_runs", 1)) for row in rows)
-    print(f"test={wanted_test} rows={len(rows)} runs={represented}")
+    print(
+        f"test={wanted_test} rows={len(rows)} runs={represented} "
+        "source=parent-origin-main+local-spool"
+    )
     by_cell: dict[str, dict[str, Any]] = {}
     for row in rows:
         payload = row.get("series") or {}
@@ -1108,7 +1182,7 @@ def _usage(message: str) -> int:
         "  series.py history --test <test id> [--tree <sha>] [--parent <root>]\n"
         "append validates complete series rows. append-cells converts typed harness\n"
         "results, compresses consecutive equal runs, and writes the UNPUBLISHED spool.\n"
-        "history reads tracked shards plus that live spool.",
+        "history freshly reads tracked shards from parent origin/main plus that local spool.",
         file=sys.stderr,
     )
     return 2

@@ -232,6 +232,19 @@ reminders:
         component: ledger-spool-backlog
       title: "validation ledger publication is stalled: {summary}"
 
+  - name: series_spool_backlog
+    cadence_secs: 900
+    gate:
+      cmd: python3 ci-hub/health/ledger_spool_backlog.py --store series --gate
+      when: failure
+      capture: true
+    emit:
+      kind: action
+      skill: hard-warn-coordinator
+      fields:
+        component: series-spool-backlog
+      title: "per-test series publication is stalled: {summary}"
+
   # The mutation half, deliberately separated from the detector above. Detection
   # was never the whole problem: publication was a MANUAL command, so a receipt
   # stayed readable only by the parent that produced it -- VALIDATED to its
@@ -246,12 +259,13 @@ reminders:
   # at all. A publish is heavier than a rescue, so it gets its own budget and
   # the detector keeps its own. The exit code reports only whether the unit was
   # ACCEPTED; whether publication succeeded is reported by the next
-  # ledger_spool_backlog observation, which is the honest place for it.
+  # ledger_spool_backlog or series_spool_backlog observation, which is the
+  # honest place for it.
   #
-  # No new authority: this schedules the existing publisher, which writes only
-  # through a dedicated clone, goes out via the serialized parent-main-write,
-  # appends only, and drops a batch solely after the commit carrying it is
-  # confirmed an ancestor of the freshly fetched remote.
+  # No new authority: this schedules the existing publisher for both stores. It
+  # writes only through a dedicated clone, goes out via the serialized
+  # parent-main-write, appends only, and drops a batch solely after the commit
+  # carrying it is confirmed an ancestor of the freshly fetched remote.
   - name: ledger_publish_sweep
     cadence_secs: 900
     gate:

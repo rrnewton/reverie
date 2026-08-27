@@ -30,6 +30,8 @@ ROOT = Path(__file__).resolve().parents[2]
 LEDGER_LIB = ROOT / "ci-hub" / "ledger"
 sys.path.insert(0, str(LEDGER_LIB))
 from validate_rows import live_spool_dir  # noqa: E402
+sys.path.insert(0, str(ROOT / "ci-hub" / "series"))
+from series import spool_dir as series_spool_dir  # noqa: E402
 
 DEFAULT_MAX_AGE_SECONDS = 3600
 
@@ -162,25 +164,26 @@ def measure(
     )
 
 
-def render(backlog: SpoolBacklog) -> tuple[str, str]:
+def render(backlog: SpoolBacklog, *, store: str = "ledger") -> tuple[str, str]:
     age = round(backlog.oldest_age_seconds, 1)
     bound = round(backlog.max_age_seconds, 1)
     scope = f"parents_scanned={backlog.parents_scanned}"
     owner = f"; oldest_parent={backlog.oldest_parent}" if backlog.oldest_parent else ""
+    label = "validation ledger" if store == "ledger" else "per-test series"
     if backlog.stalled:
         return (
             "stalled",
-            f"ledger spool publication stalled: oldest unpublished batch age={age}s "
+            f"{label} spool publication stalled: oldest unpublished batch age={age}s "
             f"exceeds bound={bound}s; depth={backlog.depth}; "
             f"oldest_entry={backlog.oldest_entry}{owner}; {scope}",
         )
     if backlog.depth:
         return (
             "pending",
-            f"ledger spool has {backlog.depth} fresh unpublished batch(es); "
+            f"{label} spool has {backlog.depth} fresh unpublished batch(es); "
             f"oldest_age={age}s <= bound={bound}s{owner}; {scope}",
         )
-    return "drained", f"ledger spool drained: depth=0; bound={bound}s; {scope}"
+    return "drained", f"{label} spool drained: depth=0; bound={bound}s; {scope}"
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -199,6 +202,12 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     parser.add_argument(
+        "--store",
+        choices=("ledger", "series"),
+        default="ledger",
+        help="measure the validation ledger or per-test series spool",
+    )
+    parser.add_argument(
         "--max-age-seconds",
         type=float,
         default=DEFAULT_MAX_AGE_SECONDS,
@@ -211,16 +220,18 @@ def main(argv: list[str] | None = None) -> int:
     if args.spool_dir is not None:
         spool_dirs = [args.spool_dir]
     else:
-        spool_dirs = [live_spool_dir(parent) for parent in producing_parents(ROOT)]
+        locate = live_spool_dir if args.store == "ledger" else series_spool_dir
+        spool_dirs = [locate(parent) for parent in producing_parents(ROOT)]
 
     try:
         backlog = measure_parents(spool_dirs, max_age_seconds=args.max_age_seconds)
     except SpoolUnavailable as exc:
+        label = "validation ledger" if args.store == "ledger" else "per-test series"
         print("state=unknown")
-        print(f"summary=ledger spool backlog unavailable: {exc}")
+        print(f"summary={label} spool backlog unavailable: {exc}")
         return 2
 
-    state, summary = render(backlog)
+    state, summary = render(backlog, store=args.store)
     report = {
         "state": state,
         "summary": summary,

@@ -5,13 +5,14 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-"""Drain every producing parent's ledger spool, unattended.
+"""Drain every producing parent's validation-ledger and per-test series spools.
 
 WHY THIS EXISTS. Publication was a manual command. Nothing ran it, so a receipt
-was readable only by the parent that produced it -- VALIDATED to its producer
-and NOT-VALIDATED to every other actor, including the landing authority. That
-recurred three times on 2026-08-11 alone, the worst case being a fully
-qualifying 794-second green that sat invisible for 55 minutes.
+or per-test run was readable only by the parent that produced it and invisible
+to every other actor. For validation receipts that recurred three times on
+2026-08-11 alone, the worst case being a fully qualifying 794-second green that
+sat invisible for 55 minutes. The same mechanism publishes the per-test series;
+without it, the run history would repeat that defect by construction.
 
 WHY IT IS NOT A TICK GATE. tick-hub already ran this experiment and recorded the
 result: `unpushed_parent_commits` had its `--rescue` mutation REMOVED on
@@ -50,6 +51,8 @@ sys.path.insert(0, str(ROOT / "scripts"))
 from check_commit_attribution import AttributionError, detect_machine  # noqa: E402
 from ledger_spool_backlog import producing_parents  # noqa: E402
 from validate_rows import live_spool_dir  # noqa: E402
+sys.path.insert(0, str(ROOT / "ci-hub" / "series"))
+from series import spool_dir as series_spool_dir  # noqa: E402
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
 import bounded_capture  # noqa: E402
 
@@ -94,9 +97,21 @@ def publishing_attribution() -> str:
     return f"[impl agent, automation] [ledger-publisher, {detect_machine()}]"
 
 
-def publish_parent(parent: Path, clone: Path, *, timeout: float,
-                   attribution: str) -> dict:
-    spool = live_spool_dir(parent)
+def pending_stores(parent: Path) -> dict[str, Path]:
+    """Every append-only store in this parent that has unpublished batches."""
+    candidates = {
+        "ledger": live_spool_dir(parent),
+        "series": series_spool_dir(parent),
+    }
+    return {
+        name: spool
+        for name, spool in candidates.items()
+        if pending_batches(spool)
+    }
+
+
+def publish_parent(parent: Path, clone: Path, *, store: str, spool: Path,
+                   timeout: float, attribution: str) -> dict:
     result = subprocess.run(
         [
             sys.executable,
@@ -107,13 +122,18 @@ def publish_parent(parent: Path, clone: Path, *, timeout: float,
             "--spool-dir", str(spool),
             "--writer", str(parent / "scripts" / "parent-main-write"),
             "--attribution", attribution,
+            "--store", store,
         ],
         capture_output=True,
         text=True,
         check=False,
         timeout=timeout,
     )
-    report: dict = {"parent": str(parent), "rc": result.returncode}
+    report: dict = {
+        "parent": str(parent),
+        "store": store,
+        "rc": result.returncode,
+    }
     try:
         report.update(json.loads(result.stdout.strip().splitlines()[-1]))
     except (ValueError, IndexError):
@@ -134,15 +154,28 @@ def main(argv: list[str] | None = None) -> int:
 
     clone = ROOT / CLONE_RELATIVE
     reports: list[dict] = []
-    parents = [p for p in producing_parents(ROOT) if pending_batches(live_spool_dir(p))]
-    if not parents:
-        print(json.dumps({"parents_with_backlog": 0, "published": 0}, sort_keys=True))
+    work = {
+        parent: pending_stores(parent)
+        for parent in producing_parents(ROOT)
+    }
+    work = {parent: stores for parent, stores in work.items() if stores}
+    if not work:
+        print(json.dumps(
+            {"parents_with_backlog": 0, "stores_with_backlog": 0, "published": 0},
+            sort_keys=True,
+        ))
         return 0
     if args.dry_run:
         print(json.dumps(
-            {"parents_with_backlog": len(parents),
-             "would_publish": {str(p): pending_batches(live_spool_dir(p))
-                               for p in parents}},
+            {"parents_with_backlog": len(work),
+             "stores_with_backlog": sum(len(stores) for stores in work.values()),
+             "would_publish": {
+                 str(parent): {
+                     name: pending_batches(spool)
+                     for name, spool in stores.items()
+                 }
+                 for parent, stores in work.items()
+             }},
             sort_keys=True,
         ))
         return 0
@@ -169,23 +202,39 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     failed = 0
-    for parent in parents:
-        try:
-            report = publish_parent(parent, clone, timeout=args.timeout_seconds,
-                                    attribution=attribution)
-        except subprocess.TimeoutExpired:
-            report = {"parent": str(parent), "rc": 124, "error": "publish timed out"}
-        # A refusal is never fatal to the sweep: the batch stays spooled and the
-        # backlog gate keeps reporting it. One stuck parent must not stop the
-        # others from becoming visible.
-        if report.get("rc"):
-            failed += 1
-        reports.append(report)
+    failed_parents: set[Path] = set()
+    for parent, stores in work.items():
+        for store, spool in stores.items():
+            try:
+                report = publish_parent(
+                    parent,
+                    clone,
+                    store=store,
+                    spool=spool,
+                    timeout=args.timeout_seconds,
+                    attribution=attribution,
+                )
+            except subprocess.TimeoutExpired:
+                report = {
+                    "parent": str(parent),
+                    "store": store,
+                    "rc": 124,
+                    "error": "publish timed out",
+                }
+            # A refusal is never fatal to the sweep: the batch stays spooled and the
+            # backlog gate keeps reporting it. One stuck store must not stop the
+            # others from becoming visible.
+            if report.get("rc"):
+                failed += 1
+                failed_parents.add(parent)
+            reports.append(report)
 
     print(json.dumps(
-        {"parents_with_backlog": len(parents),
+        {"parents_with_backlog": len(work),
+         "stores_with_backlog": sum(len(stores) for stores in work.values()),
          "published": sum(r.get("published", 0) or 0 for r in reports),
-         "failed_parents": failed,
+         "failed_parents": len(failed_parents),
+         "failed_stores": failed,
          "reports": reports},
         sort_keys=True,
     ))

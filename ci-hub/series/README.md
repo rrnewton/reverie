@@ -9,6 +9,12 @@ series/<team>/<short-host>/<YYYY>-<MM>.jsonl        tracked, published
 ignored/ci-hub/series-spool/                        live, unpublished
 ```
 
+The scheduled `ledger_publish_sweep` drains both validation-ledger and per-test
+series batches through the same append-only publisher and serialized parent-main
+writer. Until that succeeds, the producing checkout reads its own spool. After
+it succeeds, another checkout reads the tracked `series/` shard after fetching
+parent main. `series_spool_backlog` reports batches that remain unpublished.
+
 Step 3 of the https://github.com/rrnewton/hermit/pull/2447 storage plan created
 this store. The validate and pressure-test writers and the history command below
 complete step 4.
@@ -78,8 +84,9 @@ python3 ci-hub/series/series.py history \
   --test applications/git-repository-workflow
 ```
 
-This reads both published shards and the unpublished live spool, prints the
-number of stored rows and represented runs, starts with each cell's all-history
+This freshly fetches parent `origin/main`, reads its published shards plus the
+unpublished and retained local spool, prints the number of stored rows and
+represented runs, starts with each cell's all-history
 `wall_time_min_ms` and `wall_time_max_ms`, then shows each row's source SHA,
 current/on-write main ancestry, depth, outcome, run span, `run1`/`run2`
 scheduler turns, virtual nanoseconds, syscall counts, wall-time range, producer,
