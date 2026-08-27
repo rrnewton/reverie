@@ -227,6 +227,13 @@ fn vfork_child_flags_for(current_pid: u32, pid_namespace: u64) -> Option<usize> 
 /// allocation-free and independent of TLS because clone may install guest TLS.
 #[no_mangle]
 pub extern "C" fn reverie_sabre_after_clone_child(clone_flags: usize, vfork_slot: usize) {
+    // Process-forming raw clone trampolines abandon their Rust frames in the
+    // child, so the copied guard cannot release the slot-map lock there.
+    // Release it before any child callback can consult thread state.
+    if clone_flags & libc::CLONE_VM as usize == 0 {
+        unsafe { crate::slot_map::unlock_after_fork_child() };
+    }
+
     let vfork_flags = (libc::CLONE_VM | libc::CLONE_VFORK) as usize;
     if clone_flags & vfork_flags != vfork_flags {
         if prepare_private_vfork_child(vfork_slot) {

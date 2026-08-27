@@ -2280,7 +2280,9 @@ mod tests {
             }
         }
 
+        let _slot_map_fork_guard = crate::slot_map::lock_for_fork();
         let child = unsafe { libc::fork() };
+        drop(_slot_map_fork_guard);
         assert!(child >= 0);
         if child == 0 {
             CLEANUPS.store(0, Ordering::Release);
