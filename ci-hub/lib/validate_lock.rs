@@ -2191,7 +2191,13 @@ fn current_main_freshness_check(
         return Ok(());
     }
 
-    let refspec = "refs/heads/main:refs/remotes/origin/main";
+    // A frozen checkout deliberately rewrites its private origin/main to the
+    // measured target after each freshness check. If current main has since
+    // diverged, the next fetch is necessarily a non-fast-forward update of
+    // that private remote-tracking ref. The Git metadata lock above makes the
+    // forced update exclusive; without `+`, the frozen run becomes unusable
+    // precisely for the divergent history it exists to measure.
+    let refspec = "+refs/heads/main:refs/remotes/origin/main";
     let fetch_timeout = format!("{CURRENT_MAIN_FETCH_TIMEOUT_SECONDS}s");
     let common = Command::new("git")
         .arg("-C")
@@ -9256,6 +9262,32 @@ exit 0
 
         // main advances underneath the target.
         git_success(Some(&seed), &["push", "--quiet", "origin", "main"]);
+
+        // Match prepare_fresh_checkout's frozen state: its private origin/main
+        // is pinned to the measured target. With main now on the sibling
+        // history, the removed fetch refspec refuses the non-fast-forward
+        // tracking-ref update before the frozen predicate can be evaluated.
+        git_success(
+            Some(&root.join("hermit")),
+            &["update-ref", "refs/remotes/origin/main", &target],
+        );
+        let removed = Command::new("git")
+            .arg("-C")
+            .arg(root.join("hermit"))
+            .args([
+                "fetch",
+                "--no-tags",
+                "origin",
+                "refs/heads/main:refs/remotes/origin/main",
+            ])
+            .output()
+            .unwrap();
+        assert!(
+            !removed.status.success()
+                && String::from_utf8_lossy(&removed.stderr).contains("non-fast-forward"),
+            "the removed refspec must reproduce the divergent frozen-checkout refusal: {:?}",
+            removed
+        );
 
         // CONTROL: a landing run must now be refused, and DEFINITELY so.
         let landing = current_main_freshness_check(&root, &target, Kind::Validate);
