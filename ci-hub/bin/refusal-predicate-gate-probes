@@ -1,0 +1,439 @@
+#!/usr/bin/env python3
+"""Run the measured refusal-predicate cases against any Hermit revision.
+
+The checker under test lives in the Hermit repository at
+``scripts/check-refusal-predicate-anchored.py``.  This command keeps the review
+evidence outside that checker: it writes each predicate to an isolated file,
+checks that the predicate itself has the stated behavior, invokes the selected
+checker, and reports the result separately for every case.
+"""
+
+from __future__ import annotations
+
+import argparse
+import contextlib
+import hashlib
+import subprocess
+import sys
+import tempfile
+import textwrap
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Iterator
+
+
+ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_HERMIT = ROOT / "hermit"
+CHECKER_RELATIVE = Path("scripts/check-refusal-predicate-anchored.py")
+
+
+@dataclass(frozen=True)
+class Probe:
+    name: str
+    expected_rc: int
+    predicate: str
+    source: str
+    samples: tuple[tuple[str, bool], ...]
+
+    @property
+    def expected_word(self) -> str:
+        return "REFUSED" if self.expected_rc == 1 else "OK"
+
+    @property
+    def filename(self) -> str:
+        expectation = "must-refuse" if self.expected_rc == 1 else "must-pass"
+        return f"{expectation}-{self.name}.py"
+
+
+QUOTED_REFUSAL = "thread panicked: connection refused by: peer"
+DIRECT_REFUSAL = "validate: REFUSED because a nested validate is active"
+INDENTED_REFUSAL = "earlier output\n   refused by: admission\nlater output"
+
+
+MUST_REFUSE = (
+    Probe(
+        "map-bound-contains",
+        1,
+        "return any(map(output.__contains__, _REFUSAL_SHAPES))",
+        """
+        _REFUSAL_SHAPES = ("refused by:",)
+        def looks_refused(output):
+            return any(map(output.__contains__, _REFUSAL_SHAPES))
+        """,
+        ((QUOTED_REFUSAL, True),),
+    ),
+    Probe(
+        "operator-contains",
+        1,
+        "return any(operator.contains(output, shape) for shape in _REFUSAL_SHAPES)",
+        """
+        import operator
+        _REFUSAL_SHAPES = ("refused by:",)
+        def looks_refused(output):
+            return any(operator.contains(output, shape) for shape in _REFUSAL_SHAPES)
+        """,
+        ((QUOTED_REFUSAL, True),),
+    ),
+    Probe(
+        "imported-search",
+        1,
+        "return any(search(shape, output) for shape in _REFUSAL_SHAPES)",
+        """
+        from re import search
+        _REFUSAL_SHAPES = ("refused by:",)
+        def looks_refused(output):
+            return any(search(shape, output) for shape in _REFUSAL_SHAPES)
+        """,
+        ((QUOTED_REFUSAL, True),),
+    ),
+    Probe(
+        "unbound-find",
+        1,
+        "return any(str.find(output, shape) >= 0 for shape in _REFUSAL_SHAPES)",
+        """
+        _REFUSAL_SHAPES = ("refused by:",)
+        def looks_refused(output):
+            return any(str.find(output, shape) >= 0 for shape in _REFUSAL_SHAPES)
+        """,
+        ((QUOTED_REFUSAL, True),),
+    ),
+    Probe(
+        "direct-bound-contains",
+        1,
+        "return any(output.__contains__(shape) for shape in _REFUSAL_SHAPES)",
+        """
+        _REFUSAL_SHAPES = ("refused by:",)
+        def looks_refused(output):
+            return any(output.__contains__(shape) for shape in _REFUSAL_SHAPES)
+        """,
+        ((QUOTED_REFUSAL, True),),
+    ),
+    Probe(
+        "keyword-helper",
+        1,
+        "return any(_contains(hay=output, needle=shape) for shape in _REFUSAL_SHAPES)",
+        """
+        _REFUSAL_SHAPES = ("refused by:",)
+        def _contains(hay, needle):
+            return needle in hay
+        def looks_refused(output):
+            return any(
+                _contains(hay=output, needle=shape)
+                for shape in _REFUSAL_SHAPES
+            )
+        """,
+        ((QUOTED_REFUSAL, True),),
+    ),
+    Probe(
+        "constructed-marker",
+        1,
+        "return any(shape in output for shape in (\"refused\" + \" by:\",))",
+        """
+        _REFUSAL_SHAPES = ("refused" + " by:",)
+        def looks_refused(output):
+            return any(shape in output for shape in _REFUSAL_SHAPES)
+        """,
+        ((QUOTED_REFUSAL, True),),
+    ),
+    Probe(
+        "refusal-marker-character",
+        1,
+        "return any(shape in output for shape in (\"🚫\",))",
+        """
+        _REFUSAL_SHAPES = ("🚫",)
+        def looks_refused(output):
+            return any(shape in output for shape in _REFUSAL_SHAPES)
+        """,
+        (("wrapper quoted the 🚫 marker", True),),
+    ),
+    Probe(
+        "validate-no-result",
+        1,
+        "return any(shape in output for shape in _NO_RESULT_SHAPES)",
+        """
+        _NO_RESULT_SHAPES = ("validate NO-RESULT", "INTERRUPTED (no result)")
+        def looks_refused(output):
+            return any(shape in output for shape in _NO_RESULT_SHAPES)
+        """,
+        (("wrapper quoted validate NO-RESULT from another command", True),),
+    ),
+    Probe(
+        "declined-by",
+        1,
+        "return any(shape in output for shape in (\"declined by:\", \"validate: DECLINED\"))",
+        """
+        _REFUSAL_SHAPES = ("declined by:", "validate: DECLINED")
+        def looks_refused(output):
+            return any(shape in output for shape in _REFUSAL_SHAPES)
+        """,
+        (("server said declined by: policy before crashing", True),),
+    ),
+    Probe(
+        "fixed-prose-before-fullmatch",
+        1,
+        'return any(re.compile(r"wrapper quoted: refused by:.*").fullmatch(line) '
+        "for line in output.splitlines())",
+        """
+        import re
+        _REFUSAL_SUMMARY = re.compile(r"wrapper quoted: refused by:.*")
+        def looks_refused(output):
+            return any(
+                _REFUSAL_SUMMARY.fullmatch(line)
+                for line in output.splitlines()
+            )
+        """,
+        (("wrapper quoted: refused by: firewall", True),),
+    ),
+)
+
+
+MUST_PASS = (
+    Probe(
+        "assigned-splitlines",
+        0,
+        "lines = output.splitlines(); line.strip().startswith(shape)",
+        """
+        _REFUSAL_SHAPES = ("refused by:", "validate: REFUSED")
+        def looks_refused(output):
+            lines = output.splitlines()
+            return any(
+                line.strip().startswith(shape)
+                for line in lines
+                for shape in _REFUSAL_SHAPES
+            )
+        """,
+        (
+            (QUOTED_REFUSAL, False),
+            (INDENTED_REFUSAL, True),
+            (DIRECT_REFUSAL, True),
+        ),
+    ),
+    Probe(
+        "split-newline",
+        0,
+        'line.strip().startswith(shape) for line in output.split("\\n")',
+        """
+        _REFUSAL_SHAPES = ("refused by:", "validate: REFUSED")
+        def looks_refused(output):
+            return any(
+                line.strip().startswith(shape)
+                for line in output.split("\\n")
+                for shape in _REFUSAL_SHAPES
+            )
+        """,
+        (
+            (QUOTED_REFUSAL, False),
+            (INDENTED_REFUSAL, True),
+            (DIRECT_REFUSAL, True),
+        ),
+    ),
+    Probe(
+        "spaces-before-marker-regex",
+        0,
+        're.search(r"^ *(?:refused by:|validate: REFUSED)", output, re.MULTILINE)',
+        """
+        import re
+        def looks_refused(output):
+            return bool(re.search(
+                r"^ *(?:refused by:|validate: REFUSED)",
+                output,
+                re.MULTILINE,
+            ))
+        """,
+        (
+            (QUOTED_REFUSAL, False),
+            (INDENTED_REFUSAL, True),
+            (DIRECT_REFUSAL, True),
+        ),
+    ),
+    Probe(
+        "safe-exact-membership",
+        0,
+        "return output in _REFUSAL_SHAPES",
+        """
+        _REFUSAL_SHAPES = ("refused by:", "validate: REFUSED")
+        def looks_refused(output):
+            return output in _REFUSAL_SHAPES
+        """,
+        (
+            (QUOTED_REFUSAL, False),
+            ("refused by:", True),
+        ),
+    ),
+)
+
+
+PROBES = MUST_REFUSE + MUST_PASS
+
+
+def normalized_source(source: str) -> str:
+    return textwrap.dedent(source).lstrip("\n").rstrip() + "\n"
+
+
+def behavior_errors(probe: Probe, path: Path) -> list[str]:
+    namespace: dict[str, object] = {"__file__": str(path), "__name__": "probe"}
+    try:
+        exec(compile(path.read_text(encoding="utf-8"), str(path), "exec"), namespace)
+        predicate = namespace["looks_refused"]
+    except Exception as error:
+        return [f"fixture could not load: {type(error).__name__}: {error}"]
+    errors = []
+    for sample, wanted in probe.samples:
+        try:
+            observed = bool(predicate(sample))  # type: ignore[operator]
+        except Exception as error:
+            errors.append(f"fixture raised {type(error).__name__}: {error}")
+            continue
+        if observed != wanted:
+            errors.append(
+                f"fixture returned {observed}, expected {wanted}, for {sample!r}"
+            )
+    return errors
+
+
+def run_checker(checker: Path, target: Path) -> tuple[int, str]:
+    completed = subprocess.run(
+        [sys.executable, str(checker), str(target)],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    return completed.returncode, completed.stdout + completed.stderr
+
+
+def first_output_line(output: str) -> str:
+    return next((line.strip() for line in output.splitlines() if line.strip()), "<no output>")
+
+
+def checker_word(rc: int) -> str:
+    if rc == 0:
+        return "OK"
+    if rc == 1:
+        return "REFUSED"
+    return "ERROR"
+
+
+def run_probes(checker: Path) -> int:
+    failures = 0
+    total = 0
+    with tempfile.TemporaryDirectory(prefix="refusal-predicate-gate-probes-") as raw:
+        root = Path(raw)
+        for probe in PROBES:
+            total += 1
+            fixture = root / probe.filename
+            fixture.write_text(normalized_source(probe.source), encoding="utf-8")
+            fixture_errors = behavior_errors(probe, fixture)
+            rc, output = run_checker(checker, fixture)
+            ok = not fixture_errors and rc == probe.expected_rc
+            print(
+                f"{'PASS' if ok else 'FAIL'} {probe.name}: expected checker "
+                f"{probe.expected_word} rc={probe.expected_rc}, got "
+                f"{checker_word(rc)} rc={rc}"
+            )
+            print(f"  predicate: {probe.predicate}")
+            for error in fixture_errors:
+                print(f"  fixture: {error}")
+            if not ok:
+                print(f"  checker: {first_output_line(output)}")
+                failures += 1
+
+        total += 1
+        wrong = root / "wrong-nonempty-directory"
+        wrong.mkdir()
+        (wrong / "harmless.py").write_text("value = 1\n", encoding="utf-8")
+        rc, output = run_checker(checker, wrong)
+        ok = rc == 1
+        print(
+            f"{'PASS' if ok else 'FAIL'} wrong-nonempty-directory: expected checker "
+            f"REFUSED rc=1, got {checker_word(rc)} rc={rc}"
+        )
+        print("  predicate: protected refusal predicate is absent from a nonempty Python corpus")
+        if not ok:
+            print(f"  checker: {first_output_line(output)}")
+            failures += 1
+
+    print()
+    print(f"probes: {total}  passed: {total - failures}  failed: {failures}")
+    print("RESULT: PASS" if failures == 0 else "RESULT: FAIL")
+    return 0 if failures == 0 else 1
+
+
+def git(repo: Path, *args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["git", "-C", str(repo), *args], capture_output=True, text=True, timeout=30
+    )
+
+
+@contextlib.contextmanager
+def selected_checker(repo: Path, rev: str | None) -> Iterator[tuple[Path, str]]:
+    if rev is None:
+        checker = repo / CHECKER_RELATIVE
+        if not checker.is_file():
+            raise ValueError(f"checker not found: {checker}")
+        resolved = git(repo, "rev-parse", "HEAD")
+        identity = resolved.stdout.strip() if resolved.returncode == 0 else "working tree"
+        dirty = git(repo, "status", "--porcelain", "--", str(CHECKER_RELATIVE))
+        if dirty.returncode == 0 and dirty.stdout.strip():
+            identity += "-dirty"
+        yield checker, identity
+        return
+
+    resolved = git(repo, "rev-parse", "--verify", f"{rev}^{{commit}}")
+    if resolved.returncode != 0 or not resolved.stdout.strip():
+        raise ValueError(
+            f"cannot resolve Hermit revision {rev!r}: {resolved.stderr.strip()}"
+        )
+    exact = resolved.stdout.strip()
+    shown = git(repo, "show", f"{exact}:{CHECKER_RELATIVE.as_posix()}")
+    if shown.returncode != 0:
+        raise ValueError(
+            f"cannot read {CHECKER_RELATIVE} at {exact}: {shown.stderr.strip()}"
+        )
+    with tempfile.TemporaryDirectory(prefix="refusal-predicate-checker-") as raw:
+        checker = Path(raw) / CHECKER_RELATIVE.name
+        checker.write_text(shown.stdout, encoding="utf-8")
+        yield checker, exact
+
+
+def parse_args(argv: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description=(
+            "Run the measured refusal-predicate cases against a Hermit checkout "
+            "or an exact revision."
+        )
+    )
+    parser.add_argument(
+        "repo",
+        nargs="?",
+        type=Path,
+        default=DEFAULT_HERMIT,
+        help=f"Hermit repository (default: {DEFAULT_HERMIT})",
+    )
+    parser.add_argument(
+        "--rev",
+        help="Hermit commit to read without changing the checkout; default uses its working tree",
+    )
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(sys.argv[1:] if argv is None else argv)
+    repo = args.repo.resolve()
+    if not repo.is_dir():
+        print(f"refusal-predicate-gate-probes: no such Hermit repository: {repo}", file=sys.stderr)
+        return 2
+    try:
+        with selected_checker(repo, args.rev) as (checker, identity):
+            print(f"Hermit: {repo}")
+            print(f"revision: {identity}")
+            print(f"checker: {CHECKER_RELATIVE}")
+            print(f"checker sha256: {hashlib.sha256(checker.read_bytes()).hexdigest()}")
+            print()
+            return run_probes(checker)
+    except (OSError, subprocess.SubprocessError, ValueError) as error:
+        print(f"refusal-predicate-gate-probes: {error}", file=sys.stderr)
+        return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
