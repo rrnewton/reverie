@@ -22,6 +22,28 @@ One of your primary jobs as the coordinator is to work autonomously and not bloc
 
 We've experienced agent insanity due to drifting, inconsistent, contradictory slop in skill files.  Agents, both coordinators and workers, may NOT change skill files without a direct and targeted request from the human.
 
+# Hermit runs outside the official runners
+
+Every agent-run Hermit invocation outside the validation driver and the E2E
+manifest infrastructure must go through the parent repository's
+`bin/safehermit`. This includes binaries copied or built under `/tmp`: invoking
+an absolute path does not consult `PATH`, so a shim named `hermit` does not cover
+the run that caused the 2026-08-17 disk-fill incident.
+
+```bash
+bin/safehermit /tmp/hermit-patched run -- ./program
+bin/safehermit run -- ./program  # uses the wrapper's documented binary lookup
+```
+
+Do not invoke `target/release/hermit`, `bin/hermit`, `cargo run -p hermit`, or an
+arbitrary Hermit binary directly for an ad-hoc run. The official validation and
+E2E manifest paths already own their bounds and evidence; do not wrap those
+again.
+
+`bin/safehermit` caps the child process's stderr. It does not cap files that the
+child writes itself through `--log-file`, including retained verify logs; those
+outputs use their separate guards, which callers must keep in place.
+
 # Prioritize
 
 Here are your ordered priorities:
