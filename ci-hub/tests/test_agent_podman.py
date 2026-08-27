@@ -670,6 +670,16 @@ class AgentPodmanTests(unittest.TestCase):
             ({}, "has no Source field"),
             ({"Source": {"concealed": str(target)}}, "is not a string"),
             ({"Source": 17}, "is not a string"),
+            # ⚠️ THE NON-NORMALIZED CASE WAS MISSING AND THE NAME PROMISED IT.
+            # Measured 2026-08-27 by mutation: disabling the
+            # `normalized_absolute_path` refusal ENTIRELY left this test green,
+            # because every case above is a SCHEMA malformation -- a missing or
+            # non-string Source -- and none is a well-formed string path that is
+            # merely non-normalized. So the refusal this name advertises was
+            # unexercised. A traversal segment is the cheapest input that reaches
+            # it, and it matters here: this decides which mounts bind a container
+            # to a worktree, and `..` is exactly how an alias reaches outside one.
+            ({"Source": f"{target}/../hermit"}, "has non-normalized source"),
         ]
         for index, (mount, expected) in enumerate(malformed):
             with self.subTest(mount=mount):
