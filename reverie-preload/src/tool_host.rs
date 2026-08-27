@@ -44,12 +44,25 @@
 //!
 //! # Coverage boundary
 //!
-//! The e9patch, LiteInst, and SaBRe hosts use this shared Tool driver. Their
-//! patch-frame conversion, lifecycle state, syscall-event storage, and
-//! fast-path versus slow-path counters remain in the concrete hosts. This
-//! module therefore prevents the Tool polling, tail-injection, and restart
-//! protocol from drifting while the broader patching-backend consolidation
-//! proceeds in later increments.
+//! ⚠️ ONE HOST USES THIS DRIVER TODAY, NOT THREE. `experimental/reverie-sabre`'s
+//! `reverie_adapter` is the only caller of [`drive_tool_syscall`]; the e9patch
+//! and LiteInst hosts still carry their own copies. An earlier version of this
+//! paragraph claimed all three, which would have read as coverage that does not
+//! exist -- check with `git grep drive_tool_syscall` before widening the claim.
+//!
+//! Patch-frame conversion, lifecycle state, syscall-event storage, and fast-path
+//! versus slow-path counters remain in the concrete hosts. This module prevents
+//! the Tool polling, tail-injection, and restart protocol from drifting while
+//! the broader patching-backend consolidation proceeds in later increments.
+//!
+//! ⚠️ STILL OWED BY THE SEAM INCREMENT, AND NOT YET DISCHARGED. The backend seam
+//! traits (`HostSyscallEvent`, `HostBackend`, and the slow-path counter) do not
+//! exist yet -- SaBRe adopted the driver without them. When that seam lands, the
+//! host-backend's slow-path counter accessor must be **non-`Option`** so a
+//! converging backend cannot silently drop per-path (fastpath vs slowpath)
+//! counts. That requirement is recorded here because the increment that must
+//! honour it has not happened; deleting it while its trigger is still in the
+//! future would lose it.
 
 use core::future::Future;
 use core::sync::atomic::AtomicI64;

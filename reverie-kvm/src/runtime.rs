@@ -1667,7 +1667,8 @@ impl KvmBackend {
 /// matching `reverie-ptrace`, whose restart frame is likewise not conditioned on
 /// the syscall number (`reverie-ptrace/src/task.rs`). It deliberately does *not*
 /// match `reverie-preload::drive_tool_syscall`, which restarts only `wait4` and
-/// passes an explicit `ERESTARTSYS` through to the guest for everything else.
+/// `waitid` and passes an explicit `ERESTARTSYS` through to the guest for
+/// everything else.
 /// Detcore's `signal_interrupt_errno()` returns `ERESTARTSYS` for `read`,
 /// `futex`, `poll`, `ppoll` and `epoll_wait` as well as `wait4`, so the narrow
 /// policy leaks the private 512 for those; the two backends disagree and
