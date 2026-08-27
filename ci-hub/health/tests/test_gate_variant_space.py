@@ -86,13 +86,13 @@ def main() -> int:
     if gate.evaluate([approval, continuation], SHA)[0] == gate.OK:
         silent.append("SILENTLY CLEARED: an indented CONTINUATION marker was not honoured")
 
-    # The other direction, so the bracket cannot pass by blocking everything:
-    # a refusal naming a SUPERSEDED sha must NOT block -- that is the author
-    # pushing a fix, and 5 of the 7 markers in the 184-PR census were exactly it.
+    # An old-head refusal remains live until it is answered. A push alone cannot
+    # distinguish an author who fixed the objection from one who pushed past it;
+    # hermit#2670 merged through exactly that ambiguity.
     stale = "1" * 40
     rc_stale, _ = gate.evaluate([approval, f"CHANGES-REQUESTED-AT: claude {stale}"], SHA)
-    if rc_stale != gate.OK:
-        silent.append("FALSE REFUSAL: a superseded-sha refusal blocked the head")
+    if rc_stale != gate.BLOCKED:
+        silent.append("SILENTLY CLEARED: an unanswered old-head refusal did not block")
     # And prose discussing the convention must not block, or the gate gets disabled.
     rc_prose, _ = gate.evaluate(
         [approval, "A sweep seeing only APPROVED-AT cannot see a CHANGES-REQUESTED-AT."], SHA

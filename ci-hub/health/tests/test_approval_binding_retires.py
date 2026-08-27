@@ -176,7 +176,7 @@ def test_old_head_retirement_of_unsigned_refusal_does_not_clear_named_peer() -> 
         _refusal(SECOND_REFUSAL_ID),
         _withdrawal("hermit-030", SECOND_REFUSAL_ID),
     ]
-    rc, reason = _gate_result(comments, MOVED_HEAD, require_answered=True)
+    rc, reason = _gate_result(comments, MOVED_HEAD)
     assert rc == gate.BLOCKED, reason
     assert "OUTRUN" in reason, reason
     assert "1 other refusal(s) WERE answered" in reason, reason
@@ -190,7 +190,7 @@ def test_old_head_named_refusal_is_cleared_by_its_own_precise_retirement() -> No
         _refusal(REFUSAL_ID, "hermit-011"),
         _withdrawal("hermit-011", REFUSAL_ID),
     ]
-    rc, reason = _gate_result(comments, MOVED_HEAD, require_answered=True)
+    rc, reason = _gate_result(comments, MOVED_HEAD)
     assert rc == gate.OK, reason
     assert "ANSWERED" in reason, reason
 
@@ -201,7 +201,7 @@ def test_old_head_unsigned_refusal_keeps_its_precise_exit() -> None:
         _refusal(REFUSAL_ID),
         _withdrawal("hermit-030", REFUSAL_ID),
     ]
-    rc, reason = _gate_result(comments, MOVED_HEAD, require_answered=True)
+    rc, reason = _gate_result(comments, MOVED_HEAD)
     assert rc == gate.OK, reason
     assert "NO READABLE ISSUER WAS RETIRED" in reason, reason
 
@@ -212,6 +212,6 @@ def test_old_head_unsigned_unquoted_withdrawal_clears_nothing() -> None:
         _refusal(REFUSAL_ID),
         _withdrawal("hermit-030", None),
     ]
-    rc, reason = _gate_result(comments, MOVED_HEAD, require_answered=True)
+    rc, reason = _gate_result(comments, MOVED_HEAD)
     assert rc == gate.BLOCKED, reason
     assert "by <unsigned>" in reason, reason

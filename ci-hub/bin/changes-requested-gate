@@ -507,11 +507,12 @@ def head_is_main_equal(source: str, head: str) -> bool:
     ⚠️ A WIPED BRANCH IS NOT A CLEAN HEAD, AND IT LAUNDERS EVERY REFUSAL. Something
     on this box closes pull requests and RESETS BRANCHES to main-equal on a ~10
     minute cadence -- hermit#2448 four times. When that happens the head sha MOVES,
-    so every refusal naming the old sha stops binding and this gate reports its most
-    reassuring verdict: "refusal marker(s) present but none names <head> -- superseded
-    by a later push, the correct clearing path". That sentence is equally true of an
-    author pushing a fix and of a branch wiped out from under the review, and comments
-    alone cannot tell them apart.
+    so every refusal naming the old sha stops binding. This gate used to report its
+    most reassuring verdict: "refusal marker(s) present but none names <head> --
+    superseded by a later push, the correct clearing path". That sentence is equally
+    true of an author pushing a fix and of a branch wiped out from under the review,
+    and comments alone cannot tell them apart. Old-head refusals now block until they
+    are answered, so a wipe cannot clear them by moving the SHA.
 
     A main-equal head also merges as a NO-OP, so the pull request closes as "merged"
     while its content never landed -- a landing verified before a wipe looks identical
@@ -1219,12 +1220,14 @@ def evaluate(
             f"{len(relaned)} were answered by the refusing MEMBER approving a later sha."
         )
     verdict = " ".join(parts) + retire_note()
-    # Reported, not blocked, by default: `land-pr.sh` abandons on any non-zero, so
-    # blocking here would stop every head carrying an outrun refusal at once. Whether
-    # that is the right policy is a decision for the owner, not a side effect of
-    # fixing the readout. `--require-answered` opts in to the stricter rule so the
-    # cost can be measured on real heads before it is imposed on all of them.
-    return (BLOCKED if require_answered else OK, verdict)
+    # An old-head refusal remains a refusal until its issuer withdraws it or that
+    # same member approves a later head.  Treating a push alone as a discharge is
+    # the bypass that admitted hermit#2670: the production lander does not pass
+    # `--require-answered`, so an advisory-only OUTRUN verdict still printed CLEAR.
+    # The owner has now made the stricter policy unconditional.  Keep the option
+    # accepted for compatibility with callers that already supplied it, but do not
+    # let omitting it restore the bypass.
+    return BLOCKED, verdict
 
 
 _T_HEAD = "f013ac4b1a3155ebede568c5667f915a4c8ff6b1"
@@ -1338,32 +1341,32 @@ def self_test() -> int:
     # ⚠️ ANSWERED MUST RENDER DIFFERENTLY FROM OUTRUN. Both are "no refusal binds
     # this head", both were reported as "superseded by a later push, the correct
     # clearing path", and that single sentence is why 23 orphaned refusals went
-    # unnoticed. These cases assert the DISTINCTION, not the exit code -- the codes
-    # are deliberately equal by default, so a test on rc alone would pass with the
-    # defect fully restored.
+    # unnoticed. These cases assert both the distinction and the exit code: an
+    # answered refusal clears, while an outrun refusal blocks the production path.
     _MOVED = "a" * 40
     render = [
         (
             "a refusal ANSWERED by its own lane at the sha it refused",
-            [_by(_A1, _T_REF), _by(_A1, _T_WD)], "ANSWERED", "OUTRUN",
+            [_by(_A1, _T_REF), _by(_A1, _T_WD)], OK, "ANSWERED", "OUTRUN",
         ),
         (
             "a refusal merely OUTRUN by a later push, never withdrawn",
-            [_T_REF], "OUTRUN", "ANSWERED",
+            [_T_REF], BLOCKED, "OUTRUN", "ANSWERED",
         ),
         (
             "a CODEX refusal outrun while a CLAUDE one was answered",
-            [_T_CODEX_REF, _by(_A1, _T_REF), _by(_A1, _T_WD)], "OUTRUN", None,
+            [_T_CODEX_REF, _by(_A1, _T_REF), _by(_A1, _T_WD)],
+            BLOCKED, "OUTRUN", None,
         ),
     ]
-    for name, bodies, must_say, must_not_say in render:
+    for name, bodies, want_rc, must_say, must_not_say in render:
         rc, why = evaluate(bodies, _MOVED)
         if must_say not in why:
             bad.append(f"{name}: verdict does not say {must_say} -- {why[:90]}")
         if must_not_say and must_not_say in why.split(".")[0]:
             bad.append(f"{name}: verdict wrongly leads with {must_not_say} -- {why[:90]}")
-        if rc != OK:
-            bad.append(f"{name}: default rc changed to {rc}; land-pr.sh abandons on non-zero")
+        if rc != want_rc:
+            bad.append(f"{name}: default rc is {rc}, want {want_rc}")
 
     # ⚠️ A BOTCHED WITHDRAWAL MUST NOT MANUFACTURE A REFUSAL. The suffix-less
     # spelling used to miss WITHDRAWN and REFUSAL and land on REFUSAL_BARE, so an
@@ -1412,7 +1415,8 @@ def self_test() -> int:
                 f"compared the delta against the objection"
             )
 
-    # The opt-in stricter rule blocks the outrun case and leaves the answered one.
+    # The compatibility option has the same result: it blocks the outrun case and
+    # leaves the answered one.
     if evaluate([_T_REF], _MOVED, require_answered=True)[0] != BLOCKED:
         bad.append("--require-answered did not block an outrun refusal")
     if evaluate(
@@ -1581,22 +1585,22 @@ def self_test() -> int:
         ([_tag("hermit-004", _T_REF), _tag("hermit-004", _T_APP)], OK,
          "ANSWERED", _COLLEAGUE,
          "the SAME member approving later must discharge"),
-        ([_tag("hermit-004", _T_REF), _tag("hermit-003", _T_APP)], OK,
+        ([_tag("hermit-004", _T_REF), _tag("hermit-003", _T_APP)], BLOCKED,
          _COLLEAGUE, "ANSWERED",
          "a DIFFERENT member of the same lane must not discharge"),
-        ([_tag("hermit-004", _T_REF), _T_APP], OK,
+        ([_tag("hermit-004", _T_REF), _T_APP], BLOCKED,
          _COLLEAGUE, "ANSWERED",
          "an UNSIGNED approval must not discharge -- it names nobody"),
-        ([_T_REF, _tag("hermit-003", _T_APP)], OK,
+        ([_T_REF, _tag("hermit-003", _T_APP)], BLOCKED,
          _COLLEAGUE, "ANSWERED",
          "an UNSIGNED refusal is discharged by no approval -- its owner is unknown"),
-        ([_tag("hermit-004", _T_REF), _tag("hermit-001", _T_APP_CODEX)], OK,
+        ([_tag("hermit-004", _T_REF), _tag("hermit-001", _T_APP_CODEX)], BLOCKED,
          "OUTRUN", "ANSWERED",
          "a DIFFERENT lane's approval must not discharge"),
-        ([_tag("hermit-003", _T_APP), _tag("hermit-004", _T_REF)], OK,
+        ([_tag("hermit-003", _T_APP), _tag("hermit-004", _T_REF)], BLOCKED,
          "OUTRUN", "ANSWERED",
          "an approval EARLIER than the refusal must not discharge"),
-        ([_tag("hermit-004", _T_REF)], OK,
+        ([_tag("hermit-004", _T_REF)], BLOCKED,
          "OUTRUN", "ANSWERED",
          "no approval at all must remain outrun"),
         # ⚠️ THE MARKER'S OWN `BY` OUTRANKS THE COMMENT'S DISCLOSURE TAG, BOTH WAYS.
@@ -1609,7 +1613,7 @@ def self_test() -> int:
          OK, "ANSWERED", _COLLEAGUE,
          "an approval signed BY the refusing member discharges, whoever posted it"),
         ([_tag("hermit-004", _T_REF), _tag("hermit-004", f"{_T_APP} BY hermit-003")],
-         OK, _COLLEAGUE, "ANSWERED",
+         BLOCKED, _COLLEAGUE, "ANSWERED",
          "an approval signed BY someone else does not discharge, whoever posted it"),
     ]
     for bodies, want_rc, must_say, must_not_say, why in relane:
@@ -1625,11 +1629,10 @@ def self_test() -> int:
     #      opposite responses -- one waits for the author, one waits for a named
     #      reviewer -- and rendering them alike is the exact defect that let 23
     #      refusals go unnoticed.
-    #   2. --require-answered must BLOCK the colleague case. If it did not, the
-    #      distinction would be decoration: the stricter policy would admit the
-    #      undischarged head it exists to stop.
-    #   3. --require-answered must still CLEAR the same-member case, or the fix
-    #      over-blocks the behaviour it was written to credit.
+    #   2. The default production path and the compatibility option must BLOCK the
+    #      colleague case. If either did not, the distinction would be decoration.
+    #   3. Both forms must still CLEAR the same-member case, or the fix over-blocks
+    #      the behaviour it was written to credit.
     _colleague_why = evaluate(
         [_tag("hermit-004", _T_REF), _tag("hermit-003", _T_APP)], _T_OTHER)[1]
     _quiet_why = evaluate([_tag("hermit-004", _T_REF)], _T_OTHER)[1]
@@ -1638,6 +1641,9 @@ def self_test() -> int:
             "a colleague's approval renders IDENTICALLY to a record that went quiet "
             "-- two states needing opposite responses, one sentence"
         )
+    if evaluate([_tag("hermit-004", _T_REF), _tag("hermit-003", _T_APP)],
+                _T_OTHER)[0] != BLOCKED:
+        bad.append("the production path did not block a refusal a COLLEAGUE approved over")
     if evaluate([_tag("hermit-004", _T_REF), _tag("hermit-003", _T_APP)], _T_OTHER,
                 require_answered=True)[0] != BLOCKED:
         bad.append("--require-answered did not block a refusal only a COLLEAGUE approved over")
@@ -1753,11 +1759,8 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument(
         "--require-answered",
         action="store_true",
-        help="BLOCK when a refusal was OUTRUN rather than answered -- i.e. the sha "
-             "moved but the refusing lane never withdrew. Off by default because "
-             "land-pr.sh abandons on any non-zero, so turning it on stops every head "
-             "carrying an outrun refusal at once; that is a policy decision, not a "
-             "side effect of reporting honestly.",
+        help="compatibility spelling: old-head refusals are always required to be "
+             "answered; omitting this option no longer permits an OUTRUN refusal",
     )
     p.add_argument("--self-test", action="store_true",
                    help="exercise the withdrawal-scoping cases and exit")
