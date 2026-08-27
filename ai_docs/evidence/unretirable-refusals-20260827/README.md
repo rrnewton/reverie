@@ -5,7 +5,7 @@ This directory preserves the evidence for TaskGraph task
 
 ## Current count
 
-`current-census.json` was captured at `2026-08-27T11:51:16Z` from all 48 open
+`current-census.json` was refreshed at `2026-08-27T12:13:20Z` from all 48 open
 pull requests in the five project repositories:
 
 - `rrnewton/hermit`: 30
@@ -18,7 +18,7 @@ The query read issue comments, reviews, review threads, and review comments. No
 connection was truncated, every refusal record had a numeric GitHub comment id,
 and no review or review-comment container carried a marker. The current liveness
 input came from the repository's independent `/proc` reader: full host PID
-namespace, 679 own-uid processes, zero unreadable agent-capable processes, and
+namespace, 746 own-uid processes, zero unreadable agent-capable processes, and
 30 distinct live agent names.
 
 The readers find 23 unanswered refusal records across 11 pull requests:
