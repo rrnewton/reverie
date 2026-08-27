@@ -1,0 +1,30 @@
+2562	addressed-before-merge	The record-path class defect was fixed and independently approved at the final head.
+2610	addressed-before-merge	The regex/counting errors and later table-count error were corrected before final approval.
+2611	addressed-before-merge	The checker/Makefile mismatch was corrected before final approval.
+2615	addressed-before-merge	The claimed chokepoint and coverage were rewritten and approved at the final head.
+2618	partly-unanswered-on-main	The wrong heap extent was fixed, but the same refusal's silent no-enclosing-mapping branch and missing direct detlog_brk_heap coverage remain on current origin/main.
+2622	addressed-before-merge	The stale allowlist/Makefile mismatch was corrected and reviewed.
+2625	addressed-before-merge	The constant pin and closed-stdin test issue were corrected; the second parsed refusal was a reviewer's approval retraction, not an additional code objection.
+2627	addressed-before-merge	The one-string outcome check was widened to the existing non-PASS/non-FAIL outcomes and independently approved.
+2628	addressed-before-merge	The missing site coverage was added and approved at the final head.
+2632	partly-unanswered-on-main	The no-panic assertion was restored, but E9patch run and record PATH misses still use untyped errors and therefore still map to 125 rather than the PR's claimed 127.
+2633	addressed-before-merge	The formatting-only refusal was corrected and approved.
+2637	addressed-before-merge	The broad refusal predicate and later final-status objections were fixed and approved at the final head.
+2641	addressed-before-merge	The HOME-dependent fixture was replaced by a deterministic absolute fixture and approved.
+2655	addressed-before-merge	The checker was scheduled before merge and approved.
+2670	partly-unanswered-on-main	Three objections were corrected; the refusal noting that the documented exit table omits shell launch statuses 126 and 127 remains true on current origin/main.
+2672	addressed-before-merge	The signal/refusal findings were fixed across later heads and independently approved at the final head.
+2674	addressed-before-merge	The shell and Python option-mode findings were fixed and independently approved at the final head.
+2676	addressed-before-merge	The redundant assertion and timing-order gap were replaced by an independently observable ordering assertion and approved.
+2678	addressed-before-merge	The stale causal claim, missing report assertion, moving timing window, and uninterruptible pause were corrected and approved.
+2679	addressed-before-merge	The false GIT_CONFIG cause and non-discriminating control description were corrected and approved.
+2681	addressed-before-merge	The per-runner split received both-direction unit coverage and the refusing reviewer approved the final head.
+2683	addressed-before-merge	The refusal-marker objections were addressed and the final head received independent approval. A separate unmarked Bash -D objection was still real at merge and was later fixed forward by https://github.com/rrnewton/hermit/pull/2674.
+2686	addressed-before-merge	The five-selector, empty-result, audit-gaps, JSON, and stale-comment findings were fixed before merge.
+2692	addressed-before-merge	The exit-class gate gaps were corrected and independently approved.
+2696	addressed-before-merge	The literal checkout path and unscheduled self-test were corrected; repeated exact-head reviews found no remaining issue.
+2701	addressed-before-merge	The journal/registry identity error, skill overlap, vocabulary, direct-run, result-path, and final-file-state findings were all corrected before owner-directed landing.
+2702	addressed-before-merge	The predicate grammar findings were corrected and independently approved at the final head.
+2705	partly-unanswered-on-main	The false 0 ms representation was fixed. The later refusal's four findings remain on current origin/main: publication bypasses the stronger summary checks; DBT and record/replay omit runtime totals; syscall totals lose pre-exec counts; and the fallback trusts log paths parsed from captured stderr.
+2709	addressed-before-merge	The final commit adds the missing CellResult-level bracket and corrects the volatile-count claim.
+2711	addressed-before-merge	The final commit adds both-direction brackets for the no-comparison guard.

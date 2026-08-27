@@ -1,0 +1,3557 @@
+[
+  {
+    "changed_clear_to_block": true,
+    "comment_count": 20,
+    "created_at": "2026-08-06T13:55:40Z",
+    "cutoff": "2026-08-27T10:28:52+00:00",
+    "draft": true,
+    "fixed_rc": 1,
+    "fixed_reason": "2 of 2 refusal marker(s) were OUTRUN, not answered: <no lane>@5b6ce1fe by <unsigned>, codex@5b6ce1fe8095 by <unsigned>. The sha moved so they no longer name 96eeb0d60387, and NO entitled withdrawal says the objection was addressed. This gate cannot tell a reviewer who read the delta from an author who pushed past the objection, and it will not assert the benign reading. For a named refusal, the refusing member posts CHANGES-REQUESTED-WITHDRAWN-AT at the sha it refused; an unsigned refusal is retired by an exact `RETIRES <comment-id>`.",
+    "head": "96eeb0d603875e595f36d6ce97fc77a998ea53a2",
+    "marker_rows": [
+      {
+        "id": 5250055861,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": null,
+        "sha": "5b6ce1fe"
+      },
+      {
+        "id": 5273493046,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "codex",
+        "sha": "5b6ce1fe80953a4f3a698233e2e28be87f8d3613"
+      }
+    ],
+    "merged_at": null,
+    "number": 1689,
+    "old_rc": 0,
+    "old_reason": "2 of 2 refusal marker(s) were OUTRUN, not answered: <no lane>@5b6ce1fe by <unsigned>, codex@5b6ce1fe8095 by <unsigned>. The sha moved so they no longer name 96eeb0d60387, and NO entitled withdrawal says the objection was addressed. This gate cannot tell a reviewer who read the delta from an author who pushed past the objection, and it will not assert the benign reading. For a named refusal, the refusing member posts CHANGES-REQUESTED-WITHDRAWN-AT at the sha it refused; an unsigned refusal is retired by an exact `RETIRES <comment-id>`.",
+    "state": "OPEN",
+    "title": "DBT backend: honour --log-file, preserve wait status, emit heap DETLOG, and scope --verify INFO to the guest",
+    "url": "https://github.com/rrnewton/hermit/pull/1689"
+  },
+  {
+    "changed_clear_to_block": false,
+    "comment_count": 54,
+    "created_at": "2026-08-12T10:12:08Z",
+    "cutoff": "2026-08-27T10:28:52+00:00",
+    "draft": false,
+    "fixed_rc": 1,
+    "fixed_reason": "2 refusal(s) bound to the exact head b3ca4e155098 from lane(s) claude,codex that have not withdrawn. A refusal naming the head blocks regardless of any lane's approval, and a withdrawal from a DIFFERENT lane does not discharge it. This clears when the AUTHOR pushes a fix (the sha moves and the refusal stops naming the head) or the refusing lane itself posts CHANGES-REQUESTED-WITHDRAWN-AT at this sha.",
+    "head": "b3ca4e155098ad6e6f32f507ed72855da0638010",
+    "marker_rows": [
+      {
+        "id": 5271163993,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": null,
+        "sha": null
+      },
+      {
+        "id": 5271163993,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "codex",
+        "sha": "e211b9d01e635aac45c4558f12cab57764f6be3c"
+      },
+      {
+        "id": 5273789752,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "codex",
+        "sha": "b3ca4e155098ad6e6f32f507ed72855da0638010"
+      },
+      {
+        "id": 5274807361,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "claude",
+        "sha": "b3ca4e155098ad6e6f32f507ed72855da0638010"
+      }
+    ],
+    "merged_at": null,
+    "number": 2176,
+    "old_rc": 1,
+    "old_reason": "2 refusal(s) bound to the exact head b3ca4e155098 from lane(s) claude,codex that have not withdrawn. A refusal naming the head blocks regardless of any lane's approval, and a withdrawal from a DIFFERENT lane does not discharge it. This clears when the AUTHOR pushes a fix (the sha moves and the refusal stops naming the head) or the refusing lane itself posts CHANGES-REQUESTED-WITHDRAWN-AT at this sha.",
+    "state": "OPEN",
+    "title": "Determinize blocking pipe write completion",
+    "url": "https://github.com/rrnewton/hermit/pull/2176"
+  },
+  {
+    "changed_clear_to_block": false,
+    "comment_count": 33,
+    "created_at": "2026-08-13T01:58:13Z",
+    "cutoff": "2026-08-27T10:28:52+00:00",
+    "draft": false,
+    "fixed_rc": 1,
+    "fixed_reason": "1 refusal(s) bound to the exact head 4352d4bfc3f6 from lane(s) codex that have not withdrawn. A refusal naming the head blocks regardless of any lane's approval, and a withdrawal from a DIFFERENT lane does not discharge it. This clears when the AUTHOR pushes a fix (the sha moves and the refusal stops naming the head) or the refusing lane itself posts CHANGES-REQUESTED-WITHDRAWN-AT at this sha.",
+    "head": "4352d4bfc3f66ca8e64b6f0f648c672e1a7a519c",
+    "marker_rows": [
+      {
+        "id": 5415961922,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "claude",
+        "sha": "f57f6549904ba1235694b2b704174b6666af66ff"
+      },
+      {
+        "id": 5436273554,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "codex",
+        "sha": "9c835cf5d22e907448bcd287d59d113a521ad999"
+      },
+      {
+        "id": 5436508949,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "codex",
+        "sha": "9c835cf5d22e907448bcd287d59d113a521ad999"
+      },
+      {
+        "id": 5437082528,
+        "kind": "CHANGES-REQUESTED-WITHDRAWN-AT",
+        "lane": "claude",
+        "sha": "f57f6549904ba1235694b2b704174b6666af66ff"
+      },
+      {
+        "id": 5437625950,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "codex",
+        "sha": "4352d4bfc3f66ca8e64b6f0f648c672e1a7a519c"
+      }
+    ],
+    "merged_at": null,
+    "number": 2216,
+    "old_rc": 1,
+    "old_reason": "1 refusal(s) bound to the exact head 4352d4bfc3f6 from lane(s) codex that have not withdrawn. A refusal naming the head blocks regardless of any lane's approval, and a withdrawal from a DIFFERENT lane does not discharge it. This clears when the AUTHOR pushes a fix (the sha moves and the refusal stops naming the head) or the refusing lane itself posts CHANGES-REQUESTED-WITHDRAWN-AT at this sha.",
+    "state": "OPEN",
+    "title": "Bind the core-review merge gate to the exact PR head",
+    "url": "https://github.com/rrnewton/hermit/pull/2216"
+  },
+  {
+    "changed_clear_to_block": true,
+    "comment_count": 9,
+    "created_at": "2026-08-13T02:59:52Z",
+    "cutoff": "2026-08-27T10:28:52+00:00",
+    "draft": true,
+    "fixed_rc": 1,
+    "fixed_reason": "1 of 1 refusal marker(s) were OUTRUN, not answered: codex@8a569bb1b22d by hermit-908. The sha moved so they no longer name 042a96041883, and NO entitled withdrawal says the objection was addressed. This gate cannot tell a reviewer who read the delta from an author who pushed past the objection, and it will not assert the benign reading. For a named refusal, the refusing member posts CHANGES-REQUESTED-WITHDRAWN-AT at the sha it refused; an unsigned refusal is retired by an exact `RETIRES <comment-id>`.",
+    "head": "042a96041883a84667fa86bfadb9994603bdc33c",
+    "marker_rows": [
+      {
+        "id": 5276923975,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "codex",
+        "sha": "8a569bb1b22d711ad04fbf9fb478cbc82b91f913"
+      }
+    ],
+    "merged_at": null,
+    "number": 2223,
+    "old_rc": 0,
+    "old_reason": "1 of 1 refusal marker(s) were OUTRUN, not answered: codex@8a569bb1b22d by hermit-908. The sha moved so they no longer name 042a96041883, and NO entitled withdrawal says the objection was addressed. This gate cannot tell a reviewer who read the delta from an author who pushed past the objection, and it will not assert the benign reading. For a named refusal, the refusing member posts CHANGES-REQUESTED-WITHDRAWN-AT at the sha it refused; an unsigned refusal is retired by an exact `RETIRES <comment-id>`.",
+    "state": "OPEN",
+    "title": "Fix ptrace robust-futex owner death and harden evidence",
+    "url": "https://github.com/rrnewton/hermit/pull/2223"
+  },
+  {
+    "changed_clear_to_block": false,
+    "comment_count": 3,
+    "created_at": "2026-08-16T18:02:00Z",
+    "cutoff": "2026-08-27T10:28:52+00:00",
+    "draft": true,
+    "fixed_rc": 0,
+    "fixed_reason": "no refusal marker of any shape on this pull request",
+    "head": "d16a0f1c12626ac7991a354b9597b135633ea25c",
+    "marker_rows": [],
+    "merged_at": null,
+    "number": 2302,
+    "old_rc": 0,
+    "old_reason": "no refusal marker of any shape on this pull request",
+    "state": "OPEN",
+    "title": "Land M2 canonical verification and fix remaining measured reds",
+    "url": "https://github.com/rrnewton/hermit/pull/2302"
+  },
+  {
+    "changed_clear_to_block": false,
+    "comment_count": 4,
+    "created_at": "2026-08-17T15:16:18Z",
+    "cutoff": "2026-08-27T10:28:52+00:00",
+    "draft": false,
+    "fixed_rc": 1,
+    "fixed_reason": "1 refusal(s) bound to the exact head e2b18509ba0d from lane(s) claude that have not withdrawn. A refusal naming the head blocks regardless of any lane's approval, and a withdrawal from a DIFFERENT lane does not discharge it. This clears when the AUTHOR pushes a fix (the sha moves and the refusal stops naming the head) or the refusing lane itself posts CHANGES-REQUESTED-WITHDRAWN-AT at this sha.",
+    "head": "e2b18509ba0dfabe4cf68e8b514ae4745b299169",
+    "marker_rows": [
+      {
+        "id": 5419595129,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "claude",
+        "sha": "e2b18509ba0dfabe4cf68e8b514ae4745b299169"
+      }
+    ],
+    "merged_at": null,
+    "number": 2304,
+    "old_rc": 1,
+    "old_reason": "1 refusal(s) bound to the exact head e2b18509ba0d from lane(s) claude that have not withdrawn. A refusal naming the head blocks regardless of any lane's approval, and a withdrawal from a DIFFERENT lane does not discharge it. This clears when the AUTHOR pushes a fix (the sha moves and the refusal stops naming the head) or the refusing lane itself posts CHANGES-REQUESTED-WITHDRAWN-AT at this sha.",
+    "state": "OPEN",
+    "title": "Order SaBRe shutdown evidence deterministically",
+    "url": "https://github.com/rrnewton/hermit/pull/2304"
+  },
+  {
+    "changed_clear_to_block": false,
+    "comment_count": 2,
+    "created_at": "2026-08-22T14:32:57Z",
+    "cutoff": "2026-08-27T10:28:52+00:00",
+    "draft": true,
+    "fixed_rc": 0,
+    "fixed_reason": "no refusal marker of any shape on this pull request",
+    "head": "26276e2b266e944bc02ff775b4ceb5cb0956019e",
+    "marker_rows": [],
+    "merged_at": null,
+    "number": 2368,
+    "old_rc": 0,
+    "old_reason": "no refusal marker of any shape on this pull request",
+    "state": "OPEN",
+    "title": "Revive the reproducible OSS Buck2 build",
+    "url": "https://github.com/rrnewton/hermit/pull/2368"
+  },
+  {
+    "changed_clear_to_block": false,
+    "comment_count": 1,
+    "created_at": "2026-08-24T20:14:08Z",
+    "cutoff": "2026-08-27T10:28:52+00:00",
+    "draft": true,
+    "fixed_rc": 0,
+    "fixed_reason": "no refusal marker of any shape on this pull request",
+    "head": "e68b24bdf6523e57d51ac5a6487c2a304107c686",
+    "marker_rows": [],
+    "merged_at": null,
+    "number": 2400,
+    "old_rc": 0,
+    "old_reason": "no refusal marker of any shape on this pull request",
+    "state": "OPEN",
+    "title": "[SALVAGE] Preserve compat stability aggregator work",
+    "url": "https://github.com/rrnewton/hermit/pull/2400"
+  },
+  {
+    "changed_clear_to_block": false,
+    "comment_count": 2,
+    "created_at": "2026-08-24T20:14:15Z",
+    "cutoff": "2026-08-27T10:28:52+00:00",
+    "draft": true,
+    "fixed_rc": 0,
+    "fixed_reason": "no refusal marker of any shape on this pull request",
+    "head": "952d804796860f705f437fd0d7ad1f1f44fcb004",
+    "marker_rows": [],
+    "merged_at": null,
+    "number": 2403,
+    "old_rc": 0,
+    "old_reason": "no refusal marker of any shape on this pull request",
+    "state": "OPEN",
+    "title": "[SALVAGE] [hermit2, sanity-driver, unresolved, devbig014, role=impl] Record divergence turn ranges in result rows",
+    "url": "https://github.com/rrnewton/hermit/pull/2403"
+  },
+  {
+    "changed_clear_to_block": false,
+    "comment_count": 2,
+    "created_at": "2026-08-24T20:14:33Z",
+    "cutoff": "2026-08-27T10:28:52+00:00",
+    "draft": true,
+    "fixed_rc": 0,
+    "fixed_reason": "no refusal marker of any shape on this pull request",
+    "head": "64cfa88c40d6084db9e3b1108733a75018fc518d",
+    "marker_rows": [],
+    "merged_at": null,
+    "number": 2408,
+    "old_rc": 0,
+    "old_reason": "no refusal marker of any shape on this pull request",
+    "state": "OPEN",
+    "title": "[SALVAGE] Document four cases where finished work was not observed",
+    "url": "https://github.com/rrnewton/hermit/pull/2408"
+  },
+  {
+    "changed_clear_to_block": false,
+    "comment_count": 2,
+    "created_at": "2026-08-24T20:14:43Z",
+    "cutoff": "2026-08-27T10:28:52+00:00",
+    "draft": true,
+    "fixed_rc": 0,
+    "fixed_reason": "no refusal marker of any shape on this pull request",
+    "head": "b5f7de472fefaf6278d5090e80e7456ce2961592",
+    "marker_rows": [],
+    "merged_at": null,
+    "number": 2412,
+    "old_rc": 0,
+    "old_reason": "no refusal marker of any shape on this pull request",
+    "state": "OPEN",
+    "title": "[SALVAGE] [hermit2, codex-overhaul-ultra, unresolved, devbig014, role=impl] Define the minimal guest environment contrac",
+    "url": "https://github.com/rrnewton/hermit/pull/2412"
+  },
+  {
+    "changed_clear_to_block": false,
+    "comment_count": 1,
+    "created_at": "2026-08-24T20:14:58Z",
+    "cutoff": "2026-08-27T10:28:52+00:00",
+    "draft": true,
+    "fixed_rc": 0,
+    "fixed_reason": "no refusal marker of any shape on this pull request",
+    "head": "1ddfe52e137812f26e4dd8d4e1c667fb5616f535",
+    "marker_rows": [],
+    "merged_at": null,
+    "number": 2416,
+    "old_rc": 0,
+    "old_reason": "no refusal marker of any shape on this pull request",
+    "state": "OPEN",
+    "title": "[SALVAGE] [hermit2, divergence, unresolved, devbig014, role=impl] Classify inner pressure deadlines as timeouts",
+    "url": "https://github.com/rrnewton/hermit/pull/2416"
+  },
+  {
+    "changed_clear_to_block": false,
+    "comment_count": 1,
+    "created_at": "2026-08-24T20:15:05Z",
+    "cutoff": "2026-08-27T10:28:52+00:00",
+    "draft": true,
+    "fixed_rc": 0,
+    "fixed_reason": "no refusal marker of any shape on this pull request",
+    "head": "995a20cbc465fc677ffbee938ef3b37d6ca0b054",
+    "marker_rows": [],
+    "merged_at": null,
+    "number": 2419,
+    "old_rc": 0,
+    "old_reason": "no refusal marker of any shape on this pull request",
+    "state": "OPEN",
+    "title": "[SALVAGE] [hermit2, ratchet-kvm, unresolved, devbig014, role=impl] Enable canonical KVM verification and promote six mea",
+    "url": "https://github.com/rrnewton/hermit/pull/2419"
+  },
+  {
+    "changed_clear_to_block": false,
+    "comment_count": 1,
+    "created_at": "2026-08-24T20:15:20Z",
+    "cutoff": "2026-08-27T10:28:52+00:00",
+    "draft": true,
+    "fixed_rc": 0,
+    "fixed_reason": "no refusal marker of any shape on this pull request",
+    "head": "f4a7d70a8928d2222906211dd95af54e45ded71a",
+    "marker_rows": [],
+    "merged_at": null,
+    "number": 2425,
+    "old_rc": 0,
+    "old_reason": "no refusal marker of any shape on this pull request",
+    "state": "OPEN",
+    "title": "[SALVAGE] [hermit2, sweep3, unresolved, devbig014, role=coordinator] Preserve interrupted PR 1147 validation work before",
+    "url": "https://github.com/rrnewton/hermit/pull/2425"
+  },
+  {
+    "changed_clear_to_block": false,
+    "comment_count": 9,
+    "created_at": "2026-08-24T20:15:54Z",
+    "cutoff": "2026-08-27T10:28:52+00:00",
+    "draft": false,
+    "fixed_rc": 0,
+    "fixed_reason": "no refusal marker of any shape on this pull request",
+    "head": "f630aef3d18e87e49a1e099a5bcf4d2bf43987d1",
+    "marker_rows": [],
+    "merged_at": null,
+    "number": 2427,
+    "old_rc": 0,
+    "old_reason": "no refusal marker of any shape on this pull request",
+    "state": "OPEN",
+    "title": "[SALVAGE] salvage: preserve BPF denial classification work",
+    "url": "https://github.com/rrnewton/hermit/pull/2427"
+  },
+  {
+    "changed_clear_to_block": true,
+    "comment_count": 22,
+    "created_at": "2026-08-25T14:56:05Z",
+    "cutoff": "2026-08-25T21:13:58+00:00",
+    "draft": false,
+    "fixed_rc": 1,
+    "fixed_reason": "1 of 2 refusal marker(s) were APPROVED OVER BY ANOTHER MEMBER of the refusing lane, which is not a discharge: codex@d836df64edf7 refused by codex-rev-2562, approved over by hermit-001/hermit-001. A lane is its MEMBERS, not one authority -- `approval_binding` scores this same shape REFUSED since dev-hermit#193, and an approval whose issuer cannot be read discharges nothing at all. The member who objected has not spoken again. To discharge one, THAT member posts APPROVED-AT at a later sha, or CHANGES-REQUESTED-WITHDRAWN-AT at the sha it refused. 1 were answered by the refusing MEMBER approving a later sha.",
+    "head": "df23d1fe27db2a47e057a364405934c67dcbfbb8",
+    "marker_rows": [
+      {
+        "id": 5416394683,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "codex",
+        "sha": "d836df64edf70eb02622bc9f8d5cca7388684766"
+      },
+      {
+        "id": 5416412982,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "codex",
+        "sha": "d836df64edf70eb02622bc9f8d5cca7388684766"
+      }
+    ],
+    "merged_at": "2026-08-25T21:13:58Z",
+    "number": 2562,
+    "old_rc": 0,
+    "old_reason": "1 of 2 refusal marker(s) were APPROVED OVER BY ANOTHER MEMBER of the refusing lane, which is not a discharge: codex@d836df64edf7 refused by codex-rev-2562, approved over by hermit-001/hermit-001. A lane is its MEMBERS, not one authority -- `approval_binding` scores this same shape REFUSED since dev-hermit#193, and an approval whose issuer cannot be read discharges nothing at all. The member who objected has not spoken again. To discharge one, THAT member posts APPROVED-AT at a later sha, or CHANGES-REQUESTED-WITHDRAWN-AT at the sha it refused. 1 were answered by the refusing MEMBER approving a later sha.",
+    "state": "MERGED",
+    "title": "[hermit2, hermit-013, unresolved, devbig014, role=impl] Carry the failure class through all three flattenings that destroyed it",
+    "url": "https://github.com/rrnewton/hermit/pull/2562"
+  },
+  {
+    "changed_clear_to_block": false,
+    "comment_count": 43,
+    "created_at": "2026-08-25T18:23:15Z",
+    "cutoff": "2026-08-27T09:36:46+00:00",
+    "draft": false,
+    "fixed_rc": 2,
+    "fixed_reason": "1 refusal marker(s) carry no readable sha, so whether they bind 2268a5360e19 cannot be decided. Refusing: a marker that cannot be bound is not a marker that does not apply. Re-post it as 'CHANGES-REQUESTED-AT: <lane> <40-hex>' on its own line, or retire it with a 'CHANGES-REQUESTED-WITHDRAWN-AT' comment carrying 'RETIRES <the refusing comment id>' -- a bare or lane-only withdrawal CANNOT retire a marker that names no head.",
+    "head": "2268a5360e199abb0e1fc282a95da3da2a3eb878",
+    "marker_rows": [
+      {
+        "id": 5415310677,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "claude",
+        "sha": "dd71f21b770de0689e135591aeaa8585c12720f2"
+      },
+      {
+        "id": 5415386485,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "codex",
+        "sha": "49333e3e45b11b1b00c4ffcadc05aea393bb8646"
+      },
+      {
+        "id": 5416099009,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "claude",
+        "sha": "c8df23f93f6e2bdad752489a537bfd861655b5ad"
+      },
+      {
+        "id": 5416200070,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "claude",
+        "sha": "585167c0b3726d452cad603f204a055752930a18"
+      },
+      {
+        "id": 5420330871,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "codex",
+        "sha": "bdf87b0dc9f236d388f1b33d0d7575e427b82e06"
+      },
+      {
+        "id": 5420343746,
+        "kind": "CHANGES-REQUESTED-WITHDRAWN-AT",
+        "lane": "claude",
+        "sha": "585167c0b3726d452cad603f204a055752930a18"
+      },
+      {
+        "id": 5436273248,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "codex",
+        "sha": "326e6c6c4716eaa8c83eefe55711e210c8f6d7ff"
+      },
+      {
+        "id": 5436508351,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "codex",
+        "sha": "e28d05626a16f8ff34d0514e8ab2ad127876f0ab"
+      },
+      {
+        "id": 5436826117,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": null,
+        "sha": null
+      },
+      {
+        "id": 5436826117,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "codex",
+        "sha": "294ddee97aebd3c8ab302f969bf767e6688745a6"
+      },
+      {
+        "id": 5437087941,
+        "kind": "CHANGES-REQUESTED-WITHDRAWN-AT",
+        "lane": "claude",
+        "sha": "c8df23f93f6e2bdad752489a537bfd861655b5ad"
+      },
+      {
+        "id": 5437090075,
+        "kind": "CHANGES-REQUESTED-WITHDRAWN-AT",
+        "lane": "codex",
+        "sha": "326e6c6c4716eaa8c83eefe55711e210c8f6d7ff"
+      }
+    ],
+    "merged_at": "2026-08-27T09:36:46Z",
+    "number": 2602,
+    "old_rc": 2,
+    "old_reason": "1 refusal marker(s) carry no readable sha, so whether they bind 2268a5360e19 cannot be decided. Refusing: a marker that cannot be bound is not a marker that does not apply. Re-post it as 'CHANGES-REQUESTED-AT: <lane> <40-hex>' on its own line, or retire it with a 'CHANGES-REQUESTED-WITHDRAWN-AT' comment carrying 'RETIRES <the refusing comment id>' -- a bare or lane-only withdrawal CANNOT retire a marker that names no head.",
+    "state": "MERGED",
+    "title": "[hermit2, hermit-030, unresolved, devbig014, role=impl] PR_SWEEP_VERDICTS: an instrument that only looks for good news reports a clean board",
+    "url": "https://github.com/rrnewton/hermit/pull/2602"
+  },
+  {
+    "changed_clear_to_block": false,
+    "comment_count": 10,
+    "created_at": "2026-08-25T18:49:00Z",
+    "cutoff": "2026-08-25T19:29:19+00:00",
+    "draft": false,
+    "fixed_rc": 0,
+    "fixed_reason": "no refusal marker of any shape on this pull request",
+    "head": "bc5f60bc3b1f28be8a7241952fcb4b16c97039db",
+    "marker_rows": [],
+    "merged_at": "2026-08-25T19:29:19Z",
+    "number": 2606,
+    "old_rc": 0,
+    "old_reason": "no refusal marker of any shape on this pull request",
+    "state": "MERGED",
+    "title": "Stable step 2: drop hermit's last two nightly feature gates (get_mut_unchecked, thread_id_value)",
+    "url": "https://github.com/rrnewton/hermit/pull/2606"
+  },
+  {
+    "changed_clear_to_block": false,
+    "comment_count": 6,
+    "created_at": "2026-08-25T18:53:51Z",
+    "cutoff": "2026-08-26T00:21:14+00:00",
+    "draft": false,
+    "fixed_rc": 0,
+    "fixed_reason": "no refusal marker of any shape on this pull request",
+    "head": "63d0755ed9872f59e10c2c2714dc38dcf0ffee50",
+    "marker_rows": [],
+    "merged_at": "2026-08-26T00:21:14Z",
+    "number": 2608,
+    "old_rc": 0,
+    "old_reason": "no refusal marker of any shape on this pull request",
+    "state": "MERGED",
+    "title": "PR_SWEEP_VERDICTS: four pull-request API fields whose plain reading is wrong",
+    "url": "https://github.com/rrnewton/hermit/pull/2608"
+  },
+  {
+    "changed_clear_to_block": true,
+    "comment_count": 9,
+    "created_at": "2026-08-25T19:13:08Z",
+    "cutoff": "2026-08-25T23:56:48+00:00",
+    "draft": false,
+    "fixed_rc": 1,
+    "fixed_reason": "3 of 4 refusal marker(s) were APPROVED OVER BY ANOTHER MEMBER of the refusing lane, which is not a discharge: claude@d83271dde6be refused by hermit-dbg, approved over by hermit-007/hermit-007/<unsigned>, claude@d83271dde6be refused by hermit-011, approved over by hermit-007/hermit-007/<unsigned>, claude@1e145c0ce3c8 refused by <unsigned>, approved over by <unsigned>. A lane is its MEMBERS, not one authority -- `approval_binding` scores this same shape REFUSED since dev-hermit#193, and an approval whose issuer cannot be read discharges nothing at all. The member who objected has not spoken again. To discharge one, THAT member posts APPROVED-AT at a later sha, or CHANGES-REQUESTED-WITHDRAWN-AT at the sha it refused. 1 were answered by the refusing MEMBER approving a later sha.",
+    "head": "19ace93716381bb632eb51477d61ff449c06f1da",
+    "marker_rows": [
+      {
+        "id": 5415517844,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "claude",
+        "sha": "d83271dde6bea521339ea33c67cc444526d61a4f"
+      },
+      {
+        "id": 5415646632,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "claude",
+        "sha": "d83271dde6bea521339ea33c67cc444526d61a4f"
+      },
+      {
+        "id": 5416200012,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "claude",
+        "sha": "d1e082c67495a9488e50ebea814b56b8b0b8a9bf"
+      },
+      {
+        "id": 5416948415,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "claude",
+        "sha": "1e145c0ce3c8f9ccb3d50c4e25f103428261c504"
+      }
+    ],
+    "merged_at": "2026-08-25T23:56:48Z",
+    "number": 2610,
+    "old_rc": 0,
+    "old_reason": "3 of 4 refusal marker(s) were APPROVED OVER BY ANOTHER MEMBER of the refusing lane, which is not a discharge: claude@d83271dde6be refused by hermit-dbg, approved over by hermit-007/hermit-007/<unsigned>, claude@d83271dde6be refused by hermit-011, approved over by hermit-007/hermit-007/<unsigned>, claude@1e145c0ce3c8 refused by <unsigned>, approved over by <unsigned>. A lane is its MEMBERS, not one authority -- `approval_binding` scores this same shape REFUSED since dev-hermit#193, and an approval whose issuer cannot be read discharges nothing at all. The member who objected has not spoken again. To discharge one, THAT member posts APPROVED-AT at a later sha, or CHANGES-REQUESTED-WITHDRAWN-AT at the sha it refused. 1 were answered by the refusing MEMBER approving a later sha.",
+    "state": "MERGED",
+    "title": "[hermit2, hermit-006, unresolved, devbig014, role=impl] PR_SWEEP_VERDICTS: counting a marker's text counts the arguments about it",
+    "url": "https://github.com/rrnewton/hermit/pull/2610"
+  },
+  {
+    "changed_clear_to_block": true,
+    "comment_count": 10,
+    "created_at": "2026-08-25T19:21:25Z",
+    "cutoff": "2026-08-25T19:51:49+00:00",
+    "draft": false,
+    "fixed_rc": 1,
+    "fixed_reason": "1 of 1 refusal marker(s) were APPROVED OVER BY ANOTHER MEMBER of the refusing lane, which is not a discharge: claude@7a75909c92ae refused by <unsigned>, approved over by hermit-007. A lane is its MEMBERS, not one authority -- `approval_binding` scores this same shape REFUSED since dev-hermit#193, and an approval whose issuer cannot be read discharges nothing at all. The member who objected has not spoken again. To discharge one, THAT member posts APPROVED-AT at a later sha, or CHANGES-REQUESTED-WITHDRAWN-AT at the sha it refused.",
+    "head": "f0e86fa9a69d6b25700a0612fab7ffc1cb4a6bb1",
+    "marker_rows": [
+      {
+        "id": 5415605469,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "claude",
+        "sha": "7a75909c92ae87d0f02fdf4aa6d9aad55ceda82f"
+      }
+    ],
+    "merged_at": "2026-08-25T19:51:49Z",
+    "number": 2611,
+    "old_rc": 0,
+    "old_reason": "1 of 1 refusal marker(s) were APPROVED OVER BY ANOTHER MEMBER of the refusing lane, which is not a discharge: claude@7a75909c92ae refused by <unsigned>, approved over by hermit-007. A lane is its MEMBERS, not one authority -- `approval_binding` scores this same shape REFUSED since dev-hermit#193, and an approval whose issuer cannot be read discharges nothing at all. The member who objected has not spoken again. To discharge one, THAT member posts APPROVED-AT at a later sha, or CHANGES-REQUESTED-WITHDRAWN-AT at the sha it refused.",
+    "state": "MERGED",
+    "title": "[hermit2, hermit-011, unresolved, devbig014, role=impl] Refuse a checker that nothing schedules",
+    "url": "https://github.com/rrnewton/hermit/pull/2611"
+  },
+  {
+    "changed_clear_to_block": false,
+    "comment_count": 12,
+    "created_at": "2026-08-25T19:33:11Z",
+    "cutoff": "2026-08-25T21:26:56+00:00",
+    "draft": false,
+    "fixed_rc": 0,
+    "fixed_reason": "2 refusal(s) named 200ec9355545 and every refusing lane posted CHANGES-REQUESTED-WITHDRAWN-AT at the same head",
+    "head": "200ec9355545085b38bef3aff82a7d3598fef83c",
+    "marker_rows": [
+      {
+        "id": 5416140976,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "claude",
+        "sha": "200ec9355545085b38bef3aff82a7d3598fef83c"
+      },
+      {
+        "id": 5416343237,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "codex",
+        "sha": "200ec9355545085b38bef3aff82a7d3598fef83c"
+      },
+      {
+        "id": 5416927569,
+        "kind": "CHANGES-REQUESTED-WITHDRAWN-AT",
+        "lane": "claude",
+        "sha": "200ec9355545085b38bef3aff82a7d3598fef83c"
+      },
+      {
+        "id": 5416983395,
+        "kind": "CHANGES-REQUESTED-WITHDRAWN-AT",
+        "lane": "codex",
+        "sha": "200ec9355545085b38bef3aff82a7d3598fef83c"
+      }
+    ],
+    "merged_at": "2026-08-25T21:26:56Z",
+    "number": 2613,
+    "old_rc": 0,
+    "old_reason": "2 refusal(s) named 200ec9355545 and every refusing lane posted CHANGES-REQUESTED-WITHDRAWN-AT at the same head",
+    "state": "MERGED",
+    "title": "mem_race: fix the provenance, keep the race \u2014 UnsafeCell instead of a cast pointer",
+    "url": "https://github.com/rrnewton/hermit/pull/2613"
+  },
+  {
+    "changed_clear_to_block": false,
+    "comment_count": 6,
+    "created_at": "2026-08-25T20:00:20Z",
+    "cutoff": "2026-08-25T20:09:18+00:00",
+    "draft": false,
+    "fixed_rc": 0,
+    "fixed_reason": "no refusal marker of any shape on this pull request",
+    "head": "050dc55671c88c4c22f8b063e728c4f6f801423a",
+    "marker_rows": [],
+    "merged_at": "2026-08-25T20:09:18Z",
+    "number": 2614,
+    "old_rc": 0,
+    "old_reason": "no refusal marker of any shape on this pull request",
+    "state": "MERGED",
+    "title": "lint-checks: say \"cannot determine from here\" instead of manufacturing a main-red from a worktree",
+    "url": "https://github.com/rrnewton/hermit/pull/2614"
+  },
+  {
+    "changed_clear_to_block": true,
+    "comment_count": 10,
+    "created_at": "2026-08-25T20:13:18Z",
+    "cutoff": "2026-08-25T23:42:03+00:00",
+    "draft": false,
+    "fixed_rc": 1,
+    "fixed_reason": "1 of 2 refusal marker(s) were APPROVED OVER BY ANOTHER MEMBER of the refusing lane, which is not a discharge: claude@072ed7b4d2a7 refused by hermit-004, approved over by hermit-007. A lane is its MEMBERS, not one authority -- `approval_binding` scores this same shape REFUSED since dev-hermit#193, and an approval whose issuer cannot be read discharges nothing at all. The member who objected has not spoken again. To discharge one, THAT member posts APPROVED-AT at a later sha, or CHANGES-REQUESTED-WITHDRAWN-AT at the sha it refused. 1 were answered by the refusing MEMBER approving a later sha.",
+    "head": "5dbb961a89efb71a7ab76a7e9bfdcaa9e11fd504",
+    "marker_rows": [
+      {
+        "id": 5416429398,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "claude",
+        "sha": "072ed7b4d2a74b9533c20f654f844d53df52214f"
+      },
+      {
+        "id": 5416525763,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "codex",
+        "sha": "072ed7b4d2a74b9533c20f654f844d53df52214f"
+      }
+    ],
+    "merged_at": "2026-08-25T23:42:03Z",
+    "number": 2615,
+    "old_rc": 0,
+    "old_reason": "1 of 2 refusal marker(s) were APPROVED OVER BY ANOTHER MEMBER of the refusing lane, which is not a discharge: claude@072ed7b4d2a7 refused by hermit-004, approved over by hermit-007. A lane is its MEMBERS, not one authority -- `approval_binding` scores this same shape REFUSED since dev-hermit#193, and an approval whose issuer cannot be read discharges nothing at all. The member who objected has not spoken again. To discharge one, THAT member posts APPROVED-AT at a later sha, or CHANGES-REQUESTED-WITHDRAWN-AT at the sha it refused. 1 were answered by the refusing MEMBER approving a later sha.",
+    "state": "MERGED",
+    "title": "Close the GIT_CONFIG environ race at the chokepoint, after two narrower fixes measurably did not",
+    "url": "https://github.com/rrnewton/hermit/pull/2615"
+  },
+  {
+    "changed_clear_to_block": false,
+    "comment_count": 1,
+    "created_at": "2026-08-25T20:17:40Z",
+    "cutoff": "2026-08-25T20:52:31+00:00",
+    "draft": false,
+    "fixed_rc": 0,
+    "fixed_reason": "no refusal marker of any shape on this pull request",
+    "head": "2a694ec53705cdaa927877e32512eea039640799",
+    "marker_rows": [],
+    "merged_at": "2026-08-25T20:52:31Z",
+    "number": 2616,
+    "old_rc": 0,
+    "old_reason": "no refusal marker of any shape on this pull request",
+    "state": "MERGED",
+    "title": "Fix forward: the no_result declared 16 checkers and 3 assertions unevaluated when they are not",
+    "url": "https://github.com/rrnewton/hermit/pull/2616"
+  },
+  {
+    "changed_clear_to_block": false,
+    "comment_count": 7,
+    "created_at": "2026-08-25T20:26:01Z",
+    "cutoff": "2026-08-25T20:45:51+00:00",
+    "draft": false,
+    "fixed_rc": 0,
+    "fixed_reason": "no refusal marker of any shape on this pull request",
+    "head": "40e21265be946f843059693ea548d246499359b3",
+    "marker_rows": [],
+    "merged_at": "2026-08-25T20:45:51Z",
+    "number": 2617,
+    "old_rc": 0,
+    "old_reason": "no refusal marker of any shape on this pull request",
+    "state": "MERGED",
+    "title": "[hermit2, hermit-007, unresolved, devbig014, role=impl] Make the DBT wait-status brackets run: 0 tests to 2 on the default build",
+    "url": "https://github.com/rrnewton/hermit/pull/2617"
+  },
+  {
+    "changed_clear_to_block": true,
+    "comment_count": 7,
+    "created_at": "2026-08-25T20:33:27Z",
+    "cutoff": "2026-08-26T00:47:47+00:00",
+    "draft": false,
+    "fixed_rc": 1,
+    "fixed_reason": "1 of 1 refusal marker(s) were APPROVED OVER BY ANOTHER MEMBER of the refusing lane, which is not a discharge: claude@8c26f05dcf81 refused by <unsigned>, approved over by hermit-006. A lane is its MEMBERS, not one authority -- `approval_binding` scores this same shape REFUSED since dev-hermit#193, and an approval whose issuer cannot be read discharges nothing at all. The member who objected has not spoken again. To discharge one, THAT member posts APPROVED-AT at a later sha, or CHANGES-REQUESTED-WITHDRAWN-AT at the sha it refused.",
+    "head": "34edf129564d147bfc286e351dd1f775146566e6",
+    "marker_rows": [
+      {
+        "id": 5416716654,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "claude",
+        "sha": "8c26f05dcf817acccf1d7166dfa6fa41629f49fb"
+      }
+    ],
+    "merged_at": "2026-08-26T00:47:47Z",
+    "number": 2618,
+    "old_rc": 0,
+    "old_reason": "1 of 1 refusal marker(s) were APPROVED OVER BY ANOTHER MEMBER of the refusing lane, which is not a discharge: claude@8c26f05dcf81 refused by <unsigned>, approved over by hermit-006. A lane is its MEMBERS, not one authority -- `approval_binding` scores this same shape REFUSED since dev-hermit#193, and an approval whose issuer cannot be read discharges nothing at all. The member who objected has not spoken again. To discharge one, THAT member posts APPROVED-AT at a later sha, or CHANGES-REQUESTED-WITHDRAWN-AT at the sha it refused.",
+    "state": "MERGED",
+    "title": "[hermit2, hermit-007, unresolved, devbig014, role=impl] Emit the heap DETLOG record from the observed program break",
+    "url": "https://github.com/rrnewton/hermit/pull/2618"
+  },
+  {
+    "changed_clear_to_block": false,
+    "comment_count": 2,
+    "created_at": "2026-08-25T20:38:15Z",
+    "cutoff": "2026-08-25T21:00:41+00:00",
+    "draft": false,
+    "fixed_rc": 0,
+    "fixed_reason": "no refusal marker of any shape on this pull request",
+    "head": "cd924028dcf6bb7417dbbf6375d5a3f03a7093ff",
+    "marker_rows": [],
+    "merged_at": "2026-08-25T21:00:41Z",
+    "number": 2619,
+    "old_rc": 0,
+    "old_reason": "no refusal marker of any shape on this pull request",
+    "state": "MERGED",
+    "title": "Split from #2335: preserve the BPF FILE_OPEN retry measurement, the one finding it holds alone",
+    "url": "https://github.com/rrnewton/hermit/pull/2619"
+  },
+  {
+    "changed_clear_to_block": false,
+    "comment_count": 4,
+    "created_at": "2026-08-25T20:38:31Z",
+    "cutoff": "2026-08-26T00:19:44+00:00",
+    "draft": false,
+    "fixed_rc": 1,
+    "fixed_reason": "1 refusal(s) bound to the exact head 0c0212b30c74 from lane(s) codex that have not withdrawn. A refusal naming the head blocks regardless of any lane's approval, and a withdrawal from a DIFFERENT lane does not discharge it. This clears when the AUTHOR pushes a fix (the sha moves and the refusal stops naming the head) or the refusing lane itself posts CHANGES-REQUESTED-WITHDRAWN-AT at this sha.",
+    "head": "0c0212b30c74a26a5a65c947d1e4649f930f343c",
+    "marker_rows": [
+      {
+        "id": 5417596800,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "codex",
+        "sha": "0c0212b30c74a26a5a65c947d1e4649f930f343c"
+      }
+    ],
+    "merged_at": "2026-08-26T00:19:44Z",
+    "number": 2620,
+    "old_rc": 1,
+    "old_reason": "1 refusal(s) bound to the exact head 0c0212b30c74 from lane(s) codex that have not withdrawn. A refusal naming the head blocks regardless of any lane's approval, and a withdrawal from a DIFFERENT lane does not discharge it. This clears when the AUTHOR pushes a fix (the sha moves and the refusal stops naming the head) or the refusing lane itself posts CHANGES-REQUESTED-WITHDRAWN-AT at this sha.",
+    "state": "MERGED",
+    "title": "[hermit2, hermit-007, unresolved, devbig014, role=impl] Defend the DBT --log-file refusal, so reversing it has to be deliberate",
+    "url": "https://github.com/rrnewton/hermit/pull/2620"
+  },
+  {
+    "changed_clear_to_block": false,
+    "comment_count": 4,
+    "created_at": "2026-08-25T20:38:41Z",
+    "cutoff": "2026-08-26T00:17:41+00:00",
+    "draft": false,
+    "fixed_rc": 0,
+    "fixed_reason": "no refusal marker of any shape on this pull request",
+    "head": "58cc34883a84ee9d6b0780b708e4a328c098904f",
+    "marker_rows": [],
+    "merged_at": "2026-08-26T00:17:41Z",
+    "number": 2621,
+    "old_rc": 0,
+    "old_reason": "no refusal marker of any shape on this pull request",
+    "state": "MERGED",
+    "title": "Split from #2335: make the QEMU demo earn the L2 it prints (NEEDS A GREEN DEMO RUN BEFORE LANDING)",
+    "url": "https://github.com/rrnewton/hermit/pull/2621"
+  },
+  {
+    "changed_clear_to_block": true,
+    "comment_count": 12,
+    "created_at": "2026-08-25T20:41:32Z",
+    "cutoff": "2026-08-26T00:08:15+00:00",
+    "draft": false,
+    "fixed_rc": 1,
+    "fixed_reason": "2 of 2 refusal marker(s) were APPROVED OVER BY ANOTHER MEMBER of the refusing lane, which is not a discharge: claude@f581a7e4a8a8 refused by hermit-014, approved over by hermit-004, claude@f581a7e4a8a8 refused by <unsigned>, approved over by hermit-004. A lane is its MEMBERS, not one authority -- `approval_binding` scores this same shape REFUSED since dev-hermit#193, and an approval whose issuer cannot be read discharges nothing at all. The member who objected has not spoken again. To discharge one, THAT member posts APPROVED-AT at a later sha, or CHANGES-REQUESTED-WITHDRAWN-AT at the sha it refused.",
+    "head": "fa8d5eef4730c3b54db61e11a34ec4d4b794f168",
+    "marker_rows": [
+      {
+        "id": 5416742383,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "claude",
+        "sha": "f581a7e4a8a863d6cef5729c0d2d83cd21a78c84"
+      },
+      {
+        "id": 5417100702,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "claude",
+        "sha": "f581a7e4a8a863d6cef5729c0d2d83cd21a78c84"
+      }
+    ],
+    "merged_at": "2026-08-26T00:08:15Z",
+    "number": 2622,
+    "old_rc": 0,
+    "old_reason": "2 of 2 refusal marker(s) were APPROVED OVER BY ANOTHER MEMBER of the refusing lane, which is not a discharge: claude@f581a7e4a8a8 refused by hermit-014, approved over by hermit-004, claude@f581a7e4a8a8 refused by <unsigned>, approved over by hermit-004. A lane is its MEMBERS, not one authority -- `approval_binding` scores this same shape REFUSED since dev-hermit#193, and an approval whose issuer cannot be read discharges nothing at all. The member who objected has not spoken again. To discharge one, THAT member posts APPROVED-AT at a later sha, or CHANGES-REQUESTED-WITHDRAWN-AT at the sha it refused.",
+    "state": "MERGED",
+    "title": "[hermit2, hermit-011, unresolved, devbig014, role=impl] check-checker-scheduling: stop counting prose and quoted names as scheduling",
+    "url": "https://github.com/rrnewton/hermit/pull/2622"
+  },
+  {
+    "changed_clear_to_block": false,
+    "comment_count": 3,
+    "created_at": "2026-08-25T20:47:21Z",
+    "cutoff": "2026-08-25T21:23:24+00:00",
+    "draft": false,
+    "fixed_rc": 0,
+    "fixed_reason": "no refusal marker of any shape on this pull request",
+    "head": "0f53760e198180ef55ce39647629205d9c911728",
+    "marker_rows": [],
+    "merged_at": "2026-08-25T21:23:24Z",
+    "number": 2623,
+    "old_rc": 0,
+    "old_reason": "no refusal marker of any shape on this pull request",
+    "state": "MERGED",
+    "title": "Make the signalled-guest bracket run on the default build: 0 runs to 1",
+    "url": "https://github.com/rrnewton/hermit/pull/2623"
+  },
+  {
+    "changed_clear_to_block": false,
+    "comment_count": 5,
+    "created_at": "2026-08-25T20:48:08Z",
+    "cutoff": "2026-08-25T21:18:12+00:00",
+    "draft": false,
+    "fixed_rc": 0,
+    "fixed_reason": "no refusal marker of any shape on this pull request",
+    "head": "745680e7295a976c5501597eb673d22058e4f022",
+    "marker_rows": [],
+    "merged_at": "2026-08-25T21:18:12Z",
+    "number": 2624,
+    "old_rc": 0,
+    "old_reason": "no refusal marker of any shape on this pull request",
+    "state": "MERGED",
+    "title": "Pin the fourth divergence coordinate to storage, and stop a divergence that located nothing reading as never-compared",
+    "url": "https://github.com/rrnewton/hermit/pull/2624"
+  },
+  {
+    "changed_clear_to_block": true,
+    "comment_count": 25,
+    "created_at": "2026-08-25T20:59:50Z",
+    "cutoff": "2026-08-25T23:09:29+00:00",
+    "draft": false,
+    "fixed_rc": 1,
+    "fixed_reason": "2 of 3 refusal marker(s) were APPROVED OVER BY ANOTHER MEMBER of the refusing lane, which is not a discharge: claude@06c3f3735fbf refused by <unsigned>, approved over by <unsigned>/hermit-012, claude@f013ac4b1a31 refused by <unsigned>, approved over by hermit-012. A lane is its MEMBERS, not one authority -- `approval_binding` scores this same shape REFUSED since dev-hermit#193, and an approval whose issuer cannot be read discharges nothing at all. The member who objected has not spoken again. To discharge one, THAT member posts APPROVED-AT at a later sha, or CHANGES-REQUESTED-WITHDRAWN-AT at the sha it refused. 1 other refusal(s) WERE answered by a withdrawal.",
+    "head": "6457ba0acfb4eda22cf5fd617412c6b734b92801",
+    "marker_rows": [
+      {
+        "id": 5416825495,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "claude",
+        "sha": "06c3f3735fbf1f72a1dcbb3b7488e914f8b200b0"
+      },
+      {
+        "id": 5417453728,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "claude",
+        "sha": "f013ac4b1a3155ebede568c5667f915a4c8ff6b1"
+      },
+      {
+        "id": 5417519496,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "claude",
+        "sha": "f013ac4b1a3155ebede568c5667f915a4c8ff6b1"
+      },
+      {
+        "id": 5417606538,
+        "kind": "CHANGES-REQUESTED-WITHDRAWN-AT",
+        "lane": "claude",
+        "sha": "f013ac4b1a3155ebede568c5667f915a4c8ff6b1"
+      }
+    ],
+    "merged_at": "2026-08-25T23:09:29Z",
+    "number": 2625,
+    "old_rc": 0,
+    "old_reason": "2 of 3 refusal marker(s) were APPROVED OVER BY ANOTHER MEMBER of the refusing lane, which is not a discharge: claude@06c3f3735fbf refused by <unsigned>, approved over by <unsigned>/hermit-012, claude@f013ac4b1a31 refused by <unsigned>, approved over by hermit-012. A lane is its MEMBERS, not one authority -- `approval_binding` scores this same shape REFUSED since dev-hermit#193, and an approval whose issuer cannot be read discharges nothing at all. The member who objected has not spoken again. To discharge one, THAT member posts APPROVED-AT at a later sha, or CHANGES-REQUESTED-WITHDRAWN-AT at the sha it refused. 1 other refusal(s) WERE answered by a withdrawal.",
+    "state": "MERGED",
+    "title": "cli tests: export the exit-code constant instead of copying it, and name what the helper pins",
+    "url": "https://github.com/rrnewton/hermit/pull/2625"
+  },
+  {
+    "changed_clear_to_block": false,
+    "comment_count": 4,
+    "created_at": "2026-08-25T21:00:40Z",
+    "cutoff": "2026-08-25T22:11:06+00:00",
+    "draft": false,
+    "fixed_rc": 0,
+    "fixed_reason": "no refusal marker of any shape on this pull request",
+    "head": "58ac7d2ad070b8e94e4b362cf1805338e29f461f",
+    "marker_rows": [],
+    "merged_at": "2026-08-25T22:11:06Z",
+    "number": 2626,
+    "old_rc": 0,
+    "old_reason": "no refusal marker of any shape on this pull request",
+    "state": "MERGED",
+    "title": "[hermit2, hermit-011, unresolved, devbig014, role=impl] Anchor the no-result marker match, and self-test the classification it drives",
+    "url": "https://github.com/rrnewton/hermit/pull/2626"
+  },
+  {
+    "changed_clear_to_block": true,
+    "comment_count": 10,
+    "created_at": "2026-08-25T21:08:50Z",
+    "cutoff": "2026-08-25T23:55:13+00:00",
+    "draft": false,
+    "fixed_rc": 1,
+    "fixed_reason": "1 of 1 refusal marker(s) were APPROVED OVER BY ANOTHER MEMBER of the refusing lane, which is not a discharge: claude@bdf63019bb5f refused by hermit-dbg, approved over by hermit-005/<unsigned>. A lane is its MEMBERS, not one authority -- `approval_binding` scores this same shape REFUSED since dev-hermit#193, and an approval whose issuer cannot be read discharges nothing at all. The member who objected has not spoken again. To discharge one, THAT member posts APPROVED-AT at a later sha, or CHANGES-REQUESTED-WITHDRAWN-AT at the sha it refused.",
+    "head": "3ac53f8917aba80877a40a877817a54b261e6370",
+    "marker_rows": [
+      {
+        "id": 5416942700,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "claude",
+        "sha": "bdf63019bb5f53b584a1fdebd540cb1b46ef07b7"
+      }
+    ],
+    "merged_at": "2026-08-25T23:55:13Z",
+    "number": 2627,
+    "old_rc": 0,
+    "old_reason": "1 of 1 refusal marker(s) were APPROVED OVER BY ANOTHER MEMBER of the refusing lane, which is not a discharge: claude@bdf63019bb5f refused by hermit-dbg, approved over by hermit-005/<unsigned>. A lane is its MEMBERS, not one authority -- `approval_binding` scores this same shape REFUSED since dev-hermit#193, and an approval whose issuer cannot be read discharges nothing at all. The member who objected has not spoken again. To discharge one, THAT member posts APPROVED-AT at a later sha, or CHANGES-REQUESTED-WITHDRAWN-AT at the sha it refused.",
+    "state": "MERGED",
+    "title": "Render an ERROR that located nothing as itself, instead of as an all-green run",
+    "url": "https://github.com/rrnewton/hermit/pull/2627"
+  },
+  {
+    "changed_clear_to_block": true,
+    "comment_count": 16,
+    "created_at": "2026-08-25T21:22:30Z",
+    "cutoff": "2026-08-25T22:59:39+00:00",
+    "draft": false,
+    "fixed_rc": 1,
+    "fixed_reason": "1 of 5 refusal marker(s) were APPROVED OVER BY ANOTHER MEMBER of the refusing lane, which is not a discharge: codex@9660a3e6aa30 refused by hermit-001, approved over by codex-rev-2628. A lane is its MEMBERS, not one authority -- `approval_binding` scores this same shape REFUSED since dev-hermit#193, and an approval whose issuer cannot be read discharges nothing at all. The member who objected has not spoken again. To discharge one, THAT member posts APPROVED-AT at a later sha, or CHANGES-REQUESTED-WITHDRAWN-AT at the sha it refused. 4 were answered by the refusing MEMBER approving a later sha.",
+    "head": "c4eb4cabc3f56593548f11d6c7e0c2c6ae4aec6f",
+    "marker_rows": [
+      {
+        "id": 5417420176,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "codex",
+        "sha": "9660a3e6aa30ade790f62b60039dee0dd0c9af2d"
+      },
+      {
+        "id": 5417537356,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "codex",
+        "sha": "9660a3e6aa30ade790f62b60039dee0dd0c9af2d"
+      },
+      {
+        "id": 5417861654,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "codex",
+        "sha": "3e4a5c3173962feaa3807ed8eea59517d8502d5b"
+      },
+      {
+        "id": 5417901970,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "claude",
+        "sha": "3e4a5c3173962feaa3807ed8eea59517d8502d5b"
+      },
+      {
+        "id": 5417976909,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "codex",
+        "sha": "e3e0b3ae7c620fcaa0ee01ce84b879d4478a988a"
+      }
+    ],
+    "merged_at": "2026-08-25T22:59:39Z",
+    "number": 2628,
+    "old_rc": 0,
+    "old_reason": "1 of 5 refusal marker(s) were APPROVED OVER BY ANOTHER MEMBER of the refusing lane, which is not a discharge: codex@9660a3e6aa30 refused by hermit-001, approved over by codex-rev-2628. A lane is its MEMBERS, not one authority -- `approval_binding` scores this same shape REFUSED since dev-hermit#193, and an approval whose issuer cannot be read discharges nothing at all. The member who objected has not spoken again. To discharge one, THAT member posts APPROVED-AT at a later sha, or CHANGES-REQUESTED-WITHDRAWN-AT at the sha it refused. 4 were answered by the refusing MEMBER approving a later sha.",
+    "state": "MERGED",
+    "title": "Pin all six of record's container-child classification sites, from one",
+    "url": "https://github.com/rrnewton/hermit/pull/2628"
+  },
+  {
+    "changed_clear_to_block": false,
+    "comment_count": 1,
+    "created_at": "2026-08-25T21:29:52Z",
+    "cutoff": "2026-08-25T22:02:35+00:00",
+    "draft": false,
+    "fixed_rc": 0,
+    "fixed_reason": "no refusal marker of any shape on this pull request",
+    "head": "10357a7b583bc6c491b090c0688ff585aae529da",
+    "marker_rows": [],
+    "merged_at": "2026-08-25T22:02:35Z",
+    "number": 2629,
+    "old_rc": 0,
+    "old_reason": "no refusal marker of any shape on this pull request",
+    "state": "MERGED",
+    "title": "[hermit2, hermit-003, unresolved, devbig014, role=impl] Say why a KVM working directory under /tmp cannot be resolved",
+    "url": "https://github.com/rrnewton/hermit/pull/2629"
+  },
+  {
+    "changed_clear_to_block": false,
+    "comment_count": 1,
+    "created_at": "2026-08-25T21:39:15Z",
+    "cutoff": "2026-08-25T22:10:16+00:00",
+    "draft": false,
+    "fixed_rc": 0,
+    "fixed_reason": "no refusal marker of any shape on this pull request",
+    "head": "cf73fb8715bbf1e6fc5db9a179da08524212238e",
+    "marker_rows": [],
+    "merged_at": "2026-08-25T22:10:16Z",
+    "number": 2630,
+    "old_rc": 0,
+    "old_reason": "no refusal marker of any shape on this pull request",
+    "state": "MERGED",
+    "title": "Restore the negative class assertion on the pre-dispatch arm",
+    "url": "https://github.com/rrnewton/hermit/pull/2630"
+  },
+  {
+    "changed_clear_to_block": false,
+    "comment_count": 3,
+    "created_at": "2026-08-25T22:07:31Z",
+    "cutoff": "2026-08-25T23:59:46+00:00",
+    "draft": false,
+    "fixed_rc": 0,
+    "fixed_reason": "no refusal marker of any shape on this pull request",
+    "head": "d5eb11d5a7c1070a130fe6f9643d63bbc3a9cb2c",
+    "marker_rows": [],
+    "merged_at": "2026-08-25T23:59:46Z",
+    "number": 2631,
+    "old_rc": 0,
+    "old_reason": "no refusal marker of any shape on this pull request",
+    "state": "MERGED",
+    "title": "[hermit2, hermit-003, unresolved, devbig014, role=impl] Schedule the 22 run_kvm_ cli tests, which no node ran (6 of 22 red, 16 verified \u2014 do not merge until triaged)",
+    "url": "https://github.com/rrnewton/hermit/pull/2631"
+  },
+  {
+    "changed_clear_to_block": true,
+    "comment_count": 8,
+    "created_at": "2026-08-25T22:10:04Z",
+    "cutoff": "2026-08-26T03:10:01+00:00",
+    "draft": false,
+    "fixed_rc": 1,
+    "fixed_reason": "1 of 1 refusal marker(s) were OUTRUN, not answered: codex@135f1db7b7e5 by codex-rev-2632. The sha moved so they no longer name be00ac49206a, and NO entitled withdrawal says the objection was addressed. This gate cannot tell a reviewer who read the delta from an author who pushed past the objection, and it will not assert the benign reading. For a named refusal, the refusing member posts CHANGES-REQUESTED-WITHDRAWN-AT at the sha it refused; an unsigned refusal is retired by an exact `RETIRES <comment-id>`.",
+    "head": "be00ac49206a11adfaccea2e50169606e6fd677e",
+    "marker_rows": [
+      {
+        "id": 5419274704,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "codex",
+        "sha": "135f1db7b7e525d470a13334af28efd5fcdcd9d9"
+      }
+    ],
+    "merged_at": "2026-08-26T03:10:01Z",
+    "number": 2632,
+    "old_rc": 0,
+    "old_reason": "1 of 1 refusal marker(s) were OUTRUN, not answered: codex@135f1db7b7e5 by codex-rev-2632. The sha moved so they no longer name be00ac49206a, and NO entitled withdrawal says the objection was addressed. This gate cannot tell a reviewer who read the delta from an author who pushed past the objection, and it will not assert the benign reading. For a named refusal, the refusing member posts CHANGES-REQUESTED-WITHDRAWN-AT at the sha it refused; an unsigned refusal is retired by an exact `RETIRES <comment-id>`.",
+    "state": "MERGED",
+    "title": "One code for one condition: a missing guest program is 127 however it was spelled",
+    "url": "https://github.com/rrnewton/hermit/pull/2632"
+  },
+  {
+    "changed_clear_to_block": true,
+    "comment_count": 7,
+    "created_at": "2026-08-25T22:20:33Z",
+    "cutoff": "2026-08-26T00:00:48+00:00",
+    "draft": false,
+    "fixed_rc": 1,
+    "fixed_reason": "1 of 1 refusal marker(s) were APPROVED OVER BY ANOTHER MEMBER of the refusing lane, which is not a discharge: claude@59a3c013438f refused by hermit-006, approved over by hermit-020. A lane is its MEMBERS, not one authority -- `approval_binding` scores this same shape REFUSED since dev-hermit#193, and an approval whose issuer cannot be read discharges nothing at all. The member who objected has not spoken again. To discharge one, THAT member posts APPROVED-AT at a later sha, or CHANGES-REQUESTED-WITHDRAWN-AT at the sha it refused.",
+    "head": "e353a8ed34d6d8011c36ac6e502206292387cb39",
+    "marker_rows": [
+      {
+        "id": 5418500663,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "claude",
+        "sha": "59a3c013438f3fae724f8bc5483ae7349c3b594f"
+      }
+    ],
+    "merged_at": "2026-08-26T00:00:48Z",
+    "number": 2633,
+    "old_rc": 0,
+    "old_reason": "1 of 1 refusal marker(s) were APPROVED OVER BY ANOTHER MEMBER of the refusing lane, which is not a discharge: claude@59a3c013438f refused by hermit-006, approved over by hermit-020. A lane is its MEMBERS, not one authority -- `approval_binding` scores this same shape REFUSED since dev-hermit#193, and an approval whose issuer cannot be read discharges nothing at all. The member who objected has not spoken again. To discharge one, THAT member posts APPROVED-AT at a later sha, or CHANGES-REQUESTED-WITHDRAWN-AT at the sha it refused.",
+    "state": "MERGED",
+    "title": "Give the container-child fault injector a site identity, so record's two replay-stage sites can be tested",
+    "url": "https://github.com/rrnewton/hermit/pull/2633"
+  },
+  {
+    "changed_clear_to_block": false,
+    "comment_count": 2,
+    "created_at": "2026-08-25T22:35:21Z",
+    "cutoff": "2026-08-26T00:04:53+00:00",
+    "draft": false,
+    "fixed_rc": 0,
+    "fixed_reason": "no refusal marker of any shape on this pull request",
+    "head": "f1082a6da4a9c37981c96cee0cb81ddd51dce8e0",
+    "marker_rows": [],
+    "merged_at": "2026-08-26T00:04:53Z",
+    "number": 2634,
+    "old_rc": 0,
+    "old_reason": "no refusal marker of any shape on this pull request",
+    "state": "MERGED",
+    "title": "detcore-dbt: give setpgid a copied-child policy instead of a silent native escape",
+    "url": "https://github.com/rrnewton/hermit/pull/2634"
+  },
+  {
+    "changed_clear_to_block": false,
+    "comment_count": 2,
+    "created_at": "2026-08-25T22:45:25Z",
+    "cutoff": "2026-08-25T23:35:42+00:00",
+    "draft": false,
+    "fixed_rc": 0,
+    "fixed_reason": "no refusal marker of any shape on this pull request",
+    "head": "d927a51ab5f0e90a3ce40ecfff34e67f306964d0",
+    "marker_rows": [],
+    "merged_at": "2026-08-25T23:35:42Z",
+    "number": 2635,
+    "old_rc": 0,
+    "old_reason": "no refusal marker of any shape on this pull request",
+    "state": "MERGED",
+    "title": "[hermit2, hermit-003, unresolved, devbig014, role=impl] Treat ESRCH from signal_guest as the expected race it is, not a panic that hangs the scheduler",
+    "url": "https://github.com/rrnewton/hermit/pull/2635"
+  },
+  {
+    "changed_clear_to_block": false,
+    "comment_count": 1,
+    "created_at": "2026-08-25T22:52:46Z",
+    "cutoff": "2026-08-25T23:18:08+00:00",
+    "draft": false,
+    "fixed_rc": 0,
+    "fixed_reason": "no refusal marker of any shape on this pull request",
+    "head": "2db11a6988387191eed0d34be49bfe687f741976",
+    "marker_rows": [],
+    "merged_at": "2026-08-25T23:18:08Z",
+    "number": 2636,
+    "old_rc": 0,
+    "old_reason": "no refusal marker of any shape on this pull request",
+    "state": "MERGED",
+    "title": "validate: make the failure headline name everything it counts, and report nodes that have no class at all",
+    "url": "https://github.com/rrnewton/hermit/pull/2636"
+  },
+  {
+    "changed_clear_to_block": true,
+    "comment_count": 33,
+    "created_at": "2026-08-25T23:01:24Z",
+    "cutoff": "2026-08-27T07:30:07+00:00",
+    "draft": false,
+    "fixed_rc": 1,
+    "fixed_reason": "4 of 5 refusal marker(s) were APPROVED OVER BY ANOTHER MEMBER of the refusing lane, which is not a discharge: claude@f2664bf2d150 refused by hermit-dbg, approved over by hermit-106/hermit-106/hermit-106/hermit-106/hermit-106, codex@b2399fddf0ee refused by codex-rev-2637, approved over by <unsigned>/hermit-127, codex@b2399fddf0ee refused by hermit-007, approved over by <unsigned>/hermit-127, claude@556d6351356f refused by <unsigned>, approved over by hermit-106/hermit-106/hermit-106/hermit-106/hermit-106. A lane is its MEMBERS, not one authority -- `approval_binding` scores this same shape REFUSED since dev-hermit#193, and an approval whose issuer cannot be read discharges nothing at all. The member who objected has not spoken again. To discharge one, THAT member posts APPROVED-AT at a later sha, or CHANGES-REQUESTED-WITHDRAWN-AT at the sha it refused. 1 other refusal(s) WERE answered by a withdrawal.",
+    "head": "95c5adeede661ec73b59ddd32f7f221e36ccbdb5",
+    "marker_rows": [
+      {
+        "id": 5419784218,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "claude",
+        "sha": "f2664bf2d1501ef056a454fea0ea2a60138bb701"
+      },
+      {
+        "id": 5419872704,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "codex",
+        "sha": "b2399fddf0eef43d0a619100b36021273ef119f6"
+      },
+      {
+        "id": 5419899101,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "codex",
+        "sha": "b2399fddf0eef43d0a619100b36021273ef119f6"
+      },
+      {
+        "id": 5428693547,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "claude",
+        "sha": "556d6351356fe7dd3b4e4c92402c3b7f0c770875"
+      },
+      {
+        "id": 5430961808,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "codex",
+        "sha": "556d6351356fe7dd3b4e4c92402c3b7f0c770875"
+      },
+      {
+        "id": 5435729849,
+        "kind": "CHANGES-REQUESTED-WITHDRAWN-AT",
+        "lane": "codex",
+        "sha": "95c5adeede661ec73b59ddd32f7f221e36ccbdb5"
+      },
+      {
+        "id": 5435752410,
+        "kind": "CHANGES-REQUESTED-WITHDRAWN-AT",
+        "lane": "codex",
+        "sha": "556d6351356fe7dd3b4e4c92402c3b7f0c770875"
+      }
+    ],
+    "merged_at": "2026-08-27T07:30:07Z",
+    "number": 2637,
+    "old_rc": 0,
+    "old_reason": "4 of 5 refusal marker(s) were APPROVED OVER BY ANOTHER MEMBER of the refusing lane, which is not a discharge: claude@f2664bf2d150 refused by hermit-dbg, approved over by hermit-106/hermit-106/hermit-106/hermit-106/hermit-106, codex@b2399fddf0ee refused by codex-rev-2637, approved over by <unsigned>/hermit-127, codex@b2399fddf0ee refused by hermit-007, approved over by <unsigned>/hermit-127, claude@556d6351356f refused by <unsigned>, approved over by hermit-106/hermit-106/hermit-106/hermit-106/hermit-106. A lane is its MEMBERS, not one authority -- `approval_binding` scores this same shape REFUSED since dev-hermit#193, and an approval whose issuer cannot be read discharges nothing at all. The member who objected has not spoken again. To discharge one, THAT member posts APPROVED-AT at a later sha, or CHANGES-REQUESTED-WITHDRAWN-AT at the sha it refused. 1 other refusal(s) WERE answered by a withdrawal.",
+    "state": "MERGED",
+    "title": "[hermit2, hermit-011, unresolved, devbig014, role=impl] A refused validate child is a could-not-evaluate, not a failed stop path",
+    "url": "https://github.com/rrnewton/hermit/pull/2637"
+  },
+  {
+    "changed_clear_to_block": false,
+    "comment_count": 7,
+    "created_at": "2026-08-25T23:06:37Z",
+    "cutoff": "2026-08-26T00:27:52+00:00",
+    "draft": false,
+    "fixed_rc": 0,
+    "fixed_reason": "no refusal marker of any shape on this pull request",
+    "head": "f758a298323d243369978d15dbd96adfc9b4309a",
+    "marker_rows": [],
+    "merged_at": "2026-08-26T00:27:52Z",
+    "number": 2638,
+    "old_rc": 0,
+    "old_reason": "no refusal marker of any shape on this pull request",
+    "state": "MERGED",
+    "title": "Report an unstaged LiteInst runtime as a no_result, not as a product failure",
+    "url": "https://github.com/rrnewton/hermit/pull/2638"
+  },
+  {
+    "changed_clear_to_block": false,
+    "comment_count": 2,
+    "created_at": "2026-08-25T23:13:20Z",
+    "cutoff": "2026-08-25T23:22:16+00:00",
+    "draft": false,
+    "fixed_rc": 0,
+    "fixed_reason": "no refusal marker of any shape on this pull request",
+    "head": "bc99ec4d76e06fc14b74421bdcf727efbd0356ee",
+    "marker_rows": [],
+    "merged_at": "2026-08-25T23:22:16Z",
+    "number": 2639,
+    "old_rc": 0,
+    "old_reason": "no refusal marker of any shape on this pull request",
+    "state": "MERGED",
+    "title": "Stop telling the next reader hermit has no bug here, because it does",
+    "url": "https://github.com/rrnewton/hermit/pull/2639"
+  },
+  {
+    "changed_clear_to_block": false,
+    "comment_count": 1,
+    "created_at": "2026-08-25T23:17:18Z",
+    "cutoff": "2026-08-25T23:24:23+00:00",
+    "draft": false,
+    "fixed_rc": 0,
+    "fixed_reason": "no refusal marker of any shape on this pull request",
+    "head": "1864325f2e04bc03a8de83a026cd1a105b7bb014",
+    "marker_rows": [],
+    "merged_at": "2026-08-25T23:24:23Z",
+    "number": 2640,
+    "old_rc": 0,
+    "old_reason": "no refusal marker of any shape on this pull request",
+    "state": "MERGED",
+    "title": "Record the LiteInst pin beside every staged copy, not just one",
+    "url": "https://github.com/rrnewton/hermit/pull/2640"
+  },
+  {
+    "changed_clear_to_block": true,
+    "comment_count": 10,
+    "created_at": "2026-08-25T23:24:58Z",
+    "cutoff": "2026-08-25T23:42:01+00:00",
+    "draft": false,
+    "fixed_rc": 1,
+    "fixed_reason": "1 of 1 refusal marker(s) were APPROVED OVER BY ANOTHER MEMBER of the refusing lane, which is not a discharge: codex@198fa68adf32 refused by codex-rev-2641, approved over by hermit-001/codex-rev-2641b. A lane is its MEMBERS, not one authority -- `approval_binding` scores this same shape REFUSED since dev-hermit#193, and an approval whose issuer cannot be read discharges nothing at all. The member who objected has not spoken again. To discharge one, THAT member posts APPROVED-AT at a later sha, or CHANGES-REQUESTED-WITHDRAWN-AT at the sha it refused.",
+    "head": "c62c998a33d6863fbb392bbbdb7c1c0e1ccb724a",
+    "marker_rows": [
+      {
+        "id": 5418374888,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "codex",
+        "sha": "198fa68adf326c909f44d9b03fab2bc25d1eb0fd"
+      }
+    ],
+    "merged_at": "2026-08-25T23:42:01Z",
+    "number": 2641,
+    "old_rc": 0,
+    "old_reason": "1 of 1 refusal marker(s) were APPROVED OVER BY ANOTHER MEMBER of the refusing lane, which is not a discharge: codex@198fa68adf32 refused by codex-rev-2641, approved over by hermit-001/codex-rev-2641b. A lane is its MEMBERS, not one authority -- `approval_binding` scores this same shape REFUSED since dev-hermit#193, and an approval whose issuer cannot be read discharges nothing at all. The member who objected has not spoken again. To discharge one, THAT member posts APPROVED-AT at a later sha, or CHANGES-REQUESTED-WITHDRAWN-AT at the sha it refused.",
+    "state": "MERGED",
+    "title": "P0 main-red: take the literal home path out of the KVM cwd test",
+    "url": "https://github.com/rrnewton/hermit/pull/2641"
+  },
+  {
+    "changed_clear_to_block": false,
+    "comment_count": 3,
+    "created_at": "2026-08-25T23:27:42Z",
+    "cutoff": "2026-08-25T23:50:29+00:00",
+    "draft": false,
+    "fixed_rc": 0,
+    "fixed_reason": "no refusal marker of any shape on this pull request",
+    "head": "65b5defbadc981daa4494082560a1ab5f327dd47",
+    "marker_rows": [],
+    "merged_at": "2026-08-25T23:50:29Z",
+    "number": 2643,
+    "old_rc": 0,
+    "old_reason": "no refusal marker of any shape on this pull request",
+    "state": "MERGED",
+    "title": "[hermit2, hermit-003, unresolved, devbig014, role=impl] Assert the confirmation string hermit actually prints, in six KVM cli tests",
+    "url": "https://github.com/rrnewton/hermit/pull/2643"
+  },
+  {
+    "changed_clear_to_block": false,
+    "comment_count": 5,
+    "created_at": "2026-08-25T23:29:21Z",
+    "cutoff": "2026-08-26T00:00:11+00:00",
+    "draft": false,
+    "fixed_rc": 0,
+    "fixed_reason": "1 refusal(s) named d6e1204ce841 and every refusing lane posted CHANGES-REQUESTED-WITHDRAWN-AT at the same head",
+    "head": "d6e1204ce84178ac0f07c78fdd58e65b9acd5e72",
+    "marker_rows": [
+      {
+        "id": 5418502188,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "claude",
+        "sha": "d6e1204ce84178ac0f07c78fdd58e65b9acd5e72"
+      },
+      {
+        "id": 5418562559,
+        "kind": "CHANGES-REQUESTED-WITHDRAWN-AT",
+        "lane": "claude",
+        "sha": "d6e1204ce84178ac0f07c78fdd58e65b9acd5e72"
+      }
+    ],
+    "merged_at": "2026-08-26T00:00:11Z",
+    "number": 2644,
+    "old_rc": 0,
+    "old_reason": "1 refusal(s) named d6e1204ce841 and every refusing lane posted CHANGES-REQUESTED-WITHDRAWN-AT at the same head",
+    "state": "MERGED",
+    "title": "hermit-cli: warn at the constant that stress_suite Some(1) is the GUEST signal",
+    "url": "https://github.com/rrnewton/hermit/pull/2644"
+  },
+  {
+    "changed_clear_to_block": false,
+    "comment_count": 2,
+    "created_at": "2026-08-25T23:41:16Z",
+    "cutoff": "2026-08-26T00:28:26+00:00",
+    "draft": false,
+    "fixed_rc": 0,
+    "fixed_reason": "no refusal marker of any shape on this pull request",
+    "head": "e55190d2e97a0423f9712c53fee6133b470118e2",
+    "marker_rows": [],
+    "merged_at": "2026-08-26T00:28:26Z",
+    "number": 2645,
+    "old_rc": 0,
+    "old_reason": "no refusal marker of any shape on this pull request",
+    "state": "MERGED",
+    "title": "Close the silent-cap class: the other two refusals now name their remainder",
+    "url": "https://github.com/rrnewton/hermit/pull/2645"
+  },
+  {
+    "changed_clear_to_block": false,
+    "comment_count": 3,
+    "created_at": "2026-08-25T23:47:07Z",
+    "cutoff": "2026-08-25T23:56:00+00:00",
+    "draft": false,
+    "fixed_rc": 0,
+    "fixed_reason": "no refusal marker of any shape on this pull request",
+    "head": "2650686d55e96ae23746969c0733f248100236ad",
+    "marker_rows": [],
+    "merged_at": "2026-08-25T23:56:00Z",
+    "number": 2647,
+    "old_rc": 0,
+    "old_reason": "no refusal marker of any shape on this pull request",
+    "state": "MERGED",
+    "title": "P0 main-red: take the measurement host out of two provenance records in check-reverie-pin.rs",
+    "url": "https://github.com/rrnewton/hermit/pull/2647"
+  },
+  {
+    "changed_clear_to_block": false,
+    "comment_count": 3,
+    "created_at": "2026-08-25T23:51:43Z",
+    "cutoff": "2026-08-26T00:12:42+00:00",
+    "draft": false,
+    "fixed_rc": 0,
+    "fixed_reason": "no refusal marker of any shape on this pull request",
+    "head": "226bdaef0abb2d4f167d487053cdff0bd0069d56",
+    "marker_rows": [],
+    "merged_at": "2026-08-26T00:12:42Z",
+    "number": 2649,
+    "old_rc": 0,
+    "old_reason": "no refusal marker of any shape on this pull request",
+    "state": "MERGED",
+    "title": "check-reverie-pin: the git-env lock fixes reproduced flakiness, not a theory",
+    "url": "https://github.com/rrnewton/hermit/pull/2649"
+  },
+  {
+    "changed_clear_to_block": false,
+    "comment_count": 0,
+    "created_at": "2026-08-25T23:51:57Z",
+    "cutoff": "2026-08-25T23:55:57+00:00",
+    "draft": false,
+    "fixed_rc": 0,
+    "fixed_reason": "no refusal marker of any shape on this pull request",
+    "head": "27b26c65b0746234185ae324e59503cd89c264eb",
+    "marker_rows": [],
+    "merged_at": "2026-08-25T23:55:57Z",
+    "number": 2650,
+    "old_rc": 0,
+    "old_reason": "no refusal marker of any shape on this pull request",
+    "state": "MERGED",
+    "title": "[hermit2, hermit-003, unresolved, devbig014, role=impl] Emit the guest's output when verification diverges, instead of discarding it",
+    "url": "https://github.com/rrnewton/hermit/pull/2650"
+  },
+  {
+    "changed_clear_to_block": false,
+    "comment_count": 1,
+    "created_at": "2026-08-26T00:03:38Z",
+    "cutoff": "2026-08-26T00:18:56+00:00",
+    "draft": false,
+    "fixed_rc": 0,
+    "fixed_reason": "no refusal marker of any shape on this pull request",
+    "head": "05a8e569251d36a2349e71bf597708a5206f32c9",
+    "marker_rows": [],
+    "merged_at": "2026-08-26T00:18:56Z",
+    "number": 2651,
+    "old_rc": 0,
+    "old_reason": "no refusal marker of any shape on this pull request",
+    "state": "MERGED",
+    "title": "Account for the ten unledgered test binaries, and schedule the auditor that finds them",
+    "url": "https://github.com/rrnewton/hermit/pull/2651"
+  },
+  {
+    "changed_clear_to_block": false,
+    "comment_count": 3,
+    "created_at": "2026-08-26T00:04:40Z",
+    "cutoff": "2026-08-26T00:10:25+00:00",
+    "draft": false,
+    "fixed_rc": 0,
+    "fixed_reason": "no refusal marker of any shape on this pull request",
+    "head": "fc46bce3e6c0780b4b3cf64aeccd66a3dc0a1ad9",
+    "marker_rows": [],
+    "merged_at": "2026-08-26T00:10:25Z",
+    "number": 2652,
+    "old_rc": 0,
+    "old_reason": "no refusal marker of any shape on this pull request",
+    "state": "MERGED",
+    "title": "[hermit2, hermit-triage, unresolved, devbig014, role=impl] P0 main-red: take the measurement host out of the privileged DAG description",
+    "url": "https://github.com/rrnewton/hermit/pull/2652"
+  },
+  {
+    "changed_clear_to_block": false,
+    "comment_count": 4,
+    "created_at": "2026-08-26T00:06:10Z",
+    "cutoff": "2026-08-26T00:30:38+00:00",
+    "draft": false,
+    "fixed_rc": 0,
+    "fixed_reason": "no refusal marker of any shape on this pull request",
+    "head": "4b70416375d24c6384d294561411ad2c9fa5f093",
+    "marker_rows": [],
+    "merged_at": "2026-08-26T00:30:38Z",
+    "number": 2653,
+    "old_rc": 0,
+    "old_reason": "no refusal marker of any shape on this pull request",
+    "state": "MERGED",
+    "title": "Put the erased measurement hosts back where the checker permits them",
+    "url": "https://github.com/rrnewton/hermit/pull/2653"
+  },
+  {
+    "changed_clear_to_block": false,
+    "comment_count": 0,
+    "created_at": "2026-08-26T00:07:51Z",
+    "cutoff": "2026-08-26T00:11:11+00:00",
+    "draft": false,
+    "fixed_rc": 0,
+    "fixed_reason": "no refusal marker of any shape on this pull request",
+    "head": "0d28812a024ab7675ac22edd753533c4905a9a8b",
+    "marker_rows": [],
+    "merged_at": "2026-08-26T00:11:11Z",
+    "number": 2654,
+    "old_rc": 0,
+    "old_reason": "no refusal marker of any shape on this pull request",
+    "state": "MERGED",
+    "title": "Bound the gdbserver accept on the client's liveness, and reap the gdb it leaked",
+    "url": "https://github.com/rrnewton/hermit/pull/2654"
+  },
+  {
+    "changed_clear_to_block": true,
+    "comment_count": 4,
+    "created_at": "2026-08-26T00:08:32Z",
+    "cutoff": "2026-08-26T00:30:20+00:00",
+    "draft": false,
+    "fixed_rc": 1,
+    "fixed_reason": "1 of 2 refusal marker(s) were OUTRUN, not answered: codex@5dfa90844573 by hermit-001. The sha moved so they no longer name 8bc27644cbe3, and NO entitled withdrawal says the objection was addressed. This gate cannot tell a reviewer who read the delta from an author who pushed past the objection, and it will not assert the benign reading. For a named refusal, the refusing member posts CHANGES-REQUESTED-WITHDRAWN-AT at the sha it refused; an unsigned refusal is retired by an exact `RETIRES <comment-id>`. 1 of 2 refusal marker(s) were APPROVED OVER BY ANOTHER MEMBER of the refusing lane, which is not a discharge: claude@5dfa90844573 refused by <unsigned>, approved over by hermit-triage. A lane is its MEMBERS, not one authority -- `approval_binding` scores this same shape REFUSED since dev-hermit#193, and an approval whose issuer cannot be read discharges nothing at all. The member who objected has not spoken again. To discharge one, THAT member posts APPROVED-AT at a later sha, or CHANGES-REQUESTED-WITHDRAWN-AT at the sha it refused.",
+    "head": "8bc27644cbe31ae7836fbd51ead7c27fdc5fbabc",
+    "marker_rows": [
+      {
+        "id": 5418774197,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "codex",
+        "sha": "5dfa908445736252e77d6578fdbeac1c5c1d5caa"
+      },
+      {
+        "id": 5418787644,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "claude",
+        "sha": "5dfa908445736252e77d6578fdbeac1c5c1d5caa"
+      }
+    ],
+    "merged_at": "2026-08-26T00:30:20Z",
+    "number": 2655,
+    "old_rc": 0,
+    "old_reason": "1 of 2 refusal marker(s) were OUTRUN, not answered: codex@5dfa90844573 by hermit-001. The sha moved so they no longer name 8bc27644cbe3, and NO entitled withdrawal says the objection was addressed. This gate cannot tell a reviewer who read the delta from an author who pushed past the objection, and it will not assert the benign reading. For a named refusal, the refusing member posts CHANGES-REQUESTED-WITHDRAWN-AT at the sha it refused; an unsigned refusal is retired by an exact `RETIRES <comment-id>`. 1 of 2 refusal marker(s) were APPROVED OVER BY ANOTHER MEMBER of the refusing lane, which is not a discharge: claude@5dfa90844573 refused by <unsigned>, approved over by hermit-triage. A lane is its MEMBERS, not one authority -- `approval_binding` scores this same shape REFUSED since dev-hermit#193, and an approval whose issuer cannot be read discharges nothing at all. The member who objected has not spoken again. To discharge one, THAT member posts APPROVED-AT at a later sha, or CHANGES-REQUESTED-WITHDRAWN-AT at the sha it refused.",
+    "state": "MERGED",
+    "title": "Refuse a bare exit-status integer in a test, for the four values that changed meaning",
+    "url": "https://github.com/rrnewton/hermit/pull/2655"
+  },
+  {
+    "changed_clear_to_block": false,
+    "comment_count": 2,
+    "created_at": "2026-08-26T00:11:59Z",
+    "cutoff": "2026-08-26T00:23:41+00:00",
+    "draft": false,
+    "fixed_rc": 0,
+    "fixed_reason": "no refusal marker of any shape on this pull request",
+    "head": "7ad8aa4cb3b3b76f6f36ed1cf44b4cbf995fc401",
+    "marker_rows": [],
+    "merged_at": "2026-08-26T00:23:41Z",
+    "number": 2656,
+    "old_rc": 0,
+    "old_reason": "no refusal marker of any shape on this pull request",
+    "state": "MERGED",
+    "title": "P0 main-red, mine: a runner prefix inside a string literal is not an invocation",
+    "url": "https://github.com/rrnewton/hermit/pull/2656"
+  },
+  {
+    "changed_clear_to_block": false,
+    "comment_count": 4,
+    "created_at": "2026-08-26T00:13:57Z",
+    "cutoff": "2026-08-26T00:20:37+00:00",
+    "draft": false,
+    "fixed_rc": 0,
+    "fixed_reason": "no refusal marker of any shape on this pull request",
+    "head": "339d1bb865e47dcf58f0ea33af6d3d53068dc535",
+    "marker_rows": [],
+    "merged_at": "2026-08-26T00:20:37Z",
+    "number": 2657,
+    "old_rc": 0,
+    "old_reason": "no refusal marker of any shape on this pull request",
+    "state": "MERGED",
+    "title": "MAIN RED: no-result fixture reads as scheduling, so #2622's allowlist entry went stale on merge",
+    "url": "https://github.com/rrnewton/hermit/pull/2657"
+  },
+  {
+    "changed_clear_to_block": false,
+    "comment_count": 3,
+    "created_at": "2026-08-26T00:27:13Z",
+    "cutoff": "2026-08-26T00:42:34+00:00",
+    "draft": false,
+    "fixed_rc": 0,
+    "fixed_reason": "no refusal marker of any shape on this pull request",
+    "head": "49818137e4cc7098599fc53705b8eb0c25d111d7",
+    "marker_rows": [],
+    "merged_at": "2026-08-26T00:42:34Z",
+    "number": 2659,
+    "old_rc": 0,
+    "old_reason": "no refusal marker of any shape on this pull request",
+    "state": "MERGED",
+    "title": "Report a deliberate fail-closed shutdown as a REFUSAL, not as an internal failure",
+    "url": "https://github.com/rrnewton/hermit/pull/2659"
+  },
+  {
+    "changed_clear_to_block": false,
+    "comment_count": 4,
+    "created_at": "2026-08-26T00:29:12Z",
+    "cutoff": "2026-08-26T00:45:44+00:00",
+    "draft": false,
+    "fixed_rc": 0,
+    "fixed_reason": "no refusal marker of any shape on this pull request",
+    "head": "13e84160584239122e957ffffa17064a8475daed",
+    "marker_rows": [],
+    "merged_at": "2026-08-26T00:45:44Z",
+    "number": 2660,
+    "old_rc": 0,
+    "old_reason": "no refusal marker of any shape on this pull request",
+    "state": "MERGED",
+    "title": "gdb watcher: finish() could block forever, and a healthy teardown was reported as a failed connect",
+    "url": "https://github.com/rrnewton/hermit/pull/2660"
+  },
+  {
+    "changed_clear_to_block": false,
+    "comment_count": 2,
+    "created_at": "2026-08-26T00:30:52Z",
+    "cutoff": "2026-08-26T00:45:23+00:00",
+    "draft": false,
+    "fixed_rc": 0,
+    "fixed_reason": "no refusal marker of any shape on this pull request",
+    "head": "129d50068bad6448ebeb1676716808e89d8039c4",
+    "marker_rows": [],
+    "merged_at": "2026-08-26T00:45:23Z",
+    "number": 2661,
+    "old_rc": 0,
+    "old_reason": "no refusal marker of any shape on this pull request",
+    "state": "MERGED",
+    "title": "check-checker-scheduling: allow flags between a runner and its path",
+    "url": "https://github.com/rrnewton/hermit/pull/2661"
+  },
+  {
+    "changed_clear_to_block": false,
+    "comment_count": 1,
+    "created_at": "2026-08-26T00:34:04Z",
+    "cutoff": "2026-08-26T00:56:03+00:00",
+    "draft": false,
+    "fixed_rc": 0,
+    "fixed_reason": "no refusal marker of any shape on this pull request",
+    "head": "fa89359bd07ff36fa9e7d2971612513b79ab8dab",
+    "marker_rows": [],
+    "merged_at": "2026-08-26T00:56:03Z",
+    "number": 2663,
+    "old_rc": 0,
+    "old_reason": "no refusal marker of any shape on this pull request",
+    "state": "MERGED",
+    "title": "Declare where a measurement host belongs, instead of relying on the scanner not looking",
+    "url": "https://github.com/rrnewton/hermit/pull/2663"
+  },
+  {
+    "changed_clear_to_block": false,
+    "comment_count": 3,
+    "created_at": "2026-08-26T00:39:15Z",
+    "cutoff": "2026-08-26T00:55:04+00:00",
+    "draft": false,
+    "fixed_rc": 0,
+    "fixed_reason": "no refusal marker of any shape on this pull request",
+    "head": "bd83f07e325e1eea18570af8f5da6d74cc0d7d0a",
+    "marker_rows": [],
+    "merged_at": "2026-08-26T00:55:04Z",
+    "number": 2664,
+    "old_rc": 0,
+    "old_reason": "no refusal marker of any shape on this pull request",
+    "state": "MERGED",
+    "title": "Pin the exit-status matcher with named tests, so narrowing it cannot read as progress",
+    "url": "https://github.com/rrnewton/hermit/pull/2664"
+  },
+  {
+    "changed_clear_to_block": false,
+    "comment_count": 2,
+    "created_at": "2026-08-26T00:52:22Z",
+    "cutoff": "2026-08-26T01:12:55+00:00",
+    "draft": false,
+    "fixed_rc": 0,
+    "fixed_reason": "no refusal marker of any shape on this pull request",
+    "head": "a61b27fbf238ce85d65dcefec3876d1e478cb533",
+    "marker_rows": [],
+    "merged_at": "2026-08-26T01:12:55Z",
+    "number": 2667,
+    "old_rc": 0,
+    "old_reason": "no refusal marker of any shape on this pull request",
+    "state": "MERGED",
+    "title": "check-checker-scheduling: an -o output path directly after the runner read as an invocation",
+    "url": "https://github.com/rrnewton/hermit/pull/2667"
+  },
+  {
+    "changed_clear_to_block": false,
+    "comment_count": 24,
+    "created_at": "2026-08-26T00:52:30Z",
+    "cutoff": "2026-08-26T17:03:25+00:00",
+    "draft": false,
+    "fixed_rc": 2,
+    "fixed_reason": "1 refusal marker(s) carry no readable sha, so whether they bind 6a839d935210 cannot be decided. Refusing: a marker that cannot be bound is not a marker that does not apply. Re-post it as 'CHANGES-REQUESTED-AT: <lane> <40-hex>' on its own line, or retire it with a 'CHANGES-REQUESTED-WITHDRAWN-AT' comment carrying 'RETIRES <the refusing comment id>' -- a bare or lane-only withdrawal CANNOT retire a marker that names no head.",
+    "head": "6a839d9352106bb3296800f27ce602bba32c463e",
+    "marker_rows": [
+      {
+        "id": 5419105798,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "claude",
+        "sha": "e87188be829227f83efe5c1356926570b09335b0"
+      },
+      {
+        "id": 5419143984,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "claude",
+        "sha": "e87188be829227f83efe5c1356926570b09335b0"
+      },
+      {
+        "id": 5419148321,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "claude",
+        "sha": "56e3c4d5e90eaf85a9a1b34cbaeaafbbb727812a"
+      },
+      {
+        "id": 5419390920,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": null,
+        "sha": null
+      },
+      {
+        "id": 5419390920,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "codex",
+        "sha": "aeda16ff7de3b93ed9f7c2c1184e998980958cfd"
+      },
+      {
+        "id": 5419398129,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "claude",
+        "sha": "aeda16ff7de3b93ed9f7c2c1184e998980958cfd"
+      },
+      {
+        "id": 5419564455,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "claude",
+        "sha": "d260a7a4a5ad16388d2d978cbd2a07cada586738"
+      },
+      {
+        "id": 5419982944,
+        "kind": "CHANGES-REQUESTED-WITHDRAWN-AT",
+        "lane": "claude",
+        "sha": "aeda16ff7de3b93ed9f7c2c1184e998980958cfd"
+      },
+      {
+        "id": 5420378960,
+        "kind": "CHANGES-REQUESTED-WITHDRAWN-AT",
+        "lane": "claude",
+        "sha": "d260a7a4a5ad16388d2d978cbd2a07cada586738"
+      }
+    ],
+    "merged_at": "2026-08-26T17:03:25Z",
+    "number": 2668,
+    "old_rc": 2,
+    "old_reason": "1 refusal marker(s) carry no readable sha, so whether they bind 6a839d935210 cannot be decided. Refusing: a marker that cannot be bound is not a marker that does not apply. Re-post it as 'CHANGES-REQUESTED-AT: <lane> <40-hex>' on its own line, or retire it with a 'CHANGES-REQUESTED-WITHDRAWN-AT' comment carrying 'RETIRES <the refusing comment id>' -- a bare or lane-only withdrawal CANNOT retire a marker that names no head.",
+    "state": "MERGED",
+    "title": "The verify harness leaked one bit of fd state between its two runs, and blamed the guest",
+    "url": "https://github.com/rrnewton/hermit/pull/2668"
+  },
+  {
+    "changed_clear_to_block": false,
+    "comment_count": 11,
+    "created_at": "2026-08-26T00:53:03Z",
+    "cutoff": "2026-08-26T01:20:10+00:00",
+    "draft": false,
+    "fixed_rc": 0,
+    "fixed_reason": "1 refusal marker(s) present, none names e6079aa2adbb, and every one was ANSWERED -- the refusing MEMBER itself posted APPROVED-AT later in the record. That is a STRONGER clearing form than a withdrawal: the member who objected re-read a later sha and approved it, rather than saying never mind. It is still not evidence the finding was addressed -- an approval granted on a summary that drifted from the objection produces this exact readout.",
+    "head": "e6079aa2adbb206e982fa351c915e6203ea416b4",
+    "marker_rows": [
+      {
+        "id": 5419132051,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "claude",
+        "sha": "267c49e262d074e38c858c66ad22edca87ebe02f"
+      }
+    ],
+    "merged_at": "2026-08-26T01:20:10Z",
+    "number": 2669,
+    "old_rc": 0,
+    "old_reason": "1 refusal marker(s) present, none names e6079aa2adbb, and every one was ANSWERED -- the refusing MEMBER itself posted APPROVED-AT later in the record. That is a STRONGER clearing form than a withdrawal: the member who objected re-read a later sha and approved it, rather than saying never mind. It is still not evidence the finding was addressed -- an approval granted on a summary that drifted from the objection produces this exact readout.",
+    "state": "MERGED",
+    "title": "Restore the success-path wait: hermit stopped waiting for the gdb it spawned, twice, by two different routes",
+    "url": "https://github.com/rrnewton/hermit/pull/2669"
+  },
+  {
+    "changed_clear_to_block": true,
+    "comment_count": 17,
+    "created_at": "2026-08-26T00:53:29Z",
+    "cutoff": "2026-08-27T09:35:31+00:00",
+    "draft": false,
+    "fixed_rc": 1,
+    "fixed_reason": "4 of 6 refusal marker(s) were OUTRUN, not answered: codex@370c3952bbb1 by hermit-005, codex@370c3952bbb1 by hermit-016, codex@370c3952bbb1 by hermit-015, codex@370c3952bbb1 by hermit-007. The sha moved so they no longer name 1b9fc5871a95, and NO entitled withdrawal says the objection was addressed. This gate cannot tell a reviewer who read the delta from an author who pushed past the objection, and it will not assert the benign reading. For a named refusal, the refusing member posts CHANGES-REQUESTED-WITHDRAWN-AT at the sha it refused; an unsigned refusal is retired by an exact `RETIRES <comment-id>`. 2 other refusal(s) WERE answered by a withdrawal. \u26a0\ufe0f A REFUSAL WITH NO READABLE ISSUER WAS RETIRED BY SOMEONE WHO MAY NOT BE ITS AUTHOR: comment 5420431960 names no issuer and was retired by hermit-121. `RETIRES` is the only exit for an unsigned refusal, so this is permitted -- but it is the weaker discharge and nothing here shows the objection was answered.",
+    "head": "1b9fc5871a95b8deceedcba5782e2a496bad1714",
+    "marker_rows": [
+      {
+        "id": 5419667113,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "claude",
+        "sha": "2ab838d349f76d20f1fd1c0cb0071af2610d58ef"
+      },
+      {
+        "id": 5420431960,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "codex",
+        "sha": "370c3952bbb1c67366b7b42631a569b4fcc0b42e"
+      },
+      {
+        "id": 5420450829,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "codex",
+        "sha": "370c3952bbb1c67366b7b42631a569b4fcc0b42e"
+      },
+      {
+        "id": 5420455389,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "codex",
+        "sha": "370c3952bbb1c67366b7b42631a569b4fcc0b42e"
+      },
+      {
+        "id": 5420456779,
+        "kind": "CHANGES-REQUESTED-WITHDRAWN-AT",
+        "lane": "claude",
+        "sha": "2ab838d349f76d20f1fd1c0cb0071af2610d58ef"
+      },
+      {
+        "id": 5420514948,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "codex",
+        "sha": "370c3952bbb1c67366b7b42631a569b4fcc0b42e"
+      },
+      {
+        "id": 5420530386,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "codex",
+        "sha": "370c3952bbb1c67366b7b42631a569b4fcc0b42e"
+      },
+      {
+        "id": 5437092153,
+        "kind": "CHANGES-REQUESTED-WITHDRAWN-AT",
+        "lane": "codex",
+        "sha": "370c3952bbb1c67366b7b42631a569b4fcc0b42e"
+      }
+    ],
+    "merged_at": "2026-08-27T09:35:31Z",
+    "number": 2670,
+    "old_rc": 0,
+    "old_reason": "4 of 6 refusal marker(s) were OUTRUN, not answered: codex@370c3952bbb1 by hermit-005, codex@370c3952bbb1 by hermit-016, codex@370c3952bbb1 by hermit-015, codex@370c3952bbb1 by hermit-007. The sha moved so they no longer name 1b9fc5871a95, and NO entitled withdrawal says the objection was addressed. This gate cannot tell a reviewer who read the delta from an author who pushed past the objection, and it will not assert the benign reading. For a named refusal, the refusing member posts CHANGES-REQUESTED-WITHDRAWN-AT at the sha it refused; an unsigned refusal is retired by an exact `RETIRES <comment-id>`. 2 other refusal(s) WERE answered by a withdrawal. \u26a0\ufe0f A REFUSAL WITH NO READABLE ISSUER WAS RETIRED BY SOMEONE WHO MAY NOT BE ITS AUTHOR: comment 5420431960 names no issuer and was retired by hermit-121. `RETIRES` is the only exit for an unsigned refusal, so this is permitted -- but it is the weaker discharge and nothing here shows the objection was answered.",
+    "state": "MERGED",
+    "title": "PR_SWEEP_VERDICTS: run the merge gate by hand, because nothing else runs it",
+    "url": "https://github.com/rrnewton/hermit/pull/2670"
+  },
+  {
+    "changed_clear_to_block": false,
+    "comment_count": 0,
+    "created_at": "2026-08-26T00:56:40Z",
+    "cutoff": "2026-08-26T01:21:04+00:00",
+    "draft": false,
+    "fixed_rc": 0,
+    "fixed_reason": "no refusal marker of any shape on this pull request",
+    "head": "419f5bbb7da68e33666155d6bb3207ca13ae3261",
+    "marker_rows": [],
+    "merged_at": "2026-08-26T01:21:04Z",
+    "number": 2671,
+    "old_rc": 0,
+    "old_reason": "no refusal marker of any shape on this pull request",
+    "state": "MERGED",
+    "title": "[hermit2, hermit-011, unresolved, devbig014, role=impl] test.cli_kvm: set its budget from measurement, so gate.manifest stops truncating every validate",
+    "url": "https://github.com/rrnewton/hermit/pull/2671"
+  },
+  {
+    "changed_clear_to_block": true,
+    "comment_count": 51,
+    "created_at": "2026-08-26T00:59:39Z",
+    "cutoff": "2026-08-26T17:46:19+00:00",
+    "draft": false,
+    "fixed_rc": 1,
+    "fixed_reason": "9 of 16 refusal marker(s) were OUTRUN, not answered: codex@6837ed241f8d by hermit-007, codex@01b431155a6c by hermit-007, codex@cbd8a8eaa934 by hermit-007, codex@d2152b6b2cac by hermit-007, codex@3a24a06c1b91 by codex-rev-2672, codex@3a24a06c1b91 by hermit-007, codex@e4f42b2faee9 by hermit-001, codex@e4f42b2faee9 by hermit-003, codex@e4f42b2faee9 by hermit-dbg. The sha moved so they no longer name 6ea965e40160, and NO entitled withdrawal says the objection was addressed. This gate cannot tell a reviewer who read the delta from an author who pushed past the objection, and it will not assert the benign reading. For a named refusal, the refusing member posts CHANGES-REQUESTED-WITHDRAWN-AT at the sha it refused; an unsigned refusal is retired by an exact `RETIRES <comment-id>`. 6 other refusal(s) WERE answered by a withdrawal. 1 were answered by the refusing MEMBER approving a later sha.",
+    "head": "6ea965e4016008cf064faab02412058c54e6ea26",
+    "marker_rows": [
+      {
+        "id": 5419198888,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "codex",
+        "sha": "6837ed241f8dc9bfb1b581e0318f1fd43e1f66c5"
+      },
+      {
+        "id": 5419213123,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "claude",
+        "sha": "6837ed241f8dc9bfb1b581e0318f1fd43e1f66c5"
+      },
+      {
+        "id": 5419277593,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "claude",
+        "sha": "6837ed241f8dc9bfb1b581e0318f1fd43e1f66c5"
+      },
+      {
+        "id": 5419401477,
+        "kind": "CHANGES-REQUESTED-WITHDRAWN-AT",
+        "lane": "claude",
+        "sha": "6837ed241f8dc9bfb1b581e0318f1fd43e1f66c5"
+      },
+      {
+        "id": 5419401477,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "codex",
+        "sha": "01b431155a6cbaab234d457b02c04f129a108bca"
+      },
+      {
+        "id": 5419549541,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "codex",
+        "sha": "cbd8a8eaa9340b066dacfa4e85b8cae36add172e"
+      },
+      {
+        "id": 5419722437,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "claude",
+        "sha": "bb7b0daef6babffa29f00337fa891af93154e347"
+      },
+      {
+        "id": 5419750766,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "codex",
+        "sha": "d2152b6b2cac6dfd6146a8231965a1992eef9e07"
+      },
+      {
+        "id": 5419754372,
+        "kind": "CHANGES-REQUESTED-WITHDRAWN-AT",
+        "lane": "claude",
+        "sha": "bb7b0daef6babffa29f00337fa891af93154e347"
+      },
+      {
+        "id": 5419758005,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "claude",
+        "sha": "d2152b6b2cac6dfd6146a8231965a1992eef9e07"
+      },
+      {
+        "id": 5420008973,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "codex",
+        "sha": "3a24a06c1b915c7ac43bf23088cd4bf263d65986"
+      },
+      {
+        "id": 5420022209,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "claude",
+        "sha": "3a24a06c1b915c7ac43bf23088cd4bf263d65986"
+      },
+      {
+        "id": 5420047976,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "codex",
+        "sha": "3a24a06c1b915c7ac43bf23088cd4bf263d65986"
+      },
+      {
+        "id": 5420134562,
+        "kind": "CHANGES-REQUESTED-WITHDRAWN-AT",
+        "lane": "claude",
+        "sha": "d2152b6b2cac6dfd6146a8231965a1992eef9e07"
+      },
+      {
+        "id": 5420285815,
+        "kind": "CHANGES-REQUESTED-WITHDRAWN-AT",
+        "lane": "codex",
+        "sha": "3a24a06c1b91"
+      },
+      {
+        "id": 5420310748,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "codex",
+        "sha": "76423fe8b8c68f1daea8746780a6d738dd3007ab"
+      },
+      {
+        "id": 5420310748,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "claude",
+        "sha": "76423fe8b8c68f1daea8746780a6d738dd3007ab"
+      },
+      {
+        "id": 5420456464,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "codex",
+        "sha": "e4f42b2faee9d98bc7812b5f35e2da2f37e9c1ae"
+      },
+      {
+        "id": 5420475946,
+        "kind": "CHANGES-REQUESTED-WITHDRAWN-AT",
+        "lane": "claude",
+        "sha": "76423fe8b8c68f1daea8746780a6d738dd3007ab"
+      },
+      {
+        "id": 5420475946,
+        "kind": "CHANGES-REQUESTED-WITHDRAWN-AT",
+        "lane": "codex",
+        "sha": "76423fe8b8c68f1daea8746780a6d738dd3007ab"
+      },
+      {
+        "id": 5420505470,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "codex",
+        "sha": "e4f42b2faee9d98bc7812b5f35e2da2f37e9c1ae"
+      },
+      {
+        "id": 5420563671,
+        "kind": "CHANGES-REQUESTED-WITHDRAWN-AT",
+        "lane": "claude",
+        "sha": "6837ed241f8dc9bfb1b581e0318f1fd43e1f66c5"
+      },
+      {
+        "id": 5420569720,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "codex",
+        "sha": "e4f42b2faee9d98bc7812b5f35e2da2f37e9c1ae"
+      }
+    ],
+    "merged_at": "2026-08-26T17:46:19Z",
+    "number": 2672,
+    "old_rc": 0,
+    "old_reason": "9 of 16 refusal marker(s) were OUTRUN, not answered: codex@6837ed241f8d by hermit-007, codex@01b431155a6c by hermit-007, codex@cbd8a8eaa934 by hermit-007, codex@d2152b6b2cac by hermit-007, codex@3a24a06c1b91 by codex-rev-2672, codex@3a24a06c1b91 by hermit-007, codex@e4f42b2faee9 by hermit-001, codex@e4f42b2faee9 by hermit-003, codex@e4f42b2faee9 by hermit-dbg. The sha moved so they no longer name 6ea965e40160, and NO entitled withdrawal says the objection was addressed. This gate cannot tell a reviewer who read the delta from an author who pushed past the objection, and it will not assert the benign reading. For a named refusal, the refusing member posts CHANGES-REQUESTED-WITHDRAWN-AT at the sha it refused; an unsigned refusal is retired by an exact `RETIRES <comment-id>`. 6 other refusal(s) WERE answered by a withdrawal. 1 were answered by the refusing MEMBER approving a later sha.",
+    "state": "MERGED",
+    "title": "[hermit2, hermit-020, unresolved, devbig014, role=impl] Split signal death from policy refusal, and test the claim hermit#2659 shipped untested",
+    "url": "https://github.com/rrnewton/hermit/pull/2672"
+  },
+  {
+    "changed_clear_to_block": false,
+    "comment_count": 1,
+    "created_at": "2026-08-26T01:03:13Z",
+    "cutoff": "2026-08-26T01:17:27+00:00",
+    "draft": false,
+    "fixed_rc": 0,
+    "fixed_reason": "no refusal marker of any shape on this pull request",
+    "head": "5b29e00b6c5999a2e6c717abb0d330244db17920",
+    "marker_rows": [],
+    "merged_at": "2026-08-26T01:17:27Z",
+    "number": 2673,
+    "old_rc": 0,
+    "old_reason": "no refusal marker of any shape on this pull request",
+    "state": "MERGED",
+    "title": "AGENTS.md claimed a merge gate that cannot fire; say what actually holds the line",
+    "url": "https://github.com/rrnewton/hermit/pull/2673"
+  },
+  {
+    "changed_clear_to_block": true,
+    "comment_count": 31,
+    "created_at": "2026-08-26T01:17:36Z",
+    "cutoff": "2026-08-27T09:59:57+00:00",
+    "draft": false,
+    "fixed_rc": 1,
+    "fixed_reason": "5 of 7 refusal marker(s) were APPROVED OVER BY ANOTHER MEMBER of the refusing lane, which is not a discharge: codex@95399b721002 refused by hermit-001, approved over by <unsigned>/hermit-127, codex@95399b721002 refused by codex-rev-2674, approved over by <unsigned>/hermit-127, codex@0bdbc8602831 refused by codex-rev-2674, approved over by <unsigned>/hermit-127, claude@0bdbc8602831 refused by hermit-dbg, approved over by hermit-006/<unsigned>, codex@f4fe6c545335 refused by codex-rev-2674b, approved over by <unsigned>/hermit-127. A lane is its MEMBERS, not one authority -- `approval_binding` scores this same shape REFUSED since dev-hermit#193, and an approval whose issuer cannot be read discharges nothing at all. The member who objected has not spoken again. To discharge one, THAT member posts APPROVED-AT at a later sha, or CHANGES-REQUESTED-WITHDRAWN-AT at the sha it refused. 2 other refusal(s) WERE answered by a withdrawal. \u26a0\ufe0f A REFUSAL WITH NO READABLE ISSUER WAS RETIRED BY SOMEONE WHO MAY NOT BE ITS AUTHOR: comment 5430040987 names no issuer and was retired by hermit-121; comment 5435849515 names no issuer and was retired by hermit-121. `RETIRES` is the only exit for an unsigned refusal, so this is permitted -- but it is the weaker discharge and nothing here shows the objection was answered.",
+    "head": "54d73ed1c81fe2dd43189fb2b3b613a55a677d97",
+    "marker_rows": [
+      {
+        "id": 5419353232,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "codex",
+        "sha": "95399b7210024a52d4458a223f03674ced2dce61"
+      },
+      {
+        "id": 5419509085,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "codex",
+        "sha": "95399b7210024a52d4458a223f03674ced2dce61"
+      },
+      {
+        "id": 5419572374,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "codex",
+        "sha": "0bdbc8602831f88a362cbf4be705aada58a92c38"
+      },
+      {
+        "id": 5419578901,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "claude",
+        "sha": "0bdbc8602831f88a362cbf4be705aada58a92c38"
+      },
+      {
+        "id": 5420231825,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "codex",
+        "sha": "f4fe6c545335e6da769e6945f5276d6668ae85de"
+      },
+      {
+        "id": 5430040987,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "claude",
+        "sha": "f4fe6c545335e6da769e6945f5276d6668ae85de"
+      },
+      {
+        "id": 5435849515,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "codex",
+        "sha": "c4b0926580c18792f738885340e9e93b686e2a70"
+      },
+      {
+        "id": 5437093535,
+        "kind": "CHANGES-REQUESTED-WITHDRAWN-AT",
+        "lane": "claude",
+        "sha": "f4fe6c545335e6da769e6945f5276d6668ae85de"
+      },
+      {
+        "id": 5437100333,
+        "kind": "CHANGES-REQUESTED-WITHDRAWN-AT",
+        "lane": "codex",
+        "sha": "c4b0926580c18792f738885340e9e93b686e2a70"
+      }
+    ],
+    "merged_at": "2026-08-27T09:59:57Z",
+    "number": 2674,
+    "old_rc": 0,
+    "old_reason": "5 of 7 refusal marker(s) were APPROVED OVER BY ANOTHER MEMBER of the refusing lane, which is not a discharge: codex@95399b721002 refused by hermit-001, approved over by <unsigned>/hermit-127, codex@95399b721002 refused by codex-rev-2674, approved over by <unsigned>/hermit-127, codex@0bdbc8602831 refused by codex-rev-2674, approved over by <unsigned>/hermit-127, claude@0bdbc8602831 refused by hermit-dbg, approved over by hermit-006/<unsigned>, codex@f4fe6c545335 refused by codex-rev-2674b, approved over by <unsigned>/hermit-127. A lane is its MEMBERS, not one authority -- `approval_binding` scores this same shape REFUSED since dev-hermit#193, and an approval whose issuer cannot be read discharges nothing at all. The member who objected has not spoken again. To discharge one, THAT member posts APPROVED-AT at a later sha, or CHANGES-REQUESTED-WITHDRAWN-AT at the sha it refused. 2 other refusal(s) WERE answered by a withdrawal. \u26a0\ufe0f A REFUSAL WITH NO READABLE ISSUER WAS RETIRED BY SOMEONE WHO MAY NOT BE ITS AUTHOR: comment 5430040987 names no issuer and was retired by hermit-121; comment 5435849515 names no issuer and was retired by hermit-121. `RETIRES` is the only exit for an unsigned refusal, so this is permitted -- but it is the weaker discharge and nothing here shows the objection was answered.",
+    "state": "MERGED",
+    "title": "check-checker-scheduling: classify Bash -D as no execution",
+    "url": "https://github.com/rrnewton/hermit/pull/2674"
+  },
+  {
+    "changed_clear_to_block": false,
+    "comment_count": 2,
+    "created_at": "2026-08-26T01:29:52Z",
+    "cutoff": "2026-08-26T01:34:21+00:00",
+    "draft": false,
+    "fixed_rc": 0,
+    "fixed_reason": "no refusal marker of any shape on this pull request",
+    "head": "651cceb032d371c05c28da967480c0040e703359",
+    "marker_rows": [],
+    "merged_at": "2026-08-26T01:34:21Z",
+    "number": 2675,
+    "old_rc": 0,
+    "old_reason": "no refusal marker of any shape on this pull request",
+    "state": "MERGED",
+    "title": "[hermit2, hermit-triage, unresolved, devbig014, role=impl] Run check-checker-scheduling's own self-test, which no job has ever executed",
+    "url": "https://github.com/rrnewton/hermit/pull/2675"
+  },
+  {
+    "changed_clear_to_block": true,
+    "comment_count": 19,
+    "created_at": "2026-08-26T01:33:22Z",
+    "cutoff": "2026-08-27T05:23:36+00:00",
+    "draft": false,
+    "fixed_rc": 1,
+    "fixed_reason": "3 of 5 refusal marker(s) were OUTRUN, not answered: claude@c665fccd698d by hermit-dbg, claude@d0085bb6bb38 by hermit-004, claude@d0085bb6bb38 by hermit-006. The sha moved so they no longer name 0a09a5ef35e4, and NO entitled withdrawal says the objection was addressed. This gate cannot tell a reviewer who read the delta from an author who pushed past the objection, and it will not assert the benign reading. For a named refusal, the refusing member posts CHANGES-REQUESTED-WITHDRAWN-AT at the sha it refused; an unsigned refusal is retired by an exact `RETIRES <comment-id>`. 2 of 5 refusal marker(s) were APPROVED OVER BY ANOTHER MEMBER of the refusing lane, which is not a discharge: codex@c665fccd698d refused by hermit-001, approved over by <unsigned>, codex@c665fccd698d refused by codex-rev-2676, approved over by <unsigned>. A lane is its MEMBERS, not one authority -- `approval_binding` scores this same shape REFUSED since dev-hermit#193, and an approval whose issuer cannot be read discharges nothing at all. The member who objected has not spoken again. To discharge one, THAT member posts APPROVED-AT at a later sha, or CHANGES-REQUESTED-WITHDRAWN-AT at the sha it refused.",
+    "head": "0a09a5ef35e457f28d0ba3a39c7f7dc017dc4a3e",
+    "marker_rows": [
+      {
+        "id": 5419462982,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "codex",
+        "sha": "c665fccd698d28f93ef65b960157ed40d8752331"
+      },
+      {
+        "id": 5419555207,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "codex",
+        "sha": "c665fccd698d28f93ef65b960157ed40d8752331"
+      },
+      {
+        "id": 5419562283,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "claude",
+        "sha": "c665fccd698d28f93ef65b960157ed40d8752331"
+      },
+      {
+        "id": 5419629673,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "claude",
+        "sha": "d0085bb6bb38420986ad8e3af2ae8d128b9c61f0"
+      },
+      {
+        "id": 5419643418,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "claude",
+        "sha": "d0085bb6bb38420986ad8e3af2ae8d128b9c61f0"
+      }
+    ],
+    "merged_at": "2026-08-27T05:23:36Z",
+    "number": 2676,
+    "old_rc": 0,
+    "old_reason": "3 of 5 refusal marker(s) were OUTRUN, not answered: claude@c665fccd698d by hermit-dbg, claude@d0085bb6bb38 by hermit-004, claude@d0085bb6bb38 by hermit-006. The sha moved so they no longer name 0a09a5ef35e4, and NO entitled withdrawal says the objection was addressed. This gate cannot tell a reviewer who read the delta from an author who pushed past the objection, and it will not assert the benign reading. For a named refusal, the refusing member posts CHANGES-REQUESTED-WITHDRAWN-AT at the sha it refused; an unsigned refusal is retired by an exact `RETIRES <comment-id>`. 2 of 5 refusal marker(s) were APPROVED OVER BY ANOTHER MEMBER of the refusing lane, which is not a discharge: codex@c665fccd698d refused by hermit-001, approved over by <unsigned>, codex@c665fccd698d refused by codex-rev-2676, approved over by <unsigned>. A lane is its MEMBERS, not one authority -- `approval_binding` scores this same shape REFUSED since dev-hermit#193, and an approval whose issuer cannot be read discharges nothing at all. The member who objected has not spoken again. To discharge one, THAT member posts APPROVED-AT at a later sha, or CHANGES-REQUESTED-WITHDRAWN-AT at the sha it refused.",
+    "state": "MERGED",
+    "title": "gdb watcher: name the connected-and-finished scenario as a cell, and say what it does not cover",
+    "url": "https://github.com/rrnewton/hermit/pull/2676"
+  },
+  {
+    "changed_clear_to_block": false,
+    "comment_count": 1,
+    "created_at": "2026-08-26T01:34:29Z",
+    "cutoff": "2026-08-26T01:37:12+00:00",
+    "draft": false,
+    "fixed_rc": 0,
+    "fixed_reason": "no refusal marker of any shape on this pull request",
+    "head": "7e3004480dbdec5acf640dad8975298deee58026",
+    "marker_rows": [],
+    "merged_at": "2026-08-26T01:37:12Z",
+    "number": 2677,
+    "old_rc": 0,
+    "old_reason": "no refusal marker of any shape on this pull request",
+    "state": "MERGED",
+    "title": "Name the fifth remedy \u2014 and a comment defending a lock said the race it prevents is harmless, which is false",
+    "url": "https://github.com/rrnewton/hermit/pull/2677"
+  },
+  {
+    "changed_clear_to_block": true,
+    "comment_count": 23,
+    "created_at": "2026-08-26T01:46:45Z",
+    "cutoff": "2026-08-26T17:29:50+00:00",
+    "draft": false,
+    "fixed_rc": 1,
+    "fixed_reason": "3 of 4 refusal marker(s) were APPROVED OVER BY ANOTHER MEMBER of the refusing lane, which is not a discharge: claude@a826d51a2116 refused by hermit-007, approved over by <unsigned>/hermit-dbg/hermit-015/<unsigned>, codex@a826d51a2116 refused by hermit-007, approved over by hermit-001, codex@8881f9cb4836 refused by codex-rev-2678, approved over by hermit-001. A lane is its MEMBERS, not one authority -- `approval_binding` scores this same shape REFUSED since dev-hermit#193, and an approval whose issuer cannot be read discharges nothing at all. The member who objected has not spoken again. To discharge one, THAT member posts APPROVED-AT at a later sha, or CHANGES-REQUESTED-WITHDRAWN-AT at the sha it refused. 1 were answered by the refusing MEMBER approving a later sha.",
+    "head": "4f54cd0b14505834d2f64a9b35a1f776f8479659",
+    "marker_rows": [
+      {
+        "id": 5419495465,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "claude",
+        "sha": "a826d51a21168d064743798808cdaf9850b27723"
+      },
+      {
+        "id": 5419522059,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "codex",
+        "sha": "a826d51a21168d064743798808cdaf9850b27723"
+      },
+      {
+        "id": 5419529451,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "codex",
+        "sha": "a826d51a21168d064743798808cdaf9850b27723"
+      },
+      {
+        "id": 5420351646,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "codex",
+        "sha": "8881f9cb4836c7bc70e40ce928e04184546148dc"
+      },
+      {
+        "id": 5420419331,
+        "kind": "CHANGES-REQUESTED-WITHDRAWN-AT",
+        "lane": "codex",
+        "sha": "8881f9cb4836c7bc70e40ce928e04184546148dc"
+      }
+    ],
+    "merged_at": "2026-08-26T17:29:50Z",
+    "number": 2678,
+    "old_rc": 0,
+    "old_reason": "3 of 4 refusal marker(s) were APPROVED OVER BY ANOTHER MEMBER of the refusing lane, which is not a discharge: claude@a826d51a2116 refused by hermit-007, approved over by <unsigned>/hermit-dbg/hermit-015/<unsigned>, codex@a826d51a2116 refused by hermit-007, approved over by hermit-001, codex@8881f9cb4836 refused by codex-rev-2678, approved over by hermit-001. A lane is its MEMBERS, not one authority -- `approval_binding` scores this same shape REFUSED since dev-hermit#193, and an approval whose issuer cannot be read discharges nothing at all. The member who objected has not spoken again. To discharge one, THAT member posts APPROVED-AT at a later sha, or CHANGES-REQUESTED-WITHDRAWN-AT at the sha it refused. 1 were answered by the refusing MEMBER approving a later sha.",
+    "state": "MERGED",
+    "title": "[hermit2, hermit-006, unresolved, devbig014, role=impl] gdb watcher: a stranger's accept is not our release, so stop concluding on it",
+    "url": "https://github.com/rrnewton/hermit/pull/2678"
+  },
+  {
+    "changed_clear_to_block": true,
+    "comment_count": 12,
+    "created_at": "2026-08-26T01:48:59Z",
+    "cutoff": "2026-08-26T16:47:26+00:00",
+    "draft": false,
+    "fixed_rc": 1,
+    "fixed_reason": "1 of 3 refusal marker(s) were OUTRUN, not answered: codex@43e87360907f by hermit-001. The sha moved so they no longer name ed10774e05c8, and NO entitled withdrawal says the objection was addressed. This gate cannot tell a reviewer who read the delta from an author who pushed past the objection, and it will not assert the benign reading. For a named refusal, the refusing member posts CHANGES-REQUESTED-WITHDRAWN-AT at the sha it refused; an unsigned refusal is retired by an exact `RETIRES <comment-id>`. 1 of 3 refusal marker(s) were APPROVED OVER BY ANOTHER MEMBER of the refusing lane, which is not a discharge: claude@c84f83c3667d refused by hermit-dbg, approved over by <unsigned>. A lane is its MEMBERS, not one authority -- `approval_binding` scores this same shape REFUSED since dev-hermit#193, and an approval whose issuer cannot be read discharges nothing at all. The member who objected has not spoken again. To discharge one, THAT member posts APPROVED-AT at a later sha, or CHANGES-REQUESTED-WITHDRAWN-AT at the sha it refused. 1 other refusal(s) WERE answered by a withdrawal.",
+    "head": "ed10774e05c81afa2248ff72bb53fb2a139c3690",
+    "marker_rows": [
+      {
+        "id": 5419487639,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "codex",
+        "sha": "43e87360907fb7b04c5eec48a3bfe518c920714f"
+      },
+      {
+        "id": 5419542932,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "claude",
+        "sha": "43e87360907fb7b04c5eec48a3bfe518c920714f"
+      },
+      {
+        "id": 5420332594,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "claude",
+        "sha": "c84f83c3667d94de9390bad762da54de45c2ede5"
+      },
+      {
+        "id": 5420563553,
+        "kind": "CHANGES-REQUESTED-WITHDRAWN-AT",
+        "lane": "claude",
+        "sha": "43e87360907fb7b04c5eec48a3bfe518c920714f"
+      }
+    ],
+    "merged_at": "2026-08-26T16:47:26Z",
+    "number": 2679,
+    "old_rc": 0,
+    "old_reason": "1 of 3 refusal marker(s) were OUTRUN, not answered: codex@43e87360907f by hermit-001. The sha moved so they no longer name ed10774e05c8, and NO entitled withdrawal says the objection was addressed. This gate cannot tell a reviewer who read the delta from an author who pushed past the objection, and it will not assert the benign reading. For a named refusal, the refusing member posts CHANGES-REQUESTED-WITHDRAWN-AT at the sha it refused; an unsigned refusal is retired by an exact `RETIRES <comment-id>`. 1 of 3 refusal marker(s) were APPROVED OVER BY ANOTHER MEMBER of the refusing lane, which is not a discharge: claude@c84f83c3667d refused by hermit-dbg, approved over by <unsigned>. A lane is its MEMBERS, not one authority -- `approval_binding` scores this same shape REFUSED since dev-hermit#193, and an approval whose issuer cannot be read discharges nothing at all. The member who objected has not spoken again. To discharge one, THAT member posts APPROVED-AT at a later sha, or CHANGES-REQUESTED-WITHDRAWN-AT at the sha it refused. 1 other refusal(s) WERE answered by a withdrawal.",
+    "state": "MERGED",
+    "title": "check-reverie-pin: correct the GIT_CONFIG cause (harness process, not a git wrapper) and stop calling the bogus-count probe a discriminating control",
+    "url": "https://github.com/rrnewton/hermit/pull/2679"
+  },
+  {
+    "changed_clear_to_block": true,
+    "comment_count": 21,
+    "created_at": "2026-08-26T01:52:38Z",
+    "cutoff": "2026-08-27T10:28:52+00:00",
+    "draft": false,
+    "fixed_rc": 1,
+    "fixed_reason": "1 of 3 refusal marker(s) were APPROVED OVER BY ANOTHER MEMBER of the refusing lane, which is not a discharge: codex@642a2990502a refused by hermit-016, approved over by hermit-006. A lane is its MEMBERS, not one authority -- `approval_binding` scores this same shape REFUSED since dev-hermit#193, and an approval whose issuer cannot be read discharges nothing at all. The member who objected has not spoken again. To discharge one, THAT member posts APPROVED-AT at a later sha, or CHANGES-REQUESTED-WITHDRAWN-AT at the sha it refused. 2 other refusal(s) WERE answered by a withdrawal. \u26a0\ufe0f A REFUSAL WITH NO READABLE ISSUER WAS RETIRED BY SOMEONE WHO MAY NOT BE ITS AUTHOR: comment 5420547902 names no issuer and was retired by hermit-121. `RETIRES` is the only exit for an unsigned refusal, so this is permitted -- but it is the weaker discharge and nothing here shows the objection was answered.",
+    "head": "020b8d754369868d77d9eea34b8b1393c79c58c6",
+    "marker_rows": [
+      {
+        "id": 5419576945,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "claude",
+        "sha": "099290c10486cba2d48a3ee044989cab242f059b"
+      },
+      {
+        "id": 5420110375,
+        "kind": "CHANGES-REQUESTED-WITHDRAWN-AT",
+        "lane": "claude",
+        "sha": "099290c10486cba2d48a3ee044989cab242f059b"
+      },
+      {
+        "id": 5420278252,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "codex",
+        "sha": "642a2990502aec16021e9c8048dc270bc86dc2ba"
+      },
+      {
+        "id": 5420439552,
+        "kind": "CHANGES-REQUESTED-WITHDRAWN-AT",
+        "lane": "claude",
+        "sha": "099290c10486cba2d48a3ee044989cab242f059b"
+      },
+      {
+        "id": 5420547902,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "codex",
+        "sha": "642a2990502aec16021e9c8048dc270bc86dc2ba"
+      },
+      {
+        "id": 5437102604,
+        "kind": "CHANGES-REQUESTED-WITHDRAWN-AT",
+        "lane": "codex",
+        "sha": "642a2990502aec16021e9c8048dc270bc86dc2ba"
+      }
+    ],
+    "merged_at": null,
+    "number": 2680,
+    "old_rc": 0,
+    "old_reason": "1 of 3 refusal marker(s) were APPROVED OVER BY ANOTHER MEMBER of the refusing lane, which is not a discharge: codex@642a2990502a refused by hermit-016, approved over by hermit-006. A lane is its MEMBERS, not one authority -- `approval_binding` scores this same shape REFUSED since dev-hermit#193, and an approval whose issuer cannot be read discharges nothing at all. The member who objected has not spoken again. To discharge one, THAT member posts APPROVED-AT at a later sha, or CHANGES-REQUESTED-WITHDRAWN-AT at the sha it refused. 2 other refusal(s) WERE answered by a withdrawal. \u26a0\ufe0f A REFUSAL WITH NO READABLE ISSUER WAS RETIRED BY SOMEONE WHO MAY NOT BE ITS AUTHOR: comment 5420547902 names no issuer and was retired by hermit-121. `RETIRES` is the only exit for an unsigned refusal, so this is permitted -- but it is the weaker discharge and nothing here shows the objection was answered.",
+    "state": "OPEN",
+    "title": "Pin the three matcher narrowings that passed all seventeen tests",
+    "url": "https://github.com/rrnewton/hermit/pull/2680"
+  },
+  {
+    "changed_clear_to_block": true,
+    "comment_count": 3,
+    "created_at": "2026-08-26T01:56:02Z",
+    "cutoff": "2026-08-26T02:31:30+00:00",
+    "draft": false,
+    "fixed_rc": 1,
+    "fixed_reason": "1 of 1 refusal marker(s) were OUTRUN, not answered: claude@0ded834e39a1 by hermit-004. The sha moved so they no longer name ed2532d71b1f, and NO entitled withdrawal says the objection was addressed. This gate cannot tell a reviewer who read the delta from an author who pushed past the objection, and it will not assert the benign reading. For a named refusal, the refusing member posts CHANGES-REQUESTED-WITHDRAWN-AT at the sha it refused; an unsigned refusal is retired by an exact `RETIRES <comment-id>`.",
+    "head": "ed2532d71b1f6e1d0b908443cf2cc4377d52c157",
+    "marker_rows": [
+      {
+        "id": 5419599620,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "claude",
+        "sha": "0ded834e39a1b589906dcdd4ed8ec549e75b6324"
+      }
+    ],
+    "merged_at": "2026-08-26T02:31:30Z",
+    "number": 2681,
+    "old_rc": 0,
+    "old_reason": "1 of 1 refusal marker(s) were OUTRUN, not answered: claude@0ded834e39a1 by hermit-004. The sha moved so they no longer name ed2532d71b1f, and NO entitled withdrawal says the objection was addressed. This gate cannot tell a reviewer who read the delta from an author who pushed past the objection, and it will not assert the benign reading. For a named refusal, the refusing member posts CHANGES-REQUESTED-WITHDRAWN-AT at the sha it refused; an unsigned refusal is retired by an exact `RETIRES <comment-id>`.",
+    "state": "MERGED",
+    "title": "[hermit2, hermit-triage, unresolved, devbig014, role=impl] One flag table cannot serve five runners: split VALUE_FLAGS per runner, measured",
+    "url": "https://github.com/rrnewton/hermit/pull/2681"
+  },
+  {
+    "changed_clear_to_block": false,
+    "comment_count": 0,
+    "created_at": "2026-08-26T02:02:55Z",
+    "cutoff": "2026-08-26T02:07:36+00:00",
+    "draft": false,
+    "fixed_rc": 0,
+    "fixed_reason": "no refusal marker of any shape on this pull request",
+    "head": "51783e82f8d45a79da32edcd36c71a7d935f330a",
+    "marker_rows": [],
+    "merged_at": "2026-08-26T02:07:36Z",
+    "number": 2682,
+    "old_rc": 0,
+    "old_reason": "no refusal marker of any shape on this pull request",
+    "state": "MERGED",
+    "title": "Buck2 OSS build: land the 305 inert files only, no pin and no toolchain change",
+    "url": "https://github.com/rrnewton/hermit/pull/2682"
+  },
+  {
+    "changed_clear_to_block": true,
+    "comment_count": 45,
+    "created_at": "2026-08-26T02:03:38Z",
+    "cutoff": "2026-08-27T03:20:14+00:00",
+    "draft": false,
+    "fixed_rc": 1,
+    "fixed_reason": "6 of 13 refusal marker(s) were OUTRUN, not answered: codex@b516317a3b8b by <unsigned>, codex@b516317a3b8b by hermit-016, codex@b516317a3b8b by hermit-003, codex@b516317a3b8b by hermit-015, codex@44fa7e6568f4 by hermit-003, codex@44fa7e6568f4 by hermit-016. The sha moved so they no longer name 91bae53a6f3e, and NO entitled withdrawal says the objection was addressed. This gate cannot tell a reviewer who read the delta from an author who pushed past the objection, and it will not assert the benign reading. For a named refusal, the refusing member posts CHANGES-REQUESTED-WITHDRAWN-AT at the sha it refused; an unsigned refusal is retired by an exact `RETIRES <comment-id>`. 3 of 13 refusal marker(s) were APPROVED OVER BY ANOTHER MEMBER of the refusing lane, which is not a discharge: claude@96afaba7daa3 refused by hermit-triage, approved over by hermit-016/hermit-030/hermit-006/hermit-dbg/<unsigned>/hermit-005/<unsigned>/hermit-106, codex@b516317a3b8b refused by codex-rev-2683, approved over by hermit-001, claude@44fa7e6568f4 refused by hermit-triage, approved over by <unsigned>/hermit-106. A lane is its MEMBERS, not one authority -- `approval_binding` scores this same shape REFUSED since dev-hermit#193, and an approval whose issuer cannot be read discharges nothing at all. The member who objected has not spoken again. To discharge one, THAT member posts APPROVED-AT at a later sha, or CHANGES-REQUESTED-WITHDRAWN-AT at the sha it refused. 4 other refusal(s) WERE answered by a withdrawal.",
+    "head": "91bae53a6f3e0f0b96bd3530ff35f5e85fdfb48f",
+    "marker_rows": [
+      {
+        "id": 5419637223,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "claude",
+        "sha": "96afaba7daa3f5a766af7bf49b9304190429db56"
+      },
+      {
+        "id": 5419648644,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "claude",
+        "sha": "96afaba7daa3f5a766af7bf49b9304190429db56"
+      },
+      {
+        "id": 5419667440,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "claude",
+        "sha": "96afaba7daa3f5a766af7bf49b9304190429db56"
+      },
+      {
+        "id": 5419721605,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "claude",
+        "sha": "23aeb38d99304725694bb38856866ecaf10d32a0"
+      },
+      {
+        "id": 5419735225,
+        "kind": "CHANGES-REQUESTED-WITHDRAWN-AT",
+        "lane": "claude",
+        "sha": "96afaba7daa3f5a766af7bf49b9304190429db56"
+      },
+      {
+        "id": 5419770225,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "claude",
+        "sha": "4e9ea946eda20de64e9a42468684d52bde5f73c9"
+      },
+      {
+        "id": 5419921577,
+        "kind": "CHANGES-REQUESTED-WITHDRAWN-AT",
+        "lane": "claude",
+        "sha": "23aeb38d99304725694bb38856866ecaf10d32a0"
+      },
+      {
+        "id": 5420040108,
+        "kind": "CHANGES-REQUESTED-WITHDRAWN-AT",
+        "lane": "claude",
+        "sha": "4e9ea946eda20de64e9a42468684d52bde5f73c9"
+      },
+      {
+        "id": 5420314856,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "codex",
+        "sha": "b516317a3b8be940505f9a26b51dc5ccb4c463b3"
+      },
+      {
+        "id": 5420319639,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "codex",
+        "sha": "b516317a3b8be940505f9a26b51dc5ccb4c463b3"
+      },
+      {
+        "id": 5420377131,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "codex",
+        "sha": "b516317a3b8be940505f9a26b51dc5ccb4c463b3"
+      },
+      {
+        "id": 5420390840,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "codex",
+        "sha": "b516317a3b8be940505f9a26b51dc5ccb4c463b3"
+      },
+      {
+        "id": 5420397286,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "codex",
+        "sha": "b516317a3b8be940505f9a26b51dc5ccb4c463b3"
+      },
+      {
+        "id": 5420449924,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "codex",
+        "sha": "44fa7e6568f4c206d496d8bd0e71a64b2078ceae"
+      },
+      {
+        "id": 5420501947,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "codex",
+        "sha": "44fa7e6568f4c206d496d8bd0e71a64b2078ceae"
+      },
+      {
+        "id": 5420519862,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "claude",
+        "sha": "44fa7e6568f4c206d496d8bd0e71a64b2078ceae"
+      },
+      {
+        "id": 5420563404,
+        "kind": "CHANGES-REQUESTED-WITHDRAWN-AT",
+        "lane": "claude",
+        "sha": "96afaba7daa3f5a766af7bf49b9304190429db56"
+      }
+    ],
+    "merged_at": "2026-08-27T03:20:14Z",
+    "number": 2683,
+    "old_rc": 0,
+    "old_reason": "6 of 13 refusal marker(s) were OUTRUN, not answered: codex@b516317a3b8b by <unsigned>, codex@b516317a3b8b by hermit-016, codex@b516317a3b8b by hermit-003, codex@b516317a3b8b by hermit-015, codex@44fa7e6568f4 by hermit-003, codex@44fa7e6568f4 by hermit-016. The sha moved so they no longer name 91bae53a6f3e, and NO entitled withdrawal says the objection was addressed. This gate cannot tell a reviewer who read the delta from an author who pushed past the objection, and it will not assert the benign reading. For a named refusal, the refusing member posts CHANGES-REQUESTED-WITHDRAWN-AT at the sha it refused; an unsigned refusal is retired by an exact `RETIRES <comment-id>`. 3 of 13 refusal marker(s) were APPROVED OVER BY ANOTHER MEMBER of the refusing lane, which is not a discharge: claude@96afaba7daa3 refused by hermit-triage, approved over by hermit-016/hermit-030/hermit-006/hermit-dbg/<unsigned>/hermit-005/<unsigned>/hermit-106, codex@b516317a3b8b refused by codex-rev-2683, approved over by hermit-001, claude@44fa7e6568f4 refused by hermit-triage, approved over by <unsigned>/hermit-106. A lane is its MEMBERS, not one authority -- `approval_binding` scores this same shape REFUSED since dev-hermit#193, and an approval whose issuer cannot be read discharges nothing at all. The member who objected has not spoken again. To discharge one, THAT member posts APPROVED-AT at a later sha, or CHANGES-REQUESTED-WITHDRAWN-AT at the sha it refused. 4 other refusal(s) WERE answered by a withdrawal.",
+    "state": "MERGED",
+    "title": "check-checker-scheduling: one admission test, and a flag default that fails loud",
+    "url": "https://github.com/rrnewton/hermit/pull/2683"
+  },
+  {
+    "changed_clear_to_block": false,
+    "comment_count": 2,
+    "created_at": "2026-08-26T02:16:42Z",
+    "cutoff": "2026-08-26T02:30:42+00:00",
+    "draft": false,
+    "fixed_rc": 0,
+    "fixed_reason": "no refusal marker of any shape on this pull request",
+    "head": "60f21f0e72a216300de9c823953db57e7e0b7383",
+    "marker_rows": [],
+    "merged_at": "2026-08-26T02:30:42Z",
+    "number": 2684,
+    "old_rc": 0,
+    "old_reason": "no refusal marker of any shape on this pull request",
+    "state": "MERGED",
+    "title": "check-checker-scheduling: a prefix convention could not see its own families",
+    "url": "https://github.com/rrnewton/hermit/pull/2684"
+  },
+  {
+    "changed_clear_to_block": false,
+    "comment_count": 6,
+    "created_at": "2026-08-26T02:31:56Z",
+    "cutoff": "2026-08-26T03:15:11+00:00",
+    "draft": false,
+    "fixed_rc": 0,
+    "fixed_reason": "1 refusal marker(s) present, none names d62a49741e54, and every one was ANSWERED -- its own lane withdrew at the sha it refused. That is the correct clearing FORM. It is not evidence the finding was addressed: a withdrawal granted for a change that answered the description rather than the objection produces this exact readout.",
+    "head": "d62a49741e542434495c5f676dc5e98bcc365f78",
+    "marker_rows": [
+      {
+        "id": 5419800765,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "claude",
+        "sha": "1de9e184e8453826e370df9fa78f90e2264791a5"
+      },
+      {
+        "id": 5419941810,
+        "kind": "CHANGES-REQUESTED-WITHDRAWN-AT",
+        "lane": "claude",
+        "sha": "1de9e184e8453826e370df9fa78f90e2264791a5"
+      }
+    ],
+    "merged_at": "2026-08-26T03:15:11Z",
+    "number": 2685,
+    "old_rc": 0,
+    "old_reason": "1 refusal marker(s) present, none names d62a49741e54, and every one was ANSWERED -- its own lane withdrew at the sha it refused. That is the correct clearing FORM. It is not evidence the finding was addressed: a withdrawal granted for a change that answered the description rather than the objection produces this exact readout.",
+    "state": "MERGED",
+    "title": "bisect-probe: run a list of test ids and report one verdict per REQUESTED id (an unmatched id is UNSELECTED, never a pass)",
+    "url": "https://github.com/rrnewton/hermit/pull/2685"
+  },
+  {
+    "changed_clear_to_block": true,
+    "comment_count": 28,
+    "created_at": "2026-08-26T02:40:09Z",
+    "cutoff": "2026-08-27T07:11:29+00:00",
+    "draft": false,
+    "fixed_rc": 1,
+    "fixed_reason": "1 of 3 refusal marker(s) were OUTRUN, not answered: codex@33290127e43f by hermit-126. The sha moved so they no longer name a8c7d8f3a377, and NO entitled withdrawal says the objection was addressed. This gate cannot tell a reviewer who read the delta from an author who pushed past the objection, and it will not assert the benign reading. For a named refusal, the refusing member posts CHANGES-REQUESTED-WITHDRAWN-AT at the sha it refused; an unsigned refusal is retired by an exact `RETIRES <comment-id>`. 2 of 3 refusal marker(s) were APPROVED OVER BY ANOTHER MEMBER of the refusing lane, which is not a discharge: claude@44f76910ab0d refused by hermit-004, approved over by <unsigned>/hermit-012/hermit-107/hermit-107/hermit-107/<unsigned>/<unsigned>, codex@979a50b17a75 refused by codex-rev-2686, approved over by hermit-001. A lane is its MEMBERS, not one authority -- `approval_binding` scores this same shape REFUSED since dev-hermit#193, and an approval whose issuer cannot be read discharges nothing at all. The member who objected has not spoken again. To discharge one, THAT member posts APPROVED-AT at a later sha, or CHANGES-REQUESTED-WITHDRAWN-AT at the sha it refused.",
+    "head": "a8c7d8f3a377d6e2ec5f1e216df2917d374588d3",
+    "marker_rows": [
+      {
+        "id": 5419861392,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "claude",
+        "sha": "44f76910ab0daafc730a969b8ec121fa06d24120"
+      },
+      {
+        "id": 5420217285,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "codex",
+        "sha": "979a50b17a75ac486661ec5e1a950ec7c99bdbf1"
+      },
+      {
+        "id": 5430475958,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "codex",
+        "sha": "33290127e43f2ad5f282892dcfd74f0f374a2847"
+      }
+    ],
+    "merged_at": "2026-08-27T07:11:29Z",
+    "number": 2686,
+    "old_rc": 0,
+    "old_reason": "1 of 3 refusal marker(s) were OUTRUN, not answered: codex@33290127e43f by hermit-126. The sha moved so they no longer name a8c7d8f3a377, and NO entitled withdrawal says the objection was addressed. This gate cannot tell a reviewer who read the delta from an author who pushed past the objection, and it will not assert the benign reading. For a named refusal, the refusing member posts CHANGES-REQUESTED-WITHDRAWN-AT at the sha it refused; an unsigned refusal is retired by an exact `RETIRES <comment-id>`. 2 of 3 refusal marker(s) were APPROVED OVER BY ANOTHER MEMBER of the refusing lane, which is not a discharge: claude@44f76910ab0d refused by hermit-004, approved over by <unsigned>/hermit-012/hermit-107/hermit-107/hermit-107/<unsigned>/<unsigned>, codex@979a50b17a75 refused by codex-rev-2686, approved over by hermit-001. A lane is its MEMBERS, not one authority -- `approval_binding` scores this same shape REFUSED since dev-hermit#193, and an approval whose issuer cannot be read discharges nothing at all. The member who objected has not spoken again. To discharge one, THAT member posts APPROVED-AT at a later sha, or CHANGES-REQUESTED-WITHDRAWN-AT at the sha it refused.",
+    "state": "MERGED",
+    "title": "test-harness plan: refuse an unknown test id (it exited 0 for a typo, and for a real id, so its rc meant nothing)",
+    "url": "https://github.com/rrnewton/hermit/pull/2686"
+  },
+  {
+    "changed_clear_to_block": false,
+    "comment_count": 2,
+    "created_at": "2026-08-26T02:47:49Z",
+    "cutoff": "2026-08-26T03:09:38+00:00",
+    "draft": false,
+    "fixed_rc": 0,
+    "fixed_reason": "no refusal marker of any shape on this pull request",
+    "head": "12381718e2e5b4dae5d9fef9df8f40a97e2c1fcc",
+    "marker_rows": [],
+    "merged_at": "2026-08-26T03:09:38Z",
+    "number": 2687,
+    "old_rc": 0,
+    "old_reason": "no refusal marker of any shape on this pull request",
+    "state": "MERGED",
+    "title": "The recipe I recorded to prove a measurement does not reproduce on the host it names",
+    "url": "https://github.com/rrnewton/hermit/pull/2687"
+  },
+  {
+    "changed_clear_to_block": false,
+    "comment_count": 3,
+    "created_at": "2026-08-26T02:56:54Z",
+    "cutoff": "2026-08-26T03:09:56+00:00",
+    "draft": false,
+    "fixed_rc": 0,
+    "fixed_reason": "no refusal marker of any shape on this pull request",
+    "head": "e49d0d0d52d37222e1d06dc1eb10f869206488dc",
+    "marker_rows": [],
+    "merged_at": "2026-08-26T03:09:56Z",
+    "number": 2688,
+    "old_rc": 0,
+    "old_reason": "no refusal marker of any shape on this pull request",
+    "state": "MERGED",
+    "title": "A hold keyed on \"the related task is still open\" can never clear \u2014 with the two claims a reviewer falsified removed",
+    "url": "https://github.com/rrnewton/hermit/pull/2688"
+  },
+  {
+    "changed_clear_to_block": false,
+    "comment_count": 3,
+    "created_at": "2026-08-26T02:57:37Z",
+    "cutoff": "2026-08-26T03:05:43+00:00",
+    "draft": false,
+    "fixed_rc": 0,
+    "fixed_reason": "no refusal marker of any shape on this pull request",
+    "head": "eb15b68151dd4e0bc59b8bfb920c906f0a6b228a",
+    "marker_rows": [],
+    "merged_at": "2026-08-26T03:05:43Z",
+    "number": 2689,
+    "old_rc": 0,
+    "old_reason": "no refusal marker of any shape on this pull request",
+    "state": "MERGED",
+    "title": "check-reverie-pin: retract my four-git table -- every condition is rejected 128, not tolerated",
+    "url": "https://github.com/rrnewton/hermit/pull/2689"
+  },
+  {
+    "changed_clear_to_block": false,
+    "comment_count": 4,
+    "created_at": "2026-08-26T03:33:43Z",
+    "cutoff": "2026-08-26T03:38:57+00:00",
+    "draft": false,
+    "fixed_rc": 0,
+    "fixed_reason": "no refusal marker of any shape on this pull request",
+    "head": "884f12cf4a557ef1cd4d84ff6e342978030cdc1f",
+    "marker_rows": [],
+    "merged_at": "2026-08-26T03:38:57Z",
+    "number": 2690,
+    "old_rc": 0,
+    "old_reason": "no refusal marker of any shape on this pull request",
+    "state": "MERGED",
+    "title": "check-checker-scheduling: a population FLOOR \u2014 a collapse reports healthy where a zero does not",
+    "url": "https://github.com/rrnewton/hermit/pull/2690"
+  },
+  {
+    "changed_clear_to_block": false,
+    "comment_count": 0,
+    "created_at": "2026-08-26T04:24:49Z",
+    "cutoff": "2026-08-26T15:51:05+00:00",
+    "draft": false,
+    "fixed_rc": 0,
+    "fixed_reason": "no refusal marker of any shape on this pull request",
+    "head": "996f01455fd9998d73fe3bea38ac4f4c9d625d32",
+    "marker_rows": [],
+    "merged_at": "2026-08-26T15:51:05Z",
+    "number": 2691,
+    "old_rc": 0,
+    "old_reason": "no refusal marker of any shape on this pull request",
+    "state": "MERGED",
+    "title": "[hermit2, hermit-011, unresolved, devbig014, role=impl] bisect-probe: three clippy lints that turned check.script_sigpipe red on main",
+    "url": "https://github.com/rrnewton/hermit/pull/2691"
+  },
+  {
+    "changed_clear_to_block": true,
+    "comment_count": 13,
+    "created_at": "2026-08-26T04:26:17Z",
+    "cutoff": "2026-08-26T17:20:41+00:00",
+    "draft": false,
+    "fixed_rc": 1,
+    "fixed_reason": "1 of 2 refusal marker(s) were APPROVED OVER BY ANOTHER MEMBER of the refusing lane, which is not a discharge: claude@f4349f5b1db1 refused by hermit-016, approved over by hermit-dbg/hermit-007/hermit-triage/<unsigned>/hermit-109/hermit-102/<unsigned>. A lane is its MEMBERS, not one authority -- `approval_binding` scores this same shape REFUSED since dev-hermit#193, and an approval whose issuer cannot be read discharges nothing at all. The member who objected has not spoken again. To discharge one, THAT member posts APPROVED-AT at a later sha, or CHANGES-REQUESTED-WITHDRAWN-AT at the sha it refused. 1 were answered by the refusing MEMBER approving a later sha.",
+    "head": "1fa4e21decff5a101959b73bb41c18cb776586c5",
+    "marker_rows": [
+      {
+        "id": 5420636751,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "claude",
+        "sha": "f4349f5b1db1cd97e854d9229d39909d1a3cde6f"
+      },
+      {
+        "id": 5420645964,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "claude",
+        "sha": "f4349f5b1db1cd97e854d9229d39909d1a3cde6f"
+      }
+    ],
+    "merged_at": "2026-08-26T17:20:41Z",
+    "number": 2692,
+    "old_rc": 0,
+    "old_reason": "1 of 2 refusal marker(s) were APPROVED OVER BY ANOTHER MEMBER of the refusing lane, which is not a discharge: claude@f4349f5b1db1 refused by hermit-016, approved over by hermit-dbg/hermit-007/hermit-triage/<unsigned>/hermit-109/hermit-102/<unsigned>. A lane is its MEMBERS, not one authority -- `approval_binding` scores this same shape REFUSED since dev-hermit#193, and an approval whose issuer cannot be read discharges nothing at all. The member who objected has not spoken again. To discharge one, THAT member posts APPROVED-AT at a later sha, or CHANGES-REQUESTED-WITHDRAWN-AT at the sha it refused. 1 were answered by the refusing MEMBER approving a later sha.",
+    "state": "MERGED",
+    "title": "[hermit2, hermit-020, unresolved, devbig014, role=impl] The exit-class gate was blind to the two codes I added to hermit's reserved set",
+    "url": "https://github.com/rrnewton/hermit/pull/2692"
+  },
+  {
+    "changed_clear_to_block": false,
+    "comment_count": 1,
+    "created_at": "2026-08-26T15:33:24Z",
+    "cutoff": "2026-08-26T16:36:15+00:00",
+    "draft": false,
+    "fixed_rc": 0,
+    "fixed_reason": "no refusal marker of any shape on this pull request",
+    "head": "5f4d7601c33f11ca6a113c4856852a72bc4dce5b",
+    "marker_rows": [],
+    "merged_at": "2026-08-26T16:36:15Z",
+    "number": 2693,
+    "old_rc": 0,
+    "old_reason": "no refusal marker of any shape on this pull request",
+    "state": "MERGED",
+    "title": "[hermit2, hermit-106, unresolved, devbig014, role=impl] /proc/*/maps: pad the pathname to its column, so the line's LENGTH stops republishing the host inode",
+    "url": "https://github.com/rrnewton/hermit/pull/2693"
+  },
+  {
+    "changed_clear_to_block": false,
+    "comment_count": 20,
+    "created_at": "2026-08-26T15:50:09Z",
+    "cutoff": "2026-08-27T10:28:52+00:00",
+    "draft": false,
+    "fixed_rc": 1,
+    "fixed_reason": "1 refusal(s) bound to the exact head f6d7aac97b85 from lane(s) codex that have not withdrawn. A refusal naming the head blocks regardless of any lane's approval, and a withdrawal from a DIFFERENT lane does not discharge it. This clears when the AUTHOR pushes a fix (the sha moves and the refusal stops naming the head) or the refusing lane itself posts CHANGES-REQUESTED-WITHDRAWN-AT at this sha.",
+    "head": "f6d7aac97b855c2271e6c76862aecdc2dad8e3c3",
+    "marker_rows": [
+      {
+        "id": 5428164435,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "claude",
+        "sha": "7fc9417bdf4782b549ee6639f46fbc33e00a0683"
+      },
+      {
+        "id": 5428777790,
+        "kind": "CHANGES-REQUESTED-WITHDRAWN-AT",
+        "lane": "claude",
+        "sha": "7fc9417bdf4782b549ee6639f46fbc33e00a0683"
+      },
+      {
+        "id": 5430429037,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "codex",
+        "sha": "c484922608898a9e5fc0d499ba7cdbc34e96b8c3"
+      },
+      {
+        "id": 5436063851,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "codex",
+        "sha": "19e884d65fcf6b475a599aecb69ae78366193caf"
+      },
+      {
+        "id": 5436269239,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "codex",
+        "sha": "f6d7aac97b855c2271e6c76862aecdc2dad8e3c3"
+      }
+    ],
+    "merged_at": null,
+    "number": 2694,
+    "old_rc": 1,
+    "old_reason": "1 refusal(s) bound to the exact head f6d7aac97b85 from lane(s) codex that have not withdrawn. A refusal naming the head blocks regardless of any lane's approval, and a withdrawal from a DIFFERENT lane does not discharge it. This clears when the AUTHOR pushes a fix (the sha moves and the refusal stops naming the head) or the refusing lane itself posts CHANGES-REQUESTED-WITHDRAWN-AT at this sha.",
+    "state": "OPEN",
+    "title": "Stop a guest from changing the file status flags of hermit's own stdin, stdout and stderr",
+    "url": "https://github.com/rrnewton/hermit/pull/2694"
+  },
+  {
+    "changed_clear_to_block": true,
+    "comment_count": 13,
+    "created_at": "2026-08-26T16:24:26Z",
+    "cutoff": "2026-08-27T07:33:37+00:00",
+    "draft": false,
+    "fixed_rc": 1,
+    "fixed_reason": "2 of 2 refusal marker(s) were OUTRUN, not answered: claude@c0327084672b by <unsigned>, claude@204a2a5dc05b by hermit-109. The sha moved so they no longer name a6c514d9122b, and NO entitled withdrawal says the objection was addressed. This gate cannot tell a reviewer who read the delta from an author who pushed past the objection, and it will not assert the benign reading. For a named refusal, the refusing member posts CHANGES-REQUESTED-WITHDRAWN-AT at the sha it refused; an unsigned refusal is retired by an exact `RETIRES <comment-id>`.",
+    "head": "a6c514d9122b043e63da4275d5c785df66eae96a",
+    "marker_rows": [
+      {
+        "id": 5428566748,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "claude",
+        "sha": "c0327084672b155ed89f31f9d3d3db246a610377"
+      },
+      {
+        "id": 5429733696,
+        "kind": "CHANGES-REQUESTED-WITHDRAWN-AT",
+        "lane": "claude",
+        "sha": "c0327084672b155ed89f31f9d3d3db246a610377"
+      },
+      {
+        "id": 5429733696,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "claude",
+        "sha": "204a2a5dc05bbf5cd05fcaf5c6cf602aa0c3df7e"
+      }
+    ],
+    "merged_at": "2026-08-27T07:33:37Z",
+    "number": 2696,
+    "old_rc": 0,
+    "old_reason": "2 of 2 refusal marker(s) were OUTRUN, not answered: claude@c0327084672b by <unsigned>, claude@204a2a5dc05b by hermit-109. The sha moved so they no longer name a6c514d9122b, and NO entitled withdrawal says the objection was addressed. This gate cannot tell a reviewer who read the delta from an author who pushed past the objection, and it will not assert the benign reading. For a named refusal, the refusing member posts CHANGES-REQUESTED-WITHDRAWN-AT at the sha it refused; an unsigned refusal is retired by an exact `RETIRES <comment-id>`.",
+    "state": "MERGED",
+    "title": "[hermit2, hermit-101, unresolved, devbig014, role=impl] bisect-probe: stream results, localise EVERY id, and refuse to bisect what the probe cannot observe",
+    "url": "https://github.com/rrnewton/hermit/pull/2696"
+  },
+  {
+    "changed_clear_to_block": false,
+    "comment_count": 2,
+    "created_at": "2026-08-26T18:10:25Z",
+    "cutoff": "2026-08-26T18:56:08+00:00",
+    "draft": false,
+    "fixed_rc": 0,
+    "fixed_reason": "no refusal marker of any shape on this pull request",
+    "head": "cb71f6543f5e7a7f8d05984a8619d1d708789172",
+    "marker_rows": [],
+    "merged_at": "2026-08-26T18:56:08Z",
+    "number": 2698,
+    "old_rc": 0,
+    "old_reason": "no refusal marker of any shape on this pull request",
+    "state": "MERGED",
+    "title": "A guest can silently cut hermit's own error channel by setting O_NONBLOCK on fd 2",
+    "url": "https://github.com/rrnewton/hermit/pull/2698"
+  },
+  {
+    "changed_clear_to_block": false,
+    "comment_count": 11,
+    "created_at": "2026-08-26T18:39:09Z",
+    "cutoff": "2026-08-27T10:28:52+00:00",
+    "draft": false,
+    "fixed_rc": 1,
+    "fixed_reason": "2 refusal(s) bound to the exact head 943b09666e48 from lane(s) claude,codex that have not withdrawn. A refusal naming the head blocks regardless of any lane's approval, and a withdrawal from a DIFFERENT lane does not discharge it. This clears when the AUTHOR pushes a fix (the sha moves and the refusal stops naming the head) or the refusing lane itself posts CHANGES-REQUESTED-WITHDRAWN-AT at this sha.",
+    "head": "943b09666e48950bf9f65d33d894330c0de56c83",
+    "marker_rows": [
+      {
+        "id": 5430334241,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "claude",
+        "sha": "9353d7ef2e504bdc6bfd46cfc1c2299255446f47"
+      },
+      {
+        "id": 5430409607,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "claude",
+        "sha": "b0d56a9e5202257a10f914cff771800fea3c465e"
+      },
+      {
+        "id": 5430420204,
+        "kind": "CHANGES-REQUESTED-WITHDRAWN-AT",
+        "lane": "claude",
+        "sha": "9353d7ef2e504bdc6bfd46cfc1c2299255446f47"
+      },
+      {
+        "id": 5430515417,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "codex",
+        "sha": "b8007f790ae374f98ec40c46318ff5cb382f91dc"
+      },
+      {
+        "id": 5431126064,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "codex",
+        "sha": "943b09666e48950bf9f65d33d894330c0de56c83"
+      },
+      {
+        "id": 5434392665,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "claude",
+        "sha": "943b09666e48950bf9f65d33d894330c0de56c83"
+      }
+    ],
+    "merged_at": null,
+    "number": 2699,
+    "old_rc": 1,
+    "old_reason": "2 refusal(s) bound to the exact head 943b09666e48 from lane(s) claude,codex that have not withdrawn. A refusal naming the head blocks regardless of any lane's approval, and a withdrawal from a DIFFERENT lane does not discharge it. This clears when the AUTHOR pushes a fix (the sha moves and the refusal stops naming the head) or the refusing lane itself posts CHANGES-REQUESTED-WITHDRAWN-AT at this sha.",
+    "state": "OPEN",
+    "title": "[hermit2, hermit-101, unresolved, devbig014, role=impl] Schedule the signal-stop checker and retire the allowlist entry its own fix makes false",
+    "url": "https://github.com/rrnewton/hermit/pull/2699"
+  },
+  {
+    "changed_clear_to_block": false,
+    "comment_count": 5,
+    "created_at": "2026-08-26T19:31:32Z",
+    "cutoff": "2026-08-27T01:28:03+00:00",
+    "draft": false,
+    "fixed_rc": 0,
+    "fixed_reason": "no refusal marker of any shape on this pull request",
+    "head": "b2792b75c83ce7ec3eb6ad40d33e0811465e6443",
+    "marker_rows": [],
+    "merged_at": "2026-08-27T01:28:03Z",
+    "number": 2700,
+    "old_rc": 0,
+    "old_reason": "no refusal marker of any shape on this pull request",
+    "state": "MERGED",
+    "title": "Bound the diagnostic stderr retry, so a stopped reader cannot hang hermit on its way out",
+    "url": "https://github.com/rrnewton/hermit/pull/2700"
+  },
+  {
+    "changed_clear_to_block": true,
+    "comment_count": 4,
+    "created_at": "2026-08-26T20:00:48Z",
+    "cutoff": "2026-08-26T20:39:46+00:00",
+    "draft": false,
+    "fixed_rc": 1,
+    "fixed_reason": "2 of 2 refusal marker(s) were OUTRUN, not answered: codex@b0729d090982 by hermit-126, codex@b0729d090982 by hermit-127. The sha moved so they no longer name c85086913823, and NO entitled withdrawal says the objection was addressed. This gate cannot tell a reviewer who read the delta from an author who pushed past the objection, and it will not assert the benign reading. For a named refusal, the refusing member posts CHANGES-REQUESTED-WITHDRAWN-AT at the sha it refused; an unsigned refusal is retired by an exact `RETIRES <comment-id>`.",
+    "head": "c850869138238664855a179b7861284b6df9e83c",
+    "marker_rows": [
+      {
+        "id": 5430671989,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "codex",
+        "sha": "b0729d090982974bb0dec05ba439b1c5b5ff59a9"
+      },
+      {
+        "id": 5430753650,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "codex",
+        "sha": "b0729d090982974bb0dec05ba439b1c5b5ff59a9"
+      }
+    ],
+    "merged_at": "2026-08-26T20:39:46Z",
+    "number": 2701,
+    "old_rc": 0,
+    "old_reason": "2 of 2 refusal marker(s) were OUTRUN, not answered: codex@b0729d090982 by hermit-126, codex@b0729d090982 by hermit-127. The sha moved so they no longer name c85086913823, and NO entitled withdrawal says the objection was addressed. This gate cannot tell a reviewer who read the delta from an author who pushed past the objection, and it will not assert the benign reading. For a named refusal, the refusing member posts CHANGES-REQUESTED-WITHDRAWN-AT at the sha it refused; an unsigned refusal is retired by an exact `RETIRES <comment-id>`.",
+    "state": "MERGED",
+    "title": "Synthesize Hermit debugging evidence into one skill",
+    "url": "https://github.com/rrnewton/hermit/pull/2701"
+  },
+  {
+    "changed_clear_to_block": true,
+    "comment_count": 16,
+    "created_at": "2026-08-26T20:09:42Z",
+    "cutoff": "2026-08-27T07:31:09+00:00",
+    "draft": false,
+    "fixed_rc": 1,
+    "fixed_reason": "3 of 4 refusal marker(s) were APPROVED OVER BY ANOTHER MEMBER of the refusing lane, which is not a discharge: codex@a5c0ea42bba1 refused by hermit-125, approved over by hermit-127/hermit-127, codex@c7325dff3073 refused by hermit-124, approved over by hermit-127/hermit-127, codex@d3c0d5d0a072 refused by hermit-128, approved over by hermit-127/hermit-127. A lane is its MEMBERS, not one authority -- `approval_binding` scores this same shape REFUSED since dev-hermit#193, and an approval whose issuer cannot be read discharges nothing at all. The member who objected has not spoken again. To discharge one, THAT member posts APPROVED-AT at a later sha, or CHANGES-REQUESTED-WITHDRAWN-AT at the sha it refused. 1 other refusal(s) WERE answered by a withdrawal.",
+    "head": "3ac56ae37f9e094f73d1ed36f2f95b94e463f8ba",
+    "marker_rows": [
+      {
+        "id": 5430612594,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "codex",
+        "sha": "a5c0ea42bba1d1352787c56ad984762606dbe7ee"
+      },
+      {
+        "id": 5430702648,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "codex",
+        "sha": "c7325dff307361f0c0dc3703deb1a9fa0af9d96b"
+      },
+      {
+        "id": 5430785163,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "claude",
+        "sha": "2fde22f747a55178f3e3a67fef26e05c4ae66629"
+      },
+      {
+        "id": 5430800471,
+        "kind": "CHANGES-REQUESTED-WITHDRAWN-AT",
+        "lane": "claude",
+        "sha": "2fde22f747a55178f3e3a67fef26e05c4ae66629"
+      },
+      {
+        "id": 5430915068,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "codex",
+        "sha": "d3c0d5d0a072bd95be34a5f1225ddb3158480140"
+      }
+    ],
+    "merged_at": "2026-08-27T07:31:09Z",
+    "number": 2702,
+    "old_rc": 0,
+    "old_reason": "3 of 4 refusal marker(s) were APPROVED OVER BY ANOTHER MEMBER of the refusing lane, which is not a discharge: codex@a5c0ea42bba1 refused by hermit-125, approved over by hermit-127/hermit-127, codex@c7325dff3073 refused by hermit-124, approved over by hermit-127/hermit-127, codex@d3c0d5d0a072 refused by hermit-128, approved over by hermit-127/hermit-127. A lane is its MEMBERS, not one authority -- `approval_binding` scores this same shape REFUSED since dev-hermit#193, and an approval whose issuer cannot be read discharges nothing at all. The member who objected has not spoken again. To discharge one, THAT member posts APPROVED-AT at a later sha, or CHANGES-REQUESTED-WITHDRAWN-AT at the sha it refused. 1 other refusal(s) WERE answered by a withdrawal.",
+    "state": "MERGED",
+    "title": "[hermit2, hermit-106, unresolved, devbig014, role=impl] Execute the validate refusal predicate in lint",
+    "url": "https://github.com/rrnewton/hermit/pull/2702"
+  },
+  {
+    "changed_clear_to_block": false,
+    "comment_count": 1,
+    "created_at": "2026-08-26T20:39:04Z",
+    "cutoff": "2026-08-27T00:23:30+00:00",
+    "draft": false,
+    "fixed_rc": 0,
+    "fixed_reason": "no refusal marker of any shape on this pull request",
+    "head": "0858d75e531481c08a3c19e2cd18a301c4348516",
+    "marker_rows": [],
+    "merged_at": "2026-08-27T00:23:30Z",
+    "number": 2703,
+    "old_rc": 0,
+    "old_reason": "no refusal marker of any shape on this pull request",
+    "state": "MERGED",
+    "title": "Advance Hermit to Reverie ad598995",
+    "url": "https://github.com/rrnewton/hermit/pull/2703"
+  },
+  {
+    "changed_clear_to_block": false,
+    "comment_count": 0,
+    "created_at": "2026-08-26T20:43:02Z",
+    "cutoff": "2026-08-26T20:44:10+00:00",
+    "draft": false,
+    "fixed_rc": 0,
+    "fixed_reason": "no refusal marker of any shape on this pull request",
+    "head": "ffa5b7be819d1bb8de456d3f5fd5214eb5aaa6b8",
+    "marker_rows": [],
+    "merged_at": "2026-08-26T20:44:10Z",
+    "number": 2704,
+    "old_rc": 0,
+    "old_reason": "no refusal marker of any shape on this pull request",
+    "state": "MERGED",
+    "title": "Document Hermit validation level meanings",
+    "url": "https://github.com/rrnewton/hermit/pull/2704"
+  },
+  {
+    "changed_clear_to_block": true,
+    "comment_count": 2,
+    "created_at": "2026-08-26T21:28:24Z",
+    "cutoff": "2026-08-27T07:33:49+00:00",
+    "draft": false,
+    "fixed_rc": 1,
+    "fixed_reason": "2 of 2 refusal marker(s) were OUTRUN, not answered: codex@4f8b43000a58 by <unsigned>, codex@14c81dea8b29 by <unsigned>. The sha moved so they no longer name 3ca8f0fe0876, and NO entitled withdrawal says the objection was addressed. This gate cannot tell a reviewer who read the delta from an author who pushed past the objection, and it will not assert the benign reading. For a named refusal, the refusing member posts CHANGES-REQUESTED-WITHDRAWN-AT at the sha it refused; an unsigned refusal is retired by an exact `RETIRES <comment-id>`.",
+    "head": "3ca8f0fe08766f2d39f4ce1b7ee032a9116df80c",
+    "marker_rows": [
+      {
+        "id": 5432005694,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "codex",
+        "sha": "4f8b43000a58deda553da39567225c695857170e"
+      },
+      {
+        "id": 5435097096,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "codex",
+        "sha": "14c81dea8b2976bd17af0fd9e099b7a4fa62bded"
+      }
+    ],
+    "merged_at": "2026-08-27T07:33:49Z",
+    "number": 2705,
+    "old_rc": 0,
+    "old_reason": "2 of 2 refusal marker(s) were OUTRUN, not answered: codex@4f8b43000a58 by <unsigned>, codex@14c81dea8b29 by <unsigned>. The sha moved so they no longer name 3ca8f0fe0876, and NO entitled withdrawal says the objection was addressed. This gate cannot tell a reviewer who read the delta from an author who pushed past the objection, and it will not assert the benign reading. For a named refusal, the refusing member posts CHANGES-REQUESTED-WITHDRAWN-AT at the sha it refused; an unsigned refusal is retired by an exact `RETIRES <comment-id>`.",
+    "state": "MERGED",
+    "title": "Emit per-cell runtime history from validate and pressure tests",
+    "url": "https://github.com/rrnewton/hermit/pull/2705"
+  },
+  {
+    "changed_clear_to_block": false,
+    "comment_count": 4,
+    "created_at": "2026-08-26T23:24:36Z",
+    "cutoff": "2026-08-27T08:02:15+00:00",
+    "draft": false,
+    "fixed_rc": 0,
+    "fixed_reason": "no refusal marker of any shape on this pull request",
+    "head": "ce5d1bbb576e9d4ec2d89324f1b4de4a3606aaf1",
+    "marker_rows": [],
+    "merged_at": "2026-08-27T08:02:15Z",
+    "number": 2706,
+    "old_rc": 0,
+    "old_reason": "no refusal marker of any shape on this pull request",
+    "state": "MERGED",
+    "title": "[hermit2, hermit-125, unresolved, devbig014, role=impl] Make the retry scheduler-accounting self-test wait for prerequisite completion",
+    "url": "https://github.com/rrnewton/hermit/pull/2706"
+  },
+  {
+    "changed_clear_to_block": false,
+    "comment_count": 0,
+    "created_at": "2026-08-27T02:05:49Z",
+    "cutoff": "2026-08-27T02:12:00+00:00",
+    "draft": false,
+    "fixed_rc": 0,
+    "fixed_reason": "no refusal marker of any shape on this pull request",
+    "head": "b70fcafe848e333d14c244fe3253ff387909e297",
+    "marker_rows": [],
+    "merged_at": "2026-08-27T02:12:00Z",
+    "number": 2708,
+    "old_rc": 0,
+    "old_reason": "no refusal marker of any shape on this pull request",
+    "state": "MERGED",
+    "title": "Preserve E2E results across retries",
+    "url": "https://github.com/rrnewton/hermit/pull/2708"
+  },
+  {
+    "changed_clear_to_block": true,
+    "comment_count": 1,
+    "created_at": "2026-08-27T02:33:49Z",
+    "cutoff": "2026-08-27T03:35:51+00:00",
+    "draft": false,
+    "fixed_rc": 1,
+    "fixed_reason": "1 of 1 refusal marker(s) were OUTRUN, not answered: claude@62115a443b7f by hermit-106. The sha moved so they no longer name fed4cab57144, and NO entitled withdrawal says the objection was addressed. This gate cannot tell a reviewer who read the delta from an author who pushed past the objection, and it will not assert the benign reading. For a named refusal, the refusing member posts CHANGES-REQUESTED-WITHDRAWN-AT at the sha it refused; an unsigned refusal is retired by an exact `RETIRES <comment-id>`.",
+    "head": "fed4cab5714488bf3645ee8973f8dcd0c77f8458",
+    "marker_rows": [
+      {
+        "id": 5433834466,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "claude",
+        "sha": "62115a443b7f049f52e7e30dbea3f76be78707e5"
+      }
+    ],
+    "merged_at": "2026-08-27T03:35:51Z",
+    "number": 2709,
+    "old_rc": 0,
+    "old_reason": "1 of 1 refusal marker(s) were OUTRUN, not answered: claude@62115a443b7f by hermit-106. The sha moved so they no longer name fed4cab57144, and NO entitled withdrawal says the objection was addressed. This gate cannot tell a reviewer who read the delta from an author who pushed past the objection, and it will not assert the benign reading. For a named refusal, the refusing member posts CHANGES-REQUESTED-WITHDRAWN-AT at the sha it refused; an unsigned refusal is retired by an exact `RETIRES <comment-id>`.",
+    "state": "MERGED",
+    "title": "[hermit2, hermit-135, unresolved, devbig014, role=impl] Keep an absent divergence coordinate meaning \"older record\", not \"found nothing\"",
+    "url": "https://github.com/rrnewton/hermit/pull/2709"
+  },
+  {
+    "changed_clear_to_block": false,
+    "comment_count": 1,
+    "created_at": "2026-08-27T02:59:54Z",
+    "cutoff": "2026-08-27T04:10:11+00:00",
+    "draft": false,
+    "fixed_rc": 0,
+    "fixed_reason": "no refusal marker of any shape on this pull request",
+    "head": "f7d52e1637ca4c8e76527142def370e3f2e0fd35",
+    "marker_rows": [],
+    "merged_at": "2026-08-27T04:10:11Z",
+    "number": 2710,
+    "old_rc": 0,
+    "old_reason": "no refusal marker of any shape on this pull request",
+    "state": "MERGED",
+    "title": "Share the stderr diagnostic deadline across the invocation, so the process count stops being a factor",
+    "url": "https://github.com/rrnewton/hermit/pull/2710"
+  },
+  {
+    "changed_clear_to_block": true,
+    "comment_count": 1,
+    "created_at": "2026-08-27T03:02:29Z",
+    "cutoff": "2026-08-27T03:35:59+00:00",
+    "draft": false,
+    "fixed_rc": 1,
+    "fixed_reason": "1 of 1 refusal marker(s) were OUTRUN, not answered: claude@d0940378f68f by hermit-106. The sha moved so they no longer name 9963ae2c2280, and NO entitled withdrawal says the objection was addressed. This gate cannot tell a reviewer who read the delta from an author who pushed past the objection, and it will not assert the benign reading. For a named refusal, the refusing member posts CHANGES-REQUESTED-WITHDRAWN-AT at the sha it refused; an unsigned refusal is retired by an exact `RETIRES <comment-id>`.",
+    "head": "9963ae2c2280ed75d685d1192da88d904e609ad3",
+    "marker_rows": [
+      {
+        "id": 5433968017,
+        "kind": "CHANGES-REQUESTED-AT",
+        "lane": "claude",
+        "sha": "d0940378f68fa13255c6a5fcd7e59303dc071c10"
+      }
+    ],
+    "merged_at": "2026-08-27T03:35:59Z",
+    "number": 2711,
+    "old_rc": 0,
+    "old_reason": "1 of 1 refusal marker(s) were OUTRUN, not answered: claude@d0940378f68f by hermit-106. The sha moved so they no longer name 9963ae2c2280, and NO entitled withdrawal says the objection was addressed. This gate cannot tell a reviewer who read the delta from an author who pushed past the objection, and it will not assert the benign reading. For a named refusal, the refusing member posts CHANGES-REQUESTED-WITHDRAWN-AT at the sha it refused; an unsigned refusal is retired by an exact `RETIRES <comment-id>`.",
+    "state": "MERGED",
+    "title": "[hermit2, hermit-135, unresolved, devbig014, role=impl] A cell that never produced a comparison must not be recorded as diverged",
+    "url": "https://github.com/rrnewton/hermit/pull/2711"
+  },
+  {
+    "changed_clear_to_block": false,
+    "comment_count": 0,
+    "created_at": "2026-08-27T03:22:30Z",
+    "cutoff": "2026-08-27T03:23:08+00:00",
+    "draft": false,
+    "fixed_rc": 0,
+    "fixed_reason": "no refusal marker of any shape on this pull request",
+    "head": "b466906fa396c5f9429898de59dcf617b601fa18",
+    "marker_rows": [],
+    "merged_at": "2026-08-27T03:23:08Z",
+    "number": 2712,
+    "old_rc": 0,
+    "old_reason": "no refusal marker of any shape on this pull request",
+    "state": "MERGED",
+    "title": "[hermit2, hermit-135, unresolved, devbig014, role=impl] Read the terminal attempt, so a retried cell is not discarded whole",
+    "url": "https://github.com/rrnewton/hermit/pull/2712"
+  },
+  {
+    "changed_clear_to_block": false,
+    "comment_count": 1,
+    "created_at": "2026-08-27T03:36:47Z",
+    "cutoff": "2026-08-27T04:12:09+00:00",
+    "draft": false,
+    "fixed_rc": 0,
+    "fixed_reason": "no refusal marker of any shape on this pull request",
+    "head": "aa47da3fe4956936d7be8ded08be0649d473b6e0",
+    "marker_rows": [],
+    "merged_at": "2026-08-27T04:12:09Z",
+    "number": 2713,
+    "old_rc": 0,
+    "old_reason": "no refusal marker of any shape on this pull request",
+    "state": "MERGED",
+    "title": "Retain every appended pressure-test attempt",
+    "url": "https://github.com/rrnewton/hermit/pull/2713"
+  },
+  {
+    "changed_clear_to_block": false,
+    "comment_count": 0,
+    "created_at": "2026-08-27T03:47:44Z",
+    "cutoff": "2026-08-27T03:48:01+00:00",
+    "draft": false,
+    "fixed_rc": 0,
+    "fixed_reason": "no refusal marker of any shape on this pull request",
+    "head": "2c31ec076152d15104d5fdbb71403ff304477dee",
+    "marker_rows": [],
+    "merged_at": "2026-08-27T03:48:01Z",
+    "number": 2714,
+    "old_rc": 0,
+    "old_reason": "no refusal marker of any shape on this pull request",
+    "state": "MERGED",
+    "title": "[hermit2, hermit-135, unresolved, devbig014, role=impl] Record a red cell's earlier diverging attempt instead of dropping it when a retry passes",
+    "url": "https://github.com/rrnewton/hermit/pull/2714"
+  },
+  {
+    "changed_clear_to_block": false,
+    "comment_count": 1,
+    "created_at": "2026-08-27T04:55:06Z",
+    "cutoff": "2026-08-27T04:58:38+00:00",
+    "draft": false,
+    "fixed_rc": 0,
+    "fixed_reason": "no refusal marker of any shape on this pull request",
+    "head": "76df848a8b7e7f717d385c15eb0ee8552b1652e3",
+    "marker_rows": [],
+    "merged_at": "2026-08-27T04:58:38Z",
+    "number": 2716,
+    "old_rc": 0,
+    "old_reason": "no refusal marker of any shape on this pull request",
+    "state": "MERGED",
+    "title": "Correct remaining KVM parity documentation details",
+    "url": "https://github.com/rrnewton/hermit/pull/2716"
+  },
+  {
+    "changed_clear_to_block": false,
+    "comment_count": 1,
+    "created_at": "2026-08-27T05:22:24Z",
+    "cutoff": "2026-08-27T10:28:52+00:00",
+    "draft": true,
+    "fixed_rc": 0,
+    "fixed_reason": "no refusal marker of any shape on this pull request",
+    "head": "89f6eaa95f20ddd3459ff680b59486b769099c13",
+    "marker_rows": [],
+    "merged_at": null,
+    "number": 2717,
+    "old_rc": 0,
+    "old_reason": "no refusal marker of any shape on this pull request",
+    "state": "OPEN",
+    "title": "Record first divergence points from the red-cell pass",
+    "url": "https://github.com/rrnewton/hermit/pull/2717"
+  },
+  {
+    "changed_clear_to_block": false,
+    "comment_count": 1,
+    "created_at": "2026-08-27T05:42:15Z",
+    "cutoff": "2026-08-27T10:17:48+00:00",
+    "draft": false,
+    "fixed_rc": 0,
+    "fixed_reason": "no refusal marker of any shape on this pull request",
+    "head": "e59cb527d8b47c215bc8af7163825fe9b4d9bd18",
+    "marker_rows": [],
+    "merged_at": "2026-08-27T10:17:48Z",
+    "number": 2718,
+    "old_rc": 0,
+    "old_reason": "no refusal marker of any shape on this pull request",
+    "state": "MERGED",
+    "title": "Project series rows into scorecard observations",
+    "url": "https://github.com/rrnewton/hermit/pull/2718"
+  },
+  {
+    "changed_clear_to_block": false,
+    "comment_count": 1,
+    "created_at": "2026-08-27T06:01:30Z",
+    "cutoff": "2026-08-27T07:34:29+00:00",
+    "draft": false,
+    "fixed_rc": 0,
+    "fixed_reason": "no refusal marker of any shape on this pull request",
+    "head": "490e67e1f2881161e6144c0015556a7fabc6798a",
+    "marker_rows": [],
+    "merged_at": "2026-08-27T07:34:29Z",
+    "number": 2719,
+    "old_rc": 0,
+    "old_reason": "no refusal marker of any shape on this pull request",
+    "state": "MERGED",
+    "title": "[hermit2, hermit-127, unresolved, devbig014, role=impl] Display scorecard measurement separately",
+    "url": "https://github.com/rrnewton/hermit/pull/2719"
+  },
+  {
+    "changed_clear_to_block": false,
+    "comment_count": 0,
+    "created_at": "2026-08-27T06:25:12Z",
+    "cutoff": "2026-08-27T07:34:42+00:00",
+    "draft": false,
+    "fixed_rc": 0,
+    "fixed_reason": "no refusal marker of any shape on this pull request",
+    "head": "e3d7fe07663b2dd9eed85f56e363db0e39dce849",
+    "marker_rows": [],
+    "merged_at": "2026-08-27T07:34:42Z",
+    "number": 2720,
+    "old_rc": 0,
+    "old_reason": "no refusal marker of any shape on this pull request",
+    "state": "MERGED",
+    "title": "Run the shard-coverage guard in the lane that executes, and assign the node it named",
+    "url": "https://github.com/rrnewton/hermit/pull/2720"
+  },
+  {
+    "changed_clear_to_block": false,
+    "comment_count": 0,
+    "created_at": "2026-08-27T06:37:12Z",
+    "cutoff": "2026-08-27T07:22:16+00:00",
+    "draft": false,
+    "fixed_rc": 0,
+    "fixed_reason": "no refusal marker of any shape on this pull request",
+    "head": "72b2b99ac807f9e6acddf9e6059932e45ae68adc",
+    "marker_rows": [],
+    "merged_at": "2026-08-27T07:22:16Z",
+    "number": 2721,
+    "old_rc": 0,
+    "old_reason": "no refusal marker of any shape on this pull request",
+    "state": "MERGED",
+    "title": "Record why test.hermit_unit is pinned to nextest -j 1",
+    "url": "https://github.com/rrnewton/hermit/pull/2721"
+  },
+  {
+    "changed_clear_to_block": false,
+    "comment_count": 0,
+    "created_at": "2026-08-27T06:51:06Z",
+    "cutoff": "2026-08-27T07:55:38+00:00",
+    "draft": false,
+    "fixed_rc": 0,
+    "fixed_reason": "no refusal marker of any shape on this pull request",
+    "head": "7d79451b8ce17e4d46c0467d69918d354c75dd4f",
+    "marker_rows": [],
+    "merged_at": "2026-08-27T07:55:38Z",
+    "number": 2722,
+    "old_rc": 0,
+    "old_reason": "no refusal marker of any shape on this pull request",
+    "state": "MERGED",
+    "title": "Report validate results by individual test id",
+    "url": "https://github.com/rrnewton/hermit/pull/2722"
+  },
+  {
+    "changed_clear_to_block": false,
+    "comment_count": 0,
+    "created_at": "2026-08-27T07:19:37Z",
+    "cutoff": "2026-08-27T07:34:54+00:00",
+    "draft": false,
+    "fixed_rc": 0,
+    "fixed_reason": "no refusal marker of any shape on this pull request",
+    "head": "bf3fa23685baa5cf34e3804f75b43ea04718c488",
+    "marker_rows": [],
+    "merged_at": "2026-08-27T07:34:54Z",
+    "number": 2723,
+    "old_rc": 0,
+    "old_reason": "no refusal marker of any shape on this pull request",
+    "state": "MERGED",
+    "title": "Make the two rust-scripts clippy-clean that were failing the node gating all twenty",
+    "url": "https://github.com/rrnewton/hermit/pull/2723"
+  },
+  {
+    "changed_clear_to_block": false,
+    "comment_count": 0,
+    "created_at": "2026-08-27T08:06:27Z",
+    "cutoff": "2026-08-27T10:28:52+00:00",
+    "draft": false,
+    "fixed_rc": 0,
+    "fixed_reason": "no refusal marker of any shape on this pull request",
+    "head": "53ecdac33868376c384dad19bf1de84a1d2faaa5",
+    "marker_rows": [],
+    "merged_at": null,
+    "number": 2724,
+    "old_rc": 0,
+    "old_reason": "no refusal marker of any shape on this pull request",
+    "state": "OPEN",
+    "title": "DBT verify: retain the two captures under the names the harness scans for",
+    "url": "https://github.com/rrnewton/hermit/pull/2724"
+  },
+  {
+    "changed_clear_to_block": false,
+    "comment_count": 0,
+    "created_at": "2026-08-27T08:56:29Z",
+    "cutoff": "2026-08-27T10:28:52+00:00",
+    "draft": false,
+    "fixed_rc": 0,
+    "fixed_reason": "no refusal marker of any shape on this pull request",
+    "head": "cc8c899eb64a4235eaf5c1ebf4805bd6890f5a60",
+    "marker_rows": [],
+    "merged_at": null,
+    "number": 2725,
+    "old_rc": 0,
+    "old_reason": "no refusal marker of any shape on this pull request",
+    "state": "OPEN",
+    "title": "Correct eight stale DBT cell reasons",
+    "url": "https://github.com/rrnewton/hermit/pull/2725"
+  },
+  {
+    "changed_clear_to_block": false,
+    "comment_count": 0,
+    "created_at": "2026-08-27T09:17:06Z",
+    "cutoff": "2026-08-27T09:19:14+00:00",
+    "draft": false,
+    "fixed_rc": 0,
+    "fixed_reason": "no refusal marker of any shape on this pull request",
+    "head": "51f88c999f4461f7670e1be0d048faf34bd0c6a1",
+    "marker_rows": [],
+    "merged_at": "2026-08-27T09:19:14Z",
+    "number": 2726,
+    "old_rc": 0,
+    "old_reason": "no refusal marker of any shape on this pull request",
+    "state": "MERGED",
+    "title": "Import retained canonical scorecard comparisons",
+    "url": "https://github.com/rrnewton/hermit/pull/2726"
+  },
+  {
+    "changed_clear_to_block": false,
+    "comment_count": 0,
+    "created_at": "2026-08-27T09:41:04Z",
+    "cutoff": "2026-08-27T09:42:40+00:00",
+    "draft": false,
+    "fixed_rc": 0,
+    "fixed_reason": "no refusal marker of any shape on this pull request",
+    "head": "c078ab5c58c49aff34b361d31c29e1e31f48e350",
+    "marker_rows": [],
+    "merged_at": "2026-08-27T09:42:40Z",
+    "number": 2727,
+    "old_rc": 0,
+    "old_reason": "no refusal marker of any shape on this pull request",
+    "state": "MERGED",
+    "title": "Generate scorecard prose from its tables",
+    "url": "https://github.com/rrnewton/hermit/pull/2727"
+  },
+  {
+    "changed_clear_to_block": false,
+    "comment_count": 0,
+    "created_at": "2026-08-27T09:55:57Z",
+    "cutoff": "2026-08-27T09:58:50+00:00",
+    "draft": false,
+    "fixed_rc": 0,
+    "fixed_reason": "no refusal marker of any shape on this pull request",
+    "head": "0d1c5be7b14678af1100132b24e9418bb72551ea",
+    "marker_rows": [],
+    "merged_at": "2026-08-27T09:58:50Z",
+    "number": 2728,
+    "old_rc": 0,
+    "old_reason": "no refusal marker of any shape on this pull request",
+    "state": "MERGED",
+    "title": "Derive review lint labels from the shared contract",
+    "url": "https://github.com/rrnewton/hermit/pull/2728"
+  },
+  {
+    "changed_clear_to_block": false,
+    "comment_count": 0,
+    "created_at": "2026-08-27T09:57:03Z",
+    "cutoff": "2026-08-27T10:28:52+00:00",
+    "draft": false,
+    "fixed_rc": 0,
+    "fixed_reason": "no refusal marker of any shape on this pull request",
+    "head": "82199367f291e5cfa40aea02be035ed73a138f33",
+    "marker_rows": [],
+    "merged_at": null,
+    "number": 2729,
+    "old_rc": 0,
+    "old_reason": "no refusal marker of any shape on this pull request",
+    "state": "OPEN",
+    "title": "Stop a public doc comment linking to a private item, which reds doc.rustdoc",
+    "url": "https://github.com/rrnewton/hermit/pull/2729"
+  },
+  {
+    "changed_clear_to_block": false,
+    "comment_count": 0,
+    "created_at": "2026-08-27T10:17:03Z",
+    "cutoff": "2026-08-27T10:18:19+00:00",
+    "draft": false,
+    "fixed_rc": 0,
+    "fixed_reason": "no refusal marker of any shape on this pull request",
+    "head": "7f61c5fd418dbddae558f44c501c85d736a5fe15",
+    "marker_rows": [],
+    "merged_at": "2026-08-27T10:18:19Z",
+    "number": 2730,
+    "old_rc": 0,
+    "old_reason": "no refusal marker of any shape on this pull request",
+    "state": "MERGED",
+    "title": "Preserve the SaBRe TLS divergence records",
+    "url": "https://github.com/rrnewton/hermit/pull/2730"
+  },
+  {
+    "changed_clear_to_block": false,
+    "comment_count": 0,
+    "created_at": "2026-08-27T10:18:26Z",
+    "cutoff": "2026-08-27T10:28:52+00:00",
+    "draft": false,
+    "fixed_rc": 0,
+    "fixed_reason": "no refusal marker of any shape on this pull request",
+    "head": "09a1fcf83bc0e21532acf45b43d6dae4be5d3605",
+    "marker_rows": [],
+    "merged_at": null,
+    "number": 2731,
+    "old_rc": 0,
+    "old_reason": "no refusal marker of any shape on this pull request",
+    "state": "OPEN",
+    "title": "Use canonical names for DBT verification logs",
+    "url": "https://github.com/rrnewton/hermit/pull/2731"
+  },
+  {
+    "changed_clear_to_block": false,
+    "comment_count": 0,
+    "created_at": "2026-08-27T10:20:29Z",
+    "cutoff": "2026-08-27T10:28:52+00:00",
+    "draft": false,
+    "fixed_rc": 0,
+    "fixed_reason": "no refusal marker of any shape on this pull request",
+    "head": "5982d0d684238ef2797e7a5bf5db66719f8f43e8",
+    "marker_rows": [],
+    "merged_at": null,
+    "number": 2733,
+    "old_rc": 0,
+    "old_reason": "no refusal marker of any shape on this pull request",
+    "state": "OPEN",
+    "title": "Report completed runs with PMU overshoots",
+    "url": "https://github.com/rrnewton/hermit/pull/2733"
+  },
+  {
+    "changed_clear_to_block": false,
+    "comment_count": 0,
+    "created_at": "2026-08-27T10:26:27Z",
+    "cutoff": "2026-08-27T10:28:52+00:00",
+    "draft": false,
+    "fixed_rc": 0,
+    "fixed_reason": "no refusal marker of any shape on this pull request",
+    "head": "8f7b74095e57aaea73bd5e0539b92622a6a6003a",
+    "marker_rows": [],
+    "merged_at": null,
+    "number": 2734,
+    "old_rc": 0,
+    "old_reason": "no refusal marker of any shape on this pull request",
+    "state": "OPEN",
+    "title": "Stage the LiteInst revision with its runtime",
+    "url": "https://github.com/rrnewton/hermit/pull/2734"
+  },
+  {
+    "changed_clear_to_block": false,
+    "comment_count": 0,
+    "created_at": "2026-08-27T10:28:13Z",
+    "cutoff": "2026-08-27T10:28:52+00:00",
+    "draft": false,
+    "fixed_rc": 0,
+    "fixed_reason": "no refusal marker of any shape on this pull request",
+    "head": "b4ddcd717237faa5c2eac734ca170c5b2bd29e81",
+    "marker_rows": [],
+    "merged_at": null,
+    "number": 2735,
+    "old_rc": 0,
+    "old_reason": "no refusal marker of any shape on this pull request",
+    "state": "OPEN",
+    "title": "Replace four stale pre-#2558 exit-1 assertions with the named hermit failure constant",
+    "url": "https://github.com/rrnewton/hermit/pull/2735"
+  },
+  {
+    "changed_clear_to_block": false,
+    "comment_count": 0,
+    "created_at": "2026-08-27T10:28:30Z",
+    "cutoff": "2026-08-27T10:28:52+00:00",
+    "draft": false,
+    "fixed_rc": 0,
+    "fixed_reason": "no refusal marker of any shape on this pull request",
+    "head": "01b421f241b52ef11d9143fb1679e4d512fb2b5a",
+    "marker_rows": [],
+    "merged_at": null,
+    "number": 2736,
+    "old_rc": 0,
+    "old_reason": "no refusal marker of any shape on this pull request",
+    "state": "OPEN",
+    "title": "Repair backend-parity host tmp fixtures",
+    "url": "https://github.com/rrnewton/hermit/pull/2736"
+  }
+]
