@@ -118,7 +118,10 @@ fn record_with_dbt_tool(number: i32) {
 
 #[test]
 fn syscall_counter_global_aggregates_across_fork_tree() {
-    let dir = tempfile::tempdir().expect("tempdir");
+    // The centralized validator gives TMPDIR an intentionally long isolated
+    // path. Unix-domain socket paths have a much smaller fixed limit, so keep
+    // this randomly named test directory directly under /tmp.
+    let dir = tempfile::tempdir_in("/tmp").expect("tempdir");
     let socket = dir.path().join("dbt-rpc.sock");
 
     // Coordinator: serve one shared global on a dedicated tokio runtime thread.
