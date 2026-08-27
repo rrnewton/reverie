@@ -259,3 +259,73 @@ def test_missing_prior_log_cannot_confirm_a_solo_rerun(tmp_path: Path) -> None:
     )
 
     assert evidence["solo_rerun_confirmation"] is False
+
+
+def cell_results(test: str) -> dict[str, object]:
+    return {
+        "cells": [
+            {
+                "lane": "portable",
+                "category": "applications",
+                "test": test,
+                "mode": "verify",
+                "backend": "ptrace",
+                "cell_verdict": {
+                    "state": "compared-and-diverged",
+                    "comparison_tier": "canonical-bitwise",
+                },
+            }
+        ]
+    }
+
+
+def test_aggregate_node_sibling_does_not_confirm_an_exact_cell() -> None:
+    current_test = "applications/git-repository-workflow"
+    current_cell = f"{current_test}/verify/ptrace"
+    old = prior(
+        gates=[
+            {
+                "name": "e2e.manifest_applications",
+                "result": "fail",
+                "failure_origin": "outer_gate",
+                "failed_substeps": [],
+            }
+        ],
+        failed_cells=["applications/c-toolchain-workflow/verify/ptrace"],
+    )
+    evidence = MODULE.build_evidence(
+        log_text="[e2e.manifest_applications] ✗ FAIL   applications\n",
+        registry={current_cell},
+        prior=[old],
+        commit=COMMIT,
+        dag_jobs=4,
+        concurrent_validates=0,
+        cell_results=cell_results(current_test),
+    )
+    assert evidence["solo_rerun_confirmation"] is False
+
+
+def test_same_exact_cell_can_confirm_a_prior_aggregate_failure() -> None:
+    current_test = "applications/git-repository-workflow"
+    current_cell = f"{current_test}/verify/ptrace"
+    old = prior(
+        gates=[
+            {
+                "name": "e2e.manifest_applications",
+                "result": "fail",
+                "failure_origin": "outer_gate",
+                "failed_substeps": [],
+            }
+        ],
+        failed_cells=[current_cell],
+    )
+    evidence = MODULE.build_evidence(
+        log_text="[e2e.manifest_applications] ✗ FAIL   applications\n",
+        registry={current_cell},
+        prior=[old],
+        commit=COMMIT,
+        dag_jobs=4,
+        concurrent_validates=0,
+        cell_results=cell_results(current_test),
+    )
+    assert evidence["solo_rerun_confirmation"] is True

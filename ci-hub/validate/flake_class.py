@@ -13,9 +13,10 @@ Two MEASURED false-red sources, both real:
   1. CONTENTION on the shared cargo package cache / build dir: #1592 FAILED at
      ``-j16`` (concurrent with other validates) and PASSED at ``-j4`` solo — and
      ``-j4`` was faster. The red was contention, not a defect.
-  2. A measured FLAKY CELL: ``command_strict_verify`` was 9 PASS / 1 FAIL of 10
-     under identical conditions. One run of it is a 90/10 coin; one tail lands a
-     permanent red. See ``flaky-cells.json``.
+  2. A measured FLAKY CELL: the generated ``flaky-cells.json`` lists an exact
+     ``test/mode/backend`` cell only after both passed and diverged comparisons
+     were observed at one exact Hermit tree. A single red for that same cell and
+     tree therefore needs re-measurement instead of becoming permanent evidence.
 
 This is the READ-SIDE half (parent tooling): it reclassifies already-recorded
 reds so the false ones surface for re-measurement, and it works retroactively on
@@ -33,10 +34,12 @@ judges.
 from __future__ import annotations
 
 import datetime as dt
-import json
 import os
 import re
 from dataclasses import dataclass, field
+from pathlib import Path
+
+import flaky_cells as flaky_registry
 
 # A DAG node's own per-node verdict line, e.g.:
 #   [test.command_strict_verify] ✗ FAIL   Portable command strict verification (113s, exit 101)
@@ -275,18 +278,26 @@ def failure_tier(record: dict) -> str:
     return "ok"
 
 
-def load_registry(path: str = FLAKY_REGISTRY_PATH) -> dict[str, dict]:
-    """Return {cell_name: entry}. Missing/invalid file -> empty registry."""
+def load_registry(path: str = FLAKY_REGISTRY_PATH) -> dict[tuple[str, str], dict]:
+    """Return {(exact cell id, tree): entry}. Missing/invalid file -> empty."""
     try:
-        with open(path) as fh:
-            data = json.load(fh)
-    except (OSError, json.JSONDecodeError):
+        data = flaky_registry.load_registry(Path(path))
+    except ValueError:
         return {}
-    out: dict[str, dict] = {}
+    out = {}
     for entry in data.get("cells", []):
-        if isinstance(entry, dict) and entry.get("cell"):
-            out[str(entry["cell"])] = entry
+        if isinstance(entry, dict) and entry.get("cell") and entry.get("tree"):
+            out[(str(entry["cell"]), str(entry["tree"]))] = entry
     return out
+
+
+def _registry_entry(registry: dict, cell: str, tree: object) -> dict | None:
+    """Read schema-2 keys while retaining synthetic legacy-test compatibility."""
+    entry = registry.get((cell, str(tree or "")))
+    if isinstance(entry, dict):
+        return entry
+    legacy = registry.get(cell)
+    return legacy if isinstance(legacy, dict) else None
 
 
 def parse_failing_cells(log_path: str | None) -> list[str]:
@@ -439,8 +450,17 @@ def classify(
         )
 
     jobs = record.get("jobs")  # schema-4 producer field; None until it lands
-    failing = parse_failing_cells(record.get("log_file"))
-    flaky_hits = [c for c in failing if c in registry]
+    persisted = record.get("failed_cells")
+    failing = (
+        [str(cell) for cell in persisted if isinstance(cell, str) and cell]
+        if isinstance(persisted, list)
+        else parse_failing_cells(record.get("log_file"))
+    )
+    flaky_hits = [
+        cell
+        for cell in failing
+        if _registry_entry(registry, cell, record.get("commit")) is not None
+    ]
     concurrent = derive_concurrent_validates(record, all_records)
 
     reasons: list[str] = []
@@ -449,7 +469,7 @@ def classify(
     if failing and flaky_hits and set(failing) == set(flaky_hits):
         verdict = "needs-rerun"
         for c in flaky_hits:
-            e = registry.get(c, {})
+            e = _registry_entry(registry, c, record.get("commit")) or {}
             reasons.append(
                 "known-flaky-cell: {} (measured {}/{}) — single FAILED is a "
                 "weighted coin, re-run solo".format(
@@ -469,11 +489,13 @@ def classify(
         if flaky_hits and verdict == "defect":
             # Mixed: a flaky cell AND a non-flaky cell failed -> real defect, but
             # surface the flaky component so a re-run separates the two.
+            non_flaky = [
+                c for c in failing
+                if _registry_entry(registry, c, record.get("commit")) is None
+            ]
             reasons.append(
                 "defect: non-flaky cell(s) also failed ({}); flaky component: "
-                "{}".format(
-                    ", ".join(c for c in failing if c not in registry),
-                    ", ".join(flaky_hits)))
+                "{}".format(", ".join(non_flaky), ", ".join(flaky_hits)))
     if verdict == "defect" and not reasons:
         reasons.append(
             "defect: no known-flaky failing cell and no overlapping validate"

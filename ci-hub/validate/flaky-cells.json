@@ -1,16 +1,19 @@
 {
-  "schema": 1,
-  "_comment": "Registry of validate cells (DAG nodes / test targets) with MEASURED instability. A single FAILED on a cell listed here is a weighted coin-flip, not proof of a defect: per the false-red-durability rule, such a red must be RE-RUN SOLO AT -j4 before it is written as a FAILURE. Add a cell ONLY with a measured pass/fail sample and its provenance; do not list a cell on suspicion. `ci-hub/validate/flake_class.py` consumes this to reclassify a fail -> needs-rerun.",
+  "schema": 2,
+  "_comment": "Generated from clean parent stress/flakiness series rows. A cell appears only when passed and diverged comparisons were both observed at the exact Hermit tree. sample_size counts compared outcomes only; no_result, timeout, errored, and skipped rows are excluded. sample_size does not state a failure rate: 29 observations with none of one outcome are needed for a 95% upper bound below 10%, and 59 for a bound below 5%.",
   "cells": [
     {
-      "cell": "command_strict_verify",
+      "cell": "applications/git-repository-workflow/verify/ptrace",
       "product": "hermit",
-      "observed_pass": 9,
-      "observed_fail": 1,
-      "sample_size": 10,
-      "measured_at": "2026-08-04",
-      "source": "tg:ledger-records-reds-without-distinguishing-flake-from-defect",
-      "note": "common_commands_are_deterministic_under_strict_verify: 9 PASS / 1 FAIL of 10 under identical conditions. Live instance 3a404879 (portable CI DAG manifest fail@221s) was this single-tail failure."
+      "tree": "dee8cf49ce6a7e3e9e2c87c930f3aa55ae83da18",
+      "observed_pass": 15,
+      "observed_fail": 5,
+      "sample_size": 20,
+      "measured_at": "2026-08-27",
+      "source": "series",
+      "producers": [
+        "pressure-test"
+      ]
     }
   ]
 }

@@ -355,6 +355,23 @@ def _enrich_failure_classification(row: dict, root: Path) -> None:
     failed_gates = [gate for gate in gates if _is_failed_gate(gate)]
     if not failed_gates:
         return
+
+    validate_dir = Path(__file__).resolve().parents[1] / "validate"
+    if str(validate_dir) not in sys.path:
+        sys.path.insert(0, str(validate_dir))
+    import failure_evidence  # noqa: PLC0415
+
+    has_cell_results, exact_failed, _ = failure_evidence.failed_cells(
+        row.get("cell_results")
+    )
+    if has_cell_results and "failed_cells" in row and row["failed_cells"] != exact_failed:
+        raise ValueError("failed_cells differ from the validated cell_results summary")
+    if has_cell_results:
+        # This field comes from the already-validated schema-6 summary, not the
+        # diagnostic log. Preserve it even if the log-side classification below
+        # is unavailable.
+        row["failed_cells"] = exact_failed
+
     log_file = row.get("log_file")
     dag_jobs = row.get("dag_jobs")
     concurrent = row.get("concurrent_validates")
@@ -371,19 +388,18 @@ def _enrich_failure_classification(row: dict, root: Path) -> None:
     ):
         return
 
-    validate_dir = Path(__file__).resolve().parents[1] / "validate"
-    if str(validate_dir) not in sys.path:
-        sys.path.insert(0, str(validate_dir))
-    import failure_evidence  # noqa: PLC0415
-
     try:
         evidence = failure_evidence.build_evidence(
             log_text=Path(log_file).read_text(errors="replace"),
-            registry=failure_evidence.flaky_cells(failure_evidence.DEFAULT_REGISTRY),
+            registry=failure_evidence.flaky_cells(
+                failure_evidence.DEFAULT_REGISTRY,
+                str(row.get("commit") or ""),
+            ),
             prior=rows(root=root),
             commit=str(row.get("commit") or ""),
             dag_jobs=dag_jobs,
             concurrent_validates=concurrent,
+            cell_results=row.get("cell_results"),
         )
     except (OSError, ValueError, json.JSONDecodeError):
         return
@@ -393,16 +409,24 @@ def _enrich_failure_classification(row: dict, root: Path) -> None:
     }
     if not failed_nodes:
         return
+    if (
+        has_cell_results
+        and "flaky_failed_cells" in row
+        and row["flaky_failed_cells"] != evidence.get("flaky_failed_cells")
+    ):
+        raise ValueError("flaky_failed_cells differ from the exact-tree registry")
     for key in (
         "failed_substeps",
         "failed_substep_classes",
+        "failed_cells",
         "first_error_line",
         "flaky_failed_substeps",
+        "flaky_failed_cells",
         "known_flaky_failure",
         "solo_rerun_confirmation",
         "solo_rerun_of",
     ):
-        if row.get(key) is None:
+        if key in evidence and row.get(key) is None:
             row[key] = evidence.get(key)
 
     unmatched = failed_nodes.difference(
@@ -486,9 +510,9 @@ def record(row: dict, *, root: Path | None = None) -> dict:
             "acceptance fixture producer is not allowed in the production ledger"
         )
     _require_local_commit(row)
+    _require_cell_results(row, root)
     _enrich_failure_classification(row, root)
     _require_gate_failure_bindings(row)
-    _require_cell_results(row, root)
     event = _event_for_row(row, root)
     target = spool(live_spool_dir(root), event["team"], event["host"], [event])
     return {

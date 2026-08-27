@@ -49,6 +49,14 @@ distinguishes a complete run from a passing subset. `RUNNER_LOGS` contains the
 incrementally flushed per-step logs and `journal.jsonl`, so a killed runner
 still leaves the last observed step and test boundaries.
 
+For schema-6 failed receipts, the ledger adapter validates the retained
+`cell_results` artifact before classification and writes `failed_cells` as exact
+`test/mode/backend` ids whose typed verdict is `compared-and-diverged`.
+`flaky_failed_cells` is the subset present in the exact-tree generated
+`flaky-cells.json`. A cell with `unavailable-with-reason` is not put in either
+list, and its presence prevents an aggregate manifest failure from being called
+known-flaky.
+
 ## Reverie centralized producer
 
 `ci-hub validate-run --repo rrnewton/reverie --checkout <reverie> --agent

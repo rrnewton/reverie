@@ -910,6 +910,102 @@ def test_contended_row_carries_evidence_but_still_requires_solo_confirmation(
     assert recorded["concurrent_validates"] == 1
 
 
+def test_failed_schema6_row_persists_exact_compared_cell_id(tmp_path: Path):
+    source = with_cell_results(
+        failed_row(tmp_path, record_id="exact-cell-failure", jobs=4, concurrent=0),
+        tmp_path,
+        "compared-and-diverged",
+    )
+
+    validate_rows.record(source, root=tmp_path)
+    [recorded] = validate_rows.rows(root=tmp_path)
+
+    assert recorded["failed_cells"] == ["hello/verify/ptrace"]
+    assert recorded["flaky_failed_cells"] == []
+    assert recorded["known_flaky_failure"] is False
+
+
+def test_failed_schema6_row_matches_only_exact_tree_registry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    source = with_cell_results(
+        failed_row(tmp_path, record_id="exact-flaky-cell", jobs=4, concurrent=0),
+        tmp_path,
+        "compared-and-diverged",
+    )
+    registry = tmp_path / "flaky-cells.json"
+    registry.write_text(json.dumps({
+        "schema": 2,
+        "cells": [{
+            "cell": "hello/verify/ptrace",
+            "product": "hermit",
+            "tree": source["commit"],
+            "observed_pass": 1,
+            "observed_fail": 1,
+            "sample_size": 2,
+            "measured_at": "2026-08-27",
+            "source": "series",
+            "producers": ["validate"],
+        }],
+    }))
+    import failure_evidence
+    monkeypatch.setattr(failure_evidence, "DEFAULT_REGISTRY", registry)
+
+    validate_rows.record(source, root=tmp_path)
+    [recorded] = validate_rows.rows(root=tmp_path)
+
+    assert recorded["failed_cells"] == ["hello/verify/ptrace"]
+    assert recorded["flaky_failed_cells"] == ["hello/verify/ptrace"]
+    assert recorded["known_flaky_failure"] is True
+
+
+def test_failed_schema6_row_does_not_turn_no_result_into_a_failed_cell(
+    tmp_path: Path,
+):
+    source = with_cell_results(
+        failed_row(tmp_path, record_id="no-result-cell", jobs=4, concurrent=0),
+        tmp_path,
+        "unavailable-with-reason",
+    )
+
+    validate_rows.record(source, root=tmp_path)
+    [recorded] = validate_rows.rows(root=tmp_path)
+
+    assert recorded["failed_cells"] == []
+    assert recorded["flaky_failed_cells"] == []
+    assert recorded["known_flaky_failure"] is False
+
+
+def test_schema6_failed_cell_survives_when_the_failure_log_is_missing(tmp_path: Path):
+    source = with_cell_results(
+        failed_row(tmp_path, record_id="missing-log-exact-cell", jobs=4, concurrent=0),
+        tmp_path,
+        "compared-and-diverged",
+    )
+    Path(source["log_file"]).unlink()
+
+    validate_rows.record(source, root=tmp_path)
+    [recorded] = validate_rows.rows(root=tmp_path)
+
+    assert recorded["failed_cells"] == ["hello/verify/ptrace"]
+    assert "flaky_failed_cells" not in recorded
+    assert "known_flaky_failure" not in recorded
+
+
+def test_schema6_cannot_override_the_exact_failed_cell_ids(tmp_path: Path):
+    source = with_cell_results(
+        failed_row(tmp_path, record_id="false-failed-cell", jobs=4, concurrent=0),
+        tmp_path,
+        "compared-and-diverged",
+    )
+    source["failed_cells"] = ["applications/not-the-measured-cell/verify/ptrace"]
+
+    with pytest.raises(ValueError, match="failed_cells differ"):
+        validate_rows.record(source, root=tmp_path)
+
+    assert validate_rows.events(root=tmp_path) == []
+
+
 def test_missing_failure_log_stays_unclassified_and_cannot_look_durable(
     tmp_path: Path,
 ):

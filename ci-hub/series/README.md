@@ -109,6 +109,21 @@ current/on-write main ancestry, depth, outcome, run span, `run1`/`run2`
 scheduler turns, virtual nanoseconds, syscall counts, wall-time range, producer,
 and run id. An empty result prints `no runs recorded` and exits nonzero.
 
+## Derived flaky cells
+
+Regenerate the measured-flake registry from the published series with:
+
+```sh
+python3 ci-hub/validate/flaky_cells.py derive --parent .
+```
+
+The command groups rows by exact `cell` and exact Hermit `tree`, requires both
+`passed` and `diverged` in that population, expands `num_runs`, and records
+`observed_pass`, `observed_fail`, and `sample_size`. `no_result`, `timeout`,
+`errored`, `skipped`, and dirty-source rows contribute nothing. A small sample
+records observed instability only; it is not presented as a failure-rate
+estimate.
+
 ## Raw positions, not bounds
 
 Coordinates are stored as **raw positions, one value per run**. `{earliest,

@@ -489,6 +489,107 @@ def test_build_evidence_first_error_line_is_none_on_a_clean_run():
     assert ev["failed_substeps"] == []
 
 
+def _cell_result(test: str, state: str) -> dict:
+    verdict = {
+        "state": state,
+        "comparison_tier": "canonical-bitwise",
+    }
+    if state == "unavailable-with-reason":
+        verdict["reason"] = "raw no_result: comparator output absent"
+    return {
+        "lane": "portable",
+        "category": "applications",
+        "test": test,
+        "mode": "verify",
+        "backend": "ptrace",
+        "cell_verdict": verdict,
+    }
+
+
+def test_exact_failed_cell_drives_flake_classification() -> None:
+    test = "applications/git-repository-workflow"
+    cell = f"{test}/verify/ptrace"
+    evidence = build_evidence(
+        log_text=_fail("e2e.manifest_applications", "FAIL exact compared cell"),
+        registry={cell},
+        prior=[],
+        commit="a" * 40,
+        dag_jobs=4,
+        concurrent_validates=0,
+        cell_results={"cells": [_cell_result(test, "compared-and-diverged")]},
+    )
+    assert evidence["failed_cells"] == [cell]
+    assert evidence["flaky_failed_cells"] == [cell]
+    assert evidence["flaky_failed_substeps"] == []
+    assert evidence["known_flaky_failure"] is True
+
+
+def test_unavailable_cell_is_not_a_failure_and_blocks_flake_classification() -> None:
+    flaky_test = "applications/git-repository-workflow"
+    unavailable_test = "applications/timed-progress-bar"
+    flaky_cell = f"{flaky_test}/verify/ptrace"
+    evidence = build_evidence(
+        log_text=_fail("e2e.manifest_applications", "FAIL aggregate cell result"),
+        registry={flaky_cell},
+        prior=[],
+        commit="a" * 40,
+        dag_jobs=4,
+        concurrent_validates=0,
+        cell_results={
+            "cells": [
+                _cell_result(flaky_test, "compared-and-diverged"),
+                _cell_result(unavailable_test, "unavailable-with-reason"),
+            ]
+        },
+    )
+    assert evidence["failed_cells"] == [flaky_cell]
+    assert unavailable_test not in " ".join(evidence["failed_cells"])
+    assert evidence["known_flaky_failure"] is False
+
+
+def test_one_flaky_cell_does_not_cover_a_different_failed_sibling() -> None:
+    flaky_test = "applications/git-repository-workflow"
+    other_test = "applications/c-toolchain-workflow"
+    flaky_cell = f"{flaky_test}/verify/ptrace"
+    other_cell = f"{other_test}/verify/ptrace"
+    evidence = build_evidence(
+        log_text=_fail("e2e.manifest_applications", "FAIL two compared cells"),
+        registry={flaky_cell},
+        prior=[],
+        commit="a" * 40,
+        dag_jobs=4,
+        concurrent_validates=0,
+        cell_results={
+            "cells": [
+                _cell_result(flaky_test, "compared-and-diverged"),
+                _cell_result(other_test, "compared-and-diverged"),
+            ]
+        },
+    )
+    assert evidence["failed_cells"] == [other_cell, flaky_cell]
+    assert evidence["flaky_failed_cells"] == [flaky_cell]
+    assert evidence["known_flaky_failure"] is False
+
+
+def test_exact_cell_does_not_hide_a_non_manifest_failure() -> None:
+    test = "applications/git-repository-workflow"
+    cell = f"{test}/verify/ptrace"
+    log = _fail("e2e.manifest_applications", "FAIL exact compared cell") + _fail(
+        "test.cli", "test result: FAILED. 1 failed"
+    )
+    evidence = build_evidence(
+        log_text=log,
+        registry={cell},
+        prior=[],
+        commit="a" * 40,
+        dag_jobs=4,
+        concurrent_validates=0,
+        cell_results={"cells": [_cell_result(test, "compared-and-diverged")]},
+    )
+    assert evidence["flaky_failed_cells"] == [cell]
+    assert evidence["known_flaky_failure"] is False
+
+
 # --- Mutation 7: a MISSING HOST INTERPRETER is host-environment, not code -----
 #
 # The hermit #1711 defect (`validate_ledger_misclassifies_a`), replayed from the

@@ -3,8 +3,9 @@
 
 The shared Rust ``validate_status`` reader is the sole verdict authority. This
 producer helper only binds a raw ledger row to observable facts: failed DAG
-substeps, membership in the measured-flake registry, and whether this exact
-commit/cell is a solo ``-j 4`` reproduction of an earlier rerun-required red.
+substeps, exact failed test/mode/backend cells, membership in the measured-flake
+registry, and whether this exact commit/cell is a solo ``-j 4`` reproduction of
+an earlier rerun-required red.
 """
 
 from __future__ import annotations
@@ -19,8 +20,12 @@ from typing import Mapping
 
 
 CI_HUB = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import flaky_cells as flaky_registry  # noqa: E402
+
 sys.path.insert(0, str(CI_HUB / "remediation"))
 from nonzero_result import per_node_counts  # noqa: E402
+
 sys.path.insert(0, str(CI_HUB / "ledger"))
 import validate_rows as canonical_ledger  # noqa: E402
 
@@ -43,18 +48,58 @@ _CONTENTION_CPU_PER_WALL = 0.5  # <= this: mostly off-CPU, i.e. waiting
 _THROTTLED_SECONDS_FLOOR = 1.0
 
 
-def flaky_cells(path: Path) -> set[str]:
-    value = json.loads(path.read_text())
-    rows = value.get("cells") if isinstance(value, Mapping) else None
-    if not isinstance(rows, list):
-        raise ValueError("flake registry cells must be a list")
-    names = set()
-    for row in rows:
-        if not isinstance(row, Mapping) or not row.get("cell"):
+def flaky_cells(path: Path, commit: str | None = None) -> set[str]:
+    """Exact cell ids measured both passing and diverging at ``commit``."""
+    registry = flaky_registry.load_registry(path)
+    if commit is None:
+        return {
+            str(entry["cell"])
+            for entry in registry["cells"]
+            if isinstance(entry, Mapping)
+        }
+    return flaky_registry.cells_for_tree(registry, commit)
+
+
+def failed_cells(cell_results: object) -> tuple[bool, list[str], list[str]]:
+    """Return (evidence present, diverged cells, cells without a comparison)."""
+    if not isinstance(cell_results, Mapping):
+        return False, [], []
+    cells = cell_results.get("cells")
+    if not isinstance(cells, list):
+        return False, [], []
+    diverged: set[str] = set()
+    unavailable: set[str] = set()
+    for cell in cells:
+        if not isinstance(cell, Mapping):
             continue
-        name = str(row["cell"])
-        names.add(name if "." in name else f"test.{name}")
-    return names
+        values = [cell.get(key) for key in ("test", "mode", "backend")]
+        if any(not isinstance(value, str) or not value for value in values):
+            continue
+        identity = "/".join(str(value) for value in values)
+        verdict = cell.get("cell_verdict")
+        state = verdict.get("state") if isinstance(verdict, Mapping) else None
+        if state == "compared-and-diverged":
+            diverged.add(identity)
+        elif state == "unavailable-with-reason":
+            unavailable.add(identity)
+    return True, sorted(diverged), sorted(unavailable)
+
+
+def observed_failed_cells(row: Mapping[str, object]) -> set[str]:
+    """Exact failed cell ids persisted in a ledger row, or empty if absent."""
+    cells = row.get("failed_cells")
+    if not isinstance(cells, list):
+        return set()
+    return {str(cell) for cell in cells if isinstance(cell, str) and cell}
+
+
+def _manifest_result_node(node: str) -> bool:
+    group, separator, job = node.partition(".")
+    return (
+        separator == "."
+        and group in {"e2e", "privileged-e2e"}
+        and job.startswith("manifest_")
+    )
 
 
 def ledger_rows(path: Path | None) -> list[dict[str, object]]:
@@ -812,9 +857,16 @@ def build_evidence(
     commit: str,
     dag_jobs: int,
     concurrent_validates: int | None,
+    cell_results: object = None,
 ) -> dict[str, object]:
     cells = failed_substeps(log_text)
     cell_set = set(cells)
+    has_cell_results, exact_failed, unavailable = failed_cells(cell_results)
+    exact_failed_set = set(exact_failed)
+    flaky_failed_cells = sorted(exact_failed_set.intersection(registry))
+    # Schema-1 registries named DAG nodes. Keep their read path for historical
+    # fixtures, but generated schema-2 entries are exact test/mode/backend ids
+    # and therefore cannot match an aggregate node by accident.
     flaky_failed = sorted(cell for cell in cells if cell in registry)
     classes = classify_failed_substeps(
         log_text, flaky_registry=registry, commit=commit
@@ -844,17 +896,34 @@ def build_evidence(
             if str(row.get("commit") or "") == commit
             and prior_requires_rerun(row)
             and not cell_set.isdisjoint(observed_failed_substeps(row))
+            and (
+                not exact_failed_set
+                or not exact_failed_set.isdisjoint(observed_failed_cells(row))
+            )
         ]
         if candidates:
             confirmation_row = max(
                 candidates, key=lambda row: str(row.get("finished_at") or "")
             )
-    return {
+    # A generated exact-cell entry may trigger the rerun rule only when every
+    # observed product failure is one of those cells. A sibling comparison
+    # failure, a cell that produced no comparison, or a non-manifest DAG-node
+    # failure keeps the row out of the measured-flake class.
+    exact_flaky_failure = (
+        has_cell_results
+        and bool(exact_failed)
+        and len(flaky_failed_cells) == len(exact_failed)
+        and not unavailable
+        and bool(cells)
+        and all(_manifest_result_node(node) for node in cells)
+    )
+    result = {
         "failed_substeps": cells,
         "failed_substep_classes": classes,
         "first_error_line": first_error_line,
         "flaky_failed_substeps": flaky_failed,
-        "known_flaky_failure": bool(flaky_failed),
+        "known_flaky_failure": exact_flaky_failure
+        or (not has_cell_results and bool(flaky_failed)),
         "solo_rerun_confirmation": confirmation_row is not None,
         "solo_rerun_of": (
             {
@@ -865,6 +934,10 @@ def build_evidence(
             else None
         ),
     }
+    if has_cell_results:
+        result["failed_cells"] = exact_failed
+        result["flaky_failed_cells"] = flaky_failed_cells
+    return result
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -885,7 +958,7 @@ def main(argv: list[str] | None = None) -> int:
             return 2
     try:
         log_text = args.log.read_text(errors="replace")
-        registry = flaky_cells(args.registry)
+        registry = flaky_cells(args.registry, args.commit)
     except (OSError, ValueError, json.JSONDecodeError) as error:
         print(f"failure_evidence: cannot load evidence: {error}", file=sys.stderr)
         return 2

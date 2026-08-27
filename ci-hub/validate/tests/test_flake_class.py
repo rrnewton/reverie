@@ -12,6 +12,44 @@ import flake_class as fc
 
 
 class CompletionTest(unittest.TestCase):
+    def exact_cell_red(self, *cells):
+        return {
+            "schema_version": 6,
+            "profile": "full",
+            "result": "fail",
+            "checks": 5,
+            "gates_run": 5,
+            "gates_expected": 5,
+            "failures": 1,
+            "commit": "a" * 40,
+            "jobs": 4,
+            "failed_cells": list(cells),
+            "gates": [
+                {
+                    "name": "e2e.manifest_applications",
+                    "result": "fail",
+                    "exit_code": 1,
+                    "real_seconds": 30,
+                }
+            ],
+        }
+
+    def test_exact_cell_registry_is_bound_to_tree_and_all_failed_cells(self):
+        flaky = "applications/git-repository-workflow/verify/ptrace"
+        sibling = "applications/c-toolchain-workflow/verify/ptrace"
+        entry = {"observed_pass": 15, "observed_fail": 5, "sample_size": 20}
+        registry = {(flaky, "a" * 40): entry}
+
+        exact = self.exact_cell_red(flaky)
+        self.assertEqual(fc.classify(exact, [exact], registry).verdict, "needs-rerun")
+
+        wrong_tree = self.exact_cell_red(flaky)
+        wrong_tree["commit"] = "b" * 40
+        self.assertEqual(fc.classify(wrong_tree, [wrong_tree], registry).verdict, "defect")
+
+        mixed = self.exact_cell_red(flaky, sibling)
+        self.assertEqual(fc.classify(mixed, [mixed], registry).verdict, "defect")
+
     def test_truncated_never_becomes_flaky_or_defect(self):
         truncated = {
             "profile": "full", "result": "fail", "checks": 2,
