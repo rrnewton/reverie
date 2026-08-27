@@ -58,10 +58,10 @@ Nothing owned by `hermit-124` is unsafe to interrupt as a running process. No re
 
 ## Uncommitted and local-only state found during checkpoint
 
-These must be inspected before cleanup; they are not part of either settled PR head:
+The two dirty worktrees were committed and pushed before stopping. They are not part of either settled PR head and must be inspected before cleanup:
 
-- `/home/newton/work/dev-hermit/worktrees/hermit-124-pmu-skid-hermit`, branch `hermit-124/pmu-skid-integration`, head `1540f91a0539e0cec8923d33220cdc316c910a0b`: ten staged Cargo manifest/lockfile edits pinning Reverie from `86d9003a...` to old PR503 head `c73b7e4e...`. The branch head is an ancestor of pushed branch `hermit-124/pmu-skid-integration-v2` at `f6706739f9374e54af36bed6587011d9a1a5673e`; the staged edits themselves are uncommitted and obsolete relative to the newer integration branch, but remain present locally.
-- `/tmp/orc-hermit-2696`, branch `hermit-124/pr-2696-takeover`, head `5fea32e55ebc7e2409ad37169d7adbd498788f64`: uncommitted edit to `scripts/bisect-probe.rs`. It contains suite-only category probing and fail-closed midpoint handling. It is not an ancestor of reviewed PR2696 head `a6c514d...`; inspect whether the final PR carries equivalent content before discarding or preserving it.
+- `/home/newton/work/dev-hermit/worktrees/hermit-124-pmu-skid-hermit`: the ten Cargo manifest/lockfile edits pinning Reverie to old PR503 head `c73b7e4e...` are preserved as commit `213bb86a69bafb5a610e7f1405a2593e7b8c3157`, remote branch `hermit-124/checkpoint-old-pmu-integration-20260827`. They are obsolete relative to the newer integration branch and must not be landed as-is.
+- `/tmp/orc-hermit-2696`: the `scripts/bisect-probe.rs` suite-only category probing and fail-closed midpoint work is preserved as commit `2477d792243f1234bcb263cc853109ce451de448`, remote branch `hermit-124/checkpoint-bisect-probe-20260827`. It is not an ancestor of reviewed PR2696 head `a6c514d...`; inspect whether the final pull request carries equivalent content before using it.
 - Clean local-only historical branches: `hermit-124/2696-brackets` at `b5fdb953f69ef9d322afa4d486f9ea2dea9512c1` and `hermit-124/2696-final` at `c1f462b619d983879b1c6abfe5d0217d34c41287`. Neither is an ancestor of `a6c514d...`; they were earlier rebased forms and are not the landing head.
 - Pushed integration branch: `hermit-124/pmu-skid-integration-v2` at `f6706739f9374e54af36bed6587011d9a1a5673e`. It pins the older settled Reverie head `e3ccb715...`; after PR503 lands it must be rebuilt from current Hermit main using the landed Reverie SHA rather than advanced as-is.
 - Pushed budget branch: `hermit-124/reverie-budget-926d` at `fe95da9af2b7dc3762c4b143535e6dc5fc9d9278`; agent(hermit-139) owns the active replacement work, so do not redo it.
@@ -84,3 +84,5 @@ From `/home/newton/work/dev-hermit`:
 5. Read `ci-hub/ci-hub validate-lock status`; do not infer the two handles above survived reboot.
 
 Unverified: no fresh exact-head review verdict or canonical validation exists yet for PR503 `d0ab063c...` or PR2733 `91442c38...`. PR503 has not landed. PR2733 has not landed. PR2696 landing status has not been rechecked after this checkpoint.
+
+Checkpoint update: Hermit `origin/main` moved after the PR2733 declaration to `26f5bc2de3d328b64c41c42ef093ecb9d89e98ab`; therefore PR2733 `91442c38...` is no longer based on current main and will need another exact-head decision after restart. Reverie PR503 remained at `d0ab063c...` on base `d3cd29e2...` at the last remote check.
