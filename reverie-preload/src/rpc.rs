@@ -303,8 +303,8 @@ mod tests {
     // connections (the property the DBT backend lacks).
     #[test]
     fn end_to_end_against_a_wire_server() {
-        let dir =
-            std::env::temp_dir().join(format!("reverie-preload-rpc-test-{}", std::process::id()));
+        let dir = std::path::Path::new("/tmp")
+            .join(format!("reverie-preload-rpc-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let sock = dir.join("coord.sock");
         let _ = std::fs::remove_file(&sock);
