@@ -82,6 +82,7 @@ sys.path.insert(0, str(ROOT / "ci-hub"))
 sys.path.insert(0, str(ROOT / "ci-hub" / "ledger"))
 import validate_rows as canonical_ledger  # noqa: E402
 import approval_binding as approval_authority  # noqa: E402
+import review_contract  # noqa: E402
 
 from check_outcome import CheckOutcome, classify_check, select_latest_checks
 from actions_job_outcome import (
@@ -206,17 +207,9 @@ _RETRYABLE_MARKERS = (
     "unexpected end of json input",
 )
 
-# Keep this exact language in sync with Hermit's
-# scripts/core-review-protocol-lint.sh. Review activity is durable and numbered;
-# approval is an unsuffixed assertion about the current head.
-_REVIEW_ROUND_LABEL = re.compile(
-    r"^adversarial-review-(?P<reviewer>codex|claude)(?P<round>[1-4])$"
-)
-_POST_FACTO_LABEL = "post-facto-human-review"
-_PASSED_REVIEW_LABELS = {
-    "codex": "passed-review-codex",
-    "claude": "passed-review-claude",
-}
+# Review activity is durable and numbered; approval is an unsuffixed assertion
+# about the current head. The writer and every reader use review_contract, so a
+# round cannot be accepted on one path and rejected on another.
 _MECHANISM_TAG_PREFIX = "mechanism:"
 HEALTH_VERDICT_RULE = (
     "ready non-draft PR GitHub check rollups (pull_request-triggered checks "
@@ -667,22 +660,29 @@ def _label_names(entry: dict[str, object]) -> set[str]:
 def _review_protocol_status(entry: dict[str, object]) -> ReviewProtocolStatus | None:
     """Classify one PR through the canonical exact-head approval verifier."""
     labels = _label_names(entry)
-    if _POST_FACTO_LABEL not in labels:
+    if review_contract.POST_FACTO_LABEL not in labels:
         return None
 
-    rounds: dict[str, set[int]] = {"codex": set(), "claude": set()}
+    rounds: dict[str, set[int]] = {
+        family: set() for family in review_contract.REVIEW_FAMILIES
+    }
     invalid_labels: list[str] = []
     for label in labels:
-        match = _REVIEW_ROUND_LABEL.fullmatch(label)
-        if match:
-            rounds[match.group("reviewer")].add(int(match.group("round")))
+        parsed_round = review_contract.parse_round_label(label)
+        if parsed_round is not None:
+            reviewer, round_number = parsed_round
+            rounds[reviewer].add(round_number)
         elif label.startswith(
-            ("adversarial-review-codex", "adversarial-review-claude")
+            tuple(
+                review_contract.round_label_prefix(family)
+                for family in review_contract.REVIEW_FAMILIES
+            )
         ):
             invalid_labels.append(label)
-        elif label.startswith(
-            ("passed-review-codex", "passed-review-claude")
-        ) and label not in _PASSED_REVIEW_LABELS.values():
+        elif (
+            label.startswith(tuple(review_contract.PASSED_REVIEW_LABELS.values()))
+            and label not in review_contract.PASSED_REVIEW_LABELS.values()
+        ):
             invalid_labels.append(label)
 
     has_round = {reviewer: bool(values) for reviewer, values in rounds.items()}
@@ -696,7 +696,7 @@ def _review_protocol_status(entry: dict[str, object]) -> ReviewProtocolStatus | 
     malformed: list[tuple[str, str]] = []
     has_approval: dict[str, bool] = {}
     unlabeled_bindings: list[str] = []
-    for reviewer, expected in _PASSED_REVIEW_LABELS.items():
+    for reviewer, expected in review_contract.PASSED_REVIEW_LABELS.items():
         if expected not in labels:
             has_approval[reviewer] = False
             # ⚠️ SAME LABEL-AS-INDEX DEFECT AS approval_binding.collect(): without
@@ -758,9 +758,9 @@ def _review_protocol_status(entry: dict[str, object]) -> ReviewProtocolStatus | 
         return "partial" if present == 1 else "missing"
 
     missing: list[str] = []
-    for reviewer in ("codex", "claude"):
+    for reviewer in review_contract.REVIEW_FAMILIES:
         if not has_round[reviewer]:
-            missing.append(f"review-round-{reviewer}")
+            missing.append(review_contract.missing_round_requirement(reviewer))
         if not has_approval[reviewer]:
             missing.append(f"current-approval-{reviewer}")
 

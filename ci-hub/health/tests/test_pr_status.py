@@ -596,6 +596,33 @@ class ReviewProtocolClassificationTests(unittest.TestCase):
         self.assertEqual(audit.codex_rounds, (4,))
         self.assertEqual(audit.claude_rounds, (3,))
 
+    def test_every_writer_round_is_accepted_by_the_reader(self) -> None:
+        for family in pr_status.review_contract.REVIEW_FAMILIES:
+            for round_number in pr_status.review_contract.REVIEW_ROUNDS:
+                with self.subTest(family=family, round=round_number):
+                    audit = self.classify(
+                        "post-facto-human-review",
+                        pr_status.review_contract.round_label(family, round_number),
+                    )
+                    self.assertEqual(
+                        getattr(audit, f"{family}_rounds"),
+                        (round_number,),
+                    )
+
+    def test_review_round_codex_is_not_an_activity_label(self) -> None:
+        audit = self.classify(
+            "post-facto-human-review",
+            "review-round-codex",
+            "adversarial-review-claude1",
+        )
+        self.assertEqual(audit.codex_rounds, ())
+        self.assertEqual(audit.review_rounds, "partial")
+        self.assertIn(
+            "one of adversarial-review-codex1, adversarial-review-codex2, "
+            "adversarial-review-codex3, adversarial-review-codex4",
+            audit.missing,
+        )
+
     def test_one_sided_review_is_distinct_from_current_approval(self) -> None:
         audit = self.classify(
             "post-facto-human-review",
@@ -607,7 +634,11 @@ class ReviewProtocolClassificationTests(unittest.TestCase):
         )
         self.assertEqual(audit.review_rounds, "partial")
         self.assertEqual(audit.current_approvals, "partial")
-        self.assertIn("review-round-codex", audit.missing)
+        self.assertIn(
+            "one of adversarial-review-codex1, adversarial-review-codex2, "
+            "adversarial-review-codex3, adversarial-review-codex4",
+            audit.missing,
+        )
         self.assertIn("current-approval-codex", audit.missing)
 
     def test_unbound_cache_label_is_absent_current_authority(self) -> None:
@@ -635,6 +666,24 @@ class ReviewProtocolClassificationTests(unittest.TestCase):
         # routes off these counts, so surfacing must not silently reroute.
         self.assertEqual(audit.current_approvals, "missing")
         self.assertIn("current-approval-claude", audit.missing)
+
+    def test_an_unrecorded_refusal_remains_visibly_incomplete(self) -> None:
+        audit = self.classify(
+            "post-facto-human-review",
+            "adversarial-review-claude1",
+            comments=(
+                f"[hermit2, hermit-127, unresolved, devbig014, role=reviewer]\n"
+                f"CHANGES-REQUESTED-AT: codex {self.HEAD}",
+            ),
+        )
+        self.assertFalse(audit.complete)
+        self.assertEqual(audit.review_rounds, "partial")
+        self.assertIn("unlabeled-refusal:codex@aaaaaaaaaaaa", audit.invalid_labels)
+        self.assertIn(
+            "one of adversarial-review-codex1, adversarial-review-codex2, "
+            "adversarial-review-codex3, adversarial-review-codex4",
+            audit.missing,
+        )
 
     def test_no_binding_and_no_label_does_not_claim_one(self) -> None:
         """Negative control: without it the assertion above would pass on a build

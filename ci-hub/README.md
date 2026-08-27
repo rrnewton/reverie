@@ -224,6 +224,29 @@ Neither nonzero state calls `tg`. Use `--check-only` to validate evidence withou
 mutating a live task. The upstream `tg` binary has no project hook, so project
 policy requires this gateway and forbids raw terminal-status updates.
 
+## Recording completed reviews
+
+`ci-hub review-attest` is the coordinator's single recording step after a
+reviewer posts an exact-head verdict comment. Pass the full comment URL and the
+outcome; the command verifies that the comment belongs to the selected pull
+request, names the dispatched reviewer, and contains exactly one canonical
+verdict for the selected family and head:
+
+```text
+ci-hub review-attest --repo rrnewton/hermit --pr 1234 \
+  --head 40_HEX_HEAD --family codex --outcome approval \
+  --comment-url https://github.com/rrnewton/hermit/pull/1234#issuecomment-5678 \
+  --reviewer hermit-127 --task review-task-id \
+  --round 1 --who hermit-coordinator --team hermit2
+```
+
+Approval and refusal both apply the numbered `adversarial-review-<family><N>`
+activity label. Approval additionally applies `passed-review-<family>`; refusal
+removes that approval label if it is present. The accepted families, rounds,
+and exact label spellings live in `ci-hub/review_contract.py`, which both the
+writer and the status reader import. Before any mutation, the writer also
+requires every contract label to exist in both supported repositories.
+
 ## Object map and ownership
 
 | Object | Owns | Does not own |

@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
-"""Record a coordinator's exact-head review-dispatch attestation.
+"""Record a coordinator's exact-head review-outcome attestation.
 
 This command does not identify the process that performed a review.  It records
 the coordinator's knowledge that a reviewer from the selected dispatch family
-returned an approval for one exact PR head.  The family is a closed CLI enum;
-unknown values fail during argument parsing before any GitHub command runs.
+returned an approval or refusal for one exact PR head.  The family and outcome
+are closed CLI enums; unknown values fail during argument parsing before any
+GitHub command runs.
 
-The exact-head comment is authority.  Labels are routing/activity caches.  The
-comment is posted first, the live head is checked again, and labels are applied
-only while that head remains current.  No label is created by this command.
+The reviewer's exact-head comment is authority.  Labels are routing/activity
+caches.  The exact comment is verified first, the coordinator's attestation is
+posted, the live head is checked again, and labels are applied only while that
+head remains current.  No label is created by this command.
 """
 
 from __future__ import annotations
@@ -24,18 +26,24 @@ from typing import Callable, Sequence
 
 ROOT = Path(__file__).resolve().parents[2]
 GH = ROOT / "ci-hub/bin/gh"
+sys.path.insert(0, str(ROOT / "ci-hub"))
+sys.path.insert(0, str(ROOT / "ci-hub/health"))
+import approval_binding as approval_authority  # noqa: E402
+import review_contract  # noqa: E402
+
 SHA40 = re.compile(r"^[0-9a-f]{40}$")
-SUPPORTED_REPOS = frozenset({"rrnewton/hermit", "rrnewton/reverie"})
-FAMILY_LABELS = {
-    "codex": "passed-review-codex",
-    "claude": "passed-review-claude",
-}
+COMMENT_URL = re.compile(
+    r"^https://github\.com/(?P<repo>rrnewton/(?:hermit|reverie))/pull/"
+    r"(?P<pr>[1-9][0-9]*)#issuecomment-(?P<comment>[1-9][0-9]*)$"
+)
+SUPPORTED_REPOS = frozenset(review_contract.SUPPORTED_REPOS)
+FAMILY_LABELS = review_contract.PASSED_REVIEW_LABELS
+OUTCOMES = ("approval", "refusal")
 CRITICAL_CLASSES = (
     "hermit-syscall",
     "detcore-scheduling",
     "reverie-api",
 )
-HUMAN_REVIEW_LABEL = "post-facto-human-review"
 
 Runner = Callable[..., subprocess.CompletedProcess[str]]
 
@@ -45,8 +53,11 @@ def _positive_round(raw: str) -> int:
         value = int(raw)
     except ValueError as error:
         raise argparse.ArgumentTypeError("review round must be an integer") from error
-    if not 1 <= value <= 99:
-        raise argparse.ArgumentTypeError("review round must be in 1..99")
+    if value not in review_contract.REVIEW_ROUNDS:
+        raise argparse.ArgumentTypeError(
+            "review round must be one of "
+            + ", ".join(str(round_number) for round_number in review_contract.REVIEW_ROUNDS)
+        )
     return value
 
 
@@ -67,14 +78,16 @@ def _repo(raw: str) -> str:
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(
         description=(
-            "Coordinator-only exact-head review-dispatch attestation; "
-            "does not prove the executing process family."
+            "Coordinator-only exact-head review-outcome attestation that verifies "
+            "the reviewer's exact comment; does not prove the executing process family."
         )
     )
     result.add_argument("--pr", type=int, required=True)
     result.add_argument("--repo", type=_repo, default="rrnewton/hermit")
     result.add_argument("--head", type=_exact_sha, required=True)
-    result.add_argument("--family", choices=tuple(FAMILY_LABELS), required=True)
+    result.add_argument("--family", choices=review_contract.REVIEW_FAMILIES, required=True)
+    result.add_argument("--outcome", choices=OUTCOMES, required=True)
+    result.add_argument("--comment-url", required=True)
     result.add_argument("--reviewer", required=True)
     result.add_argument("--task", required=True)
     result.add_argument("--round", type=_positive_round, default=1)
@@ -143,14 +156,92 @@ def _available_labels(runner: Runner, repo: str) -> set[str]:
         raise RuntimeError("repository label list returned malformed JSON") from error
 
 
-def _required_labels(family: str, round_number: int, critical: str | None) -> list[str]:
-    labels = [
-        f"adversarial-review-{family}{round_number}",
-        FAMILY_LABELS[family],
-    ]
+def _assert_repository_contract(runner: Runner) -> None:
+    missing = review_contract.repository_label_gaps(
+        lambda repo: _available_labels(runner, repo)
+    )
+    if missing:
+        raise RuntimeError(
+            "review label contract is incomplete; refusing to record any outcome: "
+            + ", ".join(missing)
+        )
+
+
+def _required_labels(
+    family: str,
+    round_number: int,
+    outcome: str,
+    critical: str | None,
+) -> list[str]:
+    labels = [review_contract.round_label(family, round_number)]
+    if outcome == "approval":
+        labels.append(FAMILY_LABELS[family])
     if critical is not None:
-        labels.append(HUMAN_REVIEW_LABEL)
+        labels.append(review_contract.POST_FACTO_LABEL)
     return labels
+
+
+def _comment_reference(raw: str) -> tuple[str, int, str]:
+    match = COMMENT_URL.fullmatch(raw)
+    if match is None:
+        raise RuntimeError(
+            "--comment-url must be a full supported pull-request comment URL"
+        )
+    return match.group("repo"), int(match.group("pr")), match.group("comment")
+
+
+def _read_comment(runner: Runner, repo: str, comment_id: str) -> dict[str, object]:
+    proc = _run(
+        runner,
+        [str(GH), "api", f"repos/{repo}/issues/comments/{comment_id}"],
+        context="read exact reviewer comment",
+    )
+    try:
+        value = json.loads(proc.stdout)
+    except json.JSONDecodeError as error:
+        raise RuntimeError("read exact reviewer comment returned malformed JSON") from error
+    if not isinstance(value, dict):
+        raise RuntimeError("read exact reviewer comment returned a non-object")
+    return value
+
+
+def _verify_reviewer_comment(args: argparse.Namespace, runner: Runner) -> None:
+    repo, pr, comment_id = _comment_reference(args.comment_url)
+    if repo != args.repo or pr != args.pr:
+        raise RuntimeError(
+            "--comment-url must name the selected repository and pull request"
+        )
+    comment = _read_comment(runner, repo, comment_id)
+    if comment.get("html_url") != args.comment_url:
+        raise RuntimeError("GitHub returned a different reviewer comment URL")
+    body = comment.get("body")
+    if not isinstance(body, str):
+        raise RuntimeError("reviewer comment has no readable body")
+    issuer = approval_authority.comment_issuer(body)
+    if issuer is None or issuer.casefold() != args.reviewer.casefold():
+        raise RuntimeError(
+            f"reviewer comment issuer is {issuer or 'missing'}, expected {args.reviewer}"
+        )
+
+    markers = [
+        parsed
+        for line in approval_authority.marker_lines(body)
+        if approval_authority.marker_assertion(line)
+        for parsed in [approval_authority.parse_marker(line)]
+    ]
+    if any(marker is None for marker in markers):
+        raise RuntimeError("reviewer comment contains a non-canonical verdict assertion")
+    expected_kind = (
+        approval_authority.MARKER_APPROVED
+        if args.outcome == "approval"
+        else approval_authority.MARKER_REFUSED
+    )
+    expected = (expected_kind, args.family, args.head)
+    if markers != [expected]:
+        raise RuntimeError(
+            "reviewer comment must contain exactly one canonical exact-head verdict: "
+            f"{expected_kind}: {args.family} {args.head}"
+        )
 
 
 def _comment_body(args: argparse.Namespace) -> str:
@@ -162,11 +253,12 @@ def _comment_body(args: argparse.Namespace) -> str:
             f"reviewer: {args.reviewer}",
             f"task: {args.task}",
             f"review-round: {args.round}",
+            f"review-outcome: {args.outcome}",
+            f"review-comment: {args.comment_url}",
             f"critical-class: {critical}",
             f"head: {args.head}",
-            "basis: coordinator dispatched this reviewer and received an approval for this exact head",
+            "basis: coordinator verified the reviewer's exact comment for this exact head",
             "limitation: dispatch attestation does not prove the executing process family",
-            f"APPROVED-AT: {args.family} {args.head}",
         ]
     )
 
@@ -179,14 +271,8 @@ def execute(args: argparse.Namespace, runner: Runner = subprocess.run) -> int:
             "the dispatched reviewer cannot record its own family attestation"
         )
 
-    labels = _required_labels(args.family, args.round, args.critical)
-    available = _available_labels(runner, args.repo)
-    missing = [label for label in labels if label not in available]
-    if missing:
-        raise RuntimeError(
-            "required existing label(s) absent; refusing to create or mutate: "
-            + ", ".join(missing)
-        )
+    _assert_repository_contract(runner)
+    labels = _required_labels(args.family, args.round, args.outcome, args.critical)
 
     before = _read_pr(runner, args.repo, args.pr)
     if before.get("state") != "OPEN":
@@ -197,7 +283,8 @@ def execute(args: argparse.Namespace, runner: Runner = subprocess.run) -> int:
             f"observed {before.get('headRefOid') or 'missing'}"
         )
 
-    verdict = f"APPROVED-AT: {args.family} {args.head}"
+    _verify_reviewer_comment(args, runner)
+
     _run(
         runner,
         [
@@ -208,8 +295,6 @@ def execute(args: argparse.Namespace, runner: Runner = subprocess.run) -> int:
             args.team,
             "--role",
             "coordinator",
-            "--verdict",
-            verdict,
             "pr",
             "comment",
             str(args.pr),
@@ -232,7 +317,12 @@ def execute(args: argparse.Namespace, runner: Runner = subprocess.run) -> int:
     additions = [label for label in labels if label not in existing]
     for label in additions:
         edit.extend(["--add-label", label])
-    if additions:
+    removals: list[str] = []
+    approval_label = FAMILY_LABELS[args.family]
+    if args.outcome == "refusal" and approval_label in existing:
+        removals.append(approval_label)
+        edit.extend(["--remove-label", approval_label])
+    if additions or removals:
         _run(runner, edit, context="apply review cache labels")
 
     final = _read_pr(runner, args.repo, args.pr)
@@ -240,10 +330,20 @@ def execute(args: argparse.Namespace, runner: Runner = subprocess.run) -> int:
         raise RuntimeError(
             "PR head moved after cache-label application; exact-head consumers must treat the labels as stale"
         )
+    final_labels = _label_names(final.get("labels"))
+    missing_after = [label for label in labels if label not in final_labels]
+    if missing_after:
+        raise RuntimeError(
+            "review cache label(s) absent after mutation: " + ", ".join(missing_after)
+        )
+    if args.outcome == "refusal" and approval_label in final_labels:
+        raise RuntimeError(f"{approval_label} remains after recording a refusal")
     print(
         "REVIEW-ATTESTED "
         f"repo={args.repo} pr={args.pr} head={args.head} family={args.family} "
-        f"reviewer={args.reviewer} labels={','.join(labels)} "
+        f"reviewer={args.reviewer} outcome={args.outcome} "
+        f"comment={args.comment_url} labels={','.join(labels)} "
+        f"removed={','.join(removals) or '-'} "
         "basis=coordinator-dispatch limitation=process-family-not-proven"
     )
     return 0

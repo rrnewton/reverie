@@ -141,7 +141,7 @@ LANDING AND COORDINATION ACTIONS
   tick                    Run due scheduled operational-health gates
   land-lock               Acquire, renew, inspect, or release the fleet landing mutex
   apply-local-label       Reconcile the derived label with exact-head validation truth
-  review-attest           Record a coordinator's typed exact-head review attestation
+  review-attest           Record a coordinator's typed exact-head review outcome
   ci-mode                 Inspect or change constrained GH Actions admission mode
   batch                   Inspect or edit the named current GH Actions batch
   ci-timeout              Cancel hosted runs starved waiting to start; reroute to local
@@ -282,7 +282,7 @@ enum HubCommand {
     FirstBad(FirstBadArgs),
     /// Reconcile `locally-validated` with each PR's exact-head validation record.
     ApplyLocalLabel(ApplyLocalLabelArgs),
-    /// Record a coordinator's exact-head review-dispatch attestation and cache labels.
+    /// Record a coordinator's exact-head review outcome and cache labels.
     ReviewAttest(ReviewAttestArgs),
     /// Operate the shared-file landing mutex.
     LandLock(landing_lock::LandLockArgs),
@@ -790,6 +790,21 @@ impl ReviewFamily {
 }
 
 #[derive(Clone, Debug, ValueEnum)]
+enum ReviewOutcome {
+    Approval,
+    Refusal,
+}
+
+impl ReviewOutcome {
+    fn as_str(&self) -> &'static str {
+        match self {
+            Self::Approval => "approval",
+            Self::Refusal => "refusal",
+        }
+    }
+}
+
+#[derive(Clone, Debug, ValueEnum)]
 enum CriticalReviewClass {
     HermitSyscall,
     DetcoreScheduling,
@@ -814,12 +829,18 @@ struct ReviewAttestArgs {
     /// Supported fork repository carrying the PR and existing review labels.
     #[arg(long, default_value = "rrnewton/hermit")]
     repo: String,
-    /// Exact lowercase 40-hex head approved by the dispatched reviewer.
+    /// Exact lowercase 40-hex head reviewed by the dispatched reviewer.
     #[arg(long)]
     head: String,
     /// Coordinator-selected reviewer family; unknown values fail before mutation.
     #[arg(long, value_enum)]
     family: ReviewFamily,
+    /// Review outcome; unknown values fail before mutation.
+    #[arg(long, value_enum)]
+    outcome: ReviewOutcome,
+    /// Full URL of the reviewer's exact verdict comment.
+    #[arg(long)]
+    comment_url: String,
     /// Exact dispatched reviewer agent name.
     #[arg(long)]
     reviewer: String,
@@ -1334,7 +1355,7 @@ impl HubCommand {
             },
             Self::ReviewAttest(_) => CostSpec {
                 tool: "ci-hub/review-attest",
-                basis: "not measured: bounded live-head and existing-label GitHub reads plus one comment and optional cache-label mutation".into(),
+                basis: "not measured: bounded live-head, exact-comment and repository-label GitHub reads plus one attestation comment and optional cache-label mutation".into(),
             },
             Self::Obligations(_)
             | Self::InheritObligations(_)
@@ -1990,6 +2011,8 @@ fn execute(root: &Path, command: HubCommand) -> Result<i32, CiHubError> {
             push_option(&mut forwarded, "--repo", args.repo);
             push_option(&mut forwarded, "--head", args.head);
             push_option(&mut forwarded, "--family", args.family.as_str());
+            push_option(&mut forwarded, "--outcome", args.outcome.as_str());
+            push_option(&mut forwarded, "--comment-url", args.comment_url);
             push_option(&mut forwarded, "--reviewer", args.reviewer);
             push_option(&mut forwarded, "--task", args.task);
             push_option(&mut forwarded, "--round", args.round.to_string());
@@ -9275,7 +9298,7 @@ mod tests {
     }
 
     #[test]
-    fn review_attest_family_and_critical_class_are_closed_enums() {
+    fn review_attest_family_outcome_and_critical_class_are_closed_enums() {
         let command = Cli::try_parse_from([
             "ci-hub",
             "review-attest",
@@ -9285,6 +9308,10 @@ mod tests {
             "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             "--family",
             "codex",
+            "--outcome",
+            "refusal",
+            "--comment-url",
+            "https://github.com/rrnewton/hermit/pull/42#issuecomment-1234",
             "--reviewer",
             "codex-2",
             "--task",
@@ -9301,7 +9328,7 @@ mod tests {
         assert!(matches!(&command, HubCommand::ReviewAttest(_)));
         assert!(command.cost_spec().is_some());
 
-        let error = Cli::try_parse_from([
+        let family_error = Cli::try_parse_from([
             "ci-hub",
             "review-attest",
             "--pr",
@@ -9310,6 +9337,10 @@ mod tests {
             "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             "--family",
             "codxe",
+            "--outcome",
+            "approval",
+            "--comment-url",
+            "https://github.com/rrnewton/hermit/pull/42#issuecomment-1234",
             "--reviewer",
             "codex-2",
             "--task",
@@ -9320,7 +9351,32 @@ mod tests {
             "hermit2",
         ])
         .unwrap_err();
-        assert_eq!(error.kind(), ErrorKind::InvalidValue);
+        assert_eq!(family_error.kind(), ErrorKind::InvalidValue);
+
+        let outcome_error = Cli::try_parse_from([
+            "ci-hub",
+            "review-attest",
+            "--pr",
+            "42",
+            "--head",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "--family",
+            "codex",
+            "--outcome",
+            "unknown",
+            "--comment-url",
+            "https://github.com/rrnewton/hermit/pull/42#issuecomment-1234",
+            "--reviewer",
+            "codex-2",
+            "--task",
+            "review-pr-42",
+            "--who",
+            "hermit-coord",
+            "--team",
+            "hermit2",
+        ])
+        .unwrap_err();
+        assert_eq!(outcome_error.kind(), ErrorKind::InvalidValue);
     }
 
     #[test]
