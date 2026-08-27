@@ -303,11 +303,6 @@ fi
 # child. `run` acquires (FIFO), heartbeats only while we live, and ALWAYS releases
 # on exit; --child-deadline hard-kills + releases if we ever wedge.
 if [ "$INNER" -eq 0 ]; then
-  # A replacement lander inherits durable remediation from state, without
-  # depending on a wake sent to its predecessor. This acknowledges discovery;
-  # the obligation remains open until the repair SHA is explicitly resolved.
-  "$ROOT/ci-hub/ci-hub" inherit-obligations --agent "$AGENT" \
-    --session "${ORC_AGENT_SESSION_ID:-${HOSTNAME:-unknown}:$$}"
   args=(--_inner "$PR" "$BR" --repo "$R" --agent "$AGENT" --team "$TEAM" --checkout "$WT" --gate-deadline "$GATE_DEADLINE")
   [ "$UNION" -eq 1 ] && args+=(--union)
   [ "$NO_REBASE" -eq 1 ] && args+=(--no-rebase)
@@ -322,22 +317,11 @@ if [ "$INNER" -eq 0 ]; then
   esac
   [ "$rc" -eq 0 ] || exit "$rc"
 
-  # The merge and ancestry proof are already complete. Post-land remediation is
-  # useful bookkeeping, never retroactive authorization and never a reason to
-  # report a successful land as failed. Prepare and arm only after the merge.
+  # The merge and ancestry proof are already complete. The speculative-land
+  # obligation that used to be armed here was removed: over its whole history it
+  # produced no fix, and arming it could never affect a land that had already
+  # happened. MC is still read because the LANDED: line below reports it.
   MC=$(with-proxy gh pr view "$PR" -R "$R" --json mergeCommit -q .mergeCommit.oid 2>/dev/null || true)
-  if "$ROOT/ci-hub/remediation/land_and_arm.py" prepare \
-      --repo "$R" --pr "$PR" --source "$WT" \
-      --land-mode speculative --actor "$AGENT" >/dev/null 2>&1 \
-      && "$ROOT/ci-hub/remediation/land_and_arm.py" complete \
-        --repo "$R" --pr "$PR" >/dev/null 2>&1; then
-    say "post-land verification obligation armed"
-  else
-    say "WARN: post-land verification obligation was not armed; landing remains successful"
-    publish_landing_comment post-land-arm-failed \
-      "post-land verification arming returned no completed obligation; the merge remains landed" \
-      || say "POST-LAND COMMENT PUBLICATION FAILED: use the durable record printed above"
-  fi
 
   # Detached and single-flight: this audit must never delay or veto a land.
   if [ "${CI_HUB_POST_LAND_AUDIT:-1}" = 1 ]; then
@@ -815,7 +799,7 @@ MC=$(with-proxy gh pr view "$PR" -R "$R" --json mergeCommit -q .mergeCommit.oid)
 if git -C "$WT" merge-base --is-ancestor "$MC" origin/main 2>/dev/null; then
   # Return to the outer process. `land-lock run` must finish its descendant
   # census and release before any durable post-land verifier is launched.
-  say "MERGED UNDER LOCK:$MC; post-land obligation arming deferred until release"
+  say "MERGED UNDER LOCK:$MC"
   exit 0
 else
   abandon "merge reported but $MC is NOT an ancestor of origin/main (verify manually)" 7
