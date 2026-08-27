@@ -901,12 +901,11 @@ impl Container {
                 Err(RunError::ExitStatus(child.wait()?))
             }
             Ok(n) => {
-                // FIXME: Handle errors
                 let value: Result<T, Error> =
                     bincode::serde::decode_from_slice(&buf[0..n], bincode::config::legacy())
                         .unwrap()
                         .0;
-                Ok(value.unwrap())
+                value.map_err(RunError::Spawn)
             }
             Err(err) => {
                 // FIXME: Handle this error
@@ -1051,6 +1050,34 @@ mod tests {
             Container::new().run(|| String::from("foobar")),
             Ok("foobar".into())
         );
+    }
+
+    #[test]
+    fn mount_error_from_child_is_returned() {
+        let source_dir = tempfile::tempdir().unwrap();
+        let missing_source = source_dir.path().join("missing");
+
+        let result = Container::new()
+            .unshare(Namespace::USER | Namespace::MOUNT)
+            .map_root()
+            .mount(Mount::bind(missing_source, "/test"))
+            .run(|| 42);
+
+        assert_eq!(
+            result,
+            Err(RunError::Spawn(Error::new(Errno::ENOENT, Context::Mount)))
+        );
+    }
+
+    #[test]
+    fn test_directory_is_available_after_mount() {
+        let result = Container::new()
+            .unshare(Namespace::USER | Namespace::MOUNT)
+            .map_root()
+            .mount(Mount::tmpfs("/test").touch_target())
+            .run(|| Path::new("/test").is_dir());
+
+        assert_eq!(result, Ok(true));
     }
 
     #[test]

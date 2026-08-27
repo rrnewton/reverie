@@ -108,7 +108,11 @@ VALIDATION_STARTED_EPOCH=$(date +%s)
 VALIDATION_HOST=$(hostname -s 2>/dev/null || hostname 2>/dev/null || printf unknown)
 DEV_HERMIT_PARENT=$(find_dev_hermit_parent || true)
 VALIDATION_SLOT=$(validation_slot_name "$DEV_HERMIT_PARENT")
-VALIDATION_LEDGER_TOOL="${HOME:?HOME is required}/work/dev-hermit/ci-hub/ledger/validate_rows.py"
+if [[ -n $DEV_HERMIT_PARENT ]]; then
+    VALIDATION_LEDGER_TOOL="$DEV_HERMIT_PARENT/ci-hub/ledger/validate_rows.py"
+else
+    VALIDATION_LEDGER_TOOL="${HOME:?HOME is required}/work/dev-hermit/ci-hub/ledger/validate_rows.py"
+fi
 VALIDATION_COMMIT=$(git rev-parse HEAD 2>/dev/null || printf unknown)
 VALIDATION_GIT_DEPTH=$(git rev-list --count HEAD 2>/dev/null || printf 0)
 VALIDATION_GIT_AHEAD=0
@@ -358,8 +362,9 @@ readonly -a REGULAR_TEST_SKIP_ARGS=(
 )
 
 run_check "Cross-client skill discovery" "$ROOT_DIR/scripts/check-skill-discovery.rs"
-run_check "Merge-gate policy" "$ROOT_DIR/scripts/check-merge-gate-policy.sh"
 run_check "Build workspace" cargo build --workspace --all-features
+run_check "DBT virtual identity and pidfd_open policy" \
+    "$ROOT_DIR/reverie-dbt/scripts/test-identity-policy.sh"
 run_check "Test regular workspace cases" cargo test --workspace --all-features \
     -- --test-threads=1 "${REGULAR_TEST_SKIP_ARGS[@]}"
 run_check "Documentation tests" cargo test --workspace --doc

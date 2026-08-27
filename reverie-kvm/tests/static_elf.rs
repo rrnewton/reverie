@@ -16,6 +16,8 @@ use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 
 use kvm_ioctls::Kvm;
+use reverie::BackendChildWaitEvent;
+use reverie::BackendChildWaitState;
 use reverie::BackendStatsRequest;
 use reverie::BackendStatsSource;
 use reverie::ExitStatus;
@@ -2743,4 +2745,269 @@ fn put_u32(image: &mut [u8], offset: usize, value: u32) {
 
 fn put_u64(image: &mut [u8], offset: usize, value: u64) {
     image[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
+}
+
+/// A LIVE pthread worker exercises the `pid != tid` path end to end.
+///
+/// ⚠️ THIS IS THE CASE THE REJECTED IMPLEMENTATION COULD NOT SEE. Every earlier
+/// signal test ran with `pid == tid`, so validating a thread-directed target
+/// against `state.pid` looked correct. Under a real worker it is wrong in both
+/// directions at once: the worker's own `tkill(gettid(), 0)` was refused with
+/// ESRCH, while a LEADER-targeted request was accepted and then evaluated
+/// against the worker's signal state.
+#[test]
+fn real_pthread_worker_signals_itself_by_tid_and_is_refused_for_the_leader() {
+    match Kvm::new() {
+        Ok(_) => {}
+        Err(error) if kvm_is_unavailable(&error) => {
+            eprintln!("skipping KVM worker-signal test: cannot open /dev/kvm: {error}");
+            return;
+        }
+        Err(error) => panic!("failed to probe /dev/kvm: {error}"),
+    }
+
+    let directory = TestDirectory::new();
+    let executable = compile_c_program(
+        &directory.0,
+        "worker-thread-signal-identity",
+        r#"
+#define _GNU_SOURCE
+#include <errno.h>
+#include <pthread.h>
+#include <stdatomic.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+
+static atomic_int result;
+
+static void *worker(void *unused) {
+  (void)unused;
+  pid_t pid = getpid();
+  pid_t tid = (pid_t)syscall(SYS_gettid);
+
+  // The premise. If a worker's tid equalled its pid this test would prove
+  // nothing, which is exactly how the rejected version passed review's tests.
+  if (tid == pid) {
+    atomic_store(&result, 20);
+    return NULL;
+  }
+  // A worker signalling ITSELF by tid must succeed.
+  if (syscall(SYS_tkill, tid, 0) != 0) {
+    atomic_store(&result, 21);
+    return NULL;
+  }
+  // ...and by (tgid, tid).
+  if (syscall(SYS_tgkill, pid, tid, 0) != 0) {
+    atomic_store(&result, 22);
+    return NULL;
+  }
+  // ⚠️ THE REFUSAL. Naming the LEADER from the worker must fail visibly rather
+  // than being applied to this thread. Any success here is the rejected bug.
+  if (syscall(SYS_tgkill, pid, pid, 0) == 0) {
+    atomic_store(&result, 23);
+    return NULL;
+  }
+  // A non-positive thread id is EINVAL, not ESRCH.
+  if (syscall(SYS_tkill, 0, 0) == 0 || errno != EINVAL) {
+    atomic_store(&result, 24);
+    return NULL;
+  }
+  atomic_store(&result, 1);
+  return NULL;
+}
+
+int main(void) {
+  atomic_store(&result, 0);
+  pthread_t thread;
+  if (pthread_create(&thread, NULL, worker, NULL) != 0) {
+    return 10;
+  }
+  if (pthread_join(thread, NULL) != 0) {
+    return 11;
+  }
+  int observed = atomic_load(&result);
+  return observed == 1 ? 0 : observed;
+}
+"#,
+    );
+    let executable = executable.to_str().unwrap();
+    let image = std::fs::read(executable).unwrap();
+    let mut backend = KvmBackend::new(256 * 1024 * 1024).unwrap();
+    backend
+        .install_static_elf_with_context(
+            &image,
+            &[executable],
+            &["PATH=/usr/bin:/bin"],
+            &directory.0,
+        )
+        .unwrap();
+    let (_trace, code, _stdout, _stderr) =
+        futures::executor::block_on(backend.run_static_elf_with_tool::<StraceTool>((), true))
+            .unwrap();
+    assert_eq!(
+        code, 0,
+        "worker signal-identity guest failed with code {code}; \
+         20=pid==tid so the case is vacuous, 21=tkill(gettid()) refused, \
+         22=tgkill(getpid(),gettid()) refused, 23=leader-targeted call WRONGLY \
+         SUCCEEDED, 24=tkill(0) not EINVAL"
+    );
+}
+
+#[derive(Default)]
+struct ChildWaitEventLog {
+    events: Mutex<Vec<BackendChildWaitEvent>>,
+}
+
+#[reverie::global_tool]
+impl GlobalTool for ChildWaitEventLog {
+    type Request = ();
+    type Response = ();
+    type Config = ();
+
+    async fn receive_rpc(&self, _from: Pid, (): ()) {}
+
+    async fn on_backend_child_wait_event(
+        &self,
+        event: BackendChildWaitEvent,
+    ) -> Result<(), reverie::Error> {
+        self.events
+            .lock()
+            .expect("child wait-event log poisoned")
+            .push(event);
+        Ok(())
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct ChildWaitEventTool;
+
+#[reverie::tool]
+impl Tool for ChildWaitEventTool {
+    type GlobalState = ChildWaitEventLog;
+    type ThreadState = ();
+
+    fn subscriptions(_config: &()) -> Subscription {
+        let mut subscriptions = Subscription::none();
+        subscriptions.syscalls([Sysno::fork, Sysno::wait4, Sysno::rt_sigaction]);
+        subscriptions
+    }
+}
+
+#[test]
+fn child_waitability_callback_and_auto_reap_are_observed_on_real_kvm() {
+    match Kvm::new() {
+        Ok(_) => {}
+        Err(error) if kvm_is_unavailable(&error) => {
+            eprintln!("skipping KVM child-lifecycle test: cannot open /dev/kvm: {error}");
+            return;
+        }
+        Err(error) => panic!("failed to probe /dev/kvm: {error}"),
+    }
+
+    let directory = TestDirectory::new();
+    let executable = compile_c_program(
+        &directory.0,
+        "child-waitability",
+        r#"
+#include <errno.h>
+#include <signal.h>
+#include <sys/wait.h>
+#include <unistd.h>
+
+static void child_exit(int code) {
+  pid_t child = fork();
+  if (child < 0) _exit(90);
+  if (child == 0) _exit(code);
+}
+
+int main(void) {
+  struct sigaction action = {0};
+  action.sa_handler = (void (*)(int))0x4321;
+  sigemptyset(&action.sa_mask);
+  errno = 0;
+  /* Installing a real SIGCHLD handler must SUCCEED, as it does natively and under
+     ptrace. What this test is really for is unchanged below: with a real handler
+     installed SIGCHLD does not auto-reap, so the child must still be waitable.
+     (This handler address is never invoked.) */
+  if (sigaction(SIGCHLD, &action, 0) != 0) return 10;
+
+  child_exit(7);
+  int status = 0;
+  if (waitpid(-1, &status, 0) <= 0 || !WIFEXITED(status) ||
+      WEXITSTATUS(status) != 7) return 11;
+
+  action.sa_handler = SIG_IGN;
+  action.sa_flags = 0;
+  if (sigaction(SIGCHLD, &action, 0) != 0) return 12;
+  child_exit(8);
+  if (waitpid(-1, &status, 0) != -1 || errno != ECHILD) return 13;
+
+  action.sa_handler = SIG_DFL;
+  action.sa_flags = SA_NOCLDWAIT;
+  if (sigaction(SIGCHLD, &action, 0) != 0) return 14;
+  child_exit(9);
+  if (waitpid(-1, &status, 0) != -1 || errno != ECHILD) return 15;
+
+  return 0;
+}
+"#,
+    );
+    let executable = executable.to_str().unwrap();
+    let image = std::fs::read(executable).unwrap();
+    let mut backend = KvmBackend::new(256 * 1024 * 1024).unwrap();
+    backend
+        .install_static_elf_with_context(
+            &image,
+            &[executable],
+            &["PATH=/usr/bin:/bin"],
+            &directory.0,
+        )
+        .unwrap();
+
+    let (global, code, _stdout, stderr) = futures::executor::block_on(
+        backend.run_static_elf_with_tool::<ChildWaitEventTool>((), true),
+    )
+    .unwrap();
+    assert_eq!(
+        code,
+        0,
+        "child lifecycle guest failed with code {code}; stderr={}",
+        String::from_utf8_lossy(&stderr),
+    );
+
+    let events = global
+        .events
+        .lock()
+        .expect("child wait-event log poisoned")
+        .clone();
+    assert_eq!(
+        events,
+        vec![
+            BackendChildWaitEvent {
+                parent: Pid::from_raw(1),
+                child: Pid::from_raw(2),
+                state: BackendChildWaitState::Exited {
+                    status: ExitStatus::Exited(7),
+                    waitable: true
+                },
+            },
+            BackendChildWaitEvent {
+                parent: Pid::from_raw(1),
+                child: Pid::from_raw(3),
+                state: BackendChildWaitState::Exited {
+                    status: ExitStatus::Exited(8),
+                    waitable: false
+                },
+            },
+            BackendChildWaitEvent {
+                parent: Pid::from_raw(1),
+                child: Pid::from_raw(4),
+                state: BackendChildWaitState::Exited {
+                    status: ExitStatus::Exited(9),
+                    waitable: false
+                },
+            },
+        ],
+        "the backend callback must describe every real terminal waitability transition",
+    );
 }

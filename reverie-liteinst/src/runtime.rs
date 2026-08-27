@@ -5,6 +5,7 @@ use core::sync::atomic::AtomicPtr;
 use core::sync::atomic::AtomicU8;
 use core::sync::atomic::AtomicU64;
 use core::sync::atomic::Ordering;
+use std::cell::Cell;
 use std::ffi::OsStr;
 use std::io;
 use std::ptr;
@@ -256,13 +257,13 @@ static EVENT_DEVICE: AtomicU64 = AtomicU64::new(0);
 static EVENT_INODE: AtomicU64 = AtomicU64::new(0);
 static IN_GUEST_STAGE_STREAM: AtomicBool = AtomicBool::new(false);
 
-#[thread_local]
-static mut CURRENT_EVENT: *mut SyscallEvent = ptr::null_mut();
-// Reentry is a property of Tool execution, not of syscall-event storage:
-// instruction callbacks have no current SyscallEvent but must take the same
-// native/raw bypasses while holding Tool and thread-state locks.
-#[thread_local]
-static TOOL_CALLBACK_ACTIVE: AtomicBool = AtomicBool::new(false);
+thread_local! {
+    static CURRENT_EVENT: Cell<*mut SyscallEvent> = const { Cell::new(ptr::null_mut()) };
+    // Reentry is a property of Tool execution, not of syscall-event storage:
+    // instruction callbacks have no current SyscallEvent but must take the same
+    // native/raw bypasses while holding Tool and thread-state locks.
+    static TOOL_CALLBACK_ACTIVE: AtomicBool = const { AtomicBool::new(false) };
+}
 
 struct ToolCallbackGuard {
     previous: bool,
@@ -270,14 +271,14 @@ struct ToolCallbackGuard {
 
 impl ToolCallbackGuard {
     fn enter() -> Self {
-        let previous = TOOL_CALLBACK_ACTIVE.swap(true, Ordering::Relaxed);
+        let previous = TOOL_CALLBACK_ACTIVE.with(|active| active.swap(true, Ordering::Relaxed));
         Self { previous }
     }
 }
 
 impl Drop for ToolCallbackGuard {
     fn drop(&mut self) {
-        TOOL_CALLBACK_ACTIVE.store(self.previous, Ordering::Relaxed);
+        TOOL_CALLBACK_ACTIVE.with(|active| active.store(self.previous, Ordering::Relaxed));
     }
 }
 
@@ -287,20 +288,19 @@ struct CurrentEventGuard {
 
 impl CurrentEventGuard {
     fn enter(event: *mut SyscallEvent) -> Self {
-        let previous = unsafe { CURRENT_EVENT };
-        unsafe { CURRENT_EVENT = event };
+        let previous = CURRENT_EVENT.replace(event);
         Self { previous }
     }
 }
 
 impl Drop for CurrentEventGuard {
     fn drop(&mut self) {
-        unsafe { CURRENT_EVENT = self.previous };
+        CURRENT_EVENT.set(self.previous);
     }
 }
 
 fn tool_callback_active() -> bool {
-    TOOL_CALLBACK_ACTIVE.load(Ordering::Relaxed)
+    TOOL_CALLBACK_ACTIVE.with(|active| active.load(Ordering::Relaxed))
 }
 
 static ARENAS: OnceLock<Vec<RuntimeArena>> = OnceLock::new();
@@ -333,18 +333,15 @@ pub(crate) struct InstructionSubscriptions {
     pub(crate) rdtsc: bool,
 }
 
-#[thread_local]
-static mut RCB_CLOCK: *mut reverie_ptrace::InGuestRcbCounter = ptr::null_mut();
-#[thread_local]
-static mut RCB_CLOCK_OWNER: libc::pid_t = 0;
-#[thread_local]
-static mut RCB_CLOCK_UNAVAILABLE: bool = false;
-#[thread_local]
-static mut RCB_HANDLER_ENTRY: u64 = 0;
-#[thread_local]
-static mut RCB_HANDLER_DEDUCTION: u64 = 0;
-#[thread_local]
-static mut RCB_HANDLER_DEPTH: u32 = 0;
+thread_local! {
+    static RCB_CLOCK: Cell<*mut reverie_ptrace::InGuestRcbCounter> =
+        const { Cell::new(ptr::null_mut()) };
+    static RCB_CLOCK_OWNER: Cell<libc::pid_t> = const { Cell::new(0) };
+    static RCB_CLOCK_UNAVAILABLE: Cell<bool> = const { Cell::new(false) };
+    static RCB_HANDLER_ENTRY: Cell<u64> = const { Cell::new(0) };
+    static RCB_HANDLER_DEDUCTION: Cell<u64> = const { Cell::new(0) };
+    static RCB_HANDLER_DEPTH: Cell<u32> = const { Cell::new(0) };
+}
 
 /// Install the current thread's in-guest RCB clock before seccomp is active.
 pub(crate) fn initialize_rcb_clock() -> io::Result<()> {
@@ -364,20 +361,18 @@ fn initialize_rcb_clock_with(
     // owner from inside the still-active fork callback. Preserve that callback
     // depth while replacing the counter; resetting it would make the outer
     // leave underflow after child reconstruction completes.
-    let active_depth = unsafe { RCB_HANDLER_DEPTH };
+    let active_depth = RCB_HANDLER_DEPTH.get();
     // Publish an unavailable sentinel before creating the perf event. When a
     // fork child first initializes after seccomp is active, the builder's own
     // syscalls can re-enter an already-patched syscall hook; that nested hook
     // must observe this owner as initialized instead of recursively creating
     // another counter.
-    unsafe {
-        RCB_CLOCK = ptr::null_mut();
-        RCB_CLOCK_OWNER = owner;
-        RCB_CLOCK_UNAVAILABLE = true;
-        RCB_HANDLER_ENTRY = 0;
-        RCB_HANDLER_DEDUCTION = 0;
-        RCB_HANDLER_DEPTH = active_depth;
-    }
+    RCB_CLOCK.set(ptr::null_mut());
+    RCB_CLOCK_OWNER.set(owner);
+    RCB_CLOCK_UNAVAILABLE.set(true);
+    RCB_HANDLER_ENTRY.set(0);
+    RCB_HANDLER_DEDUCTION.set(0);
+    RCB_HANDLER_DEPTH.set(active_depth);
     let clock = match create() {
         Ok(clock) => clock,
         // The in-guest clock is optional. CPU discovery, perf-event setup,
@@ -392,28 +387,26 @@ fn initialize_rcb_clock_with(
             .read()
             .map_err(|error| io::Error::from_raw_os_error(error.into_raw()))?
     };
-    unsafe {
-        RCB_CLOCK = Box::into_raw(Box::new(clock));
-        RCB_CLOCK_OWNER = owner;
-        RCB_CLOCK_UNAVAILABLE = false;
-        RCB_HANDLER_ENTRY = active_entry;
-        RCB_HANDLER_DEDUCTION = 0;
-        RCB_HANDLER_DEPTH = active_depth;
-    }
+    RCB_CLOCK.set(Box::into_raw(Box::new(clock)));
+    RCB_CLOCK_OWNER.set(owner);
+    RCB_CLOCK_UNAVAILABLE.set(false);
+    RCB_HANDLER_ENTRY.set(active_entry);
+    RCB_HANDLER_DEDUCTION.set(0);
+    RCB_HANDLER_DEPTH.set(active_depth);
     Ok(())
 }
 
 fn rcb_clock() -> io::Result<Option<&'static reverie_ptrace::InGuestRcbCounter>> {
     let owner = unsafe { raw_syscall6(libc::SYS_gettid, [0; 6]) } as libc::pid_t;
-    if unsafe { RCB_CLOCK_OWNER } != owner {
+    if RCB_CLOCK_OWNER.get() != owner {
         // A fork/clone child inherits the parent's TLS bytes, including an fd
         // that still measures the parent thread. Leak that inherited handle
         // and bind a fresh PMU event to this calling thread.
         initialize_rcb_clock()?;
     }
-    let current = unsafe { RCB_CLOCK };
+    let current = RCB_CLOCK.get();
     if current.is_null() {
-        debug_assert!(unsafe { RCB_CLOCK_UNAVAILABLE });
+        debug_assert!(RCB_CLOCK_UNAVAILABLE.get());
         Ok(None)
     } else {
         Ok(Some(unsafe { &*current }))
@@ -423,33 +416,28 @@ fn rcb_clock() -> io::Result<Option<&'static reverie_ptrace::InGuestRcbCounter>>
 /// Mark entry into an ordinary-context tool callback.
 pub(crate) fn enter_rcb_handler() -> io::Result<()> {
     let Some(clock) = rcb_clock()? else {
-        unsafe {
-            RCB_HANDLER_DEPTH = RCB_HANDLER_DEPTH.saturating_add(1);
-        }
+        RCB_HANDLER_DEPTH.set(RCB_HANDLER_DEPTH.get().saturating_add(1));
         return Ok(());
     };
     let sample = clock
         .read()
         .map_err(|error| io::Error::from_raw_os_error(error.into_raw()))?;
-    unsafe {
-        if RCB_HANDLER_DEPTH == 0 {
-            RCB_HANDLER_ENTRY = sample;
-        }
-        RCB_HANDLER_DEPTH = RCB_HANDLER_DEPTH.saturating_add(1);
+    if RCB_HANDLER_DEPTH.get() == 0 {
+        RCB_HANDLER_ENTRY.set(sample);
     }
+    RCB_HANDLER_DEPTH.set(RCB_HANDLER_DEPTH.get().saturating_add(1));
     Ok(())
 }
 
 /// Deduct all RCBs retired while the outermost tool callback was active.
 pub(crate) fn leave_rcb_handler() -> io::Result<()> {
-    unsafe {
-        if RCB_HANDLER_DEPTH == 0 {
-            return Err(io::Error::other("LiteInst RCB handler depth underflow"));
-        }
-        RCB_HANDLER_DEPTH -= 1;
-        if RCB_HANDLER_DEPTH != 0 {
-            return Ok(());
-        }
+    let depth = RCB_HANDLER_DEPTH.get();
+    if depth == 0 {
+        return Err(io::Error::other("LiteInst RCB handler depth underflow"));
+    }
+    RCB_HANDLER_DEPTH.set(depth - 1);
+    if depth != 1 {
+        return Ok(());
     }
     let Some(clock) = rcb_clock()? else {
         return Ok(());
@@ -457,11 +445,12 @@ pub(crate) fn leave_rcb_handler() -> io::Result<()> {
     let sample = clock
         .read()
         .map_err(|error| io::Error::from_raw_os_error(error.into_raw()))?;
-    unsafe {
-        RCB_HANDLER_DEDUCTION =
-            RCB_HANDLER_DEDUCTION.saturating_add(sample.saturating_sub(RCB_HANDLER_ENTRY));
-        RCB_HANDLER_ENTRY = 0;
-    }
+    RCB_HANDLER_DEDUCTION.set(
+        RCB_HANDLER_DEDUCTION
+            .get()
+            .saturating_add(sample.saturating_sub(RCB_HANDLER_ENTRY.get())),
+    );
+    RCB_HANDLER_ENTRY.set(0);
     Ok(())
 }
 
@@ -477,16 +466,14 @@ pub(crate) fn read_guest_rcb_clock() -> io::Result<u64> {
     let sample = clock
         .read()
         .map_err(|error| io::Error::from_raw_os_error(error.into_raw()))?;
-    unsafe {
-        let active = if RCB_HANDLER_DEPTH == 0 {
-            0
-        } else {
-            sample.saturating_sub(RCB_HANDLER_ENTRY)
-        };
-        Ok(sample
-            .saturating_sub(RCB_HANDLER_DEDUCTION)
-            .saturating_sub(active))
-    }
+    let active = if RCB_HANDLER_DEPTH.get() == 0 {
+        0
+    } else {
+        sample.saturating_sub(RCB_HANDLER_ENTRY.get())
+    };
+    Ok(sample
+        .saturating_sub(RCB_HANDLER_DEDUCTION.get())
+        .saturating_sub(active))
 }
 
 pub(crate) fn reserve_coordinator_fd(fd: libc::c_int) -> io::Result<()> {
@@ -1363,17 +1350,55 @@ const TRACKED_SYSCALLS: usize = 512;
 
 // AUTONOMOUS-BOT-IMPLEMENTED
 // TODO-HUMAN-REVIEW(PR-249): Review public fallback-surface observability counters.
-/// Total number of syscalls that reached [`LiteinstDispatcher`]'s escape surface
-/// — a trapped site the runtime could not route to the Tool (un-patchable
+/// Total and per-syscall counts for [`LiteinstDispatcher`]'s escape surface —
+/// trapped sites the runtime could not route to the Tool (un-patchable
 /// `SITE_FALLBACK`, or an unclaimable site) and therefore failed closed with
 /// `EOPNOTSUPP`.
-static FALLBACK_TOTAL: AtomicU64 = AtomicU64::new(0);
+struct FallbackCounters {
+    total: AtomicU64,
+    by_number: [AtomicU64; TRACKED_SYSCALLS],
+}
+
+impl FallbackCounters {
+    const fn new() -> Self {
+        Self {
+            total: AtomicU64::new(0),
+            by_number: [const { AtomicU64::new(0) }; TRACKED_SYSCALLS],
+        }
+    }
+
+    fn record(&self, number: i64) {
+        self.total.fetch_add(1, Ordering::Relaxed);
+        if let Ok(index) = usize::try_from(number)
+            && index < TRACKED_SYSCALLS
+        {
+            self.by_number[index].fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    fn total(&self) -> u64 {
+        self.total.load(Ordering::Relaxed)
+    }
+
+    fn by_number(&self, number: i64) -> u64 {
+        match usize::try_from(number) {
+            Ok(index) if index < TRACKED_SYSCALLS => self.by_number[index].load(Ordering::Relaxed),
+            _ => 0,
+        }
+    }
+
+    fn reset(&self) {
+        self.total.store(0, Ordering::Relaxed);
+        for slot in &self.by_number {
+            slot.store(0, Ordering::Relaxed);
+        }
+    }
+}
 
 // AUTONOMOUS-BOT-IMPLEMENTED
 // TODO-HUMAN-REVIEW(PR-249): Review public fallback-surface observability counters.
-/// Per-syscall-number escape counts, indexed by syscall number.
-static FALLBACK_BY_NUMBER: [AtomicU64; TRACKED_SYSCALLS] =
-    [const { AtomicU64::new(0) }; TRACKED_SYSCALLS];
+/// Process-wide counters used by the installed runtime.
+static FALLBACK_COUNTERS: FallbackCounters = FallbackCounters::new();
 
 /// Record that one syscall reached the fail-closed escape surface.
 ///
@@ -1388,12 +1413,7 @@ static FALLBACK_BY_NUMBER: [AtomicU64; TRACKED_SYSCALLS] =
 /// the `SIGSYS` dispatch path. It does not change the forwarding decision.
 pub(crate) fn record_fallback_dispatch(number: i64) {
     // AUTONOMOUS-BOT-IMPLEMENTED
-    FALLBACK_TOTAL.fetch_add(1, Ordering::Relaxed);
-    if let Ok(index) = usize::try_from(number)
-        && index < TRACKED_SYSCALLS
-    {
-        FALLBACK_BY_NUMBER[index].fetch_add(1, Ordering::Relaxed);
-    }
+    FALLBACK_COUNTERS.record(number);
 }
 
 /// Total syscalls that failed closed on the escape surface.
@@ -1404,7 +1424,7 @@ pub(crate) fn record_fallback_dispatch(number: i64) {
 /// (e.g. a libc-internal `getrandom`) that bypass determinism, so a nonzero
 /// count is a determinism-completeness signal, not merely a perf one.
 pub(crate) fn fallback_dispatch_count() -> u64 {
-    FALLBACK_TOTAL.load(Ordering::Relaxed)
+    FALLBACK_COUNTERS.total()
 }
 
 /// Number of times syscall `number` reached the escape surface.
@@ -1412,20 +1432,16 @@ pub(crate) fn fallback_dispatch_count() -> u64 {
 /// Returns `0` for a negative number or one at or above [`TRACKED_SYSCALLS`],
 /// which are only ever reflected in [`fallback_dispatch_count`].
 pub(crate) fn fallback_syscall_count(number: i64) -> u64 {
-    match usize::try_from(number) {
-        Ok(index) if index < TRACKED_SYSCALLS => FALLBACK_BY_NUMBER[index].load(Ordering::Relaxed),
-        _ => 0,
-    }
+    FALLBACK_COUNTERS.by_number(number)
 }
 
 // AUTONOMOUS-BOT-IMPLEMENTED
 // TODO-HUMAN-REVIEW(PR-260): Review the fork-child per-process observability reset.
 /// Reset every fallback-surface counter to zero for the current process.
 ///
-/// LiteInst's observability counters — the process-wide [`FALLBACK_TOTAL`], the
-/// per-syscall-number [`FALLBACK_BY_NUMBER`], and each patch site's per-site
-/// `trap`/`hook` counts ([`site_counts`]) — are process-global. A `fork`/`clone`
-/// child copy-on-write inherits the parent's accumulated values, so without a
+/// LiteInst's process-wide [`FALLBACK_COUNTERS`] and each patch site's per-site
+/// `trap`/`hook` counts ([`site_counts`]) are inherited by a `fork`/`clone`
+/// child copy-on-write, so without a
 /// reset the child would report the parent's residual surface and hook activity
 /// as its own. This is the same per-process runtime state the shared
 /// [`ForkHook`] seam ([`reverie_preload::fork`]) exists to re-establish in the
@@ -1439,17 +1455,18 @@ pub(crate) fn fallback_syscall_count(number: i64) -> u64 {
 /// only relaxed atomic stores plus one lock-free [`OnceLock::get`], no allocation
 /// and no locks, so it is safe to run in the child from inside the `SIGSYS`
 /// handler.
+fn reset_site_observability(sites: &[SiteSlot]) {
+    for site in sites {
+        site.trap_count.store(0, Ordering::Relaxed);
+        site.hook_count.store(0, Ordering::Relaxed);
+    }
+}
+
 pub(crate) fn reset_fallback_observability() {
     // AUTONOMOUS-BOT-IMPLEMENTED
-    FALLBACK_TOTAL.store(0, Ordering::Relaxed);
-    for slot in &FALLBACK_BY_NUMBER {
-        slot.store(0, Ordering::Relaxed);
-    }
+    FALLBACK_COUNTERS.reset();
     if let Some(sites) = SITES.get() {
-        for site in sites {
-            site.trap_count.store(0, Ordering::Relaxed);
-            site.hook_count.store(0, Ordering::Relaxed);
-        }
+        reset_site_observability(sites);
     }
 }
 
@@ -2779,7 +2796,7 @@ impl SyscallDispatcher for LiteinstDispatcher {
 }
 
 unsafe extern "C" fn tool_trampoline() {
-    let event = unsafe { CURRENT_EVENT };
+    let event = CURRENT_EVENT.get();
     if event.is_null() {
         unsafe {
             exit_now(123);
@@ -3317,6 +3334,7 @@ mod tests {
     use super::ALT_STACK_ENV;
     use super::ENABLED_FALLBACK_CLASSIFICATIONS;
     use super::FORK_HOOK;
+    use super::FallbackCounters;
     use super::LiteinstDispatcher;
     use super::MAX_PATCH_SITES;
     use super::RCB_CLOCK;
@@ -3341,8 +3359,7 @@ mod tests {
     use super::mark_site_range_stale;
     use super::raw_syscall6;
     use super::record_fallback_dispatch;
-    use super::reset_fallback_observability;
-    use super::site_counts;
+    use super::reset_site_observability;
 
     #[test]
     fn every_optional_rcb_setup_error_takes_the_real_unavailable_path() {
@@ -3360,9 +3377,9 @@ mod tests {
             reverie::Errno::EIO,
         ] {
             initialize_rcb_clock_with(|| Err(error)).unwrap();
-            assert!(unsafe { RCB_CLOCK }.is_null());
-            assert!(unsafe { RCB_CLOCK_UNAVAILABLE });
-            assert_eq!(unsafe { RCB_CLOCK_OWNER }, owner);
+            assert!(RCB_CLOCK.get().is_null());
+            assert!(RCB_CLOCK_UNAVAILABLE.get());
+            assert_eq!(RCB_CLOCK_OWNER.get(), owner);
         }
     }
 
@@ -3445,52 +3462,42 @@ mod tests {
 
     #[test]
     fn recording_a_fallback_bumps_total_and_the_matching_syscall() {
-        // A syscall number unique to this test, so the per-number assertion is
-        // exact even if the process-global counters are touched concurrently.
+        let counters = FallbackCounters::new();
         let number: i64 = 402;
-        let per_before = fallback_syscall_count(number);
-        let total_before = fallback_dispatch_count();
 
-        record_fallback_dispatch(number);
+        counters.record(number);
 
-        assert_eq!(fallback_syscall_count(number), per_before + 1);
-        assert!(
-            fallback_dispatch_count() > total_before,
-            "total must advance by at least this recording"
-        );
+        assert_eq!(counters.by_number(number), 1);
+        assert_eq!(counters.total(), 1);
     }
 
     #[test]
     fn out_of_range_syscall_numbers_count_in_the_total_only() {
+        let counters = FallbackCounters::new();
         // Above the tracked bound: total advances, per-number stays zero.
         let huge = i64::from(i32::MAX);
-        let total_before = fallback_dispatch_count();
-        record_fallback_dispatch(huge);
-        assert_eq!(fallback_syscall_count(huge), 0);
-        assert!(fallback_dispatch_count() > total_before);
+        counters.record(huge);
+        assert_eq!(counters.by_number(huge), 0);
+        assert_eq!(counters.total(), 1);
 
         // Negative numbers are never used to index the per-number table.
-        let total_before = fallback_dispatch_count();
-        record_fallback_dispatch(-1);
-        assert_eq!(fallback_syscall_count(-1), 0);
-        assert!(fallback_dispatch_count() > total_before);
+        counters.record(-1);
+        assert_eq!(counters.by_number(-1), 0);
+        assert_eq!(counters.total(), 2);
     }
 
     #[test]
-    fn fork_child_reset_zeroes_the_process_global_fallback_counters() {
-        // Serial (`--test-threads=1`), so resetting the process-global counters
-        // does not race other tests. Record on both counter families, then prove
-        // the fork-child reset clears them. This is the by-number/total analog of
-        // reverie-e9patch's round-7 `resetting_observability_zeroes_...` test.
+    fn fallback_counter_reset_zeroes_total_and_per_number_counts() {
+        let counters = FallbackCounters::new();
         let number: i64 = 404;
-        record_fallback_dispatch(number);
-        assert!(fallback_dispatch_count() > 0);
-        assert!(fallback_syscall_count(number) > 0);
+        counters.record(number);
+        assert_eq!(counters.total(), 1);
+        assert_eq!(counters.by_number(number), 1);
 
-        reset_fallback_observability();
+        counters.reset();
 
-        assert_eq!(fallback_dispatch_count(), 0);
-        assert_eq!(fallback_syscall_count(number), 0);
+        assert_eq!(counters.total(), 0);
+        assert_eq!(counters.by_number(number), 0);
     }
 
     #[test]
@@ -3498,24 +3505,20 @@ mod tests {
         // The per-site trap/hook counts are observability; the site's address and
         // state are functional patch metadata the COW-inherited child must keep.
         // Reset must clear the former without disturbing the latter.
-        SITES.get_or_init(|| {
-            (0..MAX_PATCH_SITES)
-                .map(|_| SiteSlot::new())
-                .collect::<Vec<_>>()
-                .into_boxed_slice()
-        });
+        let site = SiteSlot::new();
         let address = 0x4321_9000;
-        let (site, claimed) = claim_site(address).unwrap();
-        assert!(claimed);
+        site.address.store(address, Ordering::Release);
         site.state.store(SITE_ACTIVE, Ordering::Release);
         site.trap_count.store(7, Ordering::Release);
         site.hook_count.store(11, Ordering::Release);
-        assert_eq!(site_counts(address), (7, 11));
+        assert_eq!(site.trap_count.load(Ordering::Acquire), 7);
+        assert_eq!(site.hook_count.load(Ordering::Acquire), 11);
 
-        reset_fallback_observability();
+        reset_site_observability(std::slice::from_ref(&site));
 
         // Observability cleared...
-        assert_eq!(site_counts(address), (0, 0));
+        assert_eq!(site.trap_count.load(Ordering::Acquire), 0);
+        assert_eq!(site.hook_count.load(Ordering::Acquire), 0);
         // ...but the functional patch state is intact, so the child's inherited
         // instrumentation keeps working.
         assert_eq!(site.address.load(Ordering::Acquire), address);
@@ -3525,15 +3528,31 @@ mod tests {
     #[test]
     fn fork_hook_runs_the_observability_reset() {
         // The static FORK_HOOK must wrap `reset_fallback_observability`, so
-        // invoking it (as `process_syscall` does in the fork child) clears the
-        // process-global counters — proving the shared ForkHook seam is wired to
-        // the reset rather than a private path.
+        // invoking it (as `process_syscall` does in the fork child) clears both
+        // process-global and per-site counters — proving the shared ForkHook seam
+        // is wired to the complete production reset rather than a private path.
+        SITES.get_or_init(|| {
+            (0..MAX_PATCH_SITES)
+                .map(|_| SiteSlot::new())
+                .collect::<Vec<_>>()
+                .into_boxed_slice()
+        });
+        let address = 0x7654_3000;
+        let (site, claimed) = claim_site(address).unwrap();
+        assert!(claimed);
+        site.state.store(SITE_ACTIVE, Ordering::Release);
+        site.trap_count.store(7, Ordering::Release);
+        site.hook_count.store(11, Ordering::Release);
         record_fallback_dispatch(405);
         assert!(fallback_dispatch_count() > 0);
 
         FORK_HOOK.run_in_child();
 
         assert_eq!(fallback_dispatch_count(), 0);
+        assert_eq!(site.trap_count.load(Ordering::Acquire), 0);
+        assert_eq!(site.hook_count.load(Ordering::Acquire), 0);
+        assert_eq!(site.address.load(Ordering::Acquire), address);
+        assert_eq!(site.state.load(Ordering::Acquire), SITE_ACTIVE);
         assert_eq!(fallback_syscall_count(405), 0);
     }
 

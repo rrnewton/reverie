@@ -1361,20 +1361,25 @@ fn drain_unregistered_child(task: Running) -> Result<(), TraceError> {
 
 fn liteinst_pidfd_setup_error(
     pid: Pid,
-    open_error: Errno,
+    setup_error: Errno,
     kill_error: Option<Errno>,
     drain_result: Result<(), TraceError>,
 ) -> anyhow::Error {
+    let setup_failure = if setup_error == Errno::ETIMEDOUT {
+        format!(
+            "LiteInst tracee {pid} root identity did not become a stable traced thread-group leader with a pidfd within the 2,000-attempt retry budget"
+        )
+    } else {
+        format!("failed to open pidfd for LiteInst tracee {pid}: {setup_error}")
+    };
     match (kill_error, drain_result) {
         (Some(kill_error), drain_result) => anyhow::anyhow!(
-            "failed to open pidfd for LiteInst tracee {pid}: {open_error}; numeric setup-failure kill also failed: {kill_error}; drain result: {drain_result:?}"
+            "{setup_failure}; numeric setup-failure kill also failed: {kill_error}; drain result: {drain_result:?}"
         ),
-        (None, Err(drain_error)) => anyhow::anyhow!(
-            "failed to open pidfd for LiteInst tracee {pid}: {open_error}; cleanup drain also failed: {drain_error}"
-        ),
-        (None, Ok(())) => {
-            anyhow::anyhow!("failed to open pidfd for LiteInst tracee {pid}: {open_error}")
+        (None, Err(drain_error)) => {
+            anyhow::anyhow!("{setup_failure}; cleanup drain also failed: {drain_error}")
         }
+        (None, Ok(())) => anyhow::anyhow!(setup_failure),
     }
 }
 
@@ -1790,8 +1795,10 @@ fn seccomp_filter(events: &Subscription) -> seccomp::Filter {
                 .iter_syscalls()
                 .map(|syscall| (syscall, Action::Trace(0))),
         )
-        // Always allow these syscalls to pass through untraced.
-        .syscall(Sysno::restart_syscall, Action::Allow)
+        // rt_sigreturn must execute from Reverie's private page while restoring
+        // a signal frame. restart_syscall deliberately has no unconditional
+        // override: like every ordinary syscall, it is traced exactly when the
+        // Tool subscribes to it and otherwise falls through to the Allow default.
         .syscall(Sysno::rt_sigreturn, Action::Allow)
         // Allow untraced syscalls through without tracing them.
         .ip_range(
@@ -2908,6 +2915,61 @@ mod tests {
     }
 
     #[derive(Default)]
+    struct SubscribedRestartSyscallTool;
+
+    #[reverie::tool]
+    impl Tool for SubscribedRestartSyscallTool {
+        type GlobalState = ();
+        type ThreadState = ();
+
+        fn subscriptions(_config: &()) -> Subscription {
+            [Sysno::restart_syscall].into_iter().collect()
+        }
+
+        async fn handle_syscall_event<G: Guest<Self>>(
+            &self,
+            _guest: &mut G,
+            syscall: Syscall,
+        ) -> Result<i64, Error> {
+            assert_eq!(syscall.number(), Sysno::restart_syscall);
+            Ok(0x5a)
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn subscribed_restart_syscall_reaches_the_tool() {
+        let tracer = spawn_fn::<SubscribedRestartSyscallTool, _>(|| {
+            let result = unsafe { libc::syscall(libc::SYS_restart_syscall) };
+            assert_eq!(result, 0x5a, "subscribed restart_syscall bypassed the Tool");
+        })
+        .await
+        .expect("spawn subscribed restart_syscall guest");
+
+        let (status, _) = tokio::time::timeout(Duration::from_secs(3), tracer.wait())
+            .await
+            .expect("subscribed restart_syscall guest hung")
+            .expect("subscribed restart_syscall guest failed");
+        assert_eq!(status, ExitStatus::Exited(0));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn unsubscribed_restart_syscall_retains_the_linux_result() {
+        let tracer = spawn_fn::<InitFailureTool, _>(|| {
+            let result = unsafe { libc::syscall(libc::SYS_restart_syscall) };
+            assert_eq!(result, -1, "unsubscribed restart_syscall was intercepted");
+            assert_eq!(Errno::last(), Errno::EINTR);
+        })
+        .await
+        .expect("spawn unsubscribed restart_syscall guest");
+
+        let (status, _) = tokio::time::timeout(Duration::from_secs(3), tracer.wait())
+            .await
+            .expect("unsubscribed restart_syscall guest hung")
+            .expect("unsubscribed restart_syscall guest failed");
+        assert_eq!(status, ExitStatus::Exited(0));
+    }
+
+    #[derive(Default)]
     struct TimedExecTransitionTool;
 
     #[reverie::tool]
@@ -3493,10 +3555,30 @@ mod tests {
         )
         .to_string();
         assert!(
+            message.contains("failed to open pidfd for LiteInst tracee 42"),
+            "genuine pidfd failure lost its cause: {message}"
+        );
+        assert!(
             message.contains("EMFILE"),
             "missing pidfd failure: {message}"
         );
         assert!(message.contains("EIO"), "missing drain failure: {message}");
+    }
+
+    #[test]
+    fn pidfd_setup_timeout_names_thread_group_leader_retry_exhaustion() {
+        let message = liteinst_pidfd_setup_error(Pid::from_raw(42), Errno::ETIMEDOUT, None, Ok(()))
+            .to_string();
+        assert!(
+            message.contains(
+                "root identity did not become a stable traced thread-group leader with a pidfd within the 2,000-attempt retry budget"
+            ),
+            "missing root-identity retry exhaustion: {message}"
+        );
+        assert!(
+            !message.contains("failed to open pidfd"),
+            "timeout still blames pidfd_open: {message}"
+        );
     }
 
     #[test]

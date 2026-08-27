@@ -437,10 +437,13 @@ mod tests {
 
     #[tokio::test]
     async fn mount_tmpfs() {
+        let mount = "type=tmpfs,target=/tmp"
+            .parse::<Mount>()
+            .expect("tmpfs mount syntax should parse");
         let output = Command::new("ls")
             .arg("/tmp")
             .map_root()
-            .mount(Mount::tmpfs("/tmp"))
+            .mount(mount)
             .output()
             .await
             .unwrap();

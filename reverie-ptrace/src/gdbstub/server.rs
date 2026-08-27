@@ -106,7 +106,11 @@ impl GdbServer {
 
 struct GdbServerImpl {
     reader: Box<dyn AsyncRead + Send + Unpin>,
-    pkt_tx: mpsc::Sender<Packet>,
+    /// ⚠️ `Option` SO THE RELAY CAN DROP IT. The session's command loop ends
+    /// only when every sender on this channel is gone; holding it in `self` for
+    /// the lifetime of [`GdbServerImpl::run`] made that impossible. See the
+    /// deadlock note on `run`.
+    pkt_tx: Option<mpsc::Sender<Packet>>,
     server_rx: Option<oneshot::Receiver<()>>,
     session: Option<Session>,
 }
@@ -171,7 +175,7 @@ impl GdbServerImpl {
 
         Ok(GdbServerImpl {
             reader: Box::new(reader),
-            pkt_tx: tx,
+            pkt_tx: Some(tx),
             server_rx: Some(server_rx),
             session: Some(session),
         })
@@ -195,7 +199,7 @@ impl GdbServerImpl {
 
         Ok(GdbServerImpl {
             reader: Box::new(reader),
-            pkt_tx: tx,
+            pkt_tx: Some(tx),
             server_rx: Some(server_rx),
             session: Some(session),
         })
@@ -218,6 +222,8 @@ impl GdbServerImpl {
 
     async fn send_packet(&mut self, packet: Packet) -> Result<(), Error> {
         self.pkt_tx
+            .as_ref()
+            .ok_or(Error::GdbServerSendPacketError)?
             .send(packet)
             .await
             .map_err(|_| Error::GdbServerSendPacketError)
@@ -233,6 +239,47 @@ impl GdbServerImpl {
                 PacketWithAck::WithAck(pkt) => self.send_packet(pkt).await?,
             }
         }
+
+        // ⚠️ THE CLIENT IS GONE, SO DROP THE SENDER. The session's command loop
+        // is `while let Some(pkt) = cmd_rx.recv().await`, which ends only when
+        // every sender is dropped. This one lived in `self` for the whole of
+        // `run`, and `run` cannot return until `try_join` below completes, and
+        // `try_join` cannot complete until the session loop ends. Holding it
+        // here made the exit condition unreachable BY CONSTRUCTION: the relay
+        // would notice the peer had closed, return `Ok(())`, and then wait
+        // forever for a session that was waiting for this sender to go away.
+        //
+        // ⚠️ AND IT IS NOT THE hermit HANG, WHICH THIS COMMENT CLAIMED FOR THREE
+        // REVISIONS. "The hang had simply moved here" was written from reading and
+        // is DISPROVED by instrumenting the run: with the fake-gdb reproduction,
+        // every await in this file resolves, `try_join` COMPLETES, `run` returns
+        // `Ok`, and hermit still exits rc=124. The wedge is the inferior's resume
+        // path: the tracee is ALIVE in `t (tracing stop)` with `TracerPid` set to
+        // the container, and `guest-3` is blocked in `do_wait` for it while the
+        // tokio worker is parked -- not this file. Caught by
+        // `agent(codex-rev-493)`.
+        //
+        // ⚠️ AN EARLIER VERSION OF THIS COMMENT SAID "with no children" AND
+        // CONCLUDED THE TRACEE WAS GONE. `task/<tid>/children` DOES NOT EXIST ON
+        // THIS KERNEL: `# CONFIG_PROC_CHILDREN is not set` (6.19.2-0_fbk0_hardened),
+        // so the read fails for EVERY process -- measured, an ordinary host parent
+        // with a live child in the same namespace reads empty 10 times out of 10.
+        // The file is not evidence of anything, anywhere, here.
+        //
+        // ⚠️ AND THE FIRST CORRECTION OF THAT MISTAKE WAS ALSO WRONG: it blamed the
+        // tracee's PID namespace, which sounds right and is not why. That is the
+        // same failure twice -- a correct observation with an invented mechanism
+        // attached -- so the mechanism is now named from `/boot/config` rather than
+        // reasoned about. `agent(hermit-dbgrev16)` measured both.
+        //
+        // ⚠️ AND THE REACH IS NARROWER THAN "a departed peer ends the session".
+        // Closing this channel ends `Session::run` only once it has passed its
+        // initial `gdb_stop_rx.recv()` and entered the command loop; a peer that
+        // departs BEFORE the first inferior stop is parked on a different channel
+        // entirely, whose sender lives in `TracedTask`. Caught by
+        // `agent(codex-rev-493)`. What this fixes is a session that has BEGUN and
+        // then loses its client.
+        self.pkt_tx.take();
 
         // remote client closed connection.
         Ok(())
@@ -256,10 +303,246 @@ impl GdbServerImpl {
         if let Some(server_rx) = self.server_rx.take() {
             server_rx.await.map_err(|_| Error::GdbServerNotStarted)?;
             let mut session = self.session.take().ok_or(Error::SessionNotStarted)?;
+            // ⚠️ BOTH HALVES MUST BE ABLE TO END, AND ONE OF THEM COULD NOT.
+            // `relay_gdb_packets` terminates when the peer closes; `session.run`
+            // terminates when its command channel closes. The relay now drops
+            // the only sender as it leaves, so a departed client ends both and
+            // this join returns. Before that, a client that closed the
+            // connection left the session waiting on a channel whose sender was
+            // owned by the very future the join was waiting for.
             let run_session = session.run();
             let run_loop = self.relay_gdb_packets();
             future::try_join(run_session, run_loop).await?;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use tokio::io::AsyncWriteExt;
+    use tokio::sync::mpsc;
+    use tokio::sync::oneshot;
+
+    use super::*;
+
+    /// ⚠️ THIS DRIVES `relay_gdb_packets` ITSELF. AN EARLIER VERSION DID NOT, AND
+    /// THAT VERSION WAS WORTHLESS.
+    ///
+    /// What it used to do: build a local `mpsc` channel in the test, drop the
+    /// local sender, and assert the local receiver ended. That is a proof that a
+    /// channel behaves like a channel. It never touched [`GdbServerImpl`], so
+    /// deleting the production `self.pkt_tx.take()` left it PASSING in 0.00s --
+    /// measured, after two review lanes refused the head for exactly this. The
+    /// mutation advertised as old-fails/new-passes mutated the MODEL, not the
+    /// code.
+    ///
+    /// What it does now: constructs a real [`GdbServerImpl`] over a duplex pipe,
+    /// closes the peer, calls the real `relay_gdb_packets`, and asserts the
+    /// session's real receiver observes the channel CLOSED. Removing the `take()`
+    /// makes `rx.recv()` pend forever, because the sender is still owned by the
+    /// `server` binding this test is holding -- which is precisely the ownership
+    /// relationship `run()` has, and precisely the deadlock.
+    ///
+    /// ⚠️ THE ASSERTION IS ON `recv()` RETURNING `None`, NOT ON A TIMER. A closed
+    /// channel resolves immediately; an open one never resolves. The timeout is a
+    /// bound so a regression FAILS instead of wedging the runner, not the thing
+    /// being measured.
+    #[tokio::test]
+    async fn the_relay_closes_the_session_channel_when_the_peer_departs() {
+        // A duplex pipe stands in for the accepted TCP stream. Dropping our end
+        // gives the reader EOF, which is what a departed gdb looks like here.
+        let (peer, ours) = tokio::io::duplex(64);
+        let (reader, _writer) = tokio::io::split(ours);
+        let (tx, mut rx) = mpsc::channel::<Packet>(1);
+        let (_server_tx, server_rx) = oneshot::channel();
+
+        let mut server = GdbServerImpl {
+            reader: Box::new(reader),
+            pkt_tx: Some(tx),
+            server_rx: Some(server_rx),
+            // `relay_gdb_packets` never touches the session; `run` does, and a
+            // real `Session` needs an inferior. Keeping this `None` is what lets
+            // the boundary under test be exercised on its own.
+            session: None,
+        };
+
+        // The peer departs without ever speaking, which is the reproduction:
+        // `gdb` exiting before it finishes connecting.
+        let mut peer = peer;
+        peer.shutdown().await.expect("failed to close the peer");
+        drop(peer);
+
+        let relayed = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            server.relay_gdb_packets(),
+        )
+        .await
+        .expect("relay_gdb_packets did not return after the peer closed");
+        assert!(relayed.is_ok(), "the relay reported an error: {relayed:?}");
+
+        // ⚠️ THE ACTUAL PROPERTY. `server` is still alive and still owns
+        // `pkt_tx` unless the relay took it -- exactly as `run()` holds `self`
+        // across its `try_join`. If the sender survives, this pends forever and
+        // the session's command loop could never end.
+        let closed = tokio::time::timeout(std::time::Duration::from_secs(10), rx.recv())
+            .await
+            .expect(
+                "the session channel was still OPEN after the relay returned, so the command \
+                 loop could never end -- this is the deadlock",
+            );
+        assert!(
+            closed.is_none(),
+            "expected the channel to be closed, got a packet"
+        );
+
+        // Named so a reader cannot mistake the assertion above for a liveness
+        // check on a value nobody holds.
+        drop(server);
+    }
+
+    /// `wait_for_tcp_connection` must leave NOTHING LISTENING once it has
+    /// accepted its client.
+    ///
+    /// ⚠️ THIS IS A CROSS-REPOSITORY CONTRACT AND IT IS LOAD-BEARING IN HERMIT.
+    /// hermit's gdb-client watcher (`hermit-cli/src/bin/hermit/gdb_client.rs`)
+    /// decides whether a container was stranded waiting for a debugger that will
+    /// never come by CONNECTING TO THIS PORT after it observes its spawned `gdb`
+    /// exit; a successful connect is its evidence that an accept was still
+    /// pending. That inference is sound ONLY because this function drops its
+    /// listener the moment it returns.
+    ///
+    /// If this is ever changed to keep the listener bound -- to support
+    /// reconnect, say -- then every HEALTHY gdb session that finishes before its
+    /// container does gets reported as "the gdb client hermit spawned exited
+    /// before it finished connecting". That is hermit's defect 2 restored, and
+    /// NOTHING ON HERMIT'S SIDE CAN DETECT IT: to the watcher, a bound port plus
+    /// a dead client is indistinguishable from a stranded accept. The check has
+    /// to live here, next to the fact it depends on.
+    #[tokio::test(flavor = "current_thread")]
+    async fn the_listener_is_closed_once_the_client_is_accepted() {
+        // A port that is free right now. Bind-and-drop is the only portable way
+        // to learn one, because `wait_for_tcp_connection` insists on binding the
+        // address itself and will not take a listener we made.
+        let addr: SocketAddr = {
+            let probe = std::net::TcpListener::bind("127.0.0.1:0")
+                .expect("failed to bind a probe listener to find a free port");
+            probe
+                .local_addr()
+                .expect("probe listener has no local addr")
+        };
+
+        let server = tokio::spawn(wait_for_tcp_connection(addr));
+
+        // Connect as the real client would. Bounded, because a wedged test costs
+        // the whole run's budget while a red one names itself in a line.
+        let mut client = None;
+        for _ in 0..300 {
+            if let Ok(s) = std::net::TcpStream::connect(addr) {
+                client = Some(s);
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        let client = client.expect("could not connect to the gdbserver port within 3s");
+
+        let accepted = server
+            .await
+            .expect("the accept task panicked")
+            .expect("wait_for_tcp_connection failed");
+
+        // ⚠️ THE ASSERTION. Nothing this process owns may still be listening on
+        // the port now that the client has been accepted.
+        let leaked = this_process_listening_fds_on(addr.port());
+        assert!(
+            leaked.is_empty(),
+            "wait_for_tcp_connection LEAKED its listener: this process still holds {leaked:?} \
+             listening on port {}. hermit's watcher reads a successful connect to this port as \
+             proof that a container is stranded, so a healthy finished session would be reported \
+             as a client that exited before connecting",
+            addr.port(),
+        );
+
+        drop(accepted);
+        drop(client);
+    }
+
+    /// The fds THIS PROCESS still holds in `LISTEN` on `port`, as
+    /// `("/proc/self/fd/<n>", inode)` pairs. Empty means we let the listener go.
+    ///
+    /// ⚠️ IT ASKS ABOUT THIS PROCESS ON PURPOSE, AND AN EARLIER VERSION DID NOT.
+    /// The obvious way to write the check above is to `connect` a second time and
+    /// require a refusal, which is literally what hermit's watcher does. That
+    /// version is RED IN THIS CRATE'S OWN TEST BINARY -- measured 5 runs out of 5,
+    /// against 3 out of 3 green under `--test-threads=1` -- and it is red for a
+    /// reason that has nothing to do with this function.
+    ///
+    /// `fork(2)` COPIES THE LISTENING FD, and `tracer::tests` forks constantly.
+    /// A sibling test forking during the accept window inherits this listener;
+    /// when `wait_for_tcp_connection` drops OUR copy the child's copy keeps the
+    /// port bound, so the second connect is accepted by a process we never
+    /// started. Caught by scanning `/proc` at the failure: inode 450116219,
+    /// listening, held by `pid=3170590 (tracer::tests::) fd=20`, while the test
+    /// itself was pid 3170539. `CLOEXEC` does not help -- it fires on `exec`, not
+    /// on `fork`, and the window is between the two.
+    ///
+    /// ⚠️ THIS IS A CONFOUND IN THE OBSERVABLE, NOT A HOLE IN THE CONTRACT, and
+    /// the difference decides whether the check may be rewritten at all. In
+    /// hermit the guest is spawned BEFORE `GdbServer::from_addr` binds anything
+    /// (`reverie-ptrace/src/tracer.rs`, the guest is already running at the
+    /// `Configure the gdb server` step), so no hermit fork can inherit this
+    /// listener and the connect really does mean what the watcher takes it to
+    /// mean. The confound exists only here, because this crate runs forking tests
+    /// beside this one in one process.
+    ///
+    /// So the check asks the question the connect was a proxy for -- "did this
+    /// function let go of its listener" -- directly, and is strictly harder to
+    /// satisfy: a leak is caught even on a host where the port would have refused
+    /// for some unrelated reason. What it deliberately no longer does is fail
+    /// when SOMEBODY ELSE holds a copy, which was never this function's defect.
+    fn this_process_listening_fds_on(port: u16) -> Vec<(String, String)> {
+        const TCP_LISTEN: &str = "0A";
+        let mut listening_inodes = Vec::new();
+        for table in ["/proc/net/tcp", "/proc/net/tcp6"] {
+            let Ok(contents) = std::fs::read_to_string(table) else {
+                continue;
+            };
+            for line in contents.lines().skip(1) {
+                let cols: Vec<&str> = line.split_whitespace().collect();
+                // local_address is `HEXADDR:HEXPORT`; st is the connection state;
+                // inode is the tenth column.
+                let (Some(local), Some(state), Some(inode)) =
+                    (cols.get(1), cols.get(3), cols.get(9))
+                else {
+                    continue;
+                };
+                let Some((_, hex_port)) = local.rsplit_once(':') else {
+                    continue;
+                };
+                if u16::from_str_radix(hex_port, 16) == Ok(port) && *state == TCP_LISTEN {
+                    listening_inodes.push(inode.to_string());
+                }
+            }
+        }
+        if listening_inodes.is_empty() {
+            return Vec::new();
+        }
+
+        let mut held = Vec::new();
+        let Ok(fds) = std::fs::read_dir("/proc/self/fd") else {
+            panic!("cannot read /proc/self/fd, so this test cannot decide anything");
+        };
+        for entry in fds.flatten() {
+            let Ok(target) = std::fs::read_link(entry.path()) else {
+                continue;
+            };
+            let target = target.to_string_lossy().to_string();
+            for inode in &listening_inodes {
+                if target == format!("socket:[{inode}]") {
+                    held.push((entry.path().to_string_lossy().to_string(), inode.clone()));
+                }
+            }
+        }
+        held
     }
 }
