@@ -192,7 +192,11 @@ survivable rather than merely known.
 
 # Compose multi-line notes in a quoted heredoc, never inline
 
-Write handoff documents under tracked `ai_docs/handoffs/` (or as a TaskGraph HANDOFF note), never as the only copy under `ignored/`.
+A resumption handoff goes in the agent's own worktree slot as untracked
+`HANDOFF.md`, so the handoff stays visibly associated with that slot. A slot
+containing an unread `HANDOFF.md` must not be removed or reclaimed. Durable
+investigation write-ups still belong in a suitable tracked path or TaskGraph
+note; they are not transient handoffs.
 
 `tg note` is the durable record -- panes are not -- and it is **quoting-safe for
 shell metacharacters**: text that reaches its argv survives `$(...)`, backticks,
