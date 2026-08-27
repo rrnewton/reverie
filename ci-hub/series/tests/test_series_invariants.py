@@ -744,6 +744,39 @@ class CellResultProjection(unittest.TestCase):
             [(1, "diverged"), (2, "passed")],
         )
 
+    def test_pressure_retry_retains_both_attempts_at_one_repetition(self):
+        first = self._cell(7, outcome="FAIL", duration_ms=90)
+        first["attempt"] = 1
+        second = self._cell(7, outcome="PASS", duration_ms=80)
+        second["attempt"] = 2
+        rows = self._project([second, first])
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(
+            [
+                (
+                    row["series"]["run_index"],
+                    row["series"]["attempt"],
+                    row["series"]["outcome"],
+                )
+                for row in rows
+            ],
+            [(7, 1, "diverged"), (7, 2, "passed")],
+        )
+        self.assertNotEqual(rows[0]["event_id"], rows[1]["event_id"])
+        self.assertEqual(
+            [row["series"]["attempt"] for row in series.history_rows(rows, self._cell(0)["test"])],
+            [1, 2],
+        )
+
+    def test_pressure_attempt_must_be_positive(self):
+        cell = self._cell(7)
+        cell["attempt"] = 0
+        with self.assertRaisesRegex(
+            series.MalformedRow,
+            "pressure-test cell result attempt must be a positive int",
+        ):
+            self._project([cell])
+
     def test_validate_requires_the_appended_attempt_ordinal(self):
         cell = self._cell(0)
         with self.assertRaisesRegex(

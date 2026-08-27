@@ -196,13 +196,14 @@ def spool_dir(parent: Any) -> Path:
     return shared_parent_root(parent) / "ignored" / "ci-hub" / "series-spool"
 
 
-def row_identity(row: dict) -> tuple[str, str, int]:
-    """The (cell, tree, run) key. Two rows sharing it describe one repetition."""
+def row_identity(row: dict) -> tuple[str, str, int, int]:
+    """The (cell, tree, run, attempt) key for one execution."""
     payload = row.get("series") or {}
     return (
         str(payload.get("cell", "")),
         str(payload.get("tree", "")),
         int(payload.get("run_index", -1)),
+        int(payload.get("attempt", 1)),
     )
 
 
@@ -240,6 +241,11 @@ def validate_row(row: Any, *, strict_paths: bool = True) -> dict:
     run_index = payload["run_index"]
     if not isinstance(run_index, int) or isinstance(run_index, bool) or run_index < 0:
         raise MalformedRow(f"run_index must be a non-negative int, got {run_index!r}")
+    attempt = payload.get("attempt")
+    if attempt is not None and (
+        not isinstance(attempt, int) or isinstance(attempt, bool) or attempt < 1
+    ):
+        raise MalformedRow(f"attempt must be a positive int when present, got {attempt!r}")
 
     outcome = payload.get("outcome")
     if outcome not in OUTCOMES:
@@ -382,7 +388,10 @@ def series_for(rows: Iterable[dict], cell: str, tree: str) -> list[dict]:
         if (r.get("series") or {}).get("cell") == cell
         and (r.get("series") or {}).get("tree") == tree
     ]
-    out.sort(key=lambda r: int((r.get("series") or {}).get("run_index", -1)))
+    out.sort(key=lambda r: (
+        int((r.get("series") or {}).get("run_index", -1)),
+        int((r.get("series") or {}).get("attempt", 1)),
+    ))
     return out
 
 
@@ -560,6 +569,7 @@ def history_rows(rows: Iterable[dict], test: str, tree: str | None = None) -> li
             str(row.get("emitted_at", "")),
             str(row.get("run_id", "")),
             int((row.get("series") or {}).get("run_index", -1)),
+            int((row.get("series") or {}).get("attempt", 1)),
             str(row.get("event_id", "")),
         ),
     )
@@ -750,6 +760,7 @@ def collapse_rows(rows: Sequence[dict]) -> list[dict]:
         key=lambda row: (
             str((row.get("series") or {}).get("cell", "")),
             int((row.get("series") or {}).get("run_index", -1)),
+            int((row.get("series") or {}).get("attempt", 1)),
         ),
     )
     collapsed: list[dict] = []
@@ -766,6 +777,8 @@ def collapse_rows(rows: Sequence[dict]) -> list[dict]:
                 previous.get("run_id") == row.get("run_id")
                 and _compression_key(previous_payload) == _compression_key(payload)
                 and previous_end == int(payload["run_index"])
+                and int(previous_payload.get("attempt", 1)) == 1
+                and int(payload.get("attempt", 1)) == 1
             ):
                 previous_payload["num_runs"] = int(previous_payload.get("num_runs", 1)) + 1
                 previous_runtime = previous_payload.get("runtime") or {}
@@ -806,6 +819,13 @@ def rows_from_cell_results(
     depth = source_depths(parent, tree)
 
     rows = []
+    pressure_counts: dict[tuple[str, int], int] = {}
+    if producer == "pressure-test":
+        for cell_result in cell_results:
+            run_index = cell_result.get("run_index")
+            if isinstance(run_index, int) and not isinstance(run_index, bool):
+                key = (_cell_name(cell_result), run_index)
+                pressure_counts[key] = pressure_counts.get(key, 0) + 1
     for cell_result in cell_results:
         if cell_result.get("hermit_sha") != tree:
             raise MalformedRow(
@@ -833,6 +853,16 @@ def rows_from_cell_results(
                     "pressure-test cell result run_index must be a non-negative int, "
                     f"got {run_index!r}"
                 )
+            attempt = cell_result.get("attempt", 1)
+            if (
+                not isinstance(attempt, int)
+                or isinstance(attempt, bool)
+                or attempt < 1
+            ):
+                raise MalformedRow(
+                    "pressure-test cell result attempt must be a positive int, "
+                    f"got {attempt!r}"
+                )
         payload = {
             "cell": _cell_name(cell_result),
             "tree": tree,
@@ -844,6 +874,11 @@ def rows_from_cell_results(
             "runtime": _cell_runtime(cell_result),
             "source_tree_dirty": bool(cell_result.get("source_tree_dirty", False)),
         }
+        if (
+            producer == "pressure-test"
+            and pressure_counts.get((payload["cell"], run_index), 0) > 1
+        ):
+            payload["attempt"] = attempt
         coordinates = _cell_coordinates(cell_result)
         if coordinates is not None and payload["outcome"] == "diverged":
             payload["coordinates"] = coordinates
@@ -870,6 +905,7 @@ def rows_from_cell_results(
                 "cell": payload["cell"],
                 "tree": payload["tree"],
                 "run_index": payload["run_index"],
+                **({"attempt": payload["attempt"]} if "attempt" in payload else {}),
             },
             sort_keys=True,
             separators=(",", ":"),
@@ -1116,6 +1152,9 @@ def _run_span(payload: dict) -> str:
     count = payload.get("num_runs", 1)
     if not isinstance(first, int) or not isinstance(count, int) or count < 1:
         return "-"
+    attempt = payload.get("attempt")
+    if isinstance(attempt, int) and not isinstance(attempt, bool):
+        return f"{first} attempt {attempt}"
     if count == 1:
         return str(first)
     return f"{first}-{first + count - 1} ({count})"
