@@ -539,7 +539,9 @@ impl DbtRunner {
     where
         G: GlobalTool + 'static,
     {
-        let directory = tempfile::Builder::new().prefix("reverie-dbt-").tempdir()?;
+        let directory = tempfile::Builder::new()
+            .prefix("reverie-dbt-")
+            .tempdir_in("/tmp")?;
         let socket = directory.path().join("coordinator.sock");
         let mut global = Arc::new(G::init_global_state(&config).await);
         let connected = Arc::new(AtomicBool::new(false));
