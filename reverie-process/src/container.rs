@@ -1113,6 +1113,30 @@ mod tests {
         );
     }
 
+    /// Pinning each guest to a different CPU must put it on a different CPU.
+    ///
+    /// ⚠️ THE IDENTIFIER THIS READS IS 32-BIT ON PURPOSE, AND AN 8-BIT ONE MADE
+    /// THIS TEST UNPASSABLE ON THIS HOST. It used to read
+    /// `get_feature_info().initial_local_apic_id()`, the LEGACY CPUID leaf 1
+    /// `EBX[31:24]` field, which is a `u8` and so has 256 possible values.
+    /// Asking it to tell 316 CPUs apart is a pigeonhole failure, not a
+    /// scheduling bug. Measured at reverie main
+    /// `b181b1bba20c846d277f500c25182a00e18add9a` on a 316-CPU host:
+    ///
+    /// ```text
+    /// 316 observations, min id 0, max id 255, 256 distinct ids,
+    /// exactly 60 ids seen twice -- and 316 - 256 = 60.
+    /// ```
+    ///
+    /// So `max(count) == 1` could not hold for ANY amount of correct pinning,
+    /// and the failure was deterministic rather than flaky. It had been
+    /// recorded several times as "pre-existing and host-specific" and routinely
+    /// skipped, which was true and left `validate.sh` step 2 red on main.
+    ///
+    /// CPUID leaf `0x0B` reports the 32-bit x2APIC id, which distinguishes as
+    /// many CPUs as the machine has. Reading it does not weaken the assertion --
+    /// the assertion is unchanged, and it is now able to fail for the reason it
+    /// was written to catch instead of failing for arithmetic.
     #[cfg(target_arch = "x86_64")]
     #[test]
     pub fn pin_affinity_to_all_cores() -> Result<(), Error> {
@@ -1123,8 +1147,8 @@ mod tests {
         let cpus = num_cpus::get();
         println!("Total cpus {}", cpus);
 
-        // Map the apic_id to the number of times we observed it:
-        let mut results: HashMap<u8, usize> = HashMap::new();
+        // Map the x2APIC id to the number of times we observed it:
+        let mut results: HashMap<u32, usize> = HashMap::new();
         for core in 0..cpus {
             println!("  Launching guest with affinity set to {}", core);
             let mut container = Container::new();
@@ -1132,18 +1156,36 @@ mod tests {
             let which_core = container
                 .run(|| {
                     let cpuid = CpuId::new();
+                    // Every level of leaf 0x0B reports the same x2APIC id for
+                    // the executing logical processor, so the first is enough.
                     cpuid
-                        .get_feature_info()
-                        .expect("cpuid failed")
-                        .initial_local_apic_id()
+                        .get_extended_topology_info()
+                        .and_then(|mut levels| levels.next())
+                        .map(|level| level.x2apic_id())
                 })
                 .unwrap();
-            println!("    Guest sees its on APIC id {}", which_core);
+            // ⚠️ REFUSE RATHER THAN FALL BACK TO THE 8-BIT FIELD. On a host
+            // this large the legacy id provably cannot answer the question, so
+            // silently using it would restore exactly the defect above.
+            let which_core = which_core.unwrap_or_else(|| {
+                panic!(
+                    "CPUID leaf 0x0B (extended topology) is unavailable, so no \
+                     32-bit x2APIC id can be read; with {cpus} CPUs the legacy \
+                     8-bit APIC id cannot distinguish them and this test cannot \
+                     decide anything"
+                )
+            });
+            println!("    Guest sees its on x2APIC id {}", which_core);
             *results.entry(which_core).or_default() += 1;
         }
 
         println!("Final table size {:?}", results.len());
-        assert_eq!(results.values().fold(0, |n, v| std::cmp::max(n, *v)), 1);
+        assert_eq!(
+            results.values().fold(0, |n, v| std::cmp::max(n, *v)),
+            1,
+            "two guests pinned to different CPUs reported the same x2APIC id, \
+             so affinity did not place them on distinct CPUs"
+        );
         Ok(())
     }
 }
