@@ -143,7 +143,12 @@ class ParallelValidatePathTest(unittest.TestCase):
             "wait": 1,
             "hold": 1,
             "child_deadline": 3600,
-            "environment": {"HOME": "/home/test", "PATH": "/usr/bin", "TMPDIR": "/tmp"},
+            "environment": {
+                "HOME": "/home/test",
+                "PATH": "/usr/bin",
+                "TMPDIR": "/tmp",
+                "XDG_RUNTIME_DIR": "/run/user/1234",
+            },
         }
         old_a = start_unit.build_systemd_command(**common, unit="validate-a")
         old_b = start_unit.build_systemd_command(**common, unit="validate-b")
@@ -171,8 +176,11 @@ class ParallelValidatePathTest(unittest.TestCase):
         fixed_a = start_unit.build_systemd_command(
             **common, unit="validate-a", runtime_root=runtime_a
         )
+        other_parent = self.root / "other-parent-worktree"
         fixed_b = start_unit.build_systemd_command(
-            **common, unit="validate-b", runtime_root=runtime_b
+            **(common | {"root": other_parent}),
+            unit="validate-b",
+            runtime_root=runtime_b,
         )
         for name in ("tmp", "cache", "python-cache", "hermit-data"):
             self.assertTrue((runtime_a / name).is_dir())
@@ -194,9 +202,7 @@ class ParallelValidatePathTest(unittest.TestCase):
         # The state enforcing the DAG's resource_caps is intentionally shared:
         # making it per run would recreate the exact cross-run over-admission
         # it exists to prevent. Only the outputs above are per run.
-        shared_caps = (
-            f"DAGRUN_RESOURCE_CAPS_PATH={self.root / 'ignored' / 'validate' / 'resource-caps.json'}"
-        )
+        shared_caps = "DAGRUN_RESOURCE_CAPS_PATH=/run/user/1234/ci-hub/resource-caps.json"
         self.assertIn(shared_caps, fixed_a)
         self.assertIn(shared_caps, fixed_b)
 

@@ -594,6 +594,16 @@ def _validate_output_paths(root: Path, unit: str) -> tuple[Path, Path]:
     return base / "e2e", base / "safe-ci-dag-runner"
 
 
+def _shared_resource_caps_path(environment: Mapping[str, str]) -> Path:
+    """Return one user-runtime path shared by every parent worktree."""
+    runtime = Path(
+        environment.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"
+    )
+    if not runtime.is_absolute():
+        raise ValueError(f"XDG_RUNTIME_DIR must be absolute, got {runtime}")
+    return runtime / "ci-hub" / "resource-caps.json"
+
+
 def prepare_runtime_root(parent: Path, unit: str) -> Path:
     """Create the host-side temporary/cache tree owned by one validate run."""
     runtime = parent / "validate-runtime" / unit
@@ -1285,7 +1295,7 @@ def build_systemd_command(
         build_budget_env.extend(["--setenv", "REVERIE_REQUIRE_KVM=1"])
     else:
         e2e_result_root, runner_log_dir = _validate_output_paths(root, unit)
-        resource_caps_path = root / "ignored" / "validate" / "resource-caps.json"
+        resource_caps_path = _shared_resource_caps_path(environment)
         build_budget_env.extend(
             [
                 "--setenv",
