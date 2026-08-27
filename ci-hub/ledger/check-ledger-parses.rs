@@ -22,6 +22,7 @@
 //!
 //! ```cargo
 //! [dependencies]
+//! hermit-manifest-plan = { path = "../../hermit/ci/manifest-plan" }
 //! serde = { version = "1", features = ["derive"] }
 //! serde_json = "1"
 //! ```

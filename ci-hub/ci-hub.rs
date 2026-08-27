@@ -11,6 +11,7 @@
 //! chrono = "0.4"
 //! clap = { version = "4", features = ["derive"] }
 //! fs2 = "0.4"
+//! hermit-manifest-plan = { path = "../hermit/ci/manifest-plan" }
 //! libc = "0.2"
 //! serde = { version = "1", features = ["derive"] }
 //! serde_json = "1"
