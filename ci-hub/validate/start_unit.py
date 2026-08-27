@@ -2104,7 +2104,7 @@ def main(
         except (RuntimeError, ValueError) as error:
             return refuse(
                 str(error),
-                "list live units with `ci-hub validate-worktrees --runs 10` and attach to one of those",
+                "attach with the exact validate-* handle printed by the original validate-run",
             )
     if args.checkout is None or not args.agent or not args.target:
         return refuse(

@@ -76,6 +76,11 @@ pub trait BoundedOutput {
 
     /// Drop-in for the `spawn()` / write stdin / `wait_with_output()` idiom.
     fn bounded_output_with_input(&mut self, input: &[u8]) -> io::Result<Output>;
+
+    /// Stream stdout normally while retaining stderr in a regular file until
+    /// the direct child exits. Unlike a pipe, the file cannot keep the caller
+    /// waiting merely because a detached grandchild inherited its descriptor.
+    fn bounded_status_with_stderr(&mut self) -> io::Result<(std::process::ExitStatus, Vec<u8>)>;
 }
 
 impl BoundedOutput for Command {
@@ -85,6 +90,16 @@ impl BoundedOutput for Command {
 
     fn bounded_output_with_input(&mut self, input: &[u8]) -> io::Result<Output> {
         capture(self, Some(input))
+    }
+
+    fn bounded_status_with_stderr(&mut self) -> io::Result<(std::process::ExitStatus, Vec<u8>)> {
+        let mut stderr_file = scratch_file("err")?;
+        self.stderr(Stdio::from(stderr_file.try_clone()?));
+        let status = self.spawn()?.wait()?;
+        stderr_file.seek(SeekFrom::Start(0))?;
+        let mut stderr = Vec::new();
+        stderr_file.read_to_end(&mut stderr)?;
+        Ok((status, stderr))
     }
 }
 
@@ -143,7 +158,7 @@ fn capture(command: &mut Command, input: Option<&[u8]>) -> io::Result<Output> {
 #[cfg(test)]
 mod tests {
     use super::BoundedOutput;
-    use std::process::Command;
+    use std::process::{Command, Stdio};
     use std::sync::mpsc;
     use std::time::Duration;
 
@@ -226,6 +241,33 @@ mod tests {
         assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "out");
         assert_eq!(String::from_utf8_lossy(&output.stderr).trim(), "err");
         assert_eq!(output.status.code(), Some(3));
+    }
+
+    #[test]
+    fn status_with_stderr_streams_stdout_and_captures_stderr() {
+        let (status, stderr) = Command::new("sh")
+            .args(["-c", "echo err >&2; exit 3"])
+            .stdout(Stdio::null())
+            .bounded_status_with_stderr()
+            .expect("ran");
+        assert_eq!(status.code(), Some(3));
+        assert_eq!(stderr, b"err\n");
+    }
+
+    #[test]
+    fn status_with_stderr_does_not_wait_for_a_grandchild_holding_the_file() {
+        let finished = finishes(
+            || {
+                Command::new("sh")
+                    .args(["-c", "sleep 30 >&2 & echo err >&2; exit 7"])
+                    .stdout(Stdio::null())
+                    .bounded_status_with_stderr()
+            },
+            5,
+        );
+        let (status, stderr) = finished.expect("regular-file stderr capture hung").unwrap();
+        assert_eq!(status.code(), Some(7));
+        assert_eq!(stderr, b"err\n");
     }
 
     #[test]

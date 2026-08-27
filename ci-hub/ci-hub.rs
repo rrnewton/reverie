@@ -84,7 +84,7 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::env;
 use std::ffi::{OsStr, OsString};
-use std::io::{self, Read, Write};
+use std::io::{self, BufRead, BufReader, Read, Write};
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, ExitStatus, Stdio};
@@ -121,7 +121,6 @@ READ-ONLY STATUS AND HISTORY
   receipt-digest          Recompute a HistoryRow's canonical exact-row digest
   history                 Query the retained GitHub Actions timeline
   green-time              Estimate carried-forward green/red time and densification gaps
-  validate-worktrees      Show registered worktree validation runs
   verify-landing          Verify a PR replay SHA or commit SHA on a fetched target
 
 VALIDATION ACTIONS
@@ -176,7 +175,6 @@ lists commands; it does not define those rules independently.
 
 5. Recover and diagnose without changing the authority hierarchy:
      ./ci-hub/ci-hub local-history --since YYYY-MM-DD
-     ./ci-hub/ci-hub validate-worktrees --runs 10
      ./ci-hub/ci-hub newest-green
      ./ci-hub/ci-hub first-bad CELL_OR_GATE
    Query runner health for capacity only: ./ci-hub/ci-hub runner-health --all
@@ -226,8 +224,6 @@ enum HubCommand {
     GreenTime(PassthroughArgs),
     /// List recent machine-wide validation runs, or use --all for every record.
     LocalHistory(LocalHistoryArgs),
-    /// Show validate runs currently registered by each worktree.
-    ValidateWorktrees(ValidateWorktreesArgs),
     /// Summarize self-hosted runners and recent workflows.
     RunnerHealth(RunnerHealthArgs),
     /// Gate timing-sensitive work on measured CPU and memory utilization.
@@ -380,22 +376,6 @@ struct LocalHistoryArgs {
 }
 
 #[derive(Args, Clone, Debug)]
-struct ValidateWorktreesArgs {
-    /// Include this many most-recent registered runs.
-    #[arg(long, default_value_t = 0)]
-    runs: usize,
-    /// Mark a registered worktree stale after this many hours.
-    #[arg(long, default_value_t = 24.0)]
-    stale_hours: f64,
-    /// Emit the machine-readable worktree and run report.
-    #[arg(long)]
-    json: bool,
-    /// Override the canonical parent ignored/ci-hub store.
-    #[arg(long)]
-    data_dir: Option<PathBuf>,
-}
-
-#[derive(Args, Clone, Debug)]
 struct RunnerHealthArgs {
     #[arg(long, default_value = "rrnewton/hermit")]
     repo: String,
@@ -442,12 +422,32 @@ struct ValidateStatusArgs {
     /// Number of recent validation runs to show when no SHA or PR is supplied.
     #[arg(long, default_value_t = DEFAULT_VALIDATE_HISTORY_LIMIT)]
     limit: usize,
+    /// Do not include process-verified validation runs that are still executing.
+    #[arg(long, conflicts_with = "in_progress_only")]
+    exclude_in_progress: bool,
+    /// Show only process-verified validation runs that are still executing.
+    #[arg(long, conflicts_with = "exclude_in_progress")]
+    in_progress_only: bool,
+    /// Optional identity columns for the current/recent table. Comma-separated
+    /// values and repeated flags are both accepted; `none` selects no identity
+    /// column. The default stays narrow with SHA alone.
+    #[arg(long, value_enum, value_delimiter = ',', default_value = "sha")]
+    columns: Vec<ValidateStatusColumn>,
     /// Repository used to resolve --pr head SHAs.
     #[arg(long, default_value = "rrnewton/hermit")]
     repo: String,
     /// Emit the machine-readable verdict report.
     #[arg(long)]
     json: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+enum ValidateStatusColumn {
+    Sha,
+    Branch,
+    #[value(name = "gitdepth", alias = "git-depth")]
+    GitDepth,
+    None,
 }
 
 #[derive(Args, Clone, Debug)]
@@ -1146,8 +1146,7 @@ impl HubCommand {
                 tool: "ci-hub/review-attest",
                 basis: "not measured: bounded live-head, exact-comment and repository-label GitHub reads plus one attestation comment and optional cache-label mutation".into(),
             },
-            Self::ValidateWorktrees(_)
-            | Self::Quickstart
+            Self::Quickstart
             | Self::GreenTime(_)
             | Self::Ledger(_)
             | Self::CiMode(_)
@@ -1320,11 +1319,12 @@ fn warn_if_main_is_soft_green(root: &Path) {
         .bounded_output();
     match output {
         Ok(output) if output.status.success() => {
-            let _ = io::stderr().write_all(&output.stderr);
+            let _ = write_python_stderr(&output.stderr);
         }
         Ok(output) => eprintln!(
             "ci-hub: WARNING: current-main hard/soft state is UNKNOWN: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
+            String::from_utf8_lossy(&python_stderr_without_allocator_warning(&output.stderr))
+                .trim()
         ),
         Err(error) => {
             eprintln!("ci-hub: WARNING: current-main hard/soft state is UNKNOWN: {error}")
@@ -1530,22 +1530,6 @@ fn execute(root: &Path, command: HubCommand) -> Result<i32, CiHubError> {
                 forwarded.push("--json".into());
             }
             run_python(root, "ci-hub/remediation/protocol.py", forwarded)
-        }
-        HubCommand::ValidateWorktrees(args) => {
-            let mut forwarded = Vec::new();
-            push_option(&mut forwarded, "--runs", args.runs.to_string());
-            push_option(
-                &mut forwarded,
-                "--stale-hours",
-                args.stale_hours.to_string(),
-            );
-            if args.json {
-                forwarded.push("--json".into());
-            }
-            if let Some(data_dir) = args.data_dir {
-                push_option(&mut forwarded, "--data-dir", data_dir);
-            }
-            run_python(root, "ci-hub/validate/worktrees.py", forwarded)
         }
         HubCommand::RunnerHealth(args) => {
             let mut forwarded = Vec::new();
@@ -3182,7 +3166,7 @@ fn run_local_history(root: &Path, args: LocalHistoryArgs) -> Result<i32, CiHubEr
                 tool: "local-history".into(),
                 source,
             })?;
-        io::stderr().write_all(&output.stderr).ok();
+        write_python_stderr(&output.stderr).ok();
         if !output.status.success() {
             io::stdout().write_all(&output.stdout).ok();
             return Ok(exit_status_code(output.status));
@@ -3221,7 +3205,8 @@ fn load_ledger_rows_reporting(
         if !output.status.success() {
             return Err(CiHubError::ValidateStatus(format!(
                 "canonical validate-ledger union refused: {}",
-                String::from_utf8_lossy(&output.stderr).trim()
+                String::from_utf8_lossy(&python_stderr_without_allocator_warning(&output.stderr))
+                    .trim()
             )));
         }
         String::from_utf8(output.stdout).map_err(|error| {
@@ -5239,6 +5224,12 @@ fn short_wall(seconds: Option<f64>) -> String {
     }
 }
 
+fn short_timestamp(value: &str) -> String {
+    chrono::DateTime::parse_from_rfc3339(value)
+        .map(|timestamp| timestamp.to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
+        .unwrap_or_else(|_| value.to_string())
+}
+
 /// COMMITS SINCE GREEN, for `validate-status`' standard output.
 ///
 /// ⚠️ WHY THIS LIVES IN THE STANDARD READER AND NOT ONLY IN `newest-green`.
@@ -5499,17 +5490,60 @@ fn standard_green_depth(root: &Path, branch: &str) -> GreenDepth {
     }
 }
 
-fn recent_row_test_counts(row: &HistoryRow) -> (String, String) {
-    let total = match (row.executed_tests, row.filtered_tests) {
-        (Some(executed), Some(filtered)) if executed >= 0 && filtered >= 0 => executed
-            .checked_add(filtered)
-            .map(|count| count.to_string())
-            .unwrap_or_else(|| "-".into()),
-        _ => "-".into(),
+fn parse_passed_tests(line: &str) -> Option<i64> {
+    let result = line.split_once("test result: ")?.1;
+    let before_passed = result.split_once(" passed")?.0;
+    before_passed
+        .split_whitespace()
+        .next_back()?
+        .parse::<i64>()
+        .ok()
+        .filter(|count| *count >= 0)
+}
+
+/// Recover an observed lower bound for historical rows whose producer retained
+/// test summaries only in the durable log. Compact logs can omit summaries and
+/// retry logs can retain more attempts than the terminal receipt, so this value
+/// must never be presented as an exact count. No parseable summary is UNKNOWN,
+/// never a fabricated zero.
+fn observed_passed_tests_from_log(root: &Path, row: &HistoryRow) -> Option<i64> {
+    let raw = row.log_file.as_deref()?;
+    let path = if let Some(relative) = raw.strip_prefix("{{WORKSPACE_ROOT}}/") {
+        root.join(relative)
+    } else {
+        history_repo_path(root, Path::new(raw))
     };
-    // `executed_tests` includes ignored tests when the producer saw a
-    // `running N tests` banner, so it cannot be relabelled as passed. Historical
-    // receipts have no passed count and remain visibly unknown.
+    let file = std::fs::File::open(path).ok()?;
+    let mut passed = None;
+    for line in BufReader::new(file).lines() {
+        let line = line.ok()?;
+        let Some(count) = parse_passed_tests(&line) else {
+            continue;
+        };
+        passed = Some(passed.unwrap_or(0_i64).checked_add(count)?);
+    }
+    let passed = passed?;
+    let total = row.executed_tests?.checked_add(row.filtered_tests?)?;
+    (total >= 0 && passed <= total).then_some(passed)
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct TestCounts {
+    total: Option<i64>,
+    passed: Option<i64>,
+    passed_at_least: Option<i64>,
+}
+
+fn recent_row_test_counts(root: &Path, row: &HistoryRow) -> TestCounts {
+    let total = match (row.executed_tests, row.filtered_tests) {
+        (Some(executed), Some(filtered)) if executed >= 0 && filtered >= 0 => {
+            executed.checked_add(filtered)
+        }
+        _ => None,
+    };
+    // `executed_tests` includes failed and ignored tests, so it cannot be
+    // relabelled as passed. Prefer a producer-carried count; old rows fall back
+    // to the final per-node summaries in their retained log.
     let passed = row
         .extra
         .get("passed_tests")
@@ -5517,66 +5551,482 @@ fn recent_row_test_counts(row: &HistoryRow) -> (String, String) {
         .filter(|count| *count >= 0)
         .filter(|count| {
             row.executed_tests
-                .is_some_and(|executed| *count <= executed)
-        })
-        .map(|count| count.to_string())
-        .unwrap_or_else(|| "-".into());
-    (total, passed)
-}
-
-fn recent_validate_history_header() -> String {
-    format!(
-        "{:<13} {:<12} {:<20} {:>7} {:>11} {:>12} {:>7} {:<24} SUMMARY",
-        "VERDICT", "SHA", "FINISHED", "NODES", "TESTS-TOTAL", "TESTS-PASSED", "WALL", "HOST/SLOT"
-    )
-}
-
-fn recent_validate_history_line(row: &HistoryRow, verdict: &str, summary: &str) -> String {
-    let sha = row.commit.as_deref().unwrap_or("?");
-    let short_sha = sha.get(..12).unwrap_or(sha);
-    let finished = row
-        .finished_at
-        .as_deref()
-        .or(row.started_at.as_deref())
-        .unwrap_or("?");
-    let nodes = match (row.gates_run.or(row.checks), row.gates_expected) {
-        (Some(run), Some(expected)) => format!("{run}/{expected}"),
-        (Some(run), None) => run.to_string(),
-        _ => "-".into(),
-    };
-    let (total, passed) = recent_row_test_counts(row);
-    let host_slot = format!(
-        "{}/{}",
-        row.host.as_deref().unwrap_or("?"),
-        row.slot.as_deref().unwrap_or("?")
-    );
-    format!(
-        "{:<13} {:<12} {:<20} {:>7} {:>11} {:>12} {:>7} {:<24} {}",
-        verdict,
-        short_sha,
-        finished,
-        nodes,
+                .is_some_and(|executed| executed >= 0 && *count <= executed)
+        });
+    let passed_at_least = passed
+        .is_none()
+        .then(|| observed_passed_tests_from_log(root, row))
+        .flatten();
+    TestCounts {
         total,
         passed,
-        short_wall(row.real_seconds),
-        host_slot,
-        summary,
+        passed_at_least,
+    }
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct ValidateRunProcessIdentity {
+    pid: u32,
+    start_ticks: u64,
+    boot_id: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct ValidateRunRecord {
+    schema_version: u32,
+    unit: String,
+    target: String,
+    repo: String,
+    #[serde(default)]
+    agent: Option<String>,
+    started_at: String,
+    #[serde(default)]
+    host: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct ValidateStatusEntry {
+    status: String,
+    in_progress: bool,
+    sha: Option<String>,
+    branch: Option<String>,
+    git_depth: Option<i64>,
+    started_at: Option<String>,
+    finished_at: Option<String>,
+    elapsed_seconds: Option<f64>,
+    tests_total: Option<i64>,
+    tests_passed: Option<i64>,
+    tests_passed_at_least: Option<i64>,
+    host: Option<String>,
+    slot: Option<String>,
+    summary: String,
+}
+
+fn process_state_and_start_ticks(stat: &str) -> Option<(char, u64)> {
+    // Everything after the final `) ` begins at proc stat field 3; starttime is
+    // field 22, therefore index 19 in this suffix. Splitting at the final close
+    // handles spaces and closing parentheses in the process name.
+    let fields = stat
+        .rsplit_once(") ")?
+        .1
+        .split_whitespace()
+        .collect::<Vec<_>>();
+    let state = fields.first()?.chars().next()?;
+    let start_ticks = fields.get(19)?.parse().ok()?;
+    Some((state, start_ticks))
+}
+
+fn cgroup_contains_exact_unit(cgroup: &str, unit: &str) -> bool {
+    cgroup.lines().any(|line| {
+        line.splitn(3, ':')
+            .nth(2)
+            .is_some_and(|path| path.split('/').any(|component| component == unit))
+    })
+}
+
+fn validate_run_process_is_live(
+    proc_root: &Path,
+    boot_id_path: &Path,
+    unit: &str,
+    identity: &ValidateRunProcessIdentity,
+) -> Result<bool, String> {
+    let current_boot = std::fs::read_to_string(boot_id_path)
+        .map_err(|error| format!("cannot read {}: {error}", boot_id_path.display()))?;
+    if current_boot.trim() != identity.boot_id {
+        return Ok(false);
+    }
+    let process = proc_root.join(identity.pid.to_string());
+    let stat_path = process.join("stat");
+    let stat = match std::fs::read_to_string(&stat_path) {
+        Ok(stat) => stat,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(format!("cannot read {}: {error}", stat_path.display())),
+    };
+    let Some((state, start_ticks)) = process_state_and_start_ticks(&stat) else {
+        return Ok(false);
+    };
+    if matches!(state, 'Z' | 'X') || start_ticks != identity.start_ticks {
+        return Ok(false);
+    }
+    let cgroup_path = process.join("cgroup");
+    let cgroup = match std::fs::read_to_string(&cgroup_path) {
+        Ok(cgroup) => cgroup,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(format!("cannot read {}: {error}", cgroup_path.display())),
+    };
+    Ok(cgroup_contains_exact_unit(&cgroup, unit))
+}
+
+fn local_host() -> Option<String> {
+    std::fs::read_to_string("/etc/hostname")
+        .ok()
+        .map(|host| host.trim().to_string())
+        .filter(|host| !host.is_empty())
+}
+
+fn elapsed_since(started_at: &str, now: chrono::DateTime<chrono::Utc>) -> Option<f64> {
+    let started = chrono::DateTime::parse_from_rfc3339(started_at).ok()?;
+    Some(
+        now.signed_duration_since(started.with_timezone(&chrono::Utc))
+            .num_milliseconds()
+            .max(0) as f64
+            / 1000.0,
     )
+}
+
+fn live_validate_runs_from(
+    root: &Path,
+    repo: &str,
+    proc_root: &Path,
+    boot_id_path: &Path,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Result<Vec<ValidateStatusEntry>, CiHubError> {
+    let directory = root.join("ignored/validate/runs");
+    let entries = match std::fs::read_dir(&directory) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => {
+            return Err(CiHubError::ValidateStatus(format!(
+                "cannot read validation run handles in {}: {error}",
+                directory.display()
+            )))
+        }
+    };
+    let mut paths = entries
+        .map(|entry| {
+            entry.map(|entry| entry.path()).map_err(|error| {
+                CiHubError::ValidateStatus(format!(
+                    "cannot enumerate validation run handles in {}: {error}",
+                    directory.display()
+                ))
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    paths.retain(|path| {
+        path.extension()
+            .is_some_and(|extension| extension == "json")
+    });
+    paths.sort();
+
+    let mut live = Vec::new();
+    for path in paths {
+        let content = std::fs::read_to_string(&path).map_err(|error| {
+            CiHubError::ValidateStatus(format!(
+                "cannot read validation run handle {}: {error}",
+                path.display()
+            ))
+        })?;
+        let value: serde_json::Value = serde_json::from_str(&content).map_err(|error| {
+            CiHubError::ValidateStatus(format!(
+                "validation run handle {} is not JSON: {error}",
+                path.display()
+            ))
+        })?;
+        if !matches!(
+            value.get("state").and_then(serde_json::Value::as_str),
+            Some("launching" | "running")
+        ) {
+            continue;
+        }
+        let Some(unit) = value.get("unit").and_then(serde_json::Value::as_str) else {
+            continue;
+        };
+        if !unit.starts_with("validate-") || !unit.ends_with(".service") {
+            continue;
+        }
+        let Some(identity_value) = value.get("process_identity") else {
+            // `launching` exists briefly before validate-lock publishes the
+            // process identity. It is not yet enough evidence to call a run
+            // executing, and old interrupted launch records prove why the state
+            // string alone must not be trusted.
+            continue;
+        };
+        let identity: ValidateRunProcessIdentity =
+            match serde_json::from_value(identity_value.clone()) {
+                Ok(identity) => identity,
+                Err(_) => continue,
+            };
+        if !validate_run_process_is_live(proc_root, boot_id_path, unit, &identity)
+            .map_err(CiHubError::ValidateStatus)?
+        {
+            continue;
+        }
+        // Only a process-bound live record can affect the answer. Historical
+        // stale handles predate fields that are required now; rejecting those
+        // before checking liveness would make an old file hide a current run.
+        let record: ValidateRunRecord = serde_json::from_value(value).map_err(|error| {
+            CiHubError::ValidateStatus(format!(
+                "live validation run handle {} is malformed: {error}",
+                path.display()
+            ))
+        })?;
+        if record.schema_version != 1 {
+            return Err(CiHubError::ValidateStatus(format!(
+                "live validation run handle {} has unsupported schema {}",
+                path.display(),
+                record.schema_version
+            )));
+        }
+        if canonical_validation_repo(&record.repo) != Some(repo) {
+            continue;
+        }
+        let expected_name = format!("{}.json", record.unit.trim_end_matches(".service"));
+        if path.file_name().and_then(OsStr::to_str) != Some(expected_name.as_str()) {
+            return Err(CiHubError::ValidateStatus(format!(
+                "live validation run handle {} does not bind its unit {}",
+                path.display(),
+                record.unit
+            )));
+        }
+        let summary = format!(
+            "agent={} unit={}",
+            record.agent.as_deref().unwrap_or("?"),
+            record.unit
+        );
+        live.push(ValidateStatusEntry {
+            status: "IN-PROGRESS".into(),
+            in_progress: true,
+            sha: Some(record.target),
+            branch: None,
+            git_depth: None,
+            started_at: Some(record.started_at.clone()),
+            finished_at: None,
+            elapsed_seconds: elapsed_since(&record.started_at, now),
+            tests_total: None,
+            tests_passed: None,
+            tests_passed_at_least: None,
+            host: record.host.or_else(local_host),
+            slot: None,
+            summary,
+        });
+    }
+    live.sort_by(|left, right| right.started_at.cmp(&left.started_at));
+    Ok(live)
+}
+
+fn live_validate_runs(root: &Path, repo: &str) -> Result<Vec<ValidateStatusEntry>, CiHubError> {
+    live_validate_runs_from(
+        root,
+        repo,
+        Path::new("/proc"),
+        Path::new("/proc/sys/kernel/random/boot_id"),
+        chrono::Utc::now(),
+    )
+}
+
+fn selected_validate_status_columns(
+    requested: &[ValidateStatusColumn],
+) -> Result<Vec<ValidateStatusColumn>, CiHubError> {
+    if requested.contains(&ValidateStatusColumn::None) {
+        if requested.len() != 1 {
+            return Err(CiHubError::ValidateStatus(
+                "--columns none cannot be combined with another column".into(),
+            ));
+        }
+        return Ok(Vec::new());
+    }
+    let mut columns = Vec::new();
+    for column in requested {
+        if !columns.contains(column) {
+            columns.push(*column);
+        }
+    }
+    Ok(columns)
+}
+
+fn validation_repo_checkout(root: &Path, repo: &str) -> PathBuf {
+    root.join(if repo == CANONICAL_REVERIE_REPO {
+        "reverie"
+    } else {
+        "hermit"
+    })
+}
+
+fn branch_for_validation_sha(root: &Path, repo: &str, sha: &str) -> Option<String> {
+    let checkout = validation_repo_checkout(root, repo);
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(checkout)
+        .args([
+            "branch",
+            "--remotes",
+            "--contains",
+            sha,
+            "--format=%(refname:short)",
+        ])
+        .bounded_output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let branches = stdout
+        .lines()
+        .map(str::trim)
+        .filter(|branch| !branch.is_empty())
+        .collect::<Vec<_>>();
+    branches
+        .iter()
+        .find(|branch| **branch == "origin/main")
+        .or_else(|| branches.first())
+        .map(|branch| branch.strip_prefix("origin/").unwrap_or(branch).to_string())
+}
+
+fn git_depth_for_validation_sha(root: &Path, repo: &str, sha: &str) -> Option<i64> {
+    let checkout = validation_repo_checkout(root, repo);
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(checkout)
+        .args(["rev-list", "--count", sha])
+        .bounded_output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    String::from_utf8_lossy(&output.stdout).trim().parse().ok()
+}
+
+fn fill_optional_validate_status_columns(
+    root: &Path,
+    repo: &str,
+    columns: &[ValidateStatusColumn],
+    entry: &mut ValidateStatusEntry,
+) {
+    let Some(sha) = entry.sha.as_deref() else {
+        return;
+    };
+    if columns.contains(&ValidateStatusColumn::Branch) && entry.branch.is_none() {
+        entry.branch = branch_for_validation_sha(root, repo, sha);
+    }
+    if columns.contains(&ValidateStatusColumn::GitDepth) && entry.git_depth.is_none() {
+        entry.git_depth = git_depth_for_validation_sha(root, repo, sha);
+    }
+}
+
+fn validate_status_header(columns: &[ValidateStatusColumn]) -> String {
+    let mut fields = vec![format!("{:<13}", "STATUS")];
+    for column in columns {
+        fields.push(match column {
+            ValidateStatusColumn::Sha => format!("{:<12}", "SHA"),
+            ValidateStatusColumn::Branch => format!("{:<18}", "BRANCH"),
+            ValidateStatusColumn::GitDepth => format!("{:>8}", "GITDEPTH"),
+            ValidateStatusColumn::None => unreachable!("none is removed before rendering"),
+        });
+    }
+    fields.push(format!("{:<20}", "STARTED/FINISHED"));
+    fields.push(format!("{:>7}", "ELAPSED"));
+    fields.push(format!("{:<16}", "HOST"));
+    fields.push(format!("{:>11}", "TESTS-TOTAL"));
+    fields.push(format!("{:>12}", "TESTS-PASSED"));
+    fields.push("SUMMARY".into());
+    fields.join(" ")
+}
+
+fn validate_status_line(entry: &ValidateStatusEntry, columns: &[ValidateStatusColumn]) -> String {
+    let mut fields = vec![format!("{:<13}", entry.status)];
+    for column in columns {
+        fields.push(match column {
+            ValidateStatusColumn::Sha => {
+                let sha = entry.sha.as_deref().unwrap_or("-");
+                format!("{:<12}", sha.get(..12).unwrap_or(sha))
+            }
+            ValidateStatusColumn::Branch => {
+                format!("{:<18}", entry.branch.as_deref().unwrap_or("-"))
+            }
+            ValidateStatusColumn::GitDepth => format!(
+                "{:>8}",
+                entry
+                    .git_depth
+                    .map(|depth| depth.to_string())
+                    .unwrap_or_else(|| "-".into())
+            ),
+            ValidateStatusColumn::None => unreachable!("none is removed before rendering"),
+        });
+    }
+    let when = entry
+        .finished_at
+        .as_deref()
+        .or(entry.started_at.as_deref())
+        .unwrap_or("-");
+    fields.push(format!("{:<20}", short_timestamp(when)));
+    fields.push(format!("{:>7}", short_wall(entry.elapsed_seconds)));
+    let host = entry
+        .host
+        .as_deref()
+        .unwrap_or("-")
+        .split('.')
+        .next()
+        .unwrap_or("-");
+    fields.push(format!("{:<16}", host));
+    fields.push(format!(
+        "{:>11}",
+        entry
+            .tests_total
+            .map(|count| count.to_string())
+            .unwrap_or_else(|| "-".into())
+    ));
+    fields.push(format!(
+        "{:>12}",
+        match (entry.tests_passed, entry.tests_passed_at_least) {
+            (Some(count), _) => count.to_string(),
+            (None, Some(count)) => format!(">={count}"),
+            (None, None) => "-".into(),
+        }
+    ));
+    fields.push(entry.summary.clone());
+    fields.join(" ")
+}
+
+fn finished_validate_status_entry(
+    root: &Path,
+    repo: &str,
+    row: &HistoryRow,
+) -> ValidateStatusEntry {
+    let verdict = recent_row_verdict(row, repo);
+    let tests = recent_row_test_counts(root, row);
+    ValidateStatusEntry {
+        status: verdict.into(),
+        in_progress: false,
+        sha: row.commit.clone(),
+        branch: row
+            .extra
+            .get("branch")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string),
+        git_depth: row
+            .extra
+            .get("git_depth")
+            .and_then(serde_json::Value::as_i64),
+        started_at: row.started_at.clone(),
+        finished_at: row.finished_at.clone(),
+        elapsed_seconds: row.real_seconds,
+        tests_total: tests.total,
+        tests_passed: tests.passed,
+        tests_passed_at_least: tests.passed_at_least,
+        host: row.host.clone(),
+        slot: row.slot.clone(),
+        summary: recent_row_summary(row, verdict),
+    }
 }
 
 fn print_recent_validate_history(
     root: &Path,
     rows: &[HistoryRow],
     repo: &str,
-    limit: usize,
     ledger: &Path,
-    json: bool,
+    args: &ValidateStatusArgs,
 ) -> Result<i32, CiHubError> {
-    if limit == 0 {
+    if args.limit == 0 {
         return Err(CiHubError::ValidateStatus(
             "--limit must be greater than zero".into(),
         ));
     }
+    let columns = selected_validate_status_columns(&args.columns)?;
+    let mut current = if args.exclude_in_progress {
+        Vec::new()
+    } else {
+        live_validate_runs(root, repo)?
+    };
     let mut recent = rows
         .iter()
         .filter(|row| row.commit.is_some())
@@ -5594,41 +6044,45 @@ fn print_recent_validate_history(
             .unwrap_or("");
         right.cmp(left)
     });
-    recent.truncate(limit);
-
-    let entries = recent
-        .iter()
-        .map(|row| {
-            let verdict = recent_row_verdict(row, repo);
-            serde_json::json!({
-                "verdict": verdict,
-                "sha": row.commit,
-                "started_at": row.started_at,
-                "finished_at": row.finished_at,
-                "wall_seconds": row.real_seconds,
-                "nodes_run": row.gates_run.or(row.checks),
-                "nodes_expected": row.gates_expected,
-                "executed_tests": row.executed_tests,
-                "host": row.host,
-                "slot": row.slot,
-                "summary": recent_row_summary(row, verdict),
-            })
+    recent.retain(|row| {
+        !current.iter().any(|entry| {
+            entry.sha.as_deref() == row.commit.as_deref()
+                && entry.started_at.as_deref() == row.started_at.as_deref()
         })
-        .collect::<Vec<_>>();
+    });
+    recent.truncate(args.limit);
+
+    let mut finished = if args.in_progress_only {
+        Vec::new()
+    } else {
+        recent
+            .iter()
+            .map(|row| finished_validate_status_entry(root, repo, row))
+            .collect::<Vec<_>>()
+    };
+    for entry in current.iter_mut().chain(finished.iter_mut()) {
+        fill_optional_validate_status_columns(root, repo, &columns, entry);
+    }
+    let mut entries = current;
+    entries.extend(finished);
 
     // Computed for BOTH output modes: a number that only appears under --json
     // is a number the humans reading the default output never see, which is the
     // condition this metric exists to end.
     let depth = standard_green_depth(root, "main");
 
-    if json {
+    if args.json {
+        let in_progress_count = entries.iter().filter(|entry| entry.in_progress).count();
         println!(
             "{}",
             serde_json::to_string_pretty(&serde_json::json!({
-                "schema_version": 2,
+                "schema_version": 3,
                 "repo": repo,
                 "count": entries.len(),
-                "limit": limit,
+                "in_progress_count": in_progress_count,
+                "finished_count": entries.len() - in_progress_count,
+                "limit": args.limit,
+                "columns": columns.iter().map(|column| column.to_possible_value().expect("value enum").get_name().to_string()).collect::<Vec<_>>(),
                 "runs": entries,
                 "commits_since_green": depth.json(),
                 "ledger": ledger.display().to_string(),
@@ -5642,19 +6096,16 @@ fn print_recent_validate_history(
     // last N commits" are different facts and the second is the actionable one.
     println!("{}", depth.line());
     if entries.is_empty() {
-        println!("No validation runs found for {repo}.");
+        if args.in_progress_only {
+            println!("No in-progress validation runs found for {repo}.");
+        } else {
+            println!("No validation runs found for {repo}.");
+        }
         return Ok(0);
     }
-    println!("{}", recent_validate_history_header());
-    for (row, entry) in recent.iter().zip(entries.iter()) {
-        println!(
-            "{}",
-            recent_validate_history_line(
-                row,
-                entry["verdict"].as_str().unwrap_or("?"),
-                entry["summary"].as_str().unwrap_or("?"),
-            )
-        );
+    println!("{}", validate_status_header(&columns));
+    for entry in &entries {
+        println!("{}", validate_status_line(entry, &columns));
     }
     Ok(0)
 }
@@ -5695,7 +6146,7 @@ fn run_validate_status(root: &Path, args: ValidateStatusArgs) -> Result<i32, CiH
     // both, or either together with `--pr`.
     let sha_input = args.sha.as_ref().or(args.sha_positional.as_ref());
     if sha_input.is_none() && args.pr.is_none() {
-        return print_recent_validate_history(root, &repo_rows, repo, args.limit, &path, args.json);
+        return print_recent_validate_history(root, &repo_rows, repo, &path, &args);
     }
     let sha = match (sha_input, args.pr) {
         (Some(input), None) => {
@@ -6860,7 +7311,38 @@ fn run_bash(root: &Path, relative_script: &str, args: Vec<OsString>) -> Result<i
 fn run_python_path(script: &Path, args: Vec<OsString>) -> Result<i32, CiHubError> {
     let mut command = Command::new("python3");
     command.arg(script).args(args);
-    run_status(command, &script.display().to_string())
+    command.stdin(Stdio::inherit()).stdout(Stdio::inherit());
+    let (status, stderr) =
+        command
+            .bounded_status_with_stderr()
+            .map_err(|source| CiHubError::Launch {
+                tool: script.display().to_string(),
+                source,
+            })?;
+    write_python_stderr(&stderr).map_err(|source| CiHubError::Launch {
+        tool: format!("{} stderr", script.display()),
+        source,
+    })?;
+    Ok(exit_status_code(status))
+}
+
+const PYTHON_JEMALLOC_WARNING: &[u8] =
+    b"<jemalloc>: Invalid conf pair: experimental_infallible_new:true";
+
+fn python_stderr_without_allocator_warning(stderr: &[u8]) -> Vec<u8> {
+    let mut kept = Vec::with_capacity(stderr.len());
+    for line in stderr.split_inclusive(|byte| *byte == b'\n') {
+        let content = line.strip_suffix(b"\n").unwrap_or(line);
+        let content = content.strip_suffix(b"\r").unwrap_or(content);
+        if content != PYTHON_JEMALLOC_WARNING {
+            kept.extend_from_slice(line);
+        }
+    }
+    kept
+}
+
+fn write_python_stderr(stderr: &[u8]) -> io::Result<()> {
+    io::stderr().write_all(&python_stderr_without_allocator_warning(stderr))
 }
 
 fn run_status(mut command: Command, tool: &str) -> Result<i32, CiHubError> {
@@ -7079,18 +7561,23 @@ mod tests {
         let mut value = schema4_receipt_value();
         value["passed_tests"] = serde_json::json!(785);
         let row = history_row(value);
-        let verdict = recent_row_verdict(&row, CANONICAL_VALIDATE_REPO);
-        let summary = recent_row_summary(&row, verdict);
+        let entry = finished_validate_status_entry(
+            Path::new("/no-retained-log"),
+            CANONICAL_VALIDATE_REPO,
+            &row,
+        );
 
-        assert_eq!(verdict, "VALIDATED");
+        assert_eq!(entry.status, "VALIDATED");
+        assert_eq!(entry.tests_total, Some(1479));
+        assert_eq!(entry.tests_passed, Some(785));
+        assert_eq!(entry.tests_passed_at_least, None);
         assert_eq!(
-            recent_validate_history_header(),
-            "VERDICT       SHA          FINISHED               NODES TESTS-TOTAL TESTS-PASSED    WALL HOST/SLOT                SUMMARY"
+            validate_status_header(&[ValidateStatusColumn::Sha]),
+            "STATUS        SHA          STARTED/FINISHED     ELAPSED HOST             TESTS-TOTAL TESTS-PASSED SUMMARY"
         );
-        assert_eq!(
-            recent_validate_history_line(&row, verdict, &summary),
-            "VALIDATED     630f44aab7fd 2026-08-01T12:01:00Z     2/2        1479          785   1m00s validation-host/lander   passed"
-        );
+        let line = validate_status_line(&entry, &[ValidateStatusColumn::Sha]);
+        assert!(line.starts_with("VALIDATED     630f44aab7fd"), "{line}");
+        assert!(line.contains("          785 passed"), "{line}");
     }
 
     #[test]
@@ -7117,14 +7604,16 @@ mod tests {
             "real_seconds": 10.0,
             "admission": "ci-hub-validate-lock"
         }));
-        let verdict = recent_row_verdict(&row, CANONICAL_VALIDATE_REPO);
-        let summary = recent_row_summary(&row, verdict);
-
-        assert_eq!(verdict, "NOT-VALIDATED");
-        assert_eq!(
-            recent_validate_history_line(&row, verdict, &summary),
-            "NOT-VALIDATED 0123456789ab 2026-08-02T00:00:00Z     1/2           -           10     10s runner/slot              dirty tree"
+        let entry = finished_validate_status_entry(
+            Path::new("/no-retained-log"),
+            CANONICAL_VALIDATE_REPO,
+            &row,
         );
+        assert_eq!(entry.status, "NOT-VALIDATED");
+        assert_eq!(entry.tests_total, None);
+        assert_eq!(entry.tests_passed, Some(10));
+        assert_eq!(entry.tests_passed_at_least, None);
+        assert_eq!(entry.summary, "dirty tree");
     }
 
     #[test]
@@ -7151,10 +7640,14 @@ mod tests {
             "real_seconds": 1850.0,
             "admission": "ci-hub-validate-lock"
         }));
-        assert_eq!(
-            recent_validate_history_line(&row, "FAILED", "failed: test.cli"),
-            "FAILED        fedcba987654 2026-08-03T00:00:00Z   64/64        3645         1678  30m50s runner/slot              failed: test.cli"
+        let entry = finished_validate_status_entry(
+            Path::new("/no-retained-log"),
+            CANONICAL_VALIDATE_REPO,
+            &row,
         );
+        assert_eq!(entry.tests_total, Some(3645));
+        assert_eq!(entry.tests_passed, Some(1678));
+        assert_eq!(entry.tests_passed_at_least, None);
     }
 
     #[test]
@@ -7163,7 +7656,14 @@ mod tests {
         value["executed_tests"] = serde_json::json!(786);
         value["filtered_tests"] = serde_json::json!(693);
         let row = history_row(value);
-        assert_eq!(recent_row_test_counts(&row), ("1479".into(), "-".into()));
+        assert_eq!(
+            recent_row_test_counts(Path::new("/no-retained-log"), &row),
+            TestCounts {
+                total: Some(1479),
+                passed: None,
+                passed_at_least: None,
+            }
+        );
     }
 
     #[test]
@@ -7177,7 +7677,10 @@ mod tests {
             let mut value = schema4_receipt_value();
             value["passed_tests"] = passed;
             let row = history_row(value);
-            assert_eq!(recent_row_test_counts(&row).1, "-");
+            assert_eq!(
+                recent_row_test_counts(Path::new("/no-retained-log"), &row).passed,
+                None
+            );
         }
 
         let mut value = schema4_receipt_value();
@@ -7185,7 +7688,203 @@ mod tests {
         value["filtered_tests"] = serde_json::json!(2);
         value["passed_tests"] = serde_json::json!(0);
         let row = history_row(value);
-        assert_eq!(recent_row_test_counts(&row), ("-".into(), "-".into()));
+        assert_eq!(
+            recent_row_test_counts(Path::new("/no-retained-log"), &row),
+            TestCounts {
+                total: None,
+                passed: None,
+                passed_at_least: None,
+            }
+        );
+
+        let mut value = schema4_receipt_value();
+        value["executed_tests"] = serde_json::Value::Null;
+        value["passed_tests"] = serde_json::json!(0);
+        let row = history_row(value);
+        assert_eq!(
+            recent_row_test_counts(Path::new("/no-retained-log"), &row).passed,
+            None
+        );
+    }
+
+    #[test]
+    fn recent_history_marks_log_derived_passes_as_an_observed_lower_bound() {
+        let log = std::env::temp_dir().join(format!(
+            "ci-hub-passed-tests-{}-{}.log",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap()
+        ));
+        std::fs::write(
+            &log,
+            "[test.one] test result: ok. 1 passed; 0 failed\n\
+             [test.one] ✓ PASS [test result: ok. 10 passed; 0 failed]\n\
+             [test.two] test result: FAILED. 2 passed; 1 failed\n\
+             [test.two] test result: FAILED. nextest: 8 passed, 1 failed\n",
+        )
+        .unwrap();
+        let mut value = schema4_receipt_value();
+        value["executed_tests"] = serde_json::json!(30);
+        value["filtered_tests"] = serde_json::json!(0);
+        value["log_file"] = serde_json::json!(log);
+        let row = history_row(value);
+        assert_eq!(
+            recent_row_test_counts(Path::new("/"), &row),
+            TestCounts {
+                total: Some(30),
+                passed: None,
+                passed_at_least: Some(21),
+            }
+        );
+        std::fs::remove_file(log).unwrap();
+    }
+
+    #[test]
+    fn recent_history_does_not_turn_an_empty_log_into_zero_passed() {
+        let log = std::env::temp_dir().join(format!(
+            "ci-hub-no-passed-tests-{}-{}.log",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap()
+        ));
+        std::fs::write(&log, "validation started but emitted no test summary\n").unwrap();
+        let mut value = schema4_receipt_value();
+        value["executed_tests"] = serde_json::json!(1);
+        value["log_file"] = serde_json::json!(log);
+        let row = history_row(value);
+        assert_eq!(
+            recent_row_test_counts(Path::new("/"), &row).passed_at_least,
+            None
+        );
+        std::fs::remove_file(log).unwrap();
+    }
+
+    #[test]
+    fn live_validate_requires_boot_pid_generation_and_exact_unit() {
+        let root = std::env::temp_dir().join(format!(
+            "ci-hub-live-validate-{}-{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap()
+        ));
+        let runs = root.join("ignored/validate/runs");
+        let proc_root = root.join("proc");
+        let process = proc_root.join("123");
+        std::fs::create_dir_all(&runs).unwrap();
+        std::fs::create_dir_all(&process).unwrap();
+        let boot_id = root.join("boot_id");
+        std::fs::write(&boot_id, "boot-one\n").unwrap();
+        let mut fields = vec!["0"; 20];
+        fields[0] = "S";
+        fields[19] = "777";
+        std::fs::write(
+            process.join("stat"),
+            format!("123 (validate runner) {}\n", fields.join(" ")),
+        )
+        .unwrap();
+        std::fs::write(
+            process.join("cgroup"),
+            "0::/user.slice/validate-hermit-test.service\n",
+        )
+        .unwrap();
+        std::fs::write(
+            runs.join("validate-hermit-test.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "schema_version": 1,
+                "state": "running",
+                "unit": "validate-hermit-test.service",
+                "target": "a".repeat(40),
+                "repo": CANONICAL_VALIDATE_REPO,
+                "agent": "hermit-test",
+                "started_at": "2026-08-27T12:00:00Z",
+                "host": "validation-host",
+                "process_identity": {
+                    "pid": 123,
+                    "start_ticks": 777,
+                    "boot_id": "boot-one"
+                }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let now = chrono::DateTime::parse_from_rfc3339("2026-08-27T12:05:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        let live =
+            live_validate_runs_from(&root, CANONICAL_VALIDATE_REPO, &proc_root, &boot_id, now)
+                .unwrap();
+        assert_eq!(live.len(), 1);
+        assert_eq!(live[0].status, "IN-PROGRESS");
+        assert_eq!(live[0].elapsed_seconds, Some(300.0));
+        assert_eq!(live[0].host.as_deref(), Some("validation-host"));
+
+        std::fs::write(
+            process.join("cgroup"),
+            "0::/user.slice/validate-hermit-test.service.old\n",
+        )
+        .unwrap();
+        assert!(
+            live_validate_runs_from(&root, CANONICAL_VALIDATE_REPO, &proc_root, &boot_id, now,)
+                .unwrap()
+                .is_empty()
+        );
+        fields[0] = "Z";
+        std::fs::write(
+            process.join("stat"),
+            format!("123 (validate runner) {}\n", fields.join(" ")),
+        )
+        .unwrap();
+        std::fs::write(
+            process.join("cgroup"),
+            "0::/user.slice/validate-hermit-test.service\n",
+        )
+        .unwrap();
+        assert!(
+            live_validate_runs_from(&root, CANONICAL_VALIDATE_REPO, &proc_root, &boot_id, now,)
+                .unwrap()
+                .is_empty()
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn stale_running_handle_without_process_identity_is_not_in_progress() {
+        let root = std::env::temp_dir().join(format!(
+            "ci-hub-stale-validate-{}-{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap()
+        ));
+        let runs = root.join("ignored/validate/runs");
+        std::fs::create_dir_all(&runs).unwrap();
+        std::fs::write(
+            runs.join("stale.json"),
+            serde_json::to_vec(&serde_json::json!({
+                "schema_version": 1,
+                "state": "running",
+                "unit": "validate-stale.service",
+                "target": "b".repeat(40),
+                "repo": CANONICAL_VALIDATE_REPO,
+                "started_at": "2026-08-01T00:00:00Z"
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        assert!(live_validate_runs_from(
+            &root,
+            CANONICAL_VALIDATE_REPO,
+            &root.join("proc"),
+            &root.join("boot_id"),
+            chrono::Utc::now(),
+        )
+        .unwrap()
+        .is_empty());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn python_allocator_warning_filter_removes_only_the_exact_line() {
+        let input = b"before\n<jemalloc>: Invalid conf pair: experimental_infallible_new:true\nafter\n<jemalloc>: another warning\n";
+        assert_eq!(
+            python_stderr_without_allocator_warning(input),
+            b"before\nafter\n<jemalloc>: another warning\n"
+        );
     }
     use super::*;
 
@@ -8316,12 +9015,41 @@ mod tests {
         assert_eq!(args.sha, None);
         assert_eq!(args.pr, None);
         assert_eq!(args.limit, DEFAULT_VALIDATE_HISTORY_LIMIT);
+        assert_eq!(args.columns, [ValidateStatusColumn::Sha]);
+        assert!(!args.exclude_in_progress);
+        assert!(!args.in_progress_only);
 
-        let cli = Cli::try_parse_from(["ci-hub", "validate-status", "--limit", "3"]).unwrap();
+        let cli = Cli::try_parse_from([
+            "ci-hub",
+            "validate-status",
+            "--limit",
+            "3",
+            "--columns",
+            "branch,gitdepth",
+            "--exclude-in-progress",
+        ])
+        .unwrap();
         let HubCommand::ValidateStatus(args) = cli.command else {
             panic!("wrong command variant")
         };
         assert_eq!(args.limit, 3);
+        assert_eq!(
+            args.columns,
+            [ValidateStatusColumn::Branch, ValidateStatusColumn::GitDepth]
+        );
+        assert!(args.exclude_in_progress);
+        assert!(Cli::try_parse_from([
+            "ci-hub",
+            "validate-status",
+            "--exclude-in-progress",
+            "--in-progress-only",
+        ])
+        .is_err());
+        assert!(selected_validate_status_columns(&[
+            ValidateStatusColumn::None,
+            ValidateStatusColumn::Sha,
+        ])
+        .is_err());
     }
 
     #[test]
@@ -8375,30 +9103,6 @@ mod tests {
         };
         assert_eq!(args.agent_snapshot, Some(PathBuf::from("/tmp/agents.json")));
         assert_eq!(args.max_snapshot_age, 300);
-        assert!(args.json);
-    }
-
-    #[test]
-    fn parses_typed_validate_worktrees_command() {
-        let command = Cli::try_parse_from([
-            "ci-hub",
-            "validate-worktrees",
-            "--runs",
-            "10",
-            "--stale-hours",
-            "6",
-            "--data-dir",
-            "/tmp/ci-hub",
-            "--json",
-        ])
-        .unwrap()
-        .command;
-        let HubCommand::ValidateWorktrees(args) = command else {
-            panic!("wrong command variant")
-        };
-        assert_eq!(args.runs, 10);
-        assert_eq!(args.stale_hours, 6.0);
-        assert_eq!(args.data_dir, Some(PathBuf::from("/tmp/ci-hub")));
         assert!(args.json);
     }
 
@@ -8618,7 +9322,6 @@ mod tests {
         assert!(matches!(command, HubCommand::Quickstart));
         assert!(AGENT_QUICKSTART.starts_with("ci-hub agent quickstart\n"));
         assert!(AGENT_QUICKSTART.contains("ci-hub/ci-hub health"));
-        assert!(AGENT_QUICKSTART.contains("validate-worktrees"));
         assert!(AGENT_QUICKSTART.contains("newest-green"));
         assert!(AGENT_QUICKSTART.contains("first-bad CELL_OR_GATE"));
         assert!(AGENT_QUICKSTART.contains("land-lock run"));
@@ -8718,10 +9421,6 @@ mod tests {
             .unwrap()
             .command;
         assert!(status.cost_spec().is_none());
-        let worktrees = Cli::try_parse_from(["ci-hub", "validate-worktrees"])
-            .unwrap()
-            .command;
-        assert!(worktrees.cost_spec().is_none());
     }
 
     #[test]

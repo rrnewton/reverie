@@ -192,9 +192,9 @@ the size of `wrkslots` itself. These read `worktree-state.json` or the
 Plus nine `scripts/*worktree*-test.sh` / `check-agent-slot-test.sh` suites that
 assert the current schema.
 
-**In-flight and entangled**, as the owner flagged: `ci-hub/validate/aggregate.py`,
-`ci-hub/validate/mutation_suite.py`, and `ci-hub/validate/tests/test_worktrees.py`
-reference `worktrees/` or `worktree-state`. The validate on-disk record format and
+**In-flight and entangled**, as the owner flagged: `ci-hub/validate/aggregate.py`
+and `ci-hub/validate/mutation_suite.py` reference `worktrees/` or
+`worktree-state`. The validate on-disk record format and
 the slot layout are therefore coupled; changing both at once is the thing to
 avoid.
 

@@ -22,7 +22,7 @@ DOCS = (
     ROOT / "ci-hub/landing/README.md",
     ROOT / "ci-hub/containers/README.md",
 )
-EXPECTED_COMMANDS = 58
+EXPECTED_COMMANDS = 57
 FENCE = re.compile(r"^```(?P<language>[A-Za-z0-9_-]*)\s*$")
 FATAL_OUTPUT = (
     "gh auth login",
@@ -137,7 +137,6 @@ def _classify(text: str) -> str:
             "quickstart",
             "history",
             "local-history",
-            "validate-worktrees",
         }:
             return "local-read"
         if command == "land-lock" and re.search(r"\bland-lock\s+status\b", normalized):

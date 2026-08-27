@@ -56,7 +56,7 @@ forms**, one of which (`history runs`) duplicates the default renderer.
 
 | Disposition | All top-level commands |
 | --- | --- |
-| Keep as stable user workflows | `quickstart`, `health` (after JSON repair), `active-work`, `main-health`, `pr-status`, `verify-landing`, `refresh-history`, `history`, `validate-worktrees`, `runner-health`, `load-probe`, `validate-status`, `hosted-status`, `validate-run`, `validate-stop`, `newest-green`, `first-bad`, `land-lock` (`status`/`run` emphasis), `validate-lock` (`status`/`run` emphasis) |
+| Keep as stable user workflows | `quickstart`, `health` (after JSON repair), `active-work`, `main-health`, `pr-status`, `verify-landing`, `refresh-history`, `history`, `runner-health`, `load-probe`, `validate-status`, `hosted-status`, `validate-run`, `validate-stop`, `newest-green`, `first-bad`, `land-lock` (`status`/`run` emphasis), `validate-lock` (`status`/`run` emphasis) |
 | Keep only as a clearly labeled diagnostic | `local-history`, `ci-timeout scan` |
 | Rename or finish wiring | `ci-mode status/set` (currently only an autoretry-mode projection), `tick` (must execute the canonical `health-tick` wrapper) |
 | Hide or deprecate from the public surface | top-level `green-time`, `ci-mode fire`, `batch`, `ci-timeout reap` |

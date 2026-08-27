@@ -64,7 +64,6 @@ CI_HUB_DOCS_PARSE_ONLY=1 ./ci-hub/landing/land-pr.sh \
 
 # Inspect local validate-run history, retained profiles, or runner health.
 ./ci-hub/ci-hub local-history --since 2026-08-03
-./ci-hub/ci-hub validate-worktrees --runs 10
 ./ci-hub/ci-hub runner-health --all
 
 # Launch one detached full validate through the sole admission point. The user
