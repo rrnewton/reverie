@@ -38,6 +38,38 @@ bin/hermit-repeat --selftest                                      # parsing self
   never counted as one; a run that came back clean is a data point, not an
   absence.
 
+### ⚠️ The bucket caps a cell and this tool does not — how two correct measurements disagree
+
+The e2e bucket now wraps every cell in `timeout --kill-after=10s 15s bash -c '…'`,
+a **per-cell deadline**. `bin/hermit-repeat --cell` deliberately does **not**
+apply that cap: each node runs under its own `--deadline` instead. The tool
+prints the difference on every `--cell` run, but it is worth understanding
+before you compare any two numbers.
+
+**Why it matters, with the cell it was observed on.** Measured 2026-08-27 at
+hermit `5436f9349c5e`: `language-runtimes/python-dict-hash-iteration`
+verify/ptrace takes **about 7.8 s per node** — roughly half the bucket's 15 s
+cap. On a quiet box it finishes comfortably inside the cap either way, and the
+bucket and this tool agree. On a loaded box the same cell can cross 15 s, at
+which point **the bucket reports a timeout and this tool reports whatever the
+cell actually did.** Neither measurement is wrong; they were taken under
+different bounds.
+
+That is the shape to watch for: a cell sitting at a large fraction of its cap is
+one where bucket results and pressure-test results will start to disagree under
+load, invisibly, with nothing in either output pointing at the cap. A cell at 7.8
+of 15 s is already halfway there.
+
+**So when a cell fails under load, establish which happened before reporting
+it.** The report answers this directly: a failing run is shown either as
+`BOUND FIRED: killed at the deadline, so this is not a cell verdict`, or with its
+elapsed stated against the deadline and flagged `NEAR THE BOUND` at ≥ 80 %, with
+a summary counting how many were killed by the bound, how many ran close to it,
+and how many finished well inside it. A run with no elapsed recorded is reported
+as unanswerable rather than as "not near the bound". A pressure test is
+deliberately load, so it is the tool most likely to manufacture a bound-kill and
+report it as flakiness if nobody looks.
+
 Artefacts land in `ignored/hermit-repeat/<run-id>/`: `report.txt`,
 `result.json`, `dag.json`, `runner.log`, and a per-node directory with the
 `safehermit` bounds report and the node script that ran.
