@@ -101,7 +101,7 @@ impl GlobalTool for Gate {
 fn unique_sock_path(tag: &str) -> std::path::PathBuf {
     static COUNTER: AtomicU32 = AtomicU32::new(0);
     let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-    std::env::temp_dir().join(format!("reverie-rpc-{tag}-{}-{n}.sock", std::process::id()))
+    std::path::Path::new("/tmp").join(format!("reverie-rpc-{tag}-{}-{n}.sock", std::process::id()))
 }
 
 #[tokio::test]

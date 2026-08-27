@@ -30,7 +30,7 @@ fn output_with_timeout(mut command: Command, timeout: Duration) -> Output {
 #[test]
 fn installed_hook_reentry_bypasses_tool_with_shared_coordinator_rpc() {
     let binary = env!("CARGO_BIN_EXE_reverie-liteinst-rpc-tool-guest");
-    let directory = std::env::temp_dir().join(format!("li-rpc-{}", std::process::id()));
+    let directory = std::path::Path::new("/tmp").join(format!("li-rpc-{}", std::process::id()));
     std::fs::create_dir_all(&directory).unwrap();
     let socket = directory.join("coordinator.sock");
 
