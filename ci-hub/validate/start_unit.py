@@ -627,13 +627,66 @@ def _shared_resource_caps_path(environment: Mapping[str, str]) -> Path:
     return runtime / "ci-hub" / "resource-caps.json"
 
 
+def _carries_nosuid_or_nodev(path: Path) -> bool:
+    """Does `path` sit on a filesystem mounted `nosuid` or `nodev`?
+
+    Either flag alone breaks every Hermit run. Unreadable counts as unusable, so
+    an unstattable candidate is skipped rather than silently trusted.
+    """
+    try:
+        flags = os.statvfs(path).f_flag
+    except OSError:
+        return True
+    return bool(flags & os.ST_NOSUID) or bool(flags & os.ST_NODEV)
+
+
+def runtime_root_parent(environment: Mapping[str, str]) -> Path:
+    """Pick a short host directory whose filesystem Hermit's container can use.
+
+    ⚠️ TMPDIR ON A `nosuid` OR `nodev` FILESYSTEM KILLS EVERY HERMIT RUN, and
+    `/run/user/<uid>` -- the previous unconditional choice -- carries both.
+    Hermit's container writes its frozen `/etc/group` and empty nscd directory as
+    temporary files, i.e. into TMPDIR, then bind-mounts each read-only. A
+    read-only bind remount inside a user namespace may not clear flags locked in
+    the source mount, so the remount returns EPERM and the container never
+    spawns. The guest does not merely fail; it never exists.
+
+    Measured 2026-08-27 on devbig030: one arm of the goal-5 concurrent pair
+    produced 612 e2e rows, ALL FAILING, 610 of them from this single cause,
+    reading as test results while measuring nothing. Reproduced on devbig014 with
+    only the mount flags varying and everything else held constant: no
+    nosuid/nodev passes, `nosuid` alone fails, `nodev` alone fails.
+
+    Preference order keeps the previous behaviour wherever it was already
+    correct, and the length bound still applies -- `/tmp/vXXXXXX` is shorter than
+    the `/run/user/<uid>` path it replaces, so nothing regresses there.
+    """
+    configured = environment.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"
+    candidates = [Path(configured), Path("/tmp"), Path("/var/tmp")]
+    rejected: list[str] = []
+    for candidate in candidates:
+        if not candidate.is_absolute():
+            raise ValueError(f"XDG_RUNTIME_DIR must be absolute, got {candidate}")
+        if not candidate.is_dir():
+            continue
+        if _carries_nosuid_or_nodev(candidate):
+            rejected.append(str(candidate))
+            continue
+        return candidate
+    # ⚠️ REFUSE RATHER THAN PROCEED. Running anyway produces a full set of rows
+    # that all fail for one reason and say nothing about the code, which is
+    # strictly worse than not running: it looks like a measurement.
+    raise ValueError(
+        "no usable parent for this run's TMPDIR: every candidate is on a "
+        "filesystem mounted nosuid or nodev, which makes Hermit's read-only "
+        "bind remount fail with EPERM and every guest fail to start. "
+        f"Rejected: {', '.join(rejected) or 'none found'}"
+    )
+
+
 def prepare_runtime_root(environment: Mapping[str, str]) -> Path:
     """Create the short host-side temporary/cache tree owned by one validate run."""
-    parent = Path(
-        environment.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"
-    )
-    if not parent.is_absolute():
-        raise ValueError(f"XDG_RUNTIME_DIR must be absolute, got {parent}")
+    parent = runtime_root_parent(environment)
     runtime = Path(tempfile.mkdtemp(prefix="v", dir=parent))
     if len(os.fsencode(runtime)) > MAX_RUNTIME_ROOT_BYTES:
         shutil.rmtree(runtime)
