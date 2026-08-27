@@ -335,12 +335,12 @@ where
                     SyscallArgs::new(args[0], args[1], args[2], args[3], args[4], args[5]),
                 );
                 // Drive the Tool handler to a terminal outcome. The shared
-                // driver owns the wait4/ERESTARTSYS restart protocol (Reverie
+                // driver owns the ERESTARTSYS restart protocol (Reverie
                 // #362) so it cannot drift between the in-guest backends. Before
                 // this the direct host mapped a Tool error straight to `-errno`,
                 // leaking Detcore's private `ERESTARTSYS` (512) from a
-                // restartable wait4 scheduler poll out to the guest as errno 512.
-                match drive_tool_syscall(tool, &mut guest, syscall, number, &tail) {
+                // restartable syscall out to the guest as errno 512.
+                match drive_tool_syscall(tool, &mut guest, syscall, &tail) {
                     DrivenSyscall::Result(value) => {
                         guest.event.set_result(value);
                         None
