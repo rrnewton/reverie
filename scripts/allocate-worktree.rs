@@ -2128,6 +2128,72 @@ fn add_worktree(primary: &Path, dst: &Path, branch: Option<&str>, start: &str) {
         ));
     }
     println!("  created {}", dst.display());
+    initialize_required_submodules(dst);
+}
+
+/// Submodules a new product worktree needs in order to BUILD.
+///
+/// `git worktree add` does not populate submodules, and this allocator never
+/// asked it to, so a slot arrived with an EMPTY `agent-utils/` and self-tests
+/// died in under a second on a dependency error that reads like a product
+/// failure. Measured 2026-08-27 across the 61 slot hermit worktrees on disk:
+/// 27 (44%) had an empty `agent-utils`. The 34 that were populated were
+/// populated BY HAND, by whichever agent happened to need it and worked out why.
+///
+/// A slot that looks allocated and cannot build is worse than no slot, so this
+/// belongs in the allocator rather than in a step somebody has to remember.
+///
+/// `third-party/rr` is deliberately NOT here. It is a large clone, it was empty
+/// in 50 of the same 61 worktrees, and almost nothing needs it; initializing it
+/// unconditionally would cost every allocation for a handful of callers.
+const REQUIRED_SUBMODULES: &[(&str, &str)] = &[("hermit", "agent-utils")];
+
+/// Populate the build-required submodules of a freshly created worktree.
+///
+/// ADVISORY, never fatal, matching this allocator's existing convention that
+/// housekeeping does not block an allocation. A failure here leaves exactly the
+/// state that existed before this function did — an empty submodule directory —
+/// so refusing the whole allocation would be a strictly worse outcome than the
+/// bug being fixed. It is printed loudly instead, because the failure it
+/// replaces was silent.
+///
+/// Costs nothing on a normal box: the objects come from the parent's own
+/// `.git/modules/...` through a git alternates file, so no network is involved.
+/// Measured 2026-08-27: 5 seconds, populating 19 entries, with the proxy unset.
+fn initialize_required_submodules(dst: &Path) {
+    let Some(product) = dst.file_name().and_then(|name| name.to_str()) else {
+        return;
+    };
+    for (owner, submodule) in REQUIRED_SUBMODULES {
+        if *owner != product {
+            continue;
+        }
+        // Only when it is actually empty: re-running allocation to adopt a slot
+        // must not disturb a submodule the owner has already checked out, and
+        // may have moved to a different commit on purpose.
+        let path = dst.join(submodule);
+        let populated = std::fs::read_dir(&path)
+            .map(|mut entries| entries.next().is_some())
+            .unwrap_or(false);
+        if populated {
+            continue;
+        }
+        let (ok, _, err) = git(dst, &["submodule", "update", "--init", submodule]);
+        if ok {
+            println!("  initialized {product} submodule {submodule}");
+        } else {
+            eprintln!(
+                "⚠  could not initialize {product} submodule {submodule} in {}: {}\n   \
+                 The slot IS allocated. Until this is populated, builds and self-tests in it \
+                 fail immediately on a missing dependency, which reads like a product failure \
+                 rather than an incomplete checkout. Re-run:\n     \
+                 git -C {} submodule update --init {submodule}",
+                dst.display(),
+                err.trim(),
+                dst.display(),
+            );
+        }
+    }
 }
 
 fn includes_product(selection: &str, product: &str) -> bool {
