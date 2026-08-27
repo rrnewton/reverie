@@ -1793,7 +1793,7 @@ mod tests {
 
     #[test]
     fn remote_adapter_bypasses_unsubscribed_syscalls() {
-        let path = std::env::temp_dir().join(format!(
+        let path = std::path::Path::new("/tmp").join(format!(
             "reverie-sabre-rpc-{}-{}.sock",
             std::process::id(),
             RPC_SOCKET_COUNTER.fetch_add(1, Ordering::Relaxed)
@@ -1944,7 +1944,7 @@ mod tests {
     fn remote_adapter_routes_tool_rpc_over_real_uds_on_first_poll() {
         let global = Arc::new(RemoteCounter::default());
         let server_global = global.clone();
-        let path = std::env::temp_dir().join(format!(
+        let path = std::path::Path::new("/tmp").join(format!(
             "reverie-sabre-rpc-{}-{}.sock",
             std::process::id(),
             RPC_SOCKET_COUNTER.fetch_add(1, Ordering::Relaxed)
