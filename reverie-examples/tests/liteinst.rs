@@ -326,7 +326,7 @@ fn exact_chaos_tool_interrupts_then_limits_retry() {
     assert!(output.status.success(), "{output:?}");
     assert_eq!(output.stdout, b"chaos-interrupt-then-one\n");
     let stderr = String::from_utf8(output.stderr).unwrap();
-    assert!(stderr.contains(" = -512"), "{stderr}");
+    assert!(stderr.contains(" = -4"), "{stderr}");
     assert!(stderr.contains(", 1) = 1"), "{stderr}");
 }
 

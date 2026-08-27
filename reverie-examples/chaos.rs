@@ -153,7 +153,7 @@ impl Tool for ChaosTool {
                     *guest.thread_state_mut() = true;
 
                     // XXX: inject a signal like SIGINT?
-                    let err = Errno::ERESTARTSYS;
+                    let err = Errno::EINTR;
 
                     eprintln!(
                         "[pid={}, n={}] {} = {}",

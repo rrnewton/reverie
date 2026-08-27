@@ -131,6 +131,7 @@ fn exercise_chaos_interrupt() {
         unsafe { libc::read(pipe[0], output.as_mut_ptr().cast(), output.len()) },
         -1
     );
+    assert_eq!(unsafe { *libc::__errno_location() }, libc::EINTR);
     assert_eq!(
         unsafe { libc::read(pipe[0], output.as_mut_ptr().cast(), output.len()) },
         1
