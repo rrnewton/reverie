@@ -22,7 +22,6 @@ use syscalls::Errno;
 use super::fd::FileType;
 use super::fd::create_dir_all;
 use super::fd::touch_path;
-use super::util;
 
 /// A mount.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -33,6 +32,18 @@ pub struct Mount {
     flags: MountFlags,
     data: Option<CString>,
     touch_target: bool,
+    /// A path, fstype or data string that could not be represented as a C
+    /// string, recorded at BUILD time and reported at [`Mount::mount`] time.
+    ///
+    /// ⚠️ WHY A FLAG AND NOT A `Result` FROM THE BUILDER. `mount()` runs AFTER
+    /// FORK, where this module documents that it cannot allocate -- so the
+    /// failure cannot be discovered or described there. And making the builder
+    /// fallible would change `Mount::new(..) -> Self` into
+    /// `-> Result<Self, _>` for every caller, including hermit, to report a
+    /// condition none of them can do anything about except refuse the mount.
+    /// Recording one bool costs nothing after fork and turns a panic into the
+    /// `Errno` the caller already handles.
+    unrepresentable: bool,
 }
 
 /// Represents a bind mount. Can be converted into a [`Mount`].
@@ -47,12 +58,34 @@ pub struct Bind {
     pub target: CString,
 }
 
+/// `util::to_cstring` panics on an interior NUL. Every mount path, source,
+/// fstype and data string went through it, so a recoverable "this is not a
+/// valid C string" was a panic inside the builder. Measured on reverie main
+/// 200439dc8de9:
+///
+/// ```text
+/// Mount::new(OsStr::from_bytes(b"/test/work\0dir"))
+///   panicked at reverie-process/src/util.rs:17:41:
+///   called `Result::unwrap()` on an `Err` value: NulError(10, [...])
+/// ```
+///
+/// This returns the empty string on failure and says so, letting the caller
+/// record it and refuse the mount instead of aborting the process.
+fn checked_cstring<S: AsRef<OsStr>>(s: S) -> (CString, bool) {
+    match CString::new(s.as_ref().as_bytes()) {
+        Ok(c) => (c, true),
+        Err(_) => (CString::default(), false),
+    }
+}
+
 impl Mount {
     /// Creates a new mount at the path `target`.
     pub fn new<S: AsRef<OsStr>>(target: S) -> Self {
+        let (t, ok) = checked_cstring(target);
         Self {
+            unrepresentable: !ok,
             source: None,
-            target: util::to_cstring(target),
+            target: t,
             fstype: None,
             flags: MountFlags::empty(),
             data: None,
@@ -162,7 +195,9 @@ impl Mount {
 
     /// Sets the mount point target.
     pub fn target<S: AsRef<OsStr>>(mut self, target: S) -> Self {
-        self.target = util::to_cstring(target);
+        let (t, ok) = checked_cstring(target);
+        self.target = t;
+        self.unrepresentable |= !ok;
         self
     }
 
@@ -173,7 +208,9 @@ impl Mount {
 
     /// Sets the source of the mount.
     pub fn source<S: AsRef<OsStr>>(mut self, path: S) -> Self {
-        self.source = Some(util::to_cstring(path));
+        let (v, ok) = checked_cstring(path);
+        self.source = Some(v);
+        self.unrepresentable |= !ok;
         self
     }
 
@@ -241,13 +278,17 @@ impl Mount {
 
     /// Sets the filesystem type.
     pub fn fstype<S: AsRef<OsStr>>(mut self, fstype: S) -> Self {
-        self.fstype = Some(util::to_cstring(fstype));
+        let (v, ok) = checked_cstring(fstype);
+        self.fstype = Some(v);
+        self.unrepresentable |= !ok;
         self
     }
 
     /// Sets any additional data required by the mount.
     pub fn data<S: AsRef<OsStr>>(mut self, data: S) -> Self {
-        self.data = Some(util::to_cstring(data));
+        let (v, ok) = checked_cstring(data);
+        self.data = Some(v);
+        self.unrepresentable |= !ok;
         self
     }
 
@@ -276,6 +317,15 @@ impl Mount {
     /// (or `clone`) and before `execve`. Any allocations could cause deadlocks
     /// (which are hard to track down).
     pub(super) fn mount(&mut self) -> Result<(), Errno> {
+        // ⚠️ REFUSE, DO NOT PANIC. A path/fstype/data string that is not a valid
+        // C string was recorded at build time (see `unrepresentable`). This is
+        // the first point that can report it, and it is a plain flag test
+        // because this runs after fork where allocation is not available.
+        // EINVAL is what the kernel returns for a malformed mount argument, so
+        // the caller's existing error path already knows what to do with it.
+        if self.unrepresentable {
+            return Err(Errno::EINVAL);
+        }
         // NOTE: Although we can't allocate here, we can safely *modify* `self`.
         // When this function is called, we have forked virtual memory and any
         // modifications we make are copy-on-write and lost when `execve` is
@@ -337,15 +387,24 @@ impl Bind {
         S: AsRef<OsStr>,
         T: AsRef<OsStr>,
     {
+        let (src, src_ok) = checked_cstring(source);
+        let (tgt, tgt_ok) = checked_cstring(target);
+        debug_assert!(
+            src_ok && tgt_ok,
+            "Bind path not representable as a C string; the Mount it converts \
+             into is marked unrepresentable and its mount() will fail EINVAL"
+        );
         Self {
-            source: util::to_cstring(source),
-            target: util::to_cstring(target),
+            source: src,
+            target: tgt,
         }
     }
 }
 
 impl From<Bind> for Mount {
     fn from(b: Bind) -> Self {
+        let src_empty = b.source.as_bytes().is_empty();
+        let tgt_empty = b.target.as_bytes().is_empty();
         Self {
             source: Some(b.source),
             target: b.target,
@@ -353,6 +412,11 @@ impl From<Bind> for Mount {
             flags: MountFlags::MS_BIND,
             data: None,
             touch_target: false,
+            // A Bind built from a path that was not representable as a C string
+            // holds an EMPTY CString (see `checked_cstring`). Empty source or
+            // target is never a valid bind mount, so it carries the refusal
+            // forward rather than attempting mount(2) with "".
+            unrepresentable: src_empty || tgt_empty,
         }
     }
 }
@@ -361,11 +425,14 @@ impl From<&str> for Bind {
     fn from(s: &str) -> Self {
         if let Some((source, target)) = s.split_once(':') {
             Self {
-                source: util::to_cstring(source),
-                target: util::to_cstring(target),
+                source: checked_cstring(source).0,
+                target: checked_cstring(target).0,
             }
         } else {
-            let source = util::to_cstring(s);
+            // A Rust `&str` may contain an interior NUL, so this path panicked
+            // too. An unrepresentable path becomes empty here and the Mount it
+            // converts into refuses with EINVAL.
+            let source = checked_cstring(s).0;
             let target = source.clone();
             Self { source, target }
         }
@@ -581,5 +648,65 @@ mod tests {
             Mount::from(Bind::from("source:target")),
             Mount::bind("source", "target")
         );
+    }
+}
+
+#[cfg(test)]
+mod unrepresentable_paths_are_refused_not_panics {
+    use std::ffi::OsStr;
+    use std::os::unix::ffi::OsStrExt;
+
+    use syscalls::Errno;
+
+    use super::Bind;
+    use super::Mount;
+
+    /// ⚠️ THIS PANICKED BEFORE, AND THE PANIC WAS THE WHOLE DEFECT. Every mount
+    /// path went through `util::to_cstring`, which unwraps `CString::new`.
+    /// Measured on reverie main 200439dc8de9:
+    ///   panicked at reverie-process/src/util.rs:17:41:
+    ///   called `Result::unwrap()` on an `Err` value: NulError(10, [...])
+    /// A recoverable "this path is not a valid C string" aborted the process.
+    #[test]
+    fn a_target_with_an_interior_nul_refuses_instead_of_panicking() {
+        let bad = OsStr::from_bytes(b"/test/work\0dir");
+        let mut m = Mount::new(bad);
+        assert_eq!(m.mount(), Err(Errno::EINVAL));
+    }
+
+    #[test]
+    fn an_unrepresentable_source_fstype_or_data_also_refuses() {
+        let bad = OsStr::from_bytes(b"bad\0value");
+        for m in [
+            Mount::new("/test").source(bad),
+            Mount::new("/test").fstype(bad),
+            Mount::new("/test").data(bad),
+        ] {
+            let mut m = m;
+            assert_eq!(m.mount(), Err(Errno::EINVAL));
+        }
+    }
+
+    /// ⚠️ THE CONTROL, WITHOUT WHICH THE THREE ABOVE PROVE NOTHING. A refusal
+    /// that fired on every mount would pass them and break every real mount.
+    /// A representable path must NOT be marked unrepresentable -- it must get
+    /// past the flag test and fail (or succeed) on the real syscall instead.
+    #[test]
+    fn a_representable_path_is_not_refused_by_this_check() {
+        let mut m = Mount::new("/test/workdir").fstype("tmpfs");
+        let got = m.mount();
+        assert_ne!(
+            got,
+            Err(Errno::EINVAL),
+            "a valid path must reach mount(2); EINVAL here means the refusal \
+             over-fired and no mount would ever work"
+        );
+    }
+
+    #[test]
+    fn a_bind_from_a_str_with_an_interior_nul_refuses() {
+        let b = Bind::from("/test/a\0b");
+        let mut m: Mount = b.into();
+        assert_eq!(m.mount(), Err(Errno::EINVAL));
     }
 }
