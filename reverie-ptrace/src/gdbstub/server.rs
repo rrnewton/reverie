@@ -400,4 +400,149 @@ mod tests {
         // check on a value nobody holds.
         drop(server);
     }
+
+    /// `wait_for_tcp_connection` must leave NOTHING LISTENING once it has
+    /// accepted its client.
+    ///
+    /// ⚠️ THIS IS A CROSS-REPOSITORY CONTRACT AND IT IS LOAD-BEARING IN HERMIT.
+    /// hermit's gdb-client watcher (`hermit-cli/src/bin/hermit/gdb_client.rs`)
+    /// decides whether a container was stranded waiting for a debugger that will
+    /// never come by CONNECTING TO THIS PORT after it observes its spawned `gdb`
+    /// exit; a successful connect is its evidence that an accept was still
+    /// pending. That inference is sound ONLY because this function drops its
+    /// listener the moment it returns.
+    ///
+    /// If this is ever changed to keep the listener bound -- to support
+    /// reconnect, say -- then every HEALTHY gdb session that finishes before its
+    /// container does gets reported as "the gdb client hermit spawned exited
+    /// before it finished connecting". That is hermit's defect 2 restored, and
+    /// NOTHING ON HERMIT'S SIDE CAN DETECT IT: to the watcher, a bound port plus
+    /// a dead client is indistinguishable from a stranded accept. The check has
+    /// to live here, next to the fact it depends on.
+    #[tokio::test(flavor = "current_thread")]
+    async fn the_listener_is_closed_once_the_client_is_accepted() {
+        // A port that is free right now. Bind-and-drop is the only portable way
+        // to learn one, because `wait_for_tcp_connection` insists on binding the
+        // address itself and will not take a listener we made.
+        let addr: SocketAddr = {
+            let probe = std::net::TcpListener::bind("127.0.0.1:0")
+                .expect("failed to bind a probe listener to find a free port");
+            probe
+                .local_addr()
+                .expect("probe listener has no local addr")
+        };
+
+        let server = tokio::spawn(wait_for_tcp_connection(addr));
+
+        // Connect as the real client would. Bounded, because a wedged test costs
+        // the whole run's budget while a red one names itself in a line.
+        let mut client = None;
+        for _ in 0..300 {
+            if let Ok(s) = std::net::TcpStream::connect(addr) {
+                client = Some(s);
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        let client = client.expect("could not connect to the gdbserver port within 3s");
+
+        let accepted = server
+            .await
+            .expect("the accept task panicked")
+            .expect("wait_for_tcp_connection failed");
+
+        // ⚠️ THE ASSERTION. Nothing this process owns may still be listening on
+        // the port now that the client has been accepted.
+        let leaked = this_process_listening_fds_on(addr.port());
+        assert!(
+            leaked.is_empty(),
+            "wait_for_tcp_connection LEAKED its listener: this process still holds {leaked:?} \
+             listening on port {}. hermit's watcher reads a successful connect to this port as \
+             proof that a container is stranded, so a healthy finished session would be reported \
+             as a client that exited before connecting",
+            addr.port(),
+        );
+
+        drop(accepted);
+        drop(client);
+    }
+
+    /// The fds THIS PROCESS still holds in `LISTEN` on `port`, as
+    /// `("/proc/self/fd/<n>", inode)` pairs. Empty means we let the listener go.
+    ///
+    /// ⚠️ IT ASKS ABOUT THIS PROCESS ON PURPOSE, AND AN EARLIER VERSION DID NOT.
+    /// The obvious way to write the check above is to `connect` a second time and
+    /// require a refusal, which is literally what hermit's watcher does. That
+    /// version is RED IN THIS CRATE'S OWN TEST BINARY -- measured 5 runs out of 5,
+    /// against 3 out of 3 green under `--test-threads=1` -- and it is red for a
+    /// reason that has nothing to do with this function.
+    ///
+    /// `fork(2)` COPIES THE LISTENING FD, and `tracer::tests` forks constantly.
+    /// A sibling test forking during the accept window inherits this listener;
+    /// when `wait_for_tcp_connection` drops OUR copy the child's copy keeps the
+    /// port bound, so the second connect is accepted by a process we never
+    /// started. Caught by scanning `/proc` at the failure: inode 450116219,
+    /// listening, held by `pid=3170590 (tracer::tests::) fd=20`, while the test
+    /// itself was pid 3170539. `CLOEXEC` does not help -- it fires on `exec`, not
+    /// on `fork`, and the window is between the two.
+    ///
+    /// ⚠️ THIS IS A CONFOUND IN THE OBSERVABLE, NOT A HOLE IN THE CONTRACT, and
+    /// the difference decides whether the check may be rewritten at all. In
+    /// hermit the guest is spawned BEFORE `GdbServer::from_addr` binds anything
+    /// (`reverie-ptrace/src/tracer.rs`, the guest is already running at the
+    /// `Configure the gdb server` step), so no hermit fork can inherit this
+    /// listener and the connect really does mean what the watcher takes it to
+    /// mean. The confound exists only here, because this crate runs forking tests
+    /// beside this one in one process.
+    ///
+    /// So the check asks the question the connect was a proxy for -- "did this
+    /// function let go of its listener" -- directly, and is strictly harder to
+    /// satisfy: a leak is caught even on a host where the port would have refused
+    /// for some unrelated reason. What it deliberately no longer does is fail
+    /// when SOMEBODY ELSE holds a copy, which was never this function's defect.
+    fn this_process_listening_fds_on(port: u16) -> Vec<(String, String)> {
+        const TCP_LISTEN: &str = "0A";
+        let mut listening_inodes = Vec::new();
+        for table in ["/proc/net/tcp", "/proc/net/tcp6"] {
+            let Ok(contents) = std::fs::read_to_string(table) else {
+                continue;
+            };
+            for line in contents.lines().skip(1) {
+                let cols: Vec<&str> = line.split_whitespace().collect();
+                // local_address is `HEXADDR:HEXPORT`; st is the connection state;
+                // inode is the tenth column.
+                let (Some(local), Some(state), Some(inode)) =
+                    (cols.get(1), cols.get(3), cols.get(9))
+                else {
+                    continue;
+                };
+                let Some((_, hex_port)) = local.rsplit_once(':') else {
+                    continue;
+                };
+                if u16::from_str_radix(hex_port, 16) == Ok(port) && *state == TCP_LISTEN {
+                    listening_inodes.push(inode.to_string());
+                }
+            }
+        }
+        if listening_inodes.is_empty() {
+            return Vec::new();
+        }
+
+        let mut held = Vec::new();
+        let Ok(fds) = std::fs::read_dir("/proc/self/fd") else {
+            panic!("cannot read /proc/self/fd, so this test cannot decide anything");
+        };
+        for entry in fds.flatten() {
+            let Ok(target) = std::fs::read_link(entry.path()) else {
+                continue;
+            };
+            let target = target.to_string_lossy().to_string();
+            for inode in &listening_inodes {
+                if target == format!("socket:[{inode}]") {
+                    held.push((entry.path().to_string_lossy().to_string(), inode.clone()));
+                }
+            }
+        }
+        held
+    }
 }
