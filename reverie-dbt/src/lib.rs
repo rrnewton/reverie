@@ -42,6 +42,7 @@ use std::task::Context;
 use std::task::Poll;
 use std::task::Waker;
 
+pub use evidence::COPIED_CHILD_POLICY_REFUSAL_EVIDENCE_PREFIX;
 pub use evidence::DbtEvidence;
 pub use evidence::DbtEvidenceLogLevel;
 pub use evidence::decode_evidence;
