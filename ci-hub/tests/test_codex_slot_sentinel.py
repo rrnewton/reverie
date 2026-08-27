@@ -93,7 +93,7 @@ if program == "systemctl":
             for slot, slot_state in registry.get("slots", {}).items():
                 if slot_state.get("coordinator_lease", {}).get("unit") == unit:
                     journal = slot_state.get("coordinator_lease_revocation")
-                    slot_exists = (root / "worktrees" / slot).is_dir()
+                    slot_exists = (root / "worktrees" / "slots" / slot).is_dir()
                     break
         state.setdefault("stop_log", []).append(arguments)
         state.setdefault("stop_observations", []).append({
@@ -185,7 +185,11 @@ else:
 FAKE_REGISTRY_CHECKER = r"""#!/usr/bin/env python3
 import sys
 
-if len(sys.argv) != 3 or sys.argv[1] != "--root":
+if (
+    len(sys.argv) not in (3, 5)
+    or sys.argv[1] != "--root"
+    or (len(sys.argv) == 5 and sys.argv[3] != "--slot")
+):
     print(f"unexpected registry-check arguments: {sys.argv[1:]}", file=sys.stderr)
     sys.exit(64)
 """
@@ -211,7 +215,7 @@ class SentinelFixture:
             "reverie",
             "liteinst2",
             "scripts",
-            "worktrees",
+            "worktrees/slots",
             "ignored/ci-hub",
             "proc",
             "cgroup",
@@ -300,7 +304,7 @@ class SentinelFixture:
     def plan_and_launch(
         self, slot: str = "slot01", *, working_slot: str | None = None
     ) -> tuple[dict[str, Any], dict[str, Any]]:
-        working = self.root / "worktrees" / (working_slot or slot)
+        working = self.root / "worktrees" / "slots" / (working_slot or slot)
         working.mkdir(parents=True, exist_ok=True)
         planned = self.sentinel_command(
             "plan", "--slot", slot, "--working-directory", str(working)
@@ -311,7 +315,7 @@ class SentinelFixture:
         return planned, lease
 
     def write_registry_slot(self, lease: dict[str, Any], slot: str = "slot01") -> None:
-        (self.root / "worktrees" / slot).mkdir(parents=True, exist_ok=True)
+        (self.root / "worktrees" / "slots" / slot).mkdir(parents=True, exist_ok=True)
         state = {
             "version": 3,
             "updated": "fixture",
@@ -329,9 +333,9 @@ class SentinelFixture:
                     "status": "active",
                     "task": "sentinel-release-fixture",
                     "purpose": "exercise exact coordinator revocation",
-                    "hermit_path": f"worktrees/{slot}/hermit",
-                    "reverie_path": f"worktrees/{slot}/reverie",
-                    "liteinst2_path": f"worktrees/{slot}/liteinst2",
+                    "hermit_path": f"worktrees/slots/{slot}/hermit",
+                    "reverie_path": f"worktrees/slots/{slot}/reverie",
+                    "liteinst2_path": f"worktrees/slots/{slot}/liteinst2",
                     "hermit_branch": "-",
                     "reverie_branch": "-",
                     "liteinst2_branch": "-",
@@ -480,7 +484,7 @@ class CodexSlotSentinelTests(unittest.TestCase):
     def test_allocator_preserves_legacy_authority_and_recovers_failed_launch(self) -> None:
         fixture = self.fixture(prefix="release-worktree-test.")
         slot = "lander-linear"
-        (fixture.root / "worktrees" / slot).mkdir()
+        (fixture.root / "worktrees" / "slots" / slot).mkdir()
         historical = {
             "agents": [
                 {
@@ -497,9 +501,9 @@ class CodexSlotSentinelTests(unittest.TestCase):
             "status": "active",
             "task": "historic-slot-task",
             "purpose": "historic purpose must remain exact",
-            "hermit_path": f"worktrees/{slot}/hermit",
-            "reverie_path": f"worktrees/{slot}/reverie",
-            "liteinst2_path": f"worktrees/{slot}/liteinst2",
+            "hermit_path": f"worktrees/slots/{slot}/hermit",
+            "reverie_path": f"worktrees/slots/{slot}/reverie",
+            "liteinst2_path": f"worktrees/slots/{slot}/liteinst2",
             "hermit_branch": "-",
             "reverie_branch": "-",
             "liteinst2_branch": "-",
@@ -625,7 +629,7 @@ class CodexSlotSentinelTests(unittest.TestCase):
         _plan, lease = fixture.plan_and_launch()
         fixture.write_registry_slot(lease)
         fixture.vanish_unit(lease)
-        product_path = fixture.root / "worktrees" / "slot01" / "hermit"
+        product_path = fixture.root / "worktrees" / "slots" / "slot01" / "hermit"
         self.assertFalse(product_path.exists())
 
         refused = fixture.run_rust(
@@ -662,7 +666,7 @@ class CodexSlotSentinelTests(unittest.TestCase):
         fixture.initialize_primary("hermit")
         _plan, lease = fixture.plan_and_launch("slot01", working_slot="other")
         fixture.write_registry_slot(lease)
-        product_path = fixture.root / "worktrees" / "slot01" / "hermit"
+        product_path = fixture.root / "worktrees" / "slots" / "slot01" / "hermit"
 
         refused = fixture.run_rust(
             ALLOCATOR,
@@ -711,11 +715,11 @@ class CodexSlotSentinelTests(unittest.TestCase):
 
         state["slots"]["slot01"]["coordinator_lease_intent"]["plan"][
             "working_directory"
-        ] = str(fixture.root / "worktrees" / "other")
+        ] = str(fixture.root / "worktrees" / "slots" / "other")
         (fixture.root / "worktree-state.json").write_text(
             json.dumps(state, indent=2, sort_keys=True) + "\n"
         )
-        new_product = fixture.root / "worktrees" / "slot01" / "reverie"
+        new_product = fixture.root / "worktrees" / "slots" / "slot01" / "reverie"
 
         refused = fixture.run_rust(
             ALLOCATOR,
@@ -740,7 +744,7 @@ class CodexSlotSentinelTests(unittest.TestCase):
         released = fixture.release()
         self.assert_success(released)
         self.assertNotIn("slot01", fixture.registry()["slots"])
-        self.assertFalse((fixture.root / "worktrees" / "slot01").exists())
+        self.assertFalse((fixture.root / "worktrees" / "slots" / "slot01").exists())
         systemd = fixture.read_systemd()
         self.assertEqual(
             systemd["stop_log"],
@@ -804,7 +808,7 @@ class CodexSlotSentinelTests(unittest.TestCase):
                 self.assertNotEqual(refused.returncode, 0, refused.stdout)
                 slot = fixture.registry()["slots"]["slot01"]
                 self.assertNotIn("coordinator_lease_revocation", slot)
-                self.assertTrue((fixture.root / "worktrees" / "slot01").is_dir())
+                self.assertTrue((fixture.root / "worktrees" / "slots" / "slot01").is_dir())
                 self.assertEqual(fixture.read_systemd()["stop_log"], [])
                 self.assertIn("live Codex coordinator lease refused cleanup", refused.stderr)
 
@@ -819,8 +823,8 @@ class CodexSlotSentinelTests(unittest.TestCase):
         self.assertIn("does not bind exact slot path", refused.stderr)
         slot = fixture.registry()["slots"]["slot01"]
         self.assertNotIn("coordinator_lease_revocation", slot)
-        self.assertTrue((fixture.root / "worktrees" / "slot01").is_dir())
-        self.assertTrue((fixture.root / "worktrees" / "other").is_dir())
+        self.assertTrue((fixture.root / "worktrees" / "slots" / "slot01").is_dir())
+        self.assertTrue((fixture.root / "worktrees" / "slots" / "other").is_dir())
         self.assertEqual(fixture.read_systemd()["stop_log"], [])
 
 

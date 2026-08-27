@@ -251,7 +251,7 @@ class SummaryCompletenessTest(unittest.TestCase):
 # property), matching hermit — the record stores only exit_code, not a kind.
 REVERIE_HEADER = (
     "Reverie validation log\n"
-    "Root: /home/user/work/dev-hermit/worktrees/slot01/reverie\n"
+    "Root: /home/user/work/dev-hermit/worktrees/slots/slot01/reverie\n"
     "Level: reverie-full\n"
     "Host OS: Linux\n"
     "Commit: 0123456789abcdef0123456789abcdef01234567 (clean tree, commit-anchored)\n"
@@ -292,9 +292,15 @@ class RepoAttributionTest(unittest.TestCase):
 
     def test_reverie_cwd_fallback(self):
         # No product header, ambiguous filename -> attribute by reverie checkout.
-        run = parse("Root: /x/worktrees/slot01/reverie\nLevel: reverie-full\n"
+        run = parse("Root: /x/worktrees/slots/slot01/reverie\nLevel: reverie-full\n"
                     + PASS, name="validate-run.test.log")
         self.assertEqual(run["repo"], "reverie")
+
+    def test_historical_slot_layout_remains_attributable(self):
+        self.assertEqual(
+            "slot01",
+            agg.slot_from_cwd("/x/worktrees/slot01/hermit"),
+        )
 
     def test_reverie_primary_slot(self):
         self.assertEqual(agg.slot_from_cwd("/home/user/dev-hermit/reverie"), "primary")

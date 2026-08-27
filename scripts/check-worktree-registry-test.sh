@@ -16,14 +16,14 @@ git -C "$root" commit -q -m 'seed parent checkout'
 
 mkdir -p "$root/worktrees"
 for slot in slot01 slot02; do
-  mkdir -p "$root/worktrees/$slot/hermit"
-  git -C "$root/worktrees/$slot/hermit" init -q -b main
-  git -C "$root/worktrees/$slot/hermit" config user.email test@example.invalid
-  git -C "$root/worktrees/$slot/hermit" config user.name test
-  touch "$root/worktrees/$slot/hermit/seed"
-  git -C "$root/worktrees/$slot/hermit" add seed
-  git -C "$root/worktrees/$slot/hermit" commit -q -m seed
-  git -C "$root/worktrees/$slot/hermit" switch -q -c "correct-${slot#slot}"
+  mkdir -p "$root/worktrees/slots/$slot/hermit"
+  git -C "$root/worktrees/slots/$slot/hermit" init -q -b main
+  git -C "$root/worktrees/slots/$slot/hermit" config user.email test@example.invalid
+  git -C "$root/worktrees/slots/$slot/hermit" config user.name test
+  touch "$root/worktrees/slots/$slot/hermit/seed"
+  git -C "$root/worktrees/slots/$slot/hermit" add seed
+  git -C "$root/worktrees/slots/$slot/hermit" commit -q -m seed
+  git -C "$root/worktrees/slots/$slot/hermit" switch -q -c "correct-${slot#slot}"
 done
 
 cat >"$root/worktree-state.json" <<'JSON'
@@ -32,16 +32,16 @@ cat >"$root/worktree-state.json" <<'JSON'
   "slots": {
     "slot01": {
       "agents": [{"name":"agent-01","read_only":false}],
-      "hermit_branch":"correct-01", "hermit_path":"worktrees/slot01/hermit",
-      "reverie_branch":"-", "reverie_path":"worktrees/slot01/reverie",
-      "liteinst2_branch":"-", "liteinst2_path":"worktrees/slot01/liteinst2",
+      "hermit_branch":"correct-01", "hermit_path":"worktrees/slots/slot01/hermit",
+      "reverie_branch":"-", "reverie_path":"worktrees/slots/slot01/reverie",
+      "liteinst2_branch":"-", "liteinst2_path":"worktrees/slots/slot01/liteinst2",
       "task":"task-01", "status":"active"
     },
     "slot02": {
       "agents": [{"name":"agent-02","read_only":false}],
-      "hermit_branch":"correct-02", "hermit_path":"worktrees/slot02/hermit",
-      "reverie_branch":"-", "reverie_path":"worktrees/slot02/reverie",
-      "liteinst2_branch":"-", "liteinst2_path":"worktrees/slot02/liteinst2",
+      "hermit_branch":"correct-02", "hermit_path":"worktrees/slots/slot02/hermit",
+      "reverie_branch":"-", "reverie_path":"worktrees/slots/slot02/reverie",
+      "liteinst2_branch":"-", "liteinst2_path":"worktrees/slots/slot02/liteinst2",
       "task":"task-02", "status":"active"
     }
   }
@@ -111,8 +111,8 @@ grep -Fq 'DRIFT slot=slot01 hermit recorded=wrong-01 actual=correct-01' \
 # residue and no .git. Git can see the fixture parent's `main`, but that parent
 # identity must never satisfy the product row or become repair authority.
 sed -i 's/wrong-01/correct-01/g' "$root/worktree-state.json" "$root/worktrees/ACTIVE.md"
-mkdir -p "$root/worktrees/ascent/hermit/target"
-printf 'generated\n' >"$root/worktrees/ascent/hermit/target/artifact"
+mkdir -p "$root/worktrees/slots/ascent/hermit/target"
+printf 'generated\n' >"$root/worktrees/slots/ascent/hermit/target/artifact"
 python3 - "$root/worktree-state.json" "$root/worktrees/ACTIVE.md" <<'PY'
 import json
 import pathlib
@@ -122,9 +122,9 @@ state_path, active_path = map(pathlib.Path, sys.argv[1:])
 state = json.loads(state_path.read_text())
 state["slots"]["ascent"] = {
     "agents": [{"name": "agent-ascent", "read_only": False}],
-    "hermit_branch": "main", "hermit_path": "worktrees/ascent/hermit",
-    "reverie_branch": "-", "reverie_path": "worktrees/ascent/reverie",
-    "liteinst2_branch": "-", "liteinst2_path": "worktrees/ascent/liteinst2",
+    "hermit_branch": "main", "hermit_path": "worktrees/slots/ascent/hermit",
+    "reverie_branch": "-", "reverie_path": "worktrees/slots/ascent/reverie",
+    "liteinst2_branch": "-", "liteinst2_path": "worktrees/slots/ascent/liteinst2",
     "task": "task-ascent", "status": "released",
 }
 state_path.write_text(json.dumps(state, indent=2) + "\n")
@@ -136,7 +136,7 @@ if "$script_dir/check-worktree-registry.rs" --root "$root" >"$root/ascent.out" 2
   echo 'expected residue-only descendant to fail exact-root binding' >&2
   exit 1
 fi
-grep -Fq "DRIFT slot=ascent hermit recorded=main actual=unreadable:git top-level $root does not equal requested checkout $root/worktrees/ascent/hermit" \
+grep -Fq "DRIFT slot=ascent hermit recorded=main actual=unreadable:git top-level $root does not equal requested checkout $root/worktrees/slots/ascent/hermit" \
   "$root/ascent.out"
 grep -Fq 'FAIL rows=3 correct_rows=2 drift_rows=1 product_cells=9 drift_cells=1' \
   "$root/ascent.out"
@@ -150,14 +150,14 @@ import sys
 
 path = pathlib.Path(sys.argv[1])
 state = json.loads(path.read_text())
-state["slots"]["slot02"]["hermit_path"] = "worktrees/slot02/./hermit"
+state["slots"]["slot02"]["hermit_path"] = "worktrees/slots/slot02/./hermit"
 path.write_text(json.dumps(state, indent=2) + "\n")
 PY
 if "$script_dir/check-worktree-registry.rs" --root "$root" >"$root/alias.out" 2>&1; then
   echo 'expected aliased registry path to fail exact path binding' >&2
   exit 1
 fi
-grep -Fq 'DRIFT slot=slot02 hermit path recorded=Some("worktrees/slot02/./hermit") expected=worktrees/slot02/hermit' \
+grep -Fq 'DRIFT slot=slot02 hermit path recorded=Some("worktrees/slots/slot02/./hermit") expected=worktrees/slots/slot02/hermit' \
   "$root/alias.out"
 grep -Fq 'FAIL rows=3 correct_rows=1 drift_rows=2 product_cells=9 drift_cells=2' \
   "$root/alias.out"

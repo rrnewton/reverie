@@ -4,10 +4,17 @@ Agent work uses registered nested slots. A normal slot has all three product
 worktrees, each with its own writable build output:
 
 ```text
-worktrees/<slot>/hermit
-worktrees/<slot>/reverie
-worktrees/<slot>/liteinst2
+worktrees/slots/<slot>/hermit
+worktrees/slots/<slot>/reverie
+worktrees/slots/<slot>/liteinst2
 ```
+
+Temporary validation checkouts and per-run Cargo homes live under
+`worktrees/validate/`. Validation logs, run records, and any checkout-local
+receipt recovered before cleanup remain under `ignored/validate/`; the
+temporary checkout is removed when the run finishes. Use
+`ci-hub validate-run --sweep-completed` to retry cleanup left by an interrupted
+waiter.
 
 Never develop in the primary `hermit/`, `reverie/`, or `liteinst2/` checkout,
 and never create an agent worktree with raw `git worktree add`. Read
@@ -34,6 +41,10 @@ files are machine-local; do not hand-edit their managed state. At most twelve
 slots may be active and at most five clean slots may be parked. If allocation
 reports an ownership conflict or capacity problem, preserve the existing slot
 and escalate rather than deleting it.
+
+Before moving, removing, or reclaiming any slot, prove from the running system
+that no live agent process uses it. The presence or absence of a handoff is not
+a liveness check: moving a live slot breaks the session's hook paths.
 
 `scripts/slot-init.sh <slot> [product] [start-point]` is an unregistered manual
 scaffolding fallback. It creates detached worktrees but does not update either

@@ -29,7 +29,7 @@ class IdentityFixture(unittest.TestCase):
         self.proc = self.root / "proc"
         self.proc.mkdir()
         self.repo = self.root / "repo"
-        (self.repo / "worktrees" / "slot-a" / "hermit").mkdir(parents=True)
+        (self.repo / "worktrees" / "slots" / "slot-a" / "hermit").mkdir(parents=True)
         self.state = self.repo / "worktree-state.json"
         self.db = self.root / "tasks.db"
         connection = sqlite3.connect(self.db)
@@ -66,7 +66,7 @@ class IdentityFixture(unittest.TestCase):
         row: dict[str, object] = {
             "status": "active",
             "task": task,
-            "hermit_path": "worktrees/slot-a/hermit",
+            "hermit_path": "worktrees/slots/slot-a/hermit",
             "agents": agents,
         }
         if sidecar_agent is not None:
@@ -131,7 +131,11 @@ class IdentityFixture(unittest.TestCase):
             50,
             agent=caller_agent,
             pane=pane,
-            cwd=cwd if cwd is not None else self.repo / "worktrees" / "slot-a" / "hermit",
+            cwd=(
+                cwd
+                if cwd is not None
+                else self.repo / "worktrees" / "slots" / "slot-a" / "hermit"
+            ),
             cgroup=cgroup,
             cmdline=caller_cmdline,
         )
@@ -206,7 +210,7 @@ class ResolutionTests(IdentityFixture):
             100,
             50,
             agent="agent-a",
-            cwd=self.repo / "worktrees" / "slot-a" / "hermit",
+            cwd=self.repo / "worktrees" / "slots" / "slot-a" / "hermit",
             cgroup="/agent.slice/a.scope",
         )
         result = self.resolve()

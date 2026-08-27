@@ -59,6 +59,7 @@ class FakeRun:
         self.collected_unit = False
         self.current_main = "b" * 40
         self.target_contains_current_main = False
+        self.source_common_dir_available = True
 
     def default_ledger_row(self) -> dict[str, object]:
         return {
@@ -114,6 +115,7 @@ class FakeRun:
                 receipt.write_text(f'{{"commit": "{SHA}", "cwd": "{self.fresh}"}}\n')
             return completed(command, stdout=f"{self.fresh}\n")
         if command[:2] == ["rm", "-rf"]:
+            shutil.rmtree(command[-1], ignore_errors=True)
             return completed(command)
         if command[:1] == ["timeout"] and "fetch" in command:
             return completed(command)
@@ -139,10 +141,24 @@ class FakeRun:
             owner = nested if location == nested or nested in location.parents else self.fresh
             return completed(command, stdout=f"{owner}\n")
         if self.fresh is not None and command[:4] == ["git", "-C", str(self.fresh), "rev-parse"]:
+            if command[-1] == "--git-common-dir":
+                common = self.checkout / ".git"
+                common.mkdir(exist_ok=True)
+                return completed(command, stdout=f"{common}\n")
             return completed(command, stdout=f"{SHA}\n")
         if command[:3] == ["git", "-C", str(self.checkout)] and command[3] in {"worktree", "submodule"}:
             if command[3:5] == ["worktree", "remove"]:
                 self.removed.append(command[-1])
+                shutil.rmtree(command[-1], ignore_errors=True)
+            return completed(command)
+        if (
+            self.fresh is not None
+            and command[:3] == ["git", "-C", str(self.fresh)]
+            and command[3] == "worktree"
+        ):
+            if command[3:5] == ["worktree", "remove"]:
+                self.removed.append(command[-1])
+                shutil.rmtree(command[-1], ignore_errors=True)
             return completed(command)
         if self.fresh is not None and command[:4] == ["git", "-C", str(self.fresh), "submodule"]:
             return completed(command)
@@ -207,6 +223,8 @@ class FakeRun:
             if command[-1] == "--show-toplevel":
                 return completed(command, stdout=f"{self.checkout}\n")
             if command[-1] == "--git-common-dir":
+                if not self.source_common_dir_available:
+                    return completed(command, rc=1, stderr="source checkout missing")
                 common = self.checkout / ".git"
                 common.mkdir(exist_ok=True)
                 return completed(command, stdout=f"{common}\n")
@@ -344,10 +362,6 @@ class StartUnitTest(unittest.TestCase):
 
     def tearDown(self) -> None:
         start_unit.HOST_TMP_ROOT = self.original_host_tmp_root
-        shutil.rmtree(
-            self.root.parent / f".{self.root.name}-frozen-validate",
-            ignore_errors=True,
-        )
         self.temporary.cleanup()
 
     def invoke(self, extra: list[str] | None = None) -> tuple[int, str, str]:
@@ -375,6 +389,13 @@ class StartUnitTest(unittest.TestCase):
                 sleep=lambda _seconds: None,
             )
         return rc, out.getvalue(), err.getvalue()
+
+    def removed_temporary_paths(self) -> list[Path]:
+        return [
+            Path(command[-1])
+            for command in self.fake.commands
+            if command[:2] == ["rm", "-rf"]
+        ]
 
     def test_positive_launch_routes_systemd_service_through_validate_lock(self) -> None:
         rc, output, error = self.invoke(["--pr", "123", "--", "full", "--ignore-cache"])
@@ -419,6 +440,241 @@ class StartUnitTest(unittest.TestCase):
         self.assertEqual("observer-only", record["pane_role"])
         self.assertEqual(3600, record["validate_lock_child_deadline_seconds"])
         self.assertEqual(3239, record["hermit_run_timeout_seconds"])
+
+    def test_sweep_completed_archives_receipts_and_removes_checkout(self) -> None:
+        fresh = self.root / "worktrees" / "validate" / "validate-fresh-sweep"
+        receipt = fresh / "reports" / "result.jsonl"
+        receipt.parent.mkdir(parents=True)
+        receipt.write_text(f'{{"commit": "{SHA}"}}\n')
+        cargo_home = self.root / "worktrees/validate/validate-cargo-sweep"
+        cargo_home.mkdir()
+        self.fake.fresh = fresh
+        record_path = self.root / "ignored/validate/runs/validate-sweep.json"
+        start_unit.run_registry.write_record(
+            record_path,
+            {
+                "schema_version": 1,
+                "unit": "validate-sweep.service",
+                "checkout": str(fresh),
+                "source_checkout": str(self.checkout),
+                "temporary_checkout": True,
+                "cargo_home": str(cargo_home),
+                "repo": "rrnewton/hermit",
+                "state": "completed",
+                "exit_code": 0,
+                "final_validate_status": "PASSED",
+            },
+        )
+
+        out = io.StringIO()
+        err = io.StringIO()
+        with mock.patch.object(
+            start_unit, "path_may_have_live_process", return_value=False
+        ), contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = start_unit.main(
+                ["--sweep-completed", "--json"],
+                run=self.fake,
+                environment=self.environment,
+                root=self.root,
+            )
+
+        self.assertEqual(0, rc, err.getvalue())
+        report = json.loads(out.getvalue())
+        self.assertEqual([str(fresh)], report["removed"])
+        self.assertEqual([str(cargo_home)], report["removed_cargo_homes"])
+        self.assertEqual([], report["retained"])
+        self.assertFalse(fresh.exists())
+        self.assertFalse(cargo_home.exists())
+        archived = (
+            self.root
+            / "ignored/validate/orphaned-receipts/validate-sweep/reports/result.jsonl"
+        )
+        self.assertEqual(f'{{"commit": "{SHA}"}}\n', archived.read_text())
+        durable = start_unit.run_registry.read_record(record_path)
+        self.assertIsInstance(durable.get("checkout_removed_at"), str)
+        self.assertIsInstance(durable.get("cargo_home_removed_at"), str)
+        self.assertEqual([str(archived)], durable["archived_orphaned_receipts"])
+
+        out = io.StringIO()
+        with mock.patch.object(
+            start_unit, "path_may_have_live_process", return_value=False
+        ), contextlib.redirect_stdout(out):
+            second_rc = start_unit.main(
+                ["--sweep-completed", "--json"],
+                run=self.fake,
+                environment=self.environment,
+                root=self.root,
+            )
+        self.assertEqual(0, second_rc)
+        self.assertEqual([], json.loads(out.getvalue())["removed"])
+        self.assertEqual([], json.loads(out.getvalue())["removed_cargo_homes"])
+        self.assertEqual(
+            [str(archived)],
+            start_unit.run_registry.read_record(record_path)[
+                "archived_orphaned_receipts"
+            ],
+        )
+
+    def test_sweep_completed_refuses_checkout_outside_validate_parent(self) -> None:
+        checkout = self.root / "worktrees" / "slots" / "slot01" / "hermit"
+        checkout.mkdir(parents=True)
+        start_unit.run_registry.write_record(
+            self.root / "ignored/validate/runs/validate-wrong-parent.json",
+            {
+                "schema_version": 1,
+                "unit": "validate-wrong-parent.service",
+                "checkout": str(checkout),
+                "source_checkout": str(self.checkout),
+                "temporary_checkout": True,
+                "repo": "rrnewton/hermit",
+                "state": "completed",
+            },
+        )
+
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            rc = start_unit.main(
+                ["--sweep-completed", "--json"],
+                run=self.fake,
+                environment=self.environment,
+                root=self.root,
+            )
+
+        self.assertEqual(start_unit.EXIT_COULD_NOT_DETERMINE, rc)
+        report = json.loads(out.getvalue())
+        self.assertEqual([], report["removed"])
+        self.assertEqual(
+            [
+                {
+                    "checkout": str(checkout),
+                    "reason": "temporary checkout is outside worktrees/validate",
+                }
+            ],
+            report["retained"],
+        )
+        self.assertTrue(checkout.is_dir())
+
+    def test_sweep_completed_retains_when_unit_and_terminal_record_are_absent(self) -> None:
+        fresh = self.root / "worktrees/validate/validate-fresh-running"
+        fresh.mkdir(parents=True)
+        self.fake.collected_unit = True
+        start_unit.run_registry.write_record(
+            self.root / "ignored/validate/runs/validate-running.json",
+            {
+                "schema_version": 1,
+                "unit": "validate-running.service",
+                "checkout": str(fresh),
+                "source_checkout": str(self.checkout),
+                "temporary_checkout": True,
+                "repo": "rrnewton/hermit",
+                "state": "running",
+            },
+        )
+
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            rc = start_unit.main(
+                ["--sweep-completed", "--json"],
+                run=self.fake,
+                environment=self.environment,
+                root=self.root,
+            )
+
+        self.assertEqual(start_unit.EXIT_COULD_NOT_DETERMINE, rc)
+        report = json.loads(out.getvalue())
+        self.assertEqual([], report["removed"])
+        self.assertEqual(
+            "unit state unavailable and run record is not terminal",
+            report["retained"][0]["reason"],
+        )
+        self.assertTrue(fresh.is_dir())
+
+    def test_sweep_completed_retains_terminal_checkout_used_by_a_process(self) -> None:
+        fresh = self.root / "worktrees/validate/validate-fresh-held"
+        fresh.mkdir(parents=True)
+        start_unit.run_registry.write_record(
+            self.root / "ignored/validate/runs/validate-held.json",
+            {
+                "schema_version": 1,
+                "unit": "validate-held.service",
+                "checkout": str(fresh),
+                "source_checkout": str(self.checkout),
+                "temporary_checkout": True,
+                "repo": "rrnewton/hermit",
+                "state": "completed",
+                "exit_code": 0,
+                "final_validate_status": "PASSED",
+            },
+        )
+
+        out = io.StringIO()
+        with mock.patch.object(
+            start_unit, "path_may_have_live_process", return_value=True
+        ), contextlib.redirect_stdout(out):
+            rc = start_unit.main(
+                ["--sweep-completed", "--json"],
+                run=self.fake,
+                environment=self.environment,
+                root=self.root,
+            )
+
+        self.assertEqual(start_unit.EXIT_COULD_NOT_DETERMINE, rc)
+        report = json.loads(out.getvalue())
+        self.assertEqual([], report["removed"])
+        self.assertEqual("a live process may still use the checkout", report["retained"][0]["reason"])
+        self.assertTrue(fresh.is_dir())
+
+    def test_sweep_completed_rejects_ignored_launch_flags(self) -> None:
+        for flag in ("--make-validate", "--allow-owner-validate-symlink"):
+            with self.subTest(flag=flag):
+                out = io.StringIO()
+                err = io.StringIO()
+                with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                    rc = start_unit.main(
+                        ["--sweep-completed", flag],
+                        run=self.fake,
+                        environment=self.environment,
+                        root=self.root,
+                    )
+                self.assertEqual(2, rc)
+                self.assertIn("cannot be combined", err.getvalue())
+
+    def test_cleanup_liveness_includes_an_open_file_descriptor(self) -> None:
+        checkout = self.root / "worktrees/validate/validate-fresh-held"
+        checkout.mkdir(parents=True)
+        artifact = checkout / "artifact"
+        artifact.write_text("held\n")
+        proc = self.root / "proc" / "123"
+        (proc / "fd").mkdir(parents=True)
+        (proc / "map_files").mkdir()
+        (proc / "cwd").symlink_to(self.root)
+        (proc / "exe").symlink_to(sys.executable)
+        (proc / "root").symlink_to("/")
+        (proc / "fd" / "7").symlink_to(artifact)
+
+        self.assertTrue(
+            start_unit.path_may_have_live_process(checkout, proc_root=proc.parent)
+        )
+
+    def test_orphan_archive_retry_requires_identical_regular_file(self) -> None:
+        fresh = self.root / "worktrees/validate/validate-fresh-archive"
+        receipt = fresh / "receipt.jsonl"
+        receipt.parent.mkdir(parents=True)
+        receipt.write_text("first\n")
+
+        first = start_unit.archive_orphaned_receipts(
+            self.root, fresh, ["receipt.jsonl"], unit="validate-archive"
+        )
+        second = start_unit.archive_orphaned_receipts(
+            self.root, fresh, ["receipt.jsonl"], unit="validate-archive"
+        )
+        self.assertEqual(first, second)
+
+        receipt.write_text("changed\n")
+        with self.assertRaisesRegex(RuntimeError, "different content"):
+            start_unit.archive_orphaned_receipts(
+                self.root, fresh, ["receipt.jsonl"], unit="validate-archive"
+            )
 
     def test_hermit_run_timeout_is_derived_inside_child_deadline(self) -> None:
         self.assertEqual(3239, start_unit.hermit_run_timeout_seconds(3600))
@@ -527,7 +783,7 @@ class StartUnitTest(unittest.TestCase):
                     any(command[0] == "systemd-run" for command in self.fake.commands)
                 )
 
-    def test_collected_sigterm_records_143_but_wrapper_reports_no_authority(self) -> None:
+    def test_collected_sigterm_records_and_returns_143(self) -> None:
         self.fake.actual_exit = 143
         self.fake.final_validate_status = None
         self.fake.executed_nodes = None
@@ -537,8 +793,8 @@ class StartUnitTest(unittest.TestCase):
 
         rc, _output, error = self.invoke(["--", "full"])
 
-        self.assertEqual(2, rc, error)
-        self.assertIn("CANONICAL-VERDICT-UNAVAILABLE", error)
+        self.assertEqual(143, rc, error)
+        self.assertIn("inner validate exited 143", error)
         record = start_unit.run_registry.read_record(
             self.root / "ignored/validate/runs/validate-test.json"
         )
@@ -694,7 +950,10 @@ class StartUnitTest(unittest.TestCase):
         self.assertFalse(record["target_contains_current_main_before_launch"])
         self.assertFalse(record["qualifying_receipt"])
         self.assertEqual(self.fake.current_main, record["current_main_before_launch"])
-        self.assertNotIn(self.root, Path(record["checkout"]).parents)
+        self.assertEqual(
+            self.root / "worktrees" / "validate",
+            Path(record["checkout"]).parent,
+        )
 
         result_path = Path(record["result_record"])
         frozen_row = json.loads(result_path.read_text().strip())
@@ -868,12 +1127,15 @@ class StartUnitTest(unittest.TestCase):
     def test_fresh_parent_symlinked_into_host_tmp_is_refused_before_mktemp(self) -> None:
         hidden_parent = start_unit.HOST_TMP_ROOT / "fresh-parent"
         hidden_parent.mkdir(parents=True)
-        (self.root / "ignored").symlink_to(hidden_parent, target_is_directory=True)
+        (self.root / "worktrees").mkdir()
+        (self.root / "worktrees" / "validate").symlink_to(
+            hidden_parent, target_is_directory=True
+        )
 
         rc, _output, error = self.invoke(["--", "full"])
 
         self.assertEqual(2, rc)
-        self.assertIn("fresh-checkout parent resolves beneath host /tmp", error)
+        self.assertIn("validation checkout parent resolves beneath host /tmp", error)
         self.assertFalse(any(command[:2] == ["mktemp", "-d"] for command in self.fake.commands))
         self.assertFalse(any(command[0] == "systemd-run" for command in self.fake.commands))
         self.assertFalse((hidden_parent / "ledger").exists())
@@ -1076,6 +1338,10 @@ class StartUnitTest(unittest.TestCase):
         self.assertIsNotNone(self.fake.fresh)
         self.assertEqual(str(self.fake.fresh), self._working_directory())
         self.assertNotEqual(str(self.checkout), self._working_directory())
+        self.assertEqual(
+            self.root / "worktrees" / "validate",
+            self.fake.fresh.parent,
+        )
 
     def test_in_place_opt_out_still_validates_the_slot_tree(self) -> None:
         rc, _output, error = self.invoke(["--in-place", "--", "full"])
@@ -1172,6 +1438,26 @@ class StartUnitTest(unittest.TestCase):
         self.assertEqual(["status", "identity", "remove"], kinds)
         self.assertEqual([str(self.fake.fresh)], self.fake.removed)
 
+    def test_cleanup_falls_back_to_the_temp_checkout_when_source_is_missing(self) -> None:
+        fresh = self.root / "worktrees/validate/validate-fresh-source-gone"
+        fresh.mkdir(parents=True)
+        (fresh / ".git").write_text("gitdir: shared/worktrees/source-gone\n")
+        self.fake.fresh = fresh
+        self.fake.source_common_dir_available = False
+
+        removed = start_unit.remove_fresh_checkout(
+            self.checkout, fresh, run=self.fake
+        )
+
+        self.assertTrue(removed)
+        self.assertEqual([str(fresh)], self.fake.removed)
+        self.assertTrue(
+            any(
+                command[:4] == ["git", "-C", str(fresh), "worktree"]
+                for command in self.fake.commands
+            )
+        )
+
     def test_canonical_nonpass_is_a_real_receipt_not_an_orphan(self) -> None:
         """A nonpass is not landing authority, but it is still a receipt.
 
@@ -1218,10 +1504,10 @@ class StartUnitTest(unittest.TestCase):
 
         rc, _output, error = self.invoke(["--", "full"])
 
-        self.assertEqual(2, rc)
+        self.assertEqual(start_unit.EXIT_COULD_NOT_DETERMINE, rc)
         self.assertIn("CANONICAL-VERDICT-UNAVAILABLE", error)
 
-    def test_uncanonical_receipt_refuses_and_RETAINS_the_temp_checkout(self) -> None:
+    def test_uncanonical_receipt_is_archived_before_temp_checkout_removal(self) -> None:
         """The negative that matters: an invisible green must be impossible.
 
         A temp-dir validate whose receipt lands only in the temp checkout's own
@@ -1240,10 +1526,19 @@ class StartUnitTest(unittest.TestCase):
 
         rc, _output, error = self.invoke(["--", "full"])
 
-        self.assertEqual(2, rc)
+        self.assertEqual(start_unit.EXIT_COULD_NOT_DETERMINE, rc)
         self.assertIn("CANONICAL-VERDICT-UNAVAILABLE", error)
         self.assertIn("ORPHANED-RECEIPT", error)
-        self.assertEqual([], self.fake.removed, "evidence must not be destroyed")
+        self.assertEqual([str(self.fake.fresh)], self.fake.removed)
+        archived = (
+            self.root
+            / "ignored/validate/orphaned-receipts/validate-test/.hermit-validate-ledger.jsonl"
+        )
+        self.assertTrue(archived.is_file(), "evidence must survive checkout removal")
+        self.assertIn(
+            self.root / "worktrees/validate/validate-cargo-abcd1234",
+            self.removed_temporary_paths(),
+        )
 
     def plant_orphan_receipt(self, rel: str = ".hermit-validate-ledger.jsonl") -> None:
         """Have the run write its receipt inside its own temp checkout."""
@@ -1257,12 +1552,12 @@ class StartUnitTest(unittest.TestCase):
 
         rc, _output, error = self.invoke(["--", "full"])
 
-        self.assertEqual(2, rc)
+        self.assertEqual(start_unit.EXIT_COULD_NOT_DETERMINE, rc)
         self.assertIn("NO-RECEIPT-PRODUCED", error)
         self.assertNotIn("ORPHANED-RECEIPT", error)
         self.assertEqual([str(self.fake.fresh)], self.fake.removed)
 
-    def test_a_receipt_under_an_UNANTICIPATED_name_is_still_retained(self) -> None:
+    def test_a_receipt_under_an_UNANTICIPATED_name_is_archived(self) -> None:
         """Why the test is SHAPE, not a whitelist of ledger filenames.
 
         A whitelist fails in the dangerous direction: a receipt written under a
@@ -1274,9 +1569,15 @@ class StartUnitTest(unittest.TestCase):
 
         rc, _output, error = self.invoke(["--", "full"])
 
-        self.assertEqual(2, rc)
+        self.assertEqual(start_unit.EXIT_COULD_NOT_DETERMINE, rc)
         self.assertIn("ORPHANED-RECEIPT", error)
-        self.assertEqual([], self.fake.removed)
+        self.assertEqual([str(self.fake.fresh)], self.fake.removed)
+        self.assertTrue(
+            (
+                self.root
+                / "ignored/validate/orphaned-receipts/validate-test/ci/some-unanticipated-receipt.jsonl"
+            ).is_file()
+        )
 
     def test_a_TRACKED_jsonl_is_not_mistaken_for_a_produced_receipt(self) -> None:
         """Attribution is by tracked-ness. A .jsonl that git tracks at this
@@ -1288,7 +1589,7 @@ class StartUnitTest(unittest.TestCase):
 
         rc, _output, error = self.invoke(["--", "full"])
 
-        self.assertEqual(2, rc)
+        self.assertEqual(start_unit.EXIT_COULD_NOT_DETERMINE, rc)
         self.assertIn("NO-RECEIPT-PRODUCED", error)
         self.assertEqual([str(self.fake.fresh)], self.fake.removed)
 
@@ -1306,7 +1607,7 @@ class StartUnitTest(unittest.TestCase):
 
         rc, _output, error = self.invoke(["--", "full"])
 
-        self.assertEqual(2, rc)
+        self.assertEqual(start_unit.EXIT_COULD_NOT_DETERMINE, rc)
         self.assertIn("NO-RECEIPT-PRODUCED", error)
         self.assertNotIn("ORPHANED-RECEIPT", error)
         self.assertEqual([str(self.fake.fresh)], self.fake.removed)
@@ -1325,10 +1626,14 @@ class StartUnitTest(unittest.TestCase):
 
         rc, _output, error = self.invoke(["--", "full"])
 
-        self.assertEqual(2, rc)
+        self.assertEqual(start_unit.EXIT_COULD_NOT_DETERMINE, rc)
         self.assertIn("ORPHANED-RECEIPT", error)
         self.assertIn("scan failed", error)
         self.assertEqual([], self.fake.removed)
+        self.assertIn(
+            self.root / "worktrees/validate/validate-cargo-abcd1234",
+            self.removed_temporary_paths(),
+        )
 
     def test_a_row_for_the_same_sha_from_a_DIFFERENT_run_does_not_satisfy_it(self) -> None:
         """Identity binding, not a correlated proxy.
@@ -1341,7 +1646,7 @@ class StartUnitTest(unittest.TestCase):
 
         rc, _output, error = self.invoke(["--", "full"])
 
-        self.assertEqual(2, rc)
+        self.assertEqual(start_unit.EXIT_COULD_NOT_DETERMINE, rc)
         self.assertIn("CANONICAL-VERDICT-UNAVAILABLE", error)
         # The property under test is IDENTITY BINDING -- a foreign row must not
         # satisfy the check. Retention is a separate question: this run left no

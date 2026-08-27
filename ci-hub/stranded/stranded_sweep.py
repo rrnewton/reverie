@@ -102,17 +102,27 @@ def _git(repo: Path, *args: str, timeout: int = 30, raw: bool = False) -> tuple[
 
 
 def find_checkouts(root: Path) -> list[Path]:
-    """The parent plus every child checkout under worktrees/.
+    """The parent plus canonical slots and any remaining legacy checkouts.
 
     Finds `.git` entries (file for a linked worktree, dir for a clone) rather
     than trusting any registry -- ACTIVE.md, `git worktree list`, and the
     filesystem are known to disagree, and stranded work hides in the gap.
     """
     out = [root]
-    wt = root / "worktrees"
-    if wt.is_dir():
-        for dot in sorted(wt.glob("*/*/.git")):
-            out.append(dot.parent)
+    worktrees = root / "worktrees"
+    if worktrees.is_dir():
+        dots = set((worktrees / "slots").glob("*/*/.git"))
+        dots.update(
+            dot
+            for dot in worktrees.glob("*/.git")
+            if dot.relative_to(worktrees).parts[0] not in {"slots", "validate"}
+        )
+        dots.update(
+            dot
+            for dot in worktrees.glob("*/*/.git")
+            if dot.relative_to(worktrees).parts[0] not in {"slots", "validate"}
+        )
+        out.extend(sorted(dot.parent for dot in dots))
     return out
 
 
@@ -153,7 +163,15 @@ def _active_md_rows(root: Path) -> dict[str, str]:
 
 def attribute(root: Path, checkout: Path, paths: list[str]) -> Owner:
     rel = checkout.relative_to(root) if checkout != root else Path(".")
-    slot = rel.parts[1] if len(rel.parts) > 1 and rel.parts[0] == "worktrees" else ""
+    slot = ""
+    if len(rel.parts) > 2 and rel.parts[:2] == ("worktrees", "slots"):
+        slot = rel.parts[2]
+    elif (
+        len(rel.parts) > 1
+        and rel.parts[0] == "worktrees"
+        and rel.parts[1] != "validate"
+    ):
+        slot = rel.parts[1]
     own = Owner(slot=slot, registry_row=_active_md_rows(root).get(slot, ""))
     _, own.branch = _git(checkout, "branch", "--show-current")
     rc, val = _git(checkout, "log", "-1", "--format=%an <%ae>")

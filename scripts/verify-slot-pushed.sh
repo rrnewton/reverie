@@ -49,8 +49,8 @@ find_root() {
     echo "verify-slot-pushed.sh: could not locate dev-hermit root" >&2; exit 2
 }
 ROOT=$(find_root)
-WT="$ROOT/worktrees"
-[[ -d $WT ]] || { echo "no worktrees/ dir"; exit 0; }
+WT="$ROOT/worktrees/slots"
+[[ -d $WT ]] || { echo "no worktrees/slots/ dir"; exit 0; }
 
 # Is this worktree's HEAD durable on origin? echoes "safe" or "RISK:<reason>".
 child_state() {

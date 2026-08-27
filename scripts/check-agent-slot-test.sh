@@ -9,7 +9,7 @@ guard="$here/check-agent-slot.sh"
 tmp="$(mktemp -d "${TMPDIR:-/tmp}/check-agent-slot-test.XXXXXX")"
 trap 'rm -rf -- "$tmp"' EXIT
 
-mkdir -p "$tmp/worktrees/mine/hermit" "$tmp/worktrees/theirs/hermit"
+mkdir -p "$tmp/worktrees/slots/mine/hermit" "$tmp/worktrees/slots/theirs/hermit"
 cat >"$tmp/worktree-state.json" <<'JSON'
 {
   "version": 3,
@@ -37,15 +37,15 @@ check() { # name expected_rc must_contain agent cwd [env...]
 # ---- REFUSALS: the planted violating case must be refused -------------------
 check no-slot-in-parent        1 "NO assigned worktree slot" sol-nobody  "$tmp"                     IGNORE=1
 check no-slot-names-allocator  1 "allocate-worktree.rs --agent sol-nobody" sol-nobody "$tmp"        IGNORE=1
-check assigned-but-in-parent   1 "instead of its assigned slot worktrees/mine" sol-example "$tmp" IGNORE=1
-check assigned-headline-honest 1 "cd $tmp/worktrees/mine"    sol-example "$tmp"                     IGNORE=1
-check borrowing-another-slot   1 "assigns it worktrees/mine" sol-example "$tmp/worktrees/theirs"    IGNORE=1
-check unassigned-in-some-slot  1 "registry assigns it NO slot" sol-nobody "$tmp/worktrees/mine"     IGNORE=1
+check assigned-but-in-parent   1 "instead of its assigned slot worktrees/slots/mine" sol-example "$tmp" IGNORE=1
+check assigned-headline-honest 1 "cd $tmp/worktrees/slots/mine"    sol-example "$tmp"                     IGNORE=1
+check borrowing-another-slot   1 "assigns it worktrees/slots/mine" sol-example "$tmp/worktrees/slots/theirs"    IGNORE=1
+check unassigned-in-some-slot  1 "registry assigns it NO slot" sol-nobody "$tmp/worktrees/slots/mine"     IGNORE=1
 check parent-subdir-counts     1 "NO assigned worktree slot" sol-nobody  "$tmp/ci-hub"              IGNORE=1
 
 # ---- ALLOWED: the planted qualifying case must fire, not sit inert ----------
-check own-slot-ok              0 "registered slot worktrees/mine" sol-example "$tmp/worktrees/mine" IGNORE=1
-check own-slot-nested-ok       0 "registered slot worktrees/mine" sol-example "$tmp/worktrees/mine/hermit" IGNORE=1
+check own-slot-ok              0 "registered slot worktrees/slots/mine" sol-example "$tmp/worktrees/slots/mine" IGNORE=1
+check own-slot-nested-ok       0 "registered slot worktrees/slots/mine" sol-example "$tmp/worktrees/slots/mine/hermit" IGNORE=1
 check declared-owner-ask-ok    0 "DECLARED owner-direct-ask"  sol-nobody  "$tmp"  HERMIT_OWNER_DIRECT_ASK=1
 check outside-parent-ok        0 "has no claim on it"         sol-nobody  "/tmp"                    IGNORE=1
 

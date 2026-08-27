@@ -268,9 +268,9 @@ write_state() {
       "hermit_branch": "$branch",
       "hermit_path": "$recorded_path",
       "reverie_branch": "-",
-      "reverie_path": "worktrees/$slot/reverie",
+      "reverie_path": "worktrees/slots/$slot/reverie",
       "liteinst2_branch": "-",
-      "liteinst2_path": "worktrees/$slot/liteinst2",
+      "liteinst2_path": "worktrees/slots/$slot/liteinst2",
       "task": "fixture-$slot",
       "status": "active"
     }
@@ -317,8 +317,8 @@ make_fixture() {
   fixture_count=$((fixture_count + 1))
   fixture_root="$suite_root/$name"
   primary="$fixture_root/hermit"
-  target="$fixture_root/worktrees/$name/hermit"
-  keep="$fixture_root/worktrees/keep-$name/hermit"
+  target="$fixture_root/worktrees/slots/$name/hermit"
+  keep="$fixture_root/worktrees/slots/keep-$name/hermit"
   target_branch="published-$name"
   output="$fixture_root/release.out"
 
@@ -403,7 +403,7 @@ JSON
 
   git -C "$primary" worktree add -q -b "keep-$name" "$keep" origin/main
 
-  write_state "$name" "$target_branch" "worktrees/$name/hermit"
+  write_state "$name" "$target_branch" "worktrees/slots/$name/hermit"
 }
 
 plant_named_watchman_fd() {
@@ -861,7 +861,7 @@ grep -Fxq 'post-atomic-path-fence-rename crash injected' "$fallback_rename_crash
   || fail 'atomic fallback did not reach the post-rename crash boundary'
 test ! -e "$target" \
   || fail 'atomic fallback rename crash left the canonical path published'
-fallback_fenced_paths=("$fixture_root/worktrees/deinitialized-fallback-rename-crash"/.hermit.release-worktree-*)
+fallback_fenced_paths=("$fixture_root/worktrees/slots/deinitialized-fallback-rename-crash"/.hermit.release-worktree-*)
 if test "${#fallback_fenced_paths[@]}" -ne 1 \
     || test ! -d "${fallback_fenced_paths[0]}"; then
   fail 'atomic fallback rename crash did not retain one fenced target'
@@ -974,7 +974,7 @@ grep -Fq 'post-repair worktree registration mismatch' "$output" \
   || fail 'release trusted repair exit zero without registration evidence'
 test ! -e "$target" \
   || fail 'false-repair transaction unexpectedly restored canonical path'
-false_repair_fenced=("$fixture_root/worktrees/deinitialized-false-repair-success"/.hermit.release-worktree-*)
+false_repair_fenced=("$fixture_root/worktrees/slots/deinitialized-false-repair-success"/.hermit.release-worktree-*)
 if test "${#false_repair_fenced[@]}" -ne 1 || test ! -d "${false_repair_fenced[0]}"; then
   fail 'false-repair transaction did not retain one recoverable fenced path'
 fi
@@ -1483,7 +1483,7 @@ grep -Fxq 'post-path-fence crash injected' "$fence_crash_evidence" \
   || fail 'production did not reach the post-path-fence crash boundary'
 test ! -e "$target" \
   || fail 'path-fence crash left the canonical target path published'
-fenced_paths=("$fixture_root/worktrees/interrupted-path-fence"/.hermit.release-worktree-*)
+fenced_paths=("$fixture_root/worktrees/slots/interrupted-path-fence"/.hermit.release-worktree-*)
 if test "${#fenced_paths[@]}" -ne 1 || test ! -d "${fenced_paths[0]}"; then
   fail 'path-fence crash did not retain one exact fenced target'
 fi
@@ -1575,9 +1575,9 @@ assert_unrelated_survives
 # reject the alias and preserve the real checkout.
 make_fixture real-target
 real_target=$target
-mkdir -p "$fixture_root/worktrees/alias"
-ln -s ../real-target/hermit "$fixture_root/worktrees/alias/hermit"
-write_state alias "$target_branch" 'worktrees/alias/hermit'
+mkdir -p "$fixture_root/worktrees/slots/alias"
+ln -s ../real-target/hermit "$fixture_root/worktrees/slots/alias/hermit"
+write_state alias "$target_branch" 'worktrees/slots/alias/hermit'
 target=$real_target
 if run_release_force alias; then
   fail 'symlink alias removed an unrelated physical worktree'
@@ -2105,7 +2105,7 @@ cat >"$fixture_root/podman.json" <<JSON
   "Names": ["unmanaged-target-mount"],
   "State": "running",
   "Labels": null,
-  "Mounts": [{"Source": "$fixture_root/worktrees/unmanaged-target-mount"}]
+  "Mounts": [{"Source": "$fixture_root/worktrees/slots/unmanaged-target-mount"}]
 }]
 JSON
 if run_release unmanaged-target-mount; then

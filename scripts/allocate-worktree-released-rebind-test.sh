@@ -81,9 +81,9 @@ state.setdefault("slots", {})[slot] = {
     "status": status,
     "agents": [{"name": incumbent, "task": "t", "read_only": False}],
     "hermit_branch": "-", "reverie_branch": "-", "liteinst2_branch": "-",
-    "hermit_path": f"worktrees/{slot}/hermit",
-    "reverie_path": f"worktrees/{slot}/reverie",
-    "liteinst2_path": f"worktrees/{slot}/liteinst2",
+    "hermit_path": f"worktrees/slots/{slot}/hermit",
+    "reverie_path": f"worktrees/slots/{slot}/reverie",
+    "liteinst2_path": f"worktrees/slots/{slot}/liteinst2",
     "purpose": "planted by allocate-worktree-released-rebind-test",
     "started": "2026-08-08T00:00:00Z",
 }

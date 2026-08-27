@@ -59,7 +59,8 @@ UNKNOWN = "unknown"
 DEFAULT_MAX_SOURCE_AGE_SECS = 300
 
 # Repositories whose git worktree registrations are counted.  These are counted
-# because NOTHING ELSE COUNTS THEM: the slot registry sees `worktrees/<slot>`,
+# because NOTHING ELSE COUNTS THEM: the slot registry sees
+# `worktrees/slots/<slot>`,
 # not the git worktrees created inside slots.  Measured 2026-08-24: parent 104,
 # hermit 310, reverie 53, liteinst2 19, agent-utils 33.  The 310 in hermit is
 # 1.8x the slot count everyone was discussing and was invisible to every gate.
@@ -136,7 +137,7 @@ def occupied_slots(root: Path, slot_names: set[str]) -> set[str]:
         raise ParityUnavailable(f"cannot enumerate process cwds: {exc}") from exc
     occupied: set[str] = set()
     for name in slot_names:
-        slot_dir = (root / "worktrees" / name).resolve()
+        slot_dir = (root / "worktrees" / "slots" / name).resolve()
         for cwd in cwds:
             if cwd == slot_dir or slot_dir in cwd.parents:
                 occupied.add(name)

@@ -1,8 +1,8 @@
 #!/usr/bin/env rust-script
 //! Release a worktree slot allocated by `allocate-worktree.rs`.
 //!
-//! CANONICAL LAYOUT v3 (nested):
-//! worktrees/<slot>/{hermit,reverie,liteinst2}.
+//! CANONICAL LAYOUT (nested):
+//! worktrees/slots/<slot>/{hermit,reverie,liteinst2}.
 //!
 //! Refuses to silently discard work: it inspects each product worktree for
 //! uncommitted changes and warns loudly. `--clean` physically removes the
@@ -35,7 +35,7 @@ const AGENT_SNAPSHOT_MAX_AGE_SECS: u64 = 10 * 60;
 
 const USAGE: &str = r#"Usage: release-worktree.rs --slot SLOT [OPTIONS]
 
-Release a worktree slot (worktrees/<slot>/{hermit,reverie,liteinst2}) and
+Release a worktree slot (worktrees/slots/<slot>/{hermit,reverie,liteinst2}) and
 update ownership.
 
 Required:
@@ -329,7 +329,7 @@ fn validate_owners(slot: &str, slot_state: &Value) -> Result<(), String> {
 fn validate_canonical_slot_paths(slot: &str, slot_state: &Value) -> Result<(), String> {
     for product in ["hermit", "reverie", "liteinst2"] {
         let key = format!("{product}_path");
-        let expected = format!("worktrees/{slot}/{product}");
+        let expected = format!("worktrees/slots/{slot}/{product}");
         if slot_state[key.as_str()].as_str() != Some(expected.as_str()) {
             return Err(format!(
                 "slot {slot} records noncanonical {key}; expected exact path '{expected}'"
@@ -437,7 +437,7 @@ fn clean_targets_from_state(
             continue;
         }
 
-        let expected_recorded = format!("worktrees/{slot}/{label}");
+        let expected_recorded = format!("worktrees/slots/{slot}/{label}");
         let expected_relative = PathBuf::from(&expected_recorded);
         let canonical = canonical_exact(root, &expected_relative)?;
         let primary = root.join(label);
@@ -463,7 +463,7 @@ fn clean_targets_from_state(
         });
     }
 
-    let slot_relative = PathBuf::from("worktrees").join(slot);
+    let slot_relative = PathBuf::from("worktrees/slots").join(slot);
     let slot_dir = root.join(&slot_relative);
     if slot_dir.exists() {
         canonical_exact(root, &slot_relative)?;
@@ -1127,7 +1127,7 @@ fn validate_sentinel_slot_binding(root: &Path, slot: &str, lease: &Value) -> Res
     // identity for the directory this lease must have guarded.
     let expected = fs::canonicalize(root)
         .map_err(|error| format!("canonicalize workspace for sentinel binding: {error}"))?
-        .join("worktrees")
+        .join("worktrees/slots")
         .join(slot);
     let recorded = lease["working_directory"]
         .as_str()
@@ -3427,7 +3427,7 @@ fn journal_target(
         "liteinst2" => "liteinst2_branch",
         _ => unreachable!(),
     };
-    let expected_original = root.join("worktrees").join(slot).join(label);
+    let expected_original = root.join("worktrees/slots").join(slot).join(label);
     let original = PathBuf::from(
         journal
             .get("original")
@@ -3481,7 +3481,7 @@ fn exact_path_present(path: &Path) -> Result<bool, String> {
 }
 
 fn verify_absent_slot_recovery(root: &Path, slot: &str) -> Result<(), String> {
-    let slot_dir = root.join("worktrees").join(slot);
+    let slot_dir = root.join("worktrees/slots").join(slot);
     if exact_path_present(&slot_dir)? {
         return Err(format!(
             "slot {slot} is absent from state but physical path {} remains",
@@ -4225,7 +4225,7 @@ fn orphan_consumer_observation(
 }
 
 fn verify_no_slot_registrations(root: &Path, slot: &str) -> Result<(), String> {
-    let slot_dir = root.join("worktrees").join(slot);
+    let slot_dir = root.join("worktrees/slots").join(slot);
     for product in ["hermit", "reverie", "liteinst2"] {
         let listing = git_inspect(&root.join(product), &["worktree", "list", "--porcelain"])?;
         if let Some(candidate) = listing
@@ -4291,7 +4291,7 @@ fn initial_orphan_targets(
         if branch == "-" {
             continue;
         }
-        let expected_relative = PathBuf::from("worktrees").join(slot).join(label);
+        let expected_relative = PathBuf::from("worktrees/slots").join(slot).join(label);
         let original = canonical_exact(root, &expected_relative)?;
         let top = git_output(
             &original,
@@ -4329,7 +4329,7 @@ fn initial_orphan_targets(
     if targets.is_empty() {
         return Err("orphan finalizer found no recorded product residue".to_string());
     }
-    let slot_dir = root.join("worktrees").join(slot);
+    let slot_dir = root.join("worktrees/slots").join(slot);
     let allowed: BTreeSet<&str> = targets.iter().map(|target| target.label).collect();
     for entry in fs::read_dir(&slot_dir)
         .map_err(|error| format!("enumerate orphan slot {}: {error}", slot_dir.display()))?
@@ -4368,7 +4368,7 @@ fn parse_orphan_targets(
             Some("liteinst2") => "liteinst2",
             other => return Err(format!("orphan journal has invalid target {other:?}")),
         };
-        let original = root.join("worktrees").join(slot).join(label);
+        let original = root.join("worktrees/slots").join(slot).join(label);
         let fenced = original
             .parent()
             .expect("orphan target has slot parent")
@@ -4807,7 +4807,7 @@ fn coordinator_finalize_orphan(
         }
     }
     verify_no_slot_registrations(root, slot)?;
-    let slot_dir = root.join("worktrees").join(slot);
+    let slot_dir = root.join("worktrees/slots").join(slot);
     if slot_dir.exists() {
         fs::remove_dir(&slot_dir).map_err(|error| {
             format!(
@@ -5864,28 +5864,6 @@ fn main() {
 
     let root = find_root();
 
-    // ⚠️ BEFORE EVERY REFUSAL BELOW, DELIBERATELY. The owner's ruling on
-    // 2026-08-27: build output is regenerable by construction, so it can always
-    // be reclaimed even from a slot whose record must stay untouched. Those are
-    // exactly the slots that leaked -- a release refused for unpushed work or a
-    // dead record left its build output on disk forever. Running here means the
-    // disk comes back whether or not the rest of the release succeeds.
-    //
-    // A sweep is a treatment; this is the fix, because nobody has to remember it.
-    if !slot.is_empty() && valid_slot(&slot) {
-        let candidate = root.join("worktrees").join(&slot);
-        if candidate.is_dir() {
-            let removed = scrub_build_output(&candidate);
-            if !removed.is_empty() {
-                println!(
-                    "release-worktree: reclaimed {} build output director{} under slot {slot}",
-                    removed.len(),
-                    if removed.len() == 1 { "y" } else { "ies" }
-                );
-            }
-        }
-    }
-
     // slot-owner-authority takes the registry's shared lock while reading the
     // exact owner row. Run it before taking the writer lock below, then bind
     // its identity and complete lease value to the freshly reloaded state
@@ -5906,6 +5884,32 @@ fn main() {
         coordinator_finalize_orphan(&root, &mut state, &slot, &orphan_recovery_note)
             .unwrap_or_else(|error| die(&format!("orphan finalization refused: {error}")));
         return;
+    }
+
+    // ⚠️ BEFORE EVERY ORDINARY-RELEASE REFUSAL BELOW, DELIBERATELY. The owner's
+    // ruling on 2026-08-27: build output is regenerable by construction, so it
+    // can always be reclaimed even from a slot whose record must stay untouched.
+    // Those are exactly the slots that leaked -- a release refused for unpushed
+    // work or a dead record left its build output on disk forever.
+    //
+    // An unfinished orphan-residue transaction is the exception. Its manifest
+    // binds the fenced bytes, so scrubbing before recovery would change evidence
+    // that has already been captured and make the exact retry impossible.
+    if state["slots"][&slot]
+        .get("orphan_residue_journal")
+        .is_none()
+    {
+        let candidate = root.join("worktrees/slots").join(&slot);
+        if candidate.is_dir() {
+            let removed = scrub_build_output(&candidate);
+            if !removed.is_empty() {
+                println!(
+                    "release-worktree: reclaimed {} build output director{} under slot {slot}",
+                    removed.len(),
+                    if removed.len() == 1 { "y" } else { "ies" }
+                );
+            }
+        }
     }
 
     // ACTIVE.md is a durable, human-augmented projection of the JSON
@@ -6057,7 +6061,7 @@ fn main() {
         println!("agent '{name}' was the last owner of {slot}; releasing whole slot");
     }
 
-    let slot_dir = root.join("worktrees").join(&slot);
+    let slot_dir = root.join("worktrees/slots").join(&slot);
     if !clean {
         for label in ["hermit", "reverie", "liteinst2"] {
             let path = slot_dir.join(label);

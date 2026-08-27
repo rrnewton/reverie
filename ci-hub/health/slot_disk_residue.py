@@ -75,7 +75,7 @@ from pathlib import Path
 
 import residue_sweep
 
-WORKTREES_DIR = "worktrees"
+SLOTS_DIR = Path("worktrees/slots")
 DEFAULT_STATE = Path(".tick-hub") / "slot-disk-residue-state.json"
 
 # Defaults. A slot must be BOTH sustained-idle and materially large: a 40 MiB
@@ -101,9 +101,9 @@ class ResidueUnavailable(RuntimeError):
 def repo_root(start: Path | None = None) -> Path:
     here = (start or Path(__file__).resolve().parent).resolve()
     for cand in [here, *here.parents]:
-        if (cand / WORKTREES_DIR).is_dir():
+        if (cand / SLOTS_DIR).is_dir():
             return cand
-    raise ResidueUnavailable(f"no {WORKTREES_DIR}/ directory found above {here}")
+    raise ResidueUnavailable(f"no {SLOTS_DIR}/ directory found above {here}")
 
 
 def slots_on_disk(root: Path) -> set[str]:
@@ -114,7 +114,7 @@ def slots_on_disk(root: Path) -> set[str]:
     exists (costing plenty); only one of those two is a disk problem, and it is
     the one the registry cannot see.
     """
-    wt = root / WORKTREES_DIR
+    wt = root / SLOTS_DIR
     try:
         return {p.name for p in wt.iterdir() if p.is_dir() and not p.is_symlink()}
     except OSError as exc:
@@ -224,7 +224,7 @@ def occupancy(root: Path, proc_root: Path = Path("/proc")) -> Occupancy:
     `slots_on_disk` and drops out on its own. Counted for visibility, never
     subtracted.
     """
-    prefix = str(root / WORKTREES_DIR) + os.sep
+    prefix = str(root / SLOTS_DIR) + os.sep
     occ = Occupancy()
     uid = os.getuid()
     try:
@@ -427,7 +427,7 @@ def evaluate(
             stale = [*after, *before]
         selected = stale[:max_measure]
         for slot in selected:
-            size = disk_bytes(root / WORKTREES_DIR / slot, timeout=du_timeout)
+            size = disk_bytes(root / SLOTS_DIR / slot, timeout=du_timeout)
             if size is not None:
                 next_slots[slot]["size_bytes"] = size
                 next_slots[slot]["sized_at"] = fmt_ts(now)

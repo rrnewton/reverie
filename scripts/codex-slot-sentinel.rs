@@ -920,7 +920,7 @@ mod tests {
             cgroup_path:
                 "/user.slice/user-1.slice/user@1.service/app.slice/dev-hermit-slot-slot01-0123456789abcdef.service"
                     .to_string(),
-            working_directory: "/tmp/worktrees/slot01".to_string(),
+            working_directory: "/tmp/worktrees/slots/slot01".to_string(),
         };
         validate_lease(&lease).unwrap();
         let mut wrong = lease.clone();

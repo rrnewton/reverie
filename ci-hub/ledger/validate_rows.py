@@ -136,12 +136,12 @@ def _workspace_root_for_row(row: dict, fallback: Path) -> str:
     cwd = str(row.get("cwd") or "")
     if "/worktrees/" in cwd:
         return cwd.split("/worktrees/", 1)[0]
-    # Historical admitted runs also used ephemeral checkouts directly under
-    # dev-hermit/ignored (for example ignored/validate-fresh-*).  Those paths
-    # have no trailing product directory, but they still carry the canonical
-    # workspace boundary.  Recognise that boundary explicitly so migration
-    # preserves the row without leaking an owner path or weakening the ledger
-    # validator.
+    # Admitted runs use ephemeral checkouts beneath dev-hermit. Current runs use
+    # worktrees/validate; historical runs used ignored/validate-fresh-*. These
+    # paths have no trailing product directory, but they still carry the
+    # canonical workspace boundary. Recognise that boundary explicitly so
+    # migration preserves the row without leaking an owner path or weakening
+    # the ledger validator.
     if "/dev-hermit/" in cwd:
         prefix, _ = cwd.split("/dev-hermit/", 1)
         return prefix + "/dev-hermit"

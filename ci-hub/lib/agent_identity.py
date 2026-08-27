@@ -539,7 +539,7 @@ def _slot_owners(row: Mapping[str, Any]) -> tuple[str, ...]:
 
 
 def _registered_paths(repo_root: Path, slot: str, row: Mapping[str, Any]) -> tuple[Path, ...]:
-    paths = {repo_root / "worktrees" / slot}
+    paths = {repo_root / "worktrees" / "slots" / slot}
     for key, value in row.items():
         if not key.endswith("_path") or not isinstance(value, str) or not value.strip():
             continue

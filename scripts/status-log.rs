@@ -428,7 +428,7 @@ fn validate_workstream(slug: &str, worker: &Value) -> Result<Workstream, String>
     if !cwd.contains('/') {
         return Err(format!(
             "mapping \"cwd\" for {slug:?} is {cwd:?}, which is not a slot or working directory \
-             path; give the agent's actual workspace, e.g. worktrees/<slot>/hermit"
+             path; give the agent's actual workspace, e.g. worktrees/slots/<slot>/hermit"
         ));
     }
     validate_slug(slug, &task)?;

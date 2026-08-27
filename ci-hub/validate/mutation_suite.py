@@ -329,7 +329,7 @@ def _catalogue() -> tuple[list[Mutant], list[Population]]:
               is_ancestor=lambda s: True, fetched_fresh=False).ok)
         m("preflight/reverie-patch-override",
           "an uncommitted [patch.\"...reverie.git\"] override riding along in a commit "
-          "(live in worktrees/250-delegate/hermit)",
+          "(live in worktrees/slots/250-delegate/hermit)",
           lambda: PF.check_no_uncommitted_patch_override(
               '+[patch."https://github.com/rrnewton/reverie.git"]\n'
               '+reverie = { path = "../reverie" }\n').verdict == PF.REFUSE)

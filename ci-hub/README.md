@@ -69,7 +69,7 @@ CI_HUB_DOCS_PARSE_ONLY=1 ./ci-hub/landing/land-pr.sh \
 # Launch one detached full validate through the sole admission point. The user
 # service runs ci-hub validate-lock before scripts/validate.rs and writes a durable log.
 # A ci-hub-owned observer tab appears in the validate-hermit Herdr workspace.
-./ci-hub/ci-hub validate-run --checkout worktrees/slot01/hermit \
+./ci-hub/ci-hub validate-run --checkout worktrees/slots/slot01/hermit \
   --agent hermit-example --target aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
   --pr 123 --dry-run -- full
 

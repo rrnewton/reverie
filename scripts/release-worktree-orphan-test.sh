@@ -28,11 +28,11 @@ make_fixture() {
   local name=$1
   fixture_root="$suite_root/$name"
   primary="$fixture_root/hermit"
-  target="$fixture_root/worktrees/$name/hermit"
+  target="$fixture_root/worktrees/slots/$name/hermit"
   output="$fixture_root/finalize.out"
   mkdir -p \
     "$primary" "$fixture_root/reverie" "$fixture_root/liteinst2" \
-    "$fixture_root/scripts" "$fixture_root/bin" "$fixture_root/worktrees/$name" \
+    "$fixture_root/scripts" "$fixture_root/bin" "$fixture_root/worktrees/slots/$name" \
     "$fixture_root/ignored/ci-hub" "$fixture_root/proc" \
     "$fixture_root/cgroup" "$target/target/debug" \
     "$target/.safe-ci-dag-runner/profiles" "$target/.dagrun/profiles" \
@@ -71,9 +71,9 @@ make_fixture() {
   "slots": {
     "$name": {
       "agents": [{"name":"fixture-$name","read_only":false,"task":"fixture-$name"}],
-      "hermit_branch":"codex-coord", "hermit_path":"worktrees/$name/hermit",
-      "reverie_branch":"-", "reverie_path":"worktrees/$name/reverie",
-      "liteinst2_branch":"-", "liteinst2_path":"worktrees/$name/liteinst2",
+      "hermit_branch":"codex-coord", "hermit_path":"worktrees/slots/$name/hermit",
+      "reverie_branch":"-", "reverie_path":"worktrees/slots/$name/reverie",
+      "liteinst2_branch":"-", "liteinst2_path":"worktrees/slots/$name/liteinst2",
       "task":"fixture-$name", "purpose":"orphan fixture", "status":"released"
     }
   }
@@ -143,7 +143,7 @@ if ! run_finalize orphan-positive; then
   cat "$output" >&2
   fail 'qualifying released orphan residue was refused'
 fi
-test ! -e "$fixture_root/worktrees/orphan-positive" \
+test ! -e "$fixture_root/worktrees/slots/orphan-positive" \
   || fail 'positive orphan slot directory survived'
 if grep -Fq 'orphan-positive' "$fixture_root/worktree-state.json"; then
   fail 'positive orphan row survived registry finalization'
@@ -207,13 +207,13 @@ import sys
 path = pathlib.Path(sys.argv[1])
 state = json.loads(path.read_text())
 state["slots"]["orphan-path-alias"]["hermit_path"] = \
-    "worktrees/orphan-path-alias/./hermit"
+    "worktrees/slots/orphan-path-alias/./hermit"
 path.write_text(json.dumps(state, indent=2) + "\n")
 PY
 if run_finalize orphan-path-alias; then
   fail 'aliased registry path authorized orphan deletion'
 fi
-grep -Fq "records noncanonical hermit_path; expected exact path 'worktrees/orphan-path-alias/hermit'" \
+grep -Fq "records noncanonical hermit_path; expected exact path 'worktrees/slots/orphan-path-alias/hermit'" \
   "$output" || fail 'path-alias refusal omitted exact canonical authority'
 assert_retained orphan-path-alias
 
@@ -225,7 +225,7 @@ if ! run_finalize orphan-cargo-artifact-lock; then
   cat "$output" >&2
   fail 'exact target-local Cargo artifact marker was refused'
 fi
-test ! -e "$fixture_root/worktrees/orphan-cargo-artifact-lock" \
+test ! -e "$fixture_root/worktrees/slots/orphan-cargo-artifact-lock" \
   || fail 'Cargo artifact marker positive retained the slot directory'
 
 # ADJACENT UNKNOWN-FILE NEGATIVE: classification is the exact marker name,
@@ -315,7 +315,7 @@ grep -Fxq 'post-orphan-fence crash injected' "$crash_marker" \
 grep -Fq '"phase": "fenced"' "$fixture_root/worktree-state.json" \
   || fail 'fence crash did not durably record phase'
 test ! -e "$target" || fail 'fence crash retained canonical path'
-find "$fixture_root/worktrees/orphan-crash-fence" -maxdepth 1 \
+find "$fixture_root/worktrees/slots/orphan-crash-fence" -maxdepth 1 \
   -name '.hermit.orphan-residue-*' -type d | grep -q . \
   || fail 'fence crash left no exact fenced residue'
 if (cd "$fixture_root" && "$script_dir/release-worktree.rs" \
@@ -328,7 +328,7 @@ if ! run_finalize orphan-crash-fence; then
   cat "$output" >&2
   fail 'journaled fence recovery failed'
 fi
-test ! -e "$fixture_root/worktrees/orphan-crash-fence" \
+test ! -e "$fixture_root/worktrees/slots/orphan-crash-fence" \
   || fail 'fence recovery retained slot directory'
 
 # EVIDENCE-TAMPER NEGATIVE: copied evidence is authority, not a cache.

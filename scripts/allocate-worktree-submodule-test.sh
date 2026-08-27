@@ -105,7 +105,7 @@ entries() { # <dir>
 note "CASE 1  POPULATED -- a fresh allocation leaves agent-utils usable"
 build_fixture "$script_dir/allocate-worktree.rs"
 allocate "hermit-sub" "subslot"
-au="$root/tree/worktrees/subslot/hermit/agent-utils"
+au="$root/tree/worktrees/slots/subslot/hermit/agent-utils"
 if [[ "$(entries "$au")" -gt 0 ]]; then
   ok "C1: agent-utils is populated ($(entries "$au") entries)"
 else
@@ -152,7 +152,7 @@ if [[ -n "$before_sha" ]]; then
   note "        pre-change allocator taken from $before_sha"
   build_fixture "$before_src"
   allocate "hermit-sub" "subslot"
-  if [[ "$(entries "$root/tree/worktrees/subslot/hermit/agent-utils")" -eq 0 ]]; then
+  if [[ "$(entries "$root/tree/worktrees/slots/subslot/hermit/agent-utils")" -eq 0 ]]; then
     ok "C2: pre-change build left agent-utils EMPTY -- the defect, reproduced"
   else
     bad "C2: pre-change build unexpectedly populated agent-utils"
@@ -167,7 +167,7 @@ note "CASE 3  PRESERVED -- re-running allocation to adopt must NOT revert a"
 note "        submodule the owner moved. Adoption is re-run routinely."
 build_fixture "$script_dir/allocate-worktree.rs"
 allocate "hermit-sub" "subslot"
-au="$root/tree/worktrees/subslot/hermit/agent-utils"
+au="$root/tree/worktrees/slots/subslot/hermit/agent-utils"
 git -C "$au" -c protocol.file.allow=always fetch -q origin 2>/dev/null || true
 git -C "$au" checkout -q "$later_sha" 2>/dev/null || true
 moved="$(git -C "$au" rev-parse HEAD 2>/dev/null)"
@@ -202,7 +202,7 @@ git -C "$root/tree/hermit" config --file .gitmodules submodule.agent-utils.url \
 git -C "$root/tree/hermit" add .gitmodules
 git -C "$root/tree/hermit" commit -q -m 'break the submodule url'
 allocate "hermit-sub" "brokenslot"
-if grep -q "allocated worktrees/brokenslot" "$root/out.brokenslot"; then
+if grep -q "allocated worktrees/slots/brokenslot" "$root/out.brokenslot"; then
   ok "C4: the allocation still succeeded"
 else
   bad "C4: a failed submodule init blocked the allocation"

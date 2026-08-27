@@ -66,7 +66,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 STATE_FILE = "worktree-state.json"
-WORKTREES_DIR = "worktrees"
+SLOTS_DIR = Path("worktrees/slots")
 
 # A slot is DEAD only if it claims to be active. `released` slots are correctly
 # inactive and are not a finding.
@@ -112,7 +112,7 @@ def occupied_slots(root: Path) -> dict[str, int]:
     process names: matching names is how sibling agents get misidentified (and,
     on this box, killed). A cwd is an unforgeable statement of where a process is.
     """
-    prefix = str(root / WORKTREES_DIR) + os.sep
+    prefix = str(root / SLOTS_DIR) + os.sep
     counts: dict[str, int] = {}
     for entry in os.listdir("/proc"):
         if not entry.isdigit():
@@ -136,8 +136,9 @@ PRODUCTS = ("hermit", "reverie", "liteinst2")
 def porcelain_slots(root: Path, products: tuple[str, ...] = PRODUCTS) -> set[str]:
     """Slot names git itself believes are worktrees.
 
-    THE AUTHORITY IS PER-PRODUCT, NOT THE PARENT. A slot is `worktrees/<slot>/`,
-    but the things git tracks are its CHILDREN: `worktrees/<slot>/hermit` is a
+    THE AUTHORITY IS PER-PRODUCT, NOT THE PARENT. A slot is
+    `worktrees/slots/<slot>/`, but the things git tracks are its CHILDREN:
+    `worktrees/slots/<slot>/hermit` is a
     worktree of the hermit repo, and the parent repo knows nothing about it.
     Asking the parent returns 42 unrelated entries and ZERO slot children, which
     made an earlier version of this function report every active slot as missing
@@ -145,7 +146,7 @@ def porcelain_slots(root: Path, products: tuple[str, ...] = PRODUCTS) -> set[str
     the wrong repository. Measured: hermit 101 slot children, reverie 46,
     liteinst2 16. Query each product and union the slot names.
     """
-    prefix = str(root / WORKTREES_DIR) + os.sep
+    prefix = str(root / SLOTS_DIR) + os.sep
     found: set[str] = set()
     for product in products:
         if not (root / product / ".git").exists():
@@ -215,7 +216,7 @@ def classify(
         hb = parse_ts(rec.get("heartbeat"))
         age = (now - hb).total_seconds() / 3600.0 if hb else None
         agents = [a.get("name", "") for a in (rec.get("agents") or []) if isinstance(a, dict)]
-        path = root / WORKTREES_DIR / name
+        path = root / SLOTS_DIR / name
         v = SlotVerdict(
             slot=name, classification="", status=str(rec.get("status") or ""),
             procs=procs, owner_pid=opid, owner_pid_alive=alive,
@@ -247,7 +248,7 @@ def classify(
     # produces a registry that LOOKS complete.
     known = set(slots)
     on_disk = set()
-    wt = root / WORKTREES_DIR
+    wt = root / SLOTS_DIR
     if wt.is_dir():
         on_disk = {p.name for p in wt.iterdir() if p.is_dir()}
     for name in sorted((porc | on_disk) - known):

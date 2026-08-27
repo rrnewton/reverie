@@ -1,15 +1,16 @@
 #!/usr/bin/env rust-script
 //! Allocate a worktree slot for a dev-hermit agent, enforcing worktree discipline.
 //!
-//! CANONICAL LAYOUT v3 (nested, one slot per agent):
+//! CANONICAL LAYOUT (nested, one slot per agent):
 //!
-//!   worktrees/<slot>/hermit    Hermit worktree  (from the hermit/ primary)
-//!   worktrees/<slot>/reverie   Reverie worktree (from the reverie/ primary)
-//!   worktrees/<slot>/liteinst2 LiteInst2 worktree (from the liteinst2/ primary)
+//!   worktrees/slots/<slot>/hermit    Hermit worktree  (from the hermit/ primary)
+//!   worktrees/slots/<slot>/reverie   Reverie worktree (from the reverie/ primary)
+//!   worktrees/slots/<slot>/liteinst2 LiteInst2 worktree (from the liteinst2/ primary)
 //!
-//! `<slot>` is either a NAMED agent slot (e.g. worktrees/kvm, worktrees/dbi for
+//! `<slot>` is either a NAMED agent slot (e.g. worktrees/slots/kvm,
+//! worktrees/slots/dbi for
 //! the purpose-fixed agents hermit-kvm, hermit-dbi, ...) or a generic slotNN
-//! (worktrees/slot01, ...). Each agent owns exactly ONE slot (1-1 mapping). A
+//! (worktrees/slots/slot01, ...). Each agent owns exactly ONE slot (1-1 mapping). A
 //! New slots contain all three product worktrees by default. A specialized
 //! allocation may request an individual product or the legacy Hermit+Reverie
 //! pair (`both`).
@@ -81,7 +82,7 @@ struct ObservedOwnerLease {
 const USAGE: &str = r#"Usage: allocate-worktree.rs --agent NAME [OPTIONS]
 
 Allocate a worktree slot (nested layout
-worktrees/<slot>/{hermit,reverie,liteinst2}) and register its ownership. Each
+worktrees/slots/<slot>/{hermit,reverie,liteinst2}) and register its ownership. Each
 agent owns exactly one slot.
 
 Required:
@@ -89,7 +90,7 @@ Required:
 
 Options:
   --slot SLOT         Slot name. Default: the agent name with a leading
-                      'hermit-' stripped (hermit-kvm -> worktrees/kvm), or a
+                      'hermit-' stripped (hermit-kvm -> worktrees/slots/kvm), or a
                       generic slotNN if the agent name is not a clean token.
                       Accepts a named token ([a-z0-9-]+) or slotNN.
   --task TASK-ID      Task this slot serves (recorded in state + ACTIVE.md).
@@ -118,8 +119,11 @@ Options:
                       coordinator reason for the binding-only migration.
   --check-only        Run registry branch/content consistency plus workspace
                       homeostasis, then exit WITHOUT allocating anything.
+  --migrate-layout    Atomically rewrite exact legacy worktrees/<slot>/<product>
+                      registry paths to worktrees/slots/<slot>/<product> and
+                      regenerate the managed ACTIVE.md block. No worktree moves.
   --repair            Reconcile recorded branch cells from physical checkouts.
-  --dry-run           With --repair, report the exact scoped changes only.
+  --dry-run           With --repair or --migrate-layout, report changes only.
   --exclude-slot SLOT With --repair, explicitly exclude a named slot. May be
                       repeated; exclusions are printed and never inspected.
                       Alternatively, --repair --slot SLOT repairs one slot.
@@ -145,7 +149,7 @@ Policy:
 
 Examples:
   ./scripts/allocate-worktree.rs --agent hermit-kvm --task impl-kvm-ratchet
-      -> worktrees/kvm/{hermit,reverie,liteinst2}
+      -> worktrees/slots/kvm/{hermit,reverie,liteinst2}
   ./scripts/allocate-worktree.rs --agent hermit-201 --slot slot01 \
       --product hermit --hermit-branch debug-batch1 --task impl-debug
   ./scripts/allocate-worktree.rs --agent hermit-ci --slot kvm \
@@ -274,7 +278,7 @@ fn verify_repair_checkout_published(
             "{slot}/{product}: checkout is absent; unpublished state cannot be proven"
         ));
     }
-    let path = root.join(format!("worktrees/{slot}/{product}"));
+    let path = root.join(format!("worktrees/slots/{slot}/{product}"));
     exact_checkout_root(&path)
         .map_err(|error| format!("{slot}/{product}: exact checkout unavailable: {error}"))?;
     let (status_ok, status, status_error) = git(
@@ -365,7 +369,7 @@ fn recorded_branch_is_unfulfilled_intent(
     if recorded == "-" || recorded.is_empty() || recorded.starts_with("detached") {
         return false;
     }
-    let path = root.join(format!("worktrees/{slot}/{product}"));
+    let path = root.join(format!("worktrees/slots/{slot}/{product}"));
     // An unreadable checkout is already skipped upstream; be conservative here and do not claim
     // an intent we cannot check for.
     if exact_checkout_root(&path).is_err() {
@@ -494,9 +498,9 @@ fn newest_source_mtime(dir: &Path) -> i64 {
     }
 }
 
-/// Count physical slot directories under worktrees/ (each child dir is a slot).
+/// Count physical slot directories under worktrees/slots/.
 fn physical_slot_count(root: &Path) -> usize {
-    let wt = root.join("worktrees");
+    let wt = root.join("worktrees/slots");
     std::fs::read_dir(&wt)
         .map(|rd| {
             rd.filter_map(|e| e.ok())
@@ -601,7 +605,7 @@ fn homeostasis_check(root: &Path) {
     let slots_obj = state["slots"].as_object();
     // (name, idle_hours, registered) sorted most-idle-first.
     let mut languishing: Vec<(String, i64, bool)> = Vec::new();
-    if let Ok(rd) = std::fs::read_dir(root.join("worktrees")) {
+    if let Ok(rd) = std::fs::read_dir(root.join("worktrees/slots")) {
         let mut names: Vec<String> = rd
             .filter_map(|e| e.ok())
             .filter(|e| e.path().is_dir())
@@ -609,7 +613,7 @@ fn homeostasis_check(root: &Path) {
             .collect();
         names.sort();
         for name in names {
-            let dir = root.join("worktrees").join(&name);
+            let dir = root.join("worktrees/slots").join(&name);
             let registered = slots_obj.map(|s| s.contains_key(&name)).unwrap_or(false);
             let state_ts = slots_obj
                 .and_then(|s| s.get(&name))
@@ -944,7 +948,7 @@ fn actual_checkout(path: &Path) -> Option<String> {
 fn validate_canonical_slot_paths(slot: &str, record: &Value) -> Result<(), String> {
     for product in ["hermit", "reverie", "liteinst2"] {
         let key = format!("{product}_path");
-        let expected = format!("worktrees/{slot}/{product}");
+        let expected = format!("worktrees/slots/{slot}/{product}");
         if record[key.as_str()].as_str() != Some(expected.as_str()) {
             return Err(format!(
                 "slot {slot} records noncanonical {key}; expected exact path '{expected}'"
@@ -952,6 +956,65 @@ fn validate_canonical_slot_paths(slot: &str, record: &Value) -> Result<(), Strin
         }
     }
     Ok(())
+}
+
+/// Rewrite only the exact path spelling replaced by the slots/ layout.
+/// Anything else is left untouched and refuses the whole migration.
+fn migrate_layout(root: &Path, dry_run: bool) -> ! {
+    let mut state = load_state(root);
+    let slot_names: Vec<String> = state["slots"]
+        .as_object()
+        .map(|slots| slots.keys().cloned().collect())
+        .unwrap_or_default();
+    let mut changes: Vec<(String, String, String)> = Vec::new();
+    let mut invalid: Vec<String> = Vec::new();
+    for slot in &slot_names {
+        for product in ["hermit", "reverie", "liteinst2"] {
+            let key = format!("{product}_path");
+            let legacy = format!("worktrees/{slot}/{product}");
+            let canonical = format!("worktrees/slots/{slot}/{product}");
+            match state["slots"][slot][key.as_str()].as_str() {
+                Some(value) if value == canonical => {}
+                Some(value) if value == legacy => {
+                    changes.push((slot.clone(), key, canonical));
+                }
+                other => invalid.push(format!(
+                    "{slot}/{product}: expected {legacy:?} or {canonical:?}, got {other:?}"
+                )),
+            }
+        }
+    }
+    if !invalid.is_empty() {
+        for finding in invalid {
+            eprintln!("REFUSING layout migration: {finding}");
+        }
+        die("registry contains a path that is neither the exact legacy nor canonical spelling");
+    }
+    for (slot, key, canonical) in &changes {
+        println!(
+            "  migrate {slot}/{key}: '{}' -> '{canonical}'",
+            state["slots"][slot][key.as_str()].as_str().unwrap_or("")
+        );
+    }
+    if dry_run {
+        println!(
+            "layout migration --dry-run: {} path cell(s) would change. No files written.",
+            changes.len()
+        );
+        exit(if changes.is_empty() { 0 } else { 1 });
+    }
+    for (slot, key, canonical) in &changes {
+        state["slots"][slot][key.as_str()] = json!(canonical);
+    }
+    if !changes.is_empty() {
+        save_state(root, &mut state);
+        regen_active_md(root, &state);
+    }
+    println!(
+        "layout migration: rewrote {} path cell(s); no worktree was moved.",
+        changes.len()
+    );
+    exit(0);
 }
 
 /// SINGLE-WRITER REPAIR/SYNC: reconcile the recorded {product}_branch cells in
@@ -1071,7 +1134,7 @@ fn repair_registry(
                 .as_str()
                 .unwrap_or("-")
                 .to_string();
-            let rel = PathBuf::from(format!("worktrees/{slot}/{product}"));
+            let rel = PathBuf::from(format!("worktrees/slots/{slot}/{product}"));
             match actual_checkout(&root.join(&rel)) {
                 None => {
                     skipped += 1;
@@ -1095,7 +1158,7 @@ fn repair_registry(
                                  the checkout, which is on '{actual}'. This is a branch that was \
                                  asked for but never created, so reconciling the record to the \
                                  checkout would cement '{actual}' and discard the intent. Create \
-                                 '{recorded}' in worktrees/{slot}/{product} and switch to it, or \
+                                 '{recorded}' in worktrees/slots/{slot}/{product} and switch to it, or \
                                  have the owner correct the recorded cell; repair will not choose \
                                  between them."
                             ));
@@ -2051,7 +2114,7 @@ fn next_free_slot(root: &Path, state: &Value) -> String {
     for n in 1..=999 {
         let name = format!("slot{n:02}");
         let in_state = slots.map(|s| s.contains_key(&name)).unwrap_or(false);
-        if !in_state && !root.join("worktrees").join(&name).exists() {
+        if !in_state && !root.join("worktrees/slots").join(&name).exists() {
             return name;
         }
     }
@@ -2227,6 +2290,7 @@ fn main() {
     let mut purpose = String::new();
     let mut read_mostly = false;
     let mut check_only = false;
+    let mut migrate_layout_requested = false;
     let mut repair = false;
     let mut dry_run = false;
     let mut excluded_slots = BTreeSet::new();
@@ -2260,6 +2324,7 @@ fn main() {
             "--recover-legacy-unbound-owner" => recover_legacy_unbound_owner = true,
             "--recovery-note" => recovery_note = take(&mut i, &argv, "--recovery-note"),
             "--check-only" => check_only = true,
+            "--migrate-layout" => migrate_layout_requested = true,
             "--repair" | "--sync" => repair = true,
             "--dry-run" => dry_run = true,
             "--exclude-slot" => {
@@ -2272,6 +2337,31 @@ fn main() {
             other => die(&format!("unknown argument: {other}\n\n{USAGE}")),
         }
         i += 1;
+    }
+
+    if migrate_layout_requested {
+        if repair
+            || check_only
+            || !agent.is_empty()
+            || !slot.is_empty()
+            || !task.is_empty()
+            || product != "all"
+            || hermit_branch.is_some()
+            || reverie_branch.is_some()
+            || liteinst2_branch.is_some()
+            || start_point.is_some()
+            || !purpose.is_empty()
+            || read_mostly
+            || codex_systemd_sentinel
+            || recover_legacy_unbound_owner
+            || !recovery_note.is_empty()
+            || !excluded_slots.is_empty()
+        {
+            die("--migrate-layout must be run by itself, optionally with --dry-run");
+        }
+        let root = find_root();
+        let _registry_lock = lock_registry(&root);
+        migrate_layout(&root, dry_run);
     }
 
     // Single-writer REPAIR/SYNC: reconcile recorded branch cells from physical
@@ -2593,7 +2683,7 @@ fn main() {
         }
     }
 
-    let slot_dir = root.join("worktrees").join(&slot);
+    let slot_dir = root.join("worktrees/slots").join(&slot);
 
     // An existing finalized sentinel is the authority for every later
     // allocation mutation. Verify its exact live identity and cross-slot
@@ -2619,7 +2709,7 @@ fn main() {
     }
 
     println!(
-        "Allocating worktrees/{slot} for agent '{agent}' (product={product}, start={})",
+        "Allocating worktrees/slots/{slot} for agent '{agent}' (product={product}, start={})",
         start_point.as_deref().unwrap_or("each primary HEAD")
     );
 
@@ -2709,15 +2799,15 @@ fn main() {
                 json!({
                     "agents": [],
                     "allocated": now.clone(),
-                    "hermit_path": format!("worktrees/{slot}/hermit"),
-                    "reverie_path": format!("worktrees/{slot}/reverie"),
-                    "liteinst2_path": format!("worktrees/{slot}/liteinst2"),
+                    "hermit_path": format!("worktrees/slots/{slot}/hermit"),
+                    "reverie_path": format!("worktrees/slots/{slot}/reverie"),
+                    "liteinst2_path": format!("worktrees/slots/{slot}/liteinst2"),
                 })
             });
         if !recover_legacy_unbound_owner {
-            entry["hermit_path"] = json!(format!("worktrees/{slot}/hermit"));
-            entry["reverie_path"] = json!(format!("worktrees/{slot}/reverie"));
-            entry["liteinst2_path"] = json!(format!("worktrees/{slot}/liteinst2"));
+            entry["hermit_path"] = json!(format!("worktrees/slots/{slot}/hermit"));
+            entry["reverie_path"] = json!(format!("worktrees/slots/{slot}/reverie"));
+            entry["liteinst2_path"] = json!(format!("worktrees/slots/{slot}/liteinst2"));
             entry["status"] = json!("active");
             entry["updated"] = json!(now.clone());
             if let Some(lease) = &verified_codex_lease {
@@ -2955,7 +3045,7 @@ fn main() {
     save_state(&root, &mut state);
     regen_active_md(&root, &state);
 
-    println!("\n✓ allocated worktrees/{slot} to {agent}");
+    println!("\n✓ allocated worktrees/slots/{slot} to {agent}");
     println!("  state:   {}", state_path(&root).display());
     println!("  active:  {}", root.join("worktrees/ACTIVE.md").display());
 
@@ -2964,7 +3054,7 @@ fn main() {
     if hermit_branch.is_none() && include_hermit {
         println!(
             "  note: hermit worktree is DETACHED. Create a feature branch before editing:\n\
-             \r        git -C worktrees/{slot}/hermit switch -c <branch> origin/main"
+             \r        git -C worktrees/slots/{slot}/hermit switch -c <branch> origin/main"
         );
     }
 }

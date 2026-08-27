@@ -35,6 +35,13 @@ never a claim that the current tip passed.
 
 ## Per-run output that survives the fresh checkout
 
+Disposable checkouts and private Cargo homes are created under
+`worktrees/validate/`, never under `ignored/`. A normal waiter removes them at
+completion; `ci-hub validate-run --sweep-completed` retries cleanup for
+terminal runs whose waiter was interrupted, including its recorded private
+Cargo home. Before removing a checkout, the sweep copies any untracked `*.jsonl` receipt to
+`ignored/validate/orphaned-receipts/<unit>/`.
+
 `ci-hub validate-run` prints `E2E_RESULTS` and `RUNNER_LOGS` paths for Hermit
 runs and records the same paths as `e2e_result_root` and
 `safe_ci_dag_runner_log_dir` in `ignored/validate/runs/<unit>.json`. They live

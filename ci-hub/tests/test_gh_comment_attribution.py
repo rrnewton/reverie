@@ -111,7 +111,7 @@ class FleetGhTest(unittest.TestCase):
         )
         shutil.copy2(SOURCE_DISCLOSURE, self.root / "ci-hub/lib/disclosure_tag.py")
 
-        self.slot = self.root / "worktrees/slot01"
+        self.slot = self.root / "worktrees/slots/slot01"
         self.cwd = self.slot / "hermit"
         self.cwd.mkdir(parents=True)
         (self.root / "worktree-state.lock").touch()

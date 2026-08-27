@@ -57,8 +57,8 @@ new_repo() { # dir  checked-out-branch  [extra-local-branch]
 #           branch stale-unpushed-70 that exists but is not checked out (the
 #           slot-250 shape: repurposed slot, stale recorded branch).
 # ok71:     physical == recorded (correct control; must stay untouched).
-new_repo "$root/worktrees/drift70/hermit" "physical-70" "stale-unpushed-70"
-new_repo "$root/worktrees/ok71/hermit"    "correct-71"
+new_repo "$root/worktrees/slots/drift70/hermit" "physical-70" "stale-unpushed-70"
+new_repo "$root/worktrees/slots/ok71/hermit"    "correct-71"
 
 cat >"$root/worktree-state.json" <<'JSON'
 {
@@ -66,16 +66,16 @@ cat >"$root/worktree-state.json" <<'JSON'
   "slots": {
     "drift70": {
       "agents": [{"name":"agent-70","read_only":false}],
-      "hermit_branch":"stale-unpushed-70", "hermit_path":"worktrees/drift70/hermit",
-      "reverie_branch":"-", "reverie_path":"worktrees/drift70/reverie",
-      "liteinst2_branch":"-", "liteinst2_path":"worktrees/drift70/liteinst2",
+      "hermit_branch":"stale-unpushed-70", "hermit_path":"worktrees/slots/drift70/hermit",
+      "reverie_branch":"-", "reverie_path":"worktrees/slots/drift70/reverie",
+      "liteinst2_branch":"-", "liteinst2_path":"worktrees/slots/drift70/liteinst2",
       "task":"task-70", "status":"active"
     },
     "ok71": {
       "agents": [{"name":"agent-71","read_only":false}],
-      "hermit_branch":"correct-71", "hermit_path":"worktrees/ok71/hermit",
-      "reverie_branch":"-", "reverie_path":"worktrees/ok71/reverie",
-      "liteinst2_branch":"-", "liteinst2_path":"worktrees/ok71/liteinst2",
+      "hermit_branch":"correct-71", "hermit_path":"worktrees/slots/ok71/hermit",
+      "reverie_branch":"-", "reverie_path":"worktrees/slots/ok71/reverie",
+      "liteinst2_branch":"-", "liteinst2_path":"worktrees/slots/ok71/liteinst2",
       "task":"task-71", "status":"active"
     }
   }
@@ -129,7 +129,7 @@ grep -Fq 'Human notes below must survive too.' "$root/worktrees/ACTIVE.md" \
 # --- NEGATIVE: repair must NOT be destructive. The unpushed local branch that
 #     used to be the recorded value must STILL EXIST (repair rewrote a string in
 #     the registry, it never touched a git ref).
-git -C "$root/worktrees/drift70/hermit" rev-parse --verify --quiet stale-unpushed-70 >/dev/null \
+git -C "$root/worktrees/slots/drift70/hermit" rev-parse --verify --quiet stale-unpushed-70 >/dev/null \
   || { echo "FAIL: repair DELETED the unpushed local branch stale-unpushed-70" >&2; exit 1; }
 
 # --- CONTROL: the already-correct slot's recorded value is unchanged.
@@ -144,8 +144,8 @@ grep -Fq 'repair: 0 branch cells needed reconciliation' "$root/repair2.out" \
 # FALSE-ASCENT NEGATIVE: a generated-residue directory sees the fixture
 # parent's `main`, but neither repair nor allocator adoption may treat that
 # ancestor as the requested Hermit checkout.
-mkdir -p "$root/worktrees/ascent72/hermit/target"
-printf 'generated\n' >"$root/worktrees/ascent72/hermit/target/artifact"
+mkdir -p "$root/worktrees/slots/ascent72/hermit/target"
+printf 'generated\n' >"$root/worktrees/slots/ascent72/hermit/target/artifact"
 python3 - "$root/worktree-state.json" "$root/worktrees/ACTIVE.md" <<'PY'
 import json
 import pathlib
@@ -155,9 +155,9 @@ state_path, active_path = map(pathlib.Path, sys.argv[1:])
 state = json.loads(state_path.read_text())
 state["slots"]["ascent72"] = {
     "agents": [{"name": "agent-ascent", "read_only": False}],
-    "hermit_branch": "main", "hermit_path": "worktrees/ascent72/hermit",
-    "reverie_branch": "-", "reverie_path": "worktrees/ascent72/reverie",
-    "liteinst2_branch": "-", "liteinst2_path": "worktrees/ascent72/liteinst2",
+    "hermit_branch": "main", "hermit_path": "worktrees/slots/ascent72/hermit",
+    "reverie_branch": "-", "reverie_path": "worktrees/slots/ascent72/reverie",
+    "liteinst2_branch": "-", "liteinst2_path": "worktrees/slots/ascent72/liteinst2",
     "task": "task-ascent", "status": "released",
 }
 state_path.write_text(json.dumps(state, indent=2) + "\n")
@@ -194,13 +194,13 @@ import sys
 
 path = pathlib.Path(sys.argv[1])
 state = json.loads(path.read_text())
-state["slots"]["ascent72"]["hermit_path"] = "worktrees/ascent72/./hermit"
+state["slots"]["ascent72"]["hermit_path"] = "worktrees/slots/ascent72/./hermit"
 path.write_text(json.dumps(state, indent=2) + "\n")
 PY
 alias_hash=$(sha256sum "$root/worktree-state.json")
 (cd "$root" && "$root/scripts/allocate-worktree.rs" --repair --dry-run) \
   >"$root/alias-repair.out" 2>&1
-grep -Fq "skip ascent72: slot ascent72 records noncanonical hermit_path; expected exact path 'worktrees/ascent72/hermit'; all branch cells left as-is" \
+grep -Fq "skip ascent72: slot ascent72 records noncanonical hermit_path; expected exact path 'worktrees/slots/ascent72/hermit'; all branch cells left as-is" \
   "$root/alias-repair.out" \
   || { echo 'FAIL: repair did not refuse lexical path alias' >&2; cat "$root/alias-repair.out" >&2; exit 1; }
 [[ $(sha256sum "$root/worktree-state.json") == "$alias_hash" ]] \
@@ -210,7 +210,7 @@ if (cd "$root" && "$root/scripts/allocate-worktree.rs" \
     --hermit-branch requested-ascent) >"$root/alias-adopt.out" 2>&1; then
   echo 'FAIL: allocator adopted a slot with an aliased registry path' >&2; exit 1
 fi
-grep -Fq "slot ascent72 records noncanonical hermit_path; expected exact path 'worktrees/ascent72/hermit'" \
+grep -Fq "slot ascent72 records noncanonical hermit_path; expected exact path 'worktrees/slots/ascent72/hermit'" \
   "$root/alias-adopt.out" \
   || { echo 'FAIL: allocator did not expose lexical path alias' >&2; cat "$root/alias-adopt.out" >&2; exit 1; }
 python3 - "$root/worktree-state.json" <<'PY'
@@ -220,7 +220,7 @@ import sys
 
 path = pathlib.Path(sys.argv[1])
 state = json.loads(path.read_text())
-state["slots"]["ascent72"]["hermit_path"] = "worktrees/ascent72/hermit"
+state["slots"]["ascent72"]["hermit_path"] = "worktrees/slots/ascent72/hermit"
 path.write_text(json.dumps(state, indent=2) + "\n")
 PY
 
@@ -245,8 +245,8 @@ PY
 # --- RELEASE-JOURNAL ISOLATION: a fenced checkout is intentionally absent at
 # its canonical path. Neither repair nor ordinary re-adoption may translate
 # that transient absence into branch="-" or status=active.
-fenced="$root/worktrees/ok71/.hermit.release-worktree-123-456"
-mv "$root/worktrees/ok71/hermit" "$fenced"
+fenced="$root/worktrees/slots/ok71/.hermit.release-worktree-123-456"
+mv "$root/worktrees/slots/ok71/hermit" "$fenced"
 python3 - "$root/worktree-state.json" "$fenced" <<'PY'
 import json
 import pathlib
@@ -259,7 +259,7 @@ record["status"] = "releasing"
 record["release_journal"] = {
     "schema_version": 1,
     "label": "hermit",
-    "original": str(state_path.parent / "worktrees/ok71/hermit"),
+    "original": str(state_path.parent / "worktrees/slots/ok71/hermit"),
     "fenced": sys.argv[2],
 }
 state_path.write_text(json.dumps(state, indent=2) + "\n")
@@ -283,7 +283,7 @@ grep -Fq 'REFUSING repair while slot release transaction(s) require guarded reco
 # it re-arms drift by planting a recorded branch; a name that resolves is the shape a repurposed
 # slot actually has (see stale-unpushed-70 above). A recorded name that resolves nowhere is a
 # separate case with its own fixture below, where repair must refuse rather than reconcile.
-git -C "$root/worktrees/drift70/hermit" branch stale-again
+git -C "$root/worktrees/slots/drift70/hermit" branch stale-again
 python3 - "$root/worktree-state.json" <<'PY'
 import json
 import pathlib
@@ -313,12 +313,12 @@ jq -e '.slots.drift70.hermit_branch == "physical-70"' \
 # UNPUBLISHED NEGATIVE: scope is not force. A local-only current HEAD refuses
 # before either registry file changes, even though the unrelated journal is
 # explicitly excluded.
-printf 'local-only\n' >"$root/worktrees/drift70/hermit/local-only"
-git -C "$root/worktrees/drift70/hermit" add local-only
-git -C "$root/worktrees/drift70/hermit" commit -q -m 'local only fixture'
+printf 'local-only\n' >"$root/worktrees/slots/drift70/hermit/local-only"
+git -C "$root/worktrees/slots/drift70/hermit" add local-only
+git -C "$root/worktrees/slots/drift70/hermit" commit -q -m 'local only fixture'
 # Real ref, for the same reason as the fixture above: this case is about the unpublished-HEAD
 # refusal, not about a recorded name that resolves nowhere.
-git -C "$root/worktrees/drift70/hermit" branch stale-unpublished
+git -C "$root/worktrees/slots/drift70/hermit" branch stale-unpublished
 python3 - "$root/worktree-state.json" <<'PY'
 import json
 import pathlib
@@ -342,7 +342,7 @@ grep -Fq 'commit(s) are reachable from HEAD but no remote ref' \
 
 # Publish the fixture commit, then prove the alternate named-slot scope works
 # while the unrelated ok71 journal remains armed.
-git -C "$root/worktrees/drift70/hermit" push -q origin physical-70
+git -C "$root/worktrees/slots/drift70/hermit" push -q origin physical-70
 (cd "$root" && "$root/scripts/allocate-worktree.rs" --repair --slot drift70) \
   >"$root/scoped-only.out" 2>&1 \
   || { echo 'FAIL: named-slot repair refused a published target' >&2; \
@@ -365,7 +365,7 @@ path.write_text(path.read_text().replace(
     "| drift70 | agent-70 | stale-active-only |",
 ))
 PY
-printf 'dirty\n' >"$root/worktrees/drift70/hermit/untracked-active-only"
+printf 'dirty\n' >"$root/worktrees/slots/drift70/hermit/untracked-active-only"
 active_only_state_hash=$(sha256sum "$root/worktree-state.json")
 active_only_active_hash=$(sha256sum "$root/worktrees/ACTIVE.md")
 if (cd "$root" && "$root/scripts/allocate-worktree.rs" --repair --slot drift70) \
@@ -379,7 +379,7 @@ grep -Fq 'uncommitted work is present' "$root/scoped-active-only.out" \
   || { echo 'FAIL: ACTIVE-only refusal changed registry state' >&2; exit 1; }
 [[ $(sha256sum "$root/worktrees/ACTIVE.md") == "$active_only_active_hash" ]] \
   || { echo 'FAIL: ACTIVE-only refusal changed ACTIVE' >&2; exit 1; }
-rm -f "$root/worktrees/drift70/hermit/untracked-active-only"
+rm -f "$root/worktrees/slots/drift70/hermit/untracked-active-only"
 (cd "$root" && "$root/scripts/allocate-worktree.rs" --repair --slot drift70) \
   >"$root/scoped-active-only-clean.out" 2>&1 \
   || { echo 'FAIL: clean ACTIVE-only repair was refused' >&2; \
@@ -405,7 +405,7 @@ grep -Fq 'slot ok71 has an unfinished release transaction' "$root/releasing-adop
 # the journal's mere PRESENCE made every completed revocation a permanent,
 # undischargeable veto over repair for the WHOLE registry. Bracket all three ways.
 # First retire the ok71 release journal so it is not the thing refusing below.
-mv "$fenced" "$root/worktrees/ok71/hermit"
+mv "$fenced" "$root/worktrees/slots/ok71/hermit"
 python3 - "$root/worktree-state.json" <<'RETIRE_OK71'
 import json
 import pathlib
@@ -468,7 +468,7 @@ if journal.get("phase") != "revoked":
 ASSERT_PRESERVED
 
 # NEGATIVE 2/2 -- finished, but the slot holds uncommitted work: still refused.
-echo dirty >"$root/worktrees/drift70/hermit/uncommitted-file"
+echo dirty >"$root/worktrees/slots/drift70/hermit/uncommitted-file"
 if (cd "$root" && "$root/scripts/allocate-worktree.rs" --repair) \
     >"$root/revoke-dirty.out" 2>&1; then
   echo 'FAIL: repair skipped a revoked journal whose slot has uncommitted work' >&2; exit 1
@@ -476,7 +476,7 @@ fi
 grep -Fq 'require guarded recovery: drift70' "$root/revoke-dirty.out" \
   || { echo 'FAIL: dirty-slot refusal did not name the slot' >&2; \
        cat "$root/revoke-dirty.out" >&2; exit 1; }
-rm -f "$root/worktrees/drift70/hermit/uncommitted-file"
+rm -f "$root/worktrees/slots/drift70/hermit/uncommitted-file"
 
 # ============================================================================
 # UNFULFILLED-INTENT NEGATIVE: the recorded branch does not exist in the checkout.
@@ -494,9 +494,9 @@ rm -f "$root/worktrees/drift70/hermit/uncommitted-file"
 #   (c) the mechanism STILL FIRES for a recorded branch that does resolve -- proving the refusal
 #       discriminates on ref existence rather than disabling repair.
 # ============================================================================
-git -C "$root/worktrees/drift70/hermit" checkout -q previous-task-branch 2>/dev/null \
-  || git -C "$root/worktrees/drift70/hermit" switch -q -c previous-task-branch
-git -C "$root/worktrees/drift70/hermit" push -q -u origin previous-task-branch
+git -C "$root/worktrees/slots/drift70/hermit" checkout -q previous-task-branch 2>/dev/null \
+  || git -C "$root/worktrees/slots/drift70/hermit" switch -q -c previous-task-branch
+git -C "$root/worktrees/slots/drift70/hermit" push -q -u origin previous-task-branch
 python3 - "$root/worktree-state.json" <<'PY'
 import json
 import pathlib
@@ -508,7 +508,7 @@ state = json.loads(path.read_text())
 state["slots"]["drift70"]["hermit_branch"] = "agent/new-task-never-created"
 path.write_text(json.dumps(state, indent=2) + "\n")
 PY
-git -C "$root/worktrees/drift70/hermit" rev-parse --verify --quiet \
+git -C "$root/worktrees/slots/drift70/hermit" rev-parse --verify --quiet \
   refs/heads/agent/new-task-never-created >/dev/null \
   && { echo 'FAIL: fixture is inert -- the "never created" branch exists' >&2; exit 1; }
 
@@ -545,7 +545,7 @@ grep -Fq 'DRIFT slot=drift70 hermit recorded=agent/new-task-never-created actual
 
 # (c) DELETION-MUTATION GUARD: the same slot, same drift, but now the recorded branch EXISTS.
 # Repair must FIRE. If this reconcile stops happening, the fix has become a blanket disable.
-git -C "$root/worktrees/drift70/hermit" branch agent/new-task-actually-created
+git -C "$root/worktrees/slots/drift70/hermit" branch agent/new-task-actually-created
 python3 - "$root/worktree-state.json" <<'PY'
 import json
 import pathlib
@@ -568,7 +568,7 @@ jq -e '.slots.drift70.hermit_branch == "previous-task-branch"' \
   "$root/worktree-state.json" >/dev/null \
   || { echo 'FAIL: resolvable-branch reconcile did not reach the registry' >&2; exit 1; }
 # ...and the ref it stopped recording still resolves: repair rewrote a string, not a ref.
-git -C "$root/worktrees/drift70/hermit" rev-parse --verify --quiet \
+git -C "$root/worktrees/slots/drift70/hermit" rev-parse --verify --quiet \
   refs/heads/agent/new-task-actually-created >/dev/null \
   || { echo 'FAIL: repair deleted the ref it stopped recording' >&2; exit 1; }
 

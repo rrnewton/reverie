@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import filecmp
 import fcntl
 import json
 import os
@@ -199,21 +200,11 @@ def frozen_result_path(root: Path, unit: str) -> Path:
     return root / "ignored" / "validate" / "frozen" / f"{unit}.jsonl"
 
 
-def frozen_checkout_parent(root: Path) -> Path:
-    """Return a guest-visible worktree parent outside the dev-hermit boundary.
-
-    Hermit's product front door correctly accepts only canonical current-tip
-    validation. A frozen validation is still box-admitted, but its result must
-    not enter that receipt path. Keeping its disposable checkout beside rather
-    than beneath dev-hermit makes the product use its standalone result writer;
-    ``HERMIT_VALIDATE_LEDGER`` below then points that writer at the durable,
-    explicitly non-canonical file owned by this run.
-    """
-    candidate = (root.parent / f".{root.name}-frozen-validate").resolve()
-    if candidate == root or root in candidate.parents:
-        raise ValueError("frozen validation checkout parent must be outside dev-hermit")
+def validate_checkout_parent(root: Path) -> Path:
+    """Return the one parent for disposable validation checkouts and caches."""
+    candidate = (root / "worktrees" / "validate").resolve()
     candidate.mkdir(parents=True, exist_ok=True)
-    return require_guest_visible_root(candidate, role="frozen validation checkout parent")
+    return require_guest_visible_root(candidate, role="validation checkout parent")
 
 
 def current_main_for_frozen_validate(
@@ -895,8 +886,8 @@ def prepare_fresh_checkout(
     return fresh
 
 
-def remove_fresh_checkout(source: Path, fresh: Path, *, run: Runner) -> None:
-    """Remove the temp worktree AND deregister it. Best-effort, never fatal."""
+def remove_fresh_checkout(source: Path, fresh: Path, *, run: Runner) -> bool:
+    """Remove the temp worktree AND deregister it; return observed absence."""
     # A frozen checkout is a standalone shared clone: `.git` is its own
     # directory and it has no registration in the source repository. Ordinary
     # fresh checkouts are worktrees, whose `.git` is a file naming the shared
@@ -909,13 +900,307 @@ def remove_fresh_checkout(source: Path, fresh: Path, *, run: Runner) -> None:
                 f"validate-run: could not remove isolated checkout {fresh}: {error}",
                 file=sys.stderr,
             )
-        return
+        return not fresh.exists()
+    failures: list[str] = []
+    candidates = [source]
+    if fresh != source:
+        candidates.append(fresh)
+    for repository in candidates:
+        try:
+            with git_mutation_lock(repository, run=run):
+                removal = run(
+                    [
+                        "git",
+                        "-C",
+                        str(repository),
+                        "worktree",
+                        "remove",
+                        "--force",
+                        str(fresh),
+                    ],
+                    check=False,
+                )
+                run(
+                    ["git", "-C", str(repository), "worktree", "prune"],
+                    check=False,
+                )
+        except RuntimeError as error:
+            failures.append(f"{repository}: {error}")
+            continue
+        if not fresh.exists():
+            return True
+        failures.append(
+            f"{repository}: git worktree remove exited "
+            f"{getattr(removal, 'returncode', 'unknown')}"
+        )
+    removed = not fresh.exists()
+    if not removed:
+        print(
+            f"validate-run: temp checkout still exists after cleanup attempt: {fresh}; "
+            f"attempts: {'; '.join(failures)}",
+            file=sys.stderr,
+        )
+    return removed
+
+
+def archive_orphaned_receipts(
+    root: Path,
+    fresh: Path,
+    locations: Sequence[str],
+    *,
+    unit: str,
+) -> list[str]:
+    """Copy checkout-local receipt evidence outside the disposable checkout."""
+    destination_root = root / "ignored" / "validate" / "orphaned-receipts" / unit
+    fresh_root = fresh.resolve()
+    archived: list[str] = []
+    for raw in locations:
+        relative = Path(raw)
+        if relative.is_absolute() or ".." in relative.parts:
+            raise RuntimeError(f"unsafe orphaned receipt path {raw!r}")
+        source = fresh / relative
+        if source.is_symlink() or not source.is_file():
+            raise RuntimeError(f"orphaned receipt is not a regular file: {source}")
+        try:
+            source.resolve().relative_to(fresh_root)
+        except ValueError as error:
+            raise RuntimeError(f"orphaned receipt escapes its checkout: {source}") from error
+        destination = destination_root / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            destination.parent.resolve().relative_to(destination_root.resolve())
+        except ValueError as error:
+            raise RuntimeError(f"orphaned receipt archive path escapes: {destination}") from error
+        if destination.is_symlink():
+            raise RuntimeError(f"orphaned receipt archive path is a symlink: {destination}")
+        if destination.exists():
+            if not destination.is_file() or not filecmp.cmp(
+                source, destination, shallow=False
+            ):
+                raise RuntimeError(
+                    f"orphaned receipt archive path has different content: {destination}"
+                )
+        else:
+            shutil.copy2(source, destination, follow_symlinks=False)
+        archived.append(str(destination))
+    return archived
+
+
+def path_may_have_live_process(path: Path, *, proc_root: Path = Path("/proc")) -> bool:
+    """Whether a same-uid process uses ``path`` or process state is unreadable."""
+    resolved = str(path.resolve())
+    prefix = f"{resolved}{os.sep}"
+
+    def matches(target: str) -> bool:
+        if target.endswith(" (deleted)"):
+            target = target[: -len(" (deleted)")]
+        return target == resolved or target.startswith(prefix)
+
     try:
-        with git_mutation_lock(source, run=run):
-            run(["git", "-C", str(source), "worktree", "remove", "--force", str(fresh)], check=False)
-            run(["git", "-C", str(source), "worktree", "prune"], check=False)
-    except RuntimeError as error:
-        print(f"validate-run: could not lock shared Git metadata for cleanup: {error}", file=sys.stderr)
+        entries = os.listdir(proc_root)
+    except OSError:
+        return True
+    uid = os.getuid()
+    for entry in entries:
+        if not entry.isdigit():
+            continue
+        proc = proc_root / entry
+        try:
+            if proc.stat().st_uid != uid:
+                continue
+        except OSError:
+            continue
+        readable = False
+        for name in ("cwd", "exe", "root"):
+            try:
+                target = os.readlink(proc / name)
+            except OSError:
+                continue
+            readable = True
+            if matches(target):
+                return True
+        for name in ("fd", "map_files"):
+            try:
+                links = os.listdir(proc / name)
+            except OSError:
+                continue
+            readable = True
+            for link in links:
+                try:
+                    target = os.readlink(proc / name / link)
+                except OSError:
+                    continue
+                if matches(target):
+                    return True
+        try:
+            with (proc / "maps").open(encoding="utf-8", errors="replace") as handle:
+                for line in handle:
+                    fields = line.rstrip("\n").split(maxsplit=5)
+                    if len(fields) == 6 and matches(fields[5]):
+                        return True
+        except OSError:
+            pass
+        if not readable:
+            try:
+                state = (proc / "stat").read_text().rsplit(")", 1)[1].split()[0]
+            except (OSError, IndexError):
+                continue
+            if state != "Z":
+                return True
+    return False
+
+
+def cleanup_recorded_checkout(
+    root: Path,
+    record: Mapping[str, Any],
+    *,
+    unit: str,
+    run: Runner,
+    check_processes: bool = True,
+) -> tuple[bool, list[str], str | None]:
+    """Archive local receipt evidence and remove one terminal temp checkout."""
+    raw_checkout = record.get("checkout")
+    if not isinstance(raw_checkout, str):
+        return False, [], "run record has no checkout path"
+    checkout = Path(raw_checkout).resolve()
+    parent = validate_checkout_parent(root)
+    temporary = record.get("temporary_checkout")
+    if temporary is False:
+        return False, [], None
+    if checkout.parent != parent or not checkout.name.startswith("validate-fresh-"):
+        if temporary is True:
+            return False, [], "temporary checkout is outside worktrees/validate"
+        return False, [], None
+    if not checkout.exists():
+        return False, [], None
+    if check_processes and path_may_have_live_process(checkout):
+        return False, [], "a live process may still use the checkout"
+    locations = orphaned_receipt_locations(checkout, run=run)
+    archived = archive_orphaned_receipts(root, checkout, locations, unit=unit)
+    raw_source = record.get("source_checkout")
+    if isinstance(raw_source, str):
+        source = Path(raw_source)
+    else:
+        repo = canonical_repo(str(record.get("repo", "rrnewton/hermit")))
+        source = root / repo.rsplit("/", 1)[-1]
+    removed = remove_fresh_checkout(source, checkout, run=run)
+    return (
+        removed,
+        archived,
+        None if removed else "checkout still exists after the removal attempt",
+    )
+
+
+def cleanup_recorded_cargo_home(
+    root: Path,
+    record: Mapping[str, Any],
+    *,
+    run: Runner,
+    check_processes: bool = True,
+) -> tuple[bool, str | None]:
+    """Remove one recorded per-run Cargo home after its unit is terminal."""
+    raw_private = record.get("cargo_home")
+    if not isinstance(raw_private, str):
+        return False, None
+    private = Path(raw_private).resolve()
+    parent = validate_checkout_parent(root)
+    if private.parent != parent or not private.name.startswith("validate-cargo-"):
+        return False, "recorded Cargo home is outside worktrees/validate"
+    if not private.exists():
+        return False, None
+    if check_processes and path_may_have_live_process(private):
+        return False, "a live process may still use the Cargo home"
+    remove_private_cargo_home(private, run=run)
+    return (
+        not private.exists(),
+        None if not private.exists() else "Cargo home still exists after the removal attempt",
+    )
+
+
+def sweep_completed_checkouts(root: Path, *, run: Runner) -> dict[str, Any]:
+    """Remove terminal validation checkouts left by interrupted waiters."""
+    runs = root / "ignored" / "validate" / "runs"
+    removed: list[str] = []
+    removed_cargo_homes: list[str] = []
+    retained: list[dict[str, str]] = []
+    if not runs.is_dir():
+        return {
+            "removed": removed,
+            "removed_cargo_homes": removed_cargo_homes,
+            "retained": retained,
+        }
+    for path in sorted(runs.glob("*.json")):
+        try:
+            record = run_registry.read_record(path)
+            unit = sanitize_unit(str(record.get("unit", path.stem)))
+            properties = service_properties(unit, run=run)
+        except (OSError, RuntimeError, ValueError) as error:
+            retained.append({"checkout": str(path), "reason": str(error)})
+            continue
+        if properties is None:
+            if not service_result.is_evidenced_terminal(record):
+                retained.append(
+                    {
+                        "checkout": str(record.get("checkout", "")),
+                        "reason": "unit state unavailable and run record is not terminal",
+                    }
+                )
+                continue
+        elif properties.get("ActiveState") not in TERMINAL_STATES:
+            retained.append(
+                {"checkout": str(record.get("checkout", "")), "reason": "unit-running"}
+            )
+            continue
+        fields: dict[str, Any] = {}
+        try:
+            cleaned, archived, reason = cleanup_recorded_checkout(
+                root,
+                record,
+                unit=unit,
+                run=run,
+                check_processes=True,
+            )
+        except (OSError, RuntimeError, ValueError) as error:
+            retained.append(
+                {"checkout": str(record.get("checkout", "")), "reason": str(error)}
+            )
+        else:
+            if cleaned:
+                removed.append(str(record.get("checkout")))
+                fields.update(
+                    checkout_removed_at=datetime.now(timezone.utc).isoformat(),
+                    archived_orphaned_receipts=archived,
+                )
+            if reason is not None:
+                retained.append(
+                    {"checkout": str(record.get("checkout", "")), "reason": reason}
+                )
+        try:
+            cargo_cleaned, cargo_reason = cleanup_recorded_cargo_home(
+                root,
+                record,
+                run=run,
+                check_processes=True,
+            )
+        except (OSError, RuntimeError, ValueError) as error:
+            retained.append(
+                {"checkout": str(record.get("cargo_home", "")), "reason": str(error)}
+            )
+        else:
+            if cargo_cleaned:
+                removed_cargo_homes.append(str(record.get("cargo_home")))
+                fields["cargo_home_removed_at"] = datetime.now(timezone.utc).isoformat()
+            if cargo_reason is not None:
+                retained.append(
+                    {"checkout": str(record.get("cargo_home", "")), "reason": cargo_reason}
+                )
+        if fields:
+            bookkeep_record(path, **fields)
+    return {
+        "removed": removed,
+        "removed_cargo_homes": removed_cargo_homes,
+        "retained": retained,
+    }
 
 
 # Seeded from the shared cache rather than started empty, and seeded with these
@@ -1806,6 +2091,59 @@ def bookkeep_record(record_path, /, **fields):
         return dict(fields)
 
 
+def cleanup_after_attach(
+    root: Path,
+    record_path: Path,
+    record: Mapping[str, Any],
+    *,
+    unit: str,
+    run: Runner,
+) -> None:
+    """Finish cleanup owned by a caller that previously stopped waiting."""
+    try:
+        cleaned, archived, reason = cleanup_recorded_checkout(
+            root, record, unit=unit, run=run, check_processes=True
+        )
+    except (OSError, RuntimeError, ValueError) as error:
+        print(
+            "validate-run: completed checkout RETAINED: cleanup could not "
+            f"preserve its evidence: {error}",
+            file=sys.stderr,
+        )
+    else:
+        if cleaned:
+            bookkeep_record(
+                record_path,
+                checkout_removed_at=datetime.now(timezone.utc).isoformat(),
+                archived_orphaned_receipts=archived,
+            )
+        elif reason is not None:
+            print(
+                f"validate-run: completed checkout RETAINED: {reason}",
+                file=sys.stderr,
+            )
+    try:
+        cargo_cleaned, cargo_reason = cleanup_recorded_cargo_home(
+            root, record, run=run, check_processes=True
+        )
+    except (OSError, RuntimeError, ValueError) as error:
+        print(
+            f"validate-run: completed Cargo home RETAINED: {error}",
+            file=sys.stderr,
+        )
+    else:
+        if cargo_cleaned:
+            bookkeep_record(
+                record_path,
+                cargo_home_removed_at=datetime.now(timezone.utc).isoformat(),
+            )
+        elif cargo_reason is not None:
+            print(
+                f"validate-run: completed Cargo home RETAINED: {cargo_reason}",
+                file=sys.stderr,
+            )
+
+
 def attach(
     raw_unit: str,
     *,
@@ -1851,6 +2189,7 @@ def attach(
                 repo=repo,
             )
         except (KeyError, RuntimeError, ValueError) as error:
+            cleanup_after_attach(root, record_path, record, unit=unit, run=run)
             return could_not_determine(
                 f"FROZEN-VALIDATE-RESULT-UNAVAILABLE: {error}",
                 f"the unit ran; inspect {record.get('result_record', '<result-record>')} "
@@ -1872,6 +2211,7 @@ def attach(
             {**updated, "event": "finished", "unit": f"{unit}.service"},
             json_output=json_output,
         )
+        cleanup_after_attach(root, record_path, record, unit=unit, run=run)
         return measured_exit
     try:
         target = str(record["target"])
@@ -1882,6 +2222,7 @@ def attach(
             root, target, checkout, run_started_at, repo=repo, run=run
         )
     except (KeyError, RuntimeError, ValueError) as error:
+        cleanup_after_attach(root, record_path, record, unit=unit, run=run)
         return could_not_determine(
             f"CANONICAL-VERDICT-UNAVAILABLE: {error}",
             "the unit ran; re-read with `ci-hub validate-status --sha "
@@ -1913,6 +2254,7 @@ def attach(
         {**updated, "event": "finished", "unit": f"{unit}.service"},
         json_output=json_output,
     )
+    cleanup_after_attach(root, record_path, record, unit=unit, run=run)
     return canonical_exit
 
 
@@ -2000,6 +2342,14 @@ def parser() -> argparse.ArgumentParser:
         metavar="VALIDATE-UNIT",
         help="reattach to a durable validate-* handle without launching another run",
     )
+    result.add_argument(
+        "--sweep-completed",
+        action="store_true",
+        help=(
+            "archive checkout-local receipt evidence and remove completed "
+            "worktrees/validate/ checkouts left by interrupted waiters"
+        ),
+    )
     result.add_argument("--unit", help="validate-* unit name; .service suffix is optional")
     result.add_argument("--log", type=Path, help="durable log (default: ignored/validate/<unit>.log)")
     result.add_argument("--wait", type=int, default=7200, help="validate-lock queue wait bound")
@@ -2074,6 +2424,35 @@ def main(
             "caller poll seconds must be positive",
             "pass --caller-poll-seconds with a value greater than 0, or omit it for the default",
         )
+    if args.sweep_completed:
+        if any(
+            (
+                args.attach,
+                args.checkout,
+                args.agent,
+                args.target,
+                args.pr,
+                args.unit,
+                args.log,
+                args.ci_dag_jobs,
+                args.frozen_validate,
+                args.in_place,
+                args.make_validate,
+                args.allow_owner_validate_symlink,
+                args.dry_run,
+                args.validate_args,
+            )
+        ):
+            return refuse(
+                "--sweep-completed cannot be combined with launch or attach arguments",
+                "run `ci-hub validate-run --sweep-completed` by itself",
+            )
+        report = sweep_completed_checkouts(root.resolve(), run=run)
+        emit_report(
+            {"schema_version": 1, "event": "sweep-completed", **report},
+            json_output=args.json,
+        )
+        return 0 if not report["retained"] else EXIT_COULD_NOT_DETERMINE
     if args.attach:
         if any(
             (
@@ -2232,11 +2611,7 @@ def main(
                 source_checkout,
                 args.target,
                 run=run,
-                parent=(
-                    frozen_checkout_parent(root.resolve())
-                    if args.frozen_validate
-                    else (root / "ignored").resolve()
-                ),
+                parent=validate_checkout_parent(root.resolve()),
                 repo=repo,
                 independent_refs=args.frozen_validate,
             )
@@ -2244,7 +2619,7 @@ def main(
         preflight(root, checkout, args.target, repo=repo, run=run)
         runtime_root = prepare_runtime_root(environment or os.environ)
         private_cargo_home = prepare_private_cargo_home(
-            (root / "ignored").resolve(),
+            validate_checkout_parent(root.resolve()),
             run=run,
             shared=Path((environment or os.environ).get("HOME", "")) / ".cargo",
         )
@@ -2312,6 +2687,9 @@ def main(
                     "target": args.target,
                     "repo": repo,
                     "checkout": str(checkout),
+                    "source_checkout": str(source_checkout),
+                    "temporary_checkout": fresh_checkout is not None,
+                    "cargo_home": str(private_cargo_home),
                     "log": str(log),
                     "agent": args.agent,
                     "pr": args.pr,
@@ -2499,12 +2877,8 @@ def main(
                 remove_private_cargo_home(private_cargo_home, run=run)
                 remove_runtime_root(runtime_root, run=run)
                 return inner_exit
-            if fresh_checkout is not None:
-                print(
-                    f"validate-run: fresh checkout RETAINED at {fresh_checkout} "
-                    "because the frozen-validation result is unreadable",
-                    file=sys.stderr,
-                )
+            if fresh_checkout is not None and source_checkout is not None:
+                remove_fresh_checkout(source_checkout, fresh_checkout, run=run)
             remove_private_cargo_home(private_cargo_home, run=run)
             remove_runtime_root(runtime_root, run=run)
             return could_not_determine(
@@ -2581,15 +2955,34 @@ def main(
                 # Could not look. A NO-RESULT must never authorize deletion.
                 orphans = [f"<scan failed: {scan_error}>"]
             if orphans:
-                # The run HAPPENED and produced evidence; it landed somewhere no
-                # reader looks. That is unreadable, not unstarted and not failed.
+                # The run HAPPENED and produced evidence; preserve it in the
+                # durable validation evidence tree before reclaiming the temp
+                # checkout. Keeping a whole checkout for one receipt caused the
+                # unbounded disk growth this path now prevents.
+                try:
+                    archived = archive_orphaned_receipts(
+                        root.resolve(), fresh_checkout, orphans, unit=unit
+                    )
+                except (OSError, RuntimeError) as archive_error:
+                    remove_private_cargo_home(private_cargo_home, run=run)
+                    remove_runtime_root(runtime_root, run=run)
+                    return could_not_determine(
+                        "ORPHANED-RECEIPT: the run wrote checkout-local evidence, "
+                        f"but it could not be archived: {archive_error}. Temp checkout "
+                        f"RETAINED at {fresh_checkout}.",
+                        "preserve the files manually before reclaiming the checkout",
+                    )
+                removed = remove_fresh_checkout(source_checkout, fresh_checkout, run=run)
+                disposition = "removed" if removed else f"RETAINED at {fresh_checkout}"
+                remove_private_cargo_home(private_cargo_home, run=run)
+                remove_runtime_root(runtime_root, run=run)
                 return could_not_determine(
                     "ORPHANED-RECEIPT: this run wrote a receipt into "
                     f"{', '.join(orphans)} inside the temp checkout, where no "
-                    f"consumer reads it. Temp checkout RETAINED at {fresh_checkout} "
-                    "-- it is the only trace that this happened.",
-                    f"recover the receipt from {fresh_checkout} before anything reclaims "
-                    "it; the run's result exists but no consumer can see it",
+                    "consumer reads it. The receipt was archived outside the temp "
+                    f"checkout at {', '.join(archived)}, then the checkout was {disposition}.",
+                    "inspect the archived receipt; the run's result exists but is not "
+                    "a canonical verdict",
                 )
             print(
                 "validate-run: NO-RECEIPT-PRODUCED: the run stopped before writing a "

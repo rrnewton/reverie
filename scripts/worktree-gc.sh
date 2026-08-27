@@ -100,9 +100,9 @@ find_root() {
     echo "worktree-gc.sh: could not locate dev-hermit root" >&2; exit 1
 }
 ROOT=$(find_root)
-WT="$ROOT/worktrees"
+WT="$ROOT/worktrees/slots"
 STATE="$ROOT/worktree-state.json"
-[[ -d $WT ]] || { echo "no worktrees/ dir at $WT"; exit 0; }
+[[ -d $WT ]] || { echo "no worktrees/slots/ dir at $WT"; exit 0; }
 
 # Fill DERIVED defaults now that ROOT is known. Single-source the cap from the
 # allocator's constant so the two tools can never drift (see DERIVATION above).

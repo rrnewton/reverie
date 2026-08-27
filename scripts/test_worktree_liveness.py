@@ -25,10 +25,10 @@ NOW = datetime(2026, 8, 7, 12, 0, 0, tzinfo=timezone.utc)
 
 
 def build_root(tmp: Path, slots: dict) -> Path:
-    (tmp / "worktrees").mkdir(parents=True, exist_ok=True)
+    (tmp / "worktrees" / "slots").mkdir(parents=True, exist_ok=True)
     for name, rec in slots.items():
         if rec.pop("_mkdir", True):
-            (tmp / "worktrees" / name).mkdir(exist_ok=True)
+            (tmp / "worktrees" / "slots" / name).mkdir(exist_ok=True)
     (tmp / wl.STATE_FILE).write_text(
         json.dumps({"slots": slots, "version": 1}, indent=2), encoding="utf-8")
     return tmp
@@ -136,7 +136,7 @@ def test_stale_heartbeat_alone_does_not_rescue_a_slot(tmp_path):
 
 def test_bare_git_worktree_add_is_DETECTED(tmp_path):
     root = build_root(tmp_path, {"known": {"status": "active"}})
-    (root / "worktrees" / "snuck-in").mkdir()
+    (root / "worktrees" / "slots" / "snuck-in").mkdir()
     state = json.loads((root / wl.STATE_FILE).read_text())
     got = {v.slot: v for v in
            wl.classify(root, state, {}, {"snuck-in"}, NOW, 6.0)}
@@ -147,7 +147,7 @@ def test_bare_git_worktree_add_is_DETECTED(tmp_path):
 def test_porcelain_is_read_from_the_PRODUCT_repos_not_the_parent(tmp_path):
     """Regression: querying the parent repo made every slot look absent.
 
-    `worktrees/<slot>/hermit` is a worktree of the HERMIT repo; the parent knows
+    `worktrees/slots/<slot>/hermit` is a worktree of the HERMIT repo; the parent knows
     nothing about it. An earlier version asked the parent and reported 104/104
     active slots as missing from porcelain -- pure artifact of the wrong authority.
     Here the parent is deliberately given a worktree that must NOT be counted,
@@ -155,10 +155,10 @@ def test_porcelain_is_read_from_the_PRODUCT_repos_not_the_parent(tmp_path):
     """
     root = tmp_path
     (root / wl.STATE_FILE).write_text('{"slots": {}}', encoding="utf-8")
-    (root / "worktrees" / "realslot" / "hermit").mkdir(parents=True)
+    (root / "worktrees" / "slots" / "realslot" / "hermit").mkdir(parents=True)
     for repo, entries in (
-        (root, [root / "worktrees" / "decoy"]),                     # parent: ignore
-        (root / "hermit", [root / "worktrees" / "realslot" / "hermit"]),
+        (root, [root / "worktrees" / "slots" / "decoy"]),                     # parent: ignore
+        (root / "hermit", [root / "worktrees" / "slots" / "realslot" / "hermit"]),
     ):
         repo.mkdir(parents=True, exist_ok=True)
         (repo / ".git").write_text("gitdir: x\n", encoding="utf-8")
@@ -170,7 +170,7 @@ def test_porcelain_is_read_from_the_PRODUCT_repos_not_the_parent(tmp_path):
         target = cmd[2]
         body = ""
         if target.endswith("hermit"):
-            body = f"worktree {root}/worktrees/realslot/hermit\n"
+            body = f"worktree {root}/worktrees/slots/realslot/hermit\n"
         return subprocess.CompletedProcess(cmd, 0, body, "")
 
     orig = wl.subprocess.run

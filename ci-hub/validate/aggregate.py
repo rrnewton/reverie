@@ -123,7 +123,10 @@ def walk_pruned(root: str, want, max_depth: int = 6):
 def slot_from_cwd(cwd: str | None) -> str:
     if not cwd:
         return "unknown"
-    m = re.search(r"/worktrees/([^/]+)/", cwd + "/")
+    # Current slots live below worktrees/slots/. Keep reading historical rows
+    # from the former worktrees/<slot>/ layout: the ledger is append-only and a
+    # directory move must not erase its slot attribution.
+    m = re.search(r"/worktrees/(?:slots/)?([^/]+)/", cwd + "/")
     if m:
         return m.group(1)
     if cwd.startswith("/tmp") or "/tmp/" in cwd:

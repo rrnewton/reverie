@@ -51,8 +51,8 @@ cwd=$(norm "$cwd"); root=$(norm "$root")
 
 # --- where is this agent standing? ------------------------------------------
 in_slot=""
-if [[ $cwd == "$root/worktrees/"* ]]; then
-  rest=${cwd#"$root/worktrees/"}
+if [[ $cwd == "$root/worktrees/slots/"* ]]; then
+  rest=${cwd#"$root/worktrees/slots/"}
   in_slot=${rest%%/*}
 fi
 
@@ -80,19 +80,19 @@ allocate="./scripts/allocate-worktree.rs --agent $agent --task <task-id> --produ
 # --- verdicts ----------------------------------------------------------------
 if [[ -n $in_slot ]]; then
   if [[ -z $assigned ]]; then
-    say "REFUSE: agent '$agent' is working in worktrees/$in_slot but the registry assigns it NO slot."
+    say "REFUSE: agent '$agent' is working in worktrees/slots/$in_slot but the registry assigns it NO slot."
     say "  Working in an unassigned slot is Invariant 2 territory -- another agent may own it."
     say "  Allocate your own:"
     say "    $allocate"
     exit 1
   fi
   if [[ $in_slot != "$assigned" ]]; then
-    say "REFUSE: agent '$agent' is in worktrees/$in_slot but the registry assigns it worktrees/$assigned."
+    say "REFUSE: agent '$agent' is in worktrees/slots/$in_slot but the registry assigns it worktrees/slots/$assigned."
     say "  Do not borrow another agent's slot. Move to your own:"
-    say "    cd $root/worktrees/$assigned"
+    say "    cd $root/worktrees/slots/$assigned"
     exit 1
   fi
-  say "OK: agent '$agent' is in its registered slot worktrees/$assigned."
+  say "OK: agent '$agent' is in its registered slot worktrees/slots/$assigned."
   exit 0
 fi
 
@@ -107,7 +107,7 @@ if [[ $cwd == "$root" || $cwd == "$root/"* ]]; then
   # The headline must not assert something the body then contradicts: an agent
   # that HAS a slot but is standing in the parent is misplaced, not unassigned.
   if [[ -n $assigned ]]; then
-    say "REFUSE: agent '$agent' is standing in the SHARED PARENT ($root) instead of its assigned slot worktrees/$assigned."
+    say "REFUSE: agent '$agent' is standing in the SHARED PARENT ($root) instead of its assigned slot worktrees/slots/$assigned."
   else
     say "REFUSE: agent '$agent' has NO assigned worktree slot and is standing in the SHARED PARENT ($root)."
   fi
@@ -115,11 +115,11 @@ if [[ $cwd == "$root" || $cwd == "$root/"* ]]; then
   say "  on 2026-08-07 it caused two transient deletions, a near-destroyed 329-line file, and index contention."
   if [[ -n $assigned ]]; then
     say "  The registry DOES assign you a slot -- go there:"
-    say "    cd $root/worktrees/$assigned"
+    say "    cd $root/worktrees/slots/$assigned"
   else
     say "  Allocate your own slot, then work only inside it:"
     say "    $allocate"
-    say "    cd $root/worktrees/$agent   # or the --slot you chose"
+    say "    cd $root/worktrees/slots/$agent   # or the --slot you chose"
   fi
   say "  If this really is an owner direct ask, declare it: HERMIT_OWNER_DIRECT_ASK=1"
   exit 1

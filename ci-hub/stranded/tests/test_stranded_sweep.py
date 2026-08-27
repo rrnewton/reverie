@@ -171,6 +171,22 @@ class WorktreeScanTest(unittest.TestCase):
     def tearDown(self) -> None:
         self.tmp.cleanup()
 
+    def test_checkout_discovery_reads_slots_and_remaining_legacy_paths(self) -> None:
+        current = self.root / "worktrees/slots/slot01/hermit"
+        legacy = self.root / "worktrees/old-slot/hermit"
+        direct_legacy = self.root / "worktrees/standalone-review"
+        validate = self.root / "worktrees/validate/validate-fresh-test"
+        for checkout in (current, legacy, direct_legacy, validate):
+            make_repo(checkout)
+
+        found = S.find_checkouts(self.root)
+
+        self.assertIn(self.root, found)
+        self.assertIn(current, found)
+        self.assertIn(legacy, found)
+        self.assertIn(direct_legacy, found)
+        self.assertNotIn(validate, found)
+
     def test_no_remote_refs_is_not_T2(self) -> None:
         """A remoteless checkout must NOT report its whole history as stranded.
 

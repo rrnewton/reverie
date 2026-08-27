@@ -7,16 +7,16 @@ set -euo pipefail
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 readonly ROOT_DIR
 
-# Canonical nested layout v3 (one slot per agent):
-#   worktrees/<slot>/hermit   -> Hermit worktree  (from the hermit/ primary)
-#   worktrees/<slot>/reverie  -> Reverie worktree (from the reverie/ primary)
-#   worktrees/<slot>/liteinst2 -> LiteInst2 worktree (from the liteinst2/ primary)
+# Canonical nested layout (one slot per agent):
+#   worktrees/slots/<slot>/hermit   -> Hermit worktree  (from the hermit/ primary)
+#   worktrees/slots/<slot>/reverie  -> Reverie worktree (from the reverie/ primary)
+#   worktrees/slots/<slot>/liteinst2 -> LiteInst2 worktree (from the liteinst2/ primary)
 #
 # PREFER scripts/allocate-worktree.rs: it is registry-aware (updates
 # worktree-state.json + worktrees/ACTIVE.md, enforces one-owner-per-slot and
 # one-slot-per-agent). This shell helper only creates detached worktrees and
 # does NOT touch the registry; use it for quick manual scaffolding.
-readonly WORKTREES="$ROOT_DIR/worktrees"
+readonly WORKTREES="$ROOT_DIR/worktrees/slots"
 
 function usage {
     cat <<'EOF'
@@ -24,9 +24,9 @@ Usage: ./scripts/slot-init.sh SLOT [PRODUCT] [START_POINT]
 
 Create one or more nested product worktrees for a slot:
 
-  worktrees/<slot>/hermit   Hermit worktree  (from the hermit/ primary)
-  worktrees/<slot>/reverie  Reverie worktree (from the reverie/ primary)
-  worktrees/<slot>/liteinst2 LiteInst2 worktree (from the liteinst2/ primary)
+  worktrees/slots/<slot>/hermit   Hermit worktree  (from the hermit/ primary)
+  worktrees/slots/<slot>/reverie  Reverie worktree (from the reverie/ primary)
+  worktrees/slots/<slot>/liteinst2 LiteInst2 worktree (from the liteinst2/ primary)
 
   SLOT         Named token ([a-z][a-z0-9-]*, e.g. kvm) or slotNN (e.g. slot01).
   PRODUCT      hermit | reverie | liteinst2 | both | all
@@ -72,7 +72,7 @@ esac
 readonly START_POINT_OVERRIDE=${3:-}
 
 # add_worktree PRIMARY_DIR PRODUCT_SUBDIR
-#   Create worktrees/<slot>/<product> as a detached worktree of the primary repo.
+#   Create worktrees/slots/<slot>/<product> as a detached worktree of the primary repo.
 function add_worktree {
     local primary_dir=$1
     local product_subdir=$2

@@ -32,7 +32,7 @@ GIB = sdr.GIB
 
 def make_root(tmp: Path, slots: list[str]) -> Path:
     for slot in slots:
-        (tmp / "worktrees" / slot).mkdir(parents=True)
+        (tmp / "worktrees" / "slots" / slot).mkdir(parents=True)
     return tmp
 
 
@@ -72,7 +72,7 @@ class DiskResidueBracketTest(unittest.TestCase):
         """
         with tempfile.TemporaryDirectory() as raw:
             root = make_root(Path(raw), ["busy"])
-            slot_dir = root / "worktrees" / "busy"
+            slot_dir = root / "worktrees" / "slots" / "busy"
             # Our own child, in its own process group, killed by exact PID below.
             child = subprocess.Popen(
                 [sys.executable, "-c", "import sys; sys.stdin.read()"],
@@ -185,8 +185,8 @@ class DiskResidueBracketTest(unittest.TestCase):
         idle -- the exact false-idle this tool exists to avoid.
         """
         occ = sdr.Occupancy()
-        cwd = "/r/worktrees/busy/hermit (deleted)"
-        prefix = "/r/worktrees/"
+        cwd = "/r/worktrees/slots/busy/hermit (deleted)"
+        prefix = "/r/worktrees/slots/"
         self.assertTrue(cwd.endswith(" (deleted)"))
         stripped = cwd[: -len(" (deleted)")]
         self.assertTrue(stripped.startswith(prefix))
@@ -233,7 +233,7 @@ class DeltaPagingTest(unittest.TestCase):
                 **state_with("old", NOW - timedelta(hours=72), int(8 * GIB)),
                 "reported": ["old"],
             }))
-            (root / "worktrees" / "fresh").mkdir()
+            (root / "worktrees" / "slots" / "fresh").mkdir()
             rc, out = self._run(root, state, [])
             self.assertEqual(rc, 1, out)
             self.assertIn("state=reclaimable", out)
@@ -561,11 +561,11 @@ class OccupancyAgreesWithTheReleaseAuthorityTest(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
-        (self.root / "worktrees" / "held").mkdir(parents=True)
+        (self.root / "worktrees" / "slots" / "held").mkdir(parents=True)
 
     def test_open_fd_with_cwd_elsewhere_reads_OCCUPIED(self) -> None:
         """THE case that diverged. cwd is outside the slot; only an fd is inside."""
-        target = self.root / "worktrees" / "held" / "artifact.bin"
+        target = self.root / "worktrees" / "slots" / "held" / "artifact.bin"
         target.write_bytes(b"x")
         # cwd deliberately OUTSIDE the slot, so a cwd-only predicate sees nothing.
         child = subprocess.Popen(
@@ -585,19 +585,19 @@ class OccupancyAgreesWithTheReleaseAuthorityTest(unittest.TestCase):
 
     def test_a_slot_nothing_touches_reads_FREE(self) -> None:
         """The predicate must not have become vacuously strict."""
-        (self.root / "worktrees" / "untouched").mkdir()
+        (self.root / "worktrees" / "slots" / "untouched").mkdir()
         occ = sdr.occupancy(self.root)
         self.assertEqual(occ.counts.get("untouched", 0), 0)
 
     def test_one_process_two_signals_counts_once(self) -> None:
         """cwd AND an fd in the same slot is one occupant, not two."""
-        target = self.root / "worktrees" / "held" / "artifact.bin"
+        target = self.root / "worktrees" / "slots" / "held" / "artifact.bin"
         target.write_bytes(b"x")
         child = subprocess.Popen(
             [sys.executable, "-c",
              "import sys; f=open(sys.argv[1]); sys.stdout.write('r'); "
              "sys.stdout.flush(); sys.stdin.read()", str(target)],
-            cwd=str(self.root / "worktrees" / "held"),
+            cwd=str(self.root / "worktrees" / "slots" / "held"),
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
         try:
             child.stdout.read(1)

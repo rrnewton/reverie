@@ -11,7 +11,7 @@ root="$(mktemp -d "${TMPDIR:-/tmp}/allocate-codex-sidecar.XXXXXX")"
 trap 'rm -rf "$root"' EXIT
 
 mkdir -p "$root/scripts" "$root/hermit" "$root/reverie" "$root/liteinst2" \
-  "$root/worktrees/codex-fixture" "$root/ignored/ci-hub"
+  "$root/worktrees/slots/codex-fixture" "$root/ignored/ci-hub"
 touch "$root/.gitmodules"
 cp "${ALLOC_SRC:-$script_dir/allocate-worktree.rs}" "$root/scripts/allocate-worktree.rs"
 chmod +x "$root/scripts/allocate-worktree.rs"
@@ -44,11 +44,11 @@ for product in hermit reverie liteinst2; do
   git -C "$root/$product" commit -q -m seed
 done
 git -C "$root/hermit" worktree add -q --detach \
-  "$root/worktrees/codex-fixture/hermit" HEAD
+  "$root/worktrees/slots/codex-fixture/hermit" HEAD
 
 fixture_pid=$$
 fixture_start_ticks="$(awk '{print $22}' "/proc/$fixture_pid/stat")"
-python3 - "$root/worktree-state.json" "$root/worktrees/codex-fixture" \
+python3 - "$root/worktree-state.json" "$root/worktrees/slots/codex-fixture" \
   "$fixture_pid" "$fixture_start_ticks" <<'PY'
 import json
 import sys
@@ -76,9 +76,9 @@ state = {
                 "task": "codex-sidecar-regression",
                 "read_only": False,
             }],
-            "hermit_path": "worktrees/codex-fixture/hermit",
-            "reverie_path": "worktrees/codex-fixture/reverie",
-            "liteinst2_path": "worktrees/codex-fixture/liteinst2",
+            "hermit_path": "worktrees/slots/codex-fixture/hermit",
+            "reverie_path": "worktrees/slots/codex-fixture/reverie",
+            "liteinst2_path": "worktrees/slots/codex-fixture/liteinst2",
             "hermit_branch": "detached",
             "reverie_branch": "-",
             "liteinst2_branch": "-",

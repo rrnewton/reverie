@@ -143,7 +143,7 @@ run_one(){
     say "pr#$pr waiting for a box (${waited}0s elapsed)..."
     sleep 10
   done
-  local wt="$ROOT/worktrees/$slot/hermit"
+  local wt="$ROOT/worktrees/slots/$slot/hermit"
   say "pr#$pr -> slot $slot ($wt): checkout + full validate"
   # Per-PR validate: checkout PR head into the slot, run the full validate (which
   # auto-reports into the hub ledger consumed by validate-status). Overridable.

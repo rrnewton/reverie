@@ -83,6 +83,16 @@ third claim store.
 
 **Every task starts with an explicit write destination.** The dispatch names the repository, checkout or clone, directory tree, branch, and whether the agent may write. “No slot” is not permission to write somewhere else.
 
+Live agent slots are rooted at `worktrees/slots/<slot>/`. Disposable validation
+checkouts are rooted separately at `worktrees/validate/`; their logs, run
+records, and recovered receipt evidence stay under `ignored/validate/` so the
+checkout can be removed promptly after completion.
+
+Never move, remove, or reclaim a slot merely because it has no handoff. First
+inspect the running system and prove that no live agent process uses the slot;
+moving a live slot invalidates the session's hook paths while the agent is still
+running. If liveness cannot be established, leave the slot in place.
+
 ## ⚠️ Never commit to `dev-hermit` from the shared parent checkout
 
 `/home/newton/work/dev-hermit` is the tree every agent reaches for first. It is

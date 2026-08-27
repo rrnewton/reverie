@@ -352,7 +352,7 @@ fn main() {
 
         for product in ["hermit", "reverie", "liteinst2"] {
             let expected = entry[format!("{product}_branch")].as_str().unwrap_or("-");
-            let expected_relative = format!("worktrees/{slot}/{product}");
+            let expected_relative = format!("worktrees/slots/{slot}/{product}");
             let recorded_path = entry[format!("{product}_path")].as_str();
             if recorded_path != Some(expected_relative.as_str()) {
                 drift_cells += 1;
