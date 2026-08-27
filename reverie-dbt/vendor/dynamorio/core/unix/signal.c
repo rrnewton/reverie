@@ -2695,6 +2695,38 @@ handle_post_sigprocmask(dcontext_t *dcontext, int how, kernel_sigset_t *app_set,
     return 0;
 }
 
+/* Add signals held in DynamoRIO's per-thread queue to a successful kernel
+ * rt_sigpending result.  The kernel cannot report these signals because its
+ * handler has already handed them to DynamoRIO.  As with Linux rt_sigpending,
+ * report only signals that are also blocked by the application.
+ */
+int
+handle_post_sigpending(dcontext_t *dcontext, kernel_sigset_t *set, size_t sigsetsize)
+{
+    thread_sig_info_t *info = (thread_sig_info_t *)dcontext->signal_field;
+    kernel_sigset_t pending;
+    int sig;
+
+    if (sigsetsize != sizeof(kernel_sigset_t))
+        return EINVAL;
+    if (set == NULL || !d_r_safe_read(set, sizeof(pending), &pending))
+        return EFAULT;
+
+    /* This is the owning thread.  Signal delivery can prepend a queue entry,
+     * but it cannot remove one until dispatch resumes.  We only test each
+     * pointer for null, so a concurrent arrival is allowed to fall on either
+     * side of this syscall's observation point without walking mutable lists.
+     */
+    for (sig = 1; sig <= MAX_SIGNUM; sig++) {
+        if (info->sigpending[sig] != NULL &&
+            kernel_sigismember(&info->app_sigblocked, sig))
+            kernel_sigaddset(&pending, sig);
+    }
+    if (!safe_write_ex(set, sizeof(pending), &pending, NULL))
+        return EFAULT;
+    return 0;
+}
+
 void
 handle_sigsuspend(dcontext_t *dcontext, kernel_sigset_t *set, size_t sigsetsize)
 {
