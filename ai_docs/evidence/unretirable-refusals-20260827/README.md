@@ -69,6 +69,14 @@ They do not have one implementation cause.
    is why https://github.com/rrnewton/hermit/pull/2680 remained blocked after
    the CLI fix.
 
+   The production `approval_binding.py --repo rrnewton/hermit --pr 2680 --json`
+   output can appear to contradict this: its `REFUSED_STALE` row carries
+   `refusal_issuers=[]`. That field includes only unanswered refusals whose
+   refused SHA equals the current head. PR2680's refusal names `642a2990502a`
+   while the current head is `020b8d754369`, so the empty list says nothing
+   about the stale refusal's issuer. The live landing gate and both underlying
+   parsers read the real comment as `hermit-016`.
+
 2. The CLI defect was loss of the GitHub comment id between the API response and
    `evaluate`. The evaluator and its policy were already correct. Commit
    `a82eba216c4b232fd71f7c0f9f83926aac7c3af7` preserves the id and refuses an
@@ -100,6 +108,13 @@ Run the local two-direction case without GitHub:
 
 ```text
 python3 ai_docs/evidence/unretirable-refusals-20260827/reproduce_pr503.py
+```
+
+Settle the PR2680 current-head filtering question and exercise both permitted
+and refused exact retirements:
+
+```text
+python3 ai_docs/evidence/unretirable-refusals-20260827/reproduce_pr2680.py
 ```
 
 Verify that a missing comment id produces an indeterminate result rather than
