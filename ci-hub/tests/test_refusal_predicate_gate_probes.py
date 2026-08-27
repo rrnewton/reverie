@@ -182,21 +182,25 @@ class ExecutingCheckerProbesTest(unittest.TestCase):
         exec(compile(self.module.EXECUTING_SHELL.format(body=body), "<probe>", "exec"), namespace)
         predicate = namespace["_looks_refused"]
         self.assertTrue(
-            predicate(self.module._GENUINE),  # type: ignore[operator]
+            predicate(self.module._GENUINE, 2),  # type: ignore[operator]
             "the bare-startswith probe no longer fires on a genuine refusal, so it "
             "would be refused for missing it rather than for the class it names",
         )
         self.assertTrue(
-            predicate(self.module._QUOTED_DOC),  # type: ignore[operator]
+            predicate(self.module._QUOTED_DOC, 2),  # type: ignore[operator]
             "the bare-startswith probe must MISCLASSIFY the quoted-documentation "
             "line; that misclassification is the defect it exists to demonstrate",
         )
 
     def test_the_quoted_documentation_sample_is_in_the_corpus(self) -> None:
-        wanted = [s for s, _ in self.module.EXECUTING_SAMPLES if s == self.module._QUOTED_DOC]
+        wanted = [
+            expected
+            for sample, _, expected in self.module.EXECUTING_SAMPLES
+            if sample == self.module._QUOTED_DOC
+        ]
         self.assertEqual(1, len(wanted))
         self.assertFalse(
-            dict(self.module.EXECUTING_SAMPLES)[self.module._QUOTED_DOC],
+            wanted[0],
             "a line that merely starts with the marker is not a refusal",
         )
 
