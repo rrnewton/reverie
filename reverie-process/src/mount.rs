@@ -316,6 +316,60 @@ impl Mount {
     /// NOTE: This function *must* not allocate since it is called after `fork`
     /// (or `clone`) and before `execve`. Any allocations could cause deadlocks
     /// (which are hard to track down).
+    /// The flags the kernel will not let a read-only bind remount drop, read back
+    /// from the mount that now exists at our target.
+    ///
+    /// ⚠️ WITHOUT THIS, A READ-ONLY BIND OF A `nosuid` OR `nodev` SOURCE FAILS
+    /// WITH EPERM AND THE WHOLE CONTAINER NEVER SPAWNS. Inside a user namespace
+    /// the kernel locks these flags, and `do_remount` refuses any remount that
+    /// would clear one; passing only `MS_RDONLY` asks to clear every other flag
+    /// the source had. Re-supplying them asks for exactly what is already there,
+    /// which is permitted.
+    ///
+    /// Measured 2026-08-27: this cost a whole validate arm. Hermit places its
+    /// frozen `/etc/group` and empty nscd directory in TMPDIR and binds each
+    /// read-only, so a TMPDIR on `/run/user/<uid>` -- `nosuid,nodev` on any
+    /// systemd host -- failed every container spawn. 610 of that arm's 612 e2e
+    /// rows came from this single mount, each one reading as a test result while
+    /// measuring nothing. `nosuid` alone and `nodev` alone were each sufficient.
+    ///
+    /// ⚠️ `statfs` RATHER THAN `/proc/self/mountinfo` BECAUSE THIS RUNS AFTER
+    /// FORK, where the surrounding contract forbids allocation. `statfs` is one
+    /// syscall onto a caller-owned buffer and parses nothing.
+    ///
+    /// ⚠️ AND ONLY THE FLAGS WHOSE `ST_` AND `MS_` VALUES COINCIDE. That is true
+    /// for `NOSUID`, `NODEV`, `NOEXEC`, `NOATIME` and `NODIRATIME`, and FALSE for
+    /// `RELATIME`: `ST_RELATIME` is 0x1000 while `MS_RELATIME` is 0x200000, so
+    /// copying the raw bits across would set `MS_SYNCHRONOUS`-adjacent garbage
+    /// rather than the flag intended. Relatime is therefore left out; the kernel
+    /// keeps the existing atime policy when a remount names none.
+    fn locked_source_flags(&self) -> MountFlags {
+        // SAFETY: `statfs` writes only into `buffer`, and `target_ptr` is a
+        // NUL-terminated C string owned by `self` for the whole call.
+        let mut buffer = std::mem::MaybeUninit::<libc::statvfs>::uninit();
+        let flags = unsafe {
+            if libc::statvfs(self.target_ptr(), buffer.as_mut_ptr()) != 0 {
+                // Cannot read the source, so add nothing: the remount then
+                // behaves exactly as it did before this function existed.
+                return MountFlags::empty();
+            }
+            buffer.assume_init().f_flag
+        };
+        let mut preserved = MountFlags::empty();
+        for (probe, flag) in [
+            (libc::ST_NOSUID, MountFlags::MS_NOSUID),
+            (libc::ST_NODEV, MountFlags::MS_NODEV),
+            (libc::ST_NOEXEC, MountFlags::MS_NOEXEC),
+            (libc::ST_NOATIME, MountFlags::MS_NOATIME),
+            (libc::ST_NODIRATIME, MountFlags::MS_NODIRATIME),
+        ] {
+            if flags & probe != 0 {
+                preserved |= flag;
+            }
+        }
+        preserved
+    }
+
     pub(super) fn mount(&mut self) -> Result<(), Errno> {
         // ⚠️ REFUSE, DO NOT PANIC. A path/fstype/data string that is not a valid
         // C string was recorded at build time (see `unrepresentable`). This is
@@ -367,7 +421,7 @@ impl Mount {
                     ptr::null(),
                     self.target_ptr(),
                     ptr::null(),
-                    (self.flags | MountFlags::MS_REMOUNT).bits(),
+                    (self.flags | MountFlags::MS_REMOUNT | self.locked_source_flags()).bits(),
                     ptr::null(),
                 )
             })?;
