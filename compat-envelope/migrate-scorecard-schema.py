@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import csv
 import fcntl
+import json
 import shutil
 import sys
 from pathlib import Path
@@ -24,8 +25,6 @@ from pathlib import Path
 TIER_COLUMNS = ("bitwise_parity", "compared_log_messages", "tier")
 COMPARISON_TIER_COLUMN = "comparison_tier"
 LEGACY_COMPARISON_TIER = "legacy-unqualified"
-E9PATCH_REACH_COLUMNS = ("candidate_sites", "mapped_sites", "reach_state")
-REVERIE_COLUMNS = ("absence_reason",)
 PROVENANCE_COLUMNS = (
     "legacy_parity_unqualified",
     "ref_output_hash",
@@ -44,6 +43,33 @@ PRESERVED = (
     "bucket", "test_id", "test_mode", "backend", "cell_state", "outcome",
     "deterministic", "output_hash", "duration_ms", "max_rss_kb", "reason",
 )
+SCHEMA = Path(__file__).with_name("scorecard-schema.json")
+
+
+def shared_header(path: Path, old_header: list[str]) -> list[str]:
+    variant = "scorecard.csv" if path.name == "scorecard-observations.csv" else path.name
+    try:
+        document = json.loads(SCHEMA.read_text(encoding="utf-8"))
+        variants = document["variants"]
+        if variant in variants:
+            columns = variants[variant]["columns"]
+        else:
+            known = set(old_header) - {"parity"}
+            candidates = [
+                definition["columns"]
+                for definition in variants.values()
+                if known <= set(definition["columns"])
+            ]
+            if not candidates:
+                raise KeyError(variant)
+            columns = min(candidates, key=len)
+    except (OSError, json.JSONDecodeError, KeyError, TypeError) as error:
+        raise ValueError(f"cannot read shared scorecard row for {variant}: {error}") from error
+    if not isinstance(columns, list) or not columns or not all(
+        isinstance(column, str) and column for column in columns
+    ):
+        raise ValueError(f"shared scorecard row for {variant} is malformed")
+    return columns
 
 
 def present_or_none(header: list[str], columns: tuple[str, ...], label: str) -> bool:
@@ -66,18 +92,33 @@ def migrate(path: Path, *, apply: bool) -> int:
                 return 2
             lines = original.splitlines()
             header = next(csv.reader([lines[0]]))
+            original_header = list(header)
             rows = list(csv.DictReader(lines))
             if any(None in row for row in rows):
                 print(f"REFUSED: {path} has over-wide rows", file=sys.stderr)
                 return 2
+            preferred_parity = (
+                "tool_count_parity"
+                if path.name == "reverie-scorecard.csv"
+                else "stdout_parity"
+            )
             parity_columns = [name for name in PARITY_NAMES if name in header]
-            if len(parity_columns) != 1:
+            if "parity" in parity_columns and len(parity_columns) != 1:
                 print(
-                    f"REFUSED: {path} must have exactly one parity observable; found {parity_columns}",
+                    f"REFUSED: {path} legacy parity cannot coexist with named observables; found {parity_columns}",
                     file=sys.stderr,
                 )
                 return 2
-            parity_column = parity_columns[0]
+            if preferred_parity in parity_columns:
+                parity_column = preferred_parity
+            elif parity_columns == ["parity"]:
+                parity_column = "parity"
+            else:
+                print(
+                    f"REFUSED: {path} has no {preferred_parity} observable; found {parity_columns}",
+                    file=sys.stderr,
+                )
+                return 2
 
             if ANCHOR not in header:
                 if "reason" not in header:
@@ -92,40 +133,29 @@ def migrate(path: Path, *, apply: bool) -> int:
                     row[ANCHOR] = ""
 
             try:
-                has_tier = present_or_none(header, TIER_COLUMNS, "tier")
-                has_provenance = present_or_none(
-                    header, PROVENANCE_COLUMNS, "provenance"
-                )
+                present_or_none(header, TIER_COLUMNS, "tier")
+                present_or_none(header, PROVENANCE_COLUMNS, "provenance")
             except ValueError as error:
                 print(f"REFUSED: {path} {error}", file=sys.stderr)
                 return 2
 
-            new_header = list(header)
-            if not has_tier:
-                at = new_header.index(ANCHOR) + 1
-                new_header[at:at] = list(TIER_COLUMNS)
-            if not has_provenance:
-                new_header.extend(PROVENANCE_COLUMNS)
-            if COMPARISON_TIER_COLUMN not in new_header:
-                new_header.append(COMPARISON_TIER_COLUMN)
-            if path.name == "e9patch-scorecard.csv":
-                for column in E9PATCH_REACH_COLUMNS:
-                    if column not in new_header:
-                        new_header.append(column)
-            if path.name == "reverie-scorecard.csv":
-                for column in REVERIE_COLUMNS:
-                    if column not in new_header:
-                        new_header.append(column)
+            try:
+                new_header = shared_header(path, header)
+            except ValueError as error:
+                print(f"REFUSED: {path} {error}", file=sys.stderr)
+                return 2
+            allowed_old = set(new_header) | {"parity"}
+            unknown = [column for column in header if column not in allowed_old]
+            if unknown:
+                print(
+                    f"REFUSED: {path} has columns outside the shared row: {unknown}",
+                    file=sys.stderr,
+                )
+                return 2
             comparison_labelled = 0
             for row in rows:
-                for column in TIER_COLUMNS + PROVENANCE_COLUMNS:
+                for column in new_header:
                     row.setdefault(column, "")
-                for column in E9PATCH_REACH_COLUMNS:
-                    if column in new_header:
-                        row.setdefault(column, "")
-                for column in REVERIE_COLUMNS:
-                    if column in new_header:
-                        row.setdefault(column, "")
                 # The old rows do not carry INFO/stack/heap evidence.  Record
                 # that absence explicitly; never guess either strict tier.
                 if not (row.get(COMPARISON_TIER_COLUMN) or "").strip():
@@ -169,9 +199,11 @@ def migrate(path: Path, *, apply: bool) -> int:
                         row["legacy_parity_unqualified"] = carried
                         row[parity_column] = ""
                         unqualified += 1
+                if parity_column == "parity":
+                    row.pop("parity", None)
 
             changed = (
-                new_header != header
+                new_header != original_header
                 or labelled > 0
                 or unqualified > 0
                 or comparison_labelled > 0
@@ -203,7 +235,13 @@ def migrate(path: Path, *, apply: bool) -> int:
     if len(before) != len(after):
         print(f"FAILED: row count {len(before)} -> {len(after)}", file=sys.stderr)
         return 1
-    parity_column = next(name for name in PARITY_NAMES if name in after[0])
+    target_parity_column = preferred_parity if parity_column == "parity" else parity_column
+    if target_parity_column not in after[0]:
+        print(
+            f"FAILED: migrated row has no {target_parity_column} observable",
+            file=sys.stderr,
+        )
+        return 1
     moved = 0
     for index, (old, new) in enumerate(zip(before, after), start=2):
         for column in PRESERVED:
@@ -215,7 +253,9 @@ def migrate(path: Path, *, apply: bool) -> int:
                 )
                 return 1
         old_parity = (old.get(parity_column) or "").strip()
-        if old_parity in ("0", "1") and not (new.get(parity_column) or "").strip():
+        if old_parity in ("0", "1") and not (
+            new.get(target_parity_column) or ""
+        ).strip():
             if new.get("legacy_parity_unqualified") != f"{parity_column}:{old_parity}":
                 print(f"FAILED: line {index} lost legacy parity", file=sys.stderr)
                 return 1

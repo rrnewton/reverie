@@ -1,5 +1,5 @@
 {
-  "_what": "THE single definition of the compat-envelope scorecard shape. Producers and guards derive from THIS; nothing restates a column list inline.",
+  "_what": "The cross-language projection of compat-envelope/lib/scorecard.rs. Rust producers and readers import ScorecardRow directly; Python and shell producers read this checked projection.",
   "_why": [
     "Measured at origin/main 2026-08-07: five emitters declared FIVE DISTINCT column",
     "lists and shared none. Even the two 36-column ones were different shapes. That is",
@@ -10,7 +10,7 @@
     "appends its extras AFTER the full core, so a reader that knows only the core can",
     "still index every core column correctly in any variant."
   ],
-  "_generated_from": "derived once from origin/main scorecard headers, then authoritative. check_emitter_schema.py enforces both directions, so this file cannot silently drift from the CSVs nor they from it.",
+  "_generated_from": "compat-envelope/lib/scorecard.rs; check-scorecard-schema.rs enforces the Rust type -> JSON projection -> CSV chain in both directions.",
   "core": [
     "run_id",
     "run_utc",
@@ -56,7 +56,10 @@
       "emitter": "collect-envelope.rs",
       "extra_columns": [
         "stack_hash",
-        "heap_hash"
+        "heap_hash",
+        "parity_exercised",
+        "backend_engaged",
+        "native_output_hash"
       ],
       "omits_core": [],
       "columns": [
@@ -93,13 +96,16 @@
         "executed_count",
         "evidence_count",
         "comparison_tier",
-        "stack_hash",
-        "heap_hash",
         "exit_code_parity",
         "detlog_parity",
         "oracle_verdict",
         "stack_parity",
-        "heap_parity"
+        "heap_parity",
+        "stack_hash",
+        "heap_hash",
+        "parity_exercised",
+        "backend_engaged",
+        "native_output_hash"
       ],
       "core_prefix_safe": true
     },
@@ -262,14 +268,14 @@
         "executed_count",
         "evidence_count",
         "comparison_tier",
-        "candidate_sites",
-        "mapped_sites",
-        "reach_state",
         "exit_code_parity",
         "detlog_parity",
         "oracle_verdict",
         "stack_parity",
-        "heap_parity"
+        "heap_parity",
+        "candidate_sites",
+        "mapped_sites",
+        "reach_state"
       ],
       "core_prefix_safe": true
     },
@@ -325,9 +331,7 @@
         "tool_count_parity",
         "absence_reason"
       ],
-      "omits_core": [
-        "stdout_parity"
-      ],
+      "omits_core": [],
       "columns": [
         "run_id",
         "run_utc",
@@ -343,7 +347,7 @@
         "cell_state",
         "outcome",
         "deterministic",
-        "tool_count_parity",
+        "stdout_parity",
         "output_hash",
         "duration_ms",
         "max_rss_kb",
@@ -362,20 +366,19 @@
         "executed_count",
         "evidence_count",
         "comparison_tier",
-        "absence_reason",
         "exit_code_parity",
         "detlog_parity",
         "oracle_verdict",
         "stack_parity",
-        "heap_parity"
+        "heap_parity",
+        "tool_count_parity",
+        "absence_reason"
       ],
-      "core_prefix_safe": false
+      "core_prefix_safe": true
     }
   },
-  "_known_violation": {
-    "reverie-scorecard.csv": "TWO violations of the core-prefix rule, both measured at origin/main 2026-08-07: (1) omits the core column 'stdout_parity'; (2) inserts its extra 'tool_count_parity' at index 14, MID-CORE, rather than after the core. Either alone breaks core-position indexing for this variant. This is also why collect-reverie-compat.rs misaligns when it appends into the 33-column canonical scorecard (its DEFAULT --csv target): the columns disagree in content AND order, not merely in count. Recorded, not blessed. Fixing needs the emitter, currently owned by hermit-w7."
-  },
-  "_core_prefix_rule": "A variant SHOULD be its core columns in core order, then its extras. That is what lets a reader who knows only the core index every core column correctly in any variant. `core_prefix_safe` records whether each variant actually obeys it; the checker reports a violation rather than silently accepting it.",
+  "_known_violation": {},
+  "_core_prefix_rule": "Every variant carries the complete core in core order, then its extras. check-scorecard-schema.rs derives that order from ScorecardVariant and refuses drift.",
   "unimplemented_comparisons": {
     "_what": "Comparisons the strict standard names that NOTHING CURRENTLY PERFORMS. Declared here so a cell cannot appear to satisfy one, and so the gap is a fact in the schema rather than folklore.",
     "_why": [

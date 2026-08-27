@@ -78,8 +78,8 @@ absence_columns=$(head -1 "$CSV" | awk -F, '{ n=0; for (i=1; i<=NF; i++) n += ($
 [ "$absence_columns" -eq 1 ] \
   || fail "header must contain exactly one absence_reason column, got $absence_columns"
 ncol=$(head -1 "$CSV" | awk -F, '{print NF}')
-expected=$(awk -F'"' '/^const HEADER: &str =/{print $2}' "$ROOT/collect-reverie-compat.rs" | awk -F, '{print NF}')
-[ -n "$expected" ] || fail "cannot read HEADER from collect-reverie-compat.rs"
+expected=$("$ROOT/check-scorecard-schema.rs" --header reverie-scorecard.csv | awk -F, '{print NF}')
+[ -n "$expected" ] || fail "cannot read the shared reverie scorecard row"
 [ "$ncol" -eq "$expected" ] || fail "header width $ncol != collector HEADER width $expected"
 ok "header width $ncol matches the full provenance collector contract"
 HEADER=$(head -1 "$CSV")

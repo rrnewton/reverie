@@ -81,6 +81,10 @@
     unused_variables,
     unused_must_use
 )]
+#[path = "lib/scorecard.rs"]
+mod scorecard;
+
+use scorecard::{split_csv_line, ScorecardColumn as Column, ScorecardRow};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
@@ -194,26 +198,26 @@ fn known_comparison_tier(tier: &str) -> bool {
 /// Columns common to every supported scorecard schema. Observable-specific
 /// parity is resolved separately so stdout equality and Tool-count equality
 /// can never be silently conflated.
-const REQUIRED_COLUMNS: &[&str] = &[
-    "run_id",
-    "run_utc",
-    "hermit_sha",
-    "reverie_sha",
-    "dirty",
-    "run_mode",
-    "lane",
-    "bucket",
-    "test_id",
-    "test_mode",
-    "backend",
-    "cell_state",
-    "outcome",
-    "deterministic",
-    "output_hash",
-    "duration_ms",
-    "max_rss_kb",
-    "reason",
-    "comparison_tier",
+const REQUIRED_COLUMNS: &[Column] = &[
+    Column::RunId,
+    Column::RunUtc,
+    Column::HermitSha,
+    Column::ReverieSha,
+    Column::Dirty,
+    Column::RunMode,
+    Column::Lane,
+    Column::Bucket,
+    Column::TestId,
+    Column::TestMode,
+    Column::Backend,
+    Column::CellState,
+    Column::Outcome,
+    Column::Deterministic,
+    Column::OutputHash,
+    Column::DurationMs,
+    Column::MaxRssKb,
+    Column::Reason,
+    Column::ComparisonTier,
 ];
 
 fn parse_bool(s: &str) -> Option<bool> {
@@ -222,37 +226,6 @@ fn parse_bool(s: &str) -> Option<bool> {
         "0" | "false" | "FALSE" | "False" => Some(false),
         _ => None,
     }
-}
-
-/// Minimal RFC-4180-ish CSV split: handles double-quoted fields with commas and
-/// escaped `""`. Good enough for our own writer's output.
-fn split_csv_line(line: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    let mut field = String::new();
-    let mut in_quotes = false;
-    let mut chars = line.chars().peekable();
-    while let Some(c) = chars.next() {
-        if in_quotes {
-            if c == '"' {
-                if chars.peek() == Some(&'"') {
-                    field.push('"');
-                    chars.next();
-                } else {
-                    in_quotes = false;
-                }
-            } else {
-                field.push(c);
-            }
-        } else if c == '"' {
-            in_quotes = true;
-        } else if c == ',' {
-            out.push(std::mem::take(&mut field));
-        } else {
-            field.push(c);
-        }
-    }
-    out.push(field);
-    out
 }
 
 fn main() {
@@ -377,7 +350,8 @@ fn main() {
 
     let mut lines = text.lines();
     let header_line = lines.next().unwrap_or_else(|| die("empty CSV (no header)"));
-    let header = split_csv_line(header_line);
+    let header = split_csv_line(header_line)
+        .unwrap_or_else(|error| die(&format!("invalid CSV header: {error}")));
     let idx = |name: &str| -> usize {
         header
             .iter()
@@ -385,30 +359,18 @@ fn main() {
             .unwrap_or_else(|| die(&format!("CSV missing required column `{name}`")))
     };
     // Validate the header carries every common field we rely on.
-    for h in REQUIRED_COLUMNS {
-        let _ = idx(h);
+    for column in REQUIRED_COLUMNS {
+        let _ = idx(column.name());
     }
-    let modern_parity_columns = ["stdout_parity", "tool_count_parity"];
     let selected_modern = parity_key;
     let selected_count = header
         .iter()
         .filter(|h| h.as_str() == selected_modern)
         .count();
     let legacy_count = header.iter().filter(|h| h.as_str() == "parity").count();
-    let wrong_modern: Vec<&str> = modern_parity_columns
-        .iter()
-        .copied()
-        .filter(|name| *name != selected_modern && header.iter().any(|h| h == name))
-        .collect();
     if selected_count > 1 || legacy_count > 1 {
         die(&format!(
             "CSV has duplicate observable columns (`{selected_modern}` count={selected_count}, legacy `parity` count={legacy_count})"
-        ));
-    }
-    if !wrong_modern.is_empty() {
-        die(&format!(
-            "CSV observable does not match --observable `{observable}`: found `{}`, expected `{selected_modern}` (or legacy `parity`)",
-            wrong_modern.join("`, `")
         ));
     }
     if selected_count == 1 && legacy_count == 1 {
@@ -416,56 +378,51 @@ fn main() {
             "CSV has ambiguous observable columns `{selected_modern}` and legacy `parity`; keep exactly one"
         ));
     }
-    let i_par = if selected_count == 1 {
-        idx(selected_modern)
-    } else if legacy_count == 1 {
-        idx("parity")
-    } else {
+    if selected_count == 0 && legacy_count == 0 {
+        let wrong_modern = if selected_modern == "stdout_parity" {
+            "tool_count_parity"
+        } else {
+            "stdout_parity"
+        };
+        if header.iter().any(|column| column == wrong_modern) {
+            die(&format!(
+                "CSV observable does not match --observable `{observable}`: found `{wrong_modern}`, expected `{selected_modern}` (or legacy `parity`)"
+            ));
+        }
         die(&format!(
             "CSV missing observable column `{selected_modern}` (legacy `parity` is also accepted)"
         ));
+    }
+    let selected_column = Column::parse(selected_modern).unwrap();
+    let other_column = if selected_column == Column::StdoutParity {
+        Column::ToolCountParity
+    } else {
+        Column::StdoutParity
     };
-    let (i_run, i_bucket, i_tid, i_tmode, i_backend, i_outcome, i_det, i_comparison_tier) = (
-        idx("run_id"),
-        idx("bucket"),
-        idx("test_id"),
-        idx("test_mode"),
-        idx("backend"),
-        idx("outcome"),
-        idx("deterministic"),
-        idx("comparison_tier"),
-    );
-    // Evidence that a determinism comparison actually happened. OPTIONAL by
-    // design: pre-schema-5 rows do not carry these columns, and such a row must
-    // read as UNEVIDENCED rather than fail the whole render -- an old row cannot
-    // retroactively acquire evidence it never recorded.
-    let i_comparator = header.iter().position(|h| h == "parity_comparator");
-    let i_compared = header.iter().position(|h| h == "compared_log_messages");
-    let i_stack_parity = header.iter().position(|h| h == "stack_parity");
-    let i_heap_parity = header.iter().position(|h| h == "heap_parity");
+    let legacy_parity = (legacy_count == 1).then_some(selected_column);
 
     let mut cells: Vec<Cell> = Vec::new();
     for (n, line) in lines.enumerate() {
         if line.trim().is_empty() {
             continue;
         }
-        let f = split_csv_line(line);
-        let get = |i: usize| f.get(i).cloned().unwrap_or_default();
-        if f.len() < header.len() {
-            eprintln!(
-                "warn: row {} has {} fields (< {}); skipping",
+        let fields = split_csv_line(line)
+            .unwrap_or_else(|error| die(&format!("REFUSED row {}: {error}", n + 2)));
+        let row = ScorecardRow::parse(&header, &fields, legacy_parity)
+            .unwrap_or_else(|error| die(&format!("REFUSED row {}: {error}", n + 2)));
+        if !row.get(other_column).trim().is_empty() {
+            die(&format!(
+                "CSV observable does not match --observable `{observable}`: row {} populates `{}`, expected `{selected_modern}`",
                 n + 2,
-                f.len(),
-                header.len()
-            );
-            continue;
+                other_column.name()
+            ));
         }
-        let comparison_tier = get(i_comparison_tier).trim().to_string();
+        let comparison_tier = row.comparison_tier.trim().to_string();
         if comparison_tier.is_empty() {
             die(&format!(
                 "REFUSED row {}: outcome {:?} has no comparison_tier; a raw pass may never default to a strict green",
                 n + 2,
-                get(i_outcome)
+                row.outcome
             ));
         }
         if !known_comparison_tier(&comparison_tier) {
@@ -475,29 +432,31 @@ fn main() {
                 comparison_tier
             ));
         }
+        let deterministic = parse_bool(&row.deterministic);
+        let observable_parity = parse_bool(row.get(selected_column));
+        let stack_parity = parse_bool(&row.stack_parity);
+        let heap_parity = parse_bool(&row.heap_parity);
+        let info_comparison_evidenced = nonempty_comparison(&row.compared_log_messages);
+        let determinism_evidenced = !row.parity_comparator.trim().is_empty()
+            || nonempty_comparison(&row.compared_log_messages);
         cells.push(Cell {
             seq: n,
-            run_id: get(i_run),
-            bucket: get(i_bucket),
-            test_id: get(i_tid),
-            test_mode: get(i_tmode),
-            backend: get(i_backend),
-            outcome: get(i_outcome),
-            deterministic: parse_bool(&get(i_det)),
-            observable_parity: parse_bool(&get(i_par)),
+            run_id: row.run_id,
+            bucket: row.bucket,
+            test_id: row.test_id,
+            test_mode: row.test_mode,
+            backend: row.backend,
+            outcome: row.outcome,
+            deterministic,
+            observable_parity,
             comparison_tier,
-            stack_parity: i_stack_parity.and_then(|index| parse_bool(&get(index))),
-            heap_parity: i_heap_parity.and_then(|index| parse_bool(&get(index))),
-            info_comparison_evidenced: i_compared
-                .map(&get)
-                .is_some_and(|value| nonempty_comparison(&value)),
+            stack_parity,
+            heap_parity,
+            info_comparison_evidenced,
             // Absent columns (pre-schema-5 rows) read as blank, i.e. NOT
             // evidenced -- an older row cannot retroactively acquire evidence it
             // never recorded.
-            determinism_evidenced: i_comparator.map(&get).is_some_and(|v| !v.trim().is_empty())
-                || i_compared
-                    .map(&get)
-                    .is_some_and(|v| nonempty_comparison(&v)),
+            determinism_evidenced,
         });
     }
     if cells.is_empty() {

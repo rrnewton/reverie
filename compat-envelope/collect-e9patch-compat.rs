@@ -56,6 +56,10 @@
     unused_variables,
     unused_must_use
 )]
+#[path = "lib/scorecard.rs"]
+mod scorecard;
+
+use scorecard::{ScorecardColumn as Column, ScorecardRow, ScorecardVariant};
 use std::collections::BTreeMap;
 use std::env;
 use std::fs::{self, File};
@@ -66,9 +70,6 @@ use std::process::{exit, Command, Stdio};
 use std::thread::sleep;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-// Shared comparison/provenance contract plus the e9patch reach tail. Keep the
-// common prefix in sync with the other collectors and the renderer.
-const HEADER: &str = "run_id,run_utc,hermit_sha,reverie_sha,dirty,run_mode,lane,bucket,test_id,test_mode,backend,cell_state,outcome,deterministic,stdout_parity,output_hash,duration_ms,max_rss_kb,reason,verify_compare,bitwise_parity,compared_log_messages,tier,legacy_parity_unqualified,ref_output_hash,parity_comparator,parity_tier,profile_flags,population_id,selected_count,executed_count,evidence_count,comparison_tier,candidate_sites,mapped_sites,reach_state,exit_code_parity,detlog_parity,oracle_verdict,stack_parity,heap_parity";
 const RUN_MODE: &str = "e9patch";
 const BUCKET: &str = "e9patch-corpus";
 // Single mode token: "run the freestanding raw-syscall guest under strict verify".
@@ -641,19 +642,20 @@ fn main() {
         return;
     }
 
+    let header = ScorecardVariant::E9patch.header();
     if !csv_path.exists() {
-        fs::write(&csv_path, format!("{HEADER}\n"))
+        fs::write(&csv_path, format!("{header}\n"))
             .unwrap_or_else(|e| die(&format!("create CSV: {e}")));
     } else {
         let existing_header = fs::read_to_string(&csv_path)
             .ok()
             .and_then(|text| text.lines().next().map(str::to_string))
             .unwrap_or_default();
-        if existing_header != HEADER {
+        if existing_header != header {
             die(&format!(
                 "scorecard header does not match this producer (have {} columns, need {}); migrate it before appending",
                 existing_header.split(',').count(),
-                HEADER.split(',').count()
+                header.split(',').count()
             ));
         }
     }
@@ -663,7 +665,7 @@ fn main() {
     let tmp = env::temp_dir().join(format!("e9c-guests-{now}"));
     fs::create_dir_all(&tmp).ok();
 
-    let mut rows: Vec<String> = Vec::new();
+    let mut rows: Vec<ScorecardRow> = Vec::new();
     let mut regressions: Vec<String> = Vec::new();
     // Tallies for the honest summary.
     let mut tally: BTreeMap<&str, u32> = BTreeMap::new();
@@ -833,7 +835,7 @@ fn main() {
         buf.push('\n');
     }
     for r in &rows {
-        buf.push_str(r);
+        buf.push_str(&r.encode(ScorecardVariant::E9patch));
         buf.push('\n');
     }
     fs::write(&csv_path, buf).unwrap_or_else(|e| die(&format!("write CSV: {e}")));
@@ -955,7 +957,7 @@ fn row(
     duration_ms: i64,
     reason: &str,
     reach: Option<(u64, u64)>,
-) -> String {
+) -> ScorecardRow {
     let det = deterministic
         .map(|b| if b { "1" } else { "0" })
         .unwrap_or("");
@@ -970,60 +972,54 @@ fn row(
     } else {
         ("", "")
     };
-    let reason_q = format!("\"{}\"", reason.replace('"', "'"));
-    [
-        run_id.to_string(),
-        run_utc.to_string(),
-        hermit_sha.to_string(),
-        reverie_sha.to_string(),
-        dirty.to_string(),
-        RUN_MODE.to_string(),
-        lane.to_string(),
-        BUCKET.to_string(),
-        test_id.to_string(),
-        MODE.to_string(),
-        backend.to_string(),
-        cell_state.to_string(),
-        outcome.to_string(),
-        det.to_string(),
-        String::new(), // stdout_parity: no complete provenance receipt
-        output_hash.to_string(),
-        duration_ms.to_string(),
-        String::new(), // max_rss_kb
-        reason_q,
-        verify_compare.to_string(),
-        String::new(), // bitwise_parity
-        String::new(), // compared_log_messages
-        det_tier.to_string(),
-        legacy_parity,
-        ref_output_hash.to_string(),
-        String::new(), // parity_comparator
-        String::new(), // parity_tier
-        String::new(), // profile_flags
-        String::new(), // population_id
-        String::new(), // selected_count
-        String::new(), // executed_count
-        String::new(), // evidence_count
-        "unqualified-stdout-only".to_string(),
-        reach.map(|(c, _)| c.to_string()).unwrap_or_default(),
-        reach.map(|(_, m)| m.to_string()).unwrap_or_default(),
-        match reach {
-            Some((_, m)) if m > 0 => "e9patch-exercised",
-            Some(_) => "not-exercised-no-main-elf-sites",
-            None => "unknown-no-banner",
-        }
-        .to_string(),
-        // exit_code_parity / detlog_parity / oracle_verdict, added to the core
-        // schema 2026-08-07. This emitter builds a FIXED POSITIONAL row, so the
-        // placeholders are mandatory: without them every row is three fields
-        // narrower than its header and each trailing value is read from the
-        // wrong column. Blank is also the correct VALUE -- no producer computes
-        // any of the three, and scorecard-schema.json refuses a non-blank one.
-        String::new(),   // exit_code_parity
-        String::new(),   // detlog_parity
-        String::new(),   // oracle_verdict
-        "0".to_string(), // stack_parity: this new run did not request L3
-        "0".to_string(), // heap_parity: this new run did not request L3
-    ]
-    .join(",")
+    ScorecardRow::from_pairs([
+        (Column::RunId, run_id.to_string()),
+        (Column::RunUtc, run_utc.to_string()),
+        (Column::HermitSha, hermit_sha.to_string()),
+        (Column::ReverieSha, reverie_sha.to_string()),
+        (Column::Dirty, dirty.to_string()),
+        (Column::RunMode, RUN_MODE.to_string()),
+        (Column::Lane, lane.to_string()),
+        (Column::Bucket, BUCKET.to_string()),
+        (Column::TestId, test_id.to_string()),
+        (Column::TestMode, MODE.to_string()),
+        (Column::Backend, backend.to_string()),
+        (Column::CellState, cell_state.to_string()),
+        (Column::Outcome, outcome.to_string()),
+        (Column::Deterministic, det.to_string()),
+        (Column::OutputHash, output_hash.to_string()),
+        (Column::DurationMs, duration_ms.to_string()),
+        (Column::Reason, reason.replace('"', "'")),
+        (Column::VerifyCompare, verify_compare.to_string()),
+        (Column::Tier, det_tier.to_string()),
+        (Column::LegacyParityUnqualified, legacy_parity),
+        (Column::RefOutputHash, ref_output_hash.to_string()),
+        (
+            Column::ComparisonTier,
+            "unqualified-stdout-only".to_string(),
+        ),
+        (
+            Column::CandidateSites,
+            reach
+                .map(|(candidate, _)| candidate.to_string())
+                .unwrap_or_default(),
+        ),
+        (
+            Column::MappedSites,
+            reach
+                .map(|(_, mapped)| mapped.to_string())
+                .unwrap_or_default(),
+        ),
+        (
+            Column::ReachState,
+            match reach {
+                Some((_, mapped)) if mapped > 0 => "e9patch-exercised",
+                Some(_) => "not-exercised-no-main-elf-sites",
+                None => "unknown-no-banner",
+            }
+            .to_string(),
+        ),
+        (Column::StackParity, "0".to_string()),
+        (Column::HeapParity, "0".to_string()),
+    ])
 }

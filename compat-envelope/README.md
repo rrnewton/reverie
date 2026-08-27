@@ -43,6 +43,8 @@ A cell a backend never ran counts as `0` in both (honest 0/0, never blank-as-gre
 
 | File | Role |
 | --- | --- |
+| `lib/scorecard.rs` | Owns the complete `ScorecardRow`, every column, and every published scorecard variant imported by the Rust producers and renderer. |
+| `check-scorecard-schema.rs` | Checks the Rust type against `scorecard-schema.json`, every producer import, and every published CSV header and row width. `check_emitter_schema.py` remains as a compatibility entry point. |
 | `collect-envelope.rs` | **Hermit** collector. Drives `hermit/ci/test_harness.sh`, consumes its JSONL, and writes an ignored per-run observation. `publish-scorecard.py` is the explicit history/current-view publication boundary. Two modes (below). `--assert-green` turns it into the regression gate. |
 | `collect-reverie-compat.rs` | **Reverie** collector (owner directive #1, run first). Runs the shared Reverie counter Tool through the ptrace and KVM launchers and records ptrace-vs-kvm parity into `reverie-scorecard.csv`. |
 | `collect-e9patch-compat.rs` | **e9patch** collector. Runs the freestanding raw-syscall corpus through the ptrace backend both un-rewritten (golden) and e9tool-rewritten, and records preprocessing-invariance (golden-vs-e9 parity) with honest L1/L2 levels into `e9patch-scorecard.csv`. e9patch is NOT a Detcore backend (see below), so it lives in its own CSV like reverie. |
@@ -150,6 +152,13 @@ both lanes = the full 235-cell verify corpus across every runnable backend**.
   performance cells were measured with Hermit `82a8e853` and uniform lane flags.
 
 ## CSV schema (shared contract)
+
+`lib/scorecard.rs` owns the complete `ScorecardRow`, its columns, and every
+published file variant. Rust collectors and the renderer import that type
+directly. `scorecard-schema.json` is its checked projection for the Python and
+shell producers. `check-scorecard-schema.rs` refuses a mismatched projection,
+an untyped producer, an undeclared scorecard, a header difference, or a row-width
+difference before the compatibility run starts.
 
 ```
 run_id,run_utc,hermit_sha,reverie_sha,dirty,run_mode,lane,bucket,

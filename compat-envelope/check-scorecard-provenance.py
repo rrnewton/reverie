@@ -104,14 +104,34 @@ def main() -> int:
         return 1
 
     parity_columns = [name for name in PARITY_COLUMNS if name in header]
-    if len(parity_columns) != 1:
+    modern_columns = [name for name in ("stdout_parity", "tool_count_parity") if name in header]
+    if "parity" in parity_columns and modern_columns:
         print(
             "REFUSED: expected exactly one parity observable column, found "
-            f"{parity_columns or 'none'}",
+            f"{parity_columns}; legacy `parity` cannot coexist with a named observable",
             file=sys.stderr,
         )
         return 1
-    parity_column = parity_columns[0]
+    if not parity_columns:
+        print(
+            "REFUSED: expected exactly one parity observable column, found none",
+            file=sys.stderr,
+        )
+        return 1
+    selected_modern = f"{args.observable.replace('-', '_')}_parity"
+    if selected_modern in modern_columns:
+        parity_column = selected_modern
+    elif len(modern_columns) == 1:
+        # Preserve the renderer's more specific observable-mismatch diagnostic.
+        parity_column = modern_columns[0]
+    elif parity_columns == ["parity"]:
+        parity_column = "parity"
+    else:
+        print(
+            f"REFUSED: scorecard has no `{selected_modern}` column for --observable {args.observable}",
+            file=sys.stderr,
+        )
+        return 1
     if parity_column == "parity" and args.observable == "tool-count":
         expected_comparator, expected_tier = PARITY_COLUMNS["tool_count_parity"]
     else:
@@ -146,12 +166,17 @@ def main() -> int:
     for line, row in enumerate(scoped, start=2):
         run_id = (row.get("run_id") or "").strip()
         by_run[run_id].append((line, row))
+        test = row.get("test_id") or "<unknown-test>"
+        prefix = f"line {line} {test}"
         verdict = (row.get(parity_column) or "").strip()
+        for other in modern_columns:
+            if other != parity_column and (row.get(other) or "").strip():
+                failures.append(
+                    f"{prefix}: non-selected observable {other} is populated"
+                )
         if verdict not in ("0", "1"):
             continue
         claims += 1
-        test = row.get("test_id") or "<unknown-test>"
-        prefix = f"line {line} {test}"
 
         hermit_sha = (row.get("hermit_sha") or "").strip()
         reverie_sha = (row.get("reverie_sha") or "").strip()

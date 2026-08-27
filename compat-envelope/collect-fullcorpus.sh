@@ -382,7 +382,11 @@ csv_field() {
 }
 export -f csv_field
 
-HDR="run_id,run_utc,hermit_sha,reverie_sha,dirty,run_mode,lane,bucket,test_id,test_mode,backend,cell_state,outcome,deterministic,stdout_parity,output_hash,duration_ms,max_rss_kb,reason,verify_compare,bitwise_parity,compared_log_messages,tier,legacy_parity_unqualified,ref_output_hash,parity_comparator,parity_tier,profile_flags,population_id,selected_count,executed_count,evidence_count,comparison_tier,exit_code_parity,detlog_parity,oracle_verdict,stack_parity,heap_parity"
+HDR=$(jq -er '.variants["fullcorpus-scorecard.csv"].columns | join(",")' \
+  "$here/scorecard-schema.json") || {
+  echo "collect-fullcorpus: cannot read the shared fullcorpus scorecard row" >&2
+  exit 2
+}
 RUN_UTC="@$(date +%s)"
 
 # --- one (backend,cell) measurement ------------------------------------------
@@ -631,6 +635,12 @@ for backend in $order; do
 done
 
 { echo "$HDR"; cat "$ROWS"/*.row; } > "$OUT"
+if ! "$here/check-scorecard-schema.rs" --file "$OUT" \
+      --variant fullcorpus-scorecard.csv >/dev/null; then
+  echo "collect-fullcorpus: REFUSED — emitted rows do not match the shared scorecard row" >&2
+  rm -rf "$ROWS"
+  exit 2
+fi
 rm -rf "$ROWS"
 echo "== full-corpus scorecard written: $OUT =="
 

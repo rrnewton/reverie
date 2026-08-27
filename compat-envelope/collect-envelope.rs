@@ -60,6 +60,12 @@
     unused_variables,
     unused_must_use
 )]
+#[path = "lib/scorecard.rs"]
+mod scorecard;
+
+use scorecard::{
+    parse_columns, split_csv_line, ScorecardColumn as Column, ScorecardRow, ScorecardVariant,
+};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
@@ -90,24 +96,11 @@ Options:
   -h, --help        Show this help.
 "#;
 
-// Machine-readable discovery hint for check_emitter_schema.py. The run id is
-// substituted at runtime; the literal names the output class, not one file.
 const DEFAULT_CSV_TEMPLATE: &str = "ignored/envelope/<run_id>.csv";
 
 fn die(msg: &str) -> ! {
     eprintln!("collect-envelope: {msg}\n\n{USAGE}");
     exit(2);
-}
-
-const HEADER: &str = "run_id,run_utc,hermit_sha,reverie_sha,dirty,run_mode,lane,bucket,test_id,test_mode,backend,cell_state,outcome,deterministic,stdout_parity,parity_exercised,backend_engaged,native_output_hash,output_hash,ref_output_hash,duration_ms,max_rss_kb,reason,verify_compare,bitwise_parity,compared_log_messages,tier,legacy_parity_unqualified,parity_comparator,parity_tier,profile_flags,population_id,selected_count,executed_count,evidence_count,comparison_tier,stack_parity,heap_parity";
-
-/// Quote a CSV field if it contains a comma, quote, or newline.
-fn csv_field(s: &str) -> String {
-    if s.contains(',') || s.contains('"') || s.contains('\n') {
-        format!("\"{}\"", s.replace('"', "\"\""))
-    } else {
-        s.to_string()
-    }
 }
 
 struct Meta {
@@ -388,51 +381,48 @@ fn main() {
             fs::create_dir_all(parent)
                 .unwrap_or_else(|e| die(&format!("cannot create observation directory: {e}")));
         }
-        fs::write(&csv_path, format!("{HEADER}\n"))
+        fs::write(&csv_path, format!("{}\n", ScorecardVariant::Run.header()))
             .unwrap_or_else(|e| die(&format!("cannot create CSV: {e}")));
     }
-    // BIND TO THE FILE'S SCHEMA, not to ours.
-    //
-    // This producer's HEADER is wider than the canonical scorecard (it also records
-    // stdout_parity/parity_exercised/backend_engaged/native_output_hash/
-    // ref_output_hash/run_flags). It used to append its own row shape regardless of
-    // what the target file's header actually was, so appending into the canonical
-    // 23-column scorecard wrote 28-field rows: five values past the last column,
-    // which a reader surfaces as csv.DictReader's None key and which shifts nothing
-    // visibly until someone reads the tail. Read the header and project onto it.
+    // Bind to the target's declared projection of the shared row. The per-run
+    // artifact carries collector-only fields, while publication projects the
+    // same ScorecardRow onto scorecard.csv without positional reconstruction.
     let target_header: Vec<String> = {
         let first = fs::read_to_string(&csv_path)
             .unwrap_or_else(|e| die(&format!("cannot read CSV header: {e}")));
         let line = first.lines().next().unwrap_or("").to_string();
-        line.split(',').map(|c| c.trim().to_string()).collect()
+        split_csv_line(&line).unwrap_or_else(|error| die(&format!("invalid CSV header: {error}")))
     };
+    let target_columns = parse_columns(&target_header, Some(Column::StdoutParity))
+        .unwrap_or_else(|error| die(&format!("invalid CSV header: {error}")));
     // A provenance column is not optional merely because a legacy target header
     // omitted it.  Dropping one would recreate the exact condition/value split
     // this producer is responsible for repairing.
     for required in [
-        "run_id",
-        "run_utc",
-        "hermit_sha",
-        "reverie_sha",
-        "test_id",
-        "backend",
-        "outcome",
-        "deterministic",
-        "ref_output_hash",
-        "parity_comparator",
-        "parity_tier",
-        "profile_flags",
-        "population_id",
-        "selected_count",
-        "executed_count",
-        "evidence_count",
-        "comparison_tier",
+        Column::RunId,
+        Column::RunUtc,
+        Column::HermitSha,
+        Column::ReverieSha,
+        Column::TestId,
+        Column::Backend,
+        Column::Outcome,
+        Column::Deterministic,
+        Column::RefOutputHash,
+        Column::ParityComparator,
+        Column::ParityTier,
+        Column::ProfileFlags,
+        Column::PopulationId,
+        Column::SelectedCount,
+        Column::ExecutedCount,
+        Column::EvidenceCount,
+        Column::ComparisonTier,
     ] {
-        if !target_header.iter().any(|c| c == required) {
+        if !target_columns.contains(&required) {
             die(&format!(
-                "scorecard {} is missing the required column {required:?}; its header has {} \
+                "scorecard {} is missing the required column {:?}; its header has {} \
                  column(s): {}",
                 csv_path.display(),
+                required.name(),
                 target_header.len(),
                 target_header.join(",")
             ));
@@ -465,7 +455,7 @@ fn main() {
         }
     }
 
-    let mut pending_rows: Vec<(Vec<String>, bool, bool)> = Vec::new();
+    let mut pending_rows: Vec<(ScorecardRow, bool, bool)> = Vec::new();
     let mut regressions: Vec<String> = Vec::new();
     for ((bucket, backend), group) in &groups {
         let unavailable_reason = avail.get(backend).and_then(|r| r.clone());
@@ -644,64 +634,73 @@ fn main() {
                 ""
             };
             let profile_flags = profile_flags(&lane, bucket, backend, &mode);
-            let row = vec![
-                meta.run_id.clone(),
-                meta.run_utc.clone(),
-                meta.hermit_sha.clone(),
-                meta.reverie_sha.clone(),
-                meta.dirty.to_string(),
-                mode.clone(),
-                lane.clone(),
-                bucket.clone(),
-                c.test.clone(),
-                c.mode.clone(),
-                backend.clone(),
-                c.cell_state.clone(),
-                outcome,
-                deterministic
-                    .map(|b| if b { "1" } else { "0" })
-                    .unwrap_or("")
-                    .to_string(),
-                parity
-                    .map(|b| if b { "1" } else { "0" })
-                    .unwrap_or("")
-                    .to_string(),
-                parity_exercised
-                    .map(|b| if b { "1" } else { "0" })
-                    .unwrap_or("")
-                    .to_string(),
+            let row = ScorecardRow::from_pairs([
+                (Column::RunId, meta.run_id.clone()),
+                (Column::RunUtc, meta.run_utc.clone()),
+                (Column::HermitSha, meta.hermit_sha.clone()),
+                (Column::ReverieSha, meta.reverie_sha.clone()),
+                (Column::Dirty, meta.dirty.to_string()),
+                (Column::RunMode, mode.clone()),
+                (Column::Lane, lane.clone()),
+                (Column::Bucket, bucket.clone()),
+                (Column::TestId, c.test.clone()),
+                (Column::TestMode, c.mode.clone()),
+                (Column::Backend, backend.clone()),
+                (Column::CellState, c.cell_state.clone()),
+                (Column::Outcome, outcome),
+                (
+                    Column::Deterministic,
+                    deterministic
+                        .map(|value| if value { "1" } else { "0" })
+                        .unwrap_or("")
+                        .to_string(),
+                ),
+                (
+                    Column::StdoutParity,
+                    parity
+                        .map(|value| if value { "1" } else { "0" })
+                        .unwrap_or("")
+                        .to_string(),
+                ),
+                (
+                    Column::ParityExercised,
+                    parity_exercised
+                        .map(|value| if value { "1" } else { "0" })
+                        .unwrap_or("")
+                        .to_string(),
+                ),
                 // THE COUNT TRAVELS WITH THE CELL. Blank means no counter was found
                 // for this backend, which is not the same as zero and must not be read
                 // as engagement.
-                backend_engaged.map(|n| n.to_string()).unwrap_or_default(),
-                native_output_hash,
-                output_hash,
-                ref_output_hash,
-                duration_ms.to_string(),
-                String::new(), // max_rss_kb: filled by expansion-dag.rs cgroup path
-                reason,
-                verify_compare.to_string(),
-                bitwise_parity.to_string(),
-                compared_log_messages.to_string(),
-                tier.to_string(),
-                String::new(), // legacy_parity_unqualified: producers never write legacy claims
-                parity_comparator.to_string(),
-                parity_tier.to_string(),
-                profile_flags,
-                population_id.clone(),
-                String::new(), // selected_count: filled after every row is known
-                String::new(), // executed_count
-                String::new(), // evidence_count
-                // This collector compares stdout only.  It must state that
-                // limitation on every row and can never mint either strict
-                // green tier merely because the execution itself passed.
-                "unqualified-stdout-only".to_string(),
-                // This producer did not request the L3 memory flags. New rows
-                // know that fact, so false is correct; only historical rows are
-                // blank/unknown.
-                "0".to_string(),
-                "0".to_string(),
-            ];
+                (
+                    Column::BackendEngaged,
+                    backend_engaged
+                        .map(|value| value.to_string())
+                        .unwrap_or_default(),
+                ),
+                (Column::NativeOutputHash, native_output_hash),
+                (Column::OutputHash, output_hash),
+                (Column::RefOutputHash, ref_output_hash),
+                (Column::DurationMs, duration_ms.to_string()),
+                (Column::Reason, reason),
+                (Column::VerifyCompare, verify_compare.to_string()),
+                (Column::BitwiseParity, bitwise_parity.to_string()),
+                (
+                    Column::ComparedLogMessages,
+                    compared_log_messages.to_string(),
+                ),
+                (Column::Tier, tier.to_string()),
+                (Column::ParityComparator, parity_comparator.to_string()),
+                (Column::ParityTier, parity_tier.to_string()),
+                (Column::ProfileFlags, profile_flags),
+                (Column::PopulationId, population_id.clone()),
+                (
+                    Column::ComparisonTier,
+                    "unqualified-stdout-only".to_string(),
+                ),
+                (Column::StackParity, "0".to_string()),
+                (Column::HeapParity, "0".to_string()),
+            ]);
             pending_rows.push((row, executed, has_parity_evidence));
         }
     }
@@ -719,37 +718,15 @@ fn main() {
             pending_rows.len()
         ));
     }
-    let names: Vec<&str> = HEADER.split(',').collect();
-    let set_named = |row: &mut Vec<String>, name: &str, value: String| {
-        let index = names
-            .iter()
-            .position(|candidate| *candidate == name)
-            .unwrap_or_else(|| die(&format!("internal HEADER missing {name}")));
-        row[index] = value;
-    };
     let mut out = fs::OpenOptions::new()
         .append(true)
         .open(&csv_path)
         .unwrap_or_else(|e| die(&format!("cannot open CSV for append: {e}")));
     for (mut row, _, _) in pending_rows {
-        set_named(&mut row, "selected_count", planned_count.to_string());
-        set_named(&mut row, "executed_count", executed_count.to_string());
-        set_named(&mut row, "evidence_count", evidence_count.to_string());
-        let line = target_header
-            .iter()
-            .map(|col| {
-                let want: &str = if col == "parity" {
-                    "stdout_parity"
-                } else {
-                    col.as_str()
-                };
-                match names.iter().position(|name| *name == want) {
-                    Some(index) => csv_field(&row[index]),
-                    None => String::new(),
-                }
-            })
-            .collect::<Vec<_>>()
-            .join(",");
+        row.selected_count = planned_count.to_string();
+        row.executed_count = executed_count.to_string();
+        row.evidence_count = evidence_count.to_string();
+        let line = row.encode_columns(&target_columns);
         writeln!(out, "{line}").unwrap_or_else(|e| die(&format!("CSV write failed: {e}")));
     }
     eprintln!(

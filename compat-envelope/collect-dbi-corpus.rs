@@ -69,6 +69,10 @@
     unused_variables,
     unused_must_use
 )]
+#[path = "lib/scorecard.rs"]
+mod scorecard;
+
+use scorecard::{ScorecardColumn as Column, ScorecardRow, ScorecardVariant};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
@@ -77,29 +81,12 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
-// `comparison_tier` is REQUIRED, not decorative: render-scorecard.rs refuses any
-// row whose tier is empty or unknown ("a raw pass may never default to a strict
-// green"), and it is the field that separates PASS from ATTEMPTED_UNQUALIFIABLE.
-// Without it every row this tool emits is rejected at ingest, which is why the
-// output was unreadable by anything tracked rather than merely untracked.
-// Keep this byte-for-byte aligned with the `dbi-scorecard.csv` variant in
-// scorecard-schema.json. Unsupported observables remain blank; omission is not
-// permitted because a short row silently shifts every later provenance field.
-const HEADER: &str = "run_id,run_utc,hermit_sha,reverie_sha,dirty,run_mode,lane,bucket,test_id,test_mode,backend,cell_state,outcome,deterministic,stdout_parity,output_hash,duration_ms,max_rss_kb,reason,verify_compare,bitwise_parity,compared_log_messages,tier,legacy_parity_unqualified,ref_output_hash,parity_comparator,parity_tier,profile_flags,population_id,selected_count,executed_count,evidence_count,comparison_tier,exit_code_parity,detlog_parity,oracle_verdict,stack_parity,heap_parity";
 const DEFAULT_CSV_TEMPLATE: &str = "dbi-scorecard.csv";
 const PINNED_GUEST_ENV_ARGS: &[&str] = &["--base-env", "minimal", "-e", "LC_ALL=C", "-e", "TZ=UTC"];
 
 fn die(msg: &str) -> ! {
     eprintln!("collect-dbi-corpus: {msg}");
     std::process::exit(1);
-}
-
-fn csv_field(s: &str) -> String {
-    if s.contains(',') || s.contains('"') || s.contains('\n') {
-        format!("\"{}\"", s.replace('"', "\"\""))
-    } else {
-        s.to_string()
-    }
 }
 
 fn git(repo: &Path, args: &[&str]) -> Option<String> {
@@ -366,27 +353,27 @@ mod guest_env_pin_tests {
 
     #[test]
     fn population_receipt_is_order_invariant_but_identity_sensitive() {
-        let mut a = vec![vec![String::new(); HEADER.split(',').count()]; 2];
+        let mut a = vec![ScorecardRow::default(); 2];
         for (index, row) in a.iter_mut().enumerate() {
-            row[5] = "expansion".into();
-            row[6] = "portable".into();
-            row[7] = "micro-c".into();
-            row[8] = format!("case-{index}");
-            row[9] = "verify".into();
-            row[10] = "dbi".into();
-            row[11] = "enabled".into();
+            row.run_mode = "expansion".into();
+            row.lane = "portable".into();
+            row.bucket = "micro-c".into();
+            row.test_id = format!("case-{index}");
+            row.test_mode = "verify".into();
+            row.backend = "dbi".into();
+            row.cell_state = "enabled".into();
         }
         let mut reversed = a.clone();
         reversed.reverse();
         assert_eq!(population_id(&a), population_id(&reversed));
-        reversed[0][10] = "ptrace-ref".into();
+        reversed[0].backend = "ptrace-ref".into();
         assert_ne!(population_id(&a), population_id(&reversed));
 
-        a[0][14] = "1".into();
+        a[0].stdout_parity = "1".into();
         finalize_rows(&mut a, 1);
-        assert!(a.iter().all(|row| row[29] == "2"));
-        assert!(a.iter().all(|row| row[30] == "1"));
-        assert!(a.iter().all(|row| row[31] == "1"));
+        assert!(a.iter().all(|row| row.selected_count == "2"));
+        assert!(a.iter().all(|row| row.executed_count == "1"));
+        assert!(a.iter().all(|row| row.evidence_count == "1"));
     }
 }
 
@@ -630,7 +617,7 @@ fn build_compiled_fixture(
 
 #[allow(clippy::too_many_arguments)]
 fn push_row(
-    out: &mut Vec<Vec<String>>,
+    out: &mut Vec<ScorecardRow>,
     run_id: &str,
     run_utc: &str,
     hermit_sha: &str,
@@ -691,78 +678,80 @@ fn push_row(
         "observable": "guest-stdout-sha256"
     })
     .to_string();
-    let row = vec![
-        run_id.to_string(),
-        run_utc.to_string(),
-        hermit_sha.to_string(),
-        reverie_sha.to_string(),
-        dirty.to_string(),
-        "expansion".to_string(),
-        "portable".to_string(),
-        bucket.to_string(),
-        test_id.to_string(),
-        "verify".to_string(),
-        backend.to_string(),
-        "enabled".to_string(),
-        outcome.to_string(),
-        det.to_string(),
-        par.to_string(),
-        output_hash.to_string(),
-        dur,
-        String::new(),
-        reason.to_string(),
-        if has_parity {
-            "stdout-sha256-exact-v1".to_string()
-        } else {
-            String::new()
-        },
-        String::new(),
-        String::new(),
-        if has_parity {
-            "B4".to_string()
-        } else {
-            String::new()
-        },
-        String::new(),
-        ref_output_hash.to_string(),
-        if has_parity {
-            "stdout-sha256-exact-v1".to_string()
-        } else {
-            String::new()
-        },
-        if has_parity {
-            "stdout-exact".to_string()
-        } else {
-            String::new()
-        },
-        profile_flags,
-        String::new(), // population_id: filled after every selected row is known
-        String::new(), // selected_count
-        String::new(), // executed_count
-        String::new(), // evidence_count
-        comparison_tier.to_string(),
-        exit_par.to_string(),
-        String::new(),
-        String::new(),
-        String::new(),
-        String::new(),
-    ];
-    assert_eq!(row.len(), HEADER.split(',').count());
-    out.push(row);
+    out.push(ScorecardRow::from_pairs([
+        (Column::RunId, run_id.to_string()),
+        (Column::RunUtc, run_utc.to_string()),
+        (Column::HermitSha, hermit_sha.to_string()),
+        (Column::ReverieSha, reverie_sha.to_string()),
+        (Column::Dirty, dirty.to_string()),
+        (Column::RunMode, "expansion".to_string()),
+        (Column::Lane, "portable".to_string()),
+        (Column::Bucket, bucket.to_string()),
+        (Column::TestId, test_id.to_string()),
+        (Column::TestMode, "verify".to_string()),
+        (Column::Backend, backend.to_string()),
+        (Column::CellState, "enabled".to_string()),
+        (Column::Outcome, outcome.to_string()),
+        (Column::Deterministic, det.to_string()),
+        (Column::StdoutParity, par.to_string()),
+        (Column::OutputHash, output_hash.to_string()),
+        (Column::DurationMs, dur),
+        (Column::Reason, reason.to_string()),
+        (
+            Column::VerifyCompare,
+            if has_parity {
+                "stdout-sha256-exact-v1".to_string()
+            } else {
+                String::new()
+            },
+        ),
+        (
+            Column::Tier,
+            if has_parity {
+                "B4".to_string()
+            } else {
+                String::new()
+            },
+        ),
+        (Column::RefOutputHash, ref_output_hash.to_string()),
+        (
+            Column::ParityComparator,
+            if has_parity {
+                "stdout-sha256-exact-v1".to_string()
+            } else {
+                String::new()
+            },
+        ),
+        (
+            Column::ParityTier,
+            if has_parity {
+                "stdout-exact".to_string()
+            } else {
+                String::new()
+            },
+        ),
+        (Column::ProfileFlags, profile_flags),
+        (Column::ComparisonTier, comparison_tier.to_string()),
+        (Column::ExitCodeParity, exit_par.to_string()),
+    ]));
 }
 
-fn population_id(rows: &[Vec<String>]) -> String {
+fn population_id(rows: &[ScorecardRow]) -> String {
     // Must stay identical to check-scorecard-provenance.py's
     // scorecard-population-v2 identity over run_mode/lane/bucket/test/backend.
-    const FIELDS: [usize; 7] = [5, 6, 7, 8, 9, 10, 11];
     let mut keys: Vec<String> = rows
         .iter()
         .map(|row| {
-            FIELDS
-                .iter()
-                .map(|&i| row[i].as_str())
-                .collect::<Vec<_>>()
-                .join("\t")
+            [
+                row.run_mode.as_str(),
+                row.lane.as_str(),
+                row.bucket.as_str(),
+                row.test_id.as_str(),
+                row.test_mode.as_str(),
+                row.backend.as_str(),
+                row.cell_state.as_str(),
+            ]
+            .join("\t")
         })
         .collect();
     keys.sort();
@@ -775,29 +764,24 @@ fn population_id(rows: &[Vec<String>]) -> String {
     format!("sha256:{:x}", digest.finalize())
 }
 
-fn finalize_rows(rows: &mut [Vec<String>], executed: usize) {
+fn finalize_rows(rows: &mut [ScorecardRow], executed: usize) {
     let population = population_id(rows);
     let selected = rows.len();
     let evidence = rows
         .iter()
-        .filter(|row| matches!(row[14].as_str(), "0" | "1"))
+        .filter(|row| matches!(row.stdout_parity.as_str(), "0" | "1"))
         .count();
     for row in rows {
-        row[28] = population.clone();
-        row[29] = selected.to_string();
-        row[30] = executed.to_string();
-        row[31] = evidence.to_string();
+        row.population_id = population.clone();
+        row.selected_count = selected.to_string();
+        row.executed_count = executed.to_string();
+        row.evidence_count = evidence.to_string();
     }
 }
 
-fn encode_rows(rows: &[Vec<String>]) -> String {
+fn encode_rows(rows: &[ScorecardRow]) -> String {
     rows.iter()
-        .map(|row| {
-            row.iter()
-                .map(|field| csv_field(field))
-                .collect::<Vec<_>>()
-                .join(",")
-        })
+        .map(|row| row.encode(ScorecardVariant::Dbi))
         .collect::<Vec<_>>()
         .join("\n")
 }
@@ -953,7 +937,7 @@ fn main() {
         hermit_bin(&repo).display()
     );
 
-    let mut rows: Vec<Vec<String>> = Vec::new();
+    let mut rows: Vec<ScorecardRow> = Vec::new();
     let mut executed_count = 0usize;
     let mut tally: BTreeMap<&str, usize> = BTreeMap::new();
     let total = tests.len();
@@ -1152,16 +1136,17 @@ fn main() {
 
     finalize_rows(&mut rows, executed_count);
     let lines = encode_rows(&rows);
+    let header = ScorecardVariant::Dbi.header();
 
     if to_stdout {
-        println!("{HEADER}");
+        println!("{header}");
         println!("{lines}");
         return;
     }
     if let Some(parent) = csv.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    let body = format!("{HEADER}\n{lines}\n");
+    let body = format!("{header}\n{lines}\n");
     std::fs::write(&csv, body)
         .unwrap_or_else(|e| die(&format!("cannot write {}: {e}", csv.display())));
     eprintln!(

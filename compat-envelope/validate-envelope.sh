@@ -38,6 +38,12 @@ done
 
 fail=0
 
+echo "== compat-envelope: shared scorecard row =="
+if ! "${here}/check-scorecard-schema.rs" --root "${here}/.."; then
+  echo "validate-envelope: scorecard producer/reader/schema drift" >&2
+  exit 1
+fi
+
 echo "== compat-envelope regression: hermit (lane=${lane}, backends=${backends}) =="
 if ! "${here}/collect-envelope.rs" --mode regression --lane "${lane}" \
       --repo "${repo}" --backends "${backends}" --with-parity \

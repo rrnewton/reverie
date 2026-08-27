@@ -92,7 +92,7 @@ for capability in exit_code detlog oracle; do
     bad "missing $capability was hidden"
   fi
 done
-"$GUARD" --root "$r" --json >"$TMP/cap.json" 2>&1
+"$GUARD" --root "$r" --json >"$TMP/cap.json" 2>"$TMP/cap.err"
 python3 - "$TMP/cap.json" <<'PY'
 import json, sys
 d = json.load(open(sys.argv[1]))

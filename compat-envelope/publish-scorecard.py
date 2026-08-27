@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import csv
 import fcntl
+import json
 import os
 import sys
 import tempfile
@@ -24,6 +25,7 @@ from pathlib import Path
 
 OPTIONAL_PARITY_COLUMNS = ("stack_parity", "heap_parity")
 CELL_KEY = ("test_id", "backend")
+SCHEMA = Path(__file__).with_name("scorecard-schema.json")
 
 
 class PublishError(Exception):
@@ -47,8 +49,27 @@ def read_csv(path: Path) -> tuple[list[str], list[dict[str, str]]]:
     return list(reader.fieldnames), rows
 
 
-def upgraded_header(header: list[str]) -> list[str]:
-    return header + [column for column in OPTIONAL_PARITY_COLUMNS if column not in header]
+def shared_header() -> list[str]:
+    try:
+        document = json.loads(SCHEMA.read_text(encoding="utf-8"))
+        header = document["variants"]["scorecard.csv"]["columns"]
+    except (OSError, json.JSONDecodeError, KeyError, TypeError) as error:
+        raise PublishError(f"cannot read shared scorecard row from {SCHEMA}: {error}") from error
+    if not isinstance(header, list) or not header or not all(
+        isinstance(column, str) and column for column in header
+    ):
+        raise PublishError(f"{SCHEMA}: scorecard.csv columns are malformed")
+    if len(header) != len(set(header)):
+        raise PublishError(f"{SCHEMA}: scorecard.csv contains duplicate columns")
+    return header
+
+
+def require_shared_header(path: Path, actual: list[str], expected: list[str]) -> None:
+    if actual != expected:
+        raise PublishError(
+            f"{path} header differs from the shared scorecard row; "
+            "run compat-envelope/check-scorecard-schema.rs"
+        )
 
 
 def normalise_rows(
@@ -112,8 +133,11 @@ def atomic_write(path: Path, header: list[str], rows: list[dict[str, str]]) -> N
 def initialise(current: Path, history: Path) -> tuple[int, int]:
     if history.exists():
         raise PublishError(f"history already exists: {history}")
-    header, old_rows = read_csv(current)
-    header = upgraded_header(header)
+    old_header, old_rows = read_csv(current)
+    header = shared_header()
+    unknown = [column for column in old_header if column not in header]
+    if unknown:
+        raise PublishError(f"{current} has unknown columns: {', '.join(unknown)}")
     history_rows = normalise_rows(old_rows, header, historical=True)
     projected = current_rows(history_rows)
     atomic_write(history, header, history_rows)
@@ -123,8 +147,11 @@ def initialise(current: Path, history: Path) -> tuple[int, int]:
 
 def upgrade_only(path: Path) -> int:
     """Widen one historical scorecard without inventing either run mode."""
-    header, rows = read_csv(path)
-    header = upgraded_header(header)
+    old_header, rows = read_csv(path)
+    header = shared_header()
+    unknown = [column for column in old_header if column not in header]
+    if unknown:
+        raise PublishError(f"{path} has unknown columns: {', '.join(unknown)}")
     rows = normalise_rows(rows, header, historical=True)
     atomic_write(path, header, rows)
     return len(rows)
@@ -132,15 +159,18 @@ def upgrade_only(path: Path) -> int:
 
 def publish(observation: Path, current: Path, history: Path) -> tuple[int, int, bool]:
     history_header, history_rows_raw = read_csv(history)
-    header = upgraded_header(history_header)
+    header = shared_header()
+    require_shared_header(history, history_header, header)
     history_rows = normalise_rows(history_rows_raw, header, historical=True)
     source_header, source_rows_raw = read_csv(observation)
     unknown = [column for column in source_header if column not in header]
     if unknown:
         raise PublishError(
-            f"observation {observation} has column(s) absent from history: "
+            f"observation {observation} has column(s) outside the shared scorecard row: "
             f"{', '.join(unknown)}"
         )
+    if len(source_header) != len(set(source_header)):
+        raise PublishError(f"observation {observation} has duplicate columns")
     source_rows = normalise_rows(source_rows_raw, header, historical=False)
     if not source_rows:
         raise PublishError(f"observation {observation} has no rows")
@@ -168,11 +198,11 @@ def publish(observation: Path, current: Path, history: Path) -> tuple[int, int, 
 
 def check_projection(current: Path, history: Path) -> tuple[int, int]:
     history_header, history_rows_raw = read_csv(history)
-    header = upgraded_header(history_header)
+    header = shared_header()
+    require_shared_header(history, history_header, header)
     history_rows = normalise_rows(history_rows_raw, header, historical=True)
     current_header, actual = read_csv(current)
-    if current_header != header:
-        raise PublishError("current and history headers differ")
+    require_shared_header(current, current_header, header)
     expected = current_rows(history_rows)
     if actual != expected:
         raise PublishError(

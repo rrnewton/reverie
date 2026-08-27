@@ -80,6 +80,10 @@
     unused_variables,
     unused_must_use
 )]
+#[path = "lib/scorecard.rs"]
+mod scorecard;
+
+use scorecard::{split_csv_line, ScorecardColumn as Column, ScorecardRow, ScorecardVariant};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::env;
@@ -88,10 +92,6 @@ use std::path::{Path, PathBuf};
 use std::process::{exit, Command};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
-// Shared contract with collect-envelope.rs / render-scorecard.rs. Keep in sync.
-// `absence_reason` is APPENDED at the end: readers resolve columns by header
-// name, so trailing additions are backward compatible with the 19-column form.
-const HEADER: &str = "run_id,run_utc,hermit_sha,reverie_sha,dirty,run_mode,lane,bucket,test_id,test_mode,backend,cell_state,outcome,deterministic,tool_count_parity,output_hash,duration_ms,max_rss_kb,reason,verify_compare,bitwise_parity,compared_log_messages,tier,legacy_parity_unqualified,ref_output_hash,parity_comparator,parity_tier,profile_flags,population_id,selected_count,executed_count,evidence_count,comparison_tier,absence_reason,stack_parity,heap_parity";
 const BUCKET: &str = "reverie-examples";
 // Single reverie mode: "run the shared counter Tool". The specific tool
 // (counter1/counter2) is preserved in test_id so it slots into the
@@ -107,14 +107,6 @@ const ABSENCE_NOT_COLLECTED: &str = "not_collected";
 const ABSENCE_UNSUPPORTED: &str = "unsupported";
 const ABSENCE_UNAVAILABLE: &str = "unavailable";
 const ABSENCE_NO_RESULT: &str = "no_result";
-
-fn csv_field(value: &str) -> String {
-    if value.contains(',') || value.contains('"') || value.contains('\n') {
-        format!("\"{}\"", value.replace('"', "\"\""))
-    } else {
-        value.to_string()
-    }
-}
 
 fn sha256_text(value: &str) -> String {
     let mut hash = Sha256::new();
@@ -393,7 +385,7 @@ fn main() {
     }
 
     let here = script_dir();
-    let csv_path = csv.unwrap_or_else(|| here.join("scorecard.csv"));
+    let csv_path = csv.unwrap_or_else(|| here.join(ScorecardVariant::Reverie.file_name()));
     let repo = repo
         .or_else(|| {
             let c = here.join("..").join("hermit");
@@ -515,7 +507,7 @@ fn main() {
         return;
     }
 
-    let mut rows: Vec<Vec<String>> = Vec::new();
+    let mut rows: Vec<ScorecardRow> = Vec::new();
     let mut regressions: Vec<String> = Vec::new();
     let mut executed_count = 0usize;
     let mut evidence_count = 0usize;
@@ -727,39 +719,38 @@ fn main() {
     let mut buf = String::new();
     let mut kept = 0usize;
     let mut dropped = 0usize;
-    let target_header: Vec<String> = if existing.trim().is_empty() {
-        HEADER.split(',').map(String::from).collect()
+    let variant = ScorecardVariant::Reverie;
+    let header = variant.header();
+    let target_header = variant
+        .columns()
+        .into_iter()
+        .map(|column| column.name().to_string())
+        .collect::<Vec<_>>();
+    if existing.trim().is_empty() {
+        buf.push_str(&header);
+        buf.push('\n');
     } else {
-        existing
-            .lines()
-            .next()
-            .unwrap_or("")
-            .split(',')
-            .map(String::from)
-            .collect()
-    };
-    for required in HEADER.split(',') {
-        if !target_header.iter().any(|column| column == required) {
+        let existing_header = existing.lines().next().unwrap_or("");
+        if existing_header != header {
             die(&format!(
-                "scorecard {} is missing required provenance column {required:?}; run migrate-scorecard-schema.py --apply first",
+                "scorecard {} does not match the shared reverie row; run check-scorecard-schema.rs",
                 csv_path.display()
             ));
         }
-    }
-    if existing.trim().is_empty() {
-        buf.push_str(&target_header.join(","));
-        buf.push('\n');
-    } else {
         for (i, line) in existing.lines().enumerate() {
             if i == 0 {
-                buf.push_str(&target_header.join(","));
+                buf.push_str(&header);
                 buf.push('\n');
                 continue;
             }
             if line.trim().is_empty() {
                 continue;
             }
-            let is_ours = line.split(',').nth(7).map(|b| b == BUCKET).unwrap_or(false);
+            let fields = split_csv_line(line)
+                .unwrap_or_else(|error| die(&format!("malformed existing scorecard row: {error}")));
+            let existing_row = ScorecardRow::parse(&target_header, &fields, None)
+                .unwrap_or_else(|error| die(&format!("malformed existing scorecard row: {error}")));
+            let is_ours = existing_row.bucket == BUCKET;
             if is_ours && !append {
                 dropped += 1;
                 continue;
@@ -769,28 +760,11 @@ fn main() {
             buf.push('\n');
         }
     }
-    let names: Vec<&str> = HEADER.split(',').collect();
     for row in &mut rows {
-        for (name, value) in [
-            ("selected_count", selected_count.to_string()),
-            ("executed_count", executed_count.to_string()),
-            ("evidence_count", evidence_count.to_string()),
-        ] {
-            let index = names
-                .iter()
-                .position(|candidate| *candidate == name)
-                .unwrap();
-            row[index] = value;
-        }
-        let projected = target_header
-            .iter()
-            .map(|column| {
-                let index = names.iter().position(|name| *name == column).unwrap();
-                csv_field(&row[index])
-            })
-            .collect::<Vec<_>>()
-            .join(",");
-        buf.push_str(&projected);
+        row.selected_count = selected_count.to_string();
+        row.executed_count = executed_count.to_string();
+        row.evidence_count = evidence_count.to_string();
+        buf.push_str(&row.encode(variant));
         buf.push('\n');
     }
     fs::write(&csv_path, buf).unwrap_or_else(|e| die(&format!("cannot write CSV: {e}")));
@@ -845,7 +819,7 @@ fn row(
     reason: &str,
     absence_reason: &str,
     reps: u32,
-) -> Vec<String> {
+) -> ScorecardRow {
     let det = deterministic
         .map(|b| if b { "1" } else { "0" })
         .unwrap_or("");
@@ -883,44 +857,40 @@ fn row(
     } else {
         ("", "")
     };
-    vec![
-        run_id.to_string(),
-        run_utc.to_string(),
-        hermit_sha.to_string(),
-        reverie_sha.to_string(),
-        dirty.to_string(),
-        "reverie".to_string(), // run_mode
-        lane.to_string(),
-        BUCKET.to_string(),
-        test_id.to_string(),
-        test_mode.to_string(),
-        backend.to_string(),
-        cell_state.to_string(),
-        outcome.to_string(),
-        det.to_string(),
-        par.to_string(),
-        output_hash.to_string(),
-        duration_ms.to_string(),
-        String::new(), // max_rss_kb
-        reason.to_string(),
-        verify_compare.to_string(),
-        bitwise_parity.to_string(),
-        compared,
-        tier.to_string(),
-        String::new(), // legacy_parity_unqualified: producers never write legacy claims
-        ref_output_hash.to_string(),
-        parity_comparator.to_string(),
-        parity_tier.to_string(),
-        profile_flags.to_string(),
-        population_id.to_string(),
-        String::new(), // selected_count: filled once the run completes
-        String::new(), // executed_count
-        String::new(), // evidence_count
-        // A repeated syscall total is real evidence, but it is neither of the
-        // cross-backend stdout+INFO tiers.  Keep it explicitly non-green.
-        "unqualified-tool-count-only".to_string(),
-        absence_reason.to_string(),
-        "0".to_string(), // stack_parity: this new run did not request L3
-        "0".to_string(), // heap_parity: this new run did not request L3
-    ]
+    ScorecardRow::from_pairs([
+        (Column::RunId, run_id.to_string()),
+        (Column::RunUtc, run_utc.to_string()),
+        (Column::HermitSha, hermit_sha.to_string()),
+        (Column::ReverieSha, reverie_sha.to_string()),
+        (Column::Dirty, dirty.to_string()),
+        (Column::RunMode, "reverie".to_string()),
+        (Column::Lane, lane.to_string()),
+        (Column::Bucket, BUCKET.to_string()),
+        (Column::TestId, test_id.to_string()),
+        (Column::TestMode, test_mode.to_string()),
+        (Column::Backend, backend.to_string()),
+        (Column::CellState, cell_state.to_string()),
+        (Column::Outcome, outcome.to_string()),
+        (Column::Deterministic, det.to_string()),
+        (Column::ToolCountParity, par.to_string()),
+        (Column::OutputHash, output_hash.to_string()),
+        (Column::DurationMs, duration_ms.to_string()),
+        (Column::Reason, reason.to_string()),
+        (Column::VerifyCompare, verify_compare.to_string()),
+        (Column::BitwiseParity, bitwise_parity.to_string()),
+        (Column::ComparedLogMessages, compared),
+        (Column::Tier, tier.to_string()),
+        (Column::RefOutputHash, ref_output_hash.to_string()),
+        (Column::ParityComparator, parity_comparator.to_string()),
+        (Column::ParityTier, parity_tier.to_string()),
+        (Column::ProfileFlags, profile_flags.to_string()),
+        (Column::PopulationId, population_id.to_string()),
+        (
+            Column::ComparisonTier,
+            "unqualified-tool-count-only".to_string(),
+        ),
+        (Column::AbsenceReason, absence_reason.to_string()),
+        (Column::StackParity, "0".to_string()),
+        (Column::HeapParity, "0".to_string()),
+    ])
 }
