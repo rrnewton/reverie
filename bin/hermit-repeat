@@ -927,6 +927,73 @@ def classify_nextest_output(text: str, test_id: str) -> tuple[str, str]:
     return "failed", f"nextest reported {only} for {test_id}"
 
 
+
+# --------------------------------------------------------------------------- bound proximity
+# ⚠️ A FAILURE THAT RAN CLOSE TO ITS BOUND MAY NOT BE A FAILURE OF THE CELL.
+# agent(hermit-122) measured, under two concurrent validates, deadline-sensitive
+# failures including a KVM failure it classified as a bound-kill under
+# contention. A pressure test is DELIBERATELY load, so it is the tool most
+# likely to produce exactly that and the least able to notice: the verdict says
+# "failed" either way.
+# The pieces to tell them apart were already recorded -- elapsed_s, timed_out,
+# exit 124, safehermit's bound.wall -- but they sat in three different tables, so
+# separating a bound-kill from a real failure meant cross-referencing by hand and
+# nobody would.
+BOUND_PROXIMITY = 0.80
+
+
+def bound_note(r, deadline: float | None) -> str | None:
+    """One phrase saying whether this run's failure could be the bound firing.
+
+    Returns None when the question does not arise -- the run did not fail, or
+    there is no elapsed time to compare. Deliberately NOT a verdict: a run at 95%
+    of its bound MIGHT still have failed on its merits, and saying otherwise
+    would trade one unjustified claim for another."""
+    if r.category not in ("failed", "no_result"):
+        return None
+    if r.exit_code == 124 or r.timed_out:
+        return "BOUND FIRED: killed at the deadline, so this is not a cell verdict"
+    if r.exit_code == 125:
+        return "BOUND FIRED: stderr byte cap, so this is not a cell verdict"
+    if not deadline or not r.elapsed_s:
+        return None
+    frac = r.elapsed_s / deadline
+    if frac >= BOUND_PROXIMITY:
+        return (f"NEAR THE BOUND: ran {r.elapsed_s:.1f}s of a {deadline:.0f}s deadline "
+                f"({100*frac:.0f}%) -- contention could have made this a bound-kill")
+    return f"ran {r.elapsed_s:.1f}s of a {deadline:.0f}s deadline ({100*frac:.0f}%)"
+
+
+def bound_summary_lines(results: list, deadline: float | None) -> list[str]:
+    """How many failures could be the bound rather than the cell."""
+    failed = [r for r in results if r.category in ("failed", "no_result")]
+    if not failed:
+        return []
+    fired = [r for r in failed if r.exit_code in (124, 125) or r.timed_out]
+    near = [r for r in failed
+            if r not in fired and deadline and r.elapsed_s
+            and r.elapsed_s / deadline >= BOUND_PROXIMITY]
+    unknown = [r for r in failed if r not in fired and r not in near
+               and not (deadline and r.elapsed_s)]
+    out = [f"  BOUND CHECK on {len(failed)} non-passing run(s), deadline "
+           f"{deadline:.0f}s:" if deadline else
+           f"  BOUND CHECK on {len(failed)} non-passing run(s): NO DEADLINE RECORDED"]
+    out.append(f"    {len(fired)} killed BY the bound -- not cell verdicts")
+    out.append(f"    {len(near)} ran to >= {100*BOUND_PROXIMITY:.0f}% of it -- could be "
+               f"bound-kills under contention")
+    out.append(f"    {len(failed) - len(fired) - len(near) - len(unknown)} finished well "
+               f"inside it -- these are the cell's own failures")
+    if unknown:
+        out.append(f"    {len(unknown)} have NO elapsed time recorded, so the question "
+                   f"cannot be answered for them")
+    if fired or near:
+        out.append("    ⚠️ A pressure test is deliberately load. Do not report the rows "
+                   "above")
+        out.append("       as cell flakiness without saying the bound may have produced "
+                   "them.")
+    return out
+
+
 # --------------------------------------------------------------------------- report
 def fmt(v, width, none="-"):
     return (none if v is None else str(v)).rjust(width)
@@ -1598,10 +1665,15 @@ def write_report(args, meta: dict, results: list[RunResult], fh):
         if notrun:
             w(f"  {len(notrun)} of them NEVER RAN: " + ", ".join(r.name for r in notrun))
         shown = failed + noresult
+        for _l in bound_summary_lines(results, getattr(args, "deadline", None)):
+            w(_l)
         _summarize_failures(shown, w)
         w("  FULL DETAIL for the first 3 (the rest are in result.json):")
         for r in shown[:3]:
             w(f"    {r.name}  [{r.category}]  {r.why}")
+            _bn = bound_note(r, getattr(args, "deadline", None))
+            if _bn:
+                w(f"        {_bn}")
             for k in ("bound.wall", "bound.bytes", "truncated"):
                 if k in r.safehermit_bounds:
                     w(f"        safehermit {k} = {r.safehermit_bounds[k]}")
@@ -2592,6 +2664,45 @@ def _selftest() -> int:
           "min 12  max 40  distinct 2" in lines[0], True)
     check("and it names the thread the range belongs to",
           "dtid 3" in lines[0], True)
+
+    # --- bound proximity on failures ---------------------------------------
+    # agent(hermit-122) measured deadline-sensitive failures under two concurrent
+    # validates, including a KVM failure it classified as a bound-kill under
+    # contention. A pressure test is deliberately load, so it manufactures that
+    # condition; if the report cannot separate it from a cell failure the sweep
+    # reports contention as flakiness.
+    kill124 = RunResult(index=1, name="a", dir="/f/a", category="failed", why="",
+                        exit_code=124, elapsed_s=900.0)
+    check("an exit-124 failure is named as the bound firing, not a verdict",
+          bound_note(kill124, 900.0).startswith("BOUND FIRED"), True)
+    to = RunResult(index=2, name="b", dir="/f/b", category="failed", why="",
+                   exit_code=1, timed_out=True, elapsed_s=899.0)
+    check("a timed_out failure is the bound firing however it exited",
+          bound_note(to, 900.0).startswith("BOUND FIRED"), True)
+    near = RunResult(index=3, name="c", dir="/f/c", category="failed", why="",
+                     exit_code=1, elapsed_s=800.0)
+    check("a failure at 89% of the bound is flagged as possibly bound-limited",
+          "NEAR THE BOUND" in bound_note(near, 900.0), True)
+    far = RunResult(index=4, name="d", dir="/f/d", category="failed", why="",
+                    exit_code=1, elapsed_s=8.0)
+    n = bound_note(far, 900.0)
+    check("a failure well inside the bound is NOT flagged", "NEAR THE BOUND" in n, False)
+    check("but its elapsed IS still stated against the bound", "8.0s of a 900s" in n, True)
+    # ⚠️ The one that keeps this honest in the other direction.
+    check("a CLEAN run gets no bound note at all -- this is about failures",
+          bound_note(RunResult(index=5, name="e", dir="/f/e", category="clean", why="",
+                               elapsed_s=899.0), 900.0), None)
+    check("no elapsed time means the question is unanswerable, not answered no",
+          bound_note(RunResult(index=6, name="f", dir="/f/f", category="failed", why="",
+                               exit_code=1), 900.0), None)
+
+    lines = "\n".join(bound_summary_lines([kill124, near, far], 900.0))
+    check("the summary counts bound-kills separately", "1 killed BY the bound" in lines, True)
+    check("and counts the near ones separately again", ">= 80% of it" in lines, True)
+    check("and says which are the cell's own", "1 finished well inside it" in lines, True)
+    check("and warns against reporting the first two as flakiness",
+          "without saying the bound may have produced them." in lines, True)
+    check("no failures means no bound section at all", bound_summary_lines([far._replace()] if hasattr(far,'_replace') else [RunResult(index=9,name="g",dir="/f/g",category="clean",why="")], 900.0), [])
 
     # --- nextest vocabulary -----------------------------------------------
     # The guest heading does not merely use the wrong words for a nextest sweep,
