@@ -1119,9 +1119,8 @@ mod tests {
     /// THIS TEST UNPASSABLE ON THIS HOST. It used to read
     /// `get_feature_info().initial_local_apic_id()`, the LEGACY CPUID leaf 1
     /// `EBX[31:24]` field, which is a `u8` and so has 256 possible values.
-    /// Asking it to tell 316 CPUs apart is a pigeonhole failure, not a
-    /// scheduling bug. Measured at reverie main
-    /// `b181b1bba20c846d277f500c25182a00e18add9a` on a 316-CPU host:
+    /// Measured at reverie main `b181b1bba20c846d277f500c25182a00e18add9a` on a
+    /// 316-CPU host:
     ///
     /// ```text
     /// 316 observations, min id 0, max id 255, 256 distinct ids,
@@ -1133,10 +1132,31 @@ mod tests {
     /// recorded several times as "pre-existing and host-specific" and routinely
     /// skipped, which was true and left `validate.sh` step 2 red on main.
     ///
+    /// ⚠️ BUT THE 256 CEILING IS NOT WHERE IT BREAKS, AND ASSUMING SO WOULD
+    /// LEAVE THE NEXT READER ON A 64-CORE BOX BELIEVING THEY ARE SAFE. The
+    /// legacy field drops the HIGH TOPOLOGY BITS, so ids repeat across sockets
+    /// long before the count reaches 256: on this host the first collision is
+    /// core 32 against core 0, both reporting id 0. Measured by enumerating
+    /// only the first N cores with each identifier:
+    ///
+    /// ```text
+    /// cores    16   32   33   64  128  256  316
+    /// 8-bit    ok   ok  FAIL FAIL FAIL FAIL FAIL
+    /// 32-bit   ok   ok   ok   ok   ok   ok   ok
+    /// ```
+    ///
+    /// So this is not a test that was always broken. It is a test whose hidden
+    /// assumption -- that the enumerated CPUs have distinct LEGACY apic ids --
+    /// held on the smaller machines it was written against and stopped holding
+    /// here, at 33 cores rather than at 257.
+    ///
     /// CPUID leaf `0x0B` reports the 32-bit x2APIC id, which distinguishes as
     /// many CPUs as the machine has. Reading it does not weaken the assertion --
     /// the assertion is unchanged, and it is now able to fail for the reason it
-    /// was written to catch instead of failing for arithmetic.
+    /// was written to catch instead of failing for arithmetic. Verified in that
+    /// direction too: with affinity broken outright the repaired test reports
+    /// `left: 316, right: 1`, and with affinity broken for half the cores it
+    /// also fails.
     #[cfg(target_arch = "x86_64")]
     #[test]
     pub fn pin_affinity_to_all_cores() -> Result<(), Error> {
