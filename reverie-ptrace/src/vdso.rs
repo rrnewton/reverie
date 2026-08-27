@@ -491,7 +491,7 @@ mod tests {
         assert!(!is_patch_required(&Subscription::none()));
         assert!(!is_patch_required(&[Sysno::read].into_iter().collect()));
 
-        for (_, (_, _, _, sysno)) in VDSO_PATCH_INFO.iter() {
+        for (_, _, _, sysno) in VDSO_PATCH_INFO.values() {
             assert!(
                 is_patch_required(&[*sysno].into_iter().collect()),
                 "a subscription for vDSO syscall {sysno:?} must require patching",
@@ -510,7 +510,7 @@ mod tests {
 
     #[test]
     fn each_subscription_selects_only_its_own_vdso_symbols() {
-        for (_, (_, _, _, subscribed_sysno)) in VDSO_PATCH_INFO.iter() {
+        for (_, _, _, subscribed_sysno) in VDSO_PATCH_INFO.values() {
             let subscriptions = [*subscribed_sysno].into_iter().collect();
             let selected = subscribed_vdso_patches(&subscriptions).collect::<Vec<_>>();
 
