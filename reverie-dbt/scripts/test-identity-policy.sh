@@ -27,8 +27,9 @@ guest="$tmpdir/identity-policy"
 
 set +e
 env HERMIT_DBT_NOOP=1 \
-  "$drrun" -quiet -disable_rseq -stack_size 2M -c "$client" -- "$guest" \
-  >"$tmpdir/out" 2>"$tmpdir/err"
+  "$drrun" -quiet -disable_rseq -stack_size 2M -c "$client" \
+  -diagnostic_fd 198 -- "$guest" \
+  >"$tmpdir/out" 2>"$tmpdir/err" 198>&2
 status=$?
 set -e
 
@@ -52,7 +53,7 @@ if ((status != 0)); then
   exit 1
 fi
 
-if ! grep -qx 'pid=3 ppid=1 tid=3 identity_fd=open' "$tmpdir/out"; then
+if ! grep -qx 'pid=3 ppid=1 tid=3 internal_fds=open' "$tmpdir/out"; then
   echo "FAIL: DBT virtual identity and pidfd_open policy: unexpected guest output" >&2
   echo "--- stdout ---" >&2
   cat "$tmpdir/out" >&2
