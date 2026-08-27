@@ -1,0 +1,62 @@
+FINDINGS: the "truncated middle band" is NOT a truncation class and NOT OOM-on-neighbour. PREMISE REFUTED. Evidence from durable /tmp/hermit-validate.*.log at each stop point (all 21 band rows read).
+
+=== 1. HOW executed_tests IS DERIVED, AND AT WHAT SCOPE ===
+Source: ci-hub/validate/aggregate.py:324 -> nonzero_result.executed_test_count(banner_text), where banner_text = every test-runner banner across the WHOLE run (all gates joined). It SUMS every "running N tests" banner in the run.
+=> executed_tests is a PER-RUN SUM over all gates, NOT per-gate. Its SCOPE is unambiguous (always whole-run).
+=> But its VALUE is a running-total-until-halt: it counts only the tests that ran BEFORE the DAG stopped. safe-ci-dag-runner eager-exits on the first node failure (aborts queued nodes, lets in-flight finish), so accumulation stops partway. A run where all nodes complete sums ~765; a run halted after a mid-DAG failure sums 350-520. Same commit 17b59fc6 yields 359 (halted at command_strict_verify) and 760 (halted at liteinst_strict) across two runs -- same field, same scope, different STOP POINT. The band is the eager-exit stop-point, not truncation.
+CLASSIFIER IMPLICATION: a band count does NOT mean "verdict untrustworthy". It correlates with "a node failed and the DAG short-circuited" -- a proxy. The real signal is already in the log: "safe-ci-dag-runner: FAIL - N passed, 1 failed, K aborted" plus a named "X FAIL <node> (exit C)". Keying needs-rerun on executed_tests alone re-introduces the proxy defect the classifier exists to fix.
+
+=== 2. TRUNCATION CAUSE FOR THREE ROWS -- LOG LINE AT STOP POINT ===
+Every band log ends with the PRIVILEGED lane passing (Exit 0); the failure is in the PORTABLE lane earlier. Quoted stop-point lines:
+
+71bc3856 (hMJRT7, et=515, 500s) -- /tmp/hermit-validate.hMJRT7.log:
+  L2007 "[test.hermit_integration] signal scenario blocking-sigsuspend, iteration 1 failed: ...hermit run ... --max-timeslice=disabled ... signal_determinism blocking-sigsuspend"
+  L2074 "test result: FAILED. 11 passed; 1 failed"
+  L2077 "X FAIL Portable Hermit integration targets (323s, exit 101)"
+  L2428-2431 "ABORT ... (eager-exit after another step failed; keep_going lets in-flight steps finish)"
+  L2432 "safe-ci-dag-runner: FAIL - 21 passed, 1 failed, 4 aborted, 0 skipped in 415.6s"
+  CAUSE = genuine test failure (blocking-sigsuspend, a KNOWN load-flaky debug assertion) + eager-exit abort of 4 buckets. NOT timeout, NOT OOM.
+
+289ce78e (kWVzlm, et=442, 507s) -- /tmp/hermit-validate.kWVzlm.log:
+  L2118 "X FAIL Portable manifest bucket: util-c (3s, exit 126)" then 4 ABORTs
+  L2127 "safe-ci-dag-runner: FAIL - 26 passed, 1 failed, 4 aborted, 0 skipped in 422.5s"
+  CAUSE = util-c exit 126 (not-executable/perm), failed in 3s. TRANSIENT: the re-run of 289ce78e PASSED full 765/438s (failures=0). This one is a FALSE RED. NOT timeout, NOT OOM.
+
+75edd745 (DpQNsA, et=464, 459s) -- /tmp/hermit-validate.DpQNsA.log:
+  L2217 "X FAIL DynamoRIO DBI strict backend parity matrix (7s, exit 1)"
+  L2258 "safe-ci-dag-runner: FAIL - 32 passed, 1 failed, 0 aborted, 0 skipped in 399.4s"
+  CAUSE = dbi_parity matrix exit 1, failed in 7s. Wall 459s = the OTHER (passing) nodes' time. NOT timeout, NOT OOM.
+
+=== 3. DOES ONE CAUSE DOMINATE? NO. ===
+Failing-gate distribution across all 21 band rows (one named X FAIL node each; every dag summary shows exactly "1 failed"):
+  4  hermit_integration (exit 101 / one TIMEOUT)
+  3  rustdoc (cargo doc, exit 101)
+  3  e2e manifest bucket (util-c/system-utils/language-runtimes, exit 1/126)
+  3  clippy (exit 101)
+  2  dbi_release build (exit 101)
+  2  command_strict_verify (exit 101)
+  2  dbi_parity (exit 1)
+  1  hermit_unit (exit 101)
+  1  EXTERNAL SIGTERM (signal 15)
+
+- 8 of 21 are DETERMINISTIC build/lint/doc reds (clippy 3 + rustdoc 3 + dbi_release build 2). These genuinely condemn the code (it does not lint/doc/build at that SHA); they will NOT recover on re-run and are correctly red.
+- The rest are per-node test failures: a mix of genuine reds and known-flaky/transient (util-c exit126 re-ran GREEN; blocking-sigsuspend known flaky; liteinst_strict timeout is a known load-dependent hang).
+- Exactly 1 row is a TRUE truncation: 3a404879 (jGFasJ, et=430, 75s) -- log ends "[safe-ci] signal 15 - stopping scope safe-ci-2067578.scope (tears down all steps + orphans)", NO dag FAIL summary, NO X FAIL. External SIGTERM (admission/eviction/coordinator kill) tore down the run mid-flight. This is the only row matching "ran hundreds then stopped with no verdict" -- and its cause is external kill, NOT OOM-on-neighbour.
+
+FIRST SUSPECT (memory.oom.group / OOM-on-innocent-neighbour): REFUTED across ALL 21 logs. Grep for memory.oom / oom-kill / killed process / out of memory / memory.max / Cannot allocate = ZERO hits. The only "sigkill" matches are the passing unit test process_group_forwarding_is_limited_to_unmaskable_sigkill ... ok.
+
+=== TIMEOUT vs BAND (user's question) ===
+Only 2 of 21 involve a timeout, both OUTSIDE the 245-507s band range (real_seconds 1278 and 1470). No 900s/1200s wall fired on the band rows -- they failed FAST (nodes exited in 3-323s) and eager-exit aborted the rest; their wall is the passing nodes' time. So timeout is NOT the shared cause.
+Wall-vs-CPU on the two timeout rows (livelock discriminator):
+  1b12bc1a hermit_integration TIMEOUT>1200: wall=1278s cpu=719.9s cpu/wall=0.563 -> contended/waiting, NOT single-core livelock.
+  17b59fc6 liteinst_strict TIMEOUT>900: wall=1470s cpu=5870.6s cpu/wall=3.994 -> ~4 cores burning = CPU-bound load-dependent hang (consistent with the known liteinst_strict python_entropy transient, misattributed, not the 1443 timeslice livelock).
+Neither matches the earlier 600.013/599.986 (ratio 1.0) single-core livelock signature.
+
+=== 17b59fc6 RECONCILIATION WITH hermit-ci (359 vs 760) ===
+Two DIFFERENT runs failing on DIFFERENT nodes:
+  OzElQe et=359: X FAIL command_strict_verify (217s, exit 101)
+  ywZ5qk et=760: X FAIL liteinst_strict (900s, TIMEOUT)
+Both are genuine reds; the count differs only because the DAG halted at different depths (per-run running-total, see part 1). The fault_class=code attribution keyed to the 760 run is really the liteinst_strict TIMEOUT (a known load-dependent hang) -- so "code" is NOT settled; at least one of the two nodes is load/flaky. LiteInst attribution should be treated as UNSETTLED pending a boxed re-run, not confirmed.
+
+=== BOTTOM LINE ===
+The "middle band" is the eager-exit signature of safe-ci-dag-runner (one node fails -> DAG short-circuits -> per-run executed-test SUM stops mid-count). It is NOT a truncation class, NOT OOM-on-neighbour, and does NOT reduce to one fixable cause. No single fix recovers 21 PRs. The correct discriminator is the dag FAIL summary + named node + exit code (already in every log), NOT the executed_tests band. Only 1 of 21 is a true no-verdict truncation, caused by external SIGTERM.

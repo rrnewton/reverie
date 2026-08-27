@@ -178,6 +178,8 @@ survivable rather than merely known.
 
 # Compose multi-line notes in a quoted heredoc, never inline
 
+Write handoff documents under tracked `ai_docs/handoffs/` (or as a TaskGraph HANDOFF note), never as the only copy under `ignored/`.
+
 `tg note` is the durable record -- panes are not -- and it is **quoting-safe for
 shell metacharacters**: text that reaches its argv survives `$(...)`, backticks,
 `$VAR`, `${BRACE}` and mixed quotes.

@@ -1,0 +1,34 @@
+# Authoritative 0-byte DynamoRIO/cmake object manifest — 2026-08-04T20:11:26Z
+# scope: *.o size 0 inside every dynamorio-build/ cmake tree (NOT rust target/deps, NOT backups)
+
+STAGING  ./ignored/validate/1580-stale-dynamorio/debug-reverie-dbi-5ce6fb33c5d43ee1/out/dynamorio-build/tools/CMakeFiles/run_in_bg.dir/run_in_bg.c.o
+STAGING  ./ignored/validate/1580-stale-dynamorio/debug-reverie-dbi-5ce6fb33c5d43ee1/out/dynamorio-build/tools/CMakeFiles/drloader.dir/drloader.c.o
+STAGING  ./ignored/validate/1580-stale-dynamorio/debug-reverie-dbi-5ce6fb33c5d43ee1/out/dynamorio-build/tools/CMakeFiles/drnudgeunix.dir/__/core/unix/nudgesig.c.o
+STAGING  ./ignored/validate/1580-stale-dynamorio/debug-reverie-dbi-5ce6fb33c5d43ee1/out/dynamorio-build/clients/drcachesim/CMakeFiles/minizip.dir/__/__/third_party/zlib/contrib/minizip/minizip.c.o
+STAGING  ./ignored/validate/1580-stale-dynamorio/debug-reverie-dbi-5ce6fb33c5d43ee1/out/dynamorio-build/ext/drsyms/CMakeFiles/dwelf_pic.dir/__/__/third_party/elfutils/libdwelf/dwelf_dwarf_gnu_debugaltlink.c.o
+STAGING  ./ignored/validate/1580-stale-dynamorio/debug-reverie-dbi-5ce6fb33c5d43ee1/out/dynamorio-build/ext/drsyms/CMakeFiles/ebl_pic.dir/__/__/third_party/elfutils/libebl/eblelfdata.c.o
+STAGING  ./ignored/validate/1580-stale-dynamorio/debug-reverie-dbi-5ce6fb33c5d43ee1/out/dynamorio-build/ext/drsyms/CMakeFiles/ebl_pic.dir/__/__/third_party/elfutils/libebl/eblcheckobjattr.c.o
+STAGING  ./ignored/validate/1580-stale-dynamorio/debug-reverie-dbi-5ce6fb33c5d43ee1/out/dynamorio-build/ext/drsyms/CMakeFiles/ebl_pic.dir/__/__/third_party/elfutils/libebl/ebl_data_marker_symbol.c.o
+STAGING  ./ignored/validate/1580-stale-dynamorio/debug-reverie-dbi-5ce6fb33c5d43ee1/out/dynamorio-build/ext/drsyms/CMakeFiles/ebl_pic.dir/__/__/third_party/elfutils/libebl/eblabicfi.c.o
+STAGING  ./ignored/validate/1580-stale-dynamorio/debug-reverie-dbi-5ce6fb33c5d43ee1/out/dynamorio-build/ext/drsyms/CMakeFiles/ebl_pic.dir/__/__/third_party/elfutils/libebl/eblbsspltp.c.o
+STAGING  ./ignored/validate/1580-stale-dynamorio/debug-reverie-dbi-5ce6fb33c5d43ee1/out/dynamorio-build/clients/drcachesim/drpt2trace/libipt/CMakeFiles/ipt.dir/__/__/__/__/third_party/libipt/libipt/src/pt_event_queue.c.o
+STAGING  ./ignored/validate/1580-stale-dynamorio/debug-reverie-dbi-5ce6fb33c5d43ee1/out/dynamorio-build/clients/drcachesim/drpt2trace/libipt/CMakeFiles/ipt.dir/__/__/__/__/third_party/libipt/libipt/src/pt_packet.c.o
+SLOT  ./worktrees/226/hermit/target/debug/build/reverie-dbi-89ddd5351296fa25/out/dynamorio-build/clients/drcachesim/CMakeFiles/drmemtrace_nomain.dir/common/options.cpp.o
+SLOT  ./worktrees/226/hermit/target/debug/build/reverie-dbi-89ddd5351296fa25/out/dynamorio-build/clients/drcachesim/CMakeFiles/drmemtrace_schedule_stats.dir/tools/schedule_stats.cpp.o
+SLOT  ./worktrees/226/hermit/target/debug/build/reverie-dbi-89ddd5351296fa25/out/dynamorio-build/clients/drcachesim/CMakeFiles/drmemtrace_view.dir/tracer/raw2trace_shared.cpp.o
+SLOT  ./worktrees/226/hermit/target/debug/build/reverie-dbi-89ddd5351296fa25/out/dynamorio-build/clients/drcachesim/CMakeFiles/drmemtrace_static.dir/common/options.cpp.o
+SLOT  ./worktrees/226/hermit/target/debug/build/reverie-dbi-89ddd5351296fa25/out/dynamorio-build/clients/drcachesim/CMakeFiles/drmemtrace_drstatic.dir/tracer/raw2trace_shared.cpp.o
+SLOT  ./worktrees/226/hermit/target/debug/build/reverie-dbi-89ddd5351296fa25/out/dynamorio-build/clients/drcachesim/CMakeFiles/drmemtrace_drstatic.dir/common/options.cpp.o
+SLOT  ./worktrees/226/hermit/target/release/build/reverie-dbi-67b1fb033d51f080/out/dynamorio-build/clients/drcachesim/CMakeFiles/drmemtrace_launcher.dir/scheduler/scheduler_impl.cpp.o
+SLOT  ./worktrees/226/hermit/target/release/build/reverie-dbi-627892a9054bf226/out/dynamorio-build/clients/drcachesim/CMakeFiles/drmemtrace_launcher.dir/scheduler/scheduler_impl.cpp.o
+SLOT  ./worktrees/226/hermit/target/release/build/reverie-dbi-627892a9054bf226/out/dynamorio-build/clients/drcachesim/CMakeFiles/drmemtrace_launcher.dir/common/options.cpp.o
+SLOT  ./worktrees/vprod/hermit/target/release/build/reverie-dbi-b1907cbfdc0ce784/out/dynamorio-build/core/CMakeFiles/dynamorio.dir/ir/x86/opnd.c.o
+STAGING  ./ignored/ci-hub/obligations/20260804-023434-74a5b6b56e76-c7c06f/hermit/target/debug/build/reverie-dbi-c0b65b343b79ca6c/out/dynamorio-build/tools/CMakeFiles/drnudgeunix.dir/nudgeunix.c.o
+STAGING  ./ignored/ci-hub/obligations/20260804-023434-74a5b6b56e76-c7c06f/hermit/target/debug/build/reverie-dbi-c0b65b343b79ca6c/out/dynamorio-build/ext/drsyms/CMakeFiles/ebl_pic.dir/__/__/third_party/elfutils/libebl/eblsymboltypename.c.o
+STAGING  ./ignored/ci-hub/obligations/20260804-023434-74a5b6b56e76-c7c06f/hermit/target/debug/build/reverie-dbi-c0b65b343b79ca6c/out/dynamorio-build/ext/drsyms/CMakeFiles/elf_pic.dir/__/__/third_party/elfutils/libelf/elf64_checksum.c.o
+STAGING  ./ignored/ci-hub/obligations/20260804-023434-74a5b6b56e76-c7c06f/hermit/target/debug/build/reverie-dbi-c0b65b343b79ca6c/out/dynamorio-build/ext/drsyms/CMakeFiles/elf_pic.dir/__/__/third_party/elfutils/libelf/elf64_getshdr.c.o
+STAGING  ./ignored/ci-hub/obligations/20260804-023434-74a5b6b56e76-c7c06f/hermit/target/debug/build/reverie-dbi-c0b65b343b79ca6c/out/dynamorio-build/clients/drcachesim/drpt2trace/libipt/CMakeFiles/ipt.dir/__/__/__/__/third_party/libipt/libipt/src/pt_event_decoder.c.o
+STAGING  ./ignored/ci-hub/obligations/20260804-025419-0f891e432a75-7a7725/hermit/target/debug/build/reverie-dbi-c0b65b343b79ca6c/out/dynamorio-build/ext/drsyms/CMakeFiles/dw_pic.dir/__/__/third_party/elfutils/libdw/cfi.c.o
+SLOT  ./worktrees/vforkverify/hermit/target/release/build/reverie-dbi-f2ab466807de3dac/out/dynamorio-build/clients/drcachesim/CMakeFiles/drmemtrace_launcher.dir/scheduler/scheduler_impl.cpp.o
+
+# TOTAL=29  in-real-slots=11  in-staging/obligation=18

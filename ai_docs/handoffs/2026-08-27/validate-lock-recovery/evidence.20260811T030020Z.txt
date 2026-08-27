@@ -1,0 +1,29 @@
+validate-lock quarantine recovery evidence
+stamp_utc=20260811T030020Z
+actor=codex-2 (claude agent) task=baseline-main-green-and-validate-walltime
+record: agent=owner-checkout-watch operation=validate:b4cc27da6aa02bd2126234b9cb71a4f80c9d143b phase=residual pgid=1354722 domain_complete=false
+boot_id_current=5367be51-01dd-4905-8ec9-663e5570e6d8
+--- per-pid /proc absence (leader, 11 residuals, supervisor) ---
+absent 1354722
+absent 1423046
+absent 1423088
+absent 1423144
+absent 1423180
+absent 1423223
+absent 1423335
+absent 1423557
+absent 1423604
+absent 1423678
+absent 1423688
+absent 1423904
+absent 1332699
+--- pgid 1354722 membership ---
+members=0
+--- safe.slice recursive cgroup.procs total ---
+safe_slice_total_procs=0
+--- box-wide validate payload scan ---
+matches=0
+--- owner-checkout unit ---
+ActiveState=inactive
+SubState=dead
+InactiveEnterTimestamp=Mon 2026-08-10 19:26:15 PDT

@@ -1,0 +1,13 @@
+Current finding at Hermit origin/main 1ce198d2f224240ea7e648e92a10e6e8d7f91a93:
+
+The eight c-program verify/DBT cells are add-key-enosys, cachestat-enosys, futex-waitv-enosys, get-robust-list-self, ioctl-fioclex, kcmp-eperm, keyctl-enosys, and listmount-enosys. Their source is tests/e2e/manifests/c-programs.yaml; ci/compat-envelope/cells.json is generated from it.
+
+The old conclusion was true when introduced by 88ccebce2e0d3c34465ae7cf86ea197893d2c32e: DBT returned through run_dbt without a terminal canonical comparison. The cited hermit-cli/src/bin/hermit/run.rs:2163 then named that dispatch. Current run.rs:2163 is unrelated executable-validation code, so the line citation drifted.
+
+The old conclusion is now false. Three retained measurements per cell, 24 cell-runs total, report verification.verdict=matched and bitwise_parity=true at Hermit d77c8d0b145b9ef1ca51f9a29b54214838f922dc and 90e46cba9ad83550205f3c9cd232ae222c6b6173. Each is classified infrastructure-error only because verification_logs is empty. A direct probe at 94dd9f445ab81607cad10279f3fa5f7f0ada88a0 found two nonempty DBT logs, but DBT names them dbt-run1_log_* and dbt-run2_log_* while ci/compat-envelope/pressure-test.rs and ci/manifest-plan/src/runner.rs accept run1_log_* and run2_log_*.
+
+I will correct the eight entries from unavailable/no_result to infrastructure-error/matched-with-undiscovered-logs, retain exact measurement SHAs in evidence, regenerate cells.json, and leave ci.dbt=false until the evidence readers can find the retained logs. I will not change the ninth same-locator host-identity entry in backend-parity-c.yaml because the retained 24/24 evidence does not include that cell.
+
+Worktree: /tmp/hermit-123-falsified-dbt-reasons
+Branch: hermit-123/fix-falsified-dbt-reasons
+No unsafe-to-interrupt operation is running.
