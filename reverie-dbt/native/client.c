@@ -395,6 +395,7 @@ static void exit_runtime_tree(int exit_code) {
 #define EVIDENCE_FRAME_FINAL 5
 #define EVIDENCE_FRAME_ERROR 6
 #define EVIDENCE_FRAME_CHILD 7
+#define EVIDENCE_FRAME_POLICY_REFUSAL 8
 #define EVIDENCE_CONFIG_PAGE_SIZE 4096
 
 static const unsigned char evidence_channel_magic[8] = {'R', 'V', 'D', 'B',
@@ -849,6 +850,39 @@ static void require_evidence_child(process_id_t child) {
   if (!evidence_announce_child(child)) {
     dr_fprintf(diagnostic_file,
                "reverie-dbt: protected child evidence announcement failed\n");
+    exit_runtime_tree(101);
+  }
+}
+
+static bool evidence_policy_refusal(int sysnum) {
+  unsigned char payload[8];
+  evidence_sender_state_t *sender;
+  bool ok;
+  if (!evidence_is_enabled())
+    return true;
+  put_u64_le(payload, (uint64_t)(int64_t)sysnum);
+  dr_mutex_lock(evidence_lock);
+  sender = evidence_sender_locked();
+  ok = sender != NULL && !sender->transport_failed &&
+       evidence_flush_locked(sender, 0);
+  if (ok)
+    ok = evidence_send_frame(EVIDENCE_FRAME_POLICY_REFUSAL, payload,
+                             sizeof(payload), sender->sequence++);
+  if (ok) {
+    sender->started = false;
+    sender->finalized = true;
+    sender->finalization_started = true;
+  } else if (sender != NULL) {
+    sender->transport_failed = true;
+  }
+  dr_mutex_unlock(evidence_lock);
+  return ok;
+}
+
+static void require_evidence_policy_refusal(int sysnum) {
+  if (!evidence_policy_refusal(sysnum)) {
+    dr_fprintf(diagnostic_file,
+               "reverie-dbt: protected policy-refusal evidence failed\n");
     exit_runtime_tree(101);
   }
 }
@@ -3737,6 +3771,7 @@ static bool pre_syscall(void *drcontext, int sysnum) {
       return false;
     }
     if (copied_action == 1) {
+      require_evidence_policy_refusal(sysnum);
       dr_fprintf(diagnostic_file,
                  "detcore-dbt: unsupported syscall %d in copied child\n", sysnum);
       exit_runtime_tree(101);
