@@ -76,6 +76,7 @@ class Resolution:
     pid: int
     model: str = MODEL_UNRESOLVED
     model_source: str | None = None
+    client_family: str | None = None
     schema: int = SCHEMA_VERSION
 
     @property
@@ -95,6 +96,7 @@ class Resolution:
             "pid": self.pid,
             "model": self.model,
             "model_source": self.model_source,
+            "client_family": self.client_family,
             "signals": [signal.to_dict() for signal in self.signals],
         }
 
@@ -779,6 +781,8 @@ def resolve_identity(
     signals, primary, primary_source, inherited_env = _identity_signals(contexts, ancestry_error)
     process_model_signal, model, model_source = model_signal(contexts)
     signals.append(process_model_signal)
+    process_family_signal, client_family = client_family_signal(contexts)
+    signals.append(process_family_signal)
 
     cwd, cwd_detail = _read_cwd(pid, proc_root)
     slot_signal, derived_tasks = slot_owner_signal(cwd, cwd_detail, registry, root)
@@ -792,13 +796,13 @@ def resolve_identity(
 
     resolved = [signal for signal in signals if signal.state == "resolved" and signal.agent]
     identities = {_canonical(signal.agent) for signal in resolved if signal.agent}
-    # Model ambiguity is reported alongside identity evidence but is not an
-    # agent-name disagreement. Keep the two authorities separate: a caller can
-    # have a proven agent and an explicitly unresolved model.
+    # Model and client-family ambiguity are reported alongside identity evidence
+    # but are not agent-name disagreement. Keep those authorities separate: a
+    # caller can have a proven agent while its model or client family is not.
     ambiguous = [
         signal
         for signal in signals
-        if signal.source != "process-model"
+        if signal.source not in {"process-model", "client-family"}
         and signal.state == "ambiguous"
         and signal.candidates
     ]
@@ -816,10 +820,19 @@ def resolve_identity(
             pid,
             model,
             model_source,
+            client_family,
         )
     if primary is None:
         return Resolution(
-            "UNRESOLVED", None, None, basis, tuple(signals), pid, model, model_source
+            "UNRESOLVED",
+            None,
+            None,
+            basis,
+            tuple(signals),
+            pid,
+            model,
+            model_source,
+            client_family,
         )
     if identities and _canonical(primary) not in identities:
         return Resolution(
@@ -831,6 +844,7 @@ def resolve_identity(
             pid,
             model,
             model_source,
+            client_family,
         )
     return Resolution(
         "AGREEMENT",
@@ -841,4 +855,5 @@ def resolve_identity(
         pid,
         model,
         model_source,
+        client_family,
     )

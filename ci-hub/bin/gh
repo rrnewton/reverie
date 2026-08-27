@@ -30,8 +30,10 @@ the existing ``VERDICT:`` prefix on that prose line when needed, so readers do
 not have to infer intent and no second marker is added.
 
 A shared GitHub credential still cannot prove who typed the arguments.  The
-independent process-context comparison makes a false claim falsifiable; it does
-not turn the prefix into identity or review-family authority.
+independent process-context comparison makes a false claim falsifiable.  The
+disclosure prefix is not review-family authority, but an explicit ``--verdict``
+is also checked against the ``codex`` or ``claude`` client found in process
+ancestry before the write is attempted.
 
 Truly unresolvable ownership is deliberately fail-closed for every comment
 lane.  A missing cwd, pane, or sidecar remains an explicit unavailable signal
@@ -154,17 +156,52 @@ def required_disclosure(values: Mapping[str, str]) -> tuple[str, str, str]:
 
 def validate_disclosure(
     claimed_agent: str, team: str, role: str
-) -> disclosure_tag.Disclosure:
+) -> tuple[disclosure_tag.Disclosure, agent_identity.Resolution]:
     resolution = agent_identity.resolve_identity(os.getpid())
     try:
-        return disclosure_tag.from_resolution(
+        return (
+            disclosure_tag.from_resolution(
+                resolution,
+                team=team,
+                role=role,
+                claimed_agent=claimed_agent,
+            ),
             resolution,
-            team=team,
-            role=role,
-            claimed_agent=claimed_agent,
         )
     except disclosure_tag.DisclosureError as error:
         die(str(error))
+
+
+def validate_verdict_family(
+    verdict: str, resolution: agent_identity.Resolution
+) -> None:
+    """Refuse a binding marker from a different or unproven client family."""
+
+    grammar = _approval_binding_module()
+    if grammar is None:
+        die("cannot load approval_binding to verify --verdict family")
+    parsed = grammar.parse_canonical_marker(verdict)
+    if parsed is None:
+        # Preserve the existing canonical-marker diagnostic in ``with_verdict``.
+        return
+    _kind, lane, _head = parsed
+    family = resolution.client_family
+    if family is None:
+        family_signal = next(
+            (
+                signal
+                for signal in resolution.signals
+                if signal.source == "client-family"
+            ),
+            None,
+        )
+        detail = family_signal.detail if family_signal is not None else "no family evidence"
+        die(f"review family unresolved: cannot publish {lane!r} verdict; {detail}")
+    if lane != family:
+        die(
+            "review-family mismatch: verdict declares "
+            f"{lane!r}, but process ancestry resolves to {family!r}"
+        )
 
 
 #: A VERDICT THAT CANNOT BIND MUST NOT BE POSTED SILENTLY.
@@ -664,7 +701,9 @@ def main() -> int:
         die("--verdict only applies to a comment or review write")
     if is_attributed_write(args):
         claimed_agent, team, role = required_disclosure(supplied)
-        disclosure = validate_disclosure(claimed_agent, team, role)
+        disclosure, resolution = validate_disclosure(claimed_agent, team, role)
+        if verdict is not None:
+            validate_verdict_family(verdict, resolution)
         args = rewrite(args, disclosure, verdict)
         # A named task is what couples the publication to its record. It is
         # optional so that every existing caller keeps working unchanged, and

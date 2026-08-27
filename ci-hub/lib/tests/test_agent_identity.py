@@ -423,6 +423,25 @@ class ResolutionTests(IdentityFixture):
         signal = next(s for s in result.signals if s.source == "process-model")
         self.assertEqual("resolved", signal.state)
 
+    def test_codex_client_family_is_resolved_without_an_explicit_model(self) -> None:
+        self.standard_processes(caller_cmdline=("codex", "exec", "task"))
+        result = self.resolve()
+        self.assertEqual("codex", result.client_family)
+        signal = next(s for s in result.signals if s.source == "client-family")
+        self.assertEqual("resolved", signal.state)
+
+    def test_mixed_client_ancestry_has_no_single_review_family(self) -> None:
+        self.standard_processes(
+            caller_cmdline=("codex", "exec", "task"),
+            parent_cmdline=("claude", "--print"),
+        )
+        result = self.resolve()
+        self.assertEqual("AGREEMENT", result.state)
+        self.assertIsNone(result.client_family)
+        signal = next(s for s in result.signals if s.source == "client-family")
+        self.assertEqual("ambiguous", signal.state)
+        self.assertEqual(("claude", "codex"), signal.candidates)
+
     def test_cli_model_slug_is_passed_through_verbatim_without_mapping(self) -> None:
         self.standard_processes(
             caller_cmdline=("codex", "--model", "vendor/model:vNext+preview")

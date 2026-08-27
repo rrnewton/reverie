@@ -80,6 +80,7 @@ def _print_diagnostics(result: agent_identity.Resolution) -> None:
     print(f"agent={result.agent or ''}", file=sys.stderr)
     print(f"model={result.model}", file=sys.stderr)
     print(f"model_source={result.model_source or ''}", file=sys.stderr)
+    print(f"client_family={result.client_family or ''}", file=sys.stderr)
     print(f"primary_source={result.primary_source or ''}", file=sys.stderr)
     print("basis=" + ",".join(result.basis), file=sys.stderr)
     for signal in result.signals:

@@ -167,6 +167,7 @@ class FleetGhTest(unittest.TestCase):
         state: str = "AGREEMENT",
         agent: str | None = TEST_AGENT,
         model: str = "unresolved",
+        client_family: str | None = "codex",
         signal_state: str = "unavailable",
         signal_agent: str | None = None,
         signal_candidates: tuple[str, ...] = (),
@@ -179,6 +180,7 @@ class FleetGhTest(unittest.TestCase):
             f"candidates={signal_candidates!r}; detail='fixture'\n"
             "class Resolution:\n"
             f"    state={state!r}; agent={agent!r}; model={model!r}; "
+            f"client_family={client_family!r}; "
             "basis=('fixture',); signals=(Signal(),)\n"
             "    exit_code={'AGREEMENT':0,'DISAGREEMENT':1}.get(state,2)\n"
             "def resolve_identity(pid, **kwargs): return Resolution()\n"
@@ -272,6 +274,7 @@ class FleetGhTest(unittest.TestCase):
         )
 
     def test_verdict_with_lead_in_marks_that_line_and_blocks(self) -> None:
+        self.install_identity_stub(client_family="codex")
         marker = f"CHANGES-REQUESTED-AT: codex {HEAD}"
         body = f"For this head, {marker} because the assertion still accepts prose."
         result = self.run_shim(
@@ -290,6 +293,7 @@ class FleetGhTest(unittest.TestCase):
         self.assertEqual(gate.evaluate([approval, posted], HEAD)[0], gate.BLOCKED)
 
     def test_verdict_line_with_another_marker_is_refused(self) -> None:
+        self.install_identity_stub(client_family="codex")
         approval = f"APPROVED-AT: codex {HEAD}"
         refusal = f"CHANGES-REQUESTED-AT: codex {HEAD}"
         body = (
@@ -322,6 +326,7 @@ class FleetGhTest(unittest.TestCase):
         self.assertFalse(self.capture.exists())
 
     def test_verdict_already_on_its_own_line_is_not_duplicated(self) -> None:
+        self.install_identity_stub(client_family="codex")
         marker = f"APPROVED-AT: codex {HEAD}"
         result = self.run_shim(
             *self.identity(role="coordinator"),
@@ -333,6 +338,7 @@ class FleetGhTest(unittest.TestCase):
         self.assertEqual(posted.splitlines().count(marker), 1)
 
     def test_verdict_inside_a_fence_is_refused_instead_of_moved(self) -> None:
+        self.install_identity_stub(client_family="codex")
         marker = f"CHANGES-REQUESTED-AT: codex {HEAD}"
         result = self.run_shim(
             *self.identity(role="reviewer"),
@@ -341,6 +347,33 @@ class FleetGhTest(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 2)
         self.assertIn("exactly once in prose", result.stderr)
+        self.assertFalse(self.capture.exists())
+
+    def test_verdict_family_must_match_process_client(self) -> None:
+        self.install_identity_stub(client_family="codex")
+        marker = f"APPROVED-AT: claude {HEAD}"
+        result = self.run_shim(
+            *self.identity(role="reviewer"),
+            "--verdict", marker,
+            "pr", "comment", "42", "--body", marker,
+        )
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("review-family mismatch", result.stderr)
+        self.assertFalse(
+            self.capture.exists(),
+            "CODEX PROCESS INVOKED THE WRITER FOR A CLAUDE VERDICT",
+        )
+
+    def test_verdict_family_must_be_proven(self) -> None:
+        self.install_identity_stub(client_family=None)
+        marker = f"APPROVED-AT: codex {HEAD}"
+        result = self.run_shim(
+            *self.identity(role="reviewer"),
+            "--verdict", marker,
+            "pr", "comment", "42", "--body", marker,
+        )
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("review family unresolved", result.stderr)
         self.assertFalse(self.capture.exists())
 
     def test_pr_close_comment_without_identity_is_refused_before_write(self) -> None:
