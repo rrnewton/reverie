@@ -1659,12 +1659,23 @@ impl KvmBackend {
 /// the host kernel consumes it: the tracee's return register is set to
 /// `-ERESTARTSYS` alongside a pending signal and Linux's signal-delivery path
 /// rewinds and re-issues the syscall. A KVM guest is not a host process resumed
-/// through that path, so this backend must repeat the callback itself — the same
-/// resolution `reverie-preload::drive_tool_syscall` applies for the ld-preload
-/// backends. Without it the private 512 reaches the guest as an
-/// application-visible errno.
+/// through that path, so this backend must repeat the callback itself. Without
+/// it the private 512 reaches the guest as an application-visible errno.
 ///
-/// Isolating the policy in one pure function keeps it directly testable.
+/// This restarts on `ERESTARTSYS` regardless of which syscall produced it,
+/// matching `reverie-ptrace`, whose restart frame is likewise not conditioned on
+/// the syscall number (`reverie-ptrace/src/task.rs`). It deliberately does *not*
+/// match `reverie-preload::drive_tool_syscall`, which restarts only `wait4` and
+/// passes an explicit `ERESTARTSYS` through to the guest for everything else.
+/// Detcore's `signal_interrupt_errno()` returns `ERESTARTSYS` for `read`,
+/// `futex`, `poll`, `ppoll` and `epoll_wait` as well as `wait4`, so the narrow
+/// policy leaks the private 512 for those; the two backends disagree and
+/// reconciling them is tracked separately.
+///
+/// Isolating the policy in one pure function keeps it directly testable. Note
+/// that testing it does not test the restart itself — the re-invocation loops in
+/// `run_with_tool` and `run_static_elf_with_tool` are covered by
+/// `tests/erestartsys.rs`, which fails if either loop stops re-invoking.
 fn classify_handler_result(
     result: std::result::Result<i64, reverie::Error>,
 ) -> Result<Option<i64>> {
