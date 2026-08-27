@@ -216,28 +216,34 @@ class IsZeroTestGreenTest(unittest.TestCase):
         self.assertFalse(nonzero_result.is_zero_test_green("built ok, no tests logged"))
 
 
-class ClassifyLocalZeroTestTest(unittest.TestCase):
-    """The detector wired into the speculative-land local classifier."""
+class ClassifyLocalFinalStatusTest(unittest.TestCase):
+    """The speculative-land classifier consumes validate's fixed status."""
 
-    def test_negative_zero_test_green_downgrades_to_no_result(self) -> None:
-        state, reason = protocol._classify_local(0, GATED_ZERO_TEST)
-        self.assertEqual(state, "no_result")
-        self.assertEqual(reason, "zero-test-green")
+    def test_status_passes_even_when_old_prose_would_have_said_zero_test(self) -> None:
+        state, reason = protocol._classify_local(
+            0,
+            GATED_ZERO_TEST
+            + "FINAL_VALIDATE_STATUS: PASSED\n"
+            + "# ci-hub/validate-lock tool COST ACTUAL exit=0\n",
+        )
+        self.assertEqual(state, "green")
+        self.assertEqual(reason, "final-status:PASSED")
 
     def test_positive_genuine_pass_stays_green(self) -> None:
-        state, reason = protocol._classify_local(0, GENUINE_PASS)
+        state, reason = protocol._classify_local(
+            0,
+            GENUINE_PASS
+            + "FINAL_VALIDATE_STATUS: PASSED\n"
+            + "# ci-hub/validate-lock tool COST ACTUAL exit=0\n",
+        )
         self.assertEqual(state, "green")
-        self.assertEqual(reason, "clean exit")
+        self.assertEqual(reason, "final-status:PASSED")
 
-    def test_clean_exit_without_captured_output_stays_green(self) -> None:
-        # Backward-compatible: exit 0 with no readable output is still green — the
-        # detector never manufactures a no_result from a log it could not read.
-        self.assertEqual(protocol._local_state(0), "green")
-        self.assertEqual(protocol._local_state(0, ""), "green")
+    def test_clean_exit_without_captured_output_is_no_result(self) -> None:
+        self.assertEqual(protocol._local_state(0), "no_result")
+        self.assertEqual(protocol._local_state(0, ""), "no_result")
 
-    def test_downgrade_is_no_result_never_red(self) -> None:
-        # Even a false positive is recoverable: a zero-test green becomes a hole
-        # to re-dispatch, never a tip to revert.
+    def test_absence_is_no_result_never_red(self) -> None:
         state, _ = protocol._classify_local(0, GATED_ZERO_TEST)
         self.assertNotEqual(state, "red")
 

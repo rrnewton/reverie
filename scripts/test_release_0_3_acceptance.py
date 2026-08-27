@@ -156,6 +156,7 @@ class ReleaseAcceptanceTests(unittest.TestCase):
                 "Validation level: full (host OS: linux)\n"
                 "test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out\n"
                 "✅ Validation summary [full] (12 passed, 0 failed; full log: /tmp/raw.log)\n"
+                "FINAL_VALIDATE_STATUS: PASSED\n"
             ).encode()
             return self.manifest(criterion, {
                 "producer": criterion["producer"],
@@ -290,8 +291,8 @@ class ReleaseAcceptanceTests(unittest.TestCase):
     def test_captured_validate_exit_not_tee_exit_is_enforced(self) -> None:
         self.mutate_exit(b"7\n")
         report = self.evaluate()
-        self.assertEqual(self.row(report, "AC-STRICT-03").verdict, "FAIL")
-        self.assertIn("exited 7", self.row(report, "AC-STRICT-03").reason)
+        self.assertEqual(self.row(report, "AC-STRICT-03").verdict, "NO_RESULT")
+        self.assertIn("requires exit 0, got 7", self.row(report, "AC-STRICT-03").reason)
 
     def test_runner_up_half_is_derived_from_denominator(self) -> None:
         self.mutate_json_artifact(
@@ -305,6 +306,20 @@ class ReleaseAcceptanceTests(unittest.TestCase):
         self.mutate_log(lambda text: text + "CACHE HIT\n")
         report = self.evaluate()
         self.assertEqual(self.row(report, "AC-STRICT-03").verdict, "NO_RESULT")
+
+    def test_manual_status_absence_is_no_result(self) -> None:
+        self.mutate_log(
+            lambda text: text.replace("FINAL_VALIDATE_STATUS: PASSED\n", "")
+        )
+        report = self.evaluate()
+        self.assertEqual(self.row(report, "AC-STRICT-03").verdict, "NO_RESULT")
+
+    def test_manual_last_status_occurrence_wins(self) -> None:
+        self.mutate_log(
+            lambda text: "FINAL_VALIDATE_STATUS: COULD_NOT_RUN\n" + text
+        )
+        report = self.evaluate()
+        self.assertEqual(self.row(report, "AC-STRICT-03").verdict, "PASS")
 
 
 if __name__ == "__main__":

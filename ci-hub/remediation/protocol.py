@@ -41,7 +41,7 @@ import obligations
 from check_outcome import CheckOutcome, classify_check, select_latest_workflow_attempts
 from check_outcome import FAIL_CONCLUSIONS as _RED_CONCLUSIONS
 from gate_completeness import gates_complete
-from nonzero_result import is_zero_test_green
+import service_result
 import validate_rows as canonical_ledger
 
 DEFAULT_REPO = "rrnewton/hermit"
@@ -213,12 +213,8 @@ TERMINAL_VERIFICATION_STATES = frozenset(("green", "red", "error"))
 # revert of a healthy main tip one step away (task
 # obligation-path-must-consume-no-result-taxonomy).
 REMEDIATION_STATES = frozenset(("red",))
-# A local validate exit code is not a truth value. Exit 0 is the only passing
-# answer; a validate process the ENVIRONMENT killed — OOM/SIGKILL (137),
-# SIGTERM (143), or any signal (a negative subprocess returncode) — never
-# delivered a verdict at all. That is a no_result, exactly like a cancelled
-# hosted run.
-_LOCAL_INFRA_EXITS = frozenset((137, 143))
+# A local validate exit code is not a truth value. The fixed final status and
+# exit must agree; absence or disagreement is a no_result.
 DEFAULT_LOCAL_REDISPATCH_LIMIT = int(
     os.environ.get("CI_HUB_LOCAL_REDISPATCH_LIMIT", "2")
 )
@@ -270,304 +266,31 @@ LOCAL_SCHEMA4_COVERAGE_STATUS = "grandfathered-unknown"
 LOCAL_DECLARED_COVERAGE_STATUS = "satisfied"
 LOCAL_POLICY_SKIP_AUTHORITY = "ci-hub-local-receipt-policy-v1"
 
-# A clean nonzero exit is NOT automatically a failing answer. Tonight three
-# separate ENVIRONMENTAL failures — a sandbox EPERM on a re-validate, a
-# BpfJailer denial of a `.o.d` write inside a DAG step, and a cold-build linker
-# flake with zero tests run — each exited clean-nonzero and read as a product
-# RED, and each was one automated step from reverting a healthy tip. The
-# genuine failure was in the HARNESS, not the landed code.
-#
-# THE DERIVED DISCRIMINATOR (task cancellation_taxonomy_distinguish_self). The
-# earlier attempt enumerated environmental root causes and defaulted every other
-# nonzero exit to RED. That is precisely "a hardcoded list of a growing set":
-# each NEW environmental wording we had not yet listed fell through to red and
-# became one automated step from reverting a healthy tip — the exact failure
-# mode that bit us five times tonight. So we DERIVE instead of enumerate, and we
-# put the UNKNOWN on the safe side:
-#
-#   only a genuine, product-attributable failing TEST VERDICT makes the LOCAL
-#   leg red. Every other nonzero exit — a build/link error, a sandbox denial, a
-#   proxy drop, a disk-full, or an unrecognised failure we have never seen — is
-#   a no_result: re-dispatch and (if it reproduces) fix the box, never revert
-#   the tip on a local leg alone.
-#
-# This is sound, not merely cautious: a speculative land already COMPILED and
-# TESTED the tip before arming, so a nonzero re-validate that is NOT a fresh
-# failing test is overwhelmingly the environment (cold cache, sandbox, flake),
-# not a regression in the landed code. And a real regression the environment did
-# NOT cause surfaces on the GitHub leg too, which is authoritative and reverts on
-# its own. The only "list" that remains is _TEST_FAILURE_MARKERS, and it lives
-# in the SAFE direction: a marker we forget only downgrades a would-be red to a
-# re-dispatch (recoverable), it can never manufacture a revert. _INFRA_SIGNATURE
-# is retained ONLY to LABEL which box to fix; it no longer decides red vs
-# no_result, so a missing category costs a precise log line, never a false red.
-_TEST_FAILURE_MARKERS = (
-    "test result: failed",  # cargo: printed only when >0 tests failed
-    "error: test failed",  # cargo test-harness wrapper on a failing suite
-    "failures:",  # cargo lists the failing test names under this header
-    "tests failed",
-    "assertion failed",
-    "assertionerror",
-    "panicked at",  # a rust test panic
-)
-_TEST_FAILURE_COUNT_RE = re.compile(r"\b([1-9]\d*)\s+failed\b")  # pytest "3 failed"
-# The DAG runner's OWN closing summary, under either executable name, e.g.
-#   dagrun: FAIL - 8 passed, 1 failed, 0 aborted, 39 skipped in 234.1s
-# Its "N failed" counts DAG NODES, not tests, so _TEST_FAILURE_COUNT_RE must not
-# read it as a test verdict.  A node can be "failed" because it TIMED OUT, was
-# cancelled, or was killed -- none of which is a product test failure, and the
-# measured instance was a node frozen in do_signal_stop for ~210s that completes
-# in 54-58s unfrozen.  Matched as a whole line so only the aggregate is removed;
-# genuine runner output on every other line is still read.
-_DAG_RUNNER_AGGREGATE_RE = re.compile(
-    r"(?mi)^[^\n]*\b(?:dagrun|safe-ci-dag-runner):\s*(?:fail|ok|pass)\b[^\n]*$"
-)
-# These forms bind the failure to a product test suite rather than to the DAG's
-# aggregate ``N failed`` node count.  They are intentionally narrower than
-# _has_test_failures: when an unrelated build marker is also present, only a
-# concrete named-test or test-runner verdict is strong enough to win.
-_NAMED_TEST_FAILURE_RE = re.compile(r"(?mi)^test\s+.+?\s+\.\.\.\s+failed\s*$")
-_PYTEST_FAILURE_SUMMARY_RE = re.compile(
-    r"(?mi)^=+[^\n]*\b[1-9]\d*\s+failed\b[^\n]*=+\s*$"
-)
-# A BUILD-PHASE failure — a cargo build-script panic or a "failed to run custom
-# build command" — is NOT a product test verdict, even though the DAG runner
-# renders it with the very same "N failed" / "panicked at" vocabulary a failing
-# test uses. It is a hole to re-dispatch (a cold-toolchain build-script flake
-# reproduces every cold run), never a tip to revert. It is recognised ahead of
-# ambiguous panic/count markers, but not ahead of an independent explicit test-
-# runner verdict. Incident: a reverie-dbi/build.rs:339 cold-build panic,
-# rendered "0 passed, 1 failed ... panicked at .../build.rs", was read as a
-# test-failure and armed a revert of a healthy tip (obligation
-# 20260804-025419-0f891e43). A build.rs panic means the crate never built, so no
-# product test in that node could have run; a genuine regression the build did not
-# cause still reverts via the authoritative GitHub leg, which compiles cleanly.
-_BUILD_SCRIPT_FAILURE_MARKERS = (
-    "failed to run custom build command for",  # cargo build-script failure line
-)
-_BUILD_SCRIPT_PANIC_RE = re.compile(r"panicked at [^\n]*build\.rs")
-# Build helpers can fail after the DAG node has started but before the named
-# product test runs.  The DAG summary still renders these as ``N failed``, which
-# is test-looking vocabulary; the concrete operation is the binding.  These are
-# the two verbatim DynamoRIO failures carried by obligation 3801a7df.
-_BUILD_TOOL_FAILURE_MARKERS = (
-    "failed to build and install dynamorio",
-    "failed to configure dynamorio",
-)
-# An inner-MemoryMax OOM inside a boxed DAG node — the safe-ci-dag-runner reaped a
-# step because it crossed its cgroup memory.max — is an ENVIRONMENTAL cap breach,
-# not a product test verdict, even when its victim happens to be a test process and
-# the node then surfaces "N failed"/"panicked at". It reproduces every run at the
-# same cap, so it is a hole to re-dispatch (and fix-forward by RAISING the cap),
-# never a tip to revert. It is recognised BEFORE the build-script and test-verdict
-# markers so neither shared vocabulary can manufacture a false red, and because
-# "raise this node's cap" is the actionable label even when the OOM also panicked a
-# build.rs. BLAST-RADIUS CAVEAT (see the task note): the runner does not set
-# memory.oom.group, so the kernel may kill an innocent process INSIDE the breaching
-# node rather than the allocator that crossed the cap — attribution is sound at
-# DAG-NODE granularity, NOT per-process. Do not blame the named victim; the reason
-# points at the node's cap, which is the correct fix. Exact runner strings:
-# model.rs `OOM-KILLED (hit inner MemoryMax; N oom_kill event(s))` and scheduler.rs
-# `MEMORY CAP HIT: OOM-killed at its inner cgroup MemoryMax`.
-_INNER_MEMORYMAX_OOM_MARKERS = (
-    "oom-killed (hit inner memorymax",  # model.rs step reason
-    "oom-killed at its inner cgroup memorymax",  # scheduler.rs cap-hit banner
-)
-# Diagnostic-only labels for a no_result. Grouped by CAUSE, but NON-load-bearing:
-# they name which box to fix in the log, they do NOT gate red vs no_result, so
-# this set can be incomplete without ever producing a false red.
-_INFRA_SIGNATURE_CATEGORIES: tuple[tuple[str, tuple[str, ...]], ...] = (
-    (
-        "sandbox-denied",  # 3pai BpfJailer / seccomp / permission denial
-        (
-            "operation not permitted",
-            "permission denied",
-            "eperm",
-            "eacces",
-            "bpfjailer",
-            "blocked by seccomp",
-            "seccomp",
-        ),
-    ),
-    (
-        "network-proxy",  # the required proxy / network dropped mid-fetch
-        (
-            "could not resolve host",
-            "connection reset by peer",
-            "connection timed out",
-            "failed to connect",
-            "proxyconnect",
-            "temporary failure in name resolution",
-            "network is unreachable",
-        ),
-    ),
-    (
-        "disk-exhausted",  # ran out of disk / inodes / memory under load
-        (
-            "no space left on device",
-            "disk quota exceeded",
-            "cannot allocate memory",
-        ),
-    ),
-    (
-        "cold-build-flake",  # a cold-toolchain link/archive race, zero tests run
-        (
-            "collect2: error",
-            "ld returned 1 exit status",
-            "ld: cannot",
-            "error adding symbols",
-            "clang: error: unable to execute command",
-        ),
-    ),
-)
-
-
-def _has_test_failures(output: str) -> bool:
-    """Whether the validate output shows at least one genuine test failure.
-
-    Over-inclusive on purpose: a false positive here only forces a genuine RED
-    (revertable), never swallows one, so unusual failure formatting fails safe.
-
-    THE ONE THING IT MUST NOT COUNT is safe-ci-dag-runner's own aggregate, whose
-    "N failed" counts DAG NODES.  A node is "failed" when it times out, is
-    cancelled, or is killed, so counting it here manufactures a PRODUCT red from
-    an infrastructure event.  Measured 2026-08-08 on obligation
-    20260809-012006-649cee3a8339-dad6e4: a log with ZERO test-failure markers
-    classified ("red", "test-failure") purely on the literal text "1 failed",
-    where the failing node was a TIMEOUT caused by a frozen cgroup.
-    The sibling _has_explicit_product_test_failure already documents excluding
-    this exact text "because it may count DAG nodes"; this catch-all was
-    re-admitting what the strong predicate deliberately threw out.
-
-    Stripping is line-scoped, so this stays over-inclusive everywhere else: a
-    genuine "3 failed" from a test runner on any other line still counts.
-    """
-    lowered = output.lower()
-    if any(marker in lowered for marker in _TEST_FAILURE_MARKERS):
-        return True
-    without_node_aggregate = _DAG_RUNNER_AGGREGATE_RE.sub("", lowered)
-    return _TEST_FAILURE_COUNT_RE.search(without_node_aggregate) is not None
-
-
-def _has_explicit_product_test_failure(output: str) -> bool:
-    """Whether a test runner itself emitted a strong failing verdict.
-
-    Raw combined logs can contain failures from independent DAG nodes.  A
-    DynamoRIO/build marker therefore cannot globally mask an explicit libtest,
-    named-test, or pytest verdict elsewhere in the same run.  Bare aggregate
-    ``N failed`` text is deliberately excluded because it may count DAG nodes.
-    The persisted canonical FAILED/3 receipt remains the final typed authority.
-    """
-    lowered = output.lower()
-    return (
-        "test result: failed" in lowered
-        or _NAMED_TEST_FAILURE_RE.search(output) is not None
-        or _PYTEST_FAILURE_SUMMARY_RE.search(output) is not None
-    )
-
-
-def _infra_signature(output: str) -> str | None:
-    """Best-effort ROOT-CAUSE label for a no_result, or None if unrecognised.
-
-    Diagnostic only: it decides nothing. A None just yields a generic
-    "non-test-failure" label; it never turns a no_result into a red.
-    """
-    lowered = output.lower()
-    for category, needles in _INFRA_SIGNATURE_CATEGORIES:
-        if any(needle in lowered for needle in needles):
-            return category
-    return None
-
-
-def _is_inner_memorymax_oom(output: str) -> bool:
-    """Whether a boxed DAG node was OOM-reaped at its inner cgroup memory.max.
-
-    A cap breach is environmental (raise the cap), not a product test verdict —
-    even when the reaped victim is a test process and the node then renders
-    "N failed"/"panicked at". Recognising it keeps that shared vocabulary from
-    manufacturing a false red; attribution is sound only at DAG-NODE granularity.
-    """
-    lowered = output.lower()
-    return any(marker in lowered for marker in _INNER_MEMORYMAX_OOM_MARKERS)
-
-
-def _is_build_phase_failure(output: str) -> bool:
-    """Whether the failure originates in the BUILD phase, not a product test.
-
-    A cargo build-script panic (``panicked at .../build.rs``) or a cargo
-    "failed to run custom build command" is a build-layer flake, not a test
-    verdict — the DAG runner just renders it with the same vocabulary. Recognising
-    it here keeps that shared vocabulary from ever manufacturing a false red.
-    """
-    lowered = output.lower()
-    if any(marker in lowered for marker in _BUILD_SCRIPT_FAILURE_MARKERS):
-        return True
-    return _BUILD_SCRIPT_PANIC_RE.search(lowered) is not None
-
-
-def _is_build_tool_failure(output: str) -> bool:
-    """Whether a named external build/configure step failed before tests ran."""
-    lowered = output.lower()
-    return any(marker in lowered for marker in _BUILD_TOOL_FAILURE_MARKERS)
+# The local validate outcome is intentionally not inferred from libtest, DAG,
+# build, OOM, proxy, or other human prose. Those strings share a channel with
+# wrappers and diagnostics. Only the fixed final status plus agreeing exit code
+# answers passed, failed, or could-not-run.
 
 
 def _classify_local(exit_code: int, output: str = "") -> tuple[str, str]:
     """Map a local validate (exit_code, output) to (state, human reason).
 
-    The discriminator is DERIVED, not enumerated: only a genuine failing test
-    VERDICT is red; every other nonzero exit — build/link error, sandbox denial,
-    proxy drop, disk-full, or an unrecognised failure — is a no_result to
-    re-dispatch, so an unknown failure mode can never manufacture a revert.
+    Validate's fixed final status is the verdict. Human test, DAG, build and
+    environmental prose remains diagnostic only. ``exit_code`` belongs to the
+    surrounding validate-run command, which can remap a completed inner result;
+    the coupled exit is the named validate-lock COST ACTUAL value in ``output``.
     """
-    if exit_code == 0:
-        # A clean exit is a PROXY for "the tests passed"; the executed count the
-        # run itself printed is the fact. A validate that exited 0 having run a
-        # DEMONSTRABLY zero test count (every libtest banner reported 0 — the
-        # `--features` gating shape that compiles the target but excludes its
-        # tests) is a no-result wearing a success badge, not a pass. It is a hole
-        # to RE-DISPATCH (never a red to revert): downgrading here can only turn a
-        # provably inert green into a recoverable re-dispatch, never manufacture a
-        # revert. Absence of any banner stays green — is_zero_test_green fires only
-        # on positive evidence of zero-ness, so an unreadable/banner-less log is
-        # never downgraded.
-        if is_zero_test_green(output):
-            return "no_result", "zero-test-green"
-        return "green", "clean exit"
-    if exit_code < 0 or exit_code in _LOCAL_INFRA_EXITS:
-        return "no_result", f"environment-killed (exit={exit_code})"
-    if _is_inner_memorymax_oom(output):
-        # A boxed node reaped at its inner cgroup memory.max is an environmental
-        # cap breach (fix-forward = raise the cap), NOT a failing test verdict —
-        # even when the reaped victim is a test process and the node then rendered
-        # "N failed"/"panicked at". Recognised BEFORE build-script/test markers so
-        # neither shared vocabulary can manufacture a revert: re-dispatch, never revert.
-        return "no_result", "non-test-failure:inner-memorymax-oom"
-    if _has_explicit_product_test_failure(output):
-        # Combined DAG output may also mention an unrelated build-node failure.
-        # A concrete test-runner verdict is the stronger causal binding and must
-        # not be globally masked by that build marker.  Canonical FAILED/3
-        # receipt verification still decides whether this provisional red may
-        # drive remediation.
-        return "red", "test-failure"
-    if _is_build_phase_failure(output):
-        # A build-script panic / "failed to run custom build command" surfaced
-        # through the DAG runner's "N failed" / "panicked at" summary is a
-        # build-layer flake, NOT a failing test verdict: re-dispatch, never revert.
-        return "no_result", "non-test-failure:build-script"
-    if _is_build_tool_failure(output):
-        # The runner's aggregate ``N failed`` counts DAG nodes, not product
-        # tests.  Without an explicit product-test verdict, the named
-        # configure/install operation binds the observed failure to the build
-        # layer, so remediation must repair/re-dispatch the box.
-        return "no_result", "non-test-failure:build-tool"
-    if _has_test_failures(output):
-        return "red", "test-failure"
-    # Nonzero, but no product test rendered a failing verdict: the failure came
-    # from the build/harness/sandbox layer (or is simply unrecognised). Either
-    # way it is a hole to re-dispatch, never a tip to revert. GitHub stays
-    # authoritative for a genuine regression the environment did not cause.
-    category = _infra_signature(output) or "unclassified"
-    return "no_result", f"non-test-failure:{category}"
+    evidence = service_result.read_output_evidence(output)
+    classified = service_result.classify(evidence)
+    result = classified["result"]
+    if result == "success":
+        return "green", "final-status:PASSED"
+    if result == "failure":
+        return "red", "final-status:FAILED"
+    if result == "no-result":
+        return "no_result", "final-status:COULD_NOT_RUN"
+    detail = str(classified.get("detail", "final validate status is absent"))
+    return "no_result", f"final-status-unavailable:{detail}; wrapper-exit={exit_code}"
 
 
 def _local_state(exit_code: int, output: str = "") -> str:
@@ -575,18 +298,27 @@ def _local_state(exit_code: int, output: str = "") -> str:
 
 
 def _read_local_output(log_path: Path, offset: int, *, cap: int = 64_000_000) -> str:
-    """Best-effort read of this validate run's output for classification.
+    """Best-effort tail of this validate run's output for classification.
 
     The validate subprocess streams to the same log the watcher opened, so the
-    output from `offset` (captured just before validate started) to end is this
-    run's. A read failure yields "" (no test-failure verdict visible), which
-    leaves a nonzero exit as a no_result to re-dispatch — the safe state that
-    never manufactures a revert from an output we could not even read.
+    output after `offset` belongs to this run. The final status is at the END,
+    so a bounded reader must retain the tail rather than the first `cap` bytes;
+    otherwise a sufficiently chatty run deterministically drops its verdict.
+    A read failure yields "", which remains a no_result.
     """
     try:
-        with log_path.open("r", encoding="utf-8", errors="replace") as handle:
-            handle.seek(max(0, offset))
-            return handle.read(cap)
+        with log_path.open("rb") as handle:
+            first = max(0, offset)
+            handle.seek(0, os.SEEK_END)
+            end = handle.tell()
+            start = max(first, end - cap)
+            handle.seek(start)
+            output = handle.read()
+            if start > first:
+                _, separator, output = output.partition(b"\n")
+                if not separator:
+                    return ""
+            return output.decode("utf-8", "replace")
     except OSError:
         return ""
 
@@ -4035,8 +3767,8 @@ def _local_run(
         )
         # Everything from here streams to the same log the watcher opened, so
         # capture the offset now: the bytes after it are exactly this validate
-        # run's output, used to tell a product test failure from an
-        # environmental (harness-caused) one.
+        # run's output, so an earlier status line from another run cannot be
+        # paired with this process's exit.
         log_offset = log_path.stat().st_size if log_path.exists() else 0
         result = _run(
             (

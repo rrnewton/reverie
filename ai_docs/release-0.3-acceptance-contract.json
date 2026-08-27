@@ -84,10 +84,10 @@
       "title": "Exact-RC manual sequential full validation executes nonzero raw tests",
       "evaluator": "manual_validate_log",
       "command": ["bash", "-o", "pipefail", "-c", "CI_DAG_JOBS=1 ./scripts/validate.rs full --ignore-cache --no-label-pr --verbose 2>&1 | tee \"$RAW_LOG\"; status=${PIPESTATUS[0]}; printf '%s\\n' \"$status\" > \"$EXIT_FILE\"; exit \"$status\""],
-      "fields": ["artifact.path", "artifact.sha256", "exit_artifact.path", "exit_artifact.sha256", "parsed.commit", "parsed.selection", "parsed.validation_level", "parsed.final_summary", "parsed.pipeline_exit", "parsed.libtest_passed_sum"],
+      "fields": ["artifact.path", "artifact.sha256", "exit_artifact.path", "exit_artifact.sha256", "parsed.commit", "parsed.selection", "parsed.validation_level", "parsed.final_validate_status", "parsed.pipeline_exit", "parsed.libtest_passed_sum"],
       "denominator": {"field": "parsed.libtest_passed_sum", "unit": "raw libtest tests passed", "minimum": 1},
       "threshold": {"field": "parsed.pipeline_exit", "op": "eq", "value": 0},
-      "forbidden": [{"field": "parsed.forbidden_markers", "op": "nonempty", "reason": "cache hit, interruption, or environmental block"}],
+      "forbidden": [{"field": "parsed.cache_hit", "op": "eq", "value": true, "reason": "cache hit rather than an executed run"}],
       "producer": {"runner": "manual-sequential-validation", "signer": "raw-artifact-sha256"}
     },
     {

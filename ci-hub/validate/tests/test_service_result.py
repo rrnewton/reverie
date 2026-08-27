@@ -17,10 +17,11 @@ class ServiceResultTest(unittest.TestCase):
             log.write_text(text)
             return service_result.from_log(log)
 
-    def test_genuine_pass_requires_positive_node_evidence(self) -> None:
+    def test_genuine_pass_requires_status_and_exit_agreement(self) -> None:
         result = self.classify(
             "   862 test(s) executed, 350 filtered\n"
             "   nodes: 55 executed, 0 failed, 0 skipped in 9m12s at -j 16\n"
+            "FINAL_VALIDATE_STATUS: PASSED\n"
             "# ci-hub/validate-lock tool COST ACTUAL wall=552.0s cpu=1.0s "
             "cpu_user=0.5s cpu_system=0.5s exit=0\n"
         )
@@ -30,6 +31,7 @@ class ServiceResultTest(unittest.TestCase):
         self.assertEqual(0, result["exit_code"])
         self.assertEqual(55, result["executed_nodes"])
         self.assertEqual(862, result["executed_tests"])
+        self.assertTrue(service_result.is_evidenced_terminal(result))
 
     def test_sigterm_exit_is_named_killed_and_preserved_as_143(self) -> None:
         result = self.classify(
@@ -53,7 +55,7 @@ class ServiceResultTest(unittest.TestCase):
         self.assertEqual(137, result["exit_code"])
         self.assertEqual(9, result["signal"])
 
-    def test_zero_node_exit_zero_is_no_result_not_success(self) -> None:
+    def test_exit_zero_without_status_is_unknown(self) -> None:
         result = self.classify(
             "   0 test(s) executed, 0 filtered\n"
             "   nodes: 0 executed, 0 failed, 0 skipped in 0s at -j 16\n"
@@ -61,10 +63,11 @@ class ServiceResultTest(unittest.TestCase):
             "cpu_user=0.1s cpu_system=0.0s exit=0\n"
         )
 
-        self.assertEqual("not-run", result["state"])
-        self.assertEqual("no-result", result["result"])
+        self.assertEqual("unknown", result["state"])
+        self.assertEqual("unknown", result["result"])
         self.assertEqual(0, result["exit_code"])
         self.assertEqual(0, result["executed_nodes"])
+        self.assertEqual("final validate status is absent", result["detail"])
 
     def test_collected_units_synthetic_success_is_not_exit_evidence(self) -> None:
         properties = {
@@ -98,13 +101,7 @@ class ServiceResultTest(unittest.TestCase):
         self.assertEqual("unknown", unknown["state"])
         self.assertFalse(service_result.is_evidenced_terminal(unknown))
 
-    def test_a_known_zero_node_exit_zero_is_still_not_run_and_still_terminal(self) -> None:
-        """Do not overcorrect: `not-run` is right when the writer KNOWS.
-
-        exit 0 with zero executed nodes is a real observation -- the run
-        happened and did nothing. That must stay a positive, durable claim, or
-        an inert green would start reading as unknown and escape its refusal.
-        """
+    def test_absence_is_not_terminal_even_when_exit_is_known(self) -> None:
         result = self.classify(
             "   0 test(s) executed, 0 filtered\n"
             "   nodes: 0 executed, 0 failed, 0 skipped in 0s at -j 16\n"
@@ -112,8 +109,56 @@ class ServiceResultTest(unittest.TestCase):
             "cpu_user=0.1s cpu_system=0.0s exit=0\n"
         )
 
-        self.assertEqual("not-run", result["state"])
+        self.assertEqual("unknown", result["state"])
+        self.assertFalse(service_result.is_evidenced_terminal(result))
+
+    def test_could_not_run_is_named_and_uses_exit_75(self) -> None:
+        result = self.classify(
+            "validate refused by: stale base\n"
+            "FINAL_VALIDATE_STATUS: COULD_NOT_RUN\n"
+            "# ci-hub/validate-lock tool COST ACTUAL wall=0.1s cpu=0.1s "
+            "cpu_user=0.1s cpu_system=0.0s exit=75\n"
+        )
+
+        self.assertEqual("completed", result["state"])
+        self.assertEqual("no-result", result["result"])
+        self.assertEqual("COULD_NOT_RUN", result["final_validate_status"])
         self.assertTrue(service_result.is_evidenced_terminal(result))
+
+    def test_earlier_quoted_status_does_not_override_final_status(self) -> None:
+        result = self.classify(
+            "fixture says FINAL_VALIDATE_STATUS: PASSED in prose\n"
+            "FINAL_VALIDATE_STATUS: COULD_NOT_RUN\n"
+            "quoted block follows:\n"
+            "FINAL_VALIDATE_STATUS: FAILED\n"
+            "# ci-hub/validate-lock tool COST ACTUAL wall=0.1s cpu=0.1s "
+            "cpu_user=0.1s cpu_system=0.0s exit=1\n"
+        )
+
+        self.assertEqual("completed", result["state"])
+        self.assertEqual("failure", result["result"])
+        self.assertEqual("FAILED", result["final_validate_status"])
+
+    def test_status_exit_disagreement_is_unknown(self) -> None:
+        result = self.classify(
+            "FINAL_VALIDATE_STATUS: PASSED\n"
+            "# ci-hub/validate-lock tool COST ACTUAL wall=0.1s cpu=0.1s "
+            "cpu_user=0.1s cpu_system=0.0s exit=1\n"
+        )
+
+        self.assertEqual("unknown", result["state"])
+        self.assertEqual("unknown", result["result"])
+        self.assertIn("requires exit 0, got 1", result["detail"])
+
+    def test_status_signal_disagreement_is_unknown_not_killed(self) -> None:
+        result = self.classify(
+            "FINAL_VALIDATE_STATUS: PASSED\n"
+            "# ci-hub/validate-lock tool COST ACTUAL wall=0.1s cpu=0.1s "
+            "cpu_user=0.1s cpu_system=0.0s exit=143\n"
+        )
+
+        self.assertEqual("unknown", result["state"])
+        self.assertIn("requires exit 0, got 143", result["detail"])
 
     def test_loaded_systemd_signal_is_fail_closed_fallback(self) -> None:
         properties = {

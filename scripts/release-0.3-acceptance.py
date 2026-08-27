@@ -12,6 +12,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "ci-hub/validate"))
+
+from final_validate_status import (  # noqa: E402
+    FinalValidateStatusError,
+    read_coupled_final_validate_status,
+)
+
 
 GO = 0
 DEPLOYMENT_DEFECT = 2
@@ -22,7 +30,6 @@ PARENT_CONTRACT_BASE_SHA = "ec33089a26e0270464cf53092f13debf29243482"
 SHA40 = re.compile(r"^[0-9a-f]{40}$")
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 LIBTEST_OK = re.compile(r"\btest result: ok\. (\d+) passed\b")
-SUCCESS_SUMMARY = re.compile(r"✅ Validation summary \[full\] \(\d+ passed, 0 failed(?:;[^)]*)?\)")
 
 
 class ContractError(ValueError):
@@ -325,33 +332,37 @@ def manual_validate(
     except ValueError:
         return "NO_RESULT", "captured pipeline exit is not an integer", {}
     commit_line = f"Commit: {subject.hermit_sha} (clean tree, commit-anchored); selection: full"
-    markers: list[str] = []
-    if "CACHE HIT" in log:
-        markers.append("CACHE HIT")
-    if re.search(r"(?:⏹\s+)?Validation interrupted by\b", log, re.IGNORECASE):
-        markers.append("interruption")
-    if re.search(r"ENVIRONMENTAL block|validate INCOMPLETE", log, re.IGNORECASE):
-        markers.append("environmental block")
+    try:
+        final_status = read_coupled_final_validate_status(log, pipeline_exit)
+        status_error = None
+    except FinalValidateStatusError as error:
+        final_status = None
+        status_error = str(error)
     passed_sum = sum(int(value) for value in LIBTEST_OK.findall(log))
     observed = {
         "commit": subject.hermit_sha if commit_line in log else None,
         "selection": "full" if commit_line in log else None,
         "validation_level": "full" if "Validation level: full" in log else None,
-        "final_summary": bool(SUCCESS_SUMMARY.search(log)),
+        "final_validate_status": final_status,
+        "final_validate_status_error": status_error,
         "pipeline_exit": pipeline_exit,
         "libtest_passed_sum": passed_sum,
-        "forbidden_markers": markers,
+        "cache_hit": "CACHE HIT" in log,
     }
     if commit_line not in log:
         return "NO_RESULT", "raw log is not anchored to the exact tested RC SHA and full selection", observed
     if "Validation level: full" not in log:
         return "NO_RESULT", "raw log does not declare Validation level: full", observed
-    if pipeline_exit != 0:
-        return "FAIL", f"manual validation pipeline exited {pipeline_exit}", observed
-    if markers:
-        return "NO_RESULT", f"raw log contains forbidden marker(s): {markers}", observed
-    if not SUCCESS_SUMMARY.search(log):
-        return "NO_RESULT", "raw log has no successful final full summary", observed
+    if observed["cache_hit"]:
+        return "NO_RESULT", "raw log reports a cache hit rather than an executed run", observed
+    if status_error is not None:
+        return "NO_RESULT", status_error, observed
+    if final_status is None:
+        return "NO_RESULT", "raw log has no final validate status", observed
+    if final_status == "COULD_NOT_RUN":
+        return "NO_RESULT", "validate reported COULD_NOT_RUN", observed
+    if final_status == "FAILED":
+        return "FAIL", "validate reported FAILED", observed
     if passed_sum <= 0:
         return "NO_RESULT", "raw libtest passed-count sum is zero", observed
     return "PASS", f"exact-RC raw manual validation executed {passed_sum} libtest tests", observed

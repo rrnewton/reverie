@@ -8,8 +8,9 @@ later ``systemctl show`` still exits zero, but describes a synthetic
 
 The cost wrapper's final line is written by the process that actually waited
 for ``ci-hub validate-lock``.  It therefore supplies the inner exit after the
-unit has been collected.  A zero exit is only a passing validation when the
-driver's final DAG summary also proves that at least one node executed.
+unit has been collected.  The validate driver's final status supplies the
+outcome.  Both channels must agree; prose elsewhere in the log is diagnostic,
+not a verdict.
 """
 
 from __future__ import annotations
@@ -18,6 +19,13 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
+
+from final_validate_status import (
+    FINAL_VALIDATE_STATUS_EXIT_CODES,
+    FinalValidateStatusError,
+    read_final_validate_status,
+    require_final_validate_status_exit,
+)
 
 
 ACTUAL_EXIT_RE = re.compile(
@@ -32,6 +40,8 @@ class RunEvidence:
     inner_exit: int | None = None
     executed_nodes: int | None = None
     executed_tests: int | None = None
+    final_validate_status: str | None = None
+    final_validate_status_error: str | None = None
 
 
 def _decode_exit(raw: str) -> int | None:
@@ -42,15 +52,12 @@ def _decode_exit(raw: str) -> int | None:
     return int(raw)
 
 
-def read_log_evidence(path: Path) -> RunEvidence:
-    """Read the last authoritative exit and top-level completion summaries."""
+def read_output_evidence(output: str) -> RunEvidence:
+    """Read the last authoritative inner exit, status, and count summaries."""
     inner_exit: int | None = None
     executed_nodes: int | None = None
     executed_tests: int | None = None
-    try:
-        lines = path.read_text(errors="replace").splitlines()
-    except (FileNotFoundError, OSError):
-        return RunEvidence()
+    lines = output.splitlines()
     for line in lines:
         actual = ACTUAL_EXIT_RE.match(line)
         if actual:
@@ -61,7 +68,28 @@ def read_log_evidence(path: Path) -> RunEvidence:
         tests = TEST_SUMMARY_RE.match(line)
         if tests:
             executed_tests = int(tests.group(1))
-    return RunEvidence(inner_exit, executed_nodes, executed_tests)
+    final_status: str | None = None
+    status_error: str | None = None
+    try:
+        final_status = read_final_validate_status("\n".join(lines))
+    except FinalValidateStatusError as error:
+        status_error = str(error)
+    return RunEvidence(
+        inner_exit=inner_exit,
+        executed_nodes=executed_nodes,
+        executed_tests=executed_tests,
+        final_validate_status=final_status,
+        final_validate_status_error=status_error,
+    )
+
+
+def read_log_evidence(path: Path) -> RunEvidence:
+    """Read one durable log without turning an unreadable file into a verdict."""
+    try:
+        output = path.read_text(errors="replace")
+    except (FileNotFoundError, OSError):
+        return RunEvidence()
+    return read_output_evidence(output)
 
 
 def service_exit(properties: Mapping[str, str] | None) -> int | None:
@@ -103,8 +131,34 @@ def classify(
         "exit_code": exit_code,
         "executed_nodes": evidence.executed_nodes,
         "executed_tests": evidence.executed_tests,
+        "final_validate_status": evidence.final_validate_status,
         "result_source": source,
     }
+    if evidence.final_validate_status_error is not None:
+        return {
+            **common,
+            "state": "unknown",
+            "result": "unknown",
+            "detail": evidence.final_validate_status_error,
+        }
+    status: str | None = None
+    if evidence.final_validate_status is not None:
+        try:
+            status = evidence.final_validate_status
+            require_final_validate_status_exit(status, exit_code)
+        except FinalValidateStatusError as error:
+            return {
+                **common,
+                "state": "unknown",
+                "result": "unknown",
+                "detail": str(error),
+            }
+    if status == "PASSED":
+        return {**common, "state": "completed", "result": "success"}
+    if status == "FAILED":
+        return {**common, "state": "completed", "result": "failure"}
+    if status == "COULD_NOT_RUN":
+        return {**common, "state": "completed", "result": "no-result"}
     if exit_code is not None and 129 <= exit_code <= 192:
         return {
             **common,
@@ -112,42 +166,13 @@ def classify(
             "result": "terminated",
             "signal": exit_code - 128,
         }
-    if exit_code == 0 and evidence.executed_nodes is not None and evidence.executed_nodes > 0:
-        return {**common, "state": "completed", "result": "success"}
-    if exit_code == 0:
-        return {
-            **common,
-            "state": "not-run",
-            "result": "no-result",
-            "detail": "exit 0 without evidence that any validation node executed",
-        }
-    if exit_code is not None:
-        return {**common, "state": "completed", "result": "failure"}
-    # NO EVIDENCE AT ALL. Not a verdict -- an admission.
-    #
-    # This branch is reached when there is neither a durable inner exit in the
-    # log nor a resolvable systemd unit. The writer knows NOTHING about the
-    # outcome, and it used to answer `not-run` / `no-result`, which are POSITIVE
-    # CLAIMS THAT THE RUN NEVER HAPPENED. They are not the same statement as "I
-    # cannot tell", and readers cannot recover the difference: the honest
-    # `detail` string sat right beside a `state` that contradicted it.
-    #
-    # Measured on 2026-08-24, three times in one night, all costly:
-    #   * hermit-005's record said finished while its unit ran another 50
-    #     MINUTES. A quiet box was declared on that record and the window was
-    #     spent while the box was not quiet.
-    #   * hermit-006's earlier record said the run was dead while that unit
-    #     still held the box-global lock.
-    #   * the record for the main-tip run said `not-run` for a run whose
-    #     canonical verdict is VALIDATED.
-    # The failure ran in BOTH directions -- finished-while-running and
-    # not-run-while-passed -- so it was never lag or truncation. It was a writer
-    # reporting its own ignorance as a fact about the run.
+    # No final status means validate died before reporting.  An exit alone is
+    # not promoted into passed, failed, or could-not-run.
     return {
         **common,
         "state": "unknown",
         "result": "unknown",
-        "detail": "no durable inner exit and no live systemd unit identity",
+        "detail": "final validate status is absent",
     }
 
 
@@ -172,7 +197,6 @@ def is_evidenced_terminal(record: Mapping[str, Any]) -> bool:
         return True
     if state != "completed":
         return False
-    if record.get("result") == "success":
-        nodes = record.get("executed_nodes")
-        return isinstance(nodes, int) and nodes > 0 and record.get("exit_code") == 0
-    return isinstance(record.get("exit_code"), int)
+    status = record.get("final_validate_status")
+    expected = FINAL_VALIDATE_STATUS_EXIT_CODES.get(status)
+    return expected is not None and record.get("exit_code") == expected

@@ -5354,332 +5354,112 @@ class GithubStateClassificationTest(unittest.TestCase):
 
 
 class LocalStateClassificationTest(unittest.TestCase):
-    """A local validate exit code is not a truth value: OOM/SIGKILL != red."""
+    """A local validate exit code is not a verdict without its final status."""
 
     def test_clean_exit_is_green(self) -> None:
-        self.assertEqual(protocol._local_state(0), "green")
+        self.assertEqual(
+            protocol._local_state(
+                0,
+                "FINAL_VALIDATE_STATUS: PASSED\n"
+                "# ci-hub/validate-lock tool COST ACTUAL exit=0\n",
+            ),
+            "green",
+        )
 
-    def test_clean_nonzero_exit_without_a_test_verdict_is_no_result(self) -> None:
-        # DERIVED discriminator (task cancellation_taxonomy_distinguish_self): a
-        # bare nonzero exit with no visible failing-test verdict is NOT a red.
-        # We could not read a product test failure, so the failure came from the
-        # build/harness/sandbox layer (or is unrecognised) -> re-dispatch, never
-        # revert. Putting the unknown on the safe side is what stops a growing
-        # list of environmental wordings from ever manufacturing a false revert.
-        for code in (1, 2, 3, 42):
+    def test_any_exit_without_status_is_no_result(self) -> None:
+        for code in (0, 1, 2, 3, 42):
             self.assertEqual(protocol._local_state(code), "no_result", code)
 
-    def test_nonzero_exit_with_a_test_verdict_is_red(self) -> None:
-        # The one thing that DOES make a local leg red: a genuine failing test.
-        for code in (1, 101):
-            self.assertEqual(
-                protocol._local_state(code, "test result: FAILED. 1 failed"),
-                "red",
-                code,
-            )
-
-    def test_environment_kill_is_no_result_not_red(self) -> None:
-        # Regression (task obligation-path-must-consume-no-result-taxonomy): an
-        # OOM/SIGKILL (137) sub-profile build was misread as red and helped drive
-        # an automated revert of a healthy main tip. A killed process never
-        # delivered a verdict; it is a hole to re-dispatch.
+    def test_environment_kill_without_status_is_no_result(self) -> None:
         for code in (137, 143, -9, -15):
             self.assertEqual(protocol._local_state(code), "no_result", code)
 
 
-class EnvironmentalLocalClassificationTest(unittest.TestCase):
-    """Plant every direction: a HARNESS-caused red is no_result, never a revert.
+class FinalValidateStatusClassificationTest(unittest.TestCase):
+    """Local remediation consumes validate's status, never surrounding prose."""
 
-    Regression (task cancellation_taxonomy_distinguish_self): three environmental
-    failures tonight (a sandbox EPERM re-validate, a BpfJailer `.o.d` denial, a
-    cold-build link flake with zero tests) each read as a product red and were
-    one automated step from reverting a healthy tip.
-    """
-
-    def test_sandbox_eperm_with_zero_test_failures_is_no_result(self) -> None:
-        # #1576: a re-validate died on a sandbox EPERM, no test ever ran.
-        output = "make: *** [foo.o] Error 1\nopenat(...) = -1 EPERM (Operation not permitted)\n"
-        state, reason = protocol._classify_local(1, output)
-        self.assertEqual(state, "no_result")
-        self.assertEqual(reason, "non-test-failure:sandbox-denied")
-
-    def test_bpfjailer_dep_write_denial_is_no_result(self) -> None:
-        # step-21: BpfJailer denied a `.o.d` dependency-file write.
-        output = "cc1: fatal error: could not open dr_config.h.o.d: Permission denied\n"
-        state, reason = protocol._classify_local(2, output)
-        self.assertEqual(state, "no_result")
-        self.assertEqual(reason, "non-test-failure:sandbox-denied")
-
-    def test_cold_build_link_flake_is_no_result(self) -> None:
-        # DynamoRIO cold-build link flake, ZERO test failures.
-        output = "/usr/bin/ld: cannot find -lfoo\ncollect2: error: ld returned 1 exit status\n"
-        state, reason = protocol._classify_local(1, output)
-        self.assertEqual(state, "no_result")
-        self.assertEqual(reason, "non-test-failure:cold-build-flake")
-
-    def test_dynamorio_build_summary_is_build_no_result_not_test_failure(self) -> None:
-        # Negative half of the mixed-output bracket. Exact 3801a7df shape: the
-        # DAG aggregate says ``1 failed``, but the only concrete operation is
-        # DynamoRIO configure/install, before a named product test. The old
-        # count regex mislabeled this test-failure.
-        for operation in (
-            "failed to build and install DynamoRIO: exit status: 2",
-            "failed to configure DynamoRIO: exit status: 1",
-        ):
-            with self.subTest(operation=operation):
+    def test_fixed_statuses_and_exit_codes(self) -> None:
+        cases = (
+            (0, 0, "PASSED", "green"),
+            (3, 1, "FAILED", "red"),
+            (4, 75, "COULD_NOT_RUN", "no_result"),
+        )
+        for wrapper_exit, validate_exit, status, expected in cases:
+            with self.subTest(status=status):
                 output = (
-                    "❌ portable CI DAG lane (0 passed, 1 failed, exit 1: "
-                    f"[doc.rustdoc] {operation})\n"
-                    "❌ Validation summary [full] (4 passed, 1 failed)\n"
+                    f"FINAL_VALIDATE_STATUS: {status}\n"
+                    "# ci-hub/validate-lock tool COST ACTUAL "
+                    f"exit={validate_exit}\n"
                 )
-                state, reason = protocol._classify_local(1, output)
+                self.assertEqual(protocol._local_state(wrapper_exit, output), expected)
+
+    def test_absence_is_no_result_even_when_exit_looks_decisive(self) -> None:
+        for exit_code in (0, 1, 75, 137, -9):
+            with self.subTest(exit_code=exit_code):
+                state, reason = protocol._classify_local(
+                    exit_code,
+                    "test result: FAILED\n"
+                    "# ci-hub/validate-lock tool COST ACTUAL exit=1\n",
+                )
                 self.assertEqual(state, "no_result")
-                self.assertEqual(reason, "non-test-failure:build-tool")
+                self.assertIn("final validate status is absent", reason)
 
-    def test_dag_runner_node_aggregate_is_not_a_product_test_verdict(self) -> None:
-        # REAL incident, planted verbatim: obligation
-        # 20260809-012006-649cee3a8339-dad6e4 at hermit 649cee3a. The run had ZERO
-        # test-failure markers of any kind; the red rested ENTIRELY on the literal
-        # text "1 failed" inside safe-ci-dag-runner's own closing summary, whose
-        # counts are DAG NODES. The failing node was a TIMEOUT -- its cgroup held
-        # processes in do_signal_stop for ~210s on a node that finishes in 54-58s
-        # unfrozen -- so an infrastructure freeze was rendered as a product red.
-        #
-        # _has_explicit_product_test_failure already excluded this text "because
-        # it may count DAG nodes"; the catch-all was re-admitting it.
-        for runner in ("dagrun", "safe-ci-dag-runner"):
-            with self.subTest(runner=runner):
-                output = (
-                    "[e2e.metadata] ✗ FAIL   metadata (233s, TIMEOUT >60s)\n"
-                    f"{runner}: FAIL - 8 passed, 1 failed, 0 aborted, "
-                    "39 skipped in 234.1s\n"
-                )
-                state, reason = protocol._classify_local(1, output)
-                self.assertEqual(state, "no_result")
-                self.assertNotEqual(reason, "test-failure")
-
-    def test_node_aggregate_strip_is_line_scoped_not_a_blanket_disable(self) -> None:
-        # A fix that stopped manufacturing reds by never counting again would be
-        # as useless as the bug. The aggregate is removed by LINE, so a genuine
-        # bare count elsewhere in the same log still reds.
-        runner = (
-            "safe-ci-dag-runner: FAIL - 8 passed, 1 failed, 0 aborted, "
-            "39 skipped in 234.1s\n"
+    def test_status_exit_disagreement_is_no_result(self) -> None:
+        state, reason = protocol._classify_local(
+            0,
+            "FINAL_VALIDATE_STATUS: PASSED\n"
+            "# ci-hub/validate-lock tool COST ACTUAL exit=1\n",
         )
-        with self.subTest("bare count alone still reds"):
-            state, reason = protocol._classify_local(1, "collected 12 items\n3 failed, 9 passed\n")
-            self.assertEqual((state, reason), ("red", "test-failure"))
-        with self.subTest("bare count ALONGSIDE the aggregate still reds"):
-            state, reason = protocol._classify_local(1, "3 failed, 9 passed\n" + runner)
-            self.assertEqual((state, reason), ("red", "test-failure"))
-        with self.subTest("libtest verdict alongside the aggregate still reds"):
-            output = "test result: FAILED. 2 passed; 1 failed; 0 ignored\n" + runner
-            state, reason = protocol._classify_local(1, output)
-            self.assertEqual((state, reason), ("red", "test-failure"))
+        self.assertEqual(state, "no_result")
+        self.assertIn("requires exit 0, got 1", reason)
 
-    def test_a_node_that_could_not_run_is_never_a_product_red(self) -> None:
-        # The three outcomes, at the classifier: a node can be "failed" because it
-        # TIMED OUT, was CANCELLED, or was ABORTED. None of those is a product test
-        # verdict, and collapsing them into red is what trains a fleet to distrust
-        # real reds.
-        for label, node_line in (
-            ("timeout", "[e2e.metadata] ✗ FAIL metadata (233s, TIMEOUT >60s)"),
-            ("cpu-timeout", "[build.dbt] ✗ FAIL dbt (61s, CPU-TIMEOUT >60s cpu)"),
-            ("oom", "[test.big] ✗ FAIL big (12s, OOM-KILLED (hit inner MemoryMax))"),
-        ):
-            with self.subTest(label):
-                output = (
-                    f"{node_line}\n"
-                    "safe-ci-dag-runner: FAIL - 0 passed, 1 failed, 0 aborted, "
-                    "0 skipped in 234.1s\n"
-                )
-                state, _ = protocol._classify_local(1, output)
-                self.assertEqual(state, "no_result", f"{label} must not be a product red")
-
-    def test_explicit_test_verdict_wins_over_unrelated_build_marker(self) -> None:
-        # Positive half of the mixed-output bracket. Combined DAG output can
-        # carry an unrelated build-node marker and a genuine product-test
-        # verdict. The explicit named test + libtest summary is the stronger
-        # causal evidence and must remain red; canonical FAILED/3 receipt
-        # binding remains the final remediation authority.
-        for operation in (
-            "failed to build and install DynamoRIO: exit status: 2",
-            "failed to configure DynamoRIO: exit status: 1",
-        ):
-            with self.subTest(operation=operation):
-                output = (
-                    f"[build.dbi_release] {operation}\n"
-                    "test tests::determinism_holds ... FAILED\n"
-                    "test result: FAILED. 41 passed; 1 failed; 0 ignored\n"
-                    "❌ Validation summary [full] (4 passed, 2 failed)\n"
-                )
-                state, reason = protocol._classify_local(1, output)
-                self.assertEqual(state, "red")
-                self.assertEqual(reason, "test-failure")
-
-    def test_build_script_panic_dag_summary_is_no_result_not_red(self) -> None:
-        # REAL incident log (obligation 20260804-025419-0f891e43), planted verbatim:
-        # a reverie-dbi/build.rs:339 cold-build panic that the DAG runner rendered
-        # with "N failed" + "panicked at". Both the "panicked at" marker and the
-        # "\bN failed\b" count regex fire, so the OLD classifier called it a red and
-        # armed a revert of a healthy tip. A build.rs panic is a BUILD-phase flake,
-        # never a test verdict -> no_result, re-dispatch.
+    def test_last_occurrence_wins_over_quoted_earlier_status(self) -> None:
         output = (
-            "❌ portable CI DAG manifest (0 passed, 1 failed, exit 1: "
-            "[build.dbi_release] thread 'main' (3550207) panicked at "
-            ".cargo/git/checkouts/reverie-2fc770f7a9c80803/d973a85/"
-            "reverie-dbi/build.rs:339:5:; full log: /tmp/hermit-validate.4bKorf.log)\n"
-            "❌ Validation summary [full] (3 passed, 2 failed; full log: "
-            "/tmp/hermit-validate.4bKorf.log)\n"
+            "FINAL_VALIDATE_STATUS: COULD_NOT_RUN\n"
+            "quoted fixture above; actual summary follows\n"
+            "FINAL_VALIDATE_STATUS: FAILED\n"
+            "# ci-hub/validate-lock tool COST ACTUAL exit=1\n"
         )
-        state, reason = protocol._classify_local(1, output)
-        self.assertEqual(state, "no_result")
-        self.assertEqual(reason, "non-test-failure:build-script")
+        self.assertEqual(protocol._local_state(1, output), "red")
 
-    def test_cargo_custom_build_command_failure_is_no_result(self) -> None:
-        output = (
-            "error: failed to run custom build command for `reverie-dbi v0.1.0`\n"
-            "  process didn't exit successfully (exit status: 101)\n"
-            "test summary: 0 passed, 1 failed\n"
+    def test_prose_cannot_override_the_reported_status(self) -> None:
+        failing_prose = (
+            "test result: FAILED. 1 failed\n"
+            "panicked at src/lib.rs\n"
+            "FINAL_VALIDATE_STATUS: PASSED\n"
+            "# ci-hub/validate-lock tool COST ACTUAL exit=0\n"
         )
-        state, reason = protocol._classify_local(101, output)
-        self.assertEqual(state, "no_result")
-        self.assertEqual(reason, "non-test-failure:build-script")
-
-    def test_genuine_test_panic_outside_build_rs_stays_red(self) -> None:
-        # Guard against over-broadening: a panic in PRODUCT source (not build.rs)
-        # with a failing test verdict is a real red and MUST still revert.
-        output = (
-            "thread 'tests::determinism' panicked at src/detcore/sched.rs:88:5:\n"
-            "test result: FAILED. 40 passed; 1 failed; 0 ignored\n"
+        environmental_prose = (
+            "OOM-KILLED at inner MemoryMax\n"
+            "permission denied\n"
+            "FINAL_VALIDATE_STATUS: FAILED\n"
+            "# ci-hub/validate-lock tool COST ACTUAL exit=1\n"
         )
-        state, reason = protocol._classify_local(101, output)
-        self.assertEqual(state, "red")
-        self.assertEqual(reason, "test-failure")
+        self.assertEqual(protocol._local_state(0, failing_prose), "green")
+        self.assertEqual(protocol._local_state(1, environmental_prose), "red")
 
-    def test_inner_memorymax_oom_in_test_node_is_no_result_not_red(self) -> None:
-        # Sixth env signature (task cancellation_taxonomy_distinguish_self note
-        # 2026-08-04, validate SHA 37f8ef3c): an inner-cgroup MemoryMax OOM inside a
-        # boxed TEST node SIGKILLs a test process, so the node surfaces a genuine
-        # test-failure VERDICT ("N failed"/panic). Build-script recognition alone
-        # does NOT catch this (no build.rs panic), so without the OOM signature
-        # _has_test_failures would fire -> false red. The OOM string is the tell:
-        # this is a cap breach to re-dispatch (fix-forward = raise the cap), never a
-        # tip to revert. Runner strings planted verbatim (model.rs / scheduler.rs).
-        output = (
-            "[test.hermit_integration] ▲ MEMORY CAP HIT: OOM-killed at its inner "
-            "cgroup MemoryMax (4.0 GiB); peak 4.0 GiB, 14 oom_kill event(s)\n"
-            "❌ portable CI DAG manifest (0 passed, 1 failed, exit 1: "
-            "[test.hermit_integration] OOM-KILLED (hit inner MemoryMax; 14 oom_kill "
-            "event(s)))\n"
-            "thread 'detcore::sched::tests::t' panicked at src/lib.rs:9:1: SIGKILL\n"
-            "test result: FAILED. 20 passed; 1 failed; 0 ignored\n"
+    def test_unknown_status_is_no_result(self) -> None:
+        state, reason = protocol._classify_local(
+            3,
+            "FINAL_VALIDATE_STATUS: MAYBE\n"
+            "# ci-hub/validate-lock tool COST ACTUAL exit=1\n",
         )
-        state, reason = protocol._classify_local(1, output)
         self.assertEqual(state, "no_result")
-        self.assertEqual(reason, "non-test-failure:inner-memorymax-oom")
+        self.assertIn("unknown final validate status", reason)
 
-    def test_inner_memorymax_oom_that_also_panicked_build_rs_labels_oom(self) -> None:
-        # When an OOM reaps a child rustc/cc1plus and reverie-dbi/build.rs then
-        # panics, BOTH the OOM string and the build.rs panic are present. The OOM
-        # signature is checked FIRST because "raise this node's cap" is the
-        # actionable label; the outcome is no_result either way, never a revert.
-        output = (
-            "[build.dbi_release] ▲ MEMORY CAP HIT: OOM-killed at its inner cgroup "
-            "MemoryMax (8.0 GiB); peak 8.0 GiB, 1 oom_kill event(s)\n"
-            "thread 'main' panicked at reverie-dbi/build.rs:339:5: rustc killed\n"
-            "❌ Validation summary [full] (3 passed, 2 failed)\n"
-        )
-        state, reason = protocol._classify_local(1, output)
-        self.assertEqual(state, "no_result")
-        self.assertEqual(reason, "non-test-failure:inner-memorymax-oom")
-
-    def test_genuine_test_failure_without_oom_stays_red(self) -> None:
-        # Symmetric guard: a real failing test verdict with NO OOM string is still a
-        # red that must revert -- the OOM signature never swallows a genuine failure.
-        output = "test result: FAILED. 40 passed; 1 failed; 0 ignored\n"
-        state, reason = protocol._classify_local(101, output)
-        self.assertEqual(state, "red")
-        self.assertEqual(reason, "test-failure")
-
-    def test_network_proxy_drop_is_no_result(self) -> None:
-        output = "error: failed to get `serde`\nCaused by: could not resolve host: github.com\n"
-        state, _ = protocol._classify_local(101, output)
-        self.assertEqual(state, "no_result")
-
-    def test_disk_exhaustion_is_no_result(self) -> None:
-        output = "error: No space left on device (os error 28)\n"
-        state, _ = protocol._classify_local(1, output)
-        self.assertEqual(state, "no_result")
-
-    def test_a_real_test_failure_is_red_even_with_a_sandbox_line(self) -> None:
-        # A real test failure is NEVER swallowed: it wins over any infra line.
-        output = (
-            "some background noise: permission denied on /proc\n"
-            "test tests::determinism_holds ... FAILED\n"
-            "test result: FAILED. 41 passed; 1 failed; 0 ignored\n"
-        )
-        state, reason = protocol._classify_local(101, output)
-        self.assertEqual(state, "red")
-        self.assertEqual(reason, "test-failure")
-
-    def test_pytest_style_failure_count_is_red(self) -> None:
-        state, reason = protocol._classify_local(1, "=== 3 failed, 200 passed in 4.2s ===")
-        self.assertEqual(state, "red")
-        self.assertEqual(reason, "test-failure")
-
-    def test_local_compile_break_is_no_result_not_a_local_revert(self) -> None:
-        # A post-land compile break of code that ALREADY compiled+tested before
-        # arming is overwhelmingly environmental (cold cache/toolchain), so the
-        # LOCAL leg does not revert on it: no failing test verdict -> no_result,
-        # re-dispatch. A genuine regression the environment did not cause still
-        # reverts via the authoritative GitHub leg, which sees it too.
-        output = "error[E0425]: cannot find value `foo` in this scope\nerror: could not compile `hermit`\n"
-        state, reason = protocol._classify_local(101, output)
-        self.assertEqual(state, "no_result")
-        self.assertEqual(reason, "non-test-failure:unclassified")
-
-    def test_never_before_seen_environmental_wording_is_no_result(self) -> None:
-        # THE derivation the growing-list trap demands: an environmental failure
-        # whose wording is in NONE of our signature categories must STILL be a
-        # no_result, because the discriminator is "no failing test verdict", not
-        # "matches a known infra string". A missing signature costs only a vague
-        # log label ("unclassified"), never a false red / revert.
-        output = "quux-jailer: request refused by frobnicator policy 0x9\nBuild step failed.\n"
-        state, reason = protocol._classify_local(1, output)
-        self.assertEqual(state, "no_result")
-        self.assertEqual(reason, "non-test-failure:unclassified")
-
-    def test_environmental_local_red_never_remediates(self) -> None:
-        # End-to-end: an environmental local leg stays no_result through the
-        # actuator, so no obligation ever recommends a revert for it.
-        with tempfile.TemporaryDirectory() as tmp:
-            store = Path(tmp) / "store.jsonl"
-            obligations.create_obligation(
-                repo="rrnewton/hermit",
-                landed_sha=SHA,
-                land_mode="speculative",
-                actor="tester",
-                obligation_id="ob-env",
-                path=store,
+    def test_bounded_log_read_keeps_the_final_status_and_inner_exit(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            log = Path(temporary) / "validate.log"
+            log.write_text(
+                "FINAL_VALIDATE_STATUS: COULD_NOT_RUN\n"
+                + ("foreign output\n" * 20)
+                + "FINAL_VALIDATE_STATUS: FAILED\n"
+                + "# ci-hub/validate-lock tool COST ACTUAL exit=1\n"
             )
-            obligations.transition(
-                "ob-env",
-                "legs",
-                {
-                    "local": {
-                        "state": "no_result",
-                        "exit_code": 1,
-                        "redispatch_count": protocol.DEFAULT_LOCAL_REDISPATCH_LIMIT,
-                        "source": None,
-                    },
-                    "github": {"state": "running"},
-                },
-                store,
-            )
-            with mock.patch.object(protocol, "github_main_sha", return_value=SHA):
-                record = protocol.evaluate_obligation("ob-env", store_path=store)
-            self.assertNotEqual(record.get("overall_state"), "remediation_required")
+            output = protocol._read_local_output(log, 0, cap=100)
+
+        self.assertNotIn("COULD_NOT_RUN", output)
+        self.assertEqual(protocol._local_state(3, output), "red")
 
 
 class LocalRedispatchTest(unittest.TestCase):
