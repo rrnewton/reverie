@@ -11725,51 +11725,43 @@ mod tests {
     }
 
     #[test]
-    fn captured_output_lseek_is_pipe_for_standard_and_alias_fds() {
+    fn captured_output_lseek_is_pipe_for_seekable_standard_stream_alias() {
         let root = TestDir::new();
         let mut state = test_state(&root.0);
         let mut memory = GuestMemory::new(0, 0x4000).unwrap();
         let mut output = CapturedOutput::default();
 
-        for fd in [libc::STDOUT_FILENO, libc::STDERR_FILENO] {
-            let action = execute_basic_syscall_with_output(
-                &mut memory,
-                &mut state,
-                &SyscallRequest::new(
-                    libc::SYS_lseek as u64,
-                    [fd as u64, 0, libc::SEEK_CUR as u64, 0, 0, 0],
-                ),
-                Some(&mut output),
-            );
-            assert!(matches!(
-                action,
-                SyscallAction::Continue {
-                    result,
-                    segment: None
-                } if result == negative_errno(libc::ESPIPE)
-            ));
-        }
-
-        let alias = syscall_result(
-            &mut memory,
+        let path = root.0.join("captured-stderr");
+        std::fs::write(&path, b"seekable").unwrap();
+        let alias = insert_file_with_flags(
             &mut state,
-            libc::SYS_dup,
-            [libc::STDERR_FILENO as u64, 0, 0, 0, 0, 0],
+            std::fs::OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(path)
+                .unwrap(),
+            false,
+            Some(OutputAlias::Stderr),
         );
         assert_eq!(alias, 3);
-        assert!(matches!(
-            output_alias(&state, alias as libc::c_int),
-            Some(OutputAlias::Stderr)
-        ));
-        let action = execute_basic_syscall_with_output(
-            &mut memory,
-            &mut state,
-            &SyscallRequest::new(
-                libc::SYS_lseek as u64,
-                [alias as u64, 0, libc::SEEK_CUR as u64, 0, 0, 0],
-            ),
-            Some(&mut output),
+        let request = SyscallRequest::new(
+            libc::SYS_lseek as u64,
+            [alias as u64, 4, libc::SEEK_SET as u64, 0, 0, 0],
         );
+
+        // The same guest descriptor is genuinely seekable when output capture
+        // is disabled. This is the control that prevents an inherited pipe from
+        // making the captured-output assertion pass through the host fallback.
+        assert!(matches!(
+            execute_basic_syscall_with_output(&mut memory, &mut state, &request, None),
+            SyscallAction::Continue {
+                result: 4,
+                segment: None
+            }
+        ));
+
+        let action =
+            execute_basic_syscall_with_output(&mut memory, &mut state, &request, Some(&mut output));
         assert!(matches!(
             action,
             SyscallAction::Continue {
