@@ -414,15 +414,15 @@ where
         let Some(commit) = row.commit.as_deref() else {
             continue;
         };
-        let Some(tree) = row.extra.get("tree").and_then(|value| value.as_str()) else {
-            continue;
-        };
-        let Some(toolchain) = row.extra.get("toolchain").and_then(|value| value.as_str()) else {
-            continue;
-        };
         let Some(evidence) =
             validated_evidence(row, cell_results_schema_min, cell_results_schema_max)?
         else {
+            continue;
+        };
+        let Some(tree) = row.tree().map_err(str::to_owned)? else {
+            continue;
+        };
+        let Some(toolchain) = row.extra.get("toolchain").and_then(|value| value.as_str()) else {
             continue;
         };
         let run_id = row
@@ -615,7 +615,7 @@ mod tests {
             "run_id": format!("run-{commit}-{ordinal}"),
             "finished_at": format!("2026-08-17T{:02}:{:02}:00Z", ordinal / 60, ordinal % 60),
             "commit": commit,
-            "tree": format!("tree-{commit}"),
+            "tree": commit,
             "toolchain": "rustc-test",
             "cell_results": CellResultsEvidence {
                 run_id: format!("run-{commit}-{ordinal}"),
@@ -1136,5 +1136,18 @@ mod tests {
         )
         .unwrap_err();
         assert!(error.contains("missing commit object"));
+    }
+
+    #[test]
+    fn malformed_tree_in_supported_cell_results_fails_by_name() {
+        let mut malformed = row(FIX, 1, true);
+        malformed
+            .extra
+            .insert("tree".into(), serde_json::json!("unknown"));
+        let error = evaluate(&[malformed], FIX).unwrap_err();
+        assert_eq!(
+            error,
+            "malformed HistoryRow tree: expected exactly 40 hexadecimal characters"
+        );
     }
 }

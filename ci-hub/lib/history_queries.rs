@@ -92,10 +92,13 @@ pub struct FirstBadReport {
     pub query: String,
     pub matched_name: String,
     pub first_bad: ValidationEvidence,
+    pub first_bad_matched_by: String,
     pub last_good: ValidationEvidence,
+    pub last_good_matched_by: String,
     pub commits_between: usize,
     pub commits_without_cell_record: usize,
     pub first_bad_commit_has_mixed_outcomes: bool,
+    pub tree_match_refusals: Vec<String>,
     pub files_touched: Vec<String>,
     pub plausibility: String,
     pub source_node: Option<String>,
@@ -178,31 +181,51 @@ pub enum FirstBadOutcome {
         query: String,
         matched_name: String,
         failure: ValidationEvidence,
+        matched_by: String,
+        tree_match_refusals: Vec<String>,
     },
     NoEvidence {
         query: String,
         available_names: Vec<String>,
+        tree_match_refusals: Vec<String>,
     },
     NoTransition {
         query: String,
         matched_name: String,
         observations: usize,
+        tree_match_refusals: Vec<String>,
     },
 }
 
 pub struct HistoryQueryEngine {
     commits: Vec<String>,
     rows_by_commit: BTreeMap<String, Vec<HistoryRow>>,
+    rows_off_branch: Vec<HistoryRow>,
     unreadable_commits: BTreeSet<String>,
 }
 
 impl HistoryQueryEngine {
     /// `commits` are first-parent branch commits in newest-to-oldest order.
     pub fn new(commits: Vec<String>, rows: Vec<HistoryRow>) -> Self {
+        Self::build(commits, rows, false)
+    }
+
+    /// Retain off-branch rows only for `first-bad`, whose historical
+    /// measurement may associate them by Git tree. Validation authority keeps
+    /// using [`Self::new`] and therefore exact commits only.
+    pub fn new_for_first_bad(commits: Vec<String>, rows: Vec<HistoryRow>) -> Self {
+        Self::build(commits, rows, true)
+    }
+
+    fn build(commits: Vec<String>, rows: Vec<HistoryRow>, retain_off_branch: bool) -> Self {
         let main: BTreeSet<&str> = commits.iter().map(String::as_str).collect();
         let mut rows_by_commit: BTreeMap<String, Vec<HistoryRow>> = BTreeMap::new();
+        let mut rows_off_branch = Vec::new();
         for row in rows {
             let Some(commit) = row.commit.as_deref() else {
+                if retain_off_branch {
+                    rows_off_branch.push(row);
+                }
                 continue;
             };
             if main.contains(commit) {
@@ -210,11 +233,14 @@ impl HistoryQueryEngine {
                     .entry(commit.to_string())
                     .or_default()
                     .push(row);
+            } else if retain_off_branch {
+                rows_off_branch.push(row);
             }
         }
         Self {
             commits,
             rows_by_commit,
+            rows_off_branch,
             unreadable_commits: BTreeSet::new(),
         }
     }
@@ -355,10 +381,25 @@ impl HistoryQueryEngine {
         }
     }
 
+    #[cfg(test)]
     pub fn first_bad(&self, query: &str, branch: &str, branch_ref: &str) -> FirstBadOutcome {
+        self.first_bad_with_trees(query, branch, branch_ref, &BTreeMap::new())
+    }
+
+    /// Match clean, commit-anchored off-branch rows to one branch commit with
+    /// the same Git tree. Exact commit matches remain preferred and are never
+    /// duplicated through their tree.
+    pub fn first_bad_with_trees(
+        &self,
+        query: &str,
+        branch: &str,
+        branch_ref: &str,
+        commit_trees: &BTreeMap<String, String>,
+    ) -> FirstBadOutcome {
         let normalized = normalize(query);
         let mut available = BTreeSet::new();
         let mut observations: Vec<(usize, String, GateHistoryRow, HistoryRow)> = Vec::new();
+        let mut tree_match_refusals = Vec::new();
 
         for (index, sha) in self.commits.iter().enumerate() {
             let Some(rows) = self.rows_by_commit.get(sha) else {
@@ -382,6 +423,71 @@ impl HistoryQueryEngine {
             }
         }
 
+        if !commit_trees.is_empty() {
+            let commit_indices: BTreeMap<&str, usize> = self
+                .commits
+                .iter()
+                .enumerate()
+                .map(|(index, commit)| (commit.as_str(), index))
+                .collect();
+            let mut commits_by_tree: BTreeMap<String, Vec<&str>> = BTreeMap::new();
+            for (commit, tree) in commit_trees {
+                if commit_indices.contains_key(commit.as_str()) {
+                    commits_by_tree
+                        .entry(tree.to_ascii_lowercase())
+                        .or_default()
+                        .push(commit.as_str());
+                }
+            }
+
+            for row in self.rows_off_branch.iter().filter(|row| {
+                row.commit.is_some()
+                    && row.commit_anchored == Some(true)
+                    && row.tree_dirty == Some(false)
+            }) {
+                let matching_gate = row
+                    .gates
+                    .iter()
+                    .find(|gate| normalize(&gate.name) == normalized);
+                let tree = match row.tree() {
+                    Ok(Some(tree)) => tree,
+                    Ok(None) => continue,
+                    Err(error) => {
+                        if matching_gate.is_some() {
+                            tree_match_refusals.push(format!(
+                                "{error} on history row for {}",
+                                row.commit.as_deref().unwrap_or("unknown commit")
+                            ));
+                        }
+                        continue;
+                    }
+                };
+                let Some(matched_commits) = commits_by_tree.get(&tree.to_ascii_lowercase()) else {
+                    continue;
+                };
+                if matched_commits.len() != 1 {
+                    if matching_gate.is_some() {
+                        tree_match_refusals.push(format!(
+                            "history row tree {tree} matches {} commits on {branch_ref}",
+                            matched_commits.len()
+                        ));
+                    }
+                    continue;
+                }
+                for gate in &row.gates {
+                    available.insert(gate.name.clone());
+                }
+                let Some(gate) = matching_gate else {
+                    continue;
+                };
+                let sha = matched_commits[0];
+                let index = *commit_indices
+                    .get(sha)
+                    .expect("tree index contains only branch commits");
+                observations.push((index, sha.to_string(), gate.clone(), row.clone()));
+            }
+        }
+
         if observations.is_empty() {
             let suggestions = available
                 .into_iter()
@@ -394,6 +500,7 @@ impl HistoryQueryEngine {
             return FirstBadOutcome::NoEvidence {
                 query: query.to_string(),
                 available_names: suggestions,
+                tree_match_refusals,
             };
         }
 
@@ -440,17 +547,20 @@ impl HistoryQueryEngine {
                 .filter_map(|item| item.2.result.as_deref().or(item.2.kind.as_deref()))
                 .collect();
             let report = Box::new(FirstBadReport {
-                schema_version: 1,
+                schema_version: 2,
                 branch: branch.to_string(),
                 branch_ref: branch_ref.to_string(),
                 query: query.to_string(),
                 matched_name: bad.2.name.clone(),
                 first_bad: gate_evidence(&bad.1, &bad.3, &bad.2),
+                first_bad_matched_by: history_match(&bad.1, &bad.3).into(),
                 last_good: gate_evidence(&good.1, &good.3, &good.2),
+                last_good_matched_by: history_match(&good.1, &good.3).into(),
                 commits_between: between,
                 commits_without_cell_record: missing,
                 first_bad_commit_has_mixed_outcomes: bad_results.contains("pass")
                     && (bad_results.contains("fail") || bad_results.contains("timeout")),
+                tree_match_refusals,
                 files_touched: Vec::new(),
                 plausibility: "not-assessed".into(),
                 source_node: bad.2.source_node.clone(),
@@ -500,13 +610,24 @@ impl HistoryQueryEngine {
                 query: query.to_string(),
                 matched_name,
                 failure: gate_evidence(sha, row, gate),
+                matched_by: history_match(sha, row).into(),
+                tree_match_refusals,
             };
         }
         FirstBadOutcome::NoTransition {
             query: query.to_string(),
             matched_name,
             observations: observations.len(),
+            tree_match_refusals,
         }
+    }
+}
+
+fn history_match(sha: &str, row: &HistoryRow) -> &'static str {
+    if row.commit.as_deref() == Some(sha) {
+        "commit"
+    } else {
+        "tree"
     }
 }
 
@@ -939,6 +1060,11 @@ mod tests {
         row
     }
 
+    fn with_tree(mut row: HistoryRow, tree: &str) -> HistoryRow {
+        row.extra.insert("tree".into(), serde_json::json!(tree));
+        row
+    }
+
     fn with_satisfied_coverage(mut row: HistoryRow) -> HistoryRow {
         row.schema_version = Some(5);
         row.checks = Some(1);
@@ -1307,6 +1433,207 @@ mod tests {
         assert_eq!(report.commits_between, 1);
         assert_eq!(report.commits_without_cell_record, 1);
         assert_eq!(bisect_probe.as_deref(), Some("gap"));
+    }
+
+    #[test]
+    fn first_bad_uses_a_unique_tree_match_without_changing_exact_commit_authority() {
+        const BAD: &str = "1111111111111111111111111111111111111111";
+        const GOOD: &str = "2222222222222222222222222222222222222222";
+        const OFF_BRANCH: &str = "3333333333333333333333333333333333333333";
+        const BAD_TREE: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        const GOOD_TREE: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        let commits = vec![BAD.into(), GOOD.into()];
+        let rows = vec![
+            gate(
+                with_tree(
+                    row(BAD, "2026-08-03T02:00:00Z", "full", "full", "fail"),
+                    BAD_TREE,
+                ),
+                "cell",
+                "fail",
+            ),
+            gate(
+                with_tree(
+                    row(OFF_BRANCH, "2026-08-03T01:00:00Z", "full", "full", "pass"),
+                    "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+                ),
+                "cell",
+                "pass",
+            ),
+        ];
+        let commit_trees = BTreeMap::from([
+            (BAD.to_string(), BAD_TREE.to_string()),
+            (GOOD.to_string(), GOOD_TREE.to_string()),
+        ]);
+
+        let FirstBadOutcome::Found(report) = HistoryQueryEngine::new_for_first_bad(commits, rows)
+            .first_bad_with_trees("cell", "main", "origin/main", &commit_trees)
+        else {
+            panic!("expected tree-matched transition")
+        };
+        assert_eq!(report.first_bad.sha, BAD);
+        assert_eq!(report.first_bad_matched_by, "commit");
+        assert_eq!(report.last_good.sha, GOOD);
+        assert_eq!(report.last_good_matched_by, "tree");
+        assert_eq!(report.commits_between, 0);
+
+        assert!(matches!(
+            newest_green(HistoryQueryEngine::new(
+                vec![GOOD.into()],
+                vec![with_tree(
+                    row(OFF_BRANCH, "2026-08-03T01:00:00Z", "full", "full", "pass"),
+                    GOOD_TREE
+                )]
+            )),
+            NewestGreenOutcome::NoEvidence { .. }
+        ));
+    }
+
+    #[test]
+    fn first_bad_does_not_use_a_different_dirty_or_unanchored_tree() {
+        const BAD: &str = "1111111111111111111111111111111111111111";
+        const GOOD: &str = "2222222222222222222222222222222222222222";
+        const OFF_BRANCH: &str = "3333333333333333333333333333333333333333";
+        const BAD_TREE: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        const GOOD_TREE: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        const OTHER_TREE: &str = "cccccccccccccccccccccccccccccccccccccccc";
+        let failed = gate(
+            with_tree(
+                row(BAD, "2026-08-03T02:00:00Z", "full", "full", "fail"),
+                BAD_TREE,
+            ),
+            "cell",
+            "fail",
+        );
+        let mut dirty = gate(
+            with_tree(
+                row(OFF_BRANCH, "2026-08-03T01:00:00Z", "full", "full", "pass"),
+                GOOD_TREE,
+            ),
+            "cell",
+            "pass",
+        );
+        dirty.tree_dirty = Some(true);
+        let mut unanchored = dirty.clone();
+        unanchored.tree_dirty = Some(false);
+        unanchored.commit_anchored = Some(false);
+        let different = gate(
+            with_tree(
+                row(OFF_BRANCH, "2026-08-03T01:00:00Z", "full", "full", "pass"),
+                OTHER_TREE,
+            ),
+            "cell",
+            "pass",
+        );
+        let commit_trees = BTreeMap::from([
+            (BAD.to_string(), BAD_TREE.to_string()),
+            (GOOD.to_string(), GOOD_TREE.to_string()),
+        ]);
+        for ignored in [dirty, unanchored, different] {
+            let outcome = HistoryQueryEngine::new_for_first_bad(
+                vec![BAD.into(), GOOD.into()],
+                vec![failed.clone(), ignored],
+            )
+            .first_bad_with_trees("cell", "main", "origin/main", &commit_trees);
+            assert!(matches!(
+                outcome,
+                FirstBadOutcome::FailureWithoutKnownGood {
+                    matched_by,
+                    ..
+                } if matched_by == "commit"
+            ));
+        }
+    }
+
+    #[test]
+    fn first_bad_refuses_a_malformed_tree_for_the_requested_cell() {
+        const MAIN: &str = "1111111111111111111111111111111111111111";
+        const OFF_BRANCH: &str = "2222222222222222222222222222222222222222";
+        const MAIN_TREE: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let malformed = gate(
+            with_tree(
+                row(OFF_BRANCH, "2026-08-03T01:00:00Z", "full", "full", "pass"),
+                "unknown",
+            ),
+            "cell",
+            "pass",
+        );
+        let outcome = HistoryQueryEngine::new_for_first_bad(vec![MAIN.into()], vec![malformed])
+            .first_bad_with_trees(
+                "cell",
+                "main",
+                "origin/main",
+                &BTreeMap::from([(MAIN.to_string(), MAIN_TREE.to_string())]),
+            );
+        let FirstBadOutcome::NoEvidence {
+            tree_match_refusals,
+            ..
+        } = outcome
+        else {
+            panic!("a malformed off-branch tree must not become evidence")
+        };
+        assert_eq!(
+            tree_match_refusals,
+            vec![format!(
+                "malformed HistoryRow tree: expected exactly 40 hexadecimal characters on history row for {OFF_BRANCH}"
+            )]
+        );
+    }
+
+    #[test]
+    fn first_bad_refuses_an_ambiguous_tree_for_the_requested_cell() {
+        const MAIN_A: &str = "1111111111111111111111111111111111111111";
+        const MAIN_B: &str = "2222222222222222222222222222222222222222";
+        const OFF_BRANCH: &str = "3333333333333333333333333333333333333333";
+        const TREE: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let commit_trees = BTreeMap::from([
+            (MAIN_A.to_string(), TREE.to_string()),
+            (MAIN_B.to_string(), TREE.to_string()),
+        ]);
+        let exact = gate(
+            with_tree(
+                row(MAIN_A, "2026-08-03T02:00:00Z", "full", "full", "fail"),
+                TREE,
+            ),
+            "cell",
+            "fail",
+        );
+        let exact_outcome =
+            HistoryQueryEngine::new_for_first_bad(vec![MAIN_A.into(), MAIN_B.into()], vec![exact])
+                .first_bad_with_trees("cell", "main", "origin/main", &commit_trees);
+        assert!(matches!(
+            exact_outcome,
+            FirstBadOutcome::FailureWithoutKnownGood {
+                matched_by,
+                tree_match_refusals,
+                ..
+            } if matched_by == "commit" && tree_match_refusals.is_empty()
+        ));
+
+        let row = gate(
+            with_tree(
+                row(OFF_BRANCH, "2026-08-03T01:00:00Z", "full", "full", "pass"),
+                TREE,
+            ),
+            "cell",
+            "pass",
+        );
+        let outcome =
+            HistoryQueryEngine::new_for_first_bad(vec![MAIN_A.into(), MAIN_B.into()], vec![row])
+                .first_bad_with_trees("cell", "main", "origin/main", &commit_trees);
+        let FirstBadOutcome::NoEvidence {
+            tree_match_refusals,
+            ..
+        } = outcome
+        else {
+            panic!("an ambiguous off-branch tree must not become evidence")
+        };
+        assert_eq!(
+            tree_match_refusals,
+            vec![format!(
+                "history row tree {TREE} matches 2 commits on origin/main"
+            )]
+        );
     }
 
     /// THE CONTROL. Adjacent commits, zero window: the answer IS localized and

@@ -161,6 +161,17 @@ cell detail was not retained and never turns absence into a pass. Host load was
 not stored by schema 3, so only the measured run CPU/wall ratio can currently be
 reported.
 
+Squash landing changes a commit SHA while preserving its Git tree. `first-bad`
+therefore prefers an exact commit match, then admits an off-branch row only when
+it is clean, commit-anchored, carries a valid forty-hex `tree`, and that tree
+identifies exactly one commit in the queried first-parent history. Reports say
+whether each endpoint matched by `commit` or `tree`. A malformed tree for the
+requested cell is reported by name rather than disappearing as absence, and a
+tree shared by multiple branch commits is refused rather than attributed to an
+arbitrary commit. These additions are `first-bad` report schema 2.
+`newest-green` remains exact-commit-only because it participates in validation
+authority rather than historical measurement.
+
 Both commands follow `validate-status` exit codes: `0` found the requested
 evidence, `3` found failure evidence without the required green boundary, and
 `4` means no qualifying record/transition. Tool-cost output reports estimated

@@ -3693,10 +3693,10 @@ fn qualify_canonical_receipt(row: &HistoryRow, sha: &str) -> Option<QualifyingRe
         return None;
     }
 
-    let tree = extra_str(row, "tree")?;
-    if !is_oid(tree) {
-        return None;
-    }
+    // Receipt qualification deliberately maps both an absent and a malformed
+    // tree to a non-qualifying row. Other consumers need to distinguish those
+    // states, so the shared accessor retains that distinction.
+    let _tree = row.tree().ok()??;
     let checks = row.checks?;
     let gates_run = row.gates_run?;
     let gates_expected = row.gates_expected?;
@@ -3817,10 +3817,10 @@ fn qualify_reverie_receipt(row: &HistoryRow, sha: &str) -> Option<QualifyingRece
         "reverie-local-validation/v2" => &V2_GATES,
         _ => return None,
     };
-    let tree = extra_str(row, "tree")?;
-    if !is_oid(tree) {
-        return None;
-    }
+    // Match the Hermit receipt contract: both absent and malformed trees are
+    // non-qualifying here, while the shared accessor keeps them distinguishable
+    // for consumers that must report malformed rows.
+    let _tree = row.tree().ok()??;
     let checks = row.checks?;
     let gates_run = row.gates_run?;
     let gates_expected = row.gates_expected?;
@@ -4036,7 +4036,10 @@ fn newest_canonical_receipt(rows: &[QualifyingReceipt]) -> Option<&QualifyingRec
 /// One qualifying authority record rendered with every condition it verified.
 fn describe_receipt(receipt: &QualifyingReceipt) -> serde_json::Value {
     let row = &receipt.row;
-    let tree = extra_str(row, "tree").expect("qualified receipt has tree");
+    let tree = row
+        .tree()
+        .expect("qualified receipt has a well-formed tree")
+        .expect("qualified receipt has tree");
     let repo = row
         .repo
         .as_deref()
@@ -4178,6 +4181,49 @@ fn branch_history(repo: &Path, branch_ref: &str) -> Result<Vec<String>, CiHubErr
         )));
     }
     Ok(commits)
+}
+
+fn branch_history_with_trees(
+    repo: &Path,
+    branch_ref: &str,
+) -> Result<(Vec<String>, BTreeMap<String, String>), CiHubError> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(["log", "--first-parent", "--format=%H%x09%T", branch_ref])
+        .bounded_output()
+        .map_err(|source| CiHubError::Launch {
+            tool: "git log trees for history query".into(),
+            source,
+        })?;
+    if !output.status.success() {
+        return Err(CiHubError::HistoryQuery(format!(
+            "cannot read Git trees for {branch_ref}: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        )));
+    }
+    let mut commits = Vec::new();
+    let mut trees = BTreeMap::new();
+    for line in String::from_utf8_lossy(&output.stdout).lines() {
+        let Some((commit, tree)) = line.trim().split_once('\t') else {
+            return Err(CiHubError::HistoryQuery(format!(
+                "git log emitted a malformed commit/tree row for {branch_ref}: {line}"
+            )));
+        };
+        if !is_oid(commit) || !is_oid(tree) {
+            return Err(CiHubError::HistoryQuery(format!(
+                "git log emitted a malformed commit/tree value for {branch_ref}: {line}"
+            )));
+        }
+        commits.push(commit.to_string());
+        trees.insert(commit.to_string(), tree.to_string());
+    }
+    if commits.is_empty() {
+        return Err(CiHubError::HistoryQuery(format!(
+            "{branch_ref} has no commits"
+        )));
+    }
+    Ok((commits, trees))
 }
 
 #[derive(Debug, Deserialize, PartialEq, Eq)]
@@ -4775,8 +4821,9 @@ fn print_first_bad(report: &history_queries::FirstBadReport, json: bool) {
         return;
     }
     println!(
-        "FIRST-BAD {} cell={} observed={} profile={} selection={}",
+        "FIRST-BAD {} matched-by={} cell={} observed={} profile={} selection={}",
         report.first_bad.sha,
+        report.first_bad_matched_by,
         report.matched_name,
         report.first_bad.finished_at.as_deref().unwrap_or("unknown"),
         report.first_bad.profile,
@@ -4784,8 +4831,9 @@ fn print_first_bad(report: &history_queries::FirstBadReport, json: bool) {
     );
     println!("BRANCH {} ref={}", report.branch, report.branch_ref);
     println!(
-        "LAST-GOOD {} observed={} commits-between={} no-cell-record={} first-bad-mixed={}",
+        "LAST-GOOD {} matched-by={} observed={} commits-between={} no-cell-record={} first-bad-mixed={}",
         report.last_good.sha,
+        report.last_good_matched_by,
         report.last_good.finished_at.as_deref().unwrap_or("unknown"),
         report.commits_between,
         report.commits_without_cell_record,
@@ -4793,6 +4841,9 @@ fn print_first_bad(report: &history_queries::FirstBadReport, json: bool) {
     );
     if report.first_bad_commit_has_mixed_outcomes {
         println!("FLAKE-SIGNAL: the same first-bad SHA has both PASS and FAIL records for this cell; the failure is real evidence but not a deterministic commit regression");
+    }
+    for refusal in &report.tree_match_refusals {
+        println!("TREE-MATCH-REFUSED {refusal}");
     }
     println!(
         "FILES-TOUCHED {}",
@@ -4835,22 +4886,18 @@ fn run_first_bad(root: &Path, args: FirstBadArgs) -> Result<i32, CiHubError> {
     if !args.query.no_fetch {
         fetch_history_branch(&repo, &args.query.branch)?;
     }
-    let commits = branch_history(&repo, &branch_ref)?;
-    let main_set: std::collections::BTreeSet<&str> = commits.iter().map(String::as_str).collect();
+    let (commits, commit_trees) = branch_history_with_trees(&repo, &branch_ref)?;
     let ledger = ledger_path(root);
     let mut rows = load_ledger_rows(&ledger)?;
-    rows.retain(|row| {
-        row.commit
-            .as_deref()
-            .map(|commit| main_set.contains(commit))
-            .unwrap_or(false)
-    });
+    rows.retain(|row| row_matches_validation_repo(row, CANONICAL_VALIDATE_REPO));
     retain_cell_evidence(root, &mut rows)?;
-    match HistoryQueryEngine::new(commits, rows).first_bad(
+    let outcome = HistoryQueryEngine::new_for_first_bad(commits, rows).first_bad_with_trees(
         &args.cell_or_gate,
         &args.query.branch,
         &branch_ref,
-    ) {
+        &commit_trees,
+    );
+    match outcome {
         FirstBadOutcome::Found(mut report) => {
             report.files_touched = files_touched(&repo, &report.first_bad.sha)?;
             report.plausibility =
@@ -4870,18 +4917,21 @@ fn run_first_bad(root: &Path, args: FirstBadArgs) -> Result<i32, CiHubError> {
                 println!(
                     "{}",
                     serde_json::json!({
-                        "schema_version": 1,
+                        "schema_version": 2,
                         "verdict": "INDETERMINATE",
                         "exit_code": FIRST_BAD_INDETERMINATE,
                         "branch": args.query.branch,
                         "query": report.query,
                         "matched_name": report.matched_name,
                         "newest_known_fail": report.first_bad,
+                        "newest_known_fail_matched_by": report.first_bad_matched_by,
                         "oldest_known_pass": report.last_good,
+                        "oldest_known_pass_matched_by": report.last_good_matched_by,
                         "unlocalized_window_commits": report.commits_between + 1,
                         "commits_between": report.commits_between,
                         "commits_without_cell_record": report.commits_without_cell_record,
                         "first_bad_commit_has_mixed_outcomes": report.first_bad_commit_has_mixed_outcomes,
+                        "tree_match_refusals": report.tree_match_refusals,
                         "bisect_probe": bisect_probe,
                         "reason": "the two endpoints are adjacent RUNS of this cell, not adjacent commits; no commit in the window has a record for this cell, so the regression is not localized to any commit",
                         "remedy": bisect_probe.as_deref().map(|sha| format!(
@@ -4901,13 +4951,15 @@ fn run_first_bad(root: &Path, args: FirstBadArgs) -> Result<i32, CiHubError> {
             );
             println!("BRANCH {} ref={}", report.branch, report.branch_ref);
             println!(
-                "NEWEST-KNOWN-FAIL {} observed={}",
+                "NEWEST-KNOWN-FAIL {} matched-by={} observed={}",
                 report.first_bad.sha,
+                report.first_bad_matched_by,
                 report.first_bad.finished_at.as_deref().unwrap_or("unknown"),
             );
             println!(
-                "OLDEST-KNOWN-PASS {} observed={}",
+                "OLDEST-KNOWN-PASS {} matched-by={} observed={}",
                 report.last_good.sha,
+                report.last_good_matched_by,
                 report.last_good.finished_at.as_deref().unwrap_or("unknown"),
             );
             println!(
@@ -4934,36 +4986,48 @@ fn run_first_bad(root: &Path, args: FirstBadArgs) -> Result<i32, CiHubError> {
                     "FLAKE-SIGNAL: the newest-known-fail SHA also has a PASS record for this cell"
                 );
             }
+            for refusal in &report.tree_match_refusals {
+                println!("TREE-MATCH-REFUSED {refusal}");
+            }
             Ok(FIRST_BAD_INDETERMINATE)
         }
         FirstBadOutcome::FailureWithoutKnownGood {
             query,
             matched_name,
             failure,
+            matched_by,
+            tree_match_refusals,
         } => {
             if args.query.json {
                 println!(
                     "{}",
-                    serde_json::json!({"schema_version": 1, "verdict": "FAILED", "exit_code": 3, "branch": args.query.branch, "query": query, "matched_name": matched_name, "failure": failure, "reason": "failure exists but no earlier PASS is retained"})
+                    serde_json::json!({"schema_version": 2, "verdict": "FAILED", "exit_code": 3, "branch": args.query.branch, "query": query, "matched_name": matched_name, "failure": failure, "matched_by": matched_by, "tree_match_refusals": tree_match_refusals, "reason": "failure exists but no earlier PASS is retained"})
                 );
             } else {
-                println!("FIRST-BAD FAILED cell={matched_name} sha={} -- failure exists but no earlier PASS is retained", failure.sha);
+                println!("FIRST-BAD FAILED cell={matched_name} sha={} matched-by={matched_by} -- failure exists but no earlier PASS is retained", failure.sha);
+                for refusal in &tree_match_refusals {
+                    println!("TREE-MATCH-REFUSED {refusal}");
+                }
             }
             Ok(3)
         }
         FirstBadOutcome::NoEvidence {
             query,
             available_names,
+            tree_match_refusals,
         } => {
             if args.query.json {
                 println!(
                     "{}",
-                    serde_json::json!({"schema_version": 1, "verdict": "NOT-VALIDATED", "exit_code": 4, "branch": args.query.branch, "query": query, "suggestions": available_names, "reason": "no retained cell/gate record"})
+                    serde_json::json!({"schema_version": 2, "verdict": "NOT-VALIDATED", "exit_code": 4, "branch": args.query.branch, "query": query, "suggestions": available_names, "tree_match_refusals": tree_match_refusals, "reason": "no retained cell/gate record"})
                 );
             } else {
                 println!("FIRST-BAD NOT-VALIDATED cell={query} -- no retained cell/gate record; absence is not PASS");
                 if !available_names.is_empty() {
                     println!("SUGGESTIONS {}", available_names.join(" | "));
+                }
+                for refusal in &tree_match_refusals {
+                    println!("TREE-MATCH-REFUSED {refusal}");
                 }
             }
             Ok(4)
@@ -4972,14 +5036,18 @@ fn run_first_bad(root: &Path, args: FirstBadArgs) -> Result<i32, CiHubError> {
             query,
             matched_name,
             observations,
+            tree_match_refusals,
         } => {
             if args.query.json {
                 println!(
                     "{}",
-                    serde_json::json!({"schema_version": 1, "verdict": "NOT-VALIDATED", "exit_code": 4, "branch": args.query.branch, "query": query, "matched_name": matched_name, "observations": observations, "reason": "no retained PASS-to-FAIL transition"})
+                    serde_json::json!({"schema_version": 2, "verdict": "NOT-VALIDATED", "exit_code": 4, "branch": args.query.branch, "query": query, "matched_name": matched_name, "observations": observations, "tree_match_refusals": tree_match_refusals, "reason": "no retained PASS-to-FAIL transition"})
                 );
             } else {
                 println!("FIRST-BAD NOT-VALIDATED cell={matched_name} observations={observations} -- no retained PASS-to-FAIL transition");
+                for refusal in &tree_match_refusals {
+                    println!("TREE-MATCH-REFUSED {refusal}");
+                }
             }
             Ok(4)
         }
@@ -8361,6 +8429,7 @@ mod tests {
         let report = describe_receipt(receipt);
         assert_eq!(report["repo"], CANONICAL_VALIDATE_REPO);
         assert_eq!(report["sha"], RECEIPT_SHA);
+        assert_eq!(report["tree"], "f9294df9294df9294df9294df9294df9294df929");
         assert_eq!(report["tree_dirty"], false);
         assert_eq!(report["checks"], 2);
         assert_eq!(report["gates_run"], 2);
@@ -8526,6 +8595,7 @@ mod tests {
                 ("raw_result", serde_json::json!("fail")),
             ),
             ("missing tree", ("tree", serde_json::Value::Null)),
+            ("malformed tree", ("tree", serde_json::json!("unknown"))),
         ] {
             let mut value = schema4_receipt_value();
             value[mutate.0] = mutate.1;
@@ -8666,6 +8736,7 @@ mod tests {
         );
 
         for (name, path, replacement) in [
+            ("malformed tree", vec!["tree"], serde_json::json!("unknown")),
             (
                 "direct producer",
                 vec!["producer"],
