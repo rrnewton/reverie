@@ -300,7 +300,6 @@ _LANE = re.compile(r"\b(claude|codex)\b", re.I)
 # Two refusals from different agents also have BYTE-IDENTICAL marker text
 # (`CHANGES-REQUESTED-AT: claude <sha>`), so "quote the exact text" cannot
 # separate them either.
-_RETIRES = re.compile(r"\bRETIRES\s+#?(\d{6,})\b", re.I)
 # ⚠️ A DOCUMENTATION EXAMPLE IS NOT A REFUSAL, AND THIS COST A REAL LANDING.
 # Measured 2026-08-25 on hermit#2611: a comment explaining the convention contained
 #     CHANGES-REQUESTED-AT: claude <sha>   ->  refuses, clears the lane
@@ -595,6 +594,7 @@ def evaluate(
     # `ids` are the comment ids the bodies came from, so a withdrawal can name the
     # refusal it retires. Optional and positional-compatible: every existing caller
     # and test passes bodies alone and gets the previous behaviour.
+    grammar = _load_grammar()
     items = list(zip(ids, bodies)) if ids is not None else list(enumerate(bodies))
     found4 = markers_with_ids(items)
     # Same-lane approvals, and where each comment sits in the record's order.
@@ -658,8 +658,8 @@ def evaluate(
         if kind != WITHDRAWN:
             continue
         who = _issuer_of_comment(by_id.get(cid, ""))
-        for m in _RETIRES.finditer(by_id.get(cid, "")):
-            _retire_claims.setdefault(m.group(1), []).append(who)
+        for target in grammar.retirement_targets(by_id.get(cid, "")):
+            _retire_claims.setdefault(target, []).append(who)
     # (target comment id) -> (owner, claimants) for the two reportable outcomes.
     _retire_refused: dict[str, tuple[str, str]] = {}
     _retire_unowned: dict[str, str] = {}
@@ -673,10 +673,9 @@ def evaluate(
         if key not in _retire_claims:
             return False
         owner = _issuer_of_comment(by_id.get(cid, ""))
-        if owner is None:
-            _retire_unowned[key] = _claimants(key)
-            return True
-        if owner in _retire_claims[key]:
+        if grammar.retirement_allowed(owner, _retire_claims[key]):
+            if owner is None:
+                _retire_unowned[key] = _claimants(key)
             return True
         _retire_refused[key] = (owner, _claimants(key))
         return False
@@ -863,7 +862,7 @@ def evaluate(
     precise_lanes = {
         lane for kind, lane, sha, cid in found4
         if kind == WITHDRAWN and lane is not None and binds(sha)
-        and _RETIRES.search(by_id.get(cid, ""))
+        and grammar.retirement_targets(by_id.get(cid, ""))
     }
     # ⚠️ AN UNQUOTED WITHDRAWAL RETIRES ONE REFUSAL, NOT EVERY REFUSAL IN ITS LANE.
     # The choice was framed as retire-nothing versus retire-all: retire-nothing is
@@ -909,7 +908,7 @@ def evaluate(
     unquoted_left: dict[tuple[str, "str | None"], int] = {}
     for kind, lane, sha, cid in found4:
         if (kind == WITHDRAWN and lane is not None and binds(sha)
-                and not _RETIRES.search(by_id.get(cid, ""))):
+                and not grammar.retirement_targets(by_id.get(cid, ""))):
             key = (lane, _issuer_of_comment(by_id.get(cid, "")))
             unquoted_left[key] = unquoted_left.get(key, 0) + 1
 
@@ -1213,11 +1212,7 @@ def _issuer_of_comment(body: str) -> "str | None":
     comment. ``None`` means UNREADABLE, which every caller here must treat as
     "matches nobody" rather than "matches anybody".
     """
-    for line in (body or "").split("\n"):
-        named = _load_grammar().marker_issuer(line)
-        if named:
-            return named
-    return _load_grammar().comment_author(body or "")
+    return _load_grammar().comment_issuer(body)
 
 
 def self_test() -> int:

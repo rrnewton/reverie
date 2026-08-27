@@ -84,6 +84,7 @@ import bounded_capture  # noqa: E402
 import ops_state  # noqa: E402
 
 SHA40 = re.compile(r"\b[0-9a-f]{40}\b")
+RETIRES = re.compile(r"\bRETIRES\s+#?(\d{6,})\b", re.IGNORECASE)
 LANES = ("claude", "codex")
 CRITICAL_CLASSES = frozenset(
     {"hermit-syscall", "detcore-scheduling", "reverie-api"}
@@ -854,6 +855,42 @@ def comment_author(body: str) -> "str | None":
     return m.group(1).lower() if m else None
 
 
+def comment_issuer(body: str) -> "str | None":
+    """Who issued a comment's marker, or None when the comment does not say.
+
+    A marker's own ``BY`` clause wins over the surrounding disclosure tag. This
+    is the same ownership rule used for approvals, withdrawals and refusals; it
+    lives here so the two refusal readers cannot disagree about who may retire a
+    refusal.
+    """
+    for line in (body or "").split("\n"):
+        named = marker_issuer(line)
+        if named:
+            return named
+    return comment_author(body or "")
+
+
+def retirement_targets(body: str) -> list[str]:
+    """Comment ids named by ``RETIRES`` in ``body``, in document order."""
+    return [match.group(1) for match in RETIRES.finditer(body or "")]
+
+
+def retirement_allowed(
+    refusal_issuer: "str | None", claimants: "Sequence[str | None]"
+) -> bool:
+    """Whether any claimant may retire a refusal with this issuer.
+
+    A refusal with a readable issuer may be retired only by that issuer. A
+    refusal with no readable issuer keeps the existing escape hatch: any
+    claimant may retire it by naming its GitHub comment id.
+    """
+    if not claimants:
+        return False
+    if refusal_issuer is None:
+        return True
+    return refusal_issuer in claimants
+
+
 def sha_names_same_head(a: "str | None", b: "str | None") -> bool:
     """True when two shas name one head; a citation may abbreviate the issuance."""
     if not a or not b:
@@ -984,7 +1021,8 @@ def lane_shas(
     """SHAs a lane EXPLICITLY bound itself to, oldest first. Never inferred.
 
     `unanswered` is an OUT-PARAMETER carrying the refusals in this lane that
-    their OWN ISSUER never took back, as (sha, issuer) pairs, oldest first.
+    their OWN ISSUER never took back and no entitled withdrawal retired by
+    comment id, as (sha, issuer) pairs, oldest first.
 
     ⚠️ AN APPROVAL FROM SOMEBODY ELSE DOES NOT DISCHARGE A REFUSAL, and until
     this parameter existed it did. The clearing rule below is chronological --
@@ -1003,6 +1041,9 @@ def lane_shas(
       * the refusal's OWN issuer, by approving the same lane afterwards. That
         is a reviewer changing their mind, which is what the chronological rule
         was written for and is still honoured exactly.
+      * a canonical withdrawal may name exactly one refusing comment with
+        `RETIRES <comment-id>`. A signed refusal still requires its own issuer;
+        an unsigned refusal keeps the existing gate's exit through any claimant.
       * NOBODY ELSE. Another agent's approval is recorded, binds normally in
         `found`, and leaves the refusal standing -- so the lane reports REFUSED
         while showing an approval, which is the honest description of a lane
@@ -1015,12 +1056,12 @@ def lane_shas(
 
     An UNSIGNED REFUSAL is likewise undischargeable by an approval: nothing can
     prove ownership of it. That fails closed and the escape hatch is the one
-    that already exists -- `CHANGES-REQUESTED-WITHDRAWN-AT`, which says in the
-    grammar what is being retracted, or a push, which moves the head.
+    that already exists -- a canonical `CHANGES-REQUESTED-WITHDRAWN-AT` comment
+    carrying `RETIRES <comment-id>`, or a push, which moves the head.
 
-    ⚠️ AND THE COST, NAMED RATHER THAN LEFT TO BE DISCOVERED: a refusal is now
-    un-clearable by anyone but its author, so an agent that refuses and then
-    goes away parks the head until someone pushes or withdraws in the grammar.
+    ⚠️ AND THE COST, NAMED RATHER THAN LEFT TO BE DISCOVERED: a refusal naming
+    an issuer is un-clearable by anyone but that issuer, so an agent that
+    refuses and then goes away parks the head until someone pushes.
     That is the "answered versus abandoned" problem arriving from the other
     side, and it is a real trade, not a free win. It is the safer direction --
     a parked head is visible and a silently-overridden refusal is not -- but a
@@ -1166,10 +1207,31 @@ def lane_shas(
     # a CITATION and must neither bind nor be reported as a malformed attempt.
     issued: list[tuple[str | None, str, str | None, str | None]] = []
     # Refusals in THIS lane that their own issuer has not taken back, as
-    # (sha, issuer), oldest first. Maintained unconditionally rather than only
+    # (sha, issuer, comment-id), oldest first. The comment id is retained only
+    # inside this function so `RETIRES <comment-id>` can address one refusal;
+    # the public `unanswered` out-parameter remains (sha, issuer).
+    # Maintained unconditionally rather than only
     # when the caller asks: the discharge rule has to see every marker in order,
     # and computing it twice is how two readers of one grammar drift apart.
-    outstanding: list[tuple[str, "str | None"]] = []
+    outstanding: list[tuple[str, "str | None", object | None]] = []
+
+    # A RETIRES claim has authority only when it accompanies a canonical
+    # withdrawal. Collect claims first because the existing gate treats the
+    # named refusal as retired regardless of where the withdrawal appears in the
+    # comment stream. The entitlement rule is shared with that gate below.
+    retire_claims: dict[str, list["str | None"]] = {}
+    for c in comments:
+        body = c.get("body") or ""
+        lines = [_undecorate_block(line) for line in marker_lines(body)]
+        if not any(
+            parsed is not None and parsed[0] == MARKER_WITHDRAWN
+            for parsed in (parse_marker(line) for line in lines)
+        ):
+            continue
+        who = comment_issuer(body)
+        for target in retirement_targets(body):
+            retire_claims.setdefault(target, []).append(who)
+
     for c in comments:
         body = c.get("body") or ""
         author = comment_author(body)
@@ -1183,9 +1245,18 @@ def lane_shas(
         # A rejection contributes NOTHING, even if the same comment also carries
         # an APPROVED-AT-shaped line -- a comment quoting the convention, or
         # quoting the approval it supersedes, must not bind as a positive.
-        relevant_rejection = any(
+        comment_id = c.get("id")
+        refusal_issuer = comment_issuer(body)
+        named_retirement = (
+            comment_id is not None
+            and retirement_allowed(
+                refusal_issuer, retire_claims.get(str(comment_id), [])
+            )
+        )
+        comment_refuses_lane = any(
             refuses_lane(refusal_binding(line)) for line in lines
         )
+        relevant_rejection = comment_refuses_lane and not named_retirement
         # ⚠️ AN EXPLICIT WITHDRAWAL IS THE ESCAPE HATCH, AND WITHOUT IT THE
         # DISCHARGE RULE HAS NO DOOR. `CHANGES-REQUESTED-WITHDRAWN-AT` is the
         # grammar's way of saying "I take mine back", and `gh-merge-verified`
@@ -1197,18 +1268,26 @@ def lane_shas(
         # discharges only its own author's refusal, and an unsigned one
         # discharges nothing. Otherwise the unilateral clear this change removes
         # comes straight back through a different keyword.
+        precise_withdrawal = bool(retirement_targets(body))
         for line in lines:
             parsed_withdrawal = parse_marker(line)
             if (
                 parsed_withdrawal is not None
                 and parsed_withdrawal[0] == MARKER_WITHDRAWN
                 and parsed_withdrawal[1] == lane
+                and not precise_withdrawal
             ):
                 retractor = marker_issuer(line) or author
                 if retractor is not None:
                     outstanding[:] = [
                         held for held in outstanding if held[1] != retractor
                     ]
+
+        # A retired refusal no longer clears an earlier approval or contributes
+        # an unanswered refusal. Skip the whole comment rather than allowing an
+        # APPROVED-AT-shaped quotation beside the retired refusal to bind.
+        if comment_refuses_lane and named_retirement:
+            continue
 
         if relevant_rejection:
             # Verdicts are chronological. A later exact-head request for changes
@@ -1275,6 +1354,7 @@ def lane_shas(
                     outstanding.append((
                         refusal[1],
                         marker_issuer(line) or author,
+                        comment_id,
                     ))
             found.clear()
             continue
@@ -1400,7 +1480,7 @@ def lane_shas(
                 if issuers is not None:
                     issuers.append((sha, marker_issuer(line) or author))
     if unanswered is not None:
-        unanswered.extend(outstanding)
+        unanswered.extend((sha, issuer) for sha, issuer, _cid in outstanding)
     return found
 
 
@@ -2348,12 +2428,12 @@ def main() -> int:
         # `state=REFUSED` alone gave both the same answer, which is "ask the
         # reviewer", and for one of them there is nobody to ask.
         #
-        # A refusal that names NO issuer is the RETIRABLE one. `RETIRES
-        # #<comment-id>` in `ci-hub/bin/changes-requested-gate` has retired it for
-        # any claimant since 2026-08-25 -- see `retired()` there, which returns
-        # True when the issuer is unreadable and prints that it may not be the
-        # author. A comment id is assigned by GitHub and cannot go missing, which
-        # is why that identity was chosen over the issuer.
+        # A refusal that names NO issuer is the RETIRABLE one. A canonical
+        # withdrawal carrying `RETIRES #<comment-id>` retires it for any claimant
+        # in both this reader and `ci-hub/bin/changes-requested-gate`; the gate
+        # reports that the claimant may not be the author. A comment id is
+        # assigned by GitHub and cannot go missing, which is why that identity
+        # was chosen over the issuer.
         #
         # A refusal that DOES name an issuer is retirable by that issuer ALONE. So
         # if they have left the fleet it is retirable by nobody, in either
@@ -2380,8 +2460,9 @@ def main() -> int:
             )
             print(
                 "refusal_issuer_remedy=a refusal naming NO issuer is retired by any "
-                "agent posting RETIRES #<comment-id>, through "
-                "ci-hub/bin/changes-requested-gate; a refusal naming an issuer is "
+                "agent posting a canonical withdrawal carrying RETIRES #<comment-id>; "
+                "approval_binding and changes-requested-gate both honor it. A refusal "
+                "naming an issuer is "
                 "retired by that issuer alone, so a departed issuer leaves it "
                 "retirable by nobody -- escalate rather than re-review"
             )
