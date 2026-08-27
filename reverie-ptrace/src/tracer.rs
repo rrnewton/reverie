@@ -3279,10 +3279,9 @@ mod tests {
         }
     }
 
-    #[tokio::test(flavor = "current_thread")]
-    async fn precise_timer_delivery_reaches_tool() {
+    async fn run_precise_timer_delivery() -> u64 {
         if !crate::perf::is_perf_supported() {
-            return;
+            return 0;
         }
 
         let _ = reverie::take_skid_overshoot_count();
@@ -3305,13 +3304,55 @@ mod tests {
             .expect("wait precise-timer tracee");
         assert_eq!(status, ExitStatus::Exited(0));
 
-        let overshoot_count = reverie::take_skid_overshoot_count();
-        if std::env::var(crate::timer::SKID_MARGIN_OVERRIDE_ENV).as_deref() == Ok("0") {
+        reverie::take_skid_overshoot_count()
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn precise_timer_delivery_reaches_tool() {
+        const FORCED_OVERSHOOT_CHILD: &str = "REVERIE_PTRACE_FORCED_OVERSHOOT_CHILD";
+
+        if std::env::var_os(FORCED_OVERSHOOT_CHILD).is_some() {
             assert!(
-                overshoot_count > 0,
+                run_precise_timer_delivery().await > 0,
                 "zero skid margin did not exercise the overshoot path"
             );
+            return;
         }
+
+        // Ordinary delivery remains a working control. Exercise the real
+        // overshoot path in a fresh test process so its process-global PMU
+        // configuration can safely read the zero-margin fault injection.
+        let _ = run_precise_timer_delivery().await;
+        let output =
+            std::process::Command::new(std::env::current_exe().expect("locate test binary"))
+                .args([
+                    "--exact",
+                    "tracer::tests::precise_timer_delivery_reaches_tool",
+                    "--nocapture",
+                    "--test-threads=1",
+                ])
+                .env(FORCED_OVERSHOOT_CHILD, "1")
+                .env(crate::timer::SKID_MARGIN_OVERRIDE_ENV, "0")
+                .output()
+                .expect("run forced-overshoot child test");
+        assert!(
+            output.status.success(),
+            "forced-overshoot child failed:\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            output
+                .stderr
+                .starts_with(crate::timer::SKID_OVERSHOOT_MARKER.as_bytes())
+                || output
+                    .stderr
+                    .windows(crate::timer::SKID_OVERSHOOT_MARKER.len())
+                    .any(|window| window == crate::timer::SKID_OVERSHOOT_MARKER.as_bytes()),
+            "forced-overshoot child did not emit {}:\n{}",
+            crate::timer::SKID_OVERSHOOT_MARKER,
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 
     fn root_stop_guest_command(mode: &str) -> Command {
