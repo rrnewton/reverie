@@ -232,3 +232,22 @@ async fn supervisor_restarts_wait4_without_leaking_private_errno() {
     assert_eq!(output.status.code(), Some(0), "{output:?}");
     assert_eq!(output.stdout, b"wait4-restart-ok\n", "{output:?}");
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn supervisor_restarts_read_without_leaking_private_errno() {
+    let (_preload_directory, preload) = compile_noop_preload();
+    let (output, _) = tokio::time::timeout(
+        Duration::from_secs(10),
+        LiteinstBackend::run_with_output_and_preload::<CoordinatorOnlyTool>(
+            guest_command("restart-read"),
+            (),
+            preload,
+        ),
+    )
+    .await
+    .expect("supervised read hung")
+    .unwrap();
+
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+    assert_eq!(output.stdout, b"read-result=4243 calls=3\n", "{output:?}");
+}
