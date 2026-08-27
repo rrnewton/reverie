@@ -2068,32 +2068,21 @@ mod tests {
     static RANDOM_FD_TEST_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
-    fn copied_vfork_uses_the_copied_child_path_before_rust_thread_init() {
+    fn copied_vfork_is_classified_before_the_shared_memory_return() {
         let source = include_str!("../native/client.c");
-        let thread_init = source
-            .split_once("static void thread_init(void *drcontext)")
-            .expect("native thread_init definition")
+        let child_result = source
+            .split_once("} else if (result == 0) {")
+            .expect("clone child-result branch")
             .1
-            .split_once("static void complete_runtime_thread_exit")
-            .expect("end of native thread_init definition")
+            .split_once("if ((flags & CLONE_VM) != 0)")
+            .expect("shared-memory child return")
             .0;
-        let copied_vfork = thread_init
-            .find("if (copied_vfork)")
-            .expect("copied vfork selection");
-        let rust_thread_init = thread_init
-            .find("reverie_dbt_runtime_thread_init(")
-            .expect("Rust thread initialization call");
 
         assert!(
-            copied_vfork < rust_thread_init,
-            "a copied vfork child must not enter Rust thread initialization"
-        );
-        let copied_path = &thread_init[copied_vfork..rust_thread_init];
-        assert!(
-            copied_path.contains("remember_virtual_identity")
-                && copied_path.contains("release_clone_identity_handoff")
-                && copied_path.contains("return;"),
-            "the copied vfork path must publish identity, release its handoff, and return"
+            child_result.contains("(flags & CLONE_VFORK) != 0")
+                && child_result.contains("copied_vfork_pid")
+                && child_result.contains("release_clone_identity_handoff"),
+            "a copied vfork child must be classified and release its handoff before the shared-memory return"
         );
     }
 
