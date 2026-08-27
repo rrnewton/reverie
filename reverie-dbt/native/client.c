@@ -52,6 +52,12 @@
 #ifndef SHM_REMAP
 #define SHM_REMAP 040000
 #endif
+#ifndef CLOSE_RANGE_UNSHARE
+#define CLOSE_RANGE_UNSHARE (1U << 1)
+#endif
+#ifndef CLOSE_RANGE_CLOEXEC
+#define CLOSE_RANGE_CLOEXEC (1U << 2)
+#endif
 
 typedef int64_t (*syscall_invoker_t)(uintptr_t, int64_t, const uint64_t *);
 typedef int32_t (*register_reader_t)(uintptr_t, struct user_regs_struct *);
@@ -1527,19 +1533,72 @@ static int64_t invoke_raw_syscall(uintptr_t context, int64_t sysnum,
 static bool is_exec_syscall(int sysnum);
 
 // AUTONOMOUS-BOT-IMPLEMENTED
+// TODO-HUMAN-REVIEW(PR-411): Review close_range splitting around the internal
+// identity and diagnostic descriptors.
+#ifdef SYS_close_range
+static int64_t close_range_preserving_internal_descriptors(
+    uintptr_t context, const uint64_t *args) {
+  const uint32_t first = (uint32_t)args[0];
+  const uint32_t last = (uint32_t)args[1];
+  uint32_t flags = (uint32_t)args[2];
+  int64_t result;
+
+  if (first > last ||
+      (flags & ~(CLOSE_RANGE_UNSHARE | CLOSE_RANGE_CLOEXEC)) != 0)
+    return -EINVAL;
+
+  if ((flags & CLOSE_RANGE_UNSHARE) != 0) {
+    const uint64_t unshare_args[6] = {CLONE_FILES, 0, 0, 0, 0, 0};
+    result = invoke_raw_syscall(context, SYS_unshare, unshare_args);
+    if (result < 0)
+      return result;
+    flags &= ~CLOSE_RANGE_UNSHARE;
+  }
+
+  if (first < VIRTUAL_IDENTITY_FD) {
+    const uint32_t range_last =
+        last < VIRTUAL_IDENTITY_FD ? last : VIRTUAL_IDENTITY_FD - 1;
+    const uint64_t close_args[6] = {first, range_last, flags, 0, 0, 0};
+    result = invoke_raw_syscall(context, SYS_close_range, close_args);
+    if (result < 0)
+      return result;
+  }
+  if (last > DBT_DIAGNOSTIC_FD) {
+    const uint32_t range_first =
+        first > DBT_DIAGNOSTIC_FD ? first : DBT_DIAGNOSTIC_FD + 1;
+    const uint64_t close_args[6] = {range_first, last, flags, 0, 0, 0};
+    result = invoke_raw_syscall(context, SYS_close_range, close_args);
+    if (result < 0)
+      return result;
+  }
+  return 0;
+}
+#endif
+
+// AUTONOMOUS-BOT-IMPLEMENTED
 // TODO-HUMAN-REVIEW(PR-106): keep the identity memfd (fd 197) and diagnostic fd
 // (198) alive across close/fcntl(F_SETFD)/dup2/dup3 in copied children.
-// RESIDUAL: close_range is not intercepted and can still close the memfd.
 static bool preserve_internal_descriptors(uintptr_t context, int sysnum,
                                           const uint64_t *args,
                                           int64_t *result) {
   int fd = (int)args[0];
-  (void)context;
   if (sysnum == SYS_close &&
       (fd == VIRTUAL_IDENTITY_FD || fd == DBT_DIAGNOSTIC_FD)) {
     *result = 0;
     return true;
   }
+#ifdef SYS_close_range
+  // AUTONOMOUS-BOT-IMPLEMENTED
+  if (sysnum == SYS_close_range) {
+    const uint32_t first = (uint32_t)args[0];
+    const uint32_t last = (uint32_t)args[1];
+    if ((first <= VIRTUAL_IDENTITY_FD && VIRTUAL_IDENTITY_FD <= last) ||
+        (first <= DBT_DIAGNOSTIC_FD && DBT_DIAGNOSTIC_FD <= last)) {
+      *result = close_range_preserving_internal_descriptors(context, args);
+      return true;
+    }
+  }
+#endif
   if (sysnum == SYS_fcntl &&
       (fd == VIRTUAL_IDENTITY_FD || fd == DBT_DIAGNOSTIC_FD) &&
       args[1] == F_SETFD) {

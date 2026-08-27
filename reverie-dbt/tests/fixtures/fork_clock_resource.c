@@ -37,7 +37,15 @@
 #include <time.h>
 #include <unistd.h>
 
-enum { CLOCK_READS = 4 };
+enum {
+  CLOCK_READS = 4,
+  VIRTUAL_IDENTITY_FD = 197,
+  DBT_DIAGNOSTIC_FD = 198,
+};
+
+#ifndef CLOSE_RANGE_CLOEXEC
+#define CLOSE_RANGE_CLOEXEC (1U << 2)
+#endif
 
 // TODO-HUMAN-REVIEW(PR-shared-dbi-clock): Review the shared-clock lifecycle probe.
 static int probe(const char *who) {
@@ -89,11 +97,20 @@ int main(int argc, char **argv) {
   if (child < 0)
     return 4;
   if (child == 0) {
-    execl("/proc/self/exe", argv[0], "--exec-child", (char *)0);
+#ifdef SYS_close_range
+    if (syscall(SYS_close_range, VIRTUAL_IDENTITY_FD, DBT_DIAGNOSTIC_FD,
+                CLOSE_RANGE_CLOEXEC) != 0 ||
+        syscall(SYS_close_range, VIRTUAL_IDENTITY_FD, DBT_DIAGNOSTIC_FD, 0) !=
+            0)
+      syscall(SYS_exit, 5);
+#else
     syscall(SYS_exit, 5);
+#endif
+    execl("/proc/self/exe", argv[0], "--exec-child", (char *)0);
+    syscall(SYS_exit, 6);
   }
   if (wait_for_child(child) != 0)
-    return 6;
+    return 7;
 
   return probe("parent-after");
 }

@@ -80,9 +80,9 @@ run_tool() {
   if (($# > 0)); then
     guest=("$@")
   fi
-  env "$env_var=1" "$drrun" -quiet -disable_rseq -stack_size 2M -c "$client" -- \
-    "${guest[@]}" \
-    >"$tmpdir/out" 2>"$tmpdir/err"
+  env "$env_var=1" "$drrun" -quiet -disable_rseq -stack_size 2M -c "$client" \
+    -diagnostic_fd 198 -- "${guest[@]}" \
+    >"$tmpdir/out" 2>"$tmpdir/err" 198>&2
 }
 
 # Run the guest under the built-in default determinism runtime (no observation
@@ -91,8 +91,8 @@ run_tool() {
 # the root's syscalls and passes them through, which deliberately bypasses that
 # native fallback; the default runtime is the mode where determinism applies.
 run_default_runtime() {
-  "$drrun" -quiet -disable_rseq -stack_size 2M -c "$client" -- "$@" \
-    >"$tmpdir/out" 2>"$tmpdir/err"
+  "$drrun" -quiet -disable_rseq -stack_size 2M -c "$client" \
+    -diagnostic_fd 198 -- "$@" >"$tmpdir/out" 2>"$tmpdir/err" 198>&2
 }
 
 run_pthread_tool() {
@@ -152,7 +152,7 @@ grep -Eq '^BACKTRACE ok=1 frames=[0-9]+ top=0x[0-9a-f]+$' "$tmpdir/err" \
 echo "PASS: backtrace (in-process frame-pointer walk of the guest stack at getpid)"
 
 run_tool HERMIT_DBT_NOOP "$identity_policy_guest"
-grep -q '^pid=3 ppid=1 tid=3 identity_fd=open$' "$tmpdir/out" \
+grep -q '^pid=3 ppid=1 tid=3 internal_fds=open$' "$tmpdir/out" \
   || fail "noop: deferred syscall bypassed virtual identity or private descriptor policy"
 echo "PASS: deferred syscall preserves virtual identity and private descriptors"
 
