@@ -279,7 +279,7 @@ pub(crate) fn execute_basic_syscall(
     state: &mut LoadedStaticElf,
     request: &SyscallRequest,
 ) -> SyscallAction {
-    execute_basic_syscall_with_output(memory, state, request, None)
+    execute_basic_syscall_with_output(memory, state, request, None, None)
 }
 
 fn execute_basic_syscall_with_output(
@@ -287,6 +287,7 @@ fn execute_basic_syscall_with_output(
     state: &mut LoadedStaticElf,
     request: &SyscallRequest,
     output: Option<&mut CapturedOutput>,
+    sigaction_installed: Option<&mut bool>,
 ) -> SyscallAction {
     let args = request.args();
     let number = request.number();
@@ -787,7 +788,7 @@ fn execute_basic_syscall_with_output(
     } else if number == libc::SYS_prlimit64 as u64 {
         prlimit64(memory, args)
     } else if number == libc::SYS_rt_sigaction as u64 {
-        rt_sigaction(memory, state, args)
+        rt_sigaction(memory, state, args, sigaction_installed)
     } else if number == libc::SYS_rt_sigprocmask as u64 {
         rt_sigprocmask(memory, state, args)
     } else if number == libc::SYS_sigaltstack as u64 {
@@ -1019,6 +1020,45 @@ impl ChildCompletion {
             Self::Waitable(status)
         } else {
             Self::AutoReaped(status)
+        }
+    }
+}
+
+pub(crate) struct ChildCompletionPublisher {
+    pid: i32,
+    completion: Arc<Mutex<Option<ChildCompletion>>>,
+    notifier: std::sync::mpsc::Sender<i32>,
+    published: bool,
+}
+
+impl ChildCompletionPublisher {
+    pub(crate) fn new(
+        pid: i32,
+        completion: Arc<Mutex<Option<ChildCompletion>>>,
+        notifier: std::sync::mpsc::Sender<i32>,
+    ) -> Self {
+        Self {
+            pid,
+            completion,
+            notifier,
+            published: false,
+        }
+    }
+
+    pub(crate) fn publish(&mut self, completion: ChildCompletion) {
+        *self
+            .completion
+            .lock()
+            .expect("KVM child completion lock poisoned") = Some(completion);
+        self.published = true;
+        let _ = self.notifier.send(self.pid);
+    }
+}
+
+impl Drop for ChildCompletionPublisher {
+    fn drop(&mut self) {
+        if !self.published {
+            self.publish(ChildCompletion::Failed);
         }
     }
 }
@@ -2089,10 +2129,7 @@ impl SyscallExecutor for ElfExecutor {
         // Clones share the underlying MAP_SHARED mapping, so writes through this
         // handle reach the guest; `execute_basic_syscall` needs `&mut` access.
         let mut memory = memory.clone();
-        let sigchld_action_before = (request.number() == libc::SYS_rt_sigaction as u64
-            && request.args()[0] as libc::c_int == libc::SIGCHLD
-            && request.args()[1] != 0)
-            .then(|| self.state.signal_actions.get(&libc::SIGCHLD).copied());
+        let mut sigaction_installed = false;
         let address_space_syscall = matches!(
             request.number(),
             number if number == libc::SYS_brk as u64
@@ -2113,6 +2150,7 @@ impl SyscallExecutor for ElfExecutor {
                 &mut self.state,
                 request,
                 self.output.as_mut(),
+                Some(&mut sigaction_installed),
             );
             shared.program_break = self.state.program_break;
             shared.mmap_base = self.state.mmap_base;
@@ -2125,14 +2163,12 @@ impl SyscallExecutor for ElfExecutor {
                 &mut self.state,
                 request,
                 self.output.as_mut(),
+                Some(&mut sigaction_installed),
             )
         };
-        if let Some(before) = sigchld_action_before {
-            let after = self.state.signal_actions.get(&libc::SIGCHLD).copied();
-            if after != before {
-                self.sigchld_auto_reap
-                    .store(sigchld_auto_reaps(&self.state), Ordering::SeqCst);
-            }
+        if sigaction_installed && request.args()[0] as libc::c_int == libc::SIGCHLD {
+            self.sigchld_auto_reap
+                .store(sigchld_auto_reaps(&self.state), Ordering::SeqCst);
         }
         if let Some(mut shared_files) = shared_files {
             *shared_files =
@@ -9902,7 +9938,12 @@ fn prlimit64(memory: &mut GuestMemory, args: &[u64; 6]) -> i64 {
     write_bytes(memory, args[3], &bytes)
 }
 
-fn rt_sigaction(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) -> i64 {
+fn rt_sigaction(
+    memory: &mut GuestMemory,
+    state: &mut LoadedStaticElf,
+    args: &[u64; 6],
+    mut installed: Option<&mut bool>,
+) -> i64 {
     if args[3] != KERNEL_SIGSET_SIZE as u64 {
         return negative_errno(libc::EINVAL);
     }
@@ -9945,6 +9986,9 @@ fn rt_sigaction(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u
         .unwrap_or([0; KERNEL_SIGACTION_SIZE]);
     if let Some(action) = action {
         state.signal_actions.insert(signal, action);
+        if let Some(installed) = installed.as_deref_mut() {
+            *installed = true;
+        }
     }
     if args[2] != 0 {
         return write_bytes(memory, args[2], &previous);
@@ -11696,6 +11740,7 @@ mod tests {
                 &mut state,
                 &SyscallRequest::new(libc::SYS_fstat as u64, [fd as u64, address, 0, 0, 0, 0]),
                 Some(&mut output),
+                None,
             );
             assert!(matches!(
                 action,
@@ -21102,6 +21147,36 @@ mod tests {
         executor.register_child_process(pid, start_sender, completion, handle);
     }
 
+    #[test]
+    fn child_panic_wakes_blocking_wait_with_typed_failure() {
+        let root = TestDir::new();
+        let state = test_state(&root.0);
+        let mut executor = ElfExecutor::new(state, false);
+        let (start_sender, start_receiver) = std::sync::mpsc::channel();
+        let completion = Arc::new(Mutex::new(None));
+        let publisher = ChildCompletionPublisher::new(
+            2,
+            completion.clone(),
+            executor.child_completion_notifier(),
+        );
+        let handle = std::thread::spawn(move || -> crate::Result<()> {
+            let _publisher = publisher;
+            start_receiver.recv().unwrap();
+            panic!("synthetic child panic before terminal status")
+        });
+        executor.register_child_process(2, start_sender, completion, handle);
+
+        let memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        assert_eq!(
+            executor.execute(
+                &SyscallRequest::new(libc::SYS_wait4 as u64, [2, 0, 0, 0, 0, 0]),
+                &memory,
+            ),
+            negative_errno(libc::EIO),
+        );
+        assert!(executor.join_all_child_processes().is_err());
+    }
+
     fn register_any_wait_race(executor: &mut ElfExecutor) -> std::sync::mpsc::Sender<()> {
         let notifier = executor.child_completion_notifier();
         let (release_sender, release_receiver) = std::sync::mpsc::channel();
@@ -21729,6 +21804,7 @@ mod tests {
                     0,
                     0,
                 ],
+                None,
             ),
             negative_errno(libc::ENOSYS),
         );
@@ -21821,6 +21897,48 @@ mod tests {
             leader.child_completion(ExitStatus::Exited(8)),
             ChildCompletion::AutoReaped(ExitStatus::Exited(8)),
             "a failed stale sibling update must not reset the process-wide SIGCHLD policy",
+        );
+    }
+
+    #[test]
+    fn valid_same_value_sigaction_refreshes_shared_child_exit_policy() {
+        const ACTION: u64 = 0x100;
+        let root = TestDir::new();
+        let leader = ElfExecutor::new(test_state(&root.0), false);
+        let mut sibling = leader.thread_child(2).unwrap();
+        let mut memory = GuestMemory::new(0, PAGE_SIZE as usize).unwrap();
+        let ignored = custom_action(1);
+        memory.write(ACTION, &ignored).unwrap();
+
+        sibling.state.signal_actions.insert(libc::SIGCHLD, ignored);
+        sibling.sigchld_auto_reap.store(false, Ordering::SeqCst);
+        assert_eq!(
+            sibling.child_completion(ExitStatus::Exited(7)),
+            ChildCompletion::Waitable(ExitStatus::Exited(7)),
+            "the setup requires stale local action bytes and a different shared policy",
+        );
+
+        assert_eq!(
+            sibling.execute(
+                &SyscallRequest::new(
+                    libc::SYS_rt_sigaction as u64,
+                    [
+                        libc::SIGCHLD as u64,
+                        ACTION,
+                        0,
+                        KERNEL_SIGSET_SIZE as u64,
+                        0,
+                        0,
+                    ],
+                ),
+                &memory,
+            ),
+            0,
+        );
+        assert_eq!(
+            leader.child_completion(ExitStatus::Exited(8)),
+            ChildCompletion::AutoReaped(ExitStatus::Exited(8)),
+            "a successful same-value install must refresh shared SIGCHLD policy",
         );
     }
 

@@ -60,6 +60,7 @@ use crate::bootstrap::set_user_segment_base;
 use crate::elf::LoadedStaticElf;
 use crate::elf::load_static_elf;
 use crate::executor::ChildCompletion;
+use crate::executor::ChildCompletionPublisher;
 use crate::executor::ElfExecutor;
 use crate::executor::ProcessAction;
 use crate::executor::conventional_exit_code;
@@ -1093,9 +1094,12 @@ impl KvmBackend {
                 let parent_pid = context.pid;
                 let lifecycle_state = global_state.clone();
                 let auto_reap = executor.child_exit_policy();
-                let completion_notifier = executor.child_completion_notifier();
                 let completion = Arc::new(Mutex::new(None));
-                let child_completion = completion.clone();
+                let mut completion_publisher = ChildCompletionPublisher::new(
+                    raw_child_pid,
+                    completion.clone(),
+                    executor.child_completion_notifier(),
+                );
                 let (start_sender, start_receiver) = std::sync::mpsc::channel();
                 let handle = std::thread::Builder::new()
                     .name(format!("reverie-kvm-process-{raw_child_pid}"))
@@ -1105,7 +1109,7 @@ impl KvmBackend {
                                 "KVM child process {raw_child_pid} lost its parent start gate"
                             ))
                         })?;
-                        let result = futures::executor::block_on(
+                        let (status, _, _) = futures::executor::block_on(
                             child.backend.run_static_elf_process_with_tool(
                                 &mut child.executor,
                                 child_pid,
@@ -1118,46 +1122,24 @@ impl KvmBackend {
                                 &subscriptions,
                                 false,
                             ),
+                        )?;
+                        write_tid_best_effort(
+                            &mut child.backend.memory,
+                            child.executor.take_clear_child_tid(),
+                            0,
                         );
-                        match result {
-                            Ok((status, _, _)) => {
-                                write_tid_best_effort(
-                                    &mut child.backend.memory,
-                                    child.executor.take_clear_child_tid(),
-                                    0,
-                                );
-                                let waitable = !auto_reap.load(Ordering::SeqCst);
-                                let completion =
-                                    ChildCompletion::from_waitability(status, waitable);
-                                *child_completion
-                                    .lock()
-                                    .expect("KVM child completion lock poisoned") =
-                                    Some(completion);
-                                let _ = completion_notifier.send(raw_child_pid);
-                                futures::executor::block_on(
-                                    lifecycle_state.on_backend_child_wait_event(
-                                        BackendChildWaitEvent {
-                                            parent: parent_pid,
-                                            child: child_pid,
-                                            state: BackendChildWaitState::Exited {
-                                                status,
-                                                waitable,
-                                            },
-                                        },
-                                    ),
-                                )
-                                .map_err(Error::Reverie)?;
-                                Ok(())
-                            }
-                            Err(error) => {
-                                *child_completion
-                                    .lock()
-                                    .expect("KVM child completion lock poisoned") =
-                                    Some(ChildCompletion::Failed);
-                                let _ = completion_notifier.send(raw_child_pid);
-                                Err(error)
-                            }
-                        }
+                        let waitable = !auto_reap.load(Ordering::SeqCst);
+                        completion_publisher
+                            .publish(ChildCompletion::from_waitability(status, waitable));
+                        futures::executor::block_on(lifecycle_state.on_backend_child_wait_event(
+                            BackendChildWaitEvent {
+                                parent: parent_pid,
+                                child: child_pid,
+                                state: BackendChildWaitState::Exited { status, waitable },
+                            },
+                        ))
+                        .map_err(Error::Reverie)?;
+                        Ok(())
                     })?;
                 pending_child_starts
                     .lock()
