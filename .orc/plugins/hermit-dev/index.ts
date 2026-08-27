@@ -129,10 +129,10 @@ const AGENT_LIVENESS_COMMAND =
 // ARGUMENT PASSING, measured rather than assumed -- read this before "fixing"
 // an empty `$1` again.
 //
-// `orc.registerScript` binds call arguments to SHELL POSITIONALS. There is no
-// `{}` placeholder anywhere in the orc surface, so a body containing `{}` sends
-// those two literal characters to the program (observed 2026-08-10 as
-// `unknown argument: {}`). Use `"$1"`.
+// `orc.registerScript` binds call arguments to SHELL POSITIONALS and also
+// substitutes brace-delimited text before invoking the shell. The Python dict
+// literal in ARGV_ECHO_COMMAND was replaced by the first argument (measured
+// 2026-08-27). Avoid braces in script bodies; use `"$1"` for arguments.
 //
 // The binding is measured rather than inferred:
 // `hermitOperationalTick` (`HERMIT_AGENT_SNAPSHOT_JSON="$1"`) runs through
@@ -161,7 +161,7 @@ const ARGV_ECHO_SCRIPT_NAME = "hermitEchoScriptArgv";
 // that something is wrong.
 const ARGV_ECHO_COMMAND =
   "/usr/bin/python3 -c 'import json,sys; " +
-  'print(json.dumps({"dollar_zero": sys.argv[1], "argv": sys.argv[2:]}))\' ' +
+  'print(json.dumps(dict(dollar_zero=sys.argv[1], argv=sys.argv[2:])))\' ' +
   '"$0" "$@"';
 const LEGACY_SPECULATIVE_LAND_WORKFLOW_NAME =
   "hermit-dev-speculative-land-remediation-v1";
@@ -879,8 +879,8 @@ async function hermitDevListScripts(): Promise<{
     scripts,
     note: "orc.scripts is a Proxy: it inspects as {} and Object.keys() is " +
       "empty, but every name above is callable on it. Arguments bind to SHELL " +
-      "POSITIONALS ($1, $2, …). There is NO {} placeholder -- a body " +
-      "containing {} sends those two literal characters to the program. Do " +
+      "POSITIONALS ($1, $2, …). ORC also substitutes brace-delimited text " +
+      "before invoking the shell, so registered commands must avoid braces. Do " +
       "not hand-roll orc.callScriptInternal: its argsJson parameter is a JSON " +
       "STRING, and getting that wrong binds no positionals at all.",
   };

@@ -88,6 +88,11 @@ check(
   ARGV_ECHO_COMMAND.startsWith("/usr/bin/python3 "),
   ARGV_ECHO_COMMAND,
 );
+check(
+  "argv echo contains no braces for ORC to substitute",
+  !ARGV_ECHO_COMMAND.includes("{") && !ARGV_ECHO_COMMAND.includes("}"),
+  ARGV_ECHO_COMMAND,
+);
 
 // Run the shipped command the way a correct runtime does: `sh -c CMD $0 args…`.
 function runEcho(args, { offByOne = false } = {}) {
@@ -280,11 +285,11 @@ const DEAD_BODY = JSON.stringify({
     text.includes('"$1"'),
     text,
   );
-  // `{}` is NOT an orc placeholder. A body containing it sends those two
-  // literal characters to the program -- the observed `unknown argument: {}`.
+  // The registered-script runtime substitutes brace-delimited text before
+  // invoking the shell. This probe needs only shell positionals.
   check(
-    "the probe command uses no {} placeholder",
-    !text.includes("{}"),
+    "the probe command contains no braces for ORC to substitute",
+    !text.includes("{") && !text.includes("}"),
     text,
   );
   check(

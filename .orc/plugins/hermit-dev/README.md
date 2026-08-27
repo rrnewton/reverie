@@ -102,9 +102,11 @@ Three things mislead people here, and all three cost time on 2026-08-10:
   properties. `Object.keys(orc.scripts)` is `[]` while every registered name is
   callable. Use `await orc["hermit-dev.listScripts"]()` to see what is there
   along with the syntax that calls it.
-- **There is no `{}` placeholder.** No brace substitution exists anywhere in the
-  orc script surface. A body containing `{}` passes those two literal characters
-  through to the program, which is what produced `unknown argument: {}`.
+- **Registered script bodies undergo brace substitution.** Avoid brace-delimited
+  syntax inside the command itself. The argv diagnostic's Python dictionary
+  literal was replaced by its first argument before the shell ran, producing a
+  Python exception. Use syntax without braces and bind arguments through shell
+  positionals.
 - **Do not hand-roll `orc.callScriptInternal`.** Its signature is
   `callScriptInternal(name, argsJson?)` and `argsJson` is a **JSON string**.
   Pass an array and the dispatcher rejects the call; pass a bare name and it is
