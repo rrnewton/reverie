@@ -164,5 +164,42 @@ class ExecutingCheckerProbesTest(unittest.TestCase):
             self.assertIn("got node no_result", rendered)
 
 
+    def test_the_bare_startswith_probe_detects_a_genuine_refusal(self) -> None:
+        """It must be unsafe for the reason it names, not by never firing.
+
+        This probe once keyed on "halted:", a string no sample contains, so it
+        was refused because it MISSED both genuine refusals rather than because
+        matching the start of a line is not the same as matching the whole line.
+        Substituting the real marker made it pass. Asserting that the fixture
+        still classifies a genuine refusal as refused is what stops it drifting
+        back to a string that tests nothing.
+        """
+        body = next(
+            b for n, _, b in self.module.EXECUTING_MUST_REFUSE
+            if n == "marker-named-bare-startswith"
+        )
+        namespace: dict[str, object] = {"__name__": "probe"}
+        exec(compile(self.module.EXECUTING_SHELL.format(body=body), "<probe>", "exec"), namespace)
+        predicate = namespace["_looks_refused"]
+        self.assertTrue(
+            predicate(self.module._GENUINE),  # type: ignore[operator]
+            "the bare-startswith probe no longer fires on a genuine refusal, so it "
+            "would be refused for missing it rather than for the class it names",
+        )
+        self.assertTrue(
+            predicate(self.module._QUOTED_DOC),  # type: ignore[operator]
+            "the bare-startswith probe must MISCLASSIFY the quoted-documentation "
+            "line; that misclassification is the defect it exists to demonstrate",
+        )
+
+    def test_the_quoted_documentation_sample_is_in_the_corpus(self) -> None:
+        wanted = [s for s, _ in self.module.EXECUTING_SAMPLES if s == self.module._QUOTED_DOC]
+        self.assertEqual(1, len(wanted))
+        self.assertFalse(
+            dict(self.module.EXECUTING_SAMPLES)[self.module._QUOTED_DOC],
+            "a line that merely starts with the marker is not a refusal",
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

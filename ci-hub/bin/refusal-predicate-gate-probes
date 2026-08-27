@@ -411,6 +411,9 @@ _GENUINE = (
     + "0123456789abcdef0123456789abcdef01234567"
 )
 _WRAPPED = "wrapper: " + _GENUINE
+_QUOTED_DOC = (
+    "\U0001F6AB validate REFUSED is quoted documentation, not a final summary"
+)
 
 
 def _whole_channel(collection: str, values: str) -> str:
@@ -448,9 +451,16 @@ EXECUTING_MUST_REFUSE = (
      '_REFUSAL_SHAPES = ("skipped by policy",)\n'
      'def _looks_refused(output):\n'
      '    return any(output.find(s) >= 0 for s in _REFUSAL_SHAPES)'),
+    # ⚠️ THIS PROBE USES THE REAL MARKER, AND THAT IS THE WHOLE POINT.
+    # It previously keyed on "halted:", a string no sample contains, so it was
+    # refused because it MISSED both genuine refusals -- not because a line-start
+    # match on an incomplete summary is wrong. Substituting the real marker made
+    # it PASS, which means the probe named one class and tested another. A test
+    # that goes red for a reason other than the one it names is as bad as one
+    # that goes green without checking; it just does not announce itself.
     ("marker-named-bare-startswith",
-     '_REFUSAL_SHAPES under bare startswith over lines',
-     '_REFUSAL_SHAPES = ("halted:",)\n'
+     'startswith the real marker: anchored to the line, but not the WHOLE line',
+     '_REFUSAL_SHAPES = ("\\U0001F6AB validate REFUSED",)\n'
      'def _looks_refused(output):\n'
      '    return any(l.startswith(s) for l in output.splitlines()'
      ' for s in _REFUSAL_SHAPES)'),
@@ -486,6 +496,12 @@ EXECUTING_SAMPLES = (
     (_GENUINE, True),
     (_WRAPPED, False),
     ("thread panicked: connection refused by: peer", False),
+    # ⚠️ THE CASE THAT SEPARATES "starts the line" FROM "is the line". The marker
+    # opens this line at column zero, so a startswith match fires, but the line is
+    # documentation rather than a final summary. Without it a predicate that
+    # anchors to the line start without requiring the complete summary classifies
+    # every sample here correctly and reads as safe.
+    (_QUOTED_DOC, False),
 )
 
 
