@@ -88,9 +88,12 @@ that matter to `worktrees.py` are:
 
 The current JSONL record written by VALIDATE includes the exact HEAD commit,
 whether the tree matched that commit, and what selection actually ran. Staged
-work or the explicit `--run-on-dirty-tree` escape can still run, but its record
-says `commit_anchored=false`. Skill `hermit-validation-authority` defines the evidentiary
-consequence; this README only documents what the producer stores.
+work or the explicit
+`--skip-inner-dirty-working-tree-and-rebase-freshness-checks` escape can still run after
+canonical admission, but its record says `commit_anchored=false`. The option skips only
+the two checks in `scripts/validate.rs`; it does not bypass `ci-hub validate-lock`.
+Skill `hermit-validation-authority` defines the evidentiary consequence; this README only
+documents what the producer stores.
 
 | Field | Meaning |
 | --- | --- |

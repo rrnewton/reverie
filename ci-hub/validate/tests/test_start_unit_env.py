@@ -325,7 +325,10 @@ class StartUnitEnvTest(unittest.TestCase):
             allow_owner_validate_symlink=True,
         )
         joined = " ".join(command)
-        self.assertIn("VALIDATE_RUN_ON_DIRTY_TREE=1", joined)
+        self.assertIn(
+            "VALIDATE_SKIP_INNER_DIRTY_WORKING_TREE_AND_REBASE_FRESHNESS_CHECKS=1",
+            joined,
+        )
         self.assertIn("with-proxy make validate", joined)
 
 

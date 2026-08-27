@@ -614,7 +614,12 @@ class StartUnitTest(unittest.TestCase):
             for flag, value in zip(systemd_runs[1], systemd_runs[1][1:])
             if flag == "--setenv" and "=" in value
         }
-        self.assertEqual("1", frozen_env["VALIDATE_RUN_ON_DIRTY_TREE"])
+        self.assertEqual(
+            "1",
+            frozen_env[
+                "VALIDATE_SKIP_INNER_DIRTY_WORKING_TREE_AND_REBASE_FRESHNESS_CHECKS"
+            ],
+        )
         self.assertEqual("1", frozen_env["VALIDATE_IGNORE_CACHE"])
         self.assertNotIn("VALIDATE_LABEL_PR", frozen_env)
         self.assertIn("--no-label-pr", systemd_runs[1])
@@ -748,7 +753,10 @@ class StartUnitTest(unittest.TestCase):
             for command in self.fake.commands
             if command[0] == "systemd-run" and "validate-lock" in command
         )
-        self.assertIn("VALIDATE_RUN_ON_DIRTY_TREE=1", systemd)
+        self.assertIn(
+            "VALIDATE_SKIP_INNER_DIRTY_WORKING_TREE_AND_REBASE_FRESHNESS_CHECKS=1",
+            systemd,
+        )
         self.assertEqual(systemd[-3:], ["with-proxy", "make", "validate"])
 
     def test_owner_symlink_exception_refuses_any_second_dirty_path(self) -> None:

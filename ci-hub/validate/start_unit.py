@@ -98,6 +98,9 @@ EXIT_REMEASURE = 4
 EXIT_COULD_NOT_DETERMINE = 75
 FROZEN_VALIDATE_KIND = "frozen-validate"
 FROZEN_RESULT_ADMISSION = "frozen-validate"
+INNER_FRESHNESS_SKIP_ENV = (
+    "VALIDATE_SKIP_INNER_DIRTY_WORKING_TREE_AND_REBASE_FRESHNESS_CHECKS"
+)
 CURRENT_MAIN_FETCH_TIMEOUT_SECONDS = 30
 HERMIT_MIN_CLEANUP_GRACE_SECONDS = 60
 
@@ -1334,7 +1337,7 @@ def build_systemd_command(
         build_budget_env.extend(
             [
                 "--setenv",
-                "VALIDATE_RUN_ON_DIRTY_TREE=1",
+                f"{INNER_FRESHNESS_SKIP_ENV}=1",
                 "--setenv",
                 "VALIDATE_IGNORE_CACHE=1",
                 "--setenv",
@@ -1350,7 +1353,7 @@ def build_systemd_command(
         # driver already has a typed escape hatch whose receipt stays explicitly
         # unanchored; the owner watch interprets that distinct evidence rather
         # than laundering it into a clean canonical receipt.
-        child.append("VALIDATE_RUN_ON_DIRTY_TREE=1")
+        child.append(f"{INNER_FRESHNESS_SKIP_ENV}=1")
     if repo == "rrnewton/reverie":
         child.extend(
             [
