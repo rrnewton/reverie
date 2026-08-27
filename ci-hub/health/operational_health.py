@@ -894,7 +894,10 @@ def _assert_plausible_agent_payload(payload: object, *, source: str) -> None:
 
     This promotes the environment-independent half of the predicate that
     `scripts/allocate-worktree.rs::observe_owner_lease` already relies on: a
-    real ORC agent carries a `%NN` pane identity. Its OTHER half -- resolving
+    pane-bound ORC agent carries a `%NN` pane identity. The full ORC array also
+    contains managed, free, and unreachable entries with no pane, so requiring
+    one from EVERY entry would refuse the real producer. Require at least one
+    pane-bound entry and retain the complete array. Its OTHER half -- resolving
     that pane via `tmux list-panes -a` -- is DELIBERATELY NOT promoted.
     Measured 2026-08-08: from an agent shell (TMUX_TMPDIR inherited) that
     lists the 17-pane ORC server, but from `hermit-health-tick.service`, whose
@@ -918,14 +921,22 @@ def _assert_plausible_agent_payload(payload: object, *, source: str) -> None:
         # Zero agents is indistinguishable from no observation, so it must read
         # as could-not-measure -- never as a healthy, empty fleet.
         raise RuntimeError(f"agent-snapshot-implausible:{source}:zero-agents")
+    pane_bound = 0
     for index, raw in enumerate(payload):
         pane = raw.get("tmux_pane_id") if isinstance(raw, Mapping) else None
+        if pane is None:
+            continue
         if not (isinstance(pane, str) and _AGENT_PANE_RE.match(pane)):
             name = raw.get("name", "?") if isinstance(raw, Mapping) else "?"
             raise RuntimeError(
                 f"agent-snapshot-implausible:{source}:"
-                f"entry-{index}({name})-has-no-pane-identity"
+                f"entry-{index}({name})-has-invalid-pane-identity"
             )
+        pane_bound += 1
+    if pane_bound == 0:
+        raise RuntimeError(
+            f"agent-snapshot-implausible:{source}:no-pane-bound-agents"
+        )
 
 
 def load_agent_snapshot(
@@ -1034,17 +1045,8 @@ def live_agent_names() -> tuple[str, ...] | None:
     Measured 2026-08-26, `ignored/ci-hub/agent-snapshot.json` was 356283s -- 4.12
     days -- old against a 600s window, so `load_agent_snapshot` raised and NO
     claim on the board could be expired by the documented mechanism, however dead
-    its owner. The snapshot had no continuously scheduled producer: the
-    compatible bridge writer exists, but is scheduled by nothing and exits when
-    the canonical health workflow is active.
-
-    ⚠️ THIS PARAGRAPH USED TO SAY "`cache-agents` EXISTS BUT NOTHING INVOKES IT".
-    That was true when written and was overtaken by `e5864b405`, which DELETED the
-    subcommand -- see the note at the `persist=False` call below, which has said
-    so since. The file then asserted both `exists` and `was deleted` about the same
-    symbol, and two readers reached opposite conclusions from it on 2026-08-26.
-    A stale sentence next to a correct one is worse than no sentence: it makes the
-    contradiction look like a disagreement between people rather than a diff.
+    its owner. The scheduled ORC workflow already carried the full snapshot, but
+    its receiver had been deleted, leaving this fallback as the only answer.
 
     ⚠️ AND THE ANSWER WAS ALREADY IN THE TREE. `slot_agent_parity.py` hit the same
     file at 65.8 hours and responded by reading the census live through
@@ -1083,6 +1085,39 @@ def live_agent_names() -> tuple[str, ...] | None:
         return None
     names = tuple(sorted(str(name) for name in fleet))
     return names or None
+
+
+def cache_agent_snapshot(
+    snapshot: str | None = None,
+    *,
+    snapshot_file: Path = DEFAULT_AGENT_SNAPSHOT,
+    now: float | None = None,
+) -> int:
+    """Persist the full ORC snapshot supplied to the scheduled health tick."""
+    text = (
+        snapshot
+        if snapshot is not None
+        else os.environ.get("HERMIT_AGENT_SNAPSHOT_JSON")
+    )
+    if text is None:
+        _emit({"state": "unknown", "summary": "ORC-agent-snapshot-missing"})
+        return 1
+    try:
+        payload: object = json.loads(text)
+        agents = _parse_agents(payload)
+        # A bad write is also a maximally fresh write. Refuse it before replacing
+        # the last usable observation; freshness cannot establish plausibility.
+        _assert_plausible_agent_payload(payload, source="ORC")
+        _persist_agent_snapshot(
+            snapshot_file,
+            payload,
+            captured_at=time.time() if now is None else now,
+        )
+    except (json.JSONDecodeError, OSError, RuntimeError) as error:
+        _emit({"state": "unknown", "summary": f"cannot-cache-agent-snapshot:{error}"})
+        return 1
+    _emit({"state": "ok", "count": len(agents), "summary": "agent-snapshot-cached"})
+    return 0
 
 
 def _taskgraph_in_progress() -> tuple[TaskRecord, ...]:
@@ -1390,31 +1425,12 @@ def active_work_gate(
     now: float | None = None,
     persist: bool = True,
 ) -> int:
-    # ⚠️ LIVE FIRST, AND THE CACHE IS NO LONGER CONSULTED BY DEFAULT.
-    # `ignored/ci-hub/agent-snapshot.json` HAS NO CONTINUOUSLY SCHEDULED PRODUCER.
-    # `agent-container-reconcile-bridge.rs` writes the exact envelope, but it is
-    # scheduled by nothing and deliberately exits while the canonical health
-    # workflow is active. Measured 2026-08-26 the file was 4.12 days old, and it
-    # had been read as the authority for claim expiry that whole time.
-    #
-    # A names-only producer would be WORSE than none: `_parse_agents` gives every
-    # agent `status=""` -> `busy=false, current_task=null`, which routes EVERY owned
-    # task to `misrouted`. A fresh cache would produce a flood of false misroutes
-    # where the stale one produced an honest refusal.
-    #
-    # So an unattended cache is not trustworthy where it sits, and the live path
-    # is the only honest default. An EXPLICIT `--agent-snapshot`/`snapshot=` still
-    # takes the full census path -- that is how tests and a human supply real ORC
-    # data -- but nothing falls back to a file no scheduled writer keeps current.
-    explicit = snapshot is not None or os.environ.get("HERMIT_AGENT_SNAPSHOT_JSON")
-    if not explicit:
-        names = live_agent_names()
-        if names is not None:
-            return _emit_live_names_report(
-                names,
-                reason="cache bypassed: agent-snapshot.json has no scheduled producer",
-                json_output=json_output,
-            )
+    # The ORC production workflow supplies the full agent array to health-tick
+    # every five minutes. health-tick persists that observation through the
+    # explicit `cache-agents` command after validating its structure. Prefer the
+    # fresh full snapshot because `claimed`, `actually_active`, and `misrouted`
+    # require status and current_task; the live fallback has names only and can
+    # determine `orphaned` but must refuse those other questions.
     try:
         agents, captured_at = load_agent_snapshot(
             snapshot,
@@ -1530,12 +1546,8 @@ def _run_active_work(
         # was observed in production on 2026-08-07 and again on 2026-08-08.
         # `DEV_HERMIT_PARENT` does not rescue a caller here, because
         # `DEFAULT_AGENT_SNAPSHOT` derives from `ROOT`, i.e. from `__file__`.
-        # ⚠️ THERE IS NO LONGER A DEFAULT CACHE-SEEDING STEP. `cache-agents` was
-        # deleted at e5864b405. A compatible bridge writer still exists, but is
-        # scheduled by nothing and exits while the canonical health workflow is
-        # active, so it cannot make this file a reliable default. Supplying a
-        # snapshot explicitly, via this argument or `HERMIT_AGENT_SNAPSHOT_JSON`,
-        # is now the ONLY way to reach the full census path.
+        # Seeding the default cache remains the separate `cache-agents` command's
+        # job. An explicit file is read-only and cannot replace fleet evidence.
         persist=False,
     )
 
@@ -2060,6 +2072,7 @@ def build_parser() -> argparse.ArgumentParser:
     active_work.set_defaults(_command_parser=active_work)
 
     commands = (
+        ("cache-agents", "cache the current ORC agent snapshot"),
         ("github-main", "report hosted workflow state for current main"),
         ("pull-requests", "report pull-request validation and queue health"),
         ("primary-snapshot", "refresh the primary checkout snapshot when safe"),
@@ -2085,6 +2098,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if parsed.command == "active-work":
         return _run_active_work(parsed, parsed._command_parser)
     commands = {
+        "cache-agents": cache_agent_snapshot,
         "github-main": github_main_gate,
         "pull-requests": pull_request_gate,
         "primary-snapshot": primary_snapshot_gate,

@@ -179,6 +179,63 @@ class OrphanDetectorFailsClosed(unittest.TestCase):
         finally:
             os.unlink(empty)
 
+    def test_resolver_stderr_cannot_become_part_of_the_database_path(self) -> None:
+        """A runtime diagnostic on stderr must not corrupt a valid stdout path."""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            fake_bin = root / "bin"
+            fake_bin.mkdir()
+            socket = root / "tmux"
+            socket.mkdir()
+            database = root / "taskgraph.db"
+            database.touch()
+
+            scripts = {
+                "python3": """#!/bin/sh
+printf 'runtime diagnostic\\n' >&2
+printf '%s\\n' "$FAKE_TG_DB"
+""",
+                "orc": """#!/bin/sh
+printf 'orc socket (TMUX_TMPDIR): %s\\n' "$FAKE_TMUX_SOCKET"
+""",
+                "tmux": """#!/bin/sh
+case "$1" in
+  list-sessions) printf 'orc-session\\n' ;;
+  list-windows) printf 'worker\\n' ;;
+  *) exit 64 ;;
+esac
+""",
+                "tg": """#!/bin/sh
+[ "$TG_DB_PATH" = "$FAKE_TG_DB" ] || exit 17
+printf 'result\\n------\\n\\n(0 rows)\\n'
+""",
+            }
+            for name, body in scripts.items():
+                path = fake_bin / name
+                path.write_text(body)
+                path.chmod(0o755)
+
+            env = dict(os.environ)
+            env.update(
+                {
+                    "PATH": str(fake_bin) + os.pathsep + env.get("PATH", ""),
+                    "FAKE_TG_DB": str(database),
+                    "FAKE_TMUX_SOCKET": str(socket),
+                }
+            )
+            result = subprocess.run(
+                [str(DETECTOR)],
+                cwd=ROOT,
+                env=env,
+                text=True,
+                capture_output=True,
+            )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("runtime diagnostic", result.stderr)
+        self.assertIn(f"task graph: {database}", result.stdout)
+        self.assertNotIn("runtime diagnostic", result.stdout)
+
 
 if __name__ == "__main__":
     sys.exit(0 if unittest.main(exit=False).result.wasSuccessful() else 1)

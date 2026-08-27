@@ -106,8 +106,8 @@ if [[ ! -f $TG_RESOLVER ]]; then
     echo "  (refusing to report: an unread task graph must not be printed as zero orphans)" >&2
     exit 2
 fi
-if ! TG_DB_RESOLVED=$(python3 "$TG_RESOLVER" --print-path 2>&1); then
-    echo "orphaned-task-detector: COULD NOT MEASURE — ${TG_DB_RESOLVED}" >&2
+if ! TG_DB_RESOLVED=$(python3 "$TG_RESOLVER" --print-path); then
+    echo "orphaned-task-detector: COULD NOT MEASURE — task graph resolver failed" >&2
     echo "  (refusing to report: an unread task graph must not be printed as zero orphans)" >&2
     echo "  bind one explicitly, e.g. TG_DB_PATH=~/.tg/<graph>.db $0" >&2
     exit 2

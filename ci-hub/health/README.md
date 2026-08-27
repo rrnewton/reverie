@@ -155,14 +155,18 @@ it has no reset, clean, force-checkout, or force-push path.
 Run a dry tick from the repository root:
 
 ```bash
-HERMIT_AGENT_SNAPSHOT_JSON='[]' ./ci-hub/bin/health-tick --no-header
+./ci-hub/bin/health-tick --no-header
 ```
 
 Run and persist due times:
 
 ```bash
-HERMIT_AGENT_SNAPSHOT_JSON='[]' ./ci-hub/bin/health-tick --flush --no-header
+./ci-hub/bin/health-tick --flush --no-header
 ```
+
+The scheduled ORC workflow supplies `HERMIT_AGENT_SNAPSHOT_JSON`; manual runs
+must not invent that value. An empty array is no observation and is refused
+before it can replace the last usable agent snapshot.
 
 The parent `agent-utils` path is a symlink to `hermit/agent-utils`. A recursive
 checkout initializes that nested submodule. For a selective checkout, initialize

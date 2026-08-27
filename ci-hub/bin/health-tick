@@ -12,24 +12,26 @@ if [[ -z ${CI_HUB_TOOL_COST_ACTIVE:-} ]]; then
         --basis "not measured: due operational-health gates vary and tick cost history is not retained" \
         -- "$0" "$@"
 fi
-# The `cache-agents` seeding step was removed here on 2026-08-26. `e5864b405`
-# deleted that subcommand. The compatible bridge writer is scheduled by nothing
-# and exits while the canonical health workflow is active, so it cannot keep the
-# cache current; the live read through `residue_sweep.read_live_fleet()` is the
-# only honest default. This call site outlived the deleted subcommand. Deleting
-# the whole `if` block, not just the call, mattered: an `if ... then fi` with no
-# body is a bash syntax error, which would have turned a dead gate into a dead
-# tick.
+# The ORC production path supplies the full agent array on every scheduled tick:
+# `HERMIT_AGENT_SNAPSHOT_JSON="$1" ./ci-hub/bin/health-tick --flush --no-header`.
+# Persist that observation for `ci-hub active-work`, whose complete claim census
+# requires status and current_task rather than tmux window names alone.
 #
-# ⚠️ WHAT IT WAS DOING, WHICH IS WORSE THAN A DEAD GATE. `argparse` rejects an
-# unregistered subcommand with exit 2, and this script runs under `set -euo
-# pipefail`, so the tick ABORTED HERE -- before `cd "$ROOT"` and before every
-# gate. Not "one gate could not run": NO gate ran. And the guard made it invisible
-# in the obvious place, because a bare `./ci-hub/bin/health-tick` with
-# `HERMIT_AGENT_SNAPSHOT_JSON` unset skips the block entirely and looks healthy.
-# The ORC production path sets it -- `.orc/plugins/hermit-dev/index.ts:112`,
-# `HERMIT_AGENT_SNAPSHOT_JSON="$1" ./ci-hub/bin/health-tick --flush --no-header`
-# -- so the tick that actually runs is exactly the one that died.
+# A rejected snapshot must not stop every other health gate. `cache-agents`
+# validates before replacing the previous file; on refusal, say so and continue
+# through the gates, then retain the nonzero result so the producer failure cannot
+# read as health while active-work keeps its fail-closed fallback.
+cache_status=0
+if [[ -n ${HERMIT_AGENT_SNAPSHOT_JSON:-} ]]; then
+    if cache_result=$(
+        python3 "$ROOT/ci-hub/health/operational_health.py" cache-agents 2>&1
+    ); then
+        :
+    else
+        cache_status=$?
+        printf 'ERROR: could not cache the ORC agent snapshot: %s\n' "$cache_result" >&2
+    fi
+fi
 cd "$ROOT"
 
 # Hard Invariant 13 is an aggregate COUNT, not an idleness threshold.  The
@@ -132,5 +134,8 @@ if (( pipeline_status[0] != 0 )); then
     printf 'exited %s before running any gate; %s check(s) unobserved"\n' \
         "${pipeline_status[0]}" "$not_run" "${pipeline_status[0]}" "$not_run"
     exit "${pipeline_status[0]}"
+fi
+if (( cache_status != 0 )); then
+    exit "$cache_status"
 fi
 exit "${pipeline_status[1]}"

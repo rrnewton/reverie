@@ -49,6 +49,28 @@ class HealthTickEvaluationProvenanceTests(unittest.TestCase):
         )
         agent_tool.chmod(0o755)
 
+        health = self.repo / "ci-hub" / "health"
+        health.mkdir()
+        operational_health = health / "operational_health.py"
+        operational_health.write_text(
+            textwrap.dedent(
+                """\
+                import os
+                import pathlib
+                import sys
+
+                if sys.argv[1:] != ["cache-agents"]:
+                    raise SystemExit(64)
+                record = os.environ.get("FAKE_CACHE_RECORD")
+                if record:
+                    pathlib.Path(record).write_text(
+                        os.environ.get("HERMIT_AGENT_SNAPSHOT_JSON", "missing")
+                    )
+                raise SystemExit(int(os.environ.get("FAKE_CACHE_EXIT", "0")))
+                """
+            )
+        )
+
         self.fake_bin = self.repo / "fake-bin"
         self.fake_bin.mkdir()
         fake_date = self.fake_bin / "date"
@@ -87,17 +109,29 @@ class HealthTickEvaluationProvenanceTests(unittest.TestCase):
             stderr=subprocess.PIPE,
         )
 
-    def _run(self, *, mode: str, exit_status: int = 0) -> subprocess.CompletedProcess[str]:
+    def _run(
+        self,
+        *,
+        mode: str,
+        exit_status: int = 0,
+        snapshot: str | None = None,
+        cache_exit: int = 0,
+    ) -> subprocess.CompletedProcess[str]:
         environment = os.environ.copy()
         environment.pop("HERMIT_AGENT_SNAPSHOT_JSON", None)
+        cache_record = self.repo / "cache-record.json"
         environment.update(
             {
                 "CI_HUB_TOOL_COST_ACTIVE": "1",
                 "FAKE_TICK_MODE": mode,
                 "FAKE_TICK_EXIT": str(exit_status),
+                "FAKE_CACHE_EXIT": str(cache_exit),
+                "FAKE_CACHE_RECORD": str(cache_record),
                 "PATH": f"{self.fake_bin}:{environment['PATH']}",
             }
         )
+        if snapshot is not None:
+            environment["HERMIT_AGENT_SNAPSHOT_JSON"] = snapshot
         return subprocess.run(
             [str(self.repo / "ci-hub" / "bin" / "health-tick")],
             cwd=self.repo,
@@ -134,6 +168,20 @@ class HealthTickEvaluationProvenanceTests(unittest.TestCase):
         self.assertEqual("HEALTH: quiet evaluation\n", result.stdout)
         self.assertNotIn("ACTION:", result.stdout)
         self.assertNotIn("NOTE:", result.stdout)
+
+    def test_scheduled_snapshot_is_passed_to_cache_agents(self) -> None:
+        snapshot = '[{"name":"worker","tmux_pane_id":"%7"}]'
+        result = self._run(mode="quiet", snapshot=snapshot)
+
+        self.assertEqual(0, result.returncode)
+        self.assertEqual(snapshot, (self.repo / "cache-record.json").read_text())
+
+    def test_a_rejected_snapshot_does_not_hide_every_other_gate(self) -> None:
+        result = self._run(mode="quiet", snapshot="[]", cache_exit=1)
+
+        self.assertEqual(1, result.returncode)
+        self.assertEqual("HEALTH: quiet evaluation\n", result.stdout)
+        self.assertIn("could not cache the ORC agent snapshot", result.stderr)
 
 
 if __name__ == "__main__":

@@ -783,6 +783,49 @@ class OperationalHealthTest(unittest.TestCase):
                     now=1061,
                 )
 
+    def test_cache_agent_snapshot_validates_before_replacing_the_file(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "agents.json"
+            path.write_text("last usable observation\n")
+            result, output = self.capture(
+                operational_health.cache_agent_snapshot,
+                '[{"name":"worker","status":"busy","current_task":"task"}]',
+                snapshot_file=path,
+                now=1000,
+            )
+            self.assertEqual(result, 1)
+            self.assertIn("no-pane-bound-agents", output)
+            self.assertEqual(path.read_text(), "last usable observation\n")
+
+    def test_cache_agent_snapshot_persists_a_plausible_full_snapshot(self) -> None:
+        snapshot = (
+            '[{"name":"coordinator","status":"managed","current_task":null,'
+            '"tmux_pane_id":null},'
+            '{"name":"worker","status":"busy","current_task":"task",'
+            '"tmux_pane_id":"%7"}]'
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "agents.json"
+            result, output = self.capture(
+                operational_health.cache_agent_snapshot,
+                snapshot,
+                snapshot_file=path,
+                now=1000,
+            )
+            envelope = json.loads(path.read_text())
+        self.assertEqual(result, 0)
+        self.assertIn("state=ok", output)
+        self.assertEqual(envelope["captured_at"], 1000)
+        self.assertEqual(envelope["agents"][1]["current_task"], "task")
+
+    def test_cache_agents_command_dispatches_to_the_snapshot_writer(self) -> None:
+        with mock.patch.object(
+            operational_health, "cache_agent_snapshot", return_value=7
+        ) as cache:
+            result = operational_health.main(["cache-agents"])
+        self.assertEqual(result, 7)
+        cache.assert_called_once_with()
+
     def test_taskgraph_query_parses_exact_tag_array(self) -> None:
         output = """task_json
 ---------------
@@ -818,38 +861,39 @@ class OperationalHealthTest(unittest.TestCase):
         self.assertEqual(len(tasks), 1)
         self.assertTrue(tasks[0].implemented)
 
-    def test_no_explicit_snapshot_goes_LIVE_and_never_reads_the_cache_file(
-        self,
-    ) -> None:
-        """⚠️ THE CACHE IS DELETED AS A DEFAULT SOURCE, AND THIS PINS THAT.
-
-        `ignored/ci-hub/agent-snapshot.json` has no continuously scheduled
-        producer. The compatible bridge writer is dormant, so with no explicit
-        snapshot this must go live and must not touch the file, even if a
-        plausible-looking one exists on disk.
-        """
-        tasks = (operational_health.TaskRecord("held", "Held", "ghost", ()),)
+    def test_no_explicit_snapshot_uses_a_fresh_full_cache(self) -> None:
+        tasks = (operational_health.TaskRecord("held", "Held", "worker", ()),)
         with tempfile.TemporaryDirectory() as directory, mock.patch.object(
             operational_health, "_taskgraph_in_progress", return_value=tasks
         ), mock.patch.object(
-            operational_health, "live_agent_names", return_value=("worker",)
-        ), mock.patch.object(
             operational_health,
-            "load_agent_snapshot",
-            side_effect=AssertionError("the cache must not be read by default"),
+            "live_agent_names",
+            side_effect=AssertionError("a fresh full snapshot must not go name-only"),
         ):
+            path = Path(directory) / "agents.json"
+            operational_health._persist_agent_snapshot(
+                path,
+                [
+                    {
+                        "name": "worker",
+                        "status": "busy",
+                        "current_task": "held",
+                        "tmux_pane_id": "%7",
+                    }
+                ],
+                captured_at=950,
+            )
             result, output = self.capture(
                 operational_health.active_work_gate,
-                snapshot_file=Path(directory) / "present-but-unused.json",
+                snapshot_file=path,
                 json_output=True,
                 now=1000,
             )
         payload = json.loads(output)
-        self.assertEqual(payload["census_mode"], "live-names-only")
-        self.assertEqual(payload["orphaned"], ["held"])
-        self.assertIn("no scheduled producer", payload["summary"])
-        self.assertNotIn("no possible producer", payload["summary"])
-        self.assertEqual(result, 1)
+        self.assertNotIn("census_mode", payload)
+        self.assertEqual([item["id"] for item in payload["claimed"]], ["held"])
+        self.assertEqual([item["id"] for item in payload["actually_active"]], ["held"])
+        self.assertEqual(result, 0)
 
     def test_an_explicit_snapshot_still_takes_the_full_census_path(self) -> None:
         """The escape hatch: real ORC data, supplied deliberately, still works.
