@@ -22,12 +22,6 @@ registers it as the `hermit-dev` skill.
   The versioned config is `ci-hub/health/tick-hub.yaml`; the plugin only supplies the
   live `orc.listAgents()` snapshot, invokes `ci-hub/bin/health-tick`, and sends a
   `HARD WARNING` wakeup when the hub emits an action/error or fails.
-- Recover any write-ahead land intent interrupted between merge and arm, poll
-  obligations every fifteen seconds, and send an advisory wake when an exact-SHA
-  verifier fails. A completed send is recorded as `sent_unacknowledged`; a
-  lander's startup `inherit-obligations` scan records acknowledgment. Durable
-  state, the five-minute tick, and fresh-reader discovery own correctness, so a
-  wake lost during recycling costs latency rather than losing the obligation.
 - Through that tick, gently fast-forward clean product primaries and publish a
   coherent parent gitlink snapshot; dirty or inconsistent state is preserved
   and surfaced as a hard warning.
@@ -80,10 +74,8 @@ A live session's `orc.hermit-dev.status()` must report the five-minute tick
 interval, `ci-hub/health/tick-hub.yaml` config, and a non-null
 `lastPolicyContextInjection` receipt with `contextInjected: true`.
 `orc.listWorkflows()` must show the sleeping
-`hermit-dev-operational-health-v1`,
-`hermit-dev-speculative-land-remediation-v1`, and
-`hermit-dev-policy-reload-2h-v1` workflows and must not show
-`hermit-dev-pr-health` or `policy-reload-2h`.
+`hermit-dev-operational-health-v1` and `hermit-dev-policy-reload-2h-v1`
+workflows and must not show `hermit-dev-pr-health` or `policy-reload-2h`.
 
 ## Calling a registered script (read this before "fixing" an empty `$1`)
 
@@ -110,10 +102,10 @@ Three things mislead people here, and all three cost time on 2026-08-10:
   not valid JSON, so **no positionals bind and the script runs with an empty
   `$1`**. Nothing was dropped — nothing well-formed was supplied.
 
-That the binding works is measured, not assumed: `hermitSpeculativeLandWakeSent`
-(`--target "$1"`) wrote 76 of 76 production records with a non-empty target, and
+That the binding works is measured, not assumed:
 `hermitOperationalTick` (`HERMIT_AGENT_SNAPSHOT_JSON="$1"`) runs on its argument
-continuously.
+continuously, and `verifyScriptArgs()` brackets the same surface with an inert,
+distinctive multi-argument payload.
 
 To answer "did my arguments arrive?" with evidence rather than inference:
 

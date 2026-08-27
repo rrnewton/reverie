@@ -226,53 +226,6 @@ git show -s --format='%h %ci %s' 8b3c0e9
 
 ---
 
-## Claim 5 — the speculative-land mechanism (commit `6cbc776b`) is real and tested
-
-**Command (the commit + its files):**
-
-```bash
-git show --stat 6cbc776 | sed -n '1,15p'
-```
-
-**Real output (abridged):**
-
-```
-commit 6cbc776b4c770f7c97716ddc563c9a99f8cab7a9
-    ci-hub: enforce speculative land remediation
- ci-hub/remediation/land_and_arm.py            | 452 ++++++++++++++++++++
- ci-hub/remediation/protocol.py                |  77 ++++-
- ci-hub/remediation/tests/test_land_and_arm.py | 128 ++++++++
- ci-hub/remediation/tests/test_protocol.py     |  78 ++++-
-```
-
-**Command (run the tests):**
-
-```bash
-cd ~/work/dev-hermit/ci-hub/remediation
-python3 -m unittest discover -s tests -p 'test_*.py' -v 2>&1 | tail -3
-```
-
-**Real output:**
-
-```
-----------------------------------------------------------------------
-Ran 14 tests in 0.072s
-
-OK
-```
-
-**What proves it:** The commit adds a real 452-line `land_and_arm.py` plus a test
-suite. Running that suite green (14 tests, `OK`) shows the mechanism's contract is
-executable and enforced, not aspirational — including the important cases
-`test_recovery_arms_a_merge_left_between_merge_and_arm` and
-`test_nonzero_merge_command_still_arms_when_pr_actually_merged` (i.e. it recovers
-if it crashes between merging and arming, and it arms on a genuine merge even when
-the merge command returned nonzero).
-
-**Time:** ~2 seconds.
-
----
-
 ## Claim 6 — the landings on hermit `main` are ancestry-confirmed (tip `7d5b8f93`)
 
 The original claim was "10 ancestry-confirmed landings." Here is the deterministic

@@ -40,8 +40,7 @@ alongside it).
 
 Store: `ignored/ci-hub/stress-runs.jsonl` (gitignored, append-only, one event
 per run). Joins the rest of the ci-hub store by `(repo, git_sha)` and the same
-`OWNER/REPO` string, per `ci-hub/history/obligations.py`'s file-contract
-convention. Alarm markers: `ignored/ci-hub/stress-alarm-*.json`.
+`OWNER/REPO` string. Alarm markers: `ignored/ci-hub/stress-alarm-*.json`.
 
 ## Flaky-is-red verdict (the important part)
 

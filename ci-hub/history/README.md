@@ -203,15 +203,14 @@ persist a durable JSONL snapshot per run.
 
 ## Join keys (file contract — join ONLY via these)
 
-| concept            | gha-runs.csv | local (`validate-run-global.jsonl`) | obligations.jsonl |
-|--------------------|--------------|-------------------------------------|-------------------|
-| commit             | `head_sha`   | `commit`                            | `landed_sha`      |
-| GHA run id         | `run_id`     | —                                   | `github.run_ids`  |
-| repo               | `repo`       | (same string)                       | `repo`            |
+| concept            | gha-runs.csv | local (`validate-run-global.jsonl`) |
+|--------------------|--------------|-------------------------------------|
+| commit             | `head_sha`   | `commit`                            |
+| repo               | `repo`       | (same string)                       |
 
 All commit values are the same 40-hex SHA; `repo` is the same `OWNER/REPO` string
-everywhere. `obligations.py` (owner: speculative-land) and the `submodule-bumps`
-stream stay separate stores and join by these columns only.
+everywhere. The `submodule-bumps` stream stays separate and joins by these
+columns only.
 
 ## Live consumers
 

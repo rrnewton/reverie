@@ -60,8 +60,6 @@ receipt floor:
 - `ci-hub.rs:4182` (`record.schema_version != 1`)
 - `directives/check.py:147` ("ledger schema_version must be 1")
 - `health/operational_health.py:472` (health envelope schema)
-- `history/obligations.py:75` (obligation event `SCHEMA_VERSION`)
-- `remediation/land_and_arm.py:273` (land-intent schema)
 
 ## The covered-path defect, made concrete — FOUR live drifts among 1b
 

@@ -11,8 +11,7 @@ WHY THIS EXISTS
     Neither survives agent recycling, and we recycle agents many times a day,
     several at 0% context. An alarm that lives in a thought is not an alarm.
 
-    This module makes the saturation signal DURABLE (append-only JSONL, the same
-    convention as ``ci-hub/history/obligations.py``), turns "sustained
+    This module makes the saturation signal DURABLE (append-only JSONL), turns "sustained
     saturation" into a machine-readable predicate a load-throttling consumer can
     read WITHOUT a GitHub call, and keeps that throttle OBSERVABLE and
     SELF-BOUNDING.
@@ -142,7 +141,7 @@ class Observation:
     schema: int = SCHEMA_VERSION
 
 
-# --- durable store (mirrors ci-hub/history/obligations.py conventions) ---------
+# --- durable store ------------------------------------------------------------
 def _read_records(fh) -> list[dict]:
     fh.seek(0)
     out: list[dict] = []

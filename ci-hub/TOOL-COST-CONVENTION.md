@@ -84,9 +84,8 @@ ci-hub/bin/tool-cost \
 `--actual-json` is optional. When supplied, the helper atomically writes schema
 v1 containing the same estimate plus actual wall, total/user/system CPU, and
 exit fields. Long-lived stores should ingest or reference that JSON instead of
-parsing human-facing log lines. The speculative-land obligation store uses this
-path for its detached local `scripts/validate.rs` run. `estimate.kind` is `derived` or
-`unknown`; unknown estimates store JSON `null` for wall and CPU seconds.
+parsing human-facing log lines. `estimate.kind` is `derived` or `unknown`;
+unknown estimates store JSON `null` for wall and CPU seconds.
 
 For a self-contained product tool that cannot depend on the parent checkout,
 keep its calculation local but use the same output contract. Parent launchers

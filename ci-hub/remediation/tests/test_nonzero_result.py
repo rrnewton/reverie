@@ -23,7 +23,6 @@ sys.path.insert(0, str(REMEDIATION))
 sys.path.insert(0, str(HISTORY))
 
 import nonzero_result
-import protocol
 
 # A real cargo test-target that COMPILED and ran but whose tests were all gated
 # out (`--features notifier`): the binary runs, executes zero tests, exits 0.
@@ -214,38 +213,6 @@ class IsZeroTestGreenTest(unittest.TestCase):
         # Fail-safe: a green whose log carries no banner is NOT flagged.
         self.assertFalse(nonzero_result.is_zero_test_green(""))
         self.assertFalse(nonzero_result.is_zero_test_green("built ok, no tests logged"))
-
-
-class ClassifyLocalFinalStatusTest(unittest.TestCase):
-    """The speculative-land classifier consumes validate's fixed status."""
-
-    def test_status_passes_even_when_old_prose_would_have_said_zero_test(self) -> None:
-        state, reason = protocol._classify_local(
-            0,
-            GATED_ZERO_TEST
-            + "FINAL_VALIDATE_STATUS: PASSED\n"
-            + "# ci-hub/validate-lock tool COST ACTUAL exit=0\n",
-        )
-        self.assertEqual(state, "green")
-        self.assertEqual(reason, "final-status:PASSED")
-
-    def test_positive_genuine_pass_stays_green(self) -> None:
-        state, reason = protocol._classify_local(
-            0,
-            GENUINE_PASS
-            + "FINAL_VALIDATE_STATUS: PASSED\n"
-            + "# ci-hub/validate-lock tool COST ACTUAL exit=0\n",
-        )
-        self.assertEqual(state, "green")
-        self.assertEqual(reason, "final-status:PASSED")
-
-    def test_clean_exit_without_captured_output_is_no_result(self) -> None:
-        self.assertEqual(protocol._local_state(0), "no_result")
-        self.assertEqual(protocol._local_state(0, ""), "no_result")
-
-    def test_absence_is_no_result_never_red(self) -> None:
-        state, _ = protocol._classify_local(0, GATED_ZERO_TEST)
-        self.assertNotEqual(state, "red")
 
 
 if __name__ == "__main__":

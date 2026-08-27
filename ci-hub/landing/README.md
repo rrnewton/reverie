@@ -294,8 +294,8 @@ ci-hub/landing/land-pr.sh 1711 fixture/pid-tid-virtualization-identity --no-reba
 
 `--no-rebase` removes a **mutation**, never a **check**: the land-lock, the
 initial and final authority, the merge-gate diagnostic observation, receipt
-dereference, `--match-head-commit`, obligation arming, and the post-merge
-`mergeCommit.oid` ancestry proof all still run. Whether the candidate's
+dereference, `--match-head-commit`, and the post-merge `mergeCommit.oid`
+ancestry proof all still run. Whether the candidate's
 validation is landable after `main` moves follows skill `hermit-validation-authority`.
 Prefer the default rebase when the branch genuinely needs to be updated. Compare
 `rrnewton/hermit#1812`: an unconditional

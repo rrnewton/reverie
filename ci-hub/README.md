@@ -41,12 +41,6 @@ are:
 CI_HUB_DOCS_PARSE_ONLY=1 ./ci-hub/landing/land-pr.sh \
   123 example/feature-branch --foreground
 
-# Inspect or recover polling for obligations that are still open.
-./ci-hub/ci-hub obligations
-./ci-hub/ci-hub obligations --actionable
-./ci-hub/ci-hub inherit-obligations --agent hermit-lander --session "$HOSTNAME:$$"
-./ci-hub/ci-hub watch-obligations --once
-
 # Start GitHub CI BY HAND on a chosen commit, and read the result. NOTHING on
 # GitHub starts by itself any more: owner directive 2026-08-21 keeps CI "disabled
 # in the sense that it does not run automatically", so every workflow in this
@@ -309,25 +303,9 @@ generic, add it there and link/use it here.
   are not silently relabeled as product failures;
 - pending current-main work is displayed as pending and must not be claimed
   green.
-- every unresolved speculative-land obligation makes `health` nonzero. A
-  verification failure remains unresolved until an explicit fix-forward or
-  revert is recorded with `resolve-obligation`.
 
 The outer ORC workflow calls `bin/health-tick` every five minutes. The pinned
-tick engine reads `health/tick-hub.yaml`; dev-hermit probes live beside it. A
-detached per-obligation watcher records terminal state continuously, while the
-dedicated ORC workflow `hermit-dev-speculative-land-remediation-v1` first
-recovers any write-ahead intent interrupted after merge but before arm, then
-polls every 15 seconds. A failure records durable remediation state and may send
-an advisory wake to the live `hermit-lander` (or coordinator). The wake is
-recorded as `sent_unacknowledged`; only a reader's `inherit-obligations` scan
-changes it to `acknowledged`. A bare scan records receipt only. When the reader
-has evaluated the recommendation, it records either `--action-outcome executed`
-or `--action-outcome declined --reason '<durable rationale>'`; a decline without
-a nonblank reason is refused. The resulting `remediation.dispatch.acknowledgement`
-lives on the obligation, so a refusal cannot be mistaken for a click-through.
-The five-minute tick and every fresh lander's startup scan recover from a lost
-wake.
+tick engine reads `health/tick-hub.yaml`; dev-hermit probes live beside it.
 
 ## The lander restores the checkout it was handed
 
@@ -357,112 +335,6 @@ guess the opposite.
 
 Keep a rescue ref while landing (`refs/rescue/<agent>/<name>-<sha>`): it is
 append-only, costs nothing, and is what made the three wipes recoverable.
-
-## Speculative-land obligation contract
-
-The canonical `landing/land-pr.sh` entrypoint supports `rrnewton/hermit` by
-default and explicit `--repo rrnewton/reverie`; it refuses a checkout whose
-origin does not match the selected repository. It prepares the speculative-land
-obligation before its bounded child can merge; raw `gh pr merge` is not the
-protocol. It also dereferences the final pushed head through the repository-selected
-authority immediately before a
-`--match-head-commit` merge. Once GitHub exposes
-the merged SHA it completes the prepared intent and calls `arm-land`. If the
-wrapper dies in that interval, the restartable ORC workflow recovers the intent
-and arms it. The write-ahead intent and initial OPEN event both carry the
-versioned repository/workflow/job policy; an unsupported repository or a
-`--source` checkout whose `origin` names another repository is refused before
-merge instead of creating an obligation no verifier can satisfy. Omitting
-`--source` selects the canonical `hermit/` or `reverie/` checkout from `--repo`;
-Reverie never inherits Hermit's default. Arming appends that OPEN event to
-`ignored/ci-hub/obligations.jsonl`, then concurrently:
-
-1. retains local validation and hosted-observation component slots for legacy
-   obligation records; current authority and whether either component may run
-   are selected only by skill `hermit-validation-authority`; and
-2. launches a detached watcher whose durable log lives beside the local
-   validation log.
-
-Historical obligation schemas retain their recorded workflow tuples for audit
-and replay of old state. Interpret them under the current authority boundary in
-the canonical skill named above.
-
-The event log is append-only and locked. Every transition retains timestamps,
-verification scope (`total` here), GitHub run IDs, local log path, and failure
-recommendation for the history and green-time consumers. The local verifier is
-wrapped by `bin/tool-cost`; its history-derived estimate and atomic actual
-wall/CPU JSON are copied into the obligation record. Stable cross-store joins
-are `landed_sha → gha-runs.csv:head_sha`, `landed_sha → local-runs.csv:git_sha`,
-and `github.run_ids → gha-runs.csv:run_id`.
-
-This is a write-ahead, crash-recoverable protocol, **not an atomic transaction
-with GitHub**. An OPEN row is not proof that its producers were armed. The
-launcher claims an append-only token, each local runner and watcher registers
-its own PID against a component token, and the intent becomes `armed` only after
-both registrations are durable. Recovery audits that evidence even when the
-intent already says `armed`; abandoned `pending`/`starting` claims are
-idempotently resumed, while compare-and-append claims prevent concurrent
-recoverers from starting duplicate producers. A merge can complete before
-arming; the machine-local intent lets ORC recover that window when the same
-workspace returns. Raw merges bypass the intent, and loss of the workspace/disk
-loses its machine-local recovery state.
-
-Green qualification is intentionally not restated here; follow skill
-`hermit-validation-authority`. Legacy obligation fields remain data, not authority.
-
-Automatic local re-dispatch consults the owner-watch admission predicate before
-claiming the obligation or spawning clone/submodule setup. A missing release
-record admits the bootstrap case; a starved or indeterminate watch yields without
-spending the retry; a recently admitted watch preserves the positive re-dispatch
-path. This early check is deliberately not the acquisition authority:
-`validate-lock run` repeats the same predicate at the box-anchor boundary, so a
-watch arrival between the precheck and the claim still makes re-dispatch yield.
-
-This operational object does not select validation authority. Follow skill
-`hermit-validation-authority`; repository-specific non-Hermit policy remains separate.
-
-A qualifying result selected by `hermit-validation-authority` satisfies the validation leg
-of an obligation. Operational `pending`, `running`, `no_result`, and diagnostic
-fields do not redefine that policy. A red verdict is not permission to rewrite
-`main`: no automatic revert is recommended or dispatched. A revert requires a durable owner-authored record
-bound to the exact candidate revert SHA, current-main SHA, and failed-land
-identity; otherwise the obligation is explicitly awaiting that decision.
-The owner record is an exact-main commit comment headed
-`REMEDIATION-REVERT-AUTHORIZED`; consume it once with
-`ci-hub/ci-hub authorize-revert OBLIGATION_ID` before any revert dispatch.
-Outstanding work is enumerable from state alone with
-`obligations --actionable`. A replacement lander acknowledges inherited work at
-startup with `inherit-obligations`; no notification delivery is required. The
-obligation remains visible and unhealthy even after acknowledgment, until the
-repair lands and is closed with a full SHA. Resolution requires `--kind` to
-match the durable triggered recommendation, freshly fetches the obligation's
-repository-bound `main`, and refuses a nonexistent, wrong-repository, off-main,
-or pre-failure repair. Its compare-and-append binds the event identity and full
-remediation action, so a concurrent same-state change cannot inherit the proof.
-A `revert` must be the failed land's direct child and restore its sole parent's
-exact tree; other repairs are reviewed fix-forwards. The completed event records
-the exact failed-land/repair/main ancestry and kind proof:
-
-```bash
-./ci-hub/ci-hub resolve-obligation OBLIGATION_ID --kind fix-forward --ref REPAIR_SHA
-# or: --kind revert --ref REVERT_SHA
-```
-
-Completed remediations are terminal: later polls return the recorded repair
-instead of re-evaluating the failed land's historical red producers. If a
-watcher is nevertheless stuck, use the supported exact-identity cancellation
-path rather than a PID-only or pattern signal:
-
-```bash
-./ci-hub/ci-hub cancel-watcher OBLIGATION_ID --reason "stuck after terminal remediation"
-```
-
-Watcher registration persists host, boot ID, PID, and `/proc` start ticks.
-Cancellation opens a pidfd, rechecks those fields, records the request, and
-sends only `SIGTERM`; it never escalates to a stronger signal. A legacy row
-without that durable identity is refused. Cancellation is accepted only after
-the obligation is terminal, and changes only watcher state—the satisfied or
-remediated result remains exactly as before.
 
 ## Why this exists
 

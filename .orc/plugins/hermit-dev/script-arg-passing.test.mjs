@@ -13,11 +13,11 @@
 //
 // The diagnosis that followed was wrong in an instructive way, and this file
 // pins the correction so it is not re-derived: the surface does NOT drop
-// arguments. Two production controls prove it (`hermitSpeculativeLandWakeSent`
-// bound `$1` in 76 of 76 records; `hermitOperationalTick` runs on `$1`
-// continuously). What actually breaks is calling `orc.callScriptInternal` by
-// hand, whose `argsJson` parameter is a JSON STRING -- pass an array and the
-// dispatcher rejects it, pass a bare name and NO positionals bind.
+// arguments. `hermitOperationalTick` runs on `$1` continuously, and the inert
+// echo checks below bracket the same binding with multiple distinctive values.
+// What actually breaks is calling `orc.callScriptInternal` by hand, whose
+// `argsJson` parameter is a JSON STRING -- pass an array and the dispatcher
+// rejects it, pass a bare name and NO positionals bind.
 //
 // Like its sibling harnesses, the logic under test lives inside index.ts and
 // cannot be imported without an `orc` host. The SHELL STRING is not
@@ -475,7 +475,7 @@ async function probePolicyReload(activate) {
   const activationReasons = [];
   const workflowSource = sourceBetween(
     "export async function policyReloadHeartbeat",
-    "\nfunction stableAlertSignature",
+    "\n// --- registered-script invocation",
   );
   const workflow = compilePolicyReloadWorkflow(workflowSource, {
     "hermit-dev.activate": async (reason) => {
@@ -538,7 +538,7 @@ check(
 );
 const policyReloadSource = sourceBetween(
   "export async function policyReloadHeartbeat",
-  "\nfunction stableAlertSignature",
+  "\n// --- registered-script invocation",
 );
 check(
   "policy reload does not capture the policy registration helper",

@@ -6,41 +6,15 @@
 
 WHY THIS EXISTS, AND WHY IT IS THIS SMALL
 =========================================
-It replaces the speculative-land obligations machinery, which was audited over
-its whole history on 2026-08-27: 46 obligations created across 24 days, and ZERO
-resolved by anyone acting on the recommendation. What it produced instead was two
-self-referential records, two "repairs" that predated the acknowledgement they
-were credited to (one by 64 hours), and one pair of CONTRADICTORY
-recommendations -- a revert and a fix-forward -- both credited to the same
-unrelated commit, which had landed 49 seconds after acknowledgement.
+This answers one historical question and nothing else: whether a commit has a
+recorded local validate verdict. It sends no wake, makes no recommendation, and
+does not mutate validation state.
 
-The question underneath it was real. This answers that question and nothing else:
-no wake, no recommendation, no acknowledgement path, no remediation state. Those
-were the parts that produced sixteen unresolved obligations, a crash-looping
-workflow, and a poller that could not finish a census.
-
-⚠️ THE BINDING THIS DELIBERATELY DOES NOT INHERIT
-=================================================
-The old lookup refused with CANONICAL-VERDICT-UNAVAILABLE unless it found a row
-whose cwd was THE CURRENT RUN'S OWN fresh checkout, at or after that run's start.
-That checkout is `mktemp`-generated per invocation, so the name can never match a
-previous run's.
-
-That rule is CORRECT for certifying a run -- an older row must not be allowed to
-bind a later one. It is the WRONG question here. "Was this commit ever validated"
-is historical; "may this row certify my run" is not. The old code answered the
-second while being asked the first, which is why it reported no_result for NINE
-commits whose full-profile `fail` receipts were sitting in the ledger the whole
-time.
-
-So this reader keys on the COMMIT ALONE. It never looks at cwd, workspace, or
-time-ordering against a caller.
-
-⚠️ GITHUB IS NOT AN INPUT
-=========================
-All ten of the stuck obligations carried failure_source=github while
-github_actions_enabled=false, so their recommendations derived from a signal this
-project deliberately does not gate on. This reads the LOCAL ledger only.
+THE BINDING
+===========
+This is a historical query, not certification of a new run. It keys on the
+commit alone and never looks at cwd, workspace, or time ordering against a
+caller. GitHub is not an input; this reads the local ledger only.
 
 THREE ANSWERS, AND NONE MAY BE INFERRED FROM ANOTHER
 ====================================================

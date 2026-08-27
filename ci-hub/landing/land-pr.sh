@@ -317,10 +317,8 @@ if [ "$INNER" -eq 0 ]; then
   esac
   [ "$rc" -eq 0 ] || exit "$rc"
 
-  # The merge and ancestry proof are already complete. The speculative-land
-  # obligation that used to be armed here was removed: over its whole history it
-  # produced no fix, and arming it could never affect a land that had already
-  # happened. MC is still read because the LANDED: line below reports it.
+  # The merge and ancestry proof are already complete. MC is read because the
+  # LANDED line below reports it.
   MC=$(with-proxy gh pr view "$PR" -R "$R" --json mergeCommit -q .mergeCommit.oid 2>/dev/null || true)
 
   # Detached and single-flight: this audit must never delay or veto a land.
@@ -504,8 +502,8 @@ fi
 # This flag removes a MUTATION, never a CHECK. Still executed on this path: the
 # land-lock (outer `land-lock run`), the step-1b exact-head authority, the step-4
 # recheck at the head actually being merged, the merge-gate diagnostic observation, the step-5b
-# final-boundary authority + receipt dereference, `--match-head-commit`,
-# obligation arming, and the post-merge mergeCommit.oid ancestry proof.
+# final-boundary authority + receipt dereference, `--match-head-commit`, and the
+# post-merge mergeCommit.oid ancestry proof.
 plain_rebase=0
 rebase_base=$(git -C "$WT" rev-parse --verify origin/main) \
   || abandon "cannot resolve current main before rebase" 3

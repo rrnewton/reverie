@@ -26,12 +26,8 @@ detector is deliberately RESULT-LEVEL: it reads the emitted log, not the source.
 
 FAIL-SAFE DIRECTION. The detector fires ONLY on POSITIVE evidence of zero-ness:
 at least one test-runner banner is present AND the total executed across every
-banner is 0. Absence of any banner yields ``None`` (unknown, not zero) so a green
-whose log we could not parse for banners is NEVER downgraded — the detector can
-only refuse a demonstrably inert green, it can never manufacture a no-result from
-a green it merely failed to read. In the speculative-land classifier a downgrade
-is to ``no_result`` (a hole to RE-DISPATCH), never to ``red`` (a revert): even a
-false positive here is recoverable and can never revert a healthy tip.
+banner is 0. Absence of any banner yields ``None`` (unknown, not zero), so a
+consumer can distinguish an unparseable log from a demonstrably inert run.
 
 KNOWN LIMITATION — this detector catches "produced EVIDENCE OF NOTHING", NOT
 "produced NO EVIDENCE". An absent or zero-length log is no-evidence just as a
@@ -42,18 +38,13 @@ emitting, a retention expiry, a fetch that 404s. This gap is deliberately left
 UNCLOSED here (documented, not silent: a detector with an undocumented hole
 converts "we do not check this" into "we checked and it passed").
 
-The predicate that would CLOSE it: ``log absent OR zero bytes after the
-validate-start offset => NOT a pass => no_result``. It MUST key on an observable
-first-cause — ``stat()`` (file exists AND ``st_size > offset``) — NOT on the
-empty string this classifier receives, because ``_read_local_output`` in
-``protocol.py`` returns ``""`` on an OSError too: a genuinely empty/absent log
-(no evidence) and a READ FAILURE of a log that did contain a Validation summary
-are both ``""`` here and must not be conflated. Treating a read failure as
-``no_result`` is still SAFE (re-dispatch, never revert) but would spuriously
-re-dispatch real greens whenever a log read hiccups, so the closing predicate
-belongs at the read site (which can stat the file) rather than in this
-string-only function. NOT a legitimate-empty concern at the ``_classify_local``
-layer: a genuine exit-0 validation driver always emits its ``Validation summary``
+The predicate that would CLOSE it must key on an observable first cause such as
+``stat()`` (file exists and ``st_size > offset``), not on the empty string this
+parser receives: a genuinely empty or absent log and a read failure of a log
+that did contain a validation summary are both ``""`` here and must not be
+conflated. The closing predicate belongs at the read site, which can stat the
+file, rather than in this string-only function. A genuine exit-0 validation
+driver always emits its ``Validation summary``
 line, so empty output there is no-evidence, not a valid banner-less pass. (The
 distinct, legitimate no-banner-but-NONEMPTY case — build-only / skipped-gate
 summaries — is exactly why ``executed_test_count`` returns ``None`` for it,

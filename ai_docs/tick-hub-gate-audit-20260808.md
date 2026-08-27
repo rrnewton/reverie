@@ -42,7 +42,7 @@ Commit map:
 | Commit | Date | Gates introduced |
 |---|---|---|
 | `8698bd1` | 08-03 | primary_checkout_snapshot, github_main_health, pull_request_health, **stuck_agents** |
-| `7a42ff5` | 08-03 | speculative_land_obligations |
+| `7a42ff5` | 08-03 | speculative_land_obligations (removed 2026-08-26) |
 | `4ed8e67` | 08-03 | ci_queue_health |
 | `809eb05` | 08-03 | ci_lane_saturation |
 | `847bf49` | 08-03 | **active_work_reconciliation** |
@@ -273,7 +273,7 @@ the lock; the fd must be closed at the hook.
 | 4 | `validate_wall_series_readiness` | 86400s | `wall_series.py --readiness` | **Ledger** — ORC blind | Report only | **KEEP** — standing by design, but daily; re-verify the 90d/3.91d premise (see §5) |
 | 5 | `owner_tooling_directives` | 3600s | `directives/check.py` | **Owner intent recorded outside TaskGraph** — ORC blind | Report only | **KEEP — high value**, but currently red for a lineage artifact; see §5 |
 | 6 | `unpushed_parent_commits` | 900s | `unpushed_parent_commits.py --scope all --rescue` | **"Not on GitHub"** — external by construction | ⚠️ **MUTATES**: pushes `rescue/auto-*`. Additive, cannot destroy | **KEEP, but see §3b/§6** — mutation under a read-shaped name; self-clears via `--not --remotes` |
-| 7 | `speculative_land_obligations` | 300s | `ci-hub watch-obligations --once --gate` | **External** — PR/landing state | Report only; discrete items that clear | **KEEP** |
+| 7 | `speculative_land_obligations` | 300s | removed | **Retired** | No action | **REMOVED 2026-08-26** |
 | 8 | `primary_checkout_snapshot` | 300s | `operational_health.py primary-snapshot` | **Local git** — ORC has no shell | ⚠️ **MUTATES**: commits + pushes parent `main`. Touches no agent | **KEEP, re-scoped** `0e14559`: moving-reference + ordering bug fixed; 60-min deferral budget |
 | 9 | `github_main_health` | 900s | `operational_health.py github-main` | **External** | Report only | **KEEP** |
 | 10 | `pull_request_health` | 900s | `operational_health.py pull-requests` | **External** | Report only | **KEEP** |

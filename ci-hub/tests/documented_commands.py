@@ -135,9 +135,6 @@ def _classify(text: str) -> str:
         if command in {
             "help",
             "quickstart",
-            "obligations",
-            "inherit-obligations",
-            "watch-obligations",
             "history",
             "local-history",
             "validate-worktrees",
@@ -147,9 +144,7 @@ def _classify(text: str) -> str:
             return "local-read"
         if command in {
             "land-lock",
-            "cancel-watcher",
             "refresh-history",
-            "resolve-obligation",
             "verify-landing",
             "validate-run",
         }:
@@ -245,8 +240,7 @@ def _check_shell_syntax(path: Path, block: list[tuple[int, str]]) -> None:
 
 def _render(text: str) -> str:
     return (
-        text.replace("OBLIGATION_ID", "missing-obligation")
-        .replace("PARENT_HEAD", "a" * 40)
+        text.replace("PARENT_HEAD", "a" * 40)
         .replace("REPAIR_SHA", "a" * 40)
         .replace("PR_NUMBER", os.environ.get("CI_HUB_DOCS_MERGED_PR", "1278"))
     )
@@ -304,12 +298,6 @@ def _parse_probe(command: str) -> str:
     if re.match(r"^(?:\./)?ci-hub/bin/manual-run(?:\s|$)", normalized):
         return "./ci-hub/bin/manual-run --help"
     return command
-
-
-def _nested_land_and_arm(command: str) -> str | None:
-    marker = "./ci-hub/remediation/land_and_arm.py"
-    offset = command.find(marker)
-    return command[offset:] if offset >= 0 else None
 
 
 def _workspace_state(root: Path, *, include_ignored: bool) -> str:
@@ -428,26 +416,6 @@ def _run_one(
         f"output={len(_business_output(output).splitlines())} line(s)"
     ]
 
-    nested = _nested_land_and_arm(rendered)
-    if nested is not None:
-        nested_result = subprocess.run(
-            nested,
-            cwd=root,
-            env=run_environment | {"CI_HUB_DOCS_PARSE_ONLY": "1"},
-            shell=True,
-            executable="/bin/bash",
-            text=True,
-            capture_output=True,
-            timeout=45,
-            check=False,
-        )
-        nested_output = nested_result.stdout + nested_result.stderr
-        if nested_result.returncode != 0 or not _business_output(nested_output):
-            raise DocsCommandError(
-                f"{command.label}: nested land_and_arm invocation failed parse validation\n"
-                f"command: {nested}\noutput:\n{nested_output}"
-            )
-        reports.append(f"PASS parse-nested {command.label} land_and_arm.py")
     if verify_purity:
         after = _workspace_state(root, include_ignored=True)
         changed_mtimes = _changed_mtimes(before_mtimes, _tracked_mtimes(root))
@@ -670,7 +638,6 @@ def run(*, root: Path = ROOT, live: bool = False) -> list[str]:
                 ),
                 "DEV_HERMIT_PARENT": str(root),
                 "CI_HUB_LANDING_LOCK": str(state / "landing.lock"),
-                "CI_HUB_OBLIGATIONS_STORE": str(state / "obligations.jsonl"),
                 "CI_HUB_MAIN_HEALTH_TIMEOUT": "4",
                 "CI_HUB_MAIN_HEALTH_DEADLINE": "8",
                 "CI_HUB_PR_STATUS_TIMEOUT": "8",

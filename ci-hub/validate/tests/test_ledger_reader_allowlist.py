@@ -24,7 +24,6 @@ CONSUMERS = (
     "history/query.py",
     "history/validate_time_ratchet.py",
     "lib/validate_status.rs",
-    "remediation/protocol.py",
     "validate/aggregate.py",
     "validate/anchor_select.py",
     "validate/attribute_reds.py",

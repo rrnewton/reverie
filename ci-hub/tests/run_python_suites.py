@@ -36,9 +36,9 @@ REQUIREMENTS = Path(__file__).with_name("requirements-workflow.txt")
 DEFAULT_SUITES = (
     ("ci-hub/directives/tests", 52),
     ("ci-hub/health/tests", 467),
-    ("ci-hub/history/tests", 59),
+    ("ci-hub/history/tests", 44),
     ("ci-hub/lib/tests", 77),
-    ("ci-hub/remediation/tests", 193),
+    ("ci-hub/remediation/tests", 25),
     ("ci-hub/runners/tests", 55),
     # Include both the legacy root-level validation tests and the nested suite.
     # Pointing only at validate/tests left six root modules outside the counted

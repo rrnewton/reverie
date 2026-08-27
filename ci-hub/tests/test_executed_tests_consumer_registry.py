@@ -20,10 +20,9 @@ is correct; a static check cannot. It asserts that THE SET OF FILES ALLOWED TO
 MENTION THE FIELD IS EXACTLY THE REVIEWED SET, so a new consumer cannot be added
 silently and a removed one cannot leave a stale entry behind.
 
-That churn is real, not hypothetical: over one two-day window three consumers
-appeared (`ci-hub/ci-hub.rs`, `ci-hub/pin/validation_gate.py`,
-`ci-hub/remediation/protocol.py`) and two dropped away. A hand-maintained list
-was already out of date when this guard was written.
+That churn is real, not hypothetical: consumers have repeatedly appeared and
+dropped away, and a hand-maintained list was already out of date when this guard
+was written.
 
 WHEN THIS TEST FAILS, DO NOT JUST EDIT THE LIST. Classify the new site first:
   * producer / passthrough / diagnostic      -> add it, with its reason
@@ -72,8 +71,7 @@ ALLOWED: dict[str, str] = {
         "landing-authority fixture producer; carries the nonzero-floor field"
     ),
     "ci-hub/validation/verify_receipt.sh": "receipt verifier",
-    "ci-hub/remediation/nonzero_result.py": "remediation classification",
-    "ci-hub/remediation/protocol.py": "remediation protocol",
+    "ci-hub/remediation/nonzero_result.py": "result classification",
     "ci-hub/pin/validation_gate.py": "pin validation gate",
     # Reads a SCORECARD CELL's own `executed_tests`, not a validate-ledger row,
     # and only as a REFUSAL FLOOR: a cell reporting <= 0 becomes NO_RESULT

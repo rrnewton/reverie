@@ -4,6 +4,10 @@ Read-only census and classification of every OPEN / IN_PROGRESS / BACKLOG task i
 `hermit` TaskGraph, for task `taskgraph-hygiene-full-open-census`. **Nothing was closed,
 demoted, re-owned or edited by this census.**
 
+**2026-08-27 update:** the task name preserved in the historical census refers
+to infrastructure that has since been deleted; it is not current operating
+guidance.
+
 ## Denominator, and why it needs a transaction
 
 `sqlite3` opened read-only (`file:~/.tg/hermit.db?mode=ro`) with every query inside one

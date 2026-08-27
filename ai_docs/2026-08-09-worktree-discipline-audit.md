@@ -210,9 +210,8 @@ in `ci-hub/health/` or `tick-hub.yaml` reads it.
 `AGENTS.md:29-34` states the constraint plainly: "**The ORC coordinator HAS NO SHELL** — its
 only effects are `orc.*` plus scripts pre-registered via `orc.registerScript`."
 
-`.orc/plugins/hermit-dev/index.ts:739-762` registers exactly four scripts:
-`hermitOperationalTick` (`:739`), `hermitSpeculativeLandObligations` (`:745`),
-`hermitVerifyAgentDeath` (`:751`), `hermitSpeculativeLandWakeSent` (`:759`).
+`.orc/plugins/hermit-dev/index.ts` registers the operational tick, agent-death
+verification, and inert argument-echo scripts.
 **None allocates, releases, or inspects a worktree.**
 
 So rule 1 is not under-enforced; it is *uninstantiable*. The policy's own workaround

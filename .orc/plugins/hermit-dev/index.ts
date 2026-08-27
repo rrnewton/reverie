@@ -112,21 +112,6 @@ const OPERATIONAL_TICK_COMMAND =
   'HERMIT_AGENT_SNAPSHOT_JSON="$1" ./ci-hub/bin/health-tick --flush --no-header';
 const OPERATIONAL_TICK_INTERVAL_MS = 5 * 60 * 1000;
 const OPERATIONAL_TICK_WORKFLOW_NAME = "hermit-dev-operational-health-v1";
-const SPECULATIVE_LAND_SCRIPT_NAME = "hermitSpeculativeLandObligations";
-const SPECULATIVE_LAND_COMMAND =
-  'cd "' + SHELL_WORKSPACE_ROOT + '" && ' +
-  'python3 ci-hub/remediation/land_and_arm.py recover --observe-timeout 5 && ' +
-  // This heartbeat is already inside a hard wall bound. Do not route its
-  // Python obligation reader through ci-hub's `rust-script --force` front
-  // door: unrelated concurrent ci-hub callers serialize on Cargo's global
-  // build lock before this poll can run. The compatibility entrypoint execs
-  // the same protocol.py implementation directly and therefore keeps a
-  // repository-independent obligation census independent of Rust rebuilds.
-  './ci-hub/bin/speculative-land watch --once --gate';
-const SPECULATIVE_LAND_WAKE_SCRIPT_NAME = "hermitSpeculativeLandWakeSent";
-const SPECULATIVE_LAND_WAKE_COMMAND =
-  'cd "' + SHELL_WORKSPACE_ROOT + '" && ' +
-  './ci-hub/ci-hub record-obligation-wake --target "$1" --source orc';
 // MANDATORY before close+respawn. The mission mandate authorizes replacing a
 // broken agent with no permission, which pairs an UNVERIFIED alarm with an
 // IRREVERSIBLE action. This is the check that must sit between them, and it is
@@ -149,14 +134,10 @@ const AGENT_LIVENESS_COMMAND =
 // those two literal characters to the program (observed 2026-08-10 as
 // `unknown argument: {}`). Use `"$1"`.
 //
-// The binding works, and two independent production controls prove it rather
-// than one reading of the docs:
-//   * `hermitSpeculativeLandWakeSent` (`--target "$1"`) wrote 76 records via
-//     this surface with target `coordinator` (39) or `hermit-lander` (37) and
-//     EMPTY IN ZERO of 76.
-//   * `hermitOperationalTick` (`HERMIT_AGENT_SNAPSHOT_JSON="$1"`) has run on
-//     that argument continuously.
-// Both call through `orc.scripts.<name>(...)`.
+// The binding is measured rather than inferred:
+// `hermitOperationalTick` (`HERMIT_AGENT_SNAPSHOT_JSON="$1"`) runs through
+// `orc.scripts.<name>(...)` continuously, and `verifyScriptArgPassing()` below
+// brackets the same surface with a distinctive multi-argument payload.
 //
 // WHAT DOES BREAK, and how an empty `$1` is actually produced: calling
 // `orc.callScriptInternal` by hand. Its signature is
@@ -182,25 +163,12 @@ const ARGV_ECHO_COMMAND =
   "python3 -c 'import json,sys; " +
   'print(json.dumps({"dollar_zero": sys.argv[1], "argv": sys.argv[2:]}))\' ' +
   '"$0" "$@"';
-const SPECULATIVE_LAND_INTERVAL_MS = 15 * 1000;
-// Measured 2026-08-06/07: live ticks 5.1-19.3s (n=8) and 5.55-5.85s (n=5 at
-// 03:03-03:05Z), out-of-band 5.1-16.8s (n=6); worst case a cold ci-hub rebuild
-// at ~14s. 240s is ~12x the observed maximum. The 11-19s tail is ci-hub REBUILD
-// cost, not poll cost: other agents edit ci-hub/lib/*.rs constantly and ci-hub's
-// shebang is `rust-script --force`, so every call enters Cargo.
-// Do NOT lower this to "tighten" it -- that converts ordinary long ticks into
-// false failures. Do NOT raise it either; nothing observed needs more. If this
-// outer fallback fires, the heartbeat must report an explicit NO-RESULT with
-// zero completed obligation checks reported; silence is not a clear.
-const SPECULATIVE_LAND_TIMEOUT_SEC = 240;
-const SPECULATIVE_LAND_WORKFLOW_NAME =
+const LEGACY_SPECULATIVE_LAND_WORKFLOW_NAME =
   "hermit-dev-speculative-land-remediation-v1";
-const SPECULATIVE_LAND_ALERT_CACHE_KEY =
-  "hermit-dev.speculative-land-remediation-alert";
 const LEGACY_PR_HEALTH_WORKFLOW_NAME = "hermit-dev-pr-health";
 
-// Both heartbeats are load-bearing for the self-healing fleet, and cold boot
-// routinely restarts them for reasons that have nothing to do with this plugin
+// The recurring workflows are load-bearing for the self-healing fleet, and
+// cold boot routinely restarts them for reasons that have nothing to do with this plugin
 // ("restore: timed out waiting for restored effect registration" hit ~14
 // workflows in the crash-loop boot). The stock policy burned all four attempts
 // inside one second and left the heartbeat permanently dead; back off instead.
@@ -694,187 +662,6 @@ export async function policyReloadHeartbeat(wf: WfContext): Promise<void> {
   });
 }
 
-function stableAlertSignature(report: string): string {
-  const lines = report.split("\n");
-  if (lines.includes("watch_status=no-result")) {
-    const stablePrefixes = [
-      "state=",
-      "verdict=",
-      "watch_status=",
-      "watch_verdict=",
-      "watch_planned=",
-      "watch_stopped_because=",
-    ];
-    return lines.filter((line) =>
-      stablePrefixes.some((prefix) => line.startsWith(prefix))
-    ).join("\n");
-  }
-  return lines.filter((line) => !line.startsWith("COST ")).join("\n");
-}
-
-function speculativeLandTimeoutReport(elapsedMs: number): string {
-  const boundMs = SPECULATIVE_LAND_TIMEOUT_SEC * 1000;
-  return [
-    "WATCH OBLIGATIONS: NO-RESULT checked=0 planned=unknown " +
-      "elapsed_ms=" + elapsedMs + " bound_ms=" + boundMs,
-    "state=no-result",
-    "verdict=NO-RESULT",
-    "watch_status=no-result",
-    "watch_verdict=NO-RESULT",
-    "watch_planned=unknown",
-    "watch_checked=0",
-    "watch_attempted=unknown",
-    "watch_timed_out=true",
-    "watch_stopped_because=outer-timeout",
-    "elapsed_ms=" + elapsedMs,
-    "bound_ms=" + boundMs,
-    "summary=NO-RESULT: the speculative-land obligation watcher exceeded " +
-      "its " + boundMs + "ms outer bound before reporting any obligation. " +
-      "No completed obligation check was reported, so checked and clear was " +
-      "not established.",
-  ].join("\n");
-}
-
-function remediationAlertSignature(report: string): string {
-  const lines = report.split("\n");
-  const state = lines.find((line) => line.startsWith("state=")) || "state=unknown";
-  const ids = lines.find((line) => line.startsWith("ids=")) || "ids=unknown";
-  return state + "\n" + ids;
-}
-
-export async function speculativeLandRemediationHeartbeat(
-  wf: WfContext,
-): Promise<void> {
-  await wf.loop(async () => {
-    // A tick may exceed its effect bound. If the throw escaped this loop body it
-    // would KILL the workflow and discard every captured obligation row. That is
-    // survival by safety net, not reporting. Convert the throw into a typed value
-    // the existing pollFailed branch already alerts on and dedupes.
-    const startedMs = Date.now();
-    let result: { exitCode: number; stdout?: string; stderr?: string };
-    let timedOut = false;
-    try {
-      result = await orc.scripts.hermitSpeculativeLandObligations() as {
-        exitCode: number;
-        stdout?: string;
-        stderr?: string;
-      };
-    } catch (err) {
-      // Exit code 3 is deliberate: >1 so `pollFailed` picks it up, and not 2 so
-      // it can never be mistaken for `remediation-required`. Reusing that branch
-      // avoids a parallel alert path that would need its own dedupe and could rot.
-      timedOut = true;
-      result = {
-        exitCode: 3,
-        stdout: "",
-        stderr: "speculative-land poll did not complete: " +
-          String((err as any)?.message || err),
-      };
-    }
-    const elapsedMs = Date.now() - startedMs;
-    if (timedOut) {
-      result.stdout = speculativeLandTimeoutReport(elapsedMs);
-    }
-    const exitCode = Number(result.exitCode);
-    const stdout = String(result.stdout || "").trim();
-    const stderr = String(result.stderr || "").trim();
-    const report = [stdout, stderr].filter(Boolean).join("\n");
-    const outcome = timedOut ? "timeout" : (exitCode > 1 ? "error" : "ok");
-    // The bound travels WITH the duration: "ran 19s" means nothing to a reader
-    // who does not know whether the budget was 20s or 240s.
-    const timing = "outcome=" + outcome + " elapsed_ms=" + elapsedMs +
-      " bound_ms=" + (SPECULATIVE_LAND_TIMEOUT_SEC * 1000) +
-      " exit_code=" + exitCode;
-    // Every tick, not only failing ones: a duration series is what turns the NEXT
-    // outlier into one log line instead of another investigation. Steady state is
-    // ~5.6s, so an anomaly is obvious against its own history.
-    //
-    // WRAPPED DELIBERATELY, and this is not defensive noise. Every other orc.log
-    // in this file sits inside registerPluginSurface(), i.e. the full-capability
-    // PLUGIN-LOAD context. This is the first orc.log in a `wf.loop`, which the
-    // engine re-evaluates under the REDUCED workflow-restart preset (see the
-    // contract at the top of this file). If `log` is absent there, the call does
-    // not return undefined -- it fails the dispatch and crashes the workflow,
-    // which restarts, re-evaluates, and crashes again until the engine gives up.
-    // That is the exact crash-loop that killed both workflows in this plugin.
-    // Instrumentation must never be able to kill the thing it instruments, so a
-    // missing surface degrades to a silent no-op and the tick proceeds.
-    try {
-      orc.log(
-        timedOut ? "error" : "info",
-        SPECULATIVE_LAND_SCRIPT_NAME + " " + timing,
-      );
-    } catch (_logErr) {
-      // Intentionally swallowed: losing one telemetry line is strictly better
-      // than losing the remediation heartbeat.
-    }
-    const remediationRequired =
-      exitCode === 2 && stdout.includes("state=remediation-required");
-    const pollFailed = exitCode > 1 && !remediationRequired;
-    if (remediationRequired || pollFailed) {
-      const signature = remediationRequired
-        ? remediationAlertSignature(stdout)
-        : stableAlertSignature(report);
-      if (orc.kvGet(SPECULATIVE_LAND_ALERT_CACHE_KEY) !== signature) {
-        let deliveryRecorded = !remediationRequired;
-        const title = remediationRequired
-          ? "REMEDIATION WAKE SENT (ACK PENDING): speculative land failed verification"
-          : "HARD WARNING: speculative-land obligation watcher failed";
-        const agents = await orc.listAgents();
-        const landerAlive = agents.some((agent: any) =>
-          String(agent.name || "") === "hermit-lander" &&
-          !["dead", "failed", "retired", "terminated"].includes(
-            String(agent.status || "").toLowerCase(),
-          )
-        );
-        const targets = remediationRequired && landerAlive
-          ? ["hermit-lander"]
-          : [];
-        // `timing` is appended to the BODY only, never folded into `report`.
-        // `report` feeds stableAlertSignature(), which retains the typed reason
-        // and planned count for NO-RESULT but ignores elapsed time, checked count,
-        // and the rotating unchecked IDs. The body carries the changing evidence;
-        // the signature stays keyed on the failure that needs repair.
-        await orc.sendWakeup(
-          targets,
-          title,
-          (report || "speculative-land watcher returned no diagnostic output") +
-            "\n" + timing +
-            (remediationRequired
-              ? "\nThis wake is advisory; the durable obligation is authoritative. " +
-                "Discover and acknowledge it with ci-hub inherit-obligations, execute " +
-                "the recorded fix-forward/revert action, then close it with ci-hub " +
-                "resolve-obligation."
-              : "\nRun " + PR_STATUS_COMMAND + " and repair the watcher now."),
-        );
-        if (remediationRequired) {
-          const target = targets.length > 0 ? targets[0] : "coordinator";
-          const delivery = await orc.scripts.hermitSpeculativeLandWakeSent(target) as {
-            exitCode: number;
-            stdout?: string;
-            stderr?: string;
-          };
-          deliveryRecorded = Number(delivery.exitCode) === 0;
-          if (!deliveryRecorded) {
-            await orc.sendWakeup(
-              [],
-              "HARD WARNING: speculative-land wake was not recorded",
-              [delivery.stdout, delivery.stderr].filter(Boolean).join("\n") ||
-                "record-obligation-wake returned no diagnostic output",
-            );
-          }
-        }
-        if (deliveryRecorded) {
-          orc.kvSet(SPECULATIVE_LAND_ALERT_CACHE_KEY, signature);
-        }
-      }
-    } else {
-      orc.kvSet(SPECULATIVE_LAND_ALERT_CACHE_KEY, "");
-    }
-    await wf.sleep(SPECULATIVE_LAND_INTERVAL_MS);
-  });
-}
-
 // --- registered-script invocation -------------------------------------------
 
 interface ScriptResult {
@@ -890,8 +677,8 @@ async function callRegisteredScript(
   name: string,
   args: unknown[],
 ): Promise<ScriptResult> {
-  // Preferred path: the `orc.scripts` Proxy, which is what the two production
-  // controls use. It JSON-encodes `args` itself.
+  // Preferred path: the `orc.scripts` Proxy, which production callers use. It
+  // JSON-encodes `args` itself.
   const scripts = orc.scripts as Record<string, unknown> | undefined;
   if (scripts) {
     const fn = scripts[name];
@@ -1203,24 +990,12 @@ function registerPluginSurface(): void {
     timeoutSec: 180,
   });
 
-  orc.registerScript(SPECULATIVE_LAND_SCRIPT_NAME, {
-    script: SPECULATIVE_LAND_COMMAND,
-    description: "Poll exact-SHA speculative-land obligations for immediate remediation",
-    timeoutSec: SPECULATIVE_LAND_TIMEOUT_SEC,
-  });
-
   orc.registerScript(AGENT_LIVENESS_SCRIPT_NAME, {
     script: AGENT_LIVENESS_COMMAND,
     description:
       "REQUIRED before close+respawn: independently verify a named agent is " +
       "genuinely dead (rc 0 dead / 1 alive / 2 unverifiable; refuse on 1 or 2)",
     timeoutSec: 60,
-  });
-
-  orc.registerScript(SPECULATIVE_LAND_WAKE_SCRIPT_NAME, {
-    script: SPECULATIVE_LAND_WAKE_COMMAND,
-    description: "Record an ORC wake as sent but not yet acknowledged",
-    timeoutSec: 30,
   });
 
   orc.registerScript(ARGV_ECHO_SCRIPT_NAME, {
@@ -1342,10 +1117,7 @@ function registerPluginSurface(): void {
         operationalTickIntervalMinutes: OPERATIONAL_TICK_INTERVAL_MS / 60000,
         policyReloadWorkflow: POLICY_RELOAD_WORKFLOW_NAME,
         policyReloadIntervalMinutes: POLICY_RELOAD_INTERVAL_MS / 60000,
-        speculativeLandCommand: SPECULATIVE_LAND_COMMAND,
-        speculativeLandWakeCommand: SPECULATIVE_LAND_WAKE_COMMAND,
         agentLivenessCommand: AGENT_LIVENESS_COMMAND,
-        speculativeLandPollIntervalSeconds: SPECULATIVE_LAND_INTERVAL_MS / 1000,
         heartbeatRestartPolicy: HEARTBEAT_RESTARTABLE,
         maxParkedSlots: 5,
         maxActiveWorktrees: 12,
@@ -1364,15 +1136,6 @@ function registerPluginSurface(): void {
     "Run tick-hub operational checks and hard-warn the coordinator on failures",
     {
       name: OPERATIONAL_TICK_WORKFLOW_NAME,
-      restartable: HEARTBEAT_RESTARTABLE,
-    },
-  );
-
-  orc.workflow(
-    speculativeLandRemediationHeartbeat,
-    "Hard-warn immediately when an exact-SHA speculative-land verifier fails",
-    {
-      name: SPECULATIVE_LAND_WORKFLOW_NAME,
       restartable: HEARTBEAT_RESTARTABLE,
     },
   );
@@ -1407,6 +1170,7 @@ function registerPluginSurface(): void {
       for (const legacyWorkflow of [
         LEGACY_PR_HEALTH_WORKFLOW_NAME,
         LEGACY_POLICY_RELOAD_WORKFLOW_NAME,
+        LEGACY_SPECULATIVE_LAND_WORKFLOW_NAME,
       ]) {
         try {
           await orc.killWorkflow(legacyWorkflow);

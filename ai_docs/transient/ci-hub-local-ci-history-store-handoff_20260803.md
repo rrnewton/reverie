@@ -70,14 +70,12 @@ Front-controller seam already existed in `ci-hub/ci-hub.rs`:
 
 ## Join keys (file contract — join ONLY via these)
 
-| concept    | gha-runs.csv | local (`validate-run-global.jsonl`) | obligations.jsonl |
-|------------|--------------|-------------------------------------|-------------------|
-| commit     | `head_sha`   | `commit`                            | `landed_sha`      |
-| GHA run id | `run_id`     | —                                   | `github.run_ids`  |
-| repo       | `repo`       | (same string)                       | `repo`            |
+| concept    | gha-runs.csv | local (`validate-run-global.jsonl`) |
+|------------|--------------|-------------------------------------|
+| commit     | `head_sha`   | `commit`                            |
+| repo       | `repo`       | (same string)                       |
 
-`obligations.py` (owner: hermit-251 / speculative-land) and the
-`submodule-bumps` stream stay **separate stores** and join by these columns only.
+The `submodule-bumps` stream stays separate and joins by these columns only.
 
 ## Live verification (2026-08-03)
 

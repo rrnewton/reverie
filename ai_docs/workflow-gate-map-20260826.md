@@ -113,8 +113,8 @@ a merge, or a validate. Its entire power is that somebody reads the line.
 | 397 | `unpushed_change_clone_commits` | action |
 | 414 | `unpushed_parent_commits` | action |
 | 433 | `activation_obligations` | action |
-| 447 | `speculative_land_obligations` | action |
-| 484 | `speculative_land_obligation_decision_waits` | note |
+| 447 | `speculative_land_obligations` (removed 2026-08-26) | action |
+| 484 | `speculative_land_obligation_decision_waits` (removed 2026-08-26) | note |
 | 522 | `primary_checkout_snapshot` | action |
 | 550 | `reverie_pin_lag_note` | note |
 | 562 | `reverie_pin_lag_escalation` | action |
@@ -206,7 +206,7 @@ the gate itself.
 
 The 14 with nothing recorded: `ledger_spool_backlog`, `validate_wall_regression`,
 `validate_wall_series_readiness`, `unpushed_change_clone_commits`, `unpushed_parent_commits`,
-`activation_obligations`, `speculative_land_obligation_decision_waits`, `reverie_pin_lag_note`,
+`activation_obligations`, `reverie_pin_lag_note`,
 `reverie_pin_lag_escalation`, `github_main_health`, `hermit_merge_gate_authority`,
 `ci_queue_health`, `approval_no_longer_binds_to_head`, `btrfs_headroom`.
 

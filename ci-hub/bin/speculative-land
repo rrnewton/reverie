@@ -1,5 +1,0 @@
-#!/usr/bin/env bash
-# Compatibility path; typed dispatch and cost scoping live in ci-hub.rs.
-set -euo pipefail
-ROOT=$(git -C "$(dirname -- "${BASH_SOURCE[0]}")/../.." rev-parse --show-toplevel)
-exec python3 "$ROOT/ci-hub/remediation/protocol.py" "$@"

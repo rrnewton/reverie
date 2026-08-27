@@ -78,8 +78,6 @@ class OperationalBoundsTest(unittest.TestCase):
         self.snapshot.write_text(
             json.dumps([{"name": "worker", "status": "busy", "current_task": "task"}])
         )
-        self.store = self.temp / "obligations.jsonl"
-
         # BIND A GRAPH so `active-work` can actually answer.
         #
         # The `tg` stub above is not enough any more, and that is the whole
@@ -126,7 +124,7 @@ class OperationalBoundsTest(unittest.TestCase):
                 "CI_HUB_MAIN_HEALTH_DEADLINE": "0.2",
                 "CI_HUB_PR_STATUS_TIMEOUT": "0.1",
                 "CI_HUB_PR_STATUS_DEADLINE": "0.2",
-                "CI_HUB_REMEDIATION_NETWORK_TIMEOUT": "0.1",
+                "CI_HUB_NETWORK_TIMEOUT": "0.1",
                 "CI_HUB_AGGREGATE_TMPDIRS": str(self.temp),
                 "DEV_HERMIT_PARENT": str(self.temp),
                 "TMPDIR": str(self.temp),
@@ -237,82 +235,6 @@ class OperationalBoundsTest(unittest.TestCase):
             ),
             (("pr-status", "--repo", "rrnewton/dev-hermit"), {2}, stall_env),
             (("tick",), {0}, tick_env),
-            (
-                (
-                    "arm-land",
-                    "not-a-sha",
-                    "--source",
-                    str(ROOT),
-                    "--no-dispatch",
-                    "--store",
-                    str(self.store),
-                ),
-                {2},
-                self.env,
-            ),
-            (("obligations", "--store", str(self.store)), {0}, self.env),
-            (
-                ("obligations", "--actionable", "--store", str(self.store)),
-                {0},
-                self.env,
-            ),
-            (
-                (
-                    "inherit-obligations",
-                    "--agent",
-                    "test-lander",
-                    "--session",
-                    "test-session",
-                    "--store",
-                    str(self.store),
-                ),
-                {0},
-                self.env,
-            ),
-            (
-                (
-                    "record-obligation-wake",
-                    "--target",
-                    "test-lander",
-                    "--source",
-                    "test",
-                    "--store",
-                    str(self.store),
-                ),
-                {0},
-                self.env,
-            ),
-            (
-                ("watch-obligations", "--once", "--store", str(self.store)),
-                {0},
-                self.env,
-            ),
-            (
-                (
-                    "cancel-watcher",
-                    "missing",
-                    "--reason",
-                    "test cancellation",
-                    "--store",
-                    str(self.store),
-                ),
-                {2},
-                self.env,
-            ),
-            (
-                (
-                    "resolve-obligation",
-                    "missing",
-                    "--kind",
-                    "revert",
-                    "--ref",
-                    "a" * 40,
-                    "--store",
-                    str(self.store),
-                ),
-                {2},
-                self.env,
-            ),
             (("refresh-history", "--", "--help"), {0}, self.env),
             (("history", "--", "--help"), {0}, self.env),
             (("local-history", "--json", "--since", "2999-01-01"), {0}, self.env),
@@ -373,15 +295,7 @@ class OperationalBoundsTest(unittest.TestCase):
                 self.run_bounded(*args, expected=expected, env=environment)
 
     def test_composite_health_returns_explicit_partial_result_on_stalls(self) -> None:
-        # Isolate the obligations store: the composite `health` precedence ranks an
-        # OPEN speculative-land obligation (print_obligations -> 1) above the stall's
-        # degraded-2, so reading the live ignored/ci-hub/obligations.jsonl makes this
-        # test fail whenever the real fleet has an open obligation. Point it at the
-        # empty per-test store, exactly as the remediation sibling below does.
-        env = self.env | {
-            "CI_HUB_AGENT_TOOL": str(self.stall),
-            "CI_HUB_OBLIGATIONS_STORE": str(self.store),
-        }
+        env = self.env | {"CI_HUB_AGENT_TOOL": str(self.stall)}
         result = self.run_bounded(
             "health",
             "--repo",
@@ -393,36 +307,6 @@ class OperationalBoundsTest(unittest.TestCase):
         self.assertIn("DEGRADED", output)
         self.assertIn("UNAVAILABLE", output)
         self.assertGreaterEqual(output.count("PARTIAL RESULT"), 2)
-
-    def test_composite_health_surfaces_unacknowledged_remediation(self) -> None:
-        self.store.write_text(
-            json.dumps(
-                {
-                    "schema_version": 1,
-                    "obligation_id": "owed-remediation",
-                    "repo": "rrnewton/hermit",
-                    "landed_sha": "a" * 40,
-                    "opened_at": "2026-08-03T00:00:00Z",
-                    "overall_state": "remediation_required",
-                    "local": {"state": "red"},
-                    "github": {"state": "running"},
-                    "recommendation": {"action": "revert"},
-                    "remediation": {
-                        "state": "triggered",
-                        "dispatch": {"state": "sent_unacknowledged"},
-                    },
-                }
-            )
-            + "\n"
-        )
-        env = self.env | {
-            "CI_HUB_AGENT_TOOL": str(self.stall),
-            "CI_HUB_OBLIGATIONS_STORE": str(self.store),
-        }
-        result = self.run_bounded("health", expected={2}, env=env)
-        output = result.stdout + result.stderr
-        self.assertIn("Speculative-land obligations: REMEDIATION REQUIRED", output)
-        self.assertIn("dispatch=sent_unacknowledged", output)
 
     def test_land_lock_full_protocol_is_bounded(self) -> None:
         env = self.env | {"CI_HUB_LANDING_LOCK": str(self.temp / "landing.lock")}
@@ -668,7 +552,7 @@ class OperationalBoundsTest(unittest.TestCase):
                     pass
             process.communicate(timeout=5)
 
-    def test_shared_lander_preserves_recoverable_arm_and_durable_abandonment(
+    def test_shared_lander_preserves_lock_and_durable_abandonment(
         self,
     ) -> None:
         front_door = (ROOT / "ci-hub/ci-hub").read_text()
@@ -677,8 +561,6 @@ class OperationalBoundsTest(unittest.TestCase):
         self.assertTrue(rust_source.startswith("#!/usr/bin/env -S rust-script --force\n"))
         script = (ROOT / "ci-hub/landing/land-pr.sh").read_text()
         detached = script.index('nohup setsid "$0"')
-        inherit = script.index('"$ROOT/ci-hub/ci-hub" inherit-obligations')
-        prepare = script.index('"$ROOT/ci-hub/remediation/land_and_arm.py" prepare')
         acquire = script.index('"$ROOT/ci-hub/ci-hub" land-lock run')
         receipt = script.index(
             'receipt_detail=$(validation_landability "$HEAD" "$current_base"'
@@ -686,16 +568,9 @@ class OperationalBoundsTest(unittest.TestCase):
         merge = script.index('gh pr merge "$PR"')
         ancestry = script.index("merge-base --is-ancestor", merge)
         inner_marker = script.index("# --- inner: we now hold the land-lock")
-        complete_command = '"$ROOT/ci-hub/remediation/land_and_arm.py" complete'
-        complete = script.index(complete_command)
         lock_result = script.index("rc=$?", acquire)
-        self.assertLess(detached, inherit)
-        self.assertLess(inherit, acquire)
+        self.assertLess(detached, acquire)
         self.assertLess(acquire, lock_result)
-        self.assertLess(lock_result, prepare)
-        self.assertLess(lock_result, complete)
-        self.assertLess(complete, inner_marker)
-        self.assertNotIn(complete_command, script[inner_marker:])
         self.assertLess(inner_marker, receipt)
         self.assertLess(receipt, merge)
         self.assertLess(acquire, merge)
@@ -703,7 +578,6 @@ class OperationalBoundsTest(unittest.TestCase):
         self.assertIn("MERGED UNDER LOCK:", script[ancestry:])
         self.assertIn("124) comment_abandon", script)
         self.assertIn("publish_landing_comment abandoned", script)
-        self.assertIn("publish_landing_comment post-land-arm-failed", script)
         self.assertIn('DG_AGENT_NAME', script)
         self.assertIn('--checkout "$WT"', script)
         publisher = (ROOT / "ci-hub/landing/publish_comment.py").read_text()
@@ -753,13 +627,6 @@ class OperationalBoundsTest(unittest.TestCase):
         self.assertIn("ci-hub/validation/verify_receipt.sh", authority)
         self.assertIn("validate-status --sha", authority)
         self.assertIn("hosted-status --repo", authority)
-
-        plugin = (ROOT / ".orc/plugins/hermit-dev/index.ts").read_text()
-        heartbeat = plugin[plugin.index("speculativeLandRemediationHeartbeat") :]
-        wake = heartbeat.index("await orc.sendWakeup(")
-        record = heartbeat.index("hermitSpeculativeLandWakeSent", wake)
-        self.assertLess(wake, record)
-        self.assertIn("sent but not yet acknowledged", plugin)
 
     def test_lander_ignores_unbacked_label_cache(self) -> None:
         result = subprocess.run(

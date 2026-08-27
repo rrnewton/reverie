@@ -5,6 +5,11 @@
 `answer-ledger-location-and-triage-ignored-including-the-213gb-ci-hub`. No
 sizes were re-measured for this document, and nothing was deleted.
 
+**2026-08-27 update:** the speculative-land obligation framework and its
+on-disk checkout tree were deleted. The figures below remain the historical
+measurement that identified the disk cost; they are not current retention
+guidance.
+
 ## Decision summary
 
 - The version-controlled ledger destination is
@@ -17,10 +22,10 @@ sizes were re-measured for this document, and nothing was deleted.
   tracked `ci-hub/` source tree. It was **211.88 GiB apparent** but **65.83 GiB
   compressed physical** on Btrfs/zstd. Obligation clones account for 98.58% of
   the compressed usage.
-- The complete top-level census is **448 entries: KEEP 9 · PURGE 1 · UNKNOWN
-  438**. The only immediate top-level purge proposal is `__pycache__`. Twelve
-  terminal obligation clone payloads are nested purge candidates, but only
-  through registry-aware cleanup. Linux and DRB assets remain KEEP.
+- The complete top-level census was **448 entries: KEEP 9 · PURGE 1 · UNKNOWN
+  438**. The later owner directive removed the entire speculative-land checkout
+  tree rather than applying the original per-clone retention proposal. Linux
+  and DRB assets remain KEEP.
 
 ## 1. Ledger location: the migration never finished
 
@@ -108,14 +113,13 @@ first serialized-scan value rather than silently mixing snapshots.
   item: `20260804-004303-d5fcdbe822bd-bbb4b8`.
 - `stress-wt/nightly` is a deliberately persistent detached nightly worktree,
   and `stress-calib` is its durable calibrator. They are KEEP assets.
-- The remaining roughly 100 MiB of authority/history data includes
-  `obligations.jsonl`, per-obligation logs and cost JSON, GHA CSV/JSON state,
-  directives, landing intents, submodule-bump records, and caches. Preserve it.
+- The remaining roughly 100 MiB of authority/history data included the retired
+  event log, per-run logs and cost JSON, GHA CSV/JSON state, directives,
+  landing intents, submodule-bump records, and caches.
 
-No production retention path was found for terminal obligation clones. A
-registry-aware cleanup mechanism should preserve the unresolved clone,
-append-only metadata, logs/cost evidence, and stress assets while removing
-only confirmed-terminal clone payloads.
+No production retention path was found for terminal clones. The later owner
+directive removed the framework and its checkout tree instead of adding another
+cleanup mechanism.
 
 Terminal nested purge candidates are:
 
@@ -132,7 +136,8 @@ Terminal nested purge candidates are:
 11. `20260807-011247-20f21bdbde5f-8118ee`
 12. `20260807-011450-851164890bc9-5e9b7c`
 
-This is a proposal, not deletion authorization.
+This was the original proposal. The 2026-08-27 owner directive superseded it
+and authorized deletion of the complete speculative-land checkout tree.
 
 ## 4. Complete `ignored/` triage
 
@@ -146,7 +151,7 @@ process, registry, and ownership evidence establish otherwise.
 | Entry | Apparent bytes | Reason |
 |---|---:|---|
 | `btrfs-kernel-build` | 3,411,204,685 | Contains a Linux checkout plus kernel build/boot artifacts. |
-| `ci-hub` | 227,502,592,953 | Mixed authority state; preserve metadata, stress assets, and the unresolved obligation. The 12 terminal clone payloads are the nested exception above. |
+| `ci-hub` | 227,502,592,953 | Historical pre-deletion size. Preserve the remaining metadata and stress assets; the speculative-land checkout tree was removed on 2026-08-27. |
 | `haskell-drb` | 865,030,136 | DRB build/probe assets. |
 | `linux` | 1,530,887,364 | Linux Git checkout. Its broken alternate-object reference makes preservation especially important. |
 | `logs` | 11,138,360,862 | Mixed log tree containing extensive DRB experiment evidence; conservatively retain the whole tree. |
@@ -330,14 +335,14 @@ entries from the 448-entry denominator.
 
 </details>
 
-## Recommended owner decision
+## Owner decision update
 
-1. Approve removal of the single top-level `__pycache__` entry if desired.
-2. Add a registry-aware terminal-obligation cleanup path, then remove only the
-   12 terminal clone payloads listed above. Do not delete the unresolved clone,
-   append-only authority/history data, cost/log evidence, or stress assets.
-3. Preserve the nine KEEP entries, especially Linux, QEMU/Linux, and DRB assets.
-4. Audit the 438 UNKNOWN entries in descending exclusive-byte order and require
+1. The speculative-land checkout tree and the framework that created it were
+   deleted on 2026-08-27.
+2. Preserve the remaining KEEP entries, especially Linux, QEMU/Linux, and DRB
+   assets.
+3. Audit the 438 UNKNOWN entries in descending exclusive-byte order and require
    task/process/ownership evidence before promoting any of them to PURGE.
 
-No deletion was performed as part of either the census or this publication.
+No deletion was performed during the original census. The later removal was a
+separate owner-directed action.

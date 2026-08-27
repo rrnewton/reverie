@@ -56,9 +56,8 @@ Each run appends profile+result+commit+timings to a JSONL ledger
 `ignored/validate-run-ledger.jsonl` (`validate.sh:338-339`, `:831-841`). A green
 FULL run applies the **`locally-validated`** PR label (`:3330`) — the substitute
 for green CI. There is **no** `all-tests-passed` label and **no** incremental
-chain-depth counter (neither string exists). A total/incremental *scope*
-distinction exists only for landing obligations
-(`ci-hub/history/obligations.py:140-141`), not per-test-run tagging.
+chain-depth counter (neither string exists). Per-test-run tagging does not carry
+a total/incremental scope distinction.
 
 ### 4. Timeouts are WALL-CLOCK; there are NO CPU-time budgets
 Every DAG node uses a wall `"timeout"` key; **zero** nodes carry `cpu_timeout`

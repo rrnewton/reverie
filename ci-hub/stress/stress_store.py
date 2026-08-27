@@ -30,7 +30,7 @@ is exactly the failure mode this task exists to kill).
 
 Store: ``ignored/ci-hub/stress-runs.jsonl`` (gitignored, append-only, one event
 per run). Joins the rest of the ci-hub store by ``(repo, git_sha)`` and the same
-``OWNER/REPO`` string, matching obligations.py's file-contract convention.
+``OWNER/REPO`` string.
 """
 
 from __future__ import annotations

@@ -29,9 +29,8 @@ row and resumes from the last cursor):
       already-downloaded artifact id is skipped. Also refreshes the local
       validate-run history via validate/aggregate.py --write-global.
 
-JOIN KEYS (also recorded in obligations.py):
-  obligations.landed_sha == gha-runs.csv:head_sha == local-runs.csv:git_sha
-  obligations.github.run_ids == gha-runs.csv:run_id
+JOIN KEYS:
+  gha-runs.csv:head_sha == local-runs.csv:git_sha
   repo is the same OWNER/REPO string in every store.
 
 All GitHub access goes through `with-proxy gh` (override via CI_HUB_GH).

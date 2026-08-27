@@ -120,33 +120,10 @@ def test_unknown_never_prints_a_plausible_soft_or_hard_state(
     assert M.warning_text(state) is None
 
 
-def test_ci_hub_contact_warning_and_lander_soft_binding_are_wired() -> None:
+def test_ci_hub_contact_warning_is_wired() -> None:
     rust = (M.ROOT / "ci-hub/ci-hub.rs").read_text()
     main_start = rust.index("fn main() -> ExitCode")
     execute = rust.index("match execute(&root, cli.command)", main_start)
     warning = rust.index("warn_if_main_is_soft_green(&root);", main_start)
     cost = rust.index('env::var_os("CI_HUB_TOOL_COST_ACTIVE")', main_start)
     assert cost < warning < execute
-
-    lander = (M.ROOT / "ci-hub/landing/land-pr.sh").read_text()
-    # ⚠️ THIS PREVIOUSLY PINNED `land_and_arm.py" mark-soft`, WHICH WAS REMOVED ON
-    # PURPOSE. f317f715 "Remove unrequested landing refusals" (2026-08-11) dropped
-    # the pre-merge remediation vetoes, mark-soft among them, "while retaining
-    # exact-head review and VALIDATE/LEDGER authority". So the assertion was
-    # guarding a decision that had been reversed, and it never went red because
-    # `ci-hub/landing` is not in run_python_suites.py's registry -- nothing has
-    # run this file since.
-    #
-    # The removal is NOT reverted here and the guard is NOT deleted. The lander
-    # still arms remediation, now through the chained `prepare && complete`, so
-    # the ordering invariant is re-pinned against the wiring that exists: the
-    # lock result is known before arming begins, and completion follows
-    # preparation rather than standing alone.
-    prepare = lander.index('land_and_arm.py" prepare')
-    complete = lander.index('land_and_arm.py" complete')
-    lock_result = lander.index("rc=$?")
-    assert lock_result < prepare, "the lander arms remediation before it knows the lock result"
-    assert prepare < complete, "completion must follow preparation, not precede it"
-    # `mark-soft` itself is still IMPLEMENTED in land_and_arm.py with no caller in
-    # the lander. That is a live subcommand with no invoker, which is worth an
-    # owner decision (revive or retire) and is deliberately not decided here.

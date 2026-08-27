@@ -47,20 +47,20 @@ The recommended destination is:
 
 ### Inventory
 
-The Rust front door declares **34 top-level commands**
+The Rust front door declares **26 top-level commands**
 ([`ci-hub/ci-hub.rs:76`](../../ci-hub/ci-hub.rs#L76),
 [`ci-hub/ci-hub.rs:195`](../../ci-hub/ci-hub.rs#L195)). Six are namespaces with
-26 typed nested leaves. The other 28 are standalone commands. `history` adds a
-default form and four Python subcommands, so there are **58 callable leaf
+26 typed nested leaves. The other 20 are standalone commands. `history` adds a
+default form and four Python subcommands, so there are **50 callable leaf
 forms**, one of which (`history runs`) duplicates the default renderer.
 
 | Disposition | All top-level commands |
 | --- | --- |
-| Keep as stable user workflows | `quickstart`, `health` (after JSON repair), `active-work`, `main-health`, `pr-status`, `verify-landing`, `obligations`, `inherit-obligations`, `watch-obligations`, `resolve-obligation`, `refresh-history`, `history`, `validate-worktrees`, `runner-health`, `load-probe`, `validate-status`, `hosted-status`, `validate-run`, `validate-stop`, `newest-green`, `first-bad`, `land-lock` (`status`/`run` emphasis), `validate-lock` (`status`/`run` emphasis) |
+| Keep as stable user workflows | `quickstart`, `health` (after JSON repair), `active-work`, `main-health`, `pr-status`, `verify-landing`, `refresh-history`, `history`, `validate-worktrees`, `runner-health`, `load-probe`, `validate-status`, `hosted-status`, `validate-run`, `validate-stop`, `newest-green`, `first-bad`, `land-lock` (`status`/`run` emphasis), `validate-lock` (`status`/`run` emphasis) |
 | Keep only as a clearly labeled diagnostic | `local-history`, `ci-timeout scan` |
 | Rename or finish wiring | `ci-mode status/set` (currently only an autoretry-mode projection), `tick` (must execute the canonical `health-tick` wrapper) |
-| Hide or deprecate from the public surface | top-level `green-time`, `ci-mode fire`, `batch`, `ci-timeout reap`, direct `arm-land` |
-| Internal ABI/protocol/admin only | `record-obligation-wake`, `receipt-digest`, `ledger`, `apply-local-label`, low-level lock acquire/renew/release/reclaim/census verbs |
+| Hide or deprecate from the public surface | top-level `green-time`, `ci-mode fire`, `batch`, `ci-timeout reap` |
+| Internal ABI/protocol/admin only | `receipt-digest`, `ledger`, `apply-local-label`, low-level lock acquire/renew/release/reclaim/census verbs |
 
 Nested inventories are:
 
@@ -82,8 +82,7 @@ Nested inventories are:
 
 ### Commands not fit for the current public surface
 
-1. **`health --json` is not one JSON document.** It hardcodes non-JSON
-   obligation output and then prints separate main/PR JSON values. Keep the
+1. **`health --json` is not one JSON document.** It prints separate main/PR JSON values. Keep the
    command, but give it a versioned composite schema
    ([`ci-hub/ci-hub.rs:1430`](../../ci-hub/ci-hub.rs#L1430)).
 2. **Top-level `green-time` is explicitly incomplete.** Its signal adapter and
@@ -105,14 +104,11 @@ Nested inventories are:
 6. **Top-level `tick` is a weaker duplicate.** It invokes `tick-hub` directly,
    while `bin/health-tick` first refreshes the optional ORC snapshot. Make the
    top-level command execute the canonical wrapper or hide it.
-7. **Direct `arm-land` bypasses the crash-safe intent wrapper.** The canonical
-   `land_and_arm.py` binds the arm to durable landing intent. Retain direct
-   arming only as an explicitly named recovery/admin operation.
-8. **`ledger` is mislabeled as read-only.** `attribute-reds --persist/--refill`
+7. **`ledger` is mislabeled as read-only.** `attribute-reds --persist/--refill`
    mutates local evidence
    ([`ci-hub/ci-hub.rs:638`](../../ci-hub/ci-hub.rs#L638)). Separate query and
    maintenance namespaces.
-9. **`validate-run` and `validate-stop` are untyped passthroughs.** Their real
+8. **`validate-run` and `validate-stop` are untyped passthroughs.** Their real
    argument contracts live in Python. Either type them at the Rust boundary or
    visibly declare them external adapters
    ([`ci-hub/ci-hub.rs:246`](../../ci-hub/ci-hub.rs#L246)).
@@ -125,12 +121,11 @@ Nested inventories are:
 | `validate` | run, stop, status, hosted status, worktrees, newest-green, first-bad, logs |
 | `history` | runs, refresh, node budgets, green-time |
 | `land` | verify, lock status/run, apply validated evidence through the lander |
-| `obligation` | list, inherit, watch, resolve |
 | `admin` | hidden protocol/ABI operations, ledger maintenance, recovery-only commands |
 
-Keep compatibility aliases hidden for one release, emit a deterministic
-deprecation message, and test that every documented leaf reaches a real
-consumer. Delete the dead Python fallback branches after that assertion is
+The speculative-land obligation commands were removed on 2026-08-27 without
+compatibility aliases. Test that every remaining documented leaf reaches a real
+consumer, then delete dead Python fallback branches after that assertion is
 covered.
 
 ## 2. Rust validation migration: landed status
@@ -335,7 +330,7 @@ observable outcome rather than an ordinal.
      enforcement in `qualifying-receipt.json`.
 4. **`ci-hub-quarantine-misleading-mutators`**
    - Fix `health --json`.
-   - Hide `ci-mode fire`, batch mutators, `ci-timeout reap`, direct `arm-land`,
+   - Hide `ci-mode fire`, batch mutators, `ci-timeout reap`,
      and incomplete top-level `green-time` from normal help.
    - Make `tick` execute the canonical health wrapper.
 

@@ -380,17 +380,10 @@ if grep -Fq 'authority_mode=hosted-only' "$lander" ||
 else
   audit "validate-producer changes use local-only authority like other PR heads" ok
 fi
-# The speculative-land obligation was REMOVED, so the original form of this
-# bracket -- "it is prepared after the merge and therefore cannot veto it" --
-# can no longer be satisfied: there is nothing to prepare. It is replaced by the
-# stronger property the removal establishes, which is that the lander invokes
-# the obligation machinery NOWHERE AT ALL. Left as-is the bracket would have
-# reported the deletion as a regression ("still vetoes the pre-merge path"),
-# which is the wrong reading of an absence.
 if ! grep -Eq 'land_and_arm\.py|inherit-obligations|resolve-obligation' "$lander"; then
-  audit "lander invokes no speculative-land obligation machinery at all" ok
+  audit "lander invokes no removed post-land verification commands" ok
 else
-  audit "lander still invokes speculative-land obligation machinery" bad
+  audit "lander still invokes removed post-land verification commands" bad
 fi
 if grep -Fq -- '--checkout "$WT"' "$lander" &&
    grep -Fq 'DG_AGENT_NAME' "$lander" && grep -Fq '"reviewer"' "$publisher"; then

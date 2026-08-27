@@ -74,18 +74,16 @@ mod validate_status;
 use crate::bounded_output::BoundedOutput;
 use clap::error::ErrorKind;
 use clap::{Args, Parser, Subcommand, ValueEnum};
-use fs2::FileExt;
 use history_queries::{
     CellEvidenceCache, FirstBadOutcome, HistoryQueryEngine, NewestGreenCache, NewestGreenOutcome,
 };
-use records::{HistoryRow, ObligationRecord};
+use records::HistoryRow;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::env;
 use std::ffi::{OsStr, OsString};
-use std::fs::File;
-use std::io::{self, BufRead, BufReader, Read, Write};
+use std::io::{self, Read, Write};
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, ExitStatus, Stdio};
@@ -94,8 +92,6 @@ use thiserror::Error;
 const DEFAULT_MAIN_RUN_LIMIT: usize = 100;
 const DEFAULT_VALIDATE_HISTORY_LIMIT: usize = 10;
 const DEFAULT_WARN_THRESHOLD: usize = 10;
-const DEFAULT_GITHUB_WAIT_SECONDS: u64 = 120;
-const DEFAULT_POLL_SECONDS: u64 = 15;
 const DEFAULT_AGENT_SNAPSHOT_MAX_AGE_SECONDS: u64 = 10 * 60;
 const GATE_FLOOR_POLICY: &str = "registry-effective-floor";
 const CANONICAL_VALIDATE_REPO: &str = "rrnewton/hermit";
@@ -107,7 +103,7 @@ Usage: ci-hub <COMMAND>
 START HERE
   Begin with fleet-wide truth and ownership before narrowing the question.
   quickstart              Print the opinionated five-step agent workflow
-  health                  Combine current-main, open-PR, and remediation diagnostics
+  health                  Combine current-main, open-PR, and ownership diagnostics
   active-work             Reconcile tasks, owners, and live ORC agents
 
 READ-ONLY STATUS AND HISTORY
@@ -125,7 +121,6 @@ READ-ONLY STATUS AND HISTORY
   history                 Query the retained GitHub Actions timeline
   green-time              Estimate carried-forward green/red time and densification gaps
   validate-worktrees      Show registered worktree validation runs
-  obligations             List open or actionable post-land obligations
   verify-landing          Verify a PR replay SHA or commit SHA on a fetched target
 
 VALIDATION ACTIONS
@@ -145,16 +140,6 @@ LANDING AND COORDINATION ACTIONS
   ci-mode                 Inspect or change constrained GH Actions admission mode
   batch                   Inspect or edit the named current GH Actions batch
   ci-timeout              Cancel hosted runs starved waiting to start; reroute to local
-
-POST-LAND ACTIONS
-  Arm, watch, acknowledge, and resolve exact-SHA validation after landing.
-  arm-land                Arm concurrent local and GitHub verification after a land
-  inherit-obligations     Let a fresh lander claim obligations from a recycled agent
-  watch-obligations       Poll verifier state and trigger failure remediation
-  cancel-watcher          Safely terminate one exact, durably identified watcher
-  authorize-revert        Consume an exact-SHA repository-owner revert authorization
-  record-obligation-wake  Record an ORC wake-delivery attempt
-  resolve-obligation      Record a completed fix-forward or revert
 
 Run `ci-hub <COMMAND> --help` for exhaustive flags and `ci-hub quickstart` for
 the short operational workflow.
@@ -193,8 +178,6 @@ lists commands; it does not define those rules independently.
      ./ci-hub/ci-hub validate-worktrees --runs 10
      ./ci-hub/ci-hub newest-green
      ./ci-hub/ci-hub first-bad CELL_OR_GATE
-     ./ci-hub/ci-hub obligations --actionable
-     ./ci-hub/ci-hub inherit-obligations --agent AGENT --session "$HOSTNAME:$$"
    Query runner health for capacity only: ./ci-hub/ci-hub runner-health --all
 
 Run from the dev-hermit root. Networked subcommands apply with-proxy internally.
@@ -219,7 +202,7 @@ struct Cli {
 enum HubCommand {
     /// Print the opinionated agent workflow (pure: no files or network).
     Quickstart,
-    /// Summarize current-main, open-PR, and speculative-land health.
+    /// Summarize current-main, open-PR, and ownership health.
     Health(HealthArgs),
     /// Reconcile TaskGraph state, task ownership, and live ORC agents.
     ActiveWork(ActiveWorkArgs),
@@ -230,25 +213,9 @@ enum HubCommand {
     PrStatus(PrStatusArgs),
     /// Run due operational-health gates.
     Tick(PassthroughArgs),
-    /// Arm local and GitHub verification for a just-landed SHA.
-    ArmLand(ArmLandArgs),
     /// Verify a PR replay SHA or commit SHA against a freshly fetched target.
     #[command(visible_alias = "verify-landed-pr")]
     VerifyLanding(VerifyLandingArgs),
-    /// Show speculative-land obligations from the typed JSONL store.
-    Obligations(ObligationsArgs),
-    /// Discover and acknowledge remediation inherited by this lander instance.
-    InheritObligations(InheritObligationsArgs),
-    /// Record that ORC sent a wake which has not yet been acknowledged.
-    RecordObligationWake(RecordObligationWakeArgs),
-    /// Poll open obligations and record verifier transitions.
-    WatchObligations(WatchObligationsArgs),
-    /// Pidfd-cancel one exact watcher without changing obligation truth.
-    CancelWatcher(CancelWatcherArgs),
-    /// Consume one owner authorization for an exact main and revert candidate.
-    AuthorizeRevert(AuthorizeRevertArgs),
-    /// Record a completed fix-forward or revert.
-    ResolveObligation(ResolveObligationArgs),
     /// Incrementally ingest GH Actions and local VALIDATE history.
     RefreshHistory(RefreshHistoryArgs),
     /// Query the local commit, VALIDATE, and GH Actions history store.
@@ -361,45 +328,6 @@ struct PassthroughArgs {
     args: Vec<OsString>,
 }
 
-#[derive(Clone, Debug, ValueEnum)]
-enum LandMode {
-    Admin,
-    Speculative,
-}
-
-impl LandMode {
-    fn as_str(&self) -> &'static str {
-        match self {
-            Self::Admin => "admin",
-            Self::Speculative => "speculative",
-        }
-    }
-}
-
-#[derive(Args, Clone, Debug)]
-struct ArmLandArgs {
-    sha: String,
-    #[arg(long, default_value = "rrnewton/hermit")]
-    repo: String,
-    /// PR number used to resolve a rebase-merged head to its replayed SHA.
-    #[arg(long)]
-    pr: Option<u64>,
-    #[arg(long)]
-    source: Option<PathBuf>,
-    #[arg(long, value_enum, default_value_t = LandMode::Speculative)]
-    land_mode: LandMode,
-    #[arg(long)]
-    actor: Option<String>,
-    #[arg(long, default_value_t = DEFAULT_GITHUB_WAIT_SECONDS)]
-    github_wait_seconds: u64,
-    #[arg(long, default_value_t = DEFAULT_POLL_SECONDS)]
-    poll_seconds: u64,
-    #[arg(long)]
-    no_dispatch: bool,
-    #[arg(long)]
-    store: Option<PathBuf>,
-}
-
 #[derive(Args, Clone, Debug)]
 struct VerifyLandingArgs {
     /// Positive PR number or commit OID (abbreviations are expanded before reporting).
@@ -418,116 +346,6 @@ struct VerifyLandingArgs {
     target: String,
     #[arg(long)]
     json: bool,
-}
-
-#[derive(Args, Clone, Debug)]
-struct ObligationsArgs {
-    #[arg(long)]
-    all: bool,
-    #[arg(long)]
-    actionable: bool,
-    #[arg(long)]
-    json: bool,
-    #[arg(long)]
-    gate: bool,
-    #[arg(long)]
-    store: Option<PathBuf>,
-}
-
-#[derive(Args, Clone, Debug)]
-struct InheritObligationsArgs {
-    #[arg(long)]
-    agent: String,
-    #[arg(long)]
-    session: Option<String>,
-    /// Record an evaluated recommendation; omission records receipt only.
-    #[arg(long, value_enum)]
-    action_outcome: Option<AcknowledgementOutcome>,
-    /// Durable refusal rationale; valid only when the action was declined.
-    #[arg(long)]
-    reason: Option<String>,
-    #[arg(long)]
-    store: Option<PathBuf>,
-}
-
-#[derive(Clone, Copy, Debug, ValueEnum)]
-enum AcknowledgementOutcome {
-    Executed,
-    Declined,
-}
-
-#[derive(Args, Clone, Debug)]
-struct RecordObligationWakeArgs {
-    #[arg(long)]
-    target: String,
-    #[arg(long, default_value = "orc")]
-    source: String,
-    #[arg(long)]
-    store: Option<PathBuf>,
-}
-
-#[derive(Args, Clone, Debug)]
-struct WatchObligationsArgs {
-    #[arg(long)]
-    id: Option<String>,
-    #[arg(long)]
-    once: bool,
-    #[arg(long)]
-    gate: bool,
-    #[arg(long, default_value_t = DEFAULT_POLL_SECONDS)]
-    poll_seconds: u64,
-    #[arg(long)]
-    store: Option<PathBuf>,
-}
-
-#[derive(Args, Clone, Debug)]
-struct CancelWatcherArgs {
-    id: String,
-    #[arg(long)]
-    reason: String,
-    #[arg(long)]
-    actor: Option<String>,
-    #[arg(long, default_value_t = 10.0)]
-    wait_seconds: f64,
-    #[arg(long)]
-    store: Option<PathBuf>,
-}
-
-#[derive(Clone, Debug, ValueEnum)]
-enum RemediationKind {
-    FixForward,
-    Revert,
-}
-
-impl RemediationKind {
-    fn as_str(&self) -> &'static str {
-        match self {
-            Self::FixForward => "fix-forward",
-            Self::Revert => "revert",
-        }
-    }
-}
-
-#[derive(Args, Clone, Debug)]
-struct ResolveObligationArgs {
-    id: String,
-    #[arg(long, value_enum)]
-    kind: RemediationKind,
-    #[arg(long = "ref")]
-    reference: String,
-    #[arg(long)]
-    started_at: Option<String>,
-    #[arg(long)]
-    source: Option<PathBuf>,
-    #[arg(long)]
-    store: Option<PathBuf>,
-}
-
-#[derive(Args, Clone, Debug)]
-struct AuthorizeRevertArgs {
-    id: String,
-    #[arg(long)]
-    store: Option<PathBuf>,
 }
 
 #[derive(Args, Clone, Debug)]
@@ -1263,11 +1081,6 @@ impl HubCommand {
                 basis: "not measured: due health gates vary and tick cost history is not retained"
                     .into(),
             },
-            Self::ArmLand(_) => CostSpec {
-                tool: "ci-hub/arm-land",
-                basis: "not measured: verifier launch and GitHub dispatch cost history is not retained"
-                    .into(),
-            },
             Self::VerifyLanding(args) => CostSpec {
                 tool: "ci-hub/verify-landing",
                 basis: if args.reference.len() == 40 {
@@ -1277,31 +1090,6 @@ impl HubCommand {
                     "not measured: one GitHub PR query plus one target fetch and ancestry check"
                         .into()
                 },
-            },
-            Self::ResolveObligation(_) => CostSpec {
-                tool: "ci-hub/resolve-obligation",
-                basis: "not measured: one repository-bound main fetch plus exact repair-object and ancestry checks"
-                    .into(),
-            },
-            Self::AuthorizeRevert(_) => CostSpec {
-                tool: "ci-hub/authorize-revert",
-                basis: "not measured: two main-identity queries plus owner-comment and exact candidate-tree checks"
-                    .into(),
-            },
-            Self::WatchObligations(args) => CostSpec {
-                tool: "ci-hub/watch-obligations",
-                basis: if args.once {
-                    "not measured: one exact-SHA obligation poll has no retained cost history"
-                        .into()
-                } else {
-                    "not measured: verifier completion time is unknown; polling bounds are not estimates"
-                        .into()
-                },
-            },
-            Self::CancelWatcher(_) => CostSpec {
-                tool: "ci-hub/cancel-watcher",
-                basis: "not measured: one local append-only identity check plus a bounded pidfd SIGTERM wait"
-                    .into(),
             },
             Self::RefreshHistory(args) => CostSpec {
                 tool: "ci-hub/refresh-history",
@@ -1357,10 +1145,7 @@ impl HubCommand {
                 tool: "ci-hub/review-attest",
                 basis: "not measured: bounded live-head, exact-comment and repository-label GitHub reads plus one attestation comment and optional cache-label mutation".into(),
             },
-            Self::Obligations(_)
-            | Self::InheritObligations(_)
-            | Self::RecordObligationWake(_)
-            | Self::ValidateWorktrees(_)
+            Self::ValidateWorktrees(_)
             | Self::Quickstart
             | Self::GreenTime(_)
             | Self::Ledger(_)
@@ -1387,31 +1172,6 @@ enum CiHubError {
         tool: String,
         #[source]
         source: io::Error,
-    },
-    #[error("ci-hub: cannot open obligation store {path}: {source}")]
-    ObligationOpen {
-        path: PathBuf,
-        #[source]
-        source: io::Error,
-    },
-    #[error("ci-hub: cannot read obligation store {path}: {source}")]
-    ObligationRead {
-        path: PathBuf,
-        #[source]
-        source: io::Error,
-    },
-    #[error("ci-hub: obligation store {path} line {line}: {source}")]
-    ObligationJson {
-        path: PathBuf,
-        line: usize,
-        #[source]
-        source: serde_json::Error,
-    },
-    #[error("ci-hub: obligation store {path} line {line} uses schema {schema}, expected 1")]
-    ObligationSchema {
-        path: PathBuf,
-        line: usize,
-        schema: u32,
     },
     #[error("ci-hub: local-history --json returned an invalid typed history row: {0}")]
     HistoryJson(#[source] serde_json::Error),
@@ -1620,16 +1380,6 @@ fn execute(root: &Path, command: HubCommand) -> Result<i32, CiHubError> {
     match command {
         HubCommand::Quickstart => unreachable!("quickstart returns before workspace discovery"),
         HubCommand::Health(args) => {
-            let obligation_code = print_obligations(
-                root,
-                ObligationsArgs {
-                    all: false,
-                    actionable: false,
-                    json: false,
-                    gate: false,
-                    store: None,
-                },
-            )?;
             let main_code = run_python(
                 root,
                 "ci-hub/health/github_main_health.py",
@@ -1674,16 +1424,9 @@ fn execute(root: &Path, command: HubCommand) -> Result<i32, CiHubError> {
                     _ => 0,
                 }
             };
-            // Preserve the existing precedence (obligations > main > PR, keeping
-            // main/PR's more-informative exit 2); orphans only redden a health
-            // poll that would otherwise be green.
-            let base = if obligation_code != 0 {
-                obligation_code
-            } else if main_code != 0 {
-                main_code
-            } else {
-                pr_code
-            };
+            // Preserve main/PR's more-informative exit 2; orphans only redden a
+            // health poll that would otherwise be green.
+            let base = if main_code != 0 { main_code } else { pr_code };
             Ok(if base != 0 { base } else { orphan_contrib })
         }
         HubCommand::ActiveWork(args) => {
@@ -1728,41 +1471,6 @@ fn execute(root: &Path, command: HubCommand) -> Result<i32, CiHubError> {
                 .args(args.args);
             run_status(command, "tick-hub")
         }
-        HubCommand::ArmLand(args) => {
-            let mut protocol_args = vec![OsString::from("arm"), OsString::from(args.sha)];
-            push_option(&mut protocol_args, "--repo", args.repo);
-            if let Some(pr) = args.pr {
-                push_option(&mut protocol_args, "--pr", pr.to_string());
-            }
-            push_option(
-                &mut protocol_args,
-                "--source",
-                args.source.unwrap_or_else(|| root.join("hermit")),
-            );
-            push_option(&mut protocol_args, "--land-mode", args.land_mode.as_str());
-            push_option(
-                &mut protocol_args,
-                "--actor",
-                args.actor.unwrap_or_else(default_actor),
-            );
-            push_option(
-                &mut protocol_args,
-                "--github-wait-seconds",
-                args.github_wait_seconds.to_string(),
-            );
-            push_option(
-                &mut protocol_args,
-                "--poll-seconds",
-                args.poll_seconds.to_string(),
-            );
-            if args.no_dispatch {
-                protocol_args.push("--no-dispatch".into());
-            }
-            if let Some(store) = args.store {
-                push_option(&mut protocol_args, "--store", store);
-            }
-            run_python(root, "ci-hub/remediation/protocol.py", protocol_args)
-        }
         HubCommand::VerifyLanding(args) => {
             let mut protocol_args = vec![
                 OsString::from("verify-landing"),
@@ -1783,99 +1491,6 @@ fn execute(root: &Path, command: HubCommand) -> Result<i32, CiHubError> {
             }
             if args.json {
                 protocol_args.push("--json".into());
-            }
-            run_python(root, "ci-hub/remediation/protocol.py", protocol_args)
-        }
-        HubCommand::Obligations(args) => print_obligations(root, args),
-        HubCommand::InheritObligations(args) => {
-            let mut protocol_args = vec![OsString::from("inherit")];
-            push_option(&mut protocol_args, "--agent", args.agent);
-            if let Some(session) = args.session {
-                push_option(&mut protocol_args, "--session", session);
-            }
-            if let Some(outcome) = args.action_outcome {
-                let outcome = match outcome {
-                    AcknowledgementOutcome::Executed => "executed",
-                    AcknowledgementOutcome::Declined => "declined",
-                };
-                push_option(&mut protocol_args, "--action-outcome", outcome);
-            }
-            if let Some(reason) = args.reason {
-                push_option(&mut protocol_args, "--reason", reason);
-            }
-            if let Some(store) = args.store {
-                push_option(&mut protocol_args, "--store", store);
-            }
-            run_python(root, "ci-hub/remediation/protocol.py", protocol_args)
-        }
-        HubCommand::RecordObligationWake(args) => {
-            let mut protocol_args = vec![OsString::from("wake-sent")];
-            push_option(&mut protocol_args, "--target", args.target);
-            push_option(&mut protocol_args, "--source", args.source);
-            if let Some(store) = args.store {
-                push_option(&mut protocol_args, "--store", store);
-            }
-            run_python(root, "ci-hub/remediation/protocol.py", protocol_args)
-        }
-        HubCommand::WatchObligations(args) => {
-            let mut protocol_args = vec![OsString::from("watch")];
-            if let Some(id) = args.id {
-                push_option(&mut protocol_args, "--id", id);
-            }
-            if args.once {
-                protocol_args.push("--once".into());
-            }
-            if args.gate {
-                protocol_args.push("--gate".into());
-            }
-            push_option(
-                &mut protocol_args,
-                "--poll-seconds",
-                args.poll_seconds.to_string(),
-            );
-            if let Some(store) = args.store {
-                push_option(&mut protocol_args, "--store", store);
-            }
-            run_python(root, "ci-hub/remediation/protocol.py", protocol_args)
-        }
-        HubCommand::CancelWatcher(args) => {
-            let mut protocol_args = vec![OsString::from("cancel-watcher"), OsString::from(args.id)];
-            push_option(&mut protocol_args, "--reason", args.reason);
-            push_option(
-                &mut protocol_args,
-                "--actor",
-                args.actor.unwrap_or_else(default_actor),
-            );
-            push_option(
-                &mut protocol_args,
-                "--wait-seconds",
-                args.wait_seconds.to_string(),
-            );
-            if let Some(store) = args.store {
-                push_option(&mut protocol_args, "--store", store);
-            }
-            run_python(root, "ci-hub/remediation/protocol.py", protocol_args)
-        }
-        HubCommand::AuthorizeRevert(args) => {
-            let mut protocol_args =
-                vec![OsString::from("authorize-revert"), OsString::from(args.id)];
-            if let Some(store) = args.store {
-                push_option(&mut protocol_args, "--store", store);
-            }
-            run_python(root, "ci-hub/remediation/protocol.py", protocol_args)
-        }
-        HubCommand::ResolveObligation(args) => {
-            let mut protocol_args = vec![OsString::from("resolve"), OsString::from(args.id)];
-            push_option(&mut protocol_args, "--kind", args.kind.as_str());
-            push_option(&mut protocol_args, "--ref", args.reference);
-            if let Some(started_at) = args.started_at {
-                push_option(&mut protocol_args, "--started-at", started_at);
-            }
-            if let Some(source) = args.source {
-                push_option(&mut protocol_args, "--source", source);
-            }
-            if let Some(store) = args.store {
-                push_option(&mut protocol_args, "--store", store);
             }
             run_python(root, "ci-hub/remediation/protocol.py", protocol_args)
         }
@@ -7230,201 +6845,6 @@ fn run_apply_local_label(root: &Path, args: ApplyLocalLabelArgs) -> Result<i32, 
     Ok(if failed == 0 { 0 } else { 1 })
 }
 
-fn print_obligations(root: &Path, args: ObligationsArgs) -> Result<i32, CiHubError> {
-    let store = args
-        .store
-        .or_else(|| env::var_os("CI_HUB_OBLIGATIONS_STORE").map(PathBuf::from))
-        .unwrap_or_else(|| root.join("ignored/ci-hub/obligations.jsonl"));
-    let mut records = latest_obligations(&store)?;
-    let redispatch_limit = env::var("CI_HUB_LOCAL_REDISPATCH_LIMIT")
-        .ok()
-        .and_then(|value| value.parse::<u64>().ok())
-        .unwrap_or(2);
-    for record in &mut records {
-        let disposition = record.local.receipt_disposition(redispatch_limit);
-        record
-            .local
-            .extra
-            .insert("receipt_disposition".into(), disposition);
-    }
-    if args.actionable {
-        records.retain(|record| record.remediation_required());
-    }
-    if !args.all {
-        records.retain(|record| !record.is_closed());
-    }
-    records.sort_by(|left, right| {
-        (&left.opened_at, &left.obligation_id).cmp(&(&right.opened_at, &right.obligation_id))
-    });
-    let unresolved: Vec<_> = records
-        .iter()
-        .filter(|record| !record.is_closed())
-        .collect();
-    let remediation: Vec<_> = unresolved
-        .iter()
-        .filter(|record| record.remediation_required())
-        .collect();
-    let sent_unacknowledged = remediation
-        .iter()
-        .filter(|record| record.dispatch_state() == "sent_unacknowledged")
-        .count();
-    let acknowledged = remediation
-        .iter()
-        .filter(|record| record.dispatch_state() == "acknowledged")
-        .count();
-
-    if args.json {
-        #[derive(Serialize)]
-        struct Output<'a> {
-            obligations: &'a [ObligationRecord],
-        }
-        println!(
-            "{}",
-            serde_json::to_string(&Output {
-                obligations: &records
-            })
-            .expect("typed obligation output is serializable")
-        );
-    } else if args.gate {
-        let state = if !remediation.is_empty() {
-            "remediation-required"
-        } else if !unresolved.is_empty() {
-            "open"
-        } else {
-            "clear"
-        };
-        println!("state={state}");
-        println!("count={}", unresolved.len());
-        println!("remediation_count={}", remediation.len());
-        println!("sent_unacknowledged_count={sent_unacknowledged}");
-        println!("acknowledged_count={acknowledged}");
-        println!(
-            "ids={}",
-            if unresolved.is_empty() {
-                "none".to_string()
-            } else {
-                unresolved
-                    .iter()
-                    .map(|record| record.obligation_id.as_str())
-                    .collect::<Vec<_>>()
-                    .join(",")
-            }
-        );
-        println!(
-            "summary={}",
-            if unresolved.is_empty() {
-                "no-open-speculative-land-obligations".to_string()
-            } else {
-                unresolved
-                    .iter()
-                    .map(|record| obligation_summary(record))
-                    .collect::<Vec<_>>()
-                    .join(";")
-            }
-        );
-    } else {
-        let heading = if !remediation.is_empty() {
-            "Speculative-land obligations: REMEDIATION REQUIRED"
-        } else if !unresolved.is_empty() {
-            "Speculative-land obligations: OPEN"
-        } else {
-            "Speculative-land obligations: CLEAR"
-        };
-        println!("{heading}");
-        for record in &records {
-            println!("  {}", obligation_summary(record));
-            if let Some(failure) = &record.failure_summary {
-                println!("    failure: {failure}");
-            }
-        }
-    }
-    Ok(if !remediation.is_empty() {
-        2
-    } else if !unresolved.is_empty() {
-        1
-    } else {
-        0
-    })
-}
-
-fn latest_obligations(path: &Path) -> Result<Vec<ObligationRecord>, CiHubError> {
-    if !path.exists() {
-        return Ok(Vec::new());
-    }
-    let file = File::open(path).map_err(|source| CiHubError::ObligationOpen {
-        path: path.to_path_buf(),
-        source,
-    })?;
-    file.lock_shared()
-        .map_err(|source| CiHubError::ObligationOpen {
-            path: path.to_path_buf(),
-            source,
-        })?;
-    let mut latest = BTreeMap::new();
-    for (index, line) in BufReader::new(&file).lines().enumerate() {
-        let line_number = index + 1;
-        let line = line.map_err(|source| CiHubError::ObligationRead {
-            path: path.to_path_buf(),
-            source,
-        })?;
-        if line.trim().is_empty() {
-            continue;
-        }
-        let value: serde_json::Value =
-            serde_json::from_str(&line).map_err(|source| CiHubError::ObligationJson {
-                path: path.to_path_buf(),
-                line: line_number,
-                source,
-            })?;
-        // Projection checkpoints are append-only acceleration hints, not
-        // obligation records.  The original checkpoint writer intentionally
-        // omitted `obligation_id`; a later writer added a synthetic one, so
-        // deserializing every JSONL line directly as ObligationRecord makes a
-        // valid mixed-version store unreadable.  Ignore both checkpoint shapes
-        // by their typed event marker while retaining strict parsing for real
-        // obligation events.
-        if value.get("event_type").and_then(serde_json::Value::as_str)
-            == Some("projection-checkpoint")
-        {
-            continue;
-        }
-        let record: ObligationRecord =
-            serde_json::from_value(value).map_err(|source| CiHubError::ObligationJson {
-                path: path.to_path_buf(),
-                line: line_number,
-                source,
-            })?;
-        if record.schema_version != 1 {
-            return Err(CiHubError::ObligationSchema {
-                path: path.to_path_buf(),
-                line: line_number,
-                schema: record.schema_version,
-            });
-        }
-        latest.insert(record.obligation_id.clone(), record);
-    }
-    FileExt::unlock(&file).map_err(|source| CiHubError::ObligationRead {
-        path: path.to_path_buf(),
-        source,
-    })?;
-    Ok(latest.into_values().collect())
-}
-
-fn obligation_summary(record: &ObligationRecord) -> String {
-    format!(
-        "{} {}@{} overall={} local={} local_receipt={} github={} recommendation={} dispatch={}",
-        record.obligation_id,
-        record.repo,
-        &record.landed_sha[..record.landed_sha.len().min(12)],
-        record.overall_state,
-        record.local.state,
-        record.local.receipt_disposition_state(),
-        record.github.state,
-        record.recommendation_action(),
-        record.dispatch_state()
-    )
-}
-
 fn run_python(root: &Path, relative_script: &str, args: Vec<OsString>) -> Result<i32, CiHubError> {
     run_python_path(&root.join(relative_script), args)
 }
@@ -7464,12 +6884,6 @@ fn exit_status_code(status: ExitStatus) -> i32 {
 fn push_option(arguments: &mut Vec<OsString>, name: &'static str, value: impl AsRef<OsStr>) {
     arguments.push(name.into());
     arguments.push(value.as_ref().to_os_string());
-}
-
-fn default_actor() -> String {
-    env::var("AGENT")
-        .or_else(|_| env::var("USER"))
-        .unwrap_or_else(|_| "unknown".into())
 }
 
 fn to_exit_code(code: i32) -> ExitCode {
@@ -7948,48 +7362,6 @@ mod tests {
         )
         .is_err());
         std::fs::remove_dir_all(&root).ok();
-    }
-
-    #[test]
-    fn obligation_reader_ignores_legacy_and_current_projection_checkpoints() {
-        let path = std::env::temp_dir().join(format!(
-            "ci-hub-obligation-checkpoints-{}-{}.jsonl",
-            std::process::id(),
-            chrono::Utc::now().timestamp_nanos_opt().unwrap()
-        ));
-        let obligation = serde_json::json!({
-            "schema_version": 1,
-            "obligation_id": "o1",
-            "repo": "rrnewton/hermit",
-            "landed_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            "opened_at": "2026-08-10T00:00:00Z",
-            "overall_state": "pending",
-            "local": {"state": "pending"},
-            "github": {"state": "pending"}
-        });
-        let legacy_checkpoint = serde_json::json!({
-            "schema_version": 1,
-            "event_type": "projection-checkpoint",
-            "checkpoint_schema_version": 1,
-            "checkpoint_id": "legacy"
-        });
-        let current_checkpoint = serde_json::json!({
-            "schema_version": 1,
-            "obligation_id": "__ci_hub_projection_checkpoint__",
-            "event_type": "projection-checkpoint",
-            "checkpoint_schema_version": 1,
-            "checkpoint_id": "current"
-        });
-        std::fs::write(
-            &path,
-            format!("{legacy_checkpoint}\n{obligation}\n{current_checkpoint}\n"),
-        )
-        .unwrap();
-
-        let records = latest_obligations(&path).unwrap();
-        std::fs::remove_file(&path).unwrap();
-        assert_eq!(records.len(), 1);
-        assert_eq!(records[0].obligation_id, "o1");
     }
 
     fn schema4_receipt_value() -> serde_json::Value {
@@ -8823,50 +8195,6 @@ mod tests {
     }
 
     #[test]
-    fn parses_typed_arm_command() {
-        let cli = Cli::try_parse_from([
-            "ci-hub",
-            "arm-land",
-            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            "--pr",
-            "1219",
-            "--land-mode",
-            "admin",
-            "--no-dispatch",
-        ])
-        .unwrap();
-        let HubCommand::ArmLand(args) = cli.command else {
-            panic!("wrong command variant")
-        };
-        assert!(matches!(args.land_mode, LandMode::Admin));
-        assert_eq!(args.pr, Some(1219));
-        assert!(args.no_dispatch);
-    }
-
-    #[test]
-    fn parses_exact_watcher_cancellation_command() {
-        let cli = Cli::try_parse_from([
-            "ci-hub",
-            "cancel-watcher",
-            "obligation-123",
-            "--reason",
-            "terminal watcher did not unwind",
-            "--actor",
-            "test-operator",
-            "--wait-seconds",
-            "2.5",
-        ])
-        .unwrap();
-        let HubCommand::CancelWatcher(args) = cli.command else {
-            panic!("wrong command variant")
-        };
-        assert_eq!(args.id, "obligation-123");
-        assert_eq!(args.reason, "terminal watcher did not unwind");
-        assert_eq!(args.actor.as_deref(), Some("test-operator"));
-        assert_eq!(args.wait_seconds, 2.5);
-    }
-
-    #[test]
     fn parses_qualified_ledger_rows_command() {
         let cli = Cli::try_parse_from(["ci-hub", "ledger", "qualified-rows"]).unwrap();
         let HubCommand::Ledger(args) = cli.command else {
@@ -9244,7 +8572,6 @@ mod tests {
             "READ-ONLY STATUS AND HISTORY",
             "VALIDATION ACTIONS",
             "LANDING AND COORDINATION ACTIONS",
-            "POST-LAND ACTIONS",
         ];
         let mut previous = 0;
         for heading in headings {
@@ -9293,7 +8620,6 @@ mod tests {
         assert!(AGENT_QUICKSTART.contains("validate-worktrees"));
         assert!(AGENT_QUICKSTART.contains("newest-green"));
         assert!(AGENT_QUICKSTART.contains("first-bad CELL_OR_GATE"));
-        assert!(AGENT_QUICKSTART.contains("obligations --actionable"));
         assert!(AGENT_QUICKSTART.contains("land-lock run"));
         assert!(AGENT_QUICKSTART.contains("validate-run --checkout"));
         assert!(AGENT_QUICKSTART.contains("apply-local-label --pr"));
@@ -9387,53 +8713,6 @@ mod tests {
 
     #[test]
     fn trivial_reads_have_no_cost_wrapper() {
-        let obligations = Cli::try_parse_from(["ci-hub", "obligations"])
-            .unwrap()
-            .command;
-        assert!(obligations.cost_spec().is_none());
-        let inherit = Cli::try_parse_from([
-            "ci-hub",
-            "inherit-obligations",
-            "--agent",
-            "hermit-lander",
-            "--session",
-            "session-1",
-        ])
-        .unwrap()
-        .command;
-        assert!(inherit.cost_spec().is_none());
-        let declined = Cli::try_parse_from([
-            "ci-hub",
-            "inherit-obligations",
-            "--agent",
-            "hermit-lander",
-            "--action-outcome",
-            "declined",
-            "--reason",
-            "owner authorization is absent",
-        ])
-        .unwrap()
-        .command;
-        let HubCommand::InheritObligations(declined) = declined else {
-            panic!("expected inherit-obligations command")
-        };
-        assert!(matches!(
-            declined.action_outcome,
-            Some(AcknowledgementOutcome::Declined)
-        ));
-        assert_eq!(
-            declined.reason.as_deref(),
-            Some("owner authorization is absent")
-        );
-        let wake = Cli::try_parse_from([
-            "ci-hub",
-            "record-obligation-wake",
-            "--target",
-            "hermit-lander",
-        ])
-        .unwrap()
-        .command;
-        assert!(wake.cost_spec().is_none());
         let status = Cli::try_parse_from(["ci-hub", "land-lock", "status"])
             .unwrap()
             .command;

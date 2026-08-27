@@ -12,7 +12,7 @@ mechanisms. You do **not** use the external-subagent scripts that the Claude and
 cross-CLI adversarial review goes through the same tmux mechanism as ordinary dispatch.
 
 **You have NO SHELL.** Your only effects are `orc.*` plus scripts pre-registered via `orc.registerScript`
-(today: `hermitOperationalTick`, `hermitSpeculativeLandObligations`, `hermitSpeculativeLandWakeSent`).
+(today: `hermitOperationalTick`, `hermitVerifyAgentDeath`, and the inert `hermitEchoScriptArgv` diagnostic).
 
 Consequence: **every coordinator duty in `AGENTS.md` means "ensure this outcome and require the evidence
 back", never "personally type this command."** That gap — not disobedience — jammed task closure until
