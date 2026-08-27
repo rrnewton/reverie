@@ -1,0 +1,189 @@
+#!/usr/bin/env python3
+"""commit-verdict -- did this commit ever get a local validate verdict, and what was it?
+
+    ci-hub/bin/commit-verdict <sha> [<sha>...]
+    ci-hub/bin/commit-verdict --selftest
+
+WHY THIS EXISTS, AND WHY IT IS THIS SMALL
+=========================================
+It replaces the speculative-land obligations machinery, which was audited over
+its whole history on 2026-08-27: 46 obligations created across 24 days, and ZERO
+resolved by anyone acting on the recommendation. What it produced instead was two
+self-referential records, two "repairs" that predated the acknowledgement they
+were credited to (one by 64 hours), and one pair of CONTRADICTORY
+recommendations -- a revert and a fix-forward -- both credited to the same
+unrelated commit, which had landed 49 seconds after acknowledgement.
+
+The question underneath it was real. This answers that question and nothing else:
+no wake, no recommendation, no acknowledgement path, no remediation state. Those
+were the parts that produced sixteen unresolved obligations, a crash-looping
+workflow, and a poller that could not finish a census.
+
+⚠️ THE BINDING THIS DELIBERATELY DOES NOT INHERIT
+=================================================
+The old lookup refused with CANONICAL-VERDICT-UNAVAILABLE unless it found a row
+whose cwd was THE CURRENT RUN'S OWN fresh checkout, at or after that run's start.
+That checkout is `mktemp`-generated per invocation, so the name can never match a
+previous run's.
+
+That rule is CORRECT for certifying a run -- an older row must not be allowed to
+bind a later one. It is the WRONG question here. "Was this commit ever validated"
+is historical; "may this row certify my run" is not. The old code answered the
+second while being asked the first, which is why it reported no_result for NINE
+commits whose full-profile `fail` receipts were sitting in the ledger the whole
+time.
+
+So this reader keys on the COMMIT ALONE. It never looks at cwd, workspace, or
+time-ordering against a caller.
+
+⚠️ GITHUB IS NOT AN INPUT
+=========================
+All ten of the stuck obligations carried failure_source=github while
+github_actions_enabled=false, so their recommendations derived from a signal this
+project deliberately does not gate on. This reads the LOCAL ledger only.
+
+THREE ANSWERS, AND NONE MAY BE INFERRED FROM ANOTHER
+====================================================
+    PASS        a verdict exists and every row for the commit passed
+    FAIL        a verdict exists and at least one row did not pass
+    NO-VERDICT  no run.result row names this commit at all
+Absence is its own answer. A commit nobody validated must never read as one that
+passed -- that is the shape this repository keeps paying for.
+
+EXIT CODES
+  0  every commit asked about has a verdict, and all of them passed
+  1  every commit has a verdict, and at least one is not a pass
+  3  at least one commit has NO verdict -- absence dominates, so it cannot hide
+     behind a neighbour's failure
+  2  usage error, or the ledger could not be read at all
+"""
+
+from __future__ import annotations
+
+import glob
+import json
+import os
+import sys
+
+ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+LEDGER = os.path.join(ROOT, "ledger")
+
+
+def verdicts(shas, ledger=LEDGER):
+    """{sha: (verdict, [rows])} plus the count of rows we could not interpret.
+
+    THE WHOLE READER. Keyed on `commit`, and on nothing else.
+
+    `unreadable` is returned rather than ignored: a row this cannot interpret is
+    a row it cannot rule out, so a NO-VERDICT reported alongside a nonzero count
+    is weaker than one reported alongside zero. The caller is told which it has.
+    """
+    found = {s: [] for s in shas}
+    unreadable = 0
+    # Deduplicate by real path. A count that double-reports rows is worse than
+    # no count: it reads as corroboration. Caught in testing when a stray symlink
+    # made the glob enumerate every shard twice and every row total doubled.
+    paths = {os.path.realpath(p): p
+             for p in glob.glob(os.path.join(ledger, "**", "*.jsonl"), recursive=True)}
+    for path in sorted(paths.values()):
+        with open(path, errors="replace") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    row = json.loads(line)
+                except ValueError:
+                    unreadable += 1
+                    continue
+                commit = row.get("commit")
+                if not isinstance(commit, str) or row.get("event_type") != "run.result":
+                    continue
+                for s in shas:
+                    if commit.startswith(s) or s.startswith(commit):
+                        found[s].append(row)
+    return found, unreadable
+
+
+def classify(rows):
+    """PASS only when rows exist AND every one passed. Absence is its own answer."""
+    if not rows:
+        return "NO-VERDICT"
+    return "PASS" if all(r.get("outcome") == "pass" for r in rows) else "FAIL"
+
+
+def _selftest() -> int:
+    failures = []
+
+    def check(label, got, want):
+        if got != want:
+            failures.append(f"{label}: got {got!r}, want {want!r}")
+
+    # THE ONE THAT MATTERS MOST: absence must never read as a pass.
+    check("no rows is NO-VERDICT, not PASS", classify([]), "NO-VERDICT")
+    check("all pass is PASS", classify([{"outcome": "pass"}, {"outcome": "pass"}]), "PASS")
+    check("any non-pass is FAIL", classify([{"outcome": "pass"}, {"outcome": "fail"}]), "FAIL")
+    # An outcome this does not recognise is NOT a pass. Defaulting an unknown
+    # string to success is how a value that carries no information reads as one.
+    check("an unrecognised outcome is not a pass", classify([{"outcome": "killed"}]), "FAIL")
+    check("a missing outcome is not a pass", classify([{}]), "FAIL")
+
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as d:
+        os.makedirs(os.path.join(d, "hermit", "h"))
+        p = os.path.join(d, "hermit", "h", "2026-08.jsonl")
+        with open(p, "w") as fh:
+            fh.write(json.dumps({"commit": "a" * 40, "event_type": "run.result", "outcome": "fail"}) + "\n")
+            fh.write(json.dumps({"commit": "b" * 40, "event_type": "run.result", "outcome": "pass"}) + "\n")
+            # An observation row is NOT a verdict; counting it would manufacture one.
+            fh.write(json.dumps({"commit": "c" * 40, "event_type": "run.enrich", "outcome": "pass"}) + "\n")
+            fh.write("{not json\n")
+        got, unreadable = verdicts(["a" * 12, "b" * 12, "c" * 12, "d" * 12], ledger=d)
+        check("a 12-char prefix matches a 40-char commit", classify(got["a" * 12]), "FAIL")
+        check("a passing commit reads PASS", classify(got["b" * 12]), "PASS")
+        check("a non-run.result row is NOT a verdict", classify(got["c" * 12]), "NO-VERDICT")
+        check("an absent commit reads NO-VERDICT", classify(got["d" * 12]), "NO-VERDICT")
+        check("unreadable rows are counted, not silently dropped", unreadable, 1)
+
+    for f in failures:
+        print(f"commit-verdict: SELFTEST FAIL {f}", file=sys.stderr)
+    print(f"commit-verdict: selftest {'FAILED' if failures else 'PASSED'} ({len(failures)} failures)",
+          file=sys.stderr)
+    return 1 if failures else 0
+
+
+def main() -> int:
+    args = sys.argv[1:]
+    if args and args[0] == "--selftest":
+        return _selftest()
+    if not args or args[0] in ("-h", "--help"):
+        print(__doc__.strip(), file=sys.stderr)
+        return 2
+    if not os.path.isdir(LEDGER):
+        print(f"commit-verdict: no ledger at {LEDGER}", file=sys.stderr)
+        return 2
+
+    found, unreadable = verdicts(args)
+    worst = 0
+    for sha in args:
+        rows = found[sha]
+        v = classify(rows)
+        detail = ""
+        if rows:
+            outs = ",".join(sorted({str(r.get("outcome")) for r in rows}))
+            # `started_at` is optional on a row. Printing Python's None would
+            # read as a value; say the field is absent instead.
+            stamps = sorted(str(r["started_at"]) for r in rows if r.get("started_at"))
+            when = stamps[0] if stamps else "not-recorded"
+            detail = f"  rows={len(rows)} outcome={outs} first={when}"
+        print(f"{v:10} {sha}{detail}")
+        worst = 3 if v == "NO-VERDICT" else max(worst, 1 if v == "FAIL" else 0)
+    if unreadable:
+        print(f"commit-verdict: {unreadable} ledger row(s) were not readable as JSON and were "
+              f"NOT consulted; a NO-VERDICT above is weaker than it looks.", file=sys.stderr)
+    return worst
+
+
+if __name__ == "__main__":
+    sys.exit(main())
