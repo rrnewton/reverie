@@ -110,6 +110,20 @@ Two related rules that fail the same way:
   force-push overwrites your branch with a no-op head. `git branch --show-current`
   and a check for `.git/rebase-merge` cost nothing.
 
+**Remote branch deletion must be conditional on the recorded tip.** Before
+deleting, commit and push a tracked record containing the repository, branch
+name, and exact SHA, then read that record back from the remote. Delete with an
+explicit expected-SHA lease:
+
+```bash
+git push --force-with-lease=refs/heads/<branch>:<sha> origin :refs/heads/<branch>
+```
+
+If the branch moved after the record was written, the deletion must fail rather
+than delete the new tip. Verify the remote refs by content afterward. Never
+include `main`, `integration/*`, `archive/*`, or `refs/rescue/*` in a deletion
+set.
+
 # Worktrees and reviews
 
 Before reviewing code or dispatching an adversarial review, follow [code-review](.skills/code-review/SKILL.md). It owns
