@@ -10,6 +10,7 @@ import os
 import re
 import secrets
 import shlex
+import shutil
 import subprocess
 import tempfile
 import sys
@@ -602,7 +603,13 @@ def git_mutation_lock(source: Path, *, run: Runner):
 
 
 def prepare_fresh_checkout(
-    source: Path, target: str, *, run: Runner, parent: Path, repo: str
+    source: Path,
+    target: str,
+    *,
+    run: Runner,
+    parent: Path,
+    repo: str,
+    independent_refs: bool = False,
 ) -> Path:
     """Materialize `target` into a private temp worktree and PROVE it is usable.
 
@@ -639,14 +646,55 @@ def prepare_fresh_checkout(
         ),
         role="fresh checkout",
     )
-    # A worktree, not a clone: it shares the source object store, so this costs
-    # no object copy. It does register in the source repo, which is why the
-    # caller removes it explicitly rather than just unlinking the directory.
+    # Ordinary validation uses a worktree: it shares the source object store,
+    # so this costs no object copy. Frozen validation needs independent refs.
+    # Its target is deliberately behind the freshly observed origin/main, but
+    # the target's own pre.reverie_pin gate uses origin/main as its historical
+    # monotonicity floor. Leaving the live ref visible makes every old target
+    # whose Reverie pin has since advanced fail before the test matrix starts.
+    # A shared clone uses the same object store while keeping refs independent,
+    # so its origin/main can name the commit being re-measured without changing
+    # the source repository's ref for concurrent users.
     with git_mutation_lock(source, run=run):
-        run(
-            ["git", "-C", str(source), "worktree", "add", "--detach", str(fresh), target],
-            check=True,
-        )
+        if independent_refs:
+            origin_url = checked_output(
+                ["git", "-C", str(source), "remote", "get-url", "origin"],
+                run=run,
+                purpose="cannot resolve source origin for frozen validation",
+            )
+            run(
+                [
+                    "git",
+                    "clone",
+                    "--shared",
+                    "--no-checkout",
+                    "--no-tags",
+                    str(source),
+                    str(fresh),
+                ],
+                check=True,
+            )
+            run(
+                ["git", "-C", str(fresh), "remote", "set-url", "origin", origin_url],
+                check=True,
+            )
+            run(["git", "-C", str(fresh), "checkout", "--detach", target], check=True)
+            run(
+                [
+                    "git",
+                    "-C",
+                    str(fresh),
+                    "update-ref",
+                    "refs/remotes/origin/main",
+                    target,
+                ],
+                check=True,
+            )
+        else:
+            run(
+                ["git", "-C", str(source), "worktree", "add", "--detach", str(fresh), target],
+                check=True,
+            )
         head = checked_output(
             ["git", "-C", str(fresh), "rev-parse", "HEAD^{commit}"],
             run=run,
@@ -711,6 +759,19 @@ def prepare_fresh_checkout(
 
 def remove_fresh_checkout(source: Path, fresh: Path, *, run: Runner) -> None:
     """Remove the temp worktree AND deregister it. Best-effort, never fatal."""
+    # A frozen checkout is a standalone shared clone: `.git` is its own
+    # directory and it has no registration in the source repository. Ordinary
+    # fresh checkouts are worktrees, whose `.git` is a file naming the shared
+    # common directory.
+    if (fresh / ".git").is_dir():
+        try:
+            shutil.rmtree(fresh)
+        except OSError as error:
+            print(
+                f"validate-run: could not remove isolated checkout {fresh}: {error}",
+                file=sys.stderr,
+            )
+        return
     try:
         with git_mutation_lock(source, run=run):
             run(["git", "-C", str(source), "worktree", "remove", "--force", str(fresh)], check=False)
@@ -2014,6 +2075,7 @@ def main(
                     else (root / "ignored").resolve()
                 ),
                 repo=repo,
+                independent_refs=args.frozen_validate,
             )
             checkout = fresh_checkout
         preflight(root, checkout, args.target, repo=repo, run=run)

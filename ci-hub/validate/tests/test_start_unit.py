@@ -116,6 +116,16 @@ class FakeRun:
             return completed(command)
         if command[:1] == ["timeout"] and "fetch" in command:
             return completed(command)
+        if command[:2] == ["git", "clone"]:
+            return completed(command)
+        if command[:5] == ["git", "-C", str(self.checkout), "remote", "get-url"]:
+            return completed(command, stdout="https://github.com/rrnewton/hermit.git\n")
+        if (
+            self.fresh is not None
+            and command[:3] == ["git", "-C", str(self.fresh)]
+            and command[3] in {"remote", "checkout", "update-ref"}
+        ):
+            return completed(command)
         if (
             self.fresh is not None
             and command[:1] == ["git"]
@@ -599,6 +609,33 @@ class StartUnitTest(unittest.TestCase):
         self.assertEqual("1", frozen_env["VALIDATE_RUN_ON_DIRTY_TREE"])
         self.assertEqual("1", frozen_env["VALIDATE_IGNORE_CACHE"])
         self.assertEqual("0", frozen_env["VALIDATE_LABEL_PR"])
+        clone_index = next(
+            (
+                index
+                for index, command in enumerate(self.fake.commands)
+                if command[:2] == ["git", "clone"] and "--shared" in command
+            ),
+            None,
+        )
+        self.assertIsNotNone(clone_index, "a frozen checkout needs independent refs")
+        self.assertIn(
+            [
+                "git",
+                "-C",
+                str(self.fake.fresh),
+                "update-ref",
+                "refs/remotes/origin/main",
+                SHA,
+            ],
+            self.fake.commands,
+        )
+        self.assertFalse(
+            any(
+                command[3:5] == ["worktree", "add"]
+                for command in self.fake.commands[clone_index:]
+            ),
+            "a worktree would share origin/main with concurrent source checkouts",
+        )
         self.assertIn("MEASURED-AGAINST-SUPERSEDED-TIP", second_output)
         self.assertIn("qualifying_receipt=false", second_output)
 
