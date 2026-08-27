@@ -62,8 +62,10 @@ under `series`:
 ```
 
 `run_id` identifies one validate invocation or pressure-test campaign.
-`run_index` is the ordered repetition or retry ordinal for one cell in that
-run. `num_runs` defaults to one; a value greater than one represents that many
+`run_index` is copied from the validate result's positive `attempt` or supplied
+from the pressure-test repetition directory. The writer reads the harness's
+appended `results.jsonl`; it does not maintain another cell-result file.
+`num_runs` defaults to one; a value greater than one represents that many
 consecutive equal executions starting at `run_index`. Only wall time is folded
 as a minimum/maximum. Outcome, coordinates, source depth, main ancestry, and
 the two Hermit executions' scheduler turns, virtual nanoseconds, and syscall

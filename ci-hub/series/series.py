@@ -773,9 +773,28 @@ def rows_from_cell_results(
             raise MalformedRow(
                 f"cell result Hermit sha {cell_result.get('hermit_sha')!r} does not match {tree}"
             )
-        run_index = cell_result.get("run_index", 0)
-        if not isinstance(run_index, int) or isinstance(run_index, bool) or run_index < 0:
-            raise MalformedRow(f"cell result run_index must be a non-negative int, got {run_index!r}")
+        if producer == "validate":
+            run_index = cell_result.get("attempt")
+            if (
+                not isinstance(run_index, int)
+                or isinstance(run_index, bool)
+                or run_index < 1
+            ):
+                raise MalformedRow(
+                    "validate cell result attempt must be a positive int, "
+                    f"got {run_index!r}"
+                )
+        else:
+            run_index = cell_result.get("run_index")
+            if (
+                not isinstance(run_index, int)
+                or isinstance(run_index, bool)
+                or run_index < 0
+            ):
+                raise MalformedRow(
+                    "pressure-test cell result run_index must be a non-negative int, "
+                    f"got {run_index!r}"
+                )
         payload = {
             "cell": _cell_name(cell_result),
             "tree": tree,

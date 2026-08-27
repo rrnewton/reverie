@@ -655,6 +655,12 @@ class CellResultProjection(unittest.TestCase):
             emitted_at="2026-08-26T10:00:00Z",
         )
 
+    def _validate_cell(self, attempt, outcome="PASS", duration_ms=100):
+        cell = self._cell(attempt - 1, outcome=outcome, duration_ms=duration_ms)
+        cell.pop("run_index")
+        cell["attempt"] = attempt
+        return cell
+
     def test_two_hundred_raw_run_ids_become_one_batch_row(self):
         cells = [self._cell(i, duration_ms=5_100 + i) for i in range(200)]
         rows = self._project(cells)
@@ -686,14 +692,36 @@ class CellResultProjection(unittest.TestCase):
         self.assertEqual(zero["wall_time_max_ms"], 0)
 
     def test_failed_retry_then_success_is_not_compressed_away(self):
-        rows = self._project([
-            self._cell(0, outcome="FAIL", duration_ms=90),
-            self._cell(1, outcome="PASS", duration_ms=80),
-        ])
+        rows = series.rows_from_cell_results(
+            [
+                self._validate_cell(1, outcome="FAIL", duration_ms=90),
+                self._validate_cell(2, outcome="PASS", duration_ms=80),
+            ],
+            parent=self.parent,
+            producer="validate",
+            run_id="validate-one",
+            tree=self.tree,
+            emitted_at="2026-08-26T10:00:00Z",
+        )
         self.assertEqual(
             [(r["series"]["run_index"], r["series"]["outcome"]) for r in rows],
-            [(0, "diverged"), (1, "passed")],
+            [(1, "diverged"), (2, "passed")],
         )
+
+    def test_validate_requires_the_appended_attempt_ordinal(self):
+        cell = self._cell(0)
+        with self.assertRaisesRegex(
+            series.MalformedRow,
+            "validate cell result attempt must be a positive int",
+        ):
+            series.rows_from_cell_results(
+                [cell],
+                parent=self.parent,
+                producer="validate",
+                run_id="validate-one",
+                tree=self.tree,
+                emitted_at="2026-08-26T10:00:00Z",
+            )
 
     def test_cell_outcome_mapping_is_closed(self):
         expected = {
@@ -841,9 +869,8 @@ class CellResultProjection(unittest.TestCase):
         import io
 
         real_stdin = sys.stdin
-        sys.stdin = io.StringIO(
-            json.dumps(self._cell(0)) + "\n" + json.dumps(self._cell(0)) + "\n"
-        )
+        duplicate = self._validate_cell(1)
+        sys.stdin = io.StringIO(json.dumps(duplicate) + "\n" + json.dumps(duplicate) + "\n")
         try:
             with contextlib.redirect_stderr(io.StringIO()):
                 rc = series.main([
