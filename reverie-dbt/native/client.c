@@ -2942,26 +2942,16 @@ static bool emulate_identity_getter(prototype_counters_t *counters, int sysnum,
   }
 }
 
-static int blocking_exact_child_wait_target_argument(int sysnum,
-                                                     const uint64_t *args) {
-  int options;
-
+static int blocking_positive_child_wait_target_argument(int sysnum,
+                                                        const uint64_t *args) {
   if (sysnum == SYS_wait4) {
-    options = (int)args[2];
-    return (int32_t)args[0] > 0 &&
-                   (options &
-                    (WNOHANG | WUNTRACED | WCONTINUED | __WCLONE | __WALL)) ==
-                       0
+    return (int32_t)args[0] > 0 && ((int)args[2] & WNOHANG) == 0
                ? 0
                : -1;
   }
   if (sysnum == SYS_waitid) {
-    options = (int)args[3];
     return args[0] == P_PID && (int32_t)args[1] > 0 &&
-                   (options & WEXITED) != 0 &&
-                   (options &
-                    (WNOHANG | WSTOPPED | WCONTINUED | __WCLONE | __WALL)) ==
-                       0
+                   ((int)args[3] & WNOHANG) == 0
                ? 1
                : -1;
   }
@@ -2975,7 +2965,7 @@ static bool prepare_original_identity_syscall(void *drcontext,
                                               bool tail_injected) {
   uint64_t translated[6];
   int wait_target_argument =
-      tail_injected ? blocking_exact_child_wait_target_argument(sysnum, args)
+      tail_injected ? blocking_positive_child_wait_target_argument(sysnum, args)
                     : -1;
   int i;
   clear_translated_child_wait(&counters->translated_child_wait);
