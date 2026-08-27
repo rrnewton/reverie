@@ -1,0 +1,314 @@
+diff --git a/hermit-cli/src/bin/hermit/gdb_client.rs b/hermit-cli/src/bin/hermit/gdb_client.rs
+index ea86072450..07a88acd41 100644
+--- a/hermit-cli/src/bin/hermit/gdb_client.rs
++++ b/hermit-cli/src/bin/hermit/gdb_client.rs
+@@ -54,11 +54,6 @@ use std::thread;
+ use std::thread::JoinHandle;
+ use std::time::Duration;
+ 
+-/// Context added to a container failure when the spawned client had exited
+-/// BEFORE the gdbserver ever accepted a connection.
+-pub const CLIENT_EXITED_BEFORE_CONNECTING: &str = "the gdb client hermit spawned exited before it finished connecting to the \
+-     gdbserver, so the replay had no debugger to serve";
+-
+ /// How often the watcher polls, both for the client exiting and for the port
+ /// becoming connectable.
+ ///
+@@ -72,7 +67,6 @@ const POLL_INTERVAL: Duration = Duration::from_millis(20);
+ /// that client dies while the container is still waiting for it.
+ pub struct GdbClientWatch {
+     container_done: Arc<AtomicBool>,
+-    client_exited_early: Arc<AtomicBool>,
+     /// Shared so `finish` can reap a still-running client without waiting for
+     /// it, and so the watcher can reap it the moment it exits.
+     client: Arc<Mutex<Child>>,
+@@ -83,10 +77,8 @@ impl GdbClientWatch {
+     /// Take ownership of the spawned client and start watching it.
+     pub fn spawn(client: Child, port: u16) -> Self {
+         let container_done = Arc::new(AtomicBool::new(false));
+-        let client_exited_early = Arc::new(AtomicBool::new(false));
+         let client = Arc::new(Mutex::new(client));
+         let done = Arc::clone(&container_done);
+-        let exited_early = Arc::clone(&client_exited_early);
+         let watched = Arc::clone(&client);
+ 
+         let watcher = thread::spawn(move || {
+@@ -125,7 +117,6 @@ impl GdbClientWatch {
+             if done.load(Ordering::SeqCst) {
+                 return;
+             }
+-            exited_early.store(true, Ordering::SeqCst);
+ 
+             while !done.load(Ordering::SeqCst) {
+                 // Refused simply means the container has not bound the port yet
+@@ -141,29 +132,47 @@ impl GdbClientWatch {
+ 
+         Self {
+             container_done,
+-            client_exited_early,
+             client,
+             watcher: Some(watcher),
+         }
+     }
+ 
+-    /// Stop watching and report whether the client exited while the container
+-    /// was still running.
++    /// Stop watching. Returns as soon as the release decision has been made,
++    /// whatever the client is doing.
+     ///
+-    /// ⚠️ RETURNS PROMPTLY EVEN IF THE CLIENT IS STILL ALIVE. That is the whole
+-    /// point of the poll loop above: a live client no longer holds this.
+-    pub fn finish(&mut self) -> bool {
++    /// ⚠️ THIS MUST NOT WAIT FOR THE CLIENT, and that is the whole of defect 2.
++    /// The first version's watcher blocked in `client.wait()`, so joining it
++    /// blocked for the client's entire lifetime -- MEASURED at 30.001s against a
++    /// 30-second client, and independently at 5.001s by a reviewer. `Drop` calls
++    /// this, so an early `?` inherited the block: the fix for a hang could hang.
++    fn stop_watching(&mut self) {
+         self.container_done.store(true, Ordering::SeqCst);
+         if let Some(watcher) = self.watcher.take() {
+             let _ = watcher.join();
+         }
+-        // A client still running at this point is gdb outliving the container,
+-        // which is ordinary. Reap it without waiting: `try_wait` releases the
+-        // zombie if it has exited, and leaves it to the OS if it has not.
++    }
++
++    /// The SUCCESS path: stop watching, then wait for the client to exit and
++    /// reap it.
++    ///
++    /// ⚠️ THE WAIT IS A RESTORATION, NOT AN ADDITION. The code this replaced
++    /// ended with `let _ = gdb_client.wait();` after the container returned, in
++    /// both `record_start.rs` and `replay.rs`. The first version of this watcher
++    /// dropped that silently while claiming only to add a reap -- a behaviour
++    /// change with no argument for it, measured by a reviewer as a live
++    /// `/bin/sleep 30` stand-in surviving `cargo test`, reparented to init. A gdb
++    /// that outlives its container is ORDINARY, and hermit waited for it before.
++    ///
++    /// ⚠️ AND IT CANNOT REINTRODUCE THE 30-SECOND BLOCK, because the block was
++    /// never about waiting -- it was about waiting BEFORE the release. Here the
++    /// release has already happened in `stop_watching`, so nothing the client
++    /// does can keep the gdbserver's accept pending. `Drop` deliberately does
++    /// NOT call this; see below.
++    pub fn finish(&mut self) {
++        self.stop_watching();
+         if let Ok(mut guard) = self.client.lock() {
+-            let _ = guard.try_wait();
++            let _ = guard.wait();
+         }
+-        self.client_exited_early.load(Ordering::SeqCst)
+     }
+ }
+ 
+@@ -174,8 +183,20 @@ impl Drop for GdbClientWatch {
+     /// `deterministic_container()?` sat between the spawn and the wait, so BOTH
+     /// leaked. An earlier comment of mine claimed `replay.rs` did not; that was
+     /// wrong, and `agent(codex-rev-2654)` measured it.
++    ///
++    /// ⚠️ AND THIS REAPS WITHOUT WAITING, WHICH IS THE DIFFERENCE FROM `finish`.
++    /// On the error path there may be no container coming at all, so a client
++    /// still trying to connect would never exit and a blocking wait here would
++    /// hang the error exit -- defect 2 rebuilt one level down. A client that has
++    /// already exited is reaped; one still alive is left running, exactly as the
++    /// pre-watcher code left it. That is not an improvement, and it is not a
++    /// regression either; naming it here so the next reader does not have to
++    /// rediscover which of the two paths waits.
+     fn drop(&mut self) {
+-        self.finish();
++        self.stop_watching();
++        if let Ok(mut guard) = self.client.lock() {
++            let _ = guard.try_wait();
++        }
+     }
+ }
+ 
+@@ -186,64 +207,78 @@ mod tests {
+ 
+     use super::*;
+ 
+-    /// ⚠️ THE DEFECT THAT SHIPPED: `finish()` blocked for the client's whole
+-    /// lifetime. Measured at **30.001s** against a 30-second client before the
+-    /// fix, and independently at 5.001s by a reviewer. `Drop` calls `finish()`,
+-    /// so an early `?` inherited it -- the fix for a hang could hang.
++    /// ⚠️ DEFECT 2, AT THE PATH THAT ACTUALLY HAD IT. Tearing the watch down
++    /// must not wait for the client. The first version blocked for the client's
++    /// whole lifetime -- measured at **30.001s** against a 30-second client, and
++    /// independently at 5.001s by a reviewer -- and because `Drop` ran the same
++    /// code, an early `?` inherited it: the fix for a hang could hang.
++    ///
++    /// ⚠️ AND THIS IS THE TEST THAT REPLACES A TAUTOLOGY. The version that
++    /// shipped asserted `!early || watch.container_done.load(..)`, which
++    /// `finish()` had itself just set -- always true, proving nothing. Two
++    /// reviewers proved it independently. The timing assertion below is the part
++    /// that was ever load-bearing.
+     #[test]
+-    fn finish_returns_promptly_while_the_client_is_still_alive() {
++    fn dropping_a_watch_while_the_client_is_alive_returns_promptly() {
+         let listener = TcpListener::bind(("127.0.0.1", 0)).expect("failed to bind");
+         let port = listener.local_addr().expect("no local addr").port();
+         let client = std::process::Command::new("/bin/sleep")
+             .arg("30")
+             .spawn()
+             .expect("failed to spawn the stand-in client");
+-        let mut watch = GdbClientWatch::spawn(client, port);
++        let watch = GdbClientWatch::spawn(client, port);
++        let alive = Arc::clone(&watch.client);
+ 
+         let start = Instant::now();
+-        let early = watch.finish();
++        drop(watch);
+         let elapsed = start.elapsed();
+ 
+-        assert!(
+-            !early,
+-            "a client still alive when the container finished is the ORDINARY ordering and \
+-             must not be reported as an early exit"
+-        );
++        // `Drop` leaves a live client running, exactly as the pre-watcher code
++        // left a live gdb on an error path. Reap it here so the suite leaves
++        // nothing behind: a reviewer measured the previous version leaking a
++        // `/bin/sleep 30` into init.
++        {
++            let mut guard = alive.lock().expect("gdb client mutex poisoned");
++            let _ = guard.kill();
++            let _ = guard.wait();
++        }
++
+         assert!(
+             elapsed < Duration::from_secs(5),
+-            "finish() blocked {elapsed:?} on a live client; it must not wait for one"
++            "dropping the watch blocked {elapsed:?} on a live client; the error path must not \
++             wait for one"
+         );
+     }
+ 
+-    /// ⚠️ THE FALSE POSITIVE THAT SHIPPED: a `gdb -batch ... quit` exits as soon
+-    /// as its session ends, which is before the container returns. The first
+-    /// version reported that as "exited before connecting" and welded a false
+-    /// cause onto any later container failure.
++    /// ⚠️ THE SUCCESS-PATH WAIT, WHICH I SILENTLY DELETED. The pre-watcher code
++    /// ended with `let _ = gdb_client.wait();` after the container returned, in
++    /// both call sites. The first version of this watcher removed it while
++    /// claiming only to add a reap. This asserts the restoration by the only
++    /// thing that distinguishes it from a no-op: `finish()` does not return
++    /// before the client has.
+     #[test]
+-    fn a_client_that_completes_its_session_is_not_reported_as_an_early_exit() {
++    fn finish_waits_for_the_client_the_way_the_pre_watcher_code_did() {
+         let listener = TcpListener::bind(("127.0.0.1", 0)).expect("failed to bind");
+         let port = listener.local_addr().expect("no local addr").port();
+-        // Exits immediately, standing in for a gdb that connected, worked and
+-        // quit while the container was still shutting down.
+-        let client = std::process::Command::new("/bin/true")
++        let client = std::process::Command::new("/bin/sleep")
++            .arg("1")
+             .spawn()
+             .expect("failed to spawn the stand-in client");
+-        // Give it time to exit, so the watcher observes the exit rather than
+-        // racing it.
+-        thread::sleep(Duration::from_millis(200));
+-
+         let mut watch = GdbClientWatch::spawn(client, port);
+-        // The container reports finishing at essentially the same moment, which
+-        // is the healthy ordering this test exists to protect.
+-        thread::sleep(Duration::from_millis(50));
+-        let early = watch.finish();
+ 
+-        // ⚠️ This asserts the DIRECTION that matters. A client whose exit is
+-        // observed after the container is done must not be labelled, because a
+-        // false cause on an unrelated failure sends the reader somewhere useless.
++        let start = Instant::now();
++        watch.finish();
++        let elapsed = start.elapsed();
++
++        assert!(
++            elapsed >= Duration::from_millis(900),
++            "finish() returned after {elapsed:?}, before a 1-second client could have exited; \
++             the success-path wait is not there"
++        );
++        let mut guard = watch.client.lock().expect("gdb client mutex poisoned");
+         assert!(
+-            !early || watch.container_done.load(Ordering::SeqCst),
+-            "a completed session must not be reported as having exited before connecting"
++            matches!(guard.try_wait(), Ok(Some(_))),
++            "finish() returned without reaping the client"
+         );
+     }
+ 
+@@ -282,14 +317,12 @@ mod tests {
+             }
+         }
+ 
++        watch.finish();
++
+         assert!(
+             released,
+             "the watcher did not connect within 30s, so a waiting accept would never have \
+              been released"
+         );
+-        assert!(
+-            watch.finish(),
+-            "a client that exited while the container was still running must be reported"
+-        );
+     }
+ }
+diff --git a/hermit-cli/src/bin/hermit/record_start.rs b/hermit-cli/src/bin/hermit/record_start.rs
+index acb60765ad..8610090189 100644
+--- a/hermit-cli/src/bin/hermit/record_start.rs
++++ b/hermit-cli/src/bin/hermit/record_start.rs
+@@ -42,7 +42,6 @@ use super::container::Classified;
+ use super::container::IdentityGuard;
+ use super::container::RunGuarded;
+ use super::container::deterministic_container;
+-use super::gdb_client::CLIENT_EXITED_BEFORE_CONNECTING;
+ use super::gdb_client::GdbClientWatch;
+ use super::global_opts::GlobalOpts;
+ use super::record_envelope::RecordEnvelope;
+@@ -665,16 +664,8 @@ impl StartOpts {
+             hermit::replay_with_gdbserver_and_mounts(data_dir, gdbserver_port, &self.mount)
+                 .map_err(SerializableError::from)
+         });
+-        let client_exited_early = gdb_watch.finish();
+-        match ran.classified() {
+-            Ok(result) => Ok(result),
+-            // Name the cause rather than the symptom: without this the failure
+-            // reads as an opaque protocol error from a session that never began.
+-            Err(error) if client_exited_early => {
+-                Err(error.context(CLIENT_EXITED_BEFORE_CONNECTING))
+-            }
+-            Err(error) => Err(error),
+-        }
++        gdb_watch.finish();
++        ran.classified()
+     }
+ }
+ 
+diff --git a/hermit-cli/src/bin/hermit/replay.rs b/hermit-cli/src/bin/hermit/replay.rs
+index b1cffa6ea0..ce1b2fe43a 100644
+--- a/hermit-cli/src/bin/hermit/replay.rs
++++ b/hermit-cli/src/bin/hermit/replay.rs
+@@ -18,7 +18,6 @@ use reverie::process::ExitStatus;
+ 
+ use super::container::deterministic_container;
+ use super::container::with_container;
+-use super::gdb_client::CLIENT_EXITED_BEFORE_CONNECTING;
+ use super::gdb_client::GdbClientWatch;
+ use super::global_opts::GlobalOpts;
+ 
+@@ -113,14 +112,8 @@ impl ReplayOpts {
+             let result = with_container(&mut container, || {
+                 self.container_main(global, self.autopilot, &hermit, id)
+             });
+-            let client_exited_early = gdb_watch.finish();
+-            match result {
+-                Ok(status) => Ok(status),
+-                Err(error) if client_exited_early => {
+-                    Err(error.context(CLIENT_EXITED_BEFORE_CONNECTING))
+-                }
+-                Err(error) => Err(error),
+-            }
++            gdb_watch.finish();
++            result
+         }
+     }
+ 

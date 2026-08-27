@@ -1,0 +1,13 @@
+diff --git a/scripts/check-checker-scheduling.rs b/scripts/check-checker-scheduling.rs
+index 01c9476d5b..0b7d2ec80f 100755
+--- a/scripts/check-checker-scheduling.rs
++++ b/scripts/check-checker-scheduling.rs
+@@ -687,7 +687,7 @@ fn extract_cmds(raw: &str) -> Vec<String> {
+         let Some(after_colon) = rest.1.split_once(':') else {
+             continue;
+         };
+-        out.push(decode_json_string(after_colon.1.trim()));
++        out.push(after_colon.1.trim().to_string());
+     }
+     out
+ }

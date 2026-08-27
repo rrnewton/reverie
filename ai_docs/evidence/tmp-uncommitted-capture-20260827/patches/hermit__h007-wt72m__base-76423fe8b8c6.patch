@@ -1,0 +1,13 @@
+diff --git a/detcore-model/src/lib.rs b/detcore-model/src/lib.rs
+index ffd2549ac5..a27d811a3f 100644
+--- a/detcore-model/src/lib.rs
++++ b/detcore-model/src/lib.rs
+@@ -90,7 +90,7 @@ pub const fn signal_exit_status(signo: i32) -> i32 {
+ pub const HERMIT_SIGINT_DEATH_EXIT: i32 = signal_exit_status(2);
+ 
+ /// The highest signal number this recognises, `SIGRTMAX` on Linux.
+-const MAX_SIGNO: i32 = 64;
++const MAX_SIGNO: i32 = 15;
+ 
+ /// Recover the signal from a `128 + signo` status, or `None` if it is not in the
+ /// band.

@@ -1,0 +1,561 @@
+diff --git a/SCORECARD.md b/SCORECARD.md
+index 8aeff482b7..2e77786e64 100644
+--- a/SCORECARD.md
++++ b/SCORECARD.md
+@@ -10,24 +10,24 @@ Every selected `verify` cell, and every seed in a selected `chaos` cell, runs th
+ 
+ | Backend | Green | Red | Not applicable | Total |
+ | --- | ---: | ---: | ---: | ---: |
+-| `ptrace` | 235 | 120 | 707 | 1062 |
+-| `dbt` | 0 | 60 | 1002 | 1062 |
+-| `kvm` | 0 | 23 | 1039 | 1062 |
+-| `sabre` | 56 | 87 | 919 | 1062 |
+-| `liteinst` | 3 | 50 | 1009 | 1062 |
+-| `native` | 0 | 33 | 321 | 354 |
+-| **Total** | **294** | **373** | **4997** | **5664** |
++| `ptrace` | 236 | 120 | 709 | 1065 |
++| `dbt` | 0 | 60 | 1005 | 1065 |
++| `kvm` | 0 | 23 | 1042 | 1065 |
++| `sabre` | 56 | 87 | 922 | 1065 |
++| `liteinst` | 3 | 50 | 1012 | 1065 |
++| `native` | 0 | 33 | 322 | 355 |
++| **Total** | **295** | **373** | **5012** | **5680** |
+ 
+ ## Denominator, and why the percentage is not comparable across changes to it
+ 
+-Green is **294 of 5664**, which is **5.19%** — over THIS population and no other. The population is every combination the manifest declares, and it is composed of:
++Green is **295 of 5680**, which is **5.19%** — over THIS population and no other. The population is every combination the manifest declares, and it is composed of:
+ 
+ - backends: `ptrace`, `dbt`, `kvm`, `sabre`, `liteinst`, `native`
+ - modes: `chaos`, `naked`, `replay`, `verify`
+ 
+-⚠️ **4997 of those 5664 cells are NOT APPLICABLE** — their backend is not enabled for their mode, so they were never asked to run and cannot pass or fail. Over the 667 cells that CAN run, green is **44.08%**.
++⚠️ **5012 of those 5680 cells are NOT APPLICABLE** — their backend is not enabled for their mode, so they were never asked to run and cannot pass or fail. Over the 668 cells that CAN run, green is **44.16%**.
+ 
+-⚠️ **DO NOT QUOTE THAT SECOND FIGURE AS PROGRESS.** It is the same 294 green cells measured against a smaller denominator. Nothing was fixed to produce it; it is what the first figure always meant once the cells that cannot run are excluded. Quote both or neither, and never compare one against the other as though something moved.
++⚠️ **DO NOT QUOTE THAT SECOND FIGURE AS PROGRESS.** It is the same 295 green cells measured against a smaller denominator. Nothing was fixed to produce it; it is what the first figure always meant once the cells that cannot run are excluded. Quote both or neither, and never compare one against the other as though something moved.
+ 
+ ⚠️ **Adding or removing a backend or mode changes this denominator and therefore the percentage, without anything about the product changing.** Removing a backend whose cells are mostly red RAISES the reported figure; adding honest red cells LOWERS it. Neither is progress. Before comparing this percentage against an earlier one, diff the two lists above: if they differ, the numbers are not comparable and the difference is not a result.
+ 
+@@ -35,11 +35,11 @@ The mode view makes the current order of work explicit: expand `verify` first, t
+ 
+ | Mode | `ptrace` | `dbt` | `kvm` | `sabre` | `liteinst` | `native` | Green | Red | Total |
+ | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+-| `verify` | 232 / 354 | 0 / 354 | 0 / 354 | 56 / 354 | 3 / 354 | — | 291 | 1479 | 1770 |
+-| `replay` | 1 / 354 | 0 / 354 | 0 / 354 | 0 / 354 | 0 / 354 | — | 1 | 1769 | 1770 |
+-| `chaos` | 2 / 354 | 0 / 354 | 0 / 354 | 0 / 354 | 0 / 354 | — | 2 | 1768 | 1770 |
+-| `naked` | — | — | — | — | — | 0 / 354 | 0 | 354 | 354 |
+-| **Total** | | | | | | | **294** | **5370** | **5664** |
++| `verify` | 233 / 355 | 0 / 355 | 0 / 355 | 56 / 355 | 3 / 355 | — | 292 | 1483 | 1775 |
++| `replay` | 1 / 355 | 0 / 355 | 0 / 355 | 0 / 355 | 0 / 355 | — | 1 | 1774 | 1775 |
++| `chaos` | 2 / 355 | 0 / 355 | 0 / 355 | 0 / 355 | 0 / 355 | — | 2 | 1773 | 1775 |
++| `naked` | — | — | — | — | — | 0 / 355 | 0 | 355 | 355 |
++| **Total** | | | | | | | **295** | **5385** | **5680** |
+ 
+ ## Cross-backend parity
+ 
+@@ -54,7 +54,7 @@ This view uses the same Basic Sanity Milestone 1 contracts as the tables above,
+ | `applications` | 3 / 6 | 0 / 6 | 0 / 6 | 3 | 18 |
+ | `backend-parity-c` | 86 / 102 | 0 / 102 | 0 / 102 | 86 | 306 |
+ | `bin-c` | 0 / 2 | 0 / 2 | 0 / 2 | 0 | 6 |
+-| `c-programs` | 78 / 162 | 0 / 162 | 0 / 162 | 78 | 486 |
++| `c-programs` | 79 / 163 | 0 / 163 | 0 / 163 | 79 | 489 |
+ | `chaos-c` | 0 / 1 | 0 / 1 | 1 / 1 | 1 | 3 |
+ | `data-handling` | 6 / 6 | 0 / 6 | 0 / 6 | 6 | 18 |
+ | `debugger-c` | 1 / 1 | 0 / 1 | 0 / 1 | 1 | 3 |
+@@ -65,4 +65,4 @@ This view uses the same Basic Sanity Milestone 1 contracts as the tables above,
+ | `system-utils` | 30 / 33 | 1 / 33 | 0 / 33 | 31 | 99 |
+ | `util-c` | 0 / 1 | 0 / 1 | 0 / 1 | 0 | 3 |
+ 
+-Ordinary full validation executes 296 selected regression cells: the 294 green compatibility cells above (including 2 chaos-mode race-exposure checks), and 2 explicit custom commands outside the comparable denominator. A passing validate must produce a fresh result for all of them; a failing green cell is a regression, not permission to move it to red.
++Ordinary full validation executes 297 selected regression cells: the 295 green compatibility cells above (including 2 chaos-mode race-exposure checks), and 2 explicit custom commands outside the comparable denominator. A passing validate must produce a fresh result for all of them; a failing green cell is a regression, not permission to move it to red.
+diff --git a/ci/compat-envelope/cells.json b/ci/compat-envelope/cells.json
+index 7c6623d5e8..d55bc59e49 100644
+--- a/ci/compat-envelope/cells.json
++++ b/ci/compat-envelope/cells.json
+@@ -35746,6 +35746,197 @@
+       "observations": [],
+       "measurement": "never-measured"
+     },
++    {
++      "lane": "portable",
++      "category": "c-programs",
++      "test": "c-programs/pipe2-errno-precedence",
++      "mode": "chaos",
++      "backend": "dbt",
++      "enabled": false,
++      "status": "not-applicable",
++      "not_applicable_reason": "Chaos scheduling is unsupported by DBT",
++      "observations": [],
++      "measurement": "never-measured"
++    },
++    {
++      "lane": "portable",
++      "category": "c-programs",
++      "test": "c-programs/pipe2-errno-precedence",
++      "mode": "chaos",
++      "backend": "kvm",
++      "enabled": false,
++      "status": "not-applicable",
++      "not_applicable_reason": "Chaos scheduling is unsupported by KVM",
++      "observations": [],
++      "measurement": "never-measured"
++    },
++    {
++      "lane": "portable",
++      "category": "c-programs",
++      "test": "c-programs/pipe2-errno-precedence",
++      "mode": "chaos",
++      "backend": "liteinst",
++      "enabled": false,
++      "status": "not-applicable",
++      "not_applicable_reason": "Chaos scheduling is unsupported by LiteInst",
++      "observations": [],
++      "measurement": "never-measured"
++    },
++    {
++      "lane": "portable",
++      "category": "c-programs",
++      "test": "c-programs/pipe2-errno-precedence",
++      "mode": "chaos",
++      "backend": "ptrace",
++      "enabled": false,
++      "status": "not-applicable",
++      "not_applicable_reason": "Chaos scheduling is only meaningful for guests with an explicit schedule-diversity oracle",
++      "observations": [],
++      "measurement": "never-measured"
++    },
++    {
++      "lane": "portable",
++      "category": "c-programs",
++      "test": "c-programs/pipe2-errno-precedence",
++      "mode": "chaos",
++      "backend": "sabre",
++      "enabled": false,
++      "status": "not-applicable",
++      "not_applicable_reason": "Chaos scheduling is unsupported by SaBRe",
++      "observations": [],
++      "measurement": "never-measured"
++    },
++    {
++      "lane": "portable",
++      "category": "c-programs",
++      "test": "c-programs/pipe2-errno-precedence",
++      "mode": "naked",
++      "backend": "native",
++      "enabled": false,
++      "status": "not-applicable",
++      "not_applicable_reason": "This probe asserts kernel errno precedence, not native nondeterminism",
++      "observations": [],
++      "measurement": "never-measured"
++    },
++    {
++      "lane": "portable",
++      "category": "c-programs",
++      "test": "c-programs/pipe2-errno-precedence",
++      "mode": "replay",
++      "backend": "dbt",
++      "enabled": false,
++      "status": "not-applicable",
++      "not_applicable_reason": "Record/replay is unsupported by DBT",
++      "observations": [],
++      "measurement": "never-measured"
++    },
++    {
++      "lane": "portable",
++      "category": "c-programs",
++      "test": "c-programs/pipe2-errno-precedence",
++      "mode": "replay",
++      "backend": "kvm",
++      "enabled": false,
++      "status": "not-applicable",
++      "not_applicable_reason": "Record/replay is unsupported by KVM",
++      "observations": [],
++      "measurement": "never-measured"
++    },
++    {
++      "lane": "portable",
++      "category": "c-programs",
++      "test": "c-programs/pipe2-errno-precedence",
++      "mode": "replay",
++      "backend": "liteinst",
++      "enabled": false,
++      "status": "not-applicable",
++      "not_applicable_reason": "Record/replay is unsupported by LiteInst",
++      "observations": [],
++      "measurement": "never-measured"
++    },
++    {
++      "lane": "portable",
++      "category": "c-programs",
++      "test": "c-programs/pipe2-errno-precedence",
++      "mode": "replay",
++      "backend": "ptrace",
++      "enabled": false,
++      "status": "not-applicable",
++      "not_applicable_reason": "Record/replay qualification is separate from this errno-precedence assertion",
++      "observations": [],
++      "measurement": "never-measured"
++    },
++    {
++      "lane": "portable",
++      "category": "c-programs",
++      "test": "c-programs/pipe2-errno-precedence",
++      "mode": "replay",
++      "backend": "sabre",
++      "enabled": false,
++      "status": "not-applicable",
++      "not_applicable_reason": "Record/replay is unsupported by SaBRe",
++      "observations": [],
++      "measurement": "never-measured"
++    },
++    {
++      "lane": "portable",
++      "category": "c-programs",
++      "test": "c-programs/pipe2-errno-precedence",
++      "mode": "verify",
++      "backend": "dbt",
++      "enabled": false,
++      "status": "not-applicable",
++      "not_applicable_reason": "Not measured here; DynamoRIO is absent on the boxes this cell was qualified on, so no DBT result is claimed either way",
++      "observations": [],
++      "measurement": "never-measured"
++    },
++    {
++      "lane": "portable",
++      "category": "c-programs",
++      "test": "c-programs/pipe2-errno-precedence",
++      "mode": "verify",
++      "backend": "kvm",
++      "enabled": false,
++      "status": "not-applicable",
++      "not_applicable_reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately",
++      "observations": [],
++      "measurement": "never-measured"
++    },
++    {
++      "lane": "portable",
++      "category": "c-programs",
++      "test": "c-programs/pipe2-errno-precedence",
++      "mode": "verify",
++      "backend": "liteinst",
++      "enabled": false,
++      "status": "not-applicable",
++      "not_applicable_reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify LiteInst separately",
++      "observations": [],
++      "measurement": "never-measured"
++    },
++    {
++      "lane": "portable",
++      "category": "c-programs",
++      "test": "c-programs/pipe2-errno-precedence",
++      "mode": "verify",
++      "backend": "ptrace",
++      "enabled": true,
++      "status": "green",
++      "observations": [],
++      "measurement": "never-measured"
++    },
++    {
++      "lane": "portable",
++      "category": "c-programs",
++      "test": "c-programs/pipe2-errno-precedence",
++      "mode": "verify",
++      "backend": "sabre",
++      "enabled": false,
++      "status": "not-applicable",
++      "not_applicable_reason": "Initial C-corpus migration preserves the established ptrace baseline; qualify SaBRe separately",
++      "observations": [],
++      "measurement": "never-measured"
++    },
+     {
+       "lane": "portable",
+       "category": "c-programs",
+diff --git a/ci/expected-e2e-plan.json b/ci/expected-e2e-plan.json
+index 277d67bbda..547494c5f5 100644
+--- a/ci/expected-e2e-plan.json
++++ b/ci/expected-e2e-plan.json
+@@ -1120,6 +1120,13 @@
+       "mode": "verify",
+       "test": "c-programs/pidfd-poll-self"
+     },
++    {
++      "backend": "ptrace",
++      "category": "c-programs",
++      "lane": "portable",
++      "mode": "verify",
++      "test": "c-programs/pipe2-errno-precedence"
++    },
+     {
+       "backend": "ptrace",
+       "category": "c-programs",
+diff --git a/detcore/src/syscalls/files.rs b/detcore/src/syscalls/files.rs
+index d050256820..083f634aed 100644
+--- a/detcore/src/syscalls/files.rs
++++ b/detcore/src/syscalls/files.rs
+@@ -201,6 +201,36 @@ fn copy_timer_slack_output<M: MemoryAccess>(
+ /// unprivileged capacity increase while the soft limit is active.
+ const DETERMINISTIC_PIPE_CAPACITY_BYTES: i32 = 8 * 1024;
+ 
++/// Why the pin failed, and which descriptors Linux had already created when it did.
++///
++/// `pipe2` has already SUCCEEDED by the time the capacity is pinned, so the two descriptors
++/// exist in the guest whatever happens next. Carrying them alongside the errno is what makes
++/// releasing them possible; classifying separately from acting on it is what makes the
++/// classification unit-testable without a guest.
++#[derive(Debug, PartialEq, Eq)]
++struct PipeCapacityFailure {
++    created_fds: [i32; 2],
++    error: Errno,
++}
++
++/// Classify the result of pinning a pipe's capacity.
++///
++/// The ONLY success shape is Linux returning exactly the requested capacity. `F_SETPIPE_SZ`
++/// returns the capacity it actually applied, and it may round; a rounded value is a pipe whose
++/// size we did not choose, which is the host-dependent capacity this path exists to remove. It
++/// is not a kernel errno, so it is reported as `EIO` rather than dressed up as one.
++fn pipe_capacity_failure(
++    created_fds: [i32; 2],
++    capacity_result: Result<i64, Errno>,
++) -> Option<PipeCapacityFailure> {
++    let error = match capacity_result {
++        Ok(applied) if applied == i64::from(DETERMINISTIC_PIPE_CAPACITY_BYTES) => return None,
++        Ok(_) => Errno::EIO,
++        Err(error) => error,
++    };
++    Some(PipeCapacityFailure { created_fds, error })
++}
++
+ fn should_tag_sabre_internal_pipe_io(
+     discovers_live_metadata: bool,
+     fd_type: FdType,
+@@ -2954,32 +2984,60 @@ impl<T: RecordOrReplay> Detcore<T> {
+         } else {
+             call
+         };
++        // NO PRE-CALL READ OF `pipefd`. This is load-bearing on three backends, not a style
++        // choice. `record_or_replay` below returns early on failure, so every guest memory
++        // access AFTER it runs only when pipe2 SUCCEEDED -- and a successful pipe2 means the
++        // kernel itself wrote two ints there, which proves the address valid. A pre-call
++        // snapshot would be the only access to a kernel-UNVALIDATED address, and `LocalMemory`
++        // (reverie-dbt, reverie-e9patch, reverie-liteinst) implements reads as an unsafe
++        // `copy_nonoverlapping` that always returns `Ok`: a bad pointer is a hardware fault
++        // that `Result::ok` cannot catch, so the guest would die with SIGSEGV before Linux
++        // could report EFAULT. Letting the kernel touch `pipefd` first is also what keeps its
++        // argument-validation precedence intact -- flags are checked before the pointer, so a
++        // bad pointer with bad flags is EINVAL and with good flags EFAULT.
++        // `tests/c/pipe2_errno_precedence.c` asserts that precedence directly.
+         let res = self.record_or_replay(guest, injected).await?;
+         let memory = guest.memory();
+ 
+         if let Some(pipefd) = call.pipefd() {
+             let fds: [i32; 2] = memory.read_value(pipefd)?;
+             if internally_nonblocking {
+-                let actual_capacity = guest
++                let capacity_result = guest
+                     .inject(
+                         syscalls::Fcntl::new()
+                             .with_fd(fds[0])
+                             .with_cmd(F_SETPIPE_SZ(DETERMINISTIC_PIPE_CAPACITY_BYTES)),
+                     )
+-                    .await
+-                    .map_err(|error| {
+-                        Error::Tool(anyhow::anyhow!(
+-                            "failed to pin internal pipe capacity to {} bytes: {}",
+-                            DETERMINISTIC_PIPE_CAPACITY_BYTES,
+-                            error
+-                        ))
+-                    })?;
+-                if actual_capacity != i64::from(DETERMINISTIC_PIPE_CAPACITY_BYTES) {
+-                    return Err(Error::Tool(anyhow::anyhow!(
+-                        "kernel set internal pipe capacity to {} bytes instead of {}",
+-                        actual_capacity,
+-                        DETERMINISTIC_PIPE_CAPACITY_BYTES
+-                    )));
++                    .await;
++                if let Some(failure) = pipe_capacity_failure(fds, capacity_result) {
++                    // Release the descriptors Linux already created, THEN stop the run.
++                    //
++                    // Returning `Err` here -- what this code did before -- unwinds without
++                    // closing them. `pipe2` has already succeeded, so both descriptors are
++                    // live in the guest and are not yet registered with `add_fd`, which means
++                    // Detcore's own bookkeeping never learns they exist. Closing them is the
++                    // only way the guest's descriptor table matches Detcore's model.
++                    //
++                    // We do NOT fabricate a `pipe2` errno. Linux leaves `pipefd` untouched
++                    // when `pipe2` fails, so inventing a failure would oblige us to restore
++                    // the caller's buffer, which needs the pre-call snapshot the comment above
++                    // explains we must never take. And returning success with an unpinned pipe
++                    // silently restores exactly the host-dependent capacity this path exists
++                    // to remove. An unpinnable pipe means determinism is unavailable for this
++                    // run, so fail closed and loudly rather than quietly.
++                    //
++                    // Defensive, not expected: pinning on a freshly created EMPTY pipe is a
++                    // shrink or a no-op. EBUSY needs buffered data and EPERM needs to exceed
++                    // `pipe-max-size`; neither can hold here.
++                    for fd in failure.created_fds {
++                        let _ = guest.inject(syscalls::Close::new().with_fd(fd)).await;
++                    }
++                    error!(
++                        "[detcore] cannot pin scheduler-managed pipe to {} bytes (fds {:?}): {}. \
++                         Determinism is unavailable for this run.",
++                        DETERMINISTIC_PIPE_CAPACITY_BYTES, failure.created_fds, failure.error,
++                    );
++                    unrecoverable_shutdown(guest).await;
+                 }
+             }
+             self.add_fd(guest, fds[0], call.flags(), FdType::Pipe)
+@@ -4069,6 +4127,7 @@ mod test {
+     use reverie::syscalls::FromToRaw;
+     use reverie::syscalls::Whence;
+ 
++    use super::DETERMINISTIC_PIPE_CAPACITY_BYTES;
+     use super::Errno;
+     use super::TimerSlackBinding;
+     use super::UNIX_AUTOBIND_NAME_LEN;
+@@ -4076,6 +4135,7 @@ mod test {
+     use super::classify_timer_slack_binding;
+     use super::is_inherited_container_output;
+     use super::parse_timer_slack_write;
++    use super::pipe_capacity_failure;
+     use super::random_device_lseek_result;
+     use super::should_tag_sabre_internal_pipe_io;
+     use super::unix_autobind_address;
+@@ -4093,6 +4153,37 @@ mod test {
+         assert_eq!(libc::SOCK_CLOEXEC, OFlag::O_CLOEXEC.bits());
+     }
+ 
++    #[test]
++    fn pipe_capacity_failure_classifies_the_errno() {
++        let created = [17, 18];
++
++        // The only success shape: Linux applied EXACTLY the capacity we asked for.
++        assert_eq!(
++            pipe_capacity_failure(created, Ok(i64::from(DETERMINISTIC_PIPE_CAPACITY_BYTES))),
++            None
++        );
++
++        // Successful-but-wrong capacity is a pipe whose size we did not choose. That is not a
++        // kernel errno, so it is reported as EIO rather than dressed up as one.
++        let mismatch = pipe_capacity_failure(
++            created,
++            Ok(i64::from(DETERMINISTIC_PIPE_CAPACITY_BYTES) * 2),
++        )
++        .expect("a capacity Linux rounded away from the pin must not read as success");
++        assert_eq!(mismatch.created_fds, created);
++        assert_eq!(mismatch.error, Errno::EIO);
++
++        // A real kernel errno is preserved rather than rewritten.
++        let denied = pipe_capacity_failure(created, Err(Errno::EPERM))
++            .expect("a kernel refusal must not read as success");
++        assert_eq!(denied.created_fds, created);
++        assert_eq!(denied.error, Errno::EPERM);
++
++        // The descriptors are carried through every failure shape, because they are what the
++        // caller has to close; losing them here is how they would leak.
++        assert_eq!(denied.created_fds, created);
++    }
++
+     #[test]
+     fn sabre_pipe_marker_requires_nonblockize_retry_semantics() {
+         assert!(should_tag_sabre_internal_pipe_io(
+diff --git a/tests/e2e/manifests/c-programs.yaml b/tests/e2e/manifests/c-programs.yaml
+index 58b64b3d85..0a1c94ba5b 100644
+--- a/tests/e2e/manifests/c-programs.yaml
++++ b/tests/e2e/manifests/c-programs.yaml
+@@ -4953,6 +4953,77 @@ test:
+           kvm: No custom edge-case arguments have been calibrated for this C guest
+           sabre: No custom edge-case arguments have been calibrated for this C guest
+           liteinst: No custom edge-case arguments have been calibrated for this C guest
++  - id: c-programs/pipe2-errno-precedence
++    description: Strict verification for tests/c/pipe2_errno_precedence.c
++    lane: portable
++    requires:
++      - linux
++      - x86_64
++      - userns
++      - ptrace
++      - cc
++    timeout_seconds: 90
++    occasional: false
++    program: tests/c/pipe2_errno_precedence.c
++    observation:
++      status: true
++      stdout: true
++      stderr: false
++      artifacts: []
++    modes:
++      verify:
++        ci: true
++        backends_enabled:
++          - ptrace
++        guest_args:
++          # 8192 is DETERMINISTIC_PIPE_CAPACITY_BYTES. Passing it makes the guest ASSERT the
++          # pin rather than only print F_GETPIPE_SZ. Without the argument, deleting the
++          # F_SETPIPE_SZ call outright still passed every registered cell, because two runs of
++          # an unpinned pipe agree with each other and the errno cases are unaffected -- the
++          # cell could not fail. Omitted natively, where the capacity is the host's.
++          ptrace:
++            - '8192'
++        backends_disabled:
++          dbt: Not measured here; DynamoRIO is absent on the boxes this cell was qualified on, so no DBT result is claimed either way
++          kvm: Initial C-corpus migration preserves the established ptrace baseline; qualify KVM separately
++          sabre: Initial C-corpus migration preserves the established ptrace baseline; qualify SaBRe separately
++          liteinst: Initial C-corpus migration preserves the established ptrace baseline; qualify LiteInst separately
++      naked:
++        ci: false
++        backends_enabled: []
++        backends_disabled:
++          native: This probe asserts kernel errno precedence, not native nondeterminism
++        ci_disabled_reason: 'NOT-EXERCISED (by design): this probe asserts kernel errno precedence and a pinned pipe capacity, both of which exist only under Detcore; native presents no oracle for either.'
++      replay:
++        ci: false
++        backends_enabled: []
++        backends_disabled:
++          ptrace: Record/replay qualification is separate from this errno-precedence assertion
++          dbt: Record/replay is unsupported by DBT
++          kvm: Record/replay is unsupported by KVM
++          sabre: Record/replay is unsupported by SaBRe
++          liteinst: Record/replay is unsupported by LiteInst
++        ci_disabled_reason: 'NOT-EXERCISED: record/replay qualification is a separate exercise from this errno-precedence assertion and has never been run for this guest.'
++      chaos:
++        ci: false
++        backends_enabled: []
++        backends_disabled:
++          ptrace: Chaos scheduling is only meaningful for guests with an explicit schedule-diversity oracle
++          dbt: Chaos scheduling is unsupported by DBT
++          kvm: Chaos scheduling is unsupported by KVM
++          sabre: Chaos scheduling is unsupported by SaBRe
++          liteinst: Chaos scheduling is unsupported by LiteInst
++        ci_disabled_reason: 'NOT-EXERCISED: chaos scheduling is only meaningful for guests with an explicit schedule-diversity oracle; this guest is single-threaded and has none.'
++      custom:
++        ci: false
++        backends_enabled: []
++        backends_disabled:
++          ptrace: No custom edge-case arguments have been calibrated for this C guest
++          dbt: No custom edge-case arguments have been calibrated for this C guest
++          kvm: No custom edge-case arguments have been calibrated for this C guest
++          sabre: No custom edge-case arguments have been calibrated for this C guest
++          liteinst: No custom edge-case arguments have been calibrated for this C guest
++        ci_disabled_reason: 'NOT-EXERCISED: no custom edge-case arguments have been calibrated for this guest beyond the pinned-capacity argument the verify mode already passes.'
+   - id: c-programs/ppoll-readv
+     description: Strict verification for tests/c/ppoll_readv.c
+     lane: portable
+diff --git a/tests/e2e/manifests/inventory/test-files.json b/tests/e2e/manifests/inventory/test-files.json
+index 49e478d5a8..2ba4303e38 100644
+--- a/tests/e2e/manifests/inventory/test-files.json
++++ b/tests/e2e/manifests/inventory/test-files.json
+@@ -1338,6 +1338,12 @@
+       "runner": "target/debug/test-harness via tests/e2e/manifests/c-programs.yaml (explicit mode selection; ci=false)",
+       "why": "tests/c/pidfd_waitid_child.c is owned by target/debug/test-harness via tests/e2e/manifests/c-programs.yaml (explicit mode selection; ci=false): Direct C guest is centrally discoverable with ptrace verification enabled for explicit runs; it remains outside blocking CI until its standalone build and output contract are calibrated"
+     },
++    {
++      "disposition": "manifest-test",
++      "path": "tests/c/pipe2_errno_precedence.c",
++      "runner": "target/debug/test-harness via tests/e2e/manifests/c-programs.yaml (verify on ptrace; ci=true)",
++      "why": "tests/c/pipe2_errno_precedence.c is owned by target/debug/test-harness via tests/e2e/manifests/c-programs.yaml (verify on ptrace; ci=true): regression guest for pipe2 argument-validation precedence, asserting that a bad pipefd pointer with valid flags is EFAULT while bad flags stay EINVAL even when the pointer is also unusable, and asserting the pinned deterministic pipe capacity so removing the F_SETPIPE_SZ pin fails the cell instead of passing it"
++    },
+     {
+       "disposition": "manifest-test",
+       "path": "tests/c/ppoll_readv.c",

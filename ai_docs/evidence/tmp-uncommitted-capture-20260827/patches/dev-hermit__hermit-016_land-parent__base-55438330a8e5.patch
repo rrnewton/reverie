@@ -1,0 +1,56 @@
+diff --git a/demos/lib/qemu_controller.py b/demos/lib/qemu_controller.py
+index 00e18adfa..16c26eff0 100755
+--- a/demos/lib/qemu_controller.py
++++ b/demos/lib/qemu_controller.py
+@@ -1,15 +1,44 @@
+ #!/usr/bin/env python3
+ """Run QEMU plus its serial/QMP controller inside Hermit's boundary."""
+ 
+-import argparse
+-import os
+-from pathlib import Path
+-import subprocess
+ import sys
+-import time
+-from typing import List, Optional
+ 
+-from demo_common import qmp_command, stop_process, wait_for_socket
++# SELF-GUARD, and it must run before the `demo_common` import below.
++#
++# WHY HERE rather than in the caller. Hermit reports a CONSTANT mtime for every
++# file (measured: `stat -c %Y demos/lib/demo_common.py` gives the real mtime
++# natively and 1767225600 under `hermit run --strict`). CPython invalidates a
++# .pyc by comparing the source mtime it stats against the mtime recorded in the
++# .pyc header, so a hermited run and a native run sharing this directory
++# CONTINUOUSLY INVALIDATE EACH OTHER'S CACHE. The first hermited run after any
++# native one therefore recompiles `demo_common` and does measurably different
++# work, and only that one.
++#
++# That is not hypothetical. It made 2 of 10 runs of a QEMU boot experiment
++# diverge in their snapshots and was investigated for a day as a suspected
++# Detcore determinism hole before being traced here. See
++# `experiments/detcore-partial-determinism_20260819/README.md`.
++#
++# demos/05-qemu-boot.py and 06-qemu-resume.py already set
++# PYTHONDONTWRITEBYTECODE=1 in the child environment, so for them this is
++# belt-and-braces. The point of putting it HERE is that this module is the
++# single entry point every ad-hoc experiment driver executes inside Hermit, and
++# those drivers have no reason to know about the hazard. Guarding at the entry
++# point means they get it without knowing.
++#
++# `sys.dont_write_bytecode` is the in-process equivalent of the env var and,
++# unlike the env var, cannot be dropped by a caller that rebuilds the
++# environment from scratch.
++sys.dont_write_bytecode = True
++
++import argparse  # noqa: E402
++import os  # noqa: E402
++from pathlib import Path  # noqa: E402
++import subprocess  # noqa: E402
++import time  # noqa: E402
++from typing import List, Optional  # noqa: E402
++
++from demo_common import qmp_command, stop_process, wait_for_socket  # noqa: E402
+ 
+ 
+ # Force subprocess to launch QEMU with fork()+execve, never vfork(). CPython

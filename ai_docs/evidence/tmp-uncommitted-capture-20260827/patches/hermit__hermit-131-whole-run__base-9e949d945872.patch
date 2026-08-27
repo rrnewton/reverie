@@ -1,0 +1,355 @@
+diff --git a/scripts/validate.rs b/scripts/validate.rs
+index 6cfda84684..79ae88009b 100755
+--- a/scripts/validate.rs
++++ b/scripts/validate.rs
+@@ -123,6 +123,15 @@ const COVERAGE_LEDGER_SCHEMA_VERSION: i64 = 5;
+ /// it without inference.
+ const LEDGER_PRODUCER: &str = "hermit-validate-rs";
+ 
++/// Default wall budget for one complete validate invocation, including retries.
++///
++/// A slow healthy sibling finishes in 23-31 minutes. Three additional 421s
++/// retry attempts put the worst observed shape at about 52 minutes; 70 minutes
++/// leaves room for setup, queueing, and result publication while remaining
++/// bounded. The enclosing validate-lock deadline must remain later than this
++/// driver's scope backstop (`run + scope_grace_s(run)`).
++const DEFAULT_RUN_TIMEOUT_SECONDS: i64 = 4_200;
++
+ /// The Reverie-pin preflight node's tag. Named once so the plan that creates it
+ /// and the fail-closed assertion that requires it cannot drift apart.
+ const PIN_GATE_TAG: &str = "pre.reverie_pin";
+@@ -351,7 +360,7 @@ fn usage() -> &'static str {
+      \x20 --no-label-pr    Disable the non-fatal receipt publication and label update.\n\
+      \x20 --ignore-cache   Force a real run even on a tree-keyed cache hit.\n\
+      \x20 -j N             Scheduler width (default: host_cpus/8, floor 2, cap 16).\n\
+-     \x20 --run-timeout SEC  Wall budget for the WHOLE invocation (across lanes and\n\
++     \x20 --run-timeout SEC  Wall budget for the WHOLE invocation (default 4200s; across lanes and\n\
+      \x20                  retries). On breach, in-flight nodes are cut and the run still\n\
+      \x20                  reports instead of being killed externally. Also sets a later\n\
+      \x20                  systemd-scope backstop. Env: HERMIT_VALIDATE_RUN_TIMEOUT_SECONDS.\n\
+@@ -6795,6 +6804,54 @@ struct LaneResult {
+     env_retries: usize,
+     /// The whole-invocation deadline expired during this lane.
+     run_timed_out: bool,
++    /// Retry scheduler invocations withheld because a selected node's declared
++    /// wall budget did not fit inside the current whole-run remainder.
++    retry_run_timeout_refusals: Vec<RetryRunTimeoutRefusal>,
++}
++
++#[derive(Clone, Debug, PartialEq, Eq)]
++struct RetryRunTimeoutRefusal {
++    tag: String,
++    attempt: usize,
++    max_attempts: usize,
++    remaining_s: i64,
++    needed_s: i64,
++}
++
++impl RetryRunTimeoutRefusal {
++    fn message(&self) -> String {
++        format!(
++            "validate: {}: NOT starting attempt {}/{}; whole-run budget has {}s remaining, but {}s \
++             are needed to preserve this node's declared wall budget.",
++            self.tag, self.attempt, self.max_attempts, self.remaining_s, self.needed_s
++        )
++    }
++}
++
++/// Name every selected retry node whose declared wall bound does not fit the
++/// current whole-run remainder.
++///
++/// This deliberately uses the same strict `node < run` rule as dagrun's own
++/// preflight. It is checked before invoking the retry scheduler at all, so a
++/// node cannot sit queued behind its peers and then be killed by the less-
++/// specific whole-run deadline. The whole retry round is withheld when this
++/// list is non-empty; selectively launching peers would lose that guarantee.
++fn retry_steps_violating_run_timeout(
++    cfg: &DagConfig,
++    attempts: &[NodeAttempt],
++    remaining_s: i64,
++    max_attempts: usize,
++) -> Vec<RetryRunTimeoutRefusal> {
++    steps_violating_run_timeout(cfg, remaining_s)
++        .into_iter()
++        .map(|(tag, needed_s)| RetryRunTimeoutRefusal {
++            attempt: next_attempt_ordinal(attempts, &tag),
++            tag,
++            max_attempts,
++            remaining_s,
++            needed_s,
++        })
++        .collect()
+ }
+ 
+ /// Return the durable log's byte length once it has stopped growing.
+@@ -8645,7 +8702,144 @@ fn scheduler_accounting_bracket() -> Result<String, String> {
+                 .outcomes
+                 .iter()
+                 .map(|outcome| (outcome.tag.as_str(), outcome.ok, outcome.aborted))
+-                .collect::<Vec<_>>()
++            .collect::<Vec<_>>()
++        ));
++    }
++
++    // WHOLE-RUN RETRY ADMISSION, BOTH DIRECTIONS. The exact measured shape was
++    // a 405-second completed attempt with only 200 seconds left. The negative
++    // side must name all four facts; the positive side is one second across the
++    // strict node-bound < run-bound boundary and must proceed.
++    let mut deadline_step = step("deadline_admission", "true");
++    deadline_step.timeout = 405;
++    let deadline_cfg = DagConfig {
++        steps: vec![deadline_step],
++        ..Default::default()
++    };
++    let prior_attempts: Vec<NodeAttempt> = (1..=3)
++        .map(|attempt| unreported_attempt("fixture.deadline_admission".into(), attempt))
++        .collect();
++    if !retry_steps_violating_run_timeout(&deadline_cfg, &prior_attempts, 406, 4).is_empty() {
++        return Err(
++            "retry run timeout: a node with a 405s wall bound was declined with 406s remaining"
++                .into(),
++        );
++    }
++    let insufficient =
++        retry_steps_violating_run_timeout(&deadline_cfg, &prior_attempts, 200, 4);
++    let expected = RetryRunTimeoutRefusal {
++        tag: "fixture.deadline_admission".into(),
++        attempt: 4,
++        max_attempts: 4,
++        remaining_s: 200,
++        needed_s: 405,
++    };
++    if insufficient != vec![expected.clone()]
++        || insufficient[0].message()
++            != "validate: fixture.deadline_admission: NOT starting attempt 4/4; whole-run budget \
++                has 200s remaining, but 405s are needed to preserve this node's declared wall \
++                budget."
++    {
++        return Err(format!(
++            "retry run timeout: insufficient-budget refusal lost node, attempt, or timing: \
++             {insufficient:?} message={:?}",
++            insufficient.first().map(RetryRunTimeoutRefusal::message)
++        ));
++    }
++
++    // Exercise the production retry loop, not only its predicate. With ample
++    // time the second attempt must run and pass. With too little time after the
++    // first failure, the payload marker must still contain exactly one line:
++    // the proposed second attempt was declined before dagrun launched it.
++    let proceeds_log = tmp.join("retry-time-available.log");
++    let proceeds_marker = tmp.join("retry-time-available-attempts");
++    let proceeds_cmd = format!(
++        "printf 'attempt\\n' >> {marker}; test $(wc -l < {marker}) -gt 1",
++        marker = validate_plan::shell_quote(&proceeds_marker.to_string_lossy()),
++    );
++    let mut proceeds_step = step("retry_time_available", &proceeds_cmd);
++    proceeds_step.timeout = 5;
++    let proceeds_deadline = monotonic_now_ns()
++        .and_then(|now| now.checked_add(20_000_000_000))
++        .ok_or("retry run timeout: cannot construct positive deadline")?;
++    let proceeds = run_lane_with_env_retries(
++        &DagConfig { steps: vec![proceeds_step], ..Default::default() },
++        1,
++        true,
++        0,
++        None,
++        &proceeds_log,
++        Some(proceeds_deadline),
++        1,
++        &BTreeMap::new(),
++        false,
++    );
++    if !proceeds.ok
++        || !proceeds.complete
++        || proceeds.env_retries != 1
++        || proceeds.attempts.len() != 2
++        || !proceeds.retry_run_timeout_refusals.is_empty()
++    {
++        return Err(format!(
++            "retry run timeout: sufficient-budget retry did not proceed and pass: ok={} \
++             complete={} retries={} attempts={} refusals={:?}",
++            proceeds.ok,
++            proceeds.complete,
++            proceeds.env_retries,
++            proceeds.attempts.len(),
++            proceeds.retry_run_timeout_refusals
++        ));
++    }
++
++    let declined_log = tmp.join("retry-time-insufficient.log");
++    let declined_marker = tmp.join("retry-time-insufficient-attempts");
++    let declined_cmd = format!(
++        "printf 'attempt\\n' >> {marker}; sleep 2; exit 1",
++        marker = validate_plan::shell_quote(&declined_marker.to_string_lossy()),
++    );
++    let mut declined_step = step("retry_time_insufficient", &declined_cmd);
++    declined_step.timeout = 5;
++    let declined_deadline = monotonic_now_ns()
++        .and_then(|now| now.checked_add(8_000_000_000))
++        .ok_or("retry run timeout: cannot construct negative deadline")?;
++    let declined = run_lane_with_env_retries(
++        &DagConfig { steps: vec![declined_step], ..Default::default() },
++        1,
++        true,
++        0,
++        None,
++        &declined_log,
++        Some(declined_deadline),
++        1,
++        &BTreeMap::new(),
++        false,
++    );
++    let declined_launches = std::fs::read_to_string(&declined_marker)
++        .unwrap_or_default()
++        .lines()
++        .count();
++    let declined_refusal = declined.retry_run_timeout_refusals.first();
++    if declined.ok
++        || !declined.complete
++        || declined.env_retries != 0
++        || declined.attempts.len() != 1
++        || declined_launches != 1
++        || declined_refusal.is_none_or(|r| {
++            r.tag != "fixture.retry_time_insufficient"
++                || r.attempt != 2
++                || r.max_attempts != 2
++                || r.remaining_s >= r.needed_s
++                || r.needed_s != 5
++        })
++    {
++        return Err(format!(
++            "retry run timeout: insufficient-budget retry was launched or not reported: ok={} \
++             complete={} retries={} attempts={} launches={declined_launches} refusals={:?}",
++            declined.ok,
++            declined.complete,
++            declined.env_retries,
++            declined.attempts.len(),
++            declined.retry_run_timeout_refusals
+         ));
+     }
+     Ok(())
+@@ -8656,8 +8850,8 @@ fn scheduler_accounting_bracket() -> Result<String, String> {
+     match (result, cleanup) {
+         (Ok(()), Ok(())) => Ok(
+             "scheduler accounting: complete and allowed-failure plans accepted; fail-fast, \
+-             skipped, aborted, exact attempt identity, and three-state environmental retry \
+-             verdicts bracketed"
++            skipped, aborted, exact attempt identity, whole-run retry admission, and three-state \
++            environmental retry verdicts bracketed"
+                 .into(),
+         ),
+         (Err(problem), Ok(())) => Err(problem),
+@@ -8723,6 +8917,7 @@ fn run_lane_with_env_retries(
+             ok: false,
+             env_retries: 0,
+             run_timed_out: true,
++            retry_run_timeout_refusals: Vec::new(),
+         };
+     }
+     let mut round_log_start = settled_log_len(log_path);
+@@ -8761,6 +8956,7 @@ fn run_lane_with_env_retries(
+         first.outcomes.iter().map(|o| (o.tag.clone(), o.clone())).collect();
+     let mut skipped = first.skipped.clone();
+     let mut env_retries = 0usize;
++    let mut retry_run_timeout_refusals = Vec::new();
+     // Attempt 1 for everything the first pass reported, recorded BEFORE any
+     // retry can replace it in `by_tag`. This is the row that used to vanish.
+     let mut attempts: Vec<NodeAttempt> = order
+@@ -8916,9 +9112,26 @@ fn run_lane_with_env_retries(
+             );
+             break;
+         }
++        let mut retry_cfg = cfg.clone();
++        retry_cfg.description = format!("{} — retry {}/{}", cfg.description, env_retries + 1, max);
++        retry_cfg.steps = steps;
++
+         // Retries draw down the same clock. Giving every retry a fresh budget
+-        // would turn a bounded invocation back into an unbounded one.
+-        if remaining_budget_s(deadline) == Some(0) {
++        // would turn a bounded invocation back into an unbounded one. Check the
++        // complete retry DAG before invoking the scheduler: dagrun refuses that
++        // whole invocation when even one selected node's declared wall bound
++        // does not fit, and doing the same check here lets validate name the
++        // node and proposed attempt instead of reporting only a generic refusal.
++        //
++        // This is intentionally the declared wall bound, not the duration of an
++        // earlier attempt. In the measured failure the round began with about
++        // 483s left, then liteinst waited 148s before launch; comparing 483s to
++        // its prior 405s duration would have admitted work that could no longer
++        // finish. Comparing the round against its existing 900s node bound
++        // refuses before any retry node starts, so queue time cannot invalidate
++        // the decision.
++        let remaining = remaining_budget_s(deadline);
++        if remaining == Some(0) {
+             eprintln!(
+                 "validate: whole-run budget exhausted; NOT starting retry {}/{}.",
+                 env_retries + 1,
+@@ -8927,6 +9140,21 @@ fn run_lane_with_env_retries(
+             run_timed_out = true;
+             break;
+         }
++        if let Some(remaining_s) = remaining {
++            let refused = retry_steps_violating_run_timeout(
++                &retry_cfg,
++                &attempts,
++                remaining_s,
++                max + 1,
++            );
++            if !refused.is_empty() {
++                for refusal in &refused {
++                    eprintln!("{}", refusal.message());
++                }
++                retry_run_timeout_refusals.extend(refused);
++                break;
++            }
++        }
+         env_retries += 1;
+         for (tag, class) in blocked.iter().filter(|(tag, _)| retry_tags.contains(tag)) {
+             // This says WHY the retry scheduler accepted the prior failure. The
+@@ -8942,9 +9170,6 @@ fn run_lane_with_env_retries(
+                 max + 1
+             );
+         }
+-        let mut retry_cfg = cfg.clone();
+-        retry_cfg.description = format!("{} — retry {env_retries}/{max}", cfg.description);
+-        retry_cfg.steps = steps;
+         // Everything before this byte belongs to an earlier scheduler
+         // invocation. The retry may emit no detail at all; that must stay
+         // unknown rather than inheriting a stale banner through whole-log rfind.
+@@ -8957,7 +9182,7 @@ fn run_lane_with_env_retries(
+             cgroups.clone(),
+             None,
+             Some(scheduler_cpu_budget()),
+-            remaining_budget_s(deadline),
++            remaining,
+         );
+         if record_step_profiles {
+             forward_step_profiles(&again, jobs);
+@@ -9086,7 +9311,16 @@ fn run_lane_with_env_retries(
+             .iter()
+             .all(|outcome| outcome_execution(outcome) == AttemptExecution::Completed);
+     let ok = outcomes.iter().all(|o| o.ok || o.aborted);
+-    LaneResult { outcomes, skipped, attempts, complete, ok, env_retries, run_timed_out }
++    LaneResult {
++        outcomes,
++        skipped,
++        attempts,
++        complete,
++        ok,
++        env_retries,
++        run_timed_out,
++        retry_run_timeout_refusals,
++    }
+ }
+ 
+ /// Print every node that took more than one attempt, and every attempt that
+@@ -11738,7 +11972,8 @@ fn run(durable_slot: &mut Option<DurableLog>) -> RunSummary {
+     // safe-ci step's scheduler-owned epoch; a top-level run owns its epoch here.
+     let run_timeout = args
+         .run_timeout
+-        .or_else(|| env_positive("HERMIT_VALIDATE_RUN_TIMEOUT_SECONDS"));
++        .or_else(|| env_positive("HERMIT_VALIDATE_RUN_TIMEOUT_SECONDS"))
++        .or(Some(DEFAULT_RUN_TIMEOUT_SECONDS));
+     let deadline_ns = if args.show_plan {
+         None
+     } else {

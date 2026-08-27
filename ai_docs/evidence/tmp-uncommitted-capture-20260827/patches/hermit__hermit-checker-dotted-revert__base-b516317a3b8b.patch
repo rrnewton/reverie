@@ -1,0 +1,14 @@
+diff --git a/scripts/check-checker-scheduling.rs b/scripts/check-checker-scheduling.rs
+index 01c9476d5b..afa9db27f5 100755
+--- a/scripts/check-checker-scheduling.rs
++++ b/scripts/check-checker-scheduling.rs
+@@ -492,8 +492,7 @@ fn is_invoked(text: &str, path: &str) -> bool {
+     // hermit#2661, #2667, #2674, #2681 -- was reachable only when this clause had already
+     // declined. Two characters defeated them all: `rustc -o ./scripts/x.rs` read as an
+     // invocation. A guard one arm of an OR can bypass is not a guard.
+-    let dotted = format!("./{path}");
+-    if text.lines().any(|line| invokes_on_line(line, &dotted)) {
++    if text.contains(&format!("./{path}")) {
+         return true;
+     }
+     // `rustc` is a runner here too: ci/run-reverie-pin-check.sh COMPILES

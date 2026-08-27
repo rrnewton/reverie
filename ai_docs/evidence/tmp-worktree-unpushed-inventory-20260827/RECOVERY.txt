@@ -1,0 +1,373 @@
+Unpushed HEADs in /tmp git worktrees, captured 2026-08-27 before a possible reboot.
+The WORKING TREES are in /tmp and are lost on reboot. The COMMITS are in each
+repo's object store and survive -- but for a DETACHED head the only reference is
+the per-worktree HEAD under <repo>/.git/worktrees/<name>/, and `git worktree prune`
+DELETES THAT REFERENCE once the /tmp path is gone. After prune + gc the commit is
+unrecoverable. Recover with: git -C <repo> log <sha>   /   git -C <repo> branch <name> <sha>
+
+dev-hermit	DETACHED	716cbfaf8723682b3dda46e40238523ddbdb6fb6	ahead=3	/tmp/hermit-005/d185
+	1787704371	attribute_reds: do not report the outer gate name as a per-node cause
+dev-hermit	DETACHED	f56a6a02cfd625c64ddd2416d53d13a84ad26380	ahead=1	/tmp/hermit-005/d189
+	1787705860	fleet-gh: a comment must not carry a verdict, and the command declares intent
+dev-hermit	DETACHED	4e35be6a1f794a19e2f190bbb19d73da8dd52608	ahead=2	/tmp/hermit-005/d189b
+	1787706725	fleet-gh: narrow the refusal to a verdict that cannot bind
+dev-hermit	DETACHED	091daf5876079b7bfddd7d4745c997b6c9b28c89	ahead=1	/tmp/dev-hermit-131-final-status
+	1787799668	WIP consume fixed final validate status
+dev-hermit	refs/heads/hermit-131/whole-run-deadline	8672f96444bec842d2ffbc878fee874561a15348	ahead=1	/tmp/dev-hermit-131-whole-run
+	1787778531	Give Hermit validate a whole-run budget
+dev-hermit	DETACHED	78ca9731599c538251426754244752450c197502	ahead=1	/tmp/dev-hermit-land-wt.rDgXDs
+	1787591280	[hermit2, fix-validate, unresolved, devbig014, role=impl] Add repository routing to canonical lander
+dev-hermit	DETACHED	7abcda027915318ff8472e366f98803b24a74b7a	ahead=1	/tmp/dev-hermit-land-wt2.R9MDVq
+	1787592373	[hermit2, fix-validate, unresolved, devbig014, role=impl] Add repository routing to canonical lander
+dev-hermit	refs/heads/codex/zero-references-dagrun-parent	020b5e93f45c9dfd27f6bfcad11f50a285cfb0e7	ahead=1	/tmp/dev-hermit-zero-references
+	1787601103	[hermit2, hermit-011, unresolved, devbig014, role=impl] Add bin/hermit-repeat: one command for the distribution of first divergence points
+dev-hermit	refs/heads/hermit-011/validate-run-check-kwarg	8807f17163dcaa25438ad6ea7817a1ef72dde3c4	ahead=1	/tmp/hermit-011/dh-land
+	1787703767	[hermit2, hermit-011, unresolved, devbig014, role=impl] validate-run: honour `check` instead of forwarding it into Popen, which rejects it
+dev-hermit	DETACHED	91d7f3a3af1e8ab0a7e8abd8fac28cf9c874459f	ahead=3	/tmp/hermit-121-assertion-review
+	1787785087	grammar: parse verdict assertions by context
+dev-hermit	refs/heads/hermit-122/parallel-validate-parent	3d9765bb9d87dbbfbdcfe7683b1e2b5453fd393f	ahead=1	/tmp/hermit-122-parallel-validate-parent
+	1787786105	Finish concurrent validate path isolation
+dev-hermit	DETACHED	53f570cb2af51a3c0ffd04723e713618823daba8	ahead=4	/tmp/hermit-127-grammar-review-53f
+	1787786747	grammar: refuse ambiguous verdict lines
+dev-hermit	DETACHED	ea207106c8ceeb99c065d73749860a42619951eb	ahead=2	/tmp/hermit-127-marker-assertion
+	1787780612	WIP grammar: restore coverage after third review
+dev-hermit	DETACHED	47a1af8456a54425434f095df4ee6258035babcc	ahead=1	/tmp/hermit-127-validate-status-split
+	1787786098	validate-status: separate records from missing measurements
+dev-hermit	DETACHED	96152d8a712de66d3a4984fa9dc3ae3b902f2e8b	ahead=1	/tmp/hermit-128-marker-grammar-rereview
+	1787776889	review grammar: distinguish marker assertions from prose mentions
+dev-hermit	refs/heads/hermit-132/freshness-check-a-positive	61fe88b0ec472bd936b03531510b4095e3e6f9f4	ahead=1	/tmp/hermit-132-freshness-check
+	1787787309	validate-run: check current main at submission
+dev-hermit	refs/heads/wip/hermit-123-assertion-mention-grammar	53f570cb2af51a3c0ffd04723e713618823daba8	ahead=4	/tmp/hermit-assertion-handoff
+	1787786747	grammar: refuse ambiguous verdict lines
+dev-hermit	refs/heads/reapply/closure-actor	d172088d8395f9c31ae028035c544378f6b67fd9	ahead=1	/tmp/reapply-actor
+	1787771112	[hermit2, hermit-104, unresolved, devbig014, role=impl] Reapply closing_actor onto the rewritten verified_close.py
+dev-hermit	refs/heads/reapply/git-guard-shim	378eee0122d10858978b43689bb70838147b0b69	ahead=1	/tmp/reapply-shim
+	1787768408	[hermit2, hermit-106, unresolved, devbig014, role=impl] git-guard-shim: refuse a mutating `git stash` wherever the stack is SHARED
+dev-hermit	refs/heads/fix/ledger-null-vec-and-loud-reader	6b9d9fa4aa88947fd361a4bf7076f1208b664ccb	ahead=1	/tmp/wt-ledgerfix
+	1787599948	[hermit2, degraded-hermit-006, unresolved, devbig014, role=impl] Make a null list stop discarding a validate receipt, and make the reader say what it could not read
+dev-hermit	refs/heads/fix/run-record-must-not-assert-ignorance	3d4084158a3ced0f7da1a6e09ce26ecd3be16023	ahead=1	/tmp/wt-runrec
+	1787618278	[hermit2, degraded-hermit-006, unresolved, devbig014, role=impl] Let the validate run record say "I do not know" instead of asserting the run never happened
+hermit	refs/heads/cumulative-head-eighteen-20260823	78485954c7eedcaa4cfbe17c4599a150551889fb	ahead=16	/tmp/cumhead18-20260823
+	1787483185	[hermit2, hermit-003, unresolved, devbig014, role=impl] Declare the new record_replay_path module so this piece compiles alone
+hermit	DETACHED	a8345b31ae7ffffc3d2b0ba80404d11bd6525182	ahead=3	/tmp/h-stderr
+	1787788800	Bound the stderr diagnostic wait per INVOCATION, derived from the unwind grace it sits inside
+hermit	refs/heads/hermit-007/schedule-test-binary-audit	05a8e569251d36a2349e71bf597708a5206f32c9	ahead=2	/tmp/h007-hermit-wt
+	1787702700	Replace stress_suite's `none-recorded` with what its three tiers actually cost
+hermit	DETACHED	eb15b68151dd4e0bc59b8bfb920c906f0a6b228a	ahead=1	/tmp/h007-rp
+	1787713012	check-reverie-pin: retract my four-git table -- every condition is rejected 128, not tolerated
+hermit	DETACHED	642a2990502aec16021e9c8048dc270bc86dc2ba	ahead=2	/tmp/h007-w80
+	1787712277	[hermit2, hermit-015, unresolved, devbig014, role=impl] Put the boundary tests ON the boundary -- three of them guarded a range from outside it
+hermit	DETACHED	f4349f5b1db1cd97e854d9229d39909d1a3cde6f	ahead=1	/tmp/h007-w92
+	1787718365	[hermit2, hermit-020, unresolved, devbig014, role=impl] The exit-class gate was blind to the two codes I added to hermit's reserved set
+hermit	DETACHED	1fa4e21decff5a101959b73bb41c18cb776586c5	ahead=2	/tmp/h007-w92b
+	1787719016	[hermit2, hermit-020, unresolved, devbig014, role=impl] The reason I gave for excluding 129 and 143 was inverted, and imported from an unlanded branch
+hermit	DETACHED	38e82520c9f8bdeeaeaccf1cf16c9a7ced2c31a9	ahead=1	/tmp/h007-wt2653
+	1787703411	P0 main-red: take the hostname literal out of the new KVM node, and record the host where it is allowed
+hermit	DETACHED	7ad8aa4cb3b3b76f6f36ed1cf44b4cbf995fc401	ahead=1	/tmp/h007-wt2656
+	1787703082	[hermit2, hermit-001, unresolved, devbig014, role=impl] P0 main-red, mine: a runner prefix inside a string literal is not an invocation
+hermit	DETACHED	49818137e4cc7098599fc53705b8eb0c25d111d7	ahead=1	/tmp/h007-wt2659
+	1787704021	[hermit2, hermit-020, unresolved, devbig014, role=impl] Report a deliberate fail-closed shutdown as a REFUSAL, not as an internal failure
+hermit	DETACHED	099290c10486cba2d48a3ee044989cab242f059b	ahead=1	/tmp/h007-wt2680
+	1787709081	[hermit2, hermit-015, unresolved, devbig014, role=impl] Pin the three matcher narrowings that passed all seventeen tests
+hermit	DETACHED	23aeb38d99304725694bb38856866ecaf10d32a0	ahead=2	/tmp/h007-wt2683
+	1787710853	Narrow the quote strip to genuine literal openers
+hermit	DETACHED	76423fe8b8c68f1daea8746780a6d738dd3007ab	ahead=7	/tmp/h007-wt72m
+	1787714544	[hermit2, hermit-020, unresolved, devbig014, role=impl] Assert the operator-facing half too — the marker and the sentence fail independently
+hermit	DETACHED	64933fa152e01b2ae626acd1ada14c9761936aeb	ahead=3	/tmp/h007-wt83c
+	1787712607	Make the flag table per-runner: one flag is not one flag
+hermit	DETACHED	62115a443b7f049f52e7e30dbea3f76be78707e5	ahead=1	/tmp/h106-2709h
+	1787797982	[hermit2, hermit-135, unresolved, devbig014, role=impl] Keep an absent divergence coordinate meaning "older record", not "found nothing"
+hermit	DETACHED	d836df64edf70eb02622bc9f8d5cca7388684766	ahead=2	/tmp/h12-2562
+	1787685333	[hermit2, hermit-013, unresolved, devbig014, role=impl] Report a missing guest program as 127, and make the exit code a mapping from the failure class
+hermit	DETACHED	a8faeb31832f574716181991905d5646e00bf2f5	ahead=3	/tmp/h12-fix
+	1787717796	Answer the relayed codex refusal: word boundary, and a third flag arity
+hermit	DETACHED	20d12f49274c9287369dc33b830ad2919914ad79	ahead=1	/tmp/h12-prov
+	1787672414	[hermit2, hermit-012, unresolved, devbig014, role=impl] ci/manifest-plan: record the binary's own build provenance, not only the checkout it ran in
+hermit	DETACHED	699999c2468ef1efbbabbd874da91da874478ec2	ahead=1	/tmp/h12-r2665
+	1787714540	[hermit2, hermit-003, unresolved, devbig014, role=impl] Discover checker entrypoints by shebang, not by filename prefix
+hermit	DETACHED	267c49e262d074e38c858c66ad22edca87ebe02f	ahead=1	/tmp/h12-r2669
+	1787705614	[hermit2, hermit-dbg, unresolved, devbig014, role=impl] Restore the success-path wait: hermit stopped waiting for the gdb it spawned, twice, by two different routes
+hermit	DETACHED	bb7b0daef6babffa29f00337fa891af93154e347	ahead=3	/tmp/h12-r2672
+	1787710784	[hermit2, hermit-020, unresolved, devbig014, role=impl] Report a refusal as a refusal in record mode, and witness the signal death end to end
+hermit	DETACHED	642a2990502aec16021e9c8048dc270bc86dc2ba	ahead=2	/tmp/h12-r2680
+	1787712277	[hermit2, hermit-015, unresolved, devbig014, role=impl] Put the boundary tests ON the boundary -- three of them guarded a range from outside it
+hermit	DETACHED	979a50b17a75ac486661ec5e1a950ec7c99bdbf1	ahead=1	/tmp/h12-r2686
+	1787712934	[hermit2, hermit-003, unresolved, devbig014, role=impl] test-harness plan: refuse an unknown test id, so a bisection cannot read a typo as a pass
+hermit	DETACHED	416131c4e9e5eb1308dc28a153012ff5681fd840	ahead=1	/tmp/h12-r2686b
+	1787716018	[hermit2, hermit-003, unresolved, devbig014, role=impl] test-harness plan: refuse an unknown test id, so a bisection cannot read a typo as a pass
+hermit	DETACHED	884f12cf4a557ef1cd4d84ff6e342978030cdc1f	ahead=1	/tmp/h12-r2690
+	1787715152	[hermit2, hermit-003, unresolved, devbig014, role=impl] check-checker-scheduling: a population FLOOR, because a collapse reports healthy while a zero does not
+hermit	DETACHED	1f4982f7ab408de62600fcb29487ad02b37e37c5	ahead=1	/tmp/h12-rb2601
+	1787683599	[hermit2, hermit-020, unresolved, devbig014, role=impl] PR_SWEEP_VERDICTS: correct my own mergeable claim — a merged PR always reads UNKNOWN, so the post-merge reading proves nothing
+hermit	DETACHED	bdf87b0dc9f236d388f1b33d0d7575e427b82e06	ahead=2	/tmp/hermit-005/h2602
+	1787713142	[hermit2, hermit-030, unresolved, devbig014, role=impl] PR_SWEEP_VERDICTS: stamp every parser-behaviour table with the commit it was measured at
+hermit	DETACHED	f2664bf2d1501ef056a454fea0ea2a60138bb701	ahead=2	/tmp/hermit-005/h2637
+	1787704250	[hermit2, hermit-011, unresolved, devbig014, role=impl] The fixture must not inherit the outer run's active marker — this is why the node passed standalone and failed inside a validate
+hermit	refs/heads/h005-2653	fa89359bd07ff36fa9e7d2971612513b79ab8dab	ahead=1	/tmp/hermit-005/h2653
+	1787704364	Declare where a measurement host belongs, instead of relying on the scanner not looking
+hermit	DETACHED	13e84160584239122e957ffffa17064a8475daed	ahead=1	/tmp/hermit-005/h2660
+	1787704312	[hermit2, hermit-014, unresolved, devbig014, role=impl] gdb watcher: stop finish() blocking forever, and stop reporting a healthy teardown as a failed connect
+hermit	DETACHED	129d50068bad6448ebeb1676716808e89d8039c4	ahead=1	/tmp/hermit-005/h2661
+	1787704808	check-checker-scheduling: allow flags between a runner and its path
+hermit	DETACHED	c2b395ed051ea8be5dfd4b02926ea6a83c317da5	ahead=2	/tmp/hermit-005/h2666
+	1787704959	[hermit2, hermit-triage, unresolved, devbig014, role=impl] A release connect is an attempt, not a conclusion: stop a stranger on a guessable port silently restoring the gdb hang
+hermit	DETACHED	8b6654cec1a2a32a1427a30a3a6ec861b6f6f3b3	ahead=2	/tmp/hermit-005/h2666b
+	1787707915	[hermit2, hermit-triage, unresolved, devbig014, role=impl] Earn the early-exit report: a queued probe is not an accepted one, so a served gdbserver stops being blamed
+hermit	DETACHED	e87188be829227f83efe5c1356926570b09335b0	ahead=1	/tmp/hermit-005/h2668
+	1787705513	[hermit2, hermit-001, unresolved, devbig014, role=impl] The verify harness leaked one bit of fd state between its two runs, and blamed the guest
+hermit	DETACHED	2ab838d349f76d20f1fd1c0cb0071af2610d58ef	ahead=1	/tmp/hermit-005/h2670
+	1787705580	[hermit2, hermit-016, unresolved, devbig014, role=impl] PR_SWEEP_VERDICTS: run the merge gate by hand, because nothing else runs it
+hermit	DETACHED	3a24a06c1b915c7ac43bf23088cd4bf263d65986	ahead=5	/tmp/hermit-005/h2672
+	1787711909	[hermit2, hermit-020, unresolved, devbig014, role=impl] Retire the two overclaims and bound both signal-test waits
+hermit	DETACHED	a826d51a21168d064743798808cdaf9850b27723	ahead=1	/tmp/hermit-005/h2678
+	1787708786	gdb watcher: a stranger's accept is not our release, so stop concluding on it
+hermit	DETACHED	5b162a786056bcf2ec5e48e82319f4cb646756bd	ahead=1	/tmp/hermit-005/h2679
+	1787713556	[hermit2, hermit-003, unresolved, devbig014, role=impl] Make the GIT_CONFIG race measurement reproduce as written: the recipe on main gives 0/20, not 20/20
+hermit	DETACHED	642a2990502aec16021e9c8048dc270bc86dc2ba	ahead=2	/tmp/hermit-005/h2680
+	1787712277	[hermit2, hermit-015, unresolved, devbig014, role=impl] Put the boundary tests ON the boundary -- three of them guarded a range from outside it
+hermit	DETACHED	96afaba7daa3f5a766af7bf49b9304190429db56	ahead=1	/tmp/hermit-005/h2683
+	1787709716	check-checker-scheduling: one admission test, and a flag default that fails loud
+hermit	DETACHED	60f21f0e72a216300de9c823953db57e7e0b7383	ahead=1	/tmp/hermit-005/h2684
+	1787710534	check-checker-scheduling: a prefix convention could not see its own families
+hermit	DETACHED	1de9e184e8453826e370df9fa78f90e2264791a5	ahead=1	/tmp/hermit-005/h2685
+	1787711399	[hermit2, hermit-003, unresolved, devbig014, role=impl] Add bisect-probe: run a list of test ids and report one verdict per REQUESTED id
+hermit	DETACHED	eb15b68151dd4e0bc59b8bfb920c906f0a6b228a	ahead=1	/tmp/hermit-005/h2689
+	1787713012	check-reverie-pin: retract my four-git table -- every condition is rejected 128, not tolerated
+hermit	DETACHED	fa8d5eef4730c3b54db61e11a34ec4d4b794f168	ahead=2	/tmp/h4-2622wt
+	1787701386	[hermit2, hermit-014, unresolved, devbig014, role=impl] Restore the Makefile hunk this branch's rebase dropped, so the allowlist entry stops being stale
+hermit	DETACHED	fa89359bd07ff36fa9e7d2971612513b79ab8dab	ahead=1	/tmp/h4-2663
+	1787704364	Declare where a measurement host belongs, instead of relying on the scanner not looking
+hermit	refs/heads/hermit-dbg/board-circular-hold-v2	e49d0d0d52d37222e1d06dc1eb10f869206488dc	ahead=1	/tmp/hdbg-2607b
+	1787712922	[hermit2, hermit-dbg, unresolved, devbig014, role=impl] A hold keyed on "the related task is still open" can never clear — with the two claims a reviewer falsified removed
+hermit	DETACHED	4b70416375d24c6384d294561411ad2c9fa5f093	ahead=1	/tmp/hdbg-2653
+	1787703310	Put the erased measurement hosts back where the checker permits them
+hermit	DETACHED	5a8b69bed7b1c83598f41e92e91ac9ce4de38b6b	ahead=1	/tmp/hdbg-2657
+	1787703177	[hermit2, hermit-014, unresolved, devbig014, role=impl] MAIN RED: give the no-result fixture a path that is not a real checker, so check-checker-scheduling stops reading it as scheduling
+hermit	refs/heads/hermit-dbg/gate-names-the-fifth-remedy	833dd8c7b59ede8e5d786d8463702038a9e26de9	ahead=1	/tmp/hdbg-gate
+	1787704470	[hermit2, hermit-dbg, unresolved, devbig014, role=impl] Name the fifth remedy, because four agents cleared this gate by deleting the thing it checks
+hermit	refs/heads/hermit-dbg/gate-fifth-remedy-v2	7e3004480dbdec5acf640dad8975298deee58026	ahead=1	/tmp/hdbg-gate2
+	1787707951	[hermit2, hermit-dbg, unresolved, devbig014, role=impl] Name the fifth remedy — and a comment defending a lock said the race it prevents is harmless, which is false
+hermit	refs/heads/hermit-dbg/recipe-that-reproduces	12381718e2e5b4dae5d9fef9df8f40a97e2c1fcc	ahead=1	/tmp/hdbg-recipe
+	1787712276	[hermit2, hermit-dbg, unresolved, devbig014, role=impl] The recipe I recorded to prove a measurement does not reproduce on the host it names
+hermit	refs/heads/hermit-dbg/watcher-six-defects	b32de987736476c6a744ca9c6bf9b90f8696f398	ahead=1	/tmp/hdbg-six
+	1787703716	[hermit2, hermit-dbg, unresolved, devbig014, role=impl] The watcher I landed could hang in finish() and mislabel healthy runs — six defects, all found after it merged
+hermit	refs/heads/hermit-dbg/restore-success-path-wait	e6079aa2adbb206e982fa351c915e6203ea416b4	ahead=1	/tmp/hdbg-wait
+	1787706572	[hermit2, hermit-dbg, unresolved, devbig014, role=impl] Restore the success-path wait: hermit stopped waiting for the gdb it spawned, twice, by two different routes
+hermit	DETACHED	b3436376b09da52b5ee911f6a2f4c9b6e99e90a4	ahead=1	/tmp/hermit-121-ad598-validate
+	1787783969	[hermit2, hermit-121, unresolved, devbig014, role=impl] Advance Hermit to Reverie 200439dc
+hermit	refs/heads/hermit-121/reverie-pin-200439	0858d75e531481c08a3c19e2cd18a301c4348516	ahead=2	/tmp/hermit-121-reverie-pin-200439
+	1787785109	[hermit2, hermit-121, unresolved, devbig014, role=impl] Advance Hermit from Reverie 200439dc to ad598995
+hermit	refs/heads/hermit-122/preserve-e2e-retry-results	b70fcafe848e333d14c244fe3253ff387909e297	ahead=1	/tmp/hermit-122-e2e-retry-results
+	1787796207	[hermit2, hermit-122, unresolved, devbig014, role=impl] Preserve E2E results across retries
+hermit	refs/heads/hermit-122/parallel-validate-product	3532dcba8576f0448e29ef6b3eced636132bd889	ahead=2	/tmp/hermit-122-parallel-validate-product
+	1787786195	Prove remaining concurrent validate path isolation
+hermit	DETACHED	05634b365cd6f5a02a99ed986bff3a520ae32a6f	ahead=3	/tmp/hermit-123-pr2637-clean
+	1787777520	[hermit2, hermit-123, unresolved, devbig014, role=impl] Port the refusal predicate fix to PR 2637
+hermit	refs/heads/h123/pr2637-current	156ae30dd0f504acc56725ddcb8af32d2a5fe02b	ahead=3	/tmp/hermit-123-pr2637-current
+	1787797358	[hermit2, hermit-123, unresolved, devbig014, role=impl] Port the refusal predicate fix to PR 2637
+hermit	DETACHED	05634b365cd6f5a02a99ed986bff3a520ae32a6f	ahead=3	/tmp/hermit-123-pr2637-ported
+	1787777520	[hermit2, hermit-123, unresolved, devbig014, role=impl] Port the refusal predicate fix to PR 2637
+hermit	DETACHED	05634b365cd6f5a02a99ed986bff3a520ae32a6f	ahead=3	/tmp/hermit-123-pr2637-proof2
+	1787777520	[hermit2, hermit-123, unresolved, devbig014, role=impl] Port the refusal predicate fix to PR 2637
+hermit	DETACHED	05634b365cd6f5a02a99ed986bff3a520ae32a6f	ahead=3	/tmp/hermit-123-pr2637-proof3
+	1787777520	[hermit2, hermit-123, unresolved, devbig014, role=impl] Port the refusal predicate fix to PR 2637
+hermit	DETACHED	05634b365cd6f5a02a99ed986bff3a520ae32a6f	ahead=3	/tmp/hermit-123-pr2637-proof4
+	1787777520	[hermit2, hermit-123, unresolved, devbig014, role=impl] Port the refusal predicate fix to PR 2637
+hermit	DETACHED	556d6351356fe7dd3b4e4c92402c3b7f0c770875	ahead=2	/tmp/hermit-123-pr2637-unported
+	1787718444	[hermit2, hermit-011, unresolved, devbig014, role=impl] The fixture must not inherit the outer run's active marker — this is why the node passed standalone and failed inside a validate
+hermit	refs/heads/h123/refusal-predicate-gate-final	6635137e88fe46ac3c3850887a13526fc4166ed6	ahead=11	/tmp/hermit-123-pr2702
+	1787797532	[hermit2, hermit-123, unresolved, devbig014, role=impl] Execute the validate refusal predicate in lint
+hermit	refs/heads/hermit-124/2696-brackets	b5fdb953f69ef9d322afa4d486f9ea2dea9512c1	ahead=5	/tmp/hermit-124-2696-brackets
+	1787790329	[hermit2, hermit-124, unresolved, devbig014, role=impl] Refuse unmeasured bisect decisions
+hermit	refs/heads/hermit-124/2696-final	c1f462b619d983879b1c6abfe5d0217d34c41287	ahead=5	/tmp/hermit-124-2696-final
+	1787792982	[hermit2, hermit-124, unresolved, devbig014, role=impl] Refuse unmeasured bisect decisions
+hermit	DETACHED	556d6351356fe7dd3b4e4c92402c3b7f0c770875	ahead=2	/tmp/hermit-124-pr2637-review
+	1787718444	[hermit2, hermit-011, unresolved, devbig014, role=impl] The fixture must not inherit the outer run's active marker — this is why the node passed standalone and failed inside a validate
+hermit	DETACHED	b8007f790ae374f98ec40c46318ff5cb382f91dc	ahead=6	/tmp/hermit-124-pr2699-control
+	1787774608	[hermit2, degraded-hermit-125, unresolved, devbig014, role=impl] Keep stop-test checks active under Python optimization
+hermit	DETACHED	c7325dff307361f0c0dc3703deb1a9fa0af9d96b	ahead=2	/tmp/hermit-124-pr2702-review
+	1787775515	[hermit2, hermit-106, unresolved, devbig014, role=impl] Wire the refusal-predicate checker into lint-checks, because unwired it made main red
+hermit	DETACHED	a5c0ea42bba1d1352787c56ad984762606dbe7ee	ahead=1	/tmp/hermit-125-pr2702-review
+	1787774957	[hermit2, hermit-106, unresolved, devbig014, role=impl] Refuse an unanchored refusal predicate, so the protection on hermit#2637 stops being a comment
+hermit	DETACHED	987a19231badae421ad73d050891b618ce1b578a	ahead=1	/tmp/hermit-125-retry-resumed
+	1787780663	[hermit2, hermit-125, unresolved, devbig014, role=impl] Stabilize retry self-test ordering
+hermit	DETACHED	987a19231badae421ad73d050891b618ce1b578a	ahead=1	/tmp/hermit-125-retry-review
+	1787780663	[hermit2, hermit-125, unresolved, devbig014, role=impl] Stabilize retry self-test ordering
+hermit	refs/heads/hermit-125/retry-self-test-stable	987a19231badae421ad73d050891b618ce1b578a	ahead=1	/tmp/hermit-125-retry-self-test
+	1787780663	[hermit2, hermit-125, unresolved, devbig014, role=impl] Stabilize retry self-test ordering
+hermit	refs/heads/hermit-126/dbt-child-wait-polling	1c933620d04e4880cfd9eff6668e8cce813e146f	ahead=1	/tmp/hermit-126-dbt-child-wait
+	1787800113	WIP: schedule DBT process child waits
+hermit	DETACHED	b8007f790ae374f98ec40c46318ff5cb382f91dc	ahead=6	/tmp/hermit-127-pr2637-ported
+	1787774608	[hermit2, degraded-hermit-125, unresolved, devbig014, role=impl] Keep stop-test checks active under Python optimization
+hermit	DETACHED	556d6351356fe7dd3b4e4c92402c3b7f0c770875	ahead=2	/tmp/hermit-127-pr2637-unported
+	1787718444	[hermit2, hermit-011, unresolved, devbig014, role=impl] The fixture must not inherit the outer run's active marker — this is why the node passed standalone and failed inside a validate
+hermit	DETACHED	4e45bf1b25bbc50ae804f4b78c30cdb556dc14e8	ahead=3	/tmp/hermit-127-pr2702-4e45
+	1787790306	[hermit2, hermit-106, unresolved, devbig014, role=impl] Correct this checker's own remedy: strip before anchoring, or it misses two of three real declines
+hermit	DETACHED	6b837d7bc36acd45be7a20670c63d34a39de9c91	ahead=9	/tmp/hermit-127-pr2702-6b837
+	1787793744	[hermit2, hermit-135, unresolved, devbig014, role=impl] An absent refusal classification is a no-result, not a pass
+hermit	DETACHED	fc37dd48b4d0939499e41ce3cd3b68dd27e39806	ahead=8	/tmp/hermit-127-pr2702-fc37
+	1787793739	[hermit2, hermit-123, unresolved, devbig014, role=impl] Execute the validate refusal predicate in lint
+hermit	DETACHED	c7f617d52d670fda2e26591cf0b014cf98c27de3	ahead=6	/tmp/hermit-127-pr2702-parent-c7
+	1787790308	[hermit2, hermit-132, unresolved, devbig014, role=impl] Require stripped line-start refusal matches
+hermit	DETACHED	eef9ea68b28e24b68aa969ea563946ad06b98785	ahead=7	/tmp/hermit-127-pr2702-review
+	1787790957	[hermit2, hermit-123, unresolved, devbig014, role=impl] Make refusal predicate protection executable
+hermit	DETACHED	9a3733958204614d0e0995893c74ae5f0e548e5f	ahead=7	/tmp/hermit-127-pr2702-review-9a373
+	1787791383	[hermit2, hermit-123, unresolved, devbig014, role=impl] Make refusal predicate protection executable
+hermit	DETACHED	cca971d665e53031c38d2cc07c7f757ee89710b3	ahead=1	/tmp/hermit-127-review-2578
+	1787677678	Compare the guest INFO stream, not the tracer and CLI streams
+hermit	DETACHED	b0729d090982974bb0dec05ba439b1c5b5ff59a9	ahead=1	/tmp/hermit-127-review-2701
+	1787774306	[hermit2, hermit-123, unresolved, devbig014, role=impl] Make debugging evidence current
+hermit	DETACHED	c35fe1e3d5c8c1886fd313edd71555e8fb4b9679	ahead=1	/tmp/hermit-128-pr2705-review
+	1787779229	[hermit2, hermit-129, unresolved, devbig014, role=impl] Emit per-cell run history with runtime totals
+hermit	DETACHED	4f8b43000a58deda553da39567225c695857170e	ahead=1	/tmp/hermit-128-pr2705-review-4f8b
+	1787780504	[hermit2, hermit-129, unresolved, devbig014, role=impl] Emit per-cell run history with runtime totals
+hermit	refs/heads/hermit-129/per-testid-run-ledger	5ee8533c648f388c3c2c06e0ce3d585ded6ac8f7	ahead=4	/tmp/hermit-129-per-testid-run-ledger-hermit
+	1787798752	[hermit2, hermit-121, unresolved, devbig014, role=impl] Build cell history from appended retry results
+hermit	DETACHED	7707a68771aeb8eb9b2edf347426f5ab887661dd	ahead=1	/tmp/hermit-131-final-status
+	1787799634	WIP emit fixed final validate status
+hermit	refs/heads/hermit-131/per-test-timeout	e119019df745682acb501d8fb2ed2b72d8e55599	ahead=1	/tmp/hermit-131-per-test-timeout
+	1787786278	[hermit2, hermit-131, unresolved, devbig014, role=impl] Make timeout policy manifest-driven per cell
+hermit	refs/heads/hermit-131/pr2699-fix	943b09666e48950bf9f65d33d894330c0de56c83	ahead=7	/tmp/hermit-131-pr2699
+	1787777084	[hermit2, hermit-131, unresolved, devbig014, role=impl] Match only validate's refusal summary
+hermit	refs/heads/hermit-132/per-attempt-workdir	ef5fe1082c1175cf3baf7a52b9c62a25ab453b7d	ahead=1	/tmp/hermit-132-per-attempt-workdir
+	1787780683	[hermit2, hermit-132, unresolved, devbig014, role=impl] Give each test attempt its own host workdir
+hermit	refs/heads/h106/refusal-predicate-gate	ac18c31d0de40b6dc50ac46fca6f1e29547f6fdc	ahead=6	/tmp/hermit-132-pr2702
+	1787785772	[hermit2, hermit-132, unresolved, devbig014, role=impl] Require stripped line-start refusal matches
+hermit	DETACHED	b516317a3b8be940505f9a26b51dc5ccb4c463b3	ahead=1	/tmp/hermit-checker-bare-revert
+	1787713208	One admission test for is_invoked, and a loud default over the per-runner table
+hermit	DETACHED	b516317a3b8be940505f9a26b51dc5ccb4c463b3	ahead=1	/tmp/hermit-checker-decoder-revert
+	1787713208	One admission test for is_invoked, and a loud default over the per-runner table
+hermit	DETACHED	b516317a3b8be940505f9a26b51dc5ccb4c463b3	ahead=1	/tmp/hermit-checker-dotted-revert
+	1787713208	One admission test for is_invoked, and a loud default over the per-runner table
+hermit	DETACHED	b516317a3b8be940505f9a26b51dc5ccb4c463b3	ahead=1	/tmp/hermit-checker-flag-revert
+	1787713208	One admission test for is_invoked, and a loud default over the per-runner table
+hermit	DETACHED	b516317a3b8be940505f9a26b51dc5ccb4c463b3	ahead=1	/tmp/hermit-checker-position-revert
+	1787713208	One admission test for is_invoked, and a loud default over the per-runner table
+hermit	DETACHED	b516317a3b8be940505f9a26b51dc5ccb4c463b3	ahead=1	/tmp/hermit-checker-probes
+	1787713208	One admission test for is_invoked, and a loud default over the per-runner table
+hermit	DETACHED	b516317a3b8be940505f9a26b51dc5ccb4c463b3	ahead=1	/tmp/hermit-checker-review.9OvHso
+	1787713208	One admission test for is_invoked, and a loud default over the per-runner table
+hermit	refs/heads/reauthor/pr-2363-content-pinned-consumers	b5b5b824965ddfdb39ffed15d4d2f4262c1a2e28	ahead=1	/tmp/hermit-dap-pr2363-reauthor
+	1787484838	Restore pinned check-outcome adapter coverage
+hermit	refs/heads/hermit-dbg-2562-msgfix	2cb374386235e8d6bcecb4ccc2e5bb065b290783	ahead=5	/tmp/hermit-dbg-2562r
+	1787692313	[hermit2, hermit-dbg, unresolved, devbig014, role=impl] Drive four of the six restored record call sites, one per spelling, instead of one
+hermit	DETACHED	7e8b9103f0cf4cce0a3815a5a9ca876ce8967461	ahead=2	/tmp/hermit-dbg-2562rb
+	1787685379	[hermit2, hermit-013, unresolved, devbig014, role=impl] Report a missing guest program as 127, and make the exit code a mapping from the failure class
+hermit	DETACHED	f53ff62d24fb979a08c10ed8fd88816033d1d38c	ahead=1	/tmp/hermit-dbg-2609w2
+	1787684837	[hermit2, hermit-011, unresolved, devbig014, role=impl] Schedule the lint checkers as one DAG node so new checkers are gated by default
+hermit	DETACHED	200ec9355545085b38bef3aff82a7d3598fef83c	ahead=1	/tmp/hermit-dbg-2613w
+	1787686345	mem_race: fix the provenance, keep the race — UnsafeCell instead of a cast pointer
+hermit	refs/heads/h2617	40e21265be946f843059693ea548d246499359b3	ahead=1	/tmp/hermit-dbg-2617
+	1787689468	[hermit2, hermit-007, unresolved, devbig014, role=impl] Make the DBT wait-status brackets run: 0 tests to 2 on the default build
+hermit	DETACHED	745680e7295a976c5501597eb673d22058e4f022	ahead=1	/tmp/hermit-dbg-2624w
+	1787690617	[hermit2, hermit-015, unresolved, devbig014, role=impl] Pin the fourth divergence coordinate to storage, and stop a divergence that located nothing reading as never-compared
+hermit	DETACHED	bdf63019bb5f53b584a1fdebd540cb1b46ef07b7	ahead=2	/tmp/hermit-dbg-2627w
+	1787692037	[hermit2, hermit-012, unresolved, devbig014, role=impl] Render an ERROR that located nothing as itself, instead of as an all-green run
+hermit	refs/heads/hermit-dbg/collect-spelling-failures	c4eb4cabc3f56593548f11d6c7e0c2c6ae4aec6f	ahead=5	/tmp/hermit-dbg-ff
+	1787698486	[hermit2, hermit-dbg, unresolved, devbig014, role=impl] Make the source comments say what was measured, not what three retracted claims said
+hermit	refs/heads/dbg/no-result-scope	2a694ec53705cdaa927877e32512eea039640799	ahead=1	/tmp/hermit-dbg-lintw
+	1787689035	Fix forward: my no_result declared 16 checkers and 3 assertions unevaluated when they are not
+hermit	refs/heads/codex/latch-validation-failures	afcbfdceb7a6f72f24cc66dfa35c6f08bcfe336d	ahead=1	/tmp/hermit-latch-wt
+	1787628557	[hermit2, m2audit, unresolved, devbig014, role=impl] Refuse cached passes after genuine validation failures
+hermit	refs/heads/fix/deterministic-pipe-capacity	f0ef40c712395340258ae5f88a4268506a9a2069	ahead=1	/tmp/hermit-pipe-capacity-fix
+	1787603460	[hermit2, hermit-008, unresolved, devbig014, role=impl] detcore: pin internal pipe capacity for deterministic polling
+hermit	refs/heads/land/pr-2275	e062bacbd40629b94de0d06316418734f32c4b96	ahead=1	/tmp/hermit-pr2275
+	1787663600	[hermit2, bport, unresolved, devbig014, role=impl] Report verification relaxations from the comparator
+hermit	refs/heads/port/pr-2275-current2	54cbb275047540fe6714f98687ba94413e68d545	ahead=1	/tmp/hermit-pr2275-port
+	1787664583	[hermit2, hermit-008, unresolved, devbig014, role=impl] Report verification relaxations from the comparator
+hermit	refs/heads/land/pr-2519	cd2d261702b58989da0d3c23225107755680ad0d	ahead=1	/tmp/hermit-pr2519
+	1787645935	[hermit2, hermit-011, unresolved, devbig014, role=impl] Re-derive doc.rustdoc's memory and duration after its feature scope grew
+hermit	DETACHED	c1f462b619d983879b1c6abfe5d0217d34c41287	ahead=5	/tmp/hermit-pr2696-final-review
+	1787792982	[hermit2, hermit-124, unresolved, devbig014, role=impl] Refuse unmeasured bisect decisions
+hermit	DETACHED	f2208e3214fdda08d6168e9e25d0a636311c806e	ahead=5	/tmp/hermit-pr2696-final-review2
+	1787794184	[hermit2, hermit-124, unresolved, devbig014, role=impl] Refuse unmeasured bisect decisions
+hermit	DETACHED	c85f795465b9e9a0f8c17308fdd827bfcc801da7	ahead=5	/tmp/hermit-pr2696-final-review3
+	1787794937	[hermit2, hermit-124, unresolved, devbig014, role=impl] Refuse unmeasured bisect decisions
+hermit	DETACHED	d92364216a89eceeeacac1514f31dbbc6a4c6eff	ahead=5	/tmp/hermit-pr2696-final-review4
+	1787797229	[hermit2, hermit-124, unresolved, devbig014, role=impl] Refuse unmeasured bisect decisions
+hermit	DETACHED	585d4d7e1178202dbd38390ad01a0a7111e16bfb	ahead=4	/tmp/hermit-pr2696-independent-review
+	1787786037	[hermit2, hermit-124, unresolved, devbig014, role=impl] Keep the bisect-probe self-test scheduled
+hermit	DETACHED	9822ee2818a1c2244ccb8dd3ca0afa4f12079f8a	ahead=5	/tmp/hermit-pr2696-rereview
+	1787790814	[hermit2, hermit-124, unresolved, devbig014, role=impl] Refuse unmeasured bisect decisions
+hermit	DETACHED	99bf5075b74812d7a4b83dfc65feb450d67b97a5	ahead=5	/tmp/hermit-pr2696-rereview2
+	1787791720	[hermit2, hermit-124, unresolved, devbig014, role=impl] Refuse unmeasured bisect decisions
+hermit	DETACHED	35a655714583aa5710e5860f7e8c4316bf5db712	ahead=5	/tmp/hermit-pr2696-rereview3
+	1787792061	[hermit2, hermit-124, unresolved, devbig014, role=impl] Refuse unmeasured bisect decisions
+hermit	DETACHED	2bc359c755ee993f3f2d033c7dd3f945ea893a6c	ahead=6	/tmp/hermit-pr2696-rereview5
+	1787797952	[hermit2, hermit-124, unresolved, devbig014, role=impl] Refuse stale bisect-probe results
+hermit	DETACHED	943b09666e48950bf9f65d33d894330c0de56c83	ahead=7	/tmp/hermit-pr2699-review
+	1787777084	[hermit2, hermit-131, unresolved, devbig014, role=impl] Match only validate's refusal summary
+hermit	DETACHED	d3c0d5d0a072bd95be34a5f1225ddb3158480140	ahead=5	/tmp/hermit-pr2702-code-review
+	1787776747	[hermit2, hermit-106, unresolved, devbig014, role=impl] Fail closed on an empty corpus, and catch the four one-line rewrites that walked past
+hermit	DETACHED	c7325dff307361f0c0dc3703deb1a9fa0af9d96b	ahead=2	/tmp/hermit-pr2702-evidence-review
+	1787775515	[hermit2, hermit-106, unresolved, devbig014, role=impl] Wire the refusal-predicate checker into lint-checks, because unwired it made main red
+hermit	DETACHED	96244587c610d8306ed042c48b6283d5b416cab0	ahead=1	/tmp/pr2372-standalone.rvYakM/hermit
+	1787494264	[hermit2, degraded-hermit-004, unresolved, devbig014, role=impl] Restore pinned check-outcome adapter coverage and run it in the DAG
+hermit	refs/heads/doc-dbt-is-buildable	06a369d3161158822f7dc337e40a43252b74bc71	ahead=1	/tmp/hm-docfix2
+	1787653767	[hermit2, hermit-005, unresolved, devbig014, role=impl] Correct check 7: "not included in this build" is one flag, not a reason to abstain
+hermit	refs/heads/fix-portability-evidence-path	a2cbad52c85a1bf57eb8dd4192ba5684e528e7fa	ahead=1	/tmp/hm-now
+	1787648668	[hermit2, hermit-005, unresolved, devbig014, role=impl] Reference the LiteInst requalification by task id, not by an absolute scratch path
+hermit	refs/heads/fix-portability-red	7795aae4d15959f7222b6e581ff4659b5d9c6307	ahead=1	/tmp/hm-portable
+	1787648295	[hermit2, hermit-005, unresolved, devbig014, role=impl] Clear the portability red: synthetic fixture host, and measurement provenance moved to docs
+hermit	refs/heads/doc-deadlock-report-section-rule	9f6fcd24a7261aec635cd4a26a889bc16dd4e843	ahead=1	/tmp/hm-report
+	1787654274	[hermit2, hermit-005, unresolved, devbig014, role=impl] Put the deadlock-report determinism rule where authors edit, and say what the test cannot see
+hermit	refs/heads/hermit-005/kvm-node-hostname-literal	4b70416375d24c6384d294561411ad2c9fa5f093	ahead=1	/tmp/hermit-005/kvmhost
+	1787703310	Put the erased measurement hosts back where the checker permits them
+hermit	DETACHED	3a6da5b9203dbf9cfe57ccdd31996828d5ceb870	ahead=5	/tmp/tmp.AemjlCSO60/m
+	1787642878	Merge branch 'case3' into HEAD
+hermit	DETACHED	4e9ea946eda20de64e9a42468684d52bde5f73c9	ahead=2	/tmp/hermit-005/n2683
+	1787711140	Narrow the quote strip to genuine literal openers
+hermit	refs/heads/hermit-124/pr-2696-takeover	5fea32e55ebc7e2409ad37169d7adbd498788f64	ahead=3	/tmp/orc-hermit-2696
+	1787774271	[hermit2, hermit-124, unresolved, devbig014, role=impl] Schedule the bisect-probe self-test
+hermit	DETACHED	9353d7ef2e504bdc6bfd46cfc1c2299255446f47	ahead=3	/tmp/pop2699
+	1787769464	[hermit2, hermit-101, unresolved, devbig014, role=impl] Schedule the signal-stop checker and retire the allowlist entry its own fix makes false
+hermit	DETACHED	23aeb38d99304725694bb38856866ecaf10d32a0	ahead=2	/tmp/hermit-005/q2683w
+	1787710853	Narrow the quote strip to genuine literal openers
+hermit	DETACHED	76423fe8b8c68f1daea8746780a6d738dd3007ab	ahead=7	/tmp/hermit-005/q72w
+	1787714544	[hermit2, hermit-020, unresolved, devbig014, role=impl] Assert the operator-facing half too — the marker and the sentence fail independently
+hermit	DETACHED	b516317a3b8be940505f9a26b51dc5ccb4c463b3	ahead=1	/tmp/hermit-005/r2683w
+	1787713208	One admission test for is_invoked, and a loud default over the per-runner table
+hermit	refs/heads/fix/pr-2259-two-guest-residual	699e6e48193adac11f058abb0373234b8ee6e321	ahead=1	/tmp/hermit-pr2259-residual.vU8tn7/repo
+	1787645014	[hermit2, hermit-008, unresolved, devbig014, role=impl] Preserve DBT guest-channel regression probes
+hermit	refs/heads/fix/pr-2339-only-residual	8e585713948776b9dbb264aafc2dda7e696c295c	ahead=9	/tmp/hermit-pr2339.D6Nf2N/repo
+	1787650481	[hermit2, hermit-008, unresolved, devbig014, role=impl] Keep environmental retries narrowly evidenced
+hermit	DETACHED	0a48d3b16cc86cf14d6aeb04fe7932a3c943a0a7	ahead=2	/tmp/review-2288-0a48d3b1
+	1787497358	[hermit2, hermit-003, unresolved, devbig014, role=impl] Resolve live tids, keep Linux's fault order in the tail scan, and take the host out of the bracket
+hermit	DETACHED	96244587c610d8306ed042c48b6283d5b416cab0	ahead=1	/tmp/review-2372-96244587
+	1787494264	[hermit2, degraded-hermit-004, unresolved, devbig014, role=impl] Restore pinned check-outcome adapter coverage and run it in the DAG
+hermit	DETACHED	56851c817f8c790126ab7cb7ee09b21d5b3b047c	ahead=1	/tmp/tri
+	1787769986	[hermit2, hermit-030, unresolved, devbig014, role=impl] check-checker-scheduling: a checker the shell never executes is not a scheduled checker
+hermit	DETACHED	33b34ee7ae69402ea87c4e9eeac2cb324c58e551	ahead=1	/tmp/w2178
+	1787652162	[hermit2, degraded-hermit-006, unresolved, devbig014, role=impl] Add sweep check 12: an absent symbol can be a rename, not a residual
+hermit	DETACHED	d62a49741e542434495c5f676dc5e98bcc365f78	ahead=1	/tmp/hermit-005/w2685
+	1787712583	[hermit2, hermit-003, unresolved, devbig014, role=impl] Add bisect-probe: run a list of test ids and report one verdict per REQUESTED id
+hermit	DETACHED	9734286ba6c3e28304ac3a2bce10e4942257b653	ahead=1	/tmp/hermit-dbg-2609w/wt
+	1787684259	[hermit2, hermit-011, unresolved, devbig014, role=impl] Schedule the lint checkers as one DAG node so new checkers are gated by default
+hermit	DETACHED	0ded834e39a1b589906dcdd4ed8ec549e75b6324	ahead=1	/tmp/wt-81
+	1787709293	[hermit2, hermit-triage, unresolved, devbig014, role=impl] One flag table cannot serve five runners: split VALUE_FLAGS per runner, measured
+hermit	DETACHED	96afaba7daa3f5a766af7bf49b9304190429db56	ahead=1	/tmp/wt-83
+	1787709716	check-checker-scheduling: one admission test, and a flag default that fails loud
+hermit	DETACHED	b516317a3b8be940505f9a26b51dc5ccb4c463b3	ahead=1	/tmp/wt-83c
+	1787713208	One admission test for is_invoked, and a loud default over the per-runner table
+hermit	DETACHED	9741f4f4787834cd54f484a8bb3931ce38aaac33	ahead=3	/tmp/wt-g2
+	1787705508	[hermit2, hermit-triage, unresolved, devbig014, role=impl] Earn the early-exit report: a queued probe is not an accepted one, so a served gdbserver stops being blamed
+hermit	refs/heads/hermit-triage/release-probe-not-a-conclusion	c2b395ed051ea8be5dfd4b02926ea6a83c317da5	ahead=2	/tmp/wt-gdb
+	1787704959	[hermit2, hermit-triage, unresolved, devbig014, role=impl] A release connect is an attempt, not a conclusion: stop a stranger on a guessable port silently restoring the gdb hang
+hermit	refs/heads/hermit-triage/privileged-json-hostname	fc46bce3e6c0780b4b3cf64aeccd66a3dc0a1ad9	ahead=1	/tmp/wt-pj
+	1787702626	[hermit2, hermit-triage, unresolved, devbig014, role=impl] Take the measurement host out of the privileged DAG description, so check-portable-paths stops failing
+hermit	refs/heads/hermit-triage/wire-checker-scheduling-self-test	651cceb032d371c05c28da967480c0040e703359	ahead=1	/tmp/wt-st
+	1787707683	[hermit2, hermit-triage, unresolved, devbig014, role=impl] Run check-checker-scheduling's own self-test, which no job has ever executed
+hermit	DETACHED	bdf87b0dc9f236d388f1b33d0d7575e427b82e06	ahead=2	/tmp/hermit-005/x2602
+	1787713142	[hermit2, hermit-030, unresolved, devbig014, role=impl] PR_SWEEP_VERDICTS: stamp every parser-behaviour table with the commit it was measured at
+hermit	DETACHED	8881f9cb4836c7bc70e40ce928e04184546148dc	ahead=2	/tmp/hermit-005/x2678
+	1787712305	Answer three refusals: stop the hang, and stop claiming to fix the report
+hermit	DETACHED	370c3952bbb1c67366b7b42631a569b4fcc0b42e	ahead=2	/tmp/hermit-005/y2670
+	1787713618	[hermit2, hermit-016, unresolved, devbig014, role=impl] Make the hand-run recipe fail loud, and separate the gate from its scheduled test
+hermit	DETACHED	e4f42b2faee9d98bc7812b5f35e2da2f37e9c1ae	ahead=8	/tmp/hermit-005/z2672
+	1787717006	[hermit2, hermit-020, unresolved, devbig014, role=impl] Close the four findings agent(hermit-005)'s codex lane left open
+reverie	refs/heads/hermit-126/process-child-registration	eb4c66b1ce9dd6c5bac1b67ab820bd9c4ea26ab7	ahead=1	/tmp/hermit-126-reverie-process-child
+	1787799707	WIP: report DBT process clone metadata
+reverie	refs/heads/hermit-128-port-isolation-timeout	cc24cea8f865a2ffa4513de5920cf077ed2e43eb	ahead=1	/tmp/hermit-128-port-isolation
+	1787778992	[hermit2, hermit-128, unresolved, devbig014, role=impl] Bound port isolation child exit waits
+reverie	DETACHED	0315d6ce5c8c03c7e807523f5f58659472b56d8f	ahead=1	/tmp/hermit-128-reverie-pr495-review
+	1787777943	mount: refuse a path that is not a valid C string, instead of panicking

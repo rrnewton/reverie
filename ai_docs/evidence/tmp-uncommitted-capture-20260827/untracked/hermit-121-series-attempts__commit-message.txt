@@ -1,0 +1,16 @@
+[hermit2, hermit-121, unresolved, devbig014, role=impl] Retain pressure retries in per-test history
+
+Plain Language Summary and Project Impact
+
+A pressure repetition can now contain multiple appended cell-attempt rows. Keep every one in the existing series instead of projecting only the terminal attempt. The repetition number remains stable, and an explicit attempt ordinal distinguishes executions within that repetition. Ordinary one-attempt pressure rows preserve their existing event identity and 200-run compression.
+
+Task: per-testid-run-ledger-every-run-of-every-cell-with-runtime-stats
+
+Validation rejects missing or nonpositive pressure attempt ordinals when multiple rows share a repetition. History orders those rows by repetition and attempt and displays the attempt explicitly.
+
+Validation:
+- python3 -m pytest -q ci-hub/series/tests/test_series_invariants.py (50 passed)
+- python3 -m py_compile ci-hub/series/series.py
+- git diff --check
+
+[impl agent, gpt-5.6-sol] [hermit-121, devbig014]

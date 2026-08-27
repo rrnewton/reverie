@@ -1,0 +1,485 @@
+Rescue refs pushed 2026-08-27 for unpushed HEADs in /tmp git worktrees.
+/tmp does not survive a reboot; these commits are now on the remote.
+Recover: git -C <repo> fetch origin <rescue_ref> && git -C <repo> log FETCH_HEAD
+These are RESCUE refs, not proposals to land. Deciding what to keep is separate.
+
+dev-hermit	rescue/20260827-020b5e93f	020b5e93f45c9dfd27f6bfcad11f50a285cfb0e7	ahead=1	branch
+	[hermit2, hermit-011, unresolved, devbig014, role=impl] Add bin/hermit-repeat: one command for the distributio
+	from: /tmp/dev-hermit-zero-references
+dev-hermit	rescue/20260827-378eee012	378eee0122d10858978b43689bb70838147b0b69	ahead=1	branch
+	[hermit2, hermit-106, unresolved, devbig014, role=impl] git-guard-shim: refuse a mutating `git stash` wherever
+	from: /tmp/reapply-shim
+dev-hermit	rescue/20260827-3d4084158	3d4084158a3ced0f7da1a6e09ce26ecd3be16023	ahead=1	branch
+	[hermit2, degraded-hermit-006, unresolved, devbig014, role=impl] Let the validate run record say "I do not kno
+	from: /tmp/wt-runrec
+dev-hermit	rescue/20260827-3d9765bb9	3d9765bb9d87dbbfbdcfe7683b1e2b5453fd393f	ahead=1	branch
+	Finish concurrent validate path isolation
+	from: /tmp/hermit-122-parallel-validate-parent
+dev-hermit	rescue/20260827-47a1af845	47a1af8456a54425434f095df4ee6258035babcc	ahead=1	DETACHED
+	validate-status: separate records from missing measurements
+	from: /tmp/hermit-127-validate-status-split
+dev-hermit	rescue/20260827-4e35be6a1	4e35be6a1f794a19e2f190bbb19d73da8dd52608	ahead=2	DETACHED
+	fleet-gh: narrow the refusal to a verdict that cannot bind
+	from: /tmp/hermit-005/d189b
+dev-hermit	rescue/20260827-53f570cb2	53f570cb2af51a3c0ffd04723e713618823daba8	ahead=4	DETACHED
+	grammar: refuse ambiguous verdict lines
+	from: /tmp/hermit-127-grammar-review-53f
+dev-hermit	rescue/20260827-61fe88b0e	61fe88b0ec472bd936b03531510b4095e3e6f9f4	ahead=1	branch
+	validate-run: check current main at submission
+	from: /tmp/hermit-132-freshness-check
+dev-hermit	rescue/20260827-6b9d9fa4a	6b9d9fa4aa88947fd361a4bf7076f1208b664ccb	ahead=1	branch
+	[hermit2, degraded-hermit-006, unresolved, devbig014, role=impl] Make a null list stop discarding a validate r
+	from: /tmp/wt-ledgerfix
+dev-hermit	rescue/20260827-716cbfaf8	716cbfaf8723682b3dda46e40238523ddbdb6fb6	ahead=3	DETACHED
+	attribute_reds: do not report the outer gate name as a per-node cause
+	from: /tmp/hermit-005/d185
+dev-hermit	rescue/20260827-71e9c6884	71e9c68846a13e05cc88c3123329f058a211d8bc	ahead=5	DETACHED
+	Read final validate status from bounded log tail
+	from: /tmp/dev-hermit-131-final-status
+dev-hermit	rescue/20260827-78ca97315	78ca9731599c538251426754244752450c197502	ahead=1	DETACHED
+	[hermit2, fix-validate, unresolved, devbig014, role=impl] Add repository routing to canonical lander
+	from: /tmp/dev-hermit-land-wt.rDgXDs
+dev-hermit	rescue/20260827-7abcda027	7abcda027915318ff8472e366f98803b24a74b7a	ahead=1	DETACHED
+	[hermit2, fix-validate, unresolved, devbig014, role=impl] Add repository routing to canonical lander
+	from: /tmp/dev-hermit-land-wt2.R9MDVq
+dev-hermit	rescue/20260827-8672f9644	8672f96444bec842d2ffbc878fee874561a15348	ahead=1	branch
+	Give Hermit validate a whole-run budget
+	from: /tmp/dev-hermit-131-whole-run
+dev-hermit	rescue/20260827-8807f1716	8807f17163dcaa25438ad6ea7817a1ef72dde3c4	ahead=1	branch
+	[hermit2, hermit-011, unresolved, devbig014, role=impl] validate-run: honour `check` instead of forwarding it 
+	from: /tmp/hermit-011/dh-land
+dev-hermit	rescue/20260827-91d7f3a3a	91d7f3a3af1e8ab0a7e8abd8fac28cf9c874459f	ahead=3	DETACHED
+	grammar: parse verdict assertions by context
+	from: /tmp/hermit-121-assertion-review
+dev-hermit	rescue/20260827-96152d8a7	96152d8a712de66d3a4984fa9dc3ae3b902f2e8b	ahead=1	DETACHED
+	review grammar: distinguish marker assertions from prose mentions
+	from: /tmp/hermit-128-marker-grammar-rereview
+dev-hermit	rescue/20260827-d172088d8	d172088d8395f9c31ae028035c544378f6b67fd9	ahead=1	branch
+	[hermit2, hermit-104, unresolved, devbig014, role=impl] Reapply closing_actor onto the rewritten verified_clos
+	from: /tmp/reapply-actor
+dev-hermit	rescue/20260827-ea207106c	ea207106c8ceeb99c065d73749860a42619951eb	ahead=2	DETACHED
+	WIP grammar: restore coverage after third review
+	from: /tmp/hermit-127-marker-assertion
+dev-hermit	rescue/20260827-f56a6a02c	f56a6a02cfd625c64ddd2416d53d13a84ad26380	ahead=1	DETACHED
+	fleet-gh: a comment must not carry a verdict, and the command declares intent
+	from: /tmp/hermit-005/d189
+hermit	rescue/20260827-0493ca9b5	0493ca9b57492feddf37bc46d77648ee38753392	ahead=6	DETACHED
+	[hermit2, hermit-124, unresolved, devbig014, role=impl] Refuse stale bisect-probe results
+	from: /tmp/hermit-pr2696-live-review2
+hermit	rescue/20260827-05634b365	05634b365cd6f5a02a99ed986bff3a520ae32a6f	ahead=3	DETACHED
+	[hermit2, hermit-123, unresolved, devbig014, role=impl] Port the refusal predicate fix to PR 2637
+	from: /tmp/hermit-123-pr2637-clean
+hermit	rescue/20260827-05a8e5692	05a8e569251d36a2349e71bf597708a5206f32c9	ahead=2	branch
+	Replace stress_suite's `none-recorded` with what its three tiers actually cost
+	from: /tmp/h007-hermit-wt
+hermit	rescue/20260827-06a369d31	06a369d3161158822f7dc337e40a43252b74bc71	ahead=1	branch
+	[hermit2, hermit-005, unresolved, devbig014, role=impl] Correct check 7: "not included in this build" is one f
+	from: /tmp/hm-docfix2
+hermit	rescue/20260827-0858d75e5	0858d75e531481c08a3c19e2cd18a301c4348516	ahead=2	branch
+	[hermit2, hermit-121, unresolved, devbig014, role=impl] Advance Hermit from Reverie 200439dc to ad598995
+	from: /tmp/hermit-121-reverie-pin-200439
+hermit	rescue/20260827-099290c10	099290c10486cba2d48a3ee044989cab242f059b	ahead=1	DETACHED
+	[hermit2, hermit-015, unresolved, devbig014, role=impl] Pin the three matcher narrowings that passed all seven
+	from: /tmp/h007-wt2680
+hermit	rescue/20260827-0a48d3b16	0a48d3b16cc86cf14d6aeb04fe7932a3c943a0a7	ahead=2	DETACHED
+	[hermit2, hermit-003, unresolved, devbig014, role=impl] Resolve live tids, keep Linux's fault order in the tai
+	from: /tmp/review-2288-0a48d3b1
+hermit	rescue/20260827-0ded834e3	0ded834e39a1b589906dcdd4ed8ec549e75b6324	ahead=1	DETACHED
+	[hermit2, hermit-triage, unresolved, devbig014, role=impl] One flag table cannot serve five runners: split VAL
+	from: /tmp/wt-81
+hermit	rescue/20260827-104aaba55	104aaba5532b5d61200843d8429f3c2fa6698896	ahead=1	DETACHED
+	[hermit2, hermit-131, unresolved, devbig014, role=impl] Emit a fixed final validate status
+	from: /tmp/hermit-131-final-status-land
+hermit	rescue/20260827-12381718e	12381718e2e5b4dae5d9fef9df8f40a97e2c1fcc	ahead=1	branch
+	[hermit2, hermit-dbg, unresolved, devbig014, role=impl] The recipe I recorded to prove a measurement does not 
+	from: /tmp/hdbg-recipe
+hermit	rescue/20260827-129d50068	129d50068bad6448ebeb1676716808e89d8039c4	ahead=1	DETACHED
+	check-checker-scheduling: allow flags between a runner and its path
+	from: /tmp/hermit-005/h2661
+hermit	rescue/20260827-13e841605	13e84160584239122e957ffffa17064a8475daed	ahead=1	DETACHED
+	[hermit2, hermit-014, unresolved, devbig014, role=impl] gdb watcher: stop finish() blocking forever, and stop 
+	from: /tmp/hermit-005/h2660
+hermit	rescue/20260827-1527475fc	1527475fc0732723882b88fe72d37723ecdd8567	ahead=4	branch
+	[hermit2, hermit-123, unresolved, devbig014, role=impl] Keep refusal handling from hiding fixture failures
+	from: /tmp/hermit-123-pr2637-current
+hermit	rescue/20260827-1a9df228d	1a9df228dac02a1dc5c85eae20eee674afc3fdea	ahead=4	branch
+	WIP: pin DBT process wait support
+	from: /tmp/hermit-126-dbt-child-wait
+hermit	rescue/20260827-1de9e184e	1de9e184e8453826e370df9fa78f90e2264791a5	ahead=1	DETACHED
+	[hermit2, hermit-003, unresolved, devbig014, role=impl] Add bisect-probe: run a list of test ids and report on
+	from: /tmp/hermit-005/h2685
+hermit	rescue/20260827-1f4982f7a	1f4982f7ab408de62600fcb29487ad02b37e37c5	ahead=1	DETACHED
+	[hermit2, hermit-020, unresolved, devbig014, role=impl] PR_SWEEP_VERDICTS: correct my own mergeable claim — a 
+	from: /tmp/h12-rb2601
+hermit	rescue/20260827-1fa4e21de	1fa4e21decff5a101959b73bb41c18cb776586c5	ahead=2	DETACHED
+	[hermit2, hermit-020, unresolved, devbig014, role=impl] The reason I gave for excluding 129 and 143 was invert
+	from: /tmp/h007-w92b
+hermit	rescue/20260827-200ec9355	200ec9355545085b38bef3aff82a7d3598fef83c	ahead=1	DETACHED
+	mem_race: fix the provenance, keep the race — UnsafeCell instead of a cast pointer
+	from: /tmp/hermit-dbg-2613w
+hermit	rescue/20260827-20d12f492	20d12f49274c9287369dc33b830ad2919914ad79	ahead=1	DETACHED
+	[hermit2, hermit-012, unresolved, devbig014, role=impl] ci/manifest-plan: record the binary's own build proven
+	from: /tmp/h12-prov
+hermit	rescue/20260827-23aeb38d9	23aeb38d99304725694bb38856866ecaf10d32a0	ahead=2	DETACHED
+	Narrow the quote strip to genuine literal openers
+	from: /tmp/h007-wt2683
+hermit	rescue/20260827-267c49e26	267c49e262d074e38c858c66ad22edca87ebe02f	ahead=1	DETACHED
+	[hermit2, hermit-dbg, unresolved, devbig014, role=impl] Restore the success-path wait: hermit stopped waiting 
+	from: /tmp/h12-r2669
+hermit	rescue/20260827-2a694ec53	2a694ec53705cdaa927877e32512eea039640799	ahead=1	branch
+	Fix forward: my no_result declared 16 checkers and 3 assertions unevaluated when they are not
+	from: /tmp/hermit-dbg-lintw
+hermit	rescue/20260827-2ab838d34	2ab838d349f76d20f1fd1c0cb0071af2610d58ef	ahead=1	DETACHED
+	[hermit2, hermit-016, unresolved, devbig014, role=impl] PR_SWEEP_VERDICTS: run the merge gate by hand, because
+	from: /tmp/hermit-005/h2670
+hermit	rescue/20260827-2bc359c75	2bc359c755ee993f3f2d033c7dd3f945ea893a6c	ahead=6	DETACHED
+	[hermit2, hermit-124, unresolved, devbig014, role=impl] Refuse stale bisect-probe results
+	from: /tmp/hermit-pr2696-rereview5
+hermit	rescue/20260827-2cb374386	2cb374386235e8d6bcecb4ccc2e5bb065b290783	ahead=5	branch
+	[hermit2, hermit-dbg, unresolved, devbig014, role=impl] Drive four of the six restored record call sites, one 
+	from: /tmp/hermit-dbg-2562r
+hermit	rescue/20260827-2dc423370	2dc4233700c96974fda6561abf9fe77a88c6a144	ahead=13	branch
+	[hermit2, hermit-123, unresolved, devbig014, role=impl] Check refusal reason and child status in the gate
+	from: /tmp/hermit-123-pr2702
+hermit	rescue/20260827-33b34ee7a	33b34ee7ae69402ea87c4e9eeac2cb324c58e551	ahead=1	DETACHED
+	[hermit2, degraded-hermit-006, unresolved, devbig014, role=impl] Add sweep check 12: an absent symbol can be a
+	from: /tmp/w2178
+hermit	rescue/20260827-3532dcba8	3532dcba8576f0448e29ef6b3eced636132bd889	ahead=2	branch
+	Prove remaining concurrent validate path isolation
+	from: /tmp/hermit-122-parallel-validate-product
+hermit	rescue/20260827-35a655714	35a655714583aa5710e5860f7e8c4316bf5db712	ahead=5	DETACHED
+	[hermit2, hermit-124, unresolved, devbig014, role=impl] Refuse unmeasured bisect decisions
+	from: /tmp/hermit-pr2696-rereview3
+hermit	rescue/20260827-370c3952b	370c3952bbb1c67366b7b42631a569b4fcc0b42e	ahead=2	DETACHED
+	[hermit2, hermit-016, unresolved, devbig014, role=impl] Make the hand-run recipe fail loud, and separate the g
+	from: /tmp/hermit-005/y2670
+hermit	rescue/20260827-38e82520c	38e82520c9f8bdeeaeaccf1cf16c9a7ced2c31a9	ahead=1	DETACHED
+	P0 main-red: take the hostname literal out of the new KVM node, and record the host where it is allowed
+	from: /tmp/h007-wt2653
+hermit	rescue/20260827-3a24a06c1	3a24a06c1b915c7ac43bf23088cd4bf263d65986	ahead=5	DETACHED
+	[hermit2, hermit-020, unresolved, devbig014, role=impl] Retire the two overclaims and bound both signal-test w
+	from: /tmp/hermit-005/h2672
+hermit	rescue/20260827-3a6da5b92	3a6da5b9203dbf9cfe57ccdd31996828d5ceb870	ahead=5	DETACHED
+	Merge branch 'case3' into HEAD
+	from: /tmp/tmp.AemjlCSO60/m
+hermit	rescue/20260827-40e21265b	40e21265be946f843059693ea548d246499359b3	ahead=1	branch
+	[hermit2, hermit-007, unresolved, devbig014, role=impl] Make the DBT wait-status brackets run: 0 tests to 2 on
+	from: /tmp/hermit-dbg-2617
+hermit	rescue/20260827-416131c4e	416131c4e9e5eb1308dc28a153012ff5681fd840	ahead=1	DETACHED
+	[hermit2, hermit-003, unresolved, devbig014, role=impl] test-harness plan: refuse an unknown test id, so a bis
+	from: /tmp/h12-r2686b
+hermit	rescue/20260827-437838fab	437838fab4e9311ea847383d4a511ef2e6511c02	ahead=1	branch
+	[hermit2, hermit-126, unresolved, devbig014, role=impl] Schedule DBT process child waits without host polling
+	from: /tmp/hermit-126-final-main
+hermit	rescue/20260827-49818137e	49818137e4cc7098599fc53705b8eb0c25d111d7	ahead=1	DETACHED
+	[hermit2, hermit-020, unresolved, devbig014, role=impl] Report a deliberate fail-closed shutdown as a REFUSAL,
+	from: /tmp/h007-wt2659
+hermit	rescue/20260827-4b7041637	4b70416375d24c6384d294561411ad2c9fa5f093	ahead=1	DETACHED
+	Put the erased measurement hosts back where the checker permits them
+	from: /tmp/hdbg-2653
+hermit	rescue/20260827-4e45bf1b2	4e45bf1b25bbc50ae804f4b78c30cdb556dc14e8	ahead=3	DETACHED
+	[hermit2, hermit-106, unresolved, devbig014, role=impl] Correct this checker's own remedy: strip before anchor
+	from: /tmp/hermit-127-pr2702-4e45
+hermit	rescue/20260827-4e9ea946e	4e9ea946eda20de64e9a42468684d52bde5f73c9	ahead=2	DETACHED
+	Narrow the quote strip to genuine literal openers
+	from: /tmp/hermit-005/n2683
+hermit	rescue/20260827-4f8b43000	4f8b43000a58deda553da39567225c695857170e	ahead=1	DETACHED
+	[hermit2, hermit-129, unresolved, devbig014, role=impl] Emit per-cell run history with runtime totals
+	from: /tmp/hermit-128-pr2705-review-4f8b
+hermit	rescue/20260827-54cbb2750	54cbb275047540fe6714f98687ba94413e68d545	ahead=1	branch
+	[hermit2, hermit-008, unresolved, devbig014, role=impl] Report verification relaxations from the comparator
+	from: /tmp/hermit-pr2275-port
+hermit	rescue/20260827-556d63513	556d6351356fe7dd3b4e4c92402c3b7f0c770875	ahead=2	DETACHED
+	[hermit2, hermit-011, unresolved, devbig014, role=impl] The fixture must not inherit the outer run's active ma
+	from: /tmp/hermit-123-pr2637-unported
+hermit	rescue/20260827-56851c817	56851c817f8c790126ab7cb7ee09b21d5b3b047c	ahead=1	DETACHED
+	[hermit2, hermit-030, unresolved, devbig014, role=impl] check-checker-scheduling: a checker the shell never ex
+	from: /tmp/tri
+hermit	rescue/20260827-585d4d7e1	585d4d7e1178202dbd38390ad01a0a7111e16bfb	ahead=4	DETACHED
+	[hermit2, hermit-124, unresolved, devbig014, role=impl] Keep the bisect-probe self-test scheduled
+	from: /tmp/hermit-pr2696-independent-review
+hermit	rescue/20260827-5a8b69bed	5a8b69bed7b1c83598f41e92e91ac9ce4de38b6b	ahead=1	DETACHED
+	[hermit2, hermit-014, unresolved, devbig014, role=impl] MAIN RED: give the no-result fixture a path that is no
+	from: /tmp/hdbg-2657
+hermit	rescue/20260827-5b162a786	5b162a786056bcf2ec5e48e82319f4cb646756bd	ahead=1	DETACHED
+	[hermit2, hermit-003, unresolved, devbig014, role=impl] Make the GIT_CONFIG race measurement reproduce as writ
+	from: /tmp/hermit-005/h2679
+hermit	rescue/20260827-5fea32e55	5fea32e55ebc7e2409ad37169d7adbd498788f64	ahead=3	branch
+	[hermit2, hermit-124, unresolved, devbig014, role=impl] Schedule the bisect-probe self-test
+	from: /tmp/orc-hermit-2696
+hermit	rescue/20260827-60f21f0e7	60f21f0e72a216300de9c823953db57e7e0b7383	ahead=1	DETACHED
+	check-checker-scheduling: a prefix convention could not see its own families
+	from: /tmp/hermit-005/h2684
+hermit	rescue/20260827-62115a443	62115a443b7f049f52e7e30dbea3f76be78707e5	ahead=1	DETACHED
+	[hermit2, hermit-135, unresolved, devbig014, role=impl] Keep an absent divergence coordinate meaning "older re
+	from: /tmp/h106-2709h
+hermit	rescue/20260827-642a29905	642a2990502aec16021e9c8048dc270bc86dc2ba	ahead=2	DETACHED
+	[hermit2, hermit-015, unresolved, devbig014, role=impl] Put the boundary tests ON the boundary -- three of the
+	from: /tmp/h007-w80
+hermit	rescue/20260827-64933fa15	64933fa152e01b2ae626acd1ada14c9761936aeb	ahead=3	DETACHED
+	Make the flag table per-runner: one flag is not one flag
+	from: /tmp/h007-wt83c
+hermit	rescue/20260827-651cceb03	651cceb032d371c05c28da967480c0040e703359	ahead=1	branch
+	[hermit2, hermit-triage, unresolved, devbig014, role=impl] Run check-checker-scheduling's own self-test, which
+	from: /tmp/wt-st
+hermit	rescue/20260827-699999c24	699999c2468ef1efbbabbd874da91da874478ec2	ahead=1	DETACHED
+	[hermit2, hermit-003, unresolved, devbig014, role=impl] Discover checker entrypoints by shebang, not by filena
+	from: /tmp/h12-r2665
+hermit	rescue/20260827-699e6e481	699e6e48193adac11f058abb0373234b8ee6e321	ahead=1	branch
+	[hermit2, hermit-008, unresolved, devbig014, role=impl] Preserve DBT guest-channel regression probes
+	from: /tmp/hermit-pr2259-residual.vU8tn7/repo
+hermit	rescue/20260827-6b837d7bc	6b837d7bc36acd45be7a20670c63d34a39de9c91	ahead=9	DETACHED
+	[hermit2, hermit-135, unresolved, devbig014, role=impl] An absent refusal classification is a no-result, not a
+	from: /tmp/hermit-127-pr2702-6b837
+hermit	rescue/20260827-745680e72	745680e7295a976c5501597eb673d22058e4f022	ahead=1	DETACHED
+	[hermit2, hermit-015, unresolved, devbig014, role=impl] Pin the fourth divergence coordinate to storage, and s
+	from: /tmp/hermit-dbg-2624w
+hermit	rescue/20260827-76423fe8b	76423fe8b8c68f1daea8746780a6d738dd3007ab	ahead=7	DETACHED
+	[hermit2, hermit-020, unresolved, devbig014, role=impl] Assert the operator-facing half too — the marker and t
+	from: /tmp/h007-wt72m
+hermit	rescue/20260827-7795aae4d	7795aae4d15959f7222b6e581ff4659b5d9c6307	ahead=1	branch
+	[hermit2, hermit-005, unresolved, devbig014, role=impl] Clear the portability red: synthetic fixture host, and
+	from: /tmp/hm-portable
+hermit	rescue/20260827-78485954c	78485954c7eedcaa4cfbe17c4599a150551889fb	ahead=16	branch
+	[hermit2, hermit-003, unresolved, devbig014, role=impl] Declare the new record_replay_path module so this piec
+	from: /tmp/cumhead18-20260823
+hermit	rescue/20260827-7ad8aa4cb	7ad8aa4cb3b3b76f6f36ed1cf44b4cbf995fc401	ahead=1	DETACHED
+	[hermit2, hermit-001, unresolved, devbig014, role=impl] P0 main-red, mine: a runner prefix inside a string lit
+	from: /tmp/h007-wt2656
+hermit	rescue/20260827-7e3004480	7e3004480dbdec5acf640dad8975298deee58026	ahead=1	branch
+	[hermit2, hermit-dbg, unresolved, devbig014, role=impl] Name the fifth remedy — and a comment defending a lock
+	from: /tmp/hdbg-gate2
+hermit	rescue/20260827-7e8b9103f	7e8b9103f0cf4cce0a3815a5a9ca876ce8967461	ahead=2	DETACHED
+	[hermit2, hermit-013, unresolved, devbig014, role=impl] Report a missing guest program as 127, and make the ex
+	from: /tmp/hermit-dbg-2562rb
+hermit	rescue/20260827-833dd8c7b	833dd8c7b59ede8e5d786d8463702038a9e26de9	ahead=1	branch
+	[hermit2, hermit-dbg, unresolved, devbig014, role=impl] Name the fifth remedy, because four agents cleared thi
+	from: /tmp/hdbg-gate
+hermit	rescue/20260827-884f12cf4	884f12cf4a557ef1cd4d84ff6e342978030cdc1f	ahead=1	DETACHED
+	[hermit2, hermit-003, unresolved, devbig014, role=impl] check-checker-scheduling: a population FLOOR, because 
+	from: /tmp/h12-r2690
+hermit	rescue/20260827-8881f9cb4	8881f9cb4836c7bc70e40ce928e04184546148dc	ahead=2	DETACHED
+	Answer three refusals: stop the hang, and stop claiming to fix the report
+	from: /tmp/hermit-005/x2678
+hermit	rescue/20260827-8b6654cec	8b6654cec1a2a32a1427a30a3a6ec861b6f6f3b3	ahead=2	DETACHED
+	[hermit2, hermit-triage, unresolved, devbig014, role=impl] Earn the early-exit report: a queued probe is not a
+	from: /tmp/hermit-005/h2666b
+hermit	rescue/20260827-8e5857139	8e585713948776b9dbb264aafc2dda7e696c295c	ahead=9	branch
+	[hermit2, hermit-008, unresolved, devbig014, role=impl] Keep environmental retries narrowly evidenced
+	from: /tmp/hermit-pr2339.D6Nf2N/repo
+hermit	rescue/20260827-9353d7ef2	9353d7ef2e504bdc6bfd46cfc1c2299255446f47	ahead=3	DETACHED
+	[hermit2, hermit-101, unresolved, devbig014, role=impl] Schedule the signal-stop checker and retire the allowl
+	from: /tmp/pop2699
+hermit	rescue/20260827-943b09666	943b09666e48950bf9f65d33d894330c0de56c83	ahead=7	DETACHED
+	[hermit2, hermit-131, unresolved, devbig014, role=impl] Match only validate's refusal summary
+	from: /tmp/hermit-131-pr2699
+hermit	rescue/20260827-96244587c	96244587c610d8306ed042c48b6283d5b416cab0	ahead=1	DETACHED
+	[hermit2, degraded-hermit-004, unresolved, devbig014, role=impl] Restore pinned check-outcome adapter coverage
+	from: /tmp/pr2372-standalone.rvYakM/hermit
+hermit	rescue/20260827-96afaba7d	96afaba7daa3f5a766af7bf49b9304190429db56	ahead=1	DETACHED
+	check-checker-scheduling: one admission test, and a flag default that fails loud
+	from: /tmp/hermit-005/h2683
+hermit	rescue/20260827-9734286ba	9734286ba6c3e28304ac3a2bce10e4942257b653	ahead=1	DETACHED
+	[hermit2, hermit-011, unresolved, devbig014, role=impl] Schedule the lint checkers as one DAG node so new chec
+	from: /tmp/hermit-dbg-2609w/wt
+hermit	rescue/20260827-9741f4f47	9741f4f4787834cd54f484a8bb3931ce38aaac33	ahead=3	DETACHED
+	[hermit2, hermit-triage, unresolved, devbig014, role=impl] Earn the early-exit report: a queued probe is not a
+	from: /tmp/wt-g2
+hermit	rescue/20260827-979a50b17	979a50b17a75ac486661ec5e1a950ec7c99bdbf1	ahead=1	DETACHED
+	[hermit2, hermit-003, unresolved, devbig014, role=impl] test-harness plan: refuse an unknown test id, so a bis
+	from: /tmp/h12-r2686
+hermit	rescue/20260827-9822ee281	9822ee2818a1c2244ccb8dd3ca0afa4f12079f8a	ahead=5	DETACHED
+	[hermit2, hermit-124, unresolved, devbig014, role=impl] Refuse unmeasured bisect decisions
+	from: /tmp/hermit-pr2696-rereview
+hermit	rescue/20260827-987a19231	987a19231badae421ad73d050891b618ce1b578a	ahead=1	DETACHED
+	[hermit2, hermit-125, unresolved, devbig014, role=impl] Stabilize retry self-test ordering
+	from: /tmp/hermit-125-retry-resumed
+hermit	rescue/20260827-99bf5075b	99bf5075b74812d7a4b83dfc65feb450d67b97a5	ahead=5	DETACHED
+	[hermit2, hermit-124, unresolved, devbig014, role=impl] Refuse unmeasured bisect decisions
+	from: /tmp/hermit-pr2696-rereview2
+hermit	rescue/20260827-9a3733958	9a3733958204614d0e0995893c74ae5f0e548e5f	ahead=7	DETACHED
+	[hermit2, hermit-123, unresolved, devbig014, role=impl] Make refusal predicate protection executable
+	from: /tmp/hermit-127-pr2702-review-9a373
+hermit	rescue/20260827-9f6fcd24a	9f6fcd24a7261aec635cd4a26a889bc16dd4e843	ahead=1	branch
+	[hermit2, hermit-005, unresolved, devbig014, role=impl] Put the deadlock-report determinism rule where authors
+	from: /tmp/hm-report
+hermit	rescue/20260827-a2cbad52c	a2cbad52c85a1bf57eb8dd4192ba5684e528e7fa	ahead=1	branch
+	[hermit2, hermit-005, unresolved, devbig014, role=impl] Reference the LiteInst requalification by task id, not
+	from: /tmp/hm-now
+hermit	rescue/20260827-a5c0ea42b	a5c0ea42bba1d1352787c56ad984762606dbe7ee	ahead=1	DETACHED
+	[hermit2, hermit-106, unresolved, devbig014, role=impl] Refuse an unanchored refusal predicate, so the protect
+	from: /tmp/hermit-125-pr2702-review
+hermit	rescue/20260827-a81f59e36	a81f59e3615f80dbdf69b13b3f3712173d38315c	ahead=8	branch
+	[hermit2, hermit-121, unresolved, devbig014, role=impl] Preserve pressure runtime parsing after retry-reader l
+	from: /tmp/hermit-129-per-testid-run-ledger-hermit
+hermit	rescue/20260827-a826d51a2	a826d51a21168d064743798808cdaf9850b27723	ahead=1	DETACHED
+	gdb watcher: a stranger's accept is not our release, so stop concluding on it
+	from: /tmp/hermit-005/h2678
+hermit	rescue/20260827-a8345b31a	a8345b31ae7ffffc3d2b0ba80404d11bd6525182	ahead=3	DETACHED
+	Bound the stderr diagnostic wait per INVOCATION, derived from the unwind grace it sits inside
+	from: /tmp/h-stderr
+hermit	rescue/20260827-a8faeb318	a8faeb31832f574716181991905d5646e00bf2f5	ahead=3	DETACHED
+	Answer the relayed codex refusal: word boundary, and a third flag arity
+	from: /tmp/h12-fix
+hermit	rescue/20260827-aa47da3fe	aa47da3fe4956936d7be8ded08be0649d473b6e0	ahead=1	branch
+	[hermit2, hermit-122, unresolved, devbig014, role=impl] Keep every appended retry observation readable
+	from: /tmp/hermit-122-appended-retry-reader-v3
+hermit	rescue/20260827-ac18c31d0	ac18c31d0de40b6dc50ac46fca6f1e29547f6fdc	ahead=6	branch
+	[hermit2, hermit-132, unresolved, devbig014, role=impl] Require stripped line-start refusal matches
+	from: /tmp/hermit-132-pr2702
+hermit	rescue/20260827-af03551e2	af03551e20d99a49a37a32cc884d14504f31e111	ahead=6	DETACHED
+	[hermit2, hermit-124, unresolved, devbig014, role=impl] Refuse stale bisect-probe results
+	from: /tmp/hermit-pr2696-live-review
+hermit	rescue/20260827-afcbfdceb	afcbfdceb7a6f72f24cc66dfa35c6f08bcfe336d	ahead=1	branch
+	[hermit2, m2audit, unresolved, devbig014, role=impl] Refuse cached passes after genuine validation failures
+	from: /tmp/hermit-latch-wt
+hermit	rescue/20260827-b0729d090	b0729d090982974bb0dec05ba439b1c5b5ff59a9	ahead=1	DETACHED
+	[hermit2, hermit-123, unresolved, devbig014, role=impl] Make debugging evidence current
+	from: /tmp/hermit-127-review-2701
+hermit	rescue/20260827-b32de9877	b32de987736476c6a744ca9c6bf9b90f8696f398	ahead=1	branch
+	[hermit2, hermit-dbg, unresolved, devbig014, role=impl] The watcher I landed could hang in finish() and mislab
+	from: /tmp/hdbg-six
+hermit	rescue/20260827-b3436376b	b3436376b09da52b5ee911f6a2f4c9b6e99e90a4	ahead=1	DETACHED
+	[hermit2, hermit-121, unresolved, devbig014, role=impl] Advance Hermit to Reverie 200439dc
+	from: /tmp/hermit-121-ad598-validate
+hermit	rescue/20260827-b4d5d76db	b4d5d76db3602d10ae122515ce1bfbcef60e2903	ahead=6	DETACHED
+	[hermit2, hermit-124, unresolved, devbig014, role=impl] Refuse stale bisect-probe results
+	from: /tmp/hermit-pr2696-final-review5
+hermit	rescue/20260827-b516317a3	b516317a3b8be940505f9a26b51dc5ccb4c463b3	ahead=1	DETACHED
+	One admission test for is_invoked, and a loud default over the per-runner table
+	from: /tmp/hermit-checker-bare-revert
+hermit	rescue/20260827-b5b5b8249	b5b5b824965ddfdb39ffed15d4d2f4262c1a2e28	ahead=1	branch
+	Restore pinned check-outcome adapter coverage
+	from: /tmp/hermit-dap-pr2363-reauthor
+hermit	rescue/20260827-b5fdb953f	b5fdb953f69ef9d322afa4d486f9ea2dea9512c1	ahead=5	branch
+	[hermit2, hermit-124, unresolved, devbig014, role=impl] Refuse unmeasured bisect decisions
+	from: /tmp/hermit-124-2696-brackets
+hermit	rescue/20260827-b70fcafe8	b70fcafe848e333d14c244fe3253ff387909e297	ahead=1	branch
+	[hermit2, hermit-122, unresolved, devbig014, role=impl] Preserve E2E results across retries
+	from: /tmp/hermit-122-e2e-retry-results
+hermit	rescue/20260827-b8007f790	b8007f790ae374f98ec40c46318ff5cb382f91dc	ahead=6	DETACHED
+	[hermit2, degraded-hermit-125, unresolved, devbig014, role=impl] Keep stop-test checks active under Python opt
+	from: /tmp/hermit-124-pr2699-control
+hermit	rescue/20260827-bb7b0daef	bb7b0daef6babffa29f00337fa891af93154e347	ahead=3	DETACHED
+	[hermit2, hermit-020, unresolved, devbig014, role=impl] Report a refusal as a refusal in record mode, and witn
+	from: /tmp/h12-r2672
+hermit	rescue/20260827-bdf63019b	bdf63019bb5f53b584a1fdebd540cb1b46ef07b7	ahead=2	DETACHED
+	[hermit2, hermit-012, unresolved, devbig014, role=impl] Render an ERROR that located nothing as itself, instea
+	from: /tmp/hermit-dbg-2627w
+hermit	rescue/20260827-bdf87b0dc	bdf87b0dc9f236d388f1b33d0d7575e427b82e06	ahead=2	DETACHED
+	[hermit2, hermit-030, unresolved, devbig014, role=impl] PR_SWEEP_VERDICTS: stamp every parser-behaviour table 
+	from: /tmp/hermit-005/h2602
+hermit	rescue/20260827-c1f462b61	c1f462b619d983879b1c6abfe5d0217d34c41287	ahead=5	DETACHED
+	[hermit2, hermit-124, unresolved, devbig014, role=impl] Refuse unmeasured bisect decisions
+	from: /tmp/hermit-124-2696-final
+hermit	rescue/20260827-c2b395ed0	c2b395ed051ea8be5dfd4b02926ea6a83c317da5	ahead=2	DETACHED
+	[hermit2, hermit-triage, unresolved, devbig014, role=impl] A release connect is an attempt, not a conclusion: 
+	from: /tmp/hermit-005/h2666
+hermit	rescue/20260827-c35fe1e3d	c35fe1e3d5c8c1886fd313edd71555e8fb4b9679	ahead=1	DETACHED
+	[hermit2, hermit-129, unresolved, devbig014, role=impl] Emit per-cell run history with runtime totals
+	from: /tmp/hermit-128-pr2705-review
+hermit	rescue/20260827-c4eb4cabc	c4eb4cabc3f56593548f11d6c7e0c2c6ae4aec6f	ahead=5	branch
+	[hermit2, hermit-dbg, unresolved, devbig014, role=impl] Make the source comments say what was measured, not wh
+	from: /tmp/hermit-dbg-ff
+hermit	rescue/20260827-c7325dff3	c7325dff307361f0c0dc3703deb1a9fa0af9d96b	ahead=2	DETACHED
+	[hermit2, hermit-106, unresolved, devbig014, role=impl] Wire the refusal-predicate checker into lint-checks, b
+	from: /tmp/hermit-124-pr2702-review
+hermit	rescue/20260827-c7f617d52	c7f617d52d670fda2e26591cf0b014cf98c27de3	ahead=6	DETACHED
+	[hermit2, hermit-132, unresolved, devbig014, role=impl] Require stripped line-start refusal matches
+	from: /tmp/hermit-127-pr2702-parent-c7
+hermit	rescue/20260827-c85f79546	c85f795465b9e9a0f8c17308fdd827bfcc801da7	ahead=5	DETACHED
+	[hermit2, hermit-124, unresolved, devbig014, role=impl] Refuse unmeasured bisect decisions
+	from: /tmp/hermit-pr2696-final-review3
+hermit	rescue/20260827-cca971d66	cca971d665e53031c38d2cc07c7f757ee89710b3	ahead=1	DETACHED
+	Compare the guest INFO stream, not the tracer and CLI streams
+	from: /tmp/hermit-127-review-2578
+hermit	rescue/20260827-cd2d26170	cd2d261702b58989da0d3c23225107755680ad0d	ahead=1	branch
+	[hermit2, hermit-011, unresolved, devbig014, role=impl] Re-derive doc.rustdoc's memory and duration after its 
+	from: /tmp/hermit-pr2519
+hermit	rescue/20260827-d3c0d5d0a	d3c0d5d0a072bd95be34a5f1225ddb3158480140	ahead=5	DETACHED
+	[hermit2, hermit-106, unresolved, devbig014, role=impl] Fail closed on an empty corpus, and catch the four one
+	from: /tmp/hermit-pr2702-code-review
+hermit	rescue/20260827-d62a49741	d62a49741e542434495c5f676dc5e98bcc365f78	ahead=1	DETACHED
+	[hermit2, hermit-003, unresolved, devbig014, role=impl] Add bisect-probe: run a list of test ids and report on
+	from: /tmp/hermit-005/w2685
+hermit	rescue/20260827-d7daa3a4a	d7daa3a4a4837fc2c2f0e7f22e05de22a6ea86d3	ahead=3	DETACHED
+	Document and test final status mapping
+	from: /tmp/hermit-131-final-status
+hermit	rescue/20260827-d826d457b	d826d457b1065e3785f95b2d5b9532002942f6c2	ahead=3	DETACHED
+	[hermit2, hermit-123, unresolved, devbig014, role=impl] Port the refusal predicate fix to PR 2637
+	from: /tmp/hermit-123-pr2637-review
+hermit	rescue/20260827-d836df64e	d836df64edf70eb02622bc9f8d5cca7388684766	ahead=2	DETACHED
+	[hermit2, hermit-013, unresolved, devbig014, role=impl] Report a missing guest program as 127, and make the ex
+	from: /tmp/h12-2562
+hermit	rescue/20260827-d92364216	d92364216a89eceeeacac1514f31dbbc6a4c6eff	ahead=5	DETACHED
+	[hermit2, hermit-124, unresolved, devbig014, role=impl] Refuse unmeasured bisect decisions
+	from: /tmp/hermit-pr2696-final-review4
+hermit	rescue/20260827-e062bacbd	e062bacbd40629b94de0d06316418734f32c4b96	ahead=1	branch
+	[hermit2, bport, unresolved, devbig014, role=impl] Report verification relaxations from the comparator
+	from: /tmp/hermit-pr2275
+hermit	rescue/20260827-e119019df	e119019df745682acb501d8fb2ed2b72d8e55599	ahead=1	branch
+	[hermit2, hermit-131, unresolved, devbig014, role=impl] Make timeout policy manifest-driven per cell
+	from: /tmp/hermit-131-per-test-timeout
+hermit	rescue/20260827-e49d0d0d5	e49d0d0d52d37222e1d06dc1eb10f869206488dc	ahead=1	branch
+	[hermit2, hermit-dbg, unresolved, devbig014, role=impl] A hold keyed on "the related task is still open" can n
+	from: /tmp/hdbg-2607b
+hermit	rescue/20260827-e4f42b2fa	e4f42b2faee9d98bc7812b5f35e2da2f37e9c1ae	ahead=8	DETACHED
+	[hermit2, hermit-020, unresolved, devbig014, role=impl] Close the four findings agent(hermit-005)'s codex lane
+	from: /tmp/hermit-005/z2672
+hermit	rescue/20260827-e6079aa2a	e6079aa2adbb206e982fa351c915e6203ea416b4	ahead=1	branch
+	[hermit2, hermit-dbg, unresolved, devbig014, role=impl] Restore the success-path wait: hermit stopped waiting 
+	from: /tmp/hdbg-wait
+hermit	rescue/20260827-e87188be8	e87188be829227f83efe5c1356926570b09335b0	ahead=1	DETACHED
+	[hermit2, hermit-001, unresolved, devbig014, role=impl] The verify harness leaked one bit of fd state between 
+	from: /tmp/hermit-005/h2668
+hermit	rescue/20260827-ea6faabbf	ea6faabbf2ad18efbf56b89918f3a6c2689bc976	ahead=5	branch
+	[hermit2, hermit-122, unresolved, devbig014, role=impl] Require complete retry measurements
+	from: /tmp/hermit-122-appended-retry-reader
+hermit	rescue/20260827-eb15b6815	eb15b68151dd4e0bc59b8bfb920c906f0a6b228a	ahead=1	DETACHED
+	check-reverie-pin: retract my four-git table -- every condition is rejected 128, not tolerated
+	from: /tmp/h007-rp
+hermit	rescue/20260827-eef9ea68b	eef9ea68b28e24b68aa969ea563946ad06b98785	ahead=7	DETACHED
+	[hermit2, hermit-123, unresolved, devbig014, role=impl] Make refusal predicate protection executable
+	from: /tmp/hermit-127-pr2702-review
+hermit	rescue/20260827-ef5fe1082	ef5fe1082c1175cf3baf7a52b9c62a25ab453b7d	ahead=1	branch
+	[hermit2, hermit-132, unresolved, devbig014, role=impl] Give each test attempt its own host workdir
+	from: /tmp/hermit-132-per-attempt-workdir
+hermit	rescue/20260827-f0ef40c71	f0ef40c712395340258ae5f88a4268506a9a2069	ahead=1	branch
+	[hermit2, hermit-008, unresolved, devbig014, role=impl] detcore: pin internal pipe capacity for deterministic 
+	from: /tmp/hermit-pipe-capacity-fix
+hermit	rescue/20260827-f2208e321	f2208e3214fdda08d6168e9e25d0a636311c806e	ahead=5	DETACHED
+	[hermit2, hermit-124, unresolved, devbig014, role=impl] Refuse unmeasured bisect decisions
+	from: /tmp/hermit-pr2696-final-review2
+hermit	rescue/20260827-f2664bf2d	f2664bf2d1501ef056a454fea0ea2a60138bb701	ahead=2	DETACHED
+	[hermit2, hermit-011, unresolved, devbig014, role=impl] The fixture must not inherit the outer run's active ma
+	from: /tmp/hermit-005/h2637
+hermit	rescue/20260827-f4349f5b1	f4349f5b1db1cd97e854d9229d39909d1a3cde6f	ahead=1	DETACHED
+	[hermit2, hermit-020, unresolved, devbig014, role=impl] The exit-class gate was blind to the two codes I added
+	from: /tmp/h007-w92
+hermit	rescue/20260827-f53ff62d2	f53ff62d24fb979a08c10ed8fd88816033d1d38c	ahead=1	DETACHED
+	[hermit2, hermit-011, unresolved, devbig014, role=impl] Schedule the lint checkers as one DAG node so new chec
+	from: /tmp/hermit-dbg-2609w2
+hermit	rescue/20260827-fa89359bd	fa89359bd07ff36fa9e7d2971612513b79ab8dab	ahead=1	DETACHED
+	Declare where a measurement host belongs, instead of relying on the scanner not looking
+	from: /tmp/hermit-005/h2653
+hermit	rescue/20260827-fa8d5eef4	fa8d5eef4730c3b54db61e11a34ec4d4b794f168	ahead=2	DETACHED
+	[hermit2, hermit-014, unresolved, devbig014, role=impl] Restore the Makefile hunk this branch's rebase dropped
+	from: /tmp/h4-2622wt
+hermit	rescue/20260827-fc37dd48b	fc37dd48b4d0939499e41ce3cd3b68dd27e39806	ahead=8	DETACHED
+	[hermit2, hermit-123, unresolved, devbig014, role=impl] Execute the validate refusal predicate in lint
+	from: /tmp/hermit-127-pr2702-fc37
+hermit	rescue/20260827-fc46bce3e	fc46bce3e6c0780b4b3cf64aeccd66a3dc0a1ad9	ahead=1	branch
+	[hermit2, hermit-triage, unresolved, devbig014, role=impl] Take the measurement host out of the privileged DAG
+	from: /tmp/wt-pj
+reverie	rescue/20260827-0315d6ce5	0315d6ce5c8c03c7e807523f5f58659472b56d8f	ahead=1	DETACHED
+	mount: refuse a path that is not a valid C string, instead of panicking
+	from: /tmp/hermit-128-reverie-pr495-review
+reverie	rescue/20260827-7d4120934	7d4120934834a3ac5b81bbe4680ac242d037c37f	ahead=2	branch
+	WIP: preserve DBT child startup status
+	from: /tmp/hermit-126-reverie-process-child
+reverie	rescue/20260827-cc24cea8f	cc24cea8f865a2ffa4513de5920cf077ed2e43eb	ahead=1	branch
+	[hermit2, hermit-128, unresolved, devbig014, role=impl] Bound port isolation child exit waits
+	from: /tmp/hermit-128-port-isolation
+reverie	rescue/20260827-f800c95ff	f800c95ff284b32a3b87b5a386d463df85565d4d	ahead=1	branch
+	[hermit2, hermit-126, unresolved, devbig014, role=impl] Report DBT process clone metadata and startup status
+	from: /tmp/hermit-126-reverie-final

@@ -1,0 +1,7 @@
+diff --git a/hermit b/hermit
+index d6747dceb..4a477eb75 160000
+--- a/hermit
++++ b/hermit
+@@ -1 +1 @@
+-Subproject commit d6747dceb203eaebab369a0116fdfa06ff1b86e3
++Subproject commit 4a477eb75c90b9b3a729923012c515710d4b2ca5

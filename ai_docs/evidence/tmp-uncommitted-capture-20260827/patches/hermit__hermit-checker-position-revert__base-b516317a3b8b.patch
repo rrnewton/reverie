@@ -1,0 +1,57 @@
+diff --git a/scripts/check-checker-scheduling.rs b/scripts/check-checker-scheduling.rs
+index 01c9476d5b..97def00484 100755
+--- a/scripts/check-checker-scheduling.rs
++++ b/scripts/check-checker-scheduling.rs
+@@ -571,43 +571,15 @@ fn invokes_on_line(line: &str, needle: &str) -> bool {
+ /// other clauses through the old guard reported 2 checkers as scheduled by NOTHING.
+ /// Adding `)` and `=` to the list would have fixed those two and left the third shape.
+ fn in_command_position(before: &str) -> bool {
+-    let mut before = before;
+-    // A quote directly before the match may be a string DELIMITER. Commands reach this
+-    // file as shell text, as JSON (decoded upstream) and as RUST literals in
+-    // scripts/validate.rs (`node.cmd = "./ci/verify-x.sh ..."`).
+-    //
+-    // ⚠️ ONLY WHEN IT OPENS ONE. agent(hermit-005) refused an earlier revision for
+-    // stripping ANY trailing quote, which readmitted the shape hermit#2656 excluded: a
+-    // runner prefix carried as FIXTURE DATA, where the quote is preceded by nothing but
+-    // indentation. In a genuine embedded command it is preceded by the operator that
+-    // introduces the literal, so that is what is required.
+-    if let Some(rest) = before.strip_suffix('"').or_else(|| before.strip_suffix('\'')) {
+-        let opener = rest.trim_end();
+-        if opener.is_empty() || !opener.ends_with(['=', '(', ',']) {
+-            return false;
+-        }
+-        before = rest;
+-    }
+-    // The match must START A WORD. `OUT=./scripts/check-x.sh` is an assignment's VALUE.
+-    if let Some(last) = before.chars().last() {
+-        if !last.is_whitespace() && !matches!(last, ';' | '&' | '|' | '(' | '`') {
+-            return false;
+-        }
+-    }
+-    let trimmed = before.trim_end();
+-    if trimmed.is_empty() {
+-        return true;
+-    }
+-    for token in trimmed.split_whitespace().rev() {
+-        if is_command_boundary(token) {
+-            return true;
+-        }
+-        if is_assignment(token) || is_expansion(token) {
+-            continue;
+-        }
+-        return false;
+-    }
+-    true
++    let before = before.trim_end();
++    let quoted = before.ends_with('"') || before.ends_with('\'');
++    !quoted
++        && (before.is_empty()
++            || before.ends_with(';')
++            || before.ends_with('&')
++            || before.ends_with('|')
++            || before.ends_with('(')
++            || before.ends_with('`'))
+ }
+ 
+ /// `NAME=value` -- an environment prefix, which precedes a command.

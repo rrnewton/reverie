@@ -1,0 +1,60 @@
+diff --git a/scripts/check-checker-scheduling.rs b/scripts/check-checker-scheduling.rs
+index 01c9476d5b..0545d11a5d 100755
+--- a/scripts/check-checker-scheduling.rs
++++ b/scripts/check-checker-scheduling.rs
+@@ -414,8 +414,10 @@ fn runner_flag_path(text: &str, path: &str) -> bool {
+     // to consume the token after it. A missing entry now steps PAST the script and
+     // reports a false ORPHAN -- loud, and one line to fix. hermit#2681's knowledge is
+     // preserved: every flag it listed as value-taking is absent from these.
+-    const PYTHON_NO_VALUE: [&str; 13] = [
+-        "-B", "-E", "-I", "-O", "-OO", "-s", "-S", "-u", "-v", "-b", "-d", "-q", "-x",
++    const RUSTC_VALUE_FLAGS: [&str; 17] = [
++        "-o", "--out-dir", "--emit", "--extern", "--target", "--edition",
++        "--crate-name", "--crate-type", "--cfg", "--check-cfg", "-L", "-l", "-C",
++        "-Z", "-W", "-A", "-D",
+     ];
+     // `-o`, `-O` and `--rcfile` are DELIBERATELY ABSENT: each takes a value here.
+     //
+@@ -425,23 +427,15 @@ fn runner_flag_path(text: &str, path: &str) -> bool {
+     // is code that is never run as a path, so it stays out of PYTHON_NO_VALUE. One flag,
+     // opposite correctness per runner, which is the case that makes this table per-runner
+     // rather than merely long.
+-    const SHELL_NO_VALUE: [&str; 17] = [
+-        "-e", "-x", "-u", "-v", "-n", "-f", "-C", "-a", "-h", "-i", "-l", "-m", "-p",
+-        "-r", "-s", "-t", "-c",
+-    ];
+-    const RUSTC_NO_VALUE: [&str; 5] = ["-O", "-g", "-V", "-h", "-v"];
++    const PYTHON_VALUE_FLAGS: [&str; 2] = ["-c", "-m"];
++    const SHELL_VALUE_FLAGS: [&str; 4] = ["-o", "-O", "--rcfile", "-D"];
+ 
+-    fn takes_value(runner: &str, flag: &str) -> bool {
+-        // An attached value is one token: `--edition=2021`, `-Dwarnings`.
+-        if flag.contains('=') || (!flag.starts_with("--") && flag.len() > 2) {
+-            return false;
++    fn value_flags_for(runner: &str) -> &'static [&'static str] {
++        match runner {
++            "rustc" => &RUSTC_VALUE_FLAGS,
++            "python" | "python3" => &PYTHON_VALUE_FLAGS,
++            _ => &SHELL_VALUE_FLAGS,
+         }
+-        let booleans: &[&str] = match runner {
+-            "rustc" => &RUSTC_NO_VALUE,
+-            "python" | "python3" => &PYTHON_NO_VALUE,
+-            _ => &SHELL_NO_VALUE,
+-        };
+-        !booleans.contains(&flag)
+     }
+ 
+     let dotted = format!("./{path}");
+@@ -451,9 +445,10 @@ fn runner_flag_path(text: &str, path: &str) -> bool {
+             if !RUNNERS.contains(token) {
+                 continue;
+             }
++            let value_flags = value_flags_for(token);
+             let mut next = index + 1;
+             while next < tokens.len() && tokens[next].starts_with('-') {
+-                if takes_value(token, tokens[next]) {
++                if value_flags.contains(&tokens[next]) {
+                     next += 1;
+                 }
+                 next += 1;

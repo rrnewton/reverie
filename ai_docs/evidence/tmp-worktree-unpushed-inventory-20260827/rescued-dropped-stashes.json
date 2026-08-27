@@ -1,0 +1,1052 @@
+[
+ {
+  "repo": "reverie",
+  "rescue_ref": "rescue/20260827-00210e4ef",
+  "sha": "00210e4ef1202c6919affaea9ef157fdf10bff3a",
+  "subject": "WIP on impl-fix-gdb-finish-panic: 286a363 feat: intercept CPUID in Dyn",
+  "dropped_at": null
+ },
+ {
+  "repo": "reverie",
+  "rescue_ref": "rescue/20260827-993bab7c0",
+  "sha": "993bab7c0fd9529420a9517838d7c541dd5c2b98",
+  "subject": "On codex/kvm-startup-livelock-fix: kvm-livelock: host-default + tripwi",
+  "dropped_at": null
+ },
+ {
+  "repo": "reverie",
+  "rescue_ref": "rescue/20260827-784722530",
+  "sha": "784722530158c2f52e45696692ec7efd7317ace8",
+  "subject": "On (no branch): uncommitted-016",
+  "dropped_at": null
+ },
+ {
+  "repo": "reverie",
+  "rescue_ref": "rescue/20260827-986a3cfab",
+  "sha": "986a3cfab47a4e2560e984f31687ea08ef6a3c10",
+  "subject": "On (no branch): tkill-wip",
+  "dropped_at": null
+ },
+ {
+  "repo": "reverie",
+  "rescue_ref": "rescue/20260827-5c9c28371",
+  "sha": "5c9c283717c47abc81ed69aae734dfb87c078951",
+  "subject": "On impl-reverie-backend-trait-docs: reverie backend trait+docs",
+  "dropped_at": null
+ },
+ {
+  "repo": "reverie",
+  "rescue_ref": "rescue/20260827-0ca4c2d43",
+  "sha": "0ca4c2d43d303d887b5757f64123008fb779f05d",
+  "subject": "On codex/liteinst-flagship-fastpath-integration: claude: lifecycle-sup",
+  "dropped_at": null
+ },
+ {
+  "repo": "reverie",
+  "rescue_ref": "rescue/20260827-30c9fd150",
+  "sha": "30c9fd150ce3fe30a945eca248e1c5576785339e",
+  "subject": "On impl-fix-lldb-handshake: lldb-wip",
+  "dropped_at": null
+ },
+ {
+  "repo": "reverie",
+  "rescue_ref": "rescue/20260827-c9ee93006",
+  "sha": "c9ee930060c6d7e145beade0bac2af685b21e703",
+  "subject": "WIP on codex/fix-kvm-counter2-parity-regression: 9bb0a68 reverie-e9pat",
+  "dropped_at": null
+ },
+ {
+  "repo": "hermit",
+  "rescue_ref": "rescue/20260827-687570fd5",
+  "sha": "687570fd544b130d45bb2b7f4f4770f04b7fefc7",
+  "subject": "WIP on share-stderr-origin: a6b0c37648 [hermit2, hermit-131, unr",
+  "dropped_at": "2026-08-26T19:54:44"
+ },
+ {
+  "repo": "hermit",
+  "rescue_ref": "rescue/20260827-5ff90f821",
+  "sha": "5ff90f8213eda46ba3b9aa9455fff28bda186285",
+  "subject": "WIP on share-stderr-origin: a6b0c37648 [hermit2, hermit-131, unr",
+  "dropped_at": "2026-08-26T19:40:01"
+ },
+ {
+  "repo": "hermit",
+  "rescue_ref": "rescue/20260827-e78c448f0",
+  "sha": "e78c448f0700353c4f085896e3c5527a599730bf",
+  "subject": "WIP on (no branch): 51c8998efc The nested hermit is pid 1 in its",
+  "dropped_at": "2026-08-26T17:50:03"
+ },
+ {
+  "repo": "hermit",
+  "rescue_ref": "rescue/20260827-91c5be6d7",
+  "sha": "91c5be6d76392b83a288c8cc32ea93d0230ef606",
+  "subject": "WIP on (no branch): a8345b31ae Bound the stderr diagnostic wait ",
+  "dropped_at": "2026-08-26T17:20:05"
+ },
+ {
+  "repo": "hermit",
+  "rescue_ref": "rescue/20260827-48509558d",
+  "sha": "48509558da7f8c93c5728ed6749e8345edf02f5d",
+  "subject": "WIP on (no branch): bee704c943 [hermit2, degraded-hermit-105, un",
+  "dropped_at": "2026-08-26T16:58:20"
+ },
+ {
+  "repo": "hermit",
+  "rescue_ref": "rescue/20260827-bfea48c36",
+  "sha": "bfea48c36cb24a158b410ad4cb7393fe791425cb",
+  "subject": "WIP on (no branch): 83b0241066 [hermit2, degraded-hermit-105, un",
+  "dropped_at": "2026-08-26T16:46:38"
+ },
+ {
+  "repo": "hermit",
+  "rescue_ref": "rescue/20260827-1b5899b12",
+  "sha": "1b5899b124d2e16ca84dba81e90e6218d5fbdb71",
+  "subject": "On (no branch): h106-slot-probe",
+  "dropped_at": "2026-08-26T11:11:54"
+ },
+ {
+  "repo": "hermit",
+  "rescue_ref": "rescue/20260827-02a4a59ff",
+  "sha": "02a4a59ffa31af78f9dd900f01bba02bc396853c",
+  "subject": "WIP on claude-dbtrestore/diagnostics-survive-nonblocking-stderr:",
+  "dropped_at": "2026-08-26T11:02:59"
+ },
+ {
+  "repo": "hermit",
+  "rescue_ref": "rescue/20260827-4a1cafdac",
+  "sha": "4a1cafdac4cfb4899bfc4572b2ef66c22fb872e6",
+  "subject": "On fix/kvm-verify-stderr-oappend-leak: 108-containment",
+  "dropped_at": "2026-08-26T08:48:38"
+ },
+ {
+  "repo": "hermit",
+  "rescue_ref": "rescue/20260827-4dd9797b6",
+  "sha": "4dd9797b688248968b647a073d91c090a0baf071",
+  "subject": "WIP on (no branch): be00ac4920 One code for one condition: a mis",
+  "dropped_at": "2026-08-25T20:02:35"
+ },
+ {
+  "repo": "hermit",
+  "rescue_ref": "rescue/20260827-24ac841b6",
+  "sha": "24ac841b67facfe7286001b094e942c2227095de",
+  "subject": "WIP on h016/buck2-oss-additive-only: 82c0433ef9 [hermit2, hermit",
+  "dropped_at": "2026-08-25T19:01:53"
+ },
+ {
+  "repo": "hermit",
+  "rescue_ref": "rescue/20260827-eb5255116",
+  "sha": "eb525511628023cde77f493209cbfa872d7c7153",
+  "subject": "WIP on hermit-triage/per-runner-value-flags: 82c0433ef9 [hermit2",
+  "dropped_at": "2026-08-25T18:54:07"
+ },
+ {
+  "repo": "hermit",
+  "rescue_ref": "rescue/20260827-c831cf4e1",
+  "sha": "c831cf4e13951843e88c21c1f263d939c7dbb8ee",
+  "subject": "WIP on hermit-triage/per-runner-value-flags: 82c0433ef9 [hermit2",
+  "dropped_at": "2026-08-25T18:53:18"
+ },
+ {
+  "repo": "hermit",
+  "rescue_ref": "rescue/20260827-00a1f3ee1",
+  "sha": "00a1f3ee1a472c971f37464eab43445e49a8a626",
+  "subject": "WIP on h015/matcher-narrowing-tests: 82c0433ef9 [hermit2, hermit",
+  "dropped_at": "2026-08-25T18:48:40"
+ },
+ {
+  "repo": "hermit",
+  "rescue_ref": "rescue/20260827-76023b6d8",
+  "sha": "76023b6d8350f45db71b368b04945200ea939adb",
+  "subject": "WIP on (no branch): 685b301de8 [hermit2, hermit-triage, unresolv",
+  "dropped_at": "2026-08-25T18:36:58"
+ },
+ {
+  "repo": "hermit",
+  "rescue_ref": "rescue/20260827-a61dd8a9d",
+  "sha": "a61dd8a9d22964ece32bbaa2c245526a06429f78",
+  "subject": "WIP on (no branch): 7835746850 Put the erased measurement hosts ",
+  "dropped_at": "2026-08-25T17:38:37"
+ },
+ {
+  "repo": "hermit",
+  "rescue_ref": "rescue/20260827-fcd96f45f",
+  "sha": "fcd96f45f9387ded6c7b0caec40c635333423029",
+  "subject": "WIP on (no branch): 339d1bb865 [hermit2, hermit-014, unresolved,",
+  "dropped_at": "2026-08-25T17:20:26"
+ },
+ {
+  "repo": "hermit",
+  "rescue_ref": "rescue/20260827-467f054f6",
+  "sha": "467f054f6f7ce740683956137463cb1279974585",
+  "subject": "WIP on (no branch): 3b7b0f67e6 detcore-dbt: give setpgid a copie",
+  "dropped_at": "2026-08-25T17:18:15"
+ },
+ {
+  "repo": "hermit",
+  "rescue_ref": "rescue/20260827-c70f77710",
+  "sha": "c70f777109c7145dca99baa88bb4c4b4bdc9966c",
+  "subject": "WIP on (no branch): cec4602d32 Close the GIT_CONFIG environ race",
+  "dropped_at": "2026-08-25T16:53:03"
+ },
+ {
+  "repo": "hermit",
+  "rescue_ref": "rescue/20260827-790cbc971",
+  "sha": "790cbc9717873d34c2f82bd06bec2358dbf8e176",
+  "subject": "WIP on (no branch): 8c5b1f8f05 [hermit2, hermit-003, unresolved,",
+  "dropped_at": "2026-08-25T16:50:45"
+ },
+ {
+  "repo": "hermit",
+  "rescue_ref": "rescue/20260827-1a441a510",
+  "sha": "1a441a51089813c627c370b43b43eb72ea688724",
+  "subject": "WIP on hermit-dbg/hostname-in-pin-check: cec4602d32 Close the GI",
+  "dropped_at": "2026-08-25T16:43:03"
+ },
+ {
+  "repo": "hermit",
+  "rescue_ref": "rescue/20260827-29e9c5ab7",
+  "sha": "29e9c5ab7df7779eba39caa3448f6c24486da8fc",
+  "subject": "WIP on h016/no-silent-cap-in-refusals: c22884a9f8 [hermit2, herm",
+  "dropped_at": "2026-08-25T16:38:33"
+ },
+ {
+  "repo": "hermit",
+  "rescue_ref": "rescue/20260827-8d0fa87e7",
+  "sha": "8d0fa87e735e6218e7065ae2f8f7a504ff87269f",
+  "subject": "WIP on h003/schedule-the-22-kvm-cli-tests: d5eb11d5a7 [hermit2, ",
+  "dropped_at": "2026-08-25T15:41:12"
+ },
+ {
+  "repo": "hermit",
+  "rescue_ref": "rescue/20260827-0789ed245",
+  "sha": "0789ed245586eaf677457c8861a0aad6f0a63722",
+  "subject": "WIP on h003/schedule-the-22-kvm-cli-tests: d5eb11d5a7 [hermit2, ",
+  "dropped_at": "2026-08-25T15:27:03"
+ },
+ {
+  "repo": "hermit",
+  "rescue_ref": "rescue/20260827-bf1124e10",
+  "sha": "bf1124e10af2a75d0cd85e69cabe6c43fe0a41cd",
+  "subject": "WIP on (no branch): 8995a4d7a9 Make the signalled-guest bracket ",
+  "dropped_at": "2026-08-25T14:26:51"
+ },
+ {
+  "repo": "hermit",
+  "rescue_ref": "rescue/20260827-f32528a7e",
+  "sha": "f32528a7e8e5a86e4e299f8c0f89effdef6b2c4e",
+  "subject": "WIP on (no branch): b3f070bfc2 [hermit2, hermit-015, unresolved,",
+  "dropped_at": "2026-08-25T14:21:14"
+ },
+ {
+  "repo": "hermit",
+  "rescue_ref": "rescue/20260827-80397fd1c",
+  "sha": "80397fd1c0a73793c2738d442715876e4070d28d",
+  "subject": "On fix/classify-container-child-exit: 127-wip",
+  "dropped_at": "2026-08-25T10:31:59"
+ },
+ {
+  "repo": "hermit",
+  "rescue_ref": "rescue/20260827-2935227ca",
+  "sha": "2935227ca4bdc6dae9e4609dfd4e49858a09b51c",
+  "subject": "WIP on (no branch): abeeb66ba9 [hermit2, hermit-007, unresolved,",
+  "dropped_at": "2026-08-25T10:30:55"
+ },
+ {
+  "repo": "hermit",
+  "rescue_ref": "rescue/20260827-0ed22bf0a",
+  "sha": "0ed22bf0a7af32fc35052785230878c6e185460c",
+  "subject": "On ci/run-node-targeted-args: runnode",
+  "dropped_at": "2026-08-25T10:17:42"
+ },
+ {
+  "repo": "hermit",
+  "rescue_ref": "rescue/20260827-ed596e591",
+  "sha": "ed596e591ed18744af560833ba18373cf174f2e3",
+  "subject": "WIP on promote/liteinst-two-cells: c4dc7eedd1 [hermit2, hermit-t",
+  "dropped_at": "2026-08-25T09:55:42"
+ },
+ {
+  "repo": "hermit",
+  "rescue_ref": "rescue/20260827-5e233a08c",
+  "sha": "5e233a08cbbec1e3ee77c078c471b845272a3559",
+  "subject": "WIP on promote/liteinst-two-cells: c4dc7eedd1 [hermit2, hermit-t",
+  "dropped_at": "2026-08-25T09:47:07"
+ },
+ {
+  "repo": "hermit",
+  "rescue_ref": "rescue/20260827-85705139b",
+  "sha": "85705139bdb5d6a50b1ed87f6bfabf8ebf8347cd",
+  "subject": "WIP on promote/liteinst-two-cells: c4dc7eedd1 [hermit2, hermit-t",
+  "dropped_at": "2026-08-25T09:46:31"
+ },
+ {
+  "repo": "hermit",
+  "rescue_ref": "rescue/20260827-62012edff",
+  "sha": "62012edff1bf45b9e9c3f8e56680acc1a83b99c2",
+  "subject": "On (no branch): sig-wip",
+  "dropped_at": "2026-08-25T09:02:06"
+ },
+ {
+  "repo": "hermit",
+  "rescue_ref": "rescue/20260827-683e7047f",
+  "sha": "683e7047f67b807d02d8838bb1de0f29d08d9d04",
+  "subject": "On (no branch): h12-pipe-wip",
+  "dropped_at": "2026-08-25T08:57:41"
+ },
+ {
+  "repo": "hermit",
+  "rescue_ref": "rescue/20260827-b8e4ffbb8",
+  "sha": "b8e4ffbb819b7c3e8f8e2428d64eee2f8d0b51ba",
+  "subject": "WIP on port-hardened-bitwise-predicate: c6f171348b [hermit2, her",
+  "dropped_at": "2026-08-25T05:26:51"
+ },
+ {
+  "repo": "hermit",
+  "rescue_ref": "rescue/20260827-d3e292124",
+  "sha": "d3e292124ce2e24edaa9b1abdb064470dc9176c0",
+  "subject": "WIP on hermit007/overflow-gid-cell: 6b803204f4 [hermit2, degrade",
+  "dropped_at": "2026-08-25T04:51:41"
+ },
+ {
+  "repo": "hermit",
+  "rescue_ref": "rescue/20260827-780bb8316",
+  "sha": "780bb83163d769eb645834b87025e9808d78f71f",
+  "subject": "On (no branch): hermit-012 2269 reduction WIP",
+  "dropped_at": "2026-08-25T04:21:18"
+ },
+ {
+  "repo": "hermit",
+  "rescue_ref": "rescue/20260827-14cce40a3",
+  "sha": "14cce40a36ec872ebe8df97b801c0efd73f4f50b",
+  "subject": "On (no branch): codex-hygiene-transplant-d5e3",
+  "dropped_at": "2026-08-25T03:46:38"
+ },
+ {
+  "repo": "hermit",
+  "rescue_ref": "rescue/20260827-ab7f6ffb5",
+  "sha": "ab7f6ffb5697df294bca0a2550d3a70a2632ee59",
+  "subject": "WIP on hermit007/pipe2-capacity-failure-rollback: 24808a591b [he",
+  "dropped_at": "2026-08-25T03:21:11"
+ },
+ {
+  "repo": "hermit",
+  "rescue_ref": "rescue/20260827-bdd13d2d7",
+  "sha": "bdd13d2d79f79f0fc6f340fa249d2d9d1b15a748",
+  "subject": "WIP on (no branch): b441950f72 [hermit2, degraded-hermit-004, un",
+  "dropped_at": "2026-08-25T03:11:16"
+ },
+ {
+  "repo": "hermit",
+  "rescue_ref": "rescue/20260827-e6bd2f8ce",
+  "sha": "e6bd2f8ce35291fc31d76f9ca45eaad20bbb829b",
+  "subject": "WIP on hermit007/pressure-timeout-classification: fd994268a3 [he",
+  "dropped_at": "2026-08-25T02:57:34"
+ },
+ {
+  "repo": "hermit",
+  "rescue_ref": "rescue/20260827-d4aa2923b",
+  "sha": "d4aa2923b9b574412d6e74d61120d52e62282726",
+  "subject": "WIP on (no branch): 086b1e0d28 [hermit2, hermit-010, unresolved,",
+  "dropped_at": "2026-08-25T01:56:04"
+ },
+ {
+  "repo": "hermit",
+  "rescue_ref": "rescue/20260827-2af7ea572",
+  "sha": "2af7ea572756f755861623f927326b20ac84b753",
+  "subject": "On requalify/pr-2333-liteinst: autostash",
+  "dropped_at": "2026-08-25T01:33:26"
+ },
+ {
+  "repo": "hermit",
+  "rescue_ref": "rescue/20260827-4cd2346b7",
+  "sha": "4cd2346b740af10f0b0d71e1268585c1b4ac6e16",
+  "subject": "On fix/pr-2259-two-guest-residual: pr2259-residual-update-2",
+  "dropped_at": "2026-08-25T00:57:49"
+ },
+ {
+  "repo": "hermit",
+  "rescue_ref": "rescue/20260827-762655203",
+  "sha": "762655203257f8abc7c984fa51e80eb5c1c2f650",
+  "subject": "On fix/pr-2259-two-guest-residual: pr2259-residual-update",
+  "dropped_at": "2026-08-25T00:45:17"
+ },
+ {
+  "repo": "hermit",
+  "rescue_ref": "rescue/20260827-4df028d99",
+  "sha": "4df028d99811f7a6d6df83081d84513196ec2102",
+  "subject": "WIP on case3: dd891a0ad9 case3 regenerated",
+  "dropped_at": "2026-08-25T00:30:35"
+ },
+ {
+  "repo": "hermit",
+  "rescue_ref": "rescue/20260827-9c3b948e8",
+  "sha": "9c3b948e883565077a966c0d9c33acbd2d2e37f2",
+  "subject": "On hermit-010/c-programs-memory: e2e-c-programs-memory-rebase",
+  "dropped_at": "2026-08-25T00:17:19"
+ },
+ {
+  "repo": "hermit",
+  "rescue_ref": "rescue/20260827-4d19a440a",
+  "sha": "4d19a440ae7f35c1407535712ebaf7f6f22a04c0",
+  "subject": "WIP on land2399: 75fa0f2588 [hermit2, degraded-hermit-004, unres",
+  "dropped_at": "2026-08-25T00:04:38"
+ },
+ {
+  "repo": "hermit",
+  "rescue_ref": "rescue/20260827-b75ab44f2",
+  "sha": "b75ab44f2e5d04edab71b2229482762f60250ffc",
+  "subject": "WIP on fix-pressure-test-fail-fast-family: 62df4b9adf [hermit2, ",
+  "dropped_at": "2026-08-24T23:58:27"
+ },
+ {
+  "repo": "hermit",
+  "rescue_ref": "rescue/20260827-7faa9fc86",
+  "sha": "7faa9fc86d86ec084a6c178b68267e9c66ab6fd3",
+  "subject": "WIP on fix-pressure-test-fail-fast-family: 62df4b9adf [hermit2, ",
+  "dropped_at": "2026-08-24T23:54:39"
+ },
+ {
+  "repo": "hermit",
+  "rescue_ref": "rescue/20260827-42028c5b0",
+  "sha": "42028c5b0584f9a23cdcc8bf54db3c93f5a85bf2",
+  "subject": "WIP on (no branch): 7fd81439e2 [hermit2, hermit-008, unresolved,",
+  "dropped_at": "2026-08-24T23:53:30"
+ },
+ {
+  "repo": "hermit",
+  "rescue_ref": "rescue/20260827-2b50fe60c",
+  "sha": "2b50fe60cb8903beab4bfb8447a5cf8a46d92a87",
+  "subject": "WIP on land2399: 079528d4e1 [hermit2, coldreview, unresolved, de",
+  "dropped_at": "2026-08-24T23:50:08"
+ },
+ {
+  "repo": "hermit",
+  "rescue_ref": "rescue/20260827-ac8f7bf13",
+  "sha": "ac8f7bf13a43a8a54c8050bdba74c6ecb3ad5ec6",
+  "subject": "WIP on land2399: 079528d4e1 [hermit2, coldreview, unresolved, de",
+  "dropped_at": "2026-08-24T23:49:46"
+ },
+ {
+  "repo": "hermit",
+  "rescue_ref": "rescue/20260827-ae7205def",
+  "sha": "ae7205def30a015895dcaf545b78b229d44daf3c",
+  "subject": "WIP on docs/pr-sweep-verdicts: 617ef46738 [hermit2, degraded-her",
+  "dropped_at": "2026-08-24T23:33:18"
+ },
+ {
+  "repo": "hermit",
+  "rescue_ref": "rescue/20260827-aec0d596e",
+  "sha": "aec0d596e50ef930bf64845189d3332ad4246fc0",
+  "subject": "WIP on gate17: 9c9bde6211 [hermit2, hermit-007, unresolved, devb",
+  "dropped_at": "2026-08-24T23:26:40"
+ },
+ {
+  "repo": "hermit",
+  "rescue_ref": "rescue/20260827-a720c41b1",
+  "sha": "a720c41b1f382efbe135e57207ca4e2887c44568",
+  "subject": "WIP on land2328: dbb827bc23 salvage: uncommitted work from scrat",
+  "dropped_at": "2026-08-24T23:13:46"
+ },
+ {
+  "repo": "hermit",
+  "rescue_ref": "rescue/20260827-06517ed29",
+  "sha": "06517ed294e04bc54a0141328f97a3a0b32b1e0e",
+  "subject": "WIP on land2328: dbb827bc23 salvage: uncommitted work from scrat",
+  "dropped_at": "2026-08-24T23:13:31"
+ },
+ {
+  "repo": "hermit",
+  "rescue_ref": "rescue/20260827-8cfbea33b",
+  "sha": "8cfbea33b2ea77d5d62b9a691715594d8d9b5a99",
+  "subject": "WIP on step8: 30928fd46f [hermit2, hermit-012, unresolved, devbi",
+  "dropped_at": "2026-08-24T21:49:08"
+ },
+ {
+  "repo": "hermit",
+  "rescue_ref": "rescue/20260827-43d8d6e60",
+  "sha": "43d8d6e60fdc226082f250532cbeb2516cc5cc03",
+  "subject": "WIP on (no branch): 9088408a7f [hermit2, hermit-007, unresolved,",
+  "dropped_at": "2026-08-24T21:48:37"
+ },
+ {
+  "repo": "hermit",
+  "rescue_ref": "rescue/20260827-c86cc3b8e",
+  "sha": "c86cc3b8e93101ecd8559e6b323606ab91f2daad",
+  "subject": "WIP on fix/git-workflow-ci-false-getdents: 444a875b29 [hermit2, ",
+  "dropped_at": "2026-08-24T21:47:49"
+ },
+ {
+  "repo": "hermit",
+  "rescue_ref": "rescue/20260827-169127bd0",
+  "sha": "169127bd0a26fc6097c3c693956cb3e787e940ac",
+  "subject": "WIP on (no branch): 8907982edb [hermit2, hermit-015, unresolved,",
+  "dropped_at": "2026-08-24T21:35:20"
+ },
+ {
+  "repo": "hermit",
+  "rescue_ref": "rescue/20260827-31fa041f3",
+  "sha": "31fa041f3a12d8eb7c8ba627a8ed58bf666d5b36",
+  "subject": "WIP on (no branch): 334a66a66b [hermit2, hermit-007, unresolved,",
+  "dropped_at": "2026-08-24T21:28:55"
+ },
+ {
+  "repo": "hermit",
+  "rescue_ref": "rescue/20260827-1705c5017",
+  "sha": "1705c50171ae327af099292eef88c274436fdda3",
+  "subject": "WIP on (no branch): 6a50338245 [hermit2, hermit-014, unresolved,",
+  "dropped_at": "2026-08-24T21:24:02"
+ },
+ {
+  "repo": "hermit",
+  "rescue_ref": "rescue/20260827-0b829045e",
+  "sha": "0b829045ea064377ec7c229bcd54ac95aa480871",
+  "subject": "On (no branch): portablestrict-wip",
+  "dropped_at": "2026-08-24T20:12:25"
+ },
+ {
+  "repo": "hermit",
+  "rescue_ref": "rescue/20260827-2a925dd46",
+  "sha": "2a925dd469f50e210d46623ecbd4749560934e0e",
+  "subject": "On diagnose/system-utils-contention: autostash",
+  "dropped_at": "2026-08-24T19:47:23"
+ },
+ {
+  "repo": "hermit",
+  "rescue_ref": "rescue/20260827-1b2346ddc",
+  "sha": "1b2346ddcecacce7edf88a338cfeb82060b05388",
+  "subject": "WIP on (no branch): 208e310b49 [hermit2, codex-timeouts, devbig0",
+  "dropped_at": "2026-08-24T19:47:05"
+ },
+ {
+  "repo": "hermit",
+  "rescue_ref": "rescue/20260827-2ec753512",
+  "sha": "2ec753512ac4fdc9b00350cbaf21f5cab5709997",
+  "subject": "On fix/build-width-control-cell: autostash",
+  "dropped_at": "2026-08-24T19:22:02"
+ },
+ {
+  "repo": "hermit",
+  "rescue_ref": "rescue/20260827-46811d387",
+  "sha": "46811d387c988f0f452f97e3b86c9fc59d9b6482",
+  "subject": "On (no branch): wip-stub-removal",
+  "dropped_at": "2026-08-24T18:19:12"
+ },
+ {
+  "repo": "hermit",
+  "rescue_ref": "rescue/20260827-a2bb53b1a",
+  "sha": "a2bb53b1a84f918962d124a43806ee8e7b9eaaf0",
+  "subject": "WIP on main: 8ea761cf91 detcore: determinize the chown family to",
+  "dropped_at": "2026-08-24T17:46:19"
+ },
+ {
+  "repo": "hermit",
+  "rescue_ref": "rescue/20260827-6a8bd963b",
+  "sha": "6a8bd963b19badcf60e95cd0a084697bf7952fa6",
+  "subject": "On feat/procfs-maps-identity-agreement: fix under test",
+  "dropped_at": "2026-08-24T17:32:00"
+ },
+ {
+  "repo": "hermit",
+  "rescue_ref": "rescue/20260827-b1c8020e1",
+  "sha": "b1c8020e139bbeb38fa1892e08bd7037090bb68b",
+  "subject": "On feat/validate-writes-divergence-position: procfs maps identit",
+  "dropped_at": "2026-08-24T17:31:46"
+ },
+ {
+  "repo": "hermit",
+  "rescue_ref": "rescue/20260827-c4699e8aa",
+  "sha": "c4699e8aa180fb918803e7b2bc60e5f34ab1a5b9",
+  "subject": "WIP on hermit-007/dbt-exec-hang-disable: dee8cf49ce [hermit2, he",
+  "dropped_at": "2026-08-24T15:30:00"
+ },
+ {
+  "repo": "hermit",
+  "rescue_ref": "rescue/20260827-0d9727f98",
+  "sha": "0d9727f98c8786169e5bafc3eb5ba999b8fb0804",
+  "subject": "WIP on main: 8ea761cf91 detcore: determinize the chown family to",
+  "dropped_at": "2026-08-24T13:08:29"
+ },
+ {
+  "repo": "hermit",
+  "rescue_ref": "rescue/20260827-daeee3c5c",
+  "sha": "daeee3c5ce23fedd49c81a9d3531e5e5fec6b593",
+  "subject": "WIP on port/2257-chaos-lock-granularity: a5cb75df9d [hermit2, he",
+  "dropped_at": "2026-08-24T06:41:59"
+ },
+ {
+  "repo": "hermit",
+  "rescue_ref": "rescue/20260827-c5efaeee6",
+  "sha": "c5efaeee60ead4be27ec80c9a4a1911af43e20e0",
+  "subject": "WIP on port/2267-promote-nanosecond-date-verify-cell: 8ea761cf91",
+  "dropped_at": "2026-08-24T04:15:42"
+ },
+ {
+  "repo": "hermit",
+  "rescue_ref": "rescue/20260827-427c6dcd1",
+  "sha": "427c6dcd178f10a730ec275354e55ec63f4dffde",
+  "subject": "WIP on dbg/2359: 24b559d372 [hermit2, fix-validate, unresolved, ",
+  "dropped_at": "2026-08-23T20:38:17"
+ },
+ {
+  "repo": "hermit",
+  "rescue_ref": "rescue/20260827-be3368813",
+  "sha": "be3368813704a129d7245a461e410b6ed56bf6f1",
+  "subject": "WIP on work/1689: 6ad65c0888 detcore: compare the guest INFO str",
+  "dropped_at": "2026-08-23T19:36:29"
+ },
+ {
+  "repo": "hermit",
+  "rescue_ref": "rescue/20260827-409ac341a",
+  "sha": "409ac341a191ea31fb552e2b7d37f4294a7a8c34",
+  "subject": "WIP on fix/uniform-reason-substance: 5e5da773f7 [hermit2, fix-va",
+  "dropped_at": "2026-08-23T17:02:41"
+ },
+ {
+  "repo": "hermit",
+  "rescue_ref": "rescue/20260827-743272e5b",
+  "sha": "743272e5b1303f5b3db31baecb20022ce5ca987f",
+  "subject": "WIP on (no branch): 85331f49c3 [hermit2, safereview, unresolved,",
+  "dropped_at": "2026-08-23T04:58:34"
+ },
+ {
+  "repo": "hermit",
+  "rescue_ref": "rescue/20260827-ef7cb97af",
+  "sha": "ef7cb97af0c2b98f6be40887f5021912319fb271",
+  "subject": "WIP on cloudlint/fix-a-rdtsc-global: 343ebd3633 Stop the evidenc",
+  "dropped_at": "2026-08-21T18:37:54"
+ },
+ {
+  "repo": "hermit",
+  "rescue_ref": "rescue/20260827-17244dd6e",
+  "sha": "17244dd6e804cbfc21dbb4f9f4b5b7d4eb9f9c51",
+  "subject": "WIP on cloudlint/fix-a-rdtsc-global: 343ebd3633 Stop the evidenc",
+  "dropped_at": "2026-08-21T18:33:05"
+ },
+ {
+  "repo": "hermit",
+  "rescue_ref": "rescue/20260827-956bc90bf",
+  "sha": "956bc90bfebea0fc167350f5e3d27379af4753ec",
+  "subject": "WIP on cloudlint/fix-b-thread-absorbs-sched: 343ebd3633 Stop the",
+  "dropped_at": "2026-08-21T18:31:57"
+ },
+ {
+  "repo": "hermit",
+  "rescue_ref": "rescue/20260827-cc672007f",
+  "sha": "cc672007f5f7e8529d38497db43d836000a4e044",
+  "subject": "WIP on cloudlint/fix-a-rdtsc-global: 343ebd3633 Stop the evidenc",
+  "dropped_at": "2026-08-21T18:30:18"
+ },
+ {
+  "repo": "hermit",
+  "rescue_ref": "rescue/20260827-1c87a00f8",
+  "sha": "1c87a00f82abc4a05b661fb2e94e212115159c74",
+  "subject": "WIP on (no branch): 6a9ebb0348 [hermit2, cloudlint, unresolved, ",
+  "dropped_at": "2026-08-21T11:59:21"
+ },
+ {
+  "repo": "hermit",
+  "rescue_ref": "rescue/20260827-b2839625c",
+  "sha": "b2839625c329d478950a069050fa786dd9b67c6b",
+  "subject": "WIP on (no branch): 6ce678e2e8 [hermit2, cloudlint, unresolved, ",
+  "dropped_at": "2026-08-21T11:59:14"
+ },
+ {
+  "repo": "hermit",
+  "rescue_ref": "rescue/20260827-43e4a861a",
+  "sha": "43e4a861a3e0404189abd10c1752c8972e796f82",
+  "subject": "On (no branch): predfix2",
+  "dropped_at": "2026-08-21T10:32:35"
+ },
+ {
+  "repo": "hermit",
+  "rescue_ref": "rescue/20260827-6cd2add53",
+  "sha": "6cd2add5313ac8b8854eb8242405546a336face0",
+  "subject": "On (no branch): predfix",
+  "dropped_at": "2026-08-21T10:30:40"
+ },
+ {
+  "repo": "hermit",
+  "rescue_ref": "rescue/20260827-8b23c2d59",
+  "sha": "8b23c2d5901bc7a1bc5ccdf75a47209734ce62df",
+  "subject": "WIP on (no branch): 54ae0d0476 [hermit2, coldreview, unresolved,",
+  "dropped_at": "2026-08-21T10:03:22"
+ },
+ {
+  "repo": "hermit",
+  "rescue_ref": "rescue/20260827-9acd12a78",
+  "sha": "9acd12a7812d8f5a27aa30ffe24d6ad76b9f4802",
+  "subject": "On impl/io-buffers-syscall-boundary-hash: io-buffers gate fix, t",
+  "dropped_at": "2026-08-20T09:18:00"
+ },
+ {
+  "repo": "hermit",
+  "rescue_ref": "rescue/20260827-79a709d80",
+  "sha": "79a709d80e340248c703fd95fa38c792f6609d34",
+  "subject": "WIP on fix/container-init-death-signal: 82c93055f0 [hermit2, tim",
+  "dropped_at": "2026-08-19T15:59:04"
+ },
+ {
+  "repo": "hermit",
+  "rescue_ref": "rescue/20260827-8c75ae252",
+  "sha": "8c75ae252b4a02ab632ee7f80db113b8b544619c",
+  "subject": "WIP on fix/container-init-death-signal: 770b95c505 [hermit2, m2a",
+  "dropped_at": "2026-08-19T15:52:49"
+ },
+ {
+  "repo": "hermit",
+  "rescue_ref": "rescue/20260827-bf933b011",
+  "sha": "bf933b011c77ced60d5f39656734250b178957f0",
+  "subject": "WIP on fix/container-init-death-signal: 770b95c505 [hermit2, m2a",
+  "dropped_at": "2026-08-19T15:48:24"
+ },
+ {
+  "repo": "hermit",
+  "rescue_ref": "rescue/20260827-b76fc783f",
+  "sha": "b76fc783f1d7ecf30139b9686229a27da5c776ce",
+  "subject": "WIP on main: 79cc840879 [hermit2, sanity-driver, unresolved, dev",
+  "dropped_at": "2026-08-17T04:27:34"
+ },
+ {
+  "repo": "hermit",
+  "rescue_ref": "rescue/20260827-8162812a6",
+  "sha": "8162812a6f33d3c75554e467c00f8f81460a6f5d",
+  "subject": "On main: m2-integration-preserve archived HANDOFF deletion and l",
+  "dropped_at": "2026-08-15T22:31:09"
+ },
+ {
+  "repo": "hermit",
+  "rescue_ref": "rescue/20260827-3b5120c8d",
+  "sha": "3b5120c8d5351e7a63c0ada734b5731b092c4c8a",
+  "subject": "WIP on fix/compat-yes-deterministic-pipe-capacity: faabc213c Mer",
+  "dropped_at": "2026-08-10T00:23:20"
+ },
+ {
+  "repo": "hermit",
+  "rescue_ref": "rescue/20260827-cbb56cf59",
+  "sha": "cbb56cf592448ad9ded037bb685f5319106cc049",
+  "subject": "WIP on fix/compat-yes-deterministic-pipe-capacity: 3ff4add4c Mer",
+  "dropped_at": "2026-08-10T00:13:43"
+ },
+ {
+  "repo": "hermit",
+  "rescue_ref": "rescue/20260827-9bc329d28",
+  "sha": "9bc329d28356c7cac9b7080af641c28a6735eee6",
+  "subject": "WIP on fix/e2e-metadata-build-node: b858b589c docs: the Reverie ",
+  "dropped_at": "2026-08-08T11:49:08"
+ },
+ {
+  "repo": "hermit",
+  "rescue_ref": "rescue/20260827-8ec98c83d",
+  "sha": "8ec98c83d974a9ad7a3fa0e020dc2bf9fcd1dc6b",
+  "subject": "WIP on w15/procfs-wiring-call-site-guard: 75506005d Fix two clip",
+  "dropped_at": "2026-08-06T22:23:12"
+ },
+ {
+  "repo": "hermit",
+  "rescue_ref": "rescue/20260827-8b0486c50",
+  "sha": "8b0486c50c83427e63d5637f0a91dc5bd51f6300",
+  "subject": "WIP on fixture/identity-surface-identity: 4c70658e7 Add fail-clo",
+  "dropped_at": "2026-08-06T07:54:18"
+ },
+ {
+  "repo": "hermit",
+  "rescue_ref": "rescue/20260827-88e365979",
+  "sha": "88e365979b522c4f888666e6384b14a2b6949193",
+  "subject": "On work/fix-1200-codex-review: runqueue cfg-test doc",
+  "dropped_at": "2026-08-03T12:05:28"
+ },
+ {
+  "repo": "hermit",
+  "rescue_ref": "rescue/20260827-7728fd754",
+  "sha": "7728fd754dfc63f3f46508eb0be5792f119ea236",
+  "subject": "WIP on codex/validate-sh-migrate-rr-to-record-verify: baf1a7b7 b",
+  "dropped_at": "2026-08-03T08:15:42"
+ },
+ {
+  "repo": "hermit",
+  "rescue_ref": "rescue/20260827-162644531",
+  "sha": "16264453136d7d00f1767d4f205979b3152a373c",
+  "subject": "On codex/liteinst-flagship-hermit-pin: flagship-hermit-pin: reve",
+  "dropped_at": "2026-08-02T00:31:06"
+ },
+ {
+  "repo": "hermit",
+  "rescue_ref": "rescue/20260827-2e836752e",
+  "sha": "2e836752e38dc94efd84a0ba8ea30ce41bea9777",
+  "subject": "WIP on codex/dbi-summary-stats: dcea4278 Surface DBI native back",
+  "dropped_at": "2026-08-01T22:08:13"
+ },
+ {
+  "repo": "hermit",
+  "rescue_ref": "rescue/20260827-16f631529",
+  "sha": "16f63152903b1d70238f3c8cce76cee95bc326db",
+  "subject": "WIP on codex/liteinst-time-observation-parity: 8c6e3efe hermit-c",
+  "dropped_at": "2026-08-01T21:55:20"
+ },
+ {
+  "repo": "hermit",
+  "rescue_ref": "rescue/20260827-f714fdffb",
+  "sha": "f714fdffb1274a262b95b19632f17a42762e1c5a",
+  "subject": "On codex/kvm-tty-deterministic-winsize: kvm-tty local reverie [p",
+  "dropped_at": "2026-08-01T21:50:50"
+ },
+ {
+  "repo": "hermit",
+  "rescue_ref": "rescue/20260827-e20c9f706",
+  "sha": "e20c9f706cdd70e0fcb986fab8bb51ab6b79e7d2",
+  "subject": "WIP on dbt/bind-getsockname: b403f79c Add bind_getsockname backe",
+  "dropped_at": "2026-08-01T06:44:58"
+ },
+ {
+  "repo": "hermit",
+  "rescue_ref": "rescue/20260827-b7f732299",
+  "sha": "b7f7322998fbc5beeedbd4df4f0ca94c4c5f97aa",
+  "subject": "On codex/e2e-python-hash-determinism: bash-random-e2e",
+  "dropped_at": "2026-07-31T23:05:43"
+ },
+ {
+  "repo": "hermit",
+  "rescue_ref": "rescue/20260827-e6b475127",
+  "sha": "e6b475127edc4b87dc323fe31d284b1db1a37831",
+  "subject": "On codex/e2e-openssl-rand: tcl-e2e-test",
+  "dropped_at": "2026-07-31T21:06:02"
+ },
+ {
+  "repo": "hermit",
+  "rescue_ref": "rescue/20260827-e56a965c8",
+  "sha": "e56a965c81ec2b742f670f9e65e069cfdda3a818",
+  "subject": "WIP on codex/dbi-postexec-time-rewind-fix: 5bbaf681 detcore-dbi:",
+  "dropped_at": "2026-07-30T23:59:08"
+ },
+ {
+  "repo": "hermit",
+  "rescue_ref": "rescue/20260827-389560ac0",
+  "sha": "389560ac02b7d3eced392753016a69425b4b1533",
+  "subject": "WIP on codex/compat-push-multibackend: 9ce42f53 Derive sysinfo(2",
+  "dropped_at": "2026-07-28T00:57:47"
+ },
+ {
+  "repo": "hermit",
+  "rescue_ref": "rescue/20260827-829aaa8c8",
+  "sha": "829aaa8c8b6971846eb1145ee8c4e0c0e0c977dd",
+  "subject": "WIP on fix-ci-red-719-slot220: 2c760f3d Make nextest DAG setup p",
+  "dropped_at": "2026-07-25T20:03:56"
+ },
+ {
+  "repo": "hermit",
+  "rescue_ref": "rescue/20260827-bb4f229a5",
+  "sha": "bb4f229a5cced3c0cfc54293d9355c6c14726c54",
+  "subject": "On validate-ci-split642-slot120: impl-ci-split-validate-workflow",
+  "dropped_at": "2026-07-24T23:14:06"
+ },
+ {
+  "repo": "hermit",
+  "rescue_ref": "rescue/20260827-55bc98ddc",
+  "sha": "55bc98ddc413efc0048694cf9868db0442f57991",
+  "subject": "On impl-validate-reliability-main-slot65: impl-validate-reliabil",
+  "dropped_at": "2026-07-24T20:15:38"
+ },
+ {
+  "repo": "hermit",
+  "rescue_ref": "rescue/20260827-3682fe185",
+  "sha": "3682fe1851d7861519e16290e765904674fa744f",
+  "subject": "On docs-deadlock-debugging-skill: hermit-148/impl-deadlock-debug",
+  "dropped_at": "2026-07-23T13:07:53"
+ },
+ {
+  "repo": "hermit",
+  "rescue_ref": "rescue/20260827-501e48482",
+  "sha": "501e48482f51c56ce01029d908a4d3747395c1b9",
+  "subject": "WIP on impl-fix-rr-internal-pipe-classification: c88bc0f docs: p",
+  "dropped_at": "2026-07-23T06:24:13"
+ },
+ {
+  "repo": "hermit",
+  "rescue_ref": "rescue/20260827-e2e4c5a5e",
+  "sha": "e2e4c5a5e3145bb133620f92ddcbecc09c547bd5",
+  "subject": "On fix-poll-retry-nondeterminism: poll-fix-final",
+  "dropped_at": "2026-07-23T05:30:45"
+ },
+ {
+  "repo": "hermit",
+  "rescue_ref": "rescue/20260827-97fa574d7",
+  "sha": "97fa574d7b9b4c26bed3a1c6662364ecb106e02a",
+  "subject": "On fix-poll-retry-nondeterminism: wip-poll-fix2",
+  "dropped_at": "2026-07-23T05:06:52"
+ },
+ {
+  "repo": "hermit",
+  "rescue_ref": "rescue/20260827-d1ff8acba",
+  "sha": "d1ff8acba540b3d5184945d55827940dd57e0068",
+  "subject": "On fix-poll-retry-nondeterminism: wip-poll-fix",
+  "dropped_at": "2026-07-23T05:01:10"
+ },
+ {
+  "repo": "hermit",
+  "rescue_ref": "rescue/20260827-31054dc46",
+  "sha": "31054dc46f31b6c36ac213b34499393d1076a96a",
+  "subject": "WIP on impl-pid-virtualization: 344200e Reconcile backend wiring",
+  "dropped_at": "2026-07-22T17:24:14"
+ },
+ {
+  "repo": "hermit",
+  "rescue_ref": "rescue/20260827-19f02f234",
+  "sha": "19f02f23450834ff1b48c4652b0c2b7f9a8e562f",
+  "subject": "WIP on impl-pid-virtualization: 344200e Reconcile backend wiring",
+  "dropped_at": "2026-07-22T17:09:07"
+ },
+ {
+  "repo": "hermit",
+  "rescue_ref": "rescue/20260827-3c8a4bf3a",
+  "sha": "3c8a4bf3abeceb69815ceb5e49a3115b779de9b1",
+  "subject": "WIP on impl-pid-virtualization: 344200e Reconcile backend wiring",
+  "dropped_at": "2026-07-22T17:00:18"
+ },
+ {
+  "repo": "hermit",
+  "rescue_ref": "rescue/20260827-890869066",
+  "sha": "89086906602529fc916cc6c7bbbf81a0b5581018",
+  "subject": "WIP on impl-pid-virtualization: 344200e Reconcile backend wiring",
+  "dropped_at": "2026-07-22T16:59:32"
+ },
+ {
+  "repo": "hermit",
+  "rescue_ref": "rescue/20260827-10dde958a",
+  "sha": "10dde958a42041de9c208c999aff2d2f7d3dfcdf",
+  "subject": "WIP on impl-pid-virtualization: 344200e Reconcile backend wiring",
+  "dropped_at": "2026-07-22T16:57:47"
+ },
+ {
+  "repo": "hermit",
+  "rescue_ref": "rescue/20260827-8b2afa4cc",
+  "sha": "8b2afa4cc3c3b3e2487e3d01cdedc2f943a31907",
+  "subject": "WIP on impl-pid-virtualization: 344200e Reconcile backend wiring",
+  "dropped_at": "2026-07-22T16:56:06"
+ },
+ {
+  "repo": "hermit",
+  "rescue_ref": "rescue/20260827-769b075d6",
+  "sha": "769b075d62c6ed9fac528910dd29749998c209ef",
+  "subject": "WIP on impl-pid-virtualization: 344200e Reconcile backend wiring",
+  "dropped_at": "2026-07-22T16:53:49"
+ },
+ {
+  "repo": "hermit",
+  "rescue_ref": "rescue/20260827-2d39aa6ee",
+  "sha": "2d39aa6ee6ebdc29308bc57bbde5d15fcfaec61f",
+  "subject": "WIP on debug-rr-multiple-pending-signals: 344200e Reconcile back",
+  "dropped_at": "2026-07-22T16:08:10"
+ },
+ {
+  "repo": "hermit",
+  "rescue_ref": "rescue/20260827-06d6b726e",
+  "sha": "06d6b726e6d59dc815d44ea9883618133f31b54b",
+  "subject": "WIP on fix-rr-sigprocmask-syscallbuf: 344200e Reconcile backend ",
+  "dropped_at": "2026-07-22T15:52:33"
+ },
+ {
+  "repo": "hermit",
+  "rescue_ref": "rescue/20260827-974d483ef",
+  "sha": "974d483ef7e63dbb1d6b73ea6e90e88f127330d4",
+  "subject": "On fix-record-verify-desync: RESTORE-mispopped-rr-suite-by-slot3",
+  "dropped_at": "2026-07-22T15:48:04"
+ },
+ {
+  "repo": "hermit",
+  "rescue_ref": "rescue/20260827-ff4bbba62",
+  "sha": "ff4bbba629edb36715b31b44817a74c194ee8bd9",
+  "subject": "WIP on fix-rr-sigchld-interrupt-signal: 344200e Reconcile backen",
+  "dropped_at": "2026-07-22T15:47:18"
+ },
+ {
+  "repo": "hermit",
+  "rescue_ref": "rescue/20260827-84ba23994",
+  "sha": "84ba23994dac8c9a7b3bfef17db72fcc03207f4c",
+  "subject": "On fix-record-verify-desync: record-verify-fix-temp",
+  "dropped_at": "2026-07-22T15:46:59"
+ },
+ {
+  "repo": "hermit",
+  "rescue_ref": "rescue/20260827-219b55d5a",
+  "sha": "219b55d5a7a27435b9d67f47f4ce3c875b0a08d6",
+  "subject": "WIP on fix-rr-spinlock-priorities-113: 344200e Reconcile backend",
+  "dropped_at": "2026-07-22T15:43:14"
+ },
+ {
+  "repo": "hermit",
+  "rescue_ref": "rescue/20260827-2778cfdee",
+  "sha": "2778cfdee71d28208807acc5e7c7b9257520544a",
+  "subject": "WIP on fix-replay-simple-go-sqlite: 344200e Reconcile backend wi",
+  "dropped_at": "2026-07-22T15:42:15"
+ },
+ {
+  "repo": "hermit",
+  "rescue_ref": "rescue/20260827-48d7697ef",
+  "sha": "48d7697ef6b045ea4e1b4f9bcf74b524d430548a",
+  "subject": "WIP on fix-rustup-epoll-ebadf: 73f0d90 Merge remote-tracking bra",
+  "dropped_at": "2026-07-22T15:40:46"
+ },
+ {
+  "repo": "hermit",
+  "rescue_ref": "rescue/20260827-5ce4dcb54",
+  "sha": "5ce4dcb54bc15bc884a9b1add9104d7d4d71f2ba",
+  "subject": "WIP on impl-clone-vfork-main-slot31: 73f0d90 Merge remote-tracki",
+  "dropped_at": "2026-07-22T15:25:53"
+ },
+ {
+  "repo": "hermit",
+  "rescue_ref": "rescue/20260827-589d87219",
+  "sha": "589d87219d5b702388455e51bb5ce4fa7c8310a9",
+  "subject": "WIP on fix-chaos-yield-starvation: 73f0d90 Merge remote-tracking",
+  "dropped_at": "2026-07-22T15:24:31"
+ },
+ {
+  "repo": "hermit",
+  "rescue_ref": "rescue/20260827-562f68aea",
+  "sha": "562f68aea92e1213ece98702f6e07f201291deb0",
+  "subject": "WIP on fix-chaos-yield-starvation: 73f0d90 Merge remote-tracking",
+  "dropped_at": "2026-07-22T15:23:12"
+ },
+ {
+  "repo": "hermit",
+  "rescue_ref": "rescue/20260827-5df9a28b6",
+  "sha": "5df9a28b6114b19b4cfe8d93ac3ce1d1fc00ad48",
+  "subject": "WIP on fix-chaos-yield-starvation: 73f0d90 Merge remote-tracking",
+  "dropped_at": "2026-07-22T15:17:28"
+ },
+ {
+  "repo": "hermit",
+  "rescue_ref": "rescue/20260827-99aff6885",
+  "sha": "99aff6885ac5452a66e4aaabe70041add9669086",
+  "subject": "WIP on fix-fbsource-chaos-matrix: 344200e Reconcile backend wiri",
+  "dropped_at": "2026-07-22T15:06:17"
+ },
+ {
+  "repo": "hermit",
+  "rescue_ref": "rescue/20260827-9f889472e",
+  "sha": "9f889472ebd6da3d7a861f8e64aa8e083fc1f722",
+  "subject": "WIP on ci-fix-frontier: 344200e Reconcile backend wiring with re",
+  "dropped_at": "2026-07-22T14:59:31"
+ },
+ {
+  "repo": "hermit",
+  "rescue_ref": "rescue/20260827-6e09f7bc3",
+  "sha": "6e09f7bc36a61ae654be76a3d666cf99eaebbab2",
+  "subject": "WIP on strict-workload-matrix: 344200e Reconcile backend wiring ",
+  "dropped_at": "2026-07-22T14:52:38"
+ },
+ {
+  "repo": "hermit",
+  "rescue_ref": "rescue/20260827-676a9dbd7",
+  "sha": "676a9dbd7f4488bc9abc4db42971c5304191d695",
+  "subject": "WIP on strict-workload-matrix: 344200e Reconcile backend wiring ",
+  "dropped_at": "2026-07-22T14:47:55"
+ },
+ {
+  "repo": "hermit",
+  "rescue_ref": "rescue/20260827-7d049bdce",
+  "sha": "7d049bdced0be2462c3c799e586a89a00aa2e738",
+  "subject": "WIP on impl-update-frontier-fail-closed: 344200e Reconcile backe",
+  "dropped_at": "2026-07-22T14:25:52"
+ }
+]

@@ -1,0 +1,13 @@
+diff --git a/scripts/check-checker-scheduling.rs b/scripts/check-checker-scheduling.rs
+index 01c9476d5b..d6a296e467 100755
+--- a/scripts/check-checker-scheduling.rs
++++ b/scripts/check-checker-scheduling.rs
+@@ -540,7 +540,7 @@ fn is_invoked(text: &str, path: &str) -> bool {
+     // A path alone at the start of a line is a shell line-continuation argument --
+     // the form run-reverie-pin-check.sh uses for both pin checkers. Anchoring to the
+     // line start is what keeps this from matching a filename quoted mid-sentence.
+-    text.lines().any(|line| invokes_on_line(line, path))
++    text.lines().any(|line| line.trim_start().starts_with(path))
+ }
+ 
+ /// Is `needle` used as a COMMAND on this line, rather than quoted inside a string?

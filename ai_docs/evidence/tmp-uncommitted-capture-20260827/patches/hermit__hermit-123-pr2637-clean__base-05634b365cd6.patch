@@ -1,0 +1,18 @@
+diff --git a/scripts/test_validate_stop_paths.py b/scripts/test_validate_stop_paths.py
+index 43617cf921..bdd574e1e9 100644
+--- a/scripts/test_validate_stop_paths.py
++++ b/scripts/test_validate_stop_paths.py
+@@ -268,11 +268,12 @@ _REFUSAL_SUMMARY = re.compile(
+ def _looks_refused(output: str) -> bool:
+     """Did the child DECLINE, as opposed to failing at something?
+ 
++    Keep this predicate local to the complete status line.
+     Match the complete status line, not refusal-shaped prose anywhere else on the
+     captured channel. Anything else stays an AssertionError because reporting a
+     crash as could-not-evaluate would hide the failure.
+     """
+-    return any(_REFUSAL_SUMMARY.fullmatch(line) for line in output.splitlines())
++    return bool(_REFUSAL_SUMMARY.search(output))
+ 
+ 
+ _SAMPLE_COMMIT = "0123456789abcdef0123456789abcdef01234567"

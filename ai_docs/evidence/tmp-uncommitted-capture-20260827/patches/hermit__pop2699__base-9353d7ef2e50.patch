@@ -1,0 +1,82 @@
+diff --git a/scripts/test_validate_stop_paths.py b/scripts/test_validate_stop_paths.py
+index 7b6fa991c5..e8676fb35e 100644
+--- a/scripts/test_validate_stop_paths.py
++++ b/scripts/test_validate_stop_paths.py
+@@ -277,6 +277,67 @@ def _looks_refused(output: str) -> bool:
+     return any(shape in output for shape in _REFUSAL_SHAPES)
+ 
+ 
++def _self_test() -> int:
++    """Pin the RED -> NO_RESULT downgrade in BOTH directions. No subprocess, no box.
++
++    ⚠️ THE DOWNGRADE IS THE DANGEROUS HALF AND IT HAD NO TEST. `_looks_refused`
++    decides whether a dead validate child is a could-not-evaluate (announced with
++    NO_RESULT_MARKER, which ci/lint-checks-node.sh turns into exit 75) or an
++    AssertionError (a red). Widening it converts EVERY failure into an absence,
++    and an absence reads as nothing-to-see everywhere downstream. Verified
++    2026-08-26 that nothing caught that: `_looks_refused` is referenced only in
++    this file, the file has no unit tests, and its sole consumer compiles
++    validate.rs and spawns it per signal case -- 8m54s at load 42.8 -- so the
++    only thing that could notice costs a box.
++
++    Direction 1 -- a GENUINE FAILURE MUST STAY RED. This is the assertion that
++    fails when someone widens the predicate.
++    Direction 2 -- a GENUINE REFUSAL MUST STILL BE A NO_RESULT, so narrowing it
++    to nothing (the lazy way to satisfy direction 1) is also caught.
++    """
++    failures: list[str] = []
++
++    # Direction 1: real failures, none of which are refusals.
++    for output in (
++        "AssertionError: validate exited before ready: rc=1",
++        "thread 'main' panicked at src/lib.rs:12:5",
++        "error: could not compile `hermit-detcore`",
++        "Traceback (most recent call last):\n  File \"x.py\", line 1",
++        "",
++        "validate: FAILED 3 nodes",
++    ):
++        if _looks_refused(output):
++            failures.append(
++                "a genuine failure was classified as a could-not-evaluate, which "
++                f"downgrades a RED to a NO_RESULT: {output[:60]!r}"
++            )
++
++    # Direction 2: every real refusal shape must still be recognised.
++    for output in (
++        "validate: refused by: another validate is already running",
++        "validate: REFUSED admission for target abc",
++        "another validate is already running",
++    ):
++        if not _looks_refused(output):
++            failures.append(
++                "a genuine refusal was NOT recognised, so a could-not-evaluate "
++                f"would be reported as a failed stop path: {output[:60]!r}"
++            )
++
++    # The predicate must stay an allowlist, not a catch-all.
++    if not _REFUSAL_SHAPES:
++        failures.append("_REFUSAL_SHAPES is empty; the predicate can never match")
++
++    for line in failures:
++        print(f"not ok - {line}")
++    if failures:
++        print(f"test_validate_stop_paths self-test: {len(failures)} failed")
++        return 1
++    print("test_validate_stop_paths self-test: refusal classification pinned "
++          "both ways (genuine failure stays RED, genuine refusal stays NO_RESULT)")
++    return 0
++
++
+ def wait_for_text(log: Path, text: str, process: subprocess.Popen[bytes]) -> None:
+     deadline = time.monotonic() + READY_TIMEOUT_SECONDS
+     while time.monotonic() < deadline:
+@@ -575,6 +636,9 @@ def run_cleanup_signal_race() -> None:
+ 
+ 
+ def main() -> None:
++    if "--self-test" in sys.argv[1:]:
++        raise SystemExit(_self_test())
++
+     # ⚠️ EVERY CHILD THIS FILE SPAWNS IS A FIXTURE, NOT A NESTED VALIDATION, so the
+     # outer run's active marker is cleared ONCE HERE rather than in each env
+     # builder. I scrubbed it in stop_test_env first and the failure simply MOVED

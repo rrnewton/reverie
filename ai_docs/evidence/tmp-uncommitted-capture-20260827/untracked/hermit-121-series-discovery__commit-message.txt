@@ -1,0 +1,17 @@
+[hermit2, hermit-121, unresolved, devbig014, role=impl] Put linked-worktree series rows in the published spool
+
+Plain Language Summary and Project Impact
+
+Per-test history written from a detached dev-hermit worktree stayed under that worktree, while the scheduled publisher scans the primary checkout. Resolve the Git common directory before choosing the series spool so normal worktree-based validate and pressure-test runs remain visible to the existing publisher and to readers on other checkouts.
+
+Task: per-testid-run-ledger-every-run-of-every-cell-with-runtime-stats
+
+Independent clones keep their own spool. Non-Git test directories keep the supplied path. The linked-worktree test brackets both results.
+
+Validation:
+- python3 -m pytest -q ci-hub/series/tests/test_series_invariants.py (48 passed)
+- python3 -m pytest -q ci-hub/ledger/tests/test_ledger_publisher.py ci-hub/health/tests/test_ledger_spool_backlog.py (30 passed)
+- python3 -m py_compile ci-hub/series/series.py
+- git diff --check
+
+[impl agent, gpt-5.6-sol] [hermit-121, devbig014]

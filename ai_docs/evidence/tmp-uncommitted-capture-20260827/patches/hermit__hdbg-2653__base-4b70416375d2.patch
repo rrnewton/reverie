@@ -1,0 +1,533 @@
+diff --git a/Makefile b/Makefile
+index 05adab97e2..879660acbe 100644
+--- a/Makefile
++++ b/Makefile
+@@ -150,6 +150,7 @@ lint-checks: ## The lint checkers CI schedules as one node (everything in `lint`
+ 	./scripts/run-script-tests.sh
+ 	./ci/lint-checks-node.sh --self-test
+ 	./scripts/check-checker-scheduling.rs
++	python3 ./ci/audit-test-binary-registration.py
+ 	@sh_files="$$(git ls-files '*.sh' ':!:third-party/**')"; \
+ 		if [ -z "$$sh_files" ]; then \
+ 			echo 'lint: no tracked shell scripts to check'; \
+diff --git a/ci/lint-checks-node.sh b/ci/lint-checks-node.sh
+index a3d1d516a5..c0bf32810b 100755
+--- a/ci/lint-checks-node.sh
++++ b/ci/lint-checks-node.sh
+@@ -146,7 +146,7 @@ lint-checks: OK"
+     # never fire. This is the exact shape the producer emits: column 0, on its own
+     # line, with make's recipe echo above it.
+     check_run 'genuine emission at column 0 is a no_result' 'no_result' 0 \
+-        "python3 scripts/test_validate_stop_paths.py
++        "python3 scripts/example-producer-not-a-real-checker.py
+ NO-RESULT-CASE: canonical adapter contract, accept arm: no parent adapter
+ PARTIAL: every evaluable assertion passed"
+     check_run 'clean run is a pass' 'pass' 0 "lint-checks: everything passed"
+diff --git a/ci/undeclared-test-binaries.tsv b/ci/undeclared-test-binaries.tsv
+index f4e7ead0f8..99e6290623 100644
+--- a/ci/undeclared-test-binaries.tsv
++++ b/ci/undeclared-test-binaries.tsv
+@@ -20,12 +20,15 @@ btrfs_reservation_determinism	none-recorded	No reason was recorded when this bin
+ btrfs_reserved_bytes_determinism	none-recorded	No reason was recorded when this binary was left out of the CI DAG.
+ buddyinfo_determinism	none-recorded	No reason was recorded when this binary was left out of the CI DAG.
+ compression	none-recorded	No reason was recorded when this binary was left out of the CI DAG.
++container_init_deadline	measured-green-pending-registration	Measured 2026-08-26 on hermit@a787a547ea: 3 tests, 3 pass, 16.2s. Green and cheap; belongs in the DAG. Not registered here because every portable.json step carries a measured rss_baseline_bytes hint and that memory sample has not been taken.
+ copy_file_range_refusal	none-recorded	No reason was recorded when this binary was left out of the CI DAG.
+ cppc_feedback_determinism	none-recorded	No reason was recorded when this binary was left out of the CI DAG.
+ cpuidle_determinism	none-recorded	No reason was recorded when this binary was left out of the CI DAG.
+ dbt_copied_tty	none-recorded	No reason was recorded when this binary was left out of the CI DAG.
+ dentry_state_determinism	none-recorded	No reason was recorded when this binary was left out of the CI DAG.
++flock_exclusion	fails-today-defect-filed	Measured 2026-08-26 on hermit@a787a547ea: 24 tests, 23 pass, 1 FAIL in 6.4s. contended_blocking_upgrade_is_fail_closed_under_strict observes Some(125) where it requires Some(1). Product defect, task a_guest_that_exits. Registering before the fix would make this a standing red.
+ frontier_app_benchmarks	none-recorded	No reason was recorded when this binary was left out of the CI DAG.
++full_summary_futex_order	measured-green-pending-registration	Measured 2026-08-26 on hermit@a787a547ea: 1 test, 1 pass, 0.3s. Green and effectively free; belongs in the DAG pending a memory sample for its hint block.
+ getitimer_determinism	none-recorded	No reason was recorded when this binary was left out of the CI DAG.
+ host_kernel_probes	none-recorded	No reason was recorded when this binary was left out of the CI DAG.
+ host_security_identity	none-recorded	No reason was recorded when this binary was left out of the CI DAG.
+@@ -34,6 +37,8 @@ io_uring_ring_determinism	none-recorded	No reason was recorded when this binary
+ ipc_determinism	none-recorded	No reason was recorded when this binary was left out of the CI DAG.
+ irq_per_cpu_determinism	none-recorded	No reason was recorded when this binary was left out of the CI DAG.
+ kvm_harder	none-recorded	No reason was recorded when this binary was left out of the CI DAG.
++kvm_info_log_determinism	host-dependency-unsatisfied	Measured 2026-08-26 on hermit@a787a547ea: 5 tests, 4 pass, 1 FAIL in 1.4s. kvm_memory_hashes_repeat_for_a_static_guest cannot link its static guest -- /usr/bin/ld: cannot find -lc, no static libc on this host. A SETUP condition, not a product opinion; it should report no_result rather than failure, the same shape as test.liteinst_strict in hermit#2638.
++kvm_lifecycle_timing_log_level	measured-green-pending-registration	Measured 2026-08-26 on hermit@a787a547ea: 1 test, 1 pass, 0.3s. Green; belongs in the DAG pending a memory sample for its hint block.
+ language_runtime_determinism	none-recorded	No reason was recorded when this binary was left out of the CI DAG.
+ leveldb	none-recorded	No reason was recorded when this binary was left out of the CI DAG.
+ liteinst_host_activation	none-recorded	No reason was recorded when this binary was left out of the CI DAG.
+@@ -60,7 +65,9 @@ redis_strict	none-recorded	No reason was recorded when this binary was left out
+ relaxed_flag_matrix	none-recorded	No reason was recorded when this binary was left out of the CI DAG.
+ remap_file_pages_refusal	none-recorded	No reason was recorded when this binary was left out of the CI DAG.
+ robust_list_queries	none-recorded	No reason was recorded when this binary was left out of the CI DAG.
++sched_setattr_abi	measured-green-pending-registration	Measured 2026-08-26 on hermit@a787a547ea: 1 test, 1 pass, 0.3s. Green; belongs in the DAG pending a memory sample for its hint block.
+ sched_setattr_noop	none-recorded	No reason was recorded when this binary was left out of the CI DAG.
++scheduler_deadlock	fails-today-defect-filed	Measured 2026-08-26 on hermit@a787a547ea: 1 test, 0 pass, 1 FAIL in 1.1s. terminal_scheduler_deadlock_reports_and_tears_down_tracees observes Some(125) where it requires Some(1) -- the same defect as flock_exclusion, task a_guest_that_exits. This binary has a 0% pass rate and has never run in any DAG.
+ scheduler_policy_queries	none-recorded	No reason was recorded when this binary was left out of the CI DAG.
+ sigmask_preemption	none-recorded	No reason was recorded when this binary was left out of the CI DAG.
+ so_incoming_cpu	none-recorded	No reason was recorded when this binary was left out of the CI DAG.
+@@ -68,18 +75,21 @@ socket_cookie_determinism	none-recorded	No reason was recorded when this binary
+ socket_ioctl_timestamp_determinism	none-recorded	No reason was recorded when this binary was left out of the CI DAG.
+ socket_timestamp_determinism	none-recorded	No reason was recorded when this binary was left out of the CI DAG.
+ sqlite_veryquick	none-recorded	No reason was recorded when this binary was left out of the CI DAG.
+-stress_suite	none-recorded	No reason was recorded when this binary was left out of the CI DAG.
++stress_suite	measured-green-pending-registration	Measured 2026-08-26 on hermit@a787a547ea: 6 tests in three tiers. Default tier (2 tests) green in 9 consecutive runs, 20.9-22.4s. Fast tier (targeted_chaos_finds_order_violation_at_least_as_often, fast_chaos_matrix) green in 29.4s. The remaining two are #[ignore = "explicit slow stress tier"] and "explicit PMU-dependent slow stress tier" and belong in super. Default+fast belong in the DAG at ~51s, pending an rss_baseline_bytes sample. Note its Some(1) is the GUEST'S signal (GuestOutcome::Exposed) and must never be swept to 125.
+ syscall_file_io	none-recorded	No reason was recorded when this binary was left out of the CI DAG.
+ syscall_file_metadata	none-recorded	No reason was recorded when this binary was left out of the CI DAG.
+ syscall_quick_wins	none-recorded	No reason was recorded when this binary was left out of the CI DAG.
+ sysfs_rtc_determinism	none-recorded	No reason was recorded when this binary was left out of the CI DAG.
+ sysv_legacy_fallbacks	none-recorded	No reason was recorded when this binary was left out of the CI DAG.
+ tcp_info_determinism	none-recorded	No reason was recorded when this binary was left out of the CI DAG.
++terminal_child_selectors	measured-green-pending-registration	Measured 2026-08-26 on hermit@a787a547ea: 2 tests, 2 pass, 0.5s. Green; belongs in the DAG pending a memory sample for its hint block.
+ thread_scheduling_fairness	none-recorded	No reason was recorded when this binary was left out of the CI DAG.
+ thread_self_procfs_determinism	none-recorded	No reason was recorded when this binary was left out of the CI DAG.
+ thread_sync_determinism	none-recorded	No reason was recorded when this binary was left out of the CI DAG.
+ uevent_seqnum_determinism	none-recorded	No reason was recorded when this binary was left out of the CI DAG.
+ unix_socket_table_determinism	none-recorded	No reason was recorded when this binary was left out of the CI DAG.
++verify_claim_names_its_limit	measured-green-pending-registration	Measured 2026-08-26 on hermit@a787a547ea: 3 tests, 3 pass, 0.1s. Green; belongs in the DAG pending a memory sample for its hint block.
+ version_provenance	none-recorded	No reason was recorded when this binary was left out of the CI DAG.
+ vmstat_determinism	none-recorded	No reason was recorded when this binary was left out of the CI DAG.
++waitid_signal_interrupt	measured-green-pending-registration	Measured 2026-08-26 on hermit@a787a547ea: 11 tests, 11 pass, 0.5s. Green; belongs in the DAG pending a memory sample for its hint block.
+ writev_determinism	none-recorded	No reason was recorded when this binary was left out of the CI DAG.
+diff --git a/demos/05-qemu-busybox.sh b/demos/05-qemu-busybox.sh
+index b2b7a7b2c0..afec7a3957 100755
+--- a/demos/05-qemu-busybox.sh
++++ b/demos/05-qemu-busybox.sh
+@@ -101,6 +101,18 @@ initramfs_image=${INITRAMFS_IMAGE:-$output_dir/initramfs-busybox.cpio.gz}
+ console_log=$output_dir/console.log
+ info_log=$output_dir/hermit-info.log
+ stderr_log=$output_dir/hermit-stderr.log
++verify_json=$output_dir/verify.json
++
++# Preflight the verdict reader BEFORE the boot, which costs several minutes.
++# `jq` is the only external dependency VERIFY=1 adds, and it is exactly the
++# binary a host BPF FILE_OPEN policy has been observed to deny
++# (ai_docs/bpf-file-open-retry-measurement-20260817.md), so a missing or
++# unreadable jq must be reported as a setup fault here rather than surface as a
++# verification failure after a 900-second run.
++if [[ $verify == 1 ]]; then
++  command -v jq >/dev/null 2>&1 \
++    || fail "VERIFY=1 requires 'jq' to read the typed verdict; install jq or run without VERIFY=1"
++fi
+ 
+ if [[ -z ${INITRAMFS_IMAGE:-} ]]; then
+   "$script_dir/qemu-busybox/build-initramfs.sh" "$initramfs_image"
+@@ -120,7 +132,14 @@ if [[ -n $skid_margin ]]; then
+   hermit_args+=(--skid-margin="$skid_margin")
+ fi
+ if [[ $verify == 1 ]]; then
+-  hermit_args+=(--verify)
++  # ⚠️ `--verify-strict` IS LOAD-BEARING FOR THE L2 LABEL PRINTED BELOW.
++  # A plain `--verify` stays on the lossy Stripped comparator on every backend
++  # -- `RunOpts::verification_strictness` returns `Canonical` only under
++  # `--verify-strict`/`--verify-verbose`, and
++  # `comparator_choice_does_not_depend_on_the_backend` pins that. AGENTS.md is
++  # explicit that default `--verify` "cannot establish L2", so requesting it
++  # while printing `level=L2` claimed a tier the run never reached.
++  hermit_args+=(--verify --verify-strict --verify-json "$verify_json")
+ fi
+ hermit_args+=(--)
+ 
+@@ -130,6 +149,9 @@ printf 'pmu_skid_margin=%s\n' "${skid_margin:-auto}"
+ printf 'hermit=%s\nqemu=%s\nkernel=%s\ninitramfs=%s\nconsole=%s\ninfo=%s\nstderr=%s\n' \
+   "$hermit_bin" "$qemu_bin" "$kernel_image" "$initramfs_image" \
+   "$console_log" "$info_log" "$stderr_log"
++if [[ $verify == 1 ]]; then
++  printf 'verify_json=%s\n' "$verify_json"
++fi
+ printf 'kernel_sha256=%s\ninitramfs_sha256=%s\n' \
+   "$(sha256sum "$kernel_image" | cut -d' ' -f1)" \
+   "$(sha256sum "$initramfs_image" | cut -d' ' -f1)"
+@@ -137,6 +159,11 @@ printf 'kernel_sha256=%s\ninitramfs_sha256=%s\n' \
+ : >"$console_log"
+ : >"$info_log"
+ : >"$stderr_log"
++if [[ $verify == 1 ]]; then
++  # Truncate any verdict left by an earlier run: a stale `verify.json` that
++  # happened to say `matched` would otherwise certify THIS run.
++  : >"$verify_json"
++fi
+ set +e
+ timeout --signal=TERM --kill-after=10 "${timeout_seconds}s" \
+   "$hermit_bin" "${hermit_args[@]}" "${guest_command[@]}" \
+@@ -149,18 +176,61 @@ if ((status != 0)); then
+   fail "Hermit/QEMU exited with status $status; inspect $console_log, $info_log, and $stderr_log"
+ fi
+ 
++# ⚠️ THE WORKLOAD CHECKS BELOW RUN IN BOTH MODES, AND THAT IS DELIBERATE.
++# They used to be skipped under VERIFY=1, which meant the stronger mode
++# checked strictly LESS about the guest: a BusyBox userspace that never
++# reached its marker, or a nested Linux that rejected its clocksource, passed
++# unnoticed as long as the two runs agreed. Two runs can agree perfectly on a
++# workload that did not do its job -- determinism is not success.
++#
++# Verify mode CAN see this output: `hermit run --verify` replays the first
++# run's captured stdout/stderr to the real descriptors before exiting
++# (`run.rs`, `std::io::stdout().write_all(&out1.stdout)`), and the demo tees
++# those into $console_log. Only the `--log` DETLOG stream is diverted.
+ marker=HERMIT-QEMU-BUSYBOX-PASS
+-if [[ $verify == 0 ]]; then
+-  grep -Fq "$marker" "$console_log" || fail \
+-    "guest exited without marker $marker; inspect $console_log"
+-  clock_failures='Unable to calibrate against PIT|Clocksource .* skewed|Marking TSC unstable|No current clocksource'
+-  if grep -Eq "^\[[[:space:]]*[0-9]+\.[0-9]+\].*($clock_failures)" "$console_log"; then
+-    fail "nested Linux reported a rejected clock failure; inspect $console_log"
++grep -Fq "$marker" "$console_log" || fail \
++  "guest exited without marker $marker; inspect $console_log"
++clock_failures='Unable to calibrate against PIT|Clocksource .* skewed|Marking TSC unstable|No current clocksource'
++if grep -Eq "^\[[[:space:]]*[0-9]+\.[0-9]+\].*($clock_failures)" "$console_log"; then
++  fail "nested Linux reported a rejected clock failure; inspect $console_log"
++fi
++printf 'console_sha256=%s\n' \
++  "$(sha256sum "$console_log" | cut -d' ' -f1)"
++
++if [[ $verify == 1 ]]; then
++  # Read the TYPED verdict, not the banner. ":: Success: deterministic.
++  # Determinism verified." is printed by a run whose own --verify-json says
++  # `bitwise_parity: false`, so scraping it cannot tell a stripped match from a
++  # canonical one -- which is precisely how this demo used to certify L2.
++  #
++  # These conjuncts mirror `verify_tier_from_json` in
++  # tests/backend-parity/run_matrix.py, the repository's enforcing definition of
++  # the `bitwise` tier. Keep the two in step. The counts are not redundant: an
++  # empty-vs-empty comparison reports "no difference" under the strictest
++  # possible spec, so without a positive count a run that produced no DETLOG at
++  # all would certify as parity.
++  [[ -s $verify_json ]] || fail \
++    "VERIFY=1 produced no typed verdict at $verify_json; inspect $stderr_log"
++  if ! jq -e '
++    .verified == true and
++    .verdict == "matched" and
++    .bitwise_parity == true and
++    .comparison.strictness == "canonical" and
++    .comparison.compare_logs == true and
++    .comparison.strip_lines == false and
++    .comparison.ignore_lines == false and
++    .comparison.skip_commit == false and
++    .comparison.skip_detlog == false and
++    (.compared_log_messages.left | type) == "number" and
++    (.compared_log_messages.right | type) == "number" and
++    .compared_log_messages.left > 0 and
++    .compared_log_messages.right > 0 and
++    .compared_log_messages.left == .compared_log_messages.right
++  ' "$verify_json" >/dev/null; then
++    fail "Hermit did not emit a matched non-vacuous canonical verdict; inspect $verify_json and $stderr_log"
+   fi
+-  printf 'console_sha256=%s\n' \
+-    "$(sha256sum "$console_log" | cut -d' ' -f1)"
+-elif ! grep -Fq 'Determinism verified' "$stderr_log"; then
+-  fail "Hermit exited without the L2 verification marker; inspect $stderr_log"
++  printf 'compared_info_messages=%s\n' \
++    "$(jq -r '.compared_log_messages.left' "$verify_json")"
+ fi
+ 
+ printf 'PASS: BusyBox userspace completed under Hermit/QEMU (%s, ptrace backend)\n' \
+diff --git a/demos/README.md b/demos/README.md
+index f230761379..5699be0095 100644
+--- a/demos/README.md
++++ b/demos/README.md
+@@ -45,18 +45,25 @@ KERNEL_IMAGE=/path/to/bzImage \
+ The higher-level `05-qemu-busybox.sh` uses the same launcher while adding asset
+ construction, timeouts, live serial output, log capture, and result checks.
+ 
+-Run Hermit's two-execution Stripped comparison. This is a useful fast
+-diagnostic, but it does not establish L2:
++Run Hermit's two-execution canonical comparison, which is what establishes L2:
+ 
+ ```bash
+ VERIFY=1 DEMO_TIMEOUT_SECONDS=900 ./demos/05-qemu-busybox.sh
+ ```
+ 
+-`VERIFY=1` adds `--verify` and requires Hermit's explicit
+-`Determinism verified` marker. It can take several minutes because QEMU's host
+-threads execute under the strict ptrace scheduler. Hermit captures guest output
+-internally in this mode so it can compare both executions; the verification
+-summary is saved as `hermit-stderr.log` instead of replaying the serial console.
++`VERIFY=1` adds `--verify --verify-strict --verify-json` and reads the typed
++verdict rather than a banner, requiring `verified=true`, `verdict=matched`,
++`bitwise_parity=true`, a canonical log comparison with no filtering, and equal
++positive compared-INFO-message counts on both sides. `--verify-strict` is
++required for that: a plain `--verify` stays on the lossy Stripped comparator and
++cannot establish L2. It needs `jq`, which the demo preflights before booting.
++
++It can take several minutes because QEMU's host threads execute under the strict
++ptrace scheduler. Hermit captures guest output internally so it can compare both
++executions, then replays the first run's stdout and stderr on exit, so the
++serial console still reaches `console.log` and the workload marker and
++rejected-clock checks apply in this mode too. The verification summary is also
++saved as `hermit-stderr.log`.
+ 
+ The ptrace PMU skid margin is processor-specific. If Reverie reports that its
+ perf counter exceeded the single-step target, measure the host and pass the
+diff --git a/docs/PR_SWEEP_VERDICTS.md b/docs/PR_SWEEP_VERDICTS.md
+index 7745392c67..7222cacac4 100644
+--- a/docs/PR_SWEEP_VERDICTS.md
++++ b/docs/PR_SWEEP_VERDICTS.md
+@@ -2218,3 +2218,78 @@ regressed main, yet still held two standalone C guests absent from main.
+ The queue is **unlanded work, not duplicates**, and the shortage is **rebases,
+ not candidates**. Plan sweeps on that basis: budget for rebasing, extracting
+ residuals and naming successors, not for closing.
++
++## Four fields on a pull request whose plain reading is wrong
++
++⚠️ **The GitHub pull-request API has at least four fields a reviewer naturally
++reads as an answer, and each of them answers a different question than the one
++being asked.** They are collected here because they were found one at a time,
++scattered across four sections and five pull requests in a single evening, and a
++reviewer who learns them one at a time learns each one by being burned by it.
++
++| field | reads as | actually means |
++| --- | --- | --- |
++| `mergeable` | can this land | *computed at some past moment*, `UNKNOWN` until asked, and never recomputed once the pull request closes |
++| `merged` / the merged flag | my commit is on `main` | **a** merge happened on this pull request; says nothing about which commits were in it |
++| `merge_commit_sha` | it merged, here is the commit | **populated on pull requests that were never merged** |
++| `head.sha` | the head I am reviewing | the head has not *moved*; says nothing about whether it is still *open* |
++
++The first two have their own sections above --
++[`mergeable` is THREE-VALUED](#mergeable-is-three-valued-and-the-third-value-is-not-an-answer)
++and the merged-flag section. The last two are recorded here.
++
++### `merge_commit_sha` is populated on a pull request that never merged
++
++Measured 2026-08-25 on hermit#2604, closed as obsolete rather than merged:
++
++```console
++state             closed
++merged            False
++merged_at         None
++merged_by         None
++merge_commit_sha  aa565ed86abf922b396749ee334c2f546738dd4e   <-- populated
++```
++
++And the content is verifiably absent from `main`: grepping `origin/main` for a
++distinctive string from the change returns **0**.
++
++So a populated `merge_commit_sha` is not evidence of a merge, and a sha that
++looks like a landing is not a landing. GitHub computes a *candidate* merge commit
++to answer the mergeability question, and the field keeps that value whatever
++happens to the pull request afterwards. **Check `merged`, and then check `main`.**
++
++### `head.sha` agreeing does not mean the head is still open
++
++The standing rule for supplying a review lane is to resolve the head from the
++branch ref **and** the API and require the two to agree, because a head that
++moves under a reviewer invalidates the binding. That rule is correct and it is
++not sufficient: **a sha stays valid on a closed pull request**, so agreement
++proves the head has not *moved* and says nothing about whether it is still
++*alive*.
++
++Measured 2026-08-25, and the author of this section is the one who got it wrong:
++
++```
++18:48:58Z  author posts "Closing: obsolete"
++18:48:59Z  pull request CLOSED, merged=false
++18:50:13Z  reviewer posts APPROVED-AT + passed-review-codex   <-- 74s too late
++```
++
++The reviewer re-read the head immediately before posting, exactly as the protocol
++requires. The API returned `state: closed` **in the same response the sha was
++read from**. The sha was checked; the state was not.
++
++**The rule is therefore: re-read the head AND the state.** One extra field, in a
++request already being made. An approving lane on a closed pull request is not
++harmless -- it is an approval a scanner will count, on a head nobody can land,
++and it has to be retracted by hand with a `CHANGES-REQUESTED-AT` at the same sha.
++
++### The shape they share
++
++Each of these fields reports something true. `mergeable` really was `UNKNOWN`
++when asked; the merge really did happen; the candidate merge commit really was
++computed; the head really has not moved. **The defect is never that the field
++lies -- it is that the question a reviewer is asking is one step further on than
++the question the field answers.** So the check is the same in all four cases:
++name the question you actually need answered, and confirm the field answers
++*that* one, rather than one adjacent to it.
+diff --git a/hermit-cli/src/bin/hermit/backends.rs b/hermit-cli/src/bin/hermit/backends.rs
+index 607695b81a..f24c8d40f0 100644
+--- a/hermit-cli/src/bin/hermit/backends.rs
++++ b/hermit-cli/src/bin/hermit/backends.rs
+@@ -756,6 +756,33 @@ fn run_dbt_legacy_verify(
+     Ok(output_status(&first))
+ }
+ 
++/// The DBT `--log-file` refusal message, named so a test can assert the exact text
++/// rather than a paraphrase of it.
++#[cfg(any(feature = "dbt", test))]
++pub(super) const DBT_LOG_FILE_REFUSAL: &str =
++    "DBT --log-file is unavailable on the ordinary single-run adapter";
++
++/// Is `--log-file` refused for this DBT invocation?
++///
++/// ⚠️ EXTRACTED SO THE POLICY IS DEFENDED. Before this, `git grep 'log-file is
++/// unavailable'` returned exactly ONE hit tree-wide -- the error string itself --
++/// with no test asserting when it fires. An undefended refusal can be reversed by
++/// accident, and there is a live proposal to reverse this one: hermit#1689's first
++/// claim implements DBT `--log-file`, and main adopted the opposite policy in
++/// `f0584c1aac` about four minutes after that branch forked, inside a commit about
++/// verification verdicts rather than as the subject of a decision.
++///
++/// This does NOT take a side on which policy is right -- that is an owner ruling.
++/// It pins what main does TODAY, so reversing it means deleting a test, which is
++/// visible in a diff, instead of editing one condition, which is not.
++///
++/// The rule: a requested log file is refused on the ordinary single-run adapter,
++/// and permitted under `--verify`, where the verification adapter owns the sink.
++#[cfg(any(feature = "dbt", test))]
++fn dbt_log_file_is_refused(log_file_requested: bool, verify: bool) -> bool {
++    log_file_requested && !verify
++}
++
+ /// Runs `program` through DynamoRIO with the real Detcore Tool.
+ ///
+ /// When `--verify-json` requests a durable report, verification obtains
+@@ -789,10 +816,8 @@ pub(super) fn run_dbt(
+     if let Some(path) = verify_json.filter(|_| verify) {
+         write_pending_verification_json(path)?;
+     }
+-    if log_file.is_some() && !verify {
+-        return Err(Error::msg(
+-            "DBT --log-file is unavailable on the ordinary single-run adapter",
+-        ));
++    if dbt_log_file_is_refused(log_file.is_some(), verify) {
++        return Err(Error::msg(DBT_LOG_FILE_REFUSAL));
+     }
+     // The DBT backend drives a single Detcore external scheduler, so it cannot
+     // honor a request to relax thread sequentialization. Fail loudly rather
+@@ -2183,4 +2208,37 @@ mod tests {
+             );
+         }
+     }
++
++    /// Pins main's CURRENT DBT `--log-file` policy, which was undefended.
++    ///
++    /// hermit#1689 claim 1 would reverse this. That reversal may well be correct --
++    /// it is an owner ruling, and this test takes no side on it. What it removes is
++    /// the possibility of reversing it SILENTLY: before this, the refusal existed
++    /// only as an error string with no assertion, so flipping the condition changed
++    /// behaviour without changing any test.
++    #[test]
++    fn dbt_log_file_is_refused_on_the_single_run_adapter_and_permitted_under_verify() {
++        // the refusal: a log file was asked for, and this is not a verification run
++        assert!(
++            dbt_log_file_is_refused(true, false),
++            "a requested --log-file must be refused on the ordinary single-run adapter"
++        );
++        // --verify owns its own sink, so the request is honoured there
++        assert!(
++            !dbt_log_file_is_refused(true, true),
++            "--verify must keep accepting --log-file; the verification adapter owns the sink"
++        );
++        // no request, nothing to refuse, either way
++        assert!(!dbt_log_file_is_refused(false, false));
++        assert!(!dbt_log_file_is_refused(false, true));
++    }
++
++    /// The refusal text is what a caller greps for, so pin it exactly.
++    #[test]
++    fn dbt_log_file_refusal_names_the_adapter_it_is_about() {
++        assert_eq!(
++            DBT_LOG_FILE_REFUSAL,
++            "DBT --log-file is unavailable on the ordinary single-run adapter"
++        );
++    }
+ }
+diff --git a/scripts/check-checker-scheduling.rs b/scripts/check-checker-scheduling.rs
+index be1331b6e7..a549ed4ac5 100755
+--- a/scripts/check-checker-scheduling.rs
++++ b/scripts/check-checker-scheduling.rs
+@@ -355,7 +355,21 @@ fn is_invoked(text: &str, path: &str) -> bool {
+     // scripts/check-reverie-pin.rs and runs the resulting binary, so the checker is
+     // genuinely scheduled without ever being executed as a script.
+     for runner in ["python3 ", "python ", "bash ", "sh ", "rustc "] {
+-        if text.contains(&format!("{runner}{path}")) {
++        let needle = format!("{runner}{path}");
++        // ⚠️ AND THE RUNNER PREFIX MUST NOT BE INSIDE A STRING LITERAL. Requiring
++        // `python3 ` in front of the path was still not enough: `ci/lint-checks-node.sh`
++        // carries `"python3 scripts/test_validate_stop_paths.py` as FIXTURE DATA -- a
++        // quoted multi-line string handed to `check_run` to simulate make's output --
++        // and that read as an invocation. Measured 2026-08-26: it turned
++        // check-checker-scheduling RED on main immediately after #2622 merged, because
++        // the entry #2622 correctly allowlisted was then reported STALE ("now
++        // scheduled") on the strength of a test fixture.
++        //
++        // A real invocation begins a command: the runner is at the start of a line, or
++        // follows a shell operator. It is never preceded by a quote. This is the THIRD
++        // narrowing of this predicate, and each one has been the same lesson -- a
++        // filename in live code is not evidence that the code runs it.
++        if text.lines().any(|line| invokes_on_line(line, &needle)) {
+             return true;
+         }
+     }
+@@ -365,6 +379,33 @@ fn is_invoked(text: &str, path: &str) -> bool {
+     text.lines().any(|l| l.trim_start().starts_with(path))
+ }
+ 
++/// Is `needle` used as a COMMAND on this line, rather than quoted inside a string?
++///
++/// The discriminator is the character immediately before the match: a command starts
++/// a line or follows a shell operator (`;`, `&`, `|`, `(`, backtick) or `$(`. A quote
++/// before it means the text is data -- an echoed diagnostic, or a fixture standing in
++/// for output. Erring toward FALSE ORPHAN stays the safe direction.
++fn invokes_on_line(line: &str, needle: &str) -> bool {
++    let mut from = 0;
++    while let Some(hit) = line[from..].find(needle) {
++        let at = from + hit;
++        let before = line[..at].trim_end();
++        let quoted = before.ends_with('"') || before.ends_with('\'');
++        if !quoted
++            && (before.is_empty()
++                || before.ends_with(';')
++                || before.ends_with('&')
++                || before.ends_with('|')
++                || before.ends_with('(')
++                || before.ends_with('`'))
++        {
++            return true;
++        }
++        from = at + 1;
++    }
++    false
++}
++
+ /// Pull the value of every `"cmd":` field out of a DAG file.
+ ///
+ /// Deliberately textual rather than a JSON parse: these scripts take no third-party
+@@ -472,6 +513,42 @@ mod tests {
+         assert!(s.contains("check-d.rs"));
+     }
+ 
++    /// ⚠️ THE FIXTURE CASE, WHICH IS THE ONE THAT REDDENED MAIN. `ci/lint-checks-node.sh`
++    /// hands `check_run` a quoted multi-line string standing in for make's output, and
++    /// its first line is `"python3 scripts/test_validate_stop_paths.py`. Requiring the
++    /// `python3 ` prefix was not enough -- the fixture has it. Measured 2026-08-26:
++    /// this exact line made a correctly-allowlisted checker report STALE on main.
++    #[test]
++    fn a_runner_prefix_inside_a_string_literal_is_not_an_invocation() {
++        let fixture = "        \"python3 scripts/test_validate_stop_paths.py";
++        assert!(
++            !is_invoked(fixture, "scripts/test_validate_stop_paths.py"),
++            "a runner prefix quoted as fixture data must not read as an invocation"
++        );
++    }
++
++    /// ...and the real shapes must still fire, so the guard cannot be over-tightened
++    /// into a permanent pass. Each of these is a form this repository actually uses.
++    #[test]
++    fn genuine_invocations_still_fire_after_the_quote_guard() {
++        for real in [
++            "\tpython3 scripts/test_validate_stop_paths.py",
++            "python3 scripts/test_validate_stop_paths.py",
++            "\t./scripts/check-x.sh",
++            "\tcd foo && python3 scripts/test_validate_stop_paths.py",
++            "\t$(SUBMODULE_PROXY) ./ci/verify-submodules.sh",
++        ] {
++            let path = if real.contains("check-x") {
++                "scripts/check-x.sh"
++            } else if real.contains("verify-submodules") {
++                "ci/verify-submodules.sh"
++            } else {
++                "scripts/test_validate_stop_paths.py"
++            };
++            assert!(is_invoked(real, path), "must still fire: {real}");
++        }
++    }
++
+     #[test]
+     fn recipe_extraction_stops_at_the_next_target() {
+         let mk = "lint-checks:\n\t./scripts/check-x.sh\n\nlint-cargo:\n\t$(CARGO) clippy\n";

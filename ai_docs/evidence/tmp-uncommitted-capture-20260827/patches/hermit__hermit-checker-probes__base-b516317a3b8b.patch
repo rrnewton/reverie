@@ -1,0 +1,44 @@
+diff --git a/scripts/check-checker-scheduling.rs b/scripts/check-checker-scheduling.rs
+index 01c9476d5b..e40f818e4d 100755
+--- a/scripts/check-checker-scheduling.rs
++++ b/scripts/check-checker-scheduling.rs
+@@ -1167,4 +1167,39 @@ mod tests {
+             "a checker named only in prose must not read as scheduled"
+         );
+     }
++
++    #[test]
++    fn review_probe_position_shapes() {
++        for (text, path) in [
++            ("assert_eq!(got, \"./scripts/check-z.rs\");", "scripts/check-z.rs"),
++            ("let doc = format!(\"./scripts/check-z.rs\");", "scripts/check-z.rs"),
++            ("let doc = \"./scripts/check-z.rs\";", "scripts/check-z.rs"),
++            ("ARR=(./scripts/check-z.rs)", "scripts/check-z.rs"),
++            ("$NOT_A_WRAPPER ./scripts/check-z.rs", "scripts/check-z.rs"),
++        ] {
++            eprintln!("PROBE invoked={} text={text}", is_invoked(text, path));
++        }
++        for (text, path) in [
++            ("! ./scripts/check-z.rs", "scripts/check-z.rs"),
++            ("time ./scripts/check-z.rs", "scripts/check-z.rs"),
++            ("FOO='a b' ./scripts/check-z.rs", "scripts/check-z.rs"),
++            ("@./scripts/check-z.rs", "scripts/check-z.rs"),
++        ] {
++            eprintln!("PROBE invoked={} text={text}", is_invoked(text, path));
++        }
++    }
++
++    #[test]
++    fn review_probe_runner_nonexecution_shapes() {
++        for (text, path) in [
++            ("rustc -V scripts/check-z.rs", "scripts/check-z.rs"),
++            ("rustc -h scripts/check-z.rs", "scripts/check-z.rs"),
++            ("bash -n scripts/check-z.sh", "scripts/check-z.sh"),
++            ("bash -s scripts/check-z.sh", "scripts/check-z.sh"),
++            ("python3 -c pass scripts/check-z.py", "scripts/check-z.py"),
++            ("python3 -m module scripts/check-z.py", "scripts/check-z.py"),
++        ] {
++            eprintln!("RUNNER_PROBE invoked={} text={text}", is_invoked(text, path));
++        }
++    }
+ }

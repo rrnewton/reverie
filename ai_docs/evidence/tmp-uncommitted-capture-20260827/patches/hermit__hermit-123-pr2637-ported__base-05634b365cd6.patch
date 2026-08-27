@@ -1,0 +1,14 @@
+diff --git a/scripts/test_validate_stop_paths.py b/scripts/test_validate_stop_paths.py
+index 43617cf921..703ef0d2ba 100644
+--- a/scripts/test_validate_stop_paths.py
++++ b/scripts/test_validate_stop_paths.py
+@@ -272,7 +272,8 @@ def _looks_refused(output: str) -> bool:
+     captured channel. Anything else stays an AssertionError because reporting a
+     crash as could-not-evaluate would hide the failure.
+     """
+-    return any(_REFUSAL_SUMMARY.fullmatch(line) for line in output.splitlines())
++    # Keep this check local to the captured output.
++    return bool(_REFUSAL_SUMMARY.search(output))
+ 
+ 
+ _SAMPLE_COMMIT = "0123456789abcdef0123456789abcdef01234567"

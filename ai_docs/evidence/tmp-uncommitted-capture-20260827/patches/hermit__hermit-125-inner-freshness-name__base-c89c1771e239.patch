@@ -1,0 +1,262 @@
+diff --git a/scripts/test_validate_stop_paths.py b/scripts/test_validate_stop_paths.py
+index 69e6837792..3eb39521ba 100644
+--- a/scripts/test_validate_stop_paths.py
++++ b/scripts/test_validate_stop_paths.py
+@@ -90,7 +90,7 @@ def stop_test_env(
+         HERMIT_VALIDATE_STOP_TEST_MODE="1",
+         HERMIT_VALIDATE_LEDGER=str(ledger),
+         DEV_HERMIT_PARENT=str(ROOT.parent),
+-        VALIDATE_RUN_ON_DIRTY_TREE="1",
++        VALIDATE_SKIP_INNER_DIRTY_WORKING_TREE_AND_REBASE_FRESHNESS_CHECKS="1",
+         VALIDATE_STOP_TEST_TMP_ROOT=str(tmpdir / "validation"),
+         TMPDIR=str(tmpdir),
+     )
+@@ -231,7 +231,10 @@ def warm_validate_binary() -> None:
+     subprocess.run(
+         [str(VALIDATE), "full", "--show-plan"],
+         cwd=ROOT,
+-        env={**os.environ, "VALIDATE_RUN_ON_DIRTY_TREE": "1"},
++        env={
++            **os.environ,
++            "VALIDATE_SKIP_INNER_DIRTY_WORKING_TREE_AND_REBASE_FRESHNESS_CHECKS": "1",
++        },
+         stdout=subprocess.DEVNULL,
+         stderr=subprocess.DEVNULL,
+         timeout=900,
+@@ -409,7 +412,7 @@ def run_canonical_adapter_contract(*, refuse: bool) -> None:
+             HERMIT_VALIDATE_STOP_TEST_MODE="1",
+             DEV_HERMIT_PARENT=str(parent),
+             CI_HUB_VALIDATE_LEDGER_TEST_ROOT=str(canonical_root),
+-            VALIDATE_RUN_ON_DIRTY_TREE="1",
++            VALIDATE_SKIP_INNER_DIRTY_WORKING_TREE_AND_REBASE_FRESHNESS_CHECKS="1",
+             VALIDATE_STOP_TEST_TMP_ROOT=str(tmpdir / "validation"),
+             VALIDATE_STOP_TEST_EXIT_EARLY="1",
+             TMPDIR=str(tmpdir),
+diff --git a/scripts/validate.rs b/scripts/validate.rs
+index 5c02190721..83172bcce4 100755
+--- a/scripts/validate.rs
++++ b/scripts/validate.rs
+@@ -291,7 +291,7 @@ struct Args {
+     focused: Option<Focused>,
+     force_full: bool,
+     baseline: Option<String>,
+-    run_on_dirty_tree: bool,
++    skip_inner_dirty_working_tree_and_rebase_freshness_checks: bool,
+     ignore_cache: bool,
+     label_pr: bool,
+     verbosity: i64,
+@@ -306,6 +306,11 @@ struct Args {
+     show_plan: bool,
+ }
+ 
++const SKIP_INNER_DIRTY_WORKING_TREE_AND_REBASE_FRESHNESS_CHECKS_OPTION: &str =
++    "--skip-inner-dirty-working-tree-and-rebase-freshness-checks";
++const SKIP_INNER_DIRTY_WORKING_TREE_AND_REBASE_FRESHNESS_CHECKS_ENV: &str =
++    "VALIDATE_SKIP_INNER_DIRTY_WORKING_TREE_AND_REBASE_FRESHNESS_CHECKS";
++
+ fn usage() -> &'static str {
+     "Usage: ./scripts/validate.rs [LEVEL] [OPTIONS]\n\
+      \n\
+@@ -346,7 +351,10 @@ fn usage() -> &'static str {
+      \x20 --verbose        Verbosity level 2: stream tagged per-step output.\n\
+      \x20 --verbosity N    Output level 1..5 (default 1; levels 3/4 currently equal 2;\n\
+      \x20                  level 5 prefixes every streamed line with test identity).\n\
+-     \x20 --run-on-dirty-tree  Escape hatch; AGENTS SHOULD NOT USE THIS.\n\
++     \x20 --skip-inner-dirty-working-tree-and-rebase-freshness-checks\n\
++     \x20                  Skip only scripts/validate.rs's dirty-working-tree and\n\
++     \x20                  rebase-freshness checks; does not bypass ci-hub validate-lock\n\
++     \x20                  admission. AGENTS SHOULD NOT USE THIS.\n\
+      \x20 --label-pr       Publish a receipt and label the PR after a full green (default).\n\
+      \x20 --no-label-pr    Disable the non-fatal receipt publication and label update.\n\
+      \x20 --ignore-cache   Force a real run even on a tree-keyed cache hit.\n\
+@@ -364,7 +372,8 @@ fn usage() -> &'static str {
+      \x20                  nested-cgroup check, then exit.\n\
+      \x20 -h, --help       Show this help and exit.\n\
+      \n\
+-     Environment: VALIDATE_LEVEL, VALIDATE_LABEL_PR, VALIDATE_RUN_ON_DIRTY_TREE,\n\
++     Environment: VALIDATE_LEVEL, VALIDATE_LABEL_PR,\n\
++     VALIDATE_SKIP_INNER_DIRTY_WORKING_TREE_AND_REBASE_FRESHNESS_CHECKS,\n\
+      VALIDATE_IGNORE_CACHE, VALIDATE_VERBOSITY, VALIDATE_VERBOSE, VALIDATE_FORCE_FULL,\n\
+      HERMIT_VALIDATE_LEDGER, PR_NUMBER, SUPER_REPETITIONS, L4_REPS, ENVELOPE_JSON,\n\
+      HERMIT_LAST_GREEN_SHA, CI_HUB_APPLY_LOCAL_LABEL, DEV_HERMIT_PARENT.\n\
+@@ -438,7 +447,10 @@ fn parse_argv(argv: &[String]) -> Result<Args, u8> {
+         focused: None,
+         force_full: env_flag("VALIDATE_FORCE_FULL", "1"),
+         baseline: None,
+-        run_on_dirty_tree: env_flag("VALIDATE_RUN_ON_DIRTY_TREE", "1"),
++        skip_inner_dirty_working_tree_and_rebase_freshness_checks: env_flag(
++            SKIP_INNER_DIRTY_WORKING_TREE_AND_REBASE_FRESHNESS_CHECKS_ENV,
++            "1",
++        ),
+         ignore_cache: env_flag("VALIDATE_IGNORE_CACHE", "1"),
+         label_pr: !env_flag("VALIDATE_LABEL_PR", "0"),
+         verbosity,
+@@ -519,7 +531,9 @@ fn parse_argv(argv: &[String]) -> Result<Args, u8> {
+                 shallow = true;
+             }
+             "--all" | "--full-run" => args.force_full = true,
+-            "--run-on-dirty-tree" => args.run_on_dirty_tree = true,
++            SKIP_INNER_DIRTY_WORKING_TREE_AND_REBASE_FRESHNESS_CHECKS_OPTION => {
++                args.skip_inner_dirty_working_tree_and_rebase_freshness_checks = true
++            }
+             "--ignore-cache" => args.ignore_cache = true,
+             "--label-pr" => args.label_pr = true,
+             "--no-label-pr" => args.label_pr = false,
+@@ -939,6 +953,8 @@ fn strict_flag_missing_from(argv: &[String]) -> bool {
+ /// on every invocation (validate.sh:308); here they are a `--self-test` subcommand
+ /// so the cost is not paid on the hot path.
+ fn self_test() -> Result<(), String> {
++    inner_freshness_skip_cli_bracket()?;
++
+     // ---- known-fail-closed disposition, as a pure decision table ----
+     //
+     // The property under test is NOT "the listed rows get mentioned". It is that mentioning
+@@ -2038,6 +2054,58 @@ cleared-caps refusal names {} starved step(s)",
+     Ok(())
+ }
+ 
++/// Assert that the public option names only the two inner checks it skips.
++///
++/// The parent `ci-hub validate-lock` admission runs before this option reaches
++/// `scripts/validate.rs`. The option therefore must not imply that it admits a
++/// dirty or stale validation target through that earlier check.
++fn inner_freshness_skip_cli_bracket() -> Result<(), String> {
++    let parsed = parse_argv(&[
++        SKIP_INNER_DIRTY_WORKING_TREE_AND_REBASE_FRESHNESS_CHECKS_OPTION.into(),
++        "--self-test".into(),
++    ])
++    .map_err(|code| {
++        format!(
++            "inner freshness skip: parser refused {} with exit {code}",
++            SKIP_INNER_DIRTY_WORKING_TREE_AND_REBASE_FRESHNESS_CHECKS_OPTION
++        )
++    })?;
++    if !parsed.skip_inner_dirty_working_tree_and_rebase_freshness_checks {
++        return Err(format!(
++            "inner freshness skip: {} did not select the two inner checks",
++            SKIP_INNER_DIRTY_WORKING_TREE_AND_REBASE_FRESHNESS_CHECKS_OPTION
++        ));
++    }
++    if parse_argv(&["--run-on-dirty-tree".into(), "--self-test".into()]).is_ok() {
++        return Err("inner freshness skip: the misleading old option is still accepted".into());
++    }
++
++    let help = usage();
++    for required in [
++        SKIP_INNER_DIRTY_WORKING_TREE_AND_REBASE_FRESHNESS_CHECKS_OPTION,
++        SKIP_INNER_DIRTY_WORKING_TREE_AND_REBASE_FRESHNESS_CHECKS_ENV,
++        "Skip only scripts/validate.rs's dirty-working-tree and\n     rebase-freshness checks",
++        "does not bypass ci-hub validate-lock\n     admission",
++    ] {
++        if !help.contains(required) {
++            return Err(format!(
++                "inner freshness skip: help omitted required text {required:?}"
++            ));
++        }
++    }
++    for removed in ["--run-on-dirty-tree", "VALIDATE_RUN_ON_DIRTY_TREE"] {
++        if help.contains(removed) {
++            return Err(format!(
++                "inner freshness skip: help still advertises misleading name {removed}"
++            ));
++        }
++    }
++    println!(
++        "  inner freshness skip: new option accepted, old option refused, and help names only the two inner checks"
++    );
++    Ok(())
++}
++
+ /// Execute the production manifest producer/audit dependency spine in both
+ /// directions. The positive case starts with no output and requires the
+ /// producer to create it before the audit runs. The negative case makes the
+@@ -3717,7 +3785,9 @@ fn rebase_freshness(force: bool) -> Result<String, String> {
+          A receipt minted here is keyed to a SHA that main has already moved past, so it cannot \
+          authorize a landing and will have to be rebuilt after the rebase it is missing.\n  \
+          Rebase first:  git rebase origin/main\n  \
+-         To validate a deliberately stale base anyway, pass --run-on-dirty-tree."
++         To skip only scripts/validate.rs's dirty-working-tree and rebase-freshness checks, pass \
++         --skip-inner-dirty-working-tree-and-rebase-freshness-checks. This does not bypass \
++         ci-hub validate-lock admission."
+     );
+     if force {
+         Ok(format!("base: STALE, {behind} behind origin/main — forced past the freshness gate"))
+@@ -10130,21 +10200,30 @@ fn product_front_door_process_bracket() -> Result<(), String> {
+         let cases: [(&str, &[&str], bool, bool, &str); 3] = [
+             (
+                 "top-level-missing-launcher",
+-                &["full"],
++                &[
++                    "full",
++                    SKIP_INNER_DIRTY_WORKING_TREE_AND_REBASE_FRESHNESS_CHECKS_OPTION,
++                ],
+                 false,
+                 false,
+                 "launcher is unavailable",
+             ),
+             (
+                 "focused-invalid-authority",
+-                &["--strict-compat-only"],
++                &[
++                    "--strict-compat-only",
++                    SKIP_INNER_DIRTY_WORKING_TREE_AND_REBASE_FRESHNESS_CHECKS_OPTION,
++                ],
+                 false,
+                 true,
+                 "Run through the canonical launcher",
+             ),
+             (
+                 "nested-marker-invalid-authority",
+-                &["--strict-compat-only"],
++                &[
++                    "--strict-compat-only",
++                    SKIP_INNER_DIRTY_WORKING_TREE_AND_REBASE_FRESHNESS_CHECKS_OPTION,
++                ],
+                 true,
+                 true,
+                 "Run through the canonical launcher",
+@@ -12046,12 +12125,19 @@ fn run(durable_slot: &mut Option<DurableLog>) -> RunSummary {
+     // Skipped for a nested payload: the outer run already made this judgement
+     // about the same checkout, and a second answer could only disagree.
+     let wt_dirty = worktree_dirty();
+-    if !nesting.nested && wt_dirty && !args.run_on_dirty_tree {
++    if !nesting.nested
++        && wt_dirty
++        && !args.skip_inner_dirty_working_tree_and_rebase_freshness_checks
++    {
+         eprintln!("validate: refusing to run on a dirty working tree.");
+         eprintln!("  HEAD {} has uncommitted working-tree changes, so a record anchored to it", git_sha());
+         eprintln!("  would describe a tree that exists nowhere in history. Commit (preferred), or");
+         eprintln!("  stage the WIP with 'git add', then re-run. To force an explicitly unanchored");
+-        eprintln!("  run pass --run-on-dirty-tree (agents must not).");
++        eprintln!(
++            "  run pass --skip-inner-dirty-working-tree-and-rebase-freshness-checks \
++             (agents must not). This skips only scripts/validate.rs's dirty-working-tree and"
++        );
++        eprintln!("  rebase-freshness checks; it does not bypass ci-hub validate-lock admission.");
+         let _ = Command::new("git").args(["status", "--short"]).status();
+         return RunSummary::refused(
+             2,
+@@ -12061,8 +12147,9 @@ fn run(durable_slot: &mut Option<DurableLog>) -> RunSummary {
+                 "HEAD has uncommitted working-tree changes, so a record anchored to it would \
+                  describe a tree that exists nowhere in history"
+                     .into(),
+-                "commit (preferred) or `git add` the WIP, then re-run; --run-on-dirty-tree forces \
+-                 an explicitly unanchored run"
++                "commit (preferred) or `git add` the WIP, then re-run; \
++                 --skip-inner-dirty-working-tree-and-rebase-freshness-checks forces an explicitly \
++                 unanchored run but does not bypass ci-hub validate-lock admission"
+                     .into(),
+             ],
+         );
+@@ -12071,7 +12158,9 @@ fn run(durable_slot: &mut Option<DurableLog>) -> RunSummary {
+     // Rebase-freshness gate. Mechanically enforced, not advisory. A nested
+     // payload inherits the outer run's verdict on the very same checkout; it also
+     // must not spend a network round trip inside a budgeted DAG node.
+-    match rebase_freshness(args.run_on_dirty_tree || nesting.nested) {
++    match rebase_freshness(
++        args.skip_inner_dirty_working_tree_and_rebase_freshness_checks || nesting.nested,
++    ) {
+         Ok(msg) => eprintln!("validate: {msg}"),
+         Err(msg) => {
+             eprintln!("validate: refusing to validate a stale base.\n  {msg}");

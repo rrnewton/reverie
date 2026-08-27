@@ -1,0 +1,296 @@
+[
+ {
+  "kind": "patch",
+  "repo": "dev-hermit",
+  "worktree": "/tmp/hermit-125-retry-analysis",
+  "baseline": "de53dd37e08446acc9479540e46c24be349c29ec",
+  "patch": "dev-hermit__hermit-125-retry-analysis__base-de53dd37e084.patch",
+  "bytes": 221,
+  "sha256": "000e1c4f9355f7b1912d1d7ee384cb854eb21efeb058e430911ee60a937ab577"
+ },
+ {
+  "kind": "patch",
+  "repo": "dev-hermit",
+  "worktree": "/tmp/hermit-016/land-parent",
+  "baseline": "55438330a8e5b772a75daaa01c3d3db76e9467de",
+  "patch": "dev-hermit__hermit-016_land-parent__base-55438330a8e5.patch",
+  "bytes": 2432,
+  "sha256": "eebaede5caa406a56704f527ae628cc8c6f1060bc2e9b989045f7450ea36d910"
+ },
+ {
+  "kind": "patch",
+  "repo": "hermit",
+  "worktree": "/tmp/h007-wt72m",
+  "baseline": "76423fe8b8c68f1daea8746780a6d738dd3007ab",
+  "patch": "hermit__h007-wt72m__base-76423fe8b8c6.patch",
+  "bytes": 523,
+  "sha256": "ede2c074b27b60a79624fe654706b80db08aaa29e02fcf5c5b34c6ce54ba4125"
+ },
+ {
+  "kind": "patch",
+  "repo": "hermit",
+  "worktree": "/tmp/h013-exitcode",
+  "baseline": "533e22fba7b8f82dc3212acaf6c22a178cea7d9a",
+  "patch": "hermit__h013-exitcode__base-533e22fba7b8.patch",
+  "bytes": 2137,
+  "sha256": "92944f2b409cd6237692e0aa4623448b01eb43b6abaf945fe18ed1f6df39acec"
+ },
+ {
+  "kind": "patch",
+  "repo": "hermit",
+  "worktree": "/tmp/hdbg-2653",
+  "baseline": "4b70416375d24c6384d294561411ad2c9fa5f093",
+  "patch": "hermit__hdbg-2653__base-4b70416375d2.patch",
+  "bytes": 31898,
+  "sha256": "2fc78bbd1693956b65338d8de86791786d7747a2d87163793be0823c9b0a1d77"
+ },
+ {
+  "kind": "patch",
+  "repo": "hermit",
+  "worktree": "/tmp/hdbg-2657",
+  "baseline": "5a8b69bed7b1c83598f41e92e91ac9ce4de38b6b",
+  "patch": "hermit__hdbg-2657__base-5a8b69bed7b1.patch",
+  "bytes": 3105,
+  "sha256": "4810f5c088e5932806df37a21e3b76e1bf21393ef981efed1d53acc386abc3ec"
+ },
+ {
+  "kind": "patch",
+  "repo": "hermit",
+  "worktree": "/tmp/hdbg-six",
+  "baseline": "b32de987736476c6a744ca9c6bf9b90f8696f398",
+  "patch": "hermit__hdbg-six__base-b32de9877364.patch",
+  "bytes": 14531,
+  "sha256": "93296e146a26bf58732b3ee7b4dca4d8fe3daf2ddfe105fa479c9404b1194f82"
+ },
+ {
+  "kind": "patch",
+  "repo": "hermit",
+  "worktree": "/tmp/hermit-123-pr2637-clean",
+  "baseline": "05634b365cd6f5a02a99ed986bff3a520ae32a6f",
+  "patch": "hermit__hermit-123-pr2637-clean__base-05634b365cd6.patch",
+  "bytes": 858,
+  "sha256": "424da11cbfe3c84c2de2e235606fc8ff7d548d5fb7abac6bbfa8ca9c42b0b80b"
+ },
+ {
+  "kind": "patch",
+  "repo": "hermit",
+  "worktree": "/tmp/hermit-123-pr2637-ported",
+  "baseline": "05634b365cd6f5a02a99ed986bff3a520ae32a6f",
+  "patch": "hermit__hermit-123-pr2637-ported__base-05634b365cd6.patch",
+  "bytes": 665,
+  "sha256": "795b3861404d81f3170031a5947a21d9e4cec65f1e19ee500e2b1a1b3eaa01c2"
+ },
+ {
+  "kind": "patch",
+  "repo": "hermit",
+  "worktree": "/tmp/hermit-123-pr2637-proof2",
+  "baseline": "05634b365cd6f5a02a99ed986bff3a520ae32a6f",
+  "patch": "hermit__hermit-123-pr2637-proof2__base-05634b365cd6.patch",
+  "bytes": 863,
+  "sha256": "f9e3eec3c57fe0054e6abdae73c1175615a42ca4ad4b2a485c85c097f4eb6c73"
+ },
+ {
+  "kind": "patch",
+  "repo": "hermit",
+  "worktree": "/tmp/hermit-123-pr2637-proof3",
+  "baseline": "05634b365cd6f5a02a99ed986bff3a520ae32a6f",
+  "patch": "hermit__hermit-123-pr2637-proof3__base-05634b365cd6.patch",
+  "bytes": 863,
+  "sha256": "f9e3eec3c57fe0054e6abdae73c1175615a42ca4ad4b2a485c85c097f4eb6c73"
+ },
+ {
+  "kind": "patch",
+  "repo": "hermit",
+  "worktree": "/tmp/hermit-123-pr2637-proof4",
+  "baseline": "05634b365cd6f5a02a99ed986bff3a520ae32a6f",
+  "patch": "hermit__hermit-123-pr2637-proof4__base-05634b365cd6.patch",
+  "bytes": 863,
+  "sha256": "f9e3eec3c57fe0054e6abdae73c1175615a42ca4ad4b2a485c85c097f4eb6c73"
+ },
+ {
+  "kind": "patch",
+  "repo": "hermit",
+  "worktree": "/tmp/hermit-125-inner-freshness-name",
+  "baseline": "c89c1771e239653a46750ab706c93a89f2ad5bc1",
+  "patch": "hermit__hermit-125-inner-freshness-name__base-c89c1771e239.patch",
+  "bytes": 13097,
+  "sha256": "7710ccd55bac5768ca36040a4bd67328e46ab9cb9d60c2e89aaf49a05e30c1de"
+ },
+ {
+  "kind": "patch",
+  "repo": "hermit",
+  "worktree": "/tmp/hermit-131-whole-run",
+  "baseline": "9e949d945872a52340b3b0b4a46cee50956b7955",
+  "patch": "hermit__hermit-131-whole-run__base-9e949d945872.patch",
+  "bytes": 15468,
+  "sha256": "016525c4152926e57cdab76af915d1863dbd4a37a0f872caf20d96d4378a2ad5"
+ },
+ {
+  "kind": "patch",
+  "repo": "hermit",
+  "worktree": "/tmp/hermit-checker-bare-revert",
+  "baseline": "b516317a3b8be940505f9a26b51dc5ccb4c463b3",
+  "patch": "hermit__hermit-checker-bare-revert__base-b516317a3b8b.patch",
+  "bytes": 745,
+  "sha256": "3c130ebf32e576906041dfa33483a4bc3912a9e724a5ae54bd44dd869c0015a6"
+ },
+ {
+  "kind": "patch",
+  "repo": "hermit",
+  "worktree": "/tmp/hermit-checker-decoder-revert",
+  "baseline": "b516317a3b8be940505f9a26b51dc5ccb4c463b3",
+  "patch": "hermit__hermit-checker-decoder-revert__base-b516317a3b8b.patch",
+  "bytes": 502,
+  "sha256": "dd0dec3323c84380121c1baef7b899b8c88f7aef24c996e46ea2c8158bd3f3ef"
+ },
+ {
+  "kind": "patch",
+  "repo": "hermit",
+  "worktree": "/tmp/hermit-checker-dotted-revert",
+  "baseline": "b516317a3b8be940505f9a26b51dc5ccb4c463b3",
+  "patch": "hermit__hermit-checker-dotted-revert__base-b516317a3b8b.patch",
+  "bytes": 783,
+  "sha256": "12eed2849d80333d127c0f45981e3cad502641782e7ae1324679bf5ca4505c33"
+ },
+ {
+  "kind": "patch",
+  "repo": "hermit",
+  "worktree": "/tmp/hermit-checker-flag-revert",
+  "baseline": "b516317a3b8be940505f9a26b51dc5ccb4c463b3",
+  "patch": "hermit__hermit-checker-flag-revert__base-b516317a3b8b.patch",
+  "bytes": 2941,
+  "sha256": "1a1406d2b2959e3c1e0946e1b597bb2c92c9871aedbf076d2ed17ce4bfa4af70"
+ },
+ {
+  "kind": "patch",
+  "repo": "hermit",
+  "worktree": "/tmp/hermit-checker-position-revert",
+  "baseline": "b516317a3b8be940505f9a26b51dc5ccb4c463b3",
+  "patch": "hermit__hermit-checker-position-revert__base-b516317a3b8b.patch",
+  "bytes": 2505,
+  "sha256": "59d81f668ff394677d99802a6c419359d096b9bad7ef5742f96b95012d5d0f0b"
+ },
+ {
+  "kind": "patch",
+  "repo": "hermit",
+  "worktree": "/tmp/hermit-checker-probes",
+  "baseline": "b516317a3b8be940505f9a26b51dc5ccb4c463b3",
+  "patch": "hermit__hermit-checker-probes__base-b516317a3b8b.patch",
+  "bytes": 1956,
+  "sha256": "c0f29d677d974baf9cbc32b17a8567c1cb51d5ea331982fb42d2f758f918bada"
+ },
+ {
+  "kind": "patch",
+  "repo": "hermit",
+  "worktree": "/tmp/orc-hermit-2696",
+  "baseline": "5fea32e55ebc7e2409ad37169d7adbd498788f64",
+  "patch": "hermit__orc-hermit-2696__base-5fea32e55ebc.patch",
+  "bytes": 22025,
+  "sha256": "f1db7f717c797dcea7d904c594e30f00145e9d7d681e8c987e872bc40fc87910"
+ },
+ {
+  "kind": "patch",
+  "repo": "hermit",
+  "worktree": "/tmp/pop2699",
+  "baseline": "9353d7ef2e504bdc6bfd46cfc1c2299255446f47",
+  "patch": "hermit__pop2699__base-9353d7ef2e50.patch",
+  "bytes": 3725,
+  "sha256": "14df2db4ec0197ee344e2f0567a34843d3f14e98cda00052be6e218ce049c30a"
+ },
+ {
+  "kind": "patch",
+  "repo": "hermit",
+  "worktree": "/tmp/sc-verify-A",
+  "baseline": "189a3b4dee3427fa5d43148f2e4eb12460221d3f",
+  "patch": "hermit__sc-verify-A__base-189a3b4dee34.patch",
+  "bytes": 1413464,
+  "sha256": "d9cce1afbe87e04906c5aeaabeeac00acd1afce5ee6ea9b3950bbf4499cc03d4"
+ },
+ {
+  "kind": "patch",
+  "repo": "hermit",
+  "worktree": "/tmp/sc-verify-B",
+  "baseline": "189a3b4dee3427fa5d43148f2e4eb12460221d3f",
+  "patch": "hermit__sc-verify-B__base-189a3b4dee34.patch",
+  "bytes": 1413464,
+  "sha256": "d9cce1afbe87e04906c5aeaabeeac00acd1afce5ee6ea9b3950bbf4499cc03d4"
+ },
+ {
+  "kind": "patch",
+  "repo": "hermit",
+  "worktree": "/tmp/w2059",
+  "baseline": "b441950f72b1c59b45c3d7ca9ca1f99336e53938",
+  "patch": "hermit__w2059__base-b441950f72b1.patch",
+  "bytes": 27517,
+  "sha256": "fc65766f24b9f5c4d5c7ea1f16aeb0f47fb31ff6a91ac8df0e7d26efb78e8458"
+ },
+ {
+  "kind": "patch",
+  "repo": "hermit",
+  "worktree": "/tmp/wt-herm-stable",
+  "baseline": "dee8cf49ce6a7e3e9e2c87c930f3aa55ae83da18",
+  "patch": "hermit__wt-herm-stable__base-dee8cf49ce6a.patch",
+  "bytes": 340,
+  "sha256": "c82ed5de06f81aaee97d14dbf9610ce68650c773ab1ed342f1c1fa56a1215673"
+ },
+ {
+  "kind": "patch",
+  "repo": "reverie",
+  "worktree": "/tmp/wt-rev-stable",
+  "baseline": "3798935e38ee0d85a2f2e3b91572280cb337af07",
+  "patch": "reverie__wt-rev-stable__base-3798935e38ee.patch",
+  "bytes": 1056,
+  "sha256": "fd0d3a7101e59f49c40d5e68030e199b4c383614d10619f48048573a8bb51488"
+ },
+ {
+  "kind": "patch",
+  "repo": "agent-utils",
+  "worktree": "/tmp/hermit-122-agent-utils-resource-caps",
+  "baseline": "900f5cc07eaed1bb6dc5da26c3f75a7c881250a7",
+  "patch": "agent-utils__hermit-122-agent-utils-resource-caps__base-900f5cc07eae.patch",
+  "bytes": 20435,
+  "sha256": "795207b0ce9e2c25ce54ca5610635262f7304df1d6929cb166dc590649e2c16c"
+ },
+ {
+  "kind": "untracked-file",
+  "repo": "dev-hermit",
+  "worktree": "/tmp/hermit-121-series-attempts",
+  "original": "/tmp/hermit-121-series-attempts/commit-message.txt",
+  "saved": "hermit-121-series-attempts__commit-message.txt",
+  "bytes": 1005,
+  "sha256": "63885f86d372e2d003c4182f3f58b5e882dfe421d5a2a48f411bec06130a4cf6"
+ },
+ {
+  "kind": "untracked-file",
+  "repo": "dev-hermit",
+  "worktree": "/tmp/hermit-121-series-discovery",
+  "original": "/tmp/hermit-121-series-discovery/commit-message.txt",
+  "saved": "hermit-121-series-discovery__commit-message.txt",
+  "bytes": 1053,
+  "sha256": "586601e5bd3003f9aa0ebe12c6f8a7a74ddc1119a95a68ce6dce384aa477e17f"
+ },
+ {
+  "kind": "skipped-generated",
+  "worktree": "/tmp/hermit-134-known-failures",
+  "path": "/tmp/hermit-134-known-failures/hermit-src/",
+  "reason": "copied source tree"
+ },
+ {
+  "kind": "untracked-file",
+  "repo": "hermit",
+  "worktree": "/tmp/w2059",
+  "original": "/tmp/w2059/tests/c/pipe2_errno_precedence.c",
+  "saved": "w2059__tests_c_pipe2_errno_precedence.c",
+  "bytes": 5822,
+  "sha256": "9873167ffad514d2081d2da88da1f561151ea1ebc6cf5ae1bc67822f30b67d77"
+ },
+ {
+  "kind": "untracked-file",
+  "repo": "agent-utils",
+  "worktree": "/tmp/hermit-122-agent-utils-resource-caps",
+  "original": "/tmp/hermit-122-agent-utils-resource-caps/rs/dagrun/src/resource_caps.rs",
+  "saved": "hermit-122-agent-utils-resource-caps__rs_dagrun_src_resource_caps.rs",
+  "bytes": 25918,
+  "sha256": "becfb16e9c764bc59a58a830a921e909024ddca3ed161666b4b3eb70ca1cfbfa"
+ }
+]
