@@ -36,6 +36,8 @@ jobs:
         key: dynamorio-${{ runner.os }}-${{ hashFiles('reverie-dbt/vendor/dynamorio/**', 'reverie-dbt/build.rs') }}
     - name: Build
       run: cargo build --workspace --all-features
+    - name: DBT virtual identity and pidfd_open policy
+      run: reverie-dbt/scripts/test-identity-policy.sh
     - name: Test regular workspace cases
       run: >-
         cargo test --workspace --all-features --
