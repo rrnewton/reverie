@@ -26,7 +26,7 @@ lane runs at all.
 Denominators, so any count can be read: **358** test ids, **677** declared cells
 (id × mode × enabled backend), **342** with `ci:true`, **66** executed nodes.
 
-## Failing cells — 8 distinct
+## Failing cells — 9 distinct
 
     applications/timed-progress-bar (verify/ptrace)
     c-programs/fp-reduction-nondeterminism (chaos/ptrace)
@@ -36,6 +36,23 @@ Denominators, so any count can be read: **358** test ids, **677** declared cells
     system-utils/du-tree-summary (verify/ptrace)
     system-utils/example-date (verify/ptrace)
     system-utils/find-tree-metadata (verify/ptrace)
+    applications/kvm-python-examples (verify/kvm)   [verdict=no_result, see below]
+
+Eight of the nine are reported by the runner as `FAIL`. The ninth,
+`applications/kvm-python-examples (verify/kvm)`, is reported as **`ERROR`** with
+`verdict=no_result` — "verification recorded no comparison at all". It is a different
+category from the others: nothing was compared, rather than a comparison that
+disagreed. It runs only in the privileged lane, so it has no counterpart in a
+devbig014 measurement at all.
+
+⚠️ **THIS CELL WAS MISSING FROM THE FIRST PUBLICATION OF THIS DOCUMENT.** The
+extraction keyed on the word `FAIL` and this row says `ERROR`, so a detector looking
+for one verdict word silently dropped a failing cell. It was caught by agent(hermit-122)
+independently counting 9 cells and 17 rows against this document's 8 and 15, from the
+run artifacts rather than from the log — corroboration by a different method, which is
+what made the disagreement informative rather than a repeat. Row arithmetic confirms
+it: seven cells failed both attempts, `fp-reduction-nondeterminism` failed once and
+passed on retry, and `kvm-python-examples` errored twice — 14 + 1 + 2 = 17.
 
 ## Failing nodes — 16 distinct
 
