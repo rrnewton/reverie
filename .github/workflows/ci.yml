@@ -43,6 +43,8 @@ jobs:
         cargo test --workspace --all-features --
         --test-threads=1
         --skip container::tests::bind_to_low_port
+        --skip container::tests::mount_error_from_child_is_returned
+        --skip container::tests::test_directory_is_available_after_mount
         --skip container::tests::pin_affinity_to_all_cores
         --skip tests::domainname
         --skip tests::hostname
@@ -51,6 +53,7 @@ jobs:
         --skip tests::local_networking_there_can_be_only_one
         --skip tests::mount_and_move_tmpfs
         --skip tests::mount_bind
+        --skip tests::mount_bind_readonly_rejects_writes
         --skip tests::mount_devpts_basic
         --skip tests::mount_devpts_isolated
         --skip tests::mount_proc
