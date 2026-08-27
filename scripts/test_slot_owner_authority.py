@@ -132,8 +132,80 @@ class SlotOwnerAuthorityTest(unittest.TestCase):
     def test_missing_legacy_sidecar_is_indeterminate(self) -> None:
         result = self.assess(state(None), stat=process_stat("S", 456))
         self.assertEqual(result.state, "indeterminate")
+        self.assertEqual(result.reason_code, "sidecar-invalid")
         self.assertEqual(result.exit_code, 2)
         self.assertFalse(result.may_recover)
+
+    def test_recorded_binding_failure_is_named_but_still_refuses(self) -> None:
+        """A recorded failure explains an indeterminate row; it never softens it.
+
+        The distinction earns its keep only if the verdict is unchanged. A row
+        that says WHY it could not bind is still unprovable, so this asserts the
+        refusal (indeterminate, rc 2, may_recover False) in the same breath as
+        the new reason code. If a later change ever lets the recorded reason
+        admit recovery, this fails.
+        """
+
+        raw = state(None)
+        raw["slots"]["slot-a"]["owner_binding_failure"] = {
+            "schema_version": 1,
+            "slot": "slot-a",
+            "agent": "agent-a",
+            "recorded_at": "2026-08-27T02:13:00Z",
+            "reason": "owner snapshot is not fresh (age=28800s)",
+        }
+        result = self.assess(raw, stat=process_stat("S", 456))
+        self.assertEqual(result.state, "indeterminate")
+        self.assertEqual(result.exit_code, 2)
+        self.assertFalse(result.may_recover)
+        self.assertEqual(result.reason_code, "owner-binding-failed")
+        self.assertIn("2026-08-27T02:13:00Z", result.detail)
+        self.assertIn("age=28800s", result.detail)
+
+    def test_malformed_binding_failure_falls_back_to_legacy_reason(self) -> None:
+        """The record is the allocator's, so a reader must not trust its shape.
+
+        A row carrying a truncated or wrong-schema record is exactly as
+        unprovable as one carrying none, and must not be described with a
+        reason code that implies a repairable cause was established.
+        """
+
+        for broken in (
+            {"schema_version": 2, "reason": "x", "recorded_at": "t"},
+            {"schema_version": 1, "recorded_at": "t"},
+            {"schema_version": 1, "reason": 7, "recorded_at": "t"},
+            "not-a-mapping",
+        ):
+            with self.subTest(broken=broken):
+                raw = state(None)
+                raw["slots"]["slot-a"]["owner_binding_failure"] = broken
+                result = self.assess(raw, stat=process_stat("S", 456))
+                self.assertEqual(result.state, "indeterminate")
+                self.assertEqual(result.reason_code, "sidecar-invalid")
+                self.assertFalse(result.may_recover)
+
+    def test_binding_failure_record_cannot_resurrect_a_valid_sidecar_verdict(
+        self,
+    ) -> None:
+        """A stale record next to a GOOD sidecar must not shadow the real answer.
+
+        The allocator clears the record when a binding succeeds, but a
+        hand-edited or partially-written row could carry both. Owner evidence
+        wins: the record is only ever an explanation for a row that failed
+        validation, never an input to aliveness.
+        """
+
+        raw = state(sidecar())
+        raw["slots"]["slot-a"]["owner_binding_failure"] = {
+            "schema_version": 1,
+            "slot": "slot-a",
+            "agent": "agent-a",
+            "recorded_at": "2026-08-27T02:13:00Z",
+            "reason": "a stale record from an earlier attempt",
+        }
+        result = self.assess(raw, stat=process_stat("S", 456))
+        self.assertEqual(result.state, "alive")
+        self.assertEqual(result.reason_code, "owner-process-alive")
 
     def test_unsupported_sidecar_schema_is_indeterminate(self) -> None:
         result = self.assess(

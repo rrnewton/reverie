@@ -1604,7 +1604,20 @@ fn observe_owner_lease(root: &Path, agent: &str) -> Result<ObservedOwnerLease, S
     if pids.len() != 1 {
         return Err(format!("tmux pane {pane} resolves {} times", pids.len()));
     }
-    let supervisor_pid = pids[0];
+    bind_pane_supervisor(root, pane, pids[0])
+}
+
+/// Read the exact identity of one tmux pane supervisor from `/proc`.
+///
+/// Shared by both owner-resolution paths so that the identity a sidecar binds
+/// is captured the same way regardless of how the pane was FOUND.  The
+/// start-ticks sample is deliberately taken twice, around the cgroup read, so a
+/// pid recycled mid-binding is caught rather than recorded.
+fn bind_pane_supervisor(
+    root: &Path,
+    pane: &str,
+    supervisor_pid: u32,
+) -> Result<ObservedOwnerLease, String> {
     let start_ticks_before = process_start_ticks(root, supervisor_pid)?;
     let boot_id = current_boot_id()?;
     let cgroup_text = fs::read_to_string(
@@ -1640,6 +1653,152 @@ fn observe_owner_lease(root: &Path, agent: &str) -> Result<ObservedOwnerLease, S
         boot_id,
         start_ticks: start_ticks_before,
     })
+}
+
+/// Read one `/proc/<pid>/status` field.
+fn process_status_field(root: &Path, pid: u32, field: &str) -> Result<String, String> {
+    let path = process_root(root)?.join(pid.to_string()).join("status");
+    let raw =
+        fs::read_to_string(&path).map_err(|error| format!("read {}: {error}", path.display()))?;
+    let prefix = format!("{field}:");
+    raw.lines()
+        .find_map(|line| line.strip_prefix(&prefix))
+        .map(|value| value.trim().to_string())
+        .ok_or_else(|| format!("{} omits {field}", path.display()))
+}
+
+/// Every pid from the calling process up to (but not through) pid 1.
+fn caller_process_ancestry(root: &Path) -> Result<Vec<u32>, String> {
+    let mut chain = Vec::new();
+    let mut pid = std::process::id();
+    // The kernel's pid space is bounded and a chain cannot legitimately be
+    // deep; the cap only stops a fabricated fixture cycle from spinning.
+    while pid > 1 && chain.len() < 64 {
+        chain.push(pid);
+        pid = process_status_field(root, pid, "PPid")?
+            .parse()
+            .map_err(|error| format!("parse PPid of {pid}: {error}"))?;
+    }
+    Ok(chain)
+}
+
+/// Bind the owner sidecar to the CALLING agent's own tmux pane supervisor.
+///
+/// WHY THIS PATH EXISTS.  `observe_owner_lease` resolves an agent name through
+/// `ignored/ci-hub/agent-snapshot.json`, a cache written by one ORC session.
+/// When that producer stalls, every allocation loses its owner evidence and the
+/// row is UNASSESSABLE FOREVER -- the evidence has to be captured at binding
+/// time and, per the sidecar migration contract, cannot be reconstructed later.
+/// Measured 2026-08-27: the snapshot's `captured_at` was 8h00m old against a
+/// 600s bound, and every mutating allocation after 2026-08-26T18:13:03Z
+/// (`coordinator`, `lseekcmd`, `133`) was recorded with no sidecar, joining 18
+/// earlier rows that `slot-owner-authority.py` answers `indeterminate` for and
+/// `release-worktree.rs` therefore refuses.  Neither usable nor recoverable.
+///
+/// But an agent allocating its OWN slot never needed the cache.  Its pane
+/// supervisor is an ANCESTOR OF THE CALLING PROCESS, which is a kernel fact
+/// readable right now.  That is strictly stronger evidence than a name looked
+/// up in a file written by somebody else: it cannot be stale, and it cannot
+/// name the wrong subject.
+///
+/// TWO INDEPENDENT BINDINGS MUST AGREE, because the hazard here is binding the
+/// WRONG subject -- a coordinator recording its own supervisor as a subagent's
+/// owner would make a live agent's slot read dead:
+///
+///   1. the calling process's own `DG_AGENT_NAME` must equal the requested
+///      agent, so the caller is claiming a slot for itself; and
+///   2. the pane found on the caller's ancestry must not be NAMED after some
+///      other agent.  ORC names each pane's window after the agent it runs
+///      (measured 2026-08-27: 21 of 23 live panes matched exactly, one was the
+///      ORC coordinator's own unnamed-for-an-agent window, one carried a stray
+///      descendant that had reset the variable).  A window name that
+///      CONTRADICTS the request refuses; an absent one merely does not
+///      corroborate, and the ancestry plus (1) still hold.
+///
+/// Failing any of these returns Err and the caller falls back to the snapshot
+/// path unchanged.  This path can only ADMIT an owner it has proven is the
+/// caller's own; it never widens what the snapshot path would accept.
+fn observe_caller_owner_lease(root: &Path, agent: &str) -> Result<ObservedOwnerLease, String> {
+    caller_is_the_requested_owner(&std::env::var("DG_AGENT_NAME").unwrap_or_default(), agent)?;
+    let ancestry = caller_process_ancestry(root)?;
+    let output = Command::new("tmux")
+        .args([
+            "list-panes",
+            "-a",
+            "-F",
+            "#{pane_id}\t#{pane_pid}\t#{window_name}",
+        ])
+        .output()
+        .map_err(|error| format!("tmux pane query unavailable: {error}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "tmux pane query failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let mut found: Vec<(&str, u32, &str)> = Vec::new();
+    for line in stdout.lines() {
+        let mut fields = line.split('\t');
+        let (Some(pane), Some(pid), window) = (fields.next(), fields.next(), fields.next()) else {
+            continue;
+        };
+        let Ok(pid) = pid.parse::<u32>() else {
+            continue;
+        };
+        if pane.starts_with('%') && ancestry.contains(&pid) {
+            found.push((pane, pid, window.unwrap_or("")));
+        }
+    }
+    if found.len() != 1 {
+        return Err(format!(
+            "the calling process's ancestry contains {} tmux pane supervisor(s), expected exactly one",
+            found.len()
+        ));
+    }
+    let (pane, supervisor_pid, window) = found[0];
+    pane_window_does_not_contradict(pane, window, agent)?;
+    bind_pane_supervisor(root, pane, supervisor_pid)
+}
+
+/// Guard 1: the caller must be claiming a slot for ITSELF.
+///
+/// The whole hazard of binding from the caller's own process tree is naming the
+/// wrong subject. A coordinator that recorded its own supervisor as a
+/// subagent's owner would make the subagent's slot read DEAD while the subagent
+/// was working, and release-worktree.rs would then reclaim a live slot. So the
+/// caller's own environment has to agree with what it asked for; anything else
+/// falls back to the snapshot path, which resolves the named agent instead.
+fn caller_is_the_requested_owner(claimed: &str, agent: &str) -> Result<(), String> {
+    let claimed = claimed.trim();
+    if claimed.is_empty() {
+        return Err("the calling process carries no DG_AGENT_NAME".to_string());
+    }
+    if claimed != agent {
+        return Err(format!(
+            "the calling process is '{claimed}', not the requested owner '{agent}', so its own \
+             supervisor is the wrong subject to bind"
+        ));
+    }
+    Ok(())
+}
+
+/// Guard 2: tmux's own record of the pane must not name a DIFFERENT agent.
+///
+/// This is corroboration from a source the caller does not write. It is
+/// deliberately asymmetric: a name that CONTRADICTS the request refuses, an
+/// ABSENT name merely fails to corroborate and leaves guard 1 plus the ancestry
+/// standing. Requiring a match outright would refuse a legitimate
+/// self-allocation from any pane ORC had not named, which is a live-agent
+/// failure mode, and the ancestry is already a kernel fact.
+fn pane_window_does_not_contradict(pane: &str, window: &str, agent: &str) -> Result<(), String> {
+    if !window.is_empty() && window != agent {
+        return Err(format!(
+            "the pane {pane} owning this process is named '{window}', which contradicts the \
+             requested owner '{agent}'"
+        ));
+    }
+    Ok(())
 }
 
 fn apply_observed_owner_lease(owner: &mut Value, observed: &Result<ObservedOwnerLease, String>) {
@@ -2448,8 +2607,19 @@ fn main() {
     } else {
         None
     };
-    let observed_owner_lease =
-        (!codex_systemd_sentinel).then(|| observe_owner_lease(&root, &agent));
+    // Try the caller's own process ancestry FIRST. It needs no external
+    // producer, so it still binds when the agent snapshot is stale or broken --
+    // which is the condition under which slots were being recorded permanently
+    // unassessable. The snapshot path stays as the fallback for allocations
+    // performed on behalf of another agent, and its refusal is what gets
+    // reported when neither can bind.
+    let observed_owner_lease = (!codex_systemd_sentinel).then(|| {
+        observe_caller_owner_lease(&root, &agent).or_else(|caller_error| {
+            observe_owner_lease(&root, &agent).map_err(|snapshot_error| {
+                format!("{snapshot_error}\n   Nor could this be bound from the caller's own process ancestry: {caller_error}")
+            })
+        })
+    });
     if let Some(Err(error)) = &observed_owner_lease {
         // The remedy is carried by {error}, which now names the actual cause.
         // A blanket "re-run adoption after the owner is live" used to be
@@ -2580,8 +2750,14 @@ fn main() {
                                 .unwrap_or_else(|error| {
                                     die(&format!("publish slot-owner sidecar: {error}"))
                                 });
+                        // A later successful binding clears the record of the
+                        // earlier failure: the row is provable again.
+                        entry
+                            .as_object_mut()
+                            .expect("slot record is an object")
+                            .remove("owner_binding_failure");
                     }
-                    Err(_) => {
+                    Err(error) => {
                         // A sidecar is authority for one exact supervisor
                         // incarnation. Failed adoption invalidates the old
                         // incarnation instead of leaving stale proof behind.
@@ -2589,6 +2765,27 @@ fn main() {
                             .as_object_mut()
                             .expect("slot record is an object")
                             .remove("owner_sidecar");
+                        // ...but removing it silently left the row BYTE-FOR-BYTE
+                        // indistinguishable from a 2026-08-07 legacy row that
+                        // predates the sidecar entirely. Those are opposite
+                        // situations: a legacy row is permanently unprovable,
+                        // whereas this one failed for a named, often transient
+                        // reason and becomes provable the moment adoption is
+                        // re-run. The authority answered the same
+                        // "slot has no versioned owner_sidecar" for both, the
+                        // only other trace was a line on stderr nobody keeps,
+                        // and 21 rows accumulated without anything counting
+                        // them. Record WHY and WHEN so a reader can tell the two
+                        // apart and act. This does not make the row provable and
+                        // is not evidence of ownership -- the authority still
+                        // answers indeterminate and release still refuses.
+                        entry["owner_binding_failure"] = json!({
+                            "schema_version": 1,
+                            "slot": slot,
+                            "agent": agent,
+                            "recorded_at": now.clone(),
+                            "reason": error,
+                        });
                     }
                 }
             }
@@ -2681,6 +2878,12 @@ fn main() {
         entry["owner_sidecar"] =
             codex_owner_sidecar(&root, &slot, &owner_agent, &owner_task, &now_iso(), &lease)
                 .unwrap_or_else(|error| die(&format!("publish Codex slot-owner sidecar: {error}")));
+        // Same reason as the ORC path: a row that has just bound owner evidence
+        // must not keep an earlier attempt's failure record, which would
+        // describe it as unbindable while it is provable.
+        if let Some(object) = entry.as_object_mut() {
+            object.remove("owner_binding_failure");
+        }
     }
 
     save_state(&root, &mut state);
@@ -2772,5 +2975,54 @@ mod tests {
             sidecar["lease"]["expires_at"].as_i64().unwrap(),
             sidecar["lease"]["renewed_at"].as_i64().unwrap() + OWNER_LEASE_TTL_SECONDS
         );
+    }
+
+    // The caller-ancestry path exists so a stalled agent snapshot cannot make a
+    // slot permanently unassessable. Its ONE dangerous failure mode is binding
+    // the wrong subject, so both guards are bracketed in both directions: the
+    // admit case is asserted alongside each refusal, because guards that only
+    // ever refuse would also pass on a path that never binds anything.
+
+    #[test]
+    fn caller_binding_admits_only_an_agent_claiming_its_own_slot() {
+        assert!(caller_is_the_requested_owner("hermit-136", "hermit-136").is_ok());
+        // Trailing whitespace from an exported variable is not a mismatch.
+        assert!(caller_is_the_requested_owner(" hermit-136\n", "hermit-136").is_ok());
+    }
+
+    #[test]
+    fn caller_binding_refuses_an_allocation_made_for_someone_else() {
+        // The coordinator case: binding here would record the COORDINATOR's
+        // supervisor as hermit-007's owner, and hermit-007's slot would read
+        // dead the moment the coordinator exited.
+        let error = caller_is_the_requested_owner("coordinator", "hermit-007")
+            .expect_err("a caller must not bind a slot for a different agent");
+        assert!(error.contains("coordinator"), "{error}");
+        assert!(error.contains("hermit-007"), "{error}");
+        assert!(error.contains("wrong subject"), "{error}");
+    }
+
+    #[test]
+    fn caller_binding_refuses_when_the_caller_has_no_agent_identity() {
+        for claimed in ["", "   ", "\n"] {
+            let error = caller_is_the_requested_owner(claimed, "hermit-007")
+                .expect_err("an unidentified caller must not bind an owner");
+            assert!(error.contains("no DG_AGENT_NAME"), "{error}");
+        }
+    }
+
+    #[test]
+    fn pane_window_refuses_a_contradiction_but_tolerates_an_absent_name() {
+        // Corroborates.
+        assert!(pane_window_does_not_contradict("%30", "hermit-136", "hermit-136").is_ok());
+        // Does not corroborate, does not contradict: guard 1 and the ancestry
+        // still stand, so a pane ORC never named must not block its own agent.
+        assert!(pane_window_does_not_contradict("%30", "", "hermit-136").is_ok());
+        // Contradicts: tmux says this pane belongs to somebody else.
+        let error = pane_window_does_not_contradict("%30", "hermit-104", "hermit-136")
+            .expect_err("a pane named for another agent must refuse");
+        assert!(error.contains("hermit-104"), "{error}");
+        assert!(error.contains("hermit-136"), "{error}");
+        assert!(error.contains("contradicts"), "{error}");
     }
 }

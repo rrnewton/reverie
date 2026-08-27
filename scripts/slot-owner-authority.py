@@ -240,6 +240,41 @@ def _validated_sidecar(
     return owner, sidecar
 
 
+def _missing_sidecar_reason(
+    slot_row: Mapping[str, object], detail: str
+) -> tuple[str, str]:
+    """Separate "binding was tried and failed" from "no binding was ever tried".
+
+    THE VERDICT IS THE SAME EITHER WAY -- indeterminate, and release refuses.
+    What differs is what a reader can DO. A row that predates the sidecar
+    carries no process identity and, per the sidecar migration contract, cannot
+    be given one retroactively; it is permanently unprovable. A row whose
+    binding failed at a named moment for a named reason usually becomes provable
+    the instant adoption is re-run, because the reason is something like a
+    stalled snapshot producer. Reporting one code for both is what let 21 rows
+    accumulate (measured 2026-08-27, 21 of 85 owner-lease-lifecycle rows) with
+    nothing able to say which of them were repairable.
+
+    This reads the allocator's own record. It is not evidence of ownership and
+    is never consulted for aliveness -- only to explain an indeterminate result.
+    """
+
+    failure = slot_row.get("owner_binding_failure")
+    if (
+        isinstance(failure, Mapping)
+        and failure.get("schema_version") == 1
+        and isinstance(failure.get("reason"), str)
+        and isinstance(failure.get("recorded_at"), str)
+    ):
+        return (
+            "owner-binding-failed",
+            f"the allocator could not bind owner evidence at "
+            f"{failure['recorded_at']}: {failure['reason']}. Re-run the exact "
+            f"allocation from the live owner to make this row provable.",
+        )
+    return "sidecar-invalid", detail
+
+
 def assess_state(
     slot: str,
     state: Mapping[str, object],
@@ -255,7 +290,9 @@ def assess_state(
     try:
         owner, sidecar = _validated_sidecar(slot, slot_row)
     except (TypeError, ValueError) as error:
-        return verdict("indeterminate", "sidecar-invalid", str(error), slot)
+        return verdict(
+            "indeterminate", *_missing_sidecar_reason(slot_row, str(error)), slot
+        )
 
     agent = str(owner["name"])
     identity = {
