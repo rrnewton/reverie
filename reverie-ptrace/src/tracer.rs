@@ -2726,6 +2726,41 @@ mod tests {
         }
     }
 
+    fn fork_paused_grandchild() -> (Pid, Pid, std::os::unix::net::UnixStream) {
+        let (mut control, mut child_control) =
+            std::os::unix::net::UnixStream::pair().expect("create parent control socket");
+        match unsafe { unistd::fork() }.expect("fork recorded parent") {
+            ForkResult::Child => {
+                drop(control);
+                match unsafe { unistd::fork() }.expect("fork retained descendant") {
+                    ForkResult::Child => loop {
+                        unsafe { libc::pause() };
+                    },
+                    ForkResult::Parent { child } => {
+                        child_control
+                            .write_all(&child.as_raw().to_ne_bytes())
+                            .expect("publish retained descendant pid");
+                        let mut release = [0];
+                        std::io::Read::read_exact(&mut child_control, &mut release)
+                            .expect("wait for recorded-parent release");
+                        unsafe { libc::_exit(0) };
+                    }
+                }
+            }
+            ForkResult::Parent { child } => {
+                drop(child_control);
+                let mut raw_pid = [0; std::mem::size_of::<i32>()];
+                std::io::Read::read_exact(&mut control, &mut raw_pid)
+                    .expect("read retained descendant pid");
+                (
+                    Pid::from(child),
+                    Pid::from_raw(i32::from_ne_bytes(raw_pid)),
+                    control,
+                )
+            }
+        }
+    }
+
     fn untraced_process_identity(pid: Pid) -> TraceeIdentity {
         let snapshot = tracee_snapshot(pid).expect("read child identity");
         let proc_dir = OpenOptions::new()
@@ -3761,6 +3796,90 @@ mod tests {
         Running::new(unrelated_pid)
             .wait()
             .expect("reap unrelated child");
+    }
+
+    #[test]
+    fn terminal_descendant_remains_owned_until_recorded_parent_exits() {
+        let (parent_pid, descendant_pid, mut control) = fork_paused_grandchild();
+        ptrace::attach(descendant_pid.into()).expect("attach retained descendant");
+        let (stopped, event) = Running::new(descendant_pid)
+            .wait()
+            .expect("wait for retained descendant attach")
+            .assume_stopped();
+        assert_eq!(event, Event::Signal(Signal::SIGSTOP));
+        let identity = TraceeIdentity::capture(
+            descendant_pid,
+            Some((parent_pid, Some(ChildOp::Fork))),
+            true,
+        )
+        .expect("capture production-shaped descendant identity");
+        stopped
+            .detach(None)
+            .expect("detach retained descendant after identity capture");
+
+        assert!(identity.same_process(), "descendant identity changed");
+        assert!(
+            !identity.is_our_tracee(),
+            "detached descendant still reports this process as tracer"
+        );
+        assert_eq!(
+            tracee_snapshot(descendant_pid)
+                .expect("read retained descendant parent")
+                .ppid,
+            parent_pid
+        );
+        assert!(
+            terminal_descendant_remains_owned(&identity),
+            "cleanup released a terminal descendant while its recorded parent still owned it"
+        );
+
+        control.write_all(&[1]).expect("release recorded parent");
+        drop(control);
+        Running::new(parent_pid)
+            .wait()
+            .expect("reap recorded parent");
+        for _ in 0..2_000 {
+            if tracee_snapshot(descendant_pid).is_ok_and(|snapshot| snapshot.ppid != parent_pid) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert_ne!(
+            tracee_snapshot(descendant_pid)
+                .expect("read reparented descendant")
+                .ppid,
+            parent_pid,
+            "descendant did not leave its recorded parent"
+        );
+        assert!(
+            !terminal_descendant_remains_owned(&identity),
+            "cleanup retained a terminal descendant after reparenting"
+        );
+
+        identity
+            .send_signal(Signal::SIGKILL)
+            .expect("kill reparented descendant through pidfd");
+        for _ in 0..2_000 {
+            let mut status = 0;
+            let waited = unsafe {
+                libc::waitpid(
+                    descendant_pid.as_raw(),
+                    &mut status,
+                    libc::WNOHANG | libc::__WALL,
+                )
+            };
+            if waited == descendant_pid.as_raw()
+                || !std::path::Path::new(&format!("/proc/{descendant_pid}")).exists()
+            {
+                return;
+            }
+            assert!(
+                waited == 0 || (waited == -1 && Errno::last() == Errno::ECHILD),
+                "unexpected wait result while cleaning reparented descendant: {waited}"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        panic!("reparented descendant {descendant_pid} was not reaped");
     }
 
     #[tokio::test(flavor = "current_thread")]
