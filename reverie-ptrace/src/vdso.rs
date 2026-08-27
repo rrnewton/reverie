@@ -152,18 +152,46 @@ mod vdso_syms {
 #[cfg(target_arch = "x86_64")]
 const VDSO_SYMBOLS: &[(&str, &[u8], Sysno)] = &[
     ("__vdso_time", vdso_syms::time, Sysno::time),
-    ("__vdso_clock_gettime", vdso_syms::clock_gettime, Sysno::clock_gettime),
+    (
+        "__vdso_clock_gettime",
+        vdso_syms::clock_gettime,
+        Sysno::clock_gettime,
+    ),
     ("__vdso_getcpu", vdso_syms::getcpu, Sysno::getcpu),
-    ("__vdso_gettimeofday", vdso_syms::gettimeofday, Sysno::gettimeofday),
-    ("__vdso_clock_getres", vdso_syms::clock_getres, Sysno::clock_getres),
+    (
+        "__vdso_gettimeofday",
+        vdso_syms::gettimeofday,
+        Sysno::gettimeofday,
+    ),
+    (
+        "__vdso_clock_getres",
+        vdso_syms::clock_getres,
+        Sysno::clock_getres,
+    ),
 ];
 
 #[cfg(target_arch = "aarch64")]
 const VDSO_SYMBOLS: &[(&str, &[u8], Sysno)] = &[
-    ("__kernel_clock_getres", vdso_syms::clock_getres, Sysno::clock_getres),
-    ("__kernel_clock_gettime", vdso_syms::clock_gettime, Sysno::clock_gettime),
-    ("__kernel_gettimeofday", vdso_syms::gettimeofday, Sysno::gettimeofday),
-    ("__kernel_rt_sigreturn", vdso_syms::rt_sigreturn, Sysno::rt_sigreturn),
+    (
+        "__kernel_clock_getres",
+        vdso_syms::clock_getres,
+        Sysno::clock_getres,
+    ),
+    (
+        "__kernel_clock_gettime",
+        vdso_syms::clock_gettime,
+        Sysno::clock_gettime,
+    ),
+    (
+        "__kernel_gettimeofday",
+        vdso_syms::gettimeofday,
+        Sysno::gettimeofday,
+    ),
+    (
+        "__kernel_rt_sigreturn",
+        vdso_syms::rt_sigreturn,
+        Sysno::rt_sigreturn,
+    ),
 ];
 
 /// Rounds up `value` so that it is a multiple of `alignment`.
@@ -171,8 +199,11 @@ fn align_up(value: usize, alignment: usize) -> usize {
     (value + alignment - 1) & alignment.wrapping_neg()
 }
 
-/// Per-symbol VDSO patch info: `symbol name -> (base offset, size, replacement bytes)`.
-type VdsoPatchInfo = BTreeMap<&'static str, (u64, usize, &'static [u8], Sysno)>;
+/// One vDSO symbol's patch coordinates and corresponding syscall.
+type VdsoPatch = (u64, usize, &'static [u8], Sysno);
+
+/// Per-symbol VDSO patch info: `symbol name -> patch`.
+type VdsoPatchInfo = BTreeMap<&'static str, VdsoPatch>;
 
 static VDSO_PATCH_INFO: LazyLock<VdsoPatchInfo> = LazyLock::new(|| {
     let info = vdso_get_symbols_info();
@@ -209,13 +240,26 @@ static VDSO_PATCH_INFO: LazyLock<VdsoPatchInfo> = LazyLock::new(|| {
 /// `clock_gettime` continuously *while holding the Big QEMU Lock*, so every
 /// needless crossing is taken with a lock held that vCPU threads are waiting on.
 fn is_symbol_patch_required(subscriptions: &Subscription, sysno: Sysno) -> bool {
-    subscriptions.iter_syscalls().any(|syscall| syscall == sysno)
+    subscriptions
+        .iter_syscalls()
+        .any(|syscall| syscall == sysno)
+}
+
+/// The exact symbol patches selected by a syscall subscription.
+///
+/// Both the in-process and stopped-guest patch paths consume this iterator, so
+/// their subscription selection is implemented in one place.
+fn subscribed_vdso_patches(
+    subscriptions: &Subscription,
+) -> impl Iterator<Item = (&'static str, &'static VdsoPatch)> + '_ {
+    VDSO_PATCH_INFO
+        .iter()
+        .filter(|(_, (_, _, _, sysno))| is_symbol_patch_required(subscriptions, *sysno))
+        .map(|(name, patch)| (*name, patch))
 }
 
 pub fn is_patch_required(subscriptions: &Subscription) -> bool {
-    VDSO_PATCH_INFO
-        .values()
-        .any(|(_, _, _, sysno)| is_symbol_patch_required(subscriptions, *sysno))
+    subscribed_vdso_patches(subscriptions).next().is_some()
 }
 
 /// One vDSO entry point rewritten for an in-guest syscall hook.
@@ -265,12 +309,9 @@ pub fn patch_current_vdso(subscriptions: &Subscription) -> Result<Vec<VdsoSyscal
     })?;
 
     let mut syscall_sites = Vec::new();
-    for (name, (offset, size, _bytes, sysno)) in VDSO_PATCH_INFO.iter() {
-        if !is_symbol_patch_required(subscriptions, *sysno) {
-            continue;
-        }
+    for (name, (offset, size, _bytes, _sysno)) in subscribed_vdso_patches(subscriptions) {
         let symbol = start + *offset as usize;
-        let number = match *name {
+        let number = match name {
             "__vdso_time" => libc::SYS_time,
             "__vdso_clock_gettime" => libc::SYS_clock_gettime,
             "__vdso_getcpu" => libc::SYS_getcpu,
@@ -379,10 +420,7 @@ where
             )
             .await?;
 
-        for (name, (offset, size, bytes, sysno)) in VDSO_PATCH_INFO.iter() {
-            if !is_symbol_patch_required(subscriptions, *sysno) {
-                continue;
-            }
+        for (name, (offset, size, bytes, _sysno)) in subscribed_vdso_patches(subscriptions) {
             let start = vdso.address.0 + offset;
             assert!(bytes.len() <= *size);
             let rptr = AddrMut::from_raw(start as usize).ok_or(Errno::EFAULT)?;
@@ -452,9 +490,51 @@ mod tests {
     fn patch_requirement_tracks_vdso_syscall_subscriptions() {
         assert!(!is_patch_required(&Subscription::none()));
         assert!(!is_patch_required(&[Sysno::read].into_iter().collect()));
-        assert!(is_patch_required(
-            &[Sysno::clock_gettime].into_iter().collect()
-        ));
-        assert!(is_patch_required(&[Sysno::time].into_iter().collect()));
+
+        for (_, (_, _, _, sysno)) in VDSO_PATCH_INFO.iter() {
+            assert!(
+                is_patch_required(&[*sysno].into_iter().collect()),
+                "a subscription for vDSO syscall {sysno:?} must require patching",
+            );
+        }
+
+        let time_is_present = VDSO_PATCH_INFO
+            .values()
+            .any(|(_, _, _, sysno)| *sysno == Sysno::time);
+        assert_eq!(
+            is_patch_required(&[Sysno::time].into_iter().collect()),
+            time_is_present,
+            "time is patchable only on architectures whose vDSO table contains it",
+        );
+    }
+
+    #[test]
+    fn each_subscription_selects_only_its_own_vdso_symbols() {
+        for (_, (_, _, _, subscribed_sysno)) in VDSO_PATCH_INFO.iter() {
+            let subscriptions = [*subscribed_sysno].into_iter().collect();
+            let selected = subscribed_vdso_patches(&subscriptions).collect::<Vec<_>>();
+
+            assert!(
+                !selected.is_empty(),
+                "{subscribed_sysno:?} selected nothing"
+            );
+            for (name, (_, _, _, selected_sysno)) in selected {
+                assert_eq!(
+                    *selected_sysno, *subscribed_sysno,
+                    "subscription for {subscribed_sysno:?} also selected {name} ({selected_sysno:?})",
+                );
+            }
+        }
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn getcpu_only_leaves_other_vdso_symbols_unselected() {
+        let subscriptions = [Sysno::getcpu].into_iter().collect();
+        let selected = subscribed_vdso_patches(&subscriptions)
+            .map(|(name, _)| name)
+            .collect::<Vec<_>>();
+
+        assert_eq!(selected, vec!["__vdso_getcpu"]);
     }
 }
