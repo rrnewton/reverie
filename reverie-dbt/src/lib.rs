@@ -24,6 +24,7 @@ pub mod sync_rpc;
 #[cfg(feature = "prototype-runtime")]
 mod tools;
 
+use std::collections::HashMap;
 use std::collections::HashSet;
 use std::ffi::c_void;
 use std::future::Future;
@@ -726,10 +727,10 @@ impl Tool for PrototypeTool {
                 }
                 Ok(result)
             }
-            Syscall::Bind(call) => {
-                rewrite_bind_port(guest, call)?;
-                Ok(guest.inject(call).await?)
-            }
+            Syscall::Bind(call) => handle_bind(guest, call).await,
+            Syscall::Connect(call) => handle_connect(guest, call).await,
+            Syscall::Getsockname(call) => handle_getsockname(guest, call).await,
+            Syscall::Getpeername(call) => handle_getpeername(guest, call).await,
             Syscall::Open(call) => handle_open(guest, call.path(), call).await,
             Syscall::Openat(call) => handle_open(guest, call.path(), call).await,
             Syscall::Read(call) if is_random_fd(call.fd()) => {
@@ -780,6 +781,7 @@ impl Tool for PrototypeTool {
                 let result = guest.inject(call).await?;
                 if result == 0 {
                     random_fds().remove(&call.fd());
+                    bound_ports().remove(&call.fd());
                 }
                 Ok(result)
             }
@@ -805,6 +807,16 @@ const RNG_SEED_ENV: &str = "HERMIT_DBT_RNG_SEED";
 
 static RANDOM_FDS: LazyLock<Mutex<HashSet<i32>>> = LazyLock::new(|| Mutex::new(HashSet::new()));
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct BoundPort {
+    address: std::net::IpAddr,
+    guest_port: u16,
+    host_port: u16,
+}
+
+static BOUND_PORTS: LazyLock<Mutex<HashMap<i32, BoundPort>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
 /// Global count of 64-bit random words dispensed so far. The deterministic RNG
 /// stream is a pure function of `(seed, word position)`, so it does not depend
 /// on guest memory layout and is reproducible across hosts.
@@ -816,6 +828,12 @@ fn random_fds() -> std::sync::MutexGuard<'static, HashSet<i32>> {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
+fn bound_ports() -> std::sync::MutexGuard<'static, HashMap<i32, BoundPort>> {
+    BOUND_PORTS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
 fn is_random_fd(fd: i32) -> bool {
     random_fds().contains(&fd)
 }
@@ -823,8 +841,16 @@ fn is_random_fd(fd: i32) -> bool {
 /// Records that `new_fd` (the return value of `dup`/`fcntl(F_DUPFD*)`) aliases
 /// `old_fd`, so reads through the duplicate stay deterministic.
 fn track_duplicated_fd(old_fd: i32, new_fd: i64) {
-    if new_fd >= 0 && is_random_fd(old_fd) {
-        random_fds().insert(new_fd as i32);
+    if new_fd < 0 {
+        return;
+    }
+    let new_fd = new_fd as i32;
+    if is_random_fd(old_fd) {
+        random_fds().insert(new_fd);
+    }
+    let mut ports = bound_ports();
+    if let Some(binding) = ports.get(&old_fd).copied() {
+        ports.insert(new_fd, binding);
     }
 }
 
@@ -839,6 +865,14 @@ fn track_replacing_fd(old_fd: i32, new_fd: i32, result: i64) {
         fds.insert(result as i32);
     } else {
         fds.remove(&new_fd);
+    }
+    drop(fds);
+
+    let mut ports = bound_ports();
+    if let Some(binding) = ports.get(&old_fd).copied() {
+        ports.insert(result as i32, binding);
+    } else {
+        ports.remove(&new_fd);
     }
 }
 
@@ -1020,6 +1054,9 @@ fn should_rewrite_syscall(sysnum: i64) -> bool {
         libc::SYS_write,
         libc::SYS_uname,
         libc::SYS_bind,
+        libc::SYS_connect,
+        libc::SYS_getsockname,
+        libc::SYS_getpeername,
         libc::SYS_open,
         libc::SYS_openat,
         // AUTONOMOUS-BOT-IMPLEMENTED
@@ -1069,32 +1106,203 @@ fn deterministic_port(next: &AtomicU16, requested: u16) -> u16 {
     }
 }
 
-fn rewrite_bind_port<G: Guest<PrototypeTool>>(
+fn sockaddr_address<G: Guest<PrototypeTool>>(
+    guest: &G,
+    address: AddrMut<'_, libc::sockaddr>,
+    length: usize,
+) -> Result<Option<(std::net::IpAddr, u16)>, Error> {
+    let memory = guest.memory();
+    if length < std::mem::size_of::<libc::sa_family_t>() {
+        return Ok(None);
+    }
+    let family = memory.read_value(address.cast::<u16>())?;
+    match family as i32 {
+        libc::AF_INET if length >= std::mem::size_of::<libc::sockaddr_in>() => {
+            let address = memory.read_value(address.cast::<libc::sockaddr_in>())?;
+            Ok(Some((
+                std::net::Ipv4Addr::from(address.sin_addr.s_addr.to_ne_bytes()).into(),
+                u16::from_be(address.sin_port),
+            )))
+        }
+        libc::AF_INET6 if length >= std::mem::size_of::<libc::sockaddr_in6>() => {
+            let address = memory.read_value(address.cast::<libc::sockaddr_in6>())?;
+            Ok(Some((
+                std::net::Ipv6Addr::from(address.sin6_addr.s6_addr).into(),
+                u16::from_be(address.sin6_port),
+            )))
+        }
+        _ => Ok(None),
+    }
+}
+
+fn write_sockaddr_port<G: Guest<PrototypeTool>>(
+    guest: &G,
+    address: AddrMut<'_, libc::sockaddr>,
+    length: usize,
+    port: u16,
+) -> Result<(), Error> {
+    if length < 4 {
+        return Ok(());
+    }
+    let port_address = unsafe { address.cast::<u8>().offset(2) }.cast::<u16>();
+    guest.memory().write_value(port_address, &port.to_be())?;
+    Ok(())
+}
+
+async fn socket_address<G: Guest<PrototypeTool>>(
+    guest: &mut G,
+    fd: i32,
+) -> Result<(std::net::IpAddr, u16), Error> {
+    let mut stack = guest.stack().await;
+    let address: AddrMut<'_, libc::sockaddr_storage> = stack.reserve();
+    let length: AddrMut<'_, libc::socklen_t> = stack.reserve();
+    let _guard = stack.commit()?;
+    guest.memory().write_value(
+        length,
+        &(std::mem::size_of::<libc::sockaddr_storage>() as libc::socklen_t),
+    )?;
+    let call = reverie::syscalls::Getsockname::new()
+        .with_fd(fd)
+        .with_usockaddr(Some(address.cast()))
+        .with_usockaddr_len(Some(length));
+    guest.inject(call).await?;
+    sockaddr_address(
+        guest,
+        address.cast(),
+        guest.memory().read_value(length)? as usize,
+    )?
+    .ok_or_else(|| Errno::EINVAL.into())
+}
+
+async fn handle_bind<G: Guest<PrototypeTool>>(
     guest: &mut G,
     call: reverie::syscalls::Bind,
-) -> Result<(), Error> {
+) -> Result<i64, Error> {
     let Some(address) = call.umyaddr() else {
-        return Ok(());
+        return Ok(guest.inject(call).await?);
+    };
+    let Ok(address_length) = usize::try_from(call.addrlen()) else {
+        return Ok(guest.inject(call).await?);
     };
     let family = guest.memory().read_value(address.cast::<u16>())?;
-    match family as i32 {
-        libc::AF_INET => {
-            let address = address.cast::<libc::sockaddr_in>();
-            let mut value = guest.memory().read_value(address)?;
-            let port = deterministic_port(&NEXT_PORT, u16::from_be(value.sin_port));
-            value.sin_port = port.to_be();
-            guest.memory().write_value(address, &value)?;
-        }
-        libc::AF_INET6 => {
-            let address = address.cast::<libc::sockaddr_in6>();
-            let mut value = guest.memory().read_value(address)?;
-            let port = deterministic_port(&NEXT_PORT, u16::from_be(value.sin6_port));
-            value.sin6_port = port.to_be();
-            guest.memory().write_value(address, &value)?;
-        }
-        _ => {}
+    if family != libc::AF_INET as u16 && family != libc::AF_INET6 as u16 {
+        return Ok(guest.inject(call).await?);
+    };
+    let Some((_requested_address, requested)) = sockaddr_address(guest, address, address_length)?
+    else {
+        return Ok(guest.inject(call).await?);
+    };
+
+    let guest_port = deterministic_port(&NEXT_PORT, requested);
+    let result = guest.inject(call).await?;
+    if result == 0 && requested == 0 {
+        let (host_address, host_port) = socket_address(guest, call.fd()).await?;
+        bound_ports().insert(
+            call.fd(),
+            BoundPort {
+                address: host_address,
+                guest_port,
+                host_port,
+            },
+        );
     }
-    Ok(())
+    Ok(result)
+}
+
+async fn handle_connect<G: Guest<PrototypeTool>>(
+    guest: &mut G,
+    call: reverie::syscalls::Connect,
+) -> Result<i64, Error> {
+    let Some(address) = call.uservaddr() else {
+        return Ok(guest.inject(call).await?);
+    };
+    let Ok(address_length) = usize::try_from(call.addrlen()) else {
+        return Ok(guest.inject(call).await?);
+    };
+    if address_length > std::mem::size_of::<libc::sockaddr_storage>() {
+        return Ok(guest.inject(call).await?);
+    }
+    let Some((destination, guest_port)) = sockaddr_address(guest, address, address_length)? else {
+        return Ok(guest.inject(call).await?);
+    };
+    let host_port = bound_ports()
+        .values()
+        .find(|binding| {
+            binding.guest_port == guest_port
+                && (binding.address == destination
+                    || (binding.address.is_unspecified()
+                        && (destination.is_loopback() || destination.is_unspecified())))
+        })
+        .map(|binding| binding.host_port);
+    let Some(host_port) = host_port else {
+        return Ok(guest.inject(call).await?);
+    };
+
+    let mut stack = guest.stack().await;
+    let translated: AddrMut<'_, libc::sockaddr_storage> = stack.reserve();
+    let _guard = stack.commit()?;
+    let mut bytes = vec![0; address_length];
+    guest
+        .memory()
+        .read_exact(address.cast::<u8>(), &mut bytes)?;
+    guest
+        .memory()
+        .write_exact(translated.cast::<u8>(), &bytes)?;
+    write_sockaddr_port(guest, translated.cast(), address_length, host_port)?;
+    Ok(guest
+        .inject(call.with_uservaddr(Some(translated.cast())))
+        .await?)
+}
+
+async fn handle_getsockname<G: Guest<PrototypeTool>>(
+    guest: &mut G,
+    call: reverie::syscalls::Getsockname,
+) -> Result<i64, Error> {
+    let requested_length = call
+        .usockaddr_len()
+        .map(|length| guest.memory().read_value(length))
+        .transpose()?;
+    let result = guest.inject(call).await?;
+    if result == 0
+        && let (Some(address), Some(length), Some(binding)) = (
+            call.usockaddr(),
+            requested_length,
+            bound_ports().get(&call.fd()).copied(),
+        )
+        && let Some((host_address, host_port)) = sockaddr_address(guest, address, length as usize)?
+        && host_address == binding.address
+        && host_port == binding.host_port
+    {
+        write_sockaddr_port(guest, address, length as usize, binding.guest_port)?;
+    }
+    Ok(result)
+}
+
+async fn handle_getpeername<G: Guest<PrototypeTool>>(
+    guest: &mut G,
+    call: reverie::syscalls::Getpeername,
+) -> Result<i64, Error> {
+    let requested_length = call
+        .usockaddr_len()
+        .map(|length| guest.memory().read_value(length))
+        .transpose()?;
+    let result = guest.inject(call).await?;
+    if result == 0
+        && let (Some(address), Some(length)) = (call.usockaddr(), requested_length)
+        && let Some((host_address, host_port)) = sockaddr_address(guest, address, length as usize)?
+        && let Some(guest_port) = bound_ports()
+            .values()
+            .find(|binding| {
+                binding.host_port == host_port
+                    && (binding.address == host_address
+                        || (binding.address.is_unspecified()
+                            && (host_address.is_loopback() || host_address.is_unspecified())))
+            })
+            .map(|binding| binding.guest_port)
+    {
+        write_sockaddr_port(guest, address, length as usize, guest_port)?;
+    }
+    Ok(result)
 }
 
 /// Drives an async tool handler on the calling guest thread, returning `Some`
@@ -2064,6 +2272,11 @@ pub unsafe extern "C" fn reverie_dbt_runtime_totals(
 mod tests {
     use super::*;
 
+    const PORT_TEST_CHILD: &str = "REVERIE_DBT_PORT_TEST_CHILD";
+    const PORT_TEST_ADDRESS: &str = "REVERIE_DBT_PORT_TEST_ADDRESS";
+    const PORT_TEST_READY: &str = "REVERIE_DBT_PORT_TEST_READY";
+    const PORT_TEST_RELEASE: &str = "REVERIE_DBT_PORT_TEST_RELEASE";
+
     /// Serializes tests that mutate the process-global `RANDOM_FDS` set.
     static RANDOM_FD_TEST_LOCK: Mutex<()> = Mutex::new(());
 
@@ -2178,6 +2391,293 @@ mod tests {
     unsafe extern "C" fn invoke_uname(_context: usize, sysnum: i64, args: *const u64) -> i64 {
         assert_eq!(sysnum, libc::SYS_uname);
         unsafe { libc::uname(*args as *mut libc::utsname) as i64 }
+    }
+
+    unsafe extern "C" fn invoke_real_syscall(
+        _context: usize,
+        sysnum: i64,
+        args: *const u64,
+    ) -> i64 {
+        let args = unsafe { std::slice::from_raw_parts(args, 6) };
+        let result =
+            unsafe { libc::syscall(sysnum, args[0], args[1], args[2], args[3], args[4], args[5]) };
+        if result == -1 {
+            -(std::io::Error::last_os_error().raw_os_error().unwrap() as i64)
+        } else {
+            result
+        }
+    }
+
+    fn run_prototype_syscall(syscall: Syscall) -> Result<i64, Error> {
+        let pid = Pid::from_raw(unsafe { libc::getpid() });
+        let mut counters = PrototypeCounters::default();
+        match run_tool_syscall(
+            &PrototypeTool,
+            0,
+            pid,
+            pid,
+            0,
+            &mut counters,
+            &GLOBAL_STATE,
+            &CONFIG,
+            syscall,
+            invoke_real_syscall,
+            read_regs,
+            write_regs_noop,
+        )? {
+            DbtSyscallOutcome::Suppress(result) => Ok(result),
+            DbtSyscallOutcome::ExecuteOriginal(syscall) => {
+                panic!("prototype unexpectedly deferred {syscall:?}")
+            }
+        }
+    }
+
+    fn direct_socket_port(fd: i32) -> u16 {
+        let mut address: libc::sockaddr_in = unsafe { std::mem::zeroed() };
+        let mut length = std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t;
+        assert_eq!(
+            unsafe {
+                libc::getsockname(
+                    fd,
+                    (&mut address as *mut libc::sockaddr_in).cast(),
+                    &mut length,
+                )
+            },
+            0
+        );
+        u16::from_be(address.sin_port)
+    }
+
+    fn prototype_socket_port(fd: i32, peer: bool) -> u16 {
+        let mut address: libc::sockaddr_in = unsafe { std::mem::zeroed() };
+        let length = std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t;
+        let syscall = if peer {
+            Syscall::Getpeername(
+                reverie::syscalls::Getpeername::new()
+                    .with_fd(fd)
+                    .with_usockaddr(AddrMut::from_ptr(
+                        (&mut address as *mut libc::sockaddr_in).cast(),
+                    ))
+                    .with_usockaddr_len(AddrMut::from_ptr(&length)),
+            )
+        } else {
+            Syscall::Getsockname(
+                reverie::syscalls::Getsockname::new()
+                    .with_fd(fd)
+                    .with_usockaddr(AddrMut::from_ptr(
+                        (&mut address as *mut libc::sockaddr_in).cast(),
+                    ))
+                    .with_usockaddr_len(AddrMut::from_ptr(&length)),
+            )
+        };
+        assert_eq!(run_prototype_syscall(syscall).unwrap(), 0);
+        u16::from_be(address.sin_port)
+    }
+
+    #[test]
+    fn port_zero_runtime_child() {
+        if std::env::var_os(PORT_TEST_CHILD).is_none() {
+            return;
+        }
+
+        NEXT_PORT.store(32768, Ordering::SeqCst);
+        bound_ports().clear();
+        let listener = unsafe { libc::socket(libc::AF_INET, libc::SOCK_STREAM, 0) };
+        assert!(
+            listener >= 0,
+            "listener socket failed: {}",
+            std::io::Error::last_os_error()
+        );
+        let loopback = std::env::var(PORT_TEST_ADDRESS)
+            .unwrap()
+            .parse::<std::net::Ipv4Addr>()
+            .unwrap();
+        let mut address = libc::sockaddr_in {
+            sin_family: libc::AF_INET as libc::sa_family_t,
+            sin_port: 0,
+            sin_addr: libc::in_addr {
+                s_addr: u32::from_ne_bytes(loopback.octets()),
+            },
+            sin_zero: [0; 8],
+        };
+        let bind = reverie::syscalls::Bind::new()
+            .with_fd(listener)
+            .with_umyaddr(AddrMut::from_ptr(
+                (&mut address as *mut libc::sockaddr_in).cast(),
+            ))
+            .with_addrlen(std::mem::size_of::<libc::sockaddr_in>() as i32);
+        assert_eq!(run_prototype_syscall(Syscall::Bind(bind)).unwrap(), 0);
+        assert_eq!(unsafe { libc::listen(listener, 1) }, 0);
+
+        let guest_port = prototype_socket_port(listener, false);
+        let host_port = direct_socket_port(listener);
+        assert_eq!(guest_port, 32768);
+        assert_ne!(host_port, 0);
+
+        let client = unsafe { libc::socket(libc::AF_INET, libc::SOCK_STREAM, 0) };
+        assert!(client >= 0);
+        address.sin_port = guest_port.to_be();
+        let connect = reverie::syscalls::Connect::new()
+            .with_fd(client)
+            .with_uservaddr(AddrMut::from_ptr(
+                (&mut address as *mut libc::sockaddr_in).cast(),
+            ))
+            .with_addrlen(std::mem::size_of::<libc::sockaddr_in>() as i32);
+        assert_eq!(run_prototype_syscall(Syscall::Connect(connect)).unwrap(), 0);
+        assert_eq!(u16::from_be(address.sin_port), guest_port);
+        assert_eq!(prototype_socket_port(client, true), guest_port);
+        let accepted =
+            unsafe { libc::accept(listener, std::ptr::null_mut(), std::ptr::null_mut()) };
+        assert!(accepted >= 0);
+
+        let ready = std::env::var_os(PORT_TEST_READY).unwrap();
+        std::fs::write(ready, format!("{guest_port} {host_port}\n")).unwrap();
+        let release = std::path::PathBuf::from(std::env::var_os(PORT_TEST_RELEASE).unwrap());
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !release.exists() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(release.exists(), "parent did not release port test child");
+
+        assert_eq!(unsafe { libc::close(accepted) }, 0);
+        assert_eq!(unsafe { libc::close(client) }, 0);
+        assert_eq!(unsafe { libc::close(listener) }, 0);
+    }
+
+    fn spawn_port_test_child(
+        ready: &Path,
+        release: &Path,
+        loopback: std::net::Ipv4Addr,
+    ) -> std::process::Child {
+        std::process::Command::new(std::env::current_exe().unwrap())
+            .arg("--exact")
+            .arg("tests::port_zero_runtime_child")
+            .arg("--nocapture")
+            .env(PORT_TEST_CHILD, "1")
+            .env(PORT_TEST_ADDRESS, loopback.to_string())
+            .env(PORT_TEST_READY, ready)
+            .env(PORT_TEST_RELEASE, release)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap()
+    }
+
+    fn wait_for_port_test_child(
+        child: &mut std::process::Child,
+        ready: &Path,
+    ) -> Result<(u16, u16), String> {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            if let Ok(value) = std::fs::read_to_string(ready) {
+                let mut values = value.split_whitespace().map(str::parse::<u16>);
+                let guest = values.next().unwrap().unwrap();
+                let host = values.next().unwrap().unwrap();
+                assert!(values.next().is_none());
+                return Ok((guest, host));
+            }
+            if let Some(status) = child.try_wait().unwrap() {
+                return Err(format!("child exited before binding: {status}"));
+            }
+            if std::time::Instant::now() >= deadline {
+                return Err("child did not bind within 5 seconds".into());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn independent_runtimes_keep_deterministic_ports_without_host_collision() {
+        let directory = tempfile::tempdir().unwrap();
+        let release = directory.path().join("release");
+        let first_ready = directory.path().join("first-ready");
+        let second_ready = directory.path().join("second-ready");
+        let pid = std::process::id();
+        assert!(pid < 1 << 22);
+        let loopback = std::net::Ipv4Addr::new(
+            127,
+            0x80 | ((pid >> 16) as u8),
+            ((pid >> 8) & 0xff) as u8,
+            (pid & 0xff) as u8,
+        );
+        let mut first = spawn_port_test_child(&first_ready, &release, loopback);
+        let first_ports = match wait_for_port_test_child(&mut first, &first_ready) {
+            Ok(ports) => ports,
+            Err(error) => {
+                std::fs::write(&release, b"release\n").unwrap();
+                let first_output = first.wait_with_output().unwrap();
+                panic!("{error}; first={first_output:?}");
+            }
+        };
+        let mut second = spawn_port_test_child(&second_ready, &release, loopback);
+        let second_ports = match wait_for_port_test_child(&mut second, &second_ready) {
+            Ok(ports) => ports,
+            Err(error) => {
+                std::fs::write(&release, b"release\n").unwrap();
+                let first_output = first.wait_with_output().unwrap();
+                let second_output = second.wait_with_output().unwrap();
+                panic!("{error}; first={first_output:?}; second={second_output:?}");
+            }
+        };
+
+        assert_eq!(first_ports.0, 32768);
+        assert_eq!(second_ports.0, 32768);
+        assert_ne!(
+            first_ports.1, second_ports.1,
+            "simultaneous runtimes must hold distinct host ports"
+        );
+        eprintln!(
+            "simultaneous DBT port-zero binds: first guest={} host={}, second guest={} host={}",
+            first_ports.0, first_ports.1, second_ports.0, second_ports.1
+        );
+
+        std::fs::write(&release, b"release\n").unwrap();
+        let first_output = first.wait_with_output().unwrap();
+        let second_output = second.wait_with_output().unwrap();
+        assert!(first_output.status.success(), "first={first_output:?}");
+        assert!(second_output.status.success(), "second={second_output:?}");
+    }
+
+    #[test]
+    fn explicit_port_collision_is_still_refused() {
+        let first = unsafe { libc::socket(libc::AF_INET, libc::SOCK_STREAM, 0) };
+        assert!(first >= 0);
+        let mut address = libc::sockaddr_in {
+            sin_family: libc::AF_INET as libc::sa_family_t,
+            sin_port: 0,
+            sin_addr: libc::in_addr {
+                s_addr: u32::from_ne_bytes([127, 0, 0, 1]),
+            },
+            sin_zero: [0; 8],
+        };
+        assert_eq!(
+            unsafe {
+                libc::bind(
+                    first,
+                    (&address as *const libc::sockaddr_in).cast(),
+                    std::mem::size_of::<libc::sockaddr_in>() as libc::socklen_t,
+                )
+            },
+            0
+        );
+        address.sin_port = direct_socket_port(first).to_be();
+
+        let second = unsafe { libc::socket(libc::AF_INET, libc::SOCK_STREAM, 0) };
+        assert!(second >= 0);
+        let bind = reverie::syscalls::Bind::new()
+            .with_fd(second)
+            .with_umyaddr(AddrMut::from_ptr(
+                (&mut address as *mut libc::sockaddr_in).cast(),
+            ))
+            .with_addrlen(std::mem::size_of::<libc::sockaddr_in>() as i32);
+        assert!(matches!(
+            run_prototype_syscall(Syscall::Bind(bind)),
+            Err(Error::Errno(Errno::EADDRINUSE))
+        ));
+
+        assert_eq!(unsafe { libc::close(second) }, 0);
+        assert_eq!(unsafe { libc::close(first) }, 0);
     }
 
     unsafe extern "C" fn read_regs(_context: usize, regs: *mut libc::user_regs_struct) -> i32 {
@@ -2518,6 +3018,10 @@ mod tests {
     #[test]
     fn rewrite_filter_covers_deterministic_policies() {
         for syscall in [
+            libc::SYS_bind,
+            libc::SYS_connect,
+            libc::SYS_getsockname,
+            libc::SYS_getpeername,
             libc::SYS_open,
             libc::SYS_openat,
             libc::SYS_read,
