@@ -181,9 +181,9 @@ const HEARTBEAT_RESTARTABLE = Object.freeze({
 const SKILL_DESCRIPTION = "Project-specific coordination, fork-only issue, " +
   "Git/PR, Reverie API, and product-vision policies for dev-hermit.";
 const SKILL_FUNCTIONS = [
-  PLUGIN_NAME + ".activate",
-  PLUGIN_NAME + ".status",
-  PLUGIN_NAME + ".selftest",
+  "hermitDevActivate",
+  "hermitDevStatus",
+  "hermitDevSelfTest",
 ];
 const SKILL_TRIGGERS = [
   "\\bdev-hermit\\b",
@@ -954,6 +954,210 @@ async function verifyScriptArgPassing(): Promise<SelfTestResult> {
   return { pass, checks };
 }
 
+function missingRegisteredNames(
+  entries: unknown,
+  required: string[],
+): string[] {
+  const names = new Set(
+    (Array.isArray(entries) ? entries : []).map((entry) => {
+      const row = (entry || {}) as { name?: unknown };
+      return String(row.name || "");
+    }),
+  );
+  return required.filter((name) => !names.has(name));
+}
+
+async function verifyRegisteredSurface(): Promise<SelfTestResult> {
+  const host = hermitDevSelfTest();
+  const checks = host.checks.slice();
+  const add = (
+    name: string,
+    pass: boolean,
+    detail: string,
+    severity: "error" | "notice" = "error",
+  ) => {
+    checks.push({ name, pass, severity, detail });
+  };
+
+  const guard = (globalThis as Record<string, unknown>).gchatSafe;
+  if (typeof guard !== "function") {
+    add("gchat-safe-callable", false, "globalThis.gchatSafe is not a function");
+  } else {
+    try {
+      const call = guard as (text: string) => {
+        clean?: boolean;
+        offenders?: unknown[];
+      };
+      const allowed = call("PR and CI are allowed project acronyms.");
+      const refused = call("THIS MESSAGE MUST BE REFUSED.");
+      add(
+        "gchat-safe-callable",
+        allowed.clean === true && refused.clean === false &&
+          Array.isArray(refused.offenders) && refused.offenders.length > 0,
+        "allowed clean=" + String(allowed.clean) +
+          "; caps clean=" + String(refused.clean) +
+          "; offenders=" + JSON.stringify(refused.offenders),
+      );
+    } catch (err) {
+      add("gchat-safe-callable", false, "call failed: " + String(err));
+    }
+  }
+
+  let listedScripts: unknown = null;
+  try {
+    listedScripts = await orc.listScripts();
+    add(
+      "script-registry-readable",
+      Array.isArray(listedScripts),
+      Array.isArray(listedScripts)
+        ? listedScripts.length + " scripts enumerated"
+        : "orc.listScripts() returned " + typeof listedScripts,
+    );
+  } catch (err) {
+    add("script-registry-readable", false, "orc.listScripts() failed: " + String(err));
+  }
+  const requiredScripts = [
+    OPERATIONAL_TICK_SCRIPT_NAME,
+    AGENT_LIVENESS_SCRIPT_NAME,
+    ARGV_ECHO_SCRIPT_NAME,
+  ];
+  const missingScripts = missingRegisteredNames(listedScripts, requiredScripts);
+  add(
+    "registered-scripts-present",
+    missingScripts.length === 0,
+    missingScripts.length === 0
+      ? requiredScripts.length + "/" + requiredScripts.length +
+        " registered scripts enumerated under orc.scripts"
+      : "absent from orc.listScripts(): " + missingScripts.join(", "),
+  );
+
+  const scriptChecks = await verifyScriptArgPassing();
+  checks.push(...scriptChecks.checks);
+
+  let listedFunctions: unknown = null;
+  try {
+    listedFunctions = orc.listUserFunctions();
+    add(
+      "function-registry-readable",
+      Array.isArray(listedFunctions),
+      Array.isArray(listedFunctions)
+        ? listedFunctions.length + " user functions enumerated"
+        : "orc.listUserFunctions() returned " + typeof listedFunctions,
+    );
+  } catch (err) {
+    add(
+      "function-registry-readable",
+      false,
+      "orc.listUserFunctions() failed: " + String(err),
+    );
+  }
+  const requiredFunctions = [
+    "hermitDevActivate",
+    "hermitDevStatus",
+    "hermitDevSelfTest",
+    AGENT_LIVENESS_SCRIPT_NAME,
+    PLUGIN_NAME + ".activate",
+    PLUGIN_NAME + ".listScripts",
+    PLUGIN_NAME + ".verifyScriptArgs",
+    PLUGIN_NAME + ".selftest",
+    PLUGIN_NAME + ".status",
+  ];
+  const missingFunctions = missingRegisteredNames(
+    listedFunctions,
+    requiredFunctions,
+  );
+  add(
+    "registered-functions-present",
+    missingFunctions.length === 0,
+    missingFunctions.length === 0
+      ? requiredFunctions.length + "/" + requiredFunctions.length +
+        " exposed functions enumerated"
+      : "absent from orc.listUserFunctions(): " + missingFunctions.join(", "),
+  );
+
+  const unresolvedFunctions = requiredFunctions.filter((name) =>
+    typeof orc[name] !== "function"
+  );
+  add(
+    "registered-functions-resolve",
+    unresolvedFunctions.length === 0,
+    unresolvedFunctions.length === 0
+      ? requiredFunctions.length + "/" + requiredFunctions.length +
+        " exposed functions resolve through orc"
+      : "not callable through orc: " + unresolvedFunctions.join(", "),
+  );
+
+  const statusFunction = orc.hermitDevStatus;
+  if (typeof statusFunction !== "function") {
+    add("advertised-status-callable", false, "orc.hermitDevStatus is not a function");
+  } else {
+    try {
+      const status = await statusFunction() as { plugin?: unknown };
+      add(
+        "advertised-status-callable",
+        status?.plugin === PLUGIN_NAME,
+        "returned plugin=" + JSON.stringify(status?.plugin),
+      );
+    } catch (err) {
+      add("advertised-status-callable", false, "call failed: " + String(err));
+    }
+  }
+
+  const pass = checks.every((check) =>
+    check.pass || check.severity === "notice"
+  );
+  return { pass, checks };
+}
+
+function hermitDevStatus() {
+  const cachedPolicy = orc.kvGet(POLICY_CACHE_KEY);
+  const sources = resolvedSources;
+  const sourceDirectory = sources
+    ? sources.sourceDirectory
+    : (REGISTERED_PLUGIN_DIRECTORY ||
+      SHELL_WORKSPACE_ROOT + "/" + PLUGIN_SUBPATH);
+  return {
+    plugin: PLUGIN_NAME,
+    skill: SKILL_NAME,
+    coordinatorSkills: [
+      SPECULATIVE_ATTACK_SKILL_NAME,
+      URGENT_VALIDATION_SKILL_NAME,
+    ],
+    sourcesResolved: sources !== null,
+    policyPath: sources ? sources.policyPath : null,
+    speculativeAttackSkillPath: sourceDirectory + "/" +
+      SPECULATIVE_ATTACK_SKILL_FILE,
+    urgentValidationSkillPath: sourceDirectory + "/" +
+      URGENT_VALIDATION_SKILL_FILE,
+    policyLoaded: typeof cachedPolicy === "string",
+    policyBytes: typeof cachedPolicy === "string" ? cachedPolicy.length : 0,
+    lastPolicyContextInjection: lastPolicyInjection,
+    workspace: sources ? sources.workspaceRoot : SHELL_WORKSPACE_ROOT,
+    registeredPluginDirectory: REGISTERED_PLUGIN_DIRECTORY,
+    requiredOrcSurface: REQUIRED_ORC_SURFACE,
+    missingOrcSurface: missingOrcSurface(),
+    missingOrcSurfaceAtStartup: lastSurfaceGap,
+    unverifiableOrcSurface: UNVERIFIABLE_ORC_SURFACE,
+    selfTestAtStartup: lastSelfTest,
+    hermitPrimary: "rrnewton/hermit",
+    hermitUpstream: "facebookexperimental/hermit",
+    reverieIssueRepo: "rrnewton/reverie",
+    issueCreateWrapper: sourceDirectory + "/" + ISSUE_CREATE_WRAPPER_FILE,
+    prStatusCommand: PR_STATUS_COMMAND,
+    operationalTickCommand: OPERATIONAL_TICK_COMMAND,
+    operationalTickConfig: SHELL_WORKSPACE_ROOT +
+      "/ci-hub/health/tick-hub.yaml",
+    operationalTickIntervalMinutes: OPERATIONAL_TICK_INTERVAL_MS / 60000,
+    policyReloadWorkflow: POLICY_RELOAD_WORKFLOW_NAME,
+    policyReloadIntervalMinutes: POLICY_RELOAD_INTERVAL_MS / 60000,
+    agentLivenessCommand: AGENT_LIVENESS_COMMAND,
+    heartbeatRestartPolicy: HEARTBEAT_RESTARTABLE,
+    maxParkedSlots: 5,
+    maxActiveWorktrees: 12,
+    maxAgents: 15,
+  };
+}
+
 // --- registration ----------------------------------------------------------
 // Every side effect this module has lives in here, and it is reached only
 // through the reduced-context guard at the bottom of the file. Nothing above
@@ -980,6 +1184,28 @@ function registerPluginSurface(): void {
   });
   // GCHAT SAFE END.
 
+  // The skill renderer treats every function name as one direct orc property.
+  // A dotted name containing this plugin's hyphen is therefore a flat registry
+  // key, not the nested `orc["hermit-dev"].status` object the old policy text
+  // advertised. Publish valid identifier aliases before any script registration
+  // can fail, while retaining the old flat keys below for compatibility.
+  orc.exposeFunction("hermitDevActivate", activateHermitDevPolicies, {
+    description: "Reload AGENTS.md and activate the canonical dev-hermit policies",
+    params: [],
+    sig: "await orc.hermitDevActivate()",
+  });
+  orc.exposeFunction("hermitDevSelfTest", verifyRegisteredSurface, {
+    description:
+      "Exercise the registered hermit-dev functions and scripts against the live registries",
+    params: [],
+    sig: "await orc.hermitDevSelfTest()",
+  });
+  orc.exposeFunction("hermitDevStatus", hermitDevStatus, {
+    description: "Report hermit-dev plugin registration and policy source state",
+    params: [],
+    sig: "orc.hermitDevStatus()",
+  });
+
   // The policy reload workflow calls this existing exposed function instead of
   // capturing injectHermitDevPolicies and its helper graph in durable workflow
   // state. Register it before the reduced-context guard so module replay can
@@ -990,7 +1216,7 @@ function registerPluginSurface(): void {
     {
       description: "Reload AGENTS.md and activate the canonical dev-hermit policies",
       params: [],
-      sig: "await orc.hermit-dev.activate()",
+      sig: 'await orc["hermit-dev.activate"]()',
     },
   );
 
@@ -1024,6 +1250,46 @@ function registerPluginSurface(): void {
       "changes nothing). Answers 'did my arguments arrive?' directly",
     timeoutSec: 30,
   });
+
+  // Register this immediately after the scripts. Workflow replay stops at the
+  // first registerScript above, while a full config load reaches this hook. If
+  // a later skill, function, or workflow registration fails, the hook survives
+  // and reports the exact missing registry entries instead of a host-only pass.
+  orc.registerStartup(
+    PLUGIN_NAME + ".surface-check",
+    async function hermitDevSurfaceCheck() {
+      try {
+        lastSelfTest = await verifyRegisteredSurface();
+        orc.log(
+          lastSelfTest.pass ? "info" : "error",
+          formatSelfTest(lastSelfTest),
+        );
+        if (!lastSelfTest.pass) {
+          await orc.sendWakeup(
+            [],
+            "HARD WARNING: hermit-dev surface validation failed",
+            formatSelfTest(lastSelfTest),
+          );
+        }
+      } catch (err) {
+        lastSelfTest = {
+          pass: false,
+          checks: [{
+            name: "registered-surface-validation-completed",
+            pass: false,
+            severity: "error",
+            detail: String(err),
+          }],
+        };
+        orc.log("error", formatSelfTest(lastSelfTest));
+        await orc.sendWakeup(
+          [],
+          "HARD WARNING: hermit-dev surface validation failed",
+          formatSelfTest(lastSelfTest),
+        );
+      }
+    },
+  );
 
   // Placeholders only; startup replaces all three with the real policy text.
   registerHermitDevSkill(
@@ -1063,7 +1329,7 @@ function registerPluginSurface(): void {
         "List registered scripts with the exact syntax that calls them " +
         "(orc.scripts is a Proxy and inspects as {} even when populated)",
       params: [],
-      sig: "await orc.hermit-dev.listScripts()",
+      sig: 'await orc["hermit-dev.listScripts"]()',
     },
   );
 
@@ -1078,75 +1344,28 @@ function registerPluginSurface(): void {
         "Bracket registered-script argument passing both ways against the live " +
         "registry using an inert argv-echo script",
       params: [],
-      sig: "await orc.hermit-dev.verifyScriptArgs()",
+      sig: 'await orc["hermit-dev.verifyScriptArgs"]()',
     },
   );
 
   orc.exposeFunction(
     PLUGIN_NAME + ".selftest",
-    hermitDevSelfTest,
+    verifyRegisteredSurface,
     {
       description:
-        "Re-run the orc.* surface self-check (brackets it both ways) against the live registry",
+        "Exercise the registered hermit-dev functions and scripts against the live registries",
       params: [],
-      sig: "orc.hermit-dev.selftest()",
+      sig: 'await orc["hermit-dev.selftest"]()',
     },
   );
 
   orc.exposeFunction(
     PLUGIN_NAME + ".status",
-    function hermitDevStatus() {
-      const cachedPolicy = orc.kvGet(POLICY_CACHE_KEY);
-      const sources = resolvedSources;
-      const sourceDirectory = sources
-        ? sources.sourceDirectory
-        : (REGISTERED_PLUGIN_DIRECTORY ||
-          SHELL_WORKSPACE_ROOT + "/" + PLUGIN_SUBPATH);
-      return {
-        plugin: PLUGIN_NAME,
-        skill: SKILL_NAME,
-        coordinatorSkills: [
-          SPECULATIVE_ATTACK_SKILL_NAME,
-          URGENT_VALIDATION_SKILL_NAME,
-        ],
-        sourcesResolved: sources !== null,
-        policyPath: sources ? sources.policyPath : null,
-        speculativeAttackSkillPath: sourceDirectory + "/" +
-          SPECULATIVE_ATTACK_SKILL_FILE,
-        urgentValidationSkillPath: sourceDirectory + "/" +
-          URGENT_VALIDATION_SKILL_FILE,
-        policyLoaded: typeof cachedPolicy === "string",
-        policyBytes: typeof cachedPolicy === "string" ? cachedPolicy.length : 0,
-        lastPolicyContextInjection: lastPolicyInjection,
-        workspace: sources ? sources.workspaceRoot : SHELL_WORKSPACE_ROOT,
-        registeredPluginDirectory: REGISTERED_PLUGIN_DIRECTORY,
-        requiredOrcSurface: REQUIRED_ORC_SURFACE,
-        missingOrcSurface: missingOrcSurface(),
-        missingOrcSurfaceAtStartup: lastSurfaceGap,
-        unverifiableOrcSurface: UNVERIFIABLE_ORC_SURFACE,
-        selfTestAtStartup: lastSelfTest,
-        hermitPrimary: "rrnewton/hermit",
-        hermitUpstream: "facebookexperimental/hermit",
-        reverieIssueRepo: "rrnewton/reverie",
-        issueCreateWrapper: sourceDirectory + "/" + ISSUE_CREATE_WRAPPER_FILE,
-        prStatusCommand: PR_STATUS_COMMAND,
-        operationalTickCommand: OPERATIONAL_TICK_COMMAND,
-        operationalTickConfig: SHELL_WORKSPACE_ROOT +
-          "/ci-hub/health/tick-hub.yaml",
-        operationalTickIntervalMinutes: OPERATIONAL_TICK_INTERVAL_MS / 60000,
-        policyReloadWorkflow: POLICY_RELOAD_WORKFLOW_NAME,
-        policyReloadIntervalMinutes: POLICY_RELOAD_INTERVAL_MS / 60000,
-        agentLivenessCommand: AGENT_LIVENESS_COMMAND,
-        heartbeatRestartPolicy: HEARTBEAT_RESTARTABLE,
-        maxParkedSlots: 5,
-        maxActiveWorktrees: 12,
-        maxAgents: 15,
-      };
-    },
+    hermitDevStatus,
     {
       description: "Report hermit-dev plugin registration and policy source state",
       params: [],
-      sig: "orc.hermit-dev.status()",
+      sig: 'orc["hermit-dev.status"]()',
     },
   );
 
@@ -1170,11 +1389,6 @@ function registerPluginSurface(): void {
   );
 
   orc.registerStartup(PLUGIN_NAME + ".startup", async function hermitDevStartup() {
-    // Report; never throw. A named-but-absent API is what crash-looped this
-    // plugin, and a startup hook that dies takes the policies down with it.
-    lastSelfTest = hermitDevSelfTest();
-    orc.log(lastSelfTest.pass ? "info" : "error", formatSelfTest(lastSelfTest));
-
     lastSurfaceGap = missingOrcSurface();
     if (lastSurfaceGap.length > 0) {
       orc.log(

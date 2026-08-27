@@ -41,7 +41,7 @@
 //          import "./memory-skill-sync.ts";
 //      (or the loader form this ORC build uses for sibling plugin modules).
 //   2. Restart ORC so the new workflow + script register.
-//   3. Verify with:  orc.hermit-dev.status()  (unchanged) and that the workflow
+//   3. Verify with:  orc.hermitDevStatus() and that the workflow
 //      `hermit-dev-memory-skill-sync-v1` appears in the workflow list.
 //   4. Verify by TICK, not by presence: the workflow must be `alive` with
 //      `crash_error: null` after at least one interval, and the module must have

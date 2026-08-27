@@ -15,8 +15,8 @@ registers it as the `hermit-dev` skill.
   `context_injected=true`; a refusal reports `context_injected=false` and must
   never use the success title.
 - Register the two narrow coordinator skills stored beside this file.
-- Expose `await orc.hermit-dev.activate()` and
-  `orc.hermit-dev.status()`.
+- Expose `await orc.hermitDevActivate()`, `orc.hermitDevStatus()`, and
+  `await orc.hermitDevSelfTest()` as directly callable functions.
 - Restore `globalThis.gchatSafe` on every config load before any registration
   effect can fail, preserving the coordinator's existing no-caps check.
 - Register the fork-safe `gh-issue-create` wrapper.
@@ -66,15 +66,22 @@ remove a stale home copy; it no longer installs one.
 
 ## Verify
 
+`/validateConfig` checks ORC's host prerequisites; it does not enumerate or
+execute this project's registered functions and scripts. A green result there
+is therefore not evidence that the hermit-dev surface completed registration.
+
 From the dev-hermit root:
 
 ```bash
 HERMIT_AGENT_SNAPSHOT_JSON='[]' ./ci-hub/bin/health-tick --no-header
 ```
 
-A live session's `orc.hermit-dev.status()` must report the sixty-minute tick
+A live session's `orc.hermitDevStatus()` must report the sixty-minute tick
 interval, `ci-hub/health/tick-hub.yaml` config, and a non-null
 `lastPolicyContextInjection` receipt with `contextInjected: true`.
+`await orc.hermitDevSelfTest()` must report the three registered scripts and
+the advertised functions present, exercise the inert argv echo through
+`orc.scripts`, and exercise `globalThis.gchatSafe` on allowed and refused text.
 `orc.listWorkflows()` must show the sleeping
 `hermit-dev-operational-health-v1` and `hermit-dev-policy-reload-2h-v1`
 workflows and must not show `hermit-dev-pr-health` or `policy-reload-2h`.
@@ -93,8 +100,8 @@ Three things mislead people here, and all three cost time on 2026-08-10:
 - **`orc.scripts` inspects as `{}` and is not empty.** It is a `Proxy` whose
   `get` trap manufactures a function for any name, so it has no own enumerable
   properties. `Object.keys(orc.scripts)` is `[]` while every registered name is
-  callable. Use `await orc.hermit-dev.listScripts()` to see what is there along
-  with the syntax that calls it.
+  callable. Use `await orc["hermit-dev.listScripts"]()` to see what is there
+  along with the syntax that calls it.
 - **There is no `{}` placeholder.** No brace substitution exists anywhere in the
   orc script surface. A body containing `{}` passes those two literal characters
   through to the program, which is what produced `unknown argument: {}`.
@@ -112,7 +119,7 @@ distinctive multi-argument payload.
 To answer "did my arguments arrive?" with evidence rather than inference:
 
 ```js
-await orc.hermit-dev.verifyScriptArgs()
+await orc["hermit-dev.verifyScriptArgs"]()
 ```
 
 It round-trips a distinctive payload through the inert `hermitEchoScriptArgv`

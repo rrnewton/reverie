@@ -42,12 +42,29 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const INDEX_TS = join(HERE, "index.ts");
 const SOURCE = readFileSync(INDEX_TS, "utf8");
 
+function sourceLineOf(fragment) {
+  const offset = SOURCE.indexOf(fragment);
+  if (offset < 0) return -1;
+  return SOURCE.slice(0, offset).split("\n").length;
+}
+
 let passed = 0;
 const failures = [];
 function check(name, cond, detail = "") {
   if (cond) { passed++; return; }
   failures.push(name + (detail ? "  -- " + detail : ""));
 }
+
+check(
+  "operational workflow source line remains stable",
+  sourceLineOf("export async function operationalHealthHeartbeat") === 612,
+  String(sourceLineOf("export async function operationalHealthHeartbeat")),
+);
+check(
+  "policy reload workflow source line remains stable",
+  sourceLineOf("export async function policyReloadHeartbeat") === 642,
+  String(sourceLineOf("export async function policyReloadHeartbeat")),
+);
 
 // --- bind to the REAL literal, not a copy of it ------------------------------
 // Extracting and evaluating the shipped concatenation removes the usual
@@ -530,6 +547,10 @@ const registrationSource = sourceBetween(
   "function registerPluginSurface(): void",
   "\n// --- module entry",
 );
+const skillFunctionsSource = sourceBetween(
+  "const SKILL_FUNCTIONS = [",
+  "];",
+);
 const gchatSafeSource = sourceBetween(
   "  // GCHAT SAFE START.",
   "  // GCHAT SAFE END.",
@@ -571,6 +592,84 @@ check(
     registrationSource.indexOf('PLUGIN_NAME + ".activate"') <
       registrationSource.indexOf("orc.registerScript"),
 );
+for (const name of [
+  "hermitDevActivate",
+  "hermitDevStatus",
+  "hermitDevSelfTest",
+]) {
+  check(
+    "the skill advertises the callable " + name + " property",
+    skillFunctionsSource.includes('"' + name + '"'),
+  );
+  check(
+    name + " is exposed before script registration can fail",
+    registrationSource.indexOf('orc.exposeFunction("' + name + '"') >= 0 &&
+      registrationSource.indexOf('orc.exposeFunction("' + name + '"') <
+        registrationSource.indexOf("orc.registerScript"),
+  );
+}
+check(
+  "the skill no longer advertises a nonexistent hyphenated namespace",
+  !skillFunctionsSource.includes('PLUGIN_NAME + ".'),
+);
+const surfaceCheckSource = sourceBetween(
+  "async function verifyRegisteredSurface",
+  "\nfunction hermitDevStatus",
+);
+const missingNamesSource = sourceBetween(
+  "function missingRegisteredNames(",
+  "\n\nasync function verifyRegisteredSurface",
+)
+  .replace(
+    "function missingRegisteredNames(\n  entries: unknown,\n  required: string[],\n): string[] {",
+    "function missingRegisteredNames(entries, required) {",
+  )
+  .replace(
+    "const row = (entry || {}) as { name?: unknown };",
+    "const row = entry || {};",
+  );
+const missingRegisteredNames = new Function(
+  '"use strict";\n' + missingNamesSource + "\nreturn missingRegisteredNames;",
+)();
+check(
+  "registered-name check accepts the complete registry",
+  missingRegisteredNames(
+    [{ name: "alpha" }, { name: "beta" }, { name: "unrelated" }],
+    ["alpha", "beta"],
+  ).length === 0,
+);
+check(
+  "registered-name check reports the exact absent entry",
+  JSON.stringify(missingRegisteredNames([{ name: "alpha" }], ["alpha", "beta"])) ===
+    JSON.stringify(["beta"]),
+);
+for (const required of [
+  "globalThis",
+  "gchatSafe",
+  "orc.listScripts()",
+  "verifyScriptArgPassing()",
+  "orc.listUserFunctions()",
+  "typeof orc[name]",
+  "orc.hermitDevStatus",
+]) {
+  check(
+    "registered-surface validation exercises " + required,
+    surfaceCheckSource.includes(required),
+  );
+}
+check(
+  "surface validation startup survives failures after script registration",
+  registrationSource.indexOf('PLUGIN_NAME + ".surface-check"') >
+      registrationSource.indexOf("orc.registerScript(ARGV_ECHO_SCRIPT_NAME") &&
+    registrationSource.indexOf('PLUGIN_NAME + ".surface-check"') <
+      registrationSource.indexOf("registerHermitDevSkill("),
+);
+check(
+  "surface validation failure sends a hard warning",
+  registrationSource.includes(
+    '"HARD WARNING: hermit-dev surface validation failed"',
+  ) && registrationSource.includes("if (!lastSelfTest.pass)"),
+);
 const policyReloadSource = sourceBetween(
   "export async function policyReloadHeartbeat",
   "\n// --- registered-script invocation",
@@ -593,6 +692,6 @@ console.log(
   "script-arg-passing: " + passed + " checks passed " +
     "(argv round-trip through the shipped literal, off-by-one detection, " +
     "death-gate permit/refuse brackets, policy context pass/fail brackets, " +
-    "the persisted GChat guard, a cache-authority mutation control, and " +
-    "index.ts drift guards)",
+    "the persisted GChat guard, registered-surface validation, a " +
+    "cache-authority mutation control, and index.ts drift guards)",
 );
