@@ -37,6 +37,12 @@ pub unsafe fn clone_syscall(
     ret_addr: *const libc::c_void,  // r9
     vfork_slot: u64,                // xmm0 (preserved by syscall)
 ) -> usize {
+    // A process child inherits only the calling thread. Exclude concurrent
+    // slot-map access at the clone boundary so the child cannot inherit its
+    // process-global lock from a thread that no longer exists there. Thread
+    // clones share the lock and its owners, so they must not take this guard.
+    let _slot_map_fork_guard =
+        (clone_flags & libc::CLONE_VM as usize == 0).then(crate::slot_map::lock_for_fork);
     let mut ret: usize = Sysno::clone as usize;
 
     core::arch::asm! {
@@ -133,6 +139,8 @@ pub unsafe fn fork_syscall(
     wrapper_sp: *const syscall_stackframe,
     vfork_slot: u64, // xmm0 (preserved by syscall)
 ) -> usize {
+    let _slot_map_fork_guard =
+        (clone_flags & libc::CLONE_VM as usize == 0).then(crate::slot_map::lock_for_fork);
     let mut ret: usize = Sysno::clone as usize;
 
     core::arch::asm! {
@@ -218,6 +226,8 @@ pub unsafe fn clone3_syscall(
     clone_flags: u64,            // xmm0 (preserved by syscall)
     vfork_slot: u64,             // xmm1 (preserved by syscall)
 ) -> usize {
+    let _slot_map_fork_guard =
+        (clone_flags & libc::CLONE_VM as u64 == 0).then(crate::slot_map::lock_for_fork);
     let mut ret: usize = Sysno::clone3 as usize;
 
     core::arch::asm! {
@@ -308,6 +318,8 @@ pub unsafe fn clone3_fork_syscall(
     clone_flags: u64, // xmm0 (preserved by syscall)
     vfork_slot: u64,  // xmm1 (preserved by syscall)
 ) -> usize {
+    let _slot_map_fork_guard =
+        (clone_flags & libc::CLONE_VM as u64 == 0).then(crate::slot_map::lock_for_fork);
     let mut ret: usize = Sysno::clone3 as usize;
 
     core::arch::asm! {
