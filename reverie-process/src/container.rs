@@ -1080,6 +1080,57 @@ mod tests {
         assert_eq!(result, Ok(true));
     }
 
+    /// A read-only bind of a source on a `nosuid`/`nodev` filesystem must work.
+    ///
+    /// ⚠️ REGRESSION TEST FOR A WHOLE LOST VALIDATE ARM, not a corner case.
+    /// Inside a user namespace the kernel LOCKS the flags of mounts inherited
+    /// from the parent namespace and refuses any remount that would clear one.
+    /// A read-only bind is bind-then-remount, and the remount used to pass
+    /// `MS_RDONLY` alone -- which asks to drop every other flag the source had.
+    /// The mount returned EPERM and the container never spawned, so the guest
+    /// did not fail, it never existed.
+    ///
+    /// Measured 2026-08-27: Hermit puts its frozen `/etc/group` and empty nscd
+    /// directory in TMPDIR and binds each read-only, so a TMPDIR on
+    /// `/run/user/<uid>` -- `nosuid,nodev` on any systemd host -- killed every
+    /// container spawn. 610 of one arm's 612 e2e rows came from this one mount.
+    ///
+    /// ⚠️ THE SOURCE MUST BE MOUNTED BY THE HOST, NOT BY THIS CONTAINER. A tmpfs
+    /// this test mounts itself lives in the container's own namespace, so its
+    /// flags are NOT locked and the remount succeeds even unfixed -- a test that
+    /// cannot fail. `/dev/shm` is host-mounted and carries both flags, so it
+    /// reproduces the inheritance that makes them locked.
+    #[test]
+    fn a_readonly_bind_survives_a_nosuid_nodev_source() {
+        let shm = Path::new("/dev/shm");
+        // Fail closed rather than silently stop exercising the condition.
+        let flags = nix::sys::statvfs::statvfs(shm).expect("statvfs /dev/shm");
+        assert!(
+            flags
+                .flags()
+                .contains(nix::sys::statvfs::FsFlags::ST_NOSUID)
+                || flags.flags().contains(nix::sys::statvfs::FsFlags::ST_NODEV),
+            "/dev/shm carries neither nosuid nor nodev on this host, so this test \
+             would pass without exercising the locked-flag remount at all"
+        );
+
+        let source = tempfile::tempdir_in(shm).unwrap();
+        let target = tempfile::tempdir().unwrap();
+
+        let result = Container::new()
+            .unshare(Namespace::USER | Namespace::MOUNT)
+            .map_root()
+            .mount(Mount::bind(source.path(), target.path()).readonly())
+            .run(|| Path::new("/proc/self/mounts").is_file());
+
+        assert_eq!(
+            result,
+            Ok(true),
+            "a read-only bind whose source is nosuid/nodev must not fail; \
+             EPERM here means the remount is dropping the source's locked flags"
+        );
+    }
+
     #[test]
     fn huge_return_value() {
         assert_eq!(
