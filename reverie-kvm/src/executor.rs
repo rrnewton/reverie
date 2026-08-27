@@ -10757,8 +10757,11 @@ mod tests {
     impl TestDir {
         fn new() -> Self {
             let id = NEXT_TEST_DIR.fetch_add(1, Ordering::Relaxed);
+            // AF_UNIX paths are limited to 107 bytes on Linux. The validation
+            // checkout deliberately has a long TMPDIR, so keep this fixture's
+            // private, nonce-qualified directory directly under /tmp.
             let path =
-                std::env::temp_dir().join(format!("reverie-kvm-fs-{}-{id}", std::process::id()));
+                Path::new("/tmp").join(format!("reverie-kvm-fs-{}-{id}", std::process::id()));
             std::fs::create_dir(&path).unwrap();
             Self(path)
         }
