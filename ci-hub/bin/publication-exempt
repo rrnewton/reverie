@@ -17,8 +17,12 @@ agent, resolved through the same process-context authority that attributes a
 comment write. The reason is still free text, because the reason is the part a
 human has to read.
 
+  cat > /tmp/<agent>-publication-reason.md <<'EOF'
+  landing published itself at <sha>
+  EOF
   ci-hub/bin/publication-exempt <task> --repo owner/name --pr N \\
-      --reason "landing published itself at <sha>" --who <agent> --team <t> --role <r>
+      --reason-file /tmp/<agent>-publication-reason.md \\
+      --who <agent> --team <t> --role <r>
 
 THE EXEMPTION IS NOT A PUBLICATION and the check keeps counting the two
 separately. This tool only makes the claim attributable; it does not make it
@@ -29,14 +33,18 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
+from typing import Callable
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from closure import publication_record  # noqa: E402
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
+BIN_DIR = Path(__file__).resolve().parent
+REPO_ROOT = BIN_DIR.parents[1]
 
 
 def resolve_actor(claimed: str) -> str:
@@ -75,22 +83,91 @@ def resolve_actor(claimed: str) -> str:
         )
     return resolved
 
-def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
+
+def write_exemption(
+    task: str,
+    repo: str,
+    pr: int,
+    actor: str,
+    reason: str,
+    *,
+    run: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+) -> subprocess.CompletedProcess[str]:
+    """Write the structured record through the byte-verifying note path."""
+    body = publication_record.render_exemption(repo, pr, actor, reason)
+    with tempfile.NamedTemporaryFile(
+        "w", suffix=".note", delete=False, encoding="utf-8"
+    ) as handle:
+        handle.write(body)
+        note_path = Path(handle.name)
+    env = os.environ.copy()
+    # NamedTemporaryFile creates an unpredictable path with O_EXCL. Tell the
+    # verified writer that this is its supported private-temp case rather than
+    # an agent-chosen shared /tmp filename.
+    env["TG_NOTE_PRIVATE_TEMP"] = "1"
+    try:
+        return run(
+            [str(BIN_DIR / "tg-note-verified"), task, "--file", str(note_path)],
+            cwd=REPO_ROOT,
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+    finally:
+        try:
+            note_path.unlink()
+        except OSError:
+            pass
+
+
+def main(
+    argv: list[str] | None = None,
+    *,
+    run: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
+    actor_resolver: Callable[[str], str] = resolve_actor,
+) -> int:
+    parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     parser.add_argument("task")
     parser.add_argument("--repo", required=True, help="owner/name")
     parser.add_argument("--pr", required=True, type=int)
-    parser.add_argument("--reason", required=True)
+    parser.add_argument(
+        "--reason-file",
+        required=True,
+        type=Path,
+        help="file containing the reason; use a quoted heredoc so the shell cannot alter it",
+    )
     parser.add_argument("--who", default="")
     parser.add_argument("--team", default="")
     parser.add_argument("--role", default="")
     args = parser.parse_args(argv)
 
-    actor = resolve_actor(args.who)
-    body = publication_record.render_exemption(args.repo, args.pr, actor, args.reason)
-    result = subprocess.run(["tg", "note", args.task, body], capture_output=True, text=True)
+    try:
+        reason = args.reason_file.read_text(encoding="utf-8")
+    except OSError as error:
+        print(
+            f"publication-exempt: cannot read reason file {args.reason_file}: {error}",
+            file=sys.stderr,
+        )
+        return 2
+
+    actor = actor_resolver(args.who)
+    result = write_exemption(
+        args.task,
+        args.repo,
+        args.pr,
+        actor,
+        reason,
+        run=run,
+    )
     if result.returncode != 0:
-        sys.exit(f"publication-exempt: tg note failed: {(result.stderr or '').strip()}")
+        detail = (result.stderr or result.stdout or "").strip()
+        print(
+            f"publication-exempt: tg-note-verified failed (rc={result.returncode}): {detail}",
+            file=sys.stderr,
+        )
+        return result.returncode
+    if result.stdout:
+        print(result.stdout.rstrip())
     print(f"recorded exemption for {args.repo}#{args.pr} on {args.task}, by {actor}")
     return 0
 
