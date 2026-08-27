@@ -65,6 +65,7 @@ For each selected strategy:
    PR description, the author runs
    `./ci-hub/bin/who-am-i --tag --role impl` from the `dev-hermit` parent and
    pastes its exact output at the start without typing or reconstructing it.
+   The PR title stays unprefixed; the disclosure belongs only in the description.
    The description names the strategy slug, links the umbrella task, and
    reports exact SHAs and validation without claiming selection.
 4. Apply the `speculative` label immediately:

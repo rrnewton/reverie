@@ -23,6 +23,8 @@ the applicable role tag:
 Examples: `[impl agent, gpt-5.6-sol]`,
 `[adversarial-reviewer agent, opus-4.8]`.
 
+The tag belongs in the description or comment body, never in the PR title.
+
 A landing discipline for autonomous multi-agent work in which **no KEY
 change reaches `main` until a human has approved it.** (Key changes
 defined below.) This is the *cautious* counterpart to

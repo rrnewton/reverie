@@ -16,9 +16,10 @@ Before writing a bot-authored PR description, run this command from the
 ./ci-hub/bin/who-am-i --tag --role ROLE
 ```
 
-Do not type, reconstruct, or normalize the output. The command resolves the
-caller and refuses unresolved identity. Do not write a prefix in a GitHub
-comment or review body. Send the unprefixed body through the registered boundary:
+The disclosure belongs on the first line of the PR description, never in the
+PR title. Do not type, reconstruct, or normalize the output. The command
+resolves the caller and refuses unresolved identity. Do not write a prefix in
+a GitHub comment or review body. Send the unprefixed body through the registered boundary:
 
 ```bash
 with-proxy ./ci-hub/bin/gh --who AGENT --team TEAM --role ROLE \

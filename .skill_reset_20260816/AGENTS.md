@@ -137,13 +137,14 @@ These files are the single sources of truth for their action. Do not restate the
 
 # Disclosure and evidence
 
-Before inserting the disclosure in a commit subject or pull-request description, run
+Before inserting the disclosure in a commit body or pull-request description, run
 `./ci-hub/bin/who-am-i --tag --role <artifact-role>` from the `dev-hermit` parent and paste its exact output
-at the start. Do not type, reconstruct, or normalize the output; the command resolves the caller and refuses
-when it cannot. GitHub comments use the [registered boundary](ci-hub/bin/gh), which validates the caller
-context and prepends the disclosure, so their bodies remain unprefixed.
+on the first line of that body. Never put the disclosure in a commit subject or pull-request title. Do not
+type, reconstruct, or normalize the output; the command resolves the caller and refuses when it cannot.
+GitHub comments use the [registered boundary](ci-hub/bin/gh), which validates the caller context and
+prepends the disclosure, so their bodies remain unprefixed.
 The prefix is disclosure, not authentication, and never proves reviewer independence. Install the
-[repository hooks](scripts/setup-hooks.sh) before committing. Immediately after the subject/body, record
+[repository hooks](scripts/setup-hooks.sh) before committing. After the disclosure in a commit body, record
 the stable task with `Task: <task-id>` when the commit implements task work.
 
 Every implementation handoff names the artifact URL, repository, branch, exact 40-hex commit, tested base,

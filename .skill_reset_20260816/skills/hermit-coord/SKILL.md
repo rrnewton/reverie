@@ -89,16 +89,18 @@ is the operational summary of the coordinator role.
   Infrastructure IDs do not replace the slug.
 - Use `with-proxy` for all networked git/GitHub operations. Every dispatch that
   can create a commit or PR description must require the author to run this
-  command from the `dev-hermit` parent and paste its exact output at the start:
+  command from the `dev-hermit` parent:
 
   ```bash
   ./ci-hub/bin/who-am-i --tag --role ROLE
   ```
 
-  The author must not type, reconstruct, or normalize that output. The command
-  resolves the caller and refuses unresolved identity. GitHub comment and review
-  bodies carry no hand-written prefix. Include this literal command shape in
-  every dispatch that can write a GitHub comment or review:
+  The author puts the exact output on the first line of the commit body or PR
+  description, never in a commit subject or PR title, and must not type,
+  reconstruct, or normalize it. The command resolves the caller and refuses
+  unresolved identity. GitHub comment and review bodies carry no hand-written
+  prefix. Include this literal command shape in every dispatch that can write a
+  GitHub comment or review:
 
   ```bash
   with-proxy ./ci-hub/bin/gh --who AGENT --team TEAM --role ROLE \

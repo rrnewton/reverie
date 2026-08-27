@@ -174,6 +174,14 @@ Don't intruduce jargon...
 
 When a task or note cites a GitHub issue or pull request, write the FULL HYPERLINK -- `https://github.com/<owner>/<repo>/pull/<n>` -- never a bare `#1234` and never a bare `hermit#1234`. A bare number cannot be resolved from its own text once the surrounding context is gone, and the default repository is not a safe guess: references span at least hermit, agent-utils, reverie and rust-lang/rust, so assuming one silently resolves to a real but unrelated pull request. Three tasks have already been written off as permanently unmatchable for exactly this. The `task-reference-hygiene` gate reports violations; it is advisory today and grandfathers everything created before 2026-08-26.
 
+# Put the who-am-i tag in bodies, never titles
+
+When a commit or pull request requires the disclosure from
+`./ci-hub/bin/who-am-i --tag --role ROLE`, copy the exact output into the body:
+the first line of the commit body or the first line of the pull-request
+description. Never put the tag in a commit subject or pull-request title. Keep
+both titles as concise descriptive prose.
+
 # NEVER READ `$?` AFTER A PIPE
 
 `$?` is the exit status of the LAST command in a pipeline, not the one you care
