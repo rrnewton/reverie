@@ -27,8 +27,10 @@ fn preload() -> PathBuf {
     let deps = executable.parent().unwrap();
     let profile = deps.parent().unwrap();
     [
-        profile.join("libreverie_examples.so"),
+        // `cargo test` refreshes the copy in `deps`; the profile-root copy can
+        // belong to another worktree when both share one Cargo target directory.
         deps.join("libreverie_examples.so"),
+        profile.join("libreverie_examples.so"),
     ]
     .into_iter()
     .find(|path| path.is_file())
