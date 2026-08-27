@@ -72,6 +72,7 @@ from typing import TextIO
 
 REVERIE_GIT_URL = "https://github.com/rrnewton/reverie.git"
 MAIN_REF = "refs/heads/main"
+ORIGIN_MAIN_REF = "refs/remotes/origin/main"
 FULL_SHA = re.compile(r"^[0-9a-f]{40}$")
 
 # `git -C <repo>` is overridden by an inherited GIT_INDEX_FILE/GIT_DIR, and git
@@ -132,6 +133,30 @@ def recorded_gitlink(root: Path, product: str) -> str | None:
     head = git(root, "rev-parse", f"HEAD:{product}")
     sha = head.stdout.strip()
     return sha if head.returncode == 0 and FULL_SHA.match(sha) else None
+
+
+def published_gitlink(root: Path, product: str) -> str | None:
+    """The gitlink published on the parent's freshly fetched origin/main.
+
+    Unlike ``recorded_gitlink``, this deliberately ignores the shared index and
+    local HEAD. Those are the right sources for a pre-commit invariant, but a
+    monitor reporting published state must not let either stale local source
+    override the remote it claims to describe.
+    """
+    fetched = git(
+        root,
+        "fetch",
+        "--quiet",
+        "--force",
+        "origin",
+        f"{MAIN_REF}:{ORIGIN_MAIN_REF}",
+        network=True,
+    )
+    if fetched.returncode != 0:
+        return None
+    published = git(root, "rev-parse", f"{ORIGIN_MAIN_REF}:{product}")
+    sha = published.stdout.strip()
+    return sha if published.returncode == 0 and FULL_SHA.match(sha) else None
 
 
 def _walk(value: object) -> list[str]:

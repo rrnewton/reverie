@@ -14,6 +14,10 @@ about the two ways staging could quietly fail:
 There is deliberately no test for a snooze or a clearing flag, because there is
 deliberately no snooze or clearing flag: the only input that quiets this tool is
 a smaller lag.
+
+The pin side is the Reverie gitlink published on parent origin/main. The shared
+parent index is deliberately varied in both directions below: stale-behind when
+the remote is current, and staged-current when the remote genuinely lags.
 """
 
 from __future__ import annotations
@@ -98,6 +102,9 @@ class RealRepository(unittest.TestCase):
         self.reverie = self.root / "reverie"
         self.reverie.mkdir(parents=True)
         git("init", "-q", "-b", "main", cwd=self.root)
+        self.parent_origin = Path(self._tmp.name) / "parent-origin.git"
+        subprocess.run(["git", "init", "-q", "--bare", str(self.parent_origin)], check=True)
+        git("remote", "add", "origin", str(self.parent_origin), cwd=self.root)
         git("init", "-q", "-b", "main", cwd=self.reverie)
         # A REAL origin, so measure() exercises its actual ls-remote + fetch path
         # instead of a stub. A fetch stubbed out here would leave the one network
@@ -121,15 +128,48 @@ class RealRepository(unittest.TestCase):
     def _record_pin(self, sha: str) -> None:
         git("update-index", "--add", "--cacheinfo", f"160000,{sha},reverie", cwd=self.root)
 
+    def _publish_pin(self, sha: str) -> None:
+        self._record_pin(sha)
+        git("commit", "-qm", f"pin reverie at {sha[:12]}", cwd=self.root)
+        git("push", "-q", "origin", "main", cwd=self.root)
+
     def _measure(self) -> dict:
         return rpl.measure(self.root)
 
     def test_lag_is_counted_along_ancestry(self) -> None:
-        self._record_pin(self.base)
+        self._publish_pin(self.base)
         self._advance(6)
+        current = git("rev-parse", "HEAD", cwd=self.reverie)
+        # The local index claims currency. The published parent gitlink is still
+        # the base, so the warning must fire from origin/main rather than go quiet.
+        self._record_pin(current)
         result = self._measure()
         self.assertEqual(result["state"], "lagging", result)
         self.assertEqual(result["lag"], 6)
+        self.assertEqual(result["pin"], self.base)
+
+    def test_stale_local_index_cannot_create_a_false_lag(self) -> None:
+        self._publish_pin(self.base)
+        self._advance(1)
+        current = git("rev-parse", "HEAD", cwd=self.reverie)
+        self._publish_pin(current)
+
+        # Deliberately make the shared index stale after origin/main is correct.
+        self._record_pin(self.base)
+        staged = git("ls-files", "--stage", "--", "reverie", cwd=self.root)
+        self.assertEqual(staged.split()[1], self.base)
+
+        result = self._measure()
+        self.assertEqual(result["state"], "current", result)
+        self.assertEqual(result["pin"], current)
+        self.assertEqual(result["main"], current)
+        self.assertEqual(result["lag"], 0)
+
+    def test_unreadable_parent_origin_does_not_fall_back_to_the_index(self) -> None:
+        self._record_pin(self.base)
+        result = self._measure()
+        self.assertEqual(result["state"], "unknown", result)
+        self.assertIn("parent origin/main", result["reason"])
 
     def test_a_rewritten_history_is_non_ancestor_not_a_lag(self) -> None:
         """The monotonicity trap: never report an N that invites a bad bump.
@@ -141,7 +181,7 @@ class RealRepository(unittest.TestCase):
         """
         self._advance(2)
         orphan = git("rev-parse", "HEAD", cwd=self.reverie)
-        self._record_pin(orphan)
+        self._publish_pin(orphan)
         git("checkout", "-q", "--orphan", "rewritten", cwd=self.reverie)
         (self.reverie / "f").write_text("rewritten\n")
         git("add", "-A", cwd=self.reverie)
@@ -163,10 +203,14 @@ class RealRepository(unittest.TestCase):
         empty = Path(self._tmp.name) / "bare-parent"
         (empty / "reverie").mkdir(parents=True)
         git("init", "-q", "-b", "main", cwd=empty)
+        parent_origin = Path(self._tmp.name) / "bare-parent-origin.git"
+        subprocess.run(["git", "init", "-q", "--bare", str(parent_origin)], check=True)
+        git("remote", "add", "origin", str(parent_origin), cwd=empty)
         (empty / "x").write_text("x\n")
         git("add", "-A", cwd=empty)
-        git("commit", "-qm", "c", cwd=empty)
         git("update-index", "--add", "--cacheinfo", f"160000,{self.base},reverie", cwd=empty)
+        git("commit", "-qm", "c", cwd=empty)
+        git("push", "-q", "origin", "main", cwd=empty)
         result = rpl.measure(empty)
         self.assertEqual(result["state"], "unknown", result)
         self.assertIn("not its own git checkout", result["reason"])

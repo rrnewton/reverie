@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Measure how far hermit's RECORDED reverie pin trails reverie main, and stage it.
+"""Measure how far the parent origin/main Reverie gitlink trails Reverie main.
 
 WHY A LAG COUNT AND NOT AN EQUALITY CHECK. `scripts/check_reverie_pin_invariant.py`
 leg C already answers "is the pin equal to reverie origin/main" -- a boolean. That
@@ -52,12 +52,12 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "scripts"))
 
-# ONE definition of "what is the recorded pin" and "where is reverie main".
+# ONE definition of "what is published on parent main" and "where is reverie main".
 # Re-deriving either here would create a second answer to a question this repo
 # already answers, which is the sprawl class the one-definition audit named.
 from check_reverie_pin_invariant import (  # noqa: E402
     git,
-    recorded_gitlink,
+    published_gitlink,
     remote_main,
 )
 
@@ -71,9 +71,12 @@ MAIN_REF = "refs/heads/main"
 def measure(root: Path = ROOT) -> dict:
     """Report the pin, reverie main, ancestry, and the linear-ancestry lag."""
     reverie = root / "reverie"
-    pin = recorded_gitlink(root, "reverie")
+    pin = published_gitlink(root, "reverie")
     if not pin:
-        return {"state": "unknown", "reason": "no recorded reverie gitlink"}
+        return {
+            "state": "unknown",
+            "reason": "could not read the Reverie gitlink from freshly fetched parent origin/main",
+        }
     if not reverie.is_dir():
         return {"state": "unknown", "reason": f"no reverie checkout at {reverie}"}
     # An UNINITIALISED submodule is an empty directory INSIDE the parent repo, so
@@ -133,7 +136,10 @@ def measure(root: Path = ROOT) -> dict:
 def render(result: dict) -> str:
     state = result["state"]
     if state == "current":
-        return f"reverie pin is current at {result['pin'][:12]} (0 commits behind main)"
+        return (
+            "parent origin/main Reverie gitlink is current at "
+            f"{result['pin'][:12]} (0 commits behind main)"
+        )
     if state == "unknown":
         return f"reverie pin lag UNMEASURABLE: {result['reason']}"
     if state == "non-ancestor":
@@ -143,7 +149,7 @@ def render(result: dict) -> str:
         )
     lag = result["lag"]
     return (
-        f"hermit's recorded reverie pin {result['pin'][:12]} is {lag} commit(s) behind "
+        f"parent origin/main Reverie gitlink {result['pin'][:12]} is {lag} commit(s) behind "
         f"reverie main {result['main'][:12]} along linear ancestry. Clear it by bumping the "
         f"pin one monotonic step at a time; there is no other way to quiet this."
     )
