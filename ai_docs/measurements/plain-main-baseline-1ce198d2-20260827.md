@@ -59,9 +59,23 @@ Denominators, so any count can be read: **358** test ids, **677** declared cells
 ## Why the raw log is not committed here
 
 The run log is 2,699,457 bytes, above this repository's 2 MiB threshold for a text
-file. It is at, on devbig030 only:
+file, so it is not on `main`. **It is committed, on a ref of its own**, because as a
+git blob it costs 203,162 bytes — the threshold is about file size, not storage:
 
-    ~/work/dev-hermit/ignored/validate/validate-hermit-106-1ce198d2f224-1787821450812849209-1017041-cdc50011.log
+    ref     refs/heads/evidence/hermit-106/baseline-1ce198d2-run-log
+    commit  86d998cab554203ce2097597edab05d1b080f7da
+    path    validate-hermit-106-1ce198d2f224-run.log
+    sha256  b9d9784429b4f9c78cb621382de8d045ad50a3164397c1e2afecccc289a13508
+
+Verified by fetching the ref back and comparing: 2,699,457 bytes, sha256 identical.
+Retrieve it with:
+
+    git show refs/heads/evidence/hermit-106/baseline-1ce198d2-run-log:validate-hermit-106-1ce198d2f224-run.log
+
+The original also still exists on devbig030 at
+`~/work/dev-hermit/ignored/validate/validate-hermit-106-1ce198d2f224-1787821450812849209-1017041-cdc50011.log`,
+but that copy is in an ignored directory on one host and nothing enumerates it; treat
+the ref above as the record and that path as a convenience.
 
 ⚠️ **A FAILING RUN WRITES NO LEDGER ROW.** `ci-hub validate-status` reports this sha
 as `NOT-VALIDATED` with "0 non-qualifying record(s)", because the ledger records
