@@ -1121,18 +1121,45 @@ class HistoryCli(unittest.TestCase):
         import tempfile
 
         with tempfile.TemporaryDirectory() as temporary:
-            parent = Path(temporary) / "parent"
+            root = Path(temporary)
+            parent = root / "parent"
             parent.mkdir()
+            hermit_bare = root / "hermit-origin.git"
+            subprocess.run(
+                ["git", "init", "-q", "--bare", "-b", "main", str(hermit_bare)],
+                check=True,
+            )
             repo = parent / "hermit"
             repo.mkdir()
-            self._git(repo, "init", "-q")
+            self._git(repo, "init", "-q", "-b", "main")
             self._git(repo, "config", "user.name", "Series Test")
             self._git(repo, "config", "user.email", "series@example.invalid")
             (repo / "one").write_text("one\n")
             self._git(repo, "add", "one")
             self._git(repo, "commit", "-qm", "one")
-            tree = self._git(repo, "rev-parse", "HEAD")
-            self._git(repo, "update-ref", "refs/remotes/origin/main", tree)
+            first_tree = self._git(repo, "rev-parse", "HEAD")
+            self._git(repo, "remote", "add", "origin", str(hermit_bare))
+            self._git(repo, "push", "-q", "-u", "origin", "main")
+
+            writer = root / "hermit-writer"
+            subprocess.run(["git", "clone", "-q", str(hermit_bare), str(writer)], check=True)
+            self._git(writer, "config", "user.name", "Series Test")
+            self._git(writer, "config", "user.email", "series@example.invalid")
+            (writer / "two").write_text("two\n")
+            self._git(writer, "add", "two")
+            self._git(writer, "commit", "-qm", "two")
+            self._git(writer, "push", "-q", "origin", "main")
+            tree = self._git(writer, "rev-parse", "HEAD")
+            self.assertEqual(self._git(repo, "rev-parse", "origin/main"), first_tree)
+            missing = subprocess.run(
+                ["git", "-C", str(repo), "cat-file", "-e", f"{tree}^{{commit}}"],
+                check=False,
+            )
+            self.assertNotEqual(
+                missing.returncode,
+                0,
+                "the history fixture must begin with a stale Hermit origin/main",
+            )
 
             first = row(
                 event_id="history-validate",
@@ -1146,7 +1173,7 @@ class HistoryCli(unittest.TestCase):
                     "outcome": "diverged",
                     "num_runs": 1,
                     "main_ancestry": True,
-                    "depth": {"hermit": {"commits": 1, "first_parent": 1}},
+                    "depth": {"hermit": {"commits": 2, "first_parent": 2}},
                     "runtime": {
                         "run1": {
                             "scheduler_turns": 12,
@@ -1175,7 +1202,7 @@ class HistoryCli(unittest.TestCase):
                     "outcome": "passed",
                     "num_runs": 200,
                     "main_ancestry": True,
-                    "depth": {"hermit": {"commits": 1, "first_parent": 1}},
+                    "depth": {"hermit": {"commits": 2, "first_parent": 2}},
                     "runtime": {
                         "run1": {
                             "scheduler_turns": 1231,
@@ -1217,7 +1244,12 @@ class HistoryCli(unittest.TestCase):
                 "wall_time_min_ms=90\twall_time_max_ms=5285",
                 text,
             )
-            self.assertIn("2026-08-25\t" + tree + "\tyes/yes\thermit:1/1", text)
+            self.assertIn("2026-08-25\t" + tree + "\tyes/yes\thermit:2/2", text)
+            self.assertEqual(
+                self._git(repo, "rev-parse", "origin/main"),
+                tree,
+                "history must refresh Hermit origin/main before labeling current ancestry",
+            )
             self.assertIn("\t12/13\t34/35\t5/6\t90\tvalidate\tvalidate-1", text)
             self.assertIn("\t0-199 (200)\t1231/1231", text)
             self.assertIn("\t5101-5285\tpressure-test\tpressure-1", text)

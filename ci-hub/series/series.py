@@ -494,11 +494,13 @@ def store_paths(parent: Any) -> list[Path]:
     return tracked + live + retained
 
 
-def published_rows(parent: Any) -> list[dict]:
-    """Read tracked series rows from a freshly fetched parent origin/main."""
-    parent = Path(parent)
+def refresh_origin_main(checkout: Any, repository: str) -> None:
+    """Refresh one checkout's remote main without moving its working tree."""
+    checkout = Path(checkout)
+    if not _is_checkout(checkout):
+        raise SeriesError(f"{repository} checkout is unavailable at {checkout}")
     command = [
-        "git", "-C", str(parent), "fetch", "--quiet", "--force", "origin",
+        "git", "-C", str(checkout), "fetch", "--quiet", "--force", "origin",
         "refs/heads/main:refs/remotes/origin/main",
     ]
     proxy = shutil.which(os.environ.get("WITH_PROXY", "with-proxy"))
@@ -512,7 +514,13 @@ def published_rows(parent: Any) -> list[dict]:
     )
     if fetched.returncode != 0:
         detail = fetched.stderr.strip() or fetched.stdout.strip() or "no output"
-        raise SeriesError(f"cannot fetch parent origin/main: {detail}")
+        raise SeriesError(f"cannot fetch {repository} origin/main: {detail}")
+
+
+def published_rows(parent: Any) -> list[dict]:
+    """Read tracked series rows from a freshly fetched parent origin/main."""
+    parent = Path(parent)
+    refresh_origin_main(parent, "parent")
 
     published_ref = "refs/remotes/origin/main"
     listed = _git(parent, [
@@ -1234,7 +1242,10 @@ def _cmd_history(argv: list[str]) -> int:
         return 1
 
     trees = [str((row.get("series") or {}).get("tree", "")) for row in rows]
-    current = main_ancestry(parent / "hermit", trees)
+    hermit_checkout = parent / "hermit"
+    if _is_checkout(hermit_checkout):
+        refresh_origin_main(hermit_checkout, "Hermit")
+    current = main_ancestry(hermit_checkout, trees)
     represented = sum(int((row.get("series") or {}).get("num_runs", 1)) for row in rows)
     print(
         f"test={wanted_test} rows={len(rows)} runs={represented} "
