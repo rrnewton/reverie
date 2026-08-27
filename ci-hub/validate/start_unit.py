@@ -781,9 +781,44 @@ def prepare_fresh_checkout(
     # the target's own pre.reverie_pin gate uses origin/main as its historical
     # monotonicity floor. Leaving the live ref visible makes every old target
     # whose Reverie pin has since advanced fail before the test matrix starts.
-    # A shared clone uses the same object store while keeping refs independent,
-    # so its origin/main can name the commit being re-measured without changing
-    # the source repository's ref for concurrent users.
+    # An ordinary local clone keeps refs independent, so its origin/main can name
+    # the commit being re-measured without changing the source repository's ref
+    # for concurrent users.
+    #
+    # DELIBERATELY NOT `--shared`, AND NOT `--dissociate`. `--shared` writes
+    # `.git/objects/info/alternates` naming an ABSOLUTE path in the source
+    # repository. That is fine on the host and FATAL in the pinned root, which
+    # bind-mounts only this checkout, as /src: git inside the container resolves
+    # a host path that is not there, and every command dies with
+    #
+    #     error: unable to normalize alternate object path: <source>/.git/objects
+    #     fatal: bad object HEAD
+    #
+    # `build.manifest_guests_in_pinned_root` and its privileged twin are the
+    # first nodes to run git inside the container, so they failed at 2-4s with
+    # exit 2 and took 16 of 75 nodes with them as dependency skips -- including
+    # three that had FAILED in an earlier run and were then merely absent, which
+    # reads as three fixes and is not. Measured across two frozen runs at
+    # 7ddb3559a09f: the path in the error tracked whatever --checkout named, so
+    # a caller cannot avoid this by supplying a self-contained checkout. The
+    # alternate is created HERE.
+    #
+    # A plain local clone costs no object copy either: git HARDLINKS the object
+    # files when source and destination share a filesystem, so this keeps the
+    # cheap path the previous comment claimed while producing a self-contained
+    # store. Measured on a 3.0 GB source: 6s to clone plus 4s for the recursive
+    # submodule update, hardlinked (pack link count 2, same inode as the source),
+    # and no alternates file anywhere in the tree -- top level or submodule.
+    # `--dissociate` was the obvious alternative and is NOT used: it copies all
+    # 3.0 GB and exceeded ten minutes, roughly a 50% increase on a 21-minute
+    # frozen run. If the two ever land on different filesystems git falls back to
+    # a real copy, which is slower but still correct: it degrades in cost, not in
+    # behaviour.
+    #
+    # Bind-mounting the source alongside /src was also rejected: the pinned
+    # root's contract is that only the checkout is visible, and admitting a
+    # second host path so git can reach outward weakens the isolation that
+    # assert-no-network and the fixed image exist to provide.
     with git_mutation_lock(source, run=run):
         if independent_refs:
             origin_url = checked_output(
@@ -795,7 +830,6 @@ def prepare_fresh_checkout(
                 [
                     "git",
                     "clone",
-                    "--shared",
                     "--no-checkout",
                     "--no-tags",
                     str(source),
