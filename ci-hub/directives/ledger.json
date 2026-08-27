@@ -179,7 +179,7 @@
     },
     {
       "id": "dbi-to-dbt-rename",
-      "summary": "Rename DBI to DBT and factor the install path after the PR queue drains",
+      "summary": "Rename DBI to DBT",
       "requested_at": "2026-07-30",
       "repository": "rrnewton/hermit",
       "checkout": "hermit",
@@ -188,8 +188,24 @@
       "owner": "hermit-dbi",
       "source_row": "9",
       "parent_id": null,
+      "implementation": {
+        "kind": "commit",
+        "identity": "e565b1ab1d5fcbbab492ffb886c893dbcb061ddf"
+      }
+    },
+    {
+      "id": "dbi-to-dbt-package-split",
+      "summary": "Factor hermit-dbt and reverie-dbt out of the install path into a separate package",
+      "requested_at": "2026-07-30",
+      "repository": "rrnewton/hermit",
+      "checkout": "hermit",
+      "target": "main",
+      "task": "dbi-to-dbt-rename-is-complete-but-the-package-split-is-not",
+      "owner": "coordinator",
+      "source_row": "9",
+      "parent_id": "dbi-to-dbt-rename",
       "implementation": null,
-      "gate": "Hermit PR queue has drained: a repo-wide dbi->dbt rename conflicts with every in-flight feature branch, so it is deliberately deferred until that condition holds"
+      "gate": "Owner agrees Hermit is in a solid 0.3 state before the package split is revived; the package split remains unlanded"
     },
     {
       "id": "irq-aware-core-allocator",
@@ -234,8 +250,10 @@
       "owner": "hermit-251",
       "source_row": "11",
       "parent_id": null,
-      "implementation": null,
-      "gate": "owner decision: flipping a default guest-visible behavior. On hermit main panic_on_unsupported_syscalls is a bare `#[clap(long)]` bool (default false) and its doc states 'Explicit strict mode enables this policy', so making it the default changes behavior for every existing caller and plausibly trips the post-facto-human-review triggers for determinization/scheduling policy. Deferred pending the owner's call."
+      "implementation": {
+        "kind": "commit",
+        "identity": "1f15510a6bb116c604a69d65975b3272a304ab7b"
+      }
     },
     {
       "id": "agent-utils-direct-main-policy",
