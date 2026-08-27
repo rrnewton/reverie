@@ -614,6 +614,41 @@ PY
       --actor allocator:test) >"$output" 2>&1
 }
 
+run_quarantined_handoff_recovery() {
+  local slot=$1 generation
+  shift
+  generation=$(python3 - "$fixture_root/worktree-state.json" "$slot" <<'PY'
+import json
+import sys
+
+state = json.load(open(sys.argv[1], encoding="utf-8"))
+print(state["slots"][sys.argv[2]]["owner_sidecar"]["generation"])
+PY
+  )
+  (cd "$fixture_root" && timeout "${RELEASE_TEST_STALE_CLEAR_TIMEOUT:-60}s" env \
+    HERMIT_RELEASE_TEST_PROC_ROOT="$fixture_root/proc" \
+    HERMIT_RELEASE_TEST_CGROUP_ROOT="$fixture_root/cgroup" \
+    HERMIT_RELEASE_TEST_TMUX_PANES="$fixture_root/tmux-panes" \
+    HERMIT_RELEASE_TEST_PODMAN_BIN="$fixture_root/bin/podman" \
+    RELEASE_TEST_PODMAN_STATE="$fixture_root/podman.json" \
+    "$@" \
+    "$script_dir/release-worktree.rs" --slot "$slot" --clean \
+      --stale-clear --recover-quarantined-handoff \
+      --expected-generation "$generation" --actor allocator:test) \
+    >"$output" 2>&1
+}
+
+run_stale_clear_all() {
+  (cd "$fixture_root" && timeout "${RELEASE_TEST_STALE_CLEAR_TIMEOUT:-60}s" env \
+    HERMIT_RELEASE_TEST_PROC_ROOT="$fixture_root/proc" \
+    HERMIT_RELEASE_TEST_CGROUP_ROOT="$fixture_root/cgroup" \
+    HERMIT_RELEASE_TEST_TMUX_PANES="$fixture_root/tmux-panes" \
+    HERMIT_RELEASE_TEST_PODMAN_BIN="$fixture_root/bin/podman" \
+    RELEASE_TEST_PODMAN_STATE="$fixture_root/podman.json" \
+    "$script_dir/release-worktree.rs" \
+      --stale-clear-all --actor allocator:test) >"$output" 2>&1
+}
+
 run_release_recover() {
   local slot=$1
   shift
@@ -1656,8 +1691,243 @@ grep -Fq 'owner authority is alive; live ORC owner refuses stale-clear' "$output
   || fail 'stale-clear did not retain the live-owner refusal'
 assert_target_retained stale-clear-live-owner
 
+# QUARANTINED-HANDOFF STATE NEGATIVE: the explicit recovery flag is not a
+# second spelling for ordinary stale-clear and cannot act on an active lease.
+make_fixture quarantined-handoff-active
+plant_expired_owner_lease quarantined-handoff-active >/dev/null
+if run_quarantined_handoff_recovery quarantined-handoff-active; then
+  fail 'quarantined-handoff recovery accepted an active lease'
+fi
+grep -Fq 'requires slot quarantined-handoff-active state lease-quarantined with a quarantined lease' "$output" \
+  || fail 'quarantined-handoff recovery did not enforce its exact state'
+assert_target_retained quarantined-handoff-active
+
+# QUARANTINED-HANDOFF POSITIVE AND NEGATIVE BRACKET. Ordinary stale-clear first
+# records the dirty work and quarantines the lease. Neither ordinary
+# stale-clear nor the all-slots reaper may cross that boundary. The explicit
+# recovery retries every proof, refuses both dirty and clean-but-unpublished
+# work, retains authority/CAS checks, and removes the slot only after the exact
+# HEAD is remotely durable.
+make_fixture quarantined-handoff-recovery
+plant_expired_owner_lease quarantined-handoff-recovery >/dev/null
+printf 'quarantined work must survive\n' >"$target/quarantined-work.txt"
+if run_stale_clear quarantined-handoff-recovery; then
+  fail 'dirty expired stale-clear did not quarantine the lease'
+fi
+grep -Fq 'lease remains quarantined' "$output" \
+  || fail 'dirty stale-clear did not report quarantine'
+python3 - "$fixture_root/worktree-state.json" <<'PY' \
+  || fail 'quarantined handoff did not record an executable, integrity-bound continuation'
+import hashlib
+import json
+import sys
+
+state = json.load(open(sys.argv[1], encoding="utf-8"))
+lease = state["slots"]["quarantined-handoff-recovery"]["owner_sidecar"]["lease"]
+handoff = lease["automatic_handoff"]
+assert lease["state"] == "quarantined"
+assert state["slots"]["quarantined-handoff-recovery"]["status"] == "lease-quarantined"
+assert handoff["complete"] is False
+assert "--stale-clear --recover-quarantined-handoff" in handoff["continuation"]
+recorded = handoff.pop("sha256")
+actual = hashlib.sha256(
+    json.dumps(handoff, separators=(",", ":"), sort_keys=True).encode()
+).hexdigest()
+assert recorded == actual, (recorded, actual)
+PY
+if run_stale_clear quarantined-handoff-recovery; then
+  fail 'ordinary stale-clear crossed a quarantined lease'
+fi
+grep -Fq 'lease is quarantined; after resolving the recorded handoff' "$output" \
+  || fail 'ordinary stale-clear did not preserve quarantine and name its exit path'
+grep -Fq -- '--recover-quarantined-handoff' "$output" \
+  || fail 'ordinary stale-clear refusal omitted the executable recovery flag'
+if ! run_stale_clear_all; then
+  cat "$output" >&2
+  fail 'stale-clear-all failed while excluding a quarantined lease'
+fi
+grep -Fq 'candidates=0 cleared=0 refused=0' "$output" \
+  || fail 'stale-clear-all selected a quarantined lease'
+assert_target_retained quarantined-handoff-recovery
+python3 - "$fixture_root/worktree-state.json" <<'PY'
+import json
+import pathlib
+import sys
+import time
+
+path = pathlib.Path(sys.argv[1])
+state = json.loads(path.read_text())
+lease = state["slots"]["quarantined-handoff-recovery"]["owner_sidecar"]["lease"]
+lease["renewed_at"] = int(time.time())
+lease["ttl_seconds"] = 600
+lease["expires_at"] = lease["renewed_at"] + lease["ttl_seconds"]
+path.write_text(json.dumps(state, indent=2, sort_keys=True) + "\n")
+PY
+if run_quarantined_handoff_recovery quarantined-handoff-recovery; then
+  fail 'quarantined recovery accepted an unexpired lease'
+fi
+grep -Fq 'lease is not expired' "$output" \
+  || fail 'quarantined recovery weakened the expiry gate'
+assert_target_retained quarantined-handoff-recovery
+python3 - "$fixture_root/worktree-state.json" <<'PY'
+import json
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+state = json.loads(path.read_text())
+lease = state["slots"]["quarantined-handoff-recovery"]["owner_sidecar"]["lease"]
+lease["renewed_at"] = 0
+lease["ttl_seconds"] = 1
+lease["expires_at"] = 1
+path.write_text(json.dumps(state, indent=2, sort_keys=True) + "\n")
+PY
+if run_quarantined_handoff_recovery quarantined-handoff-recovery; then
+  fail 'quarantined recovery deleted dirty work'
+fi
+grep -Fq 'lease remains quarantined' "$output" \
+  || fail 'dirty quarantined recovery did not stay quarantined'
+grep -Fxq 'quarantined work must survive' "$target/quarantined-work.txt" \
+  || fail 'dirty quarantined recovery lost the untracked file'
+git -C "$target" add quarantined-work.txt
+git -C "$target" commit -q -m 'preserve quarantined work'
+if run_quarantined_handoff_recovery quarantined-handoff-recovery; then
+  fail 'quarantined recovery deleted an unpublished commit'
+fi
+grep -Fq 'lease remains quarantined' "$output" \
+  || fail 'unpublished quarantined recovery did not stay quarantined'
+test -d "$target" || fail 'unpublished quarantined recovery removed the worktree'
+git -C "$target" push -q
+if run_quarantined_handoff_recovery quarantined-handoff-recovery \
+    RELEASE_TEST_OWNER_AUTHORITY_STATE=indeterminate; then
+  fail 'indeterminate authority recovered a quarantined handoff'
+fi
+grep -Fq 'owner authority is INDETERMINATE; stale-clear is fail-closed' "$output" \
+  || fail 'quarantined recovery weakened indeterminate-owner refusal'
+assert_target_retained quarantined-handoff-recovery
+if run_quarantined_handoff_recovery quarantined-handoff-recovery \
+    RELEASE_TEST_OWNER_AUTHORITY_STATE=alive; then
+  fail 'live ORC owner recovered a quarantined handoff'
+fi
+grep -Fq 'owner authority is alive; live ORC owner refuses stale-clear' "$output" \
+  || fail 'quarantined recovery weakened live-owner refusal'
+assert_target_retained quarantined-handoff-recovery
+if run_quarantined_handoff_recovery quarantined-handoff-recovery \
+    RELEASE_TEST_AUTHORITY_RENEW_LEASE=1; then
+  fail 'pre-lock authority recovered a changed quarantined lease'
+fi
+grep -Fq 'owner authority changed before stale-clear lock acquisition' "$output" \
+  || fail 'quarantined recovery did not retain full-lease CAS binding'
+assert_target_retained quarantined-handoff-recovery
+if ! run_quarantined_handoff_recovery quarantined-handoff-recovery; then
+  cat "$output" >&2
+  fail 'clean remotely durable quarantined handoff could not recover'
+fi
+test ! -e "$target" || fail 'successful quarantined recovery retained its target'
+python3 - "$fixture_root/worktree-state.json" <<'PY' \
+  || fail 'successful quarantined recovery omitted attributable history'
+import json
+import sys
+
+state = json.load(open(sys.argv[1], encoding="utf-8"))
+assert "quarantined-handoff-recovery" not in state["slots"]
+record = next(
+    row for row in state.get("lease_history", [])
+    if row.get("resource") == "slot/quarantined-handoff-recovery"
+)
+assert record["recovered_quarantined_handoff"] is True
+assert len(record["previous_handoff_sha256"]) == 64
+assert len(record["handoff_sha256"]) == 64
+PY
+assert_unrelated_survives
+
+# DOWNSTREAM PROCESS-USE NEGATIVE: recovery may make the handoff complete, but
+# it must still enter the ordinary process scan and retain a target referenced
+# by a live-process cwd.
+make_fixture quarantined-handoff-process-use
+plant_expired_owner_lease quarantined-handoff-process-use >/dev/null
+git -C "$target" commit -q --allow-empty -m 'unpublished quarantine trigger'
+if run_stale_clear quarantined-handoff-process-use; then
+  fail 'unpublished stale-clear did not quarantine the process-use fixture'
+fi
+git -C "$target" push -q
+mkdir -p \
+  "$fixture_root/proc/31337/fd" \
+  "$fixture_root/proc/31337/map_files"
+ln -s "$target" "$fixture_root/proc/31337/cwd"
+ln -s /bin/sleep "$fixture_root/proc/31337/exe"
+ln -s / "$fixture_root/proc/31337/root"
+: >"$fixture_root/proc/31337/maps"
+if run_quarantined_handoff_recovery quarantined-handoff-process-use; then
+  fail 'quarantined recovery bypassed ordinary process-use refusal'
+fi
+grep -Fq "pid 31337 cwd=$target" "$output" \
+  || fail 'quarantined recovery did not report the downstream cwd reference'
+assert_target_retained quarantined-handoff-process-use
+
+# DOWNSTREAM REMOVAL-RACE NEGATIVE: a write after every handoff and durability
+# proof must still be left to Git's non-force worktree-removal boundary.
+make_fixture quarantined-handoff-remove-race
+plant_expired_owner_lease quarantined-handoff-remove-race >/dev/null
+git -C "$target" commit -q --allow-empty -m 'unpublished quarantine trigger'
+if run_stale_clear quarantined-handoff-remove-race; then
+  fail 'unpublished stale-clear did not quarantine the remove-race fixture'
+fi
+git -C "$target" push -q
+if run_quarantined_handoff_recovery quarantined-handoff-remove-race \
+    RELEASE_TEST_REMOVE_RACE_TARGET="recovery-raced.txt"; then
+  fail 'quarantined recovery deleted a write planted at worktree removal'
+fi
+grep -Fxq 'planted at worktree remove invocation' "$target/recovery-raced.txt" \
+  || fail 'quarantined recovery lost the removal-race write'
+grep -Eq 'could not remove exact|modified or untracked files' "$output" \
+  || fail 'quarantined recovery did not reach Git non-force removal refusal'
+assert_target_retained quarantined-handoff-remove-race
+
+# QUARANTINED-HANDOFF RECORD NEGATIVE: the exit requires the exact recorded
+# handoff, including its digest. A hand-edited record must not authorize cleanup.
+make_fixture quarantined-handoff-tampered
+plant_expired_owner_lease quarantined-handoff-tampered >/dev/null
+git -C "$target" commit -q --allow-empty -m 'unpublished quarantine trigger'
+if run_stale_clear quarantined-handoff-tampered; then
+  fail 'unpublished stale-clear did not quarantine the lease'
+fi
+git -C "$target" push -q
+python3 - "$fixture_root/worktree-state.json" <<'PY'
+import json
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+state = json.loads(path.read_text())
+state["slots"]["quarantined-handoff-tampered"]["owner_sidecar"]["lease"]["automatic_handoff"]["sha256"] = "0" * 64
+path.write_text(json.dumps(state, indent=2, sort_keys=True) + "\n")
+PY
+if run_quarantined_handoff_recovery quarantined-handoff-tampered; then
+  fail 'tampered automatic handoff authorized cleanup'
+fi
+grep -Fq 'automatic handoff sha256 does not match its recorded content' "$output" \
+  || fail 'tampered automatic handoff did not fail at its digest'
+assert_target_retained quarantined-handoff-tampered
+python3 - "$fixture_root/worktree-state.json" <<'PY'
+import json
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+state = json.loads(path.read_text())
+state["slots"]["quarantined-handoff-tampered"]["owner_sidecar"]["lease"].pop("automatic_handoff")
+path.write_text(json.dumps(state, indent=2, sort_keys=True) + "\n")
+PY
+if run_quarantined_handoff_recovery quarantined-handoff-tampered; then
+  fail 'missing automatic handoff authorized cleanup'
+fi
+grep -Fq 'quarantined lease has no automatic handoff to resume' "$output" \
+  || fail 'missing automatic handoff did not fail closed'
+assert_target_retained quarantined-handoff-tampered
+
 if [[ ${RELEASE_TEST_STALE_CLEAR_ONLY:-0} == 1 ]]; then
-  echo 'release-worktree-test: PASS (4 stale-clear lock-order and fail-closed fixtures)'
+  echo "release-worktree-test: PASS ($fixture_count stale-clear and quarantined-handoff fixtures)"
   exit 0
 fi
 

@@ -57,6 +57,10 @@ Options:
   --stale-clear       Finalize one expired lease after exact owner-death and the
                       ordinary process/domain/cleanliness/durability proofs.
                       Requires --clean, --expected-generation, and --actor.
+  --recover-quarantined-handoff
+                      Retry one quarantined automatic handoff after its recorded
+                      work has been made clean and remotely durable. Requires
+                      --stale-clear; all ordinary stale-clear proofs still apply.
   --stale-clear-all   Event-driven reaper used before allocation. Attempts every
                       expired, non-quarantined slot lease through --stale-clear.
   --expected-generation ID
@@ -84,6 +88,8 @@ slot entry is dropped from state. Feature branches are NEVER deleted.
 Examples:
   ./scripts/release-worktree.rs --slot kvm
   ./scripts/release-worktree.rs --slot kvm --clean --request-release --actor hermit-kvm
+  ./scripts/release-worktree.rs --slot kvm --clean --stale-clear \
+    --recover-quarantined-handoff --expected-generation ID --actor coordinator
   ./scripts/release-worktree.rs --stale-clear-all --actor allocator:hermit-kvm
   ./scripts/release-worktree.rs --slot slot01 --clean
   ./scripts/release-worktree.rs --slot kvm --agent hermit-ci   # drop one sharer
@@ -5262,9 +5268,11 @@ fn automatic_handoff(
         "actor": actor,
         "complete": complete,
         "repositories": repositories,
-        "continuation": format!(
-            "./scripts/release-worktree.rs --slot {slot} --clean --stale-clear --expected-generation {} --actor {}",
-            lease.generation, actor
+        "continuation": stale_clear_continuation(
+            slot,
+            &lease.generation,
+            actor,
+            false,
         ),
     });
     let digest = sha256_bytes(
@@ -5272,6 +5280,90 @@ fn automatic_handoff(
     );
     handoff["sha256"] = json!(digest);
     Ok((handoff, complete))
+}
+
+fn stale_clear_continuation(
+    slot: &str,
+    generation: &str,
+    actor: &str,
+    recover_quarantined_handoff: bool,
+) -> String {
+    let recovery = if recover_quarantined_handoff {
+        " --recover-quarantined-handoff"
+    } else {
+        ""
+    };
+    format!(
+        "./scripts/release-worktree.rs --slot {slot} --clean --stale-clear{recovery} --expected-generation {generation} --actor {actor}"
+    )
+}
+
+fn set_handoff_continuation(
+    handoff: &mut Value,
+    slot: &str,
+    generation: &str,
+    actor: &str,
+    recover_quarantined_handoff: bool,
+) -> Result<(), String> {
+    {
+        let object = handoff
+            .as_object_mut()
+            .ok_or_else(|| "automatic handoff is not an object".to_string())?;
+        object.remove("sha256");
+        object.insert(
+            "continuation".to_string(),
+            json!(stale_clear_continuation(
+                slot,
+                generation,
+                actor,
+                recover_quarantined_handoff,
+            )),
+        );
+    }
+    let digest = sha256_bytes(
+        &serde_json::to_vec(handoff).map_err(|error| format!("serialize handoff: {error}"))?,
+    );
+    handoff["sha256"] = json!(digest);
+    Ok(())
+}
+
+fn validate_recorded_handoff(slot: &str, generation: &str, handoff: &Value) -> Result<(), String> {
+    let object = handoff.as_object().ok_or_else(|| {
+        format!("slot {slot} quarantined lease has no readable automatic handoff")
+    })?;
+    if object.get("schema_version").and_then(Value::as_u64) != Some(1)
+        || object.get("resource").and_then(Value::as_str) != Some(&format!("slot/{slot}"))
+        || object.get("generation").and_then(Value::as_str) != Some(generation)
+        || object.get("complete").and_then(Value::as_bool).is_none()
+        || object
+            .get("repositories")
+            .and_then(Value::as_array)
+            .is_none()
+        || object.get("continuation").and_then(Value::as_str).is_none()
+    {
+        return Err(format!(
+            "slot {slot} quarantined automatic handoff is not identity-bound and complete enough to resume"
+        ));
+    }
+    let recorded_digest = object
+        .get("sha256")
+        .and_then(Value::as_str)
+        .ok_or_else(|| format!("slot {slot} quarantined automatic handoff has no sha256"))?;
+    let mut unsigned = handoff.clone();
+    unsigned
+        .as_object_mut()
+        .expect("validated automatic handoff object")
+        .remove("sha256");
+    let actual_digest = sha256_bytes(
+        &serde_json::to_vec(&unsigned)
+            .map_err(|error| format!("serialize recorded handoff: {error}"))?,
+    );
+    if recorded_digest != actual_digest {
+        return Err(format!(
+            "slot {slot} quarantined automatic handoff sha256 does not match its recorded content"
+        ));
+    }
+    Ok(())
 }
 
 fn mutating_owner(slot_state: &Value) -> Result<&str, String> {
@@ -5318,14 +5410,17 @@ fn request_release(
         ));
     }
     let (current_handoff, complete) = automatic_handoff(root, state, slot, actor)?;
-    let handoff = if lease.state == "draining" {
+    let mut handoff = if lease.state == "draining" {
         let recorded = state["slots"][slot]["owner_sidecar"]["lease"]
             .get("automatic_handoff")
             .filter(|value| !value.is_null())
             .cloned()
             .ok_or_else(|| "draining lease has no automatic handoff".to_string())?;
         if !handoff_state_matches(&recorded, &current_handoff) {
+            let mut quarantined = recorded;
+            set_handoff_continuation(&mut quarantined, slot, &lease.generation, actor, true)?;
             state["slots"][slot]["owner_sidecar"]["lease"]["state"] = json!("quarantined");
+            state["slots"][slot]["owner_sidecar"]["lease"]["automatic_handoff"] = quarantined;
             state["slots"][slot]["status"] = json!("lease-quarantined");
             save_state(root, state);
             regen_active_md(root, state);
@@ -5337,6 +5432,9 @@ fn request_release(
     } else {
         current_handoff
     };
+    if !complete {
+        set_handoff_continuation(&mut handoff, slot, &lease.generation, actor, true)?;
+    }
     let now = epoch_now();
     let slot_state = &mut state["slots"][slot];
     slot_state["owner_sidecar"]["lease"]["renewed_at"] = json!(now);
@@ -5380,6 +5478,7 @@ fn prepare_stale_clear(
     expected_generation: &str,
     actor: &str,
     authority: &Value,
+    recover_quarantined_handoff: bool,
 ) -> Result<Value, String> {
     let lease = slot_lease_view(slot, &state["slots"][slot])?;
     if lease.generation != expected_generation {
@@ -5388,8 +5487,21 @@ fn prepare_stale_clear(
             lease.generation
         ));
     }
-    if lease.state == "quarantined" {
-        return Err(format!("slot {slot} lease is quarantined"));
+    let quarantined = lease.state == "quarantined";
+    if quarantined && !recover_quarantined_handoff {
+        return Err(format!(
+            "slot {slot} lease is quarantined; after resolving the recorded handoff, run {}",
+            stale_clear_continuation(slot, &lease.generation, actor, true)
+        ));
+    }
+    if recover_quarantined_handoff
+        && (!quarantined || state["slots"][slot]["status"].as_str() != Some("lease-quarantined"))
+    {
+        return Err(format!(
+            "--recover-quarantined-handoff requires slot {slot} state lease-quarantined with a quarantined lease; found status={:?} lease={}",
+            state["slots"][slot]["status"].as_str(),
+            lease.state,
+        ));
     }
     if epoch_now() < lease.expires_at {
         return Err(format!(
@@ -5410,23 +5522,45 @@ fn prepare_stale_clear(
             "slot {slot} owner authority is {authority_state}; live ORC owner refuses stale-clear"
         ));
     }
-    let (current_handoff, complete) = automatic_handoff(root, state, slot, actor)?;
+    let recorded = state["slots"][slot]["owner_sidecar"]["lease"]
+        .get("automatic_handoff")
+        .filter(|value| !value.is_null())
+        .cloned();
+    if quarantined {
+        validate_recorded_handoff(
+            slot,
+            &lease.generation,
+            recorded.as_ref().ok_or_else(|| {
+                format!("slot {slot} quarantined lease has no automatic handoff to resume")
+            })?,
+        )?;
+    }
+    let (mut current_handoff, complete) = automatic_handoff(root, state, slot, actor)?;
     if !complete {
+        set_handoff_continuation(&mut current_handoff, slot, &lease.generation, actor, true)?;
         state["slots"][slot]["owner_sidecar"]["lease"]["state"] = json!("quarantined");
         state["slots"][slot]["owner_sidecar"]["lease"]["last_transition_actor"] = json!(actor);
         state["slots"][slot]["owner_sidecar"]["lease"]["automatic_handoff"] = current_handoff;
         state["slots"][slot]["status"] = json!("lease-quarantined");
         save_state(root, state);
         regen_active_md(root, state);
-        return Err("automatic handoff found dirty or non-durable work; lease quarantined".into());
+        return Err(
+            "automatic handoff found dirty or non-durable work; lease remains quarantined".into(),
+        );
     }
-    let recorded = state["slots"][slot]["owner_sidecar"]["lease"]
-        .get("automatic_handoff")
-        .filter(|value| !value.is_null())
-        .cloned();
-    if let Some(recorded) = recorded {
+    if let Some(recorded) = recorded.as_ref().filter(|_| !quarantined) {
         if !handoff_state_matches(&recorded, &current_handoff) {
+            let mut quarantined_handoff = recorded.clone();
+            set_handoff_continuation(
+                &mut quarantined_handoff,
+                slot,
+                &lease.generation,
+                actor,
+                true,
+            )?;
             state["slots"][slot]["owner_sidecar"]["lease"]["state"] = json!("quarantined");
+            state["slots"][slot]["owner_sidecar"]["lease"]["automatic_handoff"] =
+                quarantined_handoff;
             state["slots"][slot]["status"] = json!("lease-quarantined");
             save_state(root, state);
             regen_active_md(root, state);
@@ -5442,7 +5576,7 @@ fn prepare_stale_clear(
     state["slots"][slot]["status"] = json!("release-requested");
     save_state(root, state);
     regen_active_md(root, state);
-    Ok(json!({
+    let mut release_record = json!({
         "schema_version": 1,
         "resource": format!("slot/{slot}"),
         "generation": lease.generation,
@@ -5450,7 +5584,13 @@ fn prepare_stale_clear(
         "authority": authority,
         "handoff_sha256": state["slots"][slot]["owner_sidecar"]["lease"]
             ["automatic_handoff"]["sha256"],
-    }))
+    });
+    if quarantined {
+        release_record["recovered_quarantined_handoff"] = json!(true);
+        release_record["previous_handoff_sha256"] =
+            recorded.expect("validated quarantined handoff")["sha256"].clone();
+    }
+    Ok(release_record)
 }
 
 fn stale_clear_all(root: &Path, actor: &str) -> Result<(), String> {
@@ -5513,6 +5653,7 @@ fn main() {
     let mut orphan_recovery_note = String::new();
     let mut request_release_flag = false;
     let mut stale_clear = false;
+    let mut recover_quarantined_handoff = false;
     let mut stale_clear_all_flag = false;
     let mut expected_generation = String::new();
     let mut actor = String::new();
@@ -5534,6 +5675,7 @@ fn main() {
             "--push" => push = true,
             "--request-release" => request_release_flag = true,
             "--stale-clear" => stale_clear = true,
+            "--recover-quarantined-handoff" => recover_quarantined_handoff = true,
             "--stale-clear-all" => stale_clear_all_flag = true,
             "--expected-generation" => {
                 expected_generation = take(&mut i, &argv, "--expected-generation")
@@ -5561,6 +5703,7 @@ fn main() {
             || recover_submodules
             || request_release_flag
             || stale_clear
+            || recover_quarantined_handoff
             || !valid_actor(&actor)
         {
             die("--stale-clear-all requires only a non-empty --actor");
@@ -5595,6 +5738,14 @@ fn main() {
             || !valid_actor(&actor))
     {
         die("--stale-clear requires --clean, --expected-generation, and --actor; it is incompatible with --force/--push/--request-release");
+    }
+    if recover_quarantined_handoff && !stale_clear {
+        die("--recover-quarantined-handoff requires --stale-clear");
+    }
+    if recover_quarantined_handoff
+        && (recover_submodules || finalize_orphan_residue || agent.is_some())
+    {
+        die("--recover-quarantined-handoff is incompatible with --agent, --recover-submodule-cleanup, and --coordinator-finalize-orphan-residue");
     }
     if finalize_orphan_residue && (!clean || force || push || recover_submodules || agent.is_some())
     {
@@ -5676,6 +5827,7 @@ fn main() {
             stale_clear_authority
                 .as_ref()
                 .expect("stale-clear authority is prepared before the writer lock"),
+            recover_quarantined_handoff,
         )
         .unwrap_or_else(|error| die(&format!("stale-clear refused: {error}")));
         if state["slots"][&slot]
