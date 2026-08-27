@@ -418,6 +418,9 @@ pub enum ComparisonTier {
 #[serde(deny_unknown_fields)]
 pub struct ComparisonSpec {
     pub strictness: ComparisonStrictness,
+    // Added by the current Hermit verifier; absent on older schema-6 rows.
+    #[serde(default)]
+    pub display_name: Option<String>,
     pub compare_logs: bool,
     // Added by the current Hermit verifier; absent on older schema-6 rows.
     #[serde(default)]
@@ -425,6 +428,9 @@ pub struct ComparisonSpec {
     // Current canonical reports bind the complete record envelope.
     #[serde(default)]
     pub record_envelope: Option<String>,
+    // A match without virtual time is replay evidence, not a determinism result.
+    #[serde(default)]
+    pub virtualize_time: Option<bool>,
     pub log_scope: ComparedLogScope,
     pub strip_lines: bool,
     pub canonicalize_addresses: bool,
@@ -625,7 +631,7 @@ mod tests {
         ));
         let current = compared.replace(
             "\"compare_logs\":true,",
-            "\"compare_logs\":true,\"compare_io_buffers\":true,\"record_envelope\":\"all_records_v1\",",
+            "\"display_name\":\"BitwiseInfoV1\",\"compare_logs\":true,\"compare_io_buffers\":true,\"record_envelope\":\"all_records_v1\",\"virtualize_time\":true,",
         );
         let CellVerdict::ComparedAndMatched { comparison, .. } =
             serde_json::from_str::<CellVerdict>(&current).unwrap()
@@ -633,10 +639,12 @@ mod tests {
             panic!("current verifier report changed verdict state");
         };
         assert_eq!(comparison.compare_io_buffers, Some(true));
+        assert_eq!(comparison.display_name.as_deref(), Some("BitwiseInfoV1"));
         assert_eq!(
             comparison.record_envelope.as_deref(),
             Some("all_records_v1")
         );
+        assert_eq!(comparison.virtualize_time, Some(true));
         for (state, expected) in [
             ("compared-and-diverged", "diverged"),
             ("performs-no-comparison-by-design", "by-design"),

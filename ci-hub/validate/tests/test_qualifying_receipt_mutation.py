@@ -198,14 +198,18 @@ def _schema6_cell_row(sha: str, state: str) -> dict:
             "comparison_tier": "canonical-bitwise",
             "comparison": {
                 "strictness": "canonical",
+                "display_name": "BitwiseInfoV1",
                 "compare_logs": True,
-                "log_scope": "full_trace",
+                "compare_io_buffers": True,
+                "log_scope": "info",
+                "record_envelope": "all_records_v1",
+                "virtualize_time": True,
                 "strip_lines": False,
                 "canonicalize_addresses": True,
                 "full_trace": True,
                 "exact_remainder": True,
-                "stripped_prefixes": [],
-                "canonicalizations": [],
+                "stripped_prefixes": ["real-wall-clock-prefix/v1"],
+                "canonicalizations": ["host-address-to-first-appearance-ordinal/v1"],
                 "ignore_lines": False,
                 "skip_commit": False,
                 "skip_detlog": False,
@@ -226,6 +230,25 @@ def _schema6_cell_row(sha: str, state: str) -> dict:
         "cells": [{**identity, "cell_verdict": verdict}],
     }
     return row
+
+
+def _make_stripped(verdict: dict) -> None:
+    verdict["comparison"].update(
+        strictness="stripped",
+        display_name="Stripped",
+        compare_logs=False,
+        compare_io_buffers=False,
+        log_scope="deterministic",
+        strip_lines=True,
+        canonicalize_addresses=False,
+        full_trace=False,
+        exact_remainder=False,
+        stripped_prefixes=[
+            "real-wall-clock-prefix/v1",
+            "unsafe-numeric-address-and-path-normalization/v1",
+        ],
+        canonicalizations=[],
+    )
 
 
 def _missing_coverage_list_row(sha: str, field: str) -> dict:
@@ -954,6 +977,57 @@ class QualifyingReceiptMutationTest(unittest.TestCase):
                     qualifying_receipt.CellResultsVerdict.SATISFIED,
                 )
 
+    def test_current_verifier_receipt_qualifies_but_weakened_or_foreign_shapes_do_not(
+        self,
+    ) -> None:
+        predicate = qualifying_receipt.active()
+        current = _schema6_cell_row(SHA, "compared-and-matched")
+        self.assertEqual(
+            qualifying_receipt.row_qualification(current, SHA, predicate),
+            (True, "qualifies"),
+        )
+        self.assertIs(
+            qualifying_receipt.cell_results_verdict(current, predicate),
+            qualifying_receipt.CellResultsVerdict.SATISFIED,
+        )
+
+        mutations = {
+            "output buffers not compared": ("compare_io_buffers", False),
+            "wrong display name": ("display_name", "Stripped"),
+            "caller-defined record envelope": ("record_envelope", "caller_defined"),
+            "virtual time disabled": ("virtualize_time", False),
+            "extra stripped prefix": (
+                "stripped_prefixes",
+                ["real-wall-clock-prefix/v1", "unreviewed-prefix"],
+            ),
+            "missing address canonicalization": ("canonicalizations", []),
+        }
+        for name, (field, value) in mutations.items():
+            with self.subTest(malformed=name):
+                malformed = copy.deepcopy(current)
+                malformed["cell_results"]["cells"][0]["cell_verdict"]["comparison"][field] = value
+                self.assertEqual(
+                    qualifying_receipt.row_qualification(malformed, SHA, predicate),
+                    (False, "cell_results cell-verdict-invalid"),
+                )
+                self.assertIs(
+                    qualifying_receipt.cell_results_verdict(malformed, predicate),
+                    qualifying_receipt.CellResultsVerdict.VERDICT_INVALID,
+                )
+
+        foreign = copy.deepcopy(current)
+        foreign["cell_results"]["cells"][0]["cell_verdict"]["comparison"][
+            "unrecognized"
+        ] = True
+        self.assertEqual(
+            qualifying_receipt.row_qualification(foreign, SHA, predicate),
+            (False, "cell_results cell-verdict-invalid"),
+        )
+        self.assertIs(
+            qualifying_receipt.cell_results_verdict(foreign, predicate),
+            qualifying_receipt.CellResultsVerdict.VERDICT_INVALID,
+        )
+
     def test_tier_vocabulary_is_exactly_the_four_settled_names(self) -> None:
         self.assertEqual(
             qualifying_receipt._KNOWN_COMPARISON_TIERS,
@@ -1026,13 +1100,7 @@ class QualifyingReceiptMutationTest(unittest.TestCase):
         weak = _schema6_cell_row(SHA, "compared-and-matched")
         weak_verdict = weak["cell_results"]["cells"][0]["cell_verdict"]
         weak_verdict["comparison_tier"] = "exit-and-stream-equality"
-        weak_verdict["comparison"]["strictness"] = "stripped"
-        weak_verdict["comparison"]["compare_logs"] = False
-        weak_verdict["comparison"]["log_scope"] = "deterministic"
-        weak_verdict["comparison"]["strip_lines"] = True
-        weak_verdict["comparison"]["canonicalize_addresses"] = False
-        weak_verdict["comparison"]["full_trace"] = False
-        weak_verdict["comparison"]["exact_remainder"] = False
+        _make_stripped(weak_verdict)
         weak_verdict["bitwise_parity"] = False
         weak_verdict["compared_log_messages"] = None
         projection = qualifying_receipt.cell_scorecard_projection(weak, predicate)
@@ -1057,13 +1125,7 @@ class QualifyingReceiptMutationTest(unittest.TestCase):
         weak = copy.deepcopy(canonical)
         weak_verdict = weak["cell_results"]["cells"][0]["cell_verdict"]
         weak_verdict["comparison_tier"] = "exit-and-stream-equality"
-        weak_verdict["comparison"]["strictness"] = "stripped"
-        weak_verdict["comparison"]["compare_logs"] = False
-        weak_verdict["comparison"]["log_scope"] = "deterministic"
-        weak_verdict["comparison"]["strip_lines"] = True
-        weak_verdict["comparison"]["canonicalize_addresses"] = False
-        weak_verdict["comparison"]["full_trace"] = False
-        weak_verdict["comparison"]["exact_remainder"] = False
+        _make_stripped(weak_verdict)
         weak_verdict["bitwise_parity"] = False
         weak_verdict["compared_log_messages"] = None
 
@@ -1098,13 +1160,7 @@ class QualifyingReceiptMutationTest(unittest.TestCase):
         measured_verdict = measured_weak["cell_results"]["cells"][0][
             "cell_verdict"
         ]
-        measured_verdict["comparison"]["strictness"] = "stripped"
-        measured_verdict["comparison"]["compare_logs"] = False
-        measured_verdict["comparison"]["log_scope"] = "deterministic"
-        measured_verdict["comparison"]["strip_lines"] = True
-        measured_verdict["comparison"]["canonicalize_addresses"] = False
-        measured_verdict["comparison"]["full_trace"] = False
-        measured_verdict["comparison"]["exact_remainder"] = False
+        _make_stripped(measured_verdict)
         measured_verdict["bitwise_parity"] = False
         measured_verdict["compared_log_messages"] = None
         projection = qualifying_receipt.cell_scorecard_projection(
@@ -1149,13 +1205,7 @@ class QualifyingReceiptMutationTest(unittest.TestCase):
         weak_cell["test"] = "broad-path-cell"
         weak_verdict = weak_cell["cell_verdict"]
         weak_verdict["comparison_tier"] = "execution-only-self-consistent"
-        weak_verdict["comparison"]["strictness"] = "stripped"
-        weak_verdict["comparison"]["compare_logs"] = False
-        weak_verdict["comparison"]["log_scope"] = "deterministic"
-        weak_verdict["comparison"]["strip_lines"] = True
-        weak_verdict["comparison"]["canonicalize_addresses"] = False
-        weak_verdict["comparison"]["full_trace"] = False
-        weak_verdict["comparison"]["exact_remainder"] = False
+        _make_stripped(weak_verdict)
         weak_verdict["bitwise_parity"] = False
         weak_verdict["compared_log_messages"] = None
         selected = [

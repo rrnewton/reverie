@@ -548,8 +548,12 @@ class CellResultsVerdict(Enum):
 _CELL_IDENTITY_KEYS = ("lane", "category", "test", "mode", "backend")
 _COMPARISON_KEYS = {
     "strictness",
+    "display_name",
     "compare_logs",
+    "compare_io_buffers",
     "log_scope",
+    "record_envelope",
+    "virtualize_time",
     "strip_lines",
     "canonicalize_addresses",
     "full_trace",
@@ -560,6 +564,18 @@ _COMPARISON_KEYS = {
     "skip_commit",
     "skip_detlog",
 }
+_COMPARISON_DISPLAY_NAMES = {
+    ("stripped", "deterministic"): "Stripped",
+    ("canonical", "info"): "BitwiseInfoV1",
+    ("canonical", "full_trace"): "BitwiseFullTraceV1",
+}
+_RECORD_ENVELOPES = {
+    "all_records_v1",
+    "dbt_evidence_transport_v1",
+    "caller_defined",
+}
+_PARITY_STRIPPED_PREFIXES = ["real-wall-clock-prefix/v1"]
+_PARITY_CANONICALIZATIONS = ["host-address-to-first-appearance-ordinal/v1"]
 _COMPARED_STATES = {"compared-and-matched", "compared-and-diverged"}
 _REASONED_STATES = {
     "performs-no-comparison-by-design",
@@ -608,8 +624,16 @@ def _comparison_spec_valid(value: Any) -> bool:
         return False
     if value["log_scope"] not in {"deterministic", "info", "full_trace"}:
         return False
+    if value.get("display_name") != _COMPARISON_DISPLAY_NAMES.get(
+        (value["strictness"], value["log_scope"])
+    ):
+        return False
+    if value.get("record_envelope") not in _RECORD_ENVELOPES:
+        return False
     for key in (
         "compare_logs",
+        "compare_io_buffers",
+        "virtualize_time",
         "strip_lines",
         "canonicalize_addresses",
         "full_trace",
@@ -669,18 +693,25 @@ def cell_verdict_valid(value: Any) -> bool:
     if state == "compared-and-diverged" and value["bitwise_parity"]:
         return False
     canonical_evidence_shape = (
-            comparison["strictness"] == "canonical"
-            and comparison["compare_logs"] is True
-            and comparison["strip_lines"] is False
-            and comparison["canonicalize_addresses"] is True
-            and comparison["full_trace"] is True
-            and comparison["exact_remainder"] is True
-            and comparison["ignore_lines"] is False
-            and comparison["skip_commit"] is False
-            and comparison["skip_detlog"] is False
-            and counts is not None
-            and counts["left"] > 0
-            and counts["right"] > 0
+        comparison["strictness"] == "canonical"
+        and comparison["display_name"] == "BitwiseInfoV1"
+        and comparison["compare_logs"] is True
+        and comparison["compare_io_buffers"] is True
+        and comparison["log_scope"] == "info"
+        and comparison["record_envelope"] == "all_records_v1"
+        and comparison["virtualize_time"] is True
+        and comparison["strip_lines"] is False
+        and comparison["canonicalize_addresses"] is True
+        and comparison["full_trace"] is True
+        and comparison["exact_remainder"] is True
+        and comparison["stripped_prefixes"] == _PARITY_STRIPPED_PREFIXES
+        and comparison["canonicalizations"] == _PARITY_CANONICALIZATIONS
+        and comparison["ignore_lines"] is False
+        and comparison["skip_commit"] is False
+        and comparison["skip_detlog"] is False
+        and counts is not None
+        and counts["left"] > 0
+        and counts["right"] > 0
     )
     if tier == "canonical-bitwise":
         return canonical_evidence_shape and value["bitwise_parity"] == (

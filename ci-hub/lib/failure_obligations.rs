@@ -150,17 +150,18 @@ fn canonical_observation(cell: &CellResult) -> Option<Observation> {
     };
     if *tier != ComparisonTier::CanonicalBitwise
         || comparison.strictness != ComparisonStrictness::Canonical
+        || comparison.display_name.as_deref() != Some("BitwiseInfoV1")
         || !comparison.compare_logs
-        || comparison.compare_io_buffers == Some(false)
-        || comparison
-            .record_envelope
-            .as_deref()
-            .is_some_and(|value| value != "all_records_v1")
+        || comparison.compare_io_buffers != Some(true)
+        || comparison.record_envelope.as_deref() != Some("all_records_v1")
+        || comparison.virtualize_time != Some(true)
         || comparison.log_scope != crate::records::ComparedLogScope::Info
         || comparison.strip_lines
         || !comparison.canonicalize_addresses
         || !comparison.full_trace
         || !comparison.exact_remainder
+        || comparison.stripped_prefixes != ["real-wall-clock-prefix/v1"]
+        || comparison.canonicalizations != ["host-address-to-first-appearance-ordinal/v1"]
         || comparison.ignore_lines
         || comparison.skip_commit
         || comparison.skip_detlog
@@ -512,16 +513,18 @@ mod tests {
     fn comparison() -> ComparisonSpec {
         ComparisonSpec {
             strictness: ComparisonStrictness::Canonical,
+            display_name: Some("BitwiseInfoV1".into()),
             compare_logs: true,
             compare_io_buffers: Some(true),
             record_envelope: Some("all_records_v1".into()),
+            virtualize_time: Some(true),
             log_scope: ComparedLogScope::Info,
             strip_lines: false,
             canonicalize_addresses: true,
             full_trace: true,
             exact_remainder: true,
-            stripped_prefixes: Vec::new(),
-            canonicalizations: vec!["bitwise-info-v1".into()],
+            stripped_prefixes: vec!["real-wall-clock-prefix/v1".into()],
+            canonicalizations: vec!["host-address-to-first-appearance-ordinal/v1".into()],
             ignore_lines: false,
             skip_commit: false,
             skip_detlog: false,
@@ -591,6 +594,21 @@ mod tests {
         .unwrap()
     }
 
+    fn row_comparison(row: &mut HistoryRow) -> &mut ComparisonSpec {
+        let evidence = row
+            .cell_results
+            .as_mut()
+            .expect("test row has cell evidence");
+        match &mut evidence.cells[0].cell_verdict {
+            CellVerdict::ComparedAndMatched { comparison, .. }
+            | CellVerdict::ComparedAndDiverged { comparison, .. } => comparison,
+            CellVerdict::PerformsNoComparisonByDesign { .. }
+            | CellVerdict::UnavailableWithReason { .. } => {
+                panic!("test row has a compared verdict")
+            }
+        }
+    }
+
     fn target_rows(rows: &[HistoryRow], target: &str) -> Vec<HistoryRow> {
         rows.iter()
             .filter(|row| row.commit.as_deref() == Some(target))
@@ -639,6 +657,46 @@ mod tests {
     fn unaffected_cell_needs_no_extra_repetitions() {
         let rows = vec![row(FIX, 1, true)];
         assert!(evaluate(&rows, FIX).unwrap().is_empty());
+    }
+
+    #[test]
+    fn canonical_observation_requires_the_current_verifier_evidence() {
+        let current = row(FIX, 1, true);
+        let cell = &current.cell_results.as_ref().unwrap().cells[0];
+        assert_eq!(
+            canonical_observation(cell),
+            Some(Observation {
+                legs: 2,
+                failures: 0
+            })
+        );
+
+        let mut missing_display_name = current.clone();
+        row_comparison(&mut missing_display_name).display_name = None;
+        let cell = &missing_display_name.cell_results.as_ref().unwrap().cells[0];
+        assert_eq!(canonical_observation(cell), None);
+
+        let mut missing_io_buffers = current.clone();
+        row_comparison(&mut missing_io_buffers).compare_io_buffers = None;
+        let cell = &missing_io_buffers.cell_results.as_ref().unwrap().cells[0];
+        assert_eq!(canonical_observation(cell), None);
+
+        let mut caller_defined = current.clone();
+        row_comparison(&mut caller_defined).record_envelope = Some("caller_defined".into());
+        let cell = &caller_defined.cell_results.as_ref().unwrap().cells[0];
+        assert_eq!(canonical_observation(cell), None);
+
+        let mut host_time = current.clone();
+        row_comparison(&mut host_time).virtualize_time = Some(false);
+        let cell = &host_time.cell_results.as_ref().unwrap().cells[0];
+        assert_eq!(canonical_observation(cell), None);
+
+        let mut extra_stripping = current.clone();
+        row_comparison(&mut extra_stripping)
+            .stripped_prefixes
+            .push("unreviewed-prefix".into());
+        let cell = &extra_stripping.cell_results.as_ref().unwrap().cells[0];
+        assert_eq!(canonical_observation(cell), None);
     }
 
     #[test]
