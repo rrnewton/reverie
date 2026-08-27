@@ -1187,7 +1187,11 @@ impl KvmBackend {
         <T::GlobalState as GlobalTool>::Config: 'static,
     {
         let mut loaded = self.static_elf.take().ok_or(Error::StaticElfNotInstalled)?;
-        if capture_output {
+        // Output capture replaces stdout and stderr with the executor's pipes,
+        // but an explicitly configured stdin remains the guest's input. Use
+        // /dev/null only when the caller supplied no stdin, matching
+        // `run_static_elf_captured` while keeping the no-input default.
+        if capture_output && loaded.stdin.is_none() {
             loaded.stdin = Some(std::fs::File::open("/dev/null")?);
         }
         let pid = Pid::from_raw(self.root_pid);

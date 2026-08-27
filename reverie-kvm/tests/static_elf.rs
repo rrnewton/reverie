@@ -1777,6 +1777,44 @@ fn static_elf_executes_syscall_and_exits() {
 }
 
 #[test]
+fn static_elf_tool_capture_preserves_configured_stdin() {
+    if !kvm_available("KVM captured stdin test") {
+        return;
+    }
+
+    let directory = TestDirectory::new();
+    let stdin_path = directory.0.join("stdin");
+    std::fs::write(&stdin_path, b"stdin-through-kvm\n").unwrap();
+    let stdin = std::fs::File::open(stdin_path).unwrap();
+
+    let image = std::fs::read("/bin/cat").unwrap();
+    let mut backend = KvmBackend::new_with_stdin(256 * 1024 * 1024, Some(stdin)).unwrap();
+    backend
+        .install_static_elf_with_args(&image, &["/bin/cat"], &["PATH=/usr/bin:/bin"])
+        .unwrap();
+
+    let (_, code, stdout, stderr) =
+        futures::executor::block_on(backend.run_static_elf_with_tool::<StraceTool>((), true))
+            .unwrap();
+
+    assert_eq!(code, 0);
+    assert_eq!(stdout, b"stdin-through-kvm\n");
+    assert!(stderr.is_empty());
+
+    let mut backend = KvmBackend::new_with_stdin(256 * 1024 * 1024, None).unwrap();
+    backend
+        .install_static_elf_with_args(&image, &["/bin/cat"], &["PATH=/usr/bin:/bin"])
+        .unwrap();
+    let (_, code, stdout, stderr) =
+        futures::executor::block_on(backend.run_static_elf_with_tool::<StraceTool>((), true))
+            .unwrap();
+
+    assert_eq!(code, 0);
+    assert!(stdout.is_empty());
+    assert!(stderr.is_empty());
+}
+
+#[test]
 fn kvm_initial_rbp_and_rflags_match_native_linux_process_entry() {
     if !kvm_available("KVM initial-register parity test") {
         return;
