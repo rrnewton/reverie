@@ -7,6 +7,7 @@ import fcntl
 import json
 import multiprocessing
 import os
+import socket
 import subprocess
 import sys
 import tempfile
@@ -171,8 +172,9 @@ class ParallelValidatePathTest(unittest.TestCase):
             shared_child.write_text("run-b")
             self.assertEqual(shared_child.read_text(), "run-b")
 
-        runtime_a = start_unit.prepare_runtime_root(self.root, "validate-a")
-        runtime_b = start_unit.prepare_runtime_root(self.root, "validate-b")
+        runtime_environment = {"XDG_RUNTIME_DIR": str(self.root)}
+        runtime_a = start_unit.prepare_runtime_root(runtime_environment)
+        runtime_b = start_unit.prepare_runtime_root(runtime_environment)
         fixed_a = start_unit.build_systemd_command(
             **common, unit="validate-a", runtime_root=runtime_a
         )
@@ -182,7 +184,7 @@ class ParallelValidatePathTest(unittest.TestCase):
             unit="validate-b",
             runtime_root=runtime_b,
         )
-        for name in ("tmp", "cache", "python-cache", "hermit-data"):
+        for name in ("cache", "python-cache", "hermit-data"):
             self.assertTrue((runtime_a / name).is_dir())
             self.assertTrue((runtime_b / name).is_dir())
             child_a = runtime_a / name / "same-relative-name"
@@ -191,9 +193,35 @@ class ParallelValidatePathTest(unittest.TestCase):
             child_b.write_text("run-b")
             self.assertEqual(child_a.read_text(), "run-a")
             self.assertEqual(child_b.read_text(), "run-b")
-        self.assertIn(f"TMPDIR={runtime_a / 'tmp'}", fixed_a)
-        self.assertIn(f"TMPDIR={runtime_b / 'tmp'}", fixed_b)
+        self.assertIn(f"TMPDIR={runtime_a}", fixed_a)
+        self.assertIn(f"TMPDIR={runtime_b}", fixed_b)
         self.assertNotEqual(runtime_a, runtime_b)
+
+        # The removed workspace-root path exceeds Linux's 107-byte Unix-socket
+        # pathname payload for both the LiteInst coordinator and the skill
+        # discovery socket fixture.  The short per-run root must leave room for
+        # the longer fixture name, not only make the two runs distinct.
+        old_tmp = self.root / "validate-runtime" / f"validate-{'x' * 72}" / "tmp"
+        old_socket = old_tmp / "reverie-liteinst-XXXXXX/coordinator.sock"
+        self.assertGreater(len(os.fsencode(old_socket)), 107)
+        old_socket.parent.mkdir(parents=True)
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as listener:
+            with self.assertRaises(OSError):
+                listener.bind(str(old_socket))
+        fixed_socket = runtime_a / (
+            "reverie-skill-discovery-canonical-4194304-"
+            "9999999999999999999/repo/README.md"
+        )
+        self.assertLessEqual(len(os.fsencode(fixed_socket)), 107)
+        fixed_socket.parent.mkdir(parents=True)
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as listener:
+            listener.bind(str(fixed_socket))
+        long_runtime_parent = self.root / ("x" * 32)
+        long_runtime_parent.mkdir()
+        with self.assertRaisesRegex(ValueError, "too long"):
+            start_unit.prepare_runtime_root(
+                {"XDG_RUNTIME_DIR": str(long_runtime_parent)}
+            )
         # One run's cells deliberately share one E2E result root so the verifier
         # can aggregate them; only separate top-level runs get separate roots.
         self.assertIn("E2E_RUN_ID=validate-a", fixed_a)

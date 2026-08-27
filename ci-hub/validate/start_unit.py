@@ -29,6 +29,9 @@ import service_result
 
 ROOT = Path(__file__).resolve().parents[2]
 HOST_TMP_ROOT = Path("/tmp").resolve()
+# Linux permits 107 pathname bytes in an AF_UNIX address. Reverie's longest
+# current temporary socket fixture appends 77 bytes including its separator.
+MAX_RUNTIME_ROOT_BYTES = 30
 
 
 def parent_checkout_head() -> str | None:
@@ -607,11 +610,22 @@ def _shared_resource_caps_path(environment: Mapping[str, str]) -> Path:
     return runtime / "ci-hub" / "resource-caps.json"
 
 
-def prepare_runtime_root(parent: Path, unit: str) -> Path:
-    """Create the host-side temporary/cache tree owned by one validate run."""
-    runtime = parent / "validate-runtime" / unit
-    runtime.mkdir(parents=True, mode=0o700, exist_ok=False)
-    for name in ("tmp", "cache", "python-cache", "hermit-data"):
+def prepare_runtime_root(environment: Mapping[str, str]) -> Path:
+    """Create the short host-side temporary/cache tree owned by one validate run."""
+    parent = Path(
+        environment.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"
+    )
+    if not parent.is_absolute():
+        raise ValueError(f"XDG_RUNTIME_DIR must be absolute, got {parent}")
+    runtime = Path(tempfile.mkdtemp(prefix="v", dir=parent))
+    if len(os.fsencode(runtime)) > MAX_RUNTIME_ROOT_BYTES:
+        shutil.rmtree(runtime)
+        raise ValueError(
+            "XDG_RUNTIME_DIR is too long for validation's Unix-domain socket paths: "
+            f"per-run root {runtime} is {len(os.fsencode(runtime))} bytes, maximum "
+            f"is {MAX_RUNTIME_ROOT_BYTES}"
+        )
+    for name in ("cache", "python-cache", "hermit-data"):
         (runtime / name).mkdir(mode=0o700)
     return runtime
 
@@ -1282,7 +1296,7 @@ def build_systemd_command(
         build_budget_env.extend(
             [
                 "--setenv",
-                f"TMPDIR={runtime_root / 'tmp'}",
+                f"TMPDIR={runtime_root}",
                 "--setenv",
                 f"XDG_CACHE_HOME={runtime_root / 'cache'}",
                 "--setenv",
@@ -2147,7 +2161,7 @@ def main(
             )
             checkout = fresh_checkout
         preflight(root, checkout, args.target, repo=repo, run=run)
-        runtime_root = prepare_runtime_root((root / "ignored").resolve(), unit)
+        runtime_root = prepare_runtime_root(environment or os.environ)
         private_cargo_home = prepare_private_cargo_home(
             (root / "ignored").resolve(),
             run=run,

@@ -336,7 +336,11 @@ class StartUnitTest(unittest.TestCase):
         (self.checkout / "scripts/validate.rs").write_text("#!/usr/bin/env rust-script\n")
         (self.root / "ci-hub/validate").mkdir(parents=True)
         self.fake = FakeRun(self.checkout)
-        self.environment = {"HOME": "/home/test", "PATH": "/usr/bin:/bin"}
+        self.environment = {
+            "HOME": "/home/test",
+            "PATH": "/usr/bin:/bin",
+            "XDG_RUNTIME_DIR": str(self.root),
+        }
 
     def tearDown(self) -> None:
         start_unit.HOST_TMP_ROOT = self.original_host_tmp_root
