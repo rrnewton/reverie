@@ -309,26 +309,26 @@ fn execute_basic_syscall_with_output(
         // TODO-HUMAN-REVIEW(#120)
         readv(memory, state, args)
     } else if number == libc::SYS_pread64 as u64 {
-        pread64(memory, state, args)
+        pread64(memory, state, args, capture_output)
     } else if number == libc::SYS_pwrite64 as u64 {
-        pwrite64(memory, state, args)
+        pwrite64(memory, state, args, capture_output)
     } else if number == libc::SYS_sendfile as u64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
         sendfile(memory, state, args, output)
     } else if number == libc::SYS_lseek as u64 {
         lseek(state, args, capture_output)
     } else if number == libc::SYS_ftruncate as u64 {
-        ftruncate(state, args)
+        ftruncate(state, args, capture_output)
     } else if number == libc::SYS_truncate as u64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
         truncate(memory, state, args)
     } else if number == libc::SYS_fallocate as u64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
-        fallocate(state, args)
+        fallocate(state, args, capture_output)
     } else if number == libc::SYS_fsync as u64 {
-        sync_file(state, args[0], false)
+        sync_file(state, args[0], false, capture_output)
     } else if number == libc::SYS_fdatasync as u64 {
-        sync_file(state, args[0], true)
+        sync_file(state, args[0], true, capture_output)
     } else if number == libc::SYS_readahead as u64 {
         // AUTONOMOUS-BOT-IMPLEMENTED
         // TODO-HUMAN-REVIEW(PR-227): Review translated host readahead semantics.
@@ -461,11 +461,11 @@ fn execute_basic_syscall_with_output(
     } else if number == libc::SYS_newfstatat as u64 {
         newfstatat(memory, state, args)
     } else if number == libc::SYS_statx as u64 {
-        statx(memory, state, args)
+        statx(memory, state, args, capture_output)
     } else if number == libc::SYS_statfs as u64 {
         statfs(memory, state, args)
     } else if number == libc::SYS_fstatfs as u64 {
-        fstatfs(memory, state, args)
+        fstatfs(memory, state, args, capture_output)
     } else if number == libc::SYS_access as u64 {
         access(memory, state, args)
     } else if number == libc::SYS_faccessat as u64 {
@@ -652,7 +652,7 @@ fn execute_basic_syscall_with_output(
         state.umask = args[0] as libc::mode_t & 0o777;
         i64::from(previous)
     } else if number == libc::SYS_fchmod as u64 {
-        fchmod(state, args)
+        fchmod(state, args, capture_output)
     } else if number == libc::SYS_chmod as u64 {
         fchmodat(memory, state, libc::AT_FDCWD, args[0], args[1], 0)
     } else if number == libc::SYS_fchmodat as u64 {
@@ -2639,10 +2639,21 @@ fn read(memory: &mut GuestMemory, state: &mut LoadedStaticElf, args: &[u64; 6]) 
     host_read(memory, host_fd, args[1], length)
 }
 
-fn pread64(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
+fn pread64(
+    memory: &mut GuestMemory,
+    state: &LoadedStaticElf,
+    args: &[u64; 6],
+    capture_output: bool,
+) -> i64 {
     let Ok(fd) = i32::try_from(args[0]) else {
         return negative_errno(libc::EBADF);
     };
+    // A positioned read/write on a pipe is ESPIPE. Without this the captured fd
+    // is simply absent from `state.files` and the lookup below answers EBADF,
+    // which is a different error than Linux and than the ptrace backend give.
+    if is_captured_stream(state, capture_output, fd) {
+        return negative_errno(libc::ESPIPE);
+    }
     let Ok(requested_length) = usize::try_from(args[2]) else {
         return negative_errno(libc::EINVAL);
     };
@@ -2675,10 +2686,21 @@ fn pread64(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -
     }
 }
 
-fn pwrite64(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
+fn pwrite64(
+    memory: &GuestMemory,
+    state: &LoadedStaticElf,
+    args: &[u64; 6],
+    capture_output: bool,
+) -> i64 {
     let Ok(fd) = i32::try_from(args[0]) else {
         return negative_errno(libc::EBADF);
     };
+    // A positioned read/write on a pipe is ESPIPE. Without this the captured fd
+    // is simply absent from `state.files` and the lookup below answers EBADF,
+    // which is a different error than Linux and than the ptrace backend give.
+    if is_captured_stream(state, capture_output, fd) {
+        return negative_errno(libc::ESPIPE);
+    }
     let Ok(requested_length) = usize::try_from(args[2]) else {
         return negative_errno(libc::EINVAL);
     };
@@ -2957,10 +2979,15 @@ fn lseek(state: &LoadedStaticElf, args: &[u64; 6], capture_output: bool) -> i64 
     }
 }
 
-fn ftruncate(state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
+fn ftruncate(state: &LoadedStaticElf, args: &[u64; 6], capture_output: bool) -> i64 {
     let Ok(fd) = i32::try_from(args[0]) else {
         return negative_errno(libc::EBADF);
     };
+    // A pipe cannot be truncated: Linux answers EINVAL, and so does the ptrace
+    // backend on a captured stream.
+    if is_captured_stream(state, capture_output, fd) {
+        return negative_errno(libc::EINVAL);
+    }
     let Some(host_fd) = host_fd(state, fd) else {
         return negative_errno(libc::EBADF);
     };
@@ -3029,10 +3056,14 @@ fn truncate(memory: &GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i
 }
 
 // TODO-HUMAN-REVIEW(PR-136): Review host fallocate delegation and flag bounds.
-fn fallocate(state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
+fn fallocate(state: &LoadedStaticElf, args: &[u64; 6], capture_output: bool) -> i64 {
     let Ok(fd) = i32::try_from(args[0]) else {
         return negative_errno(libc::EBADF);
     };
+    // Allocating into a pipe is not seekable: Linux answers ESPIPE.
+    if is_captured_stream(state, capture_output, fd) {
+        return negative_errno(libc::ESPIPE);
+    }
     let Some(host_fd) = host_fd(state, fd) else {
         return negative_errno(libc::EBADF);
     };
@@ -3057,10 +3088,15 @@ fn fallocate(state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
     }
 }
 
-fn sync_file(state: &LoadedStaticElf, raw_fd: u64, data_only: bool) -> i64 {
+fn sync_file(state: &LoadedStaticElf, raw_fd: u64, data_only: bool, capture_output: bool) -> i64 {
     let Ok(fd) = i32::try_from(raw_fd) else {
         return negative_errno(libc::EBADF);
     };
+    // There is nothing to flush to a pipe: Linux answers EINVAL for both fsync
+    // and fdatasync, which are this function's two callers.
+    if is_captured_stream(state, capture_output, fd) {
+        return negative_errno(libc::EINVAL);
+    }
     let Some(host_fd) = host_fd(state, fd) else {
         return negative_errno(libc::EBADF);
     };
@@ -3649,6 +3685,29 @@ fn output_alias(state: &LoadedStaticElf, fd: libc::c_int) -> Option<OutputAlias>
     } else {
         None
     }
+}
+
+/// Is `fd` a captured standard stream, so that this operation must answer as the
+/// pipe the sink models rather than reaching the host descriptor?
+///
+/// `lseek` and `fstat` already answer that way inline -- ESPIPE and a synthetic
+/// `S_IFIFO` stat -- and this is the same decision for the operations that did
+/// not. Those reached [`host_fd`], which for an open standard descriptor returns
+/// the SUPERVISOR's own fd 1 or 2, so a guest calling them on captured stdout
+/// operated on the invoking shell's file. Measured 2026-08-27 under
+/// `--backend kvm --verify` with stdout redirected to a file: `ftruncate`
+/// truncated that file, `fallocate` grew it to 4096 bytes and `fchmod` changed
+/// its mode from 0644 to 0600 -- all while the run's writes were going to the
+/// in-memory sink and were never supposed to touch the descriptor at all. The
+/// ptrace backend, measured in the same configuration, left the file at 20 bytes
+/// and 0644.
+///
+/// Both conditions are load-bearing. `capture_output` is required because the
+/// explicit opt-out reports on the same descriptor and must keep passing
+/// through; `output_alias` is required because only fds aliased to stdout or
+/// stderr are backed by the sink.
+fn is_captured_stream(state: &LoadedStaticElf, capture_output: bool, fd: libc::c_int) -> bool {
+    capture_output && output_alias(state, fd).is_some()
 }
 
 fn set_output_alias(state: &mut LoadedStaticElf, fd: libc::c_int, alias: Option<OutputAlias>) {
@@ -6761,7 +6820,12 @@ fn fstatat_impl(
     write_struct(memory, output_address, &stat)
 }
 
-fn statx(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
+fn statx(
+    memory: &mut GuestMemory,
+    state: &LoadedStaticElf,
+    args: &[u64; 6],
+    capture_output: bool,
+) -> i64 {
     let path = match read_c_string(memory, args[1], 4096) {
         Ok(path) => path,
         Err(error) => return read_c_string_errno(error),
@@ -6785,6 +6849,12 @@ fn statx(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> 
             let stx = synthetic_proc_statx(synthetic_proc_inode(&normalized), content.len() as u64);
             return write_struct(memory, args[4], &stx);
         }
+    } else if is_captured_stream(state, capture_output, args[0] as libc::c_int) {
+        // AT_EMPTY_PATH statx of a captured stream: the same synthetic identity
+        // `fstat` already reports, so the two agree with each other and with the
+        // process-based backends.
+        let stx = synthetic_captured_output_statx(state, args[0] as libc::c_int);
+        return write_struct(memory, args[4], &stx);
     } else if let Some(&inode) = state.proc_files.get(&(args[0] as libc::c_int)) {
         // AT_EMPTY_PATH statx of a synthetic /proc descriptor: report the memfd's
         // (deterministic) size with synthesized identity.
@@ -6913,10 +6983,19 @@ fn statfs(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) ->
     fstatfs_host(memory, host_fd, args[1])
 }
 
-fn fstatfs(memory: &mut GuestMemory, state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
+fn fstatfs(
+    memory: &mut GuestMemory,
+    state: &LoadedStaticElf,
+    args: &[u64; 6],
+    capture_output: bool,
+) -> i64 {
     let Ok(guest_fd) = libc::c_int::try_from(args[0]) else {
         return negative_errno(libc::EBADF);
     };
+    if is_captured_stream(state, capture_output, guest_fd) {
+        let fs = synthetic_captured_output_statfs();
+        return write_struct(memory, args[1], &fs);
+    }
     let Some(host_fd) = host_fd(state, guest_fd) else {
         return negative_errno(libc::EBADF);
     };
@@ -7322,10 +7401,19 @@ fn symlink_at(
     zero_or_errno(unsafe { libc::symlinkat(target.as_ptr(), new_host_dirfd, new_path.as_ptr()) })
 }
 
-fn fchmod(state: &LoadedStaticElf, args: &[u64; 6]) -> i64 {
+fn fchmod(state: &LoadedStaticElf, args: &[u64; 6], capture_output: bool) -> i64 {
     let Ok(guest_fd) = libc::c_int::try_from(args[0]) else {
         return negative_errno(libc::EBADF);
     };
+    // ⚠️ THIS ONE RETURNED 0 BEFORE AND STILL RETURNS 0, so the return code never
+    // showed the defect -- only the file did. chmod on a pipe succeeds and
+    // changes the pipe's own mode, which this guest cannot observe, so the
+    // faithful answer is to succeed WITHOUT touching the host descriptor.
+    // Previously this reached the supervisor's fd and changed the caller's file
+    // from 0644 to 0600.
+    if is_captured_stream(state, capture_output, guest_fd) {
+        return 0;
+    }
     let Some(host_fd) = host_fd(state, guest_fd) else {
         return negative_errno(libc::EBADF);
     };
@@ -8184,6 +8272,47 @@ fn synthetic_guest_fd_symlink_stat(guest_fd: libc::c_int) -> libc::stat {
     stat.st_gid = 0;
     stat.st_blksize = PAGE_SIZE as libc::blksize_t;
     stat
+}
+
+/// `statx` form of [`synthetic_captured_output_stat`].
+///
+/// ⚠️ FOUND ONLY BY COMPARING CONTENTS. `statx` returned 0 on both backends, so
+/// every return-code comparison passed while KVM reported the captured stream as
+/// `S_IFREG` with the host file's mode and ptrace reported `S_IFIFO` -- measured
+/// 2026-08-27, mode 0100644 against 0010600. A guest that stats stdout to decide
+/// whether it may seek got opposite answers from the two backends.
+fn synthetic_captured_output_statx(state: &LoadedStaticElf, fd: libc::c_int) -> libc::statx {
+    // SAFETY: libc::statx is plain-old-data; a zeroed value is valid.
+    let mut stat = unsafe { std::mem::zeroed::<libc::statx>() };
+    stat.stx_mask = libc::STATX_TYPE
+        | libc::STATX_MODE
+        | libc::STATX_NLINK
+        | libc::STATX_UID
+        | libc::STATX_GID
+        | libc::STATX_INO
+        | libc::STATX_SIZE;
+    stat.stx_blksize = PAGE_SIZE as u32;
+    stat.stx_nlink = 1;
+    stat.stx_mode = (libc::S_IFIFO | 0o600) as u16;
+    stat.stx_ino = synthetic_guest_fd_object_inode(state, fd);
+    stat.stx_dev_minor = SYNTHETIC_GUEST_FD_DEV_MINOR;
+    sanitize_statx_timestamps(&mut stat);
+    stat
+}
+
+/// `statfs` for a captured stream: the sink is a pipe, so it lives on pipefs.
+///
+/// ⚠️ ALSO INVISIBLE IN THE RETURN CODE. `fstatfs` returned 0 on both backends
+/// while KVM reported the HOST filesystem's magic -- measured 0x9123683e against
+/// ptrace's 0x50495045 -- which publishes which filesystem the invoking shell's
+/// stdout happens to live on into the guest.
+fn synthetic_captured_output_statfs() -> libc::statfs {
+    // SAFETY: libc::statfs is plain-old-data; a zeroed value is valid.
+    let mut fs = unsafe { std::mem::zeroed::<libc::statfs>() };
+    fs.f_type = PIPEFS_MAGIC as _;
+    fs.f_bsize = PAGE_SIZE as _;
+    fs.f_namelen = 255;
+    fs
 }
 
 fn synthetic_guest_fd_symlink_statx(guest_fd: libc::c_int) -> libc::statx {
@@ -11687,6 +11816,221 @@ mod tests {
         assert_eq!(path_stat.st_ino, stat.st_ino);
         assert_eq!(path_stat.st_size, stat.st_size);
         assert_eq!(path_stat.st_mode, stat.st_mode);
+    }
+
+    /// Metadata and positioned-IO syscalls on a CAPTURED standard stream must
+    /// answer as the pipe the sink models, and must not reach the host
+    /// descriptor.
+    ///
+    /// ⚠️ THE RETURN CODE ALONE CANNOT SEE THIS DEFECT, WHICH IS WHY THE FILE IS
+    /// ASSERTED TOO. Measured 2026-08-27 before the fix, under
+    /// `hermit run --verify --backend kvm` with stdout redirected to a file:
+    /// `fchmod` returned 0 on both the KVM and ptrace backends -- identical
+    /// return codes -- while KVM had changed the caller's file from 0644 to 0600
+    /// and ptrace had not. `ftruncate` and `fallocate` likewise returned 0 and
+    /// left the file at 4096 bytes where ptrace left it at 20.
+    ///
+    /// The uncaptured half is the control that has to come out the other way: the
+    /// same calls on the same descriptor must still reach the file when hermit is
+    /// not capturing, because then the guest really is talking to that file.
+    #[test]
+    fn captured_stream_syscalls_answer_as_a_pipe_and_spare_the_host_file() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        // fd 3 aliased to stdout and backed by a real file, so any escape to the
+        // host descriptor is visible in the file rather than only in an errno.
+        fn fixture(root: &std::path::Path) -> (LoadedStaticElf, std::path::PathBuf) {
+            let path = root.join("captured-stream");
+            std::fs::write(&path, b"0123456789").unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+            let mut state = test_state(root);
+            state.files.insert(
+                3,
+                std::fs::OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .open(&path)
+                    .unwrap(),
+            );
+            set_output_alias(&mut state, 3, Some(OutputAlias::Stdout));
+            (state, path)
+        }
+
+        // (syscall, args after the fd, expected result under capture)
+        let cases: [(libc::c_long, [u64; 5], i64); 6] = [
+            (libc::SYS_ftruncate, [0, 0, 0, 0, 0], -(libc::EINVAL as i64)),
+            (
+                libc::SYS_fallocate,
+                [0, 0, 4096, 0, 0],
+                -(libc::ESPIPE as i64),
+            ),
+            (libc::SYS_fsync, [0, 0, 0, 0, 0], -(libc::EINVAL as i64)),
+            (libc::SYS_fdatasync, [0, 0, 0, 0, 0], -(libc::EINVAL as i64)),
+            (
+                libc::SYS_pread64,
+                [0x1000, 4, 0, 0, 0],
+                -(libc::ESPIPE as i64),
+            ),
+            (
+                libc::SYS_pwrite64,
+                [0x1000, 4, 0, 0, 0],
+                -(libc::ESPIPE as i64),
+            ),
+        ];
+
+        for (number, rest, expected) in cases {
+            let root = TestDir::new();
+            let (mut state, path) = fixture(&root.0);
+            let mut memory = GuestMemory::new(0, 0x4000).unwrap();
+            let mut output = CapturedOutput::default();
+            let args = [3, rest[0], rest[1], rest[2], rest[3], rest[4]];
+
+            let action = execute_basic_syscall_with_output(
+                &mut memory,
+                &mut state,
+                &SyscallRequest::new(number as u64, args),
+                Some(&mut output),
+            );
+            let result = match action {
+                SyscallAction::Continue { result, .. } => result,
+                _ => panic!("syscall {number} did not produce a Continue action"),
+            };
+            assert_eq!(
+                result, expected,
+                "syscall {number} on a captured stream must answer as a pipe"
+            );
+            let metadata = std::fs::metadata(&path).unwrap();
+            assert_eq!(
+                metadata.len(),
+                10,
+                "syscall {number} reached the host file under capture"
+            );
+            assert_eq!(
+                metadata.permissions().mode() & 0o777,
+                0o644,
+                "syscall {number} changed the host file's mode under capture"
+            );
+        }
+
+        // fchmod is the one whose RETURN CODE never showed the defect: 0 before
+        // and 0 after. Only the mode distinguishes them.
+        {
+            let root = TestDir::new();
+            let (mut state, path) = fixture(&root.0);
+            let mut memory = GuestMemory::new(0, 0x4000).unwrap();
+            let mut output = CapturedOutput::default();
+            let action = execute_basic_syscall_with_output(
+                &mut memory,
+                &mut state,
+                &SyscallRequest::new(libc::SYS_fchmod as u64, [3, 0o600, 0, 0, 0, 0]),
+                Some(&mut output),
+            );
+            assert!(matches!(
+                action,
+                SyscallAction::Continue {
+                    result: 0,
+                    segment: None
+                }
+            ));
+            assert_eq!(
+                std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o644,
+                "fchmod changed the host file's mode under capture while returning 0"
+            );
+        }
+
+        // ⚠️ CONTENT, NOT RETURN CODE. `statx` and `fstatfs` both returned 0 on
+        // both backends before this change while KVM published the HOST file's
+        // type and the HOST filesystem's magic into the guest. Only these two
+        // field reads distinguish the states; an rc-only assertion passes either
+        // way, which is how they were missed on the first pass.
+        {
+            let root = TestDir::new();
+            let (mut state, _path) = fixture(&root.0);
+            let mut memory = GuestMemory::new(0, 0x4000).unwrap();
+            let mut output = CapturedOutput::default();
+
+            let action = execute_basic_syscall_with_output(
+                &mut memory,
+                &mut state,
+                &SyscallRequest::new(
+                    libc::SYS_statx as u64,
+                    [3, 0x1800, libc::AT_EMPTY_PATH as u64, 0, 0x1000, 0],
+                ),
+                Some(&mut output),
+            );
+            assert!(matches!(
+                action,
+                SyscallAction::Continue {
+                    result: 0,
+                    segment: None
+                }
+            ));
+            let stx: libc::statx = read_struct(&memory, 0x1000);
+            assert_eq!(
+                u32::from(stx.stx_mode) & libc::S_IFMT,
+                libc::S_IFIFO,
+                "statx on a captured stream reported the host file's type"
+            );
+
+            let action = execute_basic_syscall_with_output(
+                &mut memory,
+                &mut state,
+                &SyscallRequest::new(libc::SYS_fstatfs as u64, [3, 0x2000, 0, 0, 0, 0]),
+                Some(&mut output),
+            );
+            assert!(matches!(
+                action,
+                SyscallAction::Continue {
+                    result: 0,
+                    segment: None
+                }
+            ));
+            let fs: libc::statfs = read_struct(&memory, 0x2000);
+            assert_eq!(
+                fs.f_type, PIPEFS_MAGIC,
+                "fstatfs on a captured stream reported the host filesystem"
+            );
+        }
+
+        // ⚠️ THE CONTROL. Without capture the same descriptor really is that file,
+        // so every one of these must reach it. If this half ever passes with the
+        // captured half, the guard is firing unconditionally and uncaptured runs
+        // have started lying about the caller's own stdout.
+        {
+            let root = TestDir::new();
+            let (mut state, path) = fixture(&root.0);
+            let mut memory = GuestMemory::new(0, 0x4000).unwrap();
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    libc::SYS_ftruncate,
+                    [3, 0, 0, 0, 0, 0]
+                ),
+                0,
+                "uncaptured ftruncate must still reach the file"
+            );
+            assert_eq!(
+                std::fs::metadata(&path).unwrap().len(),
+                0,
+                "uncaptured ftruncate did not take effect"
+            );
+            assert_eq!(
+                syscall_result(
+                    &mut memory,
+                    &mut state,
+                    libc::SYS_fchmod,
+                    [3, 0o600, 0, 0, 0, 0]
+                ),
+                0
+            );
+            assert_eq!(
+                std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o600,
+                "uncaptured fchmod did not take effect"
+            );
+        }
     }
 
     #[test]
