@@ -188,9 +188,12 @@ def _series_spool_snapshot(
     series_store = _series_store()
     for path in sorted(root.glob("*.jsonl")):
         events = read_shard(path)
+        try:
+            series_store.validate_rows(events)
+        except series_store.SeriesError as error:
+            raise PublishRefused(f"{path}: {error}") from error
         for event in events:
             try:
-                series_store.validate_row(event)
                 emitted_at = str(event.get("emitted_at", ""))
                 month = emitted_at[:7]
                 team = str(event.get("team", ""))
@@ -541,8 +544,15 @@ def publish(
     # rather than being written into shared history and linted afterwards.
     for (team, host, month), events in pending.items():
         rel = _store_shard(store, team, host, month)
-        for event in events:
-            _validate_store_event(store, event, rel)
+        if store == "series":
+            series_store = _series_store()
+            try:
+                series_store.validate_rows(events)
+            except series_store.SeriesError as error:
+                raise PublishRefused(f"{rel}: {error}") from error
+        else:
+            for event in events:
+                _validate_store_event(store, event, rel)
 
     last_error = ""
     for attempt in range(1, attempts + 1):

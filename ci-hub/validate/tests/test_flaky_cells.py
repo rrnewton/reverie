@@ -28,7 +28,7 @@ def row(
     dirty: bool = False,
 ) -> dict:
     return {
-        "schema": "stress-series/v1",
+        "schema": series.ENVELOPE_VERSION,
         "event_id": f"event-{tree}-{run_index}-{outcome}",
         "event_type": "series.observation",
         "emitted_at": "2026-08-27T02:59:31Z",
@@ -43,6 +43,12 @@ def row(
             "num_runs": num_runs,
             "outcome": outcome,
             "source_tree_dirty": dirty,
+            "machine_shortname": "devbig014",
+            "kernel_version": "7.1.3-test",
+            "host_capabilities": {
+                "cpuid-faulting": {"present": False, "evidence": "fixture absence"},
+                "kvm": {"present": True, "evidence": "fixture presence"},
+            },
         },
     }
 
@@ -125,3 +131,32 @@ def test_checked_in_registry_is_the_projection_of_the_tracked_series() -> None:
     rows = series.union(sorted((ROOT / "series").glob("*/*/*.jsonl")))
     expected = flaky_cells.render(flaky_cells.derive(rows))
     assert flaky_cells.DEFAULT_REGISTRY.read_text() == expected
+
+
+def test_retained_v1_rows_remain_readable() -> None:
+    legacy = row("passed")
+    legacy["schema"] = series.LEGACY_ENVELOPE_VERSION
+    del legacy["series"]["machine_shortname"]
+    del legacy["series"]["kernel_version"]
+    del legacy["series"]["host_capabilities"]
+    registry = flaky_cells.derive([
+        legacy,
+        {
+            **legacy,
+            "event_id": "legacy-fail",
+            "series": {
+                **legacy["series"],
+                "outcome": "diverged",
+                "run_index": 1,
+            },
+        },
+    ])
+    assert registry["cells"][0]["sample_size"] == 2
+
+
+@pytest.mark.parametrize("capability", ["cpuid-faulting", "kvm"])
+def test_incomplete_v2_rows_cannot_enter_the_registry(capability: str) -> None:
+    incomplete = row("passed")
+    del incomplete["series"]["host_capabilities"][capability]
+    with pytest.raises(series.MalformedRow, match=capability):
+        flaky_cells.derive([incomplete])

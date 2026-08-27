@@ -50,7 +50,6 @@ import json
 import os
 import re
 import shutil
-import socket
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -70,20 +69,9 @@ from ledger import (  # noqa: E402  (path set above)
     verify_append_only,
 )
 
-ENVELOPE_VERSION = "stress-series/v1"
-
-#: Envelope keys every series row must carry. Deliberately the SAME set the
-#: validate ledger uses, so `union_events` orders and dedups these rows with the
-#: identical rule and no series-specific branch.
-ENVELOPE_KEYS = (
-    "schema", "event_id", "event_type", "emitted_at", "team", "host", "run_id",
-    "producer",
-)
-
-#: The identity of one row. `run_index` is the repetition ordinal WITHIN one
-#: campaign against one tree -- it is what makes this a series rather than a
-#: single observation, and it is why (cell, tree) alone is not a key.
-IDENTITY_KEYS = ("cell", "tree", "run_index")
+LEGACY_ENVELOPE_VERSION = "stress-series/v1"
+ENVELOPE_VERSION = "stress-series/v2"
+READABLE_ENVELOPE_VERSIONS = frozenset({LEGACY_ENVELOPE_VERSION, ENVELOPE_VERSION})
 
 #: The four divergence coordinates, stored as RAW MEASURED POSITIONS. A row may
 #: count repeated observations only when every stored position is exactly equal.
@@ -102,26 +90,7 @@ COORDINATE_KEYS = (
 
 FIRST_DIVERGENT_MESSAGE_KEYS = ("left", "right")
 
-#: Runtime fields emitted by both cell producers. These are totals for one
-#: Hermit execution, not divergence positions. They intentionally live outside
-#: ``coordinates`` so a passing row can carry them. Verify and replay cells can
-#: carry both ``run1`` and ``run2``; single-execution cells carry only ``run1``.
-RUNTIME_KEYS = (
-    "scheduler_turns",
-    "virtual_nanoseconds",
-    "syscalls",
-)
-
-#: An outcome that is NOT a statement about the cell. Mirrors the ledger's
-#: `NON_VERDICT_OUTCOMES` for the same reason: an infrastructure hiccup recorded
-#: as a product failure is how a flake becomes a false regression.
-NON_VERDICT_OUTCOMES = frozenset({"no_result", "timeout", "errored", "skipped"})
-
-#: Every outcome a row may carry.
-OUTCOMES = frozenset({"passed", "diverged"}) | NON_VERDICT_OUTCOMES
-
 _SHA_RE = re.compile(r"^[0-9a-f]{40}$")
-_CELL_RE = re.compile(r"^[A-Za-z0-9._/-]+/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$")
 # Built rather than written literally so this module does not itself contain the
 # owner-path needle the portability check greps tracked files for.
 _OWNER_PATH_NEEDLE = "/" + "home" + "/"
@@ -145,8 +114,10 @@ def shard_path(team: str, host: str, month: str) -> str:
 
     Beside `ledger/`, never inside it: two roots keep a `git log` over
     validation history readable when a campaign emits 800 rows in a minute.
-    Sharding per team and short host is what makes two machines merge trivially,
-    and is copied deliberately.
+    The path is a storage index derived from the row's authoritative `host`
+    field. Moving or republishing a row cannot change the machine it describes;
+    the v2 type also requires `host == series.machine_shortname`. Sharding per
+    team and short host is what makes two machines merge trivially.
     """
     if not re.fullmatch(r"\d{4}-\d{2}", month or ""):
         raise MalformedRow(f"month must be YYYY-MM, got {month!r}")
@@ -213,186 +184,57 @@ def row_identity(row: dict) -> tuple[str, str, int, int]:
 def validate_row(row: Any, *, strict_paths: bool = True) -> dict:
     """Refuse a row that cannot be read later. The LINTER, not the reader.
 
-    Kept separate from the fold for the ledger's stated reason: a reader that
-    enforced the lint could not replay history already written. This refuses at
-    the WRITE boundary only.
+    Hermit's shared Rust type owns the serialized shape and cross-field rules.
+    Python retains only the parent-specific owner-path rule.
     """
-    if not isinstance(row, dict):
-        raise MalformedRow(f"row must be an object, got {type(row).__name__}")
-    missing = [k for k in ENVELOPE_KEYS if not row.get(k)]
-    if missing:
-        raise MalformedRow(f"missing envelope keys: {', '.join(sorted(missing))}")
-    if row["schema"] != ENVELOPE_VERSION:
-        raise MalformedRow(f"schema must be {ENVELOPE_VERSION!r}, got {row['schema']!r}")
+    return validate_rows([row], strict_paths=strict_paths)[0]
 
-    payload = row.get("series")
-    if not isinstance(payload, dict):
-        raise MalformedRow("row must carry a 'series' object")
-    missing = [k for k in IDENTITY_KEYS if payload.get(k) in (None, "")]
-    if missing:
-        raise MalformedRow(f"series missing identity keys: {', '.join(sorted(missing))}")
 
-    cell = str(payload["cell"])
-    if not _CELL_RE.fullmatch(cell):
-        raise MalformedRow(
-            f"cell must be '<test>/<mode>/<backend>' with the test's own slashes "
-            f"allowed, got {cell!r}"
+def validate_rows(rows: Iterable[Any], *, strict_paths: bool = True) -> list[dict]:
+    """Validate a batch with one invocation of the shared Rust type checker."""
+    return _validate_rows(rows, strict_paths=strict_paths, read=False)
+
+
+def validate_read_rows(rows: Iterable[Any], *, strict_paths: bool = True) -> list[dict]:
+    """Validate stored rows, retaining readable v1 but requiring complete v2."""
+    return _validate_rows(rows, strict_paths=strict_paths, read=True)
+
+
+def _validate_rows(
+    rows: Iterable[Any], *, strict_paths: bool, read: bool,
+) -> list[dict]:
+    """Apply Hermit's shared SeriesRow checks for one read or write boundary."""
+    checked = []
+    for row in rows:
+        if not isinstance(row, dict):
+            raise MalformedRow(f"row must be an object, got {type(row).__name__}")
+        copied = dict(row)
+        if strict_paths and _contains_owner_path(copied):
+            raise MalformedRow("row contains a workspace-local owner path")
+        checked.append(copied)
+    if not checked:
+        return checked
+
+    checker = Path(__file__).resolve().with_name("check-series-rows.rs")
+    try:
+        command = [str(checker), "--read"] if read else [str(checker)]
+        result = subprocess.run(
+            command,
+            input="".join(
+                json.dumps(row, sort_keys=True, separators=(",", ":")) + "\n"
+                for row in checked
+            ),
+            capture_output=True,
+            text=True,
+            timeout=300,
+            check=False,
         )
-    tree = str(payload["tree"])
-    if not _SHA_RE.fullmatch(tree):
-        raise MalformedRow(f"tree must be a 40-hex commit sha, got {tree!r}")
-    run_index = payload["run_index"]
-    if not isinstance(run_index, int) or isinstance(run_index, bool) or run_index < 0:
-        raise MalformedRow(f"run_index must be a non-negative int, got {run_index!r}")
-    attempt = payload.get("attempt")
-    if attempt is not None and (
-        not isinstance(attempt, int) or isinstance(attempt, bool) or attempt < 1
-    ):
-        raise MalformedRow(f"attempt must be a positive int when present, got {attempt!r}")
-
-    outcome = payload.get("outcome")
-    if outcome not in OUTCOMES:
-        raise MalformedRow(
-            f"outcome must be one of {sorted(OUTCOMES)}, got {outcome!r}"
-        )
-
-    coords = payload.get("coordinates")
-    if coords is not None and not isinstance(coords, dict):
-        raise MalformedRow("coordinates must be an object when present")
-    if isinstance(coords, dict):
-        unknown = sorted(set(coords) - set(COORDINATE_KEYS))
-        if unknown:
-            raise MalformedRow(f"unknown coordinate keys: {', '.join(unknown)}")
-        for key, value in coords.items():
-            if value is None:
-                continue
-            if not isinstance(value, int) or isinstance(value, bool) or value < 0:
-                raise MalformedRow(
-                    f"coordinate {key} must be a non-negative int or null, got {value!r}"
-                )
-
-    messages = payload.get("first_divergent_messages")
-    if messages is not None:
-        if not isinstance(messages, dict):
-            raise MalformedRow("first_divergent_messages must be an object when present")
-        unknown = sorted(set(messages) - set(FIRST_DIVERGENT_MESSAGE_KEYS))
-        missing = sorted(set(FIRST_DIVERGENT_MESSAGE_KEYS) - set(messages))
-        if unknown or missing:
-            raise MalformedRow(
-                "first_divergent_messages must contain exactly left and right"
-            )
-        for side in FIRST_DIVERGENT_MESSAGE_KEYS:
-            value = messages[side]
-            if value is not None and (not isinstance(value, str) or not value):
-                raise MalformedRow(
-                    f"first_divergent_messages.{side} must be a nonempty string or null"
-                )
-        if all(messages[side] is None for side in FIRST_DIVERGENT_MESSAGE_KEYS):
-            raise MalformedRow("first_divergent_messages must contain at least one message")
-
-    # ⚠️ THE ONE CROSS-FIELD RULE, and it is the whole point of the store.
-    # 'diverged' with no located coordinate is a LEGITIMATE and distinct state --
-    # the run diverged and the position could not be established -- so it is
-    # allowed. What is refused is the inverse: coordinates on a row that did not
-    # diverge, which would let a passing run contribute a position to a range.
-    if outcome != "diverged":
-        located = (
-            {k: v for k, v in coords.items() if v is not None}
-            if isinstance(coords, dict)
-            else {}
-        )
-        if located or messages is not None:
-            raise MalformedRow(
-                f"outcome {outcome!r} must not carry divergence evidence; "
-                "only 'diverged' may"
-            )
-
-    num_runs = payload.get("num_runs", 1)
-    if not isinstance(num_runs, int) or isinstance(num_runs, bool) or num_runs < 1:
-        raise MalformedRow(f"num_runs must be a positive int, got {num_runs!r}")
-    last_run_index = payload.get("last_run_index")
-    if last_run_index is not None:
-        if (
-            not isinstance(last_run_index, int)
-            or isinstance(last_run_index, bool)
-            or last_run_index < run_index
-        ):
-            raise MalformedRow(
-                "last_run_index must be an int at least run_index, "
-                f"got {last_run_index!r}"
-            )
-        if last_run_index - run_index + 1 < num_runs:
-            raise MalformedRow(
-                "last_run_index span must contain at least num_runs observations"
-            )
-
-    runtime = payload.get("runtime")
-    if runtime is not None and not isinstance(runtime, dict):
-        raise MalformedRow("runtime must be an object when present")
-    if isinstance(runtime, dict):
-        for run in ("run1", "run2"):
-            values = runtime.get(run)
-            if values is None:
-                continue
-            if not isinstance(values, dict):
-                raise MalformedRow(f"runtime {run} must be an object when present")
-            for key in RUNTIME_KEYS:
-                value = values.get(key)
-                if value is not None and (
-                    not isinstance(value, int) or isinstance(value, bool) or value < 0
-                ):
-                    raise MalformedRow(
-                        f"runtime {run}.{key} must be a non-negative int or null, "
-                        f"got {value!r}"
-                    )
-        for key in ("wall_time_min_ms", "wall_time_max_ms"):
-            value = runtime.get(key)
-            if value is not None and (
-                not isinstance(value, (int, float))
-                or isinstance(value, bool)
-                or value < 0
-            ):
-                raise MalformedRow(
-                    f"runtime {key} must be a non-negative number or null, got {value!r}"
-                )
-        minimum = runtime.get("wall_time_min_ms")
-        maximum = runtime.get("wall_time_max_ms")
-        if (
-            isinstance(minimum, (int, float))
-            and not isinstance(minimum, bool)
-            and isinstance(maximum, (int, float))
-            and not isinstance(maximum, bool)
-            and minimum > maximum
-        ):
-            raise MalformedRow(
-                "runtime wall_time_min_ms must not exceed wall_time_max_ms"
-            )
-
-    main_ancestry = payload.get("main_ancestry")
-    if main_ancestry is not None and not isinstance(main_ancestry, bool):
-        raise MalformedRow(
-            f"main_ancestry must be a bool when present, got {main_ancestry!r}"
-        )
-
-    depth = payload.get("depth")
-    if depth is not None and not isinstance(depth, dict):
-        raise MalformedRow("depth must be an object when present")
-    if isinstance(depth, dict):
-        for repository, counts in depth.items():
-            if not isinstance(repository, str) or not repository:
-                raise MalformedRow("depth repository keys must be nonempty strings")
-            if not isinstance(counts, dict):
-                raise MalformedRow(f"depth {repository} must be an object")
-            for key in ("commits", "first_parent"):
-                value = counts.get(key)
-                if not isinstance(value, int) or isinstance(value, bool) or value < 1:
-                    raise MalformedRow(
-                        f"depth {repository}.{key} must be a positive int, got {value!r}"
-                    )
-
-    if strict_paths and _contains_owner_path(row):
-        raise MalformedRow("row contains a workspace-local owner path")
-    return row
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise SeriesError(f"cannot run the shared SeriesRow checker: {error}") from error
+    if result.returncode != 0:
+        detail = result.stderr.strip() or result.stdout.strip() or "no output"
+        raise MalformedRow(detail)
+    return checked
 
 
 def _contains_owner_path(value: Any) -> bool:
@@ -414,7 +256,7 @@ def union(paths: Sequence[Any]) -> list[dict]:
     events: list[dict] = []
     for path in paths:
         events.extend(read_shard(path))
-    return union_events(events)
+    return union_events(validate_read_rows(events))
 
 
 def series_for(rows: Iterable[dict], cell: str, tree: str) -> list[dict]:
@@ -489,14 +331,14 @@ def measurement_state(rows: Sequence[dict]) -> str:
 
 def append_rows(path: Any, rows: Iterable[dict]) -> int:
     """Validate then append. Refuses the batch before writing any of it."""
-    checked = [validate_row(dict(r)) for r in rows]
+    checked = validate_rows(rows)
     return append_events(path, checked)
 
 
 def append_cell_rows(parent: Any, path: Any, rows: Iterable[dict]) -> int:
     """Append projected cell rows once, refusing a changed repeated identity."""
     path = Path(path)
-    checked = [validate_row(dict(row)) for row in rows]
+    checked = validate_rows(rows)
     path.parent.mkdir(parents=True, exist_ok=True)
     lock_fd = os.open(path.parent / ".append.lock", os.O_WRONLY | os.O_CREAT, 0o644)
     try:
@@ -599,7 +441,7 @@ def published_rows(parent: Any) -> list[dict]:
                 f"parent origin/main:{relative}: final line has no newline terminator"
             )
         rows.extend(parse_line(line) for line in shown.stdout.splitlines() if line.strip())
-    return union_events(rows)
+    return union_events(validate_read_rows(rows))
 
 
 def history_store_rows(parent: Any) -> list[dict]:
@@ -750,7 +592,6 @@ def _cell_outcome(row: dict) -> str:
             "TIMEOUT": "timeout",
             "NO_RESULT": "no_result",
             "ERROR": "errored",
-            "HOST-INAPPLICABLE": "skipped",
         }[outcome]
     except KeyError as error:
         raise MalformedRow(f"unmapped cell outcome {outcome!r}") from error
@@ -919,11 +760,17 @@ def rows_from_cell_results(
     pressure_counts: dict[tuple[str, int], int] = {}
     if producer in {"pressure-test", "hermit-repeat"}:
         for cell_result in cell_results:
+            if cell_result.get("outcome") == "HOST-INAPPLICABLE":
+                continue
             run_index = cell_result.get("run_index")
             if isinstance(run_index, int) and not isinstance(run_index, bool):
                 key = (_cell_name(cell_result), run_index)
                 pressure_counts[key] = pressure_counts.get(key, 0) + 1
     for cell_result in cell_results:
+        # An unmet prerequisite is recorded by the validate-level ledger. It
+        # produced no execution and therefore produces no cell observation.
+        if cell_result.get("outcome") == "HOST-INAPPLICABLE":
+            continue
         schema = cell_result.get("schema")
         if not isinstance(schema, int) or isinstance(schema, bool) or schema != 4:
             raise MalformedRow(f"cell result schema must be 4, got {schema!r}")
@@ -937,6 +784,15 @@ def rows_from_cell_results(
             raise MalformedRow(
                 f"cell result Hermit sha {cell_result.get('hermit_sha')!r} does not match {tree}"
             )
+        machine_shortname = cell_result.get("machine_shortname")
+        if not isinstance(machine_shortname, str) or not machine_shortname:
+            raise MalformedRow("cell result has no nonempty machine_shortname")
+        kernel_version = cell_result.get("kernel_version")
+        if not isinstance(kernel_version, str) or not kernel_version:
+            raise MalformedRow("cell result has no nonempty kernel_version")
+        host_capabilities = cell_result.get("host_capabilities")
+        if not isinstance(host_capabilities, dict):
+            raise MalformedRow("cell result has no host_capabilities object")
         if producer == "validate":
             run_index = cell_result.get("attempt")
             if (
@@ -979,6 +835,9 @@ def rows_from_cell_results(
             "depth": depth,
             "runtime": _cell_runtime(cell_result),
             "source_tree_dirty": source_tree_dirty,
+            "machine_shortname": machine_shortname,
+            "kernel_version": kernel_version,
+            "host_capabilities": host_capabilities,
         }
         detcore_tree = cell_result.get("detcore_tree")
         if detcore_tree is not None:
@@ -1005,7 +864,7 @@ def rows_from_cell_results(
             "event_type": "series.observation",
             "emitted_at": emitted_at,
             "team": "hermit",
-            "host": socket.gethostname().split(".", 1)[0],
+            "host": machine_shortname,
             "run_id": run_id,
             "producer": producer,
             "series": payload,
@@ -1028,19 +887,16 @@ def rows_from_cell_results(
             separators=(",", ":"),
         )
         row["event_id"] = "series-" + hashlib.sha256(identity.encode()).hexdigest()
-        validate_row(row)
+    validate_rows(collapsed)
     return collapsed
 
 
 __all__ = [
     "COORDINATE_KEYS",
-    "ENVELOPE_KEYS",
     "ENVELOPE_VERSION",
     "FIRST_DIVERGENT_MESSAGE_KEYS",
-    "IDENTITY_KEYS",
-    "NON_VERDICT_OUTCOMES",
-    "OUTCOMES",
-    "RUNTIME_KEYS",
+    "LEGACY_ENVELOPE_VERSION",
+    "READABLE_ENVELOPE_VERSIONS",
     "MalformedRow",
     "SeriesError",
     "append_rows",
@@ -1064,6 +920,8 @@ __all__ = [
     "test_id",
     "union",
     "validate_row",
+    "validate_read_rows",
+    "validate_rows",
     "verify_append_only",
 ]
 
@@ -1071,11 +929,9 @@ __all__ = [
 # --------------------------------------------------------------------------
 # Write-boundary CLI.
 #
-# Step 3 left this module a library with no entry point, so a producer could
-# only MATCH the contract in its own language rather than CALL it. That is the
-# duplicated-rule shape the store exists to avoid: `validate_row` is one linter,
-# and a Rust reimplementation of it would drift silently the first time a rule
-# changed on one side.
+# Step 3 left this module a library with no entry point. The commands below are
+# the Python projection and spool front door, while Hermit's shared `SeriesRow`
+# is the write-boundary type invoked by `_validated_rows`.
 #
 # This is deliberately the only thing the CLI does. It does not publish, it does
 # not read, and it never touches the tracked shard -- a producer writes the
@@ -1205,6 +1061,12 @@ def _cmd_append_cells(argv: list[str]) -> int:
             emitted_at=emitted_at,
             hermit_checkout=hermit_checkout,
         )
+        if not series_rows:
+            print(
+                "series: no completed cell rows; unmet prerequisites remain in the validate record",
+                file=sys.stderr,
+            )
+            return 0
         target = spool_dir(parent) / _batch_name(series_rows)
         target.parent.mkdir(parents=True, exist_ok=True)
         written = append_cell_rows(parent, target, series_rows)

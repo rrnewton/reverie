@@ -16,6 +16,7 @@ this repository has hit repeatedly.
 import json
 import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -43,6 +44,12 @@ def row(**over):
             "tree": "a" * 40,
             "run_index": 0,
             "outcome": "passed",
+            "machine_shortname": "devbig014",
+            "kernel_version": "7.1.3-test",
+            "host_capabilities": {
+                "cpuid-faulting": {"present": False, "evidence": "fixture absence"},
+                "kvm": {"present": True, "evidence": "fixture presence"},
+            },
         },
     }
     for key, value in over.items():
@@ -77,16 +84,62 @@ class RowLinter(unittest.TestCase):
     def test_accepts_a_well_formed_row(self):
         self.assertIsNotNone(series.validate_row(row()))
 
-    def test_refuses_each_missing_envelope_key_individually(self):
-        for key in series.ENVELOPE_KEYS:
-            bad = row()
-            del bad[key]
-            with self.assertRaises(series.MalformedRow, msg=key):
-                series.validate_row(bad)
+    def test_refuses_a_missing_required_envelope_key(self):
+        bad = row()
+        del bad["event_id"]
+        with self.assertRaises(series.MalformedRow):
+            series.validate_row(bad)
 
     def test_refuses_a_foreign_schema(self):
         with self.assertRaises(series.MalformedRow):
             series.validate_row(row(schema="validate-ledger/v1"))
+
+    def test_requires_the_machine_kernel_and_capabilities_recorded_by_the_cell(self):
+        missing = row()
+        del missing["series"]["kernel_version"]
+        with self.assertRaises(series.MalformedRow):
+            series.validate_row(missing)
+
+        mismatched = row(host="other-host")
+        with self.assertRaises(series.MalformedRow):
+            series.validate_row(mismatched)
+
+        missing = row()
+        del missing["series"]["host_capabilities"]
+        with self.assertRaisesRegex(series.MalformedRow, "host_capabilities"):
+            series.validate_row(missing)
+
+        for capability in ("cpuid-faulting", "kvm"):
+            incomplete = row()
+            del incomplete["series"]["host_capabilities"][capability]
+            with self.assertRaisesRegex(series.MalformedRow, capability):
+                series.validate_row(incomplete)
+
+    def test_readers_refuse_incomplete_v2_by_capability_name_but_keep_v1_readable(self):
+        legacy = row(schema=series.LEGACY_ENVELOPE_VERSION)
+        for field in ("machine_shortname", "kernel_version", "host_capabilities"):
+            del legacy["series"][field]
+        self.assertEqual(series.validate_read_rows([legacy]), [legacy])
+
+        missing = row()
+        del missing["series"]["host_capabilities"]
+        with self.assertRaisesRegex(series.MalformedRow, "host_capabilities"):
+            series.validate_read_rows([missing])
+
+        for capability in ("cpuid-faulting", "kvm"):
+            incomplete = row()
+            del incomplete["series"]["host_capabilities"][capability]
+            with self.assertRaisesRegex(series.MalformedRow, capability):
+                series.validate_read_rows([incomplete])
+
+    def test_union_refuses_an_incomplete_v2_row_before_it_becomes_evidence(self):
+        incomplete = row()
+        del incomplete["series"]["host_capabilities"]["cpuid-faulting"]
+        with tempfile.TemporaryDirectory() as td:
+            shard = Path(td) / "rows.jsonl"
+            shard.write_text(json.dumps(incomplete) + "\n")
+            with self.assertRaisesRegex(series.MalformedRow, "cpuid-faulting"):
+                series.union([shard])
 
     def test_refuses_a_tree_that_is_not_a_full_sha(self):
         for bad in ("abc", "A" * 40, "", "a" * 39):
@@ -511,6 +564,12 @@ class WriteBoundaryCli(unittest.TestCase):
         payload = {
             "cell": self.CELL, "tree": self.SHA,
             "run_index": run_index, "outcome": outcome,
+            "machine_shortname": "devbig014",
+            "kernel_version": "7.1.3-test",
+            "host_capabilities": {
+                "cpuid-faulting": {"present": False, "evidence": "fixture absence"},
+                "kvm": {"present": True, "evidence": "fixture presence"},
+            },
         }
         if coordinates is not None:
             payload["coordinates"] = coordinates
@@ -518,7 +577,7 @@ class WriteBoundaryCli(unittest.TestCase):
             "schema": series.ENVELOPE_VERSION, "event_id": event_id,
             "event_type": "series.observation", "emitted_at": "2026-08-25T16:00:00Z",
             "team": "hermit", "host": "devbig014", "run_id": run_id,
-            "producer": {"source": "observed", "tool": "pressure-test", "tool_version": "1"},
+            "producer": "pressure-test",
             "series": payload,
         }
 
@@ -694,6 +753,12 @@ class CellResultProjection(unittest.TestCase):
             # The raw harness uses a separate evidence id per pressure
             # repetition. append-cells must NOT use it as the batch identity.
             "run_id": f"cell-evidence-{run_index}",
+            "machine_shortname": "devbig014",
+            "kernel_version": "7.1.3-test",
+            "host_capabilities": {
+                "cpuid-faulting": {"present": False, "evidence": "fixture absence"},
+                "kvm": {"present": True, "evidence": "fixture presence"},
+            },
             "hermit_sha": self.tree,
             "source_tree_dirty": False,
             "test": "applications/git-repository-workflow",
@@ -772,6 +837,23 @@ class CellResultProjection(unittest.TestCase):
         self.assertEqual(payload["runtime"]["wall_time_min_ms"], 5_100)
         self.assertEqual(payload["runtime"]["wall_time_max_ms"], 5_299)
         self.assertEqual(payload["runtime"]["run1"]["syscalls"], 612)
+
+    def test_different_host_capability_sets_are_not_compressed_together(self):
+        first = self._cell(0)
+        second = self._cell(1)
+        second["host_capabilities"]["cpuid-faulting"] = {
+            "present": True,
+            "evidence": "fixture presence",
+        }
+        rows = self._project([first, second])
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(
+            {
+                row["series"]["host_capabilities"]["cpuid-faulting"]["present"]
+                for row in rows
+            },
+            {False, True},
+        )
 
     def test_two_hundred_runs_keep_two_exact_divergence_points_and_counts(self):
         cells = []
@@ -868,15 +950,11 @@ class CellResultProjection(unittest.TestCase):
         ])
         self.assertEqual(len(rows), 2)
 
-    def test_missing_wall_time_stays_missing_but_measured_zero_stays_zero(self):
+    def test_unmet_prerequisite_has_no_row_but_measured_zero_stays_zero(self):
         not_run = self._cell(0, outcome="HOST-INAPPLICABLE")
         not_run.pop("duration_ms")
         not_run["runtime"] = None
-        missing = self._project([not_run])[0]["series"]["runtime"]
-        self.assertIsNone(missing["wall_time_min_ms"])
-        self.assertIsNone(missing["wall_time_max_ms"])
-        self.assertNotIn("run1", missing)
-        self.assertNotIn("run2", missing)
+        self.assertEqual(self._project([not_run]), [])
 
         measured = self._cell(0, duration_ms=0)
         measured["runtime"] = None
@@ -1033,13 +1111,57 @@ class CellResultProjection(unittest.TestCase):
             "TIMEOUT": "timeout",
             "NO_RESULT": "no_result",
             "ERROR": "errored",
-            "HOST-INAPPLICABLE": "skipped",
         }
         for raw, projected in expected.items():
             rows = self._project([self._cell(0, outcome=raw)])
             self.assertEqual(rows[0]["series"]["outcome"], projected)
+        self.assertEqual(
+            self._project([self._cell(0, outcome="HOST-INAPPLICABLE")]),
+            [],
+        )
         with self.assertRaises(series.MalformedRow):
             self._project([self._cell(0, outcome="SOMETHING_NEW")])
+
+    def test_projection_carries_the_recorded_machine_kernel_and_capabilities(self):
+        projected = self._project([self._cell(0)])[0]
+        self.assertEqual(projected["schema"], "stress-series/v2")
+        self.assertEqual(projected["host"], "devbig014")
+        self.assertEqual(projected["series"]["machine_shortname"], "devbig014")
+        self.assertEqual(projected["series"]["kernel_version"], "7.1.3-test")
+        self.assertEqual(
+            projected["series"]["host_capabilities"]["cpuid-faulting"]["present"],
+            False,
+        )
+
+        for missing in ("machine_shortname", "kernel_version", "host_capabilities"):
+            malformed = self._cell(0)
+            del malformed[missing]
+            with self.assertRaises(series.MalformedRow, msg=missing):
+                self._project([malformed])
+
+    def test_append_cells_writes_nothing_for_an_unmet_prerequisite(self):
+        import contextlib
+        import io
+
+        cell = self._cell(0, outcome="HOST-INAPPLICABLE")
+        real_stdin = sys.stdin
+        sys.stdin = io.StringIO(json.dumps(cell) + "\n")
+        stderr = io.StringIO()
+        try:
+            with contextlib.redirect_stderr(stderr):
+                rc = series.main([
+                    "append-cells",
+                    "--parent", str(self.parent),
+                    "--producer", "pressure-test",
+                    "--run-id", "unmet-prerequisite",
+                    "--tree", self.tree,
+                    "--emitted-at", "2026-08-27T10:00:00Z",
+                ])
+        finally:
+            sys.stdin = real_stdin
+        self.assertEqual(rc, 0)
+        self.assertIn("no completed cell rows", stderr.getvalue())
+        self.assertEqual(list(series.spool_dir(self.parent).glob("*.jsonl")), [])
 
     def test_projection_preserves_the_first_available_coordinate_per_axis(self):
         cell = self._cell(0, outcome="FAIL")
@@ -1355,7 +1477,7 @@ class HistoryCli(unittest.TestCase):
                 event_id="history-validate",
                 emitted_at="2026-08-25T03:00:00Z",
                 run_id="validate-1",
-                producer={"tool": "validate"},
+                producer="validate",
                 series={
                     "cell": f"{self.TEST}/verify/ptrace",
                     "tree": tree,
@@ -1394,7 +1516,7 @@ class HistoryCli(unittest.TestCase):
                 event_id="history-pressure",
                 emitted_at="2026-08-26T03:00:00Z",
                 run_id="pressure-1",
-                producer={"tool": "pressure-test"},
+                producer="pressure-test",
                 series={
                     "cell": f"{self.TEST}/verify/ptrace",
                     "tree": tree,

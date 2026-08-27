@@ -17,6 +17,9 @@ import re
 import sys
 from typing import Iterable, Mapping
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "series"))
+import series as series_store  # noqa: E402
+
 
 SCHEMA = 2
 DEFAULT_REGISTRY = Path(__file__).with_name("flaky-cells.json")
@@ -107,6 +110,7 @@ def cells_for_tree(registry: Mapping[str, object], tree: str) -> set[str]:
 
 
 def derive(rows: Iterable[Mapping[str, object]]) -> dict:
+    rows = series_store.validate_read_rows(dict(row) for row in rows)
     populations: dict[tuple[str, str], dict[str, object]] = defaultdict(
         lambda: {
             "observed_pass": 0,
@@ -116,7 +120,10 @@ def derive(rows: Iterable[Mapping[str, object]]) -> dict:
         }
     )
     for row in rows:
-        if row.get("schema") != "stress-series/v1" or row.get("team") != "hermit":
+        if (
+            row.get("schema") not in series_store.READABLE_ENVELOPE_VERSIONS
+            or row.get("team") != "hermit"
+        ):
             continue
         payload = row.get("series")
         if not isinstance(payload, Mapping):
@@ -199,15 +206,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--output", type=Path)
     args = parser.parse_args(argv)
 
-    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "series"))
-    import series  # noqa: PLC0415
-
     output = args.output or args.parent / "ci-hub/validate/flaky-cells.json"
     try:
-        rows = series.published_rows(args.parent)
+        rows = series_store.published_rows(args.parent)
         registry = derive(rows)
         _write(output, render(registry))
-    except (OSError, ValueError, series.SeriesError) as error:
+    except (OSError, ValueError, series_store.SeriesError) as error:
         print(f"flaky-cells: cannot derive registry: {error}", file=sys.stderr)
         return 1
     print(

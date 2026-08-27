@@ -40,8 +40,9 @@ rather than copying it:
 | `verify_append_only` | a rewritten or deleted line stays a **detectable violation**, not an ordinary update |
 | `parse_line`, `read_shard` | one definition of what a line is |
 
-New here, because they genuinely differ: the path root, the envelope version
-(`stress-series/v1`), the row identity, and the linter.
+New here, because they genuinely differ: the path root and the row identity.
+Hermit's `hermit_manifest_plan::stress_series::SeriesRow` owns the serialized
+row type and write checks; the parent invokes that type before appending.
 
 ## The row
 
@@ -50,11 +51,15 @@ orders and dedups these rows with no series-specific branch. The payload lives
 under `series`:
 
 ```json
-{"schema":"stress-series/v1","event_id":"…","event_type":"series.observation",
+{"schema":"stress-series/v2","event_id":"…","event_type":"series.observation",
  "emitted_at":"…","team":"hermit","host":"devbig014","run_id":"campaign-1",
  "producer":"pressure-test",
  "series":{"cell":"backend-parity-c/flock-lifecycle/verify/ptrace",
            "tree":"<40-hex>","run_index":0,"outcome":"diverged",
+           "machine_shortname":"devbig014","kernel_version":"7.1.3-…",
+           "host_capabilities":{
+             "cpuid-faulting":{"present":false,"evidence":"…"},
+             "kvm":{"present":true,"evidence":"…"}},
            "coordinates":{"first_divergent_record":98,
                           "first_divergent_syscall":37,
                           "first_divergent_scheduler_turn":4,
@@ -65,6 +70,16 @@ under `series`:
 
 `run_id` identifies one validate invocation, pressure-test campaign, or
 `hermit-repeat` sweep.
+`machine_shortname`, `kernel_version`, and `host_capabilities` identify the
+machine population in which the measurement was taken. The capability field is
+the complete closed set of verdicts used by the harness, including the evidence
+behind each verdict; it is not inferred from the hostname or kernel. The
+envelope `host` must equal `machine_shortname`. The
+`series/<team>/<host>/<month>.jsonl` path is a storage index derived from that
+field, not a second source of measurement identity; copying or republishing a
+row does not change the machine it describes. Retained `stress-series/v1` rows
+remain readable, but the scorecard does not admit them as measurement evidence
+because they do not record the kernel or capability set.
 `run_index` is copied from the validate result's positive `attempt` or supplied
 from the pressure-test repetition directory or `hermit-repeat` run number. The
 writer reads the producers' retained result rows; it does not maintain another
@@ -162,13 +177,30 @@ linter refuses coordinates on a row that did **not** diverge, but deliberately
 permits divergence with no coordinate: refusing it would force a producer to
 invent a position it does not have.
 
-## Linter and reader are separate, as in the ledger
+## Write and read validation
 
-`validate_row` refuses at the **write** boundary. Readers apply whatever is in
-the log without re-litigating it — a reader that enforced the lint could not
-replay already-written history. `observed_range` therefore filters on `outcome`
-itself, so a row written before a rule existed cannot leak a position into a
-derived range.
+`validate_row` refuses at the **write** boundary. Stored rows use the shared
+type's separate read check: retained v1 rows remain readable, while every v2
+row must satisfy the complete v2 shape, including every named host capability.
+That distinction preserves history without letting a current-schema row omit a
+fact and still count as evidence.
+
+Every production consumer of the row shape reaches one of these checks:
+
+* the publisher validates every proposed new row with `validate_row` before it
+  can enter a tracked shard;
+* `union` and `published_rows` call `validate_read_rows` before the history
+  command or flaky-cell derivation receives stored rows;
+* `flaky_cells.derive` also calls `validate_read_rows`, so direct callers cannot
+  bypass the stored-row check; and
+* Hermit's scorecard deserializes the shared `SeriesRow` and calls
+  `validate_for_projection`, which additionally refuses v1 and dirty-source
+  rows as scorecard evidence.
+
+`parse_line` and `read_shard` remain raw line-format plumbing inherited from the
+ledger; they do not interpret a row as measurement evidence. `observed_range`
+still filters on `outcome` itself so a retained row cannot leak a position into
+a derived range.
 
 ## Running the tests
 
