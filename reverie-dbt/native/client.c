@@ -3610,17 +3610,6 @@ static bool pre_syscall(void *drcontext, int sysnum) {
     return false;
   }
 
-  if (has_copied_runtime() &&
-      (sysnum == SYS_write || sysnum == SYS_vfork || sysnum == SYS_flock))
-    dr_fprintf(STDERR,
-               "TEMP copied pre pid=%d owner=%d initialized=%d sysnum=%d pending=%d flags=%llu marked=%d\n",
-               (int32_t)dr_get_process_id(), (int32_t)runtime_owner_pid,
-               (int32_t)copied_process_runtime_pid, sysnum,
-               counters->pending_virtual_child,
-               (unsigned long long)counters->pending_clone_flags,
-               (int32_t)atomic_load_explicit(&copied_vfork_pid,
-                                             memory_order_acquire));
-
   /* DynamoRIO can continue a vfork child without a new thread-init event.  At
    * its first syscall, the shared pending clone state is the only boundary
    * available before the copied-process external-runtime initialization below.
@@ -3629,9 +3618,6 @@ static bool pre_syscall(void *drcontext, int sysnum) {
       copied_process_runtime_pid != dr_get_process_id() &&
       counters->pending_virtual_child != 0 &&
       (counters->pending_clone_flags & CLONE_VFORK) != 0) {
-    dr_fprintf(STDERR, "TEMP copied vfork selected pid=%d virtual=%d\n",
-               (int32_t)dr_get_process_id(),
-               counters->pending_virtual_child);
     atomic_store_explicit(&copied_vfork_pid, (int32_t)dr_get_process_id(),
                           memory_order_release);
     release_clone_identity_handoff(counters->pending_virtual_child);
