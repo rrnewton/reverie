@@ -2705,6 +2705,36 @@ mod tests {
     }
 
     #[test]
+    fn copied_vfork_uses_the_copied_child_path_before_rust_thread_init() {
+        let source = include_str!("../native/client.c");
+        let thread_init = source
+            .split_once("static void thread_init(void *drcontext)")
+            .expect("native thread_init definition")
+            .1
+            .split_once("static void complete_runtime_thread_exit")
+            .expect("end of native thread_init definition")
+            .0;
+        let copied_vfork = thread_init
+            .find("if (copied_vfork)")
+            .expect("copied vfork selection");
+        let rust_thread_init = thread_init
+            .find("reverie_dbt_runtime_thread_init(")
+            .expect("Rust thread initialization call");
+
+        assert!(
+            copied_vfork < rust_thread_init,
+            "a copied vfork child must not enter Rust thread initialization"
+        );
+        let copied_path = &thread_init[copied_vfork..rust_thread_init];
+        assert!(
+            copied_path.contains("remember_virtual_identity")
+                && copied_path.contains("release_clone_identity_handoff")
+                && copied_path.contains("return;"),
+            "the copied vfork path must publish identity, release its handoff, and return"
+        );
+    }
+
+    #[test]
     fn thread_init_records_process_ppid_for_current_ppid() {
         // This is the only test that touches the process-global `PROCESS_PPID`
         // (no other test calls `reverie_dbt_runtime_thread_init` or
