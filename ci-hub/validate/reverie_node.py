@@ -10,9 +10,16 @@ import re
 import socket
 import subprocess
 import sys
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+from final_validate_status import (
+    FINAL_VALIDATE_STATUS_EXIT_CODES,
+    FINAL_VALIDATE_STATUS_PREFIX,
+)
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
 import bounded_capture  # noqa: E402
 
@@ -231,17 +238,36 @@ def record(root: Path, row: dict[str, Any]) -> None:
         raise Refusal(f"canonical ledger writer refused Reverie row: {detail}")
 
 
+def write_final_status(path: Path, status: str) -> None:
+    """Publish one complete status without leaving a partial file on interruption."""
+    if status not in FINAL_VALIDATE_STATUS_EXIT_CODES:
+        raise Refusal(f"unknown final validate status: {status!r}")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(
+        mode="w", prefix=f".{path.name}.", dir=path.parent, delete=False
+    ) as handle:
+        temporary = Path(handle.name)
+        handle.write(f"{FINAL_VALIDATE_STATUS_PREFIX}{status}\n")
+    try:
+        os.replace(temporary, path)
+    except OSError:
+        temporary.unlink(missing_ok=True)
+        raise
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--root", type=Path, required=True)
     parser.add_argument("--checkout", type=Path, required=True)
     parser.add_argument("--target", required=True)
     parser.add_argument("--log", type=Path, required=True)
+    parser.add_argument("--status-file", type=Path, required=True)
     parser.add_argument("--pr", type=int)
     args = parser.parse_args(argv)
     root = args.root.resolve()
     checkout = args.checkout.resolve()
     log = args.log.resolve()
+    status_file = args.status_file.resolve()
     # validate.sh records whole seconds. Floor this boundary to the same
     # precision so a row started later in this second cannot compare earlier
     # merely because the producer omitted microseconds.
@@ -309,10 +335,24 @@ def main(argv: list[str] | None = None) -> int:
         # repaired here; the reader will refuse them rather than minting green.
         record(root, canonical)
         require_expected_gate_set(gates)
-        return result.returncode
+        if result.returncode == 0:
+            status = "PASSED"
+        elif result.returncode == 1:
+            status = "FAILED"
+        else:
+            status = "COULD_NOT_RUN"
+        write_final_status(status_file, status)
+        return FINAL_VALIDATE_STATUS_EXIT_CODES[status]
     except (OSError, Refusal) as error:
         print(f"reverie-safe-validate: REFUSED: {error}", file=sys.stderr)
-        return 2
+        try:
+            write_final_status(status_file, "COULD_NOT_RUN")
+        except OSError as status_error:
+            print(
+                f"reverie-safe-validate: could not publish final status: {status_error}",
+                file=sys.stderr,
+            )
+        return FINAL_VALIDATE_STATUS_EXIT_CODES["COULD_NOT_RUN"]
 
 
 if __name__ == "__main__":
