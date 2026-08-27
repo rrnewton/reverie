@@ -23,7 +23,6 @@ use super::fd::FileType;
 use super::fd::create_dir_all;
 use super::fd::touch_path;
 
-
 /// A mount.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Mount {
