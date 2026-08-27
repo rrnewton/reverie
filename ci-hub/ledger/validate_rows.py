@@ -549,14 +549,92 @@ def events(*, root: Path | None = None) -> list[dict]:
     ]
 
 
+def _legacy_row_corrections(
+    items: list[dict],
+) -> tuple[dict[str, tuple[str, dict]], set[str]]:
+    """Validated ``run.correct`` replacements for the compatibility view.
+
+    The event union and timeline remain append-only.  Only ``rows()`` substitutes
+    a corrected ``legacy_row`` at the superseded event's original position.  A
+    whole-ledger ``fold()`` cannot be used here: enrichment chains deliberately
+    collapse by ``run_id``, while this compatibility view historically exposes
+    each distinct legacy receipt.
+    """
+    by_id = {
+        str(event.get("event_id")): event
+        for event in items
+        if isinstance(event.get("event_id"), str) and event.get("event_id")
+    }
+    known_ids = set(by_id)
+    replacements: dict[str, tuple[str, dict]] = {}
+    correction_ids: set[str] = set()
+
+    for event in items:
+        if event.get("event_type") != "run.correct" or "legacy_row" not in event:
+            continue
+        event_id = event.get("event_id")
+
+        def refuse(reason: str) -> None:
+            raise ValueError(
+                f"HistoryRow correction {event_id!r} is invalid: {reason}"
+            )
+
+        if not isinstance(event_id, str) or not event_id:
+            refuse("event_id is missing")
+        violations = validate_event(event, known_ids=known_ids)
+        if violations:
+            refuse(f"event violates {','.join(violations)}")
+        supersedes = event.get("supersedes")
+        if not isinstance(supersedes, str) or not supersedes:
+            refuse("supersedes is missing")
+        target = by_id.get(supersedes)
+        if target is None:
+            refuse(f"supersedes unknown event {supersedes!r}")
+        reason = event.get("reason")
+        if not isinstance(reason, str) or not reason.strip():
+            refuse("reason is missing")
+        for field in ("run_id", "team", "host"):
+            if event.get(field) != target.get(field):
+                refuse(f"{field} differs from superseded event")
+        corrected = event.get("legacy_row")
+        if not isinstance(corrected, dict):
+            refuse("legacy_row is not an object")
+        if not isinstance(target.get("legacy_row"), dict):
+            refuse("superseded event has no legacy_row")
+        try:
+            _require_gate_failure_bindings(corrected)
+        except ValueError as error:
+            refuse(str(error))
+        if supersedes in replacements:
+            refuse(f"a second correction also supersedes {supersedes!r}")
+        replacements[supersedes] = (event_id, corrected)
+        correction_ids.add(event_id)
+
+    return replacements, correction_ids
+
+
 def rows(*, root: Path | None = None) -> list[dict]:
     """HistoryRow compatibility view of the one canonical event union."""
     root = (root or repository_root()).resolve()
+    items = events(root=root)
+    replacements, correction_ids = _legacy_row_corrections(items)
     out: list[dict] = []
     seen: set[str] = set()
-    for event in events(root=root):
+    for event in items:
+        event_id = str(event.get("event_id") or "")
+        if event_id in correction_ids:
+            continue
         row = event.get("legacy_row")
         if isinstance(row, dict):
+            followed: set[str] = set()
+            current = event_id
+            while current in replacements:
+                if current in followed:
+                    raise ValueError(
+                        f"HistoryRow correction cycle starts at {event_id!r}"
+                    )
+                followed.add(current)
+                current, row = replacements[current]
             restored = _replace(row, WORKSPACE_TOKEN, str(root))
             identity = json.dumps(restored, sort_keys=True, separators=(",", ":"))
             if identity not in seen:

@@ -1,3 +1,4 @@
+import copy
 import json
 import hashlib
 import shutil
@@ -13,6 +14,7 @@ sys.path.insert(0, str(HERE.parent))
 sys.path.insert(0, str(HERE.parent.parent / "validate"))
 
 import validate_rows  # noqa: E402
+import ledger  # noqa: E402
 import reverie_node  # noqa: E402
 
 
@@ -50,6 +52,63 @@ def row(root: Path, *, record_id: str = "host-1-7", host: str = "hosta") -> dict
         "result": "pass",
         "commit": commit,
         "cwd": str(checkout),
+    }
+
+
+def write_events(root: Path, *events: dict) -> Path:
+    first = events[0]
+    path = (
+        root
+        / "ledger"
+        / str(first["team"])
+        / str(first["host"])
+        / "2026-08.jsonl"
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        "".join(json.dumps(event, sort_keys=True) + "\n" for event in events),
+        encoding="utf-8",
+    )
+    return path
+
+
+def event_with_null_failed_substeps(root: Path) -> dict:
+    source = row(root, record_id="historical-null")
+    source.update(
+        result="fail",
+        exit_code=1,
+        failures=1,
+        gates=[
+            {
+                "name": "check.example",
+                "result": "fail",
+                "failure_origin": "outer_gate",
+                "failed_substeps": None,
+            }
+        ],
+    )
+    return validate_rows._event_for_row(source, root)
+
+
+def correction_for(original: dict) -> dict:
+    corrected = copy.deepcopy(original["legacy_row"])
+    corrected["gates"][0]["failed_substeps"] = []
+    return {
+        "schema": "validate-ledger/v1",
+        "event_id": "historical-null-correction",
+        "event_type": "run.correct",
+        "run_id": original["run_id"],
+        "emitted_at": "2026-08-10T02:00:00Z",
+        "team": original["team"],
+        "host": original["host"],
+        "producer": {
+            "source": "reconstructed",
+            "tool": "validate_rows.py",
+            "tool_version": "1",
+        },
+        "supersedes": original["event_id"],
+        "reason": "replace explicit null with the writer's current representation",
+        "legacy_row": corrected,
     }
 
 
@@ -256,6 +315,103 @@ def test_repeated_record_of_same_event_unions_once(tmp_path: Path):
 
     assert len(validate_rows.events(root=tmp_path)) == 1
     assert validate_rows.rows(root=tmp_path) == [source]
+
+
+def test_valid_correction_replaces_legacy_row_without_hiding_original_event(
+    tmp_path: Path,
+):
+    original = event_with_null_failed_substeps(tmp_path)
+    correction = correction_for(original)
+    path = write_events(tmp_path, original, correction)
+    original_line = path.read_text(encoding="utf-8").splitlines()[0]
+
+    canonical_events = validate_rows.events(root=tmp_path)
+    assert canonical_events == [original, correction]
+    assert json.loads(original_line) == original
+
+    compatibility_rows = validate_rows.rows(root=tmp_path)
+    assert len(compatibility_rows) == 1
+    assert compatibility_rows[0]["record_id"] == original["legacy_row"]["record_id"]
+    assert compatibility_rows[0]["gates"][0]["failed_substeps"] == []
+    assert original["legacy_row"]["gates"][0]["failed_substeps"] is None
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "missing-event-id",
+        "missing-supersedes",
+        "dangling-supersedes",
+        "wrong-run",
+        "wrong-team",
+        "wrong-host",
+        "empty-reason",
+        "non-object-row",
+        "explicit-null-remains",
+    ],
+)
+def test_malformed_correction_never_hides_original_row(tmp_path: Path, case: str):
+    original = event_with_null_failed_substeps(tmp_path)
+    correction = correction_for(original)
+    if case == "missing-event-id":
+        correction.pop("event_id")
+    elif case == "missing-supersedes":
+        correction.pop("supersedes")
+    elif case == "dangling-supersedes":
+        correction["supersedes"] = "absent-event"
+    elif case == "wrong-run":
+        correction["run_id"] = "different-run"
+    elif case == "wrong-team":
+        correction["team"] = "different-team"
+    elif case == "wrong-host":
+        correction["host"] = "different-host"
+    elif case == "empty-reason":
+        correction["reason"] = ""
+    elif case == "non-object-row":
+        correction["legacy_row"] = None
+    elif case == "explicit-null-remains":
+        correction["legacy_row"]["gates"][0]["failed_substeps"] = None
+    path = write_events(tmp_path, original, correction)
+    original_line = path.read_text(encoding="utf-8").splitlines()[0]
+
+    assert original in validate_rows.events(root=tmp_path)
+    with pytest.raises(ValueError, match="HistoryRow correction"):
+        validate_rows.rows(root=tmp_path)
+    assert path.read_text(encoding="utf-8").splitlines()[0] == original_line
+
+
+def test_enrichment_compatibility_rows_do_not_collapse_by_run_id(tmp_path: Path):
+    source = row(tmp_path, record_id="enriched-run")
+    original = validate_rows._event_for_row(source, tmp_path)
+    enriched_once = copy.deepcopy(original["legacy_row"])
+    enriched_once["compatibility_step"] = 1
+    enriched_twice = copy.deepcopy(enriched_once)
+    enriched_twice["compatibility_step"] = 2
+
+    first = {
+        **{key: original[key] for key in ledger.ENVELOPE_KEYS},
+        "event_id": "enriched-run-1",
+        "event_type": "run.enrich",
+        "emitted_at": "2026-08-10T02:00:00Z",
+        "enriches": original["event_id"],
+        "legacy_row": enriched_once,
+    }
+    second = {
+        **{key: original[key] for key in ledger.ENVELOPE_KEYS},
+        "event_id": "enriched-run-2",
+        "event_type": "run.enrich",
+        "emitted_at": "2026-08-10T03:00:00Z",
+        "enriches": first["event_id"],
+        "legacy_row": enriched_twice,
+    }
+    write_events(tmp_path, original, first, second)
+
+    compatibility_rows = validate_rows.rows(root=tmp_path)
+    assert [item.get("compatibility_step") for item in compatibility_rows] == [
+        None,
+        1,
+        2,
+    ]
 
 
 def test_commit_from_independent_repo_is_refused_before_spool(tmp_path: Path):
