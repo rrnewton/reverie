@@ -38,6 +38,9 @@ use reverie::Stack;
 use reverie::TimerSchedule;
 use reverie::Tool as ReverieTool;
 use reverie_memory::MemoryAccess;
+use reverie_preload::tool_host::DrivenSyscall;
+use reverie_preload::tool_host::TailResult;
+use reverie_preload::tool_host::drive_tool_syscall;
 use reverie_rpc_transport::BlockingRpcClient;
 use reverie_rpc_transport::RpcError;
 use reverie_syscalls::Addr;
@@ -53,11 +56,6 @@ use crate::SyscallExt;
 use crate::protected_files::ProtectedFd;
 use crate::protected_files::protect_with;
 
-thread_local! {
-    static TAIL_INJECT_RESULT: std::cell::Cell<Option<i64>> =
-        const { std::cell::Cell::new(None) };
-}
-
 type ThreadStateCell<T> = Arc<Mutex<LocalThreadState<T>>>;
 
 struct LocalThreadState<T>
@@ -70,10 +68,10 @@ where
 
 /// Runs one shared Reverie tool inside a SaBRe plugin process.
 ///
-/// SaBRe callbacks are synchronous. A handler must complete during its first
-/// poll, except for [`Guest::tail_inject`], whose result is recorded before
-/// its future intentionally suspends. Other pending futures fail closed with
-/// `EIO` instead of blocking the guest in the plugin callback.
+/// SaBRe callbacks are synchronous. Subscribed syscall handlers use the shared
+/// in-guest driver to poll through synchronous RPC progress and
+/// [`Guest::tail_inject`]. Lifecycle and instruction handlers retain their
+/// one-poll behavior and fail closed when they suspend.
 // AUTONOMOUS-BOT-IMPLEMENTED
 pub struct ReverieAdapter<T>
 where
@@ -148,6 +146,7 @@ where
             global_state: &self.global_state,
             config: &self.config,
         };
+        let tail = TailResult::default();
         let mut guest = SabreGuest::new(
             tid,
             pid,
@@ -156,23 +155,10 @@ where
             Some((&self.tool, exit_handled, None)),
             original,
             special_inject,
-        );
+        )
+        .with_tail(&tail);
 
-        TAIL_INJECT_RESULT.with(|slot| slot.set(None));
-        match poll_once(self.tool.handle_syscall_event(&mut guest, syscall)) {
-            Poll::Ready(result) => shared_result(result),
-            Poll::Pending => TAIL_INJECT_RESULT.with(|slot| {
-                slot.take().map_or_else(
-                    || {
-                        crate::eprintln!(
-                            "reverie-sabre: Tool::handle_syscall_event suspended; only immediately-ready handlers and tail_inject are supported"
-                        );
-                        Err(Errno::EIO)
-                    },
-                    |result| Ok(result as usize),
-                )
-            }),
-        }
+        shared_result(drive_tool_syscall(&self.tool, &mut guest, syscall, &tail))
     }
 
     /// Allocates the shared tool's state for a newly observed guest thread.
@@ -581,6 +567,7 @@ where
             rpc,
             exit_handled,
         } = &mut *state;
+        let tail = TailResult::default();
         let mut guest = SabreGuest::new(
             tid,
             pid,
@@ -597,23 +584,10 @@ where
             )),
             original,
             special_inject,
-        );
+        )
+        .with_tail(&tail);
 
-        TAIL_INJECT_RESULT.with(|slot| slot.set(None));
-        match poll_once(self.tool.handle_syscall_event(&mut guest, syscall)) {
-            Poll::Ready(result) => shared_result(result),
-            Poll::Pending => TAIL_INJECT_RESULT.with(|slot| {
-                slot.take().map_or_else(
-                    || {
-                        crate::eprintln!(
-                            "reverie-sabre: remote Tool::handle_syscall_event suspended without tail_inject"
-                        );
-                        Err(Errno::EIO)
-                    },
-                    |result| Ok(result as usize),
-                )
-            }),
-        }
+        shared_result(drive_tool_syscall(&self.tool, &mut guest, syscall, &tail))
     }
 
     /// Allocates remote RPC and tool state for a newly observed guest thread.
@@ -842,13 +816,18 @@ fn remote_rpc_error(error: RpcError) -> Errno {
     crate::eprintln!("reverie-sabre: coordinator RPC failed: {error}");
     Errno::EIO
 }
-fn shared_result(result: Result<i64, Error>) -> Result<usize, Errno> {
-    result.map(|value| value as usize).map_err(|error| {
-        error.into_errno().unwrap_or_else(|error| {
+fn shared_result(result: DrivenSyscall) -> Result<usize, Errno> {
+    match result {
+        DrivenSyscall::Result(value) => Errno::from_ret(value as usize),
+        DrivenSyscall::Fatal(error) => {
             crate::eprintln!("reverie-sabre: shared tool failed: {error}");
-            Errno::EIO
-        })
-    })
+            Err(Errno::EIO)
+        }
+        DrivenSyscall::Exit { .. } | DrivenSyscall::ForkChild { .. } => {
+            crate::eprintln!("reverie-sabre: unsupported shared tool transition");
+            Err(Errno::EIO)
+        }
+    }
 }
 
 // AUTONOMOUS-BOT-IMPLEMENTED
@@ -1050,6 +1029,7 @@ where
     original: Option<(Sysno, SyscallArgs)>,
     special_inject: Option<&'inject mut (dyn FnMut() -> usize + Send + Sync)>,
     child_threads: Option<ChildThreadRegistry<'state, T>>,
+    tail: Option<&'state TailResult>,
 }
 
 impl<'state, 'inject, T> SabreGuest<'state, 'inject, T>
@@ -1084,7 +1064,13 @@ where
             original,
             special_inject,
             child_threads,
+            tail: None,
         }
+    }
+
+    fn with_tail(mut self, tail: &'state TailResult) -> Self {
+        self.tail = Some(tail);
+        self
     }
 
     fn initialize_child_thread(&mut self, child: Pid) -> Result<(), Errno> {
@@ -1388,7 +1374,9 @@ where
             Ok(value) => value,
             Err(errno) => -(errno.into_raw() as i64),
         };
-        TAIL_INJECT_RESULT.with(|slot| slot.set(Some(result)));
+        self.tail
+            .expect("tail_inject requires an active syscall driver")
+            .set_result(result);
         std::future::pending::<Never>().await
     }
 
@@ -1725,6 +1713,84 @@ mod tests {
         assert_eq!(HANDLED.load(Ordering::Relaxed), 1);
     }
 
+    #[derive(Default)]
+    struct RestartWait4Tool;
+
+    #[reverie::tool]
+    impl ReverieTool for RestartWait4Tool {
+        type GlobalState = ();
+        type ThreadState = usize;
+
+        async fn handle_syscall_event<G: Guest<Self>>(
+            &self,
+            guest: &mut G,
+            syscall: Syscall,
+        ) -> Result<i64, Error> {
+            assert_eq!(syscall.number(), Sysno::wait4);
+            let calls = guest.thread_state_mut();
+            *calls += 1;
+            match *calls {
+                1 => Err(Errno::ERESTARTSYS.into()),
+                2 => Ok(17),
+                calls => panic!("wait4 callback invoked {calls} times"),
+            }
+        }
+    }
+
+    #[test]
+    fn local_adapter_restarts_wait4_private_errno() {
+        let adapter = ReverieAdapter::new(RestartWait4Tool, (), ());
+        let syscall = Syscall::from_raw(Sysno::wait4, SyscallArgs::new(0, 0, 0, 0, 0, 0));
+        assert_eq!(adapter.handle_syscall(syscall), Ok(17));
+    }
+
+    #[derive(Default)]
+    struct RestartWaitidTool;
+
+    #[reverie::tool]
+    impl ReverieTool for RestartWaitidTool {
+        type GlobalState = ();
+        type ThreadState = usize;
+
+        async fn handle_syscall_event<G: Guest<Self>>(
+            &self,
+            guest: &mut G,
+            syscall: Syscall,
+        ) -> Result<i64, Error> {
+            assert_eq!(syscall.number(), Sysno::waitid);
+            let calls = guest.thread_state_mut();
+            *calls += 1;
+            match *calls {
+                1 => Err(Errno::ERESTARTSYS.into()),
+                2 => Ok(17),
+                calls => panic!("waitid callback invoked {calls} times"),
+            }
+        }
+    }
+
+    #[test]
+    fn local_adapter_restarts_waitid_private_errno() {
+        let adapter = ReverieAdapter::new(RestartWaitidTool, (), ());
+        let syscall = Syscall::from_raw(Sysno::waitid, SyscallArgs::new(0, 0, 0, 0, 0, 0));
+        assert_eq!(adapter.handle_syscall(syscall), Ok(17));
+    }
+
+    // ⚠️ `local_adapter_preserves_private_errno_for_non_wait4` AND ITS TOOL WERE HERE
+    // AND ARE DELIBERATELY GONE. The test asserted that a non-`wait4` syscall surfaces
+    // `ERESTARTSYS` to the guest. That was true when this branch was written and is
+    // false on main: `d7eb0a1d` ("Restart every preload ERESTARTSYS result") removed
+    // the syscall condition from `classify_outcome`, so EVERY private `ERESTARTSYS`
+    // restarts.
+    //
+    // ⚠️ KEPT AS WRITTEN IT DOES NOT FAIL, IT HANGS -- the driver re-invokes a callback
+    // that returns `ERESTARTSYS` every time. Measured: over 60 seconds before it was
+    // killed. A superseded assertion that wedges the suite is worse than one that goes
+    // red, because a wedged run reads as a slow box.
+    //
+    // Removed rather than inverted: asserting the NEW behaviour here would only
+    // duplicate `classify_outcome_restarts_on_erestartsys` in reverie-preload, which
+    // already owns that policy.
+
     #[test]
     fn local_adapter_delivers_post_exec() {
         POST_EXECS.store(0, Ordering::Relaxed);
@@ -1980,6 +2046,39 @@ mod tests {
 
         assert!(server_thread.join().unwrap().is_ok());
         assert_eq!(global.total.load(Ordering::SeqCst), 12);
+    }
+
+    #[test]
+    fn remote_adapter_restarts_wait4_private_errno() {
+        let path = std::env::temp_dir().join(format!(
+            "reverie-sabre-rpc-{}-{}.sock",
+            std::process::id(),
+            RPC_SOCKET_COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        let server_path = path.clone();
+        let (ready_tx, ready_rx) = mpsc::sync_channel(0);
+
+        let server_thread = thread::spawn(move || {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(async move {
+                    let server =
+                        reverie_rpc_transport::RpcServer::bind(&server_path, Arc::new(()), ())
+                            .unwrap();
+                    ready_tx.send(()).unwrap();
+                    server.serve_one().await
+                })
+        });
+        ready_rx.recv().unwrap();
+
+        let adapter = RemoteReverieAdapter::<RestartWait4Tool>::connect(&path).unwrap();
+        let syscall = Syscall::from_raw(Sysno::wait4, SyscallArgs::new(0, 0, 0, 0, 0, 0));
+        assert_eq!(adapter.handle_syscall(syscall), Ok(17));
+        drop(adapter);
+
+        assert!(server_thread.join().unwrap().is_ok());
     }
 
     #[test]
