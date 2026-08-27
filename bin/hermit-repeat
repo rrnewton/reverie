@@ -1159,6 +1159,43 @@ def absolutise_repo_paths(guest: list[str], hermit_root) -> tuple[list[str], lis
     return out, rewritten
 
 
+
+def unwrap_bucket_command(body: str) -> tuple[str, str | None]:
+    """Recover the cell's real program from the bucket's wrapper.
+
+    ⚠️ THE GENERATED SHAPE CHANGED AND THE OLD PARSE FAILED CONFUSINGLY. The
+    bucket now emits
+
+        timeout --kill-after=10s 15s bash -c '<the whole cell>'   # <id> mode= backend=
+
+    where the program is single-quoted with '\''-escaping. Splitting that at the
+    hermit invocation lands INSIDE the quotes, so `bash -c` got an unterminated
+    string and reported "unexpected EOF while looking for matching quote" -- a
+    shell syntax error that says nothing about the real cause. The existing guard
+    only caught the marker being ABSENT; here it is present, just quoted.
+
+    Returns (program, per-cell cap). The cap is the bucket's own per-cell
+    timeout, which this sweep does NOT apply -- it runs each node under its own
+    deadline -- so it is returned to be REPORTED rather than silently dropped:
+    a cell the bucket caps at 15s and this tool does not is being run under
+    different conditions, and that difference belongs in the report.
+    """
+    try:
+        toks = shlex.split(body)
+    except ValueError:
+        return body, None
+    cap = None
+    if toks and toks[0] == "timeout":
+        for t in toks[1:4]:
+            if re.fullmatch(r"[0-9]+(\.[0-9]+)?s?", t):
+                cap = t
+                break
+    for i, t in enumerate(toks):
+        if t == "-c" and i and toks[i - 1].rsplit("/", 1)[-1] in ("bash", "sh") and i + 1 < len(toks):
+            return toks[i + 1], cap
+    return body, cap
+
+
 def resolve_cell(cell_id: str, want_backend: str | None):
     """A manifest cell id -> (guest argv, backend, hermit flags).
 
@@ -1224,6 +1261,10 @@ def resolve_cell(cell_id: str, want_backend: str | None):
     # ${CC} compile -- once, so the sweep's N nodes all execute the same prebuilt
     # guest. Re-compiling per node would put the compiler in the measurement.
     body = line.split(" # ")[0]
+    body, bucket_cap = unwrap_bucket_command(body)
+    if bucket_cap:
+        say(f"{PROG}: " + f"NOTE: the bucket caps this cell at {bucket_cap}; this sweep does "
+            f"NOT apply that cap and runs each node under its own --deadline instead.")
     marker = ' "$hermit_bin" '
     if marker not in body:
         # some cells invoke hermit without the env prefix
