@@ -188,7 +188,7 @@ where
 {
     let socket_dir = tempfile::Builder::new()
         .prefix("reverie-sabre-counter-")
-        .tempdir()?;
+        .tempdir_in("/tmp")?;
     let socket_path = socket_dir.path().join("coordinator.sock");
     let retained_references = Arc::strong_count(&global);
     let server = reverie_rpc_transport::RpcServer::bind(&socket_path, global.clone(), config)?;
