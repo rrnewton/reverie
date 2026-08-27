@@ -89,6 +89,7 @@ COMMIT_TIME = re.compile(
     r"\b(?:at time|on previously committed) ([0-9][0-9_]*(?:\.[0-9_]+)?)(ns|s)?\b"
 )
 FINISH_SYSCALL = re.compile(r"\[syscall\]\[detcore, dtid (\d+)\]\s+finish syscall #(\d+):")
+BUILD_REVISION = re.compile(r"\bg([0-9a-f]{12})(-dirty)?(?:\)|\s|$)")
 
 
 def die(msg: str, code: int = 2):
@@ -98,6 +99,176 @@ def die(msg: str, code: int = 2):
 
 def say(msg: str = ""):
     print(msg, file=sys.stderr)
+
+
+def git_value(checkout: Path, *args: str) -> str:
+    """Read one exact Git value or refuse instead of inventing provenance."""
+    completed = subprocess.run(
+        ["git", "-C", str(checkout), *args],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    value = completed.stdout.strip()
+    if completed.returncode != 0 or not value:
+        detail = completed.stderr.strip() or f"exit {completed.returncode}"
+        raise RuntimeError(
+            f"cannot read git {' '.join(args)} from {checkout}: {detail}"
+        )
+    return value
+
+
+def git_tracked_dirty(checkout: Path) -> bool:
+    """Whether tracked checkout content differs from HEAD."""
+    completed = subprocess.run(
+        ["git", "-C", str(checkout), "status", "--porcelain", "--untracked-files=no"],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    if completed.returncode != 0:
+        detail = completed.stderr.strip() or f"exit {completed.returncode}"
+        raise RuntimeError(f"cannot inspect tracked state in {checkout}: {detail}")
+    return bool(completed.stdout.strip())
+
+
+def hermit_binary_revision(hermit_bin: str) -> tuple[str, bool]:
+    """Read the source revision embedded by Hermit's build script."""
+    completed = subprocess.run(
+        [hermit_bin, "--version"],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    text = "\n".join((completed.stdout, completed.stderr))
+    match = BUILD_REVISION.search(text)
+    if completed.returncode != 0 or match is None:
+        detail = text.strip() or f"exit {completed.returncode}"
+        raise RuntimeError(
+            f"cannot read a 12-hex build revision from {hermit_bin} --version: {detail}"
+        )
+    return match.group(1), match.group(2) is not None
+
+
+def require_matching_binary(checkout_sha: str, binary_revision: str, hermit_bin: str):
+    """Refuse to label results with a checkout the selected binary did not use."""
+    if not checkout_sha.startswith(binary_revision):
+        raise RuntimeError(
+            f"Hermit checkout is {checkout_sha}, but {hermit_bin} was built from "
+            f"{binary_revision}"
+        )
+
+
+def series_outcome(category: str) -> str:
+    """Map one retained run without turning a non-verdict into a divergence."""
+    try:
+        return {
+            "clean": "PASS",
+            "diverged": "FAIL",
+            "failed": "ERROR",
+            "no_result": "NO_RESULT",
+            "not_run": "NO_RESULT",
+        }[category]
+    except KeyError as exc:
+        raise RuntimeError(f"cannot write unknown run category {category!r}") from exc
+
+
+def series_cell_rows(
+    *,
+    cell: str,
+    backend: str,
+    run_id: str,
+    hermit_sha: str,
+    detcore_tree: str,
+    source_tree_dirty: bool,
+    deadline: int,
+    results: list[RunResult],
+) -> list[dict]:
+    """Translate a manifest-cell sweep to the parent writer's typed input."""
+    rows = []
+    for result in results:
+        row = {
+            "schema": 4,
+            "run_id": run_id,
+            "hermit_sha": hermit_sha,
+            "detcore_tree": detcore_tree,
+            "source_tree_dirty": source_tree_dirty,
+            "test": cell,
+            "mode": "verify",
+            "backend": backend,
+            "outcome": series_outcome(result.category),
+            "run_index": result.index - 1,
+            "attempt": 1,
+            "timeout_seconds": deadline,
+            "attempts": [],
+        }
+        if result.elapsed_s is not None:
+            row["duration_ms"] = round(result.elapsed_s * 1000)
+        if result.info_record is not None:
+            row["first_divergent_record"] = result.info_record
+        if result.sched_turn is not None:
+            row["first_divergent_scheduler_turn"] = result.sched_turn
+        if result.virtual_ns is not None:
+            row["first_divergent_virtual_nanoseconds"] = result.virtual_ns
+        if result.syscall_ordinal is not None:
+            row["first_divergent_syscall"] = result.syscall_ordinal
+        rows.append(row)
+    return rows
+
+
+def append_cell_series(args, run_id: str, results: list[RunResult]) -> str | None:
+    """Append every `--cell` run through the parent series write boundary."""
+    if not args.cell:
+        return None
+    hermit_checkout = ROOT / "hermit"
+    hermit_sha = git_value(hermit_checkout, "rev-parse", "HEAD")
+    detcore_tree = git_value(hermit_checkout, "rev-parse", "HEAD:detcore")
+    binary_revision, binary_dirty = hermit_binary_revision(args.sh_bin_resolved)
+    require_matching_binary(hermit_sha, binary_revision, args.sh_bin_resolved)
+    dirty = git_tracked_dirty(hermit_checkout) or binary_dirty
+    rows = series_cell_rows(
+        cell=args.cell,
+        backend=args.backend or "ptrace",
+        run_id=run_id,
+        hermit_sha=hermit_sha,
+        detcore_tree=detcore_tree,
+        source_tree_dirty=dirty,
+        deadline=args.deadline,
+        results=results,
+    )
+    writer = ROOT / "ci-hub/series/series.py"
+    if not writer.is_file():
+        raise RuntimeError(f"series writer does not exist at {writer}")
+    payload = "".join(json.dumps(row, sort_keys=True) + "\n" for row in rows)
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(writer),
+            "append-cells",
+            "--parent",
+            str(ROOT),
+            "--producer",
+            "hermit-repeat",
+            "--run-id",
+            run_id,
+            "--tree",
+            hermit_sha,
+        ],
+        input=payload,
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    if completed.returncode != 0:
+        detail = completed.stderr.strip() or completed.stdout.strip()
+        raise RuntimeError(
+            f"series writer refused the {len(rows)} run(s): {detail or 'no detail'}"
+        )
+    return completed.stdout.strip()
 
 
 # --------------------------------------------------------------------------- units
@@ -2085,7 +2256,8 @@ def main() -> int:
              "a guest command line. Resolves the id through scripts/manifest-to-commands.rs "
              "-- the same expansion the e2e buckets run -- builds the cell's guest, and "
              "feeds it to the ordinary sweep. GREEN cells are the point: a cell that "
-             "passes today and is flaky underneath is invisible to a single run.",
+             "passes today and is flaky underneath is invisible to a single run. Every "
+             "completed run is appended to the parent per-test series.",
     )
     p.add_argument(
         "--test-id",
@@ -2211,8 +2383,16 @@ def main() -> int:
         die(f"bin/safehermit not found at {ROOT / 'bin/safehermit'}")
 
     hermit_bin, hermit_source = resolve_hermit(args.sh_bin)
+    args.sh_bin_resolved = hermit_bin
     if not os.access(hermit_bin, os.X_OK):
         die(f"not executable: {hermit_bin}")
+    if args.cell:
+        try:
+            checkout_sha = git_value(ROOT / "hermit", "rev-parse", "HEAD")
+            binary_revision, _ = hermit_binary_revision(hermit_bin)
+            require_matching_binary(checkout_sha, binary_revision, hermit_bin)
+        except RuntimeError as exc:
+            die(f"cannot prepare the per-test series writer: {exc}")
 
     run_id = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime()) + f"-{os.getpid()}"
     out = Path(args.out) if args.out else ROOT / "ignored" / "hermit-repeat" / run_id
@@ -2485,13 +2665,26 @@ def main() -> int:
     if args.json:
         Path(args.json).write_text(json.dumps(payload, indent=2))
 
+    series_message = None
+    series_error = None
+    try:
+        series_message = append_cell_series(args, run_id, results)
+    except RuntimeError as exc:
+        series_error = str(exc)
+
     diverged = [r for r in results if r.category == "diverged"]
     clean = [r for r in results if r.category == "clean"]
     # The LAST thing on stderr is the verdict, from the same generator the report
     # ends with, so the two can never disagree. The artefact path goes above it.
     say(f"{PROG}: report {report_path}")
+    if series_message:
+        say(f"{PROG}: {series_message}")
+    if series_error:
+        say(f"{PROG}: SERIES WRITE FAILED -- {series_error}")
     for line in verdict_lines(meta, results):
         say(f"{PROG}: {line}")
+    if series_error:
+        return 2
     # ⚠️ A SELECTION THAT MATCHED NOTHING MUST NOT EXIT 0. With --test-id the
     # categories mean something different from the guest path: `failed` is the
     # FINDING (the named test failed) and `no_result` means the id was never
@@ -2549,6 +2742,76 @@ def _selftest() -> int:
     def check(label, got, want):
         if got != want:
             failures.append(f"{label}: got {got!r}, want {want!r}")
+
+    check("build revision parser",
+          BUILD_REVISION.search("hermit 0.2.0 (2026-08-27, gabcdef123456)").groups(),
+          ("abcdef123456", None))
+    check("dirty build revision parser",
+          BUILD_REVISION.search("hermit 0.2.0 (2026-08-27, gabcdef123456-dirty)").groups(),
+          ("abcdef123456", "-dirty"))
+    try:
+        require_matching_binary("abcdef123456" + "0" * 28, "abcdef123456", "/fixture/hermit")
+    except RuntimeError as exc:
+        failures.append(f"matching binary revision: rejected with {exc}")
+    try:
+        require_matching_binary("abcdef123456" + "0" * 28, "000000000000", "/fixture/hermit")
+        failures.append("mismatched binary revision: accepted")
+    except RuntimeError as exc:
+        check("mismatched binary names both revisions",
+              "abcdef123456" in str(exc) and "000000000000" in str(exc), True)
+
+    # --- parent series rows --------------------------------------------
+    # A run that never produced a comparison remains a non-verdict, and a
+    # missing elapsed time remains absent rather than becoming zero.
+    series_fixture = [
+        RunResult(
+            index=1,
+            name="run01",
+            dir="/fixture/run01",
+            category="diverged",
+            info_record=98,
+            sched_turn=4,
+            virtual_ns=1_640_995_199_000_000_000,
+            syscall_ordinal=37,
+            elapsed_s=4.016,
+        ),
+        RunResult(
+            index=2,
+            name="run02",
+            dir="/fixture/run02",
+            category="no_result",
+        ),
+    ]
+    series_rows = series_cell_rows(
+        cell="applications/git-repository-workflow",
+        backend="ptrace",
+        run_id="repeat-fixture",
+        hermit_sha="a" * 40,
+        detcore_tree="b" * 40,
+        source_tree_dirty=False,
+        deadline=10,
+        results=series_fixture,
+    )
+    check("series keeps one row per run", len(series_rows), 2)
+    check("series run indices start at zero",
+          [row["run_index"] for row in series_rows], [0, 1])
+    check("series divergence stays a failure outcome",
+          series_rows[0]["outcome"], "FAIL")
+    check("series no-result stays a non-verdict",
+          series_rows[1]["outcome"], "NO_RESULT")
+    check("series carries the Detcore tree",
+          series_rows[0]["detcore_tree"], "b" * 40)
+    check("series carries measured wall time",
+          series_rows[0]["duration_ms"], 4016)
+    check("series does not invent missing wall time",
+          "duration_ms" in series_rows[1], False)
+    check("series carries four separate coordinates",
+          [series_rows[0].get(key) for key in (
+              "first_divergent_record",
+              "first_divergent_scheduler_turn",
+              "first_divergent_virtual_nanoseconds",
+              "first_divergent_syscall",
+          )], [98, 4, 1_640_995_199_000_000_000, 37])
 
     # Record 0 is the text before the first timestamp; records are 1-based after
     # it, exactly as detcore's comparator enumerates them.

@@ -74,6 +74,14 @@ Artefacts land in `ignored/hermit-repeat/<run-id>/`: `report.txt`,
 `result.json`, `dag.json`, `runner.log`, and a per-node directory with the
 `safehermit` bounds report and the node script that ran.
 
+A `--cell` sweep also appends every run to the parent per-test series through
+`ci-hub/series/series.py append-cells`. The series row uses the manifest test
+id, `verify` mode, selected backend, Hermit commit, Detcore tree, measured wall
+time when present, and the four separate divergence coordinates. A failed or
+unresolved run is retained as a non-verdict; missing time or position is
+omitted, never written as zero. Arbitrary guest commands and `--test-id` runs
+do not claim a manifest-cell identity and therefore do not enter this store.
+
 Tests: `bin/hermit-repeat-test.sh` (fast, hermetic) and `--selftest`.
 
 ## `bin/safehermit` — the only hermit entry point agents may call

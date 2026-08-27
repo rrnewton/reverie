@@ -807,8 +807,11 @@ def rows_from_cell_results(
     tree: str, emitted_at: str,
 ) -> list[dict]:
     """Convert typed harness results into validated, compressed series rows."""
-    if producer not in {"validate", "pressure-test"}:
-        raise SeriesError(f"producer must be validate or pressure-test, got {producer!r}")
+    if producer not in {"validate", "pressure-test", "hermit-repeat"}:
+        raise SeriesError(
+            "producer must be validate, pressure-test, or hermit-repeat, "
+            f"got {producer!r}"
+        )
     if not run_id or "/" in run_id or run_id in (".", ".."):
         raise SeriesError(f"run_id must be a single path segment, got {run_id!r}")
     if _SHA_RE.fullmatch(tree) is None:
@@ -820,7 +823,7 @@ def rows_from_cell_results(
 
     rows = []
     pressure_counts: dict[tuple[str, int], int] = {}
-    if producer == "pressure-test":
+    if producer in {"pressure-test", "hermit-repeat"}:
         for cell_result in cell_results:
             run_index = cell_result.get("run_index")
             if isinstance(run_index, int) and not isinstance(run_index, bool):
@@ -874,6 +877,14 @@ def rows_from_cell_results(
             "runtime": _cell_runtime(cell_result),
             "source_tree_dirty": bool(cell_result.get("source_tree_dirty", False)),
         }
+        detcore_tree = cell_result.get("detcore_tree")
+        if detcore_tree is not None:
+            if not isinstance(detcore_tree, str) or _SHA_RE.fullmatch(detcore_tree) is None:
+                raise MalformedRow(
+                    "cell result detcore_tree must be a 40-hex object id when present, "
+                    f"got {detcore_tree!r}"
+                )
+            payload["detcore_tree"] = detcore_tree
         if (
             producer == "pressure-test"
             and pressure_counts.get((payload["cell"], run_index), 0) > 1
@@ -1274,7 +1285,8 @@ def _usage(message: str) -> int:
     print(
         "usage:\n"
         "  series.py append --parent <dev-hermit root>  < rows.jsonl\n"
-        "  series.py append-cells --parent <root> --producer <validate|pressure-test>\n"
+        "  series.py append-cells --parent <root> "
+        "--producer <validate|pressure-test|hermit-repeat>\n"
         "      --run-id <id> --tree <sha> [--emitted-at <UTC>] < cell-results.jsonl\n"
         "  series.py history --test <test id> [--tree <sha>] [--parent <root>]\n"
         "append validates complete series rows. append-cells converts typed harness\n"

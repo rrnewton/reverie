@@ -744,6 +744,57 @@ class CellResultProjection(unittest.TestCase):
             [(1, "diverged"), (2, "passed")],
         )
 
+    def test_hermit_repeat_preserves_detcore_tree(self):
+        import contextlib
+        import io
+
+        cell = self._cell(0)
+        cell["detcore_tree"] = "b" * 40
+        rows = series.rows_from_cell_results(
+            [cell],
+            parent=self.parent,
+            producer="hermit-repeat",
+            run_id="repeat-one",
+            tree=self.tree,
+            emitted_at="2026-08-27T10:00:00Z",
+        )
+        self.assertEqual(rows[0]["producer"], "hermit-repeat")
+        self.assertEqual(rows[0]["series"]["detcore_tree"], "b" * 40)
+
+        real_stdin = sys.stdin
+        sys.stdin = io.StringIO(json.dumps(cell) + "\n")
+        try:
+            with contextlib.redirect_stdout(io.StringIO()):
+                rc = series.main([
+                    "append-cells",
+                    "--parent", str(self.parent),
+                    "--producer", "hermit-repeat",
+                    "--run-id", "repeat-one",
+                    "--tree", self.tree,
+                    "--emitted-at", "2026-08-27T10:00:00Z",
+                ])
+        finally:
+            sys.stdin = real_stdin
+        self.assertEqual(rc, 0)
+        stored = series.union(sorted(series.spool_dir(self.parent).glob("*.jsonl")))
+        self.assertEqual(len(stored), 1)
+        self.assertEqual(stored[0]["producer"], "hermit-repeat")
+        self.assertEqual(stored[0]["series"]["detcore_tree"], "b" * 40)
+
+        cell["detcore_tree"] = "not-an-object-id"
+        with self.assertRaisesRegex(
+            series.MalformedRow,
+            "detcore_tree must be a 40-hex object id",
+        ):
+            series.rows_from_cell_results(
+                [cell],
+                parent=self.parent,
+                producer="hermit-repeat",
+                run_id="repeat-one",
+                tree=self.tree,
+                emitted_at="2026-08-27T10:00:00Z",
+            )
+
     def test_pressure_retry_retains_both_attempts_at_one_repetition(self):
         first = self._cell(7, outcome="FAIL", duration_ms=90)
         first["attempt"] = 1

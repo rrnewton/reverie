@@ -61,10 +61,15 @@ under `series`:
                           "first_divergent_virtual_nanoseconds":null}}}
 ```
 
-`run_id` identifies one validate invocation or pressure-test campaign.
+`run_id` identifies one validate invocation, pressure-test campaign, or
+`hermit-repeat` sweep.
 `run_index` is copied from the validate result's positive `attempt` or supplied
-from the pressure-test repetition directory. The writer reads the harness's
-appended `results.jsonl`; it does not maintain another cell-result file.
+from the pressure-test repetition directory or `hermit-repeat` run number. The
+writer reads the producers' retained result rows; it does not maintain another
+cell-result file. New rows may carry `detcore_tree`, the object id required to
+create a scorecard observation keyed by Detcore tree. It is optional only so
+the already-published rows remain readable; a projection cannot invent it for
+an older row that omitted it.
 `num_runs` defaults to one; a value greater than one represents that many
 consecutive equal executions starting at `run_index`. Only wall time is folded
 as a minimum/maximum. Outcome, coordinates, source depth, main ancestry, and
