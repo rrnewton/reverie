@@ -17,6 +17,9 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / "ci-hub"))
+from closure import publication_record  # noqa: E402
+
 SOURCE_SHIM = Path(os.environ.get("FLEET_GH_UNDER_TEST", ROOT / "ci-hub/bin/gh"))
 SOURCE_DISCLOSURE = Path(
     os.environ.get(
@@ -124,10 +127,31 @@ class FleetGhTest(unittest.TestCase):
             "import json, os, sys\n"
             "from pathlib import Path\n"
             "Path(os.environ['GH_CAPTURE']).write_text(json.dumps(sys.argv[1:]))\n"
+            "sys.stdout.write(os.environ.get('GH_STDOUT', ''))\n"
         )
         self.fake.chmod(0o755)
+        self.note_capture = self.root / "note-capture.json"
+        self.note_writer = self.root / "ci-hub/bin/tg-note-verified"
+        self.note_writer.write_text(
+            "#!/usr/bin/env python3\n"
+            "import json, os, sys\n"
+            "from pathlib import Path\n"
+            "note = Path(sys.argv[3])\n"
+            "Path(os.environ['NOTE_CAPTURE']).write_text(json.dumps({\n"
+            "    'args': sys.argv[1:],\n"
+            "    'body': note.read_text(),\n"
+            "    'private': os.environ.get('TG_NOTE_PRIVATE_TEMP'),\n"
+            "    'note_path': str(note),\n"
+            "}))\n"
+            "raise SystemExit(int(os.environ.get('NOTE_WRITER_RC', '0')))\n"
+        )
+        self.note_writer.chmod(0o755)
         self.env = os.environ.copy()
-        self.env.update(FLEET_REAL_GH=str(self.fake), GH_CAPTURE=str(self.capture))
+        self.env.update(
+            FLEET_REAL_GH=str(self.fake),
+            GH_CAPTURE=str(self.capture),
+            NOTE_CAPTURE=str(self.note_capture),
+        )
         self.env["DG_AGENT_NAME"] = TEST_AGENT
 
     def tearDown(self) -> None:
@@ -375,6 +399,43 @@ class FleetGhTest(unittest.TestCase):
         self.assertEqual(result.returncode, 2)
         self.assertIn("review family unresolved", result.stderr)
         self.assertFalse(self.capture.exists())
+
+    def test_successful_comment_records_permalink_through_verified_note(self) -> None:
+        url = "https://github.com/rrnewton/reverie/pull/447#issuecomment-123"
+        env = dict(self.env, GH_STDOUT=url + "\n")
+        result = self.run_shim(
+            *self.identity(role="reviewer"),
+            "--task", "review-task",
+            "pr", "comment", "447", "-R", "rrnewton/reverie", "--body", "review",
+            env=env,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        record = json.loads(self.note_capture.read_text())
+        self.assertEqual(record["args"][:3], ["review-task", "--file", record["note_path"]])
+        self.assertEqual(record["private"], "1")
+        self.assertEqual(
+            record["body"],
+            publication_record.render_publication(
+                "rrnewton/reverie", 447, url, TEST_AGENT
+            ),
+        )
+        self.assertFalse(Path(record["note_path"]).exists())
+        self.assertIn("recorded publication", result.stderr)
+
+    def test_verified_note_failure_warns_without_claiming_the_post_failed(self) -> None:
+        url = "https://github.com/rrnewton/reverie/pull/447#issuecomment-124"
+        env = dict(self.env, GH_STDOUT=url + "\n", NOTE_WRITER_RC="2")
+        result = self.run_shim(
+            *self.identity(role="reviewer"),
+            "--task", "review-task",
+            "pr", "comment", "447", "-R", "rrnewton/reverie", "--body", "review",
+            env=env,
+        )
+        self.assertEqual(result.returncode, 0)
+        record = json.loads(self.note_capture.read_text())
+        self.assertFalse(Path(record["note_path"]).exists())
+        self.assertIn("could not record", result.stderr)
+        self.assertIn("tg-note-verified", result.stderr)
 
     def test_pr_close_comment_without_identity_is_refused_before_write(self) -> None:
         result = self.run_shim(

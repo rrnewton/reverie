@@ -56,6 +56,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 from collections.abc import Mapping
 from pathlib import Path
 from typing import NoReturn
@@ -650,12 +651,32 @@ def record_publication(task: str, actor: str, stdout: str) -> None:
     repo = f"{parts[3]}/{parts[4]}"
     pr = int(parts[6].split("#")[0])
     body = publication_record.render_publication(repo, pr, url, actor)
+    note_path: Path | None = None
     try:
+        with tempfile.NamedTemporaryFile(
+            "w", suffix=".note", delete=False, encoding="utf-8"
+        ) as handle:
+            handle.write(body)
+            note_path = Path(handle.name)
+        env = os.environ.copy()
+        env["TG_NOTE_PRIVATE_TEMP"] = "1"
         result = subprocess.run(
-            ["tg", "note", task, body], capture_output=True, text=True
+            [
+                str(Path(__file__).resolve().parent / "tg-note-verified"),
+                task,
+                "--file",
+                str(note_path),
+            ],
+            cwd=ROOT,
+            env=env,
+            capture_output=True,
+            text=True,
         )
         if result.returncode != 0:
-            raise RuntimeError(result.stderr.strip() or f"tg note exited {result.returncode}")
+            raise RuntimeError(
+                result.stderr.strip()
+                or f"tg-note-verified exited {result.returncode}"
+            )
     except Exception as exc:  # noqa: BLE001 - see the docstring: never fail the post
         # ⚠️ THE RECOVERY HINT MUST BE THE RECORD ITSELF, not the URL. A hint that
         # says "note the link" produces PROSE, which only the fallback regex can
@@ -666,10 +687,17 @@ def record_publication(task: str, actor: str, stdout: str) -> None:
         print(
             f"gh: WARNING — posted {url} but could not record it on {task}: {exc}\n"
             "     The comment is real; only its record is missing. Re-record by\n"
-            f"     passing EXACTLY this body to `tg note {task}`:\n{indented}",
+            "     writing EXACTLY this body to a file, then running\n"
+            f"     `ci-hub/bin/tg-note-verified {task} --file NOTE.md`:\n{indented}",
             file=sys.stderr,
         )
         return
+    finally:
+        if note_path is not None:
+            try:
+                note_path.unlink()
+            except OSError:
+                pass
     print(f"gh: recorded publication {url} on {task}", file=sys.stderr)
 
 
