@@ -82,6 +82,16 @@ The payload also carries the scorecard's existing source-depth shape:
 Hermit tree was on `origin/main` when written. The history command checks the
 current `origin/main` again, because a measured branch can land later.
 
+## Recurring pressure sample
+
+`python3 ci-hub/series/pressure_schedule.py launch` is the daily tick-hub entry
+point for one bounded sample of ten red cells with executable commands. It
+launches detached, checks out current Hermit main under `ignored/`, acquires the existing
+`validate-lock` as a `bench` run, retains the pressure-test result directory,
+and invokes the existing `emit-series` command. The fixed systemd unit prevents
+two samples from overlapping, and the lock keeps the sample from running beside
+a validate.
+
 ## One test's complete history
 
 From the dev-hermit root:

@@ -245,6 +245,31 @@ reminders:
         component: series-spool-backlog
       title: "per-test series publication is stalled: {summary}"
 
+  # Run one bounded sample of red cells with executable commands each day. The
+  # health tick only
+  # launches the work and returns; the fixed systemd unit prevents overlap.
+  # The worker fetches current Hermit main into a clean worktree under ignored/
+  # and enters validate-lock as a bench run, reserving both slots so the sample
+  # cannot overlap a validate. It waits up to one hour for admission, then runs
+  # ten verify, replay, or chaos cells at -j4 with a 60-second per-cell bound and
+  # a 25-minute whole-run
+  # bound. The result directory and a plain-file log are retained. The existing
+  # pressure-test emit-series command writes the completed rows; a run that did
+  # not compare remains a non-verdict in that writer.
+  - name: pressure_test
+    cadence_secs: 86400
+    gate:
+      timeout_secs: 30
+      cmd: python3 ci-hub/series/pressure_schedule.py launch
+      when: failure
+      capture: true
+    emit:
+      kind: action
+      skill: hard-warn-coordinator
+      fields:
+        component: pressure-test
+      title: "recurring pressure test needs attention: {summary}"
+
   # The mutation half, deliberately separated from the detector above. Detection
   # was never the whole problem: publication was a MANUAL command, so a receipt
   # stayed readable only by the parent that produced it -- VALIDATED to its
