@@ -87,6 +87,30 @@ class StartUnitEnvTest(unittest.TestCase):
         self.assertEqual(env["CI_HUB_VALIDATE_PRODUCER"], "systemd-user-v1")
         self.assertEqual(env["HERMIT_VALIDATE_RUN_TIMEOUT_SECONDS"], "3239")
 
+    def test_large_child_deadline_does_not_widen_hermit_run(self) -> None:
+        command = su.build_systemd_command(
+            root=self.root,
+            checkout=self.root / "hermit",
+            target=TARGET,
+            agent="test-agent",
+            unit="validate-test.service",
+            record=self.root / "ignored/validate/runs/validate-test.json",
+            log=self.root / "out.log",
+            pr=None,
+            validate_args=["full"],
+            wait=1,
+            hold=1,
+            child_deadline=7200,
+            environment={
+                **self.base_env,
+                "HERMIT_VALIDATE_RUN_TIMEOUT_SECONDS": "99999",
+            },
+        )
+
+        env = setenvs(command)
+        self.assertEqual(env["HERMIT_VALIDATE_RUN_TIMEOUT_SECONDS"], "4200")
+        self.assertEqual(command[command.index("--child-deadline") + 1], "7200")
+
     def test_e2e_results_and_runner_logs_survive_checkout_removal(self) -> None:
         ambient = {
             **self.base_env,

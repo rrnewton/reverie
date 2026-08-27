@@ -106,6 +106,11 @@ INNER_FRESHNESS_SKIP_ENV = (
 )
 CURRENT_MAIN_FETCH_TIMEOUT_SECONDS = 30
 HERMIT_MIN_CLEANUP_GRACE_SECONDS = 60
+# A wider validate-lock deadline may reserve more time for teardown or other
+# outer work, but it must not turn Hermit's cumulative validation work back into
+# an arbitrarily long run.  This ceiling is above the observed 23-36 minute
+# healthy range while making a multi-hour validate impossible.
+HERMIT_MAX_RUN_TIMEOUT_SECONDS = 4_200
 
 CANONICAL_TERMINAL_VERDICTS = {"VALIDATED": 0, "FAILED": 3}
 CANONICAL_REMEASUREMENT_VERDICTS = frozenset(
@@ -129,12 +134,16 @@ def hermit_run_timeout_seconds(child_deadline: int) -> int:
     to be killed by validate-lock before Hermit could record the retry result.
 
     Reserve the same grace from the enclosing deadline, plus one second for a
-    strict INNER < OUTER ordering. Because the derived run timeout is smaller
-    than the child deadline, Hermit's own cleanup grace cannot exceed the grace
-    reserved here.
+    strict INNER < OUTER ordering. Cap the result so increasing the outer
+    cleanup allowance cannot silently authorize more validation work. Because
+    the derived run timeout is smaller than the child deadline, Hermit's own
+    cleanup grace cannot exceed the grace reserved here.
     """
     cleanup_grace = max(HERMIT_MIN_CLEANUP_GRACE_SECONDS, child_deadline // 10)
-    run_timeout = child_deadline - cleanup_grace - 1
+    run_timeout = min(
+        child_deadline - cleanup_grace - 1,
+        HERMIT_MAX_RUN_TIMEOUT_SECONDS,
+    )
     if run_timeout <= 0:
         raise ValueError(
             f"Hermit child deadline {child_deadline}s cannot contain its required "
@@ -1939,7 +1948,8 @@ def parser() -> argparse.ArgumentParser:
         help=(
             "payload wall deadline (default: Hermit 3600s; Reverie 8000s). "
             "Hermit requires more than 61s so its derived run timeout and "
-            "cleanup grace both fit inside this bound"
+            "cleanup grace both fit inside this bound; increasing it does not "
+            f"raise Hermit's {HERMIT_MAX_RUN_TIMEOUT_SECONDS}s whole-run ceiling"
         ),
     )
     result.add_argument(

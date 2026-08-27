@@ -433,6 +433,16 @@ class StartUnitTest(unittest.TestCase):
         self.assertEqual(59, floor_inner)
         self.assertLess(floor_inner + 60, 120)
 
+    def test_hermit_run_timeout_cannot_be_widened_past_ceiling(self) -> None:
+        # The 3h40m incident used a 7200-second child deadline, which previously
+        # widened Hermit's cumulative run budget to 6479 seconds.  Extra outer
+        # time may remain available for cleanup, but not for more validation.
+        self.assertEqual(4200, start_unit.hermit_run_timeout_seconds(7200))
+        self.assertEqual(4200, start_unit.hermit_run_timeout_seconds(24 * 60 * 60))
+
+        cleanup = max(start_unit.HERMIT_MIN_CLEANUP_GRACE_SECONDS, 4200 // 10)
+        self.assertLess(4200 + cleanup, 7200)
+
     def test_hermit_child_deadline_too_small_for_cleanup_is_refused(self) -> None:
         rc, _output, error = self.invoke(["--child-deadline", "60", "--", "full"])
 
