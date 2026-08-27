@@ -2794,6 +2794,16 @@ mod tests {
         assert_eq!(Errno::last(), Errno::ECHILD);
     }
 
+    fn assert_eventually_reaped(role: &str, pid: Pid) {
+        for _ in 0..2_000 {
+            if !std::path::Path::new(&format!("/proc/{pid}")).exists() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert_reaped(role, pid);
+    }
+
     #[tokio::test(flavor = "current_thread")]
     async fn normal_preinit_resume_clears_held_root_stop_lease() {
         let pid = match unsafe { unistd::fork() }.expect("fork held-stop resume child") {
@@ -3927,7 +3937,11 @@ mod tests {
 
         drop(wait);
         assert_reaped("root", root_pid);
-        assert_reaped("child", child_pid);
+        // A terminal child may have been reparented before the notifier
+        // releases its identity. At that point this process cannot reap it;
+        // require the new parent to finish reaping it within the same bounded
+        // interval used by fail-closed cleanup instead of racing procfs.
+        assert_eventually_reaped("child", child_pid);
         for (role, pid) in [("root", root_pid), ("child", child_pid)] {
             assert_eq!(
                 tokio::time::timeout(Duration::from_secs(1), Running::new(pid).next_state())
