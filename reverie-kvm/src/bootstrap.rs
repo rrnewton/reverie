@@ -244,16 +244,16 @@ pub(crate) fn configure_long_mode_with_syscall_area(
 /// The kernel zeroes every general-purpose register except `rsp`, and the
 /// x86-64 ABI requires the outermost frame pointer to be null so that a
 /// frame-pointer walk terminates at the entry frame rather than running off
-/// into the initial stack. Everything other than `rip`, `rsp`, and the
-/// mandatory reserved bit of `rflags` is therefore left zero here.
+/// into the initial stack. The only nonzero state here is therefore `rip`,
+/// `rsp`, and the reserved and interrupt-enable bits of `rflags`.
 ///
 /// This is a pure function so the ABI contract can be asserted without a VM.
 fn initial_guest_registers(entry_point: u64, stack_pointer: u64) -> kvm_bindings::kvm_regs {
     kvm_bindings::kvm_regs {
         rip: entry_point,
         rsp: stack_pointer,
-        // rflags bit 1 is reserved and must be set; every other flag starts clear.
-        rflags: 2,
+        // Linux enters user space with the reserved bit and IF set.
+        rflags: 0x202,
         ..Default::default()
     }
 }
@@ -859,8 +859,8 @@ mod initial_register_tests {
         assert_eq!(regs.rip, entry_point, "rip must be the ELF entry point");
         assert_eq!(regs.rsp, stack_pointer, "rsp must be the initial stack");
         assert_eq!(
-            regs.rflags, 2,
-            "rflags must have only the reserved bit 1 set",
+            regs.rflags, 0x202,
+            "rflags must have the reserved bit and interrupt-enable bit set",
         );
 
         // Name every remaining general-purpose register explicitly rather than
