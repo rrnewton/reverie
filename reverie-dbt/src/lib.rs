@@ -2096,8 +2096,25 @@ mod tests {
             .split_once("static void post_syscall")
             .expect("end of identity preparation")
             .0;
-        assert!(prepare.contains("tail_injected ? blocking_exact_child_wait_target_argument"));
+        assert!(prepare.contains("tail_injected ? blocking_positive_child_wait_target_argument"));
         assert!(prepare.contains("translated[wait_target_argument] != args[wait_target_argument]"));
+        let target = source
+            .split_once("static int blocking_positive_child_wait_target_argument")
+            .expect("blocking positive child-wait target selection")
+            .1
+            .split_once("static bool prepare_original_identity_syscall")
+            .expect("end of child-wait target selection")
+            .0;
+        assert!(target.contains("sysnum == SYS_wait4"));
+        assert!(target.contains("sysnum == SYS_waitid"));
+        assert!(target.contains("args[0] == P_PID"));
+        assert_eq!(target.matches("WNOHANG").count(), 2);
+        for excluded in ["WUNTRACED", "WSTOPPED", "WCONTINUED", "WEXITED"] {
+            assert!(
+                !target.contains(excluded),
+                "blocking legacy child wait was excluded by {excluded}"
+            );
+        }
 
         let pre_syscall = source
             .split_once("static bool pre_syscall(void *drcontext, int sysnum)")
