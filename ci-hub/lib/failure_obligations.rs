@@ -112,11 +112,15 @@ fn required_clean_legs(failures: u64, legs: u64) -> Option<u64> {
     }
 }
 
-/// A comparison contributes to requalification only when it is the canonical,
-/// non-stripped, nonempty INFO comparison that the scorecard claims.  Output-
-/// only matches, stripped comparisons, 0/0 reports and unavailable cells never
-/// become clean legs.
-fn canonical_observation(cell: &CellResult) -> Option<Observation> {
+/// Validate the common canonical, non-stripped, nonempty INFO shape against an
+/// exact expected set of the four fields added after the first schema-6 rows.
+fn observation_with_comparison_fields(
+    cell: &CellResult,
+    display_name: Option<&str>,
+    compare_io_buffers: Option<bool>,
+    record_envelope: Option<&str>,
+    virtualize_time: Option<bool>,
+) -> Option<Observation> {
     let (matched, tier, comparison, bitwise_parity, counts) = match &cell.cell_verdict {
         CellVerdict::ComparedAndMatched {
             comparison_tier,
@@ -150,11 +154,11 @@ fn canonical_observation(cell: &CellResult) -> Option<Observation> {
     };
     if *tier != ComparisonTier::CanonicalBitwise
         || comparison.strictness != ComparisonStrictness::Canonical
-        || comparison.display_name.as_deref() != Some("BitwiseInfoV1")
+        || comparison.display_name.as_deref() != display_name
         || !comparison.compare_logs
-        || comparison.compare_io_buffers != Some(true)
-        || comparison.record_envelope.as_deref() != Some("all_records_v1")
-        || comparison.virtualize_time != Some(true)
+        || comparison.compare_io_buffers != compare_io_buffers
+        || comparison.record_envelope.as_deref() != record_envelope
+        || comparison.virtualize_time != virtualize_time
         || comparison.log_scope != crate::records::ComparedLogScope::Info
         || comparison.strip_lines
         || !comparison.canonicalize_addresses
@@ -175,6 +179,28 @@ fn canonical_observation(cell: &CellResult) -> Option<Observation> {
         legs: 2,
         failures: u64::from(!matched),
     })
+}
+
+/// A comparison contributes to requalification only when it carries the
+/// complete current evidence. Output-only matches, stripped comparisons, 0/0
+/// reports and unavailable cells never become clean legs.
+fn canonical_observation(cell: &CellResult) -> Option<Observation> {
+    observation_with_comparison_fields(
+        cell,
+        Some("BitwiseInfoV1"),
+        Some(true),
+        Some("all_records_v1"),
+        Some(true),
+    )
+}
+
+/// The first schema-6 rows predate the four comparison fields that now make a
+/// canonical observation complete.  Their exact older shape is readable, but
+/// it contributes neither a clean leg nor a failure: the absent fields carry
+/// no claim.  A partial current shape or any other weakened comparison remains
+/// invalid rather than being mistaken for this history.
+fn comparison_without_later_fields_is_well_formed(cell: &CellResult) -> bool {
+    observation_with_comparison_fields(cell, None, None, None, None).is_some()
 }
 
 fn nonblank(value: &str) -> bool {
@@ -288,6 +314,7 @@ fn validated_evidence(row: &HistoryRow) -> Result<Option<&CellResultsEvidence>, 
     if evidence.cells.iter().any(|cell| match &cell.cell_verdict {
         CellVerdict::ComparedAndMatched { .. } | CellVerdict::ComparedAndDiverged { .. } => {
             canonical_observation(cell).is_none()
+                && !comparison_without_later_fields_is_well_formed(cell)
                 && matches!(
                     &cell.cell_verdict,
                     CellVerdict::ComparedAndMatched {
@@ -697,6 +724,32 @@ mod tests {
             .push("unreviewed-prefix".into());
         let cell = &extra_stripping.cell_results.as_ref().unwrap().cells[0];
         assert_eq!(canonical_observation(cell), None);
+    }
+
+    #[test]
+    fn comparison_without_later_fields_is_readable_but_adds_no_observation() {
+        let mut before_fields = row(BAD, 1, false);
+        let comparison = row_comparison(&mut before_fields);
+        comparison.display_name = None;
+        comparison.compare_io_buffers = None;
+        comparison.record_envelope = None;
+        comparison.virtualize_time = None;
+
+        let cell = &before_fields.cell_results.as_ref().unwrap().cells[0];
+        assert!(comparison_without_later_fields_is_well_formed(cell));
+        assert_eq!(canonical_observation(cell), None);
+
+        let target = row(FIX, 2, true);
+        assert!(evaluate(&[before_fields, target], FIX).unwrap().is_empty());
+    }
+
+    #[test]
+    fn partially_missing_later_fields_are_still_refused() {
+        let mut malformed = row(BAD, 1, false);
+        row_comparison(&mut malformed).display_name = None;
+        let target = row(FIX, 2, true);
+        let error = evaluate(&[malformed, target], FIX).unwrap_err();
+        assert_eq!(error, "cell_results contain an invalid typed verdict");
     }
 
     #[test]

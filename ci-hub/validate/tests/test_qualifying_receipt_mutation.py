@@ -1015,6 +1015,31 @@ class QualifyingReceiptMutationTest(unittest.TestCase):
                     qualifying_receipt.CellResultsVerdict.VERDICT_INVALID,
                 )
 
+        missing = copy.deepcopy(current)
+        del missing["cell_results"]["cells"][0]["cell_verdict"]["comparison"][
+            "display_name"
+        ]
+        self.assertEqual(
+            qualifying_receipt.row_qualification(missing, SHA, predicate),
+            (False, "cell_results cell-verdict-invalid"),
+        )
+
+        explicit_nulls = copy.deepcopy(current)
+        comparison = explicit_nulls["cell_results"]["cells"][0]["cell_verdict"][
+            "comparison"
+        ]
+        for field in (
+            "compare_io_buffers",
+            "display_name",
+            "record_envelope",
+            "virtualize_time",
+        ):
+            comparison[field] = None
+        self.assertEqual(
+            qualifying_receipt.row_qualification(explicit_nulls, SHA, predicate),
+            (False, "cell_results cell-verdict-invalid"),
+        )
+
         foreign = copy.deepcopy(current)
         foreign["cell_results"]["cells"][0]["cell_verdict"]["comparison"][
             "unrecognized"
