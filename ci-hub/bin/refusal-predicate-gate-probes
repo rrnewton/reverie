@@ -18,11 +18,11 @@ e2bcf4d1a34a142abbae5ea8cf8d162bb33a3895.  Its probes pass one file holding a
 
 ``scripts/check-validate-refusal-predicate.py`` replaced it.  It EXECUTES the
 real classification in ``scripts/test_validate_stop_paths.py`` against the
-checker's channel examples, so spelling no longer decides the verdict.  Its probes pass one
-file defining ``ValidateChildRefused`` and ``wait_for_text``.  It takes a file
-rather than a directory, so the wrong-corpus case becomes a target file that
-holds no classification: it must not read as a pass, which for this checker means
-a ``NO-RESULT-CASE:`` line at column zero that
+checker's channel examples, so spelling no longer decides the verdict.  Its
+probes pass one file defining ``ValidateChildRefused`` and ``wait_for_text``.
+It takes a file rather than a directory, so the wrong-corpus case becomes a
+target file that holds no classification: it must not read as a pass, which for
+this checker means a ``NO-RESULT-CASE:`` line at column zero that
 ``ci/lint-checks-node.sh`` turns into a no_result, not exit 0 alone.
 """
 
@@ -387,9 +387,9 @@ def run_probes(checker: Path) -> int:
 #
 # This checker loads the target module and drives its real consumer, so a probe
 # is a whole classification, not a predicate in isolation.  Every probe below was
-# measured; the eight that must be refused are the ones that turned from refused
-# to OK when marker detection moved from the collection's NAME to a list of five
-# literals, and the three that must pass are the correct predicates the
+# measured.  The cases that must be refused include predicates that turned from
+# refused to OK when marker detection moved from the collection's NAME to a list
+# of five literals, and the cases that must pass are correct predicates the
 # source-matching checker refused for their spelling.
 
 EXECUTING_SHELL = """
