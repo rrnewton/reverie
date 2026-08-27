@@ -675,7 +675,7 @@ export async function policyReloadHeartbeat(wf: WfContext): Promise<void> {
   await wf.loop(async () => {
     await wf.sleep(POLICY_RELOAD_INTERVAL_MS);
     try {
-      const receipt = await injectHermitDevPolicies("periodic");
+      const receipt = JSON.parse(String(await orc[PLUGIN_NAME + ".activate"]("periodic"))) as PolicyInjectionReceipt;
       await orc.sendWakeup(
         [],
         "POLICY RELOAD COMPLETE",
@@ -1174,15 +1174,29 @@ async function verifyScriptArgPassing(): Promise<SelfTestResult> {
 // workflow-restart context is known to serve.
 
 function registerPluginSurface(): void {
-  // ORDER IS LOAD-BEARING — orc.registerScript goes FIRST because it is the
-  // effect the reduced workflow-restart context does not publish, so the guard
-  // below aborts this function here rather than one step later. The step after
-  // it re-registers PLACEHOLDER skill text, and the reduced context DOES serve
-  // orc.registerSkill (measured: three registerSkill calls succeeded there).
-  // Letting a restart reach that step would quietly replace the activated
-  // AGENTS.md policy with the "loaded during startup" stub and leave the
-  // coordinator running on a placeholder until the next activation — a silent
-  // policy downgrade, worse than the crash it replaced. Do not reorder.
+  // The policy reload workflow calls this existing exposed function instead of
+  // capturing injectHermitDevPolicies and its helper graph in durable workflow
+  // state. Register it before the reduced-context guard so module replay can
+  // resolve the call. This does not register placeholder policy text.
+  orc.exposeFunction(
+    PLUGIN_NAME + ".activate",
+    activateHermitDevPolicies,
+    {
+      description: "Reload AGENTS.md and activate the canonical dev-hermit policies",
+      params: [],
+      sig: "await orc.hermit-dev.activate()",
+    },
+  );
+
+  // ORDER IS LOAD-BEARING — orc.registerScript is the first effect that the
+  // reduced workflow-restart context does not publish, so the guard below
+  // aborts this function here rather than one step later. The step after the
+  // scripts re-registers PLACEHOLDER skill text, and the reduced context DOES
+  // serve orc.registerSkill (measured: three registerSkill calls succeeded
+  // there). Letting a restart reach that step would quietly replace the
+  // activated AGENTS.md policy with the "loaded during startup" stub and leave
+  // the coordinator running on a placeholder until the next activation — a
+  // silent policy downgrade, worse than the crash it replaced. Do not reorder.
   orc.registerScript(OPERATIONAL_TICK_SCRIPT_NAME, {
     script: OPERATIONAL_TICK_COMMAND,
     description: "Run the version-pinned dev-hermit tick-hub operational poll",
@@ -1227,16 +1241,6 @@ function registerPluginSurface(): void {
   registerUrgentValidationSkill(
     "The urgent critical-path validation protocol is loaded during plugin " +
       "startup.",
-  );
-
-  orc.exposeFunction(
-    PLUGIN_NAME + ".activate",
-    activateHermitDevPolicies,
-    {
-      description: "Reload AGENTS.md and activate the canonical dev-hermit policies",
-      params: [],
-      sig: "await orc.hermit-dev.activate()",
-    },
   );
 
   // Top-level, NOT plugin-namespaced: this is the exact name Hard Invariant 16

@@ -449,33 +449,39 @@ check(
   JSON.stringify(mutatedInjection),
 );
 
-function compilePolicyReloadWorkflow(functionSource, inject, orcStub) {
+function compilePolicyReloadWorkflow(functionSource, orcStub) {
   const javascript = functionSource
     .replace(
       "export async function policyReloadHeartbeat",
       "async function policyReloadHeartbeat",
     )
     .replace("(wf: WfContext): Promise<void>", "(wf)")
+    .replace(" as PolicyInjectionReceipt", "")
     .replace(
       "String((err as { message?: unknown })?.message || err)",
       "String((err && err.message) || err)",
     );
   return new Function(
     "POLICY_RELOAD_INTERVAL_MS",
-    "injectHermitDevPolicies",
+    "PLUGIN_NAME",
     "orc",
     javascript + "; return policyReloadHeartbeat;",
-  )(7_200_000, inject, orcStub);
+  )(7_200_000, "hermit-dev", orcStub);
 }
 
-async function probePolicyReload(inject) {
+async function probePolicyReload(activate) {
   const wakeups = [];
   const sleeps = [];
+  const activationReasons = [];
   const workflowSource = sourceBetween(
     "export async function policyReloadHeartbeat",
     "\nfunction stableAlertSignature",
   );
-  const workflow = compilePolicyReloadWorkflow(workflowSource, inject, {
+  const workflow = compilePolicyReloadWorkflow(workflowSource, {
+    "hermit-dev.activate": async (reason) => {
+      activationReasons.push(reason);
+      return JSON.stringify(await activate(reason));
+    },
     sendWakeup: async (targets, title, body) => {
       wakeups.push({ targets, title, body });
     },
@@ -484,7 +490,7 @@ async function probePolicyReload(inject) {
     loop: async (body) => body(),
     sleep: async (milliseconds) => sleeps.push(milliseconds),
   });
-  return { sleeps, wakeups };
+  return { activationReasons, sleeps, wakeups };
 }
 
 const reloadPassed = await probePolicyReload(async () => ({
@@ -494,6 +500,12 @@ const reloadPassed = await probePolicyReload(async () => ({
   policyPath: "/workspace/AGENTS.md",
 }));
 check("periodic reload waits two hours", reloadPassed.sleeps[0] === 7_200_000);
+check(
+  "periodic reload calls the exposed activation with its reason",
+  reloadPassed.activationReasons.length === 1 &&
+    reloadPassed.activationReasons[0] === "periodic",
+  JSON.stringify(reloadPassed.activationReasons),
+);
 check(
   "periodic reload reports completed only after injection",
   reloadPassed.wakeups.length === 1 &&
@@ -512,6 +524,26 @@ check(
     reloadRefused.wakeups[0].body.includes("context_injected=false") &&
     reloadRefused.wakeups[0].body.includes("no context delivery"),
   JSON.stringify(reloadRefused.wakeups),
+);
+
+const registrationSource = sourceBetween(
+  "function registerPluginSurface(): void",
+  "\n// --- module entry",
+);
+check(
+  "policy activation is exposed before the reduced-context script guard",
+  registrationSource.indexOf('PLUGIN_NAME + ".activate"') >= 0 &&
+    registrationSource.indexOf('PLUGIN_NAME + ".activate"') <
+      registrationSource.indexOf("orc.registerScript"),
+);
+const policyReloadSource = sourceBetween(
+  "export async function policyReloadHeartbeat",
+  "\nfunction stableAlertSignature",
+);
+check(
+  "policy reload does not capture the policy registration helper",
+  !policyReloadSource.includes("injectHermitDevPolicies") &&
+    policyReloadSource.includes('orc[PLUGIN_NAME + ".activate"]("periodic")'),
 );
 
 // --- report ------------------------------------------------------------------
