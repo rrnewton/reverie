@@ -118,6 +118,7 @@ import pathlib
 import re
 import subprocess
 import sys
+import tempfile
 
 # ⚠️ THE FENCE RULE IS IMPORTED, NOT COPIED. This gate already carries its own
 # marker grammar, and that second copy is exactly what diverged from
@@ -332,6 +333,44 @@ def gh_json(args: list[str]) -> object:
             except json.JSONDecodeError:
                 continue
     return None
+
+
+def comment_bodies_and_ids(records: object) -> tuple[list[str], list[object] | None]:
+    """Return comment bodies with the GitHub ids that identify their records.
+
+    The legacy ``--from-json`` format is a JSON array of body strings and has no
+    ids to preserve.  GitHub's three comment endpoints return objects; those must
+    carry an id.  Silently replacing a missing id with the record's position would
+    let ``RETIRES 0`` name whichever comment happened to be first, so malformed
+    object input is refused instead of assigned a made-up identity.
+    """
+    if not isinstance(records, list):
+        raise ValueError("comment input is not a JSON array")
+    if not records:
+        return [], []
+    if all(isinstance(record, str) for record in records):
+        return list(records), None
+    if not all(isinstance(record, dict) for record in records):
+        raise ValueError("comment input mixes body strings with comment objects")
+
+    bodies: list[str] = []
+    ids: list[object] = []
+    for position, record in enumerate(records):
+        cid = record.get("id")
+        if (
+            isinstance(cid, bool)
+            or not isinstance(cid, (int, str))
+            or not str(cid).isdigit()
+        ):
+            raise ValueError(f"comment object {position} has no readable numeric id")
+        body = record.get("body")
+        if body is None:
+            body = ""
+        if not isinstance(body, str):
+            raise ValueError(f"comment object {position} has a non-string body")
+        bodies.append(body)
+        ids.append(cid)
+    return bodies, ids
 
 
 def markers(bodies: list[str]) -> list[tuple[str, str | None, str | None]]:
@@ -1727,6 +1766,77 @@ def self_test() -> int:
     except BaseException as exc:  # noqa: BLE001 -- the point is that it cannot
         bad.append(f"provenance: gate_provenance raised {type(exc).__name__}: {exc}")
 
+    # ⚠️ THE COMMAND PATH, NOT ANOTHER CALL TO evaluate(). The pure function
+    # already passed precise comment ids while main() discarded them from every
+    # GitHub object. That made the tests green while the installed command could
+    # not bind ``RETIRES #<comment-id>`` to the refusal it named. These subprocesses
+    # cross argument parsing, JSON ingestion and the call into evaluate, so removing
+    # ``ids=ids`` below makes the first case fail for the production reason.
+    command_refusal_id = 5420547902
+    command_withdrawal_id = 5437102604
+
+    def run_command(records: list[dict]) -> subprocess.CompletedProcess:
+        with tempfile.TemporaryDirectory(prefix="changes-requested-gate-") as directory:
+            fixture = pathlib.Path(directory) / "comments.json"
+            fixture.write_text(json.dumps(records), encoding="utf-8")
+            return subprocess.run(
+                [
+                    sys.executable,
+                    str(pathlib.Path(__file__).resolve()),
+                    "--repo", "example/repo",
+                    "--pr", "2680",
+                    "--head", _MOVED,
+                    "--from-json", str(fixture),
+                ],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+
+    command_cases = [
+        (
+            "an exact comment id retires the unsigned refusal through the command",
+            command_refusal_id,
+            OK,
+            "NO READABLE ISSUER WAS RETIRED",
+        ),
+        (
+            "a different comment id leaves the unsigned refusal blocked",
+            5999999999,
+            BLOCKED,
+            "OUTRUN",
+        ),
+    ]
+    for name, target, want_rc, must_say in command_cases:
+        result = run_command([
+            {"id": command_refusal_id, "body": _R_REF},
+            {
+                "id": command_withdrawal_id,
+                "body": _tag(
+                    "hermit-121",
+                    f"{_R_WD}\nRETIRES #{target}",
+                ),
+            },
+        ])
+        if result.returncode != want_rc or must_say not in result.stdout:
+            bad.append(
+                f"command: {name} -- rc={result.returncode}, want {want_rc}; "
+                f"stdout={result.stdout[:180]!r}; stderr={result.stderr[:100]!r}"
+            )
+        if no_verdict_in(result.stdout):
+            bad.append(f"command: {name} -- no verdict reached stdout")
+
+    missing_id = run_command([{"body": _R_REF}])
+    if (
+        missing_id.returncode != INDETERMINATE
+        or "has no readable numeric id" not in missing_id.stdout
+    ):
+        bad.append(
+            "command: a comment object without an id did not fail INDETERMINATE "
+            f"instead of being assigned a position -- rc={missing_id.returncode}; "
+            f"stdout={missing_id.stdout[:180]!r}"
+        )
+
     for b in bad:
         print(f"changes-requested-gate self-test: FAIL -- {b}", file=sys.stderr)
     if bad:
@@ -1745,7 +1855,9 @@ def self_test() -> int:
           f"and hermit#2692, their cross-lane, cross-member, unsigned and ordering "
           f"controls and the three that must fail, plus {len(absence)} "
           f"absence-is-not-a-pass case(s) and the four-outcome stdout invariant "
-          f"with its provenance stamp")
+          f"with its provenance stamp, plus {len(command_cases)} end-to-end command "
+          f"case(s) that preserve comment ids through JSON ingestion and the "
+          f"missing-id fail-closed control")
     return 0
 
 
@@ -1755,7 +1867,10 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--pr", required=True)
     p.add_argument("--head")
     p.add_argument("--source", help="a checkout, so a main-equal (wiped) head can be detected")
-    p.add_argument("--from-json", help="offline: a JSON array of comment bodies")
+    p.add_argument(
+        "--from-json",
+        help="offline: a JSON array of body strings, or comment objects carrying id and body",
+    )
     p.add_argument(
         "--require-answered",
         action="store_true",
@@ -1771,9 +1886,18 @@ def main(argv: list[str] | None = None) -> int:
     args = p.parse_args(argv)
 
     if args.from_json:
-        with open(args.from_json, encoding="utf-8") as fh:
-            bodies = json.load(fh)
         head = args.head or ""
+        try:
+            with open(args.from_json, encoding="utf-8") as fh:
+                records = json.load(fh)
+            bodies, ids = comment_bodies_and_ids(records)
+        except (OSError, json.JSONDecodeError, ValueError) as exc:
+            return emit(
+                INDETERMINATE,
+                args.pr,
+                head,
+                f"could not read comment records from {args.from_json}: {exc}",
+            )
     else:
         # ⚠ ONE QUERY, BOTH FACTS. `ci-hub/landing/land-pr.sh` reads `state` beside
         # `headRefName` in a single `gh pr view` for exactly this reason: a per-head
@@ -1818,7 +1942,7 @@ def main(argv: list[str] | None = None) -> int:
         # Issue comments are where every marker observed to date lives; reviews and
         # review comments were both EMPTY on hermit#2176, checked 2026-08-25. Read
         # all three anyway -- a container this gate does not read is a way past it.
-        bodies = []
+        records = []
         for path in (
             f"repos/{args.repo}/issues/{args.pr}/comments?per_page=100",
             f"repos/{args.repo}/pulls/{args.pr}/reviews?per_page=100",
@@ -1831,9 +1955,35 @@ def main(argv: list[str] | None = None) -> int:
                     f"could not read {path.split('?')[0]}; a failed query is "
                     f"not an empty result",
                 )
-            bodies.extend(c.get("body") or "" for c in got if isinstance(c, dict))
+            if not isinstance(got, list):
+                return emit(
+                    INDETERMINATE, args.pr, head,
+                    f"{path.split('?')[0]} returned a non-array result; this is not "
+                    f"an empty comment list",
+                )
+            if any(not isinstance(record, dict) for record in got):
+                return emit(
+                    INDETERMINATE, args.pr, head,
+                    f"{path.split('?')[0]} returned a comment without its object "
+                    f"fields; the command cannot preserve that comment's id",
+                )
+            records.extend(got)
+        try:
+            bodies, ids = comment_bodies_and_ids(records)
+        except ValueError as exc:
+            return emit(
+                INDETERMINATE,
+                args.pr,
+                head,
+                f"could not preserve the comment ids returned by GitHub: {exc}",
+            )
 
-    rc, why = evaluate(bodies, head, require_answered=args.require_answered)
+    rc, why = evaluate(
+        bodies,
+        head,
+        ids=ids,
+        require_answered=args.require_answered,
+    )
 
     # A main-equal head cannot CLEAR a pull request that carries refusal markers.
     # Only downgrades OK -> INDETERMINATE; a BLOCKED verdict is already correct and
