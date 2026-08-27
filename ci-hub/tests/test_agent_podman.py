@@ -497,6 +497,49 @@ class AgentPodmanTests(unittest.TestCase):
         ):
             render_emit(lifecycle.emit, {"state": "error"})
 
+    def _podman_stub(self, name: str, body: str) -> Path:
+        stub = self.directory / name
+        stub.write_text(body)
+        stub.chmod(0o755)
+        return stub
+
+    # ⚠️ A CHILD KILLED BY ITS BOUND USED TO REPORT NOTHING AT ALL. `bounded_podman`
+    # runs podman under `timeout --signal=TERM`, which TERMs an over-running child
+    # before it writes a word, so the operator saw "podman ps failed:" with an empty
+    # reason -- the same text a silently-crashing podman produces. That is the one
+    # distinction needed first when this suite goes red under load, because a
+    # bound-kill and a fault have opposite fixes.
+    def test_a_bound_kill_names_the_bound_instead_of_reporting_nothing(self) -> None:
+        slow = self._podman_stub("slow-podman", "#!/bin/bash\nsleep 6\necho '[]'\n")
+        self.environment["AGENT_PODMAN_BIN"] = str(slow)
+        self.write_live_state(self.OTHER_LIVE_AGENT, {})
+
+        result = self.reconcile(apply=False)
+
+        combined = result.stderr + result.stdout
+        self.assertNotEqual(result.returncode, 0, combined)
+        self.assertIn("KILLED BY ITS", combined)
+        self.assertIn("3s", combined, "the bound itself must be named, not just the fact")
+        self.assertIn("not a podman fault", combined)
+
+    # The control, and it is the half that matters: a real fault must NOT be
+    # relabelled as a bound-kill. Reading a fault as "the machine was busy" is the
+    # more comfortable error and therefore the more dangerous one.
+    def test_an_ordinary_podman_failure_is_not_relabelled_as_a_bound_kill(self) -> None:
+        bad = self._podman_stub(
+            "bad-podman",
+            "#!/bin/bash\necho 'real podman error: no such container' >&2\nexit 1\n",
+        )
+        self.environment["AGENT_PODMAN_BIN"] = str(bad)
+        self.write_live_state(self.OTHER_LIVE_AGENT, {})
+
+        result = self.reconcile(apply=False)
+
+        combined = result.stderr + result.stdout
+        self.assertNotEqual(result.returncode, 0, combined)
+        self.assertIn("real podman error: no such container", combined)
+        self.assertNotIn("KILLED BY ITS", combined)
+
     def test_quickstart_is_pure_without_podman_or_state(self) -> None:
         self.environment["AGENT_PODMAN_BIN"] = str(self.directory / "missing-podman")
         result = self.run_tool("quickstart")

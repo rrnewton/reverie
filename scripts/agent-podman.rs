@@ -1073,7 +1073,7 @@ fn inspect_release_container(container: &Container) -> Result<ReleaseInspection>
         return Err(AppError::Message(format!(
             "podman inspect failed for {}: {}",
             container.id,
-            String::from_utf8_lossy(&output.stderr).trim()
+            podman_failure_reason(&output, QUERY_TIMEOUT_SECS)
         )));
     }
     let value: Value = serde_json::from_slice(&output.stdout).map_err(|source| AppError::Json {
@@ -1717,7 +1717,7 @@ fn list_containers() -> Result<Vec<Container>> {
     if !output.status.success() {
         return Err(AppError::Message(format!(
             "podman ps failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
+            podman_failure_reason(&output, QUERY_TIMEOUT_SECS)
         )));
     }
     let value: Value = serde_json::from_slice(&output.stdout).map_err(|source| AppError::Json {
@@ -1811,7 +1811,7 @@ fn gracefully_remove(container: &Container) -> Result<()> {
         if !stop.status.success() {
             stop_error = Some(format!(
                 "podman stop failed: {}",
-                String::from_utf8_lossy(&stop.stderr).trim()
+                podman_failure_reason(&stop, STOP_TIMEOUT_SECS)
             ));
         }
     }
@@ -1822,7 +1822,7 @@ fn gracefully_remove(container: &Container) -> Result<()> {
             .unwrap_or_default();
         return Err(AppError::Message(format!(
             "{stop_context}podman rm failed: {}",
-            String::from_utf8_lossy(&remove.stderr).trim()
+            podman_failure_reason(&remove, REMOVE_TIMEOUT_SECS)
         )));
     }
     Ok(())
@@ -1836,7 +1836,7 @@ fn inspect_labels(container: &str) -> Result<BTreeMap<String, String>> {
     if !output.status.success() {
         return Err(AppError::Message(format!(
             "podman inspect failed for {container}: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
+            podman_failure_reason(&output, QUERY_TIMEOUT_SECS)
         )));
     }
     serde_json::from_slice(&output.stdout).map_err(|source| AppError::Json {
@@ -1853,7 +1853,7 @@ fn inspect_id(container: &str) -> Result<String> {
     if !output.status.success() {
         return Err(AppError::Message(format!(
             "podman inspect failed for {container}: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
+            podman_failure_reason(&output, QUERY_TIMEOUT_SECS)
         )));
     }
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
@@ -1867,7 +1867,7 @@ fn container_exists_authoritative(container: &str) -> Result<bool> {
         code => Err(AppError::Message(format!(
             "podman container exists was inconclusive for {container} (exit {}): {}",
             code.map_or_else(|| "signal".to_string(), |code| code.to_string()),
-            String::from_utf8_lossy(&output.stderr).trim()
+            podman_failure_reason(&output, QUERY_TIMEOUT_SECS)
         ))),
     }
 }
@@ -1912,6 +1912,49 @@ fn wait_for_release_visibility(container: &str, timeout: Duration) -> Result<()>
             )));
         }
         thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// Why a bounded podman call failed, naming the BOUND when the bound is the reason.
+///
+/// ⚠️ A CHILD KILLED BY ITS BOUND REPORTS NOTHING, AND THAT IS WHY THIS EXISTS.
+/// `bounded_podman` runs the child under `timeout --signal=TERM --kill-after=2s`,
+/// so an over-running child is TERMed before it writes a word and `timeout` exits
+/// 124 (137 when it had to escalate to KILL). Every caller here printed only
+/// stderr, so the operator saw
+///
+///     agent-podman: podman ps failed:
+///
+/// with nothing after the colon -- identical in shape to a podman that crashed
+/// silently. Reproduced deterministically 2026-08-27 by pointing AGENT_PODMAN_BIN
+/// at a script that merely sleeps: nothing was wrong with it and the report was
+/// indistinguishable from a fault.
+///
+/// That matters beyond tidiness. `ci-hub/tests/test_agent_podman.py` is
+/// intermittently red under load, and the FIRST question about any such failure is
+/// whether the call was killed by its bound or failed on its merits. Those have
+/// opposite fixes, and the output could not tell them apart, so the question could
+/// not be asked of the evidence that already existed.
+fn podman_failure_reason(output: &std::process::Output, bound: &str) -> String {
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    match output.status.code() {
+        // `timeout` reserves both: 124 after the TERM, 137 when --kill-after fired.
+        Some(code @ (124 | 137)) => {
+            let escalated = if code == 137 {
+                "; did not exit on TERM"
+            } else {
+                ""
+            };
+            let tail = if stderr.is_empty() {
+                String::new()
+            } else {
+                format!("; it also wrote: {stderr}")
+            };
+            format!("KILLED BY ITS {bound} BOUND (timeout exit {code}{escalated}), not a podman fault{tail}")
+        }
+        Some(code) if stderr.is_empty() => format!("exit {code}, and it wrote nothing"),
+        None if stderr.is_empty() => "killed by a signal, and it wrote nothing".to_string(),
+        _ => stderr,
     }
 }
 
