@@ -46,10 +46,10 @@ sys.path.insert(0, str(CI_HUB / "ledger"))
 
 from check_outcome import (
     CheckOutcome,
-    FAIL_CONCLUSIONS,
     classify_check,
     select_latest_workflow_attempts,
 )
+import gha_rows
 import qualifying_receipt
 import validate_rows as canonical_ledger
 
@@ -209,6 +209,10 @@ def jobs_store_path(parent: str) -> str:
     return os.path.join(store_dir(parent), "gha-jobs.csv")
 
 
+def jobs_fetched_path(parent: str) -> str:
+    return os.path.join(store_dir(parent), "gha-jobs-fetched.json")
+
+
 # ---------------------------------------------------------------------------
 # Shared helpers
 # ---------------------------------------------------------------------------
@@ -255,20 +259,30 @@ def walk_pruned(root: str, want, max_depth: int = 8):
 
 
 def load_gha_rows(parent: str, repo: str | None, since: str | None,
-                  branch: str | None) -> list[dict]:
-    path = gha_store_path(parent)
-    if not os.path.isfile(path):
-        return []
+                  branch: str | None) -> list[gha_rows.GhaRunRow]:
+    run_rows = gha_rows.load_run_store(gha_store_path(parent))
+    job_rows = gha_rows.load_job_store(jobs_store_path(parent))
+    try:
+        with open(jobs_fetched_path(parent)) as stream:
+            fetched = json.load(stream)
+    except (OSError, json.JSONDecodeError):
+        fetched = {}
+    if not isinstance(fetched, dict):
+        fetched = {}
+    gha_rows.apply_job_measurements(
+        run_rows,
+        job_rows,
+        gha_rows.fetched_attempt_keys(fetched, run_rows, job_rows),
+    )
     rows = []
-    with open(path, newline="", errors="replace") as fh:
-        for row in csvmod.DictReader(fh):
-            if repo and row.get("repo") != repo:
-                continue
-            if branch and row.get("head_branch") != branch:
-                continue
-            if since and (row.get("created_at") or "") < since:
-                continue
-            rows.append(row)
+    for row in run_rows.values():
+        if repo and row["repo"] != repo:
+            continue
+        if branch and row["head_branch"] != branch:
+            continue
+        if since and row["created_at"] < since:
+            continue
+        rows.append(row)
     return rows
 
 
@@ -691,21 +705,22 @@ def _classify_terminal(conclusion: str) -> str:
     return "no_result"
 
 
-def load_jobs_index(parent: str, repo: str | None) -> dict[str, list[dict]]:
-    """run_id -> [job rows] from the optional gha-jobs.csv, or {} when absent."""
+def load_jobs_index(
+    parent: str, repo: str | None
+) -> dict[gha_rows.RunAttemptKey, list[gha_rows.GhaJobRow]]:
+    """(repo, run_id, run_attempt) -> job rows, or {} when absent."""
     path = jobs_store_path(parent)
-    if not os.path.isfile(path):
-        return {}
-    idx: dict[str, list[dict]] = {}
-    with open(path, newline="", errors="replace") as fh:
-        for row in csvmod.DictReader(fh):
-            if repo and row.get("repo") != repo:
-                continue
-            idx.setdefault(row.get("run_id") or "", []).append(row)
+    idx: dict[gha_rows.RunAttemptKey, list[gha_rows.GhaJobRow]] = {}
+    for row in gha_rows.load_job_store(path).values():
+        if repo and row["repo"] != repo:
+            continue
+        idx.setdefault(gha_rows.run_attempt_key(row), []).append(row)
     return idx
 
 
-def _resolve_cancelled_run(run: dict, jobs: list[dict] | None) -> str | None:
+def _resolve_cancelled_run(
+    run: dict, jobs: list[gha_rows.GhaJobRow] | None
+) -> str | None:
     """Seventh case: run-level CANCELLED, but a JOB inside it may have FAILED.
 
     Run-level and job-level conclusions disagree; the discriminator is ORDERING
@@ -746,7 +761,7 @@ def _resolve_cancelled_run(run: dict, jobs: list[dict] | None) -> str | None:
     cancel_onsets = [c for c in cancel_onsets if c is not None]
     onset = min(cancel_onsets) if cancel_onsets else _epoch(run.get("updated_at"))
     for j in jobs:
-        if (j.get("conclusion") or "").lower() not in FAIL_CONCLUSIONS:
+        if classify_check(j["status"], j["conclusion"]) is not CheckOutcome.FAILED:
             continue
         done = _epoch(j.get("completed_at"))
         if done is None:
@@ -868,7 +883,7 @@ def state_timeline(parent: str, repo: str, since: str | None,
                 # that failed first is a real red (ORDERING discriminator).
                 if state == "no_result" and c == "cancelled":
                     if _resolve_cancelled_run(
-                            run, jobs_index.get(run.get("run_id") or "")) == "red":
+                            run, jobs_index.get(gha_rows.run_attempt_key(run))) == "red":
                         state = "red"
                         job_promotions += 1
                 wf_states.append(state)
@@ -1213,16 +1228,31 @@ def runs_summary(parent: str, repo: str | None, since: str | None,
     by_repo: dict[str, dict] = {}
     for r in rows:
         rp = r.get("repo", "?")
-        agg = by_repo.setdefault(rp, {"n": 0, "concl": {}, "queue": [], "run": []})
+        agg = by_repo.setdefault(
+            rp,
+            {
+                "n": 0,
+                "concl": {},
+                "queue": [],
+                "run": [],
+                "runner": [],
+                "jobs_src": {},
+            },
+        )
         agg["n"] += 1
         c = r.get("conclusion") or (r.get("status") or "?")
         agg["concl"][c] = agg["concl"].get(c, 0) + 1
+        jobs_src = r.get("jobs_src") or "never-measured"
+        agg["jobs_src"][jobs_src] = agg["jobs_src"].get(jobs_src, 0) + 1
         q = _float(r.get("queue_s"))
         rn = _float(r.get("run_s"))
+        runner = _float(r.get("runner_s")) if jobs_src == "jobs" else None
         if q is not None:
             agg["queue"].append(q)
         if rn is not None:
             agg["run"].append(rn)
+        if runner is not None:
+            agg["runner"].append(runner)
     out = ["=== ci-hub GHA run history ==="]
     for rp, agg in sorted(by_repo.items()):
         q = sorted(agg["queue"])
@@ -1238,6 +1268,17 @@ def runs_summary(parent: str, repo: str | None, since: str | None,
         if rn:
             out.append(f"  run_s   : median={percentile(rn,50):.0f} "
                        f"p95={percentile(rn,95):.0f} max={rn[-1]:.0f}")
+        runner = sorted(agg["runner"])
+        if runner:
+            out.append(f"  runner_s: median={percentile(runner,50):.0f} "
+                       f"p95={percentile(runner,95):.0f} max={runner[-1]:.0f}")
+        out.append(
+            "  job evidence: "
+            + ", ".join(
+                f"{source}={count}"
+                for source, count in sorted(agg["jobs_src"].items())
+            )
+        )
     return "\n".join(out)
 
 
@@ -1352,6 +1393,15 @@ def recent_runs(parent: str, repo: str | None, since: str | None,
             "queue_s": q,
             "queue_lower_bound_s": round(lb) if lb is not None else None,
             "run_s": _float(r.get("run_s")),
+            "runner_s": (
+                _float(r.get("runner_s")) if r.get("jobs_src") == "jobs" else None
+            ),
+            "jobs_n": (
+                int(r["jobs_n"])
+                if r.get("jobs_src") == "jobs" and r.get("jobs_n")
+                else None
+            ),
+            "jobs_src": r.get("jobs_src") or "never-measured",
             "url": r.get("html_url") or "",
             "queue_outlier": _is_queue_outlier(eff_wait(r), thresh),
         })
@@ -1374,7 +1424,8 @@ def render_recent(res: dict, limit: int) -> str:
     if not runs:
         return "  (no individual runs match this filter)"
     hdr = ("", "TIME(UTC)", "REPO", "RUN_ID", "WORKFLOW", "BRANCH/PR",
-           "CONCL", "QUEUE(s)", "RUN(s)", "URL")
+           "CONCL", "QUEUE(s)", "RUN(s)", "RUNNER(s)", "JOBS", "JOBS_SRC",
+           "URL")
     body = []
     have_lb = False
     for r in runs:
@@ -1395,6 +1446,9 @@ def render_recent(res: dict, limit: int) -> str:
             r["conclusion"],
             queue_cell,
             _s(r["run_s"]),
+            _s(r["runner_s"]),
+            "-" if r["jobs_n"] is None else str(r["jobs_n"]),
+            r["jobs_src"],
             r["url"],
         ))
     n_out = sum(1 for r in runs if r["queue_outlier"])

@@ -13,6 +13,7 @@ HISTORY = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(HISTORY))
 
 import ingest
+import gha_rows
 import query
 
 
@@ -41,6 +42,216 @@ class IngestUnitTest(unittest.TestCase):
         row = ingest.run_to_row("r/x", run)
         self.assertEqual(row["queue_s"], "300")
         self.assertEqual(row["run_s"], "")   # not completed -> no run duration
+
+    def test_complete_run_row_survives_a_rewrite(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "gha-runs.csv"
+            row = ingest.run_to_row(
+                "r/x",
+                {
+                    "id": 1,
+                    "run_attempt": 1,
+                    "status": "completed",
+                    "created_at": "2026-08-03T00:00:00Z",
+                    "run_started_at": "2026-08-03T00:00:01Z",
+                    "updated_at": "2026-08-03T00:00:02Z",
+                },
+            )
+            row.update(runner_s="1", jobs_n="1", jobs_src="jobs")
+            ingest.write_store(str(path), {gha_rows.run_key(row): row})
+            before = ingest.load_store(str(path))
+            ingest.write_store(str(path), before)
+            after = ingest.load_store(str(path))
+            self.assertEqual(after, before)
+            self.assertEqual(path.read_text().splitlines()[0].split(","), ingest.GHA_COLUMNS)
+
+    def test_legacy_run_row_remains_unknown_until_jobs_are_checked(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "gha-runs.csv"
+            base = ingest.run_to_row("r/x", {"id": 1, "run_attempt": 1})
+            with open(path, "w", newline="") as fh:
+                writer = csv.DictWriter(fh, fieldnames=gha_rows.LEGACY_RUN_COLUMNS)
+                writer.writeheader()
+                writer.writerow({field: base[field] for field in gha_rows.LEGACY_RUN_COLUMNS})
+            rows = ingest.load_store(str(path))
+            loaded = next(iter(rows.values()))
+            self.assertEqual((loaded["runner_s"], loaded["jobs_n"], loaded["jobs_src"]), ("", "", ""))
+            ingest.write_store(str(path), rows)
+            rewritten = ingest.load_store(str(path))
+            self.assertEqual(
+                tuple(next(iter(rewritten.values()))[field] for field in ("runner_s", "jobs_n", "jobs_src")),
+                ("", "", ""),
+            )
+
+    def test_unknown_run_column_is_refused_instead_of_dropped(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "gha-runs.csv"
+            columns = [*ingest.GHA_COLUMNS, "future_measurement"]
+            with open(path, "w", newline="") as fh:
+                writer = csv.DictWriter(fh, fieldnames=columns)
+                writer.writeheader()
+                writer.writerow({
+                    **{field: "" for field in columns},
+                    "repo": "r/x",
+                    "run_id": "1",
+                    "run_attempt": "1",
+                    "future_measurement": "present",
+                })
+            with self.assertRaisesRegex(ValueError, "unknown future_measurement"):
+                ingest.load_store(str(path))
+
+    def test_jobs_source_requires_its_measurements(self):
+        row = ingest.run_to_row("r/x", {"id": 1, "run_attempt": 1})
+        row["jobs_src"] = "jobs"
+        with self.assertRaisesRegex(ValueError, "requires integer runner_s"):
+            gha_rows.run_row(row)
+
+    @staticmethod
+    def _job(repo, run_id, attempt, job_id, started, completed):
+        return ingest.job_to_row(
+            repo,
+            {
+                "id": job_id,
+                "run_id": run_id,
+                "run_attempt": attempt,
+                "status": "completed",
+                "started_at": started,
+                "completed_at": completed,
+            },
+        )
+
+    @staticmethod
+    def _run_row(repo, run_id, attempt, started, updated):
+        return ingest.run_to_row(
+            repo,
+            {
+                "id": run_id,
+                "run_attempt": attempt,
+                "status": "completed",
+                "created_at": started,
+                "run_started_at": started,
+                "updated_at": updated,
+            },
+        )
+
+    def test_runner_seconds_are_derived_from_the_same_attempt(self):
+        first = ("r/x", "9", "1")
+        second = ("r/x", "9", "2")
+        runs = {
+            first: self._run_row(
+                "r/x", 9, 1, "2026-08-03T00:00:00Z", "2026-08-03T00:30:00Z"
+            ),
+            second: self._run_row(
+                "r/x", 9, 2, "2026-08-03T05:00:00Z", "2026-08-03T09:00:00Z"
+            ),
+        }
+        jobs = {}
+        job = self._job(
+            "r/x", 9, 1, 91, "2026-08-03T00:00:00Z", "2026-08-03T00:05:00Z"
+        )
+        jobs[gha_rows.job_key(job)] = job
+        job = self._job(
+            "r/x", 9, 2, 91, "2026-08-03T05:00:00Z", "2026-08-03T08:00:00Z"
+        )
+        jobs[gha_rows.job_key(job)] = job
+        self.assertEqual(len(jobs), 2)
+        self.assertEqual(ingest.augment_runs_with_jobs(runs, jobs), 2)
+        self.assertEqual(runs[first]["runner_s"], "300")
+        self.assertEqual(runs[second]["runner_s"], "10800")
+        self.assertEqual(runs[first]["jobs_n"], "1")
+        self.assertEqual(runs[second]["jobs_n"], "1")
+
+    def test_no_jobs_is_absent_not_zero(self):
+        key = ("r/x", "2", "1")
+        runs = {
+            key: self._run_row(
+                "r/x", 2, 1, "2026-08-03T00:00:00Z", "2026-08-03T01:00:00Z"
+            )
+        }
+        self.assertEqual(ingest.augment_runs_with_jobs(runs, {}, {key}), 0)
+        self.assertEqual(runs[key]["jobs_src"], "absent")
+        self.assertEqual(runs[key]["runner_s"], "")
+        self.assertEqual(runs[key]["jobs_n"], "")
+
+    def test_query_rechecks_stored_absence_against_fetched_attempts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            parent = Path(tmp)
+            (parent / "ignored" / "ci-hub").mkdir(parents=True)
+            row = self._run_row(
+                "r/x", 2, 1, "2026-08-03T00:00:00Z", "2026-08-03T01:00:00Z"
+            )
+            row["jobs_src"] = "absent"
+            path = parent / "ignored" / "ci-hub" / "gha-runs.csv"
+            ingest.write_store(str(path), {gha_rows.run_key(row): row})
+
+            loaded = query.load_gha_rows(str(parent), "r/x", None, None)
+            self.assertEqual(loaded[0]["jobs_src"], "")
+
+            ingest.save_jobs_fetched(str(parent), {"r/x": ["2:1"]})
+            loaded = query.load_gha_rows(str(parent), "r/x", None, None)
+            self.assertEqual(loaded[0]["jobs_src"], "absent")
+
+    def test_unfetched_jobs_remain_never_measured(self):
+        key = ("r/x", "3", "1")
+        runs = {
+            key: self._run_row(
+                "r/x", 3, 1, "2026-08-03T00:00:00Z", "2026-08-03T01:00:00Z"
+            )
+        }
+        self.assertEqual(ingest.augment_runs_with_jobs(runs, {}), 0)
+        self.assertEqual(runs[key]["jobs_src"], "")
+        self.assertEqual(runs[key]["runner_s"], "")
+
+    def test_parallel_runner_seconds_may_exceed_run_wall_seconds(self):
+        key = ("r/x", "6", "1")
+        runs = {
+            key: self._run_row(
+                "r/x", 6, 1, "2026-08-03T00:00:00Z", "2026-08-03T00:15:00Z"
+            )
+        }
+        jobs = {}
+        for index in range(34):
+            job = self._job(
+                "r/x",
+                6,
+                1,
+                100 + index,
+                "2026-08-03T00:00:00Z",
+                "2026-08-03T00:10:00Z",
+            )
+            jobs[gha_rows.job_key(job)] = job
+        ingest.augment_runs_with_jobs(runs, jobs)
+        self.assertEqual(runs[key]["run_s"], "900")
+        self.assertEqual(runs[key]["runner_s"], "20400")
+
+    def test_run_refresh_preserves_job_measurement(self):
+        old = self._run_row(
+            "r/x", 1, 1, "2026-08-03T00:00:00Z", "2026-08-03T00:01:00Z"
+        )
+        old.update(runner_s="30", jobs_n="2", jobs_src="jobs")
+        rows = {gha_rows.run_key(old): old}
+        refreshed = self._run_row(
+            "r/x", 1, 1, "2026-08-03T00:00:00Z", "2026-08-03T00:02:00Z"
+        )
+        ingest.upsert(rows, refreshed)
+        self.assertEqual(rows[("r/x", "1", "1")]["runner_s"], "30")
+        self.assertEqual(rows[("r/x", "1", "1")]["jobs_src"], "jobs")
+
+    def test_job_fetch_requests_every_attempt(self):
+        calls = []
+
+        def fake_gh_json(path):
+            calls.append(path)
+            return {"jobs": []}
+
+        original = ingest.gh_json
+        ingest.gh_json = fake_gh_json
+        try:
+            self.assertEqual(ingest.fetch_jobs("r/x", "9"), [])
+        finally:
+            ingest.gh_json = original
+        self.assertEqual(len(calls), 1)
+        self.assertIn("filter=all", calls[0])
 
     def test_upsert_idempotent_and_newest_wins(self):
         rows: dict = {}
@@ -439,9 +650,9 @@ class TempParentTest(unittest.TestCase):
         self.assertEqual(res["kills"][0]["verdict"], "unknown")
 
     def _gha_wf(self, sha, concl, created, updated, wf="W", status="completed",
-                run_id=None):
-        return {"repo": "r/x", "run_id": run_id or (sha + concl),
-                "run_attempt": "1", "workflow_name": wf, "head_branch": "main",
+                run_id=None, attempt="1"):
+        return {"repo": "r/x", "run_id": run_id or (sha + concl + wf),
+                "run_attempt": attempt, "workflow_name": wf, "head_branch": "main",
                 "head_sha": sha, "status": status, "conclusion": concl,
                 "created_at": created, "updated_at": updated}
 
@@ -700,13 +911,60 @@ class TempParentTest(unittest.TestCase):
 
     def _write_jobs(self, rows):
         path = self.parent / "ignored" / "ci-hub" / "gha-jobs.csv"
-        cols = ["repo", "run_id", "job_id", "name", "conclusion",
-                "started_at", "completed_at"]
         with open(path, "w", newline="") as fh:
-            w = csv.DictWriter(fh, fieldnames=cols, extrasaction="ignore")
+            w = csv.DictWriter(fh, fieldnames=ingest.JOBS_COLUMNS, extrasaction="ignore")
             w.writeheader()
             for r in rows:
-                w.writerow({c: r.get(c, "") for c in cols})
+                complete = {
+                    "run_attempt": "1",
+                    "status": "completed",
+                    "html_url": "",
+                    **r,
+                }
+                w.writerow({c: complete.get(c, "") for c in ingest.JOBS_COLUMNS})
+
+    def test_green_time_does_not_borrow_jobs_from_an_earlier_attempt(self):
+        self._write_gha([
+            self._gha_wf(
+                "a" * 40,
+                "cancelled",
+                "2026-08-03T00:00:00Z",
+                "2026-08-03T00:30:00Z",
+                run_id="R1",
+                attempt="1",
+            ),
+            self._gha_wf(
+                "a" * 40,
+                "cancelled",
+                "2026-08-03T00:00:00Z",
+                "2026-08-03T00:40:00Z",
+                run_id="R1",
+                attempt="2",
+            ),
+            self._gha_wf(
+                "b" * 40,
+                "success",
+                "2026-08-03T01:00:00Z",
+                "2026-08-03T01:00:00Z",
+                run_id="R2",
+            ),
+        ])
+        self._write_jobs([
+            {
+                "repo": "r/x",
+                "run_id": "R1",
+                "run_attempt": "1",
+                "job_id": "j1",
+                "name": "build",
+                "conclusion": "failure",
+                "started_at": "2026-08-03T00:10:00Z",
+                "completed_at": "2026-08-03T00:20:00Z",
+            }
+        ])
+        result = query.green_time(str(self.parent), "r/x", None, ["W"])
+        self.assertEqual(result["job_level_red_promotions"], 0)
+        self.assertEqual(result["red_hours"], 0.0)
+        self.assertAlmostEqual(result["no_result_hours"], 0.33, places=1)
 
     def test_green_time_case7_job_failed_before_cancel_is_red(self):
         # Seventh case: run-level cancelled, but a job FAILED at 00:30, before the
@@ -871,6 +1129,74 @@ class TempParentTest(unittest.TestCase):
             self.assertEqual(calls, [])
         finally:
             ingest.fetch_jobs = orig
+
+    def test_legacy_jobs_fetched_id_migrates_a_single_attempt_without_refetch(self):
+        self._write_gha([
+            self._gha_wf(
+                "a" * 40,
+                "cancelled",
+                "2026-08-03T00:00:00Z",
+                "2026-08-03T00:10:00Z",
+                run_id="R1",
+            )
+        ])
+        ingest.save_jobs_fetched(str(self.parent), {"r/x": ["R1"]})
+        calls = []
+        original = ingest.fetch_jobs
+        ingest.fetch_jobs = lambda repo, run_id: calls.append(run_id) or []
+        try:
+            ingest.ingest_jobs(
+                "r/x",
+                str(self.parent),
+                workflows=["W"],
+                since=None,
+                refetch=False,
+                max_runs=100,
+            )
+        finally:
+            ingest.fetch_jobs = original
+        self.assertEqual(calls, [])
+        self.assertEqual(ingest.load_jobs_fetched(str(self.parent))["r/x"], ["R1:1"])
+
+    def test_legacy_jobs_fetched_id_refetches_a_multi_attempt_run(self):
+        self._write_gha([
+            self._gha_wf(
+                "a" * 40,
+                "cancelled",
+                "2026-08-03T00:00:00Z",
+                "2026-08-03T00:10:00Z",
+                run_id="R1",
+                attempt="1",
+            ),
+            self._gha_wf(
+                "a" * 40,
+                "cancelled",
+                "2026-08-03T00:00:00Z",
+                "2026-08-03T00:20:00Z",
+                run_id="R1",
+                attempt="2",
+            ),
+        ])
+        ingest.save_jobs_fetched(str(self.parent), {"r/x": ["R1"]})
+        calls = []
+        original = ingest.fetch_jobs
+        ingest.fetch_jobs = lambda repo, run_id: calls.append(run_id) or []
+        try:
+            ingest.ingest_jobs(
+                "r/x",
+                str(self.parent),
+                workflows=["W"],
+                since=None,
+                refetch=False,
+                max_runs=100,
+            )
+        finally:
+            ingest.fetch_jobs = original
+        self.assertEqual(calls, ["R1"])
+        self.assertEqual(
+            ingest.load_jobs_fetched(str(self.parent))["r/x"],
+            ["R1:1", "R1:2"],
+        )
 
     def test_green_time_commit_without_authoritative_run_is_gap_no_record(self):
         # Commit B ran only a NON-authoritative workflow: no authoritative check

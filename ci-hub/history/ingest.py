@@ -21,6 +21,12 @@ row and resumes from the last cursor):
       lies): QUEUE_s = run_started_at - created_at is recorded SEPARATELY from
       RUN_s = updated_at - run_started_at.
 
+      RUN_s is end-to-end wall time, not execution cost. RUNNER_s is the sum of
+      attempt-matched job intervals. JOBS_SRC says whether that value came from
+      job rows, a fetched attempt had no executable interval, or the attempt was
+      never measured. Both latter states leave RUNNER_s and JOBS_n blank, never
+      zero; only the fetched state is named `absent`.
+
   (B) Per-node CI profiling artifacts -> ignored/ci-hub/gha-profiles/<repo>/...
       Downloads GitHub artifacts named ^ci-perf-* (produced by the portable DAG
       runner; see hermit PR #1548) and unzips their safe-ci-dag-runner
@@ -45,7 +51,6 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import csv as csvmod
 import datetime as dt
 import json
 import os
@@ -55,6 +60,8 @@ import subprocess
 import sys
 import tempfile
 import zipfile
+
+import gha_rows
 
 DEFAULT_REPOS = ["rrnewton/hermit", "rrnewton/reverie"]
 
@@ -73,13 +80,12 @@ PROFILES_MAX_PAGES = 30        # newest artifact pages scanned for ci-perf-* per
 
 TERMINAL_STATUS = "completed"
 
-# Stable column order for ignored/ci-hub/gha-runs.csv.
-GHA_COLUMNS = [
-    "repo", "run_id", "run_attempt", "workflow_id", "workflow_name", "event",
-    "head_branch", "head_sha", "pull_requests", "status", "conclusion",
-    "created_at", "run_started_at", "updated_at", "queue_s", "run_s",
-    "html_url", "display_title",
-]
+# Compatibility aliases for callers and tests. The shared row contract owns the
+# field set and ordering; neither producer nor consumer restates it.
+GHA_COLUMNS = list(gha_rows.RUN_COLUMNS)
+JOBS_COLUMNS = list(gha_rows.JOB_COLUMNS)
+JOBS_SRC_DERIVED = gha_rows.JOBS_SRC_DERIVED
+JOBS_SRC_ABSENT = gha_rows.JOBS_SRC_ABSENT
 
 
 def parent_root() -> str:
@@ -159,29 +165,18 @@ def _delta_s(later: str | None, earlier: str | None) -> str:
 # (A) GitHub Actions runs store
 # ---------------------------------------------------------------------------
 
-def load_store(path: str) -> dict[tuple, dict]:
-    rows: dict[tuple, dict] = {}
-    if not os.path.isfile(path):
-        return rows
-    with open(path, newline="", errors="replace") as fh:
-        for row in csvmod.DictReader(fh):
-            key = (row.get("repo", ""), row.get("run_id", ""),
-                   row.get("run_attempt", ""))
-            rows[key] = row
-    return rows
+def load_store(path: str) -> dict[gha_rows.RunKey, gha_rows.GhaRunRow]:
+    return gha_rows.load_run_store(path)
 
 
-def write_store(path: str, rows: dict[tuple, dict]) -> None:
+def write_store(
+    path: str, rows: dict[gha_rows.RunKey, gha_rows.GhaRunRow]
+) -> None:
     ordered = sorted(rows.values(),
                      key=lambda r: (r.get("repo", ""), r.get("created_at", ""),
-                                    r.get("run_id", "")))
-    tmp = path + ".tmp"
-    with open(tmp, "w", newline="") as fh:
-        w = csvmod.DictWriter(fh, fieldnames=GHA_COLUMNS, extrasaction="ignore")
-        w.writeheader()
-        for r in ordered:
-            w.writerow({c: r.get(c, "") for c in GHA_COLUMNS})
-    os.replace(tmp, path)
+                                    r.get("run_id", ""),
+                                    r.get("run_attempt", "")))
+    gha_rows.write_run_rows(path, ordered)
 
 
 def load_cursor(path: str) -> dict:
@@ -201,14 +196,14 @@ def save_cursor(path: str, cursor: dict) -> None:
     os.replace(tmp, path)
 
 
-def run_to_row(repo: str, run: dict) -> dict:
+def run_to_row(repo: str, run: dict) -> gha_rows.GhaRunRow:
     prs = "|".join(str(pr.get("number")) for pr in (run.get("pull_requests") or [])
                    if pr.get("number") is not None)
     created = run.get("created_at")
     started = run.get("run_started_at")
     updated = run.get("updated_at")
     completed = run.get("status") == TERMINAL_STATUS
-    return {
+    return gha_rows.run_row({
         "repo": repo,
         "run_id": str(run.get("id", "")),
         "run_attempt": str(run.get("run_attempt", "")),
@@ -228,14 +223,31 @@ def run_to_row(repo: str, run: dict) -> dict:
         "run_s": _delta_s(updated, started) if completed else "",
         "html_url": run.get("html_url") or "",
         "display_title": (run.get("display_title") or "")[:200],
-    }
+        # GitHub's run object does not carry job execution time. Preserve a
+        # previous derivation during upsert; ingest_jobs fills these from the
+        # attempt-scoped job rows.
+        "runner_s": "",
+        "jobs_n": "",
+        "jobs_src": "",
+    })
 
 
-def upsert(rows: dict[tuple, dict], row: dict) -> None:
-    key = (row["repo"], row["run_id"], row["run_attempt"])
+def upsert(
+    rows: dict[gha_rows.RunKey, gha_rows.GhaRunRow],
+    row: gha_rows.GhaRunRow | dict,
+) -> None:
+    row = gha_rows.run_row(row)
+    key = gha_rows.run_key(row)
     prev = rows.get(key)
     # Keep whichever observation is newest by updated_at (ISO UTC sorts lexically).
     if prev is None or row.get("updated_at", "") >= prev.get("updated_at", ""):
+        # The run API has no job-duration fields. A tail refresh must not erase
+        # a derivation already made from gha-jobs.csv, especially under
+        # --no-jobs where no later pass would restore it.
+        if prev is not None and not row["jobs_src"] and prev["jobs_src"]:
+            row["runner_s"] = prev["runner_s"]
+            row["jobs_n"] = prev["jobs_n"]
+            row["jobs_src"] = prev["jobs_src"]
         rows[key] = row
 
 
@@ -461,9 +473,8 @@ def _download_artifact(repo: str, art_id: int, out_dir: str) -> bool:
 # no_result), and it is INERT until this per-job store exists. We only ever need
 # job rows for the runs that can actually trigger the case: cancelled runs of an
 # AUTHORITATIVE workflow on main. Fetching jobs for every run would be a large,
-# needless multiplier on the API, so this ingester is deliberately SCOPED to
-# those runs. gha-runs.csv is the run universe; this narrows it to the cancelled
-# authoritative-main subset and fetches one `.../jobs` call per such run.
+# needless multiplier on the API, so the default remains scoped to those runs.
+# `--jobs-scope all` widens collection for runner_s measurement.
 # ---------------------------------------------------------------------------
 
 # Authoritative main-branch workflow per repo. MUST stay in lockstep with
@@ -474,40 +485,24 @@ AUTHORITATIVE_WORKFLOWS = {
     "rrnewton/reverie": ["Rust"],
 }
 
-JOBS_MAX_RUNS = 400  # per-pass cap on cancelled runs fetched (logged if hit)
+JOBS_MAX_RUNS = 400  # per-pass cap on runs fetched (logged if hit)
 
-JOBS_COLUMNS = [
-    "repo", "run_id", "run_attempt", "job_id", "name", "status", "conclusion",
-    "started_at", "completed_at", "html_url",
-]
+def load_jobs_store(path: str) -> dict[gha_rows.JobKey, gha_rows.GhaJobRow]:
+    return gha_rows.load_job_store(path)
 
 
-def load_jobs_store(path: str) -> dict[tuple, dict]:
-    rows: dict[tuple, dict] = {}
-    if not os.path.isfile(path):
-        return rows
-    with open(path, newline="", errors="replace") as fh:
-        for row in csvmod.DictReader(fh):
-            rows[(row.get("repo", ""), row.get("run_id", ""),
-                  row.get("job_id", ""))] = row
-    return rows
-
-
-def write_jobs_store(path: str, rows: dict[tuple, dict]) -> None:
+def write_jobs_store(
+    path: str, rows: dict[gha_rows.JobKey, gha_rows.GhaJobRow]
+) -> None:
     ordered = sorted(rows.values(),
                      key=lambda r: (r.get("repo", ""), r.get("run_id", ""),
+                                    r.get("run_attempt", ""),
                                     r.get("job_id", "")))
-    tmp = path + ".tmp"
-    with open(tmp, "w", newline="") as fh:
-        w = csvmod.DictWriter(fh, fieldnames=JOBS_COLUMNS, extrasaction="ignore")
-        w.writeheader()
-        for r in ordered:
-            w.writerow({c: r.get(c, "") for c in JOBS_COLUMNS})
-    os.replace(tmp, path)
+    gha_rows.write_job_rows(path, ordered)
 
 
-def job_to_row(repo: str, job: dict) -> dict:
-    return {
+def job_to_row(repo: str, job: dict) -> gha_rows.GhaJobRow:
+    return gha_rows.job_row({
         "repo": repo,
         "run_id": str(job.get("run_id", "")),
         "run_attempt": str(job.get("run_attempt", "")),
@@ -518,47 +513,85 @@ def job_to_row(repo: str, job: dict) -> dict:
         "started_at": job.get("started_at") or "",
         "completed_at": job.get("completed_at") or "",
         "html_url": job.get("html_url") or "",
-    }
+    })
+
+
+def augment_runs_with_jobs(
+    run_rows: dict[gha_rows.RunKey, gha_rows.GhaRunRow],
+    job_rows: dict[gha_rows.JobKey, gha_rows.GhaJobRow],
+    fetched_attempts: set[gha_rows.RunAttemptKey] | None = None,
+) -> int:
+    """Derive aggregate runner seconds from jobs of the same run attempt.
+
+    `run_s` remains end-to-end wall time. `runner_s` sums every executed job's
+    own interval and can therefore exceed `run_s` when jobs run in parallel.
+    A fetched attempt with no executable interval is absent with blank values;
+    an attempt that was never fetched remains blank/never-measured. Neither is
+    reported as zero work.
+    """
+    return gha_rows.apply_job_measurements(
+        run_rows, job_rows, fetched_attempts or set()
+    )
 
 
 def cancelled_authoritative_runs(parent: str, repo: str,
                                  workflows: list[str],
                                  since: str | None) -> list[str]:
     """run_ids of cancelled authoritative-workflow runs on main (case-7 candidates)."""
+    return list(dict.fromkeys(
+        run_id for run_id, _ in job_candidate_attempts(
+            parent, repo, workflows, since, scope="cancelled"
+        )
+    ))
+
+
+JOBS_SCOPES = ("cancelled", "all")
+
+
+def job_candidate_attempts(
+    parent: str,
+    repo: str,
+    workflows: list[str],
+    since: str | None,
+    *,
+    scope: str,
+) -> list[tuple[str, str]]:
+    """Return `(run_id, run_attempt)` candidates, newest first."""
+    if scope not in JOBS_SCOPES:
+        raise ValueError(f"unknown jobs scope {scope!r}; expected one of {JOBS_SCOPES}")
     path = gha_store_path(parent)
-    if not os.path.isfile(path):
-        return []
     want = set(workflows)
     since_iso = None
     if since:
         since_iso = since if "T" in since else since[:10] + "T00:00:00Z"
-    ids: list[str] = []
-    seen: set[str] = set()
-    with open(path, newline="", errors="replace") as fh:
-        for row in csvmod.DictReader(fh):
-            if row.get("repo") != repo:
+    selected: list[gha_rows.GhaRunRow] = []
+    for row in gha_rows.read_run_rows(path):
+        if row["repo"] != repo or row["workflow_name"] not in want:
+            continue
+        if scope == "cancelled":
+            if row["head_branch"] != "main" or row["conclusion"].lower() != "cancelled":
                 continue
-            if row.get("head_branch") != "main":
-                continue
-            if row.get("workflow_name") not in want:
-                continue
-            if (row.get("conclusion") or "").lower() != "cancelled":
-                continue
-            if since_iso and (row.get("created_at") or "") < since_iso:
-                continue
-            rid = row.get("run_id") or ""
-            if rid and rid not in seen:
-                seen.add(rid)
-                ids.append(rid)
-    return ids
+        elif row["status"] != TERMINAL_STATUS:
+            continue
+        if since_iso and row["created_at"] < since_iso:
+            continue
+        selected.append(row)
+    selected.sort(key=gha_rows.workflow_attempt_order, reverse=True)
+    return [(row["run_id"], row["run_attempt"]) for row in selected]
 
 
 def fetch_jobs(repo: str, run_id: str) -> list[dict]:
-    """All jobs of a run via `.../runs/{id}/jobs` (paginated)."""
+    """All attempts' jobs of a run via the paginated jobs endpoint.
+
+    GitHub defaults this endpoint to the latest attempt. The stored run key and
+    every job row both carry `run_attempt`, so accepting that default would make
+    an earlier run row borrow a later attempt's jobs.
+    """
     jobs: list[dict] = []
     for page in range(1, RESULT_CAP_PAGES + 1):
         payload = gh_json(
-            f"repos/{repo}/actions/runs/{run_id}/jobs?per_page={PER_PAGE}&page={page}")
+            f"repos/{repo}/actions/runs/{run_id}/jobs"
+            f"?per_page={PER_PAGE}&page={page}&filter=all")
         if not payload:
             break
         batch = payload.get("jobs") or []
@@ -569,13 +602,12 @@ def fetch_jobs(repo: str, run_id: str) -> list[dict]:
 
 
 def jobs_fetched_path(parent: str) -> str:
-    """Sidecar recording which cancelled run_ids have had jobs fetched.
+    """Sidecar recording which run attempts have had jobs fetched.
 
-    A cancelled run is terminal, so its jobs never change. Job ROWS alone cannot
-    mark a run "done": a run cancelled while still queued has ZERO jobs, so it
-    would never appear in the row store and would be re-fetched forever. This set
-    records every fetched run_id (with or without jobs) so incremental passes are
-    genuinely O(new cancelled runs), not O(all cancelled runs).
+    Job rows alone cannot mark an attempt "done": a run cancelled while still
+    queued has zero jobs. Values therefore use `run_id:run_attempt`. A legacy
+    bare run ID is migrated only when the run store has exactly one candidate
+    attempt; multi-attempt runs are refreshed with `filter=all`.
     """
     return os.path.join(store_dir(parent), "gha-jobs-fetched.json")
 
@@ -588,19 +620,42 @@ def save_jobs_fetched(parent: str, data: dict) -> None:
     save_cursor(jobs_fetched_path(parent), data)
 
 
+def _fetched_attempt(run_id: str, run_attempt: str) -> str:
+    return f"{run_id}:{run_attempt}"
+
+
 def ingest_jobs(repo: str, parent: str, *, workflows: list[str],
-                since: str | None, refetch: bool, max_runs: int) -> None:
+                since: str | None, refetch: bool, max_runs: int,
+                scope: str = "cancelled") -> None:
     path = jobs_store_path(parent)
     rows = load_jobs_store(path)
     before = len(rows)
-    candidates = cancelled_authoritative_runs(parent, repo, workflows, since)
-    # A cancelled run is terminal, so its jobs never change: skip run_ids already
-    # fetched (idempotent, cheap incremental) unless --refetch-jobs. `have` unions
-    # the fetched-set sidecar with run_ids present in the row store, so a run with
-    # zero jobs is still recorded as done and never re-fetched.
+    run_path = gha_store_path(parent)
+    run_rows = load_store(run_path)
+    candidate_attempts = job_candidate_attempts(
+        parent, repo, workflows, since, scope=scope
+    )
+    # The old sidecar recorded only run_id. It can be migrated without an API
+    # call when the run store has exactly one candidate attempt: under the old
+    # latest-attempt API default, that one is necessarily what was fetched. A
+    # multi-attempt run is not inferable and is fetched again with filter=all.
+    # Job rows themselves prove their exact attempts; the sidecar is needed for
+    # attempts that returned zero jobs.
     fetched = load_jobs_fetched(parent)
-    have = set(fetched.get(repo, [])) | {k[1] for k in rows if k[0] == repo}
-    todo = candidates if refetch else [r for r in candidates if r not in have]
+    known = gha_rows.fetched_attempt_keys(fetched, run_rows, rows)
+    have = {
+        _fetched_attempt(run_id, run_attempt)
+        for observed_repo, run_id, run_attempt in known
+        if observed_repo == repo
+    }
+    attempts_by_run: dict[str, set[str]] = {}
+    for run_id, run_attempt in candidate_attempts:
+        attempts_by_run.setdefault(run_id, set()).add(run_attempt)
+    todo_attempts = [
+        pair for pair in candidate_attempts
+        if refetch or _fetched_attempt(*pair) not in have
+    ]
+    todo = list(dict.fromkeys(run_id for run_id, _ in todo_attempts))
     truncated = 0
     if len(todo) > max_runs:
         truncated = len(todo) - max_runs
@@ -608,16 +663,30 @@ def ingest_jobs(repo: str, parent: str, *, workflows: list[str],
     api_calls = 0
     for run_id in todo:
         for job in fetch_jobs(repo, run_id):
-            rows[(repo, run_id, str(job.get("id", "")))] = job_to_row(repo, job)
-        have.add(run_id)
+            row = job_to_row(repo, job)
+            rows[gha_rows.job_key(row)] = row
+        for run_attempt in attempts_by_run.get(run_id, set()):
+            have.add(_fetched_attempt(run_id, run_attempt))
         api_calls += 1
     fetched[repo] = sorted(have)
     save_jobs_fetched(parent, fetched)
     write_jobs_store(path, rows)
+    known = gha_rows.fetched_attempt_keys(fetched, run_rows, rows)
+    augment_runs_with_jobs(run_rows, rows, known)
+    if run_rows:
+        write_store(run_path, run_rows)
     added = len(rows) - before
-    msg = (f"ci-hub ingest [{repo}]: jobs for {len(todo)} cancelled "
-           f"authoritative-main runs ({api_calls} api calls), +{added} job rows; "
+    label = "cancelled authoritative-main" if scope == "cancelled" \
+        else "terminal authoritative"
+    msg = (f"ci-hub ingest [{repo}]: jobs for {len(todo)} {label} "
+           f"runs ({api_calls} api calls), +{added} job rows; "
            f"store now {len(rows)} rows -> {path}")
+    repo_rows = [row for row in run_rows.values() if row["repo"] == repo]
+    derived = sum(row["jobs_src"] == JOBS_SRC_DERIVED for row in repo_rows)
+    absent = sum(row["jobs_src"] == JOBS_SRC_ABSENT for row in repo_rows)
+    unmeasured = len(repo_rows) - derived - absent
+    msg += (f"; runner_s measured={derived}, absent={absent}, "
+            f"never-measured={unmeasured}")
     if truncated:
         msg += (f"  [CAPPED: {truncated} more candidate runs not fetched this "
                 f"pass; raise --jobs-max-runs or re-run to continue]")
@@ -663,10 +732,13 @@ def main() -> int:
     ap.add_argument("--no-jobs", action="store_true",
                     help="skip per-job store (seventh-case discriminator source)")
     ap.add_argument("--refetch-jobs", action="store_true",
-                    help="re-fetch jobs for cancelled runs already in the store")
+                    help="re-fetch jobs for selected runs already in the store")
     ap.add_argument("--jobs-max-runs", type=int, default=JOBS_MAX_RUNS,
-                    help=f"per-pass cap on cancelled runs fetched for jobs "
+                    help=f"per-pass cap on runs fetched for jobs "
                          f"(default {JOBS_MAX_RUNS})")
+    ap.add_argument("--jobs-scope", choices=JOBS_SCOPES, default="cancelled",
+                    help="'cancelled' keeps the case-7 set; 'all' fetches every "
+                         "terminal authoritative run for runner_s measurement")
     ap.add_argument("--jobs-workflow", action="append",
                     help="authoritative workflow for job scoping (repeatable; "
                          "default per-repo AUTHORITATIVE_WORKFLOWS)")
@@ -685,7 +757,8 @@ def main() -> int:
             wf = args.jobs_workflow or AUTHORITATIVE_WORKFLOWS.get(repo, [])
             if wf:
                 ingest_jobs(repo, parent, workflows=wf, since=args.since,
-                            refetch=args.refetch_jobs, max_runs=args.jobs_max_runs)
+                            refetch=args.refetch_jobs, max_runs=args.jobs_max_runs,
+                            scope=args.jobs_scope)
     if not args.no_local:
         refresh_local(parent)
     return 0

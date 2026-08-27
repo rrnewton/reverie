@@ -33,8 +33,31 @@ in-progress row is promoted to its terminal conclusion on re-run with **zero
 duplicate rows**. Timing is split because the hosted pool is queue-starved and a
 single wall figure lies:
 
-- `queue_s = run_started_at − created_at`  (time spent queued)
-- `run_s   = updated_at   − run_started_at` (time spent running; blank until terminal)
+- `queue_s = run_started_at − created_at`  (time spent queued before the run starts)
+- `run_s   = updated_at   − run_started_at` (end-to-end run wall time; blank until terminal)
+
+`run_s` is wall time, not execution cost. Jobs can wait for runners after the
+run has started, so the run and job rows also carry one attempt-scoped
+measurement:
+
+- `runner_s` — sum of each executed job's own elapsed interval;
+- `jobs_n` — number of job intervals in that sum;
+- `jobs_src` — `jobs` when the values came from job rows, `absent` only when a
+  fetched attempt had no executable job interval, and blank when the attempt was
+  never measured.
+
+`runner_s` may exceed `run_s` because parallel jobs contribute overlapping
+runner time. It may also be much smaller when jobs wait inside an already-started
+workflow run. Both absence and never-measured leave `runner_s` and `jobs_n`
+blank, never zero; the source field keeps those two states distinct.
+
+Both CSVs use the shared definitions in `gha_rows.py`. The run key is
+`(repo, run_id, run_attempt)`; job evidence joins on that same three-part key.
+The jobs API is requested with `filter=all`, because its default returns only the
+latest attempt and cannot populate attempt-bearing history correctly. The
+default job scope remains cancelled authoritative-main runs; use
+`--jobs-scope all` to populate execution cost for every terminal authoritative
+run.
 
 Incrementality: the cursor `ignored/ci-hub/gha-cursor.json` records
 `{last_created_at, max_run_id}` per repo. Every mode fetches through one
@@ -74,7 +97,8 @@ ci-hub/history/query.py green-time --repo rrnewton/hermit
 # Default view: queue/run summary (the shape) PLUS the K most-recent individual
 # runs behind it. `--since` works here (previously only on subparsers).
 ci-hub history --repo rrnewton/hermit --limit 20
-# columns: TIME(UTC) REPO RUN_ID WORKFLOW BRANCH/PR CONCL QUEUE(s) RUN(s) URL
+# columns: TIME(UTC) REPO RUN_ID WORKFLOW BRANCH/PR CONCL QUEUE(s) RUN(s)
+#          RUNNER(s) JOBS JOBS_SRC URL
 # `!` marks a queue outlier: waited > max(300s floor, window p95) for a runner.
 
 # Surface the handful of runs stuck for hours (the tail behind a p95=0 median):
@@ -186,8 +210,13 @@ authoritative-main runs (the only runs where the case can fire), so a masked job
 failure is now recovered as red. Being non-green, the promotion moves the
 red<->no_result split (which drives action) without ever changing green_pct. A
 run cancelled while still queued has zero jobs and correctly stays no_result; a
-fetched-set sidecar (`gha-jobs-fetched.json`) makes the ingest O(new cancelled
-runs). Skip it with `ingest.py --no-jobs`; `--refetch-jobs` forces a re-fetch.
+fetched-set sidecar (`gha-jobs-fetched.json`) records exact
+`run_id:run_attempt` values and makes the default ingest O(new cancelled runs).
+Legacy bare run IDs are accepted only when the run store contains exactly one
+attempt; otherwise the run is fetched again rather than assigning evidence to
+the wrong attempt. Skip job ingestion with `ingest.py --no-jobs`, force a
+re-fetch with `--refetch-jobs`, or use `--jobs-scope all` to measure every
+terminal authoritative run.
 
 The regular `ci_queue_health` tick appends the complete snapshot to
 `ignored/ci-hub/green-time-log.jsonl`: percentage, numerator, authoritative-run

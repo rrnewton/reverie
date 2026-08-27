@@ -269,6 +269,27 @@ class CheckOutcomeContractTests(unittest.TestCase):
                 CheckOutcome.NO_RESULT,
             )
 
+    def test_run_attempt_breaks_a_same_run_id_tie(self) -> None:
+        first = {
+            "head_sha": "a" * 40,
+            "workflow_name": "ci",
+            "created_at": "2026-08-04T15:24:36Z",
+            "run_id": "11",
+            "run_attempt": "1",
+            "status": "completed",
+            "conclusion": "failure",
+        }
+        second = {
+            **first,
+            "run_attempt": "2",
+            "conclusion": "success",
+        }
+        for attempts in ([first, second], [second, first]):
+            selected = select_latest_workflow_attempts(attempts)
+            self.assertEqual(len(selected), 1)
+            self.assertEqual(selected[0]["run_attempt"], "2")
+            self.assertEqual(selected[0]["conclusion"], "success")
+
 
 if __name__ == "__main__":
     unittest.main()
