@@ -2,6 +2,7 @@ use core::arch::global_asm;
 use std::path::Path;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU64;
+use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
@@ -22,6 +23,7 @@ const RPC_CLOCK_GETTIME: u64 = 2;
 const RPC_GETTIMEOFDAY: u64 = 3;
 const RPC_FORK: u64 = 4;
 static FORCE_WAIT_RESTART: AtomicBool = AtomicBool::new(true);
+static READ_CALLS: AtomicUsize = AtomicUsize::new(0);
 
 global_asm!(
     r#"
@@ -41,11 +43,28 @@ reverie_liteinst_lifecycle_getpid_site:
     nop
     ret
     .size reverie_liteinst_lifecycle_getpid, .-reverie_liteinst_lifecycle_getpid
+
+    .p2align 4
+    .global reverie_liteinst_lifecycle_read
+    .hidden reverie_liteinst_lifecycle_read
+    .type reverie_liteinst_lifecycle_read,@function
+reverie_liteinst_lifecycle_read:
+    xor eax, eax
+    mov edi, -1
+    xor esi, esi
+    xor edx, edx
+    syscall
+    nop
+    nop
+    nop
+    ret
+    .size reverie_liteinst_lifecycle_read, .-reverie_liteinst_lifecycle_read
 "#
 );
 
 unsafe extern "C" {
     fn reverie_liteinst_lifecycle_getpid() -> i64;
+    fn reverie_liteinst_lifecycle_read() -> i64;
     static reverie_liteinst_lifecycle_getpid_site: u8;
 }
 
@@ -81,6 +100,7 @@ impl Tool for LifecycleTool {
             Sysno::fork,
             Sysno::clone,
             Sysno::wait4,
+            Sysno::read,
             Sysno::exit,
             Sysno::exit_group,
         ]
@@ -98,6 +118,12 @@ impl Tool for LifecycleTool {
                 return Err(Errno::ERESTARTSYS.into());
             }
             return Ok(4242);
+        }
+        if syscall.number() == Sysno::read {
+            if READ_CALLS.fetch_add(1, Ordering::Relaxed) < 2 {
+                return Err(Errno::ERESTARTSYS.into());
+            }
+            return Ok(4243);
         }
         let event = match syscall.number() {
             Sysno::getpid => RPC_GETPID,
@@ -179,6 +205,14 @@ fn restart_wait4() {
     println!("wait4-restart-ok");
 }
 
+fn restart_read() {
+    let result = unsafe { reverie_liteinst_lifecycle_read() };
+    let calls = READ_CALLS.load(Ordering::Relaxed);
+    println!("read-result={result} calls={calls}");
+    assert_eq!(result, 4243, "read callback was not restarted");
+    assert_eq!(calls, 3, "read callback did not restart repeatedly");
+}
+
 fn main() {
     let mut arguments = std::env::args_os();
     let _program = arguments.next();
@@ -194,6 +228,7 @@ fn main() {
         )),
         Some("fast-path") => fast_path(),
         Some("restart-wait4") => restart_wait4(),
+        Some("restart-read") => restart_read(),
         _ => panic!("unknown lifecycle fixture mode {mode:?}"),
     }
 }
