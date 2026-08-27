@@ -84,6 +84,9 @@ typedef struct {
   // client-only so identity handoff state can retain its existing CLONE_VM
   // lifetime without causing a later syscall to repeat the callback.
   uint64_t pending_process_clone_result;
+  uint64_t pending_process_clone_flags;
+  uint64_t pending_process_clone_ctid;
+  int64_t pending_process_clone_exit_signal;
   // AUTONOMOUS-BOT-IMPLEMENTED
   // TODO-HUMAN-REVIEW(PR-dbi-preempt): Review safe-point preemption thread state.
   // Client-only safe-point preemption state, appended AFTER the fields the Rust
@@ -194,7 +197,7 @@ static const cpuid_result_t extended_cpuid[] = {
 // exit, and app-level writes re-enter the syscall interception path.
 typedef void (*reverie_emit_fn_t)(const char *buf, size_t len);
 typedef void (*reverie_idle_fn_t)(void);
-#define REVERIE_DBT_RUNTIME_ABI_VERSION 3u
+#define REVERIE_DBT_RUNTIME_ABI_VERSION 4u
 // TODO-HUMAN-REVIEW(PR-162): Review the additive stdout-emit runtime callback ABI.
 typedef struct {
   reverie_emit_fn_t emit;
@@ -255,8 +258,12 @@ extern void reverie_dbt_runtime_thread_exit(prototype_counters_t *counters,
 extern uint64_t reverie_dbt_runtime_image_init(void);
 extern void reverie_dbt_runtime_exec_failed(prototype_counters_t *counters,
                                             int32_t pid);
-extern void reverie_dbt_runtime_process_clone_result(
-    prototype_counters_t *counters, int64_t sysnum, int64_t result);
+extern int32_t reverie_dbt_runtime_process_clone_result(
+    prototype_counters_t *counters, void *context, int32_t parent_tid,
+    int32_t parent_pid, uint64_t branches, int64_t sysnum, int64_t result,
+    int32_t virtual_child_tid, uint64_t child_tid_addr, uint64_t flags,
+    int32_t exit_signal, syscall_invoker_t invoke_syscall,
+    register_reader_t read_registers, register_writer_t write_registers);
 extern void reverie_dbt_runtime_background_init_v2(void *argument);
 extern int32_t reverie_dbt_runtime_ready(uint64_t image_generation);
 extern void reverie_dbt_runtime_process_exit(void);
@@ -1660,6 +1667,44 @@ static bool clone_identity_flags(int sysnum, const uint64_t *args,
   }
 }
 
+static bool process_clone_metadata(int sysnum, const uint64_t *args,
+                                   uint64_t *flags,
+                                   uint64_t *child_tid_addr,
+                                   int32_t *exit_signal) {
+  switch (sysnum) {
+  case SYS_fork:
+    *flags = 0;
+    *child_tid_addr = 0;
+    *exit_signal = SIGCHLD;
+    return true;
+  case SYS_vfork:
+    *flags = CLONE_VM | CLONE_VFORK;
+    *child_tid_addr = 0;
+    *exit_signal = SIGCHLD;
+    return true;
+  case SYS_clone:
+    *flags = args[0];
+    *child_tid_addr = args[3];
+    *exit_signal = (int32_t)(*flags & 0xff);
+    return true;
+#ifdef SYS_clone3
+  case SYS_clone3: {
+    uint64_t clone3_args[5];
+    if (args[0] == 0 || args[1] < sizeof(clone3_args) ||
+        !read_app((const void *)(uintptr_t)args[0], clone3_args,
+                  sizeof(clone3_args)))
+      return false;
+    *flags = clone3_args[0];
+    *child_tid_addr = clone3_args[2];
+    *exit_signal = (int32_t)clone3_args[4];
+    return true;
+  }
+#endif
+  default:
+    return false;
+  }
+}
+
 static bool is_clone_syscall(int sysnum) {
   return sysnum == SYS_fork || sysnum == SYS_vfork || sysnum == SYS_clone ||
          sysnum == SYS_clone3;
@@ -1717,7 +1762,20 @@ static bool prepare_clone_identity(prototype_counters_t *counters, int sysnum,
   counters->pending_virtual_child = allocate_virtual_identity();
   counters->pending_clone_flags = flags;
   if (origin == CLONE_SYSCALL_ORIGINAL && (flags & CLONE_THREAD) == 0)
+  {
+    uint64_t child_tid_addr = 0;
+    int32_t exit_signal = -1;
     counters->pending_process_clone_result = 1;
+    counters->pending_process_clone_flags = flags;
+    counters->pending_process_clone_ctid = 0;
+    counters->pending_process_clone_exit_signal = -1;
+    if (process_clone_metadata(sysnum, args, &flags, &child_tid_addr,
+                               &exit_signal)) {
+      counters->pending_process_clone_flags = flags;
+      counters->pending_process_clone_ctid = child_tid_addr;
+      counters->pending_process_clone_exit_signal = exit_signal;
+    }
+  }
   if ((flags & CLONE_THREAD) == 0) {
     atomic_store_explicit(&pending_clone_flags, flags, memory_order_relaxed);
     atomic_store_explicit(&pending_clone_creator_pid,
@@ -2857,9 +2915,25 @@ static void post_syscall(void *drcontext, int sysnum) {
     if (!test_leave_process_clone_result_pending)
       counters->pending_process_clone_result = 0;
     evidence_callback_enter();
-    reverie_dbt_runtime_process_clone_result(counters, (int64_t)sysnum,
-                                             host_syscall_result);
+    int32_t registration = reverie_dbt_runtime_process_clone_result(
+        counters, drcontext, (int32_t)dr_get_thread_id(drcontext),
+        (int32_t)dr_get_process_id(),
+        atomic_load_explicit(&branch_count, memory_order_relaxed),
+        (int64_t)sysnum, host_syscall_result, counters->pending_virtual_child,
+        counters->pending_process_clone_ctid,
+        counters->pending_process_clone_flags,
+        (int32_t)counters->pending_process_clone_exit_signal, invoke_syscall,
+        read_registers, write_registers);
     evidence_callback_leave();
+    counters->pending_process_clone_flags = 0;
+    counters->pending_process_clone_ctid = 0;
+    counters->pending_process_clone_exit_signal = 0;
+    if (registration < 0) {
+      dr_fprintf(diagnostic_file,
+                 "reverie-dbt: process child registration failed\n");
+      exit_runtime_tree(101);
+      return;
+    }
   }
 
   if (counters->pending_virtual_child != 0 && is_clone_syscall(sysnum)) {
