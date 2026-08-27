@@ -1374,9 +1374,23 @@ where
             Ok(value) => value,
             Err(errno) => -(errno.into_raw() as i64),
         };
-        self.tail
-            .expect("tail_inject requires an active syscall driver")
-            .set_result(result);
+        // ⚠️ NO DRIVER IS NOT A PANIC, AND MAKING IT ONE WAS A REGRESSION.
+        // `tail` is `None` for every guest built outside `dispatch_syscall` --
+        // local and remote thread-start and post-exec, and the remote RDTSC and
+        // signal callbacks all construct one. Those callbacks have no syscall
+        // driver to hand a result back to, and before this driver was shared they
+        // simply suspended and were dropped by their caller. An unconditional
+        // `expect` here turned that quiet, established path into a crash in
+        // lifecycle code. Found by `agent(hermit-123)`, which built a
+        // `handle_thread_start` regression that passes on base `559a37a4` and
+        // panics here.
+        //
+        // Recording the result when there IS a driver, and otherwise suspending
+        // exactly as before, keeps the syscall path's new behaviour without
+        // changing the lifecycle path's old one.
+        if let Some(tail) = self.tail {
+            tail.set_result(result);
+        }
         std::future::pending::<Never>().await
     }
 
@@ -1737,6 +1751,51 @@ mod tests {
         }
     }
 
+    /// ⚠️ A NON-WAIT SYSCALL RESTARTS TOO, AND THE ADAPTER MUST BE SEEN TO APPLY THAT.
+    /// `d7eb0a1d` made the shared driver restart EVERY private `ERESTARTSYS`, not
+    /// only the wait family. An earlier version of this branch deleted the
+    /// adapter's non-wait assertion on the grounds that asserting the new
+    /// behaviour here would merely duplicate `reverie-preload`'s unit test. That
+    /// reasoning was WRONG and `agent(hermit-123)` measured why: the preload test
+    /// establishes the shared driver's POLICY, while an adapter test establishes
+    /// that a given CALL SITE applies it. Returning `ERESTARTSYS` for `read` in
+    /// only the local adapter left all 76 library tests green — the call sites
+    /// were unobserved.
+    ///
+    /// It returns the errno once and succeeds on the second call so the restart
+    /// loop TERMINATES. A tool that returned it forever would not fail here, it
+    /// would hang, and a hung suite reads as a slow box.
+    #[derive(Default)]
+    struct RestartReadTool;
+
+    #[reverie::tool]
+    impl ReverieTool for RestartReadTool {
+        type GlobalState = ();
+        type ThreadState = usize;
+
+        async fn handle_syscall_event<G: Guest<Self>>(
+            &self,
+            guest: &mut G,
+            syscall: Syscall,
+        ) -> Result<i64, Error> {
+            assert_eq!(syscall.number(), Sysno::read);
+            let calls = guest.thread_state_mut();
+            *calls += 1;
+            match *calls {
+                1 => Err(Errno::ERESTARTSYS.into()),
+                2 => Ok(17),
+                calls => panic!("read callback invoked {calls} times"),
+            }
+        }
+    }
+
+    #[test]
+    fn local_adapter_restarts_a_non_wait_private_errno() {
+        let adapter = ReverieAdapter::new(RestartReadTool, (), ());
+        let syscall = Syscall::from_raw(Sysno::read, SyscallArgs::new(0, 0, 0, 0, 0, 0));
+        assert_eq!(adapter.handle_syscall(syscall), Ok(17));
+    }
+
     #[test]
     fn local_adapter_restarts_wait4_private_errno() {
         let adapter = ReverieAdapter::new(RestartWait4Tool, (), ());
@@ -1824,6 +1883,48 @@ mod tests {
         let adapter = ReverieAdapter::new(ProcessExitTool, (), ());
         adapter.handle_process_exit(ExitStatus::Exited(7));
         assert_eq!(PROCESS_EXITS.load(Ordering::Relaxed), 1);
+    }
+
+    /// ⚠️ A LIFECYCLE CALLBACK THAT TAIL-INJECTS MUST NOT PANIC, AND IT DID.
+    /// `SabreGuest::tail` is `None` for every guest built outside
+    /// `dispatch_syscall` — local and remote thread-start and post-exec, and the
+    /// remote RDTSC and signal callbacks. When `tail_inject` gained an
+    /// unconditional `expect("tail_inject requires an active syscall driver")`,
+    /// those callbacks crashed instead of suspending and being dropped, which is
+    /// what they did before the shared driver was wired in.
+    ///
+    /// Found by `agent(hermit-123)`, whose probe passed on base `559a37a4` and
+    /// panicked at the `expect` on `a5d02cda`. This is that probe, kept.
+    #[test]
+    fn a_lifecycle_callback_that_tail_injects_does_not_panic() {
+        #[derive(Default)]
+        struct TailInjectingThreadStartTool;
+
+        #[reverie::tool]
+        impl ReverieTool for TailInjectingThreadStartTool {
+            type GlobalState = ();
+            type ThreadState = ();
+
+            async fn handle_thread_start<G: Guest<Self>>(
+                &self,
+                guest: &mut G,
+            ) -> Result<(), Error> {
+                // No syscall driver is active here. Before the fix this reached an
+                // unconditional `expect` and aborted the process.
+                guest
+                    .tail_inject(Syscall::from_raw(
+                        Sysno::getpid,
+                        SyscallArgs::new(0, 0, 0, 0, 0, 0),
+                    ))
+                    .await
+            }
+        }
+
+        let adapter = ReverieAdapter::new(TailInjectingThreadStartTool, (), ());
+        // The assertion is that this RETURNS. A panic here fails the test by
+        // aborting it, which is the regression; suspending and being dropped is
+        // the established behaviour being preserved.
+        adapter.handle_thread_start(4242);
     }
 
     #[derive(Default)]
@@ -2075,6 +2176,41 @@ mod tests {
 
         let adapter = RemoteReverieAdapter::<RestartWait4Tool>::connect(&path).unwrap();
         let syscall = Syscall::from_raw(Sysno::wait4, SyscallArgs::new(0, 0, 0, 0, 0, 0));
+        assert_eq!(adapter.handle_syscall(syscall), Ok(17));
+        drop(adapter);
+
+        assert!(server_thread.join().unwrap().is_ok());
+    }
+
+    /// The remote call site, for the same reason as the local one above: a
+    /// mutation confined to `RemoteReverieAdapter` left all 77 tests green.
+    #[test]
+    fn remote_adapter_restarts_a_non_wait_private_errno() {
+        let path = std::env::temp_dir().join(format!(
+            "reverie-sabre-rpc-{}-{}.sock",
+            std::process::id(),
+            RPC_SOCKET_COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        let server_path = path.clone();
+        let (ready_tx, ready_rx) = mpsc::sync_channel(0);
+
+        let server_thread = thread::spawn(move || {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(async move {
+                    let server =
+                        reverie_rpc_transport::RpcServer::bind(&server_path, Arc::new(()), ())
+                            .unwrap();
+                    ready_tx.send(()).unwrap();
+                    server.serve_one().await
+                })
+        });
+        ready_rx.recv().unwrap();
+
+        let adapter = RemoteReverieAdapter::<RestartReadTool>::connect(&path).unwrap();
+        let syscall = Syscall::from_raw(Sysno::read, SyscallArgs::new(0, 0, 0, 0, 0, 0));
         assert_eq!(adapter.handle_syscall(syscall), Ok(17));
         drop(adapter);
 
