@@ -3435,9 +3435,9 @@ mod tests {
         }
     }
 
-    async fn run_precise_timer_delivery() -> u64 {
+    async fn run_precise_timer_delivery() -> Option<u64> {
         if !crate::perf::is_perf_supported() {
-            return 0;
+            return None;
         }
 
         let _ = reverie::take_skid_overshoot_count();
@@ -3460,7 +3460,7 @@ mod tests {
             .expect("wait precise-timer tracee");
         assert_eq!(status, ExitStatus::Exited(0));
 
-        reverie::take_skid_overshoot_count()
+        Some(reverie::take_skid_overshoot_count())
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -3468,8 +3468,11 @@ mod tests {
         const FORCED_OVERSHOOT_CHILD: &str = "REVERIE_PTRACE_FORCED_OVERSHOOT_CHILD";
 
         if std::env::var_os(FORCED_OVERSHOOT_CHILD).is_some() {
+            let overshoot_count = run_precise_timer_delivery()
+                .await
+                .expect("the parent starts this child only after confirming perf support");
             assert!(
-                run_precise_timer_delivery().await > 0,
+                overshoot_count > 0,
                 "zero skid margin did not exercise the overshoot path"
             );
             return;
@@ -3478,7 +3481,9 @@ mod tests {
         // Ordinary delivery remains a working control. Exercise the real
         // overshoot path in a fresh test process so its process-global PMU
         // configuration can safely read the zero-margin fault injection.
-        let _ = run_precise_timer_delivery().await;
+        if run_precise_timer_delivery().await.is_none() {
+            return;
+        }
         let output =
             std::process::Command::new(std::env::current_exe().expect("locate test binary"))
                 .args([
