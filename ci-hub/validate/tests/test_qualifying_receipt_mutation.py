@@ -358,6 +358,14 @@ def _record_canonical_fixture(root: Path, row: dict) -> None:
     validate_rows.record(row, root=root)
 
 
+def _spool_without_cell_results_check(root: Path, row: dict) -> None:
+    """Inject a future row while retaining the production writer refusal."""
+    event = validate_rows._event_for_row(copy.deepcopy(row), root)
+    validate_rows.spool(
+        validate_rows.live_spool_dir(root), event["team"], event["host"], [event]
+    )
+
+
 class QualifyingReceiptMutationTest(unittest.TestCase):
     """One test method per scenario; each asserts the full consumer panel."""
 
@@ -383,21 +391,37 @@ class QualifyingReceiptMutationTest(unittest.TestCase):
 
     # -- individual consumer drivers: each returns True iff the consumer ACCEPTS.
 
-    def _rust_accepts(self, row: dict, predicate: Path | None) -> bool:
-        target_sha = row["commit"]
+    def _run_rust_status(
+        self, root: Path, target_sha: str, predicate: Path | None
+    ) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [
+                "rust-script",
+                "--force",
+                str(CI_HUB_RS),
+                "validate-status",
+                "--sha",
+                target_sha,
+                "--json",
+            ],
+            cwd=REPO_ROOT,
+            env=_canonical_ledger_env(root, predicate),
+            capture_output=True,
+            text=True,
+            timeout=600,
+        )
+
+    def _rust_report(self, row: dict, predicate: Path | None) -> dict:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             _record_canonical_fixture(root, row)
-            proc = subprocess.run(
-                ["rust-script", "--force", str(CI_HUB_RS),
-                 "validate-status", "--sha", target_sha, "--json"],
-                cwd=REPO_ROOT, env=_canonical_ledger_env(root, predicate),
-                capture_output=True, text=True, timeout=600,
-            )
+            proc = self._run_rust_status(root, row["commit"], predicate)
         self.assertEqual(proc.returncode in (0,) or proc.stdout.strip().startswith("{"), True,
                          f"validate-status produced no report: {proc.stderr[-800:]}")
-        report = json.loads(proc.stdout)
-        return report["qualifying_count"] >= 1
+        return json.loads(proc.stdout)
+
+    def _rust_accepts(self, row: dict, predicate: Path | None) -> bool:
+        return self._rust_report(row, predicate)["qualifying_count"] >= 1
 
     def _query_accepts(self, row: dict, predicate: Path | None) -> bool:
         driver = (
@@ -1086,6 +1110,81 @@ class QualifyingReceiptMutationTest(unittest.TestCase):
             qualifying_receipt.cell_results_verdict(malformed_supported, predicate),
             qualifying_receipt.CellResultsVerdict.VERDICT_INVALID,
         )
+
+    def test_validate_status_cli_keeps_newer_shape_readable_without_authority(
+        self,
+    ) -> None:
+        predicate = qualifying_receipt.active()
+        newer = _schema6_cell_row(SHA, "compared-and-matched")
+        newer["schema_version"] = predicate["cell_results"]["supported_schema_max"] + 1
+        newer["record_id"] = "future-shape"
+        newer["run_id"] = "future-shape"
+        newer["toolchain"] = "rustc-test"
+        newer["cell_results"]["run_id"] = "future-shape"
+        newer["cell_results"]["cells"][0]["cell_verdict"]["comparison"][
+            "future_field"
+        ] = True
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _record_canonical_fixture(root, _green_row(SHA))
+            with self.assertRaisesRegex(ValueError, "cell_results schema-unavailable"):
+                _record_canonical_fixture(root, newer)
+            _spool_without_cell_results_check(root, newer)
+            proc = self._run_rust_status(root, SHA, predicate=None)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        report = json.loads(proc.stdout)
+        self.assertEqual(report["verdict"], "VALIDATED")
+        self.assertEqual(report["qualifying_count"], 1)
+        self.assertEqual(report["disqualified_count"], 1)
+        self.assertNotIn("LEDGER RECORDS UNREADABLE", proc.stderr)
+
+        failed = _schema6_cell_row(SHA, "compared-and-matched")
+        failed["schema_version"] = predicate["cell_results"]["supported_schema_max"]
+        failed.update(result="fail", raw_result="fail", exit_code=1, failures=1)
+        failed.update(dag_jobs=4, known_flaky_failure=False, solo_rerun_confirmation=False)
+        failed["gates"][1].update(
+            result="fail",
+            exit_code=1,
+            real_seconds=1,
+            failure_origin="outer_gate",
+            failed_substeps=[],
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _spool_without_cell_results_check(root, failed)
+            supported_proc = self._run_rust_status(root, SHA, predicate=None)
+        self.assertEqual(supported_proc.returncode, 3, supported_proc.stderr)
+        supported_report = json.loads(supported_proc.stdout)
+        self.assertEqual(supported_report["verdict"], "FAILED")
+        self.assertEqual(supported_report["failed_record_count"], 1)
+
+        newer_failed = copy.deepcopy(failed)
+        newer_failed["schema_version"] += 1
+        newer_failed["cell_results"]["cells"][0]["cell_verdict"]["comparison"][
+            "future_field"
+        ] = True
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _spool_without_cell_results_check(root, newer_failed)
+            newer_proc = self._run_rust_status(root, SHA, predicate=None)
+        self.assertEqual(newer_proc.returncode, 4, newer_proc.stderr)
+        newer_report = json.loads(newer_proc.stdout)
+        self.assertEqual(newer_report["verdict"], "NEEDS-RERUN")
+        self.assertEqual(newer_report["failed_record_count"], 0)
+        self.assertEqual(newer_report["withheld_nonpass_record_count"], 1)
+        self.assertNotIn("LEDGER RECORDS UNREADABLE", newer_proc.stderr)
+
+        malformed_supported = copy.deepcopy(newer)
+        malformed_supported["schema_version"] -= 1
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _spool_without_cell_results_check(root, malformed_supported)
+            malformed_proc = self._run_rust_status(root, SHA, predicate=None)
+        self.assertEqual(malformed_proc.returncode, 2)
+        self.assertEqual(malformed_proc.stdout, "")
+        self.assertIn("schema-7 row has malformed cell_results", malformed_proc.stderr)
+        self.assertNotIn("LEDGER RECORDS UNREADABLE", malformed_proc.stderr)
 
     def test_tier_vocabulary_is_exactly_the_four_settled_names(self) -> None:
         self.assertEqual(
