@@ -6,6 +6,7 @@
  * LICENSE file in the root directory of this source tree.
  */
 
+use std::cell::UnsafeCell;
 use std::env;
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
@@ -26,11 +27,47 @@ impl Tool for TestTool {
 
 const NUM_ELEMENTS: usize = 1_000_000;
 
+struct SharedCells(Arc<[UnsafeCell<u64>]>);
+
+// SAFETY: each index comes from the shared atomic counter, so only one worker
+// writes each cell. All reads happen after both workers have joined.
+unsafe impl Send for SharedCells {}
+unsafe impl Sync for SharedCells {}
+
+impl Clone for SharedCells {
+    fn clone(&self) -> Self {
+        Self(Arc::clone(&self.0))
+    }
+}
+
+impl SharedCells {
+    fn zeroed(len: usize) -> Self {
+        let cells: Vec<UnsafeCell<u64>> = (0..len).map(|_| UnsafeCell::new(0)).collect();
+        Self(cells.into())
+    }
+
+    fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    fn get(&self, index: usize) -> u64 {
+        // SAFETY: both workers have joined before this method is called.
+        unsafe { *self.0[index].get() }
+    }
+
+    fn set(&self, index: usize, value: u64) {
+        // SAFETY: the shared counter gives each index to exactly one worker.
+        // Indexing remains bounds checked because that branch is part of the
+        // scheduling behavior exercised by this program.
+        unsafe { *self.0[index].get() = value }
+    }
+}
+
 /// In guest mode two threads will try to fill up half of the data array with their thread id as
 /// value. The threads grab indices through an atomic int. For sufficiently large arrays we expect
 /// the thread ids to show up interleaved.
 fn guest_mode() {
-    let shared_data = Arc::new(Box::new([0; NUM_ELEMENTS]));
+    let shared_data = SharedCells::zeroed(NUM_ELEMENTS);
     let shared_idx = Arc::new(AtomicUsize::new(0));
 
     let handles: Vec<thread::JoinHandle<_>> = (0..2)
@@ -44,19 +81,10 @@ fn guest_mode() {
                 // adjacent elements and never inspects the value itself.
                 let tid = rank as u64 + 1;
 
-                // SAFETY: the workers only ever write to indices handed out by the shared
-                // atomic counter, so no two writes alias. This is the stable spelling of
-                // `Arc::get_mut_unchecked`: it rebuilds the same mutable slice, so
-                // indexing keeps its bounds check. Deliberately still a data race -- that
-                // is what this test exercises -- so do NOT "fix" it with atomics.
-                let data: &mut [u64] = unsafe {
-                    std::slice::from_raw_parts_mut(data.as_ptr() as *mut u64, NUM_ELEMENTS)
-                };
-
                 // Give each thread half of the fetch_add attempts.
                 for _ in 0..(NUM_ELEMENTS / 2) {
                     let idx = idx.fetch_add(1, Ordering::SeqCst);
-                    data[idx] = tid;
+                    data.set(idx, tid);
                 }
             })
         })
@@ -69,10 +97,10 @@ fn guest_mode() {
     // Calculate the number of switch points. E.g. the number of times we observed interleaved
     // writes between the threads.
     let mut switch_points = 0;
-    let mut prev = shared_data[0];
+    let mut prev = shared_data.get(0);
     for i in 1..shared_data.len() {
-        if prev != shared_data[i] {
-            prev = shared_data[i];
+        if prev != shared_data.get(i) {
+            prev = shared_data.get(i);
             switch_points += 1;
         }
     }
