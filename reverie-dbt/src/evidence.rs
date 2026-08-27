@@ -1612,7 +1612,7 @@ mod tests {
             .find("counters->pending_process_clone_result = 0;")
             .unwrap();
         let callback = post
-            .find("reverie_dbt_runtime_process_clone_result(counters, (int64_t)sysnum,")
+            .find("int32_t registration = reverie_dbt_runtime_process_clone_result(")
             .unwrap();
         let identity = post
             .find("complete_clone_identity(counters, syscall_result)")
