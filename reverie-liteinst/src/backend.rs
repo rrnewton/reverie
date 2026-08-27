@@ -910,6 +910,13 @@ mod tests {
 
     use super::*;
 
+    fn short_socket_tempdir() -> tempfile::TempDir {
+        tempfile::Builder::new()
+            .prefix("reverie-liteinst-test-")
+            .tempdir_in("/tmp")
+            .unwrap()
+    }
+
     struct CapturedLogWriter(Arc<Mutex<Vec<u8>>>);
 
     impl io::Write for CapturedLogWriter {
@@ -957,7 +964,7 @@ mod tests {
     async fn production_coordinator_drain_timeout_is_thirty_seconds() {
         assert_eq!(RPC_CONNECTION_DRAIN_TIMEOUT, Duration::from_secs(30));
 
-        let directory = tempfile::tempdir().unwrap();
+        let directory = short_socket_tempdir();
         let socket = directory.path().join("coordinator.sock");
         let server = RpcServer::bind(&socket, Arc::new(MultiClientGlobal::default()), 41).unwrap();
         let monitor = server.connection_monitor();
@@ -1021,7 +1028,7 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn coordinator_serves_multiple_local_rpc_connections() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = short_socket_tempdir();
         let socket = directory.path().join("coordinator.sock");
         let global = Arc::new(MultiClientGlobal::default());
         let server = RpcServer::bind(&socket, global.clone(), 41).unwrap();
@@ -1059,7 +1066,7 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn coordinator_two_monitor_drain_is_level_triggered() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = short_socket_tempdir();
         let main_socket = directory.path().join("coordinator.sock");
         let stats_socket = directory.path().join("stats.sock");
         let main_server =
@@ -1147,7 +1154,7 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn coordinator_surfaces_server_failure_during_connection_drain() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = short_socket_tempdir();
         let socket = directory.path().join("coordinator.sock");
         let server = RpcServer::bind(&socket, Arc::new(MultiClientGlobal::default()), 41).unwrap();
         let monitor = server.connection_monitor();
@@ -1211,7 +1218,7 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn coordinator_connection_drain_is_bounded() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = short_socket_tempdir();
         let socket = directory.path().join("coordinator.sock");
         let global = Arc::new(MultiClientGlobal::default());
         let server = RpcServer::bind(&socket, global, 41).unwrap();
@@ -1259,7 +1266,7 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn coordinator_drain_timeout_preserves_completion_error() {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = short_socket_tempdir();
         let socket = directory.path().join("coordinator.sock");
         let server = RpcServer::bind(&socket, Arc::new(MultiClientGlobal::default()), 41).unwrap();
         let connection_monitors = vec![server.connection_monitor()];
