@@ -3811,6 +3811,8 @@ static void thread_init(void *drcontext) {
           ? atomic_load_explicit(&pending_clone_flags, memory_order_relaxed)
           : 0;
   bool is_thread = (clone_flags & CLONE_THREAD) != 0;
+  bool copied_vfork = pending_child != 0 && !is_thread &&
+                      (clone_flags & CLONE_VFORK) != 0;
   DR_ASSERT(counters != NULL);
   memset(counters, 0, sizeof(*counters));
   DR_ASSERT(drmgr_set_tls_field(drcontext, thread_state_index, counters));
@@ -3839,6 +3841,19 @@ static void thread_init(void *drcontext) {
   counters->pending_virtual_child = 0;
   counters->pending_clone_flags = pending_child != 0 ? clone_flags : 0;
 
+  /* A vfork child shares the parent's address space until exec or exit.  It
+   * must keep using the existing copied-child policy instead of entering the
+   * external Rust runtime with the parent's shared runtime_state allocation.
+   */
+  if (copied_vfork) {
+    atomic_store_explicit(&copied_vfork_pid, (int32_t)dr_get_process_id(),
+                          memory_order_release);
+    remember_virtual_identity((int32_t)dr_get_process_id(), pending_child);
+    remember_virtual_identity(host_tid, pending_child);
+    release_clone_identity_handoff(pending_child);
+    return;
+  }
+
   int32_t pending_thread_start =
       !has_copied_runtime() && dr_get_thread_id(drcontext) != dr_get_process_id() &&
       reverie_dbt_runtime_ready(
@@ -3860,10 +3875,6 @@ static void thread_init(void *drcontext) {
     return;
   }
   if (pending_child != 0) {
-    if (!is_thread && (clone_flags & CLONE_VFORK) != 0)
-      atomic_store_explicit(&copied_vfork_pid,
-                            (int32_t)dr_get_process_id(),
-                            memory_order_release);
     if (!is_thread)
       remember_virtual_identity((int32_t)dr_get_process_id(), pending_child);
     remember_virtual_identity(host_tid, pending_child);
