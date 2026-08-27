@@ -1666,12 +1666,10 @@ impl KvmBackend {
 /// This restarts on `ERESTARTSYS` regardless of which syscall produced it,
 /// matching `reverie-ptrace`, whose restart frame is likewise not conditioned on
 /// the syscall number (`reverie-ptrace/src/task.rs`). It deliberately does *not*
-/// match `reverie-preload::drive_tool_syscall`, which restarts only `wait4` and
-/// passes an explicit `ERESTARTSYS` through to the guest for everything else.
-/// Detcore's `signal_interrupt_errno()` returns `ERESTARTSYS` for `read`,
-/// `futex`, `poll`, `ppoll` and `epoll_wait` as well as `wait4`, so the narrow
-/// policy leaks the private 512 for those; the two backends disagree and
-/// reconciling them is tracked separately.
+/// match the old `reverie-preload::drive_tool_syscall` policy, which restarted
+/// only `wait4` and passed an explicit `ERESTARTSYS` through to the guest for
+/// every other subscribed syscall. The shared preload driver now applies this
+/// same unconditional restart rule, so neither backend exposes the private 512.
 ///
 /// Isolating the policy in one pure function keeps it directly testable. Note
 /// that testing it does not test the restart itself — the re-invocation loops in

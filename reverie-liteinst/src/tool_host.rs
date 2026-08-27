@@ -330,10 +330,10 @@ where
         );
 
         // Drive the Tool handler to a terminal outcome. The shared driver owns
-        // the wait4/ERESTARTSYS restart protocol (Reverie #362) so it cannot
+        // the ERESTARTSYS restart protocol (Reverie #362) so it cannot
         // drift between the in-guest backends; this host maps each terminal
         // outcome onto its own per-thread lifecycle (exit/fork-child) state.
-        match drive_tool_syscall(tool, &mut guest, syscall, number, &tail) {
+        match drive_tool_syscall(tool, &mut guest, syscall, &tail) {
             DrivenSyscall::Result(value) => {
                 guest.event.result = value;
             }
