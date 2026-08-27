@@ -65,7 +65,15 @@ def safe_ci_cgroup() -> str:
     except OSError as error:
         raise Refusal(f"cannot inspect safe-ci cgroup: {error}") from error
     paths = [line.split(":", 2)[-1] for line in lines if line]
-    matches = [path for path in paths if "safe-ci-" in path and "/step-" in path]
+    matches = [
+        path
+        for path in paths
+        if "/step-" in path
+        and (
+            "safe-ci-" in path
+            or "/dagrun.slice/dagrun-" in path
+        )
+    ]
     if len(matches) != 1:
         raise Refusal(
             "process is not in exactly one safe-ci per-step cgroup; "

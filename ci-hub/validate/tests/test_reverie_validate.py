@@ -123,12 +123,17 @@ test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out;
         with mock.patch.object(Path, "read_text", return_value="0::/user.slice/agent.scope\n"):
             with self.assertRaises(reverie_node.Refusal):
                 reverie_node.safe_ci_cgroup()
-        boxed = "0::/user.slice/safe-ci-123.scope/step-validate.reverie-full\n"
-        with mock.patch.object(Path, "read_text", return_value=boxed):
-            self.assertEqual(
-                reverie_node.safe_ci_cgroup(),
-                "/user.slice/safe-ci-123.scope/step-validate.reverie-full",
-            )
+        boxed_paths = [
+            "/user.slice/safe-ci-123.scope/step-validate.reverie-full",
+            (
+                "/user.slice/user-212630.slice/user@212630.service/dagrun.slice/"
+                "dagrun-153463.scope/step-validate.reverie-full"
+            ),
+        ]
+        for path in boxed_paths:
+            with self.subTest(path=path):
+                with mock.patch.object(Path, "read_text", return_value=f"0::{path}\n"):
+                    self.assertEqual(reverie_node.safe_ci_cgroup(), path)
 
     def test_kvm_requirement_refuses_absence_and_accepts_exact_value(self) -> None:
         with mock.patch.dict(os.environ, {}, clear=True):
