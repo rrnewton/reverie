@@ -40,13 +40,22 @@ cache, so this is the canonical 3pai/BpfJailer entrypoint. The typed
 `./ci-hub/ci-hub load-probe` alias is also available outside that restriction.
 
 The hub checks GitHub current-main health and open-PR red counts once per hour.
-On each hourly tick it runs the same gentle primary-refresh routine as
-`make checkout-fresh`. Clean product checkouts fast-forward to `main`; a
-globally consistent Hermit/Reverie/LiteInst2 gitlink snapshot is committed and
-pushed to parent `main`. A dirty checkout, detached or stale branch,
-Hermit/Reverie pin mismatch, or parent-main race is preserved and hard-warned
-instead. Green ticks stay quiet; an `ACTION:` or `ERROR:` wakes the coordinator
-with a `HARD WARNING`.
+Before it loads the versioned tick runner or configuration, the durable wrapper
+asks `scripts/parent-main-write sync --preserve-dirty` to fast-forward the
+shared parent checkout. It advances only when local `main` is an ancestor of
+freshly fetched `origin/main` and every incoming path is disjoint from every
+tracked, staged, untracked, ignored, or dirty-submodule path. Unrelated work
+remains in place; overlap and divergence are preserved and reported with the
+blocking paths and the before and after SHAs. It never adopts, stashes, resets,
+reconciles, or creates a merge commit. This ordering makes a landed ci-hub
+change available to the rest of the same tick.
+
+The tick then runs the same gentle primary-refresh routine as `make
+checkout-fresh`. Clean product checkouts fast-forward to `main`; a globally
+consistent Hermit/Reverie/LiteInst2 gitlink snapshot is committed and pushed to
+parent `main`. A dirty checkout, detached or stale branch, Hermit/Reverie pin
+mismatch, or parent-main race is preserved and hard-warned instead. Green ticks
+stay quiet; an `ACTION:` or `ERROR:` wakes the coordinator with a `HARD WARNING`.
 
 ### Scope: what the hub may and may not watch
 

@@ -22,6 +22,10 @@ INVLOG="$HOME/.local/state/hermit-health-tick-invocations.log"
 
 ts() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 
+# Parse the complete invocation before it updates this version-controlled file.
+# The running tick therefore finishes with one coherent wrapper version even
+# when the fetched commit changes scripts/hermit-health-tick.sh itself.
+main() {
 start="$(ts)"
 mt_before="$(stat -c %Y "$FIRED_STATE" 2>/dev/null || echo 0)"
 
@@ -30,11 +34,43 @@ if ! cd "$ROOT" 2>/dev/null; then
     exit 126
 fi
 
+# Pull landed parent changes BEFORE loading the tick runner or its configuration.
+# This is the deployment half of a parent-main landing: the writer serializes the
+# ref update, freshly fetches origin/main, and permits only a fast-forward whose
+# incoming paths do not overlap dirty paths. Overlap or divergent main is preserved
+# byte-for-byte and reported with the blocking paths and both observed SHAs. The
+# tick still runs so this refusal cannot turn the rest of operational health into
+# silence.
+parent_before="$(git rev-parse HEAD 2>/dev/null || printf unreadable)"
+parent_sync_out="$(./scripts/parent-main-write sync --preserve-dirty 2>&1)"
+parent_sync_rc=$?
+parent_after="$(git rev-parse HEAD 2>/dev/null || printf unreadable)"
+
+# Keep the complete writer report, including every blocking path, in the durable
+# invocation history. One compact ACTION line carries the same evidence into the
+# coordinator path when the fast-forward was skipped or unavailable.
+while IFS= read -r parent_sync_line || [ -n "$parent_sync_line" ]; do
+    printf '%s parent_sync_detail=%q\n' "$start" "$parent_sync_line" >>"$INVLOG"
+done <<<"$parent_sync_out"
+printf '%s parent_sync_rc=%s before=%s after=%s\n' \
+    "$start" "$parent_sync_rc" "$parent_before" "$parent_after" >>"$INVLOG"
+
+parent_sync_finding=""
+if [ "$parent_sync_rc" -ne 0 ]; then
+    # The exact output remains above. Keep the one-line ACTION parseable even if
+    # a quoted Git path contains characters meaningful to the finding grammar.
+    parent_sync_summary="$(printf '%s' "$parent_sync_out" | tr '\n' ';' | sed 's/["\\]/ /g; s/  */ /g; s/;$//')"
+    parent_sync_finding="ACTION: hard-warn-coordinator component=parent-checkout-sync state=blocked before=$parent_before after=$parent_after summary=\"$parent_sync_summary\" title=\"parent checkout fast-forward skipped: before=$parent_before after=$parent_after; $parent_sync_summary\""
+fi
+
 # health-tick self-gates when the checkout reached through the parent
 # agent-utils symlink drifts from the nested pin in Hermit (exits non-zero
 # without advancing fired-state); that is a real health signal, recorded here.
 out="$(with-proxy ./ci-hub/bin/health-tick --flush --no-header 2>&1)"
 rc=$?
+if [ -n "$parent_sync_finding" ]; then
+    out="$(printf '%s\n%s' "$parent_sync_finding" "$out")"
+fi
 
 mt_after="$(stat -c %Y "$FIRED_STATE" 2>/dev/null || echo 0)"
 advanced=no
@@ -86,3 +122,6 @@ printf '%s rc=%s advanced=%s fired_state_mtime=%s summary=%q\n' \
     "$start" "$rc" "$advanced" "$mt_after" "$summary" >>"$INVLOG"
 
 exit "$rc"
+}
+
+main "$@"

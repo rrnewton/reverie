@@ -352,14 +352,25 @@ class PublishedResidueTests(ParentMainWriteTests):
         (self.repo / "work.txt").write_text(planted if planted is not None else "w2\n")
         return target
 
-    def advance_remote_only(self) -> str:
+    def advance_remote_only(
+        self,
+        path: str = "remote-only.md",
+        text: str = "landed elsewhere\n",
+        *,
+        force: bool = False,
+    ) -> str:
         """Advance origin/main while leaving this checkout clean and behind."""
         other = Path(self.temp.name) / "automatic-sync-publisher"
         git(Path(self.temp.name), "clone", "-q", str(self.remote), str(other))
         git(other, "config", "user.name", "Other")
         git(other, "config", "user.email", "other@example.invalid")
-        (other / "remote-only.md").write_text("landed elsewhere\n")
-        git(other, "add", "remote-only.md")
+        target = other / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(text)
+        if force:
+            git(other, "add", "-f", path)
+        else:
+            git(other, "add", path)
         git(other, "commit", "-m", tagged("remote advances"))
         git(other, "push", "-q", "origin", "HEAD:main")
         return git(other, "rev-parse", "HEAD").stdout.strip()
@@ -373,6 +384,281 @@ class PublishedResidueTests(ParentMainWriteTests):
         self.assertEqual(0, result.returncode, result.stdout + result.stderr)
         self.assertEqual(target, git(self.repo, "rev-parse", "HEAD").stdout.strip())
         self.assertIn("automatic-boundary dirty=0", result.stdout)
+
+    def test_preserve_dirty_sync_advances_and_reports_both_shas(self) -> None:
+        before = git(self.repo, "rev-parse", "HEAD").stdout.strip()
+        target = self.advance_remote_only()
+
+        result = self.writer("sync", "--preserve-dirty")
+
+        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+        self.assertEqual(target, git(self.repo, "rev-parse", "HEAD").stdout.strip())
+        self.assertIn("state=fast-forwarded", result.stdout)
+        self.assertIn(f"before={before}", result.stdout)
+        self.assertIn(f"after={target}", result.stdout)
+        self.assertIn("overlap=0", result.stdout)
+        self.assertNotIn("residue adopted=", result.stdout + result.stderr)
+
+    def test_preserve_dirty_sync_reports_an_already_current_no_op(self) -> None:
+        (self.repo / "HANDOFF.md").write_text("unread handoff\n")
+
+        result = self.writer("sync", "--preserve-dirty")
+
+        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+        self.assertIn("state=already-current", result.stdout)
+        self.assertIn(f"before={self.seed}", result.stdout)
+        self.assertIn(f"after={self.seed}", result.stdout)
+        self.assertEqual("unread handoff\n", (self.repo / "HANDOFF.md").read_text())
+
+    def test_preserve_dirty_sync_names_a_fetch_failure_and_does_not_move(self) -> None:
+        git(self.repo, "remote", "set-url", "origin", str(Path(self.temp.name) / "missing.git"))
+
+        result = self.writer("sync", "--preserve-dirty")
+
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn("could not fetch origin/main", result.stderr)
+        self.assertIn("nothing was modified", result.stderr)
+        self.assertEqual(self.seed, git(self.repo, "rev-parse", "HEAD").stdout.strip())
+
+    def test_preserve_dirty_sync_advances_around_unrelated_dirty_paths(self) -> None:
+        before = git(self.repo, "rev-parse", "HEAD").stdout.strip()
+        target = self.advance_remote_only()
+        (self.repo / "notes.md").write_text("unstaged local work\n")
+        (self.repo / "staged.md").write_text("staged local work\n")
+        git(self.repo, "add", "staged.md")
+        (self.repo / "HANDOFF.md").write_text("unread handoff\n")
+        (self.repo / "wpanic").mkdir()
+        (self.repo / "wpanic" / "probe.txt").write_text("untracked work\n")
+        status_before = git(
+            self.repo, "status", "--porcelain=v1", "--untracked-files=all"
+        ).stdout
+
+        result = self.writer("sync", "--preserve-dirty")
+
+        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+        self.assertEqual(target, git(self.repo, "rev-parse", "HEAD").stdout.strip())
+        self.assertNotEqual(before, target)
+        self.assertEqual(
+            status_before,
+            git(self.repo, "status", "--porcelain=v1", "--untracked-files=all").stdout,
+        )
+        self.assertEqual("unstaged local work\n", (self.repo / "notes.md").read_text())
+        self.assertEqual("staged local work\n", (self.repo / "staged.md").read_text())
+        self.assertEqual("unread handoff\n", (self.repo / "HANDOFF.md").read_text())
+        self.assertEqual("untracked work\n", (self.repo / "wpanic" / "probe.txt").read_text())
+        self.assertIn("state=fast-forwarded", result.stdout)
+        self.assertIn("overlap=0", result.stdout)
+        self.assertNotIn("residue adopted=", result.stdout + result.stderr)
+
+    def test_preserve_dirty_sync_refuses_exact_published_residue_without_adopting_it(self) -> None:
+        target = self.freeze()
+        before = git(self.repo, "rev-parse", "HEAD").stdout.strip()
+        index_before = git(self.repo, "write-tree").stdout.strip()
+
+        result = self.writer("sync", "--preserve-dirty")
+
+        self.assertNotEqual(0, result.returncode)
+        combined = result.stdout + result.stderr
+        self.assertIn("state=skipped reason=path-overlap", combined)
+        self.assertIn(f"before={before}", combined)
+        self.assertIn(f"after={before}", combined)
+        self.assertIn(f"target={target}", combined)
+        self.assertIn("shared.txt", combined)
+        self.assertIn("work.txt", combined)
+        self.assertIn("added.md", combined)
+        self.assertNotIn("adopted published residue", combined)
+        self.assertEqual(before, git(self.repo, "rev-parse", "HEAD").stdout.strip())
+        self.assertEqual(index_before, git(self.repo, "write-tree").stdout.strip())
+
+    def test_preserve_dirty_sync_refuses_an_untracked_ancestor_of_an_incoming_path(self) -> None:
+        target = self.advance_remote_only("wpanic", "landed file\n")
+        before = git(self.repo, "rev-parse", "HEAD").stdout.strip()
+        (self.repo / "wpanic").mkdir()
+        (self.repo / "wpanic" / "local.txt").write_text("local work\n")
+
+        result = self.writer("sync", "--preserve-dirty")
+
+        self.assertNotEqual(0, result.returncode)
+        combined = result.stdout + result.stderr
+        self.assertIn("state=skipped reason=path-overlap", combined)
+        self.assertIn("incoming=wpanic", combined)
+        self.assertIn("dirty=wpanic/local.txt", combined)
+        self.assertEqual(before, git(self.repo, "rev-parse", "HEAD").stdout.strip())
+        self.assertEqual("local work\n", (self.repo / "wpanic" / "local.txt").read_text())
+        self.assertNotEqual(target, before)
+
+    def test_preserve_dirty_sync_refuses_an_incoming_child_of_an_untracked_repository(self) -> None:
+        target = self.advance_remote_only("wpanic/incoming.txt", "landed file\n")
+        before = git(self.repo, "rev-parse", "HEAD").stdout.strip()
+        nested = self.repo / "wpanic"
+        git(self.repo, "init", "--initial-branch=main", str(nested))
+        git(nested, "config", "user.name", "Nested")
+        git(nested, "config", "user.email", "nested@example.invalid")
+        (nested / "local.txt").write_text("local repository work\n")
+        git(nested, "add", "local.txt")
+        git(nested, "commit", "-m", "local nested work")
+        self.assertEqual("wpanic/", git(
+            self.repo, "ls-files", "--others", "--exclude-standard"
+        ).stdout.strip())
+
+        result = self.writer("sync", "--preserve-dirty")
+
+        self.assertNotEqual(0, result.returncode)
+        combined = result.stdout + result.stderr
+        self.assertIn("state=skipped reason=path-overlap", combined)
+        self.assertIn("incoming=wpanic/incoming.txt", combined)
+        self.assertIn("dirty=wpanic/", combined)
+        self.assertEqual(before, git(self.repo, "rev-parse", "HEAD").stdout.strip())
+        self.assertEqual("local repository work\n", (nested / "local.txt").read_text())
+        self.assertNotEqual(target, before)
+
+    def test_preserve_dirty_sync_refuses_an_incoming_path_over_ignored_work(self) -> None:
+        (self.repo / ".gitignore").write_text("ignored/\n")
+        git(self.repo, "add", ".gitignore")
+        git(
+            self.repo,
+            "-c", "core.hooksPath=/dev/null",
+            "commit", "-m", tagged("ignore local output"),
+        )
+        git(
+            self.repo,
+            "-c", "core.hooksPath=/dev/null",
+            "push", "-q", "origin", "HEAD:main",
+        )
+        before = git(self.repo, "rev-parse", "HEAD").stdout.strip()
+        target = self.advance_remote_only("ignored/output.txt", "landed file\n", force=True)
+        ignored = self.repo / "ignored" / "output.txt"
+        ignored.parent.mkdir()
+        ignored.write_text("ignored local work\n")
+
+        result = self.writer("sync", "--preserve-dirty")
+
+        self.assertNotEqual(0, result.returncode)
+        combined = result.stdout + result.stderr
+        self.assertIn("state=skipped reason=path-overlap", combined)
+        self.assertIn("incoming=ignored/output.txt", combined)
+        self.assertIn("dirty=ignored/", combined)
+        self.assertEqual(before, git(self.repo, "rev-parse", "HEAD").stdout.strip())
+        self.assertEqual("ignored local work\n", ignored.read_text())
+        self.assertNotEqual(target, before)
+
+    def test_preserve_dirty_sync_refuses_ignored_work_created_after_its_check(self) -> None:
+        (self.repo / ".gitignore").write_text("ignored/\n")
+        git(self.repo, "add", ".gitignore")
+        git(
+            self.repo,
+            "-c", "core.hooksPath=/dev/null",
+            "commit", "-m", tagged("ignore local output"),
+        )
+        git(
+            self.repo,
+            "-c", "core.hooksPath=/dev/null",
+            "push", "-q", "origin", "HEAD:main",
+        )
+        before = git(self.repo, "rev-parse", "HEAD").stdout.strip()
+        target = self.advance_remote_only("ignored/race.txt", "landed file\n", force=True)
+
+        shim_dir = Path(self.temp.name) / "race-bin"
+        shim_dir.mkdir()
+        shim = shim_dir / "git"
+        shim.write_text(
+            "#!/usr/bin/env bash\n"
+            "set -eu\n"
+            "prefix=()\n"
+            "if [ \"${1:-}\" = -C ]; then prefix=(-C \"$2\"); shift 2; fi\n"
+            "if [ \"${1:-}\" = merge ]; then\n"
+            "  mkdir -p \"$HERMIT_RACE_ROOT/ignored\"\n"
+            "  printf 'ignored local work\\n' >\"$HERMIT_RACE_ROOT/ignored/race.txt\"\n"
+            "fi\n"
+            "exec \"$HERMIT_REAL_GIT\" \"${prefix[@]}\" \"$@\"\n"
+        )
+        shim.chmod(0o755)
+        self.env.update(
+            PATH=f"{shim_dir}:{os.environ.get('PATH', '')}",
+            HERMIT_RACE_ROOT=str(self.repo),
+            HERMIT_REAL_GIT=REAL_GIT,
+        )
+
+        result = self.writer("sync", "--preserve-dirty")
+
+        self.assertNotEqual(0, result.returncode)
+        combined = result.stdout + result.stderr
+        self.assertIn("fast-forward failed", combined)
+        self.assertIn("ignored/race.txt", combined)
+        self.assertEqual(before, git(self.repo, "rev-parse", "HEAD").stdout.strip())
+        self.assertEqual(
+            "ignored local work\n",
+            (self.repo / "ignored" / "race.txt").read_text(),
+        )
+        self.assertNotEqual(target, before)
+
+    def test_preserve_dirty_sync_refuses_an_incoming_gitlink_over_a_dirty_checkout(self) -> None:
+        submodule = Path(self.temp.name) / "hermit-origin"
+        git(Path(self.temp.name), "init", "--initial-branch=main", str(submodule))
+        git(submodule, "config", "user.name", "Nested")
+        git(submodule, "config", "user.email", "nested@example.invalid")
+        (submodule / "version.txt").write_text("old\n")
+        git(submodule, "add", "version.txt")
+        git(submodule, "commit", "-m", "old nested head")
+        old_gitlink = git(submodule, "rev-parse", "HEAD").stdout.strip()
+        (submodule / "version.txt").write_text("new\n")
+        git(submodule, "commit", "-am", "new nested head")
+        new_gitlink = git(submodule, "rev-parse", "HEAD").stdout.strip()
+
+        git(self.repo, "clone", "-q", str(submodule), "hermit")
+        git(self.repo / "hermit", "checkout", "-q", old_gitlink)
+        git(self.repo, "update-index", "--add", "--cacheinfo", f"160000,{old_gitlink},hermit")
+        git(
+            self.repo,
+            "-c", "core.hooksPath=/dev/null",
+            "commit", "-m", tagged("record nested checkout"),
+        )
+        git(
+            self.repo,
+            "-c", "core.hooksPath=/dev/null",
+            "push", "-q", "origin", "HEAD:main",
+        )
+        before = git(self.repo, "rev-parse", "HEAD").stdout.strip()
+
+        publisher = Path(self.temp.name) / "gitlink-publisher"
+        git(Path(self.temp.name), "clone", "-q", str(self.remote), str(publisher))
+        git(publisher, "config", "user.name", "Other")
+        git(publisher, "config", "user.email", "other@example.invalid")
+        git(publisher, "update-index", "--cacheinfo", f"160000,{new_gitlink},hermit")
+        git(publisher, "commit", "-m", tagged("advance nested checkout"))
+        git(publisher, "push", "-q", "origin", "HEAD:main")
+        target = git(publisher, "rev-parse", "HEAD").stdout.strip()
+
+        git(self.repo / "hermit", "checkout", "-q", new_gitlink)
+        self.assertIn("hermit", git(self.repo, "status", "--short").stdout)
+
+        result = self.writer("sync", "--preserve-dirty")
+
+        self.assertNotEqual(0, result.returncode)
+        combined = result.stdout + result.stderr
+        self.assertIn("state=skipped reason=path-overlap", combined)
+        self.assertIn("incoming=hermit dirty=hermit", combined)
+        self.assertEqual(before, git(self.repo, "rev-parse", "HEAD").stdout.strip())
+        self.assertEqual(new_gitlink, git(self.repo / "hermit", "rev-parse", "HEAD").stdout.strip())
+        self.assertNotEqual(target, before)
+
+    def test_preserve_dirty_sync_refuses_divergence_without_reconciling(self) -> None:
+        (self.repo / "local.md").write_text("local\n")
+        git(self.repo, "add", "local.md")
+        git(self.repo, "-c", "core.hooksPath=/dev/null", "commit", "-m", tagged("local move"))
+        before = git(self.repo, "rev-parse", "HEAD").stdout.strip()
+        target = self.advance_remote_only()
+
+        result = self.writer("sync", "--preserve-dirty")
+
+        self.assertNotEqual(0, result.returncode)
+        combined = result.stdout + result.stderr
+        self.assertIn("requires a fast-forward", combined)
+        self.assertIn(f"before={before}", combined)
+        self.assertIn(f"after={before}", combined)
+        self.assertIn(f"target={target}", combined)
+        self.assertEqual(before, git(self.repo, "rev-parse", "HEAD").stdout.strip())
+
 
     def test_automatic_sync_accepts_only_exact_target_residue(self) -> None:
         target = self.freeze()
@@ -1864,6 +2150,171 @@ class PrePushMainHealthBudgetTests(unittest.TestCase):
         self.assertIn("checker-started", result.stderr)
         self.assertIn("exceeded 10s pre-push budget", result.stderr)
         self.assertIn("green is not established", result.stderr)
+
+
+class HealthTickParentSyncTests(unittest.TestCase):
+    """The durable tick updates the parent before it loads versioned tick code."""
+
+    def setUp(self) -> None:
+        self.temp = tempfile.TemporaryDirectory()
+        base = Path(self.temp.name)
+        self.home = base / "home"
+        self.repo = self.home / "work" / "dev-hermit"
+        self.remote = base / "origin.git"
+        self.bin = base / "bin"
+        self.log = self.home / ".local" / "state" / "hermit-health-tick-invocations.log"
+        self.lock = base / "parent-main.lock"
+
+        self.repo.mkdir(parents=True)
+        self.bin.mkdir()
+        self.log.parent.mkdir(parents=True)
+        git(base, "init", "--bare", "--initial-branch=main", str(self.remote))
+        git(self.repo, "init", "--initial-branch=main")
+        git(self.repo, "config", "user.name", "Tick Test")
+        git(self.repo, "config", "user.email", "tick@example.invalid")
+        (self.repo / "scripts").mkdir()
+        (self.repo / "ci-hub" / "bin").mkdir(parents=True)
+        shutil.copy2(SOURCE / "scripts/parent-main-write", self.repo / "scripts/parent-main-write")
+        shutil.copy2(SOURCE / "scripts/hermit-health-tick.sh", self.repo / "scripts/hermit-health-tick.sh")
+        self.write_health_tick("old")
+        git(self.repo, "add", "scripts", "ci-hub")
+        git(self.repo, "commit", "-m", "seed tick")
+        git(self.repo, "remote", "add", "origin", str(self.remote))
+        git(self.repo, "push", "-u", "origin", "main")
+        self.before = git(self.repo, "rev-parse", "HEAD").stdout.strip()
+
+        proxy = self.bin / "with-proxy"
+        proxy.write_text('#!/bin/sh\nexec "$@"\n')
+        proxy.chmod(0o755)
+        self.env = dict(
+            os.environ,
+            HOME=str(self.home),
+            PATH=f"{self.bin}:{os.environ.get('PATH', '')}",
+            HERMIT_PARENT_MAIN_LOCK_PATH=str(self.lock),
+            HERMIT_PARENT_MAIN_NO_PROXY="1",
+        )
+
+    def tearDown(self) -> None:
+        self.temp.cleanup()
+
+    def write_health_tick(self, version: str, repo: Path | None = None) -> None:
+        target = repo or self.repo
+        script = target / "ci-hub" / "bin" / "health-tick"
+        script.write_text(
+            "#!/usr/bin/env bash\n"
+            "mkdir -p .tick-hub\n"
+            "printf '%s\\n' tick > .tick-hub/fired-state\n"
+            f"printf 'NOTE: health-version={version} observed_head=%s\\n' \"$(git rev-parse HEAD)\"\n"
+        )
+        script.chmod(0o755)
+
+    def advance_remote(self, *, update_wrapper: bool = False) -> str:
+        other = Path(self.temp.name) / "publisher"
+        git(Path(self.temp.name), "clone", "-q", str(self.remote), str(other))
+        git(other, "config", "user.name", "Other")
+        git(other, "config", "user.email", "other@example.invalid")
+        self.write_health_tick("new", other)
+        paths = ["ci-hub/bin/health-tick"]
+        if update_wrapper:
+            wrapper = other / "scripts" / "hermit-health-tick.sh"
+            wrapper.write_text(wrapper.read_text() + "# fetched wrapper version\n")
+            paths.append("scripts/hermit-health-tick.sh")
+        git(other, "add", *paths)
+        git(other, "commit", "-m", "land new health tick")
+        git(other, "push", "-q", "origin", "HEAD:main")
+        return git(other, "rev-parse", "HEAD").stdout.strip()
+
+    def run_tick(self) -> subprocess.CompletedProcess[str]:
+        return run(str(self.repo / "scripts/hermit-health-tick.sh"), cwd=self.repo, env=self.env)
+
+    def test_clean_parent_fast_forwards_before_loading_health_tick(self) -> None:
+        target = self.advance_remote(update_wrapper=True)
+
+        result = self.run_tick()
+
+        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+        self.assertEqual(target, git(self.repo, "rev-parse", "HEAD").stdout.strip())
+        log = self.log.read_text()
+        self.assertIn(f"parent_sync_rc=0 before={self.before} after={target}", log)
+        self.assertIn("state=fast-forwarded", log)
+        self.assertIn(f"health-version=new observed_head={target}", log)
+        self.assertNotIn("health-version=old", log)
+        self.assertTrue(
+            (self.repo / "scripts" / "hermit-health-tick.sh")
+            .read_text()
+            .endswith("# fetched wrapper version\n")
+        )
+
+    def test_unrelated_dirty_paths_are_preserved_while_parent_advances(self) -> None:
+        target = self.advance_remote()
+        (self.repo / "HANDOFF.md").write_text("unread handoff\n")
+        (self.repo / "wpanic").mkdir()
+        (self.repo / "wpanic" / "probe.txt").write_text("untracked work\n")
+        status_before = git(
+            self.repo,
+            "status", "--porcelain=v1", "--untracked-files=all", "--",
+            "HANDOFF.md", "wpanic",
+        ).stdout
+
+        result = self.run_tick()
+
+        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+        self.assertEqual(target, git(self.repo, "rev-parse", "HEAD").stdout.strip())
+        self.assertNotEqual(target, self.before)
+        self.assertEqual(
+            status_before,
+            git(
+                self.repo,
+                "status", "--porcelain=v1", "--untracked-files=all", "--",
+                "HANDOFF.md", "wpanic",
+            ).stdout,
+        )
+        self.assertEqual("unread handoff\n", (self.repo / "HANDOFF.md").read_text())
+        self.assertEqual("untracked work\n", (self.repo / "wpanic" / "probe.txt").read_text())
+        log = self.log.read_text()
+        self.assertIn(f"parent_sync_rc=0 before={self.before} after={target}", log)
+        self.assertIn("state=fast-forwarded", log)
+        self.assertIn("overlap=0", log)
+        self.assertIn(f"health-version=new observed_head={target}", log)
+        self.assertNotIn("component=parent-checkout-sync state=blocked", log)
+
+    def test_overlapping_dirty_path_is_named_and_not_advanced(self) -> None:
+        target = self.advance_remote()
+        tick = self.repo / "ci-hub" / "bin" / "health-tick"
+        tick.write_text(tick.read_text() + "# local work\n")
+
+        result = self.run_tick()
+
+        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+        self.assertEqual(self.before, git(self.repo, "rev-parse", "HEAD").stdout.strip())
+        self.assertNotEqual(target, self.before)
+        self.assertTrue(tick.read_text().endswith("# local work\n"))
+        log = self.log.read_text()
+        self.assertIn("component=parent-checkout-sync state=blocked", log)
+        self.assertIn(f"before={self.before} after={self.before}", log)
+        self.assertIn(
+            "incoming=ci-hub/bin/health-tick dirty=ci-hub/bin/health-tick",
+            log,
+        )
+        self.assertIn(f"health-version=old observed_head={self.before}", log)
+        self.assertNotIn("health-version=new", log)
+
+    def test_diverged_parent_is_reported_without_reconciliation(self) -> None:
+        (self.repo / "local.md").write_text("local\n")
+        git(self.repo, "add", "local.md")
+        git(self.repo, "commit", "-m", "local move")
+        local = git(self.repo, "rev-parse", "HEAD").stdout.strip()
+        target = self.advance_remote()
+
+        result = self.run_tick()
+
+        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+        self.assertEqual(local, git(self.repo, "rev-parse", "HEAD").stdout.strip())
+        log = self.log.read_text()
+        self.assertIn("component=parent-checkout-sync state=blocked", log)
+        self.assertIn("requires a fast-forward", log)
+        self.assertIn(f"before={local} after={local}", log)
+        self.assertIn(f"target={target}", log)
 
 
 if __name__ == "__main__":

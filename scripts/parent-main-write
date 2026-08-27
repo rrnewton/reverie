@@ -120,9 +120,98 @@ network_git() {
 
 fetch_expected() {
   local root=$1
-  network_git "$root" fetch origin main >/dev/null
-  HERMIT_PARENT_MAIN_EXPECT=$(git -C "$root" rev-parse --verify 'refs/remotes/origin/main^{commit}')
+  network_git "$root" fetch origin main >/dev/null ||
+    die "could not fetch origin/main; nothing was modified"
+  HERMIT_PARENT_MAIN_EXPECT=$(git -C "$root" rev-parse --verify 'refs/remotes/origin/main^{commit}') ||
+    die "fetched origin/main but could not resolve its commit; nothing was modified"
   export HERMIT_PARENT_MAIN_EXPECT
+}
+
+# The operational tick may advance the shared parent around dirty paths only
+# when the exact fetched change is disjoint from them. It has no authority to
+# decide that local bytes are expendable, even when they happen to match
+# something already published. This is deliberately narrower than ordinary
+# `sync` and `sync --automatic`: it never calls the published-residue classifier
+# and therefore cannot adopt, stage, stash, discard, reset, or reconcile work.
+sync_preserve_dirty() {
+  local root=$1 before target after path_dir incoming dirty incoming_cmp dirty_cmp overlap
+  local -a incoming_paths=() dirty_paths=()
+  before=$(git -C "$root" rev-parse HEAD) ||
+    die "sync --preserve-dirty could not read HEAD; nothing was modified"
+  target=$HERMIT_PARENT_MAIN_EXPECT
+
+  if [ "$before" = "$target" ]; then
+    printf 'PARENT_MAIN_WRITE sync state=already-current before=%s after=%s target=%s preserve-dirty=1\n' \
+      "$before" "$before" "$target"
+    return 0
+  fi
+
+  if ! git -C "$root" merge-base --is-ancestor "$before" "$target"; then
+    die "sync --preserve-dirty requires a fast-forward (before=$before after=$before target=$target); local main diverges from origin/main and nothing was modified"
+  fi
+
+  # Use NUL-delimited path lists throughout: a newline is legal in a Git path,
+  # and a safety decision may not depend on Git's display quoting. Disable rename
+  # detection so both the removed and added names participate in the overlap
+  # check. Override ignoreSubmodules so a moved or dirty gitlink is never hidden
+  # by local configuration.
+  path_dir=$(mktemp -d "${TMPDIR:-/tmp}/parent-main-sync-paths.XXXXXX") ||
+    die "sync --preserve-dirty could not allocate path-list storage; nothing was modified"
+  if ! git -C "$root" diff --name-only --no-renames --ignore-submodules=none -z >"$path_dir/worktree" ||
+     ! git -C "$root" diff --cached --name-only --no-renames --ignore-submodules=none -z >"$path_dir/index" ||
+     ! git -C "$root" ls-files --others --exclude-standard -z >"$path_dir/untracked" ||
+     ! git -C "$root" ls-files --others --ignored --exclude-standard --directory -z >"$path_dir/ignored" ||
+     ! git -C "$root" diff --name-only --no-renames --ignore-submodules=none -z "$before" "$target" >"$path_dir/incoming" ||
+     ! LC_ALL=C sort -zu "$path_dir/worktree" "$path_dir/index" "$path_dir/untracked" "$path_dir/ignored" >"$path_dir/dirty"; then
+    rm -f "$path_dir/worktree" "$path_dir/index" "$path_dir/untracked" "$path_dir/ignored" "$path_dir/incoming" "$path_dir/dirty"
+    rmdir "$path_dir" 2>/dev/null || true
+    die "sync --preserve-dirty could not compare incoming and dirty paths (before=$before after=$before target=$target); nothing was modified"
+  fi
+  mapfile -d '' -t incoming_paths <"$path_dir/incoming"
+  mapfile -d '' -t dirty_paths <"$path_dir/dirty"
+  rm -f "$path_dir/worktree" "$path_dir/index" "$path_dir/untracked" "$path_dir/ignored" "$path_dir/incoming" "$path_dir/dirty"
+  rmdir "$path_dir" 2>/dev/null || true
+
+  overlap=0
+  for incoming in "${incoming_paths[@]}"; do
+    incoming_cmp=${incoming%/}
+    for dirty in "${dirty_paths[@]}"; do
+      # `git ls-files --others` reports an embedded untracked repository as a
+      # directory name ending in slash. Normalize only for comparison so an
+      # incoming child of that directory is still recognized as overlapping;
+      # retain the exact Git-reported spelling in the refusal below.
+      dirty_cmp=${dirty%/}
+      if [ "$incoming_cmp" = "$dirty_cmp" ] ||
+         [[ "$incoming_cmp" == "$dirty_cmp/"* ]] ||
+         [[ "$dirty_cmp" == "$incoming_cmp/"* ]]; then
+        if [ "$overlap" = 0 ]; then
+          printf 'PARENT_MAIN_WRITE sync state=skipped reason=path-overlap before=%s after=%s target=%s blocking-paths:\n' \
+            "$before" "$before" "$target" >&2
+        fi
+        printf '  incoming=%q dirty=%q\n' "$incoming" "$dirty" >&2
+        overlap=$((overlap + 1))
+      fi
+    done
+  done
+  if [ "$overlap" -ne 0 ]; then
+    die "sync --preserve-dirty found $overlap incoming/dirty path overlap(s) (before=$before after=$before target=$target); nothing was modified"
+  fi
+
+  # Merge the fetched commit object, not the mutable tracking-ref name. Another
+  # process may fetch after our check; that must not silently change the target
+  # between the ancestry proof and the ref update. Git performs its own final
+  # overwrite check, including ignored paths that become dirty after our
+  # comparison (plain `git merge` overwrites ignored files by default).
+  if ! git -C "$root" merge --ff-only --no-overwrite-ignore "$target"; then
+    after=$(git -C "$root" rev-parse HEAD 2>/dev/null || printf unreadable)
+    die "sync --preserve-dirty fast-forward failed (before=$before after=$after target=$target); no adoption, reset, or reconcile was attempted"
+  fi
+  after=$(git -C "$root" rev-parse HEAD) ||
+    die "sync --preserve-dirty advanced the checkout but could not read its new HEAD (before=$before target=$target)"
+  [ "$after" = "$target" ] ||
+    die "sync --preserve-dirty ended at $after instead of fetched origin/main $target (before=$before)"
+  printf 'PARENT_MAIN_WRITE sync state=fast-forwarded before=%s after=%s target=%s preserve-dirty=1 incoming=%s dirty=%s overlap=0\n' \
+    "$before" "$after" "$target" "${#incoming_paths[@]}" "${#dirty_paths[@]}"
 }
 
 attribution_checker() {
@@ -1077,7 +1166,7 @@ usage() {
 usage:
   scripts/parent-main-write commit -m MESSAGE [--audit-reason REASON] -- PATH...
   scripts/parent-main-write publish [--audit-reason REASON] [REV]
-  scripts/parent-main-write sync [--automatic]
+  scripts/parent-main-write sync [--automatic | --preserve-dirty]
   scripts/parent-main-write reconcile
 
 Hooks use: verify-commit, verify-ref OLD NEW, verify-push REMOTE OLD NEW.
@@ -1095,10 +1184,11 @@ case "$command" in
   verify-push) verify_push "$@" ;;
   sync)
     automatic=0
-    if [ "${1:-}" = --automatic ]; then
-      automatic=1
-      shift
-    fi
+    preserve_dirty=0
+    case "${1:-}" in
+      --automatic) automatic=1; shift ;;
+      --preserve-dirty) preserve_dirty=1; shift ;;
+    esac
     [ "$#" -eq 0 ] || usage
     root=$(repo_root)
     HERMIT_PARENT_MAIN_MODE=sync
@@ -1108,6 +1198,10 @@ case "$command" in
     [ "$(git -C "$root" branch --show-current)" = main ] || die "sync requires local main"
     guard_reconcile_journal "$root" "sync"
     head=$(git -C "$root" rev-parse HEAD)
+    if [ "$preserve_dirty" = 1 ]; then
+      sync_preserve_dirty "$root"
+      exit $?
+    fi
     if [ "$head" = "$HERMIT_PARENT_MAIN_EXPECT" ]; then
       printf 'PARENT_MAIN_WRITE sync already-current=%s\n' "$head"
       exit 0
