@@ -109,7 +109,7 @@ class StartUnitEnvTest(unittest.TestCase):
 
         env = setenvs(command)
         self.assertEqual(env["HERMIT_VALIDATE_RUN_TIMEOUT_SECONDS"], "4200")
-        self.assertEqual(command[command.index("--child-deadline") + 1], "7200")
+        self.assertEqual(command[command.index("--child-deadline") + 1], "4800")
 
     def test_e2e_results_and_runner_logs_survive_checkout_removal(self) -> None:
         ambient = {

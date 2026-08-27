@@ -443,6 +443,24 @@ class StartUnitTest(unittest.TestCase):
         cleanup = max(start_unit.HERMIT_MIN_CLEANUP_GRACE_SECONDS, 4200 // 10)
         self.assertLess(4200 + cleanup, 7200)
 
+    def test_hermit_child_deadline_cannot_be_widened_past_backstop(self) -> None:
+        rc, _output, error = self.invoke(["--child-deadline", "7200", "--", "full"])
+
+        self.assertEqual(0, rc, error)
+        self.assertIn("limiting Hermit --child-deadline from 7200s to 4800s", error)
+        systemd = next(
+            command
+            for command in self.fake.commands
+            if command[0] == "systemd-run" and "validate-lock" in command
+        )
+        self.assertEqual(systemd[systemd.index("--child-deadline") + 1], "4800")
+        self.assertIn("HERMIT_VALIDATE_RUN_TIMEOUT_SECONDS=4200", systemd)
+        record = start_unit.run_registry.read_record(
+            self.root / "ignored/validate/runs/validate-test.json"
+        )
+        self.assertEqual(4800, record["validate_lock_child_deadline_seconds"])
+        self.assertEqual(4200, record["hermit_run_timeout_seconds"])
+
     def test_hermit_child_deadline_too_small_for_cleanup_is_refused(self) -> None:
         rc, _output, error = self.invoke(["--child-deadline", "60", "--", "full"])
 

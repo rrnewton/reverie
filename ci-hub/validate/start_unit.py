@@ -111,6 +111,7 @@ HERMIT_MIN_CLEANUP_GRACE_SECONDS = 60
 # an arbitrarily long run.  This ceiling is above the observed 23-36 minute
 # healthy range while making a multi-hour validate impossible.
 HERMIT_MAX_RUN_TIMEOUT_SECONDS = 4_200
+HERMIT_MAX_CHILD_DEADLINE_SECONDS = 4_800
 
 CANONICAL_TERMINAL_VERDICTS = {"VALIDATED": 0, "FAILED": 3}
 CANONICAL_REMEASUREMENT_VERDICTS = frozenset(
@@ -159,6 +160,13 @@ def hermit_run_timeout_seconds(child_deadline: int) -> int:
             f"{hermit_cleanup_grace}s >= {child_deadline}s"
         )
     return run_timeout
+
+
+def effective_child_deadline(repo: str, requested: int) -> int:
+    """Keep Hermit's external backstop bounded even when callers ask for more."""
+    if repo == "rrnewton/hermit":
+        return min(requested, HERMIT_MAX_CHILD_DEADLINE_SECONDS)
+    return requested
 
 
 def canonical_repo(value: str) -> str:
@@ -1272,6 +1280,7 @@ def build_systemd_command(
     frozen_validate: bool = False,
     frozen_result: Path | None = None,
 ) -> list[str]:
+    child_deadline = effective_child_deadline(repo, child_deadline)
     home = environment.get("HOME", "")
     path = environment.get("PATH", "")
     if not home or not path:
@@ -1948,8 +1957,9 @@ def parser() -> argparse.ArgumentParser:
         help=(
             "payload wall deadline (default: Hermit 3600s; Reverie 8000s). "
             "Hermit requires more than 61s so its derived run timeout and "
-            "cleanup grace both fit inside this bound; increasing it does not "
-            f"raise Hermit's {HERMIT_MAX_RUN_TIMEOUT_SECONDS}s whole-run ceiling"
+            "cleanup grace both fit inside this bound; Hermit requests are capped "
+            f"at {HERMIT_MAX_CHILD_DEADLINE_SECONDS}s and cannot raise the "
+            f"{HERMIT_MAX_RUN_TIMEOUT_SECONDS}s whole-run ceiling"
         ),
     )
     result.add_argument(
@@ -2106,9 +2116,17 @@ def main(
             "--pr must be positive",
             "pass the pull-request NUMBER, e.g. --pr 2614, or omit --pr entirely",
         )
-    child_deadline = args.child_deadline or (
+    requested_child_deadline = args.child_deadline or (
         8000 if repo == "rrnewton/reverie" else 3600
     )
+    child_deadline = effective_child_deadline(repo, requested_child_deadline)
+    if child_deadline != requested_child_deadline:
+        print(
+            "validate-run: limiting Hermit --child-deadline "
+            f"from {requested_child_deadline}s to {child_deadline}s; "
+            f"validation work remains capped at {HERMIT_MAX_RUN_TIMEOUT_SECONDS}s",
+            file=sys.stderr,
+        )
     if min(args.wait, args.hold, child_deadline) <= 0:
         return refuse(
             "wait/hold/child-deadline must be positive",
