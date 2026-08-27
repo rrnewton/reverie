@@ -23,6 +23,11 @@ and provide the independent observations used by the basic-sanity scorecard.
 The newest run does not erase older receipts; `validate-status` and
 `local-history` retain the run history.
 
+`ci-hub validate-status` renders run timestamps as compact ages by default
+(for example, `1h36m ago`) so stale results are visible at a glance. Use
+`--times local` or `--times utc` when an absolute timestamp is needed. JSON
+output retains the recorded RFC 3339 timestamps in every mode.
+
 If freshly fetched `origin/main` has moved beyond that exact Hermit SHA, use
 `ci-hub validate-run --frozen-validate ...`. The ordinary path still refuses a
 target that does not contain current main. The explicit frozen path forces a

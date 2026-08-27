@@ -433,6 +433,10 @@ struct ValidateStatusArgs {
     /// column. The default stays narrow with SHA alone.
     #[arg(long, value_enum, value_delimiter = ',', default_value = "sha")]
     columns: Vec<ValidateStatusColumn>,
+    /// Render human-readable timestamps relative to now, in local time, or in UTC.
+    /// Machine-readable JSON always retains the original RFC 3339 values.
+    #[arg(long, value_enum, default_value_t = ValidateStatusTimes::Relative)]
+    times: ValidateStatusTimes,
     /// Repository used to resolve --pr head SHAs.
     #[arg(long, default_value = "rrnewton/hermit")]
     repo: String,
@@ -448,6 +452,13 @@ enum ValidateStatusColumn {
     #[value(name = "gitdepth", alias = "git-depth")]
     GitDepth,
     None,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+enum ValidateStatusTimes {
+    Relative,
+    Local,
+    Utc,
 }
 
 #[derive(Args, Clone, Debug)]
@@ -5224,10 +5235,60 @@ fn short_wall(seconds: Option<f64>) -> String {
     }
 }
 
-fn short_timestamp(value: &str) -> String {
-    chrono::DateTime::parse_from_rfc3339(value)
-        .map(|timestamp| timestamp.to_rfc3339_opts(chrono::SecondsFormat::Secs, true))
-        .unwrap_or_else(|_| value.to_string())
+fn compact_age(seconds: u64) -> String {
+    if seconds < 60 {
+        format!("{seconds}s")
+    } else if seconds < 3600 {
+        format!("{}m", seconds / 60)
+    } else if seconds < 86_400 {
+        let hours = seconds / 3600;
+        let minutes = (seconds % 3600) / 60;
+        if minutes == 0 {
+            format!("{hours}hr{}", if hours == 1 { "" } else { "s" })
+        } else {
+            format!("{hours}h{minutes}m")
+        }
+    } else {
+        let days = seconds / 86_400;
+        let hours = (seconds % 86_400) / 3600;
+        if hours == 0 {
+            format!("{days}d")
+        } else {
+            format!("{days}d{hours}h")
+        }
+    }
+}
+
+fn format_validate_timestamp(
+    value: &str,
+    times: ValidateStatusTimes,
+    now: chrono::DateTime<chrono::Utc>,
+) -> String {
+    let Ok(timestamp) = chrono::DateTime::parse_from_rfc3339(value) else {
+        return value.to_string();
+    };
+    match times {
+        ValidateStatusTimes::Relative => {
+            let age = now.signed_duration_since(timestamp.with_timezone(&chrono::Utc));
+            let seconds = age.num_seconds();
+            if seconds >= 0 {
+                format!("{} ago", compact_age(seconds as u64))
+            } else {
+                format!("in {}", compact_age(seconds.unsigned_abs()))
+            }
+        }
+        ValidateStatusTimes::Local => timestamp
+            .with_timezone(&chrono::Local)
+            .to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        ValidateStatusTimes::Utc => timestamp.to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+    }
+}
+
+fn validate_status_time_width(times: ValidateStatusTimes) -> usize {
+    match times {
+        ValidateStatusTimes::Local => 25,
+        ValidateStatusTimes::Relative | ValidateStatusTimes::Utc => 20,
+    }
 }
 
 /// COMMITS SINCE GREEN, for `validate-status`' standard output.
@@ -5804,13 +5865,17 @@ fn live_validate_runs_from(
     Ok(live)
 }
 
-fn live_validate_runs(root: &Path, repo: &str) -> Result<Vec<ValidateStatusEntry>, CiHubError> {
+fn live_validate_runs(
+    root: &Path,
+    repo: &str,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Result<Vec<ValidateStatusEntry>, CiHubError> {
     live_validate_runs_from(
         root,
         repo,
         Path::new("/proc"),
         Path::new("/proc/sys/kernel/random/boot_id"),
-        chrono::Utc::now(),
+        now,
     )
 }
 
@@ -5903,7 +5968,7 @@ fn fill_optional_validate_status_columns(
     }
 }
 
-fn validate_status_header(columns: &[ValidateStatusColumn]) -> String {
+fn validate_status_header(columns: &[ValidateStatusColumn], times: ValidateStatusTimes) -> String {
     let mut fields = vec![format!("{:<13}", "STATUS")];
     for column in columns {
         fields.push(match column {
@@ -5913,7 +5978,11 @@ fn validate_status_header(columns: &[ValidateStatusColumn]) -> String {
             ValidateStatusColumn::None => unreachable!("none is removed before rendering"),
         });
     }
-    fields.push(format!("{:<20}", "STARTED/FINISHED"));
+    fields.push(format!(
+        "{:<width$}",
+        "STARTED/FINISHED",
+        width = validate_status_time_width(times)
+    ));
     fields.push(format!("{:>7}", "ELAPSED"));
     fields.push(format!("{:<16}", "HOST"));
     fields.push(format!("{:>11}", "TESTS-TOTAL"));
@@ -5922,7 +5991,12 @@ fn validate_status_header(columns: &[ValidateStatusColumn]) -> String {
     fields.join(" ")
 }
 
-fn validate_status_line(entry: &ValidateStatusEntry, columns: &[ValidateStatusColumn]) -> String {
+fn validate_status_line(
+    entry: &ValidateStatusEntry,
+    columns: &[ValidateStatusColumn],
+    times: ValidateStatusTimes,
+    now: chrono::DateTime<chrono::Utc>,
+) -> String {
     let mut fields = vec![format!("{:<13}", entry.status)];
     for column in columns {
         fields.push(match column {
@@ -5948,7 +6022,11 @@ fn validate_status_line(entry: &ValidateStatusEntry, columns: &[ValidateStatusCo
         .as_deref()
         .or(entry.started_at.as_deref())
         .unwrap_or("-");
-    fields.push(format!("{:<20}", short_timestamp(when)));
+    fields.push(format!(
+        "{:<width$}",
+        format_validate_timestamp(when, times, now),
+        width = validate_status_time_width(times)
+    ));
     fields.push(format!("{:>7}", short_wall(entry.elapsed_seconds)));
     let host = entry
         .host
@@ -6022,10 +6100,11 @@ fn print_recent_validate_history(
         ));
     }
     let columns = selected_validate_status_columns(&args.columns)?;
+    let now = chrono::Utc::now();
     let mut current = if args.exclude_in_progress {
         Vec::new()
     } else {
-        live_validate_runs(root, repo)?
+        live_validate_runs(root, repo, now)?
     };
     let mut recent = rows
         .iter()
@@ -6103,9 +6182,9 @@ fn print_recent_validate_history(
         }
         return Ok(0);
     }
-    println!("{}", validate_status_header(&columns));
+    println!("{}", validate_status_header(&columns, args.times));
     for entry in &entries {
-        println!("{}", validate_status_line(entry, &columns));
+        println!("{}", validate_status_line(entry, &columns, args.times, now));
     }
     Ok(0)
 }
@@ -6261,10 +6340,18 @@ fn run_validate_status(root: &Path, args: ValidateStatusArgs) -> Result<i32, CiH
         match assessment.verdict {
             validate_status::Verdict::Validated => {
                 let row = newest.expect("validated implies a qualifying record");
+                let passed = row
+                    .row
+                    .finished_at
+                    .as_deref()
+                    .map(|timestamp| {
+                        format_validate_timestamp(timestamp, args.times, chrono::Utc::now())
+                    })
+                    .unwrap_or_else(|| "?".into());
                 println!(
                     "# validate VALIDATED {} (passed {}, wall {}s, host {}, profile full/full) -- clean-tree commit-anchored full run",
                     assessment.sha,
-                    row.row.finished_at.as_deref().unwrap_or("?"),
+                    passed,
                     row.row.real_seconds.map(|s| s.round() as i64).unwrap_or(-1),
                     row.row.host.as_deref().unwrap_or("?"),
                 );
@@ -7561,23 +7648,72 @@ mod tests {
         let mut value = schema4_receipt_value();
         value["passed_tests"] = serde_json::json!(785);
         let row = history_row(value);
-        let entry = finished_validate_status_entry(
+        let mut entry = finished_validate_status_entry(
             Path::new("/no-retained-log"),
             CANONICAL_VALIDATE_REPO,
             &row,
         );
+        entry.finished_at = Some("2026-08-03T00:00:00Z".into());
 
         assert_eq!(entry.status, "VALIDATED");
         assert_eq!(entry.tests_total, Some(1479));
         assert_eq!(entry.tests_passed, Some(785));
         assert_eq!(entry.tests_passed_at_least, None);
         assert_eq!(
-            validate_status_header(&[ValidateStatusColumn::Sha]),
+            validate_status_header(&[ValidateStatusColumn::Sha], ValidateStatusTimes::Relative),
             "STATUS        SHA          STARTED/FINISHED     ELAPSED HOST             TESTS-TOTAL TESTS-PASSED SUMMARY"
         );
-        let line = validate_status_line(&entry, &[ValidateStatusColumn::Sha]);
+        let now = chrono::DateTime::parse_from_rfc3339("2026-08-03T01:36:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        let line = validate_status_line(
+            &entry,
+            &[ValidateStatusColumn::Sha],
+            ValidateStatusTimes::Relative,
+            now,
+        );
         assert!(line.starts_with("VALIDATED     630f44aab7fd"), "{line}");
+        assert!(line.contains("1h36m ago"), "{line}");
         assert!(line.contains("          785 passed"), "{line}");
+    }
+
+    #[test]
+    fn validate_status_time_modes_render_the_same_timestamp() {
+        let value = "2026-08-27T17:26:14Z";
+        let now = chrono::DateTime::parse_from_rfc3339("2026-08-27T19:02:14Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        assert_eq!(
+            format_validate_timestamp(value, ValidateStatusTimes::Relative, now),
+            "1h36m ago"
+        );
+        assert_eq!(
+            format_validate_timestamp(value, ValidateStatusTimes::Utc, now),
+            "2026-08-27T17:26:14Z"
+        );
+        assert_eq!(
+            format_validate_timestamp("2026-08-27T07:02:14Z", ValidateStatusTimes::Relative, now,),
+            "12hrs ago"
+        );
+        let expected_local = chrono::DateTime::parse_from_rfc3339(value)
+            .unwrap()
+            .with_timezone(&chrono::Local)
+            .to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+        assert_eq!(
+            format_validate_timestamp(value, ValidateStatusTimes::Local, now),
+            expected_local
+        );
+    }
+
+    #[test]
+    fn relative_validate_status_time_reports_future_clock_skew() {
+        let now = chrono::DateTime::parse_from_rfc3339("2026-08-27T17:21:14Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        assert_eq!(
+            format_validate_timestamp("2026-08-27T17:26:14Z", ValidateStatusTimes::Relative, now),
+            "in 5m"
+        );
     }
 
     #[test]
@@ -7614,6 +7750,25 @@ mod tests {
         assert_eq!(entry.tests_passed, Some(10));
         assert_eq!(entry.tests_passed_at_least, None);
         assert_eq!(entry.summary, "dirty tree");
+    }
+
+    #[test]
+    fn recent_history_names_a_zero_test_pass_as_no_result() {
+        let mut value = schema4_receipt_value();
+        value["executed_tests"] = serde_json::json!(0);
+        value["filtered_tests"] = serde_json::json!(0);
+        value["passed_tests"] = serde_json::json!(0);
+        let row = history_row(value);
+        let entry = finished_validate_status_entry(
+            Path::new("/no-retained-log"),
+            CANONICAL_VALIDATE_REPO,
+            &row,
+        );
+
+        assert_eq!(entry.status, "NO-RESULT");
+        assert_eq!(entry.tests_total, Some(0));
+        assert_eq!(entry.tests_passed, Some(0));
+        assert_eq!(entry.summary, "validation did not exercise the product");
     }
 
     #[test]
@@ -9016,8 +9171,22 @@ mod tests {
         assert_eq!(args.pr, None);
         assert_eq!(args.limit, DEFAULT_VALIDATE_HISTORY_LIMIT);
         assert_eq!(args.columns, [ValidateStatusColumn::Sha]);
+        assert_eq!(args.times, ValidateStatusTimes::Relative);
         assert!(!args.exclude_in_progress);
         assert!(!args.in_progress_only);
+
+        for (value, expected) in [
+            ("relative", ValidateStatusTimes::Relative),
+            ("local", ValidateStatusTimes::Local),
+            ("utc", ValidateStatusTimes::Utc),
+        ] {
+            let cli = Cli::try_parse_from(["ci-hub", "validate-status", "--times", value]).unwrap();
+            let HubCommand::ValidateStatus(args) = cli.command else {
+                panic!("wrong command variant")
+            };
+            assert_eq!(args.times, expected);
+        }
+        assert!(Cli::try_parse_from(["ci-hub", "validate-status", "--times", "wall"]).is_err());
 
         let cli = Cli::try_parse_from([
             "ci-hub",

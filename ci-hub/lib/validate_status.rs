@@ -299,7 +299,7 @@ fn is_env_fault_red(row: &HistoryRow, failed_gates: &[&crate::records::GateHisto
     command_not_found_storm || subsecond_collapse
 }
 
-/// Interpret one red ledger row using the conditions carried with it.
+/// Interpret one non-qualifying ledger row using the conditions carried with it.
 ///
 /// A bare `result=fail` is deliberately insufficient. Durable FAILED requires
 /// a complete outer-gate run, a real failing gate with its origin recorded, and
@@ -313,7 +313,19 @@ pub fn failure_disposition(row: &HistoryRow, sha: &str) -> FailureDisposition {
     match row.result.as_deref() {
         Some("truncated") => return FailureDisposition::Truncated,
         Some("needs-rerun" | "needs_rerun") => return FailureDisposition::NeedsRerun,
+        Some("no-result" | "no_result") => return FailureDisposition::NoResult,
         _ => {}
+    }
+    // A clean full run whose writer says PASS while also proving that zero tests
+    // executed has no product result. Keep this distinct from a generic
+    // non-qualifying receipt: the producer did run, but the product tests did
+    // not. A genuine build or lint failure may also have zero executed tests,
+    // so this applies only to a purported pass.
+    if is_clean_full_coverage(row, sha)
+        && row.executed_tests == Some(0)
+        && row.result.as_deref() == Some("pass")
+    {
+        return FailureDisposition::NoResult;
     }
     if !is_clean_full_coverage(row, sha)
         || !matches!(row.result.as_deref(), Some("fail" | "failed" | "timeout"))
@@ -1359,15 +1371,15 @@ mod tests {
     }
 
     #[test]
-    fn zero_test_green_is_not_validated() {
+    fn zero_test_green_is_no_result() {
         // NEGATIVE: a clean full-coverage "pass" whose own banners prove zero
         // tests ran is a no-result, not a landing-eligible green. It is neither a
-        // pass nor a known failure, so it must fall through to NotValidated
-        // (exit 4 = re-dispatch), never Validated and never FailedOnRecord.
+        // pass nor a known failure, so it must be named NoResult (exit 4 =
+        // re-dispatch), never Validated, FailedOnRecord, or generic absence.
         let mut r = clean_full_pass(PASS_SHA);
         r.executed_tests = Some(0);
         let a = assess(&[r], PASS_SHA);
-        assert_eq!(a.verdict, Verdict::NotValidated);
+        assert_eq!(a.verdict, Verdict::NoResult);
         assert_eq!(a.verdict.exit_code(), 4);
         assert_eq!(a.qualifying.len(), 0);
     }
@@ -1411,7 +1423,7 @@ mod tests {
         zero.schema_version = Some(3);
         zero.filtered_tests = None;
         zero.executed_tests = Some(0);
-        assert_eq!(assess(&[zero], PASS_SHA).verdict, Verdict::NotValidated);
+        assert_eq!(assess(&[zero], PASS_SHA).verdict, Verdict::NoResult);
     }
 
     #[test]
@@ -1452,7 +1464,7 @@ mod tests {
         zero.schema_version = Some(1);
         zero.executed_tests = Some(0);
         zero.filtered_tests = Some(0);
-        assert_eq!(assess(&[zero], PASS_SHA).verdict, Verdict::NotValidated);
+        assert_eq!(assess(&[zero], PASS_SHA).verdict, Verdict::NoResult);
     }
 
     #[test]
@@ -1618,12 +1630,12 @@ mod tests {
     #[test]
     fn no_result_verdict_is_not_failed_on_record() {
         // A `no_result` (the aggregator's downgrade of a zero-test green) is
-        // unverified, not known-bad: NotValidated (re-dispatch), not
-        // FailedOnRecord.
+        // unverified, not known-bad: NoResult (re-dispatch), not FailedOnRecord
+        // and not the generic absence state.
         let mut r = clean_full_pass(PASS_SHA);
         r.result = Some("no_result".into());
         let a = assess(&[r], PASS_SHA);
-        assert_eq!(a.verdict, Verdict::NotValidated);
+        assert_eq!(a.verdict, Verdict::NoResult);
         assert_eq!(a.verdict.exit_code(), 4);
     }
 
