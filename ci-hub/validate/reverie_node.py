@@ -17,11 +17,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
 import bounded_capture  # noqa: E402
 
 
-# Local-validation v2 follows Reverie's six-gate producer after hosted
+# Local-validation v2 follows Reverie's seven-gate producer after hosted
 # merge-gate policy enforcement was retired from validate.sh.
 EXPECTED_GATES = (
     "Cross-client skill discovery",
     "Build workspace",
+    "DBT virtual identity and pidfd_open policy",
     "Test regular workspace cases",
     "Documentation tests",
     "Clippy",

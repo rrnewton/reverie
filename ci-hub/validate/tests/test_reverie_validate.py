@@ -102,6 +102,18 @@ test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out;
         )
 
     def test_current_gate_contract_refuses_retired_merge_gate(self) -> None:
+        self.assertEqual(
+            reverie_node.EXPECTED_GATES,
+            (
+                "Cross-client skill discovery",
+                "Build workspace",
+                "DBT virtual identity and pidfd_open policy",
+                "Test regular workspace cases",
+                "Documentation tests",
+                "Clippy",
+                "Rustfmt",
+            ),
+        )
         current = [{"name": name} for name in reverie_node.EXPECTED_GATES]
         reverie_node.require_expected_gate_set(current)
         invalid_sets = {
