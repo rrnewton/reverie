@@ -142,7 +142,7 @@ class ParallelValidatePathTest(unittest.TestCase):
             "validate_args": ["full"],
             "wait": 1,
             "hold": 1,
-            "child_deadline": 1,
+            "child_deadline": 3600,
             "environment": {"HOME": "/home/test", "PATH": "/usr/bin", "TMPDIR": "/tmp"},
         }
         old_a = start_unit.build_systemd_command(**common, unit="validate-a")

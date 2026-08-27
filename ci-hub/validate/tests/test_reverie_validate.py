@@ -43,6 +43,8 @@ class ReverieValidateTest(unittest.TestCase):
         self.assertIn("--kind reverie-validate", joined)
         self.assertIn("--repo", start_unit.parser().format_help())
         self.assertIn("REVERIE_REQUIRE_KVM=1", joined)
+        self.assertNotIn("HERMIT_VALIDATE_RUN_TIMEOUT_SECONDS", joined)
+        self.assertNotIn("run_with_validate_deadline.py", joined)
         self.assertNotIn("--allow-cgroup-failure", joined)
         self.assertNotIn("--unsafe-no-cgroups", joined)
         self.assertNotIn("scripts/validate.rs", joined)

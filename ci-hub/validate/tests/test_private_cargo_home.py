@@ -193,7 +193,7 @@ def test_command_passes_cargo_home() -> None:
             validate_args=["full"],
             wait=1,
             hold=1,
-            child_deadline=1,
+            child_deadline=3600,
             environment={"HOME": str(root), "PATH": "/usr/bin"},
         )
         with_home = start_unit.build_systemd_command(**common, cargo_home=cargo_home)

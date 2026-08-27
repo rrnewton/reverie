@@ -46,7 +46,7 @@ def build(root: Path, environment: dict[str, str]) -> list[str]:
         validate_args=["full"],
         wait=1,
         hold=1,
-        child_deadline=1,
+        child_deadline=3600,
         environment=environment,
     )
 
@@ -85,6 +85,7 @@ class StartUnitEnvTest(unittest.TestCase):
         self.assertEqual(env["HOME"], "/home/test")
         self.assertEqual(env["PATH"], "/usr/bin")
         self.assertEqual(env["CI_HUB_VALIDATE_PRODUCER"], "systemd-user-v1")
+        self.assertEqual(env["HERMIT_VALIDATE_RUN_TIMEOUT_SECONDS"], "3239")
 
     def test_e2e_results_and_runner_logs_survive_checkout_removal(self) -> None:
         ambient = {
@@ -296,7 +297,7 @@ class StartUnitEnvTest(unittest.TestCase):
             validate_args=[],
             wait=1,
             hold=1,
-            child_deadline=1,
+            child_deadline=3600,
             environment=dict(self.base_env),
             make_validate=True,
         )
@@ -318,7 +319,7 @@ class StartUnitEnvTest(unittest.TestCase):
             validate_args=[],
             wait=1,
             hold=1,
-            child_deadline=1,
+            child_deadline=3600,
             environment=dict(self.base_env),
             make_validate=True,
             allow_owner_validate_symlink=True,

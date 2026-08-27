@@ -57,6 +57,7 @@ EXIT_COULD_NOT_DETERMINE = 75
 FROZEN_VALIDATE_KIND = "frozen-validate"
 FROZEN_RESULT_ADMISSION = "frozen-validate"
 CURRENT_MAIN_FETCH_TIMEOUT_SECONDS = 30
+HERMIT_MIN_CLEANUP_GRACE_SECONDS = 60
 
 CANONICAL_TERMINAL_VERDICTS = {"VALIDATED": 0, "FAILED": 3}
 CANONICAL_REMEASUREMENT_VERDICTS = frozenset(
@@ -68,6 +69,39 @@ SUPPORTED_REPOS = {
     "reverie": "rrnewton/reverie",
     "rrnewton/reverie": "rrnewton/reverie",
 }
+
+
+def hermit_run_timeout_seconds(child_deadline: int) -> int:
+    """Derive Hermit's inner deadline from validate-lock's child deadline.
+
+    Hermit's checked-in scope ladder reserves ``max(60s, run_timeout / 10)``
+    after its in-process deadline so it can stop nodes and flush evidence. The
+    canonical launcher used to pass only the outer 3600-second child deadline,
+    leaving Hermit unbounded and allowing two attempts of a 2400-second DAG node
+    to be killed by validate-lock before Hermit could record the retry result.
+
+    Reserve the same grace from the enclosing deadline, plus one second for a
+    strict INNER < OUTER ordering. Because the derived run timeout is smaller
+    than the child deadline, Hermit's own cleanup grace cannot exceed the grace
+    reserved here.
+    """
+    cleanup_grace = max(HERMIT_MIN_CLEANUP_GRACE_SECONDS, child_deadline // 10)
+    run_timeout = child_deadline - cleanup_grace - 1
+    if run_timeout <= 0:
+        raise ValueError(
+            f"Hermit child deadline {child_deadline}s cannot contain its required "
+            f"{cleanup_grace}s cleanup grace plus a positive run timeout"
+        )
+    hermit_cleanup_grace = max(
+        HERMIT_MIN_CLEANUP_GRACE_SECONDS, run_timeout // 10
+    )
+    if run_timeout + hermit_cleanup_grace >= child_deadline:
+        raise ValueError(
+            "derived Hermit run timeout does not fit strictly inside the "
+            f"validate-lock child deadline: {run_timeout}s + "
+            f"{hermit_cleanup_grace}s >= {child_deadline}s"
+        )
+    return run_timeout
 
 
 def canonical_repo(value: str) -> str:
@@ -1118,6 +1152,13 @@ def build_systemd_command(
         if ci_dag_jobs <= 0:
             raise ValueError(f"CI_DAG_JOBS must be a positive integer, got {ci_dag_jobs!r}")
         build_budget_env.extend(["--setenv", f"CI_DAG_JOBS={ci_dag_jobs}"])
+    if repo == "rrnewton/hermit":
+        build_budget_env.extend(
+            [
+                "--setenv",
+                f"HERMIT_VALIDATE_RUN_TIMEOUT_SECONDS={hermit_run_timeout_seconds(child_deadline)}",
+            ]
+        )
     # Last, so it cannot be shadowed by a caller-supplied CARGO_HOME: the whole
     # point is that this run does not share a package-cache lock with the box.
     if cargo_home is not None:
@@ -1209,10 +1250,24 @@ def build_systemd_command(
         )
         if pr is not None:
             child.extend(["--pr", str(pr)])
-    elif make_validate:
-        child.extend(["with-proxy", "make", "validate"])
     else:
-        child.extend(["with-proxy", "./scripts/validate.rs", *(validate_args or ["full"])])
+        # validate-lock's child deadline begins when this helper starts. Anchor
+        # Hermit's monotonic deadline here, BEFORE with-proxy and rust-script can
+        # spend part of the enclosing 3600 seconds compiling the driver. Setting
+        # the epoch when start_unit builds the command would charge FIFO wait;
+        # setting it inside validate.rs would fail to charge its own compilation.
+        child.extend(
+            [
+                sys.executable,
+                str(root / "ci-hub/validate/run_with_validate_deadline.py"),
+            ]
+        )
+        if make_validate:
+            child.extend(["with-proxy", "make", "validate"])
+        else:
+            child.extend(
+                ["with-proxy", "./scripts/validate.rs", *(validate_args or ["full"])]
+            )
 
     return [
         "systemd-run",
@@ -1746,7 +1801,11 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument(
         "--child-deadline",
         type=int,
-        help="payload wall deadline (default: Hermit 3600s; Reverie 8000s)",
+        help=(
+            "payload wall deadline (default: Hermit 3600s; Reverie 8000s). "
+            "Hermit requires more than 61s so its derived run timeout and "
+            "cleanup grace both fit inside this bound"
+        ),
     )
     result.add_argument(
         "--ci-dag-jobs",
@@ -1869,6 +1928,14 @@ def main(
             "drop the arguments after -- to run the Make target, or drop --make-validate "
             "to pass driver arguments",
         )
+    if repo == "rrnewton/hermit" and any(
+        value == "--run-timeout" or value.startswith("--run-timeout=")
+        for value in validate_args
+    ):
+        return refuse(
+            "--run-timeout is owned by validate-run and derived from --child-deadline",
+            "drop --run-timeout; change --child-deadline if the enclosing bound must change",
+        )
     if repo == "rrnewton/reverie" and (args.make_validate or validate_args):
         return refuse(
             "Reverie always runs its exact full validate.sh under safe-ci-dag-runner; "
@@ -1894,6 +1961,14 @@ def main(
             "wait/hold/child-deadline must be positive",
             "give --wait, --hold and --child-deadline values greater than 0, or omit them for defaults",
         )
+    try:
+        hermit_run_timeout = (
+            hermit_run_timeout_seconds(child_deadline)
+            if repo == "rrnewton/hermit"
+            else None
+        )
+    except ValueError as error:
+        return refuse(str(error), "raise --child-deadline or use the default")
     if args.ci_dag_jobs is not None and args.ci_dag_jobs <= 0:
         return refuse(
             "--ci-dag-jobs must be positive",
@@ -1951,14 +2026,15 @@ def main(
         log = (args.log or root / "ignored/validate" / f"{unit}.log").resolve()
         record_path = run_registry.record_path(root.resolve(), unit)
         e2e_result_root, runner_log_dir = _validate_output_paths(root.resolve(), unit)
-        output_fields = (
-            {
-                "e2e_result_root": str(e2e_result_root),
-                "safe_ci_dag_runner_log_dir": str(runner_log_dir),
-            }
-            if repo == "rrnewton/hermit"
-            else {}
-        )
+        output_fields = {"validate_lock_child_deadline_seconds": child_deadline}
+        if repo == "rrnewton/hermit":
+            output_fields.update(
+                {
+                    "e2e_result_root": str(e2e_result_root),
+                    "safe_ci_dag_runner_log_dir": str(runner_log_dir),
+                    "hermit_run_timeout_seconds": hermit_run_timeout,
+                }
+            )
         started_at = datetime.now(timezone.utc).isoformat()
         command = build_systemd_command(
             root=root.resolve(),

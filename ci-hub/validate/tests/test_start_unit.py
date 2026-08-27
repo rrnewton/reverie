@@ -373,13 +373,16 @@ class StartUnitTest(unittest.TestCase):
             [
                 "/usr/bin/env",
                 "PR_NUMBER=123",
+                sys.executable,
+                str(self.root / "ci-hub/validate/run_with_validate_deadline.py"),
                 "with-proxy",
                 "./scripts/validate.rs",
                 "full",
                 "--ignore-cache",
             ],
-            systemd[-6:],
+            systemd[-8:],
         )
+        self.assertIn("HERMIT_VALIDATE_RUN_TIMEOUT_SECONDS=3239", systemd)
         pane_run = next(command for command in self.fake.commands if "pane_watch.py" in " ".join(command))
         self.assertIn("herdr", pane_run)
         self.assertNotIn("scripts/validate.rs", pane_run)
@@ -394,6 +397,41 @@ class StartUnitTest(unittest.TestCase):
         self.assertEqual("success", record["result"])
         self.assertEqual(55, record["executed_nodes"])
         self.assertEqual("observer-only", record["pane_role"])
+        self.assertEqual(3600, record["validate_lock_child_deadline_seconds"])
+        self.assertEqual(3239, record["hermit_run_timeout_seconds"])
+
+    def test_hermit_run_timeout_is_derived_inside_child_deadline(self) -> None:
+        self.assertEqual(3239, start_unit.hermit_run_timeout_seconds(3600))
+        inner = start_unit.hermit_run_timeout_seconds(3600)
+        cleanup = max(start_unit.HERMIT_MIN_CLEANUP_GRACE_SECONDS, inner // 10)
+        self.assertLess(inner + cleanup, 3600)
+
+        # The minimum 60-second cleanup branch needs the explicit one-second
+        # separation too. Without the final subtraction this becomes 60 + 60
+        # == 120 and the outer deadline can fire at the same instant.
+        floor_inner = start_unit.hermit_run_timeout_seconds(120)
+        self.assertEqual(59, floor_inner)
+        self.assertLess(floor_inner + 60, 120)
+
+    def test_hermit_child_deadline_too_small_for_cleanup_is_refused(self) -> None:
+        rc, _output, error = self.invoke(["--child-deadline", "60", "--", "full"])
+
+        self.assertEqual(2, rc)
+        self.assertIn("cannot contain its required", error)
+        self.assertFalse(
+            any(command[0] == "systemd-run" for command in self.fake.commands)
+        )
+
+    def test_caller_cannot_override_launcher_owned_run_timeout(self) -> None:
+        for args in (["--run-timeout", "3599"], ["--run-timeout=3599"]):
+            with self.subTest(args=args):
+                self.fake.commands.clear()
+                rc, _output, error = self.invoke(["--", *args])
+                self.assertEqual(2, rc)
+                self.assertIn("--run-timeout is owned by validate-run", error)
+                self.assertFalse(
+                    any(command[0] == "systemd-run" for command in self.fake.commands)
+                )
 
     def test_ambient_ci_dag_jobs_is_not_inherited_without_explicit_override(self) -> None:
         self.environment["CI_DAG_JOBS"] = "64"
