@@ -114,6 +114,11 @@ typedef struct {
   // One-shot guard for the runtime thread-exit hook. Some exit syscalls do not
   // receive a DynamoRIO thread_exit callback; others can receive both paths.
   uint64_t runtime_thread_exit_called;
+  // A tail-injected exact child wait has crossed the native identity boundary.
+  // The signal callback may translate only this recorded physical target back
+  // to the virtual PID that the application passed. Numeric PID equality alone
+  // is insufficient because guest and host PID spaces can overlap.
+  translated_child_wait_t translated_child_wait;
 } prototype_counters_t;
 
 #define VIRTUAL_ROOT_PID INT32_C(3)
@@ -2937,17 +2942,57 @@ static bool emulate_identity_getter(prototype_counters_t *counters, int sysnum,
   }
 }
 
+static int blocking_exact_child_wait_target_argument(int sysnum,
+                                                     const uint64_t *args) {
+  int options;
+
+  if (sysnum == SYS_wait4) {
+    options = (int)args[2];
+    return (int32_t)args[0] > 0 &&
+                   (options &
+                    (WNOHANG | WUNTRACED | WCONTINUED | __WCLONE | __WALL)) ==
+                       0
+               ? 0
+               : -1;
+  }
+  if (sysnum == SYS_waitid) {
+    options = (int)args[3];
+    return args[0] == P_PID && (int32_t)args[1] > 0 &&
+                   (options & WEXITED) != 0 &&
+                   (options &
+                    (WNOHANG | WSTOPPED | WCONTINUED | __WCLONE | __WALL)) ==
+                       0
+               ? 1
+               : -1;
+  }
+  return -1;
+}
+
 static bool prepare_original_identity_syscall(void *drcontext,
                                               prototype_counters_t *counters,
                                               int sysnum,
-                                              const uint64_t *args) {
+                                              const uint64_t *args,
+                                              bool tail_injected) {
   uint64_t translated[6];
+  int wait_target_argument =
+      tail_injected ? blocking_exact_child_wait_target_argument(sysnum, args)
+                    : -1;
   int i;
+  clear_translated_child_wait(&counters->translated_child_wait);
   memcpy(translated, args, sizeof(translated));
   if (!translate_identity_arguments(sysnum, translated)) {
     dr_syscall_set_result(drcontext, (reg_t)unknown_identity_error(
                                          (uintptr_t)drcontext, sysnum, args));
     return false;
+  }
+  if (wait_target_argument >= 0 &&
+      translated[wait_target_argument] != args[wait_target_argument]) {
+    counters->translated_child_wait.pending = true;
+    counters->translated_child_wait.sysnum = sysnum;
+    counters->translated_child_wait.physical_pid =
+        (int32_t)translated[wait_target_argument];
+    counters->translated_child_wait.virtual_pid =
+        (int32_t)args[wait_target_argument];
   }
   for (i = 0; i != 6; ++i) {
     if (translated[i] != args[i])
@@ -2967,6 +3012,7 @@ static void post_syscall(void *drcontext, int sysnum) {
   prototype_counters_t *counters = (prototype_counters_t *)drmgr_get_tls_field(
       drcontext, thread_state_index);
   DR_ASSERT(counters != NULL);
+  clear_translated_child_wait(&counters->translated_child_wait);
 
   if (reject_opened_proc_mem((uintptr_t)drcontext, sysnum,
                              host_syscall_result)) {
@@ -3722,8 +3768,8 @@ static bool pre_syscall(void *drcontext, int sysnum) {
     }
     if (sysnum == SYS_exit || sysnum == SYS_exit_group)
       complete_runtime_thread_exit(counters, drcontext, sysnum == SYS_exit);
-    bool execute =
-        prepare_original_identity_syscall(drcontext, counters, sysnum, args);
+    bool execute = prepare_original_identity_syscall(drcontext, counters,
+                                                     sysnum, args, false);
     if (execute && is_exec_syscall(sysnum))
       require_evidence_flush(EVIDENCE_FRAME_EXEC);
     return execute;
@@ -3796,8 +3842,8 @@ static bool pre_syscall(void *drcontext, int sysnum) {
     }
     if (sysnum == SYS_exit || sysnum == SYS_exit_group)
       complete_runtime_thread_exit(counters, drcontext, sysnum == SYS_exit);
-    bool execute =
-        prepare_original_identity_syscall(drcontext, counters, sysnum, args);
+    bool execute = prepare_original_identity_syscall(drcontext, counters,
+                                                     sysnum, args, true);
     if (execute && is_exec_syscall(sysnum))
       require_evidence_flush(EVIDENCE_FRAME_EXEC);
     return execute;
@@ -3816,8 +3862,8 @@ static bool pre_syscall(void *drcontext, int sysnum) {
   }
   if (sysnum == SYS_exit || sysnum == SYS_exit_group)
     complete_runtime_thread_exit(counters, drcontext, sysnum == SYS_exit);
-  bool execute =
-      prepare_original_identity_syscall(drcontext, counters, sysnum, args);
+  bool execute = prepare_original_identity_syscall(drcontext, counters, sysnum,
+                                                   args, false);
   if (execute && is_exec_syscall(sysnum))
     require_evidence_flush(EVIDENCE_FRAME_EXEC);
   return execute;
@@ -4097,10 +4143,11 @@ static void event_exit(void) {
   drmgr_exit();
 }
 
-static void virtualize_restarted_child_wait_target(dr_siginfo_t *info) {
+static void virtualize_translated_child_wait_target(void *drcontext,
+                                                    dr_siginfo_t *info) {
+  prototype_counters_t *counters;
   unsigned char opcode[2];
   reg_t *target;
-  int options;
   int32_t physical_pid;
   int32_t virtual_pid;
 
@@ -4109,33 +4156,30 @@ static void virtualize_restarted_child_wait_target(dr_siginfo_t *info) {
       opcode[0] != 0x0f || opcode[1] != 0x05)
     return;
 
-  if (info->mcontext->xax == SYS_wait4) {
+  counters =
+      (prototype_counters_t *)drmgr_get_tls_field(drcontext, thread_state_index);
+  if (counters == NULL || !counters->translated_child_wait.pending ||
+      info->mcontext->xax !=
+          (reg_t)(uint32_t)counters->translated_child_wait.sysnum)
+    return;
+
+  if (counters->translated_child_wait.sysnum == SYS_wait4) {
     target = &info->mcontext->xdi;
-    options = (int)info->mcontext->xdx;
-    if ((int32_t)*target <= 0 ||
-        (options & (WNOHANG | WUNTRACED | WCONTINUED | __WCLONE | __WALL)) !=
-            0)
-      return;
-  } else if (info->mcontext->xax == SYS_waitid &&
-             info->mcontext->xdi == P_PID) {
+  } else if (counters->translated_child_wait.sysnum == SYS_waitid) {
     target = &info->mcontext->xsi;
-    options = (int)info->mcontext->r10;
-    if ((int32_t)*target <= 0 || (options & WEXITED) == 0 ||
-        (options & (WNOHANG | WSTOPPED | WCONTINUED | __WCLONE | __WALL)) !=
-            0)
-      return;
   } else {
     return;
   }
 
   physical_pid = (int32_t)*target;
-  if (lookup_virtual_identity(physical_pid, &virtual_pid))
+  if (consume_translated_child_wait(&counters->translated_child_wait,
+                                    counters->translated_child_wait.sysnum,
+                                    physical_pid, &virtual_pid))
     *target = (reg_t)(uint32_t)virtual_pid;
 }
 
 static dr_signal_action_t event_signal(void *drcontext, dr_siginfo_t *info) {
-  (void)drcontext;
-  virtualize_restarted_child_wait_target(info);
+  virtualize_translated_child_wait_target(drcontext, info);
   return DR_SIGNAL_DELIVER;
 }
 

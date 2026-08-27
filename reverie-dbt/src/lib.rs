@@ -2086,6 +2086,59 @@ mod tests {
         );
     }
 
+    #[test]
+    fn signal_wait_translation_requires_a_tail_injected_wait_record() {
+        let source = include_str!("../native/client.c");
+        let prepare = source
+            .split_once("static bool prepare_original_identity_syscall(")
+            .expect("identity preparation")
+            .1
+            .split_once("static void post_syscall")
+            .expect("end of identity preparation")
+            .0;
+        assert!(prepare.contains("tail_injected ? blocking_exact_child_wait_target_argument"));
+        assert!(prepare.contains("translated[wait_target_argument] != args[wait_target_argument]"));
+
+        let pre_syscall = source
+            .split_once("static bool pre_syscall(void *drcontext, int sysnum)")
+            .expect("native pre_syscall definition")
+            .1
+            .split_once("static void thread_init")
+            .expect("end of native pre_syscall definition")
+            .0;
+        assert_eq!(
+            pre_syscall
+                .matches("prepare_original_identity_syscall(drcontext, counters,")
+                .count(),
+            3
+        );
+        assert_eq!(pre_syscall.matches("sysnum, args, true").count(), 1);
+        let copied = pre_syscall.find("sysnum, args, false").unwrap();
+        let deferred = pre_syscall.find("sysnum, args, true").unwrap();
+        assert!(copied < deferred);
+        assert!(pre_syscall[deferred..].contains("args, false);"));
+
+        let signal = source
+            .split_once("static void virtualize_translated_child_wait_target")
+            .expect("signal-time wait translation")
+            .1
+            .split_once("static dr_signal_action_t event_signal")
+            .expect("end of signal-time wait translation")
+            .0;
+        assert!(signal.contains("translated_child_wait.pending"));
+        assert!(signal.contains("consume_translated_child_wait"));
+        assert!(!signal.contains("lookup_virtual_identity"));
+
+        let post = source
+            .split_once("static void post_syscall(void *drcontext, int sysnum) {")
+            .expect("native post_syscall definition")
+            .1
+            .split_once("static bool pre_syscall")
+            .expect("end of native post_syscall definition")
+            .0;
+        assert!(post.contains("clear_translated_child_wait"));
+    }
+
     unsafe extern "C" fn invoke(_context: usize, sysnum: i64, args: *const u64) -> i64 {
         assert_eq!(sysnum, libc::SYS_write);
         unsafe { *args.add(2) as i64 }
