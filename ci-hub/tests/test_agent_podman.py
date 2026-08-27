@@ -28,6 +28,48 @@ from tick_hub.engine import (  # noqa: E402
 from tick_hub.io import config_from_yaml  # noqa: E402
 
 
+# The harness's OWN bound on a child, named once so the two call sites cannot drift
+# apart and so a failure can quote the number it was actually judged against.
+HARNESS_BOUND_SECS = 30
+
+
+class HarnessBoundExceeded(RuntimeError):
+    """The HARNESS's bound killed the child. That is not a fault in the child.
+
+    ⚠️ THIS BOUND USED TO REPORT AS A BARE `TimeoutExpired` NAMING NEITHER THE BOUND
+    NOR THE ELAPSED -- the same silence `podman_failure_reason` in
+    `scripts/agent-podman.rs` was added to close one layer down. Measured 2026-08-27
+    over 30 runs of this suite: 9 runs failed and EVERY failure was a bound-kill --
+    twelve markers from agent-podman's internal `timeout(1)` bounds, which now say
+    so, and EIGHT from this one, which did not. Half the evidence for that diagnosis
+    had to be reconstructed by counting tracebacks.
+
+    ⚠️ IT ALSO BOUNDS A `rust-script` INVOCATION, so it covers a possible COMPILE and
+    not only a run. Any edit to `scripts/agent-podman.rs` invalidates that cache, so
+    the first call afterwards is not doing the same work as the rest. The message
+    says so, because a kill on a cold cache and a kill under contention want
+    opposite responses.
+
+    A RuntimeError rather than an AssertionError on purpose: a bound-kill is not an
+    assertion that failed. It surfaces as an ERROR exactly as `TimeoutExpired` did,
+    so which runs are red does not change -- only what the red says.
+    """
+
+
+def _bound_kill(what, elapsed, argv=None):
+    compiles = argv is not None and argv[:1] == ["rust-script"]
+    return HarnessBoundExceeded(
+        f"KILLED BY THE HARNESS {HARNESS_BOUND_SECS}s BOUND after {elapsed:.1f}s "
+        f"waiting for {what}; this is the harness's bound, not a fault in the child"
+        + (
+            " -- and this bound covers a rust-script invocation, so a cold or "
+            "invalidated compile cache is spent inside it"
+            if compiles
+            else ""
+        )
+    )
+
+
 FAKE_PODMAN = r"""#!/usr/bin/env python3
 import json
 import fcntl
@@ -220,16 +262,23 @@ class AgentPodmanTests(unittest.TestCase):
         }
 
     def run_tool(self, *arguments: str) -> subprocess.CompletedProcess[str]:
-        return subprocess.run(
-            ["rust-script", str(TOOL), *arguments],
-            cwd=ROOT,
-            env=self.environment,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            timeout=30,
-            check=False,
-        )
+        argv = ["rust-script", str(TOOL), *arguments]
+        started = time.monotonic()
+        try:
+            return subprocess.run(
+                argv,
+                cwd=ROOT,
+                env=self.environment,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=HARNESS_BOUND_SECS,
+                check=False,
+            )
+        except subprocess.TimeoutExpired as expired:
+            raise _bound_kill(
+                f"`{' '.join(arguments)}`", time.monotonic() - started, argv
+            ) from expired
 
     def write_live_state(
         self, agents: list[dict[str, Any]], invocations: dict[str, list[str]]
@@ -540,6 +589,45 @@ class AgentPodmanTests(unittest.TestCase):
         self.assertIn("real podman error: no such container", combined)
         self.assertNotIn("KILLED BY ITS", combined)
 
+    # ⚠️ THE HARNESS'S OWN BOUND WAS THE HALF THAT STILL REPORTED NOTHING. Eight of
+    # the nineteen failures in the 30-run campaign came from it and surfaced as a bare
+    # `TimeoutExpired` naming neither the bound nor the elapsed, so they had to be
+    # counted out of tracebacks by hand. The internal bounds already say so; this is
+    # the matching half.
+    def test_a_harness_bound_kill_names_the_bound_and_the_elapsed(self) -> None:
+        # The child must genuinely OUTLAST the bound. An invalid invocation returns in
+        # about 3ms, which is not this path at all -- the first version of this test
+        # asserted against that and correctly failed.
+        slow = self._podman_stub("slow-podman-harness", "#!/bin/bash\nsleep 20\n")
+        self.environment["AGENT_PODMAN_BIN"] = str(slow)
+        self.write_live_state(self.OTHER_LIVE_AGENT, {})
+
+        global HARNESS_BOUND_SECS
+        saved = HARNESS_BOUND_SECS
+        HARNESS_BOUND_SECS = 0.5
+        try:
+            with self.assertRaises(HarnessBoundExceeded) as caught:
+                self.run_tool("reconcile", "--agents-json", str(self.agents))
+        finally:
+            HARNESS_BOUND_SECS = saved
+
+        message = str(caught.exception)
+        self.assertIn("KILLED BY THE HARNESS", message)
+        self.assertIn("0.5s BOUND", message, "the bound itself must be quoted")
+        self.assertRegex(message, r"after \d+\.\d+s", "the elapsed must be quoted")
+        self.assertIn("not a fault in the child", message)
+        # It bounds a rust-script invocation, so the compile-cache caveat belongs here.
+        self.assertIn("compile cache", message)
+
+    # The control. Without it the guard could be raising on every call and the case
+    # above would still pass.
+    def test_a_call_inside_the_harness_bound_does_not_raise(self) -> None:
+        self.write_live_state(self.OTHER_LIVE_AGENT, {})
+
+        result = self.reconcile(apply=False)
+
+        self.assertNotIn("KILLED BY THE HARNESS", result.stderr + result.stdout)
+
     def test_quickstart_is_pure_without_podman_or_state(self) -> None:
         self.environment["AGENT_PODMAN_BIN"] = str(self.directory / "missing-podman")
         result = self.run_tool("quickstart")
@@ -603,7 +691,14 @@ class AgentPodmanTests(unittest.TestCase):
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
 
         gate.touch()
-        stdout, stderr = process.communicate(timeout=30)
+        started = time.monotonic()
+        try:
+            stdout, stderr = process.communicate(timeout=HARNESS_BOUND_SECS)
+        except subprocess.TimeoutExpired as expired:
+            process.kill()
+            raise _bound_kill(
+                "the early-cid child to exit", time.monotonic() - started
+            ) from expired
         self.assertEqual(process.returncode, 0, stderr + stdout)
 
     def test_cleanup_query_error_retains_registry_under_lifecycle_fence(self) -> None:
