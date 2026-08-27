@@ -153,9 +153,47 @@ def shard_path(team: str, host: str, month: str) -> str:
     return f"series/{team}/{host}/{month}.jsonl"
 
 
+def shared_parent_root(parent: Any) -> Path:
+    """Return the primary checkout root shared by a linked parent worktree.
+
+    A series producer commonly runs from a detached dev-hermit worktree. If its
+    spool stayed under that worktree, the scheduled publisher rooted at the
+    primary checkout would never see it. The validation ledger already resolves
+    the same Git common directory for this reason. Independent clones keep their
+    own ``.git`` directory and therefore remain independent producer roots.
+    """
+    parent = Path(parent).resolve()
+    env = {name: value for name, value in os.environ.items() if not name.startswith("GIT_")}
+    env["GIT_CONFIG_NOSYSTEM"] = "1"
+    env["GIT_CONFIG_GLOBAL"] = os.devnull
+    try:
+        result = subprocess.run(
+            [
+                "git", "--no-replace-objects", "-C", str(parent), "rev-parse",
+                "--path-format=absolute", "--git-common-dir",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            env=env,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return parent
+    if result.returncode != 0 or not result.stdout.strip():
+        return parent
+    common_dir = Path(result.stdout.strip()).resolve()
+    if common_dir.name != ".git":
+        return parent
+    shared_root = common_dir.parent
+    if not (shared_root / "ci-hub" / "series" / "series.py").is_file():
+        return parent
+    return shared_root
+
+
 def spool_dir(parent: Any) -> Path:
-    """The live, UNPUBLISHED spool. Ignored by Git, exactly like the ledger's."""
-    return Path(parent) / "ignored" / "ci-hub" / "series-spool"
+    """The live, UNPUBLISHED spool in the shared parent checkout."""
+    return shared_parent_root(parent) / "ignored" / "ci-hub" / "series-spool"
 
 
 def row_identity(row: dict) -> tuple[str, str, int]:
@@ -864,6 +902,7 @@ __all__ = [
     "row_identity",
     "rows_from_cell_results",
     "series_for",
+    "shared_parent_root",
     "shard_path",
     "spool_dir",
     "source_depths",

@@ -613,6 +613,42 @@ class CellResultProjection(unittest.TestCase):
     def tearDown(self):
         self.temporary.cleanup()
 
+    def test_linked_parent_worktree_uses_the_primary_checkout_spool(self):
+        primary = self.parent / "dev-hermit"
+        (primary / "ci-hub" / "series").mkdir(parents=True)
+        (primary / "ci-hub" / "series" / "series.py").write_text(
+            "# producer marker\n", encoding="utf-8"
+        )
+        subprocess.run(["git", "init", "-q", "-b", "main", str(primary)], check=True)
+        subprocess.run(["git", "-C", str(primary), "add", "."], check=True)
+        subprocess.run(
+            [
+                "git", "-C", str(primary),
+                "-c", "user.name=t", "-c", "user.email=t@invalid",
+                "commit", "-q", "-m", "seed",
+            ],
+            check=True,
+        )
+        linked = self.parent / "nested" / "slot" / "dev-hermit"
+        linked.parent.mkdir(parents=True)
+        subprocess.run(
+            ["git", "-C", str(primary), "worktree", "add", "--detach", str(linked), "HEAD"],
+            check=True,
+            capture_output=True,
+        )
+
+        self.assertEqual(
+            series.spool_dir(linked),
+            primary / "ignored" / "ci-hub" / "series-spool",
+        )
+
+        outside = self.parent / "plain-directory"
+        outside.mkdir()
+        self.assertEqual(
+            series.spool_dir(outside),
+            outside / "ignored" / "ci-hub" / "series-spool",
+        )
+
     def _cell(self, run_index, outcome="PASS", duration_ms=100):
         return {
             "schema": 4,
