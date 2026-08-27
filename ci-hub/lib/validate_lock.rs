@@ -2269,7 +2269,65 @@ fn current_main_freshness_check(
             ))
         })?;
     match (kind, output.status.code()) {
-        (Kind::FrozenValidate, Some(1)) => Ok(()),
+        (Kind::FrozenValidate, Some(1)) => {
+            // The remote fetch above is the authority proving this target is
+            // historical. The child then runs the target's own validation
+            // gates, whose Reverie-pin monotonicity floor is `origin/main`.
+            // Leaving the live ref in place makes that gate compare an old
+            // target with today's pin and abort before the matrix starts.
+            //
+            // This mutation is safe only in the standalone shared clone that
+            // start_unit creates for frozen validation. A linked worktree
+            // shares refs with every sibling and must fail closed instead of
+            // changing their view of main.
+            if !repository.join(".git").is_dir() {
+                return Err(ValidateLockError::StaleBase(format!(
+                    "REFUSE: frozen validation checkout {} does not have independent Git refs; \
+                     refusing to rewrite shared origin/main",
+                    repository.display()
+                )));
+            }
+            let reset = Command::new("git")
+                .arg("-C")
+                .arg(&repository)
+                .args(["update-ref", "refs/remotes/origin/main", target])
+                .bounded_output()
+                .map_err(|error| {
+                    ValidateLockError::StaleBase(format!(
+                        "validate-lock: could not set frozen origin/main to {target} in {} ({error})",
+                        repository.display()
+                    ))
+                })?;
+            if !reset.status.success() {
+                return Err(ValidateLockError::StaleBase(format!(
+                    "validate-lock: could not set frozen origin/main to {target} in {} \
+                     (git exit {:?}: {})",
+                    repository.display(),
+                    reset.status.code(),
+                    String::from_utf8_lossy(&reset.stderr).trim()
+                )));
+            }
+            let readback = Command::new("git")
+                .arg("-C")
+                .arg(&repository)
+                .args(["rev-parse", "--verify", "refs/remotes/origin/main^{commit}"])
+                .bounded_output()
+                .map_err(|error| {
+                    ValidateLockError::StaleBase(format!(
+                        "validate-lock: frozen origin/main readback failed in {} ({error})",
+                        repository.display()
+                    ))
+                })?;
+            let observed = String::from_utf8_lossy(&readback.stdout).trim().to_string();
+            if !readback.status.success() || observed != target {
+                return Err(ValidateLockError::StaleBase(format!(
+                    "validate-lock: frozen origin/main readback in {} was {:?}, expected {target}",
+                    repository.display(),
+                    observed
+                )));
+            }
+            Ok(())
+        }
         (Kind::FrozenValidate, Some(0)) => Err(ValidateLockError::StaleBase(format!(
             "REFUSE: frozen validation target {target} still contains freshly fetched origin/main. Use ordinary validate for a current target."
         ))),
@@ -9214,6 +9272,27 @@ exit 0
             current_main_freshness_check(&root, &target, Kind::FrozenValidate).is_ok(),
             "a frozen target must be ADMITTED while behind main -- that is the \
              whole reason this kind exists"
+        );
+        assert_eq!(
+            git_success(
+                Some(&root.join("hermit")),
+                &["rev-parse", "refs/remotes/origin/main"]
+            ),
+            target,
+            "the target's own gates must see the historical main ref after admission"
+        );
+        assert_ne!(
+            git_success(
+                None,
+                &[
+                    "--git-dir",
+                    root.join("remote.git").to_str().unwrap(),
+                    "rev-parse",
+                    "refs/heads/main",
+                ]
+            ),
+            target,
+            "resetting the isolated checkout must not change the fetched remote authority"
         );
 
         // DIRECTION 2: the producer floor still applies. A non-sha is refused
