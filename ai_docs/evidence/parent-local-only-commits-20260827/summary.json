@@ -1,0 +1,31 @@
+{
+  "dispositions": {
+    "content-present": 1506,
+    "superseded": 7,
+    "unpublished": 2
+  },
+  "mains": {
+    "agent-utils": "ff3b5e28c7e58d81a1d0e5f772b3c84765a6dbd6",
+    "dev-hermit": "a82eba216c4b232fd71f7c0f9f83926aac7c3af7",
+    "hermit": "ff125248383e7d4ed04eb7e93b5fa8354d972483",
+    "liteinst2": "ac6df266c76dcd5c724df958321ff4f9c0b23f63",
+    "reverie": "ab07a89239150df3726a036bee9f5e897893dfc1"
+  },
+  "population": 1515,
+  "proofs": {
+    "commit_delta_reverse_applies_to_current_main": 4,
+    "current-path-and-forward-patch-check": 2,
+    "current_touched_paths_match+commit_delta_reverse_applies_to_current_main": 1,
+    "direct-comparison-to-landed-replacement": 7,
+    "empty-content-delta": 2,
+    "exact-commit-ancestor": 1442,
+    "merged-stack-aggregate-patch-id": 9,
+    "stable-patch-id": 48
+  },
+  "repositories": {
+    "dev-hermit": 23,
+    "hermit": 544,
+    "reverie": 948
+  },
+  "rescued": 1515
+}
