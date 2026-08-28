@@ -23,25 +23,55 @@ HERE = Path(os.path.abspath(__file__)).parent
 sys.path.insert(0, str(HERE))
 
 import check_freshness as F  # noqa: E402
+from stress_rows import BurstRow  # noqa: E402
+from stress_rows import BurstStatus  # noqa: E402
+from stress_rows import StoreError  # noqa: E402
+from stress_rows import StressRunRecord  # noqa: E402
 
 NOW = datetime(2026, 8, 6, 12, 0, 0, tzinfo=timezone.utc)
+SHA = "0" * 40
 
 
-def run_row(hours_ago: float, *, bursts_ok=3, instances=192, verdict="CLEAN") -> dict:
+def run_row(hours_ago: float, *, verdict="CLEAN") -> StressRunRecord:
     stamp = (NOW - timedelta(hours=hours_ago)).isoformat().replace("+00:00", "Z")
-    return {
-        "finished_at": stamp,
-        "started_at": stamp,
-        "bursts_ok": bursts_ok,
-        "total_instances": instances,
-        "verdict": verdict,
-        "workload": "tests_misc:vfork::vfork_parent_resumes_after_child_exec",
-    }
+    if verdict == "CLEAN":
+        row = BurstRow(SHA, "000000000000", "1", 64, 0, 64, 0, "0.0", BurstStatus.OK)
+    elif verdict == "FLAKY":
+        row = BurstRow(SHA, "000000000000", "1", 64, 1, 63, 0, "0.02", BurstStatus.OK)
+    elif verdict == "ERROR":
+        row = BurstRow(
+            SHA,
+            "000000000000",
+            "1",
+            64,
+            None,
+            None,
+            None,
+            "",
+            BurstStatus.CALIB_UNDERPOWERED,
+        )
+    else:  # pragma: no cover - test helper misuse
+        raise AssertionError(f"unsupported fixture verdict {verdict}")
+    return StressRunRecord.build(
+        rows=[row],
+        repo="rrnewton/hermit",
+        git_sha=SHA,
+        workload="tests_misc:vfork::vfork_parent_resumes_after_child_exec",
+        width=64,
+        timeout_s=20,
+        backend="ptrace",
+        host="fixture-host",
+        agent="fixture-agent",
+        started_at=stamp,
+        finished_at=stamp,
+        source_tool="fixture",
+        trigger="nightly",
+    )
 
 
-def no_result_row(hours_ago: float) -> dict:
+def no_result_row(hours_ago: float) -> StressRunRecord:
     """The 2026-08-04 shape: the run fired and recorded, but measured nothing."""
-    return run_row(hours_ago, bursts_ok=0, instances=0, verdict="ERROR")
+    return run_row(hours_ago, verdict="ERROR")
 
 
 def assess(rows, cadence=24.0, grace=24.0):
@@ -112,14 +142,20 @@ class FiringButNotMeasuring(unittest.TestCase):
         self.assertLess((NOW - newest_any).total_seconds() / 3600.0, 24)
         self.assertEqual(assess(rows)["verdict"], F.NEVER)
 
-    def test_bursts_ok_without_instances_is_not_a_measurement(self):
-        self.assertFalse(F.measured({"bursts_ok": 2, "total_instances": 0}))
+    def test_bursts_ok_without_instances_is_refused_by_name(self):
+        value = run_row(2).to_dict()
+        value["total_instances"] = 0
+        with self.assertRaisesRegex(StoreError, "total_instances"):
+            StressRunRecord.from_dict(value)
 
-    def test_instances_without_bursts_ok_is_not_a_measurement(self):
-        self.assertFalse(F.measured({"bursts_ok": 0, "total_instances": 64}))
+    def test_instances_without_bursts_ok_is_refused_by_name(self):
+        value = run_row(2).to_dict()
+        value["bursts_ok"] = 0
+        with self.assertRaisesRegex(StoreError, "bursts_ok"):
+            StressRunRecord.from_dict(value)
 
     def test_a_real_measurement_passes_the_filter(self):
-        self.assertTrue(F.measured({"bursts_ok": 1, "total_instances": 64}))
+        self.assertTrue(F.measured(run_row(2)))
 
 
 class EmptyAndMalformed(unittest.TestCase):
@@ -129,8 +165,10 @@ class EmptyAndMalformed(unittest.TestCase):
         self.assertIn("never recorded", r["reason"])
 
     def test_rows_without_timestamps_are_not_counted_as_measuring(self):
-        r = assess([{"bursts_ok": 3, "total_instances": 64}])
-        self.assertEqual(r["verdict"], F.NEVER)
+        value = run_row(2).to_dict()
+        del value["finished_at"]
+        with self.assertRaisesRegex(StoreError, "finished_at"):
+            StressRunRecord.from_dict(value)
 
     def test_missing_store_file_alarms_via_cli(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -153,22 +191,36 @@ class CliContract(unittest.TestCase):
     def test_exit_codes_and_json_shape(self):
         with tempfile.TemporaryDirectory() as tmp:
             store = Path(tmp) / "s.jsonl"
-            store.write_text(json.dumps(run_row(2)) + "\n")
+            store.write_text(json.dumps(run_row(2).to_dict()) + "\n")
             self.assertEqual(
                 F.main(["--store", str(store), "--now", NOW.isoformat(), "--json"]),
                 F.EXIT_OK)
-            store.write_text(json.dumps(no_result_row(2)) + "\n")
+            store.write_text(json.dumps(no_result_row(2).to_dict()) + "\n")
             self.assertEqual(
                 F.main(["--store", str(store), "--now", NOW.isoformat(), "--json"]),
                 F.EXIT_ALARM)
 
-    def test_malformed_lines_are_counted_not_fatal(self):
+    def test_malformed_line_refuses_the_store_by_name(self):
         with tempfile.TemporaryDirectory() as tmp:
             store = Path(tmp) / "s.jsonl"
-            store.write_text("{not json\n" + json.dumps(run_row(2)) + "\n")
-            rows, malformed = F.load_rows(store)
-            self.assertEqual(malformed, 1)
-            self.assertEqual(F.assess(rows, NOW, 24.0, 24.0, malformed)["verdict"], F.FRESH)
+            store.write_text(
+                "{not json\n" + json.dumps(run_row(2).to_dict()) + "\n"
+            )
+            with self.assertRaisesRegex(StoreError, "line 1: invalid JSON"):
+                F.load_rows(store)
+            self.assertEqual(
+                F.main(["--store", str(store), "--now", NOW.isoformat(), "--json"]),
+                F.EXIT_ERROR,
+            )
+
+    def test_semantically_malformed_line_refuses_the_store_by_field_name(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = Path(tmp) / "s.jsonl"
+            value = run_row(2).to_dict()
+            value["passes"] = 63
+            store.write_text(json.dumps(value) + "\n")
+            with self.assertRaisesRegex(StoreError, "passes"):
+                F.load_rows(store)
 
 
 if __name__ == "__main__":

@@ -39,6 +39,7 @@ STRESS_DIR = REPO_ROOT / "ci-hub" / "stress"
 # FLAKY  = some OK burst had 0 < passes < N                     -> exit 2, P0
 CSV_CLEAN = "{sha},short,1,4,0,4,0,0.0,OK"
 CSV_FLAKY = "{sha},short,1,4,1,3,0,0.25,OK"
+CSV_INCOMPLETE = "{sha},short,1,4,0,3,0,0.0,OK"
 
 FAKE_SHA = "0123456789abcdef0123456789abcdef01234567"
 
@@ -47,7 +48,7 @@ def _harness(tmp_path: Path, burst_row: str, *, detail_suffix: str = "") -> dict
     """Run nightly.sh in an isolated ROOT and return what it produced."""
     root = tmp_path / "root"
     (root / "ci-hub" / "stress").mkdir(parents=True)
-    for name in ("nightly.sh", "stress_store.py"):
+    for name in ("nightly.sh", "stress_rows.py", "stress_store.py"):
         shutil.copy2(STRESS_DIR / name, root / "ci-hub" / "stress" / name)
 
     # The driver reads SHA from `git -C $ROOT/hermit rev-parse`; an empty SHA
@@ -168,6 +169,18 @@ def test_clean_control_emits_no_record_at_all(tmp_path: Path) -> None:
         f"a CLEAN nightly must not escalate, got {result['tg_calls']}"
     )
     assert result["rc"] == 0, f"a CLEAN nightly must exit 0\n{result['out']}"
+
+
+def test_incomplete_ok_row_is_a_named_error_not_a_false_green(tmp_path: Path) -> None:
+    """An OK row must account for every promised burst instance."""
+    result = _harness(tmp_path, CSV_INCOMPLETE)
+
+    assert result["rc"] != 0, result["out"]
+    assert len(result["markers"]) == 1, result["out"]
+    record = json.loads(result["markers"][0].read_text())
+    assert record["verdict"] == "ERROR"
+    assert "stress_store refused the burst row" in record["detail"]
+    assert "🟢" not in result["out"]
 
 
 def test_escalation_is_delivered_and_acknowledged(tmp_path: Path) -> None:

@@ -226,7 +226,9 @@ for wl in $WORKLOADS; do
   case "$rc" in
     0) log "🟢 ${verdict:-CLEAN} $wl" ;;
     2) raise_alarm "$wl" "${verdict:-RED}" "${summary#VERDICT=* }" "$wl_cap" ;;
-    *) log "WARN: recorder exited $rc for $wl: $summary" ;;
+    *) raise_alarm "$wl" "ERROR" \
+         "stress_store refused the burst row (exit $rc); no measurement was recorded" \
+         "$wl_cap" ;;
   esac
 done
 

@@ -65,6 +65,9 @@ import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from stress_rows import StoreError
+from stress_rows import StressRunRecord
+
 HERE = Path(os.path.abspath(__file__)).parent
 PARENT = HERE.parent.parent
 DEFAULT_STORE = PARENT / "ignored" / "ci-hub" / "stress-runs.jsonl"
@@ -84,13 +87,13 @@ def parse_ts(value) -> datetime | None:
     return stamp if stamp.tzinfo else stamp.replace(tzinfo=timezone.utc)
 
 
-def row_time(row: dict) -> datetime | None:
+def row_time(row: StressRunRecord) -> datetime | None:
     """A row's event time. `finished_at` is the completion instant; `started_at`
     is the fallback for a row that recorded a start but no finish."""
-    return parse_ts(row.get("finished_at")) or parse_ts(row.get("started_at"))
+    return parse_ts(row.finished_at) or parse_ts(row.started_at)
 
 
-def measured(row: dict) -> bool:
+def measured(row: StressRunRecord) -> bool:
     """Did this run actually MEASURE anything?
 
     A row with zero successful bursts or zero instances executed nothing — it is
@@ -98,34 +101,45 @@ def measured(row: dict) -> bool:
     case). Counting it as freshness is what would let the harness go quiet
     without the alarm firing.
     """
-    bursts_ok = row.get("bursts_ok")
-    instances = row.get("total_instances")
-    return isinstance(bursts_ok, int) and bursts_ok >= 1 and \
-        isinstance(instances, int) and instances >= 1
+    return row.summary.bursts_ok >= 1 and row.summary.total_instances >= 1
 
 
-def load_rows(store: Path) -> tuple[list[dict], int]:
-    rows, malformed = [], 0
+def load_rows(store: Path) -> list[StressRunRecord]:
+    rows: list[StressRunRecord] = []
     with open(store) as handle:
-        for line in handle:
+        for line_number, line in enumerate(handle, 1):
             line = line.strip()
             if not line:
                 continue
             try:
-                rows.append(json.loads(line))
-            except json.JSONDecodeError:
-                malformed += 1
-    return rows, malformed
+                value = json.loads(line)
+                rows.append(
+                    StressRunRecord.from_dict(
+                        value, f"stress-run store line {line_number}"
+                    )
+                )
+            except json.JSONDecodeError as error:
+                raise StoreError(
+                    f"stress-run store line {line_number}: invalid JSON: {error}"
+                ) from error
+    return rows
 
 
-def assess(rows: list[dict], now: datetime, cadence_hours: float,
+def assess(rows: list[StressRunRecord], now: datetime, cadence_hours: float,
            grace_hours: float, malformed: int = 0) -> dict:
     bound = timedelta(hours=cadence_hours + grace_hours)
-    measuring = [(row_time(r), r) for r in rows if measured(r)]
-    measuring = [(t, r) for t, r in measuring if t is not None]
+    measuring: list[tuple[datetime, StressRunRecord]] = []
+    for row in rows:
+        timestamp = row_time(row)
+        if measured(row) and timestamp is not None:
+            measuring.append((timestamp, row))
     measuring.sort(key=lambda item: item[0])
 
-    any_time = [t for t in (row_time(r) for r in rows) if t is not None]
+    any_time: list[datetime] = []
+    for row in rows:
+        timestamp = row_time(row)
+        if timestamp is not None:
+            any_time.append(timestamp)
     newest_any = max(any_time) if any_time else None
     no_result_runs = len(rows) - len(measuring)
 
@@ -236,11 +250,11 @@ def main(argv: list[str] | None = None) -> int:
         }
     else:
         try:
-            rows, malformed = load_rows(store)
-        except OSError as exc:
+            rows = load_rows(store)
+        except (OSError, StoreError) as exc:
             print(f"check_freshness: cannot read store: {exc}", file=sys.stderr)
             return EXIT_ERROR
-        report = assess(rows, now, args.cadence_hours, grace, malformed)
+        report = assess(rows, now, args.cadence_hours, grace)
 
     print(json.dumps(report, indent=2) if args.json else render(report))
     return EXIT_ALARM if report["alarm"] else EXIT_OK

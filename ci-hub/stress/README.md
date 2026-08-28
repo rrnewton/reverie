@@ -27,6 +27,7 @@ its 6h `timeout-minutes:360` and is cancelled — 0/2 completions as of
 | File | Role |
 |------|------|
 | `matched-burst.sh` | **CANONICAL nightly burst (what cron runs).** Calibrator-gated matched-load probe: builds subject at main HEAD, runs multisect's `matched.sh` with subject + a known-flaky calibrator interleaved every wave, emits one CSV row per **calibrator-valid** wave (else a RED `CALIB_UNDERPOWERED` row). See "Validity calibrator" below. |
+| `stress_rows.py` | Producer-owned typed contract for each burst row, the derived summary, and each stored run record. |
 | `stress_store.py` | flaky-is-red verdict + durable JSONL store + `summary`/`selftest` CLI |
 | `nightly.sh` | driver: resolve main HEAD → run `$STRESS_BURST_CMD` per workload → record → alarm |
 | `stress-burst` | first-gen concurrent-burst primitive (`--prebuilt`/`--build-at`); emits the CSV contract. **Deprecated for nightly — it has NO validity calibrator, so a quiet host can false-green.** Retained for on-demand single-burst use. |
@@ -56,7 +57,9 @@ Fold every burst in a run through:
 `CLEAN` is the *only* non-alarm. A run that could not execute its probe is RED
 too (a silent-green nightly is the exact failure mode this task exists to kill).
 `stress_store.py record` exits **2** on any RED, **0** on CLEAN; the driver's
-overall exit is 0 (green) or 1 (P0). Verified: `stress_store.py selftest`.
+overall exit is 0 (green) or 1 (P0). A malformed producer row exits 3 and the
+driver records an `ERROR` alarm rather than treating the missing measurement as
+green. Verified: `stress_store.py selftest`.
 
 ## Validity calibrator (the OTHER important part)
 
@@ -108,14 +111,24 @@ read the **same k/N** two ways:
     $STRESS_BURST_CMD <sha> <width> <timeout_s> <workload>  ->  CSV on stdout
     row: sha,short,build_s,burst_N,hangs,passes,other,hang_rate,STATUS
     STATUS: OK | WT_FAIL | BUILD_FAIL | NOBIN | NOTEST | PROBE_FAIL
-          | CALIB_MISSING | MATCHED_MISSING | CALIB_UNDERPOWERED   (non-OK = harness error / could-not-validate)
+          | CALIB_MISSING | MATCHED_MISSING | CALIB_UNDERPOWERED
+          | NOWIRE | NOOUTPUT   (non-OK = harness error / could-not-validate)
+
+The row has exactly nine columns. An `OK` row must carry `burst_N`, `hangs`,
+`passes`, and `other`, and the three outcome counts must sum exactly to
+`burst_N`. Missing columns are not padded, extra columns are not truncated, and
+an unknown status is refused. These checks are what make `CLEAN` a claim about
+every promised instance rather than merely every instance that happened to be
+reported.
 
 `matched-burst.sh` may emit MULTIPLE `OK` rows (one per calibrator-valid wave);
 `stress_store.py` folds them all. The three calibrator tokens are the
 could-not-validate cases, all RED (`ERROR`).
 
-`stress_store.py` depends **only** on these columns, so the layer cannot drift
-regardless of where the primitive lives or how it builds.
+`stress_rows.py` owns these columns and their validation; `stress_store.py`
+imports that type for both the JSONL writer and reader. The layer therefore
+cannot silently pad, truncate, or reinterpret a producer row regardless of
+where the primitive lives or how it builds.
 
 ### Why the collision mattered (resolved)
 
