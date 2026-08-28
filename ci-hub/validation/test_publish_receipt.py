@@ -571,6 +571,40 @@ class ReceiptTests(unittest.TestCase):
             ),
         )
 
+    def test_new_receipt_body_is_sent_on_stdin(self):
+        body = b"x" * 200_000
+        head = "e" * 40
+        created = "f" * 40
+        responses = [
+            subprocess.CompletedProcess(
+                [], 0, stdout=json.dumps({"object": {"sha": head}}), stderr=""
+            ),
+            subprocess.CompletedProcess([], 1, stdout="", stderr="not found"),
+            subprocess.CompletedProcess(
+                [], 0, stdout=json.dumps({"commit": {"sha": created}}), stderr=""
+            ),
+        ]
+        with mock.patch.object(MODULE, "gh", side_effect=responses) as gh:
+            self.assertEqual(
+                MODULE.publish("rrnewton/dev-hermit", "validation-receipts", "receipt.json", body),
+                created,
+            )
+        put = gh.call_args_list[2]
+        self.assertEqual(
+            put.args[0],
+            [
+                "api",
+                "--method",
+                "PUT",
+                "repos/rrnewton/dev-hermit/contents/receipt.json",
+                "--input",
+                "-",
+            ],
+        )
+        request = json.loads(put.kwargs["input_body"])
+        self.assertEqual(base64.b64decode(request["content"]), body)
+        self.assertEqual(request["branch"], "validation-receipts")
+
 
 class ProducerTransitionTests(unittest.TestCase):
     """Mint-side bracket for the exact whole-map transition lifecycle."""

@@ -255,14 +255,16 @@ def gh_command() -> list[str]:
     return ["with-proxy", "gh"] if shutil.which("with-proxy") else ["gh"]
 
 
-def gh(args: list[str], *, check: bool = True) -> subprocess.CompletedProcess[str]:
+def gh(
+    args: list[str], *, check: bool = True, input_body: str | None = None
+) -> subprocess.CompletedProcess[str]:
     environment = os.environ.copy()
     if not environment.get("GH_CONFIG_DIR"):
         candidate = Path.home() / ".config" / "gh"
         if (candidate / "hosts.yml").is_file():
             environment["GH_CONFIG_DIR"] = str(candidate)
     result = bounded_capture.capture(
-        gh_command() + args, env=environment
+        gh_command() + args, env=environment, input=input_body
     )
     if check and result.returncode:
         fail(f"{' '.join(args)} failed: {result.stderr.strip()}")
@@ -311,19 +313,23 @@ def publish(repo: str, branch: str, path: str, body: bytes) -> str:
             )
         return head
 
+    request = json.dumps(
+        {
+            "message": f"validation receipt: {path.rsplit('/', 1)[-1]}",
+            "content": base64.b64encode(body).decode(),
+            "branch": branch,
+        }
+    )
     result = gh(
         [
             "api",
             "--method",
             "PUT",
             endpoint,
-            "-f",
-            f"message=validation receipt: {path.rsplit('/', 1)[-1]}",
-            "-f",
-            f"content={base64.b64encode(body).decode()}",
-            "-f",
-            f"branch={branch}",
-        ]
+            "--input",
+            "-",
+        ],
+        input_body=request,
     )
     return json.loads(result.stdout)["commit"]["sha"]
 
