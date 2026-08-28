@@ -122,8 +122,8 @@ pub unsafe fn clone_syscall(
 ///
 /// This routine instead reproduces SaBRe's normal `handle_syscall` epilogue for
 /// the child: it restores the guest's saved general-purpose registers and its
-/// original `%rsp` (`wrapper_sp + 0x88`) from the syscall frame, then jumps to
-/// the saved return address with `%rax = 0`.
+/// original `%rsp` (`wrapper_sp + 0x110`) from beyond the syscall frame and
+/// trampoline slots, then jumps to the saved return address with `%rax = 0`.
 ///
 /// # Safety
 ///
@@ -180,7 +180,9 @@ pub unsafe fn fork_syscall(
         "mov rbp, qword ptr [rdi + 0x70]",
         "mov r12, qword ptr [rdi + 0x20]",  // restore guest r12 (held wrapper_sp)
         "mov r11, qword ptr [rdi + 0x80]",  // guest return RIP -> jump target
-        "lea rsp, [rdi + 0x88]",            // guest's original %rsp
+        // The frame is followed by saved RFLAGS, the architectural return
+        // address, the scratch continuation, and the 128-byte red zone.
+        "lea rsp, [rdi + 0x110]",           // guest's original %rsp
         "mov rdi, qword ptr [rdi + 0x48]",  // guest rdi (final use of frame base)
         "xor eax, eax",                     // fork/clone returns 0 in the child
         "jmp r11",
@@ -356,7 +358,9 @@ pub unsafe fn clone3_fork_syscall(
         "mov rbp, qword ptr [rdi + 0x70]",
         "mov r12, qword ptr [rdi + 0x20]",
         "mov r11, qword ptr [rdi + 0x80]",
-        "lea rsp, [rdi + 0x88]",
+        // The frame is followed by saved RFLAGS, the architectural return
+        // address, the scratch continuation, and the 128-byte red zone.
+        "lea rsp, [rdi + 0x110]",
         "mov rdi, qword ptr [rdi + 0x48]",
         "xor eax, eax",
         "jmp r11",

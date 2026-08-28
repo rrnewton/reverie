@@ -28,13 +28,17 @@ reports `WIFSIGNALED` and the original terminating signal.
 
 ## Conformance gate
 
-The gate compiles two native workloads and runs each unchanged under the
+The gate compiles four native workloads and runs each unchanged under the
 ptrace `counter2` example and the SaBRe `riptrace` tool:
 
 - `thread_lifecycle`: 128 pthread create, syscall, return, and join cycles.
 - `signal_forwarding`: installs and queries handlers, forks and waits for a
   child, verifies SIGCHLD, SIGINT, and SIGTERM delivery, then resets SIGCHLD to
   `SIG_DFL` and confirms the next child remains waitable.
+- `fork_stack`: issues `fork(2)` from a function with a stack frame and checks
+  that both the parent and child return through that frame.
+- `vfork_exact_pid`: keeps an ordinary fork alongside a vfork-style clone and
+  checks that only the vfork child enters the vfork gate.
 
 Cargo builds the pinned, vendored SaBRe source in its package `OUT_DIR`. Build
 the crate, then run:
