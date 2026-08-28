@@ -974,16 +974,16 @@ def base_accepted(verdict: BaseVerdict) -> bool:
     return verdict in (BaseVerdict.SATISFIED, BaseVerdict.GRANDFATHERED_UNKNOWN)
 
 
-def _git_output(checkout: str, *args: str) -> bytes:
+def _git_output(checkout: str, *args: str) -> str:
     result = _capture(["git", "-C", checkout, *args])
     if result.returncode != 0:
-        detail = result.stderr.decode(errors="replace").strip() or f"exit {result.returncode}"
+        detail = result.stderr.strip() or f"exit {result.returncode}"
         raise RuntimeError(f"git -C {checkout} {' '.join(args)}: {detail}")
     return result.stdout
 
 
 def git_tree(checkout: str, sha: str) -> str:
-    value = _git_output(checkout, "rev-parse", "--verify", f"{sha}^{{tree}}").decode().strip()
+    value = _git_output(checkout, "rev-parse", "--verify", f"{sha}^{{tree}}").strip()
     if _SHA40.fullmatch(value) is None:
         raise RuntimeError(f"{checkout}: {sha} has no exact tree identity")
     return value
@@ -998,7 +998,7 @@ def git_is_ancestor(checkout: str, ancestor: str, descendant: str) -> bool:
         return True
     if result.returncode == 1:
         return False
-    detail = result.stderr.decode(errors="replace").strip() or f"exit {result.returncode}"
+    detail = result.stderr.strip() or f"exit {result.returncode}"
     raise RuntimeError(
         f"git -C {checkout} merge-base --is-ancestor {ancestor} {descendant}: {detail}"
     )
