@@ -10,6 +10,7 @@ import sys
 import tempfile
 from contextlib import contextmanager
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
 from typing import Any, Mapping, TypedDict, cast
@@ -47,10 +48,27 @@ class RunState(str, Enum):
         return self in {RunState.LAUNCHING, RunState.RUNNING}
 
 
+class AdmissionState(str, Enum):
+    ADMITTED = "admitted"
+    REFUSED = "refused"
+
+
+class AdmissionRefusalReason(str, Enum):
+    STALE_BASE = "stale-base"
+    VALIDATION_LOCK_REFUSAL = "validation-lock-refusal"
+
+
 class ProcessIdentityRecord(TypedDict):
     pid: int
     start_ticks: int
     boot_id: str
+
+
+class AdmissionResultRecord(TypedDict, total=False):
+    state: str
+    recorded_at: str
+    reason: str
+    exit_code: int
 
 
 class RunRecord(TypedDict, total=False):
@@ -90,6 +108,7 @@ class RunRecord(TypedDict, total=False):
     pane_id: str | None
     pane_title: str | None
     process_identity: ProcessIdentityRecord | None
+    admission_result: AdmissionResultRecord
     result: str
     exit_code: int | None
     detail: str | None
@@ -141,6 +160,14 @@ class ProcessIdentity:
 
 
 @dataclass(frozen=True)
+class AdmissionResult:
+    state: AdmissionState
+    recorded_at: str
+    reason: AdmissionRefusalReason | None
+    exit_code: int | None
+
+
+@dataclass(frozen=True)
 class RunHandle:
     """The complete current contract shared by every producer and consumer.
 
@@ -163,6 +190,7 @@ class RunHandle:
     producer: str
     admission: str
     process_identity: ProcessIdentity | None
+    admission_result: AdmissionResult | None
     raw: RunRecord
 
     @property
@@ -189,6 +217,7 @@ COMMON_FIELDS = frozenset(
         "producer",
         "admission",
         "process_identity",
+        "admission_result",
         "result",
         "exit_code",
         "detail",
@@ -376,6 +405,61 @@ def _process_identity(value: Mapping[str, Any]) -> ProcessIdentity | None:
     return ProcessIdentity(pid=pid, start_ticks=start_ticks, boot_id=boot_id)
 
 
+def _timestamp(
+    value: Mapping[str, Any], field: str, *, error_field: str | None = None
+) -> str:
+    error_field = error_field or field
+    raw = _required_text(value, field)
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError as error:
+        raise _error(error_field, "must be an RFC3339 timestamp") from error
+    if parsed.utcoffset() is None:
+        raise _error(error_field, "must include a UTC offset")
+    return raw
+
+
+def _admission_result(value: Mapping[str, Any]) -> AdmissionResult | None:
+    raw = value.get("admission_result")
+    if raw is None:
+        # A handle written before this field existed remains readable, but its
+        # missing evidence stays unknown. It is not inferred from the log.
+        return None
+    if not isinstance(raw, dict):
+        raise _error("admission_result", "must be an object")
+    try:
+        state = AdmissionState(_required_text(raw, "state"))
+    except ValueError as error:
+        raise _error(
+            "admission_result.state", f"unsupported value {raw.get('state')!r}"
+        ) from error
+    recorded_at = _timestamp(
+        raw, "recorded_at", error_field="admission_result.recorded_at"
+    )
+    if state is AdmissionState.ADMITTED:
+        if set(raw) != {"state", "recorded_at"}:
+            raise _error(
+                "admission_result",
+                "admitted must contain exactly state and recorded_at",
+            )
+        return AdmissionResult(state, recorded_at, None, None)
+    if set(raw) != {"state", "recorded_at", "reason", "exit_code"}:
+        raise _error(
+            "admission_result",
+            "refused must contain exactly state, recorded_at, reason, and exit_code",
+        )
+    try:
+        reason = AdmissionRefusalReason(_required_text(raw, "reason"))
+    except ValueError as error:
+        raise _error(
+            "admission_result.reason", f"unsupported value {raw.get('reason')!r}"
+        ) from error
+    exit_code = raw.get("exit_code")
+    if not isinstance(exit_code, int) or isinstance(exit_code, bool) or exit_code == 0:
+        raise _error("admission_result.exit_code", "must be a nonzero integer")
+    return AdmissionResult(state, recorded_at, reason, exit_code)
+
+
 def parse_current_record(value: Mapping[str, Any]) -> RunHandle:
     if value.get("schema_version") != SCHEMA_VERSION:
         raise _error(
@@ -435,6 +519,7 @@ def parse_current_record(value: Mapping[str, Any]) -> RunHandle:
     for field in _OPTIONAL_STRING_LIST_FIELDS & allowed_fields:
         _optional_string_list(value, field)
     identity = _process_identity(value)
+    admission_result = _admission_result(value)
 
     if kind is not RunKind.BENCH:
         if value.get("pane_role") != "observer-only":
@@ -577,6 +662,7 @@ def parse_current_record(value: Mapping[str, Any]) -> RunHandle:
         producer=producer,
         admission=admission,
         process_identity=identity,
+        admission_result=admission_result,
         raw=cast(RunRecord, dict(value)),
     )
 
@@ -729,6 +815,51 @@ def bind_process_identity(path: Path, identity: ProcessIdentity) -> dict[str, An
     return value
 
 
+def publish_admission_result(
+    path: Path,
+    *,
+    state: AdmissionState,
+    reason: AdmissionRefusalReason | None = None,
+    exit_code: int | None = None,
+) -> dict[str, Any]:
+    """Publish the one framework-owned admission result without replacement."""
+    if state is AdmissionState.ADMITTED:
+        if reason is not None or exit_code is not None:
+            raise _error(
+                "admission_result", "admitted does not carry reason or exit_code"
+            )
+    elif reason is None or exit_code is None:
+        raise _error(
+            "admission_result", "refused requires reason and exit_code"
+        )
+    with exclusive_record(path):
+        value = read_record(path)
+        if value.get("producer") != PRODUCER:
+            raise _error("producer", "admission result requires a current handle")
+        existing = _admission_result(value)
+        if existing is not None:
+            if (
+                existing.state is not state
+                or existing.reason is not reason
+                or existing.exit_code != exit_code
+            ):
+                raise _error(
+                    "admission_result",
+                    "record already carries a different admission result",
+                )
+            return value
+        encoded: AdmissionResultRecord = {
+            "state": state.value,
+            "recorded_at": datetime.now(timezone.utc).isoformat(),
+        }
+        if state is AdmissionState.REFUSED:
+            assert reason is not None and exit_code is not None
+            encoded.update(reason=reason.value, exit_code=exit_code)
+        value["admission_result"] = encoded
+        _write_unlocked(path, value)
+    return value
+
+
 def _legacy_projection(value: Mapping[str, Any]) -> dict[str, Any]:
     """Project only the schema-1 fields existing readers historically required."""
     unit = value.get("unit")
@@ -750,6 +881,7 @@ def _legacy_projection(value: Mapping[str, Any]) -> dict[str, Any]:
         "started_at": value.get("started_at"),
         "host": value.get("host"),
         "process_identity": value.get("process_identity"),
+        "admission_result": None,
         "lock_admissible": state in {"launching", "running"},
         "counts_as_validation": kind != RunKind.BENCH.value,
     }
@@ -762,6 +894,7 @@ def projection(value: Mapping[str, Any]) -> dict[str, Any]:
         return _legacy_projection(value)
     handle = parse_current_record(value)
     identity = handle.process_identity
+    admission_result = handle.admission_result
     return {
         "schema_version": SCHEMA_VERSION,
         "kind": handle.kind.value,
@@ -779,6 +912,23 @@ def projection(value: Mapping[str, Any]) -> dict[str, Any]:
                 "boot_id": identity.boot_id,
             }
             if identity is not None
+            else None
+        ),
+        "admission_result": (
+            {
+                "state": admission_result.state.value,
+                "recorded_at": admission_result.recorded_at,
+                **(
+                    {
+                        "reason": admission_result.reason.value,
+                        "exit_code": admission_result.exit_code,
+                    }
+                    if admission_result.state is AdmissionState.REFUSED
+                    and admission_result.reason is not None
+                    else {}
+                ),
+            }
+            if admission_result is not None
             else None
         ),
         "lock_admissible": handle.lock_admissible,
@@ -869,6 +1019,15 @@ def _cli(argv: list[str] | None = None) -> int:
     bind.add_argument("--pid", type=int, required=True)
     bind.add_argument("--start-ticks", type=int, required=True)
     bind.add_argument("--boot-id", required=True)
+    publish_admission = commands.add_parser("publish-admission-result")
+    publish_admission.add_argument("--path", type=Path, required=True)
+    publish_admission.add_argument(
+        "--state", choices=[state.value for state in AdmissionState], required=True
+    )
+    publish_admission.add_argument(
+        "--reason", choices=[reason.value for reason in AdmissionRefusalReason]
+    )
+    publish_admission.add_argument("--exit-code", type=int)
     args = parser.parse_args(argv)
     try:
         if args.command == "inspect-current-records":
@@ -879,6 +1038,18 @@ def _cli(argv: list[str] | None = None) -> int:
                 ProcessIdentity(
                     pid=args.pid, start_ticks=args.start_ticks, boot_id=args.boot_id
                 ),
+            )
+            report = projection(value)
+        elif args.command == "publish-admission-result":
+            value = publish_admission_result(
+                args.path,
+                state=AdmissionState(args.state),
+                reason=(
+                    AdmissionRefusalReason(args.reason)
+                    if args.reason is not None
+                    else None
+                ),
+                exit_code=args.exit_code,
             )
             report = projection(value)
         else:

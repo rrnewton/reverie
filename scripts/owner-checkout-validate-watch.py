@@ -24,6 +24,11 @@ import time
 from typing import Any, Iterable, Sequence
 
 
+RUN_REGISTRY_DIR = Path(__file__).resolve().parents[1] / "ci-hub" / "validate"
+sys.path.insert(0, str(RUN_REGISTRY_DIR))
+import run_registry  # type: ignore  # noqa: E402
+
+
 PASS = 0
 FAIL = 1
 NO_RESULT = 2
@@ -321,25 +326,44 @@ def acquired_line(log: Path, *, target: str) -> str | None:
     return None
 
 
+def validation_admission_result(record: Path) -> tuple[dict[str, Any] | None, str | None]:
+    """Read the producer-owned admission result; missing evidence stays unknown."""
+    try:
+        value = run_registry.read_record(record)
+    except RuntimeError as error:
+        return None, str(error)
+    raw = value.get("admission_result")
+    if raw is None:
+        return None, None
+    if not isinstance(raw, dict):
+        # Current records are checked by run_registry before reaching here.
+        return None, "validation run handle admission_result is not an object"
+    return dict(raw), None
+
+
 def record_admission(
     state_dir: Path,
     result: dict[str, Any],
     *,
     target: str,
-    evidence_line: str,
+    run_record: Path,
+    admission_result: dict[str, Any],
 ) -> dict[str, Any]:
-    """Atomically publish the watch's exact lock admission, never its verdict."""
-    observed_at = utc_now()
-    observed_ms = epoch_millis()
+    """Publish the framework's exact admission, never a conclusion from text."""
+    recorded_at = str(admission_result["recorded_at"])
+    parsed = parse_time(recorded_at)
+    if parsed is None:
+        raise RuntimeError("typed admission result has an unreadable recorded_at")
     admission = {
         "state": "ADMITTED",
         "agent": "owner-checkout-watch",
         "kind": "validate",
         "target": target,
         "attempt_id": result["attempt_id"],
-        "admitted_at": observed_at,
-        "admitted_at_epoch_ms": observed_ms,
-        "evidence_line": evidence_line,
+        "admitted_at": recorded_at,
+        "admitted_at_epoch_ms": int(parsed.timestamp() * 1000),
+        "run_record": str(run_record),
+        "admission_result": admission_result,
         "result_json": result["result_json"],
     }
     result["lock_admission"] = admission
@@ -355,6 +379,45 @@ def record_admission(
         Path(str(result["result_json"])),
         json.dumps(result, indent=2, sort_keys=True) + "\n",
     )
+    return admission
+
+
+def observe_admission_result(
+    record: Path,
+    *,
+    state_dir: Path,
+    result: dict[str, Any],
+    target: str,
+) -> dict[str, Any] | None:
+    admission, error = validation_admission_result(record)
+    result["validation_run_record"] = str(record)
+    if error is not None:
+        result["lock_admission"] = {
+            "state": "UNKNOWN",
+            "reason": error,
+            "run_record": str(record),
+        }
+        return None
+    if admission is None:
+        return None
+    result["admission_result"] = admission
+    if admission.get("state") == "admitted":
+        if result.get("lock_admission", {}).get("state") != "ADMITTED":
+            record_admission(
+                state_dir,
+                result,
+                target=target,
+                run_record=record,
+                admission_result=admission,
+            )
+    elif admission.get("state") == "refused":
+        result["lock_admission"] = {
+            "state": "NOT_ADMITTED",
+            "reason": admission.get("reason"),
+            "exit_code": admission.get("exit_code"),
+            "recorded_at": admission.get("recorded_at"),
+            "run_record": str(record),
+        }
     return admission
 
 
@@ -1277,11 +1340,12 @@ def run_validate_observing_admission(
     *,
     cwd: Path,
     log: Path,
+    run_record: Path,
     state_dir: Path,
     result: dict[str, Any],
     target: str,
 ) -> subprocess.CompletedProcess:
-    """Run the detached producer while publishing its exact ACQUIRED event."""
+    """Run the detached producer while publishing its typed admission result."""
     admission_seen = False
     with append_launcher_output(log) as output:
         process = subprocess.Popen(
@@ -1293,26 +1357,22 @@ def run_validate_observing_admission(
         )
         while process.poll() is None:
             if not admission_seen:
-                line = acquired_line(log, target=target)
-                if line is not None:
-                    record_admission(
-                        state_dir,
-                        result,
-                        target=target,
-                        evidence_line=line,
-                    )
-                    admission_seen = True
+                admission = observe_admission_result(
+                    run_record,
+                    state_dir=state_dir,
+                    result=result,
+                    target=target,
+                )
+                admission_seen = admission is not None
             time.sleep(0.2)
         returncode = process.wait()
     if not admission_seen:
-        line = acquired_line(log, target=target)
-        if line is not None:
-            record_admission(
-                state_dir,
-                result,
-                target=target,
-                evidence_line=line,
-            )
+        observe_admission_result(
+            run_record,
+            state_dir=state_dir,
+            result=result,
+            target=target,
+        )
     return subprocess.CompletedProcess(command, returncode)
 
 
@@ -1610,6 +1670,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         launched_at = dt.datetime.now(dt.timezone.utc)
         validate_log = state_dir / "logs" / f"{attempt_id}-validate-run.log"
         validate_log.parent.mkdir(parents=True, exist_ok=True)
+        unit = f"validate-owner-checkout-{attempt_id.lower()}"
+        run_record = run_registry.record_path(parent, unit)
         command = [
             parent / "ci-hub/ci-hub",
             "validate-run",
@@ -1623,7 +1685,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "--target",
             pre["head"],
             "--unit",
-            f"validate-owner-checkout-{attempt_id.lower()}",
+            unit,
             "--log",
             validate_log,
             "--wait",
@@ -1642,22 +1704,30 @@ def main(argv: Sequence[str] | None = None) -> int:
             command,
             cwd=parent,
             log=validate_log,
+            run_record=run_record,
             state_dir=state_dir,
             result=result,
             target=pre["head"],
         )
         result["validate_run_rc"] = completed.returncode
-        lock_block = lock_block_evidence(validate_log)
-        if lock_block is not None:
-            result["lock_block_evidence"] = lock_block
-            if result.get("lock_admission", {}).get("state") != "ADMITTED":
-                result["lock_admission"] = {
-                    "state": "NOT_ADMITTED",
-                    "reason": "explicit validate-lock refusal before product work",
-                    "evidence": lock_block,
-                }
-            holder = lock_holder_attribution(parent, lock_block)
-            result["lock_holder"] = holder
+        admission_result = observe_admission_result(
+            run_record,
+            state_dir=state_dir,
+            result=result,
+            target=pre["head"],
+        )
+        lock_refused = (
+            admission_result is not None
+            and admission_result.get("state") == "refused"
+            and admission_result.get("reason") == "validation-lock-refusal"
+        )
+        if lock_refused:
+            # Text remains useful for an operator-facing holder attribution, but
+            # it no longer decides whether admission was refused.
+            lock_block = lock_block_evidence(validate_log)
+            if lock_block is not None:
+                result["lock_block_evidence"] = lock_block
+                result["lock_holder"] = lock_holder_attribution(parent, lock_block)
 
         row = latest_attempt_row(
             canonical_ledger_rows(parent),
@@ -1719,17 +1789,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                 f"{CANONICAL_GREEN_VERDICT}, for exact commit {pre['head']}"
             )
 
-        # The launcher's own log carries any admission refusal; the producer's
-        # durable log (used below for product evidence) never does.
+        # Retain presentation evidence for old reports, but never let it select
+        # a functional outcome. The current authority is `admission_result`.
         refusal = admission_refusal_evidence(validate_log)
         result["admission_refusal"] = refusal
-        readmission = (
-            refusal
-            if refusal is not None
-            and refusal.get("kind") == "canonical-terminal-readmission"
-            and refusal.get("refused_sha") == pre["head"]
-            else None
-        )
 
         evidence_log = Path(str(result["validate_log"]))
         node_evidence = privileged_tests_evidence(evidence_log)
@@ -1752,7 +1815,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             recurrence_triggered=recurrence["triggered"],
         )
 
-        if row is None and lock_block is not None:
+        if row is None and lock_refused:
             holder = result.get("lock_holder") or {}
             holder_interpretation = holder.get("interpretation")
             holder_context = (
@@ -1773,57 +1836,49 @@ def main(argv: Sequence[str] | None = None) -> int:
                     f"wrapper exit={completed.returncode} is not the job verdict"
                 ),
             )
-        elif row is None and readmission is not None and canonical_green:
-            # GREEN. Nothing ran because nothing needed to: the guard refused a
-            # redundant re-run of a commit the canonical authority has already
-            # judged. Cite the receipt so this is auditable without a second
-            # lookup, and say plainly that no test executed this attempt.
+        elif row is None and canonical_green:
             result.update(
                 state="PASS_ALREADY_VALIDATED",
                 reason=(
                     "GREEN: canonical validate-status already has terminal verdict "
-                    f"{CANONICAL_GREEN_VERDICT} for unchanged SHA {pre['head']}, so the "
-                    "de-duplication guard correctly refused a redundant re-run and no "
-                    "test executed this attempt; existing receipt "
+                    f"{CANONICAL_GREEN_VERDICT} for exact SHA {pre['head']}; no result "
+                    "for this attempt is being promoted into that authority; existing "
+                    "receipt "
                     + describe_receipt(canonical["receipt"])
                     + "; "
                     + revision["verdict_qualifier"]
                 ),
             )
-        elif row is None and readmission is not None and canonical["available"] and (
+        elif row is None and canonical["available"] and (
             canonical["verdict"] == CANONICAL_RED_VERDICT
         ):
-            # The same guard also refuses a SHA already judged terminally RED.
-            # That refusal is a failure report, not an absence of one.
             result.update(
                 state="FAIL",
                 reason=(
                     "canonical validate-status already has terminal verdict "
-                    f"{CANONICAL_RED_VERDICT} for unchanged SHA {pre['head']}; the "
-                    "re-admission refusal is reporting an existing red, not a missing "
-                    "measurement; " + revision["verdict_qualifier"]
+                    f"{CANONICAL_RED_VERDICT} for exact SHA {pre['head']}; no result "
+                    "for this attempt is being promoted into that authority; "
+                    + revision["verdict_qualifier"]
                 ),
             )
-        elif row is None and readmission is not None:
-            # The log says the guard refused on a terminal verdict, but the
-            # authority does not now agree. Fail closed: unvalidated, not green.
+        elif (
+            row is None
+            and admission_result is not None
+            and admission_result.get("state") == "refused"
+        ):
             result.update(
                 state="NO_RESULT",
                 reason=(
-                    "re-admission was refused citing terminal verdict "
-                    f"{readmission.get('refused_verdict')}, but canonical "
-                    f"validate-status now reports {canonical['verdict']!r} "
-                    f"({canonical['reason']}); refusing to infer a verdict"
+                    "the typed validation admission result refused product work, so this "
+                    f"SHA is UNVALIDATED rather than failing: {admission_result.get('reason')}"
                 ),
             )
-        elif row is None and refusal is not None:
-            # Every other admission refusal: honestly unvalidated. NOT green,
-            # and NOT a product failure — no product work ever ran.
+        elif row is None and admission_result is None:
             result.update(
                 state="NO_RESULT",
                 reason=(
-                    "validate-run refused admission before product work, so this SHA is "
-                    f"UNVALIDATED rather than failing: {refusal['detail']}"
+                    "validation admission is UNKNOWN because the run handle carries no "
+                    "typed admission result; log text is presentation only"
                 ),
             )
         elif completed.returncode != 0:

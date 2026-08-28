@@ -123,13 +123,62 @@ def readmission_refusal_log(log: Path, sha: str, verdict: str = "VALIDATED") -> 
     )
 
 
-class ReadmissionRefusalClassificationTest(unittest.TestCase):
-    """Three outcomes where the watch used to have two.
+def admitted_result() -> dict[str, object]:
+    return {"state": "admitted", "recorded_at": "2026-08-28T07:00:01+00:00"}
 
-    `validate-run` spends exit code 2 on EVERY admission refusal. Reading the
-    code alone reported 'this commit is already proven green' as FAIL, which is
-    why the owner had never seen a green. Bracket all three directions.
-    """
+
+def refused_result(reason: str) -> dict[str, object]:
+    return {
+        "state": "refused",
+        "recorded_at": "2026-08-28T07:00:01+00:00",
+        "reason": reason,
+        "exit_code": 3,
+    }
+
+
+def write_validation_record(
+    path: Path,
+    *,
+    target: str,
+    checkout: Path,
+    log: Path,
+    admission_result: dict[str, object] | None,
+) -> None:
+    root = checkout.parent.parent
+    record = {
+        "schema_version": 1,
+        "kind": "validate",
+        "state": "running",
+        "unit": f"{path.stem}.service",
+        "target": target,
+        "repo": "rrnewton/hermit",
+        "checkout": str(checkout),
+        "source_checkout": str(checkout),
+        "temporary_checkout": False,
+        "cargo_home": str(root / "cargo"),
+        "log": str(log),
+        "agent": "owner-checkout-watch",
+        "pr": None,
+        "started_at": "2026-08-28T07:00:00+00:00",
+        "parent_checkout_head": target,
+        "producer": watch.run_registry.PRODUCER,
+        "admission": "ci-hub validate-lock",
+        "pane_role": "observer-only",
+        "validate_lock_child_deadline_seconds": 1800,
+        "e2e_result_root": str(root / "e2e"),
+        "safe_ci_dag_runner_log_dir": str(root / "dag"),
+        "hermit_run_timeout_seconds": 1620,
+        **(
+            {"admission_result": admission_result}
+            if admission_result is not None
+            else {}
+        ),
+    }
+    watch.run_registry.write_record(path, record)
+
+
+class ReadmissionRefusalClassificationTest(unittest.TestCase):
+    """Typed admission and canonical status, independent of presentation text."""
 
     def _run(
         self,
@@ -139,6 +188,7 @@ class ReadmissionRefusalClassificationTest(unittest.TestCase):
         write_log,
         row: dict[str, object] | None = None,
         qualified: tuple[bool, str] = (False, "no exact-attempt ledger row"),
+        admission_result: dict[str, object] | None = None,
     ) -> tuple[int, dict, mock.Mock]:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -146,8 +196,17 @@ class ReadmissionRefusalClassificationTest(unittest.TestCase):
             state = root / "state"
             head = command(repo, "git", "rev-parse", "HEAD").strip()
 
-            def launch(command_argv, *, cwd, log, state_dir, result, target):
+            def launch(
+                command_argv, *, cwd, log, run_record, state_dir, result, target
+            ):
                 write_log(Path(log), head)
+                write_validation_record(
+                    Path(run_record),
+                    target=head,
+                    checkout=repo,
+                    log=Path(log),
+                    admission_result=admission_result,
+                )
                 return subprocess.CompletedProcess([], returncode, "", "")
 
             with mock.patch.object(
@@ -183,8 +242,8 @@ class ReadmissionRefusalClassificationTest(unittest.TestCase):
 
         self.assertEqual(rc, watch.PASS)
         self.assertEqual(result["state"], "PASS_ALREADY_VALIDATED")
-        # It reports green WITHOUT re-running: the guard refused, and the count
-        # of executed tests for THIS attempt is honestly null.
+        # It reports the existing green without promoting this attempt: the
+        # count of executed tests for THIS attempt is honestly null.
         self.assertIsNone(result["executed_tests"])
         self.assertEqual(result["validate_run_rc"], 2)
         self.assertEqual(result["ledger_row_found"], False)
@@ -240,12 +299,13 @@ class ReadmissionRefusalClassificationTest(unittest.TestCase):
                 "head predates producer floor bfb0a9ef\n",
                 encoding="utf-8",
             ),
+            admission_result=refused_result("stale-base"),
         )
 
         self.assertEqual(rc, watch.NO_RESULT)
         self.assertEqual(result["state"], "NO_RESULT")
         self.assertIn("UNVALIDATED rather than failing", result["reason"])
-        self.assertIn("producer floor", result["reason"])
+        self.assertIn("stale-base", result["reason"])
         self.assertEqual(result["admission_refusal"]["kind"], "admission-refusal")
         self.assertNotIn("GREEN", result["reason"])
         self.assertEqual(
@@ -281,6 +341,7 @@ class ReadmissionRefusalClassificationTest(unittest.TestCase):
                 "validate-run: CANONICAL-VERDICT-UNAVAILABLE: no receipt\n",
                 encoding="utf-8",
             ),
+            admission_result=refused_result("validation-lock-refusal"),
         )
 
         self.assertEqual(rc, watch.BLOCKED_ON_LOCK)
@@ -303,12 +364,29 @@ class ReadmissionRefusalClassificationTest(unittest.TestCase):
                 "# ci-hub/validate-lock tool COST ACTUAL wall=5.2s exit=3\n",
                 encoding="utf-8",
             ),
+            admission_result=admitted_result(),
         )
 
         self.assertEqual(rc, watch.FAIL)
         self.assertEqual(result["state"], "FAIL")
         self.assertIsNone(result.get("lock_block_evidence"))
         self.assertIn("make validate exit=2", result["reason"])
+
+    def test_historical_handle_does_not_promote_an_acquired_log_line(self) -> None:
+        rc, result, _ = self._run(
+            returncode=2,
+            canonical=unvalidated_status,
+            write_log=lambda log, sha: log.write_text(
+                "validate-lock: ACQUIRED by owner-checkout-watch running validate "
+                f"{sha} (lease 1200s)\n",
+                encoding="utf-8",
+            ),
+        )
+
+        self.assertEqual(watch.NO_RESULT, rc)
+        self.assertEqual("NO_RESULT", result["state"])
+        self.assertIn("admission is UNKNOWN", result["reason"])
+        self.assertEqual("UNKNOWN", result["lock_admission"]["state"])
 
     def test_a_real_failing_node_is_still_fail(self) -> None:
         """A genuine product failure keeps reporting FAIL, counts and all."""
@@ -321,6 +399,7 @@ class ReadmissionRefusalClassificationTest(unittest.TestCase):
                 encoding="utf-8",
             ),
             row={"result": "fail", "executed_tests": 814, "cwd": "", "commit": ""},
+            admission_result=admitted_result(),
         )
 
         self.assertEqual(rc, watch.FAIL)
@@ -343,7 +422,7 @@ class ReadmissionRefusalClassificationTest(unittest.TestCase):
 
         self.assertEqual(rc, watch.NO_RESULT)
         self.assertEqual(result["state"], "NO_RESULT")
-        self.assertIn("refusing to infer a verdict", result["reason"])
+        self.assertIn("admission is UNKNOWN", result["reason"])
         self.assertEqual(
             result["commit_validation_state"],
             watch.COMMIT_VALIDATION_NOT_HARD_GREEN,
@@ -844,11 +923,11 @@ class OwnerCheckoutValidateWatchTest(unittest.TestCase):
                     state,
                     result,
                     target="d" * 40,
-                    evidence_line=(
-                        "validate-lock: ACQUIRED by owner-checkout-watch running validate "
-                        + "d" * 40
-                        + " (lease 1200s)"
-                    ),
+                    run_record=state / "runs/fixture.json",
+                    admission_result={
+                        "state": "admitted",
+                        "recorded_at": "1970-01-01T00:03:21.250Z",
+                    },
                 )
             self.assertEqual(admission["state"], "ADMITTED")
             rc, status = watch.admission_status_since(state, "200")
@@ -885,11 +964,20 @@ class OwnerCheckoutValidateWatchTest(unittest.TestCase):
                 + target
                 + " (lease 1200s)"
             )
+            run_record = Path(temporary) / "ignored/validate/runs/validate-test.json"
+            write_validation_record(
+                run_record,
+                target=target,
+                checkout=Path(temporary) / "checkout",
+                log=log,
+                admission_result=admitted_result(),
+            )
 
             completed = watch.run_validate_observing_admission(
                 ["bash", "-c", f"printf '%s\\n' '{marker}'; sleep 0.4"],
                 cwd=Path(temporary),
                 log=log,
+                run_record=run_record,
                 state_dir=state,
                 result=result,
                 target=target,

@@ -74,6 +74,57 @@ class RunRegistryContractTests(unittest.TestCase):
         self.assertEqual(run_registry.RunState.PREPARING, handle.state)
         self.assertFalse(handle.lock_admissible)
         self.assertTrue(handle.counts_as_validation)
+        self.assertIsNone(handle.admission_result)
+
+    def test_admission_result_is_closed_and_exact(self) -> None:
+        handle = run_registry.parse_current_record(
+            validation_handle(
+                admission_result={
+                    "state": "admitted",
+                    "recorded_at": "2026-08-28T07:00:01+00:00",
+                }
+            )
+        )
+        self.assertEqual(run_registry.AdmissionState.ADMITTED, handle.admission_result.state)
+
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "validation-run-handle-admission_result.state: unsupported value 'waiting'",
+        ):
+            run_registry.parse_current_record(
+                validation_handle(
+                    admission_result={
+                        "state": "waiting",
+                        "recorded_at": "2026-08-28T07:00:01+00:00",
+                    }
+                )
+            )
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "validation-run-handle-admission_result.recorded_at: must include a UTC offset",
+        ):
+            run_registry.parse_current_record(
+                validation_handle(
+                    admission_result={
+                        "state": "admitted",
+                        "recorded_at": "2026-08-28T07:00:01",
+                    }
+                )
+            )
+
+    def test_refused_admission_requires_reason_and_exit_by_name(self) -> None:
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "validation-run-handle-admission_result: refused must contain exactly",
+        ):
+            run_registry.parse_current_record(
+                validation_handle(
+                    admission_result={
+                        "state": "refused",
+                        "recorded_at": "2026-08-28T07:00:01+00:00",
+                    }
+                )
+            )
 
     def test_bench_failed_state_is_distinct_and_complete(self) -> None:
         handle = run_registry.parse_current_record(
@@ -184,6 +235,24 @@ class RunRegistryContractTests(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "different process identity"):
                 run_registry.bind_process_identity(
                     path, run_registry.ProcessIdentity(3, 4, "boot-b")
+                )
+
+    def test_admission_result_cannot_be_replaced(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "validate-test.json"
+            run_registry.write_record(path, validation_handle(state="launching"))
+            run_registry.publish_admission_result(
+                path, state=run_registry.AdmissionState.ADMITTED
+            )
+            self.assertEqual(
+                "admitted", run_registry.read_record(path)["admission_result"]["state"]
+            )
+            with self.assertRaisesRegex(RuntimeError, "different admission result"):
+                run_registry.publish_admission_result(
+                    path,
+                    state=run_registry.AdmissionState.REFUSED,
+                    reason=run_registry.AdmissionRefusalReason.VALIDATION_LOCK_REFUSAL,
+                    exit_code=3,
                 )
 
 

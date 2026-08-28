@@ -1714,6 +1714,56 @@ fn anchor_token(name: &str, value: &str) -> Result<(), ValidateLockError> {
     Ok(())
 }
 
+fn publish_run_admission_result(
+    attribution: &VerifiedRunAttribution,
+    state: validate_run_handle::AdmissionState,
+    reason: Option<validate_run_handle::AdmissionRefusalReason>,
+    exit_code: Option<i32>,
+) -> Result<(), ValidateLockError> {
+    #[cfg(test)]
+    if attribution.record == Path::new("test-only-run-record") {
+        return Ok(());
+    }
+    let root = validate_run_handle::authority_root_for_record(&attribution.record)
+        .map_err(ValidateLockError::InvalidState)?;
+    validate_run_handle::publish_admission_result(
+        &root,
+        &attribution.record,
+        state,
+        reason,
+        exit_code,
+    )
+    .map_err(ValidateLockError::InvalidState)?;
+    Ok(())
+}
+
+fn refusal_before_admission(
+    attribution: &VerifiedRunAttribution,
+    code: i32,
+) -> Result<i32, ValidateLockError> {
+    publish_run_admission_result(
+        attribution,
+        validate_run_handle::AdmissionState::Refused,
+        Some(validate_run_handle::AdmissionRefusalReason::ValidationLockRefusal),
+        Some(code),
+    )?;
+    Ok(code)
+}
+
+fn stale_base_refusal_with_record(
+    attribution: &VerifiedRunAttribution,
+    error: ValidateLockError,
+) -> Result<i32, ValidateLockError> {
+    let code = stale_base_refusal(error)?;
+    publish_run_admission_result(
+        attribution,
+        validate_run_handle::AdmissionState::Refused,
+        Some(validate_run_handle::AdmissionRefusalReason::StaleBase),
+        Some(code),
+    )?;
+    Ok(code)
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum OriginalProcessGroupState {
     /// The recorded payload group is absent. This also covers a numeric PGID
@@ -4727,23 +4777,27 @@ impl ValidateLock {
             io_error("enable child subreaper at", Path::new("/proc/self"), source)
         })?;
 
+        // The run record is the shared producer-consumer contract for
+        // admission. Bind it before any normal refusal so a current invocation
+        // never leaves its observer to reconstruct the answer from log text.
+        let attribution = require_run_attribution(root, &args)?;
+
         // Refuse immutable-floor and current-main violations BEFORE this run
         // enters the box-global queue. A stale head must not wait for scarce
         // validation time it can never consume usefully.
         if let Err(error) =
             base_admission_check(root, &args.target, args.kind, args.skip_base_check)
         {
-            return stale_base_refusal(error);
+            return stale_base_refusal_with_record(&attribution, error);
         }
         if let Err(error) = current_main_freshness_check(root, &args.target, args.kind) {
-            return stale_base_refusal(error);
+            return stale_base_refusal_with_record(&attribution, error);
         }
 
         // Accountability is an admission predicate, not a post-hoc reporting
         // best effort. The canonical producer writes the run record before it
         // starts this service; bind that record to our live systemd unit before
         // we can take the one box-global anchor.
-        let attribution = require_run_attribution(root, &args)?;
         let owner = current_process_owner()?;
         publish_required_run_process_identity(&args, &attribution, &owner)?;
         let record_text = attribution.record.to_string_lossy();
@@ -4773,7 +4827,7 @@ impl ValidateLock {
         // exists to prioritize.
         let yield_status = self.wait_for_owner_watch_yield(&args.agent, args.wait, args.no_wait)?;
         if yield_status != 0 {
-            return Ok(yield_status);
+            return refusal_before_admission(&attribution, yield_status);
         }
 
         // BOX-GLOBAL PRIORITY QUEUE, THEN ANCHOR, BOTH BEFORE REPOSITORY STATE.
@@ -4794,7 +4848,7 @@ impl ValidateLock {
             match self.wait_for_global_turn(&args, &owner, &anchor_attribution, false, root)? {
                 Some(reservation) => reservation,
                 None => {
-                    return Ok(REFUSED_EXIT_CODE);
+                    return refusal_before_admission(&attribution, REFUSED_EXIT_CODE);
                 }
             };
         loop {
@@ -4825,7 +4879,7 @@ impl ValidateLock {
                     {
                         drop(box_anchors);
                         self.remove_own_global_waiter(&args, &owner)?;
-                        return stale_base_refusal(error);
+                        return stale_base_refusal_with_record(&attribution, error);
                     }
                     self.remove_own_global_waiter(&args, &owner)?;
                     break;
@@ -4837,7 +4891,7 @@ impl ValidateLock {
                         "REFUSED: validate yield state UNKNOWN ({}): {}; absence is not permission",
                         boundary.reason_code, boundary.detail
                     );
-                    return Ok(REFUSED_EXIT_CODE);
+                    return refusal_before_admission(&attribution, REFUSED_EXIT_CODE);
                 }
                 YieldState::Yield => {
                     eprintln!("validate-lock: YIELD for owner watch: {}", boundary.detail);
@@ -4846,7 +4900,7 @@ impl ValidateLock {
                         self.wait_for_owner_watch_yield(&args.agent, args.wait, args.no_wait)?;
                     if yield_status != 0 {
                         self.remove_own_global_waiter(&args, &owner)?;
-                        return Ok(yield_status);
+                        return refusal_before_admission(&attribution, yield_status);
                     }
                     (box_anchors, slot) = match self.wait_for_global_turn(
                         &args,
@@ -4856,7 +4910,7 @@ impl ValidateLock {
                         root,
                     )? {
                         Some(reservation) => reservation,
-                        None => return Ok(REFUSED_EXIT_CODE),
+                        None => return refusal_before_admission(&attribution, REFUSED_EXIT_CODE),
                     };
                 }
             }
@@ -4877,7 +4931,7 @@ impl ValidateLock {
         };
         if let Some(reason) = foreign {
             eprintln!("REFUSED: {reason}");
-            return Ok(REFUSED_EXIT_CODE);
+            return refusal_before_admission(&attribution, REFUSED_EXIT_CODE);
         }
 
         // Admission: block FIFO, or refuse immediately under --no-wait. Never
@@ -4912,13 +4966,13 @@ impl ValidateLock {
                     eprintln!(
                         "REFUSED: owner watch has priority at this free boundary (~{seconds_left}s): {reason}"
                     );
-                    return Ok(REFUSED_EXIT_CODE);
+                    return refusal_before_admission(&attribution, REFUSED_EXIT_CODE);
                 }
                 AcquireToken::YieldUnknown { reason } => {
                     eprintln!(
                         "REFUSED: validate yield state UNKNOWN: {reason}; absence is not permission"
                     );
-                    return Ok(REFUSED_EXIT_CODE);
+                    return refusal_before_admission(&attribution, REFUSED_EXIT_CODE);
                 }
                 AcquireToken::Held {
                     agent,
@@ -4930,14 +4984,14 @@ impl ValidateLock {
                     eprintln!(
                         "REFUSED: box-exclusive lock held by {agent} running {kind} {target}, ~{seconds_left}s left; {ahead} ahead in queue"
                     );
-                    return Ok(REFUSED_EXIT_CODE);
+                    return refusal_before_admission(&attribution, REFUSED_EXIT_CODE);
                 }
                 AcquireToken::WaitTurn { head, ahead } => {
                     eprintln!(
                         "REFUSED: box-exclusive lock free but {head} is ahead of {} in the FIFO queue, ~0s left; {ahead} ahead in queue",
                         args.agent
                     );
-                    return Ok(REFUSED_EXIT_CODE);
+                    return refusal_before_admission(&attribution, REFUSED_EXIT_CODE);
                 }
             }
         } else {
@@ -4949,11 +5003,20 @@ impl ValidateLock {
                 args.hold,
             )?;
             if acquire_status != 0 {
-                return Ok(acquire_status);
+                return refusal_before_admission(&attribution, acquire_status);
             }
         }
 
         if let Err(error) = active.with_guard(|| active.write_current_process_owner()) {
+            let _ = active.release(&args.agent, true);
+            return Err(error);
+        }
+        if let Err(error) = publish_run_admission_result(
+            &attribution,
+            validate_run_handle::AdmissionState::Admitted,
+            None,
+            None,
+        ) {
             let _ = active.release(&args.agent, true);
             return Err(error);
         }
@@ -5825,6 +5888,16 @@ mod tests {
         fs::write(
             authority_dir.join("run_registry.py"),
             include_str!("../validate/run_registry.py"),
+        )
+        .unwrap();
+        fs::write(
+            authority_dir.join("service_result.py"),
+            include_str!("../validate/service_result.py"),
+        )
+        .unwrap();
+        fs::write(
+            authority_dir.join("final_validate_status.py"),
+            include_str!("../validate/final_validate_status.py"),
         )
         .unwrap();
         let record = runs.join("validate-attributed.json");

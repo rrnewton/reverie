@@ -31,6 +31,46 @@ pub struct ProcessIdentity {
     pub boot_id: String,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum AdmissionState {
+    Admitted,
+    Refused,
+}
+
+impl AdmissionState {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Admitted => "admitted",
+            Self::Refused => "refused",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "kebab-case")]
+pub enum AdmissionRefusalReason {
+    StaleBase,
+    ValidationLockRefusal,
+}
+
+impl AdmissionRefusalReason {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::StaleBase => "stale-base",
+            Self::ValidationLockRefusal => "validation-lock-refusal",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+pub struct AdmissionResult {
+    pub state: AdmissionState,
+    pub recorded_at: String,
+    pub reason: Option<AdmissionRefusalReason>,
+    pub exit_code: Option<i32>,
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 pub struct Projection {
     pub unit: Option<String>,
@@ -40,6 +80,7 @@ pub struct Projection {
     pub started_at: Option<String>,
     pub host: Option<String>,
     pub process_identity: Option<ProcessIdentity>,
+    pub admission_result: Option<AdmissionResult>,
     pub lock_admissible: bool,
     pub counts_as_validation: bool,
 }
@@ -208,6 +249,31 @@ pub fn bind_process_identity(
     )
 }
 
+pub fn publish_admission_result(
+    root: &Path,
+    record: &Path,
+    state: AdmissionState,
+    reason: Option<AdmissionRefusalReason>,
+    exit_code: Option<i32>,
+) -> Result<Projection, String> {
+    let mut arguments = vec![
+        "publish-admission-result".into(),
+        "--path".into(),
+        record.display().to_string(),
+        "--state".into(),
+        state.as_str().into(),
+    ];
+    if let Some(reason) = reason {
+        arguments.push("--reason".into());
+        arguments.push(reason.as_str().into());
+    }
+    if let Some(exit_code) = exit_code {
+        arguments.push("--exit-code".into());
+        arguments.push(exit_code.to_string());
+    }
+    run_authority(root, &arguments)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -230,6 +296,16 @@ mod tests {
         fs::write(
             validate.join("run_registry.py"),
             include_str!("../validate/run_registry.py"),
+        )
+        .unwrap();
+        fs::write(
+            validate.join("service_result.py"),
+            include_str!("../validate/service_result.py"),
+        )
+        .unwrap();
+        fs::write(
+            validate.join("final_validate_status.py"),
+            include_str!("../validate/final_validate_status.py"),
         )
         .unwrap();
         root
@@ -315,6 +391,21 @@ mod tests {
             &identity,
         )
         .unwrap();
+        let projected =
+            publish_admission_result(&root, &record, AdmissionState::Admitted, None, None).unwrap();
+        assert_eq!(
+            Some(AdmissionState::Admitted),
+            projected.admission_result.map(|result| result.state)
+        );
+        let error = publish_admission_result(
+            &root,
+            &record,
+            AdmissionState::Refused,
+            Some(AdmissionRefusalReason::ValidationLockRefusal),
+            Some(3),
+        )
+        .expect_err("a recorded admission must not be replaced by a refusal");
+        assert!(error.contains("different admission result"), "{error}");
 
         fs::write(
             &record,
@@ -352,6 +443,28 @@ mod tests {
         let error = inspect_current_records(&root, &[runs.join("validate-malformed.json")])
             .expect_err("a current state outside the contract must not disappear as terminal");
         assert!(error.contains("validation-run-handle-state"), "{error}");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn new_admission_state_is_refused_by_the_producer_owned_contract() {
+        let root = fixture_root();
+        let runs = root.join("ignored/validate/runs");
+        fs::create_dir_all(&runs).unwrap();
+        let mut malformed = current_record("running");
+        malformed["admission_result"] = serde_json::json!({
+            "state": "waiting",
+            "recorded_at": "2026-08-28T07:00:01Z"
+        });
+        let record = runs.join("validate-malformed-admission.json");
+        fs::write(&record, serde_json::to_vec(&malformed).unwrap()).unwrap();
+
+        let error = inspect_current_records(&root, &[record])
+            .expect_err("a new admission state must not acquire implicit semantics");
+        assert!(
+            error.contains("validation-run-handle-admission_result.state"),
+            "{error}"
+        );
         let _ = fs::remove_dir_all(root);
     }
 }
