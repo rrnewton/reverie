@@ -185,13 +185,44 @@ fn observation_with_comparison_fields(
 /// complete current evidence. Output-only matches, stripped comparisons, 0/0
 /// reports and unavailable cells never become clean legs.
 fn canonical_observation(cell: &CellResult) -> Option<Observation> {
-    observation_with_comparison_fields(
-        cell,
-        Some("BitwiseInfoV1"),
-        Some(true),
-        Some("all_records_v1"),
-        Some(true),
-    )
+    let (matched, tier, comparison, bitwise_parity, counts) = match &cell.cell_verdict {
+        CellVerdict::ComparedAndMatched {
+            comparison_tier,
+            comparison,
+            bitwise_parity,
+            compared_log_messages,
+        } => (
+            true,
+            comparison_tier,
+            comparison,
+            *bitwise_parity,
+            compared_log_messages,
+        ),
+        CellVerdict::ComparedAndDiverged {
+            comparison_tier,
+            comparison,
+            bitwise_parity,
+            compared_log_messages,
+        } => (
+            false,
+            comparison_tier,
+            comparison,
+            *bitwise_parity,
+            compared_log_messages,
+        ),
+        CellVerdict::PerformsNoComparisonByDesign { .. }
+        | CellVerdict::UnavailableWithReason { .. } => return None,
+    };
+    if *tier != ComparisonTier::CanonicalBitwise
+        || !comparison.is_canonical_bitwise_info_v1(counts)
+        || bitwise_parity != matched
+    {
+        return None;
+    }
+    Some(Observation {
+        legs: 2,
+        failures: u64::from(!matched),
+    })
 }
 
 /// The first schema-6 rows predate the four comparison fields that now make a
