@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# Run a tool from the exact agent-utils commit pinned by dev-hermit's Hermit pin.
+# Run a tool from the agent-utils commit pinned by dev-hermit's Hermit pin.
+# tick-hub may use a different clean checkout commit only when its complete
+# tracked Python entrypoint and package have the exact same Git objects.
 set -euo pipefail
 
 ROOT=$(git -C "$(dirname -- "${BASH_SOURCE[0]}")/../.." rev-parse --show-toplevel)
@@ -118,36 +120,65 @@ agent_utils_dirt() {
     export AGENT_TOOL_PROVENANCE="undetermined: agent-utils dirty $where ($paths path(s))"
 }
 
+tick_hub_matches_parent_pin() {
+    # The parent records Hermit, Hermit records agent-utils, and the shared
+    # checkouts can be ahead while a landing is in progress. Refusing every SHA
+    # difference took down all health checks even when none of tick-hub changed.
+    # Compare the whole runtime surface, not selected files and not a commit
+    # distance. Any tick-hub change or local file under these paths still
+    # refuses, while unrelated agent-utils commits cannot blind the reporter.
+    [[ $TOOL == tick-hub ]] || return 1
+    local path expected_object actual_object
+    for path in py/bin/tick-hub py/tick_hub; do
+        expected_object=$(git -C "$AGENT_UTILS" rev-parse "$EXPECTED:$path" 2>/dev/null) \
+            || return 1
+        actual_object=$(git -C "$AGENT_UTILS" rev-parse "$ACTUAL:$path" 2>/dev/null) \
+            || return 1
+        [[ $actual_object == "$expected_object" ]] || return 1
+    done
+    # Commit equality is not enough when the checkout is dirty: an untracked or
+    # modified module under the package can change what Python imports.
+    [[ -z $(git -C "$AGENT_UTILS" status --porcelain=v1 --untracked-files=all -- \
+        py/bin/tick-hub py/tick_hub) ]]
+}
+
 ACTUAL=""
 if [[ -e "$AGENT_UTILS/.git" ]]; then
     ACTUAL=$(git -C "$AGENT_UTILS" rev-parse HEAD 2>/dev/null || true)
 fi
+TICK_HUB_CONTENT_MATCH=0
 if [[ "$ACTUAL" != "$EXPECTED" ]]; then
-    if [[ -n "$ACTUAL" ]] && [[ -n $(git -C "$AGENT_UTILS" status --porcelain) ]]; then
-        agent_utils_dirt "at $ACTUAL; expected pinned $EXPECTED"
-    fi
     CURRENT_PIN=$(gitlink_at "$HERMIT" HEAD agent-utils "checked-out Hermit commit")
     if [[ $CURRENT_PIN != "$EXPECTED" ]]; then
-        # ⚠️ NAME THE OBJECTS, NOT JUST THE VALUES. The old text said "parent-recorded"
-        # without saying that it is read from the parent's LOCAL HEAD -- not from
-        # origin/main -- so two people comparing the same pin got different answers
-        # and spent hours on it: `git ls-tree origin/main hermit` and this guard
-        # legitimately disagree whenever the local checkout has drifted, and the
-        # message gave no way to tell which had. It also could not distinguish "the
-        # parent is behind" from "the checkout is ahead", which are opposite repairs.
-        PARENT_HEAD=$(git -C "$ROOT" rev-parse HEAD 2>/dev/null || echo unknown)
-        PARENT_MAIN=$(git -C "$ROOT" rev-parse origin/main 2>/dev/null || echo unknown)
-        HERMIT_HEAD=$(git -C "$HERMIT" rev-parse HEAD 2>/dev/null || echo unknown)
-        drift=""
-        if [[ $PARENT_HEAD != "$PARENT_MAIN" && $PARENT_HEAD != unknown && $PARENT_MAIN != unknown ]]; then
-            behind=$(git -C "$ROOT" rev-list --count "$PARENT_HEAD..$PARENT_MAIN" 2>/dev/null || echo "?")
-            ahead=$(git -C "$ROOT" rev-list --count "$PARENT_MAIN..$PARENT_HEAD" 2>/dev/null || echo "?")
-            drift="
+        if tick_hub_matches_parent_pin; then
+            TICK_HUB_CONTENT_MATCH=1
+            PARENT_HEAD=$(git -C "$ROOT" rev-parse HEAD 2>/dev/null || echo unknown)
+            HERMIT_HEAD=$(git -C "$HERMIT" rev-parse HEAD 2>/dev/null || echo unknown)
+            echo "agent-tool: parent and checked-out Hermit pins differ, but tick-hub's complete tracked executable/package is byte-identical." >&2
+            echo "agent-tool:   parent HEAD $PARENT_HEAD -> Hermit $PARENT_HERMIT -> agent-utils $EXPECTED" >&2
+            echo "agent-tool:   checkout Hermit $HERMIT_HEAD -> agent-utils $CURRENT_PIN; materialized agent-utils $ACTUAL" >&2
+            echo "agent-tool: proceeding without moving either shared checkout; the running health gates still report gitlink drift." >&2
+        else
+            # ⚠️ NAME THE OBJECTS, NOT JUST THE VALUES. The old text said "parent-recorded"
+            # without saying that it is read from the parent's LOCAL HEAD -- not from
+            # origin/main -- so two people comparing the same pin got different answers
+            # and spent hours on it: `git ls-tree origin/main hermit` and this guard
+            # legitimately disagree whenever the local checkout has drifted, and the
+            # message gave no way to tell which had. It also could not distinguish "the
+            # parent is behind" from "the checkout is ahead", which are opposite repairs.
+            PARENT_HEAD=$(git -C "$ROOT" rev-parse HEAD 2>/dev/null || echo unknown)
+            PARENT_MAIN=$(git -C "$ROOT" rev-parse origin/main 2>/dev/null || echo unknown)
+            HERMIT_HEAD=$(git -C "$HERMIT" rev-parse HEAD 2>/dev/null || echo unknown)
+            drift=""
+            if [[ $PARENT_HEAD != "$PARENT_MAIN" && $PARENT_HEAD != unknown && $PARENT_MAIN != unknown ]]; then
+                behind=$(git -C "$ROOT" rev-list --count "$PARENT_HEAD..$PARENT_MAIN" 2>/dev/null || echo "?")
+                ahead=$(git -C "$ROOT" rev-list --count "$PARENT_MAIN..$PARENT_HEAD" 2>/dev/null || echo "?")
+                drift="
   NOTE: the parent's HEAD is NOT origin/main -- $behind behind, $ahead ahead. This guard
         reads HEAD, so a reader comparing against origin/main will see a DIFFERENT
         expected pin and neither is wrong."
-        fi
-        die "agent-utils pin mismatch.
+            fi
+            die "agent-utils pin mismatch.
   EXPECTED $EXPECTED
     read from: gitlink 'agent-utils' at parent-recorded Hermit $PARENT_HERMIT,
                which came from gitlink 'hermit' at the PARENT'S LOCAL HEAD $PARENT_HEAD
@@ -159,14 +190,21 @@ if [[ "$ACTUAL" != "$EXPECTED" ]]; then
   checkout to $PARENT_HERMIT, or advance the parent's hermit gitlink to $HERMIT_HEAD.
   Reverting only the agent-utils submodule does NOT hold -- any 'submodule update' in
   that checkout restores the value its own HEAD records."
+        fi
     fi
-    update_agent_utils=(
-        git -C "$HERMIT"
-        -c submodule.agent-utils.update=checkout
-        submodule update --init --checkout -- agent-utils
-    )
-    run_networked "${update_agent_utils[@]}" \
-        || die "could not initialize $AGENT_UTILS; rerun '${update_agent_utils[*]}'"
+    if [[ $TICK_HUB_CONTENT_MATCH == 0 ]] && [[ -n "$ACTUAL" ]] \
+       && [[ -n $(git -C "$AGENT_UTILS" status --porcelain) ]]; then
+        agent_utils_dirt "at $ACTUAL; expected pinned $EXPECTED"
+    fi
+    if [[ $TICK_HUB_CONTENT_MATCH == 0 ]]; then
+        update_agent_utils=(
+            git -C "$HERMIT"
+            -c submodule.agent-utils.update=checkout
+            submodule update --init --checkout -- agent-utils
+        )
+        run_networked "${update_agent_utils[@]}" \
+            || die "could not initialize $AGENT_UTILS; rerun '${update_agent_utils[*]}'"
+    fi
 fi
 
 if [[ ! -e $AGENT_UTILS/.git ]]; then
@@ -174,16 +212,22 @@ if [[ ! -e $AGENT_UTILS/.git ]]; then
 fi
 ACTUAL=$(git -C "$AGENT_UTILS" rev-parse HEAD 2>/dev/null) \
     || die "cannot read agent-utils checkout at $AGENT_UTILS"
-if [[ "$ACTUAL" != "$EXPECTED" ]]; then
+if [[ "$ACTUAL" != "$EXPECTED" && $TICK_HUB_CONTENT_MATCH == 0 ]]; then
     echo "agent-tool: agent-utils is at $ACTUAL; expected $EXPECTED" >&2
     exit 1
 fi
-# This front door proves the reviewed PIN, not remote freshness. A local
-# origin/main is a mutable transport cache and may be stale; making reporters
-# depend on it would violate the fail-open reporting contract. The separate
-# check-agent-utils-pin gate fetches origin and enforces exact main equality.
+# This front door proves either the reviewed pin or, for tick-hub alone, exact
+# identity of its complete tracked runtime with that pin. It does not prove
+# remote freshness. A local origin/main is a mutable transport cache and may be
+# stale; making reporters depend on it would violate the fail-open reporting
+# contract. The separate check-agent-utils-pin gate fetches origin and enforces
+# exact main equality.
 if [[ -n $(git -C "$AGENT_UTILS" status --porcelain) ]]; then
-    agent_utils_dirt "at pinned commit $EXPECTED"
+    if [[ $TICK_HUB_CONTENT_MATCH == 1 ]]; then
+        agent_utils_dirt "at content-equivalent commit $ACTUAL; parent pin $EXPECTED"
+    else
+        agent_utils_dirt "at pinned commit $EXPECTED"
+    fi
 fi
 
 PYTHON=${CI_HUB_PYTHON:-python3}

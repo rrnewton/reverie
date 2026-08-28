@@ -13,10 +13,14 @@ health polling. Project policy stays in this repository:
   tick engine and project health checks. `ops/ops-state.example.yaml` is its
   versioned schema/example; copy it rather than committing the live state.
 - `ci-hub/health/operational_health.py` implements project-specific probes.
-- `ci-hub/bin/health-tick` uses `ci-hub/bin/agent-tool` to materialize the exact
-  agent-utils commit pinned by the nested `agent-utils` gitlink in Hermit on
-  demand, provisions the pinned Python runtime dependency into the ignored
-  `.tick-hub/venv` when needed, then invokes the real tick-hub CLI.
+- `ci-hub/bin/health-tick` uses `ci-hub/bin/agent-tool` to run the tick-hub
+  implementation pinned by Hermit's nested `agent-utils` gitlink. Normally the
+  checkout is at that exact commit. If a landing has moved the shared Hermit
+  checkout first, the reporter may continue only when its complete tracked
+  Python entrypoint and package are byte-identical to the recorded pin; any
+  tick-hub difference still refuses. The wrapper provisions the pinned Python
+  runtime dependency into the ignored `.tick-hub/venv` when needed, then invokes
+  the real tick-hub CLI.
 - `.orc/plugins/hermit-dev/index.ts` is the outer sixty-minute scheduler and
   wakeup delivery adapter.
 
