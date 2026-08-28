@@ -31,6 +31,17 @@ import publish_backlog  # noqa: E402
 import publisher  # noqa: E402
 
 
+def classification_for_series_outcome(outcome):
+    return {
+        "passed": ("pass", None),
+        "diverged": ("determinism-failure", "product_failure"),
+        "timeout": ("timeout", "no_result"),
+        "errored": ("crash-error", "product_failure"),
+        "no_result": (None, "no_result"),
+        "skipped": (None, "understood_prerequisite_failure"),
+    }.get(outcome, ("pass", None))
+
+
 def row(**over):
     base = {
         "schema": series.ENVELOPE_VERSION,
@@ -59,6 +70,11 @@ def row(**over):
             base["series"] = {**base["series"], **value}
         else:
             base[key] = value
+    result, failure_class = classification_for_series_outcome(
+        base["series"].get("outcome")
+    )
+    base["series"].setdefault("result", result)
+    base["series"].setdefault("failure_class", failure_class)
     return base
 
 
@@ -117,25 +133,25 @@ class RowLinter(unittest.TestCase):
             with self.assertRaisesRegex(series.MalformedRow, capability):
                 series.validate_row(incomplete)
 
-    def test_readers_refuse_incomplete_v2_by_capability_name_but_keep_v1_readable(self):
+    def test_readers_refuse_incomplete_host_facts_by_capability_name_but_keep_v1_readable(self):
         legacy = row(schema=series.LEGACY_ENVELOPE_VERSION)
         for field in ("machine_shortname", "kernel_version", "host_capabilities"):
             del legacy["series"][field]
         self.assertEqual(series.validate_read_rows([legacy]), [legacy])
 
-        missing = row()
+        missing = row(schema=series.HOST_FACTS_ENVELOPE_VERSION)
         del missing["series"]["host_capabilities"]
         with self.assertRaisesRegex(series.MalformedRow, "host_capabilities"):
             series.validate_read_rows([missing])
 
         for capability in ("cpuid-faulting", "kvm"):
-            incomplete = row()
+            incomplete = row(schema=series.HOST_FACTS_ENVELOPE_VERSION)
             del incomplete["series"]["host_capabilities"][capability]
             with self.assertRaisesRegex(series.MalformedRow, capability):
                 series.validate_read_rows([incomplete])
 
     def test_union_refuses_an_incomplete_v2_row_before_it_becomes_evidence(self):
-        incomplete = row()
+        incomplete = row(schema=series.HOST_FACTS_ENVELOPE_VERSION)
         del incomplete["series"]["host_capabilities"]["cpuid-faulting"]
         with tempfile.TemporaryDirectory() as td:
             shard = Path(td) / "rows.jsonl"
@@ -156,6 +172,38 @@ class RowLinter(unittest.TestCase):
     def test_refuses_an_unknown_outcome(self):
         with self.assertRaises(series.MalformedRow):
             series.validate_row(row(series={"outcome": "green"}))
+
+    def test_v3_refuses_missing_or_mismatched_classification_by_name(self):
+        missing = row(series={"outcome": "diverged", "result": None})
+        with self.assertRaisesRegex(series.MalformedRow, "result=None"):
+            series.validate_row(missing)
+        with self.assertRaisesRegex(series.MalformedRow, "result=None"):
+            series.validate_read_rows([missing])
+
+        missing = row(series={
+            "outcome": "diverged",
+            "result": "determinism-failure",
+            "failure_class": None,
+        })
+        with self.assertRaisesRegex(series.MalformedRow, "failure_class=None"):
+            series.validate_row(missing)
+
+        mismatched = row(series={
+            "outcome": "diverged",
+            "result": "crash-error",
+            "failure_class": "product_failure",
+        })
+        with self.assertRaisesRegex(series.MalformedRow, "CrashError"):
+            series.validate_row(mismatched)
+
+        retained_v2 = row(schema=series.HOST_FACTS_ENVELOPE_VERSION)
+        del retained_v2["series"]["result"]
+        del retained_v2["series"]["failure_class"]
+        self.assertEqual(series.validate_read_rows([retained_v2]), [retained_v2])
+        with self.assertRaisesRegex(
+            series.MalformedRow, "new rows must use stress-series/v3"
+        ):
+            series.validate_rows([retained_v2])
 
     def test_refuses_an_unknown_coordinate_key(self):
         with self.assertRaises(series.MalformedRow):
@@ -371,6 +419,16 @@ class StoreMechanics(unittest.TestCase):
             shard.write_text(payload)
             merged = series.union([spool, shard])
             self.assertEqual(len(merged), 1, "event_id dedup did not collapse them")
+
+    def test_publisher_reads_retained_v1_before_appending_current_v3(self):
+        legacy = row(schema=series.LEGACY_ENVELOPE_VERSION)
+        current = row(event_id="current-v3", series={"run_index": 1})
+        merged = publisher.merge_shard(
+            json.dumps(legacy, sort_keys=True) + "\n",
+            [current],
+            store="series",
+        )
+        self.assertEqual(len(merged.splitlines()), 2)
 
     def test_series_for_returns_repetitions_in_run_order(self):
         import tempfile
@@ -632,9 +690,11 @@ class WriteBoundaryCli(unittest.TestCase):
     CELL = "c-programs/pipecap/verify/ptrace"
 
     def _row(self, event_id, run_index, outcome, coordinates=None, run_id="campaign-1"):
+        result, failure_class = classification_for_series_outcome(outcome)
         payload = {
             "cell": self.CELL, "tree": self.SHA,
             "run_index": run_index, "outcome": outcome,
+            "result": result, "failure_class": failure_class,
             "machine_shortname": "devbig014",
             "kernel_version": "7.1.3-test",
             "host_capabilities": {
@@ -896,6 +956,12 @@ class CellResultProjection(unittest.TestCase):
         }
 
     def _cell(self, run_index, outcome="PASS", duration_ms=100):
+        result, failure_class = {
+            "PASS": ("pass", None),
+            "FAIL": ("determinism-failure", "product_failure"),
+            "ERROR": (None, "understood_infrastructure_failure"),
+            "HOST-INAPPLICABLE": (None, "understood_prerequisite_failure"),
+        }.get(outcome, (None, None))
         return {
             "schema": 4,
             # The raw harness uses a separate evidence id per pressure
@@ -916,6 +982,8 @@ class CellResultProjection(unittest.TestCase):
             "backend": "ptrace",
             "classification": "required",
             "outcome": outcome,
+            "result": result,
+            "failure_class": failure_class,
             "duration_ms": duration_ms,
             "run_index": run_index,
             "runtime": {
@@ -1156,8 +1224,19 @@ class CellResultProjection(unittest.TestCase):
             emitted_at="2026-08-26T10:00:00Z",
         )
         self.assertEqual(
-            [(r["series"]["run_index"], r["series"]["outcome"]) for r in rows],
-            [(1, "diverged"), (2, "passed")],
+            [
+                (
+                    r["series"]["run_index"],
+                    r["series"]["outcome"],
+                    r["series"]["result"],
+                    r["series"]["failure_class"],
+                )
+                for r in rows
+            ],
+            [
+                (1, "diverged", "determinism-failure", "product_failure"),
+                (2, "passed", "pass", None),
+            ],
         )
 
     def test_hermit_repeat_preserves_detcore_tree(self):
@@ -1275,15 +1354,22 @@ class CellResultProjection(unittest.TestCase):
             )
 
     def test_cell_outcome_mapping_is_closed(self):
-        expected = {
-            "PASS": "passed",
-            "FAIL": "diverged",
-            "TIMEOUT": "timeout",
-            "NO_RESULT": "no_result",
-            "ERROR": "errored",
-        }
-        for raw, projected in expected.items():
+        cases = []
+        for raw, result, failure_class, projected in (
+            ("PASS", "pass", None, "passed"),
+            ("FAIL", "determinism-failure", "product_failure", "diverged"),
+            ("FAIL", "crash-error", "product_failure", "errored"),
+            ("FAIL", "timeout", "no_result", "timeout"),
+            ("FAIL", "oom", "no_result", "no_result"),
+            ("ERROR", None, "understood_infrastructure_failure", "errored"),
+            ("ERROR", None, "understood_prerequisite_failure", "skipped"),
+            ("ERROR", None, "no_result", "no_result"),
+        ):
             cell = self._cell(0, outcome=raw)
+            cell["result"] = result
+            cell["failure_class"] = failure_class
+            cases.append((cell, projected))
+        for cell, projected in cases:
             cell["mode"] = "naked"
             cell["backend"] = None
             rows = self._project([cell])
@@ -1309,6 +1395,8 @@ class CellResultProjection(unittest.TestCase):
         for attempts in ([matched, timed_out], [timed_out, matched]):
             cell = self._cell(0, outcome="FAIL", duration_ms=30_453)
             cell["attempts"] = attempts
+            cell["result"] = "timeout"
+            cell["failure_class"] = "no_result"
             row = self._project([cell])[0]["series"]
             self.assertEqual(row["outcome"], "timeout")
             self.assertNotIn("coordinates", row)
@@ -1318,6 +1406,8 @@ class CellResultProjection(unittest.TestCase):
         del timeout_without_report["verification_report_sha256"]
         cell = self._cell(0, outcome="ERROR", duration_ms=30_453)
         cell["attempts"] = [matched, timeout_without_report]
+        cell["result"] = None
+        cell["failure_class"] = "no_result"
         self.assertEqual(
             self._project([cell])[0]["series"]["outcome"],
             "timeout",
@@ -1351,6 +1441,8 @@ class CellResultProjection(unittest.TestCase):
         self.assertEqual(self._project([dbt])[0]["series"]["outcome"], "passed")
 
         all_match_fail = self._cell(0, outcome="FAIL")
+        all_match_fail["result"] = None
+        all_match_fail["failure_class"] = "no_result"
         self.assertEqual(
             self._project([all_match_fail])[0]["series"]["outcome"],
             "no_result",
@@ -1358,6 +1450,8 @@ class CellResultProjection(unittest.TestCase):
 
         mixed_no_result = self._cell(0, outcome="FAIL")
         mixed_no_result["attempts"] = [matched, self._attempt("no_result")]
+        mixed_no_result["result"] = None
+        mixed_no_result["failure_class"] = "no_result"
         self.assertEqual(
             self._project([mixed_no_result])[0]["series"]["outcome"],
             "no_result",
@@ -1365,6 +1459,8 @@ class CellResultProjection(unittest.TestCase):
 
         mixed_error = self._cell(0, outcome="ERROR")
         mixed_error["attempts"] = [matched, self._attempt("infrastructure_error")]
+        mixed_error["result"] = None
+        mixed_error["failure_class"] = "understood_infrastructure_failure"
         self.assertEqual(
             self._project([mixed_error])[0]["series"]["outcome"],
             "errored",
@@ -1468,9 +1564,27 @@ class CellResultProjection(unittest.TestCase):
             ):
                 self._project([incomplete_timeout])
 
+    def test_projection_refuses_missing_or_disagreeing_framework_classification(self):
+        missing = self._cell(0, outcome="FAIL")
+        del missing["failure_class"]
+        with self.assertRaisesRegex(series.MalformedRow, "failure_class=None"):
+            self._project([missing])
+
+        disagreeing = self._cell(0, outcome="FAIL")
+        disagreeing["result"] = "pass"
+        disagreeing["failure_class"] = None
+        with self.assertRaisesRegex(series.MalformedRow, "outcome disagrees"):
+            self._project([disagreeing])
+
+        attempts_disagree = self._cell(0, outcome="FAIL")
+        attempts_disagree["result"] = "crash-error"
+        attempts_disagree["failure_class"] = "product_failure"
+        with self.assertRaisesRegex(series.MalformedRow, "typed attempts"):
+            self._project([attempts_disagree])
+
     def test_projection_carries_the_recorded_machine_kernel_and_capabilities(self):
         projected = self._project([self._cell(0)])[0]
-        self.assertEqual(projected["schema"], "stress-series/v2")
+        self.assertEqual(projected["schema"], "stress-series/v3")
         self.assertEqual(projected["host"], "devbig014")
         self.assertEqual(projected["series"]["machine_shortname"], "devbig014")
         self.assertEqual(projected["series"]["kernel_version"], "7.1.3-test")

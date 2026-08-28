@@ -27,6 +27,14 @@ def row(
     num_runs: int = 1,
     dirty: bool = False,
 ) -> dict:
+    result, failure_class = {
+        "passed": ("pass", None),
+        "diverged": ("determinism-failure", "product_failure"),
+        "no_result": (None, "no_result"),
+        "timeout": ("timeout", "no_result"),
+        "errored": ("crash-error", "product_failure"),
+        "skipped": (None, "understood_prerequisite_failure"),
+    }[outcome]
     return {
         "schema": series.ENVELOPE_VERSION,
         "event_id": f"event-{tree}-{run_index}-{outcome}",
@@ -42,6 +50,8 @@ def row(
             "run_index": run_index,
             "num_runs": num_runs,
             "outcome": outcome,
+            "result": result,
+            "failure_class": failure_class,
             "source_tree_dirty": dirty,
             "machine_shortname": "devbig014",
             "kernel_version": "7.1.3-test",

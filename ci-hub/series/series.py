@@ -71,8 +71,13 @@ from ledger import (  # noqa: E402  (path set above)
 )
 
 LEGACY_ENVELOPE_VERSION = "stress-series/v1"
-ENVELOPE_VERSION = "stress-series/v2"
-READABLE_ENVELOPE_VERSIONS = frozenset({LEGACY_ENVELOPE_VERSION, ENVELOPE_VERSION})
+HOST_FACTS_ENVELOPE_VERSION = "stress-series/v2"
+ENVELOPE_VERSION = "stress-series/v3"
+READABLE_ENVELOPE_VERSIONS = frozenset({
+    LEGACY_ENVELOPE_VERSION,
+    HOST_FACTS_ENVELOPE_VERSION,
+    ENVELOPE_VERSION,
+})
 
 #: The four divergence coordinates, stored as RAW MEASURED POSITIONS. A row may
 #: count repeated observations only when every stored position is exactly equal.
@@ -851,19 +856,40 @@ def _typed_comparison_attempt(attempt: Any, *, mode: str, index: int) -> str:
 
 
 def _cell_outcome(row: dict) -> str:
+    """Project the framework's exact result without reconstructing it."""
+    result = row.get("result")
+    failure_class = row.get("failure_class")
+    classification = (result, failure_class)
+    try:
+        projected, allowed_cell_outcomes = {
+            ("pass", None): ("passed", {"PASS"}),
+            ("determinism-failure", "product_failure"): ("diverged", {"FAIL"}),
+            ("parity-failure", "product_failure"): ("diverged", {"FAIL"}),
+            ("replay-failure", "product_failure"): ("diverged", {"FAIL"}),
+            ("crash-error", "product_failure"): ("errored", {"FAIL"}),
+            ("timeout", "no_result"): ("timeout", {"FAIL"}),
+            ("oom", "no_result"): ("no_result", {"FAIL"}),
+            (None, "understood_infrastructure_failure"): ("errored", {"ERROR"}),
+            (None, "understood_prerequisite_failure"): (
+                "skipped", {"ERROR", "HOST-INAPPLICABLE"},
+            ),
+            (None, "no_result"): ("no_result", {"ERROR"}),
+        }[classification]
+    except (KeyError, TypeError) as error:
+        raise MalformedRow(
+            "cell result has no recognised result/failure_class pair: "
+            f"result={result!r} failure_class={failure_class!r}"
+        ) from error
     outcome = row.get("outcome")
-    raw_outcomes = {
-        "PASS": "passed",
-        "FAIL": "diverged",
-        "TIMEOUT": "timeout",
-        "NO_RESULT": "no_result",
-        "ERROR": "errored",
-    }
-    if outcome not in raw_outcomes:
-        raise MalformedRow(f"unmapped cell outcome {outcome!r}")
+    if outcome not in allowed_cell_outcomes:
+        raise MalformedRow(
+            "cell result outcome disagrees with its recorded classification: "
+            f"outcome={outcome!r} result={result!r} failure_class={failure_class!r}"
+        )
     mode = row.get("mode")
     if mode not in _COMPARISON_MODES:
-        return raw_outcomes[outcome]
+        return projected
+
     attempts = row.get("attempts")
     if not isinstance(attempts, list) or not attempts:
         raise MalformedRow("comparison cell result has no typed attempts")
@@ -872,16 +898,23 @@ def _cell_outcome(row: dict) -> str:
         for index, attempt in enumerate(attempts, 1)
     ]
     if "diverged" in states:
-        return "diverged"
-    if "timeout" in states or outcome == "TIMEOUT":
-        return "timeout"
-    if "errored" in states or outcome == "ERROR":
-        return "errored"
-    if "no_result" in states or outcome in {"FAIL", "NO_RESULT"}:
-        return "no_result"
-    if all(state == "matched" for state in states) and outcome == "PASS":
-        return "passed"
-    return "no_result"
+        attempt_projection = "diverged"
+    elif "timeout" in states or outcome == "TIMEOUT":
+        attempt_projection = "timeout"
+    elif "errored" in states or outcome == "ERROR":
+        attempt_projection = "errored"
+    elif "no_result" in states or outcome in {"FAIL", "NO_RESULT"}:
+        attempt_projection = "no_result"
+    elif all(state == "matched" for state in states) and outcome == "PASS":
+        attempt_projection = "passed"
+    else:
+        attempt_projection = "no_result"
+    if attempt_projection != projected:
+        raise MalformedRow(
+            "cell result classification disagrees with its typed attempts: "
+            f"classification={projected!r} attempts={attempt_projection!r}"
+        )
+    return projected
 
 
 def _cell_name(row: dict) -> str:
@@ -1118,6 +1151,8 @@ def rows_from_cell_results(
             "run_index": run_index,
             "num_runs": 1,
             "outcome": _cell_outcome(cell_result),
+            "result": cell_result.get("result"),
+            "failure_class": cell_result.get("failure_class"),
             "main_ancestry": ancestry,
             "depth": depth,
             "runtime": _cell_runtime(cell_result),
@@ -1182,6 +1217,7 @@ __all__ = [
     "COORDINATE_KEYS",
     "ENVELOPE_VERSION",
     "FIRST_DIVERGENT_MESSAGE_KEYS",
+    "HOST_FACTS_ENVELOPE_VERSION",
     "LEGACY_ENVELOPE_VERSION",
     "READABLE_ENVELOPE_VERSIONS",
     "MalformedRow",
@@ -1522,7 +1558,8 @@ def _cmd_history(argv: list[str]) -> int:
             f"wall_time_min_ms={minimum}\twall_time_max_ms={maximum}"
         )
     print(
-        "day\tsha\tmain(current/recorded)\tdepth(repo:commits/first-parent)\tcell\toutcome\truns\t"
+        "day\tsha\tmain(current/recorded)\tdepth(repo:commits/first-parent)\tcell\toutcome\t"
+        "result\tfailure_class\truns\t"
         "turns(run1/run2)\tvirtual_ns(run1/run2)\tsyscalls(run1/run2)\t"
         "wall_ms(min-max)\tfirst_divergent_record\tfirst_divergent_syscall\t"
         "first_divergent_scheduler_turn\tfirst_divergent_virtual_nanoseconds\t"
@@ -1552,6 +1589,8 @@ def _cmd_history(argv: list[str]) -> int:
                 _depth_text(depth),
                 str(payload.get("cell", "-")),
                 str(payload.get("outcome", "-")),
+                str(payload.get("result") or "-"),
+                str(payload.get("failure_class") or "-"),
                 _run_span(payload),
                 _runtime_value(runtime, "scheduler_turns"),
                 _runtime_value(runtime, "virtual_nanoseconds"),

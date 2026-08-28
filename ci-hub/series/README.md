@@ -51,11 +51,12 @@ orders and dedups these rows with no series-specific branch. The payload lives
 under `series`:
 
 ```json
-{"schema":"stress-series/v2","event_id":"…","event_type":"series.observation",
+{"schema":"stress-series/v3","event_id":"…","event_type":"series.observation",
  "emitted_at":"…","team":"hermit","host":"devbig014","run_id":"campaign-1",
  "producer":"pressure-test",
  "series":{"cell":"backend-parity-c/flock-lifecycle/verify/ptrace",
            "tree":"<40-hex>","run_index":0,"outcome":"diverged",
+           "result":"determinism-failure","failure_class":"product_failure",
            "machine_shortname":"devbig014","kernel_version":"7.1.3-…",
            "host_capabilities":{
              "cpuid-faulting":{"present":false,"evidence":"…"},
@@ -80,6 +81,12 @@ field, not a second source of measurement identity; copying or republishing a
 row does not change the machine it describes. Retained `stress-series/v1` rows
 remain readable, but the scorecard does not admit them as measurement evidence
 because they do not record the kernel or capability set.
+Retained `stress-series/v2` rows remain readable with their former coarse
+`outcome`; `stress-series/v3` requires the framework-written exact `result` and
+`failure_class`. New projection therefore preserves `crash-error`, timeout,
+out-of-memory, understood infrastructure failure, understood prerequisite
+failure, and genuine no-result observations instead of reconstructing a result
+from the broad outcome after execution.
 `run_index` is copied from the validate result's positive `attempt` or supplied
 from the pressure-test repetition directory or `hermit-repeat` run number. The
 writer reads the producers' retained result rows; it does not maintain another
@@ -124,7 +131,8 @@ This freshly fetches parent `origin/main`, reads its published shards plus the
 unpublished and retained local spool, prints the number of stored rows and
 represented runs, starts with each cell's all-history
 `wall_time_min_ms` and `wall_time_max_ms`, then shows each row's source SHA,
-current/on-write main ancestry, depth, outcome, run span, `run1`/`run2`
+current/on-write main ancestry, depth, outcome, exact result, failure class, run
+span, `run1`/`run2`
 scheduler turns, virtual nanoseconds, syscall counts, wall-time range, all four
 divergence coordinates, the two compared messages, producer, and run id. An
 empty result prints `no runs recorded` and exits nonzero.
