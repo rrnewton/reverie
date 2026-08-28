@@ -40,6 +40,19 @@ def _red_row(commit: str, finished_at: str, log_file: str | None) -> dict:
     }
 
 
+def _recorded_class(node: str = "build.runtime_release") -> dict:
+    return {
+        "node": node,
+        "group": node.split(".", 1)[0],
+        "sub_step_class": "dependency-build",
+        "fault_class": "infrastructure",
+        "infra_signature": "corrupt archive",
+        "host_env_signature": None,
+        "first_error_line": "archive member is not an object",
+        "known_flaky": False,
+    }
+
+
 def _persist(rows, out: Path):
     records = [attribute_row(r) for r in rows]
     return records, persist_attributions(records, out)
@@ -121,6 +134,54 @@ def test_persist_never_fabricates_when_log_is_missing(tmp_path):
     )
     assert (appended, skipped) == (0, 0)
     assert not out.exists()
+
+
+def test_recorded_classes_survive_a_reaped_log(tmp_path):
+    row = _red_row("feedface", "2026-08-04T20:01:00Z", str(tmp_path / "gone.log"))
+    row["failed_substep_classes"] = [_recorded_class()]
+    record = attribute_row(row)
+    assert record["log_status"] == "missing"
+    assert record["classes"] == row["failed_substep_classes"]
+
+
+def test_recorded_classes_win_over_a_surviving_log(tmp_path):
+    log = _log(tmp_path, "other.log", "test.from-log", "error: different")
+    row = _red_row("feedface", "2026-08-04T20:02:00Z", str(log))
+    row["failed_substep_classes"] = [_recorded_class("build.from-row")]
+    record = attribute_row(row)
+    assert record["log_status"] == "present"
+    assert [item["node"] for item in record["classes"]] == ["build.from-row"]
+
+
+def test_recorded_empty_classes_do_not_reconstruct_from_a_log(tmp_path):
+    log = _log(tmp_path, "present.log", "test.from-log", "error: different")
+    row = _red_row("feedface", "2026-08-04T20:02:30Z", str(log))
+    row["failed_substep_classes"] = []
+    record = attribute_row(row)
+    assert record["log_status"] == "present"
+    assert record["classes"] == []
+
+
+@pytest.mark.parametrize(
+    ("value", "message"),
+    [
+        ({}, "failed_substep_classes must be a list"),
+        ([{"node": "test.cli"}], r"failed_substep_classes\[0\] has inexact fields"),
+        (
+            [{**_recorded_class(), "fault_class": "future"}],
+            r"failed_substep_classes\[0\]\.fault_class has unknown value",
+        ),
+        (
+            [{**_recorded_class(), "timing": {}}],
+            r"failed_substep_classes\[0\]\.timing has inexact fields",
+        ),
+    ],
+)
+def test_malformed_recorded_classes_refuse_by_name(tmp_path, value, message):
+    row = _red_row("feedface", "2026-08-04T20:03:00Z", str(tmp_path / "gone.log"))
+    row["failed_substep_classes"] = value
+    with pytest.raises(ValueError, match=message):
+        attribute_row(row)
 
 
 def _null_record(commit: str, finished_at: str, node: str, log_file: str) -> str:

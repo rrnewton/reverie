@@ -16,7 +16,16 @@ import json
 import re
 from pathlib import Path
 import sys
-from typing import Mapping
+from typing import (
+    Literal,
+    Mapping,
+    NotRequired,
+    TypedDict,
+    cast,
+    get_args,
+    get_origin,
+    get_type_hints,
+)
 
 
 CI_HUB = Path(__file__).resolve().parents[1]
@@ -46,6 +55,191 @@ _CONTENTION_CPU_PER_WALL = 0.5  # <= this: mostly off-CPU, i.e. waiting
 # cgroup throttling is DIRECT evidence of contention and outranks the ratio: a
 # step can be throttled into a timeout while still showing a busy ratio.
 _THROTTLED_SECONDS_FLOOR = 1.0
+
+
+class FailedSubstepTiming(TypedDict):
+    wall_seconds: float | None
+    cpu_seconds: float | None
+    cpu_user_seconds: float | None
+    cpu_sys_seconds: float | None
+    cpu_usage_usec: float | None
+    cpu_source: str
+    cpu_per_wall: float | None
+    timed_out: bool | None
+    cpu_timed_out: bool | None
+    throttled_seconds: float | None
+    quota_utilization_pct: float | None
+    co_tenants_end: float | None
+    timing_verdict: Literal["livelock", "contention", "inconclusive"] | None
+    timing_source: str
+    profile_rows_matched: int
+    profile_candidate_rows: int
+    profile_row_timestamp: str | None
+
+
+class FailedSubstepClass(TypedDict):
+    node: str
+    group: str
+    sub_step_class: Literal["dependency-build", "lane-run"]
+    fault_class: Literal["infrastructure", "host-environment", "code"]
+    infra_signature: str | None
+    first_error_line: str | None
+    known_flaky: bool
+    # Historical rows predate each additive field. Missing remains readable;
+    # present values must satisfy the complete current shape.
+    host_env_signature: NotRequired[str | None]
+    timing: NotRequired[FailedSubstepTiming]
+
+
+_FAILED_SUBSTEP_HINTS = get_type_hints(FailedSubstepClass, include_extras=True)
+_FAILED_SUBSTEP_FIELDS = frozenset(_FAILED_SUBSTEP_HINTS)
+_FAILED_SUBSTEP_REQUIRED_FIELDS = frozenset(
+    field
+    for field, annotation in _FAILED_SUBSTEP_HINTS.items()
+    if get_origin(annotation) is not NotRequired
+)
+_FAILED_SUBSTEP_TIMING_HINTS = get_type_hints(FailedSubstepTiming)
+_FAILED_SUBSTEP_TIMING_FIELDS = frozenset(_FAILED_SUBSTEP_TIMING_HINTS)
+_SUB_STEP_CLASSES = frozenset(get_args(_FAILED_SUBSTEP_HINTS["sub_step_class"]))
+_FAILED_SUBSTEP_FAULT_CLASSES = frozenset(
+    get_args(_FAILED_SUBSTEP_HINTS["fault_class"])
+)
+_TIMING_VERDICTS = frozenset(
+    value
+    for member in get_args(_FAILED_SUBSTEP_TIMING_HINTS["timing_verdict"])
+    for value in get_args(member)
+)
+
+
+def _optional_string(value: object) -> bool:
+    return value is None or isinstance(value, str) and bool(value)
+
+
+def _optional_number(value: object) -> bool:
+    return value is None or (
+        isinstance(value, (int, float)) and not isinstance(value, bool)
+    )
+
+
+def _validate_failed_substep_timing(
+    value: object, index: int
+) -> FailedSubstepTiming:
+    if not isinstance(value, Mapping):
+        raise ValueError(f"failed_substep_classes[{index}].timing must be an object")
+    fields = frozenset(value)
+    if fields != _FAILED_SUBSTEP_TIMING_FIELDS:
+        missing = sorted(_FAILED_SUBSTEP_TIMING_FIELDS - fields)
+        unknown = sorted(fields - _FAILED_SUBSTEP_TIMING_FIELDS)
+        raise ValueError(
+            f"failed_substep_classes[{index}].timing has inexact fields; "
+            f"missing={missing} unknown={unknown}"
+        )
+    for field in (
+        "wall_seconds",
+        "cpu_seconds",
+        "cpu_user_seconds",
+        "cpu_sys_seconds",
+        "cpu_usage_usec",
+        "cpu_per_wall",
+        "throttled_seconds",
+        "quota_utilization_pct",
+        "co_tenants_end",
+    ):
+        if not _optional_number(value[field]):
+            raise ValueError(
+                f"failed_substep_classes[{index}].timing.{field} "
+                "must be a number or null"
+            )
+    for field in ("timed_out", "cpu_timed_out"):
+        if value[field] is not None and not isinstance(value[field], bool):
+            raise ValueError(
+                f"failed_substep_classes[{index}].timing.{field} "
+                "must be boolean or null"
+            )
+    for field in ("cpu_source", "timing_source"):
+        if not isinstance(value[field], str) or not value[field]:
+            raise ValueError(
+                f"failed_substep_classes[{index}].timing.{field} "
+                "must be a non-empty string"
+            )
+    verdict = value["timing_verdict"]
+    if verdict is not None and verdict not in _TIMING_VERDICTS:
+        raise ValueError(
+            f"failed_substep_classes[{index}].timing.timing_verdict has unknown value "
+            f"{verdict!r}"
+        )
+    for field in ("profile_rows_matched", "profile_candidate_rows"):
+        count = value[field]
+        if not isinstance(count, int) or isinstance(count, bool) or count < 0:
+            raise ValueError(
+                f"failed_substep_classes[{index}].timing.{field} "
+                "must be a non-negative integer"
+            )
+    if not _optional_string(value["profile_row_timestamp"]):
+        raise ValueError(
+            f"failed_substep_classes[{index}].timing.profile_row_timestamp "
+            "must be a non-empty string or null"
+        )
+    return cast(FailedSubstepTiming, dict(value))
+
+
+def failed_substep_classes_from_row(
+    row: Mapping[str, object],
+) -> list[FailedSubstepClass] | None:
+    """Read the producer-owned per-node evidence, or report that it is absent.
+
+    Missing is the historical state and permits a log fallback. A present field
+    is an assertion by the producer: malformed content refuses by the field name
+    instead of disappearing into the same empty result as absent evidence.
+    """
+    if "failed_substep_classes" not in row:
+        return None
+    value = row["failed_substep_classes"]
+    if not isinstance(value, list):
+        raise ValueError("failed_substep_classes must be a list")
+    result: list[FailedSubstepClass] = []
+    for index, item in enumerate(value):
+        if not isinstance(item, Mapping):
+            raise ValueError(f"failed_substep_classes[{index}] must be an object")
+        fields = frozenset(item)
+        missing = sorted(_FAILED_SUBSTEP_REQUIRED_FIELDS - fields)
+        unknown = sorted(fields - _FAILED_SUBSTEP_FIELDS)
+        if missing or unknown:
+            raise ValueError(
+                f"failed_substep_classes[{index}] has inexact fields; "
+                f"missing={missing} unknown={unknown}"
+            )
+        if not isinstance(item["node"], str) or not item["node"]:
+            raise ValueError(
+                f"failed_substep_classes[{index}].node must be a non-empty string"
+            )
+        if not isinstance(item["group"], str):
+            raise ValueError(f"failed_substep_classes[{index}].group must be a string")
+        if item["sub_step_class"] not in _SUB_STEP_CLASSES:
+            raise ValueError(
+                f"failed_substep_classes[{index}].sub_step_class has unknown value "
+                f"{item['sub_step_class']!r}"
+            )
+        if item["fault_class"] not in _FAILED_SUBSTEP_FAULT_CLASSES:
+            raise ValueError(
+                f"failed_substep_classes[{index}].fault_class has unknown value "
+                f"{item['fault_class']!r}"
+            )
+        for field in ("infra_signature", "first_error_line", "host_env_signature"):
+            if field in item and not _optional_string(item[field]):
+                raise ValueError(
+                    f"failed_substep_classes[{index}].{field} "
+                    "must be a non-empty string or null"
+                )
+        if not isinstance(item["known_flaky"], bool):
+            raise ValueError(
+                f"failed_substep_classes[{index}].known_flaky must be boolean"
+            )
+        parsed = dict(item)
+        if "timing" in item:
+            parsed["timing"] = _validate_failed_substep_timing(item["timing"], index)
+        result.append(cast(FailedSubstepClass, parsed))
+    return result
 
 
 def flaky_cells(path: Path, commit: str | None = None) -> set[str]:
@@ -506,7 +700,7 @@ def _node_lines(log_text: str, node: str) -> list[str]:
 # one is a producer-side integrity problem, not a classification problem — but it
 # is a real boundary and it should not be widened by teaching more producers to
 # emit markers from untrusted output.
-_FAULT_CLASSES = ("host-environment", "infrastructure", "code")
+_FAULT_CLASSES = tuple(sorted(_FAILED_SUBSTEP_FAULT_CLASSES))
 _FAULT_MARKER_RE = re.compile(
     r"^FAULT\s+(" + "|".join(_FAULT_CLASSES) + r")\s*:\s*(.*)$"
 )
@@ -687,7 +881,7 @@ def classify_failed_substeps(
     *,
     flaky_registry: set[str] | None = None,
     commit: str | None = None,
-) -> list[dict[str, object]]:
+) -> list[FailedSubstepClass]:
     """Turn an aggregate DAG failure into a per-node, triageable verdict list.
 
     For every node that terminated ``✗ FAIL`` this returns one record:
@@ -779,11 +973,16 @@ def classify_failed_substeps(
                 "timing": node_timing(profile_rows, node, commit or ""),
             }
         )
-    return records
+    # Keep the producer on the same complete contract that retained-row
+    # consumers use. This is intentionally a runtime check as well as a
+    # TypedDict: JSON can bypass static checking.
+    validated = failed_substep_classes_from_row({"failed_substep_classes": records})
+    assert validated is not None
+    return validated
 
 
 def row_failed_substeps(row: Mapping[str, object]) -> set[str]:
-    result = set()
+    result: set[str] = set()
     gates = row.get("gates")
     if not isinstance(gates, list):
         return result

@@ -8,24 +8,22 @@ from a zero-byte object, a stale ``--locked`` Cargo.lock, and LiteInst clock
 nondeterminism — so the recorded gate name alone cannot triage a red: every one
 requires opening the log. This turns that manual investigation into a QUERY.
 
-WHAT IT DOES. The ledger row already records ``log_file`` (a PATH — an invitation,
-not a fact). This tool dereferences that path through the shared per-node
-classifier (:func:`failure_evidence.classify_failed_substeps`) and surfaces, for
-each failing row, the FACTS the aggregate name hid: which nested substep failed,
-whether it is a build/prep step or a product test, whether the fault is
-infrastructure or code, the matched infra signature, and — decisively — the first
-substantive error line the failing node emitted, VERBATIM.
+WHAT IT DOES. Current ledger rows already record ``failed_substep_classes``.
+This tool reads that producer-owned value first. For historical rows where the
+field is absent, it dereferences ``log_file`` through the same per-node
+classifier (:func:`failure_evidence.classify_failed_substeps`). It surfaces,
+for each failing row, the FACTS the aggregate name hid: which nested substep
+failed, whether it is a build/prep step or a product test, whether the fault is
+infrastructure or code, the matched infra signature, and — decisively — the
+first substantive error line the failing node emitted, VERBATIM.
 
-BINDING (Proxy Binding review axis). The attribution is bound to the failing run's
-own log stream, node-scoped by the ``[<node.tag>] `` prefix, so one node's stdout
-can never be read as another's evidence. When ``log_file`` is absent or
-unreadable (the log is ephemeral ``/tmp`` state that outlives neither recycling
-nor a reboot) the row is reported ``log_unavailable`` rather than guessed — the
-DURABLE fix is the producer writing ``failed_substep_classes`` (with
-``first_error_line``) INTO the row so attribution survives the log; this tool is
-the read-side that works today for surviving logs and the verification harness for
-that field. It never decides a verdict (that is ``validate_status``); it only
-renders the evidence a triager would otherwise open the log to read.
+BINDING (Proxy Binding review axis). Recorded classes are bound to the row by
+its producer. The historical fallback is bound to the failing run's own log
+stream, node-scoped by the ``[<node.tag>] `` prefix, so one node's stdout can
+never be read as another's evidence. A malformed recorded value refuses by the
+field name rather than being treated as absent. It never decides a verdict
+(that is ``validate_status``); it only renders the evidence a triager would
+otherwise open the log to read.
 """
 
 from __future__ import annotations
@@ -41,22 +39,19 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from failure_evidence import (  # noqa: E402
     DEFAULT_REGISTRY,
     classify_failed_substeps,
+    failed_substep_classes_from_row,
     flaky_cells,
 )
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "ledger"))
 import validate_rows as canonical_ledger  # noqa: E402
 
-# The durable capture. WHY IT EXISTS: the run ledger's ``log_file`` points at
-# ephemeral /tmp state that outlives neither recycling nor a reboot, so a red row
-# is attributable only while its log happens to survive — every evicted log
-# strands its row permanently. Until the PRODUCER (Hermit's Rust driver) inlines the
-# verbatim fault line into every red row it writes, this sidecar is the read-side
-# that captures it NOW: run before a log is evicted, it lifts the node / fault
-# class / VERBATIM first_error_line out of each surviving red log and appends a
-# durable record keyed to the red run, so the attribution survives the log. It is
-# APPEND-ONLY (O_APPEND) and idempotent (a red run+node already recorded is
-# skipped), so it races no concurrent ledger appender and can run on every
-# landing. It never fabricates: a red whose log is gone contributes nothing.
+# The historical durable capture. WHY IT STILL EXISTS: older run rows carry only
+# a ``log_file`` under ephemeral /tmp and have no recorded
+# ``failed_substep_classes``. Run before one of those logs is evicted, this
+# sidecar lifts the node / fault class / VERBATIM first_error_line into an
+# append-only record keyed to the red run. Current rows already carry that value
+# in the ledger and do not depend on this sidecar. It never fabricates: an old row
+# whose log is gone contributes nothing.
 DEFAULT_ATTRIBUTION = (
     Path(__file__).resolve().parents[2] / "ignored" / "validate-red-attribution.jsonl"
 )
@@ -198,13 +193,12 @@ _NODE_ID_RE = re.compile(r"^[a-z0-9_-]+\.[a-z0-9_.-]+$")
 def gate_causes(row: Mapping[str, object]) -> list[dict[str, object]]:
     """One PER-NODE record for each failed gate, derived from the ROW, not the log.
 
-    ``classes`` is the good attribution and it requires the log. Measured
-    2026-08-25 across this ledger: 854 of 856 non-pass rows name a ``log_file``
-    under ``/tmp`` THAT NO LONGER EXISTS, and only 84 (9%) ever got a persisted
-    ``first_error_line``. For the other 91% ``classes`` is empty and the row
-    retains only ``failed_gates`` -- a FLAT LIST OF NAMES. That is an aggregate:
-    it drops which node failed how, and it is all those rows will ever have,
-    because the evidence was reaped.
+    ``classes`` is the good attribution and current rows carry it durably.
+    Historical rows require the log fallback. Measured 2026-08-28 across the
+    canonical ledger: 978 failed rows had only seven surviving logs, while 226
+    log-missing rows already carried 681 durable classifications. Before this
+    reader consumed the recorded field, it reported zero classifications and
+    fell back to ``failed_gates`` -- a FLAT LIST OF NAMES.
 
     The gates array is still in the row and still per-node. This turns it back
     into per-node records carrying the exit code and duration, so a triager can
@@ -253,15 +247,16 @@ def gate_causes(row: Mapping[str, object]) -> list[dict[str, object]]:
 def attribute_row(
     row: Mapping[str, object], *, registry: set[str] | None = None
 ) -> dict[str, object]:
-    """Attribute one ledger row: dereference ``log_file`` and classify.
+    """Attribute one ledger row from recorded classes or the historical log.
 
     Returns ``{commit, finished_at, result, exit_code, failed_gates, log_file,
     log_status, classes}`` where ``log_status`` is ``present``/``missing`` and
-    ``classes`` is the per-node classifier output (empty when the log is
-    unavailable or carried no ``✗ FAIL`` node — e.g. an outer-gate failure with no
-    nested substep)."""
+    ``classes`` is the producer-owned per-node value when present. Only a row
+    where that field is absent may fall back to its log. A malformed recorded
+    field raises ``ValueError`` by name instead of becoming empty evidence."""
     commit = str(row.get("commit") or "")
     log_file = row.get("log_file")
+    recorded_classes = failed_substep_classes_from_row(row)
     record: dict[str, object] = {
         "commit": commit,
         "finished_at": row.get("finished_at"),
@@ -270,7 +265,7 @@ def attribute_row(
         "failed_gates": _failed_gate_names(row),
         "log_file": log_file,
         "log_status": "missing",
-        "classes": [],
+        "classes": recorded_classes or [],
         # Per-node fallback that does NOT need the log. Always populated, so a
         # row whose log was reaped still says which node failed and how, rather
         # than degrading to the flat `failed_gates` name list.
@@ -285,9 +280,10 @@ def attribute_row(
                 text = None
             if text is not None:
                 record["log_status"] = "present"
-                record["classes"] = classify_failed_substeps(
-                    text, flaky_registry=registry or set()
-                )
+                if recorded_classes is None:
+                    record["classes"] = classify_failed_substeps(
+                        text, flaky_registry=registry or set()
+                    )
     return record
 
 
@@ -583,8 +579,8 @@ def main(argv: list[str] | None = None) -> int:
     print(
         f"— {len(records)} failed rows; log present {log_present}; "
         f"per-substep attributable {attributable}; "
-        f"log-missing {len(records) - log_present} (durable fix: producer must "
-        f"write failed_substep_classes/first_error_line into the row)"
+        f"log-missing {len(records) - log_present} (historical rows without "
+        f"failed_substep_classes still require a surviving log)"
     )
     return 0
 
