@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """Typed liveness for a held resource, and a fail-closed release verdict.
 
-WHY. Measured 2026-08-07: `worktree-state.json` holds 96 slot records whose
-fields are agents / allocated / *_branch / *_path / purpose / status / task /
-updated (+ `coordinator_lease` on 5). There is **no pid, no heartbeat, no
-last-seen** on any of them. So a recycled agent releases nothing, and a dead
-owner's ACTIVE slot is indistinguishable from a live one.
+WHY. Measured 2026-08-07: `worktree-state.json` held 96 slot records without a
+TTL owner lease. So a recycled agent released nothing, and a dead owner's
+ACTIVE slot was indistinguishable from a live one. The later
+`owner_sidecar.lease` supplies that TTL. `coordinator_lease` is a different
+artifact: it records one exact systemd sentinel incarnation and has no
+`expires_at`; treating it as the TTL lease would manufacture liveness from a
+field its producer never writes.
 
 `residue_sweep.py` copes by INFERRING death from two external signals — absence
 from the live ORC fleet, and no same-user process cwd under the slot. That
@@ -91,7 +93,8 @@ def holder_liveness(
     if any(a in live_agents for a in holders):
         return Liveness.ALIVE
 
-    lease = record.get("coordinator_lease")
+    sidecar = record.get("owner_sidecar")
+    lease = sidecar.get("lease") if isinstance(sidecar, Mapping) else None
     if isinstance(lease, Mapping):
         expires = lease.get("expires_at")
         if isinstance(expires, int):

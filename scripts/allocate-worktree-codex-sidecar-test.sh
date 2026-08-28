@@ -60,14 +60,14 @@ lease = {
     "schema_version": 1,
     "source": "codex-systemd-sentinel-v1",
     "slot": "codex-fixture",
-    "generation": "fixture-generation",
-    "nonce": "fixture-nonce",
-    "unit": "dev-hermit-slot-codex-fixture-fixture.service",
+    "generation": "0123456789abcdef",
+    "nonce": "0123456789abcdef0123456789abcdef",
+    "unit": "dev-hermit-slot-codex-fixture-0123456789abcdef.service",
     "working_directory": worktree,
     "main_pid": int(pid),
     "main_pid_starttime": int(start_ticks),
-    "cgroup_path": "/fixture/codex-fixture",
-    "invocation_id": "fixture-invocation",
+    "cgroup_path": "/fixture/dev-hermit-slot-codex-fixture-0123456789abcdef.service",
+    "invocation_id": "abcdefabcdefabcdefabcdefabcdefab",
 }
 state = {
     "version": 3,
@@ -122,14 +122,14 @@ assert sidecar["agent"] == "codex-fixture"
 assert sidecar["task"] == "codex-sidecar-regression"
 assert sidecar["supervisor_pid"] == pid
 assert sidecar["start_ticks"] == start_ticks
-assert sidecar["cgroup_path"] == "/fixture/codex-fixture"
+assert sidecar["cgroup_path"] == "/fixture/dev-hermit-slot-codex-fixture-0123456789abcdef.service"
 assert sidecar["lease"]["schema_version"] == 1
 assert sidecar["lease"]["resource"] == "slot/codex-fixture"
 assert sidecar["lease"]["generation"] == sidecar["generation"]
 assert sidecar["lease"]["ttl_seconds"] > 0
 assert sidecar["lease"]["expires_at"] == sidecar["lease"]["renewed_at"] + sidecar["lease"]["ttl_seconds"]
 assert sidecar["lease"]["state"] == "active"
-assert row["coordinator_lease"]["generation"] == "fixture-generation"
+assert row["coordinator_lease"]["generation"] == "0123456789abcdef"
 assert row["task"] == "codex-sidecar-regression"
 assert row["purpose"] == "prove existing sentinel sidecar adoption"
 print("PASS: existing Codex sentinel re-adoption published its exact owner sidecar")

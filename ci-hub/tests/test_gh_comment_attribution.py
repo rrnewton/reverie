@@ -41,7 +41,9 @@ def load_changes_requested_gate():
 
 
 def owner_row(agent: str = TEST_AGENT, *, sidecar: bool = True) -> dict:
-    cgroup = "/user.slice/test-boundary.service"
+    generation = "0123456789abcdef"
+    unit = f"dev-hermit-slot-slot01-{generation}.service"
+    cgroup = f"/user.slice/{unit}"
     task = "test-who-is-talking"
     row = {
         "status": "active",
@@ -58,9 +60,15 @@ def owner_row(agent: str = TEST_AGENT, *, sidecar: bool = True) -> dict:
         "coordinator_lease": {
             "schema_version": 1,
             "source": "codex-systemd-sentinel-v1",
+            "slot": "slot01",
+            "generation": generation,
+            "nonce": "0123456789abcdef0123456789abcdef",
+            "unit": unit,
+            "invocation_id": "abcdefabcdefabcdefabcdefabcdefab",
             "main_pid": 4242,
             "main_pid_starttime": 101,
             "cgroup_path": cgroup,
+            "working_directory": "/tmp/worktrees/slots/slot01",
         },
     }
     if sidecar:

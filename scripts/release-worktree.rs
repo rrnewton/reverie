@@ -1099,7 +1099,7 @@ struct OrcOwnerLease {
 
 #[derive(Clone, Debug)]
 struct SentinelAuthority {
-    lease: Value,
+    lease: worktree_registry::SentinelLease,
     revoked: bool,
     proof: Option<Value>,
 }
@@ -1120,7 +1120,11 @@ fn normalized_cgroup_path(path: &str) -> bool {
         .all(|component| matches!(component, Component::Normal(_)))
 }
 
-fn validate_sentinel_slot_binding(root: &Path, slot: &str, lease: &Value) -> Result<(), String> {
+fn validate_sentinel_slot_binding(
+    root: &Path,
+    slot: &str,
+    lease: &worktree_registry::SentinelLease,
+) -> Result<(), String> {
     // Do not canonicalize the slot directory itself: a legitimate recovery
     // can begin after the physical slot directory was removed but before its
     // final registry update was made durable. The canonical workspace root
@@ -1130,17 +1134,7 @@ fn validate_sentinel_slot_binding(root: &Path, slot: &str, lease: &Value) -> Res
         .map_err(|error| format!("canonicalize workspace for sentinel binding: {error}"))?
         .join("worktrees/slots")
         .join(slot);
-    let recorded = lease["working_directory"]
-        .as_str()
-        .ok_or_else(|| format!("slot {slot} coordinator lease has no working_directory"))?;
-    if Path::new(recorded) != expected {
-        return Err(format!(
-            "slot {slot} coordinator lease working_directory {:?} does not bind exact slot path {}",
-            recorded,
-            expected.display()
-        ));
-    }
-    Ok(())
+    lease.validate_slot_binding(slot, &expected)
 }
 
 fn recorded_owner_authorities(
@@ -1160,15 +1154,10 @@ fn recorded_owner_authorities(
         return Err(format!("slot {slot} has no recorded owners"));
     }
     if let Some(sentinel) = slot_state.get("coordinator_lease") {
-        if sentinel["schema_version"].as_u64() != Some(1)
-            || sentinel["source"].as_str() != Some("codex-systemd-sentinel-v1")
-            || sentinel["slot"].as_str() != Some(slot)
-        {
-            return Err(format!(
-                "slot {slot} has malformed Codex coordinator lease authority"
-            ));
-        }
-        validate_sentinel_slot_binding(root, slot, sentinel)?;
+        let sentinel = worktree_registry::SentinelLease::from_value(sentinel).map_err(|error| {
+            format!("slot {slot} has malformed Codex coordinator lease authority: {error}")
+        })?;
+        validate_sentinel_slot_binding(root, slot, &sentinel)?;
         for agent in slot_state["agents"].as_array().into_iter().flatten() {
             if agent.get("tmux_pane_id").is_some() || agent.get("cgroup_path").is_some() {
                 return Err(format!(
@@ -1176,12 +1165,13 @@ fn recorded_owner_authorities(
                 ));
             }
         }
+        let sentinel_value = sentinel.to_value()?;
         let journal = slot_state.get("coordinator_lease_revocation");
         if let Some(journal) = journal {
             let proof = journal.get("proof");
             if journal["schema_version"].as_u64() != Some(1)
                 || journal["source"].as_str() != Some("codex-systemd-sentinel-v1")
-                || journal.get("lease") != Some(sentinel)
+                || journal.get("lease") != Some(&sentinel_value)
                 || !matches!(
                     journal["phase"].as_str(),
                     Some("stop-authorized" | "revoked")
@@ -1198,11 +1188,13 @@ fn recorded_owner_authorities(
                 ));
             }
             if let Some(proof) = proof {
-                if proof["unit_id"] != sentinel["unit"]
-                    || proof["recorded_main_pid"] != sentinel["main_pid"]
-                    || proof["recorded_main_pid_starttime"] != sentinel["main_pid_starttime"]
-                    || proof["cgroup_path"] != sentinel["cgroup_path"]
-                    || proof["observed_main_pid_starttime"] == sentinel["main_pid_starttime"]
+                if proof["unit_id"].as_str() != Some(sentinel.unit.as_str())
+                    || proof["recorded_main_pid"].as_u64() != Some(u64::from(sentinel.main_pid))
+                    || proof["recorded_main_pid_starttime"].as_u64()
+                        != Some(sentinel.main_pid_starttime)
+                    || proof["cgroup_path"].as_str() != Some(sentinel.cgroup_path.as_str())
+                    || proof["observed_main_pid_starttime"].as_u64()
+                        == Some(sentinel.main_pid_starttime)
                     || proof["cgroup_members"]
                         .as_array()
                         .is_none_or(|members| !members.is_empty())
@@ -1218,7 +1210,7 @@ fn recorded_owner_authorities(
             names,
             orc: leases,
             sentinel: Some(SentinelAuthority {
-                lease: sentinel.clone(),
+                lease: sentinel,
                 revoked: journal.is_some_and(|value| value["phase"].as_str() == Some("revoked")),
                 proof: journal.and_then(|value| value.get("proof")).cloned(),
             }),
@@ -1282,7 +1274,7 @@ fn codex_sentinel_tool(root: &Path) -> Result<PathBuf, String> {
 fn codex_sentinel_command(
     root: &Path,
     operation: &str,
-    lease: &Value,
+    lease: &worktree_registry::SentinelLease,
     recover: bool,
 ) -> Result<Value, String> {
     let lease_json = serde_json::to_string(lease)
@@ -1309,7 +1301,8 @@ fn codex_sentinel_command(
     } else {
         "revoked"
     };
-    if report["state"].as_str() != Some(expected_state) || report.get("lease") != Some(lease) {
+    let reported_lease = worktree_registry::SentinelLease::from_value(&report["lease"])?;
+    if report["state"].as_str() != Some(expected_state) || &reported_lease != lease {
         return Err(format!(
             "Codex slot sentinel {operation} result is not bound to the exact lease"
         ));
@@ -1322,15 +1315,25 @@ fn codex_sentinel_command(
     Ok(report)
 }
 
-fn verify_codex_sentinel_live(root: &Path, lease: &Value) -> Result<(), String> {
+fn verify_codex_sentinel_live(
+    root: &Path,
+    lease: &worktree_registry::SentinelLease,
+) -> Result<(), String> {
     codex_sentinel_command(root, "verify", lease, false).map(|_| ())
 }
 
-fn prove_codex_sentinel_revoked(root: &Path, lease: &Value) -> Result<Value, String> {
+fn prove_codex_sentinel_revoked(
+    root: &Path,
+    lease: &worktree_registry::SentinelLease,
+) -> Result<Value, String> {
     Ok(codex_sentinel_command(root, "prove-revoked", lease, false)?["proof"].clone())
 }
 
-fn revoke_codex_sentinel(root: &Path, lease: &Value, recover: bool) -> Result<Value, String> {
+fn revoke_codex_sentinel(
+    root: &Path,
+    lease: &worktree_registry::SentinelLease,
+    recover: bool,
+) -> Result<Value, String> {
     Ok(codex_sentinel_command(root, "revoke", lease, recover)?["proof"].clone())
 }
 
@@ -2832,10 +2835,10 @@ fn arm_coordinator_lease_revocation(
     if slot_state.get("coordinator_lease_revocation").is_some() {
         return Err("coordinator lease revocation is already journaled".to_string());
     }
-    let lease = slot_state
+    let lease_value = slot_state
         .get("coordinator_lease")
-        .cloned()
         .ok_or_else(|| "slot has no Codex coordinator lease to revoke".to_string())?;
+    let lease = worktree_registry::SentinelLease::from_value(lease_value)?;
     validate_sentinel_slot_binding(root, slot, &lease)?;
     // This first exact live check prevents an already-dead/restarted unit from
     // becoming release authority. The helper repeats the check immediately
@@ -2847,7 +2850,7 @@ fn arm_coordinator_lease_revocation(
         "source": "codex-systemd-sentinel-v1",
         "phase": "stop-authorized",
         "transaction_nonce": secure_transaction_nonce()?,
-        "lease": lease,
+        "lease": lease.to_value()?,
         "authorized_at": now_iso(),
     });
     state["slots"][slot]["updated"] = json!(now_iso());
@@ -2871,7 +2874,7 @@ fn complete_coordinator_lease_revocation(
         .get("coordinator_lease_revocation")
         .cloned()
         .ok_or_else(|| "slot has no coordinator lease revocation journal".to_string())?;
-    let lease = journal["lease"].clone();
+    let lease = worktree_registry::SentinelLease::from_value(&journal["lease"])?;
     validate_sentinel_slot_binding(root, slot, &lease)?;
     match journal["phase"].as_str() {
         Some("stop-authorized") => {

@@ -13,7 +13,11 @@
 //! serde_json = "1"
 //! ```
 
-use serde::{Deserialize, Serialize};
+#[allow(dead_code)]
+#[path = "worktree_registry.rs"]
+mod worktree_registry;
+
+use serde::Serialize;
 use serde_json::json;
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
@@ -24,7 +28,6 @@ use std::process::{exit, Command, Output};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-const SOURCE: &str = "codex-systemd-sentinel-v1";
 const ENVIRONMENT_KEY: &str = "DEV_HERMIT_SLOT_LEASE";
 const QUERY_TIMEOUT: &str = "5s";
 const MUTATION_TIMEOUT: &str = "10s";
@@ -41,33 +44,7 @@ systemd incarnation. `--recover` resumes an already-journaled revocation; it
 never turns an absent pre-journal unit into release authority.
 "#;
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-struct SentinelLease {
-    schema_version: u8,
-    source: String,
-    slot: String,
-    generation: String,
-    nonce: String,
-    unit: String,
-    invocation_id: String,
-    main_pid: u32,
-    main_pid_starttime: u64,
-    cgroup_path: String,
-    working_directory: String,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-struct SentinelPlan {
-    schema_version: u8,
-    source: String,
-    slot: String,
-    generation: String,
-    nonce: String,
-    unit: String,
-    working_directory: String,
-}
+use worktree_registry::{SentinelLease, SentinelPlan};
 
 #[derive(Debug)]
 struct UnitState {
@@ -114,21 +91,6 @@ fn fail(message: impl AsRef<str>) -> ! {
     exit(1);
 }
 
-fn valid_token(value: &str) -> bool {
-    !value.is_empty()
-        && value
-            .chars()
-            .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '-')
-        && value
-            .chars()
-            .next()
-            .is_some_and(|ch| ch.is_ascii_alphanumeric())
-}
-
-fn is_hex(value: &str, length: usize) -> bool {
-    value.len() == length && value.bytes().all(|byte| byte.is_ascii_hexdigit())
-}
-
 fn normalized_absolute(path: &Path) -> bool {
     path.is_absolute()
         && path
@@ -142,53 +104,6 @@ fn normalized_cgroup(path: &str) -> bool {
         && Path::new(path.trim_start_matches('/'))
             .components()
             .all(|component| matches!(component, Component::Normal(_)))
-}
-
-fn validate_plan(plan: &SentinelPlan) -> Result<(), String> {
-    if plan.schema_version != 1 || plan.source != SOURCE {
-        return Err("sentinel plan has unsupported schema/source".to_string());
-    }
-    if !valid_token(&plan.slot) {
-        return Err("sentinel plan has invalid slot".to_string());
-    }
-    if !is_hex(&plan.generation, 16) || !is_hex(&plan.nonce, 32) {
-        return Err("sentinel plan generation/nonce is malformed".to_string());
-    }
-    let expected_unit = format!("dev-hermit-slot-{}-{}.service", plan.slot, plan.generation);
-    if plan.unit != expected_unit {
-        return Err(format!(
-            "sentinel unit {} does not bind slot/generation {}",
-            plan.unit, expected_unit
-        ));
-    }
-    if !normalized_absolute(Path::new(&plan.working_directory)) {
-        return Err("sentinel working directory is not normalized absolute".to_string());
-    }
-    Ok(())
-}
-
-fn validate_lease(lease: &SentinelLease) -> Result<(), String> {
-    validate_plan(&SentinelPlan {
-        schema_version: lease.schema_version,
-        source: lease.source.clone(),
-        slot: lease.slot.clone(),
-        generation: lease.generation.clone(),
-        nonce: lease.nonce.clone(),
-        unit: lease.unit.clone(),
-        working_directory: lease.working_directory.clone(),
-    })?;
-    if !is_hex(&lease.invocation_id, 32) {
-        return Err("sentinel InvocationID is malformed".to_string());
-    }
-    if lease.main_pid == 0 || lease.main_pid_starttime == 0 {
-        return Err("sentinel PID/starttime identity is empty".to_string());
-    }
-    if !normalized_cgroup(&lease.cgroup_path)
-        || !lease.cgroup_path.ends_with(&format!("/{}", lease.unit))
-    {
-        return Err("sentinel cgroup does not bind the exact unit".to_string());
-    }
-    Ok(())
 }
 
 fn bounded(program: &str, arguments: &[String], timeout: &str) -> io::Result<Output> {
@@ -417,15 +332,7 @@ fn cgroup_state(roots: &EvidenceRoots, cgroup: &str) -> Result<Option<(Vec<u32>,
 }
 
 fn environment_token(lease: &SentinelLease) -> String {
-    plan_environment_token(&SentinelPlan {
-        schema_version: lease.schema_version,
-        source: lease.source.clone(),
-        slot: lease.slot.clone(),
-        generation: lease.generation.clone(),
-        nonce: lease.nonce.clone(),
-        unit: lease.unit.clone(),
-        working_directory: lease.working_directory.clone(),
-    })
+    plan_environment_token(&lease.plan())
 }
 
 fn plan_environment_token(plan: &SentinelPlan) -> String {
@@ -487,7 +394,7 @@ fn state_static_matches(lease: &SentinelLease, state: &UnitState) -> Result<(), 
 }
 
 fn verify_live(lease: &SentinelLease) -> Result<(), String> {
-    validate_lease(lease)?;
+    lease.validate()?;
     let working = Path::new(&lease.working_directory);
     let roots = evidence_roots(working)?;
     let state = query_unit(&lease.unit)?;
@@ -537,7 +444,7 @@ fn verify_live(lease: &SentinelLease) -> Result<(), String> {
 }
 
 fn prove_revoked(lease: &SentinelLease) -> Result<RevocationProof, String> {
-    validate_lease(lease)?;
+    lease.validate()?;
     let roots = evidence_roots(Path::new(&lease.working_directory))?;
     let state = query_unit(&lease.unit)?;
     if state.active_state == "active" {
@@ -627,7 +534,7 @@ fn stop_unit(unit: &str) -> Result<(), String> {
 }
 
 fn plan(slot: &str, working_directory: &Path) -> Result<SentinelPlan, String> {
-    if !valid_token(slot) {
+    if !worktree_registry::valid_slot_name(slot) {
         return Err("sentinel slot is invalid".to_string());
     }
     let working_directory = fs::canonicalize(working_directory)
@@ -637,18 +544,7 @@ fn plan(slot: &str, working_directory: &Path) -> Result<SentinelPlan, String> {
     }
     let generation = secure_hex(8)?;
     let nonce = secure_hex(16)?;
-    let unit = format!("dev-hermit-slot-{slot}-{generation}.service");
-    let plan = SentinelPlan {
-        schema_version: 1,
-        source: SOURCE.to_string(),
-        slot: slot.to_string(),
-        generation,
-        nonce,
-        unit,
-        working_directory: working_directory.display().to_string(),
-    };
-    validate_plan(&plan)?;
-    Ok(plan)
+    SentinelPlan::current(slot, generation, nonce, &working_directory)
 }
 
 fn state_matches_plan(plan: &SentinelPlan, state: &UnitState) -> Result<(), String> {
@@ -672,7 +568,7 @@ fn state_matches_plan(plan: &SentinelPlan, state: &UnitState) -> Result<(), Stri
 }
 
 fn launch(plan: &SentinelPlan) -> Result<SentinelLease, String> {
-    validate_plan(plan)?;
+    plan.validate()?;
     let working_directory = PathBuf::from(&plan.working_directory);
     let before = query_unit(&plan.unit)?;
     if before.load_state == "not-found" {
@@ -720,19 +616,13 @@ fn launch(plan: &SentinelPlan) -> Result<SentinelLease, String> {
             let starttime = proc_starttime(&roots.proc_root, state.main_pid)?.ok_or_else(|| {
                 format!("sentinel MainPID {} has no proc identity", state.main_pid)
             })?;
-            let lease = SentinelLease {
-                schema_version: plan.schema_version,
-                source: plan.source.clone(),
-                slot: plan.slot.clone(),
-                generation: plan.generation.clone(),
-                nonce: plan.nonce.clone(),
-                unit: plan.unit.clone(),
-                invocation_id: state.invocation_id,
-                main_pid: state.main_pid,
-                main_pid_starttime: starttime,
-                cgroup_path: state.cgroup,
-                working_directory: plan.working_directory.clone(),
-            };
+            let lease = SentinelLease::current(
+                plan,
+                state.invocation_id,
+                state.main_pid,
+                starttime,
+                state.cgroup,
+            )?;
             verify_live(&lease)?;
             break Ok(lease);
         }
@@ -777,17 +667,11 @@ fn revoke(lease: &SentinelLease, recover: bool) -> Result<RevocationProof, Strin
 }
 
 fn parse_lease(raw: &str) -> Result<SentinelLease, String> {
-    let lease: SentinelLease =
-        serde_json::from_str(raw).map_err(|error| format!("parse lease JSON: {error}"))?;
-    validate_lease(&lease)?;
-    Ok(lease)
+    SentinelLease::from_json(raw)
 }
 
 fn parse_plan(raw: &str) -> Result<SentinelPlan, String> {
-    let plan: SentinelPlan =
-        serde_json::from_str(raw).map_err(|error| format!("parse plan JSON: {error}"))?;
-    validate_plan(&plan)?;
-    Ok(plan)
+    SentinelPlan::from_json(raw)
 }
 
 fn main() {
@@ -907,24 +791,24 @@ mod tests {
 
     #[test]
     fn lease_schema_binds_slot_generation_unit_and_cgroup() {
-        let lease = SentinelLease {
-            schema_version: 1,
-            source: SOURCE.to_string(),
-            slot: "slot01".to_string(),
-            generation: "0123456789abcdef".to_string(),
-            nonce: "0123456789abcdef0123456789abcdef".to_string(),
-            unit: "dev-hermit-slot-slot01-0123456789abcdef.service".to_string(),
-            invocation_id: "abcdefabcdefabcdefabcdefabcdefab".to_string(),
-            main_pid: 17,
-            main_pid_starttime: 99,
-            cgroup_path:
-                "/user.slice/user-1.slice/user@1.service/app.slice/dev-hermit-slot-slot01-0123456789abcdef.service"
-                    .to_string(),
-            working_directory: "/tmp/worktrees/slots/slot01".to_string(),
-        };
-        validate_lease(&lease).unwrap();
+        let plan = SentinelPlan::current(
+            "slot01",
+            "0123456789abcdef".to_string(),
+            "0123456789abcdef0123456789abcdef".to_string(),
+            Path::new("/tmp/worktrees/slots/slot01"),
+        )
+        .unwrap();
+        let lease = SentinelLease::current(
+            &plan,
+            "abcdefabcdefabcdefabcdefabcdefab".to_string(),
+            17,
+            99,
+            "/user.slice/user-1.slice/user@1.service/app.slice/dev-hermit-slot-slot01-0123456789abcdef.service"
+                .to_string(),
+        )
+        .unwrap();
         let mut wrong = lease.clone();
         wrong.unit = "dev-hermit-slot-other-0123456789abcdef.service".to_string();
-        assert!(validate_lease(&wrong).is_err());
+        assert!(SentinelLease::from_value(&wrong.to_value().unwrap()).is_err());
     }
 }

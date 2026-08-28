@@ -265,9 +265,15 @@ class SlotOwnerAuthorityTest(unittest.TestCase):
         document["slots"]["slot-a"]["coordinator_lease"] = {
             "schema_version": 1,
             "source": "codex-systemd-sentinel-v1",
+            "slot": "slot-a",
+            "generation": "0123456789abcdef",
+            "nonce": "0123456789abcdef0123456789abcdef",
+            "unit": "dev-hermit-slot-slot-a-0123456789abcdef.service",
+            "invocation_id": "abcdefabcdefabcdefabcdefabcdefab",
             "main_pid": 123,
             "main_pid_starttime": 999,
-            "cgroup_path": "/agent.slice/a.scope",
+            "cgroup_path": "/agent.slice/dev-hermit-slot-slot-a-0123456789abcdef.service",
+            "working_directory": "/tmp/worktrees/slots/slot-a",
         }
         result = self.assess(document, stat=process_stat("S", 456))
         self.assertEqual(result.state, "indeterminate")

@@ -8,19 +8,22 @@
 //! still-owning to a third.
 //!
 //! `owner_sidecar` and `coordinator_lease` are separately versioned artifact
-//! families. `OwnerSidecar` is the complete shared contract for the first; its
-//! slot field remains a JSON value so one malformed historical sidecar can be
-//! reported for that slot without making every other liveness result vanish.
-//! `coordinator_lease` remains opaque until its own contract is shared. The
-//! registry's own fields and closed status values are complete here.
+//! families. `OwnerSidecar`, `SentinelPlan`, and `SentinelLease` are their
+//! complete shared contracts. The slot fields remain JSON values so one
+//! malformed historical artifact can be reported for that slot without making
+//! every other liveness result vanish. The registry's own fields and closed
+//! status values are complete here; transaction journals remain separate
+//! versioned artifacts.
 
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::{Map, Value};
 use std::collections::BTreeMap;
+use std::path::{Component, Path};
 
 pub const SCHEMA_VERSION: u64 = 3;
 pub const OWNER_SIDECAR_SCHEMA_VERSION: u64 = 1;
 pub const OWNER_LEASE_SCHEMA_VERSION: u64 = 1;
+pub const SENTINEL_SCHEMA_VERSION: u8 = 1;
 #[allow(dead_code)]
 pub const OWNER_LEASE_TTL_SECONDS: u64 = 86_400;
 
@@ -49,6 +52,28 @@ const OWNER_LEASE_FIELDS: &[&str] = &[
     "state",
     "last_transition_actor",
     "automatic_handoff",
+];
+const SENTINEL_PLAN_FIELDS: &[&str] = &[
+    "schema_version",
+    "source",
+    "slot",
+    "generation",
+    "nonce",
+    "unit",
+    "working_directory",
+];
+const SENTINEL_LEASE_FIELDS: &[&str] = &[
+    "schema_version",
+    "source",
+    "slot",
+    "generation",
+    "nonce",
+    "unit",
+    "invocation_id",
+    "main_pid",
+    "main_pid_starttime",
+    "cgroup_path",
+    "working_directory",
 ];
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -166,6 +191,292 @@ impl Serialize for OwnerSidecarSource {
         S: Serializer,
     {
         serializer.serialize_str(self.as_str())
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SentinelPlan {
+    pub schema_version: u8,
+    pub source: OwnerSidecarSource,
+    pub slot: String,
+    pub generation: String,
+    pub nonce: String,
+    pub unit: String,
+    pub working_directory: String,
+}
+
+#[allow(dead_code)]
+impl SentinelPlan {
+    pub fn current(
+        slot: &str,
+        generation: String,
+        nonce: String,
+        working_directory: &Path,
+    ) -> Result<Self, String> {
+        let plan = Self {
+            schema_version: SENTINEL_SCHEMA_VERSION,
+            source: OwnerSidecarSource::CodexSystemdSentinelV1,
+            slot: slot.to_string(),
+            unit: format!("dev-hermit-slot-{slot}-{generation}.service"),
+            generation,
+            nonce,
+            working_directory: working_directory.display().to_string(),
+        };
+        plan.validate()?;
+        Ok(plan)
+    }
+
+    pub fn from_json(raw: &str) -> Result<Self, String> {
+        let value: Value = serde_json::from_str(raw)
+            .map_err(|error| format!("parse sentinel plan JSON: {error}"))?;
+        Self::from_value(&value)
+    }
+
+    pub fn from_value(value: &Value) -> Result<Self, String> {
+        let object = value
+            .as_object()
+            .ok_or_else(|| "sentinel plan is not an object".to_string())?;
+        let version = object
+            .get("schema_version")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| {
+                "sentinel plan schema_version is missing or not an integer".to_string()
+            })?;
+        if version != u64::from(SENTINEL_SCHEMA_VERSION) {
+            return Err(format!(
+                "sentinel plan schema_version is unsupported: {version}"
+            ));
+        }
+        require_exact_fields("sentinel plan", object, SENTINEL_PLAN_FIELDS, &[])?;
+        let plan: Self = serde_json::from_value(value.clone())
+            .map_err(|error| format!("sentinel plan schema {version}: {error}"))?;
+        plan.validate()?;
+        Ok(plan)
+    }
+
+    pub fn to_value(&self) -> Result<Value, String> {
+        serde_json::to_value(self).map_err(|error| format!("serialize sentinel plan: {error}"))
+    }
+
+    pub fn validate_slot_binding(
+        &self,
+        expected_slot: &str,
+        expected_directory: &Path,
+    ) -> Result<(), String> {
+        self.validate()?;
+        if self.slot != expected_slot || Path::new(&self.working_directory) != expected_directory {
+            return Err(format!(
+                "Codex sentinel identity does not bind exact canonical slot {}",
+                expected_directory.display()
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn validate_registry_slot(&self, expected_slot: &str) -> Result<(), String> {
+        self.validate()?;
+        if self.slot != expected_slot {
+            return Err("sentinel plan slot does not match registry key".to_string());
+        }
+        Ok(())
+    }
+
+    pub fn identity_fields(&self) -> BTreeMap<&'static str, Value> {
+        BTreeMap::from([
+            ("generation", Value::String(self.generation.clone())),
+            ("nonce", Value::String(self.nonce.clone())),
+            ("unit", Value::String(self.unit.clone())),
+            (
+                "working_directory",
+                Value::String(self.working_directory.clone()),
+            ),
+        ])
+    }
+
+    pub fn validate(&self) -> Result<(), String> {
+        if self.schema_version != SENTINEL_SCHEMA_VERSION
+            || self.source != OwnerSidecarSource::CodexSystemdSentinelV1
+        {
+            return Err("sentinel plan has unsupported schema/source".to_string());
+        }
+        if !valid_slot_name(&self.slot) {
+            return Err("sentinel plan has invalid slot".to_string());
+        }
+        if !is_hex(&self.generation, 16) || !is_hex(&self.nonce, 32) {
+            return Err("sentinel plan generation/nonce is malformed".to_string());
+        }
+        let expected_unit = format!("dev-hermit-slot-{}-{}.service", self.slot, self.generation);
+        if self.unit != expected_unit {
+            return Err(format!(
+                "sentinel unit {} does not bind slot/generation {}",
+                self.unit, expected_unit
+            ));
+        }
+        if !normalized_absolute(Path::new(&self.working_directory)) {
+            return Err("sentinel working directory is not normalized absolute".to_string());
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SentinelLease {
+    pub schema_version: u8,
+    pub source: OwnerSidecarSource,
+    pub slot: String,
+    pub generation: String,
+    pub nonce: String,
+    pub unit: String,
+    pub invocation_id: String,
+    pub main_pid: u32,
+    pub main_pid_starttime: u64,
+    pub cgroup_path: String,
+    pub working_directory: String,
+}
+
+#[allow(dead_code)]
+impl SentinelLease {
+    pub fn current(
+        plan: &SentinelPlan,
+        invocation_id: String,
+        main_pid: u32,
+        main_pid_starttime: u64,
+        cgroup_path: String,
+    ) -> Result<Self, String> {
+        let lease = Self {
+            schema_version: plan.schema_version,
+            source: plan.source,
+            slot: plan.slot.clone(),
+            generation: plan.generation.clone(),
+            nonce: plan.nonce.clone(),
+            unit: plan.unit.clone(),
+            invocation_id,
+            main_pid,
+            main_pid_starttime,
+            cgroup_path,
+            working_directory: plan.working_directory.clone(),
+        };
+        lease.validate()?;
+        Ok(lease)
+    }
+
+    pub fn from_json(raw: &str) -> Result<Self, String> {
+        let value: Value = serde_json::from_str(raw)
+            .map_err(|error| format!("parse sentinel lease JSON: {error}"))?;
+        Self::from_value(&value)
+    }
+
+    pub fn from_value(value: &Value) -> Result<Self, String> {
+        let object = value
+            .as_object()
+            .ok_or_else(|| "sentinel lease is not an object".to_string())?;
+        let version = object
+            .get("schema_version")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| {
+                "sentinel lease schema_version is missing or not an integer".to_string()
+            })?;
+        if version != u64::from(SENTINEL_SCHEMA_VERSION) {
+            return Err(format!(
+                "sentinel lease schema_version is unsupported: {version}"
+            ));
+        }
+        require_exact_fields("sentinel lease", object, SENTINEL_LEASE_FIELDS, &[])?;
+        let lease: Self = serde_json::from_value(value.clone())
+            .map_err(|error| format!("sentinel lease schema {version}: {error}"))?;
+        lease.validate()?;
+        Ok(lease)
+    }
+
+    pub fn to_value(&self) -> Result<Value, String> {
+        serde_json::to_value(self).map_err(|error| format!("serialize sentinel lease: {error}"))
+    }
+
+    pub fn plan(&self) -> SentinelPlan {
+        SentinelPlan {
+            schema_version: self.schema_version,
+            source: self.source,
+            slot: self.slot.clone(),
+            generation: self.generation.clone(),
+            nonce: self.nonce.clone(),
+            unit: self.unit.clone(),
+            working_directory: self.working_directory.clone(),
+        }
+    }
+
+    pub fn validate_slot_binding(
+        &self,
+        expected_slot: &str,
+        expected_directory: &Path,
+    ) -> Result<(), String> {
+        self.validate()?;
+        if self.slot != expected_slot || Path::new(&self.working_directory) != expected_directory {
+            return Err(format!(
+                "Codex sentinel identity does not bind exact canonical slot {}",
+                expected_directory.display()
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn validate_registry_slot(&self, expected_slot: &str) -> Result<(), String> {
+        self.validate()?;
+        if self.slot != expected_slot {
+            return Err("sentinel lease slot does not match registry key".to_string());
+        }
+        Ok(())
+    }
+
+    pub fn require_plan(&self, plan: &SentinelPlan) -> Result<(), String> {
+        let actual = self.plan();
+        for (field, matches) in [
+            (
+                "schema_version",
+                actual.schema_version == plan.schema_version,
+            ),
+            ("source", actual.source == plan.source),
+            ("slot", actual.slot == plan.slot),
+            ("generation", actual.generation == plan.generation),
+            ("nonce", actual.nonce == plan.nonce),
+            ("unit", actual.unit == plan.unit),
+            (
+                "working_directory",
+                actual.working_directory == plan.working_directory,
+            ),
+        ] {
+            if !matches {
+                return Err(format!(
+                    "launched Codex sentinel changed planned field {field}"
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    pub fn identity_fields(&self) -> BTreeMap<&'static str, Value> {
+        let mut fields = self.plan().identity_fields();
+        fields.insert("invocation_id", Value::String(self.invocation_id.clone()));
+        fields.insert("main_pid", Value::from(self.main_pid));
+        fields.insert("cgroup_path", Value::String(self.cgroup_path.clone()));
+        fields
+    }
+
+    pub fn validate(&self) -> Result<(), String> {
+        self.plan().validate()?;
+        if !is_hex(&self.invocation_id, 32) {
+            return Err("sentinel InvocationID is malformed".to_string());
+        }
+        if self.main_pid == 0 || self.main_pid_starttime == 0 {
+            return Err("sentinel PID/starttime identity is empty".to_string());
+        }
+        if !normalized_cgroup(&self.cgroup_path)
+            || !self.cgroup_path.ends_with(&format!("/{}", self.unit))
+        {
+            return Err("sentinel cgroup does not bind the exact unit".to_string());
+        }
+        Ok(())
     }
 }
 
@@ -489,23 +800,18 @@ impl OwnerSidecar {
                 if self.tmux_pane_id.is_some() {
                     return Err("Codex sentinel owner_sidecar must not claim a tmux pane".into());
                 }
-                let lease = slot
-                    .coordinator_lease
-                    .as_ref()
-                    .and_then(Value::as_object)
-                    .ok_or_else(|| {
-                        "Codex owner_sidecar disagrees with the registered coordinator lease"
-                            .to_string()
-                    })?;
-                if lease.get("schema_version").and_then(Value::as_u64) != Some(1)
-                    || lease.get("source").and_then(Value::as_str)
-                        != Some("codex-systemd-sentinel-v1")
-                    || lease.get("main_pid").and_then(Value::as_u64)
-                        != Some(u64::from(self.supervisor_pid))
-                    || lease.get("main_pid_starttime").and_then(Value::as_u64)
-                        != Some(self.start_ticks)
-                    || lease.get("cgroup_path").and_then(Value::as_str)
-                        != Some(self.cgroup_path.as_str())
+                let lease_value = slot.coordinator_lease.as_ref().ok_or_else(|| {
+                    "Codex owner_sidecar disagrees with the registered coordinator lease"
+                        .to_string()
+                })?;
+                let lease = SentinelLease::from_value(lease_value).map_err(|error| {
+                    format!(
+                        "Codex owner_sidecar disagrees with the registered coordinator lease: {error}"
+                    )
+                })?;
+                if lease.main_pid != self.supervisor_pid
+                    || lease.main_pid_starttime != self.start_ticks
+                    || lease.cgroup_path != self.cgroup_path
                 {
                     return Err(
                         "Codex owner_sidecar disagrees with the registered coordinator lease"
@@ -655,6 +961,25 @@ pub fn owner_sidecar_errors(registry: &Registry) -> BTreeMap<String, Option<Stri
         .collect()
 }
 
+/// Validate every recorded coordinator lease independently. Missing leases are
+/// named rather than counted as valid emptiness, and one malformed historical
+/// row cannot erase the valid results for other slots.
+pub fn coordinator_lease_errors(registry: &Registry) -> BTreeMap<String, Option<String>> {
+    registry
+        .slots
+        .iter()
+        .map(|(slot_name, slot)| {
+            let result = slot
+                .coordinator_lease
+                .as_ref()
+                .ok_or_else(|| "slot has no coordinator_lease".to_string())
+                .and_then(SentinelLease::from_value)
+                .and_then(|lease| lease.validate_registry_slot(slot_name));
+            (slot_name.clone(), result.err())
+        })
+        .collect()
+}
+
 impl Slot {
     fn validate(&self, slot_name: &str) -> Result<(), String> {
         require_text(
@@ -692,6 +1017,25 @@ pub fn valid_slot_name(value: &str) -> bool {
             .chars()
             .next()
             .is_some_and(|ch| ch.is_ascii_alphanumeric())
+}
+
+fn is_hex(value: &str, length: usize) -> bool {
+    value.len() == length && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn normalized_absolute(path: &Path) -> bool {
+    path.is_absolute()
+        && path
+            .components()
+            .all(|component| matches!(component, Component::RootDir | Component::Normal(_)))
+}
+
+fn normalized_cgroup(path: &str) -> bool {
+    path.starts_with('/')
+        && path != "/"
+        && Path::new(path.trim_start_matches('/'))
+            .components()
+            .all(|component| matches!(component, Component::Normal(_)))
 }
 
 fn require_text(field: &str, value: &str) -> Result<(), String> {
@@ -762,6 +1106,31 @@ mod tests {
         )
         .unwrap()
         .to_value()
+        .unwrap()
+    }
+
+    fn valid_sentinel_plan(slot: &str) -> SentinelPlan {
+        SentinelPlan::current(
+            slot,
+            "0123456789abcdef".to_string(),
+            "0123456789abcdef0123456789abcdef".to_string(),
+            Path::new(&format!("/tmp/worktrees/slots/{slot}")),
+        )
+        .unwrap()
+    }
+
+    fn valid_sentinel_lease(slot: &str) -> SentinelLease {
+        let plan = valid_sentinel_plan(slot);
+        SentinelLease::current(
+            &plan,
+            "abcdefabcdefabcdefabcdefabcdefab".to_string(),
+            17,
+            99,
+            format!(
+                "/user.slice/user-1.slice/user@1.service/app.slice/{}",
+                plan.unit
+            ),
+        )
         .unwrap()
     }
 
@@ -933,5 +1302,57 @@ mod tests {
         assert!(errors["slot02"]
             .as_ref()
             .is_some_and(|error| error.contains("field task is missing")));
+    }
+
+    #[test]
+    fn sentinel_plan_and_lease_round_trip_without_wire_drift() {
+        let plan = valid_sentinel_plan("slot01");
+        let plan_value = plan.to_value().unwrap();
+        assert_eq!(SentinelPlan::from_value(&plan_value).unwrap(), plan);
+
+        let lease = valid_sentinel_lease("slot01");
+        let lease_value = lease.to_value().unwrap();
+        assert_eq!(SentinelLease::from_value(&lease_value).unwrap(), lease);
+        lease.require_plan(&plan).unwrap();
+    }
+
+    #[test]
+    fn sentinel_missing_and_unknown_fields_fail_by_name() {
+        let mut lease = valid_sentinel_lease("slot01").to_value().unwrap();
+        lease.as_object_mut().unwrap().remove("invocation_id");
+        let missing = SentinelLease::from_value(&lease).unwrap_err();
+        assert!(
+            missing.contains("field invocation_id is missing"),
+            "{missing}"
+        );
+
+        let mut plan = valid_sentinel_plan("slot01").to_value().unwrap();
+        plan["future"] = json!(true);
+        let unknown = SentinelPlan::from_value(&plan).unwrap_err();
+        assert!(unknown.contains("field future is unsupported"), "{unknown}");
+    }
+
+    #[test]
+    fn sentinel_version_is_read_before_shape() {
+        assert_eq!(
+            SentinelPlan::from_value(&json!({"schema_version": 2, "future": true})).unwrap_err(),
+            "sentinel plan schema_version is unsupported: 2"
+        );
+        assert_eq!(
+            SentinelLease::from_value(&json!({"schema_version": 2, "future": true})).unwrap_err(),
+            "sentinel lease schema_version is unsupported: 2"
+        );
+    }
+
+    #[test]
+    fn coordinator_lease_registry_binding_fails_by_name() {
+        let mut value = valid_registry();
+        value["slots"]["slot01"]["coordinator_lease"] =
+            valid_sentinel_lease("other").to_value().unwrap();
+        let registry = Registry::from_value(&value).unwrap();
+        let error = coordinator_lease_errors(&registry)["slot01"]
+            .clone()
+            .expect("wrong slot must be refused");
+        assert!(error.contains("registry key"), "{error}");
     }
 }

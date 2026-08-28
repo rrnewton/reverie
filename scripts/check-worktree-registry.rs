@@ -24,6 +24,7 @@ const USAGE: &str = r#"Usage: check-worktree-registry.rs [--root PATH] [SCOPE]
        check-worktree-registry.rs --validate-state-stdin
        check-worktree-registry.rs --assigned-slot AGENT
        check-worktree-registry.rs --owner-sidecar-errors-stdin
+       check-worktree-registry.rs --coordinator-lease-errors-stdin
 
 Scope (mutually exclusive):
   --slot SLOT          Verify exactly one named slot.
@@ -45,6 +46,10 @@ with no output; multiple matches are a refusal rather than an arbitrary choice.
 object mapping every slot to null when its owner_sidecar and registry binding
 are valid or to the shared type's named refusal when they are not. One bad slot
 therefore cannot erase every other slot's liveness result.
+
+--coordinator-lease-errors-stdin likewise prints one result per slot for the
+complete Codex systemd sentinel lease. Absence is named rather than reported as
+a valid empty population.
 "#;
 
 #[derive(Debug)]
@@ -262,6 +267,7 @@ fn main() {
     let mut validate_state_stdin = false;
     let mut assigned_slot_agent = None;
     let mut owner_sidecar_errors_stdin = false;
+    let mut coordinator_lease_errors_stdin = false;
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
@@ -288,6 +294,7 @@ fn main() {
             }
             "--validate-state-stdin" => validate_state_stdin = true,
             "--owner-sidecar-errors-stdin" => owner_sidecar_errors_stdin = true,
+            "--coordinator-lease-errors-stdin" => coordinator_lease_errors_stdin = true,
             "--assigned-slot" => {
                 i += 1;
                 if i >= args.len() {
@@ -303,13 +310,18 @@ fn main() {
         }
         i += 1;
     }
-    if validate_state_stdin || assigned_slot_agent.is_some() || owner_sidecar_errors_stdin {
+    if validate_state_stdin
+        || assigned_slot_agent.is_some()
+        || owner_sidecar_errors_stdin
+        || coordinator_lease_errors_stdin
+    {
         if root.is_some() || only_slot.is_some() || !excluded_slots.is_empty() {
             die("stdin registry modes are incompatible with root and scope arguments");
         }
         let modes = usize::from(validate_state_stdin)
             + usize::from(assigned_slot_agent.is_some())
-            + usize::from(owner_sidecar_errors_stdin);
+            + usize::from(owner_sidecar_errors_stdin)
+            + usize::from(coordinator_lease_errors_stdin);
         if modes > 1 {
             die("stdin registry modes are mutually exclusive");
         }
@@ -326,6 +338,18 @@ fn main() {
                             .unwrap_or_else(|error| die(&format!(
                                 "serialize owner_sidecar validation: {error}"
                             )))
+                    );
+                    return;
+                }
+                if coordinator_lease_errors_stdin {
+                    println!(
+                        "{}",
+                        serde_json::to_string(&worktree_registry::coordinator_lease_errors(
+                            &registry
+                        ))
+                        .unwrap_or_else(|error| die(&format!(
+                            "serialize coordinator_lease validation: {error}"
+                        )))
                     );
                     return;
                 }

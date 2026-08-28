@@ -19,6 +19,7 @@ ROOT = Path(__file__).resolve().parents[2]
 SENTINEL = ROOT / "scripts" / "codex-slot-sentinel.rs"
 ALLOCATOR = ROOT / "scripts" / "allocate-worktree.rs"
 RELEASER = ROOT / "scripts" / "release-worktree.rs"
+WORKTREE_REGISTRY = ROOT / "scripts" / "worktree_registry.rs"
 
 
 FAKE_SYSTEMD = r"""#!/usr/bin/env python3
@@ -227,6 +228,7 @@ class SentinelFixture:
 
         self.sentinel = self.root / "scripts" / "codex-slot-sentinel.rs"
         shutil.copy2(SENTINEL, self.sentinel)
+        shutil.copy2(WORKTREE_REGISTRY, self.root / "scripts" / "worktree_registry.rs")
         self.sentinel.chmod(0o755)
         self.systemctl = self.root / "bin" / "systemctl"
         self.systemd_run = self.root / "bin" / "systemd-run"
@@ -820,7 +822,7 @@ class CodexSlotSentinelTests(unittest.TestCase):
         refused = fixture.release("--force")
 
         self.assertNotEqual(refused.returncode, 0, refused.stdout)
-        self.assertIn("does not bind exact slot path", refused.stderr)
+        self.assertIn("does not bind exact canonical slot", refused.stderr)
         slot = fixture.registry()["slots"]["slot01"]
         self.assertNotIn("coordinator_lease_revocation", slot)
         self.assertTrue((fixture.root / "worktrees" / "slots" / "slot01").is_dir())

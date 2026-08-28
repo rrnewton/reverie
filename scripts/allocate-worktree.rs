@@ -35,7 +35,7 @@ mod worktree_registry;
 
 use fs2::FileExt;
 use serde_json::{json, Value};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io::{self, ErrorKind, Write};
 use std::path::{Component, Path, PathBuf};
@@ -1489,43 +1489,26 @@ fn codex_owner_sidecar(
     agent: &str,
     task: &str,
     recorded_at: &str,
-    lease: &Value,
+    lease: &worktree_registry::SentinelLease,
 ) -> Result<Value, String> {
-    if lease["schema_version"].as_u64() != Some(1)
-        || lease["source"].as_str()
-            != Some(worktree_registry::OwnerSidecarSource::CodexSystemdSentinelV1.as_str())
-    {
-        return Err("Codex coordinator lease has an unsupported identity schema".to_string());
-    }
-    let pid = lease["main_pid"]
-        .as_u64()
-        .and_then(|value| u32::try_from(value).ok())
-        .filter(|value| *value > 0)
-        .ok_or_else(|| "Codex coordinator lease has no supervisor pid".to_string())?;
-    let recorded_ticks = lease["main_pid_starttime"]
-        .as_u64()
-        .filter(|value| *value > 0)
-        .ok_or_else(|| "Codex coordinator lease has no supervisor start_ticks".to_string())?;
-    let observed_ticks = process_start_ticks(root, pid)?;
-    if observed_ticks != recorded_ticks {
+    let observed_ticks = process_start_ticks(root, lease.main_pid)?;
+    if observed_ticks != lease.main_pid_starttime {
         return Err(format!(
-            "Codex coordinator supervisor {pid} was reused: recorded start_ticks={recorded_ticks}, observed={observed_ticks}"
+            "Codex coordinator supervisor {} was reused: recorded start_ticks={}, observed={observed_ticks}",
+            lease.main_pid, lease.main_pid_starttime
         ));
     }
-    let cgroup = lease["cgroup_path"]
-        .as_str()
-        .ok_or_else(|| "Codex coordinator lease has no cgroup path".to_string())?;
     owner_sidecar(
         slot,
         agent,
         task,
         recorded_at,
         worktree_registry::OwnerSidecarSource::CodexSystemdSentinelV1,
-        pid,
+        lease.main_pid,
         &current_boot_id()?,
-        recorded_ticks,
+        lease.main_pid_starttime,
         None,
-        cgroup,
+        &lease.cgroup_path,
     )
 }
 
@@ -1838,7 +1821,10 @@ fn sentinel_tool(root: &Path) -> Result<PathBuf, String> {
     Ok(tool)
 }
 
-fn sentinel_result(output: std::process::Output, expected_state: &str) -> Result<Value, String> {
+fn sentinel_result(
+    output: std::process::Output,
+    expected_state: &str,
+) -> Result<worktree_registry::SentinelLease, String> {
     if !output.status.success() {
         return Err(format!(
             "Codex slot sentinel refused: {}{}",
@@ -1848,16 +1834,17 @@ fn sentinel_result(output: std::process::Output, expected_state: &str) -> Result
     }
     let value: Value = serde_json::from_slice(&output.stdout)
         .map_err(|error| format!("parse Codex slot sentinel result: {error}"))?;
-    if value["state"].as_str() != Some(expected_state)
-        || value["lease"]["schema_version"].as_u64() != Some(1)
-        || value["lease"]["source"].as_str() != Some("codex-systemd-sentinel-v1")
-    {
+    if value["state"].as_str() != Some(expected_state) {
         return Err("Codex slot sentinel returned an unbound result".to_string());
     }
-    Ok(value["lease"].clone())
+    worktree_registry::SentinelLease::from_value(&value["lease"])
 }
 
-fn plan_codex_sentinel(root: &Path, slot: &str, slot_dir: &Path) -> Result<Value, String> {
+fn plan_codex_sentinel(
+    root: &Path,
+    slot: &str,
+    slot_dir: &Path,
+) -> Result<worktree_registry::SentinelPlan, String> {
     let output = Command::new(sentinel_tool(root)?)
         .args(["plan", "--slot", slot, "--working-directory"])
         .arg(slot_dir)
@@ -1872,19 +1859,18 @@ fn plan_codex_sentinel(root: &Path, slot: &str, slot_dir: &Path) -> Result<Value
     }
     let value: Value = serde_json::from_slice(&output.stdout)
         .map_err(|error| format!("parse Codex sentinel plan: {error}"))?;
-    let plan = value["plan"].clone();
-    if value["state"].as_str() != Some("planned")
-        || plan["schema_version"].as_u64() != Some(1)
-        || plan["source"].as_str() != Some("codex-systemd-sentinel-v1")
-        || plan["slot"].as_str() != Some(slot)
-        || plan["working_directory"].as_str() != slot_dir.to_str()
-    {
+    if value["state"].as_str() != Some("planned") {
         return Err("planned Codex sentinel does not bind the exact slot".to_string());
     }
+    let plan = worktree_registry::SentinelPlan::from_value(&value["plan"])?;
+    plan.validate_slot_binding(slot, slot_dir)?;
     Ok(plan)
 }
 
-fn launch_codex_sentinel(root: &Path, plan: &Value) -> Result<Value, String> {
+fn launch_codex_sentinel(
+    root: &Path,
+    plan: &worktree_registry::SentinelPlan,
+) -> Result<worktree_registry::SentinelLease, String> {
     let plan_json = serde_json::to_string(plan)
         .map_err(|error| format!("serialize Codex sentinel plan: {error}"))?;
     let output = Command::new(sentinel_tool(root)?)
@@ -1892,25 +1878,14 @@ fn launch_codex_sentinel(root: &Path, plan: &Value) -> Result<Value, String> {
         .output()
         .map_err(|error| format!("launch Codex slot sentinel: {error}"))?;
     let lease = sentinel_result(output, "live")?;
-    for field in [
-        "schema_version",
-        "source",
-        "slot",
-        "generation",
-        "nonce",
-        "unit",
-        "working_directory",
-    ] {
-        if lease.get(field) != plan.get(field) {
-            return Err(format!(
-                "launched Codex sentinel changed planned field {field}"
-            ));
-        }
-    }
+    lease.require_plan(plan)?;
     Ok(lease)
 }
 
-fn verify_codex_sentinel(root: &Path, lease: &Value) -> Result<Value, String> {
+fn verify_codex_sentinel(
+    root: &Path,
+    lease: &worktree_registry::SentinelLease,
+) -> Result<worktree_registry::SentinelLease, String> {
     let lease_json = serde_json::to_string(lease)
         .map_err(|error| format!("serialize Codex sentinel lease: {error}"))?;
     let output = Command::new(sentinel_tool(root)?)
@@ -1924,25 +1899,27 @@ fn verify_codex_sentinel(root: &Path, lease: &Value) -> Result<Value, String> {
     Ok(verified)
 }
 
-fn validate_codex_slot_binding(
+fn validate_codex_plan_binding(
     slot: &str,
     canonical_slot: &Path,
-    value: &Value,
+    plan: &worktree_registry::SentinelPlan,
 ) -> Result<(), String> {
-    if value["schema_version"].as_u64() != Some(1)
-        || value["source"].as_str() != Some("codex-systemd-sentinel-v1")
-        || value["slot"].as_str() != Some(slot)
-        || value["working_directory"].as_str() != canonical_slot.to_str()
-    {
-        return Err(format!(
-            "Codex sentinel identity does not bind exact canonical slot {}",
-            canonical_slot.display()
-        ));
-    }
-    Ok(())
+    plan.validate_slot_binding(slot, canonical_slot)
 }
 
-fn validate_codex_intent_replay(slot_record: &Value, intent: &Value) -> Result<(), String> {
+fn validate_codex_lease_binding(
+    slot: &str,
+    canonical_slot: &Path,
+    lease: &worktree_registry::SentinelLease,
+) -> Result<(), String> {
+    lease.validate_slot_binding(slot, canonical_slot)
+}
+
+fn validate_codex_intent_replay(
+    slot: &str,
+    slot_record: &Value,
+    intent: &Value,
+) -> Result<(), String> {
     let object = intent
         .as_object()
         .ok_or_else(|| "Codex sentinel launch intent is not an object".to_string())?;
@@ -1968,6 +1945,7 @@ fn validate_codex_intent_replay(slot_record: &Value, intent: &Value) -> Result<(
     {
         return Err("Codex sentinel launch intent has an inexact field set".to_string());
     }
+    worktree_registry::SentinelPlan::from_value(&intent["plan"])?.validate_registry_slot(slot)?;
     let legacy = intent["legacy_recovery"]
         .as_bool()
         .ok_or_else(|| "Codex sentinel launch intent has no legacy mode".to_string())?;
@@ -2011,40 +1989,27 @@ fn validate_codex_intent_replay(slot_record: &Value, intent: &Value) -> Result<(
 fn assert_unique_sentinel_identity(
     state: &Value,
     candidate_slot: &str,
-    candidate: &Value,
+    candidate: &BTreeMap<&'static str, Value>,
 ) -> Result<(), String> {
-    let candidate_object = candidate
-        .as_object()
-        .ok_or_else(|| "Codex sentinel identity is not an object".to_string())?;
-    let identity_fields = [
-        "generation",
-        "nonce",
-        "unit",
-        "invocation_id",
-        "main_pid",
-        "cgroup_path",
-        "working_directory",
-    ];
     for (other_slot, record) in state["slots"].as_object().into_iter().flatten() {
         if other_slot == candidate_slot {
             continue;
         }
-        let mut identities = Vec::new();
-        if let Some(lease) = record.get("coordinator_lease") {
-            identities.push(("lease", lease));
+        let mut identities: Vec<(&str, BTreeMap<&'static str, Value>)> = Vec::new();
+        if let Some(value) = record.get("coordinator_lease") {
+            let lease = worktree_registry::SentinelLease::from_value(value)?;
+            identities.push(("lease", lease.identity_fields()));
         }
-        if let Some(plan) = record
+        if let Some(value) = record
             .get("coordinator_lease_intent")
             .and_then(|intent| intent.get("plan"))
         {
-            identities.push(("launch intent", plan));
+            let plan = worktree_registry::SentinelPlan::from_value(value)?;
+            identities.push(("launch intent", plan.identity_fields()));
         }
         for (kind, other) in identities {
-            for field in identity_fields {
-                let Some(value) = candidate_object.get(field) else {
-                    continue;
-                };
-                if !value.is_null() && other.get(field) == Some(value) {
+            for (field, value) in candidate {
+                if other.get(field) == Some(value) {
                     return Err(format!(
                         "Codex sentinel {field} collides with {kind} for slot {other_slot}"
                     ));
@@ -2431,7 +2396,10 @@ fn main() {
     let existing_sentinel = existing_slot
         .as_ref()
         .and_then(|record| record.get("coordinator_lease"))
-        .cloned();
+        .map(|value| {
+            worktree_registry::SentinelLease::from_value(value)
+                .unwrap_or_else(|error| die(&format!("invalid Codex coordinator lease: {error}")))
+        });
     let existing_sentinel_intent = existing_slot
         .as_ref()
         .and_then(|record| record.get("coordinator_lease_intent"))
@@ -2502,6 +2470,7 @@ fn main() {
                 die("existing Codex sentinel launch intent does not match this exact binding request");
             }
             validate_codex_intent_replay(
+                &slot,
                 existing_slot
                     .as_ref()
                     .expect("a launch intent has an existing slot"),
@@ -2645,7 +2614,7 @@ fn main() {
                     "canonicalize existing Codex sentinel slot before allocation: {error}"
                 ))
             });
-            validate_codex_slot_binding(&slot, &canonical_slot, lease)
+            validate_codex_lease_binding(&slot, &canonical_slot, lease)
                 .unwrap_or_else(|error| die(&error));
             verify_codex_sentinel(&root, lease)
                 .unwrap_or_else(|error| die(&format!("existing Codex sentinel refused: {error}")))
@@ -2654,7 +2623,8 @@ fn main() {
         None
     };
     if let Some(lease) = &verified_codex_lease {
-        assert_unique_sentinel_identity(&state, &slot, lease).unwrap_or_else(|error| die(&error));
+        assert_unique_sentinel_identity(&state, &slot, &lease.identity_fields())
+            .unwrap_or_else(|error| die(&error));
     }
 
     println!(
@@ -2700,14 +2670,19 @@ fn main() {
         let plan = existing_sentinel_intent
             .as_ref()
             .and_then(|intent| intent.get("plan"))
-            .cloned()
+            .map(|value| {
+                worktree_registry::SentinelPlan::from_value(value).unwrap_or_else(|error| {
+                    die(&format!("invalid Codex sentinel launch plan: {error}"))
+                })
+            })
             .unwrap_or_else(|| {
                 plan_codex_sentinel(&root, &slot, &canonical_slot)
                     .unwrap_or_else(|error| die(&format!("plan Codex slot sentinel: {error}")))
             });
-        validate_codex_slot_binding(&slot, &canonical_slot, &plan)
+        validate_codex_plan_binding(&slot, &canonical_slot, &plan)
             .unwrap_or_else(|error| die(&error));
-        assert_unique_sentinel_identity(&state, &slot, &plan).unwrap_or_else(|error| die(&error));
+        assert_unique_sentinel_identity(&state, &slot, &plan.identity_fields())
+            .unwrap_or_else(|error| die(&error));
         Some(plan)
     } else {
         None
@@ -2760,7 +2735,7 @@ fn main() {
             entry["status"] = json!("active");
             entry["updated"] = json!(now.clone());
             if let Some(lease) = &verified_codex_lease {
-                entry["coordinator_lease"] = lease.clone();
+                entry["coordinator_lease"] = lease.to_value().unwrap_or_else(|error| die(&error));
             }
             // Slot-level task/purpose/branches describe the mutating OWNER. A
             // read-mostly sharer records its own task but cannot clobber these.
@@ -2923,10 +2898,11 @@ fn main() {
         regen_active_md(&root, &state);
         let lease = launch_codex_sentinel(&root, plan)
             .unwrap_or_else(|error| die(&format!("create/recover Codex slot sentinel: {error}")));
-        assert_unique_sentinel_identity(&state, &slot, &lease).unwrap_or_else(|error| die(&error));
+        assert_unique_sentinel_identity(&state, &slot, &lease.identity_fields())
+            .unwrap_or_else(|error| die(&error));
         let entry = &mut state["slots"][&slot];
         let intent = entry["coordinator_lease_intent"].clone();
-        entry["coordinator_lease"] = lease;
+        entry["coordinator_lease"] = lease.to_value().unwrap_or_else(|error| die(&error));
         entry["status"] = json!("active");
         entry["updated"] = json!(now_iso());
         entry
@@ -2962,7 +2938,8 @@ fn main() {
 
     if codex_systemd_sentinel {
         let entry = &mut state["slots"][&slot];
-        let lease = entry["coordinator_lease"].clone();
+        let lease = worktree_registry::SentinelLease::from_value(&entry["coordinator_lease"])
+            .unwrap_or_else(|error| die(&format!("invalid Codex coordinator lease: {error}")));
         let mutating: Vec<&Value> = entry["agents"]
             .as_array()
             .into_iter()

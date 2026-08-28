@@ -20,9 +20,19 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from holder_liveness import Liveness, Release, holder_liveness, release_verdict
 
 NOW = 1_000_000
-LEASED_LIVE = {"agents": ["hermit-w10"], "coordinator_lease": {"expires_at": NOW + 600}}
-LEASED_DEAD = {"agents": ["hermit-gone"], "coordinator_lease": {"expires_at": NOW - 600}}
+LEASED_LIVE = {
+    "agents": ["hermit-w10"],
+    "owner_sidecar": {"lease": {"expires_at": NOW + 600}},
+}
+LEASED_DEAD = {
+    "agents": ["hermit-gone"],
+    "owner_sidecar": {"lease": {"expires_at": NOW - 600}},
+}
 UNLEASED = {"agents": ["hermit-gone"]}
+COORDINATOR_ONLY = {
+    "agents": ["hermit-gone"],
+    "coordinator_lease": {"expires_at": NOW - 600},
+}
 
 CLEAN = dict(now=NOW, live_agents=[], processes_under_slot=0,
              dirty_files=0, unpublished_commits=0)
@@ -44,6 +54,15 @@ def test_no_lease_and_no_signal_is_UNKNOWN_not_dead():
     """The whole point. Absence of evidence is not evidence of absence."""
     assert holder_liveness(UNLEASED, now=NOW, live_agents=[],
                            processes_under_slot=0) is Liveness.UNKNOWN
+
+
+def test_coordinator_lease_is_not_mistaken_for_the_ttl_owner_lease():
+    assert holder_liveness(
+        COORDINATOR_ONLY,
+        now=NOW,
+        live_agents=[],
+        processes_under_slot=0,
+    ) is Liveness.UNKNOWN
 
 
 def test_live_process_under_slot_keeps_it_alive_without_a_lease():
