@@ -22,7 +22,7 @@
 #
 #   IMPLAUSIBLE (stub / empty / dead panes) -> the message must accuse the SNAPSHOT
 #   PLAUSIBLE  (real fleet, agent not in it) -> the message must accuse the AGENT
-#   PLAUSIBLE  (agent listed twice)          -> the message must say AMBIGUOUS
+#   INVALID    (agent listed twice)          -> the shared type must name the duplicate
 #   PLAUSIBLE  (agent present on a live pane)-> the lease must BIND (admit control)
 #
 # The last case is not decoration: without it this suite would pass on a build
@@ -210,13 +210,13 @@ expect_unbound case4 "C4"
 note ""
 
 # ================================================ CASE 5: DUPLICATE ENTRIES ====
-note "CASE 5  PLAUSIBLE / duplicate -- agent listed twice"
+note "CASE 5  INVALID / duplicate -- agent listed twice"
 write_snapshot '[{"name": "sol-dup", "status": "busy", "tmux_pane_id": "'"$live_pane"'"},
                  {"name": "sol-dup", "status": "busy", "tmux_pane_id": "'"$live_pane"'"}]'
 allocate sol-dup case5 >/dev/null
 assert_reached case5 "C5"
-assert_has   case5 "is listed 2 times in the owner snapshot" "C5 names the duplication and count"
-assert_has   case5 "ownership is ambiguous"                  "C5 explains the consequence"
+assert_has   case5 "owner snapshot is invalid"               "C5 refuses at the shared contract"
+assert_has   case5 'duplicate agent name "sol-dup"'           "C5 names the duplicate agent"
 assert_lacks case5 "IS NOT USABLE"                           "C5 does NOT blame the snapshot"
 expect_unbound case5 "C5"
 note ""
@@ -239,8 +239,8 @@ note ""
 
 # ------------------------------------------------------------------ result ----
 note "======================================================================"
-note "cases bracketed: 3 implausible (stub/empty/dead-pane), 2 plausible"
-note "(absent/duplicate), 1 admit control."
+note "cases bracketed: 3 implausible (stub/empty/dead-pane), 1 invalid"
+note "(duplicate), 1 plausible absent-agent case, 1 admit control."
 note "refusals expected and observed: 5.  admits expected and observed: 1."
 note "assertions: $pass passed, $fail failed"
 if (( fail )); then
