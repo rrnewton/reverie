@@ -713,6 +713,142 @@ class StartUnitTest(unittest.TestCase):
             ],
         )
 
+    def test_sweep_completed_removes_legacy_checkout_under_ignored(self) -> None:
+        fresh = self.root / "ignored" / "validate-fresh-legacy"
+        receipt = fresh / "reports" / "result.jsonl"
+        receipt.parent.mkdir(parents=True)
+        receipt.write_text(f'{{"commit": "{SHA}"}}\n')
+        self.fake.fresh = fresh
+        record_path = self.root / "ignored/validate/runs/validate-legacy.json"
+        start_unit.run_registry.write_record(
+            record_path,
+            {
+                "schema_version": 1,
+                "unit": "validate-legacy.service",
+                "checkout": str(fresh),
+                "source_checkout": str(self.checkout),
+                # The historical record predates temporary_checkout.  Its exact
+                # parent and validate-fresh- prefix establish what it is.
+                "repo": "rrnewton/hermit",
+                "state": "completed",
+                "exit_code": 0,
+                "final_validate_status": "PASSED",
+            },
+        )
+
+        out = io.StringIO()
+        with mock.patch.object(
+            start_unit, "path_may_have_live_process", return_value=False
+        ), contextlib.redirect_stdout(out):
+            rc = start_unit.main(
+                ["--sweep-completed", "--json"],
+                run=self.fake,
+                environment=self.environment,
+                root=self.root,
+            )
+
+        self.assertEqual(0, rc)
+        report = json.loads(out.getvalue())
+        self.assertEqual([str(fresh)], report["removed"])
+        self.assertFalse(fresh.exists())
+        archived = (
+            self.root
+            / "ignored/validate/orphaned-receipts/validate-legacy/reports/result.jsonl"
+        )
+        self.assertEqual(f'{{"commit": "{SHA}"}}\n', archived.read_text())
+
+    def test_sweep_completed_does_not_query_irrelevant_retained_records(self) -> None:
+        start_unit.run_registry.write_record(
+            self.root / "ignored/validate/runs/bench-old.json",
+            {
+                "schema_version": 1,
+                "unit": "bench-old.service",
+                "checkout": str(self.checkout),
+                "state": "completed",
+            },
+        )
+
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            rc = start_unit.main(
+                ["--sweep-completed", "--json"],
+                run=self.fake,
+                environment=self.environment,
+                root=self.root,
+            )
+
+        self.assertEqual(0, rc)
+        self.assertEqual([], json.loads(out.getvalue())["retained"])
+        self.assertFalse(
+            any(command[:3] == ["systemctl", "--user", "show"] for command in self.fake.commands)
+        )
+
+    def test_sweep_completed_removes_checkout_from_pre_run_number_record(self) -> None:
+        fresh = self.root / "worktrees/validate/validate-fresh-pre-run-number"
+        fresh.mkdir(parents=True)
+        self.fake.fresh = fresh
+        record_path = self.root / "ignored/validate/runs/validate-pre-run-number.json"
+        record_path.parent.mkdir(parents=True)
+        record_path.write_text(
+            json.dumps(
+                {
+                    "schema_version": start_unit.run_registry.SCHEMA_VERSION,
+                    "kind": "validate",
+                    "unit": "validate-pre-run-number.service",
+                    "target": SHA,
+                    "checkout": str(fresh),
+                    "source_checkout": str(self.checkout),
+                    "temporary_checkout": True,
+                    "cargo_home": str(
+                        self.root / "worktrees/validate/validate-cargo-already-gone"
+                    ),
+                    "repo": "rrnewton/hermit",
+                    "log": str(self.root / "ignored/validate/pre-run-number.log"),
+                    "agent": "old-agent",
+                    "started_at": "2026-08-28T00:00:00Z",
+                    "producer": start_unit.run_registry.PRODUCER,
+                    "admission": "ci-hub validate-lock",
+                    "pane_role": "observer-only",
+                    "parent_checkout_head": None,
+                    "validate_lock_child_deadline_seconds": 3600,
+                    "e2e_result_root": str(self.root / "ignored/validate/artifacts/e2e"),
+                    "safe_ci_dag_runner_log_dir": str(
+                        self.root / "ignored/validate/artifacts/safe-ci-dag-runner"
+                    ),
+                    "hermit_run_timeout_seconds": 3239,
+                    "admission_result": {
+                        "state": "admitted",
+                        "recorded_at": "2026-08-28T00:00:00Z",
+                    },
+                    "state": "completed",
+                    "result": "success",
+                    "exit_code": 0,
+                    "finished_at": "2026-08-28T00:10:00Z",
+                    "final_validate_status": "PASSED",
+                }
+            )
+            + "\n"
+        )
+
+        out = io.StringIO()
+        with mock.patch.object(
+            start_unit, "path_may_have_live_process", return_value=False
+        ), contextlib.redirect_stdout(out):
+            rc = start_unit.main(
+                ["--sweep-completed", "--json"],
+                run=self.fake,
+                environment=self.environment,
+                root=self.root,
+            )
+
+        self.assertEqual(start_unit.EXIT_COULD_NOT_DETERMINE, rc)
+        report = json.loads(out.getvalue())
+        self.assertEqual([str(fresh)], report["removed"])
+        self.assertEqual([], report["retained"])
+        self.assertEqual(str(record_path), report["bookkeeping_errors"][0]["record"])
+        self.assertIn("run_number", report["bookkeeping_errors"][0]["reason"])
+        self.assertFalse(fresh.exists())
+
     def test_sweep_completed_refuses_checkout_outside_validate_parent(self) -> None:
         checkout = self.root / "worktrees" / "slots" / "slot01" / "hermit"
         checkout.mkdir(parents=True)
@@ -745,7 +881,10 @@ class StartUnitTest(unittest.TestCase):
             [
                 {
                     "checkout": str(checkout),
-                    "reason": f"temporary checkout is outside {self.root / 'worktrees' / 'validate'}",
+                    "reason": (
+                        "temporary checkout is outside "
+                        f"{self.root / 'worktrees' / 'validate'} or {self.root / 'ignored'}"
+                    ),
                 }
             ],
             report["retained"],

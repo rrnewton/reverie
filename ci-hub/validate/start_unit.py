@@ -1110,6 +1110,24 @@ def path_may_have_live_process(path: Path, *, proc_root: Path = Path("/proc")) -
     return False
 
 
+def recorded_checkout_parents(root: Path, record: Mapping[str, Any]) -> list[Path]:
+    """Exact parents in which this record may own a disposable checkout."""
+    parents = [
+        validate_checkout_parent(root),
+        # Before disposable validation checkouts were separated from retained
+        # evidence, ordinary runs put them directly below ignored/.  Those
+        # directories are still validate-only checkouts, and a missing
+        # temporary_checkout field is the legacy shape rather than evidence
+        # that a user works there.
+        (root / "ignored").resolve(),
+    ]
+    if record.get("admission") == FROZEN_RESULT_ADMISSION:
+        # Accept the short-lived in-boundary location too, so interrupted
+        # frozen runs made between 2ad960917 and this repair remain sweepable.
+        parents.insert(0, frozen_checkout_parent(root))
+    return parents
+
+
 def cleanup_recorded_checkout(
     root: Path,
     record: Mapping[str, Any],
@@ -1123,11 +1141,7 @@ def cleanup_recorded_checkout(
     if not isinstance(raw_checkout, str):
         return False, [], "run record has no checkout path"
     checkout = Path(raw_checkout).resolve()
-    parents = [validate_checkout_parent(root)]
-    if record.get("admission") == FROZEN_RESULT_ADMISSION:
-        # Accept the short-lived in-boundary location too, so interrupted
-        # frozen runs made between 2ad960917 and this repair remain sweepable.
-        parents.insert(0, frozen_checkout_parent(root))
+    parents = recorded_checkout_parents(root, record)
     temporary = record.get("temporary_checkout")
     if temporary is False:
         return False, [], None
@@ -1182,21 +1196,75 @@ def cleanup_recorded_cargo_home(
     )
 
 
+def recorded_cleanup_path_exists(root: Path, record: Mapping[str, Any]) -> bool:
+    """Whether a run record names material that this sweep could remove."""
+    raw_checkout = record.get("checkout")
+    if isinstance(raw_checkout, str):
+        checkout = Path(raw_checkout).resolve()
+        temporary = record.get("temporary_checkout")
+        accepted_unmarked_checkout = (
+            checkout.parent in recorded_checkout_parents(root, record)
+            and checkout.name.startswith("validate-fresh-")
+        )
+        if checkout.exists() and (
+            temporary is True
+            or (temporary is not False and accepted_unmarked_checkout)
+        ):
+            return True
+
+    raw_cargo_home = record.get("cargo_home")
+    return isinstance(raw_cargo_home, str) and Path(raw_cargo_home).resolve().exists()
+
+
+def read_cleanup_record(path: Path) -> dict[str, Any]:
+    """Read only the fields needed to remove disposable run material safely.
+
+    Run handles are intentionally strict for verdict readers, but that contract
+    has acquired required fields without changing its schema version.  Applying
+    today's verdict schema to every historical row prevented cleanup before it
+    could discover that most rows had no checkout left, and one old admitted row
+    without a run number made the complete sweep return could-not-determine.
+
+    Cleanup does not interpret a verdict.  It independently requires an exact
+    disposable parent and name, terminal service or durable completion evidence,
+    and no live process.  Reading the versioned JSON object here preserves those
+    checks without making disk cleanup depend on every historical reporting field.
+    """
+    try:
+        value = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError) as error:
+        raise RuntimeError(f"cannot read validation handle {path}: {error}") from error
+    if not isinstance(value, dict):
+        raise RuntimeError(f"validation handle {path} is not an object")
+    if value.get("schema_version") != run_registry.SCHEMA_VERSION:
+        raise RuntimeError(f"validation handle {path} has an unsupported schema")
+    return value
+
+
 def sweep_completed_checkouts(root: Path, *, run: Runner) -> dict[str, Any]:
     """Remove terminal validation checkouts left by interrupted waiters."""
     runs = root / "ignored" / "validate" / "runs"
     removed: list[str] = []
     removed_cargo_homes: list[str] = []
     retained: list[dict[str, str]] = []
+    bookkeeping_errors: list[dict[str, str]] = []
     if not runs.is_dir():
         return {
             "removed": removed,
             "removed_cargo_homes": removed_cargo_homes,
             "retained": retained,
+            "bookkeeping_errors": bookkeeping_errors,
         }
     for path in sorted(runs.glob("*.json")):
         try:
-            record = run_registry.read_record(path)
+            record = read_cleanup_record(path)
+            # The registry also contains bench handles and historical validation
+            # handles whose disposable paths are already gone.  Querying systemd
+            # for every one made the sweep scale with all retained history and
+            # made irrelevant bench unit names permanent failures.  Cleanup is
+            # needed only while a recorded disposable path still exists.
+            if not recorded_cleanup_path_exists(root, record):
+                continue
             unit = sanitize_unit(str(record.get("unit", path.stem)))
             properties = service_properties(unit, run=run)
         except (OSError, RuntimeError, ValueError) as error:
@@ -1260,11 +1328,17 @@ def sweep_completed_checkouts(root: Path, *, run: Runner) -> dict[str, Any]:
                     {"checkout": str(record.get("cargo_home", "")), "reason": cargo_reason}
                 )
         if fields:
-            bookkeep_record(path, **fields)
+            try:
+                run_registry.update_record(path, blocking=False, **fields)
+            except (OSError, RuntimeError, ValueError) as error:
+                bookkeeping_errors.append(
+                    {"record": str(path), "reason": str(error)}
+                )
     return {
         "removed": removed,
         "removed_cargo_homes": removed_cargo_homes,
         "retained": retained,
+        "bookkeeping_errors": bookkeeping_errors,
     }
 
 
@@ -2603,7 +2677,11 @@ def main(
             {"schema_version": 1, "event": "sweep-completed", **report},
             json_output=args.json,
         )
-        return 0 if not report["retained"] else EXIT_COULD_NOT_DETERMINE
+        return (
+            0
+            if not report["retained"] and not report["bookkeeping_errors"]
+            else EXIT_COULD_NOT_DETERMINE
+        )
     if args.attach:
         if any(
             (

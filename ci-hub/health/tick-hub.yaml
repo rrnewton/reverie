@@ -22,7 +22,7 @@ description: |-
   orc-internal state costs an agent. Prefer DETECT-ONLY: a gate that reports a
   fact leaves the decision where the authority is.
 
-  Current roster: 25 active reminders; `tick-hub list` is the canonical count.
+  `tick-hub list` is the canonical reminder count.
   The ledger spool backlog joins the local-but-ORC-invisible measurements because
   only the filesystem carries unpublished batch age. Four ORC-internal gates were
   removed on 2026-08-08; the removal record is inline below, above
@@ -168,6 +168,32 @@ reminders:
       fields:
         component: worktree-disk-residue
       title: "worktree slots are idle on disk and reclaimable: {summary}"
+
+  # VALIDATE CHECKOUT CLEANUP MUST OUTLIVE THE PROCESS THAT STARTED THE RUN.
+  # The launcher's waiter removes its checkout on the normal completion path,
+  # but agents end, panes disappear, and waiters are killed while their detached
+  # systemd units continue.  Before this recurring pass, every such run left a
+  # checkout forever.  The manual sweep also queried every retained run record,
+  # including bench records it cannot interpret; cleanup now considers only
+  # records whose disposable checkout or Cargo home still exists.
+  #
+  # This runs the existing evidence-preserving cleanup: checkout-local receipts
+  # are archived first, active units and paths held by live processes are kept,
+  # and only then is a terminal checkout removed.  A running checkout is an
+  # expected retention and stays quiet; any other retained path is a failure.
+  - name: validate_checkout_cleanup
+    cadence_secs: 3600
+    gate:
+      timeout_secs: 30
+      cmd: python3 ci-hub/health/validate_checkout_cleanup.py --state-root /home/newton/work/dev-hermit
+      when: failure
+      capture: true
+    emit:
+      kind: action
+      skill: hard-warn-coordinator
+      fields:
+        component: validate-checkout-cleanup
+      title: "terminal validate checkout cleanup needs attention: {summary}"
 
   # LEDGER PUBLICATION BACKLOG. Validation events are visible locally as soon as
   # the producer atomically admits an immutable *.jsonl spool batch, but they do
