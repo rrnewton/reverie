@@ -46,6 +46,14 @@ def owner_row(agent: str = TEST_AGENT, *, sidecar: bool = True) -> dict:
     row = {
         "status": "active",
         "task": task,
+        "allocated": "2026-08-28T00:00:00Z",
+        "updated": "2026-08-28T00:00:00Z",
+        "hermit_path": "worktrees/slots/slot01/hermit",
+        "hermit_branch": "detached",
+        "reverie_path": "worktrees/slots/slot01/reverie",
+        "reverie_branch": "-",
+        "liteinst2_path": "worktrees/slots/slot01/liteinst2",
+        "liteinst2_branch": "-",
         "agents": [{"name": agent, "read_only": False, "task": task}],
         "coordinator_lease": {
             "schema_version": 1,
@@ -98,8 +106,22 @@ class FleetGhTest(unittest.TestCase):
         shutil.copy2(ROOT / "ci-hub/bin/who-am-i", self.printer)
         self.shim.chmod(0o755)
         self.printer.chmod(0o755)
-        for dependency in ("agent_identity.py", "ops_state.py", "taskgraph_db.py"):
+        for dependency in (
+            "agent_identity.py",
+            "ops_state.py",
+            "taskgraph_db.py",
+            "worktree_registry.py",
+        ):
             shutil.copy2(ROOT / "ci-hub/lib" / dependency, self.root / "ci-hub/lib" / dependency)
+        (self.root / "scripts").mkdir()
+        shutil.copy2(
+            ROOT / "scripts/check-worktree-registry.rs",
+            self.root / "scripts/check-worktree-registry.rs",
+        )
+        shutil.copy2(
+            ROOT / "scripts/worktree_registry.rs",
+            self.root / "scripts/worktree_registry.rs",
+        )
         shutil.copy2(
             ROOT / "ci-hub/lib/bounded_capture.py",
             self.root / "ci-hub/lib/bounded_capture.py",
@@ -159,7 +181,13 @@ class FleetGhTest(unittest.TestCase):
 
     def write_registry(self, row: dict) -> None:
         (self.root / "worktree-state.json").write_text(
-            json.dumps({"slots": {"slot01": row}})
+            json.dumps(
+                {
+                    "version": 3,
+                    "updated": "2026-08-28T00:00:00Z",
+                    "slots": {"slot01": row},
+                }
+            )
         )
 
     @staticmethod

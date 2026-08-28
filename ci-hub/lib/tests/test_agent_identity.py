@@ -55,6 +55,35 @@ class IdentityFixture(unittest.TestCase):
         task: str = "task-a",
         sidecar_agent: str | None = "agent-a",
     ) -> None:
+        row = self.registry_row(
+            "slot-a",
+            owners=owners,
+            pane=pane,
+            cgroup=cgroup,
+            task=task,
+            sidecar_agent=sidecar_agent,
+        )
+        self.state.write_text(
+            json.dumps(
+                {
+                    "version": 3,
+                    "updated": "2026-08-28T00:00:00Z",
+                    "slots": {"slot-a": row},
+                }
+            )
+        )
+
+    def registry_row(
+        self,
+        slot: str,
+        *,
+        owners: tuple[str, ...],
+        pane: str | None,
+        cgroup: str | None = None,
+        task: str = "task-a",
+        status: str = "active",
+        sidecar_agent: str | None = None,
+    ) -> dict[str, object]:
         agents = []
         for owner in owners:
             entry: dict[str, object] = {"name": owner, "task": task, "read_only": False}
@@ -64,9 +93,16 @@ class IdentityFixture(unittest.TestCase):
                 entry["cgroup_path"] = cgroup
             agents.append(entry)
         row: dict[str, object] = {
-            "status": "active",
+            "status": status,
             "task": task,
-            "hermit_path": "worktrees/slots/slot-a/hermit",
+            "allocated": "2026-08-28T00:00:00Z",
+            "updated": "2026-08-28T00:00:00Z",
+            "hermit_path": f"worktrees/slots/{slot}/hermit",
+            "hermit_branch": "detached",
+            "reverie_path": f"worktrees/slots/{slot}/reverie",
+            "reverie_branch": "-",
+            "liteinst2_path": f"worktrees/slots/{slot}/liteinst2",
+            "liteinst2_branch": "-",
             "agents": agents,
         }
         if sidecar_agent is not None:
@@ -80,7 +116,7 @@ class IdentityFixture(unittest.TestCase):
             if cgroup is not None:
                 sidecar["cgroup_path"] = cgroup
             row["owner_sidecar"] = sidecar
-        self.state.write_text(json.dumps({"version": 1, "slots": {"slot-a": row}}))
+        return row
 
     def add_process(
         self,
@@ -307,10 +343,12 @@ class ResolutionTests(IdentityFixture):
         every guarded write.
         """
         document = json.loads(self.state.read_text())
-        document["slots"]["stale-slot"] = {
-            "status": "released",
-            "agents": [{"name": "ghost-agent", "tmux_pane_id": "%7"}],
-        }
+        document["slots"]["stale-slot"] = self.registry_row(
+            "stale-slot",
+            owners=("ghost-agent",),
+            pane="%7",
+            status="released",
+        )
         self.state.write_text(json.dumps(document))
         self.standard_processes()
         result = self.resolve()
@@ -330,10 +368,11 @@ class ResolutionTests(IdentityFixture):
         claiming the caller's pane for a different agent must still refuse.
         """
         document = json.loads(self.state.read_text())
-        document["slots"]["live-conflict"] = {
-            "status": "active",
-            "agents": [{"name": "other-agent", "tmux_pane_id": "%7"}],
-        }
+        document["slots"]["live-conflict"] = self.registry_row(
+            "live-conflict",
+            owners=("other-agent",),
+            pane="%7",
+        )
         self.state.write_text(json.dumps(document))
         self.standard_processes()
         result = self.resolve()
@@ -354,10 +393,12 @@ class ResolutionTests(IdentityFixture):
         explicitly rather than left to the reader of the filter.
         """
         document = json.loads(self.state.read_text())
-        document["slots"]["mid-release"] = {
-            "status": "release-requested",
-            "agents": [{"name": "departing-agent", "tmux_pane_id": "%7"}],
-        }
+        document["slots"]["mid-release"] = self.registry_row(
+            "mid-release",
+            owners=("departing-agent",),
+            pane="%7",
+            status="release-requested",
+        )
         self.state.write_text(json.dumps(document))
         self.standard_processes()
         result = self.resolve()

@@ -133,19 +133,41 @@ slot_busy() {
     return 1
 }
 
-# Registered status of a slot from worktree-state.json ("active"/"released"/"" if unknown).
-slot_state() {
-    local slot=$1
-    [[ -f $STATE ]] || { echo ""; return; }
-    python3 - "$STATE" "$slot" <<'PY' 2>/dev/null || echo ""
-import json,sys
+# Read and validate one exact registry snapshot before any pruning decision.
+# Re-running the Rust checker once per slot made a 178-row report invoke the
+# authority 178 times; keeping the accepted statuses in memory is both faster
+# and prevents one report from mixing different registry revisions.
+declare -A REGISTRY_STATUS
+if [[ -f $STATE ]]; then
+    if ! registry_rows=$(python3 - "$STATE" "$ROOT" <<'PY'
+import sys
+from pathlib import Path
+state, root = Path(sys.argv[1]), Path(sys.argv[2])
+sys.path.insert(0, str(root / "ci-hub" / "lib"))
+from worktree_registry import RegistrySchemaError, read_registry
 try:
-    s=json.load(open(sys.argv[1]))
-    slot=s.get("slots",{}).get(sys.argv[2])
-    print(slot.get("status","active") if slot else "")
-except Exception:
-    print("")
+    document = read_registry(
+        state, checker=root / "scripts" / "check-worktree-registry.rs"
+    )
+except RegistrySchemaError as error:
+    print(f"worktree-gc: {error}", file=sys.stderr)
+    raise SystemExit(2)
+for name, row in document["slots"].items():
+    print(f"{name}\t{row['status']}")
 PY
+    ); then
+        echo "worktree-gc: COULD NOT READ worktree registry; refusing to classify or prune" >&2
+        exit 2
+    fi
+    while IFS=$'\t' read -r registry_slot registry_status; do
+        [[ -n $registry_slot ]] || continue
+        REGISTRY_STATUS["$registry_slot"]=$registry_status
+    done <<<"$registry_rows"
+fi
+
+# Registered status of a slot ("active"/"released"/"" if unregistered).
+slot_state() {
+    printf '%s\n' "${REGISTRY_STATUS[$1]:-}"
 }
 
 # git worktree clean (no uncommitted changes)?

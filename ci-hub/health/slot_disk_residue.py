@@ -75,6 +75,12 @@ from pathlib import Path
 
 import residue_sweep
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
+from worktree_registry import (  # noqa: E402
+    RegistrySchemaError,
+    read_registry as read_typed_registry,
+)
+
 SLOTS_DIR = Path("worktrees/slots")
 DEFAULT_STATE = Path(".tick-hub") / "slot-disk-residue-state.json"
 
@@ -123,11 +129,9 @@ def slots_on_disk(root: Path) -> set[str]:
 
 def read_registry(path: Path) -> dict[str, object]:
     try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
+        value = read_typed_registry(path)
+    except RegistrySchemaError as exc:
         raise ResidueUnavailable(f"cannot read slot registry {path}: {exc}") from exc
-    if not isinstance(value, dict) or not isinstance(value.get("slots"), dict):
-        raise ResidueUnavailable(f"slot registry {path} has no slots object")
     return value
 
 
@@ -146,8 +150,9 @@ def quarantined_slot_names(registry: dict[str, object]) -> set[str]:
     """Rows retired from allocation but retained visibly and non-destructively.
 
     Quarantine is deliberately not active-cap occupancy, but it is never hidden
-    from the report.  The transition mechanism owns which exact quarantine
-    statuses may be written; this consumer merely preserves their denominator.
+    from the report. The exact values are owned by the shared registry type;
+    `lease-quarantined` is the current releaser state and
+    `quarantined-retired` is retained for historical rows.
     """
 
     raw_slots = registry.get("slots")
@@ -157,8 +162,7 @@ def quarantined_slot_names(registry: dict[str, object]) -> set[str]:
         str(name)
         for name, raw in raw_slots.items()
         if isinstance(raw, dict)
-        and isinstance(raw.get("status"), str)
-        and raw["status"].startswith("quarantined-")
+        and raw.get("status") in {"lease-quarantined", "quarantined-retired"}
     }
 
 

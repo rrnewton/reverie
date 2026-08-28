@@ -66,6 +66,7 @@ build_fixture() { # <allocator-source>
   cp "$1" "$root/tree/scripts/allocate-worktree.rs"
   chmod +x "$root/tree/scripts/allocate-worktree.rs"
   cp "$script_dir/check-worktree-registry.rs" "$root/tree/scripts/"
+  cp "$script_dir/worktree_registry.rs" "$root/tree/scripts/"
   : >"$root/tree/.gitmodules"
   git -C "$root/tree" init -q -b main
   git -C "$root/tree" config user.email test@example.invalid

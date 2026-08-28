@@ -14,6 +14,7 @@ mkdir -p "$root/scripts" "$root/hermit" "$root/reverie" "$root/liteinst2" \
   "$root/worktrees/slots/codex-fixture" "$root/ignored/ci-hub"
 touch "$root/.gitmodules"
 cp "${ALLOC_SRC:-$script_dir/allocate-worktree.rs}" "$root/scripts/allocate-worktree.rs"
+cp "$script_dir/worktree_registry.rs" "$root/scripts/"
 chmod +x "$root/scripts/allocate-worktree.rs"
 
 # The allocator asks this verifier to prove the exact already-recorded sentinel.
@@ -68,6 +69,8 @@ lease = {
     "invocation_id": "fixture-invocation",
 }
 state = {
+    "version": 3,
+    "updated": "2026-08-28T00:00:00Z",
     "slots": {
         "codex-fixture": {
             "status": "active",

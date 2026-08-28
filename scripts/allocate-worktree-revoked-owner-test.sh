@@ -45,6 +45,7 @@ mkdir -p "$root/scripts" "$root/hermit" "$root/reverie" "$root/liteinst2" \
 touch "$root/.gitmodules"
 cp "$alloc_src" "$root/scripts/allocate-worktree.rs"
 cp "$script_dir/check-worktree-registry.rs" "$root/scripts/"
+cp "$script_dir/worktree_registry.rs" "$root/scripts/"
 # `git show HEAD:scripts/allocate-worktree.rs > /tmp/old.rs` -- the documented way
 # to produce an ALLOC_SRC build for an A/B -- writes a file with NO executable
 # bit. The fixture invokes the script as `./scripts/allocate-worktree.rs`, so
@@ -79,7 +80,11 @@ plant() { # <slot> <status> <incumbent>
   python3 - "$root/worktree-state.json" "$1" "$2" "$3" <<'PY'
 import json, os, sys
 path, slot, status, incumbent = sys.argv[1:5]
-state = json.load(open(path)) if os.path.exists(path) else {"slots": {}}
+state = json.load(open(path)) if os.path.exists(path) else {
+    "version": 3,
+    "updated": "2026-08-08T00:00:00Z",
+    "slots": {},
+}
 state.setdefault("slots", {})[slot] = {
     "status": status,
     "agents": [{"name": incumbent, "task": "t", "read_only": False}],
@@ -88,7 +93,8 @@ state.setdefault("slots", {})[slot] = {
     "reverie_path": f"worktrees/slots/{slot}/reverie",
     "liteinst2_path": f"worktrees/slots/{slot}/liteinst2",
     "purpose": "planted by allocate-worktree-released-rebind-test",
-    "started": "2026-08-08T00:00:00Z",
+    "allocated": "2026-08-08T00:00:00Z",
+    "updated": "2026-08-08T00:00:00Z",
 }
 json.dump(state, open(path, "w"), indent=2)
 PY

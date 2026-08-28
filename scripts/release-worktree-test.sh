@@ -257,14 +257,18 @@ write_state() {
   cat >"$fixture_root/worktree-state.json" <<JSON
 {
   "version": 3,
+  "updated": "2026-08-28T00:00:00Z",
   "slots": {
     "$slot": {
       "agents": [{
         "name": "fixture-$slot",
         "read_only": false,
+        "task": "fixture-$slot",
         "tmux_pane_id": "%lease-$slot",
         "cgroup_path": "/agent.slice/fixture-$slot.scope"
       }],
+      "allocated": "2026-08-28T00:00:00Z",
+      "updated": "2026-08-28T00:00:00Z",
       "hermit_branch": "$branch",
       "hermit_path": "$recorded_path",
       "reverie_branch": "-",
@@ -335,6 +339,7 @@ make_fixture() {
     "$fixture_root/unrelated"
   : >"$fixture_root/.gitmodules"
   cp "$script_dir/check-worktree-registry.rs" "$fixture_root/scripts/"
+  cp "$script_dir/worktree_registry.rs" "$fixture_root/scripts/"
   cp "$script_dir/agent-podman.rs" "$fixture_root/scripts/"
   cp "$suite_root/bin/podman" "$fixture_root/bin/podman"
   cp "$suite_root/bin/slot-owner-authority.py" \

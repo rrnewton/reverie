@@ -3,11 +3,16 @@
 //!
 //! ```cargo
 //! [dependencies]
+//! serde = { version = "1", features = ["derive"] }
 //! serde_json = "1"
 //! ```
 
+#[path = "worktree_registry.rs"]
+mod worktree_registry;
+
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet};
+use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 use std::process::{exit, Command};
 
@@ -16,6 +21,8 @@ const BEGIN: &str =
 const END: &str = "<!-- END worktree-state -->";
 
 const USAGE: &str = r#"Usage: check-worktree-registry.rs [--root PATH] [SCOPE]
+       check-worktree-registry.rs --validate-state-stdin
+       check-worktree-registry.rs --assigned-slot AGENT
 
 Scope (mutually exclusive):
   --slot SLOT          Verify exactly one named slot.
@@ -25,6 +32,13 @@ Scope (mutually exclusive):
 Fail unless every worktree-state.json branch agrees with the actual checkout and
 the managed ACTIVE.md row agrees with worktree-state.json. Detached expectations
 may be `detached` (any detached SHA) or `detached:<sha-prefix>` (exact prefix).
+
+--validate-state-stdin validates one exact JSON document from standard input
+against the shared schema without inspecting worktrees or ACTIVE.md.
+
+--assigned-slot reads that document from standard input and prints the one slot
+the allocator's existing ownership rule assigns to AGENT. No match is success
+with no output; multiple matches are a refusal rather than an arbitrary choice.
 "#;
 
 #[derive(Debug)]
@@ -38,13 +52,6 @@ enum Actual {
 fn die(message: &str) -> ! {
     eprintln!("worktree-registry: ERROR {message}");
     exit(2);
-}
-
-fn valid_slot(slot: &str) -> bool {
-    !slot.is_empty()
-        && slot
-            .chars()
-            .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '-')
 }
 
 fn find_root() -> PathBuf {
@@ -246,6 +253,8 @@ fn main() {
     let mut root = None;
     let mut only_slot = None;
     let mut excluded_slots = BTreeSet::new();
+    let mut validate_state_stdin = false;
+    let mut assigned_slot_agent = None;
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
@@ -270,6 +279,14 @@ fn main() {
                 }
                 excluded_slots.insert(args[i].clone());
             }
+            "--validate-state-stdin" => validate_state_stdin = true,
+            "--assigned-slot" => {
+                i += 1;
+                if i >= args.len() {
+                    die("--assigned-slot requires an agent name");
+                }
+                assigned_slot_agent = Some(args[i].clone());
+            }
             "-h" | "--help" => {
                 print!("{USAGE}");
                 return;
@@ -278,16 +295,51 @@ fn main() {
         }
         i += 1;
     }
+    if validate_state_stdin || assigned_slot_agent.is_some() {
+        if root.is_some() || only_slot.is_some() || !excluded_slots.is_empty() {
+            die("stdin registry modes are incompatible with root and scope arguments");
+        }
+        if validate_state_stdin && assigned_slot_agent.is_some() {
+            die("--validate-state-stdin and --assigned-slot are mutually exclusive");
+        }
+        let mut bytes = Vec::new();
+        io::stdin()
+            .read_to_end(&mut bytes)
+            .unwrap_or_else(|error| die(&format!("read stdin: {error}")));
+        match worktree_registry::Registry::parse(&bytes) {
+            Ok(registry) => {
+                if let Some(agent) = assigned_slot_agent {
+                    let slots = registry.assigned_slots(&agent);
+                    match slots.as_slice() {
+                        [] => {}
+                        [slot] => println!("{slot}"),
+                        _ => {
+                            eprintln!(
+                                "worktree-registry: REFUSE agent {agent:?} has multiple current slot assignments: {}",
+                                slots.join(",")
+                            );
+                            exit(1);
+                        }
+                    }
+                }
+                return;
+            }
+            Err(error) => {
+                eprintln!("worktree-registry: REFUSE {error}");
+                exit(1);
+            }
+        }
+    }
     if only_slot.is_some() && !excluded_slots.is_empty() {
         die("--slot and --exclude-slot are mutually exclusive");
     }
     if let Some(slot) = &only_slot {
-        if !valid_slot(slot) {
+        if !worktree_registry::valid_slot_name(slot) {
             die(&format!("invalid --slot value {slot:?}"));
         }
     }
     for slot in &excluded_slots {
-        if !valid_slot(slot) {
+        if !worktree_registry::valid_slot_name(slot) {
             die(&format!("invalid --exclude-slot value {slot:?}"));
         }
     }
@@ -295,6 +347,8 @@ fn main() {
     let state_path = root.join("worktree-state.json");
     let state_text = std::fs::read_to_string(&state_path)
         .unwrap_or_else(|error| die(&format!("read {}: {error}", state_path.display())));
+    worktree_registry::Registry::parse(state_text.as_bytes())
+        .unwrap_or_else(|error| die(&format!("validate {}: {error}", state_path.display())));
     let state: Value = serde_json::from_str(&state_text)
         .unwrap_or_else(|error| die(&format!("parse {}: {error}", state_path.display())));
     let slots = state["slots"]

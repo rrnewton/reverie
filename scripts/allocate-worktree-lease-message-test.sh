@@ -66,6 +66,7 @@ touch "$root/.gitmodules"
 # WORDING moved and the bind/refuse pattern did not.
 cp "${ALLOC_SRC:-$script_dir/allocate-worktree.rs}" "$root/scripts/allocate-worktree.rs"
 cp "$script_dir/check-worktree-registry.rs" "$root/scripts/"
+cp "$script_dir/worktree_registry.rs" "$root/scripts/"
 
 git -C "$root" init -q -b main
 git -C "$root" config user.email test@example.invalid

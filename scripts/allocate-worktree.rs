@@ -23,8 +23,13 @@
 //! ```cargo
 //! [dependencies]
 //! fs2 = "0.4"
+//! serde = { version = "1", features = ["derive"] }
 //! serde_json = "1"
 //! ```
+#[allow(dead_code)]
+#[path = "worktree_registry.rs"]
+mod worktree_registry;
+
 use fs2::FileExt;
 use serde_json::{json, Value};
 use std::collections::BTreeSet;
@@ -694,17 +699,18 @@ fn load_state(root: &Path) -> Value {
         return json!({ "version": 3, "updated": Value::Null, "slots": {} });
     }
     let txt = std::fs::read_to_string(&p).unwrap_or_else(|e| die(&format!("read state: {e}")));
-    let mut v: Value = serde_json::from_str(&txt)
+    let v: Value = serde_json::from_str(&txt)
         .unwrap_or_else(|e| die(&format!("parse worktree-state.json: {e}")));
-    if !v.get("slots").map(|s| s.is_object()).unwrap_or(false) {
-        v["slots"] = json!({});
-    }
+    worktree_registry::Registry::from_value(&v)
+        .unwrap_or_else(|e| die(&format!("validate worktree-state.json: {e}")));
     v
 }
 
 fn save_state(root: &Path, state: &mut Value) {
     state["updated"] = json!(now_iso());
     state["version"] = json!(3);
+    worktree_registry::Registry::from_value(state)
+        .unwrap_or_else(|e| die(&format!("refuse invalid worktree-state.json write: {e}")));
     let txt = serde_json::to_string_pretty(state).unwrap();
     durable_replace(&state_path(root), (txt + "\n").as_bytes())
         .unwrap_or_else(|e| die(&format!("write state: {e}")));
@@ -1262,15 +1268,7 @@ fn repair_registry(
 
 /// Slot name is a named token [a-z0-9-]+ (e.g. kvm) or slotNN.
 fn valid_slot(name: &str) -> bool {
-    !name.is_empty()
-        && name
-            .chars()
-            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
-        && name
-            .chars()
-            .next()
-            .map(|c| c.is_ascii_alphanumeric())
-            .unwrap_or(false)
+    worktree_registry::valid_slot_name(name)
 }
 
 /// Tmux pane ids that exist on this box right now, best effort. `None` means
@@ -2607,10 +2605,13 @@ fn main() {
                 if other == &slot {
                     continue;
                 }
-                if matches!(
-                    s["status"].as_str(),
-                    Some("released") | Some("owner-lease-revoked")
-                ) {
+                let status = s["status"]
+                    .as_str()
+                    .and_then(|value| worktree_registry::SlotStatus::parse(value).ok())
+                    .unwrap_or_else(|| {
+                        die(&format!("validated slot '{other}' lost its typed status"))
+                    });
+                if !status.blocks_new_allocation() {
                     continue;
                 }
                 let owns = s["agents"]

@@ -29,16 +29,19 @@ done
 cat >"$root/worktree-state.json" <<'JSON'
 {
   "version": 3,
+  "updated": "2026-08-28T00:00:00Z",
   "slots": {
     "slot01": {
-      "agents": [{"name":"agent-01","read_only":false}],
+      "agents": [{"name":"agent-01","read_only":false,"task":"task-01"}],
+      "allocated":"2026-08-28T00:00:00Z", "updated":"2026-08-28T00:00:00Z",
       "hermit_branch":"correct-01", "hermit_path":"worktrees/slots/slot01/hermit",
       "reverie_branch":"-", "reverie_path":"worktrees/slots/slot01/reverie",
       "liteinst2_branch":"-", "liteinst2_path":"worktrees/slots/slot01/liteinst2",
       "task":"task-01", "status":"active"
     },
     "slot02": {
-      "agents": [{"name":"agent-02","read_only":false}],
+      "agents": [{"name":"agent-02","read_only":false,"task":"task-02"}],
+      "allocated":"2026-08-28T00:00:00Z", "updated":"2026-08-28T00:00:00Z",
       "hermit_branch":"correct-02", "hermit_path":"worktrees/slots/slot02/hermit",
       "reverie_branch":"-", "reverie_path":"worktrees/slots/slot02/reverie",
       "liteinst2_branch":"-", "liteinst2_path":"worktrees/slots/slot02/liteinst2",
@@ -62,12 +65,32 @@ pass="$root/pass.out"
 "$script_dir/check-worktree-registry.rs" --root "$root" >"$pass" 2>&1
 grep -Fq 'PASS rows=2 correct_rows=2 drift_rows=0 product_cells=6 drift_cells=0' "$pass"
 
+# The shared reader must refuse a malformed status by name before any consumer
+# can reinterpret absence as its own default.
+jq 'del(.slots.slot01.status)' "$root/worktree-state.json" >"$root/missing-status.json"
+if "$script_dir/check-worktree-registry.rs" --validate-state-stdin \
+    <"$root/missing-status.json" >"$root/missing-status.out" 2>&1; then
+  echo "shared registry type accepted a missing status" >&2
+  exit 1
+fi
+grep -Fq 'status' "$root/missing-status.out" \
+  || { echo "missing-status refusal did not name status" >&2; exit 1; }
+
+# Assignment follows the allocator's existing ownership rule rather than JSON
+# key order; historical released/revoked rows do not shadow the current row.
+test "$("$script_dir/check-worktree-registry.rs" --assigned-slot agent-01 \
+  <"$root/worktree-state.json")" = slot01
+
 # The established reconciliation front door must invoke the same predicate.
 mkdir -p "$root/scripts" "$root/hermit" "$root/reverie" "$root/liteinst2"
 touch "$root/.gitmodules"
 cp "$script_dir/check-worktree-registry.rs" "$root/scripts/"
-(cd "$root" && "$script_dir/allocate-worktree.rs" --check-only) \
-  >"$root/check-only-pass.out" 2>&1
+cp "$script_dir/worktree_registry.rs" "$root/scripts/"
+if ! (cd "$root" && "$script_dir/allocate-worktree.rs" --check-only) \
+  >"$root/check-only-pass.out" 2>&1; then
+  cat "$root/check-only-pass.out" >&2
+  exit 1
+fi
 grep -Fq 'PASS rows=2 correct_rows=2 drift_rows=0 product_cells=6 drift_cells=0' \
   "$root/check-only-pass.out"
 

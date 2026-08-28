@@ -35,6 +35,9 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Mapping, Sequence
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "ci-hub" / "lib"))
+from worktree_registry import RegistrySchemaError, parse_registry_bytes  # noqa: E402
+
 
 SCHEMA_VERSION = 1
 SIDECAR_SCHEMA_VERSION = 1
@@ -454,13 +457,17 @@ def read_guarded_state(
                         ) from error
                     time.sleep(min(REGISTRY_LOCK_POLL_SECONDS, remaining))
             try:
-                state = json.loads(state_path.read_text(encoding="utf-8"))
+                raw_state = state_path.read_bytes()
             finally:
                 fcntl.flock(lock, fcntl.LOCK_UN)
-    except (OSError, json.JSONDecodeError) as error:
+        state = parse_registry_bytes(
+            raw_state,
+            checker=Path(__file__).resolve().with_name(
+                "check-worktree-registry.rs"
+            ),
+        )
+    except (OSError, RegistrySchemaError) as error:
         return {}, f"cannot read guarded slot registry: {error}"
-    if not isinstance(state, Mapping):
-        return {}, "slot registry is not an object"
     return state, None
 
 

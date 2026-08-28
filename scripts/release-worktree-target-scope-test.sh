@@ -325,7 +325,7 @@ mv "$root/state.tmp" "$root/worktree-state.json"
 if run_release "$root" target >"$root/release.out" 2>&1; then
   fail 'missing branch field was accepted'
 fi
-grep -Fq 'DRIFT slot=target hermit recorded=- actual=detached:' "$root/release.out" \
+grep -Fq 'missing field `hermit_branch`' "$root/release.out" \
   || {
     cat "$root/release.out" >&2
     fail 'missing-branch refusal was not explicit'

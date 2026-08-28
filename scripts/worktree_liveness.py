@@ -65,6 +65,9 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "ci-hub" / "lib"))
+from worktree_registry import read_registry  # noqa: E402
+
 STATE_FILE = "worktree-state.json"
 SLOTS_DIR = Path("worktrees/slots")
 
@@ -262,7 +265,10 @@ def classify(
 
 
 def build_report(root: Path, stale_hours: float, now: datetime | None = None) -> dict:
-    state = json.loads((root / STATE_FILE).read_text(encoding="utf-8"))
+    state = read_registry(
+        root / STATE_FILE,
+        checker=Path(__file__).resolve().with_name("check-worktree-registry.rs"),
+    )
     occ = occupied_slots(root)
     porc = porcelain_slots(root)
     now = now or datetime.now(timezone.utc)

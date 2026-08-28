@@ -30,6 +30,14 @@ def state(sidecar: dict[str, object] | None) -> dict[str, object]:
     row: dict[str, object] = {
         "status": "active",
         "task": "task-a",
+        "allocated": "2026-08-28T00:00:00Z",
+        "updated": "2026-08-28T00:00:00Z",
+        "hermit_path": "worktrees/slots/slot-a/hermit",
+        "hermit_branch": "detached",
+        "reverie_path": "worktrees/slots/slot-a/reverie",
+        "reverie_branch": "-",
+        "liteinst2_path": "worktrees/slots/slot-a/liteinst2",
+        "liteinst2_branch": "-",
         "agents": [
             {
                 "name": "agent-a",
@@ -42,7 +50,11 @@ def state(sidecar: dict[str, object] | None) -> dict[str, object]:
     }
     if sidecar is not None:
         row["owner_sidecar"] = sidecar
-    return {"slots": {"slot-a": row}}
+    return {
+        "version": 3,
+        "updated": "2026-08-28T00:00:00Z",
+        "slots": {"slot-a": row},
+    }
 
 
 def sidecar(**updates: object) -> dict[str, object]:

@@ -46,8 +46,10 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
 
 import residue_sweep  # noqa: E402
+from worktree_registry import RegistrySchemaError, read_registry  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
 ACTIONABLE = "actionable"
@@ -263,11 +265,9 @@ def main(argv: list[str] | None = None) -> int:
 
         registry_path = root / "worktree-state.json"
         try:
-            registry = json.loads(registry_path.read_text())
-        except (OSError, json.JSONDecodeError) as exc:
+            registry = read_registry(registry_path)
+        except RegistrySchemaError as exc:
             raise ParityUnavailable(f"cannot read {registry_path}: {exc}") from exc
-        if not isinstance(registry, dict):
-            raise ParityUnavailable("worktree-state.json root is not an object")
 
         state, summary, fields = evaluate(root, live, registry)
     except ParityUnavailable as exc:

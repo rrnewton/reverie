@@ -27,6 +27,7 @@
 set -uo pipefail
 
 agent=""; cwd="${PWD}"; root=""; quiet=0
+script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 while (($# > 0)); do
   case "$1" in
     --agent) agent=${2:-}; shift 2 ;;
@@ -39,7 +40,7 @@ done
 [[ -n $agent ]] || { echo "check-agent-slot: --agent NAME is required" >&2; exit 2; }
 
 if [[ -z $root ]]; then
-  root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+  root=$(cd -- "$script_dir/.." && pwd)
 fi
 state="$root/worktree-state.json"
 
@@ -59,20 +60,16 @@ fi
 # --- which slot, if any, does the registry assign to this agent? ------------
 assigned=""
 if [[ -r $state ]]; then
-  assigned=$(python3 - "$state" "$agent" <<'PY' 2>/dev/null || true
-import json, sys
-state, agent = sys.argv[1], sys.argv[2]
-try:
-    slots = json.load(open(state)).get("slots", {})
-except Exception:
-    sys.exit(0)
-for name, slot in slots.items():
-    for owner in slot.get("agents", []) or []:
-        if owner.get("name") == agent:
-            print(name)
-            sys.exit(0)
-PY
-)
+  registry_error_file=$(mktemp "${TMPDIR:-/tmp}/check-agent-slot.XXXXXX")
+  assigned=$("$script_dir/check-worktree-registry.rs" --assigned-slot "$agent" \
+    <"$state" 2>"$registry_error_file") || {
+      registry_error=$(<"$registry_error_file")
+      rm -f -- "$registry_error_file"
+      say "REFUSE: worktree registry cannot determine agent '$agent' assignment."
+      say "  $registry_error"
+      exit 1
+    }
+  rm -f -- "$registry_error_file"
 fi
 
 allocate="./scripts/allocate-worktree.rs --agent $agent --task <task-id> --product all --purpose \"<one line>\""

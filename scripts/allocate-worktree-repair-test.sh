@@ -25,6 +25,7 @@ mkdir -p "$root/scripts" "$root/hermit" "$root/reverie" "$root/liteinst2" "$root
 touch "$root/.gitmodules"
 cp "$script_dir/allocate-worktree.rs" "$root/scripts/"
 cp "$script_dir/check-worktree-registry.rs" "$root/scripts/"
+cp "$script_dir/worktree_registry.rs" "$root/scripts/"
 
 git -C "$root" init -q -b main
 git -C "$root" config user.email test@example.invalid
@@ -63,16 +64,19 @@ new_repo "$root/worktrees/slots/ok71/hermit"    "correct-71"
 cat >"$root/worktree-state.json" <<'JSON'
 {
   "version": 3,
+  "updated": "2026-08-28T00:00:00Z",
   "slots": {
     "drift70": {
-      "agents": [{"name":"agent-70","read_only":false}],
+      "agents": [{"name":"agent-70","read_only":false,"task":"task-70"}],
+      "allocated":"2026-08-28T00:00:00Z", "updated":"2026-08-28T00:00:00Z",
       "hermit_branch":"stale-unpushed-70", "hermit_path":"worktrees/slots/drift70/hermit",
       "reverie_branch":"-", "reverie_path":"worktrees/slots/drift70/reverie",
       "liteinst2_branch":"-", "liteinst2_path":"worktrees/slots/drift70/liteinst2",
       "task":"task-70", "status":"active"
     },
     "ok71": {
-      "agents": [{"name":"agent-71","read_only":false}],
+      "agents": [{"name":"agent-71","read_only":false,"task":"task-71"}],
+      "allocated":"2026-08-28T00:00:00Z", "updated":"2026-08-28T00:00:00Z",
       "hermit_branch":"correct-71", "hermit_path":"worktrees/slots/ok71/hermit",
       "reverie_branch":"-", "reverie_path":"worktrees/slots/ok71/reverie",
       "liteinst2_branch":"-", "liteinst2_path":"worktrees/slots/ok71/liteinst2",

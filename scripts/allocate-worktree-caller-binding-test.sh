@@ -98,7 +98,7 @@ note ""
 
 build_fixture() { # <allocator-source>
   rm -rf "$root/tree"
-  mkdir -p "$root/tree/scripts" "$root/tree/hermit" "$root/tree/reverie" \
+  mkdir -p "$root/tree/scripts" "$root/tree/ci-hub/lib" "$root/tree/hermit" "$root/tree/reverie" \
            "$root/tree/liteinst2" "$root/tree/worktrees" "$root/tree/ignored/ci-hub"
   touch "$root/tree/.gitmodules"
   cp "$1" "$root/tree/scripts/allocate-worktree.rs"
@@ -106,7 +106,9 @@ build_fixture() { # <allocator-source>
   # would fail to execute and report a missing registry rather than a verdict.
   chmod +x "$root/tree/scripts/allocate-worktree.rs"
   cp "$script_dir/check-worktree-registry.rs" "$root/tree/scripts/"
+  cp "$script_dir/worktree_registry.rs" "$root/tree/scripts/"
   cp "$script_dir/slot-owner-authority.py" "$root/tree/scripts/"
+  cp "$script_dir/../ci-hub/lib/worktree_registry.py" "$root/tree/ci-hub/lib/"
   git -C "$root/tree" init -q -b main
   git -C "$root/tree" config user.email test@example.invalid
   git -C "$root/tree" config user.name test

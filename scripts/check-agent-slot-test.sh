@@ -13,9 +13,38 @@ mkdir -p "$tmp/worktrees/slots/mine/hermit" "$tmp/worktrees/slots/theirs/hermit"
 cat >"$tmp/worktree-state.json" <<'JSON'
 {
   "version": 3,
+  "updated": "2026-08-28T00:00:00Z",
   "slots": {
-    "mine":   { "agents": [{ "name": "sol-example", "read_only": false }] },
-    "theirs": { "agents": [{ "name": "other-agent", "read_only": false }] }
+    "old": {
+      "agents": [{ "name": "sol-example", "read_only": false, "task": "old-task" }],
+      "status": "released",
+      "hermit_path": "worktrees/slots/old/hermit", "hermit_branch": "detached",
+      "reverie_path": "worktrees/slots/old/reverie", "reverie_branch": "-",
+      "liteinst2_path": "worktrees/slots/old/liteinst2", "liteinst2_branch": "-"
+    },
+    "revoked": {
+      "agents": [{ "name": "sol-example", "read_only": false, "task": "old-task" }],
+      "status": "owner-lease-revoked",
+      "hermit_path": "worktrees/slots/revoked/hermit", "hermit_branch": "detached",
+      "reverie_path": "worktrees/slots/revoked/reverie", "reverie_branch": "-",
+      "liteinst2_path": "worktrees/slots/revoked/liteinst2", "liteinst2_branch": "-"
+    },
+    "mine": {
+      "agents": [{ "name": "sol-example", "read_only": false, "task": "task-a" }],
+      "allocated": "2026-08-28T00:00:00Z", "updated": "2026-08-28T00:00:00Z",
+      "status": "active", "task": "task-a",
+      "hermit_path": "worktrees/slots/mine/hermit", "hermit_branch": "detached",
+      "reverie_path": "worktrees/slots/mine/reverie", "reverie_branch": "-",
+      "liteinst2_path": "worktrees/slots/mine/liteinst2", "liteinst2_branch": "-"
+    },
+    "theirs": {
+      "agents": [{ "name": "other-agent", "read_only": false, "task": "task-b" }],
+      "allocated": "2026-08-28T00:00:00Z", "updated": "2026-08-28T00:00:00Z",
+      "status": "active", "task": "task-b",
+      "hermit_path": "worktrees/slots/theirs/hermit", "hermit_branch": "detached",
+      "reverie_path": "worktrees/slots/theirs/reverie", "reverie_branch": "-",
+      "liteinst2_path": "worktrees/slots/theirs/liteinst2", "liteinst2_branch": "-"
+    }
   }
 }
 JSON
@@ -48,6 +77,23 @@ check own-slot-ok              0 "registered slot worktrees/slots/mine" sol-exam
 check own-slot-nested-ok       0 "registered slot worktrees/slots/mine" sol-example "$tmp/worktrees/slots/mine/hermit" IGNORE=1
 check declared-owner-ask-ok    0 "DECLARED owner-direct-ask"  sol-nobody  "$tmp"  HERMIT_OWNER_DIRECT_ASK=1
 check outside-parent-ok        0 "has no claim on it"         sol-nobody  "/tmp"                    IGNORE=1
+
+# Two current rows for one agent are an invalid assignment, not permission to
+# choose whichever key happens to appear first in the JSON object.
+python3 - "$tmp/worktree-state.json" <<'PY'
+import json
+import pathlib
+import sys
+path = pathlib.Path(sys.argv[1])
+state = json.loads(path.read_text())
+row = dict(state["slots"]["mine"])
+row["hermit_path"] = "worktrees/slots/second/hermit"
+row["reverie_path"] = "worktrees/slots/second/reverie"
+row["liteinst2_path"] = "worktrees/slots/second/liteinst2"
+state["slots"]["second"] = row
+path.write_text(json.dumps(state))
+PY
+check ambiguous-current-slots 1 "multiple current slot assignments" sol-example "$tmp" IGNORE=1
 
 # ---- the refusal must always be ACTIONABLE ----------------------------------
 out=$("$guard" --agent sol-nobody --cwd "$tmp" --root "$tmp" 2>&1) || true

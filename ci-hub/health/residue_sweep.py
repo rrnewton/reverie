@@ -29,6 +29,10 @@ from pathlib import Path
 from typing import Iterable, Sequence
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
 import bounded_capture  # noqa: E402
+from worktree_registry import (  # noqa: E402
+    RegistrySchemaError,
+    read_registry as read_typed_registry,
+)
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -539,11 +543,9 @@ def guarded_unassessable_owner_slots(
 
 def read_registry() -> dict[str, object]:
     try:
-        value = json.loads(REGISTRY.read_text())
-    except (OSError, json.JSONDecodeError) as exc:
+        value = read_typed_registry(REGISTRY)
+    except RegistrySchemaError as exc:
         raise SweepUnavailable(f"cannot read {REGISTRY}: {exc}") from exc
-    if not isinstance(value, dict):
-        raise SweepUnavailable("worktree-state.json root is not an object")
     return value
 
 

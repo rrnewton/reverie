@@ -14,9 +14,14 @@
 //! [dependencies]
 //! fs2 = "0.4"
 //! libc = "0.2"
+//! serde = { version = "1", features = ["derive"] }
 //! serde_json = "1"
 //! sha2 = "0.10"
 //! ```
+#[allow(dead_code)]
+#[path = "worktree_registry.rs"]
+mod worktree_registry;
+
 use fs2::FileExt;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
@@ -229,15 +234,7 @@ fn git_inspect(dir: &Path, args: &[&str]) -> Result<String, String> {
 
 /// Slot name is a lowercase named token (for example `kvm`) or `slotNN`.
 fn valid_slot(name: &str) -> bool {
-    !name.is_empty()
-        && name
-            .chars()
-            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
-        && name
-            .chars()
-            .next()
-            .map(|c| c.is_ascii_alphanumeric())
-            .unwrap_or(false)
+    worktree_registry::valid_slot_name(name)
 }
 
 #[derive(Clone, Debug)]
@@ -576,17 +573,18 @@ fn load_state(root: &Path) -> Value {
         die("worktree-state.json not found; nothing to release");
     }
     let txt = std::fs::read_to_string(&p).unwrap_or_else(|e| die(&format!("read state: {e}")));
-    let mut v: Value = serde_json::from_str(&txt)
+    let v: Value = serde_json::from_str(&txt)
         .unwrap_or_else(|e| die(&format!("parse worktree-state.json: {e}")));
-    if !v.get("slots").map(|s| s.is_object()).unwrap_or(false) {
-        v["slots"] = json!({});
-    }
+    worktree_registry::Registry::from_value(&v)
+        .unwrap_or_else(|e| die(&format!("validate worktree-state.json: {e}")));
     v
 }
 
 fn save_state(root: &Path, state: &mut Value) {
     state["updated"] = json!(now_iso());
     state["version"] = json!(3);
+    worktree_registry::Registry::from_value(state)
+        .unwrap_or_else(|e| die(&format!("refuse invalid worktree-state.json write: {e}")));
     let txt = serde_json::to_string_pretty(state).unwrap();
     durable_replace(&state_path(root), (txt + "\n").as_bytes())
         .unwrap_or_else(|e| die(&format!("write state: {e}")));

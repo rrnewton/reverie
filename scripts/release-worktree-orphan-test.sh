@@ -39,6 +39,7 @@ make_fixture() {
     "$fixture_root/unrelated"
   : >"$fixture_root/.gitmodules"
   cp "$script_dir/check-worktree-registry.rs" "$fixture_root/scripts/"
+  cp "$script_dir/worktree_registry.rs" "$fixture_root/scripts/"
   cp "$script_dir/agent-podman.rs" "$fixture_root/scripts/"
   cp "$suite_root/podman" "$fixture_root/bin/podman"
   printf 'unrelated survives\n' >"$fixture_root/unrelated/sentinel"
@@ -68,9 +69,12 @@ make_fixture() {
   cat >"$fixture_root/worktree-state.json" <<JSON
 {
   "version": 3,
+  "updated": "2026-08-28T00:00:00Z",
   "slots": {
     "$name": {
       "agents": [{"name":"fixture-$name","read_only":false,"task":"fixture-$name"}],
+      "allocated": "2026-08-28T00:00:00Z",
+      "updated": "2026-08-28T00:00:00Z",
       "hermit_branch":"codex-coord", "hermit_path":"worktrees/slots/$name/hermit",
       "reverie_branch":"-", "reverie_path":"worktrees/slots/$name/reverie",
       "liteinst2_branch":"-", "liteinst2_path":"worktrees/slots/$name/liteinst2",

@@ -42,6 +42,23 @@ slots may be active and at most five clean slots may be parked. If allocation
 reports an ownership conflict or capacity problem, preserve the existing slot
 and escalate rather than deleting it.
 
+`scripts/worktree_registry.rs` owns the schema-3 registry row and its status
+values. The allocator, releaser, and registry checker import that type;
+Python ownership and health readers validate the exact bytes through
+`ci-hub/lib/worktree_registry.py` before reading their own fields. The readers
+do not all ask the same question: capacity counts only `active`, guarded owner
+checks also inspect held and release states, and the allocation guard treats
+`released` and `owner-lease-revoked` as no longer assigning the agent a slot.
+Those distinctions are deliberate. A missing or unknown status is not one of
+them and is refused before any reader can supply its own default.
+
+The production readers are `allocate-worktree.rs`, `release-worktree.rs`,
+`check-worktree-registry.rs`, `check-agent-slot.sh`, `worktree-gc.sh`,
+`slot-owner-authority.py`, `worktree_liveness.py`, `agent_identity.py`,
+`slot_agent_parity.py`, `slot_disk_residue.py`, and `residue_sweep.py`.
+`owner_sidecar` and `coordinator_lease` remain separately versioned artifacts;
+the registry type preserves them without claiming their schemas.
+
 Before moving, removing, or reclaiming any slot, prove from the running system
 that no live agent process uses it. The presence or absence of a handoff is not
 a liveness check: moving a live slot breaks the session's hook paths.

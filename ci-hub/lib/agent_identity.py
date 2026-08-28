@@ -38,6 +38,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 import taskgraph_db
+from worktree_registry import RegistrySchemaError, read_registry
 
 
 AGREEMENT = 0
@@ -522,11 +523,9 @@ def _read_cgroup(pid: int, proc_root: Path) -> tuple[str | None, str]:
 
 def load_registry(state_path: Path) -> Registry:
     try:
-        document = json.loads(state_path.read_text())
-    except (OSError, json.JSONDecodeError) as error:
+        document = read_registry(state_path)
+    except RegistrySchemaError as error:
         return Registry(None, f"cannot read {state_path}: {error}")
-    if not isinstance(document, dict) or not isinstance(document.get("slots"), dict):
-        return Registry(None, f"{state_path} lacks object field slots")
     return Registry(document)
 
 

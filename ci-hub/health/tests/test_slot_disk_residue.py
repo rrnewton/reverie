@@ -42,6 +42,40 @@ def state_with(slot: str, idle_since: datetime, size_bytes: int) -> dict:
                              "sized_at": stamp}}}
 
 
+def registry_slot(
+    name: str,
+    *,
+    status: str,
+    agent: str = "fixture-agent",
+    task: str = "fixture-task",
+    extra: dict[str, object] | None = None,
+) -> dict[str, object]:
+    row: dict[str, object] = {
+        "status": status,
+        "task": task,
+        "allocated": "2026-08-28T00:00:00Z",
+        "updated": "2026-08-28T00:00:00Z",
+        "hermit_path": f"worktrees/slots/{name}/hermit",
+        "hermit_branch": "detached",
+        "reverie_path": f"worktrees/slots/{name}/reverie",
+        "reverie_branch": "-",
+        "liteinst2_path": f"worktrees/slots/{name}/liteinst2",
+        "liteinst2_branch": "-",
+        "agents": [{"name": agent, "task": task, "read_only": False}],
+    }
+    if extra:
+        row.update(extra)
+    return row
+
+
+def registry_document(slots: dict[str, object]) -> dict[str, object]:
+    return {
+        "version": 3,
+        "updated": "2026-08-28T00:00:00Z",
+        "slots": slots,
+    }
+
+
 class DiskResidueBracketTest(unittest.TestCase):
     """The two cases the task requires, plus the ways each could be faked."""
 
@@ -336,11 +370,14 @@ class CapacityDenominatorTest(unittest.TestCase):
             "slots": {
                 "working": {"status": "active"},
                 "preserved": {"status": "quarantined-retired"},
+                "lease": {"status": "lease-quarantined"},
                 "parked": {"status": "parked"},
             }
         }
         self.assertEqual(sdr.active_slot_names(registry), {"working"})
-        self.assertEqual(sdr.quarantined_slot_names(registry), {"preserved"})
+        self.assertEqual(
+            sdr.quarantined_slot_names(registry), {"preserved", "lease"}
+        )
 
     def test_owner_census_timeout_cannot_erase_known_cap_breach(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
@@ -354,14 +391,18 @@ class CapacityDenominatorTest(unittest.TestCase):
                 encoding="utf-8",
             )
             registry = root / "worktree-state.json"
-            registry.write_text(json.dumps({
-                "slots": {
-                    "working": {
-                        "status": "active",
-                        "agents": [{"name": "agent", "read_only": False}],
-                    }
-                }
-            }), encoding="utf-8")
+            registry.write_text(
+                json.dumps(
+                    registry_document(
+                        {
+                            "working": registry_slot(
+                                "working", status="active", agent="agent"
+                            )
+                        }
+                    )
+                ),
+                encoding="utf-8",
+            )
             proc = subprocess.run(
                 [
                     sys.executable,
@@ -438,29 +479,33 @@ class UnassessableOwnerBracketTest(unittest.TestCase):
     reclaimable, and says so out loud instead of vanishing from the report.
     """
 
-    REGISTRY = {
-        "slots": {
+    REGISTRY = registry_document(
+        {
             # A live agent's slot as the allocator actually writes one today:
             # active, one mutating owner, and no owner_sidecar at all.
-            "unassessable": {
-                "status": "active",
-                "task": "t-live",
-                "agents": [{"name": "live-agent", "task": "t-live",
-                            "read_only": False}],
-            },
+            "unassessable": registry_slot(
+                "unassessable",
+                status="active",
+                agent="live-agent",
+                task="t-live",
+            ),
             # A genuinely dead owner: sidecar present and identity-bound.
-            "deadowner": {
-                "status": "active",
-                "task": "t-gone",
-                "agents": [{"name": "gone-agent", "task": "t-gone",
-                            "read_only": False}],
-                "owner_sidecar": {"agent": "gone-agent",
-                                  "generation": "boot-a:1:2"},
-            },
+            "deadowner": registry_slot(
+                "deadowner",
+                status="active",
+                agent="gone-agent",
+                task="t-gone",
+                extra={
+                    "owner_sidecar": {
+                        "agent": "gone-agent",
+                        "generation": "boot-a:1:2",
+                    }
+                },
+            ),
             # Nobody's: released, so status alone frees it.
-            "abandoned": {"status": "released"},
+            "abandoned": registry_slot("abandoned", status="released"),
         }
-    }
+    )
 
     AUTHORITY = {
         "schema_version": 1,
