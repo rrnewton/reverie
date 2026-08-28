@@ -890,6 +890,68 @@ class OperationalHealthTest(unittest.TestCase):
         self.assertEqual(len(tasks), 1)
         self.assertTrue(tasks[0].implemented)
 
+    def test_task_reference_hygiene_refuses_a_malformed_task_row_by_name(self) -> None:
+        completed = SimpleNamespace(
+            returncode=0,
+            stdout="task_json\n---------\n{not-json\n\n(1 rows)\n",
+            stderr="",
+        )
+        with mock.patch.object(
+            operational_health.taskgraph_db, "resolve", return_value=None
+        ), mock.patch.object(
+            operational_health.taskgraph_db, "child_env", return_value={}
+        ), mock.patch.object(
+            operational_health.subprocess, "run", return_value=completed
+        ):
+            result, output = self.capture(
+                operational_health.task_reference_hygiene_gate
+            )
+        self.assertEqual(result, 1)
+        self.assertIn("state=error", output)
+        self.assertIn("taskgraph-returned-invalid-json", output)
+        self.assertIn("open_tasks=unknown", output)
+
+    def test_task_reference_hygiene_refuses_a_missing_task_row_by_count(self) -> None:
+        completed = SimpleNamespace(
+            returncode=0,
+            stdout="task_json\n---------\n\n(1 rows)\n",
+            stderr="",
+        )
+        with mock.patch.object(
+            operational_health.taskgraph_db, "resolve", return_value=None
+        ), mock.patch.object(
+            operational_health.taskgraph_db, "child_env", return_value={}
+        ), mock.patch.object(
+            operational_health.subprocess, "run", return_value=completed
+        ):
+            result, output = self.capture(
+                operational_health.task_reference_hygiene_gate
+            )
+        self.assertEqual(result, 1)
+        self.assertIn("state=error", output)
+        self.assertIn("taskgraph-row-count-mismatch:parsed=0,reported=1", output)
+        self.assertIn("open_tasks=unknown", output)
+
+    def test_task_reference_hygiene_accepts_a_reported_empty_population(self) -> None:
+        completed = SimpleNamespace(
+            returncode=0,
+            stdout="task_json\n---------\n\n(0 rows)\n",
+            stderr="",
+        )
+        with mock.patch.object(
+            operational_health.taskgraph_db, "resolve", return_value=None
+        ), mock.patch.object(
+            operational_health.taskgraph_db, "child_env", return_value={}
+        ), mock.patch.object(
+            operational_health.subprocess, "run", return_value=completed
+        ):
+            result, output = self.capture(
+                operational_health.task_reference_hygiene_gate
+            )
+        self.assertEqual(result, 0)
+        self.assertIn("state=clean", output)
+        self.assertIn("open_tasks=0", output)
+
     def test_no_explicit_snapshot_uses_a_fresh_full_cache(self) -> None:
         tasks = (operational_health.TaskRecord("held", "Held", "worker", ()),)
         with tempfile.TemporaryDirectory() as directory, mock.patch.object(

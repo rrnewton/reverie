@@ -1075,6 +1075,39 @@ def cache_agent_snapshot(
     return 0
 
 
+def _taskgraph_json_rows(output: str) -> tuple[dict[str, Any], ...]:
+    """Read every JSON row and prove it matches TaskGraph's reported count.
+
+    ``tg sql`` surrounds its JSON values with a human table header and a
+    ``(N rows)`` footer.  Ignoring an undecodable row turns missing input into a
+    smaller, apparently healthy population.  The footer is therefore part of
+    the boundary check: a malformed, missing, or duplicated row is an error,
+    never an absent task.
+    """
+    rows: list[dict[str, Any]] = []
+    for line in output.splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("{"):
+            continue
+        try:
+            row = json.loads(stripped)
+        except json.JSONDecodeError as error:
+            raise RuntimeError(
+                f"taskgraph-returned-invalid-json:{error.msg}"
+            ) from error
+        if not isinstance(row, dict):
+            raise RuntimeError("taskgraph-returned-non-object-json-row")
+        rows.append(row)
+
+    counts = re.findall(r"^\((\d+) rows\)$", output, flags=re.MULTILINE)
+    if len(counts) != 1 or int(counts[0]) != len(rows):
+        reported = counts[0] if len(counts) == 1 else "missing-or-ambiguous"
+        raise RuntimeError(
+            f"taskgraph-row-count-mismatch:parsed={len(rows)},reported={reported}"
+        )
+    return tuple(rows)
+
+
 def _taskgraph_in_progress() -> tuple[TaskRecord, ...]:
     # Two populations, deliberately in one query:
     #   * IN_PROGRESS       -- the live queue (activity, staleness, routing)
@@ -1136,16 +1169,7 @@ ORDER BY local_id
         raise RuntimeError(f"taskgraph-query-failed-after-retry:{last_error}")
 
     tasks: list[TaskRecord] = []
-    for line in process.stdout.splitlines():
-        line = line.strip()
-        if not line.startswith("{"):
-            continue
-        try:
-            raw = json.loads(line)
-        except json.JSONDecodeError as error:
-            raise RuntimeError(
-                f"taskgraph-returned-invalid-json:{error.msg}"
-            ) from error
+    for raw in _taskgraph_json_rows(process.stdout):
         tags = raw.get("tags")
         if not isinstance(tags, list) or not all(isinstance(tag, str) for tag in tags):
             raise RuntimeError(f"taskgraph-task-has-invalid-tags:{raw.get('id')}")
@@ -1161,12 +1185,6 @@ ORDER BY local_id
                 # rather than silently discharging it.
                 landed=raw.get("landed") == 1,
             )
-        )
-    count_match = re.search(r"\((\d+) rows\)", process.stdout)
-    if count_match is None or int(count_match.group(1)) != len(tasks):
-        raise RuntimeError(
-            f"taskgraph-row-count-mismatch:parsed={len(tasks)},reported="
-            f"{count_match.group(1) if count_match else 'missing'}"
         )
     return tuple(tasks)
 
@@ -1870,9 +1888,9 @@ ORDER BY local_id
         _emit(
             {
                 "state": "error",
-                "open_tasks": 0,
-                "unlinked_tasks": 0,
-                "new_violations": 0,
+                "open_tasks": "unknown",
+                "unlinked_tasks": "unknown",
+                "new_violations": "unknown",
                 "summary": f"task-reference-lint-unrunnable: {error}",
             }
         )
@@ -1882,10 +1900,24 @@ ORDER BY local_id
         _emit(
             {
                 "state": "error",
-                "open_tasks": 0,
-                "unlinked_tasks": 0,
-                "new_violations": 0,
+                "open_tasks": "unknown",
+                "unlinked_tasks": "unknown",
+                "new_violations": "unknown",
                 "summary": f"task-reference-query-failed: {detail}",
+            }
+        )
+        return 1
+
+    try:
+        rows = _taskgraph_json_rows(process.stdout)
+    except RuntimeError as error:
+        _emit(
+            {
+                "state": "error",
+                "open_tasks": "unknown",
+                "unlinked_tasks": "unknown",
+                "new_violations": "unknown",
+                "summary": str(error),
             }
         )
         return 1
@@ -1894,23 +1926,42 @@ ORDER BY local_id
     grandfathered: list[str] = []
     violations: list[str] = []
     notes_only = 0
-    for line in process.stdout.splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        try:
-            row = json.loads(line)
-        except json.JSONDecodeError:
-            continue
+    for row in rows:
+        for field in ("id", "created", "text", "notes"):
+            if not isinstance(row.get(field), str):
+                _emit(
+                    {
+                        "state": "error",
+                        "open_tasks": "unknown",
+                        "unlinked_tasks": "unknown",
+                        "new_violations": "unknown",
+                        "summary": (
+                            "task-reference-row-has-invalid-"
+                            f"{field}:{row.get('id', '?')}"
+                        ),
+                    }
+                )
+                return 1
+        if not row["id"]:
+            _emit(
+                {
+                    "state": "error",
+                    "open_tasks": "unknown",
+                    "unlinked_tasks": "unknown",
+                    "new_violations": "unknown",
+                    "summary": "task-reference-row-has-empty-id",
+                }
+            )
+            return 1
         total += 1
-        bad = unlinked_task_references(row.get("text", ""))
-        if unlinked_task_references(row.get("notes", "")) and not bad:
+        bad = unlinked_task_references(row["text"])
+        if unlinked_task_references(row["notes"]) and not bad:
             notes_only += 1
         if not bad:
             continue
         cited = ",".join("#" + n for n in sorted(bad, key=int)[:3])
         entry = f"{row.get('id', '?')}({cited})"
-        if str(row.get("created", "")) >= TASK_REFERENCE_GRANDFATHER_DATE:
+        if row["created"] >= TASK_REFERENCE_GRANDFATHER_DATE:
             violations.append(entry)
         else:
             grandfathered.append(entry)
