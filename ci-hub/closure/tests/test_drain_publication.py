@@ -19,6 +19,7 @@ from __future__ import annotations
 import datetime as dt
 import importlib.util
 import json
+import os
 import sqlite3
 import subprocess
 import sys
@@ -154,18 +155,6 @@ class _Fixture(unittest.TestCase):
         )
         return result.returncode, result.stdout + result.stderr
 
-
-class TickHubParseContract(_Fixture):
-    """The gate's stdout must survive `tick_hub.engine.parse_kv_lines`.
-
-    REGRESSION, observed live on the first tick. The gate printed every field
-    on ONE line; parse_kv_lines partitions each LINE on its first `=`, so it
-    captured `state` and nothing else, `{summary}` never resolved, and tick-hub
-    REFUSED the emission -- the gate went NO-SIGNAL. Silence reads as health,
-    which is the exact defect this gate exists to remove, reproduced in the
-    gate itself. A passing unit suite said nothing about it.
-    """
-
     @staticmethod
     def _parse_kv_lines(text: str) -> dict[str, str]:
         """Byte-for-byte the tick-hub parser (agent-utils/py/tick_hub/engine.py)."""
@@ -179,6 +168,18 @@ class TickHubParseContract(_Fixture):
                 if key.strip():
                     out[key.strip()] = value.strip()
         return out
+
+
+class TickHubParseContract(_Fixture):
+    """The gate's stdout must survive `tick_hub.engine.parse_kv_lines`.
+
+    REGRESSION, observed live on the first tick. The gate printed every field
+    on ONE line; parse_kv_lines partitions each LINE on its first `=`, so it
+    captured `state` and nothing else, `{summary}` never resolved, and tick-hub
+    REFUSED the emission -- the gate went NO-SIGNAL. Silence reads as health,
+    which is the exact defect this gate exists to remove, reproduced in the
+    gate itself. A passing unit suite said nothing about it.
+    """
 
     def test_the_gap_verdict_exposes_a_nonempty_summary(self) -> None:
         self._close()
@@ -202,6 +203,81 @@ class TickHubParseContract(_Fixture):
         captured = self._parse_kv_lines(self._gate()[1])
         self.assertTrue(captured["summary"])
         self.assertIn("NOTHING MEASURED", captured["summary"])
+
+    def test_an_unreadable_facts_file_exposes_why_no_result_was_produced(self) -> None:
+        unreadable = Path(self.tmp.name) / "missing-facts.json"
+        code, out = self._gate(unreadable)
+        self.assertEqual(code, 75, out)
+        captured = self._parse_kv_lines(out)
+        self.assertEqual(captured["state"], "unavailable")
+        self.assertIn("cannot read --pr-facts", captured["summary"])
+
+    def test_an_out_of_scope_task_exposes_why_no_result_was_produced(self) -> None:
+        self._sql("UPDATE tasks SET title=? WHERE local_id=?", "Drain all pull requests", TASK)
+        code, out = self._gate()
+        self.assertEqual(code, 75, out)
+        captured = self._parse_kv_lines(out)
+        self.assertEqual(captured["state"], "unavailable")
+        self.assertIn("not an in-scope drain task", captured["summary"])
+
+    def test_unavailable_json_is_valid_and_does_not_claim_clean(self) -> None:
+        unreadable = Path(self.tmp.name) / "missing-facts.json"
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(MODULE),
+                "--db",
+                str(self.db),
+                "--pr-facts",
+                str(unreadable),
+                "--task",
+                TASK,
+                "--json",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        self.assertEqual(result.returncode, 75, result.stdout + result.stderr)
+        captured = json.loads(result.stdout)
+        self.assertEqual(captured["state"], "unavailable")
+        self.assertIn("cannot read --pr-facts", captured["summary"])
+
+    def test_a_github_failure_exposes_why_no_result_was_produced(self) -> None:
+        self._close()
+        bindir = Path(self.tmp.name) / "bin"
+        bindir.mkdir()
+        proxy = bindir / "with-proxy"
+        proxy.write_text(
+            "#!/bin/sh\nprintf 'synthetic GitHub failure\\nsecond detail' >&2\nexit 17\n",
+            encoding="utf-8",
+        )
+        proxy.chmod(0o755)
+        env = dict(os.environ)
+        env["PATH"] = f"{bindir}:{env['PATH']}"
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(MODULE),
+                "--db",
+                str(self.db),
+                "--task",
+                TASK,
+                "--grace-mins",
+                "0",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=120,
+            env=env,
+        )
+        out = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 75, out)
+        captured = self._parse_kv_lines(out)
+        self.assertEqual(captured["state"], "unavailable")
+        self.assertIn("cannot read GitHub", captured["summary"])
+        self.assertIn("synthetic GitHub failure", captured["summary"])
+        self.assertIn("second detail", captured["summary"])
 
 
 class SubjectBinding(unittest.TestCase):
@@ -327,15 +403,18 @@ class DrainPublicationBracket(_Fixture):
         self._close()
         code, out = self._gate()
         # Not in scope at all -- so the gate cannot even address it by id.
-        self.assertEqual(code, 2, out)
+        self.assertEqual(code, 75, out)
         self.assertIn("does not name exactly one pull request", out)
 
     def test_an_empty_taskgraph_refuses_rather_than_reporting_clean(self) -> None:
         """Silence because the data source vanished must not read as health."""
         self._sql("DELETE FROM tasks WHERE local_id=?", TASK)
         code, out = self._gate()
-        self.assertEqual(code, 2, out)
+        self.assertEqual(code, 75, out)
         self.assertIn("refusing to report", out)
+        captured = self._parse_kv_lines(out)
+        self.assertEqual(captured["state"], "unavailable")
+        self.assertIn("cannot read the TaskGraph", captured["summary"])
 
 
 class CutoverSuppression(_Fixture):

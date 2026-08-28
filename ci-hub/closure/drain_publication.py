@@ -110,14 +110,15 @@ tick-hub permanently excludes anything ORC can observe directly, and TaskGraph
 census is named in that exclusion. This gate is not one. The fact it measures
 is WHETHER THE PULL REQUEST CARRIES THE VERDICT -- GitHub state, which ORC
 cannot see. The TaskGraph is read only to know which PRs to ask about and which
-permalink was claimed. Consistent with that, GitHub being unreachable is
-UNAVAILABLE (exit 2), never a pass: the recorded permalink must appear in the
-PR's actual comment set, so pasting a plausible URL does not satisfy the rule.
+permalink was claimed. Consistent with that, GitHub being unreachable is NO
+RESULT (exit 75), never a pass or a publication gap: the recorded permalink
+must appear in the PR's actual comment set, so pasting a plausible URL does not
+satisfy the rule.
 
 EXIT CODES
   0  every in-scope drain task published its verdict (or is exempt, by name)
   1  at least one in-scope drain task closed with its verdict unpublished
-  2  UNAVAILABLE -- the TaskGraph or GitHub could not be read. Never 0.
+ 75  NO RESULT -- the TaskGraph or GitHub could not be read. Never 0 or 1.
 """
 
 from __future__ import annotations
@@ -203,6 +204,10 @@ import publication_record  # noqa: E402
 
 SOURCE_RECORD = "record"
 SOURCE_REGEX = "regex"
+# tick-hub reserves EX_TEMPFAIL for a gate that ran but could not determine its
+# condition. Exit 2 is an ordinary failure to `when: failure` and would announce
+# a publication gap even though no verdict was measured.
+NO_RESULT_EXIT = 75
 
 _REPO_ALT = "|".join(re.escape(r) for r in DEFAULT_REPOS)
 
@@ -651,6 +656,30 @@ def render_census(scoped: list[DrainTask], excluded: int, total: int, pre: bool)
     return "\n".join(lines)
 
 
+def report(
+    state: str,
+    summary: str,
+    *,
+    json_output: bool = False,
+    **fields: object,
+) -> None:
+    """Emit a result that both humans and tick-hub can read."""
+    if json_output:
+        print(json.dumps({"state": state, **fields, "summary": summary}, indent=2))
+        return
+
+    # tick_hub.engine.parse_kv_lines partitions each LINE on its first `=`, so
+    # packing fields onto one line captures `state` and drops `summary`.
+    print(f"state={state}")
+    for key, value in fields.items():
+        print(f"{key}={value}")
+    # Last, and always present: a captured-but-empty summary is what takes the
+    # emission down, so it is the one field that must never be omitted. Error
+    # strings can contain newlines; collapse them so the line parser retains
+    # the complete explanation instead of only its first line.
+    print(f"summary={' '.join(summary.split())}")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--db", type=Path, default=None)
@@ -690,8 +719,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         tasks = load_tasks(args.db)
     except Unavailable as exc:
-        print(f"state=unavailable summary=cannot read the TaskGraph: {exc}")
-        return 2
+        report("unavailable", f"cannot read the TaskGraph: {exc}", json_output=args.json)
+        return NO_RESULT_EXIT
 
     scoped, excluded = collect(tasks)
     total = len(tasks)
@@ -699,20 +728,21 @@ def main(argv: list[str] | None = None) -> int:
     if args.task is not None:
         scoped = [t for t in scoped if t.task_id == args.task]
         if not scoped:
-            print(
-                f"state=unavailable summary=task {args.task!r} is not an in-scope drain "
-                "task: not tagged drain/pr-drain, or its subject does not name exactly "
-                "one pull request"
+            report(
+                "unavailable",
+                f"task {args.task!r} is not an in-scope drain task: not tagged "
+                "drain/pr-drain, or its subject does not name exactly one pull request",
+                json_output=args.json,
             )
-            return 2
+            return NO_RESULT_EXIT
 
     cached = None
     if args.pr_facts is not None:
         try:
             cached = json.loads(args.pr_facts.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
-            print(f"state=unavailable summary=cannot read --pr-facts: {exc}")
-            return 2
+            report("unavailable", f"cannot read --pr-facts: {exc}", json_output=args.json)
+            return NO_RESULT_EXIT
 
     # Only tasks that could possibly fail need a network round trip. Open tasks
     # and rollups are already out of scope, so the steady-state cost is the
@@ -723,8 +753,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         facts = gather_facts(sorted({(t.repo, t.number) for t in wanted}), cached=cached)
     except Unavailable as exc:
-        print(f"state=unavailable summary=cannot read GitHub: {exc}")
-        return 2
+        report("unavailable", f"cannot read GitHub: {exc}", json_output=args.json)
+        return NO_RESULT_EXIT
     apply_facts(scoped, facts)
     if args.save_pr_facts is not None:
         args.save_pr_facts.write_text(json.dumps(facts, indent=1), encoding="utf-8")
@@ -782,21 +812,6 @@ def main(argv: list[str] | None = None) -> int:
             "deferred_in_grace_window": [t.task_id for t in deferred],
         }, indent=2))
         return 1 if failing else 0
-
-    # ONE key=value PER LINE. tick_hub.engine.parse_kv_lines partitions each
-    # LINE on its first `=`, so a single line packing several fields captures
-    # exactly one key and `{summary}` never resolves -- which makes tick-hub
-    # refuse the whole emission and the gate go NO-SIGNAL. That is silence, and
-    # silence reads as health: the precise failure this gate exists to remove,
-    # reproduced in the gate itself. Observed on the first live tick, before
-    # this was split. Do not re-pack these onto one line.
-    def report(state: str, summary: str, **fields: object) -> None:
-        print(f"state={state}")
-        for key, value in fields.items():
-            print(f"{key}={value}")
-        # Last, and always present: a captured-but-empty summary is what takes
-        # the emission down, so it is the one field that must never be omitted.
-        print(f"summary={summary}")
 
     common = dict(
         checked=len(checked),

@@ -620,8 +620,8 @@ reminders:
   # WHETHER THE PULL REQUEST CARRIES THE VERDICT -- GitHub state, which ORC
   # cannot see. The TaskGraph is read only to know which PRs to ask about. The
   # recorded permalink must appear in the PR's real comment set, so a plausible
-  # pasted URL does not satisfy it, and GitHub being unreachable is exit 2
-  # UNAVAILABLE, never a pass.
+  # pasted URL does not satisfy it. GitHub being unreachable is exit 75 NO
+  # RESULT: neither a pass nor a claim that a drain task failed publication.
   #
   # THE CUTOVER IS LOAD-BEARING AND WAS COMPUTED, NOT GUESSED. Enumerated before
   # enforcement: of 60 closed drain tasks against unmerged PRs, 25 recorded no
@@ -649,9 +649,8 @@ reminders:
       # Measured 2026-08-25: 25s for the full 72-task census with 67 PRs
       # fetched. The gated path fetches only PRs drained since the cutover, so
       # steady state is a handful -- but the cutover set grows across a drain
-      # wave, and a timeout here would blank {summary} and take the gate SILENT
-      # rather than red, which is the failure mode this whole entry exists to
-      # remove. 120s is ~5x the worst case observed.
+      # wave. tick-hub reports a timeout as NO-SIGNAL rather than interpreting
+      # it as a publication gap. 120s is ~5x the worst case observed.
       timeout_secs: 120
       when: failure
       capture: true
