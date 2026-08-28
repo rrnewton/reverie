@@ -85,6 +85,14 @@ class ActivationObligationContract(unittest.TestCase):
         with self.assertRaisesRegex(TOOL.Refusal, "event_type"):
             TOOL.ActivationObligation.from_mapping(row)
 
+    def test_newer_activation_schema_is_refused_before_its_shape(self) -> None:
+        row = activation_row()
+        row["schema"] = "ci-hub-change-activation-obligation/v2"
+        row["new_field"] = True
+        with self.assertRaisesRegex(TOOL.Refusal, "schema") as caught:
+            TOOL.ActivationObligation.from_mapping(row)
+        self.assertNotIn("new_field", str(caught.exception))
+
     def test_event_and_state_disagreement_fails_by_name(self) -> None:
         row = activation_row()
         activation = row["activation"]
@@ -101,6 +109,91 @@ class ActivationObligationContract(unittest.TestCase):
         handle = io.StringIO(json.dumps(first) + "\n" + json.dumps(second) + "\n")
         with self.assertRaisesRegex(TOOL.Refusal, "identity changed"):
             TOOL._activation_latest_from_handle(handle)
+
+
+class ChangeManifestSealContract(unittest.TestCase):
+    def test_complete_manifest_and_seal_round_trip(self) -> None:
+        manifest = {
+            "schema": TOOL.SCHEMA,
+            "task": "typed-change-manifest",
+            "clone": "/tmp/change-clone",
+            "created_at": "2026-08-28T08:30:00+00:00",
+            "initial_base": "a" * 40,
+            "claims": ["ci-hub/a", "ci-hub/b"],
+        }
+        seal = {
+            "schema": TOOL.SCHEMA,
+            "task": "typed-change-manifest",
+            "base": "a" * 40,
+            "candidate": "b" * 40,
+            "changed_paths": ["ci-hub/a", "ci-hub/b"],
+            "diff_sha256": "c" * 64,
+            "tests": [{"command": "python3 -m unittest", "exit_code": 0}],
+            "sealed_at": "2026-08-28T08:31:00+00:00",
+        }
+        self.assertEqual(TOOL.ChangeManifest.from_mapping(manifest).to_dict(), manifest)
+        self.assertEqual(TOOL.ChangeSeal.from_mapping(seal).to_dict(), seal)
+
+    def test_manifest_missing_and_unknown_fields_fail_by_name(self) -> None:
+        missing = {
+            "schema": TOOL.SCHEMA,
+            "task": "typed-change-manifest",
+            "clone": "/tmp/change-clone",
+            "created_at": "2026-08-28T08:30:00+00:00",
+            "claims": ["ci-hub/a"],
+        }
+        with self.assertRaisesRegex(TOOL.Refusal, "initial_base"):
+            TOOL.ChangeManifest.from_mapping(missing)
+        missing["initial_base"] = "a" * 40
+        missing["unreviewed"] = True
+        with self.assertRaisesRegex(TOOL.Refusal, "unreviewed"):
+            TOOL.ChangeManifest.from_mapping(missing)
+
+    def test_newer_manifest_schema_is_refused_before_its_shape(self) -> None:
+        manifest = {
+            "schema": "ci-hub-change/v2",
+            "task": "typed-change-manifest",
+            "clone": "/tmp/change-clone",
+            "created_at": "2026-08-28T08:30:00+00:00",
+            "initial_base": "a" * 40,
+            "claims": ["ci-hub/a"],
+            "new_field": True,
+        }
+        with self.assertRaisesRegex(TOOL.Refusal, "schema") as caught:
+            TOOL.ChangeManifest.from_mapping(manifest)
+        self.assertNotIn("new_field", str(caught.exception))
+
+    def test_seal_refuses_an_unsuccessful_or_incomplete_test_by_name(self) -> None:
+        seal = {
+            "schema": TOOL.SCHEMA,
+            "task": "typed-change-manifest",
+            "base": "a" * 40,
+            "candidate": "b" * 40,
+            "changed_paths": ["ci-hub/a"],
+            "diff_sha256": "c" * 64,
+            "tests": [{"command": "false", "exit_code": 1}],
+            "sealed_at": "2026-08-28T08:31:00+00:00",
+        }
+        with self.assertRaisesRegex(TOOL.Refusal, "tests-exit_code"):
+            TOOL.ChangeSeal.from_mapping(seal)
+        seal["tests"] = [{"command": "true"}]
+        with self.assertRaisesRegex(TOOL.Refusal, "exit_code"):
+            TOOL.ChangeSeal.from_mapping(seal)
+
+    def test_seal_unknown_field_fails_by_name(self) -> None:
+        seal = {
+            "schema": TOOL.SCHEMA,
+            "task": "typed-change-manifest",
+            "base": "a" * 40,
+            "candidate": "b" * 40,
+            "changed_paths": ["ci-hub/a"],
+            "diff_sha256": "c" * 64,
+            "tests": [{"command": "true", "exit_code": 0}],
+            "sealed_at": "2026-08-28T08:31:00+00:00",
+            "assumed_clean": True,
+        }
+        with self.assertRaisesRegex(TOOL.Refusal, "assumed_clean"):
+            TOOL.ChangeSeal.from_mapping(seal)
 
 
 class Fixture(unittest.TestCase):
@@ -383,8 +476,8 @@ class Fixture(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         git(repo, "push", "origin", "HEAD:main")
         manifest, seal = TOOL.verified_seal(repo, require_unpublished_base=False)
-        self.assertEqual(manifest["task"], "fixture-change")
-        self.assertEqual(seal["candidate"], candidate)
+        self.assertEqual(manifest.task, "fixture-change")
+        self.assertEqual(seal.candidate, candidate)
 
     def test_negative_published_candidate_is_not_publishable_twice(self) -> None:
         repo = self.clone()

@@ -69,6 +69,19 @@ def _exact_mapping(
     return value
 
 
+def _versioned_mapping(
+    value: object, *, schema: str, fields: frozenset[str], role: str
+) -> Mapping[str, Any]:
+    if not isinstance(value, dict):
+        raise Refusal(f"{role}: expected an object")
+    found = value.get("schema")
+    if not isinstance(found, str) or not found:
+        raise Refusal(f"{role}-schema: expected a non-empty string")
+    if found != schema:
+        raise Refusal(f"{role}-schema: unsupported value {found!r}")
+    return _exact_mapping(value, fields=fields, role=role)
+
+
 def _required_string(value: Mapping[str, Any], field: str, role: str) -> str:
     found = value[field]
     if not isinstance(found, str) or not found:
@@ -91,6 +104,189 @@ def _timestamp(value: str, field: str) -> str:
             f"activation-obligation-{field}: expected UTC YYYY-MM-DDTHH:MM:SSZ"
         )
     return value
+
+
+def _metadata_timestamp(value: str, field: str) -> str:
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as error:
+        raise Refusal(
+            f"ci-hub-change-{field}: expected an ISO-8601 timestamp"
+        ) from error
+    if parsed.utcoffset() != timezone.utc.utcoffset(parsed):
+        raise Refusal(f"ci-hub-change-{field}: expected a UTC timestamp")
+    return value
+
+
+def _change_task(row: Mapping[str, Any], role: str) -> str:
+    try:
+        return validate_task(_required_string(row, "task", role))
+    except Refusal as error:
+        raise Refusal(f"{role}-task: {error}") from error
+
+
+@dataclass(frozen=True)
+class ChangeManifest:
+    schema: str
+    task: str
+    clone: str
+    created_at: str
+    initial_base: str
+    claims: tuple[str, ...]
+
+    FIELDS = frozenset(("schema", "task", "clone", "created_at", "initial_base", "claims"))
+
+    @classmethod
+    def from_mapping(cls, value: object) -> ChangeManifest:
+        role = "ci-hub-change-manifest"
+        row = _versioned_mapping(value, schema=SCHEMA, fields=cls.FIELDS, role=role)
+        schema = str(row["schema"])
+        task = _change_task(row, role)
+        clone = _required_string(row, "clone", role)
+        if not Path(clone).is_absolute():
+            raise Refusal(f"{role}-clone: expected an absolute path")
+        created_at = _metadata_timestamp(
+            _required_string(row, "created_at", role), "manifest-created_at"
+        )
+        initial_base = _required_string(row, "initial_base", role)
+        if not OID_RE.fullmatch(initial_base):
+            raise Refusal(f"{role}-initial_base: expected a forty-hex commit")
+        raw_claims = row["claims"]
+        if not isinstance(raw_claims, list) or not raw_claims or not all(
+            isinstance(claim, str) and claim for claim in raw_claims
+        ):
+            raise Refusal(f"{role}-claims: expected a non-empty string array")
+        claims = tuple(raw_claims)
+        if tuple(sorted(set(claims))) != claims:
+            raise Refusal(f"{role}-claims: expected sorted unique paths")
+        for claim in claims:
+            try:
+                normalized = normalize_claim(claim)
+            except Refusal as error:
+                raise Refusal(f"{role}-claims: {error}") from error
+            if normalized != claim:
+                raise Refusal(f"{role}-claims: path is not normalized: {claim!r}")
+        return cls(schema, task, clone, created_at, initial_base, claims)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "schema": self.schema,
+            "task": self.task,
+            "clone": self.clone,
+            "created_at": self.created_at,
+            "initial_base": self.initial_base,
+            "claims": list(self.claims),
+        }
+
+
+@dataclass(frozen=True)
+class SealTestResult:
+    command: str
+    exit_code: int
+
+    @classmethod
+    def from_mapping(cls, value: object) -> SealTestResult:
+        role = "ci-hub-change-seal-tests"
+        row = _exact_mapping(
+            value, fields=frozenset(("command", "exit_code")), role=role
+        )
+        command = _required_string(row, "command", role)
+        exit_code = row["exit_code"]
+        if type(exit_code) is not int:
+            raise Refusal(f"{role}-exit_code: expected an integer")
+        if exit_code != 0:
+            raise Refusal(f"{role}-exit_code: expected 0, got {exit_code}")
+        return cls(command, exit_code)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"command": self.command, "exit_code": self.exit_code}
+
+
+@dataclass(frozen=True)
+class ChangeSeal:
+    schema: str
+    task: str
+    base: str
+    candidate: str
+    changed_paths: tuple[str, ...]
+    diff_sha256: str
+    tests: tuple[SealTestResult, ...]
+    sealed_at: str
+
+    FIELDS = frozenset(
+        (
+            "schema",
+            "task",
+            "base",
+            "candidate",
+            "changed_paths",
+            "diff_sha256",
+            "tests",
+            "sealed_at",
+        )
+    )
+
+    @classmethod
+    def from_mapping(cls, value: object) -> ChangeSeal:
+        role = "ci-hub-change-seal"
+        row = _versioned_mapping(value, schema=SCHEMA, fields=cls.FIELDS, role=role)
+        schema = str(row["schema"])
+        task = _change_task(row, role)
+        base = _required_string(row, "base", role)
+        if not OID_RE.fullmatch(base):
+            raise Refusal(f"{role}-base: expected a forty-hex commit")
+        candidate = _required_string(row, "candidate", role)
+        if not OID_RE.fullmatch(candidate):
+            raise Refusal(f"{role}-candidate: expected a forty-hex commit")
+        if base == candidate:
+            raise Refusal(f"{role}-candidate: must differ from base")
+        raw_paths = row["changed_paths"]
+        if not isinstance(raw_paths, list) or not raw_paths or not all(
+            isinstance(path, str) and path for path in raw_paths
+        ):
+            raise Refusal(f"{role}-changed_paths: expected a non-empty string array")
+        changed_paths = tuple(raw_paths)
+        if tuple(sorted(set(changed_paths))) != changed_paths:
+            raise Refusal(f"{role}-changed_paths: expected sorted unique paths")
+        for path in changed_paths:
+            try:
+                normalized = normalize_claim(path)
+            except Refusal as error:
+                raise Refusal(f"{role}-changed_paths: {error}") from error
+            if normalized != path:
+                raise Refusal(f"{role}-changed_paths: path is not normalized: {path!r}")
+        diff_sha256 = _required_string(row, "diff_sha256", role)
+        if not DIGEST_RE.fullmatch(diff_sha256):
+            raise Refusal(f"{role}-diff_sha256: expected 64 lowercase hex digits")
+        raw_tests = row["tests"]
+        if not isinstance(raw_tests, list) or not raw_tests:
+            raise Refusal(f"{role}-tests: expected a non-empty array")
+        tests = tuple(SealTestResult.from_mapping(test) for test in raw_tests)
+        sealed_at = _metadata_timestamp(
+            _required_string(row, "sealed_at", role), "seal-sealed_at"
+        )
+        return cls(
+            schema,
+            task,
+            base,
+            candidate,
+            changed_paths,
+            diff_sha256,
+            tests,
+            sealed_at,
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "schema": self.schema,
+            "task": self.task,
+            "base": self.base,
+            "candidate": self.candidate,
+            "changed_paths": list(self.changed_paths),
+            "diff_sha256": self.diff_sha256,
+            "tests": [test.to_dict() for test in self.tests],
+            "sealed_at": self.sealed_at,
+        }
 
 
 @dataclass(frozen=True)
@@ -177,10 +373,10 @@ class ActivationObligation:
     @classmethod
     def from_mapping(cls, value: object) -> ActivationObligation:
         role = "activation-obligation"
-        row = _exact_mapping(value, fields=cls.FIELDS, role=role)
-        schema = _required_string(row, "schema", role)
-        if schema != ACTIVATION_SCHEMA:
-            raise Refusal(f"{role}-schema: unsupported value {schema!r}")
+        row = _versioned_mapping(
+            value, schema=ACTIVATION_SCHEMA, fields=cls.FIELDS, role=role
+        )
+        schema = str(row["schema"])
         event_id = _required_string(row, "event_id", role)
         if not EVENT_ID_RE.fullmatch(event_id):
             raise Refusal(f"{role}-event_id: expected 32 lowercase hex digits")
@@ -424,8 +620,8 @@ def read_json(path: Path, role: str) -> dict[str, Any]:
         value = json.loads(path.read_text())
     except (OSError, json.JSONDecodeError) as error:
         raise Refusal(f"cannot read {role} {path}: {error}") from error
-    if not isinstance(value, dict) or value.get("schema") != SCHEMA:
-        raise Refusal(f"{role} {path} has unsupported schema")
+    if not isinstance(value, dict):
+        raise Refusal(f"{role} {path} is not a JSON object")
     return value
 
 
@@ -680,8 +876,7 @@ def diff_digest(repo: Path, base: str, candidate: str) -> str:
 
 
 def initialize_manifest(repo: Path, task: str, claims: list[str], base: str) -> None:
-    write_json(
-        metadata_path(repo, MANIFEST),
+    manifest = ChangeManifest.from_mapping(
         {
             "schema": SCHEMA,
             "task": validate_task(task),
@@ -689,7 +884,11 @@ def initialize_manifest(repo: Path, task: str, claims: list[str], base: str) -> 
             "created_at": datetime.now(timezone.utc).isoformat(),
             "initial_base": base,
             "claims": sorted(set(claims)),
-        },
+        }
+    )
+    write_json(
+        metadata_path(repo, MANIFEST),
+        manifest.to_dict(),
     )
 
 
@@ -833,17 +1032,15 @@ def command_create(args: argparse.Namespace) -> None:
     print(f"CI_HUB_CHANGE created={destination} task={args.task} base={base} branch={branch}")
 
 
-def load_manifest(repo: Path) -> dict[str, Any]:
-    value = read_json(metadata_path(repo, MANIFEST), "change manifest")
-    if Path(str(value.get("clone", ""))).resolve() != repo:
-        raise Refusal("manifest clone path does not match this checkout")
-    claims = value.get("claims")
-    if not isinstance(claims, list) or not claims or not all(isinstance(x, str) for x in claims):
-        raise Refusal("manifest carries no usable path claims")
-    return value
+def load_manifest(repo: Path) -> ChangeManifest:
+    path = metadata_path(repo, MANIFEST)
+    manifest = ChangeManifest.from_mapping(read_json(path, "change manifest"))
+    if Path(manifest.clone).resolve() != repo:
+        raise Refusal("ci-hub-change-manifest-clone: does not match this checkout")
+    return manifest
 
 
-def verify_candidate(repo: Path) -> tuple[dict[str, Any], str, str, list[str], str]:
+def verify_candidate(repo: Path) -> tuple[ChangeManifest, str, str, list[str], str]:
     manifest = load_manifest(repo)
     if not is_clean(repo):
         raise Refusal("candidate clone is dirty; commit the complete change before sealing")
@@ -858,7 +1055,7 @@ def verify_candidate(repo: Path) -> tuple[dict[str, Any], str, str, list[str], s
     paths = changed_paths(repo, base, candidate)
     if not paths:
         raise Refusal("candidate commit changes zero paths")
-    claims = [str(item) for item in manifest["claims"]]
+    claims = list(manifest.claims)
     outside = [path for path in paths if not any(claim_covers(claim, path) for claim in claims)]
     if outside:
         raise Refusal("candidate changes unclaimed paths: " + ", ".join(outside))
@@ -870,65 +1067,62 @@ def command_seal(args: argparse.Namespace) -> None:
     manifest, base, candidate, paths, digest = verify_candidate(repo)
     if not args.test:
         raise Refusal("seal requires at least one --test command")
-    tests: list[dict[str, Any]] = []
+    tests: list[SealTestResult] = []
     for command in args.test:
         result = run(("bash", "-lc", command), cwd=repo, check=False, capture=False)
-        tests.append({"command": command, "exit_code": result.returncode})
+        tests.append(SealTestResult(command=command, exit_code=result.returncode))
         if result.returncode != 0:
             raise Refusal(f"test failed with exit {result.returncode}: {command}")
-    write_json(
-        metadata_path(repo, SEAL),
+    seal = ChangeSeal.from_mapping(
         {
             "schema": SCHEMA,
-            "task": manifest["task"],
+            "task": manifest.task,
             "base": base,
             "candidate": candidate,
             "changed_paths": paths,
             "diff_sha256": digest,
-            "tests": tests,
+            "tests": [test.to_dict() for test in tests],
             "sealed_at": datetime.now(timezone.utc).isoformat(),
-        },
+        }
     )
+    write_json(metadata_path(repo, SEAL), seal.to_dict())
     print(
-        f"CI_HUB_CHANGE sealed=1 task={manifest['task']} base={base} "
+        f"CI_HUB_CHANGE sealed=1 task={manifest.task} base={base} "
         f"candidate={candidate} paths={len(paths)} tests={len(tests)} diff_sha256={digest}"
     )
 
 
 def verified_seal(
     repo: Path, *, require_unpublished_base: bool
-) -> tuple[dict[str, Any], dict[str, Any]]:
-    seal = read_json(metadata_path(repo, SEAL), "change seal")
+) -> tuple[ChangeManifest, ChangeSeal]:
+    seal = ChangeSeal.from_mapping(
+        read_json(metadata_path(repo, SEAL), "change seal")
+    )
     manifest = load_manifest(repo)
     if not is_clean(repo):
         raise Refusal("candidate clone changed after sealing")
-    base = str(seal.get("base", ""))
+    base = seal.base
     candidate = git(repo, "rev-parse", "HEAD^{commit}")
     parents = git(repo, "rev-list", "--parents", "-n", "1", candidate).split()
     if len(parents) != 2 or parents[1] != base:
         raise Refusal("sealed candidate no longer has its recorded single parent")
     paths = changed_paths(repo, base, candidate)
     digest = diff_digest(repo, base, candidate)
-    claims = [str(item) for item in manifest["claims"]]
+    claims = list(manifest.claims)
     outside = [path for path in paths if not any(claim_covers(claim, path) for claim in claims)]
     if outside:
         raise Refusal("sealed candidate now changes unclaimed paths: " + ", ".join(outside))
     expected = {
-        "task": manifest["task"],
+        "task": manifest.task,
         "base": base,
         "candidate": candidate,
-        "changed_paths": paths,
+        "changed_paths": tuple(paths),
         "diff_sha256": digest,
     }
     for key, value in expected.items():
-        if seal.get(key) != value:
-            raise Refusal(f"seal mismatch for {key}: sealed={seal.get(key)!r} current={value!r}")
-    tests = seal.get("tests")
-    if not isinstance(tests, list) or not tests:
-        raise Refusal("seal has no test record")
-    for item in tests:
-        if not isinstance(item, dict) or item.get("exit_code") != 0:
-            raise Refusal("seal contains a missing or unsuccessful test")
+        sealed = getattr(seal, key)
+        if sealed != value:
+            raise Refusal(f"seal mismatch for {key}: sealed={sealed!r} current={value!r}")
     if require_unpublished_base:
         current = fetch_main(repo)
         if current != base:
@@ -945,11 +1139,11 @@ def command_publish(args: argparse.Namespace) -> None:
     store = activation_store_path(primary, args.store)
     obligation = create_activation_obligation(
         store=store,
-        task=str(manifest["task"]),
-        candidate=str(seal["candidate"]),
+        task=manifest.task,
+        candidate=seal.candidate,
         primary=primary,
-        changed_paths=[str(path) for path in seal["changed_paths"]],
-        diff_sha256=str(seal["diff_sha256"]),
+        changed_paths=list(seal.changed_paths),
+        diff_sha256=seal.diff_sha256,
     )
     try:
         published_result = run(
@@ -982,7 +1176,7 @@ def command_publish(args: argparse.Namespace) -> None:
                 },
             )
         else:
-            contained = is_ancestor(repo, str(seal["candidate"]), observed)
+            contained = is_ancestor(repo, seal.candidate, observed)
             transition_activation_obligation(
                 store,
                 obligation.obligation_id,
@@ -998,15 +1192,15 @@ def command_publish(args: argparse.Namespace) -> None:
                         "last_reason": (
                             f"publisher refused: {error}; observed origin/main "
                             f"{observed} {'contains' if contained else 'does not contain'} "
-                            f"candidate {seal['candidate']}"
+                            f"candidate {seal.candidate}"
                         ),
                     },
                 },
             )
         raise
     published = fetch_main(repo)
-    if published != seal["candidate"]:
-        contained = is_ancestor(repo, str(seal["candidate"]), published)
+    if published != seal.candidate:
+        contained = is_ancestor(repo, seal.candidate, published)
         transition_activation_obligation(
             store,
             obligation.obligation_id,
@@ -1016,7 +1210,7 @@ def command_publish(args: argparse.Namespace) -> None:
                 "activation": {
                     "state": "pending" if contained else "publication_refused",
                     "last_reason": (
-                        f"remote moved after publication: expected {seal['candidate']}, "
+                        f"remote moved after publication: expected {seal.candidate}, "
                         f"observed {published}"
                     ),
                 },
@@ -1024,7 +1218,7 @@ def command_publish(args: argparse.Namespace) -> None:
         )
         raise Refusal(
             "remote main moved after publication: "
-            f"expected {seal['candidate']}, observed {published}"
+            f"expected {seal.candidate}, observed {published}"
         )
     obligation = transition_activation_obligation(
         store,
@@ -1037,7 +1231,7 @@ def command_publish(args: argparse.Namespace) -> None:
             }
         },
     )
-    print(f"CI_HUB_CHANGE published=1 task={manifest['task']} candidate={published}")
+    print(f"CI_HUB_CHANGE published=1 task={manifest.task} candidate={published}")
     print(
         f"CI_HUB_CHANGE activation_obligation={obligation.obligation_id} "
         f"state={obligation.overall_state} store={store}"
@@ -1199,8 +1393,8 @@ def command_activate(args: argparse.Namespace) -> None:
     clone = repository_root(Path(args.clone).expanduser())
     primary = repository_root(Path(args.primary).expanduser())
     manifest, seal = verified_seal(clone, require_unpublished_base=False)
-    candidate = str(seal["candidate"])
-    paths = [str(path) for path in seal["changed_paths"]]
+    candidate = seal.candidate
+    paths = list(seal.changed_paths)
     store = activation_store_path(primary, args.store)
     obligation = activation_for_candidate(store, candidate, primary)
     if obligation is None:
@@ -1215,18 +1409,18 @@ def command_activate(args: argparse.Namespace) -> None:
                     + reason
                 )
             print(
-                f"CI_HUB_CHANGE activated=already task={manifest['task']} "
+                f"CI_HUB_CHANGE activated=already task={manifest.task} "
                 f"candidate={candidate} activated_head={head} "
                 f"activation_obligation={prior.obligation_id}"
             )
             return
         obligation = create_activation_obligation(
             store=store,
-            task=str(manifest["task"]),
+            task=manifest.task,
             candidate=candidate,
             primary=primary,
             changed_paths=paths,
-            diff_sha256=str(seal["diff_sha256"]),
+            diff_sha256=seal.diff_sha256,
         )
     attempts = obligation.activation.attempts + 1
     attempted_at = utc_now()
@@ -1303,7 +1497,7 @@ def command_activate(args: argparse.Namespace) -> None:
         },
     )
     print(
-        f"CI_HUB_CHANGE activated=1 task={manifest['task']} candidate={candidate} "
+        f"CI_HUB_CHANGE activated=1 task={manifest.task} candidate={candidate} "
         f"activated_head={head} paths={len(paths)} "
         f"activation_obligation={obligation.obligation_id}"
     )
@@ -1317,14 +1511,16 @@ def command_status(args: argparse.Namespace) -> None:
     repo = repository_root(Path(args.clone).expanduser() if args.clone else None)
     report: dict[str, Any] = {
         "schema": SCHEMA,
-        "manifest": load_manifest(repo),
+        "manifest": load_manifest(repo).to_dict(),
         "head": git(repo, "rev-parse", "HEAD^{commit}"),
         "clean": is_clean(repo),
         "seal": None,
     }
     seal_path = metadata_path(repo, SEAL)
     if seal_path.is_file():
-        report["seal"] = read_json(seal_path, "change seal")
+        report["seal"] = ChangeSeal.from_mapping(
+            read_json(seal_path, "change seal")
+        ).to_dict()
     print(json.dumps(report, indent=2, sort_keys=True))
 
 
@@ -1479,7 +1675,7 @@ def command_dispose(args: argparse.Namespace) -> None:
         raise Refusal(
             f"clone {destination} holds {len(unpushed)} commit(s) on its own "
             f"branches that no remote contains (branch {branch}, task "
-            f"{manifest.get('task')}, tip {unpushed[0]}); PRESERVE THEM FIRST "
+            f"{manifest.task}, tip {unpushed[0]}); PRESERVE THEM FIRST "
             "-- disposal never removes work that exists nowhere else"
         )
     head = git(repo, "rev-parse", "HEAD^{commit}")
@@ -1492,7 +1688,7 @@ def command_dispose(args: argparse.Namespace) -> None:
     skipped, namespaces = unconsidered_unpushed(repo)
     shutil.rmtree(destination)
     print(
-        f"CI_HUB_CHANGE disposed={destination} task={manifest.get('task')} "
+        f"CI_HUB_CHANGE disposed={destination} task={manifest.task} "
         f"recovery_sha={head} recovery_refs={summarize_refs(reachable)}"
     )
     if skipped:
