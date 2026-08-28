@@ -27,21 +27,67 @@
 # The scratch predecessors hardcoded HOME_BRANCH=_batch10_union; this does not.
 #
 # Usage: union-rebase.sh <hermit-worktree> <pr-branch> [--push]
-# Prints one status line: RESULT <branch> CLEAN|UNIONED|HUMAN:<reason>|LINT-FAIL:*|REBASE-FAIL:*
+#                        [--result-json PATH]
+# Writes the strict result contract when --result-json is supplied. The RESULT
+# line is presentation for operators; land-pr consumes the JSON contract.
 set -uo pipefail
 
 WT=${1:?hermit worktree path}
 BR=${2:?pr branch (e.g. codex/e2e-foo)}
-PUSH=${3:-}
+shift 2
+PUSH=0
+RESULT_JSON=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --push) PUSH=1 ;;
+    --result-json)
+      [ $# -ge 2 ] || { echo "union-rebase: --result-json needs a path" >&2; exit 2; }
+      RESULT_JSON=$2; shift ;;
+    *) echo "union-rebase: unknown argument $1" >&2; exit 2 ;;
+  esac
+  shift
+done
 # Resolve the parent-repo resolver relative to this script, not a hardcoded home.
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 PARENT_ROOT=$(cd -- "$SCRIPT_DIR/../.." && pwd)
 RESOLVER="$PARENT_ROOT/scripts/e2e-union-resolve.py"
+RESULT_HELPER="$SCRIPT_DIR/union_rebase_result.py"
 WIP="_uwip_$$"           # PID-unique wip branch: no fleet-wide collision
 cd "$WT" || exit 9
 
 MANAGED_PLAN="ci/expected-e2e-plan.json"
-status() { echo "RESULT $BR $1"; }
+BASE_SHA=""
+INPUT_SHA=""
+FORK=""
+RESULT_SHA=""
+status() {
+  local outcome=$1 detail=${2:-} observed_exit=${3:-0} pushed=false display
+  case "$outcome" in
+    clean) display=CLEAN ;;
+    unioned) display=UNIONED ;;
+    human) display=HUMAN ;;
+    lint-fail) display=LINT-FAIL ;;
+    rebase-fail) display=REBASE-FAIL ;;
+    *) echo "union-rebase: internal unknown outcome $outcome" >&2; return 9 ;;
+  esac
+  [ "$PUSH" -eq 1 ] && [ "$outcome" != human ] \
+    && [ "$outcome" != lint-fail ] && [ "$outcome" != rebase-fail ] && pushed=true
+  if [ -n "$RESULT_JSON" ]; then
+    python3 "$RESULT_HELPER" write --path "$RESULT_JSON" --branch "$BR" \
+      --outcome "$outcome" --detail "$detail" --base-sha "$BASE_SHA" \
+      --input-sha "$INPUT_SHA" --fork-sha "$FORK" --result-sha "$RESULT_SHA" \
+      --pushed "$pushed" --exit-code "$observed_exit" || return $?
+  fi
+  if [ -n "$detail" ]; then
+    echo "RESULT $BR $display:$detail"
+  else
+    echo "RESULT $BR $display"
+  fi
+}
+finish() {
+  status "$@" || exit $?
+  exit 0
+}
 # Return the worktree to a stateless detached HEAD and drop the wip branch.
 detach_home() {
   git checkout -q --detach origin/main 2>/dev/null \
@@ -61,10 +107,16 @@ is_managed() {
   esac
 }
 
-with-proxy git fetch -q origin main "$BR" 2>/dev/null || { status "REBASE-FAIL:fetch"; exit 0; }
-FORK=$(git merge-base "origin/$BR" origin/main) || { status "REBASE-FAIL:no-merge-base"; exit 0; }
+fetch_rc=0
+with-proxy git fetch -q origin main "$BR" 2>/dev/null || fetch_rc=$?
+[ "$fetch_rc" -eq 0 ] || finish rebase-fail fetch "$fetch_rc"
+BASE_SHA=$(git rev-parse origin/main) || finish rebase-fail resolve-main "$?"
+INPUT_SHA=$(git rev-parse "origin/$BR") || finish rebase-fail resolve-input "$?"
+FORK=$(git merge-base "origin/$BR" origin/main) || finish rebase-fail no-merge-base "$?"
 git branch -D "$WIP" >/dev/null 2>&1
-git checkout -q -B "$WIP" "origin/$BR" || { status "REBASE-FAIL:checkout"; exit 0; }
+checkout_rc=0
+git checkout -q -B "$WIP" "origin/$BR" || checkout_rc=$?
+[ "$checkout_rc" -eq 0 ] || finish rebase-fail checkout "$checkout_rc"
 
 # --- rebase; resolve conflicts just enough to continue -----------------------
 # Managed conflicts: take main's side now (the authoritative pass rewrites them).
@@ -74,13 +126,13 @@ GIT_EDITOR=true git rebase origin/main >/dev/null 2>&1
 rc=$?
 while [ $rc -ne 0 ]; do
   mapfile -t U < <(git diff --name-only --diff-filter=U)
-  if [ ${#U[@]} -eq 0 ]; then abort; status "REBASE-FAIL:stopped-no-conflict"; exit 0; fi
+  if [ ${#U[@]} -eq 0 ]; then abort; finish rebase-fail stopped-no-conflict "$rc"; fi
   for f in "${U[@]}"; do
     if [ "$f" = "$MANAGED_PLAN" ] || is_managed "$f"; then
       git checkout -q --ours -- "$f" 2>/dev/null || git checkout -q --theirs -- "$f" 2>/dev/null || git rm -q -- "$f"
       git add -- "$f" 2>/dev/null || true
     else
-      abort; status "HUMAN:unmanaged-conflict:$f"; exit 0
+      abort; finish human "unmanaged-conflict:$f" "$rc"
     fi
   done
   GIT_EDITOR=true git rebase --continue >/dev/null 2>&1
@@ -100,11 +152,10 @@ for f in "${TOUCHED[@]}"; do
   if [ $prc -ne 0 ]; then
     rm -rf "$tmp"; abort
     case $prc in
-      3) status "HUMAN:non-additive:$f" ;;
-      4) status "HUMAN:unmanaged:$f" ;;
-      *) status "HUMAN:resolve-err:$f" ;;
+      3) finish human "non-additive:$f" "$prc" ;;
+      4) finish human "unmanaged:$f" "$prc" ;;
+      *) finish human "resolve-err:$f" "$prc" ;;
     esac
-    exit 0
   fi
   if ! cmp -s "$tmp/out" "$f"; then cp "$tmp/out" "$f"; git add -- "$f"; UNIONED=1; fi
   rm -rf "$tmp"
@@ -112,8 +163,10 @@ done
 if ! git diff --cached --quiet; then GIT_EDITOR=true git commit -q --amend --no-edit; fi
 
 # --- regenerate the derived plan from the merged manifests, amend if changed --
-if ! ./ci/test_harness.sh plan --format json >/tmp/_uplan.$$ 2>/tmp/_uperr.$$; then
-  abort; status "LINT-FAIL:plan-emit"; exit 0
+plan_rc=0
+./ci/test_harness.sh plan --format json >/tmp/_uplan.$$ 2>/tmp/_uperr.$$ || plan_rc=$?
+if [ "$plan_rc" -ne 0 ]; then
+  abort; finish lint-fail plan-emit "$plan_rc"
 fi
 jq -S '{schema:1, cells:(.|sort_by(.category,.test,.mode,.backend))}' /tmp/_uplan.$$ >"$MANAGED_PLAN"
 rm -f /tmp/_uplan.$$ /tmp/_uperr.$$
@@ -122,11 +175,14 @@ if ! git diff --quiet -- "$MANAGED_PLAN"; then
 fi
 
 # --- prove self-consistency: #1518 symmetry lint + exact ratchet -------------
-if ! cargo run --quiet -p hermit-manifest-plan -- --format harness-json >/dev/null 2>&1; then
-  abort; status "LINT-FAIL:symmetry"; exit 0
+symmetry_rc=0
+cargo run --quiet -p hermit-manifest-plan -- --format harness-json >/dev/null 2>&1 || symmetry_rc=$?
+if [ "$symmetry_rc" -ne 0 ]; then
+  abort; finish lint-fail symmetry "$symmetry_rc"
 fi
 
-if [ "$PUSH" = "--push" ]; then
+RESULT_SHA=$(git rev-parse HEAD) || finish rebase-fail resolve-result "$?"
+if [ "$PUSH" -eq 1 ]; then
   # REFUSE TO PUBLISH A HEAD THAT IS NOT AHEAD OF MAIN.
   #
   # The push below is `--force-with-lease HEAD:$BR`, and the lease only proves
@@ -149,21 +205,23 @@ if [ "$PUSH" = "--push" ]; then
   # as a loose object. That PR carried a fix for a red `make lint`.
   #
   # A no-op rebase is a legitimate outcome; silently publishing it is not. Say
-  # so and let the caller decide -- land-pr.sh treats any non-CLEAN/UNIONED
-  # RESULT as an abandon, which leaves the branch INTACT for a human.
+  # so and let the caller decide -- land-pr.sh requires a successful value from
+  # the serialized result, which leaves the branch INTACT for a human.
   if [ "$(git rev-list --count origin/main..HEAD)" -eq 0 ]; then
     detach_home
-    status "REBASE-FAIL:head-not-ahead-of-main"; exit 0
+    finish rebase-fail head-not-ahead-of-main 1
   fi
-  if ! with-proxy git push -q --force-with-lease "origin" "HEAD:$BR"; then
+  push_rc=0
+  with-proxy git push -q --force-with-lease "origin" "HEAD:$BR" || push_rc=$?
+  if [ "$push_rc" -ne 0 ]; then
     detach_home
-    status "REBASE-FAIL:push"; exit 0
+    finish rebase-fail push "$push_rc"
   fi
 fi
 
 detach_home
 if [ "$UNIONED" -eq 1 ]; then
-  status "UNIONED"
+  finish unioned
 else
-  status "CLEAN"
+  finish clean
 fi

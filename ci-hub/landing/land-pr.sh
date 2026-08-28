@@ -511,13 +511,21 @@ if [ "$NO_REBASE" -eq 1 ]; then
   say "no-rebase: skipping the local rebase + force-push; merging the authorized head as it stands"
 elif [ "$UNION" -eq 1 ]; then
   ulog="/tmp/land-$PR-union.log"
-  "$SCRIPT_DIR/union-rebase.sh" "$WT" "$BR" --push >"$ulog" 2>&1
-  RES=$(grep -E '^RESULT' "$ulog" | tail -1)
-  say "union: ${RES:-<none> (see $ulog)}"
-  case "$RES" in
-    *" CLEAN"|*" UNIONED") : ;;
-    *) abandon "union-rebase did not converge: ${RES:-see $ulog}" 3 ;;
-  esac
+  uresult=$(mktemp)
+  union_rc=0
+  "$SCRIPT_DIR/union-rebase.sh" "$WT" "$BR" --push \
+    --result-json "$uresult" >"$ulog" 2>&1 || union_rc=$?
+  if [ "$union_rc" -ne 0 ]; then
+    rm -f -- "$uresult"
+    abandon "union-rebase could not write its result contract (rc=$union_rc; see $ulog)" 3
+  fi
+  result_rc=0
+  RES=$(python3 "$SCRIPT_DIR/union_rebase_result.py" require-success \
+    --path "$uresult" --expect-branch "$BR" 2>&1) || result_rc=$?
+  rm -f -- "$uresult"
+  say "union: ${RES:-<no structured result> (see $ulog)}"
+  [ "$result_rc" -eq 0 ] \
+    || abandon "union-rebase did not converge: ${RES:-see $ulog}" 3
 else
   plain_rebase=1
   git -C "$WT" checkout -q -B "_land_$PR" "origin/$BR" || abandon "checkout origin/$BR failed" 3
