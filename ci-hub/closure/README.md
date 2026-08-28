@@ -118,4 +118,11 @@ derives landing state from it and accepts an explicit SHA token or a typed
 nothing, so code closures had been recording a SHA their own consumer could not
 read. A test in this directory binds the two formats together.
 
+For code evidence whose verified closure marker says `landing=landed`, the
+gateway also preserves the existing task tags, appends `landed`, reads the tags
+back, and only then closes the task. The tag is therefore a query index derived
+from the marker, not a second manual bookkeeping step. A failed or unconfirmed
+tag update leaves the task open. Markers for `implemented-unlanded`, `n/a`, and
+`superseded` do not acquire `landed`.
+
 Tests: `python3 -m pytest ci-hub/closure/ -q`

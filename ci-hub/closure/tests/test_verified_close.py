@@ -162,7 +162,11 @@ class FakeRunner:
         artifact_ancestry_rc=0,
         tags="implemented",
     ):
-        self.tags = tags
+        try:
+            parsed_tags = json.loads(tags)
+        except json.JSONDecodeError:
+            parsed_tags = [tag.strip() for tag in tags.split(",") if tag.strip()]
+        self.tags = json.dumps(parsed_tags)
         self.code_state = code_state
         self.artifact_present = artifact_present
         self.artifact_type = artifact_type
@@ -267,6 +271,9 @@ class FakeRunner:
             self.task_mutations.append(("tg", "note", command[1], content))
             return completed(command)
         if command and command[0] == "tg":
+            if command[:2] == ("tg", "update") and "--tags" in command:
+                raw = command[command.index("--tags") + 1]
+                self.tags = json.dumps(raw.split(",") if raw else [])
             self.task_mutations.append(command)
             return completed(command)
         raise AssertionError(f"unexpected command: {command}")
@@ -353,6 +360,141 @@ class VerifiedCloseTest(unittest.TestCase):
         landed_notes = [c for c in landed.task_mutations if c[:2] == ("tg", "note")]
         self.assertIn("landing=landed", landed_notes[0][-1])
 
+    def test_landed_marker_adds_the_landed_tag_before_closing(self):
+        runner = FakeRunner(code_state="landed", tags='["implemented","drain"]')
+
+        rc = verified_close.main(
+            ["fixture-task", "--code", "a" * 40, "--source", "."], run=runner
+        )
+
+        self.assertEqual(verified_close.CLOSED, rc)
+        self.assertEqual('["implemented", "drain", "landed"]', runner.tags)
+        mutations = runner.task_mutations
+        note_index = next(i for i, command in enumerate(mutations) if command[1] == "note")
+        tag_index = next(
+            i for i, command in enumerate(mutations)
+            if command[1] == "update" and "--tags" in command
+        )
+        close_index = next(
+            i for i, command in enumerate(mutations)
+            if command[1] == "update" and command[-2:] == ("--status", "closed")
+        )
+        self.assertLess(note_index, tag_index)
+        self.assertLess(tag_index, close_index)
+        self.assertEqual(
+            ("tg", "update", "fixture-task", "--tags", "implemented,drain,landed"),
+            mutations[tag_index],
+        )
+
+    def test_implemented_unlanded_marker_does_not_add_the_landed_tag(self):
+        runner = FakeRunner(code_state="not-landed", tags='["implemented","drain"]')
+
+        rc = verified_close.main(
+            ["fixture-task", "--code", "b" * 40, "--source", "."], run=runner
+        )
+
+        self.assertEqual(verified_close.CLOSED, rc)
+        self.assertEqual('["implemented", "drain"]', runner.tags)
+        self.assertFalse(
+            any(command[1] == "update" and "--tags" in command
+                for command in runner.task_mutations)
+        )
+
+    def test_n_a_marker_does_not_add_the_landed_tag(self):
+        runner = FakeRunner(tags='["implemented","research"]')
+        evidence = verified_close.Evidence(
+            "verified",
+            "artifact",
+            "ai_docs/result.md",
+            resolved="rrnewton/dev-hermit:ai_docs/result.md@" + "a" * 40,
+        )
+
+        rc = verified_close.close_task("fixture-task", evidence, run=runner)
+
+        self.assertEqual(verified_close.CLOSED, rc)
+        note = next(
+            command[3] for command in runner.task_mutations if command[1] == "note"
+        )
+        self.assertIn("landing=n/a", note)
+        self.assertFalse(
+            any(command[1] == "update" and "--tags" in command
+                for command in runner.task_mutations)
+        )
+
+    def test_an_existing_landed_tag_is_not_rewritten(self):
+        runner = FakeRunner(code_state="landed", tags='["implemented","landed"]')
+
+        rc = verified_close.main(
+            ["fixture-task", "--code", "a" * 40, "--source", "."], run=runner
+        )
+
+        self.assertEqual(verified_close.CLOSED, rc)
+        self.assertFalse(
+            any(command[1] == "update" and "--tags" in command
+                for command in runner.task_mutations)
+        )
+        self.assertIn(
+            ("tg", "update", "fixture-task", "--status", "closed"),
+            runner.task_mutations,
+        )
+
+    def test_failed_landed_tag_write_leaves_the_task_open(self):
+        runner = FakeRunner(code_state="landed", tags='["implemented","drain"]')
+
+        def fail_tag_update(command, **kwargs):
+            if command[:2] == ("tg", "update") and "--tags" in command:
+                runner.task_mutations.append(tuple(command))
+                return completed(command, rc=1, stderr="tag update failed")
+            return runner(command, **kwargs)
+
+        rc = verified_close.main(
+            ["fixture-task", "--code", "a" * 40, "--source", "."],
+            run=fail_tag_update,
+        )
+
+        self.assertEqual(verified_close.UNVERIFIABLE, rc)
+        self.assertTrue(any(command[1] == "note" for command in runner.task_mutations))
+        self.assertFalse(
+            any(command[1] == "update" and command[-2:] == ("--status", "closed")
+                for command in runner.task_mutations)
+        )
+
+    def test_unconfirmed_landed_tag_write_leaves_the_task_open(self):
+        runner = FakeRunner(code_state="landed", tags='["implemented","drain"]')
+
+        def ignore_tag_update(command, **kwargs):
+            if command[:2] == ("tg", "update") and "--tags" in command:
+                runner.task_mutations.append(tuple(command))
+                return completed(command)
+            return runner(command, **kwargs)
+
+        rc = verified_close.main(
+            ["fixture-task", "--code", "a" * 40, "--source", "."],
+            run=ignore_tag_update,
+        )
+
+        self.assertEqual(verified_close.UNVERIFIABLE, rc)
+        self.assertFalse(
+            any(command[1] == "update" and command[-2:] == ("--status", "closed")
+                for command in runner.task_mutations)
+        )
+
+    def test_landed_close_refuses_before_writing_when_tags_are_unreadable(self):
+        runner = FakeRunner(code_state="landed")
+
+        def unreadable_tags(command, **kwargs):
+            if command[:2] == ("tg", "sql"):
+                return completed(command, rc=1, stderr="database unavailable")
+            return runner(command, **kwargs)
+
+        rc = verified_close.main(
+            ["fixture-task", "--code", "a" * 40, "--source", "."],
+            run=unreadable_tags,
+        )
+
+        self.assertEqual(verified_close.UNVERIFIABLE, rc)
+        self.assertEqual([], runner.task_mutations)
+
     def test_unlanded_close_is_refused_when_the_implemented_tag_is_absent(self):
         """The negative bracket for the tag gate.
 
@@ -397,13 +539,16 @@ class VerifiedCloseTest(unittest.TestCase):
 
         self.assertEqual([0, 0, 0], results)
         notes = [command for command in runner.task_mutations if command[1] == "note"]
-        closes = [command for command in runner.task_mutations if command[1] == "update"]
+        closes = [
+            command for command in runner.task_mutations
+            if command[1] == "update" and command[-2:] == ("--status", "closed")
+        ]
         self.assertEqual(3, len(notes))
         self.assertEqual(3, len(closes))
         self.assertTrue(all("CLOSURE-VERIFIED:" in command[3] for command in notes))
         self.assertTrue(all(command[-2:] == ("--status", "closed") for command in closes))
         self.assertEqual(
-            ["note", "update"] * 3,
+            ["note", "update", "update", "note", "update", "note", "update"],
             [command[1] for command in runner.task_mutations],
         )
         artifact_note = next(
@@ -661,34 +806,16 @@ class ContentLostRefusesClosure(unittest.TestCase):
 
     def test_the_drift_qualifier_reaches_the_durable_closure_note(self) -> None:
         """The record is the point. An in-memory `reason` nobody writes down is not one."""
-        recorded: list[tuple[str, ...]] = []
-
-        def run(command, cwd=None, **kw):
-            import subprocess as _sp
-            # Normalise the verified writer to ('tg','note',task,CONTENT), reading
-            # the --file back before close_task() unlinks it. Without this the
-            # assertions below inspect a temp-file NAME and this test can only
-            # ever fail -- which is what it did once the closure note moved off
-            # `tg note` and onto tg-note-verified.
-            if command and str(command[0]).endswith("tg-note-verified") and "--file" in command:
-                path = list(command)[list(command).index("--file") + 1]
-                try:
-                    with open(path, encoding="utf-8") as handle:
-                        recorded.append(("tg", "note", command[1], handle.read()))
-                except OSError:
-                    recorded.append(tuple(command))
-            else:
-                recorded.append(tuple(command))
-            return _sp.CompletedProcess(list(command), 0, "", "")
+        runner = FakeRunner()
 
         ev = verified_close.Evidence(
             "verified", "code", "PR-4", resolved="rrnewton/dev-hermit@" + self.feature,
             reason="CONTEXT-DRIFTED: 1 of 2 hunk(s) no longer reverse-apply",
             landing="landed",
         )
-        verified_close.close_task("t", ev, run=run)
-        notes = [c for c in recorded if len(c) > 1 and c[1] == "note"]
-        self.assertTrue(notes, f"no tg note was written: {recorded}")
+        verified_close.close_task("t", ev, run=runner)
+        notes = [c for c in runner.task_mutations if len(c) > 1 and c[1] == "note"]
+        self.assertTrue(notes, f"no tg note was written: {runner.task_mutations}")
         body = notes[0][-1]
         self.assertIn("CLOSURE-VERIFIED", body)
         self.assertIn("detail=CONTEXT-DRIFTED", body)
@@ -793,9 +920,25 @@ class DispositionClosesWithoutInflatingTheMetric(unittest.TestCase):
             )
 
         self.assertEqual(
-            verified_close.read_task_tags("t", run=run), '["drain","landed"]'
+            verified_close.read_task_tags("t", run=run), ("drain", "landed")
         )
         self.assertTrue(verified_close.task_claims_landing("t", run=run))
+
+    def test_tag_checks_do_not_match_substrings(self) -> None:
+        def run(command, cwd=None, **kw):
+            import subprocess as _sp
+            return _sp.CompletedProcess(
+                list(command), 0,
+                'tags\n----------\n["not-implemented","unlanded"]\n\n(1 row)\n',
+                "",
+            )
+
+        self.assertEqual(
+            verified_close.read_task_tags("t", run=run),
+            ("not-implemented", "unlanded"),
+        )
+        self.assertFalse(verified_close.task_has_implemented_tag("t", run=run))
+        self.assertFalse(verified_close.task_claims_landing("t", run=run))
 
     def test_a_task_id_that_is_not_an_identifier_is_refused(self) -> None:
         """The id is interpolated into SQL, so anything unexpected reads as unreadable."""

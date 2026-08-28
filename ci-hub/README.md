@@ -205,9 +205,15 @@ Task closure is a separate, fail-closed consumer of that verifier:
 ```
 
 The gateway records `CLOSURE-VERIFIED` on the task before changing its status.
-It closes only a landed code reference, a URL that resolves, a local artifact
-tracked on freshly fetched parent `main`, or a GitHub Actions run ID that
-resolves. Local artifact evidence is recorded as the typed tuple
+When that record says `landing=landed`, the same operation preserves the task's
+existing tags, adds `landed`, verifies the tag readback, and only then closes
+the task. `landing=implemented-unlanded`, `landing=n/a`, and
+`landing=superseded` do not add it. This makes the tag a derived index of the
+verified marker rather than a second fact an agent must remember to record.
+
+The gateway closes only a landed code reference, a URL that resolves, a local
+artifact tracked on freshly fetched parent `main`, or a GitHub Actions run ID
+that resolves. Local artifact evidence is recorded as the typed tuple
 `rrnewton/dev-hermit:path@last-content-commit;target=main@tip`; the gateway
 verifies that content commit is ancestral to the fetched target. This proves
 publication, not that the artifact answers the task's goal, which the

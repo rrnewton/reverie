@@ -113,8 +113,8 @@ def _run(
 _TASK_ID_OK = re.compile(r"\A[A-Za-z0-9_.-]+\Z")
 
 
-def read_task_tags(task: str, *, run: Run = _run) -> str | None:
-    """The task's tags, lowercased, or None if they could not be read.
+def read_task_tags(task: str, *, run: Run = _run) -> tuple[str, ...] | None:
+    """The task's exact tag list, or None if it could not be read.
 
     ⚠️ READ THE DATABASE, NOT `tg show`. Both tag gates in this module used to
     scan `tg show` output for a line starting with "tags:". `tg show` prints a
@@ -145,7 +145,13 @@ def read_task_tags(task: str, *, run: Run = _run) -> str | None:
     ]
     if not rows:
         return None
-    return rows[0].lower()
+    try:
+        value = json.loads(rows[0])
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(value, list) or any(not isinstance(tag, str) for tag in value):
+        return None
+    return tuple(value)
 
 
 def task_has_implemented_tag(task: str, *, run: Run = _run) -> bool:
@@ -160,7 +166,7 @@ def task_has_implemented_tag(task: str, *, run: Run = _run) -> bool:
     tags = read_task_tags(task, run=run)
     if tags is None:
         return False
-    return "implemented" in tags
+    return "implemented" in {tag.lower() for tag in tags}
 
 
 def task_claims_landing(task: str, *, run: Run = _run) -> bool:
@@ -176,7 +182,23 @@ def task_claims_landing(task: str, *, run: Run = _run) -> bool:
         # Fail CLOSED for this check: unreadable tags must not be read as
         # "claims nothing", which would silently permit the disposition.
         return True
-    return "implemented" in tags or "landed" in tags
+    lowered = {tag.lower() for tag in tags}
+    return "implemented" in lowered or "landed" in lowered
+
+
+def tags_with_landed(tags: Sequence[str]) -> tuple[str, ...] | None:
+    """Return the exact replacement tag list for a verified landed closure.
+
+    `tg update --tags` replaces the whole list, so preserving every existing tag
+    is part of the write. An unreadable or unrepresentable list refuses before
+    the closure note is written; guessing here would turn an audit repair into
+    silent metadata loss.
+    """
+    if any(not tag or "," in tag or "\n" in tag or "\r" in tag for tag in tags):
+        return None
+    if "landed" in tags:
+        return tags
+    return (*tags, "landed")
 
 
 def _json_object(output: str) -> dict[str, object] | None:
@@ -696,6 +718,8 @@ def close_task(
     the preview, which is the property that failed when the disposition gate was
     added to this function alone.
     """
+    landed_tags: tuple[str, ...] | None = None
+    add_landed_tag = False
     if evidence.state != "verified" or not evidence.resolved:
         return evidence.rc
     if evidence.kind == "disposition" and task_claims_landing(task, run=run):
@@ -719,12 +743,32 @@ def close_task(
             file=sys.stderr,
         )
         return REFUSED
+    if evidence.landing == "landed":
+        current_tags = read_task_tags(task, run=run)
+        if current_tags is None:
+            print(
+                "UNVERIFIABLE "
+                f"task={task} reason=could-not-confirm-current-tags-before-landed-close; "
+                "the closure note and task status were not changed",
+                file=sys.stderr,
+            )
+            return UNVERIFIABLE
+        landed_tags = tags_with_landed(current_tags)
+        if landed_tags is None:
+            print(
+                "UNVERIFIABLE "
+                f"task={task} reason=could-not-preserve-tags-before-landed-close; "
+                "the closure note and task status were not changed",
+                file=sys.stderr,
+            )
+            return UNVERIFIABLE
+        add_landed_tag = "landed" not in current_tags
     # ⚠️ A DISPOSITION IS RECORDED, NOT VERIFIED, AND THE ANCHOR MUST SAY SO.
-    # CLOSURE-VERIFIED is what every landing-debt query and the health tick count.
-    # Writing it for a closure where nothing was resolved would make the metric
-    # rise by exactly the closures that carry no evidence -- the instrument would
-    # report improvement caused by the thing it exists to detect. Distinct anchor,
-    # so both populations stay separately countable.
+    # CLOSURE-VERIFIED is the evidence from which the queryable `landed` tag is
+    # derived below. Writing it for a closure where nothing was resolved would
+    # make the audit index rise for precisely the closures carrying no evidence.
+    # Distinct anchors keep verified landings and recorded dispositions separately
+    # countable.
     anchor = "CLOSURE-RECORDED" if evidence.kind == "disposition" else "CLOSURE-VERIFIED"
     note = (
         f"{anchor}: "
@@ -744,10 +788,11 @@ def close_task(
     # check added above is in the preview by construction; anything below is a
     # write and is the only thing --check-only skips.
     if dry_run:
+        tag_detail = " would-add-tag=landed" if add_landed_tag else ""
         print(
             f"VERIFIED task={task} kind={evidence.kind} "
             f"reference={evidence.reference} resolved={evidence.resolved} "
-            f"would-record={anchor} rc=0"
+            f"would-record={anchor}{tag_detail} rc=0"
         )
         return CLOSED
     # ⚠️ THE CLOSURE NOTE GOES THROUGH THE VERIFIED WRITER, NOT `tg note`.
@@ -790,6 +835,32 @@ def close_task(
             file=sys.stderr,
         )
         return UNVERIFIABLE
+    # DERIVED, NOT A SECOND MANUAL FACT. The verified marker is durable before
+    # its query index is written. A failed or unconfirmed tag update leaves the
+    # task open, so no closed `landing=landed` task can silently omit `landed`.
+    if add_landed_tag:
+        assert landed_tags is not None
+        tagged = run(
+            ("tg", "update", task, "--tags", ",".join(landed_tags)), cwd=ROOT
+        )
+        if tagged.returncode != 0:
+            print(
+                "UNVERIFIABLE "
+                f"task={task} reason=failed-to-record-landed-tag detail="
+                f"{(tagged.stderr or tagged.stdout).strip()}; task remains open",
+                file=sys.stderr,
+            )
+            return UNVERIFIABLE
+        recorded_tags = read_task_tags(task, run=run)
+        if recorded_tags is None or not set(landed_tags).issubset(recorded_tags):
+            print(
+                "UNVERIFIABLE "
+                f"task={task} reason=landed-tag-readback-mismatch "
+                f"expected={json.dumps(landed_tags)} actual="
+                f"{json.dumps(recorded_tags)}; task remains open",
+                file=sys.stderr,
+            )
+            return UNVERIFIABLE
     closed = run(("tg", "update", task, "--status", "closed"), cwd=ROOT)
     if closed.returncode != 0:
         print(
