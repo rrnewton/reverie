@@ -194,6 +194,34 @@ any cell. The patch was removed afterward and the Hermit checkout is clean. The
 raw two-attempt chaos record remains retained; only the invalid verify-file
 lookup was skipped.
 
+### Retained retry failure classification
+
+`retry-failure-classification.tsv` classifies the 23 batch-one result groups
+that contain a second attempt. Its source is the retained
+`red-batch1-seed1/summary.json` named in `raw-artifacts-sha256.txt` at SHA-256
+`7a504faf0f07544f1cd6cd8c701a6744ce3b97d3d14fa4f10994f494669773a3`.
+`retry-failure-classification-tsv.jq` requires that exact measured population:
+873 attempt rows, 850 result groups, and 23 two-attempt groups whose first
+attempt is the retained canonical `determinism-failure` result.
+
+All 23 triggering first attempts are `product_failure` under the framework's
+current [`ObservedResult` to `FailureClass` contract](https://github.com/rrnewton/hermit/blob/7f050cc4c9bc778022bbc661c6c53b1603d16710/ci/manifest-plan/src/runner.rs).
+Sixteen second attempts
+remain `determinism-failure`, four change exact result to `crash-error`, and all
+twenty remain `product_failure`. Three second attempts pass; their
+`failure_class` is `null` because a pass has no failure attribution, and those
+three repetitions are recovered green results. Thus seven exact results change
+between attempts, while the four failure-to-failure changes stay in the same
+broader product-failure category.
+
+The retained summary has `error_kind=null` on every one of these attempts and
+contains no `retry_class` field. Neither absence is used as the classification
+source. `failure_class` comes from the retained structured `result`;
+`retry_class` separately answers why another attempt was allowed and its newer
+class/detail contract is not reconstructed into this older artifact. The raw
+summary is unchanged. `retry-failure-classification-verification.txt` records
+the source and projection digests and the exact result/class counts.
+
 ## Results
 
 ### By batch
@@ -347,6 +375,11 @@ failure that did not occur.
   `batch4-cells-83.tsv`: exact disjoint inputs.
 - `normalize-pressure.jq`, `final-results-tsv.jq`, and `cell-results-tsv.jq`:
   normalization programs.
+- `retry-failure-classification.tsv` and
+  `retry-failure-classification-tsv.jq`: the durable 23-retry projection and
+  its exact derivation from the retained batch-one summary.
+- `retry-failure-classification-verification.txt`: source hash, projection
+  hash, and result/class totals for that projection.
 - `verification.txt`: exact membership, runner, timeout, and command-rendering
   checks.
 - `batch4-summarizer-recovery.patch`: the exact one-line post-processing guard
