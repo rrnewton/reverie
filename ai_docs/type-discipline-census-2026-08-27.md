@@ -36,6 +36,30 @@ Excluded: tests and fixtures, vendored/third-party source, dated evidence snapsh
 
 ## Sharpest findings
 
+### A missing input can look like a measured zero
+
+Four later measurements exposed the same failure in different readers. The
+reported value looked healthy because the reader silently omitted part or all
+of the population it claimed to count:
+
+- disk-residue reporting returned zero quarantined slots while the live
+  registry contained 25 rows in the actual `lease-quarantined` state;
+- slot/agent parity counted all 18 named snapshot entries as live instead of
+  applying the shared status meaning, which yielded 12 live agents and exposed
+  two more active slots without a live owner, including assignments to the
+  departed `cloudlint` and `cloudrecover` agents;
+- red attribution returned zero per-node classifications from 978 failed rows
+  because it read only seven surviving `/tmp` logs and ignored the durable
+  `failed_substep_classes` already stored in the rows; consuming that field
+  restored 681 classifications across 226 log-missing rows; and
+- a DBT cell recorded as an infrastructure error concealed a divergence that
+  reproduced three times out of three because two log files used a prefix the
+  scanner did not include.
+
+A zero or green result is therefore evidence only when the reader also proves
+which population it observed and names unavailable or omitted inputs. Missing
+input must remain distinguishable from an observed empty result.
+
 ### The ledger does not record which host state produced a row
 
 [`ledger/hermit/devbig014/2026-08.jsonl`](https://github.com/rrnewton/dev-hermit/blob/c2bd4ca5e9682f434f263730b45cd65e4b8fd1a6/ledger/hermit/devbig014/2026-08.jsonl) contains 1,989 rows. All 1,989 omit a kernel release, boot ID, host capability set, and `host_class`:
