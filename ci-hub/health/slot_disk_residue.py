@@ -49,11 +49,14 @@ THREE MEASUREMENT HONESTIES, because a number without them is not evidence:
    for `--idle-hours` before it can qualify. This is what makes the 0.6% blind
    spot tolerable: a permission blip does not survive a day of consecutive ticks.
 
-3. SIZE IS ACTUAL DISK BLOCKS, NOT APPARENT SIZE. Slots are seeded with
-   `cp -a --reflink=auto`, so extents are shared between them. A slot reported at
-   8 GiB may free far less than 8 GiB when removed, because its neighbours hold
-   references to the same extents. The number is an upper bound on what reclaim
-   yields, and `summary=` says so rather than implying a clean total.
+3. SIZE IS MEASURED NOW, ONCE FOR THE COMPLETE CANDIDATE SET. Per-slot tree
+   sizes cannot be added on btrfs: compression makes `du` count the wrong bytes,
+   `--one-file-system` skips nested subvolumes, and reflinks make the same extent
+   appear under several slots. `compsize` receives every candidate path in one
+   invocation, so shared extents inside that set are counted once. Its disk-usage
+   result remains an upper bound because protected paths outside the set may
+   still reference an extent. The report says that and refuses any measurement
+   larger than the filesystem instead of printing an impossible number.
 
 DISK PAGES ON THE DELTA; SAFETY BREACHES STAY FAILED.  A disk-idleness candidate
 pages only when newly reclaimable, because a permanent disk page gets muted.  A
@@ -73,6 +76,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
+import btrfs_headroom
 import residue_sweep
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
@@ -84,13 +88,12 @@ from worktree_registry import (  # noqa: E402
 SLOTS_DIR = Path("worktrees/slots")
 DEFAULT_STATE = Path(".tick-hub") / "slot-disk-residue-state.json"
 
-# Defaults. A slot must be BOTH sustained-idle and materially large: a 40 MiB
-# idle directory is not a disk problem and paging about it is noise.
+# Defaults. A slot must be sustained-idle, and the complete unprotected set must
+# be materially large: a few 40 MiB directories are not a disk problem and
+# paging about them is noise.
 DEFAULT_IDLE_HOURS = 24.0
 DEFAULT_MIN_GIB = 1.0
-DEFAULT_REFRESH_HOURS = 12.0
-DEFAULT_DU_TIMEOUT = 120
-DEFAULT_MAX_MEASURE = 60
+DEFAULT_SIZE_TIMEOUT = 5
 DEFAULT_ACTIVE_SLOT_CAP = 12
 
 GIB = 1024.0 ** 3
@@ -311,28 +314,124 @@ def occupancy(root: Path, proc_root: Path = Path("/proc")) -> Occupancy:
     return occ
 
 
-def disk_bytes(path: Path, timeout: int = DEFAULT_DU_TIMEOUT) -> int | None:
-    """Actual disk blocks used, not apparent size.
+@dataclass(frozen=True)
+class CandidateSetMeasurement:
+    size_upper_bound_bytes: int | None
+    device_total_bytes: int | None
+    data_headroom_bytes: int | None
+    error: str | None = None
 
-    `--block-size=1` without `--apparent-size` reports allocated blocks, which is
-    what "consuming space" means. `--one-file-system` keeps a stray bind mount or
-    nested mount from being attributed to the slot. Returns None -- never 0 -- if
-    the measurement could not be taken, so an unmeasurable slot cannot silently
-    read as empty and get flagged.
+
+def measure_candidate_set(
+    root: Path, slots: list[str], timeout: int = DEFAULT_SIZE_TIMEOUT
+) -> CandidateSetMeasurement:
+    """Measure all candidate paths together, never by adding per-slot sizes.
+
+    ``compsize`` counts a reflink-shared extent once when all paths are supplied
+    in one invocation. Its Disk Usage column is post-compression, unlike
+    ``du``'s value on this filesystem. It is still an upper bound on bytes freed:
+    an extent can also be referenced by a protected path outside this set.
+
+    Filesystem capacity and data headroom come from btrfs's allocator counters.
+    If either source is unavailable, or the path-set result exceeds the entire
+    filesystem, the byte figure is refused rather than guessed.
     """
     try:
-        out = subprocess.run(
-            ["du", "-s", "--block-size=1", "--one-file-system", str(path)],
-            capture_output=True, text=True, timeout=timeout, check=False,
+        headroom = btrfs_headroom.measure(str(root))
+    except (btrfs_headroom.NotBtrfs, OSError, ValueError) as exc:
+        return CandidateSetMeasurement(
+            None, None, None, f"btrfs allocator accounting unavailable: {exc}"
         )
-    except (OSError, subprocess.SubprocessError):
-        return None
-    if out.returncode != 0 and not out.stdout.strip():
-        return None
+
+    if not slots:
+        return CandidateSetMeasurement(
+            0,
+            headroom.device_total,
+            headroom.pool_headroom("data"),
+        )
+
+    paths = [str(root / SLOTS_DIR / slot) for slot in sorted(slots)]
     try:
-        return int(out.stdout.split(None, 1)[0])
-    except (ValueError, IndexError):
-        return None
+        out = subprocess.run(
+            ["compsize", "--bytes", *paths],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+    except FileNotFoundError:
+        return CandidateSetMeasurement(
+            None,
+            headroom.device_total,
+            headroom.pool_headroom("data"),
+            "compsize is not installed",
+        )
+    except subprocess.TimeoutExpired:
+        return CandidateSetMeasurement(
+            None,
+            headroom.device_total,
+            headroom.pool_headroom("data"),
+            f"compsize exceeded its {timeout}s limit",
+        )
+    except OSError as exc:
+        return CandidateSetMeasurement(
+            None,
+            headroom.device_total,
+            headroom.pool_headroom("data"),
+            f"compsize could not run: {exc}",
+        )
+
+    blob = out.stdout + out.stderr
+    if out.returncode != 0:
+        if "No files." in blob or "All empty or still-delalloced files" in blob:
+            size = 0
+        else:
+            detail = " ".join(blob.split()) or f"exit {out.returncode}"
+            return CandidateSetMeasurement(
+                None,
+                headroom.device_total,
+                headroom.pool_headroom("data"),
+                f"compsize failed: {detail}",
+            )
+    else:
+        totals = [line.split() for line in out.stdout.splitlines()
+                  if line.split() and line.split()[0] == "TOTAL"]
+        if len(totals) != 1 or len(totals[0]) < 3:
+            return CandidateSetMeasurement(
+                None,
+                headroom.device_total,
+                headroom.pool_headroom("data"),
+                "compsize did not emit exactly one TOTAL row",
+            )
+        try:
+            size = int(totals[0][2])
+        except ValueError:
+            return CandidateSetMeasurement(
+                None,
+                headroom.device_total,
+                headroom.pool_headroom("data"),
+                "compsize TOTAL disk-usage value is not an integer",
+            )
+
+    if size < 0:
+        return CandidateSetMeasurement(
+            None,
+            headroom.device_total,
+            headroom.pool_headroom("data"),
+            "compsize reported a negative candidate-set size",
+        )
+    if size > headroom.device_total:
+        return CandidateSetMeasurement(
+            None,
+            headroom.device_total,
+            headroom.pool_headroom("data"),
+            "candidate-set size exceeds the filesystem capacity",
+        )
+    return CandidateSetMeasurement(
+        size,
+        headroom.device_total,
+        headroom.pool_headroom("data"),
+    )
 
 
 def parse_ts(value: object) -> datetime | None:
@@ -369,7 +468,6 @@ class SlotResidue:
     procs: int
     idle_since: str | None
     idle_hours: float | None
-    size_bytes: int | None
     reclaimable: bool
     reason: str
 
@@ -382,20 +480,13 @@ def evaluate(
     prior: dict,
     now: datetime,
     idle_hours: float,
-    min_gib: float,
-    refresh_hours: float,
-    max_measure: int,
-    du_timeout: int,
-    measure: bool = True,
 ) -> tuple[list[SlotResidue], dict, Occupancy]:
-    """Classify every on-disk slot. Pure disk + process facts, nothing else."""
+    """Classify every on-disk slot from current process facts and idle history."""
     on_disk = slots_on_disk(root)
     occ = occupancy(root)
     prior_slots = prior.get("slots") if isinstance(prior.get("slots"), dict) else {}
-    min_bytes = min_gib * GIB
 
     next_slots: dict[str, dict] = {}
-    idle_names: list[str] = []
     for slot in sorted(on_disk):
         procs = occ.counts.get(slot, 0)
         rec = prior_slots.get(slot) if isinstance(prior_slots.get(slot), dict) else {}
@@ -403,49 +494,19 @@ def evaluate(
             # Any live process resets the clock outright. Positive evidence of use
             # always wins; the cost of a false "idle" is somebody's work listed
             # for deletion, the cost of a false "busy" is one more cycle of disk.
-            next_slots[slot] = {"size_bytes": rec.get("size_bytes"),
-                                "sized_at": rec.get("sized_at")}
+            next_slots[slot] = {}
             continue
         since = parse_ts(rec.get("idle_since")) or now
-        next_slots[slot] = {
-            "idle_since": fmt_ts(since),
-            "size_bytes": rec.get("size_bytes"),
-            "sized_at": rec.get("sized_at"),
-        }
-        idle_names.append(slot)
-
-    # Measure only idle slots, and only when the cached size is missing or stale.
-    # An occupied slot's size is nobody's business: it is not a reclaim candidate.
-    if measure:
-        stale = []
-        for slot in idle_names:
-            rec = next_slots[slot]
-            sized_at = parse_ts(rec.get("sized_at"))
-            age_h = (now - sized_at).total_seconds() / 3600.0 if sized_at else None
-            if rec.get("size_bytes") is None or age_h is None or age_h >= refresh_hours:
-                stale.append(slot)
-        cursor = prior.get("measure_cursor")
-        if isinstance(cursor, str) and stale:
-            after = [slot for slot in stale if slot > cursor]
-            before = [slot for slot in stale if slot <= cursor]
-            stale = [*after, *before]
-        selected = stale[:max_measure]
-        for slot in selected:
-            size = disk_bytes(root / SLOTS_DIR / slot, timeout=du_timeout)
-            if size is not None:
-                next_slots[slot]["size_bytes"] = size
-                next_slots[slot]["sized_at"] = fmt_ts(now)
-        if selected:
-            # Advance on an attempted measurement even when du fails, otherwise
-            # one unreadable directory starves every later slot forever.
-            prior = {**prior, "measure_cursor": selected[-1]}
+        # Deliberately discard legacy size_bytes/sized_at state. A cached byte
+        # count survived the files it described and was repeatedly presented as
+        # current. Byte accounting is now one fresh measurement over the final
+        # candidate set, after owner suppression.
+        next_slots[slot] = {"idle_since": fmt_ts(since)}
 
     results: list[SlotResidue] = []
     for slot in sorted(on_disk):
         rec = next_slots[slot]
         procs = occ.counts.get(slot, 0)
-        size = rec.get("size_bytes")
-        size = size if isinstance(size, int) else None
         since = parse_ts(rec.get("idle_since"))
         age_h = (now - since).total_seconds() / 3600.0 if since else None
 
@@ -457,25 +518,18 @@ def evaluate(
             shown = 0.0 if age_h is None else age_h
             reclaimable = False
             reason = f"idle {shown:.1f}h (< {idle_hours}h threshold)"
-        elif size is None:
-            reclaimable, reason = False, "size could not be measured; not flagged"
-        elif size < min_bytes:
-            reclaimable = False
-            reason = f"idle {age_h:.1f}h but only {size / GIB:.2f} GiB (< {min_gib} GiB)"
         else:
             reclaimable = True
-            reason = f"idle {age_h:.1f}h, {size / GIB:.2f} GiB on disk, no process inside"
+            reason = f"idle {age_h:.1f}h, no process inside"
 
         results.append(SlotResidue(
             slot=slot, procs=procs,
             idle_since=rec.get("idle_since"),
             idle_hours=round(age_h, 2) if age_h is not None else None,
-            size_bytes=size, reclaimable=reclaimable, reason=reason,
+            reclaimable=reclaimable, reason=reason,
         ))
 
     next_state = {"slots": next_slots}
-    if isinstance(prior.get("measure_cursor"), str):
-        next_state["measure_cursor"] = prior["measure_cursor"]
     return results, next_state, occ
 
 
@@ -517,40 +571,146 @@ def suppress_undecided_owners(
             )
 
 
+def apply_size_threshold(
+    results: list[SlotResidue],
+    measurement: CandidateSetMeasurement,
+    min_gib: float,
+) -> int:
+    """Apply one current size threshold to the complete unprotected set.
+
+    Returns the number of slots in the set before the size decision. A missing
+    or impossible measurement removes every slot from the reclaim list: unknown
+    size must never be converted into a positive reclamation claim.
+    """
+    candidates = [r for r in results if r.reclaimable]
+    if not candidates or min_gib <= 0:
+        return len(candidates)
+
+    if measurement.size_upper_bound_bytes is None:
+        for result in candidates:
+            result.reclaimable = False
+            result.reason += "; current candidate-set size unavailable; not flagged"
+        return len(candidates)
+
+    measured_gib = measurement.size_upper_bound_bytes / GIB
+    if measurement.size_upper_bound_bytes < min_gib * GIB:
+        for result in candidates:
+            result.reclaimable = False
+            result.reason += (
+                f"; complete candidate set is up to {measured_gib:.2f} GiB "
+                f"(< {min_gib} GiB threshold)"
+            )
+    else:
+        for result in candidates:
+            result.reason += "; included in the current candidate-set measurement"
+    return len(candidates)
+
+
 def summarize(
-    results: list[SlotResidue], occ: Occupancy, fresh: set[str], min_gib: float
+    results: list[SlotResidue],
+    occ: Occupancy,
+    fresh: set[str],
+    min_gib: float,
+    measured_candidates: int,
+    measurement: CandidateSetMeasurement,
+    measurement_required: bool,
 ) -> tuple[str, str, dict]:
     flagged = [r for r in results if r.reclaimable]
-    total = sum(r.size_bytes or 0 for r in flagged)
     fields = {
         "slots_on_disk": len(results),
         "slots_occupied": sum(1 for r in results if r.procs > 0),
         "slots_idle": sum(1 for r in results if r.procs == 0),
+        "idle_unprotected_slots": measured_candidates,
         "reclaimable_slots": len(flagged),
-        "reclaimable_gib": round(total / GIB, 2),
         "new_reclaimable_slots": len(fresh),
         "blind_pids": occ.blind_pids,
         "zombie_pids": occ.zombie_pids,
         "deleted_cwd_pids": occ.deleted_cwd_pids,
     }
-    state = RECLAIMABLE if fresh else OK
-    if fresh:
-        named = ", ".join(
-            f"{r.slot} ({(r.size_bytes or 0) / GIB:.1f} GiB)"
-            for r in flagged if r.slot in fresh
+    if measurement.device_total_bytes is not None:
+        fields["filesystem_device_gib"] = round(measurement.device_total_bytes / GIB, 2)
+    if measurement.data_headroom_bytes is not None:
+        fields["filesystem_data_headroom_gib"] = round(
+            measurement.data_headroom_bytes / GIB, 2
+        )
+    if measurement.size_upper_bound_bytes is not None:
+        fields["idle_unprotected_gib_upper_bound"] = round(
+            measurement.size_upper_bound_bytes / GIB, 2
+        )
+        fields["idle_unprotected_size_status"] = "current"
+    elif measurement_required:
+        fields["idle_unprotected_size_status"] = UNKNOWN
+        fields["idle_unprotected_size_error"] = (
+            measurement.error or "measurement unavailable"
+        )
+    else:
+        fields["idle_unprotected_size_status"] = "not-requested"
+
+    measurement_unknown = (
+        measurement_required
+        and measured_candidates > 0
+        and measurement.size_upper_bound_bytes is None
+    )
+    if measurement_unknown:
+        state = UNKNOWN
+    elif fresh:
+        state = RECLAIMABLE
+    else:
+        state = OK
+    headroom = (
+        f" Current data headroom is {measurement.data_headroom_bytes / GIB:.1f} GiB."
+        if measurement.data_headroom_bytes is not None
+        else ""
+    )
+
+    if measurement_unknown:
+        summary = (
+            f"{measured_candidates} idle unprotected slot(s), but their current set size "
+            f"is unavailable: {measurement.error or 'measurement unavailable'}. "
+            "No reclaimable byte figure is reported."
+            + headroom
+        )
+    elif fresh:
+        named = ", ".join(r.slot for r in flagged if r.slot in fresh)
+        size = measurement.size_upper_bound_bytes
+        measured = (
+            f"currently reference up to {size / GIB:.2f} GiB as one measured set. "
+            "This is an upper bound: extents shared with protected paths may not be freed. "
+            if size is not None
+            else "were not measured because the byte threshold is disabled. "
         )
         summary = (
-            f"{len(fresh)} slot(s) newly idle >= threshold and >= {min_gib} GiB: {named}; "
-            f"{len(flagged)} reclaimable in total holding up to {total / GIB:.1f} GiB "
-            f"(upper bound: reflink-shared extents are counted per-slot). "
+            f"{len(fresh)} slot(s) newly idle >= threshold: {named}; "
+            f"{len(flagged)} reclaim candidate(s) {measured}"
             f"DETECT ONLY -- release-worktree.rs is the authority and may still "
             f"refuse; reclaim needs a recovery SHA."
+            + headroom
+        )
+    elif flagged:
+        size = measurement.size_upper_bound_bytes
+        measured = (
+            f"currently reference up to {size / GIB:.2f} GiB as one measured set. "
+            "This is an upper bound: extents shared with protected paths may not be freed. "
+            if size is not None
+            else "were not measured because the byte threshold is disabled. "
+        )
+        summary = (
+            f"no newly reclaimable slot; {len(flagged)} standing reclaim CANDIDATE(s) "
+            f"{measured}Standing backlog, not paged."
+            + headroom
+        )
+    elif measured_candidates and measurement.size_upper_bound_bytes is not None:
+        summary = (
+            f"no reclaim candidate: {measured_candidates} idle unprotected slot(s) "
+            f"currently reference up to {measurement.size_upper_bound_bytes / GIB:.2f} GiB "
+            f"as one measured set (< {min_gib} GiB threshold)."
+            + headroom
         )
     else:
         summary = (
-            f"no newly reclaimable slot; {len(flagged)} standing reclaim CANDIDATE(s) "
-            f"holding up to {total / GIB:.1f} GiB of {fields['slots_on_disk']} on disk "
-            f"({fields['slots_occupied']} occupied). Standing backlog, not paged."
+            f"no reclaim candidate among {fields['slots_on_disk']} slot(s) on disk "
+            f"({fields['slots_occupied']} occupied)."
+            + headroom
         )
     if occ.blind_pids:
         summary += f" occupancy blind spot: {occ.blind_pids} same-uid pid(s) with unreadable cwd."
@@ -564,12 +724,30 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--gate", action="store_true",
                    help="exit 1 when a slot became reclaimable since the last run")
     p.add_argument("--idle-hours", type=float, default=DEFAULT_IDLE_HOURS)
-    p.add_argument("--min-gib", type=float, default=DEFAULT_MIN_GIB)
-    p.add_argument("--refresh-hours", type=float, default=DEFAULT_REFRESH_HOURS)
-    p.add_argument("--max-measure", type=int, default=DEFAULT_MAX_MEASURE)
-    p.add_argument("--du-timeout", type=int, default=DEFAULT_DU_TIMEOUT)
+    p.add_argument(
+        "--min-gib",
+        type=float,
+        default=DEFAULT_MIN_GIB,
+        help="minimum current upper bound for the complete idle unprotected set",
+    )
+    p.add_argument(
+        "--size-timeout",
+        "--du-timeout",
+        dest="size_timeout",
+        type=int,
+        default=DEFAULT_SIZE_TIMEOUT,
+        help=(
+            "seconds allowed for the one current compsize measurement "
+            f"(default {DEFAULT_SIZE_TIMEOUT}; --du-timeout is a compatibility alias)"
+        ),
+    )
+    # Accepted so an older installed tick configuration fails safe during a
+    # rolling update. They no longer alter behavior: cached sizes and partial
+    # refreshes are the defect this version removes.
+    p.add_argument("--refresh-hours", help=argparse.SUPPRESS)
+    p.add_argument("--max-measure", help=argparse.SUPPRESS)
     p.add_argument("--no-measure", action="store_true",
-                   help="skip du entirely and use only cached sizes")
+                   help="skip size and filesystem-headroom measurement")
     p.add_argument("--state", default=None, help=f"state file (default {DEFAULT_STATE})")
     p.add_argument("--registry", default=None,
                    help="slot registry (default <root>/worktree-state.json)")
@@ -588,6 +766,12 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.active_slot_cap < 0:
         p.error("--active-slot-cap must be non-negative")
+    if args.idle_hours < 0:
+        p.error("--idle-hours must be non-negative")
+    if args.min_gib < 0:
+        p.error("--min-gib must be non-negative")
+    if args.size_timeout <= 0:
+        p.error("--size-timeout must be positive")
 
     try:
         root = repo_root(Path(args.root) if args.root else None)
@@ -659,12 +843,7 @@ def main(argv: list[str] | None = None) -> int:
             return 1 if active_excess else 2
         prior = read_state(state_path)
         now = datetime.now(timezone.utc)
-        results, next_state, occ = evaluate(
-            root, prior, now,
-            idle_hours=args.idle_hours, min_gib=args.min_gib,
-            refresh_hours=args.refresh_hours, max_measure=args.max_measure,
-            du_timeout=args.du_timeout, measure=not args.no_measure,
-        )
+        results, next_state, occ = evaluate(root, prior, now, idle_hours=args.idle_hours)
         dead_owner = residue_sweep.guarded_dead_owner_slots(
             registry, authorities, set(occ.counts)
         )
@@ -682,23 +861,53 @@ def main(argv: list[str] | None = None) -> int:
 
     suppress_undecided_owners(results, live_owner_slots, unassessable_owner_slots)
 
+    candidate_names = [r.slot for r in results if r.reclaimable]
+    measurement_required = bool(candidate_names) and args.min_gib > 0
+    if args.no_measure:
+        measurement = CandidateSetMeasurement(
+            None,
+            None,
+            None,
+            "measurement disabled by --no-measure" if measurement_required else None,
+        )
+    else:
+        measurement = measure_candidate_set(root, candidate_names, args.size_timeout)
+    measured_candidates = apply_size_threshold(results, measurement, args.min_gib)
+
     current = {r.slot for r in results if r.reclaimable}
     reported = prior.get("reported")
-    if isinstance(reported, list):
+    if measurement_required and measurement.size_upper_bound_bytes is None:
+        # Do not acknowledge an unmeasured candidate set. If measurement works
+        # next tick, every newly qualifying slot must still be able to page. Do
+        # forget previously reported slots that are no longer candidates, so a
+        # later idle period is a new event rather than hidden by old state.
+        fresh = set()
+        previous = set(reported) if isinstance(reported, list) else set()
+        next_state["reported"] = sorted(previous & set(candidate_names))
+    elif isinstance(reported, list):
         # Only slots that were ALREADY reclaimable are suppressed. A slot that
         # gets used again and later goes idle again must page again, so this is
         # the current set, never a cumulative union.
         fresh = current - set(reported)
+        next_state["reported"] = sorted(current)
     else:
         # First run adopts the baseline WITHOUT paging: the standing backlog did
         # not happen at this tick and must not be reported as if it had.
         fresh = set()
-    next_state["reported"] = sorted(current)
+        next_state["reported"] = sorted(current)
 
     if not args.dry_run:
         write_state(state_path, next_state)
 
-    state, summary, fields = summarize(results, occ, fresh, args.min_gib)
+    state, summary, fields = summarize(
+        results,
+        occ,
+        fresh,
+        args.min_gib,
+        measured_candidates,
+        measurement,
+        measurement_required,
+    )
 
     fields.update({
         "active_slots": active_count,
@@ -766,14 +975,11 @@ def main(argv: list[str] | None = None) -> int:
     # answer alone. It stays failed while the condition holds -- the dial that
     # clears it is restoring owner evidence in the allocator, not reclassifying
     # the finding here.
-    return (
-        1
-        if (
-            args.gate
-            and (fresh or active_excess or dead_owner or unassessable_owner_slots)
-        )
-        else 0
-    )
+    if not args.gate:
+        return 0
+    if fresh or active_excess or dead_owner or unassessable_owner_slots:
+        return 1
+    return 2 if state == UNKNOWN else 0
 
 
 if __name__ == "__main__":

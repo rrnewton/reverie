@@ -155,11 +155,11 @@ reminders:
     cadence_secs: 3600
     gate:
       # One guarded bulk owner census replaces one subprocess/registry-lock
-      # acquisition per row. Disk sizing is also incremental: at most one 5s
-      # `du` per tick. A persisted round-robin cursor prevents an unreadable or
-      # newly-stale early slot from starving later rows. Expensive work per tick
-      # is fixed even while the visible backlog grows.
-      cmd: python3 ci-hub/health/slot_disk_residue.py --gate --max-measure 1 --du-timeout 5 --refresh-hours 24
+      # acquisition per row. Candidate sizing is one bounded `compsize` call
+      # over the complete current set, never a sum of cached per-slot values.
+      # This deduplicates reflinks within the set and refuses an unavailable or
+      # physically impossible result instead of printing an invented total.
+      cmd: python3 ci-hub/health/slot_disk_residue.py --gate --size-timeout 5
       when: failure
       capture: true
     emit:

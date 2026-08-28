@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -80,20 +81,19 @@ class DiskResidueBracketTest(unittest.TestCase):
     """The two cases the task requires, plus the ways each could be faked."""
 
     def test_positive_abandoned_slot_is_detected(self) -> None:
-        """POSITIVE: on disk, big, no process inside, idle a long time -> flagged."""
+        """POSITIVE: on disk, no process inside, idle a long time -> candidate."""
         with tempfile.TemporaryDirectory() as raw:
             root = make_root(Path(raw), ["abandoned"])
             prior = state_with("abandoned", NOW - timedelta(hours=72), int(8 * GIB))
             results, _, _ = sdr.evaluate(
-                root, prior, NOW, idle_hours=24.0, min_gib=1.0,
-                refresh_hours=12.0, max_measure=0, du_timeout=5, measure=False,
+                root, prior, NOW, idle_hours=24.0,
             )
             self.assertEqual(len(results), 1)
             verdict = results[0]
             self.assertTrue(verdict.reclaimable, verdict.reason)
             self.assertEqual(verdict.procs, 0)
             self.assertAlmostEqual(verdict.idle_hours, 72.0, places=1)
-            self.assertIn("8.00 GiB", verdict.reason)
+            self.assertNotIn("GiB", verdict.reason)
 
     def test_negative_slot_with_a_live_process_is_not_flagged(self) -> None:
         """NEGATIVE: identical slot -- old, big, idle-clocked -- but occupied.
@@ -115,8 +115,7 @@ class DiskResidueBracketTest(unittest.TestCase):
             try:
                 prior = state_with("busy", NOW - timedelta(hours=72), int(8 * GIB))
                 results, next_state, occ = sdr.evaluate(
-                    root, prior, NOW, idle_hours=24.0, min_gib=1.0,
-                    refresh_hours=12.0, max_measure=0, du_timeout=5, measure=False,
+                    root, prior, NOW, idle_hours=24.0,
                 )
                 verdict = results[0]
                 self.assertFalse(verdict.reclaimable, verdict.reason)
@@ -137,58 +136,58 @@ class DiskResidueBracketTest(unittest.TestCase):
             root = make_root(Path(raw), ["justidle"])
             prior = state_with("justidle", NOW - timedelta(hours=1), int(8 * GIB))
             results, _, _ = sdr.evaluate(
-                root, prior, NOW, idle_hours=24.0, min_gib=1.0,
-                refresh_hours=12.0, max_measure=0, du_timeout=5, measure=False,
+                root, prior, NOW, idle_hours=24.0,
             )
             self.assertFalse(results[0].reclaimable)
             self.assertIn("< 24.0h", results[0].reason)
 
-    def test_small_idle_slot_is_not_flagged(self) -> None:
-        """Long-idle but tiny: real, but not a disk-reclamation finding."""
+    def test_legacy_cached_size_is_discarded(self) -> None:
+        """A fossilized size must not survive into the next state or verdict."""
         with tempfile.TemporaryDirectory() as raw:
             root = make_root(Path(raw), ["tiny"])
             prior = state_with("tiny", NOW - timedelta(hours=72), 4096)
-            results, _, _ = sdr.evaluate(
-                root, prior, NOW, idle_hours=24.0, min_gib=1.0,
-                refresh_hours=12.0, max_measure=0, du_timeout=5, measure=False,
+            results, next_state, _ = sdr.evaluate(
+                root, prior, NOW, idle_hours=24.0,
             )
-            self.assertFalse(results[0].reclaimable)
-            self.assertIn("0.00 GiB", results[0].reason)
+            self.assertTrue(results[0].reclaimable)
+            self.assertNotIn("size_bytes", next_state["slots"]["tiny"])
+            self.assertNotIn("sized_at", next_state["slots"]["tiny"])
 
-    def test_unmeasurable_size_is_never_flagged(self) -> None:
-        """An unmeasured slot must not read as empty and must not read as huge.
-
-        `disk_bytes` returns None rather than 0 precisely so a `du` failure
-        cannot be laundered into a finding either way.
-        """
+    def test_unmeasurable_candidate_set_is_never_flagged(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = make_root(Path(raw), ["unmeasured"])
             prior = {"slots": {"unmeasured": {
                 "idle_since": sdr.fmt_ts(NOW - timedelta(hours=72))}}}
             results, _, _ = sdr.evaluate(
-                root, prior, NOW, idle_hours=24.0, min_gib=1.0,
-                refresh_hours=12.0, max_measure=0, du_timeout=5, measure=False,
+                root, prior, NOW, idle_hours=24.0,
             )
+            count = sdr.apply_size_threshold(
+                results,
+                sdr.CandidateSetMeasurement(None, 10 * int(GIB), None, "unavailable"),
+                min_gib=1.0,
+            )
+            self.assertEqual(count, 1)
             self.assertFalse(results[0].reclaimable)
-            self.assertIn("could not be measured", results[0].reason)
+            self.assertIn("current candidate-set size unavailable", results[0].reason)
 
-    def test_incremental_measurement_round_robins_without_starvation(self) -> None:
+    def test_current_candidate_set_below_threshold_is_not_flagged(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = make_root(Path(raw), ["a", "b", "c"])
             prior = {
-                "slots": {},
-                "measure_cursor": "b",
+                "slots": {
+                    slot: {"idle_since": sdr.fmt_ts(NOW - timedelta(hours=72))}
+                    for slot in ("a", "b", "c")
+                }
             }
-            with mock.patch.object(sdr, "disk_bytes", return_value=4096) as measure:
-                _, next_state, _ = sdr.evaluate(
-                    root, prior, NOW, idle_hours=24.0, min_gib=1.0,
-                    refresh_hours=24.0, max_measure=1, du_timeout=5,
-                )
-            self.assertEqual(measure.call_count, 1)
-            self.assertEqual(measure.call_args.args[0].name, "c")
-            self.assertEqual(next_state["measure_cursor"], "c")
-            self.assertIsNotNone(next_state["slots"]["c"]["sized_at"])
-            self.assertIsNone(next_state["slots"]["a"]["sized_at"])
+            results, _, _ = sdr.evaluate(root, prior, NOW, idle_hours=24.0)
+            count = sdr.apply_size_threshold(
+                results,
+                sdr.CandidateSetMeasurement(int(0.5 * GIB), 10 * int(GIB), None),
+                min_gib=1.0,
+            )
+            self.assertEqual(count, 3)
+            self.assertFalse(any(r.reclaimable for r in results))
+            self.assertTrue(all("complete candidate set" in r.reason for r in results))
 
     def test_registry_absence_alone_never_flags_anything(self) -> None:
         """The registry is not consulted at all -- the filesystem is the authority.
@@ -205,8 +204,7 @@ class DiskResidueBracketTest(unittest.TestCase):
                                             "agents": [{"name": "somebody"}]}}}))
             prior = state_with("unregistered", NOW - timedelta(hours=72), int(8 * GIB))
             results, _, _ = sdr.evaluate(
-                root, prior, NOW, idle_hours=24.0, min_gib=1.0,
-                refresh_hours=12.0, max_measure=0, du_timeout=5, measure=False,
+                root, prior, NOW, idle_hours=24.0,
             )
             self.assertTrue(results[0].reclaimable)
             self.assertNotIn("somebody", results[0].reason)
@@ -228,18 +226,242 @@ class DiskResidueBracketTest(unittest.TestCase):
         del occ
 
 
+class CandidateSetMeasurementTest(unittest.TestCase):
+    @staticmethod
+    def _headroom(device_total: int = int(10 * GIB), data_headroom: int = int(4 * GIB)):
+        result = mock.Mock()
+        result.device_total = device_total
+        result.pool_headroom.return_value = data_headroom
+        return result
+
+    def test_one_compsize_call_measures_the_complete_sorted_set(self) -> None:
+        output = subprocess.CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout=(
+                "Processed 2 files, 1 regular extents (2 refs), 0 inline.\n"
+                "Type Perc Disk Usage Uncompressed Referenced\n"
+                "TOTAL 100% 4194304 4194304 8388608\n"
+            ),
+            stderr="",
+        )
+        with mock.patch.object(
+            sdr.btrfs_headroom, "measure", return_value=self._headroom()
+        ), mock.patch.object(subprocess, "run", return_value=output) as run:
+            measured = sdr.measure_candidate_set(Path("/repo"), ["b", "a"], timeout=7)
+
+        self.assertEqual(measured.size_upper_bound_bytes, 4194304)
+        self.assertIsNone(measured.error)
+        run.assert_called_once_with(
+            [
+                "compsize",
+                "--bytes",
+                "/repo/worktrees/slots/a",
+                "/repo/worktrees/slots/b",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=7,
+            check=False,
+        )
+
+    def test_impossible_measurement_is_refused_not_printed(self) -> None:
+        output = subprocess.CompletedProcess(
+            args=[], returncode=0,
+            stdout="TOTAL 100% 11811160064 11811160064 11811160064\n",
+            stderr="",
+        )
+        with mock.patch.object(
+            sdr.btrfs_headroom,
+            "measure",
+            return_value=self._headroom(device_total=int(10 * GIB)),
+        ), mock.patch.object(subprocess, "run", return_value=output):
+            measured = sdr.measure_candidate_set(Path("/repo"), ["a"], timeout=7)
+
+        self.assertIsNone(measured.size_upper_bound_bytes)
+        self.assertEqual(measured.error, "candidate-set size exceeds the filesystem capacity")
+
+    def test_unexpected_compsize_output_is_unknown_not_an_exception(self) -> None:
+        output = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout="a format this reader does not know\n", stderr=""
+        )
+        with mock.patch.object(
+            sdr.btrfs_headroom, "measure", return_value=self._headroom()
+        ), mock.patch.object(subprocess, "run", return_value=output):
+            measured = sdr.measure_candidate_set(Path("/repo"), ["a"], timeout=7)
+
+        self.assertIsNone(measured.size_upper_bound_bytes)
+        self.assertEqual(measured.error, "compsize did not emit exactly one TOTAL row")
+
+    def test_real_reflinks_are_counted_once_for_the_set(self) -> None:
+        if shutil.which("compsize") is None:
+            self.skipTest("compsize is not installed")
+        with tempfile.TemporaryDirectory() as raw:
+            root = make_root(Path(raw), ["a", "b"])
+            try:
+                sdr.btrfs_headroom.measure(str(root))
+            except (sdr.btrfs_headroom.NotBtrfs, OSError, ValueError):
+                self.skipTest("temporary directory is not on readable btrfs")
+            source = root / "source.bin"
+            source.write_bytes(os.urandom(4 * 1024 * 1024))
+            copies = [root / "worktrees" / "slots" / slot / "copy.bin"
+                      for slot in ("a", "b")]
+            for copy in copies:
+                copied = subprocess.run(
+                    ["cp", "--reflink=always", str(source), str(copy)],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                if copied.returncode != 0:
+                    self.skipTest(f"reflink unavailable: {copied.stderr.strip()}")
+
+            one = sdr.measure_candidate_set(root, ["a"], timeout=5)
+            both = sdr.measure_candidate_set(root, ["a", "b"], timeout=5)
+            self.assertIsNone(one.error, one.error)
+            self.assertIsNone(both.error, both.error)
+            self.assertEqual(both.size_upper_bound_bytes, one.size_upper_bound_bytes)
+
+    def test_real_nested_btrfs_subvolume_is_not_skipped(self) -> None:
+        if shutil.which("compsize") is None or shutil.which("btrfs") is None:
+            self.skipTest("compsize or btrfs is not installed")
+        with tempfile.TemporaryDirectory() as raw:
+            root = make_root(Path(raw), ["a"])
+            try:
+                sdr.btrfs_headroom.measure(str(root))
+            except (sdr.btrfs_headroom.NotBtrfs, OSError, ValueError):
+                self.skipTest("temporary directory is not on readable btrfs")
+            nested = root / "worktrees" / "slots" / "a" / "nested"
+            created = subprocess.run(
+                ["btrfs", "subvolume", "create", str(nested)],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if created.returncode != 0:
+                self.skipTest(f"subvolume creation unavailable: {created.stderr.strip()}")
+            blob = nested / "blob"
+            try:
+                with blob.open("wb") as handle:
+                    handle.write(os.urandom(4 * 1024 * 1024))
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                measured = sdr.measure_candidate_set(root, ["a"], timeout=5)
+                self.assertIsNone(measured.error, measured.error)
+                self.assertGreaterEqual(measured.size_upper_bound_bytes or 0, 4 * 1024 * 1024)
+            finally:
+                blob.unlink(missing_ok=True)
+                nested.rmdir()
+
+
+class CandidateSetReportTest(unittest.TestCase):
+    @staticmethod
+    def _old_candidate() -> sdr.SlotResidue:
+        return sdr.SlotResidue(
+            slot="old", procs=0, idle_since=None, idle_hours=48.0,
+            reclaimable=True, reason="idle",
+        )
+
+    def test_current_set_replaces_the_fossilized_total(self) -> None:
+        results = [self._old_candidate()]
+        measurement = sdr.CandidateSetMeasurement(
+            int(2.1 * GIB), int(3502.22 * GIB), int(1144.7 * GIB)
+        )
+        state, summary, fields = sdr.summarize(
+            results, sdr.Occupancy(), set(), 1.0, 1, measurement, True
+        )
+
+        self.assertEqual(state, sdr.OK)
+        self.assertEqual(fields["idle_unprotected_gib_upper_bound"], 2.1)
+        self.assertEqual(fields["idle_unprotected_size_status"], "current")
+        self.assertNotIn("reclaimable_gib", fields)
+        self.assertIn("2.10 GiB as one measured set", summary)
+        self.assertNotIn("208.9", summary)
+
+    def test_impossible_or_unavailable_size_has_no_numeric_substitute(self) -> None:
+        results = [self._old_candidate()]
+        measurement = sdr.CandidateSetMeasurement(
+            None, int(3502.22 * GIB), int(1144.7 * GIB),
+            "candidate-set size exceeds the filesystem capacity",
+        )
+        measured_candidates = sdr.apply_size_threshold(results, measurement, 1.0)
+        state, summary, fields = sdr.summarize(
+            results,
+            sdr.Occupancy(),
+            set(),
+            1.0,
+            measured_candidates,
+            measurement,
+            True,
+        )
+
+        self.assertEqual(state, sdr.UNKNOWN)
+        self.assertEqual(fields["idle_unprotected_size_status"], sdr.UNKNOWN)
+        self.assertNotIn("idle_unprotected_gib_upper_bound", fields)
+        self.assertIn("No reclaimable byte figure is reported", summary)
+
+    def test_disabled_threshold_does_not_masquerade_as_a_zero_measurement(self) -> None:
+        results = [self._old_candidate()]
+        measurement = sdr.CandidateSetMeasurement(None, None, None)
+        state, summary, fields = sdr.summarize(
+            results, sdr.Occupancy(), set(), 0.0, 1, measurement, False
+        )
+
+        self.assertEqual(state, sdr.OK)
+        self.assertEqual(fields["idle_unprotected_size_status"], "not-requested")
+        self.assertNotIn("idle_unprotected_gib_upper_bound", fields)
+        self.assertIn("were not measured", summary)
+        self.assertNotIn("0.0 GiB", summary)
+
+    def test_gate_refuses_when_a_required_measurement_is_disabled(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = make_root(Path(raw), ["old"])
+            state_file = root / "state.json"
+            state_file.write_text(json.dumps({
+                "reported": ["gone", "old"],
+                "slots": {
+                    "old": {
+                        "idle_since": sdr.fmt_ts(NOW - timedelta(hours=48)),
+                        "size_bytes": int(208.9 * GIB),
+                    }
+                },
+            }), encoding="utf-8")
+            proc = subprocess.run(
+                [
+                    sys.executable,
+                    str(REPO / "ci-hub/health/slot_disk_residue.py"),
+                    "--root", str(root),
+                    "--state", str(state_file),
+                    "--gate",
+                    "--idle-hours", "0",
+                    "--min-gib", "1",
+                    "--no-measure",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            persisted = json.loads(state_file.read_text(encoding="utf-8"))
+
+        self.assertEqual(proc.returncode, 2, proc.stdout + proc.stderr)
+        self.assertIn("state=unknown", proc.stdout)
+        self.assertIn("idle_unprotected_size_status=unknown", proc.stdout)
+        self.assertNotIn("idle_unprotected_gib_upper_bound=", proc.stdout)
+        self.assertNotIn("208.9", proc.stdout)
+        self.assertEqual(persisted["reported"], ["old"])
+        self.assertNotIn("size_bytes", persisted["slots"]["old"])
+
+
 class DeltaPagingTest(unittest.TestCase):
     """A gate that fires every tick forever gets muted; this one must not."""
 
     def _run(self, root: Path, state: Path, extra: list[str]) -> tuple[int, str]:
-        # Thresholds at zero so these tests exercise the DELTA logic alone; the
-        # threshold behaviour is bracketed separately above. `du` is left enabled
-        # because an unmeasured slot is deliberately never flagged, so suppressing
-        # it here would make every slot inert and the delta untestable.
+        # A zero threshold needs no byte measurement, so these tests exercise
+        # the delta logic without depending on the host filesystem.
         proc = subprocess.run(
             [sys.executable, str(REPO / "ci-hub/health/slot_disk_residue.py"),
              "--root", str(root), "--state", str(state), "--gate",
-             "--idle-hours", "0", "--min-gib", "0", *extra],
+             "--idle-hours", "0", "--min-gib", "0", "--no-measure", *extra],
             capture_output=True, text=True, timeout=120,
         )
         return proc.returncode, proc.stdout
@@ -294,8 +516,14 @@ class DeltaPagingTest(unittest.TestCase):
                 line.split("=", 1) for line in out.splitlines() if "=" in line
                 and not line.startswith("slot=")
             )
-            for key in ("state", "summary", "slots_on_disk", "reclaimable_slots",
-                        "reclaimable_gib", "blind_pids"):
+            for key in (
+                "state",
+                "summary",
+                "slots_on_disk",
+                "reclaimable_slots",
+                "idle_unprotected_size_status",
+                "blind_pids",
+            ):
                 self.assertIn(key, fields)
             self.assertTrue(fields["summary"].strip())
             self.assertNotIn("{summary}", out)
@@ -354,14 +582,15 @@ class TickHubScopeTest(unittest.TestCase):
             "disk-reclamation monitoring was lost, not re-scoped",
         )
 
-    def test_disk_gate_has_count_independent_expensive_work_bound(self) -> None:
+    def test_disk_gate_has_one_bounded_current_set_measurement(self) -> None:
         command = next(
             cmd for cmd in self._active_gate_cmds()
             if "slot_disk_residue.py" in cmd
         )
-        self.assertIn("--max-measure 1", command)
-        self.assertIn("--du-timeout 5", command)
-        self.assertIn("--refresh-hours 24", command)
+        self.assertIn("--size-timeout 5", command)
+        self.assertNotIn("--max-measure", command)
+        self.assertNotIn("--refresh-hours", command)
+        self.assertNotIn("--du-timeout", command)
 
 
 class CapacityDenominatorTest(unittest.TestCase):
@@ -438,7 +667,7 @@ class UndecidedOwnerSuppressionTest(unittest.TestCase):
     def _residue(slot: str, reclaimable: bool) -> sdr.SlotResidue:
         return sdr.SlotResidue(
             slot=slot, procs=0, idle_since=None, idle_hours=99.0,
-            size_bytes=int(2 * GIB), reclaimable=reclaimable, reason="before")
+            reclaimable=reclaimable, reason="before")
 
     def test_suppression_can_only_ever_remove_candidates(self) -> None:
         """Every combination of membership and prior flag, exhaustively."""
@@ -550,7 +779,8 @@ class UnassessableOwnerBracketTest(unittest.TestCase):
                  "--root", str(root), "--registry", str(registry),
                  "--state", str(state),
                  "--test-owner-authority-json", str(authority),
-                 "--active-slot-cap", "5", "--gate", "--no-measure"],
+                 "--active-slot-cap", "5", "--gate", "--min-gib", "0",
+                 "--no-measure"],
                 capture_output=True, text=True, timeout=30)
 
     def test_positive_a_proven_dead_owner_is_still_reported_dead(self) -> None:
