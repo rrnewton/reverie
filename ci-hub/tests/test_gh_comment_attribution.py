@@ -19,6 +19,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "ci-hub"))
 from closure import publication_record  # noqa: E402
+sys.path.insert(0, str(ROOT / "ci-hub/landing"))
+import task_pr_record  # noqa: E402
 
 SOURCE_SHIM = Path(os.environ.get("FLEET_GH_UNDER_TEST", ROOT / "ci-hub/bin/gh"))
 SOURCE_DISCLOSURE = Path(
@@ -141,6 +143,11 @@ class FleetGhTest(unittest.TestCase):
         shutil.copy2(
             ROOT / "ci-hub/closure/publication_record.py",
             self.root / "ci-hub/closure/publication_record.py",
+        )
+        (self.root / "ci-hub/landing").mkdir(parents=True)
+        shutil.copy2(
+            ROOT / "ci-hub/landing/task_pr_record.py",
+            self.root / "ci-hub/landing/task_pr_record.py",
         )
         shutil.copy2(SOURCE_DISCLOSURE, self.root / "ci-hub/lib/disclosure_tag.py")
 
@@ -546,6 +553,38 @@ class FleetGhTest(unittest.TestCase):
                     f"[hermit2, {TEST_AGENT}, unresolved, {machine}, role=impl]\nprose",
                     "A CREATED ARTIFACT WENT OUT UNATTRIBUTED",
                 )
+
+    def test_successful_pr_create_records_exact_task_ownership(self) -> None:
+        url = "https://github.com/rrnewton/hermit/pull/2811"
+        env = dict(self.env, GH_STDOUT=url + "\n")
+        result = self.run_shim(
+            *self.identity(),
+            "--task", "type-census",
+            "pr", "create", "--title", "typed result", "--body", "prose",
+            env=env,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        record = json.loads(self.note_capture.read_text())
+        self.assertEqual(record["args"][:3], ["type-census", "--file", record["note_path"]])
+        self.assertEqual(record["private"], "1")
+        self.assertEqual(
+            record["body"],
+            task_pr_record.render(
+                "type-census", "rrnewton/hermit", 2811, url, TEST_AGENT
+            ),
+        )
+        self.assertFalse(Path(record["note_path"]).exists())
+        self.assertIn("recorded task/PR ownership", result.stderr)
+
+    def test_task_on_issue_create_is_refused_before_write(self) -> None:
+        result = self.run_shim(
+            *self.identity(),
+            "--task", "not-a-pr",
+            "issue", "create", "--title", "t", "--body", "prose",
+        )
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("--task applies only", result.stderr)
+        self.assertFalse(self.capture.exists())
 
     def test_created_body_from_a_file_is_prefixed_too(self) -> None:
         """`--body-file` is how a long issue is actually filed; it must not be

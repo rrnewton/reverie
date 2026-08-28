@@ -29,6 +29,10 @@ the exact canonical marker line already present in its body. The boundary puts
 the existing ``VERDICT:`` prefix on that prose line when needed, so readers do
 not have to infer intent and no second marker is added.
 
+Supplying ``--task`` to ``pr create`` records the exact task/PR ownership fact
+on that task from the URL returned by GitHub. Supplying it to a comment write
+records the exact publication fact. It is refused on other writes.
+
 A shared GitHub credential still cannot prove who typed the arguments.  The
 independent process-context comparison makes a false claim falsifiable.  The
 disclosure prefix is not review-family authority, but an explicit ``--verdict``
@@ -51,6 +55,8 @@ from pathlib import Path as _BootstrapPath
 # the checker that reads it, so neither can drift from the other.
 _bootstrap_sys.path.insert(0, str(_BootstrapPath(__file__).resolve().parent.parent))
 from closure import publication_record  # noqa: E402
+_bootstrap_sys.path.insert(0, str(_BootstrapPath(__file__).resolve().parent.parent / "landing"))
+import task_pr_record  # noqa: E402
 
 import os
 import re
@@ -618,6 +624,46 @@ def is_verdict_write(args: list[str]) -> bool:
 COMMENT_URL = re.compile(
     r"https://github\.com/[^/\s]+/[^/\s]+/pull/\d+#issuecomment-\d+"
 )
+PULL_REQUEST_URL = re.compile(
+    r"^(?P<url>https://github\.com/[^/\s]+/[^/\s]+/pull/\d+)[ \t]*$",
+    re.MULTILINE,
+)
+
+
+def write_task_record(task: str, body: str) -> str | None:
+    """Write one exact whole-note record and return a named error if it fails."""
+    note_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w", suffix=".note", delete=False, encoding="utf-8"
+        ) as handle:
+            handle.write(body)
+            note_path = Path(handle.name)
+        env = os.environ.copy()
+        env["TG_NOTE_PRIVATE_TEMP"] = "1"
+        result = subprocess.run(
+            [
+                str(Path(__file__).resolve().parent / "tg-note-verified"),
+                task,
+                "--file",
+                str(note_path),
+            ],
+            cwd=ROOT,
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            return result.stderr.strip() or f"tg-note-verified exited {result.returncode}"
+        return None
+    except Exception as exc:  # noqa: BLE001 - the GitHub write already happened
+        return str(exc)
+    finally:
+        if note_path is not None:
+            try:
+                note_path.unlink()
+            except OSError:
+                pass
 
 
 def record_publication(task: str, actor: str, stdout: str) -> None:
@@ -651,33 +697,8 @@ def record_publication(task: str, actor: str, stdout: str) -> None:
     repo = f"{parts[3]}/{parts[4]}"
     pr = int(parts[6].split("#")[0])
     body = publication_record.render_publication(repo, pr, url, actor)
-    note_path: Path | None = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            "w", suffix=".note", delete=False, encoding="utf-8"
-        ) as handle:
-            handle.write(body)
-            note_path = Path(handle.name)
-        env = os.environ.copy()
-        env["TG_NOTE_PRIVATE_TEMP"] = "1"
-        result = subprocess.run(
-            [
-                str(Path(__file__).resolve().parent / "tg-note-verified"),
-                task,
-                "--file",
-                str(note_path),
-            ],
-            cwd=ROOT,
-            env=env,
-            capture_output=True,
-            text=True,
-        )
-        if result.returncode != 0:
-            raise RuntimeError(
-                result.stderr.strip()
-                or f"tg-note-verified exited {result.returncode}"
-            )
-    except Exception as exc:  # noqa: BLE001 - see the docstring: never fail the post
+    error = write_task_record(task, body)
+    if error is not None:
         # ⚠️ THE RECOVERY HINT MUST BE THE RECORD ITSELF, not the URL. A hint that
         # says "note the link" produces PROSE, which only the fallback regex can
         # read -- the operator would follow the instructions and still not have a
@@ -685,20 +706,45 @@ def record_publication(task: str, actor: str, stdout: str) -> None:
         # path producing the same artifact.
         indented = "\n".join("       " + line for line in body.splitlines())
         print(
-            f"gh: WARNING — posted {url} but could not record it on {task}: {exc}\n"
+            f"gh: WARNING — posted {url} but could not record it on {task}: {error}\n"
             "     The comment is real; only its record is missing. Re-record by\n"
             "     writing EXACTLY this body to a file, then running\n"
             f"     `ci-hub/bin/tg-note-verified {task} --file NOTE.md`:\n{indented}",
             file=sys.stderr,
         )
         return
-    finally:
-        if note_path is not None:
-            try:
-                note_path.unlink()
-            except OSError:
-                pass
     print(f"gh: recorded publication {url} on {task}", file=sys.stderr)
+
+
+def record_task_pr(task: str, actor: str, stdout: str) -> None:
+    """Record the task/PR ownership fact from the URL returned by creation."""
+    match = PULL_REQUEST_URL.search(stdout or "")
+    if match is None:
+        print(
+            "gh: WARNING — pull request created but no URL was printed, so no "
+            f"task/PR ownership record was written to {task}",
+            file=sys.stderr,
+        )
+        return
+    url = match.group("url")
+    parts = url.split("/")
+    repo = f"{parts[3]}/{parts[4]}"
+    pr = int(parts[6])
+    body = task_pr_record.render(task, repo, pr, url, actor)
+    error = write_task_record(task, body)
+    if error is not None:
+        indented = "\n".join("       " + line for line in body.splitlines())
+        print(
+            f"gh: WARNING — created {url} but could not record its task/PR "
+            f"ownership on {task}: {error}\n"
+            "     The pull request is real; only its ownership record is missing. "
+            "Re-record by\n"
+            "     writing EXACTLY this body to a file, then running\n"
+            f"     `ci-hub/bin/tg-note-verified {task} --file NOTE.md`:\n{indented}",
+            file=sys.stderr,
+        )
+        return
+    print(f"gh: recorded task/PR ownership {url} on {task}", file=sys.stderr)
 
 
 def post_and_record(args: list[str], task: str, actor: str) -> int:
@@ -720,6 +766,20 @@ def post_and_record(args: list[str], task: str, actor: str) -> int:
     return result.returncode
 
 
+def create_pr_and_record(args: list[str], task: str, actor: str) -> int:
+    """Create one PR, then record the exact URL returned by GitHub on its task."""
+    result = subprocess.run([real_gh(), *args], capture_output=True, text=True)
+    if result.stdout:
+        sys.stdout.write(result.stdout)
+        sys.stdout.flush()
+    if result.stderr:
+        sys.stderr.write(result.stderr)
+        sys.stderr.flush()
+    if result.returncode == 0:
+        record_task_pr(task, actor, result.stdout)
+    return result.returncode
+
+
 
 def main() -> int:
     args, supplied = disclosure_options(sys.argv[1:])
@@ -733,15 +793,18 @@ def main() -> int:
         if verdict is not None:
             validate_verdict_family(verdict, resolution)
         args = rewrite(args, disclosure, verdict)
-        # A named task is what couples the publication to its record. It is
-        # optional so that every existing caller keeps working unchanged, and
-        # `drain_publication.py` measures the resulting coverage per task rather
-        # than assuming it.
+        # A named task couples a created PR or published comment to the exact
+        # record written by that operation. It remains optional so historical
+        # callers keep working while readers report record coverage.
         if task and args[:2] in (["pr", "comment"], ["issue", "comment"]):
             return post_and_record(args, task, claimed_agent)
+        if task and args[:2] == ["pr", "create"]:
+            return create_pr_and_record(args, task, claimed_agent)
+        if task:
+            die("--task applies only to a pull-request create or comment write")
     elif task or verdict is not None:
         option = "--task" if task else "--verdict"
-        die(f"{option} only applies to a comment write")
+        die(f"{option} only applies to a pull-request create or comment write")
     return subprocess.run([real_gh(), *args]).returncode
 
 

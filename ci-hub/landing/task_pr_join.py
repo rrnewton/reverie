@@ -72,6 +72,7 @@ REPO_ROOT = os.path.dirname(CI_HUB_ROOT)
 # One resolver for the TaskGraph, shared with every other ci-hub consumer.
 sys.path.insert(0, os.path.join(CI_HUB_ROOT, "lib"))
 import taskgraph_db  # noqa: E402
+import task_pr_record  # noqa: E402
 
 STRONG = {"pr_url", "branch", "head_sha"}
 DEFAULT_REPOS = ["rrnewton/hermit", "rrnewton/reverie"]
@@ -178,6 +179,26 @@ def _task_fulltext(task: dict) -> str:
     parts = [task.get("title", ""), task.get("desc", "")]
     parts.extend(task.get("notes", []) or [])
     return "\n".join(parts).lower()
+
+
+def _task_ownership_records(
+    task: dict,
+) -> tuple[list[task_pr_record.TaskPrOwnership], list[str], bool]:
+    """Return valid records, named errors, and whether the task attempted one."""
+    records: list[task_pr_record.TaskPrOwnership] = []
+    errors: list[str] = []
+    attempted = False
+    for note in task.get("notes", []) or []:
+        if (note or "").strip().startswith(task_pr_record.HEADER):
+            attempted = True
+        try:
+            record = task_pr_record.parse(note or "", expected_task=task["id"])
+        except task_pr_record.InvalidTaskPrRecord as error:
+            errors.append(str(error))
+            continue
+        if record is not None and record not in records:
+            records.append(record)
+    return records, errors, attempted
 
 
 def _tokens(text: str) -> set[str]:
@@ -298,37 +319,64 @@ def _task_tags(task: dict) -> list[str]:
 def compute_join(tasks: list[dict], prs: list[dict]) -> dict:
     # Precompute per-task and per-PR views once.
     t_views = []
+    recorded_owners: dict[tuple[str, int], list[dict]] = {}
+    invalid_records: list[dict[str, object]] = []
     for t in tasks:
-        t_views.append((t, _task_fulltext(t), _tokens(t.get("title", ""))))
+        records, errors, attempted = _task_ownership_records(t)
+        for record in records:
+            recorded_owners.setdefault((record.repo, record.pr), []).append(
+                {
+                    "task": t["id"],
+                    "status": t.get("status"),
+                    "tags": _task_tags(t),
+                    "signals": {"task_pr_record": record.url},
+                    "confidence": "EXACT",
+                    "actor": record.actor,
+                    "owner_fanout": len(records),
+                    "dedicated": True,
+                }
+            )
+        for error in errors:
+            invalid_records.append({"task": t["id"], "error": error})
+        # A task that has attempted the exact record grammar is no longer a
+        # historical task.  Its prose cannot regain authority if the record is
+        # malformed, or claim additional PRs that it did not record.
+        if not attempted:
+            t_views.append((t, _task_fulltext(t), _tokens(t.get("title", ""))))
     pr_matches: dict[tuple[str, int], dict] = {}
     for pr in prs:
-        key = (pr["repo"], pr["number"])
+        key = (pr["repo"].lower(), pr["number"])
         pr_titletok = _tokens(pr.get("title", ""))
         pr_files = {f["path"] for f in (pr.get("files") or []) if isinstance(f, dict) and f.get("path")}
-        confirmed, probable, weak = [], [], []
-        for task, ft, titletok in t_views:
-            # cheap prefilter: skip tasks that cannot possibly reference this PR
-            if (f"#{pr['number']}" not in ft
-                    and (pr.get("headRefName") or "_none_").lower() not in ft
-                    and (pr.get("headRefOid") or "_none_").lower()[:12] not in ft
-                    and not (pr_titletok & titletok)):
-                continue
-            fired = signals_for(ft, titletok, task, pr, pr_titletok, pr_files)
-            if not fired:
-                continue
-            tier, conf = classify_pair(fired)
-            entry = {"task": task["id"], "status": task.get("status"),
-                     "tags": _task_tags(task), "signals": fired, "confidence": conf}
-            if tier == "CONFIRMED":
-                confirmed.append(entry)
-            elif tier == "PROBABLE":
-                probable.append(entry)
-            else:
-                weak.append(entry)
+        confirmed = list(recorded_owners.get(key, []))
+        probable: list[dict] = []
+        weak: list[dict] = []
+        source = "record" if confirmed else "historical-prose"
+        if not confirmed:
+            for task, ft, titletok in t_views:
+                # cheap prefilter: skip tasks that cannot possibly reference this PR
+                if (f"#{pr['number']}" not in ft
+                        and (pr.get("headRefName") or "_none_").lower() not in ft
+                        and (pr.get("headRefOid") or "_none_").lower()[:12] not in ft
+                        and not (pr_titletok & titletok)):
+                    continue
+                fired = signals_for(ft, titletok, task, pr, pr_titletok, pr_files)
+                if not fired:
+                    continue
+                tier, conf = classify_pair(fired)
+                entry = {"task": task["id"], "status": task.get("status"),
+                         "tags": _task_tags(task), "signals": fired, "confidence": conf}
+                if tier == "CONFIRMED":
+                    confirmed.append(entry)
+                elif tier == "PROBABLE":
+                    probable.append(entry)
+                else:
+                    weak.append(entry)
         pr_matches[key] = {
             "repo": pr["repo"], "number": pr["number"], "title": pr.get("title", ""),
             "isDraft": pr.get("isDraft", False), "branch": pr.get("headRefName"),
             "confirmed": confirmed, "probable": probable, "weak": weak,
+            "ownership_source": source,
         }
 
     # Identify batch/sweep tasks: a task CONFIRMED-linked to > threshold distinct
@@ -337,12 +385,16 @@ def compute_join(tasks: list[dict], prs: list[dict]) -> dict:
     confirmed_pr_count: dict[str, int] = {}
     for m in pr_matches.values():
         for e in m["confirmed"]:
+            if "task_pr_record" in e["signals"]:
+                continue
             confirmed_pr_count[e["task"]] = confirmed_pr_count.get(e["task"], 0) + 1
     batch_tasks = {tid for tid, c in confirmed_pr_count.items()
                    if c > BATCH_FANOUT_THRESHOLD}
     # Annotate every confirmed entry with dedicated-vs-swept and the fan-out.
     for m in pr_matches.values():
         for e in m["confirmed"]:
+            if "task_pr_record" in e["signals"]:
+                continue
             e["owner_fanout"] = confirmed_pr_count.get(e["task"], 0)
             e["dedicated"] = e["task"] not in batch_tasks
 
@@ -352,8 +404,18 @@ def compute_join(tasks: list[dict], prs: list[dict]) -> dict:
     matched, mentioned_only, unmentioned = [], [], []
     for m in pr_matches.values():
         dedicated = [e for e in m["confirmed"] if e.get("dedicated")]
+        m["ownership_conflict"] = (
+            m["ownership_source"] == "record"
+            and len({e["task"] for e in dedicated}) > 1
+        )
+        if m["ownership_conflict"]:
+            dedicated = []
         m["dedicated_confirmed"] = dedicated
-        m["swept_only"] = bool(m["confirmed"]) and not dedicated
+        m["swept_only"] = (
+            m["ownership_source"] != "record"
+            and bool(m["confirmed"])
+            and not dedicated
+        )
         if dedicated:
             matched.append(m)
         elif m["confirmed"] or m["probable"] or m["weak"]:
@@ -383,7 +445,7 @@ def compute_join(tasks: list[dict], prs: list[dict]) -> dict:
             impl_no_pr.append(t["id"])
 
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "denominators": {
             "open_prs": len(prs),
             "tasks_total": len(tasks),
@@ -394,6 +456,7 @@ def compute_join(tasks: list[dict], prs: list[dict]) -> dict:
         "population_B_unmentioned": unmentioned,
         "population_C_impl_no_pr": impl_no_pr,
         "population_C_impl_research_no_pr_expected": impl_research,
+        "invalid_ownership_records": invalid_records,
     }
 
 
@@ -419,6 +482,9 @@ def render(report: dict, repos: list[str]) -> str:
     lines.append(f"TASK<->PR MULTI-SIGNAL JOIN  repos={','.join(repos)}")
     lines.append(f"  denominators: open_prs={N}  tasks={d['tasks_total']}  "
                  f"implemented_open_tasks={d['implemented_open_tasks']}")
+    lines.append(
+        f"  invalid task/PR ownership records: {len(report['invalid_ownership_records'])}"
+    )
     lines.append("")
     lines.append(f"A. DEDICATED owning task: {len(A)}/{N} open PRs")
     for m in sorted(A, key=lambda x: (x["repo"], x["number"])):
@@ -437,7 +503,11 @@ def render(report: dict, repos: list[str]) -> str:
             hint = f" SWEPT-BY {sw['task']}(fanout={sw.get('owner_fanout')})[{'+'.join(sorted(sw['signals']))}]"
         else:
             near = _best(m["probable"] or m["weak"]) if (m["probable"] or m["weak"]) else None
-            hint = f" ~{near['task']}[{'+'.join(sorted(near['signals']))}]" if near else ""
+            if m.get("ownership_conflict"):
+                owners = ",".join(sorted(e["task"] for e in m["confirmed"]))
+                hint = f" TASK/PR OWNERSHIP CONFLICT [{owners}]"
+            else:
+                hint = f" ~{near['task']}[{'+'.join(sorted(near['signals']))}]" if near else ""
         lines.append(f"      {m['repo'].split('/')[-1]}#{m['number']} ({tag}){hint}")
     lines.append(f"   B2 UNMENTIONED (no task references it at all -> SHARPEST HAZARD): {len(Bu)}/{N}")
     for m in sorted(Bu, key=lambda x: (x["repo"], x["number"])):
@@ -448,6 +518,11 @@ def render(report: dict, repos: list[str]) -> str:
                  f"implemented-open tasks  (+{len(Cr)} research tasks w/ durable-artifact text, PR not expected)")
     for tid in sorted(C):
         lines.append(f"   {tid}")
+    if report["invalid_ownership_records"]:
+        lines.append("")
+        lines.append("INVALID TASK/PR OWNERSHIP RECORDS (refused, not prose-fallback):")
+        for record in report["invalid_ownership_records"]:
+            lines.append(f"   {record['task']}: {record['error']}")
     return "\n".join(lines)
 
 

@@ -14,6 +14,7 @@ import os
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from task_pr_join import compute_join, BATCH_FANOUT_THRESHOLD, _task_tags  # noqa: E402
+import task_pr_record  # noqa: E402
 
 
 def _task(tid, title="", desc="", notes=None, tags=None, status="in_progress"):
@@ -173,6 +174,64 @@ def test_live_population_nonzero_and_strict_subset():
           "true orphan #99 is B2 UNMENTIONED")
 
 
+def test_exact_record_overrides_dependency_mentions():
+    print("test_exact_record_overrides_dependency_mentions")
+    repo = "rrnewton/hermit"
+    url = f"https://github.com/{repo}/pull/2811"
+    tasks = [
+        _task(
+            "actual-owner",
+            notes=[task_pr_record.render("actual-owner", repo, 2811, url, "agent-a")],
+        ),
+        _task("dependency-a", notes=[f"blocked on {url} branch typed-results"]),
+        _task("dependency-b", notes=[f"reviewed {url}; head {'a' * 40}"]),
+    ]
+    prs = [_pr(repo, 2811, "typed-results", "a" * 40)]
+    r = compute_join(tasks, prs)
+    match = r["population_A_matched"][0]
+    check(len(match["dedicated_confirmed"]) == 1,
+          "one exact task/PR record prevents dependency prose becoming ownership")
+    check(match["dedicated_confirmed"][0]["task"] == "actual-owner",
+          "the recorded task is the sole owner")
+    check(match["ownership_source"] == "record",
+          "the report names the exact record as its source")
+
+
+def test_conflicting_exact_records_refuse_ownership():
+    print("test_conflicting_exact_records_refuse_ownership")
+    repo = "rrnewton/hermit"
+    url = f"https://github.com/{repo}/pull/2811"
+    tasks = [
+        _task(name, notes=[task_pr_record.render(name, repo, 2811, url, name)])
+        for name in ("owner-a", "owner-b")
+    ]
+    r = compute_join(tasks, [_pr(repo, 2811, "typed-results", "a" * 40)])
+    check(not r["population_A_matched"],
+          "two exact owners do not silently select either task")
+    check(r["population_B_mentioned_only"][0]["ownership_conflict"],
+          "the task/PR ownership conflict is named")
+    check(not r["population_B_mentioned_only"][0]["swept_only"],
+          "an exact ownership conflict is not mislabeled as a batch sweep")
+
+
+def test_malformed_record_cannot_fall_back_to_prose():
+    print("test_malformed_record_cannot_fall_back_to_prose")
+    repo = "rrnewton/hermit"
+    url = f"https://github.com/{repo}/pull/2811"
+    malformed = task_pr_record.render(
+        "attempted-owner", repo, 2811, url, "agent-a"
+    ) + "\nfuture_field: accepted-by-accident"
+    tasks = [_task("attempted-owner", notes=[malformed, f"Implemented: {url}"])]
+    r = compute_join(tasks, [_pr(repo, 2811, "typed-results", "a" * 40)])
+    check(not r["population_A_matched"],
+          "malformed current record cannot regain authority through prose")
+    check(
+        r["invalid_ownership_records"][0]["error"]
+        == "unexpected task/PR ownership field(s): future_field",
+        "an added record field fails by its exact name",
+    )
+
+
 def main():
     for t in (test_valid_tags_are_preserved,
               test_malformed_tags_refuse_the_join,
@@ -180,7 +239,10 @@ def main():
               test_positive_dedicated_match,
               test_negative_closed_renamed_not_bound_to_neighbour,
               test_batch_task_demotion,
-              test_live_population_nonzero_and_strict_subset):
+              test_live_population_nonzero_and_strict_subset,
+              test_exact_record_overrides_dependency_mentions,
+              test_conflicting_exact_records_refuse_ownership,
+              test_malformed_record_cannot_fall_back_to_prose):
         t()
     print()
     if FAILS:
