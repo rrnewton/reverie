@@ -15,6 +15,7 @@ import shutil
 import subprocess
 import sys
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any, Mapping, Sequence, TextIO
@@ -27,10 +28,333 @@ TASK_RE = re.compile(r"^[a-z0-9][a-z0-9-]*$")
 ACTIVATION_SCHEMA = "ci-hub-change-activation-obligation/v1"
 ACTIVATION_STORE = "activation-obligations.jsonl"
 ACTIVATION_CLOSED_STATES = frozenset(("satisfied", "cancelled"))
+ACTIVATION_EVENT_TYPES = frozenset(
+    (
+        "opened",
+        "publication_unresolved",
+        "publication_confirmed_after_refusal",
+        "publication_refused",
+        "publication_moved",
+        "publication_confirmed",
+        "activation_deferred",
+        "activation_satisfied",
+    )
+)
+ACTIVATION_OVERALL_STATES = frozenset(("open", "satisfied", "cancelled"))
+ACTIVATION_STATES = frozenset(
+    ("awaiting_publication", "pending", "publication_refused", "deferred", "satisfied")
+)
+OID_RE = re.compile(r"^[0-9a-f]{40}$")
+DIGEST_RE = re.compile(r"^[0-9a-f]{64}$")
+EVENT_ID_RE = re.compile(r"^[0-9a-f]{32}$")
+OBLIGATION_ID_RE = re.compile(r"^[0-9]{8}-[0-9]{6}-[0-9a-f]{12}-[0-9a-f]{6}$")
+UTC_TIMESTAMP_RE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")
 
 
 class Refusal(RuntimeError):
     pass
+
+
+def _exact_mapping(
+    value: object, *, fields: frozenset[str], role: str
+) -> Mapping[str, Any]:
+    if not isinstance(value, dict):
+        raise Refusal(f"{role}: expected an object")
+    missing = sorted(fields - value.keys())
+    unknown = sorted(value.keys() - fields)
+    if missing:
+        raise Refusal(f"{role}: missing field(s): {', '.join(missing)}")
+    if unknown:
+        raise Refusal(f"{role}: unknown field(s): {', '.join(unknown)}")
+    return value
+
+
+def _required_string(value: Mapping[str, Any], field: str, role: str) -> str:
+    found = value[field]
+    if not isinstance(found, str) or not found:
+        raise Refusal(f"{role}-{field}: expected a non-empty string")
+    return found
+
+
+def _optional_string(value: Mapping[str, Any], field: str, role: str) -> str | None:
+    found = value[field]
+    if found is None:
+        return None
+    if not isinstance(found, str) or not found:
+        raise Refusal(f"{role}-{field}: expected null or a non-empty string")
+    return found
+
+
+def _timestamp(value: str, field: str) -> str:
+    if not UTC_TIMESTAMP_RE.fullmatch(value):
+        raise Refusal(
+            f"activation-obligation-{field}: expected UTC YYYY-MM-DDTHH:MM:SSZ"
+        )
+    return value
+
+
+@dataclass(frozen=True)
+class Activation:
+    state: str
+    attempts: int
+    last_attempt_at: str | None
+    last_reason: str | None
+    activated_head: str | None
+
+    @classmethod
+    def from_mapping(cls, value: object) -> Activation:
+        role = "activation-obligation-activation"
+        row = _exact_mapping(
+            value,
+            fields=frozenset(
+                ("state", "attempts", "last_attempt_at", "last_reason", "activated_head")
+            ),
+            role=role,
+        )
+        state = _required_string(row, "state", role)
+        if state not in ACTIVATION_STATES:
+            raise Refusal(f"{role}-state: unsupported value {state!r}")
+        attempts = row["attempts"]
+        if type(attempts) is not int or attempts < 0:
+            raise Refusal(f"{role}-attempts: expected a non-negative integer")
+        last_attempt_at = _optional_string(row, "last_attempt_at", role)
+        if last_attempt_at is not None:
+            _timestamp(last_attempt_at, "activation-last_attempt_at")
+        last_reason = _optional_string(row, "last_reason", role)
+        activated_head = _optional_string(row, "activated_head", role)
+        if activated_head is not None and not OID_RE.fullmatch(activated_head):
+            raise Refusal(f"{role}-activated_head: expected a forty-hex commit")
+        return cls(state, attempts, last_attempt_at, last_reason, activated_head)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "state": self.state,
+            "attempts": self.attempts,
+            "last_attempt_at": self.last_attempt_at,
+            "last_reason": self.last_reason,
+            "activated_head": self.activated_head,
+        }
+
+
+@dataclass(frozen=True)
+class ActivationObligation:
+    schema: str
+    event_id: str
+    event_type: str
+    recorded_at: str
+    obligation_id: str
+    task: str
+    candidate: str
+    primary: str
+    changed_paths: tuple[str, ...]
+    diff_sha256: str
+    opened_at: str
+    updated_at: str
+    overall_state: str
+    satisfied_at: str | None
+    activation: Activation
+
+    FIELDS = frozenset(
+        (
+            "schema",
+            "event_id",
+            "event_type",
+            "recorded_at",
+            "obligation_id",
+            "task",
+            "candidate",
+            "primary",
+            "changed_paths",
+            "diff_sha256",
+            "opened_at",
+            "updated_at",
+            "overall_state",
+            "satisfied_at",
+            "activation",
+        )
+    )
+
+    @classmethod
+    def from_mapping(cls, value: object) -> ActivationObligation:
+        role = "activation-obligation"
+        row = _exact_mapping(value, fields=cls.FIELDS, role=role)
+        schema = _required_string(row, "schema", role)
+        if schema != ACTIVATION_SCHEMA:
+            raise Refusal(f"{role}-schema: unsupported value {schema!r}")
+        event_id = _required_string(row, "event_id", role)
+        if not EVENT_ID_RE.fullmatch(event_id):
+            raise Refusal(f"{role}-event_id: expected 32 lowercase hex digits")
+        event_type = _required_string(row, "event_type", role)
+        if event_type not in ACTIVATION_EVENT_TYPES:
+            raise Refusal(f"{role}-event_type: unsupported value {event_type!r}")
+        recorded_at = _timestamp(
+            _required_string(row, "recorded_at", role), "recorded_at"
+        )
+        obligation_id = _required_string(row, "obligation_id", role)
+        if not OBLIGATION_ID_RE.fullmatch(obligation_id):
+            raise Refusal(f"{role}-obligation_id: unsupported value {obligation_id!r}")
+        try:
+            task = validate_task(_required_string(row, "task", role))
+        except Refusal as error:
+            raise Refusal(f"{role}-task: {error}") from error
+        candidate = _required_string(row, "candidate", role)
+        if not OID_RE.fullmatch(candidate):
+            raise Refusal(f"{role}-candidate: expected a forty-hex commit")
+        primary = _required_string(row, "primary", role)
+        if not Path(primary).is_absolute():
+            raise Refusal(f"{role}-primary: expected an absolute path")
+        raw_paths = row["changed_paths"]
+        if not isinstance(raw_paths, list) or not raw_paths or not all(
+            isinstance(path, str) and path for path in raw_paths
+        ):
+            raise Refusal(f"{role}-changed_paths: expected a non-empty string array")
+        changed_paths = tuple(raw_paths)
+        if tuple(sorted(set(changed_paths))) != changed_paths:
+            raise Refusal(f"{role}-changed_paths: expected sorted unique paths")
+        for path in changed_paths:
+            normalized = PurePosixPath(path)
+            if normalized.is_absolute() or ".." in normalized.parts or normalized.as_posix() != path:
+                raise Refusal(f"{role}-changed_paths: invalid path {path!r}")
+        diff_sha256 = _required_string(row, "diff_sha256", role)
+        if not DIGEST_RE.fullmatch(diff_sha256):
+            raise Refusal(f"{role}-diff_sha256: expected 64 lowercase hex digits")
+        opened_at = _timestamp(_required_string(row, "opened_at", role), "opened_at")
+        updated_at = _timestamp(_required_string(row, "updated_at", role), "updated_at")
+        if recorded_at != updated_at:
+            raise Refusal(f"{role}-updated_at: must equal recorded_at")
+        if opened_at > updated_at:
+            raise Refusal(f"{role}-opened_at: cannot be after updated_at")
+        overall_state = _required_string(row, "overall_state", role)
+        if overall_state not in ACTIVATION_OVERALL_STATES:
+            raise Refusal(f"{role}-overall_state: unsupported value {overall_state!r}")
+        satisfied_at = _optional_string(row, "satisfied_at", role)
+        if satisfied_at is not None:
+            _timestamp(satisfied_at, "satisfied_at")
+        activation = Activation.from_mapping(row["activation"])
+        result = cls(
+            schema,
+            event_id,
+            event_type,
+            recorded_at,
+            obligation_id,
+            task,
+            candidate,
+            primary,
+            changed_paths,
+            diff_sha256,
+            opened_at,
+            updated_at,
+            overall_state,
+            satisfied_at,
+            activation,
+        )
+        result.validate_state()
+        return result
+
+    def validate_state(self) -> None:
+        state = self.activation.state
+        if self.overall_state == "open":
+            if self.satisfied_at is not None or self.activation.activated_head is not None:
+                raise Refusal(
+                    "activation-obligation-overall_state: open record cannot be satisfied"
+                )
+            if state not in {"awaiting_publication", "pending", "deferred"}:
+                raise Refusal(
+                    "activation-obligation-activation-state: disagrees with open overall_state"
+                )
+        elif self.overall_state == "cancelled":
+            if self.satisfied_at is not None or self.activation.activated_head is not None:
+                raise Refusal(
+                    "activation-obligation-overall_state: cancelled record cannot be satisfied"
+                )
+            if state != "publication_refused":
+                raise Refusal(
+                    "activation-obligation-activation-state: cancelled record must be publication_refused"
+                )
+        elif (
+            self.satisfied_at is None
+            or state != "satisfied"
+            or self.activation.activated_head is None
+            or self.activation.last_reason is None
+        ):
+            raise Refusal(
+                "activation-obligation-overall_state: satisfied record requires satisfied_at, activated_head, and reason"
+            )
+
+        if state in {"awaiting_publication", "pending", "publication_refused"}:
+            if self.activation.attempts != 0 or self.activation.last_attempt_at is not None:
+                raise Refusal(
+                    "activation-obligation-activation-attempts: pre-activation state cannot carry an attempt"
+                )
+        elif state == "deferred":
+            if self.activation.attempts == 0 or self.activation.last_attempt_at is None:
+                raise Refusal(
+                    "activation-obligation-activation-attempts: deferred state requires an attempted activation"
+                )
+            if self.activation.last_reason is None:
+                raise Refusal(
+                    "activation-obligation-activation-last_reason: deferred state requires a reason"
+                )
+        elif state == "satisfied" and self.activation.attempts > 0:
+            if self.activation.last_attempt_at is None:
+                raise Refusal(
+                    "activation-obligation-activation-last_attempt_at: attempted satisfaction requires a timestamp"
+                )
+
+        expected = {
+            "opened": {("open", "awaiting_publication")},
+            "publication_unresolved": {("open", "awaiting_publication")},
+            "publication_confirmed_after_refusal": {("open", "pending")},
+            "publication_refused": {("cancelled", "publication_refused")},
+            "publication_moved": {
+                ("open", "pending"),
+                ("cancelled", "publication_refused"),
+            },
+            "publication_confirmed": {("open", "pending")},
+            "activation_deferred": {("open", "deferred")},
+            "activation_satisfied": {("satisfied", "satisfied")},
+        }[self.event_type]
+        if (self.overall_state, state) not in expected:
+            raise Refusal(
+                "activation-obligation-event_type: disagrees with overall_state and activation.state"
+            )
+
+    def identity(self) -> tuple[object, ...]:
+        return (
+            self.obligation_id,
+            self.task,
+            self.candidate,
+            self.primary,
+            self.changed_paths,
+            self.diff_sha256,
+            self.opened_at,
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "schema": self.schema,
+            "event_id": self.event_id,
+            "event_type": self.event_type,
+            "recorded_at": self.recorded_at,
+            "obligation_id": self.obligation_id,
+            "task": self.task,
+            "candidate": self.candidate,
+            "primary": self.primary,
+            "changed_paths": list(self.changed_paths),
+            "diff_sha256": self.diff_sha256,
+            "opened_at": self.opened_at,
+            "updated_at": self.updated_at,
+            "overall_state": self.overall_state,
+            "satisfied_at": self.satisfied_at,
+            "activation": self.activation.to_dict(),
+        }
+
+
+@dataclass(frozen=True)
+class ActivationObservation:
+    obligation: ActivationObligation
+    reason: str
+    head: str | None
 
 
 def run(
@@ -117,9 +441,12 @@ def activation_store_path(primary: Path, override: Path | None = None) -> Path:
     return primary / "ignored" / "ci-hub" / ACTIVATION_STORE
 
 
-def _activation_latest_from_handle(handle: TextIO) -> dict[str, dict[str, Any]]:
+def _activation_latest_from_handle(
+    handle: TextIO,
+) -> dict[str, ActivationObligation]:
     handle.seek(0)
-    latest: dict[str, dict[str, Any]] = {}
+    latest: dict[str, ActivationObligation] = {}
+    event_ids: set[str] = set()
     for line_number, line in enumerate(handle, 1):
         if not line.strip():
             continue
@@ -129,20 +456,29 @@ def _activation_latest_from_handle(handle: TextIO) -> dict[str, dict[str, Any]]:
             raise Refusal(
                 f"activation obligation store line {line_number} is invalid JSON: {error}"
             ) from error
-        if not isinstance(event, dict) or event.get("schema") != ACTIVATION_SCHEMA:
+        try:
+            obligation = ActivationObligation.from_mapping(event)
+        except Refusal as error:
             raise Refusal(
-                f"activation obligation store line {line_number} has unsupported schema"
-            )
-        obligation_id = event.get("obligation_id")
-        if not isinstance(obligation_id, str) or not obligation_id:
+                f"activation obligation store line {line_number}: {error}"
+            ) from error
+        if obligation.event_id in event_ids:
             raise Refusal(
-                f"activation obligation store line {line_number} has no obligation_id"
+                f"activation obligation store line {line_number}: "
+                f"activation-obligation-event_id {obligation.event_id!r} is duplicated"
             )
-        latest[obligation_id] = event
+        event_ids.add(obligation.event_id)
+        previous = latest.get(obligation.obligation_id)
+        if previous is not None and previous.identity() != obligation.identity():
+            raise Refusal(
+                f"activation obligation store line {line_number}: "
+                "activation-obligation-identity changed across events"
+            )
+        latest[obligation.obligation_id] = obligation
     return latest
 
 
-def activation_latest(store: Path) -> dict[str, dict[str, Any]]:
+def activation_latest(store: Path) -> dict[str, ActivationObligation]:
     if not store.exists():
         return {}
     with store.open("r", encoding="utf-8") as handle:
@@ -153,9 +489,11 @@ def activation_latest(store: Path) -> dict[str, dict[str, Any]]:
             fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
-def _append_activation_event(handle: TextIO, record: dict[str, Any]) -> None:
+def _append_activation_event(handle: TextIO, record: ActivationObligation) -> None:
     handle.seek(0, os.SEEK_END)
-    handle.write(json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n")
+    handle.write(
+        json.dumps(record.to_dict(), sort_keys=True, separators=(",", ":")) + "\n"
+    )
     handle.flush()
     os.fsync(handle.fileno())
 
@@ -176,7 +514,7 @@ def create_activation_obligation(
     primary: Path,
     changed_paths: Sequence[str],
     diff_sha256: str,
-) -> dict[str, Any]:
+) -> ActivationObligation:
     store.parent.mkdir(parents=True, exist_ok=True)
     opened_at = utc_now()
     with store.open("a+", encoding="utf-8") as handle:
@@ -185,18 +523,17 @@ def create_activation_obligation(
             latest = _activation_latest_from_handle(handle)
             for existing in latest.values():
                 if (
-                    existing.get("candidate") == candidate
-                    and existing.get("primary") == str(primary)
-                    and existing.get("overall_state")
-                    not in ACTIVATION_CLOSED_STATES
+                    existing.candidate == candidate
+                    and existing.primary == str(primary)
+                    and existing.overall_state not in ACTIVATION_CLOSED_STATES
                 ):
                     expected_identity = {
                         "task": task,
-                        "changed_paths": sorted(changed_paths),
+                        "changed_paths": tuple(sorted(changed_paths)),
                         "diff_sha256": diff_sha256,
                     }
                     if any(
-                        existing.get(key) != value
+                        getattr(existing, key) != value
                         for key, value in expected_identity.items()
                     ):
                         raise Refusal(
@@ -208,7 +545,7 @@ def create_activation_obligation(
                 f"{opened_at.replace('-', '').replace(':', '').replace('T', '-')[:-1]}-"
                 f"{candidate[:12]}-{uuid.uuid4().hex[:6]}"
             )
-            record = {
+            record = ActivationObligation.from_mapping({
                 "schema": ACTIVATION_SCHEMA,
                 "event_id": uuid.uuid4().hex,
                 "event_type": "opened",
@@ -230,7 +567,7 @@ def create_activation_obligation(
                     "last_reason": None,
                     "activated_head": None,
                 },
-            }
+            })
             _append_activation_event(handle, record)
             return record
         finally:
@@ -242,7 +579,7 @@ def transition_activation_obligation(
     obligation_id: str,
     event_type: str,
     patch: Mapping[str, Any],
-) -> dict[str, Any]:
+) -> ActivationObligation:
     if not re.fullmatch(r"[a-z][a-z0-9_-]*", event_type):
         raise Refusal(f"invalid activation obligation event type {event_type!r}")
     store.parent.mkdir(parents=True, exist_ok=True)
@@ -265,7 +602,7 @@ def transition_activation_obligation(
             }
             if immutable.intersection(patch):
                 raise Refusal("activation transition cannot change immutable identity")
-            record = copy.deepcopy(previous)
+            record = previous.to_dict()
             _merge_mapping(record, patch)
             now = utc_now()
             record.update(
@@ -277,26 +614,24 @@ def transition_activation_obligation(
                     "updated_at": now,
                 }
             )
-            _append_activation_event(handle, record)
-            return record
+            current = ActivationObligation.from_mapping(record)
+            _append_activation_event(handle, current)
+            return current
         finally:
             fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
 def activation_for_candidate(
     store: Path, candidate: str, primary: Path, *, include_closed: bool = False
-) -> dict[str, Any] | None:
+) -> ActivationObligation | None:
     matches = [
         record
         for record in activation_latest(store).values()
-        if record.get("candidate") == candidate
-        and record.get("primary") == str(primary)
-        and (
-            include_closed
-            or record.get("overall_state") not in ACTIVATION_CLOSED_STATES
-        )
+        if record.candidate == candidate
+        and record.primary == str(primary)
+        and (include_closed or record.overall_state not in ACTIVATION_CLOSED_STATES)
     ]
-    return max(matches, key=lambda item: str(item.get("opened_at", ""))) if matches else None
+    return max(matches, key=lambda item: item.opened_at) if matches else None
 
 
 def normalize_claim(raw: str) -> str:
@@ -634,7 +969,7 @@ def command_publish(args: argparse.Namespace) -> None:
         except Refusal as observation_error:
             transition_activation_obligation(
                 store,
-                str(obligation["obligation_id"]),
+                obligation.obligation_id,
                 "publication_unresolved",
                 {
                     "activation": {
@@ -650,7 +985,7 @@ def command_publish(args: argparse.Namespace) -> None:
             contained = is_ancestor(repo, str(seal["candidate"]), observed)
             transition_activation_obligation(
                 store,
-                str(obligation["obligation_id"]),
+                obligation.obligation_id,
                 (
                     "publication_confirmed_after_refusal"
                     if contained
@@ -674,7 +1009,7 @@ def command_publish(args: argparse.Namespace) -> None:
         contained = is_ancestor(repo, str(seal["candidate"]), published)
         transition_activation_obligation(
             store,
-            str(obligation["obligation_id"]),
+            obligation.obligation_id,
             "publication_moved",
             {
                 "overall_state": "open" if contained else "cancelled",
@@ -693,7 +1028,7 @@ def command_publish(args: argparse.Namespace) -> None:
         )
     obligation = transition_activation_obligation(
         store,
-        str(obligation["obligation_id"]),
+        obligation.obligation_id,
         "publication_confirmed",
         {
             "activation": {
@@ -704,8 +1039,8 @@ def command_publish(args: argparse.Namespace) -> None:
     )
     print(f"CI_HUB_CHANGE published=1 task={manifest['task']} candidate={published}")
     print(
-        f"CI_HUB_CHANGE activation_obligation={obligation['obligation_id']} "
-        f"state={obligation['overall_state']} store={store}"
+        f"CI_HUB_CHANGE activation_obligation={obligation.obligation_id} "
+        f"state={obligation.overall_state} store={store}"
     )
 
 
@@ -755,16 +1090,14 @@ def is_ancestor(repo: Path, ancestor: str, descendant: str) -> bool:
     return result.returncode == 0
 
 
-def activation_completion(record: Mapping[str, Any]) -> tuple[bool, str, str | None]:
-    primary = Path(str(record.get("primary", "")))
-    candidate = str(record.get("candidate", ""))
-    paths = record.get("changed_paths")
+def activation_completion(
+    record: ActivationObligation,
+) -> tuple[bool, str, str | None]:
+    primary = Path(record.primary)
+    candidate = record.candidate
+    paths = record.changed_paths
     if not primary.is_dir() or not (primary / ".git").exists():
         return False, f"primary checkout is unavailable: {primary}", None
-    if not isinstance(paths, list) or not paths or not all(
-        isinstance(path, str) for path in paths
-    ):
-        return False, "obligation has no usable changed-path identity", None
     branch = git(primary, "branch", "--show-current")
     if branch != "main":
         return False, f"primary checkout is on {branch or 'detached HEAD'}, not main", None
@@ -783,29 +1116,26 @@ def activation_completion(record: Mapping[str, Any]) -> tuple[bool, str, str | N
 
 def reconcile_activation_obligations(
     store: Path, *, primary_filter: Path | None = None
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+) -> tuple[list[ActivationObligation], list[ActivationObservation]]:
     latest = activation_latest(store)
     open_records = sorted(
         (
             record
             for record in latest.values()
-            if record.get("overall_state") not in ACTIVATION_CLOSED_STATES
-            and (
-                primary_filter is None
-                or record.get("primary") == str(primary_filter)
-            )
+            if record.overall_state not in ACTIVATION_CLOSED_STATES
+            and (primary_filter is None or record.primary == str(primary_filter))
         ),
-        key=lambda item: (str(item.get("opened_at", "")), str(item["obligation_id"])),
+        key=lambda item: (item.opened_at, item.obligation_id),
     )
-    satisfied: list[dict[str, Any]] = []
-    remaining: list[dict[str, Any]] = []
+    satisfied: list[ActivationObligation] = []
+    remaining: list[ActivationObservation] = []
     for record in open_records:
         complete, reason, head = activation_completion(record)
         if complete:
             now = utc_now()
             record = transition_activation_obligation(
                 store,
-                str(record["obligation_id"]),
+                record.obligation_id,
                 "activation_satisfied",
                 {
                     "overall_state": "satisfied",
@@ -819,10 +1149,7 @@ def reconcile_activation_obligations(
             )
             satisfied.append(record)
         else:
-            observed = copy.deepcopy(record)
-            observed["_observation_reason"] = reason
-            observed["_observation_head"] = head
-            remaining.append(observed)
+            remaining.append(ActivationObservation(record, reason, head))
     return satisfied, remaining
 
 
@@ -838,26 +1165,25 @@ def render_activation_obligations(
         f"evaluated={len(remaining) + len(satisfied)}",
         f"store={store}",
     ]
-    for record in remaining:
-        reason = str(record["_observation_reason"])
-        head = record["_observation_head"]
+    for observation in remaining:
+        record = observation.obligation
         lines.append(
             "  OPEN "
-            f"id={record['obligation_id']} task={record['task']} "
-            f"candidate={record['candidate']} primary_head={head or 'unresolved'} "
-            f"activation_state={(record.get('activation') or {}).get('state')} "
-            f"reason={reason}"
+            f"id={record.obligation_id} task={record.task} "
+            f"candidate={record.candidate} primary_head={observation.head or 'unresolved'} "
+            f"activation_state={record.activation.state} "
+            f"reason={observation.reason}"
         )
     for record in satisfied:
         lines.append(
             "  SATISFIED "
-            f"id={record['obligation_id']} candidate={record['candidate']} "
-            f"activated_head={(record.get('activation') or {}).get('activated_head')}"
+            f"id={record.obligation_id} candidate={record.candidate} "
+            f"activated_head={record.activation.activated_head}"
         )
     if remaining:
         subjects = ", ".join(
-            f"{record['task']}@{str(record['candidate'])[:12]}"
-            for record in remaining[:3]
+            f"{observation.obligation.task}@{observation.obligation.candidate[:12]}"
+            for observation in remaining[:3]
         )
         extra = f" (+{len(remaining) - 3} more)" if len(remaining) > 3 else ""
         lines.append(
@@ -881,7 +1207,7 @@ def command_activate(args: argparse.Namespace) -> None:
         prior = activation_for_candidate(
             store, candidate, primary, include_closed=True
         )
-        if prior is not None and prior.get("overall_state") == "satisfied":
+        if prior is not None and prior.overall_state == "satisfied":
             complete, reason, head = activation_completion(prior)
             if not complete:
                 raise Refusal(
@@ -891,7 +1217,7 @@ def command_activate(args: argparse.Namespace) -> None:
             print(
                 f"CI_HUB_CHANGE activated=already task={manifest['task']} "
                 f"candidate={candidate} activated_head={head} "
-                f"activation_obligation={prior['obligation_id']}"
+                f"activation_obligation={prior.obligation_id}"
             )
             return
         obligation = create_activation_obligation(
@@ -902,7 +1228,7 @@ def command_activate(args: argparse.Namespace) -> None:
             changed_paths=paths,
             diff_sha256=str(seal["diff_sha256"]),
         )
-    attempts = int((obligation.get("activation") or {}).get("attempts") or 0) + 1
+    attempts = obligation.activation.attempts + 1
     attempted_at = utc_now()
     try:
         published = fetch_main(primary)
@@ -948,7 +1274,7 @@ def command_activate(args: argparse.Namespace) -> None:
     except Refusal as error:
         transition_activation_obligation(
             store,
-            str(obligation["obligation_id"]),
+            obligation.obligation_id,
             "activation_deferred",
             {
                 "activation": {
@@ -962,7 +1288,7 @@ def command_activate(args: argparse.Namespace) -> None:
         raise
     obligation = transition_activation_obligation(
         store,
-        str(obligation["obligation_id"]),
+        obligation.obligation_id,
         "activation_satisfied",
         {
             "overall_state": "satisfied",
@@ -979,7 +1305,7 @@ def command_activate(args: argparse.Namespace) -> None:
     print(
         f"CI_HUB_CHANGE activated=1 task={manifest['task']} candidate={candidate} "
         f"activated_head={head} paths={len(paths)} "
-        f"activation_obligation={obligation['obligation_id']}"
+        f"activation_obligation={obligation.obligation_id}"
     )
     print(
         "CI_HUB_CHANGE LIMIT: git working-tree update is serialized but not a "

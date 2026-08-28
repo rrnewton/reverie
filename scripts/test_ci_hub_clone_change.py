@@ -4,10 +4,12 @@
 from __future__ import annotations
 
 import importlib.util
+import io
 import json
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -17,6 +19,7 @@ SOURCE = Path(__file__).with_name("ci-hub-clone-change.py")
 SPEC = importlib.util.spec_from_file_location("ci_hub_clone_change", SOURCE)
 assert SPEC and SPEC.loader
 TOOL = importlib.util.module_from_spec(SPEC)
+sys.modules[SPEC.name] = TOOL
 SPEC.loader.exec_module(TOOL)
 
 
@@ -29,6 +32,75 @@ def git(repo: Path, *args: str) -> str:
     if result.returncode != 0:
         raise AssertionError(result.stderr)
     return result.stdout.strip()
+
+
+def activation_row() -> dict[str, object]:
+    return {
+        "schema": TOOL.ACTIVATION_SCHEMA,
+        "event_id": "c" * 32,
+        "event_type": "opened",
+        "recorded_at": "2026-08-28T08:15:00Z",
+        "obligation_id": "20260828-081500-aaaaaaaaaaaa-abcdef",
+        "task": "typed-activation-obligation",
+        "candidate": "a" * 40,
+        "primary": "/tmp/primary",
+        "changed_paths": ["ci-hub/a", "ci-hub/b"],
+        "diff_sha256": "b" * 64,
+        "opened_at": "2026-08-28T08:15:00Z",
+        "updated_at": "2026-08-28T08:15:00Z",
+        "overall_state": "open",
+        "satisfied_at": None,
+        "activation": {
+            "state": "awaiting_publication",
+            "attempts": 0,
+            "last_attempt_at": None,
+            "last_reason": None,
+            "activated_head": None,
+        },
+    }
+
+
+class ActivationObligationContract(unittest.TestCase):
+    def test_complete_row_round_trips(self) -> None:
+        row = activation_row()
+        parsed = TOOL.ActivationObligation.from_mapping(row)
+        self.assertEqual(parsed.to_dict(), row)
+        self.assertEqual(parsed.candidate, "a" * 40)
+        self.assertEqual(parsed.activation.state, "awaiting_publication")
+
+    def test_missing_and_unknown_fields_fail_by_name(self) -> None:
+        missing = activation_row()
+        del missing["diff_sha256"]
+        with self.assertRaisesRegex(TOOL.Refusal, "diff_sha256"):
+            TOOL.ActivationObligation.from_mapping(missing)
+
+        unknown = activation_row()
+        unknown["assumed_active"] = False
+        with self.assertRaisesRegex(TOOL.Refusal, "assumed_active"):
+            TOOL.ActivationObligation.from_mapping(unknown)
+
+    def test_new_event_type_fails_by_name(self) -> None:
+        row = activation_row()
+        row["event_type"] = "future_event"
+        with self.assertRaisesRegex(TOOL.Refusal, "event_type"):
+            TOOL.ActivationObligation.from_mapping(row)
+
+    def test_event_and_state_disagreement_fails_by_name(self) -> None:
+        row = activation_row()
+        activation = row["activation"]
+        assert isinstance(activation, dict)
+        activation["state"] = "pending"
+        with self.assertRaisesRegex(TOOL.Refusal, "event_type"):
+            TOOL.ActivationObligation.from_mapping(row)
+
+    def test_immutable_identity_drift_across_events_fails_by_name(self) -> None:
+        first = activation_row()
+        second = activation_row()
+        second["event_id"] = "d" * 32
+        second["task"] = "different-task"
+        handle = io.StringIO(json.dumps(first) + "\n" + json.dumps(second) + "\n")
+        with self.assertRaisesRegex(TOOL.Refusal, "identity changed"):
+            TOOL._activation_latest_from_handle(handle)
 
 
 class Fixture(unittest.TestCase):
@@ -346,10 +418,10 @@ class Fixture(unittest.TestCase):
         )
         self.assertEqual(refused.returncode, 2)
         record = next(iter(TOOL.activation_latest(store).values()))
-        self.assertEqual(record["candidate"], candidate)
-        self.assertEqual(record["overall_state"], "cancelled")
-        self.assertEqual(record["activation"]["state"], "publication_refused")
-        self.assertEqual(record["event_type"], "publication_refused")
+        self.assertEqual(record.candidate, candidate)
+        self.assertEqual(record.overall_state, "cancelled")
+        self.assertEqual(record.activation.state, "publication_refused")
+        self.assertEqual(record.event_type, "publication_refused")
 
     def test_publish_refusal_after_push_keeps_obligation_open(self) -> None:
         repo = self.clone()
@@ -376,9 +448,9 @@ class Fixture(unittest.TestCase):
         git(repo, "fetch", "origin", "main")
         self.assertEqual(git(repo, "rev-parse", "origin/main"), candidate)
         record = next(iter(TOOL.activation_latest(store).values()))
-        self.assertEqual(record["overall_state"], "open")
-        self.assertEqual(record["activation"]["state"], "pending")
-        self.assertEqual(record["event_type"], "publication_confirmed_after_refusal")
+        self.assertEqual(record.overall_state, "open")
+        self.assertEqual(record.activation.state, "pending")
+        self.assertEqual(record.event_type, "publication_confirmed_after_refusal")
 
     def test_negative_unclaimed_path_refuses(self) -> None:
         repo = self.clone()
@@ -596,9 +668,9 @@ class Fixture(unittest.TestCase):
                                  "--primary", str(primary), "--store", str(store))
                 self.assertEqual(result.returncode, 2)
                 record = next(iter(TOOL.activation_latest(store).values()))
-                self.assertEqual(record["event_type"], "activation_deferred")
-                self.assertEqual(record["overall_state"], "open")
-                self.assertEqual(record["activation"]["state"], "deferred")
+                self.assertEqual(record.event_type, "activation_deferred")
+                self.assertEqual(record.overall_state, "open")
+                self.assertEqual(record.activation.state, "deferred")
                 shutil.rmtree(primary)
 
     def test_deferred_activation_remains_open_until_primary_contains_it(self) -> None:
@@ -625,8 +697,8 @@ class Fixture(unittest.TestCase):
         records = TOOL.activation_latest(store)
         self.assertEqual(len(records), 1)
         opened = next(iter(records.values()))
-        self.assertEqual(opened["candidate"], candidate)
-        self.assertEqual(opened["overall_state"], "open")
+        self.assertEqual(opened.candidate, candidate)
+        self.assertEqual(opened.overall_state, "open")
 
         # Model parent-main-write's correct dirty-tree refusal without weakening
         # that separately-tested guard. The activation wrapper must retain it.
@@ -649,9 +721,11 @@ class Fixture(unittest.TestCase):
         )
         self.assertEqual(deferred.returncode, 2)
         retained = next(iter(TOOL.activation_latest(store).values()))
-        self.assertEqual(retained["overall_state"], "open")
-        self.assertEqual(retained["activation"]["state"], "deferred")
-        self.assertIn("automatic sync refuses unrelated dirt", retained["activation"]["last_reason"])
+        self.assertEqual(retained.overall_state, "open")
+        self.assertEqual(retained.activation.state, "deferred")
+        self.assertIn(
+            "automatic sync refuses unrelated dirt", retained.activation.last_reason
+        )
 
         visible = command(
             str(SOURCE),
@@ -680,8 +754,8 @@ class Fixture(unittest.TestCase):
         self.assertEqual(closed.returncode, 0, closed.stderr)
         self.assertIn("newly_satisfied=1", closed.stdout)
         satisfied = next(iter(TOOL.activation_latest(store).values()))
-        self.assertEqual(satisfied["overall_state"], "satisfied")
-        self.assertEqual(satisfied["activation"]["activated_head"], candidate)
+        self.assertEqual(satisfied.overall_state, "satisfied")
+        self.assertEqual(satisfied.activation.activated_head, candidate)
 
     def test_watcher_does_not_close_over_dirty_candidate_path(self) -> None:
         """Containment alone is not deployment while executing bytes differ."""
@@ -708,7 +782,7 @@ class Fixture(unittest.TestCase):
         self.assertEqual(watched.returncode, 1)
         self.assertIn("candidate paths differ", watched.stdout)
         retained = next(iter(TOOL.activation_latest(store).values()))
-        self.assertEqual(retained["overall_state"], "open")
+        self.assertEqual(retained.overall_state, "open")
 
     def test_old_deferred_obligation_does_not_age_out(self) -> None:
         """Elapsed time cannot turn an unresolved deferral into completion."""
@@ -728,7 +802,7 @@ class Fixture(unittest.TestCase):
             )
             TOOL.transition_activation_obligation(
                 store,
-                opened["obligation_id"],
+                opened.obligation_id,
                 "activation_deferred",
                 {
                     "activation": {
@@ -749,8 +823,8 @@ class Fixture(unittest.TestCase):
         self.assertEqual(watched.returncode, 1)
         self.assertIn("open=1", watched.stdout)
         retained = next(iter(TOOL.activation_latest(store).values()))
-        self.assertEqual(retained["opened_at"], "2026-01-01T00:00:00Z")
-        self.assertEqual(retained["overall_state"], "open")
+        self.assertEqual(retained.opened_at, "2026-01-01T00:00:00Z")
+        self.assertEqual(retained.overall_state, "open")
 
     # Disposal's predicate. The refuse arm is the floor and is bracketed three
     # ways -- attached branch, non-HEAD branch, detached HEAD -- because the
