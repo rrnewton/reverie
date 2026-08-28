@@ -131,11 +131,22 @@ def main() -> int:
     args = sys.argv[1:]
     if args and args[0] == "--selftest":
         return _selftest()
-    if not args or args[0] in ("-h", "--help"):
-        print(__doc__.strip(), file=sys.stderr)
+    if args and args[0] in ("-h", "--help"):
+        print(__doc__.strip())
+        return 0
+    if not args:
+        print(
+            "commit-verdict: missing commit SHA. Pass one or more SHAs; "
+            "run --help for the verdict meanings.",
+            file=sys.stderr,
+        )
         return 2
     if not os.path.isdir(LEDGER):
-        print(f"commit-verdict: no ledger at {LEDGER}", file=sys.stderr)
+        print(
+            f"commit-verdict: no ledger at {LEDGER}. Run the copy from a complete "
+            "dev-hermit checkout that contains ledger/, then retry.",
+            file=sys.stderr,
+        )
         return 2
 
     found, unreadable = verdicts(args)

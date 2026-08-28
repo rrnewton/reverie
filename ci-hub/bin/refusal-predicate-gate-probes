@@ -760,7 +760,11 @@ def main(argv: list[str] | None = None) -> int:
     args = parse_args(sys.argv[1:] if argv is None else argv)
     repo = args.repo.resolve()
     if not repo.is_dir():
-        print(f"refusal-predicate-gate-probes: no such Hermit repository: {repo}", file=sys.stderr)
+        print(
+            f"refusal-predicate-gate-probes: no such Hermit repository: {repo}. "
+            "Pass the path to an existing Hermit checkout, then retry.",
+            file=sys.stderr,
+        )
         return 2
     try:
         with selected_checker(repo, args.rev) as (checker, identity, relative, kind):

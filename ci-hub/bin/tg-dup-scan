@@ -98,13 +98,22 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--db")
     args = ap.parse_args(argv)
     if not (args.owner or args.topic or args.duplicate_titles):
+        print(
+            "tg-dup-scan: no query selected. Pass --owner AGENT, --topic TOKEN, "
+            "or --duplicate-titles; run --help for details.",
+            file=sys.stderr,
+        )
         ap.print_help(sys.stderr)
         return 1
 
     try:
         conn = sqlite3.connect(f"file:{_db_path(args.db)}?mode=ro", uri=True)
     except sqlite3.Error as error:
-        print(f"tg-dup-scan: cannot open the database: {error}", file=sys.stderr)
+        print(
+            f"tg-dup-scan: cannot open the database: {error}. Pass --db PATH for "
+            "a readable TaskGraph database, or set TG_DB_PATH, then retry.",
+            file=sys.stderr,
+        )
         return 1
 
     try:

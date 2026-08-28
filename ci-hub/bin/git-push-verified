@@ -243,8 +243,22 @@ def format_gate(src: str, before: Optional[str]) -> FormatVerdict:
 
 
 def main(argv: list[str]) -> int:
-    if len(argv) < 2 or ":" not in argv[1]:
-        print(__doc__.strip().split("USAGE")[1], file=sys.stderr)
+    if argv and argv[0] in {"help", "-h", "--help"}:
+        print(__doc__.strip())
+        return 0
+    if len(argv) < 2:
+        print(
+            "git-push-verified: missing remote or <src>:<dst> refspec. "
+            "Pass both values; run --help for examples.",
+            file=sys.stderr,
+        )
+        return 1
+    if ":" not in argv[1]:
+        print(
+            f"git-push-verified: refspec {argv[1]!r} has no ':'. "
+            "Pass <src>:<dst>; run --help for examples.",
+            file=sys.stderr,
+        )
         return 1
 
     remote, refspec = argv[0], argv[1]
@@ -256,7 +270,11 @@ def main(argv: list[str]) -> int:
 
     intended = local_sha(src)
     if intended is None:
-        print(f"git-push-verified: cannot resolve local '{src}'", file=sys.stderr)
+        print(
+            f"git-push-verified: cannot resolve local {src!r} as a commit. "
+            "Fetch or create that commit, or pass an existing local ref, then rerun.",
+            file=sys.stderr,
+        )
         return 1
 
     before = remote_sha(remote, dst)

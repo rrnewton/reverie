@@ -169,6 +169,31 @@ class HealthTickEvaluationProvenanceTests(unittest.TestCase):
         self.assertNotIn("ACTION:", result.stdout)
         self.assertNotIn("NOTE:", result.stdout)
 
+    def test_failed_producer_names_its_exit_and_every_unobserved_check(self) -> None:
+        (self.repo / "ci-hub" / "health" / "tick-hub.yaml").write_text(
+            "checks:\n  - name: first\n  - name: second\n"
+        )
+        result = self._run(mode="does-not-run", exit_status=64)
+
+        self.assertEqual(64, result.returncode)
+        self.assertIn(
+            "ERROR: tick exited 64 before reporting; 2 configured check(s) DID NOT RUN",
+            result.stdout,
+        )
+        action = next(line for line in result.stdout.splitlines() if line.startswith("ACTION:"))
+        self.assertIn("detail=\"producer exit 64; 2 configured check(s) unobserved", action)
+        self.assertIn("the tick exited 64 before running any gate", action)
+        self.assertNotIn("producer exit ;", action)
+        self.assertEqual(1, result.stdout.count("ACTION:"))
+
+    def test_failed_producer_never_reports_zero_when_config_has_no_checks(self) -> None:
+        (self.repo / "ci-hub" / "health" / "tick-hub.yaml").write_text("checks:\n")
+        result = self._run(mode="does-not-run", exit_status=64)
+
+        self.assertEqual(64, result.returncode)
+        self.assertIn("unknown configured check(s) DID NOT RUN", result.stdout)
+        self.assertNotIn("0 configured check(s)", result.stdout)
+
     def test_scheduled_snapshot_is_passed_to_cache_agents(self) -> None:
         snapshot = '[{"name":"worker","tmux_pane_id":"%7"}]'
         result = self._run(mode="quiet", snapshot=snapshot)

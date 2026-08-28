@@ -46,12 +46,36 @@ trap cleanup EXIT
 
 die() { printf '%s\n' "tg-note-verified: $*" >&2; exit 2; }
 
-[ $# -ge 1 ] || die "usage: tg-note-verified TASK_ID [--file PATH]   (or pipe the note on stdin)"
+usage() {
+    cat <<'EOF'
+Write a TaskGraph note and verify that the stored bytes match the input.
+
+Usage:
+  tg-note-verified TASK_ID --file PATH
+  tg-note-verified TASK_ID < note.md
+
+Put note content in a file or on stdin. Never pass the note text as an argument.
+EOF
+}
+
+case "${1:-}" in
+    help|-h|--help)
+        usage
+        exit 0
+        ;;
+    "")
+        printf '%s\n' \
+            "tg-note-verified: missing TASK_ID. Pass the task id first, then --file PATH or note text on stdin." >&2
+        usage >&2
+        exit 2
+        ;;
+esac
+
 task=$1; shift
 
 src=""
 case "${1:-}" in
-    --file) [ $# -ge 2 ] || die "--file needs a path"; src=$2 ;;
+    --file) [ $# -ge 2 ] || die "--file needs a path. Pass a readable note file after --file, then retry."; src=$2 ;;
     "")     src="-" ;;
     *)      die "content must come from --file or stdin, never from an argument.
   Passing it as an argument is the defect this tool exists to prevent: the shell
@@ -62,11 +86,11 @@ if [ "$src" = "-" ]; then
     input=$(mktemp); TMPFILES="$TMPFILES $input"
     cat > "$input"
 else
-    [ -r "$src" ] || die "cannot read $src"
+    [ -r "$src" ] || die "cannot read $src. Create that file or pass a readable path, then retry."
     input=$src
 fi
 
-[ -s "$input" ] || die "refusing to write an empty note"
+[ -s "$input" ] || die "refusing to write an empty note. Put the note text in the file or on stdin, then retry."
 
 # ─────────────────────────────────────────────────────────────────────────────
 # RULE 3: CONTENT FIDELITY IS NOT AUTHORSHIP. The read-back proof below shows the

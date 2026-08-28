@@ -264,11 +264,26 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         child = subprocess.Popen(cmd, **popen_kwargs)
+    except FileNotFoundError as exc:
+        for sink in sinks.values():
+            sink.close()
+        print(
+            f"cap-log: command {cmd[0]!r} NEVER RAN: {exc}. Install it or pass "
+            "the correct executable path, then retry. Returning 127, not the "
+            "wrapped command's result.",
+            file=sys.stderr,
+        )
+        return 127
     except OSError as exc:
         for sink in sinks.values():
             sink.close()
-        print(f"cap-log: cannot run {cmd[0]!r}: {exc}", file=sys.stderr)
-        return 127
+        print(
+            f"cap-log: command {cmd[0]!r} NEVER RAN: {exc}. Check its executable "
+            "bit and interpreter, then retry. Returning 126, not the wrapped "
+            "command's result.",
+            file=sys.stderr,
+        )
+        return 126
 
     threads = []
     for name, sink in sinks.items():

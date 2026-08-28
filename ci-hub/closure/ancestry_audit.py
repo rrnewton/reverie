@@ -117,6 +117,20 @@ def load_prs(root: Path, repo: str, limit: int, herdr_agent: str | None) -> dict
     else:
         run = subprocess.run(cmd.split(), capture_output=True, text=True, timeout=900)
     body = "\n".join(l for l in run.stdout.splitlines() if not l.startswith("[herdr-run]"))
+    if run.returncode != 0:
+        route = (
+            f"rerun with --herdr-agent {herdr_agent} after repairing that agent's "
+            "GitHub access"
+            if herdr_agent
+            else "rerun with --herdr-agent AGENT from a live agent pane, or repair with-proxy"
+        )
+        print(
+            f"ancestry-audit: could not query pull requests for {slug}; "
+            f"`gh pr list` exited {run.returncode}. No PR count was produced. "
+            f"{route}, then retry.\n{run.stderr[:400]}",
+            file=sys.stderr,
+        )
+        raise SystemExit(2)
     try:
         rows = json.loads(body)
     except json.JSONDecodeError:
@@ -291,6 +305,14 @@ def main() -> int:
     ap.add_argument("--agents", type=int, default=0,
                     help="fleet size, to print the implemented-unlanded : agents ratio")
     args = ap.parse_args()
+
+    if not args.root.is_dir():
+        print(
+            f"ancestry-audit: no checkout at {args.root}. Pass --root PATH for an "
+            "existing dev-hermit checkout, then retry.",
+            file=sys.stderr,
+        )
+        return 2
 
     # Bind the TaskGraph before any network work: an unresolvable database is
     # could-not-measure, and finding that out after a full fetch wastes it.

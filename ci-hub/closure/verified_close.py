@@ -1018,6 +1018,36 @@ def main(argv: Sequence[str] | None = None, *, run: Run = _run) -> int:
             f"rc={evidence.rc}",
             file=sys.stderr,
         )
+        if evidence.kind == "artifact":
+            reason = evidence.reason or ""
+            if "outside the versioned workspace" in reason:
+                action = (
+                    "pass a URL, or pass a file inside the versioned dev-hermit "
+                    "workspace, then rerun"
+                )
+            elif "not a file" in reason:
+                action = "pass a tracked file instead of a directory, then rerun"
+            elif evidence.reference.startswith(("http://", "https://")):
+                action = (
+                    "correct the URL or make it readable, then rerun; if this task "
+                    "produced no artifact, use --disposition with the reason"
+                )
+            else:
+                action = (
+                    "commit and push that artifact to parent main, then rerun; if "
+                    "this task produced no artifact, use --disposition with the reason"
+                )
+        elif evidence.kind in {"code", "superseded"}:
+            action = (
+                "land the referenced change or correct --repo and --source, then rerun; "
+                "if no code was produced, use --disposition with the reason"
+            )
+        else:
+            action = (
+                "pass a GitHub Actions run id that exists in --repo and can be read, "
+                "then rerun"
+            )
+        print(f"ACTION: {action}.", file=sys.stderr)
         return evidence.rc
     # ONE PATH. --check-only is a parameter of the real operation, not a separate
     # early return that reimplements part of it -- see close_task()'s docstring for

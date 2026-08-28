@@ -27,12 +27,17 @@ from lib import edit_record  # noqa: E402
 
 
 def repo_root(start: Path) -> Path:
-    proc = subprocess.run(
-        ["git", "rev-parse", "--show-toplevel"],
-        cwd=str(start), capture_output=True, text=True,
-    )
+    if not start.is_dir():
+        raise ValueError(f"{start} is not a directory")
+    try:
+        proc = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            cwd=str(start), capture_output=True, text=True,
+        )
+    except OSError as error:
+        raise ValueError(f"cannot inspect {start}: {error}") from error
     if proc.returncode != 0:
-        sys.exit("edit-owners: not inside a git checkout")
+        raise ValueError(f"{start} is not inside a git checkout")
     return Path(proc.stdout.strip())
 
 
@@ -43,7 +48,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--root", default=None)
     args = parser.parse_args(argv)
 
-    root = Path(args.root).resolve() if args.root else repo_root(Path.cwd())
+    try:
+        root = repo_root(Path(args.root).resolve() if args.root else Path.cwd())
+    except ValueError as error:
+        print(
+            f"edit-owners: cannot inspect edits: {error}. Pass --root PATH for an "
+            "existing git checkout, or run the command from that checkout.",
+            file=sys.stderr,
+        )
+        return 2
     rows = edit_record.attribute(root)
     if not rows:
         print(f"edit-owners: no tracked path differs from HEAD in {root}")

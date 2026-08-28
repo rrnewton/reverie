@@ -53,6 +53,9 @@ evaluation_provenance="observed_at=$observed_at input_sha=$input_sha"
 emit_with_evaluation_provenance() {
     local line
     while IFS= read -r line || [[ -n $line ]]; do
+        if [[ -n $line ]]; then
+            printf 'reported\n' > "$report_marker"
+        fi
         case "$line" in
             ACTION:*)
                 # tick-hub appends title="..." as the ACTION's displayed text.
@@ -73,6 +76,14 @@ emit_with_evaluation_provenance() {
         esac
     done
 }
+
+# The producer runs on the left side of a pipeline, so the annotator cannot
+# return an in-process boolean saying whether it saw output. A private marker
+# distinguishes "the tick returned a gate verdict" from "the tick died before
+# reporting anything" without buffering or delaying the live report.
+report_marker=$(mktemp)
+cleanup_report_marker() { local rc=$?; rm -f "$report_marker"; exit "$rc"; }
+trap cleanup_report_marker EXIT
 
 # Carry the provenance verdict INTO the report rather than leaving it on stderr.
 #
@@ -114,25 +125,26 @@ if (( pipeline_status[0] != 0 )); then
     # found by accident. Absence of ACTION lines meant "all clear" and "nothing was
     # looked at" at the same time, which is the one thing this tool must never do.
     #
-    # So a nonzero producer status announces the size of what went unobserved. The
-    # count is read STRAIGHT FROM THE CONFIG with grep, deliberately not through
-    # tick-hub: the announcement has to work in exactly the case where tick-hub is
-    # the thing that is broken. An unreadable config degrades to "unknown", never to
-    # silence and never to zero -- a zero here would re-create the defect.
-    tick_config="$ROOT/ci-hub/health/tick-hub.yaml"
-    if [[ -r $tick_config ]]; then
-        not_run=$(grep -cE '^  - name:' "$tick_config" || true)
-        [[ -n $not_run ]] || not_run=unknown
-    else
-        not_run=unknown
+    # So a nonzero producer status with NO REPORT announces the size of what went
+    # unobserved. A nonzero status after output is a normal gate verdict and keeps
+    # that report without falsely claiming nothing ran. The no-report count is read
+    # STRAIGHT FROM THE CONFIG with grep, deliberately not through tick-hub: the
+    # announcement has to work in exactly the case where tick-hub is the thing that
+    # is broken. An unreadable config degrades to "unknown", never to silence and
+    # never to zero -- a zero here would re-create the defect.
+    if [[ ! -s $report_marker ]]; then
+        tick_config="$ROOT/ci-hub/health/tick-hub.yaml"
+        if [[ -r $tick_config ]]; then
+            not_run=$(grep -cE '^  - name:' "$tick_config" || true)
+            [[ $not_run =~ ^[1-9][0-9]*$ ]] || not_run=unknown
+        else
+            not_run=unknown
+        fi
+        printf 'ERROR: tick exited %s before reporting; %s configured check(s) DID NOT RUN\n' \
+            "${pipeline_status[0]}" "$not_run"
+        printf 'ACTION: hard-warn-coordinator component=tick-hub-reporting outcome=NO-SIGNAL gate=ALL reason=tick-exited-before-gates detail="producer exit %s; %s configured check(s) unobserved; this is NOT a clean tick" title="NO-SIGNAL gate=ALL: the tick exited %s before running any gate; %s check(s) unobserved"\n' \
+            "${pipeline_status[0]}" "$not_run" "${pipeline_status[0]}" "$not_run"
     fi
-    printf 'ERROR: tick exited %s before reporting; %s configured check(s) DID NOT RUN\n' \
-        "${pipeline_status[0]}" "$not_run"
-    printf 'ACTION: hard-warn-coordinator component=tick-hub-reporting outcome=NO-SIGNAL '
-    printf 'gate=ALL reason=tick-exited-before-gates detail="producer exit %s; %s configured '
-    printf 'check(s) unobserved; this is NOT a clean tick" title="NO-SIGNAL gate=ALL: the tick '
-    printf 'exited %s before running any gate; %s check(s) unobserved"\n' \
-        "${pipeline_status[0]}" "$not_run" "${pipeline_status[0]}" "$not_run"
     exit "${pipeline_status[0]}"
 fi
 if (( cache_status != 0 )); then

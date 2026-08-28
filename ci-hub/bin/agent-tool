@@ -4,20 +4,40 @@
 # tracked Python entrypoint and package have the exact same Git objects.
 set -euo pipefail
 
-ROOT=$(git -C "$(dirname -- "${BASH_SOURCE[0]}")/../.." rev-parse --show-toplevel)
-HERMIT="$ROOT/hermit"
-AGENT_UTILS="$ROOT/agent-utils"
-AGENT_UTILS_LINK_TARGET="hermit/agent-utils"
 TOOL=${1:-}
+
+usage() {
+    cat <<'EOF'
+usage: ci-hub/bin/agent-tool <dagrun|pr-landing-planner|safe-ci-dag-runner|tick-hub> [args...]
+
+Run one agent-utils tool from the commit selected by dev-hermit's Hermit pin.
+For that tool's options, choose its name above and append --help.
+EOF
+}
 
 case "$TOOL" in
     dagrun|pr-landing-planner|safe-ci-dag-runner|tick-hub) ;;
+    help|-h|--help)
+        usage
+        exit 0
+        ;;
+    "")
+        echo "agent-tool: missing tool name; choose one of the four names below." >&2
+        usage >&2
+        exit 2
+        ;;
     *)
-        echo "usage: ci-hub/bin/agent-tool <dagrun|pr-landing-planner|safe-ci-dag-runner|tick-hub> [args...]" >&2
+        echo "agent-tool: unknown tool '$TOOL'; choose one of the four names below." >&2
+        usage >&2
         exit 2
         ;;
 esac
 shift
+
+ROOT=$(git -C "$(dirname -- "${BASH_SOURCE[0]}")/../.." rev-parse --show-toplevel)
+HERMIT="$ROOT/hermit"
+AGENT_UTILS="$ROOT/agent-utils"
+AGENT_UTILS_LINK_TARGET="hermit/agent-utils"
 
 die() {
     echo "agent-tool: $*" >&2

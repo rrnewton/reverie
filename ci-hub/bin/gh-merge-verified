@@ -796,13 +796,19 @@ def parse_options(argv: list[str]):
     i = 1
     while i < len(argv):
         arg = argv[i]
-        if arg == "--repo" and i + 1 < len(argv):
+        if arg == "--repo":
+            if i + 1 >= len(argv):
+                raise ValueError("--repo needs OWNER/REPO; run --help for an example")
             repo, i = argv[i + 1], i + 2
         elif arg == "--verify-only":
             verify_only, i = True, i + 1
-        elif arg == "--expect-head" and i + 1 < len(argv):
+        elif arg == "--expect-head":
+            if i + 1 >= len(argv):
+                raise ValueError("--expect-head needs the exact 40-hex PR head; run --help for an example")
             expect_head, i = argv[i + 1], i + 2
-        elif arg == "--receipt" and i + 1 < len(argv):
+        elif arg == "--receipt":
+            if i + 1 >= len(argv):
+                raise ValueError("--receipt needs an output path; run --help for an example")
             receipt_path, i = argv[i + 1], i + 2
         elif arg == "--":
             extra.extend(argv[i + 1 :])
@@ -814,16 +820,30 @@ def parse_options(argv: list[str]):
 
 
 def main() -> None:
-    atexit.register(cleanup_scratch)
     argv = sys.argv[1:]
-    if not argv or argv[0] in {"-h", "--help"}:
-        die(1, __doc__ or "")
+    if argv and argv[0] in {"help", "-h", "--help"}:
+        print(__doc__ or "")
+        return
+    if not argv:
+        die(
+            1,
+            "gh-merge-verified: missing pull request number.",
+            "  Pass the PR number first; run --help for examples and exit-code meanings.",
+        )
+    atexit.register(cleanup_scratch)
 
     pr = argv[0]
     if not pr.isdigit():
-        die(1, f"gh-merge-verified: first argument must be a pull request number, got {pr!r}")
+        die(
+            1,
+            f"gh-merge-verified: first argument must be a pull request number, got {pr!r}.",
+            "  Pass the numeric PR number first; run --help for examples.",
+        )
 
-    repo, verify_only, expect_head, receipt_path, extra = parse_options(argv)
+    try:
+        repo, verify_only, expect_head, receipt_path, extra = parse_options(argv)
+    except ValueError as error:
+        die(1, f"gh-merge-verified: {error}")
 
     # TEST-ONLY ESCAPE HATCH. The self-test needs to drive this against fixture
     # repositories on disk, because a verifier that has only ever been run

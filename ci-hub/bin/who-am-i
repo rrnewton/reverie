@@ -185,6 +185,12 @@ def main() -> int:
                 f"who-am-i: DEGRADED: identity resolver returned {result.state}",
                 file=sys.stderr,
             )
+            print(
+                "who-am-i: NEXT: run with --diagnostics to see the missing or "
+                "conflicting signals. If --pid was supplied, pass a live agent PID "
+                "or omit --pid to inspect the caller.",
+                file=sys.stderr,
+            )
         if args.diagnostics:
             _print_diagnostics(result)
         sys.stdout.write(disclosure.tag)

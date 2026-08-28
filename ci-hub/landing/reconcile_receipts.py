@@ -254,7 +254,18 @@ def main(argv: list[str] | None = None) -> int:
         open_prs = fetch_open_prs(args.repo, prs_json=args.prs_json)
         rows = load_history(history_json=args.history_json)
     except (RuntimeError, OSError, ValueError) as err:
-        print(f"ERROR: {err}", file=sys.stderr)
+        supplied = []
+        if args.prs_json:
+            supplied.append(f"--prs-json {args.prs_json}")
+        if args.history_json:
+            supplied.append(f"--history-json {args.history_json}")
+        source = ", ".join(supplied) if supplied else "the live GitHub and local-history inputs"
+        print(
+            f"reconcile-receipts: COULD NOT READ {source}: {err}. "
+            "Pass readable JSON files for offline input, or omit those flags to read "
+            "the live sources, then retry.",
+            file=sys.stderr,
+        )
         return 3
 
     commits = candidate_commits(rows)

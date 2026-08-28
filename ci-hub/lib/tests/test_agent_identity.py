@@ -666,6 +666,7 @@ class CliTests(IdentityFixture):
         self.assertTrue(result.stdout.endswith(", role=impl]"))
         self.assertIn("fields: team, agent, model, machine, role", result.stderr)
         self.assertIn("DEGRADED", result.stderr)
+        self.assertIn("NEXT: run with --diagnostics", result.stderr)
         self.assertNotIn("signal source=", result.stdout)
 
     def test_default_unresolved_never_invents_an_identity(self) -> None:
@@ -684,6 +685,7 @@ class CliTests(IdentityFixture):
         self.assertIn("[hermit2, degraded-unresolved, unresolved, ", result.stdout)
         self.assertTrue(result.stdout.endswith(", role=impl]"))
         self.assertIn("DEGRADED", result.stderr)
+        self.assertIn("NEXT: run with --diagnostics", result.stderr)
 
     def test_interactive_shell_without_agent_identity_is_human(self) -> None:
         self.write_state(owners=(), sidecar_agent=None)

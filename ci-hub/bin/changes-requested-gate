@@ -1896,7 +1896,8 @@ def main(argv: list[str] | None = None) -> int:
                 INDETERMINATE,
                 args.pr,
                 head,
-                f"could not read comment records from {args.from_json}: {exc}",
+                f"could not read comment records from {args.from_json}: {exc}. "
+                "Pass a readable JSON file to --from-json, then retry",
             )
     else:
         # ⚠ ONE QUERY, BOTH FACTS. `ci-hub/landing/land-pr.sh` reads `state` beside

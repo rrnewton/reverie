@@ -41,17 +41,41 @@
 
 set -uo pipefail
 
+usage() {
+    cat <<'EOF'
+Read one authenticated GitHub REST API path through the required forward proxy.
+
+Usage:
+  ci-hub/bin/gh-api <path-or-url> [curl args...]
+  ci-hub/bin/gh-api /repos/rrnewton/hermit/pulls?state=open&per_page=100
+  ci-hub/bin/gh-api /repos/rrnewton/hermit/pulls/2276
+
+This entry point is read-only. Put curl options after the API path.
+EOF
+}
+
+case "${1:-}" in
+    help|-h|--help)
+        usage
+        exit 0
+        ;;
+    "")
+        echo "gh-api: missing API path. Pass /repos/OWNER/REPO/... or a full https URL; run --help for examples." >&2
+        usage >&2
+        exit 2
+        ;;
+    -*)
+        echo "gh-api: '$1' is not an API path. Put the path first and curl options after it; run --help for examples." >&2
+        exit 2
+        ;;
+esac
+
 PROXY="${FWDPROXY_URL:-https://fwdproxy:8082}"
 PROXY_CA="${FWDPROXY_CACERT:-/etc/pki/tls/certs/fb_certs.pem}"
 IDENTITY="${FWDPROXY_IDENTITY:-/var/facebook/x509_identities/server.pem}"
 
-if (($# < 1)); then
-    sed -n '/^# USAGE/,/^#$/p' "$0" >&2
-    exit 2
-fi
-
 command -v curl >/dev/null 2>&1 || {
-    echo "gh-api: curl is required" >&2
+    echo "gh-api: curl is required. Install curl on this host, then rerun the same command." >&2
     exit 2
 }
 
@@ -67,6 +91,7 @@ done
 TOKEN="${GH_TOKEN:-${GITHUB_TOKEN:-$(gh auth token 2>/dev/null)}}"
 [[ -n $TOKEN ]] || {
     echo "gh-api: no GitHub token (tried GH_TOKEN, GITHUB_TOKEN, 'gh auth token')" >&2
+    echo "  Set GH_TOKEN or GITHUB_TOKEN, or authenticate gh, then rerun the same request." >&2
     exit 2
 }
 

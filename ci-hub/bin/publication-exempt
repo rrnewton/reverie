@@ -68,18 +68,22 @@ def resolve_actor(claimed: str) -> str:
         sys.exit(
             f"publication-exempt: REFUSING \u2014 cannot resolve the calling agent "
             f"({(proc.stderr or '').strip()[:160]}). "
-            "A record that cannot name its author records nothing."
+            "A record that cannot name its author records nothing. Run "
+            "ci-hub/bin/who-am-i --diagnostics, fix the missing identity signal, "
+            "then retry."
         )
     if state != "AGREEMENT":
         sys.exit(
             f"publication-exempt: REFUSING \u2014 process context resolves {resolved!r} in state "
             f"{state!r}, not AGREEMENT. An attributed record whose author is "
-            "uncertain is worse than none."
+            "uncertain is worse than none. Run ci-hub/bin/who-am-i --diagnostics, "
+            "resolve the disagreement, then retry."
         )
     if claimed and resolved != claimed:
         sys.exit(
             f"publication-exempt: REFUSING \u2014 --who said {claimed!r} but the process context "
-            f"resolves to {resolved!r}."
+            f"resolves to {resolved!r}. Omit --who to use the resolved identity, or "
+            f"pass --who {resolved}, then retry."
         )
     return resolved
 
@@ -145,7 +149,9 @@ def main(
         reason = args.reason_file.read_text(encoding="utf-8")
     except OSError as error:
         print(
-            f"publication-exempt: cannot read reason file {args.reason_file}: {error}",
+            f"publication-exempt: cannot read reason file {args.reason_file}: {error}. "
+            "Create that file with the reason, or pass a readable --reason-file, "
+            "then retry.",
             file=sys.stderr,
         )
         return 2
@@ -162,7 +168,8 @@ def main(
     if result.returncode != 0:
         detail = (result.stderr or result.stdout or "").strip()
         print(
-            f"publication-exempt: tg-note-verified failed (rc={result.returncode}): {detail}",
+            f"publication-exempt: tg-note-verified failed (rc={result.returncode}): "
+            f"{detail}. Follow the note writer's remedy, then retry this command.",
             file=sys.stderr,
         )
         return result.returncode
