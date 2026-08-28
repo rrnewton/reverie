@@ -251,8 +251,12 @@ fn main() {
                 {
                     Some(v) => {
                         println!(
-                            "tier={} verify_compare={} bitwise_parity={} compared_log_messages={}",
-                            v.tier, v.verify_compare, v.bitwise_parity, v.compared_log_messages
+                            "tier={} verify_compare={} bitwise_parity={} compared_log_messages={} infrastructure_error={}",
+                            v.tier,
+                            v.verify_compare,
+                            v.bitwise_parity,
+                            v.compared_log_messages,
+                            v.infrastructure_error.as_deref().unwrap_or("")
                         );
                         exit(0);
                     }
@@ -473,7 +477,7 @@ fn main() {
         for c in group {
             let hr = outcomes.get(&(c.test.clone(), c.mode.clone()));
             let executed = hr.is_some();
-            let (outcome, duration_ms, reason) = if !available {
+            let (mut outcome, duration_ms, mut reason) = if !available {
                 (
                     "unavailable".to_string(),
                     0i64,
@@ -487,10 +491,32 @@ fn main() {
                     None => ("skip".to_string(), 0i64, "no harness record".to_string()),
                 }
             };
+            let ran_two_run_comparison = c.mode == "verify";
+            // Read the harness attempt's own receipt on non-passing rows. A
+            // successful row is still re-run with --verify-strict below because
+            // the ordinary harness comparison may be weaker; a failed row must
+            // not be ignored merely because it is not eligible for that rerun.
+            let verdict = if ran_two_run_comparison && available && outcome != "skip" {
+                if outcome == "pass" {
+                    capture_verify_verdict(&repo, &lane, backend, c)
+                } else {
+                    hr.and_then(harness_verify_verdict)
+                }
+            } else {
+                None
+            };
+            if let Some(infrastructure_error) = verdict
+                .as_ref()
+                .and_then(|verdict| verdict.infrastructure_error.as_ref())
+            {
+                outcome = "error".to_string();
+                reason = infrastructure_error.clone();
+            }
             let pass = outcome == "pass";
             // A known-green (enabled) cell that no longer passes is a regression —
-            // but an UNAVAILABLE backend is environmental, never a regression.
-            if !pass && available && c.cell_state == "enabled" {
+            // but an unavailable backend or a named infrastructure error is
+            // environmental, never a product regression.
+            if is_regression(&outcome, available, &c.cell_state) {
                 regressions.push(format!(
                     "{bucket}/{}::{} [{backend}] -> {outcome} ({reason})",
                     c.test, c.mode
@@ -512,18 +538,8 @@ fn main() {
             // BLANK means UNMEASURED and is the honest answer for a single run.
             // It is deliberately NOT `0`: `0` asserts observed nondeterminism,
             // which a single run cannot establish either.
-            let ran_two_run_comparison = c.mode == "verify";
-            let deterministic = if !available || outcome == "skip" {
-                None
-            } else if !pass {
-                // A completed non-pass IS confirmed: the cell did not reproduce
-                // its expected behaviour under its own backend.
-                Some(false)
-            } else if ran_two_run_comparison {
-                Some(true)
-            } else {
-                None
-            };
+            let deterministic =
+                deterministic_from_harness(&outcome, available, ran_two_run_comparison);
             // WHAT the two runs were compared BY, read from hermit's OWN typed
             // verdict instead of assumed from the flag or scraped from the banner.
             // `detcore::logdiff` is the one real comparator in the system and this
@@ -532,11 +548,6 @@ fn main() {
             // run whose own `--verify-json` says `bitwise_parity:false`, so the
             // banner cannot tell a stripped match from a bitwise one. `--verify-json`
             // carries the comparison's CONDITIONS beside its result, so read that.
-            let verdict = if ran_two_run_comparison && available && outcome != "skip" && pass {
-                capture_verify_verdict(&repo, &lane, backend, c)
-            } else {
-                None
-            };
             // FALLBACK, retained deliberately: some backends produce no verdict at
             // all (DBI accepts `--verify-json` and writes nothing -- measured rc=0,
             // no file), so the absent-JSON path is a REAL case, not a defensive
@@ -779,6 +790,27 @@ struct HarnessResult {
     outcome: String,
     duration_ms: i64,
     reason: String,
+    verification_report: Option<String>,
+}
+
+fn is_regression(outcome: &str, available: bool, cell_state: &str) -> bool {
+    outcome != "pass" && outcome != "error" && available && cell_state == "enabled"
+}
+
+fn deterministic_from_harness(
+    outcome: &str,
+    available: bool,
+    ran_two_run_comparison: bool,
+) -> Option<bool> {
+    if !available || matches!(outcome, "skip" | "error") {
+        None
+    } else if outcome != "pass" {
+        Some(false)
+    } else if ran_two_run_comparison {
+        Some(true)
+    } else {
+        None
+    }
 }
 
 /// Enumerate the authoritative plan. Regression = enabled ci cells
@@ -937,6 +969,13 @@ fn run_group(
                     .and_then(Value::as_str)
                     .unwrap_or("")
                     .to_string(),
+                verification_report: v
+                    .get("attempts")
+                    .and_then(Value::as_array)
+                    .and_then(|attempts| attempts.last())
+                    .and_then(|attempt| attempt.get("verification_report"))
+                    .and_then(Value::as_str)
+                    .map(str::to_owned),
             });
         }
     }
@@ -982,6 +1021,7 @@ struct VerifyVerdict {
     verify_compare: String,
     bitwise_parity: String,
     compared_log_messages: String,
+    infrastructure_error: Option<String>,
 }
 
 /// The tier a `--verify` run actually EARNED, parsed from the verdict hermit
@@ -1002,8 +1042,27 @@ fn verify_tier_from_json(text: &str) -> Option<VerifyVerdict> {
     let record = record.as_object()?;
     match record.get("verdict").and_then(Value::as_str) {
         None | Some("no_result") => return None,
-        Some(_) => {}
+        Some("matched" | "diverged" | "infrastructure_error") => {}
+        Some(other) => {
+            eprintln!("collect-envelope: REFUSED unknown verification verdict {other:?}");
+            return None;
+        }
     }
+    let infrastructure_error =
+        if record.get("verdict").and_then(Value::as_str) == Some("infrastructure_error") {
+            let cause = record.get("infrastructure_error")?.as_object()?;
+            match (
+                cause.get("kind").and_then(Value::as_str),
+                cause.get("count").and_then(Value::as_u64),
+            ) {
+                (Some("skid_overshoot"), Some(count)) if count > 0 => Some(format!(
+                    "verification recorded {count} HERMIT_SKID_OVERSHOOT report(s)"
+                )),
+                _ => return None,
+            }
+        } else {
+            None
+        };
     let comparison = record.get("comparison").and_then(Value::as_object);
     let counts = record
         .get("compared_log_messages")
@@ -1052,7 +1111,15 @@ fn verify_tier_from_json(text: &str) -> Option<VerifyVerdict> {
             "0".to_string()
         },
         compared_log_messages: compared,
+        infrastructure_error,
     })
+}
+
+fn harness_verify_verdict(result: &HarnessResult) -> Option<VerifyVerdict> {
+    result
+        .verification_report
+        .as_deref()
+        .and_then(verify_tier_from_json)
 }
 
 /// Run this cell's guest under `--verify` and read the verdict hermit wrote.
@@ -1536,6 +1603,26 @@ fn self_check() -> i32 {
             r#"{"verified":false,"verdict":"no_result"}"#,
             None,
         ),
+        (
+            "infrastructure-with-comparison",
+            r#"{"verified":false,"bitwise_parity":false,"verdict":"infrastructure_error",
+                "infrastructure_error":{"kind":"skid_overshoot","count":2},
+                "comparison":{"strictness":"canonical","compare_logs":true},
+                "compared_log_messages":{"left":112,"right":112}}"#,
+            Some("gap|0|112|112|canonical"),
+        ),
+        (
+            "infrastructure-before-comparison",
+            r#"{"verified":false,"bitwise_parity":false,"verdict":"infrastructure_error",
+                "infrastructure_error":{"kind":"skid_overshoot","count":1},
+                "comparison":null,"compared_log_messages":null}"#,
+            Some("gap|0||"),
+        ),
+        (
+            "unknown-verdict",
+            r#"{"verified":false,"verdict":"future_result"}"#,
+            None,
+        ),
         ("empty-file", "", None),
         ("not-json", "Determinism verified.", None),
     ];
@@ -1573,6 +1660,50 @@ fn self_check() -> i32 {
     .map(|v| v.tier);
     if counted == uncounted {
         println!("SELF-CHECK FAIL: zero-count comparison earns the same tier as a real one");
+        failures += 1;
+    }
+    let infrastructure = verify_tier_from_json(
+        r#"{"verified":false,"bitwise_parity":false,"verdict":"infrastructure_error",
+            "infrastructure_error":{"kind":"skid_overshoot","count":3},
+            "comparison":null,"compared_log_messages":null}"#,
+    )
+    .and_then(|verdict| verdict.infrastructure_error);
+    if infrastructure.as_deref() != Some("verification recorded 3 HERMIT_SKID_OVERSHOOT report(s)")
+    {
+        println!(
+            "SELF-CHECK FAIL: infrastructure receipt did not retain its named cause: {infrastructure:?}"
+        );
+        failures += 1;
+    }
+    if is_regression("error", true, "enabled")
+        || deterministic_from_harness("error", true, true).is_some()
+        || !is_regression("fail", true, "enabled")
+        || deterministic_from_harness("fail", true, true) != Some(false)
+    {
+        println!(
+            "SELF-CHECK FAIL: infrastructure error and product failure no longer stay in distinct scorecard buckets"
+        );
+        failures += 1;
+    }
+    let failed_harness = HarnessResult {
+        test: "fixture".into(),
+        mode: "verify".into(),
+        outcome: "error".into(),
+        duration_ms: 1,
+        reason: "fixture".into(),
+        verification_report: Some(
+            r#"{"verified":false,"bitwise_parity":false,"verdict":"infrastructure_error",
+                "infrastructure_error":{"kind":"skid_overshoot","count":4},
+                "comparison":null,"compared_log_messages":null}"#
+                .into(),
+        ),
+    };
+    let failed_cause =
+        harness_verify_verdict(&failed_harness).and_then(|verdict| verdict.infrastructure_error);
+    if failed_cause.as_deref() != Some("verification recorded 4 HERMIT_SKID_OVERSHOOT report(s)") {
+        println!(
+            "SELF-CHECK FAIL: a non-passing harness row did not read its own infrastructure receipt: {failed_cause:?}"
+        );
         failures += 1;
     }
     let total = cases.len() + verdict_cases.len();

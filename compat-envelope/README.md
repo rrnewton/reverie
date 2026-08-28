@@ -177,7 +177,11 @@ oracle_verdict,stack_parity,heap_parity
 - `backend` — `ptrace` | `dbi` | `kvm` | `sabre` | `liteinst`.
 - `cell_state` — `enabled` (in the regression envelope) | `disabled` (expansion
   candidate).
-- `outcome` — `pass` | `diverge` | `fail` | `skip`.
+- `outcome` — `pass` | `diverge` | `fail` | `error` | `timeout` | `oom` |
+  `skip` | `unavailable` | `not-exercised` | `gap`. `error` is an understood
+  infrastructure failure and is not product-regression evidence; its `reason`
+  names the cause. `tier=gap` only describes missing comparison strength and
+  does not replace the outcome.
 - `deterministic` / `<observable>_parity` — `1` | `0` | blank (unknown).
   Hermit and e9patch stdout comparisons write `stdout_parity`; Reverie counter
   comparisons write `tool_count_parity`. Scorecards written before this rename

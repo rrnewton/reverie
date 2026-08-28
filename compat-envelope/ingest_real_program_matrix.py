@@ -633,7 +633,17 @@ def mapped_row(
     has_nonzero_comparison = (
         left is not None and left > 0 and right is not None and right > 0
     )
-    if state == "PASS":
+    if source["verdict"] == "infrastructure_error":
+        if state not in ATTEMPTED:
+            raise Refused(
+                f"{source['program']}/{source['backend']}: infrastructure_error "
+                "must come from an attempted row"
+            )
+        outcome = "error"
+        deterministic = ""
+        tier = "gap"
+        compare = ""
+    elif state == "PASS":
         if verified is not True or bitwise is not True or not has_nonzero_comparison:
             raise Refused(
                 f"{source['program']}/{source['backend']}: "

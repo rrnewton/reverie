@@ -265,6 +265,27 @@ class IngestRealProgramMatrix(unittest.TestCase):
         self.assertEqual({r["comparison_tier"] for r in passes}, {"unqualified-self-verify-only"})
         self.assertTrue(all("no ptrace cross-backend witness" in r["reason"] for r in passes))
 
+    def test_infrastructure_error_is_not_recorded_as_product_failure(self):
+        rows = self._matrix()
+        dbt = next(r for r in rows if r["program"] == "echo" and r["backend"] == "dbt")
+        dbt.update(
+            state="FAIL",
+            verdict="infrastructure_error",
+            verified="false",
+            bitwise_parity="false",
+            reason="verification recorded 2 HERMIT_SKID_OVERSHOOT report(s)",
+            rc="122",
+        )
+        self._ingest(rows)
+        result = next(
+            row
+            for row in self._read_out()
+            if row["test_id"] == "real-programs/echo" and row["backend"] == "dbi"
+        )
+        self.assertEqual(result["outcome"], "error")
+        self.assertEqual(result["deterministic"], "")
+        self.assertIn("HERMIT_SKID_OVERSHOOT", result["reason"])
+
     def test_output_earns_determinism_and_leaves_unimplemented_verdicts_blank(self):
         self._ingest()
         rows = self._read_out()
