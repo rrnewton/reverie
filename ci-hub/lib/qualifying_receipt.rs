@@ -773,10 +773,11 @@ fn shared_evidence_outcome(row: &HistoryRow, pred: &QualifyingPredicate) -> Boun
 ///     green at any schema — never grandfathered.
 ///   * if `gate_filtered_tests`, additionally require `filtered_tests == 0`.
 ///   * COUNT-CAPABLE receipts (`schema_version >= counts_schema`) are held to the
-///     FULL per-node contract: `executed_tests >= require.executed_tests_min`
-///     AND a `coverage` object that satisfies its obligation (when
-///     `coverage.per_node` and `schema_version >= coverage.applies_at_schema_min`).
-///     Missing either on a count-capable receipt is a writer defect -> reject.
+///     FULL contract: every planned outer gate is accounted for,
+///     `executed_tests >= require.executed_tests_min`, AND a `coverage` object
+///     that satisfies its per-test-node obligation (when `coverage.per_node`
+///     and `schema_version >= coverage.applies_at_schema_min`). Missing any of
+///     these on a count-capable receipt is a writer defect -> reject.
 ///   * receipts carrying counts under an OLDER schema prove nonzero execution but
 ///     predate per-node coverage: held only to `executed_tests >=
 ///     require.executed_tests_min`.
@@ -871,6 +872,9 @@ pub fn row_qualification(row: &HistoryRow, sha: &str, pred: &QualifyingPredicate
     }
     let schema = row.schema_version.unwrap_or(0);
     let count_capable = schema >= pred.counts_schema;
+    if count_capable && !gate_accounting_complete(row) {
+        return Qualification::Refused("outer gate accounting incomplete");
+    }
     let counts_present = row.executed_tests.is_some() && row.filtered_tests.is_some();
     let executed_ok = matches!(row.executed_tests, Some(n) if n >= req.executed_tests_min);
     let qualification = if count_capable {
@@ -1050,6 +1054,8 @@ mod tests {
             r#"{{"schema_version":5,"profile":"full","selection_mode":"full","commit":"{sha}",
                 "commit_anchored":true,"tree_dirty":false,"result":"pass","failures":0,
                 "executed_tests":427,"filtered_tests":0,"coverage":{coverage},
+                "checks":1,"gates_run":1,"gates_expected":1,
+                "gates":[{{"name":"test","result":"pass","exit_code":0}}],
                 "producer":"hermit-validate-sh","admission":"ci-hub-validate-lock",
                 "concurrent_validates":0,
                 "concurrency_proof":"validate_lock_owner_ancestry",
@@ -1072,6 +1078,8 @@ mod tests {
             r#"{{"schema_version":5,"profile":"full","selection_mode":"full","commit":"{sha}",
                 "commit_anchored":true,"tree_dirty":false,"result":"pass","failures":0,
                 "executed_tests":427,"filtered_tests":0,"finished_at":"{finished_at}",
+                "checks":1,"gates_run":1,"gates_expected":1,
+                "gates":[{{"name":"test","result":"pass","exit_code":0}}],
                 "coverage":{{"planned_test_nodes":19,"executed_test_nodes":19,
                 "zero_executed_nodes":[],"absent_nodes":[]}},
                 "admission":"ci-hub-validate-lock","concurrent_validates":0,
@@ -1092,6 +1100,23 @@ mod tests {
         let mut pred = QualifyingPredicate::parse(EMBEDDED, "embedded").unwrap();
         pred.producer.applies_from_finished_at = Some("2026-08-08T00:00:00Z".to_string());
         pred
+    }
+
+    #[test]
+    fn count_capable_receipt_requires_complete_outer_gate_accounting() {
+        let sha = "b".repeat(40);
+        let pred = QualifyingPredicate::parse(EMBEDDED, "embedded").unwrap();
+        let mut row = row_with_producer(&sha, "2026-08-08T09:00:00Z", Some("hermit-validate-sh"));
+        assert!(
+            row_qualifies(&row, &sha, &pred),
+            "1 of 1 control must qualify"
+        );
+
+        row.gates_expected = Some(2);
+        assert_eq!(
+            row_qualification(&row, &sha, &pred),
+            Qualification::Refused("outer gate accounting incomplete")
+        );
     }
 
     /// BOTH DIRECTIONS of the provenance gate, in the engine that must agree
@@ -1476,6 +1501,8 @@ mod tests {
             r#"{{"schema_version":5,"profile":"full","selection_mode":"full","commit":"{sha}",
                 "commit_anchored":true,"tree_dirty":false,"result":"pass","failures":0,
                 "executed_tests":740,"filtered_tests":3,
+                "checks":1,"gates_run":1,"gates_expected":1,
+                "gates":[{{"name":"test","result":"pass","exit_code":0}}],
                 "coverage":{{"planned_test_nodes":4,"executed_test_nodes":4,
                     "zero_executed_nodes":[],"absent_nodes":[]}},
                 "producer":"hermit-validate-sh","admission":"ci-hub-validate-lock",
@@ -1519,6 +1546,10 @@ mod tests {
             "failures": 0,
             "executed_tests": 740,
             "filtered_tests": 3,
+            "checks": 1,
+            "gates_run": 1,
+            "gates_expected": 1,
+            "gates": [{"name": "test", "result": "pass", "exit_code": 0}],
             "coverage": {
                 "planned_test_nodes": 4,
                 "executed_test_nodes": 4,

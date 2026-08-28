@@ -166,6 +166,19 @@ def _ee303899_row(sha: str) -> dict:
     return row
 
 
+def _incomplete_outer_graph_row(sha: str) -> dict:
+    """A pass-shaped row that executed only 75 of its 76 planned outer nodes."""
+    row = _green_row(sha)
+    row["checks"] = 75
+    row["gates_run"] = 75
+    row["gates_expected"] = 76
+    row["gates"] = [
+        {"name": f"node-{index}", "result": "pass", "exit_code": 0}
+        for index in range(75)
+    ]
+    return row
+
+
 def _zero_exec_row(sha: str) -> dict:
     """A demonstrated zero-test run: never a full green at any schema."""
     row = _green_row(sha)
@@ -800,6 +813,14 @@ class QualifyingReceiptMutationTest(unittest.TestCase):
         panel = self._panel(_ee303899_row(SHA), predicate=None)
         self.assertFalse(any(panel.values()),
                          f"incomplete coverage must be rejected by every consumer: {panel}")
+
+    def test_live_rejects_incomplete_outer_graph_unanimously(self) -> None:
+        """A 75-of-76 run cannot qualify by retaining complete test-node data."""
+        panel = self._panel(_incomplete_outer_graph_row(SHA), predicate=None)
+        self.assertFalse(
+            any(panel.values()),
+            f"incomplete outer graph must be rejected by every consumer: {panel}",
+        )
 
     def test_live_rejects_unreported_coverage_lists_unanimously(self) -> None:
         """Missing is UNKNOWN, not empty, in all six consumer legs."""

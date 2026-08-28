@@ -743,7 +743,8 @@ mod tests {
                 "base_tree":"2222222222222222222222222222222222222222",
                 "reverie_base_sha":"3333333333333333333333333333333333333333",
                 "reverie_base_tree":"4444444444444444444444444444444444444444",
-                "checks":36,"failures":0,"real_seconds":528,"user_seconds":1300,"sys_seconds":90}}"#
+                "checks":36,"gates_run":36,"gates_expected":36,
+                "failures":0,"real_seconds":528,"user_seconds":1300,"sys_seconds":90}}"#
         ))
     }
 

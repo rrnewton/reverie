@@ -129,6 +129,16 @@ def gates_complete(record: Mapping[str, Any]) -> tuple[bool, str]:
     if expected <= 0:
         return False, f"vacuous contract (gates_expected={expected})"
 
+    # A typed intentional skip is useful only relative to a contract the
+    # producer actually declared. It must not turn the legacy inferred fallback
+    # into modern completeness evidence by returning before this check.
+    if source == INFERRED and schema >= DECLARE_REQUIRED_SCHEMA:
+        return False, (
+            f"schema {schema} receipt did not declare gates_expected; the inferred "
+            f"expectation ({FULL_GATES_EXPECTED}) cannot prove completeness "
+            "(a 5-of-6 short run is indistinguishable from a complete 5-of-5)"
+        )
+
     skips, skip_error = intentional_skips(record)
     if skip_error is not None or skips is None:
         return False, skip_error or "intentional skip evidence is invalid"
@@ -159,16 +169,6 @@ def gates_complete(record: Mapping[str, Any]) -> tuple[bool, str]:
         return True, (
             f"{ran} executed + {len(skips)} intentionally skipped = "
             f"{expected} planned gates ({source}); skips are not PASS"
-        )
-
-    # THE FIX. A count-capable receipt that did not declare its contract has an
-    # INFERRED denominator, and `ran >= inferred` is not proof of anything: the
-    # hardcode lags the live plan, so a 5-of-6 short run reads as 5-of-5.
-    if source == INFERRED and schema >= DECLARE_REQUIRED_SCHEMA:
-        return False, (
-            f"schema {schema} receipt did not declare gates_expected; the inferred "
-            f"expectation ({FULL_GATES_EXPECTED}) cannot prove completeness "
-            "(a 5-of-6 short run is indistinguishable from a complete 5-of-5)"
         )
 
     if ran < expected:

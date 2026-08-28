@@ -41,8 +41,11 @@ import sys
 from enum import Enum
 from pathlib import Path
 from typing import Any
-sys.path.insert(0, str(Path(__file__).resolve().parent / "lib"))
+_CI_HUB_DIR = Path(__file__).resolve().parent
+sys.path.insert(0, str(_CI_HUB_DIR / "lib"))
+sys.path.insert(0, str(_CI_HUB_DIR / "validate"))
 import bounded_capture  # noqa: E402
+from gate_completeness import gates_complete  # noqa: E402
 
 
 U64_MAX = (1 << 64) - 1
@@ -1218,9 +1221,10 @@ def _row_qualification_without_class(
     row: dict[str, Any], sha: str, pred: dict[str, Any]
 ) -> tuple[bool, str]:
     """THE qualifying-receipt predicate, mirroring the Rust `row_qualifies`
-    clause for clause. Completeness for a count-capable receipt is decided by
-    per-node COVERAGE, not the executed_tests count. The reason names the first
-    failing clause so downstream consumers do not need a diagnostic copy."""
+    clause for clause. A count-capable receipt must account for every planned
+    outer gate and satisfy per-test-node COVERAGE; ``executed_tests`` remains
+    only the zero-execution floor. The reason names the first failing clause so
+    downstream consumers do not need a diagnostic copy."""
     req = pred["require"]
     if row.get("commit") in (None, "", "unknown"):
         return False, "no-commit"
@@ -1246,6 +1250,10 @@ def _row_qualification_without_class(
     if pred.get("gate_filtered_tests") and row.get("filtered_tests") != 0:
         return False, "filtered_tests!=0"
     schema = row.get("schema_version") or 0
+    if schema >= pred["counts_schema"]:
+        gates_ok, gates_reason = gates_complete(row)
+        if not gates_ok:
+            return False, f"gate accounting incomplete: {gates_reason}"
     coverage_schema = coverage_schema_verdict(row, pred)
     if not coverage_schema_accepted(coverage_schema):
         return False, f"coverage schema {coverage_schema.value}"

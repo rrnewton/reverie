@@ -151,6 +151,13 @@ class IntentionalSkipRefusalTest(unittest.TestCase):
         self.assertFalse(ok)
         self.assertIn("skipped_nodes must equal", why)
 
+    def test_typed_skip_cannot_replace_a_declared_contract(self) -> None:
+        value = self.typed()
+        del value["gates_expected"]
+        ok, why = G.gates_complete(value)
+        self.assertFalse(ok)
+        self.assertIn("did not declare gates_expected", why)
+
 
 class DegenerateInputTest(unittest.TestCase):
     def test_missing_counts_refused(self) -> None:

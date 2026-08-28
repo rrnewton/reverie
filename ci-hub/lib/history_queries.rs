@@ -941,6 +941,22 @@ mod tests {
 
     fn with_satisfied_coverage(mut row: HistoryRow) -> HistoryRow {
         row.schema_version = Some(5);
+        row.checks = Some(1);
+        row.gates_run = Some(1);
+        row.gates_expected = Some(1);
+        if row.gates.is_empty() {
+            row.gates.push(GateHistoryRow {
+                name: "test".into(),
+                result: Some("pass".into()),
+                kind: None,
+                exit_code: Some(0),
+                real_seconds: None,
+                source_node: None,
+                failure_origin: None,
+                failed_substeps: None,
+                extra: BTreeMap::new(),
+            });
+        }
         row.coverage = Some(crate::records::CoverageRow {
             planned_test_nodes: 2,
             executed_test_nodes: 2,
