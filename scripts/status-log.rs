@@ -3,10 +3,14 @@
 //!
 //! ```cargo
 //! [dependencies]
+//! serde = { version = "1", features = ["derive"] }
 //! serde_json = "1"
 //! ```
 
-use serde_json::{json, Value};
+use serde::{Deserialize, Serialize};
+#[cfg(test)]
+use serde_json::json;
+use serde_json::Value;
 use std::collections::BTreeMap;
 use std::env;
 use std::fs::{self, OpenOptions};
@@ -110,10 +114,11 @@ Other:
                          value is total-open-including-drafts (the default).
                          A ready/non-draft basis is REFUSED here: pass it as
                          --ready-prs instead.
-  --describe-log [PATH]  Read the log and print one line per entry describing
+  --describe-log         Read the log and print one line per entry describing
                          each entry's count denominator, then exit. Entries
                          written before schema 2 are labelled
-                         denominator=unknown. Read-only: never rewrites.
+                         denominator=unknown. Use --log-file to select another
+                         path. Read-only: never rewrites.
   --check-freshness      Compare this copy of the log against the landed one on
                          origin/main and exit. Nonzero when this copy is missing
                          landed rows, i.e. when publishing it would delete
@@ -147,7 +152,10 @@ const COUNT_SEMANTICS_SCHEMA: u64 = 2;
 /// separate `awaiting_landing_to_worker` field.
 /// Schema 4 adds the coverage fields below: `covers_hour`, `written_at`,
 /// `mapping_observed_at`, and the optional `recovery_for`.
-const SCHEMA_VERSION: u64 = 4;
+/// Schema 5 makes the complete row one producer-owned Rust type. New rows are
+/// decoded by version before their shape is accepted, while schemas 1-4 remain
+/// readable as the append-only historical formats they were written in.
+const SCHEMA_VERSION: u64 = 5;
 
 /// Entries from this schema on state WHICH HOUR they describe. Below it, the
 /// only time in the record is the write time, so the covered hour is unknowable
@@ -246,6 +254,106 @@ struct Workstream {
     agent: String,
     task: String,
     cwd: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct StatusWorker {
+    agent: String,
+    task: String,
+    cwd: String,
+}
+
+impl From<&Workstream> for StatusWorker {
+    fn from(value: &Workstream) -> Self {
+        Self {
+            agent: value.agent.clone(),
+            task: value.task.clone(),
+            cwd: value.cwd.clone(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct ObservedWindow {
+    start: String,
+    end: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct OpenPrCountSemantics {
+    basis: String,
+    includes_drafts: bool,
+    repos: Vec<String>,
+    verified: bool,
+    source: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    observed_window: Option<ObservedWindow>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    observed_per_repo: Option<BTreeMap<String, u64>>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct ReadyPrCountSemantics {
+    basis: String,
+    includes_drafts: bool,
+    repos: Vec<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct CountSemantics {
+    open_prs: OpenPrCountSemantics,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    ready_prs: Option<ReadyPrCountSemantics>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct LogFreshness {
+    checked: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    landed_rows: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    local_rows: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    missing_landed_rows: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    overridden: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    reason: Option<String>,
+}
+
+/// The complete row written by `status-log.rs` at the current schema. The same
+/// type is used before append, by `--describe-log`, and by reconciliation, so a
+/// field cannot be added to the producer without making every current reader
+/// account for it. Historical schemas remain on their original bytes.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct StatusLogEntry {
+    schema_version: u64,
+    timestamp: String,
+    written_at: String,
+    covers_hour: String,
+    mapping_observed_at: String,
+    workstream_to_worker: BTreeMap<String, StatusWorker>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    awaiting_landing_to_worker: BTreeMap<String, StatusWorker>,
+    open_prs: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    ready_prs: Option<u64>,
+    genuine_reds: u64,
+    fleet_count: u64,
+    status_text: String,
+    status_text_bytes: u64,
+    status_text_sha256: String,
+    count_semantics: CountSemantics,
+    log_freshness: LogFreshness,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    recovery_for: Option<String>,
 }
 
 /// What TaskGraph actually says about a task, as opposed to what the caller
@@ -488,6 +596,254 @@ fn validate_one_workstream_per_agent(rows: &[Workstream]) -> Result<(), String> 
     ))
 }
 
+fn status_workers(rows: &[Workstream]) -> BTreeMap<String, StatusWorker> {
+    rows.iter()
+        .map(|row| (row.slug.clone(), StatusWorker::from(row)))
+        .collect()
+}
+
+fn validate_status_workers(
+    field: &str,
+    rows: &BTreeMap<String, StatusWorker>,
+) -> Result<Vec<Workstream>, String> {
+    let mut workstreams = Vec::new();
+    for (slug, worker) in rows {
+        let value = serde_json::to_value(worker)
+            .map_err(|error| format!("status-log-row-{field}: serialize worker: {error}"))?;
+        workstreams.push(
+            validate_workstream(slug, &value)
+                .map_err(|error| format!("status-log-row-{field}: {error}"))?,
+        );
+    }
+    validate_one_workstream_per_agent(&workstreams)
+        .map_err(|error| format!("status-log-row-{field}: {error}"))?;
+    Ok(workstreams)
+}
+
+impl LogFreshness {
+    fn validate(&self) -> Result<(), String> {
+        let checked_complete = self.checked
+            && self.overridden.is_none()
+            && self.reason.is_none()
+            && self.landed_rows.is_some()
+            && self.local_rows.is_some()
+            && self.missing_landed_rows == Some(0);
+        let checked_override = self.checked
+            && self.overridden == Some(true)
+            && self.reason.is_none()
+            && self.landed_rows.is_none()
+            && self.local_rows.is_none()
+            && self.missing_landed_rows.is_some_and(|count| count > 0);
+        let unchecked = !self.checked
+            && self.overridden.is_none()
+            && self.landed_rows.is_none()
+            && self.local_rows.is_none()
+            && self.missing_landed_rows.is_none()
+            && self
+                .reason
+                .as_deref()
+                .is_some_and(|reason| !reason.is_empty());
+        if checked_complete || checked_override || unchecked {
+            Ok(())
+        } else {
+            Err("status-log-row-log_freshness: fields do not describe checked, overridden, or unavailable freshness".into())
+        }
+    }
+}
+
+impl StatusLogEntry {
+    fn from_value(value: Value) -> Result<Self, String> {
+        let schema = value
+            .get("schema_version")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| {
+                "status-log-row-schema_version: missing or not an integer".to_string()
+            })?;
+        if schema != SCHEMA_VERSION {
+            return Err(format!(
+                "status-log-row-schema_version: expected {SCHEMA_VERSION}, got {schema}"
+            ));
+        }
+        let entry: Self = serde_json::from_value(value)
+            .map_err(|error| format!("status-log-row-field: {error}"))?;
+        entry.validate()?;
+        Ok(entry)
+    }
+
+    fn validate(&self) -> Result<(), String> {
+        if self.schema_version != SCHEMA_VERSION {
+            return Err(format!(
+                "status-log-row-schema_version: expected {SCHEMA_VERSION}, got {}",
+                self.schema_version
+            ));
+        }
+        if self.timestamp != self.written_at {
+            return Err("status-log-row-written_at: must equal timestamp".into());
+        }
+        if self.mapping_observed_at != self.written_at {
+            return Err("status-log-row-mapping_observed_at: must equal written_at".into());
+        }
+        if self.written_at.len() < 13 {
+            return Err("status-log-row-written_at: must contain a UTC hour".into());
+        }
+        let write_hour = checked_hour_bucket("status-log-row-written_at", &self.written_at[..13])?;
+        checked_hour_bucket("status-log-row-covers_hour", &self.covers_hour)?;
+        match &self.recovery_for {
+            Some(hour) if hour != &self.covers_hour => {
+                return Err("status-log-row-recovery_for: must equal covers_hour".into())
+            }
+            None if self.covers_hour != write_hour => return Err(
+                "status-log-row-recovery_for: required when covers_hour differs from written_at"
+                    .into(),
+            ),
+            _ => {}
+        }
+        if self.status_text.is_empty() {
+            return Err("status-log-row-status_text: must not be empty".into());
+        }
+        if self.status_text_bytes != self.status_text.len() as u64 {
+            return Err("status-log-row-status_text_bytes: does not match status_text".into());
+        }
+        if self.status_text_sha256 != sha256_hex(self.status_text.as_bytes()) {
+            return Err("status-log-row-status_text_sha256: does not match status_text".into());
+        }
+
+        let active = validate_status_workers("workstream_to_worker", &self.workstream_to_worker)?;
+        let awaiting = validate_status_workers(
+            "awaiting_landing_to_worker",
+            &self.awaiting_landing_to_worker,
+        )?;
+        for row in &awaiting {
+            if active.iter().any(|candidate| candidate.slug == row.slug) {
+                return Err(format!(
+                    "status-log-row-awaiting_landing_to_worker: workstream {:?} also appears in workstream_to_worker",
+                    row.slug
+                ));
+            }
+        }
+
+        let open = &self.count_semantics.open_prs;
+        if open.basis != BASIS_TOTAL_OPEN {
+            return Err(format!(
+                "status-log-row-count_semantics.open_prs.basis: expected {BASIS_TOTAL_OPEN}"
+            ));
+        }
+        if !open.includes_drafts {
+            return Err(
+                "status-log-row-count_semantics.open_prs.includes_drafts: must be true".into(),
+            );
+        }
+        if open.repos.is_empty() {
+            return Err("status-log-row-count_semantics.open_prs.repos: must not be empty".into());
+        }
+        let mut unique_repos = std::collections::BTreeSet::new();
+        for repo in &open.repos {
+            let parsed = parse_repos(repo).map_err(|error| {
+                format!("status-log-row-count_semantics.open_prs.repos: {error}")
+            })?;
+            if parsed.len() != 1 || parsed[0] != *repo {
+                return Err(
+                    "status-log-row-count_semantics.open_prs.repos: each array element must name exactly one owner/name repository"
+                        .into(),
+                );
+            }
+            if !unique_repos.insert(repo) {
+                return Err(
+                    "status-log-row-count_semantics.open_prs.repos: duplicate repository".into(),
+                );
+            }
+        }
+        let source_verified = match open.source.as_str() {
+            "dereferenced-auto"
+            | "declared-and-verified"
+            | "declared-and-verified-supplied-observation" => true,
+            "declared-unverified" => false,
+            other => {
+                return Err(format!(
+                    "status-log-row-count_semantics.open_prs.source: unsupported value {other:?}"
+                ))
+            }
+        };
+        if open.verified != source_verified {
+            return Err(
+                "status-log-row-count_semantics.open_prs.verified: disagrees with source".into(),
+            );
+        }
+        if let Some(per_repo) = &open.observed_per_repo {
+            let expected = open
+                .repos
+                .iter()
+                .cloned()
+                .collect::<std::collections::BTreeSet<_>>();
+            let observed = per_repo
+                .keys()
+                .cloned()
+                .collect::<std::collections::BTreeSet<_>>();
+            if observed != expected {
+                return Err(
+                    "status-log-row-count_semantics.open_prs.observed_per_repo: keys differ from repos"
+                        .into(),
+                );
+            }
+            if per_repo.values().sum::<u64>() != self.open_prs {
+                return Err(
+                    "status-log-row-open_prs: does not equal observed_per_repo total".into(),
+                );
+            }
+        }
+        if let Some(window) = &open.observed_window {
+            if window.start.is_empty() || window.end.is_empty() {
+                return Err(
+                    "status-log-row-count_semantics.open_prs.observed_window: timestamps must not be empty"
+                    .into(),
+                );
+            }
+            if window.start > window.end {
+                return Err(
+                    "status-log-row-count_semantics.open_prs.observed_window: start is after end"
+                        .into(),
+                );
+            }
+        }
+        let has_observation = open.observed_window.is_some() && open.observed_per_repo.is_some();
+        let has_no_observation = open.observed_window.is_none() && open.observed_per_repo.is_none();
+        match open.source.as_str() {
+            "dereferenced-auto" | "declared-and-verified" if !has_observation => {
+                return Err(
+                    "status-log-row-count_semantics.open_prs.source: live observations require observed_window and observed_per_repo"
+                        .into(),
+                )
+            }
+            "declared-and-verified-supplied-observation" | "declared-unverified"
+                if !has_no_observation =>
+            {
+                return Err(
+                    "status-log-row-count_semantics.open_prs.source: supplied or unverified counts must not claim a live observation"
+                        .into(),
+                )
+            }
+            _ => {}
+        }
+        match (self.ready_prs, &self.count_semantics.ready_prs) {
+            (Some(_), Some(ready))
+                if ready.basis == BASIS_READY
+                    && !ready.includes_drafts
+                    && ready.repos == open.repos => {}
+            (None, None) => {}
+            _ => {
+                return Err(
+                    "status-log-row-ready_prs: value and count semantics must appear together and use the declared repository set"
+                        .into(),
+                )
+            }
+        }
+        if self.ready_prs.is_some_and(|ready| ready > self.open_prs) {
+            return Err("status-log-row-ready_prs: cannot exceed open_prs".into());
+        }
+        self.log_freshness.validate()
+    }
+}
+
 /// Dereference every task against live TaskGraph state and refuse rows whose
 /// real state contradicts the field they were placed in. `expect_active` picks
 /// which side of the mirror we are checking.
@@ -612,6 +968,7 @@ fn parse_task_states_json(text: &str) -> Result<BTreeMap<String, TaskState>, Str
 }
 
 /// Render the validated rows back to the JSON recorded in the log.
+#[cfg(test)]
 fn rows_to_json(rows: &[Workstream]) -> Value {
     let mut object = serde_json::Map::new();
     for row in rows {
@@ -880,7 +1237,32 @@ fn describe_coverage(entry: &Value) -> String {
     }
 }
 
-fn describe_entry(index: usize, entry: &Value) -> String {
+fn describe_entry(index: usize, entry: &Value) -> Result<String, String> {
+    match entry.get("schema_version").and_then(Value::as_u64) {
+        Some(SCHEMA_VERSION) => {
+            let current = StatusLogEntry::from_value(entry.clone())?;
+            return Ok(format!(
+                "{index} {} open_prs={} basis={} repos={} {}",
+                current.timestamp,
+                current.open_prs,
+                current.count_semantics.open_prs.basis,
+                current.count_semantics.open_prs.repos.join("+"),
+                match current.recovery_for {
+                    Some(hour) => format!(
+                        "covers={} kind=recovery recovery_for={hour}",
+                        current.covers_hour
+                    ),
+                    None => format!("covers={} kind=current", current.covers_hour),
+                }
+            ));
+        }
+        Some(schema) if schema > SCHEMA_VERSION => {
+            return Err(format!(
+                "status-log-row-schema_version: unsupported newer schema {schema}; current reader supports through {SCHEMA_VERSION}"
+            ));
+        }
+        _ => {}
+    }
     let timestamp = entry
         .get("timestamp")
         .and_then(Value::as_str)
@@ -906,16 +1288,16 @@ fn describe_entry(index: usize, entry: &Value) -> String {
                         .join("+")
                 })
                 .unwrap_or_else(|| "<no-repos>".to_string());
-            format!(
+            Ok(format!(
                 "{index} {timestamp} open_prs={open_prs} basis={basis} repos={repos} {}",
                 describe_coverage(entry)
-            )
+            ))
         }
-        None => format!(
+        None => Ok(format!(
             "{index} {timestamp} open_prs={open_prs} basis=unknown repos=unknown \
              denominator=unknown pre-schema-{COUNT_SEMANTICS_SCHEMA}-entry {}",
             describe_coverage(entry)
-        ),
+        )),
     }
 }
 
@@ -962,7 +1344,28 @@ fn missing_landed_rows(local: &str, landed: &str) -> Vec<String> {
 /// Union of landed and local rows, in timestamp order, each row kept once.
 /// This is the reconciliation an append-only record admits: rows have identity,
 /// so merging is well defined and neither side loses anything.
-fn reconcile_rows(local: &str, landed: &str) -> Vec<String> {
+fn status_log_row_timestamp(row: &str) -> Result<String, String> {
+    let value: Value = match serde_json::from_str(row) {
+        Ok(value) => value,
+        Err(_) => return Ok(String::new()),
+    };
+    match value.get("schema_version").and_then(Value::as_u64) {
+        Some(SCHEMA_VERSION) => return Ok(StatusLogEntry::from_value(value)?.timestamp),
+        Some(schema) if schema > SCHEMA_VERSION => {
+            return Err(format!(
+                "status-log-row-schema_version: unsupported newer schema {schema}; current reader supports through {SCHEMA_VERSION}"
+            ));
+        }
+        _ => {}
+    }
+    Ok(value
+        .get("timestamp")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string())
+}
+
+fn reconcile_rows(local: &str, landed: &str) -> Result<Vec<String>, String> {
     let mut out: Vec<String> = Vec::new();
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     for row in log_rows(landed).into_iter().chain(log_rows(local)) {
@@ -970,17 +1373,12 @@ fn reconcile_rows(local: &str, landed: &str) -> Vec<String> {
             out.push(row);
         }
     }
-    out.sort_by_key(|row| {
-        serde_json::from_str::<Value>(row)
-            .ok()
-            .and_then(|v| {
-                v.get("timestamp")
-                    .and_then(Value::as_str)
-                    .map(str::to_string)
-            })
-            .unwrap_or_default()
-    });
-    out
+    let mut keyed = out
+        .into_iter()
+        .map(|row| status_log_row_timestamp(&row).map(|timestamp| (timestamp, row)))
+        .collect::<Result<Vec<_>, _>>()?;
+    keyed.sort_by(|a, b| a.0.cmp(&b.0));
+    Ok(keyed.into_iter().map(|(_, row)| row).collect())
 }
 
 /// The landed copy of the log, read from the freshly-known remote ref. Returns
@@ -1152,7 +1550,7 @@ fn repository_root() -> PathBuf {
 ///                         otherwise is the exact conflation above.
 ///   `recovery_for`        present only on a retroactive entry, naming the hour
 ///                         whose scheduled delivery was missed.
-fn parse_hour_bucket(flag: &str, value: &str) -> String {
+fn checked_hour_bucket(flag: &str, value: &str) -> Result<String, String> {
     let bytes = value.as_bytes();
     let shaped = bytes.len() == 13
         && bytes[..4].iter().all(u8::is_ascii_digit)
@@ -1163,7 +1561,7 @@ fn parse_hour_bucket(flag: &str, value: &str) -> String {
         && bytes[10] == b'T'
         && bytes[11..13].iter().all(u8::is_ascii_digit);
     if !shaped {
-        die(&format!(
+        return Err(format!(
             "{flag} must be a UTC hour bucket YYYY-MM-DDTHH, e.g. 2026-08-07T01; got {value:?}"
         ));
     }
@@ -1171,9 +1569,13 @@ fn parse_hour_bucket(flag: &str, value: &str) -> String {
     let day: u32 = value[8..10].parse().unwrap_or(0);
     let hour: u32 = value[11..13].parse().unwrap_or(99);
     if !(1..=12).contains(&month) || !(1..=31).contains(&day) || hour > 23 {
-        die(&format!("{flag}: {value:?} is not a real UTC hour"));
+        return Err(format!("{flag}: {value:?} is not a real UTC hour"));
     }
-    value.to_string()
+    Ok(value.to_string())
+}
+
+fn parse_hour_bucket(flag: &str, value: &str) -> String {
+    checked_hour_bucket(flag, value).unwrap_or_else(|error| die(&error))
 }
 
 /// The hour bucket of an ISO-8601 `YYYY-MM-DDTHH:MM:SSZ` write timestamp.
@@ -1359,7 +1761,7 @@ fn main() {
         let landed = landed_log(&root, &log_path)
             .unwrap_or_else(|| die("no origin/main copy of the log to compare against"));
         if args.print_reconciled {
-            for row in reconcile_rows(&local, &landed) {
+            for row in reconcile_rows(&local, &landed).unwrap_or_else(|error| die(&error)) {
                 println!("{row}");
             }
             exit(0);
@@ -1383,7 +1785,10 @@ fn main() {
             .unwrap_or_else(|e| die(&format!("read log {}: {e}", log_path.display())));
         for (index, line) in text.lines().filter(|l| !l.trim().is_empty()).enumerate() {
             match serde_json::from_str::<Value>(line) {
-                Ok(entry) => println!("{}", describe_entry(index, &entry)),
+                Ok(entry) => println!(
+                    "{}",
+                    describe_entry(index, &entry).unwrap_or_else(|error| die(&error))
+                ),
                 Err(e) => println!("{index} <unparseable entry> denominator=unknown error={e}"),
             }
         }
@@ -1562,29 +1967,6 @@ fn main() {
             .unwrap_or_else(|e| die(&format!("create log directory {}: {e}", parent.display())));
     }
 
-    let mut count_semantics = json!({
-        "open_prs": {
-            "basis": BASIS_TOTAL_OPEN,
-            "includes_drafts": true,
-            "repos": repos,
-            // Carry the condition with the value: a count that does not say
-            // whether it was checked is indistinguishable from one that was,
-            // and one that does not say HOW cannot be audited.
-            "verified": open_prs_verified,
-            "source": count_source,
-        },
-    });
-    if let Some((start, end)) = &count_window {
-        // A multi-repository total spans a window, not an instant. Recording it
-        // keeps the number from claiming a precision it does not have.
-        count_semantics["open_prs"]["observed_window"] = json!({"start": start, "end": end});
-    }
-    if let Some(per_repo) = &observed_detail {
-        count_semantics["open_prs"]["observed_per_repo"] = json!(per_repo
-            .iter()
-            .map(|(repo, n)| (repo.clone(), *n))
-            .collect::<BTreeMap<String, u64>>());
-    }
     // ---- coverage: which hour does this row describe, and when was it written ----
     let written_at = timestamp_from_date();
     let write_hour = hour_of_timestamp(&written_at);
@@ -1619,78 +2001,98 @@ fn main() {
         ));
     }
 
-    let mut entry = json!({
-        "schema_version": SCHEMA_VERSION,
-        "timestamp": written_at,
-        // Explicit names for the three time bases this row mixes. `timestamp` is
-        // retained unchanged for existing consumers and equals `written_at`.
-        "written_at": written_at,
-        "covers_hour": covers_hour,
-        // ALWAYS the write time. A mapping is sampled live and cannot be
-        // reconstructed for a past hour; saying so is the difference between a
-        // known limitation and a silent falsehood.
-        "mapping_observed_at": written_at,
-        "workstream_to_worker": rows_to_json(&active),
-        "open_prs": open_prs,
-        "genuine_reds": genuine_reds,
-        "fleet_count": fleet_count,
-        "status_text": status_text,
-        // The record carries the conditions of its own value. Without these an
-        // auditor must re-derive them and cannot tell which byte sequence was
-        // canonical -- which is exactly how the 1843/1844 skew stayed invisible.
-        "status_text_bytes": status_text.len(),
-        "status_text_sha256": sha256_hex(status_text.as_bytes()),
-    });
-    // The ready/non-draft subset is a DIFFERENT field with a DIFFERENT basis. It
-    // is never allowed to occupy `open_prs`.
-    if let Some(ready) = args.ready_prs {
-        entry["ready_prs"] = json!(ready);
-        count_semantics["ready_prs"] = json!({
-            "basis": BASIS_READY,
-            "includes_drafts": false,
-            "repos": repos,
-        });
-    }
-    if let Some(recovery_for) = &args.recovery_for {
-        entry["recovery_for"] = json!(recovery_for);
-    }
-    // Recorded, but in its OWN field so it can never be mistaken for activity.
-    if !awaiting.is_empty() {
-        entry["awaiting_landing_to_worker"] = rows_to_json(&awaiting);
-    }
-    entry["count_semantics"] = count_semantics;
-
     // Refuse to deepen a divergence that can only be undone by deleting landed
     // rows. Recorded on success so the entry carries the condition it was
     // written under, rather than leaving "was this copy fresh?" unanswerable.
     let local_now = fs::read_to_string(&log_path).unwrap_or_default();
-    match landed_log(&root, &log_path) {
+    let log_freshness = match landed_log(&root, &log_path) {
         Some(landed) => match check_log_freshness(&local_now, &landed) {
-            Ok(landed_rows) => {
-                entry["log_freshness"] = json!({
-                    "checked": true, "landed_rows": landed_rows,
-                    "local_rows": log_rows(&local_now).len(), "missing_landed_rows": 0,
-                });
-            }
+            Ok(landed_rows) => LogFreshness {
+                checked: true,
+                landed_rows: Some(landed_rows as u64),
+                local_rows: Some(log_rows(&local_now).len() as u64),
+                missing_landed_rows: Some(0),
+                overridden: None,
+                reason: None,
+            },
             Err(message) => {
                 if !args.allow_stale_log {
                     die(&message);
                 }
-                entry["log_freshness"] = json!({
-                    "checked": true, "overridden": true,
-                    "missing_landed_rows": missing_landed_rows(&local_now, &landed).len(),
-                });
+                LogFreshness {
+                    checked: true,
+                    landed_rows: None,
+                    local_rows: None,
+                    missing_landed_rows: Some(missing_landed_rows(&local_now, &landed).len() as u64),
+                    overridden: Some(true),
+                    reason: None,
+                }
             }
         },
         // No landed copy to compare against. Say so in the record instead of
         // letting an unchecked append look identical to a checked one.
-        None => {
-            entry["log_freshness"] = json!({"checked": false,
-                "reason": "no origin/main copy of the log to compare against"});
-        }
-    }
-    let line = serde_json::to_string(&entry)
-        .unwrap_or_else(|e| die(&format!("serialize status entry: {e}")));
+        None => LogFreshness {
+            checked: false,
+            landed_rows: None,
+            local_rows: None,
+            missing_landed_rows: None,
+            overridden: None,
+            reason: Some("no origin/main copy of the log to compare against".into()),
+        },
+    };
+
+    let observed_window = count_window.map(|(start, end)| ObservedWindow { start, end });
+    let observed_per_repo = observed_detail.map(|rows| rows.into_iter().collect());
+    let ready_prs = args.ready_prs;
+    let entry = StatusLogEntry {
+        schema_version: SCHEMA_VERSION,
+        timestamp: written_at.clone(),
+        written_at: written_at.clone(),
+        covers_hour,
+        // ALWAYS the write time. A mapping is sampled live and cannot be
+        // reconstructed for a past hour; saying so is the difference between a
+        // known limitation and a silent falsehood.
+        mapping_observed_at: written_at,
+        workstream_to_worker: status_workers(&active),
+        // Recorded, but in its OWN field so it can never be mistaken for activity.
+        awaiting_landing_to_worker: status_workers(&awaiting),
+        open_prs,
+        ready_prs,
+        genuine_reds,
+        fleet_count,
+        status_text_bytes: status_text.len() as u64,
+        status_text_sha256: status_digest,
+        status_text,
+        count_semantics: CountSemantics {
+            open_prs: OpenPrCountSemantics {
+                basis: BASIS_TOTAL_OPEN.into(),
+                includes_drafts: true,
+                repos: repos.clone(),
+                // Carry the condition with the value: a count that does not say
+                // whether it was checked is indistinguishable from one that was,
+                // and one that does not say HOW cannot be audited.
+                verified: open_prs_verified,
+                source: count_source.into(),
+                observed_window,
+                observed_per_repo,
+            },
+            // The ready/non-draft subset is a DIFFERENT field with a DIFFERENT
+            // basis. It is never allowed to occupy `open_prs`.
+            ready_prs: ready_prs.map(|_| ReadyPrCountSemantics {
+                basis: BASIS_READY.into(),
+                includes_drafts: false,
+                repos,
+            }),
+        },
+        log_freshness,
+        recovery_for: args.recovery_for.clone(),
+    };
+    entry.validate().unwrap_or_else(|error| die(&error));
+    let line = serde_json::to_string(
+        &serde_json::to_value(&entry)
+            .unwrap_or_else(|error| die(&format!("serialize status entry: {error}"))),
+    )
+    .unwrap_or_else(|e| die(&format!("serialize status entry: {e}")));
 
     let mut log = OpenOptions::new()
         .create(true)
@@ -1708,6 +2110,156 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn current_status_log_entry() -> StatusLogEntry {
+        let status_text = "Status is green.".to_string();
+        StatusLogEntry {
+            schema_version: SCHEMA_VERSION,
+            timestamp: "2026-08-28T07:30:00Z".into(),
+            written_at: "2026-08-28T07:30:00Z".into(),
+            covers_hour: "2026-08-28T07".into(),
+            mapping_observed_at: "2026-08-28T07:30:00Z".into(),
+            workstream_to_worker: [(
+                "fleet-observability/status-log".into(),
+                StatusWorker {
+                    agent: "type-audit".into(),
+                    task: "status-log-row-contract".into(),
+                    cwd: "worktrees/slot01/hermit".into(),
+                },
+            )]
+            .into_iter()
+            .collect(),
+            awaiting_landing_to_worker: BTreeMap::new(),
+            open_prs: 3,
+            ready_prs: Some(2),
+            genuine_reds: 0,
+            fleet_count: 12,
+            status_text_bytes: status_text.len() as u64,
+            status_text_sha256: sha256_hex(status_text.as_bytes()),
+            status_text,
+            count_semantics: CountSemantics {
+                open_prs: OpenPrCountSemantics {
+                    basis: BASIS_TOTAL_OPEN.into(),
+                    includes_drafts: true,
+                    repos: vec!["rrnewton/hermit".into(), "rrnewton/reverie".into()],
+                    verified: true,
+                    source: "declared-and-verified-supplied-observation".into(),
+                    observed_window: None,
+                    observed_per_repo: None,
+                },
+                ready_prs: Some(ReadyPrCountSemantics {
+                    basis: BASIS_READY.into(),
+                    includes_drafts: false,
+                    repos: vec!["rrnewton/hermit".into(), "rrnewton/reverie".into()],
+                }),
+            },
+            log_freshness: LogFreshness {
+                checked: true,
+                landed_rows: Some(137),
+                local_rows: Some(137),
+                missing_landed_rows: Some(0),
+                overridden: None,
+                reason: None,
+            },
+            recovery_for: None,
+        }
+    }
+
+    #[test]
+    fn current_status_log_row_round_trips_through_the_complete_type() {
+        let entry = current_status_log_entry();
+        entry.validate().unwrap();
+        let value = serde_json::to_value(&entry).unwrap();
+        assert_eq!(StatusLogEntry::from_value(value.clone()).unwrap(), entry);
+        let described = describe_entry(137, &value).unwrap();
+        assert!(described.contains("open_prs=3"), "{described}");
+        assert!(
+            described.contains("rrnewton/hermit+rrnewton/reverie"),
+            "{described}"
+        );
+    }
+
+    #[test]
+    fn current_status_log_row_missing_field_fails_by_name() {
+        let mut value = serde_json::to_value(current_status_log_entry()).unwrap();
+        value.as_object_mut().unwrap().remove("status_text_sha256");
+        let error = StatusLogEntry::from_value(value).unwrap_err();
+        assert!(error.contains("status_text_sha256"), "{error}");
+    }
+
+    #[test]
+    fn current_status_log_row_unknown_field_is_refused() {
+        let mut value = serde_json::to_value(current_status_log_entry()).unwrap();
+        value["unreviewed_count"] = json!(0);
+        let error = StatusLogEntry::from_value(value).unwrap_err();
+        assert!(error.contains("unreviewed_count"), "{error}");
+    }
+
+    #[test]
+    fn newer_status_log_schema_is_refused_after_reading_the_version() {
+        let mut value = serde_json::to_value(current_status_log_entry()).unwrap();
+        value["schema_version"] = json!(SCHEMA_VERSION + 1);
+        let describe_error = describe_entry(0, &value).unwrap_err();
+        assert!(
+            describe_error.contains("schema_version"),
+            "{describe_error}"
+        );
+        assert!(describe_error.contains("newer schema"), "{describe_error}");
+
+        let row = serde_json::to_string(&value).unwrap();
+        let reconcile_error = reconcile_rows(&row, "").unwrap_err();
+        assert!(
+            reconcile_error.contains("schema_version"),
+            "{reconcile_error}"
+        );
+        assert!(
+            reconcile_error.contains("newer schema"),
+            "{reconcile_error}"
+        );
+    }
+
+    #[test]
+    fn current_status_log_row_changed_text_fails_by_digest_field_name() {
+        let mut value = serde_json::to_value(current_status_log_entry()).unwrap();
+        value["status_text"] = json!("Status is not green.");
+        value["status_text_bytes"] = json!("Status is not green.".len());
+        let error = StatusLogEntry::from_value(value).unwrap_err();
+        assert!(error.contains("status_text_sha256"), "{error}");
+    }
+
+    #[test]
+    fn live_count_source_without_observation_fails_by_name() {
+        let mut value = serde_json::to_value(current_status_log_entry()).unwrap();
+        value["count_semantics"]["open_prs"]["source"] = json!("declared-and-verified");
+        let error = StatusLogEntry::from_value(value).unwrap_err();
+        assert!(error.contains("open_prs.source"), "{error}");
+        assert!(error.contains("observed_window"), "{error}");
+        assert!(error.contains("observed_per_repo"), "{error}");
+    }
+
+    #[test]
+    fn reconciliation_refuses_a_malformed_current_row_by_name() {
+        let mut value = serde_json::to_value(current_status_log_entry()).unwrap();
+        value["ready_prs"] = json!(4);
+        let row = serde_json::to_string(&value).unwrap();
+        let error = reconcile_rows(&row, "").unwrap_err();
+        assert!(error.contains("ready_prs"), "{error}");
+    }
+
+    #[test]
+    fn every_retained_status_log_row_remains_readable() {
+        let retained = include_str!("../ai_docs/status-log/status-log.jsonl");
+        let mut rows = 0;
+        for line in retained.lines().filter(|line| !line.trim().is_empty()) {
+            let value: Value = serde_json::from_str(line).unwrap();
+            describe_entry(rows, &value).unwrap();
+            rows += 1;
+        }
+        assert!(
+            rows > 0,
+            "the compatibility test must exercise retained rows"
+        );
+    }
 
     // =====================================================================
     // THE MAPPING IS AN ACTIVITY REPORT, NOT AN OWNERSHIP LEDGER
@@ -2181,7 +2733,7 @@ fix-post-1.0-codex-invalid-sandbox-flag | CLOSED | [\"implemented\"]
     fn reconciliation_loses_nothing_and_duplicates_nothing() {
         let landed = log_of(&["t1", "t3", "t5"]);
         let local = log_of(&["t1", "t2", "t9"]);
-        let merged = reconcile_rows(&local, &landed);
+        let merged = reconcile_rows(&local, &landed).unwrap();
         assert_eq!(merged.len(), 5, "union of 3 landed + 3 local sharing 1 = 5");
         for src in [&landed, &local] {
             for r in log_rows(src) {
@@ -2212,7 +2764,7 @@ fix-post-1.0-codex-invalid-sandbox-flag | CLOSED | [\"implemented\"]
         let landed = log_of(&["t1", "t2", "t3", "t4"]);
         let local = log_of(&["t1", "t4"]);
         assert!(check_log_freshness(&local, &landed).is_err());
-        let merged = reconcile_rows(&local, &landed).join("\n") + "\n";
+        let merged = reconcile_rows(&local, &landed).unwrap().join("\n") + "\n";
         assert!(
             check_log_freshness(&merged, &landed).is_ok(),
             "reconciling must be sufficient, not merely advisory"
@@ -2320,7 +2872,7 @@ fix-post-1.0-codex-invalid-sandbox-flag | CLOSED | [\"implemented\"]
             "fleet_count": 15,
             "status_text": "…",
         });
-        let line = describe_entry(7, &old);
+        let line = describe_entry(7, &old).unwrap();
         assert!(line.contains("denominator=unknown"), "{line}");
         assert!(line.contains("basis=unknown"), "{line}");
         assert!(line.contains("open_prs=105"), "{line}");
@@ -2341,7 +2893,7 @@ fix-post-1.0-codex-invalid-sandbox-flag | CLOSED | [\"implemented\"]
                 },
             },
         });
-        let line = describe_entry(8, &new);
+        let line = describe_entry(8, &new).unwrap();
         assert!(line.contains(BASIS_TOTAL_OPEN), "{line}");
         assert!(line.contains("rrnewton/hermit+rrnewton/reverie"), "{line}");
         // Assert the DENOMINATOR specifically, not the bare word: this row is a
@@ -2377,8 +2929,8 @@ fix-post-1.0-codex-invalid-sandbox-flag | CLOSED | [\"implemented\"]
                 "ready_prs": {"basis": BASIS_READY, "repos": ["rrnewton/hermit"]},
             },
         });
-        let a = describe_entry(0, &total);
-        let b = describe_entry(1, &ready_as_its_own_field);
+        let a = describe_entry(0, &total).unwrap();
+        let b = describe_entry(1, &ready_as_its_own_field).unwrap();
         assert!(
             a.contains("open_prs=105") && b.contains("open_prs=105"),
             "the comparable quantity now agrees: {a} / {b}"
@@ -2495,21 +3047,21 @@ fix-post-1.0-codex-invalid-sandbox-flag | CLOSED | [\"implemented\"]
     fn describe_reports_current_recovery_and_legacy_coverage_distinctly() {
         // CURRENT: covered hour equals the write hour, no recovery marker.
         let current = json!({
-            "schema_version": SCHEMA_VERSION,
+            "schema_version": COVERAGE_SCHEMA,
             "timestamp": "2026-08-07T03:00:11Z",
             "written_at": "2026-08-07T03:00:11Z",
             "covers_hour": "2026-08-07T03",
             "open_prs": 4,
             "count_semantics": {"open_prs": {"basis": BASIS_TOTAL_OPEN, "repos": ["rrnewton/hermit"]}},
         });
-        let line = describe_entry(1, &current);
+        let line = describe_entry(1, &current).unwrap();
         assert!(line.contains("covers=2026-08-07T03"), "{line}");
         assert!(line.contains("kind=current"), "{line}");
         assert!(!line.contains("recovery_for"), "{line}");
 
         // RECOVERY: the real shape of the 02:28 row, now self-describing.
         let recovery = json!({
-            "schema_version": SCHEMA_VERSION,
+            "schema_version": COVERAGE_SCHEMA,
             "timestamp": "2026-08-07T02:28:13Z",
             "written_at": "2026-08-07T02:28:13Z",
             "covers_hour": "2026-08-07T01",
@@ -2518,7 +3070,7 @@ fix-post-1.0-codex-invalid-sandbox-flag | CLOSED | [\"implemented\"]
             "open_prs": 10,
             "count_semantics": {"open_prs": {"basis": BASIS_TOTAL_OPEN, "repos": ["rrnewton/hermit"]}},
         });
-        let line = describe_entry(2, &recovery);
+        let line = describe_entry(2, &recovery).unwrap();
         assert!(line.contains("covers=2026-08-07T01"), "{line}");
         assert!(line.contains("kind=recovery"), "{line}");
         assert!(line.contains("recovery_for=2026-08-07T01"), "{line}");
@@ -2531,7 +3083,7 @@ fix-post-1.0-codex-invalid-sandbox-flag | CLOSED | [\"implemented\"]
             "timestamp": "2026-08-07T02:28:13Z",
             "open_prs": 10,
         });
-        let line = describe_entry(3, &legacy);
+        let line = describe_entry(3, &legacy).unwrap();
         assert!(line.contains("covers=unknown"), "{line}");
         assert!(
             !line.contains("covers=2026-08-07T02"),
@@ -2551,7 +3103,7 @@ fix-post-1.0-codex-invalid-sandbox-flag | CLOSED | [\"implemented\"]
                    "count_semantics": {"open_prs": {"basis": BASIS_TOTAL_OPEN, "repos": ["rrnewton/hermit"]}}}),
             json!({"timestamp": "2026-08-07T02:28:13Z"}),
         ] {
-            let line = describe_entry(0, &legacy);
+            let line = describe_entry(0, &legacy).unwrap();
             assert!(
                 line.contains("covers=unknown pre-schema-4-entry"),
                 "every pre-schema-{COVERAGE_SCHEMA} row reads unknown: {line}"
@@ -2560,7 +3112,7 @@ fix-post-1.0-codex-invalid-sandbox-flag | CLOSED | [\"implemented\"]
         // Schema 3 is BELOW the coverage schema, so it is legacy for coverage
         // purposes even though it is current for the mapping rules.
         assert!(COUNT_SEMANTICS_SCHEMA < COVERAGE_SCHEMA);
-        assert_eq!(SCHEMA_VERSION, COVERAGE_SCHEMA);
+        assert!(SCHEMA_VERSION > COVERAGE_SCHEMA);
     }
     // ============ the count must be bound to the set it names ============
 
