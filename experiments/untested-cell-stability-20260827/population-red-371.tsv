@@ -1,5 +1,5 @@
 # every RED cell at hermit 7ddb3559a09f2709a67ce2b605426b43c33f070f
-# derived from ci/compat-envelope/cells.json; this is the set pressure-test draws from
+# derived from ci/compat-envelope/cells.json; pressure-test's all-mode sample filter admits 338 of these
 # test	mode	backend	lane	status	measurement
 applications/example-timed-progress-bar	verify	dbt	portable	red	never-measured
 applications/example-timed-progress-bar	verify	kvm	portable	red	never-measured

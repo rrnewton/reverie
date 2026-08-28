@@ -1,0 +1,7 @@
+diff --git a/ci/compat-envelope/pressure-test.rs b/ci/compat-envelope/pressure-test.rs
+--- a/ci/compat-envelope/pressure-test.rs
++++ b/ci/compat-envelope/pressure-test.rs
+@@ -4588,2 +4588,2 @@
+-            if row_valid {
++            if row_valid && matches!(cell.mode.as_str(), "verify" | "replay") {
+                 if let Some(terminal) = result_rows_for_history.last() {

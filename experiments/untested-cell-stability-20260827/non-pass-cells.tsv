@@ -1,0 +1,43 @@
+batch	test	mode	backend	lane	category	pass	infrastructure_error	crash_error	determinism_failure	timeouts	ooms	retried_repetitions	executions	classification
+1	applications/example-timed-progress-bar	verify	liteinst	portable	applications	0	10	0	0	10	0	0	10	uniform infrastructure-error
+1	backend-parity-c/timer-family-identity	verify	ptrace	portable	backend-parity-c	0	0	0	10	0	0	10	20	uniform determinism-failure
+1	c-programs/nanosleep-threads-nocrash	verify	sabre	portable	c-programs	0	0	10	0	0	0	10	20	uniform crash-error
+1	c-programs/ppoll-simulation	verify	sabre	portable	c-programs	0	0	9	1	0	0	10	20	varied
+1	c-programs/printf-with-threads	verify	sabre	portable	c-programs	0	0	9	1	0	0	10	20	varied
+1	c-programs/resource-determinism	verify	ptrace	portable	c-programs	0	10	0	0	0	0	10	20	uniform infrastructure-error
+1	c-programs/socket-timestamp-edge-cases	verify	liteinst	portable	c-programs	0	10	0	0	0	0	10	20	uniform infrastructure-error
+1	c-programs/threadexhaustion	verify	sabre	portable	c-programs	0	0	7	3	0	0	10	20	varied
+1	determinism-stress-c/pipe-chain	verify	sabre	portable	determinism-stress-c	7	0	0	3	0	0	6	16	varied
+1	language-runtimes/example-python-random	verify	dbt	portable	language-runtimes	8	2	0	0	2	0	0	10	varied
+1	shared-futex-c/qemu-init	verify	ptrace	portable	shared-futex-c	0	10	0	0	0	0	10	20	uniform infrastructure-error
+2	applications/example-timed-progress-bar	verify	ptrace	portable	applications	0	10	0	0	10	0	0	10	uniform infrastructure-error
+2	backend-parity-c/pthread-lifecycle	verify	sabre	portable	backend-parity-c	0	0	8	2	0	0	10	20	varied
+2	backend-parity-c/signal-waitstatus-identity	verify	dbt	portable	backend-parity-c	0	10	0	0	10	0	0	10	uniform infrastructure-error
+2	bin-c/robust-futex-test	verify	ptrace	portable	bin-c	0	10	0	0	0	0	10	20	uniform infrastructure-error
+2	c-programs/dbt-execveat-unsupported	verify	sabre	portable	c-programs	0	0	10	0	0	0	10	20	uniform crash-error
+2	c-programs/dbt-pid-virtualization	verify	ptrace	portable	c-programs	3	7	0	0	0	0	8	18	varied
+2	c-programs/dbt-self-sigqueue	verify	dbt	portable	c-programs	0	10	0	0	0	0	10	20	uniform infrastructure-error
+2	c-programs/dbt-unsupported-syscall	verify	ptrace	portable	c-programs	0	10	0	0	0	0	10	20	uniform infrastructure-error
+3	c-programs/get-robust-list-thread	verify	sabre	portable	c-programs	0	0	10	0	0	0	10	20	uniform crash-error
+3	c-programs/just-spin	verify	sabre	portable	c-programs	0	0	10	0	0	0	10	20	uniform crash-error
+3	c-programs/nanosleep-threads-simple	verify	ptrace	portable	c-programs	0	10	0	0	0	0	10	20	uniform infrastructure-error
+3	c-programs/prodcons-determinism	verify	sabre	portable	c-programs	0	0	10	0	0	0	10	20	uniform crash-error
+3	c-programs/record-replay-fd-close	verify	sabre	portable	c-programs	0	0	10	0	0	0	10	20	uniform crash-error
+3	c-programs/record-replay-file-state	verify	ptrace	portable	c-programs	0	10	0	0	0	0	10	20	uniform infrastructure-error
+4	c-programs/sched-yield-progress	verify	sabre	portable	c-programs	0	0	10	0	0	0	10	20	uniform crash-error
+4	c-programs/sigmask-preemption	verify	sabre	portable	c-programs	0	0	10	0	0	0	10	20	uniform crash-error
+4	c-programs/sigtimedwait-timeout-0s	verify	sabre	portable	c-programs	0	0	10	0	0	0	10	20	uniform crash-error
+4	c-programs/socket-timestamp-edge-cases	verify	ptrace	portable	c-programs	0	10	0	0	0	0	10	20	uniform infrastructure-error
+4	c-programs/thread-self-procfs-handoff	verify	sabre	portable	c-programs	0	2	8	0	0	0	10	20	varied
+4	chaos-c/lock-granularity	verify	sabre	portable	chaos-c	0	0	4	6	0	0	10	20	varied
+4	determinism-stress-c/fork-tree	verify	sabre	portable	determinism-stress-c	0	0	0	10	0	0	10	20	uniform determinism-failure
+4	determinism-stress-c/thread-stress	verify	sabre	portable	determinism-stress-c	0	0	10	0	0	0	10	20	uniform crash-error
+4	determinism-stress/example-race	verify	sabre	portable	determinism-stress	0	0	10	0	0	0	10	20	uniform crash-error
+4	determinism-stress/order-violation	chaos	ptrace	portable	determinism-stress	6	0	4	0	0	0	7	17	varied
+4	shared-futex-c/qemu-exec-init	verify	ptrace	portable	shared-futex-c	0	10	0	0	0	0	10	20	uniform infrastructure-error
+4	shared-futex-c/qemu-hello	verify	ptrace	portable	shared-futex-c	0	10	0	0	0	0	10	20	uniform infrastructure-error
+4	shared-futex-c/qemu-net-init	verify	ptrace	portable	shared-futex-c	0	10	0	0	0	0	10	20	uniform infrastructure-error
+4	system-utils/example-devrand	verify	sabre	portable	system-utils	0	0	10	0	0	0	10	20	uniform crash-error
+4	system-utils/procfs-sanitized-paths	verify	ptrace	portable	system-utils	0	7	0	3	0	0	10	20	varied
+4	system-utils/startup-tls-guards	verify	sabre	portable	system-utils	0	0	0	10	0	0	10	20	uniform determinism-failure
+4	util-c/pmu-skid	verify	ptrace	portable	util-c	0	10	0	0	0	0	10	20	uniform infrastructure-error

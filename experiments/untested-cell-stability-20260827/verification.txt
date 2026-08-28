@@ -1,0 +1,22 @@
+partition_rows=338
+partition_unique_cells=338
+partition_pairwise_overlaps=0
+partition_equals_population=true
+
+batch=1 expected_final_keys=850 observed_final_keys=850 runner_cell_outcomes=850 runner_aborted=0 results_jsonl_rows=926 runner_timeouts=12 executions=938
+batch=2 expected_final_keys=850 observed_final_keys=850 runner_cell_outcomes=850 runner_aborted=0 results_jsonl_rows=888 runner_timeouts=20 executions=908
+batch=3 expected_final_keys=850 observed_final_keys=850 runner_cell_outcomes=850 runner_aborted=0 results_jsonl_rows=912 runner_timeouts=0 executions=912
+batch=4 expected_final_keys=830 observed_final_keys=830 runner_cell_outcomes=830 runner_aborted=0 results_jsonl_rows=1006 runner_timeouts=0 executions=1006
+
+cell_dag_nodes=3380
+cell_wall_timeout_seconds_unique=30
+cell_cpu_timeout_seconds_unique=60
+whole_run_timeout_firings=0
+ooms=0
+
+excluded_red_cells=33
+excluded_modes=naked
+manifest_commands_rendered=33
+manifest_command_render_failures=0
+manifest_attempts_3=31
+manifest_attempts_5=2

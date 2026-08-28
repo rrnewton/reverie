@@ -1,4 +1,5 @@
-# batch 1: --sample 76 --seed 1 --repetitions 10 --cell-timeout 30
+# DISCARDED PILOT, NOT BATCH 1: --sample 76 --seed 1 --repetitions 10 --cell-timeout 30
+# The selector bug chose enabled green cells. Retained only as evidence of the discarded launch.
 # hermit_sha ebe2a642e545a5579c379ad4397f38445ffe6022  eligible_cells 305
 # test	mode	backend	lane	category
 applications/c-toolchain-workflow	verify	ptrace	portable	applications
