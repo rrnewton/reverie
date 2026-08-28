@@ -12,11 +12,13 @@
 //! tools to break busywaits or other spins in a reliable manner. Timers
 //! are ideally deterministic so that `detcore` can use them.
 //!
-//! Due to PMU skid, precise timer events must be driven to completion via
-//! single stepping. This means the PMI is scheduled early, and events with very
-//! short timeouts require immediate single stepping. Immediate stepping is
+//! Due to PMU skid, precise timer events normally must be driven to completion
+//! via single stepping. This means the PMI is scheduled early, and events with
+//! very short timeouts require immediate single stepping. Immediate stepping is
 //! acheived by artificially generating a signal that will then be delivered
-//! immediately upon resumption of the guest.
+//! immediately upon resumption of the guest. If delivery is already past the
+//! target, the overshoot is recorded and the event is delivered at the observed
+//! counter because single stepping cannot move the guest backward.
 //!
 //! Proper use of timers requires that all delivered signals of type
 //! `Timer::signal_type()` be passed through `Timer::handle_signal`, and that
@@ -196,8 +198,8 @@ impl PmuConfig {
                 _ => return None,
             },
             // Turin EPYC family 1Ah model 11h has p99 skid of 384 RCBs. A 1K
-            // performance margin accepts rare larger overshoots because the
-            // existing single-step path completes them without losing correctness.
+            // performance margin avoids excessive single stepping. Rare larger
+            // overshoots are reported and delivered at the observed counter.
             0x1A if model_id == 0x11 => (AMD_RCB_EVENT, AMD_EPYC_9D85_SKID_MARGIN),
             // Other Zen CPUs keep rr's 10K guard because they have exhibited rare large skid.
             0x17 | 0x19 | 0x1A => (AMD_RCB_EVENT, AMD_DEFAULT_SKID_MARGIN),
@@ -249,10 +251,9 @@ impl PmuConfig {
     /// This is the experimentally determined maximum number of RCBs an overflow
     /// interrupt is delivered after the originating RCB.
     ///
-    /// If this is number is too small, timer event delivery will be delayed and
-    /// non-deterministic, which, if observed, will result in a panic. If this
-    /// number is too big, we degrade performance from excessive single
-    /// stepping.
+    /// If this number is too small, timer event delivery can pass its target and
+    /// will be reported at the observed counter. If this number is too big, we
+    /// degrade performance from excessive single stepping.
     pub fn skid_margin(&self) -> u64 {
         self.skid_margin_override.unwrap_or(self.skid_margin)
     }
@@ -286,7 +287,7 @@ impl PmuConfig {
     /// then return `true`. A non-overshoot (`rcb_actual <= rcb_target`) records
     /// nothing and returns `false`.
     ///
-    /// [`Self::attempt_single_step`]'s hard-failure guard is the sole runtime
+    /// [`Self::attempt_single_step`]'s late-delivery guard is the sole runtime
     /// caller, so a unit test that drives real `(actual, target)` pairs through
     /// this method exercises exactly the behaviour the supervisor runs — a
     /// genuine overshoot causes exactly one witness record — without needing a
@@ -559,7 +560,9 @@ impl Timer {
     /// Preconditions: task is in signal-delivery-stop.
     /// Postconditions: if a signal meant for this timer was the cause of the
     /// stop, the tracee will be at the precise instruction the timer event
-    /// should fire at.
+    /// should fire at, unless signal delivery was already past the target. In
+    /// that case the overshoot is recorded and the event fires at the observed
+    /// counter.
     /// Drives a timer signal using caller-owned stopped-state transitions.
     ///
     /// LiteInst uses this hook to keep its exact-generation root-stop lease
@@ -967,25 +970,20 @@ impl TimerImpl {
         step: &mut (dyn FnMut(Stopped) -> Result<Running, TraceError> + Send),
         observe: &mut (dyn FnMut(&Wait) -> Result<(), TraceError> + Send),
     ) -> Result<Stopped, HandleFailure> {
-        // The perf interrupt was delivered *past* the target: the actual skid
-        // exceeded the margin, so single-stepping (which cannot go backwards)
-        // can no longer land precisely on the target. Emit the canonical
-        // overshoot marker before the panic so this hard-failure path carries
-        // the same greppable signal as the detcore log-and-continue path — a
-        // retry harness can then classify it as skid rather than a real bug.
-        // Single decision-and-record site (unit-tested via
-        // `record_overshoot_if_past_target`): emits the canonical marker and
-        // increments the process-global witness counter iff this is a genuine
-        // overshoot. The `assert!` below then converts the same condition into
-        // the hard-failure panic.
-        get_pmu_config().record_overshoot_if_past_target(ctr_initial, target_rcb);
-        assert!(
-            ctr_initial <= target_rcb,
-            "Clock perf counter exceeds target value at start of attempted single-step: \
-                {} > {}. Consider increasing skid margin for this CPU.",
-            ctr_initial,
-            target_rcb
-        );
+        // The perf interrupt can arrive *past* the target when descheduling or
+        // migration delays signal handling long enough for the actual skid to
+        // exceed the margin. Single stepping cannot move the guest backward, so
+        // record the overshoot and deliver the timer event at the observed
+        // counter. The Tool can then account for the late event and either end
+        // the timeslice or re-arm the next timer through its normal callback.
+        if get_pmu_config().record_overshoot_if_past_target(ctr_initial, target_rcb) {
+            warn!(
+                "Precise timer interrupt arrived after target: actual {} > target {}; \
+                 delivering timer event at the observed counter",
+                ctr_initial, target_rcb
+            );
+            return Ok(task);
+        }
         let mut current = ClockCounter::new(ctr_initial, 0, target_rcb);
         let max_single_step_count = get_pmu_config().max_single_step_count();
         assert!(

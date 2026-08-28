@@ -3396,6 +3396,144 @@ mod tests {
         }
     }
 
+    #[derive(Default)]
+    struct PreciseTimerDeliveryTool {
+        delivered: AtomicBool,
+    }
+
+    #[reverie::tool]
+    impl Tool for PreciseTimerDeliveryTool {
+        type GlobalState = ();
+        type ThreadState = ();
+
+        fn subscriptions(_config: &()) -> Subscription {
+            Subscription::none()
+        }
+
+        async fn handle_thread_start<G: Guest<Self>>(&self, guest: &mut G) -> Result<(), Error> {
+            guest
+                .set_timer_precise(reverie::TimerSchedule::Rcbs(100))
+                .expect("configure precise timer at thread start");
+            Ok(())
+        }
+
+        async fn handle_timer_event<G: Guest<Self>>(&self, _guest: &mut G) {
+            self.delivered.store(true, Ordering::SeqCst);
+        }
+
+        async fn on_exit_process<G: reverie::GlobalRPC<Self::GlobalState>>(
+            self,
+            _pid: Pid,
+            _global_state: &G,
+            _exit_status: ExitStatus,
+        ) -> Result<(), Error> {
+            assert!(
+                self.delivered.into_inner(),
+                "precise timer event did not reach the Tool"
+            );
+            Ok(())
+        }
+    }
+
+    async fn run_precise_timer_delivery() -> u64 {
+        let _ = reverie::take_skid_overshoot_count();
+        let tracer = spawn_fn_with_config::<PreciseTimerDeliveryTool, _>(
+            || {
+                let mut value = 0u64;
+                for i in 0..1_000_000 {
+                    value = std::hint::black_box(value.wrapping_add(i));
+                }
+                std::hint::black_box(value);
+            },
+            (),
+            false,
+        )
+        .await
+        .expect("spawn precise-timer tracee");
+        let (status, ()) = tokio::time::timeout(Duration::from_secs(5), tracer.wait())
+            .await
+            .expect("precise-timer tracee timed out")
+            .expect("wait precise-timer tracee");
+        assert_eq!(status, ExitStatus::Exited(0));
+
+        reverie::take_skid_overshoot_count()
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn precise_timer_delivery_reaches_tool() {
+        const PRECISE_TIMER_CHILD: &str = "REVERIE_PTRACE_PRECISE_TIMER_CHILD";
+
+        if let Some(mode) = std::env::var_os(PRECISE_TIMER_CHILD) {
+            let overshoot_count = run_precise_timer_delivery().await;
+            match mode.to_str().expect("precise-timer child mode is UTF-8") {
+                "ordinary" => assert_eq!(
+                    overshoot_count, 0,
+                    "ordinary precise-timer delivery unexpectedly overshot"
+                ),
+                "overshoot" => assert!(
+                    overshoot_count > 0,
+                    "zero skid margin did not exercise the overshoot path"
+                ),
+                other => panic!("unknown precise-timer child mode {other:?}"),
+            }
+            return;
+        }
+
+        if !crate::perf::is_perf_supported() {
+            return;
+        }
+
+        // Both controls run in fresh exact-test processes. The overshoot count
+        // is process-global, so touching it in this parent would race the timer
+        // module's count assertions under Rust's parallel test runner.
+        let run_child = |mode: &str, force_overshoot: bool| {
+            let mut command =
+                std::process::Command::new(std::env::current_exe().expect("locate test binary"));
+            command
+                .args([
+                    "--exact",
+                    "tracer::tests::precise_timer_delivery_reaches_tool",
+                    "--nocapture",
+                    "--test-threads=1",
+                ])
+                .env(PRECISE_TIMER_CHILD, mode);
+            if force_overshoot {
+                command.env(crate::timer::SKID_MARGIN_OVERRIDE_ENV, "0");
+            }
+            command
+                .output()
+                .unwrap_or_else(|error| panic!("run {mode} precise-timer child test: {error}"))
+        };
+
+        let ordinary = run_child("ordinary", false);
+        assert!(
+            ordinary.status.success(),
+            "ordinary precise-timer child failed:\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&ordinary.stdout),
+            String::from_utf8_lossy(&ordinary.stderr)
+        );
+
+        let output = run_child("overshoot", true);
+        assert!(
+            output.status.success(),
+            "forced-overshoot child failed:\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            output
+                .stderr
+                .starts_with(crate::timer::SKID_OVERSHOOT_MARKER.as_bytes())
+                || output
+                    .stderr
+                    .windows(crate::timer::SKID_OVERSHOOT_MARKER.len())
+                    .any(|window| window == crate::timer::SKID_OVERSHOOT_MARKER.as_bytes()),
+            "forced-overshoot child did not emit {}:\n{}",
+            crate::timer::SKID_OVERSHOOT_MARKER,
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
     fn root_stop_guest_command(mode: &str) -> Command {
         if mode == "timer" {
             return Command::new("/bin/true");
