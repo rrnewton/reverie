@@ -1,0 +1,35 @@
+# Reconciliation for the never-measured uniform-pass cell and test-id lists.
+# Derived from row-level cell-results.tsv; prior measurement state comes from an exact (test, mode, backend) join to population-red-371.tsv.
+source_cell_results_rows=338
+source_unique_cell_ids=338
+joined_to_prior_measurement_rows=338
+missing_prior_measurement_rows=0
+study_uniform_pass_cells=296
+study_uniform_infrastructure_error_cells=16
+study_uniform_crash_error_cells=12
+study_uniform_determinism_failure_cells=3
+study_varied_cells=11
+study_classification_sum=338
+study_never_measured_cells=329
+study_diverged_cells=8
+study_measured_and_passed_cells=1
+study_measurement_state_sum=338
+never_measured_uniform_pass_cells=293
+never_measured_uniform_infrastructure_error_cells=15
+never_measured_uniform_crash_error_cells=12
+never_measured_uniform_determinism_failure_cells=1
+never_measured_varied_cells=8
+never_measured_classification_sum=329
+uniform_pass_never_measured_cells=293
+uniform_pass_diverged_cells=3
+uniform_pass_total=296
+uniform_pass_cell_id_lines=293
+uniform_pass_unique_cell_ids=293
+uniform_pass_cells_with_exactly_ten_pass_results=293
+uniform_pass_cells_violating_exactly_ten_pass_results=0
+uniform_pass_test_id_lines=139
+uniform_pass_unique_test_ids=139
+remaining_cell_rows=36
+remaining_unique_cell_ids=36
+cell_id_list_remaining_overlap=0
+cell_id_list_remaining_union=329

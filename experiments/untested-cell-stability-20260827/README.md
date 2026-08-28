@@ -77,6 +77,14 @@ The exact lists are:
 - `test-ids.txt`: all 187 test IDs represented by the 371 red cells.
 - `test-ids-pressure-test-eligible-155.txt`: the 155 test IDs represented by
   the 338-cell study population.
+- `never-measured-uniform-pass-cell-ids-293.txt`: the exact cell IDs for the
+  293 `never-measured` cells that passed all ten final repetitions.
+- `never-measured-uniform-pass-test-ids-139.txt`: the 139 unique test IDs
+  represented by those 293 cells.
+- `never-measured-remaining-36.tsv`: the other 36 `never-measured` cells, with
+  their cell-level classification and final-result counts.
+- `never-measured-reconciliation.txt`: row counts and set checks reconciling
+  those files against the 329 `never-measured` cells and all 338 study cells.
 
 ## Method
 

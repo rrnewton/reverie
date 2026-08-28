@@ -1,0 +1,39 @@
+# The 36 never-measured cells in the fixed 338-cell pressure-test population that were not uniform pass.
+# Derived from cell-results.tsv joined by (test, mode, backend) to population-red-371.tsv; result counts are the ten final repetitions.
+cell_id	classification	pass	infrastructure_error	crash_error	determinism_failure
+applications/example-timed-progress-bar/verify/liteinst	uniform infrastructure-error	0	10	0	0
+backend-parity-c/signal-waitstatus-identity/verify/dbt	uniform infrastructure-error	0	10	0	0
+bin-c/robust-futex-test/verify/ptrace	uniform infrastructure-error	0	10	0	0
+c-programs/dbt-execveat-unsupported/verify/sabre	uniform crash-error	0	0	10	0
+c-programs/dbt-pid-virtualization/verify/ptrace	varied	3	7	0	0
+c-programs/dbt-self-sigqueue/verify/dbt	uniform infrastructure-error	0	10	0	0
+c-programs/dbt-unsupported-syscall/verify/ptrace	uniform infrastructure-error	0	10	0	0
+c-programs/get-robust-list-thread/verify/sabre	uniform crash-error	0	0	10	0
+c-programs/just-spin/verify/sabre	uniform crash-error	0	0	10	0
+c-programs/nanosleep-threads-nocrash/verify/sabre	uniform crash-error	0	0	10	0
+c-programs/nanosleep-threads-simple/verify/ptrace	uniform infrastructure-error	0	10	0	0
+c-programs/printf-with-threads/verify/sabre	varied	0	0	9	1
+c-programs/prodcons-determinism/verify/sabre	uniform crash-error	0	0	10	0
+c-programs/record-replay-fd-close/verify/sabre	uniform crash-error	0	0	10	0
+c-programs/record-replay-file-state/verify/ptrace	uniform infrastructure-error	0	10	0	0
+c-programs/resource-determinism/verify/ptrace	uniform infrastructure-error	0	10	0	0
+c-programs/sched-yield-progress/verify/sabre	uniform crash-error	0	0	10	0
+c-programs/sigmask-preemption/verify/sabre	uniform crash-error	0	0	10	0
+c-programs/sigtimedwait-timeout-0s/verify/sabre	uniform crash-error	0	0	10	0
+c-programs/socket-timestamp-edge-cases/verify/liteinst	uniform infrastructure-error	0	10	0	0
+c-programs/socket-timestamp-edge-cases/verify/ptrace	uniform infrastructure-error	0	10	0	0
+c-programs/thread-self-procfs-handoff/verify/sabre	varied	0	2	8	0
+c-programs/threadexhaustion/verify/sabre	varied	0	0	7	3
+determinism-stress-c/fork-tree/verify/sabre	uniform determinism-failure	0	0	0	10
+determinism-stress-c/pipe-chain/verify/sabre	varied	7	0	0	3
+determinism-stress-c/thread-stress/verify/sabre	uniform crash-error	0	0	10	0
+determinism-stress/example-race/verify/sabre	uniform crash-error	0	0	10	0
+determinism-stress/order-violation/chaos/ptrace	varied	6	0	4	0
+language-runtimes/example-python-random/verify/dbt	varied	8	2	0	0
+shared-futex-c/qemu-exec-init/verify/ptrace	uniform infrastructure-error	0	10	0	0
+shared-futex-c/qemu-hello/verify/ptrace	uniform infrastructure-error	0	10	0	0
+shared-futex-c/qemu-init/verify/ptrace	uniform infrastructure-error	0	10	0	0
+shared-futex-c/qemu-net-init/verify/ptrace	uniform infrastructure-error	0	10	0	0
+system-utils/example-devrand/verify/sabre	uniform crash-error	0	0	10	0
+system-utils/procfs-sanitized-paths/verify/ptrace	varied	0	7	0	3
+util-c/pmu-skid/verify/ptrace	uniform infrastructure-error	0	10	0	0
