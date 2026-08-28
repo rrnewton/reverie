@@ -8,11 +8,14 @@
 
 //! Aggregate statistics for dynamically installed LiteInst patch sites.
 
+use std::collections::BTreeMap;
 use std::fmt;
 use std::sync::Arc;
 use std::sync::Mutex;
 
+use reverie::CounterSnapshot;
 use reverie::InstructionPatchShape;
+use reverie::LiteinstDispatchPath;
 use reverie::PatchShapeCollector;
 use reverie::PatchShapeStats;
 
@@ -27,7 +30,7 @@ pub struct LiteinstInstrumentationStats {
     candidate_sites: std::collections::BTreeSet<(u64, u64, u64)>,
     patch_shapes: PatchShapeCollector,
     patch_decisions: [u64; 4],
-    dispatch_paths: [u64; 5],
+    dispatch_paths: BTreeMap<LiteinstDispatchPath, u64>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -111,23 +114,27 @@ impl LiteinstInstrumentationStats {
     }
 
     pub(crate) fn record_first_site_seccomp(&mut self) {
-        self.dispatch_paths[0] += 1;
+        self.record_dispatch_path(LiteinstDispatchPath::FirstSiteSeccomp);
     }
 
     pub(crate) fn record_ptrace_installation(&mut self) {
-        self.dispatch_paths[1] += 1;
+        self.record_dispatch_path(LiteinstDispatchPath::PtraceInstallation);
     }
 
     pub(crate) fn record_cacheline_straddler_fallback(&mut self) {
-        self.dispatch_paths[2] += 1;
+        self.record_dispatch_path(LiteinstDispatchPath::CachelineStraddlerFallback);
     }
 
     pub(crate) fn record_unpatchable_or_other_fallback(&mut self) {
-        self.dispatch_paths[3] += 1;
+        self.record_dispatch_path(LiteinstDispatchPath::UnpatchableOrOtherFallback);
     }
 
     pub(crate) fn record_direct_hook(&mut self) {
-        self.dispatch_paths[4] += 1;
+        self.record_dispatch_path(LiteinstDispatchPath::DirectHook);
+    }
+
+    fn record_dispatch_path(&mut self, path: LiteinstDispatchPath) {
+        *self.dispatch_paths.entry(path).or_insert(0) += 1;
     }
 
     /// Returns the number of distinct instruction pointers successfully patched.
@@ -145,10 +152,13 @@ impl LiteinstInstrumentationStats {
         self.patch_decisions
     }
 
-    /// Returns first-site `Event::Seccomp`, successful ptrace installation, straddler
-    /// fallback, other fallback, and installed-hook dispatch counts.
-    pub const fn dispatch_path_counts(&self) -> [u64; 5] {
-        self.dispatch_paths
+    /// Returns the ptrace-host dispatch paths, excluding in-guest observations.
+    pub fn ptrace_host_dispatch_paths(&self) -> CounterSnapshot<LiteinstDispatchPath> {
+        CounterSnapshot::new(
+            self.dispatch_paths
+                .iter()
+                .map(|(path, count)| (*path, *count)),
+        )
     }
 
     /// Returns the exact aggregate patch-site shape distribution.
@@ -217,7 +227,7 @@ pub(crate) fn with_liteinst_stats<R>(
 impl fmt::Display for LiteinstInstrumentationStats {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let decisions = self.decision_counts();
-        let paths = self.dispatch_path_counts();
+        let paths = self.ptrace_host_dispatch_paths();
         let lengths = self.instruction_length_counts();
         let prefixes = self.straddle_prefix_counts();
         write!(
@@ -229,11 +239,11 @@ impl fmt::Display for LiteinstInstrumentationStats {
             decisions[1],
             decisions[2],
             decisions[3],
-            paths[0],
-            paths[1],
-            paths[2],
-            paths[3],
-            paths[4],
+            paths.count(&LiteinstDispatchPath::FirstSiteSeccomp),
+            paths.count(&LiteinstDispatchPath::PtraceInstallation),
+            paths.count(&LiteinstDispatchPath::CachelineStraddlerFallback),
+            paths.count(&LiteinstDispatchPath::UnpatchableOrOtherFallback),
+            paths.count(&LiteinstDispatchPath::DirectHook),
             self.classified_candidates(),
             self.cacheline_straddlers(),
             self.non_straddling(),
@@ -312,7 +322,24 @@ mod tests {
         assert_eq!(stats.distinct_rips(), 2);
         assert_eq!(stats.patch_candidates(), 7);
         assert_eq!(stats.decision_counts(), [1, 1, 4, 1]);
-        assert_eq!(stats.dispatch_path_counts(), [1, 1, 1, 1, 2]);
+        let paths = stats.ptrace_host_dispatch_paths();
+        assert_eq!(
+            paths.count(&reverie::LiteinstDispatchPath::FirstSiteSeccomp),
+            1
+        );
+        assert_eq!(
+            paths.count(&reverie::LiteinstDispatchPath::PtraceInstallation),
+            1
+        );
+        assert_eq!(
+            paths.count(&reverie::LiteinstDispatchPath::CachelineStraddlerFallback),
+            1
+        );
+        assert_eq!(
+            paths.count(&reverie::LiteinstDispatchPath::UnpatchableOrOtherFallback),
+            1
+        );
+        assert_eq!(paths.count(&reverie::LiteinstDispatchPath::DirectHook), 2);
         assert_eq!(stats.classified_candidates(), 6);
         assert_eq!(stats.cacheline_straddlers(), 4);
         assert_eq!(stats.non_straddling(), 2);
