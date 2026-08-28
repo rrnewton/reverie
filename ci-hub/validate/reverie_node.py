@@ -217,6 +217,19 @@ def gate_coverage(log_text: str) -> tuple[int, int, list[str], list[str]]:
     return executed, filtered, zero, absent
 
 
+def recorded_test_counts(source: dict[str, Any]) -> tuple[int, int]:
+    """Read the aggregate counts written by Reverie's validation framework."""
+    values: list[int] = []
+    for field in ("executed_tests", "filtered_tests"):
+        value = source.get(field)
+        if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+            raise Refusal(
+                f"Reverie source row {field} must be a nonnegative integer, got {value!r}"
+            )
+        values.append(value)
+    return values[0], values[1]
+
+
 def require_expected_gate_set(gates: object) -> None:
     gate_names = (
         [gate.get("name") for gate in gates]
@@ -297,7 +310,8 @@ def main(argv: list[str] | None = None) -> int:
         )
         source = load_source_row(root, args.target, checkout, log, started)
         log_text = log.read_text(errors="replace")
-        executed, filtered, zero, absent = gate_coverage(log_text)
+        executed, filtered = recorded_test_counts(source)
+        _, _, zero, absent = gate_coverage(log_text)
         gates = source.get("gates")
         canonical = dict(source)
         canonical.update(

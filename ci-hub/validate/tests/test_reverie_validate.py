@@ -68,7 +68,7 @@ class ReverieValidateTest(unittest.TestCase):
         checkout: Path,
         *,
         validate_exit: int,
-    ) -> tuple[int, str]:
+    ) -> tuple[int, str, dict]:
         target = "b" * 40
         log = root / "reverie.log"
         status_file = root / "final-status"
@@ -91,8 +91,11 @@ class ReverieValidateTest(unittest.TestCase):
         source = {
             "result": "pass" if validate_exit == 0 else "fail",
             "checks": len(reverie_node.EXPECTED_GATES),
+            "executed_tests": 17,
+            "filtered_tests": 4,
             "gates": [{"name": name} for name in reverie_node.EXPECTED_GATES],
         }
+        recorded: list[dict] = []
         with (
             mock.patch.object(reverie_node, "git", side_effect=fake_git),
             mock.patch.object(reverie_node, "require_kvm_environment"),
@@ -104,7 +107,11 @@ class ReverieValidateTest(unittest.TestCase):
                 return_value=subprocess.CompletedProcess([], validate_exit),
             ),
             mock.patch.object(reverie_node, "load_source_row", return_value=source),
-            mock.patch.object(reverie_node, "record"),
+            mock.patch.object(
+                reverie_node,
+                "record",
+                side_effect=lambda _root, row: recorded.append(row),
+            ),
         ):
             rc = reverie_node.main(
                 [
@@ -120,7 +127,8 @@ class ReverieValidateTest(unittest.TestCase):
                     str(status_file),
                 ]
             )
-        return rc, status_file.read_text()
+        assert len(recorded) == 1
+        return rc, status_file.read_text(), recorded[0]
 
     def test_systemd_child_is_safe_ci_wrapper_without_unboxed_flags(self) -> None:
         root = Path("/workspace/dev-hermit")
@@ -306,11 +314,13 @@ class ReverieValidateTest(unittest.TestCase):
                     root = Path(raw)
                     checkout = root / "reverie"
                     checkout.mkdir()
-                    rc, status = self.run_reverie_node(
+                    rc, status, row = self.run_reverie_node(
                         root, checkout, validate_exit=validate_exit
                     )
                 self.assertEqual(rc, expected_rc)
                 self.assertEqual(status, expected_status)
+                self.assertEqual(row["executed_tests"], 17)
+                self.assertEqual(row["filtered_tests"], 4)
 
     def test_reverie_node_refusal_publishes_could_not_run(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
@@ -356,6 +366,23 @@ test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out;
             reverie_node.gate_coverage(missing),
             (10, 3, [], ["Documentation tests"]),
         )
+
+    def test_aggregate_counts_come_from_the_framework_row(self) -> None:
+        self.assertEqual(
+            reverie_node.recorded_test_counts(
+                {"executed_tests": 17, "filtered_tests": 4}
+            ),
+            (17, 4),
+        )
+        for field, value in (
+            ("executed_tests", None),
+            ("executed_tests", "17"),
+            ("executed_tests", -1),
+            ("filtered_tests", None),
+        ):
+            row = {"executed_tests": 17, "filtered_tests": 4, field: value}
+            with self.assertRaisesRegex(reverie_node.Refusal, field):
+                reverie_node.recorded_test_counts(row)
 
     def test_current_gate_contract_refuses_retired_merge_gate(self) -> None:
         self.assertEqual(
