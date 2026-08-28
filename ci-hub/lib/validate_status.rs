@@ -15,7 +15,8 @@
 //!
 //! The full rule is "a green must carry what it verified" (AGENTS.md Proxy
 //! Binding, parent da98bdd): a clean, commit-anchored, FULL-profile,
-//! FULL-selection PASS with a nonzero executed-test count AND zero filtered-out.
+//! FULL-selection PASS with a nonzero executed-test count and satisfied
+//! per-node coverage.
 //! But the PRODUCER TRAVELS WITH THE BRANCH: a receipt's writer is whatever
 //! validation producer shipped on that PR's branch, and older writers do not emit the
 //! count fields at all. Enforcing the count clauses on EVERY receipt therefore
