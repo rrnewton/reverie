@@ -15,6 +15,7 @@ mkdir -p "$root/scripts" "$root/hermit" "$root/reverie" "$root/liteinst2" \
 touch "$root/.gitmodules"
 cp "${ALLOC_SRC:-$script_dir/allocate-worktree.rs}" "$root/scripts/allocate-worktree.rs"
 cp "$script_dir/worktree_registry.rs" "$root/scripts/"
+cp "$script_dir/agent_snapshot.rs" "$root/scripts/"
 chmod +x "$root/scripts/allocate-worktree.rs"
 
 # The allocator asks this verifier to prove the exact already-recorded sentinel.

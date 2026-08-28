@@ -26,6 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "runners"))
 # have reported a clean, EMPTY fleet -- the failure mode that reads as health.
 sys.path.insert(0, str(ROOT / "ci-hub" / "lib"))
 import taskgraph_db  # noqa: E402
+import agent_snapshot as agent_snapshot_contract  # noqa: E402
 
 import github_main_health
 import pr_status
@@ -33,18 +34,6 @@ import primary_checkout
 import queue_health
 
 
-BROKEN_AGENT_STATES = frozenset(
-    (
-        "crashed",
-        "disconnected",
-        "error",
-        "failed",
-        "stuck",
-        "unreachable",
-        "unresponsive",
-    )
-)
-ACTIVE_AGENT_STATES = frozenset(("active", "busy", "in_progress", "running", "working"))
 DEFAULT_STUCK_AFTER_SECS = 60 * 60
 DEFAULT_AGENT_SNAPSHOT_MAX_AGE_SECS = 10 * 60
 # Per-repo wall-clock budget for the auto-invoked PR-health gate, including its
@@ -133,25 +122,6 @@ MERGE_GATE_AUTHORITY_CHECKER = (
 )
 MERGE_GATE_REPO = "rrnewton/hermit"
 DEFAULT_AGENT_SNAPSHOT = ROOT / "ignored" / "ci-hub" / "agent-snapshot.json"
-_AGENT_PANE_RE = re.compile(r"^%\d+$")
-TERMINAL_AGENT_STATES = frozenset(
-    (
-        "closed",
-        "crashed",
-        "dead",
-        "disconnected",
-        "error",
-        "exited",
-        "failed",
-        "retired",
-        "stuck",
-        "terminated",
-        "unreachable",
-        "unresponsive",
-    )
-)
-
-
 @dataclass(frozen=True)
 class TaskRecord:
     id: str
@@ -232,14 +202,20 @@ class AgentRecord:
     name: str
     status: str
     current_task: str | None
+    tmux_pane_id: str | None = None
+    last_activity: float | None = None
 
     @property
     def live(self) -> bool:
-        return self.status not in TERMINAL_AGENT_STATES
+        return agent_snapshot_contract.status_semantics(self.status).live
 
     @property
     def busy(self) -> bool:
-        return self.status in ACTIVE_AGENT_STATES
+        return agent_snapshot_contract.status_semantics(self.status).busy
+
+    @property
+    def broken(self) -> bool:
+        return agent_snapshot_contract.status_semantics(self.status).broken
 
 
 @dataclass(frozen=True)
@@ -316,7 +292,7 @@ def github_main_gate() -> int:
             f"{repo.repo}:{repo.state if repo.available else 'unavailable'}"
             for repo in health
         )
-    except RuntimeError as error:
+    except (RuntimeError, agent_snapshot_contract.AgentSnapshotSchemaError) as error:
         _emit({"state": "unknown", "summary": _field(error)})
         return 1
 
@@ -748,22 +724,17 @@ def classify_stuck_agents(
     stuck_after_secs: int = DEFAULT_STUCK_AFTER_SECS,
 ) -> list[tuple[str, str]]:
     stuck: list[tuple[str, str]] = []
-    for raw in agents:
-        if not isinstance(raw, Mapping):
+    for agent in _parse_agents(agents):
+        if agent.broken:
+            stuck.append((agent.name, agent.status))
             continue
-        name = _field(raw.get("name", "unnamed"))
-        status = str(raw.get("status") or "unknown").strip().lower()
-        if status in BROKEN_AGENT_STATES:
-            stuck.append((name, status))
-            continue
-        last_activity = _last_activity_seconds(raw.get("last_activity"))
         if (
-            status in ACTIVE_AGENT_STATES
-            and last_activity is not None
-            and now - last_activity >= stuck_after_secs
+            agent.busy
+            and agent.last_activity is not None
+            and now - agent.last_activity >= stuck_after_secs
         ):
-            age_minutes = int((now - last_activity) // 60)
-            stuck.append((name, f"{status}-silent-{age_minutes}m"))
+            age_minutes = int((now - agent.last_activity) // 60)
+            stuck.append((agent.name, f"{agent.status}-silent-{age_minutes}m"))
     return sorted(stuck)
 
 
@@ -800,22 +771,22 @@ def agent_gate(
             }
         )
         return 1
-    if not isinstance(payload, list):
+    try:
+        stuck = classify_stuck_agents(
+            payload,
+            now=time.time() if now is None else now,
+            stuck_after_secs=stuck_after_secs,
+        )
+    except (RuntimeError, agent_snapshot_contract.AgentSnapshotSchemaError) as error:
         _emit(
             {
                 "state": "unknown",
                 "count": 0,
                 "names": "none",
-                "summary": "agent-snapshot-is-not-a-list",
+                "summary": str(error),
             }
         )
         return 1
-
-    stuck = classify_stuck_agents(
-        payload,
-        now=time.time() if now is None else now,
-        stuck_after_secs=stuck_after_secs,
-    )
     _emit(
         {
             "state": "stuck" if stuck else "ok",
@@ -829,29 +800,25 @@ def agent_gate(
 
 
 def _parse_agents(payload: object) -> tuple[AgentRecord, ...]:
-    if not isinstance(payload, list):
-        raise RuntimeError("agent-snapshot-is-not-a-list")
+    try:
+        validated = agent_snapshot_contract.parse_snapshot_payload(payload)
+    except agent_snapshot_contract.AgentSnapshotSchemaError as error:
+        raise RuntimeError(str(error)) from error
     agents: list[AgentRecord] = []
-    names: set[str] = set()
-    for index, raw in enumerate(payload):
-        if not isinstance(raw, Mapping):
-            raise RuntimeError(f"agent-snapshot-entry-{index}-is-not-an-object")
-        name = str(raw.get("name") or "").strip()
-        if not name:
-            raise RuntimeError(f"agent-snapshot-entry-{index}-has-no-name")
-        if name in names:
-            raise RuntimeError(f"agent-snapshot-has-duplicate-name:{name}")
-        names.add(name)
-        status = str(raw.get("status") or "unknown").strip().lower()
+    for raw in validated:
+        name = raw["name"]
+        status = raw["status"]
         current_task_raw = raw.get("current_task")
         current_task = (
-            str(current_task_raw).strip() if current_task_raw is not None else ""
+            current_task_raw.strip() if current_task_raw is not None else ""
         )
         agents.append(
             AgentRecord(
                 name=name,
                 status=status,
                 current_task=current_task or None,
+                tmux_pane_id=raw.get("tmux_pane_id"),
+                last_activity=_last_activity_seconds(raw.get("last_activity")),
             )
         )
     return tuple(sorted(agents, key=lambda agent: agent.name))
@@ -863,19 +830,19 @@ def _persist_agent_snapshot(
     *,
     captured_at: float,
 ) -> None:
+    document = {
+        "schema_version": 1,
+        "captured_at": captured_at,
+        "agents": payload,
+    }
+    encoded = (json.dumps(document, sort_keys=True) + "\n").encode("utf-8")
+    try:
+        agent_snapshot_contract.parse_snapshot_bytes(encoded)
+    except agent_snapshot_contract.AgentSnapshotSchemaError as error:
+        raise RuntimeError(str(error)) from error
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    temporary.write_text(
-        json.dumps(
-            {
-                "schema_version": 1,
-                "captured_at": captured_at,
-                "agents": payload,
-            },
-            sort_keys=True,
-        )
-        + "\n"
-    )
+    temporary.write_bytes(encoded)
     os.replace(temporary, path)
 
 
@@ -915,24 +882,12 @@ def _assert_plausible_agent_payload(payload: object, *, source: str) -> None:
     needs an independent source such as `ci-hub/health/agent_liveness_probe.py`.
     This catches the failure modes actually observed and is safe everywhere.
     """
-    if not isinstance(payload, list):
-        raise RuntimeError("agent-snapshot-is-not-a-list")
-    if not payload:
+    agents = _parse_agents(payload)
+    if not agents:
         # Zero agents is indistinguishable from no observation, so it must read
         # as could-not-measure -- never as a healthy, empty fleet.
         raise RuntimeError(f"agent-snapshot-implausible:{source}:zero-agents")
-    pane_bound = 0
-    for index, raw in enumerate(payload):
-        pane = raw.get("tmux_pane_id") if isinstance(raw, Mapping) else None
-        if pane is None:
-            continue
-        if not (isinstance(pane, str) and _AGENT_PANE_RE.match(pane)):
-            name = raw.get("name", "?") if isinstance(raw, Mapping) else "?"
-            raise RuntimeError(
-                f"agent-snapshot-implausible:{source}:"
-                f"entry-{index}({name})-has-invalid-pane-identity"
-            )
-        pane_bound += 1
+    pane_bound = sum(agent.tmux_pane_id is not None for agent in agents)
     if pane_bound == 0:
         raise RuntimeError(
             f"agent-snapshot-implausible:{source}:no-pane-bound-agents"
@@ -964,24 +919,24 @@ def load_agent_snapshot(
         return agents, observed_at
 
     try:
-        envelope = json.loads(snapshot_file.read_text())
+        raw_snapshot = snapshot_file.read_bytes()
     except FileNotFoundError as error:
         raise RuntimeError(
             "ORC-agent-snapshot-missing; wait for the operational tick or pass --agent-snapshot"
         ) from error
-    except (OSError, json.JSONDecodeError) as error:
+    except OSError as error:
         raise RuntimeError(f"cannot-read-agent-snapshot:{error}") from error
-    if not isinstance(envelope, Mapping) or envelope.get("schema_version") != 1:
-        raise RuntimeError("agent-snapshot-envelope-has-unsupported-schema")
-    captured_at = envelope.get("captured_at")
-    if isinstance(captured_at, bool) or not isinstance(captured_at, (int, float)):
-        raise RuntimeError("agent-snapshot-envelope-has-invalid-captured-at")
+    try:
+        envelope = agent_snapshot_contract.parse_snapshot_bytes(raw_snapshot)
+    except agent_snapshot_contract.AgentSnapshotSchemaError as error:
+        raise RuntimeError(str(error)) from error
+    captured_at = float(envelope["captured_at"])
     age = observed_at - float(captured_at)
     if age < 0 or age > max_age_secs:
         raise RuntimeError(
             f"agent-snapshot-stale:age={max(0, int(age))}s,max={max_age_secs}s"
         )
-    agents_payload = envelope.get("agents")
+    agents_payload = envelope["agents"]
     # AFTER the staleness check, so a stale snapshot still reports STALE and
     # keeps its existing, more specific diagnostic.
     _assert_plausible_agent_payload(agents_payload, source="cache")

@@ -43,6 +43,7 @@ touch "$root/.gitmodules"
 cp "$alloc_src" "$root/scripts/allocate-worktree.rs"
 cp "$script_dir/check-worktree-registry.rs" "$root/scripts/"
 cp "$script_dir/worktree_registry.rs" "$root/scripts/"
+cp "$script_dir/agent_snapshot.rs" "$root/scripts/"
 # `git show HEAD:scripts/allocate-worktree.rs > /tmp/old.rs` -- the documented way
 # to produce an ALLOC_SRC build for an A/B -- writes a file with NO executable
 # bit. The fixture invokes the script as `./scripts/allocate-worktree.rs`, so

@@ -15,6 +15,7 @@ cp "$script_dir/worktree-gc.sh" "$root/scripts/"
 cp "$script_dir/allocate-worktree.rs" "$root/scripts/"
 cp "$script_dir/check-worktree-registry.rs" "$root/scripts/"
 cp "$script_dir/worktree_registry.rs" "$root/scripts/"
+cp "$script_dir/agent_snapshot.rs" "$root/scripts/"
 cp "$script_dir/../ci-hub/lib/worktree_registry.py" "$root/ci-hub/lib/"
 
 cat >"$root/worktree-state.json" <<'JSON'

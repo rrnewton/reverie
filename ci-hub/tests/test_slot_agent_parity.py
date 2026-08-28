@@ -141,8 +141,9 @@ class SlotAgentParityTests(unittest.TestCase):
         snapshot.write_text(
             json.dumps(
                 {
+                    "schema_version": 1,
                     "captured_at": time.time() - 65.8 * 3600,
-                    "agents": [{"name": "hermit-001"}],
+                    "agents": [{"name": "hermit-001", "status": "busy"}],
                 }
             )
         )
@@ -162,7 +163,13 @@ class SlotAgentParityTests(unittest.TestCase):
         self.write_registry({"one": self.slot("one", "hermit-001")})
         snapshot = self.root / "snapshot.json"
         snapshot.write_text(
-            json.dumps({"captured_at": time.time() - 30, "agents": [{"name": "hermit-001"}]})
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "captured_at": time.time() - 30,
+                    "agents": [{"name": "hermit-001", "status": "busy"}],
+                }
+            )
         )
         code, fields = run(
             self.root, "--agent-source", "snapshot", "--agent-snapshot", str(snapshot)
@@ -170,10 +177,59 @@ class SlotAgentParityTests(unittest.TestCase):
         self.assertEqual(code, 0, fields.get("summary"))
         self.assertEqual(fields["live_agents_examined"], "1")
 
+    def test_terminal_snapshot_agent_does_not_cover_an_active_slot(self) -> None:
+        self.write_registry({"one": self.slot("one", "hermit-001")})
+        snapshot = self.root / "snapshot.json"
+        snapshot.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "captured_at": time.time() - 30,
+                    "agents": [{"name": "hermit-001", "status": "unreachable"}],
+                }
+            )
+        )
+        code, fields = run(
+            self.root, "--agent-source", "snapshot", "--agent-snapshot", str(snapshot)
+        )
+        self.assertEqual(code, 2, "a terminal-only census must refuse its empty denominator")
+        self.assertEqual(fields["state"], "unknown")
+        self.assertIn("no live agent identities", fields["summary"])
+
+    def test_terminal_snapshot_agent_is_excluded_from_a_mixed_denominator(self) -> None:
+        self.write_registry(
+            {
+                "live": self.slot("live", "hermit-001"),
+                "terminal": self.slot("terminal", "hermit-002"),
+            }
+        )
+        snapshot = self.root / "snapshot.json"
+        snapshot.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "captured_at": time.time() - 30,
+                    "agents": [
+                        {"name": "hermit-001", "status": "busy"},
+                        {"name": "hermit-002", "status": "unreachable"},
+                    ],
+                }
+            )
+        )
+        code, fields = run(
+            self.root, "--agent-source", "snapshot", "--agent-snapshot", str(snapshot)
+        )
+        self.assertEqual(code, 1)
+        self.assertEqual(fields["live_agents_examined"], "1")
+        self.assertEqual(fields["active_slots_without_live_agent"], "1")
+        self.assertIn("terminal", fields["summary"])
+
     def test_snapshot_with_no_identities_refuses(self) -> None:
         self.write_registry({"one": self.slot("one", "hermit-001")})
         snapshot = self.root / "snapshot.json"
-        snapshot.write_text(json.dumps({"captured_at": time.time(), "agents": []}))
+        snapshot.write_text(
+            json.dumps({"schema_version": 1, "captured_at": time.time(), "agents": []})
+        )
         code, fields = run(
             self.root, "--agent-source", "snapshot", "--agent-snapshot", str(snapshot)
         )

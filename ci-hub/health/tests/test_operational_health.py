@@ -797,6 +797,21 @@ class OperationalHealthTest(unittest.TestCase):
             self.assertIn("no-pane-bound-agents", output)
             self.assertEqual(path.read_text(), "last usable observation\n")
 
+    def test_cache_agent_snapshot_refuses_unknown_status_before_replacing(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "agents.json"
+            path.write_text("last usable observation\n")
+            result, output = self.capture(
+                operational_health.cache_agent_snapshot,
+                '[{"name":"worker","status":"future-state",'
+                '"tmux_pane_id":"%7"}]',
+                snapshot_file=path,
+                now=1000,
+            )
+            self.assertEqual(result, 1)
+            self.assertIn("future-state", output)
+            self.assertEqual(path.read_text(), "last usable observation\n")
+
     def test_cache_agent_snapshot_persists_a_plausible_full_snapshot(self) -> None:
         snapshot = (
             '[{"name":"coordinator","status":"managed","current_task":null,'
@@ -812,11 +827,25 @@ class OperationalHealthTest(unittest.TestCase):
                 snapshot_file=path,
                 now=1000,
             )
-            envelope = json.loads(path.read_text())
+            written = path.read_text()
+            envelope = json.loads(written)
         self.assertEqual(result, 0)
         self.assertIn("state=ok", output)
         self.assertEqual(envelope["captured_at"], 1000)
         self.assertEqual(envelope["agents"][1]["current_task"], "task")
+        self.assertEqual(
+            written,
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "captured_at": 1000,
+                    "agents": json.loads(snapshot),
+                },
+                sort_keys=True,
+            )
+            + "\n",
+            "shared validation must not rewrite the existing snapshot bytes",
+        )
 
     def test_cache_agents_command_dispatches_to_the_snapshot_writer(self) -> None:
         with mock.patch.object(

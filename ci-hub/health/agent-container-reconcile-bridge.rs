@@ -30,6 +30,9 @@
     unused_variables,
     unused_must_use
 )]
+#[allow(dead_code)]
+#[path = "../../scripts/agent_snapshot.rs"]
+mod agent_snapshot;
 // The ONE capture wrapper, shared by path rather than copied so this script
 // cannot drift away from the fix. Only one of its two entry points is used here.
 #[allow(dead_code)]
@@ -269,6 +272,11 @@ fn persist_snapshot(path: &Path, agents: &[Value]) -> Result<(), String> {
     let temporary = path.with_extension(format!("json.tmp.{}", std::process::id()));
     let bytes = serde_json::to_vec(&snapshot)
         .map_err(|error| format!("serialize agent snapshot: {error}"))?;
+    let validated = agent_snapshot::AgentSnapshot::parse(&bytes)
+        .map_err(|error| format!("refuse agent snapshot before publication: {error}"))?;
+    validated
+        .ensure_nonempty()
+        .map_err(|error| format!("refuse agent snapshot before publication: {error}"))?;
     fs::write(&temporary, bytes)
         .map_err(|error| format!("write temporary snapshot {}: {error}", temporary.display()))?;
     fs::rename(&temporary, path).map_err(|error| {
@@ -313,5 +321,32 @@ mod tests {
             }],
         };
         assert!(canonical_workflow_alive(&state));
+    }
+
+    #[test]
+    fn snapshot_writer_refuses_unknown_status_before_replacing_the_file() {
+        let directory = env::temp_dir().join(format!(
+            "agent-snapshot-bridge-test-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("agent-snapshot.json");
+        fs::write(&path, b"last usable observation\n").unwrap();
+        let error = persist_snapshot(
+            &path,
+            &[serde_json::json!({
+                "name": "future-agent",
+                "status": "future-state",
+                "tmux_pane_id": "%7"
+            })],
+        )
+        .unwrap_err();
+        assert!(error.contains("future-state"), "{error}");
+        assert_eq!(fs::read(&path).unwrap(), b"last usable observation\n");
+        fs::remove_dir_all(directory).unwrap();
     }
 }

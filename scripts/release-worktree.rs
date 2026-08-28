@@ -19,6 +19,9 @@
 //! sha2 = "0.10"
 //! ```
 #[allow(dead_code)]
+#[path = "agent_snapshot.rs"]
+mod agent_snapshot;
+#[allow(dead_code)]
 #[path = "worktree_registry.rs"]
 mod worktree_registry;
 
@@ -1333,80 +1336,30 @@ fn revoke_codex_sentinel(root: &Path, lease: &Value, recover: bool) -> Result<Va
 
 fn agent_snapshot(root: &Path) -> Result<BTreeMap<String, AgentPresence>, String> {
     let path = root.join("ignored/ci-hub/agent-snapshot.json");
-    let text = fs::read_to_string(&path).map_err(|error| {
+    let bytes = fs::read(&path).map_err(|error| {
         format!(
             "canonical ORC owner snapshot unavailable at {}: {error}",
             path.display()
         )
     })?;
-    let envelope: Value = serde_json::from_str(&text)
+    let snapshot = agent_snapshot::AgentSnapshot::parse(&bytes)
         .map_err(|error| format!("parse canonical ORC owner snapshot: {error}"))?;
-    if envelope["schema_version"].as_u64() != Some(1) {
-        return Err("canonical ORC owner snapshot has unsupported schema".to_string());
-    }
-    let captured_at = envelope["captured_at"]
-        .as_f64()
-        .filter(|value| value.is_finite() && *value >= 0.0)
-        .ok_or_else(|| "canonical ORC owner snapshot has invalid captured_at".to_string())?;
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(|error| format!("system clock precedes Unix epoch: {error}"))?
         .as_secs_f64();
-    let age = now - captured_at;
-    if !(0.0..=AGENT_SNAPSHOT_MAX_AGE_SECS as f64).contains(&age) {
-        return Err(format!(
-            "canonical ORC owner snapshot is not fresh: age={}s max={}s",
-            age.max(0.0) as u64,
-            AGENT_SNAPSHOT_MAX_AGE_SECS
-        ));
-    }
-    let agents = envelope["agents"]
-        .as_array()
-        .ok_or_else(|| "canonical ORC owner snapshot agents is not an array".to_string())?;
-    let terminal: BTreeSet<&str> = [
-        "closed",
-        "crashed",
-        "dead",
-        "disconnected",
-        "error",
-        "exited",
-        "failed",
-        "retired",
-        "terminated",
-        "unreachable",
-        "unresponsive",
-    ]
-    .into_iter()
-    .collect();
+    snapshot
+        .ensure_fresh(now, AGENT_SNAPSHOT_MAX_AGE_SECS as f64)
+        .map_err(|error| error.replace("agent snapshot", "canonical ORC owner snapshot"))?;
     let mut result = BTreeMap::new();
-    for (index, agent) in agents.iter().enumerate() {
-        let raw_name = agent["name"]
-            .as_str()
-            .ok_or_else(|| format!("canonical ORC owner snapshot agent {index} has no name"))?;
-        let name = raw_name.trim();
-        if name.is_empty() {
-            return Err(format!(
-                "canonical ORC owner snapshot agent {index} has no name"
-            ));
-        }
-        let status = agent["status"]
-            .as_str()
-            .unwrap_or("unknown")
-            .trim()
-            .to_ascii_lowercase();
-        let pane = agent["tmux_pane_id"]
-            .as_str()
-            .filter(|pane| !pane.is_empty())
-            .map(str::to_string);
+    for agent in &snapshot.agents {
+        let name = agent.name.as_str();
+        let pane = agent.tmux_pane_id.clone();
         let presence = AgentPresence {
-            live: !terminal.contains(status.as_str()),
+            live: agent.status.is_live(),
             pane,
         };
-        if result.insert(name.to_string(), presence).is_some() {
-            return Err(format!(
-                "canonical ORC owner snapshot has duplicate agent '{name}'"
-            ));
-        }
+        result.insert(name.to_string(), presence);
     }
     Ok(result)
 }

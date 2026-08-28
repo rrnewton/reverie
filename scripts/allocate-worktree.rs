@@ -27,6 +27,9 @@
 //! serde_json = "1"
 //! ```
 #[allow(dead_code)]
+#[path = "agent_snapshot.rs"]
+mod agent_snapshot;
+#[allow(dead_code)]
 #[path = "worktree_registry.rs"]
 mod worktree_registry;
 
@@ -1310,20 +1313,16 @@ fn live_tmux_pane_ids() -> Option<Vec<String>> {
 /// implausible} refusal set that `operational_health.load_agent_snapshot` is
 /// adopting for the same file. Classification only: it decides WHAT TO SAY
 /// about a refusal, never WHETHER to refuse.
-fn owner_snapshot_implausibility(agents: &[Value]) -> Option<String> {
+fn owner_snapshot_implausibility(agents: &[agent_snapshot::Agent]) -> Option<String> {
     if agents.is_empty() {
         return Some("it lists no agents at all".to_string());
     }
     let panes: Vec<&str> = agents
         .iter()
-        .filter_map(|entry| entry["tmux_pane_id"].as_str())
-        .filter(|pane| pane.starts_with('%') && !pane.chars().any(char::is_whitespace))
+        .filter_map(|entry| entry.tmux_pane_id.as_deref())
         .collect();
     if panes.is_empty() {
-        let mut names: Vec<&str> = agents
-            .iter()
-            .map(|entry| entry["name"].as_str().unwrap_or("<unnamed>"))
-            .collect();
+        let mut names: Vec<&str> = agents.iter().map(|entry| entry.name.as_str()).collect();
         names.truncate(5);
         return Some(format!(
             "not one of its {} entries carries a usable tmux pane id (names: {}{})",
@@ -1554,31 +1553,20 @@ fn codex_owner_sidecar(
 
 fn observe_owner_lease(root: &Path, agent: &str) -> Result<ObservedOwnerLease, String> {
     let snapshot_path = root.join("ignored/ci-hub/agent-snapshot.json");
-    let raw = fs::read_to_string(&snapshot_path)
+    let raw = fs::read(&snapshot_path)
         .map_err(|error| format!("read {}: {error}", snapshot_path.display()))?;
-    let snapshot: Value = serde_json::from_str(&raw)
-        .map_err(|error| format!("parse {}: {error}", snapshot_path.display()))?;
-    if snapshot["schema_version"].as_u64() != Some(1) {
-        return Err("owner snapshot has unsupported schema".to_string());
-    }
-    let captured = snapshot["captured_at"]
-        .as_f64()
-        .filter(|value| value.is_finite() && *value >= 0.0)
-        .ok_or_else(|| "owner snapshot has invalid captured_at".to_string())?;
-    let age = epoch_now() as f64 - captured;
-    if !(0.0..=600.0).contains(&age) {
-        return Err(format!(
-            "owner snapshot is not fresh (age={}s)",
-            age.max(0.0) as i64
-        ));
-    }
-    let agents = snapshot["agents"]
-        .as_array()
-        .ok_or_else(|| "owner snapshot agents is not an array".to_string())?;
-    let matches: Vec<&Value> = agents
-        .iter()
-        .filter(|entry| entry["name"].as_str() == Some(agent))
-        .collect();
+    let snapshot = agent_snapshot::AgentSnapshot::parse(&raw)
+        .map_err(|error| format!("owner snapshot is invalid: {error}"))?;
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|error| format!("system clock precedes Unix epoch: {error}"))?
+        .as_secs_f64();
+    snapshot
+        .ensure_fresh(now, 600.0)
+        .map_err(|error| error.replace("agent snapshot", "owner snapshot"))?;
+    let agents = &snapshot.agents;
+    let matches: Vec<&agent_snapshot::Agent> =
+        agents.iter().filter(|entry| entry.name == agent).collect();
     // Same refusal as ever, in every case. Only the WORDING is split, because
     // one message for two causes sent the fleet after the wrong remedy: an
     // implausible snapshot has to be fixed at the producer, whereas a genuinely
@@ -1618,30 +1606,12 @@ fn observe_owner_lease(root: &Path, agent: &str) -> Result<ObservedOwnerLease, S
         });
     }
     let entry = matches[0];
-    let status = entry["status"]
-        .as_str()
-        .unwrap_or("unknown")
-        .trim()
-        .to_ascii_lowercase();
-    if matches!(
-        status.as_str(),
-        "closed"
-            | "crashed"
-            | "dead"
-            | "disconnected"
-            | "error"
-            | "exited"
-            | "failed"
-            | "retired"
-            | "terminated"
-            | "unreachable"
-            | "unresponsive"
-    ) {
+    if !entry.status.is_live() {
         return Err(format!("owner '{agent}' is terminal in the fresh snapshot"));
     }
-    let pane = entry["tmux_pane_id"]
-        .as_str()
-        .filter(|pane| pane.starts_with('%') && !pane.chars().any(char::is_whitespace))
+    let pane = entry
+        .tmux_pane_id
+        .as_deref()
         .ok_or_else(|| format!("owner '{agent}' has no valid tmux pane identity"))?;
     let output = Command::new("tmux")
         .args(["list-panes", "-a", "-F", "#{pane_id}\t#{pane_pid}"])

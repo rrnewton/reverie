@@ -341,6 +341,7 @@ make_fixture() {
   cp "$script_dir/check-worktree-registry.rs" "$fixture_root/scripts/"
   cp "$script_dir/worktree_registry.rs" "$fixture_root/scripts/"
   cp "$script_dir/agent-podman.rs" "$fixture_root/scripts/"
+  cp "$script_dir/agent_snapshot.rs" "$fixture_root/scripts/"
   cp "$suite_root/bin/podman" "$fixture_root/bin/podman"
   cp "$suite_root/bin/slot-owner-authority.py" \
     "$fixture_root/scripts/slot-owner-authority.py"
@@ -2002,6 +2003,16 @@ assert_target_retained live-owner
 # ORC snapshot, its exact tmux pane pid, and that pid's unified cgroup lease.
 # Even explicit user force cannot recycle while the bound lease is nonempty.
 make_fixture recorded-live-owner
+python3 - "$fixture_root/worktree-state.json" <<'PY'
+import json
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+state = json.loads(path.read_text())
+state["slots"]["recorded-live-owner"]["agents"][0]["tmux_pane_id"] = "%424242"
+path.write_text(json.dumps(state, indent=2, sort_keys=True) + "\n")
+PY
 cat >"$fixture_root/ignored/ci-hub/agent-snapshot.json" <<JSON
 {
   "schema_version": 1,
@@ -2009,11 +2020,11 @@ cat >"$fixture_root/ignored/ci-hub/agent-snapshot.json" <<JSON
   "agents": [{
     "name": "fixture-recorded-live-owner",
     "status": "working",
-    "tmux_pane_id": "%lease-recorded-live-owner"
+    "tmux_pane_id": "%424242"
   }]
 }
 JSON
-printf 'fixture-recorded-live-owner\t%%lease-recorded-live-owner\t424242\n' \
+printf 'fixture-recorded-live-owner\t%%424242\t424242\n' \
   >"$fixture_root/tmux-panes"
 mkdir -p \
   "$fixture_root/proc/424242" \
@@ -2029,7 +2040,7 @@ printf 'DG_AGENT_NAME=fixture-recorded-live-owner\0' \
 if run_release_force recorded-live-owner; then
   fail 'exact live recorded-owner lease authorized worktree deletion'
 fi
-grep -Fq "recorded owner 'fixture-recorded-live-owner' remains live in pane %lease-recorded-live-owner" "$output" \
+grep -Fq "recorded owner 'fixture-recorded-live-owner' remains live in pane %424242" "$output" \
   || fail 'live recorded owner did not bind to its exact pane and cgroup lease'
 grep -Fq 'cgroup /agent.slice/fixture-recorded-live-owner.scope, members=1' "$output" \
   || fail 'live recorded owner refusal omitted its nonempty cgroup lease'

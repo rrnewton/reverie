@@ -41,6 +41,7 @@ make_fixture() {
   cp "$script_dir/check-worktree-registry.rs" "$fixture_root/scripts/"
   cp "$script_dir/worktree_registry.rs" "$fixture_root/scripts/"
   cp "$script_dir/agent-podman.rs" "$fixture_root/scripts/"
+  cp "$script_dir/agent_snapshot.rs" "$fixture_root/scripts/"
   cp "$suite_root/podman" "$fixture_root/bin/podman"
   printf 'unrelated survives\n' >"$fixture_root/unrelated/sentinel"
 

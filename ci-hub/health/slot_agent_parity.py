@@ -49,6 +49,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
 
 import residue_sweep  # noqa: E402
+import agent_snapshot as agent_snapshot_contract  # noqa: E402
 from worktree_registry import RegistrySchemaError, read_registry  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -86,31 +87,43 @@ def live_agents_from_fleet() -> set[str]:
 
 
 def live_agents_from_snapshot(path: Path, max_age_secs: int, now: float) -> set[str]:
+    """Read the same live/terminal decision as every Rust snapshot consumer.
+
+    This used to count every named row as live. Measured against the current
+    snapshot, six ``unreachable`` rows inflated the denominator from 12 to 18
+    and hid the unowned ``cloudlint`` and ``cloudrecover`` slots. The shared
+    status contract makes those rows terminal here just as they already were
+    to allocation, release, container reconciliation, and active-work.
+    """
     try:
-        doc = json.loads(path.read_text())
-    except (OSError, json.JSONDecodeError) as exc:
+        doc = agent_snapshot_contract.parse_snapshot_bytes(path.read_bytes())
+    except (OSError, agent_snapshot_contract.AgentSnapshotSchemaError) as exc:
         raise ParityUnavailable(f"cannot read agent snapshot {path}: {exc}") from exc
-    captured_at = doc.get("captured_at")
-    if not isinstance(captured_at, (int, float)):
-        raise ParityUnavailable(f"{path} has no numeric captured_at")
+    captured_at = float(doc["captured_at"])
     age = now - float(captured_at)
+    if age < 0:
+        raise ParityUnavailable(
+            f"agent snapshot {path} is from the future by {-age:.1f}s"
+        )
     if age > max_age_secs:
         raise ParityUnavailable(
             f"agent snapshot {path} is {age / 60:.1f} min old, older than the "
             f"{max_age_secs / 60:.1f} min bound ({age / max_age_secs:.0f} ticks); "
             "refusing to judge parity against a fleet that has moved on"
         )
-    agents = doc.get("agents")
-    if not isinstance(agents, list):
-        raise ParityUnavailable(f"{path} agents is not a list")
-    names = {
-        str(a.get("name") or a.get("agent") or "")
-        for a in agents
-        if isinstance(a, dict)
-    }
-    names.discard("")
+    agents = doc["agents"]
+    try:
+        names = {
+            a["name"]
+            for a in agents
+            if agent_snapshot_contract.status_semantics(a["status"]).live
+        }
+    except agent_snapshot_contract.AgentSnapshotSchemaError as exc:
+        raise ParityUnavailable(
+            f"cannot classify agent snapshot status from {path}: {exc}"
+        ) from exc
     if not names:
-        raise ParityUnavailable(f"{path} yielded no agent identities")
+        raise ParityUnavailable(f"{path} yielded no live agent identities")
     return names
 
 

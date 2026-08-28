@@ -59,6 +59,19 @@ The production readers are `allocate-worktree.rs`, `release-worktree.rs`,
 `owner_sidecar` and `coordinator_lease` remain separately versioned artifacts;
 the registry type preserves them without claiming their schemas.
 
+`scripts/agent_snapshot.rs` separately owns the schema-1 ORC agent snapshot
+entry fields used by this repository and the exhaustive meaning of every
+accepted agent status. The two producers are `operational_health.py` and
+`agent-container-reconcile-bridge.rs`. Its production readers are
+`allocate-worktree.rs`, `release-worktree.rs`, `agent-podman.rs`,
+`operational_health.py`, and the optional snapshot path in
+`slot_agent_parity.py`; Python reaches the Rust contract through
+`ci-hub/lib/agent_snapshot.py`. These readers still ask different questions
+(owner binding, release authority, container lifetime, task claims, and slot
+parity), but none may independently decide whether a serialized status is live.
+An unknown status refuses by name instead of entering a denominator under a
+reader-specific default.
+
 Before moving, removing, or reclaiming any slot, prove from the running system
 that no live agent process uses it. The presence or absence of a handoff is not
 a liveness check: moving a live slot breaks the session's hook paths.

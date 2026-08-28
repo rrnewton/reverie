@@ -13,6 +13,10 @@
 //! serde_json = "1"
 //! ```
 
+#[allow(dead_code)]
+#[path = "agent_snapshot.rs"]
+mod agent_snapshot;
+
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -1426,14 +1430,11 @@ fn release_audit(
 }
 
 fn load_live_agents(path: &Path) -> Result<BTreeMap<String, String>> {
-    let raw = fs::read_to_string(path).map_err(|source| AppError::Io {
+    let raw = fs::read(path).map_err(|source| AppError::Io {
         context: format!("read agent snapshot {}", path.display()),
         source,
     })?;
-    let value: Value = serde_json::from_str(&raw).map_err(|source| AppError::Json {
-        context: format!("parse agent snapshot {}", path.display()),
-        source,
-    })?;
+    let snapshot = agent_snapshot::AgentSnapshot::parse(&raw).map_err(AppError::Message)?;
     // ⚠️ A FILE THAT EXISTS AND PARSES READS AS FRESH, AND THAT IS THE WHOLE
     // HAZARD HERE. The envelope form carries `captured_at` and was age-checked;
     // the BARE-ARRAY form set `captured_at = None` and the check below was
@@ -1448,60 +1449,20 @@ fn load_live_agents(path: &Path) -> Result<BTreeMap<String, String>> {
     // container. The bare-array form is not otherwise supported and never had a
     // producer -- `_persist_agent_snapshot` in
     // `ci-hub/health/operational_health.py` always writes the envelope.
-    let agents = if let Some(object) = value.as_object() {
-        let captured_at = object
-            .get("captured_at")
-            .and_then(Value::as_f64)
-            .ok_or_else(|| AppError::Message("agent snapshot has no captured_at".to_string()))?;
-        let age = now_secs().saturating_sub(captured_at.max(0.0) as u64);
-        if age > SNAPSHOT_MAX_AGE_SECS {
-            return Err(AppError::Message(format!(
-                "agent snapshot is stale: age={age}s max={SNAPSHOT_MAX_AGE_SECS}s"
-            )));
-        }
-        object.get("agents").cloned().unwrap_or(Value::Null)
-    } else {
-        return Err(AppError::Message(
-            "agent snapshot has no captured_at (bare array): refusing rather than              treating an undated census as fresh -- this decides which agents are              absent, and reconcile --apply removes their containers"
-                .to_string(),
-        ));
-    };
-    let array = agents
-        .as_array()
-        .ok_or_else(|| AppError::Message("agent snapshot is not an array".to_string()))?;
-    let terminal: BTreeSet<&str> = [
-        "closed",
-        "crashed",
-        "dead",
-        "disconnected",
-        "error",
-        "exited",
-        "failed",
-        "retired",
-        "terminated",
-        "unreachable",
-        "unresponsive",
-    ]
-    .into_iter()
-    .collect();
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|source| AppError::Message(format!("read system clock: {source}")))?
+        .as_secs_f64();
+    snapshot
+        .ensure_fresh(now, SNAPSHOT_MAX_AGE_SECS as f64)
+        .map_err(AppError::Message)?;
     let mut live = BTreeMap::new();
-    for agent in array {
-        let Some(object) = agent.as_object() else {
-            continue;
-        };
-        let name = object.get("name").and_then(Value::as_str).unwrap_or("");
-        let status = object
-            .get("status")
-            .and_then(Value::as_str)
-            .unwrap_or("unknown")
-            .to_ascii_lowercase();
-        if !name.is_empty() && !terminal.contains(status.as_str()) {
-            let pane = object
-                .get("tmux_pane_id")
-                .and_then(Value::as_str)
-                .unwrap_or("")
-                .to_string();
-            live.insert(name.to_string(), pane);
+    for agent in &snapshot.agents {
+        if agent.status.is_live() {
+            live.insert(
+                agent.name.clone(),
+                agent.tmux_pane_id.clone().unwrap_or_default(),
+            );
         }
     }
     // ⚠️ EMPTY IS NOT STALE, AND THE STALENESS GUARD ABOVE DOES NOT COVER IT.
@@ -1536,8 +1497,12 @@ fn load_live_agents(path: &Path) -> Result<BTreeMap<String, String>> {
              terminal): refusing rather than reading an empty census as \"every owner \
              is gone\" -- this decides which agents are absent, and reconcile --apply \
              removes their containers",
-            array.len(),
-            if array.len() == 1 { "y" } else { "ies" }
+            snapshot.agents.len(),
+            if snapshot.agents.len() == 1 {
+                "y"
+            } else {
+                "ies"
+            }
         )));
     }
     Ok(live)

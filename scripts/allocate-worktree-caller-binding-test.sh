@@ -107,6 +107,7 @@ build_fixture() { # <allocator-source>
   chmod +x "$root/tree/scripts/allocate-worktree.rs"
   cp "$script_dir/check-worktree-registry.rs" "$root/tree/scripts/"
   cp "$script_dir/worktree_registry.rs" "$root/tree/scripts/"
+  cp "$script_dir/agent_snapshot.rs" "$root/tree/scripts/"
   cp "$script_dir/slot-owner-authority.py" "$root/tree/scripts/"
   cp "$script_dir/../ci-hub/lib/worktree_registry.py" "$root/tree/ci-hub/lib/"
   git -C "$root/tree" init -q -b main
