@@ -201,10 +201,26 @@ def frozen_result_path(root: Path, unit: str) -> Path:
 
 
 def validate_checkout_parent(root: Path) -> Path:
-    """Return the one parent for disposable validation checkouts and caches."""
+    """Return the parent for current-main checkouts and per-run caches."""
     candidate = (root / "worktrees" / "validate").resolve()
     candidate.mkdir(parents=True, exist_ok=True)
     return require_guest_visible_root(candidate, role="validation checkout parent")
+
+
+def frozen_checkout_parent(root: Path) -> Path:
+    """Return a guest-visible checkout parent outside the dev-hermit boundary.
+
+    Hermit's product front door accepts canonical current-main validation. A
+    frozen run instead holds ``frozen-validate`` authority and writes an
+    explicitly non-canonical result. Keeping its disposable checkout outside
+    dev-hermit prevents the product front door from mistaking that deliberate
+    distinction for an unadmitted direct invocation.
+    """
+    candidate = (root.parent / f".{root.name}-frozen-validate").resolve()
+    if candidate == root or root in candidate.parents:
+        raise ValueError("frozen validation checkout parent must be outside dev-hermit")
+    candidate.mkdir(parents=True, exist_ok=True)
+    return require_guest_visible_root(candidate, role="frozen validation checkout parent")
 
 
 def current_main_for_frozen_validate(
@@ -1097,13 +1113,18 @@ def cleanup_recorded_checkout(
     if not isinstance(raw_checkout, str):
         return False, [], "run record has no checkout path"
     checkout = Path(raw_checkout).resolve()
-    parent = validate_checkout_parent(root)
+    parents = [validate_checkout_parent(root)]
+    if record.get("admission") == FROZEN_RESULT_ADMISSION:
+        # Accept the short-lived in-boundary location too, so interrupted
+        # frozen runs made between 2ad960917 and this repair remain sweepable.
+        parents.insert(0, frozen_checkout_parent(root))
     temporary = record.get("temporary_checkout")
     if temporary is False:
         return False, [], None
-    if checkout.parent != parent or not checkout.name.startswith("validate-fresh-"):
+    if checkout.parent not in parents or not checkout.name.startswith("validate-fresh-"):
         if temporary is True:
-            return False, [], "temporary checkout is outside worktrees/validate"
+            expected = " or ".join(str(parent) for parent in parents)
+            return False, [], f"temporary checkout is outside {expected}"
         return False, [], None
     if not checkout.exists():
         return False, [], None
@@ -2641,11 +2662,16 @@ def main(
             checkout = source_checkout
         else:
             # DEFAULT: validate the COMMIT, not the tree that claims to be at it.
+            checkout_parent = (
+                frozen_checkout_parent(root.resolve())
+                if args.frozen_validate
+                else validate_checkout_parent(root.resolve())
+            )
             fresh_checkout = prepare_fresh_checkout(
                 source_checkout,
                 args.target,
                 run=run,
-                parent=validate_checkout_parent(root.resolve()),
+                parent=checkout_parent,
                 repo=repo,
                 independent_refs=args.frozen_validate,
             )

@@ -547,12 +547,86 @@ class StartUnitTest(unittest.TestCase):
             [
                 {
                     "checkout": str(checkout),
-                    "reason": "temporary checkout is outside worktrees/validate",
+                    "reason": f"temporary checkout is outside {self.root / 'worktrees' / 'validate'}",
                 }
             ],
             report["retained"],
         )
         self.assertTrue(checkout.is_dir())
+
+    def test_sweep_completed_removes_frozen_checkout_outside_dev_hermit(self) -> None:
+        fresh = start_unit.frozen_checkout_parent(self.root) / "validate-fresh-frozen"
+        (fresh / ".git").mkdir(parents=True)
+        self.fake.fresh = fresh
+        record_path = self.root / "ignored/validate/runs/validate-frozen-sweep.json"
+        start_unit.run_registry.write_record(
+            record_path,
+            {
+                "schema_version": 1,
+                "unit": "validate-frozen-sweep.service",
+                "checkout": str(fresh),
+                "source_checkout": str(self.checkout),
+                "temporary_checkout": True,
+                "admission": start_unit.FROZEN_RESULT_ADMISSION,
+                "repo": "rrnewton/hermit",
+                "state": "completed",
+                "exit_code": 0,
+                "final_validate_status": "PASSED",
+            },
+        )
+
+        out = io.StringIO()
+        with mock.patch.object(
+            start_unit, "path_may_have_live_process", return_value=False
+        ), contextlib.redirect_stdout(out):
+            rc = start_unit.main(
+                ["--sweep-completed", "--json"],
+                run=self.fake,
+                environment=self.environment,
+                root=self.root,
+            )
+
+        self.assertEqual(0, rc)
+        report = json.loads(out.getvalue())
+        self.assertEqual([str(fresh)], report["removed"])
+        self.assertFalse(fresh.exists())
+
+    def test_sweep_completed_removes_frozen_checkout_from_short_lived_location(self) -> None:
+        fresh = self.root / "worktrees/validate/validate-fresh-frozen-old"
+        (fresh / ".git").mkdir(parents=True)
+        self.fake.fresh = fresh
+        record_path = self.root / "ignored/validate/runs/validate-frozen-old-sweep.json"
+        start_unit.run_registry.write_record(
+            record_path,
+            {
+                "schema_version": 1,
+                "unit": "validate-frozen-old-sweep.service",
+                "checkout": str(fresh),
+                "source_checkout": str(self.checkout),
+                "temporary_checkout": True,
+                "admission": start_unit.FROZEN_RESULT_ADMISSION,
+                "repo": "rrnewton/hermit",
+                "state": "completed",
+                "exit_code": 75,
+                "final_validate_status": "COULD_NOT_RUN",
+            },
+        )
+
+        out = io.StringIO()
+        with mock.patch.object(
+            start_unit, "path_may_have_live_process", return_value=False
+        ), contextlib.redirect_stdout(out):
+            rc = start_unit.main(
+                ["--sweep-completed", "--json"],
+                run=self.fake,
+                environment=self.environment,
+                root=self.root,
+            )
+
+        self.assertEqual(0, rc)
+        report = json.loads(out.getvalue())
+        self.assertEqual([str(fresh)], report["removed"])
+        self.assertFalse(fresh.exists())
 
     def test_sweep_completed_retains_when_unit_and_terminal_record_are_absent(self) -> None:
         fresh = self.root / "worktrees/validate/validate-fresh-running"
@@ -915,11 +989,16 @@ class StartUnitTest(unittest.TestCase):
             (
                 index
                 for index, command in enumerate(self.fake.commands)
-                if command[:2] == ["git", "clone"] and "--shared" in command
+                if command[:2] == ["git", "clone"]
             ),
             None,
         )
         self.assertIsNotNone(clone_index, "a frozen checkout needs independent refs")
+        self.assertNotIn(
+            "--shared",
+            self.fake.commands[clone_index],
+            "the frozen checkout must not borrow an object store hidden by the pinned root",
+        )
         self.assertIn(
             [
                 "git",
@@ -950,9 +1029,12 @@ class StartUnitTest(unittest.TestCase):
         self.assertFalse(record["target_contains_current_main_before_launch"])
         self.assertFalse(record["qualifying_receipt"])
         self.assertEqual(self.fake.current_main, record["current_main_before_launch"])
-        self.assertEqual(
-            self.root / "worktrees" / "validate",
-            Path(record["checkout"]).parent,
+        frozen_parent = start_unit.frozen_checkout_parent(self.root)
+        self.assertEqual(frozen_parent, Path(record["checkout"]).parent)
+        self.assertNotIn(
+            self.root,
+            Path(record["checkout"]).parents,
+            "a frozen checkout inside dev-hermit triggers the canonical product front door, which correctly rejects frozen-validate authority",
         )
 
         result_path = Path(record["result_record"])
