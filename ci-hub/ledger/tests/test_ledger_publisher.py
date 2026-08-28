@@ -349,10 +349,7 @@ def test_invalid_event_is_refused_before_it_reaches_shared_history(tmp_path, rem
     with pytest.raises(publisher.PublishRefused) as exc:
         publisher.publish(clone, spool_dir)
     assert "fqdn-host" in str(exc.value)
-    assert list(spool_dir.glob("*.jsonl")), (
-        "a refused batch stays physically spooled even though the typed reader "
-        "correctly refuses to interpret it"
-    )
+    assert publisher.spooled(spool_dir), "a refused batch stays spooled, not silently dropped"
 
 
 # --------------------------------------------------------------- publish + ancestry
