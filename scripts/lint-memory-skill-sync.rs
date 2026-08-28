@@ -24,6 +24,7 @@
 //! Usage:
 //!   scripts/lint-memory-skill-sync.rs            # lint, human report
 //!   scripts/lint-memory-skill-sync.rs --quiet    # only print problems + summary
+//!   scripts/lint-memory-skill-sync.rs --gate     # stable key=value result
 use std::path::{Path, PathBuf};
 
 const SKILL_DIR: &str = ".claude/skills";
@@ -34,6 +35,7 @@ lint-memory-skill-sync.rs — verify repository-owned coordinator skill structur
 USAGE:
   scripts/lint-memory-skill-sync.rs            lint and print a human report
   scripts/lint-memory-skill-sync.rs --quiet    print only problems and the summary
+  scripts/lint-memory-skill-sync.rs --gate     print stable key=value fields for a consumer
   scripts/lint-memory-skill-sync.rs -h|--help  show this help and exit (no side effects)
   scripts/lint-memory-skill-sync.rs --version  print version and exit (no side effects)
 
@@ -51,7 +53,8 @@ fn main() {
         println!("lint-memory-skill-sync.rs 1.0");
         return;
     }
-    let quiet = args.iter().any(|a| a == "--quiet");
+    let gate = args.iter().any(|a| a == "--gate");
+    let quiet = gate || args.iter().any(|a| a == "--quiet");
     let root = find_root();
     let memory_dir = memory_dir(&root);
     let skill_dir = root.join(SKILL_DIR);
@@ -223,6 +226,34 @@ fn main() {
                 "LOCAL {rel}: {n} local memories claim this repository skill"
             )),
         }
+    }
+
+    if gate {
+        println!(
+            "state={}",
+            if problems.is_empty() { "ok" } else { "problems" }
+        );
+        println!(
+            "summary={} authoritative repository skill problem(s); {} optional warning(s)",
+            problems.len(),
+            warnings.len()
+        );
+        println!("active_skills={}", active_skills.len());
+        println!("mapped_memories={}", core.len());
+        println!("in_sync={ok}");
+        println!("problems={}", problems.len());
+        println!("warnings={}", warnings.len());
+        if !problems.is_empty() {
+            println!(
+                "detail={}",
+                problems
+                    .iter()
+                    .map(|problem| problem.lines().collect::<Vec<_>>().join(" "))
+                    .collect::<Vec<_>>()
+                    .join(" | ")
+            );
+        }
+        std::process::exit(if problems.is_empty() { 0 } else { 1 });
     }
 
     println!();

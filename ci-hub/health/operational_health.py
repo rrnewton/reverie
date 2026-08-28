@@ -1692,15 +1692,32 @@ def merge_gate_authority_gate(
     return 1
 
 
-def _scan_fields(stdout: str) -> dict[str, str]:
+def _gate_fields(
+    stdout: str, *, required: set[str], allowed: set[str]
+) -> dict[str, str]:
+    """Read one owned key=value report without inventing missing values."""
     fields: dict[str, str] = {}
     for line in stdout.splitlines():
-        if "=" in line and not line.startswith((" ", "\t")):
-            key, _, value = line.partition("=")
-            key = key.strip()
-            if key in {"state", "summary", "contradictions", "drift"}:
-                fields.setdefault(key, value.strip())
+        if "=" not in line or line.startswith((" ", "\t")):
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip()
+        if key not in allowed:
+            raise RuntimeError(f"gate-report-has-unknown-field:{key}")
+        if key in fields:
+            raise RuntimeError(f"gate-report-has-duplicate-field:{key}")
+        fields[key] = value.strip()
+    missing = sorted(required - fields.keys())
+    if missing:
+        raise RuntimeError("gate-report-is-missing-field:" + ",".join(missing))
     return fields
+
+
+def _gate_count(fields: Mapping[str, str], field: str) -> int:
+    value = fields[field]
+    if not value.isdecimal():
+        raise RuntimeError(f"gate-report-has-invalid-{field}:{value!r}")
+    return int(value)
 
 
 def memory_skill_sync_gate() -> int:
@@ -1710,7 +1727,7 @@ def memory_skill_sync_gate() -> int:
     contradictions in those skills; local-memory absence or drift never makes
     machine-local state authoritative. Both tools are report-only.
     """
-    lint_rc, lint_out, lint_err = _run_tool([str(MEMORY_SKILL_LINTER), "--quiet"])
+    lint_rc, lint_out, lint_err = _run_tool([str(MEMORY_SKILL_LINTER), "--gate"])
     scan_rc, scan_out, scan_err = _run_tool([str(MEMORY_SKILL_SCANNER), "--gate"])
 
     # A checker that cannot even run means drift detection is DOWN -> alert.
@@ -1721,22 +1738,70 @@ def memory_skill_sync_gate() -> int:
         _emit(
             {
                 "state": "error",
-                "problems": 0,
-                "contradictions": 0,
+                "problems": "unknown",
+                "contradictions": "unknown",
                 "summary": f"memory-skill-{which}-unrunnable: {detail} (is rust-script installed?)",
             }
         )
         return 1
 
-    problems = 0
-    match = re.search(r"problems:\s*(\d+)", lint_out)
-    if match:
-        problems = int(match.group(1))
-    elif lint_rc != 0:
-        problems = 1  # linter failed but count unparsed
-
-    scan = _scan_fields(scan_out)
-    contradictions = int(scan.get("contradictions", "0") or "0")
+    try:
+        lint = _gate_fields(
+            lint_out,
+            required={
+                "state",
+                "summary",
+                "active_skills",
+                "mapped_memories",
+                "in_sync",
+                "problems",
+                "warnings",
+            },
+            allowed={
+                "state",
+                "summary",
+                "active_skills",
+                "mapped_memories",
+                "in_sync",
+                "problems",
+                "warnings",
+                "detail",
+            },
+        )
+        scan = _gate_fields(
+            scan_out,
+            required={"state", "summary", "contradictions", "drift"},
+            allowed={"state", "summary", "contradictions", "drift"},
+        )
+        problems = _gate_count(lint, "problems")
+        contradictions = _gate_count(scan, "contradictions")
+        _gate_count(lint, "active_skills")
+        _gate_count(lint, "mapped_memories")
+        _gate_count(lint, "in_sync")
+        _gate_count(lint, "warnings")
+        _gate_count(scan, "drift")
+        if lint["state"] not in {"ok", "problems"}:
+            raise RuntimeError(f"gate-report-has-invalid-state:{lint['state']!r}")
+        if scan["state"] not in {"ok", "contradiction"}:
+            raise RuntimeError(f"gate-report-has-invalid-state:{scan['state']!r}")
+        if (lint["state"] == "ok") != (problems == 0):
+            raise RuntimeError("memory-skill-linter-state-disagrees-with-count")
+        if (scan["state"] == "ok") != (contradictions == 0):
+            raise RuntimeError("memory-skill-scanner-state-disagrees-with-count")
+        if lint_rc not in {0, 1} or (lint_rc == 0) != (lint["state"] == "ok"):
+            raise RuntimeError("memory-skill-linter-exit-disagrees-with-report")
+        if scan_rc not in {0, 1} or (scan_rc == 0) != (scan["state"] == "ok"):
+            raise RuntimeError("memory-skill-scanner-exit-disagrees-with-report")
+    except RuntimeError as error:
+        _emit(
+            {
+                "state": "error",
+                "problems": "unknown",
+                "contradictions": "unknown",
+                "summary": str(error),
+            }
+        )
+        return 1
 
     healthy = lint_rc == 0 and scan_rc == 0 and problems == 0 and contradictions == 0
     if healthy:
@@ -1760,11 +1825,8 @@ def memory_skill_sync_gate() -> int:
     # would leak phantom fields and clobber state/summary. Packing it into one
     # collapsed value keeps embedded '=' safe (partition splits on the first only).
     detail_lines: list[str] = []
-    if lint_rc != 0:
-        for line in lint_out.splitlines():
-            stripped = line.strip()
-            if stripped and not stripped.startswith("OK "):
-                detail_lines.append(f"[lint] {stripped}")
+    if lint_rc != 0 and lint.get("detail"):
+        detail_lines.append(f"[lint] {lint['detail']}")
     for line in scan_out.splitlines():
         stripped = line.strip()
         # keep the human report; drop the scanner's own key=value gate fields.

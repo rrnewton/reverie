@@ -1128,8 +1128,9 @@ class OperationalHealthTest(unittest.TestCase):
         """A stock Codex/CI host has no Claude memory directory by design."""
         lint = (
             0,
-            "active skills: 41  mapped memories: 0  in-sync: 0  "
-            "problems: 0  warnings: 1\n",
+            "state=ok\nsummary=0 authoritative repository skill problem(s); "
+            "1 optional warning(s)\nactive_skills=41\nmapped_memories=0\n"
+            "in_sync=0\nproblems=0\nwarnings=1\n",
             "",
         )
         scan = (
@@ -1150,7 +1151,12 @@ class OperationalHealthTest(unittest.TestCase):
         self.assertIn("contradictions=0", output)
 
     def test_memory_gate_still_refuses_repository_skill_contradictions(self) -> None:
-        lint = (0, "problems: 0\n", "")
+        lint = (
+            0,
+            "state=ok\nsummary=clean\nactive_skills=41\nmapped_memories=0\n"
+            "in_sync=0\nproblems=0\nwarnings=0\n",
+            "",
+        )
         scan = (
             1,
             "state=contradiction\nsummary=one repository contradiction\n"
@@ -1167,6 +1173,73 @@ class OperationalHealthTest(unittest.TestCase):
         self.assertIn("state=contradiction", output)
         self.assertIn("contradictions=1", output)
         self.assertIn("ACTION: reconcile repository skill", output)
+
+    def test_memory_gate_refuses_a_missing_count_by_name(self) -> None:
+        lint = (
+            0,
+            "state=ok\nsummary=clean\nactive_skills=41\nmapped_memories=0\n"
+            "in_sync=0\nwarnings=0\n",
+            "",
+        )
+        scan = (
+            0,
+            "state=ok\nsummary=clean\ncontradictions=0\ndrift=0\n",
+            "",
+        )
+        with mock.patch.object(
+            operational_health,
+            "_run_tool",
+            side_effect=[lint, scan],
+        ):
+            result, output = self.capture(operational_health.memory_skill_sync_gate)
+        self.assertEqual(result, 1)
+        self.assertIn("state=error", output)
+        self.assertIn("gate-report-is-missing-field:problems", output)
+        self.assertIn("problems=unknown", output)
+
+    def test_memory_gate_refuses_exit_and_report_disagreement(self) -> None:
+        lint = (
+            1,
+            "state=ok\nsummary=clean\nactive_skills=41\nmapped_memories=0\n"
+            "in_sync=0\nproblems=0\nwarnings=0\n",
+            "",
+        )
+        scan = (
+            0,
+            "state=ok\nsummary=clean\ncontradictions=0\ndrift=0\n",
+            "",
+        )
+        with mock.patch.object(
+            operational_health,
+            "_run_tool",
+            side_effect=[lint, scan],
+        ):
+            result, output = self.capture(operational_health.memory_skill_sync_gate)
+        self.assertEqual(result, 1)
+        self.assertIn("state=error", output)
+        self.assertIn("memory-skill-linter-exit-disagrees-with-report", output)
+
+    def test_memory_gate_refuses_state_and_count_disagreement(self) -> None:
+        lint = (
+            1,
+            "state=problems\nsummary=broken\nactive_skills=41\n"
+            "mapped_memories=0\nin_sync=0\nproblems=0\nwarnings=0\n",
+            "",
+        )
+        scan = (
+            0,
+            "state=ok\nsummary=clean\ncontradictions=0\ndrift=0\n",
+            "",
+        )
+        with mock.patch.object(
+            operational_health,
+            "_run_tool",
+            side_effect=[lint, scan],
+        ):
+            result, output = self.capture(operational_health.memory_skill_sync_gate)
+        self.assertEqual(result, 1)
+        self.assertIn("state=error", output)
+        self.assertIn("memory-skill-linter-state-disagrees-with-count", output)
 
 
 if __name__ == "__main__":
