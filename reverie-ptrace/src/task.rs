@@ -21,6 +21,7 @@ use std::path::PathBuf;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
+use std::sync::OnceLock as StdOnceLock;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
@@ -65,6 +66,7 @@ use safeptrace::Running;
 use safeptrace::Stopped;
 use safeptrace::Wait;
 use tokio::sync::Mutex;
+use tokio::sync::Notify;
 use tokio::sync::broadcast;
 use tokio::sync::mpsc;
 use tokio::sync::oneshot;
@@ -82,6 +84,7 @@ use crate::error::LiteinstActivationFailureReason;
 use crate::error::LiteinstActivationOperation;
 use crate::error::LiteinstActivationStage;
 use crate::error::TraceResultExt;
+use crate::error::liteinst_activation_failure_reason;
 use crate::gdbstub::BreakpointType;
 use crate::gdbstub::CoreRegs;
 use crate::gdbstub::GdbRequest;
@@ -530,9 +533,36 @@ pub(crate) struct LiteinstRuntimeConfig {
     pub(crate) syscall_marker: u64,
     pub(crate) newborn_tracees: Arc<StdMutex<HashMap<Pid, NewbornTracee>>>,
     pub(crate) held_root_stop: Arc<StdMutex<Option<HeldRootStop>>>,
+    /// Records a fail-closed LiteInst refusal raised by any task.
+    ///
+    /// A non-root task's error cannot reach the root's cleanup guard, so
+    /// without this the session could finish "successfully" after a child was
+    /// released untraced. The root consults it before reporting success.
+    pub(crate) session_failure: Arc<StdMutex<Option<String>>>,
+    /// Wakes the root task as soon as a non-root refusal records the shared
+    /// failure. The root may otherwise remain blocked in a guest wait for the
+    /// refused child and never return control to the session cleanup guard.
+    pub(crate) session_failure_changed: Arc<Notify>,
+    /// Set once the guest has created a second task.
+    ///
+    /// Hook installation is single-task-only (see `maybe_install_liteinst_site`).
+    pub(crate) multi_task: Arc<AtomicBool>,
+    /// TID of the session's root tracee, published once the guest is spawned.
+    ///
+    /// The root-stop lease and its cleanup guard are owned by exactly this
+    /// TID. A forked child is its own thread-group leader, so the
+    /// `tid == pid` shape cannot distinguish it from the root.
+    pub(crate) root_tid: Arc<StdOnceLock<Pid>>,
     pub(crate) instrumentation_stats: Option<Arc<StdMutex<LiteinstInstrumentationStats>>>,
     #[cfg(test)]
     pub(crate) fail_preinit: bool,
+    /// Synthesises a fail-closed error at the new-task boundary.
+    ///
+    /// Production no longer refuses task creation, so the cleanup guard's
+    /// whole-group reaping needs an explicit trigger that still produces a
+    /// multi-task tree at the moment of failure.
+    #[cfg(test)]
+    pub(crate) fail_new_task: bool,
     #[cfg(test)]
     pub(crate) pause_new_task: Option<mpsc::UnboundedSender<Pid>>,
     #[cfg(test)]
@@ -580,7 +610,6 @@ pub(crate) enum RootStopPause {
 struct LiteinstRootStopArmer {
     root_tid: Pid,
     held_root_stop: Arc<StdMutex<Option<HeldRootStop>>>,
-    newborn_tracees: Arc<StdMutex<HashMap<Pid, NewbornTracee>>>,
 }
 
 impl LiteinstRootStopArmer {
@@ -588,26 +617,12 @@ impl LiteinstRootStopArmer {
         if task.pid() != self.root_tid {
             return Ok(());
         }
-        if let Event::NewChild(op, child) = event {
-            self.newborn_tracees
-                .lock()
-                .unwrap()
-                .entry(child.pid())
-                .or_insert_with(|| NewbornTracee::from_event(task.pid(), *op, child));
-        }
         HeldRootStop::arm_empty(&self.held_root_stop, task, event)
     }
 
     fn ensure(&self, task: &Stopped, event: &Event) -> Result<(), TraceError> {
         if task.pid() != self.root_tid {
             return Ok(());
-        }
-        if let Event::NewChild(op, child) = event {
-            self.newborn_tracees
-                .lock()
-                .unwrap()
-                .entry(child.pid())
-                .or_insert_with(|| NewbornTracee::from_event(task.pid(), *op, child));
         }
         HeldRootStop::ensure_current(&self.held_root_stop, task, event)
     }
@@ -697,6 +712,17 @@ fn is_liteinst_mapping_syscall(nr: Sysno) -> bool {
         nr,
         // AUTONOMOUS-BOT-IMPLEMENTED
         Sysno::mmap | Sysno::munmap | Sysno::mremap | Sysno::mprotect | Sysno::pkey_mprotect
+    )
+}
+
+/// Syscalls whose return lands in two tasks at once.
+///
+/// The kernel starts the new task at the instruction following the `syscall`,
+/// so the site must still decode as the original instruction stream there.
+fn is_task_creating_syscall(nr: Sysno) -> bool {
+    matches!(
+        nr,
+        Sysno::clone | Sysno::clone3 | Sysno::fork | Sysno::vfork
     )
 }
 
@@ -2598,7 +2624,16 @@ impl<L: Tool + 'static> TracedTask<L> {
             | LiteinstRuntimePhase::Waiting
             | LiteinstRuntimePhase::Bootstrap => LiteinstActivationStage::PreReady,
         };
-        self.liteinst_failure = Some(LiteinstActivationFailure::new(stage, reason, error));
+        let failure = LiteinstActivationFailure::new(stage, reason, error);
+        if let Some(runtime) = self.global_state.liteinst_runtime.clone() {
+            let mut slot = runtime.session_failure.lock().unwrap();
+            if slot.is_none() {
+                *slot = Some(format!("tracee {}: {failure}", self.tid()));
+                drop(slot);
+                runtime.session_failure_changed.notify_waiters();
+            }
+        }
+        self.liteinst_failure = Some(failure);
     }
 
     fn reject_liteinst_activation_signal(
@@ -3733,8 +3768,27 @@ impl<L: Tool + 'static> TracedTask<L> {
     async fn maybe_install_liteinst_site(
         &mut self,
         task: Stopped,
+        nr: Sysno,
     ) -> Result<(Stopped, bool, Option<u64>), Error> {
         if self.global_state.liteinst_runtime.is_none() {
+            return Ok((task, false, None));
+        }
+        // A task-creating syscall must not be patched. Patching overwrites the
+        // instruction bytes AT the site, and the new task is resumed with the
+        // register context captured before the injection -- i.e. with `rip`
+        // pointing just past the original two-byte `syscall`. Once the site
+        // holds a longer relocating jump, that address is no longer an
+        // instruction boundary and the child executes rubbish. Leaving these
+        // sites unpatched costs nothing: they are entered once per task.
+        if is_task_creating_syscall(nr) {
+            return Ok((task, false, None));
+        }
+        if self
+            .global_state
+            .liteinst_runtime
+            .as_ref()
+            .is_some_and(|runtime| runtime.multi_task.load(Ordering::Acquire))
+        {
             return Ok((task, false, None));
         }
         let regs = task.getregs()?;
@@ -3899,7 +3953,7 @@ impl<L: Tool + 'static> TracedTask<L> {
         }
         self.record_retained_liteinst_fallback_hit(&task);
         let (installed_task, syscall_already_skipped, liteinst_resume_rip) =
-            self.maybe_install_liteinst_site(task).await?;
+            self.maybe_install_liteinst_site(task, nr).await?;
         task = installed_task;
         #[cfg(target_arch = "x86_64")]
         let is_legacy_vsyscall = !syscall_already_skipped
@@ -4016,33 +4070,38 @@ impl<L: Tool + 'static> TracedTask<L> {
         .await
     }
 
+    /// The LiteInst config, but only when this task is the session root.
+    ///
+    /// The root-stop lease and the fail-closed cleanup guard are owned by the
+    /// single spawned root TID. `tid == pid` is NOT that predicate: a forked
+    /// child is its own thread-group leader and would otherwise take the
+    /// root's shared lease, whose `root_tid` check then rejects every
+    /// transition with `EINVAL`.
+    fn liteinst_root_runtime(&self, task: &Stopped) -> Option<&LiteinstRuntimeConfig> {
+        let runtime = self.liteinst_root_config()?;
+        (Some(&task.pid()) == runtime.root_tid.get()).then_some(runtime)
+    }
+
+    /// The LiteInst config, but only when *this task* is the session root.
+    fn liteinst_root_config(&self) -> Option<&LiteinstRuntimeConfig> {
+        let runtime = self.global_state.liteinst_runtime.as_ref()?;
+        (Some(&self.tid()) == runtime.root_tid.get()).then_some(runtime)
+    }
+
     fn liteinst_root_stop_slot(
         &self,
         task: &Stopped,
     ) -> Option<Arc<StdMutex<Option<HeldRootStop>>>> {
-        (task.pid() == self.pid() && self.tid() == self.pid())
-            .then(|| {
-                self.global_state
-                    .liteinst_runtime
-                    .as_ref()
-                    .map(|runtime| Arc::clone(&runtime.held_root_stop))
-            })
-            .flatten()
+        self.liteinst_root_runtime(task)
+            .map(|runtime| Arc::clone(&runtime.held_root_stop))
     }
 
     fn liteinst_root_stop_armer(&self, task: &Stopped) -> Option<LiteinstRootStopArmer> {
-        (task.pid() == self.pid() && self.tid() == self.pid())
-            .then(|| {
-                self.global_state
-                    .liteinst_runtime
-                    .as_ref()
-                    .map(|runtime| LiteinstRootStopArmer {
-                        root_tid: self.pid(),
-                        held_root_stop: Arc::clone(&runtime.held_root_stop),
-                        newborn_tracees: Arc::clone(&runtime.newborn_tracees),
-                    })
-            })
-            .flatten()
+        let runtime = self.liteinst_root_runtime(task)?;
+        Some(LiteinstRootStopArmer {
+            root_tid: task.pid(),
+            held_root_stop: Arc::clone(&runtime.held_root_stop),
+        })
     }
 
     pub(crate) fn arm_liteinst_root_stop(&self, task: &Stopped, event: &Event) {
@@ -4054,14 +4113,37 @@ impl<L: Tool + 'static> TracedTask<L> {
             .expect("rearmed an undisarmed or mismatched root stop lease");
     }
 
+    /// Gives the cleanup guard ownership of a newborn tracee's wait statuses.
+    ///
+    /// This is deliberately NOT root-scoped, unlike the root-stop lease: the
+    /// guard has to be able to reap the whole descendant tree, and
+    /// `handle_new_task` requires the entry to exist for every child it sees.
+    /// A grandchild is reported to its own non-root parent, so scoping this to
+    /// the root leaves it unregistered.
+    fn register_liteinst_newborn(&self, task: &Stopped, event: &Event) {
+        let Some(runtime) = self.global_state.liteinst_runtime.as_ref() else {
+            return;
+        };
+        if let Event::NewChild(op, child) = event {
+            runtime
+                .newborn_tracees
+                .lock()
+                .unwrap()
+                .entry(child.pid())
+                .or_insert_with(|| NewbornTracee::from_event(task.pid(), *op, child));
+        }
+    }
+
     fn arm_liteinst_wait(&self, wait: &Wait) {
         if let Wait::Stopped(task, event) = wait {
+            self.register_liteinst_newborn(task, event);
             self.arm_liteinst_root_stop(task, event);
         }
     }
 
     fn ensure_liteinst_wait(&self, wait: &Wait) {
         if let Wait::Stopped(task, event) = wait {
+            self.register_liteinst_newborn(task, event);
             let Some(armer) = self.liteinst_root_stop_armer(task) else {
                 return;
             };
@@ -4130,25 +4212,88 @@ impl<L: Tool + 'static> TracedTask<L> {
         context: Option<libc::user_regs_struct>,
         child_context: Option<libc::user_regs_struct>,
     ) -> Result<Wait, TraceError> {
-        if let Some(runtime) = self.global_state.liteinst_runtime.as_ref() {
+        if let Some(runtime) = self.global_state.liteinst_runtime.clone() {
+            runtime.multi_task.store(true, Ordering::Release);
             let newborn_tracees = Arc::clone(&runtime.newborn_tracees);
             let child_pid = child.pid();
-            if let Some(error) = newborn_tracees
-                .lock()
-                .unwrap()
-                .get(&child_pid)
-                .expect("stored child event ownership must remain registered")
-                .registration_error()
-            {
+            let registration_error = {
+                let newborns = newborn_tracees.lock().unwrap();
+                let Some(newborn) = newborns.get(&child_pid) else {
+                    drop(newborns);
+                    self.record_liteinst_failure(
+                        LiteinstActivationFailureReason::NewbornRegistration,
+                        Error::runtime(
+                            self.tid(),
+                            "register LiteInst newborn tracee",
+                            format!("newborn {child_pid} event ownership is absent"),
+                        ),
+                    );
+                    return Err(Errno::ESRCH.into());
+                };
+                newborn.registration_error()
+            };
+            if let Some(error) = registration_error {
+                self.record_liteinst_failure(
+                    LiteinstActivationFailureReason::NewbornRegistration,
+                    Error::runtime(
+                        self.tid(),
+                        "register LiteInst newborn tracee",
+                        format!("newborn {child_pid} registration failed: {error}"),
+                    ),
+                );
                 return Err(error.into());
             }
-            let child_identity = TraceeIdentity::capture_event_child(child_pid, parent.pid(), op)?;
-            newborn_tracees
-                .lock()
-                .unwrap()
-                .get_mut(&child_pid)
-                .expect("stored child event ownership must remain registered")
-                .set_identity(child_identity);
+            let child_identity =
+                match TraceeIdentity::capture_event_child(child_pid, parent.pid(), op) {
+                    Ok(identity) => identity,
+                    Err(error) => {
+                        self.record_liteinst_failure(
+                            LiteinstActivationFailureReason::NewbornIdentity,
+                            Error::runtime(
+                                self.tid(),
+                                "capture LiteInst newborn identity",
+                                format!("newborn {child_pid} identity capture failed: {error}"),
+                            ),
+                        );
+                        return Err(error.into());
+                    }
+                };
+            if op == ChildOp::Vfork {
+                // A vfork child borrows the parent's memory and suspends it
+                // until the child execs or exits. Bind and terminate this exact
+                // child generation before returning the refusal; otherwise the
+                // parent remains kernel-frozen and orderly task cleanup cannot
+                // reach the session-level guard.
+                self.record_liteinst_failure(
+                    LiteinstActivationFailureReason::VforkUnsupported,
+                    Error::runtime(
+                        self.tid(),
+                        "refuse vfork under the LiteInst hybrid",
+                        format!(
+                            "vfork child of {} refused: exec cannot preserve the preload runtime",
+                            parent.pid()
+                        ),
+                    ),
+                );
+            }
+            {
+                let mut newborns = newborn_tracees.lock().unwrap();
+                let Some(newborn) = newborns.get_mut(&child_pid) else {
+                    drop(newborns);
+                    self.record_liteinst_failure(
+                        LiteinstActivationFailureReason::NewbornRegistration,
+                        Error::runtime(
+                            self.tid(),
+                            "store LiteInst newborn identity",
+                            format!(
+                                "newborn {child_pid} event ownership disappeared before identity storage"
+                            ),
+                        ),
+                    );
+                    return Err(Errno::ESRCH.into());
+                };
+                newborn.set_identity(child_identity);
+            }
             #[cfg(test)]
             if let Some(sender) = self
                 .global_state
@@ -4166,13 +4311,25 @@ impl<L: Tool + 'static> TracedTask<L> {
                     future::pending::<()>().await;
                 }
             }
-            // This first hybrid slice intentionally has one tracee and one
-            // thread: its patch-helper stack and bootstrap phase are
-            // process-global. Root cleanup owns both process children and
-            // CLONE_THREAD TIDs after this fail-closed error.
-            // It signals only group-leader pidfds and drains every bound
-            // notifier generation on the ptracer thread.
-            return Err(Errno::ENOTSUPP.into());
+            #[cfg(test)]
+            if runtime.fail_new_task {
+                return Err(Errno::ENOTSUPP.into());
+            }
+            if op == ChildOp::Vfork {
+                let termination = newborn_tracees
+                    .lock()
+                    .unwrap()
+                    .get(&child_pid)
+                    .ok_or(Errno::ESRCH)?
+                    .terminate_vfork_child();
+                termination?;
+                return Err(Errno::ENOTSUPP.into());
+            }
+            // Any other new task proceeds under the ordinary ptrace lifecycle.
+            // Root cleanup still owns every process child and CLONE_THREAD TID
+            // if a later LiteInst failure does fail closed: it signals only
+            // group-leader pidfds and drains every bound notifier generation on
+            // the ptracer thread.
         }
         tracing::debug!(
             "[scheduler] handling fork from parent {} to child {}: {:?}",
@@ -4207,6 +4364,14 @@ impl<L: Tool + 'static> TracedTask<L> {
         let child_restore_context = child_context.or(context);
 
         let id = child.pid();
+        // Under the LiteInst runtime the cleanup guard registers every newborn
+        // with the notifier the moment its parent reports `Event::NewChild`, so
+        // the "notifier is not yet aware of this PID" precondition for the raw
+        // `wait` below no longer holds: the notifier worker would consume the
+        // initial stop and the raw `wait` would block forever. Take the initial
+        // stop from the notifier instead, which is the same state by a
+        // registered route.
+        let notifier_owns_initial_stop = self.global_state.liteinst_runtime.is_some();
 
         // A panic anywhere in this body would otherwise be caught by tokio's
         // task harness and silently wedge the whole run; see
@@ -4222,7 +4387,12 @@ impl<L: Tool + 'static> TracedTask<L> {
             //
             // NOTE: It is okay to call `wait` instead of the async `next_state`
             // here because the notifier is not yet aware of the new process.
-            let (child, event) = match child.wait() {
+            let initial_stop = if notifier_owns_initial_stop {
+                child.next_state().await
+            } else {
+                child.wait()
+            };
+            let (child, event) = match initial_stop {
                 Ok(wait) => wait.assume_stopped(),
                 Err(TraceError::Died(zombie)) => {
                     let exit_status = match zombie.reap().await {
@@ -4282,18 +4452,31 @@ impl<L: Tool + 'static> TracedTask<L> {
             }
 
             let tid = child.pid();
-            let detach_held_root_stop = (child_task.tid() == child_task.pid())
-                .then(|| {
-                    child_task
-                        .global_state
-                        .liteinst_runtime
-                        .as_ref()
-                        .map(|runtime| Arc::clone(&runtime.held_root_stop))
-                })
-                .flatten();
+            let detach_held_root_stop = child_task
+                .liteinst_root_config()
+                .map(|runtime| Arc::clone(&runtime.held_root_stop));
             match child_task.run(child).await {
                 Err(err) => {
                     tracing::error!("Error in tracee tid {}: {}", tid, err);
+
+                    if matches!(
+                        liteinst_activation_failure_reason(&err),
+                        Some(
+                            LiteinstActivationFailureReason::PostStartExec
+                                | LiteinstActivationFailureReason::VforkUnsupported
+                        )
+                    ) {
+                        // LiteInst's session-level cleanup guard owns the exact
+                        // pidfd and notifier generation for every descendant.
+                        // Detaching a refused post-start exec lets its guest
+                        // parent reap it before the notifier can acknowledge
+                        // the terminal status. A failed vfork parent is instead
+                        // kernel-frozen behind its child. In both cases return
+                        // to the root: its shared failure slot rejects the
+                        // session, and the outer guard terminates and reaps the
+                        // entire bound tree without transferring wait ownership.
+                        return ExitStatus::Exited(1);
+                    }
 
                     // We assume the tracee is stopped since this error likely
                     // originated from the tool itself when the tracee is
@@ -4406,7 +4589,14 @@ impl<L: Tool + 'static> TracedTask<L> {
                 .and_then(|wait| self.check_swbreak(wait))
                 .await
         } else {
-            Ok(self.step_stopped(parent, None)?.next_state().await?)
+            // This nested parent step consumes the root-stop lease, so the
+            // resulting stop has to re-arm it before returning to a caller
+            // that will transition the root again. Every other nested handler
+            // does the same; this one only looks new because the whole
+            // new-task path used to be unreachable under LiteInst.
+            let wait = self.step_stopped(parent, None)?.next_state().await?;
+            self.arm_liteinst_wait(&wait);
+            Ok(wait)
         }
     }
 
@@ -4479,9 +4669,20 @@ impl<L: Tool + 'static> TracedTask<L> {
             // and get their final exit code. Normally, when not running under
             // ptrace, orphans are adopted by the init process who should
             // automatically reap them by waiting for the final exit status.
-            let (orphans, _) = {
-                let mut child_procs = self.child_procs.lock().await;
-                child_procs.deref_mut().await
+            let orphans = if self.global_state.liteinst_runtime.is_some() {
+                // A LiteInst session follows process children as part of one
+                // fail-closed instrumentation domain. Do not let root exit end
+                // the LocalSet while a child can still publish a session
+                // failure: join those exact followed tasks first.
+                let children = self.child_procs.lock().await.take_inner();
+                future::join_all(children).await;
+                Children::new()
+            } else {
+                let (orphans, _) = {
+                    let mut child_procs = self.child_procs.lock().await;
+                    child_procs.deref_mut().await
+                };
+                orphans
             };
 
             for orphan in orphans.into_inner() {
@@ -4672,15 +4873,34 @@ impl<L: Tool + 'static> TracedTask<L> {
     /// Drive a single guest thread to completion. Returns the final exit code
     /// when that guest thread exits.
     pub async fn run(mut self, child: Stopped) -> Result<ExitStatus, reverie::Error> {
+        // Only the session root owns the shared root-stop lease; a child task
+        // that superseded it would strand the root's cleanup handoff.
         let exit_held_root_stop = self
-            .global_state
-            .liteinst_runtime
-            .as_ref()
+            .liteinst_root_config()
             .map(|runtime| Arc::clone(&runtime.held_root_stop));
+        let root_session_failure = self.liteinst_root_config().map(|runtime| {
+            (
+                Arc::clone(&runtime.session_failure),
+                Arc::clone(&runtime.session_failure_changed),
+            )
+        });
         let outcome = {
             let exit_event = child.exit_event().fuse();
             let run_loop = self.run_loop(child).fuse();
-            futures::pin_mut!(exit_event, run_loop);
+            let session_failure = async move {
+                let Some((failure, changed)) = root_session_failure else {
+                    return future::pending::<String>().await;
+                };
+                loop {
+                    let notified = changed.notified();
+                    if let Some(message) = failure.lock().unwrap().clone() {
+                        return message;
+                    }
+                    notified.await;
+                }
+            }
+            .fuse();
+            futures::pin_mut!(exit_event, run_loop, session_failure);
 
             futures::select_biased! {
                 task = exit_event => match task {
@@ -4692,19 +4912,16 @@ impl<L: Tool + 'static> TracedTask<L> {
                     }
                     Err(err) => handle_internal_error(err.into()).await,
                 },
+                message = session_failure => Err(anyhow::anyhow!(
+                    "LiteInst session failed closed in a non-root task: {message}"
+                ).into()),
                 exit_status = run_loop => exit_status,
             }
         };
-        let exit_status = match (outcome, self.liteinst_failure.take()) {
-            (_, Some(original)) => return Err(anyhow::Error::new(original).into()),
-            (Ok(exit_status), None) => exit_status,
-            (Err(error), _) => return Err(error),
-        };
-        if self.global_state.liteinst_runtime.is_some() {
+        if outcome.is_ok() && self.global_state.liteinst_runtime.is_some() {
             let phase = self.liteinst_runtime.lock().unwrap().phase;
             if phase != LiteinstRuntimePhase::Ready {
-                return Err(anyhow::Error::new(LiteinstActivationFailure::new(
-                    LiteinstActivationStage::PreReady,
+                self.record_liteinst_failure(
                     LiteinstActivationFailureReason::TerminatedBeforeHandshake,
                     Error::runtime(
                         self.tid(),
@@ -4713,16 +4930,108 @@ impl<L: Tool + 'static> TracedTask<L> {
                             "tracee terminated before the required preload handshake completed (phase {phase:?})"
                         ),
                     ),
-                ))
-                .into());
+                );
             }
+        }
+        let local_failure_reason = self
+            .liteinst_failure
+            .as_ref()
+            .map(LiteinstActivationFailure::reason);
+        let (exit_status, failure) = match (outcome, self.liteinst_failure.take()) {
+            (_, Some(original)) => (
+                None,
+                Some(reverie::Error::from(anyhow::Error::new(original))),
+            ),
+            (Ok(exit_status), None) => (Some(exit_status), None),
+            (Err(error), _) => (None, Some(error)),
+        };
+        if let Some(failure) = failure {
+            let vfork_failure =
+                local_failure_reason == Some(LiteinstActivationFailureReason::VforkUnsupported);
+            if self.global_state.liteinst_runtime.is_some()
+                && self.liteinst_root_config().is_none()
+                && !vfork_failure
+            {
+                let tid = self.tid();
+                if let Err(error) = self.tool_exit(ExitStatus::Exited(1)).await {
+                    tracing::warn!(
+                        %tid,
+                        %error,
+                        "tool exit hook failed while releasing a failed LiteInst task"
+                    );
+                }
+            }
+            // A vfork parent returns directly to the session-level cleanup
+            // guard because orderly per-task exit cannot advance while the
+            // kernel has it frozen behind that child. Other non-root failures
+            // complete the existing tool-exit bookkeeping. The root failure
+            // notification allows cleanup to proceed independently if that
+            // bookkeeping blocks on a tracee which has not exited yet.
+            return Err(failure);
+        }
+        let exit_status = exit_status.expect("a task without a failure has an exit status");
+        let root_session_failure = self.liteinst_root_config().and_then(|_| {
+            self.global_state.liteinst_runtime.as_ref().map(|runtime| {
+                (
+                    Arc::clone(&runtime.session_failure),
+                    Arc::clone(&runtime.session_failure_changed),
+                )
+            })
+        });
+
+        // A fail-closed refusal raised by a non-root task cannot reach the
+        // root's cleanup guard, and that task's tracee was released so the rest
+        // of the guest could finish. Refuse to report success over it.
+        if let Some(message) = root_session_failure
+            .as_ref()
+            .and_then(|(slot, _)| slot.lock().unwrap().clone())
+        {
+            return Err(anyhow::anyhow!(
+                "LiteInst session failed closed in a non-root task: {message}"
+            )
+            .into());
         }
 
         if let Some(stats) = &self.global_state.backend_stats {
             stats.record_tracee_exit();
         }
         log_guest_exit(self.tid(), self.pid(), exit_status);
-        self.tool_exit(exit_status).await?;
+
+        let tool_exit = self.tool_exit(exit_status).fuse();
+        if let Some((failure, changed)) = root_session_failure.as_ref() {
+            let session_failure = async {
+                loop {
+                    let notified = changed.notified();
+                    if let Some(message) = failure.lock().unwrap().clone() {
+                        return message;
+                    }
+                    notified.await;
+                }
+            }
+            .fuse();
+            futures::pin_mut!(tool_exit, session_failure);
+            futures::select_biased! {
+                message = session_failure => return Err(anyhow::anyhow!(
+                    "LiteInst session failed closed in a non-root task: {message}"
+                ).into()),
+                result = tool_exit => result?,
+            }
+        } else {
+            tool_exit.await?;
+        }
+
+        // A child can fail while the root is joining it in `tool_exit`, after
+        // the fast-path check above.  The join is the final ordering boundary:
+        // re-read the shared slot before allowing the root's success to escape.
+        if let Some(message) = root_session_failure
+            .as_ref()
+            .and_then(|(slot, _)| slot.lock().unwrap().clone())
+        {
+            return Err(anyhow::anyhow!(
+                "LiteInst session failed closed in a non-root task: {message}"
+            )
+            .into());
+        }
 
         Ok(exit_status)
     }

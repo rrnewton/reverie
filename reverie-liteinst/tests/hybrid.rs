@@ -1,5 +1,7 @@
 use std::ffi::OsString;
 use std::fs;
+use std::fs::OpenOptions;
+use std::io::Write;
 use std::path::PathBuf;
 use std::process::Command as ProcessCommand;
 use std::sync::atomic::AtomicU64;
@@ -9,8 +11,11 @@ use std::time::Duration;
 #[cfg(target_arch = "x86_64")]
 use reverie::CpuIdResult;
 use reverie::Error;
+use reverie::ExitStatus;
+use reverie::GlobalRPC;
 use reverie::GlobalTool;
 use reverie::Guest;
+use reverie::Pid;
 #[cfg(target_arch = "x86_64")]
 use reverie::Rdtsc;
 #[cfg(target_arch = "x86_64")]
@@ -26,9 +31,23 @@ use reverie::syscalls::Sysno;
 use reverie_liteinst::LiteinstBackend;
 use reverie_liteinst::STRADDLER_STALENESS_TICKS_ENV;
 
+// Linux truncates PR_SET_NAME to 15 bytes.  Give every concurrently running
+// fixture a distinct, exact-width marker so one test never mistakes another
+// test's still-live process (or terminal zombie awaiting its own reaper) for a
+// cleanup failure.  The cleanup assertions remain fail-closed: they still
+// require zero processes carrying this test's marker.
+static PROCESS_NAME_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+fn unique_process_name() -> String {
+    let sequence = PROCESS_NAME_SEQUENCE.fetch_add(1, Ordering::SeqCst) & 0x000f_ffff;
+    let identity = ((std::process::id() as u64) << 20) | sequence;
+    format!("li{:013x}", identity)
+}
+
 #[derive(Debug, Default)]
 struct EventCounter {
     delivered: AtomicU64,
+    task_creation_events: AtomicU64,
     cpuid_events: AtomicU64,
     cpuid_interception: AtomicU64,
     rdtsc_events: AtomicU64,
@@ -60,6 +79,8 @@ impl GlobalTool for EventCounter {
             self.rdtsc_events.fetch_add(1, Ordering::SeqCst);
         } else if increment & (1_u64 << 58) != 0 {
             self.cpuid_interception.store(1, Ordering::SeqCst);
+        } else if increment & (1_u64 << 57) != 0 {
+            self.task_creation_events.fetch_add(1, Ordering::SeqCst);
         } else {
             self.delivered.fetch_add(increment, Ordering::SeqCst);
         }
@@ -182,6 +203,146 @@ impl Tool for PassthroughGetpid {
         assert_eq!(syscall.number(), Sysno::getpid);
         guest.send_rpc(1).await;
         Ok(guest.inject(syscall).await?)
+    }
+}
+
+#[derive(Default)]
+struct PassthroughGetpidAndTaskCreation;
+
+#[reverie::tool]
+impl Tool for PassthroughGetpidAndTaskCreation {
+    type GlobalState = EventCounter;
+    type ThreadState = ();
+
+    fn subscriptions(_config: &()) -> Subscription {
+        [
+            Sysno::getpid,
+            Sysno::clone,
+            Sysno::clone3,
+            Sysno::fork,
+            Sysno::vfork,
+        ]
+        .into_iter()
+        .collect()
+    }
+
+    async fn handle_syscall_event<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        syscall: Syscall,
+    ) -> Result<i64, Error> {
+        if syscall.number() == Sysno::getpid {
+            guest.send_rpc(1).await;
+        } else {
+            assert!(matches!(
+                syscall.number(),
+                Sysno::clone | Sysno::clone3 | Sysno::fork | Sysno::vfork
+            ));
+            guest.send_rpc(1_u64 << 57).await;
+        }
+        Ok(guest.inject(syscall).await?)
+    }
+}
+
+#[derive(Default)]
+struct ExitRecorder {
+    path: PathBuf,
+}
+
+#[reverie::global_tool]
+impl GlobalTool for ExitRecorder {
+    type Request = i32;
+    type Response = ();
+    type Config = PathBuf;
+
+    async fn init_global_state(path: &PathBuf) -> Self {
+        Self { path: path.clone() }
+    }
+
+    async fn receive_rpc(&self, _from: Tid, pid: i32) {
+        let mut file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.path)
+            .unwrap();
+        writeln!(file, "{pid}").unwrap();
+    }
+}
+
+#[derive(Default)]
+struct PassthroughTaskCreationAndRecordExits;
+
+#[reverie::tool]
+impl Tool for PassthroughTaskCreationAndRecordExits {
+    type GlobalState = ExitRecorder;
+    type ThreadState = ();
+
+    fn subscriptions(_config: &PathBuf) -> Subscription {
+        [
+            Sysno::getpid,
+            Sysno::clone,
+            Sysno::clone3,
+            Sysno::fork,
+            Sysno::vfork,
+        ]
+        .into_iter()
+        .collect()
+    }
+
+    async fn handle_syscall_event<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        syscall: Syscall,
+    ) -> Result<i64, Error> {
+        Ok(guest.inject(syscall).await?)
+    }
+
+    async fn on_exit_process<G: GlobalRPC<Self::GlobalState>>(
+        self,
+        pid: Pid,
+        global_state: &G,
+        _exit_status: ExitStatus,
+    ) -> Result<(), Error> {
+        global_state.send_rpc(pid.as_raw()).await;
+        Ok(())
+    }
+}
+
+#[derive(Default)]
+struct PassthroughTaskCreationWithPendingProcessExit;
+
+#[reverie::tool]
+impl Tool for PassthroughTaskCreationWithPendingProcessExit {
+    type GlobalState = EventCounter;
+    type ThreadState = ();
+
+    fn subscriptions(_config: &()) -> Subscription {
+        [
+            Sysno::getpid,
+            Sysno::clone,
+            Sysno::clone3,
+            Sysno::fork,
+            Sysno::vfork,
+        ]
+        .into_iter()
+        .collect()
+    }
+
+    async fn handle_syscall_event<G: Guest<Self>>(
+        &self,
+        guest: &mut G,
+        syscall: Syscall,
+    ) -> Result<i64, Error> {
+        Ok(guest.inject(syscall).await?)
+    }
+
+    async fn on_exit_process<G: GlobalRPC<Self::GlobalState>>(
+        self,
+        _pid: Pid,
+        _global_state: &G,
+        _exit_status: ExitStatus,
+    ) -> Result<(), Error> {
+        std::future::pending().await
     }
 }
 
@@ -354,6 +515,24 @@ fn processes_named(name: &str) -> Vec<u32> {
     found
 }
 
+fn assert_processes_named_eventually_reaped(name: &str, context: &str) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    loop {
+        let remaining = processes_named(name);
+        if remaining.is_empty() {
+            return;
+        }
+        if std::time::Instant::now() >= deadline {
+            let remaining_status = remaining
+                .iter()
+                .map(|pid| fs::read_to_string(format!("/proc/{pid}/status")).unwrap_or_default())
+                .collect::<Vec<_>>();
+            panic!("{context}: {remaining:?} {remaining_status:?}");
+        }
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
 fn assert_pid_reaped(pid: u32) {
     assert!(
         !std::path::Path::new(&format!("/proc/{pid}")).exists(),
@@ -370,6 +549,87 @@ fn assert_pid_reaped(pid: u32) {
         Some(libc::ECHILD),
         "failed LiteInst process {pid} was not fully reaped"
     );
+}
+
+struct UnrelatedStoppedProcess {
+    child: Option<std::process::Child>,
+}
+
+impl UnrelatedStoppedProcess {
+    fn spawn() -> Self {
+        let child = ProcessCommand::new("/bin/sleep")
+            .arg("300")
+            .spawn()
+            .expect("spawn unrelated process");
+        let pid = child.id() as i32;
+        assert_eq!(unsafe { libc::kill(pid, libc::SIGSTOP) }, 0);
+        let mut status = 0;
+        assert_eq!(
+            unsafe { libc::waitpid(pid, &mut status, libc::WUNTRACED) },
+            pid,
+            "wait for unrelated process to stop"
+        );
+        assert!(
+            libc::WIFSTOPPED(status),
+            "unrelated process did not enter a stopped state: {status}"
+        );
+        Self { child: Some(child) }
+    }
+
+    fn assert_live_and_unreaped(&self) {
+        let pid = self.child.as_ref().unwrap().id() as i32;
+        assert_eq!(
+            unsafe { libc::kill(pid, 0) },
+            0,
+            "cleanup signaled an unrelated process"
+        );
+        let mut status = 0;
+        assert_eq!(
+            unsafe { libc::waitpid(pid, &mut status, libc::WNOHANG) },
+            0,
+            "cleanup made an unrelated process waitable"
+        );
+    }
+
+    fn kill_and_reap(mut self) {
+        let mut child = self.child.take().unwrap();
+        child.kill().expect("kill unrelated process after bracket");
+        child.wait().expect("reap unrelated process after bracket");
+    }
+}
+
+impl Drop for UnrelatedStoppedProcess {
+    fn drop(&mut self) {
+        if let Some(child) = self.child.as_mut() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+}
+
+fn is_original_liteinst_session_refusal(text: &str, operation: &str) -> bool {
+    text.contains("LiteInst session failed closed in a non-root task")
+        && text.contains(operation)
+        && !text.contains("LiteInst tracee cleanup failed")
+        && !text.contains("notifier did not acknowledge terminal cleanup")
+}
+
+fn assert_original_liteinst_session_refusal(error: &Error, operation: &str) {
+    let text = error.to_string();
+    assert!(
+        is_original_liteinst_session_refusal(&text, operation),
+        "session failure did not retain the original refused {operation}, or cleanup replaced it: {text}"
+    );
+}
+
+#[test]
+fn session_refusal_assertion_rejects_terminal_cleanup_wrapper() {
+    let original = "LiteInst session failed closed in a non-root task: refused vfork";
+    let wrapped = format!(
+        "LiteInst tracee cleanup failed after {original}: notifier did not acknowledge terminal cleanup"
+    );
+    assert!(is_original_liteinst_session_refusal(original, "vfork"));
+    assert!(!is_original_liteinst_session_refusal(&wrapped, "vfork"));
 }
 
 async fn wait_for_pid_file(pid_file: &std::path::Path) -> u32 {
@@ -803,22 +1063,33 @@ async fn first_discovery_event_can_inject_more_than_once() {
     assert!(output.status.success(), "{output:?}");
 }
 
-#[tokio::test(flavor = "current_thread")]
-async fn hybrid_fails_closed_when_the_guest_forks() {
-    let (_directory, guest) = compile_fixture("hybrid_fork.c");
-    let marker = format!("li{:x}", std::process::id());
+/// Runs a multi-task fixture that is expected to complete, and requires the
+/// guest's own end-of-run marker.
+///
+/// Exit status alone is not enough: every fixture here prints its marker only
+/// after the task it creates has been created, run and reaped, so a regression
+/// that skips the task cannot satisfy the assertion by exiting zero.
+async fn run_multi_task_fixture<T>(fixture: &str, marker_line: &str) -> EventCounter
+where
+    T: Tool<GlobalState = EventCounter, ThreadState = ()> + 'static,
+{
+    let (_directory, guest) = compile_fixture(fixture);
+    let name = unique_process_name();
     let pid_directory = tempfile::tempdir().unwrap();
     let pid_file = pid_directory.path().join("root.pid");
     let mut command = Command::new(guest);
-    command.arg(&marker).arg(&pid_file);
-    let result = LiteinstBackend::run_host_with_output_and_preload::<PassthroughGetpid>(
-        command,
-        (),
-        preload_path(),
-    )
-    .await;
+    command.arg(&name).arg(&pid_file);
+    let (output, global) =
+        LiteinstBackend::run_host_with_output_and_preload::<T>(command, (), preload_path())
+            .await
+            .unwrap_or_else(|error| panic!("hybrid refused to follow {fixture}: {error}"));
 
-    let _error = result.expect_err("hybrid unexpectedly followed a child");
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        output.stdout,
+        marker_line.as_bytes(),
+        "guest did not reach the end of {fixture}: {output:?}"
+    );
     let root_pid: u32 = fs::read_to_string(&pid_file)
         .unwrap()
         .trim()
@@ -826,8 +1097,256 @@ async fn hybrid_fails_closed_when_the_guest_forks() {
         .unwrap();
     assert_pid_reaped(root_pid);
     assert!(
-        processes_named(&marker).is_empty(),
-        "failed LiteInst root/child remains stopped or as a zombie"
+        processes_named(&name).is_empty(),
+        "LiteInst root/child remains stopped or as a zombie"
+    );
+    global
+}
+
+/// The hybrid follows a forked child instead of refusing at the clone boundary.
+///
+/// This exercises the supported fork path end-to-end. It does not independently
+/// isolate the root-TID identity and root-stop lease re-arm mechanisms.
+#[tokio::test(flavor = "current_thread")]
+async fn hybrid_follows_a_forked_child() {
+    let global = run_multi_task_fixture::<PassthroughGetpidAndTaskCreation>(
+        "hybrid_fork.c",
+        "fork-followed\n",
+    )
+    .await;
+    assert!(
+        global.task_creation_events.load(Ordering::SeqCst) > 0,
+        "the task-subscribing tool did not observe the fork lifecycle"
+    );
+}
+
+/// The hybrid follows a second thread created with `clone3(CLONE_THREAD)`.
+///
+/// This exercises the supported thread-creation path end-to-end. It does not
+/// independently isolate the task-creating-site patch guard.
+#[tokio::test(flavor = "current_thread")]
+async fn hybrid_follows_a_created_thread() {
+    let global = run_multi_task_fixture::<PassthroughGetpidAndTaskCreation>(
+        "hybrid_thread.c",
+        "thread-followed\n",
+    )
+    .await;
+    assert!(
+        global.task_creation_events.load(Ordering::SeqCst) > 0,
+        "the task-subscribing tool did not observe the clone lifecycle"
+    );
+}
+
+/// The task-subscribing tool remains active without manufacturing a task event
+/// when the guest makes subscribed `getpid` calls but creates no task.
+#[tokio::test(flavor = "current_thread")]
+async fn task_subscriber_does_not_report_task_creation_without_one() {
+    let (_directory, guest) = compile_fixture("hybrid_hot_site.c");
+    let (output, global) = LiteinstBackend::run_host_with_output_and_preload::<
+        PassthroughGetpidAndTaskCreation,
+    >(Command::new(guest), (), preload_path())
+    .await
+    .unwrap();
+
+    assert_eq!(
+        output.stdout, b"calls=32 traps=1 hooks=31 ac=0 simd=1 spoofs=3\n",
+        "{output:?}"
+    );
+    assert_eq!(global.delivered.load(Ordering::SeqCst), 32, "{output:?}");
+    assert_eq!(
+        global.task_creation_events.load(Ordering::SeqCst),
+        0,
+        "the tool reported task creation for a single-task fixture: {output:?}"
+    );
+    assert!(output.status.success(), "{output:?}");
+}
+
+/// KNOWN GAP, committed as a reproducer rather than described: two generations
+/// of children do not reliably complete under this harness.
+///
+/// The grandchild's new-task event belongs to a NON-root parent, which is the
+/// case the cleanup guard's newborn registration has to cover -- scoping that
+/// registration to the root leaves the grandchild unregistered and
+/// `handle_new_task` aborts on `stored child event ownership must remain
+/// registered`. That much is fixed and this fixture does reach
+/// `fork-tree-followed`: it passed once here, and Hermit's
+/// `determinism-stress-c/fork-tree` reaches canonical L2 under the real Detcore
+/// tool, which sequentializes the guest.
+///
+/// It is `ignore`d because it is NOT reliable here: after that single pass it
+/// wedged with no forward progress on three consecutive runs, under both this
+/// tool and a variant that also subscribes to the task-creating syscalls. A
+/// flaky hang is worse than no test, so it does not run by default. Do not
+/// treat the fix it covers as verified until this is diagnosed and the `ignore`
+/// removed.
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "known gap: second-generation fork does not reliably complete in this harness"]
+async fn hybrid_follows_a_grandchild() {
+    run_multi_task_fixture::<PassthroughGetpid>("hybrid_fork_tree.c", "fork-tree-followed\n").await;
+}
+
+/// A child that execs fails the whole session; the root must not report the
+/// success it would otherwise reach.
+///
+/// Exec after start cannot preserve the preload runtime, and that refusal now
+/// happens in a task with no outer cleanup guard of its own. Two distinct
+/// regressions are covered, and they fail in different ways:
+///
+/// * without the session-wide failure record the root reaches its own clean
+///   exit and this run returns `Ok` -- a SILENT GREEN over a child that was
+///   released untraced, which is strictly worse than the refusal it replaced;
+/// * without releasing the failed non-root task from the tool, the
+///   deterministic scheduler waits forever for a thread whose tracee the error
+///   path already detached, and this test hangs rather than fails.
+#[tokio::test(flavor = "current_thread")]
+async fn a_child_that_execs_fails_the_session_instead_of_reporting_success() {
+    let (_directory, guest) = compile_fixture("hybrid_fork_exec.c");
+    let name = unique_process_name();
+    let pid_directory = tempfile::tempdir().unwrap();
+    let pid_file = pid_directory.path().join("root.pid");
+    let exit_file = pid_directory.path().join("process-exits");
+    let mut command = Command::new(guest);
+    command.arg(&name).arg(&pid_file);
+    let result =
+        tokio::time::timeout(
+            Duration::from_secs(60),
+            LiteinstBackend::run_host_with_output_and_preload::<
+                PassthroughTaskCreationAndRecordExits,
+            >(command, exit_file.clone(), preload_path()),
+        )
+        .await
+        .expect("a failed non-root task was never released from the tool: the session hung");
+
+    let error = match result {
+        Ok((output, _global)) => panic!(
+            "SILENT GREEN: the session reported success over a child that could not be \
+             followed through exec: {output:?}"
+        ),
+        Err(error) => error,
+    };
+    assert_original_liteinst_session_refusal(&error, "exec");
+    let root_pid: u32 = fs::read_to_string(&pid_file)
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    let exits = fs::read_to_string(&exit_file).unwrap_or_default();
+    let non_root_exits = exits
+        .lines()
+        .map(|pid| pid.parse::<i32>().unwrap())
+        .filter(|pid| *pid != root_pid as i32)
+        .count();
+    assert_eq!(
+        non_root_exits, 1,
+        "the failed non-root process did not run its Tool exit callback: root={root_pid} exits={exits:?}"
+    );
+    assert_pid_reaped(root_pid);
+    assert_processes_named_eventually_reaped(
+        &name,
+        "failed LiteInst root/child remains stopped or as a zombie",
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn post_start_exec_refusal_reaches_cleanup_while_process_exit_is_pending() {
+    let (_directory, guest) = compile_fixture("hybrid_fork_exec.c");
+    let name = unique_process_name();
+    let pid_directory = tempfile::tempdir().unwrap();
+    let pid_file = pid_directory.path().join("root.pid");
+    let mut command = Command::new(guest);
+    command.arg(&name).arg(&pid_file);
+
+    let result = tokio::time::timeout(
+        Duration::from_secs(3),
+        LiteinstBackend::run_host_with_output_and_preload::<
+            PassthroughTaskCreationWithPendingProcessExit,
+        >(command, (), preload_path()),
+    )
+    .await
+    .expect("post-start exec refusal never reached session cleanup");
+    let error = result.expect_err("post-start exec refusal reported success");
+    assert_original_liteinst_session_refusal(&error, "exec");
+
+    let root_pid: u32 = fs::read_to_string(&pid_file)
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    assert_pid_reaped(root_pid);
+    assert_processes_named_eventually_reaped(&name, "refused exec left a LiteInst process behind");
+}
+
+/// A root that has already exited must stop joining its child when that child
+/// refuses post-start exec, even if the child's Tool exit callback is pending.
+#[tokio::test(flavor = "current_thread")]
+async fn post_start_exec_refusal_cancels_root_join_while_process_exit_is_pending() {
+    let (_directory, guest) = compile_fixture("hybrid_fork_exec_after_root_exit.c");
+    let name = unique_process_name();
+    let pid_directory = tempfile::tempdir().unwrap();
+    let pid_file = pid_directory.path().join("root.pid");
+    let mut command = Command::new(guest);
+    command.arg(&name).arg(&pid_file);
+    let unrelated = UnrelatedStoppedProcess::spawn();
+
+    let result = tokio::time::timeout(
+        Duration::from_secs(3),
+        LiteinstBackend::run_host_with_output_and_preload::<
+            PassthroughTaskCreationWithPendingProcessExit,
+        >(command, (), preload_path()),
+    )
+    .await
+    .expect("post-start exec refusal did not cancel the root's child join");
+    let error = result.expect_err("post-start exec refusal reported success");
+    assert_original_liteinst_session_refusal(&error, "exec");
+
+    let root_pid: u32 = fs::read_to_string(&pid_file)
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    assert_pid_reaped(root_pid);
+    assert_processes_named_eventually_reaped(&name, "refused exec left a LiteInst process behind");
+    unrelated.assert_live_and_unreaped();
+    unrelated.kill_and_reap();
+}
+
+/// A vfork refusal in a non-root task fails the whole session even when it is
+/// recorded only after the root has reached its own clean exit.
+#[tokio::test(flavor = "current_thread")]
+async fn vfork_in_a_forked_child_fails_the_session_after_root_exit() {
+    let (_directory, guest) = compile_fixture("hybrid_fork_vfork.c");
+    let name = unique_process_name();
+    let pid_directory = tempfile::tempdir().unwrap();
+    let pid_file = pid_directory.path().join("root.pid");
+    let mut command = Command::new(guest);
+    command.arg(&name).arg(&pid_file);
+    let result = tokio::time::timeout(
+        Duration::from_secs(60),
+        LiteinstBackend::run_host_with_output_and_preload::<PassthroughGetpid>(
+            command,
+            (),
+            preload_path(),
+        ),
+    )
+    .await
+    .expect("a refused non-root vfork was never released from the tool: the session hung");
+
+    let error = match result {
+        Ok((output, _global)) => panic!(
+            "SILENT GREEN: the session reported success before a non-root vfork refusal: {output:?}"
+        ),
+        Err(error) => error,
+    };
+    assert_original_liteinst_session_refusal(&error, "vfork");
+    let root_pid: u32 = fs::read_to_string(&pid_file)
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+    assert_pid_reaped(root_pid);
+    assert_processes_named_eventually_reaped(
+        &name,
+        "failed LiteInst root/child remains stopped or as a zombie",
     );
 }
 

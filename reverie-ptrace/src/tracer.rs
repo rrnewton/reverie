@@ -25,7 +25,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::LazyLock;
 use std::sync::Mutex as StdMutex;
-#[cfg(test)]
+use std::sync::OnceLock as StdOnceLock;
 use std::sync::atomic::AtomicBool;
 #[cfg(test)]
 use std::sync::atomic::Ordering;
@@ -372,6 +372,40 @@ impl NewbornTracee {
     pub(crate) fn registration_error(&self) -> Option<Errno> {
         self.terminal.registration_error()
     }
+
+    pub(crate) fn terminate_vfork_child(&self) -> Result<(), TraceError> {
+        let identity = self.identity.as_ref().ok_or(Errno::ESRCH)?;
+        match identity.send_signal(Signal::SIGKILL) {
+            Ok(()) | Err(Errno::ESRCH) => {}
+            Err(error) => return Err(error.into()),
+        }
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            if self.terminal.wait(Duration::ZERO) {
+                return Ok(());
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            let Some(reservation) = self.terminal.reserve_pending_for_cleanup(remaining) else {
+                if self.terminal.wait(Duration::ZERO) {
+                    return Ok(());
+                }
+                return Err(Errno::ETIMEDOUT.into());
+            };
+            let state = reservation.decode()?;
+            let Wait::Stopped(stopped, _) = state else {
+                reservation.commit();
+                continue;
+            };
+            reservation.commit();
+            match stopped.resume(None) {
+                Ok(_) | Err(TraceError::Died(_)) | Err(TraceError::Errno(Errno::ESRCH)) => {
+                    return Ok(());
+                }
+                Err(error) => return Err(error),
+            }
+        }
+    }
 }
 
 impl TraceeIdentity {
@@ -558,6 +592,19 @@ struct RegisteredTraceeCleanup {
     identity: TraceeIdentity,
     terminal: TerminalCleanup,
     event_link: Option<EventChildLink>,
+}
+
+fn terminal_descendant_remains_owned(identity: &TraceeIdentity) -> bool {
+    if identity.is_our_tracee() {
+        return true;
+    }
+    let Some((_, parent_tgid, _)) = identity.parent else {
+        return false;
+    };
+    identity.same_process()
+        && tracee_snapshot(identity.tid)
+            .ok()
+            .is_some_and(|current| current.ppid == parent_tgid)
 }
 
 impl LiteinstTraceeCleanup {
@@ -791,7 +838,19 @@ impl LiteinstTraceeCleanup {
             return Ok(());
         }
 
-        self.freeze_root_generation()?;
+        if self.identity.same_process() {
+            self.freeze_root_generation()?;
+        } else {
+            // The exact root generation is already gone, so it cannot create
+            // another descendant. Drain any child event the notifier published
+            // before terminal acknowledgment and continue with the retained
+            // generation-bound descendants; trying to freeze a completed root
+            // would only collide with its consumed exit capability.
+            if let Some(terminal) = self.terminal.as_ref() {
+                self.capture_pending_children(terminal)?;
+            }
+            self.root_frozen = true;
+        }
         #[cfg(test)]
         if self
             .force_task_scan_once
@@ -857,7 +916,12 @@ impl LiteinstTraceeCleanup {
                     terminal_descendants.insert(pid, tracee.identity);
                 }
             }
-            terminal_descendants.retain(|_, identity| identity.same_process());
+            // Once the exact notifier generation is terminal, retain its proc
+            // identity only while it remains our tracee or its recorded parent
+            // still owns the zombie. After reparenting, waiting for another
+            // process to reap it cannot strengthen our cleanup proof and can
+            // never make progress here.
+            terminal_descendants.retain(|_, identity| terminal_descendant_remains_owned(identity));
             let root_absent = !self.identity.same_process();
             let newborns_empty = self.newborn_tracees.lock().unwrap().is_empty();
             if root_done
@@ -1708,15 +1772,27 @@ async fn run_task_tree<T: Tool + 'static>(
     root: TracedTask<T>,
     child: Stopped,
     orphanage: mpsc::Receiver<Child>,
+    liteinst_fail_closed: bool,
 ) -> Result<ExitStatus, Error> {
-    future::join(
-        // Run the root task to completion
-        root.run(child),
-        // ...and wait for all orphans simultaneously.
-        run_orphaned(orphanage),
-    )
-    .await
-    .0
+    let root = root.run(child);
+    let orphans = run_orphaned(orphanage);
+    futures::pin_mut!(root, orphans);
+    match future::select(root, orphans).await {
+        future::Either::Left((result, orphans)) => {
+            if result.is_ok() || !liteinst_fail_closed {
+                // A successful root, and every non-LiteInst backend, still
+                // owns orderly orphan completion.
+                orphans.await;
+            }
+            // A failed LiteInst root must return control to its session cleanup
+            // guard immediately. A failed descendant can retain an orphanage
+            // sender while its Tool exit callback is pending, and waiting for
+            // that channel to close would prevent the guard from terminating
+            // the exact tracee generations which make the callback pending.
+            result
+        }
+        future::Either::Right(((), root)) => root.await,
+    }
 }
 
 /// Helper function for everything after the child is spawned.
@@ -1761,6 +1837,7 @@ async fn postspawn<L: Tool + 'static>(
 
     let (orphan_sender, orphan_receiver) = mpsc::channel(1);
     let (daemon_kill, _) = broadcast::channel(1);
+    let liteinst_fail_closed = options.liteinst_runtime.is_some();
 
     // This is the root task, so there's no reason to make run its init routine
     // asynchronously, as there isn't any other work to do.
@@ -1777,7 +1854,12 @@ async fn postspawn<L: Tool + 'static>(
     tracer.arm_liteinst_root_stop(&child, &Event::Signal(Signal::SIGSTOP));
     child = tracer.tracee_preinit(child).await?;
 
-    let tracer = Box::pin(run_task_tree(tracer, child, orphan_receiver));
+    let tracer = Box::pin(run_task_tree(
+        tracer,
+        child,
+        orphan_receiver,
+        liteinst_fail_closed,
+    ));
     Ok(tracer)
 }
 
@@ -1931,7 +2013,12 @@ impl<T: Tool + 'static> TracerBuilder<T> {
     /// expected executable mapping. Distinct markers, exact return sites, and
     /// mapping generations reject accidental collisions; they are not a
     /// security boundary against arbitrary code already running in the tracee.
-    /// Dynamic mode currently fails closed if the tracee forks or adds a thread.
+    /// Dynamic mode follows threads and child processes under the ordinary
+    /// ptrace lifecycle, but hook installation is single-task only: the patch
+    /// helper runs on a process-global stack and the installer is not
+    /// re-entrant across tasks, so the hook set freezes at the first task
+    /// creation. It still fails closed on a vfork child and on an exec after
+    /// start, neither of which can preserve the preload runtime.
     // TODO-HUMAN-REVIEW(PR-270): Review dynamic LiteInst provenance API.
     pub fn liteinst_runtime(
         self,
@@ -1969,11 +2056,17 @@ impl<T: Tool + 'static> TracerBuilder<T> {
             syscall_marker,
             newborn_tracees: Arc::new(StdMutex::new(HashMap::new())),
             held_root_stop: Arc::new(StdMutex::new(None)),
+            root_tid: Arc::new(StdOnceLock::new()),
+            multi_task: Arc::new(AtomicBool::new(false)),
+            session_failure: Arc::new(StdMutex::new(None)),
+            session_failure_changed: Arc::new(tokio::sync::Notify::new()),
             instrumentation_stats: stats_request
                 .is_enabled()
                 .then(|| Arc::new(StdMutex::new(LiteinstInstrumentationStats::default()))),
             #[cfg(test)]
             fail_preinit: false,
+            #[cfg(test)]
+            fail_new_task: false,
             #[cfg(test)]
             pause_new_task: None,
             #[cfg(test)]
@@ -2018,6 +2111,15 @@ impl<T: Tool + 'static> TracerBuilder<T> {
             .as_mut()
             .expect("LiteInst runtime must be configured before preinit failure injection")
             .fail_preinit = true;
+        self
+    }
+
+    #[cfg(test)]
+    fn fail_liteinst_new_task_for_test(mut self) -> Self {
+        self.liteinst_runtime
+            .as_mut()
+            .expect("LiteInst runtime must be configured before new-task failure injection")
+            .fail_new_task = true;
         self
     }
 
@@ -2292,6 +2394,15 @@ impl<T: Tool + 'static> TracerBuilder<T> {
 
         let mut child = command.spawn().context("Failed to spawn tracee")?;
         let guest_pid = child.id();
+        if let Some(runtime) = self.liteinst_runtime.as_ref() {
+            // Publish the session root before any task can observe the config.
+            // Everything LiteInst-root-scoped keys off this exact TID rather
+            // than the `tid == pid` shape, which a forked child also has.
+            runtime
+                .root_tid
+                .set(guest_pid)
+                .expect("LiteInst root TID is published exactly once per spawn");
+        }
         let running_child = Running::new(guest_pid);
         let liteinst_newborn_tracees = self
             .liteinst_runtime
@@ -2615,6 +2726,41 @@ mod tests {
         }
     }
 
+    fn fork_paused_grandchild() -> (Pid, Pid, std::os::unix::net::UnixStream) {
+        let (mut control, mut child_control) =
+            std::os::unix::net::UnixStream::pair().expect("create parent control socket");
+        match unsafe { unistd::fork() }.expect("fork recorded parent") {
+            ForkResult::Child => {
+                drop(control);
+                match unsafe { unistd::fork() }.expect("fork retained descendant") {
+                    ForkResult::Child => loop {
+                        unsafe { libc::pause() };
+                    },
+                    ForkResult::Parent { child } => {
+                        child_control
+                            .write_all(&child.as_raw().to_ne_bytes())
+                            .expect("publish retained descendant pid");
+                        let mut release = [0];
+                        std::io::Read::read_exact(&mut child_control, &mut release)
+                            .expect("wait for recorded-parent release");
+                        unsafe { libc::_exit(0) };
+                    }
+                }
+            }
+            ForkResult::Parent { child } => {
+                drop(child_control);
+                let mut raw_pid = [0; std::mem::size_of::<i32>()];
+                std::io::Read::read_exact(&mut control, &mut raw_pid)
+                    .expect("read retained descendant pid");
+                (
+                    Pid::from(child),
+                    Pid::from_raw(i32::from_ne_bytes(raw_pid)),
+                    control,
+                )
+            }
+        }
+    }
+
     fn untraced_process_identity(pid: Pid) -> TraceeIdentity {
         let snapshot = tracee_snapshot(pid).expect("read child identity");
         let proc_dir = OpenOptions::new()
@@ -2646,6 +2792,16 @@ mod tests {
             -1
         );
         assert_eq!(Errno::last(), Errno::ECHILD);
+    }
+
+    fn assert_eventually_reaped(role: &str, pid: Pid) {
+        for _ in 0..2_000 {
+            if !std::path::Path::new(&format!("/proc/{pid}")).exists() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert_reaped(role, pid);
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -3604,12 +3760,138 @@ mod tests {
             !identity.is_our_tracee(),
             "untraced zombie became active tracee"
         );
+        assert!(
+            !terminal_descendant_remains_owned(&identity),
+            "terminal cleanup retained a zombie after its ptrace relationship ended"
+        );
 
         Running::new(pid).wait().expect("reap child");
         assert!(
             !identity.same_process(),
             "reaped child still matched identity"
         );
+    }
+
+    #[test]
+    fn terminal_descendant_retention_does_not_touch_an_untraced_process() {
+        let (traced_pid, stopped) = spawn_held_stop_child("terminal descendant retention child");
+        let traced_identity =
+            TraceeIdentity::open_root(traced_pid).expect("capture traced child identity");
+        assert!(
+            terminal_descendant_remains_owned(&traced_identity),
+            "cleanup dropped a live tracee"
+        );
+        let wait = stopped
+            .resume(None)
+            .expect("resume traced child")
+            .wait()
+            .expect("reap traced child");
+        assert_eq!(wait.assume_exited().1, ExitStatus::Exited(0));
+
+        let unrelated_pid = fork_paused_child();
+        let unrelated_identity = untraced_process_identity(unrelated_pid);
+        assert!(
+            !terminal_descendant_remains_owned(&unrelated_identity),
+            "cleanup treated an untraced process as its descendant"
+        );
+        assert_eq!(unsafe { libc::kill(unrelated_pid.as_raw(), 0) }, 0);
+        let mut status = 0;
+        assert_eq!(
+            unsafe { libc::waitpid(unrelated_pid.as_raw(), &mut status, libc::WNOHANG) },
+            0,
+            "retention check changed an unrelated process"
+        );
+
+        unsafe { libc::kill(unrelated_pid.as_raw(), libc::SIGKILL) };
+        Running::new(unrelated_pid)
+            .wait()
+            .expect("reap unrelated child");
+    }
+
+    #[test]
+    fn terminal_descendant_remains_owned_until_recorded_parent_exits() {
+        let (parent_pid, descendant_pid, mut control) = fork_paused_grandchild();
+        ptrace::attach(descendant_pid.into()).expect("attach retained descendant");
+        let (stopped, event) = Running::new(descendant_pid)
+            .wait()
+            .expect("wait for retained descendant attach")
+            .assume_stopped();
+        assert_eq!(event, Event::Signal(Signal::SIGSTOP));
+        let identity = TraceeIdentity::capture(
+            descendant_pid,
+            Some((parent_pid, Some(ChildOp::Fork))),
+            true,
+        )
+        .expect("capture production-shaped descendant identity");
+        stopped
+            .detach(None)
+            .expect("detach retained descendant after identity capture");
+
+        assert!(identity.same_process(), "descendant identity changed");
+        assert!(
+            !identity.is_our_tracee(),
+            "detached descendant still reports this process as tracer"
+        );
+        assert_eq!(
+            tracee_snapshot(descendant_pid)
+                .expect("read retained descendant parent")
+                .ppid,
+            parent_pid
+        );
+        let retained_while_parent_alive = terminal_descendant_remains_owned(&identity);
+
+        control.write_all(&[1]).expect("release recorded parent");
+        drop(control);
+        Running::new(parent_pid)
+            .wait()
+            .expect("reap recorded parent");
+        for _ in 0..2_000 {
+            if tracee_snapshot(descendant_pid).is_ok_and(|snapshot| snapshot.ppid != parent_pid) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert_ne!(
+            tracee_snapshot(descendant_pid)
+                .expect("read reparented descendant")
+                .ppid,
+            parent_pid,
+            "descendant did not leave its recorded parent"
+        );
+        let released_after_reparenting = !terminal_descendant_remains_owned(&identity);
+
+        identity
+            .send_signal(Signal::SIGKILL)
+            .expect("kill reparented descendant through pidfd");
+        for _ in 0..2_000 {
+            let mut status = 0;
+            let waited = unsafe {
+                libc::waitpid(
+                    descendant_pid.as_raw(),
+                    &mut status,
+                    libc::WNOHANG | libc::__WALL,
+                )
+            };
+            if waited == descendant_pid.as_raw()
+                || !std::path::Path::new(&format!("/proc/{descendant_pid}")).exists()
+            {
+                assert!(
+                    retained_while_parent_alive,
+                    "cleanup released a terminal descendant while its recorded parent still owned it"
+                );
+                assert!(
+                    released_after_reparenting,
+                    "cleanup retained a terminal descendant after reparenting"
+                );
+                return;
+            }
+            assert!(
+                waited == 0 || (waited == -1 && Errno::last() == Errno::ECHILD),
+                "unexpected wait result while cleaning reparented descendant: {waited}"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        panic!("reparented descendant {descendant_pid} was not reaped");
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -3657,7 +3939,11 @@ mod tests {
 
         drop(wait);
         assert_reaped("root", root_pid);
-        assert_reaped("child", child_pid);
+        // A terminal child may have been reparented before the notifier
+        // releases its identity. At that point this process cannot reap it;
+        // require the new parent to finish reaping it within the same bounded
+        // interval used by fail-closed cleanup instead of racing procfs.
+        assert_eventually_reaped("child", child_pid);
         for (role, pid) in [("root", root_pid), ("child", child_pid)] {
             assert_eq!(
                 tokio::time::timeout(Duration::from_secs(1), Running::new(pid).next_state())
@@ -3717,6 +4003,7 @@ mod tests {
         let tracer = TracerBuilder::<InitFailureTool>::new(clone_thread_guest_command())
             .liteinst_runtime(PathBuf::from("/not/used.so"), 1, 2, 3, 4)
             .activate_liteinst_without_handshake_for_test()
+            .fail_liteinst_new_task_for_test()
             .observe_liteinst_new_task_for_test(child_tx)
             .spawn()
             .await
@@ -3818,6 +4105,7 @@ mod tests {
         let tracer = TracerBuilder::<InitFailureTool>::new(clone_thread_guest_command())
             .liteinst_runtime(PathBuf::from("/not/used.so"), 1, 2, 3, 4)
             .activate_liteinst_without_handshake_for_test()
+            .fail_liteinst_new_task_for_test()
             .observe_liteinst_new_task_for_test(child_tx)
             .fail_liteinst_discovery_once_for_test(Arc::clone(&fail_once))
             .spawn()
@@ -3867,6 +4155,7 @@ mod tests {
         let tracer = TracerBuilder::<InitFailureTool>::new(clone_thread_guest_command())
             .liteinst_runtime(PathBuf::from("/not/used.so"), 1, 2, 3, 4)
             .activate_liteinst_without_handshake_for_test()
+            .fail_liteinst_new_task_for_test()
             .observe_liteinst_new_task_for_test(child_tx)
             .fail_liteinst_after_task_scan_once_for_test(
                 Arc::clone(&fail_once),
@@ -3915,6 +4204,7 @@ mod tests {
         let tracer = TracerBuilder::<InitFailureTool>::new(clone_parent_guest_command())
             .liteinst_runtime(PathBuf::from("/not/used.so"), 1, 2, 3, 4)
             .activate_liteinst_without_handshake_for_test()
+            .fail_liteinst_new_task_for_test()
             .observe_liteinst_new_task_for_test(child_tx)
             .spawn()
             .await
