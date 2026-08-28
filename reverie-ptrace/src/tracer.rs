@@ -3435,11 +3435,7 @@ mod tests {
         }
     }
 
-    async fn run_precise_timer_delivery() -> Option<u64> {
-        if !crate::perf::is_perf_supported() {
-            return None;
-        }
-
+    async fn run_precise_timer_delivery() -> u64 {
         let _ = reverie::take_skid_overshoot_count();
         let tracer = spawn_fn_with_config::<PreciseTimerDeliveryTool, _>(
             || {
@@ -3460,42 +3456,64 @@ mod tests {
             .expect("wait precise-timer tracee");
         assert_eq!(status, ExitStatus::Exited(0));
 
-        Some(reverie::take_skid_overshoot_count())
+        reverie::take_skid_overshoot_count()
     }
 
     #[tokio::test(flavor = "current_thread")]
     async fn precise_timer_delivery_reaches_tool() {
-        const FORCED_OVERSHOOT_CHILD: &str = "REVERIE_PTRACE_FORCED_OVERSHOOT_CHILD";
+        const PRECISE_TIMER_CHILD: &str = "REVERIE_PTRACE_PRECISE_TIMER_CHILD";
 
-        if std::env::var_os(FORCED_OVERSHOOT_CHILD).is_some() {
-            let overshoot_count = run_precise_timer_delivery()
-                .await
-                .expect("the parent starts this child only after confirming perf support");
-            assert!(
-                overshoot_count > 0,
-                "zero skid margin did not exercise the overshoot path"
-            );
+        if let Some(mode) = std::env::var_os(PRECISE_TIMER_CHILD) {
+            let overshoot_count = run_precise_timer_delivery().await;
+            match mode.to_str().expect("precise-timer child mode is UTF-8") {
+                "ordinary" => assert_eq!(
+                    overshoot_count, 0,
+                    "ordinary precise-timer delivery unexpectedly overshot"
+                ),
+                "overshoot" => assert!(
+                    overshoot_count > 0,
+                    "zero skid margin did not exercise the overshoot path"
+                ),
+                other => panic!("unknown precise-timer child mode {other:?}"),
+            }
             return;
         }
 
-        // Ordinary delivery remains a working control. Exercise the real
-        // overshoot path in a fresh test process so its process-global PMU
-        // configuration can safely read the zero-margin fault injection.
-        if run_precise_timer_delivery().await.is_none() {
+        if !crate::perf::is_perf_supported() {
             return;
         }
-        let output =
-            std::process::Command::new(std::env::current_exe().expect("locate test binary"))
+
+        // Both controls run in fresh exact-test processes. The overshoot count
+        // is process-global, so touching it in this parent would race the timer
+        // module's count assertions under Rust's parallel test runner.
+        let run_child = |mode: &str, force_overshoot: bool| {
+            let mut command =
+                std::process::Command::new(std::env::current_exe().expect("locate test binary"));
+            command
                 .args([
                     "--exact",
                     "tracer::tests::precise_timer_delivery_reaches_tool",
                     "--nocapture",
                     "--test-threads=1",
                 ])
-                .env(FORCED_OVERSHOOT_CHILD, "1")
-                .env(crate::timer::SKID_MARGIN_OVERRIDE_ENV, "0")
+                .env(PRECISE_TIMER_CHILD, mode);
+            if force_overshoot {
+                command.env(crate::timer::SKID_MARGIN_OVERRIDE_ENV, "0");
+            }
+            command
                 .output()
-                .expect("run forced-overshoot child test");
+                .unwrap_or_else(|error| panic!("run {mode} precise-timer child test: {error}"))
+        };
+
+        let ordinary = run_child("ordinary", false);
+        assert!(
+            ordinary.status.success(),
+            "ordinary precise-timer child failed:\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&ordinary.stdout),
+            String::from_utf8_lossy(&ordinary.stderr)
+        );
+
+        let output = run_child("overshoot", true);
         assert!(
             output.status.success(),
             "forced-overshoot child failed:\nstdout:\n{}\nstderr:\n{}",
