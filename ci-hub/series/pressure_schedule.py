@@ -255,10 +255,11 @@ def launch(
 
         previous = read_state(root)
         record = run_registry.record_path(root, UNIT)
-        run_registry.write_record(
+        run_registry.write_current_record(
             record,
             {
-                "schema_version": 1,
+                "schema_version": run_registry.SCHEMA_VERSION,
+                "kind": "bench",
                 "state": "launching",
                 "unit": f"{UNIT}.service",
                 "target": target,
@@ -267,7 +268,7 @@ def launch(
                 "log": str(log),
                 "agent": "tick-pressure-test",
                 "started_at": utc_now(),
-                "producer": "systemd-user-v1",
+                "producer": run_registry.PRODUCER,
                 "admission": "ci-hub validate-lock",
             },
         )
@@ -283,6 +284,7 @@ def launch(
                 record,
                 state="refused",
                 result="systemd-launch-refused",
+                exit_code=started.returncode,
                 detail=detail,
                 finished_at=utc_now(),
             )
@@ -475,6 +477,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     args.record,
                     state="failed",
                     result="failed",
+                    exit_code=1,
                     detail=str(error),
                     finished_at=utc_now(),
                 )

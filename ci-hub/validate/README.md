@@ -53,6 +53,20 @@ runs and records the same paths as `e2e_result_root` and
 under `ignored/validate/artifacts/<unit>/`, outside the fresh checkout that is
 removed after validation.
 
+Current run handles retain wire schema 1 so already-deployed readers can
+continue observing a run started by newer code. Their complete contract is
+owned by `run_registry.py`, and the `producer` field names that file so readers
+can distinguish them from historical schema-1 handles (including twelve older
+manual benchmark rows that already carry `kind`). Every current row records the
+existing `validate-lock` `kind`
+(`validate`, `reverie-validate`, `frozen-validate`, or `bench`), so the state
+`failed` used by the pressure-test path cannot silently acquire the meaning of
+an ordinary validation state. Python readers validate through `read_record`;
+the Rust validate-lock and validate-status consumers ask the same authority for
+their typed projections. Other schema-1 handles remain readable only as
+historical input so a process started before deployment can finish without being
+rewritten into the current contract.
+
 `E2E_RESULTS` contains the harness's per-cell JSONL and JUnit output, including
 failure reasons. Compare its per-category cells with Hermit's existing
 `ci/expected-e2e-plan.json`; that committed plan is the denominator that

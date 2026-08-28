@@ -179,6 +179,15 @@ def canonical_repo(value: str) -> str:
         ) from error
 
 
+def validation_kind(repo: str, *, frozen_validate: bool) -> str:
+    """Return the existing validate-lock kind recorded in the run handle."""
+    if frozen_validate:
+        return FROZEN_VALIDATE_KIND
+    if repo == "rrnewton/reverie":
+        return "reverie-validate"
+    return "validate"
+
+
 def row_matches_repo(row: Mapping[str, Any], repo: str) -> bool:
     value = row.get("repo")
     if repo == "rrnewton/hermit":
@@ -1849,12 +1858,7 @@ def build_systemd_command(
         "--agent",
         agent,
         "--kind",
-        (
-            FROZEN_VALIDATE_KIND
-            if frozen_validate
-            else "reverie-validate" if repo == "rrnewton/reverie"
-            else "validate"
-        ),
+        validation_kind(repo, frozen_validate=frozen_validate),
         "--target",
         target,
         "--run-record",
@@ -2748,10 +2752,11 @@ def main(
                 if args.frozen_validate
                 else {}
             )
-            run_registry.create_record(
+            run_registry.create_current_record(
                 record_path,
                 {
-                    "schema_version": 1,
+                    "schema_version": run_registry.SCHEMA_VERSION,
+                    "kind": validation_kind(repo, frozen_validate=args.frozen_validate),
                     "state": "preparing",
                     "unit": f"{unit}.service",
                     "target": args.target,
@@ -2767,7 +2772,7 @@ def main(
                     # The commit this run's TOOLING came from, distinct from
                     # `target`, which is the subject being validated.
                     "parent_checkout_head": parent_checkout_head(),
-                    "producer": "systemd-user-v1",
+                    "producer": run_registry.PRODUCER,
                     "admission": "ci-hub validate-lock",
                     "pane_role": "observer-only",
                     **output_fields,
@@ -2823,6 +2828,7 @@ def main(
                     record_path,
                     state="refused",
                     result="systemd-launch-refused",
+                    exit_code=result.returncode,
                     detail=detail,
                     finished_at=datetime.now(timezone.utc).isoformat(),
                 )

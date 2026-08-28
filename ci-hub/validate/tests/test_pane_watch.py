@@ -15,6 +15,33 @@ import pane_watch  # noqa: E402
 import run_registry  # noqa: E402
 
 
+def current_validation_handle(log: Path) -> dict[str, object]:
+    return {
+        "schema_version": run_registry.SCHEMA_VERSION,
+        "kind": "validate",
+        "state": "running",
+        "unit": "validate-test.service",
+        "target": "a" * 40,
+        "repo": "rrnewton/hermit",
+        "checkout": "/tmp/checkout",
+        "source_checkout": "/tmp/source",
+        "temporary_checkout": True,
+        "cargo_home": "/tmp/cargo",
+        "log": str(log),
+        "agent": "type-audit",
+        "pr": None,
+        "started_at": "2026-08-28T07:00:00Z",
+        "parent_checkout_head": "b" * 40,
+        "producer": run_registry.PRODUCER,
+        "admission": "ci-hub validate-lock",
+        "pane_role": "observer-only",
+        "validate_lock_child_deadline_seconds": 3600,
+        "e2e_result_root": "/tmp/e2e",
+        "safe_ci_dag_runner_log_dir": "/tmp/dag",
+        "hermit_run_timeout_seconds": 3300,
+    }
+
+
 class PaneWatchTest(unittest.TestCase):
     def test_collected_killed_unit_uses_durable_inner_exit_not_success_placeholder(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -62,6 +89,39 @@ class PaneWatchTest(unittest.TestCase):
             self.assertEqual(143, durable["exit_code"])
             self.assertEqual(15, durable["signal"])
             self.assertIn("state=killed result=terminated exit=143", output.getvalue())
+
+    def test_current_handle_keeps_attempt_result_fields_typed(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            log = root / "validate.log"
+            record = root / "runs/validate-test.json"
+            log.write_text(
+                "# ci-hub/validate-lock tool COST ACTUAL wall=50.197s cpu=0.2s "
+                "cpu_user=0.1s cpu_system=0.1s exit=143\n"
+            )
+            run_registry.write_record(record, current_validation_handle(log))
+            with mock.patch.object(pane_watch, "service_properties", return_value=None):
+                rc = pane_watch.main(
+                    [
+                        "--unit",
+                        "validate-test.service",
+                        "--target",
+                        "a" * 40,
+                        "--checkout",
+                        str(root),
+                        "--log",
+                        str(log),
+                        "--record",
+                        str(record),
+                        "--appearance-seconds",
+                        "0",
+                    ]
+                )
+            self.assertEqual(143, rc)
+            durable = run_registry.read_record(record)
+            self.assertEqual(1, durable["schema_version"])
+            self.assertEqual("validate", durable["kind"])
+            self.assertEqual("killed", durable["state"])
 
     def test_boxing_proof_is_bound_to_descendant_process_identity(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

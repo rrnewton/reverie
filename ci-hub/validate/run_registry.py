@@ -6,10 +6,579 @@ from __future__ import annotations
 import fcntl
 import json
 import os
+import sys
 import tempfile
 from contextlib import contextmanager
+from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, TypedDict, cast
+
+
+SCHEMA_VERSION = 1
+PRODUCER = "ci-hub/validate/run_registry.py"
+
+
+class RunKind(str, Enum):
+    """The existing validate-lock kinds, recorded on every current handle."""
+
+    VALIDATE = "validate"
+    REVERIE_VALIDATE = "reverie-validate"
+    FROZEN_VALIDATE = "frozen-validate"
+    BENCH = "bench"
+
+    @property
+    def counts_as_validation(self) -> bool:
+        return self is not RunKind.BENCH
+
+
+class RunState(str, Enum):
+    PREPARING = "preparing"
+    LAUNCHING = "launching"
+    RUNNING = "running"
+    REFUSED = "refused"
+    COMPLETED = "completed"
+    KILLED = "killed"
+    UNKNOWN = "unknown"
+    FAILED = "failed"
+
+    @property
+    def lock_admissible(self) -> bool:
+        return self in {RunState.LAUNCHING, RunState.RUNNING}
+
+
+class ProcessIdentityRecord(TypedDict):
+    pid: int
+    start_ticks: int
+    boot_id: str
+
+
+class RunRecord(TypedDict, total=False):
+    """Complete serialized shape; required and conditional fields are checked below."""
+
+    schema_version: int
+    kind: str
+    state: str
+    unit: str
+    target: str
+    repo: str
+    checkout: str
+    source_checkout: str
+    temporary_checkout: bool
+    cargo_home: str
+    log: str
+    agent: str
+    pr: int | None
+    started_at: str
+    parent_checkout_head: str | None
+    producer: str
+    admission: str
+    pane_role: str
+    validate_lock_child_deadline_seconds: int
+    e2e_result_root: str
+    safe_ci_dag_runner_log_dir: str
+    hermit_run_timeout_seconds: int
+    validation_kind: str
+    result_record: str
+    measured_against_superseded_tip: bool
+    current_main_before_launch: str
+    target_contains_current_main_before_launch: bool
+    qualifying_receipt: bool
+    dag_jobs: int
+    workspace_id: str | None
+    tab_id: str | None
+    pane_id: str | None
+    pane_title: str | None
+    process_identity: ProcessIdentityRecord | None
+    result: str
+    exit_code: int | None
+    detail: str | None
+    finished_at: str
+    signal: int
+    executed_nodes: int | None
+    executed_tests: int | None
+    final_validate_status: str | None
+    result_source: str
+    observed_safe_ci_cgroups: list[str]
+    canonical_verdict: str
+    wrapper_exit_code: int
+    measured_result: str
+    checkout_removed_at: str
+    archived_orphaned_receipts: list[str]
+    cargo_home_removed_at: str
+    host: str
+    results: str
+    cleanup_error: str | None
+
+
+VALIDATION_STATES = frozenset(
+    {
+        RunState.PREPARING,
+        RunState.LAUNCHING,
+        RunState.RUNNING,
+        RunState.REFUSED,
+        RunState.COMPLETED,
+        RunState.KILLED,
+        RunState.UNKNOWN,
+    }
+)
+BENCH_STATES = frozenset(
+    {
+        RunState.LAUNCHING,
+        RunState.RUNNING,
+        RunState.REFUSED,
+        RunState.COMPLETED,
+        RunState.FAILED,
+    }
+)
+
+
+@dataclass(frozen=True)
+class ProcessIdentity:
+    pid: int
+    start_ticks: int
+    boot_id: str
+
+
+@dataclass(frozen=True)
+class RunHandle:
+    """The complete current contract shared by every producer and consumer.
+
+    Historical schema-1 rows remain readable because a process started before
+    deployment may finish after it. Their missing `kind` discriminator and
+    field generations are never promoted into this type. Current writes retain
+    wire schema 1 for compatibility with already-deployed readers and require
+    `kind`, which keeps validation and pressure-test state meanings distinct.
+    """
+
+    kind: RunKind
+    state: RunState
+    unit: str
+    target: str
+    repo: str
+    checkout: str
+    log: str
+    agent: str
+    started_at: str
+    producer: str
+    admission: str
+    process_identity: ProcessIdentity | None
+    raw: RunRecord
+
+    @property
+    def lock_admissible(self) -> bool:
+        return self.state.lock_admissible
+
+    @property
+    def counts_as_validation(self) -> bool:
+        return self.kind.counts_as_validation
+
+
+COMMON_FIELDS = frozenset(
+    {
+        "schema_version",
+        "kind",
+        "state",
+        "unit",
+        "target",
+        "repo",
+        "checkout",
+        "log",
+        "agent",
+        "started_at",
+        "producer",
+        "admission",
+        "process_identity",
+        "result",
+        "exit_code",
+        "detail",
+        "finished_at",
+    }
+)
+
+VALIDATION_FIELDS = COMMON_FIELDS | frozenset(
+    {
+        "source_checkout",
+        "temporary_checkout",
+        "cargo_home",
+        "pr",
+        "parent_checkout_head",
+        "pane_role",
+        "validate_lock_child_deadline_seconds",
+        "e2e_result_root",
+        "safe_ci_dag_runner_log_dir",
+        "hermit_run_timeout_seconds",
+        "validation_kind",
+        "result_record",
+        "measured_against_superseded_tip",
+        "current_main_before_launch",
+        "target_contains_current_main_before_launch",
+        "qualifying_receipt",
+        "dag_jobs",
+        "workspace_id",
+        "tab_id",
+        "pane_id",
+        "pane_title",
+        "signal",
+        "executed_nodes",
+        "executed_tests",
+        "final_validate_status",
+        "result_source",
+        "observed_safe_ci_cgroups",
+        "canonical_verdict",
+        "wrapper_exit_code",
+        "measured_result",
+        "checkout_removed_at",
+        "archived_orphaned_receipts",
+        "cargo_home_removed_at",
+        "host",
+    }
+)
+
+BENCH_FIELDS = COMMON_FIELDS | frozenset({"results", "cleanup_error"})
+
+_OPTIONAL_TEXT_FIELDS = frozenset(
+    {
+        "source_checkout",
+        "cargo_home",
+        "parent_checkout_head",
+        "pane_role",
+        "e2e_result_root",
+        "safe_ci_dag_runner_log_dir",
+        "validation_kind",
+        "result_record",
+        "current_main_before_launch",
+        "workspace_id",
+        "tab_id",
+        "pane_id",
+        "pane_title",
+        "result",
+        "detail",
+        "finished_at",
+        "final_validate_status",
+        "result_source",
+        "canonical_verdict",
+        "measured_result",
+        "checkout_removed_at",
+        "cargo_home_removed_at",
+        "host",
+        "results",
+        "cleanup_error",
+    }
+)
+_OPTIONAL_INTEGER_FIELDS = frozenset(
+    {
+        "pr",
+        "validate_lock_child_deadline_seconds",
+        "hermit_run_timeout_seconds",
+        "dag_jobs",
+        "exit_code",
+        "signal",
+        "executed_nodes",
+        "executed_tests",
+        "wrapper_exit_code",
+    }
+)
+_OPTIONAL_BOOLEAN_FIELDS = frozenset(
+    {
+        "temporary_checkout",
+        "measured_against_superseded_tip",
+        "target_contains_current_main_before_launch",
+        "qualifying_receipt",
+    }
+)
+_OPTIONAL_STRING_LIST_FIELDS = frozenset(
+    {"observed_safe_ci_cgroups", "archived_orphaned_receipts"}
+)
+
+
+def _error(field: str, detail: str) -> RuntimeError:
+    return RuntimeError(f"validation-run-handle-{field}: {detail}")
+
+
+def _required_text(value: Mapping[str, Any], field: str) -> str:
+    raw = value.get(field)
+    if not isinstance(raw, str) or not raw.strip():
+        raise _error(field, "must be a nonempty string")
+    return raw
+
+
+def _optional_text(value: Mapping[str, Any], field: str) -> None:
+    if field in value and value[field] is not None and not isinstance(value[field], str):
+        raise _error(field, "must be a string or null")
+
+
+def _optional_integer(value: Mapping[str, Any], field: str) -> None:
+    raw = value.get(field)
+    if field in value and raw is not None and (not isinstance(raw, int) or isinstance(raw, bool)):
+        raise _error(field, "must be an integer or null")
+
+
+def _optional_boolean(value: Mapping[str, Any], field: str) -> None:
+    raw = value.get(field)
+    if field in value and raw is not None and not isinstance(raw, bool):
+        raise _error(field, "must be a boolean or null")
+
+
+def _optional_string_list(value: Mapping[str, Any], field: str) -> None:
+    raw = value.get(field)
+    if field not in value or raw is None:
+        return
+    if not isinstance(raw, list) or any(not isinstance(item, str) for item in raw):
+        raise _error(field, "must be a list of strings or null")
+
+
+def _positive_integer(value: Mapping[str, Any], field: str) -> None:
+    raw = value.get(field)
+    if not isinstance(raw, int) or isinstance(raw, bool) or raw <= 0:
+        raise _error(field, "must be a positive integer")
+
+
+def _nonnegative_integer(value: Mapping[str, Any], field: str) -> None:
+    raw = value.get(field)
+    if not isinstance(raw, int) or isinstance(raw, bool) or raw < 0:
+        raise _error(field, "must be a nonnegative integer")
+
+
+def _optional_commit(value: Mapping[str, Any], field: str) -> None:
+    raw = value.get(field)
+    if raw is None:
+        return
+    if (
+        not isinstance(raw, str)
+        or len(raw) != 40
+        or any(ch not in "0123456789abcdef" for ch in raw)
+    ):
+        raise _error(field, "must be null or a lowercase forty-hex commit")
+
+
+def _process_identity(value: Mapping[str, Any]) -> ProcessIdentity | None:
+    raw = value.get("process_identity")
+    if raw is None:
+        return None
+    if not isinstance(raw, dict) or set(raw) != {"pid", "start_ticks", "boot_id"}:
+        raise _error(
+            "process_identity", "must contain exactly pid, start_ticks, and boot_id"
+        )
+    pid = raw.get("pid")
+    start_ticks = raw.get("start_ticks")
+    boot_id = raw.get("boot_id")
+    if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
+        raise _error("process_identity.pid", "must be a positive integer")
+    if (
+        not isinstance(start_ticks, int)
+        or isinstance(start_ticks, bool)
+        or start_ticks <= 0
+    ):
+        raise _error("process_identity.start_ticks", "must be a positive integer")
+    if not isinstance(boot_id, str) or not boot_id.strip():
+        raise _error("process_identity.boot_id", "must be a nonempty string")
+    return ProcessIdentity(pid=pid, start_ticks=start_ticks, boot_id=boot_id)
+
+
+def parse_current_record(value: Mapping[str, Any]) -> RunHandle:
+    if value.get("schema_version") != SCHEMA_VERSION:
+        raise _error(
+            "schema_version", f"expected {SCHEMA_VERSION}, got {value.get('schema_version')!r}"
+        )
+    try:
+        kind = RunKind(_required_text(value, "kind"))
+    except ValueError as error:
+        raise _error("kind", f"unsupported value {value.get('kind')!r}") from error
+    try:
+        state = RunState(_required_text(value, "state"))
+    except ValueError as error:
+        raise _error("state", f"unsupported value {value.get('state')!r}") from error
+
+    allowed_states = BENCH_STATES if kind is RunKind.BENCH else VALIDATION_STATES
+    if state not in allowed_states:
+        raise _error("state", f"{state.value!r} is not valid for kind {kind.value!r}")
+    allowed_fields = BENCH_FIELDS if kind is RunKind.BENCH else VALIDATION_FIELDS
+    unknown = sorted(set(value) - allowed_fields)
+    if unknown:
+        raise _error("field", f"unknown field(s) for kind {kind.value!r}: {', '.join(unknown)}")
+
+    unit = _required_text(value, "unit")
+    target = _required_text(value, "target")
+    repo = _required_text(value, "repo")
+    checkout = _required_text(value, "checkout")
+    log = _required_text(value, "log")
+    agent = _required_text(value, "agent")
+    started_at = _required_text(value, "started_at")
+    producer = _required_text(value, "producer")
+    admission = _required_text(value, "admission")
+    if producer != PRODUCER:
+        raise _error("producer", f"must be {PRODUCER!r}")
+    if not unit.endswith(".service"):
+        raise _error("unit", "must end in .service")
+    if len(target) != 40 or any(ch not in "0123456789abcdef" for ch in target):
+        raise _error("target", "must be a lowercase forty-hex commit")
+    expected_repo = (
+        "rrnewton/reverie" if kind is RunKind.REVERIE_VALIDATE else "rrnewton/hermit"
+    )
+    if repo != expected_repo:
+        raise _error("repo", f"kind {kind.value!r} requires {expected_repo!r}")
+    expected_admission = (
+        "frozen-validate" if kind is RunKind.FROZEN_VALIDATE else "ci-hub validate-lock"
+    )
+    if admission != expected_admission:
+        raise _error(
+            "admission", f"kind {kind.value!r} requires {expected_admission!r}"
+        )
+
+    for field in _OPTIONAL_TEXT_FIELDS & allowed_fields:
+        _optional_text(value, field)
+    for field in _OPTIONAL_INTEGER_FIELDS & allowed_fields:
+        _optional_integer(value, field)
+    for field in _OPTIONAL_BOOLEAN_FIELDS & allowed_fields:
+        _optional_boolean(value, field)
+    for field in _OPTIONAL_STRING_LIST_FIELDS & allowed_fields:
+        _optional_string_list(value, field)
+    identity = _process_identity(value)
+
+    if kind is not RunKind.BENCH:
+        if value.get("pane_role") != "observer-only":
+            raise _error("pane_role", "validation handles require observer-only")
+        if not isinstance(value.get("temporary_checkout"), bool):
+            raise _error("temporary_checkout", "must be a boolean")
+        for field in (
+            "source_checkout",
+            "cargo_home",
+            "parent_checkout_head",
+            "validate_lock_child_deadline_seconds",
+        ):
+            if field not in value:
+                raise _error(field, "is required for validation handles")
+        _required_text(value, "source_checkout")
+        _required_text(value, "cargo_home")
+        _optional_commit(value, "parent_checkout_head")
+        _positive_integer(value, "validate_lock_child_deadline_seconds")
+        if value.get("pr") is not None:
+            _positive_integer(value, "pr")
+        if value.get("dag_jobs") is not None:
+            _positive_integer(value, "dag_jobs")
+        if repo == "rrnewton/hermit":
+            for field in (
+                "e2e_result_root",
+                "safe_ci_dag_runner_log_dir",
+                "hermit_run_timeout_seconds",
+            ):
+                if field not in value:
+                    raise _error(field, "is required for Hermit validation handles")
+            _required_text(value, "e2e_result_root")
+            _required_text(value, "safe_ci_dag_runner_log_dir")
+            _positive_integer(value, "hermit_run_timeout_seconds")
+        if kind is RunKind.FROZEN_VALIDATE:
+            for field in (
+                "validation_kind",
+                "result_record",
+                "measured_against_superseded_tip",
+                "current_main_before_launch",
+                "target_contains_current_main_before_launch",
+                "qualifying_receipt",
+            ):
+                if field not in value:
+                    raise _error(field, "is required for frozen validation handles")
+            if value.get("validation_kind") != RunKind.FROZEN_VALIDATE.value:
+                raise _error("validation_kind", "must be 'frozen-validate'")
+            _required_text(value, "result_record")
+            _optional_commit(value, "current_main_before_launch")
+            if value.get("current_main_before_launch") is None:
+                raise _error("current_main_before_launch", "is required")
+            if value.get("measured_against_superseded_tip") is not True:
+                raise _error("measured_against_superseded_tip", "must be true")
+            if value.get("target_contains_current_main_before_launch") is not False:
+                raise _error(
+                    "target_contains_current_main_before_launch", "must be false"
+                )
+            if value.get("qualifying_receipt") is not False:
+                raise _error("qualifying_receipt", "must be false")
+
+    for field in ("executed_nodes", "executed_tests"):
+        if value.get(field) is not None:
+            _nonnegative_integer(value, field)
+
+    if state is RunState.REFUSED:
+        for field in ("result", "detail", "finished_at", "exit_code"):
+            if value.get(field) is None:
+                raise _error(field, "is required when state is refused")
+        if value.get("result") != "systemd-launch-refused":
+            raise _error("result", "must be 'systemd-launch-refused' when state is refused")
+        _required_text(value, "detail")
+        _required_text(value, "finished_at")
+        if value.get("exit_code") == 0:
+            raise _error("exit_code", "must be nonzero when state is refused")
+    elif state is RunState.COMPLETED:
+        for field in ("result", "finished_at", "exit_code"):
+            if value.get(field) is None:
+                raise _error(field, "is required when state is completed")
+        _required_text(value, "finished_at")
+        if kind is RunKind.BENCH:
+            if value.get("result") != "passed":
+                raise _error("result", "must be 'passed' when a bench run is completed")
+            if value.get("exit_code") != 0:
+                raise _error("exit_code", "must be zero when a bench run is completed")
+        else:
+            outcomes = {
+                "PASSED": ("success", 0),
+                "FAILED": ("failure", 1),
+                "COULD_NOT_RUN": ("no-result", 75),
+            }
+            status = value.get("final_validate_status")
+            if status not in outcomes:
+                raise _error(
+                    "final_validate_status",
+                    "is required and must be a closed value when completed",
+                )
+            expected_result, expected_exit = outcomes[status]
+            if value.get("result") != expected_result:
+                raise _error(
+                    "result",
+                    f"final_validate_status {status} requires {expected_result!r}",
+                )
+            if value.get("exit_code") != expected_exit:
+                raise _error(
+                    "exit_code",
+                    f"final_validate_status {status} requires {expected_exit}",
+                )
+    elif state is RunState.KILLED:
+        if value.get("result") != "terminated":
+            raise _error("result", "must be 'terminated' when state is killed")
+        for field in ("finished_at", "exit_code", "signal"):
+            if value.get(field) is None:
+                raise _error(field, "is required when state is killed")
+        _required_text(value, "finished_at")
+        _positive_integer(value, "signal")
+        if value.get("exit_code") != 128 + value["signal"]:
+            raise _error("exit_code", "must equal 128 + signal when state is killed")
+    elif state is RunState.UNKNOWN:
+        if value.get("result") != "unknown" or not value.get("detail"):
+            raise _error("result", "unknown state requires result='unknown' and detail")
+    elif state is RunState.FAILED:
+        if value.get("result") != "failed":
+            raise _error("result", "must be 'failed' when state is failed")
+        for field in ("finished_at", "exit_code"):
+            if value.get(field) is None:
+                raise _error(field, "is required when state is failed")
+        _required_text(value, "finished_at")
+        if value.get("exit_code") == 0:
+            raise _error("exit_code", "must be nonzero when state is failed")
+
+    return RunHandle(
+        kind=kind,
+        state=state,
+        unit=unit,
+        target=target,
+        repo=repo,
+        checkout=checkout,
+        log=log,
+        agent=agent,
+        started_at=started_at,
+        producer=producer,
+        admission=admission,
+        process_identity=identity,
+        raw=cast(RunRecord, dict(value)),
+    )
 
 
 def record_path(root: Path, unit: str) -> Path:
@@ -21,8 +590,13 @@ def read_record(path: Path) -> dict[str, Any]:
         value = json.loads(path.read_text())
     except (OSError, json.JSONDecodeError) as exc:
         raise RuntimeError(f"cannot read validation handle {path}: {exc}") from exc
-    if not isinstance(value, dict) or value.get("schema_version") != 1:
+    if not isinstance(value, dict):
+        raise RuntimeError(f"validation handle {path} is not an object")
+    schema = value.get("schema_version")
+    if schema != SCHEMA_VERSION:
         raise RuntimeError(f"validation handle {path} has an unsupported schema")
+    if value.get("producer") == PRODUCER:
+        parse_current_record(value)
     return value
 
 
@@ -73,6 +647,10 @@ def exclusive_record(path: Path, *, blocking: bool = True):
 
 
 def _write_unlocked(path: Path, value: Mapping[str, Any]) -> None:
+    if value.get("schema_version") != SCHEMA_VERSION:
+        raise RuntimeError(f"validation handle {path} has an unsupported schema")
+    if value.get("producer") == PRODUCER:
+        parse_current_record(value)
     fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     try:
         with os.fdopen(fd, "w") as stream:
@@ -93,12 +671,22 @@ def write_record(path: Path, value: Mapping[str, Any]) -> None:
         _write_unlocked(path, value)
 
 
+def write_current_record(path: Path, value: Mapping[str, Any]) -> None:
+    parse_current_record(value)
+    write_record(path, value)
+
+
 def create_record(path: Path, value: Mapping[str, Any]) -> None:
     """Create a run handle without replacing another run's identity."""
     with exclusive_record(path):
         if path.exists():
             raise RuntimeError(f"validation handle already exists: {path}")
         _write_unlocked(path, value)
+
+
+def create_current_record(path: Path, value: Mapping[str, Any]) -> None:
+    parse_current_record(value)
+    create_record(path, value)
 
 
 def reserve_log(path: Path) -> None:
@@ -120,3 +708,206 @@ def update_record(path: Path, *, blocking: bool = True, **fields: Any) -> dict[s
         value.update(fields)
         _write_unlocked(path, value)
     return value
+
+
+def bind_process_identity(path: Path, identity: ProcessIdentity) -> dict[str, Any]:
+    """Publish one process identity without permitting a different replacement."""
+    with exclusive_record(path):
+        value = read_record(path)
+        encoded = {
+            "pid": identity.pid,
+            "start_ticks": identity.start_ticks,
+            "boot_id": identity.boot_id,
+        }
+        existing = value.get("process_identity")
+        if existing is not None and existing != encoded:
+            raise _error(
+                "process_identity", "record already carries a different process identity"
+            )
+        value["process_identity"] = encoded
+        _write_unlocked(path, value)
+    return value
+
+
+def _legacy_projection(value: Mapping[str, Any]) -> dict[str, Any]:
+    """Project only the schema-1 fields existing readers historically required."""
+    unit = value.get("unit")
+    if isinstance(unit, str) and unit == "hermit-pressure-test.service":
+        kind = RunKind.BENCH.value
+    elif isinstance(unit, str) and unit.startswith("validate-"):
+        kind = RunKind.VALIDATE.value
+    else:
+        kind = "legacy"
+    state = value.get("state")
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "kind": kind,
+        "state": state,
+        "unit": unit,
+        "target": value.get("target"),
+        "repo": value.get("repo"),
+        "agent": value.get("agent"),
+        "started_at": value.get("started_at"),
+        "host": value.get("host"),
+        "process_identity": value.get("process_identity"),
+        "lock_admissible": state in {"launching", "running"},
+        "counts_as_validation": kind != RunKind.BENCH.value,
+    }
+
+
+def projection(value: Mapping[str, Any]) -> dict[str, Any]:
+    if value.get("schema_version") != SCHEMA_VERSION:
+        raise _error("schema_version", f"unsupported value {value.get('schema_version')!r}")
+    if value.get("producer") != PRODUCER:
+        return _legacy_projection(value)
+    handle = parse_current_record(value)
+    identity = handle.process_identity
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "kind": handle.kind.value,
+        "state": handle.state.value,
+        "unit": handle.unit,
+        "target": handle.target,
+        "repo": handle.repo,
+        "agent": handle.agent,
+        "started_at": handle.started_at,
+        "host": handle.raw.get("host"),
+        "process_identity": (
+            {
+                "pid": identity.pid,
+                "start_ticks": identity.start_ticks,
+                "boot_id": identity.boot_id,
+            }
+            if identity is not None
+            else None
+        ),
+        "lock_admissible": handle.lock_admissible,
+        "counts_as_validation": handle.counts_as_validation,
+    }
+
+
+def inspect_current_records(paths: list[Path]) -> list[dict[str, Any]]:
+    """Validate and project every current handle with one authority process."""
+    inspected = []
+    for path in paths:
+        value = read_record(path)
+        if value.get("producer") != PRODUCER:
+            raise _error("producer", f"current record {path} has the wrong producer")
+        inspected.append({"path": str(path), "record": projection(value)})
+    return inspected
+
+
+def verify_attribution(
+    value: Mapping[str, Any], *, agent: str, target: str, kind: str
+) -> dict[str, Any]:
+    projected = projection(value)
+    if (
+        projected["agent"] != agent
+        or projected["target"] != target
+        or projected["kind"] != kind
+        or projected["lock_admissible"] is not True
+    ):
+        raise _error(
+            "attribution",
+            f"does not bind kind={kind} state=launching|running agent={agent} target={target}",
+        )
+    return projected
+
+
+def verify_holder(
+    value: Mapping[str, Any],
+    *,
+    agent: str,
+    target: str,
+    kind: str,
+    unit: str,
+    identity: ProcessIdentity,
+) -> dict[str, Any]:
+    projected = verify_attribution(value, agent=agent, target=target, kind=kind)
+    if projected["unit"] != unit:
+        raise _error("unit", f"does not bind expected unit {unit!r}")
+    observed = projected["process_identity"]
+    expected = {
+        "pid": identity.pid,
+        "start_ticks": identity.start_ticks,
+        "boot_id": identity.boot_id,
+    }
+    if observed != expected:
+        raise _error("process_identity", "does not bind the held anchor identity")
+    return projected
+
+
+def _load_cli_record(path: Path) -> dict[str, Any]:
+    return read_record(path)
+
+
+def _cli(argv: list[str] | None = None) -> int:
+    import argparse
+
+    parser = argparse.ArgumentParser(description=__doc__)
+    commands = parser.add_subparsers(dest="command", required=True)
+    inspect = commands.add_parser("inspect")
+    inspect.add_argument("--path", type=Path, required=True)
+    inspect_records = commands.add_parser("inspect-current-records")
+    inspect_records.add_argument("--path", type=Path, action="append", required=True)
+    attribution = commands.add_parser("verify-attribution")
+    attribution.add_argument("--path", type=Path, required=True)
+    attribution.add_argument("--agent", required=True)
+    attribution.add_argument("--target", required=True)
+    attribution.add_argument("--kind", required=True)
+    holder = commands.add_parser("verify-holder")
+    holder.add_argument("--path", type=Path, required=True)
+    holder.add_argument("--agent", required=True)
+    holder.add_argument("--target", required=True)
+    holder.add_argument("--kind", required=True)
+    holder.add_argument("--unit", required=True)
+    holder.add_argument("--pid", type=int, required=True)
+    holder.add_argument("--start-ticks", type=int, required=True)
+    holder.add_argument("--boot-id", required=True)
+    bind = commands.add_parser("bind-process-identity")
+    bind.add_argument("--path", type=Path, required=True)
+    bind.add_argument("--pid", type=int, required=True)
+    bind.add_argument("--start-ticks", type=int, required=True)
+    bind.add_argument("--boot-id", required=True)
+    args = parser.parse_args(argv)
+    try:
+        if args.command == "inspect-current-records":
+            report = inspect_current_records(args.path)
+        elif args.command == "bind-process-identity":
+            value = bind_process_identity(
+                args.path,
+                ProcessIdentity(
+                    pid=args.pid, start_ticks=args.start_ticks, boot_id=args.boot_id
+                ),
+            )
+            report = projection(value)
+        else:
+            value = _load_cli_record(args.path)
+            if args.command == "inspect":
+                report = projection(value)
+            elif args.command == "verify-attribution":
+                report = verify_attribution(
+                    value, agent=args.agent, target=args.target, kind=args.kind
+                )
+            else:
+                report = verify_holder(
+                    value,
+                    agent=args.agent,
+                    target=args.target,
+                    kind=args.kind,
+                    unit=args.unit,
+                    identity=ProcessIdentity(
+                        pid=args.pid,
+                        start_ticks=args.start_ticks,
+                        boot_id=args.boot_id,
+                    ),
+                )
+    except RuntimeError as error:
+        print(f"run_registry: REFUSED: {error}", file=sys.stderr)
+        return 2
+    print(json.dumps(report, sort_keys=True, separators=(",", ":")))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(_cli())

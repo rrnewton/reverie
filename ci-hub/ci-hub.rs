@@ -70,6 +70,8 @@ mod qualifying_receipt;
 mod records;
 #[path = "lib/validate_lock.rs"]
 mod validate_lock;
+#[path = "lib/validate_run_handle.rs"]
+mod validate_run_handle;
 // The legacy assessment type remains exercised by its compatibility tests;
 // production consumers below use the stricter canonical receipt assessment.
 #[allow(dead_code)]
@@ -5813,12 +5815,7 @@ fn recent_row_test_counts(root: &Path, row: &HistoryRow) -> TestCounts {
     }
 }
 
-#[derive(Clone, Debug, Deserialize)]
-struct ValidateRunProcessIdentity {
-    pid: u32,
-    start_ticks: u64,
-    boot_id: String,
-}
+type ValidateRunProcessIdentity = validate_run_handle::ProcessIdentity;
 
 #[derive(Clone, Debug, Deserialize)]
 struct ValidateRunRecord {
@@ -5957,20 +5954,117 @@ fn live_validate_runs_from(
     });
     paths.sort();
 
+    let records = paths
+        .into_iter()
+        .map(|path| {
+            let content = std::fs::read_to_string(&path).map_err(|error| {
+                CiHubError::ValidateStatus(format!(
+                    "cannot read validation run handle {}: {error}",
+                    path.display()
+                ))
+            })?;
+            let value = serde_json::from_str(&content).map_err(|error| {
+                CiHubError::ValidateStatus(format!(
+                    "validation run handle {} is not JSON: {error}",
+                    path.display()
+                ))
+            })?;
+            Ok((path, value))
+        })
+        .collect::<Result<Vec<_>, CiHubError>>()?;
+    let current_paths = records
+        .iter()
+        .filter(|(_, value)| validate_run_handle::is_current(value))
+        .map(|(path, _)| path.clone())
+        .collect::<Vec<_>>();
+    let mut current = if current_paths.is_empty() {
+        BTreeMap::new()
+    } else {
+        validate_run_handle::inspect_current_records(root, &current_paths)
+            .map_err(CiHubError::ValidateStatus)?
+            .into_iter()
+            .map(|inspected| (inspected.path, inspected.record))
+            .collect::<BTreeMap<_, _>>()
+    };
+
     let mut live = Vec::new();
-    for path in paths {
-        let content = std::fs::read_to_string(&path).map_err(|error| {
-            CiHubError::ValidateStatus(format!(
-                "cannot read validation run handle {}: {error}",
-                path.display()
-            ))
-        })?;
-        let value: serde_json::Value = serde_json::from_str(&content).map_err(|error| {
-            CiHubError::ValidateStatus(format!(
-                "validation run handle {} is not JSON: {error}",
-                path.display()
-            ))
-        })?;
+    for (path, value) in records {
+        if validate_run_handle::is_current(&value) {
+            let record = current.remove(&path).ok_or_else(|| {
+                CiHubError::ValidateStatus(format!(
+                    "current validation run handle {} was not returned by its shared authority",
+                    path.display()
+                ))
+            })?;
+            if !record.counts_as_validation || !record.lock_admissible {
+                continue;
+            }
+            let Some(unit) = record.unit.as_deref() else {
+                return Err(CiHubError::ValidateStatus(format!(
+                    "live validation run handle {} has no unit after shared validation",
+                    path.display()
+                )));
+            };
+            let Some(identity) = record.process_identity.as_ref() else {
+                continue;
+            };
+            if !validate_run_process_is_live(proc_root, boot_id_path, unit, identity)
+                .map_err(CiHubError::ValidateStatus)?
+            {
+                continue;
+            }
+            let Some(record_repo) = record.repo.as_deref() else {
+                return Err(CiHubError::ValidateStatus(format!(
+                    "live validation run handle {} has no repo after shared validation",
+                    path.display()
+                )));
+            };
+            if canonical_validation_repo(record_repo) != Some(repo) {
+                continue;
+            }
+            let expected_name = format!("{}.json", unit.trim_end_matches(".service"));
+            if path.file_name().and_then(OsStr::to_str) != Some(expected_name.as_str()) {
+                return Err(CiHubError::ValidateStatus(format!(
+                    "live validation run handle {} does not bind its unit {}",
+                    path.display(),
+                    unit
+                )));
+            }
+            let target = record.target.ok_or_else(|| {
+                CiHubError::ValidateStatus(format!(
+                    "live validation run handle {} has no target after shared validation",
+                    path.display()
+                ))
+            })?;
+            let started_at = record.started_at.ok_or_else(|| {
+                CiHubError::ValidateStatus(format!(
+                    "live validation run handle {} has no started_at after shared validation",
+                    path.display()
+                ))
+            })?;
+            let summary = format!(
+                "agent={} unit={}",
+                record.agent.as_deref().unwrap_or("?"),
+                unit
+            );
+            live.push(ValidateStatusEntry {
+                status: "IN-PROGRESS".into(),
+                in_progress: true,
+                sha: Some(target),
+                branch: None,
+                git_depth: None,
+                started_at: Some(started_at.clone()),
+                finished_at: None,
+                elapsed_seconds: elapsed_since(&started_at, now),
+                tests_total: None,
+                tests_passed: None,
+                tests_passed_at_least: None,
+                host: record.host.or_else(local_host),
+                slot: None,
+                summary,
+            });
+            continue;
+        }
         if !matches!(
             value.get("state").and_then(serde_json::Value::as_str),
             Some("launching" | "running")
@@ -8060,6 +8154,97 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn live_validate_reads_current_handle_through_shared_contract() {
+        let root = std::env::temp_dir().join(format!(
+            "ci-hub-live-current-validate-{}-{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap()
+        ));
+        let runs = root.join("ignored/validate/runs");
+        let process = root.join("proc/123");
+        let authority_dir = root.join("ci-hub/validate");
+        std::fs::create_dir_all(&runs).unwrap();
+        std::fs::create_dir_all(&process).unwrap();
+        std::fs::create_dir_all(&authority_dir).unwrap();
+        std::fs::write(
+            authority_dir.join("run_registry.py"),
+            include_str!("validate/run_registry.py"),
+        )
+        .unwrap();
+        let boot_id = root.join("boot_id");
+        std::fs::write(&boot_id, "boot-one\n").unwrap();
+        let mut fields = vec!["0"; 20];
+        fields[0] = "S";
+        fields[19] = "777";
+        std::fs::write(
+            process.join("stat"),
+            format!("123 (validate runner) {}\n", fields.join(" ")),
+        )
+        .unwrap();
+        std::fs::write(
+            process.join("cgroup"),
+            "0::/user.slice/validate-hermit-current.service\n",
+        )
+        .unwrap();
+        let current = serde_json::json!({
+            "schema_version": 1,
+            "kind": "validate",
+            "state": "running",
+            "unit": "validate-hermit-current.service",
+            "target": "a".repeat(40),
+            "repo": CANONICAL_VALIDATE_REPO,
+            "checkout": "/tmp/checkout",
+            "source_checkout": "/tmp/source",
+            "temporary_checkout": true,
+            "cargo_home": "/tmp/cargo",
+            "log": "/tmp/validate.log",
+            "agent": "hermit-test",
+            "pr": null,
+            "started_at": "2026-08-27T12:00:00Z",
+            "parent_checkout_head": "b".repeat(40),
+            "producer": "ci-hub/validate/run_registry.py",
+            "admission": "ci-hub validate-lock",
+            "pane_role": "observer-only",
+            "validate_lock_child_deadline_seconds": 3600,
+            "e2e_result_root": "/tmp/e2e",
+            "safe_ci_dag_runner_log_dir": "/tmp/dag",
+            "hermit_run_timeout_seconds": 3300,
+            "host": "validation-host",
+            "process_identity": {
+                "pid": 123,
+                "start_ticks": 777,
+                "boot_id": "boot-one"
+            }
+        });
+        let legacy_shape: ValidateRunRecord = serde_json::from_value(current.clone())
+            .expect("an already-deployed schema-1 reader must accept the additive fields");
+        assert_eq!(legacy_shape.schema_version, 1);
+        std::fs::write(
+            runs.join("validate-hermit-current.json"),
+            serde_json::to_vec(&current).unwrap(),
+        )
+        .unwrap();
+        let now = chrono::DateTime::parse_from_rfc3339("2026-08-27T12:05:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        let live = live_validate_runs_from(
+            &root,
+            CANONICAL_VALIDATE_REPO,
+            &root.join("proc"),
+            &boot_id,
+            now,
+        )
+        .unwrap();
+        assert_eq!(live.len(), 1);
+        assert_eq!(
+            live[0].sha.as_deref(),
+            Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+        );
+        assert_eq!(live[0].host.as_deref(), Some("validation-host"));
         std::fs::remove_dir_all(root).unwrap();
     }
 

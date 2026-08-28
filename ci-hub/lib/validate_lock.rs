@@ -16,6 +16,7 @@ use crate::lease::{
     self, DomainState as LeaseDomainState, HandoffState, LeaseDecision, LeaseRecord, LeaseState,
     OwnerLiveness as LeaseOwnerLiveness,
 };
+use crate::validate_run_handle;
 use chrono::{Local, TimeZone};
 use clap::{Args, Subcommand, ValueEnum};
 use fs2::FileExt;
@@ -1348,40 +1349,57 @@ fn verify_global_validate_holder(body: &str) -> Result<GlobalValidateHolder, Str
         .map_err(|error| format!("cannot read exact run record {}: {error}", record.display()))?;
     let value: serde_json::Value = serde_json::from_str(&content)
         .map_err(|error| format!("exact run record {} is not JSON: {error}", record.display()))?;
-    let field = |name: &str| value.get(name).and_then(serde_json::Value::as_str);
-    if value
+    let schema = value
         .get("schema_version")
-        .and_then(serde_json::Value::as_u64)
-        != Some(1)
-        || field("agent") != Some(agent.as_str())
-        || field("target") != Some(target.as_str())
-        || field("unit") != Some(unit.as_str())
-    {
-        return Err(format!(
-            "exact run record {} does not bind schema=1 agent={agent} target={target} unit={unit}",
-            record.display()
-        ));
-    }
-    let identity = value
-        .get("process_identity")
-        .and_then(serde_json::Value::as_object)
-        .ok_or_else(|| {
-            format!(
-                "exact run record {} has no process_identity",
+        .and_then(serde_json::Value::as_u64);
+    if validate_run_handle::is_current(&value) {
+        let root = validate_run_handle::authority_root_for_record(&record)?;
+        validate_run_handle::verify_holder(
+            &root,
+            &record,
+            &agent,
+            &target,
+            &kind,
+            &unit,
+            &validate_run_handle::ProcessIdentity {
+                pid,
+                start_ticks,
+                boot_id: boot_id.clone(),
+            },
+        )?;
+    } else {
+        let field = |name: &str| value.get(name).and_then(serde_json::Value::as_str);
+        if schema != Some(1)
+            || field("agent") != Some(agent.as_str())
+            || field("target") != Some(target.as_str())
+            || field("unit") != Some(unit.as_str())
+        {
+            return Err(format!(
+                "exact run record {} does not bind readable schema agent={agent} target={target} unit={unit}",
                 record.display()
-            )
-        })?;
-    if identity.get("pid").and_then(serde_json::Value::as_u64) != Some(u64::from(pid))
-        || identity
-            .get("start_ticks")
-            .and_then(serde_json::Value::as_u64)
-            != Some(start_ticks)
-        || identity.get("boot_id").and_then(serde_json::Value::as_str) != Some(boot_id.as_str())
-    {
-        return Err(format!(
-            "exact run record {} carries a different process_identity",
-            record.display()
-        ));
+            ));
+        }
+        let identity = value
+            .get("process_identity")
+            .and_then(serde_json::Value::as_object)
+            .ok_or_else(|| {
+                format!(
+                    "exact run record {} has no process_identity",
+                    record.display()
+                )
+            })?;
+        if identity.get("pid").and_then(serde_json::Value::as_u64) != Some(u64::from(pid))
+            || identity
+                .get("start_ticks")
+                .and_then(serde_json::Value::as_u64)
+                != Some(start_ticks)
+            || identity.get("boot_id").and_then(serde_json::Value::as_str) != Some(boot_id.as_str())
+        {
+            return Err(format!(
+                "exact run record {} carries a different process_identity",
+                record.display()
+            ));
+        }
     }
 
     let cgroup_path = PathBuf::from(format!("/proc/{pid}/cgroup"));
@@ -1457,26 +1475,52 @@ fn verify_run_attribution(
             record.display()
         ))
     })?;
-    let field = |name: &str| value.get(name).and_then(serde_json::Value::as_str);
-    if value
+    let schema = value
         .get("schema_version")
-        .and_then(serde_json::Value::as_u64)
-        != Some(1)
-        || field("agent") != Some(args.agent.as_str())
-        || field("target") != Some(args.target.as_str())
-        || !matches!(field("state"), Some("launching" | "running"))
-    {
-        return Err(ValidateLockError::InvalidState(format!(
-            "run record {} does not bind schema=1 state=launching|running agent={} target={}",
-            record.display(),
-            args.agent,
-            args.target
-        )));
-    }
-    let unit = field("unit").ok_or_else(|| {
-        ValidateLockError::InvalidState(format!("run record {} has no unit", record.display()))
-    })?;
-    let expected_name = format!("{}.json", unit.strip_suffix(".service").unwrap_or(unit));
+        .and_then(serde_json::Value::as_u64);
+    let unit = if validate_run_handle::is_current(&value) {
+        validate_run_handle::verify_attribution(
+            root,
+            &record,
+            &args.agent,
+            &args.target,
+            args.kind.as_str(),
+        )
+        .map_err(ValidateLockError::InvalidState)?
+        .unit
+        .ok_or_else(|| {
+            ValidateLockError::InvalidState(format!(
+                "run record {} has no unit after shared validation",
+                record.display()
+            ))
+        })?
+    } else {
+        let field = |name: &str| value.get(name).and_then(serde_json::Value::as_str);
+        if schema != Some(1)
+            || field("agent") != Some(args.agent.as_str())
+            || field("target") != Some(args.target.as_str())
+            || !matches!(field("state"), Some("launching" | "running"))
+        {
+            return Err(ValidateLockError::InvalidState(format!(
+                "run record {} does not bind readable schema state=launching|running agent={} target={}",
+                record.display(),
+                args.agent,
+                args.target
+            )));
+        }
+        field("unit")
+            .ok_or_else(|| {
+                ValidateLockError::InvalidState(format!(
+                    "run record {} has no unit",
+                    record.display()
+                ))
+            })?
+            .to_string()
+    };
+    let expected_name = format!(
+        "{}.json",
+        unit.strip_suffix(".service").unwrap_or(unit.as_str())
+    );
     if record.file_name().and_then(|name| name.to_str()) != Some(expected_name.as_str()) {
         return Err(ValidateLockError::InvalidState(format!(
             "run record filename does not bind unit {unit}: {}",
@@ -1493,10 +1537,7 @@ fn verify_run_attribution(
             "live systemd unit {live_unit} differs from recorded unit {unit}"
         )));
     }
-    Ok(VerifiedRunAttribution {
-        unit: unit.into(),
-        record,
-    })
+    Ok(VerifiedRunAttribution { unit, record })
 }
 
 fn require_run_attribution(
@@ -1548,6 +1589,26 @@ fn publish_run_process_identity(
             record.display()
         ))
     })?;
+    let initial = fs::read_to_string(record)
+        .map_err(|source| io_error("read run record for identity", record, source))?;
+    let initial_value: serde_json::Value = serde_json::from_str(&initial).map_err(|error| {
+        ValidateLockError::InvalidState(format!(
+            "run record {} is not valid JSON while publishing identity: {error}",
+            record.display()
+        ))
+    })?;
+    if validate_run_handle::is_current(&initial_value) {
+        let root = validate_run_handle::authority_root_for_record(record)
+            .map_err(ValidateLockError::InvalidState)?;
+        let identity = validate_run_handle::ProcessIdentity {
+            pid: owner.pid,
+            start_ticks: owner.start_ticks,
+            boot_id: owner.boot_id.clone(),
+        };
+        validate_run_handle::bind_process_identity(&root, record, &identity)
+            .map_err(ValidateLockError::InvalidState)?;
+        return Ok(());
+    }
     let lock_path = parent.join(format!(".{file_name}.lock"));
     let lock = OpenOptions::new()
         .create(true)
@@ -5746,6 +5807,82 @@ mod tests {
         assert_eq!(
             published.get("state").and_then(|v| v.as_str()),
             Some("launching")
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn current_run_record_uses_shared_kind_and_state_contract() {
+        let root = env::temp_dir().join(format!(
+            "ci-hub-attribution-current-{}-{}",
+            std::process::id(),
+            epoch_seconds().unwrap()
+        ));
+        let runs = root.join("ignored/validate/runs");
+        let authority_dir = root.join("ci-hub/validate");
+        fs::create_dir_all(&runs).unwrap();
+        fs::create_dir_all(&authority_dir).unwrap();
+        fs::write(
+            authority_dir.join("run_registry.py"),
+            include_str!("../validate/run_registry.py"),
+        )
+        .unwrap();
+        let record = runs.join("validate-attributed.json");
+        let current = serde_json::json!({
+            "schema_version": 1,
+            "kind": "validate",
+            "state": "launching",
+            "agent": "attributed-agent",
+            "target": HEX_SHA,
+            "unit": "validate-attributed.service",
+            "repo": "rrnewton/hermit",
+            "checkout": "/tmp/checkout",
+            "source_checkout": "/tmp/source",
+            "temporary_checkout": true,
+            "cargo_home": "/tmp/cargo",
+            "log": "/tmp/log",
+            "pr": null,
+            "started_at": "2026-08-28T07:00:00Z",
+            "parent_checkout_head": HEX_SHA,
+            "producer": "ci-hub/validate/run_registry.py",
+            "admission": "ci-hub validate-lock",
+            "pane_role": "observer-only",
+            "validate_lock_child_deadline_seconds": 3600,
+            "e2e_result_root": "/tmp/e2e",
+            "safe_ci_dag_runner_log_dir": "/tmp/dag",
+            "hermit_run_timeout_seconds": 3300
+        });
+        fs::write(&record, serde_json::to_vec(&current).unwrap()).unwrap();
+        let args = attribution_args(Some(record.clone()));
+        let verified = verify_run_attribution(
+            &root,
+            &args,
+            "0::/user.slice/user-1.slice/validate-attributed.service\n",
+        )
+        .expect("current run identity must be attributable through the shared contract");
+        let owner = ProcessOwner {
+            host: "fixture".into(),
+            boot_id: "boot-fixture".into(),
+            pid: 123,
+            start_ticks: 456,
+        };
+        publish_run_process_identity(&verified.record, &owner).unwrap();
+        let published: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&record).unwrap()).unwrap();
+        assert_eq!(published["process_identity"]["pid"], 123);
+
+        let mut invalid = current;
+        invalid["state"] = serde_json::json!("failed");
+        fs::write(&record, serde_json::to_vec(&invalid).unwrap()).unwrap();
+        let error = verify_run_attribution(
+            &root,
+            &args,
+            "0::/user.slice/user-1.slice/validate-attributed.service\n",
+        )
+        .expect_err("a bench-only state must not enter validation admission");
+        assert!(
+            error.to_string().contains("validation-run-handle-state"),
+            "{error}"
         );
         let _ = fs::remove_dir_all(root);
     }

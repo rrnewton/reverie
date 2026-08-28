@@ -122,6 +122,8 @@ class PressureScheduleTest(unittest.TestCase):
             record = pressure_schedule.run_registry.read_record(
                 root / "ignored" / "validate" / "runs" / "hermit-pressure-test.json"
             )
+            self.assertEqual(record["schema_version"], 1)
+            self.assertEqual(record["kind"], "bench")
             self.assertEqual(record["state"], "running")
             self.assertEqual(record["target"], "a" * 40)
             self.assertEqual(
@@ -235,10 +237,17 @@ class PressureScheduleTest(unittest.TestCase):
                 record,
                 {
                     "schema_version": 1,
+                    "kind": "bench",
                     "state": "running",
                     "unit": f"{pressure_schedule.UNIT}.service",
                     "target": "a" * 40,
+                    "repo": "rrnewton/hermit",
+                    "checkout": str(root / "ignored/ci-hub/pressure-test-worktree"),
+                    "log": str(root / "ignored/ci-hub/pressure-test.log"),
                     "agent": "tick-pressure-test",
+                    "started_at": "2026-08-28T07:00:00Z",
+                    "producer": pressure_schedule.run_registry.PRODUCER,
+                    "admission": "ci-hub validate-lock",
                 },
             )
             calls = []

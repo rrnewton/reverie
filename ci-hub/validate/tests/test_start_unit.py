@@ -340,6 +340,20 @@ class FakeRun:
 
 
 class StartUnitTest(unittest.TestCase):
+    def test_run_handle_kind_is_the_validate_lock_kind(self) -> None:
+        self.assertEqual(
+            "validate",
+            start_unit.validation_kind("rrnewton/hermit", frozen_validate=False),
+        )
+        self.assertEqual(
+            "reverie-validate",
+            start_unit.validation_kind("rrnewton/reverie", frozen_validate=False),
+        )
+        self.assertEqual(
+            "frozen-validate",
+            start_unit.validation_kind("rrnewton/hermit", frozen_validate=True),
+        )
+
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory()
         self.root = Path(self.temporary.name).resolve()
@@ -433,6 +447,8 @@ class StartUnitTest(unittest.TestCase):
         record = start_unit.run_registry.read_record(
             self.root / "ignored/validate/runs/validate-test.json"
         )
+        self.assertEqual(1, record["schema_version"])
+        self.assertEqual("validate", record["kind"])
         self.assertEqual("completed", record["state"])
         self.assertEqual("success", record["result"])
         self.assertEqual("PASSED", record["final_validate_status"])
