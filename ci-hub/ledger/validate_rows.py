@@ -26,7 +26,7 @@ import sys
 from pathlib import Path
 from typing import Iterable
 
-from ledger import read_shard, union_events, validate_event
+from ledger import read_shard, union_events, validate_event, validate_events
 from publisher import retained, spool, spooled
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -641,6 +641,15 @@ def rows(*, root: Path | None = None) -> list[dict]:
     """HistoryRow compatibility view of the one canonical event union."""
     root = (root or repository_root()).resolve()
     items = events(root=root)
+    for index, codes in enumerate(validate_events(items), 1):
+        if codes:
+            event = items[index - 1]
+            if event.get("event_type") == "run.correct":
+                raise ValueError(
+                    f"HistoryRow correction {event.get('event_id')!r} is invalid: "
+                    f"event violates {codes}"
+                )
+            raise ValueError(f"validation event {index} violates {codes}")
     replacements, correction_ids = _legacy_row_corrections(items)
     out: list[dict] = []
     seen: set[str] = set()

@@ -218,6 +218,43 @@ def test_event_fixture_builder_emits_a_well_formed_envelope():
     assert e["producer"]["source"] in ("observed", "reconstructed", "imported")
 
 
+@pytest.mark.parametrize(
+    "field",
+    (
+        "schema",
+        "event_id",
+        "event_type",
+        "emitted_at",
+        "team",
+        "host",
+        "run_id",
+        "producer",
+    ),
+)
+def test_shared_event_type_refuses_each_missing_envelope_field_by_name(field):
+    needs_impl("every envelope field is required by the shared type (§2)")
+    event = result("01A", SHA_1, "pass")
+    del event[field]
+    codes = impl.validate_event(event)
+    assert any(field in code for code in codes), codes
+
+
+def test_shared_event_type_refuses_unknown_event_type_by_name():
+    needs_impl("event_type is the closed five-value vocabulary in §3")
+    event = result("01A", SHA_1, "pass")
+    event["event_type"] = "run.future"
+    codes = impl.validate_event(event)
+    assert any("run.future" in code and "event_type" in code for code in codes), codes
+
+
+def test_shared_event_type_refuses_missing_result_outcome_by_name():
+    needs_impl("run.result requires the normalized outcome in §4.1")
+    event = result("01A", SHA_1, "pass")
+    del event["outcome"]
+    codes = impl.validate_event(event)
+    assert any("run.result omitted outcome" in code for code in codes), codes
+
+
 def test_shard_fixtures_for_two_teams_and_two_machines_are_disjoint_paths(tmp_path):
     """§1: four shards, no shared file — the whole point of the layout."""
     paths = {
@@ -290,7 +327,7 @@ def test_union_is_independent_of_file_and_line_order(tmp_path):
            result("01A", SHA_1, "pass", emitted_at="2026-08-07T01:00:00Z"),
            result("01B", SHA_1, "pass", emitted_at="2026-08-07T02:00:00Z")]
     p1 = write_shard(tmp_path, TEAM_A, HOST_1, "2026-08", evs)
-    p2 = write_shard(tmp_path, TEAM_A, HOST_2, "2026-08", list(reversed(evs)))
+    p2 = write_shard(tmp_path / "replica", TEAM_A, HOST_1, "2026-08", list(reversed(evs)))
     assert impl.union([p1, p2]) == impl.union([p2, p1])
 
 
@@ -310,14 +347,17 @@ def test_identical_duplicate_event_id_dedupes_to_one(tmp_path):
     needs_impl("same event_id with an IDENTICAL body collapses to one event (§5.2)")
     e = result("01A", SHA_1, "pass")
     p1 = write_shard(tmp_path, TEAM_A, HOST_1, "2026-08", [e])
-    p2 = write_shard(tmp_path, TEAM_A, HOST_2, "2026-08", [e])
+    p2 = write_shard(tmp_path / "replica", TEAM_A, HOST_1, "2026-08", [e])
     assert len(impl.union([p1, p2])) == 1
 
 
 def test_conflicting_duplicate_event_id_is_a_hard_error(tmp_path):
     needs_impl("same event_id with a DIFFERENT body raises — never last-writer-wins (§5.2)")
     p1 = write_shard(tmp_path, TEAM_A, HOST_1, "2026-08", [result("01A", SHA_1, "pass")])
-    p2 = write_shard(tmp_path, TEAM_A, HOST_2, "2026-08", [result("01A", SHA_1, "fail")])
+    p2 = write_shard(
+        tmp_path / "replica", TEAM_A, HOST_1, "2026-08",
+        [result("01A", SHA_1, "fail")],
+    )
     with pytest.raises(impl.ConflictingEventId):
         impl.union([p1, p2])
 
@@ -420,6 +460,12 @@ def test_host_must_match_the_shard_path():
     needs_impl("host field disagreeing with the shard path is refused (§7 lint 2)")
     e = result("01A", SHA_1, "pass", host=HOST_2)
     assert "host-path-mismatch" in impl.validate_event(e, f"ledger/{TEAM_A}/{HOST_1}/2026-08.jsonl")
+
+
+def test_team_must_match_the_shard_path():
+    needs_impl("team field disagreeing with the shard path is refused (§7 lint 2)")
+    e = result("01A", SHA_1, "pass", team=TEAM_B)
+    assert "team-path-mismatch" in impl.validate_event(e, f"ledger/{TEAM_A}/{HOST_1}/2026-08.jsonl")
 
 
 def test_owner_home_path_in_any_string_field_is_rejected():

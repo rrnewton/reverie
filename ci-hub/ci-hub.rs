@@ -58,6 +58,8 @@ mod history_queries;
 mod landing_lock;
 #[path = "lib/lease.rs"]
 mod lease;
+#[path = "lib/ledger_event.rs"]
+mod ledger_event;
 #[path = "lib/measured.rs"]
 mod measured;
 #[path = "lib/published_receipt.rs"]
@@ -80,6 +82,7 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 use history_queries::{
     CellEvidenceCache, FirstBadOutcome, HistoryQueryEngine, NewestGreenCache, NewestGreenOutcome,
 };
+use ledger_event::LedgerEvent;
 use published_receipt::{
     IdentityRequirement, ProducerDefinitionEvidence, ProducerDefinitionExpectation,
     PublishedValidationReceipt,
@@ -5204,21 +5207,59 @@ fn remote_ledger_records_for(
             .bounded_output()
             .map_err(|source| format!("git show {git_ref}:{shard} failed to launch: {source}"))?;
         if !blob.status.success() {
-            continue;
+            return Err(format!(
+                "git show {git_ref}:{shard} exited {}: {}",
+                blob.status.code().unwrap_or(-1),
+                String::from_utf8_lossy(&blob.stderr).trim()
+            ));
         }
-        for line in String::from_utf8_lossy(&blob.stdout).lines() {
+        let path = Path::new(shard);
+        let shard_host = path
+            .parent()
+            .and_then(Path::file_name)
+            .and_then(OsStr::to_str)
+            .ok_or_else(|| format!("remote ledger shard has no host component: {shard}"))?;
+        let shard_month = path
+            .file_stem()
+            .and_then(OsStr::to_str)
+            .ok_or_else(|| format!("remote ledger shard has no month component: {shard}"))?;
+        for (index, line) in String::from_utf8_lossy(&blob.stdout).lines().enumerate() {
             let line = line.trim();
             if line.is_empty() {
                 continue;
             }
-            let Ok(event) = serde_json::from_str::<serde_json::Value>(line) else {
-                continue;
-            };
+            let event = LedgerEvent::parse(line.as_bytes())
+                .and_then(|event| {
+                    event.validate()?;
+                    Ok(event)
+                })
+                .map_err(|error| format!("{git_ref}:{shard}:{}: {error}", index + 1))?;
+            if event.team != team {
+                return Err(format!(
+                    "{git_ref}:{shard}:{}: event team {:?} differs from shard team {team:?}",
+                    index + 1,
+                    event.team
+                ));
+            }
+            if event.host != shard_host {
+                return Err(format!(
+                    "{git_ref}:{shard}:{}: event host {:?} differs from shard host {shard_host:?}",
+                    index + 1,
+                    event.host
+                ));
+            }
+            if event.emitted_at.get(..7) != Some(shard_month) {
+                return Err(format!(
+                    "{git_ref}:{shard}:{}: event month differs from shard month {shard_month:?}",
+                    index + 1
+                ));
+            }
             let commit = event
-                .get("legacy_row")
+                .legacy_row
+                .as_ref()
                 .and_then(|row| row.get("commit"))
-                .or_else(|| event.get("commit"))
-                .and_then(serde_json::Value::as_str);
+                .and_then(serde_json::Value::as_str)
+                .or(event.commit.as_deref());
             if commit == Some(sha) {
                 records += 1;
             }
@@ -8182,12 +8223,38 @@ mod tests {
         let shard = root.join("ledger/hermit/devbig014");
         std::fs::create_dir_all(&shard).unwrap();
         let genuine = serde_json::json!({
+            "schema": "validate-ledger/v1",
             "event_id": "genuine",
+            "event_type": "run.result",
+            "emitted_at": "2026-08-28T03:00:00Z",
+            "team": "hermit",
+            "host": "devbig014",
+            "run_id": "genuine",
+            "producer": {
+                "source": "observed",
+                "tool": "fixture",
+                "tool_version": "1"
+            },
+            "commit": target,
+            "outcome": "fail",
             "legacy_row": {"commit": target, "result": "fail", "profile": "full"},
         });
         // Decoy: its OWN commit is `other`; the target only appears as base_sha.
         let decoy = serde_json::json!({
+            "schema": "validate-ledger/v1",
             "event_id": "decoy",
+            "event_type": "run.result",
+            "emitted_at": "2026-08-28T03:01:00Z",
+            "team": "hermit",
+            "host": "devbig014",
+            "run_id": "decoy",
+            "producer": {
+                "source": "observed",
+                "tool": "fixture",
+                "tool_version": "1"
+            },
+            "commit": other,
+            "outcome": "pass",
             "legacy_row": {"commit": other, "base_sha": target, "result": "pass"},
         });
         std::fs::write(shard.join("2026-08.jsonl"), format!("{genuine}\n{decoy}\n")).unwrap();
@@ -8239,6 +8306,18 @@ mod tests {
             CANONICAL_VALIDATE_REPO,
         )
         .is_err());
+
+        // A malformed line is not absence. The old Value reader skipped it and
+        // returned zero, which let a broken remote ledger confirm a local
+        // NOT-VALIDATED claim.
+        let mut malformed = genuine;
+        malformed.as_object_mut().unwrap().remove("event_id");
+        std::fs::write(shard.join("2026-08.jsonl"), format!("{malformed}\n")).unwrap();
+        git(&["add", "-A"]);
+        git(&["commit", "-qm", "malformed ledger fixture"]);
+        let error =
+            remote_ledger_records_for(&root, "HEAD", target, CANONICAL_VALIDATE_REPO).unwrap_err();
+        assert!(error.contains("event_id"), "{error}");
         std::fs::remove_dir_all(&root).ok();
     }
 

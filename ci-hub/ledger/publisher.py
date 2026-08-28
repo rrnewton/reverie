@@ -42,10 +42,11 @@ from ledger import (  # noqa: F401 - re-exported for callers
     MalformedEvent,
     append_events,
     parse_line,
+    read_event_shard,
     read_shard,
     shard_path,
     union_events,
-    validate_event,
+    validate_events,
     verify_append_only,
 )
 
@@ -224,21 +225,24 @@ def _store_shard(store: str, team: str, host: str, month: str) -> str:
     raise PublishRefused(f"unknown store {store!r}; expected one of {STORES}")
 
 
-def _validate_store_event(store: str, event: dict, relative: str) -> None:
+def _validate_store_events(
+    store: str, events: Sequence[dict], relative: str
+) -> None:
     if store == "ledger":
-        codes = validate_event(event, relative)
-        if codes:
-            raise PublishRefused(
-                f"{relative}: event {event.get('event_id')!r} violates {codes}"
-            )
+        for index, codes in enumerate(validate_events(events, relative), 1):
+            if codes:
+                raise PublishRefused(
+                    f"{relative}:{index}: event {events[index - 1].get('event_id')!r} "
+                    f"violates {codes}"
+                )
         return
     if store == "series":
         series_store = _series_store()
         try:
-            series_store.validate_row(event)
+            series_store.validate_rows(events)
         except series_store.SeriesError as error:
             raise PublishRefused(
-                f"{relative}: event {event.get('event_id')!r} is invalid: {error}"
+                f"{relative}: series event batch is invalid: {error}"
             ) from error
         return
     raise PublishRefused(f"unknown store {store!r}; expected one of {STORES}")
@@ -292,7 +296,7 @@ def stage_tracked(
     for path in sorted(source_root.glob(pattern)):
         relative = path.relative_to(source_root)
         team, host = relative.parts[1], relative.parts[2]
-        events = read_shard(path)
+        events = read_event_shard(path)
         if not events:
             continue
         target = spool(spool_dir, team, host, events)
@@ -314,10 +318,12 @@ def merge_shard(remote_text: str, events: Sequence[dict]) -> str:
     remote_lines = [ln for ln in remote_text.splitlines() if ln.strip()]
     if remote_text and not remote_text.endswith("\n"):
         raise MalformedEvent("remote shard's final line is truncated; refusing to append")
+    remote_events = [parse_line(line) for line in remote_lines]
+    _validate_store_events("ledger", remote_events, "remote ledger shard")
+    _validate_store_events("ledger", events, "proposed ledger shard append")
     have = {ln for ln in remote_lines}
     have_by_id: dict[str, dict] = {}
-    for line in remote_lines:
-        event = parse_line(line)
+    for event in remote_events:
         have_by_id[str(event.get("event_id", ""))] = event
     additions = []
     for event in events:
@@ -342,7 +348,9 @@ def merge_shard(remote_text: str, events: Sequence[dict]) -> str:
 def _events_from_text(text: str, label: str) -> list[dict]:
     if text and not text.endswith("\n"):
         raise PublishRefused(f"{label}: final line is truncated")
-    return [parse_line(line) for line in text.splitlines() if line.strip()]
+    events = [parse_line(line) for line in text.splitlines() if line.strip()]
+    _validate_store_events("ledger", events, label)
+    return events
 
 
 def split_published_to_match_source(
@@ -544,15 +552,7 @@ def publish(
     # rather than being written into shared history and linted afterwards.
     for (team, host, month), events in pending.items():
         rel = _store_shard(store, team, host, month)
-        if store == "series":
-            series_store = _series_store()
-            try:
-                series_store.validate_rows(events)
-            except series_store.SeriesError as error:
-                raise PublishRefused(f"{rel}: {error}") from error
-        else:
-            for event in events:
-                _validate_store_event(store, event, rel)
+        _validate_store_events(store, events, rel)
 
     last_error = ""
     for attempt in range(1, attempts + 1):
@@ -657,7 +657,8 @@ def _source_root_event_ids(source_root: Path, *, store: str = "ledger") -> set[s
         raise PublishRefused(f"unknown store {store!r}; expected one of {STORES}")
     pattern = f"{store}/*/*/[0-9][0-9][0-9][0-9]-[0-9][0-9].jsonl"
     for path in sorted(Path(source_root).glob(pattern)):
-        for event in read_shard(path):
+        reader = read_event_shard if store == "ledger" else read_shard
+        for event in reader(path):
             identifier = event.get("event_id")
             if isinstance(identifier, str) and identifier:
                 present.add(identifier)
@@ -681,7 +682,8 @@ def reap_retained(
     durable = _source_root_event_ids(Path(source_root), store=store)
     reaped = 0
     for path in sorted(directory.glob("*.jsonl")):
-        events = read_shard(path)
+        reader = read_event_shard if store == "ledger" else read_shard
+        events = reader(path)
         identifiers = {
             event.get("event_id")
             for event in events

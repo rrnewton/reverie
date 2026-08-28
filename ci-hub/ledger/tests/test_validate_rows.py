@@ -1,6 +1,7 @@
 import copy
-import json
 import hashlib
+import json
+import os
 import shutil
 import subprocess
 import sys
@@ -714,6 +715,7 @@ def test_ignored_ephemeral_checkout_is_redacted_without_weakening_guard(
 
 def test_linked_worktree_cli_filters_exact_source_row_and_refuses_ambiguity(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ):
     primary = tmp_path / "dev-hermit"
     repository(primary)
@@ -731,6 +733,10 @@ def test_linked_worktree_cli_filters_exact_source_row_and_refuses_ambiguity(
         Path("ci-hub/validate/qualifying-receipt.json"),
     )
     repository_root = HERE.parents[2]
+    monkeypatch.setenv(
+        "CI_HUB_LEDGER_EVENT_CHECKER",
+        str(repository_root / "ci-hub/ledger/check-ledger-events.rs"),
+    )
     for relative in fixture_files:
         destination = primary / relative
         destination.parent.mkdir(parents=True, exist_ok=True)
@@ -776,6 +782,10 @@ def test_linked_worktree_cli_filters_exact_source_row_and_refuses_ambiguity(
     def ledger_cli(
         command: str, item: dict | None = None
     ) -> subprocess.CompletedProcess[str]:
+        environment = os.environ.copy()
+        environment["CI_HUB_LEDGER_EVENT_CHECKER"] = str(
+            repository_root / "ci-hub/ledger/check-ledger-events.rs"
+        )
         return subprocess.run(
             [sys.executable, str(ledger_tool), command],
             cwd=linked,
@@ -783,6 +793,7 @@ def test_linked_worktree_cli_filters_exact_source_row_and_refuses_ambiguity(
             check=False,
             capture_output=True,
             text=True,
+            env=environment,
         )
 
     for item in [*decoys, source]:

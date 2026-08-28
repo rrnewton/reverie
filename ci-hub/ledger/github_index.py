@@ -61,10 +61,9 @@ from collections.abc import Callable, Iterable, Sequence
 from pathlib import Path
 from typing import Any
 
-from ledger import ENVELOPE_VERSION
 from ledger import fold
 from ledger import union_events
-from ledger import validate_event
+from ledger import validate_events
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
 import bounded_capture  # noqa: E402
@@ -83,11 +82,6 @@ INDEX_FORMAT = "hermit/validate-index/v1"
 MAX_BODY = 65535
 
 _FENCE = re.compile(r"```json\n(.*?)\n```", re.S)
-
-#: An FQDN anywhere in the host. `validate_event` already rejects a dotted host
-#: via `fqdn-host`; this exists for the framing-level check in `parse_comment`,
-#: which runs on UNTRUSTED bodies that never went through our writer.
-_FQDN = re.compile(r"[A-Za-z0-9-]+\.[A-Za-z0-9-]+\.[A-Za-z]")
 
 _SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 
@@ -221,8 +215,9 @@ def parse_comment(
         return None, None, "no-event-object"
     receipt = payload.get("receipt") if isinstance(payload.get("receipt"), dict) else None
 
-    if event.get("schema") != ENVELOPE_VERSION:
-        return None, None, f"unknown-envelope-version: {event.get('schema')!r}"
+    codes = validate_events([event])[0]
+    if codes:
+        return None, None, codes[0]
 
     # WRONG-SHA BINDING. The event's own target must equal the commit the comment
     # is physically attached to. Without this, a perfectly valid index entry
@@ -231,11 +226,6 @@ def parse_comment(
     if target != commit_sha:
         return None, None, f"target-sha-mismatch: event {target} vs comment on {commit_sha}"
 
-    host = str(event.get("host") or "")
-    if not host or "." in host or _FQDN.search(host):
-        return None, None, f"fqdn-host: {host!r}"
-    if not event.get("event_id"):
-        return None, None, "missing-event-id"
     return event, receipt, "ok"
 
 
@@ -408,8 +398,7 @@ def publish(
 
     # WRITE-SIDE GATE. One verifier, the same one the shards use, so an event
     # that may not be written locally may not be published either.
-    for event in events:
-        codes = validate_event(event)
+    for event, codes in zip(events, validate_events(events)):
         if codes:
             raise PrivacyRefusal(
                 f"refusing to publish event {event.get('event_id')}: {','.join(codes)}. "

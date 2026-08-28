@@ -22,18 +22,37 @@ silently disagree.
 
 | module | role |
 | --- | --- |
-| `ledger.py` | schema semantics — parse, lint, union, fold, query, append |
+| `../lib/ledger_event.rs` | complete `validate-ledger/v1` envelope and closed values |
+| `check-ledger-events.rs` | Python-to-Rust boundary for the shared envelope type |
+| `ledger.py` | storage-context semantics — path/reference lint, union, fold, query, append |
 | `publisher.py` | getting events into shared Git history without losing any |
+
+The two production writers are `validate_rows.py record` and
+`ledger.py migrate_legacy`. The production readers that can publish or make a
+validation conclusion are:
+
+1. `ledger.py union`, for validated shard union;
+2. `publisher.py`, for staging, preflight, remote merge, split, and retention;
+3. `validate_rows.py rows`, including correction handling;
+4. `github_index.py`, when reading or publishing the per-SHA cache; and
+5. `ci-hub.rs remote_ledger_records_for`, for remote-freshness conclusions.
+
+`validate_rows.py events` and the spool readers remain raw inspection surfaces
+so a malformed append-only event stays visible. Every path that promotes those
+bytes into a row, a publication, a cache entry, or a freshness conclusion must
+first pass the shared type.
 
 `ledger.py` and its 38 invariant tests landed first, in
 `ci-hub/ledger: deterministic global union and green/timeline/bisect queries`.
 This document and `publisher.py` were added on top of it.
 
-`validate_event` is the **linter** and `fold` is the **reader**, deliberately
-separate. The linter refuses an enrichment that overwrites a set value; the
-reader applies whatever is in the log, in order, without re-litigating it. A
-reader that enforced the lint could not replay history that was already
-written — and the real corpus contains an eleven-deep enrichment chain.
+The shared Rust type owns the complete envelope and its closed values.
+`validate_event` adds storage-path and cross-event lint, while `fold` remains
+the replay reader; those responsibilities are deliberately separate. The
+linter refuses an enrichment that overwrites a set value, but the reader
+applies whatever is in the log, in order, without re-litigating it. A reader
+that enforced the lint could not replay history that was already written — and
+the real corpus contains an eleven-deep enrichment chain.
 
 ## Events, not rows
 

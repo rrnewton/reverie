@@ -33,6 +33,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import subprocess
 from pathlib import Path
 from typing import Any, Callable, Iterable, Sequence
 
@@ -99,14 +100,34 @@ def _month_of(when: Any) -> str:
     raise ValueError(f"cannot derive a YYYY-MM shard month from {when!r}")
 
 
+def _shard_coordinates(path: Any) -> tuple[str | None, str | None, str | None]:
+    parts = Path(str(path)).parts
+    for root in ("ledger-recovery", "ledger"):
+        if root not in parts:
+            continue
+        index = len(parts) - 1 - tuple(reversed(parts)).index(root)
+        remaining = parts[index + 1:]
+        if root == "ledger" and len(remaining) == 3:
+            team, host, filename = remaining
+            month = Path(filename).stem
+        elif root == "ledger-recovery" and len(remaining) == 4:
+            team, host, month, _filename = remaining
+        else:
+            continue
+        return team, host, month if re.fullmatch(r"\d{4}-\d{2}", month) else None
+    return None, None, None
+
+
 def _shard_month(path: Any) -> str | None:
-    stem = Path(str(path)).stem
-    return stem if re.fullmatch(r"\d{4}-\d{2}", stem) else None
+    return _shard_coordinates(path)[2]
 
 
 def _shard_host(path: Any) -> str | None:
-    parts = Path(str(path)).parts
-    return parts[-2] if len(parts) >= 2 else None
+    return _shard_coordinates(path)[1]
+
+
+def _shard_team(path: Any) -> str | None:
+    return _shard_coordinates(path)[0]
 
 
 # --------------------------------------------------------------------- parse
@@ -138,6 +159,61 @@ def read_shard(path: Any) -> list[dict]:
             f"truncated (a writer died mid-append); refusing to parse it as whole"
         )
     return [parse_line(line) for line in text.splitlines() if line.strip()]
+
+
+def _shared_type_codes(events: Sequence[dict]) -> list[list[str]]:
+    """Check envelope shape and closed values with the producer-owned type."""
+    if not events:
+        return []
+    # The override is a fixture seam for isolated linked-worktree tests whose
+    # deliberately minimal repository copy does not include this checker.
+    checker = Path(
+        os.environ.get(
+            "CI_HUB_LEDGER_EVENT_CHECKER",
+            str(Path(__file__).resolve().with_name("check-ledger-events.rs")),
+        )
+    )
+    try:
+        result = subprocess.run(
+            [str(checker)],
+            input="".join(
+                json.dumps(event, sort_keys=True, separators=(",", ":")) + "\n"
+                for event in events
+            ),
+            capture_output=True,
+            text=True,
+            timeout=300,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        return [[f"shared-ledger-event-check-unavailable: {error}"]] + [
+            [] for _ in events[1:]
+        ]
+    if result.returncode == 0:
+        return [[] for _ in events]
+
+    detail = result.stderr.strip() or result.stdout.strip() or "no output"
+    match = re.search(r"stdin line (\d+): (.*)", detail, re.DOTALL)
+    if not match:
+        return [[f"shared-ledger-event-check-refused: {detail}"]] + [
+            [] for _ in events[1:]
+        ]
+    index = int(match.group(1)) - 1
+    codes = [[] for _ in events]
+    if 0 <= index < len(codes):
+        codes[index].append(match.group(2).strip())
+    else:
+        codes[0].append(f"shared-ledger-event-check-refused: {detail}")
+    return codes
+
+
+def read_event_shard(path: Any) -> list[dict]:
+    """Read and validate one validation-ledger shard, refusing any bad line."""
+    events = read_shard(path)
+    for index, codes in enumerate(validate_events(events, path), 1):
+        if codes:
+            raise MalformedEvent(f"{path}:{index}: event violates {codes}")
+    return events
 
 
 # --------------------------------------------------------------------- union
@@ -178,7 +254,7 @@ def union(paths: Sequence[Any]) -> list[dict]:
     """Read every shard and merge deterministically (§5)."""
     events: list[dict] = []
     for path in paths:
-        events.extend(read_shard(path))
+        events.extend(read_event_shard(path))
     return union_events(events)
 
 
@@ -322,20 +398,17 @@ def commit_gaps(runs: dict[str, dict], commits: Sequence[str]) -> list[str]:
 # ------------------------------------------------------------------ validate
 
 
-def validate_event(
+def _contextual_event_codes(
     event: dict,
     shard: Any = None,
     *,
     prior: dict | None = None,
     known_ids: set[str] | None = None,
 ) -> list[str]:
-    """Return the §7 violation codes for one event; empty means clean.
-
-    Returns codes rather than raising so a linter can report every problem with
-    a line at once instead of stopping at the first.
-    """
     codes: list[str] = []
 
+    # Retain the stable lint codes consumed by diagnostics. The shared Rust
+    # type is the shape authority; these are names for two of its refusals.
     if event.get("schema") != ENVELOPE_VERSION:
         codes.append("unknown-envelope-version")
 
@@ -344,6 +417,10 @@ def validate_event(
         codes.append("fqdn-host")
 
     if shard is not None:
+        shard_team = _shard_team(shard)
+        team = str(event.get("team", ""))
+        if shard_team and team and team != shard_team:
+            codes.append("team-path-mismatch")
         shard_host = _shard_host(shard)
         if shard_host and host and host != shard_host:
             codes.append("host-path-mismatch")
@@ -373,6 +450,44 @@ def validate_event(
                 codes.append("enrich-overwrites-set-value")
                 break
 
+    return codes
+
+
+def validate_events(events: Sequence[dict], shard: Any = None) -> list[list[str]]:
+    """Return every intrinsic and storage-context violation per event.
+
+    The producer-owned Rust type owns the complete envelope, event-type,
+    producer, and outcome contract. Python adds only facts that need the
+    storage path or another event. Keeping the two responsibilities separate
+    prevents a Python key list from becoming a second envelope definition.
+    """
+    items = list(events)
+    shared_codes = _shared_type_codes(items)
+    codes: list[list[str]] = []
+    for index, event in enumerate(items):
+        codes.append(_contextual_event_codes(event, shard) + shared_codes[index])
+    return codes
+
+
+def validate_event(
+    event: dict,
+    shard: Any = None,
+    *,
+    prior: dict | None = None,
+    known_ids: set[str] | None = None,
+) -> list[str]:
+    """Return the §7 violation codes for one event; empty means clean.
+
+    Returns codes rather than raising so a linter can report every problem with
+    a line at once instead of stopping at the first.
+    """
+    codes = _contextual_event_codes(
+        event,
+        shard,
+        prior=prior,
+        known_ids=known_ids,
+    )
+    codes.extend(_shared_type_codes([event])[0])
     return codes
 
 
@@ -497,6 +612,11 @@ def migrate_legacy(
                 event["enriches"] = previous_id
             previous_id = event_id
             events[row_index] = event
+    for index, codes in enumerate(validate_events(events), 1):
+        if codes:
+            raise MalformedEvent(
+                f"migrated legacy event {index} violates {codes}"
+            )
     return events
 
 
