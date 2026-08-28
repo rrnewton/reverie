@@ -144,6 +144,26 @@ def test_recorded_classes_survive_a_reaped_log(tmp_path):
     assert record["classes"] == row["failed_substep_classes"]
 
 
+def test_typed_gate_class_survives_a_reaped_log(tmp_path):
+    row = _red_row("feedface", "2026-08-04T20:01:30Z", str(tmp_path / "gone.log"))
+    row["gates"] = [
+        {
+            "name": "build.runtime_release",
+            "result": "fail",
+            "failure_class": "understood_infrastructure_failure",
+            "failure_detail": "malformed archive",
+        }
+    ]
+    record = attribute_row(row)
+    assert record["log_status"] == "missing"
+    [classification] = record["classes"]
+    assert classification["node"] == "build.runtime_release"
+    assert classification["failure_class"] == "understood_infrastructure_failure"
+    assert classification["fault_class"] == "infrastructure"
+    assert classification["infra_signature"] == "malformed archive"
+    assert classification["first_error_line"] is None
+
+
 def test_recorded_classes_win_over_a_surviving_log(tmp_path):
     log = _log(tmp_path, "other.log", "test.from-log", "error: different")
     row = _red_row("feedface", "2026-08-04T20:02:00Z", str(log))

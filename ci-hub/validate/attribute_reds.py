@@ -39,6 +39,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from failure_evidence import (  # noqa: E402
     DEFAULT_REGISTRY,
     classify_failed_substeps,
+    failed_substep_classes_from_gates,
     failed_substep_classes_from_row,
     flaky_cells,
 )
@@ -257,6 +258,11 @@ def attribute_row(
     commit = str(row.get("commit") or "")
     log_file = row.get("log_file")
     recorded_classes = failed_substep_classes_from_row(row)
+    gate_classes = (
+        failed_substep_classes_from_gates(row, flaky_registry=registry or set())
+        if recorded_classes is None
+        else None
+    )
     record: dict[str, object] = {
         "commit": commit,
         "finished_at": row.get("finished_at"),
@@ -265,7 +271,9 @@ def attribute_row(
         "failed_gates": _failed_gate_names(row),
         "log_file": log_file,
         "log_status": "missing",
-        "classes": recorded_classes or [],
+        "classes": (
+            recorded_classes if recorded_classes is not None else gate_classes or []
+        ),
         # Per-node fallback that does NOT need the log. Always populated, so a
         # row whose log was reaped still says which node failed and how, rather
         # than degrading to the flat `failed_gates` name list.
@@ -280,7 +288,7 @@ def attribute_row(
                 text = None
             if text is not None:
                 record["log_status"] = "present"
-                if recorded_classes is None:
+                if recorded_classes is None and gate_classes is None:
                     record["classes"] = classify_failed_substeps(
                         text, flaky_registry=registry or set()
                     )

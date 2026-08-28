@@ -76,6 +76,7 @@
 //! describes the actual commit, not a dirty tree (the tree is not the commit).
 
 use crate::records::HistoryRow;
+use hermit_manifest_plan::runner::FailureClass;
 use std::collections::BTreeSet;
 
 /// Logical canonical ledger root relative to the workspace. Consumers never
@@ -97,10 +98,10 @@ pub enum Verdict {
     /// A red exists, but its execution conditions are missing, contended, or
     /// known-flaky and lack the required solo `-j 4` confirmation.
     NeedsRerun,
-    /// A red whose gates could not run at all (an ENVIRONMENT fault, not a
-    /// product defect): a command-not-found storm (all-or-most failing gates at
-    /// exit 127) or a sub-second collapse where every gate failed. Nothing about
-    /// the product was actually exercised, so it is re-runnable, never FAILED.
+    /// A red whose producer reports only understood infrastructure,
+    /// prerequisite, or no-result classes. Historical rows without typed
+    /// classes retain the command-not-found/sub-second fallback. Nothing about
+    /// the product was established, so it is re-runnable, never FAILED.
     NoResult,
     /// No qualifying record: none at all, or only dirty/subset/unanchored runs.
     NotValidated,
@@ -361,13 +362,43 @@ pub fn failure_disposition(row: &HistoryRow, sha: &str) -> FailureDisposition {
     });
     let failed_gates: Vec<_> = row.gates.iter().filter(|gate| gate_is_red(gate)).collect();
 
-    // An environment fault (command-not-found storm, sub-second collapse) is
-    // checked FIRST: its gates could not run, so the red carries no information
-    // about the commit. This is the most specific reading and must win over the
-    // completeness/condition logic below — otherwise, once the producer emits
-    // conditions, a 127-storm with full profile + bound origin would launder
-    // into a durable FAILED. It is re-runnable, never FAILED.
-    if is_env_fault_red(row, &failed_gates) {
+    // Current rows carry the producer's closed class on every terminal failed
+    // gate. Once one failed gate carries it, all must: a partial set cannot
+    // silently default a sibling to product or infrastructure. Historical rows
+    // have none and retain the narrow fallback below. Unknown future values stay
+    // deserializable in the extension map but earn no authority here.
+    let mut typed_classes_present = 0usize;
+    let mut typed_product_failure = false;
+    for gate in &failed_gates {
+        match gate.failure_class() {
+            Err(_) => return FailureDisposition::NeedsRerun,
+            Ok(None) => {}
+            Ok(Some(failure_class)) => {
+                typed_classes_present += 1;
+                match failure_class {
+                    FailureClass::ProductFailure => typed_product_failure = true,
+                    FailureClass::UnderstoodInfrastructureFailure
+                    | FailureClass::UnderstoodPrerequisiteFailure
+                    | FailureClass::NoResult => {}
+                }
+            }
+        }
+    }
+    if typed_classes_present > 0 {
+        if typed_classes_present != failed_gates.len() {
+            return FailureDisposition::NeedsRerun;
+        }
+        if !typed_product_failure {
+            return FailureDisposition::NoResult;
+        }
+    }
+
+    // Historical rows have no producer class. Preserve their narrow environment
+    // fallback: a command-not-found storm or sub-second collapse exercised
+    // nothing about the product and is re-runnable, never FAILED. Current rows
+    // never reach this text/exit/timing proxy because their typed class above is
+    // authoritative.
+    if typed_classes_present == 0 && is_env_fault_red(row, &failed_gates) {
         return FailureDisposition::NoResult;
     }
 
@@ -794,6 +825,65 @@ mod tests {
         let assessment = assess(&rows, PASS_SHA);
         assert_eq!(assessment.verdict, Verdict::Validated);
         assert_eq!(assessment.failed_records, 0);
+    }
+
+    #[test]
+    fn typed_gate_failure_class_decides_without_exit_or_timing_proxies() {
+        for failure_class in [
+            FailureClass::UnderstoodInfrastructureFailure,
+            FailureClass::UnderstoodPrerequisiteFailure,
+            FailureClass::NoResult,
+        ] {
+            let mut non_product = complete_failure(PASS_SHA);
+            non_product.gates[0].extra.insert(
+                "failure_class".into(),
+                serde_json::json!(failure_class.as_str()),
+            );
+            assert_eq!(
+                failure_disposition(&non_product, PASS_SHA),
+                FailureDisposition::NoResult
+            );
+        }
+
+        let mut product = complete_failure(PASS_SHA);
+        product.gates[0].extra.insert(
+            "failure_class".into(),
+            serde_json::json!(FailureClass::ProductFailure.as_str()),
+        );
+        assert_eq!(
+            failure_disposition(&product, PASS_SHA),
+            FailureDisposition::Failed
+        );
+    }
+
+    #[test]
+    fn incomplete_or_unknown_typed_gate_classes_need_rerun() {
+        let mut partial = complete_failure(PASS_SHA);
+        partial.gates[0].extra.insert(
+            "failure_class".into(),
+            serde_json::json!(FailureClass::ProductFailure.as_str()),
+        );
+        let mut sibling = partial.gates[0].clone();
+        sibling.name = "test.second".into();
+        sibling.extra.remove("failure_class");
+        partial.gates.push(sibling);
+        partial.checks = Some(6);
+        partial.gates_run = Some(6);
+        partial.gates_expected = Some(6);
+        partial.failures = Some(2);
+        assert_eq!(
+            failure_disposition(&partial, PASS_SHA),
+            FailureDisposition::NeedsRerun
+        );
+
+        let mut unknown = complete_failure(PASS_SHA);
+        unknown.gates[0]
+            .extra
+            .insert("failure_class".into(), serde_json::json!("future_failure"));
+        assert_eq!(
+            failure_disposition(&unknown, PASS_SHA),
+            FailureDisposition::NeedsRerun
+        );
     }
 
     #[test]

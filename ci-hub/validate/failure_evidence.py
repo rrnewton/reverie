@@ -40,6 +40,50 @@ import validate_rows as canonical_ledger  # noqa: E402
 
 
 DEFAULT_REGISTRY = Path(__file__).with_name("flaky-cells.json")
+FAILURE_CLASS_SCHEMA = (
+    Path(__file__).resolve().parents[2]
+    / "hermit"
+    / "ci"
+    / "manifest-plan"
+    / "failure-class-schema.json"
+)
+
+
+def _shared_failure_classes() -> frozenset[str]:
+    try:
+        value = json.loads(FAILURE_CLASS_SCHEMA.read_text())
+    except (OSError, json.JSONDecodeError) as error:
+        raise RuntimeError(
+            f"cannot read shared failure class schema {FAILURE_CLASS_SCHEMA}: {error}"
+        ) from error
+    if not isinstance(value, Mapping) or set(value) != {"schema", "values"}:
+        raise RuntimeError("shared failure class schema has inexact fields")
+    if value["schema"] != 1:
+        raise RuntimeError(
+            f"shared failure class schema has unsupported schema {value['schema']!r}"
+        )
+    values = value["values"]
+    if (
+        not isinstance(values, list)
+        or not values
+        or any(not isinstance(item, str) or not item for item in values)
+        or len(set(values)) != len(values)
+    ):
+        raise RuntimeError("shared failure class schema values must be unique strings")
+    return frozenset(values)
+
+
+_SHARED_FAILURE_CLASSES = _shared_failure_classes()
+_SHARED_TO_FAULT_CLASS = {
+    "product_failure": "code",
+    "understood_infrastructure_failure": "infrastructure",
+    "understood_prerequisite_failure": "host-environment",
+    "no_result": "no-result",
+}
+if frozenset(_SHARED_TO_FAULT_CLASS) != _SHARED_FAILURE_CLASSES:
+    raise RuntimeError(
+        "failure class mapping does not cover the shared failure class schema"
+    )
 
 # A timed-out node burning a full core for its whole allowance is a LIVELOCK; one
 # that spent the allowance waiting is CONTENTION. They demand opposite fixes.
@@ -81,12 +125,22 @@ class FailedSubstepClass(TypedDict):
     node: str
     group: str
     sub_step_class: Literal["dependency-build", "lane-run"]
-    fault_class: Literal["infrastructure", "host-environment", "code"]
+    fault_class: Literal[
+        "infrastructure", "host-environment", "code", "no-result"
+    ]
     infra_signature: str | None
     first_error_line: str | None
     known_flaky: bool
     # Historical rows predate each additive field. Missing remains readable;
     # present values must satisfy the complete current shape.
+    failure_class: NotRequired[
+        Literal[
+            "product_failure",
+            "understood_infrastructure_failure",
+            "understood_prerequisite_failure",
+            "no_result",
+        ]
+    ]
     host_env_signature: NotRequired[str | None]
     timing: NotRequired[FailedSubstepTiming]
 
@@ -225,6 +279,14 @@ def failed_substep_classes_from_row(
                 f"failed_substep_classes[{index}].fault_class has unknown value "
                 f"{item['fault_class']!r}"
             )
+        if (
+            "failure_class" in item
+            and item["failure_class"] not in _SHARED_FAILURE_CLASSES
+        ):
+            raise ValueError(
+                f"failed_substep_classes[{index}].failure_class has unknown value "
+                f"{item['failure_class']!r}"
+            )
         for field in ("infra_signature", "first_error_line", "host_env_signature"):
             if field in item and not _optional_string(item[field]):
                 raise ValueError(
@@ -240,6 +302,74 @@ def failed_substep_classes_from_row(
             parsed["timing"] = _validate_failed_substep_timing(item["timing"], index)
         result.append(cast(FailedSubstepClass, parsed))
     return result
+
+
+def gate_failure_classes_from_row(
+    row: Mapping[str, object],
+) -> dict[str, tuple[str, str | None]] | None:
+    """Read current producer-owned gate classes, or identify a historical row.
+
+    No failed gate carrying the field means the row predates the contract and
+    may use the historical log classifier. Once one failed gate carries it,
+    every failed gate must carry a recognized value; partial current evidence
+    refuses instead of letting an untyped sibling default to ``code``.
+    """
+    gates = row.get("gates")
+    if not isinstance(gates, list):
+        return None
+    failed: list[Mapping[str, object]] = []
+    for index, gate in enumerate(gates):
+        if not isinstance(gate, Mapping):
+            continue
+        outcome = str(gate.get("result") or gate.get("kind") or "")
+        if gate.get("aborted") is True or outcome not in {
+            "fail",
+            "failed",
+            "timeout",
+            "no_result",
+            "no-result",
+        }:
+            continue
+        name = gate.get("name")
+        if not isinstance(name, str) or not name:
+            raise ValueError(f"gates[{index}].name must be a non-empty string")
+        failed.append(gate)
+    if not failed or not any("failure_class" in gate for gate in failed):
+        return None
+
+    classes: dict[str, tuple[str, str | None]] = {}
+    for gate in failed:
+        name = cast(str, gate["name"])
+        failure_class = gate.get("failure_class")
+        if failure_class not in _SHARED_FAILURE_CLASSES:
+            raise ValueError(
+                f"gate {name!r} failure_class has unknown value {failure_class!r}"
+            )
+        detail = gate.get("failure_detail")
+        if detail is not None and (not isinstance(detail, str) or not detail):
+            raise ValueError(
+                f"gate {name!r} failure_detail must be a non-empty string or absent"
+            )
+        if name in classes:
+            raise ValueError(f"duplicate failed gate failure_class for {name!r}")
+        classes[name] = (cast(str, failure_class), cast(str | None, detail))
+    return classes
+
+
+def failed_substep_classes_from_gates(
+    row: Mapping[str, object], *, flaky_registry: set[str] | None = None
+) -> list[FailedSubstepClass] | None:
+    """Project current typed gate classes without requiring a retained log."""
+    classes = gate_failure_classes_from_row(row)
+    if classes is None:
+        return None
+    return classify_failed_substeps(
+        "",
+        flaky_registry=flaky_registry,
+        commit=str(row.get("commit") or ""),
+        failed_nodes=sorted(classes),
+        failure_classes=classes,
+    )
 
 
 def flaky_cells(path: Path, commit: str | None = None) -> set[str]:
@@ -674,7 +804,7 @@ def _node_lines(log_text: str, node: str) -> list[str]:
     return out
 
 
-# === The structured fault marker: the TYPED signal, not prose ===
+# === The retained structured fault marker ===
 #
 # A substring of a human-readable sentence is a PROXY for "this failure is a host
 # provisioning gap". Nothing binds a guest's wording to this classifier's
@@ -684,22 +814,19 @@ def _node_lines(log_text: str, node: str) -> list[str]:
 # silently flipped that cell from `host-environment` to `code`. The producer-side
 # improvement DEFEATED the consumer-side fix.
 #
-# The contract, which producers emit and this module reads:
+# Retained logs can carry this older contract:
 #
 #     FAULT <class>: <detail>
 #
-# on its own line within the failing node's stream, where <class> is exactly one
-# of the fault classes below. The detail is free text FOR HUMANS ONLY — nothing
-# here parses it, so rewording the detail can never change a class. That is the
-# whole point: the class travels as a typed token, the prose travels beside it.
+# on its own line within the failing node's stream. Current producers instead
+# write `gates[].failure_class` and optional `failure_detail` directly into the
+# ledger row. This marker remains only so retained logs written before that field
+# stay attributable; it has no current write path.
 #
-# TRUST BOUNDARY, stated rather than glossed: the marker's authority comes from
-# the HARNESS emitting it. This module cannot distinguish a harness-emitted
-# marker from one a guest printed on stdout. That is acceptable because the
-# marker only ever appears in a log the harness produced, and a guest that forges
-# one is a producer-side integrity problem, not a classification problem — but it
-# is a real boundary and it should not be widened by teaching more producers to
-# emit markers from untrusted output.
+# TRUST BOUNDARY, stated rather than glossed: this module cannot distinguish a
+# historical harness marker from the same line printed by a guest. That is why
+# the retained path earns attribution only for rows without the current typed
+# field, and why no new producer should emit this text form.
 _FAULT_CLASSES = tuple(sorted(_FAILED_SUBSTEP_FAULT_CLASSES))
 _FAULT_MARKER_RE = re.compile(
     r"^FAULT\s+(" + "|".join(_FAULT_CLASSES) + r")\s*:\s*(.*)$"
@@ -881,6 +1008,8 @@ def classify_failed_substeps(
     *,
     flaky_registry: set[str] | None = None,
     commit: str | None = None,
+    failed_nodes: list[str] | None = None,
+    failure_classes: Mapping[str, tuple[str, str | None]] | None = None,
 ) -> list[FailedSubstepClass]:
     """Turn an aggregate DAG failure into a per-node, triageable verdict list.
 
@@ -894,8 +1023,10 @@ def classify_failed_substeps(
     artifact / poisoned cache), a HOST/ENVIRONMENT fault (a tool the host does not
     provide), or a CODE fault.
 
-    ``fault_class`` rules (biased so a real code defect is never hidden as
-    not-our-fault), checked in this order:
+    When ``failure_classes`` is supplied, the producer's closed value decides
+    the class and text contributes explanation only. The rules below are the
+    historical fallback for rows without that value (biased so a real code
+    defect is never hidden as not-our-fault), checked in this order:
       * ``infrastructure`` — an infra signature (corrupt archive, poisoned cargo
         cache, …) appears on THIS node's own stream lines. This wins regardless of
         group: a build node dying on a corrupt ``.a`` and a test node whose prep
@@ -913,6 +1044,9 @@ def classify_failed_substeps(
         host-environment signature is a genuine compile error in the change under
         test (still ``code``); a failing test/e2e/lint/doc node is a product
         failure.
+      * ``no-result`` exists only in current typed rows. It means the producer
+        completed no product verdict; the historical prose fallback never
+        manufactures it.
     ``known_flaky`` is advisory only (a failing test node whose name is in the
     measured-flake registry); it never downgrades ``fault_class`` — a flake is
     still a code-domain result to be re-run, not an infra fault.
@@ -931,12 +1065,25 @@ def classify_failed_substeps(
         if root is not None:
             profile_rows = _profile_rows(root)
     records: list[dict[str, object]] = []
-    for node in failed_substeps(log_text):
+    nodes = (
+        sorted(set(failed_nodes))
+        if failed_nodes is not None
+        else failed_substeps(log_text)
+    )
+    for node in nodes:
         group = node.split(".", 1)[0] if "." in node else ""
         signature = _infra_signature_for(log_text, node)
         host_env = _host_env_signature_for(log_text, node)
         marker = _fault_marker_for(log_text, node)
-        if marker is not None:
+        shared = failure_classes.get(node) if failure_classes is not None else None
+        if shared is not None:
+            failure_class, detail = shared
+            fault = _SHARED_TO_FAULT_CLASS[failure_class]
+            if fault == "host-environment" and not host_env:
+                host_env = detail
+            elif fault == "infrastructure" and not signature:
+                signature = detail
+        elif marker is not None:
             # TYPED SIGNAL WINS. The class is read from the token, so any reword
             # of the human detail — or of any other prose in the node's stream —
             # leaves the class untouched. The prose signatures below are still
@@ -955,24 +1102,25 @@ def classify_failed_substeps(
             fault = "code"
         sub_step = "dependency-build" if group in _BUILD_GROUPS else "lane-run"
         cell = node if "." in node else f"test.{node}"
-        records.append(
-            {
-                "node": node,
-                "group": group,
-                "sub_step_class": sub_step,
-                "fault_class": fault,
-                "infra_signature": signature,
-                "host_env_signature": host_env,
-                "first_error_line": _first_error_line_for(log_text, node),
-                "known_flaky": fault == "code"
-                and sub_step == "lane-run"
-                and cell in registry,
-                # WHY this node ran out of time, when it did. Additive: consumers
-                # read the row with .get()/Option, and the driver inlines this
-                # list wholesale, so no producer-side change is needed downstream.
-                "timing": node_timing(profile_rows, node, commit or ""),
-            }
-        )
+        record: dict[str, object] = {
+            "node": node,
+            "group": group,
+            "sub_step_class": sub_step,
+            "fault_class": fault,
+            "infra_signature": signature,
+            "host_env_signature": host_env,
+            "first_error_line": _first_error_line_for(log_text, node),
+            "known_flaky": fault == "code"
+            and sub_step == "lane-run"
+            and cell in registry,
+            # WHY this node ran out of time, when it did. Additive: consumers
+            # read the row with .get()/Option, and the driver inlines this
+            # list wholesale, so no producer-side change is needed downstream.
+            "timing": node_timing(profile_rows, node, commit or ""),
+        }
+        if shared is not None:
+            record["failure_class"] = shared[0]
+        records.append(record)
     # Keep the producer on the same complete contract that retained-row
     # consumers use. This is intentionally a runtime check as well as a
     # TypedDict: JSON can bypass static checking.
@@ -1057,8 +1205,14 @@ def build_evidence(
     dag_jobs: int,
     concurrent_validates: int | None,
     cell_results: object = None,
+    failed_nodes: list[str] | None = None,
+    failure_classes: Mapping[str, tuple[str, str | None]] | None = None,
 ) -> dict[str, object]:
-    cells = failed_substeps(log_text)
+    cells = (
+        sorted(set(failed_nodes))
+        if failed_nodes is not None
+        else failed_substeps(log_text)
+    )
     cell_set = set(cells)
     has_cell_results, exact_failed, unavailable = failed_cells(cell_results)
     exact_failed_set = set(exact_failed)
@@ -1068,7 +1222,11 @@ def build_evidence(
     # and therefore cannot match an aggregate node by accident.
     flaky_failed = sorted(cell for cell in cells if cell in registry)
     classes = classify_failed_substeps(
-        log_text, flaky_registry=registry, commit=commit
+        log_text,
+        flaky_registry=registry,
+        commit=commit,
+        failed_nodes=cells,
+        failure_classes=failure_classes,
     )
     # Top-level, standalone verbatim fault line (already bounded by
     # _first_error_line_for). This is the headline line the PRODUCER serializes

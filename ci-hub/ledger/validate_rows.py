@@ -376,22 +376,28 @@ def _enrich_failure_classification(row: dict, root: Path) -> None:
     log_file = row.get("log_file")
     dag_jobs = row.get("dag_jobs")
     concurrent = row.get("concurrent_validates")
+    typed_failure_classes = failure_evidence.gate_failure_classes_from_row(row)
+    readable_log = (
+        isinstance(log_file, str) and bool(log_file) and Path(log_file).is_file()
+    )
     if (
-        not isinstance(log_file, str)
-        or not log_file
-        or not Path(log_file).is_file()
-        or not isinstance(dag_jobs, int)
+        not isinstance(dag_jobs, int)
         or isinstance(dag_jobs, bool)
         or (
             concurrent is not None
             and (not isinstance(concurrent, int) or isinstance(concurrent, bool))
         )
+        or (typed_failure_classes is None and not readable_log)
     ):
         return
 
     try:
+        log_text = ""
+        if readable_log:
+            assert isinstance(log_file, str)
+            log_text = Path(log_file).read_text(errors="replace")
         evidence = failure_evidence.build_evidence(
-            log_text=Path(log_file).read_text(errors="replace"),
+            log_text=log_text,
             registry=failure_evidence.flaky_cells(
                 failure_evidence.DEFAULT_REGISTRY,
                 str(row.get("commit") or ""),
@@ -401,6 +407,12 @@ def _enrich_failure_classification(row: dict, root: Path) -> None:
             dag_jobs=dag_jobs,
             concurrent_validates=concurrent,
             cell_results=row.get("cell_results"),
+            failed_nodes=(
+                sorted(typed_failure_classes)
+                if typed_failure_classes is not None
+                else None
+            ),
+            failure_classes=typed_failure_classes,
         )
     except (OSError, ValueError, json.JSONDecodeError):
         return

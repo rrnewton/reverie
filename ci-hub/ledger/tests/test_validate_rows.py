@@ -956,6 +956,25 @@ def test_failed_solo_row_carries_durable_failure_classification(tmp_path: Path):
     assert "failure_origin" not in recorded["gates"][1]
 
 
+def test_typed_gate_class_survives_without_the_log(tmp_path: Path):
+    source = failed_row(
+        tmp_path, record_id="typed-class-no-log", jobs=4, concurrent=0
+    )
+    Path(source["log_file"]).unlink()
+    source["gates"][0]["failure_class"] = "understood_infrastructure_failure"
+    source["gates"][0]["failure_detail"] = "failed to verify the checksum"
+
+    validate_rows.record(source, root=tmp_path)
+    [recorded] = validate_rows.rows(root=tmp_path)
+
+    [classification] = recorded["failed_substep_classes"]
+    assert classification["node"] == "e2e.manifest_c_programs"
+    assert classification["failure_class"] == "understood_infrastructure_failure"
+    assert classification["fault_class"] == "infrastructure"
+    assert classification["infra_signature"] == "failed to verify the checksum"
+    assert classification["first_error_line"] is None
+
+
 def test_contended_row_carries_evidence_but_still_requires_solo_confirmation(
     tmp_path: Path,
 ):

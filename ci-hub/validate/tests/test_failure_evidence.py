@@ -14,7 +14,11 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from failure_evidence import build_evidence, classify_failed_substeps  # noqa: E402
+from failure_evidence import (  # noqa: E402
+    build_evidence,
+    classify_failed_substeps,
+    gate_failure_classes_from_row,
+)
 
 
 def _fail(node: str, *body_lines: str) -> str:
@@ -806,6 +810,54 @@ def test_reworded_detail_cannot_change_the_fault_class():
     assert seen == {"host-environment"}, (
         f"a reword changed the class across {len(_REWORDS)} phrasings: {seen}"
     )
+
+
+def test_gate_failure_class_is_the_current_authority_not_log_prose():
+    row = {
+        "gates": [
+            {
+                "name": "test.lua_guest",
+                "result": "fail",
+                "failure_class": "understood_prerequisite_failure",
+                "failure_detail": " on path",
+            }
+        ]
+    }
+    classes = gate_failure_classes_from_row(row)
+    assert classes == {
+        "test.lua_guest": ("understood_prerequisite_failure", " on path")
+    }
+    [record] = classify_failed_substeps(
+        _fail("test.lua_guest", "error[E0432]: unresolved import `wrong`"),
+        failed_nodes=["test.lua_guest"],
+        failure_classes=classes,
+    )
+    assert record["failure_class"] == "understood_prerequisite_failure"
+    assert record["fault_class"] == "host-environment"
+    assert record["host_env_signature"] == " on path"
+
+
+def test_partial_or_unknown_gate_failure_class_refuses_by_name():
+    partial = {
+        "gates": [
+            {
+                "name": "test.one",
+                "result": "fail",
+                "failure_class": "product_failure",
+            },
+            {"name": "test.two", "result": "fail"},
+        ]
+    }
+    with pytest.raises(ValueError, match="gate 'test.two' failure_class"):
+        gate_failure_classes_from_row(partial)
+
+    unknown = {
+        "gates": [
+            {"name": "test.one", "result": "fail", "failure_class": "future_failure"}
+        ]
+    }
+    with pytest.raises(ValueError, match="failure_class has unknown value 'future_failure'"):
+        gate_failure_classes_from_row(unknown)
 
 
 def test_prose_alone_still_flips_without_the_marker():
