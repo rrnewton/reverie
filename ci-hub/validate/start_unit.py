@@ -124,6 +124,7 @@ SUPPORTED_REPOS = {
     "reverie": "rrnewton/reverie",
     "rrnewton/reverie": "rrnewton/reverie",
 }
+SCORECARD_PATHS = ("SCORECARD.md", "ci/compat-envelope/cells.json")
 
 
 def hermit_run_timeout_seconds(child_deadline: int) -> int:
@@ -2119,6 +2120,68 @@ def emit_report(report: Mapping[str, Any], *, json_output: bool) -> None:
         print(f"{label} {raw} [{state}]", flush=True)
 
 
+def write_scorecard_from_results(
+    source_checkout: Path,
+    target: str,
+    results: Path,
+    *,
+    run: Runner,
+    json_output: bool,
+) -> bool:
+    """Run the locked writer after the validation verdict is established."""
+    source_checkout = source_checkout.resolve()
+    review_command = shlex.join(
+        ["git", "-C", str(source_checkout), "diff", "--", *SCORECARD_PATHS]
+    )
+    output = sys.stderr if json_output else sys.stdout
+
+    def failed(reason: str) -> bool:
+        print(
+            "validate-run: compatibility scorecard NOT UPDATED: "
+            f"{reason}. The established validate verdict is unchanged.",
+            file=sys.stderr,
+        )
+        print(f"validate-run: review with: {review_command}", file=sys.stderr)
+        return False
+
+    try:
+        head = checked_output(
+            ["git", "-C", str(source_checkout), "rev-parse", "HEAD^{commit}"],
+            run=run,
+            purpose="cannot resolve source checkout HEAD before updating the compatibility scorecard",
+        )
+        if head != target:
+            return failed(
+                f"source checkout HEAD moved from validated target {target} to {head}"
+            )
+
+        tool = source_checkout / "ci/compat-envelope/scorecard.rs"
+        if not tool.is_file():
+            return failed(f"missing {tool}")
+
+        result = run(
+            [str(tool), "observe-results", "--results", str(results.resolve())],
+            cwd=source_checkout,
+            check=False,
+        )
+        if result.stdout:
+            print(result.stdout, end="" if result.stdout.endswith("\n") else "\n", file=output)
+        if result.stderr:
+            print(
+                result.stderr,
+                end="" if result.stderr.endswith("\n") else "\n",
+                file=sys.stderr,
+            )
+        if result.returncode != 0:
+            return failed(f"observe-results exited {result.returncode}")
+        print(f"validate-run: review with: {review_command}", file=output)
+        return True
+    except Exception as error:
+        # The verdict exists already. Even an unexpected local filesystem or
+        # process-launch error must leave that result as the caller's exit code.
+        return failed(str(error))
+
+
 
 def bookkeep_record(record_path, /, **fields):
     """Update the run record, but never at the cost of the caller's verdict.
@@ -2311,12 +2374,32 @@ def attach(
             if log:
                 print(f"  log:    {log}")
             print(f"  state:  {describe_outcome(canonical_exit)}")
+    try:
+        scorecard_updated = repo != "rrnewton/hermit" or write_scorecard_from_results(
+            Path(record["source_checkout"]),
+            target,
+            Path(record["e2e_result_root"]),
+            run=run,
+            json_output=json_output,
+        )
+    except KeyError:
+        print(
+            "validate-run: compatibility scorecard NOT UPDATED: the run record is "
+            "missing its source checkout or durable result directory. The established "
+            "validate verdict is unchanged.",
+            file=sys.stderr,
+        )
+        scorecard_updated = False
     emit_report(
         {**updated, "event": "finished", "unit": f"{unit}.service"},
         json_output=json_output,
     )
     cleanup_after_attach(root, record_path, record, unit=unit, run=run)
-    return canonical_exit
+    return (
+        canonical_exit
+        if scorecard_updated or canonical_exit != EXIT_PASSED
+        else EXIT_COULD_NOT_DETERMINE
+    )
 
 
 def parser() -> argparse.ArgumentParser:
@@ -3089,6 +3172,16 @@ def main(
             f"verdict={canonical_verdict} exit={canonical_exit}"
         )
         print(f"  {row[:160]}")
+    scorecard_updated = repo != "rrnewton/hermit" or (
+        source_checkout is not None
+        and write_scorecard_from_results(
+            source_checkout,
+            args.target,
+            e2e_result_root,
+            run=run,
+            json_output=args.json,
+        )
+    )
     if fresh_checkout is not None and source_checkout is not None:
         remove_fresh_checkout(source_checkout, fresh_checkout, run=run)
     # The normal completion path, and the one that matters most: without this the
@@ -3099,7 +3192,11 @@ def main(
         {**updated, "event": "finished", "unit": f"{unit}.service"},
         json_output=args.json,
     )
-    return canonical_exit
+    return (
+        canonical_exit
+        if scorecard_updated or canonical_exit != EXIT_PASSED
+        else EXIT_COULD_NOT_DETERMINE
+    )
 
 
 if __name__ == "__main__":

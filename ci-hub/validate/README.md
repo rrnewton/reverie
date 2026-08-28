@@ -53,6 +53,18 @@ runs and records the same paths as `e2e_result_root` and
 under `ignored/validate/artifacts/<unit>/`, outside the fresh checkout that is
 removed after validation.
 
+After a canonical Hermit receipt is readable, the waiting `validate-run`
+invocation merges that run's durable per-cell results into the source
+checkout's `SCORECARD.md` and `ci/compat-envelope/cells.json`, then prints the
+exact `git diff` command for review. It does this for passing and failing
+receipts and reports an empty per-cell result set as unchanged. The write is
+refused if the source checkout moved away from the validated commit or acquired
+tracked changes while the detached service was running. That refusal does not
+change the receipt's verdict, but a green `validate-run` exits nonzero so the
+missing update cannot read as overall success. An interrupted caller leaves the
+systemd service running; `validate-run --attach <unit>` performs the same update
+when it later returns the completed run to an invoker.
+
 Current run handles retain wire schema 1 so already-deployed readers can
 continue observing a run started by newer code. Their complete contract is
 owned by `run_registry.py`, and the `producer` field names that file so readers

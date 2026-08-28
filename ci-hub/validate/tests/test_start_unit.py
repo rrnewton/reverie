@@ -60,6 +60,10 @@ class FakeRun:
         self.current_main = "b" * 40
         self.target_contains_current_main = False
         self.source_common_dir_available = True
+        self.source_head = SHA
+        self.scorecard_update = False
+        self.scorecard_rc = 0
+        self.scorecard_stderr = ""
 
     def default_ledger_row(self) -> dict[str, object]:
         return {
@@ -228,9 +232,24 @@ class FakeRun:
                 common = self.checkout / ".git"
                 common.mkdir(exist_ok=True)
                 return completed(command, stdout=f"{common}\n")
-            return completed(command, stdout=f"{SHA}\n")
+            return completed(command, stdout=f"{self.source_head}\n")
         if command[:4] == ["git", "-C", str(self.checkout), "status"]:
             return completed(command, stdout=self.dirty)
+        if command[:1] == [str(self.checkout / "ci/compat-envelope/scorecard.rs")]:
+            if self.scorecard_rc == 0 and self.scorecard_update:
+                for relative in start_unit.SCORECARD_PATHS:
+                    path = self.checkout / relative
+                    path.write_text(path.read_text() + "updated\n")
+            state = "changed" if self.scorecard_update else "unchanged"
+            return completed(
+                command,
+                rc=self.scorecard_rc,
+                stdout=(
+                    "compatibility scorecard: merged test observations\n"
+                    f"compatibility scorecard: generated files {state}\n"
+                ),
+                stderr=self.scorecard_stderr,
+            )
         if command[0].endswith("preflight_validate.py"):
             return completed(
                 command,
@@ -366,6 +385,11 @@ class StartUnitTest(unittest.TestCase):
         self.checkout.mkdir()
         (self.checkout / "scripts").mkdir()
         (self.checkout / "scripts/validate.rs").write_text("#!/usr/bin/env rust-script\n")
+        compat = self.checkout / "ci/compat-envelope"
+        compat.mkdir(parents=True)
+        (compat / "scorecard.rs").write_text("#!/usr/bin/env rust-script\n")
+        (self.checkout / "SCORECARD.md").write_text("scorecard\n")
+        (compat / "cells.json").write_text("{}\n")
         (self.root / "ci-hub/validate").mkdir(parents=True)
         self.fake = FakeRun(self.checkout)
         self.environment = {
@@ -410,6 +434,13 @@ class StartUnitTest(unittest.TestCase):
             for command in self.fake.commands
             if command[:2] == ["rm", "-rf"]
         ]
+
+    def plant_per_cell_results(self, unit: str = "validate-test") -> Path:
+        results = self.root / "ignored/validate/artifacts" / unit / "e2e"
+        result_file = results / "portable" / "results.jsonl"
+        result_file.parent.mkdir(parents=True, exist_ok=True)
+        result_file.write_text("{}\n")
+        return results
 
     def test_positive_launch_routes_systemd_service_through_validate_lock(self) -> None:
         rc, output, error = self.invoke(["--pr", "123", "--", "full", "--ignore-cache"])
@@ -456,6 +487,102 @@ class StartUnitTest(unittest.TestCase):
         self.assertEqual("observer-only", record["pane_role"])
         self.assertEqual(3600, record["validate_lock_child_deadline_seconds"])
         self.assertEqual(3239, record["hermit_run_timeout_seconds"])
+
+    def test_completed_validate_updates_scorecard_after_receipt_before_cleanup(self) -> None:
+        self.plant_per_cell_results()
+        self.fake.scorecard_update = True
+
+        rc, output, error = self.invoke()
+
+        self.assertEqual(0, rc, error)
+        self.assertIn("compatibility scorecard: generated files changed", output)
+        self.assertIn(
+            f"git -C {self.checkout} diff -- SCORECARD.md ci/compat-envelope/cells.json",
+            output,
+        )
+        self.assertTrue((self.checkout / "SCORECARD.md").read_text().endswith("updated\n"))
+        self.assertTrue(
+            (self.checkout / "ci/compat-envelope/cells.json")
+            .read_text()
+            .endswith("updated\n")
+        )
+        receipt_index = next(
+            index
+            for index, command in enumerate(self.fake.commands)
+            if command[0].endswith("ci-hub")
+            and command[1:3] == ["validate-status", "--sha"]
+        )
+        scorecard_index = next(
+            index
+            for index, command in enumerate(self.fake.commands)
+            if command[0].endswith("scorecard.rs")
+        )
+        cleanup_index = next(
+            index
+            for index, command in enumerate(self.fake.commands)
+            if command[:3] == ["git", "-C", str(self.checkout)]
+            and command[3:5] == ["worktree", "remove"]
+        )
+        self.assertLess(receipt_index, scorecard_index)
+        self.assertLess(scorecard_index, cleanup_index)
+
+    def test_no_per_cell_results_is_an_explicit_unchanged_success(self) -> None:
+        rc, output, error = self.invoke()
+
+        self.assertEqual(0, rc, error)
+        self.assertIn("compatibility scorecard: generated files unchanged", output)
+        self.assertTrue(any(command[0].endswith("scorecard.rs") for command in self.fake.commands))
+
+    def test_scorecard_refuses_a_moved_source_checkout(self) -> None:
+        results = self.plant_per_cell_results()
+        self.fake.source_head = "b" * 40
+        out, error = io.StringIO(), io.StringIO()
+
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(error):
+            updated = start_unit.write_scorecard_from_results(
+                self.checkout, SHA, results, run=self.fake, json_output=False
+            )
+
+        self.assertFalse(updated)
+        self.assertIn("compatibility scorecard NOT UPDATED", error.getvalue())
+        self.assertIn("established validate verdict is unchanged", error.getvalue())
+        self.assertFalse(any(command[0].endswith("scorecard.rs") for command in self.fake.commands))
+
+    def test_generated_file_changes_are_left_to_the_scorecard_writer(self) -> None:
+        self.plant_per_cell_results()
+        (self.checkout / "SCORECARD.md").write_text("pending review\n")
+
+        rc, _output, error = self.invoke()
+
+        self.assertEqual(0, rc, error)
+        self.assertTrue(any(command[0].endswith("scorecard.rs") for command in self.fake.commands))
+
+    def test_red_validate_still_updates_scorecard(self) -> None:
+        self.plant_per_cell_results()
+        self.fake.canonical_verdict = "FAILED"
+        self.fake.canonical_status_rc = start_unit.EXIT_FAILED
+        self.fake.scorecard_update = True
+
+        rc, output, error = self.invoke()
+
+        self.assertEqual(start_unit.EXIT_FAILED, rc, error)
+        self.assertIn("verdict=FAILED exit=3", output)
+        self.assertIn("compatibility scorecard: generated files changed", output)
+        self.assertTrue(any(command[0].endswith("scorecard.rs") for command in self.fake.commands))
+
+    def test_scorecard_failure_makes_green_command_nonzero_after_printing_verdict(self) -> None:
+        self.plant_per_cell_results()
+        self.fake.scorecard_rc = 2
+        self.fake.scorecard_stderr = "observe-results refuses unrelated tracked changes\n"
+
+        rc, output, error = self.invoke()
+
+        self.assertEqual(start_unit.EXIT_COULD_NOT_DETERMINE, rc)
+        self.assertIn("RECEIPT-CANONICAL", output)
+        self.assertIn("verdict=VALIDATED exit=0", output)
+        self.assertIn("refuses unrelated tracked changes", error)
+        self.assertIn("compatibility scorecard NOT UPDATED", error)
+        self.assertIn("established validate verdict is unchanged", error)
 
     @mock.patch.object(start_unit.pane_owner, "create_pane", return_value=None)
     def test_linked_parent_uses_shared_state_and_exact_tooling(
@@ -1319,6 +1446,7 @@ class StartUnitTest(unittest.TestCase):
 
     def test_attach_waits_on_existing_handle_without_relaunching(self) -> None:
         self.fake.validate_status_calls = 1
+        self.fake.scorecard_update = True
         record = self.root / "ignored/validate/runs/validate-test.json"
         start_unit.run_registry.write_record(
             record,
@@ -1328,6 +1456,8 @@ class StartUnitTest(unittest.TestCase):
                 "unit": "validate-test.service",
                 "target": SHA,
                 "checkout": str(self.checkout),
+                "source_checkout": str(self.checkout),
+                "e2e_result_root": str(self.plant_per_cell_results()),
                 "log": str(self.root / "run.log"),
                 "started_at": "2026-01-01T00:00:00Z",
                 "workspace_id": "wV",
@@ -1349,6 +1479,10 @@ class StartUnitTest(unittest.TestCase):
         self.assertEqual(0, rc, err.getvalue())
         self.assertIn("ATTACHED", out.getvalue())
         self.assertIn("FINISHED", out.getvalue())
+        self.assertIn(
+            "compatibility scorecard: generated files changed", out.getvalue()
+        )
+        self.assertTrue(any(command[0].endswith("scorecard.rs") for command in self.fake.commands))
         self.assertFalse(any(command[0] == "systemd-run" for command in self.fake.commands))
 
     def test_attach_returns_canonical_nonpass_not_child_zero(self) -> None:
@@ -1364,6 +1498,8 @@ class StartUnitTest(unittest.TestCase):
                 "unit": "validate-test.service",
                 "target": SHA,
                 "checkout": str(self.checkout),
+                "source_checkout": str(self.checkout),
+                "e2e_result_root": str(self.plant_per_cell_results()),
                 "log": str(self.root / "run.log"),
                 "started_at": "2026-01-01T00:00:00Z",
                 "workspace_id": "wV",
@@ -1450,6 +1586,8 @@ class StartUnitTest(unittest.TestCase):
                 "unit": "validate-test.service",
                 "target": SHA,
                 "checkout": str(self.checkout),
+                "source_checkout": str(self.checkout),
+                "e2e_result_root": str(self.plant_per_cell_results()),
                 "log": str(self.root / "run.log"),
                 "started_at": "2099-01-01T00:00:00Z",
             },

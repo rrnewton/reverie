@@ -253,6 +253,21 @@ class ReadmissionRefusalClassificationTest(unittest.TestCase):
             watch.COMMIT_VALIDATION_NOT_HARD_GREEN,
         )
 
+    def test_post_receipt_nonzero_does_not_replace_canonical_green_verdict(self) -> None:
+        rc, result, _ = self._run(
+            returncode=75,
+            canonical=validated_status,
+            write_log=lambda log, _sha: log.write_text("post-receipt failure\n"),
+            row={"result": "pass", "executed_tests": 862},
+            qualified=(True, "fixture qualifies"),
+        )
+
+        self.assertEqual(rc, watch.FAIL)
+        self.assertEqual(result["state"], "FAIL")
+        self.assertIn("canonical validate-status is VALIDATED", result["reason"])
+        self.assertIn("validate-run returned 75", result["reason"])
+        self.assertIn("verdict remains VALIDATED", result["reason"])
+
     def test_queue_refusal_before_acquisition_is_blocked_not_fail(self) -> None:
         """An exact lock refusal cannot become a product failure via wrapper rc 2."""
         rc, result, _ = self._run(
@@ -1308,7 +1323,9 @@ class OwnerCheckoutValidateWatchTest(unittest.TestCase):
             generated.write_text("evidence\n", encoding="utf-8")
             recovery = root / "recovery"
 
-            restored, after = watch.preserve_and_restore(repo, before, recovery)
+            restored, after, _scorecard = watch.preserve_and_restore(
+                repo, before, recovery
+            )
 
             self.assertTrue(restored)
             self.assertEqual(after, before)
@@ -1318,6 +1335,100 @@ class OwnerCheckoutValidateWatchTest(unittest.TestCase):
                 "evidence\n",
             )
             self.assertIn("+after", (recovery / "tracked.patch").read_text())
+
+    def test_scorecard_updates_and_existing_symlink_survive_other_restoration(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = clean_repository(root)
+            compat = repo / "ci/compat-envelope"
+            compat.mkdir(parents=True)
+            (compat / "scorecard.rs").write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            (compat / "scorecard.rs").chmod(0o755)
+            (repo / "SCORECARD.md").write_text("before scorecard\n", encoding="utf-8")
+            (compat / "cells.json").write_text("{\"before\": true}\n", encoding="utf-8")
+            command(repo, "git", "add", "SCORECARD.md", "ci/compat-envelope")
+            command(repo, "git", "commit", "-q", "-m", "scorecard fixture")
+            (repo / "validate").symlink_to("scripts/validate.rs")
+            before = watch.tree_state(repo)
+            (repo / "SCORECARD.md").write_text("after scorecard\n", encoding="utf-8")
+            (compat / "cells.json").write_text("{\"after\": true}\n", encoding="utf-8")
+            (repo / "tracked.txt").write_text("validation side effect\n", encoding="utf-8")
+            generated = repo / "build/generated.log"
+            generated.parent.mkdir()
+            generated.write_text("temporary output\n", encoding="utf-8")
+            recovery = root / "recovery"
+
+            restored, after, scorecard_refused = watch.preserve_and_restore(
+                repo, before, recovery
+            )
+
+            self.assertTrue(restored)
+            self.assertFalse(scorecard_refused)
+            self.assertEqual((repo / "tracked.txt").read_text(), "before\n")
+            self.assertTrue((repo / "validate").is_symlink())
+            self.assertEqual((repo / "SCORECARD.md").read_text(), "after scorecard\n")
+            self.assertEqual((compat / "cells.json").read_text(), '{"after": true}\n')
+            self.assertEqual(
+                sorted(after["dirty_paths"]),
+                [
+                    " M SCORECARD.md",
+                    " M ci/compat-envelope/cells.json",
+                    "?? validate",
+                ],
+            )
+            self.assertEqual(
+                (recovery / "untracked/build/generated.log").read_text(),
+                "temporary output\n",
+            )
+            patch = (recovery / "tracked.patch").read_text()
+            self.assertIn("validation side effect", patch)
+            self.assertNotIn("after scorecard", patch)
+
+    def test_inconsistent_scorecard_changes_are_left_for_inspection(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = clean_repository(root)
+            compat = repo / "ci/compat-envelope"
+            compat.mkdir(parents=True)
+            (repo / "SCORECARD.md").write_text("before\n", encoding="utf-8")
+            (compat / "cells.json").write_text("{}\n", encoding="utf-8")
+            command(repo, "git", "add", "SCORECARD.md", "ci/compat-envelope/cells.json")
+            command(repo, "git", "commit", "-q", "-m", "scorecard fixture")
+            before = watch.tree_state(repo)
+            (repo / "SCORECARD.md").write_text("unconfirmed\n", encoding="utf-8")
+
+            restored, after, scorecard_refused = watch.preserve_and_restore(
+                repo, before, root / "recovery"
+            )
+
+            self.assertTrue(restored)
+            self.assertTrue(scorecard_refused)
+            self.assertNotEqual(after, before)
+            self.assertEqual((repo / "SCORECARD.md").read_text(), "unconfirmed\n")
+
+    def test_dirty_scorecard_refuses_before_launch(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = clean_repository(root)
+            compat = repo / "ci/compat-envelope"
+            compat.mkdir(parents=True)
+            (repo / "SCORECARD.md").write_text("before\n")
+            (compat / "cells.json").write_text("{}\n")
+            command(repo, "git", "add", "SCORECARD.md", "ci/compat-envelope/cells.json")
+            command(repo, "git", "commit", "-q", "-m", "scorecard fixture")
+            (repo / "SCORECARD.md").write_text("pending review\n")
+
+            with mock.patch.object(watch, "run_validate_observing_admission") as launched:
+                rc = watch.main(
+                    [
+                        "--checkout", str(repo),
+                        "--state-dir", str(root / "state"),
+                        "--no-fetch", "--no-notify",
+                    ]
+                )
+
+            self.assertEqual(rc, watch.CANNOT_START)
+            self.assertFalse(launched.called)
 
     def test_ledger_selection_requires_exact_checkout_sha_and_attempt(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

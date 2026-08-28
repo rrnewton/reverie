@@ -63,6 +63,7 @@ CHECKOUT_FRESHNESS_BY_RELATION = {
     "ahead": "AHEAD",
     "diverged": "DIVERGED",
 }
+SCORECARD_PATHS = ("SCORECARD.md", "ci/compat-envelope/cells.json")
 RELINK_DIRECT_SIGNATURES = (
     (
         "non-executable",
@@ -1315,37 +1316,65 @@ def run_validate_observing_admission(
     return subprocess.CompletedProcess(command, returncode)
 
 
+def scorecard_files_are_current(checkout: Path) -> bool:
+    script = checkout / "ci/compat-envelope/scorecard.rs"
+    return script.is_file() and run([script, "check"], cwd=checkout).returncode == 0
+
+
 def preserve_and_restore(
     checkout: Path,
     pre: dict[str, Any],
     recovery: Path,
-) -> tuple[bool, dict[str, Any]]:
-    """Recover any post-run dirt, preserving bytes before touching them."""
+) -> tuple[bool, dict[str, Any], bool]:
+    """Recover post-run dirt without overwriting a valid generated scorecard."""
     post = tree_state(checkout)
     if post["whole_tree_hash"] == pre["whole_tree_hash"]:
-        return True, post
+        return True, post, False
 
     recovery.mkdir(parents=True, exist_ok=False)
     atomic_write(recovery / "pre.json", json.dumps(pre, indent=2, sort_keys=True) + "\n")
     atomic_write(recovery / "post.json", json.dumps(post, indent=2, sort_keys=True) + "\n")
-    atomic_write(recovery / "tracked.patch", git(checkout, "diff", "--binary", "HEAD", "--"))
+    atomic_write(
+        recovery / "tracked.patch",
+        git(
+            checkout,
+            "diff",
+            "--binary",
+            "HEAD",
+            "--",
+            ".",
+            *(f":(exclude){path}" for path in SCORECARD_PATHS),
+        ),
+    )
 
     # Moving HEAD is not a validation side effect and may be somebody else's
     # concurrent work. Preserve evidence and refuse to rewrite history.
     if post["head"] != pre["head"] or post["branch"] != pre["branch"]:
-        return False, post
+        return False, post, False
 
+    generated_changed = bool(
+        git(checkout, "diff", "--name-only", "HEAD", "--", *SCORECARD_PATHS).strip()
+    )
+    pre_untracked = {
+        line[3:] for line in pre["dirty_paths"] if line.startswith("?? ")
+    }
     untracked_raw = git(
         checkout, "ls-files", "--others", "--exclude-standard", "-z"
     )
-    for relative in [item for item in untracked_raw.split("\0") if item]:
+    for relative in [
+        item for item in untracked_raw.split("\0") if item and item not in pre_untracked
+    ]:
         source = checkout / relative
         destination = recovery / "untracked" / relative
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.move(str(source), str(destination))
 
     changed_raw = git(checkout, "diff", "--name-only", "-z", "HEAD", "--")
-    changed = [item for item in changed_raw.split("\0") if item]
+    changed = [
+        item
+        for item in changed_raw.split("\0")
+        if item and item not in SCORECARD_PATHS
+    ]
     if changed:
         completed = run(
             ["git", "restore", "--source=HEAD", "--staged", "--worktree", "--", *changed],
@@ -1358,7 +1387,17 @@ def preserve_and_restore(
             )
 
     restored = tree_state(checkout)
-    return restored["whole_tree_hash"] == pre["whole_tree_hash"], restored
+    remaining = [
+        line for line in restored["dirty_paths"] if line[3:] not in SCORECARD_PATHS
+    ]
+    clean = (
+        restored["head"] == pre["head"]
+        and restored["branch"] == pre["branch"]
+        and restored["submodules"] == pre["submodules"]
+        and remaining == pre["dirty_paths"]
+    )
+    scorecard_refused = generated_changed and not scorecard_files_are_current(checkout)
+    return clean, restored, scorecard_refused
 
 
 def render_message(result: dict[str, Any]) -> str:
@@ -1788,9 +1827,16 @@ def main(argv: Sequence[str] | None = None) -> int:
                 ),
             )
         elif completed.returncode != 0:
+            wrapper_reason = (
+                "canonical validate-status is VALIDATED for this exact run, "
+                f"but validate-run returned {completed.returncode} after publishing "
+                "that receipt; the validation verdict remains VALIDATED"
+                if row is not None and canonical_green
+                else f"make validate exit={completed.returncode}; {reason}"
+            )
             result.update(
                 state="FAIL",
-                reason=f"make validate exit={completed.returncode}; {reason}",
+                reason=wrapper_reason,
             )
         elif exception["applied"] and (qualified or exception_qualified):
             receipt_scope = (
@@ -1831,16 +1877,24 @@ def main(argv: Sequence[str] | None = None) -> int:
         if launched and pre is not None:
             recovery = state_dir / "recovery" / attempt_id
             try:
-                restored, post = preserve_and_restore(checkout, pre, recovery)
+                restored, post, scorecard_refused = preserve_and_restore(
+                    checkout, pre, recovery
+                )
                 result["post_tree_hash"] = post["whole_tree_hash"]
                 result["dirty_paths_after"] = post["dirty_paths"]
                 if recovery.exists():
                     result["recovery"] = str(recovery)
-                if not restored or post["whole_tree_hash"] != pre["whole_tree_hash"]:
+                if not restored:
                     result.update(
                         state="RESTORE_FAILED",
                         reason="post-run tree differs; recovery retained",
                     )
+                elif scorecard_refused:
+                    detail = "generated scorecard changes failed `scorecard.rs check` and were left untouched for inspection"
+                    if result.get("state") == "FAIL":
+                        result["reason"] = f"{result['reason']}; {detail}"
+                    else:
+                        result.update(state="FAIL", reason=detail)
             except Exception as restore_error:
                 result.update(
                     state="RESTORE_FAILED",
