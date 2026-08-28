@@ -296,9 +296,12 @@ def branch_head(repo: str, branch: str) -> str:
 
 
 def publish(repo: str, branch: str, path: str, body: bytes) -> str:
-    branch_head(repo, branch)
+    head = branch_head(repo, branch)
     endpoint = f"repos/{repo}/contents/{path}"
-    existing = gh(["api", f"{endpoint}?ref={branch}"], check=False)
+    # Resolve the path against the exact branch head we will return. Asking for
+    # the moving branch here could observe a concurrent publisher's newer commit
+    # and then return an older commit that does not contain the receipt.
+    existing = gh(["api", f"{endpoint}?ref={head}"], check=False)
     if existing.returncode == 0:
         value = json.loads(existing.stdout)
         found = base64.b64decode(value["content"].replace("\n", ""))
@@ -306,7 +309,7 @@ def publish(repo: str, branch: str, path: str, body: bytes) -> str:
             fail(
                 f"immutable receipt path already exists with different content: {path}"
             )
-        return branch_head(repo, branch)
+        return head
 
     result = gh(
         [

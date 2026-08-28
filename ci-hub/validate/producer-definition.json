@@ -23,19 +23,56 @@
   "_rotation_2026_08_12_reverie_pin_policy": "Promoted after fresh proof that fetched Hermit main c6c6d6958a8dc940419ead146c8283f06607a9df contains landed commit 16d47dfebcffdf73ff800a5cd8a71ef84b7d4a5b and resolves the exact six-file map below. That landed commit carries the ci-portable blob staged by the now-closed PR #2077 transition, so provenance is the landed commit rather than the closed PR head. The expired transition is removed rather than extended, and the outgoing 796565d2 map is bounded to that exact commit as legacy.",
   "_rotation_2026_08_12_compatibility_scorecard": "Promoted after fresh proof that fetched Hermit main is exactly 1f4e430c135204591daa0c0cba84f77dae679a78 and resolves the six-file map below. The owner directed this infrastructure work straight to main without the ordinary pull-request path. Its clean exact-commit full validation completed 59/59 nodes, 1049 Rust tests, and 172/172 freshly selected manifest cells with zero failures. Only scripts/validate.rs changed within the registered producer map. The outgoing map is bounded to its original registered commit as legacy.",
   "_rotation_2026_08_24_current_main": "Promoted after reading fetched Hermit main a28a49c7603750954d59ce614b39a312553c60bd and deriving all eight producer blobs from that exact tree. The superseded PR 2375 candidate named the pre-rebase head ca764b0266b789d4276ab73941318a0c6e5747a7; six blobs still match, while scripts/validate.rs and scripts/lib/validate_runtime.rs changed before the work landed and therefore correctly made exact whole-map resolution fail. A clean, boxed, exact-main full validation at a28a49c7 is required before landing this rotation. The outgoing 1f4e430c map is bounded to its registered commit as legacy, the stale transition is removed rather than relaxed, and unknown producer maps remain refused.",
-  "registered_at": "a28a49c7603750954d59ce614b39a312553c60bd",
+  "_rotation_2026_08_28_constructed_plan": "Promoted after the owner ruled that changes unable to affect a cell outcome do not require another full run. Hermit main 7e45e6de7cd812e5466c389a13bb0bd193348e1a adds off-record selection from validate's constructed plan, changes the hosted grouping that consumes it, writes scorecard observations only after receipt production, and makes two lock-file opens explicitly non-truncating. Targeted evidence: all 61 constructed portable-only steps are assigned exactly once, all 20 rust-script entrypoints are clippy-clean, the split dry run selects 23 build-side plus 38 test-side steps, and the no-record status path writes nothing. The existing clean full receipt at 6450d9f89c872bf8e917befb8127a04d7c852e62 completed 76/76 outer gates, 21/21 test nodes, 2156 tests, and 307 selected cells; its exact eight-file producer map is retained below so that measured result can be published. The outgoing a28a49c7 map is bounded to its registered commit as legacy, and unknown producer maps remain refused.",
+  "registered_at": "7e45e6de7cd812e5466c389a13bb0bd193348e1a",
   "registered_coverage_status": "complete",
   "registered": {
-    ".config/nextest.toml": "ec47795a8289a1f3ea62424b686217c942427b18",
-    ".github/workflows/ci-portable.yml": "76f36a751302aaed0eb721970efaab5c915b7370",
-    "ci/run-nextest-counted.sh": "1268ba21f7916f8b6269f059726c7edbce2ef0d2",
-    "scripts/lib/validate_history.rs": "0255c492791fba04aa9000efb18ec3f57dd6a8ad",
-    "scripts/lib/validate_plan.rs": "37fef2cd948c3bec1bf533bd5abf74c03d343ca6",
+    ".config/nextest.toml": "026dc6f11dad42b4d39ec5400b6980dcb76d5253",
+    ".github/workflows/ci-portable.yml": "11265de8a08a9cf3d5649d234eec266cfcca8eab",
+    "ci/run-nextest-counted.sh": "9ac219a3f3f50a52ed8065b9ef85909a99cb8050",
+    "scripts/lib/validate_history.rs": "be2017bd8ebdf4e5e0952e14a6f2cc89c43fd8ca",
+    "scripts/lib/validate_plan.rs": "3422ec33ef9f8eaa7b7a98b17a7cd65d284f19a2",
     "scripts/lib/validate_receipt.rs": "465f6c7e1f027ba81daf09f5011f84ebdd08deb0",
-    "scripts/lib/validate_runtime.rs": "4620bf5219aa6113a71c374958fd0ccb01450403",
-    "scripts/validate.rs": "3321ae6354b7d0d927c158f04768bf6dfcbfb85a"
+    "scripts/lib/validate_runtime.rs": "59e94680525a16fb3c8d00d9284374a2ab54b5c3",
+    "scripts/validate.rs": "a7f92488b18717aa4f588a1eb89cb262f1167b27"
   },
   "legacy": [
+    {
+      "id": "validated-rrnewton-hermit-6450d9f8",
+      "registered_at": "6450d9f89c872bf8e917befb8127a04d7c852e62",
+      "coverage_status": "complete",
+      "valid_commits": [
+        "6450d9f89c872bf8e917befb8127a04d7c852e62"
+      ],
+      "definition": {
+        ".config/nextest.toml": "026dc6f11dad42b4d39ec5400b6980dcb76d5253",
+        ".github/workflows/ci-portable.yml": "5835966875f7e8c4e9d077480494a15ed514bf11",
+        "ci/run-nextest-counted.sh": "9ac219a3f3f50a52ed8065b9ef85909a99cb8050",
+        "scripts/lib/validate_history.rs": "be2017bd8ebdf4e5e0952e14a6f2cc89c43fd8ca",
+        "scripts/lib/validate_plan.rs": "3422ec33ef9f8eaa7b7a98b17a7cd65d284f19a2",
+        "scripts/lib/validate_receipt.rs": "465f6c7e1f027ba81daf09f5011f84ebdd08deb0",
+        "scripts/lib/validate_runtime.rs": "59e94680525a16fb3c8d00d9284374a2ab54b5c3",
+        "scripts/validate.rs": "dbebc75cd96c5bd1c4b5579d8ecfcec3e1f32995"
+      }
+    },
+    {
+      "id": "pre-rrnewton-hermit-7e45e6de",
+      "registered_at": "a28a49c7603750954d59ce614b39a312553c60bd",
+      "coverage_status": "complete",
+      "valid_commits": [
+        "a28a49c7603750954d59ce614b39a312553c60bd"
+      ],
+      "definition": {
+        ".config/nextest.toml": "ec47795a8289a1f3ea62424b686217c942427b18",
+        ".github/workflows/ci-portable.yml": "76f36a751302aaed0eb721970efaab5c915b7370",
+        "ci/run-nextest-counted.sh": "1268ba21f7916f8b6269f059726c7edbce2ef0d2",
+        "scripts/lib/validate_history.rs": "0255c492791fba04aa9000efb18ec3f57dd6a8ad",
+        "scripts/lib/validate_plan.rs": "37fef2cd948c3bec1bf533bd5abf74c03d343ca6",
+        "scripts/lib/validate_receipt.rs": "465f6c7e1f027ba81daf09f5011f84ebdd08deb0",
+        "scripts/lib/validate_runtime.rs": "4620bf5219aa6113a71c374958fd0ccb01450403",
+        "scripts/validate.rs": "3321ae6354b7d0d927c158f04768bf6dfcbfb85a"
+      }
+    },
     {
       "id": "pre-rrnewton-hermit-pr-2380",
       "registered_at": "1f4e430c135204591daa0c0cba84f77dae679a78",

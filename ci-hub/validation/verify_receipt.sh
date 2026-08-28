@@ -271,7 +271,10 @@ resolve_producer_record_from_checkout() {
                '$actual == $expected' >/dev/null; then
             jq -cn --argjson record "$producer_record" \
                 --arg resolved_from "$checkout" \
-                '$record + {resolved_from: $resolved_from}'
+                '$record
+                 | {definition, coverage_status, paths}
+                 + (if has("valid_commits") then {valid_commits} else {} end)
+                 + {resolved_from: $resolved_from}'
             return 0
         fi
     done < <(jq -c '.[]' <<<"$p_producer_records")
@@ -310,7 +313,10 @@ resolve_producer_record_from_github() {
                '$actual == $expected' >/dev/null; then
             jq -cn --argjson record "$producer_record" \
                 --arg resolved_from "github:$target_repo@$target_sha" \
-                '$record + {resolved_from: $resolved_from}'
+                '$record
+                 | {definition, coverage_status, paths}
+                 + (if has("valid_commits") then {valid_commits} else {} end)
+                 + {resolved_from: $resolved_from}'
             return 0
         fi
     done < <(jq -c '.[]' <<<"$p_producer_records")

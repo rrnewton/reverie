@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import argparse
+import base64
 import hashlib
 import importlib.util
 import json
@@ -540,6 +541,36 @@ class ReceiptTests(unittest.TestCase):
         self.assertNotIn('"pr", "comment"', source)
         self.assertFalse(hasattr(MODULE, "bind_pr"))
 
+    def test_existing_receipt_is_read_from_the_returned_commit(self):
+        body = b'{"receipt":"same bytes"}\n'
+        head = "e" * 40
+        responses = [
+            subprocess.CompletedProcess(
+                [], 0, stdout=json.dumps({"object": {"sha": head}}), stderr=""
+            ),
+            subprocess.CompletedProcess(
+                [],
+                0,
+                stdout=json.dumps({"content": base64.b64encode(body).decode()}),
+                stderr="",
+            ),
+        ]
+        with mock.patch.object(MODULE, "gh", side_effect=responses) as gh:
+            self.assertEqual(
+                MODULE.publish("rrnewton/dev-hermit", "validation-receipts", "receipt.json", body),
+                head,
+            )
+        self.assertEqual(
+            gh.call_args_list[1],
+            mock.call(
+                [
+                    "api",
+                    f"repos/rrnewton/dev-hermit/contents/receipt.json?ref={head}",
+                ],
+                check=False,
+            ),
+        )
+
 
 class ProducerTransitionTests(unittest.TestCase):
     """Mint-side bracket for the exact whole-map transition lifecycle."""
@@ -780,6 +811,8 @@ class ProducerTransitionTests(unittest.TestCase):
                 self.assertEqual(legacy["definition"], primary)
                 self.assertEqual(legacy["coverage_status"], "legacy-selected-paths")
                 self.assertEqual(legacy["valid_commits"], [primary_sha])
+                self.assertNotIn("id", legacy)
+                self.assertNotIn("registered_at", legacy)
 
     def test_malformed_transition_shapes_fail_closed(self):
         with tempfile.TemporaryDirectory() as directory:

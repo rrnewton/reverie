@@ -149,6 +149,7 @@ LANDING AND COORDINATION ACTIONS
   tick                    Run due scheduled operational-health gates
   land-lock               Acquire, renew, inspect, or release the fleet landing mutex
   apply-local-label       Reconcile the derived label with exact-head validation truth
+  publish-commit-status   Publish a qualifying local receipt on its exact commit
   review-attest           Record a coordinator's typed exact-head review outcome
   ci-mode                 Inspect or change constrained GH Actions admission mode
   batch                   Inspect or edit the named current GH Actions batch
@@ -259,6 +260,8 @@ enum HubCommand {
     FirstBad(FirstBadArgs),
     /// Reconcile `locally-validated` with each PR's exact-head validation record.
     ApplyLocalLabel(ApplyLocalLabelArgs),
+    /// Publish a qualifying local validation receipt as a GitHub commit status.
+    PublishCommitStatus(PublishCommitStatusArgs),
     /// Record a coordinator's exact-head review outcome and cache labels.
     ReviewAttest(ReviewAttestArgs),
     /// Operate the shared-file landing mutex.
@@ -635,6 +638,22 @@ struct ApplyLocalLabelArgs {
     #[arg(long)]
     dry_run: bool,
     /// Emit the machine-readable per-PR action report.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Args, Clone, Debug)]
+struct PublishCommitStatusArgs {
+    /// Exact validated commit SHA.
+    #[arg(long)]
+    sha: String,
+    /// Repository containing the commit.
+    #[arg(long, default_value = "rrnewton/hermit")]
+    repo: String,
+    /// Verify and describe the intended publication without GitHub writes.
+    #[arg(long)]
+    dry_run: bool,
+    /// Emit a machine-readable report.
     #[arg(long)]
     json: bool,
 }
@@ -1192,6 +1211,10 @@ impl HubCommand {
                 tool: "ci-hub/review-attest",
                 basis: "not measured: bounded live-head, exact-comment and repository-label GitHub reads plus one attestation comment and optional cache-label mutation".into(),
             },
+            Self::PublishCommitStatus(_) => CostSpec {
+                tool: "ci-hub/publish-commit-status",
+                basis: "not measured: exact-SHA ledger scan plus bounded immutable-receipt and commit-status GitHub calls".into(),
+            },
             Self::Quickstart
             | Self::GreenTime(_)
             | Self::Ledger(_)
@@ -1661,6 +1684,7 @@ fn execute(root: &Path, command: HubCommand) -> Result<i32, CiHubError> {
         HubCommand::NewestGreen(args) => run_newest_green(root, args),
         HubCommand::FirstBad(args) => run_first_bad(root, args),
         HubCommand::ApplyLocalLabel(args) => run_apply_local_label(root, args),
+        HubCommand::PublishCommitStatus(args) => run_publish_commit_status(root, args),
         HubCommand::ReviewAttest(args) => {
             let mut forwarded = Vec::new();
             push_option(&mut forwarded, "--pr", args.pr.to_string());
@@ -1774,6 +1798,139 @@ fn gh_command(root: &Path, args: &[&str]) -> Command {
         command.env("GH_CONFIG_DIR", config_dir);
     }
     command
+}
+
+const LOCAL_VALIDATION_STATUS_CONTEXT: &str = "Local validation";
+
+fn local_validation_status_description(row: &HistoryRow) -> String {
+    let profile = row.profile.as_deref().unwrap_or("unknown profile");
+    let mut coverage = Vec::new();
+    if let Some(selected) = row
+        .cell_results
+        .as_ref()
+        .and_then(|value| value.typed())
+        .map(|value| value.selected_count)
+    {
+        coverage.push(format!("{selected} selected cells"));
+    }
+    if let Some(nodes) = &row.coverage {
+        coverage.push(format!(
+            "{}/{} test nodes",
+            nodes.executed_test_nodes, nodes.planned_test_nodes
+        ));
+    }
+    if let (Some(run), Some(expected)) = (row.gates_run, row.gates_expected) {
+        coverage.push(format!("{run}/{expected} outer gates"));
+    }
+    if coverage.is_empty() {
+        if let Some(executed) = row.executed_tests {
+            coverage.push(format!("{executed} executed tests"));
+        } else {
+            coverage.push("coverage recorded in receipt".into());
+        }
+    }
+    format!("Local {profile}: {}", coverage.join("; "))
+}
+
+fn local_validation_status_url(artifact: &VerifiedPublishedReceipt) -> Result<String, CiHubError> {
+    let receipt_commit = artifact.receipt_commit.as_deref().ok_or_else(|| {
+        CiHubError::ValidateStatus("published receipt has no commit for status URL".into())
+    })?;
+    Ok(format!(
+        "https://github.com/{VALIDATION_RECEIPT_REPO}/blob/{receipt_commit}/{}",
+        artifact.path
+    ))
+}
+
+fn commit_status_matches(body: &[u8], description: &str, target_url: &str) -> Result<bool, String> {
+    let response: serde_json::Value = serde_json::from_slice(body)
+        .map_err(|error| format!("commit-status response is not JSON: {error}"))?;
+    let statuses = response
+        .get("statuses")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| "commit-status response omitted statuses".to_string())?;
+    Ok(statuses.iter().any(|status| {
+        status.get("context").and_then(serde_json::Value::as_str)
+            == Some(LOCAL_VALIDATION_STATUS_CONTEXT)
+            && status.get("state").and_then(serde_json::Value::as_str) == Some("success")
+            && status
+                .get("description")
+                .and_then(serde_json::Value::as_str)
+                == Some(description)
+            && status.get("target_url").and_then(serde_json::Value::as_str) == Some(target_url)
+    }))
+}
+
+/// Publish the already-qualified local measurement on its exact commit.
+///
+/// The GET is deliberately scoped to one SHA and one status context. It avoids
+/// writing duplicate statuses on repeated label reconciliation while spending
+/// no fleet-wide API calls. A commit with no qualifying receipt never reaches
+/// this function, so absence remains absence rather than a manufactured red.
+fn reconcile_local_validation_commit_status(
+    root: &Path,
+    repo: &str,
+    sha: &str,
+    row: &HistoryRow,
+    artifact: &VerifiedPublishedReceipt,
+) -> Result<&'static str, CiHubError> {
+    let description = local_validation_status_description(row);
+    if description.len() > 140 {
+        return Err(CiHubError::ValidateStatus(format!(
+            "local validation status description is {} bytes, exceeding GitHub's 140-byte limit",
+            description.len()
+        )));
+    }
+    let target_url = local_validation_status_url(artifact)?;
+    let query = format!("repos/{repo}/commits/{sha}/status?per_page=100");
+    let existing = gh_command(root, &["api", &query])
+        .bounded_output()
+        .map_err(|source| CiHubError::Launch {
+            tool: "gh commit status query".into(),
+            source,
+        })?;
+    if !existing.status.success() {
+        return Err(CiHubError::Gh {
+            context: format!("commit status {sha}"),
+            message: String::from_utf8_lossy(&existing.stderr).trim().to_string(),
+        });
+    }
+    if commit_status_matches(&existing.stdout, &description, &target_url)
+        .map_err(CiHubError::ValidateStatus)?
+    {
+        return Ok("unchanged");
+    }
+
+    let endpoint = format!("repos/{repo}/statuses/{sha}");
+    let posted = gh_command(
+        root,
+        &[
+            "api",
+            "--method",
+            "POST",
+            &endpoint,
+            "-f",
+            "state=success",
+            "-f",
+            &format!("context={LOCAL_VALIDATION_STATUS_CONTEXT}"),
+            "-f",
+            &format!("description={description}"),
+            "-f",
+            &format!("target_url={target_url}"),
+        ],
+    )
+    .bounded_output()
+    .map_err(|source| CiHubError::Launch {
+        tool: "gh commit status publish".into(),
+        source,
+    })?;
+    if !posted.status.success() {
+        return Err(CiHubError::Gh {
+            context: format!("publish commit status {sha}"),
+            message: String::from_utf8_lossy(&posted.stderr).trim().to_string(),
+        });
+    }
+    Ok("published")
 }
 
 #[derive(Deserialize)]
@@ -7650,6 +7807,87 @@ fn bind_verified_receipt_to_pr(
     Ok(())
 }
 
+fn run_publish_commit_status(
+    root: &Path,
+    args: PublishCommitStatusArgs,
+) -> Result<i32, CiHubError> {
+    if !is_oid(&args.sha) || args.sha.bytes().any(|byte| byte.is_ascii_uppercase()) {
+        return Err(CiHubError::ValidateStatus(
+            "--sha must be exactly 40 lowercase hexadecimal characters".into(),
+        ));
+    }
+    let path = ledger_path(root);
+    let rows = load_ledger_rows(&path)?;
+    let assessment = assess_canonical_receipts(root, &rows, &args.sha, &args.repo)
+        .map_err(CiHubError::ValidateStatus)?;
+    if assessment.verdict != validate_status::Verdict::Validated {
+        let report = serde_json::json!({
+            "schema_version": 1,
+            "action": "none",
+            "repository": args.repo,
+            "sha": args.sha,
+            "verdict": assessment.verdict.as_str(),
+            "reason": "no qualifying local validation receipt; no commit status was written",
+        });
+        if args.json {
+            println!("{}", serde_json::to_string_pretty(&report).unwrap());
+        } else {
+            println!(
+                "{} {}: no qualifying local receipt; no commit status written",
+                report["repository"].as_str().unwrap(),
+                report["sha"].as_str().unwrap()
+            );
+        }
+        return Ok(0);
+    }
+    let selected = newest_canonical_receipt(&assessment.qualifying)
+        .expect("validated implies one selected canonical receipt");
+    let publisher = root.join("ci-hub/validation/publish_receipt.py");
+    let artifact = publish_selected_receipt(
+        root,
+        &publisher,
+        &path,
+        &args.repo,
+        &args.sha,
+        selected,
+        args.dry_run,
+    )?;
+    let description = local_validation_status_description(&selected.row);
+    let status_action = if args.dry_run {
+        "would-publish"
+    } else {
+        reconcile_local_validation_commit_status(
+            root,
+            &args.repo,
+            &args.sha,
+            &selected.row,
+            &artifact,
+        )?
+    };
+    let report = serde_json::json!({
+        "schema_version": 1,
+        "action": status_action,
+        "repository": args.repo,
+        "sha": args.sha,
+        "context": LOCAL_VALIDATION_STATUS_CONTEXT,
+        "description": description,
+        "receipt_commit": artifact.receipt_commit,
+        "receipt_path": artifact.path,
+    });
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&report).unwrap());
+    } else {
+        println!(
+            "{} {}: {} — {}",
+            report["repository"].as_str().unwrap(),
+            report["sha"].as_str().unwrap(),
+            status_action,
+            description
+        );
+    }
+    Ok(0)
+}
+
 /// `ci-hub apply-local-label --pr <N> | --all-open` reconciles the derived
 /// `locally-validated` cache in both directions. A qualifying exact-head receipt
 /// binds the label; every other exact-head verdict removes an existing label.
@@ -7790,6 +8028,30 @@ fn run_apply_local_label(root: &Path, args: ApplyLocalLabelArgs) -> Result<i32, 
                 }
             }
         };
+        let status_action = if args.dry_run {
+            "would-publish"
+        } else {
+            match reconcile_local_validation_commit_status(
+                root,
+                &args.repo,
+                &head,
+                &selected.row,
+                &artifact,
+            ) {
+                Ok(action) => action,
+                Err(error) => {
+                    eprintln!("ci-hub: apply-local-label: PR #{pr}: {error}");
+                    actions.push(serde_json::json!({
+                        "pr": pr,
+                        "head": head,
+                        "action": "status-failed",
+                        "detail": error.to_string(),
+                    }));
+                    failed += 1;
+                    continue;
+                }
+            }
+        };
         if !args.dry_run {
             if let Err(error) = bind_verified_receipt_to_pr(root, &args.repo, pr, &head, &artifact)
             {
@@ -7809,6 +8071,7 @@ fn run_apply_local_label(root: &Path, args: ApplyLocalLabelArgs) -> Result<i32, 
             "artifact_sha256": artifact.artifact_sha256,
             "path": artifact.path,
             "receipt_source": receipt_source,
+            "commit_status": status_action,
             "producer_coverage_status": artifact.producer_coverage_status,
             "producer_paths": artifact.producer_paths,
             "producer_valid_commits": artifact.producer_valid_commits,
@@ -8823,6 +9086,63 @@ mod tests {
             local_label_reconcile_action(false, false),
             LocalLabelReconcileAction::LeaveAbsent
         );
+    }
+
+    #[test]
+    fn local_validation_status_names_the_measured_population() {
+        let row: HistoryRow = serde_json::from_value(serde_json::json!({
+            "profile": "full",
+            "executed_tests": 2156,
+            "gates_run": 76,
+            "gates_expected": 76,
+            "coverage": {
+                "planned_test_nodes": 21,
+                "executed_test_nodes": 21,
+                "zero_executed_nodes": [],
+                "absent_nodes": []
+            },
+            "cell_results": {
+                "run_id": "run-1",
+                "hermit_sha": RECEIPT_SHA,
+                "source_tree_dirty": false,
+                "selected_count": 308,
+                "recorded_count": 308,
+                "population_sha256": "a".repeat(64),
+                "artifact": {"path": "cells.jsonl", "sha256": "b".repeat(64), "row_count": 308},
+                "selected": [],
+                "cells": []
+            }
+        }))
+        .unwrap();
+        assert_eq!(
+            local_validation_status_description(&row),
+            "Local full: 308 selected cells; 21/21 test nodes; 76/76 outer gates"
+        );
+    }
+
+    #[test]
+    fn commit_status_reuse_requires_exact_context_coverage_and_receipt_url() {
+        let description = "Local full: 308 selected cells; 21/21 test nodes; 76/76 outer gates";
+        let url = "https://github.com/rrnewton/dev-hermit/blob/abc/receipt.json";
+        let response = serde_json::to_vec(&serde_json::json!({
+            "statuses": [
+                {
+                    "context": LOCAL_VALIDATION_STATUS_CONTEXT,
+                    "state": "success",
+                    "description": description,
+                    "target_url": url
+                }
+            ]
+        }))
+        .unwrap();
+        assert!(commit_status_matches(&response, description, url).unwrap());
+        assert!(!commit_status_matches(
+            &response,
+            "Local full: 307 selected cells; 21/21 test nodes; 76/76 outer gates",
+            url
+        )
+        .unwrap());
+        assert!(!commit_status_matches(&response, description, "https://example.invalid").unwrap());
     }
 
     /// The remote-ledger probe must count records BY THEIR COMMIT FIELD.
