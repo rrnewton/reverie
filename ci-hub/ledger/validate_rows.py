@@ -41,6 +41,7 @@ LIVE_SPOOL_RELATIVE = Path("ignored/ci-hub/validate-ledger-spool")
 # data rather than validation observations and must never enter the canonical
 # authority view again.
 ACCEPTANCE_FIXTURE_PRODUCERS = frozenset({"ledger-live-sync-acceptance"})
+RUN_NUMBER_ENV = "CI_HUB_VALIDATE_RUN_NUMBER"
 
 
 def _producer_tool(value: object) -> str:
@@ -493,6 +494,8 @@ def _event_for_row(row: dict, root: Path) -> dict:
         "workspace": {"repo_relative": portable.get("cwd")},
         "legacy_row": portable,
     }
+    if row.get("run_number") is not None:
+        event["run_number"] = row["run_number"]
     rel = f"ledger/{team}/{host}/{emitted_at[:7]}.jsonl"
     violations = validate_event(event, rel)
     if violations:
@@ -505,6 +508,27 @@ def record(row: dict, *, root: Path | None = None) -> dict:
     production_root = repository_root().resolve()
     root = (root or production_root).resolve()
     row = copy.deepcopy(row)
+    existing_run_number = row.get("run_number")
+    if existing_run_number is not None and (
+        not isinstance(existing_run_number, int)
+        or isinstance(existing_run_number, bool)
+        or existing_run_number <= 0
+    ):
+        raise ValueError("row run_number must be a positive integer")
+    environment_run_number = os.environ.get(RUN_NUMBER_ENV)
+    if environment_run_number is not None:
+        try:
+            run_number = int(environment_run_number)
+        except ValueError as error:
+            raise ValueError(f"{RUN_NUMBER_ENV} must be a positive integer") from error
+        if run_number <= 0 or str(run_number) != environment_run_number:
+            raise ValueError(f"{RUN_NUMBER_ENV} must be a positive integer")
+        if existing_run_number is not None and existing_run_number != run_number:
+            raise ValueError(
+                f"row run_number {existing_run_number!r} differs from admitted "
+                f"run number {run_number}"
+            )
+        row["run_number"] = run_number
     if root == production_root and _is_acceptance_fixture_row(row):
         raise ValueError(
             "acceptance fixture producer is not allowed in the production ledger"

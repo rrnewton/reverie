@@ -67,6 +67,7 @@ impl AdmissionRefusalReason {
 pub struct AdmissionResult {
     pub state: AdmissionState,
     pub recorded_at: String,
+    pub run_number: Option<u64>,
     pub reason: Option<AdmissionRefusalReason>,
     pub exit_code: Option<i32>,
 }
@@ -395,7 +396,17 @@ mod tests {
             publish_admission_result(&root, &record, AdmissionState::Admitted, None, None).unwrap();
         assert_eq!(
             Some(AdmissionState::Admitted),
-            projected.admission_result.map(|result| result.state)
+            projected
+                .admission_result
+                .as_ref()
+                .map(|result| result.state)
+        );
+        assert_eq!(
+            Some(1),
+            projected
+                .admission_result
+                .as_ref()
+                .and_then(|result| result.run_number)
         );
         let error = publish_admission_result(
             &root,
@@ -463,6 +474,28 @@ mod tests {
             .expect_err("a new admission state must not acquire implicit semantics");
         assert!(
             error.contains("validation-run-handle-admission_result.state"),
+            "{error}"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn admitted_validation_without_run_number_is_refused_by_field_name() {
+        let root = fixture_root();
+        let runs = root.join("ignored/validate/runs");
+        fs::create_dir_all(&runs).unwrap();
+        let mut malformed = current_record("running");
+        malformed["admission_result"] = serde_json::json!({
+            "state": "admitted",
+            "recorded_at": "2026-08-28T07:00:01Z"
+        });
+        let record = runs.join("validate-missing-run-number.json");
+        fs::write(&record, serde_json::to_vec(&malformed).unwrap()).unwrap();
+
+        let error = inspect_current_records(&root, &[record])
+            .expect_err("an admitted validation must carry its run number");
+        assert!(
+            error.contains("validation-run-handle-admission_result.run_number"),
             "{error}"
         );
         let _ = fs::remove_dir_all(root);

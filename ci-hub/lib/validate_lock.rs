@@ -1719,14 +1719,14 @@ fn publish_run_admission_result(
     state: validate_run_handle::AdmissionState,
     reason: Option<validate_run_handle::AdmissionRefusalReason>,
     exit_code: Option<i32>,
-) -> Result<(), ValidateLockError> {
+) -> Result<Option<validate_run_handle::Projection>, ValidateLockError> {
     #[cfg(test)]
     if attribution.record == Path::new("test-only-run-record") {
-        return Ok(());
+        return Ok(None);
     }
     let root = validate_run_handle::authority_root_for_record(&attribution.record)
         .map_err(ValidateLockError::InvalidState)?;
-    validate_run_handle::publish_admission_result(
+    let projected = validate_run_handle::publish_admission_result(
         &root,
         &attribution.record,
         state,
@@ -1734,14 +1734,14 @@ fn publish_run_admission_result(
         exit_code,
     )
     .map_err(ValidateLockError::InvalidState)?;
-    Ok(())
+    Ok(Some(projected))
 }
 
 fn refusal_before_admission(
     attribution: &VerifiedRunAttribution,
     code: i32,
 ) -> Result<i32, ValidateLockError> {
-    publish_run_admission_result(
+    let _ = publish_run_admission_result(
         attribution,
         validate_run_handle::AdmissionState::Refused,
         Some(validate_run_handle::AdmissionRefusalReason::ValidationLockRefusal),
@@ -1755,7 +1755,7 @@ fn stale_base_refusal_with_record(
     error: ValidateLockError,
 ) -> Result<i32, ValidateLockError> {
     let code = stale_base_refusal(error)?;
-    publish_run_admission_result(
+    let _ = publish_run_admission_result(
         attribution,
         validate_run_handle::AdmissionState::Refused,
         Some(validate_run_handle::AdmissionRefusalReason::StaleBase),
@@ -5011,14 +5011,36 @@ impl ValidateLock {
             let _ = active.release(&args.agent, true);
             return Err(error);
         }
-        if let Err(error) = publish_run_admission_result(
+        let admitted = match publish_run_admission_result(
             &attribution,
             validate_run_handle::AdmissionState::Admitted,
             None,
             None,
         ) {
-            let _ = active.release(&args.agent, true);
-            return Err(error);
+            Ok(admitted) => admitted,
+            Err(error) => {
+                let _ = active.release(&args.agent, true);
+                return Err(error);
+            }
+        };
+        let run_number = match (args.kind.is_validation(), admitted) {
+            (true, Some(projection)) => Some(
+                projection
+                    .admission_result
+                    .and_then(|result| result.run_number)
+                    .ok_or_else(|| {
+                        ValidateLockError::InvalidState(
+                            "admitted validation result has no run_number".into(),
+                        )
+                    })?,
+            ),
+            _ => None,
+        };
+        if let Some(run_number) = run_number {
+            eprintln!(
+                "validate-lock: RUN {run_number} assigned on {} at admission",
+                current_host()
+            );
         }
 
         // Install AFTER acquisition (so a stop during a long FIFO wait keeps its
@@ -5053,6 +5075,9 @@ impl ValidateLock {
                     std::process::id().to_string(),
                 )
                 .env("CI_HUB_VALIDATE_LOCK_OWNER_FILE", &owner_file);
+            if let Some(run_number) = run_number {
+                command.env("CI_HUB_VALIDATE_RUN_NUMBER", run_number.to_string());
+            }
         }) {
             Ok(gated) => gated,
             Err(source) => {
@@ -5940,9 +5965,24 @@ mod tests {
             start_ticks: 456,
         };
         publish_run_process_identity(&verified.record, &owner).unwrap();
+        let admitted = publish_run_admission_result(
+            &verified,
+            validate_run_handle::AdmissionState::Admitted,
+            None,
+            None,
+        )
+        .unwrap()
+        .expect("a real run record must return its admitted result");
+        assert_eq!(
+            Some(1),
+            admitted
+                .admission_result
+                .and_then(|result| result.run_number)
+        );
         let published: serde_json::Value =
             serde_json::from_str(&fs::read_to_string(&record).unwrap()).unwrap();
         assert_eq!(published["process_identity"]["pid"], 123);
+        assert_eq!(published["admission_result"]["run_number"], 1);
 
         let mut invalid = current;
         invalid["state"] = serde_json::json!("failed");

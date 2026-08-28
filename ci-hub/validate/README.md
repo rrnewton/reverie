@@ -32,6 +32,14 @@ Use `ci-hub validate-status --log-paths` when following a running or completed
 validation. It adds the producer-recorded `SLOT` and full `LOG-FILE` columns;
 they stay out of the default table because the path is intentionally wide.
 
+Each run admitted by `validate-lock` receives the next RUN number for that
+repository on the current machine before its child starts. The current run
+handle's admitted result carries it while the run is in progress, and the
+completed ledger row carries the same number. `ci-hub validate-status --run-no
+NUMBER` looks up that run on the current machine. RUN is an identity, not proof
+that a completed receipt exists: a run that fails before writing a ledger row
+can leave a gap.
+
 If freshly fetched `origin/main` has moved beyond that exact Hermit SHA, use
 `ci-hub validate-run --frozen-validate ...`. The ordinary path still refuses a
 target that does not contain current main. The explicit frozen path forces a

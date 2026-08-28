@@ -427,47 +427,105 @@ struct ValidateStatusArgs {
     /// `validate-status <SHA>` or `validate-status --sha <SHA>`; the bare form
     /// is the natural reflex, so rejecting it was a usability trap. Supplying
     /// both the positional and --sha, or combining with --pr, is a conflict.
-    #[arg(value_name = "SHA", conflicts_with_all = ["sha", "pr"])]
+    #[arg(
+        value_name = "SHA",
+        conflicts_with_all = ["sha", "pr", "run_no", "commit_timeline"],
+        help_heading = "WHICH RESULTS"
+    )]
     sha_positional: Option<String>,
     /// The commit SHA (full 40-hex or an unambiguous ledger prefix) to assess.
-    #[arg(long, conflicts_with = "pr")]
+    #[arg(
+        long,
+        conflicts_with_all = ["pr", "run_no", "commit_timeline"],
+        help_heading = "WHICH RESULTS"
+    )]
     sha: Option<String>,
     /// A PR number; its head SHA is resolved via gh and assessed.
-    #[arg(long, conflicts_with = "sha")]
+    #[arg(
+        long,
+        conflicts_with_all = ["sha", "run_no", "commit_timeline"],
+        help_heading = "WHICH RESULTS"
+    )]
     pr: Option<u64>,
+    /// A validation run number for --repo on this machine.
+    #[arg(
+        long,
+        value_name = "NUMBER",
+        conflicts_with_all = [
+            "sha_positional",
+            "sha",
+            "pr",
+            "commit_timeline",
+            "limit",
+            "exclude_in_progress",
+            "in_progress_only"
+        ],
+        value_parser = clap::value_parser!(u64).range(1..),
+        help_heading = "WHICH RESULTS"
+    )]
+    run_no: Option<u64>,
     /// Number of recent validation runs to show when no SHA or PR is supplied.
-    #[arg(long, default_value_t = DEFAULT_VALIDATE_HISTORY_LIMIT, conflicts_with = "commit_timeline")]
+    #[arg(
+        long,
+        default_value_t = DEFAULT_VALIDATE_HISTORY_LIMIT,
+        conflicts_with_all = ["commit_timeline", "run_no"],
+        help_heading = "WHICH RESULTS"
+    )]
     limit: usize,
     /// List every commit in the local Hermit origin/main first-parent history,
     /// including commits with no validation ledger row.
     #[arg(
         long,
-        conflicts_with_all = ["sha_positional", "sha", "pr", "in_progress_only"]
+        conflicts_with_all = ["sha_positional", "sha", "pr", "run_no", "in_progress_only"],
+        help_heading = "WHICH RESULTS"
     )]
     commit_timeline: bool,
     /// Do not include process-verified validation runs that are still executing.
-    #[arg(long, conflicts_with = "in_progress_only")]
+    #[arg(
+        long,
+        conflicts_with = "in_progress_only",
+        help_heading = "WHICH RESULTS"
+    )]
     exclude_in_progress: bool,
     /// Show only process-verified validation runs that are still executing.
-    #[arg(long, conflicts_with = "exclude_in_progress")]
+    #[arg(
+        long,
+        conflicts_with = "exclude_in_progress",
+        help_heading = "WHICH RESULTS"
+    )]
     in_progress_only: bool,
     /// Optional identity columns for the current/recent table. Comma-separated
     /// values and repeated flags are both accepted; `none` selects no identity
     /// column. The default stays narrow with SHA alone.
-    #[arg(long, value_enum, value_delimiter = ',', default_value = "sha")]
+    #[arg(
+        long,
+        value_enum,
+        value_delimiter = ',',
+        default_value = "sha",
+        help_heading = "HOW RENDERED"
+    )]
     columns: Vec<ValidateStatusColumn>,
     /// Render human-readable timestamps relative to now, in local time, or in UTC.
     /// Machine-readable JSON always retains the original RFC 3339 values.
-    #[arg(long, value_enum, default_value_t = ValidateStatusTimes::Relative)]
+    #[arg(
+        long,
+        value_enum,
+        default_value_t = ValidateStatusTimes::Relative,
+        help_heading = "HOW RENDERED"
+    )]
     times: ValidateStatusTimes,
     /// Show the worktree slot and full producer-recorded log file path.
-    #[arg(long)]
+    #[arg(long, help_heading = "HOW RENDERED")]
     log_paths: bool,
-    /// Repository used to resolve --pr head SHAs.
-    #[arg(long, default_value = "rrnewton/hermit")]
+    /// Repository whose validation runs to report; also resolves --pr head SHAs.
+    #[arg(
+        long,
+        default_value = "rrnewton/hermit",
+        help_heading = "WHICH RESULTS"
+    )]
     repo: String,
     /// Emit the machine-readable verdict report.
-    #[arg(long)]
+    #[arg(long, help_heading = "HOW RENDERED")]
     json: bool,
 }
 
@@ -5993,6 +6051,13 @@ fn display_validate_result(result: Option<&str>) -> String {
 type ValidateRunProcessIdentity = validate_run_handle::ProcessIdentity;
 
 #[derive(Clone, Debug, Deserialize)]
+struct ValidateRunAdmissionResult {
+    state: String,
+    #[serde(default)]
+    run_number: Option<u64>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
 struct ValidateRunRecord {
     schema_version: u32,
     unit: String,
@@ -6009,12 +6074,16 @@ struct ValidateRunRecord {
     source_checkout: Option<String>,
     #[serde(default)]
     log: Option<String>,
+    #[serde(default)]
+    admission_result: Option<ValidateRunAdmissionResult>,
 }
 
 #[derive(Clone, Debug, Serialize)]
 struct ValidateStatusEntry {
     #[serde(skip_serializing_if = "Option::is_none")]
     depth: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    run_number: Option<u64>,
     verdict: Option<String>,
     result: Option<String>,
     in_progress: bool,
@@ -6092,6 +6161,18 @@ fn local_host() -> Option<String> {
         .ok()
         .map(|host| host.trim().to_string())
         .filter(|host| !host.is_empty())
+}
+
+fn local_machine() -> Option<String> {
+    local_host().map(|host| host.split('.').next().unwrap_or(&host).to_string())
+}
+
+fn host_is_machine(host: Option<&str>, machine: &str) -> bool {
+    host.is_some_and(|host| host.split('.').next() == Some(machine))
+}
+
+fn entry_is_run_on_machine(entry: &ValidateStatusEntry, run_number: u64, machine: &str) -> bool {
+    entry.run_number == Some(run_number) && host_is_machine(entry.host.as_deref(), machine)
 }
 
 fn elapsed_since(started_at: &str, now: chrono::DateTime<chrono::Utc>) -> Option<f64> {
@@ -6298,6 +6379,11 @@ fn live_validate_runs_from(
             };
             live.push(ValidateStatusEntry {
                 depth: None,
+                run_number: record.admission_result.as_ref().and_then(|result| {
+                    (result.state == validate_run_handle::AdmissionState::Admitted)
+                        .then_some(result.run_number)
+                        .flatten()
+                }),
                 verdict: None,
                 result: None,
                 in_progress: true,
@@ -6390,6 +6476,11 @@ fn live_validate_runs_from(
         };
         live.push(ValidateStatusEntry {
             depth: None,
+            run_number: record.admission_result.as_ref().and_then(|result| {
+                (result.state == "admitted")
+                    .then_some(result.run_number)
+                    .flatten()
+            }),
             verdict: None,
             result: None,
             in_progress: true,
@@ -6574,6 +6665,10 @@ fn validate_status_table_columns(
             alignment: ValidateStatusAlignment::Right,
         });
     }
+    table.push(ValidateStatusTableColumn {
+        header: "RUN",
+        alignment: ValidateStatusAlignment::Right,
+    });
     table.extend([
         ValidateStatusTableColumn {
             header: "RESULT",
@@ -6669,6 +6764,12 @@ fn validate_status_values(
                 .unwrap_or_else(|| "-".into()),
         );
     }
+    fields.push(
+        entry
+            .run_number
+            .map(|number| number.to_string())
+            .unwrap_or_else(|| missing.into()),
+    );
     fields.extend([result, verdict.into()]);
     for column in columns {
         fields.push(match column {
@@ -6769,6 +6870,10 @@ fn finished_validate_status_entry(
     let verdict = recent_row_verdict(row, repo);
     ValidateStatusEntry {
         depth: None,
+        run_number: row
+            .extra
+            .get("run_number")
+            .and_then(serde_json::Value::as_u64),
         verdict: Some(verdict.into()),
         result: row.result.clone(),
         in_progress: false,
@@ -6797,9 +6902,44 @@ fn finished_validate_status_entry(
     }
 }
 
+fn historical_validate_run_numbers(rows: &[HistoryRow]) -> Vec<Option<u64>> {
+    let mut next_by_machine = BTreeMap::<String, u64>::new();
+    let mut by_run = BTreeMap::<(String, String), u64>::new();
+    rows.iter()
+        .enumerate()
+        .map(|(index, row)| {
+            let Some(host) = row.host.as_deref() else {
+                return None;
+            };
+            let machine = host.split('.').next().unwrap_or(host).to_string();
+            let identity = row
+                .run_id
+                .as_deref()
+                .filter(|value| !value.trim().is_empty())
+                .or_else(|| extra_str(row, "record_id"))
+                .map(str::to_string)
+                .unwrap_or_else(|| format!("ledger-row-{index}"));
+            let key = (machine.clone(), identity);
+            let explicit = row
+                .extra
+                .get("run_number")
+                .and_then(serde_json::Value::as_u64);
+            let number = by_run.get(&key).copied().unwrap_or_else(|| {
+                let counter = next_by_machine.entry(machine).or_default();
+                let number = explicit.unwrap_or(*counter + 1);
+                *counter = (*counter).max(number);
+                by_run.insert(key, number);
+                number
+            });
+            Some(number)
+        })
+        .collect()
+}
+
 fn no_run_commit_timeline_entry(sha: &str, depth: usize) -> ValidateStatusEntry {
     ValidateStatusEntry {
         depth: Some(depth),
+        run_number: None,
         verdict: Some("NO-RUN".into()),
         result: None,
         in_progress: false,
@@ -6817,17 +6957,17 @@ fn no_run_commit_timeline_entry(sha: &str, depth: usize) -> ValidateStatusEntry 
     }
 }
 
-fn unreadable_commit_timeline_entry(
+fn unreadable_validate_status_entry(
     failure: &validate_status::LedgerParseFailure,
-    sha: &str,
-    depth: usize,
+    depth: Option<usize>,
 ) -> ValidateStatusEntry {
     ValidateStatusEntry {
-        depth: Some(depth),
+        depth,
+        run_number: failure.run_number,
         verdict: Some("LEDGER-UNREADABLE".into()),
         result: failure.result.clone(),
         in_progress: false,
-        sha: Some(sha.into()),
+        sha: failure.commit.clone(),
         branch: None,
         git_depth: None,
         started_at: failure.started_at.clone(),
@@ -6843,11 +6983,10 @@ fn unreadable_commit_timeline_entry(
 
 fn commit_timeline_entries(
     commits: &[String],
-    rows: &[HistoryRow],
+    finished: Vec<ValidateStatusEntry>,
     current: Vec<ValidateStatusEntry>,
     parse_failures: &[validate_status::LedgerParseFailure],
     repo: &str,
-    include_log_paths: bool,
 ) -> Vec<ValidateStatusEntry> {
     let depths = commits
         .iter()
@@ -6866,20 +7005,22 @@ fn commit_timeline_entries(
         entry.depth = Some(depth);
         by_commit.entry(sha).or_default().push(entry);
     }
-    for row in rows.iter().filter(|row| row.commit.is_some()) {
-        let sha = row.commit.as_deref().expect("filtered above");
-        let Some(depth) = depths.get(sha).copied() else {
+    for mut entry in finished {
+        let Some(sha) = entry.sha.clone() else {
             continue;
         };
-        let duplicate_live = by_commit.get(sha).is_some_and(|entries| {
-            entries.iter().any(|entry| {
-                entry.in_progress && entry.started_at.as_deref() == row.started_at.as_deref()
-            })
+        let Some(depth) = depths.get(sha.as_str()).copied() else {
+            continue;
+        };
+        let started_at = entry.started_at.as_deref();
+        let duplicate_live = by_commit.get(sha.as_str()).is_some_and(|entries| {
+            entries
+                .iter()
+                .any(|live| live.in_progress && live.started_at.as_deref() == started_at)
         });
         if !duplicate_live {
-            let mut entry = finished_validate_status_entry(repo, row, include_log_paths);
             entry.depth = Some(depth);
-            by_commit.entry(sha.into()).or_default().push(entry);
+            by_commit.entry(sha).or_default().push(entry);
         }
     }
     for failure in parse_failures
@@ -6895,7 +7036,7 @@ fn commit_timeline_entries(
         by_commit
             .entry(sha.into())
             .or_default()
-            .push(unreadable_commit_timeline_entry(failure, sha, depth));
+            .push(unreadable_validate_status_entry(failure, Some(depth)));
     }
 
     let mut timeline = Vec::new();
@@ -6948,8 +7089,22 @@ fn validate_status_history_json(
 ) -> serde_json::Value {
     let in_progress_count = entries.iter().filter(|entry| entry.in_progress).count();
     if !args.commit_timeline {
+        if let Some(run_number) = args.run_no {
+            return serde_json::json!({
+                "schema_version": 7,
+                "repo": repo,
+                "run_number": run_number,
+                "machine": local_machine(),
+                "count": entries.len(),
+                "in_progress_count": in_progress_count,
+                "finished_count": entries.len() - in_progress_count,
+                "columns": columns.iter().map(|column| column.to_possible_value().expect("value enum").get_name().to_string()).collect::<Vec<_>>(),
+                "runs": entries,
+                "ledger": ledger.display().to_string(),
+            });
+        }
         return serde_json::json!({
-            "schema_version": 4,
+            "schema_version": 5,
             "repo": repo,
             "count": entries.len(),
             "in_progress_count": in_progress_count,
@@ -6971,7 +7126,7 @@ fn validate_status_history_json(
         .filter(|entry| !entry.in_progress && entry.verdict.as_deref() != Some("NO-RUN"))
         .count();
     serde_json::json!({
-        "schema_version": 5,
+        "schema_version": 6,
         "repo": repo,
         "count": entries.len(),
         "in_progress_count": in_progress_count,
@@ -7010,26 +7165,65 @@ fn print_recent_validate_history(
     } else {
         live_validate_runs(root, repo, now, args.log_paths)?
     };
+    let historical_run_numbers = historical_validate_run_numbers(rows);
     let (mut entries, commit_count) = if args.commit_timeline {
         let commits = validation_main_history(root, repo)?;
         let commit_count = commits.len();
+        let finished = rows
+            .iter()
+            .zip(historical_run_numbers.iter().copied())
+            .map(|(row, run_number)| {
+                let mut entry = finished_validate_status_entry(repo, row, args.log_paths);
+                entry.run_number = run_number;
+                entry
+            })
+            .collect();
         (
-            commit_timeline_entries(
-                &commits,
-                rows,
-                current,
-                parse_failures,
-                repo,
-                args.log_paths,
-            ),
+            commit_timeline_entries(&commits, finished, current, parse_failures, repo),
             Some(commit_count),
         )
+    } else if let Some(run_number) = args.run_no {
+        let machine = local_machine().ok_or_else(|| {
+            CiHubError::ValidateStatus("cannot determine this machine's hostname".into())
+        })?;
+        current.retain(|entry| entry_is_run_on_machine(entry, run_number, &machine));
+        let mut matching_finished = rows
+            .iter()
+            .zip(historical_run_numbers.iter().copied())
+            .filter(|(row, number)| {
+                *number == Some(run_number) && host_is_machine(row.host.as_deref(), &machine)
+            })
+            .map(|(row, number)| {
+                let mut entry = finished_validate_status_entry(repo, row, args.log_paths);
+                entry.run_number = number;
+                entry
+            })
+            .collect::<Vec<_>>();
+        matching_finished.retain(|finished| {
+            !current
+                .iter()
+                .any(|live| live.sha == finished.sha && live.started_at == finished.started_at)
+        });
+        current.extend(matching_finished);
+        current.extend(
+            parse_failures
+                .iter()
+                .filter(|failure| {
+                    parse_failure_matches_validation_repo(failure, repo)
+                        && failure.run_number == Some(run_number)
+                        && host_is_machine(failure.host.as_deref(), &machine)
+                })
+                .map(|failure| unreadable_validate_status_entry(failure, None)),
+        );
+        current.sort_by(|left, right| right.started_at.cmp(&left.started_at));
+        (current, None)
     } else {
         let mut recent = rows
             .iter()
-            .filter(|row| row.commit.is_some())
+            .zip(historical_run_numbers.iter().copied())
+            .filter(|(row, _)| row.commit.is_some())
             .collect::<Vec<_>>();
-        recent.sort_by(|left, right| {
+        recent.sort_by(|(left, _), (right, _)| {
             let left = left
                 .finished_at
                 .as_deref()
@@ -7042,10 +7236,10 @@ fn print_recent_validate_history(
                 .unwrap_or("");
             right.cmp(left)
         });
-        recent.retain(|row| {
-            !current.iter().any(|entry| {
-                entry.sha.as_deref() == row.commit.as_deref()
-                    && entry.started_at.as_deref() == row.started_at.as_deref()
+        recent.retain(|(finished, _)| {
+            !current.iter().any(|live| {
+                live.sha.as_deref() == finished.commit.as_deref()
+                    && live.started_at.as_deref() == finished.started_at.as_deref()
             })
         });
         recent.truncate(args.limit);
@@ -7053,9 +7247,13 @@ fn print_recent_validate_history(
             Vec::new()
         } else {
             recent
-                .iter()
-                .map(|row| finished_validate_status_entry(repo, row, args.log_paths))
-                .collect::<Vec<_>>()
+                .into_iter()
+                .map(|(row, run_number)| {
+                    let mut entry = finished_validate_status_entry(repo, row, args.log_paths);
+                    entry.run_number = run_number;
+                    entry
+                })
+                .collect()
         };
         current.extend(finished);
         (current, None)
@@ -7091,7 +7289,11 @@ fn print_recent_validate_history(
             ))
             .expect("serialize recent validation history")
         );
-        return Ok(0);
+        return Ok(if args.run_no.is_some() && entries.is_empty() {
+            4
+        } else {
+            0
+        });
     }
 
     // Printed even when there are no runs at all: "no runs" and "no green in the
@@ -7109,12 +7311,17 @@ fn print_recent_validate_history(
         println!("{NO_RUN_NOTE}");
     }
     if entries.is_empty() {
-        if args.in_progress_only {
+        if let Some(run_number) = args.run_no {
+            println!(
+                "No validation run {run_number} found for {repo} on {}.",
+                local_machine().unwrap_or_else(|| "this machine".into())
+            );
+        } else if args.in_progress_only {
             println!("No in-progress validation runs found for {repo}.");
         } else {
             println!("No validation runs found for {repo}.");
         }
-        return Ok(0);
+        return Ok(if args.run_no.is_some() { 4 } else { 0 });
     }
     for line in validate_status_table(
         &entries,
@@ -8575,6 +8782,7 @@ mod tests {
     #[test]
     fn recent_history_reports_result_verdict_and_producer_executed_tests() {
         let mut value = schema4_receipt_value();
+        value["run_number"] = serde_json::json!(701);
         value["executed_tests"] = serde_json::json!(2129);
         value["filtered_tests"] = serde_json::json!(508);
         value["passed_tests"] = serde_json::json!(785);
@@ -8584,6 +8792,7 @@ mod tests {
 
         assert_eq!(entry.verdict.as_deref(), Some("VALIDATED"));
         assert_eq!(entry.result.as_deref(), Some("pass"));
+        assert_eq!(entry.run_number, Some(701));
         assert_eq!(entry.tests_executed, Some(2129));
         let now = chrono::DateTime::parse_from_rfc3339("2026-08-03T01:36:00Z")
             .unwrap()
@@ -8598,10 +8807,13 @@ mod tests {
         );
         assert_eq!(
             table[0],
-            "RESULT VERDICT   SHA          STARTED/FINISHED ELAPSED HOST            TESTS-EXECUTED SUMMARY"
+            "RUN RESULT VERDICT   SHA          STARTED/FINISHED ELAPSED HOST            TESTS-EXECUTED SUMMARY"
         );
         let line = &table[1];
-        assert!(line.starts_with("PASS   VALIDATED 630f44aab7fd"), "{line}");
+        assert!(
+            line.starts_with("701 PASS   VALIDATED 630f44aab7fd"),
+            "{line}"
+        );
         assert!(line.contains("1h36m ago"), "{line}");
         assert!(line.contains("          2129 passed"), "{line}");
         assert!(!line.contains("2637"), "{line}");
@@ -8659,14 +8871,17 @@ mod tests {
         failed["gates"][0]["exit_code"] = serde_json::json!(1);
         let rows = [history_row(passed), history_row(failed)];
 
-        let timeline = commit_timeline_entries(
-            &commits,
-            &rows,
-            Vec::new(),
-            &[],
-            CANONICAL_VALIDATE_REPO,
-            false,
-        );
+        let finished = rows
+            .iter()
+            .zip(historical_validate_run_numbers(&rows))
+            .map(|(row, run_number)| {
+                let mut entry = finished_validate_status_entry(CANONICAL_VALIDATE_REPO, row, false);
+                entry.run_number = run_number;
+                entry
+            })
+            .collect();
+        let timeline =
+            commit_timeline_entries(&commits, finished, Vec::new(), &[], CANONICAL_VALIDATE_REPO);
         assert_eq!(timeline.len(), commits.len());
         assert_eq!(timeline[0].depth, Some(0));
         assert_eq!(timeline[0].verdict.as_deref(), Some("VALIDATED"));
@@ -8701,7 +8916,7 @@ mod tests {
             true,
             true,
         );
-        assert!(table[0].starts_with("DEPTH RESULT VERDICT"));
+        assert!(table[0].starts_with("DEPTH RUN RESULT VERDICT"));
         let no_run = &table[1];
         assert_eq!(
             no_run.split_whitespace().collect::<Vec<_>>(),
@@ -8725,14 +8940,14 @@ mod tests {
             producer: Some("ci-hub-validate-run".into()),
             started_at: Some("2026-08-03T00:00:00Z".into()),
             result: Some("fail".into()),
+            run_number: None,
         };
         let timeline = commit_timeline_entries(
             std::slice::from_ref(&sha),
-            &[],
+            Vec::new(),
             Vec::new(),
             &[failure],
             CANONICAL_VALIDATE_REPO,
-            false,
         );
         assert_eq!(timeline.len(), 1);
         assert_eq!(timeline[0].verdict.as_deref(), Some("LEDGER-UNREADABLE"));
@@ -8753,6 +8968,7 @@ mod tests {
             producer: None,
             started_at: None,
             result: None,
+            run_number: None,
         };
         assert_eq!(
             unassigned_commit_timeline_failures(
@@ -8769,7 +8985,7 @@ mod tests {
     }
 
     #[test]
-    fn commit_timeline_does_not_change_normal_recent_json() {
+    fn run_numbers_bump_normal_recent_json_without_adding_selection_metadata() {
         let cli = Cli::try_parse_from(["ci-hub", "validate-status", "--json"]).unwrap();
         let HubCommand::ValidateStatus(args) = cli.command else {
             panic!("wrong command variant")
@@ -8790,7 +9006,7 @@ mod tests {
             .keys()
             .map(String::as_str)
             .collect::<BTreeSet<_>>();
-        assert_eq!(report["schema_version"], 4);
+        assert_eq!(report["schema_version"], 5);
         assert_eq!(
             keys,
             BTreeSet::from([
@@ -8806,6 +9022,37 @@ mod tests {
                 "ledger",
             ])
         );
+    }
+
+    #[test]
+    fn run_number_lookup_json_names_its_selection() {
+        let cli = Cli::try_parse_from(["ci-hub", "validate-status", "--run-no", "701", "--json"])
+            .unwrap();
+        let HubCommand::ValidateStatus(args) = cli.command else {
+            panic!("wrong command variant")
+        };
+        let mut entry = finished_validate_status_entry(
+            CANONICAL_VALIDATE_REPO,
+            &history_row(schema4_receipt_value()),
+            false,
+        );
+        entry.run_number = Some(701);
+        let report = validate_status_history_json(
+            &[entry],
+            CANONICAL_VALIDATE_REPO,
+            &[ValidateStatusColumn::Sha],
+            Path::new("ledger"),
+            &GreenDepth::Unavailable { why: "test".into() },
+            &args,
+            None,
+            0,
+        );
+
+        assert_eq!(report["schema_version"], 7);
+        assert_eq!(report["run_number"], 701);
+        assert_eq!(report["count"], 1);
+        assert!(report.get("machine").is_some());
+        assert!(report.get("commits_since_green").is_none());
     }
 
     #[test]
@@ -8889,7 +9136,7 @@ mod tests {
             false,
         );
         let line = &table[1];
-        assert!(line.starts_with("PASS   NOT-VALIDATED"), "{line}");
+        assert!(line.starts_with("  - PASS   NOT-VALIDATED"), "{line}");
         assert!(!line.contains("ran with"), "{line}");
     }
 
@@ -8916,6 +9163,32 @@ mod tests {
         value["log_file"] = serde_json::json!("/does/not/exist");
         let row = history_row(value);
         assert_eq!(recent_row_executed_tests(&row), Some(2129));
+    }
+
+    #[test]
+    fn finished_runs_are_numbered_per_machine_and_stable_run() {
+        let mut first = schema4_receipt_value();
+        first["run_id"] = serde_json::json!("first-run");
+        first["record_id"] = serde_json::json!("first-record");
+        let mut correction = first.clone();
+        correction["record_id"] = serde_json::json!("first-correction");
+        correction["corrects"] = serde_json::json!("first-record");
+        let mut second = schema4_receipt_value();
+        second["run_id"] = serde_json::json!("second-run");
+        second["record_id"] = serde_json::json!("second-record");
+        let mut other_machine = schema4_receipt_value();
+        other_machine["run_id"] = serde_json::json!("other-machine-run");
+        other_machine["record_id"] = serde_json::json!("other-machine-record");
+        other_machine["host"] = serde_json::json!("other-host");
+
+        let rows = [
+            history_row(first),
+            history_row(correction),
+            history_row(second),
+            history_row(other_machine),
+        ];
+        let run_numbers = historical_validate_run_numbers(&rows);
+        assert_eq!(run_numbers, [Some(1), Some(1), Some(2), Some(1)]);
     }
 
     #[test]
@@ -9067,7 +9340,7 @@ mod tests {
             false,
         );
         let line = &table[1];
-        assert!(line.starts_with("IN-PROGRESS -"), "{line}");
+        assert!(line.starts_with("  - IN-PROGRESS -"), "{line}");
 
         std::fs::write(
             process.join("cgroup"),
@@ -9126,6 +9399,16 @@ mod tests {
             include_str!("validate/run_registry.py"),
         )
         .unwrap();
+        std::fs::write(
+            authority_dir.join("service_result.py"),
+            include_str!("validate/service_result.py"),
+        )
+        .unwrap();
+        std::fs::write(
+            authority_dir.join("final_validate_status.py"),
+            include_str!("validate/final_validate_status.py"),
+        )
+        .unwrap();
         let boot_id = root.join("boot_id");
         std::fs::write(&boot_id, "boot-one\n").unwrap();
         let mut fields = vec!["0"; 20];
@@ -9171,6 +9454,11 @@ mod tests {
                 "pid": 123,
                 "start_ticks": 777,
                 "boot_id": "boot-one"
+            },
+            "admission_result": {
+                "state": "admitted",
+                "recorded_at": "2026-08-27T12:00:01Z",
+                "run_number": 701
             }
         });
         let legacy_shape: ValidateRunRecord = serde_json::from_value(current.clone())
@@ -9198,6 +9486,7 @@ mod tests {
             live[0].sha.as_deref(),
             Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
         );
+        assert_eq!(live[0].run_number, Some(701));
         assert_eq!(live[0].host.as_deref(), Some("validation-host"));
         assert_eq!(live[0].slot.as_deref(), Some("142"));
         assert_eq!(
@@ -10525,6 +10814,7 @@ mod tests {
         assert_eq!(args.sha_positional, None);
         assert_eq!(args.sha, None);
         assert_eq!(args.pr, None);
+        assert_eq!(args.run_no, None);
         assert_eq!(args.limit, DEFAULT_VALIDATE_HISTORY_LIMIT);
         assert_eq!(args.columns, [ValidateStatusColumn::Sha]);
         assert_eq!(args.times, ValidateStatusTimes::Relative);
@@ -10608,6 +10898,65 @@ mod tests {
         assert!(
             Cli::try_parse_from(["ci-hub", "validate-status", sha, "--commit-timeline"]).is_err()
         );
+    }
+
+    #[test]
+    fn validate_status_parses_run_number_and_groups_its_options() {
+        let cli = Cli::try_parse_from(["ci-hub", "validate-status", "--run-no", "701"]).unwrap();
+        let HubCommand::ValidateStatus(args) = cli.command else {
+            panic!("wrong command variant")
+        };
+        assert_eq!(args.run_no, Some(701));
+        assert!(Cli::try_parse_from(["ci-hub", "validate-status", "--run-no", "0"]).is_err());
+
+        for conflicting in [
+            vec!["--run-no", "701", "--limit", "1"],
+            vec!["--run-no", "701", "--sha", RECEIPT_SHA],
+            vec!["--run-no", "701", "--pr", "1"],
+            vec!["--run-no", "701", "--commit-timeline"],
+            vec!["--run-no", "701", "--in-progress-only"],
+            vec!["--run-no", "701", "--exclude-in-progress"],
+        ] {
+            let mut argv = vec!["ci-hub", "validate-status"];
+            argv.extend(conflicting);
+            assert!(Cli::try_parse_from(argv).is_err());
+        }
+
+        let mut command = <Cli as clap::CommandFactory>::command();
+        let validate_status = command
+            .find_subcommand_mut("validate-status")
+            .expect("validate-status subcommand");
+        let help = validate_status.render_long_help().to_string();
+        let which = help.find("WHICH RESULTS:").expect("selection help group");
+        let rendered = help.find("HOW RENDERED:").expect("rendering help group");
+        assert!(which < rendered, "{help}");
+        for option in ["--run-no", "--in-progress-only", "--repo"] {
+            let position = help.find(option).expect("selection option");
+            assert!(position > which && position < rendered, "{help}");
+        }
+        for option in ["--columns", "--times", "--log-paths", "--json"] {
+            assert!(
+                help.find(option).expect("rendering option") > rendered,
+                "{help}"
+            );
+        }
+    }
+
+    #[test]
+    fn run_number_lookup_is_bound_to_the_local_machine_name() {
+        let mut entry = finished_validate_status_entry(
+            CANONICAL_VALIDATE_REPO,
+            &history_row(schema4_receipt_value()),
+            false,
+        );
+        entry.run_number = Some(701);
+        entry.host = Some("devbig014.facebook.com".into());
+
+        assert!(entry_is_run_on_machine(&entry, 701, "devbig014"));
+        assert!(!entry_is_run_on_machine(&entry, 700, "devbig014"));
+        assert!(!entry_is_run_on_machine(&entry, 701, "devbig015"));
+        entry.host = None;
+        assert!(!entry_is_run_on_machine(&entry, 701, "devbig014"));
     }
 
     #[test]

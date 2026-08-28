@@ -212,6 +212,49 @@ def test_record_is_immediately_visible_through_canonical_union(tmp_path: Path):
     assert validate_rows.rows(root=tmp_path) == [source]
 
 
+def test_record_carries_the_admitted_run_number(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setenv(validate_rows.RUN_NUMBER_ENV, "701")
+    source = row(tmp_path)
+
+    validate_rows.record(source, root=tmp_path)
+
+    [event] = validate_rows.events(root=tmp_path)
+    assert event["run_number"] == 701
+    assert event["legacy_row"]["run_number"] == 701
+    assert validate_rows.rows(root=tmp_path)[0]["run_number"] == 701
+
+
+@pytest.mark.parametrize("run_number", ["0", "-1", "01", "not-a-number"])
+def test_record_refuses_an_invalid_admitted_run_number(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, run_number: str
+):
+    monkeypatch.setenv(validate_rows.RUN_NUMBER_ENV, run_number)
+    with pytest.raises(ValueError, match="must be a positive integer"):
+        validate_rows.record(row(tmp_path), root=tmp_path)
+
+
+def test_record_refuses_a_row_that_changes_its_admitted_run_number(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setenv(validate_rows.RUN_NUMBER_ENV, "701")
+    source = row(tmp_path)
+    source["run_number"] = 702
+    with pytest.raises(ValueError, match="differs from admitted run number"):
+        validate_rows.record(source, root=tmp_path)
+
+
+@pytest.mark.parametrize("run_number", [0, -1, True, "701"])
+def test_record_refuses_an_invalid_row_run_number(
+    tmp_path: Path, run_number: object
+):
+    source = row(tmp_path)
+    source["run_number"] = run_number
+    with pytest.raises(ValueError, match="row run_number must be a positive integer"):
+        validate_rows.record(source, root=tmp_path)
+
+
 @pytest.mark.parametrize(
     "gate",
     [
@@ -729,6 +772,10 @@ def test_linked_worktree_cli_filters_exact_source_row_and_refuses_ambiguity(
         # exercising the behaviour under test.
         Path("ci-hub/lib/bounded_capture.py"),
         Path("ci-hub/qualifying_receipt.py"),
+        Path("ci-hub/series/series.py"),
+        Path("ci-hub/validate/flake_class.py"),
+        Path("ci-hub/validate/flaky_cells.py"),
+        Path("ci-hub/validate/gate_completeness.py"),
         Path("ci-hub/validate/green_class.py"),
         Path("ci-hub/validate/qualifying-receipt.json"),
     )

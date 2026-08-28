@@ -633,6 +633,7 @@ pub struct LedgerParseFailure {
     pub producer: Option<String>,
     pub started_at: Option<String>,
     pub result: Option<String>,
+    pub run_number: Option<u64>,
 }
 
 impl std::fmt::Display for LedgerParseFailure {
@@ -661,6 +662,9 @@ impl std::fmt::Display for LedgerParseFailure {
         }
         if let Some(result) = &self.result {
             write!(f, " [result {result}]")?;
+        }
+        if let Some(run_number) = self.run_number {
+            write!(f, " [run_number {run_number}]")?;
         }
         Ok(())
     }
@@ -697,6 +701,12 @@ pub fn parse_ledger(buf: &str) -> (Vec<HistoryRow>, Vec<LedgerParseFailure>) {
                         .and_then(serde_json::Value::as_str)
                         .map(str::to_string)
                 };
+                let unsigned_field = |name: &str| {
+                    salvaged
+                        .as_ref()
+                        .and_then(|value| value.get(name))
+                        .and_then(serde_json::Value::as_u64)
+                };
                 failures.push(LedgerParseFailure {
                     line_number: index + 1,
                     error: error.to_string(),
@@ -708,6 +718,7 @@ pub fn parse_ledger(buf: &str) -> (Vec<HistoryRow>, Vec<LedgerParseFailure>) {
                     producer: field("producer"),
                     started_at: field("started_at"),
                     result: field("result"),
+                    run_number: unsigned_field("run_number"),
                 });
             }
         }

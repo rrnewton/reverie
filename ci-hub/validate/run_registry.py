@@ -6,6 +6,7 @@ from __future__ import annotations
 import fcntl
 import json
 import os
+import socket
 import sys
 import tempfile
 from contextlib import contextmanager
@@ -67,6 +68,7 @@ class ProcessIdentityRecord(TypedDict):
 class AdmissionResultRecord(TypedDict, total=False):
     state: str
     recorded_at: str
+    run_number: int
     reason: str
     exit_code: int
 
@@ -163,6 +165,7 @@ class ProcessIdentity:
 class AdmissionResult:
     state: AdmissionState
     recorded_at: str
+    run_number: int | None
     reason: AdmissionRefusalReason | None
     exit_code: int | None
 
@@ -357,10 +360,12 @@ def _optional_string_list(value: Mapping[str, Any], field: str) -> None:
         raise _error(field, "must be a list of strings or null")
 
 
-def _positive_integer(value: Mapping[str, Any], field: str) -> None:
+def _positive_integer(
+    value: Mapping[str, Any], field: str, *, error_field: str | None = None
+) -> None:
     raw = value.get(field)
     if not isinstance(raw, int) or isinstance(raw, bool) or raw <= 0:
-        raise _error(field, "must be a positive integer")
+        raise _error(error_field or field, "must be a positive integer")
 
 
 def _nonnegative_integer(value: Mapping[str, Any], field: str) -> None:
@@ -419,7 +424,9 @@ def _timestamp(
     return raw
 
 
-def _admission_result(value: Mapping[str, Any]) -> AdmissionResult | None:
+def _admission_result(
+    value: Mapping[str, Any], *, kind: RunKind
+) -> AdmissionResult | None:
     raw = value.get("admission_result")
     if raw is None:
         # A handle written before this field existed remains readable, but its
@@ -437,12 +444,28 @@ def _admission_result(value: Mapping[str, Any]) -> AdmissionResult | None:
         raw, "recorded_at", error_field="admission_result.recorded_at"
     )
     if state is AdmissionState.ADMITTED:
-        if set(raw) != {"state", "recorded_at"}:
+        if kind.counts_as_validation and "run_number" not in raw:
+            raise _error(
+                "admission_result.run_number",
+                "is required for an admitted validation",
+            )
+        required = (
+            {"state", "recorded_at", "run_number"}
+            if kind.counts_as_validation
+            else {"state", "recorded_at"}
+        )
+        if set(raw) != required:
             raise _error(
                 "admission_result",
-                "admitted must contain exactly state and recorded_at",
+                f"admitted {kind.value} must contain exactly {sorted(required)}",
             )
-        return AdmissionResult(state, recorded_at, None, None)
+        run_number = None
+        if kind.counts_as_validation:
+            _positive_integer(
+                raw, "run_number", error_field="admission_result.run_number"
+            )
+            run_number = int(raw["run_number"])
+        return AdmissionResult(state, recorded_at, run_number, None, None)
     if set(raw) != {"state", "recorded_at", "reason", "exit_code"}:
         raise _error(
             "admission_result",
@@ -457,7 +480,7 @@ def _admission_result(value: Mapping[str, Any]) -> AdmissionResult | None:
     exit_code = raw.get("exit_code")
     if not isinstance(exit_code, int) or isinstance(exit_code, bool) or exit_code == 0:
         raise _error("admission_result.exit_code", "must be a nonzero integer")
-    return AdmissionResult(state, recorded_at, reason, exit_code)
+    return AdmissionResult(state, recorded_at, None, reason, exit_code)
 
 
 def parse_current_record(value: Mapping[str, Any]) -> RunHandle:
@@ -519,7 +542,7 @@ def parse_current_record(value: Mapping[str, Any]) -> RunHandle:
     for field in _OPTIONAL_STRING_LIST_FIELDS & allowed_fields:
         _optional_string_list(value, field)
     identity = _process_identity(value)
-    admission_result = _admission_result(value)
+    admission_result = _admission_result(value, kind=kind)
 
     if kind is not RunKind.BENCH:
         if value.get("pane_role") != "observer-only":
@@ -828,6 +851,9 @@ def publish_admission_result(
             raise _error(
                 "admission_result", "admitted does not carry reason or exit_code"
             )
+        handle = parse_current_record(read_record(path))
+        if handle.counts_as_validation:
+            return _publish_numbered_admission_result(path)
     elif reason is None or exit_code is None:
         raise _error(
             "admission_result", "refused requires reason and exit_code"
@@ -836,7 +862,8 @@ def publish_admission_result(
         value = read_record(path)
         if value.get("producer") != PRODUCER:
             raise _error("producer", "admission result requires a current handle")
-        existing = _admission_result(value)
+        handle = parse_current_record(value)
+        existing = handle.admission_result
         if existing is not None:
             if (
                 existing.state is not state
@@ -920,6 +947,14 @@ def projection(value: Mapping[str, Any]) -> dict[str, Any]:
                 "recorded_at": admission_result.recorded_at,
                 **(
                     {
+                        "run_number": admission_result.run_number,
+                    }
+                    if admission_result.state is AdmissionState.ADMITTED
+                    and admission_result.run_number is not None
+                    else {}
+                ),
+                **(
+                    {
                         "reason": admission_result.reason.value,
                         "exit_code": admission_result.exit_code,
                     }
@@ -985,6 +1020,324 @@ def verify_holder(
     if observed != expected:
         raise _error("process_identity", "does not bind the held anchor identity")
     return projected
+
+
+def _run_number_team(repo: str) -> str:
+    if repo == "rrnewton/hermit":
+        return "hermit"
+    if repo == "rrnewton/reverie":
+        return "reverie"
+    raise _error("repo", f"cannot assign a run number for {repo!r}")
+
+
+def _run_number_state(path: Path, *, repo: str, host: str) -> int:
+    if not path.exists():
+        return 0
+    try:
+        value = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError) as error:
+        raise _error("run_number", f"cannot read {path}: {error}") from error
+    expected = {"schema_version", "repo", "host", "last_run_number"}
+    if not isinstance(value, dict) or set(value) != expected:
+        raise _error("run_number", f"{path} does not contain exactly {sorted(expected)}")
+    if value.get("schema_version") != 1:
+        raise _error("run_number", f"{path} has unsupported schema")
+    if value.get("repo") != repo or value.get("host") != host:
+        raise _error("run_number", f"{path} identity does not match {repo} on {host}")
+    _positive_integer(value, "last_run_number")
+    return int(value["last_run_number"])
+
+
+def _write_run_number_state(path: Path, *, repo: str, host: str, number: int) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(fd, "w") as stream:
+            json.dump(
+                {
+                    "schema_version": 1,
+                    "repo": repo,
+                    "host": host,
+                    "last_run_number": number,
+                },
+                stream,
+                indent=2,
+                sort_keys=True,
+            )
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+        directory = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    except BaseException:
+        temporary.unlink(missing_ok=True)
+        raise
+
+
+def _run_number_source_paths(root: Path, *, team: str, host: str) -> list[Path]:
+    published = root.glob(f"ledger/{team}/{host}/[0-9][0-9][0-9][0-9]-[0-9][0-9].jsonl")
+    recovered = root.glob(
+        f"ledger-recovery/{team}/{host}/[0-9][0-9][0-9][0-9]-[0-9][0-9]/*.jsonl"
+    )
+    spool = root / "ignored/ci-hub/validate-ledger-spool"
+    pending = spool.glob(f"{team}__{host}__*.jsonl")
+    retained = (spool / "published").glob(f"{team}__{host}__*.jsonl")
+    return sorted([*published, *recovered, *pending, *retained])
+
+
+def _run_number_from_value(value: object) -> int | None:
+    if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+        return None
+    return value
+
+
+def _ledger_run_numbers_without_canonical_view(
+    root: Path, *, team: str, host: str
+) -> tuple[int, int]:
+    """Find a non-reusing baseline even when the canonical view refuses.
+
+    The admission gate must not deadlock every future validate because one old
+    ledger line is unreadable. A nonempty unreadable line still consumes one
+    position: that can leave a gap, but it cannot reuse an identity already
+    issued to an earlier run.
+    """
+    identities: set[tuple[str, object]] = set()
+    explicit: list[int] = []
+    for path in _run_number_source_paths(root, team=team, host=host):
+        try:
+            lines = path.read_text().splitlines()
+        except OSError as error:
+            raise _error(
+                "admission_result.run_number", f"cannot read ledger shard {path}: {error}"
+            ) from error
+        for line_number, line in enumerate(lines, 1):
+            if not line.strip():
+                continue
+            physical_identity = ("line", f"{path}:{line_number}")
+            try:
+                value = json.loads(line)
+            except (json.JSONDecodeError, ValueError):
+                identities.add(physical_identity)
+                continue
+            if not isinstance(value, dict):
+                identities.add(physical_identity)
+                continue
+
+            event_type = value.get("event_type")
+            if event_type is not None:
+                if event_type != "run.result":
+                    continue
+                event_team = value.get("team")
+                event_host = str(value.get("host") or "").split(".", 1)[0]
+                if event_team != team or event_host != host:
+                    # The shard path already binds this line to the selected
+                    # team and machine. If its body disagrees, the canonical
+                    # reader quite properly refuses it, but ignoring the line
+                    # here could reuse a number already consumed by that run.
+                    identities.add(physical_identity)
+                    continue
+                legacy = value.get("legacy_row")
+                if not isinstance(legacy, dict):
+                    legacy = {}
+                producer = value.get("producer")
+                producer_tool = (
+                    producer.get("tool") if isinstance(producer, dict) else producer
+                )
+                legacy_producer = legacy.get("producer")
+                if (
+                    producer_tool == "ledger-live-sync-acceptance"
+                    or legacy_producer == "ledger-live-sync-acceptance"
+                ):
+                    continue
+                run_id = value.get("run_id")
+                event_id = value.get("event_id")
+                identity = (
+                    ("run", run_id)
+                    if isinstance(run_id, str) and run_id
+                    else (
+                        ("event", event_id)
+                        if isinstance(event_id, str) and event_id
+                        else physical_identity
+                    )
+                )
+                number = _run_number_from_value(value.get("run_number"))
+                if number is None:
+                    number = _run_number_from_value(legacy.get("run_number"))
+            else:
+                row_host = str(value.get("host") or "").split(".", 1)[0]
+                repo = value.get("repo")
+                repo_matches = (
+                    repo in (None, "hermit", "rrnewton/hermit")
+                    if team == "hermit"
+                    else repo in ("reverie", "rrnewton/reverie")
+                )
+                if row_host != host or not repo_matches:
+                    # As above, a malformed row in this machine's shard still
+                    # consumes a conservative position. A gap is safer than
+                    # issuing the same run number twice.
+                    identities.add(physical_identity)
+                    continue
+                if value.get("producer") == "ledger-live-sync-acceptance":
+                    continue
+                run_id = value.get("run_id")
+                record_id = value.get("record_id")
+                identity = (
+                    ("run", run_id)
+                    if isinstance(run_id, str) and run_id
+                    else (
+                        ("record", record_id)
+                        if isinstance(record_id, str) and record_id
+                        else physical_identity
+                    )
+                )
+                number = _run_number_from_value(value.get("run_number"))
+            identities.add(identity)
+            if number is not None:
+                explicit.append(number)
+    return len(identities), max(explicit, default=0)
+
+
+def _ledger_run_numbers(root: Path, *, team: str, host: str) -> tuple[int, int]:
+    def count_directly(error: Exception) -> tuple[int, int]:
+        print(
+            "run_registry: canonical ledger view could not supply the run "
+            f"number count ({error}); counting result entries directly",
+            file=sys.stderr,
+        )
+        return _ledger_run_numbers_without_canonical_view(
+            root, team=team, host=host
+        )
+
+    ledger_dir = Path(__file__).resolve().parents[1] / "ledger"
+    sys.path.insert(0, str(ledger_dir))
+    try:
+        try:
+            import ledger as ledger_store
+            import publisher as ledger_publisher
+            import validate_rows
+        except ModuleNotFoundError as error:
+            return count_directly(error)
+        try:
+            relevant = [
+                row
+                for row in validate_rows.rows(root=root)
+                if str(row.get("host") or "").split(".", 1)[0] == host
+                and (
+                    row.get("repo") in (None, "hermit", "rrnewton/hermit")
+                    if team == "hermit"
+                    else row.get("repo") in ("reverie", "rrnewton/reverie")
+                )
+            ]
+        except (
+            OSError,
+            RuntimeError,
+            ValueError,
+            ledger_store.LedgerError,
+            ledger_publisher.PublishRefused,
+        ) as error:
+            return count_directly(error)
+    finally:
+        sys.path.remove(str(ledger_dir))
+    identities = {
+        ("run", str(row["run_id"]))
+        if isinstance(row.get("run_id"), str) and row.get("run_id")
+        else ("row", index)
+        for index, row in enumerate(relevant)
+    }
+    explicit = [
+        number
+        for row in relevant
+        for number in (row.get("run_number"),)
+        if isinstance(number, int) and not isinstance(number, bool) and number > 0
+    ]
+    return len(identities), max(explicit, default=0)
+
+
+def _run_number_root(path: Path) -> tuple[Path, Path]:
+    path = path.resolve()
+    try:
+        root = path.parents[3]
+    except IndexError as error:
+        raise _error("run_number", f"record path is too short: {path}") from error
+    expected_directory = (root / "ignored/validate/runs").resolve()
+    if path.parent != expected_directory:
+        raise _error("run_number", f"record {path} is outside {expected_directory}")
+    return root, path
+
+
+def _publish_numbered_admission_result(path: Path) -> dict[str, Any]:
+    """Publish one admitted validation result with its machine run number."""
+    root, path = _run_number_root(path)
+    initial = parse_current_record(read_record(path))
+    if not initial.counts_as_validation:
+        raise _error("admission_result.run_number", "is valid only for validation")
+    repo = initial.repo
+    team = _run_number_team(repo)
+    host = socket.gethostname().split(".", 1)[0]
+    if not host:
+        raise _error("admission_result.run_number", "machine hostname is empty")
+    recorded_host = initial.raw.get("host")
+    if recorded_host is not None and str(recorded_host).split(".", 1)[0] != host:
+        raise _error(
+            "admission_result.run_number",
+            f"record host {recorded_host!r} differs from machine {host!r}",
+        )
+    state_path = root / "ignored/validate/run-numbers" / team / f"{host}.json"
+    with exclusive_record(state_path):
+        with exclusive_record(path):
+            value = read_record(path)
+            handle = parse_current_record(value)
+            if not handle.counts_as_validation or handle.repo != repo:
+                raise _error(
+                    "admission_result.run_number",
+                    "run identity changed while admission was being recorded",
+                )
+            existing = handle.admission_result
+            if existing is not None:
+                if existing.state is not AdmissionState.ADMITTED:
+                    raise _error(
+                        "admission_result",
+                        "record already carries a different admission result",
+                    )
+                number = existing.run_number
+                if number is None:
+                    raise _error(
+                        "admission_result.run_number",
+                        "is required for an admitted validation",
+                    )
+                previous = _run_number_state(state_path, repo=repo, host=host)
+                if number > previous:
+                    _write_run_number_state(
+                        state_path, repo=repo, host=host, number=number
+                    )
+                return value
+
+            previous = _run_number_state(state_path, repo=repo, host=host)
+            if previous > 0:
+                number = previous + 1
+            else:
+                ledger_count, ledger_max = _ledger_run_numbers(
+                    root, team=team, host=host
+                )
+                number = max(ledger_count, ledger_max) + 1
+            # Persist the counter first. If this process dies before the handle
+            # is written, the number is skipped rather than issued to two runs.
+            _write_run_number_state(
+                state_path, repo=repo, host=host, number=number
+            )
+            value["host"] = host
+            value["admission_result"] = {
+                "state": AdmissionState.ADMITTED.value,
+                "recorded_at": datetime.now(timezone.utc).isoformat(),
+                "run_number": number,
+            }
+            _write_unlocked(path, value)
+            return value
 
 
 def _load_cli_record(path: Path) -> dict[str, Any]:

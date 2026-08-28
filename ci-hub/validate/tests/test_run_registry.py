@@ -6,7 +6,9 @@ import json
 import sys
 import tempfile
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -82,10 +84,12 @@ class RunRegistryContractTests(unittest.TestCase):
                 admission_result={
                     "state": "admitted",
                     "recorded_at": "2026-08-28T07:00:01+00:00",
+                    "run_number": 701,
                 }
             )
         )
         self.assertEqual(run_registry.AdmissionState.ADMITTED, handle.admission_result.state)
+        self.assertEqual(701, handle.admission_result.run_number)
 
         with self.assertRaisesRegex(
             RuntimeError,
@@ -239,11 +243,24 @@ class RunRegistryContractTests(unittest.TestCase):
 
     def test_admission_result_cannot_be_replaced(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
-            path = Path(temporary) / "validate-test.json"
+            root = Path(temporary)
+            path = root / "ignored/validate/runs/validate-test.json"
             run_registry.write_record(path, validation_handle(state="launching"))
-            run_registry.publish_admission_result(
-                path, state=run_registry.AdmissionState.ADMITTED
-            )
+            with (
+                mock.patch.object(
+                    run_registry.socket,
+                    "gethostname",
+                    return_value="hosta.example.com",
+                ),
+                mock.patch.object(
+                    run_registry,
+                    "_ledger_run_numbers",
+                    return_value=(700, 0),
+                ),
+            ):
+                run_registry.publish_admission_result(
+                    path, state=run_registry.AdmissionState.ADMITTED
+                )
             self.assertEqual(
                 "admitted", run_registry.read_record(path)["admission_result"]["state"]
             )
@@ -254,6 +271,210 @@ class RunRegistryContractTests(unittest.TestCase):
                     reason=run_registry.AdmissionRefusalReason.VALIDATION_LOCK_REFUSAL,
                     exit_code=3,
                 )
+
+    def test_run_number_is_assigned_while_record_is_launching_and_never_reused(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            runs = root / "ignored/validate/runs"
+            first = runs / "validate-first.json"
+            second = runs / "validate-second.json"
+            run_registry.create_current_record(
+                first, validation_handle(state="launching", unit="validate-first.service")
+            )
+            run_registry.create_current_record(
+                second,
+                validation_handle(state="launching", unit="validate-second.service"),
+            )
+            with (
+                mock.patch.object(
+                    run_registry.socket,
+                    "gethostname",
+                    return_value="hosta.example.com",
+                ),
+                mock.patch.object(
+                    run_registry,
+                    "_ledger_run_numbers",
+                    return_value=(700, 0),
+                ) as ledger_numbers,
+            ):
+                assigned = run_registry.publish_admission_result(
+                    first, state=run_registry.AdmissionState.ADMITTED
+                )
+                repeated = run_registry.publish_admission_result(
+                    first, state=run_registry.AdmissionState.ADMITTED
+                )
+                next_assigned = run_registry.publish_admission_result(
+                    second, state=run_registry.AdmissionState.ADMITTED
+                )
+
+            self.assertEqual("launching", assigned["state"])
+            self.assertEqual(701, assigned["admission_result"]["run_number"])
+            self.assertEqual(701, repeated["admission_result"]["run_number"])
+            self.assertEqual(702, next_assigned["admission_result"]["run_number"])
+            ledger_numbers.assert_called_once_with(
+                root, team="hermit", host="hosta"
+            )
+            self.assertEqual(
+                701,
+                run_registry.read_record(first)["admission_result"]["run_number"],
+            )
+            projected = run_registry.projection(assigned)
+            self.assertNotIn("run_number", projected)
+            self.assertEqual(701, projected["admission_result"]["run_number"])
+
+    def test_bench_admission_does_not_consume_a_validation_run_number(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "hermit-pressure-test.json"
+            run_registry.write_record(path, bench_handle())
+
+            admitted = run_registry.publish_admission_result(
+                path, state=run_registry.AdmissionState.ADMITTED
+            )
+
+            self.assertEqual(
+                {"state", "recorded_at"}, set(admitted["admission_result"])
+            )
+
+    def test_concurrent_admissions_receive_distinct_run_numbers(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            runs = root / "ignored/validate/runs"
+            paths = [runs / "validate-first.json", runs / "validate-second.json"]
+            for index, path in enumerate(paths, 1):
+                run_registry.create_current_record(
+                    path,
+                    validation_handle(
+                        state="launching", unit=f"validate-{index}.service"
+                    ),
+                )
+            with (
+                mock.patch.object(
+                    run_registry.socket,
+                    "gethostname",
+                    return_value="hosta.example.com",
+                ),
+                mock.patch.object(
+                    run_registry,
+                    "_ledger_run_numbers",
+                    return_value=(700, 0),
+                ) as ledger_numbers,
+                ThreadPoolExecutor(max_workers=2) as executor,
+            ):
+                admitted = list(
+                    executor.map(
+                        lambda path: run_registry.publish_admission_result(
+                            path, state=run_registry.AdmissionState.ADMITTED
+                        ),
+                        paths,
+                    )
+                )
+
+            self.assertEqual(
+                [701, 702],
+                sorted(value["admission_result"]["run_number"] for value in admitted),
+            )
+            ledger_numbers.assert_called_once_with(
+                root, team="hermit", host="hosta"
+            )
+
+    def test_admitted_result_requires_a_positive_run_number(self) -> None:
+        with self.assertRaisesRegex(
+            RuntimeError, "validation-run-handle-admission_result.run_number"
+        ):
+            run_registry.parse_current_record(
+                validation_handle(
+                    admission_result={
+                        "state": "admitted",
+                        "recorded_at": "2026-08-28T07:00:01+00:00",
+                    }
+                )
+            )
+        for value in (0, -1, True, "1"):
+            with self.subTest(value=value):
+                with self.assertRaisesRegex(
+                    RuntimeError, "validation-run-handle-admission_result.run_number"
+                ):
+                    run_registry.parse_current_record(
+                        validation_handle(
+                            admission_result={
+                                "state": "admitted",
+                                "recorded_at": "2026-08-28T07:00:01+00:00",
+                                "run_number": value,
+                            }
+                        )
+                    )
+
+    def test_run_number_baseline_survives_an_unreadable_old_ledger_line(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            shard = root / "ledger/hermit/hosta/2026-08.jsonl"
+            shard.parent.mkdir(parents=True)
+            events = [
+                {
+                    "event_type": "run.result",
+                    "event_id": "first-result",
+                    "run_id": "first-run",
+                    "team": "hermit",
+                    "host": "hosta",
+                    "legacy_row": {},
+                },
+                {
+                    "event_type": "run.correct",
+                    "event_id": "first-correction",
+                    "run_id": "first-run",
+                    "team": "hermit",
+                    "host": "hosta",
+                },
+                {
+                    "event_type": "run.result",
+                    "event_id": "duplicate-result",
+                    "run_id": "first-run",
+                    "team": "hermit",
+                    "host": "hosta",
+                    "legacy_row": {},
+                },
+                {
+                    "event_type": "run.result",
+                    "event_id": "second-result",
+                    "run_id": "second-run",
+                    "team": "hermit",
+                    "host": "hosta.example.com",
+                    "run_number": 9,
+                    "legacy_row": {},
+                },
+                {
+                    "event_type": "run.result",
+                    "event_id": "fixture-result",
+                    "run_id": "fixture-run",
+                    "team": "hermit",
+                    "host": "hosta",
+                    "producer": {"tool": "ledger-live-sync-acceptance"},
+                    "legacy_row": {},
+                },
+                {
+                    "event_type": "run.result",
+                    "event_id": "wrong-host-result",
+                    "run_id": "wrong-host-run",
+                    "team": "hermit",
+                    "host": "wrong-host",
+                    "legacy_row": {},
+                },
+            ]
+            shard.write_text(
+                "\n".join(json.dumps(event) for event in events[:2])
+                + "\nnot-json\n"
+                + "\n".join(json.dumps(event) for event in events[2:])
+                + "\n"
+            )
+
+            self.assertEqual(
+                (4, 9),
+                run_registry._ledger_run_numbers_without_canonical_view(
+                    root, team="hermit", host="hosta"
+                ),
+            )
 
 
 if __name__ == "__main__":
