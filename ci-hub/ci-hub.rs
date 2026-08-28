@@ -460,6 +460,9 @@ struct ValidateStatusArgs {
     /// Machine-readable JSON always retains the original RFC 3339 values.
     #[arg(long, value_enum, default_value_t = ValidateStatusTimes::Relative)]
     times: ValidateStatusTimes,
+    /// Show the worktree slot and full producer-recorded log file path.
+    #[arg(long)]
+    log_paths: bool,
     /// Repository used to resolve --pr head SHAs.
     #[arg(long, default_value = "rrnewton/hermit")]
     repo: String,
@@ -5710,13 +5713,6 @@ fn format_validate_timestamp(
     }
 }
 
-fn validate_status_time_width(times: ValidateStatusTimes) -> usize {
-    match times {
-        ValidateStatusTimes::Local => 25,
-        ValidateStatusTimes::Relative | ValidateStatusTimes::Utc => 20,
-    }
-}
-
 /// COMMITS SINCE GREEN, for `validate-status`' standard output.
 ///
 /// ⚠️ WHY THIS LIVES IN THE STANDARD READER AND NOT ONLY IN `newest-green`.
@@ -6007,6 +6003,12 @@ struct ValidateRunRecord {
     started_at: String,
     #[serde(default)]
     host: Option<String>,
+    #[serde(default)]
+    checkout: Option<String>,
+    #[serde(default)]
+    source_checkout: Option<String>,
+    #[serde(default)]
+    log: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -6025,6 +6027,8 @@ struct ValidateStatusEntry {
     tests_executed: Option<i64>,
     host: Option<String>,
     slot: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    log_file: Option<String>,
     summary: String,
 }
 
@@ -6100,12 +6104,67 @@ fn elapsed_since(started_at: &str, now: chrono::DateTime<chrono::Utc>) -> Option
     )
 }
 
+fn slot_from_validate_checkout(root: &Path, checkout: &str) -> Option<String> {
+    let path = Path::new(checkout);
+    let components = path
+        .components()
+        .filter_map(|component| match component {
+            std::path::Component::Normal(value) => value.to_str(),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    for (index, component) in components.iter().enumerate() {
+        if *component != "worktrees" {
+            continue;
+        }
+        let slot_index = if components.get(index + 1) == Some(&"slots") {
+            index + 2
+        } else {
+            index + 1
+        };
+        if let Some(slot) = components.get(slot_index).filter(|slot| !slot.is_empty()) {
+            return Some((*slot).into());
+        }
+    }
+
+    let shared_root = landing_lock::repository_lock_root(root);
+    if path == shared_root.join("hermit") || path == shared_root.join("reverie") {
+        return Some("primary".into());
+    }
+    if path.starts_with("/tmp") {
+        return Some("standalone".into());
+    }
+    path.file_name()
+        .and_then(OsStr::to_str)
+        .filter(|name| !name.is_empty())
+        .map(str::to_string)
+}
+
+fn current_validate_run_text(
+    value: &serde_json::Value,
+    field: &str,
+    path: &Path,
+) -> Result<String, CiHubError> {
+    value
+        .get(field)
+        .and_then(serde_json::Value::as_str)
+        .filter(|text| !text.is_empty())
+        .map(str::to_string)
+        .ok_or_else(|| {
+            CiHubError::ValidateStatus(format!(
+                "live validation run handle {} has no {field} after shared validation",
+                path.display()
+            ))
+        })
+}
+
 fn live_validate_runs_from(
     root: &Path,
     repo: &str,
     proc_root: &Path,
     boot_id_path: &Path,
     now: chrono::DateTime<chrono::Utc>,
+    include_log_paths: bool,
 ) -> Result<Vec<ValidateStatusEntry>, CiHubError> {
     let directory = root.join("ignored/validate/runs");
     let entries = match std::fs::read_dir(&directory) {
@@ -6227,6 +6286,16 @@ fn live_validate_runs_from(
                 record.agent.as_deref().unwrap_or("?"),
                 unit
             );
+            let (slot, log_file) = if include_log_paths {
+                let source_checkout = current_validate_run_text(&value, "source_checkout", &path)?;
+                let log_file = current_validate_run_text(&value, "log", &path)?;
+                (
+                    slot_from_validate_checkout(root, &source_checkout),
+                    Some(log_file),
+                )
+            } else {
+                (None, None)
+            };
             live.push(ValidateStatusEntry {
                 depth: None,
                 verdict: None,
@@ -6240,7 +6309,8 @@ fn live_validate_runs_from(
                 elapsed_seconds: elapsed_since(&started_at, now),
                 tests_executed: None,
                 host: record.host.or_else(local_host),
-                slot: None,
+                slot,
+                log_file,
                 summary,
             });
             continue;
@@ -6306,6 +6376,18 @@ fn live_validate_runs_from(
             record.agent.as_deref().unwrap_or("?"),
             record.unit
         );
+        let (slot, log_file) = if include_log_paths {
+            let checkout = record
+                .source_checkout
+                .as_deref()
+                .or(record.checkout.as_deref());
+            (
+                checkout.and_then(|checkout| slot_from_validate_checkout(root, checkout)),
+                record.log.clone(),
+            )
+        } else {
+            (None, None)
+        };
         live.push(ValidateStatusEntry {
             depth: None,
             verdict: None,
@@ -6319,7 +6401,8 @@ fn live_validate_runs_from(
             elapsed_seconds: elapsed_since(&record.started_at, now),
             tests_executed: None,
             host: record.host.or_else(local_host),
-            slot: None,
+            slot,
+            log_file,
             summary,
         });
     }
@@ -6331,6 +6414,7 @@ fn live_validate_runs(
     root: &Path,
     repo: &str,
     now: chrono::DateTime<chrono::Utc>,
+    include_log_paths: bool,
 ) -> Result<Vec<ValidateStatusEntry>, CiHubError> {
     live_validate_runs_from(
         root,
@@ -6338,6 +6422,7 @@ fn live_validate_runs(
         Path::new("/proc"),
         Path::new("/proc/sys/kernel/random/boot_id"),
         now,
+        include_log_paths,
     )
 }
 
@@ -6466,43 +6551,101 @@ fn fill_optional_validate_status_columns(
     }
 }
 
-fn validate_status_header(
+#[derive(Clone, Copy)]
+enum ValidateStatusAlignment {
+    Left,
+    Right,
+}
+
+struct ValidateStatusTableColumn {
+    header: &'static str,
+    alignment: ValidateStatusAlignment,
+}
+
+fn validate_status_table_columns(
     columns: &[ValidateStatusColumn],
-    times: ValidateStatusTimes,
     commit_timeline: bool,
-) -> String {
-    let mut fields = Vec::new();
+    log_paths: bool,
+) -> Vec<ValidateStatusTableColumn> {
+    let mut table = Vec::new();
     if commit_timeline {
-        fields.push(format!("{:>5}", "DEPTH"));
+        table.push(ValidateStatusTableColumn {
+            header: "DEPTH",
+            alignment: ValidateStatusAlignment::Right,
+        });
     }
-    fields.extend([format!("{:<12}", "RESULT"), format!("{:<13}", "VERDICT")]);
+    table.extend([
+        ValidateStatusTableColumn {
+            header: "RESULT",
+            alignment: ValidateStatusAlignment::Left,
+        },
+        ValidateStatusTableColumn {
+            header: "VERDICT",
+            alignment: ValidateStatusAlignment::Left,
+        },
+    ]);
     for column in columns {
-        fields.push(match column {
-            ValidateStatusColumn::Sha => format!("{:<12}", "SHA"),
-            ValidateStatusColumn::Branch => format!("{:<18}", "BRANCH"),
-            ValidateStatusColumn::GitDepth => format!("{:>8}", "GITDEPTH"),
+        table.push(match column {
+            ValidateStatusColumn::Sha => ValidateStatusTableColumn {
+                header: "SHA",
+                alignment: ValidateStatusAlignment::Left,
+            },
+            ValidateStatusColumn::Branch => ValidateStatusTableColumn {
+                header: "BRANCH",
+                alignment: ValidateStatusAlignment::Left,
+            },
+            ValidateStatusColumn::GitDepth => ValidateStatusTableColumn {
+                header: "GITDEPTH",
+                alignment: ValidateStatusAlignment::Right,
+            },
             ValidateStatusColumn::None => unreachable!("none is removed before rendering"),
         });
     }
-    fields.push(format!(
-        "{:<width$}",
-        "STARTED/FINISHED",
-        width = validate_status_time_width(times)
-    ));
-    fields.push(format!("{:>7}", "ELAPSED"));
-    fields.push(format!("{:<16}", "HOST"));
-    fields.push(format!("{:>14}", "TESTS-EXECUTED"));
-    fields.push("SUMMARY".into());
-    fields.join(" ")
+    table.extend([
+        ValidateStatusTableColumn {
+            header: "STARTED/FINISHED",
+            alignment: ValidateStatusAlignment::Left,
+        },
+        ValidateStatusTableColumn {
+            header: "ELAPSED",
+            alignment: ValidateStatusAlignment::Right,
+        },
+        ValidateStatusTableColumn {
+            header: "HOST",
+            alignment: ValidateStatusAlignment::Left,
+        },
+        ValidateStatusTableColumn {
+            header: "TESTS-EXECUTED",
+            alignment: ValidateStatusAlignment::Right,
+        },
+    ]);
+    if log_paths {
+        table.extend([
+            ValidateStatusTableColumn {
+                header: "SLOT",
+                alignment: ValidateStatusAlignment::Left,
+            },
+            ValidateStatusTableColumn {
+                header: "LOG-FILE",
+                alignment: ValidateStatusAlignment::Left,
+            },
+        ]);
+    }
+    table.push(ValidateStatusTableColumn {
+        header: "SUMMARY",
+        alignment: ValidateStatusAlignment::Left,
+    });
+    table
 }
 
-fn validate_status_line(
+fn validate_status_values(
     entry: &ValidateStatusEntry,
     columns: &[ValidateStatusColumn],
     times: ValidateStatusTimes,
     now: chrono::DateTime<chrono::Utc>,
     commit_timeline: bool,
-) -> String {
+    log_paths: bool,
+) -> Vec<String> {
     let no_run = entry.verdict.as_deref() == Some("NO-RUN");
     let missing = if no_run { "" } else { "-" };
     let result = if no_run {
@@ -6519,64 +6662,110 @@ fn validate_status_line(
     };
     let mut fields = Vec::new();
     if commit_timeline {
-        fields.push(format!(
-            "{:>5}",
+        fields.push(
             entry
                 .depth
                 .map(|depth| depth.to_string())
-                .unwrap_or_else(|| "-".into())
-        ));
+                .unwrap_or_else(|| "-".into()),
+        );
     }
-    fields.extend([format!("{:<12}", result), format!("{:<13}", verdict)]);
+    fields.extend([result, verdict.into()]);
     for column in columns {
         fields.push(match column {
             ValidateStatusColumn::Sha => {
                 let sha = entry.sha.as_deref().unwrap_or("-");
-                format!("{:<12}", sha.get(..12).unwrap_or(sha))
+                sha.get(..12).unwrap_or(sha).into()
             }
-            ValidateStatusColumn::Branch => {
-                let branch = entry.branch.as_deref().unwrap_or(missing);
-                format!("{branch:<18}")
-            }
-            ValidateStatusColumn::GitDepth => format!(
-                "{:>8}",
-                entry
-                    .git_depth
-                    .map(|depth| depth.to_string())
-                    .unwrap_or_else(|| missing.into())
-            ),
+            ValidateStatusColumn::Branch => entry.branch.as_deref().unwrap_or(missing).into(),
+            ValidateStatusColumn::GitDepth => entry
+                .git_depth
+                .map(|depth| depth.to_string())
+                .unwrap_or_else(|| missing.into()),
             ValidateStatusColumn::None => unreachable!("none is removed before rendering"),
         });
     }
     let when = entry.finished_at.as_deref().or(entry.started_at.as_deref());
-    fields.push(format!(
-        "{:<width$}",
+    fields.push(
         when.map(|when| format_validate_timestamp(when, times, now))
             .unwrap_or_else(|| missing.into()),
-        width = validate_status_time_width(times)
-    ));
-    let elapsed = entry
-        .elapsed_seconds
-        .map(|seconds| short_wall(Some(seconds)))
-        .unwrap_or_else(|| missing.into());
-    fields.push(format!("{elapsed:>7}"));
+    );
+    fields.push(
+        entry
+            .elapsed_seconds
+            .map(|seconds| short_wall(Some(seconds)))
+            .unwrap_or_else(|| missing.into()),
+    );
     let host = entry.host.as_deref().unwrap_or(missing);
     let host = host.split('.').next().unwrap_or(missing);
-    fields.push(format!("{:<16}", host));
-    fields.push(format!(
-        "{:>14}",
+    fields.push(host.into());
+    fields.push(
         entry
             .tests_executed
             .map(|count| count.to_string())
-            .unwrap_or_else(|| missing.into())
-    ));
-    if !entry.summary.is_empty() {
-        fields.push(entry.summary.clone());
+            .unwrap_or_else(|| missing.into()),
+    );
+    if log_paths {
+        fields.push(entry.slot.as_deref().unwrap_or(missing).into());
+        fields.push(entry.log_file.as_deref().unwrap_or(missing).into());
     }
-    fields.join(" ").trim_end().into()
+    fields.push(entry.summary.clone());
+    fields
 }
 
-fn finished_validate_status_entry(repo: &str, row: &HistoryRow) -> ValidateStatusEntry {
+fn validate_status_table(
+    entries: &[ValidateStatusEntry],
+    columns: &[ValidateStatusColumn],
+    times: ValidateStatusTimes,
+    now: chrono::DateTime<chrono::Utc>,
+    commit_timeline: bool,
+    log_paths: bool,
+) -> Vec<String> {
+    let table_columns = validate_status_table_columns(columns, commit_timeline, log_paths);
+    let rows = entries
+        .iter()
+        .map(|entry| validate_status_values(entry, columns, times, now, commit_timeline, log_paths))
+        .collect::<Vec<_>>();
+    let widths = table_columns
+        .iter()
+        .enumerate()
+        .map(|(index, column)| {
+            rows.iter()
+                .map(|row| row[index].chars().count())
+                .fold(column.header.chars().count(), usize::max)
+        })
+        .collect::<Vec<_>>();
+    let render = |values: Vec<&str>| {
+        values
+            .iter()
+            .enumerate()
+            .map(|(index, value)| match table_columns[index].alignment {
+                ValidateStatusAlignment::Left => {
+                    format!("{:<width$}", value, width = widths[index])
+                }
+                ValidateStatusAlignment::Right => {
+                    format!("{:>width$}", value, width = widths[index])
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" ")
+            .trim_end()
+            .to_string()
+    };
+    let mut lines = vec![render(
+        table_columns.iter().map(|column| column.header).collect(),
+    )];
+    lines.extend(
+        rows.iter()
+            .map(|row| render(row.iter().map(String::as_str).collect())),
+    );
+    lines
+}
+
+fn finished_validate_status_entry(
+    repo: &str,
+    row: &HistoryRow,
+    include_log_paths: bool,
+) -> ValidateStatusEntry {
     let verdict = recent_row_verdict(row, repo);
     ValidateStatusEntry {
         depth: None,
@@ -6599,6 +6788,11 @@ fn finished_validate_status_entry(repo: &str, row: &HistoryRow) -> ValidateStatu
         tests_executed: recent_row_executed_tests(row),
         host: row.host.clone(),
         slot: row.slot.clone(),
+        log_file: if include_log_paths {
+            row.log_file.clone()
+        } else {
+            None
+        },
         summary: recent_row_summary(row, verdict),
     }
 }
@@ -6618,6 +6812,7 @@ fn no_run_commit_timeline_entry(sha: &str, depth: usize) -> ValidateStatusEntry 
         tests_executed: None,
         host: None,
         slot: None,
+        log_file: None,
         summary: String::new(),
     }
 }
@@ -6641,6 +6836,7 @@ fn unreadable_commit_timeline_entry(
         tests_executed: None,
         host: failure.host.clone(),
         slot: None,
+        log_file: None,
         summary: format!("ledger line {} could not be read", failure.line_number),
     }
 }
@@ -6651,6 +6847,7 @@ fn commit_timeline_entries(
     current: Vec<ValidateStatusEntry>,
     parse_failures: &[validate_status::LedgerParseFailure],
     repo: &str,
+    include_log_paths: bool,
 ) -> Vec<ValidateStatusEntry> {
     let depths = commits
         .iter()
@@ -6680,7 +6877,7 @@ fn commit_timeline_entries(
             })
         });
         if !duplicate_live {
-            let mut entry = finished_validate_status_entry(repo, row);
+            let mut entry = finished_validate_status_entry(repo, row, include_log_paths);
             entry.depth = Some(depth);
             by_commit.entry(sha.into()).or_default().push(entry);
         }
@@ -6811,13 +7008,20 @@ fn print_recent_validate_history(
     let mut current = if args.exclude_in_progress {
         Vec::new()
     } else {
-        live_validate_runs(root, repo, now)?
+        live_validate_runs(root, repo, now, args.log_paths)?
     };
     let (mut entries, commit_count) = if args.commit_timeline {
         let commits = validation_main_history(root, repo)?;
         let commit_count = commits.len();
         (
-            commit_timeline_entries(&commits, rows, current, parse_failures, repo),
+            commit_timeline_entries(
+                &commits,
+                rows,
+                current,
+                parse_failures,
+                repo,
+                args.log_paths,
+            ),
             Some(commit_count),
         )
     } else {
@@ -6850,7 +7054,7 @@ fn print_recent_validate_history(
         } else {
             recent
                 .iter()
-                .map(|row| finished_validate_status_entry(repo, row))
+                .map(|row| finished_validate_status_entry(repo, row, args.log_paths))
                 .collect::<Vec<_>>()
         };
         current.extend(finished);
@@ -6912,15 +7116,15 @@ fn print_recent_validate_history(
         }
         return Ok(0);
     }
-    println!(
-        "{}",
-        validate_status_header(&columns, args.times, args.commit_timeline)
-    );
-    for entry in &entries {
-        println!(
-            "{}",
-            validate_status_line(entry, &columns, args.times, now, args.commit_timeline)
-        );
+    for line in validate_status_table(
+        &entries,
+        &columns,
+        args.times,
+        now,
+        args.commit_timeline,
+        args.log_paths,
+    ) {
+        println!("{line}");
     }
     Ok(0)
 }
@@ -8375,34 +8579,29 @@ mod tests {
         value["filtered_tests"] = serde_json::json!(508);
         value["passed_tests"] = serde_json::json!(785);
         let row = history_row(value);
-        let mut entry = finished_validate_status_entry(CANONICAL_VALIDATE_REPO, &row);
+        let mut entry = finished_validate_status_entry(CANONICAL_VALIDATE_REPO, &row, false);
         entry.finished_at = Some("2026-08-03T00:00:00Z".into());
 
         assert_eq!(entry.verdict.as_deref(), Some("VALIDATED"));
         assert_eq!(entry.result.as_deref(), Some("pass"));
         assert_eq!(entry.tests_executed, Some(2129));
-        assert_eq!(
-            validate_status_header(
-                &[ValidateStatusColumn::Sha],
-                ValidateStatusTimes::Relative,
-                false,
-            ),
-            "RESULT       VERDICT       SHA          STARTED/FINISHED     ELAPSED HOST             TESTS-EXECUTED SUMMARY"
-        );
         let now = chrono::DateTime::parse_from_rfc3339("2026-08-03T01:36:00Z")
             .unwrap()
             .with_timezone(&chrono::Utc);
-        let line = validate_status_line(
-            &entry,
+        let table = validate_status_table(
+            std::slice::from_ref(&entry),
             &[ValidateStatusColumn::Sha],
             ValidateStatusTimes::Relative,
             now,
             false,
+            false,
         );
-        assert!(
-            line.starts_with("PASS         VALIDATED     630f44aab7fd"),
-            "{line}"
+        assert_eq!(
+            table[0],
+            "RESULT VERDICT   SHA          STARTED/FINISHED ELAPSED HOST            TESTS-EXECUTED SUMMARY"
         );
+        let line = &table[1];
+        assert!(line.starts_with("PASS   VALIDATED 630f44aab7fd"), "{line}");
         assert!(line.contains("1h36m ago"), "{line}");
         assert!(line.contains("          2129 passed"), "{line}");
         assert!(!line.contains("2637"), "{line}");
@@ -8416,6 +8615,33 @@ mod tests {
         assert!(json.get("tests_total").is_none());
         assert!(json.get("tests_passed").is_none());
         assert!(json.get("tests_passed_at_least").is_none());
+        assert!(json.get("log_file").is_none());
+
+        let entry_with_log = finished_validate_status_entry(CANONICAL_VALIDATE_REPO, &row, true);
+        assert_eq!(entry_with_log.slot.as_deref(), Some("lander"));
+        assert_eq!(
+            entry_with_log.log_file.as_deref(),
+            Some("/tmp/validate-630f.log")
+        );
+        let json_with_log = serde_json::to_value(&entry_with_log).unwrap();
+        assert_eq!(
+            json_with_log["log_file"],
+            serde_json::json!("/tmp/validate-630f.log")
+        );
+        let with_log = validate_status_table(
+            std::slice::from_ref(&entry_with_log),
+            &[ValidateStatusColumn::Sha],
+            ValidateStatusTimes::Relative,
+            now,
+            false,
+            true,
+        );
+        assert!(with_log[0].contains("SLOT   LOG-FILE"), "{}", with_log[0]);
+        assert!(
+            with_log[1].contains("lander /tmp/validate-630f.log"),
+            "{}",
+            with_log[1]
+        );
     }
 
     #[test]
@@ -8433,8 +8659,14 @@ mod tests {
         failed["gates"][0]["exit_code"] = serde_json::json!(1);
         let rows = [history_row(passed), history_row(failed)];
 
-        let timeline =
-            commit_timeline_entries(&commits, &rows, Vec::new(), &[], CANONICAL_VALIDATE_REPO);
+        let timeline = commit_timeline_entries(
+            &commits,
+            &rows,
+            Vec::new(),
+            &[],
+            CANONICAL_VALIDATE_REPO,
+            false,
+        );
         assert_eq!(timeline.len(), commits.len());
         assert_eq!(timeline[0].depth, Some(0));
         assert_eq!(timeline[0].verdict.as_deref(), Some("VALIDATED"));
@@ -8457,14 +8689,8 @@ mod tests {
         let now = chrono::DateTime::parse_from_rfc3339("2026-08-03T01:36:00Z")
             .unwrap()
             .with_timezone(&chrono::Utc);
-        assert!(validate_status_header(
-            &[ValidateStatusColumn::Sha],
-            ValidateStatusTimes::Relative,
-            true,
-        )
-        .starts_with("DEPTH RESULT       VERDICT"));
-        let no_run = validate_status_line(
-            &timeline[1],
+        let table = validate_status_table(
+            std::slice::from_ref(&timeline[1]),
             &[
                 ValidateStatusColumn::Sha,
                 ValidateStatusColumn::Branch,
@@ -8473,7 +8699,10 @@ mod tests {
             ValidateStatusTimes::Relative,
             now,
             true,
+            true,
         );
+        assert!(table[0].starts_with("DEPTH RESULT VERDICT"));
+        let no_run = &table[1];
         assert_eq!(
             no_run.split_whitespace().collect::<Vec<_>>(),
             ["1", "NO-RUN", "bbbbbbbbbbbb"]
@@ -8503,6 +8732,7 @@ mod tests {
             Vec::new(),
             &[failure],
             CANONICAL_VALIDATE_REPO,
+            false,
         );
         assert_eq!(timeline.len(), 1);
         assert_eq!(timeline[0].verdict.as_deref(), Some("LEDGER-UNREADABLE"));
@@ -8642,7 +8872,7 @@ mod tests {
             "real_seconds": 10.0,
             "admission": "ci-hub-validate-lock"
         }));
-        let entry = finished_validate_status_entry(CANONICAL_VALIDATE_REPO, &row);
+        let entry = finished_validate_status_entry(CANONICAL_VALIDATE_REPO, &row, false);
         assert_eq!(entry.verdict.as_deref(), Some("NOT-VALIDATED"));
         assert_eq!(entry.result.as_deref(), Some("pass"));
         assert_eq!(entry.tests_executed, Some(10));
@@ -8650,14 +8880,16 @@ mod tests {
         let now = chrono::DateTime::parse_from_rfc3339("2026-08-03T01:36:00Z")
             .unwrap()
             .with_timezone(&chrono::Utc);
-        let line = validate_status_line(
-            &entry,
+        let table = validate_status_table(
+            std::slice::from_ref(&entry),
             &[ValidateStatusColumn::Sha],
             ValidateStatusTimes::Relative,
             now,
             false,
+            false,
         );
-        assert!(line.starts_with("PASS         NOT-VALIDATED"), "{line}");
+        let line = &table[1];
+        assert!(line.starts_with("PASS   NOT-VALIDATED"), "{line}");
         assert!(!line.contains("ran with"), "{line}");
     }
 
@@ -8667,7 +8899,7 @@ mod tests {
         value["executed_tests"] = serde_json::json!(0);
         value["filtered_tests"] = serde_json::json!(0);
         let row = history_row(value);
-        let entry = finished_validate_status_entry(CANONICAL_VALIDATE_REPO, &row);
+        let entry = finished_validate_status_entry(CANONICAL_VALIDATE_REPO, &row, false);
 
         assert_eq!(entry.verdict.as_deref(), Some("NO-RESULT"));
         assert_eq!(entry.result.as_deref(), Some("pass"));
@@ -8806,9 +9038,15 @@ mod tests {
         let now = chrono::DateTime::parse_from_rfc3339("2026-08-27T12:05:00Z")
             .unwrap()
             .with_timezone(&chrono::Utc);
-        let live =
-            live_validate_runs_from(&root, CANONICAL_VALIDATE_REPO, &proc_root, &boot_id, now)
-                .unwrap();
+        let live = live_validate_runs_from(
+            &root,
+            CANONICAL_VALIDATE_REPO,
+            &proc_root,
+            &boot_id,
+            now,
+            false,
+        )
+        .unwrap();
         assert_eq!(live.len(), 1);
         assert_eq!(live[0].verdict, None);
         assert_eq!(live[0].result, None);
@@ -8819,25 +9057,33 @@ mod tests {
         assert!(json["result"].is_null());
         assert!(json["verdict"].is_null());
         assert!(json.get("status").is_none());
-        let line = validate_status_line(
-            &live[0],
+        assert!(json.get("log_file").is_none());
+        let table = validate_status_table(
+            &live,
             &[ValidateStatusColumn::Sha],
             ValidateStatusTimes::Relative,
             now,
             false,
+            false,
         );
-        assert!(line.starts_with("IN-PROGRESS  -"), "{line}");
+        let line = &table[1];
+        assert!(line.starts_with("IN-PROGRESS -"), "{line}");
 
         std::fs::write(
             process.join("cgroup"),
             "0::/user.slice/validate-hermit-test.service.old\n",
         )
         .unwrap();
-        assert!(
-            live_validate_runs_from(&root, CANONICAL_VALIDATE_REPO, &proc_root, &boot_id, now,)
-                .unwrap()
-                .is_empty()
-        );
+        assert!(live_validate_runs_from(
+            &root,
+            CANONICAL_VALIDATE_REPO,
+            &proc_root,
+            &boot_id,
+            now,
+            false,
+        )
+        .unwrap()
+        .is_empty());
         fields[0] = "Z";
         std::fs::write(
             process.join("stat"),
@@ -8849,11 +9095,16 @@ mod tests {
             "0::/user.slice/validate-hermit-test.service\n",
         )
         .unwrap();
-        assert!(
-            live_validate_runs_from(&root, CANONICAL_VALIDATE_REPO, &proc_root, &boot_id, now,)
-                .unwrap()
-                .is_empty()
-        );
+        assert!(live_validate_runs_from(
+            &root,
+            CANONICAL_VALIDATE_REPO,
+            &proc_root,
+            &boot_id,
+            now,
+            false,
+        )
+        .unwrap()
+        .is_empty());
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -8890,6 +9141,8 @@ mod tests {
             "0::/user.slice/validate-hermit-current.service\n",
         )
         .unwrap();
+        let source_checkout = root.join("worktrees/slots/142/hermit");
+        let log_file = root.join("ignored/validate/validate-hermit-current.log");
         let current = serde_json::json!({
             "schema_version": 1,
             "kind": "validate",
@@ -8898,10 +9151,10 @@ mod tests {
             "target": "a".repeat(40),
             "repo": CANONICAL_VALIDATE_REPO,
             "checkout": "/tmp/checkout",
-            "source_checkout": "/tmp/source",
+            "source_checkout": source_checkout.display().to_string(),
             "temporary_checkout": true,
             "cargo_home": "/tmp/cargo",
-            "log": "/tmp/validate.log",
+            "log": log_file.display().to_string(),
             "agent": "hermit-test",
             "pr": null,
             "started_at": "2026-08-27T12:00:00Z",
@@ -8937,6 +9190,7 @@ mod tests {
             &root.join("proc"),
             &boot_id,
             now,
+            true,
         )
         .unwrap();
         assert_eq!(live.len(), 1);
@@ -8945,6 +9199,26 @@ mod tests {
             Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
         );
         assert_eq!(live[0].host.as_deref(), Some("validation-host"));
+        assert_eq!(live[0].slot.as_deref(), Some("142"));
+        assert_eq!(
+            live[0].log_file.as_deref(),
+            Some(log_file.to_str().unwrap())
+        );
+        let table = validate_status_table(
+            &live,
+            &[ValidateStatusColumn::Sha],
+            ValidateStatusTimes::Relative,
+            now,
+            false,
+            true,
+        );
+        assert!(table[0].contains("SLOT LOG-FILE"), "{}", table[0]);
+        assert!(table[1].contains("142"), "{}", table[1]);
+        assert!(
+            table[1].contains(log_file.to_str().unwrap()),
+            "{}",
+            table[1]
+        );
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -8976,6 +9250,7 @@ mod tests {
             &root.join("proc"),
             &root.join("boot_id"),
             chrono::Utc::now(),
+            false,
         )
         .unwrap()
         .is_empty());
@@ -10253,9 +10528,16 @@ mod tests {
         assert_eq!(args.limit, DEFAULT_VALIDATE_HISTORY_LIMIT);
         assert_eq!(args.columns, [ValidateStatusColumn::Sha]);
         assert_eq!(args.times, ValidateStatusTimes::Relative);
+        assert!(!args.log_paths);
         assert!(!args.exclude_in_progress);
         assert!(!args.in_progress_only);
         assert!(!args.commit_timeline);
+
+        let cli = Cli::try_parse_from(["ci-hub", "validate-status", "--log-paths"]).unwrap();
+        let HubCommand::ValidateStatus(args) = cli.command else {
+            panic!("wrong command variant")
+        };
+        assert!(args.log_paths);
 
         for (value, expected) in [
             ("relative", ValidateStatusTimes::Relative),

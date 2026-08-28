@@ -28,6 +28,10 @@ The newest run does not erase older receipts; `validate-status` and
 `--times local` or `--times utc` when an absolute timestamp is needed. JSON
 output retains the recorded RFC 3339 timestamps in every mode.
 
+Use `ci-hub validate-status --log-paths` when following a running or completed
+validation. It adds the producer-recorded `SLOT` and full `LOG-FILE` columns;
+they stay out of the default table because the path is intentionally wide.
+
 If freshly fetched `origin/main` has moved beyond that exact Hermit SHA, use
 `ci-hub validate-run --frozen-validate ...`. The ordinary path still refuses a
 target that does not contain current main. The explicit frozen path forces a
