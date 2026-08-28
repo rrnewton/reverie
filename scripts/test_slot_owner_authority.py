@@ -10,6 +10,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from typing import Mapping
 
 
 MODULE_PATH = Path(__file__).with_name("slot-owner-authority.py")
@@ -89,6 +90,13 @@ def sidecar(**updates: object) -> dict[str, object]:
 
 
 class SlotOwnerAuthorityTest(unittest.TestCase):
+    def validated(self, document: dict[str, object]) -> Mapping[str, object]:
+        return authority.parse_registry_bytes(
+            json.dumps(document).encode("utf-8"),
+            checker=MODULE_PATH.with_name("check-worktree-registry.rs"),
+            include_owner_sidecars=True,
+        )
+
     def assess(
         self,
         document: dict[str, object],
@@ -110,7 +118,7 @@ class SlotOwnerAuthorityTest(unittest.TestCase):
             (cgroup / "cgroup.procs").write_text("", encoding="utf-8")
             return authority.assess_state(
                 "slot-a",
-                document,
+                self.validated(document),
                 proc_root=proc,
                 boot_id_path=boot_path,
                 cgroup_root=cgroup_root,
@@ -283,7 +291,7 @@ class SlotOwnerAuthorityTest(unittest.TestCase):
             (cgroup / "cgroup.procs").write_text("0\n", encoding="utf-8")
             result = authority.assess_state(
                 "slot-a",
-                state(sidecar()),
+                self.validated(state(sidecar())),
                 proc_root=proc,
                 boot_id_path=boot_path,
                 cgroup_root=cgroup_root,
@@ -303,7 +311,7 @@ class SlotOwnerAuthorityTest(unittest.TestCase):
             cgroup_root.write_text("fixture", encoding="utf-8")
             result = authority.assess_state(
                 "slot-a",
-                state(sidecar()),
+                self.validated(state(sidecar())),
                 proc_root=proc,
                 boot_id_path=boot_path,
                 cgroup_root=cgroup_root,

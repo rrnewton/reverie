@@ -18,17 +18,40 @@ class RegistrySchemaError(ValueError):
     """The registry bytes are unreadable or refused by the shared schema."""
 
 
+class ValidatedRegistry(dict[str, Any]):
+    """Original registry object plus per-slot results from the Rust authority."""
+
+    def __init__(
+        self,
+        document: dict[str, Any],
+        *,
+        owner_sidecar_errors: dict[str, str | None] | None = None,
+    ) -> None:
+        super().__init__(document)
+        self.owner_sidecar_errors = owner_sidecar_errors
+
+
 def default_checker() -> Path:
     return (
         Path(__file__).resolve().parents[2] / "scripts" / "check-worktree-registry.rs"
     )
 
 
-def parse_registry_bytes(raw: bytes, *, checker: Path | None = None) -> dict[str, Any]:
+def parse_registry_bytes(
+    raw: bytes,
+    *,
+    checker: Path | None = None,
+    include_owner_sidecars: bool = False,
+) -> ValidatedRegistry:
     authority = checker or default_checker()
+    mode = (
+        "--owner-sidecar-errors-stdin"
+        if include_owner_sidecars
+        else "--validate-state-stdin"
+    )
     try:
         result = subprocess.run(
-            [str(authority), "--validate-state-stdin"],
+            [str(authority), mode],
             input=raw,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -52,14 +75,44 @@ def parse_registry_bytes(raw: bytes, *, checker: Path | None = None) -> dict[str
         ) from error
     if not isinstance(document, dict):
         raise RegistrySchemaError("validated registry root is not an object")
-    return document
+    owner_sidecar_errors: dict[str, str | None] | None = None
+    if include_owner_sidecars:
+        try:
+            parsed_errors = json.loads(result.stdout)
+        except (UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise RegistrySchemaError(
+                f"owner_sidecar checker returned invalid JSON: {error}"
+            ) from error
+        if not isinstance(parsed_errors, dict) or not all(
+            isinstance(slot, str) and (error is None or isinstance(error, str))
+            for slot, error in parsed_errors.items()
+        ):
+            raise RegistrySchemaError(
+                "owner_sidecar checker returned a malformed per-slot result"
+            )
+        slots = document.get("slots")
+        if not isinstance(slots, dict) or set(parsed_errors) != set(slots):
+            raise RegistrySchemaError(
+                "owner_sidecar checker result does not cover the exact registry slots"
+            )
+        owner_sidecar_errors = parsed_errors
+    return ValidatedRegistry(
+        document, owner_sidecar_errors=owner_sidecar_errors
+    )
 
 
-def read_registry(path: Path, *, checker: Path | None = None) -> dict[str, Any]:
+def read_registry(
+    path: Path,
+    *,
+    checker: Path | None = None,
+    include_owner_sidecars: bool = False,
+) -> ValidatedRegistry:
     try:
         raw = path.read_bytes()
     except OSError as error:
         raise RegistrySchemaError(
             f"cannot read worktree registry {path}: {error}"
         ) from error
-    return parse_registry_bytes(raw, checker=checker)
+    return parse_registry_bytes(
+        raw, checker=checker, include_owner_sidecars=include_owner_sidecars
+    )

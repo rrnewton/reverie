@@ -72,11 +72,6 @@ const BASE_DISTANCE_NOTICE: u64 = 20;
 const DEFAULT_DISK_CAP_GB: u64 = 1425;
 const SLOT_COUNT_ADVISORY: usize = 12;
 const LANGUISH_HOURS: i64 = 24;
-const OWNER_SIDECAR_SCHEMA_VERSION: u64 = 1;
-const OWNER_LEASE_SCHEMA_VERSION: u64 = 1;
-const OWNER_LEASE_TTL_SECONDS: i64 = 86_400;
-const ORC_OWNER_SIDECAR_SOURCE: &str = "orc-tmux-pane-supervisor-v1";
-const CODEX_OWNER_SIDECAR_SOURCE: &str = "codex-systemd-sentinel-v1";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct ObservedOwnerLease {
@@ -1442,47 +1437,29 @@ fn owner_sidecar(
     agent: &str,
     task: &str,
     recorded_at: &str,
-    source: &str,
+    source: worktree_registry::OwnerSidecarSource,
     supervisor_pid: u32,
     boot_id: &str,
     start_ticks: u64,
     tmux_pane_id: Option<&str>,
     cgroup_path: &str,
 ) -> Result<Value, String> {
-    if supervisor_pid == 0 || start_ticks == 0 || boot_id.is_empty() {
-        return Err("slot-owner sidecar has an incomplete supervisor identity".to_string());
-    }
-    if cgroup_path == "/" || !cgroup_path.starts_with('/') {
-        return Err("slot-owner sidecar has no normalized non-root cgroup".to_string());
-    }
-    let generation = format!("{boot_id}:{supervisor_pid}:{start_ticks}");
-    let issued_at = epoch_now();
-    Ok(json!({
-        "schema_version": OWNER_SIDECAR_SCHEMA_VERSION,
-        "source": source,
-        "slot": slot,
-        "agent": agent,
-        "task": task,
-        "recorded_at": recorded_at,
-        "generation": generation,
-        "supervisor_pid": supervisor_pid,
-        "boot_id": boot_id,
-        "start_ticks": start_ticks,
-        "tmux_pane_id": tmux_pane_id,
-        "cgroup_path": cgroup_path,
-        "lease": {
-            "schema_version": OWNER_LEASE_SCHEMA_VERSION,
-            "resource": format!("slot/{slot}"),
-            "generation": generation,
-            "issued_at": issued_at,
-            "renewed_at": issued_at,
-            "ttl_seconds": OWNER_LEASE_TTL_SECONDS,
-            "expires_at": issued_at.saturating_add(OWNER_LEASE_TTL_SECONDS),
-            "state": "active",
-            "last_transition_actor": agent,
-            "automatic_handoff": null,
-        },
-    }))
+    let issued_at = u64::try_from(epoch_now())
+        .map_err(|_| "slot-owner sidecar issue time precedes Unix epoch".to_string())?;
+    worktree_registry::OwnerSidecar::current(
+        slot,
+        agent,
+        task,
+        recorded_at,
+        source,
+        supervisor_pid,
+        boot_id,
+        start_ticks,
+        tmux_pane_id,
+        cgroup_path,
+        issued_at,
+    )?
+    .to_value()
 }
 
 fn observed_owner_sidecar(
@@ -1497,7 +1474,7 @@ fn observed_owner_sidecar(
         agent,
         task,
         recorded_at,
-        ORC_OWNER_SIDECAR_SOURCE,
+        worktree_registry::OwnerSidecarSource::OrcTmuxPaneSupervisorV1,
         lease.supervisor_pid,
         &lease.boot_id,
         lease.start_ticks,
@@ -1515,7 +1492,8 @@ fn codex_owner_sidecar(
     lease: &Value,
 ) -> Result<Value, String> {
     if lease["schema_version"].as_u64() != Some(1)
-        || lease["source"].as_str() != Some(CODEX_OWNER_SIDECAR_SOURCE)
+        || lease["source"].as_str()
+            != Some(worktree_registry::OwnerSidecarSource::CodexSystemdSentinelV1.as_str())
     {
         return Err("Codex coordinator lease has an unsupported identity schema".to_string());
     }
@@ -1542,7 +1520,7 @@ fn codex_owner_sidecar(
         agent,
         task,
         recorded_at,
-        CODEX_OWNER_SIDECAR_SOURCE,
+        worktree_registry::OwnerSidecarSource::CodexSystemdSentinelV1,
         pid,
         &current_boot_id()?,
         recorded_ticks,
@@ -3087,7 +3065,10 @@ mod tests {
         )
         .unwrap();
         assert_eq!(sidecar["schema_version"], 1);
-        assert_eq!(sidecar["source"], ORC_OWNER_SIDECAR_SOURCE);
+        assert_eq!(
+            sidecar["source"],
+            worktree_registry::OwnerSidecarSource::OrcTmuxPaneSupervisorV1.as_str()
+        );
         assert_eq!(sidecar["slot"], "slot07");
         assert_eq!(sidecar["agent"], "codex-7");
         assert_eq!(sidecar["supervisor_pid"], 123);
@@ -3096,11 +3077,15 @@ mod tests {
         assert_eq!(sidecar["lease"]["schema_version"], 1);
         assert_eq!(sidecar["lease"]["resource"], "slot/slot07");
         assert_eq!(sidecar["lease"]["generation"], "boot-a:123:456");
-        assert_eq!(sidecar["lease"]["ttl_seconds"], OWNER_LEASE_TTL_SECONDS);
+        assert_eq!(
+            sidecar["lease"]["ttl_seconds"],
+            worktree_registry::OWNER_LEASE_TTL_SECONDS
+        );
         assert_eq!(sidecar["lease"]["state"], "active");
         assert_eq!(
-            sidecar["lease"]["expires_at"].as_i64().unwrap(),
-            sidecar["lease"]["renewed_at"].as_i64().unwrap() + OWNER_LEASE_TTL_SECONDS
+            sidecar["lease"]["expires_at"].as_u64().unwrap(),
+            sidecar["lease"]["renewed_at"].as_u64().unwrap()
+                + worktree_registry::OWNER_LEASE_TTL_SECONDS
         );
     }
 

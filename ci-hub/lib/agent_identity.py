@@ -119,6 +119,7 @@ class ProcessContext:
 class Registry:
     document: Mapping[str, Any] | None
     error: str | None = None
+    owner_sidecar_errors: Mapping[str, str | None] | None = None
 
 
 def _canonical(agent: str) -> str:
@@ -523,10 +524,10 @@ def _read_cgroup(pid: int, proc_root: Path) -> tuple[str | None, str]:
 
 def load_registry(state_path: Path) -> Registry:
     try:
-        document = read_registry(state_path)
+        document = read_registry(state_path, include_owner_sidecars=True)
     except RegistrySchemaError as error:
         return Registry(None, f"cannot read {state_path}: {error}")
-    return Registry(document)
+    return Registry(document, owner_sidecar_errors=document.owner_sidecar_errors)
 
 
 def _slot_owners(row: Mapping[str, Any]) -> tuple[str, ...]:
@@ -611,8 +612,8 @@ def _registry_owner_matches(
     if registry.document is None:
         return Signal(source, "unavailable", detail=registry.error or "registry unavailable")
     matches: set[str] = set()
-    for row in registry.document["slots"].values():
-        if not isinstance(row, dict):
+    for slot, row in registry.document["slots"].items():
+        if not isinstance(slot, str) or not isinstance(row, dict):
             continue
         # ⚠️ A RELEASED SLOT OWNS NOTHING, SO ITS RECORDS MUST NOT ANSWER AN
         # OWNERSHIP QUESTION. This corrects WHAT the resolver reads; it does not
@@ -640,7 +641,7 @@ def _registry_owner_matches(
         if row.get("status") == "released":
             continue
         for entry in row.get("agents", []):
-            if not isinstance(entry, dict) or not predicate(row, entry):
+            if not isinstance(entry, dict) or not predicate(slot, row, entry):
                 continue
             agent = _safe_agent(entry.get("name") if isinstance(entry.get("name"), str) else None)
             if agent:
@@ -653,17 +654,28 @@ def _registry_owner_matches(
     return Signal(source, "unavailable", detail=absent_detail)
 
 
+def _validated_owner_sidecar(
+    registry: Registry, slot: str, row: Mapping[str, Any]
+) -> Mapping[str, Any] | None:
+    errors = registry.owner_sidecar_errors
+    if errors is None or slot not in errors or errors[slot] is not None:
+        return None
+    sidecar = row.get("owner_sidecar")
+    return sidecar if isinstance(sidecar, dict) else None
+
+
 def pane_owner_signal(pane: str | None, registry: Registry) -> Signal:
     if pane is None or not PANE_RE.fullmatch(pane):
         return Signal("pane-owner", "unavailable", detail="caller has no schema-valid TMUX_PANE")
 
-    def matches(row: Mapping[str, Any], entry: Mapping[str, Any]) -> bool:
+    def matches(
+        slot: str, row: Mapping[str, Any], entry: Mapping[str, Any]
+    ) -> bool:
         if entry.get("tmux_pane_id") == pane:
             return True
-        sidecar = row.get("owner_sidecar")
+        sidecar = _validated_owner_sidecar(registry, slot, row)
         return bool(
-            isinstance(sidecar, dict)
-            and sidecar.get("schema_version") == 1
+            sidecar is not None
             and sidecar.get("agent") == entry.get("name")
             and sidecar.get("tmux_pane_id") == pane
         )
@@ -680,14 +692,12 @@ def cgroup_owner_signal(cgroup: str | None, detail: str, registry: Registry) -> 
     if cgroup is None:
         return Signal("cgroup-owner", "unavailable", detail=detail)
 
-    def matches(_row: Mapping[str, Any], entry: Mapping[str, Any]) -> bool:
+    def matches(
+        slot: str, row: Mapping[str, Any], entry: Mapping[str, Any]
+    ) -> bool:
         candidates = [entry.get("cgroup_path")]
-        sidecar = _row.get("owner_sidecar")
-        if (
-            isinstance(sidecar, dict)
-            and sidecar.get("schema_version") == 1
-            and sidecar.get("agent") == entry.get("name")
-        ):
+        sidecar = _validated_owner_sidecar(registry, slot, row)
+        if sidecar is not None and sidecar.get("agent") == entry.get("name"):
             candidates.append(sidecar.get("cgroup_path"))
         for raw in candidates:
             if not isinstance(raw, str) or not raw.startswith("/"):
@@ -703,11 +713,12 @@ def cgroup_owner_signal(cgroup: str | None, detail: str, registry: Registry) -> 
 
 
 def supervisor_owner_signal(ancestry_pids: set[int], registry: Registry) -> Signal:
-    def matches(row: Mapping[str, Any], entry: Mapping[str, Any]) -> bool:
-        sidecar = row.get("owner_sidecar")
+    def matches(
+        slot: str, row: Mapping[str, Any], entry: Mapping[str, Any]
+    ) -> bool:
+        sidecar = _validated_owner_sidecar(registry, slot, row)
         return bool(
-            isinstance(sidecar, dict)
-            and sidecar.get("schema_version") == 1
+            sidecar is not None
             and sidecar.get("supervisor_pid") in ancestry_pids
             and sidecar.get("agent") == entry.get("name")
         )

@@ -106,15 +106,34 @@ class IdentityFixture(unittest.TestCase):
             "agents": agents,
         }
         if sidecar_agent is not None:
+            sidecar_cgroup = cgroup or "/agent.slice/a.scope"
+            generation = "boot-a:50:1"
             sidecar: dict[str, object] = {
                 "schema_version": 1,
+                "source": "orc-tmux-pane-supervisor-v1",
+                "slot": slot,
                 "agent": sidecar_agent,
+                "task": task,
+                "recorded_at": "2026-08-28T00:00:00Z",
+                "generation": generation,
                 "supervisor_pid": 50,
+                "boot_id": "boot-a",
+                "start_ticks": 1,
+                "tmux_pane_id": pane,
+                "cgroup_path": sidecar_cgroup,
+                "lease": {
+                    "schema_version": 1,
+                    "resource": f"slot/{slot}",
+                    "generation": generation,
+                    "issued_at": 100,
+                    "renewed_at": 100,
+                    "ttl_seconds": 30,
+                    "expires_at": 130,
+                    "state": "active",
+                    "last_transition_actor": sidecar_agent,
+                    "automatic_handoff": None,
+                },
             }
-            if pane is not None:
-                sidecar["tmux_pane_id"] = pane
-            if cgroup is not None:
-                sidecar["cgroup_path"] = cgroup
             row["owner_sidecar"] = sidecar
         return row
 
@@ -323,7 +342,7 @@ class ResolutionTests(IdentityFixture):
         pane = next(signal for signal in result.signals if signal.source == "pane-owner")
         self.assertEqual("unavailable", pane.state)
 
-    def test_guarded_sidecar_cgroup_corroborates_legacy_agent_row(self) -> None:
+    def test_sidecar_cgroup_requires_shared_registry_binding(self) -> None:
         document = json.loads(self.state.read_text())
         del document["slots"]["slot-a"]["agents"][0]["cgroup_path"]
         self.state.write_text(json.dumps(document))
@@ -331,8 +350,8 @@ class ResolutionTests(IdentityFixture):
         result = self.resolve()
         self.assertEqual("AGREEMENT", result.state)
         cgroup = next(signal for signal in result.signals if signal.source == "cgroup-owner")
-        self.assertEqual("resolved", cgroup.state)
-        self.assertEqual("agent-a", cgroup.agent)
+        self.assertEqual("unavailable", cgroup.state)
+        self.assertIsNone(cgroup.agent)
 
     def test_released_slot_pane_claim_is_ignored(self) -> None:
         """A released slot owns nothing, so its stale pane claim must not answer.

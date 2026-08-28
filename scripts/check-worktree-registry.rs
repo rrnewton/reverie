@@ -23,6 +23,7 @@ const END: &str = "<!-- END worktree-state -->";
 const USAGE: &str = r#"Usage: check-worktree-registry.rs [--root PATH] [SCOPE]
        check-worktree-registry.rs --validate-state-stdin
        check-worktree-registry.rs --assigned-slot AGENT
+       check-worktree-registry.rs --owner-sidecar-errors-stdin
 
 Scope (mutually exclusive):
   --slot SLOT          Verify exactly one named slot.
@@ -39,6 +40,11 @@ against the shared schema without inspecting worktrees or ACTIVE.md.
 --assigned-slot reads that document from standard input and prints the one slot
 the allocator's existing ownership rule assigns to AGENT. No match is success
 with no output; multiple matches are a refusal rather than an arbitrary choice.
+
+--owner-sidecar-errors-stdin validates the registry core, then prints one JSON
+object mapping every slot to null when its owner_sidecar and registry binding
+are valid or to the shared type's named refusal when they are not. One bad slot
+therefore cannot erase every other slot's liveness result.
 "#;
 
 #[derive(Debug)]
@@ -255,6 +261,7 @@ fn main() {
     let mut excluded_slots = BTreeSet::new();
     let mut validate_state_stdin = false;
     let mut assigned_slot_agent = None;
+    let mut owner_sidecar_errors_stdin = false;
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
@@ -280,6 +287,7 @@ fn main() {
                 excluded_slots.insert(args[i].clone());
             }
             "--validate-state-stdin" => validate_state_stdin = true,
+            "--owner-sidecar-errors-stdin" => owner_sidecar_errors_stdin = true,
             "--assigned-slot" => {
                 i += 1;
                 if i >= args.len() {
@@ -295,12 +303,15 @@ fn main() {
         }
         i += 1;
     }
-    if validate_state_stdin || assigned_slot_agent.is_some() {
+    if validate_state_stdin || assigned_slot_agent.is_some() || owner_sidecar_errors_stdin {
         if root.is_some() || only_slot.is_some() || !excluded_slots.is_empty() {
             die("stdin registry modes are incompatible with root and scope arguments");
         }
-        if validate_state_stdin && assigned_slot_agent.is_some() {
-            die("--validate-state-stdin and --assigned-slot are mutually exclusive");
+        let modes = usize::from(validate_state_stdin)
+            + usize::from(assigned_slot_agent.is_some())
+            + usize::from(owner_sidecar_errors_stdin);
+        if modes > 1 {
+            die("stdin registry modes are mutually exclusive");
         }
         let mut bytes = Vec::new();
         io::stdin()
@@ -308,6 +319,16 @@ fn main() {
             .unwrap_or_else(|error| die(&format!("read stdin: {error}")));
         match worktree_registry::Registry::parse(&bytes) {
             Ok(registry) => {
+                if owner_sidecar_errors_stdin {
+                    println!(
+                        "{}",
+                        serde_json::to_string(&worktree_registry::owner_sidecar_errors(&registry))
+                            .unwrap_or_else(|error| die(&format!(
+                                "serialize owner_sidecar validation: {error}"
+                            )))
+                    );
+                    return;
+                }
                 if let Some(agent) = assigned_slot_agent {
                     let slots = registry.assigned_slots(&agent);
                     match slots.as_slice() {

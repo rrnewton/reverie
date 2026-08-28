@@ -472,7 +472,7 @@ run_release_force() {
 add_versioned_owner_lease() {
   local slot=$1 now generation
   now=$(date +%s)
-  generation=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  generation=11111111-1111-1111-1111-111111111111:424242:123456
   python3 - "$fixture_root/worktree-state.json" "$slot" "$now" "$generation" <<'PY'
 import json
 import sys
@@ -1783,6 +1783,7 @@ import sys
 path = pathlib.Path(sys.argv[1])
 state = json.loads(path.read_text())
 lease = state["slots"]["quarantined-handoff-recovery"]["owner_sidecar"]["lease"]
+lease["issued_at"] = 0
 lease["renewed_at"] = 0
 lease["ttl_seconds"] = 1
 lease["expires_at"] = 1
@@ -1928,7 +1929,7 @@ PY
 if run_quarantined_handoff_recovery quarantined-handoff-tampered; then
   fail 'missing automatic handoff authorized cleanup'
 fi
-grep -Fq 'quarantined lease has no automatic handoff to resume' "$output" \
+grep -Fq 'owner_sidecar lease field automatic_handoff is missing' "$output" \
   || fail 'missing automatic handoff did not fail closed'
 assert_target_retained quarantined-handoff-tampered
 

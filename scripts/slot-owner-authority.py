@@ -33,46 +33,17 @@ import sys
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Mapping, Sequence
+from typing import Mapping, Sequence, cast
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "ci-hub" / "lib"))
-from worktree_registry import RegistrySchemaError, parse_registry_bytes  # noqa: E402
+from worktree_registry import (  # noqa: E402
+    RegistrySchemaError,
+    ValidatedRegistry,
+    parse_registry_bytes,
+)
 
 
 SCHEMA_VERSION = 1
-SIDECAR_SCHEMA_VERSION = 1
-SOURCES = frozenset({"orc-tmux-pane-supervisor-v1", "codex-systemd-sentinel-v1"})
-LEGACY_EXACT_FIELDS = frozenset(
-    {
-        "schema_version",
-        "source",
-        "slot",
-        "agent",
-        "task",
-        "recorded_at",
-        "generation",
-        "supervisor_pid",
-        "boot_id",
-        "start_ticks",
-        "tmux_pane_id",
-        "cgroup_path",
-    }
-)
-EXACT_FIELDS = LEGACY_EXACT_FIELDS | {"lease"}
-LEASE_EXACT_FIELDS = frozenset(
-    {
-        "schema_version",
-        "resource",
-        "generation",
-        "issued_at",
-        "renewed_at",
-        "ttl_seconds",
-        "expires_at",
-        "state",
-        "last_transition_actor",
-        "automatic_handoff",
-    }
-)
 NOT_RUNNING_STATES = frozenset({"Z", "X"})
 # residue_sweep's existing outer authority call is capped at 10 seconds. Leave
 # its final two seconds for process teardown and the typed indeterminate report.
@@ -146,8 +117,12 @@ def _mutating_owner(slot_row: Mapping[str, object]) -> Mapping[str, object]:
 
 
 def _validated_sidecar(
-    slot: str, slot_row: Mapping[str, object]
+    slot: str, state: Mapping[str, object]
 ) -> tuple[Mapping[str, object], Mapping[str, object]]:
+    slots = state.get("slots")
+    if not isinstance(slots, Mapping) or not isinstance(slots.get(slot), Mapping):
+        raise ValueError("slot is absent from registry")
+    slot_row = slots[slot]
     if slot_row.get("status") not in {
         "active",
         "held",
@@ -158,88 +133,17 @@ def _validated_sidecar(
         raise ValueError(
             f"slot status is {slot_row.get('status')!r}, expected an owner-lease lifecycle state"
         )
+    if not isinstance(state, ValidatedRegistry) or state.owner_sidecar_errors is None:
+        raise ValueError("slot registry has no shared owner_sidecar validation")
+    if slot not in state.owner_sidecar_errors:
+        raise ValueError("shared owner_sidecar validation has no result for slot")
+    sidecar_error = state.owner_sidecar_errors[slot]
+    if sidecar_error is not None:
+        raise ValueError(sidecar_error)
     owner = _mutating_owner(slot_row)
     sidecar = slot_row.get("owner_sidecar")
     if not isinstance(sidecar, Mapping):
         raise ValueError("slot has no versioned owner_sidecar")
-    if frozenset(sidecar) not in {LEGACY_EXACT_FIELDS, EXACT_FIELDS}:
-        raise ValueError("owner_sidecar field set is not schema-exact")
-    if sidecar.get("schema_version") != SIDECAR_SCHEMA_VERSION:
-        raise ValueError("owner_sidecar schema_version is unsupported")
-    if sidecar.get("source") not in SOURCES:
-        raise ValueError("owner_sidecar source is unsupported")
-    if sidecar.get("slot") != slot:
-        raise ValueError("owner_sidecar slot binding does not match registry key")
-    agent = owner.get("name")
-    if not isinstance(agent, str) or not agent or sidecar.get("agent") != agent:
-        raise ValueError("owner_sidecar agent binding does not match mutating owner")
-    task = owner.get("task", slot_row.get("task", ""))
-    if not isinstance(task, str) or sidecar.get("task") != task:
-        raise ValueError("owner_sidecar task binding does not match mutating owner")
-    pid = sidecar.get("supervisor_pid")
-    start_ticks = sidecar.get("start_ticks")
-    boot_id = sidecar.get("boot_id")
-    if (
-        type(pid) is not int
-        or pid <= 0
-        or type(start_ticks) is not int
-        or start_ticks <= 0
-        or not isinstance(boot_id, str)
-        or not boot_id
-    ):
-        raise ValueError("owner_sidecar supervisor identity is incomplete")
-    if sidecar.get("generation") != f"{boot_id}:{pid}:{start_ticks}":
-        raise ValueError("owner_sidecar generation does not bind its exact identity")
-    lease = sidecar.get("lease")
-    if lease is not None:
-        if not isinstance(lease, Mapping) or frozenset(lease) != LEASE_EXACT_FIELDS:
-            raise ValueError("owner_sidecar lease field set is not schema-exact")
-        ttl = lease.get("ttl_seconds")
-        issued = lease.get("issued_at")
-        renewed = lease.get("renewed_at")
-        expires = lease.get("expires_at")
-        if (
-            lease.get("schema_version") != 1
-            or lease.get("resource") != f"slot/{slot}"
-            or lease.get("generation") != sidecar.get("generation")
-            or type(ttl) is not int
-            or ttl <= 0
-            or type(issued) is not int
-            or type(renewed) is not int
-            or issued < 0
-            or renewed < issued
-            or type(expires) is not int
-            or expires != renewed + ttl
-            or lease.get("state") not in {"active", "draining", "quarantined"}
-            or not isinstance(lease.get("last_transition_actor"), str)
-            or not lease.get("last_transition_actor")
-        ):
-            raise ValueError("owner_sidecar lease is malformed or not identity-bound")
-    cgroup = sidecar.get("cgroup_path")
-    if not isinstance(cgroup, str) or cgroup == "/" or not cgroup.startswith("/"):
-        raise ValueError("owner_sidecar cgroup path is not normalized")
-    pane = sidecar.get("tmux_pane_id")
-    source = sidecar.get("source")
-    if source == "orc-tmux-pane-supervisor-v1":
-        if not isinstance(pane, str) or not pane.startswith("%"):
-            raise ValueError("ORC owner_sidecar has no tmux pane binding")
-        if owner.get("tmux_pane_id") != pane or owner.get("cgroup_path") != cgroup:
-            raise ValueError("ORC owner_sidecar disagrees with the registered pane/cgroup lease")
-    else:
-        if pane is not None:
-            raise ValueError("Codex sentinel owner_sidecar must not claim a tmux pane")
-        lease = slot_row.get("coordinator_lease")
-        if (
-            not isinstance(lease, Mapping)
-            or lease.get("schema_version") != 1
-            or lease.get("source") != "codex-systemd-sentinel-v1"
-            or lease.get("main_pid") != pid
-            or lease.get("main_pid_starttime") != start_ticks
-            or lease.get("cgroup_path") != cgroup
-        ):
-            raise ValueError(
-                "Codex owner_sidecar disagrees with the registered coordinator lease"
-            )
     return owner, sidecar
 
 
@@ -291,7 +195,7 @@ def assess_state(
         return verdict("indeterminate", "slot-missing", "slot is absent from registry", slot)
     slot_row = slots[slot]
     try:
-        owner, sidecar = _validated_sidecar(slot, slot_row)
+        owner, sidecar = _validated_sidecar(slot, state)
     except (TypeError, ValueError) as error:
         return verdict(
             "indeterminate", *_missing_sidecar_reason(slot_row, str(error)), slot
@@ -367,7 +271,7 @@ def assess_state(
             "the recorded supervisor belongs to a previous host boot",
         )
 
-    pid = int(sidecar["supervisor_pid"])
+    pid = cast(int, sidecar["supervisor_pid"])
     stat_path = proc_root / str(pid) / "stat"
     try:
         process_state, observed_ticks = _parse_process_stat(
@@ -465,6 +369,7 @@ def read_guarded_state(
             checker=Path(__file__).resolve().with_name(
                 "check-worktree-registry.rs"
             ),
+            include_owner_sidecars=True,
         )
     except (OSError, RegistrySchemaError) as error:
         return {}, f"cannot read guarded slot registry: {error}"
@@ -558,10 +463,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.json:
             print(json.dumps(payload, sort_keys=True))
         else:
-            authorities = payload["authorities"]
+            authorities = cast(dict[str, dict[str, object]], payload["authorities"])
             counts = {state: 0 for state in ("alive", "dead", "indeterminate")}
             for authority in authorities.values():
-                counts[authority["state"]] += 1
+                counts[cast(str, authority["state"])] += 1
             print(
                 f"authorities={len(authorities)} alive={counts['alive']} "
                 f"dead={counts['dead']} indeterminate={counts['indeterminate']}"

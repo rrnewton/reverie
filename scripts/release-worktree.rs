@@ -2947,12 +2947,18 @@ fn clear_release_journal(
     slot: &str,
     crash_marker: Option<&Path>,
 ) -> Result<(), String> {
-    let lease_state = state["slots"][slot]["owner_sidecar"]["lease"]["state"]
-        .as_str()
-        .map(str::to_owned);
-    state["slots"][slot]["status"] = json!(match lease_state.as_deref() {
-        Some("quarantined") => "lease-quarantined",
-        Some("draining") => "release-requested",
+    let has_lease = state["slots"][slot]
+        .get("owner_sidecar")
+        .and_then(|sidecar| sidecar.get("lease"))
+        .is_some_and(|lease| !lease.is_null());
+    let lease_state = if has_lease {
+        Some(slot_lease_view(slot, &state["slots"][slot])?.state)
+    } else {
+        None
+    };
+    state["slots"][slot]["status"] = json!(match lease_state {
+        Some(worktree_registry::OwnerLeaseState::Quarantined) => "lease-quarantined",
+        Some(worktree_registry::OwnerLeaseState::Draining) => "release-requested",
         _ if state["slots"][slot]
             .get("coordinator_lease_revocation")
             .is_some() =>
@@ -5150,64 +5156,41 @@ fn epoch_now() -> u64 {
 #[derive(Clone, Debug)]
 struct SlotLeaseView {
     generation: String,
-    state: String,
+    state: worktree_registry::OwnerLeaseState,
     expires_at: u64,
-    source: String,
+    source: worktree_registry::OwnerSidecarSource,
+    automatic_handoff: Option<Value>,
 }
 
 fn slot_lease_view(slot: &str, slot_state: &Value) -> Result<SlotLeaseView, String> {
-    let sidecar = slot_state
-        .get("owner_sidecar")
-        .and_then(Value::as_object)
-        .ok_or_else(|| format!("slot {slot} has no versioned owner_sidecar"))?;
+    let sidecar = worktree_registry::OwnerSidecar::from_slot_value(slot_state, slot)?;
     let lease = sidecar
-        .get("lease")
-        .and_then(Value::as_object)
+        .lease
+        .as_ref()
         .ok_or_else(|| format!("slot {slot} has no TTL owner lease"))?;
-    let generation = sidecar
-        .get("generation")
-        .and_then(Value::as_str)
-        .ok_or_else(|| format!("slot {slot} owner sidecar has no generation"))?;
-    let expected_resource = format!("slot/{slot}");
-    if lease.get("schema_version").and_then(Value::as_u64) != Some(1)
-        || lease.get("resource").and_then(Value::as_str) != Some(expected_resource.as_str())
-        || lease.get("generation").and_then(Value::as_str) != Some(generation)
-    {
-        return Err(format!("slot {slot} lease is not identity-bound"));
-    }
-    let ttl = lease
-        .get("ttl_seconds")
-        .and_then(Value::as_u64)
-        .filter(|value| *value > 0)
-        .ok_or_else(|| format!("slot {slot} lease has no positive TTL"))?;
-    let renewed = lease
-        .get("renewed_at")
-        .and_then(Value::as_u64)
-        .ok_or_else(|| format!("slot {slot} lease has no renewed_at"))?;
-    let expires_at = lease
-        .get("expires_at")
-        .and_then(Value::as_u64)
-        .ok_or_else(|| format!("slot {slot} lease has no expires_at"))?;
-    if renewed.checked_add(ttl) != Some(expires_at) {
-        return Err(format!(
-            "slot {slot} lease expiry does not equal renewed_at + TTL"
-        ));
-    }
-    let state = lease
-        .get("state")
-        .and_then(Value::as_str)
-        .filter(|value| matches!(*value, "active" | "draining" | "quarantined"))
-        .ok_or_else(|| format!("slot {slot} lease has an unsupported state"))?;
-    let source = sidecar
-        .get("source")
-        .and_then(Value::as_str)
-        .ok_or_else(|| format!("slot {slot} owner sidecar has no source"))?;
     Ok(SlotLeaseView {
-        generation: generation.to_string(),
-        state: state.to_string(),
-        expires_at,
-        source: source.to_string(),
+        generation: sidecar.generation,
+        state: lease.state,
+        expires_at: lease.expires_at,
+        source: sidecar.source,
+        automatic_handoff: lease.automatic_handoff.clone(),
     })
+}
+
+fn update_slot_owner_lease<F>(slot: &str, slot_state: &mut Value, update: F) -> Result<(), String>
+where
+    F: FnOnce(&mut worktree_registry::OwnerLease) -> Result<(), String>,
+{
+    let mut sidecar = worktree_registry::OwnerSidecar::from_slot_value(slot_state, slot)?;
+    let lease = sidecar
+        .lease
+        .as_mut()
+        .ok_or_else(|| format!("slot {slot} has no TTL owner lease"))?;
+    update(lease)?;
+    let serialized = sidecar.to_value()?;
+    worktree_registry::OwnerSidecar::from_value(&serialized, slot)?;
+    slot_state["owner_sidecar"] = serialized;
+    Ok(())
 }
 
 fn valid_actor(actor: &str) -> bool {
@@ -5240,10 +5223,7 @@ fn bind_owner_authority_to_locked_state(
     let slot_state = state["slots"]
         .get(slot)
         .ok_or_else(|| format!("slot {slot} disappeared before stale-clear lock acquisition"))?;
-    let sidecar = slot_state
-        .get("owner_sidecar")
-        .and_then(Value::as_object)
-        .ok_or_else(|| format!("slot {slot} has no versioned owner_sidecar"))?;
+    let sidecar = worktree_registry::OwnerSidecar::from_slot_value(slot_state, slot)?;
     let owner = slot_state["agents"]
         .as_array()
         .and_then(|agents| {
@@ -5252,19 +5232,13 @@ fn bind_owner_authority_to_locked_state(
                 .find(|agent| agent["read_only"].as_bool() == Some(false))
         })
         .ok_or_else(|| format!("slot {slot} has no mutating owner"))?;
-    let bound_field = |name: &str| {
-        sidecar
-            .get(name)
-            .cloned()
-            .ok_or_else(|| format!("slot {slot} owner_sidecar has no {name}"))
-    };
     let expected_identity = json!({
-        "source": bound_field("source")?,
-        "generation": bound_field("generation")?,
-        "supervisor_pid": bound_field("supervisor_pid")?,
-        "boot_id": bound_field("boot_id")?,
-        "start_ticks": bound_field("start_ticks")?,
-        "lease": bound_field("lease")?,
+        "source": sidecar.source.as_str(),
+        "generation": sidecar.generation,
+        "supervisor_pid": sidecar.supervisor_pid,
+        "boot_id": sidecar.boot_id,
+        "start_ticks": sidecar.start_ticks,
+        "lease": sidecar.lease,
     });
     if authority["schema_version"].as_u64() != Some(1)
         || authority["slot"].as_str() != Some(slot)
@@ -5458,24 +5432,31 @@ fn request_release(
         ));
     }
     let lease = slot_lease_view(slot, &state["slots"][slot])?;
-    if !matches!(lease.state.as_str(), "active" | "draining") {
+    if !matches!(
+        lease.state,
+        worktree_registry::OwnerLeaseState::Active | worktree_registry::OwnerLeaseState::Draining
+    ) {
         return Err(format!(
             "slot {slot} lease is {}, expected active or draining",
-            lease.state
+            lease.state.as_str()
         ));
     }
     let (current_handoff, complete) = automatic_handoff(root, state, slot, actor)?;
-    let mut handoff = if lease.state == "draining" {
-        let recorded = state["slots"][slot]["owner_sidecar"]["lease"]
-            .get("automatic_handoff")
+    let mut handoff = if lease.state == worktree_registry::OwnerLeaseState::Draining {
+        let recorded = lease
+            .automatic_handoff
+            .as_ref()
             .filter(|value| !value.is_null())
             .cloned()
             .ok_or_else(|| "draining lease has no automatic handoff".to_string())?;
         if !handoff_state_matches(&recorded, &current_handoff) {
             let mut quarantined = recorded;
             set_handoff_continuation(&mut quarantined, slot, &lease.generation, actor, true)?;
-            state["slots"][slot]["owner_sidecar"]["lease"]["state"] = json!("quarantined");
-            state["slots"][slot]["owner_sidecar"]["lease"]["automatic_handoff"] = quarantined;
+            update_slot_owner_lease(slot, &mut state["slots"][slot], |owner_lease| {
+                owner_lease.state = worktree_registry::OwnerLeaseState::Quarantined;
+                owner_lease.automatic_handoff = Some(quarantined);
+                Ok(())
+            })?;
             state["slots"][slot]["status"] = json!("lease-quarantined");
             save_state(root, state);
             regen_active_md(root, state);
@@ -5492,13 +5473,21 @@ fn request_release(
     }
     let now = epoch_now();
     let slot_state = &mut state["slots"][slot];
-    slot_state["owner_sidecar"]["lease"]["renewed_at"] = json!(now);
-    slot_state["owner_sidecar"]["lease"]["ttl_seconds"] = json!(RELEASE_REQUEST_TTL_SECONDS);
-    slot_state["owner_sidecar"]["lease"]["expires_at"] = json!(now + RELEASE_REQUEST_TTL_SECONDS);
-    slot_state["owner_sidecar"]["lease"]["state"] =
-        json!(if complete { "draining" } else { "quarantined" });
-    slot_state["owner_sidecar"]["lease"]["last_transition_actor"] = json!(actor);
-    slot_state["owner_sidecar"]["lease"]["automatic_handoff"] = handoff;
+    update_slot_owner_lease(slot, slot_state, |owner_lease| {
+        owner_lease.renewed_at = now;
+        owner_lease.ttl_seconds = RELEASE_REQUEST_TTL_SECONDS;
+        owner_lease.expires_at = now
+            .checked_add(RELEASE_REQUEST_TTL_SECONDS)
+            .ok_or_else(|| "release request lease expiration overflows".to_string())?;
+        owner_lease.state = if complete {
+            worktree_registry::OwnerLeaseState::Draining
+        } else {
+            worktree_registry::OwnerLeaseState::Quarantined
+        };
+        owner_lease.last_transition_actor = actor.to_string();
+        owner_lease.automatic_handoff = Some(handoff);
+        Ok(())
+    })?;
     slot_state["status"] = json!(if complete {
         "release-requested"
     } else {
@@ -5542,7 +5531,7 @@ fn prepare_stale_clear(
             lease.generation
         ));
     }
-    let quarantined = lease.state == "quarantined";
+    let quarantined = lease.state == worktree_registry::OwnerLeaseState::Quarantined;
     if quarantined && !recover_quarantined_handoff {
         return Err(format!(
             "slot {slot} lease is quarantined; after resolving the recorded handoff, run {}",
@@ -5555,7 +5544,7 @@ fn prepare_stale_clear(
         return Err(format!(
             "--recover-quarantined-handoff requires slot {slot} state lease-quarantined with a quarantined lease; found status={:?} lease={}",
             state["slots"][slot]["status"].as_str(),
-            lease.state,
+            lease.state.as_str(),
         ));
     }
     if epoch_now() < lease.expires_at {
@@ -5565,7 +5554,8 @@ fn prepare_stale_clear(
         ));
     }
     let authority_state = authority["state"].as_str().unwrap_or("indeterminate");
-    let codex_sentinel = lease.source == "codex-systemd-sentinel-v1";
+    let codex_sentinel =
+        lease.source == worktree_registry::OwnerSidecarSource::CodexSystemdSentinelV1;
     if authority_state == "indeterminate" {
         return Err(format!(
             "slot {slot} owner authority is INDETERMINATE; stale-clear is fail-closed"
@@ -5577,8 +5567,9 @@ fn prepare_stale_clear(
             "slot {slot} owner authority is {authority_state}; live ORC owner refuses stale-clear"
         ));
     }
-    let recorded = state["slots"][slot]["owner_sidecar"]["lease"]
-        .get("automatic_handoff")
+    let recorded = lease
+        .automatic_handoff
+        .as_ref()
         .filter(|value| !value.is_null())
         .cloned();
     if quarantined {
@@ -5593,9 +5584,12 @@ fn prepare_stale_clear(
     let (mut current_handoff, complete) = automatic_handoff(root, state, slot, actor)?;
     if !complete {
         set_handoff_continuation(&mut current_handoff, slot, &lease.generation, actor, true)?;
-        state["slots"][slot]["owner_sidecar"]["lease"]["state"] = json!("quarantined");
-        state["slots"][slot]["owner_sidecar"]["lease"]["last_transition_actor"] = json!(actor);
-        state["slots"][slot]["owner_sidecar"]["lease"]["automatic_handoff"] = current_handoff;
+        update_slot_owner_lease(slot, &mut state["slots"][slot], |owner_lease| {
+            owner_lease.state = worktree_registry::OwnerLeaseState::Quarantined;
+            owner_lease.last_transition_actor = actor.to_string();
+            owner_lease.automatic_handoff = Some(current_handoff);
+            Ok(())
+        })?;
         state["slots"][slot]["status"] = json!("lease-quarantined");
         save_state(root, state);
         regen_active_md(root, state);
@@ -5613,9 +5607,11 @@ fn prepare_stale_clear(
                 actor,
                 true,
             )?;
-            state["slots"][slot]["owner_sidecar"]["lease"]["state"] = json!("quarantined");
-            state["slots"][slot]["owner_sidecar"]["lease"]["automatic_handoff"] =
-                quarantined_handoff;
+            update_slot_owner_lease(slot, &mut state["slots"][slot], |owner_lease| {
+                owner_lease.state = worktree_registry::OwnerLeaseState::Quarantined;
+                owner_lease.automatic_handoff = Some(quarantined_handoff);
+                Ok(())
+            })?;
             state["slots"][slot]["status"] = json!("lease-quarantined");
             save_state(root, state);
             regen_active_md(root, state);
@@ -5624,10 +5620,16 @@ fn prepare_stale_clear(
             );
         }
     } else {
-        state["slots"][slot]["owner_sidecar"]["lease"]["automatic_handoff"] = current_handoff;
+        update_slot_owner_lease(slot, &mut state["slots"][slot], |owner_lease| {
+            owner_lease.automatic_handoff = Some(current_handoff);
+            Ok(())
+        })?;
     }
-    state["slots"][slot]["owner_sidecar"]["lease"]["state"] = json!("draining");
-    state["slots"][slot]["owner_sidecar"]["lease"]["last_transition_actor"] = json!(actor);
+    update_slot_owner_lease(slot, &mut state["slots"][slot], |owner_lease| {
+        owner_lease.state = worktree_registry::OwnerLeaseState::Draining;
+        owner_lease.last_transition_actor = actor.to_string();
+        Ok(())
+    })?;
     state["slots"][slot]["status"] = json!("release-requested");
     save_state(root, state);
     regen_active_md(root, state);
@@ -5658,8 +5660,9 @@ fn stale_clear_all(root: &Path, actor: &str) -> Result<(), String> {
             .flatten()
             .filter_map(|(slot, row)| {
                 let lease = slot_lease_view(slot, row).ok()?;
-                (lease.state != "quarantined" && lease.expires_at <= epoch_now())
-                    .then_some((slot.clone(), lease.generation))
+                (lease.state != worktree_registry::OwnerLeaseState::Quarantined
+                    && lease.expires_at <= epoch_now())
+                .then_some((slot.clone(), lease.generation))
             })
             .collect::<Vec<_>>()
     };
