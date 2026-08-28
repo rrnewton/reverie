@@ -1652,6 +1652,7 @@ def preflight(
 def build_systemd_command(
     *,
     root: Path,
+    state_root: Path | None = None,
     checkout: Path,
     target: str,
     agent: str,
@@ -1673,6 +1674,7 @@ def build_systemd_command(
     frozen_validate: bool = False,
     frozen_result: Path | None = None,
 ) -> list[str]:
+    state_root = root if state_root is None else state_root
     child_deadline = effective_child_deadline(repo, child_deadline)
     home = environment.get("HOME", "")
     path = environment.get("PATH", "")
@@ -1722,7 +1724,7 @@ def build_systemd_command(
         # is absent or unusable, and a partial suite can look green.
         build_budget_env.extend(["--setenv", "REVERIE_REQUIRE_KVM=1"])
     else:
-        e2e_result_root, runner_log_dir = _validate_output_paths(root, unit)
+        e2e_result_root, runner_log_dir = _validate_output_paths(state_root, unit)
         resource_caps_path = _shared_resource_caps_path(environment)
         build_budget_env.extend(
             [
@@ -1836,7 +1838,7 @@ def build_systemd_command(
         # storage does not use it: validate.rs invokes the fixed parent adapter,
         # which appends the tracked per-machine shard that ci-hub unions.
         "--setenv",
-        f"DEV_HERMIT_PARENT={root}",
+        f"DEV_HERMIT_PARENT={state_root}",
         "--property",
         f"StandardOutput=append:{log}",
         "--property",
@@ -2348,6 +2350,11 @@ def parser() -> argparse.ArgumentParser:
         ),
     )
     result.add_argument(
+        "--state-root",
+        type=Path,
+        help=argparse.SUPPRESS,
+    )
+    result.add_argument(
         "--repo",
         default="rrnewton/hermit",
         help="receipt repository: rrnewton/hermit (default) or rrnewton/reverie",
@@ -2470,6 +2477,8 @@ def main(
     sleep: Callable[[float], None] = time.sleep,
 ) -> int:
     args = parser().parse_args(argv)
+    tool_root = root.resolve()
+    state_root = (args.state_root or tool_root).resolve()
     try:
         repo = canonical_repo(args.repo)
     except ValueError as error:
@@ -2502,7 +2511,7 @@ def main(
                 "--sweep-completed cannot be combined with launch or attach arguments",
                 "run `ci-hub validate-run --sweep-completed` by itself",
             )
-        report = sweep_completed_checkouts(root.resolve(), run=run)
+        report = sweep_completed_checkouts(state_root, run=run)
         emit_report(
             {"schema_version": 1, "event": "sweep-completed", **report},
             json_output=args.json,
@@ -2529,7 +2538,7 @@ def main(
         try:
             return attach(
                 args.attach,
-                root=root.resolve(),
+                root=state_root,
                 run=run,
                 json_output=args.json,
                 poll_seconds=args.caller_poll_seconds,
@@ -2652,7 +2661,7 @@ def main(
             current_main_before_launch = current_main_for_frozen_validate(
                 source_checkout, args.target, run=run
             )
-            frozen_result = frozen_result_path(root.resolve(), unit)
+            frozen_result = frozen_result_path(state_root, unit)
             if frozen_result.exists():
                 raise ValueError(
                     f"frozen validation result already exists at {frozen_result}; "
@@ -2663,9 +2672,9 @@ def main(
         else:
             # DEFAULT: validate the COMMIT, not the tree that claims to be at it.
             checkout_parent = (
-                frozen_checkout_parent(root.resolve())
+                frozen_checkout_parent(state_root)
                 if args.frozen_validate
-                else validate_checkout_parent(root.resolve())
+                else validate_checkout_parent(state_root)
             )
             fresh_checkout = prepare_fresh_checkout(
                 source_checkout,
@@ -2676,16 +2685,16 @@ def main(
                 independent_refs=args.frozen_validate,
             )
             checkout = fresh_checkout
-        preflight(root, checkout, args.target, repo=repo, run=run)
+        preflight(tool_root, checkout, args.target, repo=repo, run=run)
         runtime_root = prepare_runtime_root(environment or os.environ)
         private_cargo_home = prepare_private_cargo_home(
-            validate_checkout_parent(root.resolve()),
+            validate_checkout_parent(state_root),
             run=run,
             shared=Path((environment or os.environ).get("HOME", "")) / ".cargo",
         )
-        log = (args.log or root / "ignored/validate" / f"{unit}.log").resolve()
-        record_path = run_registry.record_path(root.resolve(), unit)
-        e2e_result_root, runner_log_dir = _validate_output_paths(root.resolve(), unit)
+        log = (args.log or state_root / "ignored/validate" / f"{unit}.log").resolve()
+        record_path = run_registry.record_path(state_root, unit)
+        e2e_result_root, runner_log_dir = _validate_output_paths(state_root, unit)
         output_fields = {"validate_lock_child_deadline_seconds": child_deadline}
         if repo == "rrnewton/hermit":
             output_fields.update(
@@ -2697,7 +2706,8 @@ def main(
             )
         started_at = datetime.now(timezone.utc).isoformat()
         command = build_systemd_command(
-            root=root.resolve(),
+            root=tool_root,
+            state_root=state_root,
             checkout=checkout,
             target=args.target,
             agent=args.agent,
@@ -2777,7 +2787,7 @@ def main(
             # keep the work.
             try:
                 pane = pane_owner.create_pane(
-                    root=root.resolve(),
+                    root=tool_root,
                     checkout=checkout,
                     unit=unit,
                     target=args.target,
@@ -2806,7 +2816,7 @@ def main(
                 pane_title=pane.title if pane else None,
             )
             run_registry.reserve_log(log)
-            result = run(command, cwd=root, check=False)
+            result = run(command, cwd=tool_root, check=False)
             if result.returncode != 0:
                 detail = result.stderr.strip() or result.stdout.strip() or f"exit {result.returncode}"
                 run_registry.update_record(
@@ -2975,7 +2985,7 @@ def main(
     # invisible-green failure this gate exists to make impossible.
     try:
         row, canonical_verdict, canonical_exit = assert_row_readable_from_canonical_ledger(
-            root.resolve(), args.target, checkout, started_at, repo=repo, run=run
+            state_root, args.target, checkout, started_at, repo=repo, run=run
         )
     except RuntimeError as error:
         # THE INNER RUN'S REASON OUTRANKS THE MISSING ROW. If validate refused,
@@ -3021,7 +3031,7 @@ def main(
                 # unbounded disk growth this path now prevents.
                 try:
                     archived = archive_orphaned_receipts(
-                        root.resolve(), fresh_checkout, orphans, unit=unit
+                        state_root, fresh_checkout, orphans, unit=unit
                     )
                 except (OSError, RuntimeError) as archive_error:
                     remove_private_cargo_home(private_cargo_home, run=run)

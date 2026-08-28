@@ -441,6 +441,61 @@ class StartUnitTest(unittest.TestCase):
         self.assertEqual(3600, record["validate_lock_child_deadline_seconds"])
         self.assertEqual(3239, record["hermit_run_timeout_seconds"])
 
+    @mock.patch.object(start_unit.pane_owner, "create_pane", return_value=None)
+    def test_linked_parent_uses_shared_state_and_exact_tooling(
+        self, _create_pane: mock.Mock
+    ) -> None:
+        linked = self.root / "worktrees/slots/147/dev-hermit"
+        (linked / "ci-hub/validate").mkdir(parents=True)
+        self.fake.current_main = "b" * 40
+        self.fake.target_contains_current_main = False
+
+        out = io.StringIO()
+        err = io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = start_unit.main(
+                [
+                    "--checkout",
+                    str(self.checkout),
+                    "--state-root",
+                    str(self.root),
+                    "--agent",
+                    "hermit-test",
+                    "--target",
+                    SHA,
+                    "--unit",
+                    "validate-linked-frozen",
+                    "--frozen-validate",
+                    "--",
+                    "full",
+                ],
+                run=self.fake,
+                environment=self.environment,
+                root=linked,
+                sleep=lambda _seconds: None,
+            )
+
+        self.assertEqual(0, rc, err.getvalue())
+        record = start_unit.run_registry.read_record(
+            self.root / "ignored/validate/runs/validate-linked-frozen.json"
+        )
+        self.assertEqual(
+            start_unit.frozen_checkout_parent(self.root),
+            Path(record["checkout"]).parent,
+        )
+        systemd = next(
+            command
+            for command in self.fake.commands
+            if command[0] == "systemd-run" and "validate-lock" in command
+        )
+        self.assertIn(str(linked / "ci-hub/ci-hub"), systemd)
+        self.assertEqual(
+            str(self.root / "ignored/validate/runs/validate-linked-frozen.json"),
+            systemd[systemd.index("--run-record") + 1],
+        )
+        self.assertIn(f"DEV_HERMIT_PARENT={self.root}", systemd)
+        self.assertNotIn(f"DEV_HERMIT_PARENT={linked}", systemd)
+
     def test_sweep_completed_archives_receipts_and_removes_checkout(self) -> None:
         fresh = self.root / "worktrees" / "validate" / "validate-fresh-sweep"
         receipt = fresh / "reports" / "result.jsonl"

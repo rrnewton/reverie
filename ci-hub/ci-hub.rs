@@ -1583,7 +1583,17 @@ fn execute(root: &Path, command: HubCommand) -> Result<i32, CiHubError> {
         }
         HubCommand::ValidateStatus(args) => run_validate_status(root, args),
         HubCommand::ValidateRun(args) => {
-            run_python(root, "ci-hub/validate/start_unit.py", args.args)
+            // `root` is the exact linked worktree whose ci-hub code is running,
+            // while validate-lock deliberately stores authority under the
+            // repository's main worktree. Pass that already-canonicalized state
+            // root to the producer instead of making Python independently
+            // rediscover it; two path resolvers are how the holder and its run
+            // record ended up in different directories.
+            run_python(
+                root,
+                "ci-hub/validate/start_unit.py",
+                validate_run_forwarded_args(root, args.args),
+            )
         }
         HubCommand::ValidateStop(args) => {
             run_python(root, "ci-hub/validate/stop_units.py", args.args)
@@ -7456,6 +7466,21 @@ fn push_option(arguments: &mut Vec<OsString>, name: &'static str, value: impl As
     arguments.push(value.as_ref().to_os_string());
 }
 
+fn validate_run_forwarded_args(root: &Path, mut arguments: Vec<OsString>) -> Vec<OsString> {
+    let insertion = arguments
+        .iter()
+        .position(|argument| argument == "--")
+        .unwrap_or(arguments.len());
+    arguments.splice(
+        insertion..insertion,
+        [
+            OsString::from("--state-root"),
+            landing_lock::repository_lock_root(root).into_os_string(),
+        ],
+    );
+    arguments
+}
+
 fn to_exit_code(code: i32) -> ExitCode {
     ExitCode::from(u8::try_from(code.clamp(0, 255)).unwrap_or(1))
 }
@@ -9334,6 +9359,34 @@ mod tests {
         assert!(args.args.contains(&OsString::from("--checkout")));
         assert!(args.args.contains(&OsString::from("full")));
         assert!(HubCommand::ValidateRun(args).cost_spec().is_none());
+    }
+
+    #[test]
+    fn validate_run_places_canonical_state_root_before_payload_arguments() {
+        let root = Path::new("/not-a-repository/dev-hermit-worktree");
+        let forwarded = validate_run_forwarded_args(
+            root,
+            vec![
+                OsString::from("--checkout"),
+                OsString::from("/tmp/hermit"),
+                OsString::from("--state-root"),
+                OsString::from("/caller/cannot/override"),
+                OsString::from("--"),
+                OsString::from("full"),
+            ],
+        );
+        let separator = forwarded
+            .iter()
+            .position(|argument| argument == "--")
+            .expect("payload separator");
+        assert_eq!(
+            &forwarded[separator - 2..separator],
+            [
+                OsString::from("--state-root"),
+                root.as_os_str().to_os_string(),
+            ]
+        );
+        assert_eq!(forwarded[separator + 1], OsString::from("full"));
     }
 
     #[test]
