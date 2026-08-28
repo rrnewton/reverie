@@ -108,6 +108,8 @@ const DEFAULT_AGENT_SNAPSHOT_MAX_AGE_SECONDS: u64 = 10 * 60;
 const GATE_FLOOR_POLICY: &str = "registry-effective-floor";
 const CANONICAL_VALIDATE_REPO: &str = "rrnewton/hermit";
 const CANONICAL_REVERIE_REPO: &str = "rrnewton/reverie";
+const COMMIT_TIMELINE_REF: &str = "origin/main";
+const NO_RUN_NOTE: &str = "NO-RUN means no readable validation ledger record identifies that commit; it cannot distinguish a validation that was never attempted from one that failed before writing a ledger record, and an unreadable row may not identify its commit.";
 const ROOT_HELP: &str = r#"Typed front door for dev-hermit validation, GH Actions, and runner operations
 
 Usage: ci-hub <COMMAND>
@@ -124,7 +126,7 @@ READ-ONLY STATUS AND HISTORY
   pr-status               Pull fresh open-PR GitHub status [alias: fresh]
   runner-health           Summarize self-hosted runners and recent workflows
   load-probe              Measure current CPU and memory pressure
-  validate-status         List recent validation runs or inspect one SHA/PR
+  validate-status         List recent runs, the Hermit commit timeline, or one SHA/PR
   local-history           List recent local validation runs [default: 10]
   newest-green            Find the newest ledger-qualified green commit [default: --branch main]
   first-bad               Find a retained PASS -> FAIL transition for a cell or gate
@@ -239,7 +241,7 @@ enum HubCommand {
     RunnerHealth(RunnerHealthArgs),
     /// Gate timing-sensitive work on measured CPU and memory utilization.
     LoadProbe(LoadProbeArgs),
-    /// List recent validation runs, or inspect one commit/PR verdict.
+    /// List recent runs, the Hermit commit timeline, or one commit/PR verdict.
     ValidateStatus(ValidateStatusArgs),
     /// Query the registered exact-head GH Actions result.
     HostedStatus(HostedStatusArgs),
@@ -431,8 +433,15 @@ struct ValidateStatusArgs {
     #[arg(long, conflicts_with = "sha")]
     pr: Option<u64>,
     /// Number of recent validation runs to show when no SHA or PR is supplied.
-    #[arg(long, default_value_t = DEFAULT_VALIDATE_HISTORY_LIMIT)]
+    #[arg(long, default_value_t = DEFAULT_VALIDATE_HISTORY_LIMIT, conflicts_with = "commit_timeline")]
     limit: usize,
+    /// List every commit in the local Hermit origin/main first-parent history,
+    /// including commits with no validation ledger row.
+    #[arg(
+        long,
+        conflicts_with_all = ["sha_positional", "sha", "pr", "in_progress_only"]
+    )]
+    commit_timeline: bool,
     /// Do not include process-verified validation runs that are still executing.
     #[arg(long, conflicts_with = "in_progress_only")]
     exclude_in_progress: bool,
@@ -5845,6 +5854,8 @@ struct ValidateRunRecord {
 
 #[derive(Clone, Debug, Serialize)]
 struct ValidateStatusEntry {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    depth: Option<usize>,
     verdict: Option<String>,
     result: Option<String>,
     in_progress: bool,
@@ -6060,6 +6071,7 @@ fn live_validate_runs_from(
                 unit
             );
             live.push(ValidateStatusEntry {
+                depth: None,
                 verdict: None,
                 result: None,
                 in_progress: true,
@@ -6138,6 +6150,7 @@ fn live_validate_runs_from(
             record.unit
         );
         live.push(ValidateStatusEntry {
+            depth: None,
             verdict: None,
             result: None,
             in_progress: true,
@@ -6197,6 +6210,42 @@ fn validation_repo_checkout(root: &Path, repo: &str) -> PathBuf {
     } else {
         "hermit"
     })
+}
+
+fn validation_main_history(root: &Path, repo: &str) -> Result<Vec<String>, CiHubError> {
+    if repo != CANONICAL_VALIDATE_REPO {
+        return Err(CiHubError::ValidateStatus(format!(
+            "--commit-timeline supports only {CANONICAL_VALIDATE_REPO}"
+        )));
+    }
+    let checkout = validation_repo_checkout(root, repo);
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(&checkout)
+        .args(["rev-parse", "--is-shallow-repository"])
+        .bounded_output()
+        .map_err(|source| CiHubError::Launch {
+            tool: "git shallow-check for validate-status --commit-timeline".into(),
+            source,
+        })?;
+    if !output.status.success() {
+        return Err(CiHubError::ValidateStatus(format!(
+            "cannot inspect Hermit history at {}: {}",
+            checkout.display(),
+            String::from_utf8_lossy(&output.stderr).trim()
+        )));
+    }
+    match String::from_utf8_lossy(&output.stdout).trim() {
+        "false" => branch_history(&checkout, COMMIT_TIMELINE_REF),
+        "true" => Err(CiHubError::ValidateStatus(format!(
+            "--commit-timeline cannot list every commit from shallow checkout {}; deepen or unshallow it first",
+            checkout.display()
+        ))),
+        value => Err(CiHubError::ValidateStatus(format!(
+            "git reported an unknown shallow-repository state for {}: {value}",
+            checkout.display()
+        ))),
+    }
 }
 
 fn branch_for_validation_sha(root: &Path, repo: &str, sha: &str) -> Option<String> {
@@ -6260,8 +6309,16 @@ fn fill_optional_validate_status_columns(
     }
 }
 
-fn validate_status_header(columns: &[ValidateStatusColumn], times: ValidateStatusTimes) -> String {
-    let mut fields = vec![format!("{:<12}", "RESULT"), format!("{:<13}", "VERDICT")];
+fn validate_status_header(
+    columns: &[ValidateStatusColumn],
+    times: ValidateStatusTimes,
+    commit_timeline: bool,
+) -> String {
+    let mut fields = Vec::new();
+    if commit_timeline {
+        fields.push(format!("{:>5}", "DEPTH"));
+    }
+    fields.extend([format!("{:<12}", "RESULT"), format!("{:<13}", "VERDICT")]);
     for column in columns {
         fields.push(match column {
             ValidateStatusColumn::Sha => format!("{:<12}", "SHA"),
@@ -6287,8 +6344,13 @@ fn validate_status_line(
     columns: &[ValidateStatusColumn],
     times: ValidateStatusTimes,
     now: chrono::DateTime<chrono::Utc>,
+    commit_timeline: bool,
 ) -> String {
-    let result = if entry.in_progress {
+    let no_run = entry.verdict.as_deref() == Some("NO-RUN");
+    let missing = if no_run { "" } else { "-" };
+    let result = if no_run {
+        String::new()
+    } else if entry.in_progress {
         "IN-PROGRESS".into()
     } else {
         display_validate_result(entry.result.as_deref())
@@ -6298,7 +6360,17 @@ fn validate_status_line(
     } else {
         entry.verdict.as_deref().unwrap_or("-")
     };
-    let mut fields = vec![format!("{:<12}", result), format!("{:<13}", verdict)];
+    let mut fields = Vec::new();
+    if commit_timeline {
+        fields.push(format!(
+            "{:>5}",
+            entry
+                .depth
+                .map(|depth| depth.to_string())
+                .unwrap_or_else(|| "-".into())
+        ));
+    }
+    fields.extend([format!("{:<12}", result), format!("{:<13}", verdict)]);
     for column in columns {
         fields.push(match column {
             ValidateStatusColumn::Sha => {
@@ -6306,51 +6378,51 @@ fn validate_status_line(
                 format!("{:<12}", sha.get(..12).unwrap_or(sha))
             }
             ValidateStatusColumn::Branch => {
-                format!("{:<18}", entry.branch.as_deref().unwrap_or("-"))
+                let branch = entry.branch.as_deref().unwrap_or(missing);
+                format!("{branch:<18}")
             }
             ValidateStatusColumn::GitDepth => format!(
                 "{:>8}",
                 entry
                     .git_depth
                     .map(|depth| depth.to_string())
-                    .unwrap_or_else(|| "-".into())
+                    .unwrap_or_else(|| missing.into())
             ),
             ValidateStatusColumn::None => unreachable!("none is removed before rendering"),
         });
     }
-    let when = entry
-        .finished_at
-        .as_deref()
-        .or(entry.started_at.as_deref())
-        .unwrap_or("-");
+    let when = entry.finished_at.as_deref().or(entry.started_at.as_deref());
     fields.push(format!(
         "{:<width$}",
-        format_validate_timestamp(when, times, now),
+        when.map(|when| format_validate_timestamp(when, times, now))
+            .unwrap_or_else(|| missing.into()),
         width = validate_status_time_width(times)
     ));
-    fields.push(format!("{:>7}", short_wall(entry.elapsed_seconds)));
-    let host = entry
-        .host
-        .as_deref()
-        .unwrap_or("-")
-        .split('.')
-        .next()
-        .unwrap_or("-");
+    let elapsed = entry
+        .elapsed_seconds
+        .map(|seconds| short_wall(Some(seconds)))
+        .unwrap_or_else(|| missing.into());
+    fields.push(format!("{elapsed:>7}"));
+    let host = entry.host.as_deref().unwrap_or(missing);
+    let host = host.split('.').next().unwrap_or(missing);
     fields.push(format!("{:<16}", host));
     fields.push(format!(
         "{:>14}",
         entry
             .tests_executed
             .map(|count| count.to_string())
-            .unwrap_or_else(|| "-".into())
+            .unwrap_or_else(|| missing.into())
     ));
-    fields.push(entry.summary.clone());
-    fields.join(" ")
+    if !entry.summary.is_empty() {
+        fields.push(entry.summary.clone());
+    }
+    fields.join(" ").trim_end().into()
 }
 
 fn finished_validate_status_entry(repo: &str, row: &HistoryRow) -> ValidateStatusEntry {
     let verdict = recent_row_verdict(row, repo);
     ValidateStatusEntry {
+        depth: None,
         verdict: Some(verdict.into()),
         result: row.result.clone(),
         in_progress: false,
@@ -6374,14 +6446,205 @@ fn finished_validate_status_entry(repo: &str, row: &HistoryRow) -> ValidateStatu
     }
 }
 
+fn no_run_commit_timeline_entry(sha: &str, depth: usize) -> ValidateStatusEntry {
+    ValidateStatusEntry {
+        depth: Some(depth),
+        verdict: Some("NO-RUN".into()),
+        result: None,
+        in_progress: false,
+        sha: Some(sha.into()),
+        branch: None,
+        git_depth: None,
+        started_at: None,
+        finished_at: None,
+        elapsed_seconds: None,
+        tests_executed: None,
+        host: None,
+        slot: None,
+        summary: String::new(),
+    }
+}
+
+fn unreadable_commit_timeline_entry(
+    failure: &validate_status::LedgerParseFailure,
+    sha: &str,
+    depth: usize,
+) -> ValidateStatusEntry {
+    ValidateStatusEntry {
+        depth: Some(depth),
+        verdict: Some("LEDGER-UNREADABLE".into()),
+        result: failure.result.clone(),
+        in_progress: false,
+        sha: Some(sha.into()),
+        branch: None,
+        git_depth: None,
+        started_at: failure.started_at.clone(),
+        finished_at: None,
+        elapsed_seconds: None,
+        tests_executed: None,
+        host: failure.host.clone(),
+        slot: None,
+        summary: format!("ledger line {} could not be read", failure.line_number),
+    }
+}
+
+fn commit_timeline_entries(
+    commits: &[String],
+    rows: &[HistoryRow],
+    current: Vec<ValidateStatusEntry>,
+    parse_failures: &[validate_status::LedgerParseFailure],
+    repo: &str,
+) -> Vec<ValidateStatusEntry> {
+    let depths = commits
+        .iter()
+        .enumerate()
+        .map(|(depth, sha)| (sha.as_str(), depth))
+        .collect::<BTreeMap<_, _>>();
+    let mut by_commit = BTreeMap::<String, Vec<ValidateStatusEntry>>::new();
+
+    for mut entry in current {
+        let Some(sha) = entry.sha.clone() else {
+            continue;
+        };
+        let Some(depth) = depths.get(sha.as_str()).copied() else {
+            continue;
+        };
+        entry.depth = Some(depth);
+        by_commit.entry(sha).or_default().push(entry);
+    }
+    for row in rows.iter().filter(|row| row.commit.is_some()) {
+        let sha = row.commit.as_deref().expect("filtered above");
+        let Some(depth) = depths.get(sha).copied() else {
+            continue;
+        };
+        let duplicate_live = by_commit.get(sha).is_some_and(|entries| {
+            entries.iter().any(|entry| {
+                entry.in_progress && entry.started_at.as_deref() == row.started_at.as_deref()
+            })
+        });
+        if !duplicate_live {
+            let mut entry = finished_validate_status_entry(repo, row);
+            entry.depth = Some(depth);
+            by_commit.entry(sha.into()).or_default().push(entry);
+        }
+    }
+    for failure in parse_failures
+        .iter()
+        .filter(|failure| parse_failure_matches_validation_repo(failure, repo))
+    {
+        let Some(sha) = failure.commit.as_deref() else {
+            continue;
+        };
+        let Some(depth) = depths.get(sha).copied() else {
+            continue;
+        };
+        by_commit
+            .entry(sha.into())
+            .or_default()
+            .push(unreadable_commit_timeline_entry(failure, sha, depth));
+    }
+
+    let mut timeline = Vec::new();
+    for (depth, sha) in commits.iter().enumerate() {
+        let Some(mut entries) = by_commit.remove(sha) else {
+            timeline.push(no_run_commit_timeline_entry(sha, depth));
+            continue;
+        };
+        entries.sort_by(|left, right| {
+            right.in_progress.cmp(&left.in_progress).then_with(|| {
+                let left_time = left
+                    .finished_at
+                    .as_deref()
+                    .or(left.started_at.as_deref())
+                    .unwrap_or("");
+                let right_time = right
+                    .finished_at
+                    .as_deref()
+                    .or(right.started_at.as_deref())
+                    .unwrap_or("");
+                right_time.cmp(left_time)
+            })
+        });
+        timeline.extend(entries);
+    }
+    timeline
+}
+
+fn unassigned_commit_timeline_failures(
+    parse_failures: &[validate_status::LedgerParseFailure],
+    repo: &str,
+) -> usize {
+    parse_failures
+        .iter()
+        .filter(|failure| {
+            parse_failure_matches_validation_repo(failure, repo) && failure.commit.is_none()
+        })
+        .count()
+}
+
+fn validate_status_history_json(
+    entries: &[ValidateStatusEntry],
+    repo: &str,
+    columns: &[ValidateStatusColumn],
+    ledger: &Path,
+    depth: &GreenDepth,
+    args: &ValidateStatusArgs,
+    commit_count: Option<usize>,
+    unassigned_unreadable_count: usize,
+) -> serde_json::Value {
+    let in_progress_count = entries.iter().filter(|entry| entry.in_progress).count();
+    if !args.commit_timeline {
+        return serde_json::json!({
+            "schema_version": 4,
+            "repo": repo,
+            "count": entries.len(),
+            "in_progress_count": in_progress_count,
+            "finished_count": entries.len() - in_progress_count,
+            "limit": args.limit,
+            "columns": columns.iter().map(|column| column.to_possible_value().expect("value enum").get_name().to_string()).collect::<Vec<_>>(),
+            "runs": entries,
+            "commits_since_green": depth.json(),
+            "ledger": ledger.display().to_string(),
+        });
+    }
+
+    let no_run_count = entries
+        .iter()
+        .filter(|entry| entry.verdict.as_deref() == Some("NO-RUN"))
+        .count();
+    let finished_count = entries
+        .iter()
+        .filter(|entry| !entry.in_progress && entry.verdict.as_deref() != Some("NO-RUN"))
+        .count();
+    serde_json::json!({
+        "schema_version": 5,
+        "repo": repo,
+        "count": entries.len(),
+        "in_progress_count": in_progress_count,
+        "finished_count": finished_count,
+        "commit_timeline": true,
+        "commit_count": commit_count,
+        "no_run_count": no_run_count,
+        "unassigned_unreadable_count": unassigned_unreadable_count,
+        "timeline_ref": COMMIT_TIMELINE_REF,
+        "no_run_note": NO_RUN_NOTE,
+        "limit": serde_json::Value::Null,
+        "columns": columns.iter().map(|column| column.to_possible_value().expect("value enum").get_name().to_string()).collect::<Vec<_>>(),
+        "runs": entries,
+        "commits_since_green": depth.json(),
+        "ledger": ledger.display().to_string(),
+    })
+}
+
 fn print_recent_validate_history(
     root: &Path,
     rows: &[HistoryRow],
+    parse_failures: &[validate_status::LedgerParseFailure],
     repo: &str,
     ledger: &Path,
     args: &ValidateStatusArgs,
 ) -> Result<i32, CiHubError> {
-    if args.limit == 0 {
+    if !args.commit_timeline && args.limit == 0 {
         return Err(CiHubError::ValidateStatus(
             "--limit must be greater than zero".into(),
         ));
@@ -6393,66 +6656,78 @@ fn print_recent_validate_history(
     } else {
         live_validate_runs(root, repo, now)?
     };
-    let mut recent = rows
-        .iter()
-        .filter(|row| row.commit.is_some())
-        .collect::<Vec<_>>();
-    recent.sort_by(|left, right| {
-        let left = left
-            .finished_at
-            .as_deref()
-            .or(left.started_at.as_deref())
-            .unwrap_or("");
-        let right = right
-            .finished_at
-            .as_deref()
-            .or(right.started_at.as_deref())
-            .unwrap_or("");
-        right.cmp(left)
-    });
-    recent.retain(|row| {
-        !current.iter().any(|entry| {
-            entry.sha.as_deref() == row.commit.as_deref()
-                && entry.started_at.as_deref() == row.started_at.as_deref()
-        })
-    });
-    recent.truncate(args.limit);
-
-    let mut finished = if args.in_progress_only {
-        Vec::new()
+    let (mut entries, commit_count) = if args.commit_timeline {
+        let commits = validation_main_history(root, repo)?;
+        let commit_count = commits.len();
+        (
+            commit_timeline_entries(&commits, rows, current, parse_failures, repo),
+            Some(commit_count),
+        )
     } else {
-        recent
+        let mut recent = rows
             .iter()
-            .map(|row| finished_validate_status_entry(repo, row))
-            .collect::<Vec<_>>()
+            .filter(|row| row.commit.is_some())
+            .collect::<Vec<_>>();
+        recent.sort_by(|left, right| {
+            let left = left
+                .finished_at
+                .as_deref()
+                .or(left.started_at.as_deref())
+                .unwrap_or("");
+            let right = right
+                .finished_at
+                .as_deref()
+                .or(right.started_at.as_deref())
+                .unwrap_or("");
+            right.cmp(left)
+        });
+        recent.retain(|row| {
+            !current.iter().any(|entry| {
+                entry.sha.as_deref() == row.commit.as_deref()
+                    && entry.started_at.as_deref() == row.started_at.as_deref()
+            })
+        });
+        recent.truncate(args.limit);
+        let finished = if args.in_progress_only {
+            Vec::new()
+        } else {
+            recent
+                .iter()
+                .map(|row| finished_validate_status_entry(repo, row))
+                .collect::<Vec<_>>()
+        };
+        current.extend(finished);
+        (current, None)
     };
-    for entry in current.iter_mut().chain(finished.iter_mut()) {
-        fill_optional_validate_status_columns(root, repo, &columns, entry);
+    for entry in &mut entries {
+        if entry.verdict.as_deref() != Some("NO-RUN") {
+            fill_optional_validate_status_columns(root, repo, &columns, entry);
+        }
     }
-    let mut entries = current;
-    entries.extend(finished);
 
     // Computed for BOTH output modes: a number that only appears under --json
     // is a number the humans reading the default output never see, which is the
     // condition this metric exists to end.
     let depth = standard_green_depth(root, "main");
+    let unassigned_unreadable_count = if args.commit_timeline {
+        unassigned_commit_timeline_failures(parse_failures, repo)
+    } else {
+        0
+    };
 
     if args.json {
-        let in_progress_count = entries.iter().filter(|entry| entry.in_progress).count();
         println!(
             "{}",
-            serde_json::to_string_pretty(&serde_json::json!({
-                "schema_version": 4,
-                "repo": repo,
-                "count": entries.len(),
-                "in_progress_count": in_progress_count,
-                "finished_count": entries.len() - in_progress_count,
-                "limit": args.limit,
-                "columns": columns.iter().map(|column| column.to_possible_value().expect("value enum").get_name().to_string()).collect::<Vec<_>>(),
-                "runs": entries,
-                "commits_since_green": depth.json(),
-                "ledger": ledger.display().to_string(),
-            }))
+            serde_json::to_string_pretty(&validate_status_history_json(
+                &entries,
+                repo,
+                &columns,
+                ledger,
+                &depth,
+                args,
+                commit_count,
+                unassigned_unreadable_count,
+            ))
             .expect("serialize recent validation history")
         );
         return Ok(0);
@@ -6461,6 +6736,17 @@ fn print_recent_validate_history(
     // Printed even when there are no runs at all: "no runs" and "no green in the
     // last N commits" are different facts and the second is the actionable one.
     println!("{}", depth.line());
+    if let Some(commit_count) = commit_count {
+        println!(
+            "COMMIT-TIMELINE {COMMIT_TIMELINE_REF} {commit_count} first-parent commits (depth 0 is local {COMMIT_TIMELINE_REF})."
+        );
+        if unassigned_unreadable_count > 0 {
+            println!(
+                "LEDGER-UNREADABLE {unassigned_unreadable_count} record(s) do not identify a commit; NO-RUN cannot exclude them."
+            );
+        }
+        println!("{NO_RUN_NOTE}");
+    }
     if entries.is_empty() {
         if args.in_progress_only {
             println!("No in-progress validation runs found for {repo}.");
@@ -6469,9 +6755,15 @@ fn print_recent_validate_history(
         }
         return Ok(0);
     }
-    println!("{}", validate_status_header(&columns, args.times));
+    println!(
+        "{}",
+        validate_status_header(&columns, args.times, args.commit_timeline)
+    );
     for entry in &entries {
-        println!("{}", validate_status_line(entry, &columns, args.times, now));
+        println!(
+            "{}",
+            validate_status_line(entry, &columns, args.times, now, args.commit_timeline)
+        );
     }
     Ok(0)
 }
@@ -6512,7 +6804,14 @@ fn run_validate_status(root: &Path, args: ValidateStatusArgs) -> Result<i32, CiH
     // both, or either together with `--pr`.
     let sha_input = args.sha.as_ref().or(args.sha_positional.as_ref());
     if sha_input.is_none() && args.pr.is_none() {
-        return print_recent_validate_history(root, &repo_rows, repo, &path, &args);
+        return print_recent_validate_history(
+            root,
+            &repo_rows,
+            &parse_failures,
+            repo,
+            &path,
+            &args,
+        );
     }
     let sha = match (sha_input, args.pr) {
         (Some(input), None) => {
@@ -7820,7 +8119,11 @@ mod tests {
         assert_eq!(entry.result.as_deref(), Some("pass"));
         assert_eq!(entry.tests_executed, Some(2129));
         assert_eq!(
-            validate_status_header(&[ValidateStatusColumn::Sha], ValidateStatusTimes::Relative),
+            validate_status_header(
+                &[ValidateStatusColumn::Sha],
+                ValidateStatusTimes::Relative,
+                false,
+            ),
             "RESULT       VERDICT       SHA          STARTED/FINISHED     ELAPSED HOST             TESTS-EXECUTED SUMMARY"
         );
         let now = chrono::DateTime::parse_from_rfc3339("2026-08-03T01:36:00Z")
@@ -7831,6 +8134,7 @@ mod tests {
             &[ValidateStatusColumn::Sha],
             ValidateStatusTimes::Relative,
             now,
+            false,
         );
         assert!(
             line.starts_with("PASS         VALIDATED     630f44aab7fd"),
@@ -7849,6 +8153,166 @@ mod tests {
         assert!(json.get("tests_total").is_none());
         assert!(json.get("tests_passed").is_none());
         assert!(json.get("tests_passed_at_least").is_none());
+    }
+
+    #[test]
+    fn commit_timeline_numbers_every_commit_and_does_not_call_absence_an_attempt() {
+        let commits = ["a".repeat(40), "b".repeat(40), "c".repeat(40)];
+        let mut passed = schema4_receipt_value();
+        passed["commit"] = serde_json::json!(commits[0]);
+        let mut failed = schema4_receipt_value();
+        failed["commit"] = serde_json::json!(commits[2]);
+        failed["result"] = serde_json::json!("fail");
+        failed["raw_result"] = serde_json::json!("fail");
+        failed["exit_code"] = serde_json::json!(1);
+        failed["failures"] = serde_json::json!(1);
+        failed["gates"][0]["result"] = serde_json::json!("fail");
+        failed["gates"][0]["exit_code"] = serde_json::json!(1);
+        let rows = [history_row(passed), history_row(failed)];
+
+        let timeline =
+            commit_timeline_entries(&commits, &rows, Vec::new(), &[], CANONICAL_VALIDATE_REPO);
+        assert_eq!(timeline.len(), commits.len());
+        assert_eq!(timeline[0].depth, Some(0));
+        assert_eq!(timeline[0].verdict.as_deref(), Some("VALIDATED"));
+        assert_eq!(timeline[1].depth, Some(1));
+        assert_eq!(timeline[1].sha.as_deref(), Some(commits[1].as_str()));
+        assert_eq!(timeline[1].verdict.as_deref(), Some("NO-RUN"));
+        assert_eq!(timeline[1].result, None);
+        assert_eq!(timeline[1].started_at, None);
+        assert_eq!(timeline[1].finished_at, None);
+        assert_eq!(timeline[1].elapsed_seconds, None);
+        assert_eq!(timeline[1].tests_executed, None);
+        assert_eq!(timeline[1].host, None);
+        assert_eq!(timeline[1].slot, None);
+        assert!(timeline[1].summary.is_empty());
+        assert_eq!(timeline[2].depth, Some(2));
+        assert_eq!(timeline[2].result.as_deref(), Some("fail"));
+        assert_eq!(timeline[2].verdict.as_deref(), Some("NEEDS-RERUN"));
+        assert_ne!(timeline[2].verdict.as_deref(), Some("NO-RUN"));
+
+        let now = chrono::DateTime::parse_from_rfc3339("2026-08-03T01:36:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        assert!(validate_status_header(
+            &[ValidateStatusColumn::Sha],
+            ValidateStatusTimes::Relative,
+            true,
+        )
+        .starts_with("DEPTH RESULT       VERDICT"));
+        let no_run = validate_status_line(
+            &timeline[1],
+            &[
+                ValidateStatusColumn::Sha,
+                ValidateStatusColumn::Branch,
+                ValidateStatusColumn::GitDepth,
+            ],
+            ValidateStatusTimes::Relative,
+            now,
+            true,
+        );
+        assert_eq!(
+            no_run.split_whitespace().collect::<Vec<_>>(),
+            ["1", "NO-RUN", "bbbbbbbbbbbb"]
+        );
+        assert!(NO_RUN_NOTE.contains("cannot distinguish"));
+        assert!(NO_RUN_NOTE.contains("failed before writing a ledger record"));
+    }
+
+    #[test]
+    fn commit_timeline_keeps_unreadable_records_distinct_from_no_run() {
+        let sha = "d".repeat(40);
+        let failure = validate_status::LedgerParseFailure {
+            line_number: 17,
+            error: "missing field `schema_version`".into(),
+            record_id: Some("broken".into()),
+            commit: Some(sha.clone()),
+            run_id: Some("run".into()),
+            repo: Some(CANONICAL_VALIDATE_REPO.into()),
+            host: Some("runner".into()),
+            producer: Some("ci-hub-validate-run".into()),
+            started_at: Some("2026-08-03T00:00:00Z".into()),
+            result: Some("fail".into()),
+        };
+        let timeline = commit_timeline_entries(
+            std::slice::from_ref(&sha),
+            &[],
+            Vec::new(),
+            &[failure],
+            CANONICAL_VALIDATE_REPO,
+        );
+        assert_eq!(timeline.len(), 1);
+        assert_eq!(timeline[0].verdict.as_deref(), Some("LEDGER-UNREADABLE"));
+        assert_eq!(timeline[0].result.as_deref(), Some("fail"));
+        assert_ne!(timeline[0].verdict.as_deref(), Some("NO-RUN"));
+    }
+
+    #[test]
+    fn commit_timeline_surfaces_unreadable_rows_that_do_not_identify_a_commit() {
+        let failure = validate_status::LedgerParseFailure {
+            line_number: 19,
+            error: "expected value".into(),
+            record_id: None,
+            commit: None,
+            run_id: None,
+            repo: Some(CANONICAL_VALIDATE_REPO.into()),
+            host: None,
+            producer: None,
+            started_at: None,
+            result: None,
+        };
+        assert_eq!(
+            unassigned_commit_timeline_failures(
+                std::slice::from_ref(&failure),
+                CANONICAL_VALIDATE_REPO,
+            ),
+            1
+        );
+        assert_eq!(
+            unassigned_commit_timeline_failures(&[failure], CANONICAL_REVERIE_REPO),
+            0
+        );
+        assert!(NO_RUN_NOTE.contains("unreadable row may not identify its commit"));
+    }
+
+    #[test]
+    fn commit_timeline_does_not_change_normal_recent_json() {
+        let cli = Cli::try_parse_from(["ci-hub", "validate-status", "--json"]).unwrap();
+        let HubCommand::ValidateStatus(args) = cli.command else {
+            panic!("wrong command variant")
+        };
+        let report = validate_status_history_json(
+            &[],
+            CANONICAL_VALIDATE_REPO,
+            &[ValidateStatusColumn::Sha],
+            Path::new("ledger"),
+            &GreenDepth::Unavailable { why: "test".into() },
+            &args,
+            None,
+            0,
+        );
+        let keys = report
+            .as_object()
+            .expect("history JSON is an object")
+            .keys()
+            .map(String::as_str)
+            .collect::<BTreeSet<_>>();
+        assert_eq!(report["schema_version"], 4);
+        assert_eq!(
+            keys,
+            BTreeSet::from([
+                "schema_version",
+                "repo",
+                "count",
+                "in_progress_count",
+                "finished_count",
+                "limit",
+                "columns",
+                "runs",
+                "commits_since_green",
+                "ledger",
+            ])
+        );
     }
 
     #[test]
@@ -7928,6 +8392,7 @@ mod tests {
             &[ValidateStatusColumn::Sha],
             ValidateStatusTimes::Relative,
             now,
+            false,
         );
         assert!(line.starts_with("PASS         NOT-VALIDATED"), "{line}");
         assert!(!line.contains("ran with"), "{line}");
@@ -8096,6 +8561,7 @@ mod tests {
             &[ValidateStatusColumn::Sha],
             ValidateStatusTimes::Relative,
             now,
+            false,
         );
         assert!(line.starts_with("IN-PROGRESS  -"), "{line}");
 
@@ -9469,6 +9935,7 @@ mod tests {
         assert_eq!(args.times, ValidateStatusTimes::Relative);
         assert!(!args.exclude_in_progress);
         assert!(!args.in_progress_only);
+        assert!(!args.commit_timeline);
 
         for (value, expected) in [
             ("relative", ValidateStatusTimes::Relative),
@@ -9514,6 +9981,31 @@ mod tests {
             ValidateStatusColumn::Sha,
         ])
         .is_err());
+    }
+
+    #[test]
+    fn validate_status_commit_timeline_has_an_unbounded_exclusive_cli_mode() {
+        let cli = Cli::try_parse_from(["ci-hub", "validate-status", "--commit-timeline"]).unwrap();
+        let HubCommand::ValidateStatus(args) = cli.command else {
+            panic!("wrong command variant")
+        };
+        assert!(args.commit_timeline);
+        assert_eq!(args.limit, DEFAULT_VALIDATE_HISTORY_LIMIT);
+
+        let sha = "0123456789abcdef0123456789abcdef01234567";
+        for conflicting in [
+            vec!["--commit-timeline", "--limit", "5"],
+            vec!["--commit-timeline", "--sha", sha],
+            vec!["--commit-timeline", "--pr", "1"],
+            vec!["--commit-timeline", "--in-progress-only"],
+        ] {
+            let mut argv = vec!["ci-hub", "validate-status"];
+            argv.extend(conflicting);
+            assert!(Cli::try_parse_from(argv).is_err());
+        }
+        assert!(
+            Cli::try_parse_from(["ci-hub", "validate-status", sha, "--commit-timeline"]).is_err()
+        );
     }
 
     #[test]
