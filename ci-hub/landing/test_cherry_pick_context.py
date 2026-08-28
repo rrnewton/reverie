@@ -90,6 +90,51 @@ class CherryPickContextTests(unittest.TestCase):
             output.getvalue(),
         )
 
+    def test_approval_uses_the_shared_marker_parser(self) -> None:
+        fixture = payload(disclosed=True, reviewed=True)
+        original = gate.approval_binding.parse_marker
+        try:
+            gate.approval_binding.parse_marker = lambda _line: None
+            verdict = gate.classify(fixture)
+        finally:
+            gate.approval_binding.parse_marker = original
+
+        self.assertFalse(verdict.passes)
+        self.assertEqual(verdict.approval_lanes, ("codex",))
+        self.assertEqual(verdict.units[0].missing_review_lanes, ("codex",))
+
+    def test_shared_approval_decoration_and_code_block_rules_apply(self) -> None:
+        fixture = payload(disclosed=True, reviewed=True)
+        digest = gate.context_digest(
+            {SOURCE: [CARRIED]},
+            {
+                SOURCE: "preserve audit-probe failure status and stderr before set -e unwinds"
+            },
+        )
+        fixture["comments"] = [
+            {
+                "body": (
+                    f"## APPROVED-AT: codex {HEAD} BY reviewer\n"
+                    f"CHERRY-PICK-CONTEXT-REVIEWED: codex {digest} {HEAD}"
+                )
+            }
+        ]
+        self.assertTrue(gate.classify(fixture).passes)
+
+        fixture["comments"] = [
+            {
+                "body": (
+                    "```text\n"
+                    f"APPROVED-AT: codex {HEAD}\n"
+                    "```\n"
+                    f"CHERRY-PICK-CONTEXT-REVIEWED: codex {digest} {HEAD}"
+                )
+            }
+        ]
+        verdict = gate.classify(fixture)
+        self.assertFalse(verdict.passes)
+        self.assertEqual(verdict.units[0].missing_review_lanes, ("codex",))
+
     def test_disclosure_without_new_context_review_still_refuses(self) -> None:
         verdict = gate.classify(payload(disclosed=True, reviewed=False))
         self.assertFalse(verdict.passes)

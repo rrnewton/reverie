@@ -45,6 +45,11 @@ from pathlib import Path
 from typing import Any
 
 
+HEALTH = Path(__file__).resolve().parents[1] / "health"
+sys.path.insert(0, str(HEALTH))
+import approval_binding  # noqa: E402
+
+
 SHA40 = r"[0-9a-f]{40}"
 CHERRY_PICK_RE = re.compile(
     rf"^\s*\(cherry picked from commit (?P<source>{SHA40})\)\s*$",
@@ -59,23 +64,9 @@ DISCLOSURE_RE = re.compile(
     rf"\s*(?:-|—|:)\s*(?P<detail>\S.*)\s*$",
     re.IGNORECASE,
 )
-# ⚠️ A THIRD COPY OF THE APPROVAL GRAMMAR, and the reason this clause is repeated
-# here by hand. `ci-hub/health/approval_binding.py` owns the one definition and its
-# own header records that duplicates of it HAVE ALREADY DRIFTED twice -- a copy in
-# `gh-merge-verified` and a copy in `docs/PR_SWEEP_VERDICTS.md` that had drifted
-# four ways and missed seven real bindings. This file additionally carries its own
-# `_undecorate`, so routing it through `parse_marker` also swaps its decoration
-# handling: a behaviour change, and not one to smuggle into a protocol change.
-# Tolerance now, deduplication as its own head -- but this copy is precisely why
-# "every reader tolerates the field first" had to be enumerated rather than assumed.
-#
-# `BY <agent>` is optional and ignored HERE: this consumer asks only which lanes
-# approved the head, so it must not stop matching, and it has no use for the issuer.
-APPROVAL_RE = re.compile(
-    rf"^\s*APPROVED-AT:\s*(?P<lane>claude|codex)\s+(?P<head>{SHA40})"
-    rf"(?:\s+BY\s+(?P<issuer>[a-z0-9][a-z0-9-]*))?\s*$",
-    re.IGNORECASE,
-)
+# Approval syntax belongs to `approval_binding`. This gate owns the additional
+# rule that the context digest must share a comment with the exact-head
+# approval, but it must not independently decide what an approval line says.
 CONTEXT_REVIEW_RE = re.compile(
     rf"^\s*CHERRY-PICK-CONTEXT-REVIEWED:\s*(?P<lane>claude|codex)\s+"
     rf"(?P<context>[0-9a-f]{{64}})\s+(?P<head>{SHA40})\s*$",
@@ -231,16 +222,17 @@ def classify(payload: dict[str, Any], *, expected_head: str | None = None) -> Ve
     current_approval_lanes: set[str] = set()
     for comment in comments:
         body = str(comment.get("body") if isinstance(comment, dict) else comment)
-        lines = [_undecorate(line) for line in body.splitlines()]
+        lines = approval_binding.prose_lines(body)
         approvals = {
-            match.group("lane").lower()
+            parsed[1]
             for line in lines
-            if (match := APPROVAL_RE.fullmatch(line))
-            and match.group("head").lower() == head
+            if (parsed := approval_binding.parse_marker(line))
+            and parsed[0] == approval_binding.MARKER_APPROVED
+            and parsed[2].lower() == head
         }
         current_approval_lanes.update(approvals)
         for line in lines:
-            marker = CONTEXT_REVIEW_RE.fullmatch(line)
+            marker = CONTEXT_REVIEW_RE.fullmatch(_undecorate(line))
             if not marker:
                 continue
             lane = marker.group("lane").lower()
