@@ -111,6 +111,7 @@ extra on top of the git-only path, never as the only way to verify.
 USAGE
 -----
     ci-hub/bin/gh-merge-verified <pr-number> [--repo owner/name] [--verify-only]
+                                 [--run-current-main-copy]
                                  [--expect-head <sha>]
                                  [-- extra `gh pr merge` args...]
 
@@ -120,6 +121,11 @@ USAGE
     # only prove: for a merge someone else performed, or from a box whose
     # `gh` cannot reach the API at all (verification is pure git and needs no API)
     ci-hub/bin/gh-merge-verified 2401 --repo rrnewton/hermit --verify-only
+
+    # when this pull request changes gh-merge-verified itself, fetch and run the
+    # exact copy from dev-hermit main; that reviewed copy performs admission and
+    # the merge, while the modified working-tree copy does neither
+    ci-hub/bin/gh-merge-verified 2401 --repo rrnewton/dev-hermit --run-current-main-copy --expect-head <sha>
 
 EXIT
 ----
@@ -143,7 +149,9 @@ EXIT
        so its own admission checks may be ABSENT from the copy being run. A stale
        lander does not fail -- it SKIPS the checks and reports a clean landing, which
        is indistinguishable from a checked one. `--verify-only` is exempt: it performs
-       no merge and so needs no admission.
+       no merge and so needs no admission. When the reviewed pull request changes
+       this file, pass `--run-current-main-copy`; the modified copy fetches and starts
+       the exact main copy, and only that main copy performs admission and the merge.
     8  ADMISSION COULD NOT RUN: a pre-merge check could not resolve what it needed
        (comments, reviews or labels), so it can neither admit nor refuse. NOTHING WAS
        ATTEMPTED.
@@ -204,6 +212,7 @@ import re
 import pathlib
 import os
 import shutil
+import tempfile
 import time
 import subprocess
 import sys
@@ -218,6 +227,10 @@ import sys
 # COULD NOT DETERMINE. Exit 4 was correct and the tool was honest; it just could
 # not do its job while a sibling held the ref.
 SCRATCH = f"refs/gh-merge-verified/{os.getpid()}"
+# Scratch refs live in both the repository being landed and this tool's own
+# repository. Remember each explicitly: deleting `toolmain` from the caller's
+# repository does not delete the ref that `git -C <tool-dir> fetch` created.
+SCRATCH_REPOSITORIES = {os.getcwd()}
 
 # How long to wait for `refs/heads/main` to advance after a merge this tool
 # performed, and how often to re-ask. Small because the remote settles in
@@ -307,12 +320,21 @@ def die(code: int, *lines: str) -> None:
     sys.exit(code)
 
 
+def cleanup_scratch_refs(prefix: str) -> None:
+    """Delete one completed process's scratch refs from each repository used."""
+    for repository in SCRATCH_REPOSITORIES:
+        for suffix in ("pr", "main", "toolmain"):
+            subprocess.run(
+                ["git", "-C", repository, "update-ref", "-d", f"{prefix}/{suffix}"],
+                capture_output=True,
+                text=True,
+            )
+
+
 def cleanup_scratch() -> None:
     """Delete this process's scratch refs. Leaking one ref per invocation would
     grow the ref namespace without bound in a repository many agents share."""
-    for suffix in ("pr", "main"):
-        subprocess.run(["git", "update-ref", "-d", f"{SCRATCH}/{suffix}"],
-                       capture_output=True, text=True)
+    cleanup_scratch_refs(SCRATCH)
 
 
 def gh_argv(args: list[str]) -> list[str]:
@@ -415,6 +437,54 @@ _REFUSAL_WITH_LANE = re.compile(
 
 
 
+def fetch_current_main_tool() -> tuple[pathlib.Path | None, str, str, str]:
+    """Fetch this tool's main branch and resolve its script blob and commit.
+
+    Returns ``(tool_dir, blob, main_commit, error)``. An error is a refusal to
+    infer either value; callers decide whether to report it as a failed
+    self-check or a failed request to run the current-main copy.
+    """
+    here = pathlib.Path(os.path.realpath(__file__))
+    tool_dir = here.parent
+    SCRATCH_REPOSITORIES.add(str(tool_dir))
+    rel = "ci-hub/bin/gh-merge-verified"
+    rc, tool_remote, _ = run(
+        ["git", "-C", str(tool_dir), "remote", "get-url", "origin"]
+    )
+    if rc != 0:
+        return (
+            None,
+            "",
+            "",
+            "could not resolve the origin remote of this tool's own checkout",
+        )
+    rc, _, _ = run(
+        [
+            "git",
+            "-C",
+            str(tool_dir),
+            "fetch",
+            "--quiet",
+            "--force",
+            tool_remote.strip(),
+            f"refs/heads/main:{SCRATCH}/toolmain",
+        ]
+    )
+    if rc != 0:
+        return None, "", "", "could not fetch dev-hermit main"
+    rc, blob, _ = run(
+        ["git", "-C", str(tool_dir), "rev-parse", f"{SCRATCH}/toolmain:{rel}"]
+    )
+    if rc != 0:
+        return None, "", "", f"could not resolve {rel} on dev-hermit main"
+    rc, main_commit, _ = run(
+        ["git", "-C", str(tool_dir), "rev-parse", f"{SCRATCH}/toolmain"]
+    )
+    if rc != 0:
+        return None, "", "", "could not resolve the fetched dev-hermit main commit"
+    return tool_dir, blob.strip(), main_commit.strip(), ""
+
+
 def this_tool_is_current() -> tuple[bool, str]:
     """Is the copy of this file being executed the one on origin/main?
 
@@ -450,29 +520,142 @@ def this_tool_is_current() -> tuple[bool, str]:
         if remote and not remote.startswith(("http://", "https://", "git@", "ssh://")):
             return True, "self-check disabled for a local fixture remote"
 
-    here = os.path.realpath(__file__)
-    rel = "ci-hub/bin/gh-merge-verified"
-    # ⚠️ THE TOOL LIVES IN dev-hermit, NOT IN THE REPOSITORY BEING LANDED. Deriving
-    # the remote from the pull request's repo would look for this file in `hermit`,
-    # find nothing, and refuse every landing -- fail-closed, but uselessly so.
-    tool_dir = os.path.dirname(here)
-    rc, tool_remote, _ = run(["git", "-C", tool_dir, "remote", "get-url", "origin"])
-    if rc != 0:
-        return False, "could not resolve the origin remote of this tool's own checkout"
-    rc, _, _ = run(["git", "-C", tool_dir, "fetch", "--quiet", "--force",
-                    tool_remote.strip(), f"refs/heads/main:{SCRATCH}/toolmain"])
-    if rc != 0:
-        return False, "could not fetch dev-hermit main to compare this tool against"
-    rc, blob, _ = run(["git", "-C", tool_dir, "rev-parse", f"{SCRATCH}/toolmain:{rel}"])
-    if rc != 0:
-        return False, f"could not resolve {rel} on dev-hermit main"
-    rc, mine, _ = run(["git", "-C", tool_dir, "hash-object", here])
+    here = pathlib.Path(os.path.realpath(__file__))
+    tool_dir, blob, _main_commit, error = fetch_current_main_tool()
+    if error:
+        return False, error
+    assert tool_dir is not None
+    rc, mine, _ = run(["git", "-C", str(tool_dir), "hash-object", str(here)])
     if rc != 0:
         return False, "could not hash the running copy of this tool"
-    if mine.strip() != blob.strip():
+    if mine.strip() != blob:
         return False, (f"this copy is {mine.strip()[:12]}, dev-hermit main has "
-                       f"{blob.strip()[:12]}")
+                       f"{blob[:12]}")
     return True, "current"
+
+
+def without_current_main_flag(argv: list[str]) -> list[str]:
+    """Remove this tool's flag without touching arguments after ``--``."""
+    result: list[str] = []
+    own_options = True
+    for arg in argv:
+        if own_options and arg == "--run-current-main-copy":
+            continue
+        result.append(arg)
+        if arg == "--":
+            own_options = False
+    return result
+
+
+def execute_current_main_copy(argv: list[str]) -> None:
+    """Run the exact script fetched from dev-hermit main.
+
+    This function does not admit or merge anything. It writes the fetched blob
+    beside the invoked script so the current-main copy can find the same
+    ``ci-hub/health`` and ``ci-hub/lib`` dependencies, checks the written bytes,
+    and starts that copy with this request flag removed. The fetched copy then
+    performs its ordinary self-check and every ordinary admission check.
+    """
+    tool_dir, blob, main_commit, error = fetch_current_main_tool()
+    if error:
+        die(
+            7,
+            "gh-merge-verified: REFUSING TO MERGE -- could not obtain the current-main copy.",
+            f"    {error}",
+            "  NOTHING WAS ATTEMPTED. Refresh network access or the tool checkout, then re-run",
+            "  the same command. Do not replace this with --verify-only: that checks only a merge",
+            "  that already happened and performs no admission.",
+        )
+    assert tool_dir is not None
+
+    temporary: pathlib.Path | None = None
+    try:
+        try:
+            descriptor, raw_path = tempfile.mkstemp(
+                prefix=".gh-merge-verified-current-main-", dir=tool_dir
+            )
+            temporary = pathlib.Path(raw_path)
+        except OSError as exc:
+            die(
+                7,
+                "gh-merge-verified: REFUSING TO MERGE -- cannot create the temporary current-main copy",
+                f"  beside {__file__}: {exc}",
+                "  NOTHING WAS ATTEMPTED. Make this checkout writable, then re-run the same command.",
+            )
+        try:
+            with os.fdopen(descriptor, "wb") as output:
+                materialize = subprocess.run(
+                    ["git", "-C", str(tool_dir), "cat-file", "blob", blob],
+                    stdout=output,
+                    stderr=subprocess.PIPE,
+                )
+            os.chmod(temporary, 0o700)
+        except OSError as exc:
+            die(
+                7,
+                "gh-merge-verified: REFUSING TO MERGE -- could not write the current-main copy",
+                f"  beside {__file__}: {exc}",
+                "  NOTHING WAS ATTEMPTED. Repair the checkout or its permissions, then re-run.",
+            )
+        if materialize.returncode != 0:
+            detail = materialize.stderr.decode(errors="replace").strip()
+            die(
+                7,
+                "gh-merge-verified: REFUSING TO MERGE -- fetched main but could not read its verifier",
+                f"  blob {blob[:12]}: {detail}",
+                "  NOTHING WAS ATTEMPTED. Repair the git object store or fetch, then re-run.",
+            )
+        rc, written, _ = run(
+            ["git", "-C", str(tool_dir), "hash-object", str(temporary)]
+        )
+        if rc != 0 or written.strip() != blob:
+            die(
+                7,
+                "gh-merge-verified: REFUSING TO MERGE -- the written current-main copy does not match",
+                f"  the fetched blob {blob[:12]}; NOTHING WAS ATTEMPTED.",
+                "  Remove the incomplete temporary file if it remains, repair the checkout, and re-run.",
+            )
+        print(
+            "gh-merge-verified: running the byte-identical verifier from dev-hermit main "
+            f"{main_commit[:12]} ({blob[:12]}).",
+            flush=True,
+        )
+        print(
+            "  The modified working-tree copy is not admitting or merging this pull request.",
+            flush=True,
+        )
+        try:
+            child = subprocess.Popen(
+                [sys.executable, str(temporary), *without_current_main_flag(argv)]
+            )
+        except OSError as exc:
+            die(
+                7,
+                "gh-merge-verified: REFUSING TO MERGE -- could not start the current-main copy",
+                f"    {exc}",
+                "  NOTHING WAS ATTEMPTED. Repair the Python executable or checkout, then re-run.",
+            )
+        returncode = child.wait()
+        # The first invocation after this change runs the previous main copy,
+        # whose cleanup does not yet know that `toolmain` lives in the tool
+        # repository. Its PID makes those refs exact and safe to remove after it
+        # exits; no broad ref scan or guess about another live process is needed.
+        cleanup_scratch_refs(f"refs/gh-merge-verified/{child.pid}")
+        code = returncode if returncode >= 0 else 128 - returncode
+        raise SystemExit(code)
+    finally:
+        if temporary is not None:
+            try:
+                temporary.unlink()
+            except FileNotFoundError:
+                pass
+            except OSError as exc:
+                print(
+                    f"gh-merge-verified: warning: could not remove temporary current-main copy "
+                    f"{temporary}: {exc}",
+                    "  Remove that named file manually; it is no longer used by this run.",
+                    file=sys.stderr,
+                )
 
 
 def blocking_changes_requests(pr: str, repo: str, head: str) -> list[str]:
@@ -790,6 +973,7 @@ def parse_options(argv: list[str]):
     """
     repo = "rrnewton/hermit"
     verify_only = False
+    use_current_main_copy = False
     expect_head = None
     receipt_path = None
     extra: list[str] = []
@@ -802,6 +986,8 @@ def parse_options(argv: list[str]):
             repo, i = argv[i + 1], i + 2
         elif arg == "--verify-only":
             verify_only, i = True, i + 1
+        elif arg == "--run-current-main-copy":
+            use_current_main_copy, i = True, i + 1
         elif arg == "--expect-head":
             if i + 1 >= len(argv):
                 raise ValueError("--expect-head needs the exact 40-hex PR head; run --help for an example")
@@ -816,7 +1002,7 @@ def parse_options(argv: list[str]):
         else:
             extra.append(arg)
             i += 1
-    return repo, verify_only, expect_head, receipt_path, extra
+    return repo, verify_only, use_current_main_copy, expect_head, receipt_path, extra
 
 
 def main() -> None:
@@ -841,9 +1027,28 @@ def main() -> None:
         )
 
     try:
-        repo, verify_only, expect_head, receipt_path, extra = parse_options(argv)
+        (
+            repo,
+            verify_only,
+            use_current_main_copy,
+            expect_head,
+            receipt_path,
+            extra,
+        ) = parse_options(argv)
     except ValueError as error:
         die(1, f"gh-merge-verified: {error}")
+
+    if use_current_main_copy and verify_only:
+        die(
+            1,
+            "gh-merge-verified: choose either --run-current-main-copy or --verify-only, not both.",
+            "  --run-current-main-copy obtains the reviewed verifier so it can perform admission",
+            "  before a merge.",
+            "  --verify-only performs no admission; it checks content after a merge. If the merge",
+            "  already happened, remove --run-current-main-copy.",
+        )
+    if use_current_main_copy:
+        execute_current_main_copy(argv)
 
     # TEST-ONLY ESCAPE HATCH. The self-test needs to drive this against fixture
     # repositories on disk, because a verifier that has only ever been run
@@ -927,9 +1132,12 @@ def main() -> None:
                 "",
                 "  Run from a fresh checkout, or refresh this one (`make checkout-fresh` in "
                 "dev-hermit).",
-                "  Pass --verify-only to prove an already-performed merge; that path performs "
-                "no",
-                "  merge and so needs no admission check.")
+                "  If the reviewed pull request changes this file, pass "
+                "--run-current-main-copy;",
+                "  the modified copy will fetch and start the exact verifier from main, and only",
+                "  that reviewed copy will perform admission and the merge.",
+                "  Pass --verify-only only to prove an already-performed merge; it performs no",
+                "  admission and is not a route for landing a change to this file.")
         blocking = blocking_changes_requests(pr, repo, head)
         if blocking == ["__UNREADABLE__"]:
             die(8, "gh-merge-verified: ADMISSION COULD NOT RUN -- could not read comments/reviews "

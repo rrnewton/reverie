@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -65,6 +66,25 @@ def git(cwd: Path, *args: str) -> None:
     )
     if p.returncode != 0:
         raise RuntimeError(f"git {' '.join(args)} failed: {p.stderr.strip()}")
+
+
+def git_output(cwd: Path, *args: str) -> str:
+    p = subprocess.run(
+        ["git", *args],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        env={
+            **os.environ,
+            "GIT_AUTHOR_NAME": "t",
+            "GIT_AUTHOR_EMAIL": "t@example.invalid",
+            "GIT_COMMITTER_NAME": "t",
+            "GIT_COMMITTER_EMAIL": "t@example.invalid",
+        },
+    )
+    if p.returncode != 0:
+        raise RuntimeError(f"git {' '.join(args)} failed: {p.stderr.strip()}")
+    return p.stdout.strip()
 
 
 def build_fixture(root: Path, landed: str) -> tuple[Path, Path]:
@@ -125,6 +145,59 @@ def tripwire_dir(root: Path) -> tuple[Path, Path]:
     )
     gh.chmod(0o755)
     log.write_text("")
+    return bindir, log
+
+
+def build_tool_fixture(root: Path) -> Path:
+    """A dev-hermit origin whose main has the reviewed verifier and dependencies."""
+    source_root = TOOL.parents[2]
+    origin = root / "tool-origin"
+    origin.mkdir()
+    git(origin, "init", "--quiet", "--initial-branch=main", ".")
+    for relative in (
+        "ci-hub/bin/gh-merge-verified",
+        "ci-hub/health/approval_binding.py",
+        "ci-hub/lib/bounded_capture.py",
+        "ci-hub/lib/ops_state.py",
+    ):
+        destination = origin / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source_root / relative, destination)
+    git(origin, "add", "ci-hub")
+    git(origin, "commit", "--quiet", "-m", "reviewed verifier on main")
+
+    work = root / "tool-work"
+    subprocess.run(
+        ["git", "clone", "--quiet", str(origin), str(work)],
+        check=True,
+        capture_output=True,
+    )
+    candidate = work / "ci-hub/bin/gh-merge-verified"
+    with candidate.open("a") as output:
+        output.write("\n# unreviewed working-tree change\n")
+    return candidate
+
+
+def merge_stub_dir(root: Path, target_origin: Path, landed_commit: str) -> tuple[Path, Path]:
+    """A `gh` that answers admission reads and advances main on merge."""
+    bindir = root / "merge-bin"
+    bindir.mkdir()
+    log = bindir / "calls.log"
+    log.write_text("")
+    gh = bindir / "gh"
+    gh.write_text(
+        "#!/bin/bash\n"
+        f'echo "gh $*" >> "{log}"\n'
+        "if [ \"$1\" = pr ] && [ \"$2\" = view ]; then\n"
+        "  echo '{\"comments\":[],\"reviews\":[],\"labels\":[],\"state\":\"OPEN\"}'\n"
+        "  exit 0\n"
+        "fi\n"
+        f'git -C "{target_origin}" update-ref refs/heads/main "{landed_commit}"\n'
+    )
+    gh.chmod(0o755)
+    with_proxy = bindir / "with-proxy"
+    with_proxy.write_text("#!/bin/bash\nexec \"$@\"\n")
+    with_proxy.chmod(0o755)
     return bindir, log
 
 
@@ -243,6 +316,152 @@ def unit_cases() -> None:
             f"refusal NOT excused: {text[:34]!r}",
             not tool.looks_unreachable(text),
             "a genuine refusal was misread as a network fault, which would hide it",
+        )
+
+
+def self_change_cases() -> None:
+    """A modified verifier refuses normally; only the main copy may admit it.
+
+    The first direction is load-bearing. If the ordinary invocation stops
+    refusing, the new path has disabled the self-check instead of making a
+    reviewed change to this file landable.
+    """
+    with tempfile.TemporaryDirectory(prefix="gh-merge-verified-self-change-") as tmp:
+        root = Path(tmp)
+        target_origin, target_work = build_fixture(root, "absent")
+        candidate = build_tool_fixture(root)
+
+        head = git_output(target_origin, "rev-parse", "refs/heads/feature")
+        base = git_output(target_origin, "merge-base", "main", "feature")
+        tree = git_output(target_origin, "rev-parse", f"{head}^{{tree}}")
+        landed_commit = git_output(
+            target_origin,
+            "commit-tree",
+            tree,
+            "-p",
+            base,
+            "-m",
+            "squashed landing",
+        )
+        bindir, log = merge_stub_dir(root, target_origin, landed_commit)
+        env = {
+            **os.environ,
+            "PATH": f"{bindir}:{os.environ.get('PATH', '')}",
+            "GH_MERGE_VERIFIED_REMOTE": str(target_origin),
+        }
+
+        code, out = run(
+            [
+                sys.executable,
+                str(candidate),
+                "1",
+                "--repo",
+                "fixture/repo",
+                "--expect-head",
+                head,
+            ],
+            cwd=target_work,
+            env=env,
+        )
+        check(
+            "an unreviewed modified copy is still refused",
+            code == 7
+            and "REFUSING TO MERGE" in out
+            and "this copy is" in out
+            and "dev-hermit main has" in out,
+            f"got exit {code}; the refusal may not be the measured hash mismatch\n{out}",
+        )
+        check(
+            "the refusal names the current-main remedy",
+            "--run-current-main-copy" in out
+            and "--verify-only" in out
+            and "not a route for landing" in out,
+            f"the refusal did not distinguish admission from post-merge verification\n{out}",
+        )
+        check(
+            "the refused modified copy made no GitHub call",
+            log.read_text() == "",
+            f"gh was called before refusal:\n{log.read_text()}",
+        )
+
+        code, out = run(
+            [
+                sys.executable,
+                str(candidate),
+                "1",
+                "--repo",
+                "fixture/repo",
+                "--run-current-main-copy",
+                "--verify-only",
+            ],
+            cwd=target_work,
+            env=env,
+        )
+        check(
+            "post-merge verification is not presented as an admission route",
+            code == 1
+            and "choose either" in out
+            and "performs no admission" in out,
+            f"got exit {code}\n{out}",
+        )
+
+        code, out = run(
+            [
+                sys.executable,
+                str(candidate),
+                "1",
+                "--repo",
+                "fixture/repo",
+                "--run-current-main-copy",
+                "--expect-head",
+                head,
+            ],
+            cwd=target_work,
+            env=env,
+        )
+        check(
+            "the explicit path runs the current-main verifier through admission",
+            code == 0
+            and "byte-identical verifier from dev-hermit main" in out
+            and "VERIFIED" in out,
+            f"got exit {code}\n{out}",
+        )
+        calls = log.read_text()
+        call_lines = calls.splitlines()
+        check(
+            "the current-main copy performed admission before merging",
+            len(call_lines) == 3
+            and all("gh pr view" in line for line in call_lines[:2])
+            and "gh pr merge" in call_lines[2],
+            f"expected two admission reads and one merge call; got:\n{calls}",
+        )
+        leftovers = list(candidate.parent.glob(".gh-merge-verified-current-main-*"))
+        check(
+            "the fetched script is removed after execution",
+            leftovers == [],
+            f"temporary copies remain: {leftovers}",
+        )
+        scratch = git_output(
+            candidate.parents[2],
+            "for-each-ref",
+            "--format=%(refname)",
+            "refs/gh-merge-verified",
+        )
+        check(
+            "the tool repository retains no per-process scratch refs",
+            scratch == "",
+            f"leaked refs:\n{scratch}",
+        )
+        target_scratch = git_output(
+            target_work,
+            "for-each-ref",
+            "--format=%(refname)",
+            "refs/gh-merge-verified",
+        )
+        check(
+            "the target repository retains no per-process scratch refs",
+            target_scratch == "",
+            f"leaked refs:\n{target_scratch}",
         )
 
 
@@ -480,16 +699,33 @@ def argv_cases() -> None:
         ("owned flag after the gh flags",
          ["7", "--repo", "r/h", "--squash", "--expect-head", "ABC"], "ABC", ["--squash"]),
     ]:
-        _repo, _vo, got_head, _rc, got_extra = tool.parse_options(argv)
+        _repo, _vo, _cm, got_head, _rc, got_extra = tool.parse_options(argv)
         check(f"position does not matter: {label}",
               got_head == want_head and got_extra == want_extra,
               f"expect_head={got_head!r} extra={got_extra!r}; wanted {want_head!r} / {want_extra!r}")
 
-    _r, _v, head, _rc, extra = tool.parse_options(
+    _r, _v, _cm, head, _rc, extra = tool.parse_options(
         ["7", "--repo", "r/h", "--expct-head", "ABC", "--", "--squash"])
     check("a misspelled flag before `--` is FORWARDED, never silently dropped",
           "--expct-head" in extra and "ABC" in extra and head is None,
           f"the typo vanished instead of reaching gh: extra={extra!r}")
+
+    _r, _v, current_main, _head, _rc, extra = tool.parse_options(
+        ["7", "--squash", "--run-current-main-copy"]
+    )
+    check(
+        "--run-current-main-copy is owned before the separator",
+        current_main and "--run-current-main-copy" not in extra,
+        f"current_main={current_main!r} extra={extra!r}",
+    )
+    _r, _v, current_main, _head, _rc, extra = tool.parse_options(
+        ["7", "--", "--run-current-main-copy"]
+    )
+    check(
+        "--run-current-main-copy after the separator remains a gh argument",
+        not current_main and extra == ["--run-current-main-copy"],
+        f"current_main={current_main!r} extra={extra!r}",
+    )
 
 
 def admission_unresolvable_cases() -> None:
@@ -561,6 +797,7 @@ def main() -> int:
     case("arrived", 0, "VERIFIED", "a squash landing that did arrive")
 
     unit_cases()
+    self_change_cases()
     race_cases()
     admission_unresolvable_cases()
     receipt_cases()
@@ -575,7 +812,8 @@ def main() -> int:
         )
         return 1
     print("gh-merge-verified-test: OK — refuses a merge that did not happen, "
-          "distinguishes undecidable from absent, accepts a squash landing, and never calls gh")
+          "distinguishes undecidable from absent, accepts a squash landing, and keeps "
+          "verify-only free of gh calls")
     return 0
 
 
