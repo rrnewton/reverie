@@ -23,6 +23,7 @@ use reverie::BackendStatsSource;
 use reverie::CounterSnapshot;
 use reverie::GlobalTool;
 use reverie::InstructionPatchShape;
+pub use reverie::LiteinstDispatchPath;
 use reverie::PatchShapeCollector;
 use reverie::PatchShapeStats;
 use reverie::Tid;
@@ -41,25 +42,6 @@ pub enum LiteinstPatchDecision {
     StraddlerFallback,
     /// The original syscall site was retained for another unpatchable-site reason.
     OtherFallback,
-}
-
-/// A dispatch or installation path taken by a LiteInst runtime.
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-pub enum LiteinstDispatchPath {
-    /// A ptrace `Event::Seccomp` at a previously unseen site.
-    FirstSiteSeccomp,
-    /// A successful stopped-tracee patch installation performed through ptrace.
-    PtraceInstallation,
-    /// An actual in-guest `SIGSYS` entered the patch dispatcher.
-    InGuestSigsys,
-    /// An actual in-guest `SIGSYS` was forwarded while a Tool callback was active.
-    InGuestNestedSigsys,
-    /// A cache-line-straddling site that retained the ptrace fallback.
-    CachelineStraddlerFallback,
-    /// An unpatchable or otherwise rejected site that retained the ptrace fallback.
-    UnpatchableOrOtherFallback,
-    /// A patched-site callback that returned to the ptrace-host Tool through SIGTRAP.
-    DirectHook,
 }
 
 /// Stable LiteInst statistics captured after one backend run.
@@ -96,11 +78,11 @@ impl LiteinstBackendStatsSnapshot {
     }
 
     fn decision_count(&self, decision: LiteinstPatchDecision) -> u64 {
-        count(&self.patch_decisions, decision)
+        self.patch_decisions.count(&decision)
     }
 
     fn path_count(&self, path: LiteinstDispatchPath) -> u64 {
-        count(&self.dispatch_paths, path)
+        self.dispatch_paths.count(&path)
     }
 }
 
@@ -108,7 +90,7 @@ impl fmt::Display for LiteinstBackendStatsSnapshot {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             formatter,
-            "LiteInst instrumentation stats: process_reports={} distinct_rips_patched={} patch_candidates={} decisions[direct_pun={},relocated={},straddler_fallback={},other_fallback={}] paths[first_site_seccomp={},ptrace_installation={},in_guest_sigsys={},in_guest_nested_sigsys={},cacheline_straddler={},unpatchable_or_other={},direct_hook={}] classified_candidates={} cacheline_straddlers={} non_straddling={} instruction_lengths[",
+            "LiteInst instrumentation stats: process_reports={} distinct_rips_patched={} patch_candidates={} decisions[direct_pun={},relocated={},straddler_fallback={},other_fallback={}] paths[",
             self.process_reports,
             self.patch_shapes.patched_rips(),
             self.patch_shapes.candidate_rips(),
@@ -116,13 +98,16 @@ impl fmt::Display for LiteinstBackendStatsSnapshot {
             self.decision_count(LiteinstPatchDecision::Relocated),
             self.decision_count(LiteinstPatchDecision::StraddlerFallback),
             self.decision_count(LiteinstPatchDecision::OtherFallback),
-            self.path_count(LiteinstDispatchPath::FirstSiteSeccomp),
-            self.path_count(LiteinstDispatchPath::PtraceInstallation),
-            self.path_count(LiteinstDispatchPath::InGuestSigsys),
-            self.path_count(LiteinstDispatchPath::InGuestNestedSigsys),
-            self.path_count(LiteinstDispatchPath::CachelineStraddlerFallback),
-            self.path_count(LiteinstDispatchPath::UnpatchableOrOtherFallback),
-            self.path_count(LiteinstDispatchPath::DirectHook),
+        )?;
+        for (index, path) in LiteinstDispatchPath::ALL.iter().enumerate() {
+            if index != 0 {
+                formatter.write_str(",")?;
+            }
+            write!(formatter, "{path}={}", self.path_count(*path))?;
+        }
+        write!(
+            formatter,
+            "] classified_candidates={} cacheline_straddlers={} non_straddling={} instruction_lengths[",
             self.patch_shapes.classified_candidates(),
             self.patch_shapes.cacheline_straddlers(),
             self.patch_shapes.non_straddling(),
@@ -149,7 +134,7 @@ impl LiteinstBackendStatsSource {
         stats: reverie_ptrace::LiteinstInstrumentationStats,
     ) -> Self {
         let decisions = stats.decision_counts();
-        let paths = stats.dispatch_path_counts();
+        let dispatch_paths = stats.ptrace_host_dispatch_paths();
         Self {
             snapshot: LiteinstBackendStatsSnapshot {
                 process_reports: 0,
@@ -160,13 +145,7 @@ impl LiteinstBackendStatsSource {
                     (LiteinstPatchDecision::StraddlerFallback, decisions[2]),
                     (LiteinstPatchDecision::OtherFallback, decisions[3]),
                 ]),
-                dispatch_paths: CounterSnapshot::new([
-                    (LiteinstDispatchPath::FirstSiteSeccomp, paths[0]),
-                    (LiteinstDispatchPath::PtraceInstallation, paths[1]),
-                    (LiteinstDispatchPath::CachelineStraddlerFallback, paths[2]),
-                    (LiteinstDispatchPath::UnpatchableOrOtherFallback, paths[3]),
-                    (LiteinstDispatchPath::DirectHook, paths[4]),
-                ]),
+                dispatch_paths,
             },
         }
     }
@@ -200,23 +179,9 @@ impl LiteinstBackendStatsSource {
         ]
     }
 
-    /// Returns dispatch-path counts in [`LiteinstDispatchPath`] order.
-    pub fn dispatch_path_counts(&self) -> [u64; 7] {
-        [
-            self.snapshot
-                .path_count(LiteinstDispatchPath::FirstSiteSeccomp),
-            self.snapshot
-                .path_count(LiteinstDispatchPath::PtraceInstallation),
-            self.snapshot
-                .path_count(LiteinstDispatchPath::InGuestSigsys),
-            self.snapshot
-                .path_count(LiteinstDispatchPath::InGuestNestedSigsys),
-            self.snapshot
-                .path_count(LiteinstDispatchPath::CachelineStraddlerFallback),
-            self.snapshot
-                .path_count(LiteinstDispatchPath::UnpatchableOrOtherFallback),
-            self.snapshot.path_count(LiteinstDispatchPath::DirectHook),
-        ]
+    /// Returns dispatch-path counts keyed by the shared exhaustive value.
+    pub const fn dispatch_path_counts(&self) -> &CounterSnapshot<LiteinstDispatchPath> {
+        self.snapshot.dispatch_paths()
     }
 
     /// Returns candidates with a decoded instruction shape.
@@ -258,17 +223,59 @@ impl LiteinstBackendStatsSource {
     }
 }
 
-pub(crate) const IN_GUEST_PATH_COUNT: usize = 5;
-pub(crate) const IN_GUEST_SIGSYS: usize = 0;
-pub(crate) const IN_GUEST_NESTED_SIGSYS: usize = 1;
-pub(crate) const IN_GUEST_STRADDLER_FALLBACK: usize = 2;
-pub(crate) const IN_GUEST_OTHER_FALLBACK: usize = 3;
-pub(crate) const IN_GUEST_DIRECT_HOOK: usize = 4;
-const IN_GUEST_ATOMIC_PATH_COUNT: usize = 4;
-
 struct GuestStatsCollector {
     coordinator: PathBuf,
-    paths: [AtomicU64; IN_GUEST_ATOMIC_PATH_COUNT],
+    in_guest_sigsys: AtomicU64,
+    in_guest_nested_sigsys: AtomicU64,
+    cacheline_straddler_fallback: AtomicU64,
+    unpatchable_or_other_fallback: AtomicU64,
+}
+
+impl GuestStatsCollector {
+    fn counter(&self, path: LiteinstDispatchPath) -> &AtomicU64 {
+        match path {
+            LiteinstDispatchPath::InGuestSigsys => &self.in_guest_sigsys,
+            LiteinstDispatchPath::InGuestNestedSigsys => &self.in_guest_nested_sigsys,
+            LiteinstDispatchPath::CachelineStraddlerFallback => &self.cacheline_straddler_fallback,
+            LiteinstDispatchPath::UnpatchableOrOtherFallback => &self.unpatchable_or_other_fallback,
+            LiteinstDispatchPath::FirstSiteSeccomp
+            | LiteinstDispatchPath::PtraceInstallation
+            | LiteinstDispatchPath::DirectHook => {
+                panic!("path is not counted by the in-guest dispatcher")
+            }
+        }
+    }
+
+    fn snapshot(&self, direct_hooks: u64) -> CounterSnapshot<LiteinstDispatchPath> {
+        CounterSnapshot::new([
+            (
+                LiteinstDispatchPath::InGuestSigsys,
+                self.in_guest_sigsys.load(Ordering::Relaxed),
+            ),
+            (
+                LiteinstDispatchPath::InGuestNestedSigsys,
+                self.in_guest_nested_sigsys.load(Ordering::Relaxed),
+            ),
+            (
+                LiteinstDispatchPath::CachelineStraddlerFallback,
+                self.cacheline_straddler_fallback.load(Ordering::Relaxed),
+            ),
+            (
+                LiteinstDispatchPath::UnpatchableOrOtherFallback,
+                self.unpatchable_or_other_fallback.load(Ordering::Relaxed),
+            ),
+            (LiteinstDispatchPath::DirectHook, direct_hooks),
+        ])
+    }
+
+    fn reset(&self) {
+        self.in_guest_sigsys.store(0, Ordering::Relaxed);
+        self.in_guest_nested_sigsys.store(0, Ordering::Relaxed);
+        self.cacheline_straddler_fallback
+            .store(0, Ordering::Relaxed);
+        self.unpatchable_or_other_fallback
+            .store(0, Ordering::Relaxed);
+    }
 }
 
 static GUEST_STATS: OnceLock<GuestStatsCollector> = OnceLock::new();
@@ -276,7 +283,7 @@ static GUEST_STATS: OnceLock<GuestStatsCollector> = OnceLock::new();
 #[derive(Clone, Copy)]
 pub(crate) struct GuestStatsHooks {
     collector: Option<&'static GuestStatsCollector>,
-    record_path: fn(Option<&'static GuestStatsCollector>, usize),
+    record_path: fn(Option<&'static GuestStatsCollector>, LiteinstDispatchPath),
     reset_after_fork: fn(Option<&'static GuestStatsCollector>),
 }
 
@@ -299,7 +306,7 @@ impl GuestStatsHooks {
         self.collector.is_some()
     }
 
-    pub(crate) fn record_path(self, path: usize) {
+    pub(crate) fn record_path(self, path: LiteinstDispatchPath) {
         (self.record_path)(self.collector, path);
     }
 
@@ -316,11 +323,7 @@ impl GuestStatsHooks {
         let Some(stats) = self.collector else {
             return Ok(());
         };
-        let mut paths = [0_u64; IN_GUEST_PATH_COUNT];
-        for (index, count) in stats.paths.iter().enumerate() {
-            paths[index] = count.load(Ordering::Relaxed);
-        }
-        paths[IN_GUEST_DIRECT_HOOK] = direct_hooks;
+        let paths = stats.snapshot(direct_hooks);
         let client = BlockingRpcClient::<LiteinstStatsGlobal>::connect(&stats.coordinator, tid)
             .map_err(|error| io::Error::other(error.to_string()))?;
         client
@@ -329,28 +332,32 @@ impl GuestStatsHooks {
     }
 }
 
-fn disabled_record_path(_collector: Option<&'static GuestStatsCollector>, _path: usize) {}
+fn disabled_record_path(
+    _collector: Option<&'static GuestStatsCollector>,
+    _path: LiteinstDispatchPath,
+) {
+}
 
 fn disabled_reset_after_fork(_collector: Option<&'static GuestStatsCollector>) {}
 
-fn enabled_record_path(collector: Option<&'static GuestStatsCollector>, path: usize) {
+fn enabled_record_path(
+    collector: Option<&'static GuestStatsCollector>,
+    path: LiteinstDispatchPath,
+) {
     #[cfg(test)]
     ENABLED_STATS_PROBES.fetch_add(1, Ordering::Relaxed);
     collector
         .expect("enabled stats dispatch requires a collector")
-        .paths[path]
+        .counter(path)
         .fetch_add(1, Ordering::Relaxed);
 }
 
 fn enabled_reset_after_fork(collector: Option<&'static GuestStatsCollector>) {
     #[cfg(test)]
     ENABLED_STATS_PROBES.fetch_add(1, Ordering::Relaxed);
-    for count in &collector
+    collector
         .expect("enabled stats dispatch requires a collector")
-        .paths
-    {
-        count.store(0, Ordering::Relaxed);
-    }
+        .reset();
 }
 
 #[cfg(test)]
@@ -360,7 +367,10 @@ pub(crate) fn initialize_guest_stats(coordinator: &Path) -> io::Result<GuestStat
     GUEST_STATS
         .set(GuestStatsCollector {
             coordinator: coordinator.to_path_buf(),
-            paths: std::array::from_fn(|_| AtomicU64::new(0)),
+            in_guest_sigsys: AtomicU64::new(0),
+            in_guest_nested_sigsys: AtomicU64::new(0),
+            cacheline_straddler_fallback: AtomicU64::new(0),
+            unpatchable_or_other_fallback: AtomicU64::new(0),
         })
         .map_err(|_| {
             io::Error::new(
@@ -387,7 +397,7 @@ pub(crate) struct LiteinstProcessSiteStats {
 /// One process-local, post-Tool-exit statistics message.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub(crate) struct LiteinstProcessStats {
-    pub(crate) paths: [u64; IN_GUEST_PATH_COUNT],
+    pub(crate) paths: CounterSnapshot<LiteinstDispatchPath>,
     pub(crate) sites: Vec<LiteinstProcessSiteStats>,
 }
 
@@ -427,15 +437,11 @@ impl LiteinstStatsGlobal {
         let mut reported_processes = BTreeSet::new();
         let mut seen_sites = BTreeSet::new();
         let mut decisions = [0_u64; 4];
-        let mut paths = [0_u64; 7];
+        let mut paths = Vec::new();
 
         for (process_identity, process) in processes {
             reported_processes.insert(process_identity);
-            paths[2] += process.paths[IN_GUEST_SIGSYS];
-            paths[3] += process.paths[IN_GUEST_NESTED_SIGSYS];
-            paths[4] += process.paths[IN_GUEST_STRADDLER_FALLBACK];
-            paths[5] += process.paths[IN_GUEST_OTHER_FALLBACK];
-            paths[6] += process.paths[IN_GUEST_DIRECT_HOOK];
+            paths.extend(process.paths.counts().iter().copied());
             for site in process.sites {
                 if !seen_sites.insert((process_identity, site.rip)) {
                     continue;
@@ -467,15 +473,7 @@ impl LiteinstStatsGlobal {
                     (LiteinstPatchDecision::StraddlerFallback, decisions[2]),
                     (LiteinstPatchDecision::OtherFallback, decisions[3]),
                 ]),
-                dispatch_paths: CounterSnapshot::new([
-                    (LiteinstDispatchPath::FirstSiteSeccomp, paths[0]),
-                    (LiteinstDispatchPath::PtraceInstallation, paths[1]),
-                    (LiteinstDispatchPath::InGuestSigsys, paths[2]),
-                    (LiteinstDispatchPath::InGuestNestedSigsys, paths[3]),
-                    (LiteinstDispatchPath::CachelineStraddlerFallback, paths[4]),
-                    (LiteinstDispatchPath::UnpatchableOrOtherFallback, paths[5]),
-                    (LiteinstDispatchPath::DirectHook, paths[6]),
-                ]),
+                dispatch_paths: CounterSnapshot::new(paths),
             },
         }
     }
@@ -493,14 +491,6 @@ impl BackendStatsSource for LiteinstBackendStatsSource {
     fn backend_stats(&self) -> Self::Snapshot {
         self.snapshot.clone()
     }
-}
-
-fn count<K: Copy + Eq + Ord>(snapshot: &CounterSnapshot<K>, key: K) -> u64 {
-    snapshot
-        .counts()
-        .iter()
-        .find_map(|(candidate, count)| (*candidate == key).then_some(*count))
-        .unwrap_or(0)
 }
 
 fn write_buckets(formatter: &mut fmt::Formatter<'_>, buckets: &[u64]) -> fmt::Result {
@@ -559,7 +549,13 @@ mod tests {
                 .receive_rpc(
                     Tid::from_raw(7),
                     LiteinstProcessStats {
-                        paths: [1, 2, 3, 4, direct_hooks],
+                        paths: CounterSnapshot::new([
+                            (LiteinstDispatchPath::InGuestSigsys, 1),
+                            (LiteinstDispatchPath::InGuestNestedSigsys, 2),
+                            (LiteinstDispatchPath::CachelineStraddlerFallback, 3),
+                            (LiteinstDispatchPath::UnpatchableOrOtherFallback, 4),
+                            (LiteinstDispatchPath::DirectHook, direct_hooks),
+                        ]),
                         sites: vec![LiteinstProcessSiteStats {
                             rip: 0x4000,
                             patched: true,
@@ -576,7 +572,20 @@ mod tests {
         assert_eq!(source.snapshot().process_reports(), 2);
         assert_eq!(source.distinct_rips(), 2);
         assert_eq!(source.decision_counts(), [0, 2, 0, 0]);
-        assert_eq!(source.dispatch_path_counts(), [0, 0, 2, 4, 6, 8, 18]);
+        let paths = source.dispatch_path_counts();
+        assert_eq!(paths.count(&LiteinstDispatchPath::FirstSiteSeccomp), 0);
+        assert_eq!(paths.count(&LiteinstDispatchPath::PtraceInstallation), 0);
+        assert_eq!(paths.count(&LiteinstDispatchPath::InGuestSigsys), 2);
+        assert_eq!(paths.count(&LiteinstDispatchPath::InGuestNestedSigsys), 4);
+        assert_eq!(
+            paths.count(&LiteinstDispatchPath::CachelineStraddlerFallback),
+            6
+        );
+        assert_eq!(
+            paths.count(&LiteinstDispatchPath::UnpatchableOrOtherFallback),
+            8
+        );
+        assert_eq!(paths.count(&LiteinstDispatchPath::DirectHook), 18);
         let rendered = source.to_string();
         assert!(rendered.contains("first_site_seccomp=0"), "{rendered}");
         assert!(rendered.contains("in_guest_sigsys=2"), "{rendered}");
@@ -586,12 +595,42 @@ mod tests {
     }
 
     #[test]
+    fn dispatch_path_wire_identity_is_name_not_variant_position() {
+        for path in LiteinstDispatchPath::ALL {
+            let encoded_path =
+                bincode::serde::encode_to_vec(path, bincode::config::legacy()).unwrap();
+            let encoded_name =
+                bincode::serde::encode_to_vec(path.as_str(), bincode::config::legacy()).unwrap();
+            assert_eq!(encoded_path, encoded_name, "{path}");
+        }
+    }
+
+    #[test]
+    fn process_report_round_trips_named_dispatch_paths() {
+        let report = LiteinstProcessStats {
+            paths: CounterSnapshot::new([
+                (LiteinstDispatchPath::InGuestSigsys, 2),
+                (LiteinstDispatchPath::DirectHook, 8),
+            ]),
+            sites: Vec::new(),
+        };
+
+        let bytes = bincode::serde::encode_to_vec(&report, bincode::config::legacy()).unwrap();
+        let (decoded, consumed): (LiteinstProcessStats, usize) =
+            bincode::serde::decode_from_slice(&bytes, bincode::config::legacy()).unwrap();
+        assert_eq!(consumed, bytes.len());
+        assert_eq!(decoded, report);
+        assert_eq!(decoded.paths.count(&LiteinstDispatchPath::InGuestSigsys), 2);
+        assert_eq!(decoded.paths.count(&LiteinstDispatchPath::DirectHook), 8);
+    }
+
+    #[test]
     fn disabled_hooks_do_not_enter_enabled_stats_code() {
         let probes = ENABLED_STATS_PROBES.load(Ordering::Relaxed);
         let hooks = GuestStatsHooks::DISABLED;
 
-        hooks.record_path(IN_GUEST_SIGSYS);
-        hooks.record_path(IN_GUEST_NESTED_SIGSYS);
+        hooks.record_path(LiteinstDispatchPath::InGuestSigsys);
+        hooks.record_path(LiteinstDispatchPath::InGuestNestedSigsys);
         hooks.reset_after_fork();
 
         assert_eq!(ENABLED_STATS_PROBES.load(Ordering::Relaxed), probes);

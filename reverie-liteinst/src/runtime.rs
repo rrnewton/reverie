@@ -2700,16 +2700,17 @@ fn record_enabled_fallback_stats(stats: crate::stats::GuestStatsHooks, address: 
     let straddler =
         find_site(address).is_some_and(|site| site.straddle_prefix.load(Ordering::Relaxed) != 0);
     stats.record_path(if straddler {
-        crate::stats::IN_GUEST_STRADDLER_FALLBACK
+        crate::LiteinstDispatchPath::CachelineStraddlerFallback
     } else {
-        crate::stats::IN_GUEST_OTHER_FALLBACK
+        crate::LiteinstDispatchPath::UnpatchableOrOtherFallback
     });
 }
 
 impl SyscallDispatcher for LiteinstDispatcher {
     fn dispatch(&self, event: &mut PreloadSyscallEvent) {
         if tool_callback_active() {
-            self.stats.record_path(crate::stats::IN_GUEST_NESTED_SIGSYS);
+            self.stats
+                .record_path(crate::LiteinstDispatchPath::InGuestNestedSigsys);
             let mut nested = SyscallEvent {
                 number: event.number(),
                 args: event.args(),
@@ -2721,7 +2722,8 @@ impl SyscallDispatcher for LiteinstDispatcher {
             event.set_result(nested.result);
             return;
         }
-        self.stats.record_path(crate::stats::IN_GUEST_SIGSYS);
+        self.stats
+            .record_path(crate::LiteinstDispatchPath::InGuestSigsys);
         let mode = TOOL_MODE.load(Ordering::Relaxed);
         let args = event.args();
         let compatibility_trap_fallback =
