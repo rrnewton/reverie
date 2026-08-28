@@ -629,37 +629,7 @@ if command -v with-proxy >/dev/null 2>&1; then
     gh_cmd=(with-proxy gh)
 fi
 
-# Resolve the single shared qualifying-receipt predicate from this immutable
-# parent commit. An override is used only by the cross-consumer mutation test.
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
-predicate_file=${QUALIFYING_RECEIPT_PREDICATE:-}
-if [[ -z $predicate_file ]]; then
-    predicate_file="$script_dir/../validate/qualifying-receipt.json"
-fi
-if [[ ! -r $predicate_file ]]; then
-    printf 'qualifying-receipt predicate unreadable: %s\n' "$predicate_file" >&2
-    exit 2
-fi
-p_counts_schema=$(jq -r '.counts_schema' "$predicate_file" 2>/dev/null)
-p_exec_min=$(jq -r '.require.executed_tests_min' "$predicate_file" 2>/dev/null)
-p_cov_schema=$(jq -r '.coverage.applies_at_schema_min' "$predicate_file" 2>/dev/null)
-p_cov_pernode=$(jq -r '.coverage.per_node' "$predicate_file" 2>/dev/null)
-p_gate_filtered=$(jq -r '(.gate_filtered_tests // false)' "$predicate_file" 2>/dev/null)
-p_failures_max=$(jq -r '.require.failures_max' "$predicate_file" 2>/dev/null)
-p_profile=$(jq -r '.require.profile' "$predicate_file" 2>/dev/null)
-p_selection=$(jq -r '.require.selection_mode' "$predicate_file" 2>/dev/null)
-p_result=$(jq -r '.require.result' "$predicate_file" 2>/dev/null)
-p_commit_anchored=$(jq -r '.require.commit_anchored' "$predicate_file" 2>/dev/null)
-p_tree_dirty=$(jq -r '.require.tree_dirty' "$predicate_file" 2>/dev/null)
-for _v in "$p_counts_schema" "$p_exec_min" "$p_cov_schema" "$p_cov_pernode" \
-          "$p_gate_filtered" "$p_failures_max" "$p_profile" "$p_selection" \
-          "$p_result" "$p_commit_anchored" "$p_tree_dirty"; do
-    if [[ -z $_v || $_v == null ]]; then
-        printf 'malformed qualifying-receipt predicate: %s\n' "$predicate_file" >&2
-        exit 2
-    fi
-done
-
 # Resolve the producer authority through the same helper used by the publisher.
 # The registry comes from this immutable parent commit, never the PR under test.
 load_producer_definitions || exit $?
@@ -682,6 +652,20 @@ if ((target_producer_status != 0)); then
     exit 2
 fi
 
+expected_producer_file=$(mktemp)
+cleanup_expected_producer() {
+    local status=$?
+    rm -f -- "$expected_producer_file"
+    exit "$status"
+}
+trap cleanup_expected_producer EXIT
+if ! jq -c '. + {resolved_from: "immutable-receipt-verifier"}' \
+    <<<"$target_producer_record" >"$expected_producer_file"; then
+    printf 'cannot encode target producer definition for typed receipt verification\n' >&2
+    exit 2
+fi
+
+last_typed_receipt_error=
 for candidate in "${candidates[@]}"; do
     IFS=$'\t' read -r receipt_commit receipt_path receipt_digest role_class <<<"$candidate"
     expected_prefix="validation-receipts/${repo}/${sha}/"
@@ -719,200 +703,47 @@ for candidate in "${candidates[@]}"; do
         continue
     fi
 
-    # The artifact digest binds the wrapper bytes, not the claimed selected
-    # ledger row. Re-run the shared semantic predicate on that embedded row and
-    # recompute its named Rust canonicalization before trusting the identity.
-    # A writer cannot repair a forged selected digest merely by recomputing the
-    # outer artifact digest/path. One Rust invocation owns BOTH decisions; a
-    # separate Python qualifier here made the authorities drift and doubled the
-    # process cost for every candidate.
-    row_file=$(mktemp)
-    if ! jq -c '.ledger_record' "$receipt_file" >"$row_file" 2>/dev/null; then
-        rm -f -- "$row_file" "$receipt_file"
-        continue
+    receipt_digest_args=(
+        receipt-digest
+        --sha "$sha"
+        --published-receipt
+        --repository "$repo"
+        --expected-producer-record "$expected_producer_file"
+        --json
+        "${boundary_digest_args[@]}"
+    )
+    if [[ $role_class == legacy-service ]]; then
+        receipt_digest_args+=(--require-qualifying --allow-legacy-missing-identity)
+    else
+        receipt_digest_args+=(--require-canonical-qualifying)
     fi
-    computed_digest=$("$script_dir/../ci-hub" receipt-digest --sha "$sha" \
-        --require-qualifying "${boundary_digest_args[@]}" \
-        <"$row_file" 2>/dev/null) || computed_digest=
-    if [[ ! $computed_digest =~ ^[0-9a-f]{64}$ ]]; then
-        rm -f -- "$row_file" "$receipt_file"
-        continue
+    typed_receipt_error=$(mktemp)
+    typed_receipt=$("$script_dir/../ci-hub" "${receipt_digest_args[@]}" \
+        <"$receipt_file" 2>"$typed_receipt_error") || typed_receipt=
+    if [[ -z $typed_receipt ]]; then
+        last_typed_receipt_error=$(cat "$typed_receipt_error")
     fi
-    identity_present=$(jq -r 'has("selected_receipt_identity")' "$receipt_file" 2>/dev/null)
-    if [[ $identity_present == true ]]; then
-        identity_algorithm=$(jq -r '.selected_receipt_identity.digest_algorithm // ""' "$receipt_file")
-        identity_canonicalization=$(jq -r '.selected_receipt_identity.canonicalization // ""' "$receipt_file")
-        identity_digest=$(jq -r '.selected_receipt_identity.digest // ""' "$receipt_file")
-        if [[ $identity_algorithm != sha256 ]] || \
-           [[ $identity_canonicalization != 'serde_json::to_vec(HistoryRow)-v1' ]] || \
-           [[ ! $identity_digest =~ ^[0-9a-f]{64}$ ]] || \
-           [[ $computed_digest != "$identity_digest" ]]; then
-            rm -f -- "$row_file" "$receipt_file"
-            continue
-        fi
-    elif [[ $role_class != legacy-service ]]; then
-        rm -f -- "$row_file" "$receipt_file"
-        continue
-    fi
-    rm -f -- "$row_file"
-
-    receipt_definition=$(jq -c '.producer.definition // null' "$receipt_file" 2>/dev/null) || \
-        receipt_definition=null
-    producer_record=$(jq -cn \
-        --argjson target "$target_producer_record" \
-        --argjson definition "$receipt_definition" \
-        '$target | select(.definition == $definition)' 2>/dev/null) || producer_record=
-    if [[ -z $producer_record ]]; then
-        rm -f -- "$receipt_file"
-        continue
-    fi
-
-    if jq -e \
-        --arg sha "$sha" --arg repo "$repo" --arg role_class "$role_class" \
-        --arg req_profile "$p_profile" \
-        --arg req_selection "$p_selection" \
-        --arg req_result "$p_result" \
-        --argjson req_commit_anchored "$p_commit_anchored" \
-        --argjson req_tree_dirty "$p_tree_dirty" \
-        --argjson req_failures_max "$p_failures_max" \
-        --argjson exec_min "$p_exec_min" \
-        --argjson counts_schema "$p_counts_schema" \
-        --argjson cov_schema "$p_cov_schema" \
-        --argjson cov_pernode "$p_cov_pernode" \
-        --argjson gate_filtered "$p_gate_filtered" \
-        --argjson producer_record "$producer_record" '
-        def integer:
-          if type == "number" then . == floor else false end;
-        def nonempty_string:
-          if type == "string" then test("\\S") else false end;
-        def selected_identity_valid:
-          .digest_algorithm == "sha256"
-          and .canonicalization == "serde_json::to_vec(HistoryRow)-v1"
-          and (.digest | test("^[0-9a-f]{64}$"));
-        # An intentional omission may account for a planned node, but it never
-        # enters gates/checks and is never a PASS. Keep the vocabulary closed at
-        # this authority boundary; unknown future reasons fail closed.
-        def gate_accounting_valid:
-          . as $row
-          | ($row.intentional_skipped_nodes // []) as $intentional
-          | ($intentional | type == "array")
-          and if ($intentional | length) == 0 then
-            ($row.gates_run | integer and . >= $row.gates_expected)
-          else
-            all($intentional[];
-              (.name | nonempty_string)
-              and .reason == "empty-manifest-bucket"
-            )
-            and ([$intentional[].name] | length == (unique | length))
-            and ($row.dependency_skipped_nodes | type == "array" and length == 0)
-            and ($row.unaccounted_nodes | type == "array" and length == 0)
-            and ($row.skipped_nodes | integer and . == ($intentional | length))
-            and (($row.gates_run + ($intentional | length)) == $row.gates_expected)
-          end;
-        def current_structural_row($sha; $repo):
-          .ledger_record as $row
-          | $repo == "rrnewton/hermit"
-          and ($row.schema_version | integer and . >= 4)
-          and (
-            $row.repo == "hermit"
-            or $row.repo == "rrnewton/hermit"
-            or ($row.schema_version == 4 and $row.repo == null)
-          )
-          and $row.commit == $sha
-          and ($row.tree | type == "string" and test("^[0-9A-Fa-f]{40}$"))
-          and $row.raw_result == "pass"
-          and $row.exit_code == 0
-          and ($row.checks | integer and . > 0)
-          and ($row.gates_expected | integer and . > 0)
-          and ($row | gate_accounting_valid)
-          and $row.checks == $row.gates_run
-          and ($row.gates | type == "array" and length == $row.gates_run)
-          and all($row.gates[];
-            (.name | nonempty_string)
-            and .result == "pass"
-            and .exit_code == 0
-          )
-          and ($row.executed_tests | integer)
-          and ($row.filtered_tests | integer and . >= 0)
-          and ($row.started_at | nonempty_string)
-          and ($row.finished_at | nonempty_string)
-          and ($row.host | nonempty_string)
-          and ($row.slot | nonempty_string)
-          and ($row.log_file | nonempty_string);
-        .schema_version == 1
-        and .repository == $repo
-        and .commit == $sha
-        # PRODUCER BINDING: the receipt must name the check definition that
-        # produced it, and that definition must be one registered exact whole
-        # map: the primary, or the one unexpired transition candidate. Never
-        # union fields across maps. A receipt cannot drop/add a file to escape
-        # the comparison, and an absent block is never a free pass.
-        and (.producer.definition == $producer_record.definition)
-        and (
-          if $producer_record.coverage_status == "complete" then
-            .producer.coverage_status == "complete"
-            and .producer.paths == $producer_record.paths
-          else
-            ((.producer.coverage_status // "legacy-selected-paths")
-             == "legacy-selected-paths")
-            and ((.producer.paths // $producer_record.paths)
-                 == $producer_record.paths)
-          end
-        )
-        and (.ledger_record.host | nonempty_string)
-        and (.run_id == ($sha + "@" + .ledger_record.started_at + "@" + .ledger_record.host))
-        and (.log_sha256 | test("^[0-9a-f]{64}$"))
-        and .ledger_record.commit == $sha
-        and .ledger_record.profile == $req_profile
-        and .ledger_record.selection_mode == $req_selection
-        and .ledger_record.commit_anchored == $req_commit_anchored
-        and .ledger_record.tree_dirty == $req_tree_dirty
-        and .ledger_record.result == $req_result
-        and ((.ledger_record.failures // 0) <= $req_failures_max)
-        and .ledger_record.log_file == .source_log_file
-        and (.durable_log_file | startswith("/"))
-        and (.ledger_record.executed_tests != 0)
-        and (
-          (.ledger_record.schema_version // 0) as $schema
-          | ($schema >= $counts_schema) as $count_capable
-          | ((.ledger_record.executed_tests | integer)
-             and (.ledger_record.filtered_tests | integer)) as $counts_present
-          | (.ledger_record.executed_tests | integer and . >= $exec_min) as $executed_ok
-          | (if $gate_filtered then (.ledger_record.filtered_tests == 0) else true end) as $filtered_ok
-          | $filtered_ok and (
-              if $count_capable then
-                $executed_ok and (
-                  if ($cov_pernode and ($schema >= $cov_schema)) then
-                    (.ledger_record.coverage.planned_test_nodes > 0
-                     and .ledger_record.coverage.zero_executed_nodes == []
-                     and .ledger_record.coverage.absent_nodes == [])
-                  else true end)
-              elif $counts_present then
-                $executed_ok
-              else false end)
-        )
-        and (
-          if $role_class == "legacy-service" and (has("selected_receipt_identity") | not)
-            then true
-            else (.selected_receipt_identity | selected_identity_valid)
-            end
-        )
-        and ($role_class == "legacy-service" or current_structural_row($sha; $repo))
-    ' "$receipt_file" >/dev/null; then
-        producer_status=$(jq -r '.coverage_status' <<<"$producer_record")
-        producer_paths=$(jq -r '.paths | join(",")' <<<"$producer_record")
+    rm -f -- "$typed_receipt_error"
+    if [[ -n $typed_receipt ]]; then
+        producer_status=$(jq -r '.producer_coverage_status // empty' <<<"$typed_receipt")
+        producer_paths=$(jq -r '.producer_paths | join(",")' <<<"$typed_receipt" 2>/dev/null)
         producer_valid_commits=$(jq -r '
-            if has("valid_commits") then (.valid_commits | join(","))
-            else "unbounded" end
-          ' <<<"$producer_record")
-        printf 'receipt_commit=%s receipt_path=%s receipt_sha256=%s producer_coverage_status=%s producer_paths=%s producer_valid_commits=%s\n' \
-            "$receipt_commit" "$receipt_path" "$receipt_digest" \
-            "$producer_status" "$producer_paths" "$producer_valid_commits"
-        rm -f -- "$receipt_file"
-        exit 0
+            if .producer_valid_commits == null then "unbounded"
+            else (.producer_valid_commits | join(",")) end
+          ' <<<"$typed_receipt" 2>/dev/null)
+        if [[ -n $producer_status && -n $producer_paths && -n $producer_valid_commits ]]; then
+            printf 'receipt_commit=%s receipt_path=%s receipt_sha256=%s producer_coverage_status=%s producer_paths=%s producer_valid_commits=%s\n' \
+                "$receipt_commit" "$receipt_path" "$receipt_digest" \
+                "$producer_status" "$producer_paths" "$producer_valid_commits"
+            rm -f -- "$receipt_file"
+            exit 0
+        fi
     fi
     rm -f -- "$receipt_file"
 done
 
+if [[ -n $last_typed_receipt_error ]]; then
+    printf 'typed published receipt refusal: %s\n' "$last_typed_receipt_error" >&2
+fi
 printf 'no immutable counted local-validation receipt for exact head %s\n' "$sha" >&2
 exit 1

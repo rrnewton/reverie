@@ -209,7 +209,7 @@ write_comments() {
 # normalized. So the anchor compares CANONICAL CONTENT (`jq -S -c`), which is
 # what "the mutation changed the receipt" actually means.
 mutation_anchor_failures=0
-mutation_anchors_total=32
+mutation_anchors_total=34
 assert_mutated() { # assert_mutated <base> <mutant> <label>
     local a b
     a=$(jq -S -c . "$1" 2>/dev/null) || a="<unparseable:$1>"
@@ -730,6 +730,22 @@ assert_mutated "$tmp/receipt.json" "$tmp/tampered-selected-digest.json" "IDENTIT
 verify_file "$tmp/tampered-selected-digest.json" fail \
     "tampered selected digest with recomputed outer artifact identity" \
     '[coordinator, gpt-5.6-sol]'
+
+# The receipt envelope is versioned independently of the embedded HistoryRow.
+# Missing schema fails by that field name in the shared Rust parser; a newer
+# schema is identified before the schema-1 body is interpreted.
+jq 'del(.schema_version)' "$tmp/receipt.json" >"$tmp/missing-receipt-schema.json"
+assert_mutated "$tmp/receipt.json" "$tmp/missing-receipt-schema.json" \
+    "RECEIPT missing schema_version"
+verify_file "$tmp/missing-receipt-schema.json" fail \
+    "published receipt without schema_version" '[coordinator, gpt-5.6-sol]'
+
+jq '.source_log_file = "/tmp/another-run.log"' \
+    "$tmp/receipt.json" >"$tmp/wrong-source-log.json"
+assert_mutated "$tmp/receipt.json" "$tmp/wrong-source-log.json" \
+    "RECEIPT source_log_file differs from ledger row"
+verify_file "$tmp/wrong-source-log.json" fail \
+    "published receipt with mismatched source log" '[coordinator, gpt-5.6-sol]'
 
 # Only the explicitly documented historical service-actor tag may consume an
 # older artifact that predates the canonical selected-row identity.

@@ -60,6 +60,8 @@ mod landing_lock;
 mod lease;
 #[path = "lib/measured.rs"]
 mod measured;
+#[path = "lib/published_receipt.rs"]
+mod published_receipt;
 #[path = "lib/qualifying_receipt.rs"]
 mod qualifying_receipt;
 #[path = "lib/records.rs"]
@@ -77,6 +79,10 @@ use clap::error::ErrorKind;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use history_queries::{
     CellEvidenceCache, FirstBadOutcome, HistoryQueryEngine, NewestGreenCache, NewestGreenOutcome,
+};
+use published_receipt::{
+    IdentityRequirement, ProducerDefinitionEvidence, ProducerDefinitionExpectation,
+    PublishedValidationReceipt,
 };
 use records::HistoryRow;
 use serde::{Deserialize, Serialize};
@@ -472,6 +478,21 @@ struct ReceiptDigestArgs {
     /// Emit the exact canonical HistoryRow bytes instead of their digest.
     #[arg(long, conflicts_with = "json")]
     canonical_row: bool,
+    /// Read a complete published validation receipt from stdin rather than a
+    /// bare HistoryRow. The embedded row is still the value canonicalized.
+    #[arg(long)]
+    published_receipt: bool,
+    /// Repository the published receipt must name.
+    #[arg(long, requires = "published_receipt")]
+    repository: Option<String>,
+    /// Accept the historical owner-service receipt shape that predates the
+    /// selected-receipt identity. Current receipts must carry it.
+    #[arg(long, requires = "published_receipt")]
+    allow_legacy_missing_identity: bool,
+    /// JSON file containing the exact producer definition expected for the
+    /// validated commit.
+    #[arg(long, requires = "published_receipt")]
+    expected_producer_record: Option<PathBuf>,
     /// Refuse unless the shared qualifying-receipt predicate accepts the row.
     /// This lets shell consumers bind semantic qualification and the Rust
     /// canonical digest in one authoritative process.
@@ -3463,7 +3484,7 @@ fn gh_open_prs(root: &Path, repo: &str) -> Result<Vec<u64>, CiHubError> {
 const LOCALLY_VALIDATED_LABEL: &str = "locally-validated";
 const VALIDATION_RECEIPT_REPO: &str = "rrnewton/dev-hermit";
 const VALIDATION_RECEIPT_BRANCH: &str = "validation-receipts";
-const RECEIPT_CANONICALIZATION: &str = "serde_json::to_vec(HistoryRow)-v1";
+const RECEIPT_CANONICALIZATION: &str = published_receipt::CANONICALIZATION;
 
 #[derive(Clone, Debug)]
 struct QualifyingReceipt {
@@ -3475,16 +3496,6 @@ struct QualifyingReceipt {
     coverage_basis: &'static str,
     canonical_sha256: String,
     producer_definition: Option<ProducerDefinitionEvidence>,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-struct ProducerDefinitionEvidence {
-    definition: BTreeMap<String, String>,
-    coverage_status: String,
-    paths: Vec<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    valid_commits: Option<Vec<String>>,
-    resolved_from: String,
 }
 
 #[derive(Debug)]
@@ -3564,9 +3575,17 @@ fn run_receipt_digest(args: ReceiptDigestArgs) -> Result<i32, CiHubError> {
     io::stdin()
         .read_to_string(&mut input)
         .map_err(|error| CiHubError::ValidateStatus(format!("cannot read HistoryRow: {error}")))?;
-    let row: HistoryRow = serde_json::from_str(&input).map_err(|error| {
-        CiHubError::ValidateStatus(format!("receipt-digest input is not a HistoryRow: {error}"))
-    })?;
+    let published = args
+        .published_receipt
+        .then(|| PublishedValidationReceipt::parse(input.as_bytes()))
+        .transpose()
+        .map_err(CiHubError::ValidateStatus)?;
+    let row: HistoryRow = match &published {
+        Some(receipt) => receipt.ledger_record.clone(),
+        None => serde_json::from_str(&input).map_err(|error| {
+            CiHubError::ValidateStatus(format!("receipt-digest input is not a HistoryRow: {error}"))
+        })?,
+    };
     if row.commit.as_deref() != Some(args.sha.as_str()) {
         return Err(CiHubError::ValidateStatus(
             "receipt-digest HistoryRow is not bound to --sha".into(),
@@ -3648,19 +3667,69 @@ fn run_receipt_digest(args: ReceiptDigestArgs) -> Result<i32, CiHubError> {
     let (canonical_row, digest) = canonical_row_json_and_sha256(&row).ok_or_else(|| {
         CiHubError::ValidateStatus("cannot canonicalize receipt HistoryRow".into())
     })?;
+    let mut effective_producer = None;
+    if let Some(receipt) = &published {
+        let repository = args.repository.as_deref().ok_or_else(|| {
+            CiHubError::ValidateStatus(
+                "receipt-digest --published-receipt requires --repository".into(),
+            )
+        })?;
+        let expected_producer = args
+            .expected_producer_record
+            .as_deref()
+            .map(|path| {
+                let bytes = std::fs::read(path).map_err(|error| {
+                    CiHubError::ValidateStatus(format!(
+                        "cannot read expected producer record {}: {error}",
+                        path.display()
+                    ))
+                })?;
+                serde_json::from_slice::<ProducerDefinitionExpectation>(&bytes).map_err(|error| {
+                    CiHubError::ValidateStatus(format!(
+                        "expected producer record {} is malformed: {error}",
+                        path.display()
+                    ))
+                })
+            })
+            .transpose()?;
+        receipt
+            .validate(
+                repository,
+                &args.sha,
+                &row,
+                &digest,
+                if args.allow_legacy_missing_identity {
+                    IdentityRequirement::LegacyOptional
+                } else {
+                    IdentityRequirement::Required
+                },
+                expected_producer.as_ref(),
+            )
+            .map_err(CiHubError::ValidateStatus)?;
+        let mut producer = receipt.producer.clone();
+        if producer.valid_commits.is_none() {
+            producer.valid_commits = expected_producer
+                .as_ref()
+                .and_then(|expected| expected.valid_commits.clone());
+        }
+        effective_producer = Some(producer);
+    }
     if args.canonical_row {
         print!("{canonical_row}");
     } else if args.json {
-        println!(
-            "{}",
-            serde_json::json!({
-                "schema_version": 1,
-                "sha": args.sha,
-                "digest_algorithm": "sha256",
-                "canonicalization": RECEIPT_CANONICALIZATION,
-                "digest": digest,
-            })
-        );
+        let mut report = serde_json::json!({
+            "schema_version": 1,
+            "sha": args.sha,
+            "digest_algorithm": "sha256",
+            "canonicalization": RECEIPT_CANONICALIZATION,
+            "digest": digest,
+        });
+        if let Some(producer) = &effective_producer {
+            report["producer_coverage_status"] = serde_json::json!(producer.coverage_status);
+            report["producer_paths"] = serde_json::json!(producer.paths);
+            report["producer_valid_commits"] = serde_json::json!(producer.valid_commits);
+        }
+        println!("{report}");
     } else {
         println!("{digest}");
     }
@@ -6640,168 +6709,29 @@ fn verify_publisher_report(
     if path != expected_path {
         return Err("publisher artifact path is not artifact-digest-addressed".into());
     }
-    let receipt: serde_json::Value = serde_json::from_str(artifact_body)
-        .map_err(|error| format!("publisher artifact body is not JSON: {error}"))?;
-    if receipt.get("repository").and_then(|value| value.as_str()) != Some(repo)
-        || receipt.get("commit").and_then(|value| value.as_str()) != Some(sha)
-    {
-        return Err("publisher artifact is not bound to repository and SHA".into());
-    }
-    let identity = receipt
-        .get("selected_receipt_identity")
-        .and_then(|value| value.as_object())
-        .ok_or_else(|| "publisher artifact omitted selected receipt identity".to_string())?;
-    if identity
-        .get("digest_algorithm")
-        .and_then(|value| value.as_str())
-        != Some("sha256")
-        || identity
-            .get("canonicalization")
-            .and_then(|value| value.as_str())
-            != Some(RECEIPT_CANONICALIZATION)
-        || identity.get("digest").and_then(|value| value.as_str())
-            != Some(selected.canonical_sha256.as_str())
-    {
-        return Err("publisher artifact receipt identity does not match Rust selection".into());
-    }
-    let expected_row = serde_json::to_value(&selected.row)
-        .map_err(|error| format!("cannot serialize selected row: {error}"))?;
-    if receipt.get("ledger_record") != Some(&expected_row) {
-        return Err("publisher artifact ledger row differs from Rust-selected row".into());
-    }
-    // Derive the identity only from the exact Rust-selected ledger row. The
-    // Python publisher carries the same host field into the artifact so two
-    // otherwise-identical runs from different machines cannot collide.
-    let expected_run_id = format!(
-        "{sha}@{}@{}",
-        selected
-            .row
-            .started_at
-            .as_deref()
-            .ok_or_else(|| "selected row omitted started_at".to_string())?,
-        selected
-            .row
-            .host
-            .as_deref()
-            .filter(|host| !host.trim().is_empty())
-            .ok_or_else(|| "selected row omitted host".to_string())?
-    );
-    if receipt.get("run_id").and_then(|value| value.as_str()) != Some(&expected_run_id) {
-        return Err("publisher artifact run identity differs from selected row".into());
-    }
-    let executed_tests = receipt
-        .get("ledger_record")
-        .and_then(|value| value.get("executed_tests"))
-        .and_then(|value| value.as_i64())
+    let typed_receipt = PublishedValidationReceipt::parse(artifact_body.as_bytes())?;
+    let expected_producer = selected
+        .producer_definition
+        .as_ref()
+        .map(ProducerDefinitionExpectation::from);
+    typed_receipt.validate(
+        repo,
+        sha,
+        &selected.row,
+        &selected.canonical_sha256,
+        IdentityRequirement::Required,
+        expected_producer.as_ref(),
+    )?;
+    let executed_tests = typed_receipt
+        .ledger_record
+        .executed_tests
         .ok_or_else(|| "publisher artifact omitted selected execution count".to_string())?;
-    let log_sha256 = receipt
-        .get("log_sha256")
-        .and_then(|value| value.as_str())
-        .ok_or_else(|| "publisher artifact omitted log digest".to_string())?;
-    if !is_sha256(log_sha256) {
-        return Err("publisher artifact log digest is malformed".into());
-    }
-    let producer = receipt
-        .get("producer")
-        .and_then(|value| value.as_object())
-        .ok_or_else(|| "publisher artifact omitted producer evidence".to_string())?;
-    let producer_coverage_status = producer
-        .get("coverage_status")
-        .and_then(|value| value.as_str())
-        .or_else(|| {
-            report
-                .get("verified_producer_coverage_status")
-                .and_then(|value| value.as_str())
-                .filter(|status| *status == "legacy-selected-paths")
-        })
-        .ok_or_else(|| "publisher artifact omitted producer coverage status".to_string())?;
-    if !matches!(
-        producer_coverage_status,
-        "legacy-selected-paths" | "complete"
-    ) {
-        return Err("publisher artifact producer coverage status is invalid".into());
-    }
-    let definition = producer
-        .get("definition")
-        .and_then(|value| value.as_object())
-        .ok_or_else(|| "publisher artifact omitted producer definition".to_string())?;
-    let producer_paths_value = producer
-        .get("paths")
-        .and_then(|value| value.as_array())
-        .or_else(|| {
-            (producer.get("coverage_status").is_none()
-                && producer_coverage_status == "legacy-selected-paths")
-                .then(|| {
-                    report
-                        .get("verified_producer_paths")
-                        .and_then(|value| value.as_array())
-                })
-                .flatten()
-        })
-        .ok_or_else(|| "publisher artifact omitted producer paths".to_string())?;
-    let producer_paths = producer_paths_value
-        .iter()
-        .map(|value| {
-            value
-                .as_str()
-                .map(str::to_string)
-                .ok_or_else(|| "publisher artifact producer path is not a string".to_string())
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    let definition_paths = definition.keys().cloned().collect::<Vec<_>>();
-    if producer_paths != definition_paths {
-        return Err("publisher artifact producer paths differ from its definition".into());
-    }
-    let producer_valid_commits_value = match producer.get("valid_commits") {
-        Some(serde_json::Value::Array(values)) => Some(values),
-        Some(_) => return Err("publisher artifact producer valid_commits is not an array".into()),
-        None => report
-            .get("verified_producer_valid_commits")
-            .and_then(|value| value.as_array()),
-    };
-    let producer_valid_commits = producer_valid_commits_value
-        .map(|values| {
-            values
-                .iter()
-                .map(|value| {
-                    value
-                        .as_str()
-                        .filter(|commit| is_oid(commit))
-                        .map(str::to_string)
-                        .ok_or_else(|| {
-                            "publisher artifact producer commit bound is malformed".to_string()
-                        })
-                })
-                .collect::<Result<Vec<_>, _>>()
-        })
-        .transpose()?;
-    if producer_valid_commits.as_ref().is_some_and(|commits| {
-        commits.is_empty()
-            || !commits.iter().any(|commit| commit == sha)
-            || commits.windows(2).any(|pair| pair[0] >= pair[1])
-    }) {
-        return Err("publisher artifact producer commit bound is invalid for target".into());
-    }
-    if let Some(expected) = selected.producer_definition.as_ref() {
-        let artifact_definition = definition
-            .iter()
-            .map(|(path, value)| {
-                value
-                    .as_str()
-                    .map(|blob| (path.clone(), blob.to_string()))
-                    .ok_or_else(|| "publisher artifact producer blob is not a string".to_string())
-            })
-            .collect::<Result<BTreeMap<_, _>, _>>()?;
-        if artifact_definition != expected.definition
-            || producer_coverage_status != expected.coverage_status
-            || producer_paths != expected.paths
-            || producer_valid_commits != expected.valid_commits
-        {
-            return Err(
-                "publisher artifact producer condition differs from exact target commit".into(),
-            );
-        }
-    }
+    let producer_valid_commits = typed_receipt.producer.valid_commits.clone().or_else(|| {
+        selected
+            .producer_definition
+            .as_ref()
+            .and_then(|producer| producer.valid_commits.clone())
+    });
     let receipt_commit = match report.get("receipt_commit") {
         Some(serde_json::Value::String(value))
             if !dry_run
@@ -6818,11 +6748,11 @@ fn verify_publisher_report(
         path: path.to_string(),
         artifact_sha256: artifact_sha256.to_string(),
         selected_digest: selected_digest.to_string(),
-        run_id: expected_run_id,
+        run_id: typed_receipt.run_id,
         executed_tests,
-        log_sha256: log_sha256.to_string(),
-        producer_coverage_status: producer_coverage_status.to_string(),
-        producer_paths,
+        log_sha256: typed_receipt.log_sha256,
+        producer_coverage_status: typed_receipt.producer.coverage_status,
+        producer_paths: typed_receipt.producer.paths,
         producer_valid_commits,
     })
 }
@@ -8850,10 +8780,11 @@ mod tests {
         })
     }
 
-    fn rewrite_report_run_id(report: &mut serde_json::Value, run_id: &str, sha: &str) {
-        let mut artifact: serde_json::Value =
-            serde_json::from_str(report["artifact_body"].as_str().unwrap()).unwrap();
-        artifact["run_id"] = serde_json::json!(run_id);
+    fn rewrite_report_artifact(
+        report: &mut serde_json::Value,
+        artifact: &serde_json::Value,
+        sha: &str,
+    ) {
         let artifact_body = serde_json::to_string(&artifact).unwrap();
         let artifact_sha256 = format!("{:x}", Sha256::digest(artifact_body.as_bytes()));
         report["path"] = serde_json::json!(format!(
@@ -8861,6 +8792,13 @@ mod tests {
         ));
         report["artifact_sha256"] = serde_json::json!(artifact_sha256);
         report["artifact_body"] = serde_json::json!(artifact_body);
+    }
+
+    fn rewrite_report_run_id(report: &mut serde_json::Value, run_id: &str, sha: &str) {
+        let mut artifact: serde_json::Value =
+            serde_json::from_str(report["artifact_body"].as_str().unwrap()).unwrap();
+        artifact["run_id"] = serde_json::json!(run_id);
+        rewrite_report_artifact(report, &artifact, sha);
     }
 
     /// A REAL one-commit git repo carrying the registered producer files, so the
@@ -9143,6 +9081,36 @@ mod tests {
         )
         .unwrap_err();
         assert!(error.contains("differs from Rust-selected row"));
+
+        let mut missing_schema = publisher_report_value(&selected, true);
+        let mut artifact: serde_json::Value =
+            serde_json::from_str(missing_schema["artifact_body"].as_str().unwrap()).unwrap();
+        artifact.as_object_mut().unwrap().remove("schema_version");
+        rewrite_report_artifact(&mut missing_schema, &artifact, RECEIPT_SHA);
+        let error = verify_publisher_report(
+            serde_json::to_string(&missing_schema).unwrap().as_bytes(),
+            CANONICAL_VALIDATE_REPO,
+            RECEIPT_SHA,
+            &selected,
+            true,
+        )
+        .unwrap_err();
+        assert!(error.contains("missing field `schema_version`"), "{error}");
+
+        let mut wrong_source_log = publisher_report_value(&selected, true);
+        let mut artifact: serde_json::Value =
+            serde_json::from_str(wrong_source_log["artifact_body"].as_str().unwrap()).unwrap();
+        artifact["source_log_file"] = serde_json::json!("/tmp/other.log");
+        rewrite_report_artifact(&mut wrong_source_log, &artifact, RECEIPT_SHA);
+        let error = verify_publisher_report(
+            serde_json::to_string(&wrong_source_log).unwrap().as_bytes(),
+            CANONICAL_VALIDATE_REPO,
+            RECEIPT_SHA,
+            &selected,
+            true,
+        )
+        .unwrap_err();
+        assert!(error.contains("source_log_file differs"), "{error}");
     }
 
     #[test]
