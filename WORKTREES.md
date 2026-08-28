@@ -72,6 +72,31 @@ parity), but none may independently decide whether a serialized status is live.
 An unknown status refuses by name instead of entering a denominator under a
 reader-specific default.
 
+### Measured reporting failures
+
+Three corrected reports are relevant when diagnosing slot capacity, ownership,
+or agent availability:
+
+- The old disk-residue predicate reported zero quarantined slots while the live
+  registry contained twenty-five rows whose status was `lease-quarantined`.
+  Quarantine reporting now uses the registry status. The count names retained
+  rows; it does not by itself prove that every row is safe to reclaim.
+- A live agent snapshot contained eighteen named entries, including six with
+  status `unreachable`. Counting every name as live produced eighteen agents;
+  applying the shared status meaning produced twelve and changed the number of
+  active slots without a live owner from forty-one to forty-three. The newly
+  exposed names included `cloudlint` and `cloudrecover`, agents that had already
+  departed. A named terminal entry is not evidence that an agent is available.
+- Slot assignment previously selected the first matching historical or current
+  registry row. For `hermit-001`, that could select released history instead of
+  the active `flock2407` assignment. For `codex-lsm`, two current rows exist;
+  assignment now refuses that ambiguity instead of guessing which row owns the
+  slot.
+
+These failures made quarantined, unowned, or ambiguously owned slots look
+healthy. Treat an empty or green report as meaningful only when its population
+and ambiguity checks are part of the reported contract.
+
 Before moving, removing, or reclaiming any slot, prove from the running system
 that no live agent process uses it. The presence or absence of a handoff is not
 a liveness check: moving a live slot breaks the session's hook paths.
