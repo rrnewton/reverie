@@ -1882,6 +1882,30 @@ class StartUnitTest(unittest.TestCase):
 
         self.assertEqual(self.fake.fresh, fresh)
 
+    def test_fresh_checkout_uses_the_exact_tooling_wrkslots(self) -> None:
+        linked_tooling = self.root / "worktrees/slots/linked-parent"
+
+        start_unit.prepare_fresh_checkout(
+            self.checkout,
+            SHA,
+            run=self.fake,
+            parent=self.root / "worktrees" / "validate",
+            repo="rrnewton/hermit",
+            tool_root=linked_tooling,
+        )
+
+        create = next(
+            command
+            for command in self.fake.commands
+            if wrkslots_action(command, "create")
+        )
+        self.assertEqual(str(linked_tooling / "ci-hub/bin/wrkslots"), create[0])
+        self.assertEqual(
+            str(self.root),
+            create[create.index("--project-root") + 1],
+            "exact tooling must still mutate only the canonical project registry",
+        )
+
     def test_crate_without_runner_executable_is_not_usable(self) -> None:
         self.fake.fresh_runner_executable = False
 

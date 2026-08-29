@@ -764,6 +764,7 @@ def prepare_fresh_checkout(
     run: Runner,
     parent: Path,
     repo: str,
+    tool_root: Path = ROOT,
     independent_refs: bool = False,
 ) -> Path:
     """Materialize `target` into a private temp worktree and PROVE it is usable.
@@ -914,7 +915,7 @@ def prepare_fresh_checkout(
                 )
             created = run(
                 [
-                    str(state_root / "ci-hub/bin/wrkslots"),
+                    str(tool_root / "ci-hub/bin/wrkslots"),
                     "--project-root",
                     str(state_root),
                     "--allow-existing-unregistered-worktrees",
@@ -2976,6 +2977,7 @@ def main(
                 run=run,
                 parent=checkout_parent,
                 repo=repo,
+                tool_root=tool_root,
                 independent_refs=args.frozen_validate,
             )
             checkout = fresh_checkout
