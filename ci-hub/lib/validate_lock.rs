@@ -6917,7 +6917,9 @@ mod tests {
 
     #[test]
     fn real_validate_run_reports_same_live_authority_twice() {
-        let _domain_guard = crate::landing_lock::process_domain_test_guard();
+        let Some(_domain_guard) = crate::landing_lock::process_domain_test_guard() else {
+            return;
+        };
         let _env_guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let stub = write_stub("authority-admit", "#!/bin/sh\necho OK\nexit 0\n");
         env::set_var(ADMIT_PREFLIGHT_CMD_ENV, &stub);
@@ -7015,7 +7017,9 @@ mod tests {
     // boundary all proceed; lock ends FREE.
     #[test]
     fn positive_non_starvation_three_sequential() {
-        let _domain_guard = crate::landing_lock::process_domain_test_guard();
+        let Some(_domain_guard) = crate::landing_lock::process_domain_test_guard() else {
+            return;
+        };
         let paths = temp_paths("three-sequential");
         let lock = ValidateLock {
             paths: paths.clone(),
@@ -7053,7 +7057,9 @@ mod tests {
 
     #[test]
     fn run_child_receives_process_bound_exclusivity_proof() {
-        let _domain_guard = crate::landing_lock::process_domain_test_guard();
+        let Some(_domain_guard) = crate::landing_lock::process_domain_test_guard() else {
+            return;
+        };
         let paths = temp_paths("child-proof");
         let lock = ValidateLock {
             paths: paths.clone(),
@@ -7091,6 +7097,9 @@ mod tests {
     // request is refused while that holder is live.
     #[test]
     fn negative_legacy_holder_refuses_a_second_request_and_a_benchmark() {
+        let Some(_domain_guard) = crate::landing_lock::process_domain_test_guard() else {
+            return;
+        };
         let paths = temp_paths("second-holder");
         let lock = ValidateLock {
             paths: paths.clone(),
@@ -7217,7 +7226,9 @@ mod tests {
     // 4. run child-deadline kills the child quickly and releases the box.
     #[test]
     fn run_child_deadline_kills_and_releases() {
-        let _domain_guard = crate::landing_lock::process_domain_test_guard();
+        let Some(_domain_guard) = crate::landing_lock::process_domain_test_guard() else {
+            return;
+        };
         let paths = temp_paths("child-deadline");
         let lock = ValidateLock {
             paths: paths.clone(),
@@ -7253,7 +7264,9 @@ mod tests {
 
     #[test]
     fn run_kills_stubborn_descendant_before_releasing_box() {
-        let _domain_guard = crate::landing_lock::process_domain_test_guard();
+        let Some(_domain_guard) = crate::landing_lock::process_domain_test_guard() else {
+            return;
+        };
         let paths = temp_paths("stubborn-descendant");
         let lock = ValidateLock {
             paths: paths.clone(),
@@ -7567,7 +7580,9 @@ wait
     // whichever signal happened to arrive last.
     #[test]
     fn record_termination_signal_latches_only_the_first_signal() {
-        let _domain_guard = crate::landing_lock::process_domain_test_guard();
+        let Some(_domain_guard) = crate::landing_lock::process_domain_test_guard() else {
+            return;
+        };
         SUPERVISOR_TERMINATION_SIGNAL.store(0, Ordering::SeqCst);
         record_termination_signal(libc::SIGTERM);
         record_termination_signal(libc::SIGINT);
@@ -7598,7 +7613,9 @@ wait
     // directly above.
     #[test]
     fn run_signalled_supervisor_censuses_releases_and_reports_128_plus_signal() {
-        let _domain_guard = crate::landing_lock::process_domain_test_guard();
+        let Some(_domain_guard) = crate::landing_lock::process_domain_test_guard() else {
+            return;
+        };
         // Lock order is domain-guard THEN env-lock. No other test takes both;
         // any future test that does must use this same order.
         let _env_guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
@@ -7706,7 +7723,9 @@ while :; do sleep 60; done
     // still satisfy the positive test above.
     #[test]
     fn run_without_a_termination_signal_reports_the_child_exit_code() {
-        let _domain_guard = crate::landing_lock::process_domain_test_guard();
+        let Some(_domain_guard) = crate::landing_lock::process_domain_test_guard() else {
+            return;
+        };
         let _env_guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let stub = write_stub("unsignalled-admit", "#!/bin/sh\necho OK\nexit 0\n");
         env::set_var(ADMIT_PREFLIGHT_CMD_ENV, &stub);
@@ -7790,7 +7809,9 @@ while :; do sleep 60; done
     /// admitted. Without the stabilization loop the first run quarantines.
     #[test]
     fn zero_residual_transient_group_releases_and_immediately_readmits() {
-        let _domain_guard = crate::landing_lock::process_domain_test_guard();
+        let Some(_domain_guard) = crate::landing_lock::process_domain_test_guard() else {
+            return;
+        };
         let _env_guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let stub = write_stub("zero-residual-admit", "#!/bin/sh\necho OK\nexit 0\n");
         env::set_var(ADMIT_PREFLIGHT_CMD_ENV, &stub);
@@ -7850,7 +7871,9 @@ while :; do sleep 60; done
     /// cannot silently discard the payload's result.
     #[test]
     fn supervise_child_reaps_adopted_exits_during_run_and_preserves_direct_status() {
-        let _domain_guard = crate::landing_lock::process_domain_test_guard();
+        let Some(_domain_guard) = crate::landing_lock::process_domain_test_guard() else {
+            return;
+        };
         enable_child_subreaper().unwrap();
         SUPERVISOR_TERMINATION_SIGNAL.store(0, Ordering::SeqCst);
 
@@ -7954,7 +7977,9 @@ os._exit(exit_code)
     /// cleanup must release both authorities and admit the next run.
     #[test]
     fn completed_run_with_adopted_zombie_releases_and_readmits() {
-        let _domain_guard = crate::landing_lock::process_domain_test_guard();
+        let Some(_domain_guard) = crate::landing_lock::process_domain_test_guard() else {
+            return;
+        };
         let _env_guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let stub = write_stub("zombie-readmit-admit", "#!/bin/sh\necho OK\nexit 0\n");
         env::set_var(ADMIT_PREFLIGHT_CMD_ENV, &stub);
@@ -8032,7 +8057,9 @@ os._exit(0)
 
     #[test]
     fn escaped_payload_quarantine_refuses_consumers_until_exact_recovery() {
-        let _domain_guard = crate::landing_lock::process_domain_test_guard();
+        let Some(_domain_guard) = crate::landing_lock::process_domain_test_guard() else {
+            return;
+        };
         let paths = temp_paths("escaped-quarantine");
         let lock = ValidateLock {
             paths: paths.clone(),
@@ -8212,7 +8239,9 @@ wait
 
     #[test]
     fn hard_death_before_publication_retains_armed_barrier() {
-        let _domain_guard = crate::landing_lock::process_domain_test_guard();
+        let Some(_domain_guard) = crate::landing_lock::process_domain_test_guard() else {
+            return;
+        };
         for point_name in ["after-arm", "after-spawn"] {
             let paths = temp_paths(&format!("hard-death-{point_name}"));
             let root = paths.lock.parent().unwrap().to_path_buf();
@@ -8289,7 +8318,9 @@ wait
 
     #[test]
     fn crash_windows_retain_armed_or_uncensused_barrier_after_owner_death() {
-        let _domain_guard = crate::landing_lock::process_domain_test_guard();
+        let Some(_domain_guard) = crate::landing_lock::process_domain_test_guard() else {
+            return;
+        };
         for (index, point) in [
             crate::landing_lock::RunCrashPoint::AfterArm,
             crate::landing_lock::RunCrashPoint::AfterSpawn,
@@ -8433,7 +8464,9 @@ wait
 
     #[test]
     fn normal_leader_exit_cannot_clear_an_escaped_payload_barrier() {
-        let _domain_guard = crate::landing_lock::process_domain_test_guard();
+        let Some(_domain_guard) = crate::landing_lock::process_domain_test_guard() else {
+            return;
+        };
         let paths = temp_paths("normal-exit-escaped");
         let lock = ValidateLock {
             paths: paths.clone(),
@@ -9818,7 +9851,9 @@ exit 0
 
     #[test]
     fn run_admits_target_containing_fetched_main_at_both_boundaries() {
-        let _domain_guard = crate::landing_lock::process_domain_test_guard();
+        let Some(_domain_guard) = crate::landing_lock::process_domain_test_guard() else {
+            return;
+        };
         let _env_guard = ENV_LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
         let stub = write_stub("fresh-main-admit", "#!/bin/sh\necho OK\nexit 0\n");
         env::set_var(ADMIT_PREFLIGHT_CMD_ENV, &stub);
@@ -9860,7 +9895,9 @@ exit 0
 
     #[test]
     fn run_refuses_when_main_advances_during_wait_before_consuming_lease() {
-        let _domain_guard = crate::landing_lock::process_domain_test_guard();
+        let Some(_domain_guard) = crate::landing_lock::process_domain_test_guard() else {
+            return;
+        };
         let _env_guard = ENV_LOCK.lock().unwrap_or_else(|poison| poison.into_inner());
         let stub = write_stub("advanced-main-admit", "#!/bin/sh\necho OK\nexit 0\n");
         env::set_var(ADMIT_PREFLIGHT_CMD_ENV, &stub);
@@ -9976,6 +10013,9 @@ exit 0
     // and NEVER consumes the box — a doomed ~17-min validate never starts.
     #[test]
     fn run_refuses_fixed_floor_without_consuming_box() {
+        let Some(_domain_guard) = crate::landing_lock::process_domain_test_guard() else {
+            return;
+        };
         let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
         let paths = temp_paths("run-stale-base");
         let lock = ValidateLock {

@@ -2897,7 +2897,20 @@ pub(crate) fn spawn_gated_child(
     })
 }
 
+#[cfg(test)]
+const PROCESS_DOMAIN_TEST_CHILD_ENV: &str = "CI_HUB_PROCESS_DOMAIN_TEST_CHILD";
+#[cfg(test)]
+const PROCESS_DOMAIN_TEST_LOCK_ENV: &str = "CI_HUB_PROCESS_DOMAIN_TEST_LOCK";
+#[cfg(test)]
+const PROCESS_DOMAIN_TEST_MARKER_ENV: &str = "CI_HUB_PROCESS_DOMAIN_TEST_MARKER";
+
 pub(crate) fn enable_child_subreaper() -> io::Result<()> {
+    #[cfg(test)]
+    if env::var_os(PROCESS_DOMAIN_TEST_CHILD_ENV).is_none() {
+        return Err(io::Error::other(
+            "a test enabling child subreaping must enter through process_domain_test_guard",
+        ));
+    }
     // SAFETY: PR_SET_CHILD_SUBREAPER changes only this process attribute.
     if unsafe { libc::prctl(libc::PR_SET_CHILD_SUBREAPER, 1) } != 0 {
         return Err(io::Error::last_os_error());
@@ -3359,9 +3372,83 @@ pub(crate) fn reap_exited_children() {
 }
 
 #[cfg(test)]
-pub(crate) fn process_domain_test_guard() -> std::sync::MutexGuard<'static, ()> {
+pub(crate) struct ProcessDomainTestGuard {
+    _thread: std::sync::MutexGuard<'static, ()>,
+    _process: File,
+}
+
+#[cfg(test)]
+pub(crate) fn process_domain_test_guard() -> Option<ProcessDomainTestGuard> {
     static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
+
+    // `PR_SET_CHILD_SUBREAPER` and `waitpid(-1)` are process-wide. A mutex can
+    // serialize the tests that knowingly use them, but it cannot protect an
+    // unrelated parallel test waiting for its own child. Run every marked
+    // process-domain test in its own test process instead. The mutex remains
+    // useful inside that process for tests which also mutate process-global
+    // hooks or signal state. The file lock preserves the existing mutual
+    // exclusion among this marked cohort without serializing unrelated tests.
+    if env::var_os(PROCESS_DOMAIN_TEST_CHILD_ENV).is_some() {
+        let marker_path = env::var_os(PROCESS_DOMAIN_TEST_MARKER_ENV)
+            .expect("isolated process-domain test must name its entry marker");
+        let test_name = thread::current()
+            .name()
+            .expect("the Rust test harness must name each process-domain test")
+            .to_string();
+        fs::write(&marker_path, &test_name).expect("publish process-domain test entry marker");
+        let lock_path = env::var_os(PROCESS_DOMAIN_TEST_LOCK_ENV)
+            .expect("isolated process-domain test must name its shared lock");
+        let process = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(&lock_path)
+            .expect("open process-domain test lock");
+        process
+            .lock_exclusive()
+            .expect("lock process-domain test cohort");
+        return Some(ProcessDomainTestGuard {
+            _thread: LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner()),
+            _process: process,
+        });
+    }
+
+    let test_name = thread::current()
+        .name()
+        .expect("the Rust test harness must name each process-domain test")
+        .to_string();
+    let lock_path = env::temp_dir().join(format!(
+        "ci-hub-process-domain-tests-{}.lock",
+        std::process::id()
+    ));
+    let marker_path = env::temp_dir().join(format!(
+        "ci-hub-process-domain-test-{}-{}.entered",
+        std::process::id(),
+        test_name.replace("::", "-")
+    ));
+    let status = Command::new(env::current_exe().expect("locate current test executable"))
+        .arg("--exact")
+        .arg(&test_name)
+        .arg("--nocapture")
+        .arg("--test-threads=1")
+        .env(PROCESS_DOMAIN_TEST_CHILD_ENV, "1")
+        .env(PROCESS_DOMAIN_TEST_LOCK_ENV, lock_path)
+        .env(PROCESS_DOMAIN_TEST_MARKER_ENV, &marker_path)
+        .status()
+        .expect("launch isolated process-domain test");
+    let entered = fs::read_to_string(&marker_path)
+        .unwrap_or_else(|error| panic!("isolated process-domain test did not start: {error}"));
+    let _ = fs::remove_file(&marker_path);
+    assert_eq!(
+        entered, test_name,
+        "isolated process-domain test entry marker named the wrong test"
+    );
+    assert!(
+        status.success(),
+        "isolated process-domain test {test_name} failed: {status}"
+    );
+    None
 }
 
 #[cfg(test)]
@@ -4321,8 +4408,22 @@ mod tests {
     }
 
     #[test]
+    fn child_subreaping_refuses_an_unisolated_test_process() {
+        let error = enable_child_subreaper()
+            .expect_err("a test must not make the shared harness process a child subreaper");
+        assert!(
+            error
+                .to_string()
+                .contains("must enter through process_domain_test_guard"),
+            "unexpected refusal: {error}"
+        );
+    }
+
+    #[test]
     fn process_group_signal_is_typed_and_target_scoped() {
-        let _domain_guard = process_domain_test_guard();
+        let Some(_domain_guard) = process_domain_test_guard() else {
+            return;
+        };
         let mut target = Command::new("/bin/sleep")
             .arg("60")
             .process_group(0)
@@ -4380,7 +4481,9 @@ mod tests {
     /// manufacture a residual quarantine after an otherwise completed run.
     #[test]
     fn zombie_only_descendant_is_reaped_and_domain_is_empty() {
-        let _domain_guard = process_domain_test_guard();
+        let Some(_domain_guard) = process_domain_test_guard() else {
+            return;
+        };
         let token = mint_domain_token();
         let zombie = Command::new("/bin/true")
             .process_group(0)
@@ -4414,7 +4517,9 @@ mod tests {
     /// way to clear a genuinely executing descendant.
     #[test]
     fn live_descendant_remains_an_exact_residual() {
-        let _domain_guard = process_domain_test_guard();
+        let Some(_domain_guard) = process_domain_test_guard() else {
+            return;
+        };
         let token = mint_domain_token();
         let mut child = Command::new("/bin/sleep")
             .arg("30")
@@ -4449,7 +4554,9 @@ mod tests {
     /// pass just as well if the census had stopped counting anything at all.
     #[test]
     fn an_orphan_adopted_during_the_run_is_not_charged_to_the_payload() {
-        let _domain_guard = process_domain_test_guard();
+        let Some(_domain_guard) = process_domain_test_guard() else {
+            return;
+        };
         let token = mint_domain_token();
 
         let mut foreign = Command::new("/bin/sleep")
@@ -4502,7 +4609,9 @@ mod tests {
     /// was never gathered.
     #[test]
     fn an_unclassifiable_descendant_is_reported_and_blocks_completeness() {
-        let _domain_guard = process_domain_test_guard();
+        let Some(_domain_guard) = process_domain_test_guard() else {
+            return;
+        };
         let token = mint_domain_token();
         let mut child = Command::new("/bin/sleep")
             .arg("30")
@@ -4564,7 +4673,9 @@ mod tests {
     /// older one no token would let this pass for the wrong reason.
     #[test]
     fn a_process_older_than_the_payload_is_not_a_residual_of_it() {
-        let _domain_guard = process_domain_test_guard();
+        let Some(_domain_guard) = process_domain_test_guard() else {
+            return;
+        };
         let token = mint_domain_token();
         let mut older = Command::new("/bin/sleep")
             .arg("30")
@@ -4629,7 +4740,9 @@ mod tests {
 
     #[test]
     fn unreadable_descendant_identity_makes_census_incomplete_then_recovers() {
-        let _domain_guard = process_domain_test_guard();
+        let Some(_domain_guard) = process_domain_test_guard() else {
+            return;
+        };
         let token = mint_domain_token();
         let mut child = Command::new("/bin/sleep")
             .arg("30")
@@ -4662,7 +4775,9 @@ mod tests {
 
     #[test]
     fn pidfd_signal_rejects_stale_identity_and_targets_exact_process() {
-        let _domain_guard = process_domain_test_guard();
+        let Some(_domain_guard) = process_domain_test_guard() else {
+            return;
+        };
         let mut target = Command::new("/bin/sleep").arg("30").spawn().unwrap();
         let mut control = Command::new("/bin/sleep").arg("30").spawn().unwrap();
         let identity = ProcessIdentity {
@@ -5368,7 +5483,9 @@ mod tests {
 
     #[test]
     fn full_protocol_acquire_renew_status_release_and_run() {
-        let _domain_guard = process_domain_test_guard();
+        let Some(_domain_guard) = process_domain_test_guard() else {
+            return;
+        };
         let paths = temp_paths("full-protocol");
         let lock = LandingLock {
             paths: paths.clone(),
@@ -5523,7 +5640,9 @@ os._exit(exit_code)
     /// lease after preserving that result.
     #[test]
     fn run_reaps_adopted_exits_during_live_payload_and_preserves_status() {
-        let _domain_guard = process_domain_test_guard();
+        let Some(_domain_guard) = process_domain_test_guard() else {
+            return;
+        };
         for expected_code in [0, 23] {
             let paths = temp_paths(&format!("periodic-reap-{expected_code}"));
             let root = paths.lock.parent().unwrap().to_path_buf();
@@ -5545,7 +5664,9 @@ os._exit(exit_code)
 
     #[test]
     fn census_waits_for_delayed_heartbeat_helper_before_freezing_descendants() {
-        let _domain_guard = process_domain_test_guard();
+        let Some(_domain_guard) = process_domain_test_guard() else {
+            return;
+        };
         let paths = temp_paths("delayed-heartbeat-helper");
         let lock = LandingLock {
             paths: paths.clone(),
@@ -5580,7 +5701,9 @@ os._exit(exit_code)
 
     #[test]
     fn run_child_deadline_kills_child_and_releases_the_lock() {
-        let _domain_guard = process_domain_test_guard();
+        let Some(_domain_guard) = process_domain_test_guard() else {
+            return;
+        };
         let paths = temp_paths("child-deadline");
         let lock = LandingLock {
             paths: paths.clone(),
@@ -5612,7 +5735,9 @@ os._exit(exit_code)
 
     #[test]
     fn run_kills_stubborn_descendant_before_releasing_lock() {
-        let _domain_guard = process_domain_test_guard();
+        let Some(_domain_guard) = process_domain_test_guard() else {
+            return;
+        };
         let paths = temp_paths("stubborn-descendant");
         let lock = LandingLock {
             paths: paths.clone(),
@@ -5676,7 +5801,9 @@ wait
 
     #[test]
     fn escaped_payload_quarantine_refuses_consumers_until_exact_recovery() {
-        let _domain_guard = process_domain_test_guard();
+        let Some(_domain_guard) = process_domain_test_guard() else {
+            return;
+        };
         let paths = temp_paths("escaped-quarantine");
         let lock = LandingLock {
             paths: paths.clone(),
@@ -5834,7 +5961,9 @@ wait
 
     #[test]
     fn hard_death_before_publication_retains_armed_barrier() {
-        let _domain_guard = process_domain_test_guard();
+        let Some(_domain_guard) = process_domain_test_guard() else {
+            return;
+        };
         for point_name in ["after-arm", "after-spawn"] {
             let paths = temp_paths(&format!("hard-death-{point_name}"));
             let root = paths.lock.parent().unwrap().to_path_buf();
@@ -5917,7 +6046,9 @@ wait
 
     #[test]
     fn crash_windows_retain_armed_or_uncensused_barrier_after_owner_death() {
-        let _domain_guard = process_domain_test_guard();
+        let Some(_domain_guard) = process_domain_test_guard() else {
+            return;
+        };
         for (index, point) in [
             RunCrashPoint::AfterArm,
             RunCrashPoint::AfterSpawn,
@@ -6033,7 +6164,9 @@ wait
 
     #[test]
     fn normal_leader_exit_cannot_clear_an_escaped_payload_barrier() {
-        let _domain_guard = process_domain_test_guard();
+        let Some(_domain_guard) = process_domain_test_guard() else {
+            return;
+        };
         let paths = temp_paths("normal-exit-escaped");
         let lock = LandingLock {
             paths: paths.clone(),

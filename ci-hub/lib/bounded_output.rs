@@ -36,7 +36,7 @@
 
 use std::fs::{File, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
-use std::process::{Command, Output, Stdio};
+use std::process::{Child, Command, ExitStatus, Output, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 static SCRATCH_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -95,7 +95,7 @@ impl BoundedOutput for Command {
     fn bounded_status_with_stderr(&mut self) -> io::Result<(std::process::ExitStatus, Vec<u8>)> {
         let mut stderr_file = scratch_file("err")?;
         self.stderr(Stdio::from(stderr_file.try_clone()?));
-        let status = self.spawn()?.wait()?;
+        let status = wait_for_child(&mut self.spawn()?)?;
         stderr_file.seek(SeekFrom::Start(0))?;
         let mut stderr = Vec::new();
         stderr_file.read_to_end(&mut stderr)?;
@@ -133,13 +133,13 @@ fn capture(command: &mut Command, input: Option<&[u8]>) -> io::Result<Output> {
                 // `Child`, and dropping a `Child` does NOT wait, so the failure
                 // path would leak a zombie every time. That is the same
                 // spawn-without-reap defect this file exists next to.
-                let _ = child.wait();
+                let _ = wait_for_child(&mut child);
                 return Err(error);
             }
         }
     }
 
-    let status = child.wait()?;
+    let status = wait_for_child(&mut child)?;
 
     stdout_file.seek(SeekFrom::Start(0))?;
     stderr_file.seek(SeekFrom::Start(0))?;
@@ -155,9 +155,13 @@ fn capture(command: &mut Command, input: Option<&[u8]>) -> io::Result<Output> {
     })
 }
 
+fn wait_for_child(child: &mut Child) -> io::Result<ExitStatus> {
+    child.wait()
+}
+
 #[cfg(test)]
 mod tests {
-    use super::BoundedOutput;
+    use super::{wait_for_child, BoundedOutput};
     use std::process::{Command, Stdio};
     use std::sync::mpsc;
     use std::time::Duration;
@@ -167,6 +171,19 @@ mod tests {
     /// miniature: the child is gone and its status is knowable, but the pipe
     /// never sees EOF.
     const ORPHAN_HOLDER: &str = "sleep 30 & echo started; exit 7";
+
+    #[test]
+    fn a_genuinely_missing_child_is_still_reported_as_echild() {
+        let mut child = Command::new("/bin/true").spawn().unwrap();
+        let mut status = 0;
+        // SAFETY: this waits for the exact child just spawned by this test.
+        let reaped = unsafe { libc::waitpid(child.id() as libc::pid_t, &mut status, 0) };
+        assert_eq!(reaped, child.id() as libc::pid_t);
+
+        let error = wait_for_child(&mut child)
+            .expect_err("a child reaped outside Child::wait must remain a loud failure");
+        assert_eq!(error.raw_os_error(), Some(libc::ECHILD));
+    }
 
     /// Run `body` on a worker thread and report whether it FINISHED.
     ///
