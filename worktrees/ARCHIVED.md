@@ -817,3 +817,33 @@ proofs at its mutation boundary.
 | `worktrees/codex-6` | codex-6 / `review_hermit_pr_2150_4` | Hermit `abb2faaf8b165fc7feaa81ad1c71147d21186172` at `origin/recovery/codex-hermit4-014-winddown-pr2150-abb2faaf`; Reverie `c261050cfd41bec67e31bfd0cf6f56be008d0ebb`; LiteInst2 `8bf704feb06a62e7a05bee3b237d70793e4e2689` | Review-only cache; no validation or implementation claim. The coordinator recorded a binding-only recovery generation after a zero-user path census, then `scripts/release-worktree.rs --slot codex-6 --clean` proved durability and removed the slot. |
 | `worktrees/codex-7` | codex-7 / `consolidate_validation_admission_prs` | Hermit recovery commit `71740ae6cfb1d397a949fb74ad74298ac1857fe1` at `origin/pr-2012-validation-admission-consolidation-codex-hermit4-014`; Reverie `c261050cfd41bec67e31bfd0cf6f56be008d0ebb`; LiteInst2 `8bf704feb06a62e7a05bee3b237d70793e4e2689` | Five focused checks passed; closed PR #2158 remains unmerged and the recovery commit is concept-only, not a landing candidate. `scripts/release-worktree.rs --slot codex-7 --clean` proved durability and removed the slot. |
 | `worktrees/lander` | codex-3 / `review_hermit_pr_2150_5` | Hermit `abb2faaf8b165fc7feaa81ad1c71147d21186172` at `origin/recovery/codex-hermit4-014-winddown-pr2150-abb2faaf`; Reverie `c261050cfd41bec67e31bfd0cf6f56be008d0ebb`; LiteInst2 `8bf704feb06a62e7a05bee3b237d70793e4e2689` | Review-only cache; no landing or validation authority claimed. `scripts/release-worktree.rs --slot lander --clean` proved durability and removed all three worktrees plus the registry row. |
+
+### Unregistered persistent slot reclamation (2026-08-29)
+
+The canonical audit initially named 32 unregistered persistent slots. A full-host
+process scan checked cwd, executable, file descriptors, mappings, and mount
+namespaces. Independent `DG_AGENT_NAME` probes also verified every recoverable
+historical owner dead with a complete process view and zero agent-capable blind
+spots. The only live path was `worktrees/slots/dagrun`, whose running process had
+its cwd inside the checkout; it remains intact. `worktrees/slots/validate-status-history`
+also remains intact under its live recorded owner and unread handoff.
+
+| Slots | exact checkout state and durable recovery | disposition |
+| --- | --- | --- |
+| `106`, `120`, `121`, `128`, `130`, `136`, `141`, `144`, `hermit-149`, `ignored`, `scorecard-replay-idempotence` | Empty directories or ignored validation-cache residue; no Git checkout or authored file remained. | Removed after the full path-use scan found no live reference. |
+| `138`, `139`, `140`, `142` | Sixteen authored source, script, note, and document files are preserved byte-for-byte in draft salvage PR [dev-hermit#229](https://github.com/rrnewton/dev-hermit/pull/229) at `a90c1158479f3922f9cb75fe4f0a61c73bbd7c68`; its checked manifest records every SHA-256. Reproducible compiled probe binaries were excluded. | Removed only after the salvage branch and labelled draft pull request were readable from GitHub. |
+| `bump-hermit-3e480eae`, `ghchecks` | Parent heads `a1a3f87a7917da8e8dabd286d745713149db4913` and `86983f7c8f0491dec983fe2a1656af30a50830f8`; nested Hermit heads `3e480eaec58daff352521c3147261d94bc20aa99` and `03e691bcf72f43f62b34b861d1958bc7e95caa21`. Every checkout was clean and each head was reachable from a fetched remote ref. The root handoffs were read before removal. | Removed through the parent Git worktree registry; branches and remote refs remain. |
+| `degraded-ci-hub-cargo-target`, `review-pr2836`, `review2836` | Hermit head `1ccb9b41c4a48bc378b06aab04fc3bfb1cf6078e` was clean and remote-reachable in all three slots. The cargo-target slot's nested agent-utils head `45b24f8bbccf6e971d97de041b874bc6f8e770b6` became demonstrably remote-reachable after a fresh fetch. | Removed through the Hermit Git worktree registry; branches and remote refs remain. |
+| `degraded-ci-hub-manifest-cpu` | Hermit feature head `1d01442689c144d6018e8b06ca278646d8719092` remains at `origin/manifest-cell-cpu-accounting` and PR [hermit#2830](https://github.com/rrnewton/hermit/pull/2830). Its uncommitted generated `ci/compat-envelope/cells.json` is preserved byte-for-byte in labelled draft salvage PR [hermit#2844](https://github.com/rrnewton/hermit/pull/2844) at `c3561de40a5dcca04f2e3a6dbd500500f559696a`, SHA-256 `6fbe54f7e7fc3c396b0d234e924e6bf6951caba93193fd80ca64797612b15cd8`. | Removed through the Hermit Git worktree registry after the salvage was published. |
+| `frozen-clone-7ddb3559`, `hermit-150` | Clean standalone checkouts. Hermit `7ddb3559a09f2709a67ce2b605426b43c33f070f`; review heads `4cfda506149c8125c3dbdac3eed2f228ac4188f2` and `a168d2a3662d71b48ff46c5181e081b8273809af`. Every head was reachable from a fetched remote ref. | Removed after the full path-use scan found no live reference; remote refs remain. |
+| `degraded-ci-hub-cap-removal-launcher`, `hermit-guest-cap-audit`, `hermit-guest-cap-history`, `infrastructure-receipt-consumers`, `infrastructure-receipt-consumers-land`, `pr2733-receipt-test`, `scorecard-before-retained-import`, `validate-3e480eae` | Disposable validation checkouts. Principal heads were parent `039b8ebd914a4c050948b9aa650c01b2425285ae`, parent `e8104f631ff3f8d89fae547aabe1dcb955ebc4b7`, parent `266cea5fa86a53a7e75c264607714871b2e062fe`, parent `1d7cf7fa0eea83d280472ab5ed22ab01a321d28e`, parent `a8a1af9a4e8ec8a7df9178b7df1442b4d027160e`, Hermit `7766742e3d407ae2a4a79430a1e0bb62b1804c87`, no Git metadata, and parent `7b7fd30e06fe6f67d2b24cb4ec33400cfdc39275`, respectively. These slots carry no authored work by construction; the last had generated scorecard changes only. | Removed after proving no running validate referenced any path. Registered worktrees were removed through their owning Git registry; standalone validation directories were removed directly. |
+
+The removed directories occupied 73,537,413,120 bytes (68.487 GiB) at the
+pre-removal `du` measurement. This is not asserted as the filesystem's net free
+space change because concurrent validation continued writing elsewhere.
+Immediately after reclamation the audit counted eight worktrees. Its only
+persistent unregistered result was the live `dagrun` checkout. A transient
+`validate-cargo-CgeyB7Hr` directory was reported while the audit itself ran and
+was absent immediately before and after; this matches the automatic cleanup of
+disposable validation checkouts rather than the persistent backlog measured by
+this cleanup.
