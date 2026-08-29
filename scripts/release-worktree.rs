@@ -43,8 +43,13 @@ const AGENT_SNAPSHOT_MAX_AGE_SECS: u64 = 10 * 60;
 
 const USAGE: &str = r#"Usage: release-worktree.rs --slot SLOT [OPTIONS]
 
-Release a worktree slot (worktrees/slots/<slot>/{hermit,reverie,liteinst2}) and
-update ownership.
+LEGACY INTERFACE. In a project configured with .wrkslots.yml this command
+refuses before salvaging, moving, or removing anything. Use
+ci-hub/bin/wrkslots remove for a reclaimable slot, or ci-hub/bin/wrkslots
+recover for an interrupted operation.
+
+The options below remain only for unconfigured migration fixtures that still
+exercise the previous nested-slot registry implementation.
 
 Required:
   --slot SLOT         Slot to release (named token or slotNN).
@@ -89,7 +94,7 @@ Options:
   --force             Allow --clean despite uncommitted/unpushed work (dangerous).
   -h, --help          Show this help.
 
-Without --clean the physical worktree is left in place (cache retained) and the
+In those legacy fixtures, without --clean the physical worktree is left in place and the
 slot is marked released in state. With --clean the worktree is removed and the
 slot entry is dropped from state. Feature branches are NEVER deleted.
 
@@ -5820,6 +5825,15 @@ fn main() {
     }
 
     let root = find_root();
+    if root.join(".wrkslots.yml").is_file() {
+        eprintln!(
+            "release-worktree: REFUSED -- this project records worktree lifecycle through wrkslots.\n\
+             state: REFUSED -- no checkout was salvaged, moved, or removed.\n\
+             remedy: run ci-hub/bin/wrkslots remove for a reclaimable slot, or \
+             ci-hub/bin/wrkslots recover when an interrupted operation is recorded"
+        );
+        exit(3);
+    }
 
     // slot-owner-authority takes the registry's shared lock while reading the
     // exact owner row. Run it before taking the writer lock below, then bind

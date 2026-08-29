@@ -25,16 +25,45 @@
 # Usage:
 #   stress-burst --prebuilt DIR      --workload BIN:TEST::PATH [--width W] [--timeout S] [--out CSV]
 #   stress-burst --build-at SHA      --workload BIN:TEST::PATH [--width W] [--timeout S]
-#                [--hermit DIR] [--wt-base DIR] [--out CSV]
+#                [--hermit DIR] [--wt-base DIR] [--target-dir DIR] [--out CSV]
 #
 #   --workload   BIN:TESTPATH, e.g. tests_misc:vfork::vfork_parent_resumes_after_child_exec
 #                BIN is the cargo test-binary name; TESTPATH is the --exact test path.
+#   --target-dir Reusable Cargo target directory for --prebuilt mode. Build mode
+#                uses --wt-base/targets/<sha> so checkout removal preserves its cache.
 set -uo pipefail
 
 WIDTH=64; TIMEOUT=20; MODE=""; ARG=""; WORKLOAD=""; OUT=""
-HERMIT=""; WT_BASE=""
+HERMIT=""; WT_BASE=""; TARGET_OVERRIDE=""
 SELF="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-DEFAULT_HERMIT="$(cd "$SELF/.." && pwd)/hermit"
+ROOT="$(cd "$SELF/../.." && pwd)"
+DEFAULT_HERMIT="$ROOT/hermit"
+WRKSLOTS="$ROOT/ci-hub/bin/wrkslots"
+SLOT=""
+SLOT_CREATED=0
+LOG=""
+
+cleanup() {
+  local rc=$?
+  trap - EXIT
+  [ -z "$LOG" ] || rm -rf -- "$LOG"
+  if [ "$SLOT_CREATED" -eq 1 ]; then
+    cleanup_output=$(
+      "$WRKSLOTS" --allow-existing-unregistered-worktrees \
+        remove "$SLOT" --validate-complete \
+        --coordinator-pid "$$" --expected-generation 1 2>&1
+    )
+    cleanup_rc=$?
+    if [ "$cleanup_rc" -ne 0 ]; then
+      printf '%s\n' \
+        "stress-burst: validation checkout RETAINED after wrkslots cleanup refused." \
+        "state: RETAINED -- the measurement exit remains $rc; cleanup did not complete." \
+        "remedy: $cleanup_output" >&2
+    fi
+  fi
+  exit "$rc"
+}
+trap cleanup EXIT
 
 die() { echo "stress-burst: $*" >&2; exit 2; }
 while [ $# -gt 0 ]; do
@@ -46,6 +75,7 @@ while [ $# -gt 0 ]; do
     --timeout)  TIMEOUT="$2";  shift 2;;
     --hermit)   HERMIT="$2";   shift 2;;
     --wt-base)  WT_BASE="$2";  shift 2;;
+    --target-dir) TARGET_OVERRIDE="$2"; shift 2;;
     --out)      OUT="$2";      shift 2;;
     -h|--help)  sed -n '2,40p' "$0"; exit 0;;
     *) die "unknown arg: $1";;
@@ -70,16 +100,44 @@ if [ "$MODE" = prebuilt ]; then
   [ -d "$CO" ] || die "--prebuilt dir not found: $CO"
   SHA="$(git -C "$CO" rev-parse HEAD 2>/dev/null || echo unknown)"
 else
-  # build-at SHA: relocatable worktree so we never touch anyone else's wt dir.
+  # build-at SHA: wrkslots owns the disposable checkout; the build cache stays
+  # outside it so cleanup does not discard expensive compilation artifacts.
   SHA_REQ="$ARG"
   WT_BASE="${WT_BASE:-$SELF/ignored/stress-wt}"
-  CO="$WT_BASE/$SHA_REQ"
-  mkdir -p "$WT_BASE"
-  if [ ! -d "$CO" ]; then
-    git -C "$HERMIT" worktree add --detach "$CO" "$SHA_REQ" >/dev/null 2>&1 \
-      || { emit "$SHA_REQ,,,,,,,,WT_FAIL"; exit 0; }
+  TARGET_DIR="$WT_BASE/targets/$SHA_REQ"
+  mkdir -p "$WT_BASE/targets"
+  SLOT="stress-${SHA_REQ:0:12}-$$"
+  create_output=$(
+    "$WRKSLOTS" --allow-existing-unregistered-worktrees \
+      create "$SLOT" --format json --slot-type validate \
+      --coordinator-authorized --agent "stress-$$" --task "stress-$SHA_REQ" \
+      --purpose "build and run the requested stress workload" \
+      --owner-pid "$$" --coordinator-pid "$$" \
+      --repo checkout=hermit --start "checkout=$SHA_REQ"
+  )
+  create_rc=$?
+  if [ "$create_rc" -ne 0 ]; then
+    printf '%s\n' \
+      "stress-burst: wrkslots could not create the validation checkout." \
+      "state: REFUSED -- no workload ran, so this is WT_FAIL rather than a test result." \
+      "remedy: follow the wrkslots refusal above, then rerun this command." >&2
+    emit "$SHA_REQ,,,,,,,,WT_FAIL"
+    exit 0
   fi
-  [ ! -d "$CO/target" ] && cp -a --reflink=auto "$HERMIT/target" "$CO/target" 2>/dev/null
+  SLOT_CREATED=1
+  CO=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["checkouts"][0]["path"])' <<<"$create_output")
+  parse_rc=$?
+  if [ "$parse_rc" -ne 0 ] || [ ! -d "$CO" ]; then
+    printf '%s\n' \
+      "stress-burst: wrkslots returned no readable checkout path." \
+      "state: REFUSED -- no workload ran, so this is WT_FAIL rather than a test result." \
+      "remedy: run '$WRKSLOTS status --slot $SLOT --format json' and inspect the recorded path." >&2
+    emit "$SHA_REQ,,,,,,,,WT_FAIL"
+    exit 0
+  fi
+  if [ ! -d "$TARGET_DIR" ] && [ -d "$HERMIT/target" ]; then
+    cp -a --reflink=auto "$HERMIT/target" "$TARGET_DIR" 2>/dev/null || true
+  fi
   SHA="$(git -C "$CO" rev-parse HEAD 2>/dev/null || echo "$SHA_REQ")"
   bstart=$(date +%s)
   DETCOR_PACKAGE="$(detcore_package_name "$CO")"
@@ -87,7 +145,7 @@ else
     detcore | hermit-detcore) ;;
     *) SHORT="$(git -C "$CO" rev-parse --short HEAD 2>/dev/null)"; emit "$SHA,$SHORT,$(( $(date +%s)-bstart )),$WIDTH,,,,,BUILD_FAIL"; exit 0 ;;
   esac
-  ( cd "$CO" && cargo test -p "$DETCOR_PACKAGE" --test "$BIN_NAME" --no-run ) >/dev/null 2>&1 \
+  ( cd "$CO" && CARGO_TARGET_DIR="$TARGET_DIR" cargo test -p "$DETCOR_PACKAGE" --test "$BIN_NAME" --no-run ) >/dev/null 2>&1 \
     || { SHORT="$(git -C "$CO" rev-parse --short HEAD 2>/dev/null)"; emit "$SHA,$SHORT,$(( $(date +%s)-bstart )),$WIDTH,,,,,BUILD_FAIL"; exit 0; }
   BUILD_S=$(( $(date +%s)-bstart ))
 fi
@@ -109,13 +167,14 @@ fi
 # Locate the newest test binary that actually contains TEST_PATH (multiple
 # feature builds can coexist in deps/). Mirrors probe.sh's --list verification.
 BIN=""
+SEARCH_TARGET="${TARGET_DIR:-${TARGET_OVERRIDE:-$CO/target}}"
 while IFS= read -r cand; do
   [ -x "$cand" ] || continue
   if "$cand" "$TEST_PATH" --exact --list >/dev/null 2>&1 \
      && "$cand" "$TEST_PATH" --exact --list 2>/dev/null | grep -q .; then
     BIN="$cand"; break
   fi
-done < <(find "$CO/target" -maxdepth 3 -type f -name "${BIN_NAME}-*" ! -name '*.d' -printf '%T@ %p\n' 2>/dev/null | sort -rn | cut -d' ' -f2-)
+done < <(find "$SEARCH_TARGET" -maxdepth 3 -type f -name "${BIN_NAME}-*" ! -name '*.d' -printf '%T@ %p\n' 2>/dev/null | sort -rn | cut -d' ' -f2-)
 
 [ -n "$BIN" ] || { emit "$SHA,$SHORT,$BUILD_S,$WIDTH,,,,,NOBIN"; exit 0; }
 if ! "$BIN" "$TEST_PATH" --exact --list 2>/dev/null | grep -q .; then
@@ -123,7 +182,7 @@ if ! "$BIN" "$TEST_PATH" --exact --list 2>/dev/null | grep -q .; then
 fi
 
 # --- the burst ---------------------------------------------------------------
-LOG="$(mktemp -d)"; trap 'rm -rf "$LOG"' EXIT
+LOG="$(mktemp -d)"
 touch "$LOG/burst.txt"
 for i in $(seq 1 "$WIDTH"); do
   if [ -n "$CAPTURE_DIR" ]; then

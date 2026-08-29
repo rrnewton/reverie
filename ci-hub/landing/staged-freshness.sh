@@ -56,11 +56,10 @@
 #         git update-ref refs/heads/<branch> "$commit"
 #         unset GIT_INDEX_FILE
 #
-#   (b) isolated detached worktree -- its own index by construction:
-#         git worktree add --detach /tmp/land origin/main
-#         git -C /tmp/land cherry-pick <your commit>
-#         # push that single commit, verify with ls-remote, then remove
-#         git worktree remove --force /tmp/land
+#   (b) coordinator-provided wrkslots checkout -- its own index by construction:
+#         ask the coordinator for worktrees/slots/<slot>
+#         git -C worktrees/slots/<slot> cherry-pick <your commit>
+#         # push that single commit and verify with ls-remote
 #
 # (b) additionally sidesteps a rewritten local main, because the commit reaches
 # the remote on its own rather than depending on local main's state.

@@ -26,6 +26,10 @@ def completed(command: list[str], rc: int = 0, stdout: str = "", stderr: str = "
     return subprocess.CompletedProcess(command, rc, stdout, stderr)
 
 
+def wrkslots_action(command: list[str], action: str) -> bool:
+    return command[0].endswith("ci-hub/bin/wrkslots") and action in command
+
+
 class FakeRun:
     def __init__(self, checkout: Path) -> None:
         self.checkout = checkout
@@ -94,36 +98,70 @@ class FakeRun:
 
     def __call__(self, command: list[str], **_kwargs: object):
         self.commands.append(command)
+        if command[0].endswith("ci-hub/bin/wrkslots") and "create" in command:
+            slot = command[command.index("create") + 1]
+            project_root = Path(command[command.index("--project-root") + 1])
+            self.fresh = project_root / "worktrees" / "validate" / slot
+            self._materialize_fresh_checkout()
+            return completed(command, stdout=f"created slot={slot}\n")
+        if command[0].endswith("ci-hub/bin/wrkslots") and "remove" in command:
+            if self.fresh is not None:
+                self.removed.append(str(self.fresh))
+                shutil.rmtree(self.fresh, ignore_errors=True)
+            return completed(command, stdout="removed and archived validation slot\n")
+        if (
+            command[0].endswith("ci-hub/bin/wrkslots")
+            and "recover" in command
+            and "--legacy-validate-checkout" in command
+        ):
+            project_root = Path(command[command.index("--project-root") + 1])
+            relative = Path(
+                command[command.index("--legacy-validate-checkout") + 1]
+            )
+            fresh = project_root / relative
+            self.removed.append(str(fresh))
+            shutil.rmtree(fresh, ignore_errors=True)
+            return completed(
+                command,
+                stdout="recovered completed legacy validation checkout\n",
+            )
         if command[:2] == ["mktemp", "-d"] and "validate-cargo-" in command[2]:
             private = Path(command[2].replace("XXXXXXXX", "abcd1234"))
             private.mkdir(parents=True, exist_ok=True)
             return completed(command, stdout=f"{private}\n")
         if command[:2] == ["mktemp", "-d"]:
             self.fresh = Path(command[2].replace("XXXXXXXX", "abcd1234"))
-            self.fresh.mkdir(parents=True, exist_ok=True)
-            (self.fresh / "scripts").mkdir(parents=True, exist_ok=True)
-            (self.fresh / "scripts/validate.rs").write_text("#!/usr/bin/env rust-script\n")
-            if self.fresh_complete:
-                dep = self.fresh / "agent-utils/rs" / self.fresh_runner_name
-                dep.mkdir(parents=True, exist_ok=True)
-                (dep / "Cargo.toml").write_text("[package]\n")
-                if self.fresh_runner_executable:
-                    executable = (
-                        self.fresh / "agent-utils/common/bin" / self.fresh_runner_name
-                    )
-                    executable.parent.mkdir(parents=True, exist_ok=True)
-                    executable.write_text("#!/bin/sh\n")
-            if self.plant_receipt is not None:
-                receipt = self.fresh / self.plant_receipt
-                receipt.parent.mkdir(parents=True, exist_ok=True)
-                receipt.write_text(f'{{"commit": "{SHA}", "cwd": "{self.fresh}"}}\n')
+            self._materialize_fresh_checkout()
             return completed(command, stdout=f"{self.fresh}\n")
+        return self._run_after_checkout_setup(command)
+
+    def _materialize_fresh_checkout(self) -> None:
+        assert self.fresh is not None
+        self.fresh.mkdir(parents=True, exist_ok=True)
+        (self.fresh / "scripts").mkdir(parents=True, exist_ok=True)
+        (self.fresh / "scripts/validate.rs").write_text("#!/usr/bin/env rust-script\n")
+        if self.fresh_complete:
+            dep = self.fresh / "agent-utils/rs" / self.fresh_runner_name
+            dep.mkdir(parents=True, exist_ok=True)
+            (dep / "Cargo.toml").write_text("[package]\n")
+            if self.fresh_runner_executable:
+                executable = self.fresh / "agent-utils/common/bin" / self.fresh_runner_name
+                executable.parent.mkdir(parents=True, exist_ok=True)
+                executable.write_text("#!/bin/sh\n")
+        if self.plant_receipt is not None:
+            receipt = self.fresh / self.plant_receipt
+            receipt.parent.mkdir(parents=True, exist_ok=True)
+            receipt.write_text(f'{{"commit": "{SHA}", "cwd": "{self.fresh}"}}\n')
+
+    def _run_after_checkout_setup(self, command: list[str]):
         if command[:2] == ["rm", "-rf"]:
             shutil.rmtree(command[-1], ignore_errors=True)
             return completed(command)
         if command[:1] == ["timeout"] and "fetch" in command:
             return completed(command)
         if command[:2] == ["git", "clone"]:
+            self.fresh = Path(command[-1])
+            self._materialize_fresh_checkout()
             return completed(command)
         if command[:5] == ["git", "-C", str(self.checkout), "remote", "get-url"]:
             return completed(command, stdout="https://github.com/rrnewton/hermit.git\n")
@@ -520,8 +558,7 @@ class StartUnitTest(unittest.TestCase):
         cleanup_index = next(
             index
             for index, command in enumerate(self.fake.commands)
-            if command[:3] == ["git", "-C", str(self.checkout)]
-            and command[3:5] == ["worktree", "remove"]
+            if wrkslots_action(command, "remove")
         )
         self.assertLess(receipt_index, scorecard_index)
         self.assertLess(scorecard_index, cleanup_index)
@@ -1780,9 +1817,7 @@ class StartUnitTest(unittest.TestCase):
         self.assertEqual(str(self.checkout), self._working_directory())
         self.assertFalse(
             any(
-                command[:2] == ["mktemp", "-d"]
-                and len(command) > 2
-                and "validate-fresh-" in command[2]
+                wrkslots_action(command, "create")
                 for command in self.fake.commands
             ),
             "opt-out must not build a temp checkout",
@@ -1825,7 +1860,7 @@ class StartUnitTest(unittest.TestCase):
             self.checkout,
             SHA,
             run=self.fake,
-            parent=self.root / "ignored",
+            parent=self.root / "worktrees" / "validate",
             repo="rrnewton/hermit",
         )
 
@@ -1839,7 +1874,7 @@ class StartUnitTest(unittest.TestCase):
                 self.checkout,
                 SHA,
                 run=self.fake,
-                parent=self.root / "ignored",
+                parent=self.root / "worktrees" / "validate",
                 repo="rrnewton/hermit",
             )
 
@@ -1863,12 +1898,12 @@ class StartUnitTest(unittest.TestCase):
             for command in self.fake.commands
             if command[1:3] == ["validate-status", "--sha"]
             or (len(command) >= 2 and command[-2].endswith("validate_rows.py"))
-            or command[3:5] == ["worktree", "remove"]
+            or wrkslots_action(command, "remove")
         ]
         self.assertEqual(["status", "identity", "remove"], kinds)
         self.assertEqual([str(self.fake.fresh)], self.fake.removed)
 
-    def test_cleanup_falls_back_to_the_temp_checkout_when_source_is_missing(self) -> None:
+    def test_cleanup_uses_wrkslots_even_when_source_is_missing(self) -> None:
         fresh = self.root / "worktrees/validate/validate-fresh-source-gone"
         fresh.mkdir(parents=True)
         (fresh / ".git").write_text("gitdir: shared/worktrees/source-gone\n")
@@ -1883,7 +1918,9 @@ class StartUnitTest(unittest.TestCase):
         self.assertEqual([str(fresh)], self.fake.removed)
         self.assertTrue(
             any(
-                command[:4] == ["git", "-C", str(fresh), "worktree"]
+                command[0].endswith("ci-hub/bin/wrkslots")
+                and "remove" in command
+                and "--validate-complete" in command
                 for command in self.fake.commands
             )
         )

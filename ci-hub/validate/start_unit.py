@@ -577,7 +577,7 @@ def run_command(command: Sequence[str], **kwargs: object) -> subprocess.Complete
     #
     # Honour it here rather than deleting it at the call sites: the callers were
     # written against subprocess.run semantics and check=True is load-bearing in
-    # create_fresh_checkout, where a failed `git worktree add` must raise instead
+    # prepare_fresh_checkout, where a failed `wrkslots create` must raise instead
     # of yielding an empty tree that validates fast and green.
     check = bool(kwargs.pop("check", False))
     with tempfile.TemporaryFile("w+b") as out, tempfile.TemporaryFile("w+b") as err:
@@ -791,16 +791,9 @@ def prepare_fresh_checkout(
     the launch, never quietly become a fast green.
     """
     parent = require_guest_visible_root(parent, role="fresh-checkout parent")
-    fresh = require_guest_visible_root(
-        Path(
-            checked_output(
-                ["mktemp", "-d", str(parent / "validate-fresh-XXXXXXXX")],
-                run=run,
-                purpose="cannot create temp checkout directory",
-            )
-        ),
-        role="fresh checkout",
-    )
+    state_root = parent.parent.parent
+    slot = f"validate-fresh-{target[:12]}-{os.getpid()}-{secrets.token_hex(4)}"
+    fresh = require_guest_visible_root(parent / slot, role="fresh checkout")
     # Ordinary validation uses a worktree: it shares the source object store,
     # so this costs no object copy. Frozen validation needs independent refs.
     # Its target is deliberately behind the freshly observed origin/main, but
@@ -847,6 +840,7 @@ def prepare_fresh_checkout(
     # assert-no-network and the fixed image exist to provide.
     with git_mutation_lock(source, run=run):
         if independent_refs:
+            fresh.mkdir(mode=0o700)
             origin_url = checked_output(
                 ["git", "-C", str(source), "remote", "get-url", "origin"],
                 run=run,
@@ -880,10 +874,80 @@ def prepare_fresh_checkout(
                 check=True,
             )
         else:
-            run(
-                ["git", "-C", str(source), "worktree", "add", "--detach", str(fresh), target],
-                check=True,
+            repository = state_root / repo.rsplit("/", 1)[-1]
+            try:
+                repository_relative = repository.resolve(strict=True).relative_to(
+                    state_root.resolve(strict=True)
+                )
+            except (OSError, ValueError) as error:
+                raise RuntimeError(
+                    f"cannot locate the managed source repository for {repo} beneath "
+                    f"{state_root}: {error}"
+                ) from error
+            if source.resolve() != repository.resolve():
+                source_remote = checked_output(
+                    ["git", "-C", str(source), "remote", "get-url", "origin"],
+                    run=run,
+                    purpose="cannot resolve validation source remote",
+                )
+                repository_remote = checked_output(
+                    ["git", "-C", str(repository), "remote", "get-url", "origin"],
+                    run=run,
+                    purpose="cannot resolve managed source remote",
+                )
+                if source_remote != repository_remote:
+                    raise RuntimeError(
+                        "validation source and managed source have different origin URLs; "
+                        "refusing to copy a commit into the wrong repository"
+                    )
+                run(
+                    [
+                        "git",
+                        "-C",
+                        str(repository),
+                        "fetch",
+                        "--no-tags",
+                        str(source),
+                        target,
+                    ],
+                    check=True,
+                )
+            created = run(
+                [
+                    str(state_root / "ci-hub/bin/wrkslots"),
+                    "--project-root",
+                    str(state_root),
+                    "--allow-existing-unregistered-worktrees",
+                    "create",
+                    slot,
+                    "--slot-type",
+                    "validate",
+                    "--coordinator-authorized",
+                    "--agent",
+                    f"validate-{slot}",
+                    "--task",
+                    f"validate {target}",
+                    "--purpose",
+                    f"validate commit {target}",
+                    "--owner-pid",
+                    str(os.getpid()),
+                    "--coordinator-pid",
+                    str(os.getpid()),
+                    "--repo",
+                    f"checkout={repository_relative.as_posix()}",
+                    "--start",
+                    f"checkout={target}",
+                ],
+                check=False,
             )
+            if created.returncode != 0:
+                detail = created.stderr.strip() or created.stdout.strip()
+                raise RuntimeError(
+                    "wrkslots could not create the validation checkout. state: "
+                    "REFUSED -- validation never ran and no result exists. remedy: "
+                    "follow the wrkslots error, then rerun validate-run"
+                    + (f": {detail}" if detail else "")
+                )
         head = checked_output(
             ["git", "-C", str(fresh), "rev-parse", "HEAD^{commit}"],
             run=run,
@@ -946,7 +1010,13 @@ def prepare_fresh_checkout(
     return fresh
 
 
-def remove_fresh_checkout(source: Path, fresh: Path, *, run: Runner) -> bool:
+def remove_fresh_checkout(
+    source: Path,
+    fresh: Path,
+    *,
+    run: Runner,
+    completed_record: Path | None = None,
+) -> bool:
     """Remove the temp worktree AND deregister it; return observed absence."""
     # A frozen checkout is a standalone shared clone: `.git` is its own
     # directory and it has no registration in the source repository. Ordinary
@@ -961,46 +1031,91 @@ def remove_fresh_checkout(source: Path, fresh: Path, *, run: Runner) -> bool:
                 file=sys.stderr,
             )
         return not fresh.exists()
-    failures: list[str] = []
-    candidates = [source]
-    if fresh != source:
-        candidates.append(fresh)
-    for repository in candidates:
-        try:
-            with git_mutation_lock(repository, run=run):
-                removal = run(
-                    [
-                        "git",
-                        "-C",
-                        str(repository),
-                        "worktree",
-                        "remove",
-                        "--force",
-                        str(fresh),
-                    ],
-                    check=False,
+    try:
+        validate_parent = fresh.parent
+        worktrees = validate_parent.parent
+        if validate_parent.name == "validate" and worktrees.name == "worktrees":
+            state_root = worktrees.parent
+            command = [
+                str(state_root / "ci-hub/bin/wrkslots"),
+                "--project-root",
+                str(state_root),
+                "--allow-existing-unregistered-worktrees",
+                "remove",
+                fresh.name,
+                "--validate-complete",
+                "--coordinator-pid",
+                str(os.getpid()),
+                "--expected-generation",
+                "1",
+            ]
+        elif validate_parent.name == "ignored":
+            state_root = validate_parent.parent
+            if completed_record is None:
+                raise RuntimeError(
+                    "historical checkout cleanup requires its completed validation record"
                 )
-                run(
-                    ["git", "-C", str(repository), "worktree", "prune"],
-                    check=False,
-                )
-        except RuntimeError as error:
-            failures.append(f"{repository}: {error}")
-            continue
-        if not fresh.exists():
-            return True
-        failures.append(
-            f"{repository}: git worktree remove exited "
-            f"{getattr(removal, 'returncode', 'unknown')}"
-        )
-    removed = not fresh.exists()
-    if not removed:
+            try:
+                checkout_relative = fresh.relative_to(state_root)
+                record_relative = completed_record.resolve().relative_to(state_root)
+            except ValueError as error:
+                raise RuntimeError(
+                    "historical checkout or completed record is outside the project root"
+                ) from error
+            repository = state_root / source.name
+            try:
+                repository_relative = repository.relative_to(state_root)
+            except ValueError as error:
+                raise RuntimeError(
+                    "historical checkout repository is outside the project root"
+                ) from error
+            command = [
+                str(state_root / "ci-hub/bin/wrkslots"),
+                "--project-root",
+                str(state_root),
+                "--allow-existing-unregistered-worktrees",
+                "recover",
+                "--coordinator-pid",
+                str(os.getpid()),
+                "--legacy-validate-checkout",
+                checkout_relative.as_posix(),
+                "--completed-record",
+                record_relative.as_posix(),
+                "--repository",
+                repository_relative.as_posix(),
+            ]
+        else:
+            raise RuntimeError(
+                f"checkout is outside worktrees/validate and the historical ignored layout: {fresh}"
+            )
+        removal = run(command, check=False)
+    except RuntimeError as error:
         print(
-            f"validate-run: temp checkout still exists after cleanup attempt: {fresh}; "
-            f"attempts: {'; '.join(failures)}",
+            f"validate-run: wrkslots cleanup could not run for {fresh}: {error}; "
+            "the checkout and its lifecycle record were retained. Run "
+            "'ci-hub/bin/wrkslots recover --coordinator-pid PID' if an interrupted "
+            "operation is reported, otherwise rerun the printed remove command.",
             file=sys.stderr,
         )
-    return removed
+        return False
+    if removal.returncode != 0:
+        detail = removal.stderr.strip() or removal.stdout.strip() or (
+            f"exit {removal.returncode}"
+        )
+        print(
+            f"validate-run: wrkslots retained validation checkout {fresh}: {detail}",
+            file=sys.stderr,
+        )
+        return False
+    if fresh.exists():
+        print(
+            f"validate-run: wrkslots reported success but checkout still exists at {fresh}; "
+            "state: RETAINED -- cleanup is not confirmed. remedy: run "
+            "'ci-hub/bin/wrkslots doctor --all-machines' and inspect the slot record.",
+            file=sys.stderr,
+        )
+        return False
+    return True
 
 
 def archive_orphaned_receipts(
@@ -1132,6 +1247,7 @@ def cleanup_recorded_checkout(
     root: Path,
     record: Mapping[str, Any],
     *,
+    record_path: Path,
     unit: str,
     run: Runner,
     check_processes: bool = True,
@@ -1162,7 +1278,12 @@ def cleanup_recorded_checkout(
     else:
         repo = canonical_repo(str(record.get("repo", "rrnewton/hermit")))
         source = root / repo.rsplit("/", 1)[-1]
-    removed = remove_fresh_checkout(source, checkout, run=run)
+    removed = remove_fresh_checkout(
+        source,
+        checkout,
+        run=run,
+        completed_record=record_path,
+    )
     return (
         removed,
         archived,
@@ -1289,6 +1410,7 @@ def sweep_completed_checkouts(root: Path, *, run: Runner) -> dict[str, Any]:
             cleaned, archived, reason = cleanup_recorded_checkout(
                 root,
                 record,
+                record_path=path,
                 unit=unit,
                 run=run,
                 check_processes=True,
@@ -2300,7 +2422,12 @@ def cleanup_after_attach(
     """Finish cleanup owned by a caller that previously stopped waiting."""
     try:
         cleaned, archived, reason = cleanup_recorded_checkout(
-            root, record, unit=unit, run=run, check_processes=True
+            root,
+            record,
+            record_path=record_path,
+            unit=unit,
+            run=run,
+            check_processes=True,
         )
     except (OSError, RuntimeError, ValueError) as error:
         print(

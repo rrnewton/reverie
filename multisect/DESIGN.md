@@ -24,7 +24,7 @@ parts the engine deliberately leaves to the caller:
 |---|---|
 | commit selection, green-rate model, recursion, verdict thresholds | `debug/multisect` engine |
 | checkout + build + run one probe | `multisect-probe` |
-| worktree pool + guaranteed cleanup + gc | orchestrator |
+| registered validation checkout + cleanup + cache gc | probe + orchestrator |
 | known-green anchor from ci-hub | `lib/anchors.py` |
 | up-front ETA + cost lines | `lib/estimate.py` + orchestrator |
 
@@ -40,17 +40,17 @@ a question asked of the agent.
 ## Checkout strategy: `git worktree` (decided with evidence)
 
 Considered: full clone (slow, duplicates the object store), `cp -a`/reflink copy
-(duplicates or COW-then-diverges; risks stale `target/`), locking fleet slots
-(contends with other agents; caps parallelism at the slot count), and
-`git worktree`. Worktree wins on every axis that matters here: it shares the
-parent `.git` (0.18 s, 11 MiB source), gives each probe its own `target/` (Hard
-Invariant 8: no shared writable build dir), and does not touch the fleet slot
-pool, so parallelism is bounded by cores/courtesy rather than a fixed pool.
+(duplicates or COW-then-diverges; risks stale `target/`), and registered linked
+worktrees. `wrkslots` now creates each short-lived validation checkout, while a
+per-commit target directory outside the checkout preserves warm build artifacts.
+Parallelism remains bounded by cores and the existing per-commit lock rather
+than by agent-slot ownership.
 
 Two findings shaped the implementation:
 
-- **Concurrent `git worktree add` collides** (repo-global metadata lock). Fix:
-  serialize only the add via a pool-global `flock`; builds run concurrent.
+- **Concurrent checkout creation must remain registered.** `wrkslots` owns the
+  repository-global mutation and append-only lifecycle record; builds run
+  concurrently after creation.
 - **Cold build is the safe default; reflink warm-seed is opt-in.** A seeded
   `target/` risks stale reuse and pays a ~10 s absolute-path fingerprint relink
   tax, so the default is a clean per-worktree cold build. Reps 2..N on the same
@@ -101,9 +101,10 @@ machine-readable convention any tool can adopt. The orchestrator also prints its
 own `COST ACTUAL` in a `finally` block, guaranteeing wall+CPU even if the wrapper
 is absent or the run aborts.
 
-## Pool lifecycle (never orphan)
+## Pool lifecycle
 
-Worktrees live under `multisect/ignored/` (globally gitignored). `run` and
-`calibrate` clean the pool in a `finally` block; `gc` reclaims anything leaked by
-a killed run by reading each worktree's `.git` pointer back to its owning repo and
-running `git worktree remove --force` + `prune`. Nothing is ever left orphaned.
+Validation worktrees live under `worktrees/validate/`; build caches and probe
+output live under `multisect/ignored/`. Each probe removes its slot through
+`wrkslots` on exit. `gc` clears non-worktree cache directories and deliberately
+retains historical unregistered worktrees, naming the inspection and migration
+remedy instead of deleting evidence it cannot classify.

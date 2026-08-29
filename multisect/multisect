@@ -28,7 +28,7 @@ Subcommands:
     run          calibrate -> print ETA -> run the search (wall+CPU always)
     estimate     calibrate + print ETA only (no search)
     calibrate    run one probe, print measured cold/warm build + test costs
-    gc           remove leaked probe-pool worktrees (never orphan copies)
+    gc           clear probe caches while retaining unregistered historical worktrees
 """
 
 from __future__ import annotations
@@ -179,21 +179,20 @@ def calibrate(
 # ---------------------------------------------------------------------------
 # pool cleanup -- guaranteed, never orphan
 # ---------------------------------------------------------------------------
-def cleanup_pool(repo: Path, pool: Path) -> None:
+def cleanup_pool(repo: Path, pool: Path) -> tuple[Path, ...]:
+    del repo
     if not pool.exists():
-        return
+        return ()
+    retained: list[Path] = []
     for wt in sorted(pool.glob("wt-*")):
-        subprocess.run(
-            ["git", "-C", str(repo), "worktree", "remove", "--force", str(wt)],
-            capture_output=True,
-            check=False,
-        )
-        if wt.exists():
+        if (wt / ".git").exists() or (wt / ".git").is_symlink():
+            retained.append(wt)
+        else:
             shutil.rmtree(wt, ignore_errors=True)
-    subprocess.run(
-        ["git", "-C", str(repo), "worktree", "prune"], capture_output=True, check=False
-    )
+    if retained:
+        return tuple(retained)
     shutil.rmtree(pool, ignore_errors=True)
+    return ()
 
 
 # ---------------------------------------------------------------------------
@@ -351,8 +350,16 @@ def do_run(args) -> int:
                 "consider narrowing the interval to build-clean commits."
             )
         if not args.keep_pool:
-            cleanup_pool(repo, pool)
-            eprint(f"[pool] cleaned {pool}")
+            retained = cleanup_pool(repo, pool)
+            if retained:
+                eprint(
+                    "[pool] REFUSED to delete unregistered historical worktree(s): "
+                    + ", ".join(str(path) for path in retained)
+                    + ". state: RETAINED -- wrkslots has no lifecycle record for them. "
+                    "remedy: inspect and migrate or salvage them before removal."
+                )
+            else:
+                eprint(f"[pool] cleaned {pool}")
         else:
             eprint(f"[pool] retained {pool} (--keep-pool)")
     return rc
@@ -374,44 +381,49 @@ def do_calibrate(args) -> int:
         # Standalone calibrate must not leak its worktree (run/ reuses it, so
         # run cleans via cleanup_pool; here we own the whole pool).
         if not args.keep_pool:
-            cleanup_pool(repo, pool)
-            eprint(f"[pool] cleaned {pool}")
+            retained = cleanup_pool(repo, pool)
+            if retained:
+                eprint(
+                    "[pool] REFUSED to delete unregistered historical worktree(s): "
+                    + ", ".join(str(path) for path in retained)
+                    + ". state: RETAINED -- wrkslots has no lifecycle record for them. "
+                    "remedy: inspect and migrate or salvage them before removal."
+                )
+            else:
+                eprint(f"[pool] cleaned {pool}")
     return 0
 
 
 def do_gc(args) -> int:
-    """Remove leaked probe-pool worktrees under multisect/ignored/."""
+    """Clear probe caches without bypassing wrkslots for historical worktrees."""
     ignored = HERE / "ignored"
-    repos: set[Path] = set()
     if not ignored.exists():
         print("nothing to gc")
         return 0
     removed = 0
+    retained: list[Path] = []
     for pool in list(ignored.glob("pool*")) + list(ignored.glob("*/pool*")):
-        # Best-effort: prune each worktree via any repo that owns it.
         for wt in pool.glob("wt-*"):
-            gitfile = wt / ".git"
-            repo = None
-            if gitfile.is_file():
-                txt = gitfile.read_text()
-                # "gitdir: <repo>/.git/worktrees/<name>"
-                if "gitdir:" in txt:
-                    gd = txt.split("gitdir:", 1)[1].strip()
-                    repo = Path(gd).parents[2] if "/.git/worktrees/" in gd else None
-            if repo:
-                repos.add(repo)
-                subprocess.run(
-                    ["git", "-C", str(repo), "worktree", "remove", "--force", str(wt)],
-                    capture_output=True,
-                    check=False,
-                )
-            if wt.exists():
+            if (wt / ".git").exists() or (wt / ".git").is_symlink():
+                retained.append(wt)
+            else:
                 shutil.rmtree(wt, ignore_errors=True)
-            removed += 1
-        shutil.rmtree(pool, ignore_errors=True)
-    for repo in repos:
-        subprocess.run(["git", "-C", str(repo), "worktree", "prune"], capture_output=True, check=False)
-    print(f"gc removed {removed} probe worktree(s)")
+                removed += 1
+        if not any(pool.iterdir()):
+            pool.rmdir()
+    if retained:
+        print(
+            "gc REFUSED to remove unregistered historical worktree(s): "
+            + ", ".join(str(path) for path in retained),
+            file=sys.stderr,
+        )
+        print(
+            "state: RETAINED -- no wrkslots lifecycle record proves they are disposable. "
+            "remedy: inspect and migrate or salvage each checkout before removal.",
+            file=sys.stderr,
+        )
+        return 3
+    print(f"gc removed {removed} non-worktree probe cache directorie(s)")
     return 0
 
 

@@ -45,6 +45,20 @@ class OperationalHealthTest(unittest.TestCase):
             self.assertEqual(row["emit"]["kind"], "note")
             self.assertNotIn("skill", row["emit"])
 
+    def test_wrkslots_audit_is_a_bounded_coordinator_reminder(self) -> None:
+        config = yaml.safe_load(
+            (Path(__file__).resolve().parents[1] / "tick-hub.yaml").read_text()
+        )
+        reminder = next(
+            row for row in config["reminders"] if row["name"] == "wrkslots_audit"
+        )
+        self.assertEqual(3600, reminder["cadence_secs"])
+        self.assertEqual("ci-hub/bin/wrkslots audit --gate", reminder["gate"]["cmd"])
+        self.assertEqual(120, reminder["gate"]["timeout_secs"])
+        self.assertEqual("failure", reminder["gate"]["when"])
+        self.assertTrue(reminder["gate"]["capture"])
+        self.assertIn("{summary}", reminder["emit"]["title"])
+
     def test_github_main_red_is_a_warning(self) -> None:
         repos = [SimpleNamespace(repo="example/project", state="red", available=True)]
         with mock.patch.object(

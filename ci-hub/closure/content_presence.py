@@ -189,6 +189,18 @@ def added_lines(hunk: str) -> list[str]:
     return [line[1:] for line in hunk.splitlines()[1:] if line.startswith("+")]
 
 
+def _added_block_is_unique(lines: list[str], added: list[str]) -> bool:
+    if not added:
+        return False
+    hits = 0
+    for start in range(len(lines) - len(added) + 1):
+        if lines[start:start + len(added)] == added:
+            hits += 1
+            if hits > 1:
+                return False
+    return hits == 1
+
+
 def added_block_uniquely_present(worktree: Path, path: str, added: list[str]) -> bool:
     """Is this hunk's added text present at the target as ONE contiguous, in-order run?
 
@@ -198,8 +210,6 @@ def added_block_uniquely_present(worktree: Path, path: str, added: list[str]) ->
     stays CONTENT-LOST. The three refusals are the ones named in the module docstring --
     no added lines, non-contiguous or reordered, or a match that is not unique.
     """
-    if not added:
-        return False
     target_file = worktree / path
     if not target_file.is_file():
         return False
@@ -207,13 +217,17 @@ def added_block_uniquely_present(worktree: Path, path: str, added: list[str]) ->
         lines = target_file.read_text().splitlines()
     except (OSError, UnicodeDecodeError):
         return False
-    hits = 0
-    for start in range(len(lines) - len(added) + 1):
-        if lines[start:start + len(added)] == added:
-            hits += 1
-            if hits > 1:
-                return False
-    return hits == 1
+    return _added_block_is_unique(lines, added)
+
+
+def added_block_uniquely_present_at_target(
+    repo: Path, target: str, path: str, added: list[str]
+) -> bool:
+    """Check one committed target without consulting the caller's working tree."""
+    content = _git(repo, "show", f"{target}:{path}")
+    if content.returncode != 0:
+        return False
+    return _added_block_is_unique(content.stdout.splitlines(), added)
 
 
 def check(repo: Path, sha: str, target: str) -> Presence:
@@ -258,16 +272,18 @@ def check(repo: Path, sha: str, target: str) -> Presence:
         )
 
     # REVERSE-APPLY MUST BE EVALUATED AGAINST THE TARGET'S CONTENT, not against whatever
-    # the caller happens to have checked out. A temp worktree at the target is the only
-    # honest way to ask "is this hunk present ON MAIN"; checking the caller's working
-    # tree would answer a different question and would pass or fail for the wrong reason.
+    # the caller happens to have checked out. A private temporary index loaded from the
+    # target asks that exact question without creating an unregistered worktree or
+    # touching either the caller's index or working tree.
     missing: list[str] = []
     drifted: list[str] = []
     present = 0
-    with tempfile.TemporaryDirectory(prefix="content-presence-") as td:
-        wt = Path(td) / "t"
-        add = _git(repo, "worktree", "add", "--detach", "--quiet", str(wt), target)
-        if add.returncode != 0:
+    with tempfile.TemporaryDirectory(prefix="content-presence-index-") as td:
+        index = Path(td) / "index"
+        environment = git_env.sanitized_git_env()
+        environment["GIT_INDEX_FILE"] = str(index)
+        loaded = bounded_capture.git(["read-tree", target], cwd=repo, env=environment)
+        if loaded.returncode != 0:
             return Presence(
                 sha=sha,
                 target=target,
@@ -275,34 +291,33 @@ def check(repo: Path, sha: str, target: str) -> Presence:
                 is_ancestor=True,
                 hunks_total=len(hunks),
                 reason=(
-                    "could not materialise the target for comparison: "
-                    f"{add.stderr.strip()[:200]}"
+                    "could not load the target into a private Git index: "
+                    f"{loaded.stderr.strip()[:200]}"
                 ),
             )
-        try:
-            for path, header, hunk in hunks:
-                patch = header + hunk
-                if not patch.endswith("\n"):
-                    patch += "\n"
-                rev = bounded_capture.git(
-                    ["apply", "--reverse", "--check", "-"],
-                    cwd=wt,
-                    input=patch,
-                    env=git_env.sanitized_git_env(),
-                )
-                if rev.returncode == 0:
-                    present += 1
-                    continue
-                # The hunk did not reverse-apply. Before calling that a loss, ask the
-                # weaker question the reverse-apply cannot: are this hunk's ADDED lines
-                # actually there? Only a confirmed yes downgrades it to context drift.
-                label = f"{path}@{hunk.splitlines()[0].strip()}"
-                if added_block_uniquely_present(wt, path, added_lines(hunk)):
-                    drifted.append(label)
-                else:
-                    missing.append(label)
-        finally:
-            _git(repo, "worktree", "remove", "--force", str(wt))
+        for path, header, hunk in hunks:
+            patch = header + hunk
+            if not patch.endswith("\n"):
+                patch += "\n"
+            rev = bounded_capture.git(
+                ["apply", "--cached", "--reverse", "--check", "-"],
+                cwd=repo,
+                input=patch,
+                env=environment,
+            )
+            if rev.returncode == 0:
+                present += 1
+                continue
+            # The hunk did not reverse-apply. Before calling that a loss, ask the
+            # weaker question the reverse-apply cannot: are this hunk's ADDED lines
+            # actually there? Only a confirmed yes downgrades it to context drift.
+            label = f"{path}@{hunk.splitlines()[0].strip()}"
+            if added_block_uniquely_present_at_target(
+                repo, target, path, added_lines(hunk)
+            ):
+                drifted.append(label)
+            else:
+                missing.append(label)
 
     if present == len(hunks):
         return Presence(

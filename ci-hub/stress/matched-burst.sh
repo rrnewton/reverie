@@ -34,15 +34,39 @@
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-HERMIT="$ROOT/hermit"
-WT="$ROOT/ignored/ci-hub/stress-wt/nightly"
 CALIBDIR="$ROOT/ignored/ci-hub/stress-calib"
 
 SHA="$1"; WIDTH="${2:-64}"; TIMEOUT="${3:-20}"; WL="$4"
 BIN_NAME="${WL%%:*}"                       # e.g. tests_misc
+WRKSLOTS="$ROOT/ci-hub/bin/wrkslots"
+SLOT="stress-matched-${SHA:0:12}-$$"
+SLOT_CREATED=0
+TARGET_DIR="$ROOT/ignored/ci-hub/stress-target/matched"
+WT=""
 WAVES="${STRESS_WAVES:-10}"
 CALIB_BIN="${STRESS_CALIB_BIN:-$CALIBDIR/calib-9c964fce}"
 MATCHED_SH="${MATCHED_SH:-$ROOT/experiments/multisect_detcore_misc_20260803/matched.sh}"
+
+cleanup() {
+  local rc=$?
+  trap - EXIT
+  if [ "$SLOT_CREATED" -eq 1 ]; then
+    cleanup_output=$(
+      "$WRKSLOTS" --allow-existing-unregistered-worktrees \
+        remove "$SLOT" --validate-complete \
+        --coordinator-pid "$$" --expected-generation 1 2>&1
+    )
+    cleanup_rc=$?
+    if [ "$cleanup_rc" -ne 0 ]; then
+      printf '%s\n' \
+        "matched-burst: validation checkout RETAINED after wrkslots cleanup refused." \
+        "state: RETAINED -- the stress result remains exit $rc; cleanup did not complete." \
+        "remedy: $cleanup_output" >&2
+    fi
+  fi
+  exit "$rc"
+}
+trap cleanup EXIT
 
 short() { git -C "$WT" rev-parse --short HEAD 2>/dev/null || echo "${SHA:0:12}"; }
 row_err() { echo "$SHA,$(short 2>/dev/null || echo "${SHA:0:12}"),${1:-},$WIDTH,,,,,$2"; }
@@ -55,14 +79,36 @@ detcore_package_name() {
 [ -x "$MATCHED_SH" ]  || { row_err "" MATCHED_MISSING; exit 0; }
 [ -x "$CALIB_BIN" ]   || { row_err "" CALIB_MISSING;   exit 0; }
 
-# --- build the SUBJECT test binary at main HEAD (persistent worktree; no reflink)
-mkdir -p "$(dirname "$WT")" "$CALIBDIR"
-if [ ! -e "$WT/.git" ]; then
-  [ -e "$WT" ] && { git -C "$HERMIT" worktree remove --force "$WT" 2>/dev/null || rm -rf "$WT"; }
-  git -C "$HERMIT" worktree prune 2>/dev/null || true
-  git -C "$HERMIT" worktree add --detach "$WT" "$SHA" >/dev/null 2>&1 || { row_err "" WT_FAIL; exit 0; }
-else
-  git -C "$WT" checkout -q --detach "$SHA" >/dev/null 2>&1 || { row_err "" WT_FAIL; exit 0; }
+# --- build the SUBJECT at main HEAD in a registered validation checkout -------
+mkdir -p "$TARGET_DIR" "$CALIBDIR"
+create_output=$(
+  "$WRKSLOTS" --allow-existing-unregistered-worktrees \
+    create "$SLOT" --format json --slot-type validate \
+    --coordinator-authorized --agent "stress-matched-$$" \
+    --task "matched-stress-$SHA" \
+    --purpose "build the matched-load stress subject at its recorded commit" \
+    --owner-pid "$$" --coordinator-pid "$$" \
+    --repo checkout=hermit --start "checkout=$SHA"
+)
+create_rc=$?
+if [ "$create_rc" -ne 0 ]; then
+  printf '%s\n' \
+    "matched-burst: wrkslots could not create the validation checkout." \
+    "state: REFUSED -- no matched workload ran, so this is WT_FAIL rather than a test result." \
+    "remedy: follow the wrkslots refusal above, then rerun this command." >&2
+  row_err "" WT_FAIL
+  exit 0
+fi
+SLOT_CREATED=1
+WT=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["checkouts"][0]["path"])' <<<"$create_output")
+parse_rc=$?
+if [ "$parse_rc" -ne 0 ] || [ ! -d "$WT" ]; then
+  printf '%s\n' \
+    "matched-burst: wrkslots returned no readable checkout path." \
+    "state: REFUSED -- no matched workload ran, so this is WT_FAIL rather than a test result." \
+    "remedy: run '$WRKSLOTS status --slot $SLOT --format json' and inspect the recorded path." >&2
+  row_err "" WT_FAIL
+  exit 0
 fi
 
 bstart=$(date +%s)
@@ -71,7 +117,7 @@ case "$DETCOR_PACKAGE" in
   detcore | hermit-detcore) ;;
   *) row_err "$(( $(date +%s)-bstart ))" BUILD_FAIL; exit 0 ;;
 esac
-if ! ( cd "$WT" && with-proxy cargo test -p "$DETCOR_PACKAGE" --test "$BIN_NAME" --no-run ) >/dev/null 2>&1; then
+if ! ( cd "$WT" && CARGO_TARGET_DIR="$TARGET_DIR" with-proxy cargo test -p "$DETCOR_PACKAGE" --test "$BIN_NAME" --no-run ) >/dev/null 2>&1; then
   row_err "$(( $(date +%s)-bstart ))" BUILD_FAIL; exit 0
 fi
 BUILD_S=$(( $(date +%s)-bstart ))
@@ -80,7 +126,7 @@ BUILD_S=$(( $(date +%s)-bstart ))
 # ls -t is deliberate: this needs the NEWEST build artifact and a glob cannot order
 # by mtime. cargo names these <bin>-<hex>, so there is no whitespace to split on.
 # shellcheck disable=SC2010
-SUBJ_SRC="$(ls -t "$WT"/target/debug/deps/"$BIN_NAME"-* 2>/dev/null | grep -v '\.d$' | head -1)"
+SUBJ_SRC="$(ls -t "$TARGET_DIR"/debug/deps/"$BIN_NAME"-* 2>/dev/null | grep -v '\.d$' | head -1)"
 [ -x "$SUBJ_SRC" ] || { row_err "$BUILD_S" NOBIN; exit 0; }
 SUBJ_BIN="$CALIBDIR/subject-$(short)"
 cp "$SUBJ_SRC" "$SUBJ_BIN" && chmod +x "$SUBJ_BIN" || { row_err "$BUILD_S" NOBIN; exit 0; }

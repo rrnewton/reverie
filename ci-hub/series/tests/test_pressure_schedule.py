@@ -126,10 +126,9 @@ class PressureScheduleTest(unittest.TestCase):
             self.assertEqual(record["kind"], "bench")
             self.assertEqual(record["state"], "running")
             self.assertEqual(record["target"], "a" * 40)
-            self.assertEqual(
-                record["checkout"],
-                str(root / "ignored" / "ci-hub" / "pressure-test-worktree"),
-            )
+            checkout = Path(record["checkout"])
+            self.assertEqual(checkout.parent, root / "worktrees" / "validate")
+            self.assertTrue(checkout.name.startswith("pressure-aaaaaaaaaaaa-"))
 
     def test_previous_failure_is_reported_while_next_run_launches(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -242,7 +241,7 @@ class PressureScheduleTest(unittest.TestCase):
                     "unit": f"{pressure_schedule.UNIT}.service",
                     "target": "a" * 40,
                     "repo": "rrnewton/hermit",
-                    "checkout": str(root / "ignored/ci-hub/pressure-test-worktree"),
+                    "checkout": str(root / "worktrees/validate/pressure-test"),
                     "log": str(root / "ignored/ci-hub/pressure-test.log"),
                     "agent": "tick-pressure-test",
                     "started_at": "2026-08-28T07:00:00Z",
@@ -262,12 +261,16 @@ class PressureScheduleTest(unittest.TestCase):
                 self.assertEqual(
                     pressure_schedule.run_campaign("a" * 40, record, root), 0
                 )
-            self.assertIn("worktree", calls[0])
-            self.assertIn("--detach", calls[0])
+            self.assertTrue(calls[0][0].endswith("ci-hub/bin/wrkslots"))
+            self.assertIn("create", calls[0])
+            self.assertIn("--slot-type", calls[0])
+            self.assertIn("validate", calls[0])
             self.assertIn("submodule", calls[1])
             self.assertIn("validate-lock", calls[2])
             self.assertIn("bench", calls[2])
-            self.assertEqual(calls[3][3:6], ["worktree", "remove", "--force"])
+            self.assertTrue(calls[3][0].endswith("ci-hub/bin/wrkslots"))
+            self.assertIn("remove", calls[3])
+            self.assertIn("--validate-complete", calls[3])
             finished = pressure_schedule.run_registry.read_record(record)
             self.assertEqual(finished["state"], "completed")
             self.assertEqual(finished["result"], "passed")

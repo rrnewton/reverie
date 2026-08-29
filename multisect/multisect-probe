@@ -35,7 +35,7 @@
 #
 # Inputs from the configured probe (probes/<name>.env, exported by orchestrator):
 #   PROBE_REPO           git checkout that owns the .git objects to search
-#   PROBE_POOL_DIR       directory holding per-commit worktrees (orchestrator-owned)
+#   PROBE_POOL_DIR       directory holding per-commit build caches and probe output
 #   PROBE_BUILD_ARGV     build command; compiles the test WITHOUT running it
 #   PROBE_TEST_BIN_GLOB  glob (under target/) matching the compiled test binary
 #   PROBE_TEST_ARGV      args passed to the test binary (filter, --exact, etc.)
@@ -72,9 +72,36 @@ short="${MULTISECT_SHORT_COMMIT:-${MULTISECT_COMMIT:0:12}}"
 out="${MULTISECT_OUTPUT_DIR:-$PROBE_POOL_DIR/out-$short-r${MULTISECT_REP:-0}}"
 mkdir -p "$out"
 
-wt="$PROBE_POOL_DIR/wt-$short"
+project_root="${PROBE_PROJECT_ROOT:-$(dirname "$PROBE_REPO")}"
+wrkslots="${PROBE_WRKSLOTS:-$project_root/ci-hub/bin/wrkslots}"
+repository_name=$(basename "$PROBE_REPO")
+slot="multisect-${short}-${MULTISECT_REP:-0}-$$"
+slot_created=0
+wt=""
+target_dir="$PROBE_POOL_DIR/target-$short"
 lock="$PROBE_POOL_DIR/.lock-$short"
 mkdir -p "$PROBE_POOL_DIR"
+
+cleanup() {
+  local rc=$?
+  trap - EXIT
+  if [[ $slot_created -eq 1 ]]; then
+    cleanup_output=$(
+      "$wrkslots" --project-root "$project_root" \
+        --allow-existing-unregistered-worktrees remove "$slot" \
+        --validate-complete --coordinator-pid "$$" --expected-generation 1 2>&1
+    )
+    cleanup_rc=$?
+    if [[ $cleanup_rc -ne 0 ]]; then
+      printf '%s\n' \
+        "multisect-probe: validation checkout RETAINED after wrkslots cleanup refused." \
+        "state: RETAINED -- probe exit remains $rc; cleanup did not complete." \
+        "remedy: $cleanup_output" >&2
+    fi
+  fi
+  exit "$rc"
+}
+trap cleanup EXIT
 
 # Serialize any same-commit concurrency (reps are serial today, but a per-commit
 # flock keeps a future -j change or a retry from clobbering one worktree's build
@@ -86,36 +113,30 @@ if ! flock 9; then
 fi
 
 # --- checkout ------------------------------------------------------------------
-# git worktree shares .git objects with PROBE_REPO: ~0.2s, ~11M of source, and
-# NO separate object store. Decided with evidence; see experiments/
-# multisect-build-weight_20260803/.
-#
-# `git worktree add` takes a repo-global lock on the parent's worktree metadata,
-# so CONCURRENT adds from the same PROBE_REPO (different commits, run in
-# parallel by the engine) race and fail. Serialize ONLY the add itself via a
-# pool-global lock -- a short critical section -- then release it so builds run
-# concurrently in their separate worktrees (Hard Invariant 8 preserved).
-if [[ ! -e "$wt/.git" ]]; then
-  addlock="$PROBE_POOL_DIR/.worktree-add.lock"
-  exec 8>"$addlock"
-  flock 8
-  if [[ ! -e "$wt/.git" ]]; then
-    git -C "$PROBE_REPO" worktree add --detach "$wt" "$MULTISECT_COMMIT" \
-      >"$out/checkout.log" 2>&1
-    rc_add=$?
-  else
-    rc_add=0
-  fi
-  flock -u 8
-  exec 8>&-
-  if [[ $rc_add -ne 0 ]]; then
-    fail_infra "git worktree add failed for $short (see $out/checkout.log)"
-    exit 3
-  fi
-else
-  # Reused worktree (warm rep): make sure it is exactly at this commit.
-  git -C "$wt" checkout --detach --quiet "$MULTISECT_COMMIT" \
-    >>"$out/checkout.log" 2>&1 || true
+# Every repetition gets a registered validation checkout. The per-commit target
+# directory remains outside it, so warm repetitions retain build artifacts
+# without retaining or sharing an unregistered Git worktree.
+create_output=$(
+  "$wrkslots" --project-root "$project_root" \
+    --allow-existing-unregistered-worktrees create "$slot" --format json \
+    --slot-type validate --coordinator-authorized --agent "multisect-$$" \
+    --task "multisect-$MULTISECT_COMMIT" \
+    --purpose "build and run one multisect repetition" \
+    --owner-pid "$$" --coordinator-pid "$$" \
+    --repo "checkout=$repository_name" --start "checkout=$MULTISECT_COMMIT" \
+    2>"$out/checkout.log"
+)
+rc_add=$?
+if [[ $rc_add -ne 0 ]]; then
+  fail_infra "wrkslots could not create the validation checkout for $short (see $out/checkout.log); the probe never ran"
+  exit 3
+fi
+slot_created=1
+wt=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["checkouts"][0]["path"])' <<<"$create_output")
+parse_rc=$?
+if [[ $parse_rc -ne 0 || ! -d $wt ]]; then
+  fail_infra "wrkslots returned no readable checkout path for $slot; inspect wrkslots status"
+  exit 3
 fi
 
 # --- targeted minimal build (NOT under the hang timeout) -----------------------
@@ -123,7 +144,8 @@ fi
 # carried in PROBE_BUILD_ENV. It keeps file:line backtraces (this bug class
 # needs them) while being strictly cheaper than the default dev profile.
 build_start=$(date +%s.%N)
-if ! env ${PROBE_BUILD_ENV:-} bash -c "cd '$wt' && ${PROBE_BUILD_ARGV}" \
+if ! env CARGO_TARGET_DIR="$target_dir" ${PROBE_BUILD_ENV:-} \
+      bash -c "cd '$wt' && ${PROBE_BUILD_ARGV}" \
       >"$out/build.log" 2>&1; then
   # A build failure is INFRA, not a wedge: main commits normally compile, so a
   # break here almost certainly means an environmental problem or a range that
@@ -139,8 +161,9 @@ build_end=$(date +%s.%N)
 shopt -s nullglob
 testbin=""
 # ls -t is deliberate: newest-first is the point, and a glob cannot order by mtime.
+test_glob=${PROBE_TEST_BIN_GLOB#target/}
 # shellcheck disable=SC2045
-for cand in $(ls -t "$wt"/${PROBE_TEST_BIN_GLOB} 2>/dev/null); do
+for cand in $(ls -t "$target_dir"/$test_glob 2>/dev/null); do
   case "$cand" in
     *.d | *.dwo | *.dSYM) continue ;;
   esac
@@ -151,7 +174,7 @@ for cand in $(ls -t "$wt"/${PROBE_TEST_BIN_GLOB} 2>/dev/null); do
 done
 shopt -u nullglob
 if [[ -z "$testbin" ]]; then
-  fail_infra "no executable test binary matched $PROBE_TEST_BIN_GLOB under $wt/target"
+  fail_infra "no executable test binary matched $PROBE_TEST_BIN_GLOB under $target_dir"
   exit 3
 fi
 

@@ -169,6 +169,26 @@ reminders:
         component: worktree-disk-residue
       title: "worktree slots are idle on disk and reclaimable: {summary}"
 
+  # WRKSLOTS IS THE LIFECYCLE AUTHORITY. This read-only gate asks the same
+  # append-only record and reclaim preconditions used by remove; it does not
+  # reproduce those decisions in the reminder. A DELETABLE slot, interrupted
+  # operation, or unregistered directory needs coordinator attention. A live,
+  # TTL-fresh, held, or unverifiable slot remains visible but does not page as
+  # reclaimable. The command itself names the next evidence-based operation.
+  - name: wrkslots_audit
+    cadence_secs: 3600
+    gate:
+      timeout_secs: 120
+      cmd: ci-hub/bin/wrkslots audit --gate
+      when: failure
+      capture: true
+    emit:
+      kind: action
+      skill: hard-warn-coordinator
+      fields:
+        component: wrkslots-audit
+      title: "wrkslots found worktree lifecycle work: {summary}"
+
   # VALIDATE CHECKOUT CLEANUP MUST OUTLIVE THE PROCESS THAT STARTED THE RUN.
   # The launcher's waiter removes its checkout on the normal completion path,
   # but agents end, panes disappear, and waiters are killed while their detached

@@ -10,7 +10,7 @@ multisect is deliberately thin. It wraps the existing rate-aware search engine
 
 - a **probe harness** (`multisect-probe`): checkout → targeted-minimal-build →
   run-one-test → PASS/HANG/FAIL verdict, per commit-rep;
-- a **worktree pool** with guaranteed cleanup (never orphan copies);
+- a **registered validation checkout per probe**, removed through `wrkslots`;
 - a known-green **anchor** provider that consumes ci-hub history (`lib/anchors.py`);
 - an up-front **ETA-to-blame estimator** (`lib/estimate.py`), measured not guessed;
 - the **tool-cost convention** (`ci-hub/TOOL-COST-CONVENTION.md`): a `COST
@@ -34,7 +34,7 @@ recursion — that is the engine's job, and `hermit-multisect` depends on it liv
 # Measure one probe's build/test cost on this host:
 ./multisect/multisect calibrate --probe detcore_misc --good <sha>
 
-# Remove any leaked probe worktrees (never orphan copies):
+# Clear probe caches; retain and report any historical unregistered worktrees:
 ./multisect/multisect gc
 ```
 
@@ -96,14 +96,14 @@ other-nonzero→WEDGED · `125`→build-failed (WEDGED, but a `build-failed-<sha
 marker makes the orchestrator **warn** that the blame may be a compile break, not
 the target bug).
 
-## Checkout strategy: `git worktree` (decided with evidence)
+## Checkout strategy: registered validation slots
 
-Each probe materializes its commit with `git worktree add --detach` from
-`PROBE_REPO`: it shares the parent's `.git` object store (**0.18 s, 11 MiB of
-source**, no object duplication) and gives every probe its **own `target/`** so no
-two concurrent probes share a writable build dir. Because `git worktree add`
-takes a repo-global lock, multisect serializes **only the add** (a pool-global
-`flock`, short critical section) and lets builds run concurrently. Full data,
+Each repetition asks `wrkslots` for a validation checkout at the exact commit.
+The per-commit Cargo target directory stays under `multisect/ignored/`, outside
+the checkout, so warm repetitions retain build artifacts while every Git
+worktree remains registered and is removed through the same lifecycle record.
+The existing per-commit `flock` still prevents two repetitions from sharing a
+writable build directory. Full data behind the original linked-worktree choice,
 alternatives considered, and the build-weight table:
 [`experiments/multisect-build-weight_20260803/`](../experiments/multisect-build-weight_20260803/).
 
@@ -158,7 +158,7 @@ multisect/
 │   └── anchors.py       # ci-hub known-green anchor provider (fail-safe)
 ├── probes/
 │   └── detcore_misc.env # first customer: the reap-hang search
-├── ignored/             # worktree pool + run outputs (gitignored)
+├── ignored/             # build caches + run outputs (gitignored)
 ├── README.md
 └── DESIGN.md            # rationale: automation boundary, checkout, cost model
 ```

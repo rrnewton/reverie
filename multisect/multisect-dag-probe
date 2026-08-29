@@ -41,7 +41,7 @@
 #
 # Profile inputs (multisect/probes/<name>.env):
 #   PROBE_REPO       git checkout owning the objects to search
-#   PROBE_POOL_DIR   per-commit worktree pool (orchestrator-owned, gitignored)
+#   PROBE_POOL_DIR   per-commit build-cache and output pool (orchestrator-owned)
 #   PROBE_DAG        dag json, repo-relative (e.g. ci/dag/portable.json)
 #   PROBE_NODE       node tag to run (e.g. e2e.metadata)
 #   PROBE_NODE_TIMEOUT  outer bound, seconds; a wedge must not hang the search
@@ -73,14 +73,55 @@ declare_outcome() { printf '%s\t%s\n' "$1" "$2" > "$out/probe-outcome"; }
 
 infra() { declare_outcome INFRA "$1"; echo "PROBE INFRA: $1" >&2; exit 125; }
 
-wt="$PROBE_POOL_DIR/wt-$short"
-if [[ ! -d $wt ]]; then
-  addlock="$PROBE_POOL_DIR/.worktree-add.lock"
-  ( flock 9
-    [[ -d $wt ]] || git -C "$PROBE_REPO" worktree add --detach "$wt" "$MULTISECT_COMMIT" >/dev/null 2>&1
-  ) 9>"$addlock"
+project_root="${PROBE_PROJECT_ROOT:-$(dirname "$PROBE_REPO")}"
+wrkslots="${PROBE_WRKSLOTS:-$project_root/ci-hub/bin/wrkslots}"
+repository_name=$(basename "$PROBE_REPO")
+slot="multisect-dag-${short}-${MULTISECT_REP:-0}-$$"
+slot_created=0
+wt=""
+target_dir="$PROBE_POOL_DIR/target-$short"
+
+cleanup() {
+  local rc=$?
+  trap - EXIT
+  if [[ $slot_created -eq 1 ]]; then
+    cleanup_output=$(
+      "$wrkslots" --project-root "$project_root" \
+        --allow-existing-unregistered-worktrees remove "$slot" \
+        --validate-complete --coordinator-pid "$$" --expected-generation 1 2>&1
+    )
+    cleanup_rc=$?
+    if [[ $cleanup_rc -ne 0 ]]; then
+      printf '%s\n' \
+        "multisect-dag-probe: validation checkout RETAINED after wrkslots cleanup refused." \
+        "state: RETAINED -- probe exit remains $rc; cleanup did not complete." \
+        "remedy: $cleanup_output" >&2
+    fi
+  fi
+  exit "$rc"
+}
+trap cleanup EXIT
+
+create_output=$(
+  "$wrkslots" --project-root "$project_root" \
+    --allow-existing-unregistered-worktrees create "$slot" --format json \
+    --slot-type validate --coordinator-authorized --agent "multisect-dag-$$" \
+    --task "multisect-dag-$MULTISECT_COMMIT" \
+    --purpose "run one CI DAG node multisect repetition" \
+    --owner-pid "$$" --coordinator-pid "$$" \
+    --repo "checkout=$repository_name" --start "checkout=$MULTISECT_COMMIT" \
+    2>"$out/checkout.log"
+)
+create_rc=$?
+if [[ $create_rc -ne 0 ]]; then
+  infra "wrkslots could not create the validation checkout for $short (see $out/checkout.log); the node never ran"
 fi
-[[ -d $wt ]] || infra "could not materialise a worktree for $short"
+slot_created=1
+wt=$(python3 -c 'import json,sys; print(json.load(sys.stdin)["checkouts"][0]["path"])' <<<"$create_output")
+parse_rc=$?
+if [[ $parse_rc -ne 0 || ! -d $wt ]]; then
+  infra "wrkslots returned no readable checkout path for $slot; inspect wrkslots status"
+fi
 
 runner="${PROBE_RUNNER:-}"
 if [[ -z $runner ]]; then
@@ -94,6 +135,7 @@ fi
 
 log="$out/dag.log"
 timeout --signal=TERM --kill-after=30 "$PROBE_NODE_TIMEOUT" \
+  env CARGO_TARGET_DIR="$target_dir" \
   "$runner" run --dag "$PROBE_DAG" --only "$PROBE_NODE" >"$log" 2>&1
 rc=$?
 

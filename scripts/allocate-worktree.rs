@@ -84,9 +84,12 @@ struct ObservedOwnerLease {
 
 const USAGE: &str = r#"Usage: allocate-worktree.rs --agent NAME [OPTIONS]
 
-Allocate a worktree slot (nested layout
-worktrees/slots/<slot>/{hermit,reverie,liteinst2}) and register its ownership. Each
-agent owns exactly one slot.
+LEGACY INTERFACE. In a project configured with .wrkslots.yml this command
+refuses before changing a worktree or lifecycle record. Ask the coordinator to
+run ci-hub/bin/wrkslots create --slot-type agent instead.
+
+The options below remain only for unconfigured migration fixtures that still
+exercise the previous nested-slot registry implementation.
 
 Required:
   --agent NAME        Owning agent (e.g. hermit-kvm). Mutating owner of the slot.
@@ -132,7 +135,7 @@ Options:
                       Alternatively, --repair --slot SLOT repairs one slot.
   -h, --help          Show this help.
 
-Homeostasis (ADVISORY, never blocks — allocation always completes): every
+Legacy homeostasis (ADVISORY, never blocks): every permitted fixture
 allocation also prints an informational banner if worktrees/ apparent size
 (du -sb) exceeds the GB soft cap (env HERMIT_WORKTREE_GB_CAP, default 1425 GB
 apparent; note du -sb overstates real btrfs on-disk use ~3.9x here), if any
@@ -140,7 +143,7 @@ physical slot has had no file edits in >24h (registered or orphaned), or if slot
 dirs exceed a soft count. These are housekeeping heads-ups, not stop signs; your
 slot is allocated and you should proceed.
 
-Policy:
+Legacy fixture policy:
   * One mutating owner per slot; a second mutating agent is refused.
   * One slot per agent; if the agent already owns a different slot, refused.
   * Read-mostly agents may share and are recorded as such.
@@ -2248,6 +2251,17 @@ fn main() {
             other => die(&format!("unknown argument: {other}\n\n{USAGE}")),
         }
         i += 1;
+    }
+
+    let configured_root = find_root();
+    if configured_root.join(".wrkslots.yml").is_file() {
+        eprintln!(
+            "allocate-worktree: REFUSED -- this project records worktree lifecycle through wrkslots.\n\
+             state: REFUSED -- no worktree or lifecycle record was changed.\n\
+             remedy: ask the coordinator to run ci-hub/bin/wrkslots create with --slot-type agent; \
+             use wrkslots status, audit, or doctor instead of this legacy registry tool"
+        );
+        exit(3);
     }
 
     if migrate_layout_requested {

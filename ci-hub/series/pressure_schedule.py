@@ -9,6 +9,7 @@ import fcntl
 import json
 import os
 import re
+import secrets
 import shutil
 import subprocess
 import sys
@@ -255,6 +256,12 @@ def launch(
 
         previous = read_state(root)
         record = run_registry.record_path(root, UNIT)
+        started_at = utc_now()
+        slot = (
+            f"pressure-{target[:12]}-"
+            f"{dt.datetime.now(dt.timezone.utc).strftime('%Y%m%d%H%M%S')}-"
+            f"{secrets.token_hex(4)}"
+        )
         run_registry.write_current_record(
             record,
             {
@@ -264,10 +271,10 @@ def launch(
                 "unit": f"{UNIT}.service",
                 "target": target,
                 "repo": "rrnewton/hermit",
-                "checkout": str(root / "ignored" / "ci-hub" / "pressure-test-worktree"),
+                "checkout": str(root / "worktrees" / "validate" / slot),
                 "log": str(log),
                 "agent": "tick-pressure-test",
-                "started_at": utc_now(),
+                "started_at": started_at,
                 "producer": run_registry.PRODUCER,
                 "admission": "ci-hub validate-lock",
             },
@@ -306,9 +313,21 @@ def launch(
         return 1 if prior else 0
 
 
-def remove_worktree(repository: Path, checkout: Path) -> str | None:
+def remove_worktree(root: Path, slot: str) -> str | None:
     completed = subprocess.run(
-        ["git", "-C", str(repository), "worktree", "remove", "--force", str(checkout)],
+        [
+            str(root / "ci-hub/bin/wrkslots"),
+            "--project-root",
+            str(root),
+            "--allow-existing-unregistered-worktrees",
+            "remove",
+            slot,
+            "--validate-complete",
+            "--coordinator-pid",
+            str(os.getpid()),
+            "--expected-generation",
+            "1",
+        ],
         capture_output=True,
         text=True,
         check=False,
@@ -323,9 +342,16 @@ def remove_worktree(repository: Path, checkout: Path) -> str | None:
 
 
 def run_campaign(target: str, record: Path, root: Path = ROOT) -> int:
-    repository = root / "hermit"
-    checkout = root / "ignored" / "ci-hub" / "pressure-test-worktree"
-    checkout.parent.mkdir(parents=True, exist_ok=True)
+    durable = run_registry.read_record(record)
+    raw_checkout = durable.get("checkout")
+    if not isinstance(raw_checkout, str):
+        raise RuntimeError(
+            "pressure-test run record lacks its wrkslots checkout; "
+            "state: REFUSED -- no worktree was created and no pressure test ran. "
+            "remedy: relaunch the recurring pressure test to write a complete run record"
+        )
+    checkout = Path(raw_checkout)
+    slot = checkout.name
     if checkout.exists():
         raise RuntimeError(f"refusing existing pressure-test checkout {checkout}")
 
@@ -342,14 +368,29 @@ def run_campaign(target: str, record: Path, root: Path = ROOT) -> int:
     write_state(root, state)
     added = subprocess.run(
         [
-            "git",
-            "-C",
-            str(repository),
-            "worktree",
-            "add",
-            "--detach",
-            str(checkout),
-            target,
+            str(root / "ci-hub/bin/wrkslots"),
+            "--project-root",
+            str(root),
+            "--allow-existing-unregistered-worktrees",
+            "create",
+            slot,
+            "--slot-type",
+            "validate",
+            "--coordinator-authorized",
+            "--agent",
+            "tick-pressure-test",
+            "--task",
+            "recurring-pressure-test",
+            "--purpose",
+            "run the scheduled compatibility pressure measurement",
+            "--owner-pid",
+            str(os.getpid()),
+            "--coordinator-pid",
+            str(os.getpid()),
+            "--repo",
+            "checkout=hermit",
+            "--start",
+            f"checkout={target}",
         ],
         capture_output=True,
         text=True,
@@ -360,7 +401,7 @@ def run_campaign(target: str, record: Path, root: Path = ROOT) -> int:
             added.stderr.strip() or added.stdout.strip() or f"exit {added.returncode}"
         )
         state.update(
-            state="failed", finished_at=utc_now(), detail=f"worktree add: {detail}"
+            state="failed", finished_at=utc_now(), detail=f"wrkslots create: {detail}"
         )
         write_state(root, state)
         raise RuntimeError(state["detail"])
@@ -397,7 +438,7 @@ def run_campaign(target: str, record: Path, root: Path = ROOT) -> int:
     except Exception as error:
         state.update(state="failed", finished_at=utc_now(), detail=str(error))
     finally:
-        cleanup_error = remove_worktree(repository, checkout)
+        cleanup_error = remove_worktree(root, slot)
         if cleanup_error:
             state["cleanup_error"] = cleanup_error
             state["state"] = "failed"

@@ -86,12 +86,10 @@ def warn_shared_checkout(src: str, before: str | None) -> None:
     edit gets swept into an unrelated landing, and how a landing arrives on top
     of a base nobody tested. That checkout has cost this project hours.
 
-    The remedy is one command and costs nothing:
-
-        git worktree add --detach /tmp/<name> origin/main
-
-    Then stage only the paths you own. A clean worktree at origin/main cannot
-    pick up a neighbour's edit, because the neighbour's edit is not in it.
+    The remedy is to ask the coordinator for a clean slot created through
+    ci-hub/bin/wrkslots. Then stage only the paths you own. A clean slot at
+    origin/main cannot pick up a neighbour's edit, because the neighbour's edit
+    is not in it.
 
     Deliberately NOT a refusal. Several agents push concurrently and a hard stop
     here would strand work mid-flight for a condition that is sometimes correct.
@@ -136,8 +134,8 @@ def warn_shared_checkout(src: str, before: str | None) -> None:
             if rc == 0 and behind.strip().isdigit() and int(behind.strip()) > 0:
                 print(f"  and this checkout is {behind.strip()} commit(s) BEHIND the remote ref.")
 
-    print("  If this is the shared parent checkout, land from a clean worktree instead:")
-    print("      git worktree add --detach /tmp/<name> origin/main")
+    print("  If this is the shared parent checkout, ask the coordinator for a clean slot:")
+    print("      ci-hub/bin/wrkslots create <slot> --slot-type agent --coordinator-authorized ...")
     print("  then stage only the paths you own. Not blocking; naming it so it is a choice.")
     print("")
 

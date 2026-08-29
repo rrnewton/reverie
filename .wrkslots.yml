@@ -1,10 +1,17 @@
 {
+  "cache_globs": [
+    "node_modules",
+    "target"
+  ],
   "default_landed_ref": "refs/remotes/origin/main",
   "default_remote": "origin",
   "heartbeat_ttl_seconds": 3600,
+  "layout": "flat",
   "liveness_command": "ci-hub/health/agent_liveness_probe.py",
   "machine": "devbig014",
-  "max_active_slots": 12,
+  "post_provision_hooks": [
+    "git submodule update --init --recursive"
+  ],
   "schema": 2,
-  "worktrees_dir": "worktrees"
+  "worktrees_dir": "worktrees/slots"
 }

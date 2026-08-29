@@ -18,22 +18,28 @@
 # and testable, for a caller that decides what to do with the verdict.
 #
 # REFUSING WITHOUT SAYING HOW TO FIX IT JUST MOVES THE STALL, so every refusal
-# names the self-allocation command with the agent's own name filled in.
+# tells the agent to ask the coordinator for a wrkslots assignment.
 #
-# Usage:  check-agent-slot.sh --agent NAME [--cwd DIR] [--root DIR] [--quiet]
+# Usage:  check-agent-slot.sh --agent NAME [--cwd DIR] [--root DIR]
+#                              [--wrkslots PATH] [--quiet]
 # Exit:   0 OK (in a registered slot, or a declared owner-direct-ask parent use)
 #         1 REFUSE (in the shared parent with no slot, or in someone else's slot)
 #         2 usage error
 set -uo pipefail
 
-agent=""; cwd="${PWD}"; root=""; quiet=0
+agent=""; cwd="${PWD}"; root=""; wrkslots=""; quiet=0
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 while (($# > 0)); do
   case "$1" in
     --agent) agent=${2:-}; shift 2 ;;
     --cwd)   cwd=${2:-};   shift 2 ;;
     --root)  root=${2:-};  shift 2 ;;
+    --wrkslots) wrkslots=${2:-}; shift 2 ;;
     --quiet) quiet=1; shift ;;
+    -h|--help)
+      echo "usage: check-agent-slot.sh --agent NAME [--cwd DIR] [--root DIR] [--wrkslots PATH] [--quiet]"
+      exit 0
+      ;;
     *) echo "check-agent-slot: unknown argument '$1'" >&2; exit 2 ;;
   esac
 done
@@ -42,7 +48,9 @@ done
 if [[ -z $root ]]; then
   root=$(cd -- "$script_dir/.." && pwd)
 fi
-state="$root/worktree-state.json"
+if [[ -z $wrkslots ]]; then
+  wrkslots="$root/ci-hub/bin/wrkslots"
+fi
 
 say() { ((quiet)) || printf '%s\n' "$*" >&2; }
 
@@ -58,29 +66,64 @@ if [[ $cwd == "$root/worktrees/slots/"* ]]; then
 fi
 
 # --- which slot, if any, does the registry assign to this agent? ------------
-assigned=""
-if [[ -r $state ]]; then
-  registry_error_file=$(mktemp "${TMPDIR:-/tmp}/check-agent-slot.XXXXXX")
-  assigned=$("$script_dir/check-worktree-registry.rs" --assigned-slot "$agent" \
-    <"$state" 2>"$registry_error_file") || {
-      registry_error=$(<"$registry_error_file")
-      rm -f -- "$registry_error_file"
-      say "REFUSE: worktree registry cannot determine agent '$agent' assignment."
-      say "  $registry_error"
-      exit 1
-    }
-  rm -f -- "$registry_error_file"
+if [[ ! -x $wrkslots ]]; then
+  say "REFUSE: wrkslots is unavailable at $wrkslots."
+  say "  state: REFUSED -- this guard could not determine the agent's assignment."
+  say "  remedy: initialize hermit/agent-utils and use --wrkslots PATH if the project launcher is elsewhere."
+  exit 1
 fi
+status_file=$(mktemp "${TMPDIR:-/tmp}/check-agent-slot.status.XXXXXX")
+error_file=$(mktemp "${TMPDIR:-/tmp}/check-agent-slot.error.XXXXXX")
+trap 'rm -f -- "$status_file" "$error_file"' EXIT
+if ! "$wrkslots" --project-root "$root" --allow-existing-unregistered-worktrees \
+    status --all-machines --format json \
+    >"$status_file" 2>"$error_file"; then
+  registry_error=$(<"$error_file")
+  say "REFUSE: wrkslots could not determine agent '$agent' assignment."
+  say "  state: REFUSED -- registry state is unavailable, so this path is not treated as free."
+  say "  detail: ${registry_error:-wrkslots returned no diagnostic}"
+  say "  remedy: run 'ci-hub/bin/wrkslots doctor --all-machines' and repair the reported state."
+  exit 1
+fi
+if [[ -s $error_file ]]; then
+  while IFS= read -r line; do
+    say "$line"
+  done <"$error_file"
+fi
+assigned=$(python3 - "$agent" "$status_file" <<'PY'
+import json
+import sys
 
-allocate="./scripts/allocate-worktree.rs --agent $agent --task <task-id> --product all --purpose \"<one line>\""
+agent, path = sys.argv[1:]
+with open(path, encoding="utf-8") as handle:
+    payload = json.load(handle)
+matches = sorted(
+    row["slot"]
+    for row in payload.get("active", [])
+    if row.get("slot_type") == "agent" and row.get("agent") == agent
+)
+if len(matches) > 1:
+    print(
+        f"wrkslots returned multiple active agent slots for {agent!r}: {', '.join(matches)}",
+        file=sys.stderr,
+    )
+    raise SystemExit(4)
+print(matches[0] if matches else "")
+PY
+) || {
+  say "REFUSE: wrkslots returned an ambiguous assignment for agent '$agent'."
+  say "  state: REFUSED -- this guard did not choose between conflicting slots."
+  say "  remedy: run 'ci-hub/bin/wrkslots doctor --all-machines' and repair the duplicate records."
+  exit 1
+}
 
 # --- verdicts ----------------------------------------------------------------
 if [[ -n $in_slot ]]; then
   if [[ -z $assigned ]]; then
     say "REFUSE: agent '$agent' is working in worktrees/slots/$in_slot but the registry assigns it NO slot."
     say "  Working in an unassigned slot is Invariant 2 territory -- another agent may own it."
-    say "  Allocate your own:"
-    say "    $allocate"
+    say "  state: REFUSED -- this slot is not recorded as yours."
+    say "  remedy: ask the coordinator to assign a slot through ci-hub/bin/wrkslots."
     exit 1
   fi
   if [[ $in_slot != "$assigned" ]]; then
@@ -114,9 +157,8 @@ if [[ $cwd == "$root" || $cwd == "$root/"* ]]; then
     say "  The registry DOES assign you a slot -- go there:"
     say "    cd $root/worktrees/slots/$assigned"
   else
-    say "  Allocate your own slot, then work only inside it:"
-    say "    $allocate"
-    say "    cd $root/worktrees/slots/$agent   # or the --slot you chose"
+    say "  state: REFUSED -- no writable checkout was assigned."
+    say "  remedy: ask the coordinator to create and assign a slot through ci-hub/bin/wrkslots."
   fi
   say "  If this really is an owner direct ask, declare it: HERMIT_OWNER_DIRECT_ASK=1"
   exit 1

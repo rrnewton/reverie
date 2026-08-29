@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+# Run the committed wrkslots implementation while keeping one registry beside
+# the primary dev-hermit checkout. Linked worktrees contain their own copy of
+# this launcher, but must not create a second registry beneath themselves.
+
+set -euo pipefail
+
+script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+checkout_root=$(cd -- "$script_dir/../.." && pwd)
+python_root="$checkout_root/hermit/agent-utils/py"
+
+if [[ ! -f "$python_root/wrkslots/__main__.py" ]]; then
+  printf '%s\n' \
+    "REFUSED: the committed wrkslots package is missing at $python_root." \
+    "state: REFUSED -- no worktree or lifecycle record was changed." \
+    "remedy: initialize the hermit/agent-utils submodule in this checkout, then rerun ci-hub/bin/wrkslots." >&2
+  exit 3
+fi
+
+project_root_supplied=0
+for argument in "$@"; do
+  case "$argument" in
+    --project-root|--project-root=*) project_root_supplied=1 ;;
+  esac
+done
+
+project_args=()
+if ((project_root_supplied == 0)); then
+  common_dir=$(git -C "$checkout_root" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || {
+    printf '%s\n' \
+      "REFUSED: cannot locate the shared dev-hermit Git directory from $checkout_root." \
+      "state: REFUSED -- no worktree or lifecycle record was changed." \
+      "remedy: run this command from a dev-hermit checkout, or pass --project-root PATH explicitly." >&2
+    exit 3
+  }
+  if [[ $(basename -- "$common_dir") != .git ]]; then
+    printf '%s\n' \
+      "REFUSED: Git common directory $common_dir does not identify a primary dev-hermit checkout." \
+      "state: REFUSED -- no worktree or lifecycle record was changed." \
+      "remedy: pass --project-root PATH naming the project whose worktrees directory holds the shared slot state." >&2
+    exit 3
+  fi
+  project_args=(--project-root "$(dirname -- "$common_dir")")
+fi
+
+if [[ -n ${PYTHONPATH:-} ]]; then
+  export PYTHONPATH="$python_root:$PYTHONPATH"
+else
+  export PYTHONPATH="$python_root"
+fi
+exec python3 -m wrkslots "${project_args[@]}" "$@"

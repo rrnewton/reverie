@@ -34,6 +34,7 @@ class AgentFacingMessageTests(unittest.TestCase):
             "gh-merge-verified",
             "git-push-verified",
             "tg-note-verified",
+            "wrkslots",
         ):
             with self.subTest(name=name):
                 result = run(name, "--help")

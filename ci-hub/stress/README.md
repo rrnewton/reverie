@@ -31,7 +31,7 @@ its 6h `timeout-minutes:360` and is cancelled — 0/2 completions as of
 | `stress_store.py` | flaky-is-red verdict + durable JSONL store + `summary`/`selftest` CLI |
 | `nightly.sh` | driver: resolve main HEAD → run `$STRESS_BURST_CMD` per workload → record → alarm |
 | `stress-burst` | first-gen concurrent-burst primitive (`--prebuilt`/`--build-at`); emits the CSV contract. **Deprecated for nightly — it has NO validity calibrator, so a quiet host can false-green.** Retained for on-demand single-burst use. |
-| `burst-build.sh` | first-gen scheduled adapter (`stress-burst --prebuilt` in a persistent worktree). **Superseded by `matched-burst.sh`** (same no-reflink worktree, adds the calibrator). |
+| `burst-build.sh` | first-gen scheduled adapter (`stress-burst --prebuilt` in a short-lived registered validation checkout). **Superseded by `matched-burst.sh`** (same external build cache, adds the calibrator). |
 | `burst-prebuilt.sh` | cheap adapter: `stress-burst --prebuilt <primary>` (no build; on-demand) |
 | `README.md` | this file |
 
@@ -132,25 +132,24 @@ where the primitive lives or how it builds.
 
 ### Why the collision mattered (resolved)
 
-`probe.sh` hardcodes its worktree to
-`experiments/multisect_detcore_misc_20260803/ignored/wt/<sha>`, so invoking it
-for a main-HEAD nightly would collide with multisect's live SHA-keyed bisection
-worktrees. `stress-burst` resolves this with two build modes — `--prebuilt DIR`
-(no build; burst DIR's existing binary) and `--build-at SHA --wt-base DIR`
-(isolated, relocatable per-SHA worktree, reflink-seeded) — so nightly and
-multisect share code without ever sharing a worktree. Actual signature:
+The historical `probe.sh` hardcoded a SHA-keyed worktree below an experiment,
+so invoking it for a main-HEAD nightly could collide with a live bisection.
+`stress-burst` now resolves this with two build modes — `--prebuilt DIR` (no
+checkout creation; use DIR's existing binary) and `--build-at SHA --wt-base
+DIR` (a short-lived registered validation checkout with a reusable target
+directory outside it). Nightly and multisect share code without sharing a
+writable checkout. Actual signature:
 
     stress-burst {--prebuilt DIR | --build-at SHA [--wt-base DIR] [--hermit DIR]} \
+                 [--target-dir DIR] \
                  --workload BIN:TESTPATH [--width W] [--timeout S] [--out CSV]
 
-**The nightly does NOT use `--build-at`.** `--build-at` reflink-seeds `target/`
-from the primary (`cp -a --reflink=auto`), which is (a) blocked by this host's
-BPFJailer FS policy for the agent role and (b) a known cmake-cache poisoner. So
-`burst-build.sh` instead keeps ONE persistent detached worktree
-(`ignored/ci-hub/stress-wt/nightly`), checks out the recorded SHA into it, builds
-in-tree (cold first night, incremental after — no reflink), and bursts it via
-`--prebuilt`. `--build-at` remains for multisect's per-SHA bisection, where a
-throwaway seeded worktree per commit is the right trade-off.
+**The nightly does NOT use `--build-at`.** `burst-build.sh` creates its own
+registered validation checkout at the recorded SHA, builds with a persistent
+`ignored/ci-hub/stress-target/nightly` target directory, runs `--prebuilt`, and
+removes the checkout through `wrkslots`. `--build-at` uses the same lifecycle
+with a per-SHA target directory for on-demand use. Neither mode reflink-copies a
+worktree or mutates the primary checkout.
 
 Coordination with hermit-multisect on placement/ownership: see task note
 "(4) SHARED-HARNESS PROPOSAL" + "CONVERGENCE OFFER". The primitive is a new file;
