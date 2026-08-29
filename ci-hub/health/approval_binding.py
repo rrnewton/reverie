@@ -1357,6 +1357,20 @@ def lane_shas(
                         comment_id,
                     ))
             found.clear()
+            # ⚠️ AND THE ISSUERS WITH THEM. `issuers` is documented as
+            # INDEX-ALIGNED with the returned shas, and clearing one list without
+            # the other silently breaks that: the approvals vanish while the
+            # names of who made them survive, so a consumer that zips the two
+            # mis-pairs, and a consumer that reads only `issuers` sees reviewers
+            # for a lane that is not bound at all.
+            #
+            # This was MINE, shipped in the commit that introduced `issuers`, and
+            # the test I wrote for the invariant did not catch it because every
+            # case in it was a clean stream with no rejection. Measured on
+            # hermit#2637: lane_shas returned `[]` while issuers returned one
+            # entry -- an approval that had been revoked, still naming its author.
+            if issuers is not None:
+                issuers.clear()
             continue
         for _idx, line in enumerate(lines):
             raw_line = raw_lines[_idx] if _idx < len(raw_lines) else line

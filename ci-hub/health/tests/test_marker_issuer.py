@@ -284,3 +284,48 @@ def test_omitting_the_out_param_is_unchanged_behaviour() -> None:
     """Every existing caller passes no `issuers`. They must be untouched."""
     assert ab.lane_shas([_comment("hermit-011", f"APPROVED-AT: claude {FULL}")],
                         "claude") == [FULL]
+
+
+def test_a_rejection_clears_the_issuers_with_the_shas() -> None:
+    """⚠️ REGRESSION TEST FOR A BUG I SHIPPED. `found.clear()` on a rejection used
+    to leave `issuers` populated, so the approvals vanished while the names of who
+    made them survived. A consumer zipping the two mis-pairs; one reading only
+    `issuers` sees reviewers for a lane that is not bound at all.
+
+    Every case in the original alignment test used a clean stream with no
+    rejection, which is exactly why it passed while the invariant was broken.
+    Found on hermit#2637, where lane_shas returned [] and issuers returned one
+    entry naming the author of a revoked approval."""
+    shas, issuers = _bind([
+        _comment("hermit-a", f"APPROVED-AT: claude {FULL} BY hermit-a"),
+        _comment("hermit-b", f"CHANGES-REQUESTED-AT: claude {OTHER} BY hermit-b"),
+    ])
+    assert shas == [], shas
+    assert issuers == [], issuers
+
+
+def test_alignment_survives_a_revoke_then_rebind() -> None:
+    """The sequence that makes the desync DANGEROUS rather than untidy: a stale
+    issuer whose sha equals the live one reads as a second reviewer at the
+    current head. Alignment must hold through it, in BOTH directions.
+
+    ⚠️ AND THE TWO DIRECTIONS DIFFER, which is worth pinning on its own. After a
+    revoke the SAME reviewer's re-approval at the same sha does NOT rebind -- their
+    own re-post is a citation of their earlier verdict under the issuance rule --
+    while a DIFFERENT reviewer's does. That is pre-existing behaviour, not
+    something this change introduced; it is asserted here so the alignment fix
+    cannot quietly alter it."""
+    same = _bind([
+        _comment("hermit-a", f"APPROVED-AT: claude {FULL} BY hermit-a"),
+        _comment("hermit-b", f"CHANGES-REQUESTED-AT: claude {OTHER} BY hermit-b"),
+        _comment("hermit-a", f"APPROVED-AT: claude {FULL} BY hermit-a"),
+    ])
+    assert same == ([], []), same
+
+    shas, issuers = _bind([
+        _comment("hermit-a", f"APPROVED-AT: claude {FULL} BY hermit-a"),
+        _comment("hermit-b", f"CHANGES-REQUESTED-AT: claude {OTHER} BY hermit-b"),
+        _comment("hermit-c", f"APPROVED-AT: claude {FULL} BY hermit-c"),
+    ])
+    assert len(shas) == len(issuers), (shas, issuers)
+    assert shas == [FULL] and issuers == [(FULL, "hermit-c")], (shas, issuers)

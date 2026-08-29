@@ -166,6 +166,12 @@ EXIT
        Measured 2026-08-25: this collapse made three race cases in
        gh-merge-verified-test pass on an exit 4 produced by the admission guard rather
        than by the race they claimed to exercise.
+    9  REFUSED TO MERGE: every `passed-review-<lane>` label claimed on this head was
+       bound by the SAME agent, so the two-lane rule was met in form and not in
+       substance. Nothing was attempted. Scoped like 6: a pull request claiming fewer
+       than two lanes is untouched, and a binding whose issuer is UNKNOWN makes this
+       DECLINE TO ANSWER rather than refuse -- it refuses on evidence of one agent,
+       never on the absence of evidence of two.
 
 WHAT A CALLER SHOULD DO WITH EACH, BECAUSE A CODE IS ONLY USEFUL IF IT IMPLIES AN ACTION
 ------------------------------------------------------------------------------------
@@ -890,7 +896,9 @@ def blocking_changes_requests(pr: str, repo: str, head: str) -> list[str]:
     return live
 
 
-def stale_review_labels(pr: str, repo: str, head: str) -> list[str]:
+def stale_review_labels(
+    pr: str, repo: str, head: str, single_issuer: "list[str] | None" = None
+) -> list[str]:
     """`passed-review-<lane>` labels whose lane is NOT bound to THIS head.
 
     ⚠️ A LABEL OUTLIVES THE SHA IT WAS EARNED AT. That is the whole defect. The
@@ -917,6 +925,20 @@ def stale_review_labels(pr: str, repo: str, head: str) -> list[str]:
     Returns the human-readable rows to print, or ``["__UNREADABLE__"]`` if the
     state could not be established -- which is refused as an absence of an
     answer, never treated as permission.
+
+    ⚠️ `single_issuer` IS AN OUT-PARAMETER, in the style of `malformed` in the
+    grammar module: when supplied, it receives the rows describing lanes that are
+    all BOUND AT THIS HEAD BY ONE AGENT. It is computed here rather than in a
+    second function because the answer needs the same `gh pr view` payload, and a
+    second call would be a second query -- this fleet has tripped GitHub's
+    secondary rate limit by asking the same question twice, after which every
+    gate reads INDETERMINATE and nothing can land at all.
+
+    THE LANE IS NOT THE REVIEWER. `claude` and `codex` name a HARNESS FAMILY, and
+    nineteen agents share those two names, so two lanes at one head has never been
+    evidence that two reviewers looked at it -- one agent can bind both and the
+    record is indistinguishable from independent review. dev-hermit#191 made the
+    binding carry its issuer so this function can finally ask.
     """
     grammar = _load_grammar()
     rc, out, _ = run(gh_argv(["gh", "pr", "view", pr, "--repo", repo,
@@ -938,16 +960,42 @@ def stale_review_labels(pr: str, repo: str, head: str) -> list[str]:
 
     comments = list(doc.get("comments", [])) + list(doc.get("reviews", []))
     stale = []
+    # lane -> the agents that bound THIS head on it. `None` in the set means a
+    # binding whose issuer neither the marker nor the comment's disclosure tag
+    # stated.
+    bound_by: dict[str, set] = {}
     for lane in sorted(labelled):
         if lane not in grammar.LANES:
             continue
-        shas = grammar.lane_shas(comments, lane, [])
+        issuers: list = []
+        shas = grammar.lane_shas(comments, lane, [], issuers=issuers)
         state = grammar.classify_approval(head, shas)
         if state != grammar.BOUND_CURRENT:
             bound = shas[-1][:12] if shas else "nothing"
             stale.append(
                 f"passed-review-{lane}: {state} -- newest {lane} binding is {bound}, "
                 f"head is {head[:12]}"
+            )
+            continue
+        # Only bindings AT THIS HEAD count. A lane's earlier binding on a
+        # superseded sha says nothing about who reviewed the code being merged.
+        bound_by[lane] = {i for sha, i in issuers if sha.lower() == head.lower()}
+
+    if single_issuer is not None and len(bound_by) >= 2:
+        agents = set().union(*bound_by.values())
+        # ⚠️ UNATTRIBUTABLE IS NOT "THE SAME AGENT", AND IT IS NOT "TWO AGENTS".
+        # Nothing emits `BY` yet, so the issuer usually comes from the comment's
+        # disclosure tag -- and that tag is missing on a large minority of agent
+        # comments. Refusing on an unknown identity would block nearly every pull
+        # request in the fleet on the day this lands, for a fact never
+        # established. So an absent issuer makes this check DECLINE TO ANSWER for
+        # that head, which is the same discipline as the surrounding scope rule:
+        # refuse on evidence, never on the absence of it.
+        if None not in agents and len(agents) == 1:
+            who = next(iter(agents))
+            single_issuer.append(
+                f"{', '.join(sorted(bound_by))}: all bound at {head[:12]} by "
+                f"ONE agent -- {who}"
             )
     return stale
 
@@ -1157,7 +1205,8 @@ def main() -> None:
                 "  There is deliberately no override flag.",
                 "  FALSE POSITIVE? The match is anchored to column 0, so an unindented quotation",
                 "  of a marker re-asserts it. Indent quoted markers by one space.")
-        stale = stale_review_labels(pr, repo, head)
+        one_agent: list[str] = []
+        stale = stale_review_labels(pr, repo, head, single_issuer=one_agent)
         if stale == ["__UNREADABLE__"]:
             die(8, "gh-merge-verified: ADMISSION COULD NOT RUN -- could not read labels/comments "
                    f"for #{pr}, so a stale review label cannot be ruled out.",
@@ -1176,6 +1225,22 @@ def main() -> None:
                 "  ⚠️ A MISSING LANE TOKEN READS AS MALFORMED, NOT AS AN APPROVAL: write",
                 "  'APPROVED-AT: claude <sha>', not 'APPROVED-AT <sha>'. That one-token typo is",
                 "  what left #2601 with zero authoritative lanes while looking reviewed.")
+        if one_agent:
+            die(9, f"gh-merge-verified: REFUSING TO MERGE #{pr} -- every review lane claimed on "
+                   f"this head was bound by the SAME agent.",
+                *[f"    {s}" for s in one_agent],
+                "",
+                "  THE LANE IS NOT THE REVIEWER. 'claude' and 'codex' name a harness FAMILY,",
+                "  and this fleet shares two lane names across nineteen agents, so two lanes",
+                "  is not two reviewers. The two-lane rule exists to get two INDEPENDENT",
+                "  judgements; one agent binding both satisfies its letter and none of it.",
+                "  TO PROCEED: have a DIFFERENT agent review and post",
+                f"  'APPROVED-AT: <lane> {head} BY <their-agent-id>' at this head.",
+                "  Removing a label is not a remedy -- it drops the claim rather than",
+                "  meeting it, and lands the same unreviewed code with less evidence.",
+                "  ⚠️ SCOPE: this fires only when EVERY claimed lane resolves to ONE KNOWN",
+                "  agent. An unattributable binding -- no 'BY' and no disclosure tag --",
+                "  makes this check decline to answer rather than refuse.")
     if rc != 0 or not head:
         die(4, f"gh-merge-verified: COULD NOT DETERMINE — cannot resolve the head of PR {pr}")
 

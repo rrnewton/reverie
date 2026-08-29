@@ -775,6 +775,92 @@ def admission_unresolvable_cases() -> None:
         )
 
 
+def single_issuer_cases() -> None:
+    """Two lanes bound by ONE agent must be REFUSED; by two agents, ACCEPTED.
+
+    ⚠️ THIS IS AN END-TO-END PROBE ON PURPOSE. A unit test on the helper proves it
+    RETURNS a row; it does not prove the tool REFUSES. Those are different claims,
+    and the gap between them is exactly where a check gets computed, reported and
+    then not acted on -- an instrument that reads correctly and gates nothing.
+    So this drives the real CLI and asserts the exit code.
+
+    The accept case is not decoration. Without it this pair would pass for a tool
+    that refused every two-lane head, which would be a worse defect than the one
+    being fixed: it would make the two-lane rule unsatisfiable.
+    """
+    for issuers, expect_code, name in (
+        (("hermit-011", "hermit-011"), 9, "two lanes, ONE agent: REFUSED"),
+        (("hermit-011", "hermit-030"), 0, "two lanes, TWO agents: ACCEPTED"),
+    ):
+        with tempfile.TemporaryDirectory(prefix="gh-merge-verified-iss-") as tmp:
+            root = Path(tmp)
+            origin, work = build_fixture(root, "arrived")
+            head = subprocess.run(
+                ["git", "-C", str(origin), "rev-parse", "refs/pull/1/head"],
+                capture_output=True, text=True, check=True,
+            ).stdout.strip()
+
+            claude, codex = issuers
+            doc = {
+                "headRefOid": head,
+                "state": "OPEN",
+                "labels": [{"name": "passed-review-claude"},
+                           {"name": "passed-review-codex"}],
+                "reviews": [],
+                "comments": [
+                    {"html_url": "c/1",
+                     "body": f"[hermit2, {claude}, unresolved, devbig014, role=review]\n"
+                             f"APPROVED-AT: claude {head} BY {claude}"},
+                    {"html_url": "c/2",
+                     "body": f"[hermit2, {codex}, unresolved, devbig014, role=review]\n"
+                             f"APPROVED-AT: codex {head} BY {codex}"},
+                ],
+            }
+            payload = root / "view.json"
+            payload.write_text(json.dumps(doc))
+
+            bindir = root / "bin"
+            bindir.mkdir()
+            gh = bindir / "gh"
+            # On merge this ADVANCES the fixture's main, the way a real merge
+            # would. Without that the tool correctly exits 4 waiting for a remote
+            # that never moves -- which would make the accept case unreachable and
+            # tempt a weaker assertion than "it actually merged".
+            gh.write_text(
+                "#!/bin/bash\n"
+                'if [ "$1" = pr ] && [ "$2" = view ]; then\n'
+                f'  cat {payload}\n  exit 0\nfi\n'
+                f'if [ "$1" = pr ] && [ "$2" = merge ]; then\n'
+                f'  git -C {origin} -c user.name=t -c user.email=t@example.invalid \\\n'
+                f'      commit --allow-empty --quiet -m merged\n'
+                "  echo 'Merged pull request'\n  exit 0\nfi\n"
+                "echo 'Merged pull request'\nexit 0\n"
+            )
+            gh.chmod(0o755)
+            env = {
+                **os.environ,
+                "PATH": f"{bindir}:{os.environ.get('PATH', '')}",
+                "GH_MERGE_VERIFIED_REMOTE": str(origin),
+                "GH_MERGE_VERIFIED_SELFCHECK": "off",
+                "GH_MERGE_VERIFIED_ADVANCE_TIMEOUT_S": "20",
+            }
+            code, out = run([sys.executable, str(TOOL), "1", "--repo", "fixture/repo"],
+                            cwd=work, env=env)
+            check(name, code == expect_code,
+                  f"got exit {code}, expected {expect_code}\n{out}")
+            if expect_code == 9:
+                check(
+                    "the refusal names the agent, not just the lanes",
+                    "hermit-011" in out and "SAME agent" in out,
+                    f"output did not name the agent\n{out}",
+                )
+                check(
+                    "the refusal says nothing was merged",
+                    "REFUSING TO MERGE" in out,
+                    f"output did not say it refused\n{out}",
+                )
+
+
 def main() -> int:
     if not TOOL.exists():
         print(f"gh-merge-verified-test: {TOOL} is missing", file=sys.stderr)
@@ -799,6 +885,7 @@ def main() -> int:
     unit_cases()
     self_change_cases()
     race_cases()
+    single_issuer_cases()
     admission_unresolvable_cases()
     receipt_cases()
     argv_cases()
