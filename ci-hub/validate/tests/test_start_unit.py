@@ -1810,6 +1810,22 @@ class StartUnitTest(unittest.TestCase):
             self.fake.fresh.parent,
         )
 
+        create = next(
+            command
+            for command in self.fake.commands
+            if wrkslots_action(command, "create")
+        )
+        slot = create[create.index("create") + 1]
+        self.assertEqual(
+            f"checkout=wrkslots/validate/{slot}/checkout",
+            create[create.index("--branch") + 1],
+            "validate-run must satisfy wrkslots versions that require an explicit branch",
+        )
+        self.assertEqual(
+            f"checkout={SHA}",
+            create[create.index("--start") + 1],
+        )
+
     def test_in_place_opt_out_still_validates_the_slot_tree(self) -> None:
         rc, _output, error = self.invoke(["--in-place", "--", "full"])
 

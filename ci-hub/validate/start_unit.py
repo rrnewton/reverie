@@ -935,6 +935,8 @@ def prepare_fresh_checkout(
                     str(os.getpid()),
                     "--repo",
                     f"checkout={repository_relative.as_posix()}",
+                    "--branch",
+                    f"checkout=wrkslots/validate/{slot}/checkout",
                     "--start",
                     f"checkout={target}",
                 ],
