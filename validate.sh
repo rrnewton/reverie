@@ -147,6 +147,9 @@ readonly DEV_HERMIT_PARENT VALIDATION_SLOT VALIDATION_LEDGER_TOOL
 readonly VALIDATION_COMMIT VALIDATION_GIT_DEPTH VALIDATION_GIT_AHEAD
 readonly VALIDATION_GIT_BEHIND VALIDATION_TREE_DIRTY VALIDATION_COMMIT_ANCHORED
 readonly VALIDATION_CACHE_STATE VALIDATION_CPU_TIMES_FILE
+VALIDATION_TEST_COUNTS_DIR=$(mktemp -d "${TMPDIR:-/tmp}/reverie-test-counts.XXXXXX")
+readonly VALIDATION_TEST_COUNTS_DIR
+readonly LIBTEST_COUNTS_TOOL="$ROOT_DIR/scripts/libtest-counts.rs"
 
 record_ledger_gate() {
     ledger_gate_names+=("$1")
@@ -154,26 +157,6 @@ record_ledger_gate() {
     ledger_gate_durations+=("$3")
     ledger_gate_executed_tests+=("$4")
     ledger_gate_filtered_tests+=("$5")
-}
-
-gate_test_counts() {
-    local name=$1 output_start=$2 section passed filtered
-    case "$name" in
-        "Test regular workspace cases"|"Documentation tests") ;;
-        *) printf 'null null\n'; return ;;
-    esac
-    section=$(tail -c "+$((output_start + 1))" "$LOG_FILE")
-    passed=$(printf '%s' "$section" | sed -n -E \
-        's/^[[:space:]]*test result: (ok|FAILED)[.] ([0-9]+) passed;.*/\2/p')
-    filtered=$(printf '%s' "$section" | sed -n -E \
-        's/^[[:space:]]*test result: (ok|FAILED)[.].*; ([0-9]+) filtered out;.*/\2/p')
-    if [[ -z $passed || -z $filtered ]]; then
-        printf 'null null\n'
-        return
-    fi
-    printf '%s %s\n' \
-        "$(awk '{ total += $1 } END { print total + 0 }' <<<"$passed")" \
-        "$(awk '{ total += $1 } END { print total + 0 }' <<<"$filtered")"
 }
 
 json_quote() {
@@ -223,15 +206,7 @@ append_validation_ledger() {
         result=fail
     fi
 
-    # Cargo's own result banners prove how many tests actually ran. A green
-    # command that emitted no banners records zero and cannot satisfy ci-hub's
-    # nonzero-test landing predicate.
-    executed_tests=$(sed -n -E \
-        's/^[[:space:]]*test result: (ok|FAILED)[.] ([0-9]+) passed;.*/\2/p' \
-        "$LOG_FILE" | awk '{ total += $1 } END { print total + 0 }')
-    filtered_tests=$(sed -n -E \
-        's/^[[:space:]]*test result: (ok|FAILED)[.].*; ([0-9]+) filtered out;.*/\2/p' \
-        "$LOG_FILE" | awk '{ total += $1 } END { print total + 0 }')
+    read -r executed_tests filtered_tests < <(aggregate_test_counts)
 
     gates_json=$(ledger_gates_json)
 
@@ -292,6 +267,7 @@ cleanup() {
     append_validation_ledger "$exit_status" \
         "$validation_wall" "$validation_user" "$validation_sys"
     rm -f "$VALIDATION_CPU_TIMES_FILE"
+    rm -r -- "$VALIDATION_TEST_COUNTS_DIR"
     exit "$exit_status"
 }
 
@@ -301,11 +277,11 @@ interrupted() {
     exit 130
 }
 
-run_check() {
-    local name=$1
-    shift
+run_check_impl() {
+    local name=$1 counts_file=$2
+    shift 2
     local started=$SECONDS
-    local output_start gate_executed gate_filtered
+    local counts gate_executed=null gate_filtered=null
     checks=$((checks + 1))
 
     {
@@ -313,53 +289,108 @@ run_check() {
         printf " %q" "$@"
         printf "\n"
     } >>"$LOG_FILE"
-    output_start=$(wc -c <"$LOG_FILE")
-
     local status=0
     if "$@" >>"$LOG_FILE" 2>&1; then
-        printf "PASS: %s (%ss)\n" "$name" "$((SECONDS - started))"
+        :
     else
         status=$?
+    fi
+    if [[ -n $counts_file ]]; then
+        if counts=$("$LIBTEST_COUNTS_TOOL" read "$counts_file" 2>>"$LOG_FILE") &&
+            read -r gate_executed gate_filtered <<<"$counts"; then
+            :
+        elif ((status == 0)); then
+            status=2
+        fi
+    fi
+    if ((status == 0)); then
+        printf "PASS: %s (%ss)\n" "$name" "$((SECONDS - started))"
+    else
         failures=$((failures + 1))
         printf "FAIL: %s (exit %s; %ss; log: %s)\n" \
             "$name" "$status" "$((SECONDS - started))" "$LOG_FILE" >&2
     fi
-    read -r gate_executed gate_filtered < <(gate_test_counts "$name" "$output_start")
     record_ledger_gate \
         "$name" "$status" "$((SECONDS - started))" "$gate_executed" "$gate_filtered"
 }
 
+aggregate_test_counts() {
+    local executed=0 filtered=0 i
+    for i in "${!ledger_gate_names[@]}"; do
+        case "${ledger_gate_names[i]}" in
+            "Test regular workspace cases"|"Documentation tests")
+                if [[ ${ledger_gate_executed_tests[i]} == null ]]; then
+                    printf 'null null\n'
+                    return
+                fi
+                executed=$((executed + ledger_gate_executed_tests[i]))
+                filtered=$((filtered + ledger_gate_filtered_tests[i]))
+                ;;
+        esac
+    done
+    printf '%s %s\n' "$executed" "$filtered"
+}
+
+run_check() {
+    local name=$1
+    shift
+    run_check_impl "$name" "" "$@"
+}
+
+run_test_check() {
+    local name=$1
+    shift
+    local counts_file="$VALIDATION_TEST_COUNTS_DIR/${#ledger_gate_names[@]}.json"
+    run_check_impl "$name" "$counts_file" \
+        "$LIBTEST_COUNTS_TOOL" run "$counts_file" -- "$@"
+}
+
 if ((SELF_TEST_GATE_COUNTS == 1)); then
-    run_check "Test regular workspace cases" \
-        bash -c "printf '%s\\n' 'test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out;'"
+    set -e
+    fixed_output='test result: ok. 999 passed; 0 failed; 0 ignored; 0 measured; 999 filtered out;'
+    first_counts="$VALIDATION_TEST_COUNTS_DIR/first.json"
+    second_counts="$VALIDATION_TEST_COUNTS_DIR/second.json"
+    printf '%s\n' '{"schema_version":1,"executed_tests":2,"filtered_tests":3}' >"$first_counts"
+    printf '%s\n' "$fixed_output" >>"$LOG_FILE"
+    run_check_impl "Test regular workspace cases" "$first_counts" true
     [[ ${ledger_gate_executed_tests[0]} == 2 ]]
     [[ ${ledger_gate_filtered_tests[0]} == 3 ]]
     first_record=$(ledger_gates_json)
     [[ $first_record == *'"executed_tests":2,"filtered_tests":3'* ]]
+    read -r first_executed first_filtered < <(aggregate_test_counts)
+    [[ $first_executed == 2 && $first_filtered == 3 ]]
     ledger_gate_names=()
     ledger_gate_statuses=()
     ledger_gate_durations=()
     ledger_gate_executed_tests=()
     ledger_gate_filtered_tests=()
-    run_check "Test regular workspace cases" \
-        bash -c "printf '%s\\n' 'test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out;'"
+    printf '%s\n' '{"schema_version":1,"executed_tests":5,"filtered_tests":1}' >"$second_counts"
+    printf '%s\n' "$fixed_output" >>"$LOG_FILE"
+    run_check_impl "Test regular workspace cases" "$second_counts" true
     [[ ${ledger_gate_executed_tests[0]} == 5 ]]
     [[ ${ledger_gate_filtered_tests[0]} == 1 ]]
     second_record=$(ledger_gates_json)
     [[ $second_record == *'"executed_tests":5,"filtered_tests":1'* ]]
+    read -r second_executed second_filtered < <(aggregate_test_counts)
+    [[ $second_executed == 5 && $second_filtered == 1 ]]
     [[ $first_record != "$second_record" ]]
+    [[ $first_executed != "$second_executed" ]]
     ledger_gate_names=()
     ledger_gate_statuses=()
     ledger_gate_durations=()
     ledger_gate_executed_tests=()
     ledger_gate_filtered_tests=()
-    run_check "Test regular workspace cases" true
+    run_check_impl "Test regular workspace cases" \
+        "$VALIDATION_TEST_COUNTS_DIR/missing.json" true
+    [[ ${ledger_gate_statuses[0]} == 2 ]]
     [[ ${ledger_gate_executed_tests[0]} == null ]]
     [[ ${ledger_gate_filtered_tests[0]} == null ]]
     missing_record=$(ledger_gates_json)
     [[ $missing_record != *'"executed_tests"'* ]]
-    printf 'PASS: per-gate test counts preserve values and missing evidence\n'
+    "$LIBTEST_COUNTS_TOOL" --self-test || exit 1
+    printf 'PASS: typed per-gate counts drive the gate and aggregate records\n'
     rm -f "$VALIDATION_CPU_TIMES_FILE"
+    rm -r -- "$VALIDATION_TEST_COUNTS_DIR"
     exit 0
 fi
 
@@ -438,9 +469,9 @@ run_check "Cross-client skill discovery" "$ROOT_DIR/scripts/check-skill-discover
 run_check "Build workspace" cargo build --workspace --all-features
 run_check "DBT virtual identity and pidfd_open policy" \
     "$ROOT_DIR/reverie-dbt/scripts/test-identity-policy.sh"
-run_check "Test regular workspace cases" cargo test --workspace --all-features \
+run_test_check "Test regular workspace cases" cargo test --workspace --all-features \
     -- --test-threads=1 "${REGULAR_TEST_SKIP_ARGS[@]}"
-run_check "Documentation tests" cargo test --workspace --doc
+run_test_check "Documentation tests" cargo test --workspace --doc
 run_check "Clippy" cargo clippy --workspace --all-targets --all-features -- -D warnings
 run_check "Rustfmt" cargo fmt --all -- --check
 
