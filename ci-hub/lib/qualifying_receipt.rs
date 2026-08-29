@@ -771,6 +771,8 @@ fn shared_evidence_outcome(row: &HistoryRow, pred: &QualifyingPredicate) -> Boun
 ///     malformed and must not qualify.
 ///   * a demonstrated zero-test run (`executed_tests == Some(0)`) is never a
 ///     green at any schema — never grandfathered.
+///   * when a passing row carries `passed_tests`, it must equal
+///     `executed_tests`; a partial pass count is contradictory green evidence.
 ///   * if `gate_filtered_tests`, additionally require `filtered_tests == 0`.
 ///   * COUNT-CAPABLE receipts (`schema_version >= counts_schema`) are held to the
 ///     FULL contract: every planned outer gate is accounted for,
@@ -866,6 +868,12 @@ pub fn row_qualification(row: &HistoryRow, sha: &str, pred: &QualifyingPredicate
     // A demonstrated zero-test run is never a full green, at any schema.
     if row.executed_tests == Some(0) {
         return Qualification::Refused("executed_tests == 0");
+    }
+    if row
+        .passed_tests
+        .is_some_and(|passed| Some(passed) != row.executed_tests)
+    {
+        return Qualification::Refused("passed_tests != executed_tests for passing row");
     }
     if pred.gate_filtered_tests && row.filtered_tests != Some(0) {
         return Qualification::Refused("filtered_tests != 0");
@@ -1117,6 +1125,25 @@ mod tests {
             row_qualification(&row, &sha, &pred),
             Qualification::Refused("outer gate accounting incomplete")
         );
+    }
+
+    #[test]
+    fn passing_receipt_requires_any_present_passed_count_to_match_execution() {
+        let sha = "b".repeat(40);
+        let pred = QualifyingPredicate::parse(EMBEDDED, "embedded").unwrap();
+        let mut row = row_with_producer(&sha, "2026-08-08T09:00:00Z", Some("hermit-validate-sh"));
+
+        assert!(row_qualifies(&row, &sha, &pred));
+        row.passed_tests = row.executed_tests;
+        assert!(row_qualifies(&row, &sha, &pred));
+
+        for contradictory in [Some(-1), Some(0), Some(426), Some(428)] {
+            row.passed_tests = contradictory;
+            assert_eq!(
+                row_qualification(&row, &sha, &pred),
+                Qualification::Refused("passed_tests != executed_tests for passing row")
+            );
+        }
     }
 
     /// BOTH DIRECTIONS of the provenance gate, in the engine that must agree

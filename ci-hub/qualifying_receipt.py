@@ -1247,6 +1247,13 @@ def _row_qualification_without_class(
     # A demonstrated zero-test run is never a full green, at any schema.
     if row.get("executed_tests") == 0:
         return False, "executed_tests==0"
+    passed = row.get("passed_tests")
+    if passed is not None and (
+        not isinstance(passed, int)
+        or isinstance(passed, bool)
+        or passed != row.get("executed_tests")
+    ):
+        return False, "passed_tests!=executed_tests for passing row"
     if pred.get("gate_filtered_tests") and row.get("filtered_tests") != 0:
         return False, "filtered_tests!=0"
     schema = row.get("schema_version") or 0

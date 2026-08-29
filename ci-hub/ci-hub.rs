@@ -4462,6 +4462,7 @@ fn describe_receipt(receipt: &QualifyingReceipt) -> serde_json::Value {
         "unaccounted_nodes": row.extra.get("unaccounted_nodes").cloned().unwrap_or_else(|| serde_json::json!([])),
         "gates": row.gates,
         "executed_tests": row.executed_tests,
+        "passed_tests": row.passed_tests,
         "filtered_tests": row.filtered_tests,
         "coverage": row.coverage,
         "coverage_satisfied": row.coverage.as_ref().map(|_| true),
@@ -6092,6 +6093,18 @@ fn recent_row_executed_tests(row: &HistoryRow) -> Option<i64> {
     row.executed_tests.filter(|count| *count >= 0)
 }
 
+/// The exact passing count emitted by the test framework for this run.
+///
+/// Historical rows did not carry this field. They remain readable, but neither
+/// retained presentation text nor `executed_tests - failures` can manufacture
+/// the missing value: both can describe a different population from the one
+/// the framework actually ran.
+fn recent_row_passed_tests(row: &HistoryRow) -> Option<i64> {
+    let executed = recent_row_executed_tests(row)?;
+    row.passed_tests
+        .filter(|passed| *passed >= 0 && *passed <= executed)
+}
+
 fn display_validate_result(result: Option<&str>) -> String {
     result
         .filter(|result| !result.trim().is_empty())
@@ -6145,6 +6158,7 @@ struct ValidateStatusEntry {
     finished_at: Option<String>,
     elapsed_seconds: Option<f64>,
     tests_executed: Option<i64>,
+    tests_passed: Option<i64>,
     host: Option<String>,
     slot: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -6445,6 +6459,7 @@ fn live_validate_runs_from(
                 finished_at: None,
                 elapsed_seconds: elapsed_since(&started_at, now),
                 tests_executed: None,
+                tests_passed: None,
                 host: record.host.or_else(local_host),
                 slot,
                 log_file,
@@ -6542,6 +6557,7 @@ fn live_validate_runs_from(
             finished_at: None,
             elapsed_seconds: elapsed_since(&record.started_at, now),
             tests_executed: None,
+            tests_passed: None,
             host: record.host.or_else(local_host),
             slot,
             log_file,
@@ -6764,6 +6780,10 @@ fn validate_status_table_columns(
             header: "TESTS-EXECUTED",
             alignment: ValidateStatusAlignment::Right,
         },
+        ValidateStatusTableColumn {
+            header: "TESTS-PASSED",
+            alignment: ValidateStatusAlignment::Right,
+        },
     ]);
     if log_paths {
         table.extend([
@@ -6856,6 +6876,12 @@ fn validate_status_values(
             .map(|count| count.to_string())
             .unwrap_or_else(|| missing.into()),
     );
+    fields.push(
+        entry
+            .tests_passed
+            .map(|count| count.to_string())
+            .unwrap_or_else(|| missing.into()),
+    );
     if log_paths {
         fields.push(entry.slot.as_deref().unwrap_or(missing).into());
         fields.push(entry.log_file.as_deref().unwrap_or(missing).into());
@@ -6942,6 +6968,7 @@ fn finished_validate_status_entry(
         finished_at: row.finished_at.clone(),
         elapsed_seconds: row.real_seconds,
         tests_executed: recent_row_executed_tests(row),
+        tests_passed: recent_row_passed_tests(row),
         host: row.host.clone(),
         slot: row.slot.clone(),
         log_file: if include_log_paths {
@@ -7055,6 +7082,7 @@ fn no_run_commit_timeline_entry(sha: &str, depth: usize) -> ValidateStatusEntry 
         finished_at: None,
         elapsed_seconds: None,
         tests_executed: None,
+        tests_passed: None,
         host: None,
         slot: None,
         log_file: None,
@@ -7079,6 +7107,7 @@ fn unreadable_validate_status_entry(
         finished_at: None,
         elapsed_seconds: None,
         tests_executed: None,
+        tests_passed: None,
         host: failure.host.clone(),
         slot: None,
         log_file: None,
@@ -8926,12 +8955,12 @@ mod tests {
     }
 
     #[test]
-    fn recent_history_reports_result_verdict_and_producer_executed_tests() {
+    fn recent_history_reports_exact_framework_test_counts() {
         let mut value = schema4_receipt_value();
         value["run_number"] = serde_json::json!(701);
         value["executed_tests"] = serde_json::json!(2129);
         value["filtered_tests"] = serde_json::json!(508);
-        value["passed_tests"] = serde_json::json!(785);
+        value["passed_tests"] = serde_json::json!(2129);
         let row = history_row(value);
         let mut entry = finished_validate_status_entry(CANONICAL_VALIDATE_REPO, &row, false);
         entry.finished_at = Some("2026-08-03T00:00:00Z".into());
@@ -8940,6 +8969,7 @@ mod tests {
         assert_eq!(entry.result.as_deref(), Some("pass"));
         assert_eq!(entry.run_number, Some(701));
         assert_eq!(entry.tests_executed, Some(2129));
+        assert_eq!(entry.tests_passed, Some(2129));
         let now = chrono::DateTime::parse_from_rfc3339("2026-08-03T01:36:00Z")
             .unwrap()
             .with_timezone(&chrono::Utc);
@@ -8953,7 +8983,7 @@ mod tests {
         );
         assert_eq!(
             table[0],
-            "RUN RESULT VERDICT   SHA          STARTED/FINISHED ELAPSED HOST            TESTS-EXECUTED SUMMARY"
+            "RUN RESULT VERDICT   SHA          STARTED/FINISHED ELAPSED HOST            TESTS-EXECUTED TESTS-PASSED SUMMARY"
         );
         let line = &table[1];
         assert!(
@@ -8961,7 +8991,10 @@ mod tests {
             "{line}"
         );
         assert!(line.contains("1h36m ago"), "{line}");
-        assert!(line.contains("          2129 passed"), "{line}");
+        assert!(
+            line.contains("          2129         2129 passed"),
+            "{line}"
+        );
         assert!(!line.contains("2637"), "{line}");
         assert!(!line.contains(">="), "{line}");
 
@@ -8970,8 +9003,8 @@ mod tests {
         assert_eq!(json["verdict"], serde_json::json!("VALIDATED"));
         assert!(json.get("status").is_none());
         assert_eq!(json["tests_executed"], serde_json::json!(2129));
+        assert_eq!(json["tests_passed"], serde_json::json!(2129));
         assert!(json.get("tests_total").is_none());
-        assert!(json.get("tests_passed").is_none());
         assert!(json.get("tests_passed_at_least").is_none());
         assert!(json.get("log_file").is_none());
 
@@ -8999,6 +9032,32 @@ mod tests {
             with_log[1].contains("lander /tmp/validate-630f.log"),
             "{}",
             with_log[1]
+        );
+
+        let mut mutated = schema4_receipt_value();
+        mutated["run_number"] = serde_json::json!(701);
+        mutated["executed_tests"] = serde_json::json!(2129);
+        mutated["passed_tests"] = serde_json::json!(784);
+        let mutated =
+            finished_validate_status_entry(CANONICAL_VALIDATE_REPO, &history_row(mutated), false);
+        assert_eq!(mutated.verdict.as_deref(), Some("NOT-VALIDATED"));
+        assert_eq!(mutated.tests_executed, Some(2129));
+        assert_eq!(mutated.tests_passed, Some(784));
+        let mutated_line = &validate_status_table(
+            &[mutated],
+            &[ValidateStatusColumn::Sha],
+            ValidateStatusTimes::Relative,
+            now,
+            false,
+            false,
+        )[1];
+        assert!(
+            mutated_line.starts_with("701 PASS   NOT-VALIDATED 630f44aab7fd"),
+            "{mutated_line}"
+        );
+        assert!(
+            mutated_line.contains("          2129          784"),
+            "{mutated_line}"
         );
     }
 
@@ -9352,14 +9411,34 @@ mod tests {
     }
 
     #[test]
-    fn recent_history_uses_only_the_producer_executed_count() {
+    fn failed_history_keeps_the_frameworks_lower_exact_pass_count() {
         let mut value = schema4_receipt_value();
         value["executed_tests"] = serde_json::json!(2129);
         value["filtered_tests"] = serde_json::json!(508);
         value["passed_tests"] = serde_json::json!(1604);
+        value["result"] = serde_json::json!("fail");
+        value["raw_result"] = serde_json::json!("fail");
+        value["exit_code"] = serde_json::json!(1);
+        value["failures"] = serde_json::json!(1);
         value["log_file"] = serde_json::json!("/does/not/exist");
         let row = history_row(value);
         assert_eq!(recent_row_executed_tests(&row), Some(2129));
+        assert_eq!(recent_row_passed_tests(&row), Some(1604));
+    }
+
+    #[test]
+    fn recent_history_never_invents_or_accepts_an_impossible_passed_count() {
+        for passed in [
+            serde_json::Value::Null,
+            serde_json::json!(-1),
+            serde_json::json!(2130),
+        ] {
+            let mut value = schema4_receipt_value();
+            value["executed_tests"] = serde_json::json!(2129);
+            value["passed_tests"] = passed;
+            let row = history_row(value);
+            assert_eq!(recent_row_passed_tests(&row), None);
+        }
     }
 
     #[test]
@@ -10128,7 +10207,9 @@ mod tests {
 
     #[test]
     fn canonical_receipt_accepts_genuine_schema4_and_carries_its_conditions() {
-        let row = history_row(schema4_receipt_value());
+        let mut value = schema4_receipt_value();
+        value["passed_tests"] = serde_json::json!(786);
+        let row = history_row(value);
         let assessment =
             assess_canonical_receipts(Path::new("."), &[row], RECEIPT_SHA, CANONICAL_VALIDATE_REPO)
                 .unwrap();
@@ -10146,6 +10227,7 @@ mod tests {
         assert_eq!(report["gates_expected"], 2);
         assert_eq!(report["failures"], 0);
         assert_eq!(report["executed_tests"], 786);
+        assert_eq!(report["passed_tests"], 786);
         assert_eq!(report["filtered_tests"], 693);
         assert!(report.get("selected_tests").is_none());
         assert!(report.get("discovered_tests").is_none());

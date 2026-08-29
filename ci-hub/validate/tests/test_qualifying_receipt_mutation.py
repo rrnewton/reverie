@@ -87,6 +87,7 @@ def _green_row(sha: str) -> dict:
         "exit_code": 0,
         "failures": 0,
         "executed_tests": 740,
+        "passed_tests": 740,
         "filtered_tests": 3,
         "schema_version": 5,
         "repo": "hermit",
@@ -138,6 +139,7 @@ def _grandfathered_schema4_row(sha: str) -> dict:
     row = _green_row(sha)
     row["schema_version"] = 4
     row.pop("coverage")
+    row.pop("passed_tests")
     row.pop("producer")
     row.pop("admission")
     row.pop("concurrent_validates")
@@ -156,6 +158,7 @@ def _ee303899_row(sha: str) -> dict:
     """Coverage-incomplete PASS: healthy executed count, 15 absent nodes."""
     row = _green_row(sha)
     row["executed_tests"] = 427
+    row["passed_tests"] = 427
     row["filtered_tests"] = 0
     row["coverage"] = {
         "planned_test_nodes": 19,
@@ -183,6 +186,7 @@ def _zero_exec_row(sha: str) -> dict:
     """A demonstrated zero-test run: never a full green at any schema."""
     row = _green_row(sha)
     row["executed_tests"] = 0
+    row["passed_tests"] = 0
     return row
 
 
@@ -899,6 +903,41 @@ class QualifyingReceiptMutationTest(unittest.TestCase):
         panel = self._panel(_zero_exec_row(SHA), predicate=None)
         self.assertFalse(any(panel.values()),
                          f"a zero-execution run must be rejected by every consumer: {panel}")
+
+    def test_present_passed_count_must_match_green_execution_unanimously(self) -> None:
+        """A green row may omit the historical field or report exact equality.
+
+        Lower, higher, negative, and non-integer values are contradictory or
+        malformed evidence and every receipt consumer must refuse them.
+        """
+        matched = _green_row(SHA)
+        self.assertTrue(
+            all(self._panel(matched, predicate=None).values()),
+            "matching passed/executed counts must preserve a green receipt",
+        )
+
+        absent = _green_row(SHA)
+        absent.pop("passed_tests")
+        self.assertTrue(
+            all(self._panel(absent, predicate=None).values()),
+            "historical rows with no passed_tests field must remain readable",
+        )
+
+        for label, value in (
+            ("lower", 739),
+            ("higher", 741),
+            ("negative", -1),
+            ("string", "740"),
+            ("boolean", True),
+        ):
+            with self.subTest(label=label):
+                contradictory = _green_row(SHA)
+                contradictory["passed_tests"] = value
+                panel = self._panel(contradictory, predicate=None)
+                self.assertFalse(
+                    any(panel.values()),
+                    f"{label} passed_tests must be refused everywhere: {panel}",
+                )
 
     def test_live_accepts_hard_and_rejects_soft_rebase_only_unanimously(self) -> None:
         """The class policy moves every consumer, including the Rust authority."""
