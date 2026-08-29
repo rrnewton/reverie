@@ -127,6 +127,7 @@ READ-ONLY STATUS AND HISTORY
   runner-health           Summarize self-hosted runners and recent workflows
   load-probe              Measure current CPU and memory pressure
   validate-status         List recent runs, the Hermit commit timeline, or one SHA/PR
+  signal-crosscheck       Reconcile every retained CI signal for one Hermit SHA
   local-history           List recent local validation runs [default: 10]
   newest-green            Find the newest ledger-qualified green commit [default: --branch main]
   first-bad               Find a retained PASS -> FAIL transition for a cell or gate
@@ -244,6 +245,8 @@ enum HubCommand {
     LoadProbe(LoadProbeArgs),
     /// List recent runs, the Hermit commit timeline, or one commit/PR verdict.
     ValidateStatus(ValidateStatusArgs),
+    /// Reconcile retained CI signals for one exact Hermit commit.
+    SignalCrosscheck(PassthroughArgs),
     /// Query the registered exact-head GH Actions result.
     HostedStatus(HostedStatusArgs),
     /// Recompute the canonical digest of one HistoryRow read from stdin.
@@ -1278,6 +1281,10 @@ impl HubCommand {
                 tool: "ci-hub/publish-commit-status",
                 basis: "not measured: exact-SHA ledger scan plus bounded immutable-receipt and commit-status GitHub calls".into(),
             },
+            Self::SignalCrosscheck(_) => CostSpec {
+                tool: "ci-hub/signal-crosscheck",
+                basis: "not measured: one exact-SHA validate-status query, canonical ledger and series scans, exact scorecard object reads, run-handle scan, and one GitHub commit-status query".into(),
+            },
             Self::Quickstart
             | Self::GreenTime(_)
             | Self::Ledger(_)
@@ -1703,6 +1710,9 @@ fn execute(root: &Path, command: HubCommand) -> Result<i32, CiHubError> {
             run_python(root, "ci-hub/health/load_probe.py", forwarded)
         }
         HubCommand::ValidateStatus(args) => run_validate_status(root, args),
+        HubCommand::SignalCrosscheck(args) => {
+            run_python(root, "ci-hub/validate/signal_crosscheck.py", args.args)
+        }
         HubCommand::ValidateRun(args) => {
             // `root` is the exact linked worktree whose ci-hub code is running,
             // while validate-lock deliberately stores authority under the
@@ -11453,6 +11463,26 @@ mod tests {
         assert!(AGENT_QUICKSTART.contains("hermit-validation-authority"));
         assert!(!AGENT_QUICKSTART.contains("modifying scripts/validate.rs"));
         assert!(AGENT_QUICKSTART.lines().count() < 45);
+    }
+
+    #[test]
+    fn signal_crosscheck_forwards_its_exact_sha_arguments() {
+        let sha = "a".repeat(40);
+        let command = Cli::try_parse_from(["ci-hub", "signal-crosscheck", "--sha", &sha, "--json"])
+            .unwrap()
+            .command;
+        let HubCommand::SignalCrosscheck(args) = command else {
+            panic!("wrong command variant")
+        };
+        assert_eq!(
+            args.args,
+            vec![
+                OsString::from("--sha"),
+                OsString::from(sha),
+                OsString::from("--json"),
+            ]
+        );
+        assert!(HubCommand::SignalCrosscheck(args).cost_spec().is_some());
     }
 
     #[test]
