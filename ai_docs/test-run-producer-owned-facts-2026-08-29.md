@@ -58,6 +58,33 @@ The audit was performed by content at these published heads:
 | 3 | Final Reverie validation status | [`reverie_safe_ci.py`](https://github.com/rrnewton/dev-hermit/blob/62cc2fbd938fd126b3c46a365ee9f68f6b96275a/ci-hub/validate/reverie_safe_ci.py#L24-L70) | `reverie_node.py` writes one closed status value to a dedicated file | **Recordable by the runner and already recorded through an exact text contract.** The consumer requires one known value and checks the matching exit code; this is a control, not a prose inference. |
 | 3 | Hermit launch refusal and backend unavailability | [`manifest-plan` runner](https://github.com/rrnewton/hermit/blob/f7a3759886204694631b565598f7c2c6666bf73d/ci/manifest-plan/src/runner.rs#L1924-L1984) | Hermit emits one exact `HERMIT_INTERNAL_FAILURE class=...` line before human detail | **Recordable by the product and already recorded through an exact text contract.** Unknown or altered classes do not silently match. This is the strict adapter delivered by the producer-boundary work, not arbitrary English matching. |
 
+## Tier-two audit
+
+The tier-two paths were re-audited after the receipt-denominator work at these
+heads: dev-hermit `c734926de958da2833048e8f393ffdf13075aac0`, Hermit
+`bb616ba4943424ba94781ea3377fc9f80bdf3ce0`, and agent-utils
+`45b24f8bbccf6e971d97de041b874bc6f8e770b6`. The result is **zero new code
+migrations**. One count path already uses the structured record, one family is
+live attribution that cannot wait for a terminal record, and the remaining
+three are the innermost adapters for producers that do not compute the
+project's classification.
+
+| Fact | Production consumers enumerated | Disposition |
+|---|---|---|
+| Generic scheduler test count | [`resolved_test_counts`](https://github.com/rrnewton/agent-utils/blob/45b24f8bbccf6e971d97de041b874bc6f8e770b6/rs/dagrun/src/scheduler.rs#L2538-L2555), consumed once when the scheduler builds the step result at [L3560-L3565](https://github.com/rrnewton/agent-utils/blob/45b24f8bbccf6e971d97de041b874bc6f8e770b6/rs/dagrun/src/scheduler.rs#L3560-L3565) | The Hermit [nextest wrapper](https://github.com/rrnewton/hermit/blob/bb616ba4943424ba94781ea3377fc9f80bdf3ce0/ci/run-nextest-counted.sh#L9-L35) and [result writer](https://github.com/rrnewton/hermit/blob/bb616ba4943424ba94781ea3377fc9f80bdf3ce0/ci/nextest-test-results.rs#L253-L305) are a named producer, not incidental output: they write the schema-2 `TestResults` file on both successful and failed runs and print the libtest banner for people. [`DAGRUN_REQUIRE_STRUCTURED_TEST_COUNTS=1`](https://github.com/rrnewton/hermit/blob/bb616ba4943424ba94781ea3377fc9f80bdf3ce0/scripts/validate.rs#L15613-L15617) makes an absent or malformed file remain unknown; the compatibility parser cannot set a receipt denominator. The fallback remains correct for arbitrary non-receipt commands. |
+| Live test identity and likely hung test | Rust: the unterminated tail, complete lines, teardown tail, and `-vv` decoration; Python: the corresponding unterminated tail, complete lines, and teardown tail. All seven calls use the same conservative `recognize` contract ([Rust](https://github.com/rrnewton/agent-utils/blob/45b24f8bbccf6e971d97de041b874bc6f8e770b6/rs/dagrun/src/attribution.rs#L383-L458), [Python](https://github.com/rrnewton/agent-utils/blob/45b24f8bbccf6e971d97de041b874bc6f8e770b6/py/dagrun/attribution.py#L275-L315)). | Keep the live path. `##TEST-START`/`##TEST-END` is an exact producer/consumer protocol. Libtest, pytest, and TAP are external formats. A process that hangs before its end record cannot supply a terminal structured result; the live prefix is the only evidence available. Unknown text yields no test identity. |
+| Generic validation-node failure class | Two production calls in the retry pass and terminal pass of [`run_lane_with_retries`](https://github.com/rrnewton/hermit/blob/bb616ba4943424ba94781ea3377fc9f80bdf3ce0/scripts/validate.rs#L11817-L11833), [L11995-L12020](https://github.com/rrnewton/hermit/blob/bb616ba4943424ba94781ea3377fc9f80bdf3ce0/scripts/validate.rs#L11995-L12020) | Keep the strict adapter for Cargo, shell, proxy, jailer, and third-party build diagnostics: those producers do not emit `FailureClass`. Manifest cells publish their own class and do not need this adapter. Timeout and OOM are a separate typed subpath already implemented in [Hermit PR 2822](https://github.com/rrnewton/hermit/pull/2822); do not duplicate that change here when the stacks meet. |
+| Captured stress-run failure shape | New captures call [`classify_shape`](https://github.com/rrnewton/dev-hermit/blob/c734926de958da2833048e8f393ffdf13075aac0/ci-hub/attribution/attribution.py#L644-L661) once; retained bundles use their stored `shape` and call it only when an older bundle omitted the field ([L925-L937](https://github.com/rrnewton/dev-hermit/blob/c734926de958da2833048e8f393ffdf13075aac0/ci-hub/attribution/attribution.py#L925-L937)). | Timeout and exit status are already typed. Mismatch, crash text without a signal exit, and harness failure come from arbitrary commands with no shared result. The retained-bundle call is a historical fallback and grants no new current authority. |
+| Cross-iteration stress-test category | One aggregation loop calls `categorize` for each test after reading typed JUnit pass/fail rows ([Hermit](https://github.com/rrnewton/hermit/blob/bb616ba4943424ba94781ea3377fc9f80bdf3ce0/scripts/stress-test.sh#L115-L176)). | Pass counts and flaky-versus-consistent status are computed from JUnit rows. The `system-infra` classification is necessarily an adapter over external failure detail: nextest does not know the project's infrastructure taxonomy, and the category becomes true only across iterations. |
+
+The nextest correction is important: the wrapper deliberately emits the banner
+on both outcomes, including the failing form, but it also writes the structured
+record on both outcomes. Text is therefore a compatibility and presentation
+transport, not receipt authority. The test fixes the printed banner at 999,
+changes the structured count, and requires the scheduler to follow the record;
+removing the record in structured-required mode produces unknown rather than
+999.
+
 ## What is correctly outer
 
 The following whole-run facts are not candidates for a cell-owned result:
