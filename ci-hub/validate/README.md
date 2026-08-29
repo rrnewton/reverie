@@ -28,6 +28,14 @@ The newest run does not erase older receipts; `validate-status` and
 `--times local` or `--times utc` when an absolute timestamp is needed. JSON
 output retains the recorded RFC 3339 timestamps in every mode.
 
+With no SHA, PR, or run number, the recent table includes completed ledger rows
+from every branch, ordered by completion time; it is not restricted to
+`origin/main`, and live in-progress runs may also appear. Use
+`--commit-timeline` for the `origin/main`-only view. The
+`COMMITS-SINCE-GREEN` line and its JSON object name the exact local history ref
+and full tip SHA used for the first-parent depth. This query deliberately does
+not fetch, and the named tip may differ from the checkout's `HEAD`.
+
 Use `ci-hub validate-status --log-paths` when following a running or completed
 validation. It adds the producer-recorded `SLOT` and full `LOG-FILE` columns;
 they stay out of the default table because the path is intentionally wide.

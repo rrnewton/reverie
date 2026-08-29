@@ -464,7 +464,8 @@ struct ValidateStatusArgs {
         help_heading = "WHICH RESULTS"
     )]
     run_no: Option<u64>,
-    /// Number of recent validation runs to show when no SHA or PR is supplied.
+    /// Number of recent completed ledger rows to show when no SHA or PR is
+    /// supplied. These rows may name any branch; live runs are additional.
     #[arg(
         long,
         default_value_t = DEFAULT_VALIDATE_HISTORY_LIMIT,
@@ -473,7 +474,8 @@ struct ValidateStatusArgs {
     )]
     limit: usize,
     /// List every commit in the local Hermit origin/main first-parent history,
-    /// including commits with no validation ledger row.
+    /// including commits with no validation ledger row. Unlike the ordinary
+    /// recent list, this view is restricted to that history.
     #[arg(
         long,
         conflicts_with_all = ["sha_positional", "sha", "pr", "run_no", "in_progress_only"],
@@ -4554,6 +4556,12 @@ fn branch_history(repo: &Path, branch_ref: &str) -> Result<Vec<String>, CiHubErr
     Ok(commits)
 }
 
+fn branch_history_for(repo: &Path, branch: &str) -> Result<(String, Vec<String>), CiHubError> {
+    let branch_ref = format!("origin/{branch}");
+    let commits = branch_history(repo, &branch_ref)?;
+    Ok((branch_ref, commits))
+}
+
 fn branch_history_with_trees(
     repo: &Path,
     branch_ref: &str,
@@ -5801,6 +5809,8 @@ fn format_validate_timestamp(
 /// stop calling.
 enum GreenDepth {
     Found {
+        history_ref: String,
+        history_tip: String,
         depth: usize,
         sha: String,
         window: usize,
@@ -5813,11 +5823,15 @@ enum GreenDepth {
         no_record: usize,
     },
     NoneInWindow {
+        history_ref: String,
+        history_tip: String,
         window: usize,
         oldest: String,
         recorded: usize,
     },
     Unverifiable {
+        history_ref: String,
+        history_tip: String,
         visible_depth: usize,
         required_depth: String,
     },
@@ -5829,6 +5843,8 @@ impl GreenDepth {
     fn line(&self) -> String {
         match self {
             GreenDepth::Found {
+                history_ref,
+                history_tip,
                 depth,
                 sha,
                 window,
@@ -5840,7 +5856,8 @@ impl GreenDepth {
                 ledger_unreadable,
                 no_record,
             } => format!(
-                "HERMIT COMMITS-SINCE-GREEN {depth} (last full green {} at first-parent depth {depth}; \
+                "HERMIT COMMITS-SINCE-GREEN {depth} (history {history_ref} at {history_tip}; \
+                 last full green {} at first-parent depth {depth}; \
                  FAILED={failed_on_record} NEEDS-RERUN={needs_rerun} TRUNCATED={truncated} \
                  NO-RESULT={no_result} NOT-VALIDATED={not_validated} \
                  LEDGER-UNREADABLE={ledger_unreadable} NO-RECORD={no_record}; \
@@ -5848,22 +5865,28 @@ impl GreenDepth {
                 sha.get(..12).unwrap_or(sha)
             ),
             GreenDepth::NoneInWindow {
+                history_ref,
+                history_tip,
                 window,
                 oldest,
                 recorded,
             } => format!(
                 "HERMIT COMMITS-SINCE-GREEN NONE-WITHIN-{window} -- no full green in the {window} \
-                 first-parent commits back to {} ({recorded} carried any record). This is a \
+                 first-parent commits of {history_ref} at {history_tip}, back to {} \
+                 ({recorded} carried any record). This is a \
                  BOUNDED search, not a claim that no green exists; widen it with \
                  `ci-hub newest-green`.",
                 oldest.get(..12).unwrap_or(oldest)
             ),
             GreenDepth::Unverifiable {
+                history_ref,
+                history_tip,
                 visible_depth,
                 required_depth,
             } => format!(
-                "HERMIT COMMITS-SINCE-GREEN UNVERIFIABLE-SHALLOW-HISTORY -- only {visible_depth} \
-                 first-parent commits visible, {required_depth} required. Deepen the checkout; \
+                "HERMIT COMMITS-SINCE-GREEN UNVERIFIABLE-SHALLOW-HISTORY -- {history_ref} at \
+                 {history_tip} exposes only {visible_depth} first-parent commits, \
+                 {required_depth} required. Deepen the checkout; \
                  this is not an absence."
             ),
             GreenDepth::Unavailable { why } => format!(
@@ -5876,6 +5899,8 @@ impl GreenDepth {
     fn json(&self) -> serde_json::Value {
         match self {
             GreenDepth::Found {
+                history_ref,
+                history_tip,
                 depth,
                 sha,
                 window,
@@ -5888,6 +5913,7 @@ impl GreenDepth {
                 no_record,
             } => serde_json::json!({
                 "state": "found", "depth": depth, "green_sha": sha,
+                "history_ref": history_ref, "history_tip": history_tip,
                 "searched_commits": window,
                 "commits_failed_on_record": failed_on_record,
                 "commits_needing_rerun": needs_rerun,
@@ -5907,20 +5933,26 @@ impl GreenDepth {
                 "basis": "first-parent distance",
             }),
             GreenDepth::NoneInWindow {
+                history_ref,
+                history_tip,
                 window,
                 oldest,
                 recorded,
             } => serde_json::json!({
                 "state": "none-within-window", "depth": serde_json::Value::Null,
+                "history_ref": history_ref, "history_tip": history_tip,
                 "searched_commits": window, "oldest_searched": oldest,
                 "commits_with_records": recorded,
                 "note": "bounded search; not a claim that no green exists",
             }),
             GreenDepth::Unverifiable {
+                history_ref,
+                history_tip,
                 visible_depth,
                 required_depth,
             } => serde_json::json!({
                 "state": "unverifiable-shallow-history", "depth": serde_json::Value::Null,
+                "history_ref": history_ref, "history_tip": history_tip,
                 "visible_first_parent_depth": visible_depth,
                 "required_history_depth": required_depth,
             }),
@@ -5941,8 +5973,19 @@ fn standard_green_depth(root: &Path, branch: &str) -> GreenDepth {
             why: format!("no hermit checkout at {}", repo.display()),
         };
     }
-    let branch_ref = format!("origin/{branch}");
     // Deliberately no fetch: see the cost note above.
+    let (branch_ref, history) = match branch_history_for(&repo, branch) {
+        Ok(result) => result,
+        Err(error) => {
+            return GreenDepth::Unavailable {
+                why: format!("origin/{branch}: {error}"),
+            }
+        }
+    };
+    let history_tip = history
+        .first()
+        .expect("branch_history_for returns a nonempty history")
+        .clone();
     let floor = match query_effective_gate_floor(root, &repo, branch) {
         Ok(GateFloorResolution::Effective(floor)) => floor,
         Ok(GateFloorResolution::UnverifiableShallow {
@@ -5951,6 +5994,8 @@ fn standard_green_depth(root: &Path, branch: &str) -> GreenDepth {
             ..
         }) => {
             return GreenDepth::Unverifiable {
+                history_ref: branch_ref,
+                history_tip,
                 visible_depth,
                 required_depth,
             }
@@ -5958,14 +6003,6 @@ fn standard_green_depth(root: &Path, branch: &str) -> GreenDepth {
         Err(error) => {
             return GreenDepth::Unavailable {
                 why: format!("gate floor: {error}"),
-            }
-        }
-    };
-    let history = match branch_history(&repo, &branch_ref) {
-        Ok(history) => history,
-        Err(error) => {
-            return GreenDepth::Unavailable {
-                why: format!("{branch_ref}: {error}"),
             }
         }
     };
@@ -6003,6 +6040,8 @@ fn standard_green_depth(root: &Path, branch: &str) -> GreenDepth {
         .newest_green(branch, &branch_ref, &floor_policy, &floor.sha)
     {
         NewestGreenOutcome::Found(report) => GreenDepth::Found {
+            history_ref: branch_ref,
+            history_tip,
             depth: report.commits_after_green,
             sha: report.green.sha.clone(),
             window: report.branch_commits_in_range,
@@ -6024,6 +6063,8 @@ fn standard_green_depth(root: &Path, branch: &str) -> GreenDepth {
             recorded,
             ..
         } => GreenDepth::NoneInWindow {
+            history_ref: branch_ref,
+            history_tip,
             window: commits_in_range,
             oldest: floor.sha.clone(),
             recorded,
@@ -6936,6 +6977,60 @@ fn historical_validate_run_numbers(rows: &[HistoryRow]) -> Vec<Option<u64>> {
         .collect()
 }
 
+fn recent_finished_validate_status_entries(
+    rows: &[HistoryRow],
+    historical_run_numbers: &[Option<u64>],
+    current: &[ValidateStatusEntry],
+    repo: &str,
+    include_log_paths: bool,
+    limit: usize,
+) -> Vec<ValidateStatusEntry> {
+    let mut recent = rows
+        .iter()
+        .zip(historical_run_numbers.iter().copied())
+        .filter(|(row, _)| row.commit.is_some())
+        .collect::<Vec<_>>();
+    recent.sort_by(|(left, _), (right, _)| {
+        let left = left
+            .finished_at
+            .as_deref()
+            .or(left.started_at.as_deref())
+            .unwrap_or("");
+        let right = right
+            .finished_at
+            .as_deref()
+            .or(right.started_at.as_deref())
+            .unwrap_or("");
+        right.cmp(left)
+    });
+    recent.retain(|(finished, _)| {
+        !current.iter().any(|live| {
+            live.sha.as_deref() == finished.commit.as_deref()
+                && live.started_at.as_deref() == finished.started_at.as_deref()
+        })
+    });
+    recent.truncate(limit);
+    recent
+        .into_iter()
+        .map(|(row, run_number)| {
+            let mut entry = finished_validate_status_entry(repo, row, include_log_paths);
+            entry.run_number = run_number;
+            entry
+        })
+        .collect()
+}
+
+fn recent_validate_status_note(limit: usize, include_in_progress: bool) -> String {
+    let live_runs = if include_in_progress {
+        "live in-progress runs may also appear"
+    } else {
+        "in-progress runs are excluded by --exclude-in-progress"
+    };
+    format!(
+        "RECENT VALIDATION RUNS: completed rows are selected from all completed ledger rows, ordered by completion time, limited to {limit}, and not restricted to {COMMIT_TIMELINE_REF}; {live_runs}. Use --commit-timeline for the {COMMIT_TIMELINE_REF}-only view."
+    )
+}
+
 fn no_run_commit_timeline_entry(sha: &str, depth: usize) -> ValidateStatusEntry {
     ValidateStatusEntry {
         depth: Some(depth),
@@ -7218,42 +7313,17 @@ fn print_recent_validate_history(
         current.sort_by(|left, right| right.started_at.cmp(&left.started_at));
         (current, None)
     } else {
-        let mut recent = rows
-            .iter()
-            .zip(historical_run_numbers.iter().copied())
-            .filter(|(row, _)| row.commit.is_some())
-            .collect::<Vec<_>>();
-        recent.sort_by(|(left, _), (right, _)| {
-            let left = left
-                .finished_at
-                .as_deref()
-                .or(left.started_at.as_deref())
-                .unwrap_or("");
-            let right = right
-                .finished_at
-                .as_deref()
-                .or(right.started_at.as_deref())
-                .unwrap_or("");
-            right.cmp(left)
-        });
-        recent.retain(|(finished, _)| {
-            !current.iter().any(|live| {
-                live.sha.as_deref() == finished.commit.as_deref()
-                    && live.started_at.as_deref() == finished.started_at.as_deref()
-            })
-        });
-        recent.truncate(args.limit);
         let finished = if args.in_progress_only {
             Vec::new()
         } else {
-            recent
-                .into_iter()
-                .map(|(row, run_number)| {
-                    let mut entry = finished_validate_status_entry(repo, row, args.log_paths);
-                    entry.run_number = run_number;
-                    entry
-                })
-                .collect()
+            recent_finished_validate_status_entries(
+                rows,
+                &historical_run_numbers,
+                &current,
+                repo,
+                args.log_paths,
+                args.limit,
+            )
         };
         current.extend(finished);
         (current, None)
@@ -7299,6 +7369,12 @@ fn print_recent_validate_history(
     // Printed even when there are no runs at all: "no runs" and "no green in the
     // last N commits" are different facts and the second is the actionable one.
     println!("{}", depth.line());
+    if !args.commit_timeline && args.run_no.is_none() && !args.in_progress_only {
+        println!(
+            "{}",
+            recent_validate_status_note(args.limit, !args.exclude_in_progress)
+        );
+    }
     if let Some(commit_count) = commit_count {
         println!(
             "COMMIT-TIMELINE {COMMIT_TIMELINE_REF} {commit_count} first-parent commits (depth 0 is local {COMMIT_TIMELINE_REF})."
@@ -8606,6 +8682,8 @@ mod tests {
     #[test]
     fn found_states_the_depth_and_the_commit() {
         let line = GreenDepth::Found {
+            history_ref: "origin/main".into(),
+            history_tip: "ffffffffffffffffffffffffffffffffffffffff".into(),
             depth: 365,
             sha: "dee8cf49ce6a7e3e9e2c87c930f3aa55ae83da18".into(),
             window: 628,
@@ -8620,13 +8698,15 @@ mod tests {
         .line();
         assert_eq!(
             line,
-            "HERMIT COMMITS-SINCE-GREEN 365 (last full green dee8cf49ce6a at first-parent depth 365; FAILED=1 NEEDS-RERUN=18 TRUNCATED=2 NO-RESULT=0 NOT-VALIDATED=1 LEDGER-UNREADABLE=1 NO-RECORD=342; searched 628 commits)"
+            "HERMIT COMMITS-SINCE-GREEN 365 (history origin/main at ffffffffffffffffffffffffffffffffffffffff; last full green dee8cf49ce6a at first-parent depth 365; FAILED=1 NEEDS-RERUN=18 TRUNCATED=2 NO-RESULT=0 NOT-VALIDATED=1 LEDGER-UNREADABLE=1 NO-RECORD=342; searched 628 commits)"
         );
     }
 
     #[test]
     fn found_json_keeps_each_verdict_and_absence_separate() {
         let value = GreenDepth::Found {
+            history_ref: "origin/main".into(),
+            history_tip: "ffffffffffffffffffffffffffffffffffffffff".into(),
             depth: 7,
             sha: "dee8cf49ce6a7e3e9e2c87c930f3aa55ae83da18".into(),
             window: 12,
@@ -8649,6 +8729,54 @@ mod tests {
         assert_eq!(value["commits_with_records"], 5);
         assert_eq!(value["commits_without_any_record"], 1);
         assert_eq!(value["commits_without_record"], 2);
+        assert_eq!(value["history_ref"], "origin/main");
+        assert_eq!(
+            value["history_tip"],
+            "ffffffffffffffffffffffffffffffffffffffff"
+        );
+    }
+
+    #[test]
+    fn branch_history_for_uses_origin_main_when_checkout_head_differs() {
+        let root = std::env::temp_dir().join(format!(
+            "ci-hub-validate-status-history-ref-{}-{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let git = |args: &[&str]| {
+            let output = Command::new("git")
+                .arg("-C")
+                .arg(&root)
+                .args(args)
+                .env("GIT_AUTHOR_NAME", "validate-status test")
+                .env("GIT_AUTHOR_EMAIL", "validate-status@example.invalid")
+                .env("GIT_COMMITTER_NAME", "validate-status test")
+                .env("GIT_COMMITTER_EMAIL", "validate-status@example.invalid")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "git {args:?}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            String::from_utf8(output.stdout).unwrap().trim().to_string()
+        };
+        git(&["init", "-q"]);
+        git(&["commit", "--allow-empty", "-qm", "base"]);
+        let base = git(&["rev-parse", "HEAD"]);
+        git(&["commit", "--allow-empty", "-qm", "main tip"]);
+        let main_tip = git(&["rev-parse", "HEAD"]);
+        git(&["update-ref", "refs/remotes/origin/main", &main_tip]);
+        git(&["checkout", "--detach", "-q", &base]);
+
+        let (history_ref, commits) = branch_history_for(&root, "main").unwrap();
+        assert_eq!(history_ref, "origin/main");
+        assert_eq!(commits.first(), Some(&main_tip));
+        assert_eq!(git(&["rev-parse", "HEAD"]), base);
+        assert_ne!(git(&["rev-parse", "HEAD"]), main_tip);
+
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -8707,6 +8835,8 @@ mod tests {
         // ⚠️ THE WHOLE POINT. Without the window, "no green within 200" and "no
         // green ever" render identically and the metric is a binary again.
         let line = GreenDepth::NoneInWindow {
+            history_ref: "origin/main".into(),
+            history_tip: "ffffffffffffffffffffffffffffffffffffffff".into(),
             window: 200,
             oldest: "0123456789abcdef0123456789abcdef01234567".into(),
             recorded: 10,
@@ -8714,7 +8844,7 @@ mod tests {
         .line();
         assert_eq!(
             line,
-            "HERMIT COMMITS-SINCE-GREEN NONE-WITHIN-200 -- no full green in the 200 first-parent commits back to 0123456789ab (10 carried any record). This is a BOUNDED search, not a claim that no green exists; widen it with `ci-hub newest-green`."
+            "HERMIT COMMITS-SINCE-GREEN NONE-WITHIN-200 -- no full green in the 200 first-parent commits of origin/main at ffffffffffffffffffffffffffffffffffffffff, back to 0123456789ab (10 carried any record). This is a BOUNDED search, not a claim that no green exists; widen it with `ci-hub newest-green`."
         );
     }
 
@@ -8722,6 +8852,8 @@ mod tests {
     fn the_four_states_never_render_alike() {
         let states = [
             GreenDepth::Found {
+                history_ref: "origin/main".into(),
+                history_tip: "f".repeat(40),
                 depth: 0,
                 sha: "a".repeat(40),
                 window: 1,
@@ -8734,11 +8866,15 @@ mod tests {
                 no_record: 0,
             },
             GreenDepth::NoneInWindow {
+                history_ref: "origin/main".into(),
+                history_tip: "f".repeat(40),
                 window: 5,
                 oldest: "b".repeat(40),
                 recorded: 1,
             },
             GreenDepth::Unverifiable {
+                history_ref: "origin/main".into(),
+                history_tip: "f".repeat(40),
                 visible_depth: 3,
                 required_depth: "50".into(),
             },
@@ -8854,6 +8990,57 @@ mod tests {
             "{}",
             with_log[1]
         );
+    }
+
+    #[test]
+    fn recent_history_keeps_off_main_rows_and_labels_its_scope() {
+        let main_sha = "a".repeat(40);
+        let off_main_sha = "b".repeat(40);
+        let mut main = schema4_receipt_value();
+        main["commit"] = serde_json::json!(main_sha);
+        main["finished_at"] = serde_json::json!("2026-08-29T12:00:00Z");
+        let mut off_main = schema4_receipt_value();
+        off_main["commit"] = serde_json::json!(off_main_sha);
+        off_main["finished_at"] = serde_json::json!("2026-08-29T13:00:00Z");
+        let rows = [history_row(main), history_row(off_main)];
+        let run_numbers = historical_validate_run_numbers(&rows);
+
+        let recent = recent_finished_validate_status_entries(
+            &rows,
+            &run_numbers,
+            &[],
+            CANONICAL_VALIDATE_REPO,
+            false,
+            10,
+        );
+        assert_eq!(recent.len(), 2);
+        assert_eq!(recent[0].sha.as_deref(), Some(off_main_sha.as_str()));
+        assert_eq!(recent[1].sha.as_deref(), Some(main_sha.as_str()));
+
+        let timeline = commit_timeline_entries(
+            std::slice::from_ref(&main_sha),
+            recent,
+            Vec::new(),
+            &[],
+            CANONICAL_VALIDATE_REPO,
+        );
+        assert_eq!(timeline.len(), 1);
+        assert_eq!(timeline[0].sha.as_deref(), Some(main_sha.as_str()));
+        let note = recent_validate_status_note(10, true);
+        assert!(
+            note.contains("selected from all completed ledger rows"),
+            "{note}"
+        );
+        assert!(note.contains("limited to 10"), "{note}");
+        assert!(note.contains("not restricted to origin/main"), "{note}");
+        assert!(note.contains("ordered by completion time"), "{note}");
+        assert!(note.contains("--commit-timeline"), "{note}");
+        assert!(
+            note.contains("live in-progress runs may also appear"),
+            "{note}"
+        );
+        assert!(recent_validate_status_note(10, false)
+            .contains("in-progress runs are excluded by --exclude-in-progress"));
     }
 
     #[test]
