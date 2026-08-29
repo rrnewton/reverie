@@ -38,6 +38,7 @@
 //!
 //! ```cargo
 //! [dependencies]
+//! detcore-model = { path = "../hermit/detcore-model" }
 //! serde_json = "1"
 //! sha2 = "0.10"
 //! ```
@@ -63,6 +64,9 @@
 #[path = "lib/scorecard.rs"]
 mod scorecard;
 
+use detcore_model::backend_engagement::{BackendEngagement, BackendEngagementReport};
+use detcore_model::summary::PathEvidence;
+use detcore_model::summary::RunSummary;
 use scorecard::{
     parse_columns, split_csv_line, ScorecardColumn as Column, ScorecardRow, ScorecardVariant,
 };
@@ -74,6 +78,7 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{exit, Command};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const USAGE: &str = r#"Usage: compat-envelope/collect-envelope.rs --mode regression|expansion [OPTIONS]
@@ -1000,7 +1005,7 @@ fn run_group(
 /// and fail, because the cell is neither evidence of parity nor evidence of a defect.
 ///
 /// The negative control is a BARE EXEC, not `--backend native`: hermit has no `native` backend
-/// (`--backend` accepts only ptrace/dbi/liteinst/sabre/kvm/e9patch), so the do-nothing run has to
+/// (`--backend` accepts only ptrace/dbt/liteinst/sabre/kvm/e9patch), so the do-nothing run has to
 /// bypass hermit entirely.
 ///
 /// The reference hash was always computed here and then DISCARDED, which left a `parity=1` row
@@ -1453,7 +1458,7 @@ fn build_compiled_fixture(
 
 /// Run a guest under one backend with the portable determinism profile, capture
 /// stdout, and return its SHA-256 (or None on failure/timeout).
-/// How much work THIS backend uniquely performed, parsed from its own run output.
+/// How much work THIS backend uniquely performed, read from its typed run record.
 ///
 /// A backend that did nothing agrees with the reference perfectly. e9patch scored
 /// byte-identical parity with ptrace while reporting `mapped_sites=0`: the AOT pass
@@ -1461,68 +1466,112 @@ fn build_compiled_fixture(
 /// score. The count is therefore a CONDITION that must travel with the verdict --
 /// a cell without it cannot be distinguished from an earned one.
 ///
-/// Each pattern counts work only that backend does, so a nonzero value cannot be
+/// Each field counts work only that backend does, so a nonzero value cannot be
 /// produced by the shared runtime underneath:
 ///   e9patch  `mapped_sites`  -- main-ELF sites actually rewritten by the AOT pass
-///   sabre    `patched_sites` -- call sites routed to the in-guest handler
-///   dbi      `branches`      -- blocks translated by DynamoRIO
+///   sabre    `guest_rpc_observed` -- whether the in-guest handler reached Detcore
+///   dbt      `counted_branches` -- branches counted by DynamoRIO
 ///   ptrace   `turns`         -- scheduler turns, i.e. guest stops the tracer took
 ///
-/// `None` means NO COUNTER WAS FOUND, which is deliberately not the same as zero and
-/// must never be read as engagement: liteinst and kvm expose no such counter yet, so
-/// they return `None` here and their cells cannot claim to be earned until they do.
-fn backend_engagement(backend: &str, text: &str) -> Option<i64> {
-    let key = match backend {
-        "e9patch" => "mapped_sites=",
-        "sabre" => "patched_sites=",
-        "dbi" => "branches=",
-        "ptrace" => return parse_scheduler_turns(text),
+/// `None` means the typed record was missing, malformed, for another backend,
+/// or carried no supported counter. That is deliberately not the same as zero.
+fn backend_engagement(backend: &str, bytes: &[u8]) -> Option<i64> {
+    match backend {
+        "ptrace" => serde_json::from_slice::<RunSummary>(bytes)
+            .ok()?
+            .sched_turns
+            .try_into()
+            .ok(),
+        "sabre" => {
+            let evidence = serde_json::from_slice::<PathEvidence>(bytes).ok()?;
+            if evidence.schema != PathEvidence::SCHEMA {
+                return None;
+            }
+            Some(i64::from(evidence.guest_rpc_observed))
+        }
+        "e9patch" | "dbt" => match serde_json::from_slice::<BackendEngagementReport>(bytes)
+            .ok()
+            .filter(|report| report.validate().is_ok())?
+            .engagement
+        {
+            BackendEngagement::E9patch { mapped_sites } if backend == "e9patch" => {
+                mapped_sites.try_into().ok()
+            }
+            BackendEngagement::Dbt { counted_branches } if backend == "dbt" => {
+                counted_branches.try_into().ok()
+            }
+            BackendEngagement::Ptrace { .. }
+            | BackendEngagement::E9patch { .. }
+            | BackendEngagement::Dbt { .. } => None,
+        },
         // liteinst and kvm publish no engagement counter today.
-        _ => return None,
-    };
-    let start = text.find(key)? + key.len();
-    let digits: String = text[start..]
-        .chars()
-        .take_while(|c| c.is_ascii_digit())
-        .collect();
-    digits.parse().ok()
+        _ => None,
+    }
 }
 
 /// PLANTED BOTH-WAYS CHECK for the engagement invariant, run with `--self-check`.
 ///
-/// The fixtures are REAL banner text measured on this box, not invented strings, so
-/// the parser is pinned against what the backends actually print rather than against
-/// what this file wishes they printed. Every backend is asserted in BOTH directions:
+/// The fixtures use the producer-owned record shapes rather than presentation text.
+/// Every backend is asserted in BOTH directions:
 /// an exercising run must read nonzero, a non-exercising run must read zero, and a
 /// backend with no counter must read "unknown" -- which is deliberately distinct from
 /// zero, because treating "I could not tell" as "it engaged" is the failure this
 /// whole invariant exists to prevent.
 fn self_check() -> i32 {
-    // (backend, text, expected)
+    // (backend, typed record, expected)
     let cases: &[(&str, &str, Option<i64>)] = &[
         // e9patch, the motivating case. Measured: an ordinary dynamically linked guest
         // gives the AOT pass nothing to rewrite, while a guest with syscalls in its main
         // ELF gives it two.
-        ("e9patch", ":: Backend: e9patch preprocessing + ptrace runtime; candidate_sites=0; mapped_sites=0; b0_sites=0; instruction_map_cache=Hit;", Some(0)),
-        ("e9patch", ":: Backend: e9patch preprocessing + ptrace runtime; candidate_sites=2; mapped_sites=2; b0_sites=0; instruction_map_cache=Miss;", Some(2)),
-        // dbi
-        ("dbi", "reverie-dbi: tool=Detcore branches=134328 syscalls=131 rewritten=130 stdin_reads=0 memory_hash=5262c47218cba9ee", Some(134328)),
-        ("dbi", "reverie-dbi: tool=Detcore branches=0 syscalls=0 rewritten=0 stdin_reads=0 memory_hash=0", Some(0)),
+        (
+            "e9patch",
+            r#"{"schema":1,"engagement":{"backend":"e9patch","mapped_sites":0}}"#,
+            Some(0),
+        ),
+        (
+            "e9patch",
+            r#"{"schema":1,"engagement":{"backend":"e9patch","mapped_sites":2}}"#,
+            Some(2),
+        ),
+        // dbt
+        (
+            "dbt",
+            r#"{"schema":1,"engagement":{"backend":"dbt","counted_branches":134328}}"#,
+            Some(134328),
+        ),
+        (
+            "dbt",
+            r#"{"schema":1,"engagement":{"backend":"dbt","counted_branches":0}}"#,
+            Some(0),
+        ),
         // sabre
-        ("sabre", "sabre: patched_sites=7", Some(7)),
-        ("sabre", "sabre: patched_sites=0", Some(0)),
-        // ptrace
-        ("ptrace", "Internally, the hermit scheduler ran 43 turns, recorded 0 events", Some(43)),
-        ("ptrace", "Internally, the hermit scheduler ran 0 turns, recorded 0 events", Some(0)),
+        (
+            "sabre",
+            r#"{"schema":1,"guest_rpc_observed":true,"ptrace_fallback_sites":7,"trusted_shared_object_sites":0,"trusted_shared_objects":[]}"#,
+            Some(1),
+        ),
+        (
+            "sabre",
+            r#"{"schema":1,"guest_rpc_observed":false,"ptrace_fallback_sites":0,"trusted_shared_object_sites":0,"trusted_shared_objects":[]}"#,
+            Some(0),
+        ),
         // No counter published yet. MUST be None, never Some(0) and never a pass.
-        ("liteinst", "hermit: [liteinst host hybrid] activation verified", None),
-        ("kvm", "some kvm output with no engagement counter", None),
+        ("liteinst", r#"{"schema":1}"#, None),
+        ("kvm", r#"{"schema":1}"#, None),
         // A backend that printed nothing at all cannot be scored either.
         ("e9patch", "", None),
+        // A record for another backend must not be reinterpreted positionally.
+        (
+            "e9patch",
+            r#"{"schema":1,"engagement":{"backend":"dbt","counted_branches":2}}"#,
+            None,
+        ),
+        // The historical presentation banner is no longer an authority.
+        ("e9patch", "mapped_sites=2", None),
     ];
     let mut failures = 0;
     for (backend, text, expected) in cases {
-        let got = backend_engagement(backend, text);
+        let got = backend_engagement(backend, text.as_bytes());
         let verdict = match got {
             None => "unknown".to_string(),
             Some(0) => "NOT-EXERCISED".to_string(),
@@ -1535,10 +1584,28 @@ fn self_check() -> i32 {
             println!("self-check ok  {backend:<9} {verdict}");
         }
     }
+    for (scheduler_turns, expected) in [(43, Some(43)), (0, Some(0))] {
+        let record = serde_json::to_vec(&RunSummary {
+            sched_turns: scheduler_turns,
+            ..RunSummary::default()
+        })
+        .unwrap();
+        let got = backend_engagement("ptrace", &record);
+        if got != expected {
+            println!("SELF-CHECK FAIL ptrace: expected {expected:?} got {got:?}");
+            failures += 1;
+        } else {
+            println!("self-check ok  ptrace    {scheduler_turns}");
+        }
+    }
     // The discrimination itself, stated as a property rather than left implicit.
-    if backend_engagement("e9patch", "mapped_sites=0")
-        == backend_engagement("e9patch", "mapped_sites=2")
-    {
+    if backend_engagement(
+        "e9patch",
+        br#"{"schema":1,"engagement":{"backend":"e9patch","mapped_sites":0}}"#,
+    ) == backend_engagement(
+        "e9patch",
+        br#"{"schema":1,"engagement":{"backend":"e9patch","mapped_sites":2}}"#,
+    ) {
         println!("SELF-CHECK FAIL: parser does not discriminate zero from nonzero");
         failures += 1;
     }
@@ -1706,7 +1773,7 @@ fn self_check() -> i32 {
         );
         failures += 1;
     }
-    let total = cases.len() + verdict_cases.len();
+    let total = cases.len() + 2 + verdict_cases.len();
     if failures == 0 {
         println!("self-check: {total} cases, all discriminating");
         0
@@ -1721,23 +1788,24 @@ fn self_check() -> i32 {
 fn engagement_counter_name(backend: &str) -> &'static str {
     match backend {
         "e9patch" => "mapped_sites",
-        "sabre" => "patched_sites",
-        "dbi" => "branches",
+        "sabre" => "guest RPC observed",
+        "dbt" => "counted branches",
         "ptrace" => "scheduler turns",
         _ => "engagement",
     }
 }
 
-/// ptrace reports its engagement as scheduler turns in the `--summary` report:
-/// "Internally, the hermit scheduler ran 43 turns, ...".
-fn parse_scheduler_turns(text: &str) -> Option<i64> {
-    let marker = "hermit scheduler ran ";
-    let start = text.find(marker)? + marker.len();
-    let digits: String = text[start..]
-        .chars()
-        .take_while(|c| c.is_ascii_digit())
-        .collect();
-    digits.parse().ok()
+static EVIDENCE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+fn backend_evidence_path(repo: &Path, backend: &str) -> Option<PathBuf> {
+    let directory = repo.join("target").join("compat-envelope-evidence");
+    fs::create_dir_all(&directory).ok()?;
+    let sequence = EVIDENCE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    Some(directory.join(format!(
+        "{}-{}-{sequence}.json",
+        std::process::id(),
+        backend
+    )))
 }
 
 fn run_and_hash(
@@ -1747,6 +1815,8 @@ fn run_and_hash(
     guest: &[String],
 ) -> Option<(String, Option<i64>)> {
     let hermit = hermit_bin(repo);
+    let evidence_path = backend_evidence_path(repo, backend)?;
+    let _ = fs::remove_file(&evidence_path);
     let mut cmd = Command::new("timeout");
     cmd.arg("120s")
         .arg(&hermit)
@@ -1764,9 +1834,21 @@ fn run_and_hash(
     // this, but any stack-derived observable does, so pinning here (once, at the env) is what
     // keeps cells comparable across invocations instead of two downstream exclusions that drift.
     // `minimal` is hermit's own deterministic base: PATH, HOSTNAME, HOME and nothing else.
-    // --summary makes ptrace state its own engagement count; the other backends
-    // print theirs unconditionally.
+    // `--summary-json`, `--backend-engagement-json`, and SaBRe's path-evidence
+    // file are producer-owned records. `--summary` remains presentation only.
     cmd.arg("--summary");
+    match backend {
+        "ptrace" => {
+            cmd.arg("--summary-json").arg(&evidence_path);
+        }
+        "sabre" => {
+            cmd.env("HERMIT_SABRE_PATH_EVIDENCE", &evidence_path);
+        }
+        "e9patch" | "dbt" => {
+            cmd.arg("--backend-engagement-json").arg(&evidence_path);
+        }
+        _ => {}
+    }
     cmd.arg("--base-env").arg("minimal");
     // Re-add the two variables this harness has always relied on for guest determinism.
     // `minimal` would otherwise drop them, and an UNSET TZ is worse than an inherited one:
@@ -1783,17 +1865,16 @@ fn run_and_hash(
     }
     cmd.env("LC_ALL", "C").env("TZ", "UTC").current_dir(repo);
     let out = cmd.output().ok()?;
+    let evidence = fs::read(&evidence_path).ok();
+    let _ = fs::remove_file(&evidence_path);
     if !out.status.success() {
         return None;
     }
     let mut h = Sha256::new();
     h.update(&out.stdout);
-    // The banner goes to stderr for some backends and stdout for others, so both are
-    // searched; the count is parsed from the SAME run whose bytes are being hashed,
-    // never from a separate invocation that might have engaged differently.
-    let mut text = String::from_utf8_lossy(&out.stdout).into_owned();
-    text.push_str(&String::from_utf8_lossy(&out.stderr));
-    let engaged = backend_engagement(backend, &text);
+    let engaged = evidence
+        .as_deref()
+        .and_then(|bytes| backend_engagement(backend, bytes));
     Some((format!("{:x}", h.finalize()), engaged))
 }
 
