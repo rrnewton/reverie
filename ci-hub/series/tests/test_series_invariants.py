@@ -13,6 +13,7 @@ whose negative case is untested is indistinguishable from one that returns
 this repository has hit repeatedly.
 """
 
+import hashlib
 import json
 import subprocess
 import sys
@@ -747,6 +748,83 @@ class CellResultProjection(unittest.TestCase):
             outside / "ignored" / "ci-hub" / "series-spool",
         )
 
+    def _attempt(
+        self,
+        verdict="matched",
+        *,
+        record=None,
+        syscall=None,
+        scheduler_turn=None,
+        virtual_nanoseconds=None,
+        left=None,
+        right=None,
+        timed_out=False,
+    ):
+        comparison = {
+            "strictness": "canonical",
+            "display_name": "BitwiseInfoV1",
+            "compare_logs": True,
+            "compare_io_buffers": True,
+            "log_scope": "info",
+            "record_envelope": "all_records_v1",
+            "virtualize_time": True,
+            "strip_lines": False,
+            "canonicalize_addresses": True,
+            "full_trace": True,
+            "exact_remainder": True,
+            "stripped_prefixes": ["real-wall-clock-prefix/v1"],
+            "canonicalizations": ["host-address-to-first-appearance-ordinal/v1"],
+            "ignore_lines": False,
+            "skip_commit": False,
+            "skip_detlog": False,
+        }
+        compared = {"left": 17, "right": 17}
+        report = {
+            "verified": verdict == "matched",
+            "bitwise_parity": verdict == "matched",
+            "verdict": verdict,
+            "infrastructure_error": None,
+            "comparison": comparison if verdict in {"matched", "diverged"} else None,
+            "compared_log_messages": compared if verdict in {"matched", "diverged"} else None,
+            "runtime": None,
+            "guest_exit_code": None,
+            "guest_signal": None,
+            "first_divergent_scheduler_turn": scheduler_turn,
+            "first_divergent_virtual_nanoseconds": virtual_nanoseconds,
+            "first_divergent_record": record,
+            "first_divergent_syscall": syscall,
+            "first_divergent_left_message": left,
+            "first_divergent_right_message": right,
+        }
+        if verdict == "no_result":
+            report["no_result_reason"] = {"kind": "not_run"}
+        elif verdict == "infrastructure_error":
+            report["infrastructure_error"] = {
+                "kind": "skid_overshoot",
+                "count": 1,
+            }
+        raw = json.dumps(report, sort_keys=True, separators=(",", ":"))
+        return {
+            "index": "1",
+            "outcome": (
+                "PASS" if verdict == "matched"
+                else "FAIL" if verdict == "diverged"
+                else "ERROR"
+            ),
+            "error_kind": "incomplete-verification-evidence" if timed_out else None,
+            "status": None if timed_out else (0 if verdict == "matched" else 1),
+            "signal": 15 if timed_out else None,
+            "timed_out": timed_out,
+            "verification_report": raw,
+            "verification_report_sha256": hashlib.sha256(raw.encode()).hexdigest(),
+            "first_divergent_record": record,
+            "first_divergent_syscall": syscall,
+            "first_divergent_scheduler_turn": scheduler_turn,
+            "first_divergent_virtual_nanoseconds": virtual_nanoseconds,
+            "first_divergent_left_message": left,
+            "first_divergent_right_message": right,
+        }
+
     def _cell(self, run_index, outcome="PASS", duration_ms=100):
         return {
             "schema": 4,
@@ -782,7 +860,7 @@ class CellResultProjection(unittest.TestCase):
                     "syscalls": 612,
                 },
             },
-            "attempts": [],
+            "attempts": [self._attempt()],
         }
 
     def _project(self, cells):
@@ -797,6 +875,19 @@ class CellResultProjection(unittest.TestCase):
 
     def _validate_cell(self, attempt, outcome="PASS", duration_ms=100):
         cell = self._cell(attempt - 1, outcome=outcome, duration_ms=duration_ms)
+        cell.pop("run_index")
+        cell["attempt"] = attempt
+        return cell
+
+    def _validate_diverged_cell(self, attempt, duration_ms=100):
+        cell = self._diverged_cell(
+            attempt - 1,
+            record=1_718,
+            syscall=7,
+            scheduler_turn=1_248,
+            virtual_nanoseconds=80_000,
+            duration_ms=duration_ms,
+        )
         cell.pop("run_index")
         cell["attempt"] = attempt
         return cell
@@ -822,6 +913,15 @@ class CellResultProjection(unittest.TestCase):
             "first_divergent_left_message": left,
             "first_divergent_right_message": right,
         })
+        cell["attempts"] = [self._attempt(
+            "diverged",
+            record=record,
+            syscall=syscall,
+            scheduler_turn=scheduler_turn,
+            virtual_nanoseconds=virtual_nanoseconds,
+            left=left,
+            right=right,
+        )]
         return cell
 
     def test_two_hundred_raw_run_ids_become_one_batch_row(self):
@@ -976,7 +1076,7 @@ class CellResultProjection(unittest.TestCase):
     def test_failed_retry_then_success_is_not_compressed_away(self):
         rows = series.rows_from_cell_results(
             [
-                self._validate_cell(1, outcome="FAIL", duration_ms=90),
+                self._validate_diverged_cell(1, duration_ms=90),
                 self._validate_cell(2, outcome="PASS", duration_ms=80),
             ],
             parent=self.parent,
@@ -1113,7 +1213,10 @@ class CellResultProjection(unittest.TestCase):
             "ERROR": "errored",
         }
         for raw, projected in expected.items():
-            rows = self._project([self._cell(0, outcome=raw)])
+            cell = self._cell(0, outcome=raw)
+            cell["mode"] = "naked"
+            cell["backend"] = None
+            rows = self._project([cell])
             self.assertEqual(rows[0]["series"]["outcome"], projected)
         self.assertEqual(
             self._project([self._cell(0, outcome="HOST-INAPPLICABLE")]),
@@ -1121,6 +1224,179 @@ class CellResultProjection(unittest.TestCase):
         )
         with self.assertRaises(series.MalformedRow):
             self._project([self._cell(0, outcome="SOMETHING_NEW")])
+
+    def test_comparison_cell_outcome_uses_all_typed_attempts(self):
+        matched = self._attempt("matched")
+        timed_out = self._attempt("no_result", timed_out=True)
+        diverged = self._attempt(
+            "diverged",
+            record=98,
+            syscall=37,
+            scheduler_turn=4,
+            virtual_nanoseconds=80_000,
+        )
+
+        for attempts in ([matched, timed_out], [timed_out, matched]):
+            cell = self._cell(0, outcome="FAIL", duration_ms=30_453)
+            cell["attempts"] = attempts
+            row = self._project([cell])[0]["series"]
+            self.assertEqual(row["outcome"], "timeout")
+            self.assertNotIn("coordinates", row)
+
+        timeout_without_report = self._attempt("no_result", timed_out=True)
+        del timeout_without_report["verification_report"]
+        del timeout_without_report["verification_report_sha256"]
+        cell = self._cell(0, outcome="ERROR", duration_ms=30_453)
+        cell["attempts"] = [matched, timeout_without_report]
+        self.assertEqual(
+            self._project([cell])[0]["series"]["outcome"],
+            "timeout",
+        )
+
+        for attempts in ([matched, diverged], [diverged, timed_out]):
+            cell = self._cell(0, outcome="FAIL")
+            cell["attempts"] = attempts
+            row = self._project([cell])[0]["series"]
+            self.assertEqual(row["outcome"], "diverged")
+
+        passing = self._cell(0, outcome="PASS")
+        self.assertEqual(self._project([passing])[0]["series"]["outcome"], "passed")
+
+        chaos_nonzero = self._cell(0, outcome="PASS")
+        chaos_nonzero["mode"] = "chaos"
+        chaos_nonzero["attempts"][0]["status"] = 7
+        self.assertEqual(
+            self._project([chaos_nonzero])[0]["series"]["outcome"],
+            "passed",
+        )
+
+        dbt = self._cell(0, outcome="PASS")
+        report = json.loads(dbt["attempts"][0]["verification_report"])
+        report["comparison"]["record_envelope"] = "dbt_evidence_transport_v1"
+        raw = json.dumps(report, sort_keys=True, separators=(",", ":"))
+        dbt["attempts"][0]["verification_report"] = raw
+        dbt["attempts"][0]["verification_report_sha256"] = hashlib.sha256(
+            raw.encode()
+        ).hexdigest()
+        self.assertEqual(self._project([dbt])[0]["series"]["outcome"], "passed")
+
+        all_match_fail = self._cell(0, outcome="FAIL")
+        self.assertEqual(
+            self._project([all_match_fail])[0]["series"]["outcome"],
+            "no_result",
+        )
+
+        mixed_no_result = self._cell(0, outcome="FAIL")
+        mixed_no_result["attempts"] = [matched, self._attempt("no_result")]
+        self.assertEqual(
+            self._project([mixed_no_result])[0]["series"]["outcome"],
+            "no_result",
+        )
+
+        mixed_error = self._cell(0, outcome="ERROR")
+        mixed_error["attempts"] = [matched, self._attempt("infrastructure_error")]
+        self.assertEqual(
+            self._project([mixed_error])[0]["series"]["outcome"],
+            "errored",
+        )
+
+    def test_comparison_cell_outcome_refuses_malformed_or_reidentified_reports(self):
+        malformed = self._cell(0)
+        malformed["attempts"][0]["verification_report"] = "{"
+        malformed["attempts"][0]["verification_report_sha256"] = hashlib.sha256(
+            b"{"
+        ).hexdigest()
+        with self.assertRaisesRegex(series.MalformedRow, "report is malformed"):
+            self._project([malformed])
+
+        reidentified = self._cell(0)
+        reidentified["attempts"][0]["verification_report_sha256"] = "0" * 64
+        with self.assertRaisesRegex(series.MalformedRow, "report hash mismatch"):
+            self._project([reidentified])
+
+        orphaned_hash = self._cell(0, outcome="ERROR")
+        orphaned_hash["attempts"] = [self._attempt("no_result", timed_out=True)]
+        del orphaned_hash["attempts"][0]["verification_report"]
+        with self.assertRaisesRegex(series.MalformedRow, "hash without a report"):
+            self._project([orphaned_hash])
+
+        negative_unreported_status = self._cell(0, outcome="ERROR")
+        negative_unreported_status["attempts"] = [
+            self._attempt("no_result", timed_out=True)
+        ]
+        attempt = negative_unreported_status["attempts"][0]
+        del attempt["verification_report"]
+        del attempt["verification_report_sha256"]
+        attempt.update({"status": -1, "signal": None})
+        with self.assertRaisesRegex(series.MalformedRow, "did not time out"):
+            self._project([negative_unreported_status])
+
+        incomplete = self._cell(0)
+        report = json.loads(incomplete["attempts"][0]["verification_report"])
+        del report["comparison"]["compare_io_buffers"]
+        raw = json.dumps(report, sort_keys=True, separators=(",", ":"))
+        incomplete["attempts"][0]["verification_report"] = raw
+        incomplete["attempts"][0]["verification_report_sha256"] = hashlib.sha256(
+            raw.encode()
+        ).hexdigest()
+        with self.assertRaisesRegex(series.MalformedRow, "comparison omitted"):
+            self._project([incomplete])
+
+        contradictory = self._cell(0, outcome="ERROR")
+        contradictory["attempts"] = [self._attempt("no_result", timed_out=True)]
+        report = json.loads(contradictory["attempts"][0]["verification_report"])
+        report["first_divergent_record"] = 1
+        raw = json.dumps(report, sort_keys=True, separators=(",", ":"))
+        contradictory["attempts"][0]["verification_report"] = raw
+        contradictory["attempts"][0]["verification_report_sha256"] = hashlib.sha256(
+            raw.encode()
+        ).hexdigest()
+        with self.assertRaisesRegex(series.MalformedRow, "internally inconsistent"):
+            self._project([contradictory])
+
+        contradictory_match = self._cell(0)
+        contradictory_match["attempts"][0].update({
+            "outcome": "ERROR",
+            "error_kind": "incomplete-verification-evidence",
+            "status": None,
+            "signal": 15,
+            "timed_out": True,
+        })
+        with self.assertRaisesRegex(series.MalformedRow, "internally inconsistent"):
+            self._project([contradictory_match])
+
+        nonzero_verify_match = self._cell(0)
+        nonzero_verify_match["attempts"][0]["status"] = 7
+        with self.assertRaisesRegex(series.MalformedRow, "internally inconsistent"):
+            self._project([nonzero_verify_match])
+
+        matched_with_no_result_reason = self._cell(0)
+        attempt = matched_with_no_result_reason["attempts"][0]
+        report = json.loads(attempt["verification_report"])
+        report["no_result_reason"] = {"kind": "not_run"}
+        raw = json.dumps(report, sort_keys=True, separators=(",", ":"))
+        attempt["verification_report"] = raw
+        attempt["verification_report_sha256"] = hashlib.sha256(raw.encode()).hexdigest()
+        with self.assertRaisesRegex(series.MalformedRow, "internally inconsistent"):
+            self._project([matched_with_no_result_reason])
+
+        for label, mutation in (
+            ("wrong outcome", {"outcome": "FAIL"}),
+            ("missing error kind", {"error_kind": None}),
+            ("zero signal", {"signal": 0}),
+            ("negative signal", {"signal": -9}),
+            ("negative status", {"status": -1, "signal": None}),
+        ):
+            incomplete_timeout = self._cell(0, outcome="ERROR")
+            incomplete_timeout["attempts"] = [
+                self._attempt("no_result", timed_out=True)
+            ]
+            incomplete_timeout["attempts"][0].update(mutation)
+            with self.subTest(label=label), self.assertRaisesRegex(
+                series.MalformedRow,
+                "timed-out no_result disposition is incomplete",
+            ):
+                self._project([incomplete_timeout])
 
     def test_projection_carries_the_recorded_machine_kernel_and_capabilities(self):
         projected = self._project([self._cell(0)])[0]
@@ -1166,14 +1442,8 @@ class CellResultProjection(unittest.TestCase):
     def test_projection_preserves_the_first_available_coordinate_per_axis(self):
         cell = self._cell(0, outcome="FAIL")
         cell["attempts"] = [
-            {
-                "first_divergent_record": None,
-                "first_divergent_syscall": 37,
-            },
-            {
-                "first_divergent_record": 98,
-                "first_divergent_syscall": 41,
-            },
+            self._attempt("diverged", syscall=37),
+            self._attempt("diverged", record=98, syscall=41),
         ]
         rows = self._project([cell])
         self.assertEqual(
@@ -1181,21 +1451,15 @@ class CellResultProjection(unittest.TestCase):
             {"first_divergent_record": 98, "first_divergent_syscall": 37},
         )
 
-        cell["attempts"] = []
+        cell["attempts"] = [self._attempt("diverged")]
         rows = self._project([cell])
         self.assertNotIn("coordinates", rows[0]["series"])
 
     def test_projection_keeps_a_message_pair_from_one_attempt(self):
         cell = self._cell(0, outcome="FAIL")
         cell["attempts"] = [
-            {
-                "first_divergent_left_message": "first left",
-                "first_divergent_right_message": "first right",
-            },
-            {
-                "first_divergent_left_message": "second left",
-                "first_divergent_right_message": "second right",
-            },
+            self._attempt("diverged", left="first left", right="first right"),
+            self._attempt("diverged", left="second left", right="second right"),
         ]
         rows = self._project([cell])
         self.assertEqual(

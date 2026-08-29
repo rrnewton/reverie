@@ -583,18 +583,262 @@ def source_depths(
     return depths
 
 
+_COMPARISON_MODES = frozenset({"verify", "replay", "chaos"})
+
+
+def _has_nonzero_process_disposition(attempt: dict) -> bool:
+    status = attempt.get("status")
+    signal = attempt.get("signal")
+    return (
+        isinstance(status, int)
+        and not isinstance(status, bool)
+        and status > 0
+        and signal is None
+    ) or (
+        status is None
+        and isinstance(signal, int)
+        and not isinstance(signal, bool)
+        and signal > 0
+    )
+
+
+def _typed_comparison_attempt(attempt: Any, *, mode: str, index: int) -> str:
+    """Return matched/diverged/no_result/timeout/errored for one typed attempt."""
+    if not isinstance(attempt, dict):
+        raise MalformedRow(f"cell attempt {index} must be an object")
+    raw = attempt.get("verification_report")
+    if raw is None:
+        if attempt.get("verification_report_sha256") is not None:
+            raise MalformedRow(
+                f"cell attempt {index} has a verification report hash without a report"
+            )
+        if (
+            attempt.get("outcome") == "ERROR"
+            and attempt.get("timed_out") is True
+            and isinstance(attempt.get("error_kind"), str)
+            and bool(attempt["error_kind"].strip())
+            and _has_nonzero_process_disposition(attempt)
+        ):
+            return "timeout"
+        raise MalformedRow(
+            f"cell attempt {index} has no verification report and did not time out"
+        )
+    if not isinstance(raw, str):
+        raise MalformedRow(f"cell attempt {index} verification report must be a string")
+    recorded_sha = attempt.get("verification_report_sha256")
+    if not isinstance(recorded_sha, str) or hashlib.sha256(raw.encode()).hexdigest() != recorded_sha:
+        raise MalformedRow(f"cell attempt {index} verification report hash mismatch")
+    try:
+        report = json.loads(raw)
+    except json.JSONDecodeError as error:
+        raise MalformedRow(
+            f"cell attempt {index} verification report is malformed: {error}"
+        ) from error
+    if not isinstance(report, dict):
+        raise MalformedRow(f"cell attempt {index} verification report must be an object")
+
+    verdict = report.get("verdict")
+    if verdict in {"matched", "diverged"}:
+        if (
+            report.get("no_result_reason") is not None
+            or report.get("infrastructure_error") is not None
+        ):
+            raise MalformedRow(
+                f"cell attempt {index} comparison report is internally inconsistent"
+            )
+        comparison = report.get("comparison")
+        counts = report.get("compared_log_messages")
+        if not isinstance(comparison, dict):
+            raise MalformedRow(f"cell attempt {index} has no comparison object")
+        if not isinstance(counts, dict):
+            raise MalformedRow(f"cell attempt {index} has no INFO-message counts")
+        for field in (
+            "strictness",
+            "display_name",
+            "compare_logs",
+            "compare_io_buffers",
+            "log_scope",
+            "record_envelope",
+            "virtualize_time",
+            "strip_lines",
+            "canonicalize_addresses",
+            "full_trace",
+            "exact_remainder",
+            "stripped_prefixes",
+            "canonicalizations",
+            "ignore_lines",
+            "skip_commit",
+            "skip_detlog",
+        ):
+            if field not in comparison:
+                raise MalformedRow(
+                    f"cell attempt {index} comparison omitted {field!r}"
+                )
+        left = counts.get("left")
+        right = counts.get("right")
+        if (
+            not isinstance(left, int)
+            or isinstance(left, bool)
+            or left <= 0
+            or not isinstance(right, int)
+            or isinstance(right, bool)
+            or right <= 0
+        ):
+            raise MalformedRow(
+                f"cell attempt {index} has no nonzero INFO-message counts"
+            )
+        expected_virtualize_time = mode != "replay"
+        canonical = (
+            comparison.get("strictness") == "canonical"
+            and comparison.get("display_name") == "BitwiseInfoV1"
+            and comparison.get("compare_logs") is True
+            and comparison.get("compare_io_buffers") is True
+            and comparison.get("log_scope") == "info"
+            and comparison.get("record_envelope")
+            in {"all_records_v1", "dbt_evidence_transport_v1"}
+            and comparison.get("virtualize_time") is expected_virtualize_time
+            and comparison.get("strip_lines") is False
+            and comparison.get("canonicalize_addresses") is True
+            and comparison.get("full_trace") is True
+            and comparison.get("exact_remainder") is True
+            and comparison.get("stripped_prefixes") == ["real-wall-clock-prefix/v1"]
+            and comparison.get("canonicalizations")
+            == ["host-address-to-first-appearance-ordinal/v1"]
+            and comparison.get("ignore_lines") is False
+            and comparison.get("skip_commit") is False
+            and comparison.get("skip_detlog") is False
+        )
+        if not canonical:
+            return "no_result"
+        if verdict == "matched":
+            status = attempt.get("status")
+            if (
+                report.get("verified") is not True
+                or report.get("bitwise_parity") is not True
+                or attempt.get("outcome") != "PASS"
+                or attempt.get("timed_out") is not False
+                or attempt.get("error_kind") is not None
+                or not isinstance(status, int)
+                or isinstance(status, bool)
+                or status < 0
+                or (mode != "chaos" and status != 0)
+                or attempt.get("signal") is not None
+            ):
+                raise MalformedRow(
+                    f"cell attempt {index} matched report is internally inconsistent"
+                )
+            return "matched"
+        if report.get("verified") is not False or report.get("bitwise_parity") is not False:
+            raise MalformedRow(
+                f"cell attempt {index} divergence report is internally inconsistent"
+            )
+        return "diverged"
+
+    if verdict == "no_result":
+        reason = report.get("no_result_reason")
+        contradiction_fields = (
+            "first_divergent_scheduler_turn",
+            "first_divergent_virtual_nanoseconds",
+            "first_divergent_record",
+            "first_divergent_syscall",
+            "first_divergent_left_message",
+            "first_divergent_right_message",
+            "dbt_counted_branches",
+        )
+        if (
+            report.get("verified") is not False
+            or report.get("bitwise_parity") is not False
+            or report.get("comparison") is not None
+            or report.get("compared_log_messages") is not None
+            or report.get("infrastructure_error") is not None
+            or not isinstance(reason, dict)
+            or any(report.get(field) is not None for field in contradiction_fields)
+            or any(attempt.get(field) is not None for field in contradiction_fields[:-1])
+            or attempt.get("outcome") not in {"FAIL", "ERROR"}
+        ):
+            raise MalformedRow(
+                f"cell attempt {index} no_result report is internally inconsistent"
+            )
+        kind = reason.get("kind")
+        if kind == "not_run":
+            if report.get("guest_exit_code") is not None or report.get("guest_signal") is not None:
+                raise MalformedRow(
+                    f"cell attempt {index} not_run report records a guest disposition"
+                )
+        elif kind == "first_run_rejected":
+            exit_code = reason.get("exit_code")
+            signal = reason.get("signal")
+            if (
+                (exit_code is None) == (signal is None)
+                or report.get("guest_exit_code") != exit_code
+                or report.get("guest_signal") != signal
+            ):
+                raise MalformedRow(
+                    f"cell attempt {index} first_run_rejected disposition is inconsistent"
+                )
+        else:
+            raise MalformedRow(
+                f"cell attempt {index} has unknown no_result reason {kind!r}"
+            )
+        if attempt.get("timed_out") is True:
+            if (
+                attempt.get("outcome") != "ERROR"
+                or not isinstance(attempt.get("error_kind"), str)
+                or not attempt["error_kind"].strip()
+                or not _has_nonzero_process_disposition(attempt)
+            ):
+                raise MalformedRow(
+                    f"cell attempt {index} timed-out no_result disposition is incomplete"
+                )
+            return "timeout"
+        return "no_result"
+    if verdict == "infrastructure_error":
+        reason = report.get("infrastructure_error")
+        if (
+            not isinstance(reason, dict)
+            or reason.get("kind") != "skid_overshoot"
+            or not isinstance(reason.get("count"), int)
+            or isinstance(reason.get("count"), bool)
+        ):
+            raise MalformedRow(
+                f"cell attempt {index} infrastructure_error report omitted its reason"
+            )
+        return "errored"
+    raise MalformedRow(f"cell attempt {index} has unknown verdict {verdict!r}")
+
+
 def _cell_outcome(row: dict) -> str:
     outcome = row.get("outcome")
-    try:
-        return {
-            "PASS": "passed",
-            "FAIL": "diverged",
-            "TIMEOUT": "timeout",
-            "NO_RESULT": "no_result",
-            "ERROR": "errored",
-        }[outcome]
-    except KeyError as error:
-        raise MalformedRow(f"unmapped cell outcome {outcome!r}") from error
+    raw_outcomes = {
+        "PASS": "passed",
+        "FAIL": "diverged",
+        "TIMEOUT": "timeout",
+        "NO_RESULT": "no_result",
+        "ERROR": "errored",
+    }
+    if outcome not in raw_outcomes:
+        raise MalformedRow(f"unmapped cell outcome {outcome!r}")
+    mode = row.get("mode")
+    if mode not in _COMPARISON_MODES:
+        return raw_outcomes[outcome]
+    attempts = row.get("attempts")
+    if not isinstance(attempts, list) or not attempts:
+        raise MalformedRow("comparison cell result has no typed attempts")
+    states = [
+        _typed_comparison_attempt(attempt, mode=mode, index=index)
+        for index, attempt in enumerate(attempts, 1)
+    ]
+    if "diverged" in states:
+        return "diverged"
+    if "timeout" in states or outcome == "TIMEOUT":
+        return "timeout"
+    if "errored" in states or outcome == "ERROR":
+        return "errored"
+    if "no_result" in states or outcome in {"FAIL", "NO_RESULT"}:
+        return "no_result"
+    if all(state == "matched" for state in states) and outcome == "PASS":
+        return "passed"
+    return "no_result"
 
 
 def _cell_name(row: dict) -> str:
