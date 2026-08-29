@@ -10,12 +10,13 @@ negative test proving it refuses the bad case.
      Four handed SHAs went stale in one night, one of them quoted into agent
      instructions for hours after main advanced twice.
 
-  2. A GREEN MUST CARRY A NONZERO EXECUTED TEST COUNT.
+  2. A GREEN MUST CARRY A NONZERO EXECUTED TEST COUNT IN ITS TYPED ROW.
      `--features` gating produces a build that succeeds, a target that runs, ZERO
      tests executed, and a reported SUCCESS. Proven by planting a feature-gated
      fixture. N==0 is a no-result wearing a success badge.
      The previously-recorded KNOWN GAP -- "an EMPTY log still passes" -- is
-     CLOSED here: absent, empty, and countless logs are all NO_RESULT.
+     CLOSED here: an absent row and a missing, zero, negative, malformed, or
+     wrong-commit count are all non-passing. Human log text is not consulted.
 
   3. LANDING IS VERIFIED BY ANCESTRY, NEVER BY THE `MERGED` FLAG.
      Ancestry must be tested on `mergeCommit.oid`, never the PR head: after a
@@ -106,53 +107,101 @@ def check_sha_is_current(handed_sha: str, live_head: Optional[str]) -> CheckResu
 
 # ------------------------------------------------- 2. green carries executed tests
 
-_RUNNING = re.compile(r"\brunning (\d+) tests?\b")
-_RESULT = re.compile(r"\btest result: ok\. (\d+) passed\b")
+TypedCountReader = Callable[[str, str], tuple[int, str, str]]
 
 
-def count_executed_tests(log_text: str) -> int:
-    """Total executed tests across every harness section in a log."""
-    return sum(int(m) for m in _RUNNING.findall(log_text)) or sum(
-        int(m) for m in _RESULT.findall(log_text)
-    )
+def _read_typed_executed_tests(event_path: str, sha: str) -> tuple[int, str, str]:
+    """Delegate ledger-event and HistoryRow parsing to their Rust types."""
+    reader = Path(__file__).resolve().parents[1] / "ci-hub.rs"
+    try:
+        completed = subprocess.run(
+            [
+                str(reader),
+                "receipt-digest",
+                "--sha",
+                sha,
+                "--input",
+                event_path,
+                "--ledger-event",
+                "--json",
+                "--require-executed-tests",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        return 2, "", str(error)
+    return completed.returncode, completed.stdout.strip(), completed.stderr.strip()
 
 
 def check_green_carries_executed_tests(
-    log_text: Optional[str], *, log_path: Optional[str] = None
+    event_path: Optional[str],
+    sha: Optional[str],
+    *,
+    typed_reader: Optional[TypedCountReader] = None,
 ) -> CheckResult:
-    """A green must PROVE it executed something.
+    """A green must prove nonzero execution through the shared HistoryRow.
 
-    Closes the gap recorded on this rule: absent and empty logs are no-results
-    too. A check that only looked for `N == 0` would pass an empty file, because
-    an empty file contains no zero to find -- the absence of evidence read as
-    evidence of absence of a problem.
+    The Python consumer deliberately does not interpret ``executed_tests``.
+    Rust deserializes Hermit's producer-owned type and owns the decision. Exit
+    0 means the typed row carries a positive count, exit 1 means the row itself
+    refuses, and every other result is an unreadable authority. None may fall
+    back to a still-present human banner.
     """
     name = "green-carries-executed-tests"
-    if log_text is None:
-        return CheckResult(name, REFUSE, "log is ABSENT -- no evidence is not a pass",
-                           {"log": log_path})
-    if not log_text.strip():
-        return CheckResult(name, REFUSE, "log is EMPTY -- no evidence is not a pass",
-                           {"log": log_path, "bytes": len(log_text)})
-    running = [int(m) for m in _RUNNING.findall(log_text)]
-    results = [int(m) for m in _RESULT.findall(log_text)]
-    if not running and not results:
+    if not event_path:
         return CheckResult(
-            name, REFUSE,
-            "log carries NO executed-test count at all -- a green that cannot say "
-            "what it ran is a no-result",
-            {"log": log_path},
+            name,
+            REFUSE,
+            "typed validation ledger event is ABSENT -- no evidence is not a pass",
         )
-    total = sum(running) if running else sum(results)
-    if total == 0:
+    if not sha:
         return CheckResult(
-            name, REFUSE,
-            "executed_tests == 0 -- a NO-RESULT WEARING A SUCCESS BADGE "
-            "(the --features-gating shape: build ok, target ran, nothing executed)",
-            {"log": log_path, "executed_tests": 0, "sections": len(running or results)},
+            name,
+            REFUSE,
+            "receipt SHA is ABSENT -- the typed row cannot be bound to the candidate",
+            {"ledger_event": event_path},
         )
-    return CheckResult(name, PASS, f"executed {total} test(s)",
-                       {"executed_tests": total, "sections": len(running or results)})
+    if not Path(event_path).is_file():
+        return CheckResult(
+            name,
+            REFUSE,
+            "typed validation ledger event is ABSENT -- no evidence is not a pass",
+            {"ledger_event": event_path, "sha": sha},
+        )
+    status, output, error = (typed_reader or _read_typed_executed_tests)(event_path, sha)
+    detail = {"ledger_event": event_path, "sha": sha}
+    if output:
+        try:
+            detail["typed_reader"] = json.loads(output)
+        except json.JSONDecodeError:
+            return CheckResult(
+                name,
+                UNKNOWN,
+                "shared HistoryRow reader emitted malformed JSON",
+                {**detail, "stdout": output},
+            )
+    if status == 0:
+        return CheckResult(
+            name,
+            PASS,
+            "shared HistoryRow carries a positive executed-test count",
+            detail,
+        )
+    if status == 1:
+        return CheckResult(
+            name,
+            REFUSE,
+            "shared HistoryRow carries no positive executed-test count",
+            detail,
+        )
+    return CheckResult(
+        name,
+        UNKNOWN,
+        "shared HistoryRow reader failed; prose is not a fallback",
+        {**detail, **({"reader_error": error} if error else {})},
+    )
 
 
 # ------------------------------------------------------- 3. landing by ancestry
@@ -276,18 +325,6 @@ def gh_pr_merge_info(pr: int, repo: str) -> tuple[str, Optional[str]]:
     return d.get("state", "UNKNOWN"), (d.get("mergeCommit") or {}).get("oid")
 
 
-def read_log(path: Optional[str]) -> Optional[str]:
-    if not path:
-        return None
-    p = Path(path)
-    if not p.is_file():
-        return None
-    try:
-        return p.read_text(errors="replace")
-    except OSError:
-        return None
-
-
 def git_is_ancestor_factory(checkout: str, target: str) -> Callable[[str], Optional[bool]]:
     def is_ancestor(sha: str) -> Optional[bool]:
         rc, _ = _run(["git", "cat-file", "-e", f"{sha}^{{commit}}"], cwd=checkout)
@@ -311,8 +348,8 @@ def run_preflight(args: argparse.Namespace) -> list[CheckResult]:
             live = args.live_head
         results.append(check_sha_is_current(args.sha, live))
 
-    if args.log is not None:
-        results.append(check_green_carries_executed_tests(read_log(args.log), log_path=args.log))
+    if args.ledger_event is not None or args.receipt_sha is not None:
+        results.append(check_green_carries_executed_tests(args.ledger_event, args.receipt_sha))
 
     if args.landed_pr:
         fetched = False
@@ -339,7 +376,14 @@ def main(argv: Optional[list[str]] = None) -> int:
     ap.add_argument("--sha", help="the SHA you were handed (check 1)")
     ap.add_argument("--pr", type=int, help="PR number for the live head lookup")
     ap.add_argument("--live-head", help="inject the live head instead of calling gh")
-    ap.add_argument("--log", help="validation log to count executed tests in (check 2)")
+    ap.add_argument(
+        "--ledger-event",
+        help="validation run.result JSON to check for nonzero executed tests (check 2)",
+    )
+    ap.add_argument(
+        "--receipt-sha",
+        help="exact commit the --ledger-event must describe (check 2)",
+    )
     ap.add_argument("--landed-pr", type=int, help="PR to verify LANDED by ancestry (check 3)")
     ap.add_argument("--checkout", default=".", help="git checkout for ancestry/diff")
     ap.add_argument("--target", default="main")

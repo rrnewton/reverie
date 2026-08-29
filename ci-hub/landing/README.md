@@ -484,7 +484,8 @@ dispatches, and a rule that gets retyped is a rule that decays.
 ```bash
 # the three checks
 python3 ci-hub/landing/preflight.py --sha '<handed-sha>' --pr '<n>'          # 1: SHA still head?
-python3 ci-hub/landing/preflight.py --log '<validate.log>'                 # 2: nonzero executed tests?
+python3 ci-hub/landing/preflight.py --ledger-event '<run-result.json>' \
+  --receipt-sha '<validated-sha>'                                         # 2: nonzero executed tests?
 python3 ci-hub/landing/preflight.py --landed-pr '<n>' --checkout hermit    # 3: landed by ancestry?
 # the two standing traps
 python3 ci-hub/landing/preflight.py --diff-of worktrees/'<slot>'/hermit    # 4: reverie patch override?
@@ -499,8 +500,10 @@ the gate correctly refuses rather than passing).
 1. **The SHA you were handed is a cache; the branch is the source.** Four handed
    SHAs went stale in one night.
 2. **Validation qualification follows skill `hermit-validation-authority`.** This preflight
-   mechanically refuses zero-test, absent, and empty logs; it does not define
-   green or landability independently.
+   delegates the nonzero count decision to the Rust reader of the typed ledger
+   event and Hermit's shared `HistoryRow`. Missing, malformed, wrong-commit,
+   zero, and negative typed rows do not pass; human log text is never a
+   fallback. It does not define green or landability independently.
 3. **Landing is verified by `mergeCommit.oid` ancestry on a freshly-fetched
    remote** — never the PR head (always false after a rebase replay: that read
    79 unlanded when 46 had landed), never the `MERGED` flag alone (a later

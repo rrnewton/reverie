@@ -561,6 +561,12 @@ struct ReceiptDigestArgs {
     /// Emit the exact canonical HistoryRow bytes instead of their digest.
     #[arg(long, conflicts_with = "json")]
     canonical_row: bool,
+    /// Read the selected input shape from this file instead of stdin.
+    #[arg(long, value_name = "PATH")]
+    input: Option<PathBuf>,
+    /// Read a validate-ledger run.result event and use its embedded HistoryRow.
+    #[arg(long, conflicts_with = "published_receipt")]
+    ledger_event: bool,
     /// Read a complete published validation receipt from stdin rather than a
     /// bare HistoryRow. The embedded row is still the value canonicalized.
     #[arg(long)]
@@ -586,6 +592,10 @@ struct ReceiptDigestArgs {
     /// completeness, raw result, tree, repository, and run identity).
     #[arg(long, conflicts_with = "require_qualifying")]
     require_canonical_qualifying: bool,
+    /// Exit 1 unless the shared HistoryRow carries a positive executed-test count.
+    /// Reader or schema failures remain exit 2.
+    #[arg(long)]
+    require_executed_tests: bool,
     /// Fresh Hermit main tip for the optional final merge-boundary assertion.
     #[arg(long, requires_all = ["current_reverie_base", "repo_checkout", "reverie_checkout"])]
     current_base: Option<String>,
@@ -3899,6 +3909,37 @@ fn canonical_row_json_and_sha256(row: &HistoryRow) -> Option<(String, String)> {
     Some((canonical_row_json, digest))
 }
 
+fn positive_executed_tests(row: &HistoryRow) -> Option<i64> {
+    row.executed_tests.filter(|count| *count > 0)
+}
+
+fn history_row_from_ledger_event(event: &LedgerEvent) -> Result<HistoryRow, String> {
+    event.validate()?;
+    match event.event_type {
+        ledger_event::EventType::RunResult => {}
+        ledger_event::EventType::RunStart
+        | ledger_event::EventType::RunEnrich
+        | ledger_event::EventType::RunCorrect
+        | ledger_event::EventType::RunAnnotate => {
+            return Err("receipt-digest ledger event is not run.result".into());
+        }
+    }
+    let value = event
+        .legacy_row
+        .clone()
+        .ok_or_else(|| "receipt-digest run.result event omitted legacy_row".to_string())?;
+    let row: HistoryRow = serde_json::from_value(value).map_err(|error| {
+        format!("receipt-digest run.result legacy_row is not a HistoryRow: {error}")
+    })?;
+    if event.commit.as_deref() != row.commit.as_deref() {
+        return Err("receipt-digest ledger event commit disagrees with legacy_row commit".into());
+    }
+    if row.run_id.as_deref() != Some(event.run_id.as_str()) {
+        return Err("receipt-digest ledger event run_id disagrees with legacy_row run_id".into());
+    }
+    Ok(row)
+}
+
 fn run_receipt_digest(args: ReceiptDigestArgs) -> Result<i32, CiHubError> {
     if !is_oid(&args.sha) || args.sha.bytes().any(|byte| byte.is_ascii_uppercase()) {
         return Err(CiHubError::ValidateStatus(
@@ -3906,19 +3947,36 @@ fn run_receipt_digest(args: ReceiptDigestArgs) -> Result<i32, CiHubError> {
         ));
     }
     let mut input = String::new();
-    io::stdin()
-        .read_to_string(&mut input)
-        .map_err(|error| CiHubError::ValidateStatus(format!("cannot read HistoryRow: {error}")))?;
+    if let Some(path) = &args.input {
+        input = std::fs::read_to_string(path).map_err(|error| {
+            CiHubError::ValidateStatus(format!(
+                "cannot read HistoryRow from {}: {error}",
+                path.display()
+            ))
+        })?;
+    } else {
+        io::stdin().read_to_string(&mut input).map_err(|error| {
+            CiHubError::ValidateStatus(format!("cannot read HistoryRow: {error}"))
+        })?;
+    }
     let published = args
         .published_receipt
         .then(|| PublishedValidationReceipt::parse(input.as_bytes()))
         .transpose()
         .map_err(CiHubError::ValidateStatus)?;
-    let row: HistoryRow = match &published {
-        Some(receipt) => receipt.ledger_record.clone(),
-        None => serde_json::from_str(&input).map_err(|error| {
+    let ledger_event = args
+        .ledger_event
+        .then(|| LedgerEvent::parse(input.as_bytes()))
+        .transpose()
+        .map_err(CiHubError::ValidateStatus)?;
+    let row: HistoryRow = if let Some(receipt) = &published {
+        receipt.ledger_record.clone()
+    } else if let Some(event) = &ledger_event {
+        history_row_from_ledger_event(event).map_err(CiHubError::ValidateStatus)?
+    } else {
+        serde_json::from_str(&input).map_err(|error| {
             CiHubError::ValidateStatus(format!("receipt-digest input is not a HistoryRow: {error}"))
-        })?,
+        })?
     };
     if row.commit.as_deref() != Some(args.sha.as_str()) {
         return Err(CiHubError::ValidateStatus(
@@ -4048,6 +4106,7 @@ fn run_receipt_digest(args: ReceiptDigestArgs) -> Result<i32, CiHubError> {
         }
         effective_producer = Some(producer);
     }
+    let executed_tests_accepted = positive_executed_tests(&row).is_some();
     if args.canonical_row {
         print!("{canonical_row}");
     } else if args.json {
@@ -4057,6 +4116,8 @@ fn run_receipt_digest(args: ReceiptDigestArgs) -> Result<i32, CiHubError> {
             "digest_algorithm": "sha256",
             "canonicalization": RECEIPT_CANONICALIZATION,
             "digest": digest,
+            "executed_tests": row.executed_tests,
+            "filtered_tests": row.filtered_tests,
         });
         if let Some(producer) = &effective_producer {
             report["producer_coverage_status"] = serde_json::json!(producer.coverage_status);
@@ -4067,7 +4128,11 @@ fn run_receipt_digest(args: ReceiptDigestArgs) -> Result<i32, CiHubError> {
     } else {
         println!("{digest}");
     }
-    Ok(0)
+    Ok(if args.require_executed_tests && !executed_tests_accepted {
+        1
+    } else {
+        0
+    })
 }
 
 /// Return the complete evidence bundle iff this row alone proves a canonical
@@ -10590,6 +10655,74 @@ mod tests {
         let first = qualify_canonical_receipt(&first, RECEIPT_SHA).unwrap();
         let second = qualify_canonical_receipt(&second, RECEIPT_SHA).unwrap();
         assert_ne!(first.canonical_sha256, second.canonical_sha256);
+    }
+
+    #[test]
+    fn typed_history_row_owns_the_nonzero_executed_test_decision() {
+        let mut value = schema4_receipt_value();
+        value["executed_tests"] = serde_json::json!(36);
+        assert_eq!(
+            positive_executed_tests(&history_row(value.clone())),
+            Some(36)
+        );
+
+        for refused in [
+            serde_json::json!(0),
+            serde_json::json!(-1),
+            serde_json::Value::Null,
+        ] {
+            value["executed_tests"] = refused;
+            assert_eq!(
+                positive_executed_tests(&history_row(value.clone())),
+                None,
+                "missing, zero, and negative typed counts must not pass"
+            );
+        }
+    }
+
+    #[test]
+    fn ledger_event_reader_binds_the_embedded_row_and_is_exhaustive() {
+        let mut row = schema4_receipt_value();
+        row["run_id"] = serde_json::json!("fixture-run");
+        let run_id = row["run_id"].as_str().unwrap();
+        let event = LedgerEvent::parse(
+            &serde_json::to_vec(&serde_json::json!({
+                "schema": "validate-ledger/v1",
+                "event_id": "fixture-result",
+                "event_type": "run.result",
+                "emitted_at": "2026-08-29T00:00:00Z",
+                "team": "hermit",
+                "host": "fixture",
+                "run_id": run_id,
+                "producer": {
+                    "source": "observed",
+                    "tool": "fixture",
+                    "tool_version": "1"
+                },
+                "commit": RECEIPT_SHA,
+                "outcome": "pass",
+                "legacy_row": row
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let parsed = history_row_from_ledger_event(&event).unwrap();
+        assert_eq!(positive_executed_tests(&parsed), Some(786));
+
+        let mut wrong_commit = event.clone();
+        wrong_commit.commit = Some("f".repeat(40));
+        assert_eq!(
+            history_row_from_ledger_event(&wrong_commit).unwrap_err(),
+            "receipt-digest ledger event commit disagrees with legacy_row commit"
+        );
+
+        let mut wrong_kind = event;
+        wrong_kind.event_type = ledger_event::EventType::RunStart;
+        wrong_kind.event_id = wrong_kind.run_id.clone();
+        assert_eq!(
+            history_row_from_ledger_event(&wrong_kind).unwrap_err(),
+            "receipt-digest ledger event is not run.result"
+        );
     }
 
     fn publisher_report_value(selected: &QualifyingReceipt, dry_run: bool) -> serde_json::Value {

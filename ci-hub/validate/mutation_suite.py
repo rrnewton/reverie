@@ -309,14 +309,21 @@ def _catalogue() -> tuple[list[Mutant], list[Population]]:
         m("preflight/zero-executed-tests",
           "--features gating: build ok, target ran, ZERO tests executed, SUCCESS reported",
           lambda: PF.check_green_carries_executed_tests(
-              "running 0 tests\ntest result: ok. 0 passed\n").verdict == PF.REFUSE)
-        m("preflight/empty-log",
-          "THE RECORDED KNOWN GAP: a check that only looks for N==0 passes an EMPTY "
-          "log, because there is no zero in it to find",
-          lambda: PF.check_green_carries_executed_tests("").verdict == PF.REFUSE)
-        m("preflight/absent-log",
-          "the other half of the same gap: no evidence is not a pass",
-          lambda: PF.check_green_carries_executed_tests(None).verdict == PF.REFUSE)
+              __file__, "a" * 40,
+              typed_reader=lambda _path, _sha: (
+                  1, '{"executed_tests":0}', ""
+              )).verdict == PF.REFUSE)
+        m("preflight/absent-typed-row",
+          "no typed record is not a pass, even when human output still exists",
+          lambda: PF.check_green_carries_executed_tests(
+              "/no/such/typed-row.json", "a" * 40
+          ).verdict == PF.REFUSE)
+        m("preflight/unreadable-typed-row",
+          "a reader failure must stay UNKNOWN and must never fall back to prose",
+          lambda: PF.check_green_carries_executed_tests(
+              __file__, "a" * 40,
+              typed_reader=lambda _path, _sha: (2, "", "reader failed")
+          ).verdict == PF.UNKNOWN)
         m("preflight/merged-flag-without-ancestry",
           "~12 PRs orphaned by force-push on 2026-08-03 were still flagged MERGED",
           lambda: PF.check_landed_by_ancestry(
@@ -346,7 +353,10 @@ def _catalogue() -> tuple[list[Mutant], list[Population]]:
                     PF.check_sha_is_current("a" * 40, "a" * 40).ok,
                     PF.check_sha_is_current("A" * 40, "a" * 40).ok,   # case is not staleness
                     PF.check_green_carries_executed_tests(
-                        "running 36 tests\ntest result: ok. 36 passed\n").ok,
+                        __file__, "a" * 40,
+                        typed_reader=lambda _path, _sha: (
+                            0, '{"executed_tests":36}', ""
+                        )).ok,
                     PF.check_landed_by_ancestry(
                         pr_state="MERGED", merge_commit_oid="c" * 40,
                         is_ancestor=lambda s: True, fetched_fresh=True).ok,

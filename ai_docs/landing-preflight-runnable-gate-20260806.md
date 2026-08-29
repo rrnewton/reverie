@@ -16,7 +16,8 @@ discoverable usage in `ci-hub/landing/README.md`.
 
 ```
 python3 ci-hub/landing/preflight.py --sha <handed> --pr <n>        # 1
-python3 ci-hub/landing/preflight.py --log <validate.log>           # 2
+python3 ci-hub/landing/preflight.py --ledger-event <run-result.json> \
+  --receipt-sha <validated-sha>                                    # 2
 python3 ci-hub/landing/preflight.py --landed-pr <n> --checkout hermit   # 3
 python3 ci-hub/landing/preflight.py --diff-of worktrees/<slot>/hermit   # 4
 ```
@@ -42,13 +43,14 @@ rather than from an API that has since moved on.
 | 4 | `check_no_uncommitted_patch_override` | a `[patch."…reverie.git"]` override riding along in a commit |
 | 5 | `check_no_byte_identical_branch` | opening work that already exists verbatim (live on #355) |
 
-### Check 2 closes the gap the rule itself recorded
+### Check 2 reads the producer-owned row
 
-The rule carried a **KNOWN GAP: "an EMPTY log still passes this check. Absent-or-zero-length should
-also be a no-result; not yet implemented."** It is implemented now. The reason it mattered is worth
-stating: a check that only looks for `N == 0` **passes an empty file, because there is no zero in it
-to find** — absence of evidence read as evidence of absence. Absent, empty, and count-less logs are
-all `REFUSE`.
+The original rule parsed libtest banners from a validation log. It now delegates
+the decision to `ci-hub receipt-digest`, whose Rust reader validates the typed
+ledger event and imports Hermit's shared `HistoryRow`. A missing event or commit
+binding refuses; a malformed event or failed reader is `UNKNOWN`; missing,
+zero, and negative typed counts do not pass. Human log text is no longer an
+input or a fallback.
 
 ### Check 3 is structurally prevented from consulting the PR head
 
@@ -64,24 +66,26 @@ That pins the property, not just today's output.
 
 ## Verification
 
-**24 tests, all passing**; the whole landing suite is 74 passed.
+The focused preflight tests and the Rust `ci-hub` unit tests pass.
 
 Each check has a negative *and* a positive control, because a check that refuses everything is as
 useless as one that refuses nothing and only the pair distinguishes them. Beyond the obvious ones:
 
 - hex **case difference** on a SHA is not staleness (guards against flags-everything)
 - a **removed** patch override is the fix, not the defect — the check keys on added lines
-- counts **sum across harness sections**, so a multi-crate run is not judged on its first section
+- holding human text fixed while the typed reader changes from positive to zero
+  moves the verdict from `PASS` to `REFUSE`
+- removing the typed row while a passing banner remains still refuses
 - `UNKNOWN` blocks the gate (`rc=1`), and the gate can genuinely succeed (`rc=0`)
 
 **Gate exercised end to end:**
 
 ```
 REFUSE  sha-is-current: the handed SHA is STALE -- the branch has moved
-REFUSE  green-carries-executed-tests: executed_tests == 0 -- a NO-RESULT WEARING A SUCCESS BADGE
+REFUSE  green-carries-executed-tests: shared HistoryRow carries no positive executed-test count
   exit=1
 PASS    sha-is-current: handed SHA is still the PR head
-PASS    green-carries-executed-tests: executed 36 test(s)
+PASS    green-carries-executed-tests: shared HistoryRow carries a positive executed-test count
   exit=0
 ```
 
@@ -117,6 +121,5 @@ detected by the gate on its first run against real content.**
 
 ## Files
 
-`ci-hub/landing/preflight.py` (new) · `ci-hub/landing/test_preflight.py` (new) ·
-`ci-hub/landing/README.md` (+ a usage section, so an agent finds it without the coordinator).
-Uncommitted — egress down.
+`ci-hub/landing/preflight.py` · `ci-hub/landing/test_preflight.py` ·
+`ci-hub/ci-hub.rs` · `ci-hub/landing/README.md`.

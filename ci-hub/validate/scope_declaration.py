@@ -232,7 +232,9 @@ INSTANCES: dict[str, dict[str, Any]] = {
         "declared": True,
         "where": "ci-hub/landing/preflight.py::check_green_carries_executed_tests",
         "reachable_here": True,
-        "why": "closed: absent/empty/zero-count logs are all REFUSED",
+        "why": "closed: the Rust ledger-event reader and shared HistoryRow refuse absent, "
+               "malformed, wrong-commit, missing, zero, and negative typed counts; prose is "
+               "not a fallback",
     },
     "locally-validated-label": {
         "answers": "whether the label is present",

@@ -55,70 +55,88 @@ def test_case_difference_alone_is_not_staleness() -> None:
 # --- 2. a green must carry a nonzero executed count -------------------------
 
 
-ZERO_LOG = """\
-   Compiling detcore v0.1.0
-    Finished test profile [unoptimized + debuginfo]
-     Running unittests src/lib.rs (target/debug/deps/detcore-1234)
-
-running 0 tests
-
-test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
-"""
-
-REAL_LOG = """\
-     Running unittests src/lib.rs (target/debug/deps/detcore-1234)
-
-running 36 tests
-test result: ok. 36 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
-"""
+def _typed_reader(status: int, executed: int | None = None):
+    output = '{"executed_tests":null}' if executed is None else (
+        f'{{"executed_tests":{executed}}}'
+    )
+    return lambda _path, _sha: (status, output, "")
 
 
-def test_zero_executed_tests_is_refused() -> None:
+def test_zero_executed_tests_is_refused(tmp_path: Path) -> None:
     """THE INCIDENT: --features gating -- build succeeds, target runs, ZERO tests
-    execute, SUCCESS reported. Proven by planting a feature-gated fixture."""
-    r = P.check_green_carries_executed_tests(ZERO_LOG)
+    execute, SUCCESS reported. The verdict follows the typed reader's status."""
+    row = tmp_path / "row.json"
+    row.write_text("typed input")
+    r = P.check_green_carries_executed_tests(
+        str(row), HEAD, typed_reader=_typed_reader(1, 0)
+    )
     assert r.verdict == P.REFUSE
-    assert "NO-RESULT WEARING A SUCCESS BADGE" in r.reason
-    assert r.detail["executed_tests"] == 0
+    assert r.detail["typed_reader"]["executed_tests"] == 0
 
 
-def test_a_real_green_passes() -> None:
-    r = P.check_green_carries_executed_tests(REAL_LOG)
+def test_a_real_green_passes(tmp_path: Path) -> None:
+    row = tmp_path / "row.json"
+    row.write_text("same input path")
+    r = P.check_green_carries_executed_tests(
+        str(row), HEAD, typed_reader=_typed_reader(0, 36)
+    )
     assert r.verdict == P.PASS
-    assert r.detail["executed_tests"] == 36
+    assert r.detail["typed_reader"]["executed_tests"] == 36
 
 
-def test_absent_log_is_refused() -> None:
-    """CLOSES THE RECORDED KNOWN GAP. A check that only looked for `N == 0`
-    passes an absent log, because there is no zero in it to find."""
-    r = P.check_green_carries_executed_tests(None, log_path="/nope.log")
+def test_typed_value_moves_verdict_while_human_text_is_fixed(tmp_path: Path) -> None:
+    """A consumer that calls the reader but still follows prose fails this pair."""
+    row = tmp_path / "row.json"
+    row.write_text("running 36 tests\ntest result: ok. 36 passed\n")
+    accepted = P.check_green_carries_executed_tests(
+        str(row), HEAD, typed_reader=_typed_reader(0, 36)
+    )
+    refused = P.check_green_carries_executed_tests(
+        str(row), HEAD, typed_reader=_typed_reader(1, 0)
+    )
+    assert accepted.verdict == P.PASS
+    assert refused.verdict == P.REFUSE
+
+
+def test_absent_typed_row_is_refused_even_when_banner_exists(tmp_path: Path) -> None:
+    """Still-present prose is not a fallback when the typed channel is absent."""
+    (tmp_path / "validate.log").write_text(
+        "running 36 tests\ntest result: ok. 36 passed\n"
+    )
+    r = P.check_green_carries_executed_tests(
+        str(tmp_path / "missing-row.json"), HEAD
+    )
     assert r.verdict == P.REFUSE
     assert "ABSENT" in r.reason
 
 
-def test_empty_log_is_refused() -> None:
-    """The other half of the same recorded gap."""
-    for text in ("", "   \n\n  "):
-        r = P.check_green_carries_executed_tests(text)
-        assert r.verdict == P.REFUSE, repr(text)
-        assert "EMPTY" in r.reason
-
-
-def test_log_with_no_count_at_all_is_refused() -> None:
-    """A build log that never ran a harness cannot certify a green."""
-    r = P.check_green_carries_executed_tests("Compiling foo\nFinished dev profile\n")
+def test_missing_receipt_sha_is_refused(tmp_path: Path) -> None:
+    row = tmp_path / "row.json"
+    row.write_text("typed input")
+    r = P.check_green_carries_executed_tests(
+        str(row), None, typed_reader=_typed_reader(0, 36)
+    )
     assert r.verdict == P.REFUSE
-    assert "NO executed-test count" in r.reason
+    assert "SHA is ABSENT" in r.reason
 
 
-def test_counts_are_summed_across_harness_sections() -> None:
-    """Multi-crate runs: the total is what matters, and a partial zero must not
-    hide behind a nonzero sibling in a way that loses the count."""
-    log = REAL_LOG + "\nrunning 4 tests\ntest result: ok. 4 passed\n"
-    r = P.check_green_carries_executed_tests(log)
-    assert r.verdict == P.PASS
-    assert r.detail["executed_tests"] == 40
-    assert r.detail["sections"] == 2
+def test_typed_reader_failure_is_unknown(tmp_path: Path) -> None:
+    row = tmp_path / "row.json"
+    row.write_text("typed input")
+    r = P.check_green_carries_executed_tests(
+        str(row), HEAD, typed_reader=lambda _path, _sha: (2, "", "bad row")
+    )
+    assert r.verdict == P.UNKNOWN
+    assert r.ok is False
+
+
+def test_typed_reader_malformed_output_is_unknown(tmp_path: Path) -> None:
+    row = tmp_path / "row.json"
+    row.write_text("typed input")
+    r = P.check_green_carries_executed_tests(
+        str(row), HEAD, typed_reader=lambda _path, _sha: (0, "not json", "")
+    )
+    assert r.verdict == P.UNKNOWN
 
 
 # --- 3. landing is ancestry, never the MERGED flag --------------------------
@@ -237,24 +255,39 @@ def test_distinct_tree_passes() -> None:
 # --- the gate as a whole -----------------------------------------------------
 
 
-def test_unknown_blocks_the_gate(tmp_path: Path) -> None:
+def test_unknown_blocks_the_gate(tmp_path: Path, monkeypatch) -> None:
     """UNKNOWN must not be launderable into success by the exit code."""
-    log = tmp_path / "v.log"
-    log.write_text(REAL_LOG)
-    rc = P.main(["--sha", HEAD, "--log", str(log), "--no-network"])
+    row = tmp_path / "row.json"
+    row.write_text("typed input")
+    monkeypatch.setattr(P, "_read_typed_executed_tests", _typed_reader(0, 36))
+    rc = P.main([
+        "--sha", HEAD,
+        "--ledger-event", str(row), "--receipt-sha", HEAD,
+        "--no-network",
+    ])
     assert rc == 1, "an unresolved head must block, not pass"
 
 
-def test_all_pass_exits_zero(tmp_path: Path) -> None:
+def test_all_pass_exits_zero(tmp_path: Path, monkeypatch) -> None:
     """POSITIVE CONTROL for the gate itself: it can actually succeed."""
-    log = tmp_path / "v.log"
-    log.write_text(REAL_LOG)
-    rc = P.main(["--sha", HEAD, "--live-head", HEAD, "--log", str(log), "--no-network"])
+    row = tmp_path / "row.json"
+    row.write_text("typed input")
+    monkeypatch.setattr(P, "_read_typed_executed_tests", _typed_reader(0, 36))
+    rc = P.main([
+        "--sha", HEAD, "--live-head", HEAD,
+        "--ledger-event", str(row), "--receipt-sha", HEAD,
+        "--no-network",
+    ])
     assert rc == 0
 
 
-def test_zero_test_log_fails_the_gate(tmp_path: Path) -> None:
-    log = tmp_path / "v.log"
-    log.write_text(ZERO_LOG)
-    rc = P.main(["--sha", HEAD, "--live-head", HEAD, "--log", str(log), "--no-network"])
+def test_zero_test_row_fails_the_gate(tmp_path: Path, monkeypatch) -> None:
+    row = tmp_path / "row.json"
+    row.write_text("typed input")
+    monkeypatch.setattr(P, "_read_typed_executed_tests", _typed_reader(1, 0))
+    rc = P.main([
+        "--sha", HEAD, "--live-head", HEAD,
+        "--ledger-event", str(row), "--receipt-sha", HEAD,
+        "--no-network",
+    ])
     assert rc == 1
