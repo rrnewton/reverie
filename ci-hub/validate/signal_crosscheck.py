@@ -263,6 +263,9 @@ def scorecard_report(
     projection = projection or {}
     return {
         "scope": "manifest selection and retained per-cell observations",
+        "projection_rows_scope": (
+            "readable rows at projection.refreshed_at; the source revision is not recorded"
+        ),
         "schema": cells.get("schema"),
         "cell_count": len(entries),
         "status_counts": dict(sorted(status_counts.items())),
@@ -279,9 +282,11 @@ def scorecard_report(
         "green_observed_cells": len(green_observed),
         "fresh_green_observed_cells": len(fresh_green),
         "projection": projection,
-        "projection_matches_named_series": (
+        "projection_source_matches": (
             projection.get("source") == EXPECTED_SCORECARD_SOURCE
-            and projection.get("rows_read") == published_series_rows
+        ),
+        "projection_row_count_current": (
+            projection.get("rows_read") == published_series_rows
         ),
         "current_published_series_rows": published_series_rows,
     }
@@ -459,12 +464,23 @@ def reconcile(report: Mapping[str, Any]) -> list[str]:
         issues.append("SCORECARD measurement table disagrees with cells.json")
     if scorecard and not scorecard.get("prose_matches_cells"):
         issues.append("SCORECARD prose disagrees with cells.json")
-    if scorecard and not scorecard.get("projection_matches_named_series"):
+    if scorecard and not scorecard.get("projection_source_matches"):
         projection = scorecard.get("projection") or {}
         issues.append(
-            "scorecard projection disagrees with its named series: "
-            f"source={projection.get('source')!r}, stored rows={projection.get('rows_read')!r}, "
-            f"current rows={scorecard.get('current_published_series_rows')!r}"
+            "scorecard projection names an unexpected series source: "
+            f"{projection.get('source')!r}, expected {EXPECTED_SCORECARD_SOURCE!r}"
+        )
+    elif scorecard and not scorecard.get("projection_row_count_current"):
+        projection = scorecard.get("projection") or {}
+        series = report.get("series") or {}
+        issues.append(
+            "scorecard projection is STALE, not arithmetically contradictory: "
+            f"it read {projection.get('rows_read')!r} row(s) at "
+            f"{projection.get('refreshed_at') or 'an unrecorded time'}, while the named "
+            f"published series now has {scorecard.get('current_published_series_rows')!r} "
+            f"logical row(s) at {series.get('published_ref_sha') or 'an unknown revision'}; "
+            "the projection does not record the parent commit or event frontier needed to "
+            "reload its historical input exactly"
         )
 
     handles = report.get("run_handles") or {}

@@ -29,8 +29,10 @@ def base_report() -> dict:
             "status_table_matches_cells": True,
             "measurement_table_matches_cells": True,
             "prose_matches_cells": True,
-            "projection_matches_named_series": True,
+            "projection_source_matches": True,
+            "projection_row_count_current": True,
         },
+        "series": {"published_ref_sha": "f" * 40},
         "run_handles": {"unmatched_terminal_handles": []},
         "github_status": {"published": False, "state": None},
     }
@@ -97,13 +99,31 @@ class SignalCrosscheckTests(unittest.TestCase):
     def test_scorecard_projection_mutation_is_a_named_disagreement(self) -> None:
         report = base_report()
         report["scorecard"].update({
-            "projection_matches_named_series": False,
-            "projection": {"source": "../../series", "rows_read": 9},
+            "projection_row_count_current": False,
+            "projection": {
+                "source": "../../series",
+                "refreshed_at": "2026-08-27T09:23:50Z",
+                "rows_read": 9,
+            },
             "current_published_series_rows": 10,
         })
         issues = signal_crosscheck.reconcile(report)
         self.assertEqual(len(issues), 1)
-        self.assertIn("stored rows=9, current rows=10", issues[0])
+        self.assertIn("STALE, not arithmetically contradictory", issues[0])
+        self.assertIn("read 9 row(s)", issues[0])
+        self.assertIn("now has 10 logical row(s)", issues[0])
+        self.assertIn("does not record the parent commit or event frontier", issues[0])
+
+    def test_unexpected_scorecard_source_is_distinct_from_staleness(self) -> None:
+        report = base_report()
+        report["scorecard"].update({
+            "projection_source_matches": False,
+            "projection": {"source": "/tmp/other-series", "rows_read": 10},
+            "current_published_series_rows": 10,
+        })
+        issues = signal_crosscheck.reconcile(report)
+        self.assertEqual(len(issues), 1)
+        self.assertIn("names an unexpected series source", issues[0])
 
     def test_terminal_run_without_ledger_is_not_never_attempted(self) -> None:
         report = base_report()
@@ -230,7 +250,8 @@ class SignalCrosscheckTests(unittest.TestCase):
         self.assertTrue(result["status_table_matches_cells"])
         self.assertTrue(result["measurement_table_matches_cells"])
         self.assertTrue(result["prose_matches_cells"])
-        self.assertTrue(result["projection_matches_named_series"])
+        self.assertTrue(result["projection_source_matches"])
+        self.assertTrue(result["projection_row_count_current"])
         self.assertEqual(result["fresh_observed_cells"], 1)
 
         mutated = markdown.replace(
