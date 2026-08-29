@@ -26,8 +26,9 @@
 //! the ptrace backend, not a Detcore backend".
 //!
 //! HONEST L1 vs L2. `deterministic=1` means and ONLY means the arm reached L2:
-//! `hermit run --strict --verify` printed "Determinism verified" AND exited
-//! cleanly. An arm that ran under `--strict` (L1) but whose `--verify` leg did
+//! `hermit run --strict --verify` wrote a current `VerificationReport` with a
+//! matched verdict AND exited cleanly. An arm that ran under `--strict` (L1)
+//! but whose `--verify` leg did
 //! not confirm bitwise repeat is recorded with `deterministic=0` and a `reason`
 //! that says whether L2 was missed because the verify leg WEDGED (PMU env, not a
 //! product defect) or genuinely DIVERGED (a real finding). An L1 result is never
@@ -36,7 +37,9 @@
 //!
 //! ```cargo
 //! [dependencies]
+//! hermit-manifest-plan = { path = "../hermit/ci/manifest-plan" }
 //! libc = "0.2"
+//! serde_json = "1"
 //! ```
 // ZERO-WARNINGS, MADE INTRINSIC RATHER THAN DELEGATED TO AN EXTERNAL GATE.
 // A rust-script is invisible to `cargo clippy --workspace`, so the project rule
@@ -59,6 +62,7 @@
 #[path = "lib/scorecard.rs"]
 mod scorecard;
 
+use hermit_manifest_plan::canonical_verdict::{Verdict, VerificationReport};
 use scorecard::{ScorecardColumn as Column, ScorecardRow, ScorecardVariant};
 use std::collections::BTreeMap;
 use std::env;
@@ -82,7 +86,6 @@ const FREESTANDING_FLAGS: &[&str] = &[
     "-fno-pie",
     "-no-pie",
 ];
-const L2_NEEDLE: &str = "Determinism verified";
 const PINNED_GUEST_ENV_ARGS: &[&str] = &["--base-env", "minimal", "-e", "LC_ALL=C", "-e", "TZ=UTC"];
 
 fn die(msg: &str) -> ! {
@@ -117,8 +120,9 @@ struct Run {
     /// True if the run wedged and had to be process-group killed.
     wedged: bool,
     stdout: Vec<u8>,
-    /// "Determinism verified" seen on stderr (only meaningful for --verify runs).
-    l2_verified: bool,
+    /// Current producer-owned verification report. `None` only for the strict
+    /// leg, which does not request verification.
+    verification_report: Option<Result<VerificationReport, String>>,
     /// e9patch AOT reach, parsed from the backend banner. `None` for a run with
     /// no banner at all -- which is UNKNOWN, deliberately not zero: "the tool
     /// said nothing" and "the tool said it patched nothing" are different
@@ -131,7 +135,38 @@ struct Run {
 /// Run one command with a timeout, its own process group, and a hard SIGKILL to
 /// the whole group on wedge (mirrors the python driver's start_new_session +
 /// killpg, which the leaky corpus `run()` lacks).
-fn run_timed(cmd_argv: &[String], timeout: Duration) -> Run {
+fn read_current_verification_report(path: &Path) -> Result<VerificationReport, String> {
+    let bytes =
+        fs::read(path).map_err(|error| format!("cannot read {}: {error}", path.display()))?;
+    let value = serde_json::from_slice(&bytes)
+        .map_err(|error| format!("{} is not valid JSON: {error}", path.display()))?;
+    VerificationReport::from_current_json_value(value)
+        .map_err(|error| format!("{}: {error}", path.display()))
+}
+
+fn report_matches(report: &VerificationReport) -> Result<bool, String> {
+    match report.verdict {
+        Verdict::Matched => report.require_canonical_match().map(|()| true),
+        Verdict::Diverged if !report.verified => Ok(false),
+        Verdict::Diverged => {
+            Err("verification verdict is diverged but verified is true".to_string())
+        }
+        Verdict::NoResult if !report.verified => Ok(false),
+        Verdict::NoResult => {
+            Err("verification verdict is no_result but verified is true".to_string())
+        }
+        Verdict::InfrastructureError if !report.verified => Ok(false),
+        Verdict::InfrastructureError => {
+            Err("verification verdict is infrastructure_error but verified is true".to_string())
+        }
+    }
+}
+
+fn run_timed(
+    cmd_argv: &[String],
+    timeout: Duration,
+    verification_report_path: Option<&Path>,
+) -> Run {
     let t0 = Instant::now();
     let out_tmp = env::temp_dir().join(format!("e9c-out-{}", std::process::id()));
     let err_tmp = env::temp_dir().join(format!("e9c-err-{}", std::process::id()));
@@ -159,7 +194,12 @@ fn run_timed(cmd_argv: &[String], timeout: Duration) -> Run {
                 exit: 127,
                 wedged: false,
                 stdout: Vec::new(),
-                l2_verified: false,
+                verification_report: verification_report_path.map(|path| {
+                    Err(format!(
+                        "verification process did not start, so {} was not produced",
+                        path.display()
+                    ))
+                }),
                 reach: None,
                 duration_ms: 0,
             }
@@ -190,14 +230,17 @@ fn run_timed(cmd_argv: &[String], timeout: Duration) -> Run {
     let stderr = fs::read(&err_tmp).unwrap_or_default();
     let _ = fs::remove_file(&out_tmp);
     let _ = fs::remove_file(&err_tmp);
-    let err_text = String::from_utf8_lossy(&stderr);
-    let l2_verified = err_text.contains(L2_NEEDLE);
-    let reach = parse_reach(&err_text);
+    let reach = parse_reach(&String::from_utf8_lossy(&stderr));
+    let verification_report = verification_report_path.map(|path| {
+        let result = read_current_verification_report(path);
+        let _ = fs::remove_file(path);
+        result
+    });
     Run {
         exit,
         wedged,
         stdout,
-        l2_verified,
+        verification_report,
         reach,
         duration_ms: dur,
     }
@@ -280,7 +323,12 @@ fn sha256(bytes: &[u8]) -> String {
     }
 }
 
-fn hermit_argv(hermit: &Path, e9: bool, verify: bool, guest: &Path) -> Vec<String> {
+fn hermit_argv(
+    hermit: &Path,
+    e9: bool,
+    verification_report: Option<&Path>,
+    guest: &Path,
+) -> Vec<String> {
     let mut v = vec![hermit.to_string_lossy().into_owned()];
     if e9 {
         v.push("--backend".into());
@@ -294,8 +342,10 @@ fn hermit_argv(hermit: &Path, e9: bool, verify: bool, guest: &Path) -> Vec<Strin
     // same fixed guest environment as the other scorecard collectors instead:
     // Hermit's minimal PATH/HOSTNAME/HOME plus explicit locale and timezone.
     v.extend(PINNED_GUEST_ENV_ARGS.iter().map(|arg| (*arg).to_string()));
-    if verify {
+    if let Some(path) = verification_report {
         v.push("--verify".into());
+        v.push("--verify-json".into());
+        v.push(path.to_string_lossy().into_owned());
     }
     // Keep hermit from replacing the guest's /tmp so the binary path resolves
     // (mirrors the corpus driver).
@@ -347,14 +397,19 @@ mod guest_env_pin_tests {
     }
 
     fn actual_argv() -> Vec<String> {
-        hermit_argv(Path::new("/hermit"), true, true, Path::new("/guest"))
+        hermit_argv(
+            Path::new("/hermit"),
+            true,
+            Some(Path::new("/tmp/report.json")),
+            Path::new("/guest"),
+        )
     }
 
     #[test]
     fn every_arm_and_level_carries_the_exact_pin_before_the_guest() {
         for e9 in [false, true] {
-            for verify in [false, true] {
-                let argv = hermit_argv(Path::new("/hermit"), e9, verify, Path::new("/guest"));
+            for report in [None, Some(Path::new("/tmp/report.json"))] {
+                let argv = hermit_argv(Path::new("/hermit"), e9, report, Path::new("/guest"));
                 assert!(has_exact_pin(&argv), "missing pin in {argv:?}");
             }
         }
@@ -388,11 +443,105 @@ mod guest_env_pin_tests {
     }
 }
 
+#[cfg(test)]
+mod verification_report_tests {
+    use super::*;
+
+    const FIXED_HUMAN_BANNER: &str = ":: Success: deterministic. Determinism verified.\n";
+
+    fn current_report(verdict: &str, verified: bool) -> VerificationReport {
+        VerificationReport::from_current_json_value(serde_json::json!({
+            "verified": verified,
+            "bitwise_parity": verified,
+            "verdict": verdict,
+            "infrastructure_error": null,
+            "comparison": {
+                "strictness": "canonical",
+                "display_name": "fixture",
+                "compare_logs": true,
+                "compare_io_buffers": true,
+                "log_scope": "info",
+                "record_envelope": "all_records_v1",
+                "virtualize_time": true,
+                "strip_lines": false,
+                "canonicalize_addresses": true,
+                "full_trace": true,
+                "exact_remainder": true,
+                "stripped_prefixes": [],
+                "canonicalizations": [],
+                "ignore_lines": false,
+                "skip_commit": false,
+                "skip_detlog": false
+            },
+            "compared_log_messages": {"left": 2, "right": 2},
+            "guest_exit_code": 0,
+            "guest_signal": null,
+            "first_divergent_scheduler_turn": null,
+            "first_divergent_virtual_nanoseconds": null,
+            "first_divergent_record": null,
+            "first_divergent_syscall": null,
+            "first_divergent_left_message": null,
+            "first_divergent_right_message": null
+        }))
+        .expect("current verification report fixture")
+    }
+
+    fn l1_arm(verification: Option<Result<Verdict, String>>) -> Arm {
+        Arm {
+            l1: true,
+            l2: false,
+            verify_wedged: false,
+            strict_wedged: false,
+            strict_exit: 0,
+            strict_stdout: Vec::new(),
+            duration_ms: 1,
+            reach: Some((1, 1)),
+            verification,
+        }
+    }
+
+    #[test]
+    fn typed_verdict_owns_l2_while_the_human_banner_stays_fixed() {
+        let banner_before = FIXED_HUMAN_BANNER.as_bytes();
+        let matched = current_report("matched", true);
+        let diverged = current_report("diverged", false);
+
+        assert_eq!(report_matches(&matched), Ok(true));
+        assert_eq!(report_matches(&diverged), Ok(false));
+        assert_eq!(banner_before, FIXED_HUMAN_BANNER.as_bytes());
+    }
+
+    #[test]
+    fn missing_typed_report_is_unknown_even_when_the_human_banner_says_pass() {
+        let arm = l1_arm(Some(Err("verification report is missing".to_string())));
+        let (outcome, deterministic, reason) = arm_cell(&arm, None);
+
+        assert_eq!(
+            FIXED_HUMAN_BANNER,
+            ":: Success: deterministic. Determinism verified.\n"
+        );
+        assert_eq!(outcome, "unknown");
+        assert_eq!(deterministic, None);
+        assert!(reason.contains("verification report is missing"));
+    }
+
+    #[test]
+    fn typed_non_product_verdicts_are_unknown_not_l1() {
+        for verdict in [Verdict::NoResult, Verdict::InfrastructureError] {
+            let arm = l1_arm(Some(Ok(verdict)));
+            let (outcome, deterministic, reason) = arm_cell(&arm, None);
+            assert_eq!(outcome, "unknown");
+            assert_eq!(deterministic, None);
+            assert!(reason.contains(&verdict.to_string()));
+        }
+    }
+}
+
 /// L1/L2 measurement for one arm (golden or e9) of one guest.
 struct Arm {
     /// L1 reached: strict run exited 0 with output.
     l1: bool,
-    /// L2 reached: --verify printed "Determinism verified" and exited 0.
+    /// L2 reached: --verify wrote a matched typed report and exited 0.
     l2: bool,
     /// True when L2 was missed because the verify leg wedged (env, not a defect).
     verify_wedged: bool,
@@ -404,6 +553,10 @@ struct Arm {
     duration_ms: i64,
     /// AOT reach observed on the strict leg; see `apply_reach_gate`.
     reach: Option<(u64, u64)>,
+    /// The last typed verification verdict, or the named reason the current
+    /// report could not be read. `None` means L1 never cleared, so no verify leg
+    /// ran.
+    verification: Option<Result<Verdict, String>>,
 }
 
 fn measure_arm(
@@ -417,13 +570,13 @@ fn measure_arm(
     // Strict (L1) leg. Retry a wedged strict the same way as verify: under heavy
     // fleet PMU load the strict leg can wedge too, and an env wedge must not be
     // misread as a guest run failure.
-    let mut s = run_timed(&hermit_argv(hermit, e9, false, guest), strict_to);
+    let mut s = run_timed(&hermit_argv(hermit, e9, None, guest), strict_to, None);
     let mut total = s.duration_ms;
     let mut strict_wedged = s.wedged;
     if s.wedged {
         for _ in 1..verify_retries.max(1) {
             sleep(Duration::from_secs(2));
-            let r = run_timed(&hermit_argv(hermit, e9, false, guest), strict_to);
+            let r = run_timed(&hermit_argv(hermit, e9, None, guest), strict_to, None);
             total += r.duration_ms;
             let done = !r.wedged;
             s = r;
@@ -437,24 +590,41 @@ fn measure_arm(
 
     // Only attempt L2 if L1 held. Retry any verify leg that did not confirm L2 —
     // under heavy fleet load the verify leg can wedge (timeout-killed) OR
-    // skid-panic (exits non-zero without "Determinism verified"); both are PMU
+    // skid-panic (exits non-zero without a matched report); both are PMU
     // env, not guest defects, so give L2 up to `verify_retries` attempts. A
-    // genuine non-determinism would never print the needle and honestly settles
+    // genuine non-determinism produces a diverged verdict and honestly settles
     // as L1 after the retries are spent.
     let mut l2 = false;
     let mut verify_wedged = false;
+    let mut verification = None;
     if l1 {
-        for _ in 0..verify_retries.max(1) {
-            let v = run_timed(&hermit_argv(hermit, e9, true, guest), verify_to);
+        for attempt in 0..verify_retries.max(1) {
+            let report_path = env::temp_dir().join(format!(
+                "e9c-verification-{}-{}-{attempt}.json",
+                std::process::id(),
+                if e9 { "e9patch" } else { "ptrace" }
+            ));
+            let _ = fs::remove_file(&report_path);
+            let v = run_timed(
+                &hermit_argv(hermit, e9, Some(&report_path), guest),
+                verify_to,
+                Some(&report_path),
+            );
             total += v.duration_ms;
-            // In --verify mode hermit reports the bitwise-repeat result on stderr
-            // ("Determinism verified") and does not re-echo the guest stdout, so
-            // L2 is the verified flag + clean exit (matches the corpus driver's
-            // l2_ok). Guest-output parity is measured separately from the strict
-            // (L1) arms below.
-            if v.l2_verified && v.exit == 0 {
-                l2 = true;
-                verify_wedged = false;
+            verification = Some(match v.verification_report {
+                Some(Ok(report)) => match report_matches(&report) {
+                    Ok(true) if v.exit == 0 => {
+                        l2 = true;
+                        verify_wedged = false;
+                        Ok(report.verdict)
+                    }
+                    Ok(_) => Ok(report.verdict),
+                    Err(error) => Err(error),
+                },
+                Some(Err(error)) => Err(error),
+                None => Err("verify leg did not request a verification report".to_string()),
+            });
+            if l2 {
                 break;
             }
             // Not confirmed this attempt: record whether it was a wedge (for the
@@ -470,6 +640,7 @@ fn measure_arm(
         strict_wedged,
         strict_exit: s.exit,
         reach: s.reach,
+        verification,
         strict_stdout: s.stdout,
         duration_ms: total,
     }
@@ -906,6 +1077,30 @@ fn arm_cell(a: &Arm, parity: Option<bool>) -> (&'static str, Option<bool>, Strin
             ),
         }
     } else {
+        match a.verification.as_ref() {
+            Some(Err(error)) => {
+                return (
+                    "unknown",
+                    None,
+                    format!("level=L1; verification report unavailable: {error}"),
+                );
+            }
+            Some(Ok(Verdict::NoResult)) => {
+                return (
+                    "unknown",
+                    None,
+                    "level=L1; typed verification verdict is no_result".to_string(),
+                );
+            }
+            Some(Ok(Verdict::InfrastructureError)) => {
+                return (
+                    "unknown",
+                    None,
+                    "level=L1; typed verification verdict is infrastructure_error".to_string(),
+                );
+            }
+            Some(Ok(Verdict::Matched | Verdict::Diverged)) | None => {}
+        }
         // L1 only.
         let base = if a.verify_wedged {
             "level=L1; verify wedged (PMU env, not a defect)"
