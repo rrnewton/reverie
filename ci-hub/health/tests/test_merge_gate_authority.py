@@ -251,6 +251,45 @@ raise SystemExit(2)
         self.assertEqual("unavailable", fields["state"])
         self.assertNotEqual("ok", fields["state"])
 
+    def test_old_prose_pass_is_not_a_typed_result(self) -> None:
+        prose_success = self._write_executable(
+            "prose-success", "#!/usr/bin/env bash\necho 'PASS: looks good'\n"
+        )
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            rc = operational_health.merge_gate_authority_gate(checker=prose_success)
+        fields = dict(line.split("=", 1) for line in output.getvalue().splitlines())
+        self.assertEqual(2, rc)
+        self.assertEqual("unavailable", fields["state"])
+
+    def test_mutating_typed_state_changes_the_health_result(self) -> None:
+        typed_failure = self._write_executable(
+            "typed-failure",
+            "#!/usr/bin/env bash\n"
+            "echo '{\"schema\":1,\"state\":\"fail\",\"gate_policy_matches\":false,"
+            "\"history_policy_matches\":true}'\n"
+            "exit 1\n",
+        )
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            rc = operational_health.merge_gate_authority_gate(checker=typed_failure)
+        fields = dict(line.split("=", 1) for line in output.getvalue().splitlines())
+        self.assertEqual(1, rc)
+        self.assertEqual("interrupted-transition", fields["state"])
+
+        typed_success = self._write_executable(
+            "typed-success",
+            "#!/usr/bin/env bash\n"
+            "echo '{\"schema\":1,\"state\":\"pass\",\"gate_policy_matches\":true,"
+            "\"history_policy_matches\":true}'\n",
+        )
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            rc = operational_health.merge_gate_authority_gate(checker=typed_success)
+        fields = dict(line.split("=", 1) for line in output.getvalue().splitlines())
+        self.assertEqual(0, rc)
+        self.assertEqual("ok", fields["state"])
+
     def test_tick_adopts_the_global_gate_at_hourly_cadence(self) -> None:
         config = yaml.safe_load((ROOT / "ci-hub" / "health" / "tick-hub.yaml").read_text())
         gates = {gate["name"]: gate for gate in config["reminders"]}
@@ -261,11 +300,7 @@ raise SystemExit(2)
         )
         self.assertEqual(gate["cadence_secs"], 3600)
         self.assertIn("GLOBAL", gate["emit"]["title"])
-        self.assertLess(
-            operational_health.MERGE_GATE_AUTHORITY_TIMEOUT_SECS
-            + operational_health.MERGE_GATE_AUTHORITY_PROBE_TIMEOUT_SECS,
-            30,
-        )
+        self.assertLess(operational_health.MERGE_GATE_AUTHORITY_TIMEOUT_SECS, 30)
 
 
 if __name__ == "__main__":

@@ -7,7 +7,6 @@ import argparse
 import json
 import os
 import re
-import shutil
 import signal
 import subprocess
 import sys
@@ -114,13 +113,9 @@ DEFAULT_QUEUE_GATE_TIMEOUT_SECS = float(
 MERGE_GATE_AUTHORITY_TIMEOUT_SECS = float(
     os.environ.get("CI_HUB_MERGE_GATE_AUTHORITY_TIMEOUT", "20")
 )
-MERGE_GATE_AUTHORITY_PROBE_TIMEOUT_SECS = float(
-    os.environ.get("CI_HUB_MERGE_GATE_AUTHORITY_PROBE_TIMEOUT", "4")
-)
 MERGE_GATE_AUTHORITY_CHECKER = (
     ROOT / "hermit" / "scripts" / "configure-merge-gate-ruleset.sh"
 )
-MERGE_GATE_REPO = "rrnewton/hermit"
 DEFAULT_AGENT_SNAPSHOT = ROOT / "ignored" / "ci-hub" / "agent-snapshot.json"
 @dataclass(frozen=True)
 class TaskRecord:
@@ -1589,34 +1584,6 @@ def _single_line_detail(stdout: str, stderr: str) -> str:
     return " | ".join(line for line in lines if line) or "checker emitted no detail"
 
 
-def _github_variable_surface_available() -> tuple[bool, str]:
-    """Distinguish a genuinely absent variable from unreadable ambient auth.
-
-    The authoritative shell checker intentionally maps `gh variable get`
-    failures to an empty value so its reconciliation modes can create missing
-    variables. In read-only health that shape is ambiguous: it could be a real
-    half-transition or merely expired credentials. A strict list probe resolves
-    availability only; the shell checker remains the sole semantic authority.
-    """
-
-    gh = ["gh"]
-    if shutil.which("with-proxy") is not None:
-        gh = ["with-proxy", "gh"]
-    rc, stdout, stderr = _run_tool(
-        [*gh, "variable", "list", "--repo", MERGE_GATE_REPO, "--json", "name"],
-        timeout=MERGE_GATE_AUTHORITY_PROBE_TIMEOUT_SECS,
-    )
-    if rc != 0:
-        return False, _single_line_detail(stdout, stderr)
-    try:
-        variables = json.loads(stdout)
-    except json.JSONDecodeError as error:
-        return False, f"variable-list returned invalid JSON: {error}"
-    if not isinstance(variables, list):
-        return False, "variable-list returned a non-list JSON value"
-    return True, "GitHub variable surface readable"
-
-
 def merge_gate_authority_gate(
     *,
     checker: Path = MERGE_GATE_AUTHORITY_CHECKER,
@@ -1631,12 +1598,32 @@ def merge_gate_authority_gate(
     half-transition, and unavailable evidence.
     """
 
-    rc, stdout, stderr = _run_tool([str(checker), "--check"], timeout=timeout)
+    rc, stdout, stderr = _run_tool([str(checker), "--check", "--json"], timeout=timeout)
     detail = _single_line_detail(stdout, stderr)
+    try:
+        result = json.loads(stdout)
+    except json.JSONDecodeError as error:
+        result = None
 
-    # Require the verifier's own positive statement, not merely an exit code
-    # which could have come from a wrapper that never exercised the predicate.
-    if rc == 0 and "PASS:" in stdout:
+    valid_result = (
+        isinstance(result, dict)
+        and set(result) == {
+            "schema",
+            "state",
+            "gate_policy_matches",
+            "history_policy_matches",
+        }
+        and result.get("schema") == 1
+        and isinstance(result.get("gate_policy_matches"), bool)
+        and isinstance(result.get("history_policy_matches"), bool)
+    )
+    if (
+        rc == 0
+        and valid_result
+        and result["state"] == "pass"
+        and result["gate_policy_matches"] is True
+        and result["history_policy_matches"] is True
+    ):
         _emit(
             {
                 "state": "ok",
@@ -1646,7 +1633,7 @@ def merge_gate_authority_gate(
         )
         return 0
 
-    if rc in (124, 127) or rc != 1 or "FAIL:" not in stderr:
+    if rc in (124, 127) or rc != 1 or not valid_result or result["state"] != "fail":
         _emit(
             {
                 "state": "unavailable",
@@ -1658,25 +1645,6 @@ def merge_gate_authority_gate(
             }
         )
         return 2
-
-    # `read_variable` deliberately turns a failed variable read into `unset`.
-    # Confirm the surface is readable before treating that word as evidence of
-    # an actually missing binding rather than evidence of lost credentials.
-    if "unset" in stderr:
-        available, availability_detail = _github_variable_surface_available()
-        if not available:
-            _emit(
-                {
-                    "state": "unavailable",
-                    "scope": "unknown",
-                    "summary": (
-                        "merge-authority variables could not be measured; "
-                        "the checker's unset value is NOT transition evidence: "
-                        f"{availability_detail}"
-                    ),
-                }
-            )
-            return 2
 
     _emit(
         {

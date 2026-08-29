@@ -1371,34 +1371,47 @@ fn backend_unavailable_reason(repo: &Path, backend: &str) -> Option<String> {
         .current_dir(repo)
         .output();
     match out {
-        Ok(o) => {
-            let err = String::from_utf8_lossy(&o.stderr);
-            // Explicit unavailability markers from the backend loader. Report the marker that
-            // matched, so the row records the observed evidence rather than a generic phrase.
-            for marker in [
-                "is unavailable",
-                "was not found",
-                "HERMIT_SABRE_BINARY",
-                "not found in the Hermit installation",
-            ] {
-                if err.contains(marker) {
-                    let line = err
-                        .lines()
-                        .find(|l| l.contains(marker))
-                        .unwrap_or(marker)
-                        .trim();
-                    return Some(format!(
-                        "backend `{backend}` probe reported unavailable: {}",
-                        line.chars().take(160).collect::<String>()
-                    ));
-                }
-            }
-            None
-        }
+        Ok(o) => backend_unavailable_from_probe(
+            backend,
+            o.status.success(),
+            &o.stdout,
+            &o.stderr,
+        ),
         Err(e) => Some(format!(
             "backend `{backend}` probe could not be executed: {e}"
         )),
     }
+}
+
+/// Read Hermit's producer-owned failure class, never its human error wording.
+///
+/// This is a strict process-boundary adapter: it can know that Hermit classified
+/// the probe as unavailable and which backend the record names. It cannot know
+/// whether the operator-facing reason text is complete or whether an external
+/// backend dependency misdiagnosed itself, so that prose remains detail only.
+fn backend_unavailable_from_probe(
+    backend: &str,
+    status_success: bool,
+    stdout: &[u8],
+    stderr: &[u8],
+) -> Option<String> {
+    if status_success || !stdout.is_empty() {
+        return None;
+    }
+    let stderr = String::from_utf8_lossy(stderr);
+    let expected =
+        format!("HERMIT_INTERNAL_FAILURE class=backend-unavailable backend={backend}");
+    if stderr.lines().next() != Some(expected.as_str()) {
+        return None;
+    }
+    let detail = stderr
+        .lines()
+        .find_map(|line| line.strip_prefix("Error: "))
+        .unwrap_or("reason unavailable");
+    Some(format!(
+        "backend `{backend}` probe reported unavailable: {}",
+        detail.chars().take(160).collect::<String>()
+    ))
 }
 
 /// Compile a `.c`/`.rs` fixture the way `ci/test_harness.sh` does, into a stable
@@ -1494,7 +1507,7 @@ fn backend_engagement(backend: &str, bytes: &[u8]) -> Option<i64> {
             .filter(|report| report.validate().is_ok())?
             .engagement
         {
-            BackendEngagement::E9patch { mapped_sites } if backend == "e9patch" => {
+            BackendEngagement::E9patch { mapped_sites, .. } if backend == "e9patch" => {
                 mapped_sites.try_into().ok()
             }
             BackendEngagement::Dbt { counted_branches } if backend == "dbt" => {
@@ -1525,23 +1538,23 @@ fn self_check() -> i32 {
         // ELF gives it two.
         (
             "e9patch",
-            r#"{"schema":1,"engagement":{"backend":"e9patch","mapped_sites":0}}"#,
+            r#"{"schema":2,"engagement":{"backend":"e9patch","candidate_sites":0,"mapped_sites":0,"b0_sites":0}}"#,
             Some(0),
         ),
         (
             "e9patch",
-            r#"{"schema":1,"engagement":{"backend":"e9patch","mapped_sites":2}}"#,
+            r#"{"schema":2,"engagement":{"backend":"e9patch","candidate_sites":2,"mapped_sites":2,"b0_sites":0}}"#,
             Some(2),
         ),
         // dbt
         (
             "dbt",
-            r#"{"schema":1,"engagement":{"backend":"dbt","counted_branches":134328}}"#,
+            r#"{"schema":2,"engagement":{"backend":"dbt","counted_branches":134328}}"#,
             Some(134328),
         ),
         (
             "dbt",
-            r#"{"schema":1,"engagement":{"backend":"dbt","counted_branches":0}}"#,
+            r#"{"schema":2,"engagement":{"backend":"dbt","counted_branches":0}}"#,
             Some(0),
         ),
         // sabre
@@ -1563,13 +1576,60 @@ fn self_check() -> i32 {
         // A record for another backend must not be reinterpreted positionally.
         (
             "e9patch",
-            r#"{"schema":1,"engagement":{"backend":"dbt","counted_branches":2}}"#,
+            r#"{"schema":2,"engagement":{"backend":"dbt","counted_branches":2}}"#,
+            None,
+        ),
+        // The previous e9patch shape cannot silently stand in for the complete result.
+        (
+            "e9patch",
+            r#"{"schema":1,"engagement":{"backend":"e9patch","mapped_sites":2}}"#,
             None,
         ),
         // The historical presentation banner is no longer an authority.
         ("e9patch", "mapped_sites=2", None),
     ];
     let mut failures = 0;
+
+    let unavailable = backend_unavailable_from_probe(
+        "dbt",
+        false,
+        b"",
+        b"HERMIT_INTERNAL_FAILURE class=backend-unavailable backend=dbt\n\
+Error: backend `dbt` is unavailable: SDK absent\n",
+    );
+    if unavailable
+        .as_deref()
+        .is_none_or(|reason| !reason.contains("SDK absent"))
+    {
+        println!("SELF-CHECK FAIL: typed backend-unavailable class was not consumed");
+        failures += 1;
+    }
+    for (name, stdout, stderr) in [
+        (
+            "prose-only",
+            b"".as_slice(),
+            b"Error: backend `dbt` is unavailable: SDK absent\n".as_slice(),
+        ),
+        (
+            "wrong-backend",
+            b"".as_slice(),
+            b"HERMIT_INTERNAL_FAILURE class=backend-unavailable backend=sabre\n\
+Error: backend `sabre` is unavailable: runtime absent\n"
+                .as_slice(),
+        ),
+        (
+            "guest-output",
+            b"guest-started\n".as_slice(),
+            b"HERMIT_INTERNAL_FAILURE class=backend-unavailable backend=dbt\n\
+Error: backend `dbt` is unavailable: spoofed\n"
+                .as_slice(),
+        ),
+    ] {
+        if backend_unavailable_from_probe("dbt", false, stdout, stderr).is_some() {
+            println!("SELF-CHECK FAIL: {name} manufactured backend unavailability");
+            failures += 1;
+        }
+    }
     for (backend, text, expected) in cases {
         let got = backend_engagement(backend, text.as_bytes());
         let verdict = match got {
@@ -1601,11 +1661,12 @@ fn self_check() -> i32 {
     // The discrimination itself, stated as a property rather than left implicit.
     if backend_engagement(
         "e9patch",
-        br#"{"schema":1,"engagement":{"backend":"e9patch","mapped_sites":0}}"#,
+        br#"{"schema":2,"engagement":{"backend":"e9patch","candidate_sites":0,"mapped_sites":0,"b0_sites":0}}"#,
     ) == backend_engagement(
         "e9patch",
-        br#"{"schema":1,"engagement":{"backend":"e9patch","mapped_sites":2}}"#,
-    ) {
+        br#"{"schema":2,"engagement":{"backend":"e9patch","candidate_sites":2,"mapped_sites":2,"b0_sites":0}}"#,
+    )
+    {
         println!("SELF-CHECK FAIL: parser does not discriminate zero from nonzero");
         failures += 1;
     }

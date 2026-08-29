@@ -88,12 +88,20 @@ class ReverieValidateTest(unittest.TestCase):
                 return "c" * 40
             raise AssertionError(f"unexpected git call: {args!r}")
 
+        gates = []
+        for name in reverie_node.EXPECTED_GATES:
+            gate = {"name": name}
+            if name == "Test regular workspace cases":
+                gate.update({"executed_tests": 12, "filtered_tests": 3})
+            elif name == "Documentation tests":
+                gate.update({"executed_tests": 5, "filtered_tests": 1})
+            gates.append(gate)
         source = {
             "result": "pass" if validate_exit == 0 else "fail",
             "checks": len(reverie_node.EXPECTED_GATES),
             "executed_tests": 17,
             "filtered_tests": 4,
-            "gates": [{"name": name} for name in reverie_node.EXPECTED_GATES],
+            "gates": gates,
         }
         recorded: list[dict] = []
         with (
@@ -350,22 +358,50 @@ class ReverieValidateTest(unittest.TestCase):
                 status_file.read_text(), "FINAL_VALIDATE_STATUS: COULD_NOT_RUN\n"
             )
 
-    def test_both_test_gates_must_execute_nonzero_tests(self) -> None:
-        complete = """
-== Test regular workspace cases ==
-test result: ok. 10 passed; 0 failed; 0 ignored; 2 measured; 3 filtered out;
-== Documentation tests ==
-test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out;
-"""
-        self.assertEqual(reverie_node.gate_coverage(complete), (14, 3, [], []))
-        missing = """
-== Test regular workspace cases ==
-test result: ok. 10 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out;
-"""
+    def test_both_test_gates_must_record_nonzero_tests(self) -> None:
+        complete = {
+            "gates": [
+                {
+                    "name": "Test regular workspace cases",
+                    "executed_tests": 10,
+                    "filtered_tests": 3,
+                },
+                {
+                    "name": "Documentation tests",
+                    "executed_tests": 4,
+                    "filtered_tests": 0,
+                },
+            ]
+        }
         self.assertEqual(
-            reverie_node.gate_coverage(missing),
+            reverie_node.recorded_gate_coverage(complete), (14, 3, [], [])
+        )
+        complete["gates"][1]["executed_tests"] = 0
+        self.assertEqual(
+            reverie_node.recorded_gate_coverage(complete),
+            (10, 3, ["Documentation tests"], []),
+        )
+        missing = {"gates": complete["gates"][:1]}
+        self.assertEqual(
+            reverie_node.recorded_gate_coverage(missing),
             (10, 3, [], ["Documentation tests"]),
         )
+
+    def test_missing_per_gate_count_refuses_by_field_name(self) -> None:
+        source = {
+            "gates": [
+                {
+                    "name": "Test regular workspace cases",
+                    "executed_tests": 10,
+                    "filtered_tests": 3,
+                },
+                {"name": "Documentation tests", "filtered_tests": 0},
+            ]
+        }
+        with self.assertRaisesRegex(
+            reverie_node.Refusal, "Documentation tests.*executed_tests"
+        ):
+            reverie_node.recorded_gate_coverage(source)
 
     def test_aggregate_counts_come_from_the_framework_row(self) -> None:
         self.assertEqual(

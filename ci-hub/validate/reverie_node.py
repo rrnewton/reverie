@@ -40,10 +40,6 @@ TEST_GATES = (
     "Documentation tests",
 )
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
-TEST_RESULT_RE = re.compile(
-    r"^\s*test result: (?:ok|FAILED)\. (\d+) passed;.*? (\d+) filtered out;",
-    re.MULTILINE,
-)
 
 
 class Refusal(RuntimeError):
@@ -197,23 +193,33 @@ def load_source_row(root: Path, target: str, checkout: Path, log: Path, started:
     return candidates[0]
 
 
-def gate_coverage(log_text: str) -> tuple[int, int, list[str], list[str]]:
-    sections: dict[str, str] = {}
-    markers = list(re.finditer(r"^== (.+) ==$", log_text, re.MULTILINE))
-    for index, marker in enumerate(markers):
-        end = markers[index + 1].start() if index + 1 < len(markers) else len(log_text)
-        sections[marker.group(1)] = log_text[marker.end() : end]
-    absent = [gate for gate in TEST_GATES if gate not in sections]
+def recorded_gate_coverage(source: dict[str, Any]) -> tuple[int, int, list[str], list[str]]:
+    """Read the counts each test gate wrote at the gate boundary."""
+    gates = source.get("gates")
+    if not isinstance(gates, list) or not all(isinstance(gate, dict) for gate in gates):
+        raise Refusal("Reverie source row gates must be a list of objects")
+    by_name = {gate.get("name"): gate for gate in gates}
+    absent = [gate for gate in TEST_GATES if gate not in by_name]
     zero: list[str] = []
     executed = 0
     filtered = 0
-    for gate in TEST_GATES:
-        banners = TEST_RESULT_RE.findall(sections.get(gate, ""))
-        passed = sum(int(item[0]) for item in banners)
-        filtered += sum(int(item[1]) for item in banners)
-        executed += passed
-        if gate in sections and passed == 0:
-            zero.append(gate)
+    for name in TEST_GATES:
+        gate = by_name.get(name)
+        if gate is None:
+            continue
+        values: list[int] = []
+        for field in ("executed_tests", "filtered_tests"):
+            value = gate.get(field)
+            if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+                raise Refusal(
+                    f"Reverie source row gate {name!r} {field} must be a "
+                    f"nonnegative integer, got {value!r}"
+                )
+            values.append(value)
+        executed += values[0]
+        filtered += values[1]
+        if values[0] == 0:
+            zero.append(name)
     return executed, filtered, zero, absent
 
 
@@ -309,10 +315,15 @@ def main(argv: list[str] | None = None) -> int:
             check=False,
         )
         source = load_source_row(root, args.target, checkout, log, started)
-        log_text = log.read_text(errors="replace")
         executed, filtered = recorded_test_counts(source)
-        _, _, zero, absent = gate_coverage(log_text)
         gates = source.get("gates")
+        require_expected_gate_set(gates)
+        gate_executed, gate_filtered, zero, absent = recorded_gate_coverage(source)
+        if (gate_executed, gate_filtered) != (executed, filtered):
+            raise Refusal(
+                "Reverie aggregate test counts disagree with per-gate records: "
+                f"aggregate={(executed, filtered)!r} per_gate={(gate_executed, gate_filtered)!r}"
+            )
         canonical = dict(source)
         canonical.update(
             {
@@ -348,7 +359,6 @@ def main(argv: list[str] | None = None) -> int:
         # The canonical row records even a product red. Shape failures are not
         # repaired here; the reader will refuse them rather than minting green.
         record(root, canonical)
-        require_expected_gate_set(gates)
         if result.returncode == 0:
             status = "PASSED"
         elif result.returncode == 1:
