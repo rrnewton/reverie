@@ -142,7 +142,13 @@ impl Args {
             ToolKind::Counter1Exact => Some(CounterTool::Counter1Exact),
             ToolKind::Counter2 => Some(CounterTool::Counter2),
             ToolKind::Counter2Exact => Some(CounterTool::Counter2Exact),
-            _ => None,
+            ToolKind::Chaos
+            | ToolKind::ChromeTrace
+            | ToolKind::ChunkyPrint
+            | ToolKind::Debug
+            | ToolKind::Strace
+            | ToolKind::StraceMinimal
+            | ToolKind::Noop => None,
         };
         if let Some(counter) = counter {
             return reverie_sabre_strace_plugin::run_counter(
@@ -181,7 +187,14 @@ impl Args {
                 )
                 .await;
             }
-            _ => {}
+            ToolKind::Debug
+            | ToolKind::Strace
+            | ToolKind::StraceMinimal
+            | ToolKind::Counter1
+            | ToolKind::Counter1Exact
+            | ToolKind::Counter2
+            | ToolKind::Counter2Exact
+            | ToolKind::Noop => {}
         }
 
         let mut child = reverie_host::TracerBuilder::new(command)

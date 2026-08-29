@@ -2069,10 +2069,21 @@ impl<L: Tool + 'static> TracedTask<L> {
             .as_ref()
             .and_then(|runtime| runtime.pause_root_stop.as_ref())
         {
-            let selected = match (pause, &event) {
-                (RootStopPause::Seccomp, Event::Seccomp) => true,
-                (RootStopPause::Signal(expected), Event::Signal(actual)) => expected == actual,
-                _ => false,
+            let selected = match &event {
+                Event::Seccomp => match pause {
+                    RootStopPause::Seccomp => true,
+                    RootStopPause::Signal(_) => false,
+                },
+                Event::Signal(actual) => match pause {
+                    RootStopPause::Seccomp => false,
+                    RootStopPause::Signal(expected) => expected == actual,
+                },
+                Event::NewChild(..)
+                | Event::Exec(_)
+                | Event::VforkDone
+                | Event::Exit
+                | Event::Stop
+                | Event::Syscall => false,
             };
             if selected {
                 let _ = sender.send(stopped.pid());
