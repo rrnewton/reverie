@@ -73,11 +73,13 @@ validation_slot_name() {
 LABEL_PR=1
 [[ ${VALIDATE_LABEL_PR:-1} == 0 ]] && LABEL_PR=0
 PR_NUMBER=${PR_NUMBER:-}
+SELF_TEST_GATE_COUNTS=0
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --label-pr) LABEL_PR=1; shift ;;
         --no-label-pr) LABEL_PR=0; shift ;;
+        --self-test-gate-counts) SELF_TEST_GATE_COUNTS=1; shift ;;
         -h|--help)
             echo "Usage: ./validate.sh [--label-pr|--no-label-pr]"
             echo "A green exact-head run writes a receipt; the optional PR label is derived cache."
@@ -102,6 +104,8 @@ failures=0
 declare -a ledger_gate_names=()
 declare -a ledger_gate_statuses=()
 declare -a ledger_gate_durations=()
+declare -a ledger_gate_executed_tests=()
+declare -a ledger_gate_filtered_tests=()
 
 VALIDATION_STARTED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 VALIDATION_STARTED_EPOCH=$(date +%s)
@@ -148,6 +152,28 @@ record_ledger_gate() {
     ledger_gate_names+=("$1")
     ledger_gate_statuses+=("$2")
     ledger_gate_durations+=("$3")
+    ledger_gate_executed_tests+=("$4")
+    ledger_gate_filtered_tests+=("$5")
+}
+
+gate_test_counts() {
+    local name=$1 output_start=$2 section passed filtered
+    case "$name" in
+        "Test regular workspace cases"|"Documentation tests") ;;
+        *) printf 'null null\n'; return ;;
+    esac
+    section=$(tail -c "+$((output_start + 1))" "$LOG_FILE")
+    passed=$(printf '%s' "$section" | sed -n -E \
+        's/^[[:space:]]*test result: (ok|FAILED)[.] ([0-9]+) passed;.*/\2/p')
+    filtered=$(printf '%s' "$section" | sed -n -E \
+        's/^[[:space:]]*test result: (ok|FAILED)[.].*; ([0-9]+) filtered out;.*/\2/p')
+    if [[ -z $passed || -z $filtered ]]; then
+        printf 'null null\n'
+        return
+    fi
+    printf '%s %s\n' \
+        "$(awk '{ total += $1 } END { print total + 0 }' <<<"$passed")" \
+        "$(awk '{ total += $1 } END { print total + 0 }' <<<"$filtered")"
 }
 
 json_quote() {
@@ -160,13 +186,35 @@ json_quote() {
     printf '"%s"' "$value"
 }
 
+ledger_gates_json() {
+    local gates_json='[' gate_result i
+    for i in "${!ledger_gate_names[@]}"; do
+        ((i == 0)) || gates_json+=','
+        if ((ledger_gate_statuses[i] == 0)); then
+            gate_result=pass
+        else
+            gate_result=fail
+        fi
+        gates_json+="{\"name\":$(json_quote "${ledger_gate_names[i]}"),"
+        gates_json+="\"result\":\"$gate_result\","
+        gates_json+="\"exit_code\":${ledger_gate_statuses[i]},"
+        gates_json+="\"real_seconds\":${ledger_gate_durations[i]}"
+        if [[ ${ledger_gate_executed_tests[i]} != null ]]; then
+            gates_json+=",\"executed_tests\":${ledger_gate_executed_tests[i]}"
+            gates_json+=",\"filtered_tests\":${ledger_gate_filtered_tests[i]}"
+        fi
+        gates_json+='}'
+    done
+    gates_json+=']'
+    printf '%s\n' "$gates_json"
+}
+
 append_validation_ledger() {
     local exit_status=$1
     local wall_seconds=$2 cpu_user=$3 cpu_sys=$4
-    local finished_at result gates_json gate_result line
+    local finished_at result gates_json line
     local commit_anchored_json tree_dirty_json
     local executed_tests filtered_tests
-    local i
 
     finished_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
     if ((exit_status == 0 && failures == 0)); then
@@ -185,20 +233,7 @@ append_validation_ledger() {
         's/^[[:space:]]*test result: (ok|FAILED)[.].*; ([0-9]+) filtered out;.*/\2/p' \
         "$LOG_FILE" | awk '{ total += $1 } END { print total + 0 }')
 
-    gates_json='['
-    for i in "${!ledger_gate_names[@]}"; do
-        ((i == 0)) || gates_json+=','
-        if ((ledger_gate_statuses[i] == 0)); then
-            gate_result=pass
-        else
-            gate_result=fail
-        fi
-        gates_json+="{\"name\":$(json_quote "${ledger_gate_names[i]}"),"
-        gates_json+="\"result\":\"$gate_result\","
-        gates_json+="\"exit_code\":${ledger_gate_statuses[i]},"
-        gates_json+="\"real_seconds\":${ledger_gate_durations[i]}}"
-    done
-    gates_json+=']'
+    gates_json=$(ledger_gates_json)
 
     if ((VALIDATION_COMMIT_ANCHORED == 1)); then commit_anchored_json=true; else commit_anchored_json=false; fi
     if ((VALIDATION_TREE_DIRTY == 1)); then tree_dirty_json=true; else tree_dirty_json=false; fi
@@ -266,13 +301,11 @@ interrupted() {
     exit 130
 }
 
-trap cleanup EXIT
-trap interrupted INT TERM
-
 run_check() {
     local name=$1
     shift
     local started=$SECONDS
+    local output_start gate_executed gate_filtered
     checks=$((checks + 1))
 
     {
@@ -280,6 +313,7 @@ run_check() {
         printf " %q" "$@"
         printf "\n"
     } >>"$LOG_FILE"
+    output_start=$(wc -c <"$LOG_FILE")
 
     local status=0
     if "$@" >>"$LOG_FILE" 2>&1; then
@@ -290,8 +324,47 @@ run_check() {
         printf "FAIL: %s (exit %s; %ss; log: %s)\n" \
             "$name" "$status" "$((SECONDS - started))" "$LOG_FILE" >&2
     fi
-    record_ledger_gate "$name" "$status" "$((SECONDS - started))"
+    read -r gate_executed gate_filtered < <(gate_test_counts "$name" "$output_start")
+    record_ledger_gate \
+        "$name" "$status" "$((SECONDS - started))" "$gate_executed" "$gate_filtered"
 }
+
+if ((SELF_TEST_GATE_COUNTS == 1)); then
+    run_check "Test regular workspace cases" \
+        bash -c "printf '%s\\n' 'test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out;'"
+    [[ ${ledger_gate_executed_tests[0]} == 2 ]]
+    [[ ${ledger_gate_filtered_tests[0]} == 3 ]]
+    first_record=$(ledger_gates_json)
+    [[ $first_record == *'"executed_tests":2,"filtered_tests":3'* ]]
+    ledger_gate_names=()
+    ledger_gate_statuses=()
+    ledger_gate_durations=()
+    ledger_gate_executed_tests=()
+    ledger_gate_filtered_tests=()
+    run_check "Test regular workspace cases" \
+        bash -c "printf '%s\\n' 'test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out;'"
+    [[ ${ledger_gate_executed_tests[0]} == 5 ]]
+    [[ ${ledger_gate_filtered_tests[0]} == 1 ]]
+    second_record=$(ledger_gates_json)
+    [[ $second_record == *'"executed_tests":5,"filtered_tests":1'* ]]
+    [[ $first_record != "$second_record" ]]
+    ledger_gate_names=()
+    ledger_gate_statuses=()
+    ledger_gate_durations=()
+    ledger_gate_executed_tests=()
+    ledger_gate_filtered_tests=()
+    run_check "Test regular workspace cases" true
+    [[ ${ledger_gate_executed_tests[0]} == null ]]
+    [[ ${ledger_gate_filtered_tests[0]} == null ]]
+    missing_record=$(ledger_gates_json)
+    [[ $missing_record != *'"executed_tests"'* ]]
+    printf 'PASS: per-gate test counts preserve values and missing evidence\n'
+    rm -f "$VALIDATION_CPU_TIMES_FILE"
+    exit 0
+fi
+
+trap cleanup EXIT
+trap interrupted INT TERM
 
 readonly LOCALLY_VALIDATED_LABEL=locally-validated
 
