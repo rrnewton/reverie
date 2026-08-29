@@ -191,7 +191,7 @@ fn observed_count(backend: Backend, stderr: &str) -> Option<u64> {
         Backend::ReverieDbi => parse_last_count(stderr, " syscalls="),
         Backend::ReverieKvm => parse_last_count(stderr, "reverie-counter: syscalls="),
         Backend::ReverieSabre => parse_last_count(stderr, "Saw "),
-        _ => None,
+        Backend::Native | Backend::GvisorSystrap | Backend::GvisorKvm => None,
     }
 }
 

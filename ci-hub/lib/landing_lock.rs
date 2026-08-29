@@ -4328,7 +4328,11 @@ pub(crate) fn print_census_recovery(record: &CleanupRecord, command: &str) {
                  reclaim-dead alone CANNOT clear this state"
             );
         }
-        _ => {}
+        CleanupPhase::Armed
+        | CleanupPhase::Residual {
+            domain_complete: true,
+            ..
+        } => {}
     }
 }
 
