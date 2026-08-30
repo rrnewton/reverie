@@ -44,6 +44,7 @@ published.
 
 from __future__ import annotations
 
+import copy
 import fcntl
 import hashlib
 import json
@@ -96,6 +97,7 @@ COORDINATE_KEYS = (
 
 FIRST_DIVERGENT_MESSAGE_KEYS = ("left", "right")
 WORKSPACE_TOKEN = "{{WORKSPACE_ROOT}}"
+RECORDED_ROOT = "/repo"
 
 _SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 # Built rather than written literally so this module does not itself contain the
@@ -810,9 +812,16 @@ def _typed_comparison_attempt(attempt: Any, *, mode: str, index: int) -> str:
             )
         kind = reason.get("kind")
         if kind == "not_run":
-            if report.get("guest_exit_code") is not None or report.get("guest_signal") is not None:
+            if (
+                report.get("guest_exit_code") is not None
+                or report.get("guest_signal") is not None
+                or attempt.get("outcome") != "ERROR"
+                or not isinstance(attempt.get("error_kind"), str)
+                or not attempt["error_kind"].strip()
+                or not _has_nonzero_process_disposition(attempt)
+            ):
                 raise MalformedRow(
-                    f"cell attempt {index} not_run report records a guest disposition"
+                    f"cell attempt {index} NotRun report has no complete process disposition"
                 )
         elif kind == "first_run_rejected":
             exit_code = reason.get("exit_code")
@@ -821,6 +830,13 @@ def _typed_comparison_attempt(attempt: Any, *, mode: str, index: int) -> str:
                 (exit_code is None) == (signal is None)
                 or report.get("guest_exit_code") != exit_code
                 or report.get("guest_signal") != signal
+                or attempt.get("outcome") != "FAIL"
+                or attempt.get("timed_out") is not False
+                or not isinstance(attempt.get("status"), int)
+                or isinstance(attempt.get("status"), bool)
+                or attempt["status"] <= 0
+                or attempt.get("signal") is not None
+                or attempt.get("error_kind") is not None
             ):
                 raise MalformedRow(
                     f"cell attempt {index} first_run_rejected disposition is inconsistent"
@@ -848,9 +864,12 @@ def _typed_comparison_attempt(attempt: Any, *, mode: str, index: int) -> str:
             or reason.get("kind") != "skid_overshoot"
             or not isinstance(reason.get("count"), int)
             or isinstance(reason.get("count"), bool)
+            or attempt.get("outcome") != "ERROR"
+            or attempt.get("timed_out") is not False
+            or not _has_nonzero_process_disposition(attempt)
         ):
             raise MalformedRow(
-                f"cell attempt {index} infrastructure_error report omitted its reason"
+                f"cell attempt {index} infrastructure_error report or process disposition is incomplete"
             )
         return "errored"
     raise MalformedRow(f"cell attempt {index} has unknown verdict {verdict!r}")
@@ -903,6 +922,285 @@ def _cell_outcome(row: dict) -> str:
         for index, attempt in enumerate(attempts, 1)
     ]
     return projected
+
+
+def _cell_result_evidence_sha256(row: dict) -> str:
+    """Use the scorecard writer's stable identity for one retained CellResult."""
+    row = _normalise_cell_result_for_evidence(row)
+    evidence = {
+        key: row.get(key)
+        for key in (
+            "run_id",
+            "attempt",
+            "hermit_sha",
+            "binary_sha256",
+            "test_sha256",
+            "test",
+            "category",
+            "lane",
+            "mode",
+            "backend",
+            "classification",
+            "outcome",
+            "log_level",
+            "effective_args",
+            "argv",
+            "guest_argv",
+            "env",
+            "cwd",
+            "shell_command",
+            "relaxations",
+            "attempts",
+        )
+    }
+    # ResultRow's Rust type defaults an omitted timeout to zero before hashing,
+    # and serde_json writes Unicode as UTF-8 rather than ASCII escapes.
+    evidence["timeout_seconds"] = row.get("timeout_seconds", 0)
+    encoded = json.dumps(
+        evidence, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    )
+    return hashlib.sha256(encoded.encode()).hexdigest()
+
+
+def _rewrite_recorded_root(value: str, root: str) -> str:
+    """Rewrite producing-root path tokens without aliasing sibling paths."""
+    return _replace_evidence_root_token(value, root, RECORDED_ROOT)
+
+
+def _replace_evidence_root_token(value: str, old: str, new: str) -> str:
+    """Replace invocation path tokens, including option and PATH values."""
+    delimiters = "=,:;()[]{}<>\"'"
+
+    def delimiter(character: str) -> bool:
+        return character.isspace() or character in delimiters
+
+    start = 0
+    pieces = []
+    while True:
+        found = value.find(old, start)
+        if found < 0:
+            pieces.append(value[start:])
+            return "".join(pieces)
+        end = found + len(old)
+        preceding = value[found - 1 : found]
+        following = value[end : end + 1]
+        starts_at_boundary = not preceding or delimiter(preceding)
+        ends_at_boundary = (
+            not following or following == "/" or delimiter(following)
+        )
+        if starts_at_boundary and ends_at_boundary:
+            pieces.extend((value[start:found], new))
+            start = end
+        else:
+            pieces.append(value[start:end])
+            start = end
+
+
+def _rewrite_recorded_root_json(value: Any, root: str) -> Any:
+    if isinstance(value, str):
+        return _rewrite_recorded_root(value, root)
+    if isinstance(value, list):
+        return [_rewrite_recorded_root_json(item, root) for item in value]
+    if isinstance(value, dict):
+        return {
+            key: _rewrite_recorded_root_json(item, root)
+            for key, item in value.items()
+        }
+    return value
+
+
+def _recorded_shell_quote(value: str) -> str:
+    safe = "_@%+=:,./-"
+    if value and all(
+        character.isascii() and (character.isalnum() or character in safe)
+        for character in value
+    ):
+        return value
+    return "'" + value.replace("'", "'\"'\"'") + "'"
+
+
+def _literal_shell_command(cwd: str, env: dict[str, str], argv: list[str]) -> str:
+    words = ["cd", _recorded_shell_quote(cwd), "&&", "env"]
+    words.extend(
+        _recorded_shell_quote(f"{name}={value}")
+        for name, value in sorted(env.items())
+    )
+    words.extend(_recorded_shell_quote(argument) for argument in argv)
+    return " ".join(words)
+
+
+def _normalise_cell_result_for_evidence(row: dict) -> dict:
+    """Mirror scorecard ingestion before computing ResultRow evidence identity."""
+    row = copy.deepcopy(row)
+    root = row.get("cwd")
+    if (
+        not isinstance(root, str)
+        or not root
+        or root == RECORDED_ROOT
+        or not root.startswith("/")
+    ):
+        return row
+
+    for key in ("argv", "guest_argv", "effective_args"):
+        values = row.get(key)
+        if isinstance(values, list):
+            row[key] = [
+                _rewrite_recorded_root(value, root)
+                if isinstance(value, str)
+                else value
+                for value in values
+            ]
+    env = row.get("env")
+    if isinstance(env, dict):
+        row["env"] = {
+            name: _rewrite_recorded_root(value, root)
+            if isinstance(value, str)
+            else value
+            for name, value in env.items()
+        }
+    attempts = row.get("attempts")
+    if isinstance(attempts, list):
+        row["attempts"] = [
+            _rewrite_recorded_root_json(attempt, root)
+            for attempt in attempts
+        ]
+        for attempt in row["attempts"]:
+            if not isinstance(attempt, dict):
+                continue
+            attempt_cwd = attempt.get("cwd")
+            attempt_argv = attempt.get("argv")
+            attempt_env = attempt.get("env")
+            if (
+                isinstance(attempt_cwd, str)
+                and isinstance(attempt_argv, list)
+                and all(isinstance(value, str) for value in attempt_argv)
+                and isinstance(attempt_env, dict)
+                and all(
+                    isinstance(name, str) and isinstance(value, str)
+                    for name, value in attempt_env.items()
+                )
+            ):
+                attempt["shell_command"] = _literal_shell_command(
+                    attempt_cwd, attempt_env, attempt_argv
+                )
+    row["cwd"] = RECORDED_ROOT
+    top_env = row.get("env")
+    top_argv = row.get("argv")
+    if (
+        isinstance(top_env, dict)
+        and all(
+            isinstance(name, str) and isinstance(value, str)
+            for name, value in top_env.items()
+        )
+        and isinstance(top_argv, list)
+        and all(isinstance(value, str) for value in top_argv)
+    ):
+        row["shell_command"] = _literal_shell_command(
+            row["cwd"], top_env, top_argv
+        )
+    return row
+
+
+def _no_verdict_kind(attempt: dict, disposition: str) -> str:
+    """Name the producer-validated reason without reclassifying the result."""
+    raw = attempt.get("verification_report")
+    if raw is None:
+        if disposition != "timeout":
+            raise MalformedRow("only a typed timeout may omit its verification report")
+        return "missing_report_timeout"
+    report = json.loads(raw)
+    verdict = report.get("verdict")
+    if verdict == "no_result":
+        return report["no_result_reason"]["kind"]
+    if verdict == "infrastructure_error":
+        return "infrastructure_error"
+    if verdict in {"matched", "diverged"} and disposition == "no_result":
+        return {
+            "matched": "noncanonical_match",
+            "diverged": "noncanonical_divergence",
+        }[verdict]
+    raise MalformedRow(
+        f"typed {disposition} attempt has unsupported report verdict {verdict!r}"
+    )
+
+
+def _no_verdict_evidence(row: dict, projected_outcome: str) -> dict | None:
+    """Retain typed non-comparison dispositions without reconstructing one."""
+    mode = row.get("mode")
+    if mode not in _COMPARISON_MODES or projected_outcome not in {
+        "no_result", "timeout", "errored",
+    }:
+        return None
+    attempts = row.get("attempts")
+    if not isinstance(attempts, list) or not attempts:
+        raise MalformedRow("comparison cell result has no typed attempts")
+
+    dispositions = []
+    for ordinal, attempt in enumerate(attempts, 1):
+        kind = _typed_comparison_attempt(attempt, mode=mode, index=ordinal)
+        if kind in {"matched", "diverged"}:
+            continue
+        index = attempt.get("index")
+        if not isinstance(index, str) or not index.strip():
+            raise MalformedRow(
+                f"cell attempt {ordinal} has no nonempty typed index"
+            )
+        timed_out = attempt.get("timed_out")
+        if not isinstance(timed_out, bool):
+            raise MalformedRow(
+                f"cell attempt {ordinal} timed_out must be a bool"
+            )
+        error_kind = attempt.get("error_kind")
+        if error_kind is not None and (
+            not isinstance(error_kind, str) or not error_kind.strip()
+        ):
+            raise MalformedRow(
+                f"cell attempt {ordinal} error_kind must be nonempty or null"
+            )
+        status = attempt.get("status")
+        signal = attempt.get("signal")
+        for name, value, minimum in (("status", status, 0), ("signal", signal, 1)):
+            if value is not None and (
+                not isinstance(value, int)
+                or isinstance(value, bool)
+                or value < minimum
+            ):
+                raise MalformedRow(
+                    f"cell attempt {ordinal} {name} has invalid value {value!r}"
+                )
+        if status is not None and signal is not None:
+            raise MalformedRow(
+                f"cell attempt {ordinal} records both status and signal"
+            )
+        report_sha = attempt.get("verification_report_sha256")
+        if report_sha is not None and (
+            not isinstance(report_sha, str)
+            or re.fullmatch(r"[0-9a-f]{64}", report_sha) is None
+        ):
+            raise MalformedRow(
+                f"cell attempt {ordinal} has invalid verification report identity"
+            )
+        dispositions.append({
+            "index": index,
+            "kind": _no_verdict_kind(attempt, kind),
+            "attempt_outcome": attempt.get("outcome"),
+            "disposition": kind,
+            "error_kind": error_kind,
+            "status": status,
+            "signal": signal,
+            "timed_out": timed_out,
+            "verification_report_sha256": report_sha,
+        })
+    if not dispositions:
+        if projected_outcome == "errored" and row.get("result") == "crash-error":
+            return None
+        raise MalformedRow(
+            "non-comparison cell result has no typed no-verdict attempt"
+        )
+    return {
+        "evidence_sha256": _cell_result_evidence_sha256(row),
+        "attempts": dispositions,
+    }
 
 
 def _cell_name(row: dict) -> str:
@@ -1118,6 +1416,7 @@ def rows_from_cell_results(
     if ancestry is None:
         raise SeriesError(f"cannot resolve whether Hermit {tree} is on origin/main ancestry")
     depth = source_depths(parent, tree, hermit_checkout=source)
+    recorded_detcore_tree = None
 
     rows = []
     pressure_counts: dict[tuple[str, int], int] = {}
@@ -1188,12 +1487,14 @@ def rows_from_cell_results(
                     "pressure-test cell result attempt must be a positive int, "
                     f"got {attempt!r}"
                 )
+        projected_outcome = _cell_outcome(cell_result)
+        no_verdict_evidence = _no_verdict_evidence(cell_result, projected_outcome)
         payload = {
             "cell": _cell_name(cell_result),
             "tree": tree,
             "run_index": run_index,
             "num_runs": 1,
-            "outcome": _cell_outcome(cell_result),
+            "outcome": projected_outcome,
             "result": cell_result.get("result"),
             "failure_class": cell_result.get("failure_class"),
             "main_ancestry": ancestry,
@@ -1204,7 +1505,27 @@ def rows_from_cell_results(
             "kernel_version": kernel_version,
             "host_capabilities": host_capabilities,
         }
+        if no_verdict_evidence is not None:
+            # A validate result's run_index currently carries the outer attempt
+            # ordinal too, but naming it explicitly prevents collapse_rows from
+            # combining two equal retry rows and makes the identity unambiguous
+            # to readers that do not know producer-specific run_index rules.
+            payload["attempt"] = run_index if producer == "validate" else attempt
+            payload["no_verdict_evidence"] = no_verdict_evidence
         detcore_tree = cell_result.get("detcore_tree")
+        if detcore_tree is None and no_verdict_evidence is not None:
+            if recorded_detcore_tree is None:
+                resolved = _git(source, ["rev-parse", "--verify", f"{tree}:detcore"])
+                recorded_detcore_tree = resolved.stdout.strip()
+                if (
+                    resolved.returncode != 0
+                    or _SHA_RE.fullmatch(recorded_detcore_tree) is None
+                ):
+                    detail = resolved.stderr.strip() or resolved.stdout.strip() or "no output"
+                    raise SeriesError(
+                        f"cannot resolve Detcore tree recorded by Hermit {tree}: {detail}"
+                    )
+            detcore_tree = recorded_detcore_tree
         if detcore_tree is not None:
             if not isinstance(detcore_tree, str) or _SHA_RE.fullmatch(detcore_tree) is None:
                 raise MalformedRow(

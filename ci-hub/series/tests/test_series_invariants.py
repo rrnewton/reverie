@@ -905,6 +905,22 @@ class CellResultProjection(unittest.TestCase):
         subprocess.run(
             ["git", "-C", str(self.repo), "commit", "-qm", "one"], check=True,
         )
+        self.detcore_tree = subprocess.run(
+            ["git", "-C", str(self.repo), "rev-parse", "HEAD"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        subprocess.run(
+            [
+                "git", "-C", str(self.repo), "update-index", "--add", "--cacheinfo",
+                f"160000,{self.detcore_tree},detcore",
+            ],
+            check=True,
+        )
+        subprocess.run(
+            ["git", "-C", str(self.repo), "commit", "-qm", "record detcore"], check=True,
+        )
         self.tree = subprocess.run(
             ["git", "-C", str(self.repo), "rev-parse", "HEAD"],
             check=True,
@@ -1021,7 +1037,11 @@ class CellResultProjection(unittest.TestCase):
                 else "FAIL" if verdict == "diverged"
                 else "ERROR"
             ),
-            "error_kind": "incomplete-verification-evidence" if timed_out else None,
+            "error_kind": (
+                "incomplete-verification-evidence"
+                if timed_out or verdict == "no_result"
+                else None
+            ),
             "status": None if timed_out else (0 if verdict == "matched" else 1),
             "signal": 15 if timed_out else None,
             "timed_out": timed_out,
@@ -1108,6 +1128,22 @@ class CellResultProjection(unittest.TestCase):
         )
         cell.pop("run_index")
         cell["attempt"] = attempt
+        return cell
+
+    def _validate_no_verdict_cell(self, attempt, *, timed_out, backend):
+        cell = self._validate_cell(attempt, outcome="ERROR")
+        cell["backend"] = backend
+        cell["result"] = None
+        cell["failure_class"] = "no_result"
+        inner = self._attempt("no_result", timed_out=timed_out)
+        if not timed_out:
+            inner["error_kind"] = "incomplete-verification-evidence"
+            inner["status"] = 125
+        cell["attempts"] = [inner]
+        # The synthetic repository does not contain a Detcore gitlink. Real
+        # retained results omit this field and the producer resolves it from
+        # the immutable Hermit tree.
+        cell["detcore_tree"] = self.detcore_tree
         return cell
 
     def _diverged_cell(
@@ -1319,6 +1355,193 @@ class CellResultProjection(unittest.TestCase):
             ],
         )
 
+    def test_validate_no_verdict_rows_keep_attempt_and_typed_disposition(self):
+        timeout = self._validate_no_verdict_cell(
+            1, timed_out=True, backend="sabre"
+        )
+        root = "/tmp/fixture/hermit"
+        sibling = f"{root}-backup"
+        embedded = f"--hermit={root}/target/debug/hermit"
+        path_value = f"/usr/bin:{root}/bin"
+        interior = f"prefix{root}/target/debug/hermit"
+        timeout.update({
+            "cwd": root,
+            "argv": [
+                f"{root}/target/debug/hermit",
+                root,
+                embedded,
+                sibling,
+                interior,
+            ],
+            "guest_argv": [f"{root}/guest"],
+            "effective_args": [f"{root}/config", "π"],
+            "env": {
+                "HOME": f"{root}/home",
+                "PATH": path_value,
+                "SIBLING": sibling,
+                "INTERIOR": interior,
+            },
+            "shell_command": "stale",
+        })
+        timeout["attempts"][0].update({
+            "cwd": root,
+            "argv": [f"{root}/target/debug/hermit"],
+            "guest_argv": [f"{root}/guest"],
+            "env": {"HOME": f"{root}/home"},
+            "shell_command": "stale",
+        })
+        normalised = series._normalise_cell_result_for_evidence(timeout)
+        self.assertEqual(normalised["cwd"], series.RECORDED_ROOT)
+        self.assertEqual(
+            normalised["argv"][:2],
+            [f"{series.RECORDED_ROOT}/target/debug/hermit", series.RECORDED_ROOT],
+        )
+        self.assertEqual(
+            normalised["argv"][2],
+            f"--hermit={series.RECORDED_ROOT}/target/debug/hermit",
+        )
+        self.assertEqual(normalised["env"]["HOME"], f"{series.RECORDED_ROOT}/home")
+        self.assertEqual(
+            normalised["env"]["PATH"], f"/usr/bin:{series.RECORDED_ROOT}/bin"
+        )
+        self.assertEqual(normalised["argv"][3:], [sibling, interior])
+        self.assertEqual(normalised["env"]["SIBLING"], sibling)
+        self.assertEqual(normalised["env"]["INTERIOR"], interior)
+        self.assertEqual(
+            normalised["attempts"][0]["cwd"], series.RECORDED_ROOT
+        )
+        self.assertEqual(
+            normalised["attempts"][0]["shell_command"],
+            "cd /repo && env HOME=/repo/home /repo/target/debug/hermit",
+        )
+        encoded = json.dumps(normalised, sort_keys=True, ensure_ascii=False)
+        self.assertEqual(
+            series._replace_evidence_root_token(encoded, root, series.RECORDED_ROOT),
+            encoded,
+        )
+        utf8_contract = json.loads(json.dumps(timeout))
+        utf8_contract["hermit_sha"] = "a" * 40
+        self.assertEqual(
+            series._cell_result_evidence_sha256(utf8_contract),
+            "6de0ee5d7b0c18ed4cf1bbd2c41f1df75e7d688ec59995c86cf6250e7c0b3096",
+        )
+        unavailable = self._validate_no_verdict_cell(
+            2, timed_out=False, backend="kvm"
+        )
+        rows = series.rows_from_cell_results(
+            [timeout, unavailable],
+            parent=self.parent,
+            producer="validate",
+            run_id="validate-no-verdict",
+            tree=self.tree,
+            emitted_at="2026-08-30T20:00:00Z",
+        )
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(
+            sorted([
+                (
+                    row["series"]["run_index"],
+                    row["series"]["attempt"],
+                    row["series"]["no_verdict_evidence"]["attempts"][0]["kind"],
+                    row["series"]["no_verdict_evidence"]["attempts"][0]["attempt_outcome"],
+                    row["series"]["no_verdict_evidence"]["attempts"][0]["disposition"],
+                    row["series"]["no_verdict_evidence"]["attempts"][0]["timed_out"],
+                )
+                for row in rows
+            ]),
+            [
+                (1, 1, "not_run", "ERROR", "timeout", True),
+                (2, 2, "not_run", "ERROR", "no_result", False),
+            ],
+        )
+        by_attempt = {row["series"]["attempt"]: row for row in rows}
+        self.assertEqual(
+            by_attempt[1]["series"]["no_verdict_evidence"]["evidence_sha256"],
+            series._cell_result_evidence_sha256(timeout),
+        )
+        self.assertEqual(
+            by_attempt[2]["series"]["no_verdict_evidence"]["evidence_sha256"],
+            series._cell_result_evidence_sha256(unavailable),
+        )
+        self.assertNotEqual(rows[0]["event_id"], rows[1]["event_id"])
+        self.assertEqual(
+            [row["series"]["detcore_tree"] for row in rows],
+            [self.detcore_tree, self.detcore_tree],
+        )
+
+        noncanonical = self._validate_cell(3, outcome="ERROR")
+        noncanonical["result"] = None
+        noncanonical["failure_class"] = "no_result"
+        noncanonical["detcore_tree"] = self.detcore_tree
+        report = json.loads(noncanonical["attempts"][0]["verification_report"])
+        report["comparison"]["display_name"] = "Stripped"
+        raw = json.dumps(report, sort_keys=True, separators=(",", ":"))
+        noncanonical["attempts"][0]["verification_report"] = raw
+        noncanonical["attempts"][0]["verification_report_sha256"] = hashlib.sha256(
+            raw.encode()
+        ).hexdigest()
+        weak_row = series.rows_from_cell_results(
+            [noncanonical],
+            parent=self.parent,
+            producer="validate",
+            run_id="validate-noncanonical",
+            tree=self.tree,
+            emitted_at="2026-08-30T20:00:00Z",
+        )[0]
+        disposition = weak_row["series"]["no_verdict_evidence"]["attempts"][0]
+        self.assertEqual(disposition["kind"], "noncanonical_match")
+        self.assertEqual(disposition["attempt_outcome"], "PASS")
+        self.assertEqual(disposition["disposition"], "no_result")
+
+        passing = series.rows_from_cell_results(
+            [self._validate_cell(1)],
+            parent=self.parent,
+            producer="validate",
+            run_id="validate-pass",
+            tree=self.tree,
+            emitted_at="2026-08-30T20:00:00Z",
+        )[0]
+        self.assertNotIn("attempt", passing["series"])
+        self.assertNotIn("no_verdict_evidence", passing["series"])
+
+    def test_no_verdict_contradiction_refuses_the_batch(self):
+        contradictory = self._validate_no_verdict_cell(
+            1, timed_out=True, backend="sabre"
+        )
+        contradictory["outcome"] = "FAIL"
+        contradictory["result"] = "crash-error"
+        contradictory["failure_class"] = "product_failure"
+        with self.assertRaisesRegex(
+            series.MalformedRow,
+            "timed-out attempt disposition contradicts result",
+        ):
+            series.rows_from_cell_results(
+                [contradictory],
+                parent=self.parent,
+                producer="validate",
+                run_id="validate-contradiction",
+                tree=self.tree,
+                emitted_at="2026-08-30T20:00:00Z",
+            )
+
+        for status in (0, None):
+            incomplete = self._validate_no_verdict_cell(
+                1, timed_out=False, backend="kvm"
+            )
+            incomplete["attempts"][0]["status"] = status
+            with self.subTest(status=status), self.assertRaisesRegex(
+                series.MalformedRow,
+                "NotRun report has no complete process disposition",
+            ):
+                series.rows_from_cell_results(
+                    [incomplete],
+                    parent=self.parent,
+                    producer="validate",
+                    run_id="validate-incomplete-disposition",
+                    tree=self.tree,
+                    emitted_at="2026-08-30T20:00:00Z",
+                )
+
     def test_hermit_repeat_preserves_detcore_tree(self):
         import contextlib
         import io
@@ -1523,10 +1746,11 @@ class CellResultProjection(unittest.TestCase):
         all_match_fail = self._cell(0, outcome="FAIL")
         all_match_fail["result"] = "crash-error"
         all_match_fail["failure_class"] = "product_failure"
-        self.assertEqual(
-            self._project([all_match_fail])[0]["series"]["outcome"],
-            "errored",
-        )
+        with self.assertRaisesRegex(
+            series.MalformedRow,
+            "must carry no_verdict_evidence",
+        ):
+            self._project([all_match_fail])
 
         mixed_no_result = self._cell(0, outcome="ERROR")
         mixed_no_result["attempts"] = [matched, self._attempt("no_result")]
@@ -1640,7 +1864,7 @@ class CellResultProjection(unittest.TestCase):
             incomplete_timeout["attempts"][0].update(mutation)
             with self.subTest(label=label), self.assertRaisesRegex(
                 series.MalformedRow,
-                "timed-out no_result disposition is incomplete",
+                "NotRun report has no complete process disposition",
             ):
                 self._project([incomplete_timeout])
 
@@ -1659,10 +1883,11 @@ class CellResultProjection(unittest.TestCase):
         fixed_attempts = self._cell(0, outcome="FAIL")
         fixed_attempts["result"] = "crash-error"
         fixed_attempts["failure_class"] = "product_failure"
-        self.assertEqual(
-            self._project([fixed_attempts])[0]["series"]["outcome"],
-            "errored",
-        )
+        with self.assertRaisesRegex(
+            series.MalformedRow,
+            "must carry no_verdict_evidence",
+        ):
+            self._project([fixed_attempts])
         fixed_attempts["result"] = "determinism-failure"
         self.assertEqual(
             self._project([fixed_attempts])[0]["series"]["outcome"],

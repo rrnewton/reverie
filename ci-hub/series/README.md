@@ -94,6 +94,16 @@ cell-result file. New rows may carry `detcore_tree`, the object id required to
 create a scorecard observation keyed by Detcore tree. It is optional only so
 the already-published rows remain readable; a projection cannot invent it for
 an older row that omitted it.
+
+A new comparison-mode row that reached no canonical verdict carries
+`no_verdict_evidence`: the SHA-256 identity of the complete retained result row
+and the typed reason plus process disposition of each inner invocation that did
+not compare. Such rows also carry an explicit positive outer `attempt` and are
+never compressed.
+This is what lets the scorecard distinguish a producer-recorded timeout from an
+unavailable result such as KVM exit 125 without inferring from backend, duration,
+or exit code. Historical v3 rows predate the optional field and remain readable,
+but they cannot be projected as measured no-verdict evidence.
 `num_runs` defaults to one; a value greater than one represents that many
 exactly equal observations between `run_index` and `last_run_index`. Only wall
 time is folded as a minimum/maximum. Outcome, all four measured divergence
