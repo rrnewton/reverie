@@ -190,7 +190,11 @@ def _series_spool_snapshot(
     for path in sorted(root.glob("*.jsonl")):
         events = read_shard(path)
         try:
-            series_store.validate_rows(events)
+            # A spool batch was already written by its producer and may use a
+            # retained readable schema. Keep the current-write boundary in
+            # series.append_rows(); publication must not strand older pending
+            # batches merely because the writer has since advanced.
+            series_store.validate_read_rows(events)
         except series_store.SeriesError as error:
             raise PublishRefused(f"{path}: {error}") from error
         for event in events:
@@ -312,7 +316,11 @@ def stage_tracked(
 
 
 def merge_shard(
-    remote_text: str, events: Sequence[dict], *, store: str = "ledger"
+    remote_text: str,
+    events: Sequence[dict],
+    *,
+    store: str = "ledger",
+    read_events: bool = False,
 ) -> str:
     """Append-aware merge: published lines stay put, new events go after them.
 
@@ -325,7 +333,12 @@ def merge_shard(
         raise MalformedEvent("remote shard's final line is truncated; refusing to append")
     remote_events = [parse_line(line) for line in remote_lines]
     _validate_store_events(store, remote_events, f"remote {store} shard", read=True)
-    _validate_store_events(store, events, f"proposed {store} shard append")
+    _validate_store_events(
+        store,
+        events,
+        f"proposed {store} shard append",
+        read=read_events,
+    )
     have = {ln for ln in remote_lines}
     have_by_id: dict[str, dict] = {}
     for event in remote_events:
@@ -557,7 +570,7 @@ def publish(
     # rather than being written into shared history and linted afterwards.
     for (team, host, month), events in pending.items():
         rel = _store_shard(store, team, host, month)
-        _validate_store_events(store, events, rel)
+        _validate_store_events(store, events, rel, read=(store == "series"))
 
     last_error = ""
     for attempt in range(1, attempts + 1):
@@ -578,7 +591,12 @@ def publish(
             # attempt 2 saw its own leftover and reported 0 published.
             shown = _git(repo, "show", f"{remote}/{branch}:{rel}", check=False)
             remote_text = shown.stdout if shown.returncode == 0 else ""
-            merged = merge_shard(remote_text, events, store=store)
+            merged = merge_shard(
+                remote_text,
+                events,
+                store=store,
+                read_events=(store == "series"),
+            )
             violations = verify_append_only(remote_text, merged)
             if violations:
                 raise PublishRefused(f"{rel}: merge would violate append-only {violations}")

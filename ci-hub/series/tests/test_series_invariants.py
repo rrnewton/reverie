@@ -430,6 +430,29 @@ class StoreMechanics(unittest.TestCase):
         )
         self.assertEqual(len(merged.splitlines()), 2)
 
+    def test_publisher_reads_a_retained_v2_spool_that_the_current_writer_refuses(self):
+        import tempfile
+
+        retained = row(schema=series.HOST_FACTS_ENVELOPE_VERSION)
+        del retained["series"]["result"]
+        del retained["series"]["failure_class"]
+        with self.assertRaisesRegex(
+            series.MalformedRow, "new rows must use stress-series/v3"
+        ):
+            series.validate_rows([retained])
+
+        with tempfile.TemporaryDirectory() as temporary:
+            spool = Path(temporary)
+            batch = spool / "retained-v2.jsonl"
+            batch.write_text(json.dumps(retained, sort_keys=True) + "\n")
+            pending, files = publisher._series_spool_snapshot(spool)
+
+        self.assertEqual(files, [batch])
+        self.assertEqual(
+            pending[(retained["team"], retained["host"], "2026-08")],
+            [retained],
+        )
+
     def test_series_for_returns_repetitions_in_run_order(self):
         import tempfile
         rows = [
@@ -548,6 +571,63 @@ class Publication(unittest.TestCase):
                 "the query must read fetched parent main without moving the checkout",
             )
 
+    def test_publish_drains_a_retained_v2_spool_without_reopening_v2_writes(self):
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            bare = root / "origin.git"
+            producer = root / "producer"
+            publisher_clone = root / "publisher"
+            subprocess.run(
+                ["git", "init", "-q", "--bare", "-b", "main", str(bare)],
+                check=True,
+            )
+            subprocess.run(
+                ["git", "init", "-q", "-b", "main", str(producer)], check=True,
+            )
+            (producer / "README").write_text("series\n")
+            self._git(producer, "add", "README")
+            self._git(
+                producer,
+                "-c", "user.name=t",
+                "-c", "user.email=t@invalid",
+                "commit", "-q", "-m", "seed",
+            )
+            self._git(producer, "remote", "add", "origin", str(bare))
+            self._git(producer, "push", "-q", "origin", "main")
+            subprocess.run(
+                ["git", "clone", "-q", str(bare), str(publisher_clone)], check=True,
+            )
+
+            retained = row(schema=series.HOST_FACTS_ENVELOPE_VERSION)
+            del retained["series"]["result"]
+            del retained["series"]["failure_class"]
+            with self.assertRaisesRegex(
+                series.MalformedRow, "new rows must use stress-series/v3"
+            ):
+                series.validate_rows([retained])
+
+            spool = series.spool_dir(producer)
+            spool.mkdir(parents=True)
+            batch = spool / "retained-v2.jsonl"
+            batch.write_text(json.dumps(retained, sort_keys=True) + "\n")
+
+            report = publisher.publish(
+                publisher_clone,
+                spool,
+                source_root=producer,
+                store="series",
+            )
+            self.assertEqual(report["published"], 1)
+            self.assertFalse(batch.exists())
+            published = self._git(
+                publisher_clone,
+                "show",
+                "origin/main:series/hermit/devbig014/2026-08.jsonl",
+            )
+            parsed = json.loads(published)
+            self.assertEqual(series.validate_read_rows([parsed]), [retained])
     def test_published_snapshot_stays_on_one_commit_when_the_ref_moves(self):
         with tempfile.TemporaryDirectory() as temporary:
             repo = Path(temporary) / "parent"
