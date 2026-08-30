@@ -34,6 +34,7 @@ class FakeRun:
     def __init__(self, checkout: Path) -> None:
         self.checkout = checkout
         self.commands: list[list[str]] = []
+        self.command_cwds: list[tuple[list[str], Path | None]] = []
         self.dirty = ""
         self.admission_rc = 0
         self.herdr_status_rc = 0
@@ -97,8 +98,12 @@ class FakeRun:
             }
         }
 
-    def __call__(self, command: list[str], **_kwargs: object):
+    def __call__(self, command: list[str], **kwargs: object):
         self.commands.append(command)
+        cwd = kwargs.get("cwd")
+        self.command_cwds.append(
+            (command, cwd if isinstance(cwd, Path) else Path(cwd) if cwd else None)
+        )
         if command[0].endswith("ci-hub/bin/wrkslots") and "create" in command:
             slot = command[command.index("create") + 1]
             project_root = Path(command[command.index("--project-root") + 1])
@@ -496,6 +501,41 @@ class StartUnitTest(unittest.TestCase):
                 sleep=lambda _seconds: None,
             )
         return rc, out.getvalue(), err.getvalue()
+
+    def split_tool_root(self) -> Path:
+        tool_root = Path(f"{self.root}-tool")
+        self.addCleanup(shutil.rmtree, tool_root, True)
+        for relative in (
+            "ci-hub/ci-hub",
+            "ci-hub/ledger/validate_rows.py",
+            "hermit/agent-utils/rs/dagrun/Cargo.toml",
+        ):
+            path = tool_root / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(f"tool fixture: {relative}\n")
+        return tool_root
+
+    @staticmethod
+    def tree_bytes(root: Path) -> dict[str, bytes]:
+        return {
+            str(path.relative_to(root)): path.read_bytes()
+            for path in root.rglob("*")
+            if path.is_file()
+        }
+
+    def assert_canonical_readers_use_split_roots(self, tool_root: Path) -> None:
+        readers = [
+            (command, cwd)
+            for command, cwd in self.fake.command_cwds
+            if command[1:3] == ["validate-status", "--sha"]
+            or (len(command) >= 2 and command[-2].endswith("validate_rows.py"))
+        ]
+        self.assertEqual(2, len(readers))
+        self.assertEqual(str(tool_root / "ci-hub/ci-hub"), readers[0][0][0])
+        self.assertEqual(
+            str(tool_root / "ci-hub/ledger/validate_rows.py"), readers[1][0][-2]
+        )
+        self.assertEqual([self.root, self.root], [cwd for _, cwd in readers])
 
     def removed_temporary_paths(self) -> list[Path]:
         return [
@@ -2042,6 +2082,119 @@ class StartUnitTest(unittest.TestCase):
         ]
         self.assertEqual(["status", "identity", "remove"], kinds)
         self.assertEqual([str(self.fake.fresh)], self.fake.removed)
+
+    @mock.patch.object(start_unit.pane_owner, "create_pane", return_value=None)
+    def test_post_run_uses_tool_root_readers_with_state_root_authority(
+        self, _create_pane: mock.Mock
+    ) -> None:
+        tool_root = self.split_tool_root()
+        tool_before = self.tree_bytes(tool_root)
+        self.assertFalse(
+            (self.checkout / "agent-utils/rs/dagrun/Cargo.toml").exists()
+        )
+
+        out = io.StringIO()
+        err = io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = start_unit.main(
+                [
+                    "--checkout",
+                    str(self.checkout),
+                    "--state-root",
+                    str(self.root),
+                    "--agent",
+                    "hermit-test",
+                    "--target",
+                    SHA,
+                    "--unit",
+                    "validate-split-root",
+                    "--",
+                    "full",
+                ],
+                run=self.fake,
+                environment=self.environment,
+                root=tool_root,
+                sleep=lambda _seconds: None,
+            )
+
+        self.assertEqual(0, rc, err.getvalue())
+        self.assert_canonical_readers_use_split_roots(tool_root)
+        self.assertTrue(
+            (self.root / "ignored/validate/runs/validate-split-root.json").is_file()
+        )
+        self.assertFalse((self.root / "ci-hub/ci-hub").exists())
+        self.assertFalse((self.root / "ci-hub/ledger/validate_rows.py").exists())
+        self.assertEqual(tool_before, self.tree_bytes(tool_root))
+
+    def test_attach_recovers_unknown_run_via_tool_root_readers_and_state_ledger(
+        self,
+    ) -> None:
+        tool_root = self.split_tool_root()
+        tool_before = self.tree_bytes(tool_root)
+        fresh = self.root / "worktrees/validate/validate-fresh-run1563"
+        self.fake.fresh = fresh
+        self.fake._materialize_fresh_checkout()
+        record = self.root / "ignored/validate/runs/validate-run1563.json"
+        start_unit.run_registry.write_record(
+            record,
+            {
+                "schema_version": 1,
+                "state": "unknown",
+                "result": "unknown",
+                "unit": "validate-run1563.service",
+                "target": SHA,
+                "repo": "rrnewton/hermit",
+                "checkout": str(fresh),
+                "source_checkout": str(self.checkout),
+                "temporary_checkout": True,
+                "e2e_result_root": str(
+                    self.plant_per_cell_results("validate-run1563")
+                ),
+                "log": str(self.root / "run1563.log"),
+                "started_at": "2099-01-01T00:00:00Z",
+            },
+        )
+        self.assertFalse(
+            (self.checkout / "agent-utils/rs/dagrun/Cargo.toml").exists()
+        )
+
+        out = io.StringIO()
+        err = io.StringIO()
+        with (
+            contextlib.redirect_stdout(out),
+            contextlib.redirect_stderr(err),
+            mock.patch.object(
+                start_unit, "path_may_have_live_process", return_value=False
+            ),
+        ):
+            rc = start_unit.main(
+                [
+                    "--state-root",
+                    str(self.root),
+                    "--attach",
+                    "validate-run1563",
+                ],
+                run=self.fake,
+                environment=self.environment,
+                root=tool_root,
+                sleep=lambda _seconds: None,
+            )
+
+        self.assertEqual(0, rc, err.getvalue())
+        self.assertIn("verdict=VALIDATED exit=0", out.getvalue())
+        self.assert_canonical_readers_use_split_roots(tool_root)
+        self.assertFalse(
+            any(command[0] == "systemd-run" for command in self.fake.commands)
+        )
+        self.assertTrue(
+            any(
+                command[0] == str(tool_root / "ci-hub/bin/wrkslots")
+                and "remove" in command
+                for command in self.fake.commands
+            )
+        )
+        self.assertFalse(fresh.exists())
+        self.assertEqual(tool_before, self.tree_bytes(tool_root))
 
     def test_cleanup_uses_wrkslots_even_when_source_is_missing(self) -> None:
         fresh = self.root / "worktrees/validate/validate-fresh-source-gone"

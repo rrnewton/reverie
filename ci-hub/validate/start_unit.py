@@ -1568,13 +1568,14 @@ def remove_private_cargo_home(private: Path | None, *, run: Runner) -> None:
 
 
 def assert_row_readable_from_canonical_ledger(
-    root: Path,
+    state_root: Path,
     target: str,
     cwd: Path,
     run_started_at: str,
     *,
     repo: str,
     run: Runner,
+    tool_root: Path,
 ) -> tuple[str, str, int]:
     """REQUIREMENT (a). Fail unless this run's exact row is readable canonically.
 
@@ -1596,11 +1597,15 @@ def assert_row_readable_from_canonical_ledger(
     commit and checkout alone could be an older run of the same SHA. A
     VALIDATED verdict additionally has to select that exact row as its newest
     canonical qualifying receipt; an older green cannot bless a new empty run.
+
+    Executables come from ``tool_root``. Their working directory remains the
+    canonical ``state_root`` so the ledger, live spool, and receipt authority
+    stay attached to the shared parent even when its Hermit checkout is absent.
     """
     handle_start = parse_utc_timestamp(run_started_at, role="validate-run handle")
     status = run(
         [
-            str(root / "ci-hub/ci-hub"),
+            str(tool_root / "ci-hub/ci-hub"),
             "validate-status",
             "--sha",
             target,
@@ -1608,7 +1613,7 @@ def assert_row_readable_from_canonical_ledger(
             repo,
             "--json",
         ],
-        cwd=root,
+        cwd=state_root,
         check=False,
     )
     try:
@@ -1651,8 +1656,12 @@ def assert_row_readable_from_canonical_ledger(
     # Re-read identity through the exact canonical-union adapter used by
     # validate-status; do not reconstruct a second pass/fail predicate here.
     rows = run(
-        [sys.executable, str(root / "ci-hub/ledger/validate_rows.py"), "rows"],
-        cwd=root,
+        [
+            sys.executable,
+            str(tool_root / "ci-hub/ledger/validate_rows.py"),
+            "rows",
+        ],
+        cwd=state_root,
         check=False,
     )
     if rows.returncode != 0:
@@ -2569,7 +2578,13 @@ def attach(
         run_started_at = str(record["started_at"])
         repo = canonical_repo(str(record.get("repo", "rrnewton/hermit")))
         row, canonical_verdict, canonical_exit = assert_row_readable_from_canonical_ledger(
-            root, target, checkout, run_started_at, repo=repo, run=run
+            root,
+            target,
+            checkout,
+            run_started_at,
+            repo=repo,
+            run=run,
+            tool_root=tool_root,
         )
     except (KeyError, RuntimeError, ValueError) as error:
         cleanup_after_attach(
@@ -3345,7 +3360,13 @@ def main(
     # invisible-green failure this gate exists to make impossible.
     try:
         row, canonical_verdict, canonical_exit = assert_row_readable_from_canonical_ledger(
-            state_root, args.target, checkout, started_at, repo=repo, run=run
+            state_root,
+            args.target,
+            checkout,
+            started_at,
+            repo=repo,
+            run=run,
+            tool_root=tool_root,
         )
     except RuntimeError as error:
         # THE INNER RUN'S REASON OUTRANKS THE MISSING ROW. If validate refused,
