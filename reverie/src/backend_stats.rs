@@ -69,6 +69,82 @@ pub trait BackendStatsSource {
     fn backend_stats(&self) -> Self::Snapshot;
 }
 
+macro_rules! liteinst_dispatch_paths {
+    ($(#[$doc:meta] $variant:ident => $name:literal),+ $(,)?) => {
+        /// A dispatch or installation path taken by a LiteInst runtime.
+        ///
+        /// This enum is owned by the common statistics API so the ptrace-host
+        /// collector, the in-guest report, and the public snapshot cannot assign
+        /// different meanings to the same array position. Serialization uses the
+        /// stable field name, not the enum ordinal, so inserting a variant cannot
+        /// relabel every following value on the RPC path.
+        #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+        pub enum LiteinstDispatchPath {
+            $(#[$doc] $variant),+
+        }
+
+        impl LiteinstDispatchPath {
+            /// Every dispatch path in the stable display order.
+            pub const ALL: &'static [Self] = &[$(Self::$variant),+];
+
+            /// Stable field name used in the human-readable statistics line.
+            pub const fn as_str(self) -> &'static str {
+                match self {
+                    $(Self::$variant => $name),+
+                }
+            }
+        }
+
+        impl fmt::Display for LiteinstDispatchPath {
+            fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str(self.as_str())
+            }
+        }
+
+        impl Serialize for LiteinstDispatchPath {
+            fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+            where
+                S: serde::Serializer,
+            {
+                serializer.serialize_str(self.as_str())
+            }
+        }
+
+        impl<'de> Deserialize<'de> for LiteinstDispatchPath {
+            fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+            where
+                D: serde::Deserializer<'de>,
+            {
+                let name = String::deserialize(deserializer)?;
+                match name.as_str() {
+                    $($name => Ok(Self::$variant)),+,
+                    _ => Err(serde::de::Error::unknown_variant(
+                        &name,
+                        &[$($name),+],
+                    )),
+                }
+            }
+        }
+    };
+}
+
+liteinst_dispatch_paths! {
+    /// A ptrace `Event::Seccomp` at a previously unseen site.
+    FirstSiteSeccomp => "first_site_seccomp",
+    /// A successful stopped-tracee patch installation performed through ptrace.
+    PtraceInstallation => "ptrace_installation",
+    /// An actual in-guest `SIGSYS` entered the patch dispatcher.
+    InGuestSigsys => "in_guest_sigsys",
+    /// An actual in-guest `SIGSYS` was forwarded while a Tool callback was active.
+    InGuestNestedSigsys => "in_guest_nested_sigsys",
+    /// A cache-line-straddling site that retained the ptrace fallback.
+    CachelineStraddlerFallback => "cacheline_straddler",
+    /// An unpatchable or otherwise rejected site that retained the ptrace fallback.
+    UnpatchableOrOtherFallback => "unpatchable_or_other",
+    /// A patched-site callback that returned to the ptrace-host Tool through SIGTRAP.
+    DirectHook => "direct_hook",
+}
+
 /// Decoded shape of one candidate patch site.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct InstructionPatchShape {
@@ -244,6 +320,15 @@ impl<K: Ord> CounterSnapshot<K> {
         &self.counts
     }
 
+    /// Returns the count for one named key, or zero when it was not observed.
+    pub fn count(&self, key: &K) -> u64 {
+        self.counts
+            .binary_search_by(|(candidate, _)| candidate.cmp(key))
+            .ok()
+            .map(|index| self.counts[index].1)
+            .unwrap_or(0)
+    }
+
     /// Returns the sum of all counters.
     pub fn total(&self) -> u64 {
         self.counts.iter().map(|(_, count)| count).sum()
@@ -351,6 +436,8 @@ mod tests {
         let snapshot = CounterSnapshot::new([(Path::Slow, 2), (Path::Fast, 7), (Path::Slow, 3)]);
 
         assert_eq!(snapshot.counts(), &[(Path::Fast, 7), (Path::Slow, 5)]);
+        assert_eq!(snapshot.count(&Path::Fast), 7);
+        assert_eq!(snapshot.count(&Path::Slow), 5);
         assert_eq!(snapshot.total(), 12);
     }
 

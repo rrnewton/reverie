@@ -15,6 +15,7 @@ use reverie::syscalls::Syscall;
 use reverie::syscalls::SyscallInfo;
 use reverie::syscalls::Sysno;
 use reverie_liteinst::LiteinstBackend;
+use reverie_liteinst::LiteinstDispatchPath;
 
 const RPC_GETPID: u64 = 1;
 const RPC_FORK: u64 = 4;
@@ -210,8 +211,14 @@ async fn in_guest_run_reports_typed_instrumentation_stats() {
     assert!(stats.distinct_rips() >= 1, "{stats}");
     assert!(stats.patch_candidates() >= 1, "{stats}");
     let paths = stats.dispatch_path_counts();
-    assert!(paths[2] >= 1, "expected an in-guest SIGSYS: {stats}");
-    assert!(paths[6] >= 8, "expected installed-hook dispatches: {stats}");
+    assert!(
+        paths.count(&LiteinstDispatchPath::InGuestSigsys) >= 1,
+        "expected an in-guest SIGSYS: {stats}"
+    );
+    assert!(
+        paths.count(&LiteinstDispatchPath::DirectHook) >= 8,
+        "expected installed-hook dispatches: {stats}"
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]
