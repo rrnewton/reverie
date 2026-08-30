@@ -19,7 +19,10 @@ set -uo pipefail
 ROOT="${HOME:?HOME must be set}/work/dev-hermit"
 FIRED_STATE="$ROOT/.tick-hub/fired-state"
 INVLOG="$HOME/.local/state/hermit-health-tick-invocations.log"
-TOOL_CACHE="${HERMIT_HEALTH_TOOL_CACHE:-$HOME/.local/state/hermit-health-tool}"
+TOOL_CACHE="${DEV_HERMIT_TOOL_CACHE:-${HERMIT_HEALTH_TOOL_CACHE:-$HOME/.local/state/hermit-health-tool}}"
+CANONICAL_REPOSITORY="rrnewton/dev-hermit"
+CANONICAL_REMOTE_URL="https://github.com/rrnewton/dev-hermit.git"
+GIT_TRANSPORT_ALLOWLIST="https"
 
 ts() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 
@@ -46,6 +49,13 @@ def git(repo: Path, *args: str) -> bytes:
     }
     environment["GIT_CONFIG_NOSYSTEM"] = "1"
     environment["GIT_CONFIG_GLOBAL"] = os.devnull
+    parts = repo.parts
+    pass_fds: tuple[int, ...] = ()
+    if len(parts) >= 5 and parts[:4] == ("/", "proc", "self", "fd"):
+        try:
+            pass_fds = (int(parts[4]),)
+        except ValueError as error:
+            raise InvalidCheckout(f"invalid retained-directory path {repo}") from error
     try:
         result = subprocess.run(
             ["git", "--no-replace-objects", "-C", str(repo), *args],
@@ -53,6 +63,7 @@ def git(repo: Path, *args: str) -> bytes:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             env=environment,
+            pass_fds=pass_fds,
         )
     except OSError as error:
         raise InvalidCheckout(f"cannot run git in {repo}: {error}") from error
@@ -147,6 +158,11 @@ def verify_repo(
         elif mode in {"100644", "100755"} and kind == "blob":
             if not stat.S_ISREG(metadata.st_mode):
                 raise InvalidCheckout(f"{label} tracked file {relative!r} changed type")
+            if metadata.st_nlink != 1:
+                raise InvalidCheckout(
+                    f"{label} tracked file {relative!r} has link count "
+                    f"{metadata.st_nlink}, expected 1"
+                )
             executable = bool(metadata.st_mode & 0o111)
             if executable != (mode == "100755"):
                 raise InvalidCheckout(f"{label} tracked file {relative!r} changed executable mode")
@@ -205,7 +221,9 @@ def verify_repo(
 
 
 try:
-    root = Path(sys.argv[1]).resolve(strict=True)
+    root = Path(sys.argv[1])
+    if not root.is_absolute() or not root.is_dir():
+        raise InvalidCheckout(f"tool root is not an absolute directory: {root}")
     parent_expected = sys.argv[2]
     hermit_expected = verify_repo(root, parent_expected, "parent", "hermit")
     if hermit_expected is None:
@@ -229,77 +247,1049 @@ except (InvalidCheckout, OSError) as error:
 PY
 }
 
-TOOL_CACHE_STAGING=""
-TOOL_RUN_ROOT=""
+TOOL_STAGING_ROOT=""
+TOOL_STAGING_ENTRY_NAME=""
+TOOL_STAGING_IDENTITY=""
+TOOL_STAGING_HOLDER_PID=""
+TOOL_STAGING_HOLDER_WAIT_PID=""
+TOOL_STAGING_HOLDER_CONTROL_FD=""
+TOOL_STAGING_HOLDER_OUTPUT_FD=""
+TOOL_STAGING_MAY_BE_PUBLISHED=0
 TOOL_ROOT_RESULT=""
+TOOL_CACHE_FD=""
+TOOL_TREES_FD=""
+TOOL_TARGET_ROOT=""
+TOOL_RUN_ROOT=""
+TOOL_RUN_ENTRY_NAME=""
+TOOL_HOLDER_PID=""
+TOOL_HOLDER_WAIT_PID=""
+TOOL_HOLDER_CONTROL_FD=""
+TOOL_HOLDER_OUTPUT_FD=""
 
 cleanup_tool_roots() {
-    local rc=$? path
+    local rc=$?
     trap - EXIT INT TERM
-    for path in "$TOOL_CACHE_STAGING" "$TOOL_RUN_ROOT"; do
-        [[ -n $path ]] || continue
-        case $path in
-            "$TOOL_CACHE"/.staging.*|"$TOOL_CACHE"/.run.*)
-                if ! chmod -R u+w -- "$path" 2>/dev/null; then
-                    printf 'health-tick: could not make temporary tool root removable: %s\n' "$path" >&2
-                    [[ $rc -ne 0 ]] || rc=1
-                    continue
-                fi
-                if ! rm -rf -- "$path"; then
-                    printf 'health-tick: could not remove temporary tool root: %s\n' "$path" >&2
-                    [[ $rc -ne 0 ]] || rc=1
-                fi
-                ;;
-            *)
-                printf 'health-tick: refusing unsafe temporary cleanup path %s\n' "$path" >&2
+    if [[ -n $TOOL_HOLDER_PID ]]; then
+        local entry_matched_before=0 holder_status="" holder_ready_to_release=0
+        if [[ -n $TOOL_RUN_ENTRY_NAME ]] && held_directory_entry_matches \
+            "$TOOL_CACHE_FD" "$TOOL_RUN_ENTRY_NAME" "$TOOL_RUN_ROOT"; then
+            entry_matched_before=1
+        fi
+        if [[ -n $TOOL_HOLDER_CONTROL_FD ]]; then
+            if ! printf 'cleanup\n' >&"$TOOL_HOLDER_CONTROL_FD"; then
                 [[ $rc -ne 0 ]] || rc=1
-                ;;
-        esac
-    done
+            fi
+        fi
+        if [[ -n $TOOL_HOLDER_OUTPUT_FD ]] && \
+           read -r holder_status <&"$TOOL_HOLDER_OUTPUT_FD" && \
+           [[ $holder_status == cleaned ]]; then
+            holder_ready_to_release=1
+        else
+            printf 'operational-tool: could not clear retained private tool root\n' >&2
+            [[ $rc -ne 0 ]] || rc=1
+        fi
+        # There is no Linux rmdir-by-directory-fd operation. Deleting this
+        # pathname after an inode comparison would recreate a compare/delete
+        # race and could recursively remove a same-name replacement. Leave the
+        # now-empty retained directory in the cache; the next invocation reuses
+        # it under an exclusive flock. A changed entry is preserved verbatim.
+        if [[ $entry_matched_before -ne 1 ]] || \
+           ! held_directory_entry_matches \
+               "$TOOL_CACHE_FD" "$TOOL_RUN_ENTRY_NAME" "$TOOL_RUN_ROOT"; then
+            printf 'operational-tool: private tool root entry changed; preserving it and the held directory\n' >&2
+            [[ $rc -ne 0 ]] || rc=1
+        fi
+        if [[ $holder_ready_to_release -eq 1 && -n $TOOL_HOLDER_CONTROL_FD ]]; then
+            if ! printf 'release\n' >&"$TOOL_HOLDER_CONTROL_FD"; then
+                [[ $rc -ne 0 ]] || rc=1
+            fi
+            exec {TOOL_HOLDER_CONTROL_FD}>&-
+            TOOL_HOLDER_CONTROL_FD=""
+        fi
+        if [[ -n $TOOL_HOLDER_CONTROL_FD ]]; then
+            exec {TOOL_HOLDER_CONTROL_FD}>&-
+            TOOL_HOLDER_CONTROL_FD=""
+        fi
+        if [[ -n $TOOL_HOLDER_WAIT_PID ]] && ! wait "$TOOL_HOLDER_WAIT_PID"; then
+            [[ $rc -ne 0 ]] || rc=1
+        fi
+        [[ -z $TOOL_HOLDER_OUTPUT_FD ]] || exec {TOOL_HOLDER_OUTPUT_FD}<&-
+    fi
+    if [[ -n $TOOL_STAGING_HOLDER_PID ]]; then
+        local staging_action=cleanup
+        [[ $TOOL_STAGING_MAY_BE_PUBLISHED -eq 0 ]] || staging_action=release
+        if ! stop_staging_holder "$staging_action"; then
+            printf 'operational-tool: could not safely release retained staging root\n' >&2
+            [[ $rc -ne 0 ]] || rc=1
+        fi
+    fi
+    [[ -z $TOOL_TREES_FD ]] || exec {TOOL_TREES_FD}<&-
+    [[ -z $TOOL_CACHE_FD ]] || exec {TOOL_CACHE_FD}<&-
     exit "$rc"
 }
 
+stop_staging_holder() {
+    local action=$1 holder_status="" rc=0
+    [[ -n $TOOL_STAGING_HOLDER_PID ]] || return 0
+    if [[ -n $TOOL_STAGING_HOLDER_CONTROL_FD ]]; then
+        if ! printf '%s\n' "$action" >&"$TOOL_STAGING_HOLDER_CONTROL_FD"; then
+            rc=1
+        fi
+    fi
+    if [[ $action == cleanup ]]; then
+        if [[ -n $TOOL_STAGING_HOLDER_OUTPUT_FD ]] && \
+           read -r holder_status <&"$TOOL_STAGING_HOLDER_OUTPUT_FD" && \
+           [[ $holder_status == cleaned ]]; then
+            if ! printf 'release\n' >&"$TOOL_STAGING_HOLDER_CONTROL_FD"; then
+                rc=1
+            fi
+        else
+            rc=1
+        fi
+    fi
+    [[ -z $TOOL_STAGING_HOLDER_CONTROL_FD ]] || \
+        exec {TOOL_STAGING_HOLDER_CONTROL_FD}>&-
+    if [[ -n $TOOL_STAGING_HOLDER_WAIT_PID ]] && \
+       ! wait "$TOOL_STAGING_HOLDER_WAIT_PID"; then
+        rc=1
+    fi
+    [[ -z $TOOL_STAGING_HOLDER_OUTPUT_FD ]] || \
+        exec {TOOL_STAGING_HOLDER_OUTPUT_FD}<&-
+    TOOL_STAGING_ROOT=""
+    TOOL_STAGING_ENTRY_NAME=""
+    TOOL_STAGING_IDENTITY=""
+    TOOL_STAGING_HOLDER_PID=""
+    TOOL_STAGING_HOLDER_WAIT_PID=""
+    TOOL_STAGING_HOLDER_CONTROL_FD=""
+    TOOL_STAGING_HOLDER_OUTPUT_FD=""
+    TOOL_STAGING_MAY_BE_PUBLISHED=0
+    return "$rc"
+}
+
+held_directory_entry_matches() {
+    PYTHONDONTWRITEBYTECODE=1 python3 - "$1" "$2" "$3" <<'PY'
+import os
+import stat
+import sys
+
+
+parent_fd = int(sys.argv[1])
+name = sys.argv[2]
+held_path = sys.argv[3]
+try:
+    held = os.stat(held_path)
+    current = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+except OSError:
+    raise SystemExit(1)
+if (
+    not stat.S_ISDIR(held.st_mode)
+    or not stat.S_ISDIR(current.st_mode)
+    or held.st_nlink < 1
+    or current.st_nlink < 1
+    or (held.st_dev, held.st_ino) != (current.st_dev, current.st_ino)
+):
+    raise SystemExit(1)
+PY
+}
+
+mark_held_tree_read_only() {
+    PYTHONDONTWRITEBYTECODE=1 python3 - "$1" "${2:-}" <<'PY'
+import os
+import stat
+import sys
+
+
+root_path = sys.argv[1]
+expected_identity = sys.argv[2]
+
+
+def identity(metadata: os.stat_result) -> tuple[int, int]:
+    return metadata.st_dev, metadata.st_ino
+
+
+def list_directory(fd: int) -> list[str]:
+    scan_fd = os.open(
+        ".",
+        os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+        dir_fd=fd,
+    )
+    try:
+        return sorted(os.listdir(scan_fd))
+    finally:
+        os.close(scan_fd)
+
+
+def freeze_directory(fd: int, display: str) -> None:
+    directory = os.fstat(fd)
+    if not stat.S_ISDIR(directory.st_mode) or directory.st_nlink < 1:
+        raise RuntimeError(f"held tool directory changed at {display}")
+
+    # Remove write permission from the directory before inspecting children so
+    # another process using its pathname cannot replace an entry between the
+    # identity check and the descriptor-based chmod below.
+    os.fchmod(fd, 0o555)
+    for name in list_directory(fd):
+        before = os.stat(name, dir_fd=fd, follow_symlinks=False)
+        child_display = f"{display}/{name}"
+        if stat.S_ISLNK(before.st_mode):
+            # chmod must never follow a tracked or internal symlink.
+            continue
+        flags = os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW
+        if stat.S_ISDIR(before.st_mode):
+            child_fd = os.open(name, flags | os.O_DIRECTORY, dir_fd=fd)
+            try:
+                held = os.fstat(child_fd)
+                if not stat.S_ISDIR(held.st_mode) or identity(held) != identity(before):
+                    raise RuntimeError(
+                        f"tool directory changed before read-only marking: {child_display}"
+                    )
+                freeze_directory(child_fd, child_display)
+                after = os.stat(name, dir_fd=fd, follow_symlinks=False)
+                if identity(after) != identity(held):
+                    raise RuntimeError(
+                        f"tool directory changed during read-only marking: {child_display}"
+                    )
+            finally:
+                os.close(child_fd)
+        elif stat.S_ISREG(before.st_mode):
+            child_fd = os.open(name, flags, dir_fd=fd)
+            try:
+                held = os.fstat(child_fd)
+                if not stat.S_ISREG(held.st_mode) or identity(held) != identity(before):
+                    raise RuntimeError(
+                        f"tool file changed before read-only marking: {child_display}"
+                    )
+                # Local clones may hard-link already-read-only Git object files.
+                # Never chmod a writable multiply-linked inode: doing so would
+                # mutate content outside this retained tree through the other link.
+                if held.st_nlink != 1 and held.st_mode & 0o222:
+                    raise RuntimeError(
+                        f"writable tool file has link count {held.st_nlink}: {child_display}"
+                    )
+                if held.st_mode & 0o222:
+                    os.fchmod(child_fd, stat.S_IMODE(held.st_mode) & ~0o222)
+                after = os.stat(name, dir_fd=fd, follow_symlinks=False)
+                held_after = os.fstat(child_fd)
+                if identity(after) != identity(held_after):
+                    raise RuntimeError(
+                        f"tool file changed during read-only marking: {child_display}"
+                    )
+            finally:
+                os.close(child_fd)
+        else:
+            raise RuntimeError(f"unsupported tool entry type at {child_display}")
+
+
+try:
+    # root_path is a process-owned /proc/<pid>/fd/<n> capability produced by a
+    # holder we just started. Following that one constructed procfs link obtains
+    # a descriptor for the retained inode; traversal below is entirely dirfd-
+    # relative and never follows a directory-entry symlink.
+    root_fd = os.open(root_path, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    try:
+        root = os.fstat(root_fd)
+        observed_identity = f"{root.st_dev}:{root.st_ino}"
+        if (
+            not stat.S_ISDIR(root.st_mode)
+            or root.st_nlink < 1
+            or (expected_identity and observed_identity != expected_identity)
+        ):
+            raise RuntimeError("retained tool root changed before read-only marking")
+        freeze_directory(root_fd, root_path)
+        final = os.fstat(root_fd)
+        if identity(final) != identity(root):
+            raise RuntimeError("retained tool root changed during read-only marking")
+    finally:
+        os.close(root_fd)
+except (OSError, RuntimeError) as error:
+    print(f"operational-tool: could not mark retained tool root read-only: {error}", file=sys.stderr)
+    raise SystemExit(1) from error
+PY
+}
+
+ensure_directory_without_symlinks() {
+    PYTHONDONTWRITEBYTECODE=1 python3 - "$1" <<'PY'
+import errno
+import os
+from pathlib import Path
+import sys
+
+
+path = Path(sys.argv[1])
+if not path.is_absolute():
+    print(f"operational-tool: cache path is not absolute: {path}", file=sys.stderr)
+    raise SystemExit(1)
+
+fd = os.open("/", os.O_RDONLY | os.O_DIRECTORY)
+try:
+    for component in path.parts[1:]:
+        try:
+            os.mkdir(component, mode=0o700, dir_fd=fd)
+        except FileExistsError:
+            pass
+        try:
+            next_fd = os.open(
+                component,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                dir_fd=fd,
+            )
+        except OSError as error:
+            if error.errno in (errno.ELOOP, errno.ENOTDIR):
+                print(
+                    f"operational-tool: cache path component is not a real directory: {path}",
+                    file=sys.stderr,
+                )
+                raise SystemExit(1) from error
+            raise
+        os.close(fd)
+        fd = next_fd
+finally:
+    os.close(fd)
+PY
+}
+
+open_cache_layout() {
+    ensure_directory_without_symlinks "$TOOL_CACHE" || return 1
+    ensure_directory_without_symlinks "$TOOL_CACHE/trees" || return 1
+
+    exec {TOOL_CACHE_FD}<"$TOOL_CACHE" || return 1
+    if [[ -L $TOOL_CACHE ]] || \
+       [[ $(readlink -f "/proc/self/fd/$TOOL_CACHE_FD") != "$TOOL_CACHE" ]]; then
+        printf 'operational-tool: cache root changed during no-follow open\n' >&2
+        return 1
+    fi
+    exec {TOOL_TREES_FD}<"/proc/self/fd/$TOOL_CACHE_FD/trees" || return 1
+    if [[ -L /proc/self/fd/$TOOL_CACHE_FD/trees ]] || \
+       [[ $(readlink -f "/proc/self/fd/$TOOL_TREES_FD") != "$TOOL_CACHE/trees" ]]; then
+        printf 'operational-tool: cache trees directory changed during no-follow open\n' >&2
+        return 1
+    fi
+
+    ensure_materialize_lock || return 1
+    local lock_path="/proc/self/fd/$TOOL_CACHE_FD/materialize.lock"
+    exec 8<"$lock_path" || return 1
+    if ! verify_materialize_lock_identity opened; then
+        exec 8<&-
+        return 1
+    fi
+}
+
+ensure_materialize_lock() {
+    PYTHONDONTWRITEBYTECODE=1 python3 - "$TOOL_CACHE_FD" <<'PY'
+import errno
+import os
+import stat
+import sys
+
+
+cache_fd = int(sys.argv[1])
+flags = os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW
+try:
+    lock_fd = os.open("materialize.lock", flags | os.O_CREAT | os.O_EXCL, 0o600, dir_fd=cache_fd)
+except FileExistsError:
+    try:
+        lock_fd = os.open("materialize.lock", flags, dir_fd=cache_fd)
+    except OSError as error:
+        if error.errno == errno.ELOOP:
+            print("operational-tool: materialize lock must not be a symlink", file=sys.stderr)
+        else:
+            print(f"operational-tool: materialize lock cannot be opened safely: {error}", file=sys.stderr)
+        raise SystemExit(1) from error
+except OSError as error:
+    print(f"operational-tool: could not safely create materialize lock: {error}", file=sys.stderr)
+    raise SystemExit(1) from error
+
+try:
+    metadata = os.fstat(lock_fd)
+    if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
+        print("operational-tool: materialize lock must be one regular file", file=sys.stderr)
+        raise SystemExit(1)
+finally:
+    os.close(lock_fd)
+PY
+}
+
+verify_materialize_lock_identity() {
+    PYTHONDONTWRITEBYTECODE=1 python3 - "$TOOL_CACHE_FD" 8 "$TOOL_CACHE" "$1" <<'PY'
+import os
+import stat
+import sys
+
+
+cache_fd = int(sys.argv[1])
+locked_fd = int(sys.argv[2])
+expected_path = os.path.join(sys.argv[3], "materialize.lock")
+phase = sys.argv[4]
+flags = os.O_RDONLY | os.O_CLOEXEC | os.O_NOFOLLOW
+try:
+    current_fd = os.open("materialize.lock", flags, dir_fd=cache_fd)
+except OSError as error:
+    print(
+        f"operational-tool: materialize lock changed after it was {phase}: {error}",
+        file=sys.stderr,
+    )
+    raise SystemExit(1) from error
+
+try:
+    locked = os.fstat(locked_fd)
+    current = os.fstat(current_fd)
+    path_metadata = os.stat(
+        "materialize.lock", dir_fd=cache_fd, follow_symlinks=False
+    )
+    locked_path = os.readlink(f"/proc/self/fd/{locked_fd}")
+    current_path = os.readlink(f"/proc/self/fd/{current_fd}")
+    identity = (locked.st_dev, locked.st_ino)
+    if (
+        not stat.S_ISREG(locked.st_mode)
+        or not stat.S_ISREG(current.st_mode)
+        or not stat.S_ISREG(path_metadata.st_mode)
+        or locked.st_nlink != 1
+        or current.st_nlink != 1
+        or path_metadata.st_nlink != 1
+        or identity != (current.st_dev, current.st_ino)
+        or identity != (path_metadata.st_dev, path_metadata.st_ino)
+        or locked_path != expected_path
+        or current_path != expected_path
+    ):
+        print(
+            f"operational-tool: materialize lock changed after it was {phase}",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
+finally:
+    os.close(current_fd)
+PY
+}
+
+start_staging_root_holder() {
+    local holder_pid staging_fd staging_name staging_identity
+    coproc TOOL_STAGING_HOLDER {
+        trap '' TERM INT HUP
+        exec env PYTHONDONTWRITEBYTECODE=1 python3 /dev/fd/3 \
+            "$TOOL_TREES_FD" "$TOOL_CACHE/trees" 3<<'PY'
+import fcntl
+import os
+import re
+import secrets
+import signal
+import stat
+import sys
+
+
+trees_fd = int(sys.argv[1])
+trees_path = sys.argv[2]
+
+# A systemd user unit uses KillMode=control-group by default.  The wrapper and
+# its payload must receive termination, but these descriptor holders are the
+# cleanup authority and must live long enough to answer the wrapper's EXIT
+# handshake after the payload has stopped.  Pipe EOF still ends a holder if the
+# wrapper itself is killed without running its trap.
+for termination_signal in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+    signal.signal(termination_signal, signal.SIG_IGN)
+
+
+def list_directory(fd: int) -> list[str]:
+    scan_fd = os.open(
+        ".",
+        os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+        dir_fd=fd,
+    )
+    try:
+        return os.listdir(scan_fd)
+    finally:
+        os.close(scan_fd)
+
+
+def directory_is_reusable(fd: int, name: str) -> bool:
+    try:
+        held = os.fstat(fd)
+        current = os.stat(name, dir_fd=trees_fd, follow_symlinks=False)
+        return (
+            stat.S_ISDIR(held.st_mode)
+            and stat.S_ISDIR(current.st_mode)
+            and held.st_nlink >= 1
+            and current.st_nlink >= 1
+            and (held.st_dev, held.st_ino) == (current.st_dev, current.st_ino)
+            and os.readlink(f"/proc/self/fd/{fd}") == os.path.join(trees_path, name)
+        )
+    except OSError:
+        return False
+
+
+def acquire_staging_directory() -> tuple[int, str]:
+    for name in sorted(list_directory(trees_fd)):
+        if re.fullmatch(r"\.staging\.[0-9a-f]{16}", name) is None:
+            continue
+        try:
+            fd = os.open(
+                name,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                dir_fd=trees_fd,
+            )
+        except OSError:
+            continue
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            os.close(fd)
+            continue
+        if directory_is_reusable(fd, name):
+            try:
+                clear_directory(fd)
+                if list_directory(fd):
+                    raise RuntimeError("retained staging root was not emptied for reuse")
+            except (OSError, RuntimeError):
+                os.close(fd)
+                raise
+            return fd, name
+        os.close(fd)
+
+    for _attempt in range(100):
+        name = f".staging.{secrets.token_hex(8)}"
+        try:
+            os.mkdir(name, mode=0o700, dir_fd=trees_fd)
+        except FileExistsError:
+            continue
+        created = os.stat(name, dir_fd=trees_fd, follow_symlinks=False)
+        fd = os.open(
+            name,
+            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+            dir_fd=trees_fd,
+        )
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        held = os.fstat(fd)
+        if (
+            not stat.S_ISDIR(created.st_mode)
+            or (created.st_dev, created.st_ino) != (held.st_dev, held.st_ino)
+            or not directory_is_reusable(fd, name)
+        ):
+            os.close(fd)
+            raise RuntimeError("new staging root changed before descriptor retention")
+        return fd, name
+    raise RuntimeError("could not allocate a staging root")
+
+
+def clear_directory(fd: int) -> None:
+    metadata = os.fstat(fd)
+    os.fchmod(fd, metadata.st_mode | stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR)
+    for name in list_directory(fd):
+        current = os.stat(name, dir_fd=fd, follow_symlinks=False)
+        if stat.S_ISDIR(current.st_mode):
+            child_fd = os.open(
+                name,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                dir_fd=fd,
+            )
+            try:
+                child = os.fstat(child_fd)
+                if (child.st_dev, child.st_ino) != (current.st_dev, current.st_ino):
+                    raise RuntimeError(f"staging directory changed during cleanup: {name}")
+                clear_directory(child_fd)
+                current = os.stat(name, dir_fd=fd, follow_symlinks=False)
+                if (child.st_dev, child.st_ino) != (current.st_dev, current.st_ino):
+                    raise RuntimeError(f"staging directory changed during cleanup: {name}")
+                os.rmdir(name, dir_fd=fd)
+            finally:
+                os.close(child_fd)
+        else:
+            os.unlink(name, dir_fd=fd)
+
+
+try:
+    staging_fd, staging_name = acquire_staging_directory()
+except (OSError, RuntimeError) as error:
+    print(f"operational-tool: {error}", file=sys.stderr)
+    raise SystemExit(1) from error
+
+staging = os.fstat(staging_fd)
+print(
+    os.getpid(),
+    staging_fd,
+    staging_name,
+    f"{staging.st_dev}:{staging.st_ino}",
+    flush=True,
+)
+try:
+    command = sys.stdin.buffer.readline()
+    if command == b"cleanup\n":
+        clear_directory(staging_fd)
+        if list_directory(staging_fd):
+            raise RuntimeError("retained staging root was not emptied")
+        print("cleaned", flush=True)
+        if sys.stdin.buffer.readline() != b"release\n":
+            raise RuntimeError("staging root holder received no release command")
+    elif command not in {b"", b"release\n"}:
+        raise RuntimeError("staging root holder received an invalid command")
+except (OSError, RuntimeError) as error:
+    print(f"operational-tool: {error}", file=sys.stderr)
+    raise SystemExit(1) from error
+finally:
+    os.close(staging_fd)
+PY
+    }
+    TOOL_STAGING_HOLDER_WAIT_PID=$TOOL_STAGING_HOLDER_PID
+    TOOL_STAGING_HOLDER_OUTPUT_FD=${TOOL_STAGING_HOLDER[0]}
+    TOOL_STAGING_HOLDER_CONTROL_FD=${TOOL_STAGING_HOLDER[1]}
+    if ! read -r holder_pid staging_fd staging_name staging_identity \
+        <&"$TOOL_STAGING_HOLDER_OUTPUT_FD"; then
+        exec {TOOL_STAGING_HOLDER_CONTROL_FD}>&-
+        wait "$TOOL_STAGING_HOLDER_WAIT_PID" || true
+        exec {TOOL_STAGING_HOLDER_OUTPUT_FD}<&-
+        TOOL_STAGING_HOLDER_WAIT_PID=""
+        TOOL_STAGING_HOLDER_CONTROL_FD=""
+        TOOL_STAGING_HOLDER_OUTPUT_FD=""
+        return 1
+    fi
+    if [[ ! $holder_pid =~ ^[0-9]+$ || ! $staging_fd =~ ^[0-9]+$ || \
+          ! $staging_name =~ ^\.staging\.[0-9a-f]{16}$ || \
+          ! $staging_identity =~ ^[0-9]+:[0-9]+$ ]]; then
+        printf 'operational-tool: staging holder returned malformed descriptor authority\n' >&2
+        exec {TOOL_STAGING_HOLDER_CONTROL_FD}>&-
+        wait "$TOOL_STAGING_HOLDER_WAIT_PID" || true
+        exec {TOOL_STAGING_HOLDER_OUTPUT_FD}<&-
+        TOOL_STAGING_HOLDER_WAIT_PID=""
+        TOOL_STAGING_HOLDER_CONTROL_FD=""
+        TOOL_STAGING_HOLDER_OUTPUT_FD=""
+        return 1
+    fi
+    TOOL_STAGING_HOLDER_PID=$holder_pid
+    TOOL_STAGING_ROOT="/proc/$holder_pid/fd/$staging_fd"
+    TOOL_STAGING_ENTRY_NAME=$staging_name
+    TOOL_STAGING_IDENTITY=$staging_identity
+    TOOL_STAGING_MAY_BE_PUBLISHED=0
+}
+
+start_tool_root_holder() {
+    local target_name=$1 target_identity=$2
+    local holder_pid target_fd run_fd run_name
+    coproc TOOL_ROOT_HOLDER {
+        trap '' TERM INT HUP
+        exec env PYTHONDONTWRITEBYTECODE=1 python3 /dev/fd/3 \
+            "$TOOL_TREES_FD" "$TOOL_CACHE_FD" \
+            "$target_name" "$target_identity" \
+            "$TOOL_CACHE/trees/$target_name" "$TOOL_CACHE" 3<<'PY'
+import fcntl
+import os
+import re
+import secrets
+import signal
+import stat
+import sys
+
+
+trees_fd = int(sys.argv[1])
+cache_fd = int(sys.argv[2])
+target_name = sys.argv[3]
+target_identity = sys.argv[4]
+target_path = sys.argv[5]
+cache_path = sys.argv[6]
+
+# The service manager terminates the complete unit cgroup.  Keep the two
+# retained directory descriptors alive across that broadcast so the wrapper,
+# after its foreground payload is terminal, can still clear the exact private
+# inode through the control pipe.  This holder remains bounded by that pipe and
+# by the unit cgroup; SIGKILL is intentionally not intercepted.
+for termination_signal in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+    signal.signal(termination_signal, signal.SIG_IGN)
+
+
+def open_held_directory(
+    parent_fd: int,
+    name: str,
+    expected_identity: str,
+    expected_path: str,
+    label: str,
+) -> int:
+    if not name or "/" in name or name in {".", ".."}:
+        raise RuntimeError(f"unsafe {label} directory name {name!r}")
+    fd = os.open(
+        name,
+        os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+        dir_fd=parent_fd,
+    )
+    held = os.fstat(fd)
+    current = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+    identity = f"{held.st_dev}:{held.st_ino}"
+    if (
+        not stat.S_ISDIR(held.st_mode)
+        or not stat.S_ISDIR(current.st_mode)
+        or held.st_nlink < 1
+        or current.st_nlink < 1
+        or (held.st_dev, held.st_ino) != (current.st_dev, current.st_ino)
+        or (expected_identity and identity != expected_identity)
+        or os.readlink(f"/proc/self/fd/{fd}") != expected_path
+    ):
+        os.close(fd)
+        raise RuntimeError(f"{label} directory changed before its descriptor was retained")
+    return fd
+
+
+def list_directory(fd: int) -> list[str]:
+    scan_fd = os.open(
+        ".",
+        os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+        dir_fd=fd,
+    )
+    try:
+        return os.listdir(scan_fd)
+    finally:
+        os.close(scan_fd)
+
+
+def run_directory_is_reusable(fd: int, name: str) -> bool:
+    try:
+        held = os.fstat(fd)
+        current = os.stat(name, dir_fd=cache_fd, follow_symlinks=False)
+        return (
+            stat.S_ISDIR(held.st_mode)
+            and stat.S_ISDIR(current.st_mode)
+            and held.st_nlink >= 1
+            and current.st_nlink >= 1
+            and (held.st_dev, held.st_ino) == (current.st_dev, current.st_ino)
+            and os.readlink(f"/proc/self/fd/{fd}") == os.path.join(cache_path, name)
+            and not list_directory(fd)
+        )
+    except OSError:
+        return False
+
+
+def acquire_run_directory() -> tuple[int, str]:
+    for name in sorted(list_directory(cache_fd)):
+        if re.fullmatch(r"\.run\.[0-9a-f]{16}", name) is None:
+            continue
+        try:
+            fd = os.open(
+                name,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                dir_fd=cache_fd,
+            )
+        except OSError:
+            continue
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            os.close(fd)
+            continue
+        if run_directory_is_reusable(fd, name):
+            os.fchmod(fd, 0o700)
+            return fd, name
+        os.close(fd)
+
+    for _attempt in range(100):
+        name = f".run.{secrets.token_hex(8)}"
+        try:
+            os.mkdir(name, mode=0o700, dir_fd=cache_fd)
+        except FileExistsError:
+            continue
+        fd = os.open(
+            name,
+            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+            dir_fd=cache_fd,
+        )
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        if not run_directory_is_reusable(fd, name):
+            os.close(fd)
+            raise RuntimeError("new private tool root changed before use")
+        return fd, name
+    raise RuntimeError("could not allocate a private tool root")
+
+
+def clear_directory(fd: int) -> None:
+    metadata = os.fstat(fd)
+    os.fchmod(fd, metadata.st_mode | stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR)
+    for name in list_directory(fd):
+        current = os.stat(name, dir_fd=fd, follow_symlinks=False)
+        if stat.S_ISDIR(current.st_mode):
+            child_fd = os.open(
+                name,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                dir_fd=fd,
+            )
+            try:
+                child = os.fstat(child_fd)
+                if (child.st_dev, child.st_ino) != (current.st_dev, current.st_ino):
+                    raise RuntimeError(f"private tool directory changed during cleanup: {name}")
+                clear_directory(child_fd)
+                current = os.stat(name, dir_fd=fd, follow_symlinks=False)
+                if (child.st_dev, child.st_ino) != (current.st_dev, current.st_ino):
+                    raise RuntimeError(f"private tool directory changed during cleanup: {name}")
+                os.rmdir(name, dir_fd=fd)
+            finally:
+                os.close(child_fd)
+        else:
+            os.unlink(name, dir_fd=fd)
+
+
+try:
+    target_fd = open_held_directory(
+        trees_fd, target_name, target_identity, target_path, "cached tool root"
+    )
+    run_fd, run_name = acquire_run_directory()
+except (OSError, RuntimeError) as error:
+    print(f"operational-tool: {error}", file=sys.stderr)
+    raise SystemExit(1) from error
+
+print(os.getpid(), target_fd, run_fd, run_name, flush=True)
+try:
+    command = sys.stdin.buffer.readline()
+    if command != b"cleanup\n":
+        raise RuntimeError("private tool root holder received no cleanup command")
+    clear_directory(run_fd)
+    if list_directory(run_fd):
+        raise RuntimeError("private tool root was not emptied")
+    print("cleaned", flush=True)
+    if sys.stdin.buffer.readline() != b"release\n":
+        raise RuntimeError("private tool root holder received no release command")
+except (OSError, RuntimeError) as error:
+    print(f"operational-tool: {error}", file=sys.stderr)
+    raise SystemExit(1) from error
+finally:
+    os.close(run_fd)
+    os.close(target_fd)
+PY
+    }
+    TOOL_HOLDER_WAIT_PID=$TOOL_ROOT_HOLDER_PID
+    TOOL_HOLDER_OUTPUT_FD=${TOOL_ROOT_HOLDER[0]}
+    TOOL_HOLDER_CONTROL_FD=${TOOL_ROOT_HOLDER[1]}
+    if ! read -r holder_pid target_fd run_fd run_name <&"$TOOL_HOLDER_OUTPUT_FD"; then
+        exec {TOOL_HOLDER_CONTROL_FD}>&-
+        wait "$TOOL_HOLDER_WAIT_PID" || true
+        exec {TOOL_HOLDER_OUTPUT_FD}<&-
+        TOOL_HOLDER_WAIT_PID=""
+        TOOL_HOLDER_CONTROL_FD=""
+        TOOL_HOLDER_OUTPUT_FD=""
+        return 1
+    fi
+    if [[ ! $holder_pid =~ ^[0-9]+$ || ! $target_fd =~ ^[0-9]+$ || \
+          ! $run_fd =~ ^[0-9]+$ || ! $run_name =~ ^\.run\.[0-9a-f]+$ ]]; then
+        printf 'operational-tool: directory holder returned malformed descriptor authority\n' >&2
+        exec {TOOL_HOLDER_CONTROL_FD}>&-
+        wait "$TOOL_HOLDER_WAIT_PID" || true
+        exec {TOOL_HOLDER_OUTPUT_FD}<&-
+        TOOL_HOLDER_WAIT_PID=""
+        TOOL_HOLDER_CONTROL_FD=""
+        TOOL_HOLDER_OUTPUT_FD=""
+        return 1
+    fi
+    TOOL_HOLDER_PID=$holder_pid
+    TOOL_TARGET_ROOT="/proc/$holder_pid/fd/$target_fd"
+    TOOL_RUN_ROOT="/proc/$holder_pid/fd/$run_fd"
+    TOOL_RUN_ENTRY_NAME=$run_name
+}
+
+publish_staging_no_replace() {
+    PYTHONDONTWRITEBYTECODE=1 python3 - \
+        "$TOOL_TREES_FD" "$TOOL_CACHE/trees" "$1" \
+        "$2" "$3" "$4" <<'PY'
+import ctypes
+import errno
+import os
+import platform
+import stat
+import sys
+
+
+trees_fd = int(sys.argv[1])
+trees_path = sys.argv[2]
+staging_path = sys.argv[3]
+staging_name = sys.argv[4]
+target_name = sys.argv[5]
+expected_identity = sys.argv[6]
+if any(not name or "/" in name or name in {".", ".."} for name in (staging_name, target_name)):
+    print("operational-tool: unsafe cache publication name", file=sys.stderr)
+    raise SystemExit(1)
+
+published = False
+source_fd = -1
+try:
+    # staging_path is the holder-owned /proc/<pid>/fd/<n> capability. Open that
+    # exact retained inode locally, then compare the visible trees/ entry before
+    # using its name in the same-parent RENAME_NOREPLACE operation.
+    source_fd = os.open(
+        staging_path,
+        os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC,
+    )
+    source = os.fstat(source_fd)
+    current = os.stat(staging_name, dir_fd=trees_fd, follow_symlinks=False)
+    if (
+        not stat.S_ISDIR(source.st_mode)
+        or not stat.S_ISDIR(current.st_mode)
+        or source.st_nlink < 1
+        or current.st_nlink < 1
+        or f"{source.st_dev}:{source.st_ino}" != expected_identity
+        or (source.st_dev, source.st_ino) != (current.st_dev, current.st_ino)
+        or os.readlink(staging_path) != os.path.join(trees_path, staging_name)
+    ):
+        raise RuntimeError("staging directory changed before publication")
+
+    if platform.machine() not in {"x86_64", "amd64"}:
+        raise RuntimeError(
+            "x86_64 renameat2 is required for no-replace cache publication"
+        )
+    libc = ctypes.CDLL(None, use_errno=True)
+    if libc.syscall(
+        316,  # SYS_renameat2 on x86_64, the only supported Hermit host architecture.
+        trees_fd,
+        os.fsencode(staging_name),
+        trees_fd,
+        os.fsencode(target_name),
+        1,  # RENAME_NOREPLACE
+    ) != 0:
+        error = ctypes.get_errno()
+        if error == errno.EEXIST:
+            raise SystemExit(17)
+        raise RuntimeError(
+            f"no-replace cache publication failed: {os.strerror(error)}"
+        )
+    published = True
+
+    try:
+        os.stat(staging_name, dir_fd=trees_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        pass
+    else:
+        raise RuntimeError("successful cache publication left staging unconsumed")
+    target_fd = os.open(
+        target_name,
+        os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+        dir_fd=trees_fd,
+    )
+    try:
+        target = os.fstat(target_fd)
+        if (
+            (source.st_dev, source.st_ino) != (target.st_dev, target.st_ino)
+            or os.readlink(staging_path) != os.path.join(trees_path, target_name)
+        ):
+            raise RuntimeError("published cache target does not match staging inode")
+    finally:
+        os.close(target_fd)
+except (OSError, RuntimeError) as error:
+    print(f"operational-tool: retained staging publication failed: {error}", file=sys.stderr)
+    # Once renameat2 succeeds, the retained inode is the published cache root.
+    # A caller must never treat it as disposable staging again, even when a
+    # later identity/readback check fails.
+    raise SystemExit(18 if published else 1) from error
+finally:
+    if source_fd >= 0:
+        os.close(source_fd)
+PY
+}
+
+run_git() {
+    local network=0 name
+    if [[ ${1:-} == --network ]]; then
+        network=1
+        shift
+    fi
+    if [[ ${1:-} != -C || $# -lt 3 ]]; then
+        printf 'operational-tool: internal Git call lacks an explicit working directory\n' >&2
+        return 2
+    fi
+    local -a clean_env=(env)
+    # Git's environment variables can redirect the index, object database,
+    # repository, worktree, hooks, or config. None is executable authority for
+    # this bootstrap; the versioned transport allowlist below is the sole
+    # exception and is supplied after every inherited GIT_* value is removed.
+    while IFS= read -r name; do
+        [[ $name == GIT_* ]] && clean_env+=(-u "$name")
+    done < <(compgen -e)
+    clean_env+=(
+        GIT_ALLOW_PROTOCOL="$GIT_TRANSPORT_ALLOWLIST"
+        GIT_CONFIG_NOSYSTEM=1
+        GIT_CONFIG_GLOBAL=/dev/null
+        GIT_CEILING_DIRECTORIES="$TOOL_CACHE"
+        GIT_TERMINAL_PROMPT=0
+    )
+    if [[ $network -eq 1 ]]; then
+        "${clean_env[@]}" with-proxy git --no-replace-objects "$@"
+    else
+        "${clean_env[@]}" git --no-replace-objects "$@"
+    fi
+}
+
+normalize_github_remote() {
+    local url=$1 path
+    case "$url" in
+        https://github.com/*) path=${url#https://github.com/} ;;
+        git@github.com:*) path=${url#git@github.com:} ;;
+        ssh://git@github.com/*) path=${url#ssh://git@github.com/} ;;
+        *) return 1 ;;
+    esac
+    path=${path%.git}
+    [[ $path =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || return 1
+    printf '%s\n' "$path"
+}
+
 materialize_current_tool_root() {
-    local remote_url remote_listing sha target hermit_pin agent_utils_pin
-    mkdir -p "$TOOL_CACHE/trees" || return 1
-    exec 8>"$TOOL_CACHE/materialize.lock" || return 1
+    local requested_sha=${1:-}
+    local configured_remote configured_repository remote_listing sha target hermit_pin agent_utils_pin
+    local cache_anchor trees_anchor staging_anchor
+    local target_identity="" publish_rc
+    open_cache_layout || return 1
+    cache_anchor="/proc/self/fd/$TOOL_CACHE_FD"
+    trees_anchor="/proc/self/fd/$TOOL_TREES_FD"
     flock -w "${HERMIT_HEALTH_TOOL_LOCK_TIMEOUT:-120}" 8 || {
         printf 'health-tick: timed out waiting for current-tool materialization lock\n' >&2
         return 1
     }
-    remote_url=$(git -C "$ROOT" remote get-url origin 2>/dev/null) || {
-        printf 'health-tick: state root has no readable origin URL\n' >&2
-        return 1
-    }
-    remote_listing=$(with-proxy git ls-remote --heads "$remote_url" refs/heads/main) || {
-        printf 'health-tick: cannot resolve current origin/main\n' >&2
-        return 1
-    }
-    sha=$(printf '%s\n' "$remote_listing" | awk '$2 == "refs/heads/main" && $1 ~ /^[0-9a-f]{40}$/ { print $1 }')
-    if [[ ! $sha =~ ^[0-9a-f]{40}$ ]] || [[ $(printf '%s\n' "$sha" | wc -l) -ne 1 ]]; then
-        printf 'health-tick: origin/main did not resolve to exactly one commit\n' >&2
-        return 1
-    fi
-    target="$TOOL_CACHE/trees/$sha"
-    if [[ -e $target ]]; then
-        tool_root_is_complete "$target" "$sha" || {
-            printf 'health-tick: cached tool root %s is incomplete or dirty; refusing to repair it in place\n' "$target" >&2
+    # The pathname may have been renamed and replaced while flock was blocked.
+    # Re-open it no-follow through the held cache dirfd and prove that the path,
+    # locked descriptor, inode, device, and link count still name one file.
+    verify_materialize_lock_identity locked || return 1
+    if [[ -n $requested_sha ]]; then
+        if [[ ! $requested_sha =~ ^[0-9a-f]{40}$ ]]; then
+            printf 'operational-tool: --tool-parent-sha must be one full lowercase commit SHA\n' >&2
+            return 2
+        fi
+        sha=$requested_sha
+    else
+        configured_remote=$(run_git -C "$ROOT" config --get remote.origin.url 2>/dev/null) || {
+            printf 'health-tick: state root has no readable origin URL\n' >&2
             return 1
         }
-    else
-        TOOL_CACHE_STAGING=$(mktemp -d "$TOOL_CACHE/.staging.XXXXXX") || return 1
-        if ! with-proxy git clone --quiet --no-checkout "$remote_url" "$TOOL_CACHE_STAGING"; then
+        configured_repository=$(normalize_github_remote "$configured_remote" 2>/dev/null || true)
+        if [[ $configured_remote != "$CANONICAL_REMOTE_URL" && \
+              $configured_repository != "$CANONICAL_REPOSITORY" ]]; then
+            printf 'health-tick: state root origin is %s, expected canonical %s; refusing mutable remote authority\n' \
+                "$configured_remote" "$CANONICAL_REPOSITORY" >&2
+            return 1
+        fi
+        remote_listing=$(run_git --network -C "$cache_anchor" ls-remote --heads \
+            "$CANONICAL_REMOTE_URL" refs/heads/main) || {
+            printf 'health-tick: cannot resolve current origin/main\n' >&2
+            return 1
+        }
+        sha=$(printf '%s\n' "$remote_listing" | awk '$2 == "refs/heads/main" && $1 ~ /^[0-9a-f]{40}$/ { print $1 }')
+        if [[ ! $sha =~ ^[0-9a-f]{40}$ ]] || [[ $(printf '%s\n' "$sha" | wc -l) -ne 1 ]]; then
+            printf 'health-tick: origin/main did not resolve to exactly one commit\n' >&2
+            return 1
+        fi
+    fi
+    target="$trees_anchor/$sha"
+    if [[ -L $target ]]; then
+        printf 'health-tick: cached tool root %s is a symlink; refusing it\n' "$sha" >&2
+        return 1
+    elif [[ ! -e $target && -n $requested_sha ]]; then
+        printf 'operational-tool: exact cached tool root %s is absent; refusing to fetch a different authority\n' \
+            "$sha" >&2
+        return 1
+    elif [[ ! -e $target ]]; then
+        start_staging_root_holder || return 1
+        staging_anchor=$TOOL_STAGING_ROOT
+        if ! run_git --network -C "$cache_anchor" clone --quiet --no-checkout \
+            "$CANONICAL_REMOTE_URL" "$staging_anchor"; then
             printf 'health-tick: could not clone current parent tooling\n' >&2
             return 1
         fi
-        if ! git -C "$TOOL_CACHE_STAGING" cat-file -e "$sha^{commit}" 2>/dev/null; then
-            with-proxy git -C "$TOOL_CACHE_STAGING" fetch --quiet --no-tags origin "$sha" || {
+        if ! run_git -C "$staging_anchor" cat-file -e "$sha^{commit}" 2>/dev/null; then
+            run_git --network -C "$staging_anchor" fetch --quiet --no-tags \
+                "$CANONICAL_REMOTE_URL" "$sha" || {
                 printf 'health-tick: could not fetch exact origin/main commit %s\n' "$sha" >&2
                 return 1
             }
         fi
-        git -C "$TOOL_CACHE_STAGING" checkout --quiet --detach "$sha" || return 1
-        hermit_pin=$(git --no-replace-objects -C "$TOOL_CACHE_STAGING" \
+        run_git -C "$staging_anchor" checkout --quiet --detach "$sha" || return 1
+        hermit_pin=$(run_git -C "$staging_anchor" \
             ls-tree "$sha" -- hermit \
             | awk '$1 == "160000" && $2 == "commit" { print $3 }')
         if [[ ! $hermit_pin =~ ^[0-9a-f]{40}$ ]]; then
@@ -307,9 +1297,10 @@ materialize_current_tool_root() {
                 "$sha" >&2
             return 1
         fi
-        with-proxy git -C "$TOOL_CACHE_STAGING" submodule update --init --checkout --depth 1 -- hermit \
+        run_git --network -C "$staging_anchor" submodule update \
+            --init --checkout --depth 1 -- hermit \
             || return 1
-        agent_utils_pin=$(git --no-replace-objects -C "$TOOL_CACHE_STAGING/hermit" \
+        agent_utils_pin=$(run_git -C "$staging_anchor/hermit" \
             ls-tree "$hermit_pin" -- agent-utils \
             | awk '$1 == "160000" && $2 == "commit" { print $3 }')
         if [[ ! $agent_utils_pin =~ ^[0-9a-f]{40}$ ]]; then
@@ -317,23 +1308,72 @@ materialize_current_tool_root() {
                 "$hermit_pin" >&2
             return 1
         fi
-        with-proxy git -C "$TOOL_CACHE_STAGING/hermit" submodule update --init --checkout --depth 1 -- agent-utils \
+        run_git --network -C "$staging_anchor/hermit" submodule update \
+            --init --checkout --depth 1 -- agent-utils \
             || return 1
-        tool_root_is_complete "$TOOL_CACHE_STAGING" "$sha" || {
+        tool_root_is_complete "$staging_anchor" "$sha" || {
             printf 'health-tick: materialized tool root failed pin or cleanliness verification\n' >&2
             return 1
         }
-        mv -- "$TOOL_CACHE_STAGING" "$target" || return 1
-        TOOL_CACHE_STAGING=""
-        chmod -R a-w -- "$target" || return 1
+        # The directory becomes read-only before its atomic publication, while
+        # the retained staging descriptor still names the exact verified inode.
+        # Recheck bytes afterward so publication cannot separate the checked
+        # tree from the tree whose permissions were frozen.
+        mark_held_tree_read_only "$staging_anchor" "$TOOL_STAGING_IDENTITY" || return 1
+        tool_root_is_complete "$staging_anchor" "$sha" || {
+            printf 'health-tick: read-only staging root failed final byte verification\n' >&2
+            return 1
+        }
+        # Re-read the retained inode after byte verification. This is both an
+        # integrity check and the publication boundary: the visible name is not
+        # authority, and publish_staging_no_replace compares the atomically
+        # moved target back to this already-verified descriptor.
+        [[ $(stat -Lc '%d:%i' "$staging_anchor") == "$TOOL_STAGING_IDENTITY" ]] || {
+            printf 'operational-tool: retained staging directory changed during verification\n' >&2
+            return 1
+        }
+        # From this point a signal or process death may leave the inode
+        # published. The holder must release rather than clear it until the
+        # publication helper proves that RENAME_NOREPLACE did not happen.
+        TOOL_STAGING_MAY_BE_PUBLISHED=1
+        publish_staging_no_replace \
+            "$staging_anchor" "$TOOL_STAGING_ENTRY_NAME" "$sha" "$TOOL_STAGING_IDENTITY"
+        publish_rc=$?
+        if [[ $publish_rc -eq 17 ]]; then
+            TOOL_STAGING_MAY_BE_PUBLISHED=0
+            printf 'health-tick: cache target collision left staging unconsumed; refusing replacement\n' >&2
+            return 1
+        elif [[ $publish_rc -eq 18 ]]; then
+            return 1
+        elif [[ $publish_rc -ne 0 ]]; then
+            TOOL_STAGING_MAY_BE_PUBLISHED=0
+            return "$publish_rc"
+        fi
+        target_identity=$TOOL_STAGING_IDENTITY
+        stop_staging_holder release || return 1
     fi
 
-    # Never execute the reusable cache tree itself. A private copy closes the
-    # validation-to-exec race: mutation of the shared cache during or after the
-    # copy either fails the second byte verification or cannot affect this run.
-    TOOL_RUN_ROOT=$(mktemp -d "$TOOL_CACHE/.run.XXXXXX") || return 1
-    cp -a --reflink=auto "$target/." "$TOOL_RUN_ROOT/" || return 1
-    chmod -R a-w -- "$TOOL_RUN_ROOT" || return 1
+    # Retain both terminal directories by no-follow descriptors before any
+    # chmod, copy, verification, authority read, or execution. The /proc paths
+    # below name those exact inodes even if their directory entries are moved.
+    start_tool_root_holder "$sha" "$target_identity" || return 1
+    # Existing roots may predate the atomic read-only publication protocol.
+    # Verify their exact tracked bytes and link counts before changing any mode,
+    # then apply the mark through the retained target descriptor rather than by
+    # re-resolving the cache pathname.
+    tool_root_is_complete "$TOOL_TARGET_ROOT" "$sha" || {
+        printf 'health-tick: cached tool root %s is incomplete or dirty; refusing to repair it in place\n' \
+            "$sha" >&2
+        return 1
+    }
+    mark_held_tree_read_only "$TOOL_TARGET_ROOT" "$target_identity" || return 1
+    tool_root_is_complete "$TOOL_TARGET_ROOT" "$sha" || {
+        printf 'health-tick: read-only cached tool root %s failed final byte verification\n' \
+            "$sha" >&2
+        return 1
+    }
+    cp -a --reflink=auto "$TOOL_TARGET_ROOT/." "$TOOL_RUN_ROOT/" || return 1
+    mark_held_tree_read_only "$TOOL_RUN_ROOT" || return 1
     tool_root_is_complete "$TOOL_RUN_ROOT" "$sha" || {
         printf 'health-tick: private tool snapshot failed byte verification\n' >&2
         return 1
@@ -341,6 +1381,173 @@ materialize_current_tool_root() {
     TOOL_ROOT_RESULT=$TOOL_RUN_ROOT
     flock -u 8 || return 1
     exec 8>&-
+}
+
+run_current_tool() {
+    local state_root="${DEV_HERMIT_PARENT:-$ROOT}"
+    local cache_root="$TOOL_CACHE"
+    local requested_parent_sha=""
+    local tool_relative=""
+    local component
+    local -a tool_components=()
+    local -a payload=()
+
+    shift
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            --state-root)
+                [[ $# -ge 2 ]] || {
+                    printf 'operational-tool: --state-root requires a path\n' >&2
+                    return 2
+                }
+                state_root=$2
+                shift 2
+                ;;
+            --cache-root)
+                [[ $# -ge 2 ]] || {
+                    printf 'operational-tool: --cache-root requires a path\n' >&2
+                    return 2
+                }
+                cache_root=$2
+                shift 2
+                ;;
+            --tool-relative)
+                [[ $# -ge 2 ]] || {
+                    printf 'operational-tool: --tool-relative requires a path\n' >&2
+                    return 2
+                }
+                tool_relative=$2
+                shift 2
+                ;;
+            --tool-parent-sha)
+                [[ $# -ge 2 ]] || {
+                    printf 'operational-tool: --tool-parent-sha requires a commit SHA\n' >&2
+                    return 2
+                }
+                requested_parent_sha=$2
+                shift 2
+                ;;
+            -h|--help)
+                printf '%s\n' \
+                    'usage: operational-tool --run-current-tool --state-root PATH [--cache-root PATH] [--tool-parent-sha SHA] --tool-relative PATH [-- ARGS...]' \
+                    '' \
+                    'Materialize current origin/main into a verified private tool root and run one' \
+                    'repository-relative executable. Mutable operational state remains under PATH.'
+                return 0
+                ;;
+            --)
+                shift
+                payload=("$@")
+                break
+                ;;
+            *)
+                printf 'operational-tool: unknown argument %s\n' "$1" >&2
+                return 2
+                ;;
+        esac
+    done
+
+    [[ -n $tool_relative ]] || {
+        printf 'operational-tool: --tool-relative is required\n' >&2
+        return 2
+    }
+    [[ $tool_relative != /* ]] || {
+        printf 'operational-tool: tool path must be relative to the immutable tool root\n' >&2
+        return 2
+    }
+    IFS=/ read -r -a tool_components <<<"$tool_relative"
+    for component in "${tool_components[@]}"; do
+        [[ -n $component && $component != . && $component != .. ]] || {
+            printf 'operational-tool: unsafe tool path %s\n' "$tool_relative" >&2
+            return 2
+        }
+    done
+
+    ROOT=$(realpath -e -- "$state_root") || {
+        printf 'operational-tool: state root does not exist: %s\n' "$state_root" >&2
+        return 2
+    }
+    TOOL_CACHE=$(PYTHONDONTWRITEBYTECODE=1 python3 - "$cache_root" <<'PY'
+import os
+import sys
+
+print(os.path.abspath(sys.argv[1]))
+PY
+    ) || {
+        printf 'operational-tool: cannot resolve cache root: %s\n' "$cache_root" >&2
+        return 2
+    }
+    case "$TOOL_CACHE/" in
+        "$ROOT/"|"$ROOT/"*)
+            printf 'operational-tool: cache root must be outside mutable state root %s\n' "$ROOT" >&2
+            return 2
+            ;;
+    esac
+
+    materialize_current_tool_root "$requested_parent_sha" || return $?
+    local tool_root=$TOOL_ROOT_RESULT
+    local tool_path="$tool_root/$tool_relative"
+    local resolved_tool_root resolved_tool_path
+    resolved_tool_root=$(realpath -e -- "$tool_root") || {
+        printf 'operational-tool: immutable tool root disappeared\n' >&2
+        return 2
+    }
+    resolved_tool_path=$(realpath -e -- "$tool_path") || {
+        printf 'operational-tool: immutable tool is absent: %s\n' "$tool_relative" >&2
+        return 2
+    }
+    case "$resolved_tool_path" in
+        "$resolved_tool_root/"*) ;;
+        *)
+            printf 'operational-tool: tool path escapes immutable tool root: %s\n' "$tool_relative" >&2
+            return 2
+            ;;
+    esac
+    [[ ! -L $tool_path && -f $tool_path && -x $tool_path ]] || {
+        printf 'operational-tool: immutable tool is not executable: %s\n' "$tool_relative" >&2
+        return 2
+    }
+
+    local parent_sha hermit_sha agent_utils_sha bootstrap_sha
+    parent_sha=$(run_git -C "$tool_root" rev-parse --verify 'HEAD^{commit}') || return 1
+    hermit_sha=$(run_git -C "$tool_root" ls-tree "$parent_sha" -- hermit \
+        | awk '$1 == "160000" && $2 == "commit" { print $3 }')
+    agent_utils_sha=$(run_git -C "$tool_root/hermit" \
+        ls-tree "$hermit_sha" -- agent-utils \
+        | awk '$1 == "160000" && $2 == "commit" { print $3 }')
+    if [[ ! $hermit_sha =~ ^[0-9a-f]{40}$ || ! $agent_utils_sha =~ ^[0-9a-f]{40}$ ]]; then
+        printf 'operational-tool: immutable tool authority is incomplete\n' >&2
+        return 1
+    fi
+    if [[ -n $requested_parent_sha && $parent_sha != "$requested_parent_sha" ]]; then
+        printf 'operational-tool: exact cached tool root resolved to %s, expected %s\n' \
+            "$parent_sha" "$requested_parent_sha" >&2
+        return 1
+    fi
+    bootstrap_sha=$(sha256sum -- "${BASH_SOURCE[0]}" | awk '{print $1}') || return 1
+
+    local installed_operational_tool="$HOME/.local/libexec/dev-hermit/operational-tool"
+    local operational_tool=""
+    if [[ ! -L $installed_operational_tool && -f $installed_operational_tool && \
+          -x $installed_operational_tool ]] && \
+       [[ $(stat -Lc '%a' "$installed_operational_tool") =~ ^[0-7]*[0-5][0-5][0-5]$ ]] && \
+       cmp --silent -- "${BASH_SOURCE[0]}" "$installed_operational_tool"; then
+        operational_tool=$installed_operational_tool
+    fi
+
+    printf 'operational-tool: bootstrap_sha256=%s parent_sha=%s hermit_sha=%s agent_utils_sha=%s tool_root=%s state_root=%s entrypoint=%s\n' \
+        "$bootstrap_sha" "$parent_sha" "$hermit_sha" "$agent_utils_sha" \
+        "$tool_root" "$ROOT" "$tool_relative" >&2
+
+    DEV_HERMIT_PARENT="$ROOT" \
+    DEV_HERMIT_TOOL_ROOT="$tool_root" \
+    DEV_HERMIT_TOOL_PARENT_SHA="$parent_sha" \
+    DEV_HERMIT_TOOL_HERMIT_SHA="$hermit_sha" \
+    DEV_HERMIT_TOOL_AGENT_UTILS_SHA="$agent_utils_sha" \
+    DEV_HERMIT_TOOL_BOOTSTRAP_SHA256="$bootstrap_sha" \
+    DEV_HERMIT_TOOL_CACHE="$TOOL_CACHE" \
+    DEV_HERMIT_OPERATIONAL_TOOL="$operational_tool" \
+        "$tool_path" "${payload[@]}"
 }
 
 # Parse the complete invocation before it updates this version-controlled file.
@@ -367,10 +1574,10 @@ fi
 # byte-for-byte and reported with the blocking paths and both observed SHAs. The
 # tick still runs so this refusal cannot turn the rest of operational health into
 # silence.
-parent_before="$(git rev-parse HEAD 2>/dev/null || printf unreadable)"
+parent_before="$(run_git -C "$ROOT" rev-parse HEAD 2>/dev/null || printf unreadable)"
 parent_sync_out="$(./scripts/parent-main-write sync --preserve-dirty 2>&1)"
 parent_sync_rc=$?
-parent_after="$(git rev-parse HEAD 2>/dev/null || printf unreadable)"
+parent_after="$(run_git -C "$ROOT" rev-parse HEAD 2>/dev/null || printf unreadable)"
 
 # Keep the complete writer report, including every blocking path, in the durable
 # invocation history. One compact ACTION line carries the same evidence into the
@@ -399,7 +1606,7 @@ if [[ $tool_root_rc -ne 0 ]]; then
     rc=$tool_root_rc
 else
     tool_root=$TOOL_ROOT_RESULT
-    tool_root_sha=$(git -C "$tool_root" rev-parse --verify 'HEAD^{commit}')
+    tool_root_sha=$(run_git -C "$tool_root" rev-parse --verify 'HEAD^{commit}')
     printf '%s tool_root=%s tool_root_sha=%s state_root=%s\n' \
         "$start" "$tool_root" "$tool_root_sha" "$ROOT" >>"$INVLOG"
     out="$(DEV_HERMIT_PARENT="$ROOT" \
@@ -470,4 +1677,8 @@ exit "$rc"
 trap cleanup_tool_roots EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
-main "$@"
+if [[ ${1:-} == --run-current-tool ]]; then
+    run_current_tool "$@"
+else
+    main "$@"
+fi

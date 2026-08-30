@@ -730,6 +730,16 @@ def test_production_record_refuses_acceptance_fixture_before_spool(
     assert not validate_rows.live_spool_dir(tmp_path).exists()
 
 
+def test_explicit_parent_root_overrides_descriptor_backed_tool_checkout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    state_root = tmp_path / "state"
+    state_root.mkdir()
+    monkeypatch.setenv("DEV_HERMIT_PARENT", str(state_root))
+
+    assert validate_rows.repository_root() == state_root.resolve()
+
+
 def test_isolated_fixture_store_does_not_enter_canonical_rows(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):

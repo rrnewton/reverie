@@ -5,8 +5,12 @@ Documentation=https://github.com/rrnewton/dev-hermit/blob/main/scripts/owner-che
 [Service]
 Type=oneshot
 Environment=PATH=%h/bin:%h/.local/bin:%h/.cargo/bin:%h/orc-bin:/usr/local/bin:/usr/bin:/bin
-WorkingDirectory=%h/work/dev-hermit
-ExecStart=%h/work/dev-hermit/scripts/owner-checkout-validate-watch.py
+# The installed bootstrap is immutable between explicit installs. It resolves
+# one current origin/main commit, verifies its parent -> Hermit -> agent-utils
+# gitlink chain and actual tracked bytes, then executes the watcher from a
+# private copy of that exact tree. The mutable primary is state only.
+WorkingDirectory=%h
+ExecStart=%h/.local/libexec/dev-hermit/operational-tool --run-current-tool --state-root %h/work/dev-hermit --tool-relative scripts/owner-checkout-validate-watch.py -- --checkout %h/work/dev-hermit/hermit --state-dir %h/.local/state/hermit-owner-validate
 # A full run is expected to stay under ten minutes, but the admitted producer
 # owns a 30-minute child deadline and must have time to prove cleanup.
 TimeoutStartSec=2400

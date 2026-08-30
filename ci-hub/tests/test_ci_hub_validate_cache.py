@@ -15,6 +15,55 @@ LAUNCHER = ROOT / "ci-hub/ci-hub"
 
 
 class ValidateLauncherCacheTest(unittest.TestCase):
+    def test_descriptor_backed_launcher_preserves_tool_and_state_roots(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw)
+            fake_bin = root / "bin"
+            fake_bin.mkdir()
+            fake = fake_bin / "rust-script"
+            fake.write_text(
+                "#!/bin/bash\n"
+                "set -eu\n"
+                "printf '%s\\n%s\\n%s\\n' \"$2\" \"$DEV_HERMIT_TOOL_ROOT\" "
+                "\"$DEV_HERMIT_PARENT\" > \"$4\"\n"
+            )
+            fake.chmod(0o755)
+            runtime = root / "runtime"
+            runtime.mkdir()
+            state_root = root / "state"
+            state_root.mkdir()
+            capture = root / "capture"
+            root_fd = os.open(ROOT, os.O_RDONLY | os.O_DIRECTORY)
+            self.addCleanup(os.close, root_fd)
+            retained = Path(f"/proc/{os.getpid()}/fd/{root_fd}")
+            env = {
+                **os.environ,
+                "PATH": f"{fake_bin}:{os.environ.get('PATH', '')}",
+                "XDG_RUNTIME_DIR": str(runtime),
+                "DEV_HERMIT_TOOL_ROOT": str(retained),
+                "DEV_HERMIT_PARENT": str(state_root),
+            }
+
+            result = subprocess.run(
+                [
+                    str(retained / "ci-hub/ci-hub"),
+                    "validate-run",
+                    str(capture),
+                ],
+                env=env,
+                check=False,
+            )
+
+            self.assertEqual(result.returncode, 0)
+            self.assertEqual(
+                capture.read_text().splitlines(),
+                [
+                    str(retained / "ci-hub/ci-hub.rs"),
+                    str(retained),
+                    str(state_root),
+                ],
+            )
+
     def test_two_validate_launchers_do_not_share_the_outer_rust_script_cache(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
             root = Path(raw)

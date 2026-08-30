@@ -7,6 +7,7 @@ import fcntl
 import json
 import os
 from pathlib import Path
+import signal
 import shutil
 import subprocess
 import sys
@@ -18,6 +19,7 @@ import unittest
 SOURCE = Path(__file__).resolve().parent.parent
 # Captured BEFORE any test prepends a shim directory to PATH.
 REAL_GIT = shutil.which("git") or "/usr/bin/git"
+REAL_PYTHON = shutil.which("python3") or "/usr/bin/python3"
 TRAILER = "[coordinator, Test] [parent-writer-test, devbig999]"
 
 
@@ -2210,6 +2212,13 @@ class HealthTickParentSyncTests(unittest.TestCase):
         (self.repo / "ci-hub" / "bin").mkdir(parents=True)
         shutil.copy2(SOURCE / "scripts/parent-main-write", self.repo / "scripts/parent-main-write")
         shutil.copy2(SOURCE / "scripts/hermit-health-tick.sh", self.repo / "scripts/hermit-health-tick.sh")
+        wrapper = self.repo / "scripts/hermit-health-tick.sh"
+        wrapper.write_text(
+            wrapper.read_text().replace(
+                'CANONICAL_REMOTE_URL="https://github.com/rrnewton/dev-hermit.git"',
+                f'CANONICAL_REMOTE_URL="{self.remote}"',
+            ).replace('GIT_TRANSPORT_ALLOWLIST="https"', 'GIT_TRANSPORT_ALLOWLIST="file"')
+        )
         self.write_health_tick("old")
         git(
             self.repo,
@@ -2294,6 +2303,29 @@ class HealthTickParentSyncTests(unittest.TestCase):
     def run_tick(self) -> subprocess.CompletedProcess[str]:
         return run(str(self.repo / "scripts/hermit-health-tick.sh"), cwd=self.repo, env=self.env)
 
+    def run_current_tool(
+        self, bootstrap: Path, relative: str, *args: str
+    ) -> subprocess.CompletedProcess[str]:
+        return run(
+            str(bootstrap),
+            "--run-current-tool",
+            "--state-root",
+            str(self.repo),
+            "--tool-relative",
+            relative,
+            "--",
+            *args,
+            cwd=self.home,
+            env=self.env,
+        )
+
+    def installed_bootstrap(self) -> Path:
+        bootstrap = self.home / ".local/libexec/dev-hermit/operational-tool"
+        bootstrap.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(self.repo / "scripts/hermit-health-tick.sh", bootstrap)
+        bootstrap.chmod(0o555)
+        return bootstrap
+
     def prime_cached_tool_root(self) -> tuple[str, Path, Path]:
         target = self.advance_remote()
         tick = self.repo / "ci-hub" / "bin" / "health-tick"
@@ -2320,15 +2352,19 @@ class HealthTickParentSyncTests(unittest.TestCase):
         path.write_bytes(poison + b"#" * (len(original) - len(poison)))
         os.utime(path, ns=(metadata.st_atime_ns, metadata.st_mtime_ns))
 
+    def assert_private_run_pool_is_reusable(self) -> None:
+        entries = list(Path(self.env["HERMIT_HEALTH_TOOL_CACHE"]).glob(".run.*"))
+        self.assertEqual(1, len(entries), "normal runs must reuse one private root")
+        self.assertTrue(entries[0].is_dir())
+        self.assertEqual([], list(entries[0].iterdir()))
+
     def assert_cached_tool_refused(self, marker: Path) -> None:
         result = self.run_tick()
         self.assertEqual(1, result.returncode, result.stdout + result.stderr)
         self.assertIn("cached tool root", result.stderr)
         self.assertIn("incomplete or dirty; refusing to repair it in place", result.stderr)
         self.assertFalse(marker.exists())
-        self.assertFalse(
-            list(Path(self.env["HERMIT_HEALTH_TOOL_CACHE"]).glob(".run.*"))
-        )
+        self.assert_private_run_pool_is_reusable()
 
     def test_clean_parent_fast_forwards_before_loading_health_tick(self) -> None:
         target = self.advance_remote(update_wrapper=True)
@@ -2347,6 +2383,26 @@ class HealthTickParentSyncTests(unittest.TestCase):
             .read_text()
             .endswith("# fetched wrapper version\n")
         )
+
+    def test_empty_private_run_root_is_reused_without_accumulation(self) -> None:
+        self.advance_remote()
+
+        first = self.run_tick()
+        self.assertEqual(0, first.returncode, first.stdout + first.stderr)
+        entries = list(Path(self.env["HERMIT_HEALTH_TOOL_CACHE"]).glob(".run.*"))
+        self.assertEqual(1, len(entries))
+        first_identity = (entries[0].stat().st_dev, entries[0].stat().st_ino)
+        self.assertEqual([], list(entries[0].iterdir()))
+
+        second = self.run_tick()
+        self.assertEqual(0, second.returncode, second.stdout + second.stderr)
+        entries = list(Path(self.env["HERMIT_HEALTH_TOOL_CACHE"]).glob(".run.*"))
+        self.assertEqual(1, len(entries))
+        self.assertEqual(
+            first_identity,
+            (entries[0].stat().st_dev, entries[0].stat().st_ino),
+        )
+        self.assertEqual([], list(entries[0].iterdir()))
 
     def test_unrelated_dirty_paths_are_preserved_while_parent_advances(self) -> None:
         target = self.advance_remote()
@@ -2416,12 +2472,674 @@ class HealthTickParentSyncTests(unittest.TestCase):
             ).stdout.strip(),
         )
         self.assertEqual("", git(tool_root, "status", "--porcelain=v1").stdout)
+        self.assertRegex(log, r"tool_root=/proc/[0-9]+/fd/[0-9]+")
+        self.assert_private_run_pool_is_reusable()
+
+    def test_installed_bootstrap_runs_current_tool_without_touching_stale_primary(
+        self,
+    ) -> None:
+        bootstrap = self.installed_bootstrap()
+        payload = (
+            "#!/usr/bin/env bash\n"
+            "set -eu\n"
+            "printf 'payload=landed parent=%s hermit=%s agent_utils=%s tool_root=%s state_root=%s operational_tool=%s cache=%s args=%s\\n' "
+            '"$DEV_HERMIT_TOOL_PARENT_SHA" "$DEV_HERMIT_TOOL_HERMIT_SHA" '
+            '"$DEV_HERMIT_TOOL_AGENT_UTILS_SHA" "$DEV_HERMIT_TOOL_ROOT" '
+            '"$DEV_HERMIT_PARENT" "$DEV_HERMIT_OPERATIONAL_TOOL" '
+            '"$DEV_HERMIT_TOOL_CACHE" "$*"\n'
+        )
+        target = self.advance_remote(
+            extra_executables={"scripts/owner-probe": payload}
+        )
+        stale = self.repo / "scripts/owner-probe"
+        stale.write_text("#!/usr/bin/env bash\nprintf 'payload=STALE\\n'\n")
+        stale.chmod(0o755)
+        before_head = git(self.repo, "rev-parse", "HEAD").stdout.strip()
+        before_status = git(
+            self.repo, "status", "--porcelain=v1", "--untracked-files=all"
+        ).stdout
+
+        result = self.run_current_tool(bootstrap, "scripts/owner-probe", "one", "two")
+
+        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+        self.assertIn(f"payload=landed parent={target}", result.stdout)
+        self.assertIn(f"hermit={self.hermit_head}", result.stdout)
+        self.assertIn(f"agent_utils={self.agent_utils_head}", result.stdout)
+        self.assertIn(f"state_root={self.repo}", result.stdout)
+        self.assertIn(f"operational_tool={bootstrap}", result.stdout)
         self.assertIn(
-            f"tool_root={self.env['HERMIT_HEALTH_TOOL_CACHE']}/.run.", log
+            f"cache={Path(self.env['HERMIT_HEALTH_TOOL_CACHE'])}", result.stdout
         )
+        self.assertIn("args=one two", result.stdout)
+        self.assertNotIn("payload=STALE", result.stdout)
+        self.assertIn(f"parent_sha={target}", result.stderr)
+        self.assertIn("entrypoint=scripts/owner-probe", result.stderr)
+        self.assertEqual(
+            before_head, git(self.repo, "rev-parse", "HEAD").stdout.strip()
+        )
+        self.assertEqual(
+            before_status,
+            git(self.repo, "status", "--porcelain=v1", "--untracked-files=all").stdout,
+        )
+        self.assert_private_run_pool_is_reusable()
+
+    def test_current_tool_refuses_cache_beneath_mutable_state_root(self) -> None:
+        bootstrap = self.installed_bootstrap()
+        before_head = git(self.repo, "rev-parse", "HEAD").stdout.strip()
+        before_status = git(
+            self.repo, "status", "--porcelain=v1", "--untracked-files=all"
+        ).stdout
+
+        result = run(
+            str(bootstrap),
+            "--run-current-tool",
+            "--state-root",
+            str(self.repo),
+            "--cache-root",
+            str(self.repo / "ignored/tool-cache"),
+            "--tool-relative",
+            "scripts/owner-checkout-validate-watch.py",
+            cwd=self.home,
+            env=self.env,
+        )
+
+        self.assertEqual(2, result.returncode, result.stdout + result.stderr)
+        self.assertIn(
+            "cache root must be outside mutable state root", result.stderr
+        )
+        self.assertFalse((self.repo / "ignored/tool-cache").exists())
+        self.assertEqual(
+            before_head, git(self.repo, "rev-parse", "HEAD").stdout.strip()
+        )
+        self.assertEqual(
+            before_status,
+            git(self.repo, "status", "--porcelain=v1", "--untracked-files=all").stdout,
+        )
+
+    def test_exact_tool_parent_refuses_absent_cache_without_following_main(self) -> None:
+        bootstrap = self.installed_bootstrap()
+        requested = "f" * 40
+
+        result = run(
+            str(bootstrap),
+            "--run-current-tool",
+            "--state-root",
+            str(self.repo),
+            "--tool-parent-sha",
+            requested,
+            "--tool-relative",
+            "ci-hub/bin/health-tick",
+            cwd=self.home,
+            env=self.env,
+        )
+
+        self.assertEqual(1, result.returncode, result.stdout + result.stderr)
+        self.assertIn(
+            f"exact cached tool root {requested} is absent", result.stderr
+        )
+        self.assertEqual(
+            [],
+            list(
+                (Path(self.env["HERMIT_HEALTH_TOOL_CACHE"]) / "trees").iterdir()
+            ),
+        )
+
+    def test_current_tool_refuses_repointed_primary_origin(self) -> None:
+        bootstrap = self.installed_bootstrap()
+        malicious = self.base / "malicious.git"
+        git(self.base, "init", "--bare", "--initial-branch=main", str(malicious))
+        git(self.repo, "remote", "set-url", "origin", str(malicious))
+
+        result = self.run_current_tool(
+            bootstrap, "scripts/owner-checkout-validate-watch.py", "--dry-run"
+        )
+
+        self.assertEqual(1, result.returncode, result.stdout + result.stderr)
+        self.assertIn("refusing mutable remote authority", result.stderr)
+        self.assertIn("expected canonical rrnewton/dev-hermit", result.stderr)
         self.assertFalse(
-            list(Path(self.env["HERMIT_HEALTH_TOOL_CACHE"]).glob(".run.*"))
+            list(Path(self.env["HERMIT_HEALTH_TOOL_CACHE"]).glob("trees/*"))
         )
+
+    def test_current_tool_scrubs_git_authority_environment_without_outside_writes(
+        self,
+    ) -> None:
+        bootstrap = self.installed_bootstrap()
+        outside = self.base / "outside-git-authority"
+        objects = outside / "objects"
+        alternate = outside / "alternate-objects"
+        worktree = outside / "worktree"
+        hooks = outside / "hooks"
+        for directory in (objects, alternate, worktree, hooks):
+            directory.mkdir(parents=True)
+        sentinel = outside / "sentinel"
+        sentinel.write_text("must remain exact\n")
+        before_head = git(self.repo, "rev-parse", "HEAD").stdout.strip()
+        before_status = git(
+            self.repo, "status", "--porcelain=v1", "--untracked-files=all"
+        ).stdout
+
+        def snapshot() -> dict[str, tuple[str, bytes | None]]:
+            result: dict[str, tuple[str, bytes | None]] = {}
+            for path in sorted(outside.rglob("*")):
+                relative = str(path.relative_to(outside))
+                if path.is_dir():
+                    result[relative] = ("directory", None)
+                else:
+                    result[relative] = ("file", path.read_bytes())
+            return result
+
+        before = snapshot()
+        hostile_env = dict(
+            self.env,
+            GIT_INDEX_FILE=str(outside / "index"),
+            GIT_OBJECT_DIRECTORY=str(objects),
+            GIT_ALTERNATE_OBJECT_DIRECTORIES=str(alternate),
+            GIT_DIR=str(outside / "redirected-git-dir"),
+            GIT_WORK_TREE=str(worktree),
+            GIT_CONFIG_GLOBAL=str(outside / "global-config"),
+            GIT_CONFIG_SYSTEM=str(outside / "system-config"),
+            GIT_CONFIG_COUNT="1",
+            GIT_CONFIG_KEY_0="core.hooksPath",
+            GIT_CONFIG_VALUE_0=str(hooks),
+            GIT_ALLOW_PROTOCOL="ext",
+        )
+
+        result = run(
+            str(bootstrap),
+            "--run-current-tool",
+            "--state-root",
+            str(self.repo),
+            "--tool-relative",
+            "scripts/absent-owner-tool",
+            cwd=self.home,
+            env=hostile_env,
+        )
+
+        self.assertEqual(2, result.returncode, result.stdout + result.stderr)
+        self.assertIn("immutable tool is absent", result.stderr)
+        self.assertEqual(before, snapshot())
+        self.assertEqual("must remain exact\n", sentinel.read_text())
+        self.assertEqual(
+            before_head, git(self.repo, "rev-parse", "HEAD").stdout.strip()
+        )
+        self.assertEqual(
+            before_status,
+            git(
+                self.repo,
+                "status",
+                "--porcelain=v1",
+                "--untracked-files=all",
+            ).stdout,
+        )
+
+    def test_current_tool_accepts_canonical_ssh_origin(self) -> None:
+        bootstrap = self.installed_bootstrap()
+        target = self.advance_remote(
+            extra_executables={
+                "scripts/owner-probe": "#!/usr/bin/env bash\nprintf 'canonical ssh origin\\n'\n"
+            }
+        )
+        git(
+            self.repo,
+            "remote",
+            "set-url",
+            "origin",
+            "git@github.com:rrnewton/dev-hermit.git",
+        )
+
+        result = self.run_current_tool(
+            bootstrap, "scripts/owner-probe"
+        )
+
+        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+        self.assertIn("canonical ssh origin", result.stdout)
+        self.assertIn(f"parent_sha={target}", result.stderr)
+
+    def test_current_tool_refuses_trees_symlink_without_writing_through_it(self) -> None:
+        bootstrap = self.installed_bootstrap()
+        cache = Path(self.env["HERMIT_HEALTH_TOOL_CACHE"])
+        outside = self.base / "outside-trees"
+        cache.mkdir(parents=True)
+        outside.mkdir()
+        (cache / "trees").symlink_to(outside, target_is_directory=True)
+
+        result = self.run_current_tool(
+            bootstrap, "scripts/owner-checkout-validate-watch.py", "--dry-run"
+        )
+
+        self.assertEqual(1, result.returncode, result.stdout + result.stderr)
+        self.assertIn("cache path component is not a real directory", result.stderr)
+        self.assertEqual([], list(outside.iterdir()))
+
+    def test_current_tool_refuses_lock_symlink_without_truncating_target(self) -> None:
+        bootstrap = self.installed_bootstrap()
+        cache = Path(self.env["HERMIT_HEALTH_TOOL_CACHE"])
+        (cache / "trees").mkdir(parents=True)
+        sentinel = self.base / "lock-target"
+        sentinel.write_text("must survive\n")
+        (cache / "materialize.lock").symlink_to(sentinel)
+
+        result = self.run_current_tool(
+            bootstrap, "scripts/owner-checkout-validate-watch.py", "--dry-run"
+        )
+
+        self.assertEqual(1, result.returncode, result.stdout + result.stderr)
+        self.assertIn("materialize lock must not be a symlink", result.stderr)
+        self.assertEqual("must survive\n", sentinel.read_text())
+
+    def test_current_tool_refuses_lock_replaced_while_waiting(self) -> None:
+        bootstrap = self.installed_bootstrap()
+        cache = Path(self.env["HERMIT_HEALTH_TOOL_CACHE"])
+        (cache / "trees").mkdir(parents=True)
+        lock_path = cache / "materialize.lock"
+        lock_path.write_text("")
+        original_stat = lock_path.stat()
+        lock_fd = os.open(lock_path, os.O_RDONLY)
+        fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        process = subprocess.Popen(
+            [
+                str(bootstrap),
+                "--run-current-tool",
+                "--state-root",
+                str(self.repo),
+                "--tool-relative",
+                "scripts/owner-checkout-validate-watch.py",
+                "--",
+                "--dry-run",
+            ],
+            cwd=self.home,
+            env=dict(self.env, HERMIT_HEALTH_TOOL_LOCK_TIMEOUT="10"),
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        try:
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline:
+                if process.poll() is not None:
+                    self.fail(
+                        "bootstrap exited before waiting on the held lock: "
+                        + process.communicate()[1]
+                    )
+                try:
+                    opened = os.stat(f"/proc/{process.pid}/fd/8")
+                    flock_child = subprocess.run(
+                        ["pgrep", "-P", str(process.pid), "-x", "flock"],
+                        check=False,
+                        text=True,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                    )
+                    waiting = flock_child.returncode == 0
+                except (FileNotFoundError, ProcessLookupError):
+                    waiting = False
+                if (
+                    waiting
+                    and opened.st_dev == original_stat.st_dev
+                    and opened.st_ino == original_stat.st_ino
+                ):
+                    break
+                time.sleep(0.01)
+            else:
+                self.fail("bootstrap did not enter a blocking flock on the original inode")
+
+            replaced = cache / "materialize.lock.replaced"
+            lock_path.rename(replaced)
+            lock_path.write_text("")
+            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+            os.close(lock_fd)
+            lock_fd = -1
+            stdout, stderr = process.communicate(timeout=10)
+        finally:
+            if lock_fd >= 0:
+                fcntl.flock(lock_fd, fcntl.LOCK_UN)
+                os.close(lock_fd)
+            if process.poll() is None:
+                process.kill()
+                process.communicate()
+
+        self.assertEqual(1, process.returncode, stdout + stderr)
+        self.assertIn("materialize lock changed after it was locked", stderr)
+        self.assertEqual(original_stat.st_ino, replaced.stat().st_ino)
+        self.assertNotEqual(original_stat.st_ino, lock_path.stat().st_ino)
+        self.assertEqual([], list((cache / "trees").iterdir()))
+
+    def test_cache_publish_collision_cannot_chmod_symlink_target(self) -> None:
+        bootstrap = self.installed_bootstrap()
+        cache = Path(self.env["HERMIT_HEALTH_TOOL_CACHE"])
+        outside = self.base / "outside-cache-target"
+        outside.mkdir()
+        sentinel = outside / "sentinel"
+        sentinel.write_text("must remain writable\n")
+        sentinel.chmod(0o600)
+        ready = self.base / "publish-ready"
+        proceed = self.base / "publish-proceed"
+        shim_dir = self.base / "publish-python-shim"
+        shim_dir.mkdir()
+        python_shim = shim_dir / "python3"
+        python_shim.write_text(
+            "#!/usr/bin/env bash\n"
+            "set -u\n"
+            "if [[ $# -eq 7 && $1 == - && $5 == .staging.* ]]; then\n"
+            "  : > \"$PUBLISH_COLLISION_READY\"\n"
+            "  while [[ ! -e \"$PUBLISH_COLLISION_PROCEED\" ]]; do sleep 0.01; done\n"
+            "fi\n"
+            f'exec "{REAL_PYTHON}" "$@"\n'
+        )
+        python_shim.chmod(0o755)
+        target = git(self.remote, "rev-parse", "refs/heads/main").stdout.strip()
+        process = subprocess.Popen(
+            [
+                str(bootstrap),
+                "--run-current-tool",
+                "--state-root",
+                str(self.repo),
+                "--tool-relative",
+                "scripts/owner-checkout-validate-watch.py",
+                "--",
+                "--dry-run",
+            ],
+            cwd=self.home,
+            env=dict(
+                self.env,
+                PATH=f"{shim_dir}:{self.env['PATH']}",
+                PUBLISH_COLLISION_READY=str(ready),
+                PUBLISH_COLLISION_PROCEED=str(proceed),
+            ),
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        try:
+            deadline = time.monotonic() + 15
+            while not ready.exists() and process.poll() is None:
+                if time.monotonic() >= deadline:
+                    self.fail("cache publication did not reach the deterministic barrier")
+                time.sleep(0.01)
+            if process.poll() is not None:
+                stdout, stderr = process.communicate()
+                self.fail(
+                    "cache publication exited before the deterministic barrier: "
+                    + stdout
+                    + stderr
+                )
+            target_path = cache / "trees" / target
+            target_path.symlink_to(outside, target_is_directory=True)
+            proceed.touch()
+            stdout, stderr = process.communicate(timeout=15)
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.communicate()
+
+        self.assertEqual(1, process.returncode, stdout + stderr)
+        self.assertIn("cache target collision left staging unconsumed", stderr)
+        self.assertTrue(target_path.is_symlink())
+        self.assertEqual(0o600, sentinel.stat().st_mode & 0o777)
+        self.assertEqual("must remain writable\n", sentinel.read_text())
+        staging = list((cache / "trees").glob(".staging.*"))
+        self.assertEqual(1, len(staging))
+        self.assertEqual([], list(staging[0].iterdir()))
+
+    def test_staging_pool_symlink_is_never_followed_or_cleared(self) -> None:
+        bootstrap = self.installed_bootstrap()
+        cache = Path(self.env["HERMIT_HEALTH_TOOL_CACHE"])
+        trees = cache / "trees"
+        trees.mkdir(parents=True)
+        outside = self.base / "outside-staging-pool"
+        outside.mkdir()
+        sentinel = outside / "sentinel"
+        sentinel.write_text("do not clear\n")
+        sentinel.chmod(0o600)
+        planted = trees / ".staging.deadbeefdeadbeef"
+        planted.symlink_to(outside, target_is_directory=True)
+        self.advance_remote()
+
+        result = self.run_current_tool(bootstrap, "ci-hub/bin/health-tick")
+
+        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+        self.assertTrue(planted.is_symlink())
+        self.assertEqual("do not clear\n", sentinel.read_text())
+        self.assertEqual(0o600, sentinel.stat().st_mode & 0o777)
+        self.assertEqual(
+            [],
+            [entry for entry in trees.glob(".staging.*") if not entry.is_symlink()],
+        )
+
+    def test_stale_staging_root_is_reused_without_accumulation(self) -> None:
+        bootstrap = self.installed_bootstrap()
+        cache = Path(self.env["HERMIT_HEALTH_TOOL_CACHE"])
+        trees = cache / "trees"
+        stale = trees / ".staging.0123456789abcdef"
+        (stale / "nested").mkdir(parents=True)
+        (stale / "nested" / "junk").write_text("discard me\n")
+        changed = run("chmod", "-R", "a-w", str(stale), cwd=self.repo)
+        self.assertEqual(0, changed.returncode, changed.stdout + changed.stderr)
+        stale_identity = (stale.stat().st_dev, stale.stat().st_ino)
+        target = self.advance_remote()
+
+        result = self.run_current_tool(bootstrap, "ci-hub/bin/health-tick")
+
+        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+        published = trees / target
+        self.assertTrue(published.is_dir())
+        self.assertEqual(
+            stale_identity,
+            (published.stat().st_dev, published.stat().st_ino),
+        )
+        self.assertFalse((published / "nested" / "junk").exists())
+        self.assertEqual([], list(trees.glob(".staging.*")))
+
+    def test_verified_staging_swap_cannot_publish_or_chmod_external_hardlink(
+        self,
+    ) -> None:
+        bootstrap = self.installed_bootstrap()
+        cache = Path(self.env["HERMIT_HEALTH_TOOL_CACHE"])
+        outside = self.base / "outside-staging-swap"
+        outside.mkdir()
+        sentinel = outside / "sentinel"
+        sentinel.write_text("must remain writable\n")
+        sentinel.chmod(0o600)
+        ready = self.base / "staging-swap-ready"
+        proceed = self.base / "staging-swap-proceed"
+        shim_dir = self.base / "staging-swap-python-shim"
+        shim_dir.mkdir()
+        python_shim = shim_dir / "python3"
+        python_shim.write_text(
+            "#!/usr/bin/env bash\n"
+            "set -u\n"
+            "if [[ $# -eq 7 && $1 == - && $5 == .staging.* ]]; then\n"
+            "  : > \"$STAGING_SWAP_READY\"\n"
+            "  while [[ ! -e \"$STAGING_SWAP_PROCEED\" ]]; do sleep 0.01; done\n"
+            "fi\n"
+            f'exec "{REAL_PYTHON}" "$@"\n'
+        )
+        python_shim.chmod(0o755)
+        target = git(self.remote, "rev-parse", "refs/heads/main").stdout.strip()
+        process = subprocess.Popen(
+            [
+                str(bootstrap),
+                "--run-current-tool",
+                "--state-root",
+                str(self.repo),
+                "--tool-relative",
+                "scripts/owner-checkout-validate-watch.py",
+                "--",
+                "--dry-run",
+            ],
+            cwd=self.home,
+            env=dict(
+                self.env,
+                PATH=f"{shim_dir}:{self.env['PATH']}",
+                STAGING_SWAP_READY=str(ready),
+                STAGING_SWAP_PROCEED=str(proceed),
+            ),
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        try:
+            deadline = time.monotonic() + 15
+            while not ready.exists() and process.poll() is None:
+                if time.monotonic() >= deadline:
+                    self.fail("staging verification did not reach the swap barrier")
+                time.sleep(0.01)
+            if process.poll() is not None:
+                stdout, stderr = process.communicate()
+                self.fail(
+                    "staging verification exited before the swap barrier: "
+                    + stdout
+                    + stderr
+                )
+            staging_entries = list((cache / "trees").glob(".staging.*"))
+            self.assertEqual(1, len(staging_entries))
+            staging = staging_entries[0]
+            retained = staging.with_name(f"{staging.name}.verified")
+            staging.rename(retained)
+            shutil.copytree(retained, staging, symlinks=True, copy_function=os.link)
+            changed = run("chmod", "-R", "u+w", str(staging), cwd=self.repo)
+            self.assertEqual(0, changed.returncode, changed.stdout + changed.stderr)
+            poisoned = staging / "scripts" / "hermit-health-tick.sh"
+            poisoned.unlink()
+            os.link(sentinel, poisoned)
+            proceed.touch()
+            stdout, stderr = process.communicate(timeout=15)
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.communicate()
+
+        self.assertEqual(1, process.returncode, stdout + stderr)
+        self.assertIn("staging directory changed before publication", stderr)
+        self.assertFalse((cache / "trees" / target).exists())
+        self.assertEqual(0o600, sentinel.stat().st_mode & 0o777)
+        self.assertEqual("must remain writable\n", sentinel.read_text())
+        self.assertTrue(staging.is_dir(), "replacement staging root was deleted")
+        self.assertTrue(retained.is_dir(), "retained verified root disappeared")
+        self.assertEqual([], list(retained.iterdir()))
+
+    def test_interruption_after_publication_leaves_read_only_reusable_cache(
+        self,
+    ) -> None:
+        target = self.advance_remote()
+        bootstrap = self.installed_bootstrap()
+        ready = self.base / "post-publication-ready"
+        proceed = self.base / "post-publication-proceed"
+        shim_dir = self.base / "post-publication-python-shim"
+        shim_dir.mkdir()
+        python_shim = shim_dir / "python3"
+        python_shim.write_text(
+            "#!/usr/bin/env bash\n"
+            "set -u\n"
+            f'"{REAL_PYTHON}" "$@"\n'
+            "rc=$?\n"
+            "if [[ $rc -eq 0 && $# -eq 7 && $1 == - && $5 == .staging.* ]]; then\n"
+            "  : > \"$POST_PUBLISH_READY\"\n"
+            "  while [[ ! -e $POST_PUBLISH_PROCEED ]]; do sleep 0.01; done\n"
+            "  kill -TERM \"$PPID\"\n"
+            "fi\n"
+            "exit \"$rc\"\n"
+        )
+        python_shim.chmod(0o755)
+        env = dict(
+            self.env,
+            PATH=f"{shim_dir}:{self.env['PATH']}",
+            POST_PUBLISH_READY=str(ready),
+            POST_PUBLISH_PROCEED=str(proceed),
+        )
+        process = subprocess.Popen(
+            [
+                str(bootstrap),
+                "--run-current-tool",
+                "--state-root",
+                str(self.repo),
+                "--tool-relative",
+                "ci-hub/bin/health-tick",
+            ],
+            cwd=self.home,
+            env=env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        try:
+            deadline = time.monotonic() + 15
+            while not ready.exists() and process.poll() is None:
+                if time.monotonic() >= deadline:
+                    self.fail("publication did not reach the interruption barrier")
+                time.sleep(0.01)
+            if process.poll() is not None:
+                stdout, stderr = process.communicate()
+                self.fail(
+                    "publication process exited before the interruption barrier: "
+                    + stdout
+                    + stderr
+                )
+            published = Path(self.env["HERMIT_HEALTH_TOOL_CACHE"]) / "trees" / target
+            self.assertTrue(published.is_dir())
+            directories = [
+                published,
+                *[
+                    path
+                    for path in published.rglob("*")
+                    if not path.is_symlink() and path.is_dir()
+                ],
+            ]
+            self.assertTrue(
+                all(path.stat().st_mode & 0o777 == 0o555 for path in directories)
+            )
+            self.assertTrue(
+                all(
+                    not path.lstat().st_mode & 0o222
+                    for path in published.rglob("*")
+                    if not path.is_symlink()
+                )
+            )
+            proceed.touch()
+            stdout, stderr = process.communicate(timeout=15)
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.communicate()
+
+        self.assertNotIn("health-version=", stdout)
+        self.assertTrue(published.is_dir(), stderr)
+        self.assertFalse(
+            list(
+                (Path(self.env["HERMIT_HEALTH_TOOL_CACHE"]) / "trees").glob(
+                    ".staging.*"
+                )
+            )
+        )
+
+        resumed = self.run_current_tool(bootstrap, "ci-hub/bin/health-tick")
+        self.assertEqual(0, resumed.returncode, resumed.stdout + resumed.stderr)
+        self.assert_private_run_pool_is_reusable()
+
+    def test_current_tool_refuses_symlink_in_cache_parent_chain(self) -> None:
+        bootstrap = self.installed_bootstrap()
+        outside = self.base / "outside-parent"
+        outside.mkdir()
+        linked = self.base / "linked-cache-parent"
+        linked.symlink_to(outside, target_is_directory=True)
+
+        result = run(
+            str(bootstrap),
+            "--run-current-tool",
+            "--state-root",
+            str(self.repo),
+            "--cache-root",
+            str(linked / "cache"),
+            "--tool-relative",
+            "scripts/owner-checkout-validate-watch.py",
+            cwd=self.home,
+            env=self.env,
+        )
+
+        self.assertEqual(1, result.returncode, result.stdout + result.stderr)
+        self.assertIn("cache path component is not a real directory", result.stderr)
+        self.assertFalse((outside / "cache").exists())
 
     def test_diverged_parent_is_reported_without_reconciliation(self) -> None:
         (self.repo / "local.md").write_text("local\n")
@@ -2472,6 +3190,24 @@ class HealthTickParentSyncTests(unittest.TestCase):
         self.assert_cached_tool_refused(marker)
 
         self.assertEqual(b"corrupt-index\n", index.read_bytes())
+
+    def test_cached_tracked_hardlink_is_refused_before_chmod(self) -> None:
+        _target, cached, _tick = self.prime_cached_tool_root()
+        self.make_cache_writable(cached)
+        executable = cached / "ci-hub" / "bin" / "health-tick"
+        original = executable.read_bytes()
+        outside = self.base / "outside-hardlinked-tool"
+        outside.write_bytes(original)
+        outside.chmod(0o755)
+        executable.unlink()
+        os.link(outside, executable)
+
+        result = self.run_tick()
+
+        self.assertEqual(1, result.returncode, result.stdout + result.stderr)
+        self.assertIn("tracked file 'ci-hub/bin/health-tick' has link count 2", result.stderr)
+        self.assertEqual(original, outside.read_bytes())
+        self.assertEqual(0o755, outside.stat().st_mode & 0o777)
 
     def test_assume_unchanged_cannot_hide_poisoned_tool_bytes(self) -> None:
         _target, cached, _tick = self.prime_cached_tool_root()
@@ -2541,9 +3277,13 @@ class HealthTickParentSyncTests(unittest.TestCase):
             f"parent commit {target} has no required mode-160000 Hermit gitlink",
             result.stderr,
         )
-        self.assertFalse(
-            list(Path(self.env["HERMIT_HEALTH_TOOL_CACHE"]).glob(".staging.*"))
+        staging = list(
+            (Path(self.env["HERMIT_HEALTH_TOOL_CACHE"]) / "trees").glob(
+                ".staging.*"
+            )
         )
+        self.assertEqual(1, len(staging))
+        self.assertEqual([], list(staging[0].iterdir()))
 
     def test_concurrent_cache_replacement_cannot_change_private_run(self) -> None:
         started = self.repo / ".tick-hub" / "private-started"
@@ -2600,9 +3340,245 @@ class HealthTickParentSyncTests(unittest.TestCase):
         self.assertEqual(0, process.returncode, stdout + stderr)
         self.assertIn("private-payload=safe", stdout)
         self.assertFalse(poison_ran.exists())
-        self.assertFalse(
-            list(Path(self.env["HERMIT_HEALTH_TOOL_CACHE"]).glob(".run.*"))
+        self.assert_private_run_pool_is_reusable()
+
+    def test_process_group_term_keeps_tool_root_until_payload_teardown(self) -> None:
+        started = self.repo / ".tick-hub" / "term-payload-started"
+        helper_ran = self.repo / ".tick-hub" / "term-helper-ran"
+        payload = (
+            "#!/usr/bin/env bash\n"
+            "set -u\n"
+            "on_term() {\n"
+            "  \"$DEV_HERMIT_TOOL_ROOT/scripts/term-helper\"\n"
+            "  exit 143\n"
+            "}\n"
+            "trap on_term TERM INT HUP\n"
+            "mkdir -p \"$DEV_HERMIT_PARENT/.tick-hub\"\n"
+            ": > \"$DEV_HERMIT_PARENT/.tick-hub/term-payload-started\"\n"
+            "while :; do sleep 0.05; done\n"
         )
+        helper = (
+            "#!/usr/bin/env bash\n"
+            "set -eu\n"
+            "git -C \"$DEV_HERMIT_TOOL_ROOT\" rev-parse HEAD > "
+            "\"$DEV_HERMIT_PARENT/.tick-hub/term-helper-ran\"\n"
+        )
+        target = self.advance_remote(
+            extra_executables={
+                "scripts/term-payload": payload,
+                "scripts/term-helper": helper,
+            }
+        )
+        bootstrap = self.installed_bootstrap()
+        process = subprocess.Popen(
+            [
+                str(bootstrap),
+                "--run-current-tool",
+                "--state-root",
+                str(self.repo),
+                "--tool-relative",
+                "scripts/term-payload",
+            ],
+            cwd=self.home,
+            env=self.env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            start_new_session=True,
+        )
+        try:
+            deadline = time.monotonic() + 15
+            while not started.exists() and process.poll() is None:
+                if time.monotonic() >= deadline:
+                    self.fail("payload did not reach the termination barrier")
+                time.sleep(0.01)
+            self.assertIsNone(process.poll())
+            os.killpg(process.pid, signal.SIGTERM)
+            stdout, stderr = process.communicate(timeout=15)
+        finally:
+            if process.poll() is None:
+                os.killpg(process.pid, signal.SIGKILL)
+                process.communicate()
+
+        self.assertEqual(143, process.returncode, stdout + stderr)
+        self.assertEqual(target, helper_ran.read_text().strip())
+        try:
+            self.assert_private_run_pool_is_reusable()
+        except AssertionError as error:
+            self.fail(f"{error}\nstdout:\n{stdout}\nstderr:\n{stderr}")
+        run_root = next(
+            Path(self.env["HERMIT_HEALTH_TOOL_CACHE"]).glob(".run.*")
+        )
+        first_identity = (run_root.stat().st_dev, run_root.stat().st_ino)
+
+        repeated = self.run_current_tool(
+            bootstrap, "scripts/term-helper"
+        )
+        self.assertEqual(0, repeated.returncode, repeated.stdout + repeated.stderr)
+        self.assert_private_run_pool_is_reusable()
+        reused = next(
+            Path(self.env["HERMIT_HEALTH_TOOL_CACHE"]).glob(".run.*")
+        )
+        self.assertEqual(first_identity, (reused.stat().st_dev, reused.stat().st_ino))
+
+    def test_private_run_replacement_cannot_execute_or_delete_poison(self) -> None:
+        started = self.repo / ".tick-hub" / "held-run-started"
+        proceed = self.repo / ".tick-hub" / "held-run-continue"
+        poison_ran = self.repo / ".tick-hub" / "held-run-poison-ran"
+        launcher = (
+            "#!/usr/bin/env bash\n"
+            "set -eu\n"
+            "mkdir -p \"$DEV_HERMIT_PARENT/.tick-hub\"\n"
+            ": > \"$DEV_HERMIT_PARENT/.tick-hub/held-run-started\"\n"
+            "while [[ ! -e \"$DEV_HERMIT_PARENT/.tick-hub/held-run-continue\" ]]; do sleep 0.01; done\n"
+            "\"$DEV_HERMIT_TOOL_ROOT/scripts/private-payload\"\n"
+        )
+        safe_payload = "#!/usr/bin/env bash\nprintf 'SAFE\\n'\n"
+        target = self.advance_remote(
+            extra_executables={
+                "scripts/owner-probe": launcher,
+                "scripts/private-payload": safe_payload,
+            }
+        )
+        bootstrap = self.installed_bootstrap()
+        process = subprocess.Popen(
+            [
+                str(bootstrap),
+                "--run-current-tool",
+                "--state-root",
+                str(self.repo),
+                "--tool-relative",
+                "scripts/owner-probe",
+            ],
+            cwd=self.home,
+            env=self.env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        cache = Path(self.env["HERMIT_HEALTH_TOOL_CACHE"])
+        try:
+            deadline = time.monotonic() + 15
+            while not started.exists() and process.poll() is None:
+                if time.monotonic() >= deadline:
+                    self.fail("private tool did not reach the replacement barrier")
+                time.sleep(0.01)
+            self.assertIsNone(process.poll())
+            run_entries = list(cache.glob(".run.*"))
+            self.assertEqual(1, len(run_entries))
+            run_entry = run_entries[0]
+            held_original = cache / f"{run_entry.name}.verified"
+            run_entry.rename(held_original)
+            shutil.copytree(cache / "trees" / target, run_entry, symlinks=True)
+            self.make_cache_writable(run_entry)
+            poison = run_entry / "scripts" / "private-payload"
+            poison.write_text(
+                "#!/usr/bin/env bash\n"
+                ": > \"$DEV_HERMIT_PARENT/.tick-hub/held-run-poison-ran\"\n"
+                "printf 'POISON\\n'\n"
+            )
+            poison.chmod(0o755)
+            proceed.touch()
+            stdout, stderr = process.communicate(timeout=15)
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.communicate()
+
+        self.assertEqual(1, process.returncode, stdout + stderr)
+        self.assertIn("SAFE", stdout)
+        self.assertNotIn("POISON", stdout)
+        self.assertFalse(poison_ran.exists())
+        self.assertIn("private tool root entry changed; preserving it", stderr)
+        self.assertTrue(run_entry.is_dir(), "replacement must not be deleted")
+        self.assertTrue(held_original.is_dir(), "held original must not be misidentified")
+
+    def test_private_run_replacement_after_final_identity_check_is_preserved(
+        self,
+    ) -> None:
+        poison_ran = self.repo / ".tick-hub" / "cleanup-poison-ran"
+        swap_count = self.base / "cleanup-identity-count"
+        swap_done = self.base / "cleanup-swap-done"
+        swap_name = self.base / "cleanup-swap-name"
+        target = self.advance_remote(
+            extra_executables={
+                "scripts/owner-probe": "#!/usr/bin/env bash\nprintf 'SAFE\\n'\n"
+            }
+        )
+        replacement_source = (
+            Path(self.env["HERMIT_HEALTH_TOOL_CACHE"]) / "trees" / target
+        )
+        bootstrap = self.installed_bootstrap()
+        shim_dir = self.base / "cleanup-python-shim"
+        shim_dir.mkdir()
+        python_shim = shim_dir / "python3"
+        python_shim.write_text(
+            "#!/usr/bin/env bash\n"
+            "set -u\n"
+            f'"{REAL_PYTHON}" "$@"\n'
+            "rc=$?\n"
+            "if [[ $rc -eq 0 && $# -eq 4 && $1 == - && $3 == .run.* "
+            "&& $4 == /proc/*/fd/* ]]; then\n"
+            "  count=0\n"
+            "  [[ ! -f $CLEANUP_SWAP_COUNT ]] || read -r count < \"$CLEANUP_SWAP_COUNT\"\n"
+            "  count=$((count + 1))\n"
+            "  printf '%s\\n' \"$count\" > \"$CLEANUP_SWAP_COUNT\"\n"
+            "  if [[ $count -eq 2 ]]; then\n"
+            "    run_name=$3\n"
+            "    printf '%s\\n' \"$run_name\" > \"$CLEANUP_SWAP_NAME\"\n"
+            "    mv -- \"$HERMIT_HEALTH_TOOL_CACHE/$run_name\" "
+            "\"$HERMIT_HEALTH_TOOL_CACHE/$run_name.cleanup-held\"\n"
+            "    cp -a -- \"$CLEANUP_REPLACEMENT_SOURCE\" "
+            "\"$HERMIT_HEALTH_TOOL_CACHE/$run_name\"\n"
+            "    chmod -R u+w -- \"$HERMIT_HEALTH_TOOL_CACHE/$run_name\"\n"
+            "    cat > \"$HERMIT_HEALTH_TOOL_CACHE/$run_name/scripts/owner-probe\" <<'POISON'\n"
+            "#!/usr/bin/env bash\n"
+            "printf poison > \"$CLEANUP_POISON_MARKER\"\n"
+            "printf 'POISON\\n'\n"
+            "POISON\n"
+            "    chmod +x \"$HERMIT_HEALTH_TOOL_CACHE/$run_name/scripts/owner-probe\"\n"
+            "    : > \"$CLEANUP_SWAP_DONE\"\n"
+            "  fi\n"
+            "fi\n"
+            "exit \"$rc\"\n"
+        )
+        python_shim.chmod(0o755)
+        env = dict(
+            self.env,
+            PATH=f"{shim_dir}:{self.env['PATH']}",
+            CLEANUP_SWAP_COUNT=str(swap_count),
+            CLEANUP_SWAP_DONE=str(swap_done),
+            CLEANUP_SWAP_NAME=str(swap_name),
+            CLEANUP_REPLACEMENT_SOURCE=str(replacement_source),
+            CLEANUP_POISON_MARKER=str(poison_ran),
+        )
+
+        result = run(
+            str(bootstrap),
+            "--run-current-tool",
+            "--state-root",
+            str(self.repo),
+            "--tool-relative",
+            "scripts/owner-probe",
+            cwd=self.home,
+            env=env,
+        )
+
+        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+        self.assertIn("SAFE", result.stdout)
+        self.assertNotIn("POISON", result.stdout)
+        self.assertFalse(poison_ran.exists())
+        self.assertTrue(swap_done.exists(), "final identity barrier did not fire")
+        run_name = swap_name.read_text().strip()
+        replacement = Path(self.env["HERMIT_HEALTH_TOOL_CACHE"]) / run_name
+        held_original = replacement.with_name(f"{run_name}.cleanup-held")
+        self.assertTrue(replacement.is_dir(), "same-name replacement was deleted")
+        self.assertTrue(
+            (replacement / "scripts" / "owner-probe").is_file(),
+            "replacement contents were recursively deleted",
+        )
+        self.assertTrue(held_original.is_dir())
+        self.assertEqual([], list(held_original.iterdir()))
 
 
 if __name__ == "__main__":

@@ -1321,6 +1321,11 @@ impl HubCommand {
 enum CiHubError {
     #[error("ci-hub: cannot locate workspace from {0}")]
     Workspace(PathBuf),
+    #[error("ci-hub: {variable} must name an existing absolute directory: {path}")]
+    OperationalRoot {
+        variable: &'static str,
+        path: PathBuf,
+    },
     #[error("ci-hub: failed to launch {tool}: {source}")]
     Launch {
         tool: String,
@@ -1487,6 +1492,11 @@ fn warn_if_main_is_soft_green(root: &Path) {
 }
 
 fn workspace_root() -> Result<PathBuf, CiHubError> {
+    if let Some(root) =
+        explicit_operational_root("DEV_HERMIT_TOOL_ROOT", env::var_os("DEV_HERMIT_TOOL_ROOT"))?
+    {
+        return Ok(root);
+    }
     let source = env::var_os("RUST_SCRIPT_PATH")
         .filter(|path| !path.is_empty())
         .map(PathBuf::from)
@@ -1510,6 +1520,26 @@ fn workspace_root() -> Result<PathBuf, CiHubError> {
     Ok(PathBuf::from(
         String::from_utf8_lossy(&output.stdout).trim(),
     ))
+}
+
+fn explicit_operational_root(
+    variable: &'static str,
+    value: Option<OsString>,
+) -> Result<Option<PathBuf>, CiHubError> {
+    let Some(value) = value.filter(|value| !value.is_empty()) else {
+        return Ok(None);
+    };
+    let root = PathBuf::from(value);
+    if !root.is_absolute() || !root.is_dir() {
+        return Err(CiHubError::OperationalRoot {
+            variable,
+            path: root,
+        });
+    }
+    // Do not canonicalize this path. The immutable-tool launcher deliberately
+    // supplies /proc/<holder>/fd/<n>; resolving it would discard the retained
+    // directory authority and return to a mutable cache pathname.
+    Ok(Some(root))
 }
 
 fn run_costed(root: &Path, original_args: &[OsString], spec: CostSpec) -> Result<i32, CiHubError> {
@@ -1724,7 +1754,10 @@ fn execute(root: &Path, command: HubCommand) -> Result<i32, CiHubError> {
             }
             run_python(root, "ci-hub/health/load_probe.py", forwarded)
         }
-        HubCommand::ValidateStatus(args) => run_validate_status(root, args),
+        HubCommand::ValidateStatus(args) => {
+            let state_root = operational_state_root(root)?;
+            run_validate_status(root, &state_root, args)
+        }
         HubCommand::SignalCrosscheck(args) => {
             run_python(root, "ci-hub/validate/signal_crosscheck.py", args.args)
         }
@@ -1738,7 +1771,7 @@ fn execute(root: &Path, command: HubCommand) -> Result<i32, CiHubError> {
             run_python(
                 root,
                 "ci-hub/validate/start_unit.py",
-                validate_run_forwarded_args(root, args.args),
+                validate_run_forwarded_args(root, args.args)?,
             )
         }
         HubCommand::ValidateStop(args) => {
@@ -1797,7 +1830,10 @@ fn execute(root: &Path, command: HubCommand) -> Result<i32, CiHubError> {
             run_python(root, "ci-hub/bin/review-attest", forwarded)
         }
         HubCommand::LandLock(args) => landing_lock::execute(root, args).map_err(Into::into),
-        HubCommand::ValidateLock(args) => validate_lock::execute(root, args).map_err(Into::into),
+        HubCommand::ValidateLock(args) => {
+            let state_root = operational_state_root(root)?;
+            validate_lock::execute(root, &state_root, args).map_err(Into::into)
+        }
         HubCommand::CiMode(args) => match args.command {
             CiModeCommand::Status(status_args) => ci_mode_status(root, status_args),
             CiModeCommand::Set(set_args) => ci_mode_set(root, set_args),
@@ -3497,12 +3533,28 @@ fn ledger_path(root: &Path) -> PathBuf {
 fn load_ledger_rows_reporting(
     path: &Path,
 ) -> Result<(Vec<HistoryRow>, Vec<validate_status::LedgerParseFailure>), CiHubError> {
+    let tool_root = path.parent().unwrap_or_else(|| Path::new("."));
+    load_ledger_rows_reporting_with_tool(path, tool_root)
+}
+
+fn load_ledger_rows_reporting_with_tool(
+    path: &Path,
+    tool_root: &Path,
+) -> Result<(Vec<HistoryRow>, Vec<validate_status::LedgerParseFailure>), CiHubError> {
     let canonical = path.file_name().is_some_and(|name| name == "ledger");
     let buf = if canonical {
-        let root = path.parent().unwrap_or_else(|| Path::new("."));
+        // Code comes from the immutable tool root; ledger discovery comes from
+        // the mutable state root that owns `path`. Passing both explicitly is
+        // required when tool_root is a retained /proc/<pid>/fd directory.
         let output = Command::new("python3")
-            .arg(root.join("ci-hub/ledger/validate_rows.py"))
+            .arg(tool_root.join("ci-hub/ledger/validate_rows.py"))
             .arg("rows")
+            .current_dir(path.parent().unwrap_or_else(|| Path::new(".")))
+            .env(
+                "DEV_HERMIT_PARENT",
+                path.parent().unwrap_or_else(|| Path::new(".")),
+            )
+            .env("DEV_HERMIT_TOOL_ROOT", tool_root)
             .bounded_output()
             .map_err(|source| CiHubError::Launch {
                 tool: "canonical validate-ledger union".into(),
@@ -7563,13 +7615,17 @@ fn print_recent_validate_history(
 /// new code could fall through an enumerated `case`/`if` and be read as success.
 /// The distinction belongs in the verdict string and JSON, where a reader
 /// consumes it; the exit code stays in the refusal class where it belongs.
-fn run_validate_status(root: &Path, args: ValidateStatusArgs) -> Result<i32, CiHubError> {
-    let path = ledger_path(root);
+fn run_validate_status(
+    tool_root: &Path,
+    state_root: &Path,
+    args: ValidateStatusArgs,
+) -> Result<i32, CiHubError> {
+    let path = ledger_path(state_root);
     // The failures are kept, not just printed: a record for THE COMMIT BEING
     // ASKED ABOUT that we could not read is the one case where answering
     // NOT-VALIDATED would be a confident wrong answer. See the
     // `LocalRecordUnreadable` arm below.
-    let (rows, parse_failures) = load_ledger_rows_reporting(&path)?;
+    let (rows, parse_failures) = load_ledger_rows_reporting_with_tool(&path, tool_root)?;
     let repo = canonical_validation_repo(&args.repo).ok_or_else(|| {
         CiHubError::ValidateStatus(format!(
             "--repo must be {CANONICAL_VALIDATE_REPO} or {CANONICAL_REVERIE_REPO}, got {}",
@@ -7589,7 +7645,7 @@ fn run_validate_status(root: &Path, args: ValidateStatusArgs) -> Result<i32, CiH
     let sha_input = args.sha.as_ref().or(args.sha_positional.as_ref());
     if sha_input.is_none() && args.pr.is_none() {
         return print_recent_validate_history(
-            root,
+            state_root,
             &repo_rows,
             &parse_failures,
             repo,
@@ -7601,10 +7657,10 @@ fn run_validate_status(root: &Path, args: ValidateStatusArgs) -> Result<i32, CiH
         (Some(input), None) => {
             validate_status::resolve_sha(&repo_rows, input).map_err(CiHubError::ValidateStatus)?
         }
-        (None, Some(pr)) => gh_pr_head(root, &args.repo, pr)?,
+        (None, Some(pr)) => gh_pr_head(state_root, &args.repo, pr)?,
         _ => unreachable!("clap rejects conflicting validate-status targets"),
     };
-    let assessment = assess_canonical_receipts(root, &repo_rows, &sha, repo)
+    let assessment = assess_canonical_receipts(state_root, &repo_rows, &sha, repo)
         .map_err(CiHubError::ValidateStatus)?;
     let newest = newest_canonical_receipt(&assessment.qualifying);
 
@@ -7635,7 +7691,7 @@ fn run_validate_status(root: &Path, args: ValidateStatusArgs) -> Result<i32, CiH
                 records: unreadable_here,
             })
         } else {
-            Some(probe_ledger_freshness(root, &assessment.sha, repo))
+            Some(probe_ledger_freshness(state_root, &assessment.sha, repo))
         }
     } else {
         None
@@ -8793,19 +8849,42 @@ fn push_option(arguments: &mut Vec<OsString>, name: &'static str, value: impl As
     arguments.push(value.as_ref().to_os_string());
 }
 
-fn validate_run_forwarded_args(root: &Path, mut arguments: Vec<OsString>) -> Vec<OsString> {
+fn validate_run_forwarded_args(
+    root: &Path,
+    arguments: Vec<OsString>,
+) -> Result<Vec<OsString>, CiHubError> {
+    validate_run_forwarded_args_with_state(root, env::var_os("DEV_HERMIT_PARENT"), arguments)
+}
+
+fn operational_state_root(root: &Path) -> Result<PathBuf, CiHubError> {
+    operational_state_root_with(root, env::var_os("DEV_HERMIT_PARENT"))
+}
+
+fn operational_state_root_with(
+    root: &Path,
+    explicit_state_root: Option<OsString>,
+) -> Result<PathBuf, CiHubError> {
+    Ok(
+        explicit_operational_root("DEV_HERMIT_PARENT", explicit_state_root)?
+            .unwrap_or_else(|| landing_lock::repository_lock_root(root)),
+    )
+}
+
+fn validate_run_forwarded_args_with_state(
+    root: &Path,
+    explicit_state_root: Option<OsString>,
+    mut arguments: Vec<OsString>,
+) -> Result<Vec<OsString>, CiHubError> {
+    let state_root = operational_state_root_with(root, explicit_state_root)?;
     let insertion = arguments
         .iter()
         .position(|argument| argument == "--")
         .unwrap_or(arguments.len());
     arguments.splice(
         insertion..insertion,
-        [
-            OsString::from("--state-root"),
-            landing_lock::repository_lock_root(root).into_os_string(),
-        ],
+        [OsString::from("--state-root"), state_root.into_os_string()],
     );
-    arguments
+    Ok(arguments)
 }
 
 fn to_exit_code(code: i32) -> ExitCode {
@@ -8814,6 +8893,7 @@ fn to_exit_code(code: i32) -> ExitCode {
 
 #[cfg(test)]
 mod tests {
+    use std::os::fd::AsRawFd;
 
     // ---- COMMITS-SINCE-GREEN rendering -------------------------------------
     // The rendering IS the feature: this number exists so a reader who has never
@@ -11647,8 +11727,9 @@ mod tests {
     #[test]
     fn validate_run_places_canonical_state_root_before_payload_arguments() {
         let root = Path::new("/not-a-repository/dev-hermit-worktree");
-        let forwarded = validate_run_forwarded_args(
+        let forwarded = validate_run_forwarded_args_with_state(
             root,
+            None,
             vec![
                 OsString::from("--checkout"),
                 OsString::from("/tmp/hermit"),
@@ -11657,7 +11738,8 @@ mod tests {
                 OsString::from("--"),
                 OsString::from("full"),
             ],
-        );
+        )
+        .unwrap();
         let separator = forwarded
             .iter()
             .position(|argument| argument == "--")
@@ -11670,6 +11752,81 @@ mod tests {
             ]
         );
         assert_eq!(forwarded[separator + 1], OsString::from("full"));
+    }
+
+    #[test]
+    fn descriptor_tool_root_and_mutable_state_root_remain_separate() {
+        let directory = env::temp_dir().join(format!(
+            "ci-hub-fd-root-{}-{}",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        let tool_directory = directory.join("tool");
+        let state_directory = directory.join("state");
+        std::fs::create_dir_all(&tool_directory).unwrap();
+        std::fs::create_dir_all(&state_directory).unwrap();
+        let descriptor = std::fs::File::open(&tool_directory).unwrap();
+        let retained = PathBuf::from(format!("/proc/self/fd/{}", descriptor.as_raw_fd()));
+
+        assert_eq!(
+            explicit_operational_root(
+                "DEV_HERMIT_TOOL_ROOT",
+                Some(retained.as_os_str().to_os_string()),
+            )
+            .unwrap(),
+            Some(retained.clone())
+        );
+        let forwarded = validate_run_forwarded_args_with_state(
+            Path::new("/different/tool/root"),
+            Some(state_directory.as_os_str().to_os_string()),
+            vec![OsString::from("--"), OsString::from("full")],
+        )
+        .unwrap();
+        assert_eq!(forwarded[0], OsString::from("--state-root"));
+        assert_eq!(forwarded[1], state_directory.as_os_str());
+        assert_ne!(forwarded[1], retained.as_os_str());
+        assert_eq!(
+            operational_state_root_with(
+                &retained,
+                Some(state_directory.as_os_str().to_os_string())
+            )
+            .unwrap(),
+            state_directory
+        );
+
+        drop(descriptor);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn canonical_ledger_adapter_comes_from_tool_root_and_reads_state_root() {
+        let directory = env::temp_dir().join(format!(
+            "ci-hub-split-ledger-root-{}-{}",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        let tool_root = directory.join("tool");
+        let state_root = directory.join("state");
+        let adapter = tool_root.join("ci-hub/ledger/validate_rows.py");
+        std::fs::create_dir_all(adapter.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(state_root.join("ledger")).unwrap();
+        std::fs::write(
+            &adapter,
+            r#"import os
+from pathlib import Path
+
+assert Path.cwd() == Path(os.environ["DEV_HERMIT_PARENT"])
+assert Path(__file__).parents[2] == Path(os.environ["DEV_HERMIT_TOOL_ROOT"])
+"#,
+        )
+        .unwrap();
+
+        let (rows, failures) =
+            load_ledger_rows_reporting_with_tool(&state_root.join("ledger"), &tool_root).unwrap();
+        assert!(rows.is_empty());
+        assert!(failures.is_empty());
+
+        std::fs::remove_dir_all(directory).unwrap();
     }
 
     #[test]

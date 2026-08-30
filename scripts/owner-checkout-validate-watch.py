@@ -24,9 +24,13 @@ import time
 from typing import Any, Iterable, Sequence
 
 
-RUN_REGISTRY_DIR = Path(__file__).resolve().parents[1] / "ci-hub" / "validate"
+TOOL_ROOT = Path(os.path.abspath(__file__)).parents[1]
+RUN_REGISTRY_DIR = TOOL_ROOT / "ci-hub" / "validate"
+LEDGER_DIR = TOOL_ROOT / "ci-hub" / "ledger"
 sys.path.insert(0, str(RUN_REGISTRY_DIR))
+sys.path.insert(0, str(LEDGER_DIR))
 import run_registry  # type: ignore  # noqa: E402
+import validate_rows  # type: ignore  # noqa: E402
 
 
 PASS = 0
@@ -500,21 +504,9 @@ def parse_time(value: Any) -> dt.datetime | None:
     return parsed.astimezone(dt.timezone.utc)
 
 
-def canonical_ledger_rows(parent: Path) -> list[dict[str, Any]]:
-    adapter = parent / "ci-hub/ledger/validate_rows.py"
-    completed = run([sys.executable, adapter, "rows"], cwd=parent)
-    if completed.returncode != 0:
-        detail = (completed.stderr or completed.stdout or "").strip()
-        raise RuntimeError(f"canonical ledger reader refused: {detail}")
-    rows: list[dict[str, Any]] = []
-    for line in (completed.stdout or "").splitlines():
-        try:
-            row = json.loads(line)
-        except (ValueError, TypeError):
-            continue
-        if isinstance(row, dict):
-            rows.append(row)
-    return rows
+def canonical_ledger_rows(state_root: Path) -> list[dict[str, Any]]:
+    """Read canonical state with the adapter imported from this exact tool tree."""
+    return validate_rows.rows(root=state_root)
 
 
 def latest_attempt_row(
@@ -546,8 +538,14 @@ def latest_attempt_row(
     )
 
 
-def qualify_row(parent: Path, checkout: Path, sha: str, row: dict[str, Any]) -> tuple[bool, str]:
-    sys.path.insert(0, str(parent / "ci-hub"))
+def qualify_row(
+    tool_root: Path,
+    state_root: Path,
+    checkout: Path,
+    sha: str,
+    row: dict[str, Any],
+) -> tuple[bool, str]:
+    sys.path.insert(0, str(tool_root / "ci-hub"))
     import qualifying_receipt  # type: ignore
 
     predicate = qualifying_receipt.load()
@@ -555,7 +553,7 @@ def qualify_row(parent: Path, checkout: Path, sha: str, row: dict[str, Any]) -> 
         row,
         sha,
         predicate,
-        repositories=[checkout, parent],
+        repositories=[checkout, state_root],
     )
 
 
@@ -656,7 +654,7 @@ def admission_refusal_evidence(log: Path) -> dict[str, Any] | None:
     return None
 
 
-def canonical_validate_status(parent: Path, sha: str) -> dict[str, Any]:
+def canonical_validate_status(tool_root: Path, state_root: Path, sha: str) -> dict[str, Any]:
     """Ask the ONE canonical authority whether THIS COMMIT is validated.
 
     Bound to the SHA, never to this attempt.  A refused re-admission writes no
@@ -667,8 +665,17 @@ def canonical_validate_status(parent: Path, sha: str) -> dict[str, Any]:
     SHA, or a VALIDATED verdict with no receipt behind it are all NOT green.
     """
     completed = run(
-        [parent / "ci-hub/ci-hub", "validate-status", "--sha", sha, "--json"],
-        cwd=parent,
+        [
+            "env",
+            f"DEV_HERMIT_PARENT={state_root}",
+            f"DEV_HERMIT_TOOL_ROOT={tool_root}",
+            tool_root / "ci-hub/ci-hub",
+            "validate-status",
+            "--sha",
+            sha,
+            "--json",
+        ],
+        cwd=tool_root,
     )
     status: dict[str, Any] = {
         "sha": sha,
@@ -1469,6 +1476,13 @@ def render_message(result: dict[str, Any]) -> str:
     lines = [
         "OWNER CHECKOUT PERIODIC VALIDATE: " + str(result["state"]),
         f"checkout: {result['checkout']}",
+        f"state_root: {result.get('state_root') or 'unresolved'}",
+        f"tool_root: {result.get('tool_root') or 'unresolved'}",
+        f"tool_parent_sha: {result.get('tool_parent_sha') or 'unresolved'}",
+        f"tool_hermit_sha: {result.get('tool_hermit_sha') or 'unresolved'}",
+        f"tool_agent_utils_sha: {result.get('tool_agent_utils_sha') or 'unresolved'}",
+        "tool_bootstrap_sha256: "
+        + str(result.get("tool_bootstrap_sha256") or "unresolved"),
         f"sha: {result.get('sha') or 'unresolved'}",
         f"origin_main_sha: {result.get('origin_main_sha') or 'unresolved'}",
         "checkout_freshness: "
@@ -1510,17 +1524,20 @@ def render_message(result: dict[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def notify(parent: Path, message_file: Path) -> tuple[int, str]:
+def notify(tool_root: Path, state_root: Path, message_file: Path) -> tuple[int, str]:
     completed = run(
         [
+            "env",
+            f"DEV_HERMIT_PARENT={state_root}",
+            f"DEV_HERMIT_TOOL_ROOT={tool_root}",
             sys.executable,
-            parent / "scripts/orc-hermit-msg.py",
+            tool_root / "scripts/orc-hermit-msg.py",
             "--transport",
             "auto",
             "--message-file",
             message_file,
         ],
-        cwd=parent,
+        cwd=tool_root,
     )
     detail = ((completed.stdout or "") + (completed.stderr or "")).strip()
     return completed.returncode, detail[-2000:]
@@ -1565,7 +1582,8 @@ def run_owner_check(args: argparse.Namespace, state_dir: Path) -> int:
     """Produce one owner-watch attempt while holding the population lock."""
 
     checkout = args.checkout.resolve()
-    parent = checkout.parent.resolve()
+    state_root = checkout.parent.resolve()
+    tool_root = TOOL_ROOT
     # The timer and a manual spot check can begin in the same second. Include
     # microseconds and PID so their start/failure records can never overwrite
     # one another before the nonblocking singleton lock decides the winner.
@@ -1579,6 +1597,12 @@ def run_owner_check(args: argparse.Namespace, state_dir: Path) -> int:
         "attempt_id": attempt_id,
         "started_at": utc_now(),
         "checkout": str(checkout),
+        "state_root": str(state_root),
+        "tool_root": str(tool_root),
+        "tool_parent_sha": os.environ.get("DEV_HERMIT_TOOL_PARENT_SHA"),
+        "tool_hermit_sha": os.environ.get("DEV_HERMIT_TOOL_HERMIT_SHA"),
+        "tool_agent_utils_sha": os.environ.get("DEV_HERMIT_TOOL_AGENT_UTILS_SHA"),
+        "tool_bootstrap_sha256": os.environ.get("DEV_HERMIT_TOOL_BOOTSTRAP_SHA256"),
         "result_json": str(result_path),
         "state": "CANNOT_START",
         "reason": "initializing",
@@ -1612,7 +1636,8 @@ def run_owner_check(args: argparse.Namespace, state_dir: Path) -> int:
     def conclude() -> int:
         lock.close()
         return finish(
-            parent,
+            tool_root,
+            state_root,
             state_dir,
             result_path,
             message_path,
@@ -1686,9 +1711,12 @@ def run_owner_check(args: argparse.Namespace, state_dir: Path) -> int:
         validate_log.parent.mkdir(parents=True, exist_ok=True)
         result["launcher_log"] = str(launcher_log)
         unit = f"validate-owner-checkout-{attempt_id.lower()}"
-        run_record = run_registry.record_path(parent, unit)
+        run_record = run_registry.record_path(state_root, unit)
         command = [
-            parent / "ci-hub/ci-hub",
+            "env",
+            f"DEV_HERMIT_PARENT={state_root}",
+            f"DEV_HERMIT_TOOL_ROOT={tool_root}",
+            tool_root / "ci-hub/ci-hub",
             "validate-run",
             "--checkout",
             checkout,
@@ -1717,7 +1745,7 @@ def run_owner_check(args: argparse.Namespace, state_dir: Path) -> int:
         }
         completed = run_validate_observing_admission(
             command,
-            cwd=parent,
+            cwd=tool_root,
             launcher_log=launcher_log,
             service_log=validate_log,
             run_record=run_record,
@@ -1743,10 +1771,10 @@ def run_owner_check(args: argparse.Namespace, state_dir: Path) -> int:
             lock_block = lock_block_evidence(validate_log)
             if lock_block is not None:
                 result["lock_block_evidence"] = lock_block
-                result["lock_holder"] = lock_holder_attribution(parent, lock_block)
+                result["lock_holder"] = lock_holder_attribution(state_root, lock_block)
 
         row = latest_attempt_row(
-            canonical_ledger_rows(parent),
+            canonical_ledger_rows(state_root),
             checkout=checkout,
             sha=pre["head"],
             launched_at=launched_at,
@@ -1757,7 +1785,9 @@ def run_owner_check(args: argparse.Namespace, state_dir: Path) -> int:
             result["coverage"] = row.get("coverage")
             result["validate_log"] = row.get("log_file") or str(validate_log)
             result["ledger_result"] = row.get("result")
-            qualified, reason = qualify_row(parent, checkout, pre["head"], row)
+            qualified, reason = qualify_row(
+                tool_root, state_root, checkout, pre["head"], row
+            )
             result["canonical_qualified"] = qualified
             result["canonical_qualification_reason"] = reason
             exception_qualified = False
@@ -1767,7 +1797,7 @@ def run_owner_check(args: argparse.Namespace, state_dir: Path) -> int:
                 adjusted["tree_dirty"] = False
                 adjusted["commit_anchored"] = True
                 exception_qualified, exception_reason = qualify_row(
-                    parent, checkout, pre["head"], adjusted
+                    tool_root, state_root, checkout, pre["head"], adjusted
                 )
             result["exception_adjusted_qualified"] = exception_qualified
             result["exception_adjusted_reason"] = exception_reason
@@ -1782,7 +1812,7 @@ def run_owner_check(args: argparse.Namespace, state_dir: Path) -> int:
         # the working copy later falls behind. Conversely, this harness does
         # not infer soft-green landability; that requires the separate recorded
         # X-to-Y rebase defined by hermit-validation-authority.
-        canonical = canonical_validate_status(parent, pre["head"])
+        canonical = canonical_validate_status(tool_root, state_root, pre["head"])
         result["canonical_status"] = canonical
         canonical_green = (
             canonical["available"] and canonical["verdict"] == CANONICAL_GREEN_VERDICT
@@ -1981,7 +2011,8 @@ def run_owner_check(args: argparse.Namespace, state_dir: Path) -> int:
 
 
 def finish(
-    parent: Path,
+    tool_root: Path,
+    state_root: Path,
     state_dir: Path,
     result_path: Path,
     message_path: Path,
@@ -1994,7 +2025,7 @@ def finish(
     atomic_write(message_path, render_message(result))
     notify_rc, notify_detail = (0, "notification disabled")
     if not args.no_notify:
-        notify_rc, notify_detail = notify(parent, message_path)
+        notify_rc, notify_detail = notify(tool_root, state_root, message_path)
     result["notification_rc"] = notify_rc
     result["notification_detail"] = notify_detail
     atomic_write(result_path, json.dumps(result, indent=2, sort_keys=True) + "\n")

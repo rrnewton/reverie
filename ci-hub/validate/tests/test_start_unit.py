@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import io
 import json
+import os
 import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import pathlib
 import unittest
 from unittest import mock
@@ -15,8 +18,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
 import start_unit  # noqa: E402
 import qualifying_receipt  # noqa: E402
+from scripts import test_parent_main_write as parent_main_tests  # noqa: E402
 
 
 SHA = "a" * 40
@@ -815,6 +820,376 @@ class StartUnitTest(unittest.TestCase):
         self.assertNotIn(f"DEV_HERMIT_PARENT={linked}", systemd)
         self.assertIn(f"DEV_HERMIT_TOOL_ROOT={linked}", systemd)
         self.assertNotIn(f"DEV_HERMIT_TOOL_ROOT={self.root}", systemd)
+
+    def test_fd_backed_tool_root_reenters_exact_installed_bootstrap(self) -> None:
+        root_fd = os.open(self.root, os.O_RDONLY | os.O_DIRECTORY)
+        self.addCleanup(os.close, root_fd)
+        retained = Path(f"/proc/{os.getpid()}/fd/{root_fd}")
+        home = self.root / "home"
+        bootstrap = home / ".local/libexec/dev-hermit/operational-tool"
+        bootstrap.parent.mkdir(parents=True)
+        bootstrap.write_text("#!/bin/sh\nexit 0\n")
+        bootstrap.chmod(0o555)
+        cache = self.root / "tool-cache"
+        cache.mkdir()
+        environment = dict(
+            self.environment,
+            HOME=str(home),
+            DEV_HERMIT_TOOL_ROOT=str(retained),
+            DEV_HERMIT_PARENT=str(self.root),
+            DEV_HERMIT_OPERATIONAL_TOOL=str(bootstrap),
+            DEV_HERMIT_TOOL_BOOTSTRAP_SHA256=hashlib.sha256(
+                bootstrap.read_bytes()
+            ).hexdigest(),
+            DEV_HERMIT_TOOL_CACHE=str(cache),
+            DEV_HERMIT_TOOL_PARENT_SHA=SHA,
+        )
+        out = io.StringIO()
+        err = io.StringIO()
+        with (
+            mock.patch.object(start_unit, "parent_checkout_head", return_value=SHA),
+            contextlib.redirect_stdout(out),
+            contextlib.redirect_stderr(err),
+        ):
+            rc = start_unit.main(
+                [
+                    "--checkout",
+                    str(self.checkout),
+                    "--state-root",
+                    str(self.root),
+                    "--agent",
+                    "owner-checkout-watch",
+                    "--target",
+                    SHA,
+                    "--unit",
+                    "validate-owner-fd-root",
+                    "--log",
+                    str(self.root / "owner-fd.log"),
+                    "--dry-run",
+                    "--json",
+                    "--",
+                    "full",
+                ],
+                run=self.fake,
+                environment=environment,
+                root=self.root,
+                sleep=lambda _seconds: None,
+            )
+
+        self.assertEqual(0, rc, err.getvalue())
+        report = json.loads(out.getvalue())
+        command = report["command"]
+        bootstrap_digest = hashlib.sha256(bootstrap.read_bytes()).hexdigest()
+        bootstrap_index = command.index(start_unit.PINNED_BOOTSTRAP_EXEC) - 2
+        self.assertEqual(
+            [
+                sys.executable,
+                "-c",
+                start_unit.PINNED_BOOTSTRAP_EXEC,
+                str(bootstrap),
+                bootstrap_digest,
+                "--run-current-tool",
+                "--state-root",
+                str(self.root),
+                "--cache-root",
+                str(cache),
+                "--tool-parent-sha",
+                SHA,
+                "--tool-relative",
+                "ci-hub/ci-hub",
+                "--",
+                "validate-lock",
+                "run",
+            ],
+            command[bootstrap_index : bootstrap_index + 17],
+        )
+        self.assertNotIn(str(retained / "ci-hub/ci-hub"), command)
+        self.assertNotIn(f"DEV_HERMIT_TOOL_ROOT={retained}", command)
+        self.assertNotIn(str(retained), " ".join(command))
+        self.assertIn(f"DEV_HERMIT_PARENT={self.root}", command)
+        self.assertNotIn(f"DEV_HERMIT_TOOL_ROOT={self.root}", command)
+
+    def test_fd_backed_tool_root_without_lifetime_handoff_is_refused(self) -> None:
+        root_fd = os.open(self.root, os.O_RDONLY | os.O_DIRECTORY)
+        self.addCleanup(os.close, root_fd)
+        retained = Path(f"/proc/{os.getpid()}/fd/{root_fd}")
+        environment = dict(
+            self.environment,
+            DEV_HERMIT_TOOL_ROOT=str(retained),
+            DEV_HERMIT_PARENT=str(self.root),
+        )
+        out = io.StringIO()
+        err = io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = start_unit.main(
+                [
+                    "--checkout",
+                    str(self.checkout),
+                    "--agent",
+                    "owner-checkout-watch",
+                    "--target",
+                    SHA,
+                    "--dry-run",
+                    "--",
+                    "full",
+                ],
+                run=self.fake,
+                environment=environment,
+                root=self.root,
+                sleep=lambda _seconds: None,
+            )
+
+        self.assertEqual(start_unit.EXIT_REFUSED, rc)
+        self.assertIn("lacks the installed-bootstrap", err.getvalue())
+        self.assertFalse(any(command[0] == "systemd-run" for command in self.fake.commands))
+
+    def test_unit_time_bootstrap_digest_rejects_path_replacement(self) -> None:
+        root_fd = os.open(self.root, os.O_RDONLY | os.O_DIRECTORY)
+        self.addCleanup(os.close, root_fd)
+        retained = Path(f"/proc/{os.getpid()}/fd/{root_fd}")
+        home = self.root / "home"
+        bootstrap = home / ".local/libexec/dev-hermit/operational-tool"
+        bootstrap.parent.mkdir(parents=True)
+        marker = self.root / "replacement-ran"
+        bootstrap.write_text("#!/bin/sh\nexit 0\n")
+        bootstrap.chmod(0o555)
+        cache = self.root / "tool-cache"
+        cache.mkdir()
+        environment = dict(
+            self.environment,
+            HOME=str(home),
+            DEV_HERMIT_OPERATIONAL_TOOL=str(bootstrap),
+            DEV_HERMIT_TOOL_BOOTSTRAP_SHA256=hashlib.sha256(
+                bootstrap.read_bytes()
+            ).hexdigest(),
+            DEV_HERMIT_TOOL_CACHE=str(cache),
+            DEV_HERMIT_TOOL_PARENT_SHA=SHA,
+        )
+        with mock.patch.object(start_unit, "parent_checkout_head", return_value=SHA):
+            prefix = start_unit.detached_tool_prefix(
+                retained, self.root, environment
+            )
+        self.assertIsNotNone(prefix)
+        bootstrap.chmod(0o755)
+        bootstrap.write_text(f"#!/bin/sh\nprintf poison > {marker}\n")
+        bootstrap.chmod(0o555)
+
+        result = subprocess.run(
+            prefix or [],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+
+        self.assertEqual(126, result.returncode, result.stdout + result.stderr)
+        self.assertIn("digest changed before unit exec", result.stderr)
+        self.assertFalse(marker.exists())
+
+    def test_accepted_detached_unit_owns_exact_tool_root_after_waiter_returns(
+        self,
+    ) -> None:
+        operational = parent_main_tests.HealthTickParentSyncTests()
+        operational.setUp()
+        self.addCleanup(operational.tearDown)
+        service = (
+            "#!/usr/bin/env bash\n"
+            "set -eu\n"
+            "while [[ ! -e \"$DEV_HERMIT_PARENT/unit-release\" ]]; do sleep 0.01; done\n"
+            "\"$DEV_HERMIT_TOOL_ROOT/ci-hub/validate/preflight_validate.py\"\n"
+        )
+        preflight = (
+            "#!/usr/bin/env bash\n"
+            "set -eu\n"
+            "git -C \"$DEV_HERMIT_TOOL_ROOT\" rev-parse HEAD > "
+            "\"$DEV_HERMIT_PARENT/unit-preflight-head\"\n"
+        )
+        target = operational.advance_remote(
+            extra_executables={
+                "ci-hub/ci-hub": service,
+                "ci-hub/validate/preflight_validate.py": preflight,
+            }
+        )
+        bootstrap = operational.installed_bootstrap()
+        primed = operational.run_current_tool(
+            bootstrap, "ci-hub/bin/health-tick"
+        )
+        self.assertEqual(0, primed.returncode, primed.stdout + primed.stderr)
+        shutil.rmtree(operational.base / "publisher")
+        newer_parent = operational.advance_remote(update_wrapper=True)
+        self.assertNotEqual(target, newer_parent)
+        cache = Path(operational.env["HERMIT_HEALTH_TOOL_CACHE"]).resolve()
+        cached = cache / "trees" / target
+        outer = operational.base / "outer-private-tool"
+        shutil.copytree(cached, outer, symlinks=True)
+        outer_fd = os.open(outer, os.O_RDONLY | os.O_DIRECTORY)
+        retained = Path(f"/proc/{os.getpid()}/fd/{outer_fd}")
+
+        class DetachedRun(FakeRun):
+            def __init__(self, checkout: Path) -> None:
+                super().__init__(checkout)
+                self.unit_process: subprocess.Popen[str] | None = None
+
+            def _run_after_checkout_setup(self, command: list[str]):
+                if command[0] == "systemd-run" and "validate-lock" in command:
+                    unit_environment = dict(os.environ)
+                    for flag, value in zip(command, command[1:]):
+                        if flag == "--setenv" and "=" in value:
+                            key, _, item = value.partition("=")
+                            unit_environment[key] = item
+                    executable_index = (
+                        command.index(start_unit.PINNED_BOOTSTRAP_EXEC) - 2
+                    )
+                    output = next(
+                        value.removeprefix("StandardOutput=append:")
+                        for value in command
+                        if value.startswith("StandardOutput=append:")
+                    )
+                    output_handle = Path(output).open("ab")
+                    try:
+                        self.unit_process = subprocess.Popen(
+                            command[executable_index:],
+                            cwd=Path(str(self.fresh)),
+                            env=unit_environment,
+                            stdin=subprocess.DEVNULL,
+                            stdout=output_handle,
+                            stderr=subprocess.STDOUT,
+                            text=True,
+                            start_new_session=True,
+                        )
+                    finally:
+                        output_handle.close()
+                    return completed(
+                        command,
+                        stdout="Running as unit: validate-owner-detached.service\n",
+                    )
+                if command[:3] == ["systemctl", "--user", "show"]:
+                    raise RuntimeError("injected waiter transport failure")
+                return super()._run_after_checkout_setup(command)
+
+        detached = DetachedRun(self.checkout)
+        environment = dict(
+            operational.env,
+            XDG_RUNTIME_DIR=str(self.root),
+            DEV_HERMIT_TOOL_ROOT=str(retained),
+            DEV_HERMIT_PARENT=str(self.root),
+            DEV_HERMIT_OPERATIONAL_TOOL=str(bootstrap),
+            DEV_HERMIT_TOOL_BOOTSTRAP_SHA256=hashlib.sha256(
+                bootstrap.read_bytes()
+            ).hexdigest(),
+            DEV_HERMIT_TOOL_CACHE=str(cache),
+            DEV_HERMIT_TOOL_PARENT_SHA=target,
+        )
+        out = io.StringIO()
+        err = io.StringIO()
+        try:
+            with (
+                mock.patch.object(start_unit.pane_owner, "create_pane", return_value=None),
+                contextlib.redirect_stdout(out),
+                contextlib.redirect_stderr(err),
+            ):
+                rc = start_unit.main(
+                    [
+                        "--checkout",
+                        str(self.checkout),
+                        "--state-root",
+                        str(self.root),
+                        "--agent",
+                        "owner-checkout-watch",
+                        "--target",
+                        SHA,
+                        "--unit",
+                        "validate-owner-detached",
+                        "--log",
+                        str(self.root / "owner-detached.log"),
+                        "--",
+                        "full",
+                    ],
+                    run=detached,
+                    environment=environment,
+                    root=self.root,
+                    sleep=lambda _seconds: None,
+                )
+
+            self.assertEqual(start_unit.EXIT_COULD_NOT_DETERMINE, rc, err.getvalue())
+            self.assertIn("WAIT-INTERRUPTED", err.getvalue())
+            self.assertIsNotNone(detached.unit_process)
+            os.close(outer_fd)
+            outer_fd = -1
+            parent_main_tests.run("chmod", "-R", "u+w", str(outer), cwd=self.root)
+            shutil.rmtree(outer)
+            self.assertFalse(retained.exists(), "the launcher-owned fd must be gone")
+
+            (self.root / "unit-release").touch()
+            assert detached.unit_process is not None
+            unit_rc = detached.unit_process.wait(timeout=20)
+            self.assertEqual(
+                0,
+                unit_rc,
+                (self.root / "owner-detached.log").read_text(),
+            )
+            self.assertEqual(
+                target,
+                (self.root / "unit-preflight-head").read_text().strip(),
+            )
+            operational.assert_private_run_pool_is_reusable()
+            run_root = next(cache.glob(".run.*"))
+            first_identity = (run_root.stat().st_dev, run_root.stat().st_ino)
+
+            repeated = parent_main_tests.run(
+                str(bootstrap),
+                "--run-current-tool",
+                "--state-root",
+                str(self.root),
+                "--cache-root",
+                str(cache),
+                "--tool-parent-sha",
+                target,
+                "--tool-relative",
+                "ci-hub/validate/preflight_validate.py",
+                cwd=operational.home,
+                env=operational.env,
+            )
+            self.assertEqual(0, repeated.returncode, repeated.stdout + repeated.stderr)
+            operational.assert_private_run_pool_is_reusable()
+            reused = next(cache.glob(".run.*"))
+            self.assertEqual(first_identity, (reused.stat().st_dev, reused.stat().st_ino))
+        finally:
+            if outer_fd >= 0:
+                os.close(outer_fd)
+            if detached.unit_process is not None and detached.unit_process.poll() is None:
+                detached.unit_process.kill()
+                detached.unit_process.wait(timeout=5)
+
+    def test_relative_explicit_tool_root_is_refused_before_checkout_work(self) -> None:
+        environment = dict(
+            self.environment,
+            DEV_HERMIT_TOOL_ROOT="relative/tool-root",
+            DEV_HERMIT_PARENT=str(self.root),
+        )
+        out = io.StringIO()
+        err = io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = start_unit.main(
+                [
+                    "--checkout",
+                    str(self.checkout),
+                    "--agent",
+                    "owner-checkout-watch",
+                    "--target",
+                    SHA,
+                    "--dry-run",
+                    "--",
+                    "full",
+                ],
+                run=self.fake,
+                environment=environment,
+                root=self.root,
+                sleep=lambda _seconds: None,
+            )
+
+        self.assertEqual(start_unit.EXIT_REFUSED, rc)
+        self.assertIn("is not an existing absolute directory", err.getvalue())
+        self.assertEqual([], self.fake.commands)
 
     def test_sweep_completed_archives_receipts_and_removes_checkout(self) -> None:
         fresh = self.root / "worktrees" / "validate" / "validate-fresh-sweep"

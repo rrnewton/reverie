@@ -1146,17 +1146,16 @@ struct LockPaths {
 }
 
 impl LockPaths {
-    fn for_workspace(root: &Path) -> Self {
+    fn for_workspace(tool_root: &Path, state_root: &Path) -> Self {
         // The base is DISTINCT from `.landing-lock` so a validate never contends
         // with a lander. The path is NOT caller-selectable in a production build:
         // `test_only_override` returns None there (and says so), because an
         // ambient variable that redirects the box-exclusive lockfile escapes box
         // exclusivity outright (c6767e06).
         //
-        // AND THE ROOT IS CANONICALIZED TO THE REPOSITORY'S MAIN WORKTREE, because
-        // `root` alone is not one place. `workspace_root()` (ci-hub.rs) returns the
-        // git toplevel of the running `ci-hub.rs`, so EVERY linked worktree used to
-        // derive its own private `.validate-lock` and admit independently. Measured
+        // AND THE STATE ROOT IS CANONICALIZED TO THE REPOSITORY'S MAIN WORKTREE,
+        // because one repository is not one checkout. EVERY linked worktree used
+        // to derive its own private `.validate-lock` and admit independently. Measured
         // 2026-08-08 on this box: 46 worktrees of ~/work/dev-hermit, all 46 carrying
         // a runnable `ci-hub/ci-hub`, i.e. 46 mutually blind box-exclusive locks —
         // and two runs from two of them were admitted 2/2 concurrently. Only the
@@ -1164,10 +1163,11 @@ impl LockPaths {
         // none), so collapsing them onto it orphans nothing.
         let lock = test_only_override(VALIDATE_LOCK_PATH_ENV)
             .map(PathBuf::from)
-            .unwrap_or_else(|| repository_lock_root(root).join(".validate-lock"));
+            .unwrap_or_else(|| repository_lock_root(state_root).join(".validate-lock"));
         let mut paths = Self::at(lock);
-        paths.owner_watch_verifier =
-            Some(repository_lock_root(root).join(OWNER_WATCH_VERIFIER_RELATIVE));
+        // Executable policy comes from the immutable tool root. Operational
+        // locks and handles remain rooted in the mutable shared state checkout.
+        paths.owner_watch_verifier = Some(tool_root.join(OWNER_WATCH_VERIFIER_RELATIVE));
         paths.owner_watch_state_dir =
             env::var_os("HOME").map(|home| PathBuf::from(home).join(OWNER_WATCH_STATE_RELATIVE));
         paths
@@ -1939,16 +1939,20 @@ enum GlobalTurn {
     Held(String),
 }
 
-pub fn execute(root: &Path, args: ValidateLockArgs) -> Result<i32, ValidateLockError> {
+pub fn execute(
+    tool_root: &Path,
+    state_root: &Path,
+    args: ValidateLockArgs,
+) -> Result<i32, ValidateLockError> {
     let lock = ValidateLock {
-        paths: LockPaths::for_workspace(root),
+        paths: LockPaths::for_workspace(tool_root, state_root),
     };
     match args.command {
         ValidateLockCommand::Prioritize(args) => lock.prioritize(args),
         ValidateLockCommand::RetirePriority(args) => lock.retire_priority(args),
         ValidateLockCommand::Acquire(args) => {
             reject_bad_acquire_max(args.max)?;
-            base_admission_check(root, &args.target, args.kind, args.skip_base_check)?;
+            base_admission_check(tool_root, &args.target, args.kind, args.skip_base_check)?;
             let yield_status =
                 lock.wait_for_owner_watch_yield(&args.agent, args.wait, args.wait == 0)?;
             if yield_status != 0 {
@@ -2038,7 +2042,7 @@ pub fn execute(root: &Path, args: ValidateLockArgs) -> Result<i32, ValidateLockE
         ValidateLockCommand::AuthorityStatus(args) => {
             debug_assert!(args.json, "clap requires --json");
             ValidateLock {
-                paths: LockPaths::for_authority_query(root),
+                paths: LockPaths::for_authority_query(state_root),
             }
             .print_authority_status()?;
             Ok(0)
@@ -2093,7 +2097,7 @@ pub fn execute(root: &Path, args: ValidateLockArgs) -> Result<i32, ValidateLockE
                 });
             selected.census_orphaned_domain(args)
         }
-        ValidateLockCommand::Run(args) => lock.run(args, root),
+        ValidateLockCommand::Run(args) => lock.run_with_roots(args, tool_root, state_root),
     }
 }
 
@@ -4765,7 +4769,17 @@ impl ValidateLock {
         Ok(0)
     }
 
+    #[cfg(test)]
     fn run(&self, args: RunArgs, root: &Path) -> Result<i32, ValidateLockError> {
+        self.run_with_roots(args, root, root)
+    }
+
+    fn run_with_roots(
+        &self,
+        args: RunArgs,
+        tool_root: &Path,
+        state_root: &Path,
+    ) -> Result<i32, ValidateLockError> {
         if args.child.is_empty() {
             return Err(ValidateLockError::EmptyChild);
         }
@@ -4780,17 +4794,17 @@ impl ValidateLock {
         // The run record is the shared producer-consumer contract for
         // admission. Bind it before any normal refusal so a current invocation
         // never leaves its observer to reconstruct the answer from log text.
-        let attribution = require_run_attribution(root, &args)?;
+        let attribution = require_run_attribution(state_root, &args)?;
 
         // Refuse immutable-floor and current-main violations BEFORE this run
         // enters the box-global queue. A stale head must not wait for scarce
         // validation time it can never consume usefully.
         if let Err(error) =
-            base_admission_check(root, &args.target, args.kind, args.skip_base_check)
+            base_admission_check(tool_root, &args.target, args.kind, args.skip_base_check)
         {
             return stale_base_refusal_with_record(&attribution, error);
         }
-        if let Err(error) = current_main_freshness_check(root, &args.target, args.kind) {
+        if let Err(error) = current_main_freshness_check(state_root, &args.target, args.kind) {
             return stale_base_refusal_with_record(&attribution, error);
         }
 
@@ -4844,13 +4858,18 @@ impl ValidateLock {
         // cleanup quarantine, which is unchanged and still consulted below; ACROSS
         // repositories it is not. Closing that needs a box-global durable record,
         // which is a different change from this one.
-        let (mut box_anchors, mut slot) =
-            match self.wait_for_global_turn(&args, &owner, &anchor_attribution, false, root)? {
-                Some(reservation) => reservation,
-                None => {
-                    return refusal_before_admission(&attribution, REFUSED_EXIT_CODE);
-                }
-            };
+        let (mut box_anchors, mut slot) = match self.wait_for_global_turn(
+            &args,
+            &owner,
+            &anchor_attribution,
+            false,
+            state_root,
+        )? {
+            Some(reservation) => reservation,
+            None => {
+                return refusal_before_admission(&attribution, REFUSED_EXIT_CODE);
+            }
+        };
         loop {
             let held = box_anchors
                 .iter()
@@ -4875,7 +4894,8 @@ impl ValidateLock {
                     // product driver's local-ref check remains a defensive
                     // assertion against any later race.
                     run_current_main_between_checks_hook();
-                    if let Err(error) = current_main_freshness_check(root, &args.target, args.kind)
+                    if let Err(error) =
+                        current_main_freshness_check(state_root, &args.target, args.kind)
                     {
                         drop(box_anchors);
                         self.remove_own_global_waiter(&args, &owner)?;
@@ -4907,7 +4927,7 @@ impl ValidateLock {
                         &owner,
                         &anchor_attribution,
                         false,
-                        root,
+                        state_root,
                     )? {
                         Some(reservation) => reservation,
                         None => return refusal_before_admission(&attribution, REFUSED_EXIT_CODE),
@@ -8720,21 +8740,44 @@ exit 0
         let alt = root.join("alt-validate-lock");
         // Default: derived from the workspace root, never from the environment.
         env::remove_var(VALIDATE_LOCK_PATH_ENV);
-        let default_paths = LockPaths::for_workspace(&root);
+        let default_paths = LockPaths::for_workspace(&root, &root);
         assert_eq!(default_paths.lock, root.join(".validate-lock"));
         assert_eq!(default_paths.guard, root.join(".validate-lock.guard"));
         // Override arm: present only because this is a `cfg(test)` build.
         env::set_var(VALIDATE_LOCK_PATH_ENV, &alt);
-        let overridden = LockPaths::for_workspace(&root);
+        let overridden = LockPaths::for_workspace(&root, &root);
         env::remove_var(VALIDATE_LOCK_PATH_ENV);
         assert_eq!(overridden.lock, alt);
         assert_eq!(overridden.queue, suffix(&alt, ".queue"));
         // An empty value is not an override -- it would otherwise select "" and
         // silently relocate every lock file to the process working directory.
         env::set_var(VALIDATE_LOCK_PATH_ENV, "");
-        let empty = LockPaths::for_workspace(&root);
+        let empty = LockPaths::for_workspace(&root, &root);
         env::remove_var(VALIDATE_LOCK_PATH_ENV);
         assert_eq!(empty.lock, root.join(".validate-lock"));
+    }
+
+    #[test]
+    fn split_roots_keep_lock_state_and_owner_watch_code_separate() {
+        let _env_guard = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let root = env::temp_dir().join(format!(
+            "ci-hub-vlock-split-roots-{}-{}",
+            std::process::id(),
+            epoch_seconds().unwrap()
+        ));
+        let tool_root = root.join("tool");
+        let state_root = root.join("state");
+        fs::create_dir_all(&tool_root).unwrap();
+        fs::create_dir_all(&state_root).unwrap();
+
+        let paths = LockPaths::for_workspace(&tool_root, &state_root);
+
+        assert_eq!(paths.lock, state_root.join(".validate-lock"));
+        assert_eq!(
+            paths.owner_watch_verifier,
+            Some(tool_root.join(OWNER_WATCH_VERIFIER_RELATIVE))
+        );
+        let _ = fs::remove_dir_all(root);
     }
 
     // --- box-global exclusion: one lease per REPOSITORY, one anchor per BOX ---
@@ -8786,8 +8829,8 @@ exit 0
             ]
         ));
 
-        let from_main = LockPaths::for_workspace(&main);
-        let from_linked = LockPaths::for_workspace(&linked);
+        let from_main = LockPaths::for_workspace(&main, &main);
+        let from_linked = LockPaths::for_workspace(&linked, &linked);
         assert_eq!(
             from_linked.lock,
             main.join(".validate-lock"),
@@ -8819,7 +8862,7 @@ exit 0
         fs::create_dir_all(&root).unwrap();
         assert_eq!(repository_lock_root(&root), root);
         assert_eq!(
-            LockPaths::for_workspace(&root).lock,
+            LockPaths::for_workspace(&root, &root).lock,
             root.join(".validate-lock")
         );
         let _ = fs::remove_dir_all(&root);
@@ -9433,7 +9476,10 @@ exit 0
         // The PRODUCTION constructor wires that uid-derived path in; only the
         // test constructor (`paths_at`) substitutes a per-test one.
         let workspace = env::temp_dir().join("ci-hub-vlock-anchor-prod-probe");
-        assert_eq!(LockPaths::for_workspace(&workspace).anchor, path);
+        assert_eq!(
+            LockPaths::for_workspace(&workspace, &workspace).anchor,
+            path
+        );
     }
 
     // NEGATIVE direction: a floor-blocked head is REFUSED, and the refusal
@@ -9963,6 +10009,43 @@ exit 0
             ),
             other => panic!("ERROR must fail closed to StaleBase, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn base_admission_loads_preflight_from_immutable_tool_root() {
+        let _g = ENV_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        let prior_override = env::var_os(ADMIT_PREFLIGHT_CMD_ENV);
+        env::remove_var(ADMIT_PREFLIGHT_CMD_ENV);
+        let root = env::temp_dir().join(format!(
+            "ci-hub-vlock-split-preflight-{}-{}",
+            std::process::id(),
+            epoch_seconds().unwrap()
+        ));
+        let tool_root = root.join("tool");
+        let state_root = root.join("state");
+        let tool_preflight = tool_root.join("ci-hub/validate/preflight_validate.py");
+        let state_preflight = state_root.join("ci-hub/validate/preflight_validate.py");
+        fs::create_dir_all(tool_preflight.parent().unwrap()).unwrap();
+        fs::create_dir_all(state_preflight.parent().unwrap()).unwrap();
+        fs::write(
+            &tool_preflight,
+            "from pathlib import Path\nPath(__file__).parents[2].joinpath('tool-preflight-ran').write_text('ok')\n",
+        )
+        .unwrap();
+        fs::write(&state_preflight, "raise SystemExit(2)\n").unwrap();
+
+        let result = base_admission_check(&tool_root, HEX_SHA, Kind::Validate, false);
+
+        if let Some(value) = prior_override {
+            env::set_var(ADMIT_PREFLIGHT_CMD_ENV, value);
+        }
+        assert!(
+            result.is_ok(),
+            "immutable preflight should authorize: {result:?}"
+        );
+        assert!(tool_root.join("tool-preflight-ran").is_file());
+        assert!(!state_root.join("tool-preflight-ran").exists());
+        let _ = fs::remove_dir_all(root);
     }
 
     // PASS-THROUGH: bench work is not landing evidence and does not invoke the

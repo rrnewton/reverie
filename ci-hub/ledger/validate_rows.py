@@ -68,6 +68,19 @@ def repository_root() -> Path:
         test_root = os.environ.get("CI_HUB_VALIDATE_LEDGER_TEST_ROOT")
         if test_root:
             return Path(test_root)
+    # An immutable operational-tool checkout supplies this module's code while
+    # the append-only ledger and live spool remain in the mutable parent. Keep
+    # that split explicit; deriving state from __file__ would read the private
+    # tool snapshot and make existing validation evidence disappear.
+    parent = os.environ.get("DEV_HERMIT_PARENT")
+    if parent:
+        root = Path(parent)
+        if not root.is_absolute() or not root.is_dir():
+            raise ValueError(
+                "DEV_HERMIT_PARENT must name an existing absolute directory: "
+                f"{root}"
+            )
+        return root.resolve()
     checkout_root = Path(__file__).resolve().parents[2]
     git_env = {
         name: value for name, value in os.environ.items() if not name.startswith("GIT_")

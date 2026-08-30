@@ -612,15 +612,22 @@ class OwnerCheckoutValidateWatchTest(unittest.TestCase):
             state = root / "state"
             before = watch.tree_state(repo)
 
-            rc = watch.main(
-                [
-                    "--checkout", str(repo),
-                    "--state-dir", str(state),
-                    "--no-fetch",
-                    "--no-notify",
-                    "--dry-run",
-                ]
-            )
+            authority = {
+                "DEV_HERMIT_TOOL_PARENT_SHA": "1" * 40,
+                "DEV_HERMIT_TOOL_HERMIT_SHA": "2" * 40,
+                "DEV_HERMIT_TOOL_AGENT_UTILS_SHA": "3" * 40,
+                "DEV_HERMIT_TOOL_BOOTSTRAP_SHA256": "4" * 64,
+            }
+            with mock.patch.dict(os.environ, authority):
+                rc = watch.main(
+                    [
+                        "--checkout", str(repo),
+                        "--state-dir", str(state),
+                        "--no-fetch",
+                        "--no-notify",
+                        "--dry-run",
+                    ]
+                )
 
             self.assertEqual(rc, watch.NO_RESULT)
             self.assertEqual(watch.tree_state(repo), before)
@@ -639,6 +646,12 @@ class OwnerCheckoutValidateWatchTest(unittest.TestCase):
                 watch.COMMIT_VALIDATION_UNKNOWN,
             )
             self.assertIn("current main", result["verdict_qualifier"])
+            self.assertEqual(result["state_root"], str(repo.parent.resolve()))
+            self.assertEqual(result["tool_root"], str(watch.TOOL_ROOT.resolve()))
+            self.assertEqual(result["tool_parent_sha"], "1" * 40)
+            self.assertEqual(result["tool_hermit_sha"], "2" * 40)
+            self.assertEqual(result["tool_agent_utils_sha"], "3" * 40)
+            self.assertEqual(result["tool_bootstrap_sha256"], "4" * 64)
 
     def test_validated_stale_checkout_reports_hard_green_and_behind(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -743,6 +756,18 @@ class OwnerCheckoutValidateWatchTest(unittest.TestCase):
 
             self.assertEqual(rc, watch.PASS)
             launched.assert_called_once()
+            command_argv = launched.call_args.args[0]
+            self.assertEqual(command_argv[0], "env")
+            self.assertIn(
+                f"DEV_HERMIT_PARENT={repo.parent.resolve()}", command_argv
+            )
+            self.assertIn(
+                f"DEV_HERMIT_TOOL_ROOT={watch.TOOL_ROOT.resolve()}", command_argv
+            )
+            self.assertIn(watch.TOOL_ROOT.resolve() / "ci-hub/ci-hub", command_argv)
+            self.assertEqual(
+                launched.call_args.kwargs["cwd"], watch.TOOL_ROOT.resolve()
+            )
             result = json.loads(
                 next((state / "results").glob("*.json")).read_text()
             )
@@ -862,6 +887,23 @@ class OwnerCheckoutValidateWatchTest(unittest.TestCase):
         ).read_text()
         self.assertIn("SuccessExitStatus=0 1 2 3 4 6\n", service)
         self.assertNotIn("SuccessExitStatus=0 1 2 3 4 5", service)
+
+    def test_systemd_executes_installed_bootstrap_not_mutable_primary(self) -> None:
+        service = (
+            ROOT / "scripts/systemd/hermit-owner-checkout-validate.service"
+        ).read_text()
+        self.assertIn(
+            "ExecStart=%h/.local/libexec/dev-hermit/operational-tool "
+            "--run-current-tool",
+            service,
+        )
+        self.assertIn(
+            "--tool-relative scripts/owner-checkout-validate-watch.py", service
+        )
+        self.assertNotIn(
+            "ExecStart=%h/work/dev-hermit/scripts/owner-checkout-validate-watch.py",
+            service,
+        )
 
     def test_lock_quarantine_is_distinct_from_product_failure(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -1635,14 +1677,36 @@ class OwnerCheckoutValidateWatchTest(unittest.TestCase):
     def test_canonical_rows_come_from_the_single_adapter(self) -> None:
         parent = Path("/fixture/dev-hermit")
         rows = [{"commit": "1" * 40}, {"commit": "2" * 40}]
+        with mock.patch.object(watch.validate_rows, "rows", return_value=rows) as invoked:
+            self.assertEqual(watch.canonical_ledger_rows(parent), rows)
+        invoked.assert_called_once_with(root=parent)
+
+    def test_validate_status_uses_tool_code_and_state_root(self) -> None:
+        sha = "a" * 40
+        tool_root = Path("/immutable/tool")
+        state_root = Path("/mutable/state")
         completed = subprocess.CompletedProcess(
-            [], 0, stdout="".join(json.dumps(row) + "\n" for row in rows), stderr=""
+            [],
+            0,
+            stdout=json.dumps({"sha": sha, "verdict": "UNVALIDATED"}),
+            stderr="",
         )
         with mock.patch.object(watch, "run", return_value=completed) as invoked:
-            self.assertEqual(watch.canonical_ledger_rows(parent), rows)
+            status = watch.canonical_validate_status(tool_root, state_root, sha)
+
+        self.assertTrue(status["available"])
         invoked.assert_called_once_with(
-            [sys.executable, parent / "ci-hub/ledger/validate_rows.py", "rows"],
-            cwd=parent,
+            [
+                "env",
+                f"DEV_HERMIT_PARENT={state_root}",
+                f"DEV_HERMIT_TOOL_ROOT={tool_root}",
+                tool_root / "ci-hub/ci-hub",
+                "validate-status",
+                "--sha",
+                sha,
+                "--json",
+            ],
+            cwd=tool_root,
         )
 
 

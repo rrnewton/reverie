@@ -6,12 +6,14 @@ from __future__ import annotations
 import argparse
 import filecmp
 import fcntl
+import hashlib
 import json
 import os
 import re
 import secrets
 import shlex
 import shutil
+import stat
 import subprocess
 import tempfile
 import sys
@@ -35,15 +37,13 @@ HOST_TMP_ROOT = Path("/tmp").resolve()
 MAX_RUNTIME_ROOT_BYTES = 30
 
 
-def parent_checkout_head() -> str | None:
+def parent_checkout_head(tool_root: Path = ROOT) -> str | None:
     """The commit of the checkout THIS TOOLING CAME FROM, for the run record.
 
     WHY A RUN MUST RECORD THIS. Validation tooling -- this file, `validate.rs`,
-    everything under `ci-hub/` -- executes from the SHARED PARENT WORKING TREE,
-    whatever is on disk at the moment of each invocation. The parent is
-    chronically behind `origin/main`: measured 2026-08-27, main took 96 commits
-    in 12 hours and 32% of them touched a path the tick polices, so a policed
-    path is superseded roughly every 23 minutes.
+    everything under `ci-hub/` -- can execute from an immutable retained tool
+    root while mutable records live in the shared parent. Recording only the
+    subject SHA cannot identify which tooling produced the result.
 
     A long run therefore CAN span a parent update and execute two different
     versions of its own tooling. Recording `target` alone -- the subject being
@@ -52,9 +52,8 @@ def parent_checkout_head() -> str | None:
     It cost exactly that tonight, when `ci-hub/validate/start_unit.py` was stale
     and a headline number was briefly in doubt.
 
-    One field makes it a comparison instead. It does not prevent the split and
-    is not a lock; it makes an invisible exposure visible, which is the property
-    that holds no matter when the parent updates.
+    This field makes that otherwise invisible split explicit. It is evidence,
+    not a lock.
 
     None, never a guess, when the commit cannot be established -- an unknown
     origin must not read as a matching one.
@@ -62,7 +61,7 @@ def parent_checkout_head() -> str | None:
 
     try:
         completed = subprocess.run(
-            ["git", "--no-optional-locks", "-C", str(ROOT), "rev-parse", "HEAD"],
+            ["git", "--no-optional-locks", "-C", str(tool_root), "rev-parse", "HEAD"],
             capture_output=True,
             text=True,
             timeout=10,
@@ -74,8 +73,43 @@ def parent_checkout_head() -> str | None:
         return None
     head = completed.stdout.strip()
     return head if SHA_RE.match(head) else None
+
+
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 UNIT_RE = re.compile(r"^validate-[A-Za-z0-9_.@:-]+$")
+FD_TOOL_ROOT_RE = re.compile(r"^/proc/[1-9][0-9]*/fd/[0-9]+$")
+PINNED_BOOTSTRAP_EXEC = r"""
+import hashlib
+import os
+import stat
+import sys
+
+path = sys.argv[1]
+expected = sys.argv[2]
+fd = -1
+try:
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    metadata = os.fstat(fd)
+    if (
+        not stat.S_ISREG(metadata.st_mode)
+        or metadata.st_nlink != 1
+        or metadata.st_mode & 0o222
+        or not metadata.st_mode & 0o111
+    ):
+        raise RuntimeError("installed operational-tool is not one read-only executable")
+    with os.fdopen(os.dup(fd), "rb") as source:
+        observed = hashlib.sha256(source.read()).hexdigest()
+    if observed != expected:
+        raise RuntimeError("installed operational-tool digest changed before unit exec")
+    os.set_inheritable(fd, True)
+    os.execv("/bin/bash", ["/bin/bash", f"/proc/self/fd/{fd}", *sys.argv[3:]])
+except (OSError, RuntimeError) as error:
+    print(f"validate-run: pinned operational-tool exec refused: {error}", file=sys.stderr)
+    raise SystemExit(126) from error
+finally:
+    if fd >= 0:
+        os.close(fd)
+"""
 Runner = Callable[..., subprocess.CompletedProcess[str]]
 TERMINAL_STATES = frozenset(("failed", "inactive"))
 # THE THREE OUTCOMES A CALLER MUST TELL APART, and one of them used to be
@@ -132,6 +166,123 @@ class ServiceAcceptance(Enum):
 
     PRE_ACCEPT = "pre-accept"
     POST_ACCEPT = "post-accept"
+
+
+def detached_tool_prefix(
+    tool_root: Path,
+    state_root: Path,
+    environment: Mapping[str, str],
+) -> list[str] | None:
+    """Return a unit-owned exact-tool launcher for an fd-backed caller.
+
+    A `/proc/<holder>/fd/<n>` tool root is valid only while its holder process
+    remains alive.  `validate-run` deliberately permits an accepted systemd
+    service to outlive this waiter, so forwarding that pathname would lend the
+    unit a lifetime it does not own.  Re-enter through the installed immutable
+    bootstrap instead: the unit opens the already-verified cached parent SHA,
+    creates its own private root, and keeps that root until validate-lock exits.
+
+    Ordinary checkout-backed callers keep the direct path.  An fd-backed caller
+    with incomplete handoff metadata is refused rather than launching a service
+    whose executable authority can disappear after acceptance.
+    """
+
+    if FD_TOOL_ROOT_RE.fullmatch(str(tool_root)) is None:
+        return None
+
+    home = environment.get("HOME", "")
+    raw_bootstrap = environment.get("DEV_HERMIT_OPERATIONAL_TOOL", "")
+    bootstrap_sha256 = environment.get("DEV_HERMIT_TOOL_BOOTSTRAP_SHA256", "")
+    raw_cache = environment.get("DEV_HERMIT_TOOL_CACHE", "")
+    parent_sha = environment.get("DEV_HERMIT_TOOL_PARENT_SHA", "")
+    if (
+        not home
+        or not raw_bootstrap
+        or not raw_cache
+        or not SHA_RE.fullmatch(parent_sha)
+    ):
+        raise ValueError(
+            "fd-backed DEV_HERMIT_TOOL_ROOT lacks the installed-bootstrap, cache, "
+            "or exact-parent handoff metadata"
+        )
+    if re.fullmatch(r"[0-9a-f]{64}", bootstrap_sha256) is None:
+        raise ValueError(
+            "fd-backed DEV_HERMIT_TOOL_ROOT lacks an exact bootstrap digest"
+        )
+
+    bootstrap = Path(raw_bootstrap)
+    expected_bootstrap = Path(home) / ".local/libexec/dev-hermit/operational-tool"
+    if bootstrap != expected_bootstrap or not bootstrap.is_absolute():
+        raise ValueError(
+            "DEV_HERMIT_OPERATIONAL_TOOL must name the installed operational-tool "
+            f"at {expected_bootstrap}"
+        )
+    try:
+        bootstrap_metadata = bootstrap.lstat()
+        bootstrap_resolved = bootstrap.resolve(strict=True)
+    except OSError as error:
+        raise ValueError(
+            f"installed operational-tool is unavailable: {error}"
+        ) from error
+    if (
+        bootstrap_resolved != bootstrap
+        or not stat.S_ISREG(bootstrap_metadata.st_mode)
+        or bootstrap_metadata.st_nlink != 1
+        or bootstrap_metadata.st_mode & 0o222
+        or not os.access(bootstrap, os.X_OK)
+    ):
+        raise ValueError(
+            "installed operational-tool must be one non-symlinked, read-only executable"
+        )
+    try:
+        observed_bootstrap_sha256 = hashlib.sha256(bootstrap.read_bytes()).hexdigest()
+    except OSError as error:
+        raise ValueError(
+            f"installed operational-tool is unreadable: {error}"
+        ) from error
+    if observed_bootstrap_sha256 != bootstrap_sha256:
+        raise ValueError(
+            "installed operational-tool does not match DEV_HERMIT_TOOL_BOOTSTRAP_SHA256"
+        )
+
+    cache_root = Path(raw_cache)
+    try:
+        cache_resolved = cache_root.resolve(strict=True)
+    except OSError as error:
+        raise ValueError(f"operational tool cache is unavailable: {error}") from error
+    if (
+        not cache_root.is_absolute()
+        or cache_resolved != cache_root
+        or not cache_root.is_dir()
+    ):
+        raise ValueError(
+            "DEV_HERMIT_TOOL_CACHE must name one existing absolute non-symlinked directory"
+        )
+
+    observed_parent_sha = parent_checkout_head(tool_root)
+    if observed_parent_sha != parent_sha:
+        raise ValueError(
+            "fd-backed tool root does not match DEV_HERMIT_TOOL_PARENT_SHA: "
+            f"observed {observed_parent_sha or 'unknown'}, expected {parent_sha}"
+        )
+
+    return [
+        sys.executable,
+        "-c",
+        PINNED_BOOTSTRAP_EXEC,
+        str(bootstrap),
+        bootstrap_sha256,
+        "--run-current-tool",
+        "--state-root",
+        str(state_root),
+        "--cache-root",
+        str(cache_root),
+        "--tool-parent-sha",
+        parent_sha,
+        "--tool-relative",
+        "ci-hub/ci-hub",
+        "--",
+    ]
 
 
 def hermit_run_timeout_seconds(child_deadline: int) -> int:
@@ -1925,6 +2076,7 @@ def build_systemd_command(
     frozen_validate: bool = False,
     frozen_result: Path | None = None,
     framework_result: Path | None = None,
+    unit_tool_prefix: Sequence[str] | None = None,
 ) -> list[str]:
     state_root = root if state_root is None else state_root
     child_deadline = effective_child_deadline(repo, child_deadline)
@@ -2037,21 +2189,54 @@ def build_systemd_command(
         # unanchored; the owner watch interprets that distinct evidence rather
         # than laundering it into a clean canonical receipt.
         child.append(f"{INNER_FRESHNESS_SKIP_ENV}=1")
+
+    def tool_python(relative: str, *arguments: str) -> list[str]:
+        if unit_tool_prefix is None:
+            return [sys.executable, str(root / relative), *arguments]
+        # The nested operational-tool chooses and retains the unit's private
+        # root only after systemd starts it.  Expand that newly-owned root at
+        # child execution time; never bake the launcher's expiring /proc path
+        # into validate-lock's deferred payload.
+        return [
+            "/bin/sh",
+            "-c",
+            f'exec "$0" "$DEV_HERMIT_TOOL_ROOT/{relative}" "$@"',
+            sys.executable,
+            *arguments,
+        ]
+
     if repo == "rrnewton/reverie":
-        child.extend(
-            [
-                sys.executable,
-                str(root / "ci-hub/validate/reverie_safe_ci.py"),
-                "--root",
-                str(root),
-                "--checkout",
-                str(checkout),
-                "--target",
-                target,
-                "--log",
-                str(log),
-            ]
-        )
+        if unit_tool_prefix is None:
+            child.extend(
+                tool_python(
+                    "ci-hub/validate/reverie_safe_ci.py",
+                    "--root",
+                    str(root),
+                    "--checkout",
+                    str(checkout),
+                    "--target",
+                    target,
+                    "--log",
+                    str(log),
+                )
+            )
+        else:
+            child.extend(
+                [
+                    "/bin/sh",
+                    "-c",
+                    'exec "$0" '
+                    '"$DEV_HERMIT_TOOL_ROOT/ci-hub/validate/reverie_safe_ci.py" '
+                    '--root "$DEV_HERMIT_TOOL_ROOT" "$@"',
+                    sys.executable,
+                    "--checkout",
+                    str(checkout),
+                    "--target",
+                    target,
+                    "--log",
+                    str(log),
+                ]
+            )
         if pr is not None:
             child.extend(["--pr", str(pr)])
     else:
@@ -2061,10 +2246,7 @@ def build_systemd_command(
         # the epoch when start_unit builds the command would charge FIFO wait;
         # setting it inside validate.rs would fail to charge its own compilation.
         child.extend(
-            [
-                sys.executable,
-                str(root / "ci-hub/validate/run_with_validate_deadline.py"),
-            ]
+            tool_python("ci-hub/validate/run_with_validate_deadline.py")
         )
         if make_validate:
             child.extend(["with-proxy", "make", "validate"])
@@ -2072,6 +2254,17 @@ def build_systemd_command(
             child.extend(
                 ["with-proxy", "./scripts/validate.rs", *(validate_args or ["full"])]
             )
+
+    tool_command = (
+        [*unit_tool_prefix]
+        if unit_tool_prefix is not None
+        else [str(root / "ci-hub/ci-hub")]
+    )
+    tool_root_environment = (
+        []
+        if unit_tool_prefix is not None
+        else ["--setenv", f"DEV_HERMIT_TOOL_ROOT={root}"]
+    )
 
     return [
         "systemd-run",
@@ -2095,13 +2288,12 @@ def build_systemd_command(
         # the two made a clean linked launcher execute stale primary code.
         "--setenv",
         f"DEV_HERMIT_PARENT={state_root}",
-        "--setenv",
-        f"DEV_HERMIT_TOOL_ROOT={root}",
+        *tool_root_environment,
         "--property",
         f"StandardOutput=append:{log}",
         "--property",
         f"StandardError=append:{log}",
-        str(root / "ci-hub/ci-hub"),
+        *tool_command,
         "validate-lock",
         "run",
         "--agent",
@@ -2836,7 +3028,17 @@ def main(
     sleep: Callable[[float], None] = time.sleep,
 ) -> int:
     args = parser().parse_args(argv)
-    tool_root = root.resolve()
+    environment = os.environ if environment is None else environment
+    explicit_tool_root = environment.get("DEV_HERMIT_TOOL_ROOT", "")
+    if explicit_tool_root:
+        tool_root = Path(explicit_tool_root)
+        if not tool_root.is_absolute() or not tool_root.is_dir():
+            return refuse(
+                f"DEV_HERMIT_TOOL_ROOT is not an existing absolute directory: {tool_root}",
+                "launch through the immutable operational-tool wrapper",
+            )
+    else:
+        tool_root = root.resolve()
     state_root = (args.state_root or tool_root).resolve()
     try:
         repo = canonical_repo(args.repo)
@@ -3012,8 +3214,12 @@ def main(
     runtime_root: Path | None = None
     current_main_before_launch: str | None = None
     frozen_result: Path | None = None
+    service_tool_prefix: list[str] | None = None
     service_acceptance = ServiceAcceptance.PRE_ACCEPT
     try:
+        service_tool_prefix = detached_tool_prefix(
+            tool_root, state_root, environment
+        )
         source_checkout = validate_checkout(
             args.checkout,
             args.target,
@@ -3119,6 +3325,7 @@ def main(
             frozen_validate=args.frozen_validate,
             frozen_result=frozen_result,
             framework_result=framework_result,
+            unit_tool_prefix=service_tool_prefix,
         )
         if args.dry_run:
             pane = None
@@ -3158,7 +3365,7 @@ def main(
                     "started_at": started_at,
                     # The commit this run's TOOLING came from, distinct from
                     # `target`, which is the subject being validated.
-                    "parent_checkout_head": parent_checkout_head(),
+                    "parent_checkout_head": parent_checkout_head(tool_root),
                     "producer": run_registry.PRODUCER,
                     "admission": "ci-hub validate-lock",
                     "pane_role": "observer-only",
