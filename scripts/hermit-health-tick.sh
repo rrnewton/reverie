@@ -23,6 +23,7 @@ TOOL_CACHE="${DEV_HERMIT_TOOL_CACHE:-${HERMIT_HEALTH_TOOL_CACHE:-$HOME/.local/st
 CANONICAL_REPOSITORY="rrnewton/dev-hermit"
 CANONICAL_REMOTE_URL="https://github.com/rrnewton/dev-hermit.git"
 GIT_TRANSPORT_ALLOWLIST="https"
+GITHUB_CREDENTIAL_HELPER="/usr/bin/gh"
 
 ts() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 
@@ -1177,6 +1178,7 @@ PY
 
 run_git() {
     local network=0 name
+    local -a git_command=(git --no-replace-objects)
     if [[ ${1:-} == --network ]]; then
         network=1
         shift
@@ -1201,9 +1203,24 @@ run_git() {
         GIT_TERMINAL_PROMPT=0
     )
     if [[ $network -eq 1 ]]; then
-        "${clean_env[@]}" with-proxy git --no-replace-objects "$@"
+        if [[ -L $GITHUB_CREDENTIAL_HELPER || \
+              ! -f $GITHUB_CREDENTIAL_HELPER || \
+              ! -x $GITHUB_CREDENTIAL_HELPER ]]; then
+            printf 'operational-tool: required GitHub credential helper is unavailable: %s\n' \
+                "$GITHUB_CREDENTIAL_HELPER" >&2
+            return 1
+        fi
+        # Global and system Git configuration remain disabled: either may name
+        # an arbitrary executable credential helper or rewrite transport URLs.
+        # The service still needs credentials for the private canonical GitHub
+        # repository, so install exactly one fixed helper for network calls.
+        git_command+=(
+            -c credential.https://github.com.helper=
+            -c "credential.https://github.com.helper=!$GITHUB_CREDENTIAL_HELPER auth git-credential"
+        )
+        "${clean_env[@]}" with-proxy "${git_command[@]}" "$@"
     else
-        "${clean_env[@]}" git --no-replace-objects "$@"
+        "${clean_env[@]}" "${git_command[@]}" "$@"
     fi
 }
 

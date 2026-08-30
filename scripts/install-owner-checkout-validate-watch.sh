@@ -16,6 +16,11 @@ if [[ $# -ne 0 ]]; then
     exit 2
 fi
 
+if [[ -L /usr/bin/gh || ! -f /usr/bin/gh || ! -x /usr/bin/gh ]]; then
+    printf 'owner-watch install: required GitHub credential helper is unavailable: /usr/bin/gh\n' >&2
+    exit 1
+fi
+
 install -d -m 0755 "$unit_dir" "$libexec_dir"
 install -m 0555 "$root/scripts/hermit-health-tick.sh" "$bootstrap"
 install -m 0644 "$root/scripts/systemd/hermit-owner-checkout-validate.service" "$unit_dir/"

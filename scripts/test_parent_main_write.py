@@ -2673,6 +2673,109 @@ class HealthTickParentSyncTests(unittest.TestCase):
             ).stdout,
         )
 
+    def test_current_tool_supplies_fixed_github_auth_with_global_config_disabled(
+        self,
+    ) -> None:
+        bootstrap = self.installed_bootstrap()
+        target = self.advance_remote(
+            extra_executables={
+                "scripts/owner-probe": "#!/usr/bin/env bash\nprintf 'authenticated tool\\n'\n"
+            }
+        )
+        outside = self.base / "outside-auth-config"
+        outside.mkdir()
+        hostile_marker = outside / "hostile-helper-ran"
+        hostile_config = outside / "global-config"
+        hostile_config.write_text(
+            '[credential "https://github.com"]\n'
+            f"\thelper = !printf hostile > {hostile_marker}\n"
+        )
+        auth_log = outside / "network-git.log"
+        shim_dir = outside / "bin"
+        shim_dir.mkdir()
+        git_shim = shim_dir / "git"
+        git_shim.write_text(
+            "#!/usr/bin/env python3\n"
+            "import os\n"
+            "from pathlib import Path\n"
+            "import sys\n"
+            f"real_git = {str(REAL_GIT)!r}\n"
+            "args = sys.argv[1:]\n"
+            "network_commands = {'ls-remote', 'clone', 'fetch', 'submodule'}\n"
+            "is_wrapper_network = (\n"
+            "    '--no-replace-objects' in args\n"
+            "    and any(command in args for command in network_commands)\n"
+            ")\n"
+            "if is_wrapper_network:\n"
+            "    configs = [args[index + 1] for index, value in enumerate(args[:-1]) if value == '-c']\n"
+            "    expected = 'credential.https://github.com.helper=!/usr/bin/gh auth git-credential'\n"
+            "    if 'credential.https://github.com.helper=' not in configs or expected not in configs:\n"
+            "        print('fatal: authentication required', file=sys.stderr)\n"
+            "        raise SystemExit(128)\n"
+            "    if os.environ.get('GIT_CONFIG_GLOBAL') != os.devnull:\n"
+            "        print('fatal: ambient global config was not disabled', file=sys.stderr)\n"
+            "        raise SystemExit(129)\n"
+            "    if os.environ.get('GIT_CONFIG_NOSYSTEM') != '1':\n"
+            "        print('fatal: system config was not disabled', file=sys.stderr)\n"
+            "        raise SystemExit(130)\n"
+            "    with Path(os.environ['AUTH_GIT_LOG']).open('a') as log:\n"
+            "        log.write(next(command for command in network_commands if command in args) + '\\n')\n"
+            "os.execv(real_git, [real_git, *args])\n"
+        )
+        git_shim.chmod(0o755)
+
+        result = run(
+            str(bootstrap),
+            "--run-current-tool",
+            "--state-root",
+            str(self.repo),
+            "--tool-relative",
+            "scripts/owner-probe",
+            cwd=self.home,
+            env=dict(
+                self.env,
+                PATH=f"{shim_dir}:{self.env['PATH']}",
+                GIT_CONFIG_GLOBAL=str(hostile_config),
+                GIT_CONFIG_SYSTEM=str(hostile_config),
+                GIT_CONFIG_COUNT="1",
+                GIT_CONFIG_KEY_0="credential.https://github.com.helper",
+                GIT_CONFIG_VALUE_0=f"!printf hostile > {hostile_marker}",
+                AUTH_GIT_LOG=str(auth_log),
+            ),
+        )
+
+        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+        self.assertIn("authenticated tool", result.stdout)
+        self.assertIn(f"parent_sha={target}", result.stderr)
+        self.assertFalse(hostile_marker.exists())
+        observed = auth_log.read_text().splitlines()
+        self.assertIn("ls-remote", observed)
+        self.assertIn("clone", observed)
+        self.assertIn("submodule", observed)
+
+    def test_current_tool_refuses_when_fixed_github_auth_helper_is_missing(
+        self,
+    ) -> None:
+        bootstrap = self.installed_bootstrap()
+        bootstrap.chmod(0o755)
+        bootstrap.write_text(
+            bootstrap.read_text().replace(
+                'GITHUB_CREDENTIAL_HELPER="/usr/bin/gh"',
+                f'GITHUB_CREDENTIAL_HELPER="{self.base / "missing-gh"}"',
+            )
+        )
+        bootstrap.chmod(0o555)
+
+        result = self.run_current_tool(
+            bootstrap, "scripts/owner-checkout-validate-watch.py", "--dry-run"
+        )
+
+        self.assertEqual(1, result.returncode, result.stdout + result.stderr)
+        self.assertIn("required GitHub credential helper is unavailable", result.stderr)
+        self.assertFalse(
+            list(Path(self.env["HERMIT_HEALTH_TOOL_CACHE"]).glob("trees/*"))
+        )
+
     def test_current_tool_accepts_canonical_ssh_origin(self) -> None:
         bootstrap = self.installed_bootstrap()
         target = self.advance_remote(

@@ -101,6 +101,48 @@ class InstallOwnerCheckoutValidateWatchTests(unittest.TestCase):
             ],
         )
 
+    def test_missing_fixed_credential_helper_refuses_before_installation(self) -> None:
+        fixture_root = Path(self.temporary.name) / "missing-helper-source"
+        fixture_scripts = fixture_root / "scripts"
+        fixture_scripts.mkdir(parents=True)
+        missing_helper = fixture_root / "missing-gh"
+        installer = fixture_scripts / INSTALLER.name
+        installer.write_text(
+            INSTALLER.read_text().replace("/usr/bin/gh", str(missing_helper))
+        )
+        installer.chmod(0o755)
+
+        result = subprocess.run(
+            [str(installer)],
+            cwd=fixture_root,
+            env=self.env,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+
+        self.assertEqual(1, result.returncode, result.stdout + result.stderr)
+        self.assertIn(
+            f"required GitHub credential helper is unavailable: {missing_helper}",
+            result.stderr,
+        )
+        self.assertFalse(
+            (self.home / ".local/libexec/dev-hermit/operational-tool").exists()
+        )
+        self.assertFalse(
+            (
+                self.config
+                / "systemd/user/hermit-owner-checkout-validate.service"
+            ).exists()
+        )
+        self.assertFalse(
+            (
+                self.config
+                / "systemd/user/hermit-owner-checkout-validate.timer"
+            ).exists()
+        )
+        self.assertFalse(self.log.exists())
+
     def test_unknown_argument_refuses_before_systemd(self) -> None:
         result = self.install("--unexpected")
 
