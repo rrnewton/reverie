@@ -248,6 +248,63 @@ class PaneWatchTest(unittest.TestCase):
             self.assertEqual(0, durable["exit_code"])
             self.assertEqual(["/safe-ci-test.scope"], durable["observed_safe_ci_cgroups"])
 
+    def test_observer_cannot_overwrite_concurrent_prelaunch_refusal(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            log = root / "validate.log"
+            record = root / "runs/validate-test.json"
+            log.write_text("")
+            handle = current_validation_handle(log)
+            handle["state"] = "launching"
+            run_registry.write_record(record, handle)
+
+            def stale_classification(*_args: object, **_kwargs: object) -> dict[str, object]:
+                run_registry.update_record(
+                    record,
+                    state="refused",
+                    result="systemd-launch-refused",
+                    exit_code=2,
+                    detail="validation log already exists: /fixture/validate.log",
+                    finished_at="2026-08-30T12:00:00+00:00",
+                )
+                return {
+                    "state": "unknown",
+                    "result": "unknown",
+                    "exit_code": None,
+                    "detail": "no unit was observed",
+                }
+
+            output = io.StringIO()
+            with mock.patch.object(
+                pane_watch, "service_properties", return_value=None
+            ), mock.patch.object(
+                pane_watch.service_result,
+                "from_run_record",
+                side_effect=stale_classification,
+            ), contextlib.redirect_stdout(output):
+                rc = pane_watch.main(
+                    [
+                        "--unit",
+                        "validate-test.service",
+                        "--target",
+                        "a" * 40,
+                        "--checkout",
+                        str(root),
+                        "--log",
+                        str(log),
+                        "--record",
+                        str(record),
+                        "--appearance-seconds",
+                        "0",
+                    ]
+                )
+
+            self.assertEqual(2, rc)
+            durable = run_registry.read_record(record)
+            self.assertEqual("refused", durable["state"])
+            self.assertEqual("systemd-launch-refused", durable["result"])
+            self.assertIn("state=refused result=systemd-launch-refused exit=2", output.getvalue())
+
 
 if __name__ == "__main__":
     unittest.main()

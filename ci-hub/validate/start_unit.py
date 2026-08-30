@@ -19,10 +19,10 @@ import time
 from contextlib import contextmanager
 from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime, timezone
+from enum import Enum
 from pathlib import Path
 from typing import Any, TextIO
 
-import pane_lifecycle
 import pane_owner
 import run_registry
 import service_result
@@ -125,6 +125,13 @@ SUPPORTED_REPOS = {
     "rrnewton/reverie": "rrnewton/reverie",
 }
 SCORECARD_PATHS = ("SCORECARD.md", "ci/compat-envelope/cells.json")
+
+
+class ServiceAcceptance(Enum):
+    """Whether systemd has accepted responsibility for the validation unit."""
+
+    PRE_ACCEPT = "pre-accept"
+    POST_ACCEPT = "post-accept"
 
 
 def hermit_run_timeout_seconds(child_deadline: int) -> int:
@@ -431,6 +438,26 @@ def refuse(reason: str, remedy: str, *, out: TextIO | None = None) -> int:
     print("  state:  REFUSED -- the validate NEVER RAN, so there is no log and no result.", file=stream)
     print(f"  remedy: {remedy}", file=stream)
     return EXIT_REFUSED
+
+
+def record_unstarted_refusal(
+    record_path: Path, *, detail: str, exit_code: int = EXIT_REFUSED
+) -> dict[str, Any]:
+    """Atomically make a created handle terminal when its unit never started.
+
+    The observer may already be waiting for the unit to appear.  Publishing the
+    existing refused/non-running shape under the record lock gives it a durable
+    answer instead of leaving a ``preparing``/``launching`` handle that it can
+    only classify as unknown.
+    """
+    return run_registry.update_record(
+        record_path,
+        state="refused",
+        result="systemd-launch-refused",
+        exit_code=exit_code,
+        detail=detail,
+        finished_at=datetime.now(timezone.utc).isoformat(),
+    )
 
 
 def could_not_determine(reason: str, remedy: str, *, out: TextIO | None = None) -> int:
@@ -2985,6 +3012,7 @@ def main(
     runtime_root: Path | None = None
     current_main_before_launch: str | None = None
     frozen_result: Path | None = None
+    service_acceptance = ServiceAcceptance.PRE_ACCEPT
     try:
         source_checkout = validate_checkout(
             args.checkout,
@@ -3143,12 +3171,48 @@ def main(
                     ),
                 },
             )
-            # The pane is OBSERVER-ONLY: it watches the durable log and the
-            # systemd unit and never runs the driver. So a full workspace must
-            # cost us the window, not the validation -- this run already holds
-            # a validate-lock slot, and killing it to protect a
-            # cosmetic cap would be the worse trade. Refuse the pane loudly,
-            # keep the work.
+            try:
+                # Reserve the service's output before creating any observer.
+                # A pane for a unit that has not launched can otherwise outlive
+                # a reservation refusal and manufacture an UNKNOWN result.
+                run_registry.reserve_log(log)
+                run_registry.update_record(record_path, state="launching")
+            except Exception as error:
+                detail = str(error)
+                try:
+                    record_unstarted_refusal(record_path, detail=detail)
+                except Exception as record_error:
+                    raise RuntimeError(
+                        f"{detail}; additionally could not finalize the unstarted run "
+                        f"handle: {record_error}"
+                    ) from error
+                raise RuntimeError(detail) from error
+            try:
+                result = run(command, cwd=tool_root, check=False)
+            except Exception as error:
+                detail = f"systemd-run could not be invoked: {error}"
+                try:
+                    record_unstarted_refusal(record_path, detail=detail)
+                except Exception as record_error:
+                    raise RuntimeError(
+                        f"{detail}; additionally could not finalize the unstarted run "
+                        f"handle: {record_error}"
+                    ) from error
+                raise RuntimeError(detail) from error
+            if result.returncode != 0:
+                detail = result.stderr.strip() or result.stdout.strip() or f"exit {result.returncode}"
+                record_unstarted_refusal(
+                    record_path, detail=detail, exit_code=result.returncode
+                )
+                raise RuntimeError(f"systemd-run refused service: {detail}")
+            # This transition is the cleanup boundary. From this instruction
+            # onward systemd owns a live unit, so no bookkeeping or observer
+            # failure may claim that it never started or delete its inputs.
+            service_acceptance = ServiceAcceptance.POST_ACCEPT
+            run_registry.update_record(record_path, state="running")
+            # Start the observer only after systemd accepted the unit. It reads
+            # the durable log from offset zero, so this loses no output and
+            # makes a pane for a never-launched service impossible.
             try:
                 pane = pane_owner.create_pane(
                     root=tool_root,
@@ -3163,7 +3227,7 @@ def main(
                     environment=environment or os.environ,
                     sleep=sleep,
                 )
-            except pane_lifecycle.WorkspaceFull as exc:
+            except Exception as exc:
                 pane = None
                 print(f"PANE-REFUSED {exc}", file=sys.stderr)
                 print(
@@ -3171,29 +3235,33 @@ def main(
                     "the durable log, so the validation itself is unaffected.",
                     file=sys.stderr,
                 )
-            run_registry.update_record(
-                record_path,
-                state="launching",
-                workspace_id=pane.workspace_id if pane else None,
-                tab_id=pane.tab_id if pane else None,
-                pane_id=pane.pane_id if pane else None,
-                pane_title=pane.title if pane else None,
-            )
-            run_registry.reserve_log(log)
-            result = run(command, cwd=tool_root, check=False)
-            if result.returncode != 0:
-                detail = result.stderr.strip() or result.stdout.strip() or f"exit {result.returncode}"
+            if pane is not None:
                 run_registry.update_record(
                     record_path,
-                    state="refused",
-                    result="systemd-launch-refused",
-                    exit_code=result.returncode,
-                    detail=detail,
-                    finished_at=datetime.now(timezone.utc).isoformat(),
+                    workspace_id=pane.workspace_id,
+                    tab_id=pane.tab_id,
+                    pane_id=pane.pane_id,
+                    pane_title=pane.title,
                 )
-                raise RuntimeError(f"systemd-run refused service: {detail}")
-            run_registry.update_record(record_path, state="running")
-    except (RuntimeError, ValueError) as error:
+    except Exception as error:
+        if service_acceptance is ServiceAcceptance.POST_ACCEPT:
+            print(
+                f"validate-run: ACCEPTED {unit}.service; handle={record_path} "
+                f"checkout={checkout} log={log}",
+                file=sys.stderr,
+            )
+            if fresh_checkout is not None:
+                print(
+                    f"validate-run: temp checkout RETAINED at {fresh_checkout} "
+                    "(accepted service may still use it)",
+                    file=sys.stderr,
+                )
+            return could_not_determine(
+                f"POST-ACCEPT BOOKKEEPING FAILED for {unit}.service; "
+                f"RUN CONTINUES independently: {error}",
+                f"do not relaunch; re-attach with `ci-hub validate-run --attach {unit}` "
+                f"and reconcile the durable handle at {record_path}",
+            )
         # Nothing was admitted, so the temp checkout holds no evidence and is
         # removed. Failures AFTER launch are handled below and RETAIN it.
         if fresh_checkout is not None and source_checkout is not None:

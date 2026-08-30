@@ -972,6 +972,33 @@ class SignalCrosscheckTests(unittest.TestCase):
         self.assertEqual(len(matched["terminal_handles"]), 4)
         self.assertEqual(len(unmatched["admitted_without_ledger_handles"]), 4)
 
+    def test_pending_owner_watch_correction_is_unavailable_and_disagrees(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "ignored/validate/runs").mkdir(parents=True)
+            signal_crosscheck.run_registry.owner_watch_correction_transaction(
+                root
+            ).mkdir()
+            unavailable: dict[str, str] = {}
+            handles = signal_crosscheck._collect(
+                "run-handles",
+                unavailable,
+                lambda: signal_crosscheck.run_handle_report(
+                    root, "a" * 40, "rrnewton/hermit", []
+                ),
+            )
+
+        report = base_report()
+        report.pop("run_handles")
+        report["unavailable"] = unavailable
+        report["issues"] = signal_crosscheck.reconcile(report)
+        report["result"] = "AGREE" if not report["issues"] else "DISAGREE"
+        self.assertIsNone(handles)
+        self.assertIn("run-handles", unavailable)
+        self.assertIn("recovery is pending", unavailable["run-handles"])
+        self.assertEqual("DISAGREE", report["result"])
+        self.assertIn("run-handles unavailable", report["issues"][0])
+
     def test_only_exact_terminal_admitted_handles_require_ledger_identity(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

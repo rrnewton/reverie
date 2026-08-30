@@ -11,7 +11,7 @@ from collections.abc import Sequence
 from datetime import datetime, timezone
 from pathlib import Path
 
-from run_registry import read_record, update_record
+from run_registry import read_record, update_from_observer
 import service_result
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
@@ -186,15 +186,15 @@ def main(argv: Sequence[str] | None = None) -> int:
         classified = service_result.from_run_record(
             args.record, durable, args.log, properties=final
         )
-    update_record(
+    durable = update_from_observer(
         args.record,
         **classified,
         finished_at=finished_at,
         observed_safe_ci_cgroups=sorted(observed_groups),
     )
-    state = classified["state"]
-    result = classified["result"]
-    status = classified.get("exit_code")
+    state = durable["state"]
+    result = durable["result"]
+    status = durable.get("exit_code")
     proof = ",".join(sorted(observed_groups)) or "UNOBSERVED"
     print(
         f"\nCI-HUB VALIDATE FINISHED state={state} result={result} "

@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import importlib.util
 import datetime as dt
 import json
@@ -124,7 +125,11 @@ def readmission_refusal_log(log: Path, sha: str, verdict: str = "VALIDATED") -> 
 
 
 def admitted_result() -> dict[str, object]:
-    return {"state": "admitted", "recorded_at": "2026-08-28T07:00:01+00:00"}
+    return {
+        "state": "admitted",
+        "recorded_at": "2026-08-28T07:00:01+00:00",
+        "run_number": 701,
+    }
 
 
 def refused_result(reason: str) -> dict[str, object]:
@@ -197,14 +202,22 @@ class ReadmissionRefusalClassificationTest(unittest.TestCase):
             head = command(repo, "git", "rev-parse", "HEAD").strip()
 
             def launch(
-                command_argv, *, cwd, log, run_record, state_dir, result, target
+                command_argv,
+                *,
+                cwd,
+                launcher_log,
+                service_log,
+                run_record,
+                state_dir,
+                result,
+                target,
             ):
-                write_log(Path(log), head)
+                write_log(Path(launcher_log), head)
                 write_validation_record(
                     Path(run_record),
                     target=head,
                     checkout=repo,
-                    log=Path(log),
+                    log=Path(service_log),
                     admission_result=admission_result,
                 )
                 return subprocess.CompletedProcess([], returncode, "", "")
@@ -513,6 +526,41 @@ class AdmissionRefusalEvidenceTest(unittest.TestCase):
 
 
 class OwnerCheckoutValidateWatchTest(unittest.TestCase):
+    def test_attempt_holds_population_lock_through_result_publication(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo = clean_repository(root)
+            state = root / "state"
+            events: list[str] = []
+
+            @contextlib.contextmanager
+            def population_lock(path: Path):
+                self.assertEqual(state, path)
+                events.append("entered")
+                yield
+                self.assertEqual(1, len(list((state / "results").glob("*.json"))))
+                events.append("exited")
+
+            with mock.patch.object(
+                watch.run_registry,
+                "owner_watch_population_lock",
+                side_effect=population_lock,
+            ):
+                rc = watch.main(
+                    [
+                        "--checkout",
+                        str(repo),
+                        "--state-dir",
+                        str(state),
+                        "--no-fetch",
+                        "--no-notify",
+                        "--dry-run",
+                    ]
+                )
+
+            self.assertEqual(watch.NO_RESULT, rc)
+            self.assertEqual(["entered", "exited"], events)
+
     def test_dirty_checkout_is_a_durable_cannot_start_without_mutation(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -976,7 +1024,8 @@ class OwnerCheckoutValidateWatchTest(unittest.TestCase):
             completed = watch.run_validate_observing_admission(
                 ["bash", "-c", f"printf '%s\\n' '{marker}'; sleep 0.4"],
                 cwd=Path(temporary),
-                log=log,
+                launcher_log=log,
+                service_log=state / "logs/service.log",
                 run_record=run_record,
                 state_dir=state,
                 result=result,
@@ -996,21 +1045,44 @@ class OwnerCheckoutValidateWatchTest(unittest.TestCase):
             rc, status = watch.admission_status_since(Path(temporary), "infinity")
             self.assertEqual((rc, status["state"]), (2, "UNKNOWN"))
 
-    def test_launcher_capture_cannot_overwrite_concurrent_lock_evidence(self) -> None:
+    def test_launcher_capture_and_service_log_reservation_are_distinct(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
-            log = Path(temporary) / "validate.log"
-            with watch.append_launcher_output(log) as launcher:
-                with log.open("a", encoding="utf-8") as service:
+            launcher_log = Path(temporary) / "validate-run-launcher.log"
+            service_log = Path(temporary) / "validate-run.log"
+            with watch.append_launcher_output(launcher_log) as launcher:
+                launcher.write("validate-run: FINISHED fixture.service\n")
+                watch.run_registry.reserve_log(service_log)
+                with service_log.open("a", encoding="utf-8") as service:
                     service.write(
                         "REFUSED: box-exclusive anchor held by pid=123 host=fixture\n"
                         "# ci-hub/validate-lock tool COST ACTUAL exit=3\n"
                     )
-                launcher.write("validate-run: FINISHED fixture.service\n")
 
-            text = log.read_text(encoding="utf-8")
-            self.assertTrue(text.startswith("REFUSED: box-exclusive anchor held"))
-            self.assertIn("validate-run: FINISHED", text)
-            self.assertIsNotNone(watch.lock_block_evidence(log))
+            self.assertEqual(
+                launcher_log.read_text(encoding="utf-8"),
+                "validate-run: FINISHED fixture.service\n",
+            )
+            self.assertTrue(
+                service_log.read_text(encoding="utf-8").startswith(
+                    "REFUSED: box-exclusive anchor held"
+                )
+            )
+            self.assertIsNotNone(watch.lock_block_evidence(service_log))
+
+    def test_launcher_capture_refuses_the_service_log_path(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            log = Path(temporary) / "shared.log"
+            with self.assertRaisesRegex(RuntimeError, "must be distinct"):
+                watch.run_validate_observing_admission(
+                    ["true"],
+                    cwd=Path(temporary),
+                    launcher_log=log,
+                    service_log=log,
+                    run_record=Path(temporary) / "run.json",
+                    state_dir=Path(temporary) / "state",
+                    result={},
+                    target="e" * 40,
+                )
 
     def test_lock_holder_attribution_binds_live_identity_and_reserved_pr(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

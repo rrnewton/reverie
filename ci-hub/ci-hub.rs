@@ -141,6 +141,8 @@ VALIDATION ACTIONS
   Start, stop, admit, or persist validation work.
   validate-run            Launch detached validation through ci-hub admission
   validate-stop           Stop detached validate-* user units and verify termination
+  correct-owner-watch-handles
+                          Correct proven pre-service owner-watch refusals (dry-run by default)
   validate-lock           Two validation slots; benchmarks reserve both (GRANT/QUEUE/REFUSE)
   ledger                  Read or update canonical validate-ledger views
   refresh-history         Ingest fresh GitHub and local history into the local store
@@ -255,6 +257,8 @@ enum HubCommand {
     ValidateRun(PassthroughArgs),
     /// Stop detached validate-* user units and verify they terminated.
     ValidateStop(PassthroughArgs),
+    /// Correct proven pre-service owner-watch refusals (dry-run by default).
+    CorrectOwnerWatchHandles(PassthroughArgs),
     /// Read canonical qualified views of the validate ledger.
     Ledger(LedgerArgs),
     /// Find the newest branch commit whose latest local validation passed.
@@ -1304,6 +1308,7 @@ impl HubCommand {
             | Self::ReceiptDigest(_)
             | Self::ValidateRun(_)
             | Self::ValidateStop(_)
+            | Self::CorrectOwnerWatchHandles(_)
             | Self::ApplyLocalLabel(_)
             | Self::LandLock(_)
             | Self::ValidateLock(_) => return None,
@@ -1739,6 +1744,11 @@ fn execute(root: &Path, command: HubCommand) -> Result<i32, CiHubError> {
         HubCommand::ValidateStop(args) => {
             run_python(root, "ci-hub/validate/stop_units.py", args.args)
         }
+        HubCommand::CorrectOwnerWatchHandles(args) => run_python(
+            root,
+            "ci-hub/validate/correct_owner_watch_handles.py",
+            args.args,
+        ),
         HubCommand::Ledger(args) => match args.command {
             LedgerCommand::QualifiedRows(qualified_args) => {
                 let _ = qualified_args;
@@ -11484,6 +11494,26 @@ mod tests {
         assert!(args.args.contains(&OsString::from("--checkout")));
         assert!(args.args.contains(&OsString::from("full")));
         assert!(HubCommand::ValidateRun(args).cost_spec().is_none());
+    }
+
+    #[test]
+    fn parses_owner_watch_handle_correction_passthrough() {
+        let command = Cli::try_parse_from([
+            "ci-hub",
+            "correct-owner-watch-handles",
+            "--expected-count",
+            "7",
+        ])
+        .unwrap()
+        .command;
+        let HubCommand::CorrectOwnerWatchHandles(args) = command else {
+            panic!("wrong command variant")
+        };
+        assert_eq!(
+            args.args,
+            vec![OsString::from("--expected-count"), OsString::from("7")]
+        );
+        assert!(HubCommand::CorrectOwnerWatchHandles(args).cost_spec().is_none());
     }
 
     #[test]

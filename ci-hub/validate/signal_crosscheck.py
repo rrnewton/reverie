@@ -580,6 +580,7 @@ def run_handle_report(
     repo: str,
     ledger_rows: Iterable[Mapping[str, Any]],
 ) -> dict[str, Any]:
+    run_registry.require_no_owner_watch_correction(root)
     ledger_run_identities: set[tuple[str, int]] = set()
     for row in ledger_rows:
         machine_shortname = _machine_shortname(row.get("host"))
@@ -670,7 +671,7 @@ def run_handle_report(
         matching_handles.append(handle)
         if state in TERMINAL_RUN_STATES:
             terminal_handles.append(handle)
-    return {
+    report = {
         "scope": "attempt evidence; never receipt authority",
         "run_root": str(run_root),
         "matching_handles": matching_handles,
@@ -690,6 +691,8 @@ def run_handle_report(
             and not handle.get("non_run_refusal")
         ],
     }
+    run_registry.require_no_owner_watch_correction(root)
+    return report
 
 
 def github_status_report(payload: Mapping[str, Any]) -> dict[str, Any]:

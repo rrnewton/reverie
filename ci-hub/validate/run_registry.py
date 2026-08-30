@@ -21,6 +21,7 @@ import service_result
 
 SCHEMA_VERSION = 1
 PRODUCER = "ci-hub/validate/run_registry.py"
+OWNER_WATCH_CORRECTION_TRANSACTION = "owner-watch-handle-correction.transaction"
 
 
 class RunKind(str, Enum):
@@ -758,7 +759,51 @@ def record_path(root: Path, unit: str) -> Path:
     return root / "ignored" / "validate" / "runs" / f"{unit.removesuffix('.service')}.json"
 
 
+def owner_watch_correction_transaction(root: Path) -> Path:
+    """Return the durable marker for an unfinished owner-watch correction."""
+
+    return root / "ignored" / "validate" / OWNER_WATCH_CORRECTION_TRANSACTION
+
+
+def owner_watch_correction_pending(root: Path) -> bool:
+    """Treat every directory entry, including a dangling symlink, as pending."""
+
+    try:
+        os.lstat(owner_watch_correction_transaction(root))
+    except FileNotFoundError:
+        return False
+    except OSError as error:
+        raise RuntimeError(
+            "cannot inspect owner-watch correction transaction: "
+            f"{owner_watch_correction_transaction(root)}: {error}"
+        ) from error
+    return True
+
+
+def require_no_owner_watch_correction(root: Path) -> None:
+    transaction = owner_watch_correction_transaction(root)
+    if owner_watch_correction_pending(root):
+        raise RuntimeError(
+            "owner-watch run-handle correction recovery is pending: "
+            f"{transaction}"
+        )
+
+
+def _state_root_for_run_handle(path: Path) -> Path | None:
+    absolute = path.absolute()
+    if (
+        absolute.parent.name == "runs"
+        and absolute.parent.parent.name == "validate"
+        and absolute.parent.parent.parent.name == "ignored"
+    ):
+        return absolute.parents[3]
+    return None
+
+
 def read_record(path: Path) -> dict[str, Any]:
+    state_root = _state_root_for_run_handle(path)
+    if state_root is not None:
+        require_no_owner_watch_correction(state_root)
     try:
         value = json.loads(path.read_text())
     except (OSError, json.JSONDecodeError) as exc:
@@ -770,6 +815,8 @@ def read_record(path: Path) -> dict[str, Any]:
         raise RuntimeError(f"validation handle {path} has an unsupported schema")
     if value.get("producer") == PRODUCER:
         parse_current_record(value)
+    if state_root is not None:
+        require_no_owner_watch_correction(state_root)
     return value
 
 
@@ -782,6 +829,27 @@ class RecordLocked(RuntimeError):
     BOOKKEEPING -- where blocking costs the user something more valuable than the
     record is worth.
     """
+
+
+@contextmanager
+def owner_watch_population_lock(owner_state_dir: Path):
+    """Serialize owner-watch production with evidence-bound corrections."""
+
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        descriptor = os.open(owner_state_dir, flags)
+    except OSError as error:
+        raise RuntimeError(
+            f"cannot open owner-watch population directory {owner_state_dir}: {error}"
+        ) from error
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        yield owner_state_dir
+    finally:
+        fcntl.flock(descriptor, fcntl.LOCK_UN)
+        os.close(descriptor)
 
 
 @contextmanager
@@ -880,6 +948,21 @@ def update_record(path: Path, *, blocking: bool = True, **fields: Any) -> dict[s
         value = read_record(path)
         value.update(fields)
         _write_unlocked(path, value)
+    return value
+
+
+def update_from_observer(path: Path, **fields: Any) -> dict[str, Any]:
+    """Publish observer evidence without overwriting a producer terminal state.
+
+    The producer can refuse before systemd creates the unit while ``pane_watch``
+    is waiting for that unit to appear.  The observer's earlier snapshot is not
+    allowed to replace that typed refusal with ``unknown`` after the fact.
+    """
+    with exclusive_record(path):
+        value = read_record(path)
+        if value.get("state") != RunState.REFUSED.value:
+            value.update(fields)
+            _write_unlocked(path, value)
     return value
 
 

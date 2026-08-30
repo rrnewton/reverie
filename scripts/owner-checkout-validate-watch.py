@@ -1325,13 +1325,14 @@ def first_raw_failure_line(log: Path) -> str | None:
 
 
 def append_launcher_output(log: Path):
-    """Capture validate-run's wrapper output without overwriting its service log.
+    """Capture ``validate-run`` wrapper output in its own append-only file.
 
-    ``start_unit.py`` points systemd's stdout/stderr at this same path.  The
-    wrapper remains alive while that service writes, so a normal ``"w"`` file
-    descriptor can later overwrite the beginning of the service's refusal.
-    O_APPEND makes the two writers preserve each other's complete evidence.
+    This path must be distinct from the service log passed through ``--log``.
+    ``start_unit.py`` exclusively reserves the service path before systemd can
+    append to it; opening that same path here would make every owner-watch run
+    refuse itself before the unit existed.
     """
+    log.parent.mkdir(parents=True, exist_ok=True)
     return log.open("a", encoding="utf-8")
 
 
@@ -1339,15 +1340,18 @@ def run_validate_observing_admission(
     command: Sequence[str | os.PathLike[str]],
     *,
     cwd: Path,
-    log: Path,
+    launcher_log: Path,
+    service_log: Path,
     run_record: Path,
     state_dir: Path,
     result: dict[str, Any],
     target: str,
 ) -> subprocess.CompletedProcess:
     """Run the detached producer while publishing its typed admission result."""
+    if launcher_log.resolve() == service_log.resolve():
+        raise RuntimeError("launcher capture and validation service log must be distinct")
     admission_seen = False
-    with append_launcher_output(log) as output:
+    with append_launcher_output(launcher_log) as output:
         process = subprocess.Popen(
             [str(item) for item in command],
             cwd=cwd,
@@ -1498,6 +1502,7 @@ def render_message(result: dict[str, Any]) -> str:
         f"post_tree_hash: {result.get('post_tree_hash') or 'unavailable'}",
         f"dirty_paths_after: {result.get('dirty_paths_after')!r}",
         f"validate_log: {result.get('validate_log') or 'none'}",
+        f"launcher_log: {result.get('launcher_log') or 'none'}",
         f"result_json: {result['result_json']}",
     ]
     if result.get("recovery"):
@@ -1551,6 +1556,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         rc, status = admission_status_since(state_dir, args.admission_status_since)
         print(json.dumps(status, sort_keys=True))
         return rc
+    state_dir.mkdir(parents=True, exist_ok=True)
+    with run_registry.owner_watch_population_lock(state_dir):
+        return run_owner_check(args, state_dir)
+
+
+def run_owner_check(args: argparse.Namespace, state_dir: Path) -> int:
+    """Produce one owner-watch attempt while holding the population lock."""
+
     checkout = args.checkout.resolve()
     parent = checkout.parent.resolve()
     # The timer and a manual spot check can begin in the same second. Include
@@ -1669,7 +1682,9 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         launched_at = dt.datetime.now(dt.timezone.utc)
         validate_log = state_dir / "logs" / f"{attempt_id}-validate-run.log"
+        launcher_log = state_dir / "logs" / f"{attempt_id}-validate-run-launcher.log"
         validate_log.parent.mkdir(parents=True, exist_ok=True)
+        result["launcher_log"] = str(launcher_log)
         unit = f"validate-owner-checkout-{attempt_id.lower()}"
         run_record = run_registry.record_path(parent, unit)
         command = [
@@ -1703,7 +1718,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         completed = run_validate_observing_admission(
             command,
             cwd=parent,
-            log=validate_log,
+            launcher_log=launcher_log,
+            service_log=validate_log,
             run_record=run_record,
             state_dir=state_dir,
             result=result,
@@ -1791,7 +1807,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
         # Retain presentation evidence for old reports, but never let it select
         # a functional outcome. The current authority is `admission_result`.
-        refusal = admission_refusal_evidence(validate_log)
+        refusal = admission_refusal_evidence(launcher_log)
         result["admission_refusal"] = refusal
 
         evidence_log = Path(str(result["validate_log"]))

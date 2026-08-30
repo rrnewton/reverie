@@ -286,6 +286,30 @@ class RunRegistryContractTests(unittest.TestCase):
             path.write_text(json.dumps(historical))
             self.assertEqual(historical, run_registry.read_record(path))
 
+    def test_pending_owner_watch_correction_makes_run_handles_unavailable(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            path = root / "ignored/validate/runs/validate-test.json"
+            run_registry.write_record(path, validation_handle(state="launching"))
+            transaction = run_registry.owner_watch_correction_transaction(root)
+            transaction.mkdir()
+
+            with self.assertRaisesRegex(RuntimeError, "recovery is pending"):
+                run_registry.read_record(path)
+
+    def test_symlinked_owner_watch_correction_marker_is_also_pending(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            path = root / "ignored/validate/runs/validate-test.json"
+            run_registry.write_record(path, validation_handle(state="launching"))
+            outside = root / "outside"
+            outside.mkdir()
+            transaction = run_registry.owner_watch_correction_transaction(root)
+            transaction.symlink_to(outside, target_is_directory=True)
+
+            with self.assertRaisesRegex(RuntimeError, "recovery is pending"):
+                run_registry.read_record(path)
+
     def test_multi_record_inspection_returns_current_records(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)

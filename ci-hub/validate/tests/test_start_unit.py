@@ -1421,6 +1421,134 @@ class StartUnitTest(unittest.TestCase):
         self.assertIn("ci-hub validate-lock run", output)
         self.assertFalse((self.root / "run.log").exists())
 
+    def test_service_is_accepted_before_observer_pane_creation(self) -> None:
+        def observe_reserved_log(**kwargs: object) -> None:
+            log = Path(str(kwargs["log"]))
+            self.assertTrue(log.is_file())
+            self.assertTrue(
+                any(
+                    command[0] == "systemd-run" and "validate-lock" in command
+                    for command in self.fake.commands
+                )
+            )
+            return None
+
+        with mock.patch.object(
+            start_unit.pane_owner,
+            "create_pane",
+            side_effect=observe_reserved_log,
+        ):
+            rc, _output, error = self.invoke(["--", "full"])
+
+        self.assertEqual(0, rc, error)
+
+    def test_existing_service_log_is_a_typed_refusal_without_observer(self) -> None:
+        log = self.root / "run.log"
+        log.write_text("launcher-owned collision\n")
+
+        with mock.patch.object(start_unit.pane_owner, "create_pane") as create_pane:
+            rc, _output, error = self.invoke(["--", "full"])
+
+        self.assertEqual(start_unit.EXIT_REFUSED, rc)
+        self.assertIn(f"validation log already exists: {log}", error)
+        create_pane.assert_not_called()
+        self.assertEqual("launcher-owned collision\n", log.read_text())
+        record = start_unit.run_registry.read_record(
+            self.root / "ignored/validate/runs/validate-test.json"
+        )
+        self.assertEqual("refused", record["state"])
+        self.assertEqual("systemd-launch-refused", record["result"])
+        self.assertEqual(start_unit.EXIT_REFUSED, record["exit_code"])
+        self.assertEqual(f"validation log already exists: {log}", record["detail"])
+        self.assertFalse(
+            any(
+                command[0] == "systemd-run" and "validate-lock" in command
+                for command in self.fake.commands
+            )
+        )
+
+    def test_observer_setup_exception_does_not_change_started_run_verdict(self) -> None:
+        with mock.patch.object(
+            start_unit.pane_owner,
+            "create_pane",
+            side_effect=RuntimeError("observer fixture refused"),
+        ):
+            rc, _output, error = self.invoke(["--", "full"])
+
+        self.assertEqual(start_unit.EXIT_PASSED, rc)
+        self.assertIn("observer fixture refused", error)
+        record = start_unit.run_registry.read_record(
+            self.root / "ignored/validate/runs/validate-test.json"
+        )
+        self.assertEqual("completed", record["state"])
+        self.assertEqual("success", record["result"])
+        self.assertEqual(start_unit.EXIT_PASSED, record["exit_code"])
+
+    def test_running_state_write_failure_retains_accepted_service_resources(self) -> None:
+        update_record = start_unit.run_registry.update_record
+
+        def fail_running_state(path: Path, **fields: object) -> dict[str, object]:
+            if fields.get("state") == "running":
+                raise RuntimeError("injected running-state write failure")
+            return update_record(path, **fields)
+
+        with mock.patch.object(
+            start_unit.run_registry,
+            "update_record",
+            side_effect=fail_running_state,
+        ):
+            rc, _output, error = self.invoke(["--", "full"])
+
+        self.assertEqual(start_unit.EXIT_COULD_NOT_DETERMINE, rc)
+        self.assertIn("POST-ACCEPT BOOKKEEPING FAILED", error)
+        self.assertIn("RUN CONTINUES independently", error)
+        self.assertIn("do not relaunch", error)
+        record = start_unit.run_registry.read_record(
+            self.root / "ignored/validate/runs/validate-test.json"
+        )
+        self.assertEqual("launching", record["state"])
+        self.assertTrue(Path(record["checkout"]).is_dir())
+        self.assertTrue(Path(record["cargo_home"]).is_dir())
+        systemd = next(
+            command
+            for command in self.fake.commands
+            if command[0] == "systemd-run" and "validate-lock" in command
+        )
+        runtime = Path(
+            next(value for value in systemd if value.startswith("TMPDIR=")).removeprefix(
+                "TMPDIR="
+            )
+        )
+        self.assertTrue(runtime.is_dir())
+        self.assertNotIn(str(record["checkout"]), self.fake.removed)
+
+    def test_pane_metadata_write_failure_retains_running_service_resources(self) -> None:
+        update_record = start_unit.run_registry.update_record
+
+        def fail_pane_metadata(path: Path, **fields: object) -> dict[str, object]:
+            if "pane_id" in fields:
+                raise RuntimeError("injected pane-metadata write failure")
+            return update_record(path, **fields)
+
+        with mock.patch.object(
+            start_unit.run_registry,
+            "update_record",
+            side_effect=fail_pane_metadata,
+        ):
+            rc, _output, error = self.invoke(["--", "full"])
+
+        self.assertEqual(start_unit.EXIT_COULD_NOT_DETERMINE, rc)
+        self.assertIn("POST-ACCEPT BOOKKEEPING FAILED", error)
+        self.assertIn("--attach validate-test", error)
+        record = start_unit.run_registry.read_record(
+            self.root / "ignored/validate/runs/validate-test.json"
+        )
+        self.assertEqual("running", record["state"])
+        self.assertNotIn("pane_id", record)
+        self.assertTrue(Path(record["checkout"]).is_dir())
+        self.assertTrue(Path(record["cargo_home"]).is_dir())
+        self.assertNotIn(str(record["checkout"]), self.fake.removed)
+
     def test_dirty_checkout_is_refused_before_admission(self) -> None:
         self.fake.dirty = " M scripts/validate.rs\n"
 
@@ -1746,14 +1874,15 @@ class StartUnitTest(unittest.TestCase):
         self.assertIn("stale base", error)
         self.assertFalse(any(command[0] == "systemd-run" for command in self.fake.commands))
 
-    def test_visibility_failure_refuses_before_validation_service(self) -> None:
+    def test_visibility_failure_does_not_stop_accepted_validation_service(self) -> None:
         self.fake.herdr_status_rc = 1
 
         rc, _output, error = self.invoke()
 
-        self.assertEqual(2, rc)
+        self.assertEqual(0, rc)
         self.assertIn("Herdr server did not become ready", error)
-        self.assertFalse(
+        self.assertIn("continuing WITHOUT an observer pane", error)
+        self.assertTrue(
             any(
                 command[0] == "systemd-run" and "validate-lock" in command
                 for command in self.fake.commands
