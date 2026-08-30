@@ -20,6 +20,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -488,6 +489,75 @@ class Publication(unittest.TestCase):
                 reader_head,
                 "the query must read fetched parent main without moving the checkout",
             )
+
+    def test_published_snapshot_stays_on_one_commit_when_the_ref_moves(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = Path(temporary) / "parent"
+            subprocess.run(
+                ["git", "init", "-q", "-b", "main", str(repo)], check=True
+            )
+            shard = repo / "series/hermit/devbig014/2026-08.jsonl"
+            shard.parent.mkdir(parents=True)
+            first = row()
+            shard.write_text(json.dumps(first, sort_keys=True) + "\n")
+            self._git(repo, "add", "series")
+            self._git(
+                repo,
+                "-c", "user.name=t",
+                "-c", "user.email=t@invalid",
+                "commit", "-q", "-m", "first row",
+            )
+            first_commit = self._git(repo, "rev-parse", "HEAD")
+
+            second = row(
+                event_id="01J000000000000000000000AB",
+                series={"run_index": 1},
+            )
+            with shard.open("a") as output:
+                output.write(json.dumps(second, sort_keys=True) + "\n")
+            self._git(repo, "add", "series")
+            self._git(
+                repo,
+                "-c", "user.name=t",
+                "-c", "user.email=t@invalid",
+                "commit", "-q", "-m", "second row",
+            )
+            second_commit = self._git(repo, "rev-parse", "HEAD")
+            published_ref = "refs/remotes/origin/main"
+            self._git(repo, "update-ref", published_ref, first_commit)
+
+            real_git = series._git
+
+            def move_after_resolution(checkout, args):
+                result = real_git(checkout, args)
+                if args == [
+                    "--no-replace-objects",
+                    "rev-parse",
+                    "--verify",
+                    f"{published_ref}^{{commit}}",
+                ]:
+                    self._git(repo, "update-ref", published_ref, second_commit)
+                return result
+
+            with mock.patch.object(series, "_git", side_effect=move_after_resolution):
+                snapshot = series.published_snapshot_at(repo, published_ref)
+
+            self.assertEqual(snapshot.commit, first_commit)
+            self.assertEqual([item["event_id"] for item in snapshot.rows], [first["event_id"]])
+            self.assertEqual(self._git(repo, "rev-parse", published_ref), second_commit)
+
+    def test_published_snapshot_fetches_and_resolves_origin_main_once(self):
+        expected = series.PublishedSnapshot("a" * 40, [])
+        with mock.patch.object(series, "refresh_origin_main") as refresh:
+            with mock.patch.object(
+                series, "published_snapshot_at", return_value=expected
+            ) as snapshot_at:
+                actual = series.published_snapshot(Path("/parent"))
+        self.assertIs(actual, expected)
+        refresh.assert_called_once_with(Path("/parent"), "parent")
+        snapshot_at.assert_called_once_with(
+            Path("/parent"), "refs/remotes/origin/main"
+        )
 
     def test_series_publication_refuses_a_row_the_series_linter_rejects(self):
         import tempfile

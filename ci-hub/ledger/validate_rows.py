@@ -661,6 +661,80 @@ def _legacy_row_corrections(
     return replacements, correction_ids
 
 
+def current_validation_run_rows(items: Iterable[dict]) -> list[dict]:
+    """Project valid ``corrects`` chains to one current row per stable run.
+
+    This is the Python counterpart of ``ci-hub``'s validate-status run view.
+    Finalization keeps the producer row append-only and appends a replacement
+    with the same ``run_id``.  Only a complete, unambiguous chain is collapsed;
+    malformed or ambiguous groups stay visible so a reader cannot guess away
+    evidence.
+    """
+    rows = list(items)
+    groups: dict[str, list[int]] = {}
+    for index, row in enumerate(rows):
+        run_id = row.get("run_id")
+        if isinstance(run_id, str) and run_id.strip():
+            groups.setdefault(run_id, []).append(index)
+
+    superseded: set[int] = set()
+    for indices in (group for group in groups.values() if len(group) > 1):
+        records: dict[str, int] = {}
+        valid = True
+        for index in indices:
+            record_id = rows[index].get("record_id")
+            if not isinstance(record_id, str) or not record_id.strip():
+                valid = False
+                break
+            if record_id in records:
+                valid = False
+                break
+            records[record_id] = index
+        if not valid:
+            continue
+
+        group_superseded: set[int] = set()
+        for index in indices:
+            corrects = rows[index].get("corrects")
+            if not isinstance(corrects, str):
+                continue
+            corrected_index = records.get(corrects)
+            if (
+                corrected_index is None
+                or corrected_index == index
+                or corrected_index in group_superseded
+            ):
+                valid = False
+                break
+            group_superseded.add(corrected_index)
+        if not valid:
+            continue
+
+        terminals = [index for index in indices if index not in group_superseded]
+        if len(terminals) != 1:
+            continue
+
+        chain: set[int] = set()
+        current = terminals[0]
+        while True:
+            if current in chain:
+                valid = False
+                break
+            chain.add(current)
+            corrects = rows[current].get("corrects")
+            if not isinstance(corrects, str):
+                break
+            next_index = records.get(corrects)
+            if next_index is None:
+                valid = False
+                break
+            current = next_index
+        if valid and len(chain) == len(indices):
+            superseded.update(group_superseded)
+
+    return [row for index, row in enumerate(rows) if index not in superseded]
+
+
 def rows(*, root: Path | None = None) -> list[dict]:
     """HistoryRow compatibility view of the one canonical event union."""
     root = (root or repository_root()).resolve()

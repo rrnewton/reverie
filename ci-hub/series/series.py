@@ -52,6 +52,7 @@ import re
 import shutil
 import subprocess
 import sys
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from collections.abc import Iterable, Sequence
 from pathlib import Path
@@ -107,6 +108,14 @@ class SeriesError(LedgerError):
 
 class MalformedRow(SeriesError):
     """A row that does not satisfy the schema."""
+
+
+@dataclass(frozen=True)
+class PublishedSnapshot:
+    """One immutable published-series revision and its canonical rows."""
+
+    commit: str
+    rows: list[dict]
 
 
 def shard_path(team: str, host: str, month: str) -> str:
@@ -411,18 +420,42 @@ def refresh_origin_main(checkout: Any, repository: str) -> None:
         raise SeriesError(f"cannot fetch {repository} origin/main: {detail}")
 
 
-def published_rows(parent: Any) -> list[dict]:
-    """Read tracked series rows from a freshly fetched parent origin/main."""
+def published_snapshot(parent: Any) -> PublishedSnapshot:
+    """Fetch once, then read one resolved parent ``origin/main`` snapshot."""
     parent = Path(parent)
     refresh_origin_main(parent, "parent")
+    return published_snapshot_at(parent, "refs/remotes/origin/main")
 
-    published_ref = "refs/remotes/origin/main"
+
+def published_snapshot_at(parent: Any, published_ref: str) -> PublishedSnapshot:
+    """Resolve ``published_ref`` once and read only that immutable commit.
+
+    Every tree and blob lookup below uses the resolved 40-hex object id.  A
+    concurrent fetch may move the caller's ref after resolution, but it cannot
+    splice shards from two revisions into one reported snapshot.
+    """
+    parent = Path(parent)
+    resolved = _git(parent, [
+        "--no-replace-objects", "rev-parse", "--verify", f"{published_ref}^{{commit}}",
+    ])
+    if resolved.returncode != 0:
+        raise SeriesError(
+            f"cannot resolve published series revision {published_ref}: "
+            + (resolved.stderr.strip() or "no output")
+        )
+    commit = resolved.stdout.strip()
+    if not _SHA_RE.fullmatch(commit):
+        raise SeriesError(
+            f"published series revision {published_ref} resolved to invalid commit "
+            f"{commit!r}"
+        )
+
     listed = _git(parent, [
-        "ls-tree", "-r", "--name-only", published_ref, "--", "series",
+        "--no-replace-objects", "ls-tree", "-r", "--name-only", commit, "--", "series",
     ])
     if listed.returncode != 0:
         raise SeriesError(
-            "cannot list series shards on parent origin/main: "
+            f"cannot list series shards at {commit}: "
             + (listed.stderr.strip() or "no output")
         )
     rows: list[dict] = []
@@ -430,18 +463,28 @@ def published_rows(parent: Any) -> list[dict]:
         parts = Path(relative).parts
         if len(parts) != 4 or parts[0] != "series" or not relative.endswith(".jsonl"):
             continue
-        shown = _git(parent, ["show", f"{published_ref}:{relative}"])
+        shown = _git(parent, ["--no-replace-objects", "show", f"{commit}:{relative}"])
         if shown.returncode != 0:
             raise SeriesError(
-                f"cannot read parent origin/main:{relative}: "
+                f"cannot read parent {commit}:{relative}: "
                 + (shown.stderr.strip() or "no output")
             )
         if shown.stdout and not shown.stdout.endswith("\n"):
             raise MalformedEvent(
-                f"parent origin/main:{relative}: final line has no newline terminator"
+                f"parent {commit}:{relative}: final line has no newline terminator"
             )
         rows.extend(parse_line(line) for line in shown.stdout.splitlines() if line.strip())
-    return union_events(validate_read_rows(rows))
+    return PublishedSnapshot(commit, union_events(validate_read_rows(rows)))
+
+
+def published_rows(parent: Any) -> list[dict]:
+    """Compatibility wrapper returning rows from the current published snapshot."""
+    return published_snapshot(parent).rows
+
+
+def published_rows_at(parent: Any, published_ref: str) -> list[dict]:
+    """Compatibility wrapper returning rows from one resolved revision."""
+    return published_snapshot_at(parent, published_ref).rows
 
 
 def history_store_rows(parent: Any) -> list[dict]:

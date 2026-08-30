@@ -48,6 +48,7 @@ VALIDATE_STATUS_VERDICTS = frozenset({
     "LEDGER-UNREADABLE",
 })
 GITHUB_STATUS_STATES = frozenset({"error", "failure", "pending", "success"})
+RUN_HANDLE_REPOSITORIES = frozenset({"rrnewton/hermit", "rrnewton/reverie"})
 
 
 class CrosscheckError(RuntimeError):
@@ -122,14 +123,16 @@ def validate_status_report(root: Path, sha: str, repo: str) -> dict[str, Any]:
 
 
 def ledger_report(root: Path, sha: str, repo: str) -> tuple[dict[str, Any], list[dict]]:
-    rows = canonical_ledger.rows(root=root)
-    exact = [
-        row
-        for row in rows
-        if row.get("commit") == sha and _repo_matches(row.get("repo"), repo)
+    historical_rows = canonical_ledger.rows(root=root)
+    repo_rows = [
+        row for row in historical_rows if _repo_matches(row.get("repo"), repo)
     ]
+    rows = canonical_ledger.current_validation_run_rows(repo_rows)
+    exact = [row for row in rows if row.get("commit") == sha]
     return {
-        "scope": "canonical validation rows for the exact commit",
+        "scope": "current canonical validation runs for the exact commit",
+        "historical_rows": len(historical_rows),
+        "repository_historical_rows": len(repo_rows),
         "logical_rows": len(rows),
         "exact_rows": len(exact),
         "exact_run_ids": sorted(
@@ -138,8 +141,11 @@ def ledger_report(root: Path, sha: str, repo: str) -> tuple[dict[str, Any], list
     }, exact
 
 
-def series_report(root: Path, sha: str) -> tuple[dict[str, Any], list[dict]]:
-    published = canonical_series.published_rows(root)
+def series_report(
+    root: Path, sha: str
+) -> tuple[dict[str, Any], canonical_series.PublishedSnapshot]:
+    snapshot = canonical_series.published_snapshot(root)
+    published = snapshot.rows
     spool = canonical_series.spool_dir(root)
     local_paths = sorted(spool.glob("*.jsonl")) + sorted(
         (spool / "published").glob("*.jsonl")
@@ -147,22 +153,73 @@ def series_report(root: Path, sha: str) -> tuple[dict[str, Any], list[dict]]:
     local = canonical_series.union(local_paths)
     combined = logical_series_rows(published, local)
     exact = [row for row in combined if (row.get("series") or {}).get("tree") == sha]
-    parent_main = git_text(root, "rev-parse", "refs/remotes/origin/main").strip()
     return {
         "scope": "per-cell observations; not whole-run receipt authority",
         "published_ref": "refs/remotes/origin/main",
-        "published_ref_sha": parent_main,
+        "published_ref_sha": snapshot.commit,
         "published_rows": len(published),
         "local_spool_rows": len(local),
         "logical_rows": len(combined),
         "cross_store_duplicate_rows": len(published) + len(local) - len(combined),
         "exact_rows": len(exact),
-    }, published
+    }, snapshot
 
 
 def logical_series_rows(published: Iterable[dict], local: Iterable[dict]) -> list[dict]:
     """Use the store's authority for duplicate identity and conflict refusal."""
     return canonical_series.union_events([*published, *local])
+
+
+def canonical_series_event_map(rows: Iterable[Mapping[str, Any]]) -> dict[str, str]:
+    """Canonical full-row bodies keyed by the series store's stable identity."""
+    by_event: dict[str, str] = {}
+    for row in rows:
+        event_id = row.get("event_id")
+        if not isinstance(event_id, str) or not event_id:
+            raise CrosscheckError("published series row has no event_id")
+        canonical = json.dumps(row, sort_keys=True, separators=(",", ":"))
+        prior = by_event.get(event_id)
+        if prior is not None and prior != canonical:
+            raise CrosscheckError(
+                f"published series event_id {event_id!r} has conflicting bodies"
+            )
+        by_event[event_id] = canonical
+    return by_event
+
+
+def compare_series_snapshots(
+    source_rows: Iterable[Mapping[str, Any]],
+    current_rows: Iterable[Mapping[str, Any]],
+) -> dict[str, Any]:
+    """Classify one source frontier against the current published snapshot."""
+    source = canonical_series_event_map(source_rows)
+    current = canonical_series_event_map(current_rows)
+    source_ids = set(source)
+    current_ids = set(current)
+    missing = sorted(source_ids - current_ids)
+    added = sorted(current_ids - source_ids)
+    replaced = sorted(
+        event_id
+        for event_id in source_ids & current_ids
+        if source[event_id] != current[event_id]
+    )
+    if source == current:
+        relation = "current"
+    elif not missing and not replaced and source_ids < current_ids:
+        relation = "stale"
+    else:
+        relation = "incorrect"
+    return {
+        "relation": relation,
+        "source_events": len(source),
+        "current_events": len(current),
+        "added_events": len(added),
+        "missing_events": len(missing),
+        "replaced_events": len(replaced),
+        "first_added_event_id": added[0] if added else None,
+        "first_missing_event_id": missing[0] if missing else None,
+        "first_replaced_event_id": replaced[0] if replaced else None,
+    }
 
 
 def _scorecard_total_rows(markdown: str) -> list[list[int]]:
@@ -195,10 +252,11 @@ def _scorecard_prose_counts(markdown: str) -> dict[str, int | None]:
 
 
 def scorecard_report(
+    root: Path,
     hermit: Path,
     sha: str,
     *,
-    published_series_rows: int,
+    published_series_snapshot: canonical_series.PublishedSnapshot,
 ) -> dict[str, Any]:
     cells = _json_object(
         git_text(hermit, "show", f"{sha}:ci/compat-envelope/cells.json"),
@@ -261,11 +319,31 @@ def scorecard_report(
     if projection is not None and not isinstance(projection, dict):
         raise CrosscheckError("cells.json projection is not an object")
     projection = projection or {}
+    source_commit = projection.get("source_commit")
+    source_snapshot: canonical_series.PublishedSnapshot | None = None
+    comparison: dict[str, Any] | None = None
+    if source_commit is not None:
+        if not isinstance(source_commit, str) or not SHA_RE.fullmatch(source_commit):
+            raise CrosscheckError(
+                "cells.json projection source_commit must be a lowercase 40-hex "
+                f"object id, got {source_commit!r}"
+            )
+        source_snapshot = (
+            published_series_snapshot
+            if source_commit == published_series_snapshot.commit
+            else canonical_series.published_snapshot_at(root, source_commit)
+        )
+        comparison = compare_series_snapshots(
+            source_snapshot.rows, published_series_snapshot.rows
+        )
+
+    rows_read = projection.get("rows_read")
+    rows_read_valid = (
+        isinstance(rows_read, int) and not isinstance(rows_read, bool) and rows_read >= 0
+    )
     return {
         "scope": "manifest selection and retained per-cell observations",
-        "projection_rows_scope": (
-            "readable rows at projection.refreshed_at; the source revision is not recorded"
-        ),
+        "projection_rows_scope": "canonical event map at projection.source_commit",
         "schema": cells.get("schema"),
         "cell_count": len(entries),
         "status_counts": dict(sorted(status_counts.items())),
@@ -285,10 +363,21 @@ def scorecard_report(
         "projection_source_matches": (
             projection.get("source") == EXPECTED_SCORECARD_SOURCE
         ),
-        "projection_row_count_current": (
-            projection.get("rows_read") == published_series_rows
+        "projection_source_rows": (
+            len(source_snapshot.rows) if source_snapshot is not None else None
         ),
-        "current_published_series_rows": published_series_rows,
+        "projection_rows_read_valid": rows_read_valid,
+        "projection_rows_read_matches_source": (
+            None
+            if source_snapshot is None
+            else rows_read_valid and rows_read == len(source_snapshot.rows)
+        ),
+        "projection_series_comparison": comparison,
+        "projection_series_relation": (
+            comparison.get("relation") if comparison is not None else None
+        ),
+        "current_published_series_commit": published_series_snapshot.commit,
+        "current_published_series_rows": len(published_series_snapshot.rows),
     }
 
 
@@ -308,6 +397,18 @@ def _repo_matches(value: object, repo: str) -> bool:
     if repo == "rrnewton/reverie":
         return value in {"reverie", repo}
     return value == repo
+
+
+def _run_handle_attribution(raw: Mapping[str, Any]) -> tuple[str, str]:
+    target = raw.get("target")
+    if not isinstance(target, str) or not SHA_RE.fullmatch(target):
+        raise ValueError("run handle target must be an exact lowercase forty-hex commit")
+    repo = raw.get("repo")
+    if not isinstance(repo, str) or repo not in RUN_HANDLE_REPOSITORIES:
+        raise ValueError(
+            "run handle repo must be rrnewton/hermit or rrnewton/reverie"
+        )
+    return target, repo
 
 
 def run_handle_report(
@@ -330,19 +431,27 @@ def run_handle_report(
         except (OSError, ValueError, json.JSONDecodeError) as error:
             unreadable.append({"path": str(path), "error": str(error)})
             continue
-        # A malformed handle for another target cannot contradict this SHA.
-        # Select by the two attribution fields before asking the typed reader
-        # to validate the complete record; malformed JSON remains unassignable
-        # and therefore loud.
-        if raw_json.get("target") != sha or not _repo_matches(raw_json.get("repo"), repo):
-            continue
         try:
-            raw = run_registry.read_record(path)
-            projected = run_registry.projection(raw)
-        except (OSError, RuntimeError, ValueError) as error:
+            raw_target, raw_repo = _run_handle_attribution(raw_json)
+        except ValueError as error:
             unreadable.append({"path": str(path), "error": str(error)})
             continue
-        if projected.get("target") != sha or not _repo_matches(projected.get("repo"), repo):
+        # Attribution is validated before filtering. A well-formed handle for a
+        # different commit or repository is out of scope; a missing or invalid
+        # target/repo remains loud because it cannot be assigned safely.
+        if raw_target != sha or raw_repo != repo:
+            continue
+        try:
+            raw = raw_json
+            projected = run_registry.projection(raw)
+        except (RuntimeError, ValueError) as error:
+            unreadable.append({"path": str(path), "error": str(error)})
+            continue
+        if projected.get("target") != raw_target or projected.get("repo") != raw_repo:
+            unreadable.append({
+                "path": str(path),
+                "error": "typed projection changed the validated target/repo attribution",
+            })
             continue
         if projected.get("kind") != run_registry.RunKind.VALIDATE.value:
             continue
@@ -470,17 +579,47 @@ def reconcile(report: Mapping[str, Any]) -> list[str]:
             "scorecard projection names an unexpected series source: "
             f"{projection.get('source')!r}, expected {EXPECTED_SCORECARD_SOURCE!r}"
         )
-    elif scorecard and not scorecard.get("projection_row_count_current"):
+    elif scorecard and scorecard.get("projection_series_relation") is None:
         projection = scorecard.get("projection") or {}
-        series = report.get("series") or {}
         issues.append(
-            "scorecard projection is STALE, not arithmetically contradictory: "
-            f"it read {projection.get('rows_read')!r} row(s) at "
-            f"{projection.get('refreshed_at') or 'an unrecorded time'}, while the named "
-            f"published series now has {scorecard.get('current_published_series_rows')!r} "
-            f"logical row(s) at {series.get('published_ref_sha') or 'an unknown revision'}; "
-            "the projection does not record the parent commit or event frontier needed to "
-            "reload its historical input exactly"
+            "scorecard projection records no immutable source_commit, so its "
+            f"{projection.get('rows_read')!r} row count cannot be classified as "
+            "current, stale, or incorrect"
+        )
+    elif scorecard and not scorecard.get("projection_rows_read_matches_source"):
+        projection = scorecard.get("projection") or {}
+        issues.append(
+            "scorecard projection is INCORRECT: rows_read is a source-snapshot "
+            f"invariant, but it records {projection.get('rows_read')!r} for "
+            f"{scorecard.get('projection_source_rows')!r} canonical row(s) at "
+            f"{projection.get('source_commit')}"
+        )
+    elif scorecard and scorecard.get("projection_series_relation") == "incorrect":
+        projection = scorecard.get("projection") or {}
+        comparison = scorecard.get("projection_series_comparison") or {}
+        issues.append(
+            "scorecard projection is INCORRECT: its recorded source snapshot is not "
+            "an unchanged subset of the current canonical event map "
+            f"(missing={comparison.get('missing_events')}, "
+            f"replaced={comparison.get('replaced_events')}, "
+            f"current-only={comparison.get('added_events')}; "
+            f"source={projection.get('source_commit')}, "
+            f"current={scorecard.get('current_published_series_commit')})"
+        )
+    elif scorecard and scorecard.get("projection_series_relation") == "stale":
+        projection = scorecard.get("projection") or {}
+        comparison = scorecard.get("projection_series_comparison") or {}
+        issues.append(
+            "scorecard projection is STALE: its recorded source event map is an "
+            "unchanged strict subset of the current published series "
+            f"({comparison.get('source_events')} -> {comparison.get('current_events')} "
+            f"events; source={projection.get('source_commit')}, "
+            f"current={scorecard.get('current_published_series_commit')})"
+        )
+    elif scorecard and scorecard.get("projection_series_relation") != "current":
+        issues.append(
+            "scorecard projection has unsupported series relation "
+            f"{scorecard.get('projection_series_relation')!r}"
         )
 
     handles = report.get("run_handles") or {}
@@ -554,21 +693,24 @@ def build_report(root: Path, sha: str, repo: str) -> dict[str, Any]:
         report["ledger"] = ledger
 
     series_result = _collect("series", unavailable, lambda: series_report(root, sha))
-    published_rows: list[dict] = []
+    published_snapshot: canonical_series.PublishedSnapshot | None = None
     if series_result is not None:
-        series, published_rows = series_result
+        series, published_snapshot = series_result
         report["series"] = series
 
     if repo != "rrnewton/hermit":
         unavailable["scorecard"] = (
             "only rrnewton/hermit carries the compatibility scorecard"
         )
-    elif series_result is not None:
+    elif published_snapshot is not None:
         scorecard = _collect(
             "scorecard",
             unavailable,
             lambda: scorecard_report(
-                root / "hermit", sha, published_series_rows=len(published_rows)
+                root,
+                root / "hermit",
+                sha,
+                published_series_snapshot=published_snapshot,
             ),
         )
         if scorecard is not None:
@@ -632,7 +774,11 @@ def print_text(report: Mapping[str, Any]) -> None:
             f"green-observed={scorecard.get('green_observed_cells')} "
             f"fresh-green={scorecard.get('fresh_green_observed_cells')} "
             f"projection-rows={projection.get('rows_read')} "
-            f"current-series-rows={scorecard.get('current_published_series_rows')}"
+            f"projection-source={projection.get('source_commit')} "
+            f"projection-source-rows={scorecard.get('projection_source_rows')} "
+            f"projection-relation={scorecard.get('projection_series_relation')} "
+            f"current-series-rows={scorecard.get('current_published_series_rows')} "
+            f"current-series-commit={scorecard.get('current_published_series_commit')}"
         )
     handles = report.get("run_handles")
     if handles:
