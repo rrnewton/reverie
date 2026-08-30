@@ -68,14 +68,21 @@ class Provenance:
     @property
     def suspect(self) -> bool:
         """True when this artifact could make a clean number wrong."""
-        return bool(self.capped) or bool(self.dirty) or (self.behind or 0) > 0
+        unknown = self.kind in {"binary", "tree"} and (
+            self.behind is None or self.dirty is None
+        )
+        return unknown or bool(self.capped) or bool(self.dirty) or (self.behind or 0) > 0
 
     def render(self) -> str:
         bits = [f"{self.kind}={self.identity}"]
         if self.behind is not None:
             bits.append(f"behind={self.behind}")
+        elif self.kind in {"binary", "tree"}:
+            bits.append("behind=unknown")
         if self.dirty is not None:
             bits.append(f"dirty={str(self.dirty).lower()}")
+        elif self.kind in {"binary", "tree"}:
+            bits.append("dirty=unknown")
         if self.capped is not None:
             bits.append(f"capped={str(self.capped).lower()}")
         if self.detail:
@@ -117,7 +124,8 @@ def tree_provenance(repo: str | Path, ref: str = "origin/main") -> Provenance:
     count = _git(["rev-list", "--count", f"HEAD..{ref}"], cwd=repo)
     if count is not None and count.isdigit():
         behind = int(count)
-    dirty = bool(_git(["status", "--porcelain", "--untracked-files=no"], cwd=repo))
+    status = _git(["status", "--porcelain", "--untracked-files=no"], cwd=repo)
+    dirty = None if status is None else bool(status)
     return Provenance("tree", head, behind=behind, dirty=dirty)
 
 
@@ -150,6 +158,10 @@ def require_fresh(*provenances: Provenance, allow_behind: int = 0) -> None:
             problems.append(f"{p.kind} {p.identity}: query was TRUNCATED ({p.detail})")
         if "UNKNOWN" in p.identity:
             problems.append(f"{p.kind}: UNATTRIBUTED -- {p.identity}")
+        if p.kind in {"binary", "tree"} and p.behind is None:
+            problems.append(f"{p.kind} {p.identity}: distance from target is UNKNOWN")
+        if p.kind in {"binary", "tree"} and p.dirty is None:
+            problems.append(f"{p.kind} {p.identity}: working-tree state is UNKNOWN")
         if (p.behind or 0) > allow_behind:
             problems.append(
                 f"{p.kind} {p.identity}: {p.behind} commits behind (allowed {allow_behind})"

@@ -511,7 +511,9 @@ class DeltaPagingTest(unittest.TestCase):
             root = make_root(Path(raw), ["s1"])
             state = Path(raw) / "state.json"
             rc, out = self._run(root, state, [])
-            self.assertEqual(rc, 0, out)
+            self.assertEqual(rc, 2, out)
+            self.assertIn("state=unknown", out)
+            self.assertIn("baseline was absent", out)
             fields = dict(
                 line.split("=", 1) for line in out.splitlines() if "=" in line
                 and not line.startswith("slot=")
@@ -527,6 +529,28 @@ class DeltaPagingTest(unittest.TestCase):
                 self.assertIn(key, fields)
             self.assertTrue(fields["summary"].strip())
             self.assertNotIn("{summary}", out)
+            rc2, out2 = self._run(root, state, [])
+            self.assertEqual(rc2, 0, out2)
+            self.assertIn("state=ok", out2)
+
+    def test_malformed_delta_state_is_unknown_not_a_first_run(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = make_root(Path(raw), ["s1"])
+            state = Path(raw) / "state.json"
+            state.write_text("{not json", encoding="utf-8")
+            rc, out = self._run(root, state, [])
+            self.assertEqual(rc, 2, out)
+            self.assertIn("state=unknown", out)
+            self.assertIn("cannot read delta state", out)
+
+    def test_unanticipated_delta_state_shape_is_unknown(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = make_root(Path(raw), ["s1"])
+            state = Path(raw) / "state.json"
+            state.write_text('{"reported": "s1"}', encoding="utf-8")
+            rc, out = self._run(root, state, [])
+            self.assertEqual(rc, 2, out)
+            self.assertIn("non-string-list 'reported'", out)
 
 
 class TickHubScopeTest(unittest.TestCase):

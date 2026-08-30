@@ -235,15 +235,12 @@ ORDER BY t.local_id
     )
     if proc.returncode != 0:
         raise RuntimeError(f"taskgraph query failed: {proc.stderr.strip()[:200]}")
+    try:
+        rows = taskgraph_db.parse_json_rows(proc.stdout)
+    except taskgraph_db.TaskGraphUnavailable as error:
+        raise RuntimeError(f"taskgraph query returned incomplete rows: {error}") from error
     out: list[TaggedTask] = []
-    for line in proc.stdout.splitlines():
-        line = line.strip()
-        if not line.startswith("{"):
-            continue
-        try:
-            raw = json.loads(line)
-        except json.JSONDecodeError:
-            continue
+    for raw in rows:
         out.append(
             TaggedTask(
                 id=str(raw.get("id") or ""),
@@ -260,7 +257,12 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--json", action="store_true")
     a = p.parse_args(argv)
 
-    tasks = load_tagged_tasks(a.root)
+    try:
+        tasks = load_tagged_tasks(a.root)
+    except RuntimeError as error:
+        print("state=indeterminate")
+        print(f"summary=landing composition unavailable: {error}")
+        return 2
     index = AncestorIndex(a.root)
     comp = classify(tasks, index)
     if a.json:

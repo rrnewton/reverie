@@ -83,6 +83,14 @@ class Fixture(unittest.TestCase):
     def tearDown(self) -> None:
         self.temp.cleanup()
 
+    def test_missing_search_root_is_unknown_not_zero_clones(self) -> None:
+        missing = self.root / "absent"
+        with self.assertRaisesRegex(RuntimeError, "search root is unavailable"):
+            gate_module.change_clones(missing)
+
+    def test_empty_existing_search_root_is_a_measured_zero(self) -> None:
+        self.assertEqual([], gate_module.change_clones(self.search))
+
     def clone(self, name: str = "dev-hermit-fixture") -> Path:
         path = self.search / name
         run("git", "clone", "-q", "--single-branch", "--branch", "main",

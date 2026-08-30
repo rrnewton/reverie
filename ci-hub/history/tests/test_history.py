@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import csv
+import io
 import json
 import os
 import subprocess
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
+from unittest import mock
 
 HISTORY = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(HISTORY))
@@ -18,6 +21,45 @@ import query
 
 
 class IngestUnitTest(unittest.TestCase):
+    def test_github_reader_refuses_nonzero_instead_of_returning_an_empty_page(self):
+        failed = subprocess.CompletedProcess(["gh"], 1, "", "unavailable")
+        with mock.patch.object(ingest.subprocess, "run", return_value=failed):
+            with self.assertRaisesRegex(ingest.IngestUnavailable, "rc=1"):
+                ingest.gh_json("repos/r/x/actions/runs")
+
+    def test_github_reader_returns_a_valid_object(self):
+        succeeded = subprocess.CompletedProcess(["gh"], 0, '{"workflow_runs": []}', "")
+        with mock.patch.object(ingest.subprocess, "run", return_value=succeeded):
+            self.assertEqual(
+                {"workflow_runs": []}, ingest.gh_json("repos/r/x/actions/runs")
+            )
+
+    def test_github_reader_refuses_an_unanticipated_json_shape(self):
+        succeeded = subprocess.CompletedProcess(["gh"], 0, '[]', "")
+        with mock.patch.object(ingest.subprocess, "run", return_value=succeeded):
+            with self.assertRaisesRegex(ingest.IngestUnavailable, "expected an object"):
+                ingest.gh_json("repos/r/x/actions/runs")
+
+    def test_workflow_response_refuses_a_missing_population_field(self):
+        with self.assertRaisesRegex(ingest.IngestUnavailable, "workflow_runs"):
+            ingest.required_list({"total_count": 0}, "workflow_runs", source="workflow-runs response")
+
+    def test_main_reports_indeterminate_without_committing_an_empty_store(self):
+        failed = subprocess.CompletedProcess(["gh"], 1, "", "unavailable")
+        with tempfile.TemporaryDirectory() as raw, \
+             mock.patch.object(ingest, "parent_root", return_value=raw), \
+             mock.patch.object(ingest.subprocess, "run", return_value=failed), \
+             mock.patch.object(
+                 sys, "argv",
+                 ["ingest.py", "--repo", "r/x", "--no-profiles", "--no-jobs", "--no-local"],
+             ):
+            output = io.StringIO()
+            with redirect_stdout(output):
+                code = ingest.main()
+            self.assertEqual(2, code)
+            self.assertIn("state=indeterminate", output.getvalue())
+            self.assertFalse(Path(raw, "ignored", "ci-hub", "gha-runs.csv").exists())
+
     def test_run_to_row_splits_queue_and_run(self):
         run = {
             "id": 42, "run_attempt": 1, "workflow_id": 7, "name": "CI",

@@ -39,6 +39,33 @@ def _anc(landed: set, absent: set = frozenset()):
     return f
 
 
+def test_malformed_task_tags_are_unverifiable(monkeypatch) -> None:
+    monkeypatch.setattr(TL.taskgraph_db, "resolve", lambda: object())
+    monkeypatch.setattr(TL, "_run", lambda _cmd: (
+        0, 'local_id | tags | status | notes\n---\nx | [bad | IN_PROGRESS | []\n\n(1 row)\n'
+    ))
+    try:
+        TL.load_tasks()
+    except TL.TaskGraphQueryFailed as error:
+        assert "malformed tags" in str(error)
+    else:
+        raise AssertionError("malformed tags became an empty task state")
+
+
+def test_complete_task_row_still_loads(monkeypatch) -> None:
+    monkeypatch.setattr(TL.taskgraph_db, "resolve", lambda: object())
+    monkeypatch.setattr(TL, "_run", lambda _cmd: (
+        0,
+        'local_id | tags | status | notes\n---\n'
+        'x | ["implemented"] | IN_PROGRESS | ["IMPLEMENTED: SHA '
+        + A + '"]\n\n(1 row)\n',
+    ))
+    rows = TL.load_tasks()
+    assert len(rows) == 1
+    assert rows[0].tags == ["implemented"]
+    assert rows[0].shas == [A]
+
+
 def _repo_probe(entries):
     """Map to True/False/"foreign"/"error"; missing means absent."""
     def probe(repository, sha):

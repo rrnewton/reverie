@@ -203,7 +203,10 @@ def dirty_paths(root: Path) -> list[str]:
         ["git", "diff", "--name-only", "HEAD"], cwd=str(root)
     )
     if proc.returncode != 0:
-        return []
+        raise RuntimeError(
+            "cannot enumerate tracked edits: "
+            + (proc.stderr.strip()[:160] or f"git diff exited {proc.returncode}")
+        )
     return [p for p in proc.stdout.splitlines() if p.strip()]
 
 

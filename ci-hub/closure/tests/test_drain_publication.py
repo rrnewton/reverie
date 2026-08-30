@@ -28,6 +28,11 @@ import unittest
 from pathlib import Path
 
 MODULE = Path(__file__).resolve().parents[1] / "drain_publication.py"
+SPEC = importlib.util.spec_from_file_location("drain_publication_unit", MODULE)
+assert SPEC is not None and SPEC.loader is not None
+DRAIN = importlib.util.module_from_spec(SPEC)
+sys.modules[SPEC.name] = DRAIN
+SPEC.loader.exec_module(DRAIN)
 
 TASK = "drain_hermit_pr_2304_fixture"
 PR = "hermit#2304"
@@ -53,6 +58,19 @@ CREATE TABLE task_notes (id INTEGER PRIMARY KEY, task_id TEXT NOT NULL,
 """
 
 NOW = "2026-08-25T12:00:00+00:00"
+
+
+class InputShapeBrackets(unittest.TestCase):
+    def test_valid_drain_tags_select_the_task(self) -> None:
+        self.assertTrue(DRAIN.is_drain_task({"id": "x", "tags": '["drain"]'}))
+
+    def test_malformed_tags_are_unavailable_not_not_a_drain_task(self) -> None:
+        with self.assertRaisesRegex(DRAIN.Unavailable, "malformed tags"):
+            DRAIN.is_drain_task({"id": "x", "tags": "[not json"})
+
+    def test_non_string_tags_are_unavailable(self) -> None:
+        with self.assertRaisesRegex(DRAIN.Unavailable, "not all strings"):
+            DRAIN.is_drain_task({"id": "x", "tags": "[1]"})
 
 
 class _Fixture(unittest.TestCase):

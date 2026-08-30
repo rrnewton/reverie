@@ -57,7 +57,12 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 2
-    rows = edit_record.attribute(root)
+    try:
+        rows = edit_record.attribute(root)
+    except RuntimeError as error:
+        print("state=indeterminate")
+        print(f"summary=edit ownership unavailable: {error}")
+        return 2
     if not rows:
         print(f"edit-owners: no tracked path differs from HEAD in {root}")
         return 0

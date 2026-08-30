@@ -29,6 +29,7 @@ parent checkout, or any live tmux pane.
 from __future__ import annotations
 
 import os
+import importlib.util
 import json
 import shutil
 import subprocess
@@ -38,10 +39,33 @@ import textwrap
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 HEALTH = Path(__file__).resolve().parents[1]
 REPO_ROOT = HEALTH.parents[1]
 GATE_SOURCE = HEALTH / "unpushed_parent_commits.py"
+SPEC = importlib.util.spec_from_file_location("unpushed_parent_commits_unit", GATE_SOURCE)
+assert SPEC is not None and SPEC.loader is not None
+GATE = importlib.util.module_from_spec(SPEC)
+sys.modules[SPEC.name] = GATE
+SPEC.loader.exec_module(GATE)
+
+
+class ReadFailureBrackets(unittest.TestCase):
+    def test_failed_rev_list_is_unknown_not_zero_commits(self) -> None:
+        failed = subprocess.CompletedProcess(["git"], 128, "", "bad revision")
+        with mock.patch.object(GATE.bounded_capture, "git", return_value=failed):
+            with self.assertRaisesRegex(GATE.ScanUnavailable, "rev-list failed"):
+                GATE.local_only("all")
+
+    def test_malformed_log_row_is_unknown_not_a_commit(self) -> None:
+        census = subprocess.CompletedProcess(["git"], 0, "a" * 40 + "\n", "")
+        malformed = subprocess.CompletedProcess(["git"], 0, "not-tab-separated\n", "")
+        with mock.patch.object(
+            GATE.bounded_capture, "git", side_effect=[census, malformed]
+        ):
+            with self.assertRaisesRegex(GATE.ScanUnavailable, "unparseable row"):
+                GATE.local_only("all")
 
 
 def run(*args: str, cwd: Path) -> str:

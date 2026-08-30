@@ -40,7 +40,9 @@ rather than re-deriving it from whatever it happened to inherit.
 from __future__ import annotations
 
 import argparse
+import json
 import os
+import re
 import sqlite3
 import sys
 from collections.abc import Mapping, Sequence
@@ -60,6 +62,47 @@ class TaskGraphUnavailable(RuntimeError):
     Consumers translate this into their own could-not-measure state.  It must
     never be caught and turned into an empty result.
     """
+
+
+_ROW_COUNT = re.compile(r"^\((\d+) rows?\)$")
+
+
+def parse_json_rows(output: str) -> list[dict[str, object]]:
+    """Parse ``tg sql`` json_object output without dropping malformed rows.
+
+    ``tg sql`` prints a trailing row count.  That count is part of the read
+    contract: without checking it, one malformed JSON row silently becomes a
+    smaller population that still looks complete.
+    """
+
+    rows: list[dict[str, object]] = []
+    reported: int | None = None
+    for raw in output.splitlines():
+        line = raw.strip()
+        match = _ROW_COUNT.fullmatch(line)
+        if match:
+            reported = int(match.group(1))
+            continue
+        if not line.startswith("{"):
+            continue
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError as error:
+            raise TaskGraphUnavailable(
+                f"tg sql returned malformed JSON row: {error.msg}"
+            ) from error
+        if not isinstance(row, dict):
+            raise TaskGraphUnavailable(
+                f"tg sql returned {type(row).__name__}, expected an object"
+            )
+        rows.append(row)
+    if reported is None:
+        raise TaskGraphUnavailable("tg sql output omitted its row-count footer")
+    if reported != len(rows):
+        raise TaskGraphUnavailable(
+            f"tg sql reported {reported} row(s) but {len(rows)} JSON row(s) were readable"
+        )
+    return rows
 
 
 @dataclass(frozen=True)

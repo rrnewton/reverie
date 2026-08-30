@@ -241,19 +241,26 @@ def changed_files(checkout: Path, anchor: str, target: str, include_dirty: bool)
     return sorted(set(files))
 
 
-def clears_floors(checkout: Path, sha: str) -> bool:
+def clears_floors(checkout: Path, sha: str) -> bool | None:
     """Delegate to the floor registry -- do not reimplement floor logic here."""
     if not GATE_FLOORS.exists():
+        return None
+    try:
+        res = subprocess.run(
+            [sys.executable, str(GATE_FLOORS), "--head", sha, "--repo-checkout", str(checkout),
+             "--no-fetch", "--json"],
+            capture_output=True,
+            text=True,
+            timeout=LOCAL_TIMEOUT,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if res.returncode == 0:
         return True
-    res = subprocess.run(
-        [sys.executable, str(GATE_FLOORS), "--head", sha, "--repo-checkout", str(checkout),
-         "--no-fetch", "--json"],
-        capture_output=True,
-        text=True,
-        timeout=LOCAL_TIMEOUT,
-        check=False,
-    )
-    return res.returncode == 0
+    if res.returncode == 2:
+        return False
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -373,9 +380,17 @@ def select_anchor(
     floor_refused = 0
     cleared = []
     for distance, sha, row in candidates:
-        if apply_floor and not clears_floors(checkout, sha):
-            floor_refused += 1
-            continue
+        if apply_floor:
+            floor_result = clears_floors(checkout, sha)
+            if floor_result is None:
+                return {
+                    "verdict": VERDICT_ERROR,
+                    "error": "gate floor authority is unavailable",
+                    "action": "run FULL",
+                }
+            if not floor_result:
+                floor_refused += 1
+                continue
         cleared.append((distance, sha, row))
 
     # Step 5: NEAREST ancestor, not newest-by-time. The selection diff is

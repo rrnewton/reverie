@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from unittest import mock
 
 import pytest
 
@@ -18,6 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from provenance import (  # noqa: E402
     Provenance, StaleArtifact, query_provenance, require_fresh, stamp,
+    tree_provenance,
 )
 
 
@@ -73,6 +75,19 @@ def test_an_unattributed_artifact_is_always_fatal():
     """UNKNOWN has no safe reading -- it is not 'probably fine'."""
     p = Provenance("binary", "UNKNOWN(unparsable-version)")
     with pytest.raises(StaleArtifact, match="UNATTRIBUTED"):
+        require_fresh(p, allow_behind=10_000)
+
+
+def test_partial_git_failure_is_unknown_not_current():
+    """A readable HEAD does not make failed freshness and status reads current."""
+    with mock.patch("provenance._git", side_effect=["abc123def456", None, None]):
+        p = tree_provenance("/repo")
+    assert p.behind is None
+    assert p.dirty is None
+    assert p.suspect
+    assert "behind=unknown" in p.render()
+    assert "dirty=unknown" in p.render()
+    with pytest.raises(StaleArtifact, match="UNKNOWN"):
         require_fresh(p, allow_behind=10_000)
 
 

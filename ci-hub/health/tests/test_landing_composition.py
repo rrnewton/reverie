@@ -16,6 +16,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import landing_composition as lc  # noqa: E402
@@ -31,6 +32,29 @@ def git(repo: Path, *args: str) -> str:
 
 
 class ExtractShaTests(unittest.TestCase):
+    def test_taskgraph_row_loss_is_indeterminate(self) -> None:
+        completed = subprocess.CompletedProcess(
+            ["tg"], 0, 'row_json\n--------\n{"id":"one"}\n\n(2 rows)\n', ""
+        )
+        with mock.patch.object(lc.taskgraph_db, "resolve"), \
+             mock.patch.object(lc.taskgraph_db, "child_env", return_value={}), \
+             mock.patch.object(lc.bounded_capture, "capture", return_value=completed):
+            with self.assertRaisesRegex(RuntimeError, "reported 2 row"):
+                lc.load_tagged_tasks(Path("/tmp"))
+
+    def test_complete_taskgraph_rows_still_load(self) -> None:
+        completed = subprocess.CompletedProcess(
+            ["tg"], 0,
+            'row_json\n--------\n'
+            '{"id":"one","status":"IN_PROGRESS","evidence":"IMPLEMENTED: '
+            + "a" * 40 + '"}\n\n(1 row)\n', ""
+        )
+        with mock.patch.object(lc.taskgraph_db, "resolve"), \
+             mock.patch.object(lc.taskgraph_db, "child_env", return_value={}), \
+             mock.patch.object(lc.bounded_capture, "capture", return_value=completed):
+            rows = lc.load_tagged_tasks(Path("/tmp"))
+        self.assertEqual(["one"], [row.id for row in rows])
+
     def test_first_40hex_is_taken(self) -> None:
         a, b = "a" * 40, "b" * 40
         self.assertEqual(lc.extract_sha(f"IMPLEMENTED: SHA {a} | later comment {b}"), a)

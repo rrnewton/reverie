@@ -75,8 +75,10 @@ def producing_parents(root: Path) -> list[Path]:
     roots = [root]
     try:
         siblings = sorted(root.parent.iterdir())
-    except OSError:
-        return roots
+    except OSError as exc:
+        raise SpoolUnavailable(
+            f"cannot enumerate producing parent checkouts under {root.parent}: {exc}"
+        ) from exc
     for candidate in siblings:
         if candidate == root or not candidate.is_dir():
             continue

@@ -480,9 +480,11 @@ def writer_alarms(
     prior: dict = {}
     if state_path and state_path.exists():
         try:
-            prior = json.loads(state_path.read_text()).get("fds", {})
+            loaded = json.loads(state_path.read_text())
         except (OSError, ValueError):
-            prior = {}
+            loaded = None
+        if isinstance(loaded, dict) and isinstance(loaded.get("fds"), dict):
+            prior = loaded["fds"]
 
     reasons: list[str] = []
     next_state: dict = {}
@@ -490,13 +492,19 @@ def writer_alarms(
         key = f"{row['dev']}:{row['ino']}"
         next_state[key] = {"size": row["logical_bytes"], "t": now}
         row["growth_bytes_per_hour"] = None
+        row["growth_state"] = "unknown"
         row["alarmed"] = False
         was = prior.get(key)
-        if isinstance(was, dict) and isinstance(was.get("t"), (int, float)):
+        if (
+            isinstance(was, dict)
+            and isinstance(was.get("t"), (int, float))
+            and isinstance(was.get("size"), (int, float))
+        ):
             dt = now - was["t"]
             if dt > 0:
-                rate = (row["logical_bytes"] - was.get("size", 0)) / dt * 3600.0
+                rate = (row["logical_bytes"] - was["size"]) / dt * 3600.0
                 row["growth_bytes_per_hour"] = int(rate)
+                row["growth_state"] = "measured"
                 if rate >= growth_bytes_per_hour:
                     # LIVENESS GATE. The rate above is a correct measurement of
                     # the interval, but an interval is history: a bounded
@@ -757,6 +765,8 @@ def main(argv: list[str] | None = None) -> int:
         report["open_writers_suppressed"] = suppressed
         report["open_writers_scanned"] = len(collected)
         report["writer_alarms"] = writer_reasons
+        growth_unknown = any(w.get("growth_state") == "unknown" for w in collected)
+        report["writer_growth_state"] = "unknown" if growth_unknown else "measured"
         if suppressed:
             report["summary"] += (
                 f" {suppressed} further writer row(s) SUPPRESSED by "
@@ -769,6 +779,13 @@ def main(argv: list[str] | None = None) -> int:
             report["state"] = "low"
             report["summary"] = (
                 "RUNAWAY WRITER: " + "; ".join(writer_reasons) + " -- " + report["summary"]
+            )
+        elif growth_unknown:
+            state = "unknown"
+            report["state"] = "unknown"
+            report["summary"] = (
+                "writer growth is UNKNOWN because no readable prior sample exists; "
+                + report["summary"]
             )
         elif writers:
             top = writers[0]
@@ -796,7 +813,11 @@ def main(argv: list[str] | None = None) -> int:
                 continue
             print(f"{key}={value}")
 
-    return 1 if args.gate and state == "low" else 0
+    if args.gate and state == "low":
+        return 1
+    if args.gate and state == "unknown":
+        return 2
+    return 0
 
 
 if __name__ == "__main__":

@@ -430,10 +430,16 @@ def read_baseline(path):
     """
     try:
         value = json.loads(Path(path).read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+    except FileNotFoundError:
         return None
-    reported = value.get("reported") if isinstance(value, dict) else None
-    return {int(n) for n in reported} if isinstance(reported, list) else None
+    except (OSError, ValueError) as error:
+        raise RuntimeError(f"cannot read refire baseline {path}: {error}") from error
+    if not isinstance(value, dict) or not isinstance(value.get("reported"), list):
+        raise RuntimeError(f"refire baseline {path} has an unsupported shape")
+    try:
+        return {int(n) for n in value["reported"]}
+    except (TypeError, ValueError) as error:
+        raise RuntimeError(f"refire baseline {path} has invalid PR numbers") from error
 
 
 def write_baseline(path, reported: set) -> None:
@@ -493,7 +499,22 @@ def gate_report(s: "Survey", repo: str, elapsed: float, state_path, dry_run: boo
     due_now = {v.number for v in s.verdicts if v.state == REFIRE_DUE}
     futile = {v.number for v in s.verdicts if v.state == REFIRE_FUTILE}
     covered = {v.number for v in s.verdicts}
-    prior = read_baseline(state_path)
+    try:
+        prior = read_baseline(state_path)
+    except RuntimeError as error:
+        return 2, {
+            "state": "unknown",
+            "summary": str(error),
+            "due_new": "unknown",
+            "due_standing": len(due_now),
+            "due_new_prs": "unknown",
+            "due_prs": ",".join(str(n) for n in sorted(due_now)) or "-",
+            "futile_prs": ",".join(str(n) for n in sorted(futile)) or "-",
+            "futile": len(futile),
+            "heads_total": s.heads_total,
+            "heads_covered": s.heads_covered,
+            "elapsed_secs": round(elapsed, 2),
+        }
     # First run (prior is None) adopts the standing backlog WITHOUT paging: it did
     # not happen at this tick and must not be reported as if it had. An EMPTY
     # recorded baseline is a different thing entirely -- see read_baseline.
@@ -505,7 +526,15 @@ def gate_report(s: "Survey", repo: str, elapsed: float, state_path, dry_run: boo
 
     coverage = f"{s.heads_covered}/{s.heads_total}"
     by_number = {v.number: v for v in s.verdicts}
-    if fresh:
+    if prior is None:
+        summary = (
+            f"refire baseline was absent at {state_path}; recorded the current "
+            f"{len(due_now)} due PR(s) across a {coverage} head sample, but no "
+            "new-versus-standing verdict is available this tick; the sampled "
+            "count is a floor, not a census"
+        )
+        state = "unknown"
+    elif fresh:
         named = "; ".join(
             f"#{n} (gate run {by_number[n].gate_run_id})" for n in sorted(fresh)
         )
@@ -550,7 +579,7 @@ def gate_report(s: "Survey", repo: str, elapsed: float, state_path, dry_run: boo
         "heads_covered": s.heads_covered,
         "elapsed_secs": round(elapsed, 2),
     }
-    return (1 if fresh else 0), fields
+    return (2 if prior is None else (1 if fresh else 0)), fields
 
 
 def main(argv: Sequence[str] | None = None) -> int:

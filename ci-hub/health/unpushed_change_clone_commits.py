@@ -143,7 +143,7 @@ def git(repo: Path, *args: str, deadline: float) -> str:
 def change_clones(root: Path) -> list[Path]:
     """Directories under `root` carrying a change manifest, sorted."""
     if not root.is_dir():
-        return []
+        raise RuntimeError(f"change-clone search root is unavailable: {root}")
     found = []
     for child in sorted(root.iterdir()):
         if child.is_dir() and (child / ".git" / MANIFEST).is_file():
@@ -269,7 +269,16 @@ def main() -> int:
     a = ap.parse_args()
 
     root = Path(a.search_root).expanduser()
-    clones = change_clones(root)
+    try:
+        clones = change_clones(root)
+    except OSError as error:
+        print("state=NO_RESULT")
+        print(f"summary=NO_RESULT/change-clone-enumeration-failed: {error}")
+        return 2
+    except RuntimeError as error:
+        print("state=NO_RESULT")
+        print(f"summary=NO_RESULT/change-clone-enumeration-failed: {error}")
+        return 2
     rows = inspect_all(clones)
     holding = [
         r for r in rows

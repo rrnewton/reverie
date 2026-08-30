@@ -189,6 +189,7 @@ def test_growth_trigger_fires_while_the_file_is_still_small(tmp_path):
         [_row(size=700 * 1024 * 1024)], state, 60.0, 50 * GiB, 20 * GiB
     )
     assert reasons, "35.2 GiB/h must trip a 20 GiB/h threshold"
+    assert rows[0]["growth_state"] == "measured"
     assert rows[0]["growth_bytes_per_hour"] > 34 * GiB
     assert rows[0]["logical_bytes"] < GiB, "must fire while still under 1 GiB"
 
@@ -213,6 +214,7 @@ def test_first_sighting_cannot_trigger_on_growth(tmp_path):
         [_row(size=10 * GiB)], tmp_path / "s.json", 1000.0, 50 * GiB, 1 * GiB
     )
     assert rows[0]["growth_bytes_per_hour"] is None
+    assert rows[0]["growth_state"] == "unknown"
     assert not reasons
 
 
@@ -244,6 +246,38 @@ def test_growth_survives_an_unreadable_state_file(tmp_path):
     bad.write_text("{ not json")
     rows, reasons = bh.writer_alarms([_row(size=GiB)], bad, 1.0, 50 * GiB, 20 * GiB)
     assert rows[0]["growth_bytes_per_hour"] is None and not reasons
+    assert rows[0]["growth_state"] == "unknown"
+
+
+def test_malformed_prior_sample_is_unknown_not_a_zero_rate(tmp_path):
+    state = tmp_path / "s.json"
+    state.write_text('{"fds":{"1:1":{"size":"large","t":0}}}')
+    rows, reasons = bh.writer_alarms(
+        [_row(size=GiB)], state, 3600.0, 50 * GiB, 20 * GiB
+    )
+    assert not reasons
+    assert rows[0]["growth_bytes_per_hour"] is None
+    assert rows[0]["growth_state"] == "unknown"
+
+
+def test_gate_reports_unknown_then_clean_when_growth_becomes_measurable(
+    tmp_path, monkeypatch, capsys
+):
+    hr = make_headroom(
+        meta_total=125 * GiB, meta_used=10 * GiB, meta_disk_total=250 * GiB,
+        data_total=1000 * GiB, data_used=10 * GiB, unallocated=500 * GiB,
+    )
+    monkeypatch.setattr(bh, "measure", lambda _mount: hr)
+    monkeypatch.setattr(
+        bh, "large_open_writers",
+        lambda *_args, **_kwargs: [_row(size=100 * 1024 * 1024)],
+    )
+    state = tmp_path / "writers.json"
+    args = ["--gate", "--writers", "--writers-state", str(state), "--mount", "/fake"]
+    assert bh.main(args) == 2
+    assert "writer growth is UNKNOWN" in capsys.readouterr().out
+    assert bh.main(args) == 0
+    assert "writer_growth_state=measured" in capsys.readouterr().out
 
 
 # --------------------------------------------------------------------------

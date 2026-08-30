@@ -16,6 +16,7 @@ import tempfile
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import stranded_sweep as S
@@ -204,6 +205,14 @@ class WorktreeScanTest(unittest.TestCase):
         self.assertTrue(rep.no_remote_refs)
         self.assertEqual(rep.unpushed_commits, [])
         self.assertNotIn(S.T2_UNPUSHED, rep.tiers)
+        self.assertTrue(rep.unavailable)
+
+    def test_failed_git_reads_are_indeterminate_not_clean(self) -> None:
+        with mock.patch.object(S, "_git", return_value=(128, "")):
+            rep = S.scan_checkout(self.root, self.root)
+        self.assertEqual(rep.tiers, [])
+        self.assertIn("cannot read working-tree status", rep.unavailable)
+        self.assertIn("cannot enumerate remote-tracking refs", rep.unavailable)
 
     def test_unstaged_modification_keeps_its_first_character(self) -> None:
         """REGRESSION: porcelain's first column is a SPACE for an unstaged

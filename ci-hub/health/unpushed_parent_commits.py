@@ -95,6 +95,10 @@ VERIFY_TIMEOUT_SECS = 45
 RESCUE_DEADLINE_SECS = 120
 
 
+class ScanUnavailable(RuntimeError):
+    """The local-only commit population could not be measured."""
+
+
 def git(*args: str, cwd: str = PARENT) -> str:
     return bounded_capture.git(args, cwd=cwd).stdout.strip()
 
@@ -131,18 +135,32 @@ def local_only(scope: str) -> list[dict[str, str]]:
     # HEAD in a SECONDARY WORKTREE carrying an unpushed commit is reported, and
     # a commit reachable only from a tag is not.
     spec = ["--exclude=refs/tags/*", "--all"] if scope == "all" else ["HEAD"]
-    shas = [s for s in git("rev-list", *spec, "--not", "--remotes").splitlines() if s]
+    census = bounded_capture.git(
+        ["rev-list", *spec, "--not", "--remotes"], cwd=PARENT
+    )
+    if census.returncode != 0:
+        raise ScanUnavailable(
+            f"git rev-list failed: {census.stderr.strip()[:160]}"
+        )
+    shas = [s for s in census.stdout.splitlines() if s]
     if not shas:
         return []
     listed = bounded_capture.git(
         ["log", "--no-walk=unsorted", "--stdin",
          "--format=%H\t%h\t%an\t%ad\t%s", "--date=short"],
         cwd=PARENT, input="\n".join(shas) + "\n")
+    if listed.returncode != 0:
+        raise ScanUnavailable(
+            f"git log for local-only commits failed: {listed.stderr.strip()[:160]}"
+        )
     rows = []
     for line in listed.stdout.splitlines():
         if not line:
             continue
-        sha, h, an, ad, subj = (line.split("\t", 4) + ["", "", "", "", ""])[:5]
+        fields = line.split("\t", 4)
+        if len(fields) != 5 or len(fields[0]) != 40:
+            raise ScanUnavailable(f"git log returned an unparseable row: {line[:160]}")
+        sha, h, an, ad, subj = fields
         rows.append({"sha": sha, "short": h, "author": an, "date": ad, "subject": subj})
     return rows
 
@@ -375,8 +393,13 @@ def main() -> int:
     a = ap.parse_args()
 
     scan_started = time.monotonic()
-    rows = local_only(a.scope)
-    head_n = len(local_only("head")) if a.scope == "all" else len(rows)
+    try:
+        rows = local_only(a.scope)
+        head_n = len(local_only("head")) if a.scope == "all" else len(rows)
+    except ScanUnavailable as error:
+        print("state=NO_RESULT")
+        print(f"summary=NO_RESULT/unpushed-parent-commits: {error}")
+        return 2
     if a.classify:
         classify_publication(rows)
     else:

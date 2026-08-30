@@ -68,6 +68,30 @@ class ResolveTest(unittest.TestCase):
         self.assertEqual(str(db), env[taskgraph_db.ENV_VAR])
         self.assertEqual("/bin", env["PATH"])
 
+    def test_json_rows_accept_complete_output(self) -> None:
+        rows = taskgraph_db.parse_json_rows(
+            'row_json\n--------\n{"id":"a"}\n{"id":"b"}\n\n(2 rows)\n'
+        )
+        self.assertEqual([{"id": "a"}, {"id": "b"}], rows)
+
+    def test_json_rows_refuse_a_silently_smaller_population(self) -> None:
+        with self.assertRaisesRegex(taskgraph_db.TaskGraphUnavailable, "malformed JSON"):
+            taskgraph_db.parse_json_rows(
+                'row_json\n--------\n{"id":"a"}\n{bad json\n\n(2 rows)\n'
+            )
+
+    def test_json_rows_refuse_a_row_count_mismatch(self) -> None:
+        with self.assertRaisesRegex(
+            taskgraph_db.TaskGraphUnavailable, "reported 2 row.*1 JSON"
+        ):
+            taskgraph_db.parse_json_rows(
+                'row_json\n--------\n{"id":"a"}\n\n(2 rows)\n'
+            )
+
+    def test_json_rows_refuse_output_without_a_denominator(self) -> None:
+        with self.assertRaisesRegex(taskgraph_db.TaskGraphUnavailable, "row-count footer"):
+            taskgraph_db.parse_json_rows('{"id":"a"}\n')
+
     # ---------------------------------------------------------------- negative
 
     def test_unbound_environment_refuses_instead_of_reading_tgs_empty_default(self) -> None:

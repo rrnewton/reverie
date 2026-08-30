@@ -294,15 +294,10 @@ def _tg_sql(query: str, db: Path | None, timeout: int = 60) -> list[dict]:
         raise Unavailable(f"could not execute tg: {exc}") from exc
     if proc.returncode != 0:
         raise Unavailable(f"tg sql exit {proc.returncode}: {proc.stderr.strip()[:200]}")
-    rows = []
-    for line in proc.stdout.splitlines():
-        line = line.strip()
-        if line.startswith("{"):
-            try:
-                rows.append(json.loads(line))
-            except json.JSONDecodeError:
-                continue
-    return rows
+    try:
+        return taskgraph_db.parse_json_rows(proc.stdout)
+    except taskgraph_db.TaskGraphUnavailable as exc:
+        raise Unavailable(str(exc)) from exc
 
 
 def load_tasks(db: Path | None = None) -> list[dict]:
@@ -345,8 +340,18 @@ def load_tasks(db: Path | None = None) -> list[dict]:
 def is_drain_task(task: dict) -> bool:
     try:
         tags = json.loads(task.get("tags") or "[]")
-    except (json.JSONDecodeError, TypeError):
-        tags = []
+    except (json.JSONDecodeError, TypeError) as exc:
+        raise Unavailable(
+            f"task {task.get('id', '<unknown>')} has malformed tags"
+        ) from exc
+    if not isinstance(tags, list):
+        raise Unavailable(
+            f"task {task.get('id', '<unknown>')} tags are not a list"
+        )
+    if not all(isinstance(tag, str) for tag in tags):
+        raise Unavailable(
+            f"task {task.get('id', '<unknown>')} tags are not all strings"
+        )
     if any(str(t).lower() in DRAIN_TAGS for t in tags):
         return True
     return str(task.get("id", "")).lower().startswith(DRAIN_ID_PREFIX)
@@ -722,7 +727,11 @@ def main(argv: list[str] | None = None) -> int:
         report("unavailable", f"cannot read the TaskGraph: {exc}", json_output=args.json)
         return NO_RESULT_EXIT
 
-    scoped, excluded = collect(tasks)
+    try:
+        scoped, excluded = collect(tasks)
+    except Unavailable as exc:
+        report("unavailable", f"cannot classify TaskGraph rows: {exc}", json_output=args.json)
+        return NO_RESULT_EXIT
     total = len(tasks)
 
     if args.task is not None:

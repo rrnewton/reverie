@@ -80,6 +80,10 @@ PROFILES_MAX_PAGES = 30        # newest artifact pages scanned for ci-perf-* per
 
 TERMINAL_STATUS = "completed"
 
+
+class IngestUnavailable(RuntimeError):
+    """A required history source could not be read; zero runs is not inferred."""
+
 # Compatibility aliases for callers and tests. The shared row contract owns the
 # field set and ordering; neither producer nor consumer restates it.
 GHA_COLUMNS = list(gha_rows.RUN_COLUMNS)
@@ -122,21 +126,36 @@ def gh_prefix() -> list[str]:
 
 
 def gh_json(path: str, *, timeout: int = 120):
-    """GET a GitHub REST path via gh and parse JSON; None on error/empty."""
+    """GET a GitHub REST path via gh or refuse the ingest."""
     cmd = gh_prefix() + ["api", "-H", "Accept: application/vnd.github+json", path]
     try:
         out = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
     except (subprocess.TimeoutExpired, FileNotFoundError) as exc:
-        sys.stderr.write(f"ci-hub ingest: gh api {path!r} failed: {exc}\n")
-        return None
+        raise IngestUnavailable(f"gh api {path!r} failed: {exc}") from exc
     if out.returncode != 0:
-        sys.stderr.write(f"ci-hub ingest: gh api {path!r} rc={out.returncode}: "
-                         f"{out.stderr.strip()[:200]}\n")
-        return None
+        raise IngestUnavailable(
+            f"gh api {path!r} rc={out.returncode}: {out.stderr.strip()[:200]}"
+        )
     try:
-        return json.loads(out.stdout)
-    except json.JSONDecodeError:
-        return None
+        value = json.loads(out.stdout)
+    except json.JSONDecodeError as exc:
+        raise IngestUnavailable(f"gh api {path!r} returned malformed JSON") from exc
+    if not isinstance(value, dict):
+        raise IngestUnavailable(
+            f"gh api {path!r} returned {type(value).__name__}, expected an object"
+        )
+    if not value:
+        raise IngestUnavailable(f"gh api {path!r} returned an empty object")
+    return value
+
+
+def required_list(payload: dict, field: str, *, source: str) -> list[dict]:
+    value = payload.get(field)
+    if not isinstance(value, list) or not all(isinstance(row, dict) for row in value):
+        raise IngestUnavailable(
+            f"{source} field {field!r} is not a list of objects"
+        )
+    return value
 
 
 # ---------------------------------------------------------------------------
@@ -259,9 +278,7 @@ def _fetch_window_page(repo: str, start: float, end: float, page: int) -> list[d
     window = f"{_iso(start)}..{_iso(end)}"
     q = f"per_page={PER_PAGE}&page={page}&created={window}"
     payload = gh_json(f"repos/{repo}/actions/runs?{q}")
-    if not payload:
-        return []
-    return payload.get("workflow_runs") or []
+    return required_list(payload, "workflow_runs", source="workflow-runs response")
 
 
 def fetch_window(repo: str, start: float, end: float, rows: dict[tuple, dict],
@@ -322,8 +339,6 @@ def recheck_open_runs(repo: str, rows: dict[tuple, dict],
     promoted = 0
     for run_id in open_ids:
         run = gh_json(f"repos/{repo}/actions/runs/{run_id}")
-        if not run:
-            continue
         upsert(rows, run_to_row(repo, run))
         if run.get("status") == TERMINAL_STATUS:
             promoted += 1
@@ -400,9 +415,7 @@ def ingest_profiles(repo: str, parent: str, max_pages: int = PROFILES_MAX_PAGES)
     artifacts: list[dict] = []
     for page in range(1, max_pages + 1):
         payload = gh_json(f"repos/{repo}/actions/artifacts?per_page=100&page={page}")
-        if not payload:
-            break
-        batch = payload.get("artifacts") or []
+        batch = required_list(payload, "artifacts", source="artifacts response")
         if not batch:
             break
         artifacts.extend(batch)
@@ -592,9 +605,7 @@ def fetch_jobs(repo: str, run_id: str) -> list[dict]:
         payload = gh_json(
             f"repos/{repo}/actions/runs/{run_id}/jobs"
             f"?per_page={PER_PAGE}&page={page}&filter=all")
-        if not payload:
-            break
-        batch = payload.get("jobs") or []
+        batch = required_list(payload, "jobs", source="jobs response")
         jobs.extend(batch)
         if len(batch) < PER_PAGE:
             break
@@ -748,17 +759,22 @@ def main() -> int:
 
     parent = parent_root()
     repos = args.repo or DEFAULT_REPOS
-    for repo in repos:
-        ingest_runs(repo, parent, full=args.full, since=args.since,
-                    overlap_hours=args.overlap_hours)
-        if not args.no_profiles:
-            ingest_profiles(repo, parent, max_pages=args.profiles_max_pages)
-        if not args.no_jobs:
-            wf = args.jobs_workflow or AUTHORITATIVE_WORKFLOWS.get(repo, [])
-            if wf:
-                ingest_jobs(repo, parent, workflows=wf, since=args.since,
-                            refetch=args.refetch_jobs, max_runs=args.jobs_max_runs,
-                            scope=args.jobs_scope)
+    try:
+        for repo in repos:
+            ingest_runs(repo, parent, full=args.full, since=args.since,
+                        overlap_hours=args.overlap_hours)
+            if not args.no_profiles:
+                ingest_profiles(repo, parent, max_pages=args.profiles_max_pages)
+            if not args.no_jobs:
+                wf = args.jobs_workflow or AUTHORITATIVE_WORKFLOWS.get(repo, [])
+                if wf:
+                    ingest_jobs(repo, parent, workflows=wf, since=args.since,
+                                refetch=args.refetch_jobs, max_runs=args.jobs_max_runs,
+                                scope=args.jobs_scope)
+    except IngestUnavailable as exc:
+        print("state=indeterminate")
+        print(f"summary=ci-hub history ingest unavailable: {exc}")
+        return 2
     if not args.no_local:
         refresh_local(parent)
     return 0

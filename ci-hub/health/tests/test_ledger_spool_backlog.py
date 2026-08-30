@@ -9,6 +9,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[3]
@@ -150,6 +151,14 @@ class MultiParentDiscoveryTest(unittest.TestCase):
             found = gate.producing_parents(own)
             self.assertEqual(len(found), 3, found)
             self.assertNotIn(base / "not-a-parent", found)
+
+    def test_unreadable_parent_directory_is_unknown_not_local_only(self) -> None:
+        gate = self._load()
+        with tempfile.TemporaryDirectory() as raw:
+            own = self._parent(Path(raw), "dev-hermit")
+            with mock.patch.object(Path, "iterdir", side_effect=PermissionError("denied")):
+                with self.assertRaisesRegex(gate.SpoolUnavailable, "cannot enumerate"):
+                    gate.producing_parents(own)
 
     def test_a_sibling_parents_stalled_backlog_FIRES(self) -> None:
         """The exact miss: backlog in a parent the gate does not live in."""

@@ -134,15 +134,10 @@ def _tg_sql_rows(query: str) -> list[dict]:
     )
     if cp.returncode != 0:
         raise RuntimeError(f"tg sql failed: {cp.stderr.strip()}")
-    out = []
-    for line in cp.stdout.splitlines():
-        line = line.strip()
-        if line.startswith("{"):
-            try:
-                out.append(json.loads(line))
-            except json.JSONDecodeError:
-                pass
-    return out
+    try:
+        return taskgraph_db.parse_json_rows(cp.stdout)
+    except taskgraph_db.TaskGraphUnavailable as error:
+        raise RuntimeError(f"tg sql returned incomplete rows: {error}") from error
 
 
 def load_prs_via_gh(repos: list[str]) -> list[dict]:
@@ -282,11 +277,22 @@ def _task_is_open(task: dict) -> bool:
 def _task_tags(task: dict) -> list[str]:
     raw = task.get("tags")
     if isinstance(raw, list):
-        return raw
+        if all(isinstance(tag, str) for tag in raw):
+            return raw
+        raise RuntimeError(
+            f"task {task.get('id', '<unknown>')} tags are not a list of strings"
+        )
     try:
-        return json.loads(raw) if raw else []
-    except (json.JSONDecodeError, TypeError):
-        return []
+        tags = json.loads(raw) if raw else []
+    except (json.JSONDecodeError, TypeError) as error:
+        raise RuntimeError(
+            f"task {task.get('id', '<unknown>')} has malformed tags"
+        ) from error
+    if isinstance(tags, list) and all(isinstance(tag, str) for tag in tags):
+        return tags
+    raise RuntimeError(
+        f"task {task.get('id', '<unknown>')} tags are not a list of strings"
+    )
 
 
 def compute_join(tasks: list[dict], prs: list[dict]) -> dict:
@@ -455,15 +461,20 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
     repos = args.repos or DEFAULT_REPOS
 
-    tasks = load_tasks_jsonl(args.tasks_jsonl) if args.tasks_jsonl else load_tasks_via_tg()
-    if args.prs_json:
-        prs = json.load(open(args.prs_json))
-        for p in prs:
-            p.setdefault("repo", repos[0])
-    else:
-        prs = load_prs_via_gh(repos)
-
-    report = compute_join(tasks, prs)
+    try:
+        tasks = load_tasks_jsonl(args.tasks_jsonl) if args.tasks_jsonl else load_tasks_via_tg()
+        if args.prs_json:
+            with open(args.prs_json) as handle:
+                prs = json.load(handle)
+            for p in prs:
+                p.setdefault("repo", repos[0])
+        else:
+            prs = load_prs_via_gh(repos)
+        report = compute_join(tasks, prs)
+    except (OSError, RuntimeError, json.JSONDecodeError) as error:
+        print("state=indeterminate")
+        print(f"summary=task/PR join unavailable: {error}")
+        return 2
     if args.json:
         print(json.dumps(report, indent=1))
     else:

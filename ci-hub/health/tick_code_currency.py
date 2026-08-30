@@ -168,16 +168,18 @@ def _changed_path_modes(ref: str) -> list[tuple[str, str, str]]:
     """
     out = _git("diff", "--raw", "--no-abbrev", "--no-renames", ref, "--")
     if out.returncode != 0:
-        return []
+        raise RuntimeError(
+            f"cannot enumerate paths differing from {ref}: {out.stderr.strip()[:80]}"
+        )
     changed: list[tuple[str, str, str]] = []
     for line in out.stdout.splitlines():
         try:
             metadata, path = line.split("\t", 1)
-        except ValueError:
-            continue
+        except ValueError as error:
+            raise RuntimeError(f"git diff returned an unparseable row: {line[:80]}") from error
         fields = metadata.split()
         if len(fields) < 5 or not fields[0].startswith(":"):
-            continue
+            raise RuntimeError(f"git diff returned an unparseable row: {line[:80]}")
         changed.append((path, fields[0][1:], fields[1]))
     return changed
 
@@ -331,7 +333,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     args = ap.parse_args(argv)
 
-    verdicts = compare(subject_paths(args.config, args.ref), args.ref)
+    try:
+        paths = subject_paths(args.config, args.ref)
+    except RuntimeError as error:
+        if args.as_json:
+            print(json.dumps({"state": "unknown", "summary": str(error)}))
+        else:
+            print("state=unknown")
+            print(f"summary={error}")
+        return UNKNOWN if args.gate else 0
+    verdicts = compare(paths, args.ref)
     code, text = render(verdicts, args.ref)
     if args.as_json:
         print(json.dumps(

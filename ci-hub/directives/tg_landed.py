@@ -587,23 +587,40 @@ def load_tasks(tag: str = "implemented", limit: Optional[int] = None) -> list[Ta
             f"tg sql exited {rc} while listing tasks tagged for landing: {out.strip()[:200]}"
         )
     tasks: list[TaskRefs] = []
+    reported_rows: int | None = None
     for line in out.splitlines():
+        count_match = re.fullmatch(r"\((\d+) rows?\)", line.strip())
+        if count_match:
+            reported_rows = int(count_match.group(1))
+            continue
         parts = line.split("|")
         if len(parts) < 4 or parts[0].strip() in ("", "local_id") or set(parts[0].strip()) == {"-"}:
             continue
         tid, tags_raw, status = parts[0].strip(), parts[1].strip(), parts[2].strip()
         notes_raw = "|".join(parts[3:])
         try:
-            tags = json.loads(tags_raw) if tags_raw.startswith("[") else []
-        except json.JSONDecodeError:
-            tags = []
+            tags = json.loads(tags_raw)
+        except json.JSONDecodeError as error:
+            raise TaskGraphQueryFailed(f"task {tid} has malformed tags") from error
+        if not isinstance(tags, list) or not all(isinstance(tag, str) for tag in tags):
+            raise TaskGraphQueryFailed(f"task {tid} tags are not a list of strings")
         try:
             decoded_notes = json.loads(notes_raw)
-            notes = [note for note in decoded_notes if isinstance(note, str)]
-        except (json.JSONDecodeError, TypeError):
-            notes = []
+        except (json.JSONDecodeError, TypeError) as error:
+            raise TaskGraphQueryFailed(f"task {tid} has malformed notes") from error
+        if not isinstance(decoded_notes, list) or not all(
+            isinstance(note, str) for note in decoded_notes
+        ):
+            raise TaskGraphQueryFailed(f"task {tid} notes are not a list of strings")
+        notes = decoded_notes
         shas, prs = extract_implementation_refs(notes)
         tasks.append(TaskRefs(task=tid, tags=tags, status=status, shas=shas, prs=prs))
+    if reported_rows is None:
+        raise TaskGraphQueryFailed("tg sql output omitted its row-count footer")
+    if reported_rows != len(tasks):
+        raise TaskGraphQueryFailed(
+            f"tg sql reported {reported_rows} row(s) but {len(tasks)} task row(s) were readable"
+        )
     return tasks
 
 
@@ -704,7 +721,12 @@ def main(argv: Optional[list[str]] = None) -> int:
             ))
         repositories = fetched
 
-    tasks = load_tasks(args.tag, args.limit)
+    try:
+        tasks = load_tasks(args.tag, args.limit)
+    except TaskGraphQueryFailed as error:
+        print("state=unverifiable")
+        print(f"summary=cannot read tasks tagged for landing: {error}")
+        return 2
     probe = git_repository_probe({sha for task in tasks for sha in task.shas})
     derivations = [derive_across_repositories(t, repositories, probe=probe)
                    for t in tasks]

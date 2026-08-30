@@ -299,9 +299,25 @@ def test_first_run_adopts_the_backlog_without_paging():
     tmp, path = _tmp_state()
     with tmp:
         code, fields = _gate(_survey(due=(1890, 1897, 1905)), path)
-        assert code == 0, fields
+        assert code == 2, fields
+        assert fields["state"] == "unknown"
+        assert "baseline was absent" in fields["summary"]
         assert fields["due_standing"] == 3
         assert _json.loads(path.read_text())["reported"] == [1890, 1897, 1905]
+        code, fields = _gate(_survey(due=(1890, 1897, 1905)), path)
+        assert code == 0, fields
+        assert fields["state"] == "ok"
+
+
+def test_malformed_baseline_is_unknown_and_not_overwritten():
+    tmp, path = _tmp_state()
+    with tmp:
+        path.write_text("{not json")
+        code, fields = _gate(_survey(due=(1890,)), path)
+        assert code == 2, fields
+        assert fields["state"] == "unknown"
+        assert "cannot read refire baseline" in fields["summary"]
+        assert path.read_text() == "{not json"
 
 
 def test_a_pr_outside_the_sampling_window_is_not_retired_and_never_re_pages():

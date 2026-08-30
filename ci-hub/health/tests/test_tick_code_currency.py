@@ -30,6 +30,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 MODULE = Path(__file__).resolve().parents[1] / "tick_code_currency.py"
 SPEC = importlib.util.spec_from_file_location("tick_code_currency", MODULE)
@@ -37,6 +38,20 @@ assert SPEC and SPEC.loader
 tcc = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = tcc
 SPEC.loader.exec_module(tcc)
+
+
+class ReadFailureBrackets(unittest.TestCase):
+    def test_failed_diff_is_unknown_not_an_empty_path_set(self) -> None:
+        failed = subprocess.CompletedProcess(["git"], 128, "", "bad revision")
+        with mock.patch.object(tcc, "_git", return_value=failed):
+            with self.assertRaisesRegex(RuntimeError, "cannot enumerate paths"):
+                tcc._changed_path_modes("origin/main")
+
+    def test_unparseable_diff_row_is_unknown_not_skipped(self) -> None:
+        malformed = subprocess.CompletedProcess(["git"], 0, "not a raw diff row\n", "")
+        with mock.patch.object(tcc, "_git", return_value=malformed):
+            with self.assertRaisesRegex(RuntimeError, "unparseable row"):
+                tcc._changed_path_modes("origin/main")
 
 
 def git(*args: str, cwd: Path) -> str:

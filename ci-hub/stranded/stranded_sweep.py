@@ -205,6 +205,7 @@ class CheckoutReport:
     modified: list[str] = field(default_factory=list)
     unpushed_commits: list[str] = field(default_factory=list)
     no_remote_refs: bool = False
+    unavailable: list[str] = field(default_factory=list)
     owner: dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -224,9 +225,13 @@ class CheckoutReport:
 
 def scan_checkout(root: Path, checkout: Path) -> CheckoutReport:
     rep = CheckoutReport(path=str(checkout.relative_to(root)) if checkout != root else ".")
-    _, rep.branch = _git(checkout, "branch", "--show-current")
+    branch_rc, rep.branch = _git(checkout, "branch", "--show-current")
+    if branch_rc != 0:
+        rep.unavailable.append("cannot read current branch")
     rc, status = _git(checkout, "status", "--porcelain", raw=True)
-    if rc == 0 and status:
+    if rc != 0:
+        rep.unavailable.append("cannot read working-tree status")
+    elif status:
         for line in status.splitlines():
             if len(line) < 4:
                 continue
@@ -248,10 +253,16 @@ def scan_checkout(root: Path, checkout: Path) -> CheckoutReport:
     # commits for a remoteless checkout is precisely the over-flagging that gets
     # a checker switched off.  Report the condition once instead.
     rc, remotes = _git(checkout, "for-each-ref", "--count=1", "refs/remotes/")
+    if rc != 0:
+        rep.unavailable.append("cannot enumerate remote-tracking refs")
     rep.no_remote_refs = (rc != 0) or not remotes.strip()
+    if rc == 0 and not remotes.strip():
+        rep.unavailable.append("no remote-tracking refs; publication cannot be determined")
     if not rep.no_remote_refs:
         rc, log = _git(checkout, "log", "HEAD", "--not", "--remotes", "--oneline")
-        if rc == 0 and log:
+        if rc != 0:
+            rep.unavailable.append("cannot enumerate commits absent from remote refs")
+        elif log:
             rep.unpushed_commits = log.splitlines()
     if rep.tiers:
         rep.owner = attribute(root, checkout, rep.untracked + rep.modified).as_dict()
@@ -260,7 +271,7 @@ def scan_checkout(root: Path, checkout: Path) -> CheckoutReport:
 
 def sweep_worktrees(root: Path) -> dict[str, Any]:
     reports = [scan_checkout(root, c) for c in find_checkouts(root)]
-    flagged = [r for r in reports if r.tiers]
+    flagged = [r for r in reports if r.tiers or r.unavailable]
     return {
         "schema_version": SCHEMA_VERSION,
         "scanned": len(reports),
@@ -269,6 +280,7 @@ def sweep_worktrees(root: Path) -> dict[str, Any]:
         "t2_checkouts": sum(1 for r in flagged if T2_UNPUSHED in r.tiers),
         "untracked_paths": sum(len(r.untracked) for r in flagged),
         "unpushed_commits": sum(len(r.unpushed_commits) for r in flagged),
+        "unverifiable_checkouts": sum(1 for r in reports if r.unavailable),
         "reports": [r.as_dict() for r in flagged],
     }
 
@@ -368,6 +380,8 @@ def rescue(root: Path, checkout_rel: str, quarantine: Path) -> dict[str, Any]:
     """
     checkout = root / checkout_rel if checkout_rel != "." else root
     rep = scan_checkout(root, checkout)
+    if rep.unavailable:
+        raise RuntimeError("; ".join(rep.unavailable))
     stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     dest = quarantine / f"{checkout_rel.replace('/', '_')}-{stamp}"
     dest.mkdir(parents=True, exist_ok=True)
@@ -441,7 +455,7 @@ def _cmd_worktrees(args: argparse.Namespace) -> int:
     res = sweep_worktrees(_root())
     if args.json:
         print(json.dumps(res, indent=2, sort_keys=True))
-        return 0
+        return 2 if res["unverifiable_checkouts"] else (1 if res["flagged"] else 0)
     print(f"stranded sweep: {res['scanned']} checkouts scanned, "
           f"{res['flagged']} flagged "
           f"(T1 uncommitted: {res['t1_checkouts']}, T2 unpushed: {res['t2_checkouts']})")
@@ -457,11 +471,13 @@ def _cmd_worktrees(args: argparse.Namespace) -> int:
         if r["unpushed_commits"]:
             print(f"      {len(r['unpushed_commits'])} unpushed commit(s), "
                   f"newest: {r['unpushed_commits'][0]}")
+        for reason in r.get("unavailable", []):
+            print(f"      INDETERMINATE {reason}")
         own = r.get("owner") or {}
         if own.get("last_commit_author"):
             print(f"      owner-hint: {own['last_commit_author']} "
                   f"({own.get('last_commit_when', '?')})")
-    return 1 if res["flagged"] else 0
+    return 2 if res["unverifiable_checkouts"] else (1 if res["flagged"] else 0)
 
 
 def _cmd_artifacts(args: argparse.Namespace) -> int:
@@ -502,7 +518,12 @@ def _cmd_artifacts(args: argparse.Namespace) -> int:
 
 
 def _cmd_rescue(args: argparse.Namespace) -> int:
-    man = rescue(_root(), args.checkout, Path(args.quarantine))
+    try:
+        man = rescue(_root(), args.checkout, Path(args.quarantine))
+    except RuntimeError as error:
+        print("state=indeterminate")
+        print(f"summary=stranded-work rescue unavailable: {error}")
+        return 2
     print(json.dumps(man, indent=2, sort_keys=True))
     return 0
 

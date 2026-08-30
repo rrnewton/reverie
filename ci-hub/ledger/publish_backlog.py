@@ -49,7 +49,7 @@ sys.path.insert(0, str(ROOT / "ci-hub" / "ledger"))
 sys.path.insert(0, str(ROOT / "scripts"))
 
 from check_commit_attribution import AttributionError, detect_machine  # noqa: E402
-from ledger_spool_backlog import producing_parents  # noqa: E402
+from ledger_spool_backlog import SpoolUnavailable, producing_parents  # noqa: E402
 from validate_rows import live_spool_dir  # noqa: E402
 sys.path.insert(0, str(ROOT / "ci-hub" / "series"))
 from series import spool_dir as series_spool_dir  # noqa: E402
@@ -154,10 +154,14 @@ def main(argv: list[str] | None = None) -> int:
 
     clone = ROOT / CLONE_RELATIVE
     reports: list[dict] = []
-    work = {
-        parent: pending_stores(parent)
-        for parent in producing_parents(ROOT)
-    }
+    try:
+        work = {
+            parent: pending_stores(parent)
+            for parent in producing_parents(ROOT)
+        }
+    except SpoolUnavailable as error:
+        print(json.dumps({"state": "unknown", "error": str(error)}, sort_keys=True))
+        return 2
     work = {parent: stores for parent, stores in work.items() if stores}
     if not work:
         print(json.dumps(

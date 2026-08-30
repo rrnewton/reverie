@@ -17,6 +17,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 HERE = Path(os.path.abspath(__file__)).parent
 sys.path.insert(0, str(HERE))
@@ -24,6 +25,24 @@ sys.path.insert(0, str(HERE))
 import anchor_select as A  # noqa: E402
 
 PREDICATE = HERE / "qualifying-receipt.json"
+
+
+class FloorAuthorityBrackets(unittest.TestCase):
+    def test_missing_floor_authority_is_indeterminate_not_clear(self):
+        with mock.patch.object(A, "GATE_FLOORS", Path("/definitely/absent/gate_floors.py")):
+            self.assertIsNone(A.clears_floors(Path("/tmp"), "a" * 40))
+
+    def test_floor_authority_exit_zero_still_clears(self):
+        completed = subprocess.CompletedProcess(["gate_floors"], 0, "{}", "")
+        with mock.patch.object(A, "GATE_FLOORS", Path(__file__)), \
+             mock.patch.object(A.subprocess, "run", return_value=completed):
+            self.assertIs(A.clears_floors(Path("/tmp"), "a" * 40), True)
+
+    def test_floor_authority_refusal_stays_a_refusal(self):
+        completed = subprocess.CompletedProcess(["gate_floors"], 2, "", "refused")
+        with mock.patch.object(A, "GATE_FLOORS", Path(__file__)), \
+             mock.patch.object(A.subprocess, "run", return_value=completed):
+            self.assertIs(A.clears_floors(Path("/tmp"), "a" * 40), False)
 
 
 def git_output(repo: Path, *args: str) -> str:

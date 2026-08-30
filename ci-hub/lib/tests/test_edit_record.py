@@ -15,6 +15,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 LIB = Path(__file__).resolve().parent.parent
 
@@ -89,6 +90,12 @@ class WhatItRecords(Base):
 
 
 class WhatItRefusesToGuess(Base):
+    def test_failed_git_diff_is_unavailable_not_clean(self):
+        failed = subprocess.CompletedProcess(["git"], 128, "", "not a repository")
+        with mock.patch.object(er.bounded_capture, "capture", return_value=failed):
+            with self.assertRaisesRegex(RuntimeError, "cannot enumerate tracked edits"):
+                er.dirty_paths(self.root)
+
     def test_a_claim_that_does_not_explain_the_change_is_named_as_such(self):
         """⚠️ THE CASE A NAME-ONLY CLAIM GETS WRONG.
 

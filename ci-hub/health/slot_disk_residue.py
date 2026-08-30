@@ -447,12 +447,24 @@ def fmt_ts(when: datetime) -> str:
     return when.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def read_state(path: Path) -> dict:
+def read_state(path: Path) -> dict | None:
+    if not path.exists():
+        return None
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return {}
-    return value if isinstance(value, dict) else {}
+    except (OSError, ValueError) as exc:
+        raise ResidueUnavailable(f"cannot read delta state {path}: {exc}") from exc
+    if not isinstance(value, dict):
+        raise ResidueUnavailable(f"delta state {path} is not a JSON object")
+    reported = value.get("reported")
+    if reported is not None and (
+        not isinstance(reported, list)
+        or not all(isinstance(slot, str) for slot in reported)
+    ):
+        raise ResidueUnavailable(
+            f"delta state {path} has a non-string-list 'reported' field"
+        )
+    return value
 
 
 def write_state(path: Path, state: dict) -> None:
@@ -842,6 +854,9 @@ def main(argv: list[str] | None = None) -> int:
                     print(f"{key}={value}")
             return 1 if active_excess else 2
         prior = read_state(state_path)
+        baseline_missing = prior is None
+        if prior is None:
+            prior = {}
         now = datetime.now(timezone.utc)
         results, next_state, occ = evaluate(root, prior, now, idle_hours=args.idle_hours)
         dead_owner = residue_sweep.guarded_dead_owner_slots(
@@ -948,6 +963,12 @@ def main(argv: list[str] | None = None) -> int:
     if findings:
         state = "actionable"
         summary = "; ".join([*findings, summary])
+    elif baseline_missing:
+        state = UNKNOWN
+        summary = (
+            f"slot disk residue baseline was absent at {state_path}; "
+            "recorded the current set but no delta verdict is available this tick"
+        )
 
     if args.json:
         print(json.dumps({

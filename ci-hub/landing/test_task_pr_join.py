@@ -13,7 +13,7 @@ import sys
 import os
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from task_pr_join import compute_join, BATCH_FANOUT_THRESHOLD  # noqa: E402
+from task_pr_join import compute_join, BATCH_FANOUT_THRESHOLD, _task_tags  # noqa: E402
 
 
 def _task(tid, title="", desc="", notes=None, tags=None, status="in_progress"):
@@ -46,6 +46,29 @@ def _tid_in(pop, repo, number, tid):
 
 
 FAILS = []
+
+
+def test_valid_tags_are_preserved():
+    assert _task_tags({"id": "x", "tags": '["implemented"]'}) == ["implemented"]
+
+
+def test_malformed_tags_refuse_the_join():
+    try:
+        _task_tags({"id": "x", "tags": "[not json"})
+    except RuntimeError as error:
+        assert "malformed tags" in str(error)
+    else:
+        raise AssertionError("malformed task tags were accepted as an empty list")
+
+
+def test_non_string_tags_refuse_the_join():
+    for tags in ("[1]", [1]):
+        try:
+            _task_tags({"id": "x", "tags": tags})
+        except RuntimeError as error:
+            assert "list of strings" in str(error)
+        else:
+            raise AssertionError("non-string task tags were accepted")
 
 
 def check(cond, msg):
@@ -151,7 +174,10 @@ def test_live_population_nonzero_and_strict_subset():
 
 
 def main():
-    for t in (test_positive_dedicated_match,
+    for t in (test_valid_tags_are_preserved,
+              test_malformed_tags_refuse_the_join,
+              test_non_string_tags_refuse_the_join,
+              test_positive_dedicated_match,
               test_negative_closed_renamed_not_bound_to_neighbour,
               test_batch_task_demotion,
               test_live_population_nonzero_and_strict_subset):
