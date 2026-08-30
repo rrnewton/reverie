@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 
 import importlib.util
+import io
 import json
 import subprocess
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
 from unittest import mock
 
@@ -61,6 +63,51 @@ def base_report() -> dict:
         },
         "github_status": {"published": False, "state": None},
     }
+
+
+def current_validation_handle(name: str, **updates: object) -> dict[str, object]:
+    value: dict[str, object] = {
+        "schema_version": signal_crosscheck.run_registry.SCHEMA_VERSION,
+        "kind": "validate",
+        "state": "preparing",
+        "unit": f"{name}.service",
+        "target": "a" * 40,
+        "repo": "rrnewton/hermit",
+        "checkout": "/tmp/checkout",
+        "source_checkout": "/tmp/source",
+        "temporary_checkout": True,
+        "cargo_home": "/tmp/cargo",
+        "log": "/tmp/validate.log",
+        "agent": "signal-crosscheck-test",
+        "pr": None,
+        "started_at": "2026-08-30T07:00:00+00:00",
+        "parent_checkout_head": "a" * 40,
+        "producer": signal_crosscheck.run_registry.PRODUCER,
+        "admission": "ci-hub validate-lock",
+        "pane_role": "observer-only",
+        "validate_lock_child_deadline_seconds": 3600,
+        "e2e_result_root": "/tmp/e2e",
+        "safe_ci_dag_runner_log_dir": "/tmp/dag",
+        "hermit_run_timeout_seconds": 3300,
+    }
+    value.update(updates)
+    return value
+
+
+def current_service_result(**updates: object) -> dict[str, object]:
+    value: dict[str, object] = {
+        "schema_version": signal_crosscheck.service_result.SCHEMA_VERSION,
+        "commit": "a" * 40,
+        "profile": "full",
+        "selection_mode": None,
+        "final_validate_status": "COULD_NOT_RUN",
+        "exit_code": 75,
+        "executed_nodes": 0,
+        "executed_tests": None,
+        "scorecard_writeback": None,
+    }
+    value.update(updates)
+    return value
 
 
 class SignalCrosscheckTests(unittest.TestCase):
@@ -1255,6 +1302,368 @@ class SignalCrosscheckTests(unittest.TestCase):
         self.assertEqual(report["terminal_handles"], [])
         self.assertEqual(report["matching_handles"], [])
         self.assertEqual(report["unreadable_handles"], [])
+
+    def test_run_handle_report_discriminates_mixed_record_families(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            run_root = root / "ignored" / "validate" / "runs"
+            run_root.mkdir(parents=True)
+            (run_root / "validate-valid.json").write_text(
+                json.dumps(current_validation_handle("validate-valid"))
+            )
+            for name, schema in (
+                ("validate-historical", 1),
+                ("validate-historical-hybrid", 1),
+                ("validate-current", 3),
+                ("validate-broken-result", 3),
+                ("validate-wrong-commit", 3),
+                ("validate-injected-other-target", 3),
+                ("validate-injected-other-repo", 3),
+                ("validate-path-mismatch", 3),
+                ("validate-a", 3),
+            ):
+                (run_root / f"{name}.json").write_text(
+                    json.dumps(
+                        current_validation_handle(
+                            name,
+                            service_result_schema=schema,
+                        )
+                    )
+                )
+            (run_root / "validate-historical.service-result.json").write_text(json.dumps({
+                "schema_version": 1,
+                "commit": "a" * 40,
+                "profile": "full",
+                "final_validate_status": "FAILED",
+                "exit_code": 1,
+                "executed_nodes": 1,
+                "executed_tests": 1,
+            }))
+            (run_root / "validate-current.service-result.json").write_text(json.dumps({
+                "schema_version": 3,
+                "commit": "a" * 40,
+                "profile": "full",
+                "selection_mode": None,
+                "final_validate_status": "FAILED",
+                "exit_code": 1,
+                "executed_nodes": 1,
+                "executed_tests": 1,
+                "scorecard_writeback": None,
+            }))
+            (run_root / "validate-broken-result.service-result.json").write_text(
+                json.dumps({
+                    "schema_version": 3,
+                    "commit": "a" * 40,
+                    "profile": "full",
+                    "selection_mode": None,
+                    "final_validate_status": "FAILED",
+                    "exit_code": 1,
+                    "executed_nodes": 1,
+                    "scorecard_writeback": None,
+                })
+            )
+            (run_root / "validate-wrong-commit.service-result.json").write_text(
+                json.dumps({
+                    "schema_version": 3,
+                    "commit": "b" * 40,
+                    "profile": "full",
+                    "selection_mode": None,
+                    "final_validate_status": "FAILED",
+                    "exit_code": 1,
+                    "executed_nodes": 1,
+                    "executed_tests": 1,
+                    "scorecard_writeback": None,
+                })
+            )
+            injected_other_target = current_service_result()
+            injected_other_target.update(
+                target="b" * 40,
+                repo="rrnewton/hermit",
+                unit="validate-injected-other-target.service",
+            )
+            (
+                run_root / "validate-injected-other-target.service-result.json"
+            ).write_text(json.dumps(injected_other_target))
+            injected_other_repo = current_service_result()
+            injected_other_repo.update(
+                target="a" * 40,
+                repo="rrnewton/reverie",
+                unit="validate-injected-other-repo.service",
+            )
+            (
+                run_root / "validate-injected-other-repo.service-result.json"
+            ).write_text(json.dumps(injected_other_repo))
+            historical_hybrid = {
+                "schema_version": 1,
+                "commit": "b" * 40,
+                "profile": "full",
+                "final_validate_status": "FAILED",
+                "exit_code": 1,
+                "executed_nodes": 1,
+                "executed_tests": 1,
+                "target": "b" * 40,
+                "repo": "rrnewton/hermit",
+                "unit": "validate-historical-hybrid.service",
+            }
+            (
+                run_root / "validate-historical-hybrid.service-result.json"
+            ).write_text(json.dumps(historical_hybrid))
+            (
+                run_root / "validate-path-mismatch.service-result.json"
+            ).write_text(
+                json.dumps(
+                    current_validation_handle(
+                        "validate-copied-other",
+                        target="b" * 40,
+                    )
+                )
+            )
+            # Both names are valid handles. The latter must not be hidden even
+            # though it collides with the former's service-result path.
+            (run_root / "validate-a.service-result.json").write_text(
+                json.dumps(current_validation_handle("validate-a.service-result"))
+            )
+            malformed_handle = current_validation_handle(
+                "validate-malformed-handle.service-result"
+            )
+            del malformed_handle["checkout"]
+            (run_root / "validate-malformed-handle.service-result.json").write_text(
+                json.dumps(malformed_handle)
+            )
+            (run_root / "unattributable.json").write_text(json.dumps({
+                "schema_version": 3,
+                "commit": "a" * 40,
+            }))
+            (run_root / "malformed.json").write_text("{")
+
+            report = signal_crosscheck.run_handle_report(
+                root, "a" * 40, "rrnewton/hermit", []
+            )
+
+        self.assertEqual(
+            {item["unit"] for item in report["matching_handles"]},
+            {
+                "validate-a.service",
+                "validate-a.service-result.service",
+                "validate-broken-result.service",
+                "validate-current.service",
+                "validate-historical.service",
+                "validate-historical-hybrid.service",
+                "validate-injected-other-repo.service",
+                "validate-injected-other-target.service",
+                "validate-path-mismatch.service",
+                "validate-valid.service",
+                "validate-wrong-commit.service",
+            },
+        )
+        unreadable = {
+            Path(item["path"]).name: item
+            for item in report["unreadable_handles"]
+        }
+        self.assertEqual(
+            set(unreadable),
+            {
+                "validate-broken-result.service-result.json",
+                "validate-historical-hybrid.service-result.json",
+                "validate-injected-other-repo.service-result.json",
+                "validate-injected-other-target.service-result.json",
+                "validate-malformed-handle.service-result.json",
+                "validate-path-mismatch.service-result.json",
+                "validate-wrong-commit.service-result.json",
+                "unattributable.json",
+                "malformed.json",
+            },
+        )
+        self.assertEqual(
+            unreadable["validate-broken-result.service-result.json"]["source"],
+            "validation-service-result",
+        )
+        self.assertEqual(
+            unreadable["validate-wrong-commit.service-result.json"]["source"],
+            "validation-service-result",
+        )
+        self.assertEqual(
+            unreadable["validate-injected-other-target.service-result.json"]["source"],
+            "validation-service-result",
+        )
+        self.assertEqual(
+            unreadable["validate-injected-other-repo.service-result.json"]["source"],
+            "validation-service-result",
+        )
+        self.assertEqual(
+            unreadable["validate-historical-hybrid.service-result.json"]["source"],
+            "validation-service-result",
+        )
+        self.assertEqual(
+            unreadable["validate-path-mismatch.service-result.json"]["source"],
+            "validation-service-result",
+        )
+        self.assertNotIn(
+            "source",
+            unreadable["validate-malformed-handle.service-result.json"],
+        )
+
+    def test_only_exact_pre_plan_no_result_omits_the_ledger_requirement(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            run_root = root / "ignored" / "validate" / "runs"
+            run_root.mkdir(parents=True)
+
+            base_handle = {
+                "state": "completed",
+                "admission_result": {
+                    "state": "admitted",
+                    "recorded_at": "2026-08-30T07:00:01+00:00",
+                    "run_number": 1,
+                },
+                "result": "no-result",
+                "exit_code": 75,
+                "finished_at": "2026-08-30T07:00:02+00:00",
+                "service_result_schema": 3,
+                "selection_mode": None,
+                "scorecard_writeback": None,
+                "executed_nodes": 0,
+                "executed_tests": None,
+                "final_validate_status": "COULD_NOT_RUN",
+                "result_source": "validation-service-result",
+            }
+            cases = {
+                "validate-pre-plan": ({}, {}, True),
+                "validate-passed": (
+                    {
+                        "result": "success",
+                        "exit_code": 0,
+                        "executed_nodes": 1,
+                        "executed_tests": 1,
+                        "final_validate_status": "PASSED",
+                    },
+                    {
+                        "exit_code": 0,
+                        "executed_nodes": 1,
+                        "executed_tests": 1,
+                        "final_validate_status": "PASSED",
+                    },
+                    True,
+                ),
+                "validate-failed": (
+                    {
+                        "result": "failure",
+                        "exit_code": 1,
+                        "executed_nodes": 1,
+                        "executed_tests": 1,
+                        "final_validate_status": "FAILED",
+                    },
+                    {
+                        "exit_code": 1,
+                        "executed_nodes": 1,
+                        "executed_tests": 1,
+                        "final_validate_status": "FAILED",
+                    },
+                    True,
+                ),
+                "validate-executed": (
+                    {"executed_nodes": 1},
+                    {"executed_nodes": 1},
+                    True,
+                ),
+                "validate-selected": (
+                    {"selection_mode": "explicit-test"},
+                    {"selection_mode": "explicit-test"},
+                    True,
+                ),
+                "validate-non-full": (
+                    {},
+                    {"profile": "quick"},
+                    True,
+                ),
+                "validate-wrapper-outcome": (
+                    {
+                        "canonical_verdict": "NO-RESULT",
+                        "wrapper_exit_code": 4,
+                    },
+                    {},
+                    True,
+                ),
+                "validate-writeback": (
+                    {"scorecard_writeback": {"status": "completed"}},
+                    {"scorecard_writeback": {"status": "completed"}},
+                    True,
+                ),
+                "validate-missing-result": ({}, {}, False),
+                "validate-mismatched-result": (
+                    {},
+                    {"commit": "b" * 40},
+                    True,
+                ),
+            }
+            for run_number, (name, (handle_updates, result_updates, write_result)) in enumerate(
+                cases.items(), start=1
+            ):
+                handle_updates = {
+                    **base_handle,
+                    **handle_updates,
+                    "admission_result": {
+                        **base_handle["admission_result"],
+                        "run_number": run_number,
+                    },
+                }
+                handle_path = run_root / f"{name}.json"
+                handle_path.write_text(
+                    json.dumps(current_validation_handle(name, **handle_updates))
+                )
+                if write_result:
+                    signal_crosscheck.service_result.result_path(handle_path).write_text(
+                        json.dumps(current_service_result(**result_updates))
+                    )
+
+            report = signal_crosscheck.run_handle_report(
+                root, "a" * 40, "rrnewton/hermit", []
+            )
+
+        by_unit = {item["unit"]: item for item in report["terminal_handles"]}
+        self.assertTrue(by_unit["validate-pre-plan.service"]["no_receipt_attempt"])
+        self.assertEqual(
+            {
+                item["unit"]
+                for item in report["admitted_without_ledger_handles"]
+            },
+            {
+                "validate-executed.service",
+                "validate-failed.service",
+                "validate-mismatched-result.service",
+                "validate-missing-result.service",
+                "validate-non-full.service",
+                "validate-passed.service",
+                "validate-selected.service",
+                "validate-wrapper-outcome.service",
+                "validate-writeback.service",
+            },
+        )
+        complete = base_report()
+        complete.update(sha="a" * 40, repo="rrnewton/hermit")
+        complete["run_handles"] = report
+        issues = signal_crosscheck.reconcile(complete)
+        self.assertFalse(any("validate-pre-plan.service" in issue for issue in issues))
+        self.assertTrue(
+            all(
+                any(unit in issue for issue in issues)
+                for unit in {
+                    "validate-executed.service",
+                    "validate-failed.service",
+                    "validate-mismatched-result.service",
+                    "validate-missing-result.service",
+                    "validate-non-full.service",
+                    "validate-passed.service",
+                    "validate-selected.service",
+                    "validate-wrapper-outcome.service",
+                    "validate-writeback.service",
+                }
+            )
+        )
+        output = io.StringIO()
+        with redirect_stdout(output):
+            signal_crosscheck.print_text(complete)
+        self.assertIn("no-receipt-attempts=1", output.getvalue())
 
     def test_missing_or_invalid_raw_handle_attribution_is_loud(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

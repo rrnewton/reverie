@@ -30,6 +30,7 @@ sys.path.insert(0, str(CI_HUB / "validate"))
 import ledger as ledger_store  # noqa: E402
 import run_registry  # noqa: E402
 import series as canonical_series  # noqa: E402
+import service_result  # noqa: E402
 import validate_rows as canonical_ledger  # noqa: E402
 
 
@@ -616,6 +617,153 @@ def _run_handle_repo(raw: Mapping[str, Any]) -> str:
     return repo
 
 
+def _validation_service_result_evidence(
+    root: Path,
+    handle_path: Path,
+    handle_raw: Mapping[str, Any],
+    result_path: Path,
+    payload: bytes,
+) -> service_result.RunEvidence | None:
+    """Read a framework result only through its exact producer handle."""
+    unit = handle_raw.get("unit")
+    marker = handle_raw.get("service_result_schema")
+    if not (
+        handle_raw.get("producer") == run_registry.PRODUCER
+        and isinstance(unit, str)
+        and run_registry.record_path(root, unit) == handle_path
+        and service_result.result_path(handle_path) == result_path
+        and marker
+        in {
+            service_result.HISTORICAL_SCHEMA_VERSION,
+            service_result.WRITEBACK_SCHEMA_VERSION,
+            service_result.SCHEMA_VERSION,
+        }
+    ):
+        return None
+    target = handle_raw.get("target")
+    if not isinstance(target, str) or SHA_RE.fullmatch(target) is None:
+        return None
+    evidence = service_result.read_framework_result_bytes(
+        payload,
+        expected_commit=target,
+    )
+    if evidence.service_result_schema != marker:
+        raise RuntimeError(
+            "validation-service-result-schema_version: "
+            f"handle records {marker}, result records {evidence.service_result_schema}"
+        )
+    return evidence
+
+
+def _run_handle_candidate_error(
+    root: Path,
+    path: Path,
+    raw: Mapping[str, Any],
+) -> str | None:
+    """Return why a record cannot be handled by the existing handle path."""
+    try:
+        raw_target = _run_handle_target(raw)
+        raw_repo = _run_handle_repo(raw)
+        projected = run_registry.projection(raw)
+        if projected.get("target") != raw_target or projected.get("repo") != raw_repo:
+            raise ValueError(
+                "typed projection changed the validated target/repo attribution"
+            )
+        run_id = _run_handle_id(projected.get("unit"))
+        if run_registry.record_path(root, f"{run_id}.service") != path:
+            raise ValueError("run handle unit does not map to its record path")
+        _wrapper_outcome(raw)
+    except (RuntimeError, ValueError) as error:
+        return str(error)
+    return None
+
+
+def _candidate_validation_service_result(
+    root: Path,
+    path: Path,
+    payload: bytes,
+    raw: Mapping[str, Any],
+) -> tuple[service_result.RunEvidence | None, str | None]:
+    """Read a service-result candidate only through its sibling handle."""
+    if not path.name.endswith(".service-result.json"):
+        return None, None
+    handle_error = _run_handle_candidate_error(root, path, raw)
+    # A current producer handle has a closed, fully validated schema and wins
+    # an exact filename collision. Legacy projection is intentionally
+    # permissive, so a legacy-looking record beside a producer-owned result is
+    # ambiguous until the result parser has had its say.
+    if handle_error is None and raw.get("producer") == run_registry.PRODUCER:
+        return None, None
+    sibling = path.with_name(
+        f"{path.name.removesuffix('.service-result.json')}.json"
+    )
+    try:
+        sibling_raw = run_registry.read_record(sibling)
+    except RuntimeError:
+        return None, handle_error
+    evidence = _validation_service_result_evidence(
+        root, sibling, sibling_raw, path, payload
+    )
+    if evidence is None:
+        return (None, None) if handle_error is None else (None, handle_error)
+    return evidence, None
+
+
+def _is_admitted_pre_plan_no_result(
+    root: Path,
+    path: Path,
+    raw: Mapping[str, Any],
+    projected: Mapping[str, Any],
+    wrapper_outcome: Mapping[str, Any] | None,
+) -> bool:
+    """Return whether a typed admitted run stopped before any DAG node ran."""
+    admission = projected.get("admission_result")
+    if not (
+        projected.get("state") == run_registry.RunState.COMPLETED.value
+        and isinstance(admission, Mapping)
+        and admission.get("state") == run_registry.AdmissionState.ADMITTED.value
+        and raw.get("result") == "no-result"
+        and raw.get("exit_code") == 75
+        and wrapper_outcome is None
+        and raw.get("executed_nodes") == 0
+        and "executed_tests" in raw
+        and raw.get("executed_tests") is None
+        and raw.get("final_validate_status") == "COULD_NOT_RUN"
+        and "selection_mode" in raw
+        and raw.get("selection_mode") is None
+        and raw.get("service_result_schema") == service_result.SCHEMA_VERSION
+        and "scorecard_writeback" in raw
+        and raw.get("scorecard_writeback") is None
+        and raw.get("result_source") == "validation-service-result"
+    ):
+        return False
+    result_path = service_result.result_path(path)
+    try:
+        payload = result_path.read_bytes()
+    except OSError:
+        return False
+    try:
+        evidence = _validation_service_result_evidence(
+            root,
+            path,
+            raw,
+            result_path,
+            payload,
+        )
+    except RuntimeError:
+        return False
+    return (
+        evidence is not None
+        and evidence.profile == "full"
+        and evidence.inner_exit == 75
+        and evidence.executed_nodes == 0
+        and evidence.executed_tests is None
+        and evidence.final_validate_status == "COULD_NOT_RUN"
+        and evidence.selection_mode is None
+        and evidence.scorecard_writeback is None
+    )
+
+
 def run_handle_report(
     root: Path,
     sha: str,
@@ -639,11 +787,36 @@ def run_handle_report(
     run_root = root / "ignored" / "validate" / "runs"
     for path in sorted(run_root.glob("*.json")):
         try:
-            raw_json = json.loads(path.read_text())
+            payload = path.read_bytes()
+            raw_json = json.loads(payload)
             if not isinstance(raw_json, dict):
                 raise ValueError("record is not an object")
         except (OSError, ValueError, json.JSONDecodeError) as error:
             unreadable.append({"path": str(path), "error": str(error)})
+            continue
+        try:
+            result_evidence, candidate_handle_error = (
+                _candidate_validation_service_result(
+                    root,
+                    path,
+                    payload,
+                    raw_json,
+                )
+            )
+        except RuntimeError as error:
+            unreadable.append({
+                "path": str(path),
+                "source": "validation-service-result",
+                "error": str(error),
+            })
+            continue
+        if result_evidence is not None:
+            continue
+        if candidate_handle_error is not None:
+            unreadable.append({
+                "path": str(path),
+                "error": candidate_handle_error,
+            })
             continue
         try:
             raw_target = _run_handle_target(raw_json)
@@ -695,6 +868,16 @@ def run_handle_report(
             state == run_registry.RunState.REFUSED.value
             and raw.get("result") == "systemd-launch-refused"
         )
+        no_receipt_attempt = (
+            not ledger_events
+            and _is_admitted_pre_plan_no_result(
+                root,
+                path,
+                raw,
+                projected,
+                wrapper_outcome,
+            )
+        )
         handle = {
             "path": str(path),
             "unit": projected.get("unit"),
@@ -709,6 +892,7 @@ def run_handle_report(
             "machine_shortname": machine_shortname,
             "wrapper_outcome": wrapper_outcome,
             "non_run_refusal": non_run_refusal,
+            "no_receipt_attempt": no_receipt_attempt,
             "ledger_event": (
                 admission_state == run_registry.AdmissionState.ADMITTED.value
                 and len(ledger_events) == 1
@@ -732,6 +916,7 @@ def run_handle_report(
             for handle in terminal_handles
             if handle.get("admission") == run_registry.AdmissionState.ADMITTED.value
             and not handle.get("ledger_event")
+            and not handle.get("no_receipt_attempt")
         ],
         "terminal_handles_missing_admission": [
             handle
@@ -919,10 +1104,16 @@ def reconcile(report: Mapping[str, Any]) -> list[str]:
 
     handles = report.get("run_handles") or {}
     for handle in handles.get("unreadable_handles") or []:
-        issues.append(
-            "run handle is unreadable, so its target cannot be cross-checked: "
-            f"{handle.get('path')}: {handle.get('error')}"
-        )
+        if handle.get("source") == "validation-service-result":
+            issues.append(
+                "validation service result is unreadable or mismatched: "
+                f"{handle.get('path')}: {handle.get('error')}"
+            )
+        else:
+            issues.append(
+                "run handle is unreadable, so its target cannot be cross-checked: "
+                f"{handle.get('path')}: {handle.get('error')}"
+            )
     for handle in handles.get("admitted_without_ledger_handles") or []:
         issues.append(
             "admitted terminal validation run has no ledger event: "
@@ -1115,6 +1306,8 @@ def print_text(report: Mapping[str, Any]) -> None:
             f"terminal={len(handles.get('terminal_handles') or [])} "
             "admitted-without-ledger="
             f"{len(handles.get('admitted_without_ledger_handles') or [])} "
+            "no-receipt-attempts="
+            f"{sum(bool(handle.get('no_receipt_attempt')) for handle in handles.get('terminal_handles') or [])} "
             "terminal-without-admission="
             f"{len(handles.get('terminal_handles_missing_admission') or [])}"
         )
