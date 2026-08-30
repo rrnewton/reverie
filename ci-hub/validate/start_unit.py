@@ -1018,6 +1018,7 @@ def remove_fresh_checkout(
     fresh: Path,
     *,
     run: Runner,
+    tool_root: Path = ROOT,
     completed_record: Path | None = None,
 ) -> bool:
     """Remove the temp worktree AND deregister it; return observed absence."""
@@ -1040,7 +1041,7 @@ def remove_fresh_checkout(
         if validate_parent.name == "validate" and worktrees.name == "worktrees":
             state_root = worktrees.parent
             command = [
-                str(state_root / "ci-hub/bin/wrkslots"),
+                str(tool_root / "ci-hub/bin/wrkslots"),
                 "--project-root",
                 str(state_root),
                 "--allow-existing-unregistered-worktrees",
@@ -1073,7 +1074,7 @@ def remove_fresh_checkout(
                     "historical checkout repository is outside the project root"
                 ) from error
             command = [
-                str(state_root / "ci-hub/bin/wrkslots"),
+                str(tool_root / "ci-hub/bin/wrkslots"),
                 "--project-root",
                 str(state_root),
                 "--allow-existing-unregistered-worktrees",
@@ -1253,6 +1254,7 @@ def cleanup_recorded_checkout(
     record_path: Path,
     unit: str,
     run: Runner,
+    tool_root: Path = ROOT,
     check_processes: bool = True,
 ) -> tuple[bool, list[str], str | None]:
     """Archive local receipt evidence and remove one terminal temp checkout."""
@@ -1285,6 +1287,7 @@ def cleanup_recorded_checkout(
         source,
         checkout,
         run=run,
+        tool_root=tool_root,
         completed_record=record_path,
     )
     return (
@@ -1365,7 +1368,9 @@ def read_cleanup_record(path: Path) -> dict[str, Any]:
     return value
 
 
-def sweep_completed_checkouts(root: Path, *, run: Runner) -> dict[str, Any]:
+def sweep_completed_checkouts(
+    root: Path, *, run: Runner, tool_root: Path = ROOT
+) -> dict[str, Any]:
     """Remove terminal validation checkouts left by interrupted waiters."""
     runs = root / "ignored" / "validate" / "runs"
     removed: list[str] = []
@@ -1416,6 +1421,7 @@ def sweep_completed_checkouts(root: Path, *, run: Runner) -> dict[str, Any]:
                 record_path=path,
                 unit=unit,
                 run=run,
+                tool_root=tool_root,
                 check_processes=True,
             )
         except (OSError, RuntimeError, ValueError) as error:
@@ -2043,11 +2049,13 @@ def build_systemd_command(
         "--setenv",
         "CI_HUB_VALIDATE_PRODUCER=systemd-user-v1",
         *build_budget_env,
-        # DEV_HERMIT_PARENT remains available to non-ledger helpers. Receipt
-        # storage does not use it: validate.rs invokes the fixed parent adapter,
-        # which appends the tracked per-machine shard that ci-hub unions.
+        # State remains anchored in the canonical project root while every
+        # executable helper comes from this exact tooling checkout. Conflating
+        # the two made a clean linked launcher execute stale primary code.
         "--setenv",
         f"DEV_HERMIT_PARENT={state_root}",
+        "--setenv",
+        f"DEV_HERMIT_TOOL_ROOT={root}",
         "--property",
         f"StandardOutput=append:{log}",
         "--property",
@@ -2421,6 +2429,7 @@ def cleanup_after_attach(
     *,
     unit: str,
     run: Runner,
+    tool_root: Path = ROOT,
 ) -> None:
     """Finish cleanup owned by a caller that previously stopped waiting."""
     try:
@@ -2430,6 +2439,7 @@ def cleanup_after_attach(
             record_path=record_path,
             unit=unit,
             run=run,
+            tool_root=tool_root,
             check_processes=True,
         )
     except (OSError, RuntimeError, ValueError) as error:
@@ -2476,6 +2486,7 @@ def attach(
     raw_unit: str,
     *,
     root: Path,
+    tool_root: Path = ROOT,
     run: Runner,
     json_output: bool,
     poll_seconds: float,
@@ -2517,7 +2528,9 @@ def attach(
                 repo=repo,
             )
         except (KeyError, RuntimeError, ValueError) as error:
-            cleanup_after_attach(root, record_path, record, unit=unit, run=run)
+            cleanup_after_attach(
+                root, record_path, record, unit=unit, run=run, tool_root=tool_root
+            )
             return could_not_determine(
                 f"FROZEN-VALIDATE-RESULT-UNAVAILABLE: {error}",
                 f"the unit ran; inspect {record.get('result_record', '<result-record>')} "
@@ -2539,7 +2552,9 @@ def attach(
             {**updated, "event": "finished", "unit": f"{unit}.service"},
             json_output=json_output,
         )
-        cleanup_after_attach(root, record_path, record, unit=unit, run=run)
+        cleanup_after_attach(
+            root, record_path, record, unit=unit, run=run, tool_root=tool_root
+        )
         return measured_exit
     try:
         target = str(record["target"])
@@ -2550,7 +2565,9 @@ def attach(
             root, target, checkout, run_started_at, repo=repo, run=run
         )
     except (KeyError, RuntimeError, ValueError) as error:
-        cleanup_after_attach(root, record_path, record, unit=unit, run=run)
+        cleanup_after_attach(
+            root, record_path, record, unit=unit, run=run, tool_root=tool_root
+        )
         return could_not_determine(
             f"CANONICAL-VERDICT-UNAVAILABLE: {error}",
             "the unit ran; re-read with `ci-hub validate-status --sha "
@@ -2598,7 +2615,9 @@ def attach(
         {**updated, "event": "finished", "unit": f"{unit}.service"},
         json_output=json_output,
     )
-    cleanup_after_attach(root, record_path, record, unit=unit, run=run)
+    cleanup_after_attach(
+        root, record_path, record, unit=unit, run=run, tool_root=tool_root
+    )
     return (
         canonical_exit
         if scorecard_updated or canonical_exit != EXIT_PASSED
@@ -2802,7 +2821,7 @@ def main(
                 "--sweep-completed cannot be combined with launch or attach arguments",
                 "run `ci-hub validate-run --sweep-completed` by itself",
             )
-        report = sweep_completed_checkouts(state_root, run=run)
+        report = sweep_completed_checkouts(state_root, run=run, tool_root=tool_root)
         emit_report(
             {"schema_version": 1, "event": "sweep-completed", **report},
             json_output=args.json,
@@ -2834,6 +2853,7 @@ def main(
             return attach(
                 args.attach,
                 root=state_root,
+                tool_root=tool_root,
                 run=run,
                 json_output=args.json,
                 poll_seconds=args.caller_poll_seconds,
@@ -3130,7 +3150,9 @@ def main(
         # Nothing was admitted, so the temp checkout holds no evidence and is
         # removed. Failures AFTER launch are handled below and RETAIN it.
         if fresh_checkout is not None and source_checkout is not None:
-            remove_fresh_checkout(source_checkout, fresh_checkout, run=run)
+            remove_fresh_checkout(
+                source_checkout, fresh_checkout, run=run, tool_root=tool_root
+            )
         remove_private_cargo_home(private_cargo_home, run=run)
         remove_runtime_root(runtime_root, run=run)
         return refuse(
@@ -3180,7 +3202,9 @@ def main(
             print(f"PANE-PLAN workspace={pane_owner.WORKSPACE_LABEL} role=observer-only")
             print(f"COMMAND {shlex.join(command)}")
         if fresh_checkout is not None and source_checkout is not None:
-            remove_fresh_checkout(source_checkout, fresh_checkout, run=run)
+            remove_fresh_checkout(
+                source_checkout, fresh_checkout, run=run, tool_root=tool_root
+            )
         remove_private_cargo_home(private_cargo_home, run=run)
         remove_runtime_root(runtime_root, run=run)
         return 0
@@ -3241,12 +3265,16 @@ def main(
                     file=sys.stderr,
                 )
                 if fresh_checkout is not None and source_checkout is not None:
-                    remove_fresh_checkout(source_checkout, fresh_checkout, run=run)
+                    remove_fresh_checkout(
+                        source_checkout, fresh_checkout, run=run, tool_root=tool_root
+                    )
                 remove_private_cargo_home(private_cargo_home, run=run)
                 remove_runtime_root(runtime_root, run=run)
                 return inner_exit
             if fresh_checkout is not None and source_checkout is not None:
-                remove_fresh_checkout(source_checkout, fresh_checkout, run=run)
+                remove_fresh_checkout(
+                    source_checkout, fresh_checkout, run=run, tool_root=tool_root
+                )
             remove_private_cargo_home(private_cargo_home, run=run)
             remove_runtime_root(runtime_root, run=run)
             return could_not_determine(
@@ -3267,7 +3295,9 @@ def main(
             )
             print(f"  {row[:160]}")
         if fresh_checkout is not None and source_checkout is not None:
-            remove_fresh_checkout(source_checkout, fresh_checkout, run=run)
+            remove_fresh_checkout(
+                source_checkout, fresh_checkout, run=run, tool_root=tool_root
+            )
         remove_private_cargo_home(private_cargo_home, run=run)
         remove_runtime_root(runtime_root, run=run)
         emit_report(
@@ -3308,7 +3338,9 @@ def main(
                 file=sys.stderr,
             )
             if fresh_checkout is not None and source_checkout is not None:
-                remove_fresh_checkout(source_checkout, fresh_checkout, run=run)
+                remove_fresh_checkout(
+                    source_checkout, fresh_checkout, run=run, tool_root=tool_root
+                )
             remove_private_cargo_home(private_cargo_home, run=run)
             remove_runtime_root(runtime_root, run=run)
             return inner_exit
@@ -3340,7 +3372,9 @@ def main(
                         f"RETAINED at {fresh_checkout}.",
                         "preserve the files manually before reclaiming the checkout",
                     )
-                removed = remove_fresh_checkout(source_checkout, fresh_checkout, run=run)
+                removed = remove_fresh_checkout(
+                    source_checkout, fresh_checkout, run=run, tool_root=tool_root
+                )
                 disposition = "removed" if removed else f"RETAINED at {fresh_checkout}"
                 remove_private_cargo_home(private_cargo_home, run=run)
                 remove_runtime_root(runtime_root, run=run)
@@ -3358,7 +3392,9 @@ def main(
                 "reclaiming it.",
                 file=sys.stderr,
             )
-            remove_fresh_checkout(source_checkout, fresh_checkout, run=run)
+            remove_fresh_checkout(
+                source_checkout, fresh_checkout, run=run, tool_root=tool_root
+            )
         remove_private_cargo_home(private_cargo_home, run=run)
         remove_runtime_root(runtime_root, run=run)
         # ⚠️ NOT "failed". No receipt means no verdict was ever recorded, so there
@@ -3392,7 +3428,9 @@ def main(
         )
     )
     if fresh_checkout is not None and source_checkout is not None:
-        remove_fresh_checkout(source_checkout, fresh_checkout, run=run)
+        remove_fresh_checkout(
+            source_checkout, fresh_checkout, run=run, tool_root=tool_root
+        )
     # The normal completion path, and the one that matters most: without this the
     # per-run cargo home leaks on EVERY successful validate.
     remove_private_cargo_home(private_cargo_home, run=run)

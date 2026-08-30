@@ -675,6 +675,8 @@ class StartUnitTest(unittest.TestCase):
         )
         self.assertIn(f"DEV_HERMIT_PARENT={self.root}", systemd)
         self.assertNotIn(f"DEV_HERMIT_PARENT={linked}", systemd)
+        self.assertIn(f"DEV_HERMIT_TOOL_ROOT={linked}", systemd)
+        self.assertNotIn(f"DEV_HERMIT_TOOL_ROOT={self.root}", systemd)
 
     def test_sweep_completed_archives_receipts_and_removes_checkout(self) -> None:
         fresh = self.root / "worktrees" / "validate" / "validate-fresh-sweep"
@@ -1949,18 +1951,20 @@ class StartUnitTest(unittest.TestCase):
         (fresh / ".git").write_text("gitdir: shared/worktrees/source-gone\n")
         self.fake.fresh = fresh
         self.fake.source_common_dir_available = False
+        tool_root = self.root / "linked-tooling"
 
         removed = start_unit.remove_fresh_checkout(
-            self.checkout, fresh, run=self.fake
+            self.checkout, fresh, run=self.fake, tool_root=tool_root
         )
 
         self.assertTrue(removed)
         self.assertEqual([str(fresh)], self.fake.removed)
         self.assertTrue(
             any(
-                command[0].endswith("ci-hub/bin/wrkslots")
+                command[0] == str(tool_root / "ci-hub/bin/wrkslots")
                 and "remove" in command
                 and "--validate-complete" in command
+                and command[command.index("--project-root") + 1] == str(self.root)
                 for command in self.fake.commands
             )
         )

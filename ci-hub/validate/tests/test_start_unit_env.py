@@ -283,14 +283,14 @@ class StartUnitEnvTest(unittest.TestCase):
 
     # -- parent-owned validation authorities remain reachable -----------------
 
-    def test_parent_root_is_propagated_for_shared_authorities(self) -> None:
-        """DEV_HERMIT_PARENT reaches consumers that still need the workspace root.
+    def test_parent_and_tool_roots_are_propagated(self) -> None:
+        """State and executable roots both reach the validation driver.
 
         The ledger producer deliberately does not consult this variable: it uses
         one fixed adapter path even when DEV_HERMIT_PARENT is absent. Other
-        parent-owned operations (receipt finalization, durable logs and ci-hub
-        helpers) still need the workspace root, so the admitted unit propagates
-        it explicitly.
+        state belongs under DEV_HERMIT_PARENT, while receipt finalization and
+        ci-hub helpers execute from DEV_HERMIT_TOOL_ROOT. They are equal for an
+        ordinary checkout and deliberately differ for a linked tooling checkout.
 
         Asserting the exact path, not just presence: pointing at the wrong root
         would make those other authorities unreachable.
@@ -300,6 +300,7 @@ class StartUnitEnvTest(unittest.TestCase):
             "DEV_HERMIT_PARENT", env, "the unit cannot reach parent-owned authorities"
         )
         self.assertEqual(env["DEV_HERMIT_PARENT"], str(self.root))
+        self.assertEqual(env["DEV_HERMIT_TOOL_ROOT"], str(self.root))
 
     def test_parent_ledger_is_set_even_without_libunwind(self) -> None:
         # The libunwind block is conditional; the ledger anchor must not be
