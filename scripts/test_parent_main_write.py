@@ -2482,10 +2482,12 @@ class HealthTickParentSyncTests(unittest.TestCase):
         payload = (
             "#!/usr/bin/env bash\n"
             "set -eu\n"
-            "printf 'payload=landed parent=%s hermit=%s agent_utils=%s tool_root=%s state_root=%s operational_tool=%s cache=%s args=%s\\n' "
+            "cat \"$DEV_HERMIT_TOOL_AUTHORITY\"\n"
+            "printf 'payload=landed parent=%s hermit=%s agent_utils=%s tool_root=%s state_root=%s authority=%s content=%s operational_tool=%s cache=%s args=%s\\n' "
             '"$DEV_HERMIT_TOOL_PARENT_SHA" "$DEV_HERMIT_TOOL_HERMIT_SHA" '
             '"$DEV_HERMIT_TOOL_AGENT_UTILS_SHA" "$DEV_HERMIT_TOOL_ROOT" '
-            '"$DEV_HERMIT_PARENT" "$DEV_HERMIT_OPERATIONAL_TOOL" '
+            '"$DEV_HERMIT_PARENT" "$DEV_HERMIT_TOOL_AUTHORITY" '
+            '"$DEV_HERMIT_TOOL_CONTENT_SHA256" "$DEV_HERMIT_OPERATIONAL_TOOL" '
             '"$DEV_HERMIT_TOOL_CACHE" "$*"\n'
         )
         target = self.advance_remote(
@@ -2506,6 +2508,8 @@ class HealthTickParentSyncTests(unittest.TestCase):
         self.assertIn(f"hermit={self.hermit_head}", result.stdout)
         self.assertIn(f"agent_utils={self.agent_utils_head}", result.stdout)
         self.assertIn(f"state_root={self.repo}", result.stdout)
+        self.assertRegex(result.stdout, r"authority=/proc/[0-9]+/fd/[0-9]+")
+        self.assertRegex(result.stdout, r"content=[0-9a-f]{64}")
         self.assertIn(f"operational_tool={bootstrap}", result.stdout)
         self.assertIn(
             f"cache={Path(self.env['HERMIT_HEALTH_TOOL_CACHE'])}", result.stdout
@@ -2514,6 +2518,52 @@ class HealthTickParentSyncTests(unittest.TestCase):
         self.assertNotIn("payload=STALE", result.stdout)
         self.assertIn(f"parent_sha={target}", result.stderr)
         self.assertIn("entrypoint=scripts/owner-probe", result.stderr)
+        authority = json.loads(
+            next(line for line in result.stdout.splitlines() if line.startswith("{"))
+        )
+        tool_pid, tool_fd = result.stdout.split("tool_root=/proc/", 1)[1].split(
+            " ", 1
+        )[0].split("/fd/")
+        authority_pid, authority_fd = result.stdout.split(
+            "authority=/proc/", 1
+        )[1].split(" ", 1)[0].split("/fd/")
+        self.assertEqual(tool_pid, authority_pid)
+        self.assertEqual(int(tool_fd), authority["root_fd"])
+        self.assertEqual(int(authority_fd), authority["authority_fd"])
+        cached = Path(self.env["HERMIT_HEALTH_TOOL_CACHE"]) / "trees" / target
+        self.assertEqual(str(cached), authority["target_root"])
+        cached_metadata = cached.stat()
+        self.assertEqual(cached_metadata.st_dev, authority["target_dev"])
+        self.assertEqual(cached_metadata.st_ino, authority["target_ino"])
+        self.assertEqual(
+            3,
+            len(
+                {
+                    (authority["target_dev"], authority["target_ino"]),
+                    (authority["root_dev"], authority["root_ino"]),
+                    (authority["state_dev"], authority["state_ino"]),
+                }
+            ),
+        )
+        self.assertEqual(
+            4,
+            len(
+                {
+                    authority["authority_fd"],
+                    authority["target_fd"],
+                    authority["root_fd"],
+                    authority["state_fd"],
+                }
+            ),
+        )
+        self.assertEqual(target, authority["parent_sha"])
+        self.assertEqual(self.hermit_head, authority["hermit_sha"])
+        self.assertEqual(self.agent_utils_head, authority["agent_utils_sha"])
+        self.assertEqual(str(self.repo), authority["state_root"])
+        self.assertEqual(
+            authority["content_sha256"],
+            result.stdout.split("content=", 1)[1].split(" ", 1)[0],
+        )
         self.assertEqual(
             before_head, git(self.repo, "rev-parse", "HEAD").stdout.strip()
         )
@@ -2521,7 +2571,193 @@ class HealthTickParentSyncTests(unittest.TestCase):
             before_status,
             git(self.repo, "status", "--porcelain=v1", "--untracked-files=all").stdout,
         )
+        self.assertTrue((cached / ".git").is_dir())
+        self.assertFalse((cached / ".git" / "commondir").exists())
         self.assert_private_run_pool_is_reusable()
+
+    def test_primary_executable_git_config_is_never_consulted_by_immutable_tool(
+        self,
+    ) -> None:
+        bootstrap = self.installed_bootstrap()
+        marker = self.base / "hostile-primary-config-ran"
+        hostile = self.base / "hostile-primary-config"
+        hostile.write_text(
+            "#!/usr/bin/env bash\n"
+            f"printf consulted > {marker}\n"
+            "exit 1\n"
+        )
+        hostile.chmod(0o755)
+        target = self.advance_remote(
+            extra_executables={
+                "scripts/owner-probe": "#!/usr/bin/env bash\nprintf 'SAFE\\n'\n"
+            }
+        )
+        git(self.repo, "config", "core.fsmonitor", str(hostile))
+        config_before = (self.repo / ".git/config").read_bytes()
+
+        result = self.run_current_tool(bootstrap, "scripts/owner-probe")
+
+        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+        self.assertIn("SAFE", result.stdout)
+        self.assertFalse(marker.exists())
+        self.assertEqual(config_before, (self.repo / ".git/config").read_bytes())
+        cached = Path(self.env["HERMIT_HEALTH_TOOL_CACHE"]) / "trees" / target
+        self.assertTrue((cached / ".git").is_dir())
+        self.assertFalse((cached / ".git" / "commondir").exists())
+
+    def test_state_path_replacement_refuses_before_authority_is_published(self) -> None:
+        bootstrap = self.installed_bootstrap()
+        marker = self.base / "state-replacement-payload-ran"
+        target = self.advance_remote(
+            extra_executables={
+                "scripts/owner-probe": (
+                    "#!/usr/bin/env bash\n"
+                    f"printf poison > {marker}\n"
+                )
+            }
+        )
+        primed = self.run_current_tool(bootstrap, "scripts/owner-probe")
+        self.assertEqual(0, primed.returncode, primed.stdout + primed.stderr)
+        marker.unlink()
+
+        state_root = self.base / "replaceable-state"
+        state_root.mkdir()
+        retained_state = self.base / "retained-state"
+        ready = self.base / "authority-state-ready"
+        proceed = self.base / "authority-state-proceed"
+        shim_dir = self.base / "authority-state-shim"
+        shim_dir.mkdir()
+        sha256sum = shutil.which("sha256sum") or "/usr/bin/sha256sum"
+        shim = shim_dir / "sha256sum"
+        shim.write_text(
+            "#!/usr/bin/env bash\n"
+            "set -eu\n"
+            ": > \"$AUTHORITY_STATE_READY\"\n"
+            "while [[ ! -e \"$AUTHORITY_STATE_PROCEED\" ]]; do sleep 0.01; done\n"
+            f'exec "{sha256sum}" "$@"\n'
+        )
+        shim.chmod(0o755)
+        cache = Path(self.env["HERMIT_HEALTH_TOOL_CACHE"])
+        process = subprocess.Popen(
+            [
+                str(bootstrap),
+                "--run-current-tool",
+                "--state-root",
+                str(state_root),
+                "--cache-root",
+                str(cache),
+                "--tool-parent-sha",
+                target,
+                "--tool-relative",
+                "scripts/owner-probe",
+            ],
+            cwd=self.home,
+            env=dict(
+                self.env,
+                PATH=f"{shim_dir}:{self.env['PATH']}",
+                AUTHORITY_STATE_READY=str(ready),
+                AUTHORITY_STATE_PROCEED=str(proceed),
+            ),
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        try:
+            deadline = time.monotonic() + 15
+            while not ready.exists() and process.poll() is None:
+                if time.monotonic() >= deadline:
+                    self.fail("authority creation did not reach the state-path barrier")
+                time.sleep(0.01)
+            self.assertIsNone(process.poll())
+            state_root.rename(retained_state)
+            state_root.mkdir()
+            proceed.touch()
+            stdout, stderr = process.communicate(timeout=20)
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.communicate()
+
+        self.assertEqual(1, process.returncode, stdout + stderr)
+        self.assertIn("state root changed before authority was sealed", stderr)
+        self.assertFalse(marker.exists())
+
+    def test_target_path_replacement_refuses_before_authority_is_published(self) -> None:
+        bootstrap = self.installed_bootstrap()
+        marker = self.base / "target-replacement-payload-ran"
+        target = self.advance_remote(
+            extra_executables={
+                "scripts/owner-probe": (
+                    "#!/usr/bin/env bash\n"
+                    f"printf poison > {marker}\n"
+                )
+            }
+        )
+        primed = self.run_current_tool(bootstrap, "scripts/owner-probe")
+        self.assertEqual(0, primed.returncode, primed.stdout + primed.stderr)
+        marker.unlink()
+
+        cache = Path(self.env["HERMIT_HEALTH_TOOL_CACHE"])
+        cached = cache / "trees" / target
+        retained_target = cache / "trees" / "retained-target"
+        ready = self.base / "authority-target-ready"
+        proceed = self.base / "authority-target-proceed"
+        shim_dir = self.base / "authority-target-shim"
+        shim_dir.mkdir()
+        sha256sum = shutil.which("sha256sum") or "/usr/bin/sha256sum"
+        shim = shim_dir / "sha256sum"
+        shim.write_text(
+            "#!/usr/bin/env bash\n"
+            "set -eu\n"
+            ": > \"$AUTHORITY_TARGET_READY\"\n"
+            "while [[ ! -e \"$AUTHORITY_TARGET_PROCEED\" ]]; do sleep 0.01; done\n"
+            f'exec "{sha256sum}" "$@"\n'
+        )
+        shim.chmod(0o755)
+        process = subprocess.Popen(
+            [
+                str(bootstrap),
+                "--run-current-tool",
+                "--state-root",
+                str(self.repo),
+                "--cache-root",
+                str(cache),
+                "--tool-parent-sha",
+                target,
+                "--tool-relative",
+                "scripts/owner-probe",
+            ],
+            cwd=self.home,
+            env=dict(
+                self.env,
+                PATH=f"{shim_dir}:{self.env['PATH']}",
+                AUTHORITY_TARGET_READY=str(ready),
+                AUTHORITY_TARGET_PROCEED=str(proceed),
+            ),
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        try:
+            deadline = time.monotonic() + 15
+            while not ready.exists() and process.poll() is None:
+                if time.monotonic() >= deadline:
+                    self.fail("authority creation did not reach the target-path barrier")
+                time.sleep(0.01)
+            self.assertIsNone(process.poll())
+            cached.rename(retained_target)
+            cached.mkdir()
+            cached.chmod(0o555)
+            proceed.touch()
+            stdout, stderr = process.communicate(timeout=20)
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.communicate()
+
+        self.assertEqual(1, process.returncode, stdout + stderr)
+        self.assertIn("cached target changed before authority was sealed", stderr)
+        self.assertFalse(marker.exists())
 
     def test_current_tool_refuses_cache_beneath_mutable_state_root(self) -> None:
         bootstrap = self.installed_bootstrap()

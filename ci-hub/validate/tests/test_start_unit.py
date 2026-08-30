@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import contextlib
+import fcntl
 import hashlib
 import io
 import json
 import os
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -25,6 +27,127 @@ from scripts import test_parent_main_write as parent_main_tests  # noqa: E402
 
 
 SHA = "a" * 40
+HERMIT_SHA = "b" * 40
+AGENT_UTILS_SHA = "c" * 40
+
+
+def make_tree_read_only(path: Path) -> None:
+    metadata = path.lstat()
+    if stat.S_ISLNK(metadata.st_mode):
+        return
+    if path.is_dir():
+        for child in path.iterdir():
+            make_tree_read_only(child)
+        path.chmod(0o555)
+    elif path.is_file():
+        path.chmod(0o555 if metadata.st_mode & 0o111 else 0o444)
+
+
+class AuthorityFixture:
+    def __init__(
+        self,
+        root: Path,
+        state_root: Path,
+        target_root: Path,
+        *,
+        bootstrap_sha256: str,
+        sealed: bool = True,
+        update: dict[str, object] | None = None,
+        remove: set[str] | None = None,
+    ) -> None:
+        self.root_fd = os.open(
+            root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+        )
+        self.state_fd = os.open(
+            state_root,
+            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+        )
+        self.target_fd = os.open(
+            target_root,
+            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+        )
+        self.authority_fd = os.memfd_create(
+            "dev-hermit-tool-authority",
+            os.MFD_CLOEXEC | os.MFD_ALLOW_SEALING,
+        )
+        root_metadata = os.fstat(self.root_fd)
+        state_metadata = os.fstat(self.state_fd)
+        target_metadata = os.fstat(self.target_fd)
+        content_sha256 = start_unit.immutable_tool_content_sha256(
+            Path(f"/proc/{os.getpid()}/fd/{self.root_fd}")
+        )
+        self.record: dict[str, object] = {
+            "schema": start_unit.TOOL_AUTHORITY_SCHEMA,
+            "holder_pid": os.getpid(),
+            "authority_fd": self.authority_fd,
+            "target_fd": self.target_fd,
+            "target_root": str(target_root.resolve()),
+            "target_dev": target_metadata.st_dev,
+            "target_ino": target_metadata.st_ino,
+            "root_fd": self.root_fd,
+            "root_dev": root_metadata.st_dev,
+            "root_ino": root_metadata.st_ino,
+            "state_fd": self.state_fd,
+            "state_root": str(state_root.resolve()),
+            "state_dev": state_metadata.st_dev,
+            "state_ino": state_metadata.st_ino,
+            "content_sha256": content_sha256,
+            "parent_sha": SHA,
+            "hermit_sha": HERMIT_SHA,
+            "agent_utils_sha": AGENT_UTILS_SHA,
+            "bootstrap_sha256": bootstrap_sha256,
+        }
+        self.record.update(update or {})
+        for name in remove or set():
+            self.record.pop(name, None)
+        os.write(
+            self.authority_fd,
+            json.dumps(self.record, sort_keys=True, separators=(",", ":")).encode()
+            + b"\n",
+        )
+        os.fchmod(self.authority_fd, 0o400)
+        if sealed:
+            fcntl.fcntl(
+                self.authority_fd,
+                fcntl.F_ADD_SEALS,
+                fcntl.F_SEAL_SEAL
+                | fcntl.F_SEAL_SHRINK
+                | fcntl.F_SEAL_GROW
+                | fcntl.F_SEAL_WRITE,
+            )
+        self.tool_root = Path(f"/proc/{os.getpid()}/fd/{self.root_fd}")
+        self.target_root = target_root
+        self.authority_path = Path(
+            f"/proc/{os.getpid()}/fd/{self.authority_fd}"
+        )
+
+    def environment(self) -> dict[str, str]:
+        return {
+            start_unit.TOOL_AUTHORITY_ENV: str(self.authority_path),
+            start_unit.TOOL_CONTENT_SHA256_ENV: str(
+                self.record.get("content_sha256", "")
+            ),
+            start_unit.TOOL_PARENT_SHA_ENV: str(self.record.get("parent_sha", "")),
+            start_unit.TOOL_HERMIT_SHA_ENV: str(self.record.get("hermit_sha", "")),
+            start_unit.TOOL_AGENT_UTILS_SHA_ENV: str(
+                self.record.get("agent_utils_sha", "")
+            ),
+            start_unit.TOOL_BOOTSTRAP_SHA256_ENV: str(
+                self.record.get("bootstrap_sha256", "")
+            ),
+        }
+
+    def close(self) -> None:
+        for descriptor in (
+            self.authority_fd,
+            self.state_fd,
+            self.root_fd,
+            self.target_fd,
+        ):
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
 
 
 def completed(command: list[str], rc: int = 0, stdout: str = "", stderr: str = ""):
@@ -507,6 +630,43 @@ class StartUnitTest(unittest.TestCase):
             )
         return rc, out.getvalue(), err.getvalue()
 
+    def authority_fixture(
+        self,
+        bootstrap: Path,
+        *,
+        root: Path | None = None,
+        state_root: Path | None = None,
+        target_root: Path | None = None,
+        sealed: bool = True,
+        update: dict[str, object] | None = None,
+        remove: set[str] | None = None,
+    ) -> AuthorityFixture:
+        sequence = getattr(self, "_authority_sequence", 0) + 1
+        self._authority_sequence = sequence
+        if root is None:
+            root = self.root / f"authority-tool-{sequence}"
+            (root / "ci-hub").mkdir(parents=True)
+            (root / "ci-hub/authority-marker").write_text("authorized\n")
+            make_tree_read_only(root)
+        if target_root is None:
+            target_sha = str((update or {}).get("parent_sha", SHA))
+            target_root = (
+                self.root / f"authority-cache-{sequence}" / "trees" / target_sha
+            )
+            target_root.mkdir(parents=True)
+            make_tree_read_only(target_root)
+        fixture = AuthorityFixture(
+            root,
+            state_root or self.root,
+            target_root,
+            bootstrap_sha256=hashlib.sha256(bootstrap.read_bytes()).hexdigest(),
+            sealed=sealed,
+            update=update,
+            remove=remove,
+        )
+        self.addCleanup(fixture.close)
+        return fixture
+
     def split_tool_root(self) -> Path:
         tool_root = Path(f"{self.root}-tool")
         self.addCleanup(shutil.rmtree, tool_root, True)
@@ -822,35 +982,29 @@ class StartUnitTest(unittest.TestCase):
         self.assertNotIn(f"DEV_HERMIT_TOOL_ROOT={self.root}", systemd)
 
     def test_fd_backed_tool_root_reenters_exact_installed_bootstrap(self) -> None:
-        root_fd = os.open(self.root, os.O_RDONLY | os.O_DIRECTORY)
-        self.addCleanup(os.close, root_fd)
-        retained = Path(f"/proc/{os.getpid()}/fd/{root_fd}")
         home = self.root / "home"
         bootstrap = home / ".local/libexec/dev-hermit/operational-tool"
         bootstrap.parent.mkdir(parents=True)
         bootstrap.write_text("#!/bin/sh\nexit 0\n")
         bootstrap.chmod(0o555)
         cache = self.root / "tool-cache"
-        cache.mkdir()
+        target_root = cache / "trees" / SHA
+        target_root.mkdir(parents=True)
+        make_tree_read_only(target_root)
+        authority = self.authority_fixture(bootstrap, target_root=target_root)
+        retained = authority.tool_root
         environment = dict(
             self.environment,
+            **authority.environment(),
             HOME=str(home),
             DEV_HERMIT_TOOL_ROOT=str(retained),
             DEV_HERMIT_PARENT=str(self.root),
             DEV_HERMIT_OPERATIONAL_TOOL=str(bootstrap),
-            DEV_HERMIT_TOOL_BOOTSTRAP_SHA256=hashlib.sha256(
-                bootstrap.read_bytes()
-            ).hexdigest(),
             DEV_HERMIT_TOOL_CACHE=str(cache),
-            DEV_HERMIT_TOOL_PARENT_SHA=SHA,
         )
         out = io.StringIO()
         err = io.StringIO()
-        with (
-            mock.patch.object(start_unit, "parent_checkout_head", return_value=SHA),
-            contextlib.redirect_stdout(out),
-            contextlib.redirect_stderr(err),
-        ):
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
             rc = start_unit.main(
                 [
                     "--checkout",
@@ -891,6 +1045,10 @@ class StartUnitTest(unittest.TestCase):
                 "--run-current-tool",
                 "--state-root",
                 str(self.root),
+                "--state-identity",
+                f"{authority.record['state_dev']}:{authority.record['state_ino']}",
+                "--target-identity",
+                f"{authority.record['target_dev']}:{authority.record['target_ino']}",
                 "--cache-root",
                 str(cache),
                 "--tool-parent-sha",
@@ -901,13 +1059,276 @@ class StartUnitTest(unittest.TestCase):
                 "validate-lock",
                 "run",
             ],
-            command[bootstrap_index : bootstrap_index + 17],
+            command[bootstrap_index : bootstrap_index + 21],
         )
         self.assertNotIn(str(retained / "ci-hub/ci-hub"), command)
         self.assertNotIn(f"DEV_HERMIT_TOOL_ROOT={retained}", command)
         self.assertNotIn(str(retained), " ".join(command))
         self.assertIn(f"DEV_HERMIT_PARENT={self.root}", command)
         self.assertNotIn(f"DEV_HERMIT_TOOL_ROOT={self.root}", command)
+
+    def test_fd_authority_accepts_sealed_same_holder_identity_and_pins(self) -> None:
+        bootstrap = self.root / "authority-bootstrap"
+        bootstrap.write_text("#!/bin/sh\nexit 0\n")
+        bootstrap.chmod(0o555)
+        authority = self.authority_fixture(bootstrap)
+
+        observed = start_unit.read_immutable_tool_authority(
+            authority.tool_root, self.root, authority.environment()
+        )
+
+        self.assertEqual(SHA, observed.parent_sha)
+        self.assertEqual(HERMIT_SHA, observed.hermit_sha)
+        self.assertEqual(AGENT_UTILS_SHA, observed.agent_utils_sha)
+        self.assertEqual(authority.record["content_sha256"], observed.content_sha256)
+        self.assertEqual(authority.target_fd, observed.target_fd)
+        self.assertEqual(authority.target_root, observed.target_root)
+
+    def test_fd_authority_incomplete_record_is_refused(self) -> None:
+        bootstrap = self.root / "incomplete-bootstrap"
+        bootstrap.write_text("#!/bin/sh\n")
+        bootstrap.chmod(0o555)
+        authority = self.authority_fixture(
+            bootstrap, remove={"agent_utils_sha"}
+        )
+
+        with self.assertRaisesRegex(ValueError, "fields are incomplete"):
+            start_unit.read_immutable_tool_authority(
+                authority.tool_root, self.root, authority.environment()
+            )
+
+    def test_fd_authority_unsealed_record_is_refused(self) -> None:
+        bootstrap = self.root / "unsealed-bootstrap"
+        bootstrap.write_text("#!/bin/sh\n")
+        bootstrap.chmod(0o555)
+        authority = self.authority_fixture(bootstrap, sealed=False)
+
+        with self.assertRaisesRegex(ValueError, "completely sealed"):
+            start_unit.read_immutable_tool_authority(
+                authority.tool_root, self.root, authority.environment()
+            )
+
+    def test_fd_authority_copied_record_is_refused(self) -> None:
+        bootstrap = self.root / "copied-bootstrap"
+        bootstrap.write_text("#!/bin/sh\n")
+        bootstrap.chmod(0o555)
+        authority = self.authority_fixture(bootstrap)
+        copied_fd = os.memfd_create(
+            "copied-dev-hermit-tool-authority",
+            os.MFD_CLOEXEC | os.MFD_ALLOW_SEALING,
+        )
+        self.addCleanup(os.close, copied_fd)
+        os.write(copied_fd, authority.authority_path.read_bytes())
+        os.fchmod(copied_fd, 0o400)
+        fcntl.fcntl(
+            copied_fd,
+            fcntl.F_ADD_SEALS,
+            fcntl.F_SEAL_SEAL
+            | fcntl.F_SEAL_SHRINK
+            | fcntl.F_SEAL_GROW
+            | fcntl.F_SEAL_WRITE,
+        )
+        environment = authority.environment()
+        environment[start_unit.TOOL_AUTHORITY_ENV] = (
+            f"/proc/{os.getpid()}/fd/{copied_fd}"
+        )
+
+        with self.assertRaisesRegex(ValueError, "does not name the supplied descriptors"):
+            start_unit.read_immutable_tool_authority(
+                authority.tool_root, self.root, environment
+            )
+
+    def test_fd_authority_wrong_root_descriptor_is_refused(self) -> None:
+        bootstrap = self.root / "wrong-root-bootstrap"
+        bootstrap.write_text("#!/bin/sh\n")
+        bootstrap.chmod(0o555)
+        authority = self.authority_fixture(bootstrap)
+        wrong_root = self.root / "wrong-authority-root"
+        wrong_root.mkdir()
+        make_tree_read_only(wrong_root)
+        wrong_fd = os.open(
+            wrong_root,
+            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+        )
+        self.addCleanup(os.close, wrong_fd)
+
+        with self.assertRaisesRegex(ValueError, "supplied descriptors"):
+            start_unit.read_immutable_tool_authority(
+                Path(f"/proc/{os.getpid()}/fd/{wrong_fd}"),
+                self.root,
+                authority.environment(),
+            )
+
+    def test_fd_authority_wrong_target_descriptor_is_refused(self) -> None:
+        bootstrap = self.root / "wrong-target-bootstrap"
+        bootstrap.write_text("#!/bin/sh\n")
+        bootstrap.chmod(0o555)
+        wrong_target = self.root / "wrong-authority-target"
+        wrong_target.mkdir()
+        make_tree_read_only(wrong_target)
+        wrong_target_fd = os.open(
+            wrong_target,
+            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+        )
+        self.addCleanup(os.close, wrong_target_fd)
+        authority = self.authority_fixture(
+            bootstrap, update={"target_fd": wrong_target_fd}
+        )
+
+        with self.assertRaisesRegex(ValueError, "target descriptor identity"):
+            start_unit.read_immutable_tool_authority(
+                authority.tool_root, self.root, authority.environment()
+            )
+
+    def test_fd_authority_recorded_holder_mismatch_is_refused(self) -> None:
+        bootstrap = self.root / "wrong-holder-bootstrap"
+        bootstrap.write_text("#!/bin/sh\n")
+        bootstrap.chmod(0o555)
+        authority = self.authority_fixture(
+            bootstrap, update={"holder_pid": os.getpid() + 1}
+        )
+
+        with self.assertRaisesRegex(ValueError, "supplied descriptors"):
+            start_unit.read_immutable_tool_authority(
+                authority.tool_root, self.root, authority.environment()
+            )
+
+    def test_fd_authority_from_different_holder_is_refused(self) -> None:
+        bootstrap = self.root / "cross-holder-bootstrap"
+        bootstrap.write_text("#!/bin/sh\n")
+        bootstrap.chmod(0o555)
+        authority = self.authority_fixture(bootstrap)
+        holder = subprocess.Popen(
+            ["/bin/sleep", "30"],
+            pass_fds=(authority.authority_fd,),
+        )
+        self.addCleanup(holder.wait)
+        self.addCleanup(holder.terminate)
+        environment = authority.environment()
+        environment[start_unit.TOOL_AUTHORITY_ENV] = (
+            f"/proc/{holder.pid}/fd/{authority.authority_fd}"
+        )
+
+        with self.assertRaisesRegex(ValueError, "owned by different holders"):
+            start_unit.read_immutable_tool_authority(
+                authority.tool_root, self.root, environment
+            )
+
+    def test_fd_authority_wrong_state_descriptor_is_refused(self) -> None:
+        bootstrap = self.root / "wrong-state-bootstrap"
+        bootstrap.write_text("#!/bin/sh\n")
+        bootstrap.chmod(0o555)
+        wrong_state = self.root / "wrong-state"
+        wrong_state.mkdir()
+        wrong_state_fd = os.open(
+            wrong_state,
+            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+        )
+        self.addCleanup(os.close, wrong_state_fd)
+        authority = self.authority_fixture(
+            bootstrap, update={"state_fd": wrong_state_fd}
+        )
+
+        with self.assertRaisesRegex(ValueError, "state-root descriptor identity"):
+            start_unit.read_immutable_tool_authority(
+                authority.tool_root, self.root, authority.environment()
+            )
+
+    def test_fd_authority_wrong_recorded_inode_is_refused(self) -> None:
+        bootstrap = self.root / "wrong-inode-bootstrap"
+        bootstrap.write_text("#!/bin/sh\n")
+        bootstrap.chmod(0o555)
+        authority = self.authority_fixture(
+            bootstrap, update={"root_ino": 0}
+        )
+
+        with self.assertRaisesRegex(ValueError, "root descriptor identity"):
+            start_unit.read_immutable_tool_authority(
+                authority.tool_root, self.root, authority.environment()
+            )
+
+    def test_fd_authority_wrong_target_inode_is_refused(self) -> None:
+        bootstrap = self.root / "wrong-target-inode-bootstrap"
+        bootstrap.write_text("#!/bin/sh\n")
+        bootstrap.chmod(0o555)
+        authority = self.authority_fixture(
+            bootstrap, update={"target_ino": 0}
+        )
+
+        with self.assertRaisesRegex(ValueError, "target descriptor identity"):
+            start_unit.read_immutable_tool_authority(
+                authority.tool_root, self.root, authority.environment()
+            )
+
+    def test_fd_authority_wrong_state_inode_is_refused(self) -> None:
+        bootstrap = self.root / "wrong-state-inode-bootstrap"
+        bootstrap.write_text("#!/bin/sh\n")
+        bootstrap.chmod(0o555)
+        authority = self.authority_fixture(
+            bootstrap, update={"state_ino": 0}
+        )
+
+        with self.assertRaisesRegex(ValueError, "state-root descriptor identity"):
+            start_unit.read_immutable_tool_authority(
+                authority.tool_root, self.root, authority.environment()
+            )
+
+    def test_fd_authority_wrong_sha_handoff_is_refused(self) -> None:
+        bootstrap = self.root / "wrong-sha-bootstrap"
+        bootstrap.write_text("#!/bin/sh\n")
+        bootstrap.chmod(0o555)
+        authority = self.authority_fixture(bootstrap)
+        environment = authority.environment()
+        environment[start_unit.TOOL_PARENT_SHA_ENV] = "d" * 40
+
+        with self.assertRaisesRegex(ValueError, "does not match immutable tool authority"):
+            start_unit.read_immutable_tool_authority(
+                authority.tool_root, self.root, environment
+            )
+
+    def test_fd_authority_wrong_content_digest_is_refused(self) -> None:
+        bootstrap = self.root / "wrong-digest-bootstrap"
+        bootstrap.write_text("#!/bin/sh\n")
+        bootstrap.chmod(0o555)
+        authority = self.authority_fixture(
+            bootstrap, update={"content_sha256": "d" * 64}
+        )
+
+        with self.assertRaisesRegex(ValueError, "content digest is"):
+            start_unit.read_immutable_tool_authority(
+                authority.tool_root, self.root, authority.environment()
+            )
+
+    def test_fd_authority_replaced_state_path_is_refused(self) -> None:
+        bootstrap = self.root / "replaced-state-bootstrap"
+        bootstrap.write_text("#!/bin/sh\n")
+        bootstrap.chmod(0o555)
+        state_root = self.root / "replaceable-state"
+        state_root.mkdir()
+        authority = self.authority_fixture(bootstrap, state_root=state_root)
+        retained = self.root / "retained-state"
+        state_root.rename(retained)
+        state_root.mkdir()
+
+        with self.assertRaisesRegex(ValueError, "pathname no longer names"):
+            start_unit.read_immutable_tool_authority(
+                authority.tool_root, state_root, authority.environment()
+            )
+
+    def test_fd_authority_replaced_target_path_is_refused(self) -> None:
+        bootstrap = self.root / "replaced-target-bootstrap"
+        bootstrap.write_text("#!/bin/sh\n")
+        bootstrap.chmod(0o555)
+        authority = self.authority_fixture(bootstrap)
+        retained_target = authority.target_root.with_name("retained-target")
+        authority.target_root.rename(retained_target)
+        authority.target_root.mkdir()
+        make_tree_read_only(authority.target_root)
+
+        with self.assertRaisesRegex(ValueError, "target pathname no longer names"):
+            start_unit.read_immutable_tool_authority(
+                authority.tool_root, self.root, authority.environment()
+            )
 
     def test_fd_backed_tool_root_without_lifetime_handoff_is_refused(self) -> None:
         root_fd = os.open(self.root, os.O_RDONLY | os.O_DIRECTORY)
@@ -925,6 +1346,49 @@ class StartUnitTest(unittest.TestCase):
                 [
                     "--checkout",
                     str(self.checkout),
+                    "--state-root",
+                    str(self.root),
+                    "--agent",
+                    "owner-checkout-watch",
+                    "--target",
+                    SHA,
+                    "--dry-run",
+                    "--",
+                    "full",
+                ],
+                run=self.fake,
+                environment=environment,
+                root=self.root,
+                sleep=lambda _seconds: None,
+            )
+
+        self.assertEqual(start_unit.EXIT_REFUSED, rc)
+        self.assertIn(start_unit.TOOL_AUTHORITY_ENV, err.getvalue())
+        self.assertFalse(any(command[0] == "systemd-run" for command in self.fake.commands))
+
+    def test_fd_backed_authority_without_unit_lifetime_handoff_is_refused(
+        self,
+    ) -> None:
+        bootstrap = self.root / "missing-lifetime-bootstrap"
+        bootstrap.write_text("#!/bin/sh\n")
+        bootstrap.chmod(0o555)
+        authority = self.authority_fixture(bootstrap)
+        environment = dict(
+            self.environment,
+            **authority.environment(),
+            DEV_HERMIT_TOOL_ROOT=str(authority.tool_root),
+            DEV_HERMIT_PARENT=str(self.root),
+        )
+        out = io.StringIO()
+        err = io.StringIO()
+
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = start_unit.main(
+                [
+                    "--checkout",
+                    str(self.checkout),
+                    "--state-root",
+                    str(self.root),
                     "--agent",
                     "owner-checkout-watch",
                     "--target",
@@ -944,9 +1408,6 @@ class StartUnitTest(unittest.TestCase):
         self.assertFalse(any(command[0] == "systemd-run" for command in self.fake.commands))
 
     def test_unit_time_bootstrap_digest_rejects_path_replacement(self) -> None:
-        root_fd = os.open(self.root, os.O_RDONLY | os.O_DIRECTORY)
-        self.addCleanup(os.close, root_fd)
-        retained = Path(f"/proc/{os.getpid()}/fd/{root_fd}")
         home = self.root / "home"
         bootstrap = home / ".local/libexec/dev-hermit/operational-tool"
         bootstrap.parent.mkdir(parents=True)
@@ -954,21 +1415,19 @@ class StartUnitTest(unittest.TestCase):
         bootstrap.write_text("#!/bin/sh\nexit 0\n")
         bootstrap.chmod(0o555)
         cache = self.root / "tool-cache"
-        cache.mkdir()
+        target_root = cache / "trees" / SHA
+        target_root.mkdir(parents=True)
+        make_tree_read_only(target_root)
+        authority = self.authority_fixture(bootstrap, target_root=target_root)
+        retained = authority.tool_root
         environment = dict(
             self.environment,
+            **authority.environment(),
             HOME=str(home),
             DEV_HERMIT_OPERATIONAL_TOOL=str(bootstrap),
-            DEV_HERMIT_TOOL_BOOTSTRAP_SHA256=hashlib.sha256(
-                bootstrap.read_bytes()
-            ).hexdigest(),
             DEV_HERMIT_TOOL_CACHE=str(cache),
-            DEV_HERMIT_TOOL_PARENT_SHA=SHA,
         )
-        with mock.patch.object(start_unit, "parent_checkout_head", return_value=SHA):
-            prefix = start_unit.detached_tool_prefix(
-                retained, self.root, environment
-            )
+        prefix = start_unit.detached_tool_prefix(retained, self.root, environment)
         self.assertIsNotNone(prefix)
         bootstrap.chmod(0o755)
         bootstrap.write_text(f"#!/bin/sh\nprintf poison > {marker}\n")
@@ -983,6 +1442,290 @@ class StartUnitTest(unittest.TestCase):
 
         self.assertEqual(126, result.returncode, result.stdout + result.stderr)
         self.assertIn("digest changed before unit exec", result.stderr)
+        self.assertFalse(marker.exists())
+
+    def test_unit_time_state_identity_rejects_path_replacement(self) -> None:
+        home = self.root / "state-reentry-home"
+        bootstrap = home / ".local/libexec/dev-hermit/operational-tool"
+        bootstrap.parent.mkdir(parents=True)
+        shutil.copy2(
+            parent_main_tests.SOURCE / "scripts/hermit-health-tick.sh",
+            bootstrap,
+        )
+        bootstrap.chmod(0o555)
+        cache = self.root / "state-reentry-cache"
+        target_root = cache / "trees" / SHA
+        target_root.mkdir(parents=True)
+        make_tree_read_only(target_root)
+        materialize_lock = cache / "materialize.lock"
+        materialize_lock.touch(mode=0o600)
+
+        def cache_snapshot() -> list[tuple[object, ...]]:
+            snapshot: list[tuple[object, ...]] = []
+            paths = [cache, *sorted(cache.rglob("*"))]
+            for path in paths:
+                metadata = path.lstat()
+                payload: bytes | str | None = None
+                if stat.S_ISREG(metadata.st_mode):
+                    payload = path.read_bytes()
+                elif stat.S_ISLNK(metadata.st_mode):
+                    payload = os.readlink(path)
+                snapshot.append(
+                    (
+                        str(path.relative_to(cache)),
+                        stat.S_IFMT(metadata.st_mode),
+                        stat.S_IMODE(metadata.st_mode),
+                        metadata.st_dev,
+                        metadata.st_ino,
+                        metadata.st_nlink,
+                        metadata.st_size,
+                        payload,
+                    )
+                )
+            return snapshot
+
+        cache_before = cache_snapshot()
+        state_root = self.root / "state-reentry-root"
+        state_root.mkdir()
+        authority = self.authority_fixture(
+            bootstrap,
+            state_root=state_root,
+            target_root=target_root,
+        )
+        environment = dict(
+            os.environ,
+            **authority.environment(),
+            HOME=str(home),
+            DEV_HERMIT_OPERATIONAL_TOOL=str(bootstrap),
+            DEV_HERMIT_TOOL_CACHE=str(cache),
+        )
+        prefix = start_unit.detached_tool_prefix(
+            authority.tool_root, state_root, environment
+        )
+        self.assertIsNotNone(prefix)
+        expected_identity = (
+            f"{authority.record['state_dev']}:{authority.record['state_ino']}"
+        )
+        self.assertEqual(
+            expected_identity,
+            (prefix or [])[((prefix or []).index("--state-identity") + 1)],
+        )
+        retained_state = self.root / "state-reentry-retained"
+        state_root.rename(retained_state)
+        state_root.mkdir()
+
+        result = subprocess.run(
+            prefix or [],
+            env=environment,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+
+        self.assertEqual(1, result.returncode, result.stdout + result.stderr)
+        self.assertIn(
+            "canonical state root identity changed across detached reentry",
+            result.stderr,
+        )
+        self.assertEqual(cache_before, cache_snapshot())
+
+    def test_unit_time_target_identity_rejects_path_replacement(self) -> None:
+        home = self.root / "target-reentry-home"
+        bootstrap = home / ".local/libexec/dev-hermit/operational-tool"
+        bootstrap.parent.mkdir(parents=True)
+        shutil.copy2(
+            parent_main_tests.SOURCE / "scripts/hermit-health-tick.sh",
+            bootstrap,
+        )
+        bootstrap.chmod(0o555)
+        cache = self.root / "target-reentry-cache"
+        target_root = cache / "trees" / SHA
+        target_root.mkdir(parents=True)
+        make_tree_read_only(target_root)
+        state_root = self.root / "target-reentry-state"
+        state_root.mkdir()
+        authority = self.authority_fixture(
+            bootstrap,
+            state_root=state_root,
+            target_root=target_root,
+        )
+        environment = dict(
+            os.environ,
+            **authority.environment(),
+            HOME=str(home),
+            DEV_HERMIT_OPERATIONAL_TOOL=str(bootstrap),
+            DEV_HERMIT_TOOL_CACHE=str(cache),
+        )
+        prefix = start_unit.detached_tool_prefix(
+            authority.tool_root, state_root, environment
+        )
+        self.assertIsNotNone(prefix)
+        expected_identity = (
+            f"{authority.record['target_dev']}:{authority.record['target_ino']}"
+        )
+        self.assertEqual(
+            expected_identity,
+            (prefix or [])[((prefix or []).index("--target-identity") + 1)],
+        )
+        retained_target = cache / "trees" / "retained-target"
+        target_root.rename(retained_target)
+        target_root.mkdir()
+        make_tree_read_only(target_root)
+
+        result = subprocess.run(
+            prefix or [],
+            env=environment,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+
+        self.assertEqual(1, result.returncode, result.stdout + result.stderr)
+        self.assertIn(
+            "cached exact-parent target identity changed across detached reentry",
+            result.stderr,
+        )
+        self.assertEqual([], list(cache.glob(".run.*")))
+
+    def test_detached_reentry_refuses_same_target_inode_under_other_cache(self) -> None:
+        home = self.root / "rebound-target-home"
+        bootstrap = home / ".local/libexec/dev-hermit/operational-tool"
+        bootstrap.parent.mkdir(parents=True)
+        bootstrap.write_text("#!/bin/sh\nexit 0\n")
+        bootstrap.chmod(0o555)
+        cache_a = self.root / "target-cache-a"
+        target_a = cache_a / "trees" / SHA
+        target_a.mkdir(parents=True)
+        make_tree_read_only(target_a)
+        cache_b = self.root / "target-cache-b"
+        (cache_b / "trees").mkdir(parents=True)
+        authority = self.authority_fixture(
+            bootstrap,
+            target_root=target_a,
+        )
+        environment = dict(
+            os.environ,
+            **authority.environment(),
+            HOME=str(home),
+            DEV_HERMIT_OPERATIONAL_TOOL=str(bootstrap),
+            DEV_HERMIT_TOOL_CACHE=str(cache_b),
+        )
+        observed = start_unit.read_immutable_tool_authority(
+            authority.tool_root, self.root, environment
+        )
+        original_identity = (target_a.stat().st_dev, target_a.stat().st_ino)
+        target_b = cache_b / "trees" / SHA
+        (cache_a / "trees").chmod(0o755)
+        (cache_b / "trees").chmod(0o755)
+        target_a.chmod(0o755)
+        target_a.rename(target_b)
+        target_b.chmod(0o555)
+        self.assertEqual(
+            original_identity,
+            (target_b.stat().st_dev, target_b.stat().st_ino),
+        )
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "DEV_HERMIT_TOOL_CACHE does not match the cached target root",
+        ):
+            start_unit.detached_tool_prefix(
+                authority.tool_root,
+                self.root,
+                environment,
+                authority=observed,
+            )
+
+    def test_unit_time_state_identity_race_is_refused_by_new_holder(self) -> None:
+        operational = parent_main_tests.HealthTickParentSyncTests()
+        operational.setUp()
+        self.addCleanup(operational.tearDown)
+        marker = operational.base / "rebound-state-payload-ran"
+        target = operational.advance_remote(
+            extra_executables={
+                "scripts/state-reentry-probe": (
+                    "#!/usr/bin/env bash\n"
+                    f"printf poison > {marker}\n"
+                )
+            }
+        )
+        bootstrap = operational.installed_bootstrap()
+        primed = operational.run_current_tool(
+            bootstrap, "scripts/state-reentry-probe"
+        )
+        self.assertEqual(0, primed.returncode, primed.stdout + primed.stderr)
+        marker.unlink()
+        cache = Path(operational.env["HERMIT_HEALTH_TOOL_CACHE"]).resolve()
+        authority = self.authority_fixture(
+            bootstrap,
+            state_root=operational.repo,
+            target_root=cache / "trees" / target,
+            update={
+                "parent_sha": target,
+                "hermit_sha": operational.hermit_head,
+                "agent_utils_sha": operational.agent_utils_head,
+            },
+        )
+        environment = dict(
+            operational.env,
+            **authority.environment(),
+            DEV_HERMIT_TOOL_ROOT=str(authority.tool_root),
+            DEV_HERMIT_PARENT=str(operational.repo),
+            DEV_HERMIT_OPERATIONAL_TOOL=str(bootstrap),
+            DEV_HERMIT_TOOL_CACHE=str(cache),
+        )
+        prefix = start_unit.detached_tool_prefix(
+            authority.tool_root, operational.repo, environment
+        )
+        self.assertIsNotNone(prefix)
+        command = prefix or []
+        command[command.index("--tool-relative") + 1] = "scripts/state-reentry-probe"
+
+        ready = operational.base / "state-reentry-race-ready"
+        proceed = operational.base / "state-reentry-race-proceed"
+        shim_dir = operational.base / "state-reentry-race-shim"
+        shim_dir.mkdir()
+        real_flock = shutil.which("flock") or "/usr/bin/flock"
+        flock = shim_dir / "flock"
+        flock.write_text(
+            "#!/usr/bin/env bash\n"
+            "set -eu\n"
+            ": > \"$STATE_REENTRY_READY\"\n"
+            "while [[ ! -e \"$STATE_REENTRY_PROCEED\" ]]; do sleep 0.01; done\n"
+            f'exec "{real_flock}" "$@"\n'
+        )
+        flock.chmod(0o755)
+        environment.update(
+            PATH=f"{shim_dir}:{environment['PATH']}",
+            STATE_REENTRY_READY=str(ready),
+            STATE_REENTRY_PROCEED=str(proceed),
+        )
+        process = subprocess.Popen(
+            command,
+            env=environment,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        try:
+            deadline = time.monotonic() + 15
+            while not ready.exists() and process.poll() is None:
+                if time.monotonic() >= deadline:
+                    self.fail("reentered bootstrap did not reach the post-check barrier")
+                time.sleep(0.01)
+            self.assertIsNone(process.poll())
+            retained_state = operational.base / "state-reentry-race-retained"
+            operational.repo.rename(retained_state)
+            operational.repo.mkdir()
+            proceed.touch()
+            stdout, stderr = process.communicate(timeout=20)
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.communicate()
+
+        self.assertEqual(1, process.returncode, stdout + stderr)
+        self.assertIn("did not match the prior immutable authority", stderr)
         self.assertFalse(marker.exists())
 
     def test_accepted_detached_unit_owns_exact_tool_root_after_waiter_returns(
@@ -1021,8 +1764,17 @@ class StartUnitTest(unittest.TestCase):
         cached = cache / "trees" / target
         outer = operational.base / "outer-private-tool"
         shutil.copytree(cached, outer, symlinks=True)
-        outer_fd = os.open(outer, os.O_RDONLY | os.O_DIRECTORY)
-        retained = Path(f"/proc/{os.getpid()}/fd/{outer_fd}")
+        authority = self.authority_fixture(
+            bootstrap,
+            root=outer,
+            target_root=cached,
+            update={
+                "parent_sha": target,
+                "hermit_sha": operational.hermit_head,
+                "agent_utils_sha": operational.agent_utils_head,
+            },
+        )
+        retained = authority.tool_root
 
         class DetachedRun(FakeRun):
             def __init__(self, checkout: Path) -> None:
@@ -1069,21 +1821,23 @@ class StartUnitTest(unittest.TestCase):
         detached = DetachedRun(self.checkout)
         environment = dict(
             operational.env,
+            **authority.environment(),
             XDG_RUNTIME_DIR=str(self.root),
             DEV_HERMIT_TOOL_ROOT=str(retained),
             DEV_HERMIT_PARENT=str(self.root),
             DEV_HERMIT_OPERATIONAL_TOOL=str(bootstrap),
-            DEV_HERMIT_TOOL_BOOTSTRAP_SHA256=hashlib.sha256(
-                bootstrap.read_bytes()
-            ).hexdigest(),
             DEV_HERMIT_TOOL_CACHE=str(cache),
-            DEV_HERMIT_TOOL_PARENT_SHA=target,
         )
         out = io.StringIO()
         err = io.StringIO()
         try:
             with (
                 mock.patch.object(start_unit.pane_owner, "create_pane", return_value=None),
+                mock.patch.object(
+                    start_unit,
+                    "parent_checkout_head",
+                    side_effect=AssertionError("fd authority must not consult Git"),
+                ),
                 contextlib.redirect_stdout(out),
                 contextlib.redirect_stderr(err),
             ):
@@ -1113,8 +1867,12 @@ class StartUnitTest(unittest.TestCase):
             self.assertEqual(start_unit.EXIT_COULD_NOT_DETERMINE, rc, err.getvalue())
             self.assertIn("WAIT-INTERRUPTED", err.getvalue())
             self.assertIsNotNone(detached.unit_process)
-            os.close(outer_fd)
-            outer_fd = -1
+            record = start_unit.run_registry.read_record(
+                self.root
+                / "ignored/validate/runs/validate-owner-detached.json"
+            )
+            self.assertEqual(target, record["parent_checkout_head"])
+            authority.close()
             parent_main_tests.run("chmod", "-R", "u+w", str(outer), cwd=self.root)
             shutil.rmtree(outer)
             self.assertFalse(retained.exists(), "the launcher-owned fd must be gone")
@@ -1154,8 +1912,6 @@ class StartUnitTest(unittest.TestCase):
             reused = next(cache.glob(".run.*"))
             self.assertEqual(first_identity, (reused.stat().st_dev, reused.stat().st_ino))
         finally:
-            if outer_fd >= 0:
-                os.close(outer_fd)
             if detached.unit_process is not None and detached.unit_process.poll() is None:
                 detached.unit_process.kill()
                 detached.unit_process.wait(timeout=5)
@@ -1190,6 +1946,64 @@ class StartUnitTest(unittest.TestCase):
         self.assertEqual(start_unit.EXIT_REFUSED, rc)
         self.assertIn("is not an existing absolute directory", err.getvalue())
         self.assertEqual([], self.fake.commands)
+
+    def test_arbitrary_absolute_tool_root_without_authority_is_refused(self) -> None:
+        tool_root = self.split_tool_root()
+        environment = dict(
+            self.environment,
+            DEV_HERMIT_TOOL_ROOT=str(tool_root),
+            DEV_HERMIT_PARENT=str(self.root),
+        )
+        out = io.StringIO()
+        err = io.StringIO()
+
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = start_unit.main(
+                [
+                    "--checkout",
+                    str(self.checkout),
+                    "--agent",
+                    "owner-checkout-watch",
+                    "--target",
+                    SHA,
+                    "--dry-run",
+                    "--",
+                    "full",
+                ],
+                run=self.fake,
+                environment=environment,
+                root=self.root,
+                sleep=lambda _seconds: None,
+            )
+
+        self.assertEqual(start_unit.EXIT_REFUSED, rc)
+        self.assertIn("is not a readable Git worktree", err.getvalue())
+        self.assertEqual([], self.fake.commands)
+
+    def test_canonical_linked_worktree_fallback_remains_supported(self) -> None:
+        state_root = self.root / "canonical-parent"
+        linked = self.root / "canonical-linked"
+        parent_main_tests.git(self.root, "init", "--initial-branch=main", str(state_root))
+        parent_main_tests.git(state_root, "config", "user.name", "Authority Test")
+        parent_main_tests.git(
+            state_root, "config", "user.email", "authority@example.invalid"
+        )
+        (state_root / "tracked").write_text("fixture\n")
+        parent_main_tests.git(state_root, "add", "tracked")
+        parent_main_tests.git(state_root, "commit", "-m", "fixture")
+        parent_main_tests.git(
+            state_root,
+            "worktree",
+            "add",
+            "-b",
+            "tool-authority-test",
+            str(linked),
+        )
+        expected = parent_main_tests.git(state_root, "rev-parse", "HEAD").stdout.strip()
+
+        observed = start_unit.canonical_worktree_tool_head(linked, state_root)
+
+        self.assertEqual(expected, observed)
 
     def test_sweep_completed_archives_receipts_and_removes_checkout(self) -> None:
         fresh = self.root / "worktrees" / "validate" / "validate-fresh-sweep"

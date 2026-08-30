@@ -266,6 +266,12 @@ TOOL_HOLDER_PID=""
 TOOL_HOLDER_WAIT_PID=""
 TOOL_HOLDER_CONTROL_FD=""
 TOOL_HOLDER_OUTPUT_FD=""
+TOOL_AUTHORITY_PATH=""
+TOOL_CONTENT_SHA256=""
+TOOL_PARENT_SHA=""
+TOOL_HERMIT_SHA=""
+TOOL_AGENT_UTILS_SHA=""
+TOOL_BOOTSTRAP_SHA256=""
 
 cleanup_tool_roots() {
     local rc=$?
@@ -861,15 +867,18 @@ PY
 }
 
 start_tool_root_holder() {
-    local target_name=$1 target_identity=$2
-    local holder_pid target_fd run_fd run_name
+    local target_name=$1 target_identity=$2 expected_state_identity=${3:-}
+    local holder_pid target_fd run_fd run_name run_identity state_fd state_identity
     coproc TOOL_ROOT_HOLDER {
         trap '' TERM INT HUP
         exec env PYTHONDONTWRITEBYTECODE=1 python3 /dev/fd/3 \
             "$TOOL_TREES_FD" "$TOOL_CACHE_FD" \
             "$target_name" "$target_identity" \
-            "$TOOL_CACHE/trees/$target_name" "$TOOL_CACHE" 3<<'PY'
+            "$TOOL_CACHE/trees/$target_name" "$TOOL_CACHE" "$ROOT" \
+            "$expected_state_identity" 3<<'PY'
 import fcntl
+import hashlib
+import json
 import os
 import re
 import secrets
@@ -884,9 +893,11 @@ target_name = sys.argv[3]
 target_identity = sys.argv[4]
 target_path = sys.argv[5]
 cache_path = sys.argv[6]
+state_path = sys.argv[7]
+expected_state_identity = sys.argv[8]
 
 # The service manager terminates the complete unit cgroup.  Keep the two
-# retained directory descriptors alive across that broadcast so the wrapper,
+# retained target, private-root, and state descriptors alive across that broadcast so the wrapper,
 # after its foreground payload is terminal, can still clear the exact private
 # inode through the control pipe.  This holder remains bounded by that pipe and
 # by the unit cgroup; SIGKILL is intentionally not intercepted.
@@ -1021,38 +1032,320 @@ def clear_directory(fd: int) -> None:
             os.unlink(name, dir_fd=fd)
 
 
+def update_length(digest: "hashlib._Hash", value: int) -> None:
+    digest.update(value.to_bytes(8, "big"))
+
+
+def digest_entry(path: bytes, relative: bytes, digest: "hashlib._Hash") -> None:
+    metadata = os.lstat(path)
+    mode = stat.S_IMODE(metadata.st_mode)
+    if stat.S_ISDIR(metadata.st_mode):
+        if mode & 0o222 or metadata.st_nlink < 1:
+            raise RuntimeError(
+                f"immutable tool directory is writable or unlinked: {os.fsdecode(path)}"
+            )
+        held_fd = os.open(
+            path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+        )
+        try:
+            held = os.fstat(held_fd)
+            if not stat.S_ISDIR(held.st_mode) or (held.st_dev, held.st_ino) != (
+                metadata.st_dev,
+                metadata.st_ino,
+            ):
+                raise RuntimeError(
+                    f"immutable tool directory changed before hashing: {os.fsdecode(path)}"
+                )
+            digest.update(b"d")
+            update_length(digest, len(relative))
+            digest.update(relative)
+            digest.update(mode.to_bytes(4, "big"))
+            for name in sorted(os.listdir(path), key=os.fsencode):
+                name_bytes = os.fsencode(name)
+                child_relative = relative + (b"/" if relative else b"") + name_bytes
+                if child_relative in {
+                    b".git",
+                    b"hermit/.git",
+                    b"hermit/agent-utils/.git",
+                }:
+                    continue
+                digest_entry(os.path.join(path, name_bytes), child_relative, digest)
+            after = os.lstat(path)
+            if (after.st_dev, after.st_ino) != (held.st_dev, held.st_ino):
+                raise RuntimeError(
+                    f"immutable tool directory changed while hashing: {os.fsdecode(path)}"
+                )
+        finally:
+            os.close(held_fd)
+    elif stat.S_ISREG(metadata.st_mode):
+        if mode & 0o222 or metadata.st_nlink != 1:
+            raise RuntimeError(
+                f"immutable tool file is writable or multiply linked: {os.fsdecode(path)}"
+            )
+        held_fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        try:
+            held = os.fstat(held_fd)
+            if not stat.S_ISREG(held.st_mode) or (
+                held.st_dev,
+                held.st_ino,
+                held.st_size,
+            ) != (metadata.st_dev, metadata.st_ino, metadata.st_size):
+                raise RuntimeError(
+                    f"immutable tool file changed before hashing: {os.fsdecode(path)}"
+                )
+            digest.update(b"f")
+            update_length(digest, len(relative))
+            digest.update(relative)
+            digest.update(mode.to_bytes(4, "big"))
+            digest.update(metadata.st_size.to_bytes(8, "big"))
+            observed = 0
+            while True:
+                chunk = os.read(held_fd, 64 * 1024)
+                if not chunk:
+                    break
+                observed += len(chunk)
+                digest.update(chunk)
+            after = os.fstat(held_fd)
+            if observed != metadata.st_size or (
+                after.st_dev,
+                after.st_ino,
+                after.st_size,
+            ) != (held.st_dev, held.st_ino, held.st_size):
+                raise RuntimeError(
+                    f"immutable tool file changed while hashing: {os.fsdecode(path)}"
+                )
+        finally:
+            os.close(held_fd)
+    elif stat.S_ISLNK(metadata.st_mode):
+        target = os.fsencode(os.readlink(path))
+        digest.update(b"l")
+        update_length(digest, len(relative))
+        digest.update(relative)
+        digest.update(mode.to_bytes(4, "big"))
+        update_length(digest, len(target))
+        digest.update(target)
+    else:
+        raise RuntimeError(
+            f"immutable tool has unsupported entry type at {os.fsdecode(path)}"
+        )
+
+
+def content_sha256(root_fd: int) -> str:
+    root = f"/proc/self/fd/{root_fd}".encode()
+    metadata = os.stat(root)
+    if not stat.S_ISDIR(metadata.st_mode) or stat.S_IMODE(metadata.st_mode) & 0o222:
+        raise RuntimeError("immutable tool root must be one read-only directory")
+    digest = hashlib.sha256(b"dev-hermit-tool-content-v1\0")
+    for name in sorted(os.listdir(root), key=os.fsencode):
+        name_bytes = os.fsencode(name)
+        if name_bytes == b".git":
+            continue
+        digest_entry(os.path.join(root, name_bytes), name_bytes, digest)
+    return digest.hexdigest()
+
+
+def open_state_root() -> int:
+    fd = os.open(
+        state_path,
+        os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+    )
+    metadata = os.fstat(fd)
+    current = os.stat(state_path, follow_symlinks=False)
+    identity = f"{metadata.st_dev}:{metadata.st_ino}"
+    if (
+        not stat.S_ISDIR(metadata.st_mode)
+        or not stat.S_ISDIR(current.st_mode)
+        or metadata.st_nlink < 1
+        or current.st_nlink < 1
+        or (metadata.st_dev, metadata.st_ino) != (current.st_dev, current.st_ino)
+        or os.readlink(f"/proc/self/fd/{fd}") != state_path
+        or (expected_state_identity and identity != expected_state_identity)
+    ):
+        os.close(fd)
+        raise RuntimeError(
+            "state root changed before its descriptor was retained or did not match "
+            "the prior immutable authority"
+        )
+    return fd
+
+
+def create_authority(
+    state_fd: int,
+    parent_sha: str,
+    hermit_sha: str,
+    agent_utils_sha: str,
+    bootstrap_sha256: str,
+) -> tuple[int, str]:
+    for label, value, pattern in (
+        ("parent SHA", parent_sha, r"[0-9a-f]{40}"),
+        ("Hermit SHA", hermit_sha, r"[0-9a-f]{40}"),
+        ("agent-utils SHA", agent_utils_sha, r"[0-9a-f]{40}"),
+        ("bootstrap digest", bootstrap_sha256, r"[0-9a-f]{64}"),
+    ):
+        if re.fullmatch(pattern, value) is None:
+            raise RuntimeError(f"invalid {label} for immutable tool authority")
+
+    target = os.fstat(target_fd)
+    current_target = os.stat(target_name, dir_fd=trees_fd, follow_symlinks=False)
+    root = os.fstat(run_fd)
+    current_root = os.stat(run_name, dir_fd=cache_fd, follow_symlinks=False)
+    state = os.fstat(state_fd)
+    current_state = os.stat(state_path, follow_symlinks=False)
+    if (
+        not stat.S_ISDIR(target.st_mode)
+        or not stat.S_ISDIR(current_target.st_mode)
+        or stat.S_IMODE(target.st_mode) & 0o222
+        or target.st_nlink < 1
+        or current_target.st_nlink < 1
+        or (target.st_dev, target.st_ino)
+        != (current_target.st_dev, current_target.st_ino)
+        or os.readlink(f"/proc/self/fd/{target_fd}") != target_path
+    ):
+        raise RuntimeError("cached target changed before authority was sealed")
+    if (
+        not stat.S_ISDIR(root.st_mode)
+        or not stat.S_ISDIR(current_root.st_mode)
+        or root.st_nlink < 1
+        or current_root.st_nlink < 1
+        or (root.st_dev, root.st_ino)
+        != (current_root.st_dev, current_root.st_ino)
+        or os.readlink(f"/proc/self/fd/{run_fd}")
+        != os.path.join(cache_path, run_name)
+    ):
+        raise RuntimeError("private tool root changed before authority was sealed")
+    if (
+        not stat.S_ISDIR(state.st_mode)
+        or not stat.S_ISDIR(current_state.st_mode)
+        or state.st_nlink < 1
+        or current_state.st_nlink < 1
+        or (state.st_dev, state.st_ino)
+        != (current_state.st_dev, current_state.st_ino)
+        or os.readlink(f"/proc/self/fd/{state_fd}") != state_path
+    ):
+        raise RuntimeError("state root changed before authority was sealed")
+    if len(
+        {
+            (target.st_dev, target.st_ino),
+            (root.st_dev, root.st_ino),
+            (state.st_dev, state.st_ino),
+        }
+    ) != 3:
+        raise RuntimeError(
+            "cached target, immutable tool, and mutable state roots must have distinct identities"
+        )
+
+    digest = content_sha256(run_fd)
+    authority_fd = os.memfd_create(
+        "dev-hermit-tool-authority",
+        os.MFD_CLOEXEC | os.MFD_ALLOW_SEALING,
+    )
+    record = {
+        "schema": "dev-hermit-tool-authority-v1",
+        "holder_pid": os.getpid(),
+        "authority_fd": authority_fd,
+        "target_fd": target_fd,
+        "target_root": target_path,
+        "target_dev": target.st_dev,
+        "target_ino": target.st_ino,
+        "root_fd": run_fd,
+        "root_dev": root.st_dev,
+        "root_ino": root.st_ino,
+        "state_fd": state_fd,
+        "state_root": state_path,
+        "state_dev": state.st_dev,
+        "state_ino": state.st_ino,
+        "content_sha256": digest,
+        "parent_sha": parent_sha,
+        "hermit_sha": hermit_sha,
+        "agent_utils_sha": agent_utils_sha,
+        "bootstrap_sha256": bootstrap_sha256,
+    }
+    encoded = json.dumps(record, sort_keys=True, separators=(",", ":")).encode() + b"\n"
+    try:
+        written = 0
+        while written < len(encoded):
+            count = os.write(authority_fd, encoded[written:])
+            if count <= 0:
+                raise RuntimeError("short write while sealing immutable tool authority")
+            written += count
+        os.fchmod(authority_fd, 0o400)
+        fcntl.fcntl(
+            authority_fd,
+            fcntl.F_ADD_SEALS,
+            fcntl.F_SEAL_SEAL
+            | fcntl.F_SEAL_SHRINK
+            | fcntl.F_SEAL_GROW
+            | fcntl.F_SEAL_WRITE,
+        )
+    except BaseException:
+        os.close(authority_fd)
+        raise
+    return authority_fd, digest
+
+
+target_fd = -1
+run_fd = -1
+state_fd = -1
+authority_fd = -1
 try:
     target_fd = open_held_directory(
         trees_fd, target_name, target_identity, target_path, "cached tool root"
     )
     run_fd, run_name = acquire_run_directory()
-except (OSError, RuntimeError) as error:
-    print(f"operational-tool: {error}", file=sys.stderr)
-    raise SystemExit(1) from error
+    state_fd = open_state_root()
+    run = os.fstat(run_fd)
+    state = os.fstat(state_fd)
+    print(
+        os.getpid(),
+        target_fd,
+        run_fd,
+        run_name,
+        f"{run.st_dev}:{run.st_ino}",
+        state_fd,
+        f"{state.st_dev}:{state.st_ino}",
+        flush=True,
+    )
 
-print(os.getpid(), target_fd, run_fd, run_name, flush=True)
-try:
     command = sys.stdin.buffer.readline()
-    if command != b"cleanup\n":
+    if command.startswith(b"authorize "):
+        try:
+            fields = command.decode("ascii").strip().split()
+        except UnicodeDecodeError as error:
+            raise RuntimeError("private tool root holder received non-ASCII authority") from error
+        if len(fields) != 5 or fields[0] != "authorize":
+            raise RuntimeError("private tool root holder received malformed authority")
+        authority_fd, digest = create_authority(state_fd, *fields[1:])
+        print("authorized", authority_fd, digest, flush=True)
+        command = sys.stdin.buffer.readline()
+
+    if command not in {b"", b"cleanup\n"}:
         raise RuntimeError("private tool root holder received no cleanup command")
     clear_directory(run_fd)
     if list_directory(run_fd):
         raise RuntimeError("private tool root was not emptied")
-    print("cleaned", flush=True)
-    if sys.stdin.buffer.readline() != b"release\n":
-        raise RuntimeError("private tool root holder received no release command")
+    if command == b"cleanup\n":
+        print("cleaned", flush=True)
+        if sys.stdin.buffer.readline() != b"release\n":
+            raise RuntimeError("private tool root holder received no release command")
 except (OSError, RuntimeError) as error:
     print(f"operational-tool: {error}", file=sys.stderr)
     raise SystemExit(1) from error
 finally:
-    os.close(run_fd)
-    os.close(target_fd)
+    if authority_fd >= 0:
+        os.close(authority_fd)
+    if state_fd >= 0:
+        os.close(state_fd)
+    if run_fd >= 0:
+        os.close(run_fd)
+    if target_fd >= 0:
+        os.close(target_fd)
 PY
     }
     TOOL_HOLDER_WAIT_PID=$TOOL_ROOT_HOLDER_PID
     TOOL_HOLDER_OUTPUT_FD=${TOOL_ROOT_HOLDER[0]}
     TOOL_HOLDER_CONTROL_FD=${TOOL_ROOT_HOLDER[1]}
-    if ! read -r holder_pid target_fd run_fd run_name <&"$TOOL_HOLDER_OUTPUT_FD"; then
+    if ! read -r holder_pid target_fd run_fd run_name run_identity state_fd state_identity \
+        <&"$TOOL_HOLDER_OUTPUT_FD"; then
         exec {TOOL_HOLDER_CONTROL_FD}>&-
         wait "$TOOL_HOLDER_WAIT_PID" || true
         exec {TOOL_HOLDER_OUTPUT_FD}<&-
@@ -1062,7 +1355,9 @@ PY
         return 1
     fi
     if [[ ! $holder_pid =~ ^[0-9]+$ || ! $target_fd =~ ^[0-9]+$ || \
-          ! $run_fd =~ ^[0-9]+$ || ! $run_name =~ ^\.run\.[0-9a-f]+$ ]]; then
+          ! $run_fd =~ ^[0-9]+$ || ! $run_name =~ ^\.run\.[0-9a-f]{16}$ || \
+          ! $run_identity =~ ^[0-9]+:[0-9]+$ || ! $state_fd =~ ^[0-9]+$ || \
+          ! $state_identity =~ ^[0-9]+:[0-9]+$ ]]; then
         printf 'operational-tool: directory holder returned malformed descriptor authority\n' >&2
         exec {TOOL_HOLDER_CONTROL_FD}>&-
         wait "$TOOL_HOLDER_WAIT_PID" || true
@@ -1076,6 +1371,33 @@ PY
     TOOL_TARGET_ROOT="/proc/$holder_pid/fd/$target_fd"
     TOOL_RUN_ROOT="/proc/$holder_pid/fd/$run_fd"
     TOOL_RUN_ENTRY_NAME=$run_name
+}
+
+authorize_tool_root() {
+    local parent_sha=$1 hermit_sha=$2 agent_utils_sha=$3 bootstrap_sha256=$4
+    local status authority_fd digest
+    [[ -n $TOOL_HOLDER_CONTROL_FD && -n $TOOL_HOLDER_OUTPUT_FD ]] || {
+        printf 'operational-tool: no retained holder is available for authority creation\n' >&2
+        return 1
+    }
+    if ! printf 'authorize %s %s %s %s\n' \
+        "$parent_sha" "$hermit_sha" "$agent_utils_sha" "$bootstrap_sha256" \
+        >&"$TOOL_HOLDER_CONTROL_FD"; then
+        printf 'operational-tool: could not request immutable tool authority\n' >&2
+        return 1
+    fi
+    if ! read -r status authority_fd digest <&"$TOOL_HOLDER_OUTPUT_FD" || \
+       [[ $status != authorized || ! $authority_fd =~ ^[0-9]+$ || \
+          ! $digest =~ ^[0-9a-f]{64}$ ]]; then
+        printf 'operational-tool: holder returned malformed immutable tool authority\n' >&2
+        return 1
+    fi
+    TOOL_AUTHORITY_PATH="/proc/$TOOL_HOLDER_PID/fd/$authority_fd"
+    TOOL_CONTENT_SHA256=$digest
+    TOOL_PARENT_SHA=$parent_sha
+    TOOL_HERMIT_SHA=$hermit_sha
+    TOOL_AGENT_UTILS_SHA=$agent_utils_sha
+    TOOL_BOOTSTRAP_SHA256=$bootstrap_sha256
 }
 
 publish_staging_no_replace() {
@@ -1239,7 +1561,10 @@ normalize_github_remote() {
 
 materialize_current_tool_root() {
     local requested_sha=${1:-}
+    local expected_state_identity=${2:-}
+    local expected_target_identity=${3:-}
     local configured_remote configured_repository remote_listing sha target hermit_pin agent_utils_pin
+    local bootstrap_sha
     local cache_anchor trees_anchor staging_anchor
     local target_identity="" publish_rc
     open_cache_layout || return 1
@@ -1370,10 +1695,25 @@ materialize_current_tool_root() {
         stop_staging_holder release || return 1
     fi
 
-    # Retain both terminal directories by no-follow descriptors before any
+    if [[ -n $expected_target_identity ]]; then
+        local observed_target_identity
+        observed_target_identity=$(stat -Lc '%d:%i' -- "$target") || {
+            printf 'operational-tool: cannot inspect cached exact-parent target %s\n' "$target" >&2
+            return 1
+        }
+        if [[ $observed_target_identity != "$expected_target_identity" ]]; then
+            printf 'operational-tool: cached exact-parent target identity changed across detached reentry: observed %s, expected %s\n' \
+                "$observed_target_identity" "$expected_target_identity" >&2
+            return 1
+        fi
+        target_identity=$expected_target_identity
+    fi
+
+    # Retain all terminal directories by no-follow descriptors before any
     # chmod, copy, verification, authority read, or execution. The /proc paths
     # below name those exact inodes even if their directory entries are moved.
-    start_tool_root_holder "$sha" "$target_identity" || return 1
+    start_tool_root_holder \
+        "$sha" "$target_identity" "$expected_state_identity" || return 1
     # Existing roots may predate the atomic read-only publication protocol.
     # Verify their exact tracked bytes and link counts before changing any mode,
     # then apply the mark through the retained target descriptor rather than by
@@ -1395,6 +1735,20 @@ materialize_current_tool_root() {
         printf 'health-tick: private tool snapshot failed byte verification\n' >&2
         return 1
     }
+    hermit_pin=$(run_git -C "$TOOL_TARGET_ROOT" \
+        ls-tree "$sha" -- hermit \
+        | awk '$1 == "160000" && $2 == "commit" { print $3 }')
+    agent_utils_pin=$(run_git -C "$TOOL_TARGET_ROOT/hermit" \
+        ls-tree "$hermit_pin" -- agent-utils \
+        | awk '$1 == "160000" && $2 == "commit" { print $3 }')
+    if [[ ! $hermit_pin =~ ^[0-9a-f]{40}$ || \
+          ! $agent_utils_pin =~ ^[0-9a-f]{40}$ ]]; then
+        printf 'operational-tool: verified tool snapshot has incomplete nested pins\n' >&2
+        return 1
+    fi
+    bootstrap_sha=$(sha256sum -- "${BASH_SOURCE[0]}" | awk '{print $1}') || return 1
+    authorize_tool_root \
+        "$sha" "$hermit_pin" "$agent_utils_pin" "$bootstrap_sha" || return 1
     TOOL_ROOT_RESULT=$TOOL_RUN_ROOT
     flock -u 8 || return 1
     exec 8>&-
@@ -1404,6 +1758,8 @@ run_current_tool() {
     local state_root="${DEV_HERMIT_PARENT:-$ROOT}"
     local cache_root="$TOOL_CACHE"
     local requested_parent_sha=""
+    local expected_state_identity=""
+    local expected_target_identity=""
     local tool_relative=""
     local component
     local -a tool_components=()
@@ -1428,6 +1784,22 @@ run_current_tool() {
                 cache_root=$2
                 shift 2
                 ;;
+            --state-identity)
+                [[ $# -ge 2 ]] || {
+                    printf 'operational-tool: --state-identity requires DEV:INO\n' >&2
+                    return 2
+                }
+                expected_state_identity=$2
+                shift 2
+                ;;
+            --target-identity)
+                [[ $# -ge 2 ]] || {
+                    printf 'operational-tool: --target-identity requires DEV:INO\n' >&2
+                    return 2
+                }
+                expected_target_identity=$2
+                shift 2
+                ;;
             --tool-relative)
                 [[ $# -ge 2 ]] || {
                     printf 'operational-tool: --tool-relative requires a path\n' >&2
@@ -1446,7 +1818,7 @@ run_current_tool() {
                 ;;
             -h|--help)
                 printf '%s\n' \
-                    'usage: operational-tool --run-current-tool --state-root PATH [--cache-root PATH] [--tool-parent-sha SHA] --tool-relative PATH [-- ARGS...]' \
+                    'usage: operational-tool --run-current-tool --state-root PATH [--state-identity DEV:INO] [--target-identity DEV:INO] [--cache-root PATH] [--tool-parent-sha SHA] --tool-relative PATH [-- ARGS...]' \
                     '' \
                     'Materialize current origin/main into a verified private tool root and run one' \
                     'repository-relative executable. Mutable operational state remains under PATH.'
@@ -1468,6 +1840,16 @@ run_current_tool() {
         printf 'operational-tool: --tool-relative is required\n' >&2
         return 2
     }
+    if [[ -n $expected_state_identity && \
+          ! $expected_state_identity =~ ^[0-9]+:[0-9]+$ ]]; then
+        printf 'operational-tool: --state-identity must be one DEV:INO pair\n' >&2
+        return 2
+    fi
+    if [[ -n $expected_target_identity && \
+          ! $expected_target_identity =~ ^[0-9]+:[0-9]+$ ]]; then
+        printf 'operational-tool: --target-identity must be one DEV:INO pair\n' >&2
+        return 2
+    fi
     [[ $tool_relative != /* ]] || {
         printf 'operational-tool: tool path must be relative to the immutable tool root\n' >&2
         return 2
@@ -1484,6 +1866,18 @@ run_current_tool() {
         printf 'operational-tool: state root does not exist: %s\n' "$state_root" >&2
         return 2
     }
+    if [[ -n $expected_state_identity ]]; then
+        local observed_state_identity
+        observed_state_identity=$(stat -Lc '%d:%i' -- "$ROOT") || {
+            printf 'operational-tool: cannot inspect canonical state root %s\n' "$ROOT" >&2
+            return 1
+        }
+        if [[ $observed_state_identity != "$expected_state_identity" ]]; then
+            printf 'operational-tool: canonical state root identity changed across detached reentry: observed %s, expected %s\n' \
+                "$observed_state_identity" "$expected_state_identity" >&2
+            return 1
+        fi
+    fi
     TOOL_CACHE=$(PYTHONDONTWRITEBYTECODE=1 python3 - "$cache_root" <<'PY'
 import os
 import sys
@@ -1501,7 +1895,9 @@ PY
             ;;
     esac
 
-    materialize_current_tool_root "$requested_parent_sha" || return $?
+    materialize_current_tool_root \
+        "$requested_parent_sha" "$expected_state_identity" \
+        "$expected_target_identity" || return $?
     local tool_root=$TOOL_ROOT_RESULT
     local tool_path="$tool_root/$tool_relative"
     local resolved_tool_root resolved_tool_path
@@ -1525,14 +1921,15 @@ PY
         return 2
     }
 
-    local parent_sha hermit_sha agent_utils_sha bootstrap_sha
-    parent_sha=$(run_git -C "$tool_root" rev-parse --verify 'HEAD^{commit}') || return 1
-    hermit_sha=$(run_git -C "$tool_root" ls-tree "$parent_sha" -- hermit \
-        | awk '$1 == "160000" && $2 == "commit" { print $3 }')
-    agent_utils_sha=$(run_git -C "$tool_root/hermit" \
-        ls-tree "$hermit_sha" -- agent-utils \
-        | awk '$1 == "160000" && $2 == "commit" { print $3 }')
-    if [[ ! $hermit_sha =~ ^[0-9a-f]{40}$ || ! $agent_utils_sha =~ ^[0-9a-f]{40}$ ]]; then
+    local parent_sha=$TOOL_PARENT_SHA
+    local hermit_sha=$TOOL_HERMIT_SHA
+    local agent_utils_sha=$TOOL_AGENT_UTILS_SHA
+    local bootstrap_sha=$TOOL_BOOTSTRAP_SHA256
+    if [[ ! $TOOL_AUTHORITY_PATH =~ ^/proc/[1-9][0-9]*/fd/[0-9]+$ || \
+          ! $TOOL_CONTENT_SHA256 =~ ^[0-9a-f]{64}$ || \
+          ! $parent_sha =~ ^[0-9a-f]{40}$ || ! $hermit_sha =~ ^[0-9a-f]{40}$ || \
+          ! $agent_utils_sha =~ ^[0-9a-f]{40}$ || \
+          ! $bootstrap_sha =~ ^[0-9a-f]{64}$ ]]; then
         printf 'operational-tool: immutable tool authority is incomplete\n' >&2
         return 1
     fi
@@ -1541,8 +1938,6 @@ PY
             "$parent_sha" "$requested_parent_sha" >&2
         return 1
     fi
-    bootstrap_sha=$(sha256sum -- "${BASH_SOURCE[0]}" | awk '{print $1}') || return 1
-
     local installed_operational_tool="$HOME/.local/libexec/dev-hermit/operational-tool"
     local operational_tool=""
     if [[ ! -L $installed_operational_tool && -f $installed_operational_tool && \
@@ -1558,6 +1953,8 @@ PY
 
     DEV_HERMIT_PARENT="$ROOT" \
     DEV_HERMIT_TOOL_ROOT="$tool_root" \
+    DEV_HERMIT_TOOL_AUTHORITY="$TOOL_AUTHORITY_PATH" \
+    DEV_HERMIT_TOOL_CONTENT_SHA256="$TOOL_CONTENT_SHA256" \
     DEV_HERMIT_TOOL_PARENT_SHA="$parent_sha" \
     DEV_HERMIT_TOOL_HERMIT_SHA="$hermit_sha" \
     DEV_HERMIT_TOOL_AGENT_UTILS_SHA="$agent_utils_sha" \
@@ -1623,11 +2020,17 @@ if [[ $tool_root_rc -ne 0 ]]; then
     rc=$tool_root_rc
 else
     tool_root=$TOOL_ROOT_RESULT
-    tool_root_sha=$(run_git -C "$tool_root" rev-parse --verify 'HEAD^{commit}')
+    tool_root_sha=$TOOL_PARENT_SHA
     printf '%s tool_root=%s tool_root_sha=%s state_root=%s\n' \
         "$start" "$tool_root" "$tool_root_sha" "$ROOT" >>"$INVLOG"
     out="$(DEV_HERMIT_PARENT="$ROOT" \
         DEV_HERMIT_TOOL_ROOT="$tool_root" \
+        DEV_HERMIT_TOOL_AUTHORITY="$TOOL_AUTHORITY_PATH" \
+        DEV_HERMIT_TOOL_CONTENT_SHA256="$TOOL_CONTENT_SHA256" \
+        DEV_HERMIT_TOOL_PARENT_SHA="$TOOL_PARENT_SHA" \
+        DEV_HERMIT_TOOL_HERMIT_SHA="$TOOL_HERMIT_SHA" \
+        DEV_HERMIT_TOOL_AGENT_UTILS_SHA="$TOOL_AGENT_UTILS_SHA" \
+        DEV_HERMIT_TOOL_BOOTSTRAP_SHA256="$TOOL_BOOTSTRAP_SHA256" \
         PYTHONDONTWRITEBYTECODE=1 \
         with-proxy "$tool_root/ci-hub/bin/health-tick" --flush --no-header 2>&1)"
     rc=$?
