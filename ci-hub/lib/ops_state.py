@@ -12,6 +12,7 @@ import yaml
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_PATH = ROOT / ".ops-state.yaml"
 PATH_ENV = "DEV_HERMIT_OPS_STATE"
+PARENT_ENV = "DEV_HERMIT_PARENT"
 
 
 class OpsStateError(ValueError):
@@ -20,7 +21,10 @@ class OpsStateError(ValueError):
 
 def path_from_environment() -> Path:
     override = os.environ.get(PATH_ENV)
-    return Path(override) if override else DEFAULT_PATH
+    if override:
+        return Path(override)
+    parent = os.environ.get(PARENT_ENV)
+    return Path(parent) / ".ops-state.yaml" if parent else DEFAULT_PATH
 
 
 def github_actions_policy(path: Path | None = None) -> tuple[bool, str | None]:

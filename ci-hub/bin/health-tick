@@ -1,16 +1,28 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT=$(git -C "$(dirname -- "${BASH_SOURCE[0]}")/../.." rev-parse --show-toplevel)
+SCRIPT_ROOT=$(git -C "$(dirname -- "${BASH_SOURCE[0]}")/../.." rev-parse --show-toplevel)
+TOOL_ROOT_WAS_EXPLICIT=0
+[[ -n ${DEV_HERMIT_TOOL_ROOT:-} ]] && TOOL_ROOT_WAS_EXPLICIT=1
+TOOL_ROOT=$(git -C "${DEV_HERMIT_TOOL_ROOT:-$SCRIPT_ROOT}" rev-parse --show-toplevel)
+STATE_ROOT=$(git -C "${DEV_HERMIT_PARENT:-$SCRIPT_ROOT}" rev-parse --show-toplevel)
+export DEV_HERMIT_PARENT=$STATE_ROOT
+export DEV_HERMIT_OPS_STATE="$STATE_ROOT/.ops-state.yaml"
+if [[ $TOOL_ROOT_WAS_EXPLICIT == 1 ]]; then
+    export DEV_HERMIT_TOOL_ROOT=$TOOL_ROOT
+else
+    unset DEV_HERMIT_TOOL_ROOT
+fi
+AGENT_SNAPSHOT="$STATE_ROOT/ignored/ci-hub/agent-snapshot.json"
 case ${1:-} in
     help|-h|--help) export CI_HUB_TOOL_COST_ACTIVE=1 ;;
 esac
 if [[ -z ${CI_HUB_TOOL_COST_ACTIVE:-} ]]; then
-    exec env CI_HUB_TOOL_COST_ACTIVE=1 "$ROOT/ci-hub/bin/tool-cost" \
+    exec env CI_HUB_TOOL_COST_ACTIVE=1 "$TOOL_ROOT/ci-hub/bin/tool-cost" \
         --tool ci-hub/health-tick \
         --estimate-unknown \
         --basis "not measured: due operational-health gates vary and tick cost history is not retained" \
-        -- "$0" "$@"
+        -- "$TOOL_ROOT/ci-hub/bin/health-tick" "$@"
 fi
 # The ORC production path supplies the full agent array on every scheduled tick:
 # `HERMIT_AGENT_SNAPSHOT_JSON="$1" ./ci-hub/bin/health-tick --flush --no-header`.
@@ -24,7 +36,8 @@ fi
 cache_status=0
 if [[ -n ${HERMIT_AGENT_SNAPSHOT_JSON:-} ]]; then
     if cache_result=$(
-        python3 "$ROOT/ci-hub/health/operational_health.py" cache-agents 2>&1
+        python3 "$TOOL_ROOT/ci-hub/health/operational_health.py" cache-agents \
+            --snapshot-file "$AGENT_SNAPSHOT" 2>&1
     ); then
         :
     else
@@ -32,7 +45,11 @@ if [[ -n ${HERMIT_AGENT_SNAPSHOT_JSON:-} ]]; then
         printf 'ERROR: could not cache the ORC agent snapshot: %s\n' "$cache_result" >&2
     fi
 fi
-cd "$ROOT"
+# tick-hub's production SubprocessGateRunner inherits this cwd for every
+# relative command in the reviewed config.  Run those commands from the same
+# immutable checkout that supplied the config and provenance; mutable state is
+# named explicitly through DEV_HERMIT_PARENT and the paths below.
+cd "$TOOL_ROOT"
 
 # Hard Invariant 13 is an aggregate COUNT, not an idleness threshold.  The
 # worktree_disk_residue reminder inherits this explicit policy value and fails
@@ -47,7 +64,7 @@ export DEV_HERMIT_ACTIVE_SLOT_CAP=12
 # parent commit that selected this tick configuration and its gate producers;
 # both values are captured once, before the evaluation starts.
 observed_at=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
-input_sha=$(git -C "$ROOT" rev-parse --verify 'HEAD^{commit}')
+input_sha=$(git -C "$TOOL_ROOT" rev-parse --verify 'HEAD^{commit}')
 evaluation_provenance="observed_at=$observed_at input_sha=$input_sha"
 
 emit_with_evaluation_provenance() {
@@ -97,18 +114,18 @@ trap cleanup_report_marker EXIT
 # sees it knows the tick's own version is unpinned; a reader who does not see it
 # knows provenance was clean. It is emitted ONLY when dirty, so it cannot become
 # the permanent "undetermined" that would be as useless as the outage.
-if [[ -n $(git -C "$ROOT/agent-utils" status --porcelain 2>/dev/null) ]]; then
-    dirt_paths=$(git -C "$ROOT/agent-utils" status --porcelain 2>/dev/null | wc -l | tr -d ' ')
+if [[ -n $(git -C "$TOOL_ROOT/agent-utils" status --porcelain 2>/dev/null) ]]; then
+    dirt_paths=$(git -C "$TOOL_ROOT/agent-utils" status --porcelain 2>/dev/null | wc -l | tr -d ' ')
     echo "component=agent-utils-provenance state=undetermined" \
          "reason=agent-utils dirty at pinned commit ($dirt_paths path(s)); the tick harness is" \
          "not the reviewed pinned commit. Gate RESULTS below are parent-repo logic and stand."
 fi
 
 set +e
-"$ROOT/ci-hub/bin/agent-tool" tick-hub tick \
-    --config "$ROOT/ci-hub/health/tick-hub.yaml" \
-    --state "$ROOT/.ops-state.yaml" \
-    --fired-state "$ROOT/.tick-hub/fired-state" \
+"$TOOL_ROOT/ci-hub/bin/agent-tool" tick-hub tick \
+    --config "$TOOL_ROOT/ci-hub/health/tick-hub.yaml" \
+    --state "$STATE_ROOT/.ops-state.yaml" \
+    --fired-state "$STATE_ROOT/.tick-hub/fired-state" \
     --current-tick-min 60 \
     "$@" | emit_with_evaluation_provenance
 pipeline_status=("${PIPESTATUS[@]}")
@@ -133,7 +150,7 @@ if (( pipeline_status[0] != 0 )); then
     # is broken. An unreadable config degrades to "unknown", never to silence and
     # never to zero -- a zero here would re-create the defect.
     if [[ ! -s $report_marker ]]; then
-        tick_config="$ROOT/ci-hub/health/tick-hub.yaml"
+        tick_config="$TOOL_ROOT/ci-hub/health/tick-hub.yaml"
         if [[ -r $tick_config ]]; then
             not_run=$(grep -cE '^  - name:' "$tick_config" || true)
             [[ $not_run =~ ^[1-9][0-9]*$ ]] || not_run=unknown

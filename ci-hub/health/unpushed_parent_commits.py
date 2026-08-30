@@ -74,6 +74,7 @@ from __future__ import annotations
 import argparse
 from collections import Counter
 import json
+import os
 import subprocess
 import sys
 import time
@@ -81,8 +82,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
 import bounded_capture  # noqa: E402
 
-PARENT = str(Path(__file__).resolve().parents[2])
-HERDR = f"{PARENT}/agent-utils/bin/herdr-run"
+TOOL_ROOT = str(Path(__file__).resolve().parents[2])
+PARENT = str(Path(os.environ.get("DEV_HERMIT_PARENT", TOOL_ROOT)).resolve())
+HERDR = f"{TOOL_ROOT}/agent-utils/bin/herdr-run"
 
 # Per-call ceilings for the two remote legs. The old 600s/300s could not be
 # reached by any caller with a budget, and one stuck call ate more than the
@@ -99,8 +101,8 @@ class ScanUnavailable(RuntimeError):
     """The local-only commit population could not be measured."""
 
 
-def git(*args: str, cwd: str = PARENT) -> str:
-    return bounded_capture.git(args, cwd=cwd).stdout.strip()
+def git(*args: str, cwd: str | None = None) -> str:
+    return bounded_capture.git(args, cwd=cwd or PARENT).stdout.strip()
 
 
 def local_only(scope: str) -> list[dict[str, str]]:
@@ -370,8 +372,15 @@ def rescue(
 
 
 def main() -> int:
+    global PARENT
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument(
+        "--root",
+        type=Path,
+        default=Path(os.environ.get("DEV_HERMIT_PARENT", TOOL_ROOT)),
+        help="mutable parent checkout to inspect (default: DEV_HERMIT_PARENT or tool root)",
+    )
     ap.add_argument("--scope", choices=["all", "head"], default="all",
                     help="all = every local ref (the real exposure); head = the "
                          "checked-out branch only (under-reports)")
@@ -391,6 +400,7 @@ def main() -> int:
     ap.add_argument("--agent", default="hermit-det2")
     ap.add_argument("--json", action="store_true")
     a = ap.parse_args()
+    PARENT = str(a.root.resolve())
 
     scan_started = time.monotonic()
     try:

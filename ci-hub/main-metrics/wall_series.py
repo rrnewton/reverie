@@ -442,6 +442,8 @@ def render(rep: dict) -> str:
 
 def main(argv: Sequence[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("--ledger", type=Path, default=DEFAULT_LEDGER,
+                    help="canonical validation ledger root or JSONL path")
     ap.add_argument("--repo", default="hermit",
                     help="Hermit checkout for Hermit ancestry checks")
     ap.add_argument("--reverie-repo", default="reverie",
@@ -466,7 +468,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     ap.add_argument("--min-conditioned-frac", type=float, default=0.9)
     args = ap.parse_args(argv)
     try:
-        rep = build(DEFAULT_LEDGER, Path(args.repo), not args.all_commits,
+        rep = build(args.ledger, Path(args.repo), not args.all_commits,
                     args.profile or None, args.result or None,
                     Path(args.reverie_repo))
     except RuntimeError as error:

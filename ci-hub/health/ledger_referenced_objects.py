@@ -72,18 +72,21 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
 from typing import Iterable
 
-ROOT = Path(__file__).resolve().parents[2]
-VALIDATE_DIR = ROOT / "ci-hub" / "validate"
+TOOL_ROOT = Path(__file__).resolve().parents[2]
+STATE_ROOT = Path(os.environ.get("DEV_HERMIT_PARENT", TOOL_ROOT)).resolve()
+VALIDATE_DIR = TOOL_ROOT / "ci-hub" / "validate"
 if str(VALIDATE_DIR) not in sys.path:
     sys.path.insert(0, str(VALIDATE_DIR))
 
-from qualified_rows import DEFAULT_LEDGER  # noqa: E402
 from qualified_rows import load_rows  # noqa: E402
+
+DEFAULT_LEDGER = STATE_ROOT / "ledger"
 
 # Plain description, not a coined label: these refs exist because the ledger
 # references the object. One ref per commit, named by the commit, so the mapping is
@@ -252,7 +255,7 @@ def sync(checkout: Path, commits: set[str], apply: bool) -> dict:
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--ledger", default=str(DEFAULT_LEDGER))
-    ap.add_argument("--root", default=str(ROOT))
+    ap.add_argument("--root", default=str(STATE_ROOT))
     ap.add_argument("--dry-run", action="store_true",
                     help="report what would change without writing refs")
     ap.add_argument("--json", action="store_true")

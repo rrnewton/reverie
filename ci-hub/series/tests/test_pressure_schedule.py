@@ -98,14 +98,26 @@ class PressureScheduleTest(unittest.TestCase):
                 f"--property=RuntimeMaxSec={pressure_schedule.UNIT_RUNTIME_SECONDS}",
                 launched,
             )
-            self.assertIn(f"--working-directory={root}", launched)
+            self.assertIn(
+                f"--working-directory={pressure_schedule.SOURCE_ROOT}", launched
+            )
             self.assertTrue(any(arg.startswith("--setenv=PATH=") for arg in launched))
+            self.assertIn(f"--setenv=DEV_HERMIT_PARENT={root}", launched)
+            self.assertIn(
+                f"--setenv=DEV_HERMIT_TOOL_ROOT={pressure_schedule.SOURCE_ROOT}",
+                launched,
+            )
             self.assertEqual(
-                launched[-8:],
+                launched[launched.index("--") + 1 :],
                 [
                     "/bin/with-proxy",
                     sys.executable,
-                    str(root / "ci-hub" / "series" / "pressure_schedule.py"),
+                    str(
+                        pressure_schedule.SOURCE_ROOT
+                        / "ci-hub"
+                        / "series"
+                        / "pressure_schedule.py"
+                    ),
                     "_run",
                     "--target",
                     "a" * 40,
@@ -117,6 +129,8 @@ class PressureScheduleTest(unittest.TestCase):
                         / "runs"
                         / "hermit-pressure-test.json"
                     ),
+                    "--state-root",
+                    str(root),
                 ],
             )
             record = pressure_schedule.run_registry.read_record(
@@ -201,6 +215,11 @@ class PressureScheduleTest(unittest.TestCase):
         self.assertIn(str(pressure_schedule.LOCK_WAIT_SECONDS), command)
         self.assertIn(str(pressure_schedule.LOCK_CHILD_DEADLINE_SECONDS), command)
         self.assertIn("a" * 40, command)
+        self.assertEqual(
+            command[0], str(pressure_schedule.SOURCE_ROOT / "ci-hub" / "ci-hub")
+        )
+        self.assertIn("--state-root", command)
+        self.assertEqual(command[command.index("--state-root") + 1], "/parent")
         self.assertIn(
             "/parent/ignored/validate/runs/hermit-pressure-test.json", command
         )
@@ -262,11 +281,21 @@ class PressureScheduleTest(unittest.TestCase):
                     pressure_schedule.run_campaign("a" * 40, record, root), 0
                 )
             self.assertTrue(calls[0][0].endswith("ci-hub/bin/wrkslots"))
+            self.assertTrue(
+                calls[0][0].startswith(str(pressure_schedule.SOURCE_ROOT))
+            )
             self.assertIn("create", calls[0])
             self.assertIn("--slot-type", calls[0])
             self.assertIn("validate", calls[0])
             self.assertIn("submodule", calls[1])
             self.assertIn("validate-lock", calls[2])
+            self.assertEqual(
+                calls[2][0],
+                str(pressure_schedule.SOURCE_ROOT / "ci-hub" / "ci-hub"),
+            )
+            self.assertEqual(
+                calls[2][calls[2].index("--state-root") + 1], str(root)
+            )
             self.assertIn("bench", calls[2])
             self.assertTrue(calls[3][0].endswith("ci-hub/bin/wrkslots"))
             self.assertIn("remove", calls[3])

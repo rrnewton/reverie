@@ -201,3 +201,23 @@ def test_load_rows_counts_malformed_and_skips_non_dict(tmp_path) -> None:
     assert len(rows) == 2
     assert malformed == 2
     assert [row["commit"] for row in qr.qualified_rows(rows)] == ["good", "also-good"]
+
+
+def test_load_rows_accepts_an_explicit_canonical_ledger_directory(
+    tmp_path, monkeypatch
+) -> None:
+    state_root = tmp_path / "state-root"
+    ledger = state_root / "ledger"
+    ledger.mkdir(parents=True)
+    seen = []
+    monkeypatch.setattr(
+        qr.canonical_ledger,
+        "rows",
+        lambda *, root=None: seen.append(root) or [{"commit": "state-row"}],
+    )
+
+    rows, malformed = qr.load_rows(ledger)
+
+    assert rows == [{"commit": "state-row"}]
+    assert malformed == 0
+    assert seen == [state_root.resolve()]

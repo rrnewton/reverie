@@ -95,7 +95,12 @@ class AgentToolPinEquivalenceTests(unittest.TestCase):
         self.changed_tick_hermit = git(self.hermit, "rev-parse", "HEAD")
 
         (self.parent / "ci-hub" / "bin").mkdir(parents=True)
+        (self.parent / "ci-hub" / "health").mkdir()
         shutil.copy2(AGENT_TOOL, self.parent / "ci-hub" / "bin" / "agent-tool")
+        shutil.copy2(
+            ROOT / "ci-hub" / "health" / "requirements.txt",
+            self.parent / "ci-hub" / "health" / "requirements.txt",
+        )
         (self.parent / "agent-utils").symlink_to("hermit/agent-utils")
         (self.parent / "state-marker.txt").write_text("clean\n", encoding="utf-8")
         git(self.parent, "init", "-q")
@@ -105,6 +110,7 @@ class AgentToolPinEquivalenceTests(unittest.TestCase):
             self.parent,
             "add",
             "ci-hub/bin/agent-tool",
+            "ci-hub/health/requirements.txt",
             "agent-utils",
             "state-marker.txt",
         )
@@ -146,17 +152,38 @@ class AgentToolPinEquivalenceTests(unittest.TestCase):
         git(self.hermit, "checkout", "-q", hermit)
         git(self.agent_utils, "checkout", "-q", agent_utils)
 
+    def _materialize_tool_checkout(self) -> None:
+        tool_hermit = self.tool_root / "hermit"
+        shutil.rmtree(tool_hermit)
+        git(self.base, "clone", "-q", "--no-local", self.hermit, tool_hermit)
+        git(tool_hermit, "checkout", "-q", self.changed_tick_hermit)
+        tool_agent_utils = tool_hermit / "agent-utils"
+        shutil.rmtree(tool_agent_utils)
+        git(self.base, "clone", "-q", "--no-local", self.agent_utils, tool_agent_utils)
+        git(tool_agent_utils, "checkout", "-q", self.changed_tick_agent_utils)
+
     def _run(
-        self, tool: str, *, executable_root: Path | None = None
+        self,
+        tool: str,
+        *,
+        executable_root: Path | None = None,
+        explicit_tool_root: bool = True,
+        argument: str = "marker",
+        environment_overrides: dict[str, str] | None = None,
     ) -> subprocess.CompletedProcess[str]:
         environment = dict(os.environ)
+        environment.pop("DEV_HERMIT_PARENT", None)
+        environment.pop("DEV_HERMIT_TOOL_ROOT", None)
         environment["CI_HUB_PYTHON"] = sys.executable
         root = executable_root or self.parent
         if executable_root is not None:
             environment["DEV_HERMIT_PARENT"] = str(self.parent)
-            environment["DEV_HERMIT_TOOL_ROOT"] = str(executable_root)
+            if explicit_tool_root:
+                environment["DEV_HERMIT_TOOL_ROOT"] = str(executable_root)
+        if environment_overrides:
+            environment.update(environment_overrides)
         return subprocess.run(
-            [str(root / "ci-hub" / "bin" / "agent-tool"), tool, "marker"],
+            [str(root / "ci-hub" / "bin" / "agent-tool"), tool, argument],
             cwd=self.parent,
             check=False,
             text=True,
@@ -230,6 +257,7 @@ class AgentToolPinEquivalenceTests(unittest.TestCase):
     def test_stale_dirty_state_root_uses_current_immutable_tool_root_pin(self) -> None:
         git(self.parent, "remote", "set-url", "origin", self.base / "unreachable.git")
         self._select(self.changed_tick_hermit, self.changed_tick_agent_utils)
+        self._materialize_tool_checkout()
         status_before = git(self.parent, "status", "--porcelain=v1")
         self.assertIn("hermit", status_before)
 
@@ -281,6 +309,124 @@ class AgentToolPinEquivalenceTests(unittest.TestCase):
         )
         self.assertEqual(git(self.parent, "status", "--porcelain=v1"), status_before)
 
+    def test_help_defaults_to_tool_checkout_without_initializing_state(self) -> None:
+        self._publish_current_parent()
+        self._select(self.changed_tick_hermit, self.changed_tick_agent_utils)
+        self._materialize_tool_checkout()
+        agent_remote = self.base / "agent-utils-origin.git"
+        git(self.base, "clone", "-q", "--bare", self.agent_utils, agent_remote)
+        (self.hermit / ".gitmodules").write_text(
+            '[submodule "agent-utils"]\n'
+            "\tpath = agent-utils\n"
+            f"\turl = {agent_remote}\n",
+            encoding="utf-8",
+        )
+        git(self.hermit, "config", "submodule.agent-utils.active", "true")
+        git(self.hermit, "config", "submodule.agent-utils.url", agent_remote)
+        shutil.rmtree(self.agent_utils)
+        self.agent_utils.mkdir()
+        fetch_head = Path(git(self.parent, "rev-parse", "--git-path", "FETCH_HEAD"))
+        if not fetch_head.is_absolute():
+            fetch_head = self.parent / fetch_head
+        fetch_head.write_text("caller-owned fetch head\n", encoding="utf-8")
+
+        def snapshot() -> tuple[object, ...]:
+            return (
+                git(self.parent, "rev-parse", "HEAD"),
+                git(self.parent, "status", "--porcelain=v1"),
+                git(self.parent, "rev-parse", "refs/remotes/origin/main"),
+                fetch_head.read_bytes(),
+                (self.parent / "state-marker.txt").read_bytes(),
+                git(self.hermit, "rev-parse", "HEAD"),
+                git(self.hermit, "status", "--porcelain=v1"),
+                (self.hermit / ".git" / "config").read_bytes(),
+                tuple(self.agent_utils.iterdir()),
+                (self.hermit / ".git" / "modules" / "agent-utils").exists(),
+                git(
+                    self.parent,
+                    "for-each-ref",
+                    "--format=%(refname)",
+                    "refs/ci-hub/agent-tool-pin",
+                ),
+            )
+
+        before = snapshot()
+        result = self._run(
+            "tick-hub",
+            executable_root=self.tool_root,
+            explicit_tool_root=False,
+            argument="--help",
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "changed tick-hub --help\n")
+        self.assertIn("freshly fetched origin/main", result.stderr)
+        self.assertIn(self.current_parent, result.stderr)
+        self.assertEqual(snapshot(), before)
+
+    def test_missing_yaml_uses_external_cache_with_read_only_tool_root(self) -> None:
+        self._select(self.changed_tick_hermit, self.changed_tick_agent_utils)
+        self._materialize_tool_checkout()
+        fake_python = self.base / "python-without-yaml"
+        fake_python.write_text(
+            "#!/usr/bin/env python3\n"
+            "import os, pathlib, shlex, sys\n"
+            f"real = {sys.executable!r}\n"
+            "if sys.argv[1:] == ['-c', 'import yaml']:\n"
+            "    raise SystemExit(1)\n"
+            "if sys.argv[1:3] == ['-m', 'venv']:\n"
+            "    target = pathlib.Path(sys.argv[3])\n"
+            "    (target / 'bin').mkdir(parents=True)\n"
+            "    runner = target / 'bin' / 'python'\n"
+            "    runner.write_text('#!/bin/sh\\nexec ' + shlex.quote(real) + ' \"$@\"\\n')\n"
+            "    runner.chmod(0o755)\n"
+            "    raise SystemExit(0)\n"
+            "os.execv(real, [real, *sys.argv[1:]])\n",
+            encoding="utf-8",
+        )
+        fake_python.chmod(0o755)
+        dependency_cache = self.base / "agent-tool-dependencies"
+        state_before = (
+            git(self.parent, "rev-parse", "HEAD"),
+            git(self.parent, "status", "--porcelain=v1"),
+            git(self.hermit, "rev-parse", "HEAD"),
+            git(self.hermit, "status", "--porcelain=v1"),
+        )
+        tool_status_before = git(self.tool_root, "status", "--porcelain=v1")
+        subprocess.run(["chmod", "-R", "a-w", str(self.tool_root)], check=True)
+        self.addCleanup(
+            subprocess.run,
+            ["chmod", "-R", "u+w", str(self.tool_root)],
+            check=False,
+        )
+
+        result = self._run(
+            "tick-hub",
+            executable_root=self.tool_root,
+            argument="--help",
+            environment_overrides={
+                "CI_HUB_PYTHON": str(fake_python),
+                "CI_HUB_AGENT_TOOL_CACHE": str(dependency_cache),
+            },
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "changed tick-hub --help\n")
+        self.assertEqual(tool_status_before, git(self.tool_root, "status", "--porcelain=v1"))
+        self.assertEqual(
+            state_before,
+            (
+                git(self.parent, "rev-parse", "HEAD"),
+                git(self.parent, "status", "--porcelain=v1"),
+                git(self.hermit, "rev-parse", "HEAD"),
+                git(self.hermit, "status", "--porcelain=v1"),
+            ),
+        )
+        self.assertFalse((self.tool_root / ".tick-hub").exists())
+        self.assertFalse((self.parent / ".tick-hub").exists())
+        environments = list(dependency_cache.glob("pyyaml-*/bin/python"))
+        self.assertEqual(len(environments), 1, environments)
+
     def test_fetch_failure_never_falls_back_to_stale_state_head(self) -> None:
         git(self.parent, "remote", "set-url", "origin", self.base / "unreachable.git")
         self._select(self.parent_hermit, self.expected_agent_utils)
@@ -292,6 +438,18 @@ class AgentToolPinEquivalenceTests(unittest.TestCase):
         self.assertIn("live origin/main query failed", result.stderr)
         self.assertIn("stale local HEAD was not used", result.stderr)
         self.assertNotIn("tick-hub ran", result.stdout + result.stderr)
+
+    def test_uninitialized_tool_root_fails_without_touching_state(self) -> None:
+        status_before = git(self.parent, "status", "--porcelain=v1")
+
+        result = self._run("tick-hub", executable_root=self.tool_root)
+
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertEqual(result.stdout, "")
+        self.assertIn("immutable tool checkout", result.stderr)
+        self.assertIn("is not initialized", result.stderr)
+        self.assertIn(f"state root {self.parent} was not modified", result.stderr)
+        self.assertEqual(git(self.parent, "status", "--porcelain=v1"), status_before)
 
     def test_sigterm_after_private_ref_creation_removes_only_that_ref(self) -> None:
         self._publish_current_parent()
@@ -380,7 +538,7 @@ class AgentToolPinEquivalenceTests(unittest.TestCase):
             "dirty primary\n",
         )
 
-    def test_tool_root_pin_missing_from_state_hermit_fails_loudly(self) -> None:
+    def test_tool_root_pin_missing_from_tool_hermit_fails_loudly(self) -> None:
         unavailable_hermit = "1" * 40
         git(
             self.parent,
@@ -401,6 +559,16 @@ class AgentToolPinEquivalenceTests(unittest.TestCase):
             unavailable_root,
             unavailable_parent,
         )
+        unavailable_tool_hermit = unavailable_root / "hermit"
+        shutil.rmtree(unavailable_tool_hermit)
+        git(
+            self.base,
+            "clone",
+            "-q",
+            "--no-local",
+            self.hermit,
+            unavailable_tool_hermit,
+        )
         git(self.parent, "reset", "-q", "--hard", self.stale_parent)
         (self.parent / "state-marker.txt").write_text("dirty primary\n", encoding="utf-8")
         self._select(self.changed_tick_hermit, self.changed_tick_agent_utils)
@@ -413,9 +581,9 @@ class AgentToolPinEquivalenceTests(unittest.TestCase):
         self.assertIn("cannot reconcile immutable tool root", result.stderr)
         self.assertIn(unavailable_parent, result.stderr)
         self.assertIn(unavailable_hermit, result.stderr)
-        self.assertIn(str(self.hermit), result.stderr)
+        self.assertIn(str(unavailable_tool_hermit), result.stderr)
         self.assertIn(
-            f"with-proxy git -C {self.hermit} fetch origin {unavailable_hermit}",
+            f"with-proxy git -C {unavailable_tool_hermit} fetch origin {unavailable_hermit}",
             result.stderr,
         )
         self.assertIn("no checkout was moved", result.stderr)

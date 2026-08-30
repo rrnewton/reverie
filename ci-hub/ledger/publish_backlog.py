@@ -38,22 +38,24 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
 
 
-ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(ROOT / "ci-hub" / "health"))
-sys.path.insert(0, str(ROOT / "ci-hub" / "ledger"))
-sys.path.insert(0, str(ROOT / "scripts"))
+TOOL_ROOT = Path(__file__).resolve().parents[2]
+STATE_ROOT = Path(os.environ.get("DEV_HERMIT_PARENT", TOOL_ROOT)).resolve()
+sys.path.insert(0, str(TOOL_ROOT / "ci-hub" / "health"))
+sys.path.insert(0, str(TOOL_ROOT / "ci-hub" / "ledger"))
+sys.path.insert(0, str(TOOL_ROOT / "scripts"))
 
 from check_commit_attribution import AttributionError, detect_machine  # noqa: E402
 from ledger_spool_backlog import SpoolUnavailable, producing_parents  # noqa: E402
 from validate_rows import live_spool_dir  # noqa: E402
-sys.path.insert(0, str(ROOT / "ci-hub" / "series"))
+sys.path.insert(0, str(TOOL_ROOT / "ci-hub" / "series"))
 from series import spool_dir as series_spool_dir  # noqa: E402
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
+sys.path.insert(0, str(TOOL_ROOT / "ci-hub" / "lib"))
 import bounded_capture  # noqa: E402
 
 #: One persistent dedicated clone, reused across runs. It is NOT any parent
@@ -75,7 +77,7 @@ def ensure_clone(clone: Path, *, net_wrapper: str) -> None:
         return
     clone.parent.mkdir(parents=True, exist_ok=True)
     bounded_capture.capture(
-        [net_wrapper, "git", "clone", "--quiet", "--reference", str(ROOT), ORIGIN,
+        [net_wrapper, "git", "clone", "--quiet", "--reference", str(STATE_ROOT), ORIGIN,
          str(clone)],
         check=True,
     )
@@ -115,12 +117,12 @@ def publish_parent(parent: Path, clone: Path, *, store: str, spool: Path,
     result = subprocess.run(
         [
             sys.executable,
-            str(ROOT / "ci-hub" / "ledger" / "publisher.py"),
+            str(TOOL_ROOT / "ci-hub" / "ledger" / "publisher.py"),
             "publish",
             "--source-root", str(parent),
             "--repo", str(clone),
             "--spool-dir", str(spool),
-            "--writer", str(parent / "scripts" / "parent-main-write"),
+            "--writer", str(TOOL_ROOT / "scripts" / "parent-main-write"),
             "--attribution", attribution,
             "--store", store,
         ],
@@ -152,12 +154,12 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    clone = ROOT / CLONE_RELATIVE
+    clone = STATE_ROOT / CLONE_RELATIVE
     reports: list[dict] = []
     try:
         work = {
             parent: pending_stores(parent)
-            for parent in producing_parents(ROOT)
+            for parent in producing_parents(STATE_ROOT)
         }
     except SpoolUnavailable as error:
         print(json.dumps({"state": "unknown", "error": str(error)}, sort_keys=True))

@@ -23,7 +23,8 @@
 set -uo pipefail
 
 UNIT=${LEDGER_PUBLISH_UNIT:-ledger-publish-backlog}
-ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
+TOOL_ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
+STATE_ROOT=${DEV_HERMIT_PARENT:-$TOOL_ROOT}
 
 # WHERE THE SWEEP'S OUTPUT GOES, AND WHY IT IS NOT THE JOURNAL.
 #
@@ -37,7 +38,7 @@ ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
 # That is what made the credential fault below cost a day: the error was not
 # missing and not wrong, it was addressed to a reader who could not open it.
 # Appending to a plain file costs nothing and makes the next fault legible.
-LOG_DIR=${LEDGER_PUBLISH_LOG_DIR:-$ROOT/ignored/ci-hub}
+LOG_DIR=${LEDGER_PUBLISH_LOG_DIR:-$STATE_ROOT/ignored/ci-hub}
 LOG=$LOG_DIR/ledger-publish-backlog.log
 mkdir -p "$LOG_DIR" 2>/dev/null || true
 
@@ -56,7 +57,11 @@ mkdir -p "$LOG_DIR" 2>/dev/null || true
 # to the unit. REFUSE LOUDLY IF gh IS ABSENT rather than launching a sweep that
 # is guaranteed to fail at the push: a silent absence is the exact defect this
 # comment exists to explain.
-GH_BIN=$(command -v gh 2>/dev/null || true)
+if [[ ${LEDGER_PUBLISH_GH_BIN+x} ]]; then
+  GH_BIN=$LEDGER_PUBLISH_GH_BIN
+else
+  GH_BIN=$(command -v gh 2>/dev/null || true)
+fi
 if [[ -z $GH_BIN ]]; then
   echo "state=refused summary=gh not found on PATH; a detached sweep would fail at the push. Not launched; spool retained." \
     | tee -a "$LOG" 2>/dev/null || true
@@ -76,15 +81,17 @@ if ! command -v systemd-run >/dev/null 2>&1; then
   exit 0
 fi
 
-launch_error=$(systemd-run --user --quiet --collect \
+if launch_error=$(systemd-run --user --quiet --collect \
     --unit="$UNIT" \
     --description="drain ledger spool backlog across producing parents" \
     --property=CPUQuota=100% \
     --property="StandardOutput=append:$LOG" \
     --property="StandardError=append:$LOG" \
+    --working-directory="$TOOL_ROOT" \
     --setenv="PATH=$UNIT_PATH" \
-    -- python3 "$ROOT/ci-hub/ledger/publish_backlog.py" 2>&1 >/dev/null)
-if [[ $? -eq 0 ]]; then
+    --setenv="DEV_HERMIT_PARENT=$STATE_ROOT" \
+    --setenv="DEV_HERMIT_TOOL_ROOT=$TOOL_ROOT" \
+    -- python3 "$TOOL_ROOT/ci-hub/ledger/publish_backlog.py" 2>&1 >/dev/null); then
   echo "state=launched summary=ledger publish sweep launched detached as $UNIT; output appended to $LOG"
   exit 0
 fi

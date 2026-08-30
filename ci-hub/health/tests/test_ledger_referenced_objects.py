@@ -10,6 +10,7 @@ present commits -- it subtracts as well as adds -- so that is what these assert.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -301,3 +302,45 @@ def test_non_string_repo_value_refuses_before_writing_refs(tmp_path, capsys):
     assert report["repos"] == []
     assert pinned(root / "hermit") == set()
     assert pinned(root / "reverie") == set()
+
+
+def test_default_ledger_and_checkout_root_follow_dev_hermit_parent(tmp_path):
+    state_root = tmp_path / "state-root"
+    state_root.mkdir()
+    make_repo(state_root / "hermit", count=0)
+    make_repo(state_root / "reverie", count=0)
+    (state_root / "ledger").write_text("")
+    tool_status_before = subprocess.run(
+        ["git", "status", "--porcelain=v1"],
+        cwd=lro.TOOL_ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    environment = os.environ | {
+        "DEV_HERMIT_PARENT": str(state_root),
+        "PYTHONDONTWRITEBYTECODE": "1",
+    }
+
+    result = subprocess.run(
+        [sys.executable, str(Path(lro.__file__)), "--dry-run", "--json"],
+        cwd=lro.TOOL_ROOT,
+        env=environment,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    report = json.loads(result.stdout)
+    assert {Path(item["checkout"]) for item in report["repos"]} == {
+        state_root / "hermit",
+        state_root / "reverie",
+    }
+    assert subprocess.run(
+        ["git", "status", "--porcelain=v1"],
+        cwd=lro.TOOL_ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout == tool_status_before

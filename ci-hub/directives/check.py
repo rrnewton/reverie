@@ -17,9 +17,13 @@ from pathlib import Path
 from typing import Callable, Mapping, Sequence
 
 
-ROOT = Path(__file__).resolve().parents[2]
+TOOL_ROOT = Path(__file__).resolve().parents[2]
+STATE_ROOT = Path(os.environ.get("DEV_HERMIT_PARENT", TOOL_ROOT)).resolve()
+# Retain ROOT as the code/config root for existing importers. Mutable checkout
+# subjects and reports are rooted explicitly through STATE_ROOT below.
+ROOT = TOOL_ROOT
 DEFAULT_LEDGER = Path(__file__).resolve().with_name("ledger.json")
-DEFAULT_REPORT = ROOT / "ignored/ci-hub/directives/latest.json"
+DEFAULT_REPORT = STATE_ROOT / "ignored/ci-hub/directives/latest.json"
 TASK_RE = re.compile(r"[A-Za-z0-9_.-]+")
 # Marks a status that came from an ARCHIVED database rather than the live one, so
 # "resolved" never silently means "resolved somewhere we no longer operate".
@@ -169,7 +173,7 @@ class Report:
 def _run(
     command: Sequence[str],
     *,
-    cwd: Path = ROOT,
+    cwd: Path = STATE_ROOT,
     timeout: float = 24,
     env: Mapping[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
@@ -274,7 +278,10 @@ def _assert_acyclic(directives: Sequence[Directive]) -> None:
 
 
 def _query_known_tasks(
-    directives: Sequence[Directive], run: Run, timeout: float
+    directives: Sequence[Directive],
+    run: Run,
+    timeout: float,
+    state_root: Path = STATE_ROOT,
 ) -> tuple[dict[str, str], dict[str, str], str | None]:
     """Accountable task id -> its TaskGraph status, and what its closure claimed.
 
@@ -356,7 +363,7 @@ def _query_known_tasks(
         env = dict(os.environ)
         if db is not None:
             env["TG_DB_PATH"] = str(db)
-        result = run(("tg", "sql", query), cwd=ROOT, timeout=timeout, env=env)
+        result = run(("tg", "sql", query), cwd=state_root, timeout=timeout, env=env)
         if result.returncode != 0:
             # Only the LIVE database failing is a lookup outage. An archive that
             # cannot be opened is a missing archive, not an unknown fleet state.
@@ -489,6 +496,7 @@ def _metadata_issues(
     known_tasks: set[str],
     task_lookup_error: str | None,
     archive_gap: str | None = None,
+    state_root: Path = STATE_ROOT,
 ) -> list[str]:
     issues: list[str] = []
     try:
@@ -499,8 +507,8 @@ def _metadata_issues(
         issues.append("missing_summary")
     if not REPO_RE.fullmatch(directive.repository):
         issues.append("missing_or_invalid_repository")
-    checkout = (ROOT / directive.checkout).resolve() if directive.checkout else None
-    if checkout is None or not checkout.is_relative_to(ROOT) or not checkout.is_dir():
+    checkout = (state_root / directive.checkout).resolve() if directive.checkout else None
+    if checkout is None or not checkout.is_relative_to(state_root) or not checkout.is_dir():
         issues.append("missing_or_invalid_checkout")
     if not directive.target:
         issues.append("missing_target")
@@ -558,13 +566,16 @@ def _metadata_issues(
 
 
 def _verify_landing(
-    directive: Directive, run: Run, timeout: float
+    directive: Directive,
+    run: Run,
+    timeout: float,
+    state_root: Path = STATE_ROOT,
 ) -> tuple[str, str, str | None, str | None, str]:
     assert directive.implementation is not None
-    source = (ROOT / directive.checkout).resolve()
+    source = (state_root / directive.checkout).resolve()
     command = (
         sys.executable,
-        str(ROOT / "ci-hub/remediation/protocol.py"),
+        str(TOOL_ROOT / "ci-hub/remediation/protocol.py"),
         "verify-landing",
         directive.implementation.identity,
         "--repo",
@@ -575,7 +586,7 @@ def _verify_landing(
         directive.target,
         "--json",
     )
-    result = run(command, cwd=ROOT, timeout=timeout)
+    result = run(command, cwd=state_root, timeout=timeout)
     try:
         payload = json.loads(result.stdout)
     except json.JSONDecodeError:
@@ -591,7 +602,7 @@ def _verify_landing(
     reason = _text(payload.get("reason")) or landing_state
     tip_result = run(
         ("git", "-C", str(source), "rev-parse", f"origin/{directive.target}"),
-        cwd=ROOT,
+        cwd=state_root,
         timeout=max(1.0, min(timeout, 5.0)),
     )
     target_tip = tip_result.stdout.strip() if tip_result.returncode == 0 else None
@@ -613,17 +624,18 @@ def evaluate(
     run: Run = _run,
     deadline_seconds: float = 180,
     checked_at: str | None = None,
+    state_root: Path = STATE_ROOT,
 ) -> Report:
     schema_version, directives = load_ledger(ledger_path)
     started = time.monotonic()
     archive_gap = archive_lineage_gap()
     known_tasks, closure_claims, task_lookup_error = _query_known_tasks(
-        directives, run, max(1.0, min(deadline_seconds, 5.0))
+        directives, run, max(1.0, min(deadline_seconds, 5.0)), state_root
     )
     base: dict[str, DirectiveResult] = {}
     for directive in directives:
         issues = _metadata_issues(
-            directive, known_tasks, task_lookup_error, archive_gap
+            directive, known_tasks, task_lookup_error, archive_gap, state_root
         )
         implementation = directive.implementation
         landing_state = "not_checked"
@@ -657,7 +669,7 @@ def evaluate(
                 reason = "directive-check deadline exhausted"
             else:
                 state, landing_state, resolved, target_tip, reason = _verify_landing(
-                    directive, run, max(1.0, remaining)
+                    directive, run, max(1.0, remaining), state_root
                 )
                 ancestry = {
                     "satisfied": "ancestor",
@@ -961,6 +973,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--ledger", type=Path, default=DEFAULT_LEDGER)
     parser.add_argument("--output", type=Path, default=DEFAULT_REPORT)
+    parser.add_argument("--state-root", type=Path, default=STATE_ROOT)
     parser.add_argument("--deadline-secs", type=float, default=180)
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--no-write", action="store_true")
@@ -978,7 +991,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 2
     try:
         report = evaluate(
-            ledger_path=args.ledger.resolve(), deadline_seconds=args.deadline_secs
+            ledger_path=args.ledger.resolve(),
+            deadline_seconds=args.deadline_secs,
+            state_root=args.state_root.resolve(),
         )
     except LedgerError as error:
         print(f"state=invalid\nsummary={_field(error)}")

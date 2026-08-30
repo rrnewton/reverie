@@ -24,7 +24,9 @@ import series  # noqa: E402
 import run_registry  # noqa: E402
 
 
-ROOT = series.shared_parent_root(SOURCE_ROOT)
+STATE_ROOT = Path(
+    os.environ.get("DEV_HERMIT_PARENT", series.shared_parent_root(SOURCE_ROOT))
+).resolve()
 UNIT = "hermit-pressure-test"
 SAMPLE_COUNT = 10
 CELL_TIMEOUT_SECONDS = 60
@@ -89,18 +91,22 @@ def launch_command(
         f"--property=RuntimeMaxSec={UNIT_RUNTIME_SECONDS}",
         f"--property=StandardOutput=append:{log}",
         f"--property=StandardError=append:{log}",
-        f"--working-directory={root}",
+        f"--working-directory={SOURCE_ROOT}",
         f"--setenv=PATH={os.environ.get('PATH', '')}",
         "--setenv=PYTHONUNBUFFERED=1",
+        f"--setenv=DEV_HERMIT_PARENT={root}",
+        f"--setenv=DEV_HERMIT_TOOL_ROOT={SOURCE_ROOT}",
         "--",
         with_proxy,
         sys.executable,
-        str(root / "ci-hub" / "series" / "pressure_schedule.py"),
+        str(SOURCE_ROOT / "ci-hub" / "series" / "pressure_schedule.py"),
         "_run",
         "--target",
         target,
         "--record",
         str(record),
+        "--state-root",
+        str(root),
     ]
 
 
@@ -112,7 +118,7 @@ def locked_command(
     record: Path,
 ) -> list[str]:
     return [
-        str(root / "ci-hub" / "ci-hub"),
+        str(SOURCE_ROOT / "ci-hub" / "ci-hub"),
         "validate-lock",
         "run",
         "--agent",
@@ -131,12 +137,14 @@ def locked_command(
         str(LOCK_CHILD_DEADLINE_SECONDS),
         "--",
         sys.executable,
-        str(root / "ci-hub" / "series" / "pressure_schedule.py"),
+        str(SOURCE_ROOT / "ci-hub" / "series" / "pressure_schedule.py"),
         "_locked",
         "--checkout",
         str(checkout),
         "--results",
         str(results),
+        "--state-root",
+        str(root),
     ]
 
 
@@ -162,7 +170,7 @@ def pressure_commands(checkout: Path, results: Path) -> list[list[str]]:
 
 
 def launch(
-    root: Path = ROOT,
+    root: Path = STATE_ROOT,
     run: Callable[..., subprocess.CompletedProcess] = subprocess.run,
 ) -> int:
     log = log_path(root)
@@ -316,7 +324,9 @@ def launch(
 def remove_worktree(root: Path, slot: str) -> str | None:
     completed = subprocess.run(
         [
-            str(root / "ci-hub/bin/wrkslots"),
+            str(SOURCE_ROOT / "ci-hub/bin/wrkslots"),
+            # Executable authority is the immutable/current tool checkout;
+            # --project-root below keeps all mutable worktree state in root.
             "--project-root",
             str(root),
             "--allow-existing-unregistered-worktrees",
@@ -341,7 +351,7 @@ def remove_worktree(root: Path, slot: str) -> str | None:
     )
 
 
-def run_campaign(target: str, record: Path, root: Path = ROOT) -> int:
+def run_campaign(target: str, record: Path, root: Path = STATE_ROOT) -> int:
     durable = run_registry.read_record(record)
     raw_checkout = durable.get("checkout")
     if not isinstance(raw_checkout, str):
@@ -368,7 +378,7 @@ def run_campaign(target: str, record: Path, root: Path = ROOT) -> int:
     write_state(root, state)
     added = subprocess.run(
         [
-            str(root / "ci-hub/bin/wrkslots"),
+            str(SOURCE_ROOT / "ci-hub/bin/wrkslots"),
             "--project-root",
             str(root),
             "--allow-existing-unregistered-worktrees",
@@ -463,7 +473,7 @@ def run_campaign(target: str, record: Path, root: Path = ROOT) -> int:
     return 0 if state["state"] == "passed" else 1
 
 
-def run_locked(checkout: Path, results: Path, root: Path = ROOT) -> int:
+def run_locked(checkout: Path, results: Path, root: Path = STATE_ROOT) -> int:
     environment = dict(os.environ)
     environment["DEV_HERMIT_PARENT"] = str(root)
     run_command, emit_command = pressure_commands(checkout, results)
@@ -491,6 +501,7 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
         worker.add_argument("_command")
         worker.add_argument("--target", required=True)
         worker.add_argument("--record", type=Path, required=True)
+        worker.add_argument("--state-root", type=Path, default=STATE_ROOT)
         return worker.parse_args(argv)
     if argv[:1] == ["_locked"]:
         locked = argparse.ArgumentParser(add_help=False)
@@ -498,20 +509,22 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
         locked.add_argument("_command")
         locked.add_argument("--checkout", type=Path, required=True)
         locked.add_argument("--results", type=Path, required=True)
+        locked.add_argument("--state-root", type=Path, default=STATE_ROOT)
         return locked.parse_args(argv)
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
-    subparsers.add_parser("launch", help="launch one detached sample")
+    launch_parser = subparsers.add_parser("launch", help="launch one detached sample")
+    launch_parser.add_argument("--state-root", type=Path, default=STATE_ROOT)
     return parser.parse_args(argv)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_args(sys.argv[1:] if argv is None else argv)
     if args.command == "launch":
-        return launch()
+        return launch(args.state_root)
     if args.command == "_run":
         try:
-            return run_campaign(args.target, args.record)
+            return run_campaign(args.target, args.record, args.state_root)
         except RuntimeError as error:
             try:
                 run_registry.update_record(
@@ -531,7 +544,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             emit("failed", str(error))
             return 1
     if args.command == "_locked":
-        return run_locked(args.checkout, args.results)
+        return run_locked(args.checkout, args.results, args.state_root)
     raise AssertionError(args.command)
 
 

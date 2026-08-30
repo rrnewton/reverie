@@ -53,6 +53,7 @@ import agent_snapshot as agent_snapshot_contract  # noqa: E402
 from worktree_registry import RegistrySchemaError, read_registry  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
+STATE_ROOT = Path(os.environ.get("DEV_HERMIT_PARENT", ROOT)).resolve()
 ACTIONABLE = "actionable"
 CLEAN = "ok"
 UNKNOWN = "unknown"
@@ -259,7 +260,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--test-live-agents", default=None, help="comma list (tests)")
     args = parser.parse_args(argv)
 
-    root = Path(args.root).resolve() if args.root else ROOT
+    root = Path(args.root).resolve() if args.root else STATE_ROOT
     state, summary, fields = UNKNOWN, "", {}
     try:
         if args.test_live_agents is not None:

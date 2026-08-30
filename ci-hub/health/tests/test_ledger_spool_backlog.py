@@ -90,10 +90,13 @@ class LedgerSpoolBacklogTest(unittest.TestCase):
     def test_tick_hub_runs_the_gate(self) -> None:
         config = TICK_CONFIG.read_text(encoding="utf-8")
         self.assertIn("name: ledger_spool_backlog", config)
-        self.assertIn("python3 ci-hub/health/ledger_spool_backlog.py --gate", config)
+        self.assertIn(
+            'python3 ci-hub/health/ledger_spool_backlog.py --root "$DEV_HERMIT_PARENT" --gate',
+            config,
+        )
         self.assertIn("name: series_spool_backlog", config)
         self.assertIn(
-            "python3 ci-hub/health/ledger_spool_backlog.py --store series --gate",
+            'python3 ci-hub/health/ledger_spool_backlog.py --root "$DEV_HERMIT_PARENT" --store series --gate',
             config,
         )
 

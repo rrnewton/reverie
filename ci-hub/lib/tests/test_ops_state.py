@@ -52,6 +52,34 @@ def test_environment_selects_the_live_state_file(tmp_path: Path) -> None:
             os.environ[ops_state.PATH_ENV] = previous
 
 
+def test_parent_environment_selects_ops_state_when_direct_override_is_absent(
+    tmp_path: Path,
+) -> None:
+    state_root = tmp_path / "state-root"
+    state_root.mkdir()
+    state = state_root / ".ops-state.yaml"
+    state.write_text("flags:\n  github_actions_enabled: false\n", encoding="utf-8")
+    previous_path = os.environ.pop(ops_state.PATH_ENV, None)
+    previous_parent = os.environ.get(ops_state.PARENT_ENV)
+    try:
+        os.environ[ops_state.PARENT_ENV] = str(state_root)
+        enabled, directive = ops_state.github_actions_policy()
+        assert enabled is False
+        assert directive == f"{state} flags.github_actions_enabled=false"
+        assert approval_binding.github_actions_enabled("rrnewton/hermit") is False
+        assert unevaluated_head.actions_policy("rrnewton/hermit") == (
+            False,
+            directive,
+        )
+    finally:
+        if previous_path is not None:
+            os.environ[ops_state.PATH_ENV] = previous_path
+        if previous_parent is None:
+            os.environ.pop(ops_state.PARENT_ENV, None)
+        else:
+            os.environ[ops_state.PARENT_ENV] = previous_parent
+
+
 def test_both_tick_checkers_consult_the_same_local_flag(tmp_path: Path) -> None:
     state = tmp_path / ".ops-state.yaml"
     previous = os.environ.get(ops_state.PATH_ENV)

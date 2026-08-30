@@ -2158,12 +2158,46 @@ class HealthTickParentSyncTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         base = Path(self.temp.name)
+        self.base = base
         self.home = base / "home"
         self.repo = self.home / "work" / "dev-hermit"
         self.remote = base / "origin.git"
+        self.hermit_remote = base / "hermit-origin.git"
+        self.agent_utils_remote = base / "agent-utils-origin.git"
         self.bin = base / "bin"
         self.log = self.home / ".local" / "state" / "hermit-health-tick-invocations.log"
         self.lock = base / "parent-main.lock"
+
+        agent_utils = base / "agent-utils-source"
+        git(base, "init", "--initial-branch=main", str(agent_utils))
+        git(agent_utils, "config", "user.name", "Tick Test")
+        git(agent_utils, "config", "user.email", "tick@example.invalid")
+        (agent_utils / "bin").mkdir()
+        (agent_utils / "bin" / "tick-hub").write_text("pinned agent-utils\n")
+        git(agent_utils, "add", ".")
+        git(agent_utils, "commit", "-m", "seed agent-utils")
+        self.agent_utils_head = git(agent_utils, "rev-parse", "HEAD").stdout.strip()
+        git(base, "clone", "-q", "--bare", str(agent_utils), str(self.agent_utils_remote))
+
+        hermit = base / "hermit-source"
+        git(base, "init", "--initial-branch=main", str(hermit))
+        git(hermit, "config", "user.name", "Tick Test")
+        git(hermit, "config", "user.email", "tick@example.invalid")
+        (hermit / "README.md").write_text("pinned Hermit\n")
+        git(hermit, "add", "README.md")
+        git(hermit, "commit", "-m", "seed Hermit")
+        git(
+            hermit,
+            "-c",
+            "protocol.file.allow=always",
+            "submodule",
+            "add",
+            str(self.agent_utils_remote),
+            "agent-utils",
+        )
+        git(hermit, "commit", "-am", "pin agent-utils")
+        self.hermit_head = git(hermit, "rev-parse", "HEAD").stdout.strip()
+        git(base, "clone", "-q", "--bare", str(hermit), str(self.hermit_remote))
 
         self.repo.mkdir(parents=True)
         self.bin.mkdir()
@@ -2177,7 +2211,17 @@ class HealthTickParentSyncTests(unittest.TestCase):
         shutil.copy2(SOURCE / "scripts/parent-main-write", self.repo / "scripts/parent-main-write")
         shutil.copy2(SOURCE / "scripts/hermit-health-tick.sh", self.repo / "scripts/hermit-health-tick.sh")
         self.write_health_tick("old")
-        git(self.repo, "add", "scripts", "ci-hub")
+        git(
+            self.repo,
+            "-c",
+            "protocol.file.allow=always",
+            "submodule",
+            "add",
+            str(self.hermit_remote),
+            "hermit",
+        )
+        (self.repo / "agent-utils").symlink_to("hermit/agent-utils")
+        git(self.repo, "add", "scripts", "ci-hub", ".gitmodules", "hermit", "agent-utils")
         git(self.repo, "commit", "-m", "seed tick")
         git(self.repo, "remote", "add", "origin", str(self.remote))
         git(self.repo, "push", "-u", "origin", "main")
@@ -2190,6 +2234,8 @@ class HealthTickParentSyncTests(unittest.TestCase):
             os.environ,
             HOME=str(self.home),
             PATH=f"{self.bin}:{os.environ.get('PATH', '')}",
+            GIT_ALLOW_PROTOCOL="file",
+            HERMIT_HEALTH_TOOL_CACHE=str(base / "health-tool-cache"),
             HERMIT_PARENT_MAIN_LOCK_PATH=str(self.lock),
             HERMIT_PARENT_MAIN_NO_PROXY="1",
         )
@@ -2202,19 +2248,40 @@ class HealthTickParentSyncTests(unittest.TestCase):
         script = target / "ci-hub" / "bin" / "health-tick"
         script.write_text(
             "#!/usr/bin/env bash\n"
-            "mkdir -p .tick-hub\n"
-            "printf '%s\\n' tick > .tick-hub/fired-state\n"
-            f"printf 'NOTE: health-version={version} observed_head=%s\\n' \"$(git rev-parse HEAD)\"\n"
+            "set -eu\n"
+            "mkdir -p \"$DEV_HERMIT_PARENT/.tick-hub\"\n"
+            "printf '%s\\n' tick > \"$DEV_HERMIT_PARENT/.tick-hub/fired-state\"\n"
+            f"printf 'NOTE: health-version={version} tool_head=%s state_head=%s tool_root=%s state_root=%s\\n' "
+            "\"$(git -C \"$DEV_HERMIT_TOOL_ROOT\" rev-parse HEAD)\" "
+            "\"$(git -C \"$DEV_HERMIT_PARENT\" rev-parse HEAD)\" "
+            "\"$DEV_HERMIT_TOOL_ROOT\" \"$DEV_HERMIT_PARENT\"\n"
         )
         script.chmod(0o755)
 
-    def advance_remote(self, *, update_wrapper: bool = False) -> str:
+    def advance_remote(
+        self,
+        *,
+        update_wrapper: bool = False,
+        health_script: str | None = None,
+        extra_executables: dict[str, str] | None = None,
+    ) -> str:
         other = Path(self.temp.name) / "publisher"
         git(Path(self.temp.name), "clone", "-q", str(self.remote), str(other))
         git(other, "config", "user.name", "Other")
         git(other, "config", "user.email", "other@example.invalid")
-        self.write_health_tick("new", other)
+        if health_script is None:
+            self.write_health_tick("new", other)
+        else:
+            health_tick = other / "ci-hub" / "bin" / "health-tick"
+            health_tick.write_text(health_script)
+            health_tick.chmod(0o755)
         paths = ["ci-hub/bin/health-tick"]
+        for relative, content in (extra_executables or {}).items():
+            executable = other / relative
+            executable.parent.mkdir(parents=True, exist_ok=True)
+            executable.write_text(content)
+            executable.chmod(0o755)
+            paths.append(relative)
         if update_wrapper:
             wrapper = other / "scripts" / "hermit-health-tick.sh"
             wrapper.write_text(wrapper.read_text() + "# fetched wrapper version\n")
@@ -2227,6 +2294,42 @@ class HealthTickParentSyncTests(unittest.TestCase):
     def run_tick(self) -> subprocess.CompletedProcess[str]:
         return run(str(self.repo / "scripts/hermit-health-tick.sh"), cwd=self.repo, env=self.env)
 
+    def prime_cached_tool_root(self) -> tuple[str, Path, Path]:
+        target = self.advance_remote()
+        tick = self.repo / "ci-hub" / "bin" / "health-tick"
+        tick.write_text(tick.read_text() + "# local work\n")
+        result = self.run_tick()
+        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+        cached = Path(self.env["HERMIT_HEALTH_TOOL_CACHE"]) / "trees" / target
+        self.assertTrue(cached.is_dir())
+        return target, cached, tick
+
+    def make_cache_writable(self, cached: Path) -> None:
+        changed = run("chmod", "-R", "u+w", str(cached), cwd=self.repo)
+        self.assertEqual(0, changed.returncode, changed.stdout + changed.stderr)
+
+    def poison_same_size(self, path: Path, marker: Path) -> None:
+        original = path.read_bytes()
+        metadata = path.stat()
+        poison = (
+            "#!/usr/bin/env bash\n"
+            f"printf poison > {marker}\n"
+            "exit 0\n"
+        ).encode()
+        self.assertLessEqual(len(poison), len(original))
+        path.write_bytes(poison + b"#" * (len(original) - len(poison)))
+        os.utime(path, ns=(metadata.st_atime_ns, metadata.st_mtime_ns))
+
+    def assert_cached_tool_refused(self, marker: Path) -> None:
+        result = self.run_tick()
+        self.assertEqual(1, result.returncode, result.stdout + result.stderr)
+        self.assertIn("cached tool root", result.stderr)
+        self.assertIn("incomplete or dirty; refusing to repair it in place", result.stderr)
+        self.assertFalse(marker.exists())
+        self.assertFalse(
+            list(Path(self.env["HERMIT_HEALTH_TOOL_CACHE"]).glob(".run.*"))
+        )
+
     def test_clean_parent_fast_forwards_before_loading_health_tick(self) -> None:
         target = self.advance_remote(update_wrapper=True)
 
@@ -2237,7 +2340,7 @@ class HealthTickParentSyncTests(unittest.TestCase):
         log = self.log.read_text()
         self.assertIn(f"parent_sync_rc=0 before={self.before} after={target}", log)
         self.assertIn("state=fast-forwarded", log)
-        self.assertIn(f"health-version=new observed_head={target}", log)
+        self.assertIn(f"health-version=new tool_head={target} state_head={target}", log)
         self.assertNotIn("health-version=old", log)
         self.assertTrue(
             (self.repo / "scripts" / "hermit-health-tick.sh")
@@ -2275,7 +2378,7 @@ class HealthTickParentSyncTests(unittest.TestCase):
         self.assertIn(f"parent_sync_rc=0 before={self.before} after={target}", log)
         self.assertIn("state=fast-forwarded", log)
         self.assertIn("overlap=0", log)
-        self.assertIn(f"health-version=new observed_head={target}", log)
+        self.assertIn(f"health-version=new tool_head={target} state_head={target}", log)
         self.assertNotIn("component=parent-checkout-sync state=blocked", log)
 
     def test_overlapping_dirty_path_is_named_and_not_advanced(self) -> None:
@@ -2296,8 +2399,29 @@ class HealthTickParentSyncTests(unittest.TestCase):
             "incoming=ci-hub/bin/health-tick dirty=ci-hub/bin/health-tick",
             log,
         )
-        self.assertIn(f"health-version=old observed_head={self.before}", log)
-        self.assertNotIn("health-version=new", log)
+        self.assertIn(
+            f"health-version=new tool_head={target} state_head={self.before}", log
+        )
+        self.assertNotIn("health-version=old", log)
+        tool_root = Path(self.env["HERMIT_HEALTH_TOOL_CACHE"]) / "trees" / target
+        self.assertEqual(target, git(tool_root, "rev-parse", "HEAD").stdout.strip())
+        self.assertEqual(
+            self.hermit_head,
+            git(tool_root / "hermit", "rev-parse", "HEAD").stdout.strip(),
+        )
+        self.assertEqual(
+            self.agent_utils_head,
+            git(
+                tool_root / "hermit" / "agent-utils", "rev-parse", "HEAD"
+            ).stdout.strip(),
+        )
+        self.assertEqual("", git(tool_root, "status", "--porcelain=v1").stdout)
+        self.assertIn(
+            f"tool_root={self.env['HERMIT_HEALTH_TOOL_CACHE']}/.run.", log
+        )
+        self.assertFalse(
+            list(Path(self.env["HERMIT_HEALTH_TOOL_CACHE"]).glob(".run.*"))
+        )
 
     def test_diverged_parent_is_reported_without_reconciliation(self) -> None:
         (self.repo / "local.md").write_text("local\n")
@@ -2315,6 +2439,170 @@ class HealthTickParentSyncTests(unittest.TestCase):
         self.assertIn("requires a fast-forward", log)
         self.assertIn(f"before={local} after={local}", log)
         self.assertIn(f"target={target}", log)
+        self.assertIn(f"health-version=new tool_head={target} state_head={local}", log)
+
+    def test_dirty_cached_tool_root_is_refused_without_replacing_it(self) -> None:
+        target = self.advance_remote()
+        tick = self.repo / "ci-hub" / "bin" / "health-tick"
+        tick.write_text(tick.read_text() + "# local work\n")
+        cached = Path(self.env["HERMIT_HEALTH_TOOL_CACHE"]) / "trees" / target
+        cached.mkdir(parents=True)
+        marker = cached / "foreign-marker"
+        marker.write_text("do not replace\n")
+
+        result = self.run_tick()
+
+        self.assertEqual(1, result.returncode, result.stdout + result.stderr)
+        self.assertIn("cached tool root", result.stderr)
+        self.assertIn("incomplete or dirty; refusing to repair it in place", result.stderr)
+        self.assertEqual("do not replace\n", marker.read_text())
+        self.assertEqual(self.before, git(self.repo, "rev-parse", "HEAD").stdout.strip())
+        self.assertTrue(tick.read_text().endswith("# local work\n"))
+
+    def test_corrupt_cached_index_is_refused_without_repair(self) -> None:
+        _target, cached, _tick = self.prime_cached_tool_root()
+        self.make_cache_writable(cached)
+        git_dir = Path(
+            git(cached, "rev-parse", "--absolute-git-dir").stdout.strip()
+        )
+        index = git_dir / "index"
+        index.write_bytes(b"corrupt-index\n")
+        marker = self.base / "corrupt-index-ran"
+
+        self.assert_cached_tool_refused(marker)
+
+        self.assertEqual(b"corrupt-index\n", index.read_bytes())
+
+    def test_assume_unchanged_cannot_hide_poisoned_tool_bytes(self) -> None:
+        _target, cached, _tick = self.prime_cached_tool_root()
+        self.make_cache_writable(cached)
+        executable = cached / "ci-hub" / "bin" / "health-tick"
+        marker = self.base / "assume-unchanged-poison-ran"
+        git(cached, "update-index", "--assume-unchanged", "ci-hub/bin/health-tick")
+        self.poison_same_size(executable, marker)
+        self.assertEqual("", git(cached, "status", "--porcelain=v1").stdout)
+
+        self.assert_cached_tool_refused(marker)
+
+    def test_skip_worktree_and_stat_cache_cannot_hide_poisoned_tool_bytes(self) -> None:
+        _target, cached, _tick = self.prime_cached_tool_root()
+        self.make_cache_writable(cached)
+        executable = cached / "ci-hub" / "bin" / "health-tick"
+        marker = self.base / "skip-worktree-poison-ran"
+        git(cached, "status", "--porcelain=v1")
+        git(cached, "update-index", "--skip-worktree", "ci-hub/bin/health-tick")
+        self.poison_same_size(executable, marker)
+        self.assertEqual("", git(cached, "status", "--porcelain=v1").stdout)
+
+        self.assert_cached_tool_refused(marker)
+
+    def test_nested_dirt_and_ignore_config_cannot_hide_agent_utils_poison(self) -> None:
+        _target, cached, _tick = self.prime_cached_tool_root()
+        self.make_cache_writable(cached)
+        nested = cached / "hermit" / "agent-utils"
+        (nested / "bin" / "tick-hub").write_text("poisoned agent-utils\n")
+        git(cached, "config", "submodule.hermit.ignore", "all")
+        git(cached / "hermit", "config", "submodule.agent-utils.ignore", "all")
+        self.assertEqual("", git(cached, "status", "--porcelain=v1").stdout)
+        marker = self.base / "nested-poison-ran"
+
+        self.assert_cached_tool_refused(marker)
+
+    def test_wrong_nested_head_is_refused_even_when_parent_status_is_hidden(self) -> None:
+        _target, cached, _tick = self.prime_cached_tool_root()
+        self.make_cache_writable(cached)
+        nested = cached / "hermit" / "agent-utils"
+        git(nested, "config", "user.name", "Cache Attacker")
+        git(nested, "config", "user.email", "cache@example.invalid")
+        git(nested, "commit", "--allow-empty", "-m", "wrong nested head")
+        git(cached, "config", "submodule.hermit.ignore", "all")
+        git(cached / "hermit", "config", "submodule.agent-utils.ignore", "all")
+        self.assertEqual("", git(cached, "status", "--porcelain=v1").stdout)
+        marker = self.base / "wrong-nested-head-ran"
+
+        self.assert_cached_tool_refused(marker)
+
+    def test_missing_parent_hermit_gitlink_is_refused_loudly(self) -> None:
+        publisher = self.base / "missing-hermit-publisher"
+        git(self.base, "clone", "-q", str(self.remote), str(publisher))
+        git(publisher, "config", "user.name", "Other")
+        git(publisher, "config", "user.email", "other@example.invalid")
+        git(publisher, "rm", "-f", "agent-utils", "hermit", ".gitmodules")
+        git(publisher, "commit", "-m", "remove required Hermit gitlink")
+        git(publisher, "push", "-q", "origin", "HEAD:main")
+        target = git(publisher, "rev-parse", "HEAD").stdout.strip()
+        tick = self.repo / "ci-hub" / "bin" / "health-tick"
+        tick.write_text(tick.read_text() + "# local work\n")
+
+        result = self.run_tick()
+
+        self.assertEqual(1, result.returncode, result.stdout + result.stderr)
+        self.assertIn(
+            f"parent commit {target} has no required mode-160000 Hermit gitlink",
+            result.stderr,
+        )
+        self.assertFalse(
+            list(Path(self.env["HERMIT_HEALTH_TOOL_CACHE"]).glob(".staging.*"))
+        )
+
+    def test_concurrent_cache_replacement_cannot_change_private_run(self) -> None:
+        started = self.repo / ".tick-hub" / "private-started"
+        proceed = self.repo / ".tick-hub" / "private-continue"
+        poison_ran = self.repo / ".tick-hub" / "cache-poison-ran"
+        health_script = (
+            "#!/usr/bin/env bash\n"
+            "set -eu\n"
+            "mkdir -p \"$DEV_HERMIT_PARENT/.tick-hub\"\n"
+            ": > \"$DEV_HERMIT_PARENT/.tick-hub/private-started\"\n"
+            "while [[ ! -e \"$DEV_HERMIT_PARENT/.tick-hub/private-continue\" ]]; do sleep 0.02; done\n"
+            "\"$DEV_HERMIT_TOOL_ROOT/ci-hub/bin/private-payload\"\n"
+        )
+        payload = (
+            "#!/usr/bin/env bash\n"
+            "printf 'NOTE: private-payload=safe tool_root=%s\\n' \"$DEV_HERMIT_TOOL_ROOT\"\n"
+        )
+        target = self.advance_remote(
+            health_script=health_script,
+            extra_executables={"ci-hub/bin/private-payload": payload},
+        )
+        local_tick = self.repo / "ci-hub" / "bin" / "health-tick"
+        local_tick.write_text(local_tick.read_text() + "# local work\n")
+        process = subprocess.Popen(
+            [str(self.repo / "scripts" / "hermit-health-tick.sh"), "--emit-output"],
+            cwd=self.repo,
+            env=self.env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        try:
+            deadline = time.monotonic() + 15
+            while not started.exists() and process.poll() is None:
+                if time.monotonic() >= deadline:
+                    self.fail("private tool run did not reach the concurrency barrier")
+                time.sleep(0.02)
+            self.assertIsNone(process.poll())
+            cached = Path(self.env["HERMIT_HEALTH_TOOL_CACHE"]) / "trees" / target
+            self.make_cache_writable(cached)
+            cached_payload = cached / "ci-hub" / "bin" / "private-payload"
+            cached_payload.write_text(
+                "#!/usr/bin/env bash\n"
+                ": > \"$DEV_HERMIT_PARENT/.tick-hub/cache-poison-ran\"\n"
+            )
+            cached_payload.chmod(0o755)
+            proceed.touch()
+            stdout, stderr = process.communicate(timeout=15)
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.communicate()
+
+        self.assertEqual(0, process.returncode, stdout + stderr)
+        self.assertIn("private-payload=safe", stdout)
+        self.assertFalse(poison_ran.exists())
+        self.assertFalse(
+            list(Path(self.env["HERMIT_HEALTH_TOOL_CACHE"]).glob(".run.*"))
+        )
 
 
 if __name__ == "__main__":

@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any, NoReturn
 
 ROOT = Path(__file__).resolve().parents[2]
+STATE_ROOT = Path(os.environ.get("DEV_HERMIT_PARENT", ROOT)).resolve()
 sys.path.insert(0, str(ROOT / "scripts"))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "runners"))
 # The TaskGraph binding is stated, not inherited.  `tg` with no database named
@@ -116,7 +117,7 @@ MERGE_GATE_AUTHORITY_TIMEOUT_SECS = float(
 MERGE_GATE_AUTHORITY_CHECKER = (
     ROOT / "hermit" / "scripts" / "configure-merge-gate-ruleset.sh"
 )
-DEFAULT_AGENT_SNAPSHOT = ROOT / "ignored" / "ci-hub" / "agent-snapshot.json"
+DEFAULT_AGENT_SNAPSHOT = STATE_ROOT / "ignored" / "ci-hub" / "agent-snapshot.json"
 @dataclass(frozen=True)
 class TaskRecord:
     id: str
@@ -341,7 +342,9 @@ def github_main_gate() -> int:
     return 1 if state in {"red", "none", "degraded", "stale-pending"} else 0
 
 
-def pull_request_gate() -> int:
+def pull_request_gate(
+    *, census_cache_dir: Path = pr_status.DEFAULT_CENSUS_CACHE_DIR
+) -> int:
     # Query each repo under a bounded budget and keep whatever succeeds: one slow
     # or blocked repo must not discard the other's real reds, and the gate must
     # resolve before tick-hub's 30s guillotine so the failure is reported (with a
@@ -358,7 +361,11 @@ def pull_request_gate() -> int:
             time.monotonic() - started, len(repos) - index - 1
         )
         try:
-            status = pr_status.fetch_repo_status(repo, timeout=budget)
+            status = pr_status.fetch_repo_status(
+                repo,
+                timeout=budget,
+                census_cache_dir=census_cache_dir,
+            )
             statuses.append(status)
             measured_repos.append(repo)
             if not getattr(status, "available", True):
@@ -589,7 +596,7 @@ def pull_request_gate() -> int:
 # behind a main that thirteen agents are advancing is normal; being unable to
 # publish for an hour is not.
 SNAPSHOT_DEFERRAL_BUDGET_SECS = 3600
-SNAPSHOT_DEFERRAL_STATE = ROOT / ".tick-hub" / "primary-snapshot-deferral.json"
+SNAPSHOT_DEFERRAL_STATE = STATE_ROOT / ".tick-hub" / "primary-snapshot-deferral.json"
 PRIMARY_SNAPSHOT_INNER_BUDGET_SECS = float(
     os.environ.get("CI_HUB_PRIMARY_SNAPSHOT_BUDGET", "24")
 )
@@ -621,20 +628,22 @@ def _write_deferral(path: Path, since: float | None) -> None:
 
 def primary_snapshot_gate(
     *,
+    root: Path | None = None,
     state_path: Path | None = None,
     now: float | None = None,
     budget_secs: int = SNAPSHOT_DEFERRAL_BUDGET_SECS,
 ) -> int:
     output, errors = StringIO(), StringIO()
+    target_root = root or STATE_ROOT
     result = primary_checkout.checkout_fresh(
-        primary_checkout.default_root(),
+        target_root,
         publish_parent=True,
         strict=True,
         deadline_secs=PRIMARY_SNAPSHOT_INNER_BUDGET_SECS,
         out=output,
         err=errors,
     )
-    path = state_path or SNAPSHOT_DEFERRAL_STATE
+    path = state_path or target_root / ".tick-hub" / "primary-snapshot-deferral.json"
     moment = time.time() if now is None else now
     # A known-dirty exception is part of the snapshot fact, not incidental log
     # noise.  Preserve both streams so a later refusal cannot hide the earlier
@@ -2107,11 +2116,44 @@ def build_parser() -> argparse.ArgumentParser:
     _add_active_work_options(active_work)
     active_work.set_defaults(_command_parser=active_work)
 
+    cache_agents = subparsers.add_parser(
+        "cache-agents",
+        help="cache the current ORC agent snapshot",
+        description="Cache the current ORC agent snapshot.",
+    )
+    cache_agents.add_argument(
+        "--snapshot-file",
+        type=Path,
+        default=DEFAULT_AGENT_SNAPSHOT,
+        help="destination for the validated snapshot (default: %(default)s)",
+    )
+
+    pull_requests = subparsers.add_parser(
+        "pull-requests",
+        help="report pull-request validation and queue health",
+        description="Report pull-request validation and queue health.",
+    )
+    pull_requests.add_argument(
+        "--census-cache-dir",
+        type=Path,
+        default=pr_status.DEFAULT_CENSUS_CACHE_DIR,
+        help="directory for the bounded all-open PR census cache",
+    )
+
+    primary_snapshot = subparsers.add_parser(
+        "primary-snapshot",
+        help="refresh the primary checkout snapshot when safe",
+        description="Refresh the primary checkout snapshot when safe.",
+    )
+    primary_snapshot.add_argument(
+        "--state-root",
+        type=Path,
+        default=STATE_ROOT,
+        help="mutable primary checkout and deferral-state root",
+    )
+
     commands = (
-        ("cache-agents", "cache the current ORC agent snapshot"),
         ("github-main", "report hosted workflow state for current main"),
-        ("pull-requests", "report pull-request validation and queue health"),
-        ("primary-snapshot", "refresh the primary checkout snapshot when safe"),
         ("agents", "report stuck or broken agents from the ORC snapshot"),
         ("queue-health", "report runner queue depth, waits, and stale runs"),
         ("memory-skill-sync", "check local memory skill mirrors for contradictions"),
@@ -2133,11 +2175,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     parsed = build_parser().parse_args(argv)
     if parsed.command == "active-work":
         return _run_active_work(parsed, parsed._command_parser)
+    if parsed.command == "cache-agents":
+        return cache_agent_snapshot(snapshot_file=parsed.snapshot_file)
+    if parsed.command == "pull-requests":
+        return pull_request_gate(census_cache_dir=parsed.census_cache_dir)
+    if parsed.command == "primary-snapshot":
+        return primary_snapshot_gate(root=parsed.state_root.resolve())
     commands = {
-        "cache-agents": cache_agent_snapshot,
         "github-main": github_main_gate,
-        "pull-requests": pull_request_gate,
-        "primary-snapshot": primary_snapshot_gate,
         "agents": agent_gate,
         "queue-health": queue_health_gate,
         "memory-skill-sync": memory_skill_sync_gate,

@@ -78,6 +78,7 @@ from pathlib import Path
 from typing import Callable, Mapping, Sequence
 
 ROOT = Path(__file__).resolve().parents[2]
+STATE_ROOT = Path(os.environ.get("DEV_HERMIT_PARENT", ROOT)).resolve()
 sys.path.insert(0, str(ROOT / "ci-hub"))
 sys.path.insert(0, str(ROOT / "ci-hub" / "ledger"))
 import validate_rows as canonical_ledger  # noqa: E402
@@ -110,7 +111,7 @@ DEFAULT_CENSUS_TTL_SECS = min(
     ),
     CENSUS_FRESHNESS_BOUND_SECS,
 )
-DEFAULT_CENSUS_CACHE_DIR = ROOT / "ignored/ci-hub/pr-census-cache"
+DEFAULT_CENSUS_CACHE_DIR = STATE_ROOT / "ignored/ci-hub/pr-census-cache"
 
 # Timeout basis (derived, not a plausible constant):
 #   planner engine — the binding cost is the FETCH, not the conflict analysis.
@@ -1459,6 +1460,7 @@ def fetch_repo_status(
     warn_threshold: int = DEFAULT_WARN_THRESHOLD,
     *,
     timeout: float | None = None,
+    census_cache_dir: Path = DEFAULT_CENSUS_CACHE_DIR,
 ) -> RepoStatus:
     """Default single-repo query: the robust gh engine, self-proxied.
 
@@ -1469,7 +1471,10 @@ def fetch_repo_status(
     failure for zero open PRs.
     """
     return fetch_repo_status_gh(
-        repo, net_wrapper=resolve_net_wrapper(None), timeout=timeout
+        repo,
+        net_wrapper=resolve_net_wrapper(None),
+        timeout=timeout,
+        census_cache_dir=census_cache_dir,
     )
 
 
@@ -1479,6 +1484,7 @@ def fetch_repo_status_gh(
     net_wrapper: Sequence[str],
     gh_cmd: str = "gh",
     timeout: float | None = None,
+    census_cache_dir: Path = DEFAULT_CENSUS_CACHE_DIR,
 ) -> RepoStatus:
     """Query open-PR health via one rollup call plus bounded exact-job lookups.
 
@@ -1513,6 +1519,7 @@ def fetch_repo_status_gh(
             net_wrapper=net_wrapper,
             gh_cmd=gh_cmd,
             timeout=remaining(),
+            cache_dir=census_cache_dir,
         )
     except RepoUnavailable as error:
         # The rare all-open census is not permission to throw away a successful

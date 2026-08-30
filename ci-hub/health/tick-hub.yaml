@@ -59,7 +59,7 @@ reminders:
   - name: merge_gate_refire_due
     cadence_secs: 3600
     gate:
-      cmd: python3 ci-hub/health/gate_refire.py --repo rrnewton/hermit --gate
+      cmd: python3 ci-hub/health/gate_refire.py --repo rrnewton/hermit --gate --state "$DEV_HERMIT_PARENT/.tick-hub/gate-refire-due.json"
       when: failure
       capture: true
     emit:
@@ -113,7 +113,7 @@ reminders:
   - name: slot_agent_parity
     cadence_secs: 3600
     gate:
-      cmd: python3 ci-hub/health/slot_agent_parity.py --gate
+      cmd: python3 ci-hub/health/slot_agent_parity.py --gate --root "$DEV_HERMIT_PARENT"
       when: failure
       capture: true
     emit:
@@ -142,7 +142,7 @@ reminders:
   - name: deleted_tool_absent
     cadence_secs: 3600
     gate:
-      cmd: python3 ci-hub/health/deleted_tool_absent.py --root .
+      cmd: python3 ci-hub/health/deleted_tool_absent.py --root "$DEV_HERMIT_PARENT"
       when: failure
       capture: true
     emit:
@@ -159,7 +159,7 @@ reminders:
       # over the complete current set, never a sum of cached per-slot values.
       # This deduplicates reflinks within the set and refuses an unavailable or
       # physically impossible result instead of printing an invented total.
-      cmd: python3 ci-hub/health/slot_disk_residue.py --gate --size-timeout 5
+      cmd: python3 ci-hub/health/slot_disk_residue.py --gate --size-timeout 5 --root "$DEV_HERMIT_PARENT" --state "$DEV_HERMIT_PARENT/.tick-hub/slot-disk-residue-state.json" --registry "$DEV_HERMIT_PARENT/worktree-state.json"
       when: failure
       capture: true
     emit:
@@ -179,7 +179,7 @@ reminders:
     cadence_secs: 3600
     gate:
       timeout_secs: 120
-      cmd: ci-hub/bin/wrkslots audit --gate
+      cmd: ci-hub/bin/wrkslots --project-root "$DEV_HERMIT_PARENT" audit --gate
       when: failure
       capture: true
     emit:
@@ -270,7 +270,7 @@ reminders:
   - name: ledger_spool_backlog
     cadence_secs: 3600
     gate:
-      cmd: python3 ci-hub/health/ledger_spool_backlog.py --gate
+      cmd: python3 ci-hub/health/ledger_spool_backlog.py --root "$DEV_HERMIT_PARENT" --gate
       when: failure
       capture: true
     emit:
@@ -283,7 +283,7 @@ reminders:
   - name: series_spool_backlog
     cadence_secs: 3600
     gate:
-      cmd: python3 ci-hub/health/ledger_spool_backlog.py --store series --gate
+      cmd: python3 ci-hub/health/ledger_spool_backlog.py --root "$DEV_HERMIT_PARENT" --store series --gate
       when: failure
       capture: true
     emit:
@@ -308,7 +308,7 @@ reminders:
     cadence_secs: 86400
     gate:
       timeout_secs: 30
-      cmd: python3 ci-hub/series/pressure_schedule.py launch
+      cmd: python3 ci-hub/series/pressure_schedule.py launch --state-root "$DEV_HERMIT_PARENT"
       when: failure
       capture: true
     emit:
@@ -367,7 +367,7 @@ reminders:
   - name: ledger_referenced_objects
     cadence_secs: 21600
     gate:
-      cmd: python3 ci-hub/health/ledger_referenced_objects.py
+      cmd: python3 ci-hub/health/ledger_referenced_objects.py --ledger "$DEV_HERMIT_PARENT/ledger" --root "$DEV_HERMIT_PARENT"
       when: failure
       capture: true
     emit:
@@ -385,7 +385,7 @@ reminders:
   - name: validate_wall_regression
     cadence_secs: 3600
     gate:
-      cmd: python3 ci-hub/main-metrics/wall_series.py --gate-regression
+      cmd: python3 ci-hub/main-metrics/wall_series.py --ledger "$DEV_HERMIT_PARENT/ledger" --repo "$DEV_HERMIT_PARENT/hermit" --reverie-repo "$DEV_HERMIT_PARENT/reverie" --gate-regression
       when: failure
       capture: true
     emit:
@@ -401,7 +401,7 @@ reminders:
   - name: validate_wall_series_readiness
     cadence_secs: 86400
     gate:
-      cmd: python3 ci-hub/main-metrics/wall_series.py --readiness
+      cmd: python3 ci-hub/main-metrics/wall_series.py --ledger "$DEV_HERMIT_PARENT/ledger" --repo "$DEV_HERMIT_PARENT/hermit" --reverie-repo "$DEV_HERMIT_PARENT/reverie" --readiness
       when: failure
       capture: true
     emit:
@@ -414,7 +414,7 @@ reminders:
   - name: owner_tooling_directives
     cadence_secs: 3600
     gate:
-      cmd: python3 ci-hub/directives/check.py --deadline-secs 180
+      cmd: python3 ci-hub/directives/check.py --ledger "$DEV_HERMIT_TOOL_ROOT/ci-hub/directives/ledger.json" --output "$DEV_HERMIT_PARENT/ignored/ci-hub/directives/latest.json" --state-root "$DEV_HERMIT_PARENT" --deadline-secs 180
       timeout_secs: 195
       when: failure
       capture: true
@@ -425,12 +425,14 @@ reminders:
         component: owner-tooling-directives
       title: "owner tooling directives need action: {summary}"
 
-  # THE TICK POLICES ITS OWN CODE. It executes from the shared parent WORKING
-  # TREE (hermitOperationalTick does `cd <parent> && ./ci-hub/bin/health-tick`),
-  # and the parent is chronically behind origin/main because it cannot
-  # fast-forward while other agents hold dirty paths. A behind-checkout displays
-  # LANDED content as modified, so `git restore` -- an entirely ordinary cleanup
-  # command -- silently rewinds live tick code. That happened TWICE to
+  # THE TICK POLICES ITS OWN CODE. Production now executes code and config from
+  # an immutable checkout of freshly resolved origin/main while every mutable
+  # subject is explicitly rooted at DEV_HERMIT_PARENT. This gate remains a
+  # fail-closed defense for direct/manual invocation and damaged cache content.
+  # Before that split, the parent was chronically behind origin/main because it
+  # could not fast-forward while other agents held dirty paths. A behind-checkout
+  # displayed LANDED content as modified, so `git restore` -- an entirely
+  # ordinary cleanup command -- silently rewound live tick code. That happened TWICE to
   # unpushed_parent_commits on 2026-08-08; the second time the whole tick went
   # 4s -> 36s and the detector for unpushed work went blind, with `git status`
   # reporting the file CLEAN throughout.
@@ -501,7 +503,7 @@ reminders:
   - name: unpushed_parent_commits
     cadence_secs: 3600
     gate:
-      cmd: ./ci-hub/health/unpushed_parent_commits.py --scope all
+      cmd: ./ci-hub/health/unpushed_parent_commits.py --scope all --root "$DEV_HERMIT_PARENT"
       when: failure
       capture: true
     emit:
@@ -534,7 +536,7 @@ reminders:
   - name: primary_checkout_snapshot
     cadence_secs: 3600
     gate:
-      cmd: ./ci-hub/health/operational_health.py primary-snapshot
+      cmd: ./ci-hub/health/operational_health.py primary-snapshot --state-root "$DEV_HERMIT_PARENT"
       when: failure
       capture: true
     emit:
@@ -562,7 +564,7 @@ reminders:
   - name: reverie_pin_lag_note
     cadence_secs: 3600
     gate:
-      cmd: ./ci-hub/health/reverie_pin_lag.py --gate --min-lag 1 --max-lag 4
+      cmd: ./ci-hub/health/reverie_pin_lag.py --gate --min-lag 1 --max-lag 4 --root "$DEV_HERMIT_PARENT"
       when: failure
       capture: true
     emit:
@@ -574,7 +576,7 @@ reminders:
   - name: reverie_pin_lag_escalation
     cadence_secs: 3600
     gate:
-      cmd: ./ci-hub/health/reverie_pin_lag.py --gate --min-lag 5
+      cmd: ./ci-hub/health/reverie_pin_lag.py --gate --min-lag 5 --root "$DEV_HERMIT_PARENT"
       when: failure
       capture: true
     emit:
@@ -620,7 +622,7 @@ reminders:
   - name: pull_request_health
     cadence_secs: 3600
     gate:
-      cmd: ./ci-hub/health/operational_health.py pull-requests
+      cmd: ./ci-hub/health/operational_health.py pull-requests --census-cache-dir "$DEV_HERMIT_PARENT/ignored/ci-hub/pr-census-cache"
       # 90s, against a measured 19.49s wall. Raised from the 30s
       # DEFAULT_GATE_TIMEOUT_SECS on 2026-08-20 after per-gate measurement
       # (experiments/tick-cost-budget_20260820/) found this gate had a 1.5x
@@ -732,7 +734,7 @@ reminders:
   - name: ci_lane_saturation
     cadence_secs: 3600
     gate:
-      cmd: ./ci-hub/runners/lane_health.py tick
+      cmd: ./ci-hub/runners/lane_health.py tick --store "$DEV_HERMIT_PARENT/ignored/ci-hub/lane-health.jsonl"
       when: failure
       capture: true
     emit:
@@ -792,7 +794,7 @@ reminders:
   - name: agent_container_lifecycle
     cadence_secs: 3600
     gate:
-      cmd: ./ci-hub/health/bounded_gate.py --name agent_container_lifecycle --timeout-secs 45 -- ./scripts/agent-podman.rs reconcile --agents-json ignored/ci-hub/agent-snapshot.json
+      cmd: ./ci-hub/health/bounded_gate.py --name agent_container_lifecycle --timeout-secs 45 -- ./scripts/agent-podman.rs reconcile --agents-json "$DEV_HERMIT_PARENT/ignored/ci-hub/agent-snapshot.json"
       timeout_secs: 55
       when: failure
       capture: true
@@ -982,7 +984,7 @@ reminders:
   - name: gate_runner_presence
     cadence_secs: 3600
     gate:
-      cmd: python3 ci-hub/health/gate_runner_presence.py --record .tick-hub/gate-runner-presence.json
+      cmd: python3 ci-hub/health/gate_runner_presence.py --record "$DEV_HERMIT_PARENT/.tick-hub/gate-runner-presence.json"
       when: failure
       capture: true
     emit:
@@ -1039,7 +1041,7 @@ reminders:
       # --writers-state is what makes the GROWTH trigger work: it remembers each
       # fd's size between ticks. Without it only the size trigger is live, and a
       # runaway is caught late rather than early.
-      cmd: python3 ci-hub/health/btrfs_headroom.py --gate --mount /data --writers --writers-min-gib 8 --writers-state .tick-hub/btrfs-headroom-writers.json
+      cmd: python3 ci-hub/health/btrfs_headroom.py --gate --mount /data --writers --writers-min-gib 8 --writers-state "$DEV_HERMIT_PARENT/.tick-hub/btrfs-headroom-writers.json"
       when: failure
       capture: true
     emit:

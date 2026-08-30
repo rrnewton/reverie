@@ -34,6 +34,8 @@ set -uo pipefail
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 launcher=$here/../launch_publish_backlog.sh
 work=$(mktemp -d "${TMPDIR:-/tmp}/launch-publish-test.XXXXXX")
+tool_root=$(cd -- "$here/../../.." && pwd)
+state_root=$work/state-root
 trap 'rm -rf "$work"' EXIT
 fails=0
 
@@ -46,7 +48,7 @@ check_absent() { # label  forbidden-substring  file
 }
 
 # --- stub bin: a systemd-run that records its argv and a gh that merely exists.
-mkdir -p "$work/bin" "$work/ghdir" "$work/logs"
+mkdir -p "$work/bin" "$work/ghdir" "$state_root"
 cat >"$work/bin/systemd-run" <<'STUB'
 #!/usr/bin/env bash
 printf '%s\n' "$@" > "$SYSTEMD_RUN_ARGV_SINK"
@@ -61,8 +63,9 @@ run_launcher() { # script  extra-PATH-dir  -> writes argv to $work/argv, stdout 
   local script=$1 extra=${2:-}
   : > "$work/argv"
   SYSTEMD_RUN_ARGV_SINK="$work/argv" \
-  LEDGER_PUBLISH_LOG_DIR="$work/logs" \
-  PATH="$work/bin${extra:+:$extra}:/usr/bin:/bin" \
+  DEV_HERMIT_PARENT="$state_root" \
+  LEDGER_PUBLISH_GH_BIN="${extra:+$extra/gh}" \
+    PATH="$work/bin${extra:+:$extra}:/usr/bin:/bin" \
     bash "$script" > "$work/out" 2>&1
 }
 
@@ -71,9 +74,13 @@ run_launcher "$launcher" "$work/ghdir"
 check "launch reported"                 "state=launched"                       "$work/out"
 check "1. PATH handed to the unit"      "--setenv=PATH="                       "$work/argv"
 check "1. that PATH contains gh's dir"  "$work/ghdir"                          "$work/argv"
-check "2. stdout captured to a file"    "StandardOutput=append:$work/logs"     "$work/argv"
-check "2. stderr captured to a file"    "StandardError=append:$work/logs"      "$work/argv"
-check "log path named to the caller"    "$work/logs/ledger-publish-backlog.log" "$work/out"
+check "2. stdout captured in state root" "StandardOutput=append:$state_root/ignored/ci-hub" "$work/argv"
+check "2. stderr captured in state root" "StandardError=append:$state_root/ignored/ci-hub" "$work/argv"
+check "log path named to the caller"    "$state_root/ignored/ci-hub/ledger-publish-backlog.log" "$work/out"
+check "tool cwd is immutable root"      "--working-directory=$tool_root"       "$work/argv"
+check "state root is explicit"          "--setenv=DEV_HERMIT_PARENT=$state_root" "$work/argv"
+check "tool root is explicit"           "--setenv=DEV_HERMIT_TOOL_ROOT=$tool_root" "$work/argv"
+check "publisher code comes from tool"  "$tool_root/ci-hub/ledger/publish_backlog.py" "$work/argv"
 
 echo "== FIXED launcher, gh ABSENT: must refuse rather than launch a doomed sweep =="
 run_launcher "$launcher" ""
@@ -90,13 +97,16 @@ echo "== BASELINE (pre-fix) launcher: every positive above must FAIL here =="
 # Reconstruct the invocation as it stood before this change: no --setenv, no
 # StandardOutput/StandardError, and the launcher's own stderr discarded.
 baseline=$work/baseline.sh
-sed -e 's|^launch_error=\$(systemd-run|launch_error=$(systemd-run|' "$launcher" > "$baseline"
+cp "$launcher" "$baseline"
 python3 - "$baseline" <<'PY'
 import re, sys, pathlib
 p = pathlib.Path(sys.argv[1]); s = p.read_text()
 for line in ('    --property="StandardOutput=append:$LOG" \\\n',
              '    --property="StandardError=append:$LOG" \\\n',
-             '    --setenv="PATH=$UNIT_PATH" \\\n'):
+             '    --working-directory="$TOOL_ROOT" \\\n',
+             '    --setenv="PATH=$UNIT_PATH" \\\n',
+             '    --setenv="DEV_HERMIT_PARENT=$STATE_ROOT" \\\n',
+             '    --setenv="DEV_HERMIT_TOOL_ROOT=$TOOL_ROOT" \\\n'):
     assert line in s, f"baseline reconstruction anchor missing: {line!r}"
     s = s.replace(line, '', 1)
 p.write_text(s)
@@ -106,6 +116,7 @@ check        "baseline still launches"        "state=launched"    "$work/out"
 check_absent "baseline hands NO PATH"         "--setenv=PATH="    "$work/argv"
 check_absent "baseline captures NO stdout"    "StandardOutput="   "$work/argv"
 check_absent "baseline captures NO stderr"    "StandardError="    "$work/argv"
+check_absent "baseline carries NO state root" "DEV_HERMIT_PARENT" "$work/argv"
 
 echo
 if [[ $fails -eq 0 ]]; then

@@ -13,6 +13,8 @@ usage: ci-hub/bin/agent-tool <dagrun|pr-landing-planner|safe-ci-dag-runner|tick-
 Run one agent-utils tool from the commit selected by dev-hermit's Hermit pin.
 Pin authority is DEV_HERMIT_TOOL_ROOT's exact HEAD when set, otherwise a fresh
 parent origin/main fetch. DEV_HERMIT_PARENT may name a separate state checkout.
+Missing Python dependencies use CI_HUB_AGENT_TOOL_CACHE, or the user's XDG cache;
+the cache must be outside both the immutable tool root and mutable state root.
 For that tool's options, choose its name above and append --help.
 EOF
 }
@@ -49,8 +51,16 @@ STATE_ROOT_INPUT=${DEV_HERMIT_PARENT:-$SCRIPT_ROOT}
 if ! ROOT=$(git -C "$STATE_ROOT_INPUT" rev-parse --show-toplevel 2>/dev/null); then
     die "DEV_HERMIT_PARENT '$STATE_ROOT_INPUT' is not a dev-hermit Git checkout"
 fi
-HERMIT="$ROOT/hermit"
-AGENT_UTILS="$ROOT/agent-utils"
+TOOL_ROOT_WAS_EXPLICIT=0
+[[ -n ${DEV_HERMIT_TOOL_ROOT:-} ]] && TOOL_ROOT_WAS_EXPLICIT=1
+TOOL_ROOT_INPUT=${DEV_HERMIT_TOOL_ROOT:-$SCRIPT_ROOT}
+if ! TOOL_ROOT=$(git -C "$TOOL_ROOT_INPUT" rev-parse --show-toplevel 2>/dev/null); then
+    die "DEV_HERMIT_TOOL_ROOT '$TOOL_ROOT_INPUT' is not a dev-hermit Git checkout"
+fi
+export DEV_HERMIT_PARENT=$ROOT
+export DEV_HERMIT_TOOL_ROOT=$TOOL_ROOT
+HERMIT="$TOOL_ROOT/hermit"
+AGENT_UTILS="$TOOL_ROOT/agent-utils"
 AGENT_UTILS_LINK_TARGET="hermit/agent-utils"
 
 run_networked() {
@@ -144,13 +154,10 @@ arm_pin_source_cleanup() {
 }
 
 select_pin_source() {
-    local pin_root_input fetch_ref remote_listing remote_url remote_ref extra
+    local fetch_ref remote_listing remote_url remote_ref extra
     local -a remote_lines
-    if [[ -n ${DEV_HERMIT_TOOL_ROOT:-} ]]; then
-        pin_root_input=$DEV_HERMIT_TOOL_ROOT
-        if ! PIN_ROOT=$(git -C "$pin_root_input" rev-parse --show-toplevel 2>/dev/null); then
-            die "DEV_HERMIT_TOOL_ROOT '$pin_root_input' is not a dev-hermit Git checkout"
-        fi
+    if [[ $TOOL_ROOT_WAS_EXPLICIT == 1 ]]; then
+        PIN_ROOT=$TOOL_ROOT
         if ! PIN_SOURCE_COMMIT=$(git -C "$PIN_ROOT" rev-parse --verify 'HEAD^{commit}' 2>/dev/null); then
             die "cannot resolve immutable HEAD in DEV_HERMIT_TOOL_ROOT $PIN_ROOT"
         fi
@@ -163,7 +170,7 @@ select_pin_source() {
     # overwrite another agent's work. Fetch main into a process-private ref and
     # immediately collapse that mutable ref to one exact commit. Never derive a
     # reviewed tool pin from the stale state checkout's HEAD.
-    PIN_ROOT=$ROOT
+    PIN_ROOT=$TOOL_ROOT
     fetch_ref="refs/ci-hub/agent-tool-pin/${BASHPID}-${RANDOM}"
     if ! remote_url=$(git -C "$PIN_ROOT" remote get-url origin 2>/dev/null); then
         die "cannot resolve the agent-utils pin: $PIN_ROOT has no readable origin fetch URL; stale local HEAD was not used"
@@ -219,18 +226,10 @@ if [[ $PIN_ROOT != "$ROOT" || $PIN_SOURCE_COMMIT != "$STATE_PARENT_HEAD" ]]; the
     echo "agent-tool: pin source is $PIN_SOURCE_DESCRIPTION; state root HEAD $STATE_PARENT_HEAD remains untouched." >&2
 fi
 if [[ ! -e $HERMIT/.git ]]; then
-    if [[ $PIN_ROOT != "$ROOT" || $PIN_SOURCE_COMMIT != "$STATE_PARENT_HEAD" ]]; then
-        die "cannot reconcile $PIN_SOURCE_DESCRIPTION: state checkout $HERMIT is not initialized, and initializing it from stale state-root HEAD $STATE_PARENT_HEAD would select the wrong Hermit commit $PARENT_HERMIT; no checkout was moved"
-    fi
-    update_hermit=(git -C "$ROOT" submodule update --init --checkout -- hermit)
-    run_networked "${update_hermit[@]}" \
-        || die "could not initialize Hermit checkout recorded by $PIN_SOURCE_DESCRIPTION; rerun '${update_hermit[*]}'"
-fi
-if [[ ! -e $HERMIT/.git ]]; then
-    die "$HERMIT is not initialized; run 'git -C $ROOT submodule update --init --checkout -- hermit'"
+    die "cannot reconcile $PIN_SOURCE_DESCRIPTION: immutable tool checkout $HERMIT is not initialized; prepare DEV_HERMIT_TOOL_ROOT outside this read-only preflight; state root $ROOT was not modified"
 fi
 if ! git -C "$HERMIT" cat-file -e "$PARENT_HERMIT^{commit}" 2>/dev/null; then
-    die "cannot reconcile $PIN_SOURCE_DESCRIPTION: it records Hermit $PARENT_HERMIT, but state checkout $HERMIT does not contain that commit; run 'with-proxy git -C $HERMIT fetch origin $PARENT_HERMIT', then rerun; no checkout was moved"
+    die "cannot reconcile $PIN_SOURCE_DESCRIPTION: it records Hermit $PARENT_HERMIT, but immutable tool checkout $HERMIT does not contain that commit; run 'with-proxy git -C $HERMIT fetch origin $PARENT_HERMIT', then rerun; no checkout was moved"
 fi
 EXPECTED=$(gitlink_at "$HERMIT" "$PARENT_HERMIT" agent-utils \
     "Hermit commit $PARENT_HERMIT selected by $PIN_SOURCE_DESCRIPTION")
@@ -342,23 +341,16 @@ if [[ "$ACTUAL" != "$EXPECTED" ]]; then
   that checkout restores the value its own HEAD records."
         fi
     fi
-    if [[ $TICK_HUB_CONTENT_MATCH == 0 ]] && [[ -n "$ACTUAL" ]] \
-       && [[ -n $(git -C "$AGENT_UTILS" status --porcelain) ]]; then
-        agent_utils_dirt "at $ACTUAL; expected pinned $EXPECTED"
-    fi
     if [[ $TICK_HUB_CONTENT_MATCH == 0 ]]; then
-        update_agent_utils=(
-            git -C "$HERMIT"
-            -c submodule.agent-utils.update=checkout
-            submodule update --init --checkout -- agent-utils
-        )
-        run_networked "${update_agent_utils[@]}" \
-            || die "could not initialize $AGENT_UTILS; rerun '${update_agent_utils[*]}'"
+        die "agent-utils pin mismatch in immutable tool root $TOOL_ROOT.
+  EXPECTED $EXPECTED
+  ACTUAL   ${ACTUAL:-uninitialized}
+  State root $ROOT was not modified; prepare the tool root outside this read-only preflight."
     fi
 fi
 
 if [[ ! -e $AGENT_UTILS/.git ]]; then
-    die "$AGENT_UTILS is not initialized through $AGENT_UTILS_LINK_TARGET; run 'git -C $HERMIT submodule update --init --checkout -- agent-utils'"
+    die "$AGENT_UTILS is not initialized through $AGENT_UTILS_LINK_TARGET; prepare DEV_HERMIT_TOOL_ROOT outside this read-only preflight; state root $ROOT was not modified"
 fi
 ACTUAL=$(git -C "$AGENT_UTILS" rev-parse HEAD 2>/dev/null) \
     || die "cannot read agent-utils checkout at $AGENT_UTILS"
@@ -380,23 +372,84 @@ fi
 
 PYTHON=${CI_HUB_PYTHON:-python3}
 if ! "$PYTHON" -c 'import yaml' >/dev/null 2>&1; then
-    VENV="$ROOT/.tick-hub/venv"
-    if [[ ! -x "$VENV/bin/python" ]]; then
-        "$PYTHON" -m venv "$VENV"
+    REQUIREMENTS="$TOOL_ROOT/ci-hub/health/requirements.txt"
+    [[ -f $REQUIREMENTS ]] || die "PyYAML is unavailable and requirements are missing at $REQUIREMENTS"
+    if [[ -n ${CI_HUB_AGENT_TOOL_CACHE:-} ]]; then
+        DEPENDENCY_CACHE_ROOT=$CI_HUB_AGENT_TOOL_CACHE
+    elif [[ -n ${XDG_CACHE_HOME:-} ]]; then
+        DEPENDENCY_CACHE_ROOT="$XDG_CACHE_HOME/dev-hermit/agent-tool"
+    elif [[ -n ${HOME:-} ]]; then
+        DEPENDENCY_CACHE_ROOT="$HOME/.cache/dev-hermit/agent-tool"
+    else
+        die "PyYAML is unavailable and no dependency cache root is configured; set CI_HUB_AGENT_TOOL_CACHE"
+    fi
+
+    [[ $DEPENDENCY_CACHE_ROOT == /* ]] \
+        || die "agent-tool dependency cache must be an absolute path outside the tool and state roots"
+    DEPENDENCY_CACHE_ROOT=$(realpath -m -- "$DEPENDENCY_CACHE_ROOT") \
+        || die "cannot resolve dependency cache root $DEPENDENCY_CACHE_ROOT"
+    case "$DEPENDENCY_CACHE_ROOT/" in
+        "$TOOL_ROOT/"*|"$ROOT/"*)
+            die "dependency cache $DEPENDENCY_CACHE_ROOT must be outside immutable tool root $TOOL_ROOT and state root $ROOT"
+            ;;
+    esac
+    mkdir -p -- "$DEPENDENCY_CACHE_ROOT" \
+        || die "cannot create dependency cache root $DEPENDENCY_CACHE_ROOT"
+
+    PYTHON_CACHE_TAG=$("$PYTHON" -c 'import sys; print(sys.implementation.cache_tag or "python")') \
+        || die "cannot identify CI_HUB_PYTHON for the dependency cache"
+    REQUIREMENTS_SHA=$(sha256sum -- "$REQUIREMENTS" | awk '{print $1}') \
+        || die "cannot hash dependency requirements at $REQUIREMENTS"
+    [[ $PYTHON_CACHE_TAG =~ ^[A-Za-z0-9._-]+$ && $REQUIREMENTS_SHA =~ ^[0-9a-f]{64}$ ]] \
+        || die "cannot derive a safe dependency-cache key"
+    VENV="$DEPENDENCY_CACHE_ROOT/pyyaml-$PYTHON_CACHE_TAG-$REQUIREMENTS_SHA"
+
+    exec {DEPENDENCY_LOCK_FD}>"$DEPENDENCY_CACHE_ROOT/.lock" \
+        || die "cannot open dependency cache lock in $DEPENDENCY_CACHE_ROOT"
+    flock "$DEPENDENCY_LOCK_FD" \
+        || die "cannot lock dependency cache $DEPENDENCY_CACHE_ROOT"
+    if [[ -e $VENV && ( ! -d $VENV || -L $VENV || ! -x $VENV/bin/python ) ]]; then
+        flock -u "$DEPENDENCY_LOCK_FD" || true
+        exec {DEPENDENCY_LOCK_FD}>&-
+        die "dependency cache $VENV is incomplete or unsafe; refusing to repair it in place"
+    fi
+    if [[ ! -e $VENV ]]; then
+        VENV_STAGING=$(mktemp -d "$DEPENDENCY_CACHE_ROOT/.pyyaml.XXXXXX") \
+            || die "cannot create dependency cache staging directory in $DEPENDENCY_CACHE_ROOT"
+        if ! "$PYTHON" -m venv "$VENV_STAGING"; then
+            rm -rf -- "$VENV_STAGING"
+            die "cannot create PyYAML dependency environment in $DEPENDENCY_CACHE_ROOT"
+        fi
+        STAGING_PYTHON="$VENV_STAGING/bin/python"
+        if ! "$STAGING_PYTHON" -c 'import yaml' >/dev/null 2>&1; then
+            install=(
+                "$STAGING_PYTHON" -m pip install
+                --disable-pip-version-check
+                --requirement "$REQUIREMENTS"
+            )
+            if ! run_networked "${install[@]}"; then
+                rm -rf -- "$VENV_STAGING"
+                die "cannot install PyYAML dependency environment in $DEPENDENCY_CACHE_ROOT"
+            fi
+        fi
+        if ! "$STAGING_PYTHON" -c 'import yaml' >/dev/null 2>&1; then
+            rm -rf -- "$VENV_STAGING"
+            die "new dependency environment cannot import yaml"
+        fi
+        if ! mv -- "$VENV_STAGING" "$VENV"; then
+            rm -rf -- "$VENV_STAGING"
+            die "cannot publish dependency environment $VENV"
+        fi
     fi
     PYTHON="$VENV/bin/python"
     if ! "$PYTHON" -c 'import yaml' >/dev/null 2>&1; then
-        install=(
-            "$PYTHON" -m pip install
-            --disable-pip-version-check
-            --requirement "$ROOT/ci-hub/health/requirements.txt"
-        )
-        if command -v with-proxy >/dev/null 2>&1; then
-            with-proxy "${install[@]}"
-        else
-            "${install[@]}"
-        fi
+        flock -u "$DEPENDENCY_LOCK_FD" || true
+        exec {DEPENDENCY_LOCK_FD}>&-
+        die "dependency cache $VENV cannot import yaml; refusing to repair it in place"
     fi
+    flock -u "$DEPENDENCY_LOCK_FD" \
+        || die "cannot release dependency cache lock in $DEPENDENCY_CACHE_ROOT"
+    exec {DEPENDENCY_LOCK_FD}>&-
 fi
 
 TOOL_PATH="$AGENT_UTILS/py/bin/$TOOL"

@@ -86,6 +86,8 @@ def qualified_rows(rows: Iterable[Mapping[str, object]]) -> list[dict[str, objec
 def load_rows(path: Path) -> tuple[list[dict[str, object]], int]:
     if path.resolve() == DEFAULT_LEDGER.resolve():
         return canonical_ledger.rows(), 0
+    if path.is_dir():
+        return canonical_ledger.rows(root=path.resolve().parent), 0
     rows: list[dict[str, object]] = []
     malformed = 0
     with path.open(errors="replace") as handle:

@@ -204,6 +204,12 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     parser.add_argument(
+        "--root",
+        type=Path,
+        default=Path(os.environ.get("DEV_HERMIT_PARENT", ROOT)),
+        help="state-root parent whose producer siblings are discovered",
+    )
+    parser.add_argument(
         "--store",
         choices=("ledger", "series"),
         default="ledger",
@@ -223,7 +229,7 @@ def main(argv: list[str] | None = None) -> int:
         spool_dirs = [args.spool_dir]
     else:
         locate = live_spool_dir if args.store == "ledger" else series_spool_dir
-        spool_dirs = [locate(parent) for parent in producing_parents(ROOT)]
+        spool_dirs = [locate(parent) for parent in producing_parents(args.root.resolve())]
 
     try:
         backlog = measure_parents(spool_dirs, max_age_seconds=args.max_age_seconds)

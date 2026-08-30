@@ -53,7 +53,10 @@ class OperationalHealthTest(unittest.TestCase):
             row for row in config["reminders"] if row["name"] == "wrkslots_audit"
         )
         self.assertEqual(3600, reminder["cadence_secs"])
-        self.assertEqual("ci-hub/bin/wrkslots audit --gate", reminder["gate"]["cmd"])
+        self.assertEqual(
+            'ci-hub/bin/wrkslots --project-root "$DEV_HERMIT_PARENT" audit --gate',
+            reminder["gate"]["cmd"],
+        )
         self.assertEqual(120, reminder["gate"]["timeout_secs"])
         self.assertEqual("failure", reminder["gate"]["when"])
         self.assertTrue(reminder["gate"]["capture"])
@@ -867,7 +870,9 @@ class OperationalHealthTest(unittest.TestCase):
         ) as cache:
             result = operational_health.main(["cache-agents"])
         self.assertEqual(result, 7)
-        cache.assert_called_once_with()
+        cache.assert_called_once_with(
+            snapshot_file=operational_health.DEFAULT_AGENT_SNAPSHOT
+        )
 
     def test_taskgraph_query_parses_exact_tag_array(self) -> None:
         output = """task_json

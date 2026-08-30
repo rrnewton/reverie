@@ -76,7 +76,7 @@ EXIT_CLEAR = 0
 EXIT_THROTTLED = 3
 
 _CI_HUB = Path(__file__).resolve().parents[1]
-_PARENT_ROOT = _CI_HUB.parent
+_PARENT_ROOT = Path(os.environ.get("DEV_HERMIT_PARENT", _CI_HUB.parent)).resolve()
 
 
 # --- lazy by-path imports (no sys.path pollution / name clashes) --------------

@@ -46,11 +46,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(ROOT / "scripts"))
+TOOL_ROOT = Path(__file__).resolve().parents[2]
+ROOT = Path(os.environ.get("DEV_HERMIT_PARENT", TOOL_ROOT)).resolve()
+sys.path.insert(0, str(TOOL_ROOT / "scripts"))
 
 # ONE definition of "what is published on parent main" and "where is reverie main".
 # Re-deriving either here would create a second answer to a question this repo
@@ -166,9 +168,15 @@ def main(argv: list[str] | None = None) -> int:
         help="band ceiling, inclusive; omit for unbounded (the escalation band)",
     )
     ap.add_argument("--json", action="store_true", dest="as_json")
+    ap.add_argument(
+        "--root",
+        type=Path,
+        default=ROOT,
+        help="mutable parent checkout to inspect (default: DEV_HERMIT_PARENT or tool root)",
+    )
     args = ap.parse_args(argv)
 
-    result = measure()
+    result = measure(args.root.resolve())
     if args.as_json:
         print(json.dumps(result, indent=2, sort_keys=True))
     else:

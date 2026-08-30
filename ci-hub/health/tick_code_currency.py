@@ -1,23 +1,24 @@
 #!/usr/bin/env python3
 """Page when the tick is executing code that is not what landed on main.
 
-WHY THIS EXISTS. The tick runs from the SHARED PARENT WORKING TREE:
-`hermitOperationalTick` does `cd <parent> && ./ci-hub/bin/health-tick`, and
-`health-tick` resolves ROOT from its own location. So the code the tick executes
-is whatever is on disk right now -- not what is on `origin/main`.
-
-That is the correct design and this file does not change it. The shared parent
-is the ONLY tree on this box that carries every gate's subject: a linked
-worktree pinned at `origin/main` shares `.git` refs (so ref-based gates survive)
-but does NOT carry gitignored directories or uninitialised submodules, so
-`ignored/ci-hub/agent-snapshot.json`, `hermit/`, and `.tick-hub` are simply
-absent there. Measured 2026-08-08, same tool and same moment:
+WHY THIS EXISTS. Production materializes an immutable tool checkout at the
+freshly resolved `origin/main` commit, then executes the tick from that checkout.
+Every mutable subject remains explicitly rooted at `DEV_HERMIT_PARENT`; code,
+configuration, and executables come from the immutable tool root. This split is
+necessary because a tool-only linked worktree does not carry the shared parent's
+gitignored state or initialized submodules. Measured 2026-08-08, same tool and
+same moment:
 
     slot_disk_residue from the shared parent : 0 reclaimable of 77 on disk (49 occupied)
     slot_disk_residue from a pinned worktree : 0 reclaimable of  0 on disk ( 0 occupied)
 
-0-of-77 becomes 0-OF-0, exit 0, plausible summary, nothing scanned. Pinning
-would trade today's LOUD failure for a silent one inside the monitoring layer.
+0-of-77 becomes 0-OF-0, exit 0, plausible summary, nothing scanned. The explicit
+state-root contract avoids that false-success mode while keeping stale or dirty
+shared-parent code out of the execution path.
+
+This gate remains defense in depth for direct/manual invocations and for a
+damaged tool cache: it proves that the files doing the checking match the
+checkout's `origin/main`, rather than trusting provenance metadata alone.
 
 WHAT ACTUALLY FAILED, TWICE, ON THE SAME GATE. The parent is chronically behind
 `origin/main` (it cannot fast-forward while other agents hold dirty paths), and
