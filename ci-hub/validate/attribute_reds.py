@@ -41,6 +41,7 @@ from failure_evidence import (  # noqa: E402
     classify_failed_substeps,
     failed_substep_classes_from_gates,
     failed_substep_classes_from_row,
+    gate_failure_classes_from_row,
     flaky_cells,
 )
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "ledger"))
@@ -258,9 +259,14 @@ def attribute_row(
     commit = str(row.get("commit") or "")
     log_file = row.get("log_file")
     recorded_classes = failed_substep_classes_from_row(row)
+    gate_failure_classes = (
+        gate_failure_classes_from_row(row)
+        if recorded_classes is None
+        else None
+    )
     gate_classes = (
         failed_substep_classes_from_gates(row, flaky_registry=registry or set())
-        if recorded_classes is None
+        if gate_failure_classes is not None
         else None
     )
     record: dict[str, object] = {
@@ -288,7 +294,15 @@ def attribute_row(
                 text = None
             if text is not None:
                 record["log_status"] = "present"
-                if recorded_classes is None and gate_classes is None:
+                if recorded_classes is None and gate_failure_classes is not None:
+                    record["classes"] = classify_failed_substeps(
+                        text,
+                        flaky_registry=registry or set(),
+                        commit=commit,
+                        failed_nodes=sorted(gate_failure_classes),
+                        failure_classes=gate_failure_classes,
+                    )
+                elif recorded_classes is None:
                     record["classes"] = classify_failed_substeps(
                         text, flaky_registry=registry or set()
                     )

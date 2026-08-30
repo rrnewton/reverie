@@ -164,6 +164,30 @@ def test_typed_gate_class_survives_a_reaped_log(tmp_path):
     assert classification["first_error_line"] is None
 
 
+def test_typed_gate_class_keeps_the_surviving_log_diagnostic(tmp_path):
+    log = _log(
+        tmp_path,
+        "typed.log",
+        "build.runtime_release",
+        "error: exact failure",
+    )
+    row = _red_row("feedface", "2026-08-04T20:01:45Z", str(log))
+    row["gates"] = [
+        {
+            "name": "build.runtime_release",
+            "result": "fail",
+            "failure_class": "product_failure",
+            "failure_detail": "producer classification",
+        }
+    ]
+    record = attribute_row(row)
+    assert record["log_status"] == "present"
+    [classification] = record["classes"]
+    assert classification["failure_class"] == "product_failure"
+    assert classification["fault_class"] == "code"
+    assert classification["first_error_line"] == "error: exact failure"
+
+
 def test_recorded_classes_win_over_a_surviving_log(tmp_path):
     log = _log(tmp_path, "other.log", "test.from-log", "error: different")
     row = _red_row("feedface", "2026-08-04T20:02:00Z", str(log))
