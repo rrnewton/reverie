@@ -15,10 +15,7 @@ from typing import Any, Mapping, Sequence
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "ci-hub/validate"))
 
-from final_validate_status import (  # noqa: E402
-    FinalValidateStatusError,
-    read_coupled_final_validate_status,
-)
+import service_result  # noqa: E402
 
 
 GO = 0
@@ -29,7 +26,6 @@ VERIFIED_BASE_SHA = "d53550510d1e7d13e84cc8af9bb90269e90b3f07"
 PARENT_CONTRACT_BASE_SHA = "ec33089a26e0270464cf53092f13debf29243482"
 SHA40 = re.compile(r"^[0-9a-f]{40}$")
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
-LIBTEST_OK = re.compile(r"\btest result: ok\. (\d+) passed\b")
 
 
 class ContractError(ValueError):
@@ -195,7 +191,9 @@ def validate_contract(contract: Mapping[str, Any], repo_root: Path) -> list[str]
     return errors
 
 
-def artifact_bytes(reference: Any, base: Path, expected_type: str) -> tuple[bytes | None, str | None]:
+def artifact_bytes(
+    reference: Any, base: Path, expected_type: str
+) -> tuple[bytes | None, str | None]:
     if not isinstance(reference, Mapping) or reference.get("type") != expected_type:
         return None, f"missing {expected_type} artifact reference"
     raw_path = reference.get("path")
@@ -320,52 +318,80 @@ def manual_validate(
 ) -> tuple[str, str, Mapping[str, Any]]:
     if item.get("producer") != criterion["producer"]:
         return "NO_RESULT", "manual runner/signer identity is absent", {}
-    log_bytes, problem = artifact_bytes(item.get("artifact"), base, "raw-log")
+    _, problem = artifact_bytes(item.get("artifact"), base, "raw-log")
     if problem:
         return "NO_RESULT", problem, {}
     exit_bytes, problem = artifact_bytes(item.get("exit_artifact"), base, "raw-exit")
     if problem:
         return "NO_RESULT", problem, {}
-    log = (log_bytes or b"").decode("utf-8", errors="replace")
     try:
         pipeline_exit = int((exit_bytes or b"").decode("ascii").strip())
     except ValueError:
         return "NO_RESULT", "captured pipeline exit is not an integer", {}
-    commit_line = f"Commit: {subject.hermit_sha} (clean tree, commit-anchored); selection: full"
+    result_bytes, problem = artifact_bytes(
+        item.get("result_artifact"), base, "raw-json"
+    )
+    if problem or result_bytes is None:
+        return "NO_RESULT", problem or "validation service result is absent", {}
     try:
-        final_status = read_coupled_final_validate_status(log, pipeline_exit)
-        status_error = None
-    except FinalValidateStatusError as error:
-        final_status = None
-        status_error = str(error)
-    passed_sum = sum(int(value) for value in LIBTEST_OK.findall(log))
+        framework = service_result.read_framework_result_bytes(
+            result_bytes,
+            expected_commit=subject.hermit_sha,
+        )
+    except RuntimeError as error:
+        return "NO_RESULT", str(error), {}
     observed = {
-        "commit": subject.hermit_sha if commit_line in log else None,
-        "selection": "full" if commit_line in log else None,
-        "validation_level": "full" if "Validation level: full" in log else None,
-        "final_validate_status": final_status,
-        "final_validate_status_error": status_error,
+        "commit": framework.commit,
+        "profile": framework.profile,
+        "selection_mode": framework.selection_mode,
+        "final_validate_status": framework.final_validate_status,
+        "exit_code": framework.inner_exit,
         "pipeline_exit": pipeline_exit,
-        "libtest_passed_sum": passed_sum,
-        "cache_hit": "CACHE HIT" in log,
+        "executed_nodes": framework.executed_nodes,
+        "executed_tests": framework.executed_tests,
+        "service_result_schema": framework.service_result_schema,
+        "scorecard_writeback": framework.scorecard_writeback,
+        "result_source": framework.result_source,
     }
-    if commit_line not in log:
-        return "NO_RESULT", "raw log is not anchored to the exact tested RC SHA and full selection", observed
-    if "Validation level: full" not in log:
-        return "NO_RESULT", "raw log does not declare Validation level: full", observed
-    if observed["cache_hit"]:
-        return "NO_RESULT", "raw log reports a cache hit rather than an executed run", observed
-    if status_error is not None:
-        return "NO_RESULT", status_error, observed
-    if final_status is None:
-        return "NO_RESULT", "raw log has no final validate status", observed
+    if framework.service_result_schema != service_result.SCHEMA_VERSION:
+        return (
+            "NO_RESULT",
+            "historical validation service result is readable but has no current authority",
+            observed,
+        )
+    if framework.profile != "full":
+        return "NO_RESULT", "validation service result profile is not full", observed
+    if framework.selection_mode != "full":
+        return "NO_RESULT", "validation service result selection is not full", observed
+    if pipeline_exit != framework.inner_exit:
+        return (
+            "NO_RESULT",
+            f"captured pipeline exit {pipeline_exit} disagrees with validation service result exit {framework.inner_exit}",
+            observed,
+        )
+    final_status = framework.final_validate_status
     if final_status == "COULD_NOT_RUN":
         return "NO_RESULT", "validate reported COULD_NOT_RUN", observed
     if final_status == "FAILED":
         return "FAIL", "validate reported FAILED", observed
-    if passed_sum <= 0:
-        return "NO_RESULT", "raw libtest passed-count sum is zero", observed
-    return "PASS", f"exact-RC raw manual validation executed {passed_sum} libtest tests", observed
+    if framework.scorecard_writeback is None:
+        return "NO_RESULT", "scorecard write-back outcome is absent", observed
+    if framework.scorecard_writeback.get("status") == "failed":
+        return (
+            "NO_RESULT",
+            "validation passed but scorecard write-back failed: "
+            f"{framework.scorecard_writeback['error']}",
+            observed,
+        )
+    if framework.executed_nodes is None or framework.executed_nodes <= 0:
+        return "NO_RESULT", "validation service result records zero executed nodes", observed
+    if framework.executed_tests is None or framework.executed_tests <= 0:
+        return "NO_RESULT", "validation service result records zero executed tests", observed
+    return (
+        "PASS",
+        f"exact-RC manual validation executed {framework.executed_tests} tests across {framework.executed_nodes} nodes",
+        observed,
+    )
 
 
 def hosted(
@@ -475,7 +501,7 @@ def evaluate(
             continue
         evaluator = criterion["evaluator"]
         try:
-            if evaluator == "manual_validate_log":
+            if evaluator == "manual_validate_result":
                 verdict, reason, observed = manual_validate(criterion, item, evidence_dir, subject)
             elif evaluator == "hosted_set":
                 verdict, reason, observed = hosted(criterion, item, evidence_dir, subject)

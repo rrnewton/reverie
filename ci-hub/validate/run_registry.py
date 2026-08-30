@@ -16,6 +16,8 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Mapping, TypedDict, cast
 
+import service_result
+
 
 SCHEMA_VERSION = 1
 PRODUCER = "ci-hub/validate/run_registry.py"
@@ -119,6 +121,9 @@ class RunRecord(TypedDict, total=False):
     executed_nodes: int | None
     executed_tests: int | None
     final_validate_status: str | None
+    service_result_schema: int
+    selection_mode: str | None
+    scorecard_writeback: dict[str, str] | None
     result_source: str
     observed_safe_ci_cgroups: list[str]
     canonical_verdict: str
@@ -255,6 +260,9 @@ VALIDATION_FIELDS = COMMON_FIELDS | frozenset(
         "executed_nodes",
         "executed_tests",
         "final_validate_status",
+        "service_result_schema",
+        "selection_mode",
+        "scorecard_writeback",
         "result_source",
         "observed_safe_ci_cgroups",
         "canonical_verdict",
@@ -288,6 +296,7 @@ _OPTIONAL_TEXT_FIELDS = frozenset(
         "detail",
         "finished_at",
         "final_validate_status",
+        "selection_mode",
         "result_source",
         "canonical_verdict",
         "measured_result",
@@ -308,6 +317,7 @@ _OPTIONAL_INTEGER_FIELDS = frozenset(
         "signal",
         "executed_nodes",
         "executed_tests",
+        "service_result_schema",
         "wrapper_exit_code",
     }
 )
@@ -358,6 +368,16 @@ def _optional_string_list(value: Mapping[str, Any], field: str) -> None:
         return
     if not isinstance(raw, list) or any(not isinstance(item, str) for item in raw):
         raise _error(field, "must be a list of strings or null")
+
+
+def _scorecard_writeback(value: Any) -> dict[str, str] | None:
+    try:
+        return service_result.read_scorecard_writeback_value(value)
+    except RuntimeError as error:
+        detail = str(error).removeprefix(
+            "validation-service-result-scorecard_writeback: "
+        )
+        raise _error("scorecard_writeback", detail) from error
 
 
 def _positive_integer(
@@ -576,6 +596,35 @@ def parse_current_record(value: Mapping[str, Any]) -> RunHandle:
             _required_text(value, "e2e_result_root")
             _required_text(value, "safe_ci_dag_runner_log_dir")
             _positive_integer(value, "hermit_run_timeout_seconds")
+        marker = value.get("service_result_schema")
+        if marker is not None:
+            if repo != "rrnewton/hermit":
+                raise _error(
+                    "service_result_schema",
+                    "is valid only for Hermit validation handles",
+                )
+            if marker not in {
+                service_result.HISTORICAL_SCHEMA_VERSION,
+                service_result.WRITEBACK_SCHEMA_VERSION,
+                service_result.SCHEMA_VERSION,
+            }:
+                raise _error(
+                    "service_result_schema",
+                    "expected "
+                    f"{service_result.HISTORICAL_SCHEMA_VERSION}, "
+                    f"{service_result.WRITEBACK_SCHEMA_VERSION}, or "
+                    f"{service_result.SCHEMA_VERSION}, got {marker!r}",
+                )
+        if "scorecard_writeback" in value:
+            if marker not in {
+                service_result.WRITEBACK_SCHEMA_VERSION,
+                service_result.SCHEMA_VERSION,
+            }:
+                raise _error(
+                    "scorecard_writeback",
+                    "is valid only with the current validation service result schema",
+                )
+            _scorecard_writeback(value.get("scorecard_writeback"))
         if kind is RunKind.FROZEN_VALIDATE:
             for field in (
                 "validation_kind",
@@ -644,10 +693,25 @@ def parse_current_record(value: Mapping[str, Any]) -> RunHandle:
                     "result",
                     f"final_validate_status {status} requires {expected_result!r}",
                 )
+            marker = value.get("service_result_schema")
+            if marker == service_result.SCHEMA_VERSION:
+                if "selection_mode" not in value:
+                    raise _error(
+                        "selection_mode",
+                        "is required for a completed current validation result",
+                    )
+                if "scorecard_writeback" not in value:
+                    raise _error(
+                        "scorecard_writeback",
+                        "is required for a completed current validation result",
+                    )
+                writeback = _scorecard_writeback(value.get("scorecard_writeback"))
+                expected_exit = service_result.current_command_exit(status, writeback)
             if value.get("exit_code") != expected_exit:
                 raise _error(
                     "exit_code",
-                    f"final_validate_status {status} requires {expected_exit}",
+                    f"final_validate_status {status} with scorecard_writeback "
+                    f"{value.get('scorecard_writeback')!r} requires {expected_exit}",
                 )
     elif state is RunState.KILLED:
         if value.get("result") != "terminated":

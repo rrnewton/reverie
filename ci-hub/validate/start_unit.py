@@ -1888,6 +1888,7 @@ def build_systemd_command(
     repo: str = "rrnewton/hermit",
     frozen_validate: bool = False,
     frozen_result: Path | None = None,
+    framework_result: Path | None = None,
 ) -> list[str]:
     state_root = root if state_root is None else state_root
     child_deadline = effective_child_deadline(repo, child_deadline)
@@ -1916,6 +1917,10 @@ def build_systemd_command(
                 f"HERMIT_VALIDATE_RUN_TIMEOUT_SECONDS={hermit_run_timeout_seconds(child_deadline)}",
             ]
         )
+        if framework_result is not None:
+            build_budget_env.extend(
+                ["--setenv", f"VALIDATE_SERVICE_RESULT_PATH={framework_result}"]
+            )
     # Last, so it cannot be shadowed by a caller-supplied CARGO_HOME: the whole
     # point is that this run does not share a package-cache lock with the box.
     if cargo_home is not None:
@@ -2169,7 +2174,7 @@ def wait_for_unit(
                 return durable
             raw_log = durable.get("log")
             log = Path(raw_log) if isinstance(raw_log, str) else Path("/nonexistent")
-            classified = service_result.from_log(log)
+            classified = service_result.from_run_record(record, durable, log)
             if classified.get("exit_code") is not None or missing >= (5 if seen else 50):
                 # DO NOT STAMP AN END TIME ONTO AN ADMISSION OF IGNORANCE.
                 #
@@ -2199,7 +2204,9 @@ def wait_for_unit(
             raw_log = durable.get("log")
             log = Path(raw_log) if isinstance(raw_log, str) else Path("/nonexistent")
             return {
-                **service_result.from_log(log, properties=properties),
+                **service_result.from_run_record(
+                    record, durable, log, properties=properties
+                ),
                 "finished_at": datetime.now(timezone.utc).isoformat(),
             }
         sleep(poll_seconds)
@@ -3010,14 +3017,38 @@ def main(
         )
         log = (args.log or state_root / "ignored/validate" / f"{unit}.log").resolve()
         record_path = run_registry.record_path(state_root, unit)
+        service_result_schema = (
+            service_result.schema_for_checkout(
+                checkout, reference_checkout=tool_root / "hermit"
+            )
+            if repo == "rrnewton/hermit"
+            else None
+        )
+        framework_result = (
+            service_result.result_path(record_path)
+            if service_result_schema is not None
+            else None
+        )
+        if framework_result is not None and framework_result.exists():
+            raise ValueError(
+                f"validation service result already exists at {framework_result}; "
+                "choose a different --unit so two measurements cannot share one result"
+            )
         e2e_result_root, runner_log_dir = _validate_output_paths(state_root, unit)
-        output_fields = {"validate_lock_child_deadline_seconds": child_deadline}
+        output_fields: dict[str, object] = {
+            "validate_lock_child_deadline_seconds": child_deadline
+        }
         if repo == "rrnewton/hermit":
             output_fields.update(
                 {
                     "e2e_result_root": str(e2e_result_root),
                     "safe_ci_dag_runner_log_dir": str(runner_log_dir),
                     "hermit_run_timeout_seconds": hermit_run_timeout,
+                    **(
+                        {"service_result_schema": service_result_schema}
+                        if service_result_schema is not None
+                        else {}
+                    ),
                 }
             )
         started_at = datetime.now(timezone.utc).isoformat()
@@ -3044,6 +3075,7 @@ def main(
             repo=repo,
             frozen_validate=args.frozen_validate,
             frozen_result=frozen_result,
+            framework_result=framework_result,
         )
         if args.dry_run:
             pane = None

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import contextlib
 import io
+import json
 import sys
 import tempfile
 import threading
@@ -13,6 +14,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import pane_watch  # noqa: E402
 import run_registry  # noqa: E402
+import service_result  # noqa: E402
 
 
 def current_validation_handle(log: Path) -> dict[str, object]:
@@ -122,6 +124,62 @@ class PaneWatchTest(unittest.TestCase):
             self.assertEqual(1, durable["schema_version"])
             self.assertEqual("validate", durable["kind"])
             self.assertEqual("killed", durable["state"])
+
+    def test_current_handle_uses_framework_result_instead_of_log(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            log = root / "validate.log"
+            record = root / "runs/validate-test.json"
+            log.write_text(
+                "FINAL_VALIDATE_STATUS: FAILED\n"
+                "# ci-hub/validate-lock tool COST ACTUAL wall=1s cpu=1s "
+                "cpu_user=1s cpu_system=0s exit=1\n"
+            )
+            run_registry.write_record(
+                record,
+                current_validation_handle(log) | {"service_result_schema": 3},
+            )
+            service_result.result_path(record).write_text(
+                json.dumps(
+                    {
+                        "schema_version": 3,
+                        "commit": "a" * 40,
+                        "profile": "full",
+                        "selection_mode": "full",
+                        "final_validate_status": "PASSED",
+                        "exit_code": 0,
+                        "executed_nodes": 76,
+                        "executed_tests": 2129,
+                        "scorecard_writeback": {"status": "completed"},
+                    }
+                )
+            )
+
+            with mock.patch.object(pane_watch, "service_properties", return_value=None):
+                rc = pane_watch.main(
+                    [
+                        "--unit",
+                        "validate-test.service",
+                        "--target",
+                        "a" * 40,
+                        "--checkout",
+                        str(root),
+                        "--log",
+                        str(log),
+                        "--record",
+                        str(record),
+                        "--appearance-seconds",
+                        "0",
+                    ]
+                )
+
+            self.assertEqual(0, rc)
+            durable = run_registry.read_record(record)
+            self.assertEqual("completed", durable["state"])
+            self.assertEqual("success", durable["result"])
+            self.assertEqual("validation-service-result", durable["result_source"])
+            self.assertEqual(76, durable["executed_nodes"])
+            self.assertEqual({"status": "completed"}, durable["scorecard_writeback"])
 
     def test_boxing_proof_is_bound_to_descendant_process_identity(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

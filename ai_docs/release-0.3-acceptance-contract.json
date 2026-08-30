@@ -82,12 +82,12 @@
     {
       "id": "AC-STRICT-03",
       "title": "Exact-RC manual sequential full validation executes nonzero raw tests",
-      "evaluator": "manual_validate_log",
-      "command": ["bash", "-o", "pipefail", "-c", "CI_DAG_JOBS=1 ./scripts/validate.rs full --ignore-cache --no-label-pr --verbose 2>&1 | tee \"$RAW_LOG\"; status=${PIPESTATUS[0]}; printf '%s\\n' \"$status\" > \"$EXIT_FILE\"; exit \"$status\""],
-      "fields": ["artifact.path", "artifact.sha256", "exit_artifact.path", "exit_artifact.sha256", "parsed.commit", "parsed.selection", "parsed.validation_level", "parsed.final_validate_status", "parsed.pipeline_exit", "parsed.libtest_passed_sum"],
-      "denominator": {"field": "parsed.libtest_passed_sum", "unit": "raw libtest tests passed", "minimum": 1},
-      "threshold": {"field": "parsed.pipeline_exit", "op": "eq", "value": 0},
-      "forbidden": [{"field": "parsed.cache_hit", "op": "eq", "value": true, "reason": "cache hit rather than an executed run"}],
+      "evaluator": "manual_validate_result",
+      "command": ["bash", "-o", "pipefail", "-c", "VALIDATE_SERVICE_RESULT_PATH=\"$RESULT_FILE\" CI_DAG_JOBS=1 ./scripts/validate.rs full --ignore-cache --no-label-pr --verbose 2>&1 | tee \"$RAW_LOG\"; status=${PIPESTATUS[0]}; printf '%s\\n' \"$status\" > \"$EXIT_FILE\"; exit \"$status\""],
+      "fields": ["artifact.path", "artifact.sha256", "exit_artifact.path", "exit_artifact.sha256", "result_artifact.path", "result_artifact.sha256", "result.commit", "result.profile", "result.selection_mode", "result.final_validate_status", "result.exit_code", "result.executed_nodes", "result.executed_tests"],
+      "denominator": {"field": "result.executed_tests", "unit": "framework-recorded tests executed", "minimum": 1},
+      "threshold": {"field": "result.exit_code", "op": "eq", "value": 0},
+      "forbidden": [{"field": "result.executed_nodes", "op": "eq", "value": 0, "reason": "no validation node executed"}],
       "producer": {"runner": "manual-sequential-validation", "signer": "raw-artifact-sha256"}
     },
     {
