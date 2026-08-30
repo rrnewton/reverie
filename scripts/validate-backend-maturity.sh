@@ -799,7 +799,8 @@ if [[ $SKIP_PREPARE != 1 ]]; then
         run_case prepare-examples cargo build -p reverie-examples --bins || PREPARED=0
     fi
     if selected dbt; then
-        run_case prepare-dbt cargo build -p reverie-dbt --bins || PREPARED=0
+        run_case prepare-dbt env PROFILE="$PROFILE" \
+            "$ROOT_DIR/reverie-dbt/scripts/build-client.sh" || PREPARED=0
     fi
     if selected sabre; then
         run_case prepare-sabre cargo build -p reverie-sabre-strace || PREPARED=0
