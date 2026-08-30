@@ -738,6 +738,20 @@ def _typed_comparison_attempt(attempt: Any, *, mode: str, index: int) -> str:
             raise MalformedRow(
                 f"cell attempt {index} has no nonzero INFO-message counts"
             )
+        if verdict == "matched" and (
+            report.get("verified") is not True
+            or report.get("bitwise_parity") is not True
+        ):
+            raise MalformedRow(
+                f"cell attempt {index} matched report is internally inconsistent"
+            )
+        if verdict == "diverged" and (
+            report.get("verified") is not False
+            or report.get("bitwise_parity") is not False
+        ):
+            raise MalformedRow(
+                f"cell attempt {index} divergence report is internally inconsistent"
+            )
         expected_virtualize_time = mode != "replay"
         canonical = (
             comparison.get("strictness") == "canonical"

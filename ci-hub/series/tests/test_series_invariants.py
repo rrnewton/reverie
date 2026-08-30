@@ -1493,6 +1493,74 @@ class CellResultProjection(unittest.TestCase):
         self.assertEqual(disposition["attempt_outcome"], "PASS")
         self.assertEqual(disposition["disposition"], "no_result")
 
+        inconsistent_match = json.loads(json.dumps(noncanonical))
+        report = json.loads(
+            inconsistent_match["attempts"][0]["verification_report"]
+        )
+        report["verified"] = False
+        raw = json.dumps(report, sort_keys=True, separators=(",", ":"))
+        inconsistent_match["attempts"][0]["verification_report"] = raw
+        inconsistent_match["attempts"][0]["verification_report_sha256"] = (
+            hashlib.sha256(raw.encode()).hexdigest()
+        )
+        with self.assertRaisesRegex(
+            series.MalformedRow, "matched report is internally inconsistent"
+        ):
+            series.rows_from_cell_results(
+                [inconsistent_match],
+                parent=self.parent,
+                producer="validate",
+                run_id="validate-noncanonical-bad-match",
+                tree=self.tree,
+                emitted_at="2026-08-30T20:00:00Z",
+            )
+
+        noncanonical_divergence = json.loads(json.dumps(noncanonical))
+        attempt = noncanonical_divergence["attempts"][0]
+        report = json.loads(attempt["verification_report"])
+        report["verdict"] = "diverged"
+        report["verified"] = False
+        report["bitwise_parity"] = False
+        raw = json.dumps(report, sort_keys=True, separators=(",", ":"))
+        attempt.update({
+            "outcome": "FAIL",
+            "status": 1,
+            "verification_report": raw,
+            "verification_report_sha256": hashlib.sha256(raw.encode()).hexdigest(),
+        })
+        divergence_row = series.rows_from_cell_results(
+            [noncanonical_divergence],
+            parent=self.parent,
+            producer="validate",
+            run_id="validate-noncanonical-divergence",
+            tree=self.tree,
+            emitted_at="2026-08-30T20:00:00Z",
+        )[0]
+        self.assertEqual(
+            divergence_row["series"]["no_verdict_evidence"]["attempts"][0]["kind"],
+            "noncanonical_divergence",
+        )
+        inconsistent_divergence = json.loads(json.dumps(noncanonical_divergence))
+        attempt = inconsistent_divergence["attempts"][0]
+        report = json.loads(attempt["verification_report"])
+        report["verified"] = True
+        raw = json.dumps(report, sort_keys=True, separators=(",", ":"))
+        attempt["verification_report"] = raw
+        attempt["verification_report_sha256"] = hashlib.sha256(
+            raw.encode()
+        ).hexdigest()
+        with self.assertRaisesRegex(
+            series.MalformedRow, "divergence report is internally inconsistent"
+        ):
+            series.rows_from_cell_results(
+                [inconsistent_divergence],
+                parent=self.parent,
+                producer="validate",
+                run_id="validate-noncanonical-bad-divergence",
+                tree=self.tree,
+                emitted_at="2026-08-30T20:00:00Z",
+            )
+
         passing = series.rows_from_cell_results(
             [self._validate_cell(1)],
             parent=self.parent,
