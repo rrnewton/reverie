@@ -6379,6 +6379,20 @@ fn current_validate_run_text(
         })
 }
 
+#[derive(Default)]
+struct LiveValidateRunScan {
+    entries: Vec<ValidateStatusEntry>,
+    unreadable_handles: Vec<validate_run_handle::UnreadableRecord>,
+}
+
+fn unreadable_run_handle_line(unreadable: &validate_run_handle::UnreadableRecord) -> String {
+    format!(
+        "RUN-HANDLE UNAVAILABLE {} -- {}",
+        unreadable.path.display(),
+        unreadable.error
+    )
+}
+
 fn live_validate_runs_from(
     root: &Path,
     repo: &str,
@@ -6386,11 +6400,13 @@ fn live_validate_runs_from(
     boot_id_path: &Path,
     now: chrono::DateTime<chrono::Utc>,
     include_log_paths: bool,
-) -> Result<Vec<ValidateStatusEntry>, CiHubError> {
+) -> Result<LiveValidateRunScan, CiHubError> {
     let directory = root.join("ignored/validate/runs");
     let entries = match std::fs::read_dir(&directory) {
         Ok(entries) => entries,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            return Ok(LiveValidateRunScan::default())
+        }
         Err(error) => {
             return Err(CiHubError::ValidateStatus(format!(
                 "cannot read validation run handles in {}: {error}",
@@ -6414,42 +6430,63 @@ fn live_validate_runs_from(
     });
     paths.sort();
 
-    let records = paths
-        .into_iter()
-        .map(|path| {
-            let content = std::fs::read_to_string(&path).map_err(|error| {
-                CiHubError::ValidateStatus(format!(
-                    "cannot read validation run handle {}: {error}",
-                    path.display()
-                ))
-            })?;
-            let value = serde_json::from_str(&content).map_err(|error| {
-                CiHubError::ValidateStatus(format!(
-                    "validation run handle {} is not JSON: {error}",
-                    path.display()
-                ))
-            })?;
-            Ok((path, value))
-        })
-        .collect::<Result<Vec<_>, CiHubError>>()?;
+    let mut records = Vec::new();
+    let mut unreadable_handles = Vec::new();
+    for path in paths {
+        let content = match std::fs::read_to_string(&path) {
+            Ok(content) => content,
+            Err(error) => {
+                unreadable_handles.push(validate_run_handle::UnreadableRecord {
+                    path,
+                    error: format!("cannot read validation run handle: {error}"),
+                });
+                continue;
+            }
+        };
+        let value = match serde_json::from_str(&content) {
+            Ok(value) => value,
+            Err(error) => {
+                unreadable_handles.push(validate_run_handle::UnreadableRecord {
+                    path,
+                    error: format!("validation run handle is not JSON: {error}"),
+                });
+                continue;
+            }
+        };
+        records.push((path, value));
+    }
     let current_paths = records
         .iter()
         .filter(|(_, value)| validate_run_handle::is_current(value))
         .map(|(path, _)| path.clone())
         .collect::<Vec<_>>();
-    let mut current = if current_paths.is_empty() {
-        BTreeMap::new()
+    let (mut current, unreadable_current_paths) = if current_paths.is_empty() {
+        (BTreeMap::new(), BTreeSet::new())
     } else {
-        validate_run_handle::inspect_current_records(root, &current_paths)
-            .map_err(CiHubError::ValidateStatus)?
-            .into_iter()
-            .map(|inspected| (inspected.path, inspected.record))
-            .collect::<BTreeMap<_, _>>()
+        let inspection = validate_run_handle::inspect_current_records(root, &current_paths)
+            .map_err(CiHubError::ValidateStatus)?;
+        let unreadable_current_paths = inspection
+            .unreadable
+            .iter()
+            .map(|unreadable| unreadable.path.clone())
+            .collect::<BTreeSet<_>>();
+        unreadable_handles.extend(inspection.unreadable);
+        (
+            inspection
+                .records
+                .into_iter()
+                .map(|inspected| (inspected.path, inspected.record))
+                .collect::<BTreeMap<_, _>>(),
+            unreadable_current_paths,
+        )
     };
 
     let mut live = Vec::new();
     for (path, value) in records {
         if validate_run_handle::is_current(&value) {
+            if unreadable_current_paths.contains(&path) {
+                continue;
+            }
             let record = current.remove(&path).ok_or_else(|| {
                 CiHubError::ValidateStatus(format!(
                     "current validation run handle {} was not returned by its shared authority",
@@ -6640,7 +6677,10 @@ fn live_validate_runs_from(
         });
     }
     live.sort_by(|left, right| right.started_at.cmp(&left.started_at));
-    Ok(live)
+    Ok(LiveValidateRunScan {
+        entries: live,
+        unreadable_handles,
+    })
 }
 
 fn live_validate_runs(
@@ -6648,7 +6688,7 @@ fn live_validate_runs(
     repo: &str,
     now: chrono::DateTime<chrono::Utc>,
     include_log_paths: bool,
-) -> Result<Vec<ValidateStatusEntry>, CiHubError> {
+) -> Result<LiveValidateRunScan, CiHubError> {
     live_validate_runs_from(
         root,
         repo,
@@ -7264,6 +7304,7 @@ fn unassigned_commit_timeline_failures(
 
 fn validate_status_history_json(
     entries: &[ValidateStatusEntry],
+    unreadable_handles: &[validate_run_handle::UnreadableRecord],
     repo: &str,
     columns: &[ValidateStatusColumn],
     ledger: &Path,
@@ -7285,6 +7326,7 @@ fn validate_status_history_json(
                 "finished_count": entries.len() - in_progress_count,
                 "columns": columns.iter().map(|column| column.to_possible_value().expect("value enum").get_name().to_string()).collect::<Vec<_>>(),
                 "runs": entries,
+                "unreadable_handles": unreadable_handles,
                 "ledger": ledger.display().to_string(),
             });
         }
@@ -7297,6 +7339,7 @@ fn validate_status_history_json(
             "limit": args.limit,
             "columns": columns.iter().map(|column| column.to_possible_value().expect("value enum").get_name().to_string()).collect::<Vec<_>>(),
             "runs": entries,
+            "unreadable_handles": unreadable_handles,
             "commits_since_green": depth.json(),
             "ledger": ledger.display().to_string(),
         });
@@ -7325,6 +7368,7 @@ fn validate_status_history_json(
         "limit": serde_json::Value::Null,
         "columns": columns.iter().map(|column| column.to_possible_value().expect("value enum").get_name().to_string()).collect::<Vec<_>>(),
         "runs": entries,
+        "unreadable_handles": unreadable_handles,
         "commits_since_green": depth.json(),
         "ledger": ledger.display().to_string(),
     })
@@ -7345,11 +7389,13 @@ fn print_recent_validate_history(
     }
     let columns = selected_validate_status_columns(&args.columns)?;
     let now = chrono::Utc::now();
-    let mut current = if args.exclude_in_progress {
-        Vec::new()
+    let scan = if args.exclude_in_progress {
+        LiveValidateRunScan::default()
     } else {
         live_validate_runs(root, repo, now, args.log_paths)?
     };
+    let mut current = scan.entries;
+    let unreadable_handles = scan.unreadable_handles;
     let historical_run_numbers = historical_validate_run_numbers(rows);
     let (mut entries, commit_count) = if args.commit_timeline {
         let commits = validation_main_history(root, repo)?;
@@ -7439,6 +7485,7 @@ fn print_recent_validate_history(
             "{}",
             serde_json::to_string_pretty(&validate_status_history_json(
                 &entries,
+                &unreadable_handles,
                 repo,
                 &columns,
                 ledger,
@@ -7464,6 +7511,9 @@ fn print_recent_validate_history(
             "{}",
             recent_validate_status_note(args.limit, !args.exclude_in_progress)
         );
+    }
+    for unreadable in &unreadable_handles {
+        println!("{}", unreadable_run_handle_line(unreadable));
     }
     if let Some(commit_count) = commit_count {
         println!(
@@ -9299,6 +9349,7 @@ mod tests {
         };
         let report = validate_status_history_json(
             &[],
+            &[],
             CANONICAL_VALIDATE_REPO,
             &[ValidateStatusColumn::Sha],
             Path::new("ledger"),
@@ -9325,10 +9376,50 @@ mod tests {
                 "limit",
                 "columns",
                 "runs",
+                "unreadable_handles",
                 "commits_since_green",
                 "ledger",
             ])
         );
+        assert_eq!(report["unreadable_handles"], serde_json::json!([]));
+    }
+
+    #[test]
+    fn recent_history_reports_unreadable_handles_without_hiding_valid_runs() {
+        let cli = Cli::try_parse_from(["ci-hub", "validate-status", "--json"]).unwrap();
+        let HubCommand::ValidateStatus(args) = cli.command else {
+            panic!("wrong command variant")
+        };
+        let entry = finished_validate_status_entry(
+            CANONICAL_VALIDATE_REPO,
+            &history_row(schema4_receipt_value()),
+            false,
+        );
+        let unreadable = validate_run_handle::UnreadableRecord {
+            path: PathBuf::from("/state/ignored/validate/runs/bad.json"),
+            error: "validation-run-handle-state: unsupported value 'cancelled'".into(),
+        };
+        let report = validate_status_history_json(
+            std::slice::from_ref(&entry),
+            std::slice::from_ref(&unreadable),
+            CANONICAL_VALIDATE_REPO,
+            &[ValidateStatusColumn::Sha],
+            Path::new("ledger"),
+            &GreenDepth::Unavailable { why: "test".into() },
+            &args,
+            None,
+            0,
+        );
+
+        assert_eq!(report["count"], 1);
+        assert_eq!(report["runs"].as_array().unwrap().len(), 1);
+        assert_eq!(report["unreadable_handles"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            report["unreadable_handles"][0]["path"],
+            "/state/ignored/validate/runs/bad.json"
+        );
+        assert!(unreadable_run_handle_line(&unreadable)
+            .starts_with("RUN-HANDLE UNAVAILABLE /state/ignored/validate/runs/bad.json -- "));
     }
 
     #[test]
@@ -9346,6 +9437,7 @@ mod tests {
         entry.run_number = Some(701);
         let report = validate_status_history_json(
             &[entry],
+            &[],
             CANONICAL_VALIDATE_REPO,
             &[ValidateStatusColumn::Sha],
             Path::new("ledger"),
@@ -9360,6 +9452,7 @@ mod tests {
         assert_eq!(report["count"], 1);
         assert!(report.get("machine").is_some());
         assert!(report.get("commits_since_green").is_none());
+        assert_eq!(report["unreadable_handles"], serde_json::json!([]));
     }
 
     #[test]
@@ -9648,19 +9741,20 @@ mod tests {
             false,
         )
         .unwrap();
-        assert_eq!(live.len(), 1);
-        assert_eq!(live[0].verdict, None);
-        assert_eq!(live[0].result, None);
-        assert_eq!(live[0].tests_executed, None);
-        assert_eq!(live[0].elapsed_seconds, Some(300.0));
-        assert_eq!(live[0].host.as_deref(), Some("validation-host"));
-        let json = serde_json::to_value(&live[0]).unwrap();
+        assert_eq!(live.entries.len(), 1);
+        assert!(live.unreadable_handles.is_empty());
+        assert_eq!(live.entries[0].verdict, None);
+        assert_eq!(live.entries[0].result, None);
+        assert_eq!(live.entries[0].tests_executed, None);
+        assert_eq!(live.entries[0].elapsed_seconds, Some(300.0));
+        assert_eq!(live.entries[0].host.as_deref(), Some("validation-host"));
+        let json = serde_json::to_value(&live.entries[0]).unwrap();
         assert!(json["result"].is_null());
         assert!(json["verdict"].is_null());
         assert!(json.get("status").is_none());
         assert!(json.get("log_file").is_none());
         let table = validate_status_table(
-            &live,
+            &live.entries,
             &[ValidateStatusColumn::Sha],
             ValidateStatusTimes::Relative,
             now,
@@ -9684,6 +9778,7 @@ mod tests {
             false,
         )
         .unwrap()
+        .entries
         .is_empty());
         fields[0] = "Z";
         std::fs::write(
@@ -9705,6 +9800,7 @@ mod tests {
             false,
         )
         .unwrap()
+        .entries
         .is_empty());
         std::fs::remove_dir_all(root).unwrap();
     }
@@ -9829,6 +9925,14 @@ mod tests {
             serde_json::to_vec(&historical).unwrap(),
         )
         .unwrap();
+        let mut malformed = current.clone();
+        malformed["state"] = serde_json::json!("cancelled");
+        malformed["unit"] = serde_json::json!("validate-malformed.service");
+        std::fs::write(
+            runs.join("validate-malformed.json"),
+            serde_json::to_vec(&malformed).unwrap(),
+        )
+        .unwrap();
         let now = chrono::DateTime::parse_from_rfc3339("2026-08-27T12:05:00Z")
             .unwrap()
             .with_timezone(&chrono::Utc);
@@ -9841,20 +9945,32 @@ mod tests {
             true,
         )
         .unwrap();
-        assert_eq!(live.len(), 1);
+        assert_eq!(live.entries.len(), 1);
+        assert_eq!(live.unreadable_handles.len(), 1);
         assert_eq!(
-            live[0].sha.as_deref(),
+            live.unreadable_handles[0].path,
+            runs.join("validate-malformed.json")
+        );
+        assert!(
+            live.unreadable_handles[0]
+                .error
+                .contains("validation-run-handle-state"),
+            "{}",
+            live.unreadable_handles[0].error
+        );
+        assert_eq!(
+            live.entries[0].sha.as_deref(),
             Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
         );
-        assert_eq!(live[0].run_number, Some(701));
-        assert_eq!(live[0].host.as_deref(), Some("validation-host"));
-        assert_eq!(live[0].slot.as_deref(), Some("142"));
+        assert_eq!(live.entries[0].run_number, Some(701));
+        assert_eq!(live.entries[0].host.as_deref(), Some("validation-host"));
+        assert_eq!(live.entries[0].slot.as_deref(), Some("142"));
         assert_eq!(
-            live[0].log_file.as_deref(),
+            live.entries[0].log_file.as_deref(),
             Some(log_file.to_str().unwrap())
         );
         let table = validate_status_table(
-            &live,
+            &live.entries,
             &[ValidateStatusColumn::Sha],
             ValidateStatusTimes::Relative,
             now,
@@ -9902,6 +10018,7 @@ mod tests {
             false,
         )
         .unwrap()
+        .entries
         .is_empty());
         std::fs::remove_dir_all(root).unwrap();
     }
@@ -11522,7 +11639,9 @@ mod tests {
             args.args,
             vec![OsString::from("--expected-count"), OsString::from("7")]
         );
-        assert!(HubCommand::CorrectOwnerWatchHandles(args).cost_spec().is_none());
+        assert!(HubCommand::CorrectOwnerWatchHandles(args)
+            .cost_spec()
+            .is_none());
     }
 
     #[test]

@@ -296,6 +296,8 @@ class RunRegistryContractTests(unittest.TestCase):
 
             with self.assertRaisesRegex(RuntimeError, "recovery is pending"):
                 run_registry.read_record(path)
+            with self.assertRaisesRegex(RuntimeError, "recovery is pending"):
+                run_registry.inspect_current_records([path])
 
     def test_symlinked_owner_watch_correction_marker_is_also_pending(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -316,10 +318,65 @@ class RunRegistryContractTests(unittest.TestCase):
             current = directory / "validate-test.json"
             run_registry.write_record(current, validation_handle(state="launching"))
 
-            inspected = run_registry.inspect_current_records([current])
+            report = run_registry.inspect_current_records([current])
 
-            self.assertEqual([str(current)], [row["path"] for row in inspected])
-            self.assertEqual("validate", inspected[0]["record"]["kind"])
+            self.assertEqual(
+                [str(current)], [row["path"] for row in report["records"]]
+            )
+            self.assertEqual("validate", report["records"][0]["record"]["kind"])
+            self.assertEqual([], report["unreadable"])
+
+    def test_multi_record_inspection_isolates_one_bad_record(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            first = directory / "validate-first.json"
+            malformed = directory / "validate-malformed.json"
+            second = directory / "validate-second.json"
+            first_value = validation_handle(state="launching")
+            first_value["unit"] = "validate-first.service"
+            second_value = validation_handle(state="running")
+            second_value["unit"] = "validate-second.service"
+            malformed_value = validation_handle(state="cancelled")
+            malformed_value["unit"] = "validate-malformed.service"
+            run_registry.write_record(first, first_value)
+            malformed.write_text(json.dumps(malformed_value))
+            run_registry.write_record(second, second_value)
+
+            report = run_registry.inspect_current_records(
+                [first, malformed, second]
+            )
+
+            self.assertEqual(
+                [str(first), str(second)],
+                [row["path"] for row in report["records"]],
+            )
+            self.assertEqual(
+                [str(malformed)],
+                [row["path"] for row in report["unreadable"]],
+            )
+            self.assertIn(
+                "validation-run-handle-state",
+                report["unreadable"][0]["error"],
+            )
+
+    def test_multi_record_inspection_does_not_isolate_population_unavailability(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "validate-test.json"
+            path.write_text(json.dumps(validation_handle(state="running")))
+            with mock.patch.object(
+                run_registry,
+                "read_record",
+                side_effect=run_registry.OwnerWatchCorrectionUnavailable(
+                    "owner-watch correction appeared during the record read"
+                ),
+            ):
+                with self.assertRaisesRegex(
+                    run_registry.OwnerWatchCorrectionUnavailable,
+                    "appeared during the record read",
+                ):
+                    run_registry.inspect_current_records([path])
 
     def test_process_identity_cannot_be_rebound(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

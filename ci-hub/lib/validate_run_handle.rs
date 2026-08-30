@@ -10,7 +10,7 @@
 
 use crate::bounded_output::BoundedOutput;
 use serde::de::DeserializeOwned;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::env;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -92,6 +92,18 @@ pub struct InspectedRecord {
     pub record: Projection,
 }
 
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct UnreadableRecord {
+    pub path: PathBuf,
+    pub error: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+pub struct InspectionReport {
+    pub records: Vec<InspectedRecord>,
+    pub unreadable: Vec<UnreadableRecord>,
+}
+
 pub fn workspace_root_for_record(record: &Path) -> Result<PathBuf, String> {
     let runs = record
         .parent()
@@ -164,7 +176,7 @@ fn run_authority<T: DeserializeOwned>(root: &Path, arguments: &[String]) -> Resu
 pub fn inspect_current_records(
     root: &Path,
     records: &[PathBuf],
-) -> Result<Vec<InspectedRecord>, String> {
+) -> Result<InspectionReport, String> {
     let mut arguments = vec!["inspect-current-records".into()];
     for record in records {
         arguments.push("--path".into());
@@ -423,37 +435,65 @@ mod tests {
             serde_json::to_vec(&current_record("failed")).unwrap(),
         )
         .unwrap();
-        let error = inspect_current_records(&root, &[record.clone()])
-            .expect_err("a bench-only state must be refused");
+        let error = verify_attribution(&root, &record, "type-audit", SHA, "validate")
+            .expect_err("a single-record identity check must still refuse malformed state");
         assert!(error.contains("validation-run-handle-state"), "{error}");
+
+        let report = inspect_current_records(&root, &[record.clone()])
+            .expect("bulk inspection must isolate a malformed record");
+        assert!(report.records.is_empty());
+        assert_eq!(report.unreadable.len(), 1);
+        assert_eq!(report.unreadable[0].path, record);
+        assert!(
+            report.unreadable[0]
+                .error
+                .contains("validation-run-handle-state"),
+            "{}",
+            report.unreadable[0].error
+        );
         let _ = fs::remove_dir_all(root);
     }
 
     #[test]
-    fn multi_record_inspection_refuses_a_malformed_current_handle_by_name() {
+    fn multi_record_inspection_isolates_a_malformed_handle_between_valid_handles() {
         let root = fixture_root();
         let runs = root.join("ignored/validate/runs");
         fs::create_dir_all(&runs).unwrap();
-        fs::write(
-            runs.join("historical.json"),
-            serde_json::to_vec(&serde_json::json!({
-                "schema_version": 1,
-                "state": "cancelled"
-            }))
-            .unwrap(),
-        )
-        .unwrap();
+        let first = runs.join("validate-first.json");
+        let second = runs.join("validate-second.json");
+        let mut first_value = current_record("running");
+        first_value["unit"] = serde_json::json!("validate-first.service");
+        let mut second_value = current_record("launching");
+        second_value["unit"] = serde_json::json!("validate-second.service");
+        fs::write(&first, serde_json::to_vec(&first_value).unwrap()).unwrap();
         let mut malformed = current_record("cancelled");
         malformed["unit"] = serde_json::json!("validate-malformed.service");
-        fs::write(
-            runs.join("validate-malformed.json"),
-            serde_json::to_vec(&malformed).unwrap(),
-        )
-        .unwrap();
+        let malformed_path = runs.join("validate-malformed.json");
+        fs::write(&malformed_path, serde_json::to_vec(&malformed).unwrap()).unwrap();
+        fs::write(&second, serde_json::to_vec(&second_value).unwrap()).unwrap();
 
-        let error = inspect_current_records(&root, &[runs.join("validate-malformed.json")])
-            .expect_err("a current state outside the contract must not disappear as terminal");
-        assert!(error.contains("validation-run-handle-state"), "{error}");
+        let report = inspect_current_records(
+            &root,
+            &[first.clone(), malformed_path.clone(), second.clone()],
+        )
+        .expect("one malformed record must not hide valid neighbors");
+        assert_eq!(
+            report
+                .records
+                .iter()
+                .map(|record| record.path.as_path())
+                .collect::<Vec<_>>(),
+            [first.as_path(), second.as_path()]
+        );
+        assert_eq!(report.unreadable.len(), 1);
+        assert_eq!(report.unreadable[0].path, malformed_path);
+        assert!(
+            report.unreadable[0]
+                .error
+                .contains("validation-run-handle-state"),
+            "{}",
+            report.unreadable[0].error
+        );
         let _ = fs::remove_dir_all(root);
     }
 
@@ -470,8 +510,11 @@ mod tests {
         let record = runs.join("validate-malformed-admission.json");
         fs::write(&record, serde_json::to_vec(&malformed).unwrap()).unwrap();
 
-        let error = inspect_current_records(&root, &[record])
-            .expect_err("a new admission state must not acquire implicit semantics");
+        let report = inspect_current_records(&root, &[record])
+            .expect("bulk inspection must isolate an unsupported admission state");
+        assert!(report.records.is_empty());
+        assert_eq!(report.unreadable.len(), 1);
+        let error = &report.unreadable[0].error;
         assert!(
             error.contains("validation-run-handle-admission_result.state"),
             "{error}"
@@ -495,6 +538,7 @@ mod tests {
         let mut inspected = inspect_current_records(&root, &[record])
             .expect("the optional display counter must not define admission");
         let admission = inspected
+            .records
             .pop()
             .expect("one projected record")
             .record

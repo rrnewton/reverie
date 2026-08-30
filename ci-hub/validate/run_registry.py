@@ -758,6 +758,10 @@ def owner_watch_correction_transaction(root: Path) -> Path:
     return root / "ignored" / "validate" / OWNER_WATCH_CORRECTION_TRANSACTION
 
 
+class OwnerWatchCorrectionUnavailable(RuntimeError):
+    """The run-handle population cannot be read consistently right now."""
+
+
 def owner_watch_correction_pending(root: Path) -> bool:
     """Treat every directory entry, including a dangling symlink, as pending."""
 
@@ -766,7 +770,7 @@ def owner_watch_correction_pending(root: Path) -> bool:
     except FileNotFoundError:
         return False
     except OSError as error:
-        raise RuntimeError(
+        raise OwnerWatchCorrectionUnavailable(
             "cannot inspect owner-watch correction transaction: "
             f"{owner_watch_correction_transaction(root)}: {error}"
         ) from error
@@ -776,7 +780,7 @@ def owner_watch_correction_pending(root: Path) -> bool:
 def require_no_owner_watch_correction(root: Path) -> None:
     transaction = owner_watch_correction_transaction(root)
     if owner_watch_correction_pending(root):
-        raise RuntimeError(
+        raise OwnerWatchCorrectionUnavailable(
             "owner-watch run-handle correction recovery is pending: "
             f"{transaction}"
         )
@@ -1111,15 +1115,41 @@ def projection(value: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-def inspect_current_records(paths: list[Path]) -> list[dict[str, Any]]:
-    """Validate and project every current handle with one authority process."""
-    inspected = []
+def inspect_current_records(paths: list[Path]) -> dict[str, list[dict[str, Any]]]:
+    """Validate current handles independently with one authority process.
+
+    A malformed handle is unavailable evidence about that handle. It must stay
+    visible without hiding every valid handle in the same directory. Conditions
+    that make the shared authority unavailable, such as an unfinished
+    owner-watch correction, still refuse the whole request.
+    """
+    state_roots = {
+        root for path in paths if (root := _state_root_for_run_handle(path)) is not None
+    }
+    for root in state_roots:
+        require_no_owner_watch_correction(root)
+
+    inspected: list[dict[str, Any]] = []
+    unreadable: list[dict[str, Any]] = []
     for path in paths:
-        value = read_record(path)
-        if value.get("producer") != PRODUCER:
-            raise _error("producer", f"current record {path} has the wrong producer")
-        inspected.append({"path": str(path), "record": projection(value)})
-    return inspected
+        try:
+            value = read_record(path)
+            if value.get("producer") != PRODUCER:
+                raise _error(
+                    "producer", f"current record {path} has the wrong producer"
+                )
+            inspected.append({"path": str(path), "record": projection(value)})
+        except OwnerWatchCorrectionUnavailable:
+            raise
+        except RuntimeError as error:
+            unreadable.append({"path": str(path), "error": str(error)})
+
+    # A correction may begin while the files are being inspected. Preserve the
+    # population-wide refusal instead of misreporting that shared state change
+    # as an isolated malformed record.
+    for root in state_roots:
+        require_no_owner_watch_correction(root)
+    return {"records": inspected, "unreadable": unreadable}
 
 
 def verify_attribution(
