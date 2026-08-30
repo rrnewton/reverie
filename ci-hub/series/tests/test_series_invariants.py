@@ -1381,7 +1381,7 @@ class CellResultProjection(unittest.TestCase):
         with self.assertRaises(series.MalformedRow):
             self._project([self._cell(0, outcome="SOMETHING_NEW")])
 
-    def test_comparison_cell_outcome_uses_all_typed_attempts(self):
+    def test_comparison_cell_outcome_validates_all_attempts_and_uses_framework_result(self):
         matched = self._attempt("matched")
         timed_out = self._attempt("no_result", timed_out=True)
         diverged = self._attempt(
@@ -1410,7 +1410,7 @@ class CellResultProjection(unittest.TestCase):
         cell["failure_class"] = "no_result"
         self.assertEqual(
             self._project([cell])[0]["series"]["outcome"],
-            "timeout",
+            "no_result",
         )
 
         for attempts in ([matched, diverged], [diverged, timed_out]):
@@ -1441,14 +1441,14 @@ class CellResultProjection(unittest.TestCase):
         self.assertEqual(self._project([dbt])[0]["series"]["outcome"], "passed")
 
         all_match_fail = self._cell(0, outcome="FAIL")
-        all_match_fail["result"] = None
-        all_match_fail["failure_class"] = "no_result"
+        all_match_fail["result"] = "crash-error"
+        all_match_fail["failure_class"] = "product_failure"
         self.assertEqual(
             self._project([all_match_fail])[0]["series"]["outcome"],
-            "no_result",
+            "errored",
         )
 
-        mixed_no_result = self._cell(0, outcome="FAIL")
+        mixed_no_result = self._cell(0, outcome="ERROR")
         mixed_no_result["attempts"] = [matched, self._attempt("no_result")]
         mixed_no_result["result"] = None
         mixed_no_result["failure_class"] = "no_result"
@@ -1576,11 +1576,18 @@ class CellResultProjection(unittest.TestCase):
         with self.assertRaisesRegex(series.MalformedRow, "outcome disagrees"):
             self._project([disagreeing])
 
-        attempts_disagree = self._cell(0, outcome="FAIL")
-        attempts_disagree["result"] = "crash-error"
-        attempts_disagree["failure_class"] = "product_failure"
-        with self.assertRaisesRegex(series.MalformedRow, "typed attempts"):
-            self._project([attempts_disagree])
+        fixed_attempts = self._cell(0, outcome="FAIL")
+        fixed_attempts["result"] = "crash-error"
+        fixed_attempts["failure_class"] = "product_failure"
+        self.assertEqual(
+            self._project([fixed_attempts])[0]["series"]["outcome"],
+            "errored",
+        )
+        fixed_attempts["result"] = "determinism-failure"
+        self.assertEqual(
+            self._project([fixed_attempts])[0]["series"]["outcome"],
+            "diverged",
+        )
 
     def test_projection_carries_the_recorded_machine_kernel_and_capabilities(self):
         projected = self._project([self._cell(0)])[0]

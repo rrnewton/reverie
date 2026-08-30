@@ -893,27 +893,14 @@ def _cell_outcome(row: dict) -> str:
     attempts = row.get("attempts")
     if not isinstance(attempts, list) or not attempts:
         raise MalformedRow("comparison cell result has no typed attempts")
-    states = [
+    # The framework-owned result above decides the projection. Attempt reports
+    # remain independently validated so malformed evidence cannot hide behind
+    # a well-formed terminal classification, but an outer reader must not
+    # reconstruct a competing verdict from attempt order.
+    [
         _typed_comparison_attempt(attempt, mode=mode, index=index)
         for index, attempt in enumerate(attempts, 1)
     ]
-    if "diverged" in states:
-        attempt_projection = "diverged"
-    elif "timeout" in states or outcome == "TIMEOUT":
-        attempt_projection = "timeout"
-    elif "errored" in states or outcome == "ERROR":
-        attempt_projection = "errored"
-    elif "no_result" in states or outcome in {"FAIL", "NO_RESULT"}:
-        attempt_projection = "no_result"
-    elif all(state == "matched" for state in states) and outcome == "PASS":
-        attempt_projection = "passed"
-    else:
-        attempt_projection = "no_result"
-    if attempt_projection != projected:
-        raise MalformedRow(
-            "cell result classification disagrees with its typed attempts: "
-            f"classification={projected!r} attempts={attempt_projection!r}"
-        )
     return projected
 
 
