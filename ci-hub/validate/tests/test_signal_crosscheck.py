@@ -31,7 +31,18 @@ def base_report() -> dict:
             "status_table_matches_cells": True,
             "measurement_table_matches_cells": True,
             "prose_matches_cells": True,
-            "projection_source_matches": True,
+            "projection": {
+                "source": "series",
+                "source_commit": "a" * 40,
+                "source_tree": "b" * 40,
+                "rows_read": 1,
+            },
+            "projection_source_declared": True,
+            "projection_source_path_is_canonical": True,
+            "projection_source_commit_on_published_history": True,
+            "projection_source_tree": "b" * 40,
+            "canonical_source_tree": "b" * 40,
+            "projection_source_tree_matches": True,
             "projection_rows_read_matches_source": True,
             "projection_series_relation": "current",
             "projection_series_comparison": {
@@ -44,7 +55,10 @@ def base_report() -> dict:
             "current_published_series_commit": "f" * 40,
         },
         "series": {"published_ref_sha": "f" * 40},
-        "run_handles": {"unmatched_terminal_handles": []},
+        "run_handles": {
+            "admitted_without_ledger_handles": [],
+            "terminal_handles_missing_admission": [],
+        },
         "github_status": {"published": False, "state": None},
     }
 
@@ -89,6 +103,7 @@ class SignalCrosscheckTests(unittest.TestCase):
                 "canonical": {
                     "target": sha,
                     "repo": "rrnewton/hermit",
+                    "host": "hosta",
                     "unit": "validate-canonical.service",
                     "log": canonical_log,
                 },
@@ -121,6 +136,8 @@ class SignalCrosscheckTests(unittest.TestCase):
                 "commit": sha,
                 "repo": "hermit",
                 "run_id": "same-run",
+                "run_number": 42,
+                "host": "hosta.example.com",
                 "record_id": "original",
                 "log_file": "/tmp/validate-original.log",
             }
@@ -185,7 +202,8 @@ class SignalCrosscheckTests(unittest.TestCase):
                     "kind": "validate",
                     "state": "completed",
                     "unit": raw["unit"],
-                    "admission_result": {"state": "admitted"},
+                    "host": raw.get("host"),
+                    "admission_result": {"state": "admitted", "run_number": 42},
                 }
 
             with (
@@ -220,7 +238,12 @@ class SignalCrosscheckTests(unittest.TestCase):
         self.assertEqual(report["ledger"]["exact_run_ids"], ["same-run"])
         self.assertEqual(projected_units, ["validate-canonical.service"])
         self.assertEqual(len(report["run_handles"]["terminal_handles"]), 1)
-        self.assertEqual(report["run_handles"]["unmatched_terminal_handles"], [])
+        self.assertEqual(
+            report["run_handles"]["admitted_without_ledger_handles"], []
+        )
+        self.assertEqual(
+            report["run_handles"]["terminal_handles_missing_admission"], []
+        )
         self.assertNotIn("validate-slot-poison.service", json.dumps(report))
         self.assertEqual(report["result"], "AGREE")
 
@@ -297,8 +320,9 @@ class SignalCrosscheckTests(unittest.TestCase):
         report = base_report()
         report["scorecard"].update({
             "projection": {
-                "source": "../../series",
+                "source": "series",
                 "source_commit": "a" * 40,
+                "source_tree": "b" * 40,
                 "refreshed_at": "2026-08-27T09:23:50Z",
                 "rows_read": 9,
             },
@@ -324,8 +348,9 @@ class SignalCrosscheckTests(unittest.TestCase):
         report = base_report()
         report["scorecard"].update({
             "projection": {
-                "source": "../../series",
+                "source": "series",
                 "source_commit": "a" * 40,
+                "source_tree": "b" * 40,
                 "rows_read": 8,
             },
             "projection_source_rows": 9,
@@ -354,8 +379,9 @@ class SignalCrosscheckTests(unittest.TestCase):
         report = base_report()
         report["scorecard"].update({
             "projection": {
-                "source": "../../series",
+                "source": "series",
                 "source_commit": "a" * 40,
+                "source_tree": "b" * 40,
                 "rows_read": 1,
             },
             "projection_source_rows": 1,
@@ -384,8 +410,9 @@ class SignalCrosscheckTests(unittest.TestCase):
         report = base_report()
         report["scorecard"].update({
             "projection": {
-                "source": "../../series",
+                "source": "series",
                 "source_commit": "a" * 40,
+                "source_tree": "b" * 40,
                 "rows_read": 2,
             },
             "projection_source_rows": 2,
@@ -403,21 +430,193 @@ class SignalCrosscheckTests(unittest.TestCase):
         comparison = signal_crosscheck.compare_series_snapshots(source, current)
         self.assertEqual(comparison["relation"], "current")
 
-    def test_unexpected_scorecard_source_is_distinct_from_staleness(self) -> None:
+    def test_missing_scorecard_source_declaration_is_distinct_from_staleness(self) -> None:
         report = base_report()
         report["scorecard"].update({
-            "projection_source_matches": False,
-            "projection": {"source": "/tmp/other-series", "rows_read": 10},
+            "projection_source_declared": False,
+            "projection": {"source": "", "rows_read": 10},
             "current_published_series_rows": 10,
         })
         issues = signal_crosscheck.reconcile(report)
         self.assertEqual(len(issues), 1)
-        self.assertIn("names an unexpected series source", issues[0])
+        self.assertIn("does not name its series source", issues[0])
+
+    def test_legacy_source_spellings_are_unverifiable_until_regenerated(self) -> None:
+        for source in ("../../series", "../series"):
+            with self.subTest(source=source):
+                report = base_report()
+                report["scorecard"].update({
+                    "projection": {
+                        "source": source,
+                        "source_commit": "a" * 40,
+                        "rows_read": 1,
+                    },
+                    "projection_source_tree": None,
+                    "projection_series_relation": None,
+                })
+                issues = signal_crosscheck.reconcile(report)
+                self.assertEqual(len(issues), 1)
+                self.assertIn("records no immutable source_tree", issues[0])
+
+    def test_alternate_source_path_and_tree_each_refuse(self) -> None:
+        for mutation, expected in (
+            (
+                {
+                    "projection_source_path_is_canonical": False,
+                    "projection": {
+                        "source": "alternate-series",
+                        "source_commit": "a" * 40,
+                        "source_tree": "b" * 40,
+                        "rows_read": 1,
+                    },
+                },
+                "non-canonical series path",
+            ),
+            (
+                {
+                    "projection_source_tree_matches": False,
+                    "projection_source_tree": "c" * 40,
+                    "canonical_source_tree": "b" * 40,
+                    "projection": {
+                        "source": "series",
+                        "source_commit": "a" * 40,
+                        "source_tree": "c" * 40,
+                        "rows_read": 1,
+                    },
+                },
+                "source_tree does not match",
+            ),
+        ):
+            with self.subTest(expected=expected):
+                report = base_report()
+                report["scorecard"].update(mutation)
+                issues = signal_crosscheck.reconcile(report)
+                self.assertEqual(len(issues), 1)
+                self.assertIn(expected, issues[0])
+
+    def test_canonical_source_identity_qualifies(self) -> None:
+        report = base_report()
+        report["scorecard"].update({
+            "projection": {
+                "source": "series",
+                "source_commit": "a" * 40,
+                "source_tree": "b" * 40,
+                "rows_read": 1,
+            },
+        })
+        self.assertEqual(signal_crosscheck.reconcile(report), [])
+
+    def test_projection_commit_and_tree_are_bound_to_published_parent(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = Path(directory)
+            parent = fixture / "parent"
+            foreign = fixture / "foreign"
+            parent.mkdir()
+            foreign.mkdir()
+
+            def git(repo: Path, *args: str) -> str:
+                result = subprocess.run(
+                    ["git", *args],
+                    cwd=repo,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+                return result.stdout.strip()
+
+            def initialise(repo: Path, author: str, event: str) -> None:
+                git(repo, "init", "-q", "-b", "main")
+                git(repo, "config", "user.email", f"{author}@example.invalid")
+                git(repo, "config", "user.name", author)
+                shard = repo / "series" / "hermit" / "fixture" / "2026-08.jsonl"
+                shard.parent.mkdir(parents=True)
+                shard.write_text(f'{{"event_id":"{event}"}}\n')
+                alternate = (
+                    repo / "alternate-series" / "hermit" / "fixture" / "2026-08.jsonl"
+                )
+                alternate.parent.mkdir(parents=True)
+                alternate.write_text('{"event_id":"different"}\n')
+                git(repo, "add", "series", "alternate-series")
+                git(repo, "commit", "-qm", f"{author} series")
+
+            initialise(parent, "parent", "canonical")
+            source_commit = git(parent, "rev-parse", "HEAD")
+            source_tree = signal_crosscheck.git_tree_at(
+                parent, source_commit, "series"
+            )
+            alternate_tree = signal_crosscheck.git_tree_at(
+                parent, source_commit, "alternate-series"
+            )
+            self.assertNotEqual(source_tree, alternate_tree)
+
+            (parent / "marker").write_text("published\n")
+            git(parent, "add", "marker")
+            git(parent, "commit", "-qm", "published frontier")
+            published_commit = git(parent, "rev-parse", "HEAD")
+
+            # A later worktree edit cannot change the immutable tree object.
+            (parent / "series" / "hermit" / "fixture" / "2026-08.jsonl").write_text(
+                "dirty worktree\n"
+            )
+            self.assertTrue(
+                signal_crosscheck.commit_is_ancestor(
+                    parent, source_commit, published_commit
+                )
+            )
+            self.assertEqual(
+                signal_crosscheck.git_tree_at(parent, source_commit, "series"),
+                source_tree,
+            )
+            parent_link = fixture / "parent-link"
+            parent_link.symlink_to(parent, target_is_directory=True)
+            self.assertEqual(
+                signal_crosscheck.git_tree_at(parent_link, source_commit, "series"),
+                source_tree,
+            )
+
+            with self.assertRaisesRegex(
+                signal_crosscheck.CrosscheckError,
+                "git rev-parse --verify",
+            ):
+                signal_crosscheck.git_tree_at(parent, source_commit, "missing-series")
+
+            with self.assertRaisesRegex(
+                signal_crosscheck.CrosscheckError,
+                "cannot compare series source commit",
+            ):
+                signal_crosscheck.commit_is_ancestor(
+                    parent, "f" * 40, published_commit
+                )
+
+            initialise(foreign, "foreign", "canonical")
+            foreign_commit = git(foreign, "rev-parse", "HEAD")
+            git(parent, "fetch", "-q", str(foreign), foreign_commit)
+            self.assertFalse(
+                signal_crosscheck.commit_is_ancestor(
+                    parent, foreign_commit, published_commit
+                )
+            )
+
+        report = base_report()
+        report["scorecard"].update({
+            "projection_source_commit_on_published_history": False,
+            "projection_series_relation": None,
+            "projection": {
+                "source": "series",
+                "source_commit": foreign_commit,
+                "source_tree": source_tree,
+                "rows_read": 1,
+            },
+        })
+        issues = signal_crosscheck.reconcile(report)
+        self.assertEqual(len(issues), 1)
+        self.assertIn("not on the current published parent history", issues[0])
 
     def test_historical_projection_without_source_commit_is_unbound(self) -> None:
         report = base_report()
         report["scorecard"].update({
             "projection": {"source": "../../series", "rows_read": 9},
+            "projection_source_commit_on_published_history": None,
             "projection_source_rows": None,
             "projection_rows_read_matches_source": None,
             "projection_series_relation": None,
@@ -429,7 +628,7 @@ class SignalCrosscheckTests(unittest.TestCase):
 
     def test_terminal_run_without_ledger_is_not_never_attempted(self) -> None:
         report = base_report()
-        report["run_handles"]["unmatched_terminal_handles"] = [{
+        report["run_handles"]["admitted_without_ledger_handles"] = [{
             "unit": "validate-example.service",
             "state": "completed",
             "admission": "admitted",
@@ -450,7 +649,7 @@ class SignalCrosscheckTests(unittest.TestCase):
             "ledger_event": False,
         }
         report["run_handles"]["terminal_handles"] = [passed_handle]
-        report["run_handles"]["unmatched_terminal_handles"] = [passed_handle]
+        report["run_handles"]["admitted_without_ledger_handles"] = [passed_handle]
         issues = signal_crosscheck.reconcile(report)
         self.assertEqual(report["validate_status"]["verdict"], "NOT-VALIDATED")
         self.assertEqual(len(issues), 1)
@@ -551,6 +750,7 @@ class SignalCrosscheckTests(unittest.TestCase):
 
     def test_scorecard_reads_exact_git_objects_and_checks_both_tables(self) -> None:
         source_commit = "b" * 40
+        source_tree = "d" * 40
         current_commit = "c" * 40
         series_rows = [
             {"event_id": "one", "value": 1},
@@ -559,8 +759,9 @@ class SignalCrosscheckTests(unittest.TestCase):
         cells = {
             "schema": 6,
             "projection": {
-                "source": "../../series",
+                "source": "series",
                 "source_commit": source_commit,
+                "source_tree": source_tree,
                 "refreshed_at": "2026-08-29T00:00:00Z",
                 "rows_read": 2,
                 "pre_series_corpus": False,
@@ -588,6 +789,8 @@ class SignalCrosscheckTests(unittest.TestCase):
         ])
         original = signal_crosscheck.git_text
         original_snapshot_at = signal_crosscheck.canonical_series.published_snapshot_at
+        original_commit_is_ancestor = signal_crosscheck.commit_is_ancestor
+        original_git_tree_at = signal_crosscheck.git_tree_at
         try:
             def fake_git(_repo: Path, *args: str) -> str:
                 target = args[-1]
@@ -605,6 +808,12 @@ class SignalCrosscheckTests(unittest.TestCase):
                     revision, series_rows
                 )
             )
+            signal_crosscheck.commit_is_ancestor = (
+                lambda _root, _source, _published: True
+            )
+            signal_crosscheck.git_tree_at = (
+                lambda _root, _commit, _path: source_tree
+            )
             result = signal_crosscheck.scorecard_report(
                 Path("parent"),
                 Path("hermit"),
@@ -615,17 +824,47 @@ class SignalCrosscheckTests(unittest.TestCase):
                     )
                 ),
             )
+            cells["projection"].update({
+                "source": "alternate-series",
+                "source_tree": "e" * 40,
+            })
+            alternate = signal_crosscheck.scorecard_report(
+                Path("parent"),
+                Path("hermit"),
+                "a" * 40,
+                published_series_snapshot=(
+                    signal_crosscheck.canonical_series.PublishedSnapshot(
+                        current_commit, list(series_rows)
+                    )
+                ),
+            )
+            cells["projection"].update({
+                "source": "series",
+                "source_tree": source_tree,
+            })
         finally:
             signal_crosscheck.git_text = original
             signal_crosscheck.canonical_series.published_snapshot_at = original_snapshot_at
+            signal_crosscheck.commit_is_ancestor = original_commit_is_ancestor
+            signal_crosscheck.git_tree_at = original_git_tree_at
         self.assertTrue(result["status_table_matches_cells"])
         self.assertTrue(result["measurement_table_matches_cells"])
         self.assertTrue(result["prose_matches_cells"])
-        self.assertTrue(result["projection_source_matches"])
+        self.assertTrue(result["projection_source_declared"])
+        self.assertTrue(result["projection_source_path_is_canonical"])
+        self.assertTrue(result["projection_source_commit_on_published_history"])
+        self.assertTrue(result["projection_source_tree_matches"])
         self.assertTrue(result["projection_rows_read_matches_source"])
         self.assertEqual(result["projection_series_relation"], "current")
         self.assertEqual(result["current_published_series_commit"], current_commit)
         self.assertEqual(result["fresh_observed_cells"], 1)
+        self.assertFalse(alternate["projection_source_path_is_canonical"])
+        self.assertFalse(alternate["projection_source_tree_matches"])
+        alternate_report = base_report()
+        alternate_report["scorecard"] = alternate
+        alternate_issues = signal_crosscheck.reconcile(alternate_report)
+        self.assertEqual(len(alternate_issues), 1)
+        self.assertIn("non-canonical series path", alternate_issues[0])
 
         mutated = markdown.replace(
             "green/`never-measured` count is **0**",
@@ -642,6 +881,12 @@ class SignalCrosscheckTests(unittest.TestCase):
                     revision, series_rows
                 )
             )
+            signal_crosscheck.commit_is_ancestor = (
+                lambda _root, _source, _published: True
+            )
+            signal_crosscheck.git_tree_at = (
+                lambda _root, _commit, _path: source_tree
+            )
             result = signal_crosscheck.scorecard_report(
                 Path("parent"),
                 Path("hermit"),
@@ -655,14 +900,22 @@ class SignalCrosscheckTests(unittest.TestCase):
         finally:
             signal_crosscheck.git_text = original
             signal_crosscheck.canonical_series.published_snapshot_at = original_snapshot_at
+            signal_crosscheck.commit_is_ancestor = original_commit_is_ancestor
+            signal_crosscheck.git_tree_at = original_git_tree_at
         self.assertFalse(result["prose_matches_cells"])
 
-    def test_run_handle_matching_uses_typed_projection_and_log_identity(self) -> None:
+    def test_run_handle_matching_uses_typed_projection_and_run_number_identity(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             run_root = root / "ignored" / "validate" / "runs"
             run_root.mkdir(parents=True)
-            for state in ("completed", "killed", "unknown", "failed"):
+            run_numbers = {
+                state: index
+                for index, state in enumerate(
+                    ("completed", "killed", "unknown", "failed"), start=1
+                )
+            }
+            for state in run_numbers:
                 (run_root / f"{state}.json").write_text("{}")
             (run_root / "frozen.json").write_text("{}")
             (run_root / "bench.json").write_text("{}")
@@ -680,7 +933,11 @@ class SignalCrosscheckTests(unittest.TestCase):
                         ),
                         "state": "completed" if state in {"frozen", "bench"} else state,
                         "unit": raw["unit"],
-                        "admission_result": {"state": "admitted"},
+                        "host": raw["host"],
+                        "admission_result": {
+                            "state": "admitted",
+                            "run_number": raw.get("run_number", 99),
+                        },
                     }
 
                 signal_crosscheck.run_registry.projection = fake_projection
@@ -689,19 +946,21 @@ class SignalCrosscheckTests(unittest.TestCase):
                     path.write_text(json.dumps({
                         "target": "a" * 40,
                         "repo": "rrnewton/hermit",
+                        "host": "hosta",
                         "unit": f"validate-{state}.service",
                         "log": f"/tmp/validate-{state}.log",
                         "result": "failure",
                         "exit_code": 1,
                         "fixture_state": state,
+                        "run_number": run_numbers.get(state, 99),
                     }))
                 matched = signal_crosscheck.run_handle_report(
                     root,
                     "a" * 40,
                     "rrnewton/hermit",
                     [
-                        {"log_file": f"/tmp/validate-{state}.log"}
-                        for state in ("completed", "killed", "unknown", "failed")
+                        {"host": "hosta", "run_number": value}
+                        for value in run_numbers.values()
                     ],
                 )
                 unmatched = signal_crosscheck.run_handle_report(
@@ -709,9 +968,192 @@ class SignalCrosscheckTests(unittest.TestCase):
                 )
             finally:
                 signal_crosscheck.run_registry.projection = original_projection
-        self.assertEqual(matched["unmatched_terminal_handles"], [])
+        self.assertEqual(matched["admitted_without_ledger_handles"], [])
         self.assertEqual(len(matched["terminal_handles"]), 4)
-        self.assertEqual(len(unmatched["unmatched_terminal_handles"]), 4)
+        self.assertEqual(len(unmatched["admitted_without_ledger_handles"]), 4)
+
+    def test_only_exact_terminal_admitted_handles_require_ledger_identity(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            run_root = root / "ignored" / "validate" / "runs"
+            run_root.mkdir(parents=True)
+            fixtures = {
+                "admitted-matched": (
+                    "a" * 40,
+                    "completed",
+                    "admitted",
+                    1,
+                    "hosta",
+                ),
+                "admitted-fqdn-matched": (
+                    "a" * 40,
+                    "completed",
+                    "admitted",
+                    2,
+                    "hosta.example.com",
+                ),
+                "admitted-cross-machine": (
+                    "a" * 40,
+                    "completed",
+                    "admitted",
+                    3,
+                    "hosta",
+                ),
+                "admitted-missing-host": (
+                    "a" * 40,
+                    "completed",
+                    "admitted",
+                    6,
+                    None,
+                ),
+                "refused": ("a" * 40, "refused", "refused", None, "hosta"),
+                "refused-without-admission": (
+                    "a" * 40,
+                    "refused",
+                    None,
+                    None,
+                    "hosta",
+                ),
+                "running": ("a" * 40, "running", "admitted", 4, "hosta"),
+                "missing-admission": (
+                    "a" * 40,
+                    "failed",
+                    None,
+                    None,
+                    "hosta",
+                ),
+                "other-admitted": (
+                    "b" * 40,
+                    "completed",
+                    "admitted",
+                    5,
+                    "hosta",
+                ),
+                "other-refused": (
+                    "b" * 40,
+                    "refused",
+                    "refused",
+                    None,
+                    "hosta",
+                ),
+                "other-missing": ("b" * 40, "failed", None, None, "hosta"),
+            }
+            for name, (target, state, admission, run_number, host) in fixtures.items():
+                (run_root / f"{name}.json").write_text(json.dumps({
+                    "producer": signal_crosscheck.run_registry.PRODUCER,
+                    "target": target,
+                    "repo": "rrnewton/hermit",
+                    "unit": f"validate-{name}.service",
+                    "log": f"/tmp/{name}.log",
+                    "result": (
+                        "systemd-launch-refused" if state == "refused" else None
+                    ),
+                    "fixture_state": state,
+                    "fixture_admission": admission,
+                    "fixture_run_number": run_number,
+                    "fixture_host": host,
+                }))
+
+            def projection(raw: dict) -> dict:
+                self.assertEqual(raw["target"], "a" * 40)
+                admission = raw["fixture_admission"]
+                run_number = raw["fixture_run_number"]
+                return {
+                    "target": raw["target"],
+                    "repo": raw["repo"],
+                    "kind": "validate",
+                    "state": raw["fixture_state"],
+                    "unit": raw["unit"],
+                    "host": raw["fixture_host"],
+                    "admission_result": (
+                        {
+                            "state": admission,
+                            **(
+                                {"run_number": run_number}
+                                if admission == "admitted"
+                                else {}
+                            ),
+                        }
+                        if admission is not None
+                        else None
+                    ),
+                }
+
+            with mock.patch.object(
+                signal_crosscheck.run_registry, "projection", side_effect=projection
+            ):
+                report = signal_crosscheck.run_handle_report(
+                    root,
+                    "a" * 40,
+                    "rrnewton/hermit",
+                    [
+                        # The ledger compatibility row may retain the FQDN even
+                        # though its canonical envelope uses the short host.
+                        {"host": "hosta.example.com", "run_number": 1},
+                        # Normalize the projected handle host in the reciprocal
+                        # direction too.
+                        {"host": "hosta", "run_number": 2},
+                        # Per-machine counters may legitimately reuse a number.
+                        {"host": "hostb", "run_number": 3},
+                        # A missing handle host must not be inferred from here.
+                        {"host": "hostc", "run_number": 6},
+                        # A matching log basename must not establish identity.
+                        {
+                            "host": "hosta",
+                            "run_number": 99,
+                            "log_file": "/elsewhere/admitted-cross-machine.log",
+                        },
+                    ],
+                )
+
+        self.assertEqual(len(report["matching_handles"]), 8)
+        self.assertEqual(len(report["terminal_handles"]), 7)
+        self.assertIn(
+            "validate-running.service",
+            {item["unit"] for item in report["matching_handles"]},
+        )
+        self.assertNotIn(
+            "validate-running.service",
+            {item["unit"] for item in report["terminal_handles"]},
+        )
+        self.assertEqual(
+            [item["unit"] for item in report["admitted_without_ledger_handles"]],
+            [
+                "validate-admitted-cross-machine.service",
+                "validate-admitted-missing-host.service",
+            ],
+        )
+        by_unit = {item["unit"]: item for item in report["terminal_handles"]}
+        self.assertTrue(by_unit["validate-admitted-matched.service"]["ledger_event"])
+        self.assertEqual(
+            by_unit["validate-admitted-matched.service"]["machine_shortname"],
+            "hosta",
+        )
+        fqdn = by_unit["validate-admitted-fqdn-matched.service"]
+        self.assertTrue(fqdn["ledger_event"])
+        self.assertEqual(fqdn["host"], "hosta.example.com")
+        self.assertEqual(fqdn["machine_shortname"], "hosta")
+        collision = by_unit["validate-admitted-cross-machine.service"]
+        self.assertFalse(collision["ledger_event"])
+        self.assertEqual(collision["machine_shortname"], "hosta")
+        missing_host = by_unit["validate-admitted-missing-host.service"]
+        self.assertIsNone(missing_host["host"])
+        self.assertEqual(missing_host["machine_shortname"], "")
+        self.assertFalse(missing_host["ledger_event"])
+        self.assertEqual(
+            [item["unit"] for item in report["terminal_handles_missing_admission"]],
+            ["validate-missing-admission.service"],
+        )
+        refused = next(
+            item for item in report["terminal_handles"] if item["admission"] == "refused"
+        )
+        self.assertFalse(refused["ledger_event"])
+        refused_without_admission = next(
+            item
+            for item in report["terminal_handles"]
+            if item["unit"] == "validate-refused-without-admission.service"
+        )
+        self.assertTrue(refused_without_admission["non_run_refusal"])
 
     def test_valid_handle_for_another_target_is_out_of_scope(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -734,6 +1176,7 @@ class SignalCrosscheckTests(unittest.TestCase):
             finally:
                 signal_crosscheck.run_registry.projection = original_projection
         self.assertEqual(report["terminal_handles"], [])
+        self.assertEqual(report["matching_handles"], [])
         self.assertEqual(report["unreadable_handles"], [])
 
     def test_missing_or_invalid_raw_handle_attribution_is_loud(self) -> None:
@@ -746,6 +1189,11 @@ class SignalCrosscheckTests(unittest.TestCase):
                 "invalid-target": {
                     "target": "not-a-commit",
                     "repo": "rrnewton/hermit",
+                },
+                "missing-repo-exact-target": {"target": "a" * 40},
+                "invalid-repo-exact-target": {
+                    "target": "a" * 40,
+                    "repo": "hermit",
                 },
                 "missing-repo-other-target": {"target": "b" * 40},
                 "invalid-repo-other-target": {
@@ -768,12 +1216,76 @@ class SignalCrosscheckTests(unittest.TestCase):
                 signal_crosscheck.run_registry.projection = original_projection
 
         self.assertEqual(report["terminal_handles"], [])
-        self.assertEqual(len(report["unreadable_handles"]), len(fixtures))
+        self.assertEqual(len(report["unreadable_handles"]), 4)
+        paths = {
+            Path(item["path"]).stem for item in report["unreadable_handles"]
+        }
+        self.assertEqual(
+            paths,
+            {
+                "missing-target",
+                "invalid-target",
+                "missing-repo-exact-target",
+                "invalid-repo-exact-target",
+            },
+        )
         errors = "\n".join(
             str(item["error"]) for item in report["unreadable_handles"]
         )
         self.assertIn("target must be an exact lowercase forty-hex commit", errors)
         self.assertIn("repo must be rrnewton/hermit or rrnewton/reverie", errors)
+
+    def test_exact_target_unknown_legacy_handle_without_ledger_stays_unmatched(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            run_root = root / "ignored" / "validate" / "runs"
+            run_root.mkdir(parents=True)
+            (run_root / "unknown.json").write_text(json.dumps({
+                "producer": signal_crosscheck.run_registry.PRODUCER,
+                "target": "a" * 40,
+                "repo": "rrnewton/hermit",
+                "kind": "validate",
+                "state": "unknown",
+                "result": "unknown",
+                "exit_code": None,
+                "unit": "validate-owner-checkout.service",
+                "log": "/tmp/validate-owner-checkout.log",
+            }))
+            with mock.patch.object(
+                signal_crosscheck.run_registry,
+                "projection",
+                return_value={
+                    "target": "a" * 40,
+                    "repo": "rrnewton/hermit",
+                    "kind": "validate",
+                    "state": "unknown",
+                    "unit": "validate-owner-checkout.service",
+                    "admission_result": None,
+                },
+            ):
+                report = signal_crosscheck.run_handle_report(
+                    root, "a" * 40, "rrnewton/hermit", []
+                )
+
+        self.assertEqual(report["unreadable_handles"], [])
+        self.assertEqual(report["admitted_without_ledger_handles"], [])
+        self.assertEqual(len(report["terminal_handles_missing_admission"]), 1)
+        self.assertEqual(
+            report["terminal_handles_missing_admission"][0]["unit"],
+            "validate-owner-checkout.service",
+        )
+        self.assertIsNone(
+            report["terminal_handles_missing_admission"][0]["host"]
+        )
+        self.assertEqual(
+            report["terminal_handles_missing_admission"][0]["machine_shortname"],
+            "",
+        )
+        complete = base_report()
+        complete["run_handles"] = report
+        issues = signal_crosscheck.reconcile(complete)
+        self.assertEqual(len(issues), 1)
+        self.assertIn("has no typed admission_result", issues[0])
 
 
 if __name__ == "__main__":

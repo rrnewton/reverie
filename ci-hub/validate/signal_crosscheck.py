@@ -35,8 +35,7 @@ import validate_rows as canonical_ledger  # noqa: E402
 
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 LOCAL_VALIDATION_CONTEXT = "Local validation"
-TERMINAL_RUN_STATES = frozenset({"completed", "killed", "unknown", "failed"})
-EXPECTED_SCORECARD_SOURCE = "../../series"
+TERMINAL_RUN_STATES = frozenset({"refused", "completed", "killed", "unknown", "failed"})
 VALIDATE_STATUS_VERDICTS = frozenset({
     "VALIDATED",
     "FAILED",
@@ -49,6 +48,7 @@ VALIDATE_STATUS_VERDICTS = frozenset({
 })
 GITHUB_STATUS_STATES = frozenset({"error", "failure", "pending", "success"})
 RUN_HANDLE_REPOSITORIES = frozenset({"rrnewton/hermit", "rrnewton/reverie"})
+CANONICAL_SERIES_PATH = "series"
 
 
 class CrosscheckError(RuntimeError):
@@ -340,6 +340,49 @@ def _scorecard_prose_counts(markdown: str) -> dict[str, int | None]:
     }
 
 
+def commit_is_ancestor(repo: Path, ancestor: str, descendant: str) -> bool:
+    """Whether two exact commits establish one published-history relationship."""
+    result = _run(
+        [
+            "git",
+            "--no-replace-objects",
+            "-C",
+            str(repo),
+            "merge-base",
+            "--is-ancestor",
+            ancestor,
+            descendant,
+        ],
+        cwd=repo,
+        env=_git_environment(),
+    )
+    if result.returncode == 0:
+        return True
+    if result.returncode == 1:
+        return False
+    detail = result.stderr.strip() or result.stdout.strip() or "no output"
+    raise CrosscheckError(
+        f"cannot compare series source commit {ancestor} with published commit "
+        f"{descendant}: {detail}"
+    )
+
+
+def git_tree_at(repo: Path, commit: str, path: str) -> str:
+    """Return the exact Git tree object for `path` at `commit`."""
+    tree = git_text(repo, "rev-parse", "--verify", f"{commit}:{path}").strip()
+    if not SHA_RE.fullmatch(tree):
+        raise CrosscheckError(
+            f"Git tree for {path} at {commit} is not a lowercase forty-hex object id: "
+            f"{tree!r}"
+        )
+    object_type = git_text(repo, "cat-file", "-t", tree).strip()
+    if object_type != "tree":
+        raise CrosscheckError(
+            f"Git object for {path} at {commit} is {object_type!r}, expected 'tree'"
+        )
+    return tree
+
+
 def scorecard_report(
     root: Path,
     hermit: Path,
@@ -408,23 +451,48 @@ def scorecard_report(
     if projection is not None and not isinstance(projection, dict):
         raise CrosscheckError("cells.json projection is not an object")
     projection = projection or {}
+    source = projection.get("source")
     source_commit = projection.get("source_commit")
+    source_tree = projection.get("source_tree")
     source_snapshot: canonical_series.PublishedSnapshot | None = None
     comparison: dict[str, Any] | None = None
+    source_commit_on_published_history: bool | None = None
+    canonical_source_tree: str | None = None
+    source_tree_matches: bool | None = None
     if source_commit is not None:
         if not isinstance(source_commit, str) or not SHA_RE.fullmatch(source_commit):
             raise CrosscheckError(
                 "cells.json projection source_commit must be a lowercase 40-hex "
                 f"object id, got {source_commit!r}"
             )
-        source_snapshot = (
-            published_series_snapshot
-            if source_commit == published_series_snapshot.commit
-            else canonical_series.published_snapshot_at(root, source_commit)
+        if source_tree is not None and (
+            not isinstance(source_tree, str) or not SHA_RE.fullmatch(source_tree)
+        ):
+            raise CrosscheckError(
+                "cells.json projection source_tree must be a lowercase 40-hex "
+                f"object id, got {source_tree!r}"
+            )
+        source_commit_on_published_history = commit_is_ancestor(
+            root, source_commit, published_series_snapshot.commit
         )
-        comparison = compare_series_snapshots(
-            source_snapshot.rows, published_series_snapshot.rows
-        )
+        if source_commit_on_published_history and source_tree is not None:
+            canonical_source_tree = git_tree_at(
+                root, source_commit, CANONICAL_SERIES_PATH
+            )
+            source_tree_matches = source_tree == canonical_source_tree
+        if (
+            source_commit_on_published_history
+            and source == CANONICAL_SERIES_PATH
+            and source_tree_matches
+        ):
+            source_snapshot = (
+                published_series_snapshot
+                if source_commit == published_series_snapshot.commit
+                else canonical_series.published_snapshot_at(root, source_commit)
+            )
+            comparison = compare_series_snapshots(
+                source_snapshot.rows, published_series_snapshot.rows
+            )
 
     rows_read = projection.get("rows_read")
     rows_read_valid = (
@@ -449,9 +517,16 @@ def scorecard_report(
         "green_observed_cells": len(green_observed),
         "fresh_green_observed_cells": len(fresh_green),
         "projection": projection,
-        "projection_source_matches": (
-            projection.get("source") == EXPECTED_SCORECARD_SOURCE
+        "projection_source_declared": (
+            isinstance(source, str) and bool(source.strip())
         ),
+        "projection_source_path_is_canonical": source == CANONICAL_SERIES_PATH,
+        "projection_source_commit_on_published_history": (
+            source_commit_on_published_history
+        ),
+        "projection_source_tree": source_tree,
+        "canonical_source_tree": canonical_source_tree,
+        "projection_source_tree_matches": source_tree_matches,
         "projection_source_rows": (
             len(source_snapshot.rows) if source_snapshot is not None else None
         ),
@@ -470,16 +545,6 @@ def scorecard_report(
     }
 
 
-def _record_identity(row: Mapping[str, Any]) -> set[str]:
-    values = set()
-    for field in ("run_id", "log_file"):
-        value = row.get(field)
-        if isinstance(value, str) and value:
-            values.add(value)
-            values.add(Path(value).name)
-    return values
-
-
 def _repo_matches(value: object, repo: str) -> bool:
     if repo == "rrnewton/hermit":
         return value in {None, "hermit", repo}
@@ -488,16 +553,25 @@ def _repo_matches(value: object, repo: str) -> bool:
     return value == repo
 
 
-def _run_handle_attribution(raw: Mapping[str, Any]) -> tuple[str, str]:
+def _machine_shortname(value: object) -> str:
+    """Normalize an explicit host without inferring a missing machine."""
+    return str(value or "").split(".", 1)[0]
+
+
+def _run_handle_target(raw: Mapping[str, Any]) -> str:
     target = raw.get("target")
     if not isinstance(target, str) or not SHA_RE.fullmatch(target):
         raise ValueError("run handle target must be an exact lowercase forty-hex commit")
+    return target
+
+
+def _run_handle_repo(raw: Mapping[str, Any]) -> str:
     repo = raw.get("repo")
     if not isinstance(repo, str) or repo not in RUN_HANDLE_REPOSITORIES:
         raise ValueError(
             "run handle repo must be rrnewton/hermit or rrnewton/reverie"
         )
-    return target, repo
+    return repo
 
 
 def run_handle_report(
@@ -506,10 +580,19 @@ def run_handle_report(
     repo: str,
     ledger_rows: Iterable[Mapping[str, Any]],
 ) -> dict[str, Any]:
-    ledger_identities: set[str] = set()
+    ledger_run_identities: set[tuple[str, int]] = set()
     for row in ledger_rows:
-        ledger_identities.update(_record_identity(row))
-    handles = []
+        machine_shortname = _machine_shortname(row.get("host"))
+        run_number = row.get("run_number")
+        if (
+            machine_shortname
+            and isinstance(run_number, int)
+            and not isinstance(run_number, bool)
+            and run_number > 0
+        ):
+            ledger_run_identities.add((machine_shortname, run_number))
+    matching_handles = []
+    terminal_handles = []
     unreadable = []
     run_root = root / "ignored" / "validate" / "runs"
     for path in sorted(run_root.glob("*.json")):
@@ -521,14 +604,21 @@ def run_handle_report(
             unreadable.append({"path": str(path), "error": str(error)})
             continue
         try:
-            raw_target, raw_repo = _run_handle_attribution(raw_json)
+            raw_target = _run_handle_target(raw_json)
         except ValueError as error:
             unreadable.append({"path": str(path), "error": str(error)})
             continue
-        # Attribution is validated before filtering. A well-formed handle for a
-        # different commit or repository is out of scope; a missing or invalid
-        # target/repo remains loud because it cannot be assigned safely.
-        if raw_target != sha or raw_repo != repo:
+        # A valid non-matching target proves this handle is out of scope without
+        # guessing which repository an older schema omitted. An invalid target,
+        # or an exact-target handle with no valid repository, remains loud.
+        if raw_target != sha:
+            continue
+        try:
+            raw_repo = _run_handle_repo(raw_json)
+        except ValueError as error:
+            unreadable.append({"path": str(path), "error": str(error)})
+            continue
+        if raw_repo != repo:
             continue
         try:
             raw = raw_json
@@ -545,32 +635,59 @@ def run_handle_report(
         if projected.get("kind") != run_registry.RunKind.VALIDATE.value:
             continue
         state = str(projected.get("state"))
-        if state not in TERMINAL_RUN_STATES:
-            continue
         admission = projected.get("admission_result")
         admission_state = admission.get("state") if isinstance(admission, dict) else None
-        log = str(raw.get("log") or "")
-        identifiers = {
-            str(raw.get("unit") or "").removesuffix(".service"),
-            log,
-            Path(log).name,
-        } - {"", "."}
-        handles.append({
+        admission_run_number = (
+            admission.get("run_number") if isinstance(admission, dict) else None
+        )
+        projected_host = projected.get("host")
+        machine_shortname = _machine_shortname(projected_host)
+        non_run_refusal = (
+            state == run_registry.RunState.REFUSED.value
+            and raw.get("result") == "systemd-launch-refused"
+        )
+        handle = {
             "path": str(path),
             "unit": projected.get("unit"),
             "state": state,
             "result": raw.get("result"),
             "exit_code": raw.get("exit_code"),
-            "admission": admission_state or "unknown-legacy",
-            "ledger_event": bool(identifiers & ledger_identities),
-        })
+            "producer": raw.get("producer"),
+            "admission": admission_state,
+            "run_number": admission_run_number,
+            "host": projected_host,
+            "machine_shortname": machine_shortname,
+            "non_run_refusal": non_run_refusal,
+            "ledger_event": (
+                admission_state == run_registry.AdmissionState.ADMITTED.value
+                and isinstance(admission_run_number, int)
+                and not isinstance(admission_run_number, bool)
+                and bool(machine_shortname)
+                and (machine_shortname, admission_run_number)
+                in ledger_run_identities
+            ),
+        }
+        matching_handles.append(handle)
+        if state in TERMINAL_RUN_STATES:
+            terminal_handles.append(handle)
     return {
         "scope": "attempt evidence; never receipt authority",
         "run_root": str(run_root),
-        "terminal_handles": handles,
+        "matching_handles": matching_handles,
+        "terminal_handles": terminal_handles,
         "unreadable_handles": unreadable,
-        "unmatched_terminal_handles": [
-            handle for handle in handles if not handle.get("ledger_event")
+        "admitted_without_ledger_handles": [
+            handle
+            for handle in terminal_handles
+            if handle.get("admission") == run_registry.AdmissionState.ADMITTED.value
+            and not handle.get("ledger_event")
+        ],
+        "terminal_handles_missing_admission": [
+            handle
+            for handle in terminal_handles
+            if handle.get("producer") == run_registry.PRODUCER
+            and handle.get("admission") is None
+            and not handle.get("non_run_refusal")
         ],
     }
 
@@ -662,18 +779,54 @@ def reconcile(report: Mapping[str, Any]) -> list[str]:
         issues.append("SCORECARD measurement table disagrees with cells.json")
     if scorecard and not scorecard.get("prose_matches_cells"):
         issues.append("SCORECARD prose disagrees with cells.json")
-    if scorecard and not scorecard.get("projection_source_matches"):
+    if scorecard and not scorecard.get("projection_source_declared"):
         projection = scorecard.get("projection") or {}
         issues.append(
-            "scorecard projection names an unexpected series source: "
-            f"{projection.get('source')!r}, expected {EXPECTED_SCORECARD_SOURCE!r}"
+            "scorecard projection does not name its series source: "
+            f"{projection.get('source')!r}"
         )
-    elif scorecard and scorecard.get("projection_series_relation") is None:
+    elif scorecard and (scorecard.get("projection") or {}).get("source_commit") is None:
         projection = scorecard.get("projection") or {}
         issues.append(
             "scorecard projection records no immutable source_commit, so its "
             f"{projection.get('rows_read')!r} row count cannot be classified as "
             "current, stale, or incorrect"
+        )
+    elif scorecard and scorecard.get("projection_source_tree") is None:
+        projection = scorecard.get("projection") or {}
+        issues.append(
+            "scorecard projection records no immutable source_tree, so its source "
+            f"{projection.get('source')!r} cannot be verified; regenerate it"
+        )
+    elif (
+        scorecard
+        and scorecard.get("projection_source_commit_on_published_history") is False
+    ):
+        projection = scorecard.get("projection") or {}
+        issues.append(
+            "scorecard projection source_commit is not on the current published "
+            "parent history: "
+            f"source={projection.get('source_commit')}, "
+            f"current={scorecard.get('current_published_series_commit')}"
+        )
+    elif scorecard and not scorecard.get("projection_source_path_is_canonical"):
+        projection = scorecard.get("projection") or {}
+        issues.append(
+            "scorecard projection identifies a non-canonical series path: "
+            f"{projection.get('source')!r}, expected {CANONICAL_SERIES_PATH!r}"
+        )
+    elif scorecard and not scorecard.get("projection_source_tree_matches"):
+        projection = scorecard.get("projection") or {}
+        issues.append(
+            "scorecard projection source_tree does not match the canonical series "
+            f"tree at {projection.get('source_commit')}: "
+            f"recorded={scorecard.get('projection_source_tree')}, "
+            f"canonical={scorecard.get('canonical_source_tree')}"
+        )
+    elif scorecard and scorecard.get("projection_series_relation") is None:
+        issues.append(
+            "scorecard projection has an immutable source identity but no series "
+            "comparison result"
         )
     elif scorecard and not scorecard.get("projection_rows_read_matches_source"):
         projection = scorecard.get("projection") or {}
@@ -717,11 +870,16 @@ def reconcile(report: Mapping[str, Any]) -> list[str]:
             "run handle is unreadable, so its target cannot be cross-checked: "
             f"{handle.get('path')}: {handle.get('error')}"
         )
-    for handle in handles.get("unmatched_terminal_handles") or []:
+    for handle in handles.get("admitted_without_ledger_handles") or []:
         issues.append(
-            "terminal validation run has no ledger event: "
+            "admitted terminal validation run has no ledger event: "
             f"{handle.get('unit') or handle.get('path')} "
             f"state={handle.get('state')} admission={handle.get('admission')}"
+        )
+    for handle in handles.get("terminal_handles_missing_admission") or []:
+        issues.append(
+            "current-producer terminal validation run has no typed admission_result: "
+            f"{handle.get('unit') or handle.get('path')} state={handle.get('state')}"
         )
 
     github = report.get("github_status") or {}
@@ -890,6 +1048,7 @@ def print_text(report: Mapping[str, Any]) -> None:
             f"fresh-green={scorecard.get('fresh_green_observed_cells')} "
             f"projection-rows={projection.get('rows_read')} "
             f"projection-source={projection.get('source_commit')} "
+            f"projection-source-tree={projection.get('source_tree')} "
             f"projection-source-rows={scorecard.get('projection_source_rows')} "
             f"projection-relation={scorecard.get('projection_series_relation')} "
             f"current-series-rows={scorecard.get('current_published_series_rows')} "
@@ -899,8 +1058,12 @@ def print_text(report: Mapping[str, Any]) -> None:
     if handles:
         print(
             "run-handles: "
+            f"matching={len(handles.get('matching_handles') or [])} "
             f"terminal={len(handles.get('terminal_handles') or [])} "
-            f"without-ledger={len(handles.get('unmatched_terminal_handles') or [])}"
+            "admitted-without-ledger="
+            f"{len(handles.get('admitted_without_ledger_handles') or [])} "
+            "terminal-without-admission="
+            f"{len(handles.get('terminal_handles_missing_admission') or [])}"
         )
     github = report.get("github_status")
     if github:
