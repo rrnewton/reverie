@@ -98,6 +98,14 @@ COORDINATE_KEYS = (
 FIRST_DIVERGENT_MESSAGE_KEYS = ("left", "right")
 WORKSPACE_TOKEN = "{{WORKSPACE_ROOT}}"
 RECORDED_ROOT = "/repo"
+# Unicode White_Space (not Python's broader str.isspace set) plus the exact
+# punctuation that delimits path tokens in recorded argv/env/shell text.
+_EVIDENCE_PATH_DELIMITERS = frozenset(
+    "\u0009\u000a\u000b\u000c\u000d\u0020\u0085\u00a0\u1680"
+    "\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a"
+    "\u2028\u2029\u202f\u205f\u3000"
+    "=,:;()[]{}<>\"'"
+)
 
 _SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 # Built rather than written literally so this module does not itself contain the
@@ -983,10 +991,8 @@ def _rewrite_recorded_root(value: str, root: str) -> str:
 
 def _replace_evidence_root_token(value: str, old: str, new: str) -> str:
     """Replace invocation path tokens, including option and PATH values."""
-    delimiters = "=,:;()[]{}<>\"'"
-
     def delimiter(character: str) -> bool:
-        return character.isspace() or character in delimiters
+        return character in _EVIDENCE_PATH_DELIMITERS
 
     start = 0
     pieces = []

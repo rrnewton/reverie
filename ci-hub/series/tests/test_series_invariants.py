@@ -1419,6 +1419,24 @@ class CellResultProjection(unittest.TestCase):
             series._replace_evidence_root_token(encoded, root, series.RECORDED_ROOT),
             encoded,
         )
+        for delimiter in (
+            " ", "\t", "\n", "\r", "\v", "\f", "\u00a0", "\u2003",
+        ):
+            self.assertEqual(
+                series._replace_evidence_root_token(
+                    f"{delimiter}{root}/nested", root, series.RECORDED_ROOT
+                ),
+                f"{delimiter}{series.RECORDED_ROOT}/nested",
+            )
+        for codepoint in range(0x1C, 0x20):
+            control = chr(codepoint)
+            value = f"{control}{root}/nested"
+            self.assertEqual(
+                series._replace_evidence_root_token(
+                    value, root, series.RECORDED_ROOT
+                ),
+                value,
+            )
         utf8_contract = json.loads(json.dumps(timeout))
         utf8_contract["hermit_sha"] = "a" * 40
         self.assertEqual(
