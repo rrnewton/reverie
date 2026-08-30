@@ -95,6 +95,7 @@ COORDINATE_KEYS = (
 )
 
 FIRST_DIVERGENT_MESSAGE_KEYS = ("left", "right")
+WORKSPACE_TOKEN = "{{WORKSPACE_ROOT}}"
 
 _SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 # Built rather than written literally so this module does not itself contain the
@@ -939,6 +940,41 @@ def _cell_coordinates(row: dict) -> dict | None:
     return located or None
 
 
+def _replace_at_path_boundary(value: str, old: str, new: str) -> str:
+    """Replace a known path without consuming a sibling path's prefix."""
+    start = 0
+    pieces = []
+    while True:
+        found = value.find(old, start)
+        if found < 0:
+            pieces.append(value[start:])
+            return "".join(pieces)
+        end = found + len(old)
+        preceding = value[found - 1 : found]
+        following = value[end : end + 1]
+        before_preceding = value[found - 2 : found - 1]
+        opening_quote = preceding in "\"'" and (
+            not before_preceding
+            or before_preceding.isspace()
+            or before_preceding in "=([{,:>"
+        )
+        starts_at_boundary = (
+            not preceding
+            or preceding.isspace()
+            or preceding in "=([{,:"
+            or opening_quote
+        )
+        ends_at_boundary = not following or following == "/" or (
+            opening_quote and following == preceding
+        )
+        if starts_at_boundary and ends_at_boundary:
+            pieces.extend((value[start:found], new))
+            start = end
+        else:
+            pieces.append(value[start:end])
+            start = end
+
+
 def _cell_first_divergent_messages(row: dict) -> dict | None:
     attempts = row.get("attempts")
     attempts = attempts if isinstance(attempts, list) else []
@@ -950,7 +986,27 @@ def _cell_first_divergent_messages(row: dict) -> dict | None:
         left = left if isinstance(left, str) and left else None
         right = right if isinstance(right, str) and right else None
         if left is not None or right is not None:
-            return {"left": left, "right": right}
+            messages = {"left": left, "right": right}
+            cwd = row.get("cwd")
+            if not isinstance(cwd, str) or _OWNER_PATH_NEEDLE not in cwd:
+                return messages
+
+            # The retained harness row is the exact local evidence and keeps
+            # its absolute paths.  The published series is portable evidence:
+            # retain the diagnostic text, but replace the exact execution cwd
+            # with the same workspace token used by the validation ledger.
+            # Do not infer a broader workspace or owner-home prefix: only the
+            # CellResult cwd is producer-owned evidence, and normalizing a
+            # sibling path would let an unknown owner path evade the guard.
+            messages = {
+                side: (
+                    _replace_at_path_boundary(value, cwd, WORKSPACE_TOKEN)
+                    if value is not None
+                    else None
+                )
+                for side, value in messages.items()
+            }
+            return messages
     return None
 
 

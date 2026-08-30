@@ -1738,6 +1738,96 @@ class CellResultProjection(unittest.TestCase):
             {"left": "first left", "right": "first right"},
         )
 
+    def test_projection_makes_workspace_paths_in_divergence_messages_portable(self):
+        owner_home = "/" + "home" + "/operator"
+        workspace = owner_home + "/work/dev-hermit"
+        cwd = workspace + "/worktrees/slots/pressure/ignored/pressure-fresh-one"
+        cell = self._diverged_cell(
+            0,
+            record=98,
+            syscall=37,
+            scheduler_turn=4,
+            virtual_nanoseconds=80_000,
+            left=f'newfstatat("{cwd}", st_size=2234)',
+            right=f'newfstatat("{cwd}/fixtures/program", st_size=2176)',
+        )
+        cell["cwd"] = cwd
+
+        rows = self._project([cell])
+
+        messages = rows[0]["series"]["first_divergent_messages"]
+        self.assertEqual(
+            messages,
+            {
+                "left": 'newfstatat("{{WORKSPACE_ROOT}}", st_size=2234)',
+                "right": (
+                    'newfstatat("{{WORKSPACE_ROOT}}/fixtures/program", '
+                    'st_size=2176)'
+                ),
+            },
+        )
+        self.assertNotIn("/" + "home" + "/", json.dumps(rows))
+
+    def test_projection_still_refuses_an_unattributed_owner_path(self):
+        self._assert_divergence_message_is_refused(
+            "path=" + "/" + "home" + "/someone-else/secret"
+        )
+
+    def test_projection_does_not_redact_a_workspace_sibling_prefix(self):
+        owner_home = "/" + "home" + "/operator"
+        workspace = owner_home + "/work/dev-hermit"
+        self._assert_divergence_message_is_refused(
+            f'path="{workspace}-foreign/secret"', cwd=workspace + "/hermit"
+        )
+
+    def test_projection_does_not_redact_an_owner_home_sibling_prefix(self):
+        owner_home = "/" + "home" + "/operator"
+        self._assert_divergence_message_is_refused(f'path="{owner_home}2/secret"')
+
+    def test_projection_does_not_redact_cwd_inside_an_enclosing_path(self):
+        owner_home = "/" + "home" + "/operator"
+        cwd = owner_home + "/work/dev-hermit/hermit"
+        self._assert_divergence_message_is_refused(f'path="/tmp{cwd}/secret"')
+
+    def test_projection_does_not_redact_cwd_after_a_plain_character(self):
+        owner_home = "/" + "home" + "/operator"
+        cwd = owner_home + "/work/dev-hermit/hermit"
+        self._assert_divergence_message_is_refused(f"path=x{cwd}/secret")
+
+    def test_projection_does_not_treat_colon_as_a_trailing_path_boundary(self):
+        self._assert_cwd_suffix_is_refused(":foreign")
+
+    def test_projection_does_not_treat_semicolon_as_a_trailing_path_boundary(self):
+        self._assert_cwd_suffix_is_refused(";foreign")
+
+    def test_projection_does_not_treat_parenthesis_as_a_trailing_path_boundary(self):
+        self._assert_cwd_suffix_is_refused(")foreign")
+
+    def test_projection_does_not_treat_space_as_a_trailing_path_boundary(self):
+        self._assert_cwd_suffix_is_refused(" foreign")
+
+    def _assert_cwd_suffix_is_refused(self, suffix):
+        owner_home = "/" + "home" + "/operator"
+        cwd = owner_home + "/work/dev-hermit/hermit"
+        self._assert_divergence_message_is_refused(f"path={cwd}{suffix}", cwd=cwd)
+
+    def _assert_divergence_message_is_refused(self, message, *, cwd=None):
+        owner_home = "/" + "home" + "/operator"
+        cwd = cwd or owner_home + "/work/dev-hermit/hermit"
+        cell = self._diverged_cell(
+            0,
+            record=98,
+            syscall=37,
+            scheduler_turn=4,
+            virtual_nanoseconds=80_000,
+            left="inbound read",
+            right=message,
+        )
+        cell["cwd"] = cwd
+
+        with self.assertRaisesRegex(series.MalformedRow, "workspace-local owner path"):
+            self._project([cell])
+
     def test_append_cells_uses_the_supplied_run_id_for_the_whole_batch(self):
         import contextlib
         import io
