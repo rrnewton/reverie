@@ -11,6 +11,8 @@ usage() {
 usage: ci-hub/bin/agent-tool <dagrun|pr-landing-planner|safe-ci-dag-runner|tick-hub> [args...]
 
 Run one agent-utils tool from the commit selected by dev-hermit's Hermit pin.
+Pin authority is DEV_HERMIT_TOOL_ROOT's exact HEAD when set, otherwise a fresh
+parent origin/main fetch. DEV_HERMIT_PARENT may name a separate state checkout.
 For that tool's options, choose its name above and append --help.
 EOF
 }
@@ -34,15 +36,22 @@ case "$TOOL" in
 esac
 shift
 
-ROOT=$(git -C "$(dirname -- "${BASH_SOURCE[0]}")/../.." rev-parse --show-toplevel)
-HERMIT="$ROOT/hermit"
-AGENT_UTILS="$ROOT/agent-utils"
-AGENT_UTILS_LINK_TARGET="hermit/agent-utils"
-
 die() {
     echo "agent-tool: $*" >&2
     exit 1
 }
+
+if ! SCRIPT_ROOT=$(git -C "$(dirname -- "${BASH_SOURCE[0]}")/../.." \
+    rev-parse --show-toplevel 2>/dev/null); then
+    die "cannot resolve the dev-hermit tool root containing ${BASH_SOURCE[0]}"
+fi
+STATE_ROOT_INPUT=${DEV_HERMIT_PARENT:-$SCRIPT_ROOT}
+if ! ROOT=$(git -C "$STATE_ROOT_INPUT" rev-parse --show-toplevel 2>/dev/null); then
+    die "DEV_HERMIT_PARENT '$STATE_ROOT_INPUT' is not a dev-hermit Git checkout"
+fi
+HERMIT="$ROOT/hermit"
+AGENT_UTILS="$ROOT/agent-utils"
+AGENT_UTILS_LINK_TARGET="hermit/agent-utils"
 
 run_networked() {
     if command -v with-proxy >/dev/null 2>&1; then
@@ -65,6 +74,135 @@ gitlink_at() {
     printf '%s\n' "$object"
 }
 
+PIN_SOURCE_TEMP_ROOT=""
+PIN_SOURCE_TEMP_REF=""
+PIN_SOURCE_TEMP_OID=""
+
+cleanup_pin_source_ref() {
+    local original_rc=$1 current ref_rc cleanup_rc=0
+    trap - EXIT INT TERM
+    if [[ -z $PIN_SOURCE_TEMP_REF ]]; then
+        return "$original_rc"
+    fi
+
+    if current=$(git -C "$PIN_SOURCE_TEMP_ROOT" rev-parse --verify --quiet \
+        "$PIN_SOURCE_TEMP_REF"); then
+        if [[ $current != "$PIN_SOURCE_TEMP_OID" ]]; then
+            echo "agent-tool: WARNING: refusing to remove private pin-source ref $PIN_SOURCE_TEMP_REF: expected $PIN_SOURCE_TEMP_OID, found $current" >&2
+            cleanup_rc=1
+        elif git -C "$PIN_SOURCE_TEMP_ROOT" update-ref --no-deref -d \
+            "$PIN_SOURCE_TEMP_REF" "$PIN_SOURCE_TEMP_OID"; then
+            PIN_SOURCE_TEMP_REF=""
+            PIN_SOURCE_TEMP_OID=""
+            PIN_SOURCE_TEMP_ROOT=""
+        else
+            echo "agent-tool: WARNING: could not remove private pin-source ref $PIN_SOURCE_TEMP_REF at expected $PIN_SOURCE_TEMP_OID" >&2
+            cleanup_rc=1
+        fi
+    else
+        ref_rc=$?
+        if [[ $ref_rc -eq 1 ]]; then
+            PIN_SOURCE_TEMP_REF=""
+            PIN_SOURCE_TEMP_OID=""
+            PIN_SOURCE_TEMP_ROOT=""
+        else
+            echo "agent-tool: WARNING: could not inspect private pin-source ref $PIN_SOURCE_TEMP_REF before cleanup" >&2
+            cleanup_rc=1
+        fi
+    fi
+
+    if [[ $original_rc -ne 0 ]]; then
+        return "$original_rc"
+    fi
+    return "$cleanup_rc"
+}
+
+pin_source_exit() {
+    local original_rc=$? final_rc
+    if cleanup_pin_source_ref "$original_rc"; then
+        final_rc=0
+    else
+        final_rc=$?
+    fi
+    exit "$final_rc"
+}
+
+pin_source_signal() {
+    local signal_rc=$1 final_rc
+    if cleanup_pin_source_ref "$signal_rc"; then
+        final_rc=0
+    else
+        final_rc=$?
+    fi
+    exit "$final_rc"
+}
+
+arm_pin_source_cleanup() {
+    trap pin_source_exit EXIT
+    trap 'pin_source_signal 130' INT
+    trap 'pin_source_signal 143' TERM
+}
+
+select_pin_source() {
+    local pin_root_input fetch_ref remote_listing remote_url remote_ref extra
+    local -a remote_lines
+    if [[ -n ${DEV_HERMIT_TOOL_ROOT:-} ]]; then
+        pin_root_input=$DEV_HERMIT_TOOL_ROOT
+        if ! PIN_ROOT=$(git -C "$pin_root_input" rev-parse --show-toplevel 2>/dev/null); then
+            die "DEV_HERMIT_TOOL_ROOT '$pin_root_input' is not a dev-hermit Git checkout"
+        fi
+        if ! PIN_SOURCE_COMMIT=$(git -C "$PIN_ROOT" rev-parse --verify 'HEAD^{commit}' 2>/dev/null); then
+            die "cannot resolve immutable HEAD in DEV_HERMIT_TOOL_ROOT $PIN_ROOT"
+        fi
+        PIN_SOURCE_DESCRIPTION="immutable tool root $PIN_ROOT at HEAD $PIN_SOURCE_COMMIT"
+        return
+    fi
+
+    # The durable health tick normally runs from the shared primary, whose HEAD
+    # may stay behind indefinitely because advancing its product gitlinks would
+    # overwrite another agent's work. Fetch main into a process-private ref and
+    # immediately collapse that mutable ref to one exact commit. Never derive a
+    # reviewed tool pin from the stale state checkout's HEAD.
+    PIN_ROOT=$ROOT
+    fetch_ref="refs/ci-hub/agent-tool-pin/${BASHPID}-${RANDOM}"
+    if ! remote_url=$(git -C "$PIN_ROOT" remote get-url origin 2>/dev/null); then
+        die "cannot resolve the agent-utils pin: $PIN_ROOT has no readable origin fetch URL; stale local HEAD was not used"
+    fi
+    # Fetch by URL rather than by the configured remote name. Git otherwise
+    # also updates refs/remotes/origin/main opportunistically, even with an
+    # explicit destination, creating a shared-ref race across linked worktrees.
+    if ! remote_listing=$(run_networked git -C "$PIN_ROOT" ls-remote \
+        --exit-code --refs "$remote_url" refs/heads/main); then
+        die "cannot resolve the agent-utils pin: live origin/main query failed in $PIN_ROOT; stale local HEAD was not used"
+    fi
+    mapfile -t remote_lines <<<"$remote_listing"
+    if [[ ${#remote_lines[@]} -ne 1 ]]; then
+        die "cannot resolve the agent-utils pin: live origin/main query returned ${#remote_lines[@]} records; stale local HEAD was not used"
+    fi
+    read -r PIN_SOURCE_TEMP_OID remote_ref extra <<<"${remote_lines[0]}"
+    if [[ ! $PIN_SOURCE_TEMP_OID =~ ^[0-9a-f]{40}$ \
+          || $remote_ref != refs/heads/main || -n ${extra:-} ]]; then
+        die "cannot resolve the agent-utils pin: malformed origin/main response '${remote_lines[0]}'; stale local HEAD was not used"
+    fi
+
+    PIN_SOURCE_TEMP_ROOT=$PIN_ROOT
+    PIN_SOURCE_TEMP_REF=$fetch_ref
+    arm_pin_source_cleanup
+    if ! run_networked git -C "$PIN_ROOT" fetch --quiet --no-tags \
+        --no-write-fetch-head "$remote_url" "$PIN_SOURCE_TEMP_OID"; then
+        die "cannot resolve the agent-utils pin: fresh fetch of origin/main failed in $PIN_ROOT; stale local HEAD was not used"
+    fi
+    if ! git -C "$PIN_ROOT" cat-file -e "$PIN_SOURCE_TEMP_OID^{commit}" 2>/dev/null; then
+        die "fresh origin/main fetch did not provide commit $PIN_SOURCE_TEMP_OID"
+    fi
+    if ! git -C "$PIN_ROOT" update-ref --no-deref "$PIN_SOURCE_TEMP_REF" \
+        "$PIN_SOURCE_TEMP_OID" 0000000000000000000000000000000000000000; then
+        die "cannot create private pin-source ref $PIN_SOURCE_TEMP_REF at $PIN_SOURCE_TEMP_OID"
+    fi
+    PIN_SOURCE_COMMIT=$PIN_SOURCE_TEMP_OID
+    PIN_SOURCE_DESCRIPTION="freshly fetched origin/main commit $PIN_SOURCE_COMMIT in $PIN_ROOT"
+}
+
 if [[ ! -L $AGENT_UTILS ]]; then
     die "$AGENT_UTILS is not the tracked compatibility symlink; expected 'agent-utils -> $AGENT_UTILS_LINK_TARGET'"
 fi
@@ -73,20 +211,32 @@ if [[ $ACTUAL_LINK != "$AGENT_UTILS_LINK_TARGET" ]]; then
     die "$AGENT_UTILS points to '$ACTUAL_LINK'; expected exact relative target '$AGENT_UTILS_LINK_TARGET'"
 fi
 
-PARENT_HERMIT=$(gitlink_at "$ROOT" HEAD hermit "parent HEAD")
+select_pin_source
+PARENT_HERMIT=$(gitlink_at "$PIN_ROOT" "$PIN_SOURCE_COMMIT" hermit \
+    "$PIN_SOURCE_DESCRIPTION")
+STATE_PARENT_HEAD=$(git -C "$ROOT" rev-parse --verify 'HEAD^{commit}' 2>/dev/null || echo unknown)
+if [[ $PIN_ROOT != "$ROOT" || $PIN_SOURCE_COMMIT != "$STATE_PARENT_HEAD" ]]; then
+    echo "agent-tool: pin source is $PIN_SOURCE_DESCRIPTION; state root HEAD $STATE_PARENT_HEAD remains untouched." >&2
+fi
 if [[ ! -e $HERMIT/.git ]]; then
+    if [[ $PIN_ROOT != "$ROOT" || $PIN_SOURCE_COMMIT != "$STATE_PARENT_HEAD" ]]; then
+        die "cannot reconcile $PIN_SOURCE_DESCRIPTION: state checkout $HERMIT is not initialized, and initializing it from stale state-root HEAD $STATE_PARENT_HEAD would select the wrong Hermit commit $PARENT_HERMIT; no checkout was moved"
+    fi
     update_hermit=(git -C "$ROOT" submodule update --init --checkout -- hermit)
     run_networked "${update_hermit[@]}" \
-        || die "could not initialize parent-recorded Hermit checkout; rerun '${update_hermit[*]}'"
+        || die "could not initialize Hermit checkout recorded by $PIN_SOURCE_DESCRIPTION; rerun '${update_hermit[*]}'"
 fi
 if [[ ! -e $HERMIT/.git ]]; then
     die "$HERMIT is not initialized; run 'git -C $ROOT submodule update --init --checkout -- hermit'"
 fi
 if ! git -C "$HERMIT" cat-file -e "$PARENT_HERMIT^{commit}" 2>/dev/null; then
-    die "$HERMIT does not contain parent-recorded commit $PARENT_HERMIT; run 'git -C $HERMIT fetch origin main' through with-proxy, then rerun"
+    die "cannot reconcile $PIN_SOURCE_DESCRIPTION: it records Hermit $PARENT_HERMIT, but state checkout $HERMIT does not contain that commit; run 'with-proxy git -C $HERMIT fetch origin $PARENT_HERMIT', then rerun; no checkout was moved"
 fi
 EXPECTED=$(gitlink_at "$HERMIT" "$PARENT_HERMIT" agent-utils \
-    "parent-recorded Hermit commit $PARENT_HERMIT")
+    "Hermit commit $PARENT_HERMIT selected by $PIN_SOURCE_DESCRIPTION")
+if ! cleanup_pin_source_ref 0; then
+    die "pin resolution completed, but private pin-source ref cleanup was unsafe; refusing to run $TOOL"
+fi
 
 # REPORTERS DEGRADE, ACTORS REFUSE.
 #
@@ -172,42 +322,22 @@ if [[ "$ACTUAL" != "$EXPECTED" ]]; then
     if [[ $CURRENT_PIN != "$EXPECTED" ]]; then
         if tick_hub_matches_parent_pin; then
             TICK_HUB_CONTENT_MATCH=1
-            PARENT_HEAD=$(git -C "$ROOT" rev-parse HEAD 2>/dev/null || echo unknown)
             HERMIT_HEAD=$(git -C "$HERMIT" rev-parse HEAD 2>/dev/null || echo unknown)
-            echo "agent-tool: parent and checked-out Hermit pins differ, but tick-hub's complete tracked executable/package is byte-identical." >&2
-            echo "agent-tool:   parent HEAD $PARENT_HEAD -> Hermit $PARENT_HERMIT -> agent-utils $EXPECTED" >&2
+            echo "agent-tool: selected and checked-out Hermit pins differ, but tick-hub's complete tracked executable/package is byte-identical." >&2
+            echo "agent-tool:   $PIN_SOURCE_DESCRIPTION -> Hermit $PARENT_HERMIT -> agent-utils $EXPECTED" >&2
             echo "agent-tool:   checkout Hermit $HERMIT_HEAD -> agent-utils $CURRENT_PIN; materialized agent-utils $ACTUAL" >&2
             echo "agent-tool: proceeding without moving either shared checkout; the running health gates still report gitlink drift." >&2
         else
-            # ⚠️ NAME THE OBJECTS, NOT JUST THE VALUES. The old text said "parent-recorded"
-            # without saying that it is read from the parent's LOCAL HEAD -- not from
-            # origin/main -- so two people comparing the same pin got different answers
-            # and spent hours on it: `git ls-tree origin/main hermit` and this guard
-            # legitimately disagree whenever the local checkout has drifted, and the
-            # message gave no way to tell which had. It also could not distinguish "the
-            # parent is behind" from "the checkout is ahead", which are opposite repairs.
-            PARENT_HEAD=$(git -C "$ROOT" rev-parse HEAD 2>/dev/null || echo unknown)
-            PARENT_MAIN=$(git -C "$ROOT" rev-parse origin/main 2>/dev/null || echo unknown)
             HERMIT_HEAD=$(git -C "$HERMIT" rev-parse HEAD 2>/dev/null || echo unknown)
-            drift=""
-            if [[ $PARENT_HEAD != "$PARENT_MAIN" && $PARENT_HEAD != unknown && $PARENT_MAIN != unknown ]]; then
-                behind=$(git -C "$ROOT" rev-list --count "$PARENT_HEAD..$PARENT_MAIN" 2>/dev/null || echo "?")
-                ahead=$(git -C "$ROOT" rev-list --count "$PARENT_MAIN..$PARENT_HEAD" 2>/dev/null || echo "?")
-                drift="
-  NOTE: the parent's HEAD is NOT origin/main -- $behind behind, $ahead ahead. This guard
-        reads HEAD, so a reader comparing against origin/main will see a DIFFERENT
-        expected pin and neither is wrong."
-            fi
             die "agent-utils pin mismatch.
   EXPECTED $EXPECTED
-    read from: gitlink 'agent-utils' at parent-recorded Hermit $PARENT_HERMIT,
-               which came from gitlink 'hermit' at the PARENT'S LOCAL HEAD $PARENT_HEAD
-               (NOT origin/main $PARENT_MAIN)
+    read from: gitlink 'agent-utils' at Hermit $PARENT_HERMIT,
+               selected by $PIN_SOURCE_DESCRIPTION
   ACTUAL   $CURRENT_PIN
     read from: gitlink 'agent-utils' at the CHECKED-OUT Hermit $HERMIT_HEAD
-               in $HERMIT$drift
-  Reconcile the Hermit checkout before materializing agent-utils: either move the
-  checkout to $PARENT_HERMIT, or advance the parent's hermit gitlink to $HERMIT_HEAD.
+               in $HERMIT
+  STATE ROOT HEAD $STATE_PARENT_HEAD in $ROOT was not used as pin authority.
+  Reconcile the checked Hermit checkout with the selected immutable pin source.
   Reverting only the agent-utils submodule does NOT hold -- any 'submodule update' in
   that checkout restores the value its own HEAD records."
         fi
@@ -236,12 +366,10 @@ if [[ "$ACTUAL" != "$EXPECTED" && $TICK_HUB_CONTENT_MATCH == 0 ]]; then
     echo "agent-tool: agent-utils is at $ACTUAL; expected $EXPECTED" >&2
     exit 1
 fi
-# This front door proves either the reviewed pin or, for tick-hub alone, exact
-# identity of its complete tracked runtime with that pin. It does not prove
-# remote freshness. A local origin/main is a mutable transport cache and may be
-# stale; making reporters depend on it would violate the fail-open reporting
-# contract. The separate check-agent-utils-pin gate fetches origin and enforces
-# exact main equality.
+# This front door proves either the pin selected by an explicitly supplied
+# immutable tool-root HEAD or a commit obtained by a fresh origin/main fetch.
+# For tick-hub alone, exact identity of its complete tracked runtime is also
+# accepted across an otherwise unrelated checked-out Hermit pin difference.
 if [[ -n $(git -C "$AGENT_UTILS" status --porcelain) ]]; then
     if [[ $TICK_HUB_CONTENT_MATCH == 1 ]]; then
         agent_utils_dirt "at content-equivalent commit $ACTUAL; parent pin $EXPECTED"

@@ -14,13 +14,21 @@ health polling. Project policy stays in this repository:
   versioned schema/example; copy it rather than committing the live state.
 - `ci-hub/health/operational_health.py` implements project-specific probes.
 - `ci-hub/bin/health-tick` uses `ci-hub/bin/agent-tool` to run the tick-hub
-  implementation pinned by Hermit's nested `agent-utils` gitlink. Normally the
-  checkout is at that exact commit. If a landing has moved the shared Hermit
-  checkout first, the reporter may continue only when its complete tracked
-  Python entrypoint and package are byte-identical to the recorded pin; any
-  tick-hub difference still refuses. The wrapper provisions the pinned Python
-  runtime dependency into the ignored `.tick-hub/venv` when needed, then invokes
-  the real tick-hub CLI.
+  implementation pinned by Hermit's nested `agent-utils` gitlink. The expected
+  pin comes from `DEV_HERMIT_TOOL_ROOT`'s exact `HEAD` when a current tooling
+  checkout is supplied; otherwise the adapter freshly fetches parent
+  `origin/main` into a process-private ref and resolves one exact commit. It
+  keeps that ref alive through both nested gitlink reads and compare-deletes it
+  on normal exit or a catchable signal; it never changes `FETCH_HEAD`, the
+  shared `origin/main` tracking ref, or a ref whose object identity changed.
+  It never treats a stale dirty state-root `HEAD` as pin authority. Normally the
+  materialized checkout is at that exact commit. If a landing has moved the
+  shared Hermit checkout first, the reporter may continue only when its complete
+  tracked Python entrypoint and package are byte-identical to the selected pin;
+  any tick-hub difference still refuses. `DEV_HERMIT_PARENT` may name the dirty
+  primary that owns the materialized Hermit/agent-utils checkouts. The wrapper
+  provisions the pinned Python runtime dependency into the ignored
+  `.tick-hub/venv` when needed, then invokes the real tick-hub CLI.
 - `.orc/plugins/hermit-dev/index.ts` is the outer sixty-minute scheduler and
   wakeup delivery adapter.
 
