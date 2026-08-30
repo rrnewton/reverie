@@ -720,9 +720,11 @@ def _comparison_spec_valid(value: Any) -> bool:
     return True
 
 
-def cell_verdict_valid(value: Any) -> bool:
+def cell_verdict_valid(value: Any, mode: Any) -> bool:
     """Validate one of the four closed states without consulting process exit."""
     if not isinstance(value, dict):
+        return False
+    if mode not in ("verify", "replay", "chaos", "naked", "custom"):
         return False
     state = value.get("state")
     if state in _REASONED_STATES:
@@ -762,14 +764,20 @@ def cell_verdict_valid(value: Any) -> bool:
         return False
     if state == "compared-and-diverged" and value["bitwise_parity"]:
         return False
+    expected_virtualize_time = {
+        "replay": False,
+        "verify": True,
+        "chaos": True,
+    }.get(mode)
     canonical_evidence_shape = (
-        comparison["strictness"] == "canonical"
+        expected_virtualize_time is not None
+        and comparison["strictness"] == "canonical"
         and comparison["display_name"] == "BitwiseInfoV1"
         and comparison["compare_logs"] is True
         and comparison["compare_io_buffers"] is True
         and comparison["log_scope"] == "info"
         and comparison["record_envelope"] == "all_records_v1"
-        and comparison["virtualize_time"] is True
+        and comparison["virtualize_time"] is expected_virtualize_time
         and comparison["strip_lines"] is False
         and comparison["canonicalize_addresses"] is True
         and comparison["full_trace"] is True
@@ -873,7 +881,9 @@ def cell_results_verdict(
         if not isinstance(cell, dict) or set(cell) != set(_CELL_IDENTITY_KEYS) | {"cell_verdict"}:
             return CellResultsVerdict.MALFORMED
         identity = _cell_identity({key: cell.get(key) for key in _CELL_IDENTITY_KEYS})
-        if identity is None or not cell_verdict_valid(cell.get("cell_verdict")):
+        if identity is None or not cell_verdict_valid(
+            cell.get("cell_verdict"), cell.get("mode")
+        ):
             return CellResultsVerdict.VERDICT_INVALID
         cell_identities.append(identity)
     if any(identity is None for identity in identities):
@@ -905,7 +915,9 @@ _SCORECARD_GREEN_TIERS = {
 
 def cell_scorecard_green(cell: Any) -> bool:
     """Project one admitted cell without treating process success as parity."""
-    if not isinstance(cell, dict) or not cell_verdict_valid(cell.get("cell_verdict")):
+    if not isinstance(cell, dict) or not cell_verdict_valid(
+        cell.get("cell_verdict"), cell.get("mode")
+    ):
         return False
     verdict = cell["cell_verdict"]
     return (

@@ -185,44 +185,22 @@ fn observation_with_comparison_fields(
 /// complete current evidence. Output-only matches, stripped comparisons, 0/0
 /// reports and unavailable cells never become clean legs.
 fn canonical_observation(cell: &CellResult) -> Option<Observation> {
-    let (matched, tier, comparison, bitwise_parity, counts) = match &cell.cell_verdict {
-        CellVerdict::ComparedAndMatched {
-            comparison_tier,
-            comparison,
-            bitwise_parity,
-            compared_log_messages,
-        } => (
-            true,
-            comparison_tier,
-            comparison,
-            *bitwise_parity,
-            compared_log_messages,
-        ),
-        CellVerdict::ComparedAndDiverged {
-            comparison_tier,
-            comparison,
-            bitwise_parity,
-            compared_log_messages,
-        } => (
-            false,
-            comparison_tier,
-            comparison,
-            *bitwise_parity,
-            compared_log_messages,
-        ),
-        CellVerdict::PerformsNoComparisonByDesign { .. }
-        | CellVerdict::UnavailableWithReason { .. } => return None,
+    let virtualize_time = match cell.mode.as_str() {
+        "replay" => Some(false),
+        "verify" | "chaos" => Some(true),
+        _ => return None,
     };
-    if *tier != ComparisonTier::CanonicalBitwise
-        || !comparison.is_canonical_bitwise_info_v1(counts)
-        || bitwise_parity != matched
-    {
-        return None;
-    }
-    Some(Observation {
-        legs: 2,
-        failures: u64::from(!matched),
-    })
+    observation_with_comparison_fields(
+        cell,
+        Some("BitwiseInfoV1"),
+        Some(true),
+        Some("all_records_v1"),
+        virtualize_time,
+    )
+}
+
+fn known_cell_mode(mode: &str) -> bool {
+    matches!(mode, "verify" | "replay" | "chaos" | "naked" | "custom")
 }
 
 /// The first schema-6 rows predate the four comparison fields that now make a
@@ -353,23 +331,28 @@ fn validated_evidence(
     if population_sha256(&evidence.selected) != evidence.population_sha256 {
         return Err("cell_results population_sha256 does not bind selected identities".into());
     }
-    if evidence.cells.iter().any(|cell| match &cell.cell_verdict {
-        CellVerdict::ComparedAndMatched { .. } | CellVerdict::ComparedAndDiverged { .. } => {
-            canonical_observation(cell).is_none()
-                && !(schema == schema_min && comparison_without_later_fields_is_well_formed(cell))
-                && matches!(
-                    &cell.cell_verdict,
-                    CellVerdict::ComparedAndMatched {
-                        comparison_tier: ComparisonTier::CanonicalBitwise,
-                        ..
-                    } | CellVerdict::ComparedAndDiverged {
-                        comparison_tier: ComparisonTier::CanonicalBitwise,
-                        ..
-                    }
-                )
-        }
-        CellVerdict::PerformsNoComparisonByDesign { reason, .. }
-        | CellVerdict::UnavailableWithReason { reason, .. } => !nonblank(reason),
+    if evidence.cells.iter().any(|cell| {
+        !known_cell_mode(&cell.mode)
+            || match &cell.cell_verdict {
+                CellVerdict::ComparedAndMatched { .. }
+                | CellVerdict::ComparedAndDiverged { .. } => {
+                    canonical_observation(cell).is_none()
+                        && !(schema == schema_min
+                            && comparison_without_later_fields_is_well_formed(cell))
+                        && matches!(
+                            &cell.cell_verdict,
+                            CellVerdict::ComparedAndMatched {
+                                comparison_tier: ComparisonTier::CanonicalBitwise,
+                                ..
+                            } | CellVerdict::ComparedAndDiverged {
+                                comparison_tier: ComparisonTier::CanonicalBitwise,
+                                ..
+                            }
+                        )
+                }
+                CellVerdict::PerformsNoComparisonByDesign { reason, .. }
+                | CellVerdict::UnavailableWithReason { reason, .. } => !nonblank(reason),
+            }
     }) {
         return Err("cell_results contain an invalid typed verdict".into());
     }
@@ -809,6 +792,77 @@ mod tests {
             .unwrap()
             .cells[0];
         assert_eq!(canonical_observation(cell), None);
+
+        let mut replay = current.clone();
+        let evidence = replay.cell_results.as_mut().unwrap().typed_mut().unwrap();
+        evidence.selected[0].mode = "replay".into();
+        evidence.cells[0].mode = "replay".into();
+        row_comparison(&mut replay).virtualize_time = Some(false);
+        let cell = &replay.cell_results.as_ref().unwrap().typed().unwrap().cells[0];
+        assert_eq!(
+            canonical_observation(cell),
+            Some(Observation {
+                legs: 2,
+                failures: 0
+            })
+        );
+
+        let mut chaos_without_virtual_time = current.clone();
+        let evidence = chaos_without_virtual_time
+            .cell_results
+            .as_mut()
+            .unwrap()
+            .typed_mut()
+            .unwrap();
+        evidence.selected[0].mode = "chaos".into();
+        evidence.cells[0].mode = "chaos".into();
+        row_comparison(&mut chaos_without_virtual_time).virtualize_time = Some(false);
+        let cell = &chaos_without_virtual_time
+            .cell_results
+            .as_ref()
+            .unwrap()
+            .typed()
+            .unwrap()
+            .cells[0];
+        assert_eq!(canonical_observation(cell), None);
+
+        let mut unknown_mode = current.clone();
+        let evidence = unknown_mode
+            .cell_results
+            .as_mut()
+            .unwrap()
+            .typed_mut()
+            .unwrap();
+        evidence.selected[0].mode = "unknown".into();
+        evidence.cells[0].mode = "unknown".into();
+        let cell = &unknown_mode
+            .cell_results
+            .as_ref()
+            .unwrap()
+            .typed()
+            .unwrap()
+            .cells[0];
+        assert_eq!(canonical_observation(cell), None);
+
+        let mut unknown_reasoned_mode = current.clone();
+        let evidence = unknown_reasoned_mode
+            .cell_results
+            .as_mut()
+            .unwrap()
+            .typed_mut()
+            .unwrap();
+        evidence.selected[0].mode = "unknown".into();
+        evidence.cells[0].mode = "unknown".into();
+        evidence.cells[0].cell_verdict = CellVerdict::UnavailableWithReason {
+            comparison_tier: ComparisonTier::DeclaredButUnverifiable,
+            reason: "fixture unavailable".into(),
+        };
+        assert!(validated_evidence(
+            &unknown_reasoned_mode,
+            CELL_RESULTS_SCHEMA_MIN,
+            CELL_RESULTS_SCHEMA_MAX,
+        )
+        .is_err());
 
         let mut extra_stripping = current.clone();
         row_comparison(&mut extra_stripping)

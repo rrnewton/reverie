@@ -190,7 +190,13 @@ def _zero_exec_row(sha: str) -> dict:
     return row
 
 
-def _schema6_cell_row(sha: str, state: str) -> dict:
+def _schema6_cell_row(
+    sha: str,
+    state: str,
+    *,
+    mode: str = "verify",
+    virtualize_time: bool = True,
+) -> dict:
     """A schema-6 row with exactly one identified cell and one closed verdict."""
     row = _green_row(sha)
     row["schema_version"] = 6
@@ -200,7 +206,7 @@ def _schema6_cell_row(sha: str, state: str) -> dict:
         "lane": "strict",
         "category": "record-replay",
         "test": "hello",
-        "mode": "verify",
+        "mode": mode,
         "backend": "ptrace",
     }
     if state in {"performs-no-comparison-by-design", "unavailable-with-reason"}:
@@ -220,7 +226,7 @@ def _schema6_cell_row(sha: str, state: str) -> dict:
                 "compare_io_buffers": True,
                 "log_scope": "info",
                 "record_envelope": "all_records_v1",
-                "virtualize_time": True,
+                "virtualize_time": virtualize_time,
                 "strip_lines": False,
                 "canonicalize_addresses": True,
                 "full_trace": True,
@@ -1073,6 +1079,76 @@ class QualifyingReceiptMutationTest(unittest.TestCase):
         self.assertIs(
             qualifying_receipt.cell_results_verdict(current, predicate),
             qualifying_receipt.CellResultsVerdict.SATISFIED,
+        )
+
+        replay = _schema6_cell_row(
+            SHA,
+            "compared-and-matched",
+            mode="replay",
+            virtualize_time=False,
+        )
+        replay["schema_version"] = predicate["cell_results"]["supported_schema_max"]
+        self.assertEqual(
+            qualifying_receipt.row_qualification(replay, SHA, predicate),
+            (True, "qualifies"),
+        )
+        self.assertTrue(
+            qualifying_receipt.cell_scorecard_projection(replay, predicate)["cells"][0][
+                "scorecard_green"
+            ]
+        )
+
+        for mode in ("verify", "chaos"):
+            with self.subTest(mode=mode, virtualize_time=False):
+                wrong_time_policy = _schema6_cell_row(
+                    SHA,
+                    "compared-and-matched",
+                    mode=mode,
+                    virtualize_time=False,
+                )
+                wrong_time_policy["schema_version"] = predicate["cell_results"][
+                    "supported_schema_max"
+                ]
+                self.assertIs(
+                    qualifying_receipt.cell_results_verdict(
+                        wrong_time_policy, predicate
+                    ),
+                    qualifying_receipt.CellResultsVerdict.VERDICT_INVALID,
+                )
+
+        unknown_mode = _schema6_cell_row(
+            SHA,
+            "compared-and-matched",
+            mode="unknown",
+            virtualize_time=False,
+        )
+        unknown_mode["schema_version"] = predicate["cell_results"][
+            "supported_schema_max"
+        ]
+        self.assertIs(
+            qualifying_receipt.cell_results_verdict(unknown_mode, predicate),
+            qualifying_receipt.CellResultsVerdict.VERDICT_INVALID,
+        )
+
+        unknown_reasoned_mode = _schema6_cell_row(
+            SHA,
+            "unavailable-with-reason",
+            mode="unknown",
+        )
+        unknown_reasoned_mode["schema_version"] = predicate["cell_results"][
+            "supported_schema_max"
+        ]
+        self.assertIs(
+            qualifying_receipt.cell_results_verdict(unknown_reasoned_mode, predicate),
+            qualifying_receipt.CellResultsVerdict.VERDICT_INVALID,
+        )
+
+        missing_mode = copy.deepcopy(replay)
+        del missing_mode["cell_results"]["selected"][0]["mode"]
+        del missing_mode["cell_results"]["cells"][0]["mode"]
+        self.assertIs(
+            qualifying_receipt.cell_results_verdict(missing_mode, predicate),
+            qualifying_receipt.CellResultsVerdict.MALFORMED,
         )
 
         mutations = {
