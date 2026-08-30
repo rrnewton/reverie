@@ -2,9 +2,11 @@
 
 import importlib.util
 import json
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 MODULE_PATH = Path(__file__).resolve().parents[1] / "signal_crosscheck.py"
@@ -48,6 +50,192 @@ def base_report() -> dict:
 
 
 class SignalCrosscheckTests(unittest.TestCase):
+    def test_linked_tool_checkout_uses_primary_state_authority(self) -> None:
+        sha = "a" * 40
+        other_sha = "b" * 40
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            primary = root / "primary"
+            linked = root / "linked"
+            primary.mkdir()
+            subprocess.run(
+                ["git", "init", "-q", "-b", "main"], cwd=primary, check=True
+            )
+            subprocess.run(
+                ["git", "config", "user.email", "crosscheck@example.invalid"],
+                cwd=primary,
+                check=True,
+            )
+            subprocess.run(
+                ["git", "config", "user.name", "crosscheck fixture"],
+                cwd=primary,
+                check=True,
+            )
+            (primary / "tracked.txt").write_text("fixture\n")
+            subprocess.run(["git", "add", "tracked.txt"], cwd=primary, check=True)
+            subprocess.run(
+                ["git", "commit", "-qm", "fixture"], cwd=primary, check=True
+            )
+            subprocess.run(
+                ["git", "worktree", "add", "-q", "-b", "linked", str(linked)],
+                cwd=primary,
+                check=True,
+            )
+
+            canonical_log = "/tmp/validate-canonical.log"
+            primary_runs = primary / "ignored" / "validate" / "runs"
+            primary_runs.mkdir(parents=True)
+            handles = {
+                "canonical": {
+                    "target": sha,
+                    "repo": "rrnewton/hermit",
+                    "unit": "validate-canonical.service",
+                    "log": canonical_log,
+                },
+                "other-sha": {
+                    "target": other_sha,
+                    "repo": "rrnewton/hermit",
+                    "unit": "validate-other-sha.service",
+                    "log": "/tmp/validate-other-sha.log",
+                },
+                "other-repo": {
+                    "target": sha,
+                    "repo": "rrnewton/reverie",
+                    "unit": "validate-other-repo.service",
+                    "log": "/tmp/validate-other-repo.log",
+                },
+            }
+            for name, value in handles.items():
+                (primary_runs / f"{name}.json").write_text(json.dumps(value))
+
+            slot_runs = linked / "ignored" / "validate" / "runs"
+            slot_runs.mkdir(parents=True)
+            (slot_runs / "poison.json").write_text(json.dumps({
+                "target": sha,
+                "repo": "rrnewton/hermit",
+                "unit": "validate-slot-poison.service",
+                "log": "/tmp/validate-slot-poison.log",
+            }))
+
+            original = {
+                "commit": sha,
+                "repo": "hermit",
+                "run_id": "same-run",
+                "record_id": "original",
+                "log_file": "/tmp/validate-original.log",
+            }
+            corrected = {
+                **original,
+                "record_id": "corrected",
+                "corrects": "original",
+                "log_file": canonical_log,
+            }
+            rows = [
+                original,
+                corrected,
+                {
+                    "commit": other_sha,
+                    "repo": "hermit",
+                    "run_id": "other-sha",
+                    "record_id": "other-sha",
+                },
+                {
+                    "commit": sha,
+                    "repo": "reverie",
+                    "run_id": "other-repo",
+                    "record_id": "other-repo",
+                },
+            ]
+            projected_units: list[str] = []
+
+            def ledger_rows(*, root: Path) -> list[dict]:
+                self.assertEqual(root.resolve(), primary.resolve())
+                return rows
+
+            def validate_status(
+                tool_root: Path, state_root: Path, target: str, repo: str
+            ) -> dict:
+                self.assertEqual(tool_root.resolve(), linked.resolve())
+                self.assertEqual(state_root.resolve(), primary.resolve())
+                self.assertEqual((target, repo), (sha, "rrnewton/hermit"))
+                return {
+                    "verdict": "VALIDATED",
+                    "qualifying_count": 1,
+                    "failed_record_count": 0,
+                    "disqualified_count": 0,
+                    "withheld_nonpass_record_count": 0,
+                }
+
+            def series_report(
+                tool_root: Path, state_root: Path, target: str
+            ) -> tuple[dict, signal_crosscheck.canonical_series.PublishedSnapshot]:
+                self.assertEqual(tool_root.resolve(), linked.resolve())
+                self.assertEqual(state_root.resolve(), primary.resolve())
+                self.assertEqual(target, sha)
+                return (
+                    {"published_ref_sha": "f" * 40},
+                    signal_crosscheck.canonical_series.PublishedSnapshot("f" * 40, []),
+                )
+
+            def projection(raw: dict) -> dict:
+                projected_units.append(raw["unit"])
+                return {
+                    "target": raw["target"],
+                    "repo": raw["repo"],
+                    "kind": "validate",
+                    "state": "completed",
+                    "unit": raw["unit"],
+                    "admission_result": {"state": "admitted"},
+                }
+
+            with (
+                mock.patch.object(signal_crosscheck.canonical_ledger, "rows", ledger_rows),
+                mock.patch.object(
+                    signal_crosscheck, "validate_status_report", validate_status
+                ),
+                mock.patch.object(signal_crosscheck, "series_report", series_report),
+                mock.patch.object(
+                    signal_crosscheck,
+                    "scorecard_report",
+                    return_value=dict(base_report()["scorecard"]),
+                ),
+                mock.patch.object(
+                    signal_crosscheck,
+                    "collect_github_status",
+                    return_value={"published": False, "state": None},
+                ),
+                mock.patch.object(signal_crosscheck.run_registry, "projection", projection),
+            ):
+                report = signal_crosscheck.build_report(
+                    linked, sha, "rrnewton/hermit"
+                )
+
+        self.assertEqual(report["tool_root"], str(linked.resolve()))
+        self.assertEqual(report["state_root"], str(primary.resolve()))
+        self.assertEqual(report["git_common_dir"], str((primary / ".git").resolve()))
+        self.assertEqual(report["ledger"]["historical_rows"], 4)
+        self.assertEqual(report["ledger"]["repository_historical_rows"], 3)
+        self.assertEqual(report["ledger"]["logical_rows"], 2)
+        self.assertEqual(report["ledger"]["exact_rows"], 1)
+        self.assertEqual(report["ledger"]["exact_run_ids"], ["same-run"])
+        self.assertEqual(projected_units, ["validate-canonical.service"])
+        self.assertEqual(len(report["run_handles"]["terminal_handles"]), 1)
+        self.assertEqual(report["run_handles"]["unmatched_terminal_handles"], [])
+        self.assertNotIn("validate-slot-poison.service", json.dumps(report))
+        self.assertEqual(report["result"], "AGREE")
+
+    def test_malformed_state_authority_refuses_before_reading_stores(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            report = signal_crosscheck.build_report(
+                root, "a" * 40, "rrnewton/hermit"
+            )
+        self.assertEqual(report["result"], "DISAGREE")
+        self.assertIsNone(report["state_root"])
+        self.assertIn("state-root", report["unavailable"])
+        self.assertEqual(len(report["issues"]), 1)
+        self.assertIn("state-root unavailable", report["issues"][0])
+
     def test_empty_combined_status_is_absence_not_pending(self) -> None:
         status = signal_crosscheck.github_status_report(
             {"state": "pending", "total_count": 0, "statuses": []}

@@ -18,7 +18,7 @@ import subprocess
 import sys
 from collections import Counter
 from pathlib import Path
-from typing import Any, Callable, Iterable, Mapping, Sequence
+from typing import Any, Callable, Iterable, Mapping, NamedTuple, Sequence
 
 
 CI_HUB = Path(__file__).resolve().parents[1]
@@ -55,6 +55,12 @@ class CrosscheckError(RuntimeError):
     """One source could not provide a trustworthy answer."""
 
 
+class Roots(NamedTuple):
+    tool_root: Path
+    state_root: Path
+    git_common_dir: Path
+
+
 def _run(
     command: Sequence[str],
     *,
@@ -76,6 +82,22 @@ def _run(
         raise CrosscheckError(f"cannot run {' '.join(command)}: {error}") from error
 
 
+def _git_environment() -> dict[str, str]:
+    environment = {
+        name: value for name, value in os.environ.items() if not name.startswith("GIT_")
+    }
+    environment["GIT_CONFIG_NOSYSTEM"] = "1"
+    environment["GIT_CONFIG_GLOBAL"] = os.devnull
+    return environment
+
+
+def _resolved(path: Path, role: str) -> Path:
+    try:
+        return path.resolve(strict=True)
+    except (OSError, RuntimeError) as error:
+        raise CrosscheckError(f"{role} is unavailable: {path}: {error}") from error
+
+
 def _json_object(raw: str, source: str) -> dict[str, Any]:
     try:
         value = json.loads(raw)
@@ -87,19 +109,86 @@ def _json_object(raw: str, source: str) -> dict[str, Any]:
 
 
 def git_text(repo: Path, *args: str) -> str:
-    result = _run(["git", "--no-replace-objects", "-C", str(repo), *args], cwd=ROOT)
+    result = _run(
+        ["git", "--no-replace-objects", "-C", str(repo), *args],
+        cwd=repo,
+        env=_git_environment(),
+    )
     if result.returncode != 0:
         detail = result.stderr.strip() or result.stdout.strip() or "no output"
         raise CrosscheckError(f"git {' '.join(args)} failed in {repo}: {detail}")
     return result.stdout
 
 
-def validate_status_report(root: Path, sha: str, repo: str) -> dict[str, Any]:
-    env = dict(os.environ)
+def resolve_roots(tool_root: Path) -> Roots:
+    """Bind immutable code to this checkout and mutable state to its primary."""
+    tool_root = _resolved(tool_root, "tool root")
+
+    tool_top = _resolved(
+        Path(
+            git_text(
+                tool_root,
+                "rev-parse",
+                "--path-format=absolute",
+                "--show-toplevel",
+            ).strip()
+        ),
+        "tool repository top level",
+    )
+    if tool_top != tool_root:
+        raise CrosscheckError(
+            f"tool root {tool_root} is not the repository top level {tool_top}"
+        )
+
+    common_text = git_text(
+        tool_root, "rev-parse", "--path-format=absolute", "--git-common-dir"
+    ).strip()
+    common_dir = _resolved(Path(common_text), "canonical Git common directory")
+    if common_dir.name != ".git" or not common_dir.is_dir():
+        raise CrosscheckError(
+            f"canonical Git common directory is malformed: {common_dir}"
+        )
+
+    state_root = _resolved(common_dir.parent, "canonical state root")
+    state_top = _resolved(
+        Path(
+            git_text(
+                state_root,
+                "rev-parse",
+                "--path-format=absolute",
+                "--show-toplevel",
+            ).strip()
+        ),
+        "canonical state repository top level",
+    )
+    state_common = _resolved(
+        Path(
+            git_text(
+                state_root,
+                "rev-parse",
+                "--path-format=absolute",
+                "--git-common-dir",
+            ).strip()
+        ),
+        "canonical state Git common directory",
+    )
+    if state_top != state_root or state_common != common_dir:
+        raise CrosscheckError(
+            "canonical state root disagrees with the linked checkout's Git common "
+            f"directory: state_root={state_root}, state_top={state_top}, "
+            f"state_common={state_common}, tool_common={common_dir}"
+        )
+    return Roots(tool_root=tool_root, state_root=state_root, git_common_dir=common_dir)
+
+
+def validate_status_report(
+    tool_root: Path, state_root: Path, sha: str, repo: str
+) -> dict[str, Any]:
+    env = _git_environment()
     env["CI_HUB_SKIP_SOFT_MAIN_WARNING"] = "1"
     result = _run(
         [
-            str(root / "ci-hub" / "ci-hub"),
+            str(tool_root / "ci-hub" / "ci-hub"),
             "validate-status",
             "--sha",
             sha,
@@ -107,7 +196,7 @@ def validate_status_report(root: Path, sha: str, repo: str) -> dict[str, Any]:
             repo,
             "--json",
         ],
-        cwd=root,
+        cwd=state_root,
         timeout=180,
         env=env,
     )
@@ -142,11 +231,11 @@ def ledger_report(root: Path, sha: str, repo: str) -> tuple[dict[str, Any], list
 
 
 def series_report(
-    root: Path, sha: str
+    tool_root: Path, state_root: Path, sha: str
 ) -> tuple[dict[str, Any], canonical_series.PublishedSnapshot]:
-    snapshot = canonical_series.published_snapshot(root)
+    snapshot = canonical_series.published_snapshot(tool_root)
     published = snapshot.rows
-    spool = canonical_series.spool_dir(root)
+    spool = canonical_series.spool_dir(state_root)
     local_paths = sorted(spool.glob("*.jsonl")) + sorted(
         (spool / "published").glob("*.jsonl")
     )
@@ -669,30 +758,50 @@ def _collect(
         return None
 
 
-def build_report(root: Path, sha: str, repo: str) -> dict[str, Any]:
+def build_report(tool_root: Path, sha: str, repo: str) -> dict[str, Any]:
     unavailable: dict[str, str] = {}
     report: dict[str, Any] = {
         "schema_version": 1,
         "sha": sha,
         "repo": repo,
+        "tool_root": str(tool_root.absolute()),
+        "state_root": None,
+        "git_common_dir": None,
         "unavailable": unavailable,
     }
 
+    roots = _collect("state-root", unavailable, lambda: resolve_roots(tool_root))
+    if roots is None:
+        report["issues"] = reconcile(report)
+        report["result"] = "DISAGREE"
+        return report
+    report["tool_root"] = str(roots.tool_root)
+    report["state_root"] = str(roots.state_root)
+    report["git_common_dir"] = str(roots.git_common_dir)
+
     validate = _collect(
-        "validate-status", unavailable, lambda: validate_status_report(root, sha, repo)
+        "validate-status",
+        unavailable,
+        lambda: validate_status_report(roots.tool_root, roots.state_root, sha, repo),
     )
     if validate is not None:
         report["validate_status"] = validate
 
     ledger_result = _collect(
-        "canonical-ledger", unavailable, lambda: ledger_report(root, sha, repo)
+        "canonical-ledger",
+        unavailable,
+        lambda: ledger_report(roots.state_root, sha, repo),
     )
     exact_ledger_rows: list[dict] = []
     if ledger_result is not None:
         ledger, exact_ledger_rows = ledger_result
         report["ledger"] = ledger
 
-    series_result = _collect("series", unavailable, lambda: series_report(root, sha))
+    series_result = _collect(
+        "series",
+        unavailable,
+        lambda: series_report(roots.tool_root, roots.state_root, sha),
+    )
     published_snapshot: canonical_series.PublishedSnapshot | None = None
     if series_result is not None:
         series, published_snapshot = series_result
@@ -707,8 +816,8 @@ def build_report(root: Path, sha: str, repo: str) -> dict[str, Any]:
             "scorecard",
             unavailable,
             lambda: scorecard_report(
-                root,
-                root / "hermit",
+                roots.tool_root,
+                roots.tool_root / "hermit",
                 sha,
                 published_series_snapshot=published_snapshot,
             ),
@@ -721,13 +830,15 @@ def build_report(root: Path, sha: str, repo: str) -> dict[str, Any]:
     handles = _collect(
         "run-handles",
         unavailable,
-        lambda: run_handle_report(root, sha, repo, exact_ledger_rows),
+        lambda: run_handle_report(roots.state_root, sha, repo, exact_ledger_rows),
     )
     if handles is not None:
         report["run_handles"] = handles
 
     github = _collect(
-        "github-status", unavailable, lambda: collect_github_status(root, repo, sha)
+        "github-status",
+        unavailable,
+        lambda: collect_github_status(roots.tool_root, repo, sha),
     )
     if github is not None:
         report["github_status"] = github
@@ -739,6 +850,10 @@ def build_report(root: Path, sha: str, repo: str) -> dict[str, Any]:
 
 def print_text(report: Mapping[str, Any]) -> None:
     print(f"CI SIGNAL CROSSCHECK {report['sha']} ({report['repo']})")
+    print(
+        f"roots: tool={report.get('tool_root')} state={report.get('state_root')} "
+        f"git-common-dir={report.get('git_common_dir')}"
+    )
     validate = report.get("validate_status")
     if validate:
         print(
