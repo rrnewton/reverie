@@ -130,6 +130,28 @@ class RunRegistryContractTests(unittest.TestCase):
                 )
             )
 
+    def test_validation_service_result_schema_is_checked_when_present(self) -> None:
+        historical = run_registry.parse_current_record(
+            validation_handle(service_result_schema=1)
+        )
+        writeback = run_registry.parse_current_record(
+            validation_handle(service_result_schema=2)
+        )
+        current = run_registry.parse_current_record(
+            validation_handle(service_result_schema=3)
+        )
+        self.assertEqual(1, historical.raw["service_result_schema"])
+        self.assertEqual(2, writeback.raw["service_result_schema"])
+        self.assertEqual(3, current.raw["service_result_schema"])
+
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "validation-run-handle-service_result_schema: expected 1, 2, or 3, got 4",
+        ):
+            run_registry.parse_current_record(
+                validation_handle(service_result_schema=4)
+            )
+
     def test_bench_failed_state_is_distinct_and_complete(self) -> None:
         handle = run_registry.parse_current_record(
             bench_handle(
@@ -178,6 +200,52 @@ class RunRegistryContractTests(unittest.TestCase):
                     exit_code=1,
                     finished_at="2026-08-28T07:01:00Z",
                     final_validate_status="PASSED",
+                )
+            )
+
+    def test_passed_validation_with_failed_writeback_keeps_both_facts(self) -> None:
+        handle = run_registry.parse_current_record(
+            validation_handle(
+                state="completed",
+                result="success",
+                exit_code=75,
+                finished_at="2026-08-28T07:01:00Z",
+                final_validate_status="PASSED",
+                service_result_schema=3,
+                selection_mode="full",
+                scorecard_writeback={
+                    "status": "failed",
+                    "error": "fixture refusal",
+                },
+            )
+        )
+        self.assertEqual("PASSED", handle.raw["final_validate_status"])
+        self.assertEqual(75, handle.raw["exit_code"])
+        self.assertEqual("failed", handle.raw["scorecard_writeback"]["status"])
+
+    def test_current_completed_result_requires_a_named_writeback_value(self) -> None:
+        base = dict(
+            state="completed",
+            result="success",
+            exit_code=0,
+            finished_at="2026-08-28T07:01:00Z",
+            final_validate_status="PASSED",
+            service_result_schema=3,
+            selection_mode="full",
+        )
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "validation-run-handle-scorecard_writeback: is required",
+        ):
+            run_registry.parse_current_record(validation_handle(**base))
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "validation-run-handle-scorecard_writeback: expected null",
+        ):
+            run_registry.parse_current_record(
+                validation_handle(
+                    **base,
+                    scorecard_writeback={"status": "invented"},
                 )
             )
 

@@ -60,6 +60,7 @@ class FakeRun:
         self.final_validate_status: str | None = "PASSED"
         self.executed_nodes: int | None = 55
         self.executed_tests: int | None = 862
+        self.write_service_result = True
         self.collected_unit = False
         self.current_main = "b" * 40
         self.target_contains_current_main = False
@@ -140,6 +141,15 @@ class FakeRun:
         self.fresh.mkdir(parents=True, exist_ok=True)
         (self.fresh / "scripts").mkdir(parents=True, exist_ok=True)
         (self.fresh / "scripts/validate.rs").write_text("#!/usr/bin/env rust-script\n")
+        source_schema = (
+            self.checkout / "ci/manifest-plan/validation-service-result-schema.json"
+        )
+        if source_schema.exists():
+            target_schema = (
+                self.fresh / "ci/manifest-plan/validation-service-result-schema.json"
+            )
+            target_schema.parent.mkdir(parents=True, exist_ok=True)
+            target_schema.write_text(source_schema.read_text())
         if self.fresh_complete:
             dep = self.fresh / "agent-utils/rs" / self.fresh_runner_name
             dep.mkdir(parents=True, exist_ok=True)
@@ -367,6 +377,27 @@ class FakeRun:
                 if flag == "--setenv" and "=" in value:
                     key, _, item = value.partition("=")
                     environment[key] = item
+            if (
+                self.write_service_result
+                and self.final_validate_status is not None
+                and (path := environment.get("VALIDATE_SERVICE_RESULT_PATH"))
+            ):
+                Path(path).write_text(
+                    json.dumps(
+                        {
+                            "schema_version": 3,
+                            "commit": SHA,
+                            "profile": "full",
+                            "selection_mode": "full",
+                            "final_validate_status": self.final_validate_status,
+                            "exit_code": self.actual_exit,
+                            "executed_nodes": self.executed_nodes or 0,
+                            "executed_tests": self.executed_tests,
+                            "scorecard_writeback": {"status": "completed"},
+                        }
+                    )
+                    + "\n"
+                )
             if frozen := environment.get("HERMIT_VALIDATE_LEDGER"):
                 row = self.default_ledger_row()
                 row["result"] = "pass" if self.actual_exit == 0 else "fail"
@@ -525,6 +556,73 @@ class StartUnitTest(unittest.TestCase):
         self.assertEqual("observer-only", record["pane_role"])
         self.assertEqual(3600, record["validate_lock_child_deadline_seconds"])
         self.assertEqual(3239, record["hermit_run_timeout_seconds"])
+
+    def test_current_target_records_and_consumes_framework_result(self) -> None:
+        schema = self.checkout / start_unit.service_result.SCHEMA_RELATIVE_PATH
+        schema.parent.mkdir(parents=True)
+        schema.write_text(start_unit.service_result.pinned_schema_path().read_text())
+
+        rc, _output, error = self.invoke(["--", "full"])
+
+        self.assertEqual(0, rc, error)
+        systemd = next(
+            command
+            for command in self.fake.commands
+            if command[0] == "systemd-run" and "validate-lock" in command
+        )
+        service_result_env = next(
+            value
+            for value in systemd
+            if value.startswith("VALIDATE_SERVICE_RESULT_PATH=")
+        )
+        record_path = self.root / "ignored/validate/runs/validate-test.json"
+        self.assertEqual(
+            str(start_unit.service_result.result_path(record_path)),
+            service_result_env.removeprefix("VALIDATE_SERVICE_RESULT_PATH="),
+        )
+        record = start_unit.run_registry.read_record(record_path)
+        self.assertEqual(3, record["service_result_schema"])
+        self.assertEqual("full", record["selection_mode"])
+        self.assertEqual("validation-service-result", record["result_source"])
+        self.assertEqual(55, record["executed_nodes"])
+        self.assertEqual(862, record["executed_tests"])
+        self.assertEqual({"status": "completed"}, record["scorecard_writeback"])
+
+    def test_current_target_missing_framework_result_does_not_fall_back_to_log(self) -> None:
+        schema = self.checkout / start_unit.service_result.SCHEMA_RELATIVE_PATH
+        schema.parent.mkdir(parents=True)
+        schema.write_text(start_unit.service_result.pinned_schema_path().read_text())
+        self.fake.write_service_result = False
+        self.fake.ledger_rows = []
+
+        rc, _output, error = self.invoke(["--", "full"])
+
+        self.assertEqual(75, rc, error)
+        record = start_unit.run_registry.read_record(
+            self.root / "ignored/validate/runs/validate-test.json"
+        )
+        self.assertEqual("unknown", record["state"])
+        self.assertEqual("validation-service-result", record["result_source"])
+        self.assertIn("validation-service-result-read", record["detail"])
+
+    def test_current_target_schema_mutation_refuses_before_launch(self) -> None:
+        schema_path = self.checkout / start_unit.service_result.SCHEMA_RELATIVE_PATH
+        schema_path.parent.mkdir(parents=True)
+        schema = json.loads(start_unit.service_result.pinned_schema_path().read_text())
+        schema["fields"].append("future")
+        schema_path.write_text(json.dumps(schema))
+
+        rc, _output, error = self.invoke(["--", "full"])
+
+        self.assertEqual(2, rc)
+        self.assertIn("validation-service-result-schema-fields", error)
+        self.assertIn("future", error)
+        self.assertFalse(
+            any(
+                command[0] == "systemd-run" and "validate-lock" in command
+                for command in self.fake.commands
+            )
+        )
 
     def test_completed_validate_updates_scorecard_after_receipt_before_cleanup(self) -> None:
         self.plant_per_cell_results()

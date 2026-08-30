@@ -152,11 +152,11 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     offset = emit_log(args.log, offset)
     finished_at = datetime.now(timezone.utc).isoformat()
+    try:
+        durable = read_record(args.record)
+    except RuntimeError:
+        durable = {}
     if final is None:
-        try:
-            durable = read_record(args.record)
-        except RuntimeError:
-            durable = {}
         if durable.get("state") == "refused":
             classified = {
                 "state": "refused",
@@ -174,15 +174,18 @@ def main(argv: Sequence[str] | None = None) -> int:
                     "executed_nodes",
                     "executed_tests",
                     "final_validate_status",
+                    "scorecard_writeback",
                     "result_source",
                     "detail",
                 )
                 if key in durable
             }
         else:
-            classified = service_result.from_log(args.log)
+            classified = service_result.from_run_record(args.record, durable, args.log)
     else:
-        classified = service_result.from_log(args.log, properties=final)
+        classified = service_result.from_run_record(
+            args.record, durable, args.log, properties=final
+        )
     update_record(
         args.record,
         **classified,

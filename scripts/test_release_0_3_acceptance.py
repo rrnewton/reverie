@@ -150,18 +150,29 @@ class ReleaseAcceptanceTests(unittest.TestCase):
 
     def positive_item(self, criterion: dict) -> dict:
         criterion_id = criterion["id"]
-        if criterion["evaluator"] == "manual_validate_log":
+        if criterion["evaluator"] == "manual_validate_result":
             log = (
-                f"Commit: {HERMIT} (clean tree, commit-anchored); selection: full\n"
-                "Validation level: full (host OS: linux)\n"
-                "test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out\n"
-                "✅ Validation summary [full] (12 passed, 0 failed; full log: /tmp/raw.log)\n"
-                "FINAL_VALIDATE_STATUS: PASSED\n"
+                "presentation only: 0 passed; CACHE HIT; "
+                "FINAL_VALIDATE_STATUS: FAILED\n"
             ).encode()
             return self.manifest(criterion, {
                 "producer": criterion["producer"],
                 "artifact": self.write_blob(f"{criterion_id}.log", log, "raw-log"),
                 "exit_artifact": self.write_blob(f"{criterion_id}.exit", b"0\n", "raw-exit"),
+                "result_artifact": self.write_json(
+                    f"{criterion_id}.service-result.json",
+                    {
+                        "schema_version": 3,
+                        "commit": HERMIT,
+                        "profile": "full",
+                        "selection_mode": "full",
+                        "final_validate_status": "PASSED",
+                        "exit_code": 0,
+                        "executed_nodes": 76,
+                        "executed_tests": 2129,
+                        "scorecard_writeback": {"status": "completed"},
+                    },
+                ),
             })
         if criterion["evaluator"] == "hosted_set":
             return self.manifest(criterion, {"artifact": self.write_json(f"{criterion_id}.json", self.hosted_raw(criterion))})
@@ -191,6 +202,15 @@ class ReleaseAcceptanceTests(unittest.TestCase):
         path.write_bytes(blob)
         reference["sha256"] = hashlib.sha256(blob).hexdigest()
 
+    def mutate_manual_result(self, mutation) -> None:
+        reference = self.evidence["criteria"]["AC-STRICT-03"]["result_artifact"]
+        path = self.artifacts / reference["path"]
+        value = json.loads(path.read_text())
+        mutation(value)
+        blob = (json.dumps(value, sort_keys=True) + "\n").encode()
+        path.write_bytes(blob)
+        reference["sha256"] = hashlib.sha256(blob).hexdigest()
+
     def evaluate(self, contract=None, evidence=None, subject=None):
         return acceptance.evaluate(
             contract or self.contract,
@@ -213,9 +233,14 @@ class ReleaseAcceptanceTests(unittest.TestCase):
         self.assertEqual(report.as_dict()["parent_status"], "main unverified")
         self.assertEqual(report.as_dict()["tested_rc_sha"], HERMIT)
 
-    def test_zero_raw_tests_is_no_result(self) -> None:
-        self.mutate_log(lambda text: text.replace("7 passed", "0 passed"))
+    def test_zero_framework_tests_is_no_result(self) -> None:
+        log_reference = self.evidence["criteria"]["AC-STRICT-03"]["artifact"]
+        log_path = self.artifacts / log_reference["path"]
+        rendered_before = log_path.read_bytes()
+        self.assertEqual(self.row(self.evaluate(), "AC-STRICT-03").verdict, "PASS")
+        self.mutate_manual_result(lambda result: result.update(executed_tests=0))
         report = self.evaluate()
+        self.assertEqual(log_path.read_bytes(), rendered_before)
         self.assertEqual(self.row(report, "AC-STRICT-03").verdict, "NO_RESULT")
         self.assertIn("zero", self.row(report, "AC-STRICT-03").reason)
 
@@ -291,8 +316,30 @@ class ReleaseAcceptanceTests(unittest.TestCase):
     def test_captured_validate_exit_not_tee_exit_is_enforced(self) -> None:
         self.mutate_exit(b"7\n")
         report = self.evaluate()
-        self.assertEqual(self.row(report, "AC-STRICT-03").verdict, "NO_RESULT")
-        self.assertIn("requires exit 0, got 7", self.row(report, "AC-STRICT-03").reason)
+        row = self.row(report, "AC-STRICT-03")
+        self.assertEqual(row.verdict, "NO_RESULT")
+        self.assertIn("disagrees", row.reason)
+        self.assertEqual(row.observed["pipeline_exit"], 7)
+        self.assertEqual(row.observed["exit_code"], 0)
+
+    def test_failed_scorecard_writeback_preserves_pass_but_is_not_release_evidence(self) -> None:
+        self.mutate_exit(b"75\n")
+        self.mutate_manual_result(
+            lambda result: result.update(
+                exit_code=75,
+                scorecard_writeback={
+                    "status": "failed",
+                    "error": "fixture refusal",
+                },
+            )
+        )
+        report = self.evaluate()
+        row = self.row(report, "AC-STRICT-03")
+        self.assertEqual("NO_RESULT", row.verdict)
+        self.assertEqual("PASSED", row.observed["final_validate_status"])
+        self.assertEqual(75, row.observed["exit_code"])
+        self.assertIn("scorecard write-back failed", row.reason)
+        self.assertIn("fixture refusal", row.reason)
 
     def test_runner_up_half_is_derived_from_denominator(self) -> None:
         self.mutate_json_artifact(
@@ -302,19 +349,26 @@ class ReleaseAcceptanceTests(unittest.TestCase):
         report = self.evaluate()
         self.assertEqual(self.row(report, "AC-RUNNERUP-01").verdict, "PASS")
 
-    def test_manual_cache_hit_is_no_result(self) -> None:
-        self.mutate_log(lambda text: text + "CACHE HIT\n")
+    def test_manual_zero_executed_nodes_is_no_result(self) -> None:
+        self.mutate_manual_result(lambda result: result.update(executed_nodes=0))
         report = self.evaluate()
         self.assertEqual(self.row(report, "AC-STRICT-03").verdict, "NO_RESULT")
 
-    def test_manual_status_absence_is_no_result(self) -> None:
-        self.mutate_log(
-            lambda text: text.replace("FINAL_VALIDATE_STATUS: PASSED\n", "")
+    def test_manual_non_full_selection_is_no_result(self) -> None:
+        self.mutate_manual_result(
+            lambda result: result.update(selection_mode="selected")
         )
         report = self.evaluate()
+        row = self.row(report, "AC-STRICT-03")
+        self.assertEqual(row.verdict, "NO_RESULT")
+        self.assertIn("selection is not full", row.reason)
+
+    def test_manual_typed_status_absence_is_no_result(self) -> None:
+        self.mutate_manual_result(lambda result: result.pop("final_validate_status"))
+        report = self.evaluate()
         self.assertEqual(self.row(report, "AC-STRICT-03").verdict, "NO_RESULT")
 
-    def test_manual_last_status_occurrence_wins(self) -> None:
+    def test_manual_log_status_cannot_override_typed_result(self) -> None:
         self.mutate_log(
             lambda text: "FINAL_VALIDATE_STATUS: COULD_NOT_RUN\n" + text
         )
