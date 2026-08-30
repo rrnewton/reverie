@@ -984,7 +984,9 @@ impl MigrationSnapshot {
             MigrationPhase::Committed | MigrationPhase::Reclaimed => {
                 Some(AuthoritativeGeneration::Target)
             }
-            _ => None,
+            MigrationPhase::Uninitialized
+            | MigrationPhase::Initializing
+            | MigrationPhase::Poisoned => None,
         }
     }
 }
