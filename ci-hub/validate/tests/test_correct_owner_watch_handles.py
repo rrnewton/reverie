@@ -620,7 +620,6 @@ class CorrectionTest(unittest.TestCase):
                     "run_number": 1,
                 }
             ),
-            "recorded run number": lambda result, handle: handle.update(run_number=1),
             "executed count": lambda result, handle: handle.update(executed_nodes=1),
             "wrong rc": lambda result, handle: result.update(validate_run_rc=3),
         }
@@ -637,6 +636,24 @@ class CorrectionTest(unittest.TestCase):
                 self.assertEqual(before, self.handle_path.read_bytes())
                 self.result_path.write_bytes(self.result_bytes)
                 self.handle_path.write_bytes(self.handle_bytes)
+
+    def test_legacy_top_level_run_number_does_not_define_admission(self) -> None:
+        handle = json.loads(self.handle_path.read_text())
+        handle["run_number"] = 1
+        self.handle_path.write_text(json.dumps(handle) + "\n")
+
+        plan = self.plan()
+        correction.apply_plan(
+            self.state_root,
+            self.owner_state,
+            expected_count=1,
+            expected_plan_sha256=str(plan["plan_sha256"]),
+            run=absent_unit,
+        )
+        corrected = correction.run_registry.read_record(self.handle_path)
+
+        self.assertNotIn("run_number", corrected)
+        self.assertEqual("refused", corrected["state"])
 
     def test_log_execution_evidence_guards_refuse_without_mutation(self) -> None:
         original_log = self.log.read_text()

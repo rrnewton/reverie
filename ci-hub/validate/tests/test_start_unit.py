@@ -1018,12 +1018,11 @@ class StartUnitTest(unittest.TestCase):
                 root=self.root,
             )
 
-        self.assertEqual(start_unit.EXIT_COULD_NOT_DETERMINE, rc)
+        self.assertEqual(0, rc)
         report = json.loads(out.getvalue())
         self.assertEqual([str(fresh)], report["removed"])
         self.assertEqual([], report["retained"])
-        self.assertEqual(str(record_path), report["bookkeeping_errors"][0]["record"])
-        self.assertIn("run_number", report["bookkeeping_errors"][0]["reason"])
+        self.assertEqual([], report["bookkeeping_errors"])
         self.assertFalse(fresh.exists())
 
     def test_sweep_completed_refuses_checkout_outside_validate_parent(self) -> None:

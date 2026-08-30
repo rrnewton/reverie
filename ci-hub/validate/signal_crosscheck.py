@@ -558,6 +558,48 @@ def _machine_shortname(value: object) -> str:
     return str(value or "").split(".", 1)[0]
 
 
+def _run_handle_id(value: object) -> str:
+    """Return the durable run id encoded by a systemd validation unit."""
+    if not isinstance(value, str) or not value.endswith(".service"):
+        raise ValueError("run handle unit must end in .service")
+    run_id = value.removesuffix(".service")
+    if not run_id:
+        raise ValueError("run handle unit must name a run")
+    return run_id
+
+
+def _wrapper_outcome(raw: Mapping[str, Any]) -> dict[str, Any] | None:
+    """Validate the wrapper verdict when a terminal handle records one."""
+    verdict = raw.get("canonical_verdict")
+    exit_code = raw.get("wrapper_exit_code")
+    if verdict is None and exit_code is None:
+        return None
+    if (
+        not isinstance(verdict, str)
+        or not isinstance(exit_code, int)
+        or isinstance(exit_code, bool)
+    ):
+        raise ValueError(
+            "run handle wrapper outcome must contain a verdict and integer exit code"
+        )
+    if verdict == "VALIDATED":
+        expected = 0
+    elif verdict == "FAILED":
+        expected = 3
+    elif verdict in {"TRUNCATED", "NEEDS-RERUN", "NO-RESULT", "NOT-VALIDATED"}:
+        expected = 4
+    else:
+        expected = None
+    if expected is None:
+        raise ValueError(f"run handle wrapper outcome has unsupported verdict {verdict!r}")
+    if exit_code != expected:
+        raise ValueError(
+            "run handle wrapper outcome disagrees: "
+            f"verdict {verdict} requires exit {expected}, got {exit_code}"
+        )
+    return {"verdict": verdict, "exit_code": exit_code}
+
+
 def _run_handle_target(raw: Mapping[str, Any]) -> str:
     target = raw.get("target")
     if not isinstance(target, str) or not SHA_RE.fullmatch(target):
@@ -581,17 +623,16 @@ def run_handle_report(
     ledger_rows: Iterable[Mapping[str, Any]],
 ) -> dict[str, Any]:
     run_registry.require_no_owner_watch_correction(root)
-    ledger_run_identities: set[tuple[str, int]] = set()
+    ledger_run_ids: dict[str, list[Mapping[str, Any]]] = {}
     for row in ledger_rows:
-        machine_shortname = _machine_shortname(row.get("host"))
-        run_number = row.get("run_number")
+        run_id = row.get("run_id")
         if (
-            machine_shortname
-            and isinstance(run_number, int)
-            and not isinstance(run_number, bool)
-            and run_number > 0
+            isinstance(run_id, str)
+            and run_id
+            and row.get("commit") == sha
+            and _repo_matches(row.get("repo"), repo)
         ):
-            ledger_run_identities.add((machine_shortname, run_number))
+            ledger_run_ids.setdefault(run_id, []).append(row)
     matching_handles = []
     terminal_handles = []
     unreadable = []
@@ -635,6 +676,12 @@ def run_handle_report(
             continue
         if projected.get("kind") != run_registry.RunKind.VALIDATE.value:
             continue
+        try:
+            run_id = _run_handle_id(projected.get("unit"))
+            wrapper_outcome = _wrapper_outcome(raw)
+        except ValueError as error:
+            unreadable.append({"path": str(path), "error": str(error)})
+            continue
         state = str(projected.get("state"))
         admission = projected.get("admission_result")
         admission_state = admission.get("state") if isinstance(admission, dict) else None
@@ -643,6 +690,7 @@ def run_handle_report(
         )
         projected_host = projected.get("host")
         machine_shortname = _machine_shortname(projected_host)
+        ledger_events = ledger_run_ids.get(run_id, [])
         non_run_refusal = (
             state == run_registry.RunState.REFUSED.value
             and raw.get("result") == "systemd-launch-refused"
@@ -650,6 +698,7 @@ def run_handle_report(
         handle = {
             "path": str(path),
             "unit": projected.get("unit"),
+            "run_id": run_id,
             "state": state,
             "result": raw.get("result"),
             "exit_code": raw.get("exit_code"),
@@ -658,15 +707,16 @@ def run_handle_report(
             "run_number": admission_run_number,
             "host": projected_host,
             "machine_shortname": machine_shortname,
+            "wrapper_outcome": wrapper_outcome,
             "non_run_refusal": non_run_refusal,
             "ledger_event": (
                 admission_state == run_registry.AdmissionState.ADMITTED.value
-                and isinstance(admission_run_number, int)
-                and not isinstance(admission_run_number, bool)
-                and bool(machine_shortname)
-                and (machine_shortname, admission_run_number)
-                in ledger_run_identities
+                and len(ledger_events) == 1
             ),
+            "ledger_event_id": (
+                ledger_events[0].get("record_id") if len(ledger_events) == 1 else None
+            ),
+            "ledger_event_count": len(ledger_events),
         }
         matching_handles.append(handle)
         if state in TERMINAL_RUN_STATES:

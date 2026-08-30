@@ -480,24 +480,28 @@ mod tests {
     }
 
     #[test]
-    fn admitted_validation_without_run_number_is_refused_by_field_name() {
+    fn admitted_validation_without_run_number_is_valid_and_renders_absent() {
         let root = fixture_root();
         let runs = root.join("ignored/validate/runs");
         fs::create_dir_all(&runs).unwrap();
-        let mut malformed = current_record("running");
-        malformed["admission_result"] = serde_json::json!({
+        let mut historical = current_record("running");
+        historical["admission_result"] = serde_json::json!({
             "state": "admitted",
             "recorded_at": "2026-08-28T07:00:01Z"
         });
-        let record = runs.join("validate-missing-run-number.json");
-        fs::write(&record, serde_json::to_vec(&malformed).unwrap()).unwrap();
+        let record = runs.join("validate-historical.json");
+        fs::write(&record, serde_json::to_vec(&historical).unwrap()).unwrap();
 
-        let error = inspect_current_records(&root, &[record])
-            .expect_err("an admitted validation must carry its run number");
-        assert!(
-            error.contains("validation-run-handle-admission_result.run_number"),
-            "{error}"
-        );
+        let mut inspected = inspect_current_records(&root, &[record])
+            .expect("the optional display counter must not define admission");
+        let admission = inspected
+            .pop()
+            .expect("one projected record")
+            .record
+            .admission_result
+            .expect("typed admission result");
+        assert_eq!(admission.state, AdmissionState::Admitted);
+        assert_eq!(admission.run_number, None);
         let _ = fs::remove_dir_all(root);
     }
 }

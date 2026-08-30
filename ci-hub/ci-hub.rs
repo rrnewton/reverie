@@ -7056,35 +7056,11 @@ fn finished_validate_status_entry(
 }
 
 fn historical_validate_run_numbers(rows: &[HistoryRow]) -> Vec<Option<u64>> {
-    let mut next_by_machine = BTreeMap::<String, u64>::new();
-    let mut by_run = BTreeMap::<(String, String), u64>::new();
     rows.iter()
-        .enumerate()
-        .map(|(index, row)| {
-            let Some(host) = row.host.as_deref() else {
-                return None;
-            };
-            let machine = host.split('.').next().unwrap_or(host).to_string();
-            let identity = row
-                .run_id
-                .as_deref()
-                .filter(|value| !value.trim().is_empty())
-                .or_else(|| extra_str(row, "record_id"))
-                .map(str::to_string)
-                .unwrap_or_else(|| format!("ledger-row-{index}"));
-            let key = (machine.clone(), identity);
-            let explicit = row
-                .extra
+        .map(|row| {
+            row.extra
                 .get("run_number")
-                .and_then(serde_json::Value::as_u64);
-            let number = by_run.get(&key).copied().unwrap_or_else(|| {
-                let counter = next_by_machine.entry(machine).or_default();
-                let number = explicit.unwrap_or(*counter + 1);
-                *counter = (*counter).max(number);
-                by_run.insert(key, number);
-                number
-            });
-            Some(number)
+                .and_then(serde_json::Value::as_u64)
         })
         .collect()
 }
@@ -9517,10 +9493,11 @@ mod tests {
     }
 
     #[test]
-    fn finished_runs_are_numbered_per_machine_and_stable_run() {
+    fn finished_runs_render_only_recorded_run_numbers() {
         let mut first = schema4_receipt_value();
         first["run_id"] = serde_json::json!("first-run");
         first["record_id"] = serde_json::json!("first-record");
+        first["run_number"] = serde_json::json!(701);
         let mut correction = first.clone();
         correction["record_id"] = serde_json::json!("first-correction");
         correction["corrects"] = serde_json::json!("first-record");
@@ -9539,7 +9516,7 @@ mod tests {
             history_row(other_machine),
         ];
         let run_numbers = historical_validate_run_numbers(&rows);
-        assert_eq!(run_numbers, [Some(1), Some(1), Some(2), Some(1)]);
+        assert_eq!(run_numbers, [Some(701), Some(701), None, None]);
     }
 
     #[test]
@@ -9818,6 +9795,38 @@ mod tests {
         std::fs::write(
             runs.join("validate-hermit-current.json"),
             serde_json::to_vec(&current).unwrap(),
+        )
+        .unwrap();
+        // Exact contract shape of the historical record that made the owner's
+        // validate-status query refuse: a real completed validation with a
+        // typed admitted result predating the optional display counter. It
+        // must remain readable without being mistaken for a live run, and it
+        // must not hide the valid live record beside it.
+        let mut historical = current.clone();
+        historical["state"] = serde_json::json!("completed");
+        historical["unit"] = serde_json::json!(
+            "validate-mega-lander-677df8ff06dc-1787940216180430273-2048177-8bd05b85.service"
+        );
+        historical["target"] = serde_json::json!("677df8ff06dc72941c2eaa5826c7ba32f4ca36aa");
+        historical["admission_result"] = serde_json::json!({
+            "state": "admitted",
+            "recorded_at": "2026-08-28T18:04:47.712970+00:00"
+        });
+        historical["result"] = serde_json::json!("success");
+        historical["exit_code"] = serde_json::json!(0);
+        historical["finished_at"] = serde_json::json!("2026-08-28T18:13:32.022882+00:00");
+        historical["final_validate_status"] = serde_json::json!("PASSED");
+        historical["canonical_verdict"] = serde_json::json!("NOT-VALIDATED");
+        historical["wrapper_exit_code"] = serde_json::json!(4);
+        historical
+            .as_object_mut()
+            .unwrap()
+            .remove("process_identity");
+        std::fs::write(
+            runs.join(
+                "validate-mega-lander-677df8ff06dc-1787940216180430273-2048177-8bd05b85.json",
+            ),
+            serde_json::to_vec(&historical).unwrap(),
         )
         .unwrap();
         let now = chrono::DateTime::parse_from_rfc3339("2026-08-27T12:05:00Z")

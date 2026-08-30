@@ -135,7 +135,7 @@ class SignalCrosscheckTests(unittest.TestCase):
             original = {
                 "commit": sha,
                 "repo": "hermit",
-                "run_id": "same-run",
+                "run_id": "validate-canonical",
                 "run_number": 42,
                 "host": "hosta.example.com",
                 "record_id": "original",
@@ -235,7 +235,7 @@ class SignalCrosscheckTests(unittest.TestCase):
         self.assertEqual(report["ledger"]["repository_historical_rows"], 3)
         self.assertEqual(report["ledger"]["logical_rows"], 2)
         self.assertEqual(report["ledger"]["exact_rows"], 1)
-        self.assertEqual(report["ledger"]["exact_run_ids"], ["same-run"])
+        self.assertEqual(report["ledger"]["exact_run_ids"], ["validate-canonical"])
         self.assertEqual(projected_units, ["validate-canonical.service"])
         self.assertEqual(len(report["run_handles"]["terminal_handles"]), 1)
         self.assertEqual(
@@ -904,7 +904,7 @@ class SignalCrosscheckTests(unittest.TestCase):
             signal_crosscheck.git_tree_at = original_git_tree_at
         self.assertFalse(result["prose_matches_cells"])
 
-    def test_run_handle_matching_uses_typed_projection_and_run_number_identity(self) -> None:
+    def test_run_handle_matching_uses_typed_projection_and_run_event_identity(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             run_root = root / "ignored" / "validate" / "runs"
@@ -936,7 +936,11 @@ class SignalCrosscheckTests(unittest.TestCase):
                         "host": raw["host"],
                         "admission_result": {
                             "state": "admitted",
-                            "run_number": raw.get("run_number", 99),
+                            **(
+                                {"run_number": raw["run_number"]}
+                                if raw.get("run_number") is not None
+                                else {}
+                            ),
                         },
                     }
 
@@ -951,16 +955,29 @@ class SignalCrosscheckTests(unittest.TestCase):
                         "log": f"/tmp/validate-{state}.log",
                         "result": "failure",
                         "exit_code": 1,
+                        "canonical_verdict": "NOT-VALIDATED",
+                        "wrapper_exit_code": 4,
                         "fixture_state": state,
-                        "run_number": run_numbers.get(state, 99),
+                        # The completed handle deliberately lacks the optional
+                        # display counter. Event identity still binds it.
+                        "run_number": (
+                            None if state == "completed" else run_numbers.get(state, 99)
+                        ),
                     }))
                 matched = signal_crosscheck.run_handle_report(
                     root,
                     "a" * 40,
                     "rrnewton/hermit",
                     [
-                        {"host": "hosta", "run_number": value}
-                        for value in run_numbers.values()
+                        {
+                            "repo": "hermit",
+                            "commit": "a" * 40,
+                            "run_id": f"validate-{state}",
+                            "record_id": f"event-{state}",
+                            "host": "hosta",
+                            "run_number": value,
+                        }
+                        for state, value in run_numbers.items()
                     ],
                 )
                 unmatched = signal_crosscheck.run_handle_report(
@@ -971,6 +988,12 @@ class SignalCrosscheckTests(unittest.TestCase):
         self.assertEqual(matched["admitted_without_ledger_handles"], [])
         self.assertEqual(len(matched["terminal_handles"]), 4)
         self.assertEqual(len(unmatched["admitted_without_ledger_handles"]), 4)
+
+    def test_run_handle_wrapper_outcome_mismatch_remains_fail_closed(self) -> None:
+        with self.assertRaisesRegex(ValueError, "wrapper outcome disagrees"):
+            signal_crosscheck._wrapper_outcome(
+                {"canonical_verdict": "VALIDATED", "wrapper_exit_code": 4}
+            )
 
     def test_pending_owner_watch_correction_is_unavailable_and_disagrees(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1009,7 +1032,7 @@ class SignalCrosscheckTests(unittest.TestCase):
                     "a" * 40,
                     "completed",
                     "admitted",
-                    1,
+                    None,
                     "hosta",
                 ),
                 "admitted-fqdn-matched": (
@@ -1075,6 +1098,12 @@ class SignalCrosscheckTests(unittest.TestCase):
                     "result": (
                         "systemd-launch-refused" if state == "refused" else None
                     ),
+                    "canonical_verdict": (
+                        "NOT-VALIDATED" if state in {"completed", "failed"} else None
+                    ),
+                    "wrapper_exit_code": (
+                        4 if state in {"completed", "failed"} else None
+                    ),
                     "fixture_state": state,
                     "fixture_admission": admission,
                     "fixture_run_number": run_number,
@@ -1114,20 +1143,44 @@ class SignalCrosscheckTests(unittest.TestCase):
                     "a" * 40,
                     "rrnewton/hermit",
                     [
-                        # The ledger compatibility row may retain the FQDN even
-                        # though its canonical envelope uses the short host.
-                        {"host": "hosta.example.com", "run_number": 1},
-                        # Normalize the projected handle host in the reciprocal
-                        # direction too.
-                        {"host": "hosta", "run_number": 2},
-                        # Per-machine counters may legitimately reuse a number.
-                        {"host": "hostb", "run_number": 3},
-                        # A missing handle host must not be inferred from here.
-                        {"host": "hostc", "run_number": 6},
-                        # A matching log basename must not establish identity.
+                        # The optional machine-local counter does not define
+                        # identity; this missing-number handle still binds by
+                        # run id and exact commit.
                         {
-                            "host": "hosta",
+                            "repo": "hermit",
+                            "commit": "a" * 40,
+                            "run_id": "validate-admitted-matched",
+                            "record_id": "event-admitted-matched",
+                            "host": "hostb",
                             "run_number": 99,
+                        },
+                        {
+                            "repo": "hermit",
+                            "commit": "a" * 40,
+                            "run_id": "validate-admitted-fqdn-matched",
+                            "record_id": "event-admitted-fqdn-matched",
+                            "host": "hosta",
+                            "run_number": 2,
+                        },
+                        # A missing display host does not erase the durable
+                        # handle/event identity.
+                        {
+                            "repo": "hermit",
+                            "commit": "a" * 40,
+                            "run_id": "validate-admitted-missing-host",
+                            "record_id": "event-admitted-missing-host",
+                            "host": "hostc",
+                            "run_number": 6,
+                        },
+                        # A colliding machine-local number and matching log
+                        # basename do not establish identity.
+                        {
+                            "repo": "hermit",
+                            "commit": "a" * 40,
+                            "run_id": "different-run",
+                            "record_id": "event-different-run",
+                            "host": "hosta",
+                            "run_number": 3,
                             "log_file": "/elsewhere/admitted-cross-machine.log",
                         },
                     ],
@@ -1145,10 +1198,7 @@ class SignalCrosscheckTests(unittest.TestCase):
         )
         self.assertEqual(
             [item["unit"] for item in report["admitted_without_ledger_handles"]],
-            [
-                "validate-admitted-cross-machine.service",
-                "validate-admitted-missing-host.service",
-            ],
+            ["validate-admitted-cross-machine.service"],
         )
         by_unit = {item["unit"]: item for item in report["terminal_handles"]}
         self.assertTrue(by_unit["validate-admitted-matched.service"]["ledger_event"])
@@ -1166,7 +1216,7 @@ class SignalCrosscheckTests(unittest.TestCase):
         missing_host = by_unit["validate-admitted-missing-host.service"]
         self.assertIsNone(missing_host["host"])
         self.assertEqual(missing_host["machine_shortname"], "")
-        self.assertFalse(missing_host["ledger_event"])
+        self.assertTrue(missing_host["ledger_event"])
         self.assertEqual(
             [item["unit"] for item in report["terminal_handles_missing_admission"]],
             ["validate-missing-admission.service"],

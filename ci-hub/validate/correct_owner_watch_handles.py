@@ -292,11 +292,22 @@ def relevant_membership(roots: EvidenceRoots) -> dict[str, list[dict[str, object
 
 def corrected_handle(handle: Mapping[str, Any]) -> dict[str, Any]:
     corrected = dict(handle)
+    # Historical handles briefly carried this display-only label at the top
+    # level.  It is not admission evidence and is not part of the current
+    # producer contract, so retaining it would make the corrected record
+    # unreadable to the shared parser.
+    corrected.pop("run_number", None)
     corrected.update(
         state="refused",
         result="systemd-launch-refused",
         exit_code=2,
     )
+    try:
+        run_registry.parse_current_record(corrected)
+    except RuntimeError as error:
+        raise CorrectionRefused(
+            f"corrected run handle violates the current producer contract: {error}"
+        ) from error
     return corrected
 
 
@@ -348,8 +359,8 @@ def verify_candidate(
         errors.append("handle records executed work")
     if "process_identity" in handle:
         errors.append("handle records a process identity")
-    if "admission_result" in handle or "run_number" in handle:
-        errors.append("handle records admission or a run number")
+    if "admission_result" in handle:
+        errors.append("handle records admission")
     if handle.get("observed_safe_ci_cgroups") != []:
         errors.append("handle records a safe-ci cgroup")
     if result.get("validate_run_rc") != 2:
@@ -548,7 +559,6 @@ def _build_plan(
             and handle.get("executed_tests") is None
             and "process_identity" not in handle
             and "admission_result" not in handle
-            and "run_number" not in handle
         ):
             rejected.append(
                 f"{attempt}: unexecuted owner-watch handle has no matching owner result"

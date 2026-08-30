@@ -526,21 +526,22 @@ def record(row: dict, *, root: Path | None = None) -> dict:
         or isinstance(existing_run_number, bool)
         or existing_run_number <= 0
     ):
-        raise ValueError("row run_number must be a positive integer")
+        # This counter is machine-local display metadata, never row identity or
+        # receipt authority.  A malformed optional label must not suppress the
+        # producer-owned result.
+        row.pop("run_number", None)
+        existing_run_number = None
     environment_run_number = os.environ.get(RUN_NUMBER_ENV)
     if environment_run_number is not None:
         try:
             run_number = int(environment_run_number)
-        except ValueError as error:
-            raise ValueError(f"{RUN_NUMBER_ENV} must be a positive integer") from error
-        if run_number <= 0 or str(run_number) != environment_run_number:
-            raise ValueError(f"{RUN_NUMBER_ENV} must be a positive integer")
-        if existing_run_number is not None and existing_run_number != run_number:
-            raise ValueError(
-                f"row run_number {existing_run_number!r} differs from admitted "
-                f"run number {run_number}"
-            )
-        row["run_number"] = run_number
+        except ValueError:
+            run_number = 0
+        if run_number > 0 and str(run_number) == environment_run_number:
+            # The admission producer owns this optional label.  Prefer it over
+            # any stale row copy without turning a display mismatch into a
+            # missing validation result.
+            row["run_number"] = run_number
     if root == production_root and _is_acceptance_fixture_row(row):
         raise ValueError(
             "acceptance fixture producer is not allowed in the production ledger"

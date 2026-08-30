@@ -227,32 +227,38 @@ def test_record_carries_the_admitted_run_number(
 
 
 @pytest.mark.parametrize("run_number", ["0", "-1", "01", "not-a-number"])
-def test_record_refuses_an_invalid_admitted_run_number(
+def test_record_omits_an_invalid_optional_admitted_run_number(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, run_number: str
 ):
     monkeypatch.setenv(validate_rows.RUN_NUMBER_ENV, run_number)
-    with pytest.raises(ValueError, match="must be a positive integer"):
-        validate_rows.record(row(tmp_path), root=tmp_path)
+    validate_rows.record(row(tmp_path), root=tmp_path)
+    [event] = validate_rows.events(root=tmp_path)
+    assert "run_number" not in event
+    assert "run_number" not in event["legacy_row"]
 
 
-def test_record_refuses_a_row_that_changes_its_admitted_run_number(
+def test_record_prefers_the_admission_producers_optional_run_number(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     monkeypatch.setenv(validate_rows.RUN_NUMBER_ENV, "701")
     source = row(tmp_path)
     source["run_number"] = 702
-    with pytest.raises(ValueError, match="differs from admitted run number"):
-        validate_rows.record(source, root=tmp_path)
+    validate_rows.record(source, root=tmp_path)
+    [event] = validate_rows.events(root=tmp_path)
+    assert event["run_number"] == 701
+    assert event["legacy_row"]["run_number"] == 701
 
 
 @pytest.mark.parametrize("run_number", [0, -1, True, "701"])
-def test_record_refuses_an_invalid_row_run_number(
+def test_record_omits_an_invalid_optional_row_run_number(
     tmp_path: Path, run_number: object
 ):
     source = row(tmp_path)
     source["run_number"] = run_number
-    with pytest.raises(ValueError, match="row run_number must be a positive integer"):
-        validate_rows.record(source, root=tmp_path)
+    validate_rows.record(source, root=tmp_path)
+    [event] = validate_rows.events(root=tmp_path)
+    assert "run_number" not in event
+    assert "run_number" not in event["legacy_row"]
 
 
 @pytest.mark.parametrize(

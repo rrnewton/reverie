@@ -5024,16 +5024,9 @@ impl ValidateLock {
             }
         };
         let run_number = match (args.kind.is_validation(), admitted) {
-            (true, Some(projection)) => Some(
-                projection
-                    .admission_result
-                    .and_then(|result| result.run_number)
-                    .ok_or_else(|| {
-                        ValidateLockError::InvalidState(
-                            "admitted validation result has no run_number".into(),
-                        )
-                    })?,
-            ),
+            (true, Some(projection)) => projection
+                .admission_result
+                .and_then(|result| result.run_number),
             _ => None,
         };
         if let Some(run_number) = run_number {

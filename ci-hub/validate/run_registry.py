@@ -465,23 +465,16 @@ def _admission_result(
         raw, "recorded_at", error_field="admission_result.recorded_at"
     )
     if state is AdmissionState.ADMITTED:
-        if kind.counts_as_validation and "run_number" not in raw:
-            raise _error(
-                "admission_result.run_number",
-                "is required for an admitted validation",
-            )
-        required = (
-            {"state", "recorded_at", "run_number"}
-            if kind.counts_as_validation
-            else {"state", "recorded_at"}
-        )
-        if set(raw) != required:
+        required = {"state", "recorded_at"}
+        allowed = required | ({"run_number"} if kind.counts_as_validation else set())
+        if not required.issubset(raw) or not set(raw).issubset(allowed):
             raise _error(
                 "admission_result",
-                f"admitted {kind.value} must contain exactly {sorted(required)}",
+                f"admitted {kind.value} must contain state and recorded_at"
+                + (", with optional run_number" if kind.counts_as_validation else ""),
             )
         run_number = None
-        if kind.counts_as_validation:
+        if "run_number" in raw:
             _positive_integer(
                 raw, "run_number", error_field="admission_result.run_number"
             )
@@ -1453,10 +1446,11 @@ def _publish_numbered_admission_result(path: Path) -> dict[str, Any]:
                     )
                 number = existing.run_number
                 if number is None:
-                    raise _error(
-                        "admission_result.run_number",
-                        "is required for an admitted validation",
-                    )
+                    # The counter is display metadata, not admission identity.
+                    # Preserve an already-admitted historical record exactly;
+                    # idempotent publication must not mutate it into a newer
+                    # shape or make its real admission unusable.
+                    return value
                 previous = _run_number_state(state_path, repo=repo, host=host)
                 if number > previous:
                     _write_run_number_state(

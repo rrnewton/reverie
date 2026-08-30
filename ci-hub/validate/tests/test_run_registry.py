@@ -471,18 +471,20 @@ class RunRegistryContractTests(unittest.TestCase):
                 root, team="hermit", host="hosta"
             )
 
-    def test_admitted_result_requires_a_positive_run_number(self) -> None:
-        with self.assertRaisesRegex(
-            RuntimeError, "validation-run-handle-admission_result.run_number"
-        ):
-            run_registry.parse_current_record(
-                validation_handle(
-                    admission_result={
-                        "state": "admitted",
-                        "recorded_at": "2026-08-28T07:00:01+00:00",
-                    }
-                )
+    def test_admitted_result_accepts_an_absent_run_number_but_checks_one_present(self) -> None:
+        handle = run_registry.parse_current_record(
+            validation_handle(
+                admission_result={
+                    "state": "admitted",
+                    "recorded_at": "2026-08-28T07:00:01+00:00",
+                }
             )
+        )
+        self.assertIsNotNone(handle.admission_result)
+        self.assertIsNone(handle.admission_result.run_number)
+        projected = run_registry.projection(handle.raw)
+        self.assertNotIn("run_number", projected["admission_result"])
+
         for value in (0, -1, True, "1"):
             with self.subTest(value=value):
                 with self.assertRaisesRegex(
@@ -497,6 +499,36 @@ class RunRegistryContractTests(unittest.TestCase):
                             }
                         )
                     )
+
+    def test_republishing_admitted_result_does_not_backfill_missing_run_number(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            path = (
+                Path(temporary)
+                / "ignored/validate/runs/validate-historical.json"
+            )
+            run_registry.create_current_record(
+                path,
+                validation_handle(
+                    state="launching",
+                    unit="validate-historical.service",
+                    admission_result={
+                        "state": "admitted",
+                        "recorded_at": "2026-08-28T07:00:01+00:00",
+                    },
+                ),
+            )
+
+            repeated = run_registry.publish_admission_result(
+                path, state=run_registry.AdmissionState.ADMITTED
+            )
+
+            self.assertEqual(
+                {
+                    "state": "admitted",
+                    "recorded_at": "2026-08-28T07:00:01+00:00",
+                },
+                repeated["admission_result"],
+            )
 
     def test_run_number_baseline_survives_an_unreadable_old_ledger_line(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
