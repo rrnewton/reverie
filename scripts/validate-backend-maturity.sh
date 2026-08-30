@@ -52,12 +52,13 @@ for backend in "${BACKEND_LIST[@]}"; do
     esac
 done
 
-mkdir -p "$(dirname -- "$REPORT")"
+mkdir -p "$(dirname -- "$REPORT")" || exit 2
+mkdir -p "$TARGET_DIR" || exit 2
 # Keep generated build scripts and fixtures under the writable checkout. Some
 # host execution policies permit file creation in /tmp but refuse to execute a
 # newly built child from there, which is an infrastructure result rather than a
 # backend result.
-WORK_DIR=$(mktemp -d "$TARGET_DIR/backend-maturity-work.XXXXXX")
+WORK_DIR=$(mktemp -d "$TARGET_DIR/backend-maturity-work.XXXXXX") || exit 2
 trap 'rm -rf -- "$WORK_DIR"' EXIT
 RELEASE_TARGET="$WORK_DIR/release-target"
 readonly RELEASE_TARGET
