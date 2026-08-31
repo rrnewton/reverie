@@ -87,6 +87,35 @@ class StartUnitEnvTest(unittest.TestCase):
         self.assertEqual(env["CI_HUB_VALIDATE_PRODUCER"], "systemd-user-v1")
         self.assertEqual(env["HERMIT_VALIDATE_RUN_TIMEOUT_SECONDS"], "3239")
 
+    def test_default_uses_the_controller_admission_policy(self) -> None:
+        command = build(self.root, dict(self.base_env))
+        lock = command.index("validate-lock")
+        child = command.index("--", lock)
+        self.assertNotIn("--max", command[lock:child])
+
+    def test_explicit_max_reaches_validate_lock(self) -> None:
+        command = su.build_systemd_command(
+            root=self.root,
+            checkout=self.root / "hermit",
+            target=TARGET,
+            agent="test-agent",
+            unit="validate-test.service",
+            record=self.root / "ignored/validate/runs/validate-test.json",
+            log=self.root / "out.log",
+            pr=None,
+            validate_args=["full"],
+            wait=1,
+            hold=1,
+            child_deadline=3600,
+            environment=self.base_env,
+            max_validates=1,
+        )
+        lock = command.index("validate-lock")
+        child = command.index("--", lock)
+        self.assertEqual(command[lock:child].count("--max"), 1)
+        maximum = command.index("--max", lock, child)
+        self.assertEqual(command[maximum + 1], "1")
+
     def test_large_child_deadline_does_not_widen_hermit_run(self) -> None:
         command = su.build_systemd_command(
             root=self.root,

@@ -2548,6 +2548,7 @@ def build_systemd_command(
     cargo_home: Path | None = None,
     runtime_root: Path | None = None,
     ci_dag_jobs: int | None = None,
+    max_validates: int | None = None,
     repo: str = "rrnewton/hermit",
     frozen_validate: bool = False,
     frozen_result: Path | None = None,
@@ -2778,6 +2779,7 @@ def build_systemd_command(
         str(hold),
         "--child-deadline",
         str(child_deadline),
+        *([] if max_validates is None else ["--max", str(max_validates)]),
         "--",
         *child,
     ]
@@ -3455,6 +3457,15 @@ def parser() -> argparse.ArgumentParser:
         ),
     )
     result.add_argument(
+        "--max",
+        dest="max_validates",
+        type=int,
+        help=(
+            "validate-lock admission policy to request; omit for the measured "
+            "concurrent default, or pass 1 for an exclusive solo confirmation"
+        ),
+    )
+    result.add_argument(
         "--make-validate",
         action="store_true",
         help=(
@@ -3797,6 +3808,7 @@ def main(
             cargo_home=private_cargo_home,
             runtime_root=runtime_root,
             ci_dag_jobs=args.ci_dag_jobs,
+            max_validates=args.max_validates,
             repo=repo,
             frozen_validate=args.frozen_validate,
             frozen_result=frozen_result,
