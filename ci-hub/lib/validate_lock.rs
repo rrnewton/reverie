@@ -1,9 +1,9 @@
-//! Validation/benchmark admission controller: at most TWO validation jobs run
-//! on this box at a time, while a benchmark takes both validation slots.
+//! Validation/benchmark admission controller: at most TEN validation jobs run
+//! on this box at a time, while a benchmark takes every validation slot.
 //!
 //! Concurrent heavy load manufactures false test FAILEDs (detcore_misc residual
 //! is monotonic in load; see `experiments/multisect_detcore_misc_20260803`), so a
-//! third validation or a benchmark overlapping any validation is never silently
+//! an eleventh validation or a benchmark overlapping any validation is never silently
 //! admitted. This is a SEPARATE lock
 //! from the landing mutex (`landing_lock.rs`): a validate must never block a
 //! lander and vice versa, so they key on different lockfiles. The lease engine
@@ -59,9 +59,9 @@ const DEFAULT_HOLD_SECONDS: u64 = 900;
 const POLL_SECONDS: u64 = 3;
 const GUARD_WAIT_SECONDS: u64 = 30;
 const GLOBAL_QUEUE_DECLARATION_TTL_SECONDS: i64 = 86_400;
-/// Two validation slots are available. Benchmarks still take both slots and
+/// Ten validation slots are available. Benchmarks still take every slot and
 /// therefore remain box-exclusive against every validation and benchmark.
-const VALIDATE_SLOT_COUNT: usize = 2;
+const VALIDATE_SLOT_COUNT: usize = 10;
 const VALIDATE_CONCURRENT_CAP: u64 = VALIDATE_SLOT_COUNT as u64;
 const LEGACY_ACQUIRE_CAP: u64 = 1;
 /// Hard ceiling on how long a `run` child may execute before it is killed and
@@ -1081,7 +1081,7 @@ pub enum ValidateLockError {
         "validate-lock: --child-deadline must be positive; unbounded lock holders are forbidden"
     )]
     UnboundedChildDeadline,
-    #[error("validate-lock: unsupported --max (bare acquire requires 1; supervised run requires the fixed two-slot box policy)")]
+    #[error("validate-lock: unsupported --max (bare acquire requires 1; supervised run requires 1 or the fixed ten-slot box policy)")]
     BadMax,
     /// Admission refused a validate whose head predates an immutable producer
     /// or merge-gate floor. Mutable-tip currency is enforced at merge time.
@@ -1143,6 +1143,7 @@ struct LockPaths {
     /// environment, one of them taking the REAL box anchor and blocking on it.
     /// A test binary must never contend with the live box.
     anchor: PathBuf,
+    global_anchor: PathBuf,
 }
 
 impl LockPaths {
@@ -1183,6 +1184,7 @@ impl LockPaths {
     }
 
     fn at(lock: PathBuf) -> Self {
+        let global_anchor = box_exclusion_anchor_at(VALIDATE_BOX_ANCHOR);
         Self {
             guard: suffix(&lock, ".guard"),
             queue: suffix(&lock, ".queue"),
@@ -1191,7 +1193,8 @@ impl LockPaths {
             released: suffix(&lock, ".released"),
             owner_watch_verifier: None,
             owner_watch_state_dir: None,
-            anchor: box_exclusion_anchor_at(VALIDATE_BOX_ANCHOR),
+            anchor: global_anchor.clone(),
+            global_anchor,
             lock,
         }
     }
@@ -1212,17 +1215,14 @@ impl LockPaths {
             released: self.released.clone(),
             owner_watch_verifier: self.owner_watch_verifier.clone(),
             owner_watch_state_dir: self.owner_watch_state_dir.clone(),
-            anchor: suffix(&self.anchor, &format!(".slot-{slot}")),
+            anchor: suffix(&self.global_anchor, &format!(".slot-{slot}")),
+            global_anchor: self.global_anchor.clone(),
             lock,
         }
     }
 
     fn global_anchor(&self) -> PathBuf {
-        let suffix = ".slot-1";
-        let text = self.anchor.to_string_lossy();
-        text.strip_suffix(suffix)
-            .map(PathBuf::from)
-            .unwrap_or_else(|| self.anchor.clone())
+        self.global_anchor.clone()
     }
 
     fn slot_anchor(&self, slot: usize) -> PathBuf {
@@ -6221,6 +6221,7 @@ mod tests {
             // therefore exercises the real anchor CODE while touching neither the
             // live box anchor nor any sibling test's.
             anchor: suffix(&lock, ".box-anchor"),
+            global_anchor: suffix(&lock, ".box-anchor"),
             lock,
         };
         // Existing lock tests are about lease/cleanup behavior, not bootstrap
@@ -8559,9 +8560,9 @@ exit 0
         let _ = fs::remove_dir_all(paths.lock.parent().unwrap());
     }
 
-    // 5. --max outside the fixed one/two policies is rejected before acquiring.
+    // 5. --max outside the fixed one/ten policies is rejected before acquiring.
     #[test]
-    fn max_greater_than_one_rejected() {
+    fn unsupported_intermediate_max_is_rejected() {
         let paths = temp_paths("bad-max");
         let lock = ValidateLock {
             paths: paths.clone(),
@@ -8930,15 +8931,16 @@ exit 0
     }
 
     #[test]
-    fn two_validation_slots_remove_the_old_single_anchor_collision() {
+    fn ten_validation_slots_remove_the_old_single_anchor_collision() {
         let dir = env::temp_dir().join(format!(
-            "ci-hub-vlock-two-slots-{}-{}",
+            "ci-hub-vlock-ten-slots-{}-{}",
             std::process::id(),
             epoch_seconds().unwrap()
         ));
         fs::create_dir_all(&dir).unwrap();
         let mut paths = LockPaths::at(dir.join("repository-validate-lock"));
         paths.anchor = dir.join("validate-box.lock");
+        paths.global_anchor = paths.anchor.clone();
 
         // Removed behavior: both validates took the one global anchor, so the
         // second acquisition deterministically collided with the first.
@@ -8953,23 +8955,26 @@ exit 0
         );
         drop(old_first);
 
-        let slot_zero = BoxExclusionAnchor::take(&paths.slot_anchor(0), 5)
-            .unwrap()
-            .expect("slot zero must be available");
-        let slot_one = BoxExclusionAnchor::take(&paths.slot_anchor(1), 0)
-            .unwrap()
-            .expect("slot one must coexist with slot zero");
-        assert!(BoxExclusionAnchor::take(&paths.slot_anchor(0), 0)
-            .unwrap()
-            .is_none());
+        let mut slots = Vec::new();
+        for slot in 0..VALIDATE_SLOT_COUNT {
+            slots.push(
+                BoxExclusionAnchor::take(&paths.slot_anchor(slot), 5)
+                    .unwrap()
+                    .unwrap_or_else(|| panic!("slot {slot} must be available")),
+            );
+        }
         assert!(
-            BoxExclusionAnchor::take(&paths.slot_anchor(1), 0)
+            BoxExclusionAnchor::take(&paths.slot_anchor(VALIDATE_SLOT_COUNT - 1), 0)
                 .unwrap()
                 .is_none(),
-            "a third validation must not exceed the two-slot policy"
+            "an eleventh validation must not exceed the ten-slot policy"
         );
-        drop(slot_one);
-        drop(slot_zero);
+        assert_eq!(
+            paths.for_slot(VALIDATE_SLOT_COUNT - 1).global_anchor(),
+            paths.global_anchor(),
+            "cleanup from the highest slot must use the global anchor",
+        );
+        drop(slots);
         let _ = fs::remove_dir_all(&dir);
     }
 

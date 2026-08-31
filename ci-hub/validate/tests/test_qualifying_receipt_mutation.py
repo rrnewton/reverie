@@ -727,7 +727,7 @@ class QualifyingReceiptMutationTest(unittest.TestCase):
         mutations = {
             "registered-producer": ("producer", "unregistered-forged-writer"),
             "canonical-admission": ("admission", "none"),
-            "bounded-concurrency": ("concurrent_validates", 2),
+            "bounded-concurrency": ("concurrent_validates", 10),
             "owner-ancestry": ("concurrency_proof", "self-declared"),
             "recorded-base": ("base_sha", None),
             "recorded-base-tree": ("base_tree", None),
@@ -751,9 +751,9 @@ class QualifyingReceiptMutationTest(unittest.TestCase):
                     f"{condition} must be load-bearing in every leg: {panel}",
                 )
 
-    def test_one_concurrent_validate_is_accepted_with_measured_proof(self) -> None:
+    def test_nine_concurrent_validates_are_accepted_with_measured_proof(self) -> None:
         row = _green_row(SHA)
-        row["concurrent_validates"] = 1
+        row["concurrent_validates"] = 9
         row["concurrency_proof"] = (
             "validate_lock_owner_ancestry+live_flock_registry_cpu_delta"
         )
@@ -765,7 +765,7 @@ class QualifyingReceiptMutationTest(unittest.TestCase):
             qualifying_receipt.active()["admission"]["required_concurrent_validates"],
         )
         panel = self._panel(row, predicate=None)
-        self.assertTrue(all(panel.values()), f"one admitted peer must qualify: {panel}")
+        self.assertTrue(all(panel.values()), f"nine admitted peers must qualify: {panel}")
 
     def test_schema4_remains_grandfathered_without_consumer_regression(self) -> None:
         """Admission tightening must not revoke counted schema-4 authority.

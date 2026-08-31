@@ -1046,7 +1046,7 @@ def base_boundary_verdict(
 
 
 def admission_verdict(row: dict[str, Any], pred: dict[str, Any]) -> AdmissionVerdict:
-    """Verify canonical admission, zero concurrency, and owner ancestry.
+    """Verify canonical admission, bounded concurrency, and owner ancestry.
 
     This is the only semantic implementation of the admission clause. Rust
     sends the row plus the relevant predicate clauses to ``--evidence-only``
