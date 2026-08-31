@@ -591,6 +591,67 @@ pub fn assess(rows: &[HistoryRow], sha: &str) -> Assessment {
     }
 }
 
+/// Assess rows whose recorded commits have already been proven to have the
+/// same Git tree. Each row is still qualified against the SHA it actually
+/// measured, preserving the producer's provenance checks. The combined result
+/// uses the ordinary verdict precedence, including a failure on any equivalent
+/// commit taking precedence over a pass.
+pub fn assess_tree_equivalent(rows: &[HistoryRow], branch_sha: &str) -> Assessment {
+    let mut by_commit = std::collections::BTreeMap::<String, Vec<HistoryRow>>::new();
+    for row in rows {
+        if let Some(commit) = row.commit.as_deref() {
+            by_commit
+                .entry(commit.to_string())
+                .or_default()
+                .push(row.clone());
+        }
+    }
+
+    let mut qualifying = Vec::new();
+    let mut disqualified = Vec::new();
+    let mut failed_records = 0usize;
+    let mut withheld_nonpass_records = 0usize;
+    let mut saw_failed = false;
+    let mut saw_needs_rerun = false;
+    let mut saw_truncated = false;
+    let mut saw_no_result = false;
+    for (commit, commit_rows) in by_commit {
+        let assessment = assess(&commit_rows, &commit);
+        match assessment.verdict {
+            Verdict::FailedOnRecord => saw_failed = true,
+            Verdict::NeedsRerun => saw_needs_rerun = true,
+            Verdict::Truncated => saw_truncated = true,
+            Verdict::NoResult => saw_no_result = true,
+            Verdict::Validated | Verdict::NotValidated => {}
+        }
+        qualifying.extend(assessment.qualifying);
+        disqualified.extend(assessment.disqualified);
+        failed_records += assessment.failed_records;
+        withheld_nonpass_records += assessment.withheld_nonpass_records;
+    }
+    let verdict = if saw_failed {
+        Verdict::FailedOnRecord
+    } else if !qualifying.is_empty() {
+        Verdict::Validated
+    } else if saw_needs_rerun {
+        Verdict::NeedsRerun
+    } else if saw_truncated {
+        Verdict::Truncated
+    } else if saw_no_result {
+        Verdict::NoResult
+    } else {
+        Verdict::NotValidated
+    };
+    Assessment {
+        sha: branch_sha.to_string(),
+        verdict,
+        qualifying,
+        disqualified,
+        failed_records,
+        withheld_nonpass_records,
+    }
+}
+
 /// Pick the most recent qualifying record (by `finished_at` string order, which
 /// is ISO-8601-Z and therefore lexicographically chronological).
 pub fn newest(rows: &[HistoryRow]) -> Option<&HistoryRow> {

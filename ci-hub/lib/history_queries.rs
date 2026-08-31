@@ -7,7 +7,7 @@
 
 use crate::qualifying_receipt::{self, CoverageVerdict};
 use crate::records::{GateHistoryRow, HistoryRow};
-use crate::validate_status::{assess, newest, Verdict};
+use crate::validate_status::{assess_tree_equivalent, newest, Verdict};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -35,7 +35,12 @@ impl CoverageStrength {
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 pub struct ValidationEvidence {
+    /// Commit actually named and executed by the validation producer.
     pub sha: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_number: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub git_depth: Option<i64>,
     pub finished_at: Option<String>,
     pub profile: String,
     pub selection_mode: String,
@@ -64,6 +69,12 @@ pub struct NewestGreenReport {
     pub trustworthy_recorded_commits_in_range: usize,
     pub full_green_commits_in_range: usize,
     pub green: ValidationEvidence,
+    /// First-parent branch commit whose tree was validated. This equals
+    /// `green.sha` for an exact commit match and names the rebased landing for
+    /// a tree match.
+    pub green_branch_sha: String,
+    /// `commit` for an exact SHA match or `tree` for a clean tree match.
+    pub green_matched_by: String,
     pub commits_after_green: usize,
     #[serde(default)]
     pub commits_failed_on_record: usize,
@@ -197,6 +208,65 @@ pub enum FirstBadOutcome {
     },
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum BranchCommitMatch {
+    Commit { sha: String },
+    Tree { sha: String },
+}
+
+/// First-parent branch commits indexed by exact SHA and exact Git tree.
+/// Commits are supplied newest-to-oldest, so a tree that occurs more than once
+/// maps deterministically to the occurrence closest to the branch tip.
+pub struct BranchCommitIndex {
+    commits: BTreeSet<String>,
+    closest_commit_by_tree: BTreeMap<String, String>,
+}
+
+impl BranchCommitIndex {
+    pub fn new(commits: &[String], commit_trees: &BTreeMap<String, String>) -> Self {
+        let mut commit_index = BTreeSet::new();
+        let mut closest_commit_by_tree = BTreeMap::new();
+        for commit in commits {
+            commit_index.insert(commit.clone());
+            if let Some(tree) = commit_trees.get(commit) {
+                closest_commit_by_tree
+                    .entry(tree.to_ascii_lowercase())
+                    .or_insert_with(|| commit.clone());
+            }
+        }
+        Self {
+            commits: commit_index,
+            closest_commit_by_tree,
+        }
+    }
+
+    pub fn match_commit(
+        &self,
+        commit: &str,
+        tree: Option<&str>,
+        allow_tree_match: bool,
+    ) -> Option<BranchCommitMatch> {
+        if self.commits.contains(commit) {
+            return Some(BranchCommitMatch::Commit {
+                sha: commit.to_string(),
+            });
+        }
+        if !allow_tree_match {
+            return None;
+        }
+        let sha = self
+            .closest_commit_by_tree
+            .get(&tree?.to_ascii_lowercase())?;
+        Some(BranchCommitMatch::Tree { sha: sha.clone() })
+    }
+
+    pub fn match_row(&self, row: &HistoryRow) -> Option<BranchCommitMatch> {
+        let commit = row.commit.as_deref()?;
+        let allow_tree_match = row.commit_anchored == Some(true) && row.tree_dirty == Some(false);
+        self.match_commit(commit, row.tree().ok().flatten(), allow_tree_match)
+    }
+}
+
 pub struct HistoryQueryEngine {
     commits: Vec<String>,
     rows_by_commit: BTreeMap<String, Vec<HistoryRow>>,
@@ -206,15 +276,21 @@ pub struct HistoryQueryEngine {
 
 impl HistoryQueryEngine {
     /// `commits` are first-parent branch commits in newest-to-oldest order.
+    #[cfg(test)]
     pub fn new(commits: Vec<String>, rows: Vec<HistoryRow>) -> Self {
         Self::build(commits, rows, false)
     }
 
-    /// Retain off-branch rows only for `first-bad`, whose historical
-    /// measurement may associate them by Git tree. Validation authority keeps
-    /// using [`Self::new`] and therefore exact commits only.
-    pub fn new_for_first_bad(commits: Vec<String>, rows: Vec<HistoryRow>) -> Self {
+    /// Retain clean off-branch rows so callers can associate a rebased
+    /// validation with the first-parent branch commit carrying the same tree.
+    pub fn new_with_tree_matches(commits: Vec<String>, rows: Vec<HistoryRow>) -> Self {
         Self::build(commits, rows, true)
+    }
+
+    /// Retain off-branch rows for `first-bad`, whose historical measurement may
+    /// associate them by Git tree.
+    pub fn new_for_first_bad(commits: Vec<String>, rows: Vec<HistoryRow>) -> Self {
+        Self::new_with_tree_matches(commits, rows)
     }
 
     fn build(commits: Vec<String>, rows: Vec<HistoryRow>, retain_off_branch: bool) -> Self {
@@ -257,6 +333,7 @@ impl HistoryQueryEngine {
         self
     }
 
+    #[cfg(test)]
     pub fn newest_green(
         &self,
         branch: &str,
@@ -264,25 +341,115 @@ impl HistoryQueryEngine {
         gate_schema: &str,
         gate_schema_floor: &str,
     ) -> NewestGreenOutcome {
+        self.newest_green_with_trees(
+            branch,
+            branch_ref,
+            gate_schema,
+            gate_schema_floor,
+            &BTreeMap::new(),
+        )
+    }
+
+    /// Find the newest full green by exact commit first, then by the exact Git
+    /// tree recorded by a clean, commit-anchored off-branch row. Rebase changes
+    /// commit identity but not the tested tree, so the evidence continues to
+    /// name the validated SHA while the report names the branch SHA carrying
+    /// that same tree.
+    pub fn newest_green_with_trees(
+        &self,
+        branch: &str,
+        branch_ref: &str,
+        gate_schema: &str,
+        gate_schema_floor: &str,
+        commit_trees: &BTreeMap<String, String>,
+    ) -> NewestGreenOutcome {
+        struct BranchAssessment {
+            verdict: Verdict,
+            newest_qualifying: Option<HistoryRow>,
+            matched_by: &'static str,
+            has_clean_anchored_pass: bool,
+        }
+
         let branch_tip = self.commits.first().cloned().unwrap_or_default();
         let range_oldest_commit = self.commits.last().cloned().unwrap_or_default();
+        let branch_index = BranchCommitIndex::new(&self.commits, commit_trees);
+        let mut tree_rows_by_commit: BTreeMap<String, Vec<HistoryRow>> = BTreeMap::new();
+        for row in &self.rows_off_branch {
+            let Some(BranchCommitMatch::Tree { sha }) = branch_index.match_row(row) else {
+                continue;
+            };
+            tree_rows_by_commit
+                .entry(sha)
+                .or_default()
+                .push(row.clone());
+        }
+
+        let mut assessments = BTreeMap::new();
+        for sha in &self.commits {
+            let mut source_rows = self.rows_by_commit.get(sha).cloned().unwrap_or_default();
+            if let Some(rows) = tree_rows_by_commit.get(sha) {
+                source_rows.extend(rows.iter().cloned());
+            }
+            if source_rows.is_empty() {
+                continue;
+            }
+            let assessment = assess_tree_equivalent(&source_rows, sha);
+            let newest_qualifying = assessment
+                .qualifying
+                .iter()
+                .filter(|row| row.commit.as_deref() == Some(sha))
+                .max_by(|left, right| {
+                    left.finished_at
+                        .as_deref()
+                        .unwrap_or("")
+                        .cmp(right.finished_at.as_deref().unwrap_or(""))
+                })
+                .cloned()
+                .or_else(|| newest(&assessment.qualifying).cloned());
+            let matched_by = newest_qualifying
+                .as_ref()
+                .map(|row| {
+                    if row.commit.as_deref() == Some(sha) {
+                        "commit"
+                    } else {
+                        "tree"
+                    }
+                })
+                .unwrap_or("commit");
+            assessments.insert(
+                sha.clone(),
+                BranchAssessment {
+                    verdict: assessment.verdict,
+                    newest_qualifying,
+                    matched_by,
+                    has_clean_anchored_pass: source_rows.iter().any(|row| {
+                        row.commit_anchored == Some(true)
+                            && row.tree_dirty == Some(false)
+                            && row.result.as_deref() == Some("pass")
+                    }),
+                },
+            );
+        }
+
         let mut trustworthy_recorded = 0usize;
         let mut failed_recorded = 0usize;
         let mut full_green_commits = 0usize;
         let mut newest_full_green = None;
         for (index, sha) in self.commits.iter().enumerate() {
-            let Some(rows) = self.rows_by_commit.get(sha) else {
+            let Some(assessment) = assessments.get(sha) else {
                 continue;
             };
-            let assessment = assess(rows, sha);
             match assessment.verdict {
                 Verdict::Validated => {
                     trustworthy_recorded += 1;
                     full_green_commits += 1;
                     if newest_full_green.is_none() {
-                        let row = newest(&assessment.qualifying)
+                        let row = assessment
+                            .newest_qualifying
+                            .as_ref()
                             .expect("validated assessment has qualifying evidence");
-                        newest_full_green = Some((index, sha, row.clone()));
+                        newest_full_green =
+                            Some((index, sha.clone(), assessment.matched_by, row.clone()));
                     }
                 }
                 Verdict::FailedOnRecord => {
@@ -294,11 +461,7 @@ impl HistoryQueryEngine {
                     // its narrower scope, even though it cannot be the branch's
                     // full green. Preserve that accounting while excluding
                     // ambiguous red states below.
-                    if rows.iter().any(|row| {
-                        row.commit_anchored == Some(true)
-                            && row.tree_dirty == Some(false)
-                            && row.result.as_deref() == Some("pass")
-                    }) {
+                    if assessment.has_clean_anchored_pass {
                         trustworthy_recorded += 1;
                     }
                 }
@@ -306,7 +469,7 @@ impl HistoryQueryEngine {
             }
         }
 
-        if let Some((index, sha, row)) = newest_full_green {
+        if let Some((index, main_sha, matched_by, row)) = newest_full_green {
             let newer = &self.commits[..index];
             let mut commits_failed_on_record = 0usize;
             let mut commits_needing_rerun = 0usize;
@@ -316,8 +479,8 @@ impl HistoryQueryEngine {
             let mut commits_with_unreadable_record = 0usize;
             let mut commits_without_any_record = 0usize;
             for commit in newer {
-                if let Some(rows) = self.rows_by_commit.get(commit) {
-                    match assess(rows, commit).verdict {
+                if let Some(assessment) = assessments.get(commit) {
+                    match assessment.verdict {
                         Verdict::Validated => {
                             unreachable!("a commit newer than the newest green cannot be validated")
                         }
@@ -343,7 +506,7 @@ impl HistoryQueryEngine {
                 newer.len()
             );
             let report = NewestGreenReport {
-                schema_version: 5,
+                schema_version: 6,
                 branch: branch.to_string(),
                 branch_ref: branch_ref.to_string(),
                 branch_tip,
@@ -353,7 +516,9 @@ impl HistoryQueryEngine {
                 branch_commits_in_range: self.commits.len(),
                 trustworthy_recorded_commits_in_range: trustworthy_recorded,
                 full_green_commits_in_range: full_green_commits,
-                green: evidence(sha, &row),
+                green: evidence(row.commit.as_deref().unwrap_or(&main_sha), &row),
+                green_branch_sha: main_sha,
+                green_matched_by: matched_by.into(),
                 commits_after_green: newer.len(),
                 commits_failed_on_record,
                 commits_needing_rerun,
@@ -663,6 +828,14 @@ fn evidence(sha: &str, row: &HistoryRow) -> ValidationEvidence {
     let (coverage, coverage_satisfied, coverage_status) = coverage(row);
     ValidationEvidence {
         sha: sha.to_string(),
+        run_number: row
+            .extra
+            .get("run_number")
+            .and_then(serde_json::Value::as_u64),
+        git_depth: row
+            .extra
+            .get("git_depth")
+            .and_then(serde_json::Value::as_i64),
         finished_at: row.finished_at.clone(),
         profile: row.profile.clone().unwrap_or_else(|| "unknown".into()),
         selection_mode: row
@@ -978,7 +1151,7 @@ pub fn cache_matches(
     ledger_modified_ns: u128,
     producer_definition_authority: &str,
 ) -> bool {
-    cache.schema_version == 7
+    cache.schema_version == 8
         && cache.branch == branch
         && cache.branch_ref == branch_ref
         && cache.branch_tip == branch_tip
@@ -1319,6 +1492,132 @@ mod tests {
         assert_eq!(report.branch_commits_in_range, 3);
         assert_eq!(report.trustworthy_recorded_commits_in_range, 3);
         assert_eq!(report.full_green_commits_in_range, 3);
+    }
+
+    #[test]
+    fn newest_green_matches_a_rebased_validation_by_tree_at_the_closest_commit() {
+        let validated = "4733542cf689ac99061e83121f3e35d83ca881b8";
+        let landed = "850685f6b9f3ae0dbc5a35fd3ec9f2abe867d95a";
+        let shared_tree = "b5aee5b5aab653301b4cdfdd54d00a8f4bc6315a";
+        let mut commits = (0_u64..16)
+            .map(|value| format!("{value:040x}"))
+            .collect::<Vec<_>>();
+        commits.push(landed.into());
+        let older_same_tree = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
+        commits.push(older_same_tree.into());
+        let mut trees = commits
+            .iter()
+            .map(|commit| (commit.clone(), "a".repeat(40)))
+            .collect::<BTreeMap<_, _>>();
+        trees.insert(landed.into(), shared_tree.into());
+        trees.insert(older_same_tree.into(), shared_tree.into());
+
+        let mut green = with_tree(
+            row(validated, "2026-08-30T20:00:00Z", "full", "full", "pass"),
+            shared_tree,
+        );
+        green
+            .extra
+            .insert("run_number".into(), serde_json::json!(1570));
+        green
+            .extra
+            .insert("git_depth".into(), serde_json::json!(2568));
+
+        let NewestGreenOutcome::Found(report) =
+            HistoryQueryEngine::new_with_tree_matches(commits, vec![green])
+                .newest_green_with_trees("main", "origin/main", "merge-gate-v2", "floor", &trees)
+        else {
+            panic!("expected tree-matched green")
+        };
+
+        assert_eq!(report.commits_after_green, 16);
+        assert_eq!(report.green.sha, validated);
+        assert_eq!(report.green_branch_sha, landed);
+        assert_eq!(report.green_matched_by, "tree");
+        assert_eq!(report.green.run_number, Some(1570));
+        assert_eq!(report.green.git_depth, Some(2568));
+    }
+
+    #[test]
+    fn newest_green_does_not_match_an_absent_tree() {
+        let commits = vec!["a".repeat(40), "b".repeat(40)];
+        let trees = BTreeMap::from([
+            (commits[0].clone(), "1".repeat(40)),
+            (commits[1].clone(), "2".repeat(40)),
+        ]);
+        let off_branch = with_tree(
+            row(
+                &"c".repeat(40),
+                "2026-08-30T20:00:00Z",
+                "full",
+                "full",
+                "pass",
+            ),
+            &"3".repeat(40),
+        );
+
+        assert!(matches!(
+            HistoryQueryEngine::new_with_tree_matches(commits, vec![off_branch])
+                .newest_green_with_trees("main", "origin/main", "merge-gate-v2", "floor", &trees,),
+            NewestGreenOutcome::NoEvidence { recorded: 0, .. }
+        ));
+    }
+
+    #[test]
+    fn newest_green_prefers_exact_commit_evidence_over_a_tree_match() {
+        let main = "a".repeat(40);
+        let off_branch = "b".repeat(40);
+        let tree = "c".repeat(40);
+        let trees = BTreeMap::from([(main.clone(), tree.clone())]);
+        let rows = vec![
+            with_tree(
+                row(&main, "2026-08-30T20:00:00Z", "full", "full", "fail"),
+                &tree,
+            ),
+            with_tree(
+                row(&off_branch, "2026-08-30T21:00:00Z", "full", "full", "pass"),
+                &tree,
+            ),
+        ];
+
+        assert!(matches!(
+            HistoryQueryEngine::new_with_tree_matches(vec![main], rows).newest_green_with_trees(
+                "main",
+                "origin/main",
+                "merge-gate-v2",
+                "floor",
+                &trees,
+            ),
+            NewestGreenOutcome::FailedOnly { recorded: 1, .. }
+        ));
+    }
+
+    #[test]
+    fn newest_green_uses_a_tree_green_when_exact_rows_are_only_partial() {
+        let main = "a".repeat(40);
+        let off_branch = "b".repeat(40);
+        let tree = "c".repeat(40);
+        let trees = BTreeMap::from([(main.clone(), tree.clone())]);
+        let rows = vec![
+            with_tree(
+                row(&main, "2026-08-30T20:00:00Z", "full", "selective", "pass"),
+                &tree,
+            ),
+            with_tree(
+                row(&off_branch, "2026-08-30T21:00:00Z", "full", "full", "pass"),
+                &tree,
+            ),
+        ];
+
+        let NewestGreenOutcome::Found(report) =
+            HistoryQueryEngine::new_with_tree_matches(vec![main.clone()], rows)
+                .newest_green_with_trees("main", "origin/main", "merge-gate-v2", "floor", &trees)
+        else {
+            panic!("expected the full tree-matched evidence to qualify")
+        };
+        assert_eq!(report.green.sha, off_branch);
+        assert_eq!(report.green_branch_sha, main);
+        assert_eq!(report.green_matched_by, "tree");
     }
 
     #[test]
@@ -1770,7 +2069,7 @@ mod tests {
     #[test]
     fn cache_invalidates_on_branch_tip_or_ledger_change() {
         let report = NewestGreenReport {
-            schema_version: 5,
+            schema_version: 6,
             branch: "main".into(),
             branch_ref: "origin/main".into(),
             branch_tip: "tip-a".into(),
@@ -1784,6 +2083,8 @@ mod tests {
                 "tip-a",
                 &row("tip-a", "2026-08-03T01:00:00Z", "full", "full", "pass"),
             ),
+            green_branch_sha: "tip-a".into(),
+            green_matched_by: "commit".into(),
             commits_after_green: 0,
             commits_failed_on_record: 0,
             commits_needing_rerun: 0,
@@ -1795,7 +2096,7 @@ mod tests {
             commits_with_records: 0,
         };
         let cache = NewestGreenCache {
-            schema_version: 7,
+            schema_version: 8,
             branch: "main".into(),
             branch_ref: "origin/main".into(),
             branch_tip: "tip-a".into(),
@@ -1819,7 +2120,7 @@ mod tests {
             "producer-a"
         ));
         let mut old_schema = cache.clone();
-        old_schema.schema_version = 6;
+        old_schema.schema_version = 7;
         assert!(!cache_matches(
             &old_schema,
             "main",

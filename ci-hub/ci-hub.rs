@@ -82,7 +82,8 @@ use crate::bounded_output::BoundedOutput;
 use clap::error::ErrorKind;
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use history_queries::{
-    CellEvidenceCache, FirstBadOutcome, HistoryQueryEngine, NewestGreenCache, NewestGreenOutcome,
+    BranchCommitIndex, BranchCommitMatch, CellEvidenceCache, FirstBadOutcome, HistoryQueryEngine,
+    NewestGreenCache, NewestGreenOutcome,
 };
 use ledger_event::LedgerEvent;
 use published_receipt::{
@@ -503,14 +504,14 @@ struct ValidateStatusArgs {
         help_heading = "WHICH RESULTS"
     )]
     in_progress_only: bool,
-    /// Optional identity columns for the current/recent table. Comma-separated
-    /// values and repeated flags are both accepted; `none` selects no identity
-    /// column. The default stays narrow with SHA alone.
+    /// Identity columns for the current/recent table. Comma-separated values
+    /// and repeated flags are both accepted; `none` selects no identity column.
+    /// The default shows the recorded SHA, branch, and its relationship to main.
     #[arg(
         long,
         value_enum,
         value_delimiter = ',',
-        default_value = "sha",
+        default_value = "sha,branch,main",
         help_heading = "HOW RENDERED"
     )]
     columns: Vec<ValidateStatusColumn>,
@@ -542,6 +543,7 @@ struct ValidateStatusArgs {
 enum ValidateStatusColumn {
     Sha,
     Branch,
+    Main,
     #[value(name = "gitdepth", alias = "git-depth")]
     GitDepth,
     None,
@@ -4664,6 +4666,7 @@ fn fetch_history_branch(repo: &Path, branch: &str) -> Result<(), CiHubError> {
     Ok(())
 }
 
+#[cfg(test)]
 fn branch_history(repo: &Path, branch_ref: &str) -> Result<Vec<String>, CiHubError> {
     let output = Command::new("git")
         .arg("-C")
@@ -4694,6 +4697,7 @@ fn branch_history(repo: &Path, branch_ref: &str) -> Result<Vec<String>, CiHubErr
     Ok(commits)
 }
 
+#[cfg(test)]
 fn branch_history_for(repo: &Path, branch: &str) -> Result<(String, Vec<String>), CiHubError> {
     let branch_ref = format!("origin/{branch}");
     let commits = branch_history(repo, &branch_ref)?;
@@ -5088,8 +5092,20 @@ fn print_newest_green(report: &history_queries::NewestGreenReport, cache_hit: bo
         return;
     }
     println!(
-        "NEWEST-GREEN {} validated={} profile={} selection={} coverage={} coverage_satisfied={} coverage_status={}",
+        "NEWEST-GREEN {} main={} matched-by={} run={} git-depth={} validated={} profile={} selection={} coverage={} coverage_satisfied={} coverage_status={}",
         report.green.sha,
+        report.green_branch_sha,
+        report.green_matched_by,
+        report
+            .green
+            .run_number
+            .map(|number| number.to_string())
+            .unwrap_or_else(|| "absent".into()),
+        report
+            .green
+            .git_depth
+            .map(|depth| depth.to_string())
+            .unwrap_or_else(|| "absent".into()),
         report.green.finished_at.as_deref().unwrap_or("unknown"),
         report.green.profile,
         report.green.selection_mode,
@@ -5175,11 +5191,8 @@ fn run_newest_green(root: &Path, args: NewestGreenArgs) -> Result<i32, CiHubErro
         }
     };
     let floor_policy = format!("{GATE_FLOOR_POLICY}:{}", effective_floor.kind);
-    let commits = history_at_or_after_gate_floor(
-        branch_history(&repo, &branch_ref)?,
-        &branch_ref,
-        &effective_floor.sha,
-    )?;
+    let (history, commit_trees) = branch_history_with_trees(&repo, &branch_ref)?;
+    let commits = history_at_or_after_gate_floor(history, &branch_ref, &effective_floor.sha)?;
     let branch_tip = commits.first().expect("nonempty history");
     let ledger = ledger_path(root);
     let (ledger_len, ledger_modified_ns) = ledger_stamp(&ledger)?;
@@ -5219,17 +5232,18 @@ fn run_newest_green(root: &Path, args: NewestGreenArgs) -> Result<i32, CiHubErro
     // Verdicts come from the ledger rows exactly as the exact-SHA
     // validate-status path reads them. Log/cache enrichment belongs to
     // first-bad's cell detail and must not change a commit verdict here.
-    match HistoryQueryEngine::new(commits, rows)
+    match HistoryQueryEngine::new_with_tree_matches(commits, rows)
         .with_unreadable_commits(unreadable_commits)
-        .newest_green(
+        .newest_green_with_trees(
             &args.query.branch,
             &branch_ref,
             &floor_policy,
             &effective_floor.sha,
+            &commit_trees,
         ) {
         NewestGreenOutcome::Found(report) => {
             let cache = NewestGreenCache {
-                schema_version: 7,
+                schema_version: 8,
                 branch: report.branch.clone(),
                 branch_ref: report.branch_ref.clone(),
                 branch_tip: report.branch_tip.clone(),
@@ -5950,7 +5964,11 @@ enum GreenDepth {
         history_ref: String,
         history_tip: String,
         depth: usize,
-        sha: String,
+        validated_sha: String,
+        main_sha: String,
+        matched_by: String,
+        run_number: Option<u64>,
+        git_depth: Option<i64>,
         window: usize,
         failed_on_record: usize,
         needs_rerun: usize,
@@ -5984,7 +6002,11 @@ impl GreenDepth {
                 history_ref,
                 history_tip,
                 depth,
-                sha,
+                validated_sha,
+                main_sha,
+                matched_by,
+                run_number,
+                git_depth,
                 window,
                 failed_on_record,
                 needs_rerun,
@@ -5993,15 +6015,34 @@ impl GreenDepth {
                 not_validated,
                 ledger_unreadable,
                 no_record,
-            } => format!(
-                "HERMIT COMMITS-SINCE-GREEN {depth} (history {history_ref} at {history_tip}; \
-                 last full green {} at first-parent depth {depth}; \
+            } => {
+                let run = run_number
+                    .map(|number| format!("RUN {number}"))
+                    .unwrap_or_else(|| "run number absent".into());
+                let validated_sha = validated_sha
+                    .get(..12)
+                    .unwrap_or(validated_sha.as_str());
+                let git_depth = git_depth
+                    .map(|value| format!("at git depth {value}"))
+                    .unwrap_or_else(|| "with git depth absent".into());
+                let main_match = if matched_by == "tree" {
+                    format!(
+                        "matched by tree to main {}",
+                        main_sha.get(..12).unwrap_or(main_sha.as_str())
+                    )
+                } else {
+                    "exact SHA on main".into()
+                };
+                format!(
+                    "HERMIT COMMITS-SINCE-GREEN {depth} (history {history_ref} at {history_tip}; \
+                 last full green {run}, validated {validated_sha} {git_depth}, \
+                 {main_match} at first-parent depth {depth}; \
                  FAILED={failed_on_record} NEEDS-RERUN={needs_rerun} TRUNCATED={truncated} \
                  NO-RESULT={no_result} NOT-VALIDATED={not_validated} \
                  LEDGER-UNREADABLE={ledger_unreadable} NO-RECORD={no_record}; \
-                 searched {window} commits)",
-                sha.get(..12).unwrap_or(sha)
-            ),
+                 searched {window} commits)"
+                )
+            }
             GreenDepth::NoneInWindow {
                 history_ref,
                 history_tip,
@@ -6040,7 +6081,11 @@ impl GreenDepth {
                 history_ref,
                 history_tip,
                 depth,
-                sha,
+                validated_sha,
+                main_sha,
+                matched_by,
+                run_number,
+                git_depth,
                 window,
                 failed_on_record,
                 needs_rerun,
@@ -6050,7 +6095,12 @@ impl GreenDepth {
                 ledger_unreadable,
                 no_record,
             } => serde_json::json!({
-                "state": "found", "depth": depth, "green_sha": sha,
+                "state": "found", "depth": depth,
+                "green_sha": validated_sha,
+                "green_main_sha": main_sha,
+                "green_matched_by": matched_by,
+                "green_run_number": run_number,
+                "green_git_depth": git_depth,
                 "history_ref": history_ref, "history_tip": history_tip,
                 "searched_commits": window,
                 "commits_failed_on_record": failed_on_record,
@@ -6112,17 +6162,18 @@ fn standard_green_depth(root: &Path, branch: &str) -> GreenDepth {
         };
     }
     // Deliberately no fetch: see the cost note above.
-    let (branch_ref, history) = match branch_history_for(&repo, branch) {
+    let branch_ref = format!("origin/{branch}");
+    let (history, commit_trees) = match branch_history_with_trees(&repo, &branch_ref) {
         Ok(result) => result,
         Err(error) => {
             return GreenDepth::Unavailable {
-                why: format!("origin/{branch}: {error}"),
+                why: format!("{branch_ref}: {error}"),
             }
         }
     };
     let history_tip = history
         .first()
-        .expect("branch_history_for returns a nonempty history")
+        .expect("branch_history_with_trees returns a nonempty history")
         .clone();
     let floor = match query_effective_gate_floor(root, &repo, branch) {
         Ok(GateFloorResolution::Effective(floor)) => floor,
@@ -6173,15 +6224,24 @@ fn standard_green_depth(root: &Path, branch: &str) -> GreenDepth {
     // Keep this on the same unmodified parsed rows as exact-SHA
     // validate-status. `retain_cell_evidence` is for first-bad cell detail.
     let floor_policy = format!("{GATE_FLOOR_POLICY}:{}", floor.kind);
-    match HistoryQueryEngine::new(commits, rows)
+    match HistoryQueryEngine::new_with_tree_matches(commits, rows)
         .with_unreadable_commits(unreadable_commits)
-        .newest_green(branch, &branch_ref, &floor_policy, &floor.sha)
-    {
+        .newest_green_with_trees(
+            branch,
+            &branch_ref,
+            &floor_policy,
+            &floor.sha,
+            &commit_trees,
+        ) {
         NewestGreenOutcome::Found(report) => GreenDepth::Found {
             history_ref: branch_ref,
             history_tip,
             depth: report.commits_after_green,
-            sha: report.green.sha.clone(),
+            validated_sha: report.green.sha.clone(),
+            main_sha: report.green_branch_sha.clone(),
+            matched_by: report.green_matched_by.clone(),
+            run_number: report.green.run_number,
+            git_depth: report.green.git_depth,
             window: report.branch_commits_in_range,
             failed_on_record: report.commits_failed_on_record,
             needs_rerun: report.commits_needing_rerun,
@@ -6280,6 +6340,10 @@ struct ValidateStatusEntry {
     in_progress: bool,
     sha: Option<String>,
     branch: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    main_match: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    main_sha: Option<String>,
     git_depth: Option<i64>,
     started_at: Option<String>,
     finished_at: Option<String>,
@@ -6291,6 +6355,10 @@ struct ValidateStatusEntry {
     #[serde(skip_serializing_if = "Option::is_none")]
     log_file: Option<String>,
     summary: String,
+    #[serde(skip)]
+    tree: Option<String>,
+    #[serde(skip)]
+    allow_tree_match: bool,
 }
 
 fn process_state_and_start_ticks(stat: &str) -> Option<(char, u64)> {
@@ -6618,6 +6686,8 @@ fn live_validate_runs_from(
                 in_progress: true,
                 sha: Some(target),
                 branch: None,
+                main_match: None,
+                main_sha: None,
                 git_depth: None,
                 started_at: Some(started_at.clone()),
                 finished_at: None,
@@ -6628,6 +6698,8 @@ fn live_validate_runs_from(
                 slot,
                 log_file,
                 summary,
+                tree: None,
+                allow_tree_match: false,
             });
             continue;
         }
@@ -6716,6 +6788,8 @@ fn live_validate_runs_from(
             in_progress: true,
             sha: Some(record.target),
             branch: None,
+            main_match: None,
+            main_sha: None,
             git_depth: None,
             started_at: Some(record.started_at.clone()),
             finished_at: None,
@@ -6726,6 +6800,8 @@ fn live_validate_runs_from(
             slot,
             log_file,
             summary,
+            tree: None,
+            allow_tree_match: false,
         });
     }
     live.sort_by(|left, right| right.started_at.cmp(&left.started_at));
@@ -6785,6 +6861,13 @@ fn validation_main_history(root: &Path, repo: &str) -> Result<Vec<String>, CiHub
             "--commit-timeline supports only {CANONICAL_VALIDATE_REPO}"
         )));
     }
+    validation_main_history_with_trees(root, repo).map(|(commits, _)| commits)
+}
+
+fn validation_main_history_with_trees(
+    root: &Path,
+    repo: &str,
+) -> Result<(Vec<String>, BTreeMap<String, String>), CiHubError> {
     let checkout = validation_repo_checkout(root, repo);
     let output = Command::new("git")
         .arg("-C")
@@ -6792,7 +6875,7 @@ fn validation_main_history(root: &Path, repo: &str) -> Result<Vec<String>, CiHub
         .args(["rev-parse", "--is-shallow-repository"])
         .bounded_output()
         .map_err(|source| CiHubError::Launch {
-            tool: "git shallow-check for validate-status --commit-timeline".into(),
+            tool: "git shallow-check for validate-status main history".into(),
             source,
         })?;
     if !output.status.success() {
@@ -6803,9 +6886,9 @@ fn validation_main_history(root: &Path, repo: &str) -> Result<Vec<String>, CiHub
         )));
     }
     match String::from_utf8_lossy(&output.stdout).trim() {
-        "false" => branch_history(&checkout, COMMIT_TIMELINE_REF),
+        "false" => branch_history_with_trees(&checkout, COMMIT_TIMELINE_REF),
         "true" => Err(CiHubError::ValidateStatus(format!(
-            "--commit-timeline cannot list every commit from shallow checkout {}; deepen or unshallow it first",
+            "validate-status cannot classify rows against all of main from shallow checkout {}; deepen or unshallow it first",
             checkout.display()
         ))),
         value => Err(CiHubError::ValidateStatus(format!(
@@ -6813,36 +6896,6 @@ fn validation_main_history(root: &Path, repo: &str) -> Result<Vec<String>, CiHub
             checkout.display()
         ))),
     }
-}
-
-fn branch_for_validation_sha(root: &Path, repo: &str, sha: &str) -> Option<String> {
-    let checkout = validation_repo_checkout(root, repo);
-    let output = Command::new("git")
-        .arg("-C")
-        .arg(checkout)
-        .args([
-            "branch",
-            "--remotes",
-            "--contains",
-            sha,
-            "--format=%(refname:short)",
-        ])
-        .bounded_output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let branches = stdout
-        .lines()
-        .map(str::trim)
-        .filter(|branch| !branch.is_empty())
-        .collect::<Vec<_>>();
-    branches
-        .iter()
-        .find(|branch| **branch == "origin/main")
-        .or_else(|| branches.first())
-        .map(|branch| branch.strip_prefix("origin/").unwrap_or(branch).to_string())
 }
 
 fn git_depth_for_validation_sha(root: &Path, repo: &str, sha: &str) -> Option<i64> {
@@ -6863,13 +6916,26 @@ fn fill_optional_validate_status_columns(
     root: &Path,
     repo: &str,
     columns: &[ValidateStatusColumn],
+    main_index: Option<&BranchCommitIndex>,
     entry: &mut ValidateStatusEntry,
 ) {
     let Some(sha) = entry.sha.as_deref() else {
         return;
     };
-    if columns.contains(&ValidateStatusColumn::Branch) && entry.branch.is_none() {
-        entry.branch = branch_for_validation_sha(root, repo, sha);
+    if columns.contains(&ValidateStatusColumn::Main) && entry.main_match.is_none() {
+        if let Some(main_index) = main_index {
+            match main_index.match_commit(sha, entry.tree.as_deref(), entry.allow_tree_match) {
+                Some(BranchCommitMatch::Commit { sha }) => {
+                    entry.main_match = Some("exact-sha".into());
+                    entry.main_sha = Some(sha);
+                }
+                Some(BranchCommitMatch::Tree { sha }) => {
+                    entry.main_match = Some("tree".into());
+                    entry.main_sha = Some(sha);
+                }
+                None => entry.main_match = Some("no-match".into()),
+            }
+        }
     }
     if columns.contains(&ValidateStatusColumn::GitDepth) && entry.git_depth.is_none() {
         entry.git_depth = git_depth_for_validation_sha(root, repo, sha);
@@ -6921,6 +6987,10 @@ fn validate_status_table_columns(
             },
             ValidateStatusColumn::Branch => ValidateStatusTableColumn {
                 header: "BRANCH",
+                alignment: ValidateStatusAlignment::Left,
+            },
+            ValidateStatusColumn::Main => ValidateStatusTableColumn {
+                header: "MAIN",
                 alignment: ValidateStatusAlignment::Left,
             },
             ValidateStatusColumn::GitDepth => ValidateStatusTableColumn {
@@ -7016,6 +7086,16 @@ fn validate_status_values(
                 sha.get(..12).unwrap_or(sha).into()
             }
             ValidateStatusColumn::Branch => entry.branch.as_deref().unwrap_or(missing).into(),
+            ValidateStatusColumn::Main => match entry.main_match.as_deref() {
+                Some("exact-sha") => "exact-sha".into(),
+                Some("tree") => {
+                    let sha = entry.main_sha.as_deref().unwrap_or("-");
+                    format!("tree:{}", sha.get(..12).unwrap_or(sha))
+                }
+                Some("no-match") => "no-match".into(),
+                Some(other) => other.into(),
+                None => missing.into(),
+            },
             ValidateStatusColumn::GitDepth => entry
                 .git_depth
                 .map(|depth| depth.to_string())
@@ -7112,6 +7192,7 @@ fn finished_validate_status_entry(
     include_log_paths: bool,
 ) -> ValidateStatusEntry {
     let verdict = recent_row_verdict(row, repo);
+    let tree = row.tree().ok().flatten().map(str::to_string);
     ValidateStatusEntry {
         depth: None,
         run_number: row
@@ -7127,6 +7208,8 @@ fn finished_validate_status_entry(
             .get("branch")
             .and_then(serde_json::Value::as_str)
             .map(str::to_string),
+        main_match: None,
+        main_sha: None,
         git_depth: row
             .extra
             .get("git_depth")
@@ -7144,6 +7227,8 @@ fn finished_validate_status_entry(
             None
         },
         summary: recent_row_summary(row, verdict),
+        tree,
+        allow_tree_match: row.commit_anchored == Some(true) && row.tree_dirty == Some(false),
     }
 }
 
@@ -7207,7 +7292,7 @@ fn recent_validate_status_note(limit: usize, include_in_progress: bool) -> Strin
         "in-progress runs are excluded by --exclude-in-progress"
     };
     format!(
-        "RECENT VALIDATION RUNS: completed rows are selected from all completed ledger rows, ordered by completion time, limited to {limit}, and not restricted to {COMMIT_TIMELINE_REF}; {live_runs}. Use --commit-timeline for the {COMMIT_TIMELINE_REF}-only view."
+        "RECENT VALIDATION RUNS: completed rows are selected from all completed ledger rows, ordered by completion time, limited to {limit}, and not restricted to {COMMIT_TIMELINE_REF}; the default MAIN column says exact-sha, tree:<main-sha>, or no-match; {live_runs}. Use --commit-timeline for the {COMMIT_TIMELINE_REF}-only view."
     )
 }
 
@@ -7220,6 +7305,8 @@ fn no_run_commit_timeline_entry(sha: &str, depth: usize) -> ValidateStatusEntry 
         in_progress: false,
         sha: Some(sha.into()),
         branch: None,
+        main_match: None,
+        main_sha: None,
         git_depth: None,
         started_at: None,
         finished_at: None,
@@ -7230,6 +7317,8 @@ fn no_run_commit_timeline_entry(sha: &str, depth: usize) -> ValidateStatusEntry 
         slot: None,
         log_file: None,
         summary: String::new(),
+        tree: None,
+        allow_tree_match: false,
     }
 }
 
@@ -7245,6 +7334,8 @@ fn unreadable_validate_status_entry(
         in_progress: false,
         sha: failure.commit.clone(),
         branch: None,
+        main_match: None,
+        main_sha: None,
         git_depth: None,
         started_at: failure.started_at.clone(),
         finished_at: None,
@@ -7255,6 +7346,8 @@ fn unreadable_validate_status_entry(
         slot: None,
         log_file: None,
         summary: format!("ledger line {} could not be read", failure.line_number),
+        tree: None,
+        allow_tree_match: false,
     }
 }
 
@@ -7369,7 +7462,7 @@ fn validate_status_history_json(
     if !args.commit_timeline {
         if let Some(run_number) = args.run_no {
             return serde_json::json!({
-                "schema_version": 7,
+                "schema_version": 8,
                 "repo": repo,
                 "run_number": run_number,
                 "machine": local_machine(),
@@ -7383,7 +7476,7 @@ fn validate_status_history_json(
             });
         }
         return serde_json::json!({
-            "schema_version": 5,
+            "schema_version": 6,
             "repo": repo,
             "count": entries.len(),
             "in_progress_count": in_progress_count,
@@ -7406,7 +7499,7 @@ fn validate_status_history_json(
         .filter(|entry| !entry.in_progress && entry.verdict.as_deref() != Some("NO-RUN"))
         .count();
     serde_json::json!({
-        "schema_version": 6,
+        "schema_version": 7,
         "repo": repo,
         "count": entries.len(),
         "in_progress_count": in_progress_count,
@@ -7440,6 +7533,14 @@ fn print_recent_validate_history(
         ));
     }
     let columns = selected_validate_status_columns(&args.columns)?;
+    let main_history = if columns.contains(&ValidateStatusColumn::Main) {
+        Some(validation_main_history_with_trees(root, repo)?)
+    } else {
+        None
+    };
+    let main_index = main_history
+        .as_ref()
+        .map(|(commits, trees)| BranchCommitIndex::new(commits, trees));
     let now = chrono::Utc::now();
     let scan = if args.exclude_in_progress {
         LiveValidateRunScan::default()
@@ -7450,7 +7551,10 @@ fn print_recent_validate_history(
     let unreadable_handles = scan.unreadable_handles;
     let historical_run_numbers = historical_validate_run_numbers(rows);
     let (mut entries, commit_count) = if args.commit_timeline {
-        let commits = validation_main_history(root, repo)?;
+        let commits = match main_history.as_ref() {
+            Some((commits, _)) => commits.clone(),
+            None => validation_main_history(root, repo)?,
+        };
         let commit_count = commits.len();
         let finished = rows
             .iter()
@@ -7518,7 +7622,15 @@ fn print_recent_validate_history(
     };
     for entry in &mut entries {
         if entry.verdict.as_deref() != Some("NO-RUN") {
-            fill_optional_validate_status_columns(root, repo, &columns, entry);
+            fill_optional_validate_status_columns(root, repo, &columns, main_index.as_ref(), entry);
+        } else if columns.contains(&ValidateStatusColumn::Main) {
+            fill_optional_validate_status_columns(
+                root,
+                repo,
+                &[ValidateStatusColumn::Main],
+                main_index.as_ref(),
+                entry,
+            );
         }
     }
 
@@ -8905,7 +9017,11 @@ mod tests {
             history_ref: "origin/main".into(),
             history_tip: "ffffffffffffffffffffffffffffffffffffffff".into(),
             depth: 365,
-            sha: "dee8cf49ce6a7e3e9e2c87c930f3aa55ae83da18".into(),
+            validated_sha: "dee8cf49ce6a7e3e9e2c87c930f3aa55ae83da18".into(),
+            main_sha: "dee8cf49ce6a7e3e9e2c87c930f3aa55ae83da18".into(),
+            matched_by: "commit".into(),
+            run_number: Some(1570),
+            git_depth: Some(2568),
             window: 628,
             failed_on_record: 1,
             needs_rerun: 18,
@@ -8918,7 +9034,7 @@ mod tests {
         .line();
         assert_eq!(
             line,
-            "HERMIT COMMITS-SINCE-GREEN 365 (history origin/main at ffffffffffffffffffffffffffffffffffffffff; last full green dee8cf49ce6a at first-parent depth 365; FAILED=1 NEEDS-RERUN=18 TRUNCATED=2 NO-RESULT=0 NOT-VALIDATED=1 LEDGER-UNREADABLE=1 NO-RECORD=342; searched 628 commits)"
+            "HERMIT COMMITS-SINCE-GREEN 365 (history origin/main at ffffffffffffffffffffffffffffffffffffffff; last full green RUN 1570, validated dee8cf49ce6a at git depth 2568, exact SHA on main at first-parent depth 365; FAILED=1 NEEDS-RERUN=18 TRUNCATED=2 NO-RESULT=0 NOT-VALIDATED=1 LEDGER-UNREADABLE=1 NO-RECORD=342; searched 628 commits)"
         );
     }
 
@@ -8928,7 +9044,11 @@ mod tests {
             history_ref: "origin/main".into(),
             history_tip: "ffffffffffffffffffffffffffffffffffffffff".into(),
             depth: 7,
-            sha: "dee8cf49ce6a7e3e9e2c87c930f3aa55ae83da18".into(),
+            validated_sha: "dee8cf49ce6a7e3e9e2c87c930f3aa55ae83da18".into(),
+            main_sha: "abc8cf49ce6a7e3e9e2c87c930f3aa55ae83da18".into(),
+            matched_by: "tree".into(),
+            run_number: Some(1570),
+            git_depth: Some(2568),
             window: 12,
             failed_on_record: 1,
             needs_rerun: 1,
@@ -8946,6 +9066,17 @@ mod tests {
         assert_eq!(value["commits_with_no_result"], 1);
         assert_eq!(value["commits_not_validated"], 1);
         assert_eq!(value["commits_with_unreadable_record"], 1);
+        assert_eq!(
+            value["green_sha"],
+            "dee8cf49ce6a7e3e9e2c87c930f3aa55ae83da18"
+        );
+        assert_eq!(
+            value["green_main_sha"],
+            "abc8cf49ce6a7e3e9e2c87c930f3aa55ae83da18"
+        );
+        assert_eq!(value["green_matched_by"], "tree");
+        assert_eq!(value["green_run_number"], 1570);
+        assert_eq!(value["green_git_depth"], 2568);
         assert_eq!(value["commits_with_records"], 5);
         assert_eq!(value["commits_without_any_record"], 1);
         assert_eq!(value["commits_without_record"], 2);
@@ -9002,7 +9133,7 @@ mod tests {
     #[test]
     fn newest_green_branch_output_shows_the_full_partition() {
         let report = history_queries::NewestGreenReport {
-            schema_version: 5,
+            schema_version: 6,
             branch: "main".into(),
             branch_ref: "origin/main".into(),
             branch_tip: "f".repeat(40),
@@ -9014,6 +9145,8 @@ mod tests {
             full_green_commits_in_range: 1,
             green: history_queries::ValidationEvidence {
                 sha: "d".repeat(40),
+                run_number: Some(1570),
+                git_depth: Some(2568),
                 finished_at: Some("2026-08-26T00:00:00Z".into()),
                 profile: "full".into(),
                 selection_mode: "full".into(),
@@ -9024,6 +9157,8 @@ mod tests {
                 log_file: None,
                 producer_definition: None,
             },
+            green_branch_sha: "d".repeat(40),
+            green_matched_by: "commit".into(),
             commits_after_green: 365,
             commits_failed_on_record: 1,
             commits_needing_rerun: 18,
@@ -9075,7 +9210,11 @@ mod tests {
                 history_ref: "origin/main".into(),
                 history_tip: "f".repeat(40),
                 depth: 0,
-                sha: "a".repeat(40),
+                validated_sha: "a".repeat(40),
+                main_sha: "a".repeat(40),
+                matched_by: "commit".into(),
+                run_number: None,
+                git_depth: None,
                 window: 1,
                 failed_on_record: 0,
                 needs_rerun: 0,
@@ -9294,6 +9433,61 @@ mod tests {
     }
 
     #[test]
+    fn recent_history_distinguishes_exact_tree_and_absent_main_matches() {
+        let exact_sha = "a".repeat(40);
+        let landed_sha = "b".repeat(40);
+        let rebased_sha = "c".repeat(40);
+        let absent_sha = "d".repeat(40);
+        let landed_tree = "1".repeat(40);
+        let trees = BTreeMap::from([
+            (exact_sha.clone(), "0".repeat(40)),
+            (landed_sha.clone(), landed_tree.clone()),
+        ]);
+        let index = BranchCommitIndex::new(&[exact_sha.clone(), landed_sha.clone()], &trees);
+
+        let make_entry = |sha: &str, tree: &str| {
+            let mut value = schema4_receipt_value();
+            value["commit"] = serde_json::json!(sha);
+            value["tree"] = serde_json::json!(tree);
+            finished_validate_status_entry(CANONICAL_VALIDATE_REPO, &history_row(value), false)
+        };
+        let mut exact = make_entry(&exact_sha, &"0".repeat(40));
+        let mut rebased = make_entry(&rebased_sha, &landed_tree);
+        let mut absent = make_entry(&absent_sha, &"2".repeat(40));
+        for entry in [&mut exact, &mut rebased, &mut absent] {
+            fill_optional_validate_status_columns(
+                Path::new("/unused"),
+                CANONICAL_VALIDATE_REPO,
+                &[ValidateStatusColumn::Main],
+                Some(&index),
+                entry,
+            );
+        }
+
+        assert_eq!(exact.main_match.as_deref(), Some("exact-sha"));
+        assert_eq!(exact.main_sha.as_deref(), Some(exact_sha.as_str()));
+        assert_eq!(rebased.main_match.as_deref(), Some("tree"));
+        assert_eq!(rebased.main_sha.as_deref(), Some(landed_sha.as_str()));
+        assert_eq!(absent.main_match.as_deref(), Some("no-match"));
+        assert_eq!(absent.main_sha, None);
+
+        let now = chrono::DateTime::parse_from_rfc3339("2026-08-03T01:36:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        let table = validate_status_table(
+            &[exact, rebased, absent],
+            &[ValidateStatusColumn::Main],
+            ValidateStatusTimes::Relative,
+            now,
+            false,
+            false,
+        );
+        assert!(table[1].contains(" exact-sha "), "{}", table[1]);
+        assert!(table[2].contains(" tree:bbbbbbbbbbbb "), "{}", table[2]);
+        assert!(table[3].contains(" no-match "), "{}", table[3]);
+    }
+
+    #[test]
     fn commit_timeline_numbers_every_commit_and_does_not_call_absence_an_attempt() {
         let commits = ["a".repeat(40), "b".repeat(40), "c".repeat(40)];
         let mut passed = schema4_receipt_value();
@@ -9444,7 +9638,7 @@ mod tests {
             .keys()
             .map(String::as_str)
             .collect::<BTreeSet<_>>();
-        assert_eq!(report["schema_version"], 5);
+        assert_eq!(report["schema_version"], 6);
         assert_eq!(
             keys,
             BTreeSet::from([
@@ -9527,7 +9721,7 @@ mod tests {
             0,
         );
 
-        assert_eq!(report["schema_version"], 7);
+        assert_eq!(report["schema_version"], 8);
         assert_eq!(report["run_number"], 701);
         assert_eq!(report["count"], 1);
         assert!(report.get("machine").is_some());
@@ -11490,7 +11684,14 @@ mod tests {
         assert_eq!(args.pr, None);
         assert_eq!(args.run_no, None);
         assert_eq!(args.limit, DEFAULT_VALIDATE_HISTORY_LIMIT);
-        assert_eq!(args.columns, [ValidateStatusColumn::Sha]);
+        assert_eq!(
+            args.columns,
+            [
+                ValidateStatusColumn::Sha,
+                ValidateStatusColumn::Branch,
+                ValidateStatusColumn::Main,
+            ]
+        );
         assert_eq!(args.times, ValidateStatusTimes::Relative);
         assert!(!args.log_paths);
         assert!(!args.exclude_in_progress);
@@ -11522,7 +11723,7 @@ mod tests {
             "--limit",
             "3",
             "--columns",
-            "branch,gitdepth",
+            "branch,main,gitdepth",
             "--exclude-in-progress",
         ])
         .unwrap();
@@ -11532,7 +11733,11 @@ mod tests {
         assert_eq!(args.limit, 3);
         assert_eq!(
             args.columns,
-            [ValidateStatusColumn::Branch, ValidateStatusColumn::GitDepth]
+            [
+                ValidateStatusColumn::Branch,
+                ValidateStatusColumn::Main,
+                ValidateStatusColumn::GitDepth,
+            ]
         );
         assert!(args.exclude_in_progress);
         assert!(Cli::try_parse_from([
