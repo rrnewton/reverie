@@ -145,14 +145,23 @@ class FailedSubstepClass(TypedDict):
     timing: NotRequired[FailedSubstepTiming]
 
 
-_FAILED_SUBSTEP_HINTS = get_type_hints(FailedSubstepClass, include_extras=True)
+_FAILED_SUBSTEP_HINTS = get_type_hints(
+    FailedSubstepClass,
+    globalns=globals(),
+    localns=globals(),
+    include_extras=True,
+)
 _FAILED_SUBSTEP_FIELDS = frozenset(_FAILED_SUBSTEP_HINTS)
 _FAILED_SUBSTEP_REQUIRED_FIELDS = frozenset(
     field
     for field, annotation in _FAILED_SUBSTEP_HINTS.items()
     if get_origin(annotation) is not NotRequired
 )
-_FAILED_SUBSTEP_TIMING_HINTS = get_type_hints(FailedSubstepTiming)
+_FAILED_SUBSTEP_TIMING_HINTS = get_type_hints(
+    FailedSubstepTiming,
+    globalns=globals(),
+    localns=globals(),
+)
 _FAILED_SUBSTEP_TIMING_FIELDS = frozenset(_FAILED_SUBSTEP_TIMING_HINTS)
 _SUB_STEP_CLASSES = frozenset(get_args(_FAILED_SUBSTEP_HINTS["sub_step_class"]))
 _FAILED_SUBSTEP_FAULT_CLASSES = frozenset(
