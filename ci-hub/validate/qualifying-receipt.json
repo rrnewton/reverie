@@ -30,13 +30,13 @@
     "applies_at_schema_min": 5,
     "branch": "main"
   },
-  "_admission_provenance_is_load_bearing": "Schema-5+ receipts must prove that the run was admitted by the canonical ci-hub validate lock, that its producer verified live owner ancestry, and that no more than nine competing validates were observed. These are exact receipt conditions, not labels inferred from profile/selection. Schema-4 remains grandfathered-unknown and is not newly rejected. The semantic implementation lives only in ci-hub/qualifying_receipt.py::admission_verdict; Rust delegates this clause to that function and verify_receipt.sh reaches it through the Rust receipt-digest consumer.",
+  "_admission_provenance_is_load_bearing": "Schema-5+ receipts must prove that the run was admitted by the canonical ci-hub validate lock, that its producer verified live owner ancestry, and that no more than five competing validates were observed. These are exact receipt conditions, not labels inferred from profile/selection. Schema-4 remains grandfathered-unknown and is not newly rejected. The semantic implementation lives only in ci-hub/qualifying_receipt.py::admission_verdict; Rust delegates this clause to that function and verify_receipt.sh reaches it through the Rust receipt-digest consumer.",
   "admission": {
     "applies_at_schema_min": 5,
     "required_admission": "ci-hub-validate-lock",
     "required_concurrent_validates": 0,
     "required_concurrency_proof": "validate_lock_owner_ancestry",
-    "maximum_concurrent_validates": 9,
+    "maximum_concurrent_validates": 5,
     "accepted_concurrency_proofs": [
       "validate_lock_owner_ancestry",
       "validate_lock_owner_ancestry+live_flock_registry_cpu_delta"

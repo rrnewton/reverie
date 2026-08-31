@@ -122,3 +122,23 @@ shape is deployed. Also re-measure for a materially different host, cold-build
 mix, per-job memory footprint, or competing heavy-workload policy. Until then,
 six is the largest supported live-job setting and one is the only supported
 negative-confirmation setting.
+
+## Implementation update, 2026-08-30
+
+The admission controller now implements the two-dimensional envelope above.
+It admits at most six live validates, reserves 2 GiB for each live validate,
+and requires the resulting reservation to fit both the 12 GiB validation
+budget and current Linux `MemAvailable`. A missing or malformed memory reading
+is an explicit refusal; it cannot silently fall back to the count alone.
+
+The implementation uses the live slot anchors as the reservation source under
+the same box-global queue guard that assigns a slot. Benchmarks retain every
+slot and therefore remain exclusive against the complete validation budget.
+The qualifying-receipt predicate accepts at most five peers, matching six live
+validates including the run producing the receipt.
+
+A later five-run launch on `devbig014` sampled system memory every five seconds
+throughout the overlap. Memory in use ranged from 109.08 to 125.34 GiB while
+`MemAvailable` ranged from 901.71 to 885.45 GiB. The range demonstrates ample
+headroom on that host; it does not replace the per-validate reservation or turn
+the count into a machine-independent tuning constant.

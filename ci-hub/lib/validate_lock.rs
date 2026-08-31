@@ -1,9 +1,9 @@
-//! Validation/benchmark admission controller: at most TEN validation jobs run
+//! Validation/benchmark admission controller: at most SIX validation jobs run
 //! on this box at a time, while a benchmark takes every validation slot.
 //!
 //! Concurrent heavy load manufactures false test FAILEDs (detcore_misc residual
 //! is monotonic in load; see `experiments/multisect_detcore_misc_20260803`), so a
-//! an eleventh validation or a benchmark overlapping any validation is never silently
+//! seventh validation or a benchmark overlapping any validation is never silently
 //! admitted. This is a SEPARATE lock
 //! from the landing mutex (`landing_lock.rs`): a validate must never block a
 //! lander and vice versa, so they key on different lockfiles. The lease engine
@@ -59,10 +59,17 @@ const DEFAULT_HOLD_SECONDS: u64 = 900;
 const POLL_SECONDS: u64 = 3;
 const GUARD_WAIT_SECONDS: u64 = 30;
 const GLOBAL_QUEUE_DECLARATION_TTL_SECONDS: i64 = 86_400;
-/// Ten validation slots are available. Benchmarks still take every slot and
+/// Six validation slots are available. Benchmarks still take every slot and
 /// therefore remain box-exclusive against every validation and benchmark.
-const VALIDATE_SLOT_COUNT: usize = 10;
+const VALIDATE_SLOT_COUNT: usize = 6;
 const VALIDATE_CONCURRENT_CAP: u64 = VALIDATE_SLOT_COUNT as u64;
+/// A measured warm full-profile validate reached 1.98 GiB RSS. Round upward to
+/// a 2 GiB admission reservation; this is not a cgroup memory.max.
+const VALIDATE_MEMORY_RESERVATION_BYTES: u64 = 2_147_483_648;
+/// The measured pre-knee envelope is six live validates at 2 GiB each. Current
+/// MemAvailable may reduce this budget, but can never enlarge it.
+const VALIDATE_MEMORY_BUDGET_BYTES: u64 =
+    VALIDATE_CONCURRENT_CAP * VALIDATE_MEMORY_RESERVATION_BYTES;
 const LEGACY_ACQUIRE_CAP: u64 = 1;
 /// Hard ceiling on how long a `run` child may execute before it is killed and
 /// cleanup is proved. A complete empty-domain proof releases the box; otherwise
@@ -386,9 +393,9 @@ pub struct CensusOrphanedDomainArgs {
     pub evidence: String,
 }
 
-/// A validation or benchmark job kind. Validation kinds share the two validation
-/// slots; a benchmark reserves both and therefore remains mutually exclusive
-/// with every validation and benchmark.
+/// A validation or benchmark job kind. Validation kinds share the validation
+/// slots; a benchmark reserves all of them and therefore remains mutually
+/// exclusive with every validation and benchmark.
 #[derive(Copy, Clone, Debug, Eq, PartialEq, ValueEnum)]
 pub enum Kind {
     Validate,
@@ -524,6 +531,9 @@ pub struct RunArgs {
     /// Must be positive: unbounded box-exclusive holders are forbidden.
     #[arg(long, default_value_t = DEFAULT_CHILD_DEADLINE_SECONDS)]
     pub child_deadline: u64,
+    /// Admission envelope. Supervised runs accept the exclusive value 1 or the
+    /// measured value 6. Each live validate reserves 2 GiB from the 12 GiB
+    /// validation budget, further bounded by current Linux MemAvailable.
     #[arg(long, default_value_t = VALIDATE_CONCURRENT_CAP)]
     pub max: u64,
     /// Retained only to give old callers a named refusal. Qualifying validation
@@ -1081,7 +1091,7 @@ pub enum ValidateLockError {
         "validate-lock: --child-deadline must be positive; unbounded lock holders are forbidden"
     )]
     UnboundedChildDeadline,
-    #[error("validate-lock: unsupported --max (bare acquire requires 1; supervised run requires 1 or the fixed ten-slot box policy)")]
+    #[error("validate-lock: unsupported --max (bare acquire requires 1; supervised run requires 1 or the measured six-slot box policy)")]
     BadMax,
     /// Admission refused a validate whose head predates an immutable producer
     /// or merge-gate floor. Mutable-tip currency is enforced at merge time.
@@ -1144,6 +1154,9 @@ struct LockPaths {
     /// A test binary must never contend with the live box.
     anchor: PathBuf,
     global_anchor: PathBuf,
+    /// Production reads Linux MemAvailable here. Tests use a private fixture so
+    /// admission tests never depend on or mutate host-wide memory state.
+    meminfo: PathBuf,
 }
 
 impl LockPaths {
@@ -1195,6 +1208,7 @@ impl LockPaths {
             owner_watch_state_dir: None,
             anchor: global_anchor.clone(),
             global_anchor,
+            meminfo: PathBuf::from("/proc/meminfo"),
             lock,
         }
     }
@@ -1217,6 +1231,7 @@ impl LockPaths {
             owner_watch_state_dir: self.owner_watch_state_dir.clone(),
             anchor: suffix(&self.global_anchor, &format!(".slot-{slot}")),
             global_anchor: self.global_anchor.clone(),
+            meminfo: self.meminfo.clone(),
             lock,
         }
     }
@@ -1937,6 +1952,60 @@ enum GlobalTurn {
         position: usize,
     },
     Held(String),
+    WaitMemory(String),
+    MemoryUnknown(String),
+}
+
+fn parse_mem_available_bytes(content: &str) -> Result<u64, String> {
+    let mut available = None;
+    for line in content.lines() {
+        let Some(value) = line.strip_prefix("MemAvailable:") else {
+            continue;
+        };
+        if available.is_some() {
+            return Err("/proc/meminfo contains duplicate MemAvailable fields".into());
+        }
+        let fields = value.split_whitespace().collect::<Vec<_>>();
+        if fields.len() != 2 || fields[1] != "kB" {
+            return Err(format!(
+                "/proc/meminfo MemAvailable must be '<integer> kB', got {value:?}"
+            ));
+        }
+        let kib = fields[0]
+            .parse::<u64>()
+            .map_err(|error| format!("/proc/meminfo MemAvailable is not an integer: {error}"))?;
+        available = Some(
+            kib.checked_mul(1024)
+                .ok_or_else(|| "/proc/meminfo MemAvailable overflows bytes".to_string())?,
+        );
+    }
+    available.ok_or_else(|| "/proc/meminfo has no MemAvailable field".into())
+}
+
+fn validate_memory_admission(
+    live_validate_jobs: usize,
+    available_bytes: u64,
+    max_jobs: u64,
+) -> Result<(), String> {
+    let requested_jobs = u64::try_from(live_validate_jobs)
+        .map_err(|_| "live validate count is outside u64".to_string())?
+        .checked_add(1)
+        .ok_or_else(|| "live validate count overflow".to_string())?;
+    if requested_jobs > max_jobs {
+        return Err(format!(
+            "{requested_jobs} live validates would exceed the --max {max_jobs} admission limit"
+        ));
+    }
+    let reserved_bytes = requested_jobs
+        .checked_mul(VALIDATE_MEMORY_RESERVATION_BYTES)
+        .ok_or_else(|| "validate memory reservation overflow".to_string())?;
+    let budget_bytes = available_bytes.min(VALIDATE_MEMORY_BUDGET_BYTES);
+    if reserved_bytes > budget_bytes {
+        return Err(format!(
+            "memory admission requires {reserved_bytes} bytes for {requested_jobs} live validate(s), but the budget is {budget_bytes} bytes (MemAvailable={available_bytes}, policy maximum={VALIDATE_MEMORY_BUDGET_BYTES})"
+        ));
+    }
+    Ok(())
 }
 
 pub fn execute(
@@ -2917,6 +2986,47 @@ impl ValidateLock {
                 return Ok(result);
             }
 
+            if args.kind.is_validation() {
+                let mut live_validate_jobs = 0usize;
+                for candidate in 0..VALIDATE_SLOT_COUNT {
+                    match BoxExclusionAnchor::observe(&self.paths.slot_anchor(candidate)) {
+                        BoxAnchorObservation::Free => {}
+                        BoxAnchorObservation::Held(_) => live_validate_jobs += 1,
+                        BoxAnchorObservation::Unknown(reason) => {
+                            self.write_global_queue(&queue)?;
+                            return Ok(GlobalTurn::MemoryUnknown(format!(
+                                "cannot establish live validate reservations from slot {candidate}: {reason}"
+                            )));
+                        }
+                    }
+                }
+                if live_validate_jobs < args.max as usize {
+                    let content = match fs::read_to_string(&self.paths.meminfo) {
+                        Ok(content) => content,
+                        Err(error) => {
+                            self.write_global_queue(&queue)?;
+                            return Ok(GlobalTurn::MemoryUnknown(format!(
+                                "cannot read {}: {error}",
+                                self.paths.meminfo.display()
+                            )));
+                        }
+                    };
+                    let available_bytes = match parse_mem_available_bytes(&content) {
+                        Ok(bytes) => bytes,
+                        Err(reason) => {
+                            self.write_global_queue(&queue)?;
+                            return Ok(GlobalTurn::MemoryUnknown(reason));
+                        }
+                    };
+                    if let Err(reason) =
+                        validate_memory_admission(live_validate_jobs, available_bytes, args.max)
+                    {
+                        self.write_global_queue(&queue)?;
+                        return Ok(GlobalTurn::WaitMemory(reason));
+                    }
+                }
+            }
+
             let mut anchors = Vec::new();
             let mut slot = 0usize;
             let wanted = if args.kind == Kind::Bench || args.max == LEGACY_ACQUIRE_CAP {
@@ -3019,6 +3129,20 @@ impl ValidateLock {
                         );
                         last = token;
                     }
+                }
+                GlobalTurn::WaitMemory(reason) => {
+                    let token = format!("memory:{reason}");
+                    if token != last {
+                        eprintln!("validate-lock: waiting for memory admission: {reason}");
+                        last = token;
+                    }
+                }
+                GlobalTurn::MemoryUnknown(reason) => {
+                    self.remove_own_global_waiter(args, owner)?;
+                    eprintln!(
+                        "REFUSED: validate memory admission is UNKNOWN: {reason}; absence is not permission"
+                    );
+                    return Ok(None);
                 }
             }
             if args.no_wait || started.elapsed() >= Duration::from_secs(args.wait) {
@@ -6222,8 +6346,14 @@ mod tests {
             // live box anchor nor any sibling test's.
             anchor: suffix(&lock, ".box-anchor"),
             global_anchor: suffix(&lock, ".box-anchor"),
+            meminfo: root.join("meminfo"),
             lock,
         };
+        fs::write(
+            &paths.meminfo,
+            "MemTotal: 1073741824 kB\nMemAvailable: 1073741824 kB\n",
+        )
+        .unwrap();
         // Existing lock tests are about lease/cleanup behavior, not bootstrap
         // UNKNOWN. Seed them with the strongest ALLOW witness: the owner watch
         // was the previous holder. Dedicated yield tests remove/replace it.
@@ -8560,7 +8690,7 @@ exit 0
         let _ = fs::remove_dir_all(paths.lock.parent().unwrap());
     }
 
-    // 5. --max outside the fixed one/ten policies is rejected before acquiring.
+    // 5. --max outside the fixed one/six policies is rejected before acquiring.
     #[test]
     fn unsupported_intermediate_max_is_rejected() {
         let paths = temp_paths("bad-max");
@@ -8931,9 +9061,166 @@ exit 0
     }
 
     #[test]
-    fn ten_validation_slots_remove_the_old_single_anchor_collision() {
+    fn mem_available_parser_requires_one_kib_field() {
+        assert_eq!(
+            parse_mem_available_bytes(
+                "MemTotal: 1048576 kB\nMemAvailable: 12582912 kB\nSwapFree: 0 kB\n"
+            )
+            .unwrap(),
+            12_884_901_888
+        );
+        assert!(parse_mem_available_bytes("MemTotal: 1 kB\n")
+            .unwrap_err()
+            .contains("no MemAvailable"));
+        assert!(
+            parse_mem_available_bytes("MemAvailable: 1 kB\nMemAvailable: 2 kB\n")
+                .unwrap_err()
+                .contains("duplicate")
+        );
+        assert!(parse_mem_available_bytes("MemAvailable: unknown kB\n")
+            .unwrap_err()
+            .contains("not an integer"));
+    }
+
+    #[test]
+    fn memory_admission_can_refuse_while_count_capacity_remains() {
+        assert_eq!(VALIDATE_CONCURRENT_CAP, 6);
+        assert!(validate_memory_admission(1, 4_294_967_296, VALIDATE_CONCURRENT_CAP).is_ok());
+        let reason =
+            validate_memory_admission(2, 5_368_709_120, VALIDATE_CONCURRENT_CAP).unwrap_err();
+        assert!(reason.contains("memory admission requires 6442450944 bytes"));
+        assert!(reason.contains("MemAvailable=5368709120"));
+        assert!(
+            validate_memory_admission(5, u64::MAX, VALIDATE_CONCURRENT_CAP).is_ok(),
+            "the measured six-job, 12-GiB envelope must be admissible"
+        );
+        assert!(
+            validate_memory_admission(6, u64::MAX, VALIDATE_CONCURRENT_CAP)
+                .unwrap_err()
+                .contains("exceed the --max 6")
+        );
+    }
+
+    #[test]
+    fn global_turn_rechecks_memory_under_the_queue_guard() {
+        let paths = temp_paths("memory-admission");
+        fs::write(
+            &paths.meminfo,
+            "MemTotal: 16777216 kB\nMemAvailable: 3145728 kB\n",
+        )
+        .unwrap();
+        let lock = ValidateLock {
+            paths: paths.clone(),
+        };
+        let owner = current_process_owner().unwrap();
+        let mut first = global_queue_run_args("memory-first", HEX_SHA);
+        first.max = VALIDATE_CONCURRENT_CAP;
+        let first_anchors = match lock
+            .try_global_turn(&first, &owner, "fixture=memory-first", true)
+            .unwrap()
+        {
+            GlobalTurn::Acquired { anchors, slot: 0 } => anchors,
+            _ => panic!("first validate must fit the memory budget"),
+        };
+
+        let mut second =
+            global_queue_run_args("memory-second", "1111111111111111111111111111111111111111");
+        second.max = VALIDATE_CONCURRENT_CAP;
+        assert!(matches!(
+            lock.try_global_turn(&second, &owner, "fixture=memory-second", true)
+                .unwrap(),
+            GlobalTurn::WaitMemory(reason)
+                if reason.contains("memory admission requires 4294967296 bytes")
+        ));
+        assert_eq!(
+            first_anchors.len(),
+            1,
+            "memory refusal must not disturb the live validate"
+        );
+
+        fs::write(
+            &paths.meminfo,
+            "MemTotal: 16777216 kB\nMemAvailable: 4194304 kB\n",
+        )
+        .unwrap();
+        let second_anchors = match lock
+            .try_global_turn(&second, &owner, "fixture=memory-second", true)
+            .unwrap()
+        {
+            GlobalTurn::Acquired { anchors, slot: 1 } => anchors,
+            _ => panic!("second validate must be admitted after memory recovers"),
+        };
+        drop(second_anchors);
+        drop(first_anchors);
+        let _ = fs::remove_dir_all(paths.lock.parent().unwrap());
+    }
+
+    #[test]
+    fn every_validation_kind_uses_memory_admission() {
+        for kind in [Kind::Validate, Kind::ReverieValidate, Kind::FrozenValidate] {
+            let paths = temp_paths(kind.as_str());
+            fs::write(
+                &paths.meminfo,
+                "MemTotal: 16777216 kB\nMemAvailable: 1048576 kB\n",
+            )
+            .unwrap();
+            let lock = ValidateLock {
+                paths: paths.clone(),
+            };
+            let owner = current_process_owner().unwrap();
+            let mut args = global_queue_run_args(kind.as_str(), HEX_SHA);
+            args.kind = kind;
+            args.max = VALIDATE_CONCURRENT_CAP;
+            assert!(matches!(
+                lock.try_global_turn(&args, &owner, "fixture=validation-kind", true)
+                    .unwrap(),
+                GlobalTurn::WaitMemory(_)
+            ));
+            assert_eq!(
+                BoxExclusionAnchor::observe(&paths.slot_anchor(0)),
+                BoxAnchorObservation::Free
+            );
+            let _ = fs::remove_dir_all(paths.lock.parent().unwrap());
+        }
+    }
+
+    #[test]
+    fn malformed_memory_evidence_refuses_before_taking_a_slot() {
+        let paths = temp_paths("memory-unknown");
+        fs::write(&paths.meminfo, "MemTotal: 1048576 kB\n").unwrap();
+        let lock = ValidateLock {
+            paths: paths.clone(),
+        };
+        let owner = current_process_owner().unwrap();
+        let mut args = global_queue_run_args("memory-unknown", HEX_SHA);
+        args.max = VALIDATE_CONCURRENT_CAP;
+        args.no_wait = true;
+        assert!(lock
+            .wait_for_global_turn(
+                &args,
+                &owner,
+                "fixture=memory-unknown",
+                true,
+                paths.lock.parent().unwrap(),
+            )
+            .unwrap()
+            .is_none());
+        assert!(
+            lock.read_global_queue().unwrap().is_empty(),
+            "memory-evidence refusal must remove its queue entry"
+        );
+        assert_eq!(
+            BoxExclusionAnchor::observe(&paths.slot_anchor(0)),
+            BoxAnchorObservation::Free,
+            "unknown memory evidence must not consume a validation slot"
+        );
+        let _ = fs::remove_dir_all(paths.lock.parent().unwrap());
+    }
+
+    #[test]
+    fn six_validation_slots_remove_the_old_single_anchor_collision() {
         let dir = env::temp_dir().join(format!(
-            "ci-hub-vlock-ten-slots-{}-{}",
+            "ci-hub-vlock-six-slots-{}-{}",
             std::process::id(),
             epoch_seconds().unwrap()
         ));
@@ -8967,7 +9254,7 @@ exit 0
             BoxExclusionAnchor::take(&paths.slot_anchor(VALIDATE_SLOT_COUNT - 1), 0)
                 .unwrap()
                 .is_none(),
-            "an eleventh validation must not exceed the ten-slot policy"
+            "a seventh validation must not exceed the six-slot policy"
         );
         assert_eq!(
             paths.for_slot(VALIDATE_SLOT_COUNT - 1).global_anchor(),
@@ -8976,6 +9263,53 @@ exit 0
         );
         drop(slots);
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn six_guarded_validate_admissions_get_distinct_cleanup_slots() {
+        let paths = temp_paths("six-guarded-slots");
+        let lock = ValidateLock {
+            paths: paths.clone(),
+        };
+        let owner = current_process_owner().unwrap();
+        let mut admitted = Vec::new();
+        for slot in 0..VALIDATE_SLOT_COUNT {
+            let mut args =
+                global_queue_run_args(&format!("six-slot-agent-{slot}"), &format!("{slot:040x}"));
+            args.max = VALIDATE_CONCURRENT_CAP;
+            match lock
+                .try_global_turn(&args, &owner, &format!("fixture=six-slot-{slot}"), true)
+                .unwrap()
+            {
+                GlobalTurn::Acquired {
+                    anchors,
+                    slot: admitted_slot,
+                } => {
+                    assert_eq!(admitted_slot, slot);
+                    assert_eq!(anchors.len(), 1);
+                    assert_eq!(
+                        paths.for_slot(admitted_slot).global_anchor(),
+                        paths.global_anchor(),
+                        "every cleanup slot must retain the one global anchor",
+                    );
+                    admitted.push(anchors);
+                }
+                _ => panic!("validate {slot} must be admitted"),
+            }
+        }
+
+        let mut seventh = global_queue_run_args(
+            "six-slot-agent-refused",
+            "ffffffffffffffffffffffffffffffffffffffff",
+        );
+        seventh.max = VALIDATE_CONCURRENT_CAP;
+        assert!(matches!(
+            lock.try_global_turn(&seventh, &owner, "fixture=six-slot-refused", true)
+                .unwrap(),
+            GlobalTurn::Held(_)
+        ));
+        drop(admitted);
+        let _ = fs::remove_dir_all(paths.lock.parent().unwrap());
     }
 
     fn attributed_status_fixture(
