@@ -6548,14 +6548,18 @@ fn unreadable_run_handle_line(unreadable: &validate_run_handle::UnreadableRecord
 }
 
 fn live_validate_runs_from(
-    root: &Path,
+    tool_root: &Path,
+    state_root: &Path,
     repo: &str,
     proc_root: &Path,
     boot_id_path: &Path,
     now: chrono::DateTime<chrono::Utc>,
     include_log_paths: bool,
 ) -> Result<LiveValidateRunScan, CiHubError> {
-    let directory = root.join("ignored/validate/runs");
+    // Run handles live under the shared state root, but their schema belongs to
+    // the exact ci-hub checkout executing this command. A stale shared checkout
+    // must not make a newer reader reject fields its own producer writes.
+    let directory = state_root.join("ignored/validate/runs");
     let entries = match std::fs::read_dir(&directory) {
         Ok(entries) => entries,
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
@@ -6617,7 +6621,7 @@ fn live_validate_runs_from(
     let (mut current, unreadable_current_paths) = if current_paths.is_empty() {
         (BTreeMap::new(), BTreeSet::new())
     } else {
-        let inspection = validate_run_handle::inspect_current_records(root, &current_paths)
+        let inspection = validate_run_handle::inspect_current_records(tool_root, &current_paths)
             .map_err(CiHubError::ValidateStatus)?;
         let unreadable_current_paths = inspection
             .unreadable
@@ -6702,7 +6706,7 @@ fn live_validate_runs_from(
                 let source_checkout = current_validate_run_text(&value, "source_checkout", &path)?;
                 let log_file = current_validate_run_text(&value, "log", &path)?;
                 (
-                    slot_from_validate_checkout(root, &source_checkout),
+                    slot_from_validate_checkout(state_root, &source_checkout),
                     Some(log_file),
                 )
             } else {
@@ -6805,7 +6809,7 @@ fn live_validate_runs_from(
                 .as_deref()
                 .or(record.checkout.as_deref());
             (
-                checkout.and_then(|checkout| slot_from_validate_checkout(root, checkout)),
+                checkout.and_then(|checkout| slot_from_validate_checkout(state_root, checkout)),
                 record.log.clone(),
             )
         } else {
@@ -6848,13 +6852,15 @@ fn live_validate_runs_from(
 }
 
 fn live_validate_runs(
-    root: &Path,
+    tool_root: &Path,
+    state_root: &Path,
     repo: &str,
     now: chrono::DateTime<chrono::Utc>,
     include_log_paths: bool,
 ) -> Result<LiveValidateRunScan, CiHubError> {
     live_validate_runs_from(
-        root,
+        tool_root,
+        state_root,
         repo,
         Path::new("/proc"),
         Path::new("/proc/sys/kernel/random/boot_id"),
@@ -7611,7 +7617,8 @@ fn validate_status_history_json(
 }
 
 fn print_recent_validate_history(
-    root: &Path,
+    tool_root: &Path,
+    state_root: &Path,
     rows: &[HistoryRow],
     parse_failures: &[validate_status::LedgerParseFailure],
     repo: &str,
@@ -7627,7 +7634,7 @@ fn print_recent_validate_history(
     let main_history_requested = columns.contains(&ValidateStatusColumn::Main);
     let main_history = if main_history_requested {
         Some(validation_main_history_for_status(
-            root,
+            state_root,
             repo,
             args.commit_timeline,
         )?)
@@ -7638,7 +7645,7 @@ fn print_recent_validate_history(
     let scan = if args.exclude_in_progress {
         LiveValidateRunScan::default()
     } else {
-        live_validate_runs(root, repo, now, args.log_paths)?
+        live_validate_runs(tool_root, state_root, repo, now, args.log_paths)?
     };
     let mut current = scan.entries;
     let unreadable_handles = scan.unreadable_handles;
@@ -7649,7 +7656,7 @@ fn print_recent_validate_history(
             Some(ValidationMainHistory::Unverifiable) => {
                 unreachable!("required main history cannot be unverifiable")
             }
-            None => validation_main_history(root, repo)?,
+            None => validation_main_history(state_root, repo)?,
         };
         let commit_count = commits.len();
         let finished = rows
@@ -7719,7 +7726,7 @@ fn print_recent_validate_history(
     for entry in &mut entries {
         if entry.verdict.as_deref() != Some("NO-RUN") {
             fill_optional_validate_status_columns(
-                root,
+                state_root,
                 repo,
                 &columns,
                 main_history.as_ref(),
@@ -7727,7 +7734,7 @@ fn print_recent_validate_history(
             );
         } else if columns.contains(&ValidateStatusColumn::Main) {
             fill_optional_validate_status_columns(
-                root,
+                state_root,
                 repo,
                 &[ValidateStatusColumn::Main],
                 main_history.as_ref(),
@@ -7739,7 +7746,7 @@ fn print_recent_validate_history(
     // Computed for BOTH output modes: a number that only appears under --json
     // is a number the humans reading the default output never see, which is the
     // condition this metric exists to end.
-    let depth = standard_green_depth(root, "main");
+    let depth = standard_green_depth(state_root, "main");
     let unassigned_unreadable_count = if args.commit_timeline {
         unassigned_commit_timeline_failures(parse_failures, repo)
     } else {
@@ -7859,6 +7866,7 @@ fn run_validate_status(
     let sha_input = args.sha.as_ref().or(args.sha_positional.as_ref());
     if sha_input.is_none() && args.pr.is_none() {
         return print_recent_validate_history(
+            tool_root,
             state_root,
             &repo_rows,
             &parse_failures,
@@ -10512,6 +10520,7 @@ mod tests {
             .with_timezone(&chrono::Utc);
         let live = live_validate_runs_from(
             &root,
+            &root,
             CANONICAL_VALIDATE_REPO,
             &proc_root,
             &boot_id,
@@ -10555,6 +10564,7 @@ mod tests {
         .unwrap();
         assert!(live_validate_runs_from(
             &root,
+            &root,
             CANONICAL_VALIDATE_REPO,
             &proc_root,
             &boot_id,
@@ -10577,6 +10587,7 @@ mod tests {
         .unwrap();
         assert!(live_validate_runs_from(
             &root,
+            &root,
             CANONICAL_VALIDATE_REPO,
             &proc_root,
             &boot_id,
@@ -10590,18 +10601,26 @@ mod tests {
     }
 
     #[test]
-    fn live_validate_reads_current_handle_through_shared_contract() {
+    fn live_validate_uses_tool_authority_and_rejects_only_unknown_fields() {
         let root = std::env::temp_dir().join(format!(
             "ci-hub-live-current-validate-{}-{}",
             std::process::id(),
             chrono::Utc::now().timestamp_nanos_opt().unwrap()
         ));
+        let tool_root = root.join("tool");
         let runs = root.join("ignored/validate/runs");
         let process = root.join("proc/123");
-        let authority_dir = root.join("ci-hub/validate");
+        let authority_dir = tool_root.join("ci-hub/validate");
+        let stale_authority_dir = root.join("ci-hub/validate");
         std::fs::create_dir_all(&runs).unwrap();
         std::fs::create_dir_all(&process).unwrap();
         std::fs::create_dir_all(&authority_dir).unwrap();
+        std::fs::create_dir_all(&stale_authority_dir).unwrap();
+        std::fs::write(
+            stale_authority_dir.join("run_registry.py"),
+            "raise SystemExit('the state-root authority must not be used')\n",
+        )
+        .unwrap();
         std::fs::write(
             authority_dir.join("run_registry.py"),
             include_str!("validate/run_registry.py"),
@@ -10667,6 +10686,13 @@ mod tests {
                 "state": "admitted",
                 "recorded_at": "2026-08-27T12:00:01Z",
                 "run_number": 701
+            },
+            "commit_status_publication": {
+                "state": "not-attempted",
+                "recorded_at": "2026-08-27T12:00:02Z",
+                "repository": CANONICAL_VALIDATE_REPO,
+                "sha": "a".repeat(40),
+                "reason": "canonical verdict is not yet available"
             }
         });
         let legacy_shape: ValidateRunRecord = serde_json::from_value(current.clone())
@@ -10710,7 +10736,7 @@ mod tests {
         )
         .unwrap();
         let mut malformed = current.clone();
-        malformed["state"] = serde_json::json!("cancelled");
+        malformed["unexpected_contract_field"] = serde_json::json!(true);
         malformed["unit"] = serde_json::json!("validate-malformed.service");
         std::fs::write(
             runs.join("validate-malformed.json"),
@@ -10721,6 +10747,7 @@ mod tests {
             .unwrap()
             .with_timezone(&chrono::Utc);
         let live = live_validate_runs_from(
+            &tool_root,
             &root,
             CANONICAL_VALIDATE_REPO,
             &root.join("proc"),
@@ -10738,7 +10765,7 @@ mod tests {
         assert!(
             live.unreadable_handles[0]
                 .error
-                .contains("validation-run-handle-state"),
+                .contains("unexpected_contract_field"),
             "{}",
             live.unreadable_handles[0].error
         );
@@ -10794,6 +10821,7 @@ mod tests {
         )
         .unwrap();
         assert!(live_validate_runs_from(
+            &root,
             &root,
             CANONICAL_VALIDATE_REPO,
             &root.join("proc"),
