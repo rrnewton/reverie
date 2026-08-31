@@ -1,13 +1,12 @@
 #!/usr/bin/env bash
 # A ratchet floor is meaningless against a population it was not measured over.
 #
-# The floors in collect-fullcorpus.sh were measured over a 235-cell corpus. 30 of
-# those cells (`performance/*`) became unbuildable when their sources stopped
-# existing in Hermit, leaving 205. The gate went on comparing 205-cell results
-# against 235-cell floors and reported FOUR "REGRESSION" lines that were pure
-# denominator error — two of them (ptrace 214, e9patch 214) numerically
-# unreachable no matter how green the run was. A gate whose only possible output
-# is a false red is worse than no gate: it trains readers to ignore it.
+# The floors in collect-fullcorpus.sh were measured over a 235-cell corpus. 30
+# performance sources were once absent from Hermit and nine rows named files
+# that had been renamed, leaving 196 buildable cells. The gate went on comparing
+# a 196-cell result against 235-cell floors and reported "NOT-COMPARABLE" rather
+# than a result. That was the correct refusal, but the missing population meant
+# the ratchet could never answer.
 #
 # The fix carries the denominator WITH the floor and refuses instead of lying.
 # This test brackets all four outcomes, because the easy mistake is to silence

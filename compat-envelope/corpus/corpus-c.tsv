@@ -12,15 +12,15 @@ c-programs/cachestat-enosys|tests/c/cachestat_enosys.c|||portable|disabled
 c-programs/clock-adjtime-deterministic|tests/c/clock_adjtime_deterministic.c|||portable|disabled
 c-programs/clone|tests/c/clone.c|-D_GNU_SOURCE -pthread -Wno-error=unused-parameter -Wno-error=unused-function -Wno-error=unused-variable -Wno-error=attributes -Wno-error=unknown-pragmas -Wno-error=sign-compare||portable|disabled
 c-programs/copy-file-range-refusal-probe|tests/c/copy_file_range_refusal_probe.c|||portable|disabled
-c-programs/dbi-copied-tiocgpgrp|tests/c/dbi_copied_tiocgpgrp.c|||portable|disabled
-c-programs/dbi-exec-failure|tests/c/dbi_exec_failure.c|-D_GNU_SOURCE -pthread -Wno-error=unused-parameter -Wno-error=unused-function -Wno-error=unused-variable -Wno-error=attributes -Wno-error=unknown-pragmas -Wno-error=sign-compare||portable|disabled
-c-programs/dbi-execveat-unsupported|tests/c/dbi_execveat_unsupported.c|||portable|disabled
-c-programs/dbi-mmap-exec|tests/c/dbi_mmap_exec.c|||portable|disabled
-c-programs/dbi-pid-virtualization|tests/c/dbi_pid_virtualization.c|||portable|disabled
-c-programs/dbi-prlimit-self|tests/c/dbi_prlimit_self.c|-D_GNU_SOURCE -pthread -Wno-error=unused-parameter -Wno-error=unused-function -Wno-error=unused-variable -Wno-error=attributes -Wno-error=unknown-pragmas -Wno-error=sign-compare||portable|disabled
-c-programs/dbi-self-sigqueue|tests/c/dbi_self_sigqueue.c|||portable|disabled
-c-programs/dbi-unsupported-syscall|tests/c/dbi_unsupported_syscall.c|||portable|disabled
-c-programs/dbi-wait-lifecycle|tests/c/dbi_wait_lifecycle.c|-D_GNU_SOURCE -pthread -Wno-error=unused-parameter -Wno-error=unused-function -Wno-error=unused-variable -Wno-error=attributes -Wno-error=unknown-pragmas -Wno-error=sign-compare||portable|disabled
+c-programs/dbi-copied-tiocgpgrp|tests/c/dbt_copied_tiocgpgrp.c|||portable|disabled
+c-programs/dbi-exec-failure|tests/c/dbt_exec_failure.c|-D_GNU_SOURCE -pthread -Wno-error=unused-parameter -Wno-error=unused-function -Wno-error=unused-variable -Wno-error=attributes -Wno-error=unknown-pragmas -Wno-error=sign-compare||portable|disabled
+c-programs/dbi-execveat-unsupported|tests/c/dbt_execveat_unsupported.c|||portable|disabled
+c-programs/dbi-mmap-exec|tests/c/dbt_mmap_exec.c|||portable|disabled
+c-programs/dbi-pid-virtualization|tests/c/dbt_pid_virtualization.c|||portable|disabled
+c-programs/dbi-prlimit-self|tests/c/dbt_prlimit_self.c|-D_GNU_SOURCE -pthread -Wno-error=unused-parameter -Wno-error=unused-function -Wno-error=unused-variable -Wno-error=attributes -Wno-error=unknown-pragmas -Wno-error=sign-compare||portable|disabled
+c-programs/dbi-self-sigqueue|tests/c/dbt_self_sigqueue.c|||portable|disabled
+c-programs/dbi-unsupported-syscall|tests/c/dbt_unsupported_syscall.c|||portable|disabled
+c-programs/dbi-wait-lifecycle|tests/c/dbt_wait_lifecycle.c|-D_GNU_SOURCE -pthread -Wno-error=unused-parameter -Wno-error=unused-function -Wno-error=unused-variable -Wno-error=attributes -Wno-error=unknown-pragmas -Wno-error=sign-compare||portable|disabled
 c-programs/epoll-determinism|tests/c/epoll_determinism.c|-D_GNU_SOURCE -pthread -Wno-error=unused-parameter -Wno-error=unused-function -Wno-error=unused-variable -Wno-error=attributes -Wno-error=unknown-pragmas -Wno-error=sign-compare||portable|enabled
 c-programs/fp-reduction-nondeterminism|tests/c/fp_reduction_nondeterminism.c|-D_GNU_SOURCE -pthread -Wno-error=unused-parameter -Wno-error=unused-function -Wno-error=unused-variable -Wno-error=attributes -Wno-error=unknown-pragmas -Wno-error=sign-compare -fopenmp||portable|disabled
 c-programs/futex-requeue-enosys|tests/c/futex_requeue_enosys.c|||portable|disabled

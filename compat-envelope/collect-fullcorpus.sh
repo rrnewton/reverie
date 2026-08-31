@@ -44,6 +44,7 @@
 #     [--out PATH]             output CSV (default: fullcorpus-scorecard.csv)
 #     [--self-check-env-pin]    bracket the generated Hermit argv; run no guests
 #     [--self-check-containment] bracket probe routing + timeout/refusal mapping; run no guests
+#     [--self-check-corpus-sources] bracket complete and missing source inventories; run no guests
 set -uo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -254,6 +255,65 @@ self_check_guest_env_pin() {
   echo "self-check: $positives generated argv variants accepted; mutation, omission, and reordering refused"
 }
 
+check_corpus_sources() { # $1=corpus-c.tsv $2=Hermit root
+  local corpus="$1" hroot="$2" id prog cflags extra lane cstate source
+  local cells=0 missing_cells=0 cell_missing
+  while IFS='|' read -r id prog cflags extra lane cstate; do
+    [ -n "$id" ] || continue
+    cells=$((cells + 1)); cell_missing=0
+    if [ ! -f "$hroot/$prog" ]; then
+      printf '  missing-source: %s (%s)\n' "$id" "$prog" >&2
+      cell_missing=1
+    fi
+    for source in $extra; do
+      if [ ! -f "$hroot/$source" ]; then
+        printf '  missing-source: %s (%s)\n' "$id" "$source" >&2
+        cell_missing=1
+      fi
+    done
+    [ "$cell_missing" -eq 0 ] || missing_cells=$((missing_cells + 1))
+  done < "$corpus"
+  if [ "$missing_cells" -ne 0 ]; then
+    printf 'collect-fullcorpus: REFUSED — %s of %s C corpus cells have missing sources; no guests run\n' \
+      "$missing_cells" "$cells" >&2
+    return 4
+  fi
+  printf '== corpus sources: %s/%s C cells present ==\n' "$cells" "$cells"
+}
+
+self_check_corpus_sources() {
+  local tmp complete missing output rc=0
+  tmp="$(mktemp -d)" || return 1
+  complete="$tmp/complete.tsv"; missing="$tmp/missing.tsv"
+  mkdir -p "$tmp/root/tests"
+  : > "$tmp/root/tests/one.c"
+  : > "$tmp/root/tests/helper.c"
+  printf '%s\n' \
+    'one|tests/one.c|||portable|disabled' \
+    'two|tests/one.c||tests/helper.c|portable|disabled' > "$complete"
+  output="$(check_corpus_sources "$complete" "$tmp/root" 2>&1)" || rc=$?
+  if [ "$rc" -ne 0 ] || [ "$output" != '== corpus sources: 2/2 C cells present ==' ]; then
+    rm -rf "$tmp"
+    echo "self-check: complete corpus was not accepted: rc=$rc output=$output" >&2
+    return 1
+  fi
+
+  printf '%s\n' \
+    'one|tests/missing.c|||portable|disabled' \
+    'two|tests/one.c||tests/missing-helper.c|portable|disabled' > "$missing"
+  rc=0; output="$(check_corpus_sources "$missing" "$tmp/root" 2>&1)" || rc=$?
+  if [ "$rc" -ne 4 ] ||
+     ! grep -Fq 'missing-source: one (tests/missing.c)' <<<"$output" ||
+     ! grep -Fq 'missing-source: two (tests/missing-helper.c)' <<<"$output" ||
+     ! grep -Fq '2 of 2 C corpus cells have missing sources' <<<"$output"; then
+    rm -rf "$tmp"
+    echo "self-check: missing corpus was not refused cell by cell: rc=$rc output=$output" >&2
+    return 1
+  fi
+  rm -rf "$tmp"
+  echo "self-check: complete corpus accepted; two missing cells refused and named"
+}
+
 while [ $# -gt 0 ]; do
   case "$1" in
     --backends) backends_arg="$2"; shift 2 ;;
@@ -263,6 +323,7 @@ while [ $# -gt 0 ]; do
     --out) OUT="$2"; shift 2 ;;
     --self-check-env-pin) self_check_env_pin=1; shift ;;
     --self-check-containment) self_check_containment=1; shift ;;
+    --self-check-corpus-sources) self_check_corpus_sources=1; shift ;;
     -h|--help) grep '^#' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "collect-fullcorpus: unknown arg $1" >&2; exit 2 ;;
   esac
@@ -276,10 +337,15 @@ if [ "$self_check_containment" = 1 ]; then
   self_check_subtree_containment_adapter
   exit $?
 fi
+if [ "${self_check_corpus_sources:-0}" = 1 ]; then
+  self_check_corpus_sources
+  exit $?
+fi
 
 [ -n "$assert_only" ] || [ -x "$BIN" ] || { echo "collect-fullcorpus: HERMIT_BIN not executable: $BIN" >&2; exit 2; }
 [ -n "$assert_only" ] || [ -x "$BOX_RUN" ] || { echo "collect-fullcorpus: cgroup box not executable: $BOX_RUN" >&2; exit 3; }
 [ -f "$CORPUS_C" ] || { echo "collect-fullcorpus: missing $CORPUS_C" >&2; exit 2; }
+[ -n "$assert_only" ] || check_corpus_sources "$CORPUS_C" "$HROOT" || exit $?
 
 HSHA="$(git -C "$HROOT" rev-parse HEAD 2>/dev/null || echo unknown)"
 RSHA="$(git -C "$RROOT" rev-parse HEAD 2>/dev/null || echo unknown)"
@@ -499,6 +565,7 @@ export BIN BOX_RUN ROWS RUN_UTC HSHA RSHA TMO_RUN TMO_VERIFY
 # --- compile C guests once (shared build tree) -------------------------------
 echo "== compiling/reusing C guests =="
 mkdir -p "$BUILD"
+build_failures=0
 # cstate names the last corpus column so the split stays self-documenting; unread here.
 # shellcheck disable=SC2034
 while IFS='|' read -r id prog cflags extra lane cstate; do
@@ -509,9 +576,15 @@ while IFS='|' read -r id prog cflags extra lane cstate; do
   extra_abs=""
   for e in $extra; do extra_abs="$extra_abs $HROOT/$e"; done
   # shellcheck disable=SC2086
-  cc -std=c11 -O2 -g -Wall -Wextra -Werror $cflags "$HROOT/$prog" $extra_abs -o "$guest" 2>"$cell/cc.err" \
-    || echo "  build-fail: $id" >&2
+  if ! cc -std=c11 -O2 -g -Wall -Wextra -Werror $cflags "$HROOT/$prog" $extra_abs -o "$guest" 2>"$cell/cc.err"; then
+    echo "  build-fail: $id (diagnostic: $cell/cc.err)" >&2
+    build_failures=$((build_failures + 1))
+  fi
 done < "$CORPUS_C"
+if [ "$build_failures" -ne 0 ]; then
+  echo "collect-fullcorpus: REFUSED — $build_failures C corpus cells did not compile; no guests run" >&2
+  exit 4
+fi
 
 # --- guest arguments, sourced from the e2e manifests -------------------------
 # Some corpus guests REQUIRE an argument (a scenario name, a fixture path). Run
