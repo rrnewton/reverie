@@ -1298,16 +1298,6 @@ def _validate_output_paths(root: Path, unit: str) -> tuple[Path, Path]:
     return base / "e2e", base / "safe-ci-dag-runner"
 
 
-def _shared_resource_caps_path(environment: Mapping[str, str]) -> Path:
-    """Return one user-runtime path shared by every parent worktree."""
-    runtime = Path(
-        environment.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"
-    )
-    if not runtime.is_absolute():
-        raise ValueError(f"XDG_RUNTIME_DIR must be absolute, got {runtime}")
-    return runtime / "ci-hub" / "resource-caps.json"
-
-
 def _carries_nosuid_or_nodev(path: Path) -> bool:
     """Does `path` sit on a filesystem mounted `nosuid` or `nodev`?
 
@@ -2619,7 +2609,6 @@ def build_systemd_command(
         build_budget_env.extend(["--setenv", "REVERIE_REQUIRE_KVM=1"])
     else:
         e2e_result_root, runner_log_dir = _validate_output_paths(state_root, unit)
-        resource_caps_path = _shared_resource_caps_path(environment)
         build_budget_env.extend(
             [
                 "--setenv",
@@ -2641,13 +2630,6 @@ def build_systemd_command(
                 f"SAFE_CI_DAG_RUNNER_LOG_DIR={runner_log_dir}",
                 "--setenv",
                 f"DAGRUN_LOG_DIR={runner_log_dir}",
-                # Deliberately shared across top-level validates. The DAG's
-                # existing resource_caps describe scarce capacity on this
-                # machine, while the per-run runtime and output paths above do
-                # not. dagrun locks and updates this file before a step's own
-                # timeout starts.
-                "--setenv",
-                f"DAGRUN_RESOURCE_CAPS_PATH={resource_caps_path}",
             ]
         )
     if frozen_validate:

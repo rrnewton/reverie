@@ -149,6 +149,7 @@ class ParallelValidatePathTest(unittest.TestCase):
                 "PATH": "/usr/bin",
                 "TMPDIR": "/tmp",
                 "XDG_RUNTIME_DIR": "/run/user/1234",
+                "DAGRUN_RESOURCE_CAPS_PATH": "/run/user/1234/ci-hub/resource-caps.json",
             },
         }
         old_a = start_unit.build_systemd_command(**common, unit="validate-a")
@@ -227,12 +228,12 @@ class ParallelValidatePathTest(unittest.TestCase):
         self.assertIn("E2E_RUN_ID=validate-a", fixed_a)
         self.assertIn("E2E_RUN_ID=validate-b", fixed_b)
 
-        # The state enforcing the DAG's resource_caps is intentionally shared:
-        # making it per run would recreate the exact cross-run over-admission
-        # it exists to prevent. Only the outputs above are per run.
-        shared_caps = "DAGRUN_RESOURCE_CAPS_PATH=/run/user/1234/ci-hub/resource-caps.json"
-        self.assertIn(shared_caps, fixed_a)
-        self.assertIn(shared_caps, fixed_b)
+        # Each top-level validate keeps the DAG's resource_caps process-local.
+        # Even an ambient path from an older launcher must not opt these runs
+        # into cross-process accounting.
+        shared_caps = "DAGRUN_RESOURCE_CAPS_PATH="
+        self.assertFalse(any(arg.startswith(shared_caps) for arg in fixed_a))
+        self.assertFalse(any(arg.startswith(shared_caps) for arg in fixed_b))
 
     def test_git_mutation_old_sections_overlap_and_fixed_section_waits(self) -> None:
         origin = self.root / "origin.git"
