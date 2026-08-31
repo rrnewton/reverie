@@ -1908,11 +1908,13 @@ class SignalCrosscheckTests(unittest.TestCase):
         self.assertIn("target must be an exact lowercase forty-hex commit", errors)
         self.assertIn("repo must be rrnewton/hermit or rrnewton/reverie", errors)
 
-    def test_unknown_pre_admission_handle_is_visible_without_disagreement(self) -> None:
+    def test_never_launched_empty_log_remains_pre_admission_history(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             run_root = root / "ignored" / "validate" / "runs"
             run_root.mkdir(parents=True)
+            log = root / "ignored" / "validate" / "validate-owner-checkout.log"
+            log.touch()
             (run_root / "unknown.json").write_text(
                 json.dumps(
                     current_validation_handle(
@@ -1927,6 +1929,7 @@ class SignalCrosscheckTests(unittest.TestCase):
                         executed_tests=None,
                         final_validate_status=None,
                         observed_safe_ci_cgroups=[],
+                        log=str(log),
                     )
                 )
             )
@@ -1941,6 +1944,10 @@ class SignalCrosscheckTests(unittest.TestCase):
         self.assertEqual(
             report["unknown_pre_admission_handles"][0]["unit"],
             "validate-owner-checkout.service",
+        )
+        self.assertEqual(
+            report["unknown_pre_admission_handles"][0]["run_log_bytes"],
+            0,
         )
         self.assertIsNone(
             report["unknown_pre_admission_handles"][0]["host"]
@@ -1968,6 +1975,67 @@ class SignalCrosscheckTests(unittest.TestCase):
         )
         self.assertIn("RECONCILIATION: AGREE", rendered)
 
+    def test_nonempty_recorded_log_proves_the_service_started(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            run_root = root / "ignored" / "validate" / "runs"
+            run_root.mkdir(parents=True)
+            run_id = "validate-started-before-admission"
+            log = root / "retained" / "custom-validate.log"
+            log.parent.mkdir()
+            log.write_text(
+                "validate-lock: unsupported --max\n"
+                "# ci-hub/validate-lock tool COST ACTUAL wall=0.355s exit=2\n"
+            )
+            (run_root / f"{run_id}.json").write_text(
+                json.dumps(
+                    current_validation_handle(
+                        run_id,
+                        state="unknown",
+                        result="unknown",
+                        exit_code=None,
+                        detail="service result was never written",
+                        process_identity=None,
+                        admission_result=None,
+                        executed_nodes=None,
+                        executed_tests=None,
+                        final_validate_status=None,
+                        observed_safe_ci_cgroups=[],
+                        log=str(log),
+                    )
+                )
+            )
+            report = signal_crosscheck.run_handle_report(
+                root, "a" * 40, "rrnewton/hermit", []
+            )
+
+        self.assertEqual(report["unknown_pre_admission_handles"], [])
+        self.assertEqual(
+            [
+                handle["unit"]
+                for handle in report["terminal_handles_missing_admission"]
+            ],
+            [f"{run_id}.service"],
+        )
+        self.assertGreater(
+            report["terminal_handles_missing_admission"][0]["run_log_bytes"],
+            0,
+        )
+        complete = base_report()
+        complete.update(sha="a" * 40, repo="rrnewton/hermit")
+        complete["run_handles"] = report
+        issues = signal_crosscheck.reconcile(complete)
+        self.assertEqual(len(issues), 1)
+        self.assertIn("retained log has", issues[0])
+        complete["issues"] = issues
+        complete["result"] = "DISAGREE"
+        output = io.StringIO()
+        with redirect_stdout(output):
+            signal_crosscheck.print_text(complete)
+        rendered = output.getvalue()
+        self.assertNotIn("run-handle-history: unknown pre-admission", rendered)
+        self.assertIn("RECONCILIATION: DISAGREE", rendered)
+
     def test_started_or_admitted_malformed_handles_remain_disagreements(
         self,
     ) -> None:
@@ -1989,6 +2057,10 @@ class SignalCrosscheckTests(unittest.TestCase):
                 "outcome-executed-tests": {"executed_tests": 0},
                 "outcome-final-status": {
                     "final_validate_status": "COULD_NOT_RUN"
+                },
+                "outcome-executed-failed": {
+                    "executed_nodes": 1,
+                    "final_validate_status": "FAILED",
                 },
                 "outcome-wrapper": {
                     "canonical_verdict": "NEEDS-RERUN",

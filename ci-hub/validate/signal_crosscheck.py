@@ -14,6 +14,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 from collections import Counter
@@ -868,6 +869,7 @@ def _is_unknown_pre_admission_artifact(
     projected: Mapping[str, Any],
     wrapper_outcome: Mapping[str, Any] | None,
     ledger_event_count: int,
+    run_log_bytes: int | None,
 ) -> bool:
     """Classify old history with no attributable admission or outcome.
 
@@ -898,7 +900,32 @@ def _is_unknown_pre_admission_artifact(
         and not raw.get("observed_safe_ci_cgroups")
         and wrapper_outcome is None
         and ledger_event_count == 0
+        and run_log_bytes in {None, 0}
     )
+
+
+def _retained_log_bytes(raw: Mapping[str, Any]) -> int | None:
+    """Return the size of this handle's retained log, if trustworthy.
+
+    ``start_unit`` resolves and exclusively reserves the recorded path as an
+    empty regular file before it asks systemd to launch the service. A
+    non-empty file therefore proves that the service wrote output; it cannot
+    be classified with a handle that never launched. Refuse to infer through a
+    symlink because current launchers record the resolved target instead.
+    """
+    raw_log = raw.get("log")
+    if not isinstance(raw_log, str) or not raw_log:
+        return None
+    candidate = Path(raw_log)
+    if not candidate.is_absolute():
+        return None
+    try:
+        metadata = candidate.lstat()
+    except (OSError, ValueError):
+        return None
+    if not stat.S_ISREG(metadata.st_mode):
+        return None
+    return metadata.st_size
 
 
 def _validation_service_result_evidence(
@@ -1148,6 +1175,7 @@ def run_handle_report(
         projected_host = projected.get("host")
         machine_shortname = _machine_shortname(projected_host)
         ledger_events = ledger_run_ids.get(run_id, [])
+        run_log_bytes = _retained_log_bytes(raw)
         non_run_refusal = (
             state == run_registry.RunState.REFUSED.value
             and raw.get("result") == "systemd-launch-refused"
@@ -1163,7 +1191,11 @@ def run_handle_report(
             )
         )
         unknown_pre_admission = _is_unknown_pre_admission_artifact(
-            raw, projected, wrapper_outcome, len(ledger_events)
+            raw,
+            projected,
+            wrapper_outcome,
+            len(ledger_events),
+            run_log_bytes,
         )
         handle = {
             "path": str(path),
@@ -1177,6 +1209,7 @@ def run_handle_report(
             "run_number": admission_run_number,
             "host": projected_host,
             "machine_shortname": machine_shortname,
+            "run_log_bytes": run_log_bytes,
             "wrapper_outcome": wrapper_outcome,
             "non_run_refusal": non_run_refusal,
             "no_receipt_attempt": no_receipt_attempt,
@@ -1415,9 +1448,17 @@ def reconcile(report: Mapping[str, Any]) -> list[str]:
             f"state={handle.get('state')} admission={handle.get('admission')}"
         )
     for handle in handles.get("terminal_handles_missing_admission") or []:
+        run_log = handle.get("run_log_bytes")
+        evidence = (
+            f"; retained log has {run_log} byte(s)"
+            if isinstance(run_log, int) and run_log > 0
+            else ""
+        )
         issues.append(
-            "current-producer terminal validation run has no typed admission_result: "
+            "current-producer terminal validation run has start or outcome evidence "
+            "but no typed admission_result: "
             f"{handle.get('unit') or handle.get('path')} state={handle.get('state')}"
+            f"{evidence}"
         )
 
     github = report.get("github_status") or {}
