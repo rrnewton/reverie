@@ -17,13 +17,12 @@ capturing the same command to a regular file returned in 0.0s with byte-identica
 stdout and the same exit code. A regular file has no EOF-waiting semantics, so
 `wait()` on the child is the only gate.
 
-⚠️ THIS IS DELIBERATELY NOT A TIMEOUT AND NOT `gc.auto=0`.
-A timeout bounds the wait and throws away the reason, turning a deterministic
-hang into a flaky failure; and it still has to pick a number that is wrong for
-either a fast box or a slow one. Disabling auto-gc hides this particular
-grandchild and leaves the next one -- a hook, a credential helper, a pager, an
-`ssh` multiplexer -- to reintroduce the same hang somewhere else. Reading into a
-file removes the mechanism instead of the symptom.
+⚠️ WHY REGULAR FILES, NOT MERELY A TIMEOUT OR `gc.auto=0`.
+An optional timeout below bounds the direct child's execution. It does not fix
+the inherited-pipe defect: a child can exit promptly and still leave a pipe open
+through a grandchild. Disabling auto-gc likewise hides only one trigger. Reading
+into regular files removes the EOF-waiting mechanism; the optional timeout then
+retains the ordinary direct-child wall bound for callers that need one.
 
 WHY THIS LIVES IN lib/. The same helper was written three times independently
 (closure/artifact_triage.py, health/tick_code_currency.py,
@@ -62,6 +61,7 @@ def capture(
     encoding: str | None = None,
     errors: str | None = "replace",
     input: bytes | str | None = None,
+    timeout: float | None = None,
     **popen_kwargs,
 ) -> CapturedProcess:
     """Run `command`, returning its stdout/stderr and exit code.
@@ -73,7 +73,11 @@ def capture(
     `stdin` defaults to DEVNULL, which is the other half of not hanging: a child
     that decides to prompt gets EOF instead of blocking on a terminal that no
     agent is watching. Pass `input=` to feed it bytes/text instead, or an
-    explicit `stdin=` to override.
+    explicit `stdin=` to override. An optional `timeout=` bounds communication
+    with and execution of the direct child; inherited descriptors in its
+    descendants still cannot extend that wait because stdout and stderr are
+    regular files rather than pipes. Omitting `timeout` retains the original
+    write-input, close-stdin, then wait behavior byte for byte.
     """
     if "stdout" in popen_kwargs or "stderr" in popen_kwargs:
         raise TypeError(
@@ -99,16 +103,23 @@ def capture(
             errors=errors if text else None,
             **popen_kwargs,
         )
-        if input is not None:
-            # Writing to stdin CAN block if the child never drains it, but that
-            # is a wait on the child's own behaviour, not on an unrelated
-            # grandchild holding an inherited descriptor. Close it so the child
-            # sees EOF and can exit.
+        if timeout is None:
+            if input is not None:
+                # Preserve the original helper contract for existing callers,
+                # including its BrokenPipeError when a child closes stdin early.
+                try:
+                    proc.stdin.write(input)
+                finally:
+                    proc.stdin.close()
+            returncode = proc.wait()
+        else:
             try:
-                proc.stdin.write(input)
-            finally:
-                proc.stdin.close()
-        returncode = proc.wait()
+                proc.communicate(input=input, timeout=timeout)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.communicate()
+                raise
+            returncode = proc.returncode
         out.seek(0)
         err.seek(0)
         result = CapturedProcess(list(command), returncode, out.read(), err.read())
