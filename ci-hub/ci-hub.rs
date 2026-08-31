@@ -144,7 +144,7 @@ VALIDATION ACTIONS
   validate-stop           Stop detached validate-* user units and verify termination
   correct-owner-watch-handles
                           Correct proven pre-service owner-watch refusals (dry-run by default)
-  validate-lock           Two validation slots; benchmarks reserve both (GRANT/QUEUE/REFUSE)
+  validate-lock           6 validation slots; benchmarks reserve every slot (GRANT/QUEUE/REFUSE)
   ledger                  Read or update canonical validate-ledger views
   refresh-history         Ingest fresh GitHub and local history into the local store
 
@@ -274,7 +274,7 @@ enum HubCommand {
     ReviewAttest(ReviewAttestArgs),
     /// Operate the shared-file landing mutex.
     LandLock(landing_lock::LandLockArgs),
-    /// Operate validation admission (two validates, or one benchmark reserving both slots).
+    /// Operate validation admission (up to 6 validates, or one benchmark reserving every slot).
     ValidateLock(validate_lock::ValidateLockArgs),
     /// Inspect or switch the committed GH Actions-constrained mode and its GitHub projection.
     CiMode(CiModeArgs),
@@ -12854,6 +12854,25 @@ assert Path(__file__).parents[2] == Path(os.environ["DEV_HERMIT_TOOL_ROOT"])
             listed_commands, clap_commands,
             "root help must classify every public subcommand exactly once"
         );
+    }
+
+    #[test]
+    fn validate_lock_help_reports_the_configured_capacity() {
+        let capacity = validate_lock::VALIDATE_SLOT_COUNT;
+        let root_help = Cli::try_parse_from(["ci-hub", "--help"])
+            .unwrap_err()
+            .to_string();
+        let root_summary = format!("{capacity} validation slots; benchmarks reserve every slot");
+        assert!(root_help.contains(&root_summary), "{root_help}");
+
+        let mut command = <Cli as clap::CommandFactory>::command();
+        let validate_lock = command
+            .find_subcommand_mut("validate-lock")
+            .expect("validate-lock subcommand");
+        let help = validate_lock.render_long_help().to_string();
+        let command_summary =
+            format!("up to {capacity} validates, or one benchmark reserving every slot");
+        assert!(help.contains(&command_summary), "{help}");
     }
 
     #[test]

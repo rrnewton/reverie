@@ -61,7 +61,7 @@ const GUARD_WAIT_SECONDS: u64 = 30;
 const GLOBAL_QUEUE_DECLARATION_TTL_SECONDS: i64 = 86_400;
 /// Six validation slots are available. Benchmarks still take every slot and
 /// therefore remain box-exclusive against every validation and benchmark.
-const VALIDATE_SLOT_COUNT: usize = 6;
+pub(crate) const VALIDATE_SLOT_COUNT: usize = 6;
 const VALIDATE_CONCURRENT_CAP: u64 = VALIDATE_SLOT_COUNT as u64;
 /// A measured warm full-profile validate reached 1.98 GiB RSS. Round upward to
 /// a 2 GiB admission reservation; this is not a cgroup memory.max.
