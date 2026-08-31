@@ -1344,7 +1344,10 @@ fn cgroup_contains_unit(cgroup: &str, unit: &str) -> bool {
     })
 }
 
-fn verify_global_validate_holder(body: &str) -> Result<GlobalValidateHolder, String> {
+fn verify_global_validate_holder(
+    tool_root: &Path,
+    body: &str,
+) -> Result<GlobalValidateHolder, String> {
     if unique_anchor_field(body, "anchor")? != "box-exclusive-v1" {
         return Err("held anchor has an unsupported authority version".into());
     }
@@ -1412,9 +1415,8 @@ fn verify_global_validate_holder(body: &str) -> Result<GlobalValidateHolder, Str
         .get("schema_version")
         .and_then(serde_json::Value::as_u64);
     if validate_run_handle::is_current(&value) {
-        let root = validate_run_handle::authority_root_for_record(&record)?;
         validate_run_handle::verify_holder(
-            &root,
+            tool_root,
             &record,
             &agent,
             &target,
@@ -1484,10 +1486,10 @@ fn verify_global_validate_holder(body: &str) -> Result<GlobalValidateHolder, Str
     })
 }
 
-fn observe_global_validate_anchor(path: &Path) -> GlobalValidateObservation {
+fn observe_global_validate_anchor(tool_root: &Path, path: &Path) -> GlobalValidateObservation {
     match BoxExclusionAnchor::observe(path) {
         BoxAnchorObservation::Free => GlobalValidateObservation::Free,
-        BoxAnchorObservation::Held(body) => match verify_global_validate_holder(&body) {
+        BoxAnchorObservation::Held(body) => match verify_global_validate_holder(tool_root, &body) {
             Ok(holder) => GlobalValidateObservation::Held(holder),
             Err(reason) => GlobalValidateObservation::Unknown(reason),
         },
@@ -1505,7 +1507,8 @@ fn systemd_service_unit(cgroup: &str) -> Option<String> {
 }
 
 fn verify_run_attribution(
-    root: &Path,
+    tool_root: &Path,
+    state_root: &Path,
     args: &RunArgs,
     cgroup: &str,
 ) -> Result<VerifiedRunAttribution, ValidateLockError> {
@@ -1516,7 +1519,7 @@ fn verify_run_attribution(
     })?;
     let record = fs::canonicalize(record)
         .map_err(|source| io_error("canonicalize run record", record, source))?;
-    let expected_dir = repository_lock_root(root).join("ignored/validate/runs");
+    let expected_dir = repository_lock_root(state_root).join("ignored/validate/runs");
     let expected_dir = fs::canonicalize(&expected_dir)
         .map_err(|source| io_error("canonicalize run-record directory", &expected_dir, source))?;
     if record.parent() != Some(expected_dir.as_path()) {
@@ -1539,7 +1542,7 @@ fn verify_run_attribution(
         .and_then(serde_json::Value::as_u64);
     let unit = if validate_run_handle::is_current(&value) {
         validate_run_handle::verify_attribution(
-            root,
+            tool_root,
             &record,
             &args.agent,
             &args.target,
@@ -1600,7 +1603,8 @@ fn verify_run_attribution(
 }
 
 fn require_run_attribution(
-    root: &Path,
+    tool_root: &Path,
+    state_root: &Path,
     args: &RunArgs,
 ) -> Result<VerifiedRunAttribution, ValidateLockError> {
     #[cfg(test)]
@@ -1616,7 +1620,7 @@ fn require_run_attribution(
     let cgroup_path = Path::new("/proc/self/cgroup");
     let cgroup = fs::read_to_string(cgroup_path)
         .map_err(|source| io_error("read live cgroup identity", cgroup_path, source))?;
-    verify_run_attribution(root, args, &cgroup)
+    verify_run_attribution(tool_root, state_root, args, &cgroup)
 }
 
 /// Publish the supervisor's complete, reuse-safe identity into the canonical
@@ -1625,6 +1629,7 @@ fn require_run_attribution(
 /// launcher may update this record concurrently, and a plain read/write here
 /// could erase either their state or this identity.
 fn publish_run_process_identity(
+    tool_root: &Path,
     record: &Path,
     owner: &ProcessOwner,
 ) -> Result<(), ValidateLockError> {
@@ -1657,14 +1662,12 @@ fn publish_run_process_identity(
         ))
     })?;
     if validate_run_handle::is_current(&initial_value) {
-        let root = validate_run_handle::authority_root_for_record(record)
-            .map_err(ValidateLockError::InvalidState)?;
         let identity = validate_run_handle::ProcessIdentity {
             pid: owner.pid,
             start_ticks: owner.start_ticks,
             boot_id: owner.boot_id.clone(),
         };
-        validate_run_handle::bind_process_identity(&root, record, &identity)
+        validate_run_handle::bind_process_identity(tool_root, record, &identity)
             .map_err(ValidateLockError::InvalidState)?;
         return Ok(());
     }
@@ -1749,6 +1752,7 @@ fn publish_run_process_identity(
 }
 
 fn publish_required_run_process_identity(
+    tool_root: &Path,
     _args: &RunArgs,
     attribution: &VerifiedRunAttribution,
     owner: &ProcessOwner,
@@ -1761,7 +1765,7 @@ fn publish_required_run_process_identity(
         // writer and its refusal paths; production cannot enter this branch.
         return Ok(());
     }
-    publish_run_process_identity(&attribution.record, owner)
+    publish_run_process_identity(tool_root, &attribution.record, owner)
 }
 
 fn anchor_token(name: &str, value: &str) -> Result<(), ValidateLockError> {
@@ -1774,6 +1778,7 @@ fn anchor_token(name: &str, value: &str) -> Result<(), ValidateLockError> {
 }
 
 fn publish_run_admission_result(
+    tool_root: &Path,
     attribution: &VerifiedRunAttribution,
     state: validate_run_handle::AdmissionState,
     reason: Option<validate_run_handle::AdmissionRefusalReason>,
@@ -1783,10 +1788,8 @@ fn publish_run_admission_result(
     if attribution.record == Path::new("test-only-run-record") {
         return Ok(None);
     }
-    let root = validate_run_handle::authority_root_for_record(&attribution.record)
-        .map_err(ValidateLockError::InvalidState)?;
     let projected = validate_run_handle::publish_admission_result(
-        &root,
+        tool_root,
         &attribution.record,
         state,
         reason,
@@ -1797,11 +1800,13 @@ fn publish_run_admission_result(
 }
 
 fn record_pre_admission_refusal(
+    tool_root: &Path,
     attribution: &VerifiedRunAttribution,
     error: ValidateLockError,
 ) -> ValidateLockError {
     let exit_code = error.exit_code();
     match publish_run_admission_result(
+        tool_root,
         attribution,
         validate_run_handle::AdmissionState::Refused,
         Some(validate_run_handle::AdmissionRefusalReason::ValidationLockRefusal),
@@ -1815,13 +1820,15 @@ fn record_pre_admission_refusal(
 }
 
 fn prepare_run_before_admission_with(
+    tool_root: &Path,
     args: &RunArgs,
     attribution: &VerifiedRunAttribution,
     owner: Result<ProcessOwner, ValidateLockError>,
     enable_subreaper: impl FnOnce() -> io::Result<()>,
 ) -> Result<ProcessOwner, ValidateLockError> {
-    let owner = owner.map_err(|error| record_pre_admission_refusal(attribution, error))?;
-    publish_required_run_process_identity(args, attribution, &owner)?;
+    let owner =
+        owner.map_err(|error| record_pre_admission_refusal(tool_root, attribution, error))?;
+    publish_required_run_process_identity(tool_root, args, attribution, &owner)?;
 
     let setup = (|| {
         if args.child.is_empty() {
@@ -1835,15 +1842,17 @@ fn prepare_run_before_admission_with(
             io_error("enable child subreaper at", Path::new("/proc/self"), source)
         })
     })();
-    setup.map_err(|error| record_pre_admission_refusal(attribution, error))?;
+    setup.map_err(|error| record_pre_admission_refusal(tool_root, attribution, error))?;
     Ok(owner)
 }
 
 fn prepare_run_before_admission(
+    tool_root: &Path,
     args: &RunArgs,
     attribution: &VerifiedRunAttribution,
 ) -> Result<ProcessOwner, ValidateLockError> {
     prepare_run_before_admission_with(
+        tool_root,
         args,
         attribution,
         current_process_owner(),
@@ -1852,10 +1861,12 @@ fn prepare_run_before_admission(
 }
 
 fn refusal_before_admission(
+    tool_root: &Path,
     attribution: &VerifiedRunAttribution,
     code: i32,
 ) -> Result<i32, ValidateLockError> {
     let _ = publish_run_admission_result(
+        tool_root,
         attribution,
         validate_run_handle::AdmissionState::Refused,
         Some(validate_run_handle::AdmissionRefusalReason::ValidationLockRefusal),
@@ -1865,11 +1876,13 @@ fn refusal_before_admission(
 }
 
 fn stale_base_refusal_with_record(
+    tool_root: &Path,
     attribution: &VerifiedRunAttribution,
     error: ValidateLockError,
 ) -> Result<i32, ValidateLockError> {
     let code = stale_base_refusal(error)?;
     let _ = publish_run_admission_result(
+        tool_root,
         attribution,
         validate_run_handle::AdmissionState::Refused,
         Some(validate_run_handle::AdmissionRefusalReason::StaleBase),
@@ -2203,7 +2216,7 @@ pub fn execute(
                 ValidateLock {
                     paths: lock.paths.for_slot(slot),
                 }
-                .status()?;
+                .status(tool_root)?;
             }
             Ok(0)
         }
@@ -4511,8 +4524,8 @@ impl ValidateLock {
         Ok(AuthorityStatus::admitted(holder, owner, cleanup_state))
     }
 
-    fn status(&self) -> Result<(), ValidateLockError> {
-        match observe_global_validate_anchor(&self.paths.anchor) {
+    fn status(&self, tool_root: &Path) -> Result<(), ValidateLockError> {
+        match observe_global_validate_anchor(tool_root, &self.paths.anchor) {
             GlobalValidateObservation::Held(holder) => {
                 println!("HELD (box-global authority):");
                 println!("  agent={}", holder.agent);
@@ -5013,8 +5026,8 @@ impl ValidateLock {
         // admission. Verify it and bind this service's process identity before
         // validating setup, so every attributable pre-admission exit can publish
         // a typed refusal instead of leaving an ambiguous historical handle.
-        let attribution = require_run_attribution(state_root, &args)?;
-        let owner = prepare_run_before_admission(&args, &attribution)?;
+        let attribution = require_run_attribution(tool_root, state_root, &args)?;
+        let owner = prepare_run_before_admission(tool_root, &args, &attribution)?;
 
         // Refuse immutable-floor and current-main violations BEFORE this run
         // enters the box-global queue. A stale head must not wait for scarce
@@ -5022,10 +5035,10 @@ impl ValidateLock {
         if let Err(error) =
             base_admission_check(tool_root, &args.target, args.kind, args.skip_base_check)
         {
-            return stale_base_refusal_with_record(&attribution, error);
+            return stale_base_refusal_with_record(tool_root, &attribution, error);
         }
         if let Err(error) = current_main_freshness_check(state_root, &args.target, args.kind) {
-            return stale_base_refusal_with_record(&attribution, error);
+            return stale_base_refusal_with_record(tool_root, &attribution, error);
         }
 
         let record_text = attribution.record.to_string_lossy();
@@ -5055,7 +5068,7 @@ impl ValidateLock {
         // exists to prioritize.
         let yield_status = self.wait_for_owner_watch_yield(&args.agent, args.wait, args.no_wait)?;
         if yield_status != 0 {
-            return refusal_before_admission(&attribution, yield_status);
+            return refusal_before_admission(tool_root, &attribution, yield_status);
         }
 
         // BOX-GLOBAL PRIORITY QUEUE, THEN ANCHOR, BOTH BEFORE REPOSITORY STATE.
@@ -5081,7 +5094,7 @@ impl ValidateLock {
         )? {
             Some(reservation) => reservation,
             None => {
-                return refusal_before_admission(&attribution, REFUSED_EXIT_CODE);
+                return refusal_before_admission(tool_root, &attribution, REFUSED_EXIT_CODE);
             }
         };
         loop {
@@ -5113,7 +5126,7 @@ impl ValidateLock {
                     {
                         drop(box_anchors);
                         self.remove_own_global_waiter(&args, &owner)?;
-                        return stale_base_refusal_with_record(&attribution, error);
+                        return stale_base_refusal_with_record(tool_root, &attribution, error);
                     }
                     self.remove_own_global_waiter(&args, &owner)?;
                     break;
@@ -5125,7 +5138,7 @@ impl ValidateLock {
                         "REFUSED: validate yield state UNKNOWN ({}): {}; absence is not permission",
                         boundary.reason_code, boundary.detail
                     );
-                    return refusal_before_admission(&attribution, REFUSED_EXIT_CODE);
+                    return refusal_before_admission(tool_root, &attribution, REFUSED_EXIT_CODE);
                 }
                 YieldState::Yield => {
                     eprintln!("validate-lock: YIELD for owner watch: {}", boundary.detail);
@@ -5134,7 +5147,7 @@ impl ValidateLock {
                         self.wait_for_owner_watch_yield(&args.agent, args.wait, args.no_wait)?;
                     if yield_status != 0 {
                         self.remove_own_global_waiter(&args, &owner)?;
-                        return refusal_before_admission(&attribution, yield_status);
+                        return refusal_before_admission(tool_root, &attribution, yield_status);
                     }
                     (box_anchors, slot) = match self.wait_for_global_turn(
                         &args,
@@ -5144,7 +5157,13 @@ impl ValidateLock {
                         state_root,
                     )? {
                         Some(reservation) => reservation,
-                        None => return refusal_before_admission(&attribution, REFUSED_EXIT_CODE),
+                        None => {
+                            return refusal_before_admission(
+                                tool_root,
+                                &attribution,
+                                REFUSED_EXIT_CODE,
+                            )
+                        }
                     };
                 }
             }
@@ -5165,7 +5184,7 @@ impl ValidateLock {
         };
         if let Some(reason) = foreign {
             eprintln!("REFUSED: {reason}");
-            return refusal_before_admission(&attribution, REFUSED_EXIT_CODE);
+            return refusal_before_admission(tool_root, &attribution, REFUSED_EXIT_CODE);
         }
 
         // Admission: block FIFO, or refuse immediately under --no-wait. Never
@@ -5200,13 +5219,13 @@ impl ValidateLock {
                     eprintln!(
                         "REFUSED: owner watch has priority at this free boundary (~{seconds_left}s): {reason}"
                     );
-                    return refusal_before_admission(&attribution, REFUSED_EXIT_CODE);
+                    return refusal_before_admission(tool_root, &attribution, REFUSED_EXIT_CODE);
                 }
                 AcquireToken::YieldUnknown { reason } => {
                     eprintln!(
                         "REFUSED: validate yield state UNKNOWN: {reason}; absence is not permission"
                     );
-                    return refusal_before_admission(&attribution, REFUSED_EXIT_CODE);
+                    return refusal_before_admission(tool_root, &attribution, REFUSED_EXIT_CODE);
                 }
                 AcquireToken::Held {
                     agent,
@@ -5218,14 +5237,14 @@ impl ValidateLock {
                     eprintln!(
                         "REFUSED: box-exclusive lock held by {agent} running {kind} {target}, ~{seconds_left}s left; {ahead} ahead in queue"
                     );
-                    return refusal_before_admission(&attribution, REFUSED_EXIT_CODE);
+                    return refusal_before_admission(tool_root, &attribution, REFUSED_EXIT_CODE);
                 }
                 AcquireToken::WaitTurn { head, ahead } => {
                     eprintln!(
                         "REFUSED: box-exclusive lock free but {head} is ahead of {} in the FIFO queue, ~0s left; {ahead} ahead in queue",
                         args.agent
                     );
-                    return refusal_before_admission(&attribution, REFUSED_EXIT_CODE);
+                    return refusal_before_admission(tool_root, &attribution, REFUSED_EXIT_CODE);
                 }
             }
         } else {
@@ -5237,7 +5256,7 @@ impl ValidateLock {
                 args.hold,
             )?;
             if acquire_status != 0 {
-                return refusal_before_admission(&attribution, acquire_status);
+                return refusal_before_admission(tool_root, &attribution, acquire_status);
             }
         }
 
@@ -5246,6 +5265,7 @@ impl ValidateLock {
             return Err(error);
         }
         let admitted = match publish_run_admission_result(
+            tool_root,
             &attribution,
             validate_run_handle::AdmissionState::Admitted,
             None,
@@ -6124,6 +6144,7 @@ mod tests {
         let args = attribution_args(Some(record.clone()));
         let verified = verify_run_attribution(
             &root,
+            &root,
             &args,
             "0::/user.slice/user-1.slice/validate-attributed.service\n",
         )
@@ -6136,7 +6157,7 @@ mod tests {
             pid: 123,
             start_ticks: 456,
         };
-        publish_run_process_identity(&verified.record, &owner)
+        publish_run_process_identity(&root, &verified.record, &owner)
             .expect("complete identity must be published before anchor acquisition");
         let published: serde_json::Value =
             serde_json::from_str(&fs::read_to_string(&verified.record).unwrap()).unwrap();
@@ -6155,17 +6176,8 @@ mod tests {
         let _ = fs::remove_dir_all(root);
     }
 
-    fn current_validation_attribution_fixture(
-        name: &str,
-    ) -> (PathBuf, PathBuf, RunArgs, VerifiedRunAttribution) {
-        let root = env::temp_dir().join(format!(
-            "ci-hub-attribution-current-{name}-{}-{}",
-            std::process::id(),
-            epoch_seconds().unwrap()
-        ));
-        let runs = root.join("ignored/validate/runs");
+    fn write_run_handle_authority(root: &Path) {
         let authority_dir = root.join("ci-hub/validate");
-        fs::create_dir_all(&runs).unwrap();
         fs::create_dir_all(&authority_dir).unwrap();
         fs::write(
             authority_dir.join("run_registry.py"),
@@ -6182,8 +6194,10 @@ mod tests {
             include_str!("../validate/final_validate_status.py"),
         )
         .unwrap();
-        let record = runs.join(format!("{name}.json"));
-        let current = serde_json::json!({
+    }
+
+    fn current_validation_record(name: &str) -> serde_json::Value {
+        serde_json::json!({
             "schema_version": 1,
             "kind": "validate",
             "state": "launching",
@@ -6206,14 +6220,100 @@ mod tests {
             "validate_lock_child_deadline_seconds": 3600,
             "e2e_result_root": "/tmp/e2e",
             "safe_ci_dag_runner_log_dir": "/tmp/dag",
-            "hermit_run_timeout_seconds": 3300
-        });
+            "hermit_run_timeout_seconds": 3300,
+            "commit_status_publication": {
+                "state": "not-attempted",
+                "recorded_at": "2026-08-31T12:16:24Z",
+                "repository": "rrnewton/hermit",
+                "sha": HEX_SHA,
+                "reason": "canonical verdict is not yet available"
+            }
+        })
+    }
+
+    fn current_validation_attribution_fixture(
+        name: &str,
+    ) -> (PathBuf, PathBuf, RunArgs, VerifiedRunAttribution) {
+        let root = env::temp_dir().join(format!(
+            "ci-hub-attribution-current-{name}-{}-{}",
+            std::process::id(),
+            epoch_seconds().unwrap()
+        ));
+        let runs = root.join("ignored/validate/runs");
+        fs::create_dir_all(&runs).unwrap();
+        write_run_handle_authority(&root);
+        let record = runs.join(format!("{name}.json"));
+        let current = current_validation_record(name);
         fs::write(&record, serde_json::to_vec(&current).unwrap()).unwrap();
         let args = attribution_args(Some(record.clone()));
         let cgroup = format!("0::/user.slice/user-1.slice/{name}.service\n");
-        let verified = verify_run_attribution(&root, &args, &cgroup)
+        let verified = verify_run_attribution(&root, &root, &args, &cgroup)
             .expect("current run identity must be attributable through the shared contract");
         (root, record, args, verified)
+    }
+
+    #[test]
+    fn validate_lock_uses_tool_authority_for_shared_current_handles() {
+        let root = env::temp_dir().join(format!(
+            "ci-hub-attribution-split-authority-{}-{}",
+            std::process::id(),
+            epoch_seconds().unwrap()
+        ));
+        let tool_root = root.join("tool");
+        let state_root = root.join("state");
+        write_run_handle_authority(&tool_root);
+        let stale_authority_dir = state_root.join("ci-hub/validate");
+        let runs = state_root.join("ignored/validate/runs");
+        fs::create_dir_all(&stale_authority_dir).unwrap();
+        fs::create_dir_all(&runs).unwrap();
+        fs::write(
+            stale_authority_dir.join("run_registry.py"),
+            "import sys\nprint('run_registry: REFUSED: stale state-root authority executed', file=sys.stderr)\nraise SystemExit(2)\n",
+        )
+        .unwrap();
+
+        let name = "validate-split-authority";
+        let record = runs.join(format!("{name}.json"));
+        let current = current_validation_record(name);
+        fs::write(&record, serde_json::to_vec(&current).unwrap()).unwrap();
+        let args = attribution_args(Some(record.clone()));
+        let cgroup = format!("0::/user.slice/user-1.slice/{name}.service\n");
+        let verified = verify_run_attribution(&tool_root, &state_root, &args, &cgroup)
+            .expect("known fields must be read by the exact executing tool authority");
+        let owner = ProcessOwner {
+            host: "fixture".into(),
+            boot_id: "boot-fixture".into(),
+            pid: 123,
+            start_ticks: 456,
+        };
+        publish_run_process_identity(&tool_root, &verified.record, &owner)
+            .expect("the exact tool authority must bind process identity");
+        let admitted = publish_run_admission_result(
+            &tool_root,
+            &verified,
+            validate_run_handle::AdmissionState::Admitted,
+            None,
+            None,
+        )
+        .expect("the exact tool authority must publish admission")
+        .expect("a current handle must return its projection");
+        assert_eq!(
+            admitted.branch.as_deref(),
+            Some("codex/validate-branch-provenance")
+        );
+
+        let mut unknown = current;
+        unknown["unexpected_contract_field"] = serde_json::json!(true);
+        fs::write(&record, serde_json::to_vec(&unknown).unwrap()).unwrap();
+        let error = verify_run_attribution(&tool_root, &state_root, &args, &cgroup)
+            .expect_err("a truly unknown field must still refuse");
+        assert!(
+            error
+                .to_string()
+                .contains("unknown field(s) for kind 'validate': unexpected_contract_field"),
+            "{error}"
+        );
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
@@ -6228,8 +6328,9 @@ mod tests {
             pid: 123,
             start_ticks: 456,
         };
-        publish_run_process_identity(&verified.record, &owner).unwrap();
+        publish_run_process_identity(&root, &verified.record, &owner).unwrap();
         let admitted = publish_run_admission_result(
+            &root,
             &verified,
             validate_run_handle::AdmissionState::Admitted,
             None,
@@ -6258,6 +6359,7 @@ mod tests {
         fs::write(&record, serde_json::to_vec(&invalid).unwrap()).unwrap();
         let error = verify_run_attribution(
             &root,
+            &root,
             &args,
             "0::/user.slice/user-1.slice/validate-attributed.service\n",
         )
@@ -6285,14 +6387,15 @@ mod tests {
                 pid: 123,
                 start_ticks: 456,
             };
-            let error = prepare_run_before_admission_with(&args, &verified, Ok(owner), || {
-                if subreaper_error {
-                    Err(io::Error::other("fixture subreaper failure"))
-                } else {
-                    panic!("bad --max must refuse before subreaper setup")
-                }
-            })
-            .unwrap_err();
+            let error =
+                prepare_run_before_admission_with(&root, &args, &verified, Ok(owner), || {
+                    if subreaper_error {
+                        Err(io::Error::other("fixture subreaper failure"))
+                    } else {
+                        panic!("bad --max must refuse before subreaper setup")
+                    }
+                })
+                .unwrap_err();
             if bad_max {
                 assert!(matches!(error, ValidateLockError::BadMax));
             } else {
@@ -6321,6 +6424,7 @@ mod tests {
         fs::create_dir_all(root.join("ignored/validate/runs")).unwrap();
         let error = verify_run_attribution(
             &root,
+            &root,
             &attribution_args(None),
             "0::/user.slice/validate-attributed.service\n",
         )
@@ -6336,6 +6440,7 @@ mod tests {
         )
         .unwrap();
         let error = verify_run_attribution(
+            &root,
             &root,
             &attribution_args(Some(record)),
             "0::/user.slice/validate-attributed.service\n",
@@ -6365,7 +6470,7 @@ mod tests {
             pid: 3,
             start_ticks: 4,
         };
-        let error = publish_run_process_identity(&record, &owner)
+        let error = publish_run_process_identity(&root, &record, &owner)
             .expect_err("a pre-existing different identity must fail closed");
         assert!(
             error.to_string().contains("different process_identity"),
@@ -6418,7 +6523,7 @@ mod tests {
             ),
         ] {
             fs::write(&record, &original).unwrap();
-            let error = publish_run_process_identity(&record, &owner)
+            let error = publish_run_process_identity(&root, &record, &owner)
                 .expect_err("malformed identity must be refused");
             assert_eq!(
                 error.to_string(),
@@ -8534,7 +8639,7 @@ wait
             lock.reclaim_dead(),
             Err(ValidateLockError::ReclaimNotProven(_))
         ));
-        lock.status().unwrap();
+        lock.status(paths.lock.parent().unwrap()).unwrap();
 
         for residual in &residuals {
             let _ = signal_exact_process(residual, libc::SIGKILL).unwrap();
@@ -8796,7 +8901,7 @@ wait
                 lock.reclaim_dead(),
                 Err(ValidateLockError::ReclaimNotProven(_))
             ));
-            lock.status().unwrap();
+            lock.status(paths.lock.parent().unwrap()).unwrap();
 
             if let Some((leader, pgid)) = published {
                 signal_group(libc::SIGKILL, pgid);
@@ -9615,7 +9720,7 @@ exit 0
     fn global_status_names_the_exact_live_holder() {
         let (anchor, record, held, expected) = attributed_status_fixture("held");
         assert_eq!(
-            observe_global_validate_anchor(&anchor),
+            observe_global_validate_anchor(record.parent().unwrap(), &anchor),
             GlobalValidateObservation::Held(expected)
         );
         drop(held);
@@ -9632,7 +9737,7 @@ exit 0
         ));
         fs::create_dir_all(&dir).unwrap();
         assert_eq!(
-            observe_global_validate_anchor(&dir.join("absent-anchor")),
+            observe_global_validate_anchor(&dir, &dir.join("absent-anchor")),
             GlobalValidateObservation::Free
         );
         let _ = fs::remove_dir_all(&dir);
@@ -9645,7 +9750,7 @@ exit 0
         let (anchor, record, held, _) = attributed_status_fixture("unknown");
         fs::remove_file(&record).unwrap();
         assert!(matches!(
-            observe_global_validate_anchor(&anchor),
+            observe_global_validate_anchor(record.parent().unwrap(), &anchor),
             GlobalValidateObservation::Unknown(reason)
                 if reason.contains("exact run record")
         ));

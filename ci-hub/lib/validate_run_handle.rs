@@ -11,7 +11,6 @@
 use crate::bounded_output::BoundedOutput;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
-use std::env;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -103,42 +102,6 @@ pub struct UnreadableRecord {
 pub struct InspectionReport {
     pub records: Vec<InspectedRecord>,
     pub unreadable: Vec<UnreadableRecord>,
-}
-
-pub fn workspace_root_for_record(record: &Path) -> Result<PathBuf, String> {
-    let runs = record
-        .parent()
-        .ok_or_else(|| format!("run record has no parent: {}", record.display()))?;
-    let validate = runs
-        .parent()
-        .ok_or_else(|| format!("run record has no validate directory: {}", record.display()))?;
-    let ignored = validate
-        .parent()
-        .ok_or_else(|| format!("run record has no ignored directory: {}", record.display()))?;
-    ignored
-        .parent()
-        .map(Path::to_path_buf)
-        .ok_or_else(|| format!("run record has no workspace root: {}", record.display()))
-}
-
-/// Prefer the running ci-hub source tree over the shared state tree.
-///
-/// `validate-run --state-root` deliberately writes handles in the primary
-/// checkout while executing tooling from a feature worktree. During that
-/// coordinated rollout the state tree may not contain the current authority
-/// yet, so deriving the checker only from the record would make the new writer
-/// unable to start. `RUST_SCRIPT_PATH` is the same source identity used by the
-/// ci-hub front door; direct binaries fall back to the record's workspace.
-pub fn authority_root_for_record(record: &Path) -> Result<PathBuf, String> {
-    if let Some(source) = env::var_os("RUST_SCRIPT_PATH").filter(|value| !value.is_empty()) {
-        let source = PathBuf::from(source);
-        if source.file_name().and_then(|name| name.to_str()) == Some("ci-hub.rs") {
-            if let Some(root) = source.parent().and_then(Path::parent) {
-                return Ok(root.to_path_buf());
-            }
-        }
-    }
-    workspace_root_for_record(record)
 }
 
 fn authority(root: &Path) -> PathBuf {
@@ -351,15 +314,6 @@ mod tests {
             "safe_ci_dag_runner_log_dir": "/tmp/dag",
             "hermit_run_timeout_seconds": 3300
         })
-    }
-
-    #[test]
-    fn run_record_path_recovers_the_parent_workspace() {
-        let record = Path::new("/parent/ignored/validate/runs/validate-a.json");
-        assert_eq!(
-            workspace_root_for_record(record).unwrap(),
-            Path::new("/parent")
-        );
     }
 
     #[test]
