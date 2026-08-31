@@ -2815,6 +2815,12 @@ class StartUnitTest(unittest.TestCase):
         self.assertEqual("1", frozen_env["VALIDATE_IGNORE_CACHE"])
         self.assertNotIn("VALIDATE_LABEL_PR", frozen_env)
         self.assertIn("--no-label-pr", systemd_runs[1])
+        self.assertIn(
+            str(self.root / "hermit/scripts/validate.rs"),
+            systemd_runs[1],
+            "frozen runs need the current front door even when the measured target predates it",
+        )
+        self.assertNotIn("./scripts/validate.rs", systemd_runs[1])
         clone_index = next(
             (
                 index
@@ -2864,7 +2870,7 @@ class StartUnitTest(unittest.TestCase):
         self.assertNotIn(
             self.root,
             Path(record["checkout"]).parents,
-            "a frozen checkout inside dev-hermit triggers the canonical product front door, which correctly rejects frozen-validate authority",
+            "the frozen checkout needs refs independent from the dev-hermit worktree family",
         )
 
         result_path = Path(record["result_record"])

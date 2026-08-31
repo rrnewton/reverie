@@ -864,11 +864,9 @@ def validate_checkout_parent(root: Path) -> Path:
 def frozen_checkout_parent(root: Path) -> Path:
     """Return a guest-visible checkout parent outside the dev-hermit boundary.
 
-    Hermit's product front door accepts canonical current-main validation. A
-    frozen run instead holds ``frozen-validate`` authority and writes an
-    explicitly non-canonical result. Keeping its disposable checkout outside
-    dev-hermit prevents the product front door from mistaking that deliberate
-    distinction for an unadmitted direct invocation.
+    A frozen run needs independent refs so updating its historical origin/main
+    view cannot mutate another checkout's view. The product front door still
+    applies through ``DEV_HERMIT_PARENT`` and verifies the frozen holder.
     """
     candidate = (root.parent / f".{root.name}-frozen-validate").resolve()
     if candidate == root or root in candidate.parents:
@@ -2719,6 +2717,28 @@ def build_systemd_command(
         )
         if make_validate:
             child.extend(["with-proxy", "make", "validate"])
+        elif frozen_validate and unit_tool_prefix is None:
+            # The target may predate frozen-holder admission. Run the current
+            # validation driver against the historical checkout so the lock
+            # boundary is fixed once in current tooling rather than copied into
+            # every historical commit that the feature exists to measure.
+            child.extend(
+                [
+                    "with-proxy",
+                    str(root / "hermit/scripts/validate.rs"),
+                    *(validate_args or ["full"]),
+                ]
+            )
+        elif frozen_validate:
+            child.extend(
+                [
+                    "/bin/sh",
+                    "-c",
+                    'exec with-proxy "$DEV_HERMIT_TOOL_ROOT/hermit/scripts/validate.rs" "$@"',
+                    "frozen-validate",
+                    *(validate_args or ["full"]),
+                ]
+            )
         else:
             child.extend(
                 ["with-proxy", "./scripts/validate.rs", *(validate_args or ["full"])]

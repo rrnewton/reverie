@@ -99,6 +99,13 @@ their typed projections. Other schema-1 handles remain readable only as
 historical input so a process started before deployment can finish without being
 rewritten into the current contract.
 
+The lock authority keeps execution admission separate from canonical receipt
+authority. `lock_admissible=true` means the holder, owner identity, anchor, and
+cleanup state are valid for that holder's validation kind. `admissible=true`
+additionally means the run may support a canonical current-main receipt. A
+`frozen-validate` holder therefore has the first property and deliberately not
+the second.
+
 `E2E_RESULTS` contains the harness's per-cell JSONL and JUnit output, including
 failure reasons. Compare its per-category cells with Hermit's existing
 `ci/expected-e2e-plan.json`; that committed plan is the denominator that

@@ -83,7 +83,10 @@ To deliberately repeat an older Hermit SHA after main advances, add
 `--frozen-validate` before `--`. That path still checks the immutable validation
 floors and box-exclusive lock, forces a real uncached run, and records the result
 outside the canonical receipt ledger with `qualifying_receipt=false` and the
-freshly observed current-main SHA. Ordinary validation remains freshness-gated.
+freshly observed current-main SHA. It runs the current validation driver against
+the historical checkout, so a target that predates frozen-holder admission can
+still be measured without changing the target tree. Ordinary validation remains
+freshness-gated.
 Follow skill `hermit-validation-authority` for the required base-currency check, the sole
 production path, and whether any resulting evidence qualifies. This README
 does not restate those decisions.

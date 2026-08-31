@@ -423,11 +423,11 @@ pub enum Kind {
     /// contained by the target. `Bench` skips both checks because it is not
     /// validation evidence; this kind changes only the moving-tip predicate.
     ///
-    /// ⚠️ ITS RECEIPT IS NOT CANONICAL CURRENT-MAIN AUTHORITY. The holder-kind
-    /// allowlist in `canonical_authority_status` deliberately does NOT include
-    /// it, so a frozen receipt can never be read as evidence that main is green.
-    /// That exclusion is the whole safety property: the run is admitted, and its
-    /// answer is labelled for its own sha.
+    /// ⚠️ ITS RECEIPT IS NOT CANONICAL CURRENT-MAIN AUTHORITY. Authority status
+    /// reports the fully checked holder as `lock_admissible`, but leaves
+    /// `admissible` false, so a frozen receipt can never be read as evidence that
+    /// main is green. That separation is the whole safety property: the run is
+    /// admitted, and its answer is labelled for its own sha.
     FrozenValidate,
     Bench,
 }
@@ -1014,6 +1014,11 @@ impl AuthorityOwner {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 struct AuthorityStatus {
     schema_version: u32,
+    /// Whether the live holder is valid for executing the validation kind it
+    /// acquired. This is deliberately separate from `admissible`: a frozen
+    /// validation may run against its exact target, but it is never canonical
+    /// current-main authority.
+    lock_admissible: bool,
     admissible: bool,
     state: AuthorityState,
     reason_code: Option<String>,
@@ -1034,6 +1039,7 @@ impl AuthorityStatus {
     ) -> Self {
         Self {
             schema_version: 1,
+            lock_admissible: false,
             admissible: false,
             state,
             reason_code: Some(reason_code.to_string()),
@@ -1051,9 +1057,29 @@ impl AuthorityStatus {
     ) -> Self {
         Self {
             schema_version: 1,
+            lock_admissible: true,
             admissible: true,
             state: AuthorityState::Held,
             reason_code: None,
+            holder: Some(holder),
+            owner: Some(owner),
+            canonical_anchor_held: true,
+            cleanup_state,
+        }
+    }
+
+    fn admitted_noncanonical(
+        reason_code: &str,
+        holder: AuthorityHolder,
+        owner: AuthorityOwner,
+        cleanup_state: AuthorityCleanupState,
+    ) -> Self {
+        Self {
+            schema_version: 1,
+            lock_admissible: true,
+            admissible: false,
+            state: AuthorityState::Held,
+            reason_code: Some(reason_code.to_string()),
             holder: Some(holder),
             owner: Some(owner),
             canonical_anchor_held: true,
@@ -4341,14 +4367,12 @@ impl ValidateLock {
                 cleanup_state,
             ));
         }
-        // ⚠️ `frozen-validate` IS DELIBERATELY ABSENT FROM THIS ALLOWLIST.
-        // A frozen run is admitted without containing current main, so its
-        // receipt is evidence about its own sha and nothing else. Admitting it
-        // here would let a receipt for a superseded tree read as canonical
-        // current-main authority -- the exact confusion the kind is designed to
-        // keep out. The list is a string allowlist, so a new kind is excluded by
-        // default; this comment records that the default is the intended answer.
-        if !matches!(holder_record.kind.as_str(), "validate" | "reverie-validate") {
+        // Only validation kinds may reach the common holder checks below. A
+        // frozen holder is valid for executing its exact-target run, but is
+        // classified as noncanonical only after its host and owner identity
+        // have passed the same checks as ordinary validation.
+        let holder_kind = Kind::parse(&holder_record.kind).ok();
+        if !holder_kind.is_some_and(Kind::is_validation) {
             return Ok(AuthorityStatus::refused(
                 AuthorityState::Held,
                 "canonical-holder-kind-not-validate",
@@ -4403,6 +4427,14 @@ impl ValidateLock {
                 "authority owner disappeared after canonical classification".into(),
             )
         })?;
+        if holder_kind == Some(Kind::FrozenValidate) {
+            return Ok(AuthorityStatus::admitted_noncanonical(
+                "canonical-holder-kind-not-validate",
+                holder,
+                owner,
+                cleanup_state,
+            ));
+        }
         Ok(AuthorityStatus::admitted(holder, owner, cleanup_state))
     }
 
@@ -6743,6 +6775,7 @@ mod tests {
         env::remove_var("CI_HUB_VALIDATE_LOCK_OWNER_PID");
         env::remove_var("CI_HUB_VALIDATE_LOCK_OWNER_FILE");
         assert_eq!(status.schema_version, 1);
+        assert!(!status.lock_admissible);
         assert!(!status.admissible);
         assert_eq!(status.state, AuthorityState::Free);
         assert_eq!(
@@ -6756,6 +6789,7 @@ mod tests {
 
         let json = serde_json::to_value(&status).unwrap();
         assert_eq!(json["schema_version"], 1);
+        assert_eq!(json["lock_admissible"], false);
         assert_eq!(json["state"], "free");
         assert_eq!(json["reason_code"], "canonical-lock-not-held");
         assert_eq!(json["holder"], serde_json::Value::Null);
@@ -6898,6 +6932,11 @@ mod tests {
                 .then(|| BoxExclusionAnchor::take(&paths.anchor, 0).unwrap().unwrap());
 
             let status = lock.with_guard(|| lock.authority_status_guarded()).unwrap();
+            assert!(
+                !status.lock_admissible,
+                "case {} became lock-admissible",
+                case.name
+            );
             assert!(!status.admissible, "case {} admitted", case.name);
             assert_eq!(status.state, case.state, "case {} state", case.name);
             assert_eq!(
@@ -6908,6 +6947,57 @@ mod tests {
             );
             let _ = fs::remove_dir_all(root);
         }
+    }
+
+    #[test]
+    fn frozen_authority_is_lock_admissible_but_not_canonical() {
+        let paths = temp_paths("authority-frozen-validate");
+        let root = paths.lock.parent().unwrap().to_path_buf();
+        let lock = ValidateLock {
+            paths: paths.clone(),
+        };
+        lock.write_holder(
+            &new_holder("authority-test", Kind::FrozenValidate, HEX_SHA, 60, None).unwrap(),
+        )
+        .unwrap();
+        write_truncated(
+            &paths.owner,
+            current_process_owner().unwrap().render().as_bytes(),
+        )
+        .unwrap();
+        let _anchor = BoxExclusionAnchor::take(&paths.anchor, 0)
+            .unwrap()
+            .expect("frozen authority anchor must be available");
+
+        let status = lock.with_guard(|| lock.authority_status_guarded()).unwrap();
+        assert!(status.lock_admissible);
+        assert!(!status.admissible);
+        assert_eq!(status.state, AuthorityState::Held);
+        assert_eq!(
+            status.reason_code.as_deref(),
+            Some("canonical-holder-kind-not-validate")
+        );
+        assert_eq!(
+            status.holder.as_ref().map(|holder| holder.kind.as_str()),
+            Some("frozen-validate")
+        );
+        assert_eq!(
+            status.owner.as_ref().map(|owner| owner.liveness),
+            Some(AuthorityOwnerLiveness::Alive)
+        );
+
+        let mut invalid_owner = current_process_owner().unwrap();
+        invalid_owner.start_ticks = invalid_owner.start_ticks.saturating_add(1);
+        write_truncated(&paths.owner, invalid_owner.render().as_bytes()).unwrap();
+        let invalid = lock.with_guard(|| lock.authority_status_guarded()).unwrap();
+        assert!(!invalid.lock_admissible);
+        assert!(!invalid.admissible);
+        assert_eq!(invalid.state, AuthorityState::Orphaned);
+        assert_eq!(
+            invalid.reason_code.as_deref(),
+            Some("canonical-owner-start-ticks-mismatch")
+        );
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
@@ -7033,6 +7123,7 @@ mod tests {
         let first = lock.with_guard(|| lock.authority_status_guarded()).unwrap();
         let second = lock.with_guard(|| lock.authority_status_guarded()).unwrap();
         for status in [&first, &second] {
+            assert!(status.lock_admissible, "real run must have a valid holder");
             assert!(
                 status.admissible,
                 "real run must be authoritative: {status:?}"
