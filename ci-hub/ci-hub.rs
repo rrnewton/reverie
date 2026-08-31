@@ -5770,6 +5770,39 @@ fn recent_row_verdict(row: &HistoryRow, repo: &str) -> &'static str {
     }
 }
 
+fn recent_row_nonqualification_reason(row: &HistoryRow, repo: &str) -> String {
+    const GENERIC: &str = "receipt did not qualify";
+
+    // Keep the operator-facing dirty-tree wording promised by validate-status.
+    // The shared predicate groups this with several identity/result failures,
+    // but this exact fact is carried directly by the row and needs no policy
+    // inference.
+    if row.tree_dirty == Some(true) {
+        return "dirty tree".into();
+    }
+    if repo != CANONICAL_VALIDATE_REPO {
+        return GENERIC.into();
+    }
+    let Some(sha) = row.commit.as_deref() else {
+        return GENERIC.into();
+    };
+    match crate::qualifying_receipt::row_qualification(
+        row,
+        sha,
+        crate::qualifying_receipt::active(),
+    ) {
+        crate::qualifying_receipt::Qualification::Refused(reason)
+        | crate::qualifying_receipt::Qualification::Indeterminate(reason) => reason.into(),
+        crate::qualifying_receipt::Qualification::FullCoverage
+        | crate::qualifying_receipt::Qualification::CountsOnlyGrandfathered { .. } => {
+            // qualify_canonical_receipt applies additional canonical-receipt
+            // shape checks after the shared predicate. It exposes no reason for
+            // those refusals, so do not invent one here.
+            GENERIC.into()
+        }
+    }
+}
+
 fn recent_row_summary(row: &HistoryRow, verdict: &str) -> String {
     // ⚠️ AN ABORTED NODE IS A CONSEQUENCE, A FAILED NODE IS A CAUSE, AND THIS
     // SUMMARY USED TO MERGE THEM. Both carry `result: "fail"`, so filtering on
@@ -5837,6 +5870,9 @@ fn recent_row_summary(row: &HistoryRow, verdict: &str) -> String {
             aborted.len()
         );
     }
+    // `summary` is serialized by validate-status schemas 6/7/8. Keep this
+    // legacy wording byte-stable; the human-only COMMIT-VERDICT annotation is
+    // derived separately from canonical qualification.
     match verdict {
         "VALIDATED" => "passed".into(),
         "FAILED" => "full run failed".into(),
@@ -6337,6 +6373,8 @@ struct ValidateStatusEntry {
     run_number: Option<u64>,
     verdict: Option<String>,
     result: Option<String>,
+    #[serde(skip)]
+    nonqualification_reason: Option<String>,
     in_progress: bool,
     sha: Option<String>,
     branch: Option<String>,
@@ -6683,6 +6721,7 @@ fn live_validate_runs_from(
                 }),
                 verdict: None,
                 result: None,
+                nonqualification_reason: None,
                 in_progress: true,
                 sha: Some(target),
                 branch: None,
@@ -6785,6 +6824,7 @@ fn live_validate_runs_from(
             }),
             verdict: None,
             result: None,
+            nonqualification_reason: None,
             in_progress: true,
             sha: Some(record.target),
             branch: None,
@@ -7000,11 +7040,11 @@ fn validate_status_table_columns(
     });
     table.extend([
         ValidateStatusTableColumn {
-            header: "RESULT",
+            header: "TEST-RESULT",
             alignment: ValidateStatusAlignment::Left,
         },
         ValidateStatusTableColumn {
-            header: "VERDICT",
+            header: "COMMIT-VERDICT",
             alignment: ValidateStatusAlignment::Left,
         },
     ]);
@@ -7088,9 +7128,14 @@ fn validate_status_values(
         display_validate_result(entry.result.as_deref())
     };
     let verdict = if entry.in_progress {
-        "-"
+        "-".into()
+    } else if let (Some(verdict), Some(reason)) = (
+        entry.verdict.as_deref(),
+        entry.nonqualification_reason.as_deref(),
+    ) {
+        format!("{verdict} ({reason})")
     } else {
-        entry.verdict.as_deref().unwrap_or("-")
+        entry.verdict.as_deref().unwrap_or("-").into()
     };
     let mut fields = Vec::new();
     if commit_timeline {
@@ -7107,7 +7152,7 @@ fn validate_status_values(
             .map(|number| number.to_string())
             .unwrap_or_else(|| missing.into()),
     );
-    fields.extend([result, verdict.into()]);
+    fields.extend([result, verdict]);
     for column in columns {
         fields.push(match column {
             ValidateStatusColumn::Sha => {
@@ -7179,6 +7224,22 @@ fn validate_status_table(
         .iter()
         .map(|entry| validate_status_values(entry, columns, times, now, commit_timeline, log_paths))
         .collect::<Vec<_>>();
+    render_validate_status_table(&table_columns, &rows)
+}
+
+fn render_validate_status_table(
+    table_columns: &[ValidateStatusTableColumn],
+    rows: &[Vec<String>],
+) -> Vec<String> {
+    for (row_index, row) in rows.iter().enumerate() {
+        assert_eq!(
+            row.len(),
+            table_columns.len(),
+            "validate-status table row {row_index} has {} values for {} headers",
+            row.len(),
+            table_columns.len()
+        );
+    }
     let widths = table_columns
         .iter()
         .enumerate()
@@ -7221,6 +7282,8 @@ fn finished_validate_status_entry(
     include_log_paths: bool,
 ) -> ValidateStatusEntry {
     let verdict = recent_row_verdict(row, repo);
+    let nonqualification_reason =
+        (verdict == "NOT-VALIDATED").then(|| recent_row_nonqualification_reason(row, repo));
     let tree = row.tree().ok().flatten().map(str::to_string);
     ValidateStatusEntry {
         depth: None,
@@ -7230,6 +7293,7 @@ fn finished_validate_status_entry(
             .and_then(serde_json::Value::as_u64),
         verdict: Some(verdict.into()),
         result: row.result.clone(),
+        nonqualification_reason,
         in_progress: false,
         sha: row.commit.clone(),
         branch: row
@@ -7331,6 +7395,7 @@ fn no_run_commit_timeline_entry(sha: &str, depth: usize) -> ValidateStatusEntry 
         run_number: None,
         verdict: Some("NO-RUN".into()),
         result: None,
+        nonqualification_reason: None,
         in_progress: false,
         sha: Some(sha.into()),
         branch: None,
@@ -7360,6 +7425,7 @@ fn unreadable_validate_status_entry(
         run_number: failure.run_number,
         verdict: Some("LEDGER-UNREADABLE".into()),
         result: failure.result.clone(),
+        nonqualification_reason: None,
         in_progress: false,
         sha: failure.commit.clone(),
         branch: None,
@@ -9343,11 +9409,11 @@ mod tests {
         );
         assert_eq!(
             table[0],
-            "RUN RESULT VERDICT   SHA          STARTED/FINISHED ELAPSED HOST            TESTS-EXECUTED TESTS-PASSED SUMMARY"
+            "RUN TEST-RESULT COMMIT-VERDICT SHA          STARTED/FINISHED ELAPSED HOST            TESTS-EXECUTED TESTS-PASSED SUMMARY"
         );
         let line = &table[1];
         assert!(
-            line.starts_with("701 PASS   VALIDATED 630f44aab7fd"),
+            line.starts_with("701 PASS        VALIDATED      630f44aab7fd"),
             "{line}"
         );
         assert!(line.contains("1h36m ago"), "{line}");
@@ -9412,7 +9478,9 @@ mod tests {
             false,
         )[1];
         assert!(
-            mutated_line.starts_with("701 PASS   NOT-VALIDATED 630f44aab7fd"),
+            mutated_line.starts_with(
+                "701 PASS        NOT-VALIDATED (passed_tests != executed_tests for passing row) 630f44aab7fd"
+            ),
             "{mutated_line}"
         );
         assert!(
@@ -9713,7 +9781,7 @@ mod tests {
             true,
             true,
         );
-        assert!(table[0].starts_with("DEPTH RUN RESULT VERDICT"));
+        assert!(table[0].starts_with("DEPTH RUN TEST-RESULT COMMIT-VERDICT"));
         let no_run = &table[1];
         assert_eq!(
             no_run.split_whitespace().collect::<Vec<_>>(),
@@ -9962,6 +10030,7 @@ mod tests {
         let entry = finished_validate_status_entry(CANONICAL_VALIDATE_REPO, &row, false);
         assert_eq!(entry.verdict.as_deref(), Some("NOT-VALIDATED"));
         assert_eq!(entry.result.as_deref(), Some("pass"));
+        assert_eq!(entry.nonqualification_reason.as_deref(), Some("dirty tree"));
         assert_eq!(entry.tests_executed, Some(10));
         assert_eq!(entry.summary, "dirty tree");
         let now = chrono::DateTime::parse_from_rfc3339("2026-08-03T01:36:00Z")
@@ -9976,8 +10045,212 @@ mod tests {
             false,
         );
         let line = &table[1];
-        assert!(line.starts_with("  - PASS   NOT-VALIDATED"), "{line}");
+        assert!(
+            line.starts_with("  - PASS        NOT-VALIDATED (dirty tree)"),
+            "{line}"
+        );
         assert!(!line.contains("ran with"), "{line}");
+        let json = serde_json::to_value(&entry).unwrap();
+        assert_eq!(json["result"], serde_json::json!("pass"));
+        assert_eq!(json["verdict"], serde_json::json!("NOT-VALIDATED"));
+        assert_eq!(json["summary"], serde_json::json!("dirty tree"));
+        assert!(json.get("nonqualification_reason").is_none());
+    }
+
+    #[test]
+    fn recent_history_uses_the_canonical_concurrency_boundary() {
+        assert_eq!(
+            crate::qualifying_receipt::active()
+                .admission
+                .maximum_concurrent_validates,
+            Some(5),
+            "this bracket is tied to the live 5a2 admission policy"
+        );
+
+        let at_limit = history_row(schema5_receipt_value(5));
+        assert!(
+            qualify_canonical_receipt(&at_limit, RECEIPT_SHA).is_some(),
+            "the canonical predicate must accept its configured concurrency ceiling"
+        );
+        let at_limit_entry =
+            finished_validate_status_entry(CANONICAL_VALIDATE_REPO, &at_limit, false);
+        assert_eq!(at_limit_entry.verdict.as_deref(), Some("VALIDATED"));
+        assert_eq!(at_limit_entry.nonqualification_reason, None);
+        assert!(!at_limit_entry.summary.contains("ran with"));
+        let now = chrono::DateTime::parse_from_rfc3339("2026-08-03T01:36:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        let at_limit_table = validate_status_table(
+            std::slice::from_ref(&at_limit_entry),
+            &[ValidateStatusColumn::Sha],
+            ValidateStatusTimes::Relative,
+            now,
+            false,
+            false,
+        );
+        assert!(
+            at_limit_table[1].starts_with("  - PASS        VALIDATED"),
+            "{}",
+            at_limit_table[1]
+        );
+        assert!(!at_limit_table[1].contains("concurrent"));
+        assert!(!at_limit_table[1].contains("ran with"));
+
+        let above_limit = history_row(schema5_receipt_value(6));
+        let canonical_reason = match crate::qualifying_receipt::row_qualification(
+            &above_limit,
+            RECEIPT_SHA,
+            crate::qualifying_receipt::active(),
+        ) {
+            crate::qualifying_receipt::Qualification::Refused(reason) => reason,
+            other => {
+                panic!("expected canonical refusal above the concurrency ceiling, got {other:?}")
+            }
+        };
+        assert_eq!(canonical_reason, "shared evidence contract not satisfied");
+        assert!(qualify_canonical_receipt(&above_limit, RECEIPT_SHA).is_none());
+        let above_limit_entry =
+            finished_validate_status_entry(CANONICAL_VALIDATE_REPO, &above_limit, false);
+        assert_eq!(above_limit_entry.verdict.as_deref(), Some("NOT-VALIDATED"));
+        assert_eq!(
+            above_limit_entry.nonqualification_reason.as_deref(),
+            Some(canonical_reason)
+        );
+        let above_limit_table = validate_status_table(
+            std::slice::from_ref(&above_limit_entry),
+            &[ValidateStatusColumn::Sha],
+            ValidateStatusTimes::Relative,
+            now,
+            false,
+            false,
+        );
+        assert!(
+            above_limit_table[1].starts_with(
+                "  - PASS        NOT-VALIDATED (shared evidence contract not satisfied)"
+            ),
+            "{}",
+            above_limit_table[1]
+        );
+        let json = serde_json::to_value(&above_limit_entry).unwrap();
+        assert!(json.get("nonqualification_reason").is_none());
+    }
+
+    #[test]
+    fn recent_history_explains_a_dirty_failed_run_without_changing_json() {
+        let mut value = schema4_receipt_value();
+        value["run_number"] = serde_json::json!(1573);
+        value["commit_anchored"] = serde_json::json!(false);
+        value["tree_dirty"] = serde_json::json!(true);
+        value["result"] = serde_json::json!("fail");
+        value["raw_result"] = serde_json::json!("fail");
+        value["exit_code"] = serde_json::json!(1);
+        value["failures"] = serde_json::json!(1);
+        value["executed_tests"] = serde_json::json!(2299);
+        value["passed_tests"] = serde_json::json!(2286);
+        value["admission"] = serde_json::json!("ci-hub-validate-lock");
+        value["gates"] = serde_json::json!([{
+            "name": "e2e.manifest_c_programs",
+            "result": "fail",
+            "exit_code": 1
+        }]);
+        let entry =
+            finished_validate_status_entry(CANONICAL_VALIDATE_REPO, &history_row(value), false);
+
+        assert_eq!(entry.result.as_deref(), Some("fail"));
+        assert_eq!(entry.verdict.as_deref(), Some("NOT-VALIDATED"));
+        assert_eq!(entry.nonqualification_reason.as_deref(), Some("dirty tree"));
+        assert_eq!(entry.summary, "failed: e2e.manifest_c_programs");
+        let now = chrono::DateTime::parse_from_rfc3339("2026-08-03T01:36:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        let table = validate_status_table(
+            std::slice::from_ref(&entry),
+            &[ValidateStatusColumn::Sha],
+            ValidateStatusTimes::Relative,
+            now,
+            false,
+            false,
+        );
+        assert!(
+            table[1].starts_with("1573 FAIL        NOT-VALIDATED (dirty tree) 630f44aab7fd"),
+            "{}",
+            table[1]
+        );
+        assert!(
+            table[1].ends_with("failed: e2e.manifest_c_programs"),
+            "{}",
+            table[1]
+        );
+        let json = serde_json::to_value(&entry).unwrap();
+        assert_eq!(json["result"], serde_json::json!("fail"));
+        assert_eq!(json["verdict"], serde_json::json!("NOT-VALIDATED"));
+        assert_eq!(
+            json["summary"],
+            serde_json::json!("failed: e2e.manifest_c_programs")
+        );
+        assert!(json.get("nonqualification_reason").is_none());
+    }
+
+    #[test]
+    fn recent_history_clean_failure_has_no_nonqualification_reason() {
+        let mut value = schema4_receipt_value();
+        value["run_number"] = serde_json::json!(1574);
+        value["result"] = serde_json::json!("fail");
+        value["raw_result"] = serde_json::json!("fail");
+        value["exit_code"] = serde_json::json!(1);
+        value["failures"] = serde_json::json!(1);
+        value["passed_tests"] = serde_json::json!(785);
+        value["admission"] = serde_json::json!("ci-hub-validate-lock");
+        value["dag_jobs"] = serde_json::json!(4);
+        value["concurrent_validates"] = serde_json::json!(0);
+        value["known_flaky_failure"] = serde_json::json!(false);
+        value["gates"][1] = serde_json::json!({
+            "name": "test",
+            "result": "fail",
+            "exit_code": 1,
+            "failure_origin": "outer_gate",
+            "failed_substeps": []
+        });
+        let entry =
+            finished_validate_status_entry(CANONICAL_VALIDATE_REPO, &history_row(value), false);
+
+        assert_eq!(entry.result.as_deref(), Some("fail"));
+        assert_eq!(entry.verdict.as_deref(), Some("FAILED"));
+        assert_eq!(entry.nonqualification_reason, None);
+        let now = chrono::DateTime::parse_from_rfc3339("2026-08-03T01:36:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        let table = validate_status_table(
+            std::slice::from_ref(&entry),
+            &[ValidateStatusColumn::Sha],
+            ValidateStatusTimes::Relative,
+            now,
+            false,
+            false,
+        );
+        assert!(
+            table[1].starts_with("1574 FAIL        FAILED         630f44aab7fd"),
+            "{}",
+            table[1]
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "validate-status table row 0 has 1 values for 2 headers")]
+    fn validate_status_table_rejects_header_value_count_mismatch() {
+        let columns = [
+            ValidateStatusTableColumn {
+                header: "RUN",
+                alignment: ValidateStatusAlignment::Right,
+            },
+            ValidateStatusTableColumn {
+                header: "TEST-RESULT",
+                alignment: ValidateStatusAlignment::Left,
+            },
+        ];
+        let rows = [vec!["1573".into()]];
+
+        let _ = render_validate_status_table(&columns, &rows);
     }
 
     #[test]
@@ -10185,6 +10458,7 @@ mod tests {
         assert!(live.unreadable_handles.is_empty());
         assert_eq!(live.entries[0].verdict, None);
         assert_eq!(live.entries[0].result, None);
+        assert_eq!(live.entries[0].nonqualification_reason, None);
         assert_eq!(live.entries[0].tests_executed, None);
         assert_eq!(live.entries[0].elapsed_seconds, Some(300.0));
         assert_eq!(live.entries[0].host.as_deref(), Some("validation-host"));
@@ -10200,6 +10474,11 @@ mod tests {
             now,
             false,
             false,
+        );
+        assert!(
+            table[0].starts_with("RUN TEST-RESULT COMMIT-VERDICT"),
+            "{}",
+            table[0]
         );
         let line = &table[1];
         assert!(line.starts_with("  - IN-PROGRESS -"), "{line}");
@@ -10819,6 +11098,27 @@ mod tests {
                 {"name": "test", "result": "pass", "exit_code": 0}
             ]
         })
+    }
+
+    fn schema5_receipt_value(concurrent_validates: u64) -> serde_json::Value {
+        let mut value = schema4_receipt_value();
+        value["schema_version"] = serde_json::json!(5);
+        value["repo"] = serde_json::json!(CANONICAL_VALIDATE_REPO);
+        value["producer"] = serde_json::json!("hermit-validate-sh");
+        value["admission"] = serde_json::json!("ci-hub-validate-lock");
+        value["concurrent_validates"] = serde_json::json!(concurrent_validates);
+        value["concurrency_proof"] = serde_json::json!("validate_lock_owner_ancestry");
+        value["base_sha"] = serde_json::json!("1111111111111111111111111111111111111111");
+        value["base_tree"] = serde_json::json!("2222222222222222222222222222222222222222");
+        value["reverie_base_sha"] = serde_json::json!("3333333333333333333333333333333333333333");
+        value["reverie_base_tree"] = serde_json::json!("4444444444444444444444444444444444444444");
+        value["coverage"] = serde_json::json!({
+            "planned_test_nodes": 2,
+            "executed_test_nodes": 2,
+            "zero_executed_nodes": [],
+            "absent_nodes": []
+        });
+        value
     }
 
     fn reverie_receipt_value() -> serde_json::Value {
