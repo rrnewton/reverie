@@ -112,6 +112,85 @@ def current_service_result(**updates: object) -> dict[str, object]:
 
 
 class SignalCrosscheckTests(unittest.TestCase):
+    def test_scorecard_population_wording_refuses_ambiguous_or_malformed_forms(
+        self,
+    ) -> None:
+        historical_table = "\n".join([
+            "| Backend | Green | Red | Not applicable | Total |",
+            "| --- | ---: | ---: | ---: | ---: |",
+            "| **Total** | **1** | **1** | **0** | **2** |",
+        ])
+        path_explicit_table = "\n".join([
+            "| Backend | Selected by full | Not selected by full | Not applicable | "
+            "In the manifest |",
+            "| --- | ---: | ---: | ---: | ---: |",
+            "| **Total** | **1** | **1** | **0** | **2** |",
+        ])
+        self.assertEqual(
+            signal_crosscheck._scorecard_status_total(
+                historical_table + "\n\n" + path_explicit_table
+            ),
+            (None, None),
+        )
+        malformed_historical_table = historical_table.replace("**2**", "2")
+        self.assertEqual(
+            signal_crosscheck._scorecard_status_total(
+                path_explicit_table + "\n\n" + malformed_historical_table
+            ),
+            (None, None),
+        )
+        self.assertEqual(
+            signal_crosscheck._scorecard_status_total("No population table."),
+            (None, None),
+        )
+        self.assertEqual(
+            signal_crosscheck._scorecard_measurement_total(path_explicit_table),
+            (None, None),
+        )
+        self.assertEqual(
+            signal_crosscheck._scorecard_status_total(
+                path_explicit_table.replace("**2**", "2")
+            ),
+            (signal_crosscheck.FULL_STATUS_COLUMNS, None),
+        )
+        self.assertEqual(
+            signal_crosscheck._scorecard_status_total(
+                path_explicit_table.replace(
+                    "| --- | ---: | ---: | ---: | ---: |\n", ""
+                )
+            ),
+            (signal_crosscheck.FULL_STATUS_COLUMNS, None),
+        )
+        self.assertEqual(
+            signal_crosscheck._scorecard_status_total(
+                path_explicit_table.replace(
+                    "| **Total** |",
+                    "| malformed | row |\n| **Total** |",
+                )
+            ),
+            (signal_crosscheck.FULL_STATUS_COLUMNS, None),
+        )
+        self.assertEqual(
+            signal_crosscheck._scorecard_status_total(
+                path_explicit_table
+                + "\n| **Total** | **1** | **1** | **0** | 2 |"
+            ),
+            (signal_crosscheck.FULL_STATUS_COLUMNS, None),
+        )
+
+        duplicated_prose = "\n".join([
+            "The count table includes all **2** cells in the manifest; no row is omitted.",
+            "The count table includes all **3** cells in the manifest; no row is omitted.",
+            "Of the cells selected by full, **0** have `never-measured`; of the "
+            "cells not selected by full, **0** have `measured-and-passed`.",
+        ])
+        self.assertEqual(
+            signal_crosscheck._scorecard_prose_counts(
+                duplicated_prose, signal_crosscheck.FULL_STATUS_COLUMNS
+            ),
+            {},
+        )
+
     def test_linked_tool_checkout_uses_primary_state_authority(self) -> None:
         sha = "a" * 40
         other_sha = "b" * 40
@@ -832,69 +911,87 @@ class SignalCrosscheckTests(unittest.TestCase):
             "The current **0** manifest-disabled combinations as **Not applicable**.",
             "The current green/`never-measured` count is **0**, and the current "
             "red/`measured-and-passed` count is **0**.",
+            "| Backend | Green | Red | Not applicable | Total |",
+            "| --- | ---: | ---: | ---: | ---: |",
             "| **Total** | **1** | **1** | **0** | **2** |",
+            "",
+            "| Status | `never-measured` | `measured-and-passed` | "
+            "`measured-no-verdict` | `diverged-unlocated` | `diverged` | Total |",
+            "| --- | ---: | ---: | ---: | ---: | ---: | ---: |",
             "| **Total** | **1** | **1** | **0** | **0** | **0** | **2** |",
         ])
-        original = signal_crosscheck.git_text
-        original_snapshot_at = signal_crosscheck.canonical_series.published_snapshot_at
-        original_commit_is_ancestor = signal_crosscheck.commit_is_ancestor
-        original_git_tree_at = signal_crosscheck.git_tree_at
-        try:
+        path_explicit = "\n".join([
+            "The count table includes all **2** cells in the manifest; no row is omitted.",
+            "Of the cells selected by full, **0** have `never-measured`; of the "
+            "cells not selected by full, **0** have `measured-and-passed`.",
+            "| Backend | Selected by full | Not selected by full | Not applicable | "
+            "In the manifest |",
+            "| --- | ---: | ---: | ---: | ---: |",
+            "| **Total** | **1** | **1** | **0** | **2** |",
+            "",
+            "| Status | `never-measured` | `measured-and-passed` | "
+            "`measured-no-verdict` | `diverged-unlocated` | `diverged` | "
+            "In the manifest |",
+            "| --- | ---: | ---: | ---: | ---: | ---: | ---: |",
+            "| **Total** | **1** | **1** | **0** | **0** | **0** | **2** |",
+        ])
+
+        def report_for(markdown_value: str) -> dict:
             def fake_git(_repo: Path, *args: str) -> str:
                 target = args[-1]
                 if target.endswith("cells.json"):
                     return json.dumps(cells)
                 if target.endswith("SCORECARD.md"):
-                    return markdown
+                    return markdown_value
                 if target.endswith(":detcore"):
                     return "tree\n"
                 raise AssertionError(args)
 
-            signal_crosscheck.git_text = fake_git
-            signal_crosscheck.canonical_series.published_snapshot_at = (
-                lambda _root, revision: signal_crosscheck.canonical_series.PublishedSnapshot(
-                    revision, series_rows
+            with (
+                mock.patch.object(signal_crosscheck, "git_text", side_effect=fake_git),
+                mock.patch.object(
+                    signal_crosscheck.canonical_series,
+                    "published_snapshot_at",
+                    side_effect=lambda _root, revision: (
+                        signal_crosscheck.canonical_series.PublishedSnapshot(
+                            revision, series_rows
+                        )
+                    ),
+                ),
+                mock.patch.object(
+                    signal_crosscheck,
+                    "commit_is_ancestor",
+                    return_value=True,
+                ),
+                mock.patch.object(
+                    signal_crosscheck,
+                    "git_tree_at",
+                    return_value=source_tree,
+                ),
+            ):
+                return signal_crosscheck.scorecard_report(
+                    Path("parent"),
+                    Path("hermit"),
+                    "a" * 40,
+                    published_series_snapshot=(
+                        signal_crosscheck.canonical_series.PublishedSnapshot(
+                            current_commit, list(series_rows)
+                        )
+                    ),
                 )
-            )
-            signal_crosscheck.commit_is_ancestor = (
-                lambda _root, _source, _published: True
-            )
-            signal_crosscheck.git_tree_at = (
-                lambda _root, _commit, _path: source_tree
-            )
-            result = signal_crosscheck.scorecard_report(
-                Path("parent"),
-                Path("hermit"),
-                "a" * 40,
-                published_series_snapshot=(
-                    signal_crosscheck.canonical_series.PublishedSnapshot(
-                        current_commit, list(series_rows)
-                    )
-                ),
-            )
-            cells["projection"].update({
-                "source": "alternate-series",
-                "source_tree": "e" * 40,
-            })
-            alternate = signal_crosscheck.scorecard_report(
-                Path("parent"),
-                Path("hermit"),
-                "a" * 40,
-                published_series_snapshot=(
-                    signal_crosscheck.canonical_series.PublishedSnapshot(
-                        current_commit, list(series_rows)
-                    )
-                ),
-            )
-            cells["projection"].update({
-                "source": "series",
-                "source_tree": source_tree,
-            })
-        finally:
-            signal_crosscheck.git_text = original
-            signal_crosscheck.canonical_series.published_snapshot_at = original_snapshot_at
-            signal_crosscheck.commit_is_ancestor = original_commit_is_ancestor
-            signal_crosscheck.git_tree_at = original_git_tree_at
+
+        result = report_for(markdown)
+        cells["projection"].update({
+            "source": "alternate-series",
+            "source_tree": "e" * 40,
+        })
+        alternate = report_for(markdown)
+        cells["projection"].update({
+            "source": "series",
+            "source_tree": source_tree,
+        })
+        cells["schema"] = 8
+        path_explicit_result = report_for(path_explicit)
         self.assertTrue(result["status_table_matches_cells"])
         self.assertTrue(result["measurement_table_matches_cells"])
         self.assertTrue(result["prose_matches_cells"])
@@ -913,44 +1010,133 @@ class SignalCrosscheckTests(unittest.TestCase):
         alternate_issues = signal_crosscheck.reconcile(alternate_report)
         self.assertEqual(len(alternate_issues), 1)
         self.assertIn("non-canonical series path", alternate_issues[0])
+        self.assertEqual(path_explicit_result["schema"], 8)
+        self.assertTrue(path_explicit_result["status_table_matches_cells"])
+        self.assertTrue(path_explicit_result["measurement_table_matches_cells"])
+        self.assertTrue(path_explicit_result["prose_matches_cells"])
+        invalid_cell_fields = [
+            ("status", "enabled", "unsupported status 'enabled'"),
+            ("status", "unknown", "unsupported status 'unknown'"),
+            ("status", None, "unsupported status None"),
+            ("measurement", "unknown", "unsupported measurement 'unknown'"),
+            ("measurement", None, "unsupported measurement None"),
+        ]
+        for field, invalid, message in invalid_cell_fields:
+            with self.subTest(field=field, invalid=invalid):
+                original_value = cells["cells"][0].pop(field)
+                if invalid is not None:
+                    cells["cells"][0][field] = invalid
+                try:
+                    with self.assertRaisesRegex(
+                        signal_crosscheck.CrosscheckError, message
+                    ):
+                        report_for(path_explicit)
+                finally:
+                    cells["cells"][0][field] = original_value
+        cells["cells"][0]["enabled"] = True
+        self.assertFalse(report_for(path_explicit)["status_table_matches_cells"])
+        del cells["cells"][0]["enabled"]
+        cells["cells"][0]["ci_disabled_reason"] = "legacy field"
+        self.assertFalse(report_for(path_explicit)["status_table_matches_cells"])
+        del cells["cells"][0]["ci_disabled_reason"]
+        self.assertFalse(
+            report_for(path_explicit + "\nEnabled cells use the full path.")[
+                "prose_matches_cells"
+            ]
+        )
+        full_measurement_header = (
+            "| Status | `never-measured` | `measured-and-passed` | "
+            "`measured-no-verdict` | `diverged-unlocated` | `diverged` | "
+            "In the manifest |"
+        )
+        historical_measurement_header = full_measurement_header.replace(
+            "In the manifest", "Total"
+        )
+        self.assertFalse(
+            report_for(
+                path_explicit.replace(
+                    full_measurement_header, historical_measurement_header
+                )
+            )["measurement_table_matches_cells"]
+        )
+        mixed_measurement_tables = path_explicit + "\n\n" + "\n".join([
+            historical_measurement_header,
+            "| --- | ---: | ---: | ---: | ---: | ---: | ---: |",
+            "| **Total** | **1** | **1** | **0** | **0** | **0** | **2** |",
+        ])
+        self.assertFalse(
+            report_for(mixed_measurement_tables)["measurement_table_matches_cells"]
+        )
+        self.assertFalse(
+            report_for(
+                path_explicit.replace(
+                    "all **2** cells in the manifest",
+                    "all **3** cells in the manifest",
+                )
+            )["prose_matches_cells"]
+        )
+        self.assertFalse(
+            report_for(
+                path_explicit.replace(
+                    "| **Total** | **1** | **1** | **0** | **2** |",
+                    "| **Total** | **1** | **1** | **0** | **3** |",
+                    1,
+                )
+            )["status_table_matches_cells"]
+        )
+        missing_prose = path_explicit.replace(
+            "Of the cells selected by full, **0** have `never-measured`; of the "
+            "cells not selected by full, **0** have `measured-and-passed`.",
+            "",
+        )
+        self.assertFalse(report_for(missing_prose)["prose_matches_cells"])
+        ambiguous = path_explicit + "\n\n" + "\n".join([
+            "| Backend | Green | Red | Not applicable | Total |",
+            "| --- | ---: | ---: | ---: | ---: |",
+            "| **Total** | **1** | **1** | **0** | **2** |",
+        ])
+        ambiguous_result = report_for(ambiguous)
+        self.assertFalse(ambiguous_result["status_table_matches_cells"])
+        self.assertFalse(ambiguous_result["prose_matches_cells"])
+        stale_historical_prose = (
+            path_explicit
+            + "\nThe current **0** manifest-disabled combinations as "
+            "**Not applicable**."
+        )
+        self.assertFalse(report_for(stale_historical_prose)["prose_matches_cells"])
+        malformed_historical_prose = (
+            path_explicit + "\nThe current count of manifest-disabled combinations."
+        )
+        self.assertFalse(
+            report_for(malformed_historical_prose)["prose_matches_cells"]
+        )
+        malformed_new_population_prose = (
+            path_explicit + "\nThe count table includes all cells in the manifest."
+        )
+        self.assertFalse(
+            report_for(malformed_new_population_prose)["prose_matches_cells"]
+        )
+        malformed_new_selection_prose = (
+            path_explicit
+            + "\nOf the cells selected by full, some have no classification."
+        )
+        self.assertFalse(
+            report_for(malformed_new_selection_prose)["prose_matches_cells"]
+        )
+        historical_on_schema_8 = report_for(markdown)
+        self.assertFalse(historical_on_schema_8["status_table_matches_cells"])
+        self.assertFalse(historical_on_schema_8["prose_matches_cells"])
+
+        cells["schema"] = 6
+        path_explicit_on_schema_6 = report_for(path_explicit)
+        self.assertFalse(path_explicit_on_schema_6["status_table_matches_cells"])
+        self.assertFalse(path_explicit_on_schema_6["prose_matches_cells"])
 
         mutated = markdown.replace(
             "green/`never-measured` count is **0**",
             "green/`never-measured` count is **1**",
         )
-        try:
-            signal_crosscheck.git_text = lambda _repo, *args: (
-                json.dumps(cells)
-                if args[-1].endswith("cells.json")
-                else mutated if args[-1].endswith("SCORECARD.md") else "tree\n"
-            )
-            signal_crosscheck.canonical_series.published_snapshot_at = (
-                lambda _root, revision: signal_crosscheck.canonical_series.PublishedSnapshot(
-                    revision, series_rows
-                )
-            )
-            signal_crosscheck.commit_is_ancestor = (
-                lambda _root, _source, _published: True
-            )
-            signal_crosscheck.git_tree_at = (
-                lambda _root, _commit, _path: source_tree
-            )
-            result = signal_crosscheck.scorecard_report(
-                Path("parent"),
-                Path("hermit"),
-                "a" * 40,
-                published_series_snapshot=(
-                    signal_crosscheck.canonical_series.PublishedSnapshot(
-                        current_commit, list(series_rows)
-                    )
-                ),
-            )
-        finally:
-            signal_crosscheck.git_text = original
-            signal_crosscheck.canonical_series.published_snapshot_at = original_snapshot_at
-            signal_crosscheck.commit_is_ancestor = original_commit_is_ancestor
-            signal_crosscheck.git_tree_at = original_git_tree_at
-        self.assertFalse(result["prose_matches_cells"])
+        self.assertFalse(report_for(mutated)["prose_matches_cells"])
 
     def test_run_handle_matching_uses_typed_projection_and_run_event_identity(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

@@ -50,6 +50,42 @@ VALIDATE_STATUS_VERDICTS = frozenset({
 GITHUB_STATUS_STATES = frozenset({"error", "failure", "pending", "success"})
 RUN_HANDLE_REPOSITORIES = frozenset({"rrnewton/hermit", "rrnewton/reverie"})
 CANONICAL_SERIES_PATH = "series"
+PATH_EXPLICIT_CELLS_SCHEMA = 8
+HISTORICAL_STATUS_COLUMNS = (
+    "Backend",
+    "Green",
+    "Red",
+    "Not applicable",
+    "Total",
+)
+FULL_STATUS_COLUMNS = (
+    "Backend",
+    "Selected by full",
+    "Not selected by full",
+    "Not applicable",
+    "In the manifest",
+)
+HISTORICAL_MEASUREMENT_COLUMNS = (
+    "Status",
+    "`never-measured`",
+    "`measured-and-passed`",
+    "`measured-no-verdict`",
+    "`diverged-unlocated`",
+    "`diverged`",
+    "Total",
+)
+FULL_MEASUREMENT_COLUMNS = (
+    *HISTORICAL_MEASUREMENT_COLUMNS[:-1],
+    "In the manifest",
+)
+SCORECARD_STATUSES = frozenset({"green", "red", "not-applicable"})
+SCORECARD_MEASUREMENTS = frozenset({
+    "never-measured",
+    "measured-and-passed",
+    "measured-no-verdict",
+    "diverged-unlocated",
+    "diverged",
+})
 
 
 class CrosscheckError(RuntimeError):
@@ -312,33 +348,189 @@ def compare_series_snapshots(
     }
 
 
-def _scorecard_total_rows(markdown: str) -> list[list[int]]:
-    totals = []
-    for line in markdown.splitlines():
-        if not line.startswith("| **Total** |"):
+def _markdown_row(line: str) -> tuple[str, ...] | None:
+    stripped = line.strip()
+    if not stripped.startswith("|") or not stripped.endswith("|"):
+        return None
+    return tuple(part.strip() for part in stripped[1:-1].split("|"))
+
+
+def _scorecard_table_total(
+    markdown: str, columns: tuple[str, ...]
+) -> list[int] | None:
+    """Read one exact table's bold total row, refusing ambiguity."""
+    lines = markdown.splitlines()
+    header_indexes = [
+        index for index, line in enumerate(lines) if _markdown_row(line) == columns
+    ]
+    if len(header_indexes) != 1:
+        return None
+    header_index = header_indexes[0]
+    if header_index + 1 >= len(lines):
+        return None
+    separator = _markdown_row(lines[header_index + 1])
+    if (
+        separator is None
+        or len(separator) != len(columns)
+        or any(re.fullmatch(r":?-{3,}:?", cell) is None for cell in separator)
+    ):
+        return None
+    total: list[int] | None = None
+    for candidate in lines[header_index + 2 :]:
+        row = _markdown_row(candidate)
+        if row is None:
+            break
+        if len(row) != len(columns) or not row[0] or total is not None:
+            return None
+        if row[0] != "**Total**":
+            if any(re.fullmatch(r"\d+", cell) is None for cell in row[1:]):
+                return None
             continue
-        numbers = [int(value) for value in re.findall(r"\*\*(\d+)\*\*", line)]
-        if numbers:
-            totals.append(numbers)
-    return totals
+        values: list[int] = []
+        for cell in row[1:]:
+            match = re.fullmatch(r"\*\*(\d+)\*\*", cell)
+            if match is None:
+                return None
+            values.append(int(match.group(1)))
+        total = values
+    return total
 
 
-def _scorecard_prose_counts(markdown: str) -> dict[str, int | None]:
-    disabled = re.search(
-        r"current \*\*(\d+)\*\* manifest-disabled combinations as "
-        r"\*\*Not applicable\*\*",
-        markdown,
+def _scorecard_known_table_total(
+    markdown: str, choices: tuple[tuple[str, ...], ...]
+) -> tuple[tuple[str, ...] | None, list[int] | None]:
+    lines = markdown.splitlines()
+    headers = [
+        columns
+        for columns in choices
+        if any(_markdown_row(line) == columns for line in lines)
+    ]
+    if len(headers) != 1:
+        return None, None
+    columns = headers[0]
+    return columns, _scorecard_table_total(markdown, columns)
+
+
+def _scorecard_status_total(
+    markdown: str,
+) -> tuple[tuple[str, ...] | None, list[int] | None]:
+    return _scorecard_known_table_total(
+        markdown, (HISTORICAL_STATUS_COLUMNS, FULL_STATUS_COLUMNS)
     )
-    cross = re.search(
-        r"current green/`never-measured` count is \*\*(\d+)\*\*, and the "
-        r"current red/`measured-and-passed` count is \*\*(\d+)\*\*",
-        markdown,
+
+
+def _scorecard_measurement_total(
+    markdown: str,
+) -> tuple[tuple[str, ...] | None, list[int] | None]:
+    return _scorecard_known_table_total(
+        markdown, (HISTORICAL_MEASUREMENT_COLUMNS, FULL_MEASUREMENT_COLUMNS)
     )
-    return {
-        "not_applicable": int(disabled.group(1)) if disabled else None,
-        "green_never_measured": int(cross.group(1)) if cross else None,
-        "red_measured_and_passed": int(cross.group(2)) if cross else None,
-    }
+
+
+def _scorecard_status_columns_for_schema(value: object) -> tuple[str, ...] | None:
+    if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+        return None
+    if value < PATH_EXPLICIT_CELLS_SCHEMA:
+        return HISTORICAL_STATUS_COLUMNS
+    return FULL_STATUS_COLUMNS
+
+
+def _scorecard_measurement_columns_for_schema(
+    value: object,
+) -> tuple[str, ...] | None:
+    if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+        return None
+    if value < PATH_EXPLICIT_CELLS_SCHEMA:
+        return HISTORICAL_MEASUREMENT_COLUMNS
+    return FULL_MEASUREMENT_COLUMNS
+
+
+def _unique_prose_counts(markdown: str, pattern: str) -> tuple[int, ...] | None:
+    matches = re.findall(pattern, markdown)
+    if len(matches) != 1:
+        return None
+    values = matches[0]
+    if isinstance(values, str):
+        values = (values,)
+    return tuple(int(value) for value in values)
+
+
+def _scorecard_prose_counts(
+    markdown: str, status_columns: tuple[str, ...] | None
+) -> dict[str, int | None]:
+    has_historical_wording = any(
+        marker in markdown
+        for marker in (
+            "manifest-disabled combinations",
+            "green/`never-measured`",
+            "red/`measured-and-passed`",
+        )
+    )
+    has_full_wording = any(
+        marker in markdown
+        for marker in (
+            "cells in the manifest",
+            "cells selected by full",
+            "cells not selected by full",
+        )
+    )
+    if has_historical_wording and has_full_wording:
+        return {}
+    if status_columns == HISTORICAL_STATUS_COLUMNS:
+        if any(
+            markdown.count(marker) != 1
+            for marker in (
+                "manifest-disabled combinations",
+                "current green/`never-measured` count",
+                "current red/`measured-and-passed` count",
+            )
+        ):
+            return {}
+        not_applicable = _unique_prose_counts(
+            markdown,
+            r"current \*\*(\d+)\*\* manifest-disabled combinations as\s+"
+            r"\*\*Not applicable\*\*",
+        )
+        cross = _unique_prose_counts(
+            markdown,
+            r"current green/`never-measured` count is \*\*(\d+)\*\*, and the\s+"
+            r"current red/`measured-and-passed` count is \*\*(\d+)\*\*",
+        )
+        return {
+            "not_applicable": not_applicable[0] if not_applicable else None,
+            "green_never_measured": cross[0] if cross else None,
+            "red_measured_and_passed": cross[1] if cross else None,
+        }
+    if status_columns == FULL_STATUS_COLUMNS:
+        if any(
+            markdown.count(marker) != 1
+            for marker in (
+                "The count table includes all",
+                "cells in the manifest; no row is omitted.",
+                "Of the cells selected by full",
+                "cells not selected by full",
+            )
+        ):
+            return {}
+        in_manifest = _unique_prose_counts(
+            markdown,
+            r"The count table includes all \*\*(\d+)\*\* cells in the manifest;\s+"
+            r"no row is omitted\.",
+        )
+        cross = _unique_prose_counts(
+            markdown,
+            r"Of the cells selected by full, \*\*(\d+)\*\* have `never-measured`;\s+"
+            r"of the cells not selected by full, \*\*(\d+)\*\* have "
+            r"`measured-and-passed`\.",
+        )
+        return {
+            "in_manifest": in_manifest[0] if in_manifest else None,
+            "selected_by_full_never_measured": cross[0] if cross else None,
+            "not_selected_by_full_measured_and_passed": (
+                cross[1] if cross else None
+            ),
+        }
+    return {}
 
 
 def commit_is_ancestor(repo: Path, ancestor: str, descendant: str) -> bool:
@@ -400,9 +592,25 @@ def scorecard_report(
     entries = cells.get("cells")
     if not isinstance(entries, list):
         raise CrosscheckError("cells.json field cells is not an array")
+    for index, cell in enumerate(entries):
+        if not isinstance(cell, dict):
+            raise CrosscheckError(f"cells.json cell {index} is not an object")
+        status = cell.get("status")
+        if not isinstance(status, str) or status not in SCORECARD_STATUSES:
+            raise CrosscheckError(
+                f"cells.json cell {index} has unsupported status {status!r}"
+            )
+        measurement = cell.get("measurement")
+        if (
+            not isinstance(measurement, str)
+            or measurement not in SCORECARD_MEASUREMENTS
+        ):
+            raise CrosscheckError(
+                f"cells.json cell {index} has unsupported measurement {measurement!r}"
+            )
 
-    status_counts = Counter(str(cell.get("status")) for cell in entries)
-    measurement_counts = Counter(str(cell.get("measurement")) for cell in entries)
+    status_counts = Counter(cell["status"] for cell in entries)
+    measurement_counts = Counter(cell["measurement"] for cell in entries)
     green_never_measured = sum(
         cell.get("status") == "green" and cell.get("measurement") == "never-measured"
         for cell in entries
@@ -425,9 +633,13 @@ def scorecard_report(
         if (cell.get("last_tested") or {}).get("detcore_tree") == detcore_tree
     ]
 
-    totals = _scorecard_total_rows(markdown)
-    status_total = totals[0] if totals else None
-    measurement_total = next((row for row in totals if len(row) == 6), None)
+    cells_schema = cells.get("schema")
+    expected_status_columns = _scorecard_status_columns_for_schema(cells_schema)
+    expected_measurement_columns = _scorecard_measurement_columns_for_schema(
+        cells_schema
+    )
+    status_columns, status_total = _scorecard_status_total(markdown)
+    measurement_columns, measurement_total = _scorecard_measurement_total(markdown)
     expected_status = [
         status_counts["green"],
         status_counts["red"],
@@ -442,12 +654,35 @@ def scorecard_report(
         measurement_counts["diverged"],
         len(entries),
     ]
-    prose_counts = _scorecard_prose_counts(markdown)
-    expected_prose = {
-        "not_applicable": status_counts["not-applicable"],
-        "green_never_measured": green_never_measured,
-        "red_measured_and_passed": red_measured_and_passed,
-    }
+    prose_columns = (
+        status_columns if status_columns == expected_status_columns else None
+    )
+    prose_counts = _scorecard_prose_counts(markdown, prose_columns)
+    if expected_status_columns == HISTORICAL_STATUS_COLUMNS:
+        expected_prose: dict[str, int] | None = {
+            "not_applicable": status_counts["not-applicable"],
+            "green_never_measured": green_never_measured,
+            "red_measured_and_passed": red_measured_and_passed,
+        }
+    elif expected_status_columns == FULL_STATUS_COLUMNS:
+        expected_prose = {
+            "in_manifest": len(entries),
+            "selected_by_full_never_measured": green_never_measured,
+            "not_selected_by_full_measured_and_passed": red_measured_and_passed,
+        }
+    else:
+        expected_prose = None
+    path_explicit_cells_match = (
+        expected_status_columns != FULL_STATUS_COLUMNS
+        or all(
+            "enabled" not in cell and "ci_disabled_reason" not in cell
+            for cell in entries
+        )
+    )
+    path_explicit_prose_matches = (
+        expected_status_columns != FULL_STATUS_COLUMNS
+        or re.search(r"\benabled\b", markdown, re.IGNORECASE) is None
+    )
     projection = cells.get("projection")
     if projection is not None and not isinstance(projection, dict):
         raise CrosscheckError("cells.json projection is not an object")
@@ -502,16 +737,27 @@ def scorecard_report(
     return {
         "scope": "manifest selection and retained per-cell observations",
         "projection_rows_scope": "canonical event map at projection.source_commit",
-        "schema": cells.get("schema"),
+        "schema": cells_schema,
         "cell_count": len(entries),
         "status_counts": dict(sorted(status_counts.items())),
         "measurement_counts": dict(sorted(measurement_counts.items())),
         "markdown_status_total": status_total,
         "markdown_measurement_total": measurement_total,
-        "status_table_matches_cells": status_total == expected_status,
-        "measurement_table_matches_cells": measurement_total == expected_measurement,
+        "status_table_matches_cells": (
+            status_columns == expected_status_columns
+            and status_total == expected_status
+            and path_explicit_cells_match
+        ),
+        "measurement_table_matches_cells": (
+            measurement_columns == expected_measurement_columns
+            and measurement_total == expected_measurement
+        ),
         "prose_counts": prose_counts,
-        "prose_matches_cells": prose_counts == expected_prose,
+        "prose_matches_cells": (
+            expected_prose is not None
+            and prose_counts == expected_prose
+            and path_explicit_prose_matches
+        ),
         "detcore_tree": detcore_tree,
         "observed_cells": len(observed),
         "fresh_observed_cells": len(fresh),
