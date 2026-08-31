@@ -114,16 +114,25 @@ class ReceiptTests(unittest.TestCase):
     def canonical_row(row: dict) -> bytes:
         return json.dumps(row, separators=(",", ":")).encode()
 
-    def args(self, root: Path, digest: str, *, dry_run: bool = True, sha: str | None = None):
+    def args(
+        self,
+        root: Path,
+        digest: str,
+        *,
+        dry_run: bool = True,
+        sha: str | None = None,
+        observe_producer_definition: bool = False,
+    ):
         return argparse.Namespace(
             repo="rrnewton/hermit",
             sha=sha or self.SHA,
-            ledger=root / "ledger.jsonl",
             selected_receipt_sha256=digest,
             canonicalization=MODULE.RECEIPT_CANONICALIZATION,
             receipt_repo=MODULE.RECEIPT_REPO,
             receipt_branch=MODULE.RECEIPT_BRANCH,
+            state_root=root,
             dry_run=dry_run,
+            observe_producer_definition=observe_producer_definition,
         )
 
     def test_selected_record_and_artifact_bind_exact_digest(self):
@@ -156,6 +165,15 @@ class ReceiptTests(unittest.TestCase):
                     canonicalization=MODULE.RECEIPT_CANONICALIZATION,
                 )
                 registered = MODULE.registered_producer()
+                observed_report = MODULE.execute(
+                    self.args(
+                        root,
+                        digest,
+                        sha=sha,
+                        observe_producer_definition=True,
+                    ),
+                    canonical_row,
+                )
             self.assertEqual(receipt["ledger_record"]["executed_tests"], 12)
             self.assertEqual(receipt["commit"], sha)
             self.assertEqual(receipt["selected_receipt_identity"]["digest"], digest)
@@ -166,6 +184,40 @@ class ReceiptTests(unittest.TestCase):
             self.assertEqual(len(receipt["log_sha256"]), 64)
             self.assertTrue(Path(receipt["durable_log_file"]).is_file())
             self.assertEqual(hashlib.sha256(body).hexdigest(), artifact_digest)
+            observed = json.loads(observed_report["artifact_body"])["producer"]
+            self.assertEqual(str(repo), observed["resolved_from"])
+            self.assertEqual(registered, observed["definition"])
+            self.assertEqual("legacy-selected-paths", observed["coverage_status"])
+            self.assertNotIn("valid_commits", observed)
+
+    def test_execute_preserves_evidence_under_explicit_state_root(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            state_root = root / "state"
+            state_root.mkdir()
+            tool_root = root / "tool"
+            tool_script = tool_root / "ci-hub/validation/publish_receipt.py"
+            repo, sha, registry = make_producer_checkout(root)
+            row = self.row(root, sha=sha, cwd=repo)
+            canonical_row = self.canonical_row(row)
+            digest = hashlib.sha256(canonical_row).hexdigest()
+
+            with (
+                mock.patch.dict(
+                    os.environ, {"PRODUCER_DEFINITION_REGISTRY": str(registry)}
+                ),
+                mock.patch.object(MODULE, "__file__", str(tool_script)),
+            ):
+                report = MODULE.execute(
+                    self.args(state_root, digest, sha=sha), canonical_row
+                )
+
+            durable_log = Path(json.loads(report["artifact_body"])["durable_log_file"])
+            self.assertTrue(
+                durable_log.is_relative_to(state_root / "ignored/validation-evidence")
+            )
+            self.assertTrue(durable_log.is_file())
+            self.assertFalse((tool_root / "ignored/validation-evidence").exists())
 
     def test_preserved_log_identity_includes_exact_content(self):
         """A post-run audit suffix must not collide with an immutable prefix."""
@@ -780,6 +832,41 @@ class ProducerTransitionTests(unittest.TestCase):
                     )
                 with self.assertRaises(SystemExit):
                     MODULE.producer_definition({"cwd": str(repo)}, legacy_replay_sha)
+
+                observed = MODULE.observed_producer_definition(
+                    {"cwd": str(repo)}, crossed_sha
+                )
+                self.assertEqual(
+                    {path: crossed[path] for path in primary},
+                    observed["definition"],
+                )
+                self.assertEqual("legacy-selected-paths", observed["coverage_status"])
+                self.assertEqual(sorted(primary), observed["paths"])
+                self.assertNotIn("valid_commits", observed)
+
+                row = ReceiptTests.row(self, root, sha=crossed_sha, cwd=repo)
+                canonical_row = ReceiptTests.canonical_row(row)
+                digest = hashlib.sha256(canonical_row).hexdigest()
+                durable = MODULE.preserve_log(root / "ledger.jsonl", crossed_sha, row)
+                with self.assertRaises(SystemExit):
+                    MODULE.build_receipt(
+                        "rrnewton/hermit",
+                        crossed_sha,
+                        row,
+                        durable,
+                        selected_digest=digest,
+                        canonicalization=MODULE.RECEIPT_CANONICALIZATION,
+                    )
+                receipt, _, _ = MODULE.build_receipt(
+                    "rrnewton/hermit",
+                    crossed_sha,
+                    row,
+                    durable,
+                    selected_digest=digest,
+                    canonicalization=MODULE.RECEIPT_CANONICALIZATION,
+                    observe_producer=True,
+                )
+                self.assertEqual(observed, receipt["producer"])
 
     def test_transition_may_change_only_existing_registered_paths(self):
         """The generic lifecycle is not coupled to one path-adding repair."""

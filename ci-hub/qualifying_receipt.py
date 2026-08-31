@@ -226,6 +226,43 @@ def _checkout_defect(checkout: Path) -> str:
     return "git repository, but it does not contain that commit"
 
 
+def _decoded_producer_definition(
+    output: str, *, checkout: Path
+) -> dict[str, Any]:
+    try:
+        producer = json.loads(output)
+    except json.JSONDecodeError as error:
+        raise RuntimeError(
+            f"producer-definition verifier returned invalid JSON: {error}"
+        ) from error
+    if (
+        not isinstance(producer, dict)
+        or not isinstance(producer.get("definition"), dict)
+        or not producer["definition"]
+        or producer.get("coverage_status")
+        not in ("legacy-selected-paths", "complete")
+        or producer.get("paths") != sorted(producer["definition"])
+        or producer.get("resolved_from") != str(checkout)
+    ):
+        raise RuntimeError(
+            "producer-definition verifier returned malformed resolved evidence"
+        )
+    valid_commits = producer.get("valid_commits")
+    if valid_commits is not None and (
+        not isinstance(valid_commits, list)
+        or not valid_commits
+        or any(
+            not isinstance(commit, str) or _SHA40.fullmatch(commit) is None
+            for commit in valid_commits
+        )
+        or len(set(valid_commits)) != len(valid_commits)
+    ):
+        raise RuntimeError(
+            "producer-definition verifier returned an invalid commit bound"
+        )
+    return producer
+
+
 def resolve_producer_definition(
     row: dict[str, Any],
     sha: str,
@@ -277,35 +314,10 @@ def resolve_producer_definition(
             str(checkout),
         )
         if result.returncode == 0:
-            try:
-                producer = json.loads(result.stdout)
-            except json.JSONDecodeError as error:
-                raise RuntimeError(
-                    f"producer-definition verifier returned invalid JSON: {error}"
-                ) from error
-            if (
-                not isinstance(producer, dict)
-                or not isinstance(producer.get("definition"), dict)
-                or not producer["definition"]
-                or producer.get("coverage_status")
-                not in ("legacy-selected-paths", "complete")
-                or producer.get("paths") != sorted(producer["definition"])
-                or producer.get("resolved_from") != str(checkout)
-            ):
-                raise RuntimeError(
-                    "producer-definition verifier returned malformed resolved evidence"
-                )
+            producer = _decoded_producer_definition(result.stdout, checkout=checkout)
             valid_commits = producer.get("valid_commits")
             if valid_commits is not None and (
-                not isinstance(valid_commits, list)
-                or not valid_commits
-                or any(
-                    not isinstance(commit, str)
-                    or _SHA40.fullmatch(commit) is None
-                    for commit in valid_commits
-                )
-                or len(set(valid_commits)) != len(valid_commits)
-                or sha not in valid_commits
+                sha not in valid_commits
             ):
                 raise RuntimeError(
                     "producer-definition verifier returned an invalid commit bound"
@@ -325,6 +337,61 @@ def resolve_producer_definition(
     raise ProducerDefinitionError(
         f"cannot resolve the producing check definition for {sha} in any repository "
         f"that durably holds it. Tried: {', '.join(attempted) or '(none)'}. {detail}"
+    )
+
+
+def observe_producer_definition(
+    row: dict[str, Any],
+    sha: str,
+    *,
+    repositories: list[str | Path] | None = None,
+) -> dict[str, Any]:
+    """Derive current producer blobs without making their registration authoritative.
+
+    The path set comes from the checked registry shape, while exact blob hashes
+    come from the commit being published. The result deliberately reports
+    ``legacy-selected-paths``: the registry's former ``complete`` claim is not
+    reusable when the map omits modules compiled by the validation entrypoint.
+    This keeps useful producer provenance in an immutable receipt without
+    reviving the retired rule that every validator edit needs a second
+    repository blessing.
+    """
+    if _SHA40.fullmatch(sha) is None:
+        raise ProducerDefinitionError("validated commit is not 40 lowercase hex")
+    candidates = producer_definition_repositories(row, repositories)
+    holders = [
+        checkout for checkout in candidates if _checkout_holds_commit(checkout, sha)
+    ]
+    if not holders:
+        raise ProducerDefinitionUndereferenceable(
+            f"cannot dereference the producer definition for {sha}: no candidate "
+            "checkout on this host holds that commit"
+        )
+    attempted: list[str] = []
+    for checkout in holders:
+        attempted.append(str(checkout))
+        result = _run_producer_definition_verifier(
+            "--producer-definition-observe",
+            "--sha",
+            sha,
+            "--repo-checkout",
+            str(checkout),
+        )
+        if result.returncode == 0:
+            producer = _decoded_producer_definition(result.stdout, checkout=checkout)
+            if "valid_commits" in producer:
+                raise RuntimeError(
+                    "observed producer definition unexpectedly carries a commit allowlist"
+                )
+            return producer
+        if result.returncode != 1:
+            raise RuntimeError(
+                "producer-definition verifier could not observe the commit map: "
+                f"rc={result.returncode}: {result.stderr.strip()}"
+            )
+    raise ProducerDefinitionError(
+        f"cannot observe the producing check definition for {sha}. Tried: "
+        f"{', '.join(attempted) or '(none)'}"
     )
 
 

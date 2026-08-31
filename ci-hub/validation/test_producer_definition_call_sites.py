@@ -76,10 +76,12 @@ class ProducerDefinitionCallSiteAudit(unittest.TestCase):
         self.assertNotIn("finalize_after", source)
         self.assertNotIn("expires_at", source)
         self.assertIn("qualifying_receipt.resolve_producer_definition(row, sha)", source)
+        self.assertIn("qualifying_receipt.observe_producer_definition(row, sha)", source)
 
         adapter = ADAPTER.read_text()
         self.assertNotIn("producer-definition.json", adapter)
         self.assertIn('"--producer-definition-resolve"', adapter)
+        self.assertIn('"--producer-definition-observe"', adapter)
         self.assertIn('"--producer-definition-primary"', adapter)
         self.assertIn('"--producer-definition-check"', adapter)
 

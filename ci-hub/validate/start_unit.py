@@ -3114,6 +3114,175 @@ def write_scorecard_from_results(
         return failed(str(error))
 
 
+COMMIT_STATUS_PUBLICATION_SUCCEEDED = frozenset({"published", "unchanged"})
+
+
+def finalize_commit_status_publication(
+    state_root: Path,
+    tool_root: Path,
+    record_path: Path,
+    *,
+    target: str,
+    repo: str,
+    canonical_verdict: str,
+    canonical_exit: int,
+    scorecard_updated: bool,
+    run: Runner,
+) -> dict[str, Any]:
+    """Publish an exact-SHA green status without changing the measured verdict.
+
+    The receipt and scorecard are established before this network-facing cache
+    is attempted. A missing GitHub status stays visible in the durable run
+    handle, but it cannot rewrite a VALIDATED product result into a test failure.
+    Re-entry skips an already successful publication; after a crash between the
+    remote write and bookkeeping, the publisher's own exact-status comparison
+    returns ``unchanged`` instead of writing a duplicate.
+    """
+
+    recorded_at = datetime.now(timezone.utc).isoformat()
+    try:
+        current = run_registry.read_record(record_path)
+    except RuntimeError:
+        current = {}
+    existing = current.get("commit_status_publication")
+    if (
+        isinstance(existing, dict)
+        and existing.get("state") in COMMIT_STATUS_PUBLICATION_SUCCEEDED
+        and existing.get("repository") == repo
+        and existing.get("sha") == target
+    ):
+        print(
+            "validate-run: commit status publication already recorded; "
+            f"not invoking publisher again for {repo}@{target}",
+            file=sys.stderr,
+        )
+        return current
+
+    common: dict[str, str] = {
+        "recorded_at": recorded_at,
+        "repository": repo,
+        "sha": target,
+    }
+    if canonical_verdict != "VALIDATED" or canonical_exit != EXIT_PASSED:
+        outcome: dict[str, str] = {
+            **common,
+            "state": "not-attempted",
+            "reason": f"canonical verdict is {canonical_verdict}",
+        }
+    elif not scorecard_updated:
+        outcome = {
+            **common,
+            "state": "not-attempted",
+            "reason": "scorecard write-back did not complete",
+        }
+    else:
+        environment = os.environ.copy()
+        environment.update(
+            {
+                "CI_HUB_SKIP_SOFT_MAIN_WARNING": "1",
+                "CI_HUB_TOOL_COST_ACTIVE": "1",
+                "DEV_HERMIT_PARENT": str(state_root),
+                "DEV_HERMIT_TOOL_ROOT": str(tool_root),
+            }
+        )
+        command = [
+            str(tool_root / "ci-hub/ci-hub"),
+            "publish-commit-status",
+            "--sha",
+            target,
+            "--repo",
+            repo,
+            "--json",
+        ]
+        try:
+            published = run(
+                command,
+                cwd=state_root,
+                env=environment,
+                check=False,
+            )
+        except OSError as error:
+            outcome = {
+                **common,
+                "state": "failed",
+                "detail": f"cannot launch publisher: {error}",
+            }
+        else:
+            if published.returncode != 0:
+                detail = (
+                    published.stderr.strip()
+                    or published.stdout.strip()
+                    or f"publisher exited {published.returncode} without output"
+                )[-1000:]
+                outcome = {**common, "state": "failed", "detail": detail}
+            else:
+                outcome = commit_status_publication_outcome(
+                    published.stdout,
+                    common=common,
+                    repository=repo,
+                    target=target,
+                )
+
+    updated = bookkeep_record(record_path, commit_status_publication=outcome)
+    if outcome["state"] in COMMIT_STATUS_PUBLICATION_SUCCEEDED:
+        print(
+            f"validate-run: commit status {outcome['state']} for {repo}@{target}",
+            file=sys.stderr,
+        )
+    elif outcome["state"] == "failed":
+        print(
+            "validate-run: COMMIT STATUS NOT PUBLISHED: "
+            f"{outcome['detail']}. The canonical validation verdict is unchanged.",
+            file=sys.stderr,
+        )
+    else:
+        print(
+            "validate-run: commit status publication not attempted: "
+            f"{outcome['reason']}",
+            file=sys.stderr,
+        )
+    return updated
+
+
+def commit_status_publication_outcome(
+    output: str,
+    *,
+    common: Mapping[str, str],
+    repository: str,
+    target: str,
+) -> dict[str, str]:
+    try:
+        report = json.loads(output)
+        action = report["action"]
+        if (
+            action not in COMMIT_STATUS_PUBLICATION_SUCCEEDED
+            or report.get("repository") != repository
+            or report.get("sha") != target
+        ):
+            raise ValueError("publisher report does not name the requested status")
+        description = report["description"]
+        receipt_commit = report["receipt_commit"]
+        receipt_path = report["receipt_path"]
+        if not all(
+            isinstance(value, str) and value
+            for value in (description, receipt_commit, receipt_path)
+        ):
+            raise ValueError("publisher report omitted receipt identity")
+        return {
+            **common,
+            "state": action,
+            "description": description,
+            "receipt_commit": receipt_commit,
+            "receipt_path": receipt_path,
+        }
+    except (json.JSONDecodeError, KeyError, TypeError, ValueError) as error:
+        detail = output.strip()[-1000:]
+        return {
+            **common,
+            "state": "failed",
+            "detail": f"unreadable publisher result: {error}; output={detail!r}",
+        }
+
 
 def bookkeep_record(record_path, /, **fields):
     """Update the run record, but never at the cost of the caller's verdict.
@@ -3342,6 +3511,17 @@ def attach(
             file=sys.stderr,
         )
         scorecard_updated = False
+    updated = finalize_commit_status_publication(
+        root,
+        tool_root,
+        record_path,
+        target=target,
+        repo=repo,
+        canonical_verdict=canonical_verdict,
+        canonical_exit=canonical_exit,
+        scorecard_updated=scorecard_updated,
+        run=run,
+    )
     emit_report(
         {**updated, "event": "finished", "unit": f"{unit}.service"},
         json_output=json_output,
@@ -4266,6 +4446,17 @@ def main(
             run=run,
             json_output=args.json,
         )
+    )
+    updated = finalize_commit_status_publication(
+        state_root,
+        tool_root,
+        record_path,
+        target=args.target,
+        repo=repo,
+        canonical_verdict=canonical_verdict,
+        canonical_exit=canonical_exit,
+        scorecard_updated=scorecard_updated,
+        run=run,
     )
     if fresh_checkout is not None and source_checkout is not None:
         remove_fresh_checkout(

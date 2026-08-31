@@ -163,6 +163,7 @@ class FakeRun:
         self.checkout = checkout
         self.commands: list[list[str]] = []
         self.command_cwds: list[tuple[list[str], Path | None]] = []
+        self.command_envs: list[dict[str, str] | None] = []
         self.dirty = ""
         self.admission_rc = 0
         self.herdr_status_rc = 0
@@ -198,6 +199,10 @@ class FakeRun:
         self.scorecard_update = False
         self.scorecard_rc = 0
         self.scorecard_stderr = ""
+        self.commit_status_action = "published"
+        self.commit_status_rc = 0
+        self.commit_status_stderr = ""
+        self.commit_status_launch_error: OSError | None = None
 
     def default_ledger_row(self) -> dict[str, object]:
         return {
@@ -232,6 +237,8 @@ class FakeRun:
         self.command_cwds.append(
             (command, cwd if isinstance(cwd, Path) else Path(cwd) if cwd else None)
         )
+        environment = kwargs.get("env")
+        self.command_envs.append(dict(environment) if isinstance(environment, dict) else None)
         if command[0].endswith("ci-hub/bin/wrkslots") and "create" in command:
             slot = command[command.index("create") + 1]
             project_root = Path(command[command.index("--project-root") + 1])
@@ -359,6 +366,25 @@ class FakeRun:
             relative = str(candidate.relative_to(self.fresh))
             tracked = set(self.fresh_tracked_jsonl.splitlines())
             return completed(command, rc=0 if relative in tracked else 1)
+        if len(command) > 1 and command[0].endswith("ci-hub") and command[1] == "publish-commit-status":
+            if self.commit_status_launch_error is not None:
+                raise self.commit_status_launch_error
+            report = {
+                "schema_version": 1,
+                "action": self.commit_status_action,
+                "repository": command[command.index("--repo") + 1],
+                "sha": command[command.index("--sha") + 1],
+                "context": "Local validation",
+                "description": "Local full: 1 selected cell; 1/1 test nodes; 1/1 outer gates",
+                "receipt_commit": "c" * 40,
+                "receipt_path": "validation-receipts/fixture.json",
+            }
+            return completed(
+                command,
+                rc=self.commit_status_rc,
+                stdout=json.dumps(report) if self.commit_status_rc == 0 else "",
+                stderr=self.commit_status_stderr,
+            )
         if command[0].endswith("ci-hub") and command[1:3] == ["validate-status", "--sha"]:
             verdict = self.canonical_verdict
             status_rc = self.canonical_status_rc
@@ -809,6 +835,12 @@ class StartUnitTest(unittest.TestCase):
         self.assertEqual("unknown", record["state"])
         self.assertEqual("validation-service-result", record["result_source"])
         self.assertIn("validation-service-result-read", record["detail"])
+        self.assertFalse(
+            any(
+                len(command) > 1 and command[1] == "publish-commit-status"
+                for command in self.fake.commands
+            )
+        )
 
     def test_current_target_schema_mutation_refuses_before_launch(self) -> None:
         schema_path = self.checkout / start_unit.service_result.SCHEMA_RELATIVE_PATH
@@ -863,8 +895,123 @@ class StartUnitTest(unittest.TestCase):
             for index, command in enumerate(self.fake.commands)
             if wrkslots_action(command, "remove")
         )
+        publish_index = next(
+            index
+            for index, command in enumerate(self.fake.commands)
+            if len(command) > 1 and command[1] == "publish-commit-status"
+        )
         self.assertLess(receipt_index, scorecard_index)
-        self.assertLess(scorecard_index, cleanup_index)
+        self.assertLess(scorecard_index, publish_index)
+        self.assertLess(publish_index, cleanup_index)
+
+    def test_green_validate_publishes_exact_sha_from_canonical_state_root_once(self) -> None:
+        rc, _output, error = self.invoke()
+
+        self.assertEqual(0, rc, error)
+        publications = [
+            (index, command)
+            for index, command in enumerate(self.fake.commands)
+            if len(command) > 1 and command[1] == "publish-commit-status"
+        ]
+        self.assertEqual(1, len(publications))
+        index, command = publications[0]
+        self.assertEqual(SHA, command[command.index("--sha") + 1])
+        self.assertEqual("rrnewton/hermit", command[command.index("--repo") + 1])
+        self.assertEqual(self.root, self.fake.command_cwds[index][1])
+        environment = self.fake.command_envs[index]
+        self.assertIsNotNone(environment)
+        assert environment is not None
+        self.assertEqual(str(self.root), environment["DEV_HERMIT_PARENT"])
+        self.assertEqual(str(self.root), environment["DEV_HERMIT_TOOL_ROOT"])
+        record = start_unit.run_registry.read_record(
+            self.root / "ignored/validate/runs/validate-test.json"
+        )
+        publication = record["commit_status_publication"]
+        self.assertEqual("published", publication["state"])
+        self.assertEqual(SHA, publication["sha"])
+
+    def test_non_green_validate_records_skip_without_invoking_publisher(self) -> None:
+        self.fake.canonical_verdict = "FAILED"
+        self.fake.canonical_status_rc = start_unit.EXIT_FAILED
+
+        rc, _output, error = self.invoke()
+
+        self.assertEqual(start_unit.EXIT_FAILED, rc, error)
+        self.assertFalse(
+            any(
+                len(command) > 1 and command[1] == "publish-commit-status"
+                for command in self.fake.commands
+            )
+        )
+        record = start_unit.run_registry.read_record(
+            self.root / "ignored/validate/runs/validate-test.json"
+        )
+        publication = record["commit_status_publication"]
+        self.assertEqual("not-attempted", publication["state"])
+        self.assertEqual("canonical verdict is FAILED", publication["reason"])
+
+    def test_publisher_failure_is_recorded_without_changing_green_verdict(self) -> None:
+        self.fake.commit_status_rc = 1
+        self.fake.commit_status_stderr = "network unavailable"
+
+        rc, _output, error = self.invoke()
+
+        self.assertEqual(0, rc)
+        self.assertIn("COMMIT STATUS NOT PUBLISHED", error)
+        self.assertIn("canonical validation verdict is unchanged", error)
+        record = start_unit.run_registry.read_record(
+            self.root / "ignored/validate/runs/validate-test.json"
+        )
+        publication = record["commit_status_publication"]
+        self.assertEqual("failed", publication["state"])
+        self.assertEqual("network unavailable", publication["detail"])
+
+    def test_publisher_launch_failure_is_recorded_without_changing_green_verdict(
+        self,
+    ) -> None:
+        self.fake.commit_status_launch_error = OSError("publisher executable unavailable")
+
+        rc, _output, error = self.invoke()
+
+        self.assertEqual(0, rc)
+        self.assertIn("COMMIT STATUS NOT PUBLISHED", error)
+        self.assertIn("canonical validation verdict is unchanged", error)
+        record = start_unit.run_registry.read_record(
+            self.root / "ignored/validate/runs/validate-test.json"
+        )
+        publication = record["commit_status_publication"]
+        self.assertEqual("failed", publication["state"])
+        self.assertEqual(
+            "cannot launch publisher: publisher executable unavailable",
+            publication["detail"],
+        )
+
+    def test_successful_publication_is_not_repeated_on_reentry(self) -> None:
+        rc, _output, error = self.invoke()
+        self.assertEqual(0, rc, error)
+        record_path = self.root / "ignored/validate/runs/validate-test.json"
+        before = sum(
+            len(command) > 1 and command[1] == "publish-commit-status"
+            for command in self.fake.commands
+        )
+
+        start_unit.finalize_commit_status_publication(
+            self.root,
+            self.root,
+            record_path,
+            target=SHA,
+            repo="rrnewton/hermit",
+            canonical_verdict="VALIDATED",
+            canonical_exit=0,
+            scorecard_updated=True,
+            run=self.fake,
+        )
+
+        after = sum(
+            len(command) > 1 and command[1] == "publish-commit-status"
+            for command in self.fake.commands
+        )
+        self.assertEqual(before, after)
 
     def test_no_per_cell_results_is_an_explicit_unchanged_success(self) -> None:
         rc, output, error = self.invoke()
@@ -923,6 +1070,19 @@ class StartUnitTest(unittest.TestCase):
         self.assertIn("refuses unrelated tracked changes", error)
         self.assertIn("compatibility scorecard NOT UPDATED", error)
         self.assertIn("established validate verdict is unchanged", error)
+        self.assertFalse(
+            any(
+                len(command) > 1 and command[1] == "publish-commit-status"
+                for command in self.fake.commands
+            )
+        )
+        record = start_unit.run_registry.read_record(
+            self.root / "ignored/validate/runs/validate-test.json"
+        )
+        self.assertEqual(
+            "scorecard write-back did not complete",
+            record["commit_status_publication"]["reason"],
+        )
 
     @mock.patch.object(start_unit.pane_owner, "create_pane", return_value=None)
     def test_linked_parent_uses_shared_state_and_exact_tooling(
@@ -3122,6 +3282,13 @@ class StartUnitTest(unittest.TestCase):
             "compatibility scorecard: generated files changed", out.getvalue()
         )
         self.assertTrue(any(command[0].endswith("scorecard.rs") for command in self.fake.commands))
+        self.assertEqual(
+            1,
+            sum(
+                len(command) > 1 and command[1] == "publish-commit-status"
+                for command in self.fake.commands
+            ),
+        )
         self.assertFalse(any(command[0] == "systemd-run" for command in self.fake.commands))
 
     def test_attach_returns_canonical_nonpass_not_child_zero(self) -> None:
@@ -3442,6 +3609,19 @@ class StartUnitTest(unittest.TestCase):
 
         self.assertEqual(0, rc, err.getvalue())
         self.assert_canonical_readers_use_split_roots(tool_root)
+        publication = next(
+            (index, command)
+            for index, command in enumerate(self.fake.commands)
+            if len(command) > 1 and command[1] == "publish-commit-status"
+        )
+        index, command = publication
+        self.assertEqual(str(tool_root / "ci-hub/ci-hub"), command[0])
+        self.assertEqual(self.root, self.fake.command_cwds[index][1])
+        environment = self.fake.command_envs[index]
+        self.assertIsNotNone(environment)
+        assert environment is not None
+        self.assertEqual(str(tool_root), environment["DEV_HERMIT_TOOL_ROOT"])
+        self.assertEqual(str(self.root), environment["DEV_HERMIT_PARENT"])
         self.assertTrue(
             (self.root / "ignored/validate/runs/validate-split-root.json").is_file()
         )

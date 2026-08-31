@@ -3,10 +3,9 @@
 
 This module is deliberately not an authority: it never scans or selects a
 ledger row, comments on a PR, or applies a label.  The Rust
-``ci-hub apply-local-label`` consumer selects one exact canonical row and
-passes its digest.  Python verifies byte identity and checks that selected row
-against the shared policy predicate; Rust alone authorizes and binds the
-artifact to a PR.
+Rust ``ci-hub`` consumers select one exact canonical row and pass its digest.
+Python verifies byte identity and checks that selected row against the shared
+policy predicate; Rust alone authorizes the commit status or PR binding.
 """
 
 from __future__ import annotations
@@ -213,6 +212,14 @@ def producer_definition(row: dict[str, Any], sha: str) -> dict[str, Any]:
         fail(str(error))
 
 
+def observed_producer_definition(row: dict[str, Any], sha: str) -> dict[str, Any]:
+    """Record exact producer blobs without requiring a separately registered hash set."""
+    try:
+        return qualifying_receipt.observe_producer_definition(row, sha)
+    except (qualifying_receipt.ProducerDefinitionError, RuntimeError) as error:
+        fail(str(error))
+
+
 def build_receipt(
     repo: str,
     sha: str,
@@ -221,6 +228,7 @@ def build_receipt(
     *,
     selected_digest: str,
     canonicalization: str,
+    observe_producer: bool = False,
 ) -> tuple[dict[str, Any], bytes, str]:
     log_digest = hashlib.sha256(durable_log.read_bytes()).hexdigest()
     # Host-in-identity (Req2): the receipt identity carries the producing host,
@@ -236,10 +244,15 @@ def build_receipt(
         "durable_log_file": str(durable_log),
         "log_sha256": log_digest,
         # Producer binding: WHICH check definition produced this receipt, at
-        # which head. The consumer requires this to equal the registered
-        # current definition, so a receipt minted by an older/foreign
-        # A validation producer cannot authorize a landing (task bind_receipt_to_producer).
-        "producer": producer_definition(row, sha),
+        # which head. PR binding retains the registered-definition check.
+        # Commit-status publication records the same exact blobs directly from
+        # the already-qualified commit, because the local status authority no
+        # longer requires a second repository to register validator edits.
+        "producer": (
+            observed_producer_definition(row, sha)
+            if observe_producer
+            else producer_definition(row, sha)
+        ),
         "selected_receipt_identity": {
             "digest_algorithm": "sha256",
             "canonicalization": canonicalization,
@@ -344,6 +357,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--canonicalization", required=True)
     parser.add_argument("--receipt-repo", default=RECEIPT_REPO)
     parser.add_argument("--receipt-branch", default=RECEIPT_BRANCH)
+    parser.add_argument(
+        "--state-root",
+        type=Path,
+        default=Path(__file__).resolve().parents[2],
+    )
+    parser.add_argument(
+        "--observe-producer-definition",
+        action="store_true",
+        help="record exact producer blobs without requiring a registered hash set",
+    )
     parser.add_argument("--dry-run", action="store_true")
     return parser.parse_args()
 
@@ -357,12 +380,7 @@ def execute(args: argparse.Namespace, canonical_record: bytes) -> dict[str, Any]
         expected_digest=args.selected_receipt_sha256,
         canonicalization=args.canonicalization,
     )
-    fixture_ledger = getattr(args, "ledger", None)
-    evidence_dir = (
-        fixture_ledger.parent / "validation-evidence"
-        if fixture_ledger is not None
-        else Path(__file__).resolve().parents[2] / "ignored" / "validation-evidence"
-    )
+    evidence_dir = args.state_root / "ignored" / "validation-evidence"
     durable_log = preserve_log(evidence_dir, args.sha, row)
     receipt, body, artifact_digest = build_receipt(
         args.repo,
@@ -371,6 +389,7 @@ def execute(args: argparse.Namespace, canonical_record: bytes) -> dict[str, Any]
         durable_log,
         selected_digest=args.selected_receipt_sha256,
         canonicalization=args.canonicalization,
+        observe_producer=args.observe_producer_definition,
     )
     path = f"validation-receipts/{args.repo}/{args.sha}/{artifact_digest}.json"
     if args.dry_run:

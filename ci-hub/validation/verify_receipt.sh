@@ -281,6 +281,27 @@ resolve_producer_record_from_checkout() {
     return 1
 }
 
+observe_primary_producer_record_from_checkout() {
+    local checkout=$1 target_sha=$2 expected_definition checked_definition
+    local relative blob paths
+    expected_definition=$(jq -c '.definition' <<<"$p_primary_record") || return 2
+    paths=$(jq -c '.paths' <<<"$p_primary_record") || return 2
+    checked_definition='{}'
+    while IFS= read -r relative; do
+        blob=$(git -C "$checkout" rev-parse "$target_sha:$relative" 2>/dev/null) || return 1
+        [[ $blob =~ ^[0-9a-f]{40}$ ]] || return 1
+        checked_definition=$(jq -cn \
+            --argjson definition "$checked_definition" \
+            --arg relative "$relative" --arg blob "$blob" \
+            '$definition + {($relative): $blob}') || return 2
+    done < <(jq -r 'keys[]' <<<"$expected_definition")
+    jq -cn --argjson definition "$checked_definition" \
+        --argjson paths "$paths" \
+        --arg resolved_from "$checkout" \
+        '{definition: $definition, coverage_status: "legacy-selected-paths",
+          paths: $paths, resolved_from: $resolved_from}'
+}
+
 resolve_producer_record_from_github() {
     local target_repo=$1 target_sha=$2 producer_record expected_definition
     local checked_definition relative blob saw_error=0
@@ -340,6 +361,7 @@ Options:
   --producer-definition-allowed  Print all currently allowed exact maps and exit
   --producer-definition-check FILE  Accept FILE only if it is one allowed whole map
   --producer-definition-resolve  Derive and check --sha from --repo-checkout
+  --producer-definition-observe  Derive the primary path set at --sha without registration
   --producer-definition-transition  Print the validated transition record and lifecycle
   --producer-definition-finalize  Print a finalized registry for --landed-replay
   --landed-replay SHA     Rebase-merge replay proven by the transition finalizer
@@ -363,6 +385,7 @@ while [[ $# -gt 0 ]]; do
         --producer-definition-check)
             producer_definition_mode=check; producer_definition_input=${2:-}; shift 2 ;;
         --producer-definition-resolve) producer_definition_mode=resolve; shift ;;
+        --producer-definition-observe) producer_definition_mode=observe; shift ;;
         --producer-definition-transition) producer_definition_mode=transition; shift ;;
         --producer-definition-finalize) producer_definition_mode=finalize; shift ;;
         --landed-replay) producer_definition_landed_replay=${2:-}; shift 2 ;;
@@ -438,6 +461,17 @@ if [[ -n $producer_definition_mode ]]; then
             exit 2
         fi
         resolve_producer_record_from_checkout "$repo_checkout" "$sha"
+        exit $?
+    fi
+    if [[ $producer_definition_mode == observe ]]; then
+        if [[ -n $producer_definition_landed_replay ]] || \
+           [[ -n $producer_definition_expected_registry_sha256 ]] || \
+           [[ ! $sha =~ ^[0-9a-f]{40}$ ]] || [[ -z $repo_checkout ]] || \
+           [[ ! -d $repo_checkout ]]; then
+            usage
+            exit 2
+        fi
+        observe_primary_producer_record_from_checkout "$repo_checkout" "$sha"
         exit $?
     fi
     if [[ $producer_definition_mode != check ]] || \

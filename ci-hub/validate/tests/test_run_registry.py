@@ -116,6 +116,42 @@ class RunRegistryContractTests(unittest.TestCase):
                 )
             )
 
+    def test_commit_status_publication_is_typed_but_optional(self) -> None:
+        absent = run_registry.parse_current_record(validation_handle())
+        self.assertNotIn("commit_status_publication", absent.raw)
+
+        published = run_registry.parse_current_record(
+            validation_handle(
+                commit_status_publication={
+                    "state": "published",
+                    "recorded_at": "2026-08-31T10:00:00+00:00",
+                    "repository": "rrnewton/hermit",
+                    "sha": SHA,
+                    "description": "Local full: 492 selected cells",
+                    "receipt_commit": "b" * 40,
+                    "receipt_path": "validation-receipts/rrnewton/hermit/receipt.json",
+                }
+            )
+        )
+        self.assertEqual(
+            "published", published.raw["commit_status_publication"]["state"]
+        )
+
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "validation-run-handle-commit_status_publication: published must contain exactly",
+        ):
+            run_registry.parse_current_record(
+                validation_handle(
+                    commit_status_publication={
+                        "state": "published",
+                        "recorded_at": "2026-08-31T10:00:00+00:00",
+                        "repository": "rrnewton/hermit",
+                        "sha": SHA,
+                    }
+                )
+            )
+
     def test_refused_admission_requires_reason_and_exit_by_name(self) -> None:
         with self.assertRaisesRegex(
             RuntimeError,

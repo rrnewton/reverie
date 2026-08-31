@@ -1812,7 +1812,10 @@ fn execute(root: &Path, command: HubCommand) -> Result<i32, CiHubError> {
         HubCommand::NewestGreen(args) => run_newest_green(root, args),
         HubCommand::FirstBad(args) => run_first_bad(root, args),
         HubCommand::ApplyLocalLabel(args) => run_apply_local_label(root, args),
-        HubCommand::PublishCommitStatus(args) => run_publish_commit_status(root, args),
+        HubCommand::PublishCommitStatus(args) => {
+            let state_root = operational_state_root(root)?;
+            run_publish_commit_status(root, &state_root, args)
+        }
         HubCommand::ReviewAttest(args) => {
             let mut forwarded = Vec::new();
             push_option(&mut forwarded, "--pr", args.pr.to_string());
@@ -8255,6 +8258,7 @@ fn publish_selected_receipt(
     sha: &str,
     selected: &QualifyingReceipt,
     dry_run: bool,
+    observe_producer_definition: bool,
 ) -> Result<VerifiedPublishedReceipt, CiHubError> {
     let _ = ledger;
     let mut command = Command::new("python3");
@@ -8273,13 +8277,18 @@ fn publish_selected_receipt(
             VALIDATION_RECEIPT_REPO,
             "--receipt-branch",
             VALIDATION_RECEIPT_BRANCH,
+            "--state-root",
         ])
+        .arg(root)
         .current_dir(root)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     if dry_run {
         command.arg("--dry-run");
+    }
+    if observe_producer_definition {
+        command.arg("--observe-producer-definition");
     }
     if let Some(config_dir) = gh_config_dir() {
         command.env("GH_CONFIG_DIR", config_dir);
@@ -8702,7 +8711,8 @@ fn bind_verified_receipt_to_pr(
 }
 
 fn run_publish_commit_status(
-    root: &Path,
+    tool_root: &Path,
+    state_root: &Path,
     args: PublishCommitStatusArgs,
 ) -> Result<i32, CiHubError> {
     if !is_oid(&args.sha) || args.sha.bytes().any(|byte| byte.is_ascii_uppercase()) {
@@ -8710,9 +8720,9 @@ fn run_publish_commit_status(
             "--sha must be exactly 40 lowercase hexadecimal characters".into(),
         ));
     }
-    let path = ledger_path(root);
-    let rows = load_ledger_rows(&path)?;
-    let assessment = assess_canonical_receipts(root, &rows, &args.sha, &args.repo)
+    let path = ledger_path(state_root);
+    let rows = load_ledger_rows_reporting_with_tool(&path, tool_root)?.0;
+    let assessment = assess_canonical_receipts(state_root, &rows, &args.sha, &args.repo)
         .map_err(CiHubError::ValidateStatus)?;
     if assessment.verdict != validate_status::Verdict::Validated {
         let report = serde_json::json!({
@@ -8736,22 +8746,23 @@ fn run_publish_commit_status(
     }
     let selected = newest_canonical_receipt(&assessment.qualifying)
         .expect("validated implies one selected canonical receipt");
-    let publisher = root.join("ci-hub/validation/publish_receipt.py");
+    let publisher = tool_root.join("ci-hub/validation/publish_receipt.py");
     let artifact = publish_selected_receipt(
-        root,
+        state_root,
         &publisher,
         &path,
         &args.repo,
         &args.sha,
         selected,
         args.dry_run,
+        true,
     )?;
     let description = local_validation_status_description(&selected.row);
     let status_action = if args.dry_run {
         "would-publish"
     } else {
         reconcile_local_validation_commit_status(
-            root,
+            state_root,
             &args.repo,
             &args.sha,
             &selected.row,
@@ -8904,6 +8915,7 @@ fn run_apply_local_label(root: &Path, args: ApplyLocalLabelArgs) -> Result<i32, 
                     &head,
                     selected,
                     args.dry_run,
+                    false,
                 ) {
                     Ok(artifact) => (artifact, "published"),
                     Err(error) => {

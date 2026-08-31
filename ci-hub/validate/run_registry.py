@@ -76,6 +76,18 @@ class AdmissionResultRecord(TypedDict, total=False):
     exit_code: int
 
 
+class CommitStatusPublicationRecord(TypedDict, total=False):
+    state: str
+    recorded_at: str
+    repository: str
+    sha: str
+    reason: str
+    detail: str
+    description: str
+    receipt_commit: str
+    receipt_path: str
+
+
 class RunRecord(TypedDict, total=False):
     """Complete serialized shape; required and conditional fields are checked below."""
 
@@ -129,6 +141,7 @@ class RunRecord(TypedDict, total=False):
     observed_safe_ci_cgroups: list[str]
     canonical_verdict: str
     wrapper_exit_code: int
+    commit_status_publication: CommitStatusPublicationRecord
     measured_result: str
     checkout_removed_at: str
     archived_orphaned_receipts: list[str]
@@ -268,6 +281,7 @@ VALIDATION_FIELDS = COMMON_FIELDS | frozenset(
         "observed_safe_ci_cgroups",
         "canonical_verdict",
         "wrapper_exit_code",
+        "commit_status_publication",
         "measured_result",
         "checkout_removed_at",
         "archived_orphaned_receipts",
@@ -337,6 +351,48 @@ _OPTIONAL_STRING_LIST_FIELDS = frozenset(
 
 def _error(field: str, detail: str) -> RuntimeError:
     return RuntimeError(f"validation-run-handle-{field}: {detail}")
+
+
+def _commit_status_publication(value: Any) -> None:
+    if not isinstance(value, dict):
+        raise _error("commit_status_publication", "must be an object")
+    state = value.get("state")
+    common = {"state", "recorded_at", "repository", "sha"}
+    if state in {"published", "unchanged"}:
+        required = common | {"description", "receipt_commit", "receipt_path"}
+    elif state == "failed":
+        required = common | {"detail"}
+    elif state == "not-attempted":
+        required = common | {"reason"}
+    else:
+        raise _error(
+            "commit_status_publication.state",
+            f"unsupported value {state!r}",
+        )
+    if set(value) != required:
+        raise _error(
+            "commit_status_publication",
+            f"{state} must contain exactly {', '.join(sorted(required))}",
+        )
+    _timestamp(
+        value,
+        "recorded_at",
+        error_field="commit_status_publication.recorded_at",
+    )
+    repository = _required_text(value, "repository")
+    if repository not in {"rrnewton/hermit", "rrnewton/reverie"}:
+        raise _error(
+            "commit_status_publication.repository",
+            f"unsupported value {repository!r}",
+        )
+    sha = _required_text(value, "sha")
+    if len(sha) != 40 or any(ch not in "0123456789abcdef" for ch in sha):
+        raise _error(
+            "commit_status_publication.sha",
+            "must be a lowercase forty-hex commit",
+        )
+    for field in required - common:
+        _required_text(value, field)
 
 
 def _required_text(value: Mapping[str, Any], field: str) -> str:
@@ -557,6 +613,8 @@ def parse_current_record(value: Mapping[str, Any]) -> RunHandle:
         _optional_string_list(value, field)
     identity = _process_identity(value)
     admission_result = _admission_result(value, kind=kind)
+    if "commit_status_publication" in value:
+        _commit_status_publication(value.get("commit_status_publication"))
 
     if kind is not RunKind.BENCH:
         if value.get("pane_role") != "observer-only":
