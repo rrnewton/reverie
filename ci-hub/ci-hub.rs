@@ -6356,6 +6356,8 @@ struct ValidateRunRecord {
     #[serde(default)]
     source_checkout: Option<String>,
     #[serde(default)]
+    branch: Option<String>,
+    #[serde(default)]
     log: Option<String>,
     #[serde(default)]
     admission_result: Option<ValidateRunAdmissionResult>,
@@ -6724,7 +6726,7 @@ fn live_validate_runs_from(
                 nonqualification_reason: None,
                 in_progress: true,
                 sha: Some(target),
-                branch: None,
+                branch: record.branch,
                 main_match: None,
                 main_sha: None,
                 git_depth: None,
@@ -6827,7 +6829,7 @@ fn live_validate_runs_from(
             nonqualification_reason: None,
             in_progress: true,
             sha: Some(record.target),
-            branch: None,
+            branch: record.branch,
             main_match: None,
             main_sha: None,
             git_depth: None,
@@ -9554,6 +9556,63 @@ mod tests {
     }
 
     #[test]
+    fn recent_history_renders_recorded_branch_without_inventing_one() {
+        let main_sha = RECEIPT_SHA.to_string();
+        let main_tree = "f9294df9294df9294df9294df9294df9294df929".to_string();
+        let commits = [main_sha.clone()];
+        let trees = BTreeMap::from([(main_sha.clone(), main_tree)]);
+        let main_history = ValidationMainHistory::Available {
+            commits: commits.to_vec(),
+            index: BranchCommitIndex::new(&commits, &trees),
+        };
+
+        let mut recorded = schema4_receipt_value();
+        recorded["branch"] = serde_json::json!("codex/validate-branch-provenance");
+        let mut attached =
+            finished_validate_status_entry(CANONICAL_VALIDATE_REPO, &history_row(recorded), false);
+        let mut historical = finished_validate_status_entry(
+            CANONICAL_VALIDATE_REPO,
+            &history_row(schema4_receipt_value()),
+            false,
+        );
+        for entry in [&mut attached, &mut historical] {
+            fill_optional_validate_status_columns(
+                Path::new("/unused"),
+                CANONICAL_VALIDATE_REPO,
+                &[ValidateStatusColumn::Main],
+                Some(&main_history),
+                entry,
+            );
+        }
+
+        let now = chrono::DateTime::parse_from_rfc3339("2026-08-03T01:36:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        let columns = [ValidateStatusColumn::Branch, ValidateStatusColumn::Main];
+        let attached_values = validate_status_values(
+            &attached,
+            &columns,
+            ValidateStatusTimes::Relative,
+            now,
+            false,
+            false,
+        );
+        let historical_values = validate_status_values(
+            &historical,
+            &columns,
+            ValidateStatusTimes::Relative,
+            now,
+            false,
+            false,
+        );
+
+        assert_eq!(attached_values[3], "codex/validate-branch-provenance");
+        assert_eq!(attached_values[4], "exact-sha");
+        assert_eq!(historical_values[3], "-");
+        assert_eq!(historical_values[4], "exact-sha");
+    }
+
+    #[test]
     fn recent_history_distinguishes_exact_tree_and_absent_main_matches() {
         let exact_sha = "a".repeat(40);
         let landed_sha = "b".repeat(40);
@@ -10660,6 +10719,7 @@ mod tests {
             "unit": "validate-hermit-current.service",
             "target": "a".repeat(40),
             "repo": CANONICAL_VALIDATE_REPO,
+            "branch": "codex/validate-branch-provenance",
             "checkout": "/tmp/checkout",
             "source_checkout": source_checkout.display().to_string(),
             "temporary_checkout": true,
@@ -10774,6 +10834,10 @@ mod tests {
             Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
         );
         assert_eq!(live.entries[0].run_number, Some(701));
+        assert_eq!(
+            live.entries[0].branch.as_deref(),
+            Some("codex/validate-branch-provenance")
+        );
         assert_eq!(live.entries[0].host.as_deref(), Some("validation-host"));
         assert_eq!(live.entries[0].slot.as_deref(), Some("142"));
         assert_eq!(

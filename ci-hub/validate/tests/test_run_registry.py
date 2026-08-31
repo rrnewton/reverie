@@ -77,6 +77,24 @@ class RunRegistryContractTests(unittest.TestCase):
         self.assertFalse(handle.lock_admissible)
         self.assertTrue(handle.counts_as_validation)
         self.assertIsNone(handle.admission_result)
+        self.assertIsNone(run_registry.projection(handle.raw)["branch"])
+
+    def test_validation_branch_provenance_is_optional_and_typed(self) -> None:
+        current = validation_handle(branch="codex/validate-branch-provenance")
+        handle = run_registry.parse_current_record(current)
+        self.assertEqual(
+            "codex/validate-branch-provenance",
+            run_registry.projection(handle.raw)["branch"],
+        )
+
+        for branch in ("", 7):
+            with self.subTest(branch=branch):
+                with self.assertRaisesRegex(
+                    RuntimeError, "validation-run-handle-branch"
+                ):
+                    run_registry.parse_current_record(
+                        validation_handle(branch=branch)
+                    )
 
     def test_admission_result_is_closed_and_exact(self) -> None:
         handle = run_registry.parse_current_record(

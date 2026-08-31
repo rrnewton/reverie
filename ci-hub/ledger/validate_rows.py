@@ -42,6 +42,7 @@ LIVE_SPOOL_RELATIVE = Path("ignored/ci-hub/validate-ledger-spool")
 # authority view again.
 ACCEPTANCE_FIXTURE_PRODUCERS = frozenset({"ledger-live-sync-acceptance"})
 RUN_NUMBER_ENV = "CI_HUB_VALIDATE_RUN_NUMBER"
+BRANCH_ENV = "CI_HUB_VALIDATE_BRANCH"
 
 
 def _producer_tool(value: object) -> str:
@@ -555,6 +556,31 @@ def record(row: dict, *, root: Path | None = None) -> dict:
             # any stale row copy without turning a display mismatch into a
             # missing validation result.
             row["run_number"] = run_number
+    existing_branch = row.get("branch")
+    if existing_branch is not None and (
+        not isinstance(existing_branch, str)
+        or not existing_branch.strip()
+        or any(
+            ord(character) < 32 or ord(character) == 127
+            for character in existing_branch
+        )
+    ):
+        # Branch is display provenance, never receipt authority. A malformed
+        # optional label must not suppress the producer-owned result.
+        row.pop("branch", None)
+    admission_branch = os.environ.get(BRANCH_ENV)
+    if (
+        admission_branch is not None
+        and admission_branch.strip()
+        and not any(
+            ord(character) < 32 or ord(character) == 127
+            for character in admission_branch
+        )
+    ):
+        # validate-lock supplies this from the source checkout's symbolic HEAD
+        # after admission. Prefer it over any stale row copy, exactly as for the
+        # admission-owned run number above.
+        row["branch"] = admission_branch
     if root == production_root and _is_acceptance_fixture_row(row):
         raise ValueError(
             "acceptance fixture producer is not allowed in the production ledger"

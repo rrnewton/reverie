@@ -36,6 +36,13 @@ from every branch, ordered by completion time; it is not restricted to
 and full tip SHA used for the first-parent depth. This query deliberately does
 not fetch, and the named tip may differ from the checkout's `HEAD`.
 
+The `BRANCH` column is provenance captured from the source checkout's symbolic
+`HEAD` before admission creates its detached validation checkout. A detached
+source or a historical record that predates this field displays `-`; the reader
+does not guess from refs that happen to contain the commit. `MAIN` independently
+reports the authoritative relationship to `origin/main` as `exact-sha`,
+`tree:<sha>`, `no-match`, or `unverifiable`.
+
 Use `ci-hub validate-status --log-paths` when following a running or completed
 validation. It adds the producer-recorded `SLOT` and full `LOG-FILE` columns;
 they stay out of the default table because the path is intentionally wide.

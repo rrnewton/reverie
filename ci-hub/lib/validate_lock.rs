@@ -125,6 +125,24 @@ const OWNER_WATCH_VERIFIER_RELATIVE: &str = "scripts/owner-checkout-validate-wat
 /// A failed or timed-out fetch refuses freshness; it must not turn a stale-head
 /// optimization into an unbounded box-global anchor hold.
 const CURRENT_MAIN_FETCH_TIMEOUT_SECONDS: u64 = 30;
+/// Admission-owned source-branch provenance forwarded to the ledger adapter.
+/// The child must not inherit an ambient value when an older or detached run
+/// handle carries no branch.
+const VALIDATE_BRANCH_ENV: &str = "CI_HUB_VALIDATE_BRANCH";
+
+fn apply_admission_provenance(
+    command: &mut Command,
+    run_number: Option<u64>,
+    branch: Option<&str>,
+) {
+    if let Some(run_number) = run_number {
+        command.env("CI_HUB_VALIDATE_RUN_NUMBER", run_number.to_string());
+    }
+    command.env_remove(VALIDATE_BRANCH_ENV);
+    if let Some(branch) = branch {
+        command.env(VALIDATE_BRANCH_ENV, branch);
+    }
+}
 
 /// How often a QUEUED waiter re-tests that its target still contains
 /// `origin/main`.
@@ -5199,11 +5217,15 @@ impl ValidateLock {
                 return Err(error);
             }
         };
-        let run_number = match (args.kind.is_validation(), admitted) {
-            (true, Some(projection)) => projection
-                .admission_result
-                .and_then(|result| result.run_number),
-            _ => None,
+        let (run_number, branch) = match (args.kind.is_validation(), admitted.as_ref()) {
+            (true, Some(projection)) => (
+                projection
+                    .admission_result
+                    .as_ref()
+                    .and_then(|result| result.run_number),
+                projection.branch.as_deref(),
+            ),
+            _ => (None, None),
         };
         if let Some(run_number) = run_number {
             eprintln!(
@@ -5244,9 +5266,7 @@ impl ValidateLock {
                     std::process::id().to_string(),
                 )
                 .env("CI_HUB_VALIDATE_LOCK_OWNER_FILE", &owner_file);
-            if let Some(run_number) = run_number {
-                command.env("CI_HUB_VALIDATE_RUN_NUMBER", run_number.to_string());
-            }
+            apply_admission_provenance(command, run_number, branch);
         }) {
             Ok(gated) => gated,
             Err(source) => {
@@ -6001,6 +6021,33 @@ fn terminate_child_group(child: &mut Child, target: &str, cause: &str) {
 #[cfg(test)]
 mod tests {
 
+    #[test]
+    fn admission_forwards_recorded_branch_and_clears_an_unrecorded_one() {
+        let mut attached = Command::new("/bin/true");
+        apply_admission_provenance(
+            &mut attached,
+            Some(701),
+            Some("codex/validate-branch-provenance"),
+        );
+        assert_eq!(
+            attached
+                .get_envs()
+                .find(|(name, _)| *name == VALIDATE_BRANCH_ENV)
+                .and_then(|(_, value)| value),
+            Some(std::ffi::OsStr::new("codex/validate-branch-provenance"))
+        );
+
+        let mut detached = Command::new("/bin/true");
+        detached.env(VALIDATE_BRANCH_ENV, "ambient-main");
+        apply_admission_provenance(&mut detached, None, None);
+        assert!(matches!(
+            detached
+                .get_envs()
+                .find(|(name, _)| *name == VALIDATE_BRANCH_ENV),
+            Some((_, None))
+        ));
+    }
+
     fn attribution_args(record: Option<PathBuf>) -> RunArgs {
         RunArgs {
             agent: "attributed-agent".into(),
@@ -6103,6 +6150,7 @@ mod tests {
             "target": HEX_SHA,
             "unit": "validate-attributed.service",
             "repo": "rrnewton/hermit",
+            "branch": "codex/validate-branch-provenance",
             "checkout": "/tmp/checkout",
             "source_checkout": "/tmp/source",
             "temporary_checkout": true,
@@ -6146,7 +6194,12 @@ mod tests {
             Some(1),
             admitted
                 .admission_result
+                .as_ref()
                 .and_then(|result| result.run_number)
+        );
+        assert_eq!(
+            admitted.branch.as_deref(),
+            Some("codex/validate-branch-provenance")
         );
         let published: serde_json::Value =
             serde_json::from_str(&fs::read_to_string(&record).unwrap()).unwrap();

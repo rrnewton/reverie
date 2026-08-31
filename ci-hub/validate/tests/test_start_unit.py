@@ -196,6 +196,7 @@ class FakeRun:
         self.target_contains_current_main = False
         self.source_common_dir_available = True
         self.source_head = SHA
+        self.source_branch: str | None = "codex/fixture-branch"
         self.scorecard_update = False
         self.scorecard_rc = 0
         self.scorecard_stderr = ""
@@ -425,6 +426,10 @@ class FakeRun:
             and command[-1] == "refs/remotes/origin/main^{commit}"
         ):
             return completed(command, stdout=f"{self.current_main}\n")
+        if command[:4] == ["git", "-C", str(self.checkout), "symbolic-ref"]:
+            if self.source_branch is None:
+                return completed(command, rc=1)
+            return completed(command, stdout=f"{self.source_branch}\n")
         if (
             command[:4] == ["git", "-C", str(self.checkout), "merge-base"]
             and command[4] == "--is-ancestor"
@@ -785,8 +790,28 @@ class StartUnitTest(unittest.TestCase):
         self.assertEqual("PASSED", record["final_validate_status"])
         self.assertEqual(55, record["executed_nodes"])
         self.assertEqual("observer-only", record["pane_role"])
+        self.assertEqual("codex/fixture-branch", record["branch"])
         self.assertEqual(3600, record["validate_lock_child_deadline_seconds"])
         self.assertEqual(3239, record["hermit_run_timeout_seconds"])
+
+    def test_detached_source_does_not_infer_main_branch(self) -> None:
+        self.fake.source_branch = None
+
+        rc, _output, error = self.invoke(["--", "full"])
+
+        self.assertEqual(0, rc, error)
+        record = start_unit.run_registry.read_record(
+            self.root / "ignored/validate/runs/validate-test.json"
+        )
+        self.assertNotIn("branch", record)
+        symbolic_ref = next(
+            command
+            for command in self.fake.commands
+            if command[:4] == ["git", "-C", str(self.checkout), "symbolic-ref"]
+        )
+        self.assertEqual(
+            ["symbolic-ref", "--quiet", "--short", "HEAD"], symbolic_ref[3:]
+        )
 
     def test_current_target_records_and_consumes_framework_result(self) -> None:
         schema = self.checkout / start_unit.service_result.SCHEMA_RELATIVE_PATH

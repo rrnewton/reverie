@@ -226,6 +226,42 @@ def test_record_carries_the_admitted_run_number(
     assert validate_rows.rows(root=tmp_path)[0]["run_number"] == 701
 
 
+def test_record_carries_the_admitted_source_branch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setenv(validate_rows.BRANCH_ENV, "codex/validate-branch-provenance")
+    source = row(tmp_path)
+
+    validate_rows.record(source, root=tmp_path)
+
+    [event] = validate_rows.events(root=tmp_path)
+    assert event["legacy_row"]["branch"] == "codex/validate-branch-provenance"
+    assert validate_rows.rows(root=tmp_path)[0]["branch"] == (
+        "codex/validate-branch-provenance"
+    )
+
+
+def test_record_without_admission_branch_keeps_branch_absent(tmp_path: Path):
+    validate_rows.record(row(tmp_path), root=tmp_path)
+
+    [event] = validate_rows.events(root=tmp_path)
+    assert "branch" not in event["legacy_row"]
+    assert "branch" not in validate_rows.rows(root=tmp_path)[0]
+
+
+def test_record_prefers_the_admission_producers_source_branch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setenv(validate_rows.BRANCH_ENV, "codex/admitted")
+    source = row(tmp_path)
+    source["branch"] = "codex/stale-copy"
+
+    validate_rows.record(source, root=tmp_path)
+
+    [event] = validate_rows.events(root=tmp_path)
+    assert event["legacy_row"]["branch"] == "codex/admitted"
+
+
 @pytest.mark.parametrize("run_number", ["0", "-1", "01", "not-a-number"])
 def test_record_omits_an_invalid_optional_admitted_run_number(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, run_number: str

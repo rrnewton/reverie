@@ -77,6 +77,7 @@ pub struct Projection {
     pub unit: Option<String>,
     pub target: Option<String>,
     pub repo: Option<String>,
+    pub branch: Option<String>,
     pub agent: Option<String>,
     pub started_at: Option<String>,
     pub host: Option<String>,
@@ -332,6 +333,7 @@ mod tests {
             "unit": "validate-a.service",
             "target": SHA,
             "repo": "rrnewton/hermit",
+            "branch": "codex/validate-branch-provenance",
             "checkout": "/tmp/checkout",
             "source_checkout": "/tmp/source",
             "temporary_checkout": true,
@@ -387,6 +389,10 @@ mod tests {
             .expect("current handle must be accepted by its producer-owned authority");
         assert!(projected.lock_admissible);
         assert!(projected.counts_as_validation);
+        assert_eq!(
+            projected.branch.as_deref(),
+            Some("codex/validate-branch-provenance")
+        );
 
         let identity = ProcessIdentity {
             pid: 7,

@@ -76,6 +76,52 @@ def parent_checkout_head(tool_root: Path = ROOT) -> str | None:
     return head if SHA_RE.match(head) else None
 
 
+def source_checkout_branch(checkout: Path, target: str, *, run: Runner) -> str | None:
+    """Return the branch attached to the admitted source checkout, if any.
+
+    This is provenance captured before the private detached validation checkout
+    exists.  A detached source has no branch: do not infer one from refs that
+    happen to contain the target, because that relationship can change later and
+    can be ambiguous even at admission time.
+    """
+
+    result = run(
+        [
+            "git",
+            "-C",
+            str(checkout),
+            "symbolic-ref",
+            "--quiet",
+            "--short",
+            "HEAD",
+        ],
+        check=False,
+    )
+    if result.returncode == 1:
+        return None
+    if result.returncode != 0:
+        detail = (
+            result.stderr.strip()
+            or result.stdout.strip()
+            or f"exit {result.returncode}"
+        )
+        raise ValueError(f"cannot inspect source checkout branch: {detail}")
+    branch = result.stdout.strip()
+    if not branch or "\n" in branch or "\r" in branch:
+        raise ValueError("source checkout symbolic branch is empty or malformed")
+    branch_head = checked_output(
+        ["git", "-C", str(checkout), "rev-parse", "HEAD^{commit}"],
+        run=run,
+        purpose="cannot recheck source checkout HEAD after reading its branch",
+    )
+    if branch_head != target:
+        raise ValueError(
+            f"source checkout branch {branch!r} moved to {branch_head}, "
+            f"not requested exact target {target}"
+        )
+    return branch
+
+
 def canonical_worktree_tool_head(tool_root: Path, state_root: Path) -> str:
     """Bind a pathname tool root to the canonical parent Git repository.
 
@@ -3891,6 +3937,7 @@ def main(
 
     fresh_checkout: Path | None = None
     source_checkout: Path | None = None
+    source_branch: str | None = None
     private_cargo_home: Path | None = None
     runtime_root: Path | None = None
     current_main_before_launch: str | None = None
@@ -3913,6 +3960,9 @@ def main(
             repo=repo,
             run=run,
             allow_owner_validate_symlink=args.allow_owner_validate_symlink,
+        )
+        source_branch = source_checkout_branch(
+            source_checkout, args.target, run=run
         )
         unit = sanitize_unit(args.unit) if args.unit else default_unit(args.agent, args.target)
         if args.frozen_validate:
@@ -4045,6 +4095,7 @@ def main(
                     "repo": repo,
                     "checkout": str(checkout),
                     "source_checkout": str(source_checkout),
+                    **({"branch": source_branch} if source_branch is not None else {}),
                     "temporary_checkout": fresh_checkout is not None,
                     "cargo_home": str(private_cargo_home),
                     "log": str(log),
@@ -4184,6 +4235,7 @@ def main(
         "target": args.target,
         "repo": repo,
         "checkout": str(checkout),
+        "branch": source_branch,
         "log": str(log),
         "record": str(record_path),
         "admission": "ci-hub validate-lock",

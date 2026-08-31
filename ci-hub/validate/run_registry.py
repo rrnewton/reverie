@@ -97,6 +97,7 @@ class RunRecord(TypedDict, total=False):
     unit: str
     target: str
     repo: str
+    branch: str | None
     checkout: str
     source_checkout: str
     temporary_checkout: bool
@@ -205,6 +206,7 @@ class RunHandle:
     unit: str
     target: str
     repo: str
+    branch: str | None
     checkout: str
     log: str
     agent: str
@@ -250,6 +252,7 @@ COMMON_FIELDS = frozenset(
 VALIDATION_FIELDS = COMMON_FIELDS | frozenset(
     {
         "source_checkout",
+        "branch",
         "temporary_checkout",
         "cargo_home",
         "pr",
@@ -295,6 +298,7 @@ BENCH_FIELDS = COMMON_FIELDS | frozenset({"results", "cleanup_error"})
 _OPTIONAL_TEXT_FIELDS = frozenset(
     {
         "source_checkout",
+        "branch",
         "cargo_home",
         "parent_checkout_head",
         "pane_role",
@@ -613,6 +617,8 @@ def parse_current_record(value: Mapping[str, Any]) -> RunHandle:
         _optional_string_list(value, field)
     identity = _process_identity(value)
     admission_result = _admission_result(value, kind=kind)
+    branch_value = value.get("branch")
+    branch = branch_value if isinstance(branch_value, str) else None
     if "commit_status_publication" in value:
         _commit_status_publication(value.get("commit_status_publication"))
 
@@ -630,6 +636,8 @@ def parse_current_record(value: Mapping[str, Any]) -> RunHandle:
             if field not in value:
                 raise _error(field, "is required for validation handles")
         _required_text(value, "source_checkout")
+        if value.get("branch") is not None:
+            _required_text(value, "branch")
         _required_text(value, "cargo_home")
         _optional_commit(value, "parent_checkout_head")
         _positive_integer(value, "validate_lock_child_deadline_seconds")
@@ -794,6 +802,7 @@ def parse_current_record(value: Mapping[str, Any]) -> RunHandle:
         unit=unit,
         target=target,
         repo=repo,
+        branch=branch,
         checkout=checkout,
         log=log,
         agent=agent,
@@ -1106,6 +1115,7 @@ def _legacy_projection(value: Mapping[str, Any]) -> dict[str, Any]:
         "unit": unit,
         "target": value.get("target"),
         "repo": value.get("repo"),
+        "branch": value.get("branch"),
         "agent": value.get("agent"),
         "started_at": value.get("started_at"),
         "host": value.get("host"),
@@ -1131,6 +1141,7 @@ def projection(value: Mapping[str, Any]) -> dict[str, Any]:
         "unit": handle.unit,
         "target": handle.target,
         "repo": handle.repo,
+        "branch": handle.branch,
         "agent": handle.agent,
         "started_at": handle.started_at,
         "host": handle.raw.get("host"),
