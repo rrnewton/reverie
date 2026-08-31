@@ -58,7 +58,7 @@ def base_report() -> dict:
         },
         "series": {"published_ref_sha": "f" * 40},
         "run_handles": {
-            "unattributed_pre_service_handles": [],
+            "unknown_pre_admission_handles": [],
             "admitted_without_ledger_handles": [],
             "terminal_handles_missing_admission": [],
         },
@@ -1722,7 +1722,7 @@ class SignalCrosscheckTests(unittest.TestCase):
         self.assertIn("target must be an exact lowercase forty-hex commit", errors)
         self.assertIn("repo must be rrnewton/hermit or rrnewton/reverie", errors)
 
-    def test_unattributed_pre_service_handle_is_visible_without_disagreement(self) -> None:
+    def test_unknown_pre_admission_handle_is_visible_without_disagreement(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             run_root = root / "ignored" / "validate" / "runs"
@@ -1737,6 +1737,10 @@ class SignalCrosscheckTests(unittest.TestCase):
                         detail="service result was never written",
                         process_identity=None,
                         admission_result=None,
+                        executed_nodes=None,
+                        executed_tests=None,
+                        final_validate_status=None,
+                        observed_safe_ci_cgroups=[],
                     )
                 )
             )
@@ -1747,16 +1751,16 @@ class SignalCrosscheckTests(unittest.TestCase):
         self.assertEqual(report["unreadable_handles"], [])
         self.assertEqual(report["admitted_without_ledger_handles"], [])
         self.assertEqual(report["terminal_handles_missing_admission"], [])
-        self.assertEqual(len(report["unattributed_pre_service_handles"]), 1)
+        self.assertEqual(len(report["unknown_pre_admission_handles"]), 1)
         self.assertEqual(
-            report["unattributed_pre_service_handles"][0]["unit"],
+            report["unknown_pre_admission_handles"][0]["unit"],
             "validate-owner-checkout.service",
         )
         self.assertIsNone(
-            report["unattributed_pre_service_handles"][0]["host"]
+            report["unknown_pre_admission_handles"][0]["host"]
         )
         self.assertEqual(
-            report["unattributed_pre_service_handles"][0]["machine_shortname"],
+            report["unknown_pre_admission_handles"][0]["machine_shortname"],
             "",
         )
         complete = base_report()
@@ -1770,9 +1774,9 @@ class SignalCrosscheckTests(unittest.TestCase):
         with redirect_stdout(output):
             signal_crosscheck.print_text(complete)
         rendered = output.getvalue()
-        self.assertIn("unattributed-pre-service=1", rendered)
+        self.assertIn("unknown-pre-admission=1", rendered)
         self.assertIn(
-            "run-handle-history: unattributed pre-service "
+            "run-handle-history: unknown pre-admission "
             "validate-owner-checkout.service state=unknown",
             rendered,
         )
@@ -1790,32 +1794,41 @@ class SignalCrosscheckTests(unittest.TestCase):
                 "start_ticks": 456,
                 "boot_id": "fixture-boot",
             }
-            (run_root / "started-without-admission.json").write_text(
-                json.dumps(
-                    current_validation_handle(
-                        "validate-started-without-admission",
-                        state="unknown",
-                        result="unknown",
-                        exit_code=None,
-                        detail="service outcome is unknown",
-                        process_identity=identity,
-                        admission_result=None,
+            evidence_cases = {
+                "started-without-admission": {"process_identity": identity},
+                "host-without-admission": {"host": "fixture-host"},
+                "outcome-exit": {"exit_code": 3},
+                "outcome-signal": {"signal": 15},
+                "outcome-executed-nodes": {"executed_nodes": 0},
+                "outcome-executed-tests": {"executed_tests": 0},
+                "outcome-final-status": {
+                    "final_validate_status": "COULD_NOT_RUN"
+                },
+                "outcome-wrapper": {
+                    "canonical_verdict": "NEEDS-RERUN",
+                    "wrapper_exit_code": 4,
+                },
+                "outcome-observed-cgroup": {
+                    "observed_safe_ci_cgroups": ["/system.slice/example.scope"]
+                },
+            }
+            for name, updates in evidence_cases.items():
+                (run_root / f"{name}.json").write_text(
+                    json.dumps(
+                        current_validation_handle(
+                            f"validate-{name}",
+                            **{
+                                "state": "unknown",
+                                "result": "unknown",
+                                "exit_code": None,
+                                "detail": "service outcome is unknown",
+                                "process_identity": None,
+                                "admission_result": None,
+                                **updates,
+                            },
+                        )
                     )
                 )
-            )
-            (run_root / "outcome-without-admission.json").write_text(
-                json.dumps(
-                    current_validation_handle(
-                        "validate-outcome-without-admission",
-                        state="unknown",
-                        result="unknown",
-                        exit_code=3,
-                        detail="service outcome is unknown",
-                        process_identity=None,
-                        admission_result=None,
-                    )
-                )
-            )
             (run_root / "admitted-without-ledger.json").write_text(
                 json.dumps(
                     current_validation_handle(
@@ -1840,16 +1853,16 @@ class SignalCrosscheckTests(unittest.TestCase):
                 root, "a" * 40, "rrnewton/hermit", []
             )
 
-        self.assertEqual(report["unattributed_pre_service_handles"], [])
+        self.assertEqual(report["unknown_pre_admission_handles"], [])
+        expected_missing = {
+            f"validate-{name}.service" for name in evidence_cases
+        }
         self.assertEqual(
-            [
+            {
                 handle["unit"]
                 for handle in report["terminal_handles_missing_admission"]
-            ],
-            [
-                "validate-outcome-without-admission.service",
-                "validate-started-without-admission.service",
-            ],
+            },
+            expected_missing,
         )
         self.assertEqual(
             [handle["unit"] for handle in report["admitted_without_ledger_handles"]],
@@ -1858,19 +1871,13 @@ class SignalCrosscheckTests(unittest.TestCase):
         complete = base_report()
         complete["run_handles"] = report
         issues = signal_crosscheck.reconcile(complete)
-        self.assertEqual(len(issues), 3)
-        self.assertTrue(
-            any(
-                "validate-outcome-without-admission.service" in issue
-                for issue in issues
-            )
-        )
-        self.assertTrue(
-            any(
-                "validate-started-without-admission.service" in issue
-                for issue in issues
-            )
-        )
+        self.assertEqual(len(issues), len(expected_missing) + 1)
+        complained_units = {
+            unit
+            for unit in expected_missing
+            if any(unit in issue for issue in issues)
+        }
+        self.assertEqual(complained_units, expected_missing)
         self.assertTrue(
             any("validate-admitted-without-ledger.service" in issue for issue in issues)
         )

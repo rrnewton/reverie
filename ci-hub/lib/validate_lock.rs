@@ -1796,6 +1796,61 @@ fn publish_run_admission_result(
     Ok(Some(projected))
 }
 
+fn record_pre_admission_refusal(
+    attribution: &VerifiedRunAttribution,
+    error: ValidateLockError,
+) -> ValidateLockError {
+    let exit_code = error.exit_code();
+    match publish_run_admission_result(
+        attribution,
+        validate_run_handle::AdmissionState::Refused,
+        Some(validate_run_handle::AdmissionRefusalReason::ValidationLockRefusal),
+        Some(exit_code),
+    ) {
+        Ok(_) => error,
+        Err(record_error) => ValidateLockError::InvalidState(format!(
+            "{error}; additionally could not publish typed pre-admission refusal: {record_error}"
+        )),
+    }
+}
+
+fn prepare_run_before_admission_with(
+    args: &RunArgs,
+    attribution: &VerifiedRunAttribution,
+    owner: Result<ProcessOwner, ValidateLockError>,
+    enable_subreaper: impl FnOnce() -> io::Result<()>,
+) -> Result<ProcessOwner, ValidateLockError> {
+    let owner = owner.map_err(|error| record_pre_admission_refusal(attribution, error))?;
+    publish_required_run_process_identity(args, attribution, &owner)?;
+
+    let setup = (|| {
+        if args.child.is_empty() {
+            return Err(ValidateLockError::EmptyChild);
+        }
+        if args.child_deadline == 0 {
+            return Err(ValidateLockError::UnboundedChildDeadline);
+        }
+        reject_bad_run_max(args.max, args.kind)?;
+        enable_subreaper().map_err(|source| {
+            io_error("enable child subreaper at", Path::new("/proc/self"), source)
+        })
+    })();
+    setup.map_err(|error| record_pre_admission_refusal(attribution, error))?;
+    Ok(owner)
+}
+
+fn prepare_run_before_admission(
+    args: &RunArgs,
+    attribution: &VerifiedRunAttribution,
+) -> Result<ProcessOwner, ValidateLockError> {
+    prepare_run_before_admission_with(
+        args,
+        attribution,
+        current_process_owner(),
+        enable_child_subreaper,
+    )
+}
+
 fn refusal_before_admission(
     attribution: &VerifiedRunAttribution,
     code: i32,
@@ -4954,21 +5009,12 @@ impl ValidateLock {
         tool_root: &Path,
         state_root: &Path,
     ) -> Result<i32, ValidateLockError> {
-        if args.child.is_empty() {
-            return Err(ValidateLockError::EmptyChild);
-        }
-        if args.child_deadline == 0 {
-            return Err(ValidateLockError::UnboundedChildDeadline);
-        }
-        reject_bad_run_max(args.max, args.kind)?;
-        enable_child_subreaper().map_err(|source| {
-            io_error("enable child subreaper at", Path::new("/proc/self"), source)
-        })?;
-
         // The run record is the shared producer-consumer contract for
-        // admission. Bind it before any normal refusal so a current invocation
-        // never leaves its observer to reconstruct the answer from log text.
+        // admission. Verify it and bind this service's process identity before
+        // validating setup, so every attributable pre-admission exit can publish
+        // a typed refusal instead of leaving an ambiguous historical handle.
         let attribution = require_run_attribution(state_root, &args)?;
+        let owner = prepare_run_before_admission(&args, &attribution)?;
 
         // Refuse immutable-floor and current-main violations BEFORE this run
         // enters the box-global queue. A stale head must not wait for scarce
@@ -4982,12 +5028,6 @@ impl ValidateLock {
             return stale_base_refusal_with_record(&attribution, error);
         }
 
-        // Accountability is an admission predicate, not a post-hoc reporting
-        // best effort. The canonical producer writes the run record before it
-        // starts this service; bind that record to our live systemd unit before
-        // we can take the one box-global anchor.
-        let owner = current_process_owner()?;
-        publish_required_run_process_identity(&args, &attribution, &owner)?;
         let record_text = attribution.record.to_string_lossy();
         for (name, value) in [
             ("boot_id", owner.boot_id.as_str()),
@@ -6115,10 +6155,11 @@ mod tests {
         let _ = fs::remove_dir_all(root);
     }
 
-    #[test]
-    fn current_run_record_uses_shared_kind_and_state_contract() {
+    fn current_validation_attribution_fixture(
+        name: &str,
+    ) -> (PathBuf, PathBuf, RunArgs, VerifiedRunAttribution) {
         let root = env::temp_dir().join(format!(
-            "ci-hub-attribution-current-{}-{}",
+            "ci-hub-attribution-current-{name}-{}-{}",
             std::process::id(),
             epoch_seconds().unwrap()
         ));
@@ -6141,14 +6182,14 @@ mod tests {
             include_str!("../validate/final_validate_status.py"),
         )
         .unwrap();
-        let record = runs.join("validate-attributed.json");
+        let record = runs.join(format!("{name}.json"));
         let current = serde_json::json!({
             "schema_version": 1,
             "kind": "validate",
             "state": "launching",
             "agent": "attributed-agent",
             "target": HEX_SHA,
-            "unit": "validate-attributed.service",
+            "unit": format!("{name}.service"),
             "repo": "rrnewton/hermit",
             "branch": "codex/validate-branch-provenance",
             "checkout": "/tmp/checkout",
@@ -6169,12 +6210,18 @@ mod tests {
         });
         fs::write(&record, serde_json::to_vec(&current).unwrap()).unwrap();
         let args = attribution_args(Some(record.clone()));
-        let verified = verify_run_attribution(
-            &root,
-            &args,
-            "0::/user.slice/user-1.slice/validate-attributed.service\n",
-        )
-        .expect("current run identity must be attributable through the shared contract");
+        let cgroup = format!("0::/user.slice/user-1.slice/{name}.service\n");
+        let verified = verify_run_attribution(&root, &args, &cgroup)
+            .expect("current run identity must be attributable through the shared contract");
+        (root, record, args, verified)
+    }
+
+    #[test]
+    fn current_run_record_uses_shared_kind_and_state_contract() {
+        let (root, record, args, verified) =
+            current_validation_attribution_fixture("validate-attributed");
+        let current: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&record).unwrap()).unwrap();
         let owner = ProcessOwner {
             host: "fixture".into(),
             boot_id: "boot-fixture".into(),
@@ -6220,6 +6267,48 @@ mod tests {
             "{error}"
         );
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn pre_admission_setup_errors_publish_identity_and_typed_refusal() {
+        for (name, bad_max, subreaper_error) in [
+            ("validate-bad-max", true, false),
+            ("validate-subreaper-error", false, true),
+        ] {
+            let (root, record, mut args, verified) = current_validation_attribution_fixture(name);
+            if bad_max {
+                args.max = 3;
+            }
+            let owner = ProcessOwner {
+                host: "fixture".into(),
+                boot_id: "boot-fixture".into(),
+                pid: 123,
+                start_ticks: 456,
+            };
+            let error = prepare_run_before_admission_with(&args, &verified, Ok(owner), || {
+                if subreaper_error {
+                    Err(io::Error::other("fixture subreaper failure"))
+                } else {
+                    panic!("bad --max must refuse before subreaper setup")
+                }
+            })
+            .unwrap_err();
+            if bad_max {
+                assert!(matches!(error, ValidateLockError::BadMax));
+            } else {
+                assert!(matches!(error, ValidateLockError::Io { .. }));
+            }
+            let published: serde_json::Value =
+                serde_json::from_str(&fs::read_to_string(&record).unwrap()).unwrap();
+            assert_eq!(published["process_identity"]["pid"], 123);
+            assert_eq!(published["admission_result"]["state"], "refused");
+            assert_eq!(
+                published["admission_result"]["reason"],
+                "validation-lock-refusal"
+            );
+            assert_eq!(published["admission_result"]["exit_code"], 2);
+            let _ = fs::remove_dir_all(root);
+        }
     }
 
     #[test]
