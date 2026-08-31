@@ -67,9 +67,10 @@ never a claim that the current tip passed.
 
 ## Per-run output that survives the fresh checkout
 
-Disposable checkouts and private Cargo homes are created under
-`worktrees/validate/`, never under `ignored/`. A normal waiter removes them at
-completion; `ci-hub validate-run --sweep-completed` retries cleanup for
+Disposable checkouts are created under `worktrees/validate/`. Private Cargo
+homes are created under `ignored/validate/cargo-homes/`, outside the directory
+whose children wrkslots treats as validation slots. A normal waiter removes
+both at completion; `ci-hub validate-run --sweep-completed` retries cleanup for
 terminal runs whose waiter was interrupted, including its recorded private
 Cargo home. Before removing a checkout, the sweep copies any untracked `*.jsonl` receipt to
 `ignored/validate/orphaned-receipts/<unit>/`.

@@ -66,10 +66,12 @@ def locked_fetch(repo: str, result: multiprocessing.Queue[tuple[int, str]]) -> N
     result.put((completed_fetch.returncode, completed_fetch.stderr))
 
 
-def seed_cargo(parent: str, shared: str, entered: multiprocessing.Queue[str]) -> None:
+def seed_cargo(root: str, shared: str, entered: multiprocessing.Queue[str]) -> None:
+    start_unit.HOST_TMP_ROOT = Path(root) / "modeled-host-tmp"
+
     def runner(command: list[str], **_kwargs: object):
         if command[:2] == ["mktemp", "-d"]:
-            private = Path(parent) / f"private-{os.getpid()}"
+            private = Path(command[2].replace("XXXXXXXX", f"{os.getpid():08d}"))
             private.mkdir()
             return completed(command, stdout=f"{private}\n")
         if command[:2] == ["cp", "-a"]:
@@ -80,7 +82,7 @@ def seed_cargo(parent: str, shared: str, entered: multiprocessing.Queue[str]) ->
         raise AssertionError(command)
 
     start_unit.prepare_private_cargo_home(
-        Path(parent), run=runner, shared=Path(shared)
+        Path(root), run=runner, shared=Path(shared)
     )
     entered.put("done")
 
@@ -299,9 +301,7 @@ class ParallelValidatePathTest(unittest.TestCase):
 
     def test_cargo_seed_old_reader_can_overlap_writer_and_fixed_reader_waits(self) -> None:
         shared = self.root / "cargo"
-        parent = self.root / "private"
         (shared / "registry").mkdir(parents=True)
-        parent.mkdir()
         entered: multiprocessing.Queue[str] = multiprocessing.Queue()
 
         # Without taking Cargo's package-cache lock, the snapshot reaches the
@@ -312,7 +312,7 @@ class ParallelValidatePathTest(unittest.TestCase):
             self.assertEqual(entered.get(timeout=1), "old-copying")
 
             child = multiprocessing.Process(
-                target=seed_cargo, args=(str(parent), str(shared), entered)
+                target=seed_cargo, args=(str(self.root), str(shared), entered)
             )
             child.start()
             with self.assertRaises(Exception):

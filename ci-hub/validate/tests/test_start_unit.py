@@ -2195,8 +2195,8 @@ class StartUnitTest(unittest.TestCase):
         receipt = fresh / "reports" / "result.jsonl"
         receipt.parent.mkdir(parents=True)
         receipt.write_text(f'{{"commit": "{SHA}"}}\n')
-        cargo_home = self.root / "worktrees/validate/validate-cargo-sweep"
-        cargo_home.mkdir()
+        cargo_home = self.root / "ignored/validate/cargo-homes/validate-cargo-sweep"
+        cargo_home.mkdir(parents=True)
         self.fake.fresh = fresh
         record_path = self.root / "ignored/validate/runs/validate-sweep.json"
         start_unit.run_registry.write_record(
@@ -2263,6 +2263,21 @@ class StartUnitTest(unittest.TestCase):
                 "archived_orphaned_receipts"
             ],
         )
+
+    def test_sweep_accepts_historical_cargo_home_location(self) -> None:
+        cargo_home = self.root / "worktrees/validate/validate-cargo-legacy"
+        cargo_home.mkdir(parents=True)
+
+        removed, reason = start_unit.cleanup_recorded_cargo_home(
+            self.root,
+            {"cargo_home": str(cargo_home)},
+            run=self.fake,
+            check_processes=False,
+        )
+
+        self.assertTrue(removed)
+        self.assertIsNone(reason)
+        self.assertFalse(cargo_home.exists())
 
     def test_sweep_completed_removes_legacy_checkout_under_ignored(self) -> None:
         fresh = self.root / "ignored" / "validate-fresh-legacy"
@@ -3493,14 +3508,17 @@ class StartUnitTest(unittest.TestCase):
             ),
             "opt-out must not build a temp checkout",
         )
-        self.assertTrue(
-            any(
-                command[:2] == ["mktemp", "-d"]
-                and len(command) > 2
-                and "validate-cargo-" in command[2]
-                for command in self.fake.commands
-            ),
-            "in-place validation must still receive its private Cargo home",
+        templates = [
+            Path(command[2])
+            for command in self.fake.commands
+            if command[:2] == ["mktemp", "-d"]
+            and len(command) > 2
+            and "validate-cargo-" in command[2]
+        ]
+        self.assertEqual(
+            [self.root / "ignored/validate/cargo-homes/validate-cargo-XXXXXXXX"],
+            templates,
+            "private Cargo homes must not appear as unregistered validation slots",
         )
 
     def test_incomplete_fresh_checkout_refuses_before_admission(self) -> None:
@@ -3826,7 +3844,7 @@ class StartUnitTest(unittest.TestCase):
         )
         self.assertTrue(archived.is_file(), "evidence must survive checkout removal")
         self.assertIn(
-            self.root / "worktrees/validate/validate-cargo-abcd1234",
+            self.root / "ignored/validate/cargo-homes/validate-cargo-abcd1234",
             self.removed_temporary_paths(),
         )
 
@@ -3921,7 +3939,7 @@ class StartUnitTest(unittest.TestCase):
         self.assertIn("scan failed", error)
         self.assertEqual([], self.fake.removed)
         self.assertIn(
-            self.root / "worktrees/validate/validate-cargo-abcd1234",
+            self.root / "ignored/validate/cargo-homes/validate-cargo-abcd1234",
             self.removed_temporary_paths(),
         )
 

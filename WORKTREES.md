@@ -9,10 +9,10 @@ worktrees/slots/<slot>/       live agent checkout
 worktrees/validate/<slot>/    disposable validation checkout
 ```
 
-Temporary validation checkouts and per-run Cargo homes live under
-`worktrees/validate/`. Validation logs, run records, and any checkout-local
-receipt recovered before cleanup remain under `ignored/validate/`; the
-temporary checkout is removed when the run finishes. Use
+Temporary validation checkouts live under `worktrees/validate/`. Per-run Cargo
+homes live under `ignored/validate/cargo-homes/`, alongside validation logs,
+run records, and any checkout-local receipt recovered before cleanup. The
+temporary checkout and Cargo home are removed when the run finishes. Use
 `ci-hub validate-run --sweep-completed` to retry cleanup left by an interrupted
 waiter.
 

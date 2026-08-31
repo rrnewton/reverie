@@ -140,9 +140,8 @@ def test_seeds_and_returns_private_home() -> None:
         (shared / "git" / "checkouts" / "reverie-x" / "huge").write_text("x" * 1000)
         (shared / "config.toml").write_text("[net]\n")
 
-        parent = Path(tmp) / "ignored"
-        parent.mkdir()
-        private = start_unit.prepare_private_cargo_home(parent, run=real_runner, shared=shared)
+        root = Path(tmp)
+        private = start_unit.prepare_private_cargo_home(root, run=real_runner, shared=shared)
 
         check("POSITIVE a private cargo home is created", private is not None)
         if private is None:
@@ -150,6 +149,11 @@ def test_seeds_and_returns_private_home() -> None:
         check(
             "POSITIVE it is not the shared home",
             private.resolve() != shared.resolve(),
+            str(private),
+        )
+        check(
+            "POSITIVE it is outside the managed validation slot directory",
+            private.parent == root / "ignored" / "validate" / "cargo-homes",
             str(private),
         )
         check(
@@ -218,13 +222,41 @@ def test_command_passes_cargo_home() -> None:
 # --------------------------------------------------------------------------
 def test_missing_shared_home_still_returns_private_home() -> None:
     with tempfile.TemporaryDirectory() as tmp:
-        parent = Path(tmp) / "ignored"
-        parent.mkdir()
+        root = Path(tmp)
         private = start_unit.prepare_private_cargo_home(
-            parent, run=real_runner, shared=Path(tmp) / "does-not-exist"
+            root, run=real_runner, shared=Path(tmp) / "does-not-exist"
         )
         check("POSITIVE absent seed still yields a private home", private.is_dir())
         start_unit.remove_private_cargo_home(private, run=real_runner)
+
+
+def test_retained_homes_do_not_create_validation_slot_directories() -> None:
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        slots = root / "worktrees" / "validate"
+        slots.mkdir(parents=True)
+        before = len(list(slots.iterdir()))
+
+        first = start_unit.prepare_private_cargo_home(
+            root, run=real_runner, shared=root / "absent-shared-home"
+        )
+        time.sleep(0.05)
+        second = start_unit.prepare_private_cargo_home(
+            root, run=real_runner, shared=root / "absent-shared-home"
+        )
+        after = len(list(slots.iterdir()))
+
+        check(
+            "POSITIVE retained Cargo homes do not change validation slot count",
+            (before, after) == (0, 0),
+            f"separated counts were {before} then {after}",
+        )
+        check(
+            "POSITIVE both retained Cargo homes exist outside the slot directory",
+            first.is_dir() and second.is_dir() and first.parent == second.parent,
+        )
+        start_unit.remove_private_cargo_home(first, run=real_runner)
+        start_unit.remove_private_cargo_home(second, run=real_runner)
 
 
 def test_remove_is_total_and_safe() -> None:
@@ -238,18 +270,29 @@ def test_remove_is_total_and_safe() -> None:
 
 
 def main() -> int:
-    print("private CARGO_HOME (#2112)")
-    test_shared_cargo_home_serialises()
-    test_seeds_and_returns_private_home()
-    test_command_passes_cargo_home()
-    test_missing_shared_home_still_returns_private_home()
-    test_remove_is_total_and_safe()
-    print()
-    if FAILURES:
-        print(f"FAILED: {len(FAILURES)} case(s): {', '.join(FAILURES)}", file=sys.stderr)
-        return 1
-    print("all private-CARGO_HOME cases passed")
-    return 0
+    original_host_tmp_root = start_unit.HOST_TMP_ROOT
+    # These filesystem-only fixtures use tempfile below the real host /tmp.
+    # Model a separate isolated guest /tmp just as test_start_unit does.
+    start_unit.HOST_TMP_ROOT = Path(tempfile.gettempdir()) / "modeled-host-tmp"
+    try:
+        print("private CARGO_HOME (#2112)")
+        test_shared_cargo_home_serialises()
+        test_seeds_and_returns_private_home()
+        test_command_passes_cargo_home()
+        test_missing_shared_home_still_returns_private_home()
+        test_retained_homes_do_not_create_validation_slot_directories()
+        test_remove_is_total_and_safe()
+        print()
+        if FAILURES:
+            print(
+                f"FAILED: {len(FAILURES)} case(s): {', '.join(FAILURES)}",
+                file=sys.stderr,
+            )
+            return 1
+        print("all private-CARGO_HOME cases passed")
+        return 0
+    finally:
+        start_unit.HOST_TMP_ROOT = original_host_tmp_root
 
 
 if __name__ == "__main__":

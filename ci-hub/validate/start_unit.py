@@ -901,10 +901,23 @@ def frozen_result_path(root: Path, unit: str) -> Path:
 
 
 def validate_checkout_parent(root: Path) -> Path:
-    """Return the parent for current-main checkouts and per-run caches."""
+    """Return the parent reserved for disposable validation checkouts."""
     candidate = (root / "worktrees" / "validate").resolve()
     candidate.mkdir(parents=True, exist_ok=True)
     return require_guest_visible_root(candidate, role="validation checkout parent")
+
+
+def private_cargo_home_parent(root: Path) -> Path:
+    """Return the parent for retained per-run Cargo homes.
+
+    ``worktrees/validate`` is a wrkslots-managed directory: every child there
+    must be a registered validation slot.  Cargo homes are retained run state,
+    not worktrees, so placing them there manufactures directory-without-row
+    findings until cleanup succeeds.
+    """
+    candidate = (root / "ignored" / "validate" / "cargo-homes").resolve()
+    candidate.mkdir(parents=True, exist_ok=True)
+    return require_guest_visible_root(candidate, role="private Cargo home parent")
 
 
 def frozen_checkout_parent(root: Path) -> Path:
@@ -2007,9 +2020,15 @@ def cleanup_recorded_cargo_home(
     if not isinstance(raw_private, str):
         return False, None
     private = Path(raw_private).resolve()
-    parent = validate_checkout_parent(root)
-    if private.parent != parent or not private.name.startswith("validate-cargo-"):
-        return False, "recorded Cargo home is outside worktrees/validate"
+    parents = (
+        private_cargo_home_parent(root),
+        # Runs launched before private Cargo homes were separated from
+        # wrkslots-managed validation checkouts remain sweepable.
+        validate_checkout_parent(root),
+    )
+    if private.parent not in parents or not private.name.startswith("validate-cargo-"):
+        expected = " or ".join(str(parent) for parent in parents)
+        return False, f"recorded Cargo home is outside {expected}"
     if not private.exists():
         return False, None
     if check_processes and path_may_have_live_process(private):
@@ -2180,7 +2199,7 @@ CARGO_SEED_SUBTREES: tuple[tuple[str, str], ...] = (
 )
 
 
-def prepare_private_cargo_home(parent: Path, *, run: Runner, shared: Path) -> Path:
+def prepare_private_cargo_home(root: Path, *, run: Runner, shared: Path) -> Path:
     """Give this validate its own CARGO_HOME, seeded by reflink from the shared one.
 
     WHY. Cargo serialises every cache mutation on one lock file,
@@ -2211,6 +2230,7 @@ def prepare_private_cargo_home(parent: Path, *, run: Runner, shared: Path) -> Pa
     private home; an allocation or copy error refuses the run instead of
     silently falling back to the shared package-cache lock.
     """
+    parent = private_cargo_home_parent(root)
     private = Path(
         checked_output(
             ["mktemp", "-d", str(parent / "validate-cargo-XXXXXXXX")],
@@ -3997,7 +4017,7 @@ def main(
         preflight(tool_root, checkout, args.target, repo=repo, run=run)
         runtime_root = prepare_runtime_root(environment or os.environ)
         private_cargo_home = prepare_private_cargo_home(
-            validate_checkout_parent(state_root),
+            state_root,
             run=run,
             shared=Path((environment or os.environ).get("HOME", "")) / ".cargo",
         )
