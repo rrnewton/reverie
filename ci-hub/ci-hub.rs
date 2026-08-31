@@ -6898,6 +6898,29 @@ fn validation_main_history_with_trees(
     }
 }
 
+enum ValidationMainHistory {
+    Available {
+        commits: Vec<String>,
+        index: BranchCommitIndex,
+    },
+    Unverifiable,
+}
+
+fn validation_main_history_for_status(
+    root: &Path,
+    repo: &str,
+    required: bool,
+) -> Result<ValidationMainHistory, CiHubError> {
+    match validation_main_history_with_trees(root, repo) {
+        Ok((commits, trees)) => {
+            let index = BranchCommitIndex::new(&commits, &trees);
+            Ok(ValidationMainHistory::Available { commits, index })
+        }
+        Err(error) if required => Err(error),
+        Err(_) => Ok(ValidationMainHistory::Unverifiable),
+    }
+}
+
 fn git_depth_for_validation_sha(root: &Path, repo: &str, sha: &str) -> Option<i64> {
     let checkout = validation_repo_checkout(root, repo);
     let output = Command::new("git")
@@ -6916,25 +6939,31 @@ fn fill_optional_validate_status_columns(
     root: &Path,
     repo: &str,
     columns: &[ValidateStatusColumn],
-    main_index: Option<&BranchCommitIndex>,
+    main_history: Option<&ValidationMainHistory>,
     entry: &mut ValidateStatusEntry,
 ) {
     let Some(sha) = entry.sha.as_deref() else {
         return;
     };
     if columns.contains(&ValidateStatusColumn::Main) && entry.main_match.is_none() {
-        if let Some(main_index) = main_index {
-            match main_index.match_commit(sha, entry.tree.as_deref(), entry.allow_tree_match) {
-                Some(BranchCommitMatch::Commit { sha }) => {
-                    entry.main_match = Some("exact-sha".into());
-                    entry.main_sha = Some(sha);
+        match main_history {
+            Some(ValidationMainHistory::Available { index, .. }) => {
+                match index.match_commit(sha, entry.tree.as_deref(), entry.allow_tree_match) {
+                    Some(BranchCommitMatch::Commit { sha }) => {
+                        entry.main_match = Some("exact-sha".into());
+                        entry.main_sha = Some(sha);
+                    }
+                    Some(BranchCommitMatch::Tree { sha }) => {
+                        entry.main_match = Some("tree".into());
+                        entry.main_sha = Some(sha);
+                    }
+                    None => entry.main_match = Some("no-match".into()),
                 }
-                Some(BranchCommitMatch::Tree { sha }) => {
-                    entry.main_match = Some("tree".into());
-                    entry.main_sha = Some(sha);
-                }
-                None => entry.main_match = Some("no-match".into()),
             }
+            Some(ValidationMainHistory::Unverifiable) => {
+                entry.main_match = Some("unverifiable".into());
+            }
+            None => {}
         }
     }
     if columns.contains(&ValidateStatusColumn::GitDepth) && entry.git_depth.is_none() {
@@ -7292,7 +7321,7 @@ fn recent_validate_status_note(limit: usize, include_in_progress: bool) -> Strin
         "in-progress runs are excluded by --exclude-in-progress"
     };
     format!(
-        "RECENT VALIDATION RUNS: completed rows are selected from all completed ledger rows, ordered by completion time, limited to {limit}, and not restricted to {COMMIT_TIMELINE_REF}; the default MAIN column says exact-sha, tree:<main-sha>, or no-match; {live_runs}. Use --commit-timeline for the {COMMIT_TIMELINE_REF}-only view."
+        "RECENT VALIDATION RUNS: completed rows are selected from all completed ledger rows, ordered by completion time, limited to {limit}, and not restricted to {COMMIT_TIMELINE_REF}; the default MAIN column says exact-sha, tree:<main-sha>, no-match, or unverifiable; {live_runs}. Use --commit-timeline for the {COMMIT_TIMELINE_REF}-only view."
     )
 }
 
@@ -7533,14 +7562,16 @@ fn print_recent_validate_history(
         ));
     }
     let columns = selected_validate_status_columns(&args.columns)?;
-    let main_history = if columns.contains(&ValidateStatusColumn::Main) {
-        Some(validation_main_history_with_trees(root, repo)?)
+    let main_history_requested = columns.contains(&ValidateStatusColumn::Main);
+    let main_history = if main_history_requested {
+        Some(validation_main_history_for_status(
+            root,
+            repo,
+            args.commit_timeline,
+        )?)
     } else {
         None
     };
-    let main_index = main_history
-        .as_ref()
-        .map(|(commits, trees)| BranchCommitIndex::new(commits, trees));
     let now = chrono::Utc::now();
     let scan = if args.exclude_in_progress {
         LiveValidateRunScan::default()
@@ -7552,7 +7583,10 @@ fn print_recent_validate_history(
     let historical_run_numbers = historical_validate_run_numbers(rows);
     let (mut entries, commit_count) = if args.commit_timeline {
         let commits = match main_history.as_ref() {
-            Some((commits, _)) => commits.clone(),
+            Some(ValidationMainHistory::Available { commits, .. }) => commits.clone(),
+            Some(ValidationMainHistory::Unverifiable) => {
+                unreachable!("required main history cannot be unverifiable")
+            }
             None => validation_main_history(root, repo)?,
         };
         let commit_count = commits.len();
@@ -7622,13 +7656,19 @@ fn print_recent_validate_history(
     };
     for entry in &mut entries {
         if entry.verdict.as_deref() != Some("NO-RUN") {
-            fill_optional_validate_status_columns(root, repo, &columns, main_index.as_ref(), entry);
+            fill_optional_validate_status_columns(
+                root,
+                repo,
+                &columns,
+                main_history.as_ref(),
+                entry,
+            );
         } else if columns.contains(&ValidateStatusColumn::Main) {
             fill_optional_validate_status_columns(
                 root,
                 repo,
                 &[ValidateStatusColumn::Main],
-                main_index.as_ref(),
+                main_history.as_ref(),
                 entry,
             );
         }
@@ -9443,7 +9483,11 @@ mod tests {
             (exact_sha.clone(), "0".repeat(40)),
             (landed_sha.clone(), landed_tree.clone()),
         ]);
-        let index = BranchCommitIndex::new(&[exact_sha.clone(), landed_sha.clone()], &trees);
+        let commits = [exact_sha.clone(), landed_sha.clone()];
+        let main_history = ValidationMainHistory::Available {
+            commits: commits.to_vec(),
+            index: BranchCommitIndex::new(&commits, &trees),
+        };
 
         let make_entry = |sha: &str, tree: &str| {
             let mut value = schema4_receipt_value();
@@ -9459,7 +9503,7 @@ mod tests {
                 Path::new("/unused"),
                 CANONICAL_VALIDATE_REPO,
                 &[ValidateStatusColumn::Main],
-                Some(&index),
+                Some(&main_history),
                 entry,
             );
         }
@@ -9485,6 +9529,128 @@ mod tests {
         assert!(table[1].contains(" exact-sha "), "{}", table[1]);
         assert!(table[2].contains(" tree:bbbbbbbbbbbb "), "{}", table[2]);
         assert!(table[3].contains(" no-match "), "{}", table[3]);
+    }
+
+    #[test]
+    fn shallow_history_marks_default_main_unverifiable_without_hiding_runs() {
+        let fixture = std::env::temp_dir().join(format!(
+            "ci-hub-validate-status-shallow-main-{}-{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap()
+        ));
+        let source = fixture.join("source");
+        let root = fixture.join("workspace");
+        std::fs::create_dir_all(&source).unwrap();
+        std::fs::create_dir_all(&root).unwrap();
+        let git = |repo: &Path, args: &[&str]| {
+            let output = Command::new("git")
+                .arg("-C")
+                .arg(repo)
+                .args(args)
+                .env("GIT_AUTHOR_NAME", "validate-status test")
+                .env("GIT_AUTHOR_EMAIL", "validate-status@example.invalid")
+                .env("GIT_COMMITTER_NAME", "validate-status test")
+                .env("GIT_COMMITTER_EMAIL", "validate-status@example.invalid")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "git {args:?}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            String::from_utf8(output.stdout).unwrap().trim().to_string()
+        };
+        git(&source, &["init", "-q", "--initial-branch=main"]);
+        std::fs::write(source.join("fixture"), "first\n").unwrap();
+        git(&source, &["add", "fixture"]);
+        git(&source, &["commit", "-qm", "first"]);
+        std::fs::write(source.join("fixture"), "second\n").unwrap();
+        git(&source, &["commit", "-qam", "second"]);
+        let clone = Command::new("git")
+            .args(["clone", "--quiet", "--depth", "1"])
+            .arg(format!("file://{}", source.display()))
+            .arg(root.join("hermit"))
+            .output()
+            .unwrap();
+        assert!(
+            clone.status.success(),
+            "shallow clone: {}",
+            String::from_utf8_lossy(&clone.stderr)
+        );
+        assert_eq!(
+            git(&root.join("hermit"), &["rev-list", "--count", "HEAD"]),
+            "1"
+        );
+
+        let main_history =
+            validation_main_history_for_status(&root, CANONICAL_VALIDATE_REPO, false).unwrap();
+        assert!(matches!(main_history, ValidationMainHistory::Unverifiable));
+        let required =
+            match validation_main_history_for_status(&root, CANONICAL_VALIDATE_REPO, true) {
+                Ok(_) => panic!("required shallow history unexpectedly loaded"),
+                Err(error) => error.to_string(),
+            };
+        assert!(required.contains("shallow checkout"), "{required}");
+
+        let cli = Cli::try_parse_from([
+            "ci-hub",
+            "validate-status",
+            "--exclude-in-progress",
+            "--limit",
+            "1",
+        ])
+        .unwrap();
+        let HubCommand::ValidateStatus(args) = cli.command else {
+            panic!("wrong command variant")
+        };
+        let columns = selected_validate_status_columns(&args.columns).unwrap();
+        assert!(columns.contains(&ValidateStatusColumn::Main));
+        let mut entry = finished_validate_status_entry(
+            CANONICAL_VALIDATE_REPO,
+            &history_row(schema4_receipt_value()),
+            false,
+        );
+        fill_optional_validate_status_columns(
+            &root,
+            CANONICAL_VALIDATE_REPO,
+            &columns,
+            Some(&main_history),
+            &mut entry,
+        );
+
+        let now = chrono::DateTime::parse_from_rfc3339("2026-08-03T01:36:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        let table = validate_status_table(
+            std::slice::from_ref(&entry),
+            &columns,
+            ValidateStatusTimes::Relative,
+            now,
+            false,
+            false,
+        );
+        assert_eq!(table.len(), 2);
+        assert!(table[1].contains(" unverifiable "), "{}", table[1]);
+
+        let report = validate_status_history_json(
+            std::slice::from_ref(&entry),
+            &[],
+            CANONICAL_VALIDATE_REPO,
+            &columns,
+            Path::new("ledger"),
+            &GreenDepth::Unavailable {
+                why: "shallow test".into(),
+            },
+            &args,
+            None,
+            0,
+        );
+        assert_eq!(report["count"], 1);
+        assert_eq!(report["runs"][0]["main_match"], "unverifiable");
+        assert!(report["runs"][0]["sha"].is_string());
+        assert!(recent_validate_status_note(1, false).contains("or unverifiable"));
+
+        std::fs::remove_dir_all(fixture).unwrap();
     }
 
     #[test]
