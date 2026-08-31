@@ -833,6 +833,14 @@ def _typed_comparison_attempt(attempt: Any, *, mode: str, index: int) -> str:
                 f"cell attempt {index} no_result report is internally inconsistent"
             )
         kind = reason.get("kind")
+        no_process_timeout = (
+            kind == "not_run"
+            and attempt.get("timed_out") is True
+            and attempt.get("status") is None
+            and attempt.get("signal") is None
+            and attempt.get("error_kind")
+            == "incomplete-verification-evidence"
+        )
         if kind == "not_run":
             if (
                 report.get("guest_exit_code") is not None
@@ -840,10 +848,13 @@ def _typed_comparison_attempt(attempt: Any, *, mode: str, index: int) -> str:
                 or attempt.get("outcome") != "ERROR"
                 or not isinstance(attempt.get("error_kind"), str)
                 or not attempt["error_kind"].strip()
-                or not _has_nonzero_process_disposition(attempt)
+                or not (
+                    _has_nonzero_process_disposition(attempt)
+                    or no_process_timeout
+                )
             ):
                 raise MalformedRow(
-                    f"cell attempt {index} NotRun report has no complete process disposition"
+                    f"cell attempt {index} NotRun report has no complete process or pre-launch timeout disposition"
                 )
         elif kind == "first_run_rejected":
             exit_code = reason.get("exit_code")
@@ -872,7 +883,10 @@ def _typed_comparison_attempt(attempt: Any, *, mode: str, index: int) -> str:
                 attempt.get("outcome") != "ERROR"
                 or not isinstance(attempt.get("error_kind"), str)
                 or not attempt["error_kind"].strip()
-                or not _has_nonzero_process_disposition(attempt)
+                or not (
+                    _has_nonzero_process_disposition(attempt)
+                    or no_process_timeout
+                )
             ):
                 raise MalformedRow(
                     f"cell attempt {index} timed-out no_result disposition is incomplete"

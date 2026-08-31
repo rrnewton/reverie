@@ -1487,6 +1487,59 @@ class CellResultProjection(unittest.TestCase):
             [self.detcore_tree, self.detcore_tree],
         )
 
+        prelaunch = self._validate_no_verdict_cell(
+            1, timed_out=True, backend="ptrace"
+        )
+        prelaunch["attempts"][0]["status"] = None
+        prelaunch["attempts"][0]["signal"] = None
+        recovered = self._validate_cell(2, outcome="PASS")
+        recovered["detcore_tree"] = self.detcore_tree
+        recovered_rows = series.rows_from_cell_results(
+            [prelaunch, recovered],
+            parent=self.parent,
+            producer="validate",
+            run_id="validate-recovered-prelaunch-not-run",
+            tree=self.tree,
+            emitted_at="2026-08-31T09:00:00Z",
+        )
+        self.assertEqual(
+            [row["series"]["outcome"] for row in recovered_rows],
+            ["no_result", "passed"],
+        )
+        prelaunch_disposition = recovered_rows[0]["series"][
+            "no_verdict_evidence"
+        ]["attempts"][0]
+        self.assertEqual(
+            (
+                prelaunch_disposition["kind"],
+                prelaunch_disposition["attempt_outcome"],
+                prelaunch_disposition["disposition"],
+                prelaunch_disposition["status"],
+                prelaunch_disposition["signal"],
+                prelaunch_disposition["timed_out"],
+            ),
+            ("not_run", "ERROR", "timeout", None, None, True),
+        )
+
+        for label, mutation in (
+            ("not timed out", {"timed_out": False}),
+            ("wrong error kind", {"error_kind": "infrastructure"}),
+        ):
+            malformed = json.loads(json.dumps(prelaunch))
+            malformed["attempts"][0].update(mutation)
+            with self.subTest(label=label), self.assertRaisesRegex(
+                series.MalformedRow,
+                "process or pre-launch timeout disposition",
+            ):
+                series.rows_from_cell_results(
+                    [malformed],
+                    parent=self.parent,
+                    producer="validate",
+                    run_id=f"validate-malformed-prelaunch-{label}",
+                    tree=self.tree,
+                    emitted_at="2026-08-31T09:00:00Z",
+                )
+
         noncanonical = self._validate_cell(3, outcome="ERROR")
         noncanonical["result"] = None
         noncanonical["failure_class"] = "no_result"
@@ -1617,7 +1670,7 @@ class CellResultProjection(unittest.TestCase):
             incomplete["attempts"][0]["status"] = status
             with self.subTest(status=status), self.assertRaisesRegex(
                 series.MalformedRow,
-                "NotRun report has no complete process disposition",
+                "NotRun report has no complete process or pre-launch timeout disposition",
             ):
                 series.rows_from_cell_results(
                     [incomplete],
@@ -1950,7 +2003,7 @@ class CellResultProjection(unittest.TestCase):
             incomplete_timeout["attempts"][0].update(mutation)
             with self.subTest(label=label), self.assertRaisesRegex(
                 series.MalformedRow,
-                "NotRun report has no complete process disposition",
+                "NotRun report has no complete process or pre-launch timeout disposition",
             ):
                 self._project([incomplete_timeout])
 
