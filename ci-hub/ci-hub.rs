@@ -1945,7 +1945,7 @@ fn local_validation_status_description(row: &HistoryRow) -> String {
         .and_then(|value| value.typed())
         .map(|value| value.selected_count)
     {
-        coverage.push(format!("{selected} selected cells"));
+        coverage.push(format!("{selected} cells selected by {profile}"));
     }
     if let Some(nodes) = &row.coverage {
         coverage.push(format!(
@@ -10988,8 +10988,8 @@ mod tests {
     }
 
     #[test]
-    fn local_validation_status_names_the_measured_population() {
-        let row: HistoryRow = serde_json::from_value(serde_json::json!({
+    fn local_validation_status_names_the_path_that_selected_cells() {
+        let mut row: HistoryRow = serde_json::from_value(serde_json::json!({
             "profile": "full",
             "executed_tests": 2156,
             "gates_run": 76,
@@ -11013,15 +11013,21 @@ mod tests {
             }
         }))
         .unwrap();
-        assert_eq!(
-            local_validation_status_description(&row),
-            "Local full: 308 selected cells; 21/21 test nodes; 76/76 outer gates"
-        );
+        for profile in ["quick", "full", "super"] {
+            row.profile = Some(profile.into());
+            assert_eq!(
+                local_validation_status_description(&row),
+                format!(
+                    "Local {profile}: 308 cells selected by {profile}; 21/21 test nodes; 76/76 outer gates"
+                )
+            );
+        }
     }
 
     #[test]
     fn commit_status_reuse_requires_exact_context_coverage_and_receipt_url() {
-        let description = "Local full: 308 selected cells; 21/21 test nodes; 76/76 outer gates";
+        let description =
+            "Local full: 308 cells selected by full; 21/21 test nodes; 76/76 outer gates";
         let url = "https://github.com/rrnewton/dev-hermit/blob/abc/receipt.json";
         let response = serde_json::to_vec(&serde_json::json!({
             "statuses": [
@@ -11037,7 +11043,7 @@ mod tests {
         assert!(commit_status_matches(&response, description, url).unwrap());
         assert!(!commit_status_matches(
             &response,
-            "Local full: 307 selected cells; 21/21 test nodes; 76/76 outer gates",
+            "Local full: 307 cells selected by full; 21/21 test nodes; 76/76 outer gates",
             url
         )
         .unwrap());
