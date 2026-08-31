@@ -1278,10 +1278,6 @@ mod tests {
         );
     }
 
-    /// The three states are distinguishable through the accessors, not only by
-    /// matching. A caller that only needs the gate must still be unable to
-    /// mistake a reader fault for a receipt refusal.
-    #[test]
     /// ⚠️ SIX READER FAULTS MUST REACH THE CALLER AS SIX, NOT AS ONE `Refused`.
     ///
     /// `shared_evidence_outcome` distinguishes six ways the verifier can fail to
@@ -1349,6 +1345,9 @@ mod tests {
         assert!(Qualification::CountsOnlyGrandfathered { schema: 4 }.accepted());
     }
 
+    /// The three states are distinguishable through the accessors, not only by
+    /// matching. A caller that only needs the gate must still be unable to
+    /// mistake a reader fault for a receipt refusal.
     #[test]
     fn boundary_outcome_keeps_the_two_blocking_states_apart() {
         assert!(BoundaryOutcome::Accepted.accepted());

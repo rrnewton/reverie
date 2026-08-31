@@ -5827,7 +5827,7 @@ fn recent_row_summary(row: &HistoryRow, verdict: &str) -> String {
         "VALIDATED" => "passed".into(),
         "FAILED" => "full run failed".into(),
         "NEEDS-RERUN" => "failure needs an uncontended confirmation".into(),
-        "TRUNCATED" => "run ended before all planned work completed".into(),
+        "TRUNCATED" => "run did not produce a complete validation verdict".into(),
         "NO-RESULT" => "validation did not exercise the product".into(),
         "NO-COMMIT" => "receipt has no commit".into(),
         _ if row.extra.get("admission").and_then(|value| value.as_str())
@@ -10182,6 +10182,52 @@ mod tests {
         assert_eq!(
             recent_row_summary(&row, "NEEDS-RERUN"),
             "failed: e2e.manifest_backend_parity_c"
+        );
+    }
+
+    /// TRUNCATED does not always mean a planned-versus-completed comparison
+    /// found missing work. Run 1572 executed and passed 1910 tests, but the
+    /// interruption/no-failure branch still classified its receipt TRUNCATED.
+    /// The summary must describe the non-verdict without inventing absent work.
+    #[test]
+    fn truncated_summary_does_not_claim_fully_accounted_work_was_missing() {
+        let sha = "e12c472d22d2725aa1e58b7169c4a44bf82fc890";
+        let row: HistoryRow = serde_json::from_value(serde_json::json!({
+            "schema_version": 4,
+            "repo": CANONICAL_VALIDATE_REPO,
+            "profile": "full",
+            "selection_mode": "full",
+            "commit": sha,
+            "commit_anchored": true,
+            "tree_dirty": false,
+            "result": "fail",
+            "exit_code": 130,
+            "checks": 5,
+            "gates_run": 5,
+            "gates_expected": 5,
+            "failures": 0,
+            "executed_tests": 1910,
+            "coverage": {
+                "planned_test_nodes": 19,
+                "executed_test_nodes": 19,
+                "zero_executed_nodes": [],
+                "absent_nodes": []
+            },
+            "gates": [
+                {"name": "pre.submodules", "result": "pass", "exit_code": 0},
+                {"name": "build.workspace", "result": "pass", "exit_code": 0},
+                {"name": "test.regular_crates", "result": "pass", "exit_code": 0},
+                {"name": "doc.doctests", "result": "pass", "exit_code": 0},
+                {"name": "lint.rustfmt", "result": "pass", "exit_code": 0}
+            ]
+        }))
+        .expect("fully accounted interrupted fixture parses");
+
+        let verdict = recent_row_verdict(&row, CANONICAL_VALIDATE_REPO);
+        assert_eq!(verdict, "TRUNCATED");
+        assert_eq!(
+            recent_row_summary(&row, verdict),
+            "run did not produce a complete validation verdict"
         );
     }
 

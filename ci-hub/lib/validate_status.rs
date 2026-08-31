@@ -92,8 +92,9 @@ pub enum Verdict {
     /// No PASS, but a clean full-coverage record that FAILED/killed/timed out —
     /// a known-bad commit, distinct and more informative than "no record".
     FailedOnRecord,
-    /// The run ended before all planned gates completed. Nothing observed
-    /// failed, so this is an absence of a result and must be re-dispatched.
+    /// The run did not produce a complete validation verdict. This includes
+    /// under-accounted gate execution and an interrupted run with no observed
+    /// failure, so it must be re-dispatched.
     Truncated,
     /// A red exists, but its execution conditions are missing, contended, or
     /// known-flaky and lack the required solo `-j 4` confirmation.
