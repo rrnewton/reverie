@@ -58,6 +58,7 @@ def base_report() -> dict:
         },
         "series": {"published_ref_sha": "f" * 40},
         "run_handles": {
+            "unattributed_pre_service_handles": [],
             "admitted_without_ledger_handles": [],
             "terminal_handles_missing_admission": [],
         },
@@ -1721,57 +1722,158 @@ class SignalCrosscheckTests(unittest.TestCase):
         self.assertIn("target must be an exact lowercase forty-hex commit", errors)
         self.assertIn("repo must be rrnewton/hermit or rrnewton/reverie", errors)
 
-    def test_exact_target_unknown_legacy_handle_without_ledger_stays_unmatched(self) -> None:
+    def test_unattributed_pre_service_handle_is_visible_without_disagreement(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             run_root = root / "ignored" / "validate" / "runs"
             run_root.mkdir(parents=True)
-            (run_root / "unknown.json").write_text(json.dumps({
-                "producer": signal_crosscheck.run_registry.PRODUCER,
-                "target": "a" * 40,
-                "repo": "rrnewton/hermit",
-                "kind": "validate",
-                "state": "unknown",
-                "result": "unknown",
-                "exit_code": None,
-                "unit": "validate-owner-checkout.service",
-                "log": "/tmp/validate-owner-checkout.log",
-            }))
-            with mock.patch.object(
-                signal_crosscheck.run_registry,
-                "projection",
-                return_value={
-                    "target": "a" * 40,
-                    "repo": "rrnewton/hermit",
-                    "kind": "validate",
-                    "state": "unknown",
-                    "unit": "validate-owner-checkout.service",
-                    "admission_result": None,
-                },
-            ):
-                report = signal_crosscheck.run_handle_report(
-                    root, "a" * 40, "rrnewton/hermit", []
+            (run_root / "unknown.json").write_text(
+                json.dumps(
+                    current_validation_handle(
+                        "validate-owner-checkout",
+                        state="unknown",
+                        result="unknown",
+                        exit_code=None,
+                        detail="service result was never written",
+                        process_identity=None,
+                        admission_result=None,
+                    )
                 )
+            )
+            report = signal_crosscheck.run_handle_report(
+                root, "a" * 40, "rrnewton/hermit", []
+            )
 
         self.assertEqual(report["unreadable_handles"], [])
         self.assertEqual(report["admitted_without_ledger_handles"], [])
-        self.assertEqual(len(report["terminal_handles_missing_admission"]), 1)
+        self.assertEqual(report["terminal_handles_missing_admission"], [])
+        self.assertEqual(len(report["unattributed_pre_service_handles"]), 1)
         self.assertEqual(
-            report["terminal_handles_missing_admission"][0]["unit"],
+            report["unattributed_pre_service_handles"][0]["unit"],
             "validate-owner-checkout.service",
         )
         self.assertIsNone(
-            report["terminal_handles_missing_admission"][0]["host"]
+            report["unattributed_pre_service_handles"][0]["host"]
         )
         self.assertEqual(
-            report["terminal_handles_missing_admission"][0]["machine_shortname"],
+            report["unattributed_pre_service_handles"][0]["machine_shortname"],
             "",
+        )
+        complete = base_report()
+        complete.update(sha="a" * 40, repo="rrnewton/hermit")
+        complete["run_handles"] = report
+        issues = signal_crosscheck.reconcile(complete)
+        self.assertEqual(issues, [])
+        complete["issues"] = issues
+        complete["result"] = "AGREE"
+        output = io.StringIO()
+        with redirect_stdout(output):
+            signal_crosscheck.print_text(complete)
+        rendered = output.getvalue()
+        self.assertIn("unattributed-pre-service=1", rendered)
+        self.assertIn(
+            "run-handle-history: unattributed pre-service "
+            "validate-owner-checkout.service state=unknown",
+            rendered,
+        )
+        self.assertIn("RECONCILIATION: AGREE", rendered)
+
+    def test_started_or_admitted_malformed_handles_remain_disagreements(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            run_root = root / "ignored" / "validate" / "runs"
+            run_root.mkdir(parents=True)
+            identity = {
+                "pid": 123,
+                "start_ticks": 456,
+                "boot_id": "fixture-boot",
+            }
+            (run_root / "started-without-admission.json").write_text(
+                json.dumps(
+                    current_validation_handle(
+                        "validate-started-without-admission",
+                        state="unknown",
+                        result="unknown",
+                        exit_code=None,
+                        detail="service outcome is unknown",
+                        process_identity=identity,
+                        admission_result=None,
+                    )
+                )
+            )
+            (run_root / "outcome-without-admission.json").write_text(
+                json.dumps(
+                    current_validation_handle(
+                        "validate-outcome-without-admission",
+                        state="unknown",
+                        result="unknown",
+                        exit_code=3,
+                        detail="service outcome is unknown",
+                        process_identity=None,
+                        admission_result=None,
+                    )
+                )
+            )
+            (run_root / "admitted-without-ledger.json").write_text(
+                json.dumps(
+                    current_validation_handle(
+                        "validate-admitted-without-ledger",
+                        state="completed",
+                        result="failure",
+                        exit_code=1,
+                        finished_at="2026-08-30T07:01:00+00:00",
+                        final_validate_status="FAILED",
+                        process_identity=None,
+                        admission_result={
+                            "state": "admitted",
+                            "recorded_at": "2026-08-30T07:00:01+00:00",
+                            "run_number": 7,
+                        },
+                        canonical_verdict="FAILED",
+                        wrapper_exit_code=3,
+                    )
+                )
+            )
+            report = signal_crosscheck.run_handle_report(
+                root, "a" * 40, "rrnewton/hermit", []
+            )
+
+        self.assertEqual(report["unattributed_pre_service_handles"], [])
+        self.assertEqual(
+            [
+                handle["unit"]
+                for handle in report["terminal_handles_missing_admission"]
+            ],
+            [
+                "validate-outcome-without-admission.service",
+                "validate-started-without-admission.service",
+            ],
+        )
+        self.assertEqual(
+            [handle["unit"] for handle in report["admitted_without_ledger_handles"]],
+            ["validate-admitted-without-ledger.service"],
         )
         complete = base_report()
         complete["run_handles"] = report
         issues = signal_crosscheck.reconcile(complete)
-        self.assertEqual(len(issues), 1)
-        self.assertIn("has no typed admission_result", issues[0])
+        self.assertEqual(len(issues), 3)
+        self.assertTrue(
+            any(
+                "validate-outcome-without-admission.service" in issue
+                for issue in issues
+            )
+        )
+        self.assertTrue(
+            any(
+                "validate-started-without-admission.service" in issue
+                for issue in issues
+            )
+        )
+        self.assertTrue(
+            any("validate-admitted-without-ledger.service" in issue for issue in issues)
+        )
 
 
 if __name__ == "__main__":

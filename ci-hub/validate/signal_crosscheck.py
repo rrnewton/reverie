@@ -617,6 +617,31 @@ def _run_handle_repo(raw: Mapping[str, Any]) -> str:
     return repo
 
 
+def _is_unattributed_pre_service_handle(
+    raw: Mapping[str, Any],
+    projected: Mapping[str, Any],
+    wrapper_outcome: Mapping[str, Any] | None,
+    ledger_event_count: int,
+) -> bool:
+    """Classify history written before validate-lock established an owner.
+
+    The launcher creates the current-producer handle before starting the
+    service.  The service then binds ``process_identity`` before publishing any
+    admission result.  An UNKNOWN handle with neither field nor any exit,
+    wrapper, or ledger outcome therefore records only a pre-service launch
+    attempt; it cannot contradict an admitted run's validation outcome.
+    """
+    return (
+        raw.get("producer") == run_registry.PRODUCER
+        and projected.get("state") == run_registry.RunState.UNKNOWN.value
+        and projected.get("process_identity") is None
+        and projected.get("admission_result") is None
+        and raw.get("exit_code") is None
+        and wrapper_outcome is None
+        and ledger_event_count == 0
+    )
+
+
 def _validation_service_result_evidence(
     root: Path,
     handle_path: Path,
@@ -878,6 +903,9 @@ def run_handle_report(
                 wrapper_outcome,
             )
         )
+        unattributed_pre_service = _is_unattributed_pre_service_handle(
+            raw, projected, wrapper_outcome, len(ledger_events)
+        )
         handle = {
             "path": str(path),
             "unit": projected.get("unit"),
@@ -893,6 +921,7 @@ def run_handle_report(
             "wrapper_outcome": wrapper_outcome,
             "non_run_refusal": non_run_refusal,
             "no_receipt_attempt": no_receipt_attempt,
+            "unattributed_pre_service": unattributed_pre_service,
             "ledger_event": (
                 admission_state == run_registry.AdmissionState.ADMITTED.value
                 and len(ledger_events) == 1
@@ -911,6 +940,11 @@ def run_handle_report(
         "matching_handles": matching_handles,
         "terminal_handles": terminal_handles,
         "unreadable_handles": unreadable,
+        "unattributed_pre_service_handles": [
+            handle
+            for handle in terminal_handles
+            if handle.get("unattributed_pre_service")
+        ],
         "admitted_without_ledger_handles": [
             handle
             for handle in terminal_handles
@@ -924,6 +958,7 @@ def run_handle_report(
             if handle.get("producer") == run_registry.PRODUCER
             and handle.get("admission") is None
             and not handle.get("non_run_refusal")
+            and not handle.get("unattributed_pre_service")
         ],
     }
     run_registry.require_no_owner_watch_correction(root)
@@ -1308,9 +1343,17 @@ def print_text(report: Mapping[str, Any]) -> None:
             f"{len(handles.get('admitted_without_ledger_handles') or [])} "
             "no-receipt-attempts="
             f"{sum(bool(handle.get('no_receipt_attempt')) for handle in handles.get('terminal_handles') or [])} "
+            "unattributed-pre-service="
+            f"{len(handles.get('unattributed_pre_service_handles') or [])} "
             "terminal-without-admission="
             f"{len(handles.get('terminal_handles_missing_admission') or [])}"
         )
+        for handle in handles.get("unattributed_pre_service_handles") or []:
+            print(
+                "run-handle-history: unattributed pre-service "
+                f"{handle.get('unit') or handle.get('path')} "
+                f"state={handle.get('state')} (no process identity or admission result)"
+            )
     github = report.get("github_status")
     if github:
         if github.get("published"):
