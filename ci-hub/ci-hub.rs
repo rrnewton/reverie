@@ -4103,7 +4103,7 @@ fn run_receipt_digest(args: ReceiptDigestArgs) -> Result<i32, CiHubError> {
             reverie_checkout,
         ) {
             crate::qualifying_receipt::BoundaryOutcome::Accepted => {}
-            crate::qualifying_receipt::BoundaryOutcome::Refused => {
+            crate::qualifying_receipt::BoundaryOutcome::Refused(_) => {
                 return Err(CiHubError::ValidateStatus(
                     "receipt-digest HistoryRow failed final merge-boundary base verification"
                         .into(),
@@ -5773,13 +5773,6 @@ fn recent_row_verdict(row: &HistoryRow, repo: &str) -> &'static str {
 fn recent_row_nonqualification_reason(row: &HistoryRow, repo: &str) -> String {
     const GENERIC: &str = "receipt did not qualify";
 
-    // Keep the operator-facing dirty-tree wording promised by validate-status.
-    // The shared predicate groups this with several identity/result failures,
-    // but this exact fact is carried directly by the row and needs no policy
-    // inference.
-    if row.tree_dirty == Some(true) {
-        return "dirty tree".into();
-    }
     if repo != CANONICAL_VALIDATE_REPO {
         return GENERIC.into();
     }
@@ -5791,8 +5784,8 @@ fn recent_row_nonqualification_reason(row: &HistoryRow, repo: &str) -> String {
         sha,
         crate::qualifying_receipt::active(),
     ) {
-        crate::qualifying_receipt::Qualification::Refused(reason)
-        | crate::qualifying_receipt::Qualification::Indeterminate(reason) => reason.into(),
+        crate::qualifying_receipt::Qualification::Refused(reason) => reason,
+        crate::qualifying_receipt::Qualification::Indeterminate(reason) => reason.into(),
         crate::qualifying_receipt::Qualification::FullCoverage
         | crate::qualifying_receipt::Qualification::CountsOnlyGrandfathered { .. } => {
             // qualify_canonical_receipt applies additional canonical-receipt
@@ -10030,7 +10023,7 @@ mod tests {
         let entry = finished_validate_status_entry(CANONICAL_VALIDATE_REPO, &row, false);
         assert_eq!(entry.verdict.as_deref(), Some("NOT-VALIDATED"));
         assert_eq!(entry.result.as_deref(), Some("pass"));
-        assert_eq!(entry.nonqualification_reason.as_deref(), Some("dirty tree"));
+        assert_eq!(entry.nonqualification_reason.as_deref(), Some("tree_dirty"));
         assert_eq!(entry.tests_executed, Some(10));
         assert_eq!(entry.summary, "dirty tree");
         let now = chrono::DateTime::parse_from_rfc3339("2026-08-03T01:36:00Z")
@@ -10046,7 +10039,7 @@ mod tests {
         );
         let line = &table[1];
         assert!(
-            line.starts_with("  - PASS        NOT-VALIDATED (dirty tree)"),
+            line.starts_with("  - PASS        NOT-VALIDATED (tree_dirty)"),
             "{line}"
         );
         assert!(!line.contains("ran with"), "{line}");
@@ -10107,14 +10100,14 @@ mod tests {
                 panic!("expected canonical refusal above the concurrency ceiling, got {other:?}")
             }
         };
-        assert_eq!(canonical_reason, "shared evidence contract not satisfied");
+        assert_eq!(canonical_reason, "admission concurrent-validates-invalid");
         assert!(qualify_canonical_receipt(&above_limit, RECEIPT_SHA).is_none());
         let above_limit_entry =
             finished_validate_status_entry(CANONICAL_VALIDATE_REPO, &above_limit, false);
         assert_eq!(above_limit_entry.verdict.as_deref(), Some("NOT-VALIDATED"));
         assert_eq!(
             above_limit_entry.nonqualification_reason.as_deref(),
-            Some(canonical_reason)
+            Some(canonical_reason.as_str())
         );
         let above_limit_table = validate_status_table(
             std::slice::from_ref(&above_limit_entry),
@@ -10126,7 +10119,7 @@ mod tests {
         );
         assert!(
             above_limit_table[1].starts_with(
-                "  - PASS        NOT-VALIDATED (shared evidence contract not satisfied)"
+                "  - PASS        NOT-VALIDATED (admission concurrent-validates-invalid)"
             ),
             "{}",
             above_limit_table[1]
@@ -10136,7 +10129,64 @@ mod tests {
     }
 
     #[test]
-    fn recent_history_explains_a_dirty_failed_run_without_changing_json() {
+    fn recent_history_renders_authoritative_qualification_reasons() {
+        let mut unanchored = schema5_receipt_value(0);
+        unanchored["commit_anchored"] = serde_json::json!(false);
+        let mut uncovered = schema5_receipt_value(0);
+        uncovered["coverage"]["zero_executed_nodes"] = serde_json::json!(["test.detcore"]);
+        let mut noncanonical_admission = schema5_receipt_value(0);
+        noncanonical_admission["admission"] = serde_json::json!("direct-shell-launch");
+        let cases = [
+            ("anchoring", "commit_anchored", unanchored),
+            (
+                "coverage",
+                "count-capable receipt coverage unsatisfied",
+                uncovered,
+            ),
+            (
+                "admission",
+                "admission admission-noncanonical",
+                noncanonical_admission,
+            ),
+        ];
+        let now = chrono::DateTime::parse_from_rfc3339("2026-08-03T01:36:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+
+        for (label, expected, receipt) in cases {
+            let entry = finished_validate_status_entry(
+                CANONICAL_VALIDATE_REPO,
+                &history_row(receipt),
+                false,
+            );
+            assert_eq!(
+                entry.nonqualification_reason.as_deref(),
+                Some(expected),
+                "{label}"
+            );
+            let table = validate_status_table(
+                std::slice::from_ref(&entry),
+                &[ValidateStatusColumn::Sha],
+                ValidateStatusTimes::Relative,
+                now,
+                false,
+                false,
+            );
+            assert!(
+                table[1].contains(&format!("NOT-VALIDATED ({expected})")),
+                "{label}: {}",
+                table[1]
+            );
+            let json = serde_json::to_value(&entry).unwrap();
+            assert!(
+                json.get("nonqualification_reason").is_none(),
+                "{label}: recent JSON schema must remain unchanged"
+            );
+        }
+    }
+
+    #[test]
+    fn recent_history_uses_first_canonical_refusal_for_an_unanchored_dirty_failure() {
         let mut value = schema4_receipt_value();
         value["run_number"] = serde_json::json!(1573);
         value["commit_anchored"] = serde_json::json!(false);
@@ -10158,7 +10208,10 @@ mod tests {
 
         assert_eq!(entry.result.as_deref(), Some("fail"));
         assert_eq!(entry.verdict.as_deref(), Some("NOT-VALIDATED"));
-        assert_eq!(entry.nonqualification_reason.as_deref(), Some("dirty tree"));
+        assert_eq!(
+            entry.nonqualification_reason.as_deref(),
+            Some("commit_anchored")
+        );
         assert_eq!(entry.summary, "failed: e2e.manifest_c_programs");
         let now = chrono::DateTime::parse_from_rfc3339("2026-08-03T01:36:00Z")
             .unwrap()
@@ -10172,7 +10225,7 @@ mod tests {
             false,
         );
         assert!(
-            table[1].starts_with("1573 FAIL        NOT-VALIDATED (dirty tree) 630f44aab7fd"),
+            table[1].starts_with("1573 FAIL        NOT-VALIDATED (commit_anchored) 630f44aab7fd"),
             "{}",
             table[1]
         );

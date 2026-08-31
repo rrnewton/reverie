@@ -354,7 +354,7 @@ pub enum Qualification {
     CountsOnlyGrandfathered { schema: u32 },
     /// Refused, with the clause that refused it. A statement ABOUT THE RECEIPT:
     /// it was read, and it does not qualify.
-    Refused(&'static str),
+    Refused(String),
     /// The receipt could not be READ, with the reader fault that stopped it.
     ///
     /// ⚠️ NOT A VERDICT ON THE RECEIPT, AND THAT IS THE WHOLE POINT. `Refused`
@@ -370,6 +370,10 @@ pub enum Qualification {
 }
 
 impl Qualification {
+    fn refused(reason: impl Into<String>) -> Self {
+        Self::Refused(reason.into())
+    }
+
     /// Today's boolean acceptance. Deliberately unchanged so this typing is not
     /// also a silent floor change.
     /// ⚠️ AN ALLOW-LIST, NOT A DENY-LIST, AND THE DIFFERENCE IS A FUTURE BUG.
@@ -474,8 +478,9 @@ fn derived_green_class(row: &HistoryRow) -> Option<&'static str> {
 }
 
 #[derive(Debug, Deserialize)]
-struct AdmissionReport {
+struct SharedEvidenceReport {
     accepted: bool,
+    evidence_reason: String,
     admission_satisfied: Option<bool>,
     admission_status: String,
     base_satisfied: Option<bool>,
@@ -516,7 +521,7 @@ pub enum BoundaryOutcome {
     /// The authority judged the row and accepted it.
     Accepted,
     /// The authority judged the row and refused it. A fact about the RECEIPT.
-    Refused,
+    Refused(String),
     /// The authority could not be consulted, or could not judge. A fact about
     /// the READER. Carries the specific failure so it cannot be reported as a
     /// generic refusal.
@@ -548,6 +553,69 @@ impl BoundaryOutcome {
             BoundaryOutcome::Indeterminate(reason) => Some(reason),
             _ => None,
         }
+    }
+
+    /// The authority's canonical refusal reason, when it reached a negative
+    /// verdict about the receipt itself.
+    pub fn refusal_reason(&self) -> Option<&str> {
+        match self {
+            BoundaryOutcome::Refused(reason) => Some(reason),
+            _ => None,
+        }
+    }
+}
+
+fn evidence_status_accepted(status: &str) -> bool {
+    matches!(status, "satisfied" | "grandfathered-unknown")
+}
+
+fn evidence_status_matches(status: &str, satisfied: Option<bool>) -> bool {
+    match status {
+        "satisfied" => satisfied == Some(true),
+        "grandfathered-unknown" => satisfied.is_none(),
+        _ => satisfied == Some(false),
+    }
+}
+
+impl SharedEvidenceReport {
+    fn statuses_accepted(&self) -> bool {
+        evidence_status_accepted(&self.coverage_schema_status)
+            && evidence_status_accepted(&self.base_status)
+            && evidence_status_accepted(&self.admission_status)
+            && evidence_status_accepted(&self.cell_results_status)
+    }
+
+    fn expected_reason(&self) -> String {
+        for (prefix, status) in [
+            ("coverage schema", self.coverage_schema_status.as_str()),
+            ("base", self.base_status.as_str()),
+            ("admission", self.admission_status.as_str()),
+            ("cell_results", self.cell_results_status.as_str()),
+        ] {
+            if !evidence_status_accepted(status) {
+                return format!("{prefix} {status}");
+            }
+        }
+        "qualifies".into()
+    }
+
+    fn statuses_match(&self) -> bool {
+        evidence_status_matches(&self.admission_status, self.admission_satisfied)
+            && evidence_status_matches(&self.base_status, self.base_satisfied)
+            && evidence_status_matches(&self.coverage_schema_status, self.coverage_schema_satisfied)
+            && evidence_status_matches(&self.cell_results_status, self.cell_results_satisfied)
+    }
+
+    fn internally_consistent(&self, exit_code: Option<i32>) -> bool {
+        let exit_matches = match exit_code {
+            Some(0) => self.accepted,
+            Some(1) => !self.accepted,
+            _ => false,
+        };
+        exit_matches
+            && self.statuses_match()
+            && self.accepted == self.statuses_accepted()
+            && self.evidence_reason == self.expected_reason()
     }
 }
 
@@ -590,9 +658,9 @@ pub fn shared_base_boundary_outcome(
     // rc 3 is the authority SAYING it could not judge (an undereferenceable
     // producer definition, an incomplete checkout). rc 1 is a verdict. Any other
     // nonzero is a crash, which is likewise not a verdict.
-    match output.status.code() {
-        Some(0) => {}
-        Some(1) => return BoundaryOutcome::Refused,
+    let exit_matches = match output.status.code() {
+        Some(0) => true,
+        Some(1) => false,
         Some(3) => {
             return BoundaryOutcome::Indeterminate(
                 "merge-boundary authority could not dereference the producer definition (rc 3)",
@@ -601,21 +669,21 @@ pub fn shared_base_boundary_outcome(
         _ => {
             return BoundaryOutcome::Indeterminate("merge-boundary authority exited abnormally");
         }
-    }
+    };
     let Ok(report) = serde_json::from_slice::<BaseBoundaryReport>(&output.stdout) else {
         return BoundaryOutcome::Indeterminate(
             "merge-boundary authority emitted no parsable report",
         );
     };
-    let status_matches = match report.base_status.as_str() {
-        "satisfied" => report.base_satisfied == Some(true),
-        "grandfathered-unknown" => report.base_satisfied.is_none(),
-        _ => false,
-    };
-    if report.accepted && status_matches {
+    if report.accepted != exit_matches
+        || !evidence_status_matches(&report.base_status, report.base_satisfied)
+    {
+        return BoundaryOutcome::Indeterminate("merge-boundary authority contradicted itself");
+    }
+    if report.accepted {
         BoundaryOutcome::Accepted
     } else {
-        BoundaryOutcome::Refused
+        BoundaryOutcome::Refused(format!("base {}", report.base_status))
     }
 }
 
@@ -650,8 +718,8 @@ pub fn shared_base_boundary_outcome(
 ///                                with the verdict possibly already produced.
 ///                                RETRY, and unlike the pipe case this one may
 ///                                have had side effects.
-///   `verifier-output-unparseable` it ran and answered, but the answer is not an
-///                                `AdmissionReport`. This consumer and the Python
+///   `verifier-output-unparseable` it ran and answered, but the answer is not a
+///                                `SharedEvidenceReport`. This consumer and the Python
 ///                                authority have SKEWED SCHEMAS. Redeploy or fix
 ///                                the pin; no number of retries converges.
 ///   `verifier-self-inconsistent` it ran, answered, parsed — and its exit code
@@ -711,44 +779,14 @@ fn shared_evidence_outcome(row: &HistoryRow, pred: &QualifyingPredicate) -> Boun
     else {
         return BoundaryOutcome::Indeterminate("verifier-not-reaped");
     };
-    let Ok(report) = serde_json::from_slice::<AdmissionReport>(&output.stdout) else {
+    let Ok(report) = serde_json::from_slice::<SharedEvidenceReport>(&output.stdout) else {
         return BoundaryOutcome::Indeterminate("verifier-output-unparseable");
-    };
-    let exit_matches = match output.status.code() {
-        Some(0) => report.accepted,
-        Some(1) => !report.accepted,
-        _ => false,
-    };
-    let status_matches = match report.admission_status.as_str() {
-        "satisfied" => report.admission_satisfied == Some(true),
-        "grandfathered-unknown" => report.admission_satisfied.is_none(),
-        _ => report.admission_satisfied == Some(false),
-    };
-    let base_status_matches = match report.base_status.as_str() {
-        "satisfied" => report.base_satisfied == Some(true),
-        "grandfathered-unknown" => report.base_satisfied.is_none(),
-        _ => report.base_satisfied == Some(false),
-    };
-    let coverage_schema_status_matches = match report.coverage_schema_status.as_str() {
-        "satisfied" => report.coverage_schema_satisfied == Some(true),
-        "grandfathered-unknown" => report.coverage_schema_satisfied.is_none(),
-        _ => report.coverage_schema_satisfied == Some(false),
-    };
-    let cell_results_status_matches = match report.cell_results_status.as_str() {
-        "satisfied" => report.cell_results_satisfied == Some(true),
-        "grandfathered-unknown" => report.cell_results_satisfied.is_none(),
-        _ => report.cell_results_satisfied == Some(false),
     };
     // SELF-CONSISTENCY FIRST, AND SEPARATELY FROM THE VERDICT. Each of these
     // compares the verifier's answer against its OWN other answer. A mismatch
     // says the authority is broken, which is not something the receipt can be
     // blamed for -- so it must not fall through into the `Refused` below.
-    if !(exit_matches
-        && status_matches
-        && base_status_matches
-        && coverage_schema_status_matches
-        && cell_results_status_matches)
-    {
+    if !report.internally_consistent(output.status.code()) {
         return BoundaryOutcome::Indeterminate("verifier-self-inconsistent");
     }
     // Only here is the answer both coherent and negative, which is the one
@@ -756,7 +794,7 @@ fn shared_evidence_outcome(row: &HistoryRow, pred: &QualifyingPredicate) -> Boun
     if report.accepted {
         BoundaryOutcome::Accepted
     } else {
-        BoundaryOutcome::Refused
+        BoundaryOutcome::Refused(report.evidence_reason)
     }
 }
 
@@ -851,43 +889,52 @@ pub fn gate_accounting_complete(row: &HistoryRow) -> bool {
 /// grandfathered through the count-only fallback with no coverage evidence.
 pub fn row_qualification(row: &HistoryRow, sha: &str, pred: &QualifyingPredicate) -> Qualification {
     let req = &pred.require;
-    if !(row.commit.as_deref() == Some(sha)
-        && row.commit_anchored == Some(req.commit_anchored)
-        && row.tree_dirty == Some(req.tree_dirty)
-        && row.selection_mode.as_deref() == Some(req.selection_mode.as_str())
-        && row.profile.as_deref() == Some(req.profile.as_str())
-        && row.result.as_deref() == Some(req.result.as_str()))
-    {
-        return Qualification::Refused("identity/result clause");
+    if row.commit.as_deref() != Some(sha) {
+        return Qualification::refused("identity/result clause");
+    }
+    if row.commit_anchored != Some(req.commit_anchored) {
+        return Qualification::refused("commit_anchored");
+    }
+    if row.tree_dirty != Some(req.tree_dirty) {
+        return Qualification::refused("tree_dirty");
+    }
+    if row.profile.as_deref() != Some(req.profile.as_str()) {
+        return Qualification::refused("identity/result clause");
+    }
+    if row.selection_mode.as_deref() != Some(req.selection_mode.as_str()) {
+        return Qualification::refused("identity/result clause");
+    }
+    if row.result.as_deref() != Some(req.result.as_str()) {
+        return Qualification::refused("identity/result clause");
     }
     // `pass` with a positive failure count is malformed; an absent count on a
     // pass row is treated as zero (old rows predate the field).
     if row.failures.unwrap_or(0) > req.failures_max {
-        return Qualification::Refused("failures > failures_max");
+        return Qualification::refused("failures > failures_max");
     }
     // A demonstrated zero-test run is never a full green, at any schema.
     if row.executed_tests == Some(0) {
-        return Qualification::Refused("executed_tests == 0");
+        return Qualification::refused("executed_tests == 0");
     }
     if row
         .passed_tests
         .is_some_and(|passed| Some(passed) != row.executed_tests)
     {
-        return Qualification::Refused("passed_tests != executed_tests for passing row");
+        return Qualification::refused("passed_tests != executed_tests for passing row");
     }
     if pred.gate_filtered_tests && row.filtered_tests != Some(0) {
-        return Qualification::Refused("filtered_tests != 0");
+        return Qualification::refused("filtered_tests != 0");
     }
     let schema = row.schema_version.unwrap_or(0);
     let count_capable = schema >= pred.counts_schema;
     if count_capable && !gate_accounting_complete(row) {
-        return Qualification::Refused("outer gate accounting incomplete");
+        return Qualification::refused("outer gate accounting incomplete");
     }
     let counts_present = row.executed_tests.is_some() && row.filtered_tests.is_some();
     let executed_ok = matches!(row.executed_tests, Some(n) if n >= req.executed_tests_min);
     let qualification = if count_capable {
         if !executed_ok {
-            return Qualification::Refused("executed_tests below executed_tests_min");
+            return Qualification::refused("executed_tests below executed_tests_min");
         }
         // Coverage is not required when the predicate turns it off or the row
         // predates it; otherwise it must be present AND satisfied. `None` here
@@ -898,13 +945,11 @@ pub fn row_qualification(row: &HistoryRow, sha: &str, pred: &QualifyingPredicate
         match row.coverage.as_ref().map(coverage_verdict) {
             Some(CoverageVerdict::Satisfied) => Qualification::FullCoverage,
             Some(CoverageVerdict::Unsatisfied) => {
-                Qualification::Refused("coverage reported inert or absent nodes")
+                Qualification::refused("count-capable receipt coverage unsatisfied")
             }
-            Some(CoverageVerdict::Unavailable(why)) => Qualification::Refused(why),
-            None => Qualification::Refused(
-                "count-capable receipt carries no coverage object; unavailable coverage \
-                 is refused, never accepted",
-            ),
+            Some(CoverageVerdict::Unavailable(_)) | None => {
+                Qualification::refused("count-capable receipt coverage unavailable")
+            }
         }
     } else if counts_present {
         // Old-schema writer that carried counts but predates per-node coverage:
@@ -917,11 +962,11 @@ pub fn row_qualification(row: &HistoryRow, sha: &str, pred: &QualifyingPredicate
         if executed_ok {
             Qualification::CountsOnlyGrandfathered { schema }
         } else {
-            Qualification::Refused("pre-coverage receipt below executed_tests_min")
+            Qualification::refused("pre-coverage receipt below executed_tests_min")
         }
     } else {
         // Neither count present: an uncounted receipt is UNVERIFIED, not green.
-        Qualification::Refused("no counts: receipt proves nothing")
+        Qualification::refused("no counts: receipt proves nothing")
     };
     if !qualification.accepted() {
         return qualification;
@@ -934,10 +979,10 @@ pub fn row_qualification(row: &HistoryRow, sha: &str, pred: &QualifyingPredicate
     if producer_enforced_for(row, pred) {
         match producer_verdict(row, pred) {
             ProducerVerdict::Missing => {
-                return Qualification::Refused("producer missing");
+                return Qualification::refused("producer missing");
             }
             ProducerVerdict::UnknownWriter => {
-                return Qualification::Refused("producer unknown-writer");
+                return Qualification::refused("producer unknown-writer");
             }
             ProducerVerdict::Ok | ProducerVerdict::Grandfathered => {}
         }
@@ -947,35 +992,37 @@ pub fn row_qualification(row: &HistoryRow, sha: &str, pred: &QualifyingPredicate
     // schema-4 stays grandfathered only with absent/null coverage, while a
     // non-null coverage claim requires schema-5+. Admission and base evidence
     // remain in the same delegated check.
-    // BOTH halves of the pair are load-bearing here, and they answer different
-    // questions: `accepted()` is the gate, `indeterminate_reason()` is the
-    // message. Using the gate alone is what produced one string for six faults.
+    // Consume all three typed facets: an accepted verdict proceeds, a reader
+    // fault stays indeterminate, and a coherent refusal keeps the authority's
+    // exact negative status instead of collapsing it to a generic clause.
     let evidence = shared_evidence_outcome(row, pred);
     if !evidence.accepted() {
-        return match evidence.indeterminate_reason() {
-            // A READER fault, carried out in its own variant. The string names
-            // which of the six it was, so the operator learns whether to fix PATH,
-            // retry, redeploy, or file a verifier bug -- and the TYPE says the
-            // receipt was never judged, so no consumer can render this as a
-            // verdict against it.
-            Some(reason) => Qualification::Indeterminate(reason),
-            // The only genuine statement about the receipt.
-            None => Qualification::Refused("shared evidence contract not satisfied"),
-        };
+        // A READER fault, carried out in its own variant. The string names which
+        // fault it was, so the operator learns whether to fix PATH, retry,
+        // redeploy, or file a verifier bug -- and the TYPE says the receipt was
+        // never judged, so no consumer can render this as a verdict against it.
+        if let Some(reason) = evidence.indeterminate_reason() {
+            return Qualification::Indeterminate(reason);
+        }
+        // The authority's exact negative status is a fact about the receipt.
+        if let Some(reason) = evidence.refusal_reason() {
+            return Qualification::Refused(reason.to_string());
+        }
+        unreachable!("every non-accepted boundary outcome carries a reason");
     }
     // Green-class gate (from origin/main): a receipt passing every value clause
     // must ALSO be of a green class the predicate accepts. Expressed as a
     // REFUSAL rather than a bare `false` so the reason survives into the typed
     // outcome; an underivable class is refused, never defaulted to accepted.
     let Some(green_class) = derived_green_class(row) else {
-        return Qualification::Refused("no derivable green class");
+        return Qualification::refused("no derivable green class");
     };
     if !pred
         .accepts_green_class
         .iter()
         .any(|accepted| accepted == green_class)
     {
-        return Qualification::Refused("green class not accepted by predicate");
+        return Qualification::refused("green class not accepted by predicate");
     }
     qualification
 }
@@ -1110,6 +1157,79 @@ mod tests {
         pred
     }
 
+    fn refusal_reason(qualification: Qualification) -> String {
+        match qualification {
+            Qualification::Refused(reason) => reason.to_string(),
+            other => panic!("expected a receipt refusal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn canonical_refusal_reasons_survive_the_rust_boundary() {
+        let sha = "b".repeat(40);
+        let pred = QualifyingPredicate::parse(EMBEDDED, "embedded").unwrap();
+        let control = row_with_producer(&sha, "2026-08-08T09:00:00Z", Some("hermit-validate-sh"));
+        assert_eq!(
+            row_qualification(&control, &sha, &pred),
+            Qualification::FullCoverage
+        );
+
+        let mut dirty = control.clone();
+        dirty.tree_dirty = Some(true);
+        assert_eq!(
+            refusal_reason(row_qualification(&dirty, &sha, &pred)),
+            "tree_dirty"
+        );
+
+        let mut unanchored = control.clone();
+        unanchored.commit_anchored = Some(false);
+        assert_eq!(
+            refusal_reason(row_qualification(&unanchored, &sha, &pred)),
+            "commit_anchored"
+        );
+
+        let mut uncovered = control.clone();
+        uncovered
+            .coverage
+            .as_mut()
+            .expect("control carries coverage")
+            .zero_executed_nodes = Some(vec!["test.detcore".into()]);
+        assert_eq!(
+            refusal_reason(row_qualification(&uncovered, &sha, &pred)),
+            "count-capable receipt coverage unsatisfied"
+        );
+
+        let mut legacy_claims_coverage = control.clone();
+        legacy_claims_coverage.schema_version = Some(4);
+        assert_eq!(
+            refusal_reason(row_qualification(&legacy_claims_coverage, &sha, &pred)),
+            "coverage schema legacy-schema-claims-coverage"
+        );
+
+        let mut noncanonical_admission = control.clone();
+        noncanonical_admission
+            .extra
+            .insert("admission".into(), serde_json::json!("direct-shell-launch"));
+        assert_eq!(
+            refusal_reason(row_qualification(&noncanonical_admission, &sha, &pred)),
+            "admission admission-noncanonical"
+        );
+
+        let mut at_limit = control.clone();
+        at_limit.concurrent_validates = Some(5);
+        assert_eq!(
+            row_qualification(&at_limit, &sha, &pred),
+            Qualification::FullCoverage
+        );
+
+        let mut above_limit = control;
+        above_limit.concurrent_validates = Some(6);
+        assert_eq!(
+            refusal_reason(row_qualification(&above_limit, &sha, &pred)),
+            "admission concurrent-validates-invalid"
+        );
+    }
+
     #[test]
     fn count_capable_receipt_requires_complete_outer_gate_accounting() {
         let sha = "b".repeat(40);
@@ -1123,7 +1243,7 @@ mod tests {
         row.gates_expected = Some(2);
         assert_eq!(
             row_qualification(&row, &sha, &pred),
-            Qualification::Refused("outer gate accounting incomplete")
+            Qualification::refused("outer gate accounting incomplete")
         );
     }
 
@@ -1141,7 +1261,7 @@ mod tests {
             row.passed_tests = contradictory;
             assert_eq!(
                 row_qualification(&row, &sha, &pred),
-                Qualification::Refused("passed_tests != executed_tests for passing row")
+                Qualification::refused("passed_tests != executed_tests for passing row")
             );
         }
     }
@@ -1319,13 +1439,56 @@ mod tests {
         }
         assert_eq!(seen.len(), 6, "six faults must remain six, not collapse");
 
-        // And the receipt verdict is the one thing that IS a Refused.
-        let refused = Qualification::Refused("shared evidence contract not satisfied");
+        // And the receipt verdict is the one thing that IS a Refused, carrying
+        // the authority's exact status rather than a generic collapse.
+        let refused = Qualification::refused("admission concurrent-validates-invalid");
         assert!(!refused.accepted());
         assert!(
             !matches!(refused, Qualification::Indeterminate(_)),
             "a genuine refusal must not masquerade as a reader fault either -- the \
              collapse has to be impossible in BOTH directions"
+        );
+    }
+
+    #[test]
+    fn shared_evidence_reason_must_match_the_first_negative_typed_status() {
+        let mut report = SharedEvidenceReport {
+            accepted: false,
+            evidence_reason: "made-up refusal".into(),
+            admission_satisfied: Some(false),
+            admission_status: "concurrent-validates-invalid".into(),
+            base_satisfied: Some(false),
+            base_status: "base-sha-missing".into(),
+            coverage_schema_satisfied: Some(true),
+            coverage_schema_status: "satisfied".into(),
+            cell_results_satisfied: Some(true),
+            cell_results_status: "satisfied".into(),
+        };
+        assert_eq!(report.expected_reason(), "base base-sha-missing");
+        assert!(
+            !report.internally_consistent(Some(1)),
+            "an arbitrary plausible refusal string must be treated as reader skew"
+        );
+
+        report.evidence_reason = report.expected_reason();
+        assert!(report.internally_consistent(Some(1)));
+
+        report.base_satisfied = Some(true);
+        report.base_status = "satisfied".into();
+        report.admission_satisfied = Some(true);
+        report.admission_status = "satisfied".into();
+        report.evidence_reason = "qualifies".into();
+        assert!(
+            !report.internally_consistent(Some(1)),
+            "a refusal must carry at least one non-accepted typed status"
+        );
+
+        report.accepted = true;
+        assert!(report.internally_consistent(Some(0)));
+        report.evidence_reason = "satisfied".into();
+        assert!(
+            !report.internally_consistent(Some(0)),
+            "accepted output must carry the canonical success reason"
         );
     }
 
@@ -1338,7 +1501,7 @@ mod tests {
     #[test]
     fn an_unreadable_receipt_is_not_accepted_by_omission() {
         assert!(!Qualification::Indeterminate("verifier-unlaunchable").accepted());
-        assert!(!Qualification::Refused("anything").accepted());
+        assert!(!Qualification::refused("anything").accepted());
         // ...and the accepting variants still accept, so this is not just "block
         // everything", which would pass the assertions above while breaking the gate.
         assert!(Qualification::FullCoverage.accepted());
@@ -1351,13 +1514,20 @@ mod tests {
     #[test]
     fn boundary_outcome_keeps_the_two_blocking_states_apart() {
         assert!(BoundaryOutcome::Accepted.accepted());
-        assert!(!BoundaryOutcome::Refused.accepted());
+        assert!(!BoundaryOutcome::Refused("receipt-refusal".into()).accepted());
         assert!(!BoundaryOutcome::Indeterminate("no python3").accepted());
 
         // Both non-accepting states BLOCK, and that is deliberate: an
         // unconsultable authority must never make a receipt more authoritative.
         // What must stay distinguishable is WHY.
-        assert_eq!(BoundaryOutcome::Refused.indeterminate_reason(), None);
+        assert_eq!(
+            BoundaryOutcome::Refused("receipt-refusal".into()).indeterminate_reason(),
+            None
+        );
+        assert_eq!(
+            BoundaryOutcome::Refused("receipt-refusal".into()).refusal_reason(),
+            Some("receipt-refusal")
+        );
         assert_eq!(
             BoundaryOutcome::Indeterminate("no python3").indeterminate_reason(),
             Some("no python3")

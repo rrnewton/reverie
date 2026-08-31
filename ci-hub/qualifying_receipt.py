@@ -1217,6 +1217,34 @@ def producer_verdict(row: dict[str, Any], pred: dict[str, Any]) -> ProducerVerdi
     return ProducerVerdict.GRANDFATHERED
 
 
+def shared_evidence_reason(
+    coverage_schema: CoverageSchemaVerdict,
+    base: BaseVerdict | None = None,
+    admission: AdmissionVerdict | None = None,
+    cell_results: CellResultsVerdict | None = None,
+) -> str:
+    """Return the first refusal judged by the shared-evidence boundary.
+
+    This is deliberately scoped to the four clauses carried by
+    ``--evidence-only``.  Value, producer-epoch, and green-class refusals remain
+    ordered by :func:`row_qualification`; this helper must not imply that the
+    narrower bridge judged the whole row.
+    """
+    verdicts = [
+        ("coverage schema", coverage_schema, coverage_schema_accepted(coverage_schema))
+    ]
+    if base is not None:
+        verdicts.append(("base", base, base_accepted(base)))
+    if admission is not None:
+        verdicts.append(("admission", admission, admission_accepted(admission)))
+    if cell_results is not None:
+        verdicts.append(("cell_results", cell_results, cell_results_accepted(cell_results)))
+    for prefix, verdict, accepted in verdicts:
+        if not accepted:
+            return f"{prefix} {verdict.value}"
+    return "qualifies"
+
+
 def _row_qualification_without_class(
     row: dict[str, Any], sha: str, pred: dict[str, Any]
 ) -> tuple[bool, str]:
@@ -1263,7 +1291,7 @@ def _row_qualification_without_class(
             return False, f"gate accounting incomplete: {gates_reason}"
     coverage_schema = coverage_schema_verdict(row, pred)
     if not coverage_schema_accepted(coverage_schema):
-        return False, f"coverage schema {coverage_schema.value}"
+        return False, shared_evidence_reason(coverage_schema)
     count_capable = schema >= pred["counts_schema"]
     counts_present = (
         row.get("executed_tests") is not None and row.get("filtered_tests") is not None
@@ -1328,15 +1356,15 @@ def row_qualification(
     if verdict in (ProducerVerdict.MISSING, ProducerVerdict.UNKNOWN_WRITER):
         if producer_enforced_for(row, pred):
             return False, f"producer {verdict.value}"
+    coverage_schema = coverage_schema_verdict(row, pred)
     base = base_evidence_verdict(row, pred)
-    if not base_accepted(base):
-        return False, f"base {base.value}"
     admission = admission_verdict(row, pred)
-    if not admission_accepted(admission):
-        return False, f"admission {admission.value}"
     cell_results = cell_results_verdict(row, pred)
-    if not cell_results_accepted(cell_results):
-        return False, f"cell_results {cell_results.value}"
+    evidence_reason = shared_evidence_reason(
+        coverage_schema, base, admission, cell_results
+    )
+    if evidence_reason != "qualifies":
+        return False, evidence_reason
     green_class, class_reason = _green_class.derive_class(row)
     if green_class not in _green_class.accepted_classes(pred):
         return False, f"green_class={green_class!r}: {class_reason}"
@@ -1492,6 +1520,9 @@ def main(argv: list[str] | None = None) -> int:
         )
         print(json.dumps({
             "accepted": accepted,
+            "evidence_reason": shared_evidence_reason(
+                coverage_schema, base, verdict, cell_results
+            ),
             "admission_satisfied": satisfied,
             "admission_status": verdict.value,
             "base_satisfied": (
