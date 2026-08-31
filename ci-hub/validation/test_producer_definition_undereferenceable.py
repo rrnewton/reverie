@@ -22,6 +22,8 @@ one that never does:
 
 from pathlib import Path
 import json
+import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -41,6 +43,70 @@ SHA = "a" * 40
 def _git(*args: str, cwd: Path) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         ["git", *args], cwd=cwd, capture_output=True, text=True, check=False
+    )
+
+
+def _qualifying_row() -> dict[str, object]:
+    return {
+        "schema_version": 5,
+        "profile": "full",
+        "selection_mode": "full",
+        "commit": SHA,
+        "commit_anchored": True,
+        "tree_dirty": False,
+        "result": "pass",
+        "failures": 0,
+        "executed_tests": 427,
+        "filtered_tests": 0,
+        "checks": 1,
+        "gates_run": 1,
+        "gates_expected": 1,
+        "gates": [{"name": "test", "result": "pass", "exit_code": 0}],
+        "coverage": {
+            "planned_test_nodes": 19,
+            "executed_test_nodes": 19,
+            "zero_executed_nodes": [],
+            "absent_nodes": [],
+        },
+        "producer": "hermit-validate-sh",
+        "admission": "ci-hub-validate-lock",
+        "concurrent_validates": 0,
+        "concurrency_proof": "validate_lock_owner_ancestry",
+        "base_sha": "b" * 40,
+        "base_tree": "c" * 40,
+        "reverie_base_sha": "d" * 40,
+        "reverie_base_tree": "e" * 40,
+    }
+
+
+def _boundary_consumer(fake_bin: Path, mode: str) -> subprocess.CompletedProcess[str]:
+    env = {
+        **os.environ,
+        "FAKE_BOUNDARY_MODE": mode,
+        "PATH": f"{fake_bin}{os.pathsep}{os.environ.get('PATH', '')}",
+    }
+    return subprocess.run(
+        [
+            str(ROOT / "ci-hub" / "ci-hub"),
+            "receipt-digest",
+            "--sha",
+            SHA,
+            "--require-qualifying",
+            "--current-base",
+            "b" * 40,
+            "--current-reverie-base",
+            "d" * 40,
+            "--repo-checkout",
+            str(fake_bin),
+            "--reverie-checkout",
+            str(fake_bin),
+        ],
+        input=json.dumps(_qualifying_row()),
+        capture_output=True,
+        text=True,
+        check=False,
+        env=env,
+        timeout=600,
     )
 
 
@@ -110,39 +176,63 @@ class UndereferenceableProducerDefinitionTest(unittest.TestCase):
             self.assertIs(report["receipt_judged"], False)
             self.assertIs(report["accepted"], False)
 
-    def test_rust_consumer_routes_rc3_to_a_loud_error_not_a_disqualified_row(
-        self,
-    ) -> None:
-        """The collapse lived in the Rust caller, so pin its branch shape.
+    def test_rust_consumer_types_rc3_and_coherent_rc1_differently(self) -> None:
+        """Drive the real Rust parser and consumer with controlled child reports."""
+        if shutil.which("rust-script") is None:
+            self.skipTest("rust-script unavailable; Rust consumer boundary cannot run")
+        with tempfile.TemporaryDirectory() as tmp:
+            fake_bin = Path(tmp)
+            python = fake_bin / "python3"
+            python.write_text(
+                """#!/bin/sh
+case "${2:-}" in
+  --evidence-only)
+    printf '%s\n' '{"accepted":true,"evidence_reason":"qualifies","admission_satisfied":true,"admission_status":"satisfied","base_satisfied":true,"base_status":"satisfied","coverage_schema_satisfied":true,"coverage_schema_status":"satisfied","cell_results_satisfied":true,"cell_results_status":"satisfied"}'
+    exit 0
+    ;;
+  --merge-boundary)
+    case "${FAKE_BOUNDARY_MODE:-}" in
+      reader)
+        exit 3
+        ;;
+      refused)
+        printf '%s\n' '{"accepted":false,"base_satisfied":false,"base_status":"base-not-current"}'
+        exit 1
+        ;;
+      inconsistent)
+        printf '%s\n' '{"accepted":false,"base_satisfied":true,"base_status":"base-not-current"}'
+        exit 1
+        ;;
+    esac
+    ;;
+esac
+exit 2
+"""
+            )
+            python.chmod(0o755)
 
-        `Some(1) => Ok(None)` feeds `disqualified`, which is the evidence
-        verdict. rc 3 must not reach that bucket.
-        """
-        # LOCATION UPDATED 2026-08-25, CONCERN UNCHANGED. The rc is now read in
-        # ci-hub/lib/qualifying_receipt.rs, which ci-hub.rs reaches through
-        # `mod qualifying_receipt`; the three literals this test used to pin were
-        # in neither file any more, so it was failing on a stale ADDRESS while the
-        # collapse it guards had moved. The assertions below pin the SAME concern
-        # -- rc 3 must not reach the verdict bucket -- at the site that now decides
-        # it. They are deliberately NOT re-pointed at a bool: a tri-state is what
-        # makes the distinction expressible at all.
-        lib = (ROOT / "ci-hub" / "lib" / "qualifying_receipt.rs").read_text()
-        rust = (ROOT / "ci-hub" / "ci-hub.rs").read_text()
+            # rc 3 is classified before report parsing because it says the
+            # authority could not judge the receipt at all.
+            reader = _boundary_consumer(fake_bin, "reader")
+            self.assertEqual(reader.returncode, 2)
+            self.assertIn("CANNOT DEREFERENCE PRODUCER DEFINITION", reader.stderr)
+            self.assertIn("rc 3", reader.stderr)
+            self.assertNotIn("failed final merge-boundary", reader.stderr)
 
-        # rc 3 is a reader fault and must be typed as one.
-        self.assertIn("Some(3) =>", lib)
-        self.assertIn("BoundaryOutcome::Indeterminate", lib)
+            # rc 1 is not enough by itself: a coherent typed report is parsed
+            # before the receipt-refusal arm becomes reachable.
+            refused = _boundary_consumer(fake_bin, "refused")
+            self.assertEqual(refused.returncode, 2)
+            self.assertIn("failed final merge-boundary base verification", refused.stderr)
+            self.assertNotIn("CANNOT DEREFERENCE PRODUCER DEFINITION", refused.stderr)
 
-        # The evidence verdict must still exist, so this did not simply delete
-        # the disqualification path.
-        self.assertIn("Some(1) => return BoundaryOutcome::Refused", lib)
-
-        # The two blocking states must be REPORTED differently at the consumer,
-        # or the type distinction dies one layer up -- which is exactly how the
-        # original collapse happened.
-        self.assertIn("CANNOT DEREFERENCE PRODUCER DEFINITION", rust)
-        self.assertIn("BoundaryOutcome::Refused", rust)
-        self.assertIn("BoundaryOutcome::Indeterminate", rust)
+            # The same rc 1 with a contradictory status/boolean pair is a
+            # reader/authority fault, proving the coherence gate is load-bearing.
+            inconsistent = _boundary_consumer(fake_bin, "inconsistent")
+            self.assertEqual(inconsistent.returncode, 2)
+            self.assertIn("CANNOT DEREFERENCE PRODUCER DEFINITION", inconsistent.stderr)
+            self.assertIn("contradicted itself", inconsistent.stderr)
+            self.assertNotIn("failed final merge-boundary", inconsistent.stderr)
 
 
 if __name__ == "__main__":
