@@ -6965,18 +6965,145 @@ fn validation_main_history_for_status(
     }
 }
 
-fn git_depth_for_validation_sha(root: &Path, repo: &str, sha: &str) -> Option<i64> {
-    let checkout = validation_repo_checkout(root, repo);
+fn git_revision_count(checkout: &Path, revisions: &[&str]) -> Result<i64, CiHubError> {
     let output = Command::new("git")
         .arg("-C")
         .arg(checkout)
-        .args(["rev-list", "--count", sha])
+        .args(["rev-list", "--count"])
+        .args(revisions)
         .bounded_output()
-        .ok()?;
+        .map_err(|source| CiHubError::Launch {
+            tool: "git rev-list count for validate-status".into(),
+            source,
+        })?;
     if !output.status.success() {
-        return None;
+        return Err(CiHubError::ValidateStatus(format!(
+            "cannot count commits for {}: {}",
+            revisions.join(" "),
+            String::from_utf8_lossy(&output.stderr).trim()
+        )));
     }
-    String::from_utf8_lossy(&output.stdout).trim().parse().ok()
+    let rendered = String::from_utf8_lossy(&output.stdout);
+    let count = rendered.trim().parse::<i64>().map_err(|_| {
+        CiHubError::ValidateStatus(format!(
+            "git rev-list --count returned a non-integer for {}: {:?}",
+            revisions.join(" "),
+            rendered.trim()
+        ))
+    })?;
+    if count <= 0 {
+        return Err(CiHubError::ValidateStatus(format!(
+            "git rev-list --count returned {count} for {}",
+            revisions.join(" ")
+        )));
+    }
+    Ok(count)
+}
+
+fn git_depth_for_validation_sha(root: &Path, repo: &str, sha: &str) -> Option<i64> {
+    let checkout = validation_repo_checkout(root, repo);
+    git_revision_count(&checkout, &[sha]).ok()
+}
+
+fn commit_timeline_git_depths(
+    root: &Path,
+    repo: &str,
+    commits: &[String],
+) -> Result<BTreeMap<String, i64>, CiHubError> {
+    // Counting every timeline row separately would launch thousands of Git
+    // processes. Count the tip once instead. Moving to a sole first parent
+    // removes only the child; at a merge, ask Git for the exact set introduced
+    // relative to the first parent. This keeps Git authoritative for merged
+    // ancestry while requiring one extra count only at merge commits.
+    let Some(tip) = commits.first() else {
+        return Err(CiHubError::ValidateStatus(
+            "commit timeline has no commits".into(),
+        ));
+    };
+    let checkout = validation_repo_checkout(root, repo);
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(&checkout)
+        .args([
+            "log",
+            "--first-parent",
+            "--format=%H%x09%P",
+            COMMIT_TIMELINE_REF,
+        ])
+        .bounded_output()
+        .map_err(|source| CiHubError::Launch {
+            tool: "git log parents for validate-status commit timeline".into(),
+            source,
+        })?;
+    if !output.status.success() {
+        return Err(CiHubError::ValidateStatus(format!(
+            "cannot read Git parents for {COMMIT_TIMELINE_REF}: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        )));
+    }
+    let rows = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(|line| line.to_string())
+        .collect::<Vec<_>>();
+    if rows.len() != commits.len() {
+        return Err(CiHubError::ValidateStatus(format!(
+            "Git parent history has {} commits but commit timeline has {}",
+            rows.len(),
+            commits.len()
+        )));
+    }
+
+    let mut git_depth = git_revision_count(&checkout, &[tip])?;
+    let mut result = BTreeMap::new();
+    for (index, line) in rows.iter().enumerate() {
+        let Some((commit, raw_parents)) = line.split_once('\t') else {
+            return Err(CiHubError::ValidateStatus(format!(
+                "git log emitted a malformed commit/parents row for {COMMIT_TIMELINE_REF}: {line}"
+            )));
+        };
+        if commit != commits[index] || !is_oid(commit) {
+            return Err(CiHubError::ValidateStatus(format!(
+                "Git parent history commit {commit:?} does not match timeline commit {:?}",
+                commits[index]
+            )));
+        }
+        let parents = raw_parents.split_whitespace().collect::<Vec<_>>();
+        if parents.iter().any(|parent| !is_oid(parent)) {
+            return Err(CiHubError::ValidateStatus(format!(
+                "git log emitted a malformed parent for {commit}: {raw_parents}"
+            )));
+        }
+        result.insert(commit.to_string(), git_depth);
+
+        let Some(first_parent) = commits.get(index + 1) else {
+            if !parents.is_empty() || git_depth != 1 {
+                return Err(CiHubError::ValidateStatus(format!(
+                    "oldest commit-timeline row {commit} has parents or Git depth {git_depth}"
+                )));
+            }
+            continue;
+        };
+        if parents.first().copied() != Some(first_parent.as_str()) {
+            return Err(CiHubError::ValidateStatus(format!(
+                "Git parent history for {commit} does not name timeline successor {first_parent} as its first parent"
+            )));
+        }
+        let removed = if parents.len() == 1 {
+            1
+        } else {
+            let excluded = format!("^{first_parent}");
+            git_revision_count(&checkout, &[commit, excluded.as_str()])?
+        };
+        git_depth = git_depth
+            .checked_sub(removed)
+            .filter(|depth| *depth > 0)
+            .ok_or_else(|| {
+                CiHubError::ValidateStatus(format!(
+                    "Git depth underflow from {commit} ({git_depth} - {removed})"
+                ))
+            })?;
+    }
+    Ok(result)
 }
 
 fn fill_optional_validate_status_columns(
@@ -7034,7 +7161,11 @@ fn validate_status_table_columns(
     let mut table = Vec::new();
     if commit_timeline {
         table.push(ValidateStatusTableColumn {
-            header: "DEPTH",
+            header: "N",
+            alignment: ValidateStatusAlignment::Right,
+        });
+        table.push(ValidateStatusTableColumn {
+            header: "GIT_DEPTH",
             alignment: ValidateStatusAlignment::Right,
         });
     }
@@ -7053,6 +7184,9 @@ fn validate_status_table_columns(
         },
     ]);
     for column in columns {
+        if commit_timeline && *column == ValidateStatusColumn::GitDepth {
+            continue;
+        }
         table.push(match column {
             ValidateStatusColumn::Sha => ValidateStatusTableColumn {
                 header: "SHA",
@@ -7119,9 +7253,10 @@ fn validate_status_values(
     columns: &[ValidateStatusColumn],
     times: ValidateStatusTimes,
     now: chrono::DateTime<chrono::Utc>,
-    commit_timeline: bool,
+    timeline_n: Option<usize>,
     log_paths: bool,
 ) -> Vec<String> {
+    let commit_timeline = timeline_n.is_some();
     let no_run = entry.verdict.as_deref() == Some("NO-RUN");
     let missing = if no_run { "" } else { "-" };
     let result = if no_run {
@@ -7142,10 +7277,11 @@ fn validate_status_values(
         entry.verdict.as_deref().unwrap_or("-").into()
     };
     let mut fields = Vec::new();
-    if commit_timeline {
+    if let Some(timeline_n) = timeline_n {
+        fields.push(timeline_n.to_string());
         fields.push(
             entry
-                .depth
+                .git_depth
                 .map(|depth| depth.to_string())
                 .unwrap_or_else(|| "-".into()),
         );
@@ -7158,6 +7294,9 @@ fn validate_status_values(
     );
     fields.extend([result, verdict]);
     for column in columns {
+        if commit_timeline && *column == ValidateStatusColumn::GitDepth {
+            continue;
+        }
         fields.push(match column {
             ValidateStatusColumn::Sha => {
                 let sha = entry.sha.as_deref().unwrap_or("-");
@@ -7226,7 +7365,17 @@ fn validate_status_table(
     let table_columns = validate_status_table_columns(columns, commit_timeline, log_paths);
     let rows = entries
         .iter()
-        .map(|entry| validate_status_values(entry, columns, times, now, commit_timeline, log_paths))
+        .enumerate()
+        .map(|(index, entry)| {
+            validate_status_values(
+                entry,
+                columns,
+                times,
+                now,
+                commit_timeline.then_some(index + 1),
+                log_paths,
+            )
+        })
         .collect::<Vec<_>>();
     render_validate_status_table(&table_columns, &rows)
 }
@@ -7534,6 +7683,21 @@ fn commit_timeline_entries(
     timeline
 }
 
+fn apply_commit_timeline_git_depths(
+    entries: &mut [ValidateStatusEntry],
+    git_depths: &BTreeMap<String, i64>,
+) -> Result<(), CiHubError> {
+    for entry in entries {
+        let sha = entry.sha.as_deref().ok_or_else(|| {
+            CiHubError::ValidateStatus("commit-timeline entry has no commit for GIT_DEPTH".into())
+        })?;
+        entry.git_depth = Some(*git_depths.get(sha).ok_or_else(|| {
+            CiHubError::ValidateStatus(format!("commit-timeline entry {sha} has no GIT_DEPTH"))
+        })?);
+    }
+    Ok(())
+}
+
 fn unassigned_commit_timeline_failures(
     parse_failures: &[validate_status::LedgerParseFailure],
     repo: &str,
@@ -7660,6 +7824,7 @@ fn print_recent_validate_history(
             }
             None => validation_main_history(state_root, repo)?,
         };
+        let git_depths = commit_timeline_git_depths(state_root, repo, &commits)?;
         let commit_count = commits.len();
         let finished = rows
             .iter()
@@ -7670,10 +7835,10 @@ fn print_recent_validate_history(
                 entry
             })
             .collect();
-        (
-            commit_timeline_entries(&commits, finished, current, parse_failures, repo),
-            Some(commit_count),
-        )
+        let mut timeline =
+            commit_timeline_entries(&commits, finished, current, parse_failures, repo);
+        apply_commit_timeline_git_depths(&mut timeline, &git_depths)?;
+        (timeline, Some(commit_count))
     } else if let Some(run_number) = args.run_no {
         let machine = local_machine().ok_or_else(|| {
             CiHubError::ValidateStatus("cannot determine this machine's hostname".into())
@@ -7792,7 +7957,7 @@ fn print_recent_validate_history(
     }
     if let Some(commit_count) = commit_count {
         println!(
-            "COMMIT-TIMELINE {COMMIT_TIMELINE_REF} {commit_count} first-parent commits (depth 0 is local {COMMIT_TIMELINE_REF})."
+            "COMMIT-TIMELINE {COMMIT_TIMELINE_REF} {commit_count} first-parent commits (N 1 is local {COMMIT_TIMELINE_REF})."
         );
         if unassigned_unreadable_count > 0 {
             println!(
@@ -9594,7 +9759,7 @@ mod tests {
             &columns,
             ValidateStatusTimes::Relative,
             now,
-            false,
+            None,
             false,
         );
         let historical_values = validate_status_values(
@@ -9602,7 +9767,7 @@ mod tests {
             &columns,
             ValidateStatusTimes::Relative,
             now,
-            false,
+            None,
             false,
         );
 
@@ -9794,6 +9959,102 @@ mod tests {
     }
 
     #[test]
+    fn commit_timeline_git_depth_matches_git_and_differs_from_n() {
+        let root = std::env::temp_dir().join(format!(
+            "ci-hub-validate-status-git-depth-{}-{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap()
+        ));
+        let repo = root.join("hermit");
+        std::fs::create_dir_all(&repo).unwrap();
+        let git = |args: &[&str]| {
+            let output = Command::new("git")
+                .arg("-C")
+                .arg(&repo)
+                .args(args)
+                .env("GIT_AUTHOR_NAME", "validate-status test")
+                .env("GIT_AUTHOR_EMAIL", "validate-status@example.invalid")
+                .env("GIT_COMMITTER_NAME", "validate-status test")
+                .env("GIT_COMMITTER_EMAIL", "validate-status@example.invalid")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "git {args:?}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            String::from_utf8(output.stdout).unwrap().trim().to_string()
+        };
+        git(&["init", "-q", "--initial-branch=main"]);
+        git(&["commit", "--allow-empty", "-qm", "base"]);
+        git(&["commit", "--allow-empty", "-qm", "main one"]);
+        git(&["checkout", "-qb", "side"]);
+        git(&["commit", "--allow-empty", "-qm", "side one"]);
+        git(&["commit", "--allow-empty", "-qm", "side two"]);
+        git(&["checkout", "-q", "main"]);
+        git(&["commit", "--allow-empty", "-qm", "main two"]);
+        git(&["merge", "--no-ff", "-qm", "merge side", "side"]);
+        let tip = git(&["rev-parse", "HEAD"]);
+        git(&["update-ref", "refs/remotes/origin/main", &tip]);
+
+        let commits = validation_main_history(&root, CANONICAL_VALIDATE_REPO).unwrap();
+        let git_depths =
+            commit_timeline_git_depths(&root, CANONICAL_VALIDATE_REPO, &commits).unwrap();
+        for sha in [&commits[0], &commits[1]] {
+            assert_eq!(
+                git_depths.get(sha).unwrap().to_string(),
+                git(&["rev-list", "--count", sha]),
+                "GIT_DEPTH must equal git rev-list --count for {sha}"
+            );
+        }
+
+        let mut timeline = commit_timeline_entries(
+            &commits,
+            Vec::new(),
+            Vec::new(),
+            &[],
+            CANONICAL_VALIDATE_REPO,
+        );
+        timeline.insert(1, timeline[0].clone());
+        apply_commit_timeline_git_depths(&mut timeline, &git_depths).unwrap();
+        let now = chrono::DateTime::parse_from_rfc3339("2026-08-31T12:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        let table = validate_status_table(
+            &timeline,
+            &[ValidateStatusColumn::Sha],
+            ValidateStatusTimes::Relative,
+            now,
+            true,
+            false,
+        );
+        assert!(table[0].starts_with("N GIT_DEPTH RUN TEST-RESULT COMMIT-VERDICT"));
+        let coordinates = table[1..4]
+            .iter()
+            .map(|line| {
+                let fields = line.split_whitespace().collect::<Vec<_>>();
+                (fields[0].to_string(), fields[1].to_string())
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            coordinates
+                .iter()
+                .map(|(n, _)| n.as_str())
+                .collect::<Vec<_>>(),
+            ["1", "2", "3"]
+        );
+        assert_eq!(
+            coordinates[0].1, coordinates[1].1,
+            "multiple results for one commit retain its GIT_DEPTH"
+        );
+        assert!(
+            coordinates.iter().any(|(n, git_depth)| n != git_depth),
+            "N and GIT_DEPTH must differ on a history containing a merge: {coordinates:?}"
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn commit_timeline_numbers_every_commit_and_does_not_call_absence_an_attempt() {
         let commits = ["a".repeat(40), "b".repeat(40), "c".repeat(40)];
         let mut passed = schema4_receipt_value();
@@ -9817,7 +10078,7 @@ mod tests {
                 entry
             })
             .collect();
-        let timeline =
+        let mut timeline =
             commit_timeline_entries(&commits, finished, Vec::new(), &[], CANONICAL_VALIDATE_REPO);
         assert_eq!(timeline.len(), commits.len());
         assert_eq!(timeline[0].depth, Some(0));
@@ -9837,6 +10098,15 @@ mod tests {
         assert_eq!(timeline[2].result.as_deref(), Some("fail"));
         assert_eq!(timeline[2].verdict.as_deref(), Some("NEEDS-RERUN"));
         assert_ne!(timeline[2].verdict.as_deref(), Some("NO-RUN"));
+        apply_commit_timeline_git_depths(
+            &mut timeline,
+            &BTreeMap::from([
+                (commits[0].clone(), 103),
+                (commits[1].clone(), 102),
+                (commits[2].clone(), 101),
+            ]),
+        )
+        .unwrap();
 
         let now = chrono::DateTime::parse_from_rfc3339("2026-08-03T01:36:00Z")
             .unwrap()
@@ -9853,11 +10123,12 @@ mod tests {
             true,
             true,
         );
-        assert!(table[0].starts_with("DEPTH RUN TEST-RESULT COMMIT-VERDICT"));
+        assert!(table[0].starts_with("N GIT_DEPTH RUN TEST-RESULT COMMIT-VERDICT"));
+        assert_eq!(table[0].matches("GIT_DEPTH").count(), 1, "{}", table[0]);
         let no_run = &table[1];
         assert_eq!(
             no_run.split_whitespace().collect::<Vec<_>>(),
-            ["1", "NO-RUN", "bbbbbbbbbbbb"]
+            ["1", "102", "NO-RUN", "bbbbbbbbbbbb"]
         );
         assert!(NO_RUN_NOTE.contains("cannot distinguish"));
         assert!(NO_RUN_NOTE.contains("failed before writing a ledger record"));
