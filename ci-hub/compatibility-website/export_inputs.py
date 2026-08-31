@@ -41,6 +41,19 @@ SCHEMA_VERSION = 1
 _SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 _MONTH_RE = re.compile(r"^[0-9]{4}-[0-9]{2}$")
 _OWNER_PATH_NEEDLE = "/" + "home" + "/"
+# Each fingerprint binds the canonical JSON for record_id, commit,
+# schema_version, run_id, and cell_results.  The narrow binding keeps a nearby
+# malformed supported-schema row visible to the fail-closed consumer.
+_WEBSITE_SELECTION_RETIREMENTS = {
+    "devbig014-1787003302-994556": {
+        "commit": "99e378524b9a6a22f5b74ab24192b906ab371a13",
+        "fingerprint": "b9a229ec66622b701f33adc8b608968075c4e946b951876416394320b2a6ac52",
+    },
+    "devbig014-1787005074-1930458": {
+        "commit": "88d4d61bfa9be43fa10513980485e9e55ef353dc",
+        "fingerprint": "64142a34df8d7d699e2b7567aee02236c472158fa554f5c6fb31275d50bd729e",
+    },
+}
 _READER_PATHS = (
     Path("ci-hub/compatibility-website/export_inputs.py"),
     Path("ci-hub/ledger/check-ledger-events.rs"),
@@ -671,28 +684,83 @@ def _incomplete_data() -> list[dict[str, str]]:
     ]
 
 
-def _validation_export(snapshot_root: Path) -> dict[str, Any]:
+def _website_current_validation_rows(
+    history_rows: list[dict],
+) -> tuple[list[dict], list[dict[str, str]]]:
+    """Keep two exact pre-comparison-field rows as history, not selection evidence."""
+    current_rows = validation_ledger.current_validation_run_rows(history_rows)
+    usable: list[dict] = []
+    incomplete: list[dict[str, str]] = []
+    fingerprint_fields = (
+        "record_id",
+        "commit",
+        "schema_version",
+        "run_id",
+        "cell_results",
+    )
+    for row in current_rows:
+        record_id = row.get("record_id")
+        retirement = _WEBSITE_SELECTION_RETIREMENTS.get(record_id)
+        if retirement is None:
+            usable.append(row)
+            continue
+        fingerprint = _value_sha256(
+            {field: row.get(field) for field in fingerprint_fields}
+        )
+        if (
+            row.get("schema_version") != 6
+            or row.get("commit") != retirement["commit"]
+            or fingerprint != retirement["fingerprint"]
+        ):
+            raise ExportRefused(
+                f"historical validation row {record_id!r} no longer matches "
+                "the exact pre-comparison-field evidence selected for retirement"
+            )
+        incomplete.append(
+            {
+                "field": "cell_results",
+                "input": "validation ledger",
+                "reason": (
+                    "schema-6 cell_results predate compare_io_buffers, "
+                    "display_name, record_envelope, and virtualize_time; the row "
+                    "remains in validation history but contributes no current "
+                    f"website selection evidence for Hermit commit {retirement['commit']}"
+                ),
+                "record_id": record_id,
+                "run_id": str(row.get("run_id")),
+                "schema": "6",
+            }
+        )
+    return usable, sorted(incomplete, key=lambda item: item["record_id"])
+
+
+def _validation_export(
+    snapshot_root: Path,
+) -> tuple[dict[str, Any], list[dict[str, str]]]:
     events = validation_ledger.events(root=snapshot_root)
     history_rows = validation_ledger.rows(root=snapshot_root)
-    current_rows = validation_ledger.current_validation_run_rows(history_rows)
+    current_rows, incomplete = _website_current_validation_rows(history_rows)
     portable_history = _portable_history_rows(history_rows, snapshot_root)
     portable_current = _portable_history_rows(current_rows, snapshot_root)
-    return {
-        "current_validation_run_row_count": len(portable_current),
-        "current_validation_run_rows": portable_current,
-        "current_validation_run_rows_sha256": _value_sha256(portable_current),
-        "event_count": len(events),
-        "event_schema_counts": _schema_counts(events, "schema"),
-        "events": events,
-        "events_sha256": _value_sha256(events),
-        "history_row_count": len(portable_history),
-        "history_row_schema_counts": _schema_counts(
-            portable_history,
-            "schema_version",
-        ),
-        "history_rows": portable_history,
-        "history_rows_sha256": _value_sha256(portable_history),
-    }
+    return (
+        {
+            "current_validation_run_row_count": len(portable_current),
+            "current_validation_run_rows": portable_current,
+            "current_validation_run_rows_sha256": _value_sha256(portable_current),
+            "event_count": len(events),
+            "event_schema_counts": _schema_counts(events, "schema"),
+            "events": events,
+            "events_sha256": _value_sha256(events),
+            "history_row_count": len(portable_history),
+            "history_row_schema_counts": _schema_counts(
+                portable_history,
+                "schema_version",
+            ),
+            "history_rows": portable_history,
+            "history_rows_sha256": _value_sha256(portable_history),
+        },
+        incomplete,
+    )
 
 
 def _series_export(
@@ -798,7 +866,7 @@ def build_export(parent_value: Path, published_ref: str) -> dict[str, Any]:
             for source, _data in mutable
             if source.store == "series"
         ]
-        validation = _validation_export(snapshot_root)
+        validation, validation_incomplete = _validation_export(snapshot_root)
         series = _series_export(
             parent,
             commit,
@@ -808,7 +876,7 @@ def build_export(parent_value: Path, published_ref: str) -> dict[str, Any]:
         sources = _provenance_sources(snapshot_root, git_files, mutable)
 
         result = {
-            "incomplete_data": _incomplete_data(),
+            "incomplete_data": [*_incomplete_data(), *validation_incomplete],
             "provenance": {
                 "parent_commit": commit,
                 "published_ref": published_ref,

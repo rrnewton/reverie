@@ -139,6 +139,116 @@ def validation_event() -> dict[str, Any]:
     }
 
 
+def pre_comparison_field_row(
+    *,
+    record_id: str,
+    commit: str,
+    run_id: str,
+    artifact_path: str,
+    artifact_sha256: str,
+    compared_messages: int,
+) -> dict[str, Any]:
+    identity = {
+        "backend": "ptrace",
+        "category": "applications",
+        "lane": "portable",
+        "mode": "verify",
+        "test": "applications/timed-progress-bar",
+    }
+    return {
+        "record_id": record_id,
+        "commit": commit,
+        "schema_version": 6,
+        "run_id": run_id,
+        "cell_results": {
+            "artifact": {
+                "path": artifact_path,
+                "row_count": 1,
+                "sha256": artifact_sha256,
+            },
+            "cells": [
+                {
+                    **identity,
+                    "cell_verdict": {
+                        "bitwise_parity": True,
+                        "compared_log_messages": {
+                            "left": compared_messages,
+                            "right": compared_messages,
+                        },
+                        "comparison": {
+                            "canonicalizations": [
+                                "host-address-to-first-appearance-ordinal/v1"
+                            ],
+                            "canonicalize_addresses": True,
+                            "compare_logs": True,
+                            "exact_remainder": True,
+                            "full_trace": True,
+                            "ignore_lines": False,
+                            "log_scope": "info",
+                            "skip_commit": False,
+                            "skip_detlog": False,
+                            "strictness": "canonical",
+                            "strip_lines": False,
+                            "stripped_prefixes": ["real-wall-clock-prefix/v1"],
+                        },
+                        "comparison_tier": "canonical-bitwise",
+                        "state": "compared-and-matched",
+                    },
+                }
+            ],
+            "hermit_sha": commit,
+            "population_sha256": (
+                "92652bcf4b3ae41ded219a3aaaebdabbd1118141daa2153b82bca354a3cbb456"
+            ),
+            "recorded_count": 1,
+            "run_id": run_id,
+            "selected": [identity],
+            "selected_count": 1,
+            "source_tree_dirty": False,
+        },
+    }
+
+
+def august_17_pre_comparison_field_rows() -> list[dict[str, Any]]:
+    return [
+        pre_comparison_field_row(
+            record_id="devbig014-1787003302-994556",
+            commit="99e378524b9a6a22f5b74ab24192b906ab371a13",
+            run_id=(
+                "portable-applications-applications-timed-progress-bar-verify-"
+                "ptrace-repetition-0001"
+            ),
+            artifact_path=(
+                "ignored/validate/artifacts/portable-applications-applications-"
+                "timed-progress-bar-verify-ptrace-repetition-0001/cell-results.jsonl"
+            ),
+            artifact_sha256=(
+                "f851f2b82dbfc941f5ca101d88411bedb8796e61366d9d0c0b00fb491e3d580e"
+            ),
+            compared_messages=106662,
+        ),
+        pre_comparison_field_row(
+            record_id="devbig014-1787005074-1930458",
+            commit="88d4d61bfa9be43fa10513980485e9e55ef353dc",
+            run_id=(
+                "validate-cell-requalification-88d4d61bfa9b-20260817T220655Z-"
+                "pid1935623--portable-applications-applications-timed-progress-bar-"
+                "verify-ptrace-repetition-0001"
+            ),
+            artifact_path=(
+                "ignored/validate/artifacts/validate-cell-requalification-"
+                "88d4d61bfa9b-20260817T220655Z-pid1935623--portable-applications-"
+                "applications-timed-progress-bar-verify-ptrace-repetition-0001/"
+                "cell-results.jsonl"
+            ),
+            artifact_sha256=(
+                "5bee38c8e3b9f6a6476fe07ad06f8fc8584fe22dfe48bc39411d1bb64115c938"
+            ),
+            compared_messages=106663,
+        ),
+    ]
+
+
 def series_row(**changes: Any) -> dict[str, Any]:
     row = {
         "schema": "stress-series/v1",
@@ -417,6 +527,51 @@ def test_export_delegates_to_authorities_and_records_all_source_locations(
     assert str(repo) not in rendered
     assert "/home/" not in rendered
     assert output["incomplete_data"]
+
+
+def test_exact_august_17_rows_stay_in_history_without_selection_authority(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    rows = august_17_pre_comparison_field_rows()
+    monkeypatch.setattr(export_inputs.validation_ledger, "events", lambda *, root: [])
+    monkeypatch.setattr(export_inputs.validation_ledger, "rows", lambda *, root: rows)
+
+    validation, incomplete = export_inputs._validation_export(tmp_path)
+
+    assert validation["history_rows"] == rows
+    assert validation["history_row_count"] == 2
+    assert validation["current_validation_run_rows"] == []
+    assert validation["current_validation_run_row_count"] == 0
+    assert [item["record_id"] for item in incomplete] == [
+        "devbig014-1787003302-994556",
+        "devbig014-1787005074-1930458",
+    ]
+    assert all(item["field"] == "cell_results" for item in incomplete)
+    assert all(item["schema"] == "6" for item in incomplete)
+    assert all(
+        "contributes no current website selection evidence" in item["reason"]
+        for item in incomplete
+    )
+
+
+def test_august_17_retirement_refuses_a_partially_updated_comparison():
+    [row, _other] = august_17_pre_comparison_field_rows()
+    row["cell_results"]["cells"][0]["cell_verdict"]["comparison"][
+        "display_name"
+    ] = "BitwiseInfoV1"
+
+    with pytest.raises(export_inputs.ExportRefused, match="no longer matches"):
+        export_inputs._website_current_validation_rows([row])
+
+
+def test_other_pre_comparison_field_row_remains_visible_to_fail_closed_consumers():
+    [row, _other] = august_17_pre_comparison_field_rows()
+    row["record_id"] = "nearby-malformed-row"
+
+    current, incomplete = export_inputs._website_current_validation_rows([row])
+
+    assert current == [row]
+    assert incomplete == []
 
 
 def test_validation_acceptance_fixture_is_excluded_by_the_canonical_reader(
