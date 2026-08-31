@@ -131,6 +131,8 @@ _EVIDENCE_PATH_DELIMITERS = frozenset(
 
 _SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 PRESSURE_PROMOTION_REPETITIONS = 10
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+_PROJECTION_RESULTS_SCHEMA_VERSION = 1
 # Built rather than written literally so this module does not itself contain the
 # owner-path needle the portability check greps tracked files for.
 _OWNER_PATH_NEEDLE = "/" + "home" + "/"
@@ -159,6 +161,15 @@ class PublishedSnapshot:
 
     commit: str
     rows: list[dict]
+
+
+@dataclass(frozen=True)
+class ProjectionResults:
+    """Hermit's projection result for every row in one canonical input."""
+
+    row_count: int
+    input_jsonl_sha256: str
+    results: dict[str, str | None]
 
 
 def shard_path(team: str, host: str, month: str) -> str:
@@ -256,6 +267,158 @@ def _validate_rows(
     rows: Iterable[Any], *, strict_paths: bool, read: bool,
 ) -> list[dict]:
     """Apply Hermit's shared SeriesRow checks for one read or write boundary."""
+    checked = _checked_rows(rows, strict_paths=strict_paths)
+    if not checked:
+        return checked
+
+    arguments = ["--read"] if read else []
+    result = _run_shared_checker(_checker_input(checked), arguments)
+    if result.returncode != 0:
+        detail = result.stderr.strip() or result.stdout.strip() or "no output"
+        raise MalformedRow(detail)
+    return checked
+
+
+def projection_results(
+    rows: Iterable[Any], *, strict_paths: bool = True,
+) -> ProjectionResults:
+    """Return Hermit's validate_for_projection result for every event id.
+
+    ``None`` means the shared type admitted the row. A nonempty string is the
+    exact rejection returned by ``SeriesRow::validate_for_projection``. Rows
+    are sorted by their canonical JSON before invoking the checker so callers
+    receive the same result map and input digest for any ordering of one row
+    population.
+    """
+    checked = _checked_rows(rows, strict_paths=strict_paths)
+    ordered = sorted(checked, key=_canonical_row_json)
+    checker_input = _checker_input(ordered)
+    expected_sha256 = hashlib.sha256(checker_input.encode()).hexdigest()
+    if not ordered:
+        return ProjectionResults(0, expected_sha256, {})
+
+    result = _run_shared_checker(checker_input, ["--projection-results"])
+    if result.returncode != 0:
+        detail = result.stderr.strip() or result.stdout.strip() or "no output"
+        raise MalformedRow(detail)
+    return _parse_projection_results(
+        result.stdout,
+        expected_event_ids={str(row["event_id"]) for row in ordered},
+        expected_row_count=len(ordered),
+        expected_sha256=expected_sha256,
+    )
+
+
+def _parse_projection_results(
+    encoded: str,
+    *,
+    expected_event_ids: set[str],
+    expected_row_count: int,
+    expected_sha256: str,
+) -> ProjectionResults:
+    """Validate the checker envelope before exposing any projection result."""
+    try:
+        output = json.loads(encoded)
+    except (json.JSONDecodeError, TypeError, RecursionError) as error:
+        raise SeriesError(
+            f"shared SeriesRow projection checker returned malformed JSON: {error}"
+        ) from error
+    if not isinstance(output, dict) or set(output) != {
+        "input_jsonl_sha256", "input_row_count", "results", "schema_version",
+    }:
+        raise SeriesError(
+            "shared SeriesRow projection checker returned an invalid top-level shape"
+        )
+    if (
+        not isinstance(output["schema_version"], int)
+        or isinstance(output["schema_version"], bool)
+        or output["schema_version"] != _PROJECTION_RESULTS_SCHEMA_VERSION
+    ):
+        raise SeriesError(
+            "shared SeriesRow projection checker returned an unsupported schema_version"
+        )
+    input_row_count = output["input_row_count"]
+    if not isinstance(input_row_count, int) or isinstance(input_row_count, bool):
+        raise SeriesError(
+            "shared SeriesRow projection checker returned an invalid input_row_count"
+        )
+    if input_row_count != expected_row_count:
+        raise SeriesError(
+            "shared SeriesRow projection checker input_row_count disagrees with rows"
+        )
+    input_jsonl_sha256 = output["input_jsonl_sha256"]
+    if (
+        not isinstance(input_jsonl_sha256, str)
+        or _SHA256_RE.fullmatch(input_jsonl_sha256) is None
+    ):
+        raise SeriesError(
+            "shared SeriesRow projection checker returned an invalid input_jsonl_sha256"
+        )
+    if input_jsonl_sha256 != expected_sha256:
+        raise SeriesError(
+            "shared SeriesRow projection checker input_jsonl_sha256 disagrees with rows"
+        )
+    raw_results = output["results"]
+    if not isinstance(raw_results, list):
+        raise SeriesError(
+            "shared SeriesRow projection checker results must be an array"
+        )
+    parsed = _parse_projection_result_items(raw_results)
+    returned_event_ids = set(parsed)
+    missing = sorted(expected_event_ids.difference(returned_event_ids))
+    unknown = sorted(returned_event_ids.difference(expected_event_ids))
+    if missing:
+        raise SeriesError(
+            "shared SeriesRow projection checker omitted event_id(s): "
+            + ", ".join(missing)
+        )
+    if unknown:
+        raise SeriesError(
+            "shared SeriesRow projection checker returned unknown event_id(s): "
+            + ", ".join(unknown)
+        )
+    if len(parsed) != expected_row_count:
+        raise SeriesError(
+            "shared SeriesRow projection checker result count disagrees with rows"
+        )
+    return ProjectionResults(
+        row_count=input_row_count,
+        input_jsonl_sha256=input_jsonl_sha256,
+        results=dict(sorted(parsed.items())),
+    )
+
+
+def _parse_projection_result_items(raw_results: list[Any]) -> dict[str, str | None]:
+    """Parse one complete event-id-to-result mapping, refusing ambiguity."""
+    parsed: dict[str, str | None] = {}
+    for index, item in enumerate(raw_results):
+        if not isinstance(item, dict) or set(item) != {"event_id", "result"}:
+            raise SeriesError(
+                f"shared SeriesRow projection checker result {index} has an invalid shape"
+            )
+        event_id = item["event_id"]
+        if not isinstance(event_id, str) or not event_id.strip():
+            raise SeriesError(
+                f"shared SeriesRow projection checker result {index} has an invalid event_id"
+            )
+        if event_id in parsed:
+            raise SeriesError(
+                f"shared SeriesRow projection checker repeated event_id {event_id!r}"
+            )
+        projection_result = item["result"]
+        if projection_result is not None and (
+            not isinstance(projection_result, str) or not projection_result.strip()
+        ):
+            raise SeriesError(
+                f"shared SeriesRow projection checker result for {event_id!r} "
+                "must be null or a nonempty string"
+            )
+        parsed[event_id] = projection_result
+    return parsed
+
+
+def _checked_rows(rows: Iterable[Any], *, strict_paths: bool) -> list[dict]:
+    """Copy input rows and enforce parent-owned path publication rules."""
     checked = []
     for row in rows:
         if not isinstance(row, dict):
@@ -264,29 +427,36 @@ def _validate_rows(
         if strict_paths and _contains_owner_path(copied):
             raise MalformedRow("row contains a workspace-local owner path")
         checked.append(copied)
-    if not checked:
-        return checked
+    return checked
 
+
+def _canonical_row_json(row: dict) -> str:
+    try:
+        return json.dumps(row, sort_keys=True, separators=(",", ":"))
+    except (TypeError, ValueError, RecursionError) as error:
+        raise MalformedRow(f"row is not canonical JSON: {error}") from error
+
+
+def _checker_input(rows: Iterable[dict]) -> str:
+    return "".join(_canonical_row_json(row) + "\n" for row in rows)
+
+
+def _run_shared_checker(
+    checker_input: str, arguments: Sequence[str],
+) -> subprocess.CompletedProcess[str]:
+    """Invoke Hermit's shared row checker without accepting partial output."""
     checker = Path(__file__).resolve().with_name("check-series-rows.rs")
     try:
-        command = [str(checker), "--read"] if read else [str(checker)]
-        result = subprocess.run(
-            command,
-            input="".join(
-                json.dumps(row, sort_keys=True, separators=(",", ":")) + "\n"
-                for row in checked
-            ),
+        return subprocess.run(
+            [str(checker), *arguments],
+            input=checker_input,
             capture_output=True,
             text=True,
             timeout=300,
             check=False,
         )
-    except (OSError, subprocess.TimeoutExpired) as error:
+    except (OSError, subprocess.TimeoutExpired, UnicodeError) as error:
         raise SeriesError(f"cannot run the shared SeriesRow checker: {error}") from error
-    if result.returncode != 0:
-        detail = result.stderr.strip() or result.stdout.strip() or "no output"
-        raise MalformedRow(detail)
-    return checked
 
 
 def _contains_owner_path(value: Any) -> bool:
@@ -3693,6 +3863,7 @@ __all__ = [
     "READABLE_ENVELOPE_VERSIONS",
     "SERIES_SPOOL_LOCK_TIMEOUT_SECONDS",
     "MalformedRow",
+    "ProjectionResults",
     "SeriesError",
     "append_rows",
     "collapse_rows",
@@ -3706,6 +3877,7 @@ __all__ = [
     "parse_line",
     "published_rows",
     "read_scorecard_projection_snapshot",
+    "projection_results",
     "row_identity",
     "rows_from_cell_results",
     "scorecard_projection_snapshot",

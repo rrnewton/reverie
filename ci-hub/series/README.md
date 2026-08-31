@@ -314,6 +314,24 @@ SHA-256 of each rejected retained CellResult and exits nonzero. Re-emitting the
 campaign is idempotent, and the rejected raw result is never synthesized into a
 series observation.
 
+The canonical Python reader also exposes `projection_results(rows)`. It sends
+the complete read-valid population to the same Rust checker and returns the
+existing reducer contract: one mapping entry per `event_id`, with `null` when
+`validate_for_projection` accepts the row and the exact rejection string when
+it does not. The helper sorts canonical JSONL before checking, verifies the
+checker-reported row count and SHA-256, and refuses missing, repeated, or
+unknown event ids. It does not remove excluded rows from history.
+
+`ci-hub/compatibility-website/export_inputs.py` publishes that complete mapping
+beside the raw canonical rows. Its binding repeats the exported row count and
+`rows_sha256`, retains the checker's canonical-JSONL digest, and counts
+exclusions jointly by series schema and exact reason. Projection results are
+one per physical row, while each joint exclusion count and the admitted and
+excluded totals separately report `physical_row_count` and
+`represented_run_count` from `num_runs`. This is evidence about whether a row
+is usable in the current projection; it is not a stored cell state or a
+measured/not-measured field.
+
 `parse_line` and `read_shard` remain raw line-format plumbing inherited from the
 ledger; they do not interpret a row as measurement evidence. `observed_range`
 still filters on `outcome` itself so a retained row cannot leak a position into

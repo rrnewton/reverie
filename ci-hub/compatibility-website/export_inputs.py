@@ -661,14 +661,6 @@ def _incomplete_data() -> list[dict[str, str]]:
             ),
         },
         {
-            "field": "projection validation reason",
-            "input": "series",
-            "reason": (
-                "the current shared checker exposes read and write validation but "
-                "does not expose validate_for_projection results"
-            ),
-        },
-        {
             "field": "row source path and line",
             "input": "series",
             "reason": (
@@ -766,6 +758,81 @@ def _validation_export(
     )
 
 
+def _projection_export(
+    rows: list[dict], rows_sha256: str, represented_run_count: int,
+) -> dict[str, Any]:
+    """Bind complete Hermit projection results to one exported row population."""
+    projection = series_store.projection_results(rows)
+    event_ids = [str(row.get("event_id", "")) for row in rows]
+    if projection.row_count != len(rows):
+        raise ExportRefused(
+            "series projection result row count disagrees with exported rows"
+        )
+    if set(projection.results) != set(event_ids):
+        raise ExportRefused(
+            "series projection result event ids disagree with exported rows"
+        )
+
+    schema_by_event_id = {
+        str(row["event_id"]): str(row.get("schema", "missing"))
+        for row in rows
+    }
+    represented_by_event_id = {
+        str(row["event_id"]): int((row.get("series") or {}).get("num_runs", 1))
+        for row in rows
+    }
+    excluded_physical = Counter()
+    excluded_represented = Counter()
+    admitted_physical = 0
+    admitted_represented = 0
+    for event_id, reason in projection.results.items():
+        represented = represented_by_event_id[event_id]
+        if reason is None:
+            admitted_physical += 1
+            admitted_represented += represented
+            continue
+        key = (schema_by_event_id[event_id], reason)
+        excluded_physical[key] += 1
+        excluded_represented[key] += represented
+    exclusion_counts = [
+        {
+            "physical_row_count": physical_count,
+            "reason": reason,
+            "represented_run_count": excluded_represented[(schema, reason)],
+            "schema": schema,
+        }
+        for (schema, reason), physical_count in sorted(excluded_physical.items())
+    ]
+    excluded_physical_total = sum(excluded_physical.values())
+    excluded_represented_total = sum(excluded_represented.values())
+    if admitted_physical + excluded_physical_total != len(rows):
+        raise ExportRefused(
+            "series projection admitted and excluded physical rows do not total "
+            "the exported row count"
+        )
+    if admitted_represented + excluded_represented_total != represented_run_count:
+        raise ExportRefused(
+            "series projection admitted and excluded represented runs do not total "
+            "the exported represented-run count"
+        )
+    return {
+        "projection_admitted_physical_row_count": admitted_physical,
+        "projection_admitted_represented_run_count": admitted_represented,
+        "projection_excluded_physical_row_count": excluded_physical_total,
+        "projection_excluded_represented_run_count": excluded_represented_total,
+        "projection_exclusion_counts": exclusion_counts,
+        "projection_result_physical_row_count": len(projection.results),
+        "projection_results": projection.results,
+        "projection_results_binding": {
+            "checker_input_jsonl_sha256": projection.input_jsonl_sha256,
+            "physical_row_count": len(rows),
+            "represented_run_count": represented_run_count,
+            "rows_sha256": rows_sha256,
+        },
+        "projection_results_sha256": _value_sha256(projection.results),
+    }
+
+
 def _series_export(
     parent: Path,
     commit: str,
@@ -783,11 +850,14 @@ def _series_export(
             "published series rows disagree with the captured parent commit files"
         )
     rows = series_store.union([*published_paths, *local_paths])
+    rows_sha256 = _value_sha256(rows)
+    represented_run_count = _represented_runs(rows)
     return {
-        "represented_run_count": _represented_runs(rows),
+        **_projection_export(rows, rows_sha256, represented_run_count),
+        "represented_run_count": represented_run_count,
         "row_count": len(rows),
         "rows": rows,
-        "rows_sha256": _value_sha256(rows),
+        "rows_sha256": rows_sha256,
         "schema_counts": _schema_counts(rows, "schema"),
     }
 

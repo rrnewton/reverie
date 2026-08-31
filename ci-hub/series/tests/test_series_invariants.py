@@ -698,6 +698,164 @@ class RowLinter(unittest.TestCase):
                 series.validate_row(row(series=payload))
 
 
+class ProjectionResultsReader(unittest.TestCase):
+    @staticmethod
+    def _legacy(event_id="legacy"):
+        legacy = row(event_id=event_id, schema=series.LEGACY_ENVELOPE_VERSION)
+        for field in ("machine_shortname", "kernel_version", "host_capabilities"):
+            del legacy["series"][field]
+        return legacy
+
+    @staticmethod
+    def _checker_output(rows, results, **changes):
+        ordered = sorted(
+            rows,
+            key=lambda item: json.dumps(item, sort_keys=True, separators=(",", ":")),
+        )
+        body = "".join(
+            json.dumps(item, sort_keys=True, separators=(",", ":")) + "\n"
+            for item in ordered
+        )
+        output = {
+            "input_jsonl_sha256": hashlib.sha256(body.encode()).hexdigest(),
+            "input_row_count": len(ordered),
+            "results": results,
+            "schema_version": 1,
+        }
+        output.update(changes)
+        return subprocess.CompletedProcess(
+            ["check-series-rows.rs", "--projection-results"],
+            0,
+            json.dumps(output),
+            "",
+        )
+
+    def test_shared_projection_results_round_trip_is_complete_and_order_independent(self):
+        current = row(event_id="current")
+        retained_v2 = row(
+            event_id="retained-v2",
+            schema=series.HOST_FACTS_ENVELOPE_VERSION,
+        )
+        legacy = self._legacy()
+        dirty = row(
+            event_id="dirty",
+            series={"source_tree_dirty": True},
+        )
+        rows = [current, retained_v2, legacy, dirty]
+
+        forward = series.projection_results(rows)
+        reverse = series.projection_results(reversed(rows))
+
+        self.assertEqual(forward, reverse)
+        self.assertEqual(forward.row_count, 4)
+        self.assertEqual(
+            forward.results,
+            {
+                "current": None,
+                "dirty": (
+                    "source_tree_dirty is true; dirty source is not checked-in evidence"
+                ),
+                "legacy": (
+                    "stress-series/v1 does not record machine_shortname, "
+                    "kernel_version, and host_capabilities"
+                ),
+                "retained-v2": None,
+            },
+        )
+
+    def test_one_field_mutation_changes_the_projection_input_digest(self):
+        original = row()
+        mutated = row(emitted_at="2026-08-25T03:00:01Z")
+
+        before = series.projection_results([original])
+        after = series.projection_results([mutated])
+
+        self.assertEqual(before.results, after.results)
+        self.assertNotEqual(before.input_jsonl_sha256, after.input_jsonl_sha256)
+
+    def test_duplicate_input_event_id_refuses(self):
+        with self.assertRaisesRegex(series.MalformedRow, "repeats event_id"):
+            series.projection_results([row(), row(series={"run_index": 1})])
+
+    def test_non_json_projection_input_refuses_with_a_named_series_error(self):
+        malformed = row(series={"unexpected": {"not", "json"}})
+        with self.assertRaisesRegex(series.MalformedRow, "not canonical JSON"):
+            series.projection_results([malformed])
+
+    def test_projection_checker_process_failure_refuses(self):
+        failed = subprocess.CompletedProcess(
+            ["check-series-rows.rs", "--projection-results"],
+            17,
+            "",
+            "fixture checker failure",
+        )
+        with mock.patch.object(series.subprocess, "run", return_value=failed):
+            with self.assertRaisesRegex(series.MalformedRow, "fixture checker failure"):
+                series.projection_results([row()])
+
+    def test_malformed_projection_checker_output_refuses(self):
+        malformed = subprocess.CompletedProcess(
+            ["check-series-rows.rs", "--projection-results"],
+            0,
+            "not-json",
+            "",
+        )
+        with mock.patch.object(series.subprocess, "run", return_value=malformed):
+            with self.assertRaisesRegex(series.SeriesError, "malformed JSON"):
+                series.projection_results([row()])
+
+    def test_projection_checker_count_and_digest_disagreement_refuse(self):
+        fixture = row()
+        valid_result = [{"event_id": fixture["event_id"], "result": None}]
+        cases = [
+            (
+                {"input_row_count": 2},
+                "input_row_count disagrees with rows",
+            ),
+            (
+                {"input_jsonl_sha256": "0" * 64},
+                "input_jsonl_sha256 disagrees with rows",
+            ),
+        ]
+        for changes, error in cases:
+            with self.subTest(changes=changes):
+                completed = self._checker_output([fixture], valid_result, **changes)
+                with mock.patch.object(
+                    series.subprocess, "run", return_value=completed
+                ):
+                    with self.assertRaisesRegex(series.SeriesError, error):
+                        series.projection_results([fixture])
+
+    def test_projection_checker_missing_duplicate_and_unknown_event_ids_refuse(self):
+        fixture = row()
+        event_id = fixture["event_id"]
+        cases = [
+            ([], "omitted event_id"),
+            (
+                [
+                    {"event_id": event_id, "result": None},
+                    {"event_id": event_id, "result": None},
+                ],
+                "repeated event_id",
+            ),
+            (
+                [
+                    {"event_id": event_id, "result": None},
+                    {"event_id": "unknown", "result": None},
+                ],
+                "unknown event_id",
+            ),
+        ]
+        for results, error in cases:
+            with self.subTest(results=results):
+                completed = self._checker_output([fixture], results)
+                with mock.patch.object(
+                    series.subprocess, "run", return_value=completed
+                ):
+                    with self.assertRaisesRegex(series.SeriesError, error):
+                        series.projection_results([fixture])
+
+
 class DerivedViews(unittest.TestCase):
     def _diverged(self, run_index, **coords):
         return row(

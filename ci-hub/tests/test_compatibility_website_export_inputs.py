@@ -275,6 +275,31 @@ def series_row(**changes: Any) -> dict[str, Any]:
     return row
 
 
+def current_series_row(**changes: Any) -> dict[str, Any]:
+    series_changes = {
+        "failure_class": None,
+        "host_capabilities": {
+            "cpuid-faulting": {
+                "evidence": "fixture absence",
+                "present": False,
+            },
+            "kvm": {
+                "evidence": "fixture presence",
+                "present": True,
+            },
+        },
+        "kernel_version": "7.1.3-test",
+        "machine_shortname": "hosta",
+        "result": "pass",
+        **changes.pop("series", {}),
+    }
+    return series_row(
+        schema="stress-series/v3",
+        series=series_changes,
+        **changes,
+    )
+
+
 def install_authority_fixtures(
     monkeypatch: pytest.MonkeyPatch,
     commit: str,
@@ -350,6 +375,7 @@ def install_authority_fixtures(
     )
 
     published_calls: list[tuple[Path, str]] = []
+    projection_calls: list[list[dict[str, Any]]] = []
     union_calls: list[list[Path]] = []
 
     def published_snapshot_at(parent: Path, reference: str):
@@ -380,6 +406,27 @@ def install_authority_fixtures(
         return [published_series] if has_published else []
 
     monkeypatch.setattr(export_inputs.series_store, "union", union)
+
+    def projection_results(rows):
+        rows = list(rows)
+        projection_calls.append(rows)
+        return export_inputs.series_store.ProjectionResults(
+            row_count=len(rows),
+            input_jsonl_sha256="c" * 64,
+            results={
+                "series-local": None,
+                "series-published": (
+                    "stress-series/v1 does not record machine_shortname, "
+                    "kernel_version, and host_capabilities"
+                ),
+            },
+        )
+
+    monkeypatch.setattr(
+        export_inputs.series_store,
+        "projection_results",
+        projection_results,
+    )
     monkeypatch.setattr(
         export_inputs.series_store,
         "refresh_origin_main",
@@ -391,6 +438,7 @@ def install_authority_fixtures(
         "local_series": local_series,
         "published_calls": published_calls,
         "published_series": published_series,
+        "projection_calls": projection_calls,
         "union_calls": union_calls,
     }
 
@@ -416,6 +464,24 @@ def test_empty_inputs_stay_empty_without_a_stored_measurement_state(tmp_path: Pa
     assert first["validation_ledger"]["current_validation_run_row_count"] == 0
     assert first["series"]["row_count"] == 0
     assert first["series"]["represented_run_count"] == 0
+    assert first["series"]["projection_results"] == {}
+    assert first["series"]["projection_result_physical_row_count"] == 0
+    assert first["series"]["projection_admitted_physical_row_count"] == 0
+    assert first["series"]["projection_admitted_represented_run_count"] == 0
+    assert first["series"]["projection_excluded_physical_row_count"] == 0
+    assert first["series"]["projection_excluded_represented_run_count"] == 0
+    assert first["series"]["projection_exclusion_counts"] == []
+    assert (
+        first["series"]["projection_results_binding"]["physical_row_count"] == 0
+    )
+    assert (
+        first["series"]["projection_results_binding"]["represented_run_count"]
+        == 0
+    )
+    assert (
+        first["series"]["projection_results_binding"]["rows_sha256"]
+        == first["series"]["rows_sha256"]
+    )
     assert first["provenance"]["source_count"] == 0
     assert {"measured", "measurement_state", "never_measured"}.isdisjoint(
         recursive_keys(first)
@@ -519,6 +585,23 @@ def test_real_nonempty_readers_keep_v1_and_deduplicate_published_and_live(
     assert output["series"]["row_count"] == 1
     assert output["series"]["represented_run_count"] == 1
     assert output["series"]["schema_counts"] == {"stress-series/v1": 1}
+    assert output["series"]["projection_results"] == {
+        "series-event-1": (
+            "stress-series/v1 does not record machine_shortname, "
+            "kernel_version, and host_capabilities"
+        )
+    }
+    assert output["series"]["projection_exclusion_counts"] == [
+        {
+            "reason": (
+                "stress-series/v1 does not record machine_shortname, "
+                "kernel_version, and host_capabilities"
+            ),
+            "physical_row_count": 1,
+            "represented_run_count": 1,
+            "schema": "stress-series/v1",
+        }
+    ]
     assert output["provenance"]["source_count"] == 3
 
 
@@ -573,6 +656,26 @@ def test_export_delegates_to_authorities_and_records_all_source_locations(
         "stress-series/v1": 1,
         "stress-series/v3": 1,
     }
+    assert fixtures["projection_calls"] == [[
+        fixtures["published_series"],
+        fixtures["local_series"],
+    ]]
+    assert output["series"]["projection_result_physical_row_count"] == 2
+    assert output["series"]["projection_admitted_physical_row_count"] == 1
+    assert output["series"]["projection_admitted_represented_run_count"] == 3
+    assert output["series"]["projection_excluded_physical_row_count"] == 1
+    assert output["series"]["projection_excluded_represented_run_count"] == 1
+    assert output["series"]["projection_results"] == {
+        "series-local": None,
+        "series-published": (
+            "stress-series/v1 does not record machine_shortname, "
+            "kernel_version, and host_capabilities"
+        ),
+    }
+    assert (
+        output["series"]["projection_results_binding"]["rows_sha256"]
+        == output["series"]["rows_sha256"]
+    )
 
     locations = {
         (source["store"], source["location"])
@@ -592,6 +695,178 @@ def test_export_delegates_to_authorities_and_records_all_source_locations(
     assert str(repo) not in rendered
     assert "/home/" not in rendered
     assert output["incomplete_data"]
+    assert [item["field"] for item in output["incomplete_data"]] == [
+        "fields allowed for publication",
+        "row source path and line",
+        "HistoryRow source path and line",
+    ]
+
+
+def test_projection_results_keep_excluded_history_and_count_schema_reason_pairs(
+    tmp_path: Path,
+):
+    legacy = series_row(event_id="legacy")
+    current = current_series_row(
+        event_id="current",
+        emitted_at="2026-08-30T02:00:00Z",
+        series={"run_index": 1},
+    )
+    dirty = current_series_row(
+        event_id="dirty",
+        emitted_at="2026-08-30T03:00:00Z",
+        series={"run_index": 2, "source_tree_dirty": True},
+    )
+    repo, commit = repository(
+        tmp_path,
+        {
+            "series/hermit/hosta/2026-08.jsonl": "".join(
+                json.dumps(item, sort_keys=True) + "\n"
+                for item in (dirty, legacy, current)
+            ).encode(),
+        },
+    )
+
+    output = build_export(repo, commit)
+    exported = output["series"]
+
+    assert {row["event_id"] for row in exported["rows"]} == {
+        "current",
+        "dirty",
+        "legacy",
+    }
+    assert exported["projection_results"] == {
+        "current": None,
+        "dirty": "source_tree_dirty is true; dirty source is not checked-in evidence",
+        "legacy": (
+            "stress-series/v1 does not record machine_shortname, "
+            "kernel_version, and host_capabilities"
+        ),
+    }
+    assert exported["projection_results_sha256"] == export_inputs._value_sha256(
+        exported["projection_results"]
+    )
+    assert exported["projection_result_physical_row_count"] == exported["row_count"] == 3
+    assert exported["projection_admitted_physical_row_count"] == 1
+    assert exported["projection_admitted_represented_run_count"] == 1
+    assert exported["projection_excluded_physical_row_count"] == 2
+    assert exported["projection_excluded_represented_run_count"] == 2
+    assert (
+        exported["projection_admitted_physical_row_count"]
+        + exported["projection_excluded_physical_row_count"]
+        == exported["row_count"]
+    )
+    assert (
+        exported["projection_admitted_represented_run_count"]
+        + exported["projection_excluded_represented_run_count"]
+        == exported["represented_run_count"]
+    )
+    assert exported["projection_exclusion_counts"] == [
+        {
+            "reason": (
+                "stress-series/v1 does not record machine_shortname, "
+                "kernel_version, and host_capabilities"
+            ),
+            "physical_row_count": 1,
+            "represented_run_count": 1,
+            "schema": "stress-series/v1",
+        },
+        {
+            "reason": (
+                "source_tree_dirty is true; dirty source is not checked-in evidence"
+            ),
+            "physical_row_count": 1,
+            "represented_run_count": 1,
+            "schema": "stress-series/v3",
+        },
+    ]
+    assert (
+        exported["projection_results_binding"]["physical_row_count"]
+        == exported["row_count"]
+    )
+    assert (
+        exported["projection_results_binding"]["represented_run_count"]
+        == exported["represented_run_count"]
+    )
+    assert (
+        exported["projection_results_binding"]["rows_sha256"]
+        == exported["rows_sha256"]
+    )
+    assert re.fullmatch(
+        r"[0-9a-f]{64}",
+        exported["projection_results_binding"]["checker_input_jsonl_sha256"],
+    )
+    assert all(
+        item["field"] != "projection validation reason"
+        for item in output["incomplete_data"]
+    )
+
+
+def test_one_series_field_mutation_changes_both_exported_row_bindings(tmp_path: Path):
+    original = current_series_row()
+    mutated = current_series_row(emitted_at="2026-08-30T01:00:01Z")
+    outputs = []
+    for name, fixture in (("original", original), ("mutated", mutated)):
+        fixture_root = tmp_path / name
+        fixture_root.mkdir()
+        repo, commit = repository(
+            fixture_root,
+            {
+                "series/hermit/hosta/2026-08.jsonl": (
+                    json.dumps(fixture, sort_keys=True).encode() + b"\n"
+                ),
+            },
+        )
+        outputs.append(build_export(repo, commit)["series"])
+
+    before, after = outputs
+    assert before["projection_results"] == after["projection_results"]
+    assert before["rows_sha256"] != after["rows_sha256"]
+    assert (
+        before["projection_results_binding"]["checker_input_jsonl_sha256"]
+        != after["projection_results_binding"]["checker_input_jsonl_sha256"]
+    )
+
+
+def test_series_export_refuses_projection_result_count_or_event_id_disagreement(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    fixture = current_series_row()
+    repo, commit = repository(
+        tmp_path,
+        {
+            "series/hermit/hosta/2026-08.jsonl": (
+                json.dumps(fixture, sort_keys=True).encode() + b"\n"
+            ),
+        },
+    )
+    cases = [
+        (
+            export_inputs.series_store.ProjectionResults(
+                row_count=2,
+                input_jsonl_sha256="c" * 64,
+                results={fixture["event_id"]: None},
+            ),
+            "row count disagrees",
+        ),
+        (
+            export_inputs.series_store.ProjectionResults(
+                row_count=1,
+                input_jsonl_sha256="c" * 64,
+                results={"unknown": None},
+            ),
+            "event ids disagree",
+        ),
+    ]
+    for projection, error in cases:
+        with monkeypatch.context() as context:
+            context.setattr(
+                export_inputs.series_store,
+                "projection_results",
+                lambda _rows, value=projection: value,
+            )
+            with pytest.raises(export_inputs.ExportRefused, match=error):
+                build_export(repo, commit)
 
 
 def test_exact_august_17_rows_stay_in_history_without_selection_authority(
