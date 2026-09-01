@@ -22,7 +22,7 @@ class FakeSystemctl:
         self.active = (
             set(active)
             if active is not None
-            else {"validate-a.service", "validate-b.scope"}
+            else {"validate-a.service", "validate-b.service"}
         )
         self.stops: list[str] = []
 
@@ -30,9 +30,9 @@ class FakeSystemctl:
         if "list-units" in command:
             return completed(
                 command,
-                stdout=(
-                    "validate-b.scope loaded active running B\n"
-                    "validate-a.service loaded active running A\n"
+                stdout="".join(
+                    f"{unit} loaded active running test\n"
+                    for unit in sorted(self.active, reverse=True)
                 ),
             )
         if "is-active" in command:
@@ -117,7 +117,7 @@ class StopUnitsTest(unittest.TestCase):
         records = [self.write_handle(unit) for unit in sorted(fake.active)]
 
         self.assertEqual(0, self.invoke(["--all"], fake))
-        self.assertEqual(["validate-a.service", "validate-b.scope"], fake.stops)
+        self.assertEqual(["validate-a.service", "validate-b.service"], fake.stops)
         self.assertEqual(set(), fake.active)
         for record in records:
             requests = run_registry.read_record(record)["termination_requests"]
@@ -162,7 +162,7 @@ class StopUnitsTest(unittest.TestCase):
     def test_active_unit_without_a_current_handle_is_refused_before_any_stop(
         self,
     ) -> None:
-        fake = FakeSystemctl()
+        fake = FakeSystemctl({"validate-a.service", "validate-b.scope"})
         self.write_handle("validate-a.service")
 
         self.assertEqual(2, self.invoke(["--all"], fake))

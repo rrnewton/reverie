@@ -142,7 +142,9 @@ validate-NAME.service --reason 'why this run must stop'` targets one run, while
 `./ci-hub/ci-hub validate-stop --all --reason 'why these runs must stop'`
 enumerates every active `validate-*` user service or scope. Before it signals
 anything, the command requires each active unit to have a current durable run
-handle and records the resolved agent identity and stated reason there. It then
+handle and records the resolved agent identity and stated reason there. A
+legacy scope without that handle therefore refuses the whole selection before
+any unit is stopped. The command then
 uses `systemctl --user stop` on each exact unit, confirms the unit became
 inactive, and marks that request confirmed. `validate-status` renders the
 retained record as `terminated-by`; a missing or unreadable handle refuses the

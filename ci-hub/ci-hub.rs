@@ -6615,14 +6615,6 @@ fn current_validate_run_text(
         })
 }
 
-fn validate_unit_record_name(unit: &str) -> String {
-    let stem = unit
-        .strip_suffix(".service")
-        .or_else(|| unit.strip_suffix(".scope"))
-        .unwrap_or(unit);
-    format!("{stem}.json")
-}
-
 #[derive(Default)]
 struct LiveValidateRunScan {
     entries: Vec<ValidateStatusEntry>,
@@ -6759,7 +6751,7 @@ fn live_validate_runs_from(
             if canonical_validation_repo(record_repo) != Some(repo) {
                 continue;
             }
-            let expected_name = validate_unit_record_name(unit);
+            let expected_name = format!("{}.json", unit.trim_end_matches(".service"));
             if path.file_name().and_then(OsStr::to_str) != Some(expected_name.as_str()) {
                 return Err(CiHubError::ValidateStatus(format!(
                     "live validation run handle {} does not bind its unit {}",
@@ -6959,7 +6951,7 @@ fn live_validate_runs_from(
         if canonical_validation_repo(&record.repo) != Some(repo) {
             continue;
         }
-        let expected_name = validate_unit_record_name(&record.unit);
+        let expected_name = format!("{}.json", record.unit.trim_end_matches(".service"));
         if path.file_name().and_then(OsStr::to_str) != Some(expected_name.as_str()) {
             return Err(CiHubError::ValidateStatus(format!(
                 "live validation run handle {} does not bind its unit {}",

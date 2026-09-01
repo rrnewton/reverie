@@ -664,8 +664,8 @@ def parse_current_record(value: Mapping[str, Any]) -> RunHandle:
     admission = _required_text(value, "admission")
     if producer != PRODUCER:
         raise _error("producer", f"must be {PRODUCER!r}")
-    if not unit.endswith((".service", ".scope")):
-        raise _error("unit", "must end in .service or .scope")
+    if not unit.endswith(".service"):
+        raise _error("unit", "must end in .service")
     if len(target) != 40 or any(ch not in "0123456789abcdef" for ch in target):
         raise _error("target", "must be a lowercase forty-hex commit")
     expected_repo = (
@@ -894,8 +894,7 @@ def parse_current_record(value: Mapping[str, Any]) -> RunHandle:
 
 
 def record_path(root: Path, unit: str) -> Path:
-    stem = unit.removesuffix(".service").removesuffix(".scope")
-    return root / "ignored" / "validate" / "runs" / f"{stem}.json"
+    return root / "ignored" / "validate" / "runs" / f"{unit.removesuffix('.service')}.json"
 
 
 def owner_watch_correction_transaction(root: Path) -> Path:
