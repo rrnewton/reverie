@@ -576,8 +576,9 @@ fn resolve_anchor(ci_hub: &Path, branch: &str, no_fetch: bool) -> Option<Anchor>
 /// record disqualifies and yields NOT-VALIDATED). We additionally re-assert the
 /// carried result/profile/selection fields — carry the condition with the value
 /// — so a future loosening of VALIDATED cannot silently widen what this gate
-/// accepts. `checks == 6` is deliberately NOT gated on: validate-status does not
-/// expose it, and VALIDATED already subsumes it.
+/// accepts. A raw check count is deliberately NOT gated on: validate-status
+/// exposes the versioned gate contract through VALIDATED, which already
+/// subsumes the exact expected sequence and count.
 fn interpret_validate_status(sha: &str, json: &str) -> Result<String, String> {
     // Tolerate `# COST`/log noise around the JSON body (newest-green wraps its
     // JSON; validate-status currently does not, but be robust to either).

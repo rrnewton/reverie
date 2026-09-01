@@ -32,16 +32,22 @@ if [[ $command == validate-status ]]; then
             if [[ $repo == rrnewton/reverie ]]; then
                 planned=2
                 executed_nodes=2
-                gates='[{"name":"Cross-client skill discovery","result":"pass"},{"name":"Build workspace","result":"pass"},{"name":"Test regular workspace cases","result":"pass"},{"name":"Documentation tests","result":"pass"},{"name":"Clippy","result":"pass"},{"name":"Rustfmt","result":"pass"}]'
+                reverie_policy=${REVERIE_POLICY:-reverie-local-validation/v3}
+                if [[ $reverie_policy == reverie-local-validation/v2 ]]; then
+                    gates='[{"name":"Cross-client skill discovery","result":"pass"},{"name":"Build workspace","result":"pass"},{"name":"Test regular workspace cases","result":"pass"},{"name":"Documentation tests","result":"pass"},{"name":"Clippy","result":"pass"},{"name":"Rustfmt","result":"pass"}]'
+                else
+                    gates='[{"name":"Cross-client skill discovery","result":"pass"},{"name":"Build workspace","result":"pass"},{"name":"DBT virtual identity and pidfd_open policy","result":"pass"},{"name":"Test regular workspace cases","result":"pass"},{"name":"Documentation tests","result":"pass"},{"name":"Clippy","result":"pass"},{"name":"Rustfmt","result":"pass"}]'
+                fi
             else
                 planned=19
                 executed_nodes=19
                 gates='[{"name":"test.strict_compat","result":"pass"},{"name":"e2e.metadata","result":"pass"}]'
+                reverie_policy=
             fi
             if [[ ${LOCAL_COVERAGE:-full} == partial ]]; then
                 executed_nodes=$((planned - 1))
             fi
-            printf '{"repo":"%s","sha":"%s","verdict":"VALIDATED","exit_code":0,"qualifying_count":%s,"newest_qualifying":{"sha":"%s","profile":"full","selection_mode":"full","coverage_satisfied":true,"coverage_status":"satisfied","coverage":{"planned_test_nodes":%s,"executed_test_nodes":%s,"absent_nodes":[],"zero_executed_nodes":[]},"gates":%s,"failures":0,"executed_tests":862,"filtered_tests":350}}\n' "$repo" "$observed_sha" "$qualifying_count" "$observed_sha" "$planned" "$executed_nodes" "$gates"
+            printf '{"repo":"%s","sha":"%s","verdict":"VALIDATED","exit_code":0,"qualifying_count":%s,"newest_qualifying":{"sha":"%s","profile":"full","selection_mode":"full","coverage_satisfied":true,"coverage_status":"satisfied","coverage":{"planned_test_nodes":%s,"executed_test_nodes":%s,"absent_nodes":[],"zero_executed_nodes":[]},"reverie_validation_policy":"%s","gates":%s,"failures":0,"executed_tests":862,"filtered_tests":350}}\n' "$repo" "$observed_sha" "$qualifying_count" "$observed_sha" "$planned" "$executed_nodes" "$reverie_policy" "$gates"
             exit 0 ;;
         red)
             printf '{"repo":"%s","sha":"%s","verdict":"FAILED","exit_code":3,"qualifying_count":0,"newest_qualifying":null}\n' "$repo" "$observed_sha"
@@ -244,13 +250,22 @@ env CI_HUB_BIN="$tmp/ci-hub" VERIFY_RECEIPT_BIN="$tmp/verify-receipt" \
 
 # Reverie's centralized full-profile row is likewise the exact-head landing
 # authority. Hosted state is diagnostic and never a fallback or veto here.
-run_reverie_local_only_case 0 "Reverie local-only admits qualifying six-gate row" \
+run_reverie_local_only_case 0 "Reverie local-only admits qualifying seven-gate v3 row" \
     env LOCAL_STATE=green HOSTED_STATE=red
 [[ $last_output == *"AUTHORITY=local "* && \
-   $last_output == *"LOCAL_COVERAGE=full-six-gate"* && \
+   $last_output == *"LOCAL_COVERAGE=full-seven-gate-v3"* && \
    $last_output == *"HOSTED=not_consulted"* ]] || {
-    echo "FAIL: Reverie local-only green did not select its six-gate authority" >&2; exit 1;
+    echo "FAIL: Reverie local-only green did not select its seven-gate v3 authority" >&2; exit 1;
 }
+run_reverie_local_only_case 0 "Reverie local-only preserves qualifying six-gate v2 authority" \
+    env LOCAL_STATE=green HOSTED_STATE=red REVERIE_POLICY=reverie-local-validation/v2
+[[ $last_output == *"AUTHORITY=local "* && \
+   $last_output == *"LOCAL_COVERAGE=full-six-gate-v2"* && \
+   $last_output == *"HOSTED=not_consulted"* ]] || {
+    echo "FAIL: Reverie local-only green did not preserve its six-gate v2 authority" >&2; exit 1;
+}
+run_reverie_local_only_case 4 "Reverie local-only refuses an unknown receipt policy" \
+    env LOCAL_STATE=green HOSTED_STATE=red REVERIE_POLICY=reverie-local-validation/v999
 run_reverie_local_only_case 4 "Reverie local-only refuses hosted-only green" \
     env LOCAL_STATE=no_result HOSTED_STATE=green
 run_reverie_local_only_case 3 "Reverie local-only preserves genuine ledger red" \
@@ -277,4 +292,4 @@ env CI_HUB_BIN="$tmp/ci-hub" VERIFY_RECEIPT_BIN="$tmp/verify-receipt" \
     >/dev/null 2>&1 || rc=$?
 [[ $rc -eq 2 ]] || { echo "FAIL: mutually exclusive authority selectors were accepted" >&2; exit 1; }
 
-echo "PASS: historical local/hosted OR positives=5; Hermit local-only positive=1 negatives=3; Reverie local-only positive=1 negatives=2; hosted-only positive=1 negatives=4; cancellation no-results=2; red/partial/stale/unbound/count/coverage/policy negatives=14"
+echo "PASS: historical local/hosted OR positives=5; Hermit local-only positive=1 negatives=3; Reverie local-only positives=2 negatives=3; hosted-only positive=1 negatives=4; cancellation no-results=2; red/partial/stale/unbound/count/coverage/policy negatives=14"

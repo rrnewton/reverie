@@ -171,6 +171,7 @@ cancellation_derived_portable_absence() {
 }
 
 local_state=no_result
+reverie_policy=
 if [[ $hosted_only -eq 1 ]]; then
     local_state=not_consulted
 else
@@ -197,6 +198,9 @@ else
     and ($row.filtered_tests | type == "number" and . >= 0)
 ' "$local_report" >/dev/null 2>&1; then
         local_state=green
+        if [[ $repo == rrnewton/reverie ]]; then
+            reverie_policy=$(jq -r '.newest_qualifying.reverie_validation_policy // empty' "$local_report")
+        fi
     elif [[ $local_rc -eq 3 ]] && jq -e --arg repo "$repo" --arg sha "$sha" '
     .repo == $repo and .sha == $sha and .verdict == "FAILED" and .exit_code == 3
 ' "$local_report" >/dev/null 2>&1; then
@@ -228,8 +232,25 @@ if [[ $local_only -eq 1 ]]; then
             required_coverage=local:portable+privileged
             ;;
         rrnewton/reverie)
-            local_coverage=full-six-gate
-            required_coverage=local:full-six-gate
+            case "$reverie_policy" in
+                reverie-local-validation/v1)
+                    local_coverage=full-seven-gate-v1
+                    required_coverage=local:full-seven-gate-v1
+                    ;;
+                reverie-local-validation/v2)
+                    local_coverage=full-six-gate-v2
+                    required_coverage=local:full-six-gate-v2
+                    ;;
+                reverie-local-validation/v3)
+                    local_coverage=full-seven-gate-v3
+                    required_coverage=local:full-seven-gate-v3
+                    ;;
+                *)
+                    local_coverage=none
+                    required_coverage=local:versioned-full-profile
+                    [[ $local_state == green ]] && local_state=no_result
+                    ;;
+            esac
             ;;
     esac
     case $local_state in

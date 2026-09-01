@@ -144,7 +144,8 @@ Reverie events use the existing HistoryRow/JSONL wire format and shard to
 `ledger/reverie/<host>/<month>.jsonl`. The direct schema-3 row emitted by
 `validate.sh` remains diagnostic. The central wrapper emits the schema-5
 `ci-hub-reverie-validate-run` row that carries exact repository, current
-seven-gate v2, test-coverage, lock, and safe-ci evidence. The reader retains the
-historical seven-gate v1 contract for old exact-SHA receipts. `validate-status` filters by
+seven-gate v3, test-coverage, lock, and safe-ci evidence. The reader retains the
+historical seven-gate v1 and six-gate v2 contracts for old exact-SHA receipts.
+`validate-status` filters by
 repository before resolving a SHA, so a same-text Hermit SHA cannot satisfy a
 Reverie query.

@@ -24,7 +24,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
 import bounded_capture  # noqa: E402
 
 
-# Local-validation v2 follows Reverie's seven-gate producer after hosted
+# Local-validation v3 follows Reverie's seven-gate producer after hosted
 # merge-gate policy enforcement was retired from validate.sh.
 EXPECTED_GATES = (
     "Cross-client skill discovery",
@@ -40,6 +40,7 @@ TEST_GATES = (
     "Documentation tests",
 )
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+SAFE_CI_STEP = "validate.reverie-full"
 
 
 class Refusal(RuntimeError):
@@ -63,6 +64,36 @@ def git(checkout: Path, *args: str) -> str:
     return result.stdout.strip()
 
 
+def _pid_scope(component: str, prefix: str) -> bool:
+    if not component.startswith(prefix) or not component.endswith(".scope"):
+        return False
+    pid = component[len(prefix) : -len(".scope")]
+    return bool(pid) and pid.isascii() and pid.isdigit()
+
+
+def is_safe_ci_step_cgroup(path: str, step: str) -> bool:
+    if not path.startswith("/"):
+        return False
+    components = path[1:].split("/")
+    if not components or any(not component for component in components):
+        return False
+    step_component = f"step-{step}"
+    if components[-1] != step_component:
+        return False
+    legacy = (
+        len(components) >= 4
+        and components[-4] == "safe.slice"
+        and components[-3] == "safe-ci.slice"
+        and _pid_scope(components[-2], "safe-ci-")
+    )
+    current = (
+        len(components) >= 3
+        and components[-3] == "dagrun.slice"
+        and _pid_scope(components[-2], "dagrun-")
+    )
+    return legacy or current
+
+
 def safe_ci_cgroup() -> str:
     try:
         lines = Path("/proc/self/cgroup").read_text().splitlines()
@@ -72,11 +103,7 @@ def safe_ci_cgroup() -> str:
     matches = [
         path
         for path in paths
-        if "/step-" in path
-        and (
-            "safe-ci-" in path
-            or "/dagrun.slice/dagrun-" in path
-        )
+        if is_safe_ci_step_cgroup(path, SAFE_CI_STEP)
     ]
     if len(matches) != 1:
         raise Refusal(
@@ -349,11 +376,11 @@ def main(argv: list[str] | None = None) -> int:
                     "required": True,
                     "observed": True,
                     "cgroup": cgroup,
-                    "step": "validate.reverie-full",
+                    "step": SAFE_CI_STEP,
                     "fallback_allowed": False,
                 },
                 "validate_lock_authority": authority,
-                "reverie_validation_policy": "reverie-local-validation/v2",
+                "reverie_validation_policy": "reverie-local-validation/v3",
             }
         )
         # The canonical row records even a product red. Shape failures are not

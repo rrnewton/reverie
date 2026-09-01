@@ -107,7 +107,14 @@ class ReverieValidateTest(unittest.TestCase):
         with (
             mock.patch.object(reverie_node, "git", side_effect=fake_git),
             mock.patch.object(reverie_node, "require_kvm_environment"),
-            mock.patch.object(reverie_node, "safe_ci_cgroup", return_value="/safe-ci"),
+            mock.patch.object(
+                reverie_node,
+                "safe_ci_cgroup",
+                return_value=(
+                    "/user.slice/user-212630.slice/user@212630.service/dagrun.slice/"
+                    "dagrun-153463.scope/step-validate.reverie-full"
+                ),
+            ),
             mock.patch.object(reverie_node, "lock_authority", return_value={}),
             mock.patch.object(
                 reverie_node.subprocess,
@@ -329,6 +336,10 @@ class ReverieValidateTest(unittest.TestCase):
                 self.assertEqual(status, expected_status)
                 self.assertEqual(row["executed_tests"], 17)
                 self.assertEqual(row["filtered_tests"], 4)
+                self.assertEqual(
+                    row["reverie_validation_policy"], "reverie-local-validation/v3"
+                )
+                self.assertEqual(row["safe_ci"]["step"], reverie_node.SAFE_CI_STEP)
 
     def test_reverie_node_refusal_publishes_could_not_run(self) -> None:
         with tempfile.TemporaryDirectory() as raw:
@@ -455,7 +466,10 @@ class ReverieValidateTest(unittest.TestCase):
             with self.assertRaises(reverie_node.Refusal):
                 reverie_node.safe_ci_cgroup()
         boxed_paths = [
-            "/user.slice/safe-ci-123.scope/step-validate.reverie-full",
+            (
+                "/user.slice/user-212630.slice/user@212630.service/safe.slice/"
+                "safe-ci.slice/safe-ci-123.scope/step-validate.reverie-full"
+            ),
             (
                 "/user.slice/user-212630.slice/user@212630.service/dagrun.slice/"
                 "dagrun-153463.scope/step-validate.reverie-full"
@@ -465,6 +479,22 @@ class ReverieValidateTest(unittest.TestCase):
             with self.subTest(path=path):
                 with mock.patch.object(Path, "read_text", return_value=f"0::{path}\n"):
                     self.assertEqual(reverie_node.safe_ci_cgroup(), path)
+
+        refused_paths = [
+            "/user.slice/safe.slice/safe-ci.slice/unsafe-ci-123.scope/step-validate.reverie-full",
+            "/user.slice/safe.slice/safe-ci.slice/safe-ci-worker.scope/step-validate.reverie-full",
+            "/user.slice/safe.slice/safe-ci.slice/safe-ci-123.scope/nested/step-validate.reverie-full",
+            "/user.slice/dagrun.slice/worker-153463.scope/step-validate.reverie-full",
+            "/user.slice/dagrun-153463.scope/step-validate.reverie-full",
+            "/user.slice/dagrun.slice/dagrun-153463.scope/nested/step-validate.reverie-full",
+            "/user.slice/dagrun.slice/dagrun-153463.scope/step-validate.other",
+            "/user.slice//dagrun.slice/dagrun-153463.scope/step-validate.reverie-full",
+        ]
+        for path in refused_paths:
+            with self.subTest(path=path):
+                with mock.patch.object(Path, "read_text", return_value=f"0::{path}\n"):
+                    with self.assertRaises(reverie_node.Refusal):
+                        reverie_node.safe_ci_cgroup()
 
     def test_kvm_requirement_refuses_absence_and_accepts_exact_value(self) -> None:
         with mock.patch.dict(os.environ, {}, clear=True):

@@ -170,7 +170,8 @@ class LandPrRepoRoutingTest(unittest.TestCase):
         self.assertIn(
             '$repo != rrnewton/hermit && $repo != rrnewton/reverie', authority
         )
-        self.assertIn("required_coverage=local:full-six-gate", authority)
+        self.assertIn("required_coverage=local:full-six-gate-v2", authority)
+        self.assertIn("required_coverage=local:full-seven-gate-v3", authority)
 
     def test_merge_remains_guarded_and_serialized(self) -> None:
         script = LANDER.read_text(encoding="utf-8")

@@ -4290,13 +4290,42 @@ fn qualify_canonical_receipt(row: &HistoryRow, sha: &str) -> Option<QualifyingRe
     })
 }
 
+fn decimal_scope_component(component: &str, prefix: &str) -> bool {
+    component
+        .strip_prefix(prefix)
+        .and_then(|value| value.strip_suffix(".scope"))
+        .is_some_and(|pid| !pid.is_empty() && pid.bytes().all(|byte| byte.is_ascii_digit()))
+}
+
+fn reverie_safe_ci_step_cgroup(cgroup: &str, step: &str) -> bool {
+    let Some(path) = cgroup.strip_prefix('/') else {
+        return false;
+    };
+    let components = path.split('/').collect::<Vec<_>>();
+    if components.is_empty() || components.iter().any(|component| component.is_empty()) {
+        return false;
+    }
+    let expected_step = format!("step-{step}");
+    if components.last().copied() != Some(expected_step.as_str()) {
+        return false;
+    }
+    let legacy = components.len() >= 4
+        && components[components.len() - 4] == "safe.slice"
+        && components[components.len() - 3] == "safe-ci.slice"
+        && decimal_scope_component(components[components.len() - 2], "safe-ci-");
+    let current = components.len() >= 3
+        && components[components.len() - 3] == "dagrun.slice"
+        && decimal_scope_component(components[components.len() - 2], "dagrun-");
+    legacy || current
+}
+
 /// Return the complete evidence bundle iff one row alone proves Reverie's
 /// versioned local-validation contract. Direct `validate.sh` rows are useful
 /// diagnostics but never qualify: only the central runner can carry both a
 /// live validate-lock ancestry proof and observed safe-ci step containment.
 fn qualify_reverie_receipt(row: &HistoryRow, sha: &str) -> Option<QualifyingReceipt> {
-    // v1 preserves exact historical seven-gate receipts. v2 is the current
-    // six-gate contract after hosted merge-gate policy enforcement retired.
+    // Preserve both immutable historical contracts. v3 is the current
+    // seven-gate contract after the DBT identity gate joined v2's six gates.
     const V1_GATES: [&str; 7] = [
         "Cross-client skill discovery",
         "Merge-gate policy",
@@ -4309,6 +4338,15 @@ fn qualify_reverie_receipt(row: &HistoryRow, sha: &str) -> Option<QualifyingRece
     const V2_GATES: [&str; 6] = [
         "Cross-client skill discovery",
         "Build workspace",
+        "Test regular workspace cases",
+        "Documentation tests",
+        "Clippy",
+        "Rustfmt",
+    ];
+    const V3_GATES: [&str; 7] = [
+        "Cross-client skill discovery",
+        "Build workspace",
+        "DBT virtual identity and pidfd_open policy",
         "Test regular workspace cases",
         "Documentation tests",
         "Clippy",
@@ -4337,6 +4375,7 @@ fn qualify_reverie_receipt(row: &HistoryRow, sha: &str) -> Option<QualifyingRece
     let gates: &[&str] = match extra_str(row, "reverie_validation_policy")? {
         "reverie-local-validation/v1" => &V1_GATES,
         "reverie-local-validation/v2" => &V2_GATES,
+        "reverie-local-validation/v3" => &V3_GATES,
         _ => return None,
     };
     // Match the Hermit receipt contract: both absent and malformed trees are
@@ -4376,12 +4415,12 @@ fn qualify_reverie_receipt(row: &HistoryRow, sha: &str) -> Option<QualifyingRece
     }
     let safe_ci = row.extra.get("safe_ci")?.as_object()?;
     let cgroup = safe_ci.get("cgroup")?.as_str()?;
+    let step = safe_ci.get("step")?.as_str()?;
     if safe_ci.get("required")?.as_bool()? != true
         || safe_ci.get("observed")?.as_bool()? != true
         || safe_ci.get("fallback_allowed")?.as_bool()? != false
-        || safe_ci.get("step")?.as_str()? != "validate.reverie-full"
-        || !cgroup.contains("safe-ci-")
-        || !cgroup.contains("/step-")
+        || step != "validate.reverie-full"
+        || !reverie_safe_ci_step_cgroup(cgroup, step)
     {
         return None;
     }
@@ -4604,6 +4643,7 @@ fn describe_receipt(receipt: &QualifyingReceipt) -> serde_json::Value {
             "grandfathered-unknown"
         },
         "coverage_basis": receipt.coverage_basis,
+        "reverie_validation_policy": extra_str(row, "reverie_validation_policy"),
         "real_seconds": row.real_seconds,
         "user_seconds": row.user_seconds,
         "sys_seconds": row.sys_seconds,
@@ -4614,7 +4654,7 @@ fn describe_receipt(receipt: &QualifyingReceipt) -> serde_json::Value {
             "canonicalization": RECEIPT_CANONICALIZATION,
             "digest": receipt.canonical_sha256,
             "tuple": {
-                "repo": CANONICAL_VALIDATE_REPO,
+                "repo": repo,
                 "sha": row.commit,
                 "tree": tree,
                 "finished_at": row.finished_at,
@@ -11559,6 +11599,7 @@ mod tests {
         let gates = [
             "Cross-client skill discovery",
             "Build workspace",
+            "DBT virtual identity and pidfd_open policy",
             "Test regular workspace cases",
             "Documentation tests",
             "Clippy",
@@ -11594,9 +11635,9 @@ mod tests {
                 "zero_executed_nodes": [],
                 "absent_nodes": []
             },
-            "checks": 6,
-            "gates_run": 6,
-            "gates_expected": 6,
+            "checks": 7,
+            "gates_run": 7,
+            "gates_expected": 7,
             "failures": 0,
             "real_seconds": 60.0,
             "log_file": "/tmp/reverie-validate.log",
@@ -11608,7 +11649,7 @@ mod tests {
                 "observed": true,
                 "fallback_allowed": false,
                 "step": "validate.reverie-full",
-                "cgroup": "/user.slice/safe-ci-123.scope/step-validate.reverie-full"
+                "cgroup": "/user.slice/user-212630.slice/user@212630.service/dagrun.slice/dagrun-153463.scope/step-validate.reverie-full"
             },
             "validate_lock_authority": {
                 "schema_version": 1,
@@ -11617,9 +11658,19 @@ mod tests {
                 "holder": {"kind": "reverie-validate", "target": RECEIPT_SHA},
                 "owner": {"liveness": "alive"}
             },
-            "reverie_validation_policy": "reverie-local-validation/v2",
+            "reverie_validation_policy": "reverie-local-validation/v3",
             "gates": gates
         })
+    }
+
+    fn reverie_v2_receipt_value() -> serde_json::Value {
+        let mut value = reverie_receipt_value();
+        value["reverie_validation_policy"] = serde_json::json!("reverie-local-validation/v2");
+        value["checks"] = serde_json::json!(6);
+        value["gates_run"] = serde_json::json!(6);
+        value["gates_expected"] = serde_json::json!(6);
+        value["gates"].as_array_mut().unwrap().remove(2);
+        value
     }
 
     fn history_row(value: serde_json::Value) -> HistoryRow {
@@ -11877,57 +11928,125 @@ mod tests {
         .unwrap();
         assert_eq!(assessment.verdict, validate_status::Verdict::Validated);
         assert_eq!(assessment.qualifying.len(), 1);
+        let report = describe_receipt(&assessment.qualifying[0]);
+        assert_eq!(
+            report["receipt_identity"]["tuple"]["repo"],
+            CANONICAL_REVERIE_REPO
+        );
+        assert_eq!(
+            report["reverie_validation_policy"],
+            "reverie-local-validation/v3"
+        );
 
-        let mut retired_seventh_gate = reverie_receipt_value();
-        retired_seventh_gate["checks"] = serde_json::json!(7);
-        retired_seventh_gate["gates_run"] = serde_json::json!(7);
-        retired_seventh_gate["gates_expected"] = serde_json::json!(7);
-        retired_seventh_gate["gates"]
+        assert!(
+            qualify_reverie_receipt(&history_row(reverie_v2_receipt_value()), RECEIPT_SHA)
+                .is_some(),
+            "historical v2 six-gate receipt stopped qualifying"
+        );
+
+        let mut legacy_safe_ci_scope = reverie_receipt_value();
+        legacy_safe_ci_scope["safe_ci"]["cgroup"] =
+            serde_json::json!("/user.slice/user-212630.slice/user@212630.service/safe.slice/safe-ci.slice/safe-ci-123.scope/step-validate.reverie-full");
+        assert!(
+            qualify_reverie_receipt(&history_row(legacy_safe_ci_scope), RECEIPT_SHA).is_some(),
+            "legacy safe-ci step scope stopped qualifying"
+        );
+
+        let mut legacy_seven_gate = reverie_receipt_value();
+        legacy_seven_gate["gates"][2] = serde_json::json!({
+            "name": "Merge-gate policy",
+            "result": "pass",
+            "exit_code": 0
+        });
+        legacy_seven_gate["gates"]
             .as_array_mut()
             .unwrap()
-            .insert(
-                1,
-                serde_json::json!({
-                    "name": "Merge-gate policy",
-                    "result": "pass",
-                    "exit_code": 0
-                }),
-            );
-        let mut legacy_seven_gate = retired_seventh_gate.clone();
+            .swap(1, 2);
         legacy_seven_gate["reverie_validation_policy"] =
             serde_json::json!("reverie-local-validation/v1");
         assert!(
             qualify_reverie_receipt(&history_row(legacy_seven_gate), RECEIPT_SHA).is_some(),
             "historical v1 seven-gate receipt stopped qualifying"
         );
+
+        let mut retired_merge_gate = reverie_receipt_value();
+        retired_merge_gate["checks"] = serde_json::json!(8);
+        retired_merge_gate["gates_run"] = serde_json::json!(8);
+        retired_merge_gate["gates_expected"] = serde_json::json!(8);
+        retired_merge_gate["gates"].as_array_mut().unwrap().insert(
+            1,
+            serde_json::json!({
+                "name": "Merge-gate policy",
+                "result": "pass",
+                "exit_code": 0
+            }),
+        );
         assert!(
-            qualify_reverie_receipt(&history_row(retired_seventh_gate), RECEIPT_SHA).is_none(),
-            "v2 receipt accepted the retired seventh gate"
+            qualify_reverie_receipt(&history_row(retired_merge_gate), RECEIPT_SHA).is_none(),
+            "v2 receipt accepted the retired merge gate"
         );
 
         let mut mixed_version = reverie_receipt_value();
         mixed_version["reverie_validation_policy"] =
-            serde_json::json!("reverie-local-validation/v1");
+            serde_json::json!("reverie-local-validation/v2");
         assert!(
             qualify_reverie_receipt(&history_row(mixed_version), RECEIPT_SHA).is_none(),
-            "v1 policy accepted the v2 six-gate sequence"
+            "v2 policy accepted the v3 seven-gate sequence"
         );
 
         let mut missing_gate = reverie_receipt_value();
-        missing_gate["checks"] = serde_json::json!(5);
-        missing_gate["gates_run"] = serde_json::json!(5);
-        missing_gate["gates_expected"] = serde_json::json!(5);
+        missing_gate["checks"] = serde_json::json!(6);
+        missing_gate["gates_run"] = serde_json::json!(6);
+        missing_gate["gates_expected"] = serde_json::json!(6);
         missing_gate["gates"].as_array_mut().unwrap().pop();
         assert!(
             qualify_reverie_receipt(&history_row(missing_gate), RECEIPT_SHA).is_none(),
-            "v2 policy accepted a missing gate"
+            "v3 policy accepted a missing gate"
+        );
+
+        let mut extra_gate = reverie_receipt_value();
+        extra_gate["checks"] = serde_json::json!(8);
+        extra_gate["gates_run"] = serde_json::json!(8);
+        extra_gate["gates_expected"] = serde_json::json!(8);
+        extra_gate["gates"]
+            .as_array_mut()
+            .unwrap()
+            .push(serde_json::json!({
+                "name": "Unknown gate",
+                "result": "pass",
+                "exit_code": 0
+            }));
+        assert!(
+            qualify_reverie_receipt(&history_row(extra_gate), RECEIPT_SHA).is_none(),
+            "v3 policy accepted an extra gate"
+        );
+
+        let mut duplicate_gate = reverie_receipt_value();
+        duplicate_gate["gates"][2] = duplicate_gate["gates"][1].clone();
+        assert!(
+            qualify_reverie_receipt(&history_row(duplicate_gate), RECEIPT_SHA).is_none(),
+            "v3 policy accepted a duplicate gate"
+        );
+
+        let mut unknown_gate = reverie_receipt_value();
+        unknown_gate["gates"][2]["name"] = serde_json::json!("Unknown gate");
+        assert!(
+            qualify_reverie_receipt(&history_row(unknown_gate), RECEIPT_SHA).is_none(),
+            "v3 policy accepted an unknown gate"
+        );
+
+        let mut wrong_count = reverie_receipt_value();
+        wrong_count["checks"] = serde_json::json!(6);
+        assert!(
+            qualify_reverie_receipt(&history_row(wrong_count), RECEIPT_SHA).is_none(),
+            "v3 policy accepted a wrong declared count"
         );
 
         let mut reordered_gates = reverie_receipt_value();
         reordered_gates["gates"].as_array_mut().unwrap().swap(0, 1);
         assert!(
             qualify_reverie_receipt(&history_row(reordered_gates), RECEIPT_SHA).is_none(),
-            "v2 policy accepted reordered gates"
+            "v3 policy accepted reordered gates"
         );
 
         let mut failed_gate = reverie_receipt_value();
@@ -11935,7 +12054,7 @@ mod tests {
         failed_gate["gates"][0]["exit_code"] = serde_json::json!(1);
         assert!(
             qualify_reverie_receipt(&history_row(failed_gate), RECEIPT_SHA).is_none(),
-            "v2 policy accepted a failed gate"
+            "v3 policy accepted a failed gate"
         );
 
         let mut unknown_policy = reverie_receipt_value();
@@ -11964,6 +12083,11 @@ mod tests {
                 serde_json::json!(true),
             ),
             (
+                "wrong safe-ci step",
+                vec!["safe_ci", "step"],
+                serde_json::json!("validate.other"),
+            ),
+            (
                 "missing test node",
                 vec!["coverage", "absent_nodes"],
                 serde_json::json!(["Documentation tests"]),
@@ -11978,6 +12102,25 @@ mod tests {
             assert!(
                 qualify_reverie_receipt(&history_row(planted), RECEIPT_SHA).is_none(),
                 "planted {name} row qualified"
+            );
+        }
+
+        for cgroup in [
+            "/user.slice/safe.slice/safe-ci.slice/unsafe-ci-153463.scope/step-validate.reverie-full",
+            "/user.slice/safe.slice/safe-ci.slice/safe-ci-worker.scope/step-validate.reverie-full",
+            "/user.slice/safe.slice/safe-ci.slice/safe-ci-153463.scope/nested/step-validate.reverie-full",
+            "/user.slice/dagrun.slice/worker-153463.scope/step-validate.reverie-full",
+            "/user.slice/dagrun-153463.scope/step-validate.reverie-full",
+            "/user.slice/dagrun.slice/dagrun-153463.scope/nested/step-validate.reverie-full",
+            "/user.slice/dagrun.slice/dagrun-153463.scope/step-validate.other",
+            "/user.slice/agent.scope/step-validate.reverie-full",
+            "/user.slice//dagrun.slice/dagrun-153463.scope/step-validate.reverie-full",
+        ] {
+            let mut planted = reverie_receipt_value();
+            planted["safe_ci"]["cgroup"] = serde_json::json!(cgroup);
+            assert!(
+                qualify_reverie_receipt(&history_row(planted), RECEIPT_SHA).is_none(),
+                "unboxed or malformed cgroup qualified: {cgroup}"
             );
         }
     }
