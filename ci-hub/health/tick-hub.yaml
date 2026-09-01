@@ -215,6 +215,27 @@ reminders:
         component: validate-checkout-cleanup
       title: "terminal validate checkout cleanup needs attention: {summary}"
 
+  # rust-script keys generated packages by absolute source path. Short-lived
+  # test fixtures and worktrees therefore leave durable compiled artifacts in
+  # the user's shared cache. Measured 2026-09-01: 9,197 generated projects in
+  # seven days occupied 256.41 GiB of Btrfs-exclusive space and added about
+  # 35.0 GB of allocated files in the preceding 24 hours. This cleanup is
+  # deliberately independent of worktree lifecycle: it removes generated
+  # cache files only, after an atomic rename and process-reference checks.
+  - name: rust_script_cache_cleanup
+    cadence_secs: 3600
+    gate:
+      timeout_secs: 300
+      cmd: python3 ci-hub/health/rust_script_cache_cleanup.py --apply --max-gib 64 --cache-root "$HOME/.cache/rust-script"
+      when: failure
+      capture: true
+    emit:
+      kind: action
+      skill: hard-warn-coordinator
+      fields:
+        component: rust-script-cache-cleanup
+      title: "rust-script cache cleanup needs attention: {summary}"
+
   # LEDGER PUBLICATION BACKLOG. Validation events are visible locally as soon as
   # the producer atomically admits an immutable *.jsonl spool batch, but they do
   # not become fleet-wide landing evidence until the publisher appends them to

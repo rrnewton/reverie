@@ -77,6 +77,7 @@ REQUIRED: dict[str, str] = {
     # Per-slot disk residue; one of only two mechanisms found genuinely live
     # during the 2026-08-19 invocation audit.
     "worktree_disk_residue": "slots accumulating on disk with no live process",
+    "rust_script_cache_cleanup": "generated rust-script packages accumulating without a bound",
     # The parity half. The cap check above was firing correctly at 77-against-12
     # and nobody knew; this one names the specific slots with nobody behind
     # them, against a denominator that maintains itself.
