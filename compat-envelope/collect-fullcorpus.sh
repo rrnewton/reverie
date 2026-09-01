@@ -28,7 +28,8 @@
 #
 # Backends are AUTO-DETECTED from the binary + host so a partially-provisioned
 # box degrades honestly (a missing backend is recorded n/a, never a false red):
-#   ptrace, liteinst   — always (default binary)
+#   ptrace             — always (default binary)
+#   liteinst           — requires its staged preload runtime
 #   dbi, sabre, e9patch — require a --features third-party-backends binary
 #   kvm                — requires /dev/kvm
 #
@@ -100,7 +101,7 @@ bounded_run() { # $1=seconds $2=diag-log $3=label ; rest=command argv
 have_backend() { # $1 = backend name; probes the binary's --backend enum + host
   local b="$1" rc=0
   case "$b" in
-    ptrace|liteinst) return 0 ;;
+    ptrace) return 0 ;;
     kvm) [ -e /dev/kvm ] || return 1 ;;
   esac
   bounded_run 30 "$ROWS/probe-$b.box.log" "compat.probe.$b" \
@@ -146,6 +147,14 @@ EOF
   fi
   rm -f "$ROWS/BOXING_REFUSED"
 
+  : >"$probe_calls"
+  FAKE_BOX_RC=125 FAKE_BOX_MARKER='' FAKE_BOX_CALLS="$probe_calls" have_backend liteinst; rc=$?
+  if [ "$rc" != 1 ] ||
+     ! grep -Fxq '/planted/hermit --backend liteinst run -- /bin/true' "$probe_calls" ||
+     [ -e "$ROWS/BOXING_REFUSED" ]; then
+    BOX_RUN="$saved_box"; BIN="$saved_bin"; rm -rf "$tmp"; return 1
+  fi
+
   FAKE_BOX_RC=137 FAKE_BOX_MARKER='WALL-TIMEOUT: planted' \
     bounded_run 1 "$tmp/wall.diag" test -- true; rc=$?
   [ "$rc" = 124 ] || { BOX_RUN="$saved_box"; BIN="$saved_bin"; rm -rf "$tmp"; return 1; }
@@ -161,7 +170,7 @@ EOF
   fi
 
   BOX_RUN="$saved_box"; BIN="$saved_bin"; rm -rf "$tmp"
-  echo "self-check: backend probe boxed 1/1 and unavailable box marked refusal 1/1; wall/cpu reaps normalize to timeout; ordinary SIGKILL stays distinct; absent cgroup refuses publication"
+  echo "self-check: backend probes boxed; unavailable LiteInst refused without a false result; unavailable box marked refusal 1/1; wall/cpu reaps normalize to timeout; ordinary SIGKILL stays distinct; absent cgroup refuses publication"
 }
 
 # Build every measured Hermit command in one place. `--base-env host` is the
