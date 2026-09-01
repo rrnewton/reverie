@@ -1773,12 +1773,14 @@ fn execute(root: &Path, command: HubCommand) -> Result<i32, CiHubError> {
             run_python(
                 root,
                 "ci-hub/validate/start_unit.py",
-                validate_run_forwarded_args(root, args.args)?,
+                operational_state_forwarded_args(root, args.args)?,
             )
         }
-        HubCommand::ValidateStop(args) => {
-            run_python(root, "ci-hub/validate/stop_units.py", args.args)
-        }
+        HubCommand::ValidateStop(args) => run_python(
+            root,
+            "ci-hub/validate/stop_units.py",
+            operational_state_forwarded_args(root, args.args)?,
+        ),
         HubCommand::CorrectOwnerWatchHandles(args) => run_python(
             root,
             "ci-hub/validate/correct_owner_watch_handles.py",
@@ -6433,6 +6435,10 @@ struct ValidateStatusEntry {
     slot: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     log_file: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    terminated_by: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    termination_reason: Option<String>,
     summary: String,
     #[serde(skip)]
     tree: Option<String>,
@@ -6524,6 +6530,37 @@ fn elapsed_since(started_at: &str, now: chrono::DateTime<chrono::Utc>) -> Option
     )
 }
 
+fn elapsed_between(started_at: &str, finished_at: &str) -> Option<f64> {
+    let started = chrono::DateTime::parse_from_rfc3339(started_at).ok()?;
+    let finished = chrono::DateTime::parse_from_rfc3339(finished_at).ok()?;
+    Some(
+        finished
+            .signed_duration_since(started)
+            .num_milliseconds()
+            .max(0) as f64
+            / 1000.0,
+    )
+}
+
+fn confirmed_termination(
+    record: &validate_run_handle::Projection,
+) -> Option<&validate_run_handle::TerminationRequest> {
+    record
+        .termination_requests
+        .iter()
+        .filter(|request| request.confirmed_at.is_some())
+        .max_by(|left, right| left.confirmed_at.cmp(&right.confirmed_at))
+}
+
+fn latest_termination_request(
+    record: &validate_run_handle::Projection,
+) -> Option<&validate_run_handle::TerminationRequest> {
+    record
+        .termination_requests
+        .iter()
+        .max_by(|left, right| left.requested_at.cmp(&right.requested_at))
+}
+
 fn slot_from_validate_checkout(root: &Path, checkout: &str) -> Option<String> {
     let path = Path::new(checkout);
     let components = path
@@ -6576,6 +6613,14 @@ fn current_validate_run_text(
                 path.display()
             ))
         })
+}
+
+fn validate_unit_record_name(unit: &str) -> String {
+    let stem = unit
+        .strip_suffix(".service")
+        .or_else(|| unit.strip_suffix(".scope"))
+        .unwrap_or(unit);
+    format!("{stem}.json")
 }
 
 #[derive(Default)]
@@ -6696,7 +6741,7 @@ fn live_validate_runs_from(
                     path.display()
                 ))
             })?;
-            if !record.counts_as_validation || !record.lock_admissible {
+            if !record.counts_as_validation {
                 continue;
             }
             let Some(unit) = record.unit.as_deref() else {
@@ -6705,14 +6750,6 @@ fn live_validate_runs_from(
                     path.display()
                 )));
             };
-            let Some(identity) = record.process_identity.as_ref() else {
-                continue;
-            };
-            if !validate_run_process_is_live(proc_root, boot_id_path, unit, identity)
-                .map_err(CiHubError::ValidateStatus)?
-            {
-                continue;
-            }
             let Some(record_repo) = record.repo.as_deref() else {
                 return Err(CiHubError::ValidateStatus(format!(
                     "live validation run handle {} has no repo after shared validation",
@@ -6722,7 +6759,7 @@ fn live_validate_runs_from(
             if canonical_validation_repo(record_repo) != Some(repo) {
                 continue;
             }
-            let expected_name = format!("{}.json", unit.trim_end_matches(".service"));
+            let expected_name = validate_unit_record_name(unit);
             if path.file_name().and_then(OsStr::to_str) != Some(expected_name.as_str()) {
                 return Err(CiHubError::ValidateStatus(format!(
                     "live validation run handle {} does not bind its unit {}",
@@ -6730,22 +6767,107 @@ fn live_validate_runs_from(
                     unit
                 )));
             }
-            let target = record.target.ok_or_else(|| {
+            let target = record.target.clone().ok_or_else(|| {
                 CiHubError::ValidateStatus(format!(
                     "live validation run handle {} has no target after shared validation",
                     path.display()
                 ))
             })?;
-            let started_at = record.started_at.ok_or_else(|| {
+            let started_at = record.started_at.clone().ok_or_else(|| {
                 CiHubError::ValidateStatus(format!(
                     "live validation run handle {} has no started_at after shared validation",
                     path.display()
                 ))
             })?;
-            let summary = format!(
-                "agent={} unit={}",
-                record.agent.as_deref().unwrap_or("?"),
-                unit
+            let process_is_live = match record.process_identity.as_ref() {
+                Some(identity) => {
+                    validate_run_process_is_live(proc_root, boot_id_path, unit, identity)
+                        .map_err(CiHubError::ValidateStatus)?
+                }
+                None => false,
+            };
+            let termination = confirmed_termination(&record)
+                .or_else(|| {
+                    (!process_is_live)
+                        .then(|| latest_termination_request(&record))
+                        .flatten()
+                })
+                .cloned();
+            if let Some(termination) = termination {
+                let finished_at = termination
+                    .confirmed_at
+                    .as_ref()
+                    .unwrap_or(&termination.requested_at)
+                    .clone();
+                let (slot, log_file) = if include_log_paths {
+                    let source_checkout =
+                        current_validate_run_text(&value, "source_checkout", &path)?;
+                    let log_file = current_validate_run_text(&value, "log", &path)?;
+                    (
+                        slot_from_validate_checkout(state_root, &source_checkout),
+                        Some(log_file),
+                    )
+                } else {
+                    (None, None)
+                };
+                live.push(ValidateStatusEntry {
+                    depth: None,
+                    run_number: record.admission_result.as_ref().and_then(|result| {
+                        (result.state == validate_run_handle::AdmissionState::Admitted)
+                            .then_some(result.run_number)
+                            .flatten()
+                    }),
+                    verdict: Some("TERMINATED".into()),
+                    result: Some("terminated".into()),
+                    nonqualification_reason: None,
+                    in_progress: false,
+                    sha: Some(target),
+                    branch: record.branch,
+                    main_match: None,
+                    main_sha: None,
+                    git_depth: None,
+                    started_at: Some(started_at.clone()),
+                    finished_at: Some(finished_at.clone()),
+                    elapsed_seconds: elapsed_between(&started_at, &finished_at),
+                    tests_executed: None,
+                    tests_passed: None,
+                    host: record.host.or_else(local_host),
+                    slot,
+                    log_file,
+                    terminated_by: Some(termination.agent.clone()),
+                    termination_reason: Some(termination.reason.clone()),
+                    summary: format!(
+                        "terminated-by={} reason={} unit={}",
+                        termination.agent, termination.reason, unit
+                    ),
+                    tree: None,
+                    allow_tree_match: false,
+                });
+                continue;
+            }
+            if !record.lock_admissible {
+                continue;
+            }
+            if !process_is_live {
+                continue;
+            }
+            let summary = latest_termination_request(&record).map_or_else(
+                || {
+                    format!(
+                        "agent={} unit={}",
+                        record.agent.as_deref().unwrap_or("?"),
+                        unit
+                    )
+                },
+                |request| {
+                    format!(
+                        "agent={} termination-requested-by={} reason={} unit={}",
+                        record.agent.as_deref().unwrap_or("?"),
+                        request.agent,
+                        request.reason,
+                        unit
+                    )
+                },
             );
             let (slot, log_file) = if include_log_paths {
                 let source_checkout = current_validate_run_text(&value, "source_checkout", &path)?;
@@ -6781,6 +6903,8 @@ fn live_validate_runs_from(
                 host: record.host.or_else(local_host),
                 slot,
                 log_file,
+                terminated_by: None,
+                termination_reason: None,
                 summary,
                 tree: None,
                 allow_tree_match: false,
@@ -6835,7 +6959,7 @@ fn live_validate_runs_from(
         if canonical_validation_repo(&record.repo) != Some(repo) {
             continue;
         }
-        let expected_name = format!("{}.json", record.unit.trim_end_matches(".service"));
+        let expected_name = validate_unit_record_name(&record.unit);
         if path.file_name().and_then(OsStr::to_str) != Some(expected_name.as_str()) {
             return Err(CiHubError::ValidateStatus(format!(
                 "live validation run handle {} does not bind its unit {}",
@@ -6884,6 +7008,8 @@ fn live_validate_runs_from(
             host: record.host.or_else(local_host),
             slot,
             log_file,
+            terminated_by: None,
+            termination_reason: None,
             summary,
             tree: None,
             allow_tree_match: false,
@@ -7515,6 +7641,8 @@ fn finished_validate_status_entry(
         } else {
             None
         },
+        terminated_by: None,
+        termination_reason: None,
         summary: recent_row_summary(row, verdict),
         tree,
         allow_tree_match: row.commit_anchored == Some(true) && row.tree_dirty == Some(false),
@@ -7576,12 +7704,12 @@ fn recent_finished_validate_status_entries(
 
 fn recent_validate_status_note(limit: usize, include_in_progress: bool) -> String {
     let live_runs = if include_in_progress {
-        "live in-progress runs may also appear"
+        "run-handle records, including live in-progress runs and attributed terminations, may also appear"
     } else {
-        "in-progress runs are excluded by --exclude-in-progress"
+        "in-progress runs are excluded by --exclude-in-progress; attributed terminations remain visible"
     };
     format!(
-        "RECENT VALIDATION RUNS: completed rows are selected from all completed ledger rows, ordered by completion time, limited to {limit}, and not restricted to {COMMIT_TIMELINE_REF}; the default MAIN column says exact-sha, tree:<main-sha>, no-match, or unverifiable; {live_runs}. Use --commit-timeline for the {COMMIT_TIMELINE_REF}-only view."
+        "RECENT VALIDATION RUNS: completed records are selected from completed ledger rows and attributed termination handles, ordered by completion time, limited to {limit}, and not restricted to {COMMIT_TIMELINE_REF}; the default MAIN column says exact-sha, tree:<main-sha>, no-match, or unverifiable; {live_runs}. Use --commit-timeline for the {COMMIT_TIMELINE_REF}-only view."
     )
 }
 
@@ -7606,6 +7734,8 @@ fn no_run_commit_timeline_entry(sha: &str, depth: usize) -> ValidateStatusEntry 
         host: None,
         slot: None,
         log_file: None,
+        terminated_by: None,
+        termination_reason: None,
         summary: String::new(),
         tree: None,
         allow_tree_match: false,
@@ -7636,6 +7766,8 @@ fn unreadable_validate_status_entry(
         host: failure.host.clone(),
         slot: None,
         log_file: None,
+        terminated_by: None,
+        termination_reason: None,
         summary: format!("ledger line {} could not be read", failure.line_number),
         tree: None,
         allow_tree_match: false,
@@ -7851,12 +7983,13 @@ fn print_recent_validate_history(
         None
     };
     let now = chrono::Utc::now();
-    let scan = if args.exclude_in_progress {
-        LiveValidateRunScan::default()
-    } else {
-        live_validate_runs(tool_root, state_root, repo, now, args.log_paths)?
-    };
+    let scan = live_validate_runs(tool_root, state_root, repo, now, args.log_paths)?;
     let mut current = scan.entries;
+    if args.exclude_in_progress {
+        current.retain(|entry| !entry.in_progress);
+    } else if args.in_progress_only {
+        current.retain(|entry| entry.in_progress);
+    }
     let unreadable_handles = scan.unreadable_handles;
     let historical_run_numbers = historical_validate_run_numbers(rows);
     let (mut entries, commit_count) = if args.commit_timeline {
@@ -7918,20 +8051,40 @@ fn print_recent_validate_history(
         current.sort_by(|left, right| right.started_at.cmp(&left.started_at));
         (current, None)
     } else {
-        let finished = if args.in_progress_only {
-            Vec::new()
+        if args.in_progress_only {
+            (current, None)
         } else {
-            recent_finished_validate_status_entries(
+            let mut finished = recent_finished_validate_status_entries(
                 rows,
                 &historical_run_numbers,
                 &current,
                 repo,
                 args.log_paths,
                 args.limit,
-            )
-        };
-        current.extend(finished);
-        (current, None)
+            );
+            let mut in_progress = current
+                .iter()
+                .filter(|entry| entry.in_progress)
+                .cloned()
+                .collect::<Vec<_>>();
+            finished.extend(current.into_iter().filter(|entry| !entry.in_progress));
+            finished.sort_by(|left, right| {
+                let left = left
+                    .finished_at
+                    .as_deref()
+                    .or(left.started_at.as_deref())
+                    .unwrap_or("");
+                let right = right
+                    .finished_at
+                    .as_deref()
+                    .or(right.started_at.as_deref())
+                    .unwrap_or("");
+                right.cmp(left)
+            });
+            finished.truncate(args.limit);
+            in_progress.extend(finished);
+            (in_progress, None)
+        }
     };
     for entry in &mut entries {
         if entry.verdict.as_deref() != Some("NO-RUN") {
@@ -8092,6 +8245,18 @@ fn run_validate_status(
         (None, Some(pr)) => gh_pr_head(state_root, &args.repo, pr)?,
         _ => unreachable!("clap rejects conflicting validate-status targets"),
     };
+    let termination_scan = live_validate_runs(
+        tool_root,
+        state_root,
+        repo,
+        chrono::Utc::now(),
+        args.log_paths,
+    )?;
+    let terminations = termination_scan
+        .entries
+        .into_iter()
+        .filter(|entry| entry.sha.as_deref() == Some(sha.as_str()) && entry.terminated_by.is_some())
+        .collect::<Vec<_>>();
     let assessment = assess_canonical_receipts(state_root, &repo_rows, &sha, repo)
         .map_err(CiHubError::ValidateStatus)?;
     let newest = newest_canonical_receipt(&assessment.qualifying);
@@ -8117,6 +8282,7 @@ fn run_validate_status(
         .count();
     let freshness = if matches!(assessment.verdict, validate_status::Verdict::NotValidated)
         && local_records == 0
+        && terminations.is_empty()
     {
         if unreadable_here > 0 {
             Some(LedgerFreshness::LocalRecordUnreadable {
@@ -8163,6 +8329,11 @@ fn run_validate_status(
     let reported_verdict = match &freshness {
         Some(LedgerFreshness::UpstreamHasRecord { .. }) => "LEDGER-LAGGING",
         Some(LedgerFreshness::LocalRecordUnreadable { .. }) => "LEDGER-UNREADABLE",
+        None if matches!(assessment.verdict, validate_status::Verdict::NotValidated)
+            && !terminations.is_empty() =>
+        {
+            "TERMINATED"
+        }
         _ => assessment.verdict.as_str(),
     };
 
@@ -8188,6 +8359,7 @@ fn run_validate_status(
             "unresolved_failure_obligations": assessment.unresolved_failure_obligations,
             "newest_qualifying": newest.map(describe_receipt),
             "qualifying_receipts": qualifying_receipts,
+            "terminations": terminations,
             "ledger": path.display().to_string(),
         });
         println!(
@@ -8195,6 +8367,15 @@ fn run_validate_status(
             serde_json::to_string_pretty(&report).expect("serialize report")
         );
     } else {
+        for termination in &terminations {
+            println!(
+                "# validate TERMINATED-RUN {} -- terminated-by={} reason={} finished={}",
+                assessment.sha,
+                termination.terminated_by.as_deref().unwrap_or("?"),
+                termination.termination_reason.as_deref().unwrap_or("?"),
+                termination.finished_at.as_deref().unwrap_or("?"),
+            );
+        }
         match assessment.verdict {
             validate_status::Verdict::Validated => {
                 let row = newest.expect("validated implies a qualifying record");
@@ -8283,6 +8464,12 @@ fn run_validate_status(
             validate_status::Verdict::NoResult => {
                 println!(
                     "# validate NO-RESULT {} -- red gates could not run (command-not-found storm or sub-second collapse); an environment fault, not a product defect; re-dispatch required",
+                    assessment.sha,
+                );
+            }
+            validate_status::Verdict::NotValidated if !terminations.is_empty() => {
+                println!(
+                    "# validate TERMINATED {} -- a validation run was terminated before producing a ledger result; no product verdict is implied",
                     assessment.sha,
                 );
             }
@@ -9307,11 +9494,11 @@ fn push_option(arguments: &mut Vec<OsString>, name: &'static str, value: impl As
     arguments.push(value.as_ref().to_os_string());
 }
 
-fn validate_run_forwarded_args(
+fn operational_state_forwarded_args(
     root: &Path,
     arguments: Vec<OsString>,
 ) -> Result<Vec<OsString>, CiHubError> {
-    validate_run_forwarded_args_with_state(root, env::var_os("DEV_HERMIT_PARENT"), arguments)
+    operational_state_forwarded_args_with(root, env::var_os("DEV_HERMIT_PARENT"), arguments)
 }
 
 fn operational_state_root(root: &Path) -> Result<PathBuf, CiHubError> {
@@ -9328,7 +9515,7 @@ fn operational_state_root_with(
     )
 }
 
-fn validate_run_forwarded_args_with_state(
+fn operational_state_forwarded_args_with(
     root: &Path,
     explicit_state_root: Option<OsString>,
     mut arguments: Vec<OsString>,
@@ -9765,7 +9952,7 @@ mod tests {
         assert_eq!(timeline[0].sha.as_deref(), Some(main_sha.as_str()));
         let note = recent_validate_status_note(10, true);
         assert!(
-            note.contains("selected from all completed ledger rows"),
+            note.contains("selected from completed ledger rows and attributed termination handles"),
             "{note}"
         );
         assert!(note.contains("limited to 10"), "{note}");
@@ -9773,11 +9960,12 @@ mod tests {
         assert!(note.contains("ordered by completion time"), "{note}");
         assert!(note.contains("--commit-timeline"), "{note}");
         assert!(
-            note.contains("live in-progress runs may also appear"),
+            note.contains("live in-progress runs and attributed terminations"),
             "{note}"
         );
-        assert!(recent_validate_status_note(10, false)
-            .contains("in-progress runs are excluded by --exclude-in-progress"));
+        let excluded = recent_validate_status_note(10, false);
+        assert!(excluded.contains("in-progress runs are excluded by --exclude-in-progress"));
+        assert!(excluded.contains("attributed terminations remain visible"));
     }
 
     #[test]
@@ -11094,6 +11282,51 @@ mod tests {
             serde_json::to_vec(&current).unwrap(),
         )
         .unwrap();
+        let mut terminated = current.clone();
+        terminated["unit"] = serde_json::json!("validate-hermit-terminated.service");
+        terminated["target"] = serde_json::json!("c".repeat(40));
+        terminated["started_at"] = serde_json::json!("2026-08-27T12:01:00Z");
+        terminated["admission_result"] = serde_json::json!({
+            "state": "admitted",
+            "recorded_at": "2026-08-27T12:01:01Z",
+            "run_number": 702
+        });
+        terminated["termination_requests"] = serde_json::json!([{
+            "requested_at": "2026-08-27T12:03:00Z",
+            "agent": "terminating-agent",
+            "pid": 4242,
+            "reason": "superseded by an exact-head run",
+            "confirmed_at": "2026-08-27T12:03:05Z"
+        }]);
+        terminated
+            .as_object_mut()
+            .unwrap()
+            .remove("process_identity");
+        std::fs::write(
+            runs.join("validate-hermit-terminated.json"),
+            serde_json::to_vec(&terminated).unwrap(),
+        )
+        .unwrap();
+        let mut interrupted_killer = terminated.clone();
+        interrupted_killer["unit"] = serde_json::json!("validate-killer-exited.service");
+        interrupted_killer["target"] = serde_json::json!("d".repeat(40));
+        interrupted_killer["started_at"] = serde_json::json!("2026-08-27T12:02:00Z");
+        interrupted_killer["admission_result"] = serde_json::json!({
+            "state": "admitted",
+            "recorded_at": "2026-08-27T12:02:01Z",
+            "run_number": 703
+        });
+        interrupted_killer["termination_requests"] = serde_json::json!([{
+            "requested_at": "2026-08-27T12:04:00Z",
+            "agent": "exited-terminating-agent",
+            "pid": 4343,
+            "reason": "operator stopped the run"
+        }]);
+        std::fs::write(
+            runs.join("validate-killer-exited.json"),
+            serde_json::to_vec(&interrupted_killer).unwrap(),
+        )
+        .unwrap();
         // Exact contract shape of the historical record that made the owner's
         // validate-status query refuse: a real completed validation with a
         // typed admitted result predating the optional display counter. It
@@ -11147,7 +11380,7 @@ mod tests {
             true,
         )
         .unwrap();
-        assert_eq!(live.entries.len(), 1);
+        assert_eq!(live.entries.len(), 3);
         assert_eq!(live.unreadable_handles.len(), 1);
         assert_eq!(
             live.unreadable_handles[0].path,
@@ -11160,20 +11393,55 @@ mod tests {
             "{}",
             live.unreadable_handles[0].error
         );
+        let running = live
+            .entries
+            .iter()
+            .find(|entry| entry.in_progress)
+            .expect("running entry");
         assert_eq!(
-            live.entries[0].sha.as_deref(),
+            running.sha.as_deref(),
             Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
         );
-        assert_eq!(live.entries[0].run_number, Some(701));
+        assert_eq!(running.run_number, Some(701));
         assert_eq!(
-            live.entries[0].branch.as_deref(),
+            running.branch.as_deref(),
             Some("codex/validate-branch-provenance")
         );
-        assert_eq!(live.entries[0].host.as_deref(), Some("validation-host"));
-        assert_eq!(live.entries[0].slot.as_deref(), Some("142"));
+        assert_eq!(running.host.as_deref(), Some("validation-host"));
+        assert_eq!(running.slot.as_deref(), Some("142"));
         assert_eq!(
-            live.entries[0].log_file.as_deref(),
+            running.log_file.as_deref(),
             Some(log_file.to_str().unwrap())
+        );
+        let killed = live
+            .entries
+            .iter()
+            .find(|entry| entry.terminated_by.as_deref() == Some("terminating-agent"))
+            .expect("terminated entry");
+        assert_eq!(killed.verdict.as_deref(), Some("TERMINATED"));
+        assert_eq!(killed.result.as_deref(), Some("terminated"));
+        assert_eq!(killed.run_number, Some(702));
+        assert_eq!(killed.terminated_by.as_deref(), Some("terminating-agent"));
+        assert_eq!(
+            killed.termination_reason.as_deref(),
+            Some("superseded by an exact-head run")
+        );
+        assert_eq!(killed.elapsed_seconds, Some(125.0));
+        let killed_json = serde_json::to_value(killed).unwrap();
+        assert_eq!(killed_json["terminated_by"], "terminating-agent");
+        assert_eq!(
+            killed_json["termination_reason"],
+            "superseded by an exact-head run"
+        );
+        let killer_exited = live
+            .entries
+            .iter()
+            .find(|entry| entry.terminated_by.as_deref() == Some("exited-terminating-agent"))
+            .expect("request remains attributable after the terminating process exits");
+        assert_eq!(killer_exited.verdict.as_deref(), Some("TERMINATED"));
+        assert_eq!(
+            killer_exited.finished_at.as_deref(),
+            Some("2026-08-27T12:04:00Z")
         );
         let table = validate_status_table(
             &live.entries,
@@ -11185,11 +11453,10 @@ mod tests {
         );
         assert!(table[0].contains("SLOT LOG-FILE"), "{}", table[0]);
         assert!(table[1].contains("142"), "{}", table[1]);
-        assert!(
-            table[1].contains(log_file.to_str().unwrap()),
-            "{}",
-            table[1]
-        );
+        assert!(table.iter().skip(1).any(|line| {
+            line.contains("terminated-by=terminating-agent")
+                && line.contains("reason=superseded by an exact-head run")
+        }));
         std::fs::remove_dir_all(root).unwrap();
     }
 
@@ -13039,9 +13306,9 @@ mod tests {
     }
 
     #[test]
-    fn validate_run_places_canonical_state_root_before_payload_arguments() {
+    fn operational_command_places_canonical_state_root_before_payload_arguments() {
         let root = Path::new("/not-a-repository/dev-hermit-worktree");
-        let forwarded = validate_run_forwarded_args_with_state(
+        let forwarded = operational_state_forwarded_args_with(
             root,
             None,
             vec![
@@ -13069,6 +13336,31 @@ mod tests {
     }
 
     #[test]
+    fn validate_stop_cannot_override_the_canonical_state_root() {
+        let root = Path::new("/not-a-repository/dev-hermit-worktree");
+        let forwarded = operational_state_forwarded_args_with(
+            root,
+            None,
+            vec![
+                OsString::from("--unit"),
+                OsString::from("validate-test.service"),
+                OsString::from("--reason"),
+                OsString::from("superseded"),
+                OsString::from("--state-root"),
+                OsString::from("/caller/cannot/override"),
+            ],
+        )
+        .unwrap();
+        assert_eq!(
+            &forwarded[forwarded.len() - 2..],
+            [
+                OsString::from("--state-root"),
+                root.as_os_str().to_os_string(),
+            ]
+        );
+    }
+
+    #[test]
     fn descriptor_tool_root_and_mutable_state_root_remain_separate() {
         let directory = env::temp_dir().join(format!(
             "ci-hub-fd-root-{}-{}",
@@ -13090,7 +13382,7 @@ mod tests {
             .unwrap(),
             Some(retained.clone())
         );
-        let forwarded = validate_run_forwarded_args_with_state(
+        let forwarded = operational_state_forwarded_args_with(
             Path::new("/different/tool/root"),
             Some(state_directory.as_os_str().to_os_string()),
             vec![OsString::from("--"), OsString::from("full")],

@@ -853,6 +853,18 @@ class SignalCrosscheckTests(unittest.TestCase):
             signal_crosscheck.reconcile(report),
         )
 
+    def test_terminated_is_a_supported_non_verdict_without_a_ledger_row(self) -> None:
+        report = base_report()
+        report["validate_status"].update({
+            "verdict": "TERMINATED",
+            "terminations": [{
+                "terminated_by": "terminating-agent",
+                "termination_reason": "superseded by an exact-head run",
+            }],
+        })
+
+        self.assertEqual([], signal_crosscheck.reconcile(report))
+
     def test_failure_and_withheld_counts_do_not_double_count_disqualified_rows(self) -> None:
         report = base_report()
         report["ledger"]["exact_rows"] = 2

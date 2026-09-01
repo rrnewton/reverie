@@ -96,6 +96,74 @@ class RunRegistryContractTests(unittest.TestCase):
                         validation_handle(branch=branch)
                     )
 
+    def test_termination_request_is_recorded_before_confirmation(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "validate-test.json"
+            run_registry.create_current_record(
+                path,
+                validation_handle(
+                    state="running",
+                    process_identity={
+                        "pid": 99,
+                        "start_ticks": 100,
+                        "boot_id": "boot-one",
+                    },
+                ),
+            )
+
+            request = run_registry.record_termination_request(
+                path,
+                agent="terminating-agent",
+                pid=4242,
+                reason="superseded by an exact-head run",
+                requested_at="2026-08-31T12:01:00+00:00",
+            )
+            before = run_registry.read_record(path)
+            self.assertEqual([request], before["termination_requests"])
+            self.assertNotIn("confirmed_at", request)
+
+            confirmed = run_registry.confirm_termination_request(
+                path,
+                request,
+                confirmed_at="2026-08-31T12:01:05+00:00",
+            )
+            self.assertEqual(
+                "2026-08-31T12:01:05+00:00", confirmed["confirmed_at"]
+            )
+            projected = run_registry.projection(run_registry.read_record(path))
+            self.assertEqual([confirmed], projected["termination_requests"])
+
+    def test_normal_completion_has_no_termination_request(self) -> None:
+        completed = validation_handle(
+            state="completed",
+            result="success",
+            exit_code=0,
+            finished_at="2026-08-31T12:05:00+00:00",
+            final_validate_status="PASSED",
+        )
+
+        handle = run_registry.parse_current_record(completed)
+
+        self.assertEqual((), handle.termination_requests)
+        self.assertEqual([], run_registry.projection(completed)["termination_requests"])
+
+    def test_termination_refuses_before_process_identity_is_recorded(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "validate-test.json"
+            run_registry.create_current_record(path, validation_handle(state="running"))
+
+            with self.assertRaisesRegex(
+                RuntimeError, "before the validation process identity is recorded"
+            ):
+                run_registry.record_termination_request(
+                    path,
+                    agent="terminating-agent",
+                    pid=4242,
+                    reason="superseded by an exact-head run",
+                )
+
+            self.assertNotIn("termination_requests", run_registry.read_record(path))
+
     def test_admission_result_is_closed_and_exact(self) -> None:
         handle = run_registry.parse_current_record(
             validation_handle(

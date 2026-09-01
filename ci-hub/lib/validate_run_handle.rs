@@ -72,6 +72,15 @@ pub struct AdmissionResult {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+pub struct TerminationRequest {
+    pub requested_at: String,
+    pub agent: String,
+    pub pid: u32,
+    pub reason: String,
+    pub confirmed_at: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 pub struct Projection {
     pub unit: Option<String>,
     pub target: Option<String>,
@@ -82,6 +91,8 @@ pub struct Projection {
     pub host: Option<String>,
     pub process_identity: Option<ProcessIdentity>,
     pub admission_result: Option<AdmissionResult>,
+    #[serde(default)]
+    pub termination_requests: Vec<TerminationRequest>,
     pub lock_admissible: bool,
     pub counts_as_validation: bool,
 }

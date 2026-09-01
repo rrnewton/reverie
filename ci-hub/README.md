@@ -135,14 +135,20 @@ not start the validation service. Once launched, recycling or interrupting the
 waiting agent does not stop the run. A successor uses `--attach <unit>` to read
 the same handle and wait for the same service; it must not relaunch. Multiple
 queued services can each be visible, but `validate-lock` remains the execution
-authority and currently admits one validate/bench at a time.
+authority and enforces the configured validation-slot capacity.
 
 Stop the unit, not the watcher: `./ci-hub/ci-hub validate-stop --unit
-validate-NAME.service` targets one run, while `./ci-hub/ci-hub validate-stop
---all` enumerates every active `validate-*` user service or scope. The command
-refuses unrelated unit names, uses `systemctl --user stop` on each exact unit,
-and fails if any unit remains active. The signal-aware Rust driver records that
-operator stop as `no_result`, never as a product failure.
+validate-NAME.service --reason 'why this run must stop'` targets one run, while
+`./ci-hub/ci-hub validate-stop --all --reason 'why these runs must stop'`
+enumerates every active `validate-*` user service or scope. Before it signals
+anything, the command requires each active unit to have a current durable run
+handle and records the resolved agent identity and stated reason there. It then
+uses `systemctl --user stop` on each exact unit, confirms the unit became
+inactive, and marks that request confirmed. `validate-status` renders the
+retained record as `terminated-by`; a missing or unreadable handle refuses the
+stop rather than producing another unattributed termination. The signal-aware
+Rust driver records an operator stop that reaches its own handler as
+`no_result`, never as a product failure.
 
 ## Standing receipt reconciliation
 

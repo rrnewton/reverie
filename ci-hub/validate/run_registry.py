@@ -88,6 +88,14 @@ class CommitStatusPublicationRecord(TypedDict, total=False):
     receipt_path: str
 
 
+class TerminationRequestRecord(TypedDict, total=False):
+    requested_at: str
+    agent: str
+    pid: int
+    reason: str
+    confirmed_at: str
+
+
 class RunRecord(TypedDict, total=False):
     """Complete serialized shape; required and conditional fields are checked below."""
 
@@ -143,6 +151,7 @@ class RunRecord(TypedDict, total=False):
     canonical_verdict: str
     wrapper_exit_code: int
     commit_status_publication: CommitStatusPublicationRecord
+    termination_requests: list[TerminationRequestRecord]
     measured_result: str
     checkout_removed_at: str
     archived_orphaned_receipts: list[str]
@@ -191,6 +200,15 @@ class AdmissionResult:
 
 
 @dataclass(frozen=True)
+class TerminationRequest:
+    requested_at: str
+    agent: str
+    pid: int
+    reason: str
+    confirmed_at: str | None
+
+
+@dataclass(frozen=True)
 class RunHandle:
     """The complete current contract shared by every producer and consumer.
 
@@ -215,6 +233,7 @@ class RunHandle:
     admission: str
     process_identity: ProcessIdentity | None
     admission_result: AdmissionResult | None
+    termination_requests: tuple[TerminationRequest, ...]
     raw: RunRecord
 
     @property
@@ -290,6 +309,7 @@ VALIDATION_FIELDS = COMMON_FIELDS | frozenset(
         "archived_orphaned_receipts",
         "cargo_home_removed_at",
         "host",
+        "termination_requests",
     }
 )
 
@@ -407,13 +427,21 @@ def _required_text(value: Mapping[str, Any], field: str) -> str:
 
 
 def _optional_text(value: Mapping[str, Any], field: str) -> None:
-    if field in value and value[field] is not None and not isinstance(value[field], str):
+    if (
+        field in value
+        and value[field] is not None
+        and not isinstance(value[field], str)
+    ):
         raise _error(field, "must be a string or null")
 
 
 def _optional_integer(value: Mapping[str, Any], field: str) -> None:
     raw = value.get(field)
-    if field in value and raw is not None and (not isinstance(raw, int) or isinstance(raw, bool)):
+    if (
+        field in value
+        and raw is not None
+        and (not isinstance(raw, int) or isinstance(raw, bool))
+    ):
         raise _error(field, "must be an integer or null")
 
 
@@ -557,10 +585,54 @@ def _admission_result(
     return AdmissionResult(state, recorded_at, None, reason, exit_code)
 
 
+def _termination_requests(value: Mapping[str, Any]) -> tuple[TerminationRequest, ...]:
+    raw = value.get("termination_requests")
+    if raw is None:
+        return ()
+    if not isinstance(raw, list):
+        raise _error("termination_requests", "must be a list")
+    requests: list[TerminationRequest] = []
+    for index, item in enumerate(raw):
+        field = f"termination_requests[{index}]"
+        if not isinstance(item, dict):
+            raise _error(field, "must be an object")
+        required = {"requested_at", "agent", "pid", "reason"}
+        allowed = required | {"confirmed_at"}
+        if not required.issubset(item) or not set(item).issubset(allowed):
+            raise _error(
+                field,
+                "must contain requested_at, agent, pid, and reason, with optional confirmed_at",
+            )
+        requested_at = _timestamp(
+            item, "requested_at", error_field=f"{field}.requested_at"
+        )
+        agent = _required_text(item, "agent")
+        reason = _required_text(item, "reason")
+        pid = item.get("pid")
+        if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
+            raise _error(f"{field}.pid", "must be a positive integer")
+        confirmed_at = None
+        if "confirmed_at" in item:
+            confirmed_at = _timestamp(
+                item, "confirmed_at", error_field=f"{field}.confirmed_at"
+            )
+        requests.append(
+            TerminationRequest(
+                requested_at=requested_at,
+                agent=agent,
+                pid=pid,
+                reason=reason,
+                confirmed_at=confirmed_at,
+            )
+        )
+    return tuple(requests)
+
+
 def parse_current_record(value: Mapping[str, Any]) -> RunHandle:
     if value.get("schema_version") != SCHEMA_VERSION:
         raise _error(
-            "schema_version", f"expected {SCHEMA_VERSION}, got {value.get('schema_version')!r}"
+            "schema_version",
+            f"expected {SCHEMA_VERSION}, got {value.get('schema_version')!r}",
         )
     try:
         kind = RunKind(_required_text(value, "kind"))
@@ -577,7 +649,9 @@ def parse_current_record(value: Mapping[str, Any]) -> RunHandle:
     allowed_fields = BENCH_FIELDS if kind is RunKind.BENCH else VALIDATION_FIELDS
     unknown = sorted(set(value) - allowed_fields)
     if unknown:
-        raise _error("field", f"unknown field(s) for kind {kind.value!r}: {', '.join(unknown)}")
+        raise _error(
+            "field", f"unknown field(s) for kind {kind.value!r}: {', '.join(unknown)}"
+        )
 
     unit = _required_text(value, "unit")
     target = _required_text(value, "target")
@@ -590,8 +664,8 @@ def parse_current_record(value: Mapping[str, Any]) -> RunHandle:
     admission = _required_text(value, "admission")
     if producer != PRODUCER:
         raise _error("producer", f"must be {PRODUCER!r}")
-    if not unit.endswith(".service"):
-        raise _error("unit", "must end in .service")
+    if not unit.endswith((".service", ".scope")):
+        raise _error("unit", "must end in .service or .scope")
     if len(target) != 40 or any(ch not in "0123456789abcdef" for ch in target):
         raise _error("target", "must be a lowercase forty-hex commit")
     expected_repo = (
@@ -617,6 +691,7 @@ def parse_current_record(value: Mapping[str, Any]) -> RunHandle:
         _optional_string_list(value, field)
     identity = _process_identity(value)
     admission_result = _admission_result(value, kind=kind)
+    termination_requests = _termination_requests(value)
     branch_value = value.get("branch")
     branch = branch_value if isinstance(branch_value, str) else None
     if "commit_status_publication" in value:
@@ -720,7 +795,9 @@ def parse_current_record(value: Mapping[str, Any]) -> RunHandle:
             if value.get(field) is None:
                 raise _error(field, "is required when state is refused")
         if value.get("result") != "systemd-launch-refused":
-            raise _error("result", "must be 'systemd-launch-refused' when state is refused")
+            raise _error(
+                "result", "must be 'systemd-launch-refused' when state is refused"
+            )
         _required_text(value, "detail")
         _required_text(value, "finished_at")
         if value.get("exit_code") == 0:
@@ -811,12 +888,14 @@ def parse_current_record(value: Mapping[str, Any]) -> RunHandle:
         admission=admission,
         process_identity=identity,
         admission_result=admission_result,
+        termination_requests=termination_requests,
         raw=cast(RunRecord, dict(value)),
     )
 
 
 def record_path(root: Path, unit: str) -> Path:
-    return root / "ignored" / "validate" / "runs" / f"{unit.removesuffix('.service')}.json"
+    stem = unit.removesuffix(".service").removesuffix(".scope")
+    return root / "ignored" / "validate" / "runs" / f"{stem}.json"
 
 
 def owner_watch_correction_transaction(root: Path) -> Path:
@@ -848,8 +927,7 @@ def require_no_owner_watch_correction(root: Path) -> None:
     transaction = owner_watch_correction_transaction(root)
     if owner_watch_correction_pending(root):
         raise OwnerWatchCorrectionUnavailable(
-            "owner-watch run-handle correction recovery is pending: "
-            f"{transaction}"
+            "owner-watch run-handle correction recovery is pending: " f"{transaction}"
         )
 
 
@@ -1004,7 +1082,9 @@ def reserve_log(path: Path) -> None:
     os.close(descriptor)
 
 
-def update_record(path: Path, *, blocking: bool = True, **fields: Any) -> dict[str, Any]:
+def update_record(
+    path: Path, *, blocking: bool = True, **fields: Any
+) -> dict[str, Any]:
     # The caller and the observer finish at nearly the same time. Serialize the
     # read-modify-write so a final exit update cannot erase cgroup evidence (or
     # vice versa) while retaining atomic replacement for readers.
@@ -1013,6 +1093,77 @@ def update_record(path: Path, *, blocking: bool = True, **fields: Any) -> dict[s
         value.update(fields)
         _write_unlocked(path, value)
     return value
+
+
+def record_termination_request(
+    path: Path,
+    *,
+    agent: str,
+    pid: int,
+    reason: str,
+    requested_at: str | None = None,
+) -> TerminationRequestRecord:
+    """Record who is about to stop a validation before the stop is attempted."""
+
+    encoded: TerminationRequestRecord = {
+        "requested_at": requested_at or datetime.now(timezone.utc).isoformat(),
+        "agent": agent,
+        "pid": pid,
+        "reason": reason,
+    }
+    with exclusive_record(path):
+        value = read_record(path)
+        handle = parse_current_record(value)
+        if not handle.counts_as_validation:
+            raise _error("termination_requests", "requires a validation handle")
+        if not handle.lock_admissible:
+            raise _error(
+                "termination_requests",
+                f"cannot request termination while state is {handle.state.value}",
+            )
+        if handle.process_identity is None:
+            raise _error(
+                "termination_requests",
+                "cannot request termination before the validation process identity is recorded",
+            )
+        requests = list(value.get("termination_requests", []))
+        requests.append(encoded)
+        value["termination_requests"] = requests
+        _write_unlocked(path, value)
+    return encoded
+
+
+def confirm_termination_request(
+    path: Path,
+    request: Mapping[str, Any],
+    *,
+    confirmed_at: str | None = None,
+) -> TerminationRequestRecord:
+    """Confirm that the exact recorded stop request left its unit inactive."""
+
+    with exclusive_record(path):
+        value = read_record(path)
+        requests = value.get("termination_requests")
+        if not isinstance(requests, list):
+            raise _error("termination_requests", "recorded request is missing")
+        match = None
+        for item in requests:
+            if isinstance(item, dict) and all(
+                item.get(field) == request.get(field)
+                for field in ("requested_at", "agent", "pid", "reason")
+            ):
+                match = item
+                break
+        if match is None:
+            raise _error(
+                "termination_requests", "recorded request changed before confirmation"
+            )
+        if "confirmed_at" not in match:
+            match["confirmed_at"] = (
+                confirmed_at or datetime.now(timezone.utc).isoformat()
+            )
+        _write_unlocked(path, value)
+        return cast(TerminationRequestRecord, dict(match))
 
 
 def update_from_observer(path: Path, **fields: Any) -> dict[str, Any]:
@@ -1042,7 +1193,8 @@ def bind_process_identity(path: Path, identity: ProcessIdentity) -> dict[str, An
         existing = value.get("process_identity")
         if existing is not None and existing != encoded:
             raise _error(
-                "process_identity", "record already carries a different process identity"
+                "process_identity",
+                "record already carries a different process identity",
             )
         value["process_identity"] = encoded
         _write_unlocked(path, value)
@@ -1066,9 +1218,7 @@ def publish_admission_result(
         if handle.counts_as_validation:
             return _publish_numbered_admission_result(path)
     elif reason is None or exit_code is None:
-        raise _error(
-            "admission_result", "refused requires reason and exit_code"
-        )
+        raise _error("admission_result", "refused requires reason and exit_code")
     with exclusive_record(path):
         value = read_record(path)
         if value.get("producer") != PRODUCER:
@@ -1121,6 +1271,7 @@ def _legacy_projection(value: Mapping[str, Any]) -> dict[str, Any]:
         "host": value.get("host"),
         "process_identity": value.get("process_identity"),
         "admission_result": None,
+        "termination_requests": value.get("termination_requests", []),
         "lock_admissible": state in {"launching", "running"},
         "counts_as_validation": kind != RunKind.BENCH.value,
     }
@@ -1128,7 +1279,9 @@ def _legacy_projection(value: Mapping[str, Any]) -> dict[str, Any]:
 
 def projection(value: Mapping[str, Any]) -> dict[str, Any]:
     if value.get("schema_version") != SCHEMA_VERSION:
-        raise _error("schema_version", f"unsupported value {value.get('schema_version')!r}")
+        raise _error(
+            "schema_version", f"unsupported value {value.get('schema_version')!r}"
+        )
     if value.get("producer") != PRODUCER:
         return _legacy_projection(value)
     handle = parse_current_record(value)
@@ -1179,6 +1332,20 @@ def projection(value: Mapping[str, Any]) -> dict[str, Any]:
             if admission_result is not None
             else None
         ),
+        "termination_requests": [
+            {
+                "requested_at": request.requested_at,
+                "agent": request.agent,
+                "pid": request.pid,
+                "reason": request.reason,
+                **(
+                    {"confirmed_at": request.confirmed_at}
+                    if request.confirmed_at is not None
+                    else {}
+                ),
+            }
+            for request in handle.termination_requests
+        ],
         "lock_admissible": handle.lock_admissible,
         "counts_as_validation": handle.counts_as_validation,
     }
@@ -1278,7 +1445,9 @@ def _run_number_state(path: Path, *, repo: str, host: str) -> int:
         raise _error("run_number", f"cannot read {path}: {error}") from error
     expected = {"schema_version", "repo", "host", "last_run_number"}
     if not isinstance(value, dict) or set(value) != expected:
-        raise _error("run_number", f"{path} does not contain exactly {sorted(expected)}")
+        raise _error(
+            "run_number", f"{path} does not contain exactly {sorted(expected)}"
+        )
     if value.get("schema_version") != 1:
         raise _error("run_number", f"{path} has unsupported schema")
     if value.get("repo") != repo or value.get("host") != host:
@@ -1352,7 +1521,8 @@ def _ledger_run_numbers_without_canonical_view(
             lines = path.read_text().splitlines()
         except OSError as error:
             raise _error(
-                "admission_result.run_number", f"cannot read ledger shard {path}: {error}"
+                "admission_result.run_number",
+                f"cannot read ledger shard {path}: {error}",
             ) from error
         for line_number, line in enumerate(lines, 1):
             if not line.strip():
@@ -1448,9 +1618,7 @@ def _ledger_run_numbers(root: Path, *, team: str, host: str) -> tuple[int, int]:
             f"number count ({error}); counting result entries directly",
             file=sys.stderr,
         )
-        return _ledger_run_numbers_without_canonical_view(
-            root, team=team, host=host
-        )
+        return _ledger_run_numbers_without_canonical_view(root, team=team, host=host)
 
     ledger_dir = Path(__file__).resolve().parents[1] / "ledger"
     sys.path.insert(0, str(ledger_dir))
@@ -1483,9 +1651,11 @@ def _ledger_run_numbers(root: Path, *, team: str, host: str) -> tuple[int, int]:
     finally:
         sys.path.remove(str(ledger_dir))
     identities = {
-        ("run", str(row["run_id"]))
-        if isinstance(row.get("run_id"), str) and row.get("run_id")
-        else ("row", index)
+        (
+            ("run", str(row["run_id"]))
+            if isinstance(row.get("run_id"), str) and row.get("run_id")
+            else ("row", index)
+        )
         for index, row in enumerate(relevant)
     }
     explicit = [
@@ -1567,9 +1737,7 @@ def _publish_numbered_admission_result(path: Path) -> dict[str, Any]:
                 number = max(ledger_count, ledger_max) + 1
             # Persist the counter first. If this process dies before the handle
             # is written, the number is skipped rather than issued to two runs.
-            _write_run_number_state(
-                state_path, repo=repo, host=host, number=number
-            )
+            _write_run_number_state(state_path, repo=repo, host=host, number=number)
             value["host"] = host
             value["admission_result"] = {
                 "state": AdmissionState.ADMITTED.value,
