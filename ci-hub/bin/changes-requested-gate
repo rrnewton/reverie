@@ -693,6 +693,12 @@ def evaluate(
     by_id: dict[object, str] = {}
     for cid, body in items:
         by_id.setdefault(cid, body)
+    refusal_comment_ids = {
+        str(cid)
+        for kind, _lane, _sha, cid in found4
+        if kind == REFUSAL
+        and grammar.comment_contains_refusal(by_id.get(cid, ""))
+    }
     _retire_claims: dict[str, list["str | None"]] = {}
     for kind, lane, sha, cid in found4:
         if kind != WITHDRAWN:
@@ -703,6 +709,7 @@ def evaluate(
     # (target comment id) -> (owner, claimants) for the two reportable outcomes.
     _retire_refused: dict[str, tuple[str, str]] = {}
     _retire_unowned: dict[str, str] = {}
+    _retire_non_refusal: dict[str, str] = {}
 
     def _claimants(key: str) -> str:
         return ", ".join(sorted({c or "<unsigned>" for c in _retire_claims[key]}))
@@ -711,6 +718,9 @@ def evaluate(
         """Did a withdrawal that is ENTITLED to retire this refusal name it?"""
         key = str(cid)
         if key not in _retire_claims:
+            return False
+        if key not in refusal_comment_ids:
+            _retire_non_refusal[key] = _claimants(key)
             return False
         owner = _issuer_of_comment(by_id.get(cid, ""))
         if grammar.retirement_allowed(owner, _retire_claims[key]):
@@ -722,6 +732,17 @@ def evaluate(
 
     def retire_note() -> str:
         parts = []
+        if _retire_non_refusal:
+            parts.append(
+                " ⚠️ A `RETIRES` NAMED A COMMENT THAT DOES NOT CONTAIN A REFUSAL, "
+                "so it retired nothing: "
+                + "; ".join(
+                    f"comment {key} was named by {claimants}"
+                    for key, claimants in sorted(_retire_non_refusal.items())
+                )
+                + ". Marker discovery remains fail-closed, but retirement requires "
+                "positive evidence that the named comment actually issued a refusal."
+            )
         if _retire_refused:
             parts.append(
                 " ⚠️ A `RETIRES` NAMED A REFUSAL ITS WRITER DOES NOT OWN, so it retired "

@@ -781,6 +781,22 @@ _REFUSAL_NEARMISS = re.compile(
     re.IGNORECASE,
 )
 
+# A permissive near-miss is enough to BLOCK, because an unreadable refusal must
+# never become permission to merge.  It is not, by itself, enough to prove that
+# the whole COMMENT is a refusal that another comment may retire.  In particular,
+# a prose continuation beginning ``CHANGES-REQUESTED and ...`` uses the review
+# state as a noun and can carry an incidental commit id later in the sentence.
+#
+# Keep the retirement boundary grammatical and small: canonical markers are
+# accepted by ``parse_marker``; non-canonical forms must end at the token or use
+# punctuation / the ordinary reason introducers already used by real refusals.
+# The no-sha ``CHANGES-REQUESTED because ...`` form remains eligible, preserving
+# the only precise exit for an otherwise permanent unbindable refusal.
+_REFUSAL_STATEMENT_TAIL = re.compile(
+    r"^\s*(?::|$|[-\N{EM DASH}]|(?:because|for|at|claude|codex)\b|[0-9a-f]{7,40}\b)",
+    re.IGNORECASE,
+)
+
 
 # ⚠️ A VERDICT IS ISSUED ONCE. EVERY LATER COPY OF IT IS A CITATION, AND CITING A
 # REFUSAL MUST NOT CREATE ONE.
@@ -986,6 +1002,32 @@ def refusal_shaped(line: str) -> bool:
     for start in marker_assertion_starts(normalized):
         match = near_miss_refusal(normalized, start)
         if match is not None and match.start() == start:
+            return True
+    return False
+
+
+def comment_contains_refusal(body: str) -> bool:
+    """Whether ``body`` contains a refusal that an explicit retirement may name.
+
+    Marker discovery remains deliberately permissive and fail-closed.  Retirement
+    is an affirmative claim that a specific comment issued a refusal, so it uses
+    this additional boundary rather than turning every refusal-shaped prose line
+    into authority to clear itself.
+    """
+    for raw in marker_lines(body or ""):
+        line = strip_decoration(raw)
+        starts = marker_assertion_starts(line)
+        if len(starts) != 1:
+            continue
+        parsed = parse_marker(line)
+        if parsed is not None and parsed[0] == MARKER_REFUSED:
+            return True
+        match = near_miss_refusal(line, starts[0])
+        if (
+            match is not None
+            and match.start() == starts[0]
+            and _REFUSAL_STATEMENT_TAIL.match(line[match.end() :]) is not None
+        ):
             return True
     return False
 
