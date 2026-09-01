@@ -39,6 +39,20 @@ summary:focus-visible {
   outline-offset: 3px;
 }
 
+.skip-link {
+  background: #ffffff;
+  color: #17202a;
+  left: 1rem;
+  padding: 0.65rem 0.9rem;
+  position: absolute;
+  top: -5rem;
+  z-index: 10;
+}
+
+.skip-link:focus {
+  top: 1rem;
+}
+
 code {
   overflow-wrap: anywhere;
 }
@@ -67,6 +81,13 @@ footer {
   color: #ffffff;
 }
 
+.site-name {
+  font-size: 1.5rem;
+  font-weight: 800;
+  margin-bottom: 0.75rem;
+  margin-top: 0.75rem;
+}
+
 .fixture-banner {
   background: #ffd166;
   border: 3px solid #6b4f00;
@@ -80,6 +101,30 @@ nav {
   display: flex;
   flex-wrap: wrap;
   gap: 0.75rem 1.25rem;
+}
+
+.breadcrumbs {
+  margin: 1rem auto 0;
+  max-width: 93rem;
+  padding: 0 1.5rem;
+}
+
+.breadcrumbs ol {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.breadcrumbs li + li::before {
+  content: "/";
+  margin-right: 0.35rem;
+}
+
+.page-heading {
+  margin-bottom: 1.5rem;
 }
 
 main > section {
@@ -100,6 +145,18 @@ main > section {
   display: grid;
   gap: 0.75rem;
   grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr));
+}
+
+.compact-metrics {
+  margin-top: 1rem;
+}
+
+.compact-metrics > a {
+  border: 2px solid var(--border);
+  border-radius: 0.45rem;
+  color: inherit;
+  padding: 0.9rem;
+  text-decoration: none;
 }
 
 .metric,
@@ -223,6 +280,48 @@ thead th,
   padding: 0.75rem 0;
 }
 
+.card-list {
+  display: grid;
+  gap: 0.85rem;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.listing-card,
+.evidence-card {
+  border: 1px solid var(--border);
+  border-radius: 0.45rem;
+  padding: 0.9rem;
+}
+
+.listing-card > :first-child,
+.evidence-card > :first-child {
+  margin-top: 0;
+}
+
+.facts {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.facts > div {
+  display: grid;
+  gap: 0.25rem;
+  grid-template-columns: minmax(11rem, 17rem) minmax(0, 1fr);
+}
+
+.compact-facts > div {
+  grid-template-columns: minmax(9rem, 13rem) minmax(0, 1fr);
+}
+
+pre {
+  margin: 0;
+  max-width: 100%;
+  overflow-x: auto;
+  white-space: pre-wrap;
+}
+
 .test-card dl,
 .provenance {
   display: grid;
@@ -277,7 +376,12 @@ footer {
   }
 
   .test-card dl > div,
-  .provenance > div {
+  .provenance > div,
+  .facts > div {
     grid-template-columns: 1fr;
+  }
+
+  .breadcrumbs {
+    padding: 0 1rem;
   }
 }
