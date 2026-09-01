@@ -6,6 +6,7 @@ root=$(cd -- "$script_dir/../.." && pwd)
 hub=$root/ci-hub/ci-hub
 tmp=$(mktemp -d)
 trap 'rm -rf -- "$tmp"' EXIT
+state_root=$tmp/state
 
 other_sha=dddddddddddddddddddddddddddddddddddddddd
 receipt_commit=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
@@ -18,6 +19,8 @@ log_sha256=$(sha256sum "$log_file" | awk '{print $1}')
 producer_registry=$tmp/producer-definition.json
 cp "$root/ci-hub/validate/producer-definition.json" "$producer_registry"
 sha=$(jq -r '.registered_at' "$producer_registry")
+mkdir -p "$state_root"
+ln -s "$root/hermit" "$state_root/hermit"
 
 fail() {
     printf 'FAIL: %s\n' "$*" >&2
@@ -58,7 +61,11 @@ jq -cn \
         {name: "test", result: "pass", exit_code: 0}
       ]
     }' >"$tmp/base-row.json"
-jq -c . "$tmp/base-row.json" >"$tmp/ledger.jsonl"
+git clone --shared --no-checkout "$root/hermit" "$deleted_cwd" >/dev/null 2>&1
+git -C "$deleted_cwd" checkout --detach "$sha" >/dev/null 2>&1
+DEV_HERMIT_PARENT="$state_root" \
+    python3 "$root/ci-hub/ledger/validate_rows.py" record \
+    <"$tmp/base-row.json" >"$tmp/record.json"
 
 artifact_counter=0
 build_artifact() { # build_artifact ROW TARGET_SHA PRODUCER_MODE
@@ -149,13 +156,23 @@ set -euo pipefail
 printf '%s ' "$@" >>"$FAKE_GH_LOG"
 printf '\n' >>"$FAKE_GH_LOG"
 args=" $* "
+if [[ ${1:-} == api &&
+      $args == *" repos/rrnewton/hermit/commits/$FAKE_HEAD/status?per_page=100 "* ]]; then
+    printf '{"statuses":[]}\n'
+    exit 0
+fi
+if [[ ${1:-} == api && $args == *" --method POST "* &&
+      $args == *" repos/rrnewton/hermit/statuses/$FAKE_HEAD "* ]]; then
+    printf 'STATUS\n' >>"$FAKE_MUTATION_LOG"
+    exit 0
+fi
 if [[ $args == *" --method PUT "* || $args == *" --method POST "* ||
       $args == *" --method PATCH "* || $args == *" --method DELETE "* ]]; then
     printf 'REMOTE_MUTATION %s\n' "$*" >>"$FAKE_MUTATION_LOG"
     exit 91
 fi
 if [[ ${1:-} == pr && ${2:-} == view ]]; then
-    printf '%s\n' "$FAKE_HEAD"
+    printf '{"headRefOid":"%s","labels":[]}\n' "$FAKE_HEAD"
     exit 0
 fi
 if [[ ${1:-} == pr && ${2:-} == edit ]]; then
@@ -221,8 +238,8 @@ invoke_apply() {
     FAKE_GH_LOG="$tmp/gh.log" \
     FAKE_MUTATION_LOG="$tmp/mutations.log" \
     PRODUCER_DEFINITION_REGISTRY="$producer_registry" \
-    "$hub" apply-local-label --pr "$pr" --repo rrnewton/hermit \
-        --ledger "$tmp/ledger.jsonl" --json
+    DEV_HERMIT_PARENT="$state_root" \
+    "$hub" apply-local-label --pr "$pr" --repo rrnewton/hermit --json
 }
 
 prepare_run_logs() {
@@ -252,6 +269,7 @@ write_two_comments "$exact_path" "$exact_digest" "$other_path" "$other_digest"
 # recorded checkout and source log may both have disappeared by binding time.
 # A rejected immutable artifact must then fail locally at the missing log,
 # before the fallback publisher can perform any remote mutation.
+rm -rf -- "$deleted_cwd"
 rm -f -- "$log_file"
 REJECT_COMMIT=
 invoke_apply >"$tmp/positive.out" 2>"$tmp/positive.err" || \
@@ -262,8 +280,8 @@ grep -Fq "contents/$other_path?ref=$receipt_commit" "$tmp/gh.log" || \
     fail "positive result did not inspect the newer nonselected receipt"
 grep -Fq "contents/$exact_path?ref=$receipt_commit" "$tmp/gh.log" || \
     fail "positive result did not continue to the exact selected receipt"
-[[ $(cat "$tmp/mutations.log") == LABEL ]] || \
-    fail "positive result performed a mutation other than the label"
+[[ $(cat "$tmp/mutations.log") == $'STATUS\nLABEL' ]] || \
+    fail "positive result did not publish only the commit status and label"
 if grep -Fq 'git/ref/heads/validation-receipts' "$tmp/gh.log"; then
     fail "positive result invoked the receipt publisher"
 fi
@@ -332,4 +350,4 @@ REJECT_COMMIT=
 run_negative missing-marker
 
 printf '%s\n' \
-    'PASS: current-primary deleted-cwd/missing-log immutable artifact reused (including skip-over of a newer nonselected receipt); wrong head, row digest, producer blob, artifact hash, receipt commit, and missing marker all refused before label/comment/remote publish'
+    'PASS: split-root current-primary deleted-cwd/missing-log immutable artifact reused (including skip-over of a newer nonselected receipt); wrong head, row digest, producer blob, artifact hash, receipt commit, and missing marker all refused before label/comment/remote publish'

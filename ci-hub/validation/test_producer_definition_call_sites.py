@@ -106,7 +106,7 @@ class ProducerDefinitionCallSiteAudit(unittest.TestCase):
 
     def test_status_history_and_finalization_do_not_use_the_registry(self):
         rust = RUST.read_text()
-        self.assertIn("assess_canonical_receipts(root, &rows", rust)
+        self.assertIn("assess_canonical_receipts(state_root, &rows", rust)
         self.assertNotIn("producer_authoritative_history_rows", rust)
         self.assertNotIn("resolve_producer_definition_evidence", rust)
 
