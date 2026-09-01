@@ -4,7 +4,8 @@
 This remains a fixture-backed prototype, not current project status. It does
 not read a ledger or infer a result. The Stage 1 artifacts have already done
 that work; this renderer validates those artifacts through the same build-data
-validator and presents their derived fields without JavaScript or a server.
+validator and presents their derived fields. Local JavaScript adds optional
+filtering and sorting; the complete table remains available without it.
 """
 
 from __future__ import annotations
@@ -24,10 +25,12 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
+from urllib.parse import urlencode
 
 
 WRITE_DATA_PATH = Path(__file__).resolve().with_name("write_data.py")
 SITE_CSS_PATH = Path(__file__).resolve().parent / "assets/site.css"
+SITE_JS_PATH = Path(__file__).resolve().parent / "assets/site.js"
 STATE_ORDER = ("green", "red", "never-measured", "unavailable")
 STATE_LABELS = {
     "green": "Green",
@@ -62,10 +65,14 @@ class SiteModel:
     incomplete: tuple[Mapping[str, Any], ...]
     runs: Mapping[str, Any]
     series_rows: tuple[Mapping[str, Any], ...]
+    series_by_cell: Mapping[str, tuple[Mapping[str, Any], ...]]
     history_rows: tuple[Mapping[str, Any], ...]
     current_history_ids: frozenset[str]
     cell_by_id: Mapping[str, Mapping[str, Any]]
     test_by_id: Mapping[str, Mapping[str, Any]]
+    host_capability_names: tuple[str, ...]
+    custom_command_evidence: tuple[Mapping[str, Any], ...]
+    recorded_not_in_current_manifest: tuple[Mapping[str, Any], ...]
     cell_paths: Mapping[str, str]
     test_paths: Mapping[str, str]
     run_paths: Mapping[str, str]
@@ -197,6 +204,17 @@ def _href(source: str, target: str, fragment: str | None = None) -> str:
     return f"{relative}#{fragment}" if fragment is not None else relative
 
 
+def _query_href(
+    source: str,
+    target: str,
+    values: Sequence[tuple[str, str]],
+    fragment: str,
+) -> str:
+    relative = _href(source, target)
+    query = urlencode(values)
+    return f"{relative}?{query}#{fragment}" if query else f"{relative}#{fragment}"
+
+
 def _unique_rows(
     rows: Sequence[Mapping[str, Any]], key: str, label: str
 ) -> dict[str, Mapping[str, Any]]:
@@ -222,6 +240,89 @@ def _cell_state(cell: Mapping[str, Any]) -> str:
             f"cell {cell.get('cell')!r} has unsupported state {value!r}"
         )
     return str(value)
+
+
+def _result_token(cell: Mapping[str, Any]) -> str:
+    value = cell.get("latest_result")
+    if value is None:
+        return "unavailable"
+    if value not in {"pass", "product_failure"}:
+        raise RenderRefused(f"unsupported latest product result {value!r}")
+    return str(value)
+
+
+def _recorded_boolean(value: Any) -> str:
+    if value is True:
+        return "true"
+    if value is False:
+        return "false"
+    if value is None:
+        return "unavailable"
+    raise RenderRefused(f"recorded boolean value is invalid: {value!r}")
+
+
+def _series_filter_evidence(row: Mapping[str, Any]) -> dict[str, Any]:
+    capabilities = row["series"].get("host_capabilities")
+    if capabilities is None:
+        capabilities = {}
+    elif not isinstance(capabilities, Mapping):
+        raise RenderRefused("series host capabilities are malformed")
+    capability_values = {}
+    for name, value in capabilities.items():
+        if not isinstance(value, Mapping):
+            raise RenderRefused("series host capability is malformed")
+        capability_values[str(name)] = _recorded_boolean(value.get("present"))
+    return {
+        "current_main_ancestry": _recorded_boolean(row.get("current_main_ancestry")),
+        "host_capabilities": capability_values,
+    }
+
+
+def _series_filter_evidence_json(rows: Sequence[Mapping[str, Any]]) -> str:
+    values = [_series_filter_evidence(row) for row in rows]
+    return json.dumps(values, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+
+
+def _recorded_values(values: Sequence[str], labels: Mapping[str, str]) -> str:
+    present = set(values)
+    if not present:
+        return _display(None)
+    return "; ".join(labels[value] for value in labels if value in present)
+
+
+def _ancestry_summary(rows: Sequence[Mapping[str, Any]]) -> str:
+    values = [_recorded_boolean(row.get("current_main_ancestry")) for row in rows]
+    return _recorded_values(
+        values,
+        {
+            "true": "True",
+            "false": "False",
+            "unavailable": "Unavailable",
+        },
+    )
+
+
+def _capability_summary(rows: Sequence[Mapping[str, Any]], names: Sequence[str]) -> str:
+    if not names:
+        return _display(None)
+    items = []
+    for name in names:
+        values = []
+        for row in rows:
+            capabilities = row["series"].get("host_capabilities", {})
+            fact = capabilities.get(name) if isinstance(capabilities, Mapping) else None
+            present = fact.get("present") if isinstance(fact, Mapping) else None
+            values.append(_recorded_boolean(present))
+        displayed = _recorded_values(
+            values,
+            {
+                "true": "present",
+                "false": "not present",
+                "unavailable": "Unavailable",
+            },
+        )
+        items.append(f"<li><code>{_escape(name)}</code>: {displayed}</li>")
+    return '<ul class="plain-list capability-list">' + "".join(items) + "</ul>"
 
 
 def _series_by_cell(
@@ -270,7 +371,119 @@ def _validate_test_membership(
             raise RenderRefused(f"custom command {identity!r} has an unknown test")
 
 
-def _validate_counts(build: Mapping[str, Any], data: Mapping[str, Any]) -> None:
+def _history_evidence_cells(
+    row: Mapping[str, Any],
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    results = row.get("cell_results")
+    if not isinstance(results, Mapping):
+        return (), ()
+    selected: set[str] = set()
+    selected_by = results.get("selected_by")
+    if selected_by is not None and not isinstance(selected_by, Mapping):
+        raise RenderRefused("validation selection evidence is malformed")
+    if selected_by is not None:
+        for selection in selected_by.values():
+            if not isinstance(selection, Mapping):
+                raise RenderRefused("validation selection evidence is malformed")
+            for cell in selection.get("cells", ()):
+                if not isinstance(cell, Mapping):
+                    raise RenderRefused("validation selection cell is malformed")
+                selected.add(_cell_identity(cell))
+    recorded: set[str] = set()
+    recorded_value = results.get("recorded")
+    if recorded_value is not None and not isinstance(recorded_value, Mapping):
+        raise RenderRefused("validation recorded-cell evidence is malformed")
+    if recorded_value is not None:
+        for cell in recorded_value.get("cells", ()):
+            if not isinstance(cell, Mapping):
+                raise RenderRefused("validation recorded cell is malformed")
+            recorded.add(_cell_identity(cell))
+    return tuple(sorted(selected)), tuple(sorted(recorded))
+
+
+def _recorded_identity_evidence(
+    identities: Sequence[str],
+    series_rows: Sequence[Mapping[str, Any]],
+    history_rows: Sequence[Mapping[str, Any]],
+) -> tuple[Mapping[str, Any], ...]:
+    evidence = {
+        identity: {
+            "cell": identity,
+            "series_rows": [],
+            "selected_history_rows": set(),
+            "recorded_history_rows": set(),
+        }
+        for identity in sorted(set(identities))
+    }
+
+    for row in series_rows:
+        identity = str(row["series"]["cell"])
+        if identity in evidence:
+            evidence[identity]["series_rows"].append(row)
+    for row in history_rows:
+        history_id = str(row["history_row_sha256"])
+        selected, recorded = _history_evidence_cells(row)
+        for identity in selected:
+            if identity in evidence:
+                evidence[identity]["selected_history_rows"].add(history_id)
+        for identity in recorded:
+            if identity in evidence:
+                evidence[identity]["recorded_history_rows"].add(history_id)
+
+    result = []
+    for identity in sorted(evidence):
+        value = evidence[identity]
+        rows = tuple(value["series_rows"])
+        result.append(
+            {
+                "cell": identity,
+                "series_rows": rows,
+                "physical_row_count": len(rows),
+                "represented_run_count": sum(
+                    int(row["series"]["num_runs"]) for row in rows
+                ),
+                "selected_history_rows": tuple(sorted(value["selected_history_rows"])),
+                "recorded_history_rows": tuple(sorted(value["recorded_history_rows"])),
+            }
+        )
+    return tuple(result)
+
+
+def _recorded_identities_not_in_current_manifest(
+    cells: Sequence[Mapping[str, Any]],
+    custom: Sequence[Mapping[str, Any]],
+    series_rows: Sequence[Mapping[str, Any]],
+    history_rows: Sequence[Mapping[str, Any]],
+) -> tuple[Mapping[str, Any], ...]:
+    current = {str(cell["cell"]) for cell in cells}
+    current.update(str(command["cell"]) for command in custom)
+    recorded = {str(row["series"]["cell"]) for row in series_rows}
+    for row in history_rows:
+        selected, executed = _history_evidence_cells(row)
+        recorded.update(selected)
+        recorded.update(executed)
+    return _recorded_identity_evidence(
+        tuple(recorded.difference(current)), series_rows, history_rows
+    )
+
+
+def _host_capability_names(
+    series_rows: Sequence[Mapping[str, Any]],
+) -> tuple[str, ...]:
+    names = set()
+    for row in series_rows:
+        capabilities = row["series"].get("host_capabilities")
+        if capabilities is None:
+            continue
+        if not isinstance(capabilities, Mapping):
+            raise RenderRefused("series host capabilities are malformed")
+        names.update(str(name) for name in capabilities)
+    return tuple(sorted(names))
+
+
+def _validate_counts(
+    build: Mapping[str, Any], data: Mapping[str, Any]
+) -> dict[str, tuple[Mapping[str, Any], ...]]:
     cells = data["cells"]
     runs = data["runs"]
     counts = data["counts"]
@@ -310,7 +523,7 @@ def _validate_counts(build: Mapping[str, Any], data: Mapping[str, Any]) -> None:
         != runs["current_validation_run_row_count"]
     ):
         raise RenderRefused("Stage 1 run counts disagree with rendered rows")
-    _series_by_cell(cells, series_rows)
+    return _series_by_cell(cells, series_rows)
 
 
 def _site_model(build: Mapping[str, Any], data: Mapping[str, Any]) -> SiteModel:
@@ -322,7 +535,7 @@ def _site_model(build: Mapping[str, Any], data: Mapping[str, Any]) -> SiteModel:
     series_rows = tuple(runs["series_rows"])
     history_rows = tuple(runs["validation_history_rows"])
     current_rows = tuple(runs["current_validation_run_rows"])
-    _validate_counts(build, data)
+    series_by_cell = _validate_counts(build, data)
     cell_by_id = _unique_rows(cells, "cell", "cell")
     test_by_id = _unique_rows(tests, "id", "test id")
     history_by_id = _unique_rows(history_rows, "history_row_sha256", "history row")
@@ -335,6 +548,12 @@ def _site_model(build: Mapping[str, Any], data: Mapping[str, Any]) -> SiteModel:
     if not set(current_by_id) <= set(history_by_id):
         raise RenderRefused("current validation row is absent from validation history")
     _validate_test_membership(tests, custom, cell_by_id)
+    custom_command_evidence = _recorded_identity_evidence(
+        tuple(str(command["cell"]) for command in custom), series_rows, history_rows
+    )
+    recorded_not_in_current_manifest = _recorded_identities_not_in_current_manifest(
+        cells, custom, series_rows, history_rows
+    )
     return SiteModel(
         build=build,
         data=data,
@@ -344,10 +563,14 @@ def _site_model(build: Mapping[str, Any], data: Mapping[str, Any]) -> SiteModel:
         incomplete=incomplete,
         runs=runs,
         series_rows=series_rows,
+        series_by_cell=series_by_cell,
         history_rows=history_rows,
         current_history_ids=frozenset(current_by_id),
         cell_by_id=cell_by_id,
         test_by_id=test_by_id,
+        host_capability_names=_host_capability_names(series_rows),
+        custom_command_evidence=custom_command_evidence,
+        recorded_not_in_current_manifest=recorded_not_in_current_manifest,
         cell_paths=_hashed_paths("cells", tuple(cell_by_id)),
         test_paths=_hashed_paths("tests", tuple(test_by_id)),
         run_paths={identity: f"runs/{identity}.html" for identity in history_by_id},
@@ -383,12 +606,10 @@ def _state_badge(cell: Mapping[str, Any]) -> str:
 
 
 def _latest_result(cell: Mapping[str, Any]) -> str:
-    value = cell.get("latest_result")
+    value = _result_token(cell)
     labels = {"pass": "Pass", "product_failure": "Product failure"}
-    if value is None:
+    if value == "unavailable":
         return _display(None)
-    if value not in labels:
-        raise RenderRefused(f"unsupported latest product result {value!r}")
     return labels[value]
 
 
@@ -563,6 +784,7 @@ def _layout(
     lead: str,
     content: str,
     breadcrumbs: Sequence[tuple[str, str | None]],
+    scripts: Sequence[str] = (),
 ) -> bytes:
     nav = (
         f'<a href="{_escape(_href(page, "index.html"))}">Overview</a>'
@@ -573,6 +795,10 @@ def _layout(
         f'<a href="{_escape(_href(page, "incomplete-data/index.html"))}">'
         "Incomplete data</a>"
     )
+    script_tags = "".join(
+        f'<script src="{_escape(_href(page, script))}" defer></script>'
+        for script in scripts
+    )
     source = f"""<!doctype html>
 <html lang="en">
 <head>
@@ -581,6 +807,7 @@ def _layout(
   <meta name="description" content="Fixture-backed Hermit compatibility evidence">
   <title>{_escape(title)} · Hermit compatibility fixture</title>
   <link rel="stylesheet" href="{_escape(_href(page, 'assets/site.css'))}">
+  {script_tags}
 </head>
 <body>
   <a class="skip-link" href="#main-content">Skip to main content</a>
@@ -621,6 +848,20 @@ def _count_link(
     )
 
 
+def _filtered_count_link(
+    source: str,
+    values: Sequence[tuple[str, str]],
+    count: int,
+    label: str,
+    fragment: str = "all-cells",
+) -> str:
+    return (
+        f'<a href="{_escape(_query_href(source, "cells/index.html", values, fragment))}" '
+        f'data-count="{count}" data-cell-filter-link="1"><strong>{count}</strong> '
+        f"{_escape(label)}</a>"
+    )
+
+
 def _state_summary(model: SiteModel, page: str) -> str:
     total = len(model.cells)
     cards = []
@@ -628,8 +869,8 @@ def _state_summary(model: SiteModel, page: str) -> str:
         count = sum(_cell_state(cell) == state for cell in model.cells)
         cards.append(
             f'<a class="metric state-{state}" '
-            f'href="{_escape(_href(page, "cells/index.html", f"cells-{state}"))}" '
-            f'data-count="{count}"><strong>{count} / {total}</strong>'
+            f'href="{_escape(_query_href(page, "cells/index.html", (("state", state),), "all-cells"))}" '
+            f'data-count="{count}" data-cell-filter-link="1"><strong>{count} / {total}</strong>'
             f"<span>{STATE_LABELS[state]}</span></a>"
         )
     return '<div class="metrics">' + "".join(cards) + "</div>"
@@ -645,9 +886,10 @@ def _overview(model: SiteModel, page: str) -> str:
       <p class="population">{_count_link(page, 'cells/index.html', 'all-cells', len(model.cells), 'cells in the manifest')}</p>
       {_state_summary(model, page)}
       <div class="metrics compact-metrics">
-        {_count_link(page, 'cells/index.html', 'selected-by-full', selected, 'cells selected by full')}
-        {_count_link(page, 'cells/index.html', 'not-selected-by-full', not_selected, 'cells not selected by full')}
+        {_filtered_count_link(page, (("selected_by_full", "true"),), selected, 'cells selected by full')}
+        {_filtered_count_link(page, (("selected_by_full", "false"),), not_selected, 'cells not selected by full')}
         {_count_link(page, 'index.html', 'custom-commands', len(model.custom_commands), 'custom commands selected by full')}
+        {_filtered_count_link(page, (("population", "not_in_current_manifest"),), len(model.recorded_not_in_current_manifest), 'recorded cell identities not in the current manifest', 'recorded-not-in-current-manifest')}
       </div>
       <div class="notice">
         <p><strong>Cells selected by quick: Unavailable.</strong></p>
@@ -678,7 +920,8 @@ def _custom_commands(model: SiteModel, page: str) -> str:
             f'<li class="listing-card">{_test_link(model, page, str(command["test"]))}'
             f'<span class="secondary"><code>{_escape(command["cell"])}</code></span>'
             f'{applicability_text}<span class="secondary">Current reproducer</span>'
-            f"{_reproducer(command)}</li>"
+            f"{_reproducer(command)}"
+            f'<a href="{_escape(_href(page, "cells/index.html", _fragment("custom-command", str(command["cell"]))))}">Recorded evidence</a></li>'
         )
     return f"""
     <section id="custom-commands" data-row-count="{len(items)}">
@@ -818,6 +1061,8 @@ def _landing_page(model: SiteModel) -> bytes:
 
 def _cell_table_row(model: SiteModel, page: str, cell: Mapping[str, Any]) -> str:
     identity = str(cell["cell"])
+    rows = model.series_by_cell[identity]
+    test = model.test_by_id[str(cell["test"])]
     incomplete = cell["incomplete_fields"]
     incomplete_text = (
         ", ".join(_escape(field) for field in incomplete)
@@ -832,12 +1077,46 @@ def _cell_table_row(model: SiteModel, page: str, cell: Mapping[str, Any]) -> str
         else "Applicable"
     )
     target = model.cell_paths[identity]
+    selected_paths = tuple(sorted(str(path) for path in cell["selected_by"]))
+    selected_path_text = (
+        ", ".join(f"Selected by {_escape(path)}" for path in selected_paths)
+        if selected_paths
+        else "None recorded"
+    )
+    attributes = {
+        "backend": str(cell["backend"]),
+        "category": str(cell["category"]),
+        "cell": identity,
+        "evidence": "incomplete" if incomplete else "complete",
+        "lane": str(cell["lane"]),
+        "latest_result_time": cell.get("latest_result_time") or "",
+        "latest_result_tree": cell.get("latest_result_tree") or "",
+        "mode": str(cell["mode"]),
+        "physical_row_count": str(cell["physical_row_count"]),
+        "represented_run_count": str(cell["represented_run_count"]),
+        "result": _result_token(cell),
+        "search": f"{cell['test']}\n{identity}",
+        "selected_by_full": str(bool(cell["selected_by_full"])).lower(),
+        "selected_by_paths": json.dumps(selected_paths, separators=(",", ":")),
+        "series_evidence": _series_filter_evidence_json(rows),
+        "state": _cell_state(cell),
+        "test": str(cell["test"]),
+    }
+    data_attributes = " ".join(
+        f'data-{name.replace("_", "-")}="{_escape(value)}"'
+        for name, value in attributes.items()
+    )
     return f"""
-      <tr data-cell-row="1" data-state="{_cell_state(cell)}">
+      <tr data-cell-row="1" data-population="in_manifest" {data_attributes}>
         <th scope="row"><a href="{_escape(_href(page, target))}"><code>{_escape(identity)}</code></a></th>
-        <td>{_test_link(model, page, str(cell['test']))}</td><td>{_escape(cell['mode'])}</td>
-        <td>{_escape(cell['backend'])}</td><td>{applicability_text}</td>
-        <td>{_selected_by_full(cell)}</td><td>{_state_badge(cell)}</td><td>{_latest_result(cell)}</td>
+        <td>{_test_link(model, page, str(cell['test']))}<span class="secondary">{_escape(test['description'])}</span></td>
+        <td>{_escape(cell['lane'])}</td><td>{_escape(cell['category'])}</td>
+        <td>{_escape(cell['mode'])}</td><td>{_escape(cell['backend'])}</td>
+        <td>{applicability_text}</td><td>{_selected_by_full(cell)}</td>
+        <td>{selected_path_text}</td><td>{_state_badge(cell)}</td><td>{_latest_result(cell)}</td>
+        <td>{_display(cell.get('latest_result_time'))}</td>
+        <td>{_display(cell.get('latest_result_tree'))}</td>
+        <td>{_ancestry_summary(rows)}</td><td>{_capability_summary(rows, model.host_capability_names)}</td>
         <td><a href="{_escape(_href(page, target, 'series-rows'))}" data-count="{cell['physical_row_count']}"
         data-represented-count="{cell['represented_run_count']}">{cell['physical_row_count']} rows / {cell['represented_run_count']} runs</a></td>
         <td>{incomplete_text}</td>
@@ -845,24 +1124,92 @@ def _cell_table_row(model: SiteModel, page: str, cell: Mapping[str, Any]) -> str
 
 
 def _cell_table(model: SiteModel, page: str) -> str:
-    bodies = []
-    for state in STATE_ORDER:
-        rows = [cell for cell in model.cells if _cell_state(cell) == state]
-        bodies.append(
-            f'<tbody id="cells-{state}" data-row-count="{len(rows)}">'
-            f'<tr class="group-row"><th colspan="10" scope="rowgroup">'
-            f"{STATE_LABELS[state]} — {len(rows)} / {len(model.cells)} cells in the manifest"
-            f'</th></tr>{"".join(_cell_table_row(model, page, cell) for cell in rows)}</tbody>'
-        )
+    cells = sorted(
+        model.cells,
+        key=lambda cell: (
+            str(cell["test"]),
+            str(cell["mode"]),
+            str(cell["backend"]),
+            str(cell["cell"]),
+        ),
+    )
     return f"""
       <div class="table-scroll"><table>
-        <caption>Every cell in the fixture manifest, grouped by its derived state.</caption>
+        <caption>Every cell in the fixture manifest. JavaScript can filter and reorder
+        these rendered rows without changing their recorded values.</caption>
         <thead><tr><th scope="col">Cell</th><th scope="col">Test id</th>
-        <th scope="col">Mode</th><th scope="col">Backend</th><th scope="col">Applicability</th>
-        <th scope="col">Selected by full</th><th scope="col">State from qualifying canonical rows</th>
-        <th scope="col">Latest product result</th><th scope="col">Canonical rows / represented runs</th>
-        <th scope="col">Incomplete fields</th></tr></thead>{"".join(bodies)}
+        <th scope="col">Lane</th><th scope="col">Category</th><th scope="col">Mode</th>
+        <th scope="col">Backend</th><th scope="col">Applicability</th>
+        <th scope="col">Selected by full</th><th scope="col">Retained validation-run selection</th>
+        <th scope="col">State from qualifying canonical rows</th><th scope="col">Latest product result</th>
+        <th scope="col">Latest result time</th><th scope="col">Latest result tree</th>
+        <th scope="col">Current main ancestry in canonical rows</th><th scope="col">Host capabilities</th>
+        <th scope="col">Canonical rows / represented runs</th><th scope="col">Incomplete fields</th></tr></thead>
+        <tbody id="cell-results" data-row-count="{len(cells)}">{"".join(_cell_table_row(model, page, cell) for cell in cells)}</tbody>
       </table></div>"""
+
+
+def _options(values: Sequence[str], labels: Mapping[str, str] | None = None) -> str:
+    display = labels or {}
+    return '<option value="">All</option>' + "".join(
+        f'<option value="{_escape(value)}">{_escape(display.get(value, value))}</option>'
+        for value in values
+    )
+
+
+def _cell_filter_form(model: SiteModel) -> str:
+    distinct = lambda field: tuple(sorted({str(cell[field]) for cell in model.cells}))
+    capability_options = _options(model.host_capability_names)
+    return f"""
+      <form class="cell-filters" data-cell-filter-form action="index.html" method="get" hidden>
+        <fieldset><legend>Search cells in the manifest</legend>
+          <label>Test id or cell <input type="search" name="q" autocomplete="off"></label>
+        </fieldset>
+        <fieldset><legend>Recorded fields</legend>
+          <label>Lane <select name="lane">{_options(distinct('lane'))}</select></label>
+          <label>Category <select name="category">{_options(distinct('category'))}</select></label>
+          <label>Mode <select name="mode">{_options(distinct('mode'))}</select></label>
+          <label>Backend <select name="backend">{_options(distinct('backend'))}</select></label>
+          <label>State <select name="state">{_options(STATE_ORDER, STATE_LABELS)}</select></label>
+          <label>Latest product result <select name="result">{_options(('pass', 'product_failure', 'unavailable'), {'pass': 'Pass', 'product_failure': 'Product failure', 'unavailable': 'Unavailable'})}</select></label>
+          <label>Current manifest full selection <select name="selected_by_full">{_options(('true', 'false'), {'true': 'Selected by full', 'false': 'Not selected by full'})}</select></label>
+          <label>Retained validation-run selection <select name="selected_by_path">{_options(('quick', 'full', 'super'), {'quick': 'Selected by quick', 'full': 'Selected by full', 'super': 'Selected by super'})}</select></label>
+          <label>Current main ancestry <select name="current_main_ancestry">{_options(('true', 'false', 'unavailable'), {'true': 'True', 'false': 'False', 'unavailable': 'Unavailable'})}</select></label>
+          <label>Host capability <select name="host_capability">{capability_options}</select></label>
+          <label>Host capability present <select name="host_capability_present">{_options(('true', 'false', 'unavailable'), {'true': 'Present', 'false': 'Not present', 'unavailable': 'Unavailable'})}</select></label>
+          <label>Required evidence <select name="evidence">{_options(('complete', 'incomplete'), {'complete': 'No incomplete fields recorded', 'incomplete': 'Incomplete fields recorded'})}</select></label>
+        </fieldset>
+        <fieldset><legend>Listing</legend>
+          <label>Cells <select name="population">
+            <option value="in_manifest">In the manifest</option>
+            <option value="not_in_current_manifest">Recorded cell identities not in the current manifest</option>
+          </select></label>
+          <label>Sort by <select name="sort">
+            <option value="manifest">Manifest order</option><option value="cell">Cell</option>
+            <option value="test">Test id</option><option value="mode">Mode</option>
+            <option value="backend">Backend</option><option value="state">State</option>
+            <option value="result">Latest product result</option>
+            <option value="latest_result_time">Latest result time</option>
+            <option value="latest_result_tree">Latest result tree</option>
+            <option value="physical_row_count">Canonical rows</option>
+            <option value="represented_run_count">Represented runs</option>
+          </select></label>
+          <label>Direction <select name="direction"><option value="asc">Ascending</option>
+            <option value="desc">Descending</option></select></label>
+        </fieldset>
+        <div class="filter-actions"><button type="submit">Apply</button>
+          <button type="button" data-clear-cell-filters>Clear search and filters</button></div>
+      </form>
+      <div id="cell-filter-error" class="notice" role="alert" hidden></div>
+      <p id="cell-filter-counts" class="population" aria-live="polite">
+        <strong data-matching-count>{len(model.cells)}</strong>
+        <span data-matching-label>matching cells in the manifest</span>;
+        <span data-evidence-label>those cells have</span>
+        <strong data-physical-count>{sum(int(cell['physical_row_count']) for cell in model.cells)}</strong>
+        canonical rows representing <strong data-represented-count>{sum(int(cell['represented_run_count']) for cell in model.cells)}</strong> runs.
+      </p>
+      <p id="cell-filter-empty" class="notice" hidden>No rows match the current search and filters.</p>
+      <noscript><p class="notice">Search and sorting require JavaScript. The complete tables remain below.</p></noscript>"""
 
 
 def _selection_lists(model: SiteModel, page: str) -> str:
@@ -885,6 +1232,124 @@ def _selection_lists(model: SiteModel, page: str) -> str:
       </div>"""
 
 
+def _history_links(
+    model: SiteModel, page: str, identities: Sequence[str], label: str
+) -> str:
+    if not identities:
+        return "None recorded"
+    return ", ".join(
+        f'<a href="{_escape(_href(page, model.run_paths[identity]))}">{_escape(label)} {index}</a>'
+        for index, identity in enumerate(identities, start=1)
+    )
+
+
+def _series_evidence_links(page: str, rows: Sequence[Mapping[str, Any]]) -> str:
+    if not rows:
+        return '<span class="unavailable">No canonical series row retained</span>'
+    return ", ".join(
+        f'<a href="{_escape(_href(page, "cells/index.html", _fragment("series", str(row["event_id"]))))}"><code>{_escape(row["event_id"])}</code></a>'
+        for row in rows
+    )
+
+
+def _custom_command_evidence(model: SiteModel, page: str) -> str:
+    evidence_by_id = {
+        str(value["cell"]): value for value in model.custom_command_evidence
+    }
+    rows = []
+    for command in model.custom_commands:
+        identity = str(command["cell"])
+        evidence = evidence_by_id[identity]
+        rows.append(
+            f'<tr id="{_fragment("custom-command", identity)}" data-custom-command-evidence-row="1">'
+            f'<th scope="row"><code>{_escape(identity)}</code></th>'
+            f'<td>{_test_link(model, page, str(command["test"]))}</td>'
+            f"<td>{_selected_by_full(command)}</td>"
+            f'<td>{_series_evidence_links(page, evidence["series_rows"])}</td>'
+            f'<td>{evidence["physical_row_count"]}</td>'
+            f'<td>{evidence["represented_run_count"]}</td>'
+            f'<td>{_history_links(model, page, evidence["selected_history_rows"], "selection row")}</td>'
+            f'<td>{_history_links(model, page, evidence["recorded_history_rows"], "recorded row")}</td>'
+            "</tr>"
+        )
+    physical = sum(
+        int(value["physical_row_count"]) for value in model.custom_command_evidence
+    )
+    represented = sum(
+        int(value["represented_run_count"]) for value in model.custom_command_evidence
+    )
+    return f"""
+    <section id="custom-command-evidence" data-row-count="{len(rows)}"
+      data-represented-count="{represented}">
+      <h2>Recorded evidence for custom commands</h2>
+      <p>These commands are selected by full but are not cells in the manifest and do not
+      enter the cell denominator. Their recorded canonical and validation-history evidence
+      is shown without deriving a current cell state, never-measured result, or manifest membership.</p>
+      <div class="table-scroll"><table>
+        <caption>Custom commands and the evidence that records them.</caption>
+        <thead><tr><th scope="col">Custom command</th><th scope="col">Test id</th>
+        <th scope="col">Selected by full</th><th scope="col">Canonical series evidence</th>
+        <th scope="col">Physical canonical rows</th><th scope="col">Represented runs</th>
+        <th scope="col">Validation rows that selected it</th><th scope="col">Validation rows that recorded it</th></tr></thead>
+        <tbody>{''.join(rows)}</tbody>
+      </table></div>
+      <p><strong>{len(rows)}</strong> custom commands selected by full; their evidence has
+      <strong>{physical}</strong> canonical rows representing <strong>{represented}</strong> runs.</p>
+    </section>"""
+
+
+def _recorded_not_in_manifest_row(
+    model: SiteModel, page: str, value: Mapping[str, Any]
+) -> str:
+    identity = str(value["cell"])
+    rows = value["series_rows"]
+    events = _series_evidence_links(page, rows)
+    attributes = {
+        "cell": identity,
+        "physical_row_count": str(value["physical_row_count"]),
+        "represented_run_count": str(value["represented_run_count"]),
+        "search": identity,
+    }
+    data_attributes = " ".join(
+        f'data-{name.replace("_", "-")}="{_escape(item)}"'
+        for name, item in attributes.items()
+    )
+    return f"""
+      <tr data-recorded-not-in-manifest-row="1" data-population="not_in_current_manifest" {data_attributes}>
+        <th scope="row"><code>{_escape(identity)}</code></th>
+        <td>{events}</td><td>{value['physical_row_count']}</td>
+        <td>{value['represented_run_count']}</td>
+        <td>{_history_links(model, page, value['selected_history_rows'], 'selection row')}</td>
+        <td>{_history_links(model, page, value['recorded_history_rows'], 'recorded row')}</td>
+        <td>{_display(None)}</td><td>{_display(None)}</td>
+      </tr>"""
+
+
+def _recorded_not_in_current_manifest(model: SiteModel, page: str) -> str:
+    values = model.recorded_not_in_current_manifest
+    physical = sum(int(value["physical_row_count"]) for value in values)
+    represented = sum(int(value["represented_run_count"]) for value in values)
+    return f"""
+    <section id="recorded-not-in-current-manifest" data-row-count="{len(values)}"
+      data-represented-count="{represented}">
+      <h2>Recorded cell identities not in the current manifest</h2>
+      <p>These identities remain reachable because canonical series or validation-history
+      evidence names them. They do not enter the current manifest denominator. Current state,
+      result, and full-selection policy are unavailable rather than inferred.</p>
+      <div class="table-scroll"><table>
+        <caption>Recorded identities outside the current manifest.</caption>
+        <thead><tr><th scope="col">Cell identity</th><th scope="col">Canonical series evidence</th>
+        <th scope="col">Physical canonical rows</th><th scope="col">Represented runs</th>
+        <th scope="col">Validation rows that selected it</th><th scope="col">Validation rows that recorded it</th>
+        <th scope="col">Current state</th><th scope="col">Selected by full in the current manifest</th></tr></thead>
+        <tbody id="recorded-not-in-current-manifest-results" data-row-count="{len(values)}">{"".join(_recorded_not_in_manifest_row(model, page, value) for value in values)}</tbody>
+      </table></div>
+      <p><strong>{len(values)}</strong> recorded cell identities not in the current manifest;
+      those identities have <strong>{physical}</strong> canonical rows representing
+      <strong>{represented}</strong> runs.</p>
+    </section>"""
+
+
 def _series_table_row(model: SiteModel, page: str, row: Mapping[str, Any]) -> str:
     payload = row["series"]
     identity = str(payload["cell"])
@@ -901,7 +1366,8 @@ def _series_table_row(model: SiteModel, page: str, row: Mapping[str, Any]) -> st
     )
     reason = row.get("projection_validation_reason")
     return f"""
-      <tr data-series-row="1">
+      <tr id="{_fragment('series', str(row['event_id']))}" data-series-row="1"
+        data-in-current-manifest="{str(identity in model.cell_by_id).lower()}">
         <th scope="row">{_cell_link(model, page, identity)}</th>
         <td>{event}</td>
         <td>{_escape(row['producer'])}<span class="secondary"><code>{_escape(row['run_id'])}</code></span></td>
@@ -965,21 +1431,27 @@ def _series_table(model: SiteModel, page: str) -> str:
 
 def _cells_index(model: SiteModel) -> bytes:
     page = "cells/index.html"
-    content = f"""
-    <section id="all-cells" data-row-count="{len(model.cells)}">
+    content = (
+        _cell_filter_form(model)
+        + f"""
+    <section id="all-cells" data-row-count="{len(model.cells)}" data-in-manifest-listing>
       <h2>All cells in the manifest</h2>
       <p>Manifest membership, selection by a named path, derived state, and product result
       are distinct facts. A cell not selected by full is not a failed measurement.</p>
       {_cell_table(model, page)}
     </section>
-    {_selection_lists(model, page)}
+    <div data-in-manifest-listing>{_selection_lists(model, page)}</div>
+    {_custom_command_evidence(model, page)}
+    {_recorded_not_in_current_manifest(model, page)}
     {_series_table(model, page)}"""
+    )
     return _layout(
         page,
         "Cells and canonical rows",
         "Every cell in the manifest and every public canonical series row in the fixture.",
         content,
         (("Overview", "index.html"), ("Cells", None)),
+        ("assets/site.js",),
     )
 
 
@@ -1085,7 +1557,7 @@ def _cell_incomplete(model: SiteModel, page: str, identity: str) -> str:
 def _cell_page(model: SiteModel, identity: str) -> bytes:
     page = model.cell_paths[identity]
     cell = model.cell_by_id[identity]
-    series_rows = _series_by_cell(model.cells, model.series_rows)[identity]
+    series_rows = model.series_by_cell[identity]
     represented = sum(int(row["series"]["num_runs"]) for row in series_rows)
     applicability = cell.get("not_applicable_reason")
     content = f"""
@@ -1170,7 +1642,8 @@ def _test_page(model: SiteModel, identity: str) -> bytes:
     ]
     custom_items = "".join(
         '<li class="listing-card" data-custom-row="1">'
-        f'<h3><code>{_escape(command["cell"])}</code></h3>{_reproducer(command)}</li>'
+        f'<h3><code>{_escape(command["cell"])}</code></h3>{_reproducer(command)}'
+        f'<a href="{_escape(_href(page, "cells/index.html", _fragment("custom-command", str(command["cell"]))))}">Recorded evidence</a></li>'
         for command in commands
     )
     content = f"""
@@ -1374,10 +1847,40 @@ def _site_css() -> bytes:
     return value
 
 
+def _site_javascript() -> bytes:
+    try:
+        value = SITE_JS_PATH.read_bytes()
+    except OSError as error:
+        raise RenderRefused(f"cannot read {SITE_JS_PATH}: {error}") from error
+    lowered = value.lower()
+    forbidden = (
+        b"http:",
+        b"https:",
+        b"fetch(",
+        b"xmlhttprequest",
+        b"websocket",
+        b"innerhtml",
+        b"outerhtml",
+        b"insertadjacenthtml",
+        b"document.write",
+        b"eval(",
+    )
+    if not value or any(token in lowered for token in forbidden):
+        raise RenderRefused(
+            "site JavaScript is empty, uses HTML injection, or requests a resource"
+        )
+    if b"textcontent" not in lowered:
+        raise RenderRefused(
+            "site JavaScript does not use textContent for visible updates"
+        )
+    return value
+
+
 def render_site(build: Mapping[str, Any], data: Mapping[str, Any]) -> dict[str, bytes]:
     model = _site_model(build, data)
     files = {
         "assets/site.css": _site_css(),
+        "assets/site.js": _site_javascript(),
         "cells/index.html": _cells_index(model),
         "incomplete-data/index.html": _incomplete_page(model),
         "index.html": _landing_page(model),
@@ -1512,8 +2015,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""This prototype always labels every page as fixture data. It reads the exact
-five-file Stage 1 artifact tree, writes no JavaScript, performs no network
-request, and refuses an existing output directory.
+five-file Stage 1 artifact tree, writes only local JavaScript, performs no
+network request, and refuses an existing output directory.
 
 Example:
   python3 ci-hub/compatibility-website/render_page.py \\
