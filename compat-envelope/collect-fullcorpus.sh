@@ -291,11 +291,11 @@ check_corpus_sources() { # $1=corpus-c.tsv $2=Hermit root
 }
 
 self_check_corpus_sources() {
-  local tmp complete missing output rc=0
+  local tmp complete missing broken output rc=0
   tmp="$(mktemp -d)" || return 1
-  complete="$tmp/complete.tsv"; missing="$tmp/missing.tsv"
+  complete="$tmp/complete.tsv"; missing="$tmp/missing.tsv"; broken="$tmp/broken.tsv"
   mkdir -p "$tmp/root/tests"
-  : > "$tmp/root/tests/one.c"
+  printf '%s\n' 'int main(void) { return 0; }' > "$tmp/root/tests/one.c"
   : > "$tmp/root/tests/helper.c"
   printf '%s\n' \
     'one|tests/one.c|||portable|disabled' \
@@ -319,8 +319,44 @@ self_check_corpus_sources() {
     echo "self-check: missing corpus was not refused cell by cell: rc=$rc output=$output" >&2
     return 1
   fi
+
+  printf '%s\n' 'int main(void) { this is not C; }' > "$tmp/root/tests/broken.c"
+  printf '%s\n' 'broken|tests/broken.c|||portable|disabled' > "$broken"
+  rc=0; output="$(compile_corpus_guests "$broken" "$tmp/root" "$tmp/build" 2>&1)" || rc=$?
+  if [ "$rc" -ne 4 ] ||
+     ! grep -Fq 'build-fail: broken' <<<"$output" ||
+     ! grep -Fq '1 C corpus cells did not compile; no corpus cells run' <<<"$output"; then
+    rm -rf "$tmp"
+    echo "self-check: compile failure was not refused before corpus execution: rc=$rc output=$output" >&2
+    return 1
+  fi
   rm -rf "$tmp"
-  echo "self-check: complete corpus accepted; two missing cells refused and named"
+  echo "self-check: complete corpus accepted; two missing cells and one compile failure refused and named"
+}
+
+compile_corpus_guests() { # $1=corpus-c.tsv $2=Hermit root $3=build root
+  local corpus="$1" hroot="$2" build="$3" id prog cflags extra lane cstate
+  local key cell guest extra_abs e build_failures=0
+  mkdir -p "$build"
+  # cstate names the last corpus column so the split stays self-documenting; unread here.
+  # shellcheck disable=SC2034
+  while IFS='|' read -r id prog cflags extra lane cstate; do
+    [ -n "$id" ] || continue
+    key="${id//\//_}"; cell="$build/$key"; mkdir -p "$cell"
+    guest="$cell/guest"
+    [ -x "$guest" ] && continue
+    extra_abs=""
+    for e in $extra; do extra_abs="$extra_abs $hroot/$e"; done
+    # shellcheck disable=SC2086
+    if ! cc -std=c11 -O2 -g -Wall -Wextra -Werror $cflags "$hroot/$prog" $extra_abs -o "$guest" 2>"$cell/cc.err"; then
+      echo "  build-fail: $id (diagnostic: $cell/cc.err)" >&2
+      build_failures=$((build_failures + 1))
+    fi
+  done < "$corpus"
+  if [ "$build_failures" -ne 0 ]; then
+    echo "collect-fullcorpus: REFUSED — $build_failures C corpus cells did not compile; no corpus cells run" >&2
+    return 4
+  fi
 }
 
 while [ $# -gt 0 ]; do
@@ -573,27 +609,7 @@ export BIN BOX_RUN ROWS RUN_UTC HSHA RSHA TMO_RUN TMO_VERIFY
 
 # --- compile C guests once (shared build tree) -------------------------------
 echo "== compiling/reusing C guests =="
-mkdir -p "$BUILD"
-build_failures=0
-# cstate names the last corpus column so the split stays self-documenting; unread here.
-# shellcheck disable=SC2034
-while IFS='|' read -r id prog cflags extra lane cstate; do
-  [ -n "$id" ] || continue
-  key="${id//\//_}"; cell="$BUILD/$key"; mkdir -p "$cell"
-  guest="$cell/guest"
-  [ -x "$guest" ] && continue
-  extra_abs=""
-  for e in $extra; do extra_abs="$extra_abs $HROOT/$e"; done
-  # shellcheck disable=SC2086
-  if ! cc -std=c11 -O2 -g -Wall -Wextra -Werror $cflags "$HROOT/$prog" $extra_abs -o "$guest" 2>"$cell/cc.err"; then
-    echo "  build-fail: $id (diagnostic: $cell/cc.err)" >&2
-    build_failures=$((build_failures + 1))
-  fi
-done < "$CORPUS_C"
-if [ "$build_failures" -ne 0 ]; then
-  echo "collect-fullcorpus: REFUSED — $build_failures C corpus cells did not compile; no guests run" >&2
-  exit 4
-fi
+compile_corpus_guests "$CORPUS_C" "$HROOT" "$BUILD" || exit $?
 
 # --- guest arguments, sourced from the e2e manifests -------------------------
 # Some corpus guests REQUIRE an argument (a scenario name, a fixture path). Run
