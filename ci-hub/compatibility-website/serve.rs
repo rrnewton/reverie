@@ -553,6 +553,11 @@ fn media_type(components: &[Vec<u8>]) -> Option<MediaType> {
             content_type: "application/json",
             content_encoding: None,
         })
+    } else if parent == Some(b"assets") && name == b"favicon.svg" {
+        Some(MediaType {
+            content_type: "image/svg+xml",
+            content_encoding: None,
+        })
     } else if name.ends_with(b".html") {
         Some(MediaType {
             content_type: "text/html; charset=utf-8",

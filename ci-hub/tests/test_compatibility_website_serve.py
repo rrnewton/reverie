@@ -22,6 +22,7 @@ from urllib.parse import urlsplit
 
 ROOT = Path(__file__).resolve().parents[2]
 SERVER = ROOT / "ci-hub/compatibility-website/serve.rs"
+FAVICON = ROOT / "ci-hub/compatibility-website/assets/favicon.svg"
 SERVER_COMMAND = ["rust-script", "--force", str(SERVER)]
 START_SECONDS = 20
 REQUEST_SECONDS = 3
@@ -230,6 +231,7 @@ class CompatibilityWebsiteServeTest(unittest.TestCase):
         self.files = {
             "index.html": b"<!doctype html><title>Compatibility</title>",
             "build.json": b'{"schema":"compatibility-site-build/v1"}\n',
+            "assets/favicon.svg": FAVICON.read_bytes(),
             "assets/site.css": b"body { color: black; }\n",
             "assets/site.js": b"document.body.dataset.ready = 'yes';\n",
             "cells/example.html": b"<!doctype html><title>Cell</title>",
@@ -334,6 +336,12 @@ class CompatibilityWebsiteServeTest(unittest.TestCase):
                     self.files["build.json"],
                 ),
                 (
+                    "/assets/favicon.svg",
+                    "image/svg+xml",
+                    None,
+                    self.files["assets/favicon.svg"],
+                ),
+                (
                     "/assets/site.css",
                     "text/css; charset=utf-8",
                     None,
@@ -390,6 +398,16 @@ class CompatibilityWebsiteServeTest(unittest.TestCase):
                 int(head_response.headers["content-length"]),
                 len(self.files["cells/example.html"]),
             )
+
+            icon_get = server.request(request_bytes(server.port, "/assets/favicon.svg"))
+            icon_head = server.request(
+                request_bytes(server.port, "/assets/favicon.svg", method="HEAD")
+            )
+            self.assert_response(icon_get, 200, body=self.files["assets/favicon.svg"])
+            self.assertEqual(icon_get.headers["content-type"], "image/svg+xml")
+            self.assertEqual(icon_head.status, 200)
+            self.assertEqual(icon_head.headers, icon_get.headers)
+            self.assertEqual(icon_head.body, b"")
         finally:
             returncode, stdout, stderr = server.stop()
             self.assertEqual((returncode, stdout, stderr), (0, "", ""))
@@ -622,6 +640,9 @@ class CompatibilityWebsiteServeTest(unittest.TestCase):
         (self.site / f"logs/{'A' * 64}.log.gz").write_bytes(b"uppercase digest")
         (self.site / "cells/wrong.json.gz").write_bytes(b"wrong directory")
         (self.site / "assets/wrong.log.gz").write_bytes(b"wrong directory")
+        (self.site / "favicon.svg").write_bytes(b"wrong SVG path")
+        (self.site / "assets/other.svg").write_bytes(b"wrong SVG name")
+        (self.site / "cells/favicon.svg").write_bytes(b"wrong SVG directory")
         (self.site / "logs/allowed.html").write_bytes(b"html is suffix-allowed")
         (self.site / "cells/allowed.css").write_bytes(b"css is suffix-allowed")
         (self.site / "data/allowed.js").write_bytes(b"js is suffix-allowed")
@@ -638,6 +659,9 @@ class CompatibilityWebsiteServeTest(unittest.TestCase):
                 f"/logs/{'A' * 64}.log.gz",
                 "/cells/wrong.json.gz",
                 "/assets/wrong.log.gz",
+                "/favicon.svg",
+                "/assets/other.svg",
+                "/cells/favicon.svg",
                 "/readme.txt",
                 "/cells",
                 "/missing.html",
@@ -955,6 +979,7 @@ class CompatibilityWebsiteServeTest(unittest.TestCase):
         self.assertIn("TcpListener::bind((Ipv4Addr::LOCALHOST", source)
         self.assertNotIn("write_all(", source)
         self.assertIn('(port == 80 && host == "127.0.0.1")', source)
+        self.assertIn('parent == Some(b"assets") && name == b"favicon.svg"', source)
 
         file_response = source[
             source.index("fn write_file_response(") : source.index("fn write_error(")

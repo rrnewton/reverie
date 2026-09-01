@@ -31,6 +31,8 @@ from urllib.parse import urlencode
 WRITE_DATA_PATH = Path(__file__).resolve().with_name("write_data.py")
 SITE_CSS_PATH = Path(__file__).resolve().parent / "assets/site.css"
 SITE_JS_PATH = Path(__file__).resolve().parent / "assets/site.js"
+FAVICON_PATH = Path(__file__).resolve().parent / "assets/favicon.svg"
+FAVICON_SHA256 = "f011d128a46779a767e70bce4d66431cbade170151663ddc36325abbb5e2c4da"
 STATE_ORDER = ("green", "red", "never-measured", "unavailable")
 STATE_LABELS = {
     "green": "Green",
@@ -806,6 +808,7 @@ def _layout(
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="description" content="Fixture-backed Hermit compatibility evidence">
   <title>{_escape(title)} · Hermit compatibility fixture</title>
+  <link rel="icon" type="image/svg+xml" href="{_escape(_href(page, 'assets/favicon.svg'))}">
   <link rel="stylesheet" href="{_escape(_href(page, 'assets/site.css'))}">
   {script_tags}
 </head>
@@ -1876,9 +1879,20 @@ def _site_javascript() -> bytes:
     return value
 
 
+def _site_favicon() -> bytes:
+    try:
+        value = FAVICON_PATH.read_bytes()
+    except OSError as error:
+        raise RenderRefused(f"cannot read {FAVICON_PATH}: {error}") from error
+    if hashlib.sha256(value).hexdigest() != FAVICON_SHA256:
+        raise RenderRefused("site favicon bytes do not match the reviewed asset")
+    return value
+
+
 def render_site(build: Mapping[str, Any], data: Mapping[str, Any]) -> dict[str, bytes]:
     model = _site_model(build, data)
     files = {
+        "assets/favicon.svg": _site_favicon(),
         "assets/site.css": _site_css(),
         "assets/site.js": _site_javascript(),
         "cells/index.html": _cells_index(model),

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import importlib.util
 import json
 import os
@@ -8,6 +9,7 @@ import posixpath
 import re
 import subprocess
 import sys
+import xml.etree.ElementTree as ET
 from collections import Counter
 from html.parser import HTMLParser
 from pathlib import Path
@@ -22,6 +24,7 @@ SCRIPT = REPOSITORY / "ci-hub/compatibility-website/render_page.py"
 STAGE1_TEST = REPOSITORY / "ci-hub/tests/test_compatibility_website_build_data.py"
 FIXTURE = REPOSITORY / "ci-hub/tests/fixtures/compatibility-website-stage-1"
 SITE_JS = REPOSITORY / "ci-hub/compatibility-website/assets/site.js"
+FAVICON = REPOSITORY / "ci-hub/compatibility-website/assets/favicon.svg"
 
 
 def load_module(name: str, path: Path) -> Any:
@@ -253,6 +256,7 @@ class PageParser(HTMLParser):
         self.series_rows = 0
         self.scripts = 0
         self.script_sources: list[str] = []
+        self.icon_links: list[tuple[str | None, str]] = []
         self.cell_rows: list[dict[str, str]] = []
         self.recorded_not_in_manifest_rows: list[dict[str, str]] = []
         self.tags: Counter[str] = Counter()
@@ -321,6 +325,9 @@ class PageParser(HTMLParser):
             self.scripts += 1
             if values.get("src") is not None:
                 self.script_sources.append(str(values["src"]))
+        if tag == "link" and values.get("rel") == "icon":
+            assert values.get("href") is not None
+            self.icon_links.append((values.get("type"), str(values["href"])))
 
     def handle_endtag(self, tag: str) -> None:
         if tag == "a":
@@ -527,7 +534,8 @@ def test_site_is_deterministic_and_truthful() -> None:
     cells_parser = parse_site(first)["cells/index.html"]
 
     assert first == second
-    assert len(first) == 21
+    assert len(first) == 22
+    assert first["assets/favicon.svg"] == FAVICON.read_bytes()
     assert set(model.cell_paths.values()) <= set(first)
     assert set(model.test_paths.values()) <= set(first)
     assert set(model.run_paths.values()) <= set(first)
@@ -685,6 +693,54 @@ def test_javascript_asset_refuses_network_html_injection_or_no_text_updates(
         render_page._site_javascript()
 
 
+def test_favicon_is_the_fixed_geometric_h_slash_slash_i_asset(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    favicon = render_page._site_favicon()
+    root = ET.fromstring(favicon)
+    elements = list(root.iter())
+    local_names = [element.tag.rsplit("}", 1)[-1] for element in elements]
+
+    assert favicon == FAVICON.read_bytes()
+    assert hashlib.sha256(favicon).hexdigest() == render_page.FAVICON_SHA256
+    assert root.attrib == {
+        "viewBox": "0 0 64 64",
+    }
+    assert local_names == ["svg", "rect", "path", "path", "rect"]
+    assert {element.attrib.get("fill") for element in elements[1:]} == {
+        "#17202a",
+        "#f5f2ea",
+    }
+    assert elements[1].attrib["rx"] == "32"
+    assert elements[1].attrib["ry"] == "32"
+    assert all(element.text is None or not element.text.strip() for element in elements)
+    lowered = favicon.lower()
+    for forbidden in (
+        b"<text",
+        b"font",
+        b"<script",
+        b"<style",
+        b"<image",
+        b"<use",
+        b"foreignobject",
+        b"href",
+        b"xlink",
+        b"url(",
+        b"data:",
+        b"javascript",
+        b"https:",
+    ):
+        assert forbidden not in lowered
+    assert lowered.count(b"http://") == 1
+    assert b'xmlns="http://www.w3.org/2000/svg"' in lowered
+
+    changed = tmp_path / "favicon.svg"
+    changed.write_bytes(favicon.replace(b"#f5f2ea", b"#ffffff", 1))
+    monkeypatch.setattr(render_page, "FAVICON_PATH", changed)
+    with pytest.raises(render_page.RenderRefused, match="favicon bytes"):
+        render_page._site_favicon()
+
+
 def test_every_internal_link_fragment_and_aggregate_resolves() -> None:
     files = render_page.render_site(*render_page.load_artifacts(FIXTURE))
     parsers = parse_site(files)
@@ -710,6 +766,23 @@ def test_every_internal_link_fragment_and_aggregate_resolves() -> None:
             visible_numbers = re.findall(r"\d+", " ".join(text_parts))
             required = Counter((str(physical), str(represented)))
             assert Counter(visible_numbers) >= required
+
+
+def test_every_html_page_has_one_resolving_local_favicon_link() -> None:
+    files = render_page.render_site(*render_page.load_artifacts(FIXTURE))
+    parsers = parse_site(files)
+
+    assert len(parsers) == 19
+    for source, parser in parsers.items():
+        assert len(parser.icon_links) == 1
+        media_type, href = parser.icon_links[0]
+        assert media_type == "image/svg+xml"
+        assert not href.startswith(("data:", "about:", "#"))
+        target, query, fragment = link_target(source, href)
+        assert target == "assets/favicon.svg"
+        assert target in files
+        assert query == ""
+        assert fragment == ""
 
 
 def test_landing_filter_links_resolve_to_exact_matching_rows() -> None:
@@ -1413,6 +1486,7 @@ def test_cli_writes_deterministic_site_and_refuses_existing_output(
     }
     model = render_page._site_model(*render_page.load_artifacts(FIXTURE))
     assert set(before) == {
+        "assets/favicon.svg",
         "assets/site.css",
         "assets/site.js",
         "cells/index.html",
