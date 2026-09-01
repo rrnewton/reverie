@@ -667,14 +667,9 @@ impl E9patchBackend {
     where
         T: Tool + 'static,
     {
-        let (tracer, resource, _stats) = Self::spawn::<T>(command, config, false).await?;
-        let result = tracer.wait_with_output().await;
-        let cleanup = resource.cleanup();
-        match (result, cleanup) {
-            (Ok(result), Ok(())) => Ok(result),
-            (Err(error), _) => Err(error),
-            (Ok(_), Err(error)) => Err(error.into()),
-        }
+        let (output, global, _stats) =
+            <Self as Backend>::run_with_output::<T>(command, config).await?;
+        Ok((output, global))
     }
 
     /// Runs a tool with the rewritten ELF mounted at its original path.
@@ -1084,10 +1079,34 @@ impl Backend for E9patchBackend {
             (Ok(_), Err(error)) => Err(error.into()),
         }
     }
+
+    async fn run_with_output<T>(
+        mut command: Command,
+        config: <T::GlobalState as GlobalTool>::Config,
+    ) -> Result<(Output, T::GlobalState, Self::Stats), Error>
+    where
+        T: Tool + 'static,
+    {
+        // Pipe here rather than relying on the caller. The previous inherent
+        // `run_with_output` left this to whoever called it, so a caller that
+        // forgot returned empty buffers that were indistinguishable from a
+        // guest that printed nothing.
+        command.stdout(reverie::process::Stdio::piped());
+        command.stderr(reverie::process::Stdio::piped());
+        let (tracer, resource, stats) = Self::spawn::<T>(command, config, false).await?;
+        let result = tracer.wait_with_output().await;
+        let cleanup = resource.cleanup();
+        match (result, cleanup) {
+            (Ok((output, global)), Ok(())) => Ok((output, global, stats.backend_stats())),
+            (Err(error), _) => Err(error),
+            (Ok(_), Err(error)) => Err(error.into()),
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
     use std::os::fd::AsRawFd;
     use std::os::fd::FromRawFd;
 
@@ -1271,6 +1290,35 @@ mod tests {
         };
         waiter.join().unwrap();
         assert!(result.unwrap().success());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn backend_trait_output_capture_runs_non_elf_fallback() {
+        let directory = tempfile::tempdir().unwrap();
+        let guest = directory.path().join("guest.sh");
+        fs::write(
+            &guest,
+            "#!/bin/sh\nprintf 'front-door-out'\nprintf 'front-door-err' >&2\n",
+        )
+        .unwrap();
+        let mut permissions = fs::metadata(&guest).unwrap().permissions();
+        permissions.set_mode(0o755);
+        fs::set_permissions(&guest, permissions).unwrap();
+
+        let (output, (), stats) =
+            <E9patchBackend as Backend>::run_with_output::<()>(Command::new(guest), ())
+                .await
+                .unwrap();
+
+        assert_eq!(output.status, ExitStatus::Exited(0));
+        assert_eq!(output.stdout, b"front-door-out");
+        assert_eq!(output.stderr, b"front-door-err");
+        assert_eq!(
+            stats.rewrite_support(),
+            crate::E9patchRewriteSupport::UnsupportedNonElf
+        );
+        assert_eq!(stats.recovered_sites(), None);
+        assert_eq!(stats.patched_sites(), None);
     }
 
     #[test]

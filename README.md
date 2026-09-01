@@ -213,24 +213,44 @@ backend must:
 7. **Return `(ExitStatus, T::GlobalState)`.** When the root guest exits, hand
    back its exit status together with the (now uniquely owned) global state, so
    the caller can read out whatever the tool accumulated.
+8. **Report backend activity on request.** Enable the backend's real statistics
+   collector and return its typed snapshot; unsupported measurements are not
+   represented by a successful zero.
+9. **Capture guest output on request.** Pipe stdout and stderr and return their
+   bytes together with the exit status, final global state, and typed backend
+   statistics.
 
 This contract is captured explicitly by the `reverie::Backend` trait:
 
 ```rust
 #[reverie::backend(?Send)]
 pub trait Backend {
+    type Stats: BackendStatsSnapshot;
+
     async fn run<T: Tool + 'static>(
         command: Command,
         config: <T::GlobalState as GlobalTool>::Config,
     ) -> Result<(ExitStatus, T::GlobalState), Error>;
+
+    async fn run_with_stats<T: Tool + 'static>(
+        command: Command,
+        config: <T::GlobalState as GlobalTool>::Config,
+    ) -> Result<(ExitStatus, T::GlobalState, Self::Stats), Error>;
+
+    async fn run_with_output<T: Tool + 'static>(
+        command: Command,
+        config: <T::GlobalState as GlobalTool>::Config,
+    ) -> Result<(Output, T::GlobalState, Self::Stats), Error>;
 }
 ```
 
-`reverie::Backend::run` is the *minimal common denominator* every backend must
-provide. A real backend will typically also expose a richer, backend-specific
-builder: `reverie-ptrace`, for example, additionally supports output capture, a
-GDB server, and spawning a *function* (rather than a `Command`) under
-instrumentation, via its `TracerBuilder`/`Tracer` API.
+`reverie::Backend::run` is the smallest entry point. The required
+`run_with_stats` and `run_with_output` entry points expose backend activity and
+captured guest output through the same common contract. A real backend will
+typically also expose a richer, backend-specific builder: `reverie-ptrace`, for
+example, additionally supports a GDB server, spawning a *function* (rather than
+a `Command`) under instrumentation, and lower-level lifecycle and stdio control
+through its `TracerBuilder`/`Tracer` API.
 
 `reverie-ptrace` is the reference implementation. It is a *centralized* backend:
 because it traps events from outside the guest via `ptrace` + `seccomp`, it can

@@ -3,6 +3,7 @@ use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
+use reverie::Backend;
 use reverie::Error;
 use reverie::ExitStatus;
 use reverie::GlobalTool;
@@ -15,9 +16,11 @@ use reverie::syscalls::Syscall;
 use reverie::syscalls::SyscallInfo;
 use reverie::syscalls::Sysno;
 use reverie_liteinst::LiteinstBackend;
+use reverie_liteinst::TOOL_PRELOAD_ENV;
 
 const RPC_GETPID: u64 = 1;
 const RPC_FORK: u64 = 4;
+const BACKEND_OUTPUT_CHILD_ENV: &str = "REVERIE_LITEINST_BACKEND_OUTPUT_TEST_CHILD";
 
 #[derive(Debug, Default)]
 struct LifecycleGlobal {
@@ -212,6 +215,50 @@ async fn in_guest_run_reports_typed_instrumentation_stats() {
     let paths = stats.dispatch_path_counts();
     assert!(paths[2] >= 1, "expected an in-guest SIGSYS: {stats}");
     assert!(paths[6] >= 8, "expected installed-hook dispatches: {stats}");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn backend_trait_output_capture_reports_bytes_status_and_stats() {
+    if std::env::var_os(BACKEND_OUTPUT_CHILD_ENV).is_none() {
+        let (_preload_directory, preload) = compile_noop_preload();
+        let child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "backend_trait_output_capture_reports_bytes_status_and_stats",
+                "--exact",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env(BACKEND_OUTPUT_CHILD_ENV, "1")
+            .env(TOOL_PRELOAD_ENV, preload)
+            .output()
+            .unwrap();
+        assert!(
+            child.status.success(),
+            "isolated Backend::run_with_output test failed:\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&child.stdout),
+            String::from_utf8_lossy(&child.stderr)
+        );
+        return;
+    }
+
+    let (output, global, stats) = tokio::time::timeout(
+        Duration::from_secs(10),
+        <LiteinstBackend as Backend>::run_with_output::<CoordinatorOnlyTool>(
+            guest_command("fast-path"),
+            (),
+        ),
+    )
+    .await
+    .expect("Backend::run_with_output hung on the LiteInst path")
+    .unwrap();
+
+    assert_eq!(output.status, ExitStatus::Exited(0), "{output:?}");
+    assert_eq!(output.stdout, b"calls=8 traps=1 hooks=8\n", "{output:?}");
+    assert!(output.stderr.is_empty(), "{output:?}");
+    assert_eq!(global.getpid.load(Ordering::Relaxed), 8);
+    assert_eq!(stats.process_reports(), 1, "{stats}");
+    assert!(stats.patch_shapes().patched_rips() >= 1, "{stats}");
+    assert!(stats.patch_shapes().candidate_rips() >= 1, "{stats}");
 }
 
 #[tokio::test(flavor = "current_thread")]

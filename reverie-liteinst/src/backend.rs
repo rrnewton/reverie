@@ -13,6 +13,7 @@ use std::os::fd::OwnedFd;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::ffi::OsStringExt;
 use std::os::unix::process::CommandExt;
+use std::os::unix::process::ExitStatusExt;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Output;
@@ -612,6 +613,34 @@ impl Backend for LiteinstBackend {
         let (status, global, stats) =
             Self::run_with_preload_and_stats::<T>(command, config, preload).await?;
         Ok((status, global, stats.backend_stats()))
+    }
+
+    async fn run_with_output<T>(
+        command: Command,
+        config: <T::GlobalState as GlobalTool>::Config,
+    ) -> Result<(ReverieOutput, T::GlobalState, Self::Stats), Error>
+    where
+        T: Tool + 'static,
+    {
+        // The preload path is resolved here rather than taken as a parameter:
+        // it is a LiteInst mechanism, not part of the backend-agnostic
+        // contract. See the `Backend` trait docs, "Why `preload` is
+        // deliberately not on this trait".
+        let preload = tool_preload_path()?;
+        let (output, global, stats) =
+            Self::run_with_output_and_preload_and_stats::<T>(command, config, preload).await?;
+        // This family of LiteInst entry points predates the trait and reports
+        // `std::process::Output`; the trait speaks Reverie's own `Output` so
+        // that the captured status is the same `reverie::ExitStatus` that
+        // `run` and `run_with_stats` return. Preserve the wait status's core
+        // dump bit rather than using the older infallible conversion, which
+        // cannot distinguish signal termination with and without a core dump.
+        let output = ReverieOutput {
+            status: ExitStatus::from_raw(output.status.into_raw()),
+            stdout: output.stdout,
+            stderr: output.stderr,
+        };
+        Ok((output, global, stats.backend_stats()))
     }
 }
 
