@@ -387,6 +387,17 @@ if ((SELF_TEST_GATE_COUNTS == 1)); then
     [[ ${ledger_gate_filtered_tests[0]} == null ]]
     missing_record=$(ledger_gates_json)
     [[ $missing_record != *'"executed_tests"'* ]]
+    ledger_gate_names=()
+    ledger_gate_statuses=()
+    ledger_gate_durations=()
+    ledger_gate_executed_tests=()
+    ledger_gate_filtered_tests=()
+    malformed_counts="$VALIDATION_TEST_COUNTS_DIR/malformed.json"
+    printf '%s\n' '{"schema_version":1,"executed_tests":"not-a-count"}' >"$malformed_counts"
+    run_check_impl "Test regular workspace cases" "$malformed_counts" true
+    [[ ${ledger_gate_statuses[0]} == 2 ]]
+    [[ ${ledger_gate_executed_tests[0]} == null ]]
+    [[ ${ledger_gate_filtered_tests[0]} == null ]]
     "$LIBTEST_COUNTS_TOOL" --self-test || exit 1
     printf 'PASS: typed per-gate counts drive the gate and aggregate records\n'
     rm -f "$VALIDATION_CPU_TIMES_FILE"
