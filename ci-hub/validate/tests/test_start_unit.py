@@ -2331,6 +2331,20 @@ class StartUnitTest(unittest.TestCase):
         self.assertIn("retained=0", out.getvalue())
         self.assertIn("bookkeeping-errors=0", out.getvalue())
 
+    def test_committed_wrkslots_exposes_ownerless_cargo_home_recovery(self) -> None:
+        wrapper = start_unit.ROOT / "ci-hub/bin/wrkslots"
+
+        result = subprocess.run(
+            [str(wrapper), "recover", "--help"],
+            cwd=start_unit.ROOT,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertIn("--ownerless-validate-cargo-home", result.stdout)
+
     def test_sweep_accepts_historical_cargo_home_location(self) -> None:
         cargo_home = self.root / "worktrees/validate/validate-cargo-legacy"
         cargo_home.mkdir(parents=True)
