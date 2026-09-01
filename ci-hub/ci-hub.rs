@@ -1811,7 +1811,10 @@ fn execute(root: &Path, command: HubCommand) -> Result<i32, CiHubError> {
         },
         HubCommand::NewestGreen(args) => run_newest_green(root, args),
         HubCommand::FirstBad(args) => run_first_bad(root, args),
-        HubCommand::ApplyLocalLabel(args) => run_apply_local_label(root, args),
+        HubCommand::ApplyLocalLabel(args) => {
+            let state_root = operational_state_root(root)?;
+            run_apply_local_label(root, &state_root, args)
+        }
         HubCommand::PublishCommitStatus(args) => {
             let state_root = operational_state_root(root)?;
             run_publish_commit_status(root, &state_root, args)
@@ -8637,19 +8640,20 @@ fn fetch_issue_comments(root: &Path, repo: &str, pr: u64) -> Result<Vec<u8>, CiH
 }
 
 fn run_immutable_receipt_verifier(
-    root: &Path,
+    tool_root: &Path,
+    state_root: &Path,
     repo: &str,
     sha: &str,
     comments: &[u8],
 ) -> Result<Option<ImmutableReceiptReference>, String> {
-    let verifier = root.join("ci-hub/validation/verify_receipt.sh");
-    let producer_checkout = root.join("hermit");
+    let verifier = tool_root.join("ci-hub/validation/verify_receipt.sh");
+    let producer_checkout = state_root.join("hermit");
     let mut command = Command::new(&verifier);
     command
         .args(["--repo", repo, "--sha", sha, "--comments", "/dev/stdin"])
         .arg("--producer-repo-checkout")
         .arg(producer_checkout)
-        .current_dir(root)
+        .current_dir(state_root)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -8781,20 +8785,22 @@ fn fetch_and_verify_immutable_receipt(
 /// failure is returned for diagnostics, but callers still take the existing
 /// fail-closed publisher path rather than treating reuse as required.
 fn reuse_existing_immutable_receipt(
-    root: &Path,
+    tool_root: &Path,
+    state_root: &Path,
     repo: &str,
     pr: u64,
     sha: &str,
     selected: &QualifyingReceipt,
 ) -> Result<Option<VerifiedPublishedReceipt>, String> {
-    let comments = fetch_issue_comments(root, repo, pr).map_err(|error| error.to_string())?;
+    let comments = fetch_issue_comments(tool_root, repo, pr).map_err(|error| error.to_string())?;
     let mut comments: serde_json::Value = serde_json::from_slice(&comments)
         .map_err(|error| format!("invalid issue comments JSON: {error}"))?;
     let mut last_rejection = None;
     loop {
         let verifier_input = serde_json::to_vec(&comments)
             .map_err(|error| format!("cannot encode issue comments: {error}"))?;
-        let Some(reference) = run_immutable_receipt_verifier(root, repo, sha, &verifier_input)?
+        let Some(reference) =
+            run_immutable_receipt_verifier(tool_root, state_root, repo, sha, &verifier_input)?
         else {
             return match last_rejection {
                 Some(error) => Err(error),
@@ -8805,7 +8811,7 @@ fn reuse_existing_immutable_receipt(
             "<!-- locally-validated-receipt commit={} path={} sha256={} -->",
             reference.receipt_commit, reference.path, reference.artifact_sha256
         );
-        match fetch_and_verify_immutable_receipt(root, repo, sha, selected, reference) {
+        match fetch_and_verify_immutable_receipt(tool_root, repo, sha, selected, reference) {
             Ok(artifact) => return Ok(Some(artifact)),
             Err(error) => last_rejection = Some(error),
         }
@@ -9012,12 +9018,23 @@ fn run_publish_commit_status(
 /// `locally-validated` cache in both directions. A qualifying exact-head receipt
 /// binds the label; every other exact-head verdict removes an existing label.
 /// Receipt comments remain immutable history and are already exact-head bound.
-fn run_apply_local_label(root: &Path, args: ApplyLocalLabelArgs) -> Result<i32, CiHubError> {
-    let path = ledger_path(root);
-    let rows = load_ledger_rows(&path)?;
+fn load_apply_local_label_rows(
+    tool_root: &Path,
+    state_root: &Path,
+) -> Result<Vec<HistoryRow>, CiHubError> {
+    Ok(load_ledger_rows_reporting_with_tool(&ledger_path(state_root), tool_root)?.0)
+}
+
+fn run_apply_local_label(
+    tool_root: &Path,
+    state_root: &Path,
+    args: ApplyLocalLabelArgs,
+) -> Result<i32, CiHubError> {
+    let path = ledger_path(state_root);
+    let rows = load_apply_local_label_rows(tool_root, state_root)?;
     let prs = match (args.pr, args.all_open) {
         (Some(pr), false) => vec![pr],
-        (None, true) => gh_open_prs(root, &args.repo)?,
+        (None, true) => gh_open_prs(tool_root, &args.repo)?,
         _ => {
             return Err(CiHubError::ValidateStatus(
                 "exactly one of --pr or --all-open is required".into(),
@@ -9031,7 +9048,7 @@ fn run_apply_local_label(root: &Path, args: ApplyLocalLabelArgs) -> Result<i32, 
     let mut failed = 0i32;
     for pr in prs {
         // In sweep mode a single unreadable PR must not abort the whole run.
-        let (head, has_label) = match gh_pr_head_and_local_label(root, &args.repo, pr) {
+        let (head, has_label) = match gh_pr_head_and_local_label(tool_root, &args.repo, pr) {
             Ok(state) => state,
             Err(error) => {
                 eprintln!("ci-hub: apply-local-label: PR #{pr}: {error}");
@@ -9042,7 +9059,7 @@ fn run_apply_local_label(root: &Path, args: ApplyLocalLabelArgs) -> Result<i32, 
                 continue;
             }
         };
-        let assessment = match assess_canonical_receipts(root, &rows, &head, &args.repo) {
+        let assessment = match assess_canonical_receipts(state_root, &rows, &head, &args.repo) {
             Ok(assessment) => assessment,
             Err(detail) => {
                 eprintln!("ci-hub: apply-local-label: PR #{pr}: {detail}");
@@ -9064,7 +9081,7 @@ fn run_apply_local_label(root: &Path, args: ApplyLocalLabelArgs) -> Result<i32, 
                 let action = if args.dry_run {
                     "would-remove"
                 } else {
-                    match remove_local_validation_label(root, &args.repo, pr) {
+                    match remove_local_validation_label(tool_root, &args.repo, pr) {
                         Ok(()) => "removed",
                         Err(error) => {
                             eprintln!("ci-hub: apply-local-label: PR #{pr}: {error}");
@@ -9117,13 +9134,15 @@ fn run_apply_local_label(root: &Path, args: ApplyLocalLabelArgs) -> Result<i32, 
         // confirms it embeds this exact selected row. Otherwise preserve the
         // existing fail-closed publisher path. Producer resolution may use a
         // durable checkout, but missing source evidence still refuses locally.
-        let publisher = root.join("ci-hub/validation/publish_receipt.py");
-        let reuse = reuse_existing_immutable_receipt(root, &args.repo, pr, &head, selected);
+        let publisher = tool_root.join("ci-hub/validation/publish_receipt.py");
+        let reuse = reuse_existing_immutable_receipt(
+            tool_root, state_root, &args.repo, pr, &head, selected,
+        );
         let (artifact, receipt_source) = match reuse {
             Ok(Some(artifact)) => (artifact, "reused-immutable"),
             reuse_unavailable => {
                 match publish_selected_receipt(
-                    root,
+                    state_root,
                     &publisher,
                     &path,
                     &args.repo,
@@ -9153,7 +9172,7 @@ fn run_apply_local_label(root: &Path, args: ApplyLocalLabelArgs) -> Result<i32, 
             "would-publish"
         } else {
             match reconcile_local_validation_commit_status(
-                root,
+                tool_root,
                 &args.repo,
                 &head,
                 &selected.row,
@@ -9174,7 +9193,8 @@ fn run_apply_local_label(root: &Path, args: ApplyLocalLabelArgs) -> Result<i32, 
             }
         };
         if !args.dry_run {
-            if let Err(error) = bind_verified_receipt_to_pr(root, &args.repo, pr, &head, &artifact)
+            if let Err(error) =
+                bind_verified_receipt_to_pr(tool_root, &args.repo, pr, &head, &artifact)
             {
                 eprintln!("ci-hub: apply-local-label: PR #{pr}: {error}");
                 actions.push(serde_json::json!({"pr": pr, "head": head, "action": "bind-failed", "detail": error.to_string()}));
@@ -13119,6 +13139,49 @@ assert Path(__file__).parents[2] == Path(os.environ["DEV_HERMIT_TOOL_ROOT"])
             load_ledger_rows_reporting_with_tool(&state_root.join("ledger"), &tool_root).unwrap();
         assert!(rows.is_empty());
         assert!(failures.is_empty());
+
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn apply_local_label_reads_validation_rows_from_operational_state_root() {
+        let directory = env::temp_dir().join(format!(
+            "ci-hub-apply-label-state-root-{}-{}",
+            std::process::id(),
+            std::thread::current().name().unwrap_or("test")
+        ));
+        let tool_root = directory.join("tool");
+        let state_root = directory.join("state");
+        let adapter = tool_root.join("ci-hub/ledger/validate_rows.py");
+        std::fs::create_dir_all(adapter.parent().unwrap()).unwrap();
+        std::fs::create_dir_all(state_root.join("ledger")).unwrap();
+        std::fs::write(
+            &adapter,
+            r#"import os
+from pathlib import Path
+
+tool_root = Path(os.environ["DEV_HERMIT_TOOL_ROOT"])
+state_root = Path(os.environ["DEV_HERMIT_PARENT"])
+assert Path(__file__).parents[2] == tool_root
+assert Path.cwd() == state_root
+print((state_root / "receipt.jsonl").read_text(), end="")
+"#,
+        )
+        .unwrap();
+        let mut receipt = schema4_receipt_value();
+        receipt["passed_tests"] = serde_json::json!(786);
+        std::fs::write(
+            state_root.join("receipt.jsonl"),
+            format!("{}\n", serde_json::to_string(&receipt).unwrap()),
+        )
+        .unwrap();
+
+        assert!(!tool_root.join("ledger").exists());
+        let rows = load_apply_local_label_rows(&tool_root, &state_root).unwrap();
+        let assessment =
+            assess_canonical_receipts(&state_root, &rows, RECEIPT_SHA, CANONICAL_VALIDATE_REPO)
+                .unwrap();
+        assert_eq!(assessment.verdict, validate_status::Verdict::Validated);
 
         std::fs::remove_dir_all(directory).unwrap();
     }
