@@ -204,6 +204,7 @@ class FakeRun:
         self.commit_status_rc = 0
         self.commit_status_stderr = ""
         self.commit_status_launch_error: OSError | None = None
+        self.ownerless_cargo_recovery_rc = 0
 
     def default_ledger_row(self) -> dict[str, object]:
         return {
@@ -256,6 +257,10 @@ class FakeRun:
             and "recover" in command
             and "--legacy-validate-checkout" in command
         ):
+            if "--coordinator-authorized" not in command:
+                raise AssertionError(
+                    "legacy validation cleanup must carry explicit coordinator authorization"
+                )
             project_root = Path(command[command.index("--project-root") + 1])
             relative = Path(
                 command[command.index("--legacy-validate-checkout") + 1]
@@ -266,6 +271,43 @@ class FakeRun:
             return completed(
                 command,
                 stdout="recovered completed legacy validation checkout\n",
+            )
+        if (
+            command[0].endswith("ci-hub/bin/wrkslots")
+            and "recover" in command
+            and "--ownerless-validate-cargo-home" in command
+        ):
+            required = (
+                "--coordinator-authorized",
+                "--coordinator-pid",
+                "--completed-record",
+            )
+            missing = [flag for flag in required if flag not in command]
+            if missing:
+                raise AssertionError(
+                    "recorded Cargo-home recovery omitted " + ", ".join(missing)
+                )
+            project_root = Path(command[command.index("--project-root") + 1])
+            relative = Path(
+                command[command.index("--ownerless-validate-cargo-home") + 1]
+            )
+            completed_record = Path(
+                command[command.index("--completed-record") + 1]
+            )
+            if relative.is_absolute() or completed_record.is_absolute():
+                raise AssertionError("wrkslots recovery paths must be project-relative")
+            if self.ownerless_cargo_recovery_rc != 0:
+                return completed(
+                    command,
+                    rc=self.ownerless_cargo_recovery_rc,
+                    stderr="ownerless validation recovery refused",
+                )
+            private = project_root / relative
+            self.removed.append(str(private))
+            shutil.rmtree(private, ignore_errors=True)
+            return completed(
+                command,
+                stdout="recovered ownerless validation cargo-home\n",
             )
         if command[:2] == ["mktemp", "-d"] and "validate-cargo-" in command[2]:
             private = Path(command[2].replace("XXXXXXXX", "abcd1234"))
@@ -2218,8 +2260,14 @@ class StartUnitTest(unittest.TestCase):
         out = io.StringIO()
         err = io.StringIO()
         with mock.patch.object(
-            start_unit, "path_may_have_live_process", return_value=False
-        ), contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            start_unit,
+            "path_may_have_live_process",
+            side_effect=AssertionError(
+                "wrkslots-routed cleanup must not use the duplicate parent proc scan"
+            ),
+        ) as parent_liveness, contextlib.redirect_stdout(
+            out
+        ), contextlib.redirect_stderr(err):
             rc = start_unit.main(
                 ["--sweep-completed", "--json"],
                 run=self.fake,
@@ -2228,6 +2276,7 @@ class StartUnitTest(unittest.TestCase):
             )
 
         self.assertEqual(0, rc, err.getvalue())
+        parent_liveness.assert_not_called()
         report = json.loads(out.getvalue())
         self.assertEqual([str(fresh)], report["removed"])
         self.assertEqual([str(cargo_home)], report["removed_cargo_homes"])
@@ -2264,20 +2313,89 @@ class StartUnitTest(unittest.TestCase):
             ],
         )
 
+    def test_sweep_completed_human_report_does_not_require_launch_fields(self) -> None:
+        out = io.StringIO()
+        err = io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = start_unit.main(
+                ["--sweep-completed"],
+                run=self.fake,
+                environment=self.environment,
+                root=self.root,
+            )
+
+        self.assertEqual(0, rc, err.getvalue())
+        self.assertIn("validate-run: SWEEP-COMPLETED", out.getvalue())
+        self.assertIn("removed=0", out.getvalue())
+        self.assertIn("removed-cargo-homes=0", out.getvalue())
+        self.assertIn("retained=0", out.getvalue())
+        self.assertIn("bookkeeping-errors=0", out.getvalue())
+
     def test_sweep_accepts_historical_cargo_home_location(self) -> None:
         cargo_home = self.root / "worktrees/validate/validate-cargo-legacy"
         cargo_home.mkdir(parents=True)
+        record_path = self.root / "ignored/validate/runs/validate-cargo-legacy.json"
+        record = {
+            "schema_version": 1,
+            "cargo_home": str(cargo_home),
+            "state": "completed",
+            "exit_code": 0,
+            "final_validate_status": "PASSED",
+        }
+        start_unit.run_registry.write_record(record_path, record)
 
         removed, reason = start_unit.cleanup_recorded_cargo_home(
             self.root,
-            {"cargo_home": str(cargo_home)},
+            record,
+            record_path=record_path,
             run=self.fake,
-            check_processes=False,
         )
 
         self.assertTrue(removed)
         self.assertIsNone(reason)
         self.assertFalse(cargo_home.exists())
+        recovery = next(
+            command
+            for command in self.fake.commands
+            if "--ownerless-validate-cargo-home" in command
+        )
+        self.assertIn("--coordinator-authorized", recovery)
+        self.assertEqual(
+            "worktrees/validate/validate-cargo-legacy",
+            recovery[recovery.index("--ownerless-validate-cargo-home") + 1],
+        )
+        self.assertEqual(
+            "ignored/validate/runs/validate-cargo-legacy.json",
+            recovery[recovery.index("--completed-record") + 1],
+        )
+        self.assertFalse(
+            any(command[:2] == ["rm", "-rf"] for command in self.fake.commands)
+        )
+
+    def test_sweep_retains_cargo_home_when_wrkslots_recovery_refuses(self) -> None:
+        cargo_home = self.root / "ignored/validate/cargo-homes/validate-cargo-refused"
+        cargo_home.mkdir(parents=True)
+        record_path = self.root / "ignored/validate/runs/validate-cargo-refused.json"
+        record = {
+            "schema_version": 1,
+            "cargo_home": str(cargo_home),
+            "state": "completed",
+            "exit_code": 0,
+            "final_validate_status": "PASSED",
+        }
+        start_unit.run_registry.write_record(record_path, record)
+        self.fake.ownerless_cargo_recovery_rc = 3
+
+        removed, reason = start_unit.cleanup_recorded_cargo_home(
+            self.root,
+            record,
+            record_path=record_path,
+            run=self.fake,
+        )
+
+        self.assertFalse(removed)
+        self.assertIn("wrkslots retained the Cargo home", reason or "")
+        self.assertTrue(cargo_home.is_dir())
 
     def test_sweep_completed_removes_legacy_checkout_under_ignored(self) -> None:
         fresh = self.root / "ignored" / "validate-fresh-legacy"
@@ -2493,6 +2611,50 @@ class StartUnitTest(unittest.TestCase):
         self.assertEqual([str(fresh)], report["removed"])
         self.assertFalse(fresh.exists())
 
+    def test_sweep_completed_retains_frozen_checkout_when_use_is_unknown(self) -> None:
+        fresh = (
+            start_unit.frozen_checkout_parent(self.root)
+            / "validate-fresh-frozen-held"
+        )
+        (fresh / ".git").mkdir(parents=True)
+        self.fake.fresh = fresh
+        record_path = self.root / "ignored/validate/runs/validate-frozen-held.json"
+        start_unit.run_registry.write_record(
+            record_path,
+            {
+                "schema_version": 1,
+                "unit": "validate-frozen-held.service",
+                "checkout": str(fresh),
+                "source_checkout": str(self.checkout),
+                "temporary_checkout": True,
+                "admission": start_unit.FROZEN_RESULT_ADMISSION,
+                "repo": "rrnewton/hermit",
+                "state": "completed",
+                "exit_code": 0,
+                "final_validate_status": "PASSED",
+            },
+        )
+
+        out = io.StringIO()
+        with mock.patch.object(
+            start_unit, "path_may_have_live_process", return_value=True
+        ) as parent_liveness, contextlib.redirect_stdout(out):
+            rc = start_unit.main(
+                ["--sweep-completed", "--json"],
+                run=self.fake,
+                environment=self.environment,
+                root=self.root,
+            )
+
+        self.assertEqual(start_unit.EXIT_COULD_NOT_DETERMINE, rc)
+        parent_liveness.assert_called_once_with(fresh)
+        report = json.loads(out.getvalue())
+        self.assertEqual([], report["removed"])
+        self.assertEqual(
+            "a live process may still use the checkout", report["retained"][0]["reason"]
+        )
+        self.assertTrue(fresh.is_dir())
+
     def test_sweep_completed_removes_frozen_checkout_from_short_lived_location(self) -> None:
         fresh = self.root / "worktrees/validate/validate-fresh-frozen-old"
         (fresh / ".git").mkdir(parents=True)
@@ -2565,9 +2727,10 @@ class StartUnitTest(unittest.TestCase):
         )
         self.assertTrue(fresh.is_dir())
 
-    def test_sweep_completed_retains_terminal_checkout_used_by_a_process(self) -> None:
+    def test_sweep_defers_linked_checkout_liveness_to_wrkslots(self) -> None:
         fresh = self.root / "worktrees/validate/validate-fresh-held"
         fresh.mkdir(parents=True)
+        self.fake.fresh = fresh
         start_unit.run_registry.write_record(
             self.root / "ignored/validate/runs/validate-held.json",
             {
@@ -2586,7 +2749,7 @@ class StartUnitTest(unittest.TestCase):
         out = io.StringIO()
         with mock.patch.object(
             start_unit, "path_may_have_live_process", return_value=True
-        ), contextlib.redirect_stdout(out):
+        ) as parent_liveness, contextlib.redirect_stdout(out):
             rc = start_unit.main(
                 ["--sweep-completed", "--json"],
                 run=self.fake,
@@ -2594,11 +2757,12 @@ class StartUnitTest(unittest.TestCase):
                 root=self.root,
             )
 
-        self.assertEqual(start_unit.EXIT_COULD_NOT_DETERMINE, rc)
+        self.assertEqual(0, rc)
+        parent_liveness.assert_not_called()
         report = json.loads(out.getvalue())
-        self.assertEqual([], report["removed"])
-        self.assertEqual("a live process may still use the checkout", report["retained"][0]["reason"])
-        self.assertTrue(fresh.is_dir())
+        self.assertEqual([str(fresh)], report["removed"])
+        self.assertEqual([], report["retained"])
+        self.assertFalse(fresh.exists())
 
     def test_sweep_completed_rejects_ignored_launch_flags(self) -> None:
         for flag in ("--make-validate", "--allow-owner-validate-symlink"):
@@ -2627,6 +2791,70 @@ class StartUnitTest(unittest.TestCase):
         (proc / "exe").symlink_to(sys.executable)
         (proc / "root").symlink_to("/")
         (proc / "fd" / "7").symlink_to(artifact)
+
+        self.assertTrue(
+            start_unit.path_may_have_live_process(checkout, proc_root=proc.parent)
+        )
+
+    def test_cleanup_liveness_retains_unreadable_process(self) -> None:
+        checkout = self.root / "worktrees/validate/validate-fresh-unknown"
+        checkout.mkdir(parents=True)
+        proc = self.root / "proc" / "123"
+        proc.mkdir(parents=True)
+        (proc / "stat").write_text("123 (possibly-related) S 1 2 3\n")
+
+        self.assertTrue(
+            start_unit.path_may_have_live_process(
+                checkout, proc_root=proc.parent
+            )
+        )
+
+    def test_cleanup_liveness_includes_a_working_directory(self) -> None:
+        checkout = self.root / "worktrees/validate/validate-fresh-cwd"
+        checkout.mkdir(parents=True)
+        proc = self.root / "proc" / "123"
+        (proc / "fd").mkdir(parents=True)
+        (proc / "map_files").mkdir()
+        (proc / "cwd").symlink_to(checkout)
+        (proc / "exe").symlink_to(sys.executable)
+        (proc / "root").symlink_to("/")
+
+        self.assertTrue(
+            start_unit.path_may_have_live_process(checkout, proc_root=proc.parent)
+        )
+
+    def test_cleanup_liveness_includes_a_mount(self) -> None:
+        checkout = self.root / "worktrees/validate/validate-fresh-mounted"
+        checkout.mkdir(parents=True)
+        proc = self.root / "proc" / "123"
+        (proc / "fd").mkdir(parents=True)
+        (proc / "map_files").mkdir()
+        (proc / "cwd").symlink_to(self.root)
+        (proc / "exe").symlink_to(sys.executable)
+        (proc / "root").symlink_to("/")
+        (proc / "maps").write_text("")
+        (proc / "mountinfo").write_text(
+            f"41 1 0:32 / {checkout} rw - btrfs /dev/test rw\n"
+        )
+
+        self.assertTrue(
+            start_unit.path_may_have_live_process(checkout, proc_root=proc.parent)
+        )
+
+    def test_cleanup_liveness_includes_a_memory_mapping(self) -> None:
+        checkout = self.root / "worktrees/validate/validate-fresh-mapped"
+        checkout.mkdir(parents=True)
+        artifact = checkout / "mapped-library.so"
+        artifact.write_text("fixture\n")
+        proc = self.root / "proc" / "123"
+        (proc / "fd").mkdir(parents=True)
+        (proc / "map_files").mkdir()
+        (proc / "cwd").symlink_to(self.root)
+        (proc / "exe").symlink_to(sys.executable)
+        (proc / "root").symlink_to("/")
+        (proc / "maps").write_text(
+            f"7f000000-7f001000 r--p 00000000 00:00 0 {artifact}\n"
+        )
 
         self.assertTrue(
             start_unit.path_may_have_live_process(checkout, proc_root=proc.parent)

@@ -1790,6 +1790,7 @@ def remove_fresh_checkout(
                 str(state_root),
                 "--allow-existing-unregistered-worktrees",
                 "recover",
+                "--coordinator-authorized",
                 "--coordinator-pid",
                 str(os.getpid()),
                 "--legacy-validate-checkout",
@@ -1930,6 +1931,25 @@ def path_may_have_live_process(path: Path, *, proc_root: Path = Path("/proc")) -
                         return True
         except OSError:
             pass
+        try:
+            with (proc / "mountinfo").open(
+                encoding="utf-8", errors="replace"
+            ) as handle:
+                for line in handle:
+                    left, separator, right = line.partition(" - ")
+                    if not separator:
+                        continue
+                    left_fields = left.split()
+                    right_fields = right.split()
+                    candidates = [
+                        *(left_fields[index] for index in (3, 4) if len(left_fields) > index),
+                        *(right_fields[index] for index in (1, 2) if len(right_fields) > index),
+                    ]
+                    for raw in candidates:
+                        if matches(raw.replace("\\040", " ")):
+                            return True
+        except OSError:
+            pass
         if not readable:
             try:
                 state = (proc / "stat").read_text().rsplit(")", 1)[1].split()[0]
@@ -1984,7 +2004,14 @@ def cleanup_recorded_checkout(
         return False, [], None
     if not checkout.exists():
         return False, [], None
-    if check_processes and path_may_have_live_process(checkout):
+    # Linked and historical worktrees are removed through wrkslots below, which
+    # owns the final liveness proof.  Only a frozen standalone clone reaches
+    # direct rmtree and therefore needs this wrapper's fail-closed procfs scan.
+    if (
+        check_processes
+        and (checkout / ".git").is_dir()
+        and path_may_have_live_process(checkout)
+    ):
         return False, [], "a live process may still use the checkout"
     locations = orphaned_receipt_locations(checkout, run=run)
     archived = archive_orphaned_receipts(root, checkout, locations, unit=unit)
@@ -2012,10 +2039,11 @@ def cleanup_recorded_cargo_home(
     root: Path,
     record: Mapping[str, Any],
     *,
+    record_path: Path,
     run: Runner,
-    check_processes: bool = True,
+    tool_root: Path = ROOT,
 ) -> tuple[bool, str | None]:
-    """Remove one recorded per-run Cargo home after its unit is terminal."""
+    """Recover one recorded per-run Cargo home after its unit is terminal."""
     raw_private = record.get("cargo_home")
     if not isinstance(raw_private, str):
         return False, None
@@ -2031,13 +2059,39 @@ def cleanup_recorded_cargo_home(
         return False, f"recorded Cargo home is outside {expected}"
     if not private.exists():
         return False, None
-    if check_processes and path_may_have_live_process(private):
-        return False, "a live process may still use the Cargo home"
-    remove_private_cargo_home(private, run=run)
-    return (
-        not private.exists(),
-        None if not private.exists() else "Cargo home still exists after the removal attempt",
+    state_root = root.resolve()
+    try:
+        private_relative = private.relative_to(state_root)
+        record_relative = record_path.resolve().relative_to(state_root)
+    except ValueError as error:
+        raise RuntimeError(
+            "recorded Cargo home or completed record is outside the project root"
+        ) from error
+    removal = run(
+        [
+            str(tool_root / "ci-hub/bin/wrkslots"),
+            "--project-root",
+            str(state_root),
+            "--allow-existing-unregistered-worktrees",
+            "recover",
+            "--coordinator-authorized",
+            "--coordinator-pid",
+            str(os.getpid()),
+            "--ownerless-validate-cargo-home",
+            private_relative.as_posix(),
+            "--completed-record",
+            record_relative.as_posix(),
+        ],
+        check=False,
     )
+    if removal.returncode != 0:
+        detail = removal.stderr.strip() or removal.stdout.strip() or (
+            f"exit {removal.returncode}"
+        )
+        return False, f"wrkslots retained the Cargo home: {detail}"
+    if private.exists():
+        return False, "wrkslots reported success but the Cargo home still exists"
+    return True, None
 
 
 def recorded_cleanup_path_exists(root: Path, record: Mapping[str, Any]) -> bool:
@@ -2160,8 +2214,9 @@ def sweep_completed_checkouts(
             cargo_cleaned, cargo_reason = cleanup_recorded_cargo_home(
                 root,
                 record,
+                record_path=path,
                 run=run,
-                check_processes=True,
+                tool_root=tool_root,
             )
         except (OSError, RuntimeError, ValueError) as error:
             retained.append(
@@ -3080,6 +3135,30 @@ def emit_report(report: Mapping[str, Any], *, json_output: bool) -> None:
         print(json.dumps(enriched, sort_keys=True), flush=True)
         return
     event = report.get("event", "state").upper()
+    if event == "SWEEP-COMPLETED":
+        removed = report.get("removed", [])
+        removed_cargo_homes = report.get("removed_cargo_homes", [])
+        retained = report.get("retained", [])
+        bookkeeping_errors = report.get("bookkeeping_errors", [])
+        print(
+            "validate-run: SWEEP-COMPLETED "
+            f"removed={len(removed)} "
+            f"removed-cargo-homes={len(removed_cargo_homes)} "
+            f"retained={len(retained)} "
+            f"bookkeeping-errors={len(bookkeeping_errors)}",
+            flush=True,
+        )
+        for row in retained:
+            print(
+                f"RETAINED {row.get('checkout', '')}: {row.get('reason', '')}",
+                flush=True,
+            )
+        for row in bookkeeping_errors:
+            print(
+                f"BOOKKEEPING-ERROR {row.get('record', '')}: {row.get('reason', '')}",
+                flush=True,
+            )
+        return
     print(
         f"validate-run: {event} {report['unit']} target={report['target']} "
         f"state={report.get('state', 'unknown')}",
@@ -3422,7 +3501,11 @@ def cleanup_after_attach(
             )
     try:
         cargo_cleaned, cargo_reason = cleanup_recorded_cargo_home(
-            root, record, run=run, check_processes=True
+            root,
+            record,
+            record_path=record_path,
+            run=run,
+            tool_root=tool_root,
         )
     except (OSError, RuntimeError, ValueError) as error:
         print(
