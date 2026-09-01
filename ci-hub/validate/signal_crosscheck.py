@@ -4,7 +4,10 @@
 This command does not create another receipt predicate. It asks the existing
 ``validate-status`` authority for the receipt verdict, then reports the other
 stores at their actual scopes and refuses contradictions or missing evidence
-that those stores would otherwise hide.
+that those stores would otherwise hide. When a rebased validation commit is no
+longer present locally, only scorecard content may be read through the
+tree-matched main commit reported by ``validate-status``; every evidence store
+remains queried by the original validated SHA.
 """
 
 from __future__ import annotations
@@ -233,6 +236,8 @@ def validate_status_report(
             sha,
             "--repo",
             repo,
+            "--columns",
+            "main",
             "--json",
         ],
         cwd=state_root,
@@ -240,6 +245,16 @@ def validate_status_report(
         env=env,
     )
     report = _json_object(result.stdout, "validate-status")
+    if report.get("sha") != sha:
+        raise CrosscheckError(
+            "validate-status answered for a different commit: "
+            f"requested={sha}, reported={report.get('sha')!r}"
+        )
+    if report.get("repo") != repo:
+        raise CrosscheckError(
+            "validate-status answered for a different repository: "
+            f"requested={repo}, reported={report.get('repo')!r}"
+        )
     report["scope"] = "canonical exact-commit receipt qualification"
     report["observed_exit_code"] = result.returncode
     if result.returncode != report.get("exit_code"):
@@ -248,6 +263,93 @@ def validate_status_report(
             f"{result.returncode} != {report.get('exit_code')!r}"
         )
     return report
+
+
+def git_commit_available(repo: Path, sha: str) -> bool:
+    """Whether this object database can dereference `sha` as a commit."""
+    result = _run(
+        [
+            "git",
+            "--no-replace-objects",
+            "-C",
+            str(repo),
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            f"{sha}^{{commit}}",
+        ],
+        cwd=repo,
+        env=_git_environment(),
+    )
+    if result.returncode == 0:
+        resolved = result.stdout.strip()
+        if not SHA_RE.fullmatch(resolved):
+            raise CrosscheckError(
+                f"git resolved {sha} to malformed commit object {resolved!r}"
+            )
+        return True
+    if result.returncode == 1:
+        return False
+    detail = result.stderr.strip() or result.stdout.strip() or "no output"
+    raise CrosscheckError(
+        f"cannot test whether commit {sha} is available in {repo}: {detail}"
+    )
+
+
+def scorecard_content_commit(
+    hermit: Path,
+    requested_sha: str,
+    validate_status: Mapping[str, Any] | None,
+) -> tuple[str, str]:
+    """Choose scorecard content without changing the evidence commit."""
+    if git_commit_available(hermit, requested_sha):
+        return requested_sha, "exact-sha"
+    if validate_status is None:
+        raise CrosscheckError(
+            f"scorecard commit {requested_sha} is unavailable and validate-status "
+            "provided no relationship to main"
+        )
+    if validate_status.get("sha") != requested_sha:
+        raise CrosscheckError(
+            "validate-status main relationship belongs to a different commit: "
+            f"requested={requested_sha}, reported={validate_status.get('sha')!r}"
+        )
+
+    main_match = validate_status.get("main_match")
+    main_sha = validate_status.get("main_sha")
+    if main_match == "tree":
+        if not isinstance(main_sha, str) or not SHA_RE.fullmatch(main_sha):
+            raise CrosscheckError(
+                "validate-status reported a tree match without an exact lowercase "
+                f"forty-hex main SHA: {main_sha!r}"
+            )
+        if not git_commit_available(hermit, main_sha):
+            raise CrosscheckError(
+                f"validate-status tree-matched {requested_sha} to main {main_sha}, "
+                "but that main commit is unavailable locally"
+            )
+        return main_sha, "tree"
+    if main_match == "no-match":
+        raise CrosscheckError(
+            f"scorecard commit {requested_sha} is unavailable and validate-status "
+            "found no matching tree on main"
+        )
+    if main_match == "exact-sha":
+        raise CrosscheckError(
+            f"validate-status reports {requested_sha} on main by exact SHA, but the "
+            "commit is unavailable locally"
+        )
+    if main_match == "unverifiable":
+        detail = validate_status.get("main_match_detail")
+        suffix = f": {detail}" if isinstance(detail, str) and detail else ""
+        raise CrosscheckError(
+            f"scorecard commit {requested_sha} is unavailable and validate-status "
+            f"could not verify its relationship to main{suffix}"
+        )
+    raise CrosscheckError(
+        f"scorecard commit {requested_sha} is unavailable and validate-status "
+        f"reported unsupported main relationship {main_match!r}"
+    )
 
 
 def ledger_report(root: Path, sha: str, repo: str) -> tuple[dict[str, Any], list[dict]]:
@@ -581,16 +683,23 @@ def git_tree_at(repo: Path, commit: str, path: str) -> str:
 def scorecard_report(
     root: Path,
     hermit: Path,
-    sha: str,
+    requested_sha: str,
     *,
+    content_sha: str | None = None,
+    content_matched_by: str = "exact-sha",
     published_series_snapshot: canonical_series.PublishedSnapshot,
 ) -> dict[str, Any]:
+    content_sha = content_sha or requested_sha
+    if content_matched_by not in {"exact-sha", "tree"}:
+        raise CrosscheckError(
+            f"unsupported scorecard content match {content_matched_by!r}"
+        )
     cells = _json_object(
-        git_text(hermit, "show", f"{sha}:ci/compat-envelope/cells.json"),
+        git_text(hermit, "show", f"{content_sha}:ci/compat-envelope/cells.json"),
         "cells.json",
     )
-    markdown = git_text(hermit, "show", f"{sha}:SCORECARD.md")
-    detcore_tree = git_text(hermit, "rev-parse", f"{sha}:detcore").strip()
+    markdown = git_text(hermit, "show", f"{content_sha}:SCORECARD.md")
+    detcore_tree = git_text(hermit, "rev-parse", f"{content_sha}:detcore").strip()
     entries = cells.get("cells")
     if not isinstance(entries, list):
         raise CrosscheckError("cells.json field cells is not an array")
@@ -738,6 +847,9 @@ def scorecard_report(
     )
     return {
         "scope": "manifest selection and retained per-cell observations",
+        "requested_sha": requested_sha,
+        "content_sha": content_sha,
+        "content_matched_by": content_matched_by,
         "projection_rows_scope": "canonical event map at projection.source_commit",
         "schema": cells_schema,
         "cell_count": len(entries),
@@ -1550,16 +1662,20 @@ def build_report(tool_root: Path, sha: str, repo: str) -> dict[str, Any]:
             "only rrnewton/hermit carries the compatibility scorecard"
         )
     elif published_snapshot is not None:
-        scorecard = _collect(
-            "scorecard",
-            unavailable,
-            lambda: scorecard_report(
+        def read_scorecard() -> dict[str, Any]:
+            content_sha, content_matched_by = scorecard_content_commit(
+                roots.tool_root / "hermit", sha, validate
+            )
+            return scorecard_report(
                 roots.tool_root,
                 roots.tool_root / "hermit",
                 sha,
+                content_sha=content_sha,
+                content_matched_by=content_matched_by,
                 published_series_snapshot=published_snapshot,
-            ),
-        )
+            )
+
+        scorecard = _collect("scorecard", unavailable, read_scorecard)
         if scorecard is not None:
             report["scorecard"] = scorecard
     else:
@@ -1621,6 +1737,9 @@ def print_text(report: Mapping[str, Any]) -> None:
         projection = scorecard.get("projection") or {}
         print(
             "scorecard: "
+            f"requested={scorecard.get('requested_sha')} "
+            f"content={scorecard.get('content_sha')} "
+            f"matched-by={scorecard.get('content_matched_by')} "
             f"cells={scorecard.get('cell_count')} "
             f"observed={scorecard.get('observed_cells')} "
             f"fresh={scorecard.get('fresh_observed_cells')} "

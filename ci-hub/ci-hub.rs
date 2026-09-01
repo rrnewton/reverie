@@ -7278,28 +7278,69 @@ fn fill_optional_validate_status_columns(
         return;
     };
     if columns.contains(&ValidateStatusColumn::Main) && entry.main_match.is_none() {
-        match main_history {
-            Some(ValidationMainHistory::Available { index, .. }) => {
-                match index.match_commit(sha, entry.tree.as_deref(), entry.allow_tree_match) {
-                    Some(BranchCommitMatch::Commit { sha }) => {
-                        entry.main_match = Some("exact-sha".into());
-                        entry.main_sha = Some(sha);
-                    }
-                    Some(BranchCommitMatch::Tree { sha }) => {
-                        entry.main_match = Some("tree".into());
-                        entry.main_sha = Some(sha);
-                    }
-                    None => entry.main_match = Some("no-match".into()),
-                }
-            }
-            Some(ValidationMainHistory::Unverifiable) => {
-                entry.main_match = Some("unverifiable".into());
-            }
-            None => {}
+        if let Some(main_history) = main_history {
+            let (main_match, main_sha) = validation_main_relationship(
+                main_history,
+                sha,
+                entry.tree.as_deref(),
+                entry.allow_tree_match,
+            );
+            entry.main_match = Some(main_match);
+            entry.main_sha = main_sha;
         }
     }
     if columns.contains(&ValidateStatusColumn::GitDepth) && entry.git_depth.is_none() {
         entry.git_depth = git_depth_for_validation_sha(root, repo, sha);
+    }
+}
+
+fn validation_main_relationship(
+    main_history: &ValidationMainHistory,
+    sha: &str,
+    tree: Option<&str>,
+    allow_tree_match: bool,
+) -> (String, Option<String>) {
+    match main_history {
+        ValidationMainHistory::Available { index, .. } => {
+            match index.match_commit(sha, tree, allow_tree_match) {
+                Some(BranchCommitMatch::Commit { sha }) => ("exact-sha".into(), Some(sha)),
+                Some(BranchCommitMatch::Tree { sha }) => ("tree".into(), Some(sha)),
+                None => ("no-match".into(), None),
+            }
+        }
+        ValidationMainHistory::Unverifiable => ("unverifiable".into(), None),
+    }
+}
+
+fn exact_validation_main_relationship(
+    main_history: &ValidationMainHistory,
+    sha: &str,
+    qualifying_trees: &BTreeSet<String>,
+) -> (String, Option<String>, Option<String>) {
+    let ValidationMainHistory::Available { index, .. } = main_history else {
+        return ("unverifiable".into(), None, None);
+    };
+    if let Some(BranchCommitMatch::Commit { sha }) = index.match_commit(sha, None, false) {
+        return ("exact-sha".into(), Some(sha), None);
+    }
+    if qualifying_trees.len() > 1 {
+        return (
+            "unverifiable".into(),
+            None,
+            Some(format!(
+                "{} qualifying receipts for {sha} disagree on the Git tree",
+                qualifying_trees.len()
+            )),
+        );
+    }
+    match index.match_commit(
+        sha,
+        qualifying_trees.first().map(String::as_str),
+        qualifying_trees.len() == 1,
+    ) {
+        Some(BranchCommitMatch::Commit { sha }) => ("exact-sha".into(), Some(sha), None),
+        Some(BranchCommitMatch::Tree { sha }) => ("tree".into(), Some(sha), None),
+        None => ("no-match".into(), None, None),
     }
 }
 
@@ -8253,6 +8294,28 @@ fn run_validate_status(
         .map_err(CiHubError::ValidateStatus)?;
     let newest = newest_canonical_receipt(&assessment.qualifying);
 
+    // The exact-SHA query owns the same relationship to main as the recent-run
+    // table. Keep this classification in the Rust authority rather than making
+    // Python consumers reproduce commit/tree matching. An off-main validation
+    // may use its qualifying receipt's clean tree to identify the rebased main
+    // commit; the receipt, ledger, and published status remain bound to
+    // `assessment.sha`.
+    let main_history = validation_main_history_for_status(state_root, repo, false)?;
+    let qualifying_trees = assessment
+        .qualifying
+        .iter()
+        .map(|receipt| {
+            receipt
+                .row
+                .tree()
+                .expect("qualified receipt has a well-formed tree")
+                .expect("qualified receipt has a tree")
+                .to_string()
+        })
+        .collect::<BTreeSet<_>>();
+    let (main_match, main_sha, main_match_detail) =
+        exact_validation_main_relationship(&main_history, &assessment.sha, &qualifying_trees);
+
     // Only the PURE-ABSENCE case is confusable. If any record for this commit is
     // readable here -- qualifying or not -- the reader has evidence about the
     // commit and staleness cannot be masquerading as absence, so no probe runs
@@ -8336,6 +8399,9 @@ fn run_validate_status(
             "schema_version": 2,
             "repo": repo,
             "sha": assessment.sha,
+            "main_match": main_match,
+            "main_sha": main_sha,
+            "main_match_detail": main_match_detail,
             "verdict": reported_verdict,
             "exit_code": assessment.verdict.exit_code(),
             // Present only on the pure-absence path. `local_absence_is_authoritative`
@@ -10074,6 +10140,48 @@ mod tests {
         assert!(table[1].contains(" exact-sha "), "{}", table[1]);
         assert!(table[2].contains(" tree:bbbbbbbbbbbb "), "{}", table[2]);
         assert!(table[3].contains(" no-match "), "{}", table[3]);
+    }
+
+    #[test]
+    fn exact_status_refuses_conflicting_qualifying_trees() {
+        let landed_sha = "b".repeat(40);
+        let landed_tree = "1".repeat(40);
+        let commits = [landed_sha.clone()];
+        let trees = BTreeMap::from([(landed_sha, landed_tree.clone())]);
+        let main_history = ValidationMainHistory::Available {
+            commits: commits.to_vec(),
+            index: BranchCommitIndex::new(&commits, &trees),
+        };
+        let qualifying_trees = BTreeSet::from([landed_tree, "2".repeat(40)]);
+
+        let (main_match, main_sha, detail) =
+            exact_validation_main_relationship(&main_history, &"c".repeat(40), &qualifying_trees);
+
+        assert_eq!(main_match, "unverifiable");
+        assert_eq!(main_sha, None);
+        assert!(
+            detail
+                .as_deref()
+                .is_some_and(|text| text.contains("disagree on the Git tree")),
+            "{detail:?}"
+        );
+    }
+
+    #[test]
+    fn exact_status_sha_on_main_outranks_conflicting_receipt_trees() {
+        let main_sha = "b".repeat(40);
+        let commits = [main_sha.clone()];
+        let trees = BTreeMap::from([(main_sha.clone(), "1".repeat(40))]);
+        let main_history = ValidationMainHistory::Available {
+            commits: commits.to_vec(),
+            index: BranchCommitIndex::new(&commits, &trees),
+        };
+        let conflicting_trees = BTreeSet::from(["2".repeat(40), "3".repeat(40)]);
+
+        assert_eq!(
+            exact_validation_main_relationship(&main_history, &main_sha, &conflicting_trees,),
+            ("exact-sha".into(), Some(main_sha), None)
+        );
     }
 
     #[test]

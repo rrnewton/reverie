@@ -341,6 +341,11 @@ class SignalCrosscheckTests(unittest.TestCase):
                 mock.patch.object(signal_crosscheck, "series_report", series_report),
                 mock.patch.object(
                     signal_crosscheck,
+                    "scorecard_content_commit",
+                    return_value=(sha, "exact-sha"),
+                ),
+                mock.patch.object(
+                    signal_crosscheck,
                     "scorecard_report",
                     return_value=dict(base_report()["scorecard"]),
                 ),
@@ -373,6 +378,229 @@ class SignalCrosscheckTests(unittest.TestCase):
         )
         self.assertNotIn("validate-slot-poison.service", json.dumps(report))
         self.assertEqual(report["result"], "AGREE")
+
+    def test_tree_matched_scorecard_content_keeps_every_evidence_query_exact(
+        self,
+    ) -> None:
+        requested_sha = "38d8218021b1db8e4cb66bf73a9d6105de44de10"
+        main_sha = "3921ff2c7ec5b37e292f2d6c6146683e7961a1e1"
+        tool_root = Path("/tool")
+        state_root = Path("/state")
+        observed: dict[str, str] = {}
+
+        def remember(name: str, target: str) -> None:
+            observed[name] = target
+            self.assertEqual(target, requested_sha)
+
+        validate = {
+            "sha": requested_sha,
+            "verdict": "VALIDATED",
+            "qualifying_count": 1,
+            "failed_record_count": 0,
+            "disqualified_count": 0,
+            "withheld_nonpass_record_count": 0,
+            "main_match": "tree",
+            "main_sha": main_sha,
+        }
+
+        with (
+            mock.patch.object(
+                signal_crosscheck,
+                "resolve_roots",
+                return_value=signal_crosscheck.Roots(
+                    tool_root, state_root, Path("/git-common")
+                ),
+            ),
+            mock.patch.object(
+                signal_crosscheck,
+                "validate_status_report",
+                side_effect=lambda _tool, _state, target, _repo: (
+                    remember("validate-status", target) or validate
+                ),
+            ),
+            mock.patch.object(
+                signal_crosscheck,
+                "ledger_report",
+                side_effect=lambda _root, target, _repo: (
+                    remember("ledger", target)
+                    or ({"exact_rows": 1}, [{"commit": target}])
+                ),
+            ),
+            mock.patch.object(
+                signal_crosscheck,
+                "series_report",
+                side_effect=lambda _tool, _state, target: (
+                    remember("series", target)
+                    or (
+                        {"published_ref_sha": "f" * 40},
+                        signal_crosscheck.canonical_series.PublishedSnapshot(
+                            "f" * 40, []
+                        ),
+                    )
+                ),
+            ),
+            mock.patch.object(
+                signal_crosscheck,
+                "git_commit_available",
+                side_effect=lambda _repo, target: target == main_sha,
+            ),
+            mock.patch.object(
+                signal_crosscheck,
+                "scorecard_report",
+                side_effect=lambda _root, _hermit, target, **kwargs: (
+                    remember("scorecard-request", target)
+                    or {
+                        **dict(base_report()["scorecard"]),
+                        "requested_sha": target,
+                        "content_sha": kwargs["content_sha"],
+                        "content_matched_by": kwargs["content_matched_by"],
+                    }
+                ),
+            ),
+            mock.patch.object(
+                signal_crosscheck,
+                "run_handle_report",
+                side_effect=lambda _root, target, _repo, _rows: (
+                    remember("run-handles", target)
+                    or dict(base_report()["run_handles"])
+                ),
+            ),
+            mock.patch.object(
+                signal_crosscheck,
+                "collect_github_status",
+                side_effect=lambda _root, _repo, target: (
+                    remember("github-status", target)
+                    or {"published": True, "state": "success"}
+                ),
+            ),
+        ):
+            report = signal_crosscheck.build_report(
+                tool_root, requested_sha, "rrnewton/hermit"
+            )
+
+        self.assertEqual(
+            set(observed),
+            {
+                "validate-status",
+                "ledger",
+                "series",
+                "scorecard-request",
+                "run-handles",
+                "github-status",
+            },
+        )
+        self.assertEqual(report["scorecard"]["requested_sha"], requested_sha)
+        self.assertEqual(report["scorecard"]["content_sha"], main_sha)
+        self.assertEqual(report["scorecard"]["content_matched_by"], "tree")
+        self.assertEqual(report["result"], "AGREE")
+
+    def test_missing_scorecard_commit_without_tree_match_stays_unavailable(
+        self,
+    ) -> None:
+        requested_sha = "1" * 40
+        tool_root = Path("/tool")
+        state_root = Path("/state")
+        validate = {
+            "sha": requested_sha,
+            "verdict": "NOT-VALIDATED",
+            "qualifying_count": 0,
+            "failed_record_count": 0,
+            "disqualified_count": 0,
+            "withheld_nonpass_record_count": 0,
+            "main_match": "no-match",
+            "main_sha": None,
+        }
+
+        with (
+            mock.patch.object(
+                signal_crosscheck,
+                "resolve_roots",
+                return_value=signal_crosscheck.Roots(
+                    tool_root, state_root, Path("/git-common")
+                ),
+            ),
+            mock.patch.object(
+                signal_crosscheck,
+                "validate_status_report",
+                return_value=validate,
+            ),
+            mock.patch.object(
+                signal_crosscheck,
+                "ledger_report",
+                return_value=({"exact_rows": 0}, []),
+            ),
+            mock.patch.object(
+                signal_crosscheck,
+                "series_report",
+                return_value=(
+                    {"published_ref_sha": "f" * 40},
+                    signal_crosscheck.canonical_series.PublishedSnapshot(
+                        "f" * 40, []
+                    ),
+                ),
+            ),
+            mock.patch.object(
+                signal_crosscheck, "git_commit_available", return_value=False
+            ),
+            mock.patch.object(signal_crosscheck, "scorecard_report") as scorecard,
+            mock.patch.object(
+                signal_crosscheck,
+                "run_handle_report",
+                return_value=dict(base_report()["run_handles"]),
+            ),
+            mock.patch.object(
+                signal_crosscheck,
+                "collect_github_status",
+                return_value={"published": False, "state": None},
+            ),
+        ):
+            report = signal_crosscheck.build_report(
+                tool_root, requested_sha, "rrnewton/hermit"
+            )
+
+        scorecard.assert_not_called()
+        self.assertNotIn("scorecard", report)
+        self.assertIn("scorecard", report["unavailable"])
+        self.assertIn(
+            "found no matching tree on main", report["unavailable"]["scorecard"]
+        )
+        self.assertEqual(report["result"], "DISAGREE")
+
+    def test_available_exact_scorecard_commit_wins_over_main_tree_match(self) -> None:
+        requested_sha = "a" * 40
+        with mock.patch.object(
+            signal_crosscheck, "git_commit_available", return_value=True
+        ):
+            content_sha, matched_by = signal_crosscheck.scorecard_content_commit(
+                Path("/hermit"),
+                requested_sha,
+                {
+                    "sha": requested_sha,
+                    "main_match": "tree",
+                    "main_sha": "b" * 40,
+                },
+            )
+        self.assertEqual(content_sha, requested_sha)
+        self.assertEqual(matched_by, "exact-sha")
+
+    def test_tree_match_from_a_different_sha_is_not_reused(self) -> None:
+        requested_sha = "a" * 40
+        with mock.patch.object(
+            signal_crosscheck, "git_commit_available", return_value=False
+        ):
+            with self.assertRaisesRegex(
+                signal_crosscheck.CrosscheckError,
+                "main relationship belongs to a different commit",
+            ):
+                signal_crosscheck.scorecard_content_commit(
+                    Path("/hermit"),
+                    requested_sha,
+                    {
+                        "sha": "b" * 40,
+                        "main_match": "tree",
+                        "main_sha": "c" * 40,
+                    },
+                )
 
     def test_malformed_state_authority_refuses_before_reading_stores(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
