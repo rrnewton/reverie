@@ -2,22 +2,24 @@
 """STANDING reconcile: earned validate receipts x FRESH open-PR heads.
 
 WHY THIS EXISTS (memory: rebase-wrapper-eligible-query-relocates-mailbox-gap,
-validate-record-keying-breaks-under-rebase). A validate receipt is keyed to an
-exact commit SHA. Every rebase / push / mark-ready REWRITES a PR's head, so the
-receipt earned at the old head is instantly ORPHANED -- and nothing sweeps for
-the receipts that are STILL valid. They just sit. Measured 2026-08-04: of 58
+validate-record-keying-breaks-under-rebase). A validate receipt remains keyed to
+the exact commit it tested. This tool joins those records to current open heads;
+it does not decide whether preservation across a rebase is landable. Every
+rebase / push / mark-ready REWRITES a PR's head, so the receipt earned at the old
+head no longer matches this exact-head inventory. Measured 2026-08-04: of 58
 distinct clean-full receipt commits only 2 still matched a current open-PR head
 (97% orphan rate), and BOTH survivors were then refused by the merge-gate floor.
-So the drain spent the afternoon queueing fresh ~500s validates while earned
-evidence sat unread. This is the cheapest work in the drain: a reconciliation
-query costs seconds; a full run costs ~500s.
+This inventory identifies exact-head matches cheaply; hard/soft-green landability
+belongs to the validation-authority rule.
 
 THE JOIN. For each distinct clean-full receipt commit, decide against a
 FRESHLY-FETCHED remote and FULL 40-hex SHAs:
 
   * ORPHANED      -- no current open-PR head equals this commit. The head moved
-                     or the PR already landed; the receipt is dead. This count
-                     is the measured cost of push-rewrites-the-head.
+                     or the PR already landed, so this exact-head join cannot
+                     bind it. This is not a verdict that the receipt's evidence
+                     is useless after a rebase; hard/soft-green landability is a
+                     separate decision.
   * NOT-CERTIFIED -- the commit DOES match an open-PR head, but the authoritative
                      is_clean_full_pass certifier (`ci-hub validate-status`)
                      refuses it. local-history's `checks==5` prefilter is LOOSER
@@ -34,7 +36,8 @@ FRESHLY-FETCHED remote and FULL 40-hex SHAs:
                      immediately before merge.
 
 STANDING, not one-shot: run it after every drain rebase wave. Each wave rewrites
-heads -- some receipts survive, some die -- and only a re-run answers today.
+heads and therefore changes the exact-head matches; only a re-run answers today's
+inventory. It does not invalidate the receipts for the commits they tested.
 
 Every count is stated WITH ITS DENOMINATOR ("valid 1 of 58", never "valid 1")
 because the interesting number is the ratio: valid/total is the earned-but-unread
@@ -212,7 +215,7 @@ def render(report: dict) -> str:
         f"VALID (fixed floors; final base check required): {c['valid']} of {n}",
         f"FLOOR-BLOCKED (green, rebase needed):  {c['floor_blocked']} of {n}",
         f"NOT-CERTIFIED (matched head, cert refuses): {c['not_certified']} of {n}",
-        f"ORPHANED (head moved/landed, receipt dead): {c['orphaned']} of {n} "
+        f"ORPHANED (head moved/landed; no exact-head match): {c['orphaned']} of {n} "
         f"= {_pct(c['orphaned'], n)} (ordering-defect cost)",
     ]
     b = report["buckets"]

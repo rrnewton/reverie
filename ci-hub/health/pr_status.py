@@ -1405,10 +1405,14 @@ def _classify_gh_prs(
                 "title": entry.get("title", ""),
                 # STALENESS IS THE BREACH, NOT COUNT. An open-PR total treats a
                 # 3-hour-old PR and a 3-week-old one as the same row; the old
-                # one is the violation. Staleness also compounds -- while a PR
-                # waits, main advances, its head goes stale and its SHA-keyed
-                # validate receipt is invalidated, so waiting does not merely
-                # delay a landing, it destroys the work that made it landable.
+                # one is the violation. Do not explain that urgency by claiming
+                # that main movement invalidates validation evidence. The
+                # validation-authority rule is exact: "Exact-commit evidence does
+                # not require the fleet to discard everything it learned whenever
+                # `main` advances." Hard/soft-green landability is decided there.
+                # `pre.reverie_pin` states the same rule for the Reverie pin: "A
+                # lagging ancestor is legitimate; requiring the tip made the
+                # verdict a property of WHEN you looked rather than of the tree."
                 #
                 # `None` when GitHub returned no createdAt: unknown age is
                 # reported as unknown rather than silently sorted as brand new.

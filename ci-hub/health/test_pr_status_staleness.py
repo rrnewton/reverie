@@ -4,10 +4,12 @@
 WHY THIS EXISTS. The owner's correction (2026-08-04) is that an open-PR COUNT is
 the wrong metric: "OLD PRs ARE ALWAYS A BREACH OF THE PROTOCOL. It is not just the
 NUMBER of PRs, it is the STALENESS." A count treats a 3-hour-old PR and a
-3-week-old PR as the same row. Worse, staleness compounds -- while a PR waits,
-main advances, its head goes stale and its SHA-keyed validate receipt is
-invalidated, so waiting does not merely delay a landing, it destroys the work that
-made it landable.
+3-week-old PR as the same row. That queue-age rule does not redefine validation
+authority: "Exact-commit evidence does not require the fleet to discard everything
+it learned whenever `main` advances." Hard/soft-green landability stays with the
+validation-authority rule. `pre.reverie_pin` states the same rule for the Reverie
+pin: "A lagging ancestor is legitimate; requiring the tip made the verdict a
+property of WHEN you looked rather than of the tree."
 
 Before this, `pr_status.py` did not fetch `createdAt` at all, carried no age
 field, and emitted PRs in whatever order GitHub returned. So the report could not
