@@ -2336,6 +2336,32 @@ class HealthTickParentSyncTests(unittest.TestCase):
         self.assertTrue(cached.is_dir())
         return target, cached, tick
 
+    def advance_remote_version(
+        self,
+        version: int,
+        *,
+        extra_executables: dict[str, str] | None = None,
+    ) -> str:
+        publisher = self.base / "publisher"
+        if publisher.exists():
+            shutil.rmtree(publisher)
+        return self.advance_remote(
+            health_script=(
+                "#!/usr/bin/env bash\n"
+                "set -eu\n"
+                f"printf 'health-version={version}\\n'\n"
+            ),
+            extra_executables=extra_executables,
+        )
+
+    def cached_tool_roots(self) -> set[str]:
+        trees = Path(self.env["HERMIT_HEALTH_TOOL_CACHE"]) / "trees"
+        return {
+            path.name
+            for path in trees.iterdir()
+            if path.is_dir() and len(path.name) == 40
+        }
+
     def make_cache_writable(self, cached: Path) -> None:
         changed = run("chmod", "-R", "u+w", str(cached), cwd=self.repo)
         self.assertEqual(0, changed.returncode, changed.stdout + changed.stderr)
@@ -2403,6 +2429,135 @@ class HealthTickParentSyncTests(unittest.TestCase):
             (entries[0].stat().st_dev, entries[0].stat().st_ino),
         )
         self.assertEqual([], list(entries[0].iterdir()))
+
+    def test_cached_tool_roots_stay_bounded_when_main_advances(self) -> None:
+        bootstrap = self.installed_bootstrap()
+        first = self.advance_remote_version(1)
+        first_run = self.run_current_tool(bootstrap, "ci-hub/bin/health-tick")
+        self.assertEqual(
+            0, first_run.returncode, first_run.stdout + first_run.stderr
+        )
+        second = self.advance_remote_version(2)
+        second_run = self.run_current_tool(bootstrap, "ci-hub/bin/health-tick")
+        self.assertEqual(
+            0, second_run.returncode, second_run.stdout + second_run.stderr
+        )
+        third = self.advance_remote_version(3)
+
+        third_run = self.run_current_tool(bootstrap, "ci-hub/bin/health-tick")
+
+        self.assertEqual(
+            0, third_run.returncode, third_run.stdout + third_run.stderr
+        )
+        self.assertEqual({second, third}, self.cached_tool_roots())
+        self.assertIn(f"retired cached tool root {first}", third_run.stderr)
+
+        predecessor = run(
+            str(bootstrap),
+            "--run-current-tool",
+            "--state-root",
+            str(self.repo),
+            "--tool-parent-sha",
+            second,
+            "--tool-relative",
+            "ci-hub/bin/health-tick",
+            cwd=self.home,
+            env=self.env,
+        )
+        self.assertEqual(
+            0, predecessor.returncode, predecessor.stdout + predecessor.stderr
+        )
+        retired = run(
+            str(bootstrap),
+            "--run-current-tool",
+            "--state-root",
+            str(self.repo),
+            "--tool-parent-sha",
+            first,
+            "--tool-relative",
+            "ci-hub/bin/health-tick",
+            cwd=self.home,
+            env=self.env,
+        )
+        self.assertEqual(1, retired.returncode, retired.stdout + retired.stderr)
+        self.assertIn(
+            f"exact cached tool root {first} is absent", retired.stderr
+        )
+
+    def test_live_cached_tool_root_is_preserved_then_retired(self) -> None:
+        bootstrap = self.installed_bootstrap()
+        started = self.base / "cached-tool-started"
+        proceed = self.base / "cached-tool-proceed"
+        blocking_probe = (
+            "#!/usr/bin/env bash\n"
+            "set -eu\n"
+            f': > "{started}"\n'
+            f'while [[ ! -e "{proceed}" ]]; do sleep 0.02; done\n'
+        )
+        first = self.advance_remote_version(
+            1, extra_executables={"scripts/blocking-probe": blocking_probe}
+        )
+        process = subprocess.Popen(
+            [
+                str(bootstrap),
+                "--run-current-tool",
+                "--state-root",
+                str(self.repo),
+                "--tool-relative",
+                "scripts/blocking-probe",
+            ],
+            cwd=self.home,
+            env=self.env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        try:
+            deadline = time.monotonic() + 15
+            while not started.exists() and process.poll() is None:
+                if time.monotonic() >= deadline:
+                    self.fail("tool did not reach the cached-root liveness barrier")
+                time.sleep(0.01)
+            self.assertIsNone(process.poll())
+
+            second = self.advance_remote_version(2)
+            second_run = self.run_current_tool(
+                bootstrap, "ci-hub/bin/health-tick"
+            )
+            self.assertEqual(
+                0, second_run.returncode, second_run.stdout + second_run.stderr
+            )
+            third = self.advance_remote_version(3)
+            third_run = self.run_current_tool(
+                bootstrap, "ci-hub/bin/health-tick"
+            )
+            self.assertEqual(
+                0, third_run.returncode, third_run.stdout + third_run.stderr
+            )
+            self.assertEqual({first, second, third}, self.cached_tool_roots())
+            self.assertIn(
+                f"cached tool root {first} is in use; preserving it",
+                third_run.stderr,
+            )
+
+            proceed.touch()
+            stdout, stderr = process.communicate(timeout=15)
+            self.assertEqual(0, process.returncode, stdout + stderr)
+
+            fourth = self.advance_remote_version(4)
+            fourth_run = self.run_current_tool(
+                bootstrap, "ci-hub/bin/health-tick"
+            )
+            self.assertEqual(
+                0, fourth_run.returncode, fourth_run.stdout + fourth_run.stderr
+            )
+            self.assertEqual({third, fourth}, self.cached_tool_roots())
+            self.assertIn(f"retired cached tool root {first}", fourth_run.stderr)
+            self.assertIn(f"retired cached tool root {second}", fourth_run.stderr)
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.communicate()
 
     def test_unrelated_dirty_paths_are_preserved_while_parent_advances(self) -> None:
         target = self.advance_remote()

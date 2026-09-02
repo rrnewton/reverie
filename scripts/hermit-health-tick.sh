@@ -373,6 +373,227 @@ stop_staging_holder() {
     return "$rc"
 }
 
+retire_old_tool_roots() {
+    local current_sha=$1
+    PYTHONDONTWRITEBYTECODE=1 python3 - \
+        "$TOOL_TREES_FD" "$TOOL_CACHE/trees" "$current_sha" <<'PY'
+import ctypes
+import fcntl
+import os
+import platform
+import re
+import secrets
+import stat
+import sys
+
+
+trees_fd = int(sys.argv[1])
+trees_path = sys.argv[2]
+current_sha = sys.argv[3]
+sha_pattern = re.compile(r"[0-9a-f]{40}")
+retiring_pattern = re.compile(r"\.retiring\.[0-9a-f]{40}\.[0-9a-f]{16}")
+
+# The immediately previous materialisation remains available for a systemd
+# command that was accepted with an exact --tool-parent-sha but has not yet
+# opened that cached root. Once a launcher opens a root, its shared flock below
+# is the authority that keeps it alive. No code compares against an older tree.
+keep_count = 2
+
+
+def list_directory(fd: int) -> list[str]:
+    scan_fd = os.open(
+        ".", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd
+    )
+    try:
+        return os.listdir(scan_fd)
+    finally:
+        os.close(scan_fd)
+
+
+def open_held_directory(name: str) -> tuple[int, os.stat_result]:
+    before = os.stat(name, dir_fd=trees_fd, follow_symlinks=False)
+    if not stat.S_ISDIR(before.st_mode):
+        raise RuntimeError("entry is not a real directory")
+    fd = os.open(
+        name,
+        os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+        dir_fd=trees_fd,
+    )
+    held = os.fstat(fd)
+    current = os.stat(name, dir_fd=trees_fd, follow_symlinks=False)
+    if (
+        not stat.S_ISDIR(held.st_mode)
+        or not stat.S_ISDIR(current.st_mode)
+        or held.st_nlink < 1
+        or current.st_nlink < 1
+        or (held.st_dev, held.st_ino) != (before.st_dev, before.st_ino)
+        or (held.st_dev, held.st_ino) != (current.st_dev, current.st_ino)
+        or os.readlink(f"/proc/self/fd/{fd}") != os.path.join(trees_path, name)
+    ):
+        os.close(fd)
+        raise RuntimeError("directory changed before its descriptor was retained")
+    return fd, held
+
+
+def verify_tree(fd: int, device: int) -> None:
+    for name in list_directory(fd):
+        entry = os.stat(name, dir_fd=fd, follow_symlinks=False)
+        if entry.st_dev != device:
+            raise RuntimeError(f"entry crosses a filesystem boundary: {name}")
+        if stat.S_ISDIR(entry.st_mode):
+            child_fd = os.open(
+                name,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                dir_fd=fd,
+            )
+            try:
+                held = os.fstat(child_fd)
+                if (held.st_dev, held.st_ino) != (entry.st_dev, entry.st_ino):
+                    raise RuntimeError(f"directory changed during inspection: {name}")
+                verify_tree(child_fd, device)
+            finally:
+                os.close(child_fd)
+        elif not (stat.S_ISREG(entry.st_mode) or stat.S_ISLNK(entry.st_mode)):
+            raise RuntimeError(f"unsupported entry type: {name}")
+
+
+def clear_tree(fd: int, device: int) -> None:
+    metadata = os.fstat(fd)
+    if metadata.st_dev != device:
+        raise RuntimeError("directory crossed a filesystem boundary before cleanup")
+    os.fchmod(fd, stat.S_IMODE(metadata.st_mode) | stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR)
+    for name in list_directory(fd):
+        current = os.stat(name, dir_fd=fd, follow_symlinks=False)
+        if current.st_dev != device:
+            raise RuntimeError(f"entry crossed a filesystem boundary before cleanup: {name}")
+        if stat.S_ISDIR(current.st_mode):
+            child_fd = os.open(
+                name,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                dir_fd=fd,
+            )
+            try:
+                held = os.fstat(child_fd)
+                if (held.st_dev, held.st_ino) != (current.st_dev, current.st_ino):
+                    raise RuntimeError(f"directory changed during cleanup: {name}")
+                clear_tree(child_fd, device)
+                current = os.stat(name, dir_fd=fd, follow_symlinks=False)
+                if (held.st_dev, held.st_ino) != (current.st_dev, current.st_ino):
+                    raise RuntimeError(f"directory changed during cleanup: {name}")
+                os.rmdir(name, dir_fd=fd)
+            finally:
+                os.close(child_fd)
+        else:
+            os.unlink(name, dir_fd=fd)
+
+
+def rename_no_replace(source: str, destination: str) -> None:
+    if platform.machine() not in {"x86_64", "amd64"}:
+        raise RuntimeError("x86_64 renameat2 is required for cached tool retirement")
+    libc = ctypes.CDLL(None, use_errno=True)
+    if libc.syscall(
+        316,
+        trees_fd,
+        os.fsencode(source),
+        trees_fd,
+        os.fsencode(destination),
+        1,
+    ) != 0:
+        error = ctypes.get_errno()
+        raise OSError(error, os.strerror(error))
+
+
+def retire(name: str, *, already_renamed: bool = False) -> bool:
+    fd = -1
+    try:
+        fd, held = open_held_directory(name)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            print(
+                f"operational-tool: cached tool root {name} is in use; preserving it",
+                file=sys.stderr,
+            )
+            return False
+        verify_tree(fd, held.st_dev)
+        retiring_name = name
+        if not already_renamed:
+            retiring_name = f".retiring.{name}.{secrets.token_hex(8)}"
+            rename_no_replace(name, retiring_name)
+            moved = os.stat(retiring_name, dir_fd=trees_fd, follow_symlinks=False)
+            if (moved.st_dev, moved.st_ino) != (held.st_dev, held.st_ino):
+                raise RuntimeError("directory changed during retirement rename")
+        clear_tree(fd, held.st_dev)
+        current = os.stat(retiring_name, dir_fd=trees_fd, follow_symlinks=False)
+        if (current.st_dev, current.st_ino) != (held.st_dev, held.st_ino):
+            raise RuntimeError("directory changed before final retirement")
+        os.rmdir(retiring_name, dir_fd=trees_fd)
+        print(f"operational-tool: retired cached tool root {name}", file=sys.stderr)
+        return True
+    finally:
+        if fd >= 0:
+            os.close(fd)
+
+
+entries: list[tuple[int, str]] = []
+for name in sorted(list_directory(trees_fd)):
+    if retiring_pattern.fullmatch(name):
+        try:
+            retire(name, already_renamed=True)
+        except (OSError, RuntimeError) as error:
+            print(
+                f"operational-tool: could not finish retiring cached tool root {name}: {error}",
+                file=sys.stderr,
+            )
+            raise SystemExit(1) from error
+        continue
+    if sha_pattern.fullmatch(name) is None:
+        continue
+    try:
+        metadata = os.stat(name, dir_fd=trees_fd, follow_symlinks=False)
+    except OSError as error:
+        print(
+            f"operational-tool: cannot inspect cached tool root {name}: {error}",
+            file=sys.stderr,
+        )
+        raise SystemExit(1) from error
+    if not stat.S_ISDIR(metadata.st_mode):
+        print(
+            f"operational-tool: cached tool root {name} is not a real directory; preserving it",
+            file=sys.stderr,
+        )
+        continue
+    entries.append((metadata.st_mtime_ns, name))
+
+if current_sha not in {name for _mtime, name in entries}:
+    print(
+        f"operational-tool: current cached tool root {current_sha} disappeared before retirement",
+        file=sys.stderr,
+    )
+    raise SystemExit(1)
+
+keep = {current_sha}
+for _mtime, name in sorted(entries, reverse=True):
+    if name in keep:
+        continue
+    keep.add(name)
+    if len(keep) >= keep_count:
+        break
+
+for _mtime, name in sorted(entries):
+    if name in keep:
+        continue
+    try:
+        retire(name)
+    except (OSError, RuntimeError) as error:
+        print(
+            f"operational-tool: could not retire cached tool root {name}: {error}",
+            file=sys.stderr,
+        )
+        raise SystemExit(1) from error
+PY
+}
+
 held_directory_entry_matches() {
     PYTHONDONTWRITEBYTECODE=1 python3 - "$1" "$2" "$3" <<'PY'
 import os
@@ -1291,6 +1512,7 @@ try:
     target_fd = open_held_directory(
         trees_fd, target_name, target_identity, target_path, "cached tool root"
     )
+    fcntl.flock(target_fd, fcntl.LOCK_SH)
     run_fd, run_name = acquire_run_directory()
     state_fd = open_state_root()
     run = os.fstat(run_fd)
@@ -1729,6 +1951,7 @@ materialize_current_tool_root() {
             "$sha" >&2
         return 1
     }
+    retire_old_tool_roots "$sha" || return 1
     cp -a --reflink=auto "$TOOL_TARGET_ROOT/." "$TOOL_RUN_ROOT/" || return 1
     mark_held_tree_read_only "$TOOL_RUN_ROOT" || return 1
     tool_root_is_complete "$TOOL_RUN_ROOT" "$sha" || {
