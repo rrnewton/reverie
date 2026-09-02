@@ -66,8 +66,37 @@ for slot, row in state["slots"].items():
     if row.get("status") != "active":
         continue
     for owner in row.get("agents", []):
-        active.append({"slot": slot, "slot_type": "agent", "agent": owner["name"]})
-print(json.dumps({"active": active}))
+        active_row = {
+            "slot": slot,
+            "slot_type": "agent",
+            "agent": owner["name"],
+            "storage_inconsistencies": [],
+        }
+        if slot == "mine":
+            mode = os.environ.get("FAKE_SELECTED_STORAGE")
+            if mode == "missing":
+                del active_row["storage_inconsistencies"]
+            elif mode == "malformed":
+                active_row["storage_inconsistencies"] = {"kind": "wrong-shape"}
+            elif mode == "inconsistent":
+                active_row["storage_inconsistencies"] = [{
+                    "kind": "row-without-directory",
+                    "detail": "active row but no slot directory",
+                    "remedy": "restore the exact slot directory",
+                }]
+        if slot == "theirs" and os.environ.get("FAKE_UNRELATED_STORAGE"):
+            active_row["storage_inconsistencies"] = [{
+                "kind": "row-without-directory",
+                "detail": "unrelated row has no slot directory",
+                "remedy": "restore the unrelated slot directory",
+            }]
+        active.append(active_row)
+print(json.dumps({
+    "active": active,
+    "registry_storage_state": "inconsistent"
+        if any(row.get("storage_inconsistencies") for row in active)
+        else "consistent",
+}))
 PY
 chmod +x "$tmp/wrkslots"
 
@@ -78,10 +107,10 @@ check() { # name expected_rc must_contain agent cwd [env...]
   out=$(env "$@" "$guard" --agent "$agent" --cwd "$dir" --root "$tmp" \
     --wrkslots "$tmp/wrkslots" 2>&1) || rc=$?
   if ((rc != want)); then
-    echo "FAIL [$name]: expected rc=$want got rc=$rc"; echo "$out" | sed 's/^/    /'; fail=$((fail+1)); return
+    echo "FAIL [$name]: expected rc=$want got rc=$rc"; printf '    %s\n' "${out//$'\n'/$'\n    '}"; fail=$((fail+1)); return
   fi
   if [[ -n $needle ]] && ! grep -qF "$needle" <<<"$out"; then
-    echo "FAIL [$name]: output did not contain '$needle'"; echo "$out" | sed 's/^/    /'; fail=$((fail+1)); return
+    echo "FAIL [$name]: output did not contain '$needle'"; printf '    %s\n' "${out//$'\n'/$'\n    '}"; fail=$((fail+1)); return
   fi
   echo "ok   [$name] rc=$rc, said '${needle:0:46}'"; pass=$((pass+1))
 }
@@ -100,6 +129,16 @@ check own-slot-ok              0 "registered slot worktrees/slots/mine" sol-exam
 check own-slot-nested-ok       0 "registered slot worktrees/slots/mine" sol-example "$tmp/worktrees/slots/mine/hermit" IGNORE=1
 check own-slot-warning-visible 0 "historical worktree retained" sol-example "$tmp/worktrees/slots/mine" \
   FAKE_WRKSLOTS_WARNING="historical worktree retained" IGNORE=1
+check own-slot-unrelated-storage-ok 0 "registered slot worktrees/slots/mine" sol-example "$tmp/worktrees/slots/mine" \
+  FAKE_UNRELATED_STORAGE=1 IGNORE=1
+check own-slot-missing-storage-field 1 "has no storage_inconsistencies field" sol-example "$tmp/worktrees/slots/mine" \
+  FAKE_SELECTED_STORAGE=missing IGNORE=1
+check own-slot-malformed-storage-field 1 "expected a list" sol-example "$tmp/worktrees/slots/mine" \
+  FAKE_SELECTED_STORAGE=malformed IGNORE=1
+check own-slot-inconsistent 1 "kind=row-without-directory" sol-example "$tmp/worktrees/slots/mine" \
+  FAKE_SELECTED_STORAGE=inconsistent IGNORE=1
+check own-slot-inconsistent-remedy 1 "restore the exact slot directory" sol-example "$tmp/worktrees/slots/mine" \
+  FAKE_SELECTED_STORAGE=inconsistent IGNORE=1
 check declared-owner-ask-ok    0 "DECLARED owner-direct-ask"  sol-nobody  "$tmp"  HERMIT_OWNER_DIRECT_ASK=1
 check outside-parent-ok        0 "has no claim on it"         sol-nobody  "/tmp"                    IGNORE=1
 

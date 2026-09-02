@@ -74,7 +74,8 @@ if [[ ! -x $wrkslots ]]; then
 fi
 status_file=$(mktemp "${TMPDIR:-/tmp}/check-agent-slot.status.XXXXXX")
 error_file=$(mktemp "${TMPDIR:-/tmp}/check-agent-slot.error.XXXXXX")
-trap 'rm -f -- "$status_file" "$error_file"' EXIT
+assignment_error_file=$(mktemp "${TMPDIR:-/tmp}/check-agent-slot.assignment-error.XXXXXX")
+trap 'rm -f -- "$status_file" "$error_file" "$assignment_error_file"' EXIT
 if ! "$wrkslots" --project-root "$root" --allow-existing-unregistered-worktrees \
     status --all-machines --format json \
     >"$status_file" 2>"$error_file"; then
@@ -90,30 +91,73 @@ if [[ -s $error_file ]]; then
     say "$line"
   done <"$error_file"
 fi
-assigned=$(python3 - "$agent" "$status_file" <<'PY'
+assigned=$(python3 - "$agent" "$status_file" 2>"$assignment_error_file" <<'PY'
 import json
 import sys
 
 agent, path = sys.argv[1:]
 with open(path, encoding="utf-8") as handle:
     payload = json.load(handle)
-matches = sorted(
-    row["slot"]
+matches = sorted((
+    (
+        row["slot"],
+        row,
+    )
     for row in payload.get("active", [])
     if row.get("slot_type") == "agent" and row.get("agent") == agent
-)
+), key=lambda item: item[0])
 if len(matches) > 1:
     print(
-        f"wrkslots returned multiple active agent slots for {agent!r}: {', '.join(matches)}",
+        f"wrkslots returned multiple active agent slots for {agent!r}: "
+        + ", ".join(slot for slot, _row in matches),
         file=sys.stderr,
     )
     raise SystemExit(4)
-print(matches[0] if matches else "")
+if not matches:
+    print("")
+    raise SystemExit(0)
+
+slot, row = matches[0]
+if "storage_inconsistencies" not in row:
+    print(
+        f"wrkslots row for agent {agent!r} slot {slot!r} has no "
+        "storage_inconsistencies field; update the wrkslots producer before "
+        "using this row as assignment evidence",
+        file=sys.stderr,
+    )
+    raise SystemExit(4)
+inconsistencies = row["storage_inconsistencies"]
+if not isinstance(inconsistencies, list):
+    print(
+        f"wrkslots row for agent {agent!r} slot {slot!r} has malformed "
+        "storage_inconsistencies; expected a list",
+        file=sys.stderr,
+    )
+    raise SystemExit(4)
+if inconsistencies:
+    print(
+        f"wrkslots reports {len(inconsistencies)} storage inconsistency finding(s) "
+        f"for agent {agent!r} slot {slot!r}",
+        file=sys.stderr,
+    )
+    for index, finding in enumerate(inconsistencies, start=1):
+        if not isinstance(finding, dict):
+            print(f"  finding {index}: malformed entry {finding!r}", file=sys.stderr)
+            continue
+        kind = finding.get("kind", "unknown")
+        detail = finding.get("detail", "no detail")
+        remedy = finding.get("remedy", "run 'wrkslots status --all-machines'")
+        print(f"  finding {index}: kind={kind}: {detail}", file=sys.stderr)
+        print(f"    remedy: {remedy}", file=sys.stderr)
+    raise SystemExit(5)
+print(slot)
 PY
 ) || {
-  say "REFUSE: wrkslots returned an ambiguous assignment for agent '$agent'."
-  say "  state: REFUSED -- this guard did not choose between conflicting slots."
-  say "  remedy: run 'ci-hub/bin/wrkslots doctor --all-machines' and repair the duplicate records."
+  assignment_error=$(<"$assignment_error_file")
+  say "REFUSE: wrkslots returned unusable assignment evidence for agent '$agent'."
+  say "  state: REFUSED -- an ambiguous assignment, malformed evidence, or a selected-row inconsistency cannot authorize this path."
+  say "  detail: ${assignment_error:-the assignment parser returned no diagnostic}"
+  say "  remedy: follow the selected finding, then rerun 'ci-hub/bin/wrkslots status --all-machines --format json'."
   exit 1
 }
 
