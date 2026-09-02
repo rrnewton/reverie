@@ -1083,7 +1083,7 @@ def base_boundary_verdict(
     repo_checkout: str,
     reverie_checkout: str,
 ) -> BaseVerdict:
-    """Assert strict mutable-tip currency exactly once before merge."""
+    """Assert final-boundary base identity and Reverie ancestry before merge."""
     static = base_evidence_verdict(row, pred)
     if static is not BaseVerdict.SATISFIED:
         return static
@@ -1101,13 +1101,20 @@ def base_boundary_verdict(
             return BaseVerdict.BASE_NOT_CONTAINED
     except RuntimeError:
         return BaseVerdict.POLICY_UNAVAILABLE
-    if row["reverie_base_sha"] != current_reverie_base:
-        return BaseVerdict.REVERIE_BASE_NOT_CURRENT
     try:
-        current_reverie_tree = git_tree(reverie_checkout, current_reverie_base)
+        # Match Hermit's owner-approved scripts/check-reverie-pin.rs policy:
+        # a pin remains valid while it is on Reverie main history. Equality to
+        # the moving tip would make the verdict depend on when it is checked.
+        if not git_is_ancestor(
+            reverie_checkout, row["reverie_base_sha"], current_reverie_base
+        ):
+            return BaseVerdict.REVERIE_BASE_NOT_CURRENT
+        recorded_reverie_tree = git_tree(
+            reverie_checkout, row["reverie_base_sha"]
+        )
     except RuntimeError:
         return BaseVerdict.POLICY_UNAVAILABLE
-    if row["reverie_base_tree"] != current_reverie_tree:
+    if row["reverie_base_tree"] != recorded_reverie_tree:
         return BaseVerdict.REVERIE_TREE_MISMATCH
     return BaseVerdict.SATISFIED
 

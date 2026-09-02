@@ -141,6 +141,10 @@ def test_merge_boundary_brackets_both_ways_and_preserves_schema4(tmp_path: Path)
     old_reverie = commit(reverie, "build content")
     (reverie / "AGENTS.md").write_text("new policy only\n")
     current_reverie = commit(reverie, "policy-only delta")
+    git(reverie, "checkout", "-qb", "divergent", old_reverie)
+    (reverie / "reverie-dbi/src/lib.rs").write_text("pub fn divergent() {}\n")
+    divergent_reverie = commit(reverie, "divergent line")
+    git(reverie, "checkout", "-q", current_reverie)
 
     pred = qr.active()
 
@@ -157,12 +161,29 @@ def test_merge_boundary_brackets_both_ways_and_preserves_schema4(tmp_path: Path)
         positive, hermit, current_base, reverie, current_reverie
     ).returncode == 0
 
-    # D is deliberately rejected: even a policy-only Reverie delta is a new
-    # exact tree and requires a fresh receipt. This keeps .gitmodules and every
-    # future unclassified path relevant without brittle build-script guards.
-    stale_reverie = row_for(hermit, pr_head, current_base, reverie, old_reverie)
+    # A recorded Reverie base remains current while it is on live main's
+    # history. This is the same stable ancestry policy used by Hermit's pin
+    # checker: a later content-changing commit must not invalidate the receipt.
+    ancestor_reverie = row_for(hermit, pr_head, current_base, reverie, old_reverie)
     assert qr.base_boundary_verdict(
-        stale_reverie,
+        ancestor_reverie,
+        pred,
+        current_base=current_base,
+        current_reverie_base=current_reverie,
+        repo_checkout=str(hermit),
+        reverie_checkout=str(reverie),
+    ) is qr.BaseVerdict.SATISFIED
+    assert running_consumer(
+        ancestor_reverie, hermit, current_base, reverie, current_reverie
+    ).returncode == 0
+
+    # A resolvable SHA on a divergent line is not contained by Reverie main.
+    # It must refuse even though its recorded tree is internally consistent.
+    divergent = row_for(
+        hermit, pr_head, current_base, reverie, divergent_reverie
+    )
+    assert qr.base_boundary_verdict(
+        divergent,
         pred,
         current_base=current_base,
         current_reverie_base=current_reverie,
@@ -170,7 +191,25 @@ def test_merge_boundary_brackets_both_ways_and_preserves_schema4(tmp_path: Path)
         reverie_checkout=str(reverie),
     ) is qr.BaseVerdict.REVERIE_BASE_NOT_CURRENT
     assert running_consumer(
-        stale_reverie, hermit, current_base, reverie, current_reverie
+        divergent, hermit, current_base, reverie, current_reverie
+    ).returncode != 0
+
+    # An ancestor does not satisfy the boundary when its recorded tree is
+    # corrupt. Tree equality stays exact at the commit the receipt names.
+    wrong_reverie_tree = dict(ancestor_reverie)
+    wrong_reverie_tree["reverie_base_tree"] = qr.git_tree(
+        str(reverie), current_reverie
+    )
+    assert qr.base_boundary_verdict(
+        wrong_reverie_tree,
+        pred,
+        current_base=current_base,
+        current_reverie_base=current_reverie,
+        repo_checkout=str(hermit),
+        reverie_checkout=str(reverie),
+    ) is qr.BaseVerdict.REVERIE_TREE_MISMATCH
+    assert running_consumer(
+        wrong_reverie_tree, hermit, current_base, reverie, current_reverie
     ).returncode != 0
 
     stale = row_for(hermit, pr_head, old_base, reverie, current_reverie)
