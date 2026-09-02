@@ -22,7 +22,7 @@ DOCS = (
     ROOT / "ci-hub/landing/README.md",
     ROOT / "ci-hub/containers/README.md",
 )
-EXPECTED_COMMANDS = 57
+EXPECTED_COMMANDS = 56
 FENCE = re.compile(r"^```(?P<language>[A-Za-z0-9_-]*)\s*$")
 FATAL_OUTPUT = (
     "gh auth login",
@@ -146,6 +146,7 @@ def _classify(text: str) -> str:
             "refresh-history",
             "verify-landing",
             "validate-run",
+            "compatibility-website",
         }:
             return "parse"
         raise DocsCommandError(f"unclassified ci-hub subcommand: {normalized}")
@@ -168,7 +169,9 @@ def _classify(text: str) -> str:
         return "local-read"
     if normalized.startswith("with-proxy gh "):
         return "live-read"
-    if normalized.startswith('git fetch origin "+refs/pull/$PR/head:refs/pr-drain/$PR"'):
+    if normalized.startswith(
+        'git fetch origin "+refs/pull/$PR/head:refs/pr-drain/$PR"'
+    ):
         return "parse"
     if normalized.startswith('git cherry origin/main "refs/pr-drain/$PR"'):
         return "parse"
@@ -178,6 +181,8 @@ def _classify(text: str) -> str:
     if normalized.startswith("systemd-run --user "):
         return "parse"
     if normalized.startswith("systemctl --user status "):
+        return "parse"
+    if _safe_find_arguments(normalized) is not None:
         return "parse"
     # manual-run STARTS GitHub Actions runs. Every documented form but --list
     # would dispatch real work against a real commit, so the whole family is
@@ -255,10 +260,24 @@ def _is_cost_line(line: str) -> bool:
 
 def _business_output(output: str) -> str:
     return "\n".join(
-        line
-        for line in output.splitlines()
-        if line.strip() and not _is_cost_line(line)
+        line for line in output.splitlines() if line.strip() and not _is_cost_line(line)
     )
+
+
+def _safe_find_arguments(command: str) -> list[str] | None:
+    normalized = " ".join(command.replace("\\\n", " ").split())
+    try:
+        arguments = shlex.split(normalized)
+    except ValueError:
+        return None
+    if (
+        len(arguments) == 5
+        and arguments[:3] == ["find", "ignored/ci-hub/landing", "-name"]
+        and re.fullmatch(r"[A-Za-z0-9*?._-]+", arguments[3])
+        and arguments[4] == "-print"
+    ):
+        return arguments
+    return None
 
 
 def _external_help(command: str) -> str:
@@ -268,12 +287,24 @@ def _external_help(command: str) -> str:
     return "gh pr view --help"
 
 
-def _parse_probe(command: str) -> str:
+def _parse_probe(command: str, *, find_root: Path | None = None) -> str:
     normalized = " ".join(command.replace("\\\n", " ").split())
+    website_prefix = "./ci-hub/ci-hub compatibility-website"
+    if normalized.startswith(website_prefix):
+        # Unlike other opaque passthrough commands, ci-hub forwards this exact
+        # argument list under CI_HUB_DOCS_PARSE_ONLY so the owning Python parser
+        # validates the documented mode and options before returning.
+        return normalized
     if normalized.startswith("systemd-run --user "):
         return "systemd-run --help"
     if normalized.startswith("systemctl --user status "):
         return "systemctl --help"
+    find_arguments = _safe_find_arguments(normalized)
+    if find_arguments is not None:
+        if find_root is None:
+            raise DocsCommandError("safe find parse probe requires an empty directory")
+        find_arguments[1] = str(find_root)
+        return shlex.join(find_arguments)
     if normalized.startswith("./ci-hub/bin/close-task "):
         return "./ci-hub/bin/close-task --help"
     if re.match(r"^(?:\./)?ci-hub/bin/reconcile-receipts(?:\s|$)", normalized):
@@ -290,7 +321,9 @@ def _parse_probe(command: str) -> str:
     # without this one.
     if normalized.startswith("python3 ci-hub/landing/coalesce_guard.py"):
         return "python3 ci-hub/landing/coalesce_guard.py --help"
-    if normalized.startswith('git fetch origin "+refs/pull/$PR/head:refs/pr-drain/$PR"'):
+    if normalized.startswith(
+        'git fetch origin "+refs/pull/$PR/head:refs/pr-drain/$PR"'
+    ):
         return "git fetch --help"
     if normalized.startswith('git cherry origin/main "refs/pr-drain/$PR"'):
         return "git cherry --help"
@@ -351,10 +384,17 @@ def _run_one(
     run_environment = environment.copy()
     executed = rendered
     allowed = {0}
+    find_probe: tempfile.TemporaryDirectory[str] | None = None
     if command.mode == "parse" or (command.mode == "live-read" and not live):
         run_environment["CI_HUB_DOCS_PARSE_ONLY"] = "1"
         if command.mode == "parse":
-            executed = _parse_probe(rendered)
+            if _safe_find_arguments(rendered) is not None:
+                find_probe = tempfile.TemporaryDirectory(
+                    prefix="ci-hub-documented-find-"
+                )
+                executed = _parse_probe(rendered, find_root=Path(find_probe.name))
+            else:
+                executed = _parse_probe(rendered)
         elif rendered.startswith("with-proxy gh "):
             executed = _external_help(rendered)
         else:
@@ -370,9 +410,7 @@ def _run_one(
         # executed. Crashes are still caught: a Rust panic is 101, a missing
         # binary 127, and any traceback trips FATAL_OUTPUT above.
         allowed = (
-            {0, 1, 2, 3, 4}
-            if re.match(r"^(?:\./)?ci-hub/ci-hub\s", rendered)
-            else {0}
+            {0, 1, 2, 3, 4} if re.match(r"^(?:\./)?ci-hub/ci-hub\s", rendered) else {0}
         )
 
     timeout = 120 if live else 45
@@ -394,6 +432,9 @@ def _run_one(
         raise DocsCommandError(
             f"{command.label}: {command.mode} command exceeded {timeout}s: {executed}"
         ) from error
+    finally:
+        if find_probe is not None:
+            find_probe.cleanup()
     output = result.stdout + result.stderr
     fatal = next((marker for marker in FATAL_OUTPUT if marker in output), None)
     if fatal is not None:
@@ -406,7 +447,11 @@ def _run_one(
             f"{command.label}: exit {result.returncode}, expected {sorted(allowed)}\n"
             f"command: {executed}\noutput:\n{output}"
         )
-    if command.mode != "setup" and not _business_output(output):
+    if (
+        command.mode != "setup"
+        and not _business_output(output)
+        and _safe_find_arguments(rendered) is None
+    ):
         raise DocsCommandError(
             f"{command.label}: silent success (no domain output)\ncommand: {executed}"
         )

@@ -23,7 +23,7 @@ use std::ffi::{CString, OsString};
 use std::fs::File;
 use std::io::{self, Read, Write};
 use std::net::{Ipv4Addr, TcpListener, TcpStream};
-use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd, RawFd};
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Component, Path, PathBuf};
 use std::process::ExitCode;
@@ -40,7 +40,7 @@ const ACCEPT_POLL: Duration = Duration::from_millis(20);
 const STREAM_BUFFER_BYTES: usize = 16 * 1024;
 const SERVER_NAME: &str = "compatibility-website serve";
 
-const USAGE: &str = r#"Usage: ci-hub/compatibility-website/serve.rs --root DIRECTORY [--port PORT]
+const USAGE: &str = r#"Usage: ci-hub/compatibility-website/serve.rs (--root DIRECTORY | --root-fd FD) [--port PORT]
 
 Serve a generated compatibility website on 127.0.0.1. The default port is 0,
 which asks the operating system for an available port. The command prints one
@@ -48,6 +48,7 @@ ready URL on stdout and then serves until SIGINT or SIGTERM.
 
 Options:
   --root DIRECTORY  Existing, nonsymlink website output directory (required).
+  --root-fd FD       Already-open inherited website directory descriptor.
   --port PORT       Loopback TCP port, from 0 through 65535 (default: 0).
   -h, --help        Show this help.
 "#;
@@ -57,8 +58,13 @@ const CONTENT_SECURITY_POLICY: &str = "default-src 'none'; script-src 'self'; st
 static STOP_REQUESTED: AtomicBool = AtomicBool::new(false);
 
 struct Config {
-    root: PathBuf,
+    root: Root,
     port: u16,
+}
+
+enum Root {
+    Path(PathBuf),
+    Inherited(RawFd),
 }
 
 enum CliAction {
@@ -142,6 +148,7 @@ fn main() -> ExitCode {
 
 fn parse_arguments(arguments: impl Iterator<Item = OsString>) -> Result<CliAction, String> {
     let mut root = None;
+    let mut root_fd = None;
     let mut port = None;
     let mut arguments = arguments.peekable();
     while let Some(argument) = arguments.next() {
@@ -150,14 +157,18 @@ fn parse_arguments(arguments: impl Iterator<Item = OsString>) -> Result<CliActio
             .ok_or_else(|| "option names must be valid UTF-8".to_owned())?;
         match option {
             "-h" | "--help" => {
-                if root.is_some() || port.is_some() || arguments.peek().is_some() {
+                if root.is_some()
+                    || root_fd.is_some()
+                    || port.is_some()
+                    || arguments.peek().is_some()
+                {
                     return Err("--help cannot be combined with other arguments".to_owned());
                 }
                 return Ok(CliAction::Help);
             }
             "--root" => {
-                if root.is_some() {
-                    return Err("--root may be supplied only once".to_owned());
+                if root.is_some() || root_fd.is_some() {
+                    return Err("--root and --root-fd are mutually exclusive".to_owned());
                 }
                 root = Some(
                     arguments
@@ -165,6 +176,24 @@ fn parse_arguments(arguments: impl Iterator<Item = OsString>) -> Result<CliActio
                         .ok_or_else(|| "--root requires a directory".to_owned())?
                         .into(),
                 );
+            }
+            "--root-fd" => {
+                if root.is_some() || root_fd.is_some() {
+                    return Err("--root and --root-fd are mutually exclusive".to_owned());
+                }
+                let value = arguments
+                    .next()
+                    .ok_or_else(|| "--root-fd requires a descriptor number".to_owned())?;
+                let value = value
+                    .to_str()
+                    .ok_or_else(|| "--root-fd must be valid UTF-8".to_owned())?;
+                let descriptor = value
+                    .parse::<RawFd>()
+                    .map_err(|_| "--root-fd must be a nonnegative integer descriptor".to_owned())?;
+                if descriptor < 0 {
+                    return Err("--root-fd must be a nonnegative integer descriptor".to_owned());
+                }
+                root_fd = Some(descriptor);
             }
             "--port" => {
                 if port.is_some() {
@@ -184,7 +213,12 @@ fn parse_arguments(arguments: impl Iterator<Item = OsString>) -> Result<CliActio
             _ => return Err(format!("unexpected argument {option:?}")),
         }
     }
-    let root = root.ok_or_else(|| "--root is required".to_owned())?;
+    let root = match (root, root_fd) {
+        (Some(path), None) => Root::Path(path),
+        (None, Some(descriptor)) => Root::Inherited(descriptor),
+        (None, None) => return Err("exactly one of --root or --root-fd is required".to_owned()),
+        (Some(_), Some(_)) => unreachable!("argument parser rejects a second root source"),
+    };
     Ok(CliAction::Serve(Config {
         root,
         port: port.unwrap_or(DEFAULT_PORT),
@@ -192,7 +226,10 @@ fn parse_arguments(arguments: impl Iterator<Item = OsString>) -> Result<CliActio
 }
 
 fn serve(config: Config) -> Result<(), String> {
-    let root = open_root(&config.root)?;
+    let root = match config.root {
+        Root::Path(path) => open_root(&path)?,
+        Root::Inherited(descriptor) => open_inherited_root(descriptor)?,
+    };
     install_stop_handlers()?;
     let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, config.port))
         .map_err(|error| format!("cannot bind 127.0.0.1:{}: {error}", config.port))?;
@@ -218,6 +255,29 @@ fn serve(config: Config) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+fn open_inherited_root(descriptor: RawFd) -> Result<OwnedFd, String> {
+    let duplicated = unsafe { libc::fcntl(descriptor, libc::F_DUPFD_CLOEXEC, 3) };
+    if duplicated < 0 {
+        return Err(format!(
+            "cannot duplicate inherited website root descriptor {descriptor}: {}",
+            io::Error::last_os_error()
+        ));
+    }
+    let root = unsafe { OwnedFd::from_raw_fd(duplicated) };
+    if unsafe { libc::close(descriptor) } != 0 {
+        return Err(format!(
+            "cannot close inherited website root descriptor {descriptor}: {}",
+            io::Error::last_os_error()
+        ));
+    }
+    if !descriptor_is_directory(root.as_raw_fd()) {
+        return Err(format!(
+            "inherited website root descriptor {descriptor} is not a directory"
+        ));
+    }
+    Ok(root)
 }
 
 fn open_root(path: &Path) -> Result<OwnedFd, String> {

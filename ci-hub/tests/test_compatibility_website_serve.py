@@ -53,13 +53,16 @@ class RunningServer:
         *,
         port: int = 0,
         command: list[str] | None = None,
+        root_fd: int | None = None,
     ) -> None:
         self.root = root
+        root_arguments = (
+            ["--root", str(root)] if root_fd is None else ["--root-fd", str(root_fd)]
+        )
         self.process = subprocess.Popen(
             [
                 *(SERVER_COMMAND if command is None else command),
-                "--root",
-                str(root),
+                *root_arguments,
                 "--port",
                 str(port),
             ],
@@ -70,6 +73,7 @@ class RunningServer:
             text=True,
             bufsize=1,
             start_new_session=True,
+            pass_fds=() if root_fd is None else (root_fd,),
         )
         try:
             assert self.process.stdout is not None
@@ -251,6 +255,11 @@ class CompatibilityWebsiteServeTest(unittest.TestCase):
         self.addCleanup(server.ensure_stopped)
         return server
 
+    def start_with_fd(self, descriptor: int, *, port: int = 0) -> RunningServer:
+        server = RunningServer(self.site, port=port, root_fd=descriptor)
+        self.addCleanup(server.ensure_stopped)
+        return server
+
     def assert_response(
         self,
         response: Response,
@@ -281,6 +290,9 @@ class CompatibilityWebsiteServeTest(unittest.TestCase):
         for arguments in (
             (),
             ("--root", str(self.site), "--root", str(self.site)),
+            ("--root", str(self.site), "--root-fd", "3"),
+            ("--root-fd", "-1"),
+            ("--root-fd", "not-a-number"),
             ("--root", str(self.site), "--port", "65536"),
             ("--root", str(self.site), "--bind", "::1"),
         ):
@@ -308,6 +320,83 @@ class CompatibilityWebsiteServeTest(unittest.TestCase):
         self.assertEqual(missing.returncode, 1)
         self.assertEqual(missing.stdout, "")
         self.assertIn("cannot open website root", missing.stderr)
+
+    def test_inherited_root_fd_preserves_identity_across_path_swap(self) -> None:
+        descriptor = os.open(self.site, os.O_RDONLY | os.O_DIRECTORY)
+        original = self.temp / "original-site"
+        self.site.rename(original)
+        self.site.mkdir()
+        (self.site / "index.html").write_bytes(b"replacement")
+        try:
+            server = self.start_with_fd(descriptor)
+        finally:
+            os.close(descriptor)
+        try:
+            response = server.request(request_bytes(server.port))
+            self.assert_response(response, 200, body=self.files["index.html"])
+        finally:
+            self.assertEqual(server.stop(), (0, "", ""))
+
+    def test_inherited_root_fd_rejects_closed_and_non_directory_descriptors(
+        self,
+    ) -> None:
+        closed = 1_000_000
+        closed_result = subprocess.run(
+            [*SERVER_COMMAND, "--root-fd", str(closed)],
+            cwd=ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+        self.assertEqual(closed_result.returncode, 1)
+        self.assertEqual(closed_result.stdout, "")
+        self.assertIn("cannot duplicate inherited website root", closed_result.stderr)
+
+        file_descriptor = os.open(self.site / "index.html", os.O_RDONLY)
+        try:
+            file_result = subprocess.run(
+                [*SERVER_COMMAND, "--root-fd", str(file_descriptor)],
+                cwd=ROOT,
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=120,
+                pass_fds=(file_descriptor,),
+            )
+        finally:
+            os.close(file_descriptor)
+        self.assertEqual(file_result.returncode, 1)
+        self.assertEqual(file_result.stdout, "")
+        self.assertIn("is not a directory", file_result.stderr)
+
+    def test_inherited_root_fd_is_not_duplicated_after_startup(self) -> None:
+        descriptor = os.open(self.site, os.O_RDONLY | os.O_DIRECTORY)
+        expected = os.fstat(descriptor)
+        try:
+            server = self.start_with_fd(descriptor)
+        finally:
+            os.close(descriptor)
+        try:
+            matching = 0
+            for entry in (Path("/proc") / str(server.process.pid) / "fd").iterdir():
+                try:
+                    observed = entry.stat()
+                except FileNotFoundError:
+                    continue
+                if (observed.st_dev, observed.st_ino) == (
+                    expected.st_dev,
+                    expected.st_ino,
+                ):
+                    matching += 1
+            self.assertEqual(matching, 1)
+            self.assert_response(
+                server.request(request_bytes(server.port)),
+                200,
+                body=self.files["index.html"],
+            )
+        finally:
+            self.assertEqual(server.stop(), (0, "", ""))
 
     def test_failed_ready_line_validation_reaps_its_process_group(self) -> None:
         pid_file = self.temp / "bad-ready.pid"

@@ -99,7 +99,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::ffi::{OsStr, OsString};
 use std::io::{self, Read, Write};
-use std::os::unix::process::ExitStatusExt;
+use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitCode, ExitStatus, Stdio};
 use thiserror::Error;
@@ -143,6 +143,10 @@ READ-ONLY STATUS AND HISTORY
   history                 Query the retained GitHub Actions timeline
   green-time              Estimate carried-forward green/red time and densification gaps
   verify-landing          Verify a PR replay SHA or commit SHA on a fetched target
+
+COMPATIBILITY WEBSITE
+  Build or serve the immutable static site without adding reporting authority.
+  compatibility-website  Build, serve, or build-and-serve the compatibility site
 
 VALIDATION ACTIONS
   Start, stop, admit, or persist validation work.
@@ -204,8 +208,11 @@ lists commands; it does not define those rules independently.
    Query runner health for capacity only: ./ci-hub/ci-hub runner-health --all
 
 Run from the dev-hermit root. Networked subcommands apply with-proxy internally.
-Meaningful work prints estimated and actual wall+CPU cost; quickstart itself is
-pure and performs no workspace discovery, filesystem writes, or network calls.
+Finite commands report wall+CPU cost where their output contract permits it.
+Compatibility-website serve and its default build-and-serve mode keep their
+long-running stream contract instead; explicit compatibility-website build is
+costed normally. Quickstart itself is pure and performs no workspace discovery,
+filesystem writes, or network calls.
 "#;
 
 #[derive(Parser, Debug)]
@@ -291,6 +298,8 @@ enum HubCommand {
     Batch(BatchArgs),
     /// Cancel PRs whose GH Actions starved waiting to start and reroute to local validation.
     CiTimeout(CiTimeoutArgs),
+    /// Build, serve, or build-and-serve the compatibility website.
+    CompatibilityWebsite(PassthroughArgs),
 }
 
 #[derive(Args, Clone, Debug)]
@@ -1267,6 +1276,19 @@ struct CostSpec {
 }
 
 impl HubCommand {
+    fn accepts_ci_hub_advisory_stderr(&self) -> bool {
+        // The website child owns an exact stream contract: build stdout is one
+        // canonical JSON value, refusal stderr is prefixed, and combined mode
+        // reports only the artifact identity before exec. A hub advisory would
+        // make those machine-readable command results ambiguous. The artifact
+        // verifier is used by the advisory classifier's Python reader, so
+        // invoking the classifier there would recurse on the same receipt.
+        !matches!(
+            self,
+            Self::CompatibilityWebsite(_) | Self::ValidateEvidence(_)
+        )
+    }
+
     fn cost_spec(&self) -> Option<CostSpec> {
         let spec = match self {
             Self::Health(_) => CostSpec {
@@ -1375,6 +1397,19 @@ impl HubCommand {
                 tool: "ci-hub/signal-crosscheck",
                 basis: "not measured: one exact-SHA validate-status query, canonical ledger and series scans, exact scorecard object reads, run-handle scan, and one GitHub commit-status query".into(),
             },
+            Self::CompatibilityWebsite(args)
+                if args.args.first().and_then(|value| value.to_str()) == Some("build")
+                    && !args
+                        .args
+                        .iter()
+                        .any(|value| matches!(value.to_str(), Some("-h" | "--help"))) =>
+            {
+                CostSpec {
+                    tool: "ci-hub/compatibility-website",
+                    basis: "not measured: canonical ledger/series reads, manifest metadata export, deterministic rendering, and immutable publication"
+                        .into(),
+                }
+            }
             Self::Quickstart
             | Self::GreenTime(_)
             | Self::Ledger(_)
@@ -1387,6 +1422,7 @@ impl HubCommand {
             | Self::ValidateStop(_)
             | Self::CorrectOwnerWatchHandles(_)
             | Self::ApplyLocalLabel(_)
+            | Self::CompatibilityWebsite(_)
             | Self::LandLock(_)
             | Self::ValidateLock(_) => return None,
         };
@@ -1497,7 +1533,8 @@ fn main() -> ExitCode {
         print!("{AGENT_QUICKSTART}");
         return ExitCode::SUCCESS;
     }
-    if env::var_os("CI_HUB_DOCS_PARSE_ONLY").is_some() {
+    let docs_parse_only = env::var_os("CI_HUB_DOCS_PARSE_ONLY").is_some();
+    if docs_parse_only && !matches!(&cli.command, HubCommand::CompatibilityWebsite(_)) {
         println!(
             "DOCS PARSE OK: {}",
             raw[1..]
@@ -1516,7 +1553,7 @@ fn main() -> ExitCode {
         }
     };
 
-    if env::var_os("CI_HUB_TOOL_COST_ACTIVE").is_none() {
+    if !docs_parse_only && env::var_os("CI_HUB_TOOL_COST_ACTIVE").is_none() {
         if let Some(spec) = cli.command.cost_spec() {
             match run_costed(&root, &raw[1..], spec) {
                 Ok(code) => return to_exit_code(code),
@@ -1533,10 +1570,7 @@ fn main() -> ExitCode {
     // receipt and prints only when the current tip is recorded soft-green but
     // is not yet hard-green. It is advisory: a broken warning probe must say
     // UNKNOWN without changing the command the caller actually requested.
-    // The artifact verifier is used by this advisory classifier's Python
-    // reader. Calling the classifier from the verifier would recursively
-    // launch another verifier for the same receipt.
-    if !matches!(&cli.command, HubCommand::ValidateEvidence(_)) {
+    if cli.command.accepts_ci_hub_advisory_stderr() {
         warn_if_main_is_soft_green(&root);
     }
 
@@ -1646,6 +1680,7 @@ fn run_costed(root: &Path, original_args: &[OsString], spec: CostSpec) -> Result
 fn execute(root: &Path, command: HubCommand) -> Result<i32, CiHubError> {
     match command {
         HubCommand::Quickstart => unreachable!("quickstart returns before workspace discovery"),
+        HubCommand::CompatibilityWebsite(args) => exec_compatibility_website(root, args.args),
         HubCommand::Health(args) => {
             let main_code = run_python(
                 root,
@@ -1954,6 +1989,19 @@ fn execute(root: &Path, command: HubCommand) -> Result<i32, CiHubError> {
             CiTimeoutCommand::Reap(reap_args) => run_ci_timeout_reap(root, reap_args),
         },
     }
+}
+
+fn exec_compatibility_website(root: &Path, args: Vec<OsString>) -> Result<i32, CiHubError> {
+    let script = root.join("ci-hub/compatibility-website/build_and_serve.py");
+    let error = Command::new("python3")
+        .arg(&script)
+        .args(args)
+        .current_dir(root)
+        .exec();
+    Err(CiHubError::Launch {
+        tool: script.display().to_string(),
+        source: error,
+    })
 }
 
 fn ci_mode_path(root: &Path) -> PathBuf {
@@ -16213,6 +16261,50 @@ mod tests {
     }
 
     #[test]
+    fn compatibility_website_forwards_exact_arguments_and_costs_only_build() {
+        let command = Cli::try_parse_from([
+            "ci-hub",
+            "compatibility-website",
+            "serve",
+            "--root",
+            "/tmp/site",
+            "--port",
+            "4321",
+        ])
+        .unwrap()
+        .command;
+        let HubCommand::CompatibilityWebsite(args) = command else {
+            panic!("wrong command variant")
+        };
+        assert_eq!(
+            args.args,
+            ["serve", "--root", "/tmp/site", "--port", "4321"]
+        );
+        let command = HubCommand::CompatibilityWebsite(args);
+        assert!(command.cost_spec().is_none());
+        assert!(!command.accepts_ci_hub_advisory_stderr());
+
+        let build = Cli::try_parse_from(["ci-hub", "compatibility-website", "build"])
+            .unwrap()
+            .command;
+        assert!(build.cost_spec().is_some());
+        assert!(!build.accepts_ci_hub_advisory_stderr());
+
+        for help in ["-h", "--help"] {
+            let command = Cli::try_parse_from(["ci-hub", "compatibility-website", "build", help])
+                .unwrap()
+                .command;
+            assert!(command.cost_spec().is_none());
+        }
+
+        let combined = Cli::try_parse_from(["ci-hub", "compatibility-website"])
+            .unwrap()
+            .command;
+        assert!(combined.cost_spec().is_none());
+        assert!(!combined.accepts_ci_hub_advisory_stderr());
+    }
+
+    #[test]
     fn parses_typed_active_work_command() {
         let command = Cli::try_parse_from([
             "ci-hub",
@@ -16703,6 +16795,7 @@ print(json.dumps({"schema_version": 1, "rows": rows, "records": records}))
         let headings = [
             "START HERE",
             "READ-ONLY STATUS AND HISTORY",
+            "COMPATIBILITY WEBSITE",
             "VALIDATION ACTIONS",
             "LANDING AND COORDINATION ACTIONS",
         ];

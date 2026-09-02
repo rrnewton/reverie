@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """Render a deterministic static compatibility site from Stage 1 artifacts.
 
-This remains a fixture-backed prototype, not current project status. It does
-not read a ledger or infer a result. The Stage 1 artifacts have already done
-that work; this renderer validates those artifacts through the same build-data
-validator and presents their derived fields. Local JavaScript adds optional
-filtering and sorting; the complete table remains available without it.
+The standalone renderer CLI and default API remain a fixture-backed prototype
+and do not claim current project status. The combined website builder supplies
+explicit live wording. Neither path reads a ledger or infers a result: the Stage 1
+artifacts have already done that work. This renderer validates those artifacts
+through the same build-data validator and presents their derived fields. Local
+JavaScript adds optional filtering and sorting; the complete table remains
+available without it.
 """
 
 from __future__ import annotations
@@ -58,6 +60,76 @@ class RenderRefused(Exception):
 
 
 @dataclass(frozen=True)
+class PageWording:
+    """The explicit fixture or live wording used throughout one rendered tree."""
+
+    meta_description: str
+    title_suffix: str
+    banner: str
+    footer: str
+    provenance_heading: str
+    landing_lead: str
+    cell_table_caption: str
+    cells_lead: str
+
+
+PAGE_WORDING = {
+    "fixture": PageWording(
+        meta_description="Fixture-backed Hermit compatibility evidence",
+        title_suffix="Hermit compatibility fixture",
+        banner="Fixture data — not current Hermit main",
+        footer=(
+            "Generated locally from validated Stage 1 fixture artifacts. "
+            "No network resources are used."
+        ),
+        provenance_heading="Fixture provenance",
+        landing_lead=(
+            "A navigable view of recorded facts in the deterministic Stage 1 fixture."
+        ),
+        cell_table_caption=(
+            "Every cell in the fixture manifest. JavaScript can filter and reorder "
+            "these rendered rows without changing their recorded values."
+        ),
+        cells_lead=(
+            "Every cell in the manifest and every public canonical series row in "
+            "the fixture."
+        ),
+    ),
+    "live": PageWording(
+        meta_description="Hermit compatibility evidence from validated Stage 1 artifacts",
+        title_suffix="Hermit compatibility",
+        banner=(
+            "Recorded data — source commits are on Overview; incomplete data is on "
+            "Incomplete data"
+        ),
+        footer=(
+            "Generated locally from validated Stage 1 artifacts. "
+            "No network resources are used."
+        ),
+        provenance_heading="Build provenance",
+        landing_lead="A navigable view of the recorded facts in this build.",
+        cell_table_caption=(
+            "Every cell in the manifest for this build. JavaScript can filter and "
+            "reorder these rendered rows without changing their recorded values."
+        ),
+        cells_lead=(
+            "Every cell in the manifest and every public canonical series row in "
+            "this build."
+        ),
+    ),
+}
+
+
+def _page_wording(value: str) -> PageWording:
+    try:
+        return PAGE_WORDING[value]
+    except (KeyError, TypeError) as error:
+        raise RenderRefused(
+            "page wording must be exactly 'fixture' or 'live'"
+        ) from error
+
+
+@dataclass(frozen=True)
 class SiteModel:
     build: Mapping[str, Any]
     data: Mapping[str, Any]
@@ -78,6 +150,7 @@ class SiteModel:
     cell_paths: Mapping[str, str]
     test_paths: Mapping[str, str]
     run_paths: Mapping[str, str]
+    wording: PageWording
 
 
 @functools.cache
@@ -528,7 +601,9 @@ def _validate_counts(
     return _series_by_cell(cells, series_rows)
 
 
-def _site_model(build: Mapping[str, Any], data: Mapping[str, Any]) -> SiteModel:
+def _site_model(
+    build: Mapping[str, Any], data: Mapping[str, Any], *, wording: str = "fixture"
+) -> SiteModel:
     cells = tuple(data["cells"])
     tests = tuple(data["tests"])
     custom = tuple(data["selected_by_full_custom_commands"])
@@ -576,6 +651,7 @@ def _site_model(build: Mapping[str, Any], data: Mapping[str, Any]) -> SiteModel:
         cell_paths=_hashed_paths("cells", tuple(cell_by_id)),
         test_paths=_hashed_paths("tests", tuple(test_by_id)),
         run_paths={identity: f"runs/{identity}.html" for identity in history_by_id},
+        wording=_page_wording(wording),
     )
 
 
@@ -786,6 +862,7 @@ def _layout(
     lead: str,
     content: str,
     breadcrumbs: Sequence[tuple[str, str | None]],
+    wording: PageWording,
     scripts: Sequence[str] = (),
 ) -> bytes:
     nav = (
@@ -806,8 +883,8 @@ def _layout(
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="description" content="Fixture-backed Hermit compatibility evidence">
-  <title>{_escape(title)} · Hermit compatibility fixture</title>
+  <meta name="description" content="{_escape(wording.meta_description)}">
+  <title>{_escape(title)} · {_escape(wording.title_suffix)}</title>
   <link rel="icon" type="image/svg+xml" href="{_escape(_href(page, 'assets/favicon.svg'))}">
   <link rel="stylesheet" href="{_escape(_href(page, 'assets/site.css'))}">
   {script_tags}
@@ -815,7 +892,7 @@ def _layout(
 <body>
   <a class="skip-link" href="#main-content">Skip to main content</a>
   <header class="site-header">
-    <p class="fixture-banner">Fixture data — not current Hermit main</p>
+    <p class="fixture-banner">{_escape(wording.banner)}</p>
     <p class="site-name">Hermit compatibility</p>
     <nav aria-label="Primary navigation">{nav}</nav>
   </header>
@@ -824,7 +901,7 @@ def _layout(
     <header class="page-heading"><h1>{_escape(title)}</h1><p>{_escape(lead)}</p></header>
     {content}
   </main>
-  <footer><p>Generated locally from validated Stage 1 fixture artifacts. No network resources are used.</p></footer>
+  <footer><p>{_escape(wording.footer)}</p></footer>
 </body>
 </html>
 """
@@ -1025,7 +1102,7 @@ def _provenance(model: SiteModel) -> str:
     provenance = model.build["provenance"]
     return f"""
     <section id="provenance">
-      <h2>Fixture provenance</h2>
+      <h2>{_escape(model.wording.provenance_heading)}</h2>
       <dl class="facts">
         <div><dt>Hermit commit used for manifest policy</dt><dd><code>{_escape(provenance['hermit_commit'])}</code></dd></div>
         <div><dt>Hermit main ancestry target</dt><dd><code>{_escape(provenance['hermit_main_commit'])}</code></dd></div>
@@ -1056,9 +1133,10 @@ def _landing_page(model: SiteModel) -> bytes:
     return _layout(
         page,
         "Hermit compatibility",
-        "A navigable view of recorded facts in the deterministic Stage 1 fixture.",
+        model.wording.landing_lead,
         content,
         (("Overview", None),),
+        model.wording,
     )
 
 
@@ -1138,8 +1216,7 @@ def _cell_table(model: SiteModel, page: str) -> str:
     )
     return f"""
       <div class="table-scroll"><table>
-        <caption>Every cell in the fixture manifest. JavaScript can filter and reorder
-        these rendered rows without changing their recorded values.</caption>
+        <caption>{_escape(model.wording.cell_table_caption)}</caption>
         <thead><tr><th scope="col">Cell</th><th scope="col">Test id</th>
         <th scope="col">Lane</th><th scope="col">Category</th><th scope="col">Mode</th>
         <th scope="col">Backend</th><th scope="col">Applicability</th>
@@ -1451,9 +1528,10 @@ def _cells_index(model: SiteModel) -> bytes:
     return _layout(
         page,
         "Cells and canonical rows",
-        "Every cell in the manifest and every public canonical series row in the fixture.",
+        model.wording.cells_lead,
         content,
         (("Overview", "index.html"), ("Cells", None)),
+        model.wording,
         ("assets/site.js",),
     )
 
@@ -1602,6 +1680,7 @@ def _cell_page(model: SiteModel, identity: str) -> bytes:
         "Manifest membership, path-specific selection, state, product result, and retained evidence.",
         content,
         (("Overview", "index.html"), ("Cells", "cells/index.html"), (identity, None)),
+        model.wording,
     )
 
 
@@ -1666,6 +1745,7 @@ def _test_page(model: SiteModel, identity: str) -> bytes:
         "Retained manifest metadata and the cells belonging to this test.",
         content,
         (("Overview", "index.html"), ("Tests", "index.html#tests"), (identity, None)),
+        model.wording,
     )
 
 
@@ -1785,6 +1865,7 @@ def _run_page(model: SiteModel, row: Mapping[str, Any]) -> bytes:
             ("Validation runs", "index.html#validation-runs"),
             (title, None),
         ),
+        model.wording,
     )
 
 
@@ -1834,6 +1915,7 @@ def _incomplete_page(model: SiteModel) -> bytes:
         "Recorded gaps in the facts available to the compatibility site.",
         content,
         (("Overview", "index.html"), ("Incomplete data", None)),
+        model.wording,
     )
 
 
@@ -1889,8 +1971,13 @@ def _site_favicon() -> bytes:
     return value
 
 
-def render_site(build: Mapping[str, Any], data: Mapping[str, Any]) -> dict[str, bytes]:
-    model = _site_model(build, data)
+def render_site(
+    build: Mapping[str, Any],
+    data: Mapping[str, Any],
+    *,
+    wording: str = "fixture",
+) -> dict[str, bytes]:
+    model = _site_model(build, data, wording=wording)
     files = {
         "assets/favicon.svg": _site_favicon(),
         "assets/site.css": _site_css(),

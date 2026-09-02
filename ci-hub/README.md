@@ -78,6 +78,48 @@ CI_HUB_DOCS_PARSE_ONLY=1 ./ci-hub/landing/land-pr.sh \
 ./ci-hub/ci-hub validate-run --attach validate-hermit-example-aaaaaaaaaaaa
 ```
 
+## Compatibility website
+
+The website command derives its data from the canonical ledger, series, and
+manifest inputs. It does not read the generated scorecard as authority. A build
+prints one canonical JSON result naming the immutable digest directory. Serving
+validates that complete directory before opening its already-validated directory
+descriptor in the loopback server. With no subcommand, the command builds or
+reuses the exact output, reports its identities on stderr, and then serves it.
+
+```bash
+./ci-hub/ci-hub compatibility-website build
+./ci-hub/ci-hub compatibility-website serve --root /absolute/path/to/dev-hermit-compatibility-website/FRESHNESS_SHA256
+./ci-hub/ci-hub compatibility-website
+```
+
+The `build` result's `path` field is the absolute value to pass to
+`serve --root`; the placeholder above is not a relative path.
+
+The default output root is the deterministic sibling
+`../CHECKOUT-NAME-compatibility-website`. Use `--output-root` to select another
+directory outside every source checkout. The output root and its immediate
+parent must be owned by the current user and must not be group- or
+other-writable; use a user-owned directory beneath `/tmp`, not `/tmp` itself.
+
+A build refusal writes no stdout and never serves an older directory. Published
+digest directories use read-only files and non-writable directories and are not
+deleted when later inputs produce a different digest. Reuse and serving reject
+mode or content changes. The same local user or root can deliberately change
+permissions; that is a host trust limit, not an accepted artifact. Builds also
+trust the local executable search path, Rust/Python toolchains, and their caches;
+ordinary tracked-source changes are detected, but this is not a hermetic defense
+against a malicious same-user process changing those dependencies between checks.
+Failed or interrupted builds and same-digest publication losers deliberately
+retain their private `.DIGEST.build-*` directories at mode 0700 and print a
+warning. They are not published artifacts; this command performs no automatic
+deletion because it cannot safely prove ownership through every failure race.
+When invoked through ci-hub, explicit `build` reports its standard cost on
+stderr. Long-running `serve` and default `build-and-serve` do not add wrapper
+cost lines to their stream contracts. The generated pages keep cells in the manifest distinct
+from cells selected by each named validate path; no selection aggregate without
+its validate path is introduced.
+
 `validate-run` and the inner `validate-lock` call the same admission mechanism.
 To deliberately repeat an older Hermit SHA after main advances, add
 `--frozen-validate` before `--`. That path still checks the immutable validation

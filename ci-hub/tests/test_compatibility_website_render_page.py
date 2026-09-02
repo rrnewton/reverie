@@ -590,6 +590,52 @@ def test_site_is_deterministic_and_truthful() -> None:
     assert render_page.render_page(build, data) == first["index.html"]
 
 
+def test_live_wording_is_explicit_and_fixture_default_is_unchanged() -> None:
+    build, data = render_page.load_artifacts(FIXTURE)
+    fixture = render_page.render_site(build, data)
+    live = render_page.render_site(build, data, wording="live")
+    fixture_html = "\n".join(
+        value.decode() for path, value in fixture.items() if path.endswith(".html")
+    )
+    live_html = "\n".join(
+        value.decode() for path, value in live.items() if path.endswith(".html")
+    )
+
+    assert set(live) == set(fixture)
+    assert all(
+        live[path] == value
+        for path, value in fixture.items()
+        if not path.endswith(".html")
+    )
+    assert fixture_html.count("Fixture data — not current Hermit main") == 19
+    assert "Fixture provenance" in fixture_html
+    assert "fixture manifest" in fixture_html
+    live_banner = (
+        "Recorded data — source commits are on Overview; incomplete data is on "
+        "Incomplete data"
+    )
+    for path, value in live.items():
+        if path.endswith(".html"):
+            assert live_banner in value.decode(), path
+            assert (
+                "source commits and incomplete data are named below"
+                not in value.decode()
+            )
+    assert "Build provenance" in live_html
+    assert "manifest for this build" in live_html
+    for fixture_only in (
+        "Fixture data — not current Hermit main",
+        "Fixture provenance",
+        "Stage 1 fixture",
+        "fixture manifest",
+        "compatibility fixture",
+    ):
+        assert fixture_only not in live_html
+
+    with pytest.raises(render_page.RenderRefused, match="exactly 'fixture' or 'live'"):
+        render_page.render_site(build, data, wording="current")
+
+
 def test_every_artifact_is_read_and_bound(monkeypatch: pytest.MonkeyPatch) -> None:
     writer = render_page._writer()
     observed = []
