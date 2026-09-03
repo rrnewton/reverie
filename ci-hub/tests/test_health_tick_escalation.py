@@ -37,6 +37,27 @@ def extract_function() -> str:
     return match.group(0)
 
 
+def extract_settings() -> list[str]:
+    """The wrapper's OWN escalation settings, not a copy of them.
+
+    A fixture that redeclares these would test the fixture: the sink list and the
+    database name could be changed in the wrapper and every assertion here would
+    still pass. Taking the real assignment lines is what makes a mutation of the
+    wrapper show up as a failure.
+    """
+    text = WRAPPER.read_text()
+    wanted = ("ESCALATION_SINKS=", "ESCALATION_TG_DB=", "ESCALATION_KEY=")
+    found = [
+        line
+        for line in text.splitlines()
+        if any(line.startswith(name) for name in wanted)
+    ]
+    assert len(found) == len(wanted), (
+        f"expected one assignment for each of {wanted} in {WRAPPER}; got {found}"
+    )
+    return found
+
+
 @pytest.fixture()
 def bench(tmp_path: Path):
     function = extract_function()
@@ -58,9 +79,9 @@ def bench(tmp_path: Path):
                 f'LIVE_REPORT={report}',
                 'LIVE_REPORT_STAMP=2026-09-03T00:00:00Z',
                 'LIVE_REPORT_ESCALATED=0',
-                'ESCALATION_KEY=operational-tick-findings',
                 'ESCALATION_AGENT=health-tick',
                 'ESCALATION_TEAM=hermit2',
+                *extract_settings(),
                 f'ESCALATE={escalate if escalate is not None else stub}',
             ]
         )
@@ -143,6 +164,33 @@ def test_per_run_provenance_is_excluded_from_change_detection(bench) -> None:
     function = extract_function()
     assert "--digest-ignore 'observed_at=" in function
     assert "--digest-ignore 'input_sha=" in function
+
+
+def test_both_sinks_are_named_on_every_call(bench) -> None:
+    """They cover different outages: the fork survives the coordinator being
+    absent, the queue gets the alarm dispatched when it is present and not
+    looking. Dropping either leaves one outage uncovered while looking complete."""
+    result = bench("ACTION: hard-warn-coordinator component=a\n")
+    assert result["calls"], "nothing was published"
+    for call in result["calls"]:
+        assert "--sink github" in call, call
+        assert "--sink taskgraph" in call, call
+
+
+def test_the_queue_database_is_named_and_not_inherited(bench) -> None:
+    """Measured from this unit: a scheduled service resolves a DIFFERENT database
+    from the one coordinators read, so an unnamed row is an invisible alarm."""
+    assert "--tg-db" in extract_function()
+    result = bench("ACTION: hard-warn-coordinator component=a\n")
+    assert all("--tg-db hermit2" in call for call in result["calls"]), result["calls"]
+
+
+def test_a_clean_tick_resolves_in_both_sinks(bench) -> None:
+    result = bench("NOTE: nothing to report\n")
+    assert result["calls"]
+    for call in result["calls"]:
+        assert "--resolve" in call
+        assert "--sink github" in call and "--sink taskgraph" in call
 
 
 def test_the_outcome_is_recorded_whatever_it_was(bench) -> None:

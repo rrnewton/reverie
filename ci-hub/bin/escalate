@@ -12,9 +12,22 @@ invalidated by an Orc build -- and it would leave the real problem in place: bot
 Orc transports need Orc, and the alarm most worth delivering is the one that says
 this host's monitoring has stopped.
 
-So the sink here is deliberately OFF THIS HOST: an issue on the fork. It needs no
-Orc, no tmux, no TUI, and no agent running, and it survives the whole fleet being
-down, which a file or a task queue on this machine does not.
+TWO SINKS, TWO DIFFERENT OUTAGES, AND THEY ARE NOT INTERCHANGEABLE.
+
+``--sink github`` writes an issue on the fork. It is deliberately OFF THIS HOST:
+it needs no Orc, no tmux, no TUI and no agent running, and it survives the whole
+fleet being down, which a file or a work queue on this machine does not. That is
+the ABSENT-COORDINATOR case.
+
+``--sink taskgraph`` files a row in the work queue. A queue entry gets DISPATCHED
+rather than needing to be noticed, which is a different property from delivery
+and the one that has actually been missing: the failure all week was correct
+alarms nobody read. That is the PRESENT-BUT-NOT-LOOKING case.
+
+The queue sink does NOT cover the first case and must not be described as though
+it does -- when Orc is down there is nobody reading the queue either. Each sink
+reports its own outcome by name and neither one's failure hides the other's,
+because conflating them would leave one outage uncovered while looking complete.
 
 WHAT THIS IS NOT. It is not a push. ``gh`` authenticates as the repository
 owner's own account and GitHub does not notify you about your own actions, so the
@@ -66,6 +79,12 @@ DEFAULT_TIMEOUT_SECONDS = 45
 KEY_MARKER = "escalation-key:"
 DIGEST_MARKER = "escalation-digest:"
 KEY_RE = re.compile(r"^[a-z0-9][a-z0-9-]{2,63}$")
+TG_DB_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$")
+GITHUB = "github"
+TASKGRAPH = "taskgraph"
+SINKS = (GITHUB, TASKGRAPH)
+DEFAULT_TG_DATABASE = "hermit2"
+DEFAULT_TG_BLOCKS = "ci_hub_trust"
 DIGEST_RE = re.compile(rf"^{DIGEST_MARKER}\s*([0-9a-f]{{12}})\s*$", re.MULTILINE)
 
 PUBLISHED = "published"
@@ -117,8 +136,16 @@ def append_local_record(log_path: Path, record: dict[str, object]) -> str | None
     return None
 
 
-class GitHubUnavailable(RuntimeError):
-    """The fork could not be read or written. Never confused with 'nothing to do'."""
+class SinkUnavailable(RuntimeError):
+    """A sink could not be read or written. Never confused with 'nothing to do'."""
+
+
+class GitHubUnavailable(SinkUnavailable):
+    """The fork could not be read or written."""
+
+
+class TaskGraphUnavailable(SinkUnavailable):
+    """The work queue could not be read or written."""
 
 
 def run_gh(
@@ -319,12 +346,13 @@ def verify_published(
 
 
 def resolve(args: argparse.Namespace) -> int:
-    """Close this key's open issue because the condition is no longer reported.
+    """Close this key's open records because the condition is no longer reported.
 
-    Without this the sink rots: an alarm that was true last week stays open next
+    Without this the sinks rot: an alarm that was true last week stays open next
     to one that is true now, and a reader cannot tell them apart. Closing is the
-    other half of reporting, and it is done by commenting first so the issue
-    still says WHY it closed.
+    other half of reporting, and it says WHY -- on the issue as a comment before
+    the close, and on the queue row through the closure verifier, which is what
+    keeps a settled alarm distinguishable from an abandoned one.
     """
     observed_at = now_utc()
     record: dict[str, object] = {
@@ -333,52 +361,72 @@ def resolve(args: argparse.Namespace) -> int:
         "repository": args.repo,
         "action": "resolve",
     }
-    gh = Path(args.gh)
-    try:
-        issue = find_open_issue(args.key, repository=args.repo, gh=gh, timeout=args.timeout)
-        if issue is None:
-            append_local_record(args.log_file, dict(record, outcome=NOTHING_OPEN))
-            print(f"escalate: outcome={NOTHING_OPEN} key={args.key}")
-            return 0
-        number = int(issue["number"])
-        closing = (
-            f"No longer reported as of {observed_at}. Closing because the "
-            "condition that opened this is absent from the current report; a "
-            "recurrence reopens a new issue under the same key.\n\n"
-            f"{KEY_MARKER} {args.key}\n"
-        )
-        comment_issue(
-            number=number,
-            body=closing,
-            repository=args.repo,
-            gh=gh,
-            timeout=args.timeout,
-            who=args.who,
-            team=args.team,
-            role=args.role,
-        )
-        run_gh(
-            ["issue", "close", str(number), "--repo", args.repo],
-            gh=gh,
-            timeout=args.timeout,
-        )
-        still_open = find_open_issue(
-            args.key, repository=args.repo, gh=gh, timeout=args.timeout
-        )
-        if still_open is not None:
-            raise GitHubUnavailable(
-                f"read-back still shows issue #{still_open['number']} open for key {args.key!r}"
+    failures = 0
+    for sink in args.sink:
+        try:
+            if sink == GITHUB:
+                outcome, where = resolve_github(args, observed_at)
+                destination = (
+                    f"issue=https://github.com/{args.repo}/issues/{where}" if where else ""
+                )
+            else:
+                outcome, where = resolve_taskgraph(args)
+                destination = f"queue-row={where} database={args.tg_db}" if where else ""
+        except SinkUnavailable as error:
+            failures += 1
+            append_local_record(
+                args.log_file,
+                dict(record, sink=sink, outcome=RECORDED_ONLY, error=str(error)),
             )
-    except GitHubUnavailable as error:
-        append_local_record(args.log_file, dict(record, outcome=RECORDED_ONLY, error=str(error)))
-        print(f"escalate: outcome={RECORDED_ONLY} key={args.key} error={error}", file=sys.stderr)
-        return 1
-    append_local_record(args.log_file, dict(record, outcome=RESOLVED, issue=number))
-    print(
-        f"escalate: outcome={RESOLVED} key={args.key} "
-        f"issue=https://github.com/{args.repo}/issues/{number}"
+            print(
+                f"escalate: sink={sink} outcome={RECORDED_ONLY} key={args.key} error={error}",
+                file=sys.stderr,
+            )
+            continue
+        append_local_record(
+            args.log_file, dict(record, sink=sink, outcome=outcome, destination=where)
+        )
+        print(
+            f"escalate: sink={sink} outcome={outcome} key={args.key} {destination}".rstrip()
+        )
+    return 1 if failures else 0
+
+
+def resolve_github(args: argparse.Namespace, observed_at: str) -> tuple[str, int | str]:
+    gh = Path(args.gh)
+    issue = find_open_issue(args.key, repository=args.repo, gh=gh, timeout=args.timeout)
+    if issue is None:
+        return NOTHING_OPEN, ""
+    number = int(issue["number"])
+    closing = (
+        f"No longer reported as of {observed_at}. Closing because the "
+        "condition that opened this is absent from the current report; a "
+        "recurrence reopens a new issue under the same key.\n\n"
+        f"{KEY_MARKER} {args.key}\n"
     )
-    return 0
+    comment_issue(
+        number=number,
+        body=closing,
+        repository=args.repo,
+        gh=gh,
+        timeout=args.timeout,
+        who=args.who,
+        team=args.team,
+        role=args.role,
+    )
+    run_gh(
+        ["issue", "close", str(number), "--repo", args.repo],
+        gh=gh,
+        timeout=args.timeout,
+    )
+    still_open = find_open_issue(
+        args.key, repository=args.repo, gh=gh, timeout=args.timeout
+    )
+    if still_open is not None:
+        raise GitHubUnavailable(
+            f"read-back still shows issue #{still_open['number']} open for key {args.key!r}"
+        )
+    return RESOLVED, number
 
 
 def escalate(args: argparse.Namespace, message: str) -> int:
@@ -415,12 +463,86 @@ def escalate(args: argparse.Namespace, message: str) -> int:
     local_error = append_local_record(args.log_file, dict(record, outcome="recorded"))
 
     body = f"{message}\n\n{marker_block(key, digest, observed_at)}"
+
+    failures = 0
+    for sink in args.sink:
+        try:
+            if sink == GITHUB:
+                outcome, where = publish_github(args, key, digest, body)
+                destination = f"issue=https://github.com/{args.repo}/issues/{where}"
+            else:
+                outcome, where = publish_taskgraph(args, key, digest, body)
+                destination = f"queue-row={where} database={args.tg_db}"
+        except SinkUnavailable as error:
+            failures += 1
+            append_local_record(
+                args.log_file,
+                dict(record, sink=sink, outcome=RECORDED_ONLY, error=str(error)),
+            )
+            print(
+                f"escalate: sink={sink} outcome={RECORDED_ONLY} key={key} error={error}",
+                file=sys.stderr,
+            )
+            continue
+        append_local_record(
+            args.log_file, dict(record, sink=sink, outcome=outcome, destination=where)
+        )
+        print(
+            f"escalate: sink={sink} outcome={outcome} key={key} "
+            f"{destination} digest={digest}"
+        )
+
+    if failures:
+        # EVERY SINK IS REPORTED BY NAME ABOVE, and one working does not excuse
+        # another failing: they cover different outages, so a partial result is
+        # a partial result. Only the total loss gets the loudest line.
+        if failures == len(args.sink):
+            print(
+                f"escalate: the alarm is in {args.log_file} and NOWHERE ELSE; "
+                "nobody has been told",
+                file=sys.stderr,
+            )
+        return 1
+    if local_error is not None:
+        print(
+            f"escalate: WARNING: published, but the local record failed: {local_error}",
+            file=sys.stderr,
+        )
+    return 0
+
+
+def publish_github(
+    args: argparse.Namespace, key: str, digest: str, body: str
+) -> tuple[str, int]:
     gh = Path(args.gh)
-    try:
-        issue = find_open_issue(key, repository=args.repo, gh=gh, timeout=args.timeout)
-        if issue is None:
-            number = create_issue(
-                title=args.title,
+    issue = find_open_issue(key, repository=args.repo, gh=gh, timeout=args.timeout)
+    if issue is None:
+        number = create_issue(
+            title=args.title,
+            body=body,
+            repository=args.repo,
+            gh=gh,
+            timeout=args.timeout,
+            who=args.who,
+            team=args.team,
+            role=args.role,
+        )
+        outcome = PUBLISHED
+    else:
+        number = int(issue["number"])
+        previous, published_at = latest_digest(
+            number, repository=args.repo, gh=gh, timeout=args.timeout
+        )
+        age = seconds_since(published_at)
+        # An unreadable or absent publication time counts as stale. The two
+        # ways to be wrong here are not symmetric: repeating an alarm is
+        # noise, and withholding one is the defect this tool exists for.
+        stale = args.repeat_after > 0 and (age is None or age >= args.repeat_after)
+        if previous == digest and not stale:
+            outcome = UNCHANGED
+        else:
+            comment_issue(
+                number=number,
                 body=body,
                 repository=args.repo,
                 gh=gh,
@@ -430,67 +552,302 @@ def escalate(args: argparse.Namespace, message: str) -> int:
                 role=args.role,
             )
             outcome = PUBLISHED
-        else:
-            number = int(issue["number"])
-            previous, published_at = latest_digest(
-                number, repository=args.repo, gh=gh, timeout=args.timeout
-            )
-            age = seconds_since(published_at)
-            # An unreadable or absent publication time counts as stale. The two
-            # ways to be wrong here are not symmetric: repeating an alarm is
-            # noise, and withholding one is the defect this tool exists for.
-            stale = args.repeat_after > 0 and (age is None or age >= args.repeat_after)
-            if previous == digest and not stale:
-                outcome = UNCHANGED
-            else:
-                comment_issue(
-                    number=number,
-                    body=body,
-                    repository=args.repo,
-                    gh=gh,
-                    timeout=args.timeout,
-                    who=args.who,
-                    team=args.team,
-                    role=args.role,
-                )
-                outcome = PUBLISHED
-        if outcome == PUBLISHED:
-            verify_published(
-                number=number,
-                digest=digest,
-                repository=args.repo,
-                gh=gh,
-                timeout=args.timeout,
-            )
-    except GitHubUnavailable as error:
-        append_local_record(
-            args.log_file,
-            dict(record, outcome=RECORDED_ONLY, error=str(error)),
+    if outcome == PUBLISHED:
+        verify_published(
+            number=number,
+            digest=digest,
+            repository=args.repo,
+            gh=gh,
+            timeout=args.timeout,
         )
-        print(
-            f"escalate: outcome={RECORDED_ONLY} key={key} error={error}",
-            file=sys.stderr,
-        )
-        print(
-            f"escalate: the alarm is in {args.log_file} and NOWHERE ELSE; "
-            "nobody has been told",
-            file=sys.stderr,
-        )
-        return 1
+    return outcome, number
 
-    append_local_record(
-        args.log_file, dict(record, outcome=outcome, issue=number)
-    )
-    print(
-        f"escalate: outcome={outcome} key={key} "
-        f"issue=https://github.com/{args.repo}/issues/{number} digest={digest}"
-    )
-    if local_error is not None:
-        print(
-            f"escalate: WARNING: published, but the local record failed: {local_error}",
-            file=sys.stderr,
+
+# ---------------------------------------------------------------- taskgraph sink
+
+
+def taskgraph_database(name: str) -> Path:
+    """The exact database file this alarm belongs in.
+
+    ⚠️ NAMED, NEVER INHERITED. Measured 2026-09-03 from a real scheduled service:
+    with no TG_DB_PATH, `tg db current` answers "(no active database - using
+    tasks)", while every coordinator and agent reads a different one. And the
+    active-database marker is a single shared file that any `tg db create`
+    rewrites for every headless caller on the box at once. A row filed into the
+    wrong database is not a quieter alarm, it is an invisible one, which is the
+    exact defect this tool exists to remove -- so an absent database REFUSES
+    rather than falling back.
+    """
+    if "/" in name:
+        # An explicit file. Named just as deliberately as a bare name, and the
+        # form a test uses so it can exercise a real database without rewriting
+        # the shared active-database marker every headless caller reads.
+        path = Path(name)
+    else:
+        if not TG_DB_NAME_RE.match(name):
+            raise TaskGraphUnavailable(
+                f"database name {name!r} must match {TG_DB_NAME_RE.pattern}"
+            )
+        path = Path.home() / ".tg" / f"{name}.db"
+    if not path.is_file():
+        raise TaskGraphUnavailable(
+            f"database {name!r} does not exist at {path}; refusing to file into "
+            "whichever database this process would otherwise inherit"
         )
-    return 0
+    return path
+
+
+def run_tg(
+    args: list[str], *, tg: str, database: str, db_path: Path, timeout: int
+) -> str:
+    environment = dict(os.environ)
+    # Both spellings, deliberately. `--db` covers tg's own subcommands; TG_DB_PATH
+    # covers the helpers this sink shells out to, which take no --db and would
+    # otherwise resolve the wrong database.
+    environment["TG_DB_PATH"] = str(db_path)
+    selector = [] if "/" in database else ["--db", database]
+    try:
+        completed = subprocess.run(
+            [tg, *selector, *args],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+            env=environment,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise TaskGraphUnavailable(f"tg {' '.join(args[:2])}: {error}") from error
+    if completed.returncode != 0:
+        detail = " ".join((completed.stderr or completed.stdout or "").split())[:400]
+        raise TaskGraphUnavailable(
+            f"tg {' '.join(args[:2])} exited {completed.returncode}: {detail}"
+        )
+    return completed.stdout
+
+
+def tg_scalar(query: str, **kwargs) -> str | None:
+    """One value from one row, or None.
+
+    `tg sql` frames its output with a header, a rule, the rows, a blank line and
+    a "(N rows)" trailer. Every query here selects a single column with no
+    newlines in it, so the framing can be stripped positionally -- the same shape
+    ci-hub/bin/tg-note-verified already relies on.
+    """
+    raw = run_tg(["sql", query], **kwargs)
+    lines = raw.splitlines()
+    body = [
+        line
+        for line in lines[2:]
+        if line.strip() and not re.fullmatch(r"\(\d+ rows?\)", line.strip())
+    ]
+    if not body:
+        return None
+    return body[0].strip()
+
+
+def find_open_task(key: str, **kwargs) -> str | None:
+    """The open queue row carrying this key.
+
+    IN_PROGRESS counts as open on purpose: if an agent has already claimed the
+    alarm, filing a second row would both duplicate the condition and split the
+    ownership picture the queue exists to hold. RESOLVED and CLOSED do not match,
+    so a condition that comes back opens a fresh row rather than reviving a
+    settled one.
+
+    The key is constrained to lowercase letters, digits and hyphens by KEY_RE
+    before it reaches here, so it cannot carry SQL syntax.
+    """
+    count = tg_scalar(
+        "SELECT COUNT(*) FROM tasks WHERE status IN ('OPEN','IN_PROGRESS') "
+        f"AND description LIKE '%{KEY_MARKER} {key}%'",
+        **kwargs,
+    )
+    if count is not None and count.isdigit() and int(count) > 1:
+        raise TaskGraphUnavailable(
+            f"key {key!r} matches {count} open queue rows; refusing to guess which "
+            "one carries the alarm. Duplicate rows for one condition corrupt the "
+            "ownership picture, so this is a refusal rather than a choice"
+        )
+    return tg_scalar(
+        "SELECT local_id FROM tasks WHERE status IN ('OPEN','IN_PROGRESS') "
+        f"AND description LIKE '%{KEY_MARKER} {key}%' LIMIT 1",
+        **kwargs,
+    )
+
+
+def latest_task_digest(local_id: str, **kwargs) -> tuple[str | None, str | None]:
+    where = (
+        f"FROM task_notes WHERE task_id='{local_id}' "
+        f"AND content LIKE '%{DIGEST_MARKER} %' ORDER BY created_at DESC LIMIT 1"
+    )
+    digest = tg_scalar(
+        f"SELECT substr(content, instr(content, '{DIGEST_MARKER} ') + "
+        f"{len(DIGEST_MARKER) + 1}, 12) {where}",
+        **kwargs,
+    )
+    when = tg_scalar(f"SELECT created_at {where}", **kwargs)
+    if digest is not None and not re.fullmatch(r"[0-9a-f]{12}", digest):
+        digest = None
+    return digest, when
+
+
+def create_task(
+    *, title: str, description: str, key: str, args: argparse.Namespace, **kwargs
+) -> str:
+    """File the row, then read it back by key.
+
+    ⚠️ `tg add` DOES NOT DEDUPLICATE. Measured 2026-09-03: adding the same title
+    twice produced a second row with a suffixed identifier, silently, and
+    auto-attached it to the first. Callers must look the row up first -- which
+    find_open_task does -- because the command will happily give you two.
+
+    The row is left UNOWNED. An alarm nobody has picked up must be claimable by
+    the next coordinator or agent; claiming it here would file work and
+    immediately mark it as somebody's.
+    """
+    run_tg(
+        [
+            "add",
+            title,
+            "--impact",
+            str(args.tg_impact),
+            "--effort",
+            str(args.tg_effort),
+            "--tags",
+            args.tg_tags,
+            "--priority",
+            args.tg_priority,
+            "--blocks",
+            args.tg_blocks,
+            "--description",
+            description,
+        ],
+        **kwargs,
+    )
+    local_id = find_open_task(key, **kwargs)
+    if local_id is None:
+        raise TaskGraphUnavailable(
+            f"filed a queue row for key {key!r} but reading it back found nothing"
+        )
+    return local_id
+
+
+def append_task_note(local_id: str, body: str, *, args: argparse.Namespace, db_path: Path) -> None:
+    """Through ci-hub/bin/tg-note-verified, which reads the note back and compares.
+
+    Not `tg note` directly: the PATH shim refuses inline note content because the
+    shell substitutes before tg ever sees it, and the verified path is the
+    supported way through. It takes no --db, so the database is named in its
+    environment.
+
+    ON STDIN, NOT --file. tg-note-verified refuses an unnamespaced staging path
+    under a shared directory, because two agents that pick the same filename can
+    swap contents between the write and the read and it would then verify
+    SOMEONE ELSE'S text as yours. Its own answer is that stdin has no file to
+    race, so there is nothing to namespace and nothing to clean up.
+    """
+    environment = dict(os.environ)
+    environment["TG_DB_PATH"] = str(db_path)
+    try:
+        completed = subprocess.run(
+            [args.tg_note_verified, local_id],
+            input=body,
+            capture_output=True,
+            text=True,
+            timeout=args.timeout,
+            check=False,
+            env=environment,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise TaskGraphUnavailable(f"tg-note-verified: {error}") from error
+    if completed.returncode != 0:
+        detail = " ".join((completed.stderr or completed.stdout or "").split())[:400]
+        raise TaskGraphUnavailable(f"tg-note-verified exited {completed.returncode}: {detail}")
+
+
+def publish_taskgraph(
+    args: argparse.Namespace, key: str, digest: str, body: str
+) -> tuple[str, str]:
+    database = args.tg_db
+    db_path = taskgraph_database(database)
+    common = {
+        "tg": args.tg,
+        "database": database,
+        "db_path": db_path,
+        "timeout": args.timeout,
+    }
+    local_id = find_open_task(key, **common)
+    if local_id is None:
+        local_id = create_task(
+            title=args.title,
+            description=f"{body}",
+            key=key,
+            args=args,
+            **common,
+        )
+        append_task_note(local_id, body, args=args, db_path=db_path)
+        outcome = PUBLISHED
+    else:
+        previous, noted_at = latest_task_digest(local_id, **common)
+        age = seconds_since(noted_at)
+        stale = args.repeat_after > 0 and (age is None or age >= args.repeat_after)
+        if previous == digest and not stale:
+            return UNCHANGED, local_id
+        append_task_note(local_id, body, args=args, db_path=db_path)
+        outcome = PUBLISHED
+    seen, _when = latest_task_digest(local_id, **common)
+    if seen != digest:
+        raise TaskGraphUnavailable(
+            f"read-back of queue row {local_id} found latest digest {seen!r}, "
+            f"expected {digest!r}"
+        )
+    return outcome, local_id
+
+
+def resolve_taskgraph(args: argparse.Namespace) -> tuple[str, str]:
+    """Close this key's queue row through the supported verifier.
+
+    Not `tg update --status closed`: the PATH shim refuses that because a task
+    closed without evidence leaves ready, active and the drain in one step and no
+    later audit can tell a settled alarm from an abandoned one.
+    """
+    database = args.tg_db
+    db_path = taskgraph_database(database)
+    common = {
+        "tg": args.tg,
+        "database": database,
+        "db_path": db_path,
+        "timeout": args.timeout,
+    }
+    local_id = find_open_task(args.key, **common)
+    if local_id is None:
+        return NOTHING_OPEN, ""
+    environment = dict(os.environ)
+    environment["TG_DB_PATH"] = str(db_path)
+    disposition = (
+        f"no longer reported by the {args.key} check as of {now_utc()}; a "
+        "recurrence files a new row under the same key"
+    )
+    try:
+        completed = subprocess.run(
+            [args.close_task, local_id, "--disposition", disposition],
+            capture_output=True,
+            text=True,
+            timeout=args.timeout,
+            check=False,
+            env=environment,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise TaskGraphUnavailable(f"close-task: {error}") from error
+    if completed.returncode != 0:
+        detail = " ".join((completed.stderr or completed.stdout or "").split())[:400]
+        raise TaskGraphUnavailable(f"close-task exited {completed.returncode}: {detail}")
+    still_open = find_open_task(args.key, **common)
+    if still_open is not None:
+        raise TaskGraphUnavailable(
+            f"read-back still shows queue row {still_open} open for key {args.key!r}"
+        )
+    return RESOLVED, local_id
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -535,6 +892,53 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--team", default="hermit2")
     parser.add_argument("--role", default="relay")
+    parser.add_argument(
+        "--sink",
+        action="append",
+        choices=SINKS,
+        default=[],
+        help=(
+            "where to publish (repeatable). `github` is off this host and covers "
+            "the coordinator being ABSENT; `taskgraph` files a row in the work "
+            "queue and covers the coordinator being PRESENT AND NOT LOOKING. They "
+            "are not substitutes: when Orc is down nobody reads the queue either. "
+            "Default: github"
+        ),
+    )
+    parser.add_argument(
+        "--tg",
+        default="tg",
+        help="the TaskGraph command (default: %(default)s)",
+    )
+    parser.add_argument(
+        "--tg-db",
+        default=DEFAULT_TG_DATABASE,
+        help=(
+            "the database to file into, named rather than inherited. A scheduled "
+            "service resolves a DIFFERENT database from the one coordinators read, "
+            "so this is not optional and an absent database refuses "
+            "(default: %(default)s)"
+        ),
+    )
+    parser.add_argument(
+        "--tg-blocks",
+        default=DEFAULT_TG_BLOCKS,
+        help="the goal the filed row blocks (default: %(default)s)",
+    )
+    parser.add_argument("--tg-impact", type=int, default=60)
+    parser.add_argument("--tg-effort", type=int, default=1)
+    parser.add_argument("--tg-tags", default="monitoring,tick")
+    parser.add_argument("--tg-priority", default="P1")
+    parser.add_argument(
+        "--tg-note-verified",
+        default=str(ROOT / "ci-hub/bin/tg-note-verified"),
+        help="the verified note path this sink appends through (default: %(default)s)",
+    )
+    parser.add_argument(
+        "--close-task",
+        default=str(ROOT / "ci-hub/bin/close-task"),
+        help="the closure verifier this sink closes through (default: %(default)s)",
+    )
     parser.add_argument(
         "--digest-ignore",
         action="append",
@@ -616,6 +1020,12 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if args.self_test:
         return self_test()
+    # argparse cannot express "default to one element" for an appending option
+    # without that default surviving alongside anything the caller supplies.
+    if not args.sink:
+        args.sink = [GITHUB]
+    else:
+        args.sink = list(dict.fromkeys(args.sink))
     required = ("key",) if args.resolve else ("key", "title")
     missing = [name for name in required if not getattr(args, name)]
     if missing:

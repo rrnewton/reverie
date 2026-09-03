@@ -68,6 +68,14 @@ ESCALATE="${HERMIT_HEALTH_ESCALATE:-$ROOT/ci-hub/bin/escalate}"
 ESCALATION_KEY="${HERMIT_HEALTH_ESCALATION_KEY:-health-tick-staleness}"
 ESCALATION_AGENT="${HERMIT_HEALTH_ESCALATION_AGENT:-health-tick}"
 ESCALATION_TEAM="${HERMIT_HEALTH_ESCALATION_TEAM:-hermit2}"
+# Both sinks. The fork is off this host and covers the coordinator being ABSENT,
+# which is the case this alarm most often reports. The work queue gets the alarm
+# DISPATCHED rather than needing to be noticed, which covers the coordinator
+# being present and not looking. Neither covers the other.
+ESCALATION_SINKS="${HERMIT_HEALTH_ESCALATION_SINKS:---sink github --sink taskgraph}"
+# Named, never inherited: a scheduled service resolves a different database from
+# the one coordinators read.
+ESCALATION_TG_DB="${HERMIT_HEALTH_ESCALATION_TG_DB:-hermit2}"
 
 # SYSTEMD IS THE AUTHORITY FOR "DID THE TIMER FIRE", AND THE HEARTBEAT FILE IS
 # NOT. Measured 2026-08-07: hermit-health-tick.sh captures its timestamp at tick
@@ -199,7 +207,9 @@ page() {
             # inherits no proxy variables, and the host has no direct external
             # route. Without it the publication fails with "network is
             # unreachable" and the alarm goes no further than this file.
+            # shellcheck disable=SC2086 -- ESCALATION_SINKS is a flag list
             out2="$(DG_AGENT_NAME="$ESCALATION_AGENT" with-proxy "$ESCALATE" \
+                $ESCALATION_SINKS --tg-db "$ESCALATION_TG_DB" \
                 --key "$ESCALATION_KEY" \
                 --title "operational health tick is not reporting on $(uname -n)" \
                 --team "$ESCALATION_TEAM" --role relay --message-file "$tmp2" 2>&1)" || rc2=$?

@@ -293,6 +293,14 @@ check "$([[ $out == *"escalation-published rc=0"* ]] && echo yes || echo no)" \
 check "$(grep -q 'with-proxy "\$ESCALATE"' "$SCRIPT" && echo yes || echo no)" \
       "the publication goes through the proxy wrapper"
 
+# Both sinks, and the database named. The fork covers the coordinator being
+# absent; the queue covers it being present and not looking. Neither covers the
+# other, so dropping either leaves one outage uncovered while looking complete.
+check "$(grep -q 'sink github --sink taskgraph' "$SCRIPT" && echo yes || echo no)" \
+      "the alarm is published to both sinks"
+check "$(grep -q 'tg-db "\$ESCALATION_TG_DB"' "$SCRIPT" && echo yes || echo no)" \
+      "the queue database is named rather than inherited"
+
 # --- report -------------------------------------------------------------------
 total=$(( PASS + ${#FAILURES[@]} ))
 if [ ${#FAILURES[@]} -gt 0 ]; then

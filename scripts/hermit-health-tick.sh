@@ -50,6 +50,18 @@ ESCALATE="${HERMIT_HEALTH_ESCALATE:-$ROOT/ci-hub/bin/escalate}"
 ESCALATION_KEY="operational-tick-findings"
 ESCALATION_AGENT="health-tick"
 ESCALATION_TEAM="hermit2"
+# BOTH SINKS, because they cover different outages and neither one covers the
+# other. The fork is off this host and survives the whole fleet being down, which
+# is the coordinator being ABSENT. The work queue gets the alarm DISPATCHED
+# rather than needing to be noticed, which is the coordinator being PRESENT AND
+# NOT LOOKING -- the failure this project actually had. When Orc is down nobody
+# reads the queue either, so the queue sink is an addition and not a replacement.
+ESCALATION_SINKS=(--sink github --sink taskgraph)
+# ⚠️ NAMED, NEVER INHERITED. Measured 2026-09-03 from this very unit: with no
+# TG_DB_PATH, `tg db current` answers "(no active database - using tasks)", while
+# every coordinator and agent reads this one. A row filed into the database a
+# scheduled service happens to inherit is an invisible alarm, not a quiet one.
+ESCALATION_TG_DB="hermit2"
 TOOL_CACHE="${DEV_HERMIT_TOOL_CACHE:-${HERMIT_HEALTH_TOOL_CACHE:-$HOME/.local/state/hermit-health-tool}}"
 CANONICAL_REPOSITORY="rrnewton/dev-hermit"
 CANONICAL_REMOTE_URL="https://github.com/rrnewton/dev-hermit.git"
@@ -126,6 +138,7 @@ escalate_live_report_findings() {
         # Nothing to report. Close a previously opened issue rather than leaving
         # last week's alarm sitting beside this week's.
         outcome=$(DG_AGENT_NAME="$ESCALATION_AGENT" with-proxy "$ESCALATE" \
+            "${ESCALATION_SINKS[@]}" --tg-db "$ESCALATION_TG_DB" \
             --key "$ESCALATION_KEY" --resolve --team "$ESCALATION_TEAM" \
             --role relay 2>&1)
         rc=$?
@@ -137,6 +150,7 @@ escalate_live_report_findings() {
         # detection only; the published text keeps the timestamps, which is
         # where they are actually useful.
         outcome=$(DG_AGENT_NAME="$ESCALATION_AGENT" with-proxy "$ESCALATE" \
+            "${ESCALATION_SINKS[@]}" --tg-db "$ESCALATION_TG_DB" \
             --key "$ESCALATION_KEY" \
             --title "operational health tick reports $count finding(s) on $(uname -n)" \
             --digest-ignore 'observed_at=[0-9TZ:+-]+' \
