@@ -1089,14 +1089,22 @@ def base_boundary_verdict(
         return static
     if _SHA40.fullmatch(current_base) is None or _SHA40.fullmatch(current_reverie_base) is None:
         return BaseVerdict.POLICY_UNAVAILABLE
-    if row["base_sha"] != current_base:
-        return BaseVerdict.BASE_NOT_CURRENT
+    recorded_base = row["base_sha"]
     try:
-        if row["base_tree"] != git_tree(repo_checkout, current_base):
+        # The receipt's base names the historical commit against which the run
+        # was admitted.  Preserve that evidence by checking its tree at that
+        # exact commit; a later main tip must not rewrite what the receipt says.
+        if row["base_tree"] != git_tree(repo_checkout, recorded_base):
             return BaseVerdict.BASE_TREE_MISMATCH
         receipt_commit = row.get("commit")
         if not isinstance(receipt_commit, str) or _SHA40.fullmatch(receipt_commit) is None:
             return BaseVerdict.BASE_NOT_CONTAINED
+        if not git_is_ancestor(repo_checkout, recorded_base, receipt_commit):
+            return BaseVerdict.BASE_NOT_CONTAINED
+        # Currency is a live ancestry question.  A no-op rebase produces no
+        # provenance record because its result is the already-validated head;
+        # that head remains current when it already contains freshly fetched
+        # main, even if main advanced after the validation began.
         if not git_is_ancestor(repo_checkout, current_base, receipt_commit):
             return BaseVerdict.BASE_NOT_CONTAINED
     except RuntimeError:

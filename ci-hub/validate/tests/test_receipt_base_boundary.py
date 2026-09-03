@@ -212,17 +212,54 @@ def test_merge_boundary_brackets_both_ways_and_preserves_schema4(tmp_path: Path)
         wrong_reverie_tree, hermit, current_base, reverie, current_reverie
     ).returncode != 0
 
-    stale = row_for(hermit, pr_head, old_base, reverie, current_reverie)
+    # A receipt keeps its historical admitted base while main may advance into
+    # the already-validated head.  This is the no-op-rebase case: the head is
+    # still exact and current, so no rebase provenance row exists or is needed.
+    advanced_main = row_for(hermit, pr_head, old_base, reverie, current_reverie)
     assert qr.base_boundary_verdict(
-        stale,
+        advanced_main,
         pred,
         current_base=current_base,
         current_reverie_base=current_reverie,
         repo_checkout=str(hermit),
         reverie_checkout=str(reverie),
-    ) is qr.BaseVerdict.BASE_NOT_CURRENT
+    ) is qr.BaseVerdict.SATISFIED
     assert running_consumer(
-        stale, hermit, current_base, reverie, current_reverie
+        advanced_main, hermit, current_base, reverie, current_reverie
+    ).returncode == 0
+
+    # The historical base remains exact evidence.  Pointing its tree field at
+    # the newer main tree must refuse even though both commits are ancestors of
+    # the validated head.
+    wrong_base_tree = dict(advanced_main)
+    wrong_base_tree["base_tree"] = qr.git_tree(str(hermit), current_base)
+    assert qr.base_boundary_verdict(
+        wrong_base_tree,
+        pred,
+        current_base=current_base,
+        current_reverie_base=current_reverie,
+        repo_checkout=str(hermit),
+        reverie_checkout=str(reverie),
+    ) is qr.BaseVerdict.BASE_TREE_MISMATCH
+    assert running_consumer(
+        wrong_base_tree, hermit, current_base, reverie, current_reverie
+    ).returncode != 0
+
+    # Current-main containment cannot substitute for containment of the base
+    # the receipt itself names.
+    unrelated_recorded_base = row_for(
+        hermit, pr_head, unsafe_head, reverie, current_reverie
+    )
+    assert qr.base_boundary_verdict(
+        unrelated_recorded_base,
+        pred,
+        current_base=current_base,
+        current_reverie_base=current_reverie,
+        repo_checkout=str(hermit),
+        reverie_checkout=str(reverie),
+    ) is qr.BaseVerdict.BASE_NOT_CONTAINED
+    assert running_consumer(
+        unrelated_recorded_base, hermit, current_base, reverie, current_reverie
     ).returncode != 0
 
     unsafe = row_for(hermit, unsafe_head, current_base, reverie, current_reverie)
