@@ -1925,6 +1925,12 @@ fn gh_config_dir() -> Option<PathBuf> {
 /// Build a `gh` invocation, prefixing `with-proxy` for external egress when
 /// available (mirrors the Python health probes' `with-proxy gh` default).
 fn gh_command(root: &Path, args: &[&str]) -> Command {
+    assert!(
+        !args
+            .iter()
+            .any(|arg| matches!(*arg, "--who" | "--team" | "--role")),
+        "identity-bearing GitHub writes must use the fleet gh wrapper"
+    );
     let mut command = if on_path("with-proxy") {
         let mut command = Command::new("with-proxy");
         command.arg("gh");
@@ -1937,6 +1943,50 @@ fn gh_command(root: &Path, args: &[&str]) -> Command {
         command.env("GH_CONFIG_DIR", config_dir);
     }
     command
+}
+
+/// Build a GitHub command whose prose write must carry fleet attribution.
+///
+/// `--who`, `--team`, and `--role` belong to `ci-hub/bin/gh`, not to the real
+/// GitHub CLI.  Keeping this separate from [`gh_command`] prevents an
+/// attribution-bearing write from accidentally forwarding those wrapper-only
+/// flags to `gh` itself.
+fn fleet_gh_command(root: &Path, args: &[&str]) -> Command {
+    let wrapper = root.join("ci-hub/bin/gh");
+    let mut command = if on_path("with-proxy") {
+        let mut command = Command::new("with-proxy");
+        command.arg(wrapper);
+        command
+    } else {
+        Command::new(wrapper)
+    };
+    command.args(args).current_dir(root);
+    if let Some(config_dir) = gh_config_dir() {
+        command.env("GH_CONFIG_DIR", config_dir);
+    }
+    command
+}
+
+fn receipt_comment_command(root: &Path, agent: &str, pr: u64, repo: &str, body: &str) -> Command {
+    let pr_arg = pr.to_string();
+    fleet_gh_command(
+        root,
+        &[
+            "--who",
+            agent,
+            "--team",
+            "hermit2",
+            "--role",
+            "coordinator",
+            "pr",
+            "comment",
+            &pr_arg,
+            "--repo",
+            repo,
+            "--body",
+            body,
+        ],
+    )
 }
 
 const LOCAL_VALIDATION_STATUS_CONTEXT: &str = "Local validation";
@@ -9101,7 +9151,6 @@ fn bind_verified_receipt_to_pr(
         CiHubError::ValidateStatus(format!("invalid issue comments JSON: {error}"))
     })?;
     if !comment_pages_contain_marker(&comments_json, &marker) {
-        let pr_arg = pr.to_string();
         let body = format!(
             "Local validation receipt published before applying `{LOCALLY_VALIDATED_LABEL}`.\n\n- SHA: `{sha}`\n- Run ID: `{}`\n- Executed tests: `{}`\n- Producer coverage: `{}`\n- Producer paths: `{}`\n- Producer valid commits: `{}`\n- Receipt identity SHA-256: `{}`\n- Immutable artifact: `{VALIDATION_RECEIPT_REPO}@{receipt_commit}:{}`\n- Artifact SHA-256: `{}`\n- Log SHA-256: `{}`\n\n{marker}",
             artifact.run_id,
@@ -9119,29 +9168,12 @@ fn bind_verified_receipt_to_pr(
             artifact.log_sha256,
         );
         let agent = env::var("DG_AGENT_NAME").unwrap_or_default();
-        let comment = gh_command(
-            root,
-            &[
-                "--who",
-                &agent,
-                "--team",
-                "hermit2",
-                "--role",
-                "coordinator",
-                "pr",
-                "comment",
-                &pr_arg,
-                "--repo",
-                repo,
-                "--body",
-                &body,
-            ],
-        )
-        .bounded_output()
-        .map_err(|source| CiHubError::Launch {
-            tool: "gh pr comment".into(),
-            source,
-        })?;
+        let comment = receipt_comment_command(root, &agent, pr, repo, &body)
+            .bounded_output()
+            .map_err(|source| CiHubError::Launch {
+                tool: "gh pr comment".into(),
+                source,
+            })?;
         if !comment.status.success() {
             return Err(CiHubError::Gh {
                 context: format!("pr comment #{pr}"),
@@ -9597,6 +9629,67 @@ fn to_exit_code(code: i32) -> ExitCode {
 #[cfg(test)]
 mod tests {
     use std::os::fd::AsRawFd;
+
+    #[test]
+    fn raw_gh_command_refuses_fleet_identity_flags() {
+        let root = Path::new("/tmp/ci-hub-raw-gh-guard");
+        let refused = std::panic::catch_unwind(|| {
+            let _ = gh_command(
+                root,
+                &[
+                    "--who",
+                    "agent",
+                    "--team",
+                    "hermit2",
+                    "--role",
+                    "coordinator",
+                ],
+            );
+        });
+        assert!(
+            refused.is_err(),
+            "wrapper-only identity flags must never reach the real gh CLI"
+        );
+    }
+
+    #[test]
+    fn receipt_comment_uses_the_fleet_gh_wrapper() {
+        let root = Path::new("/tmp/ci-hub-receipt-comment-root");
+        let command =
+            receipt_comment_command(root, "mega-lander", 2938, "rrnewton/hermit", "receipt body");
+        let program = command.get_program().to_string_lossy();
+        let args: Vec<String> = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect();
+        let wrapper = root.join("ci-hub/bin/gh").display().to_string();
+        let fleet_args = [
+            "--who",
+            "mega-lander",
+            "--team",
+            "hermit2",
+            "--role",
+            "coordinator",
+            "pr",
+            "comment",
+            "2938",
+            "--repo",
+            "rrnewton/hermit",
+            "--body",
+            "receipt body",
+        ];
+        if program == "with-proxy" {
+            assert_eq!(args.first().map(String::as_str), Some(wrapper.as_str()));
+            assert_eq!(
+                &args[1..],
+                fleet_args,
+                "identity flags must follow the fleet wrapper, not real gh"
+            );
+        } else {
+            assert_eq!(program, wrapper);
+            assert_eq!(args, fleet_args);
+        }
+    }
 
     // ---- COMMITS-SINCE-GREEN rendering -------------------------------------
     // The rendering IS the feature: this number exists so a reader who has never
