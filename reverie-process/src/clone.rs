@@ -10,11 +10,22 @@ use syscalls::Errno;
 
 use super::Pid;
 
+pub(super) const CHILD_STACK_SIZE: usize = 2 * 1024 * 1024;
+
+pub(super) fn child_stack() -> Vec<u8> {
+    vec![0u8; CHILD_STACK_SIZE]
+}
+
 pub fn clone<F>(cb: F, flags: libc::c_int) -> Result<Pid, Errno>
 where
     F: FnMut() -> i32,
 {
-    let mut stack = [0u8; 4096];
+    // The child runs container setup and libc's exec path on this stack. In an
+    // optimized build, Mount::mount alone can reserve PATH_MAX bytes in its
+    // frame, so one page cannot hold that call plus its callers. Match the
+    // stack size Container::run provides for the same setup path, and allocate
+    // it before clone so the child remains allocation-free before exec.
+    let mut stack = child_stack();
     clone_with_stack(cb, flags, &mut stack)
 }
 
@@ -47,4 +58,17 @@ where
     };
 
     Errno::result(res).map(Pid::from_raw)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_child_stack_keeps_the_container_run_minimum() {
+        assert!(
+            child_stack().len() >= 2 * 1024 * 1024,
+            "the cloned child runs container setup before exec and needs at least 2 MiB"
+        );
+    }
 }
