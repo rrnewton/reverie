@@ -130,9 +130,17 @@ escalate_live_report_findings() {
             --role relay 2>&1)
         rc=$?
     else
+        # ⚠️ THE TWO --digest-ignore PATTERNS ARE LOAD-BEARING. health-tick stamps
+        # every ACTION and NOTE with `observed_at=` and `input_sha=` provenance,
+        # so without these an unchanged condition looks new on every cycle and
+        # the sink becomes an hourly comment nobody reads. They affect change
+        # detection only; the published text keeps the timestamps, which is
+        # where they are actually useful.
         outcome=$(DG_AGENT_NAME="$ESCALATION_AGENT" with-proxy "$ESCALATE" \
             --key "$ESCALATION_KEY" \
             --title "operational health tick reports $count finding(s) on $(uname -n)" \
+            --digest-ignore 'observed_at=[0-9TZ:+-]+' \
+            --digest-ignore 'input_sha=[0-9a-f]{7,40}' \
             --team "$ESCALATION_TEAM" --role relay --message-file "$payload" 2>&1)
         rc=$?
     fi

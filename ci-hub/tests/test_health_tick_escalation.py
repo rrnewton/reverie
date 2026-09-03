@@ -135,6 +135,16 @@ def test_the_publication_goes_through_the_proxy_wrapper() -> None:
         assert "with-proxy" in line, f"unproxied publication: {line.strip()}"
 
 
+def test_per_run_provenance_is_excluded_from_change_detection(bench) -> None:
+    """health-tick stamps every line with when it was observed and which commit
+    produced it. Left in, a condition identical for a week reads as new every
+    cycle and the sink becomes hourly noise -- the same "nobody hears it" defect
+    arriving from the other side."""
+    function = extract_function()
+    assert "--digest-ignore 'observed_at=" in function
+    assert "--digest-ignore 'input_sha=" in function
+
+
 def test_the_outcome_is_recorded_whatever_it_was(bench) -> None:
     """A tick that could not publish must say so in the same durable record that
     carries the findings, not only on a stream nobody kept."""

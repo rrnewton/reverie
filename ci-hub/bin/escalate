@@ -79,8 +79,22 @@ def now_utc() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def digest_of(text: str) -> str:
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:12]
+def digest_of(text: str, ignore: tuple[str, ...] = ()) -> str:
+    """The digest decides whether anything CHANGED, so it is taken over the part
+    of the message that carries meaning.
+
+    Some callers stamp every line with when it was observed and which commit
+    produced it. Those are worth publishing and worthless for comparison: with
+    them included, a condition that has been identical for a week reads as new
+    on every run, and the sink turns into an hourly comment nobody reads --
+    which is the same "nobody hears it" defect arriving from the other side.
+    Each --digest-ignore pattern is blanked here and nowhere else; the published
+    text is always the caller's, verbatim.
+    """
+    normalized = text
+    for pattern in ignore:
+        normalized = re.sub(pattern, "<ignored>", normalized)
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:12]
 
 
 def marker_block(key: str, digest: str, observed_at: str) -> str:
@@ -381,7 +395,13 @@ def escalate(args: argparse.Namespace, message: str) -> int:
         return 2
 
     observed_at = now_utc()
-    digest = digest_of(message)
+    try:
+        for pattern in args.digest_ignore:
+            re.compile(pattern)
+    except re.error as error:
+        print(f"escalate: REFUSED: --digest-ignore {pattern!r} is not a regex: {error}", file=sys.stderr)
+        return 2
+    digest = digest_of(message, tuple(args.digest_ignore))
     record: dict[str, object] = {
         "timestamp": observed_at,
         "key": key,
@@ -516,6 +536,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--team", default="hermit2")
     parser.add_argument("--role", default="relay")
     parser.add_argument(
+        "--digest-ignore",
+        action="append",
+        default=[],
+        metavar="REGEX",
+        help=(
+            "text that changes on every run and must not count as a change "
+            "(repeatable). Affects change detection only; the published text is "
+            "always verbatim"
+        ),
+    )
+    parser.add_argument(
         "--resolve",
         action="store_true",
         help=(
@@ -556,6 +587,19 @@ def self_test() -> int:
     check("key grammar rejects uppercase", KEY_RE.match("Key") is None)
     check("key grammar rejects a leading dash", KEY_RE.match("-key") is None)
 
+    stamped_a = 'ACTION: x title="y observed_at=2026-01-01T00:00:00Z"'
+    stamped_b = 'ACTION: x title="y observed_at=2026-06-01T00:00:00Z"'
+    ignore = (r"observed_at=[0-9TZ:+-]+",)
+    check("volatile text still changes the digest by default", digest_of(stamped_a) != digest_of(stamped_b))
+    check(
+        "an ignored pattern makes the two compare equal",
+        digest_of(stamped_a, ignore) == digest_of(stamped_b, ignore),
+    )
+    check(
+        "an ignored pattern does not hide a real change",
+        digest_of(stamped_a, ignore) != digest_of(stamped_a.replace("ACTION: x", "ACTION: z"), ignore),
+    )
+
     check("no timestamp is not fresh", seconds_since(None) is None)
     check("a bad timestamp is not fresh", seconds_since("not-a-time") is None)
     aged = seconds_since("2000-01-01T00:00:00Z")
@@ -563,7 +607,7 @@ def self_test() -> int:
 
     for name in failures:
         print(f"escalate self-test FAIL: {name}", file=sys.stderr)
-    total = 13
+    total = 16
     print(f"escalate self-test: {total - len(failures)}/{total} checks passed")
     return 1 if failures else 0
 

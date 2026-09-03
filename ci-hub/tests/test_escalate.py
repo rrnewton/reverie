@@ -259,6 +259,41 @@ def test_repeat_after_zero_never_repeats(bench) -> None:
     assert repository()["issues"][0]["comments"] == []
 
 
+def test_a_per_run_timestamp_does_not_read_as_a_change(bench) -> None:
+    run, repository, _ = bench
+    stamped = 'ACTION: x title="y observed_at=%s"'
+    run("--key", "one-alarm", "--title", "t",
+        "--digest-ignore", r"observed_at=[0-9TZ:+-]+",
+        message=stamped % "2026-01-01T00:00:00Z")
+    completed = run("--key", "one-alarm", "--title", "t",
+                    "--digest-ignore", r"observed_at=[0-9TZ:+-]+",
+                    message=stamped % "2026-01-01T01:00:00Z")
+    assert "outcome=unchanged" in completed.stdout
+    assert repository()["issues"][0]["comments"] == []
+
+
+def test_ignoring_a_timestamp_does_not_hide_a_real_change(bench) -> None:
+    run, repository, _ = bench
+    run("--key", "one-alarm", "--title", "t",
+        "--digest-ignore", r"observed_at=[0-9TZ:+-]+",
+        message='ACTION: first title="y observed_at=2026-01-01T00:00:00Z"')
+    completed = run("--key", "one-alarm", "--title", "t",
+                    "--digest-ignore", r"observed_at=[0-9TZ:+-]+",
+                    message='ACTION: second title="y observed_at=2026-01-01T01:00:00Z"')
+    assert "outcome=published" in completed.stdout
+    assert len(repository()["issues"][0]["comments"]) == 1
+
+
+def test_the_published_text_keeps_what_the_digest_ignores(bench) -> None:
+    """Ignoring is for comparison only. A body with the timestamp stripped out
+    would be a worse record than one that repeats."""
+    run, repository, _ = bench
+    run("--key", "one-alarm", "--title", "t",
+        "--digest-ignore", r"observed_at=[0-9TZ:+-]+",
+        message='ACTION: x title="y observed_at=2026-01-01T00:00:00Z"')
+    assert "observed_at=2026-01-01T00:00:00Z" in repository()["issues"][0]["body"]
+
+
 def test_resolving_closes_the_issue_and_says_why(bench) -> None:
     run, repository, _ = bench
     run("--key", "one-alarm", "--title", "t", message="ACTION: x")
