@@ -46,10 +46,11 @@ Recorded here so a future searcher gets a hit instead of silence, and so nobody
 | per-process `cc1plus` peak RSS | ~522 MiB | 2026-08-04 | **UNRECOVERABLE.** Quoted in three dispatches, never written to a task or artifact. Verified 2026-08-05: no artifact under `experiments/` or `ai_docs/` contains it (all `522` hits are unrelated — dpkg file lists and regex benchmarks at 522 MB/s). **Do not cite it as measured. Re-measure and file it.** |
 
 
-## Index (375 experiment directories)
+## Index (376 experiment directories)
 
 date | slug | what | headline | how | who | artifacts
 --- | --- | --- | --- | --- | --- | ---
+2026-09-03 | dagrun-tier-labels-and-oversubscription_20260903 | How can dagrun select quick, normal, and nightly work, and how much CPU and memory overlap shortens completion under a 16-core, 14 GiB outer cgroup? | The fastest observed median was 12.53 s at a sampled average load of 12.48 effective cores and a 13.535 GiB peak under the 14 GiB cap; aligned 6.75 GiB allocations succeeded, while aligned … | observed,sampled,computed,estimated | dagrun-research | README+metadata
 2026-08-24 | skidrepro | (undocumented) | (no headline result in README) | unstated | Ryan Newton | none
 2026-08-24 | race-oracle-repeat-variance_20260824 | Does the race oracle's repeat variance survive at high N? | pooled 144/400 = 36.0% 75/400 = 18.8% | recorded,observed,sampled | Ryan Newton | README
 2026-08-24 | pr2384-liteinst-strict-blast-radius_20260824 | What does test.liteinststrict do under hermit2384? | tests run passed failed exit | recorded,observed | unknown | README

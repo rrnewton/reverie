@@ -1,0 +1,24 @@
+{
+  "experiment": "dagrun-tier-labels-and-oversubscription",
+  "date": "2026-09-03",
+  "question": "How can dagrun select quick, normal, and nightly work, and how much CPU and memory overlap shortens completion under a 16-core, 14 GiB outer cgroup?",
+  "agent": "dagrun-research",
+  "agent_utils_sha": "07394fb0b9e3328146b67f78cadc0aae193b796e",
+  "harness": {
+    "cpu_pin": 16,
+    "cpu_quota_cores": 16,
+    "memory_max_bytes": 15032385536,
+    "memory_swap_max_bytes": 0,
+    "sample_interval_ms": 100
+  },
+  "headline": {
+    "strict_16_worker_median_wall_s": 23.69,
+    "tuned_overlap_median_wall_s": 12.53,
+    "tuned_overlap_average_effective_cores": 12.48,
+    "tuned_overlap_peak_bytes": 14533169152,
+    "last_observed_success_allocation_bytes_per_step": 7247757312,
+    "first_observed_failure_allocation_bytes_per_step": 7516192768,
+    "failed_outer_oom_kills": 2
+  },
+  "raw_artifacts": "Workspace-local ignored/dagrun-research; aggregate evidence and limitations are preserved in README.md"
+}
