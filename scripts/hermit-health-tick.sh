@@ -78,6 +78,73 @@ GITHUB_CREDENTIAL_HELPER="/usr/bin/gh"
 
 ts() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 
+# THE OBJECT MIRROR, AND WHY THE 34.7 SECONDS EXISTED WITHOUT IT.
+#
+# The cache under $TOOL_CACHE/trees keeps one complete checkout per parent
+# commit and retires the previous one. That is a TREE cache with no OBJECT
+# cache, so every time origin/main moves -- continuously on this repository,
+# ledger and series commits land all day -- materialization re-downloaded the
+# entire object database it had one commit earlier.
+#
+# Measured 2026-09-03 against the real remote on this host:
+#     git clone --no-checkout <canonical>                        36.9s
+#     git clone --bare --no-tags <canonical>   (mirror, once)    33.9s
+#     git -C mirror fetch --no-tags origin main                   0.6s
+#     git clone --reference-if-able <mirror> --dissociate ...     11.3s
+#     per tick: 36.9s -> 11.9s
+#
+# ⚠️ THE AUTHORITY BOUNDARY IS THE POINT AND IT IS UNTOUCHED. The mirror lives
+# under the TOOL CACHE, which is immutable tooling, not under the mutable parent.
+# Its only remote is $CANONICAL_REMOTE_URL and nothing else ever writes to it, so
+# every object still comes from the canonical remote and the mutable parent is
+# still never consulted for a byte. The clone's URL argument is unchanged, so the
+# staging tree's `origin` is the canonical remote as before, and
+# tool_root_is_complete verifies the result exactly as before.
+#
+# --dissociate, deliberately, and it is 11.3 of the 11.9: it copies the borrowed
+# objects in so the published tool root is SELF-CONTAINED with no
+# objects/info/alternates. Dropping it would be much faster and would leave
+# immutable tooling depending on an object store outside itself.
+#
+# --reference-if-able rather than --reference: a missing or damaged mirror
+# degrades to exactly the previous full clone. The cache's failure mode is
+# slower, never wrong.
+TOOL_OBJECT_MIRROR=""
+TOOL_OBJECT_MIRROR_NAME="canonical-objects.git"
+
+refresh_canonical_object_mirror() {
+    local cache_anchor=$1 mirror
+    TOOL_OBJECT_MIRROR=""
+    mirror="$cache_anchor/$TOOL_OBJECT_MIRROR_NAME"
+    if [[ -d $mirror ]]; then
+        # Incremental: only what landed since the last tick crosses the network.
+        if ! run_git --network -C "$mirror" fetch --quiet --no-tags origin \
+            '+refs/heads/main:refs/heads/main'; then
+            printf 'operational-tool: object mirror fetch failed; falling back to a full clone\n' >&2
+            return 0
+        fi
+    else
+        if ! run_git --network -C "$cache_anchor" clone --quiet --bare --no-tags \
+            "$CANONICAL_REMOTE_URL" "$mirror"; then
+            printf 'operational-tool: could not seed the object mirror; falling back to a full clone\n' >&2
+            rm -rf "$mirror" 2>/dev/null || true
+            return 0
+        fi
+    fi
+    # The mirror is a cache OF the canonical remote and nothing else. Verify that
+    # every time rather than trusting the directory's history: a mirror whose
+    # origin has been repointed would be a second authority, which is exactly
+    # what this whole materialization exists to prevent.
+    local mirror_origin
+    mirror_origin=$(run_git -C "$mirror" config --get remote.origin.url 2>/dev/null) || return 0
+    if [[ $mirror_origin != "$CANONICAL_REMOTE_URL" ]]; then
+        printf 'operational-tool: object mirror origin is %s, not the canonical remote; ignoring it\n' \
+            "$mirror_origin" >&2
+        return 0
+    fi
+    TOOL_OBJECT_MIRROR=$mirror
+}
+
 # Copy whatever the tick has reported so far into the durable invocation log.
 #
 # Called on the ordinary path AND from the exit trap, which is what makes an
@@ -1993,8 +2060,13 @@ materialize_current_tool_root() {
     elif [[ ! -e $target ]]; then
         start_staging_root_holder || return 1
         staging_anchor=$TOOL_STAGING_ROOT
+        refresh_canonical_object_mirror "$cache_anchor"
+        mirror_reference=()
+        if [[ -n $TOOL_OBJECT_MIRROR ]]; then
+            mirror_reference=(--reference-if-able "$TOOL_OBJECT_MIRROR" --dissociate)
+        fi
         if ! run_git --network -C "$cache_anchor" clone --quiet --no-checkout \
-            "$CANONICAL_REMOTE_URL" "$staging_anchor"; then
+            "${mirror_reference[@]}" "$CANONICAL_REMOTE_URL" "$staging_anchor"; then
             printf 'health-tick: could not clone current parent tooling\n' >&2
             return 1
         fi
