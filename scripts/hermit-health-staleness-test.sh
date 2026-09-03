@@ -52,7 +52,28 @@ run_case() {
     mkdir -p "$d/bin"
     make_systemctl "$d/bin" "$trigger" "$state"
     : > "$d/orc-msg"; chmod +x "$d/orc-msg"   # stub: never pushes anywhere
-    printf '#!/usr/bin/env bash\nexit 0\n' > "$d/orc-msg"; chmod +x "$d/orc-msg"
+    printf '#!/usr/bin/env bash\nexit %s\n' "${CASE_ORC_RC:-0}" > "$d/orc-msg"
+    chmod +x "$d/orc-msg"
+
+    # The second escalation route, stubbed the same way: it records the exact
+    # bytes it was handed and exits with the scripted status. CASE_ESCALATE
+    # selects which of the three shapes this case exercises -- present and
+    # working, present and failing, or absent entirely -- because the alarm log
+    # must read differently in all three and the difference is the whole point.
+    case "${CASE_ESCALATE:-ok}" in
+        ok)
+            printf '#!/usr/bin/env bash\nwhile [ $# -gt 0 ]; do [ "$1" = --message-file ] && cp "$2" "%s"; shift; done\necho "escalate: outcome=published key=k issue=https://example.invalid/1"\nexit 0\n' \
+                "$d/escalated" > "$d/escalate"
+            chmod +x "$d/escalate"
+            ;;
+        fail)
+            printf '#!/usr/bin/env bash\necho "escalate: outcome=recorded-locally-only key=k error=fork unreachable" >&2\nexit 1\n' > "$d/escalate"
+            chmod +x "$d/escalate"
+            ;;
+        absent)
+            rm -f "$d/escalate"
+            ;;
+    esac
 
     local now; now="$(date +%s)"
     if [ "$hb_age" != "missing" ]; then
@@ -70,10 +91,12 @@ run_case() {
     HERMIT_HEALTH_COOLDOWN_STAMP="$d/cool" \
     HERMIT_HEALTH_GATED_STAMP="$d/gated" \
     HERMIT_HEALTH_ORC_MSG="$d/orc-msg" \
+    HERMIT_HEALTH_ESCALATE="$d/escalate" \
     HERMIT_HEALTH_SYSTEMCTL=systemctl \
     HB_STAT_COUNTER="$d/hbstat" \
         bash "$SCRIPT" >/dev/null 2>&1
     cat "$d/alarm.log" 2>/dev/null
+    [ -n "${CASE_ESCALATED_OUT:-}" ] && cp -f "$d/escalated" "$CASE_ESCALATED_OUT" 2>/dev/null
     rm -rf "$d"
 }
 
@@ -217,6 +240,51 @@ check "$([[ $out == *"WORK-GATED"* ]] && echo yes || echo no)" \
 out="$(run_case 60 60 "$(date -d @$(( $(date +%s) - 60 )))" inactive "$finding_line")"
 check "$([[ $out != *"WORK-STALLED"* ]] && echo yes || echo no)" \
       "findings-only heartbeat: no spurious WORK-STALLED" "got: $out"
+
+# --- 8. THE ALARM MUST ARRIVE WHEN THE ORC ROUTE IS DOWN ----------------------
+#
+# This is the condition the whole second route exists for, so it is tested with
+# the Orc route FAILING rather than succeeding. A test that passes only while
+# the coordinator is reachable would be measuring the defect, not the fix.
+stale_age=10860
+old_trigger="$(date -d @$(( $(date +%s) - stale_age )))"
+
+payload="$(mktemp)"
+out="$(CASE_ORC_RC=1 CASE_ESCALATE=ok CASE_ESCALATED_OUT="$payload" \
+       run_case "$stale_age" "$stale_age" "$old_trigger" inactive)"
+check "$([[ $out == *"escalation-PUSH-FAILED"* ]] && echo yes || echo no)" \
+      "orc route down: its own failure is still named" "got: $out"
+check "$([[ $out == *"escalation-published rc=0"* ]] && echo yes || echo no)" \
+      "orc route down: the second route still reports the alarm" "got: $out"
+check "$([[ $(cat "$payload" 2>/dev/null) == *"TIMER DEAD"* ]] && echo yes || echo no)" \
+      "orc route down: the alarm text itself is what gets published" \
+      "got: $(head -c 200 "$payload" 2>/dev/null)"
+rm -f "$payload"
+
+# Both routes down must not read like either one working. "Escalated" with no
+# destination is the ambiguity this alarm was written to remove.
+out="$(CASE_ORC_RC=1 CASE_ESCALATE=fail run_case "$stale_age" "$stale_age" "$old_trigger" inactive)"
+check "$([[ $out == *"escalation-PUBLISH-FAILED"* ]] && echo yes || echo no)" \
+      "both routes down: the second failure is named too" "got: $out"
+check "$([[ $out == *"BOTH routes are now down"* ]] && echo yes || echo no)" \
+      "both routes down: says so in one line" "got: $out"
+check "$([[ $out != *"escalation-published rc=0"* ]] && echo yes || echo no)" \
+      "both routes down: nothing claims a publication" "got: $out"
+
+# An absent second route is a third state, distinct from a failed one: nothing
+# was attempted, and the log has to say which.
+out="$(CASE_ORC_RC=0 CASE_ESCALATE=absent run_case "$stale_age" "$stale_age" "$old_trigger" inactive)"
+check "$([[ $out == *"escalation-UNAVAILABLE"* ]] && echo yes || echo no)" \
+      "second route absent: reported as absent, not as failed" "got: $out"
+check "$([[ $out == *"alerted-coordinator (push OK)"* ]] && echo yes || echo no)" \
+      "second route absent: the orc route's own outcome still stands" "got: $out"
+
+# The ordinary case: both routes work, and both are reported.
+out="$(CASE_ORC_RC=0 CASE_ESCALATE=ok run_case "$stale_age" "$stale_age" "$old_trigger" inactive)"
+check "$([[ $out == *"alerted-coordinator (push OK)"* ]] && echo yes || echo no)" \
+      "both routes up: orc reported" "got: $out"
+check "$([[ $out == *"escalation-published rc=0"* ]] && echo yes || echo no)" \
+      "both routes up: publication reported" "got: $out"
 
 # --- report -------------------------------------------------------------------
 total=$(( PASS + ${#FAILURES[@]} ))

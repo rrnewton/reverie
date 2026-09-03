@@ -58,6 +58,16 @@ LOG="${HERMIT_HEALTH_LOG:-$HOME/.local/state/hermit-health-staleness.log}"
 COOLDOWN_STAMP="${HERMIT_HEALTH_COOLDOWN_STAMP:-$HOME/.local/state/hermit-health-staleness.last-alarm}"
 GATED_STAMP="${HERMIT_HEALTH_GATED_STAMP:-$HOME/.local/state/hermit-health-staleness.last-gated-nag}"
 ORC_MSG="${HERMIT_HEALTH_ORC_MSG:-$ROOT/scripts/orc-hermit-msg.py}"
+# The second escalation, and the one that does not need Orc. $ORC_MSG delivers by
+# typing into the coordinator's TUI pane; measured 2026-09-03 across 1656 recorded
+# attempts, 1032 failed, the last success was 2026-08-25 and the 202 attempts
+# after it all failed. This alarm's whole subject is that monitoring on this host
+# has stopped, so a channel that needs a healthy coordinator on this host is the
+# wrong one to depend on alone.
+ESCALATE="${HERMIT_HEALTH_ESCALATE:-$ROOT/ci-hub/bin/escalate}"
+ESCALATION_KEY="${HERMIT_HEALTH_ESCALATION_KEY:-health-tick-staleness}"
+ESCALATION_AGENT="${HERMIT_HEALTH_ESCALATION_AGENT:-health-tick}"
+ESCALATION_TEAM="${HERMIT_HEALTH_ESCALATION_TEAM:-hermit2}"
 
 # SYSTEMD IS THE AUTHORITY FOR "DID THE TIMER FIRE", AND THE HEARTBEAT FILE IS
 # NOT. Measured 2026-08-07: hermit-health-tick.sh captures its timestamp at tick
@@ -176,6 +186,27 @@ page() {
             echo "$(ts) alerted-coordinator (push OK)" >>"$LOG"
         else
             echo "$(ts) escalation-PUSH-FAILED rc=$rc — alarm is durably logged HERE but the coordinator was NOT reached (push channel down; see orc-hermit-msg.log). Read this log directly; do NOT assume notification landed." >>"$LOG"
+        fi
+        # BOTH ROUTES ARE TRIED, ALWAYS, and neither one's failure hides the
+        # other's outcome. The Orc route is faster when the coordinator is up;
+        # this one works when it is not. Both are reported by name, because a
+        # log line that says "escalated" without saying WHERE is the same
+        # ambiguity the line above was written to remove.
+        if [ -x "$ESCALATE" ]; then
+            local out2 rc2=0 tmp2; tmp2="$(mktemp)"
+            printf '%s\n' "$msg" >"$tmp2"
+            out2="$(DG_AGENT_NAME="$ESCALATION_AGENT" "$ESCALATE" \
+                --key "$ESCALATION_KEY" \
+                --title "operational health tick is not reporting on $(uname -n)" \
+                --team "$ESCALATION_TEAM" --role relay --message-file "$tmp2" 2>&1)" || rc2=$?
+            rm -f "$tmp2"
+            if [ "$rc2" -eq 0 ]; then
+                echo "$(ts) escalation-published rc=0 $(printf '%s' "$out2" | tr '\n' ' ')" >>"$LOG"
+            else
+                echo "$(ts) escalation-PUBLISH-FAILED rc=$rc2 — BOTH routes are now down; the alarm exists only in this file and in the escalation log. $(printf '%s' "$out2" | tr '\n' ' ')" >>"$LOG"
+            fi
+        else
+            echo "$(ts) escalation-UNAVAILABLE — $ESCALATE is missing or not executable, so the Orc route above was the only one tried." >>"$LOG"
         fi
     else
         echo "$(ts) suppressed-by-cooldown" >>"$LOG"

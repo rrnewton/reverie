@@ -1,0 +1,610 @@
+#!/usr/bin/env python3
+"""Publish an operational alarm somewhere it can be read when Orc is not running.
+
+WHY THIS EXISTS. Every alerting route on this host went through
+``scripts/orc-hermit-msg.py``, which delivers by typing into the Orc coordinator's
+TUI pane. Measured 2026-09-03 over 1656 recorded attempts in
+``~/.local/state/orc-hermit-msg.log``: 1032 failed, the last successful send was
+2026-08-25T03:02:05-07:00, and the 202 attempts after it all failed. 464 of the
+failures are the composer probe not recognising a pane that is visibly drawing an
+input box. Repairing that probe is a treadmill -- three earlier probes were each
+invalidated by an Orc build -- and it would leave the real problem in place: both
+Orc transports need Orc, and the alarm most worth delivering is the one that says
+this host's monitoring has stopped.
+
+So the sink here is deliberately OFF THIS HOST: an issue on the fork. It needs no
+Orc, no tmux, no TUI, and no agent running, and it survives the whole fleet being
+down, which a file or a task queue on this machine does not.
+
+WHAT THIS IS NOT. It is not a push. ``gh`` authenticates as the repository
+owner's own account and GitHub does not notify you about your own actions, so the
+issue is VISIBLE where the project already looks -- "work from the project backlog
+and github issues" is standing policy -- rather than delivered to a phone. Saying
+otherwise would be the same overclaim this tool exists to correct.
+
+DELIVERY IS READ BACK, NOT ASSUMED. ``gh issue create`` exiting 0 says the
+command ran. This fetches the issue or comment afterwards and requires the digest
+marker to be present in what GitHub returns. Only then is the outcome
+``published``. That is the same standard the Orc relay already holds itself to,
+and the reason it reports honest failures instead of silent ones.
+
+GITHUB IS THE STATE, not a local file. The issue body and its comments carry
+``escalation-key:`` and ``escalation-digest:`` marker lines, so which issue
+belongs to a key, and whether the content has changed since the last
+publication, are both answered by reading the fork. A local cache would be one
+more thing that can be lost or disagree.
+
+QUIET WHILE UNCHANGED. The staleness alarm fires every ten minutes; 144 issues a
+day is a sink nobody reads either. An open issue whose latest digest already
+matches gets nothing new until either the content changes or ``--repeat-after``
+elapses, so a persistent condition still says "still true" once a day rather than
+going silent.
+
+THE LOCAL RECORD IS WRITTEN FIRST, always, before anything can fail. If the fork
+is unreachable the alarm is still on disk and this exits nonzero saying that the
+local copy is the only one -- never 0, because a caller that cannot tell
+"published" from "recorded here alone" is the defect being fixed.
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import re
+import subprocess
+import sys
+from datetime import datetime, timezone
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_REPOSITORY = "rrnewton/dev-hermit"
+DEFAULT_LOG = Path.home() / ".local/state/hermit-escalation.log"
+DEFAULT_REPEAT_AFTER_SECONDS = 86400
+DEFAULT_TIMEOUT_SECONDS = 45
+KEY_MARKER = "escalation-key:"
+DIGEST_MARKER = "escalation-digest:"
+KEY_RE = re.compile(r"^[a-z0-9][a-z0-9-]{2,63}$")
+DIGEST_RE = re.compile(rf"^{DIGEST_MARKER}\s*([0-9a-f]{{12}})\s*$", re.MULTILINE)
+
+PUBLISHED = "published"
+UNCHANGED = "unchanged"
+RESOLVED = "resolved"
+NOTHING_OPEN = "nothing-open"
+RECORDED_ONLY = "recorded-locally-only"
+
+
+def now_utc() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def digest_of(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:12]
+
+
+def marker_block(key: str, digest: str, observed_at: str) -> str:
+    return (
+        f"{KEY_MARKER} {key}\n"
+        f"{DIGEST_MARKER} {digest}\n"
+        f"escalation-observed-at: {observed_at}\n"
+        f"escalation-host: {os.uname().nodename}\n"
+    )
+
+
+def append_local_record(log_path: Path, record: dict[str, object]) -> str | None:
+    """Write the alarm to disk before anything that can fail. Returns an error, or None."""
+    try:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        with log_path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record, sort_keys=True) + "\n")
+    except OSError as error:
+        return str(error)
+    return None
+
+
+class GitHubUnavailable(RuntimeError):
+    """The fork could not be read or written. Never confused with 'nothing to do'."""
+
+
+def run_gh(
+    args: list[str],
+    *,
+    gh: Path,
+    timeout: int,
+    stdin_text: str | None = None,
+) -> str:
+    try:
+        completed = subprocess.run(
+            [str(gh), *args],
+            capture_output=True,
+            text=True,
+            input=stdin_text,
+            timeout=timeout,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise GitHubUnavailable(f"{' '.join(args[:3])}: {error}") from error
+    if completed.returncode != 0:
+        detail = " ".join((completed.stderr or completed.stdout or "").split())[:400]
+        raise GitHubUnavailable(
+            f"{' '.join(args[:3])} exited {completed.returncode}: {detail}"
+        )
+    return completed.stdout
+
+
+def find_open_issue(key: str, *, repository: str, gh: Path, timeout: int) -> dict | None:
+    """The open issue carrying this key, read from the fork rather than a cache.
+
+    Bodies are listed and matched exactly. GitHub's `--search` is index-backed and
+    lags behind a just-created issue, which would make a second alarm open a
+    duplicate; enumerating open issues costs one call and cannot lag.
+    """
+    raw = run_gh(
+        [
+            "issue",
+            "list",
+            "--repo",
+            repository,
+            "--state",
+            "open",
+            "--limit",
+            "100",
+            "--json",
+            "number,title,body",
+        ],
+        gh=gh,
+        timeout=timeout,
+    )
+    try:
+        issues = json.loads(raw or "[]")
+    except json.JSONDecodeError as error:
+        raise GitHubUnavailable(f"issue list returned unreadable JSON: {error}") from error
+    wanted = f"{KEY_MARKER} {key}"
+    matches = [issue for issue in issues if wanted in (issue.get("body") or "")]
+    if len(matches) > 1:
+        numbers = ", ".join(f"#{issue['number']}" for issue in matches)
+        raise GitHubUnavailable(
+            f"key {key!r} matches {len(matches)} open issues ({numbers}); "
+            "refusing to guess which one carries the alarm"
+        )
+    return matches[0] if matches else None
+
+
+def latest_digest(issue_number: int, *, repository: str, gh: Path, timeout: int) -> tuple[str | None, str | None]:
+    """The most recent digest published under this issue, and when.
+
+    Read from the body and every comment, so the answer survives losing any local
+    state and reflects what a human would actually see on the issue.
+    """
+    raw = run_gh(
+        [
+            "issue",
+            "view",
+            str(issue_number),
+            "--repo",
+            repository,
+            "--json",
+            "body,comments,createdAt",
+        ],
+        gh=gh,
+        timeout=timeout,
+    )
+    try:
+        document = json.loads(raw or "{}")
+    except json.JSONDecodeError as error:
+        raise GitHubUnavailable(f"issue view returned unreadable JSON: {error}") from error
+    entries: list[tuple[str, str]] = []
+    body = document.get("body") or ""
+    found = DIGEST_RE.findall(body)
+    if found:
+        entries.append((document.get("createdAt") or "", found[-1]))
+    for comment in document.get("comments") or []:
+        found = DIGEST_RE.findall(comment.get("body") or "")
+        if found:
+            entries.append((comment.get("createdAt") or "", found[-1]))
+    if not entries:
+        return None, None
+    when, digest = entries[-1]
+    return digest, when or None
+
+
+def seconds_since(timestamp: str | None) -> float | None:
+    if not timestamp:
+        return None
+    try:
+        parsed = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return (datetime.now(timezone.utc) - parsed).total_seconds()
+
+
+def create_issue(
+    *,
+    title: str,
+    body: str,
+    repository: str,
+    gh: Path,
+    timeout: int,
+    who: str,
+    team: str,
+    role: str,
+) -> int:
+    out = run_gh(
+        [
+            "--who",
+            who,
+            "--team",
+            team,
+            "--role",
+            role,
+            "issue",
+            "create",
+            "--repo",
+            repository,
+            "--title",
+            title,
+            "--body-file",
+            "-",
+        ],
+        gh=gh,
+        timeout=timeout,
+        stdin_text=body,
+    )
+    match = re.search(r"/issues/(\d+)", out)
+    if not match:
+        raise GitHubUnavailable(
+            f"issue create returned no issue URL: {' '.join(out.split())[:200]}"
+        )
+    return int(match.group(1))
+
+
+def comment_issue(
+    *,
+    number: int,
+    body: str,
+    repository: str,
+    gh: Path,
+    timeout: int,
+    who: str,
+    team: str,
+    role: str,
+) -> None:
+    run_gh(
+        [
+            "--who",
+            who,
+            "--team",
+            team,
+            "--role",
+            role,
+            "issue",
+            "comment",
+            str(number),
+            "--repo",
+            repository,
+            "--body-file",
+            "-",
+        ],
+        gh=gh,
+        timeout=timeout,
+        stdin_text=body,
+    )
+
+
+def verify_published(
+    *, number: int, digest: str, repository: str, gh: Path, timeout: int
+) -> None:
+    """Read the fork back and require the digest to be there. The write's own exit
+    status is not evidence: it says the command ran, not that GitHub kept it."""
+    seen, _when = latest_digest(number, repository=repository, gh=gh, timeout=timeout)
+    if seen != digest:
+        raise GitHubUnavailable(
+            f"read-back of issue #{number} found latest digest {seen!r}, expected {digest!r}"
+        )
+
+
+def resolve(args: argparse.Namespace) -> int:
+    """Close this key's open issue because the condition is no longer reported.
+
+    Without this the sink rots: an alarm that was true last week stays open next
+    to one that is true now, and a reader cannot tell them apart. Closing is the
+    other half of reporting, and it is done by commenting first so the issue
+    still says WHY it closed.
+    """
+    observed_at = now_utc()
+    record: dict[str, object] = {
+        "timestamp": observed_at,
+        "key": args.key,
+        "repository": args.repo,
+        "action": "resolve",
+    }
+    gh = Path(args.gh)
+    try:
+        issue = find_open_issue(args.key, repository=args.repo, gh=gh, timeout=args.timeout)
+        if issue is None:
+            append_local_record(args.log_file, dict(record, outcome=NOTHING_OPEN))
+            print(f"escalate: outcome={NOTHING_OPEN} key={args.key}")
+            return 0
+        number = int(issue["number"])
+        closing = (
+            f"No longer reported as of {observed_at}. Closing because the "
+            "condition that opened this is absent from the current report; a "
+            "recurrence reopens a new issue under the same key.\n\n"
+            f"{KEY_MARKER} {args.key}\n"
+        )
+        comment_issue(
+            number=number,
+            body=closing,
+            repository=args.repo,
+            gh=gh,
+            timeout=args.timeout,
+            who=args.who,
+            team=args.team,
+            role=args.role,
+        )
+        run_gh(
+            ["issue", "close", str(number), "--repo", args.repo],
+            gh=gh,
+            timeout=args.timeout,
+        )
+        still_open = find_open_issue(
+            args.key, repository=args.repo, gh=gh, timeout=args.timeout
+        )
+        if still_open is not None:
+            raise GitHubUnavailable(
+                f"read-back still shows issue #{still_open['number']} open for key {args.key!r}"
+            )
+    except GitHubUnavailable as error:
+        append_local_record(args.log_file, dict(record, outcome=RECORDED_ONLY, error=str(error)))
+        print(f"escalate: outcome={RECORDED_ONLY} key={args.key} error={error}", file=sys.stderr)
+        return 1
+    append_local_record(args.log_file, dict(record, outcome=RESOLVED, issue=number))
+    print(
+        f"escalate: outcome={RESOLVED} key={args.key} "
+        f"issue=https://github.com/{args.repo}/issues/{number}"
+    )
+    return 0
+
+
+def escalate(args: argparse.Namespace, message: str) -> int:
+    key = args.key
+    if not KEY_RE.match(key):
+        print(
+            f"escalate: REFUSED: --key must match {KEY_RE.pattern}; got {key!r}",
+            file=sys.stderr,
+        )
+        return 2
+    message = message.strip("\n")
+    if not message.strip():
+        print("escalate: REFUSED: refusing to publish an empty alarm", file=sys.stderr)
+        return 2
+
+    observed_at = now_utc()
+    digest = digest_of(message)
+    record: dict[str, object] = {
+        "timestamp": observed_at,
+        "key": key,
+        "title": args.title,
+        "digest": digest,
+        "message_bytes": len(message.encode("utf-8")),
+        "repository": args.repo,
+    }
+
+    # DISK FIRST. Everything after this point can fail; the alarm must not.
+    local_error = append_local_record(args.log_file, dict(record, outcome="recorded"))
+
+    body = f"{message}\n\n{marker_block(key, digest, observed_at)}"
+    gh = Path(args.gh)
+    try:
+        issue = find_open_issue(key, repository=args.repo, gh=gh, timeout=args.timeout)
+        if issue is None:
+            number = create_issue(
+                title=args.title,
+                body=body,
+                repository=args.repo,
+                gh=gh,
+                timeout=args.timeout,
+                who=args.who,
+                team=args.team,
+                role=args.role,
+            )
+            outcome = PUBLISHED
+        else:
+            number = int(issue["number"])
+            previous, published_at = latest_digest(
+                number, repository=args.repo, gh=gh, timeout=args.timeout
+            )
+            age = seconds_since(published_at)
+            # An unreadable or absent publication time counts as stale. The two
+            # ways to be wrong here are not symmetric: repeating an alarm is
+            # noise, and withholding one is the defect this tool exists for.
+            stale = args.repeat_after > 0 and (age is None or age >= args.repeat_after)
+            if previous == digest and not stale:
+                outcome = UNCHANGED
+            else:
+                comment_issue(
+                    number=number,
+                    body=body,
+                    repository=args.repo,
+                    gh=gh,
+                    timeout=args.timeout,
+                    who=args.who,
+                    team=args.team,
+                    role=args.role,
+                )
+                outcome = PUBLISHED
+        if outcome == PUBLISHED:
+            verify_published(
+                number=number,
+                digest=digest,
+                repository=args.repo,
+                gh=gh,
+                timeout=args.timeout,
+            )
+    except GitHubUnavailable as error:
+        append_local_record(
+            args.log_file,
+            dict(record, outcome=RECORDED_ONLY, error=str(error)),
+        )
+        print(
+            f"escalate: outcome={RECORDED_ONLY} key={key} error={error}",
+            file=sys.stderr,
+        )
+        print(
+            f"escalate: the alarm is in {args.log_file} and NOWHERE ELSE; "
+            "nobody has been told",
+            file=sys.stderr,
+        )
+        return 1
+
+    append_local_record(
+        args.log_file, dict(record, outcome=outcome, issue=number)
+    )
+    print(
+        f"escalate: outcome={outcome} key={key} "
+        f"issue=https://github.com/{args.repo}/issues/{number} digest={digest}"
+    )
+    if local_error is not None:
+        print(
+            f"escalate: WARNING: published, but the local record failed: {local_error}",
+            file=sys.stderr,
+        )
+    return 0
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    # Not `required=True`: --self-test must be runnable with no other argument,
+    # so that a harness can check this tool without composing an alarm. main()
+    # enforces both for every real publication.
+    parser.add_argument(
+        "--key",
+        help="stable identifier for this alarm; one open issue is kept per key",
+    )
+    parser.add_argument("--title", help="issue title, one line of prose")
+    parser.add_argument("--repo", default=DEFAULT_REPOSITORY, help="owner/name to publish to")
+    parser.add_argument(
+        "--message-file",
+        type=Path,
+        help="read the alarm from this file instead of standard input",
+    )
+    parser.add_argument("--log-file", type=Path, default=DEFAULT_LOG)
+    parser.add_argument(
+        "--repeat-after",
+        type=int,
+        default=DEFAULT_REPEAT_AFTER_SECONDS,
+        help=(
+            "re-say an unchanged alarm after this many seconds so a persistent "
+            "condition does not go silent; 0 never repeats (default: %(default)s)"
+        ),
+    )
+    parser.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT_SECONDS)
+    parser.add_argument(
+        "--gh",
+        default=str(ROOT / "ci-hub/bin/gh"),
+        help="the attributed GitHub boundary to write through (default: %(default)s)",
+    )
+    parser.add_argument(
+        "--who",
+        default=os.environ.get("DG_AGENT_NAME", ""),
+        help="resolved agent name for the disclosure prefix (default: $DG_AGENT_NAME)",
+    )
+    parser.add_argument("--team", default="hermit2")
+    parser.add_argument("--role", default="relay")
+    parser.add_argument(
+        "--resolve",
+        action="store_true",
+        help=(
+            "the condition is no longer reported: comment and close this key's "
+            "open issue, so the issue list says what is true now"
+        ),
+    )
+    parser.add_argument(
+        "--self-test",
+        action="store_true",
+        help="check the parts that need no network, then exit",
+    )
+    return parser
+
+
+def self_test() -> int:
+    """Cover the decisions that do not need GitHub. Reaches no repository."""
+    failures: list[str] = []
+
+    def check(name: str, condition: bool) -> None:
+        if not condition:
+            failures.append(name)
+
+    check("digest is stable", digest_of("a") == digest_of("a"))
+    check("digest separates content", digest_of("a") != digest_of("b"))
+    check("digest is twelve hex", re.fullmatch(r"[0-9a-f]{12}", digest_of("a")) is not None)
+
+    block = marker_block("health-tick-staleness", digest_of("x"), "2026-01-01T00:00:00Z")
+    found = DIGEST_RE.findall(block)
+    check("digest marker round-trips", found == [digest_of("x")])
+    check("key marker is present", f"{KEY_MARKER} health-tick-staleness" in block)
+
+    two = block + "\n" + marker_block("k", "0123456789ab", "2026-01-01T00:00:00Z")
+    check("last digest wins", DIGEST_RE.findall(two)[-1] == "0123456789ab")
+
+    check("key grammar accepts a normal key", KEY_RE.match("operational-tick-findings") is not None)
+    check("key grammar rejects spaces", KEY_RE.match("two words") is None)
+    check("key grammar rejects uppercase", KEY_RE.match("Key") is None)
+    check("key grammar rejects a leading dash", KEY_RE.match("-key") is None)
+
+    check("no timestamp is not fresh", seconds_since(None) is None)
+    check("a bad timestamp is not fresh", seconds_since("not-a-time") is None)
+    aged = seconds_since("2000-01-01T00:00:00Z")
+    check("an old timestamp is old", aged is not None and aged > 86400)
+
+    for name in failures:
+        print(f"escalate self-test FAIL: {name}", file=sys.stderr)
+    total = 13
+    print(f"escalate self-test: {total - len(failures)}/{total} checks passed")
+    return 1 if failures else 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    if args.self_test:
+        return self_test()
+    required = ("key",) if args.resolve else ("key", "title")
+    missing = [name for name in required if not getattr(args, name)]
+    if missing:
+        print(
+            "escalate: REFUSED: " + ", ".join(f"--{name}" for name in missing) + " is required",
+            file=sys.stderr,
+        )
+        return 2
+    if not args.who:
+        print(
+            "escalate: REFUSED: --who is required (or set DG_AGENT_NAME); an "
+            "unattributed issue is indistinguishable from one the owner wrote",
+            file=sys.stderr,
+        )
+        return 2
+    if not KEY_RE.match(args.key):
+        print(
+            f"escalate: REFUSED: --key must match {KEY_RE.pattern}; got {args.key!r}",
+            file=sys.stderr,
+        )
+        return 2
+    if args.resolve:
+        return resolve(args)
+    if args.message_file is not None:
+        try:
+            message = args.message_file.read_text(encoding="utf-8")
+        except OSError as error:
+            print(f"escalate: REFUSED: cannot read {args.message_file}: {error}", file=sys.stderr)
+            return 2
+    else:
+        message = sys.stdin.read()
+    return escalate(args, message)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -32,6 +32,24 @@ INVLOG="$HOME/.local/state/hermit-health-tick-invocations.log"
 LIVE_REPORT="$HOME/.local/state/hermit-health-tick-last-report.txt"
 LIVE_REPORT_STAMP=""
 LIVE_REPORT_RECORDED=0
+LIVE_REPORT_ESCALATED=0
+# Publishing the findings off this host. The agent name is what makes the write
+# attributable: the fork's GitHub author is a constant, so an unattributed issue
+# is indistinguishable from one the owner wrote, and ci-hub/bin/gh refuses
+# rather than create one. A scheduled service inherits no identity -- measured
+# 2026-09-03, all nine identity signals resolve `unavailable` under systemd --
+# so it is named here.
+# From the parent checkout, deliberately, and not from the immutable tool root:
+# this wrapper is itself the parent's version-controlled copy -- the unit runs
+# %h/work/dev-hermit/scripts/hermit-health-tick.sh -- and it already runs
+# ./scripts/parent-main-write from the same place. The tool-root discipline is
+# about the GATES and the tick runner, which are still materialized separately.
+# It also has to keep working in the one case that most needs reporting: when
+# materializing the tool root is what failed.
+ESCALATE="${HERMIT_HEALTH_ESCALATE:-$ROOT/ci-hub/bin/escalate}"
+ESCALATION_KEY="operational-tick-findings"
+ESCALATION_AGENT="health-tick"
+ESCALATION_TEAM="hermit2"
 TOOL_CACHE="${DEV_HERMIT_TOOL_CACHE:-${HERMIT_HEALTH_TOOL_CACHE:-$HOME/.local/state/hermit-health-tool}}"
 CANONICAL_REPOSITORY="rrnewton/dev-hermit"
 CANONICAL_REMOTE_URL="https://github.com/rrnewton/dev-hermit.git"
@@ -60,6 +78,61 @@ record_live_report_findings() {
                 ;;
         esac
     done <"$LIVE_REPORT"
+}
+
+# Publish the tick's findings where they can be read when Orc is not running.
+#
+# ⚠️ THE TICK HAS NEVER PUSHED ITS OWN FINDINGS ANYWHERE. This file contained
+# zero references to any relay, and the one channel that was wired to the
+# coordinator carried the staleness alarm -- whether the MONITOR IS ALIVE -- not
+# what the monitor found. So a cycle that produced fifteen findings put them in
+# the invocation log and told nobody. That log is on the same host as the thing
+# it is reporting on, which is exactly the wrong place for "this host's
+# monitoring is dark".
+#
+# ci-hub/bin/escalate publishes off this host and reads the publication back
+# before calling it delivered; it is quiet while the findings are unchanged, and
+# it closes its issue when a later tick reports nothing, so the issue list keeps
+# saying what is true now. Every outcome is recorded here, including the one
+# where publication failed -- a caller that cannot tell "published" from
+# "written down locally and nobody told" is the defect this replaces.
+#
+# Bounded and never fatal: this runs from the exit trap as well, so it must fit
+# inside the stop timeout, and a tick whose findings could not be published is
+# still a tick that ran.
+escalate_live_report_findings() {
+    [ "$LIVE_REPORT_ESCALATED" -eq 1 ] && return 0
+    [ -n "$LIVE_REPORT_STAMP" ] || return 0
+    [ -x "$ESCALATE" ] || return 0
+    LIVE_REPORT_ESCALATED=1
+    local payload count outcome rc
+    payload=$(mktemp "${TMPDIR:-/tmp}/hermit-tick-findings.XXXXXX") || return 0
+    if [ -s "$LIVE_REPORT" ]; then
+        grep -E '^(ACTION|ERROR):' "$LIVE_REPORT" >"$payload" 2>/dev/null || true
+    fi
+    # NOT `grep -c ... || echo 0`: grep prints 0 AND exits 1 on no match, so the
+    # fallback would append a second 0 and the arithmetic below would then fail
+    # with "integer expression expected" -- on exactly the clean-tick path.
+    count=$(grep -c . "$payload" 2>/dev/null)
+    [[ $count =~ ^[0-9]+$ ]] || count=0
+    if [ "$count" -eq 0 ]; then
+        # Nothing to report. Close a previously opened issue rather than leaving
+        # last week's alarm sitting beside this week's.
+        outcome=$(DG_AGENT_NAME="$ESCALATION_AGENT" "$ESCALATE" \
+            --key "$ESCALATION_KEY" --resolve --team "$ESCALATION_TEAM" \
+            --role relay 2>&1)
+        rc=$?
+    else
+        outcome=$(DG_AGENT_NAME="$ESCALATION_AGENT" "$ESCALATE" \
+            --key "$ESCALATION_KEY" \
+            --title "operational health tick reports $count finding(s) on $(uname -n)" \
+            --team "$ESCALATION_TEAM" --role relay --message-file "$payload" 2>&1)
+        rc=$?
+    fi
+    rm -f "$payload"
+    printf '%s escalation_rc=%s findings=%s detail=%q\n' \
+        "$LIVE_REPORT_STAMP" "$rc" "$count" \
+        "$(printf '%s' "$outcome" | tr '\n' ';' | cut -c1-300)" >>"$INVLOG"
 }
 
 tool_root_is_complete() {
@@ -2238,6 +2311,7 @@ mt_before="$(stat -c %Y "$FIRED_STATE" 2>/dev/null || echo 0)"
 # tick's partial findings from the previous tick's complete ones.
 LIVE_REPORT_STAMP="$start"
 LIVE_REPORT_RECORDED=0
+LIVE_REPORT_ESCALATED=0
 : >"$LIVE_REPORT" 2>/dev/null || true
 
 # --emit-output means the caller reads the report from stdout, so the report has
@@ -2372,6 +2446,7 @@ advanced=no
 # hardened to select the last invocation record explicitly, but the ordering
 # here keeps the file correct for any reader that has not been.
 record_live_report_findings
+escalate_live_report_findings
 
 # Append-only invocation record so the next investigation has a HISTORY, not a
 # single mtime. (fired-state itself is gitignored and keeps no per-run history.)
@@ -2385,7 +2460,7 @@ exit "$rc"
 # The findings first, then the tool roots: a trap that cleans up before it
 # records would lose the report of a tick that was interrupted, which is the
 # only case this trap exists for.
-trap 'record_live_report_findings; cleanup_tool_roots' EXIT
+trap 'record_live_report_findings; escalate_live_report_findings; cleanup_tool_roots' EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 if [[ ${1:-} == --run-current-tool ]]; then
