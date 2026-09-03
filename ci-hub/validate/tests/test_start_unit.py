@@ -2424,6 +2424,93 @@ class StartUnitTest(unittest.TestCase):
             ],
         )
 
+    def test_a_framework_result_sidecar_is_not_a_run_handle(self) -> None:
+        """⚠️ THE DEFECT, PINNED. Framework result sidecars live in the runs
+        directory beside the handles and end `.json` too, so the discovery glob
+        picked them up and reported each as a run handle with an unsupported
+        schema. Measured on the live tree 2026-09-03: 98 of the 111 failures
+        this gate reported were exactly this, and the gate was red on files that
+        were precisely what they should be.
+        """
+        _fresh, record_path = self.managed_cleanup_record("sidecar")
+        sidecar = start_unit.service_result.result_path(record_path)
+        sidecar.write_text(json.dumps({"anything": "the schema is not a handle's"}))
+
+        report = start_unit.sweep_completed_checkouts(
+            self.root, run=self.fake, tool_root=self.root
+        )
+
+        reasons = " ".join(
+            str(row.get("reason", "")) for row in report["retained"]
+        )
+        self.assertNotIn(str(sidecar), reasons, report["retained"])
+        self.assertEqual(1, report["discovery"]["framework_result_sidecars_skipped"])
+        self.assertEqual(1, report["discovery"]["run_handle_candidates"])
+        self.assertEqual(2, report["discovery"]["json_files_seen"])
+
+    def test_a_malformed_run_handle_is_still_loud(self) -> None:
+        """The other direction, and the one that makes the exclusion narrow
+        rather than a way to stop looking. A handle that is genuinely unreadable
+        must still be reported."""
+        broken = self.root / "ignored/validate/runs/validate-broken.json"
+        broken.parent.mkdir(parents=True, exist_ok=True)
+        broken.write_text("{ this is not json")
+
+        report = start_unit.sweep_completed_checkouts(
+            self.root, run=self.fake, tool_root=self.root
+        )
+
+        reasons = " ".join(
+            str(row.get("reason", "")) for row in report["retained"]
+        )
+        self.assertIn(str(broken), reasons, report["retained"])
+        self.assertEqual(0, report["discovery"]["framework_result_sidecars_skipped"])
+        self.assertEqual(1, report["discovery"]["json_files_seen"])
+        # Seen but not a usable candidate, and that distinction is the report:
+        # it was looked at and it could not be read.
+        self.assertEqual(0, report["discovery"]["run_handle_candidates"])
+
+    def test_a_sidecar_with_no_run_handle_is_reported_rather_than_dropped(self) -> None:
+        """The exclusion is for sidecars that BELONG to a handle. One with no
+        handle is orphaned, which is a fact about the runs directory worth
+        saying, so it must not vanish into the skip."""
+        orphan = (
+            self.root / "ignored/validate/runs/validate-gone.service-result.json"
+        )
+        orphan.parent.mkdir(parents=True, exist_ok=True)
+        orphan.write_text(json.dumps({"result": "orphaned"}))
+
+        report = start_unit.sweep_completed_checkouts(
+            self.root, run=self.fake, tool_root=self.root
+        )
+
+        targets = " ".join(
+            str(row.get("checkout", "")) for row in report["retained"]
+        )
+        reasons = " ".join(
+            str(row.get("reason", "")) for row in report["retained"]
+        )
+        self.assertIn(str(orphan), targets, report["retained"])
+        self.assertIn("has no run handle", reasons)
+        self.assertEqual(0, report["discovery"]["framework_result_sidecars_skipped"])
+        self.assertEqual(1, report["discovery"]["json_files_seen"])
+
+    def test_discovery_reports_what_it_looked_at(self) -> None:
+        """"removed 0" is unreadable on its own: a sweep that considered no
+        candidates and one that considered a hundred and could clean none print
+        the same line."""
+        for index in range(3):
+            _fresh, record_path = self.managed_cleanup_record(f"counted-{index}")
+            start_unit.service_result.result_path(record_path).write_text("{}")
+
+        report = start_unit.sweep_completed_checkouts(
+            self.root, run=self.fake, tool_root=self.root
+        )
+
+        self.assertEqual(6, report["discovery"]["json_files_seen"])
+        self.assertEqual(3, report["discovery"]["framework_result_sidecars_skipped"])
+        self.assertEqual(3, report["discovery"]["run_handle_candidates"])
+
     def test_sweep_bounds_backlog_and_advances_on_the_next_batch(self) -> None:
         for index in range(130):
             self.managed_cleanup_record(f"backlog-{index:03d}")

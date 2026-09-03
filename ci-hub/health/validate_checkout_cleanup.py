@@ -68,9 +68,19 @@ def main(argv: list[str] | None = None) -> int:
         return start_unit.EXIT_COULD_NOT_DETERMINE
 
     state, summary, failures = summarize(report)
+    discovery = report.get("discovery") or {}
     output = {
         "state": state,
         "summary": summary,
+        # WHAT DISCOVERY LOOKED AT, not only what it acted on. "removed 0" is
+        # unreadable without it: a sweep that considered no candidates and one
+        # that considered a hundred and could clean none print the same line.
+        "json_files_seen": discovery.get("json_files_seen"),
+        "framework_result_sidecars_skipped": discovery.get(
+            "framework_result_sidecars_skipped"
+        ),
+        "run_handle_candidates": discovery.get("run_handle_candidates"),
+        "deferred": len(report.get("deferred", [])),
         "removed": report.get("removed", []),
         "removed_cargo_homes": report.get("removed_cargo_homes", []),
         "retained": report.get("retained", []),
@@ -83,6 +93,12 @@ def main(argv: list[str] | None = None) -> int:
     else:
         print(f"state={state}")
         print(f"summary={summary}")
+        print(f"json_files_seen={output['json_files_seen']}")
+        print(
+            "framework_result_sidecars_skipped="
+            f"{output['framework_result_sidecars_skipped']}"
+        )
+        print(f"run_handle_candidates={output['run_handle_candidates']}")
         print(f"removed_checkouts={len(output['removed'])}")
         print(f"removed_cargo_homes={len(output['removed_cargo_homes'])}")
         print(f"deferred_checkouts={len(output['deferred'])}")

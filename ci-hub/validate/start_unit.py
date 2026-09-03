@@ -2347,20 +2347,61 @@ def cleanup_checkout_reference(root: Path, record: Mapping[str, Any]) -> Path | 
 def discover_cleanup_groups(
     root: Path, runs: Path
 ) -> tuple[
-    dict[str, CleanupGroup], list[CleanupRow], list[CleanupRow], list[dict[str, str]]
+    dict[str, CleanupGroup],
+    list[CleanupRow],
+    list[CleanupRow],
+    list[dict[str, str]],
+    dict[str, int],
 ]:
     groups: dict[str, CleanupGroup] = {}
     singles: list[CleanupRow] = []
     rows: list[CleanupRow] = []
     retained: list[dict[str, str]] = []
     unattributable = False
+    # Counted so the report can say what discovery LOOKED AT, not only what it
+    # acted on. A gate that reports "removed 0" is unreadable without knowing
+    # whether it considered 0 candidates or 111.
+    discovery_counts: dict[str, int] = {
+        "json_files_seen": 0,
+        "framework_result_sidecars_skipped": 0,
+        "run_handle_candidates": 0,
+    }
     for path in sorted(runs.glob("*.json")):
+        discovery_counts["json_files_seen"] += 1
+        # ⚠️ A FRAMEWORK RESULT SIDECAR IS NOT A RUN HANDLE. Both live here and
+        # both end `.json`, so this glob sees them; parsing one as a handle
+        # reports it as an unsupported schema and the gate goes red on a file
+        # that is exactly what it should be. Measured 2026-09-03: 98 of the 111
+        # failures this gate reported were this and nothing else.
+        #
+        # NARROW ON PURPOSE. This skips the ONE name the producer constructs --
+        # service_result.result_path is the other direction of the same rule --
+        # and only when the run handle it names is actually present. A sidecar
+        # with no handle is orphaned rather than expected, so it stays visible
+        # instead of being quietly dropped, and a genuinely malformed or
+        # unsupported handle is untouched by any of this.
+        handle = service_result.handle_path_for_result(path)
+        if handle is not None:
+            if handle.exists():
+                discovery_counts["framework_result_sidecars_skipped"] += 1
+                continue
+            retained.append(
+                {
+                    "checkout": str(path),
+                    "reason": (
+                        "framework result sidecar has no run handle at "
+                        f"{handle}; it is not a candidate and not expected"
+                    ),
+                }
+            )
+            continue
         try:
             raw = read_cleanup_record_object(path)
         except RuntimeError as error:
             retained.append({"checkout": str(path), "reason": str(error)})
             unattributable = True
             continue
+        discovery_counts["run_handle_candidates"] += 1
         checkout = cleanup_checkout_reference(root, raw)
         if raw.get("schema_version") != run_registry.SCHEMA_VERSION:
             error = RuntimeError(f"validation handle {path} has an unsupported schema")
@@ -2386,7 +2427,7 @@ def discover_cleanup_groups(
             retained.append({"checkout": str(row.record.get("checkout", "")), "reason": reason})
         singles.clear()
         rows.clear()
-    return groups, singles, rows, retained
+    return groups, singles, rows, retained, discovery_counts
 
 
 def terminal_cleanup_unit(
@@ -2485,15 +2526,24 @@ def sweep_completed_checkouts(
     deferred: list[dict[str, str]] = []
     bookkeeping_errors: list[dict[str, str]] = []
     if not runs.is_dir():
+        # Absent is a real answer and it carries its own zeros, so a reader can
+        # tell "there was nothing to look at" from "the counts are missing".
         return {
             "removed": removed,
             "removed_cargo_homes": removed_cargo_homes,
             "retained": retained,
             "deferred": deferred,
             "bookkeeping_errors": bookkeeping_errors,
+            "discovery": {
+                "json_files_seen": 0,
+                "framework_result_sidecars_skipped": 0,
+                "run_handle_candidates": 0,
+            },
         }
 
-    groups, singles, _rows, discovery_errors = discover_cleanup_groups(root, runs)
+    groups, singles, _rows, discovery_errors, discovery = discover_cleanup_groups(
+        root, runs
+    )
     retained.extend(discovery_errors)
 
     for row in singles:
@@ -2623,6 +2673,7 @@ def sweep_completed_checkouts(
         "retained": retained,
         "deferred": deferred,
         "bookkeeping_errors": bookkeeping_errors,
+        "discovery": discovery,
     }
 
 

@@ -222,8 +222,30 @@ def schema_for_checkout(checkout: Path, *, reference_checkout: Path) -> int | No
     return int(target["schema_version"])
 
 
+SERVICE_RESULT_SUFFIX = ".service-result.json"
+
+
 def result_path(record_path: Path) -> Path:
-    return record_path.with_name(f"{record_path.stem}.service-result.json")
+    return record_path.with_name(f"{record_path.stem}{SERVICE_RESULT_SUFFIX}")
+
+
+def handle_path_for_result(result: Path) -> Path | None:
+    """The run handle a framework result sidecar belongs to, or None.
+
+    ⚠️ THIS IS THE INVERSE OF `result_path` AND IT LIVES BESIDE IT ON PURPOSE.
+    Both sit in the runs directory and both end `.json`, so anything that
+    enumerates run handles with a `*.json` glob picks up the sidecars too and
+    then reports each one as a run handle with an unsupported schema. Measured
+    2026-09-03: the validation cleanup gate reported 111 failures of which 98
+    were exactly this, so a gate that had nothing wrong to say about them was
+    red on all 98 and stayed red.
+
+    Keeping the two directions adjacent is what stops the exclusion drifting
+    from the naming: change one and the other is in view.
+    """
+    if not result.name.endswith(SERVICE_RESULT_SUFFIX):
+        return None
+    return result.with_name(f"{result.name.removesuffix(SERVICE_RESULT_SUFFIX)}.json")
 
 
 def pinned_schema_path() -> Path:
