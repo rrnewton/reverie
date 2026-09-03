@@ -33,6 +33,14 @@ LIVE_REPORT="$HOME/.local/state/hermit-health-tick-last-report.txt"
 LIVE_REPORT_STAMP=""
 LIVE_REPORT_RECORDED=0
 LIVE_REPORT_ESCALATED=0
+# ⚠️ WHETHER THE REPORT IS COMPLETE, WHICH IS NOT THE SAME AS WHETHER IT IS EMPTY.
+# The escalation runs from the exit trap too, so it also runs when an outer bound
+# killed the tick partway. A killed tick can have produced NO findings yet and
+# that must never be read as "nothing is wrong": measured 2026-09-03T19:49:45Z,
+# a tick killed at its 300s bound reported zero findings and the resolve path
+# CLOSED a live alarm as "no longer reported", retracting something that was
+# true. Absence is not a clean report. This flag is what separates them.
+TICK_REPORT_COMPLETE=0
 # Publishing the findings off this host. The agent name is what makes the write
 # attributable: the fork's GitHub author is a constant, so an unattributed issue
 # is indistinguishable from one the owner wrote, and ci-hub/bin/gh refuses
@@ -134,9 +142,17 @@ escalate_live_report_findings() {
     # with "integer expression expected" -- on exactly the clean-tick path.
     count=$(grep -c . "$payload" 2>/dev/null)
     [[ $count =~ ^[0-9]+$ ]] || count=0
+    if [ "$count" -eq 0 ] && [ "$TICK_REPORT_COMPLETE" -ne 1 ]; then
+        # NOT a clean tick -- an unfinished one. Retracting an alarm requires
+        # having looked, and this run was stopped before it could. Withdrawing a
+        # true warning because the check was killed is worse than saying nothing.
+        printf '%s escalation_skipped=incomplete-report findings=0\n' \
+            "$LIVE_REPORT_STAMP" >>"$INVLOG"
+        return 0
+    fi
     if [ "$count" -eq 0 ]; then
-        # Nothing to report. Close a previously opened issue rather than leaving
-        # last week's alarm sitting beside this week's.
+        # A COMPLETE tick with nothing to report. Close what an earlier one
+        # opened, rather than leaving last week's alarm beside this week's.
         outcome=$(DG_AGENT_NAME="$ESCALATION_AGENT" with-proxy "$ESCALATE" \
             "${ESCALATION_SINKS[@]}" --tg-db "$ESCALATION_TG_DB" \
             --key "$ESCALATION_KEY" --resolve --team "$ESCALATION_TEAM" \
@@ -2341,6 +2357,7 @@ mt_before="$(stat -c %Y "$FIRED_STATE" 2>/dev/null || echo 0)"
 LIVE_REPORT_STAMP="$start"
 LIVE_REPORT_RECORDED=0
 LIVE_REPORT_ESCALATED=0
+TICK_REPORT_COMPLETE=0
 : >"$LIVE_REPORT" 2>/dev/null || true
 
 # --emit-output means the caller reads the report from stdout, so the report has
@@ -2405,6 +2422,7 @@ tool_root_rc=$?
 if [[ $tool_root_rc -ne 0 ]]; then
     printf '%s\n' "ERROR: health-tick could not materialize current immutable tooling" \
         | tee -a "$LIVE_REPORT" >&9
+    TICK_REPORT_COMPLETE=1
     out="$(cat "$LIVE_REPORT" 2>/dev/null)"
     rc=$tool_root_rc
 else
@@ -2427,6 +2445,11 @@ else
     # almost always 0 -- the exact trap that once reported a rejected push as
     # rc=0. PIPESTATUS[0] is health-tick's own status.
     rc=${PIPESTATUS[0]}
+    # The runner returned, so whatever it was going to say is now in the file.
+    # This is deliberately not conditional on rc: a tick that ran its gates and
+    # failed has still REPORTED, and health-tick emits an explicit gate=ALL line
+    # when it dies before reporting, which arrives here as a finding.
+    TICK_REPORT_COMPLETE=1
     # NOT a command substitution. The report reached the file and the caller
     # line by line as each gate decided, so the copy below is a convenience for
     # the code that follows rather than the only place the findings exist.

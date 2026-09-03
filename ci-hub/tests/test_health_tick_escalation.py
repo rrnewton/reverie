@@ -68,7 +68,13 @@ def bench(tmp_path: Path):
     stub.write_text(STUB)
     stub.chmod(0o755)
 
-    def run(report_lines: str, *, escalate: Path | None = None, twice: bool = False) -> dict:
+    def run(
+        report_lines: str,
+        *,
+        escalate: Path | None = None,
+        twice: bool = False,
+        complete: bool = True,
+    ) -> dict:
         report.write_text(report_lines)
         calls.write_text("")
         invlog.write_text("")
@@ -79,6 +85,7 @@ def bench(tmp_path: Path):
                 f'LIVE_REPORT={report}',
                 'LIVE_REPORT_STAMP=2026-09-03T00:00:00Z',
                 'LIVE_REPORT_ESCALATED=0',
+                f'TICK_REPORT_COMPLETE={1 if complete else 0}',
                 'ESCALATION_AGENT=health-tick',
                 'ESCALATION_TEAM=hermit2',
                 *extract_settings(),
@@ -116,6 +123,26 @@ def test_action_and_error_lines_are_findings_and_notes_are_not(bench) -> None:
     assert "findings=2" in result["invlog"]
     assert any("--title" in call for call in result["calls"])
     assert any("reports 2 finding(s)" in call for call in result["calls"])
+
+
+def test_an_interrupted_tick_never_retracts_an_alarm(bench) -> None:
+    """The one that bit. Measured 2026-09-03T19:49:45Z on the live unit: a tick
+    killed at its 300s bound had produced no findings yet, the resolve path read
+    that as "nothing is wrong", and it CLOSED a live alarm as no longer reported.
+    Absence is not a clean report, and withdrawing a true warning because the
+    check was stopped is worse than saying nothing at all."""
+    result = bench("", complete=False)
+    assert result["returncode"] == 0
+    assert result["calls"] == [], result["calls"]
+    assert "escalation_skipped=incomplete-report" in result["invlog"]
+
+
+def test_an_interrupted_tick_still_publishes_what_it_did_find(bench) -> None:
+    """Only the RETRACTION needs a complete report. Findings a killed tick
+    already reached are still real and still worth publishing."""
+    result = bench("ACTION: hard-warn-coordinator component=a\n", complete=False)
+    assert any("--title" in call for call in result["calls"]), result["calls"]
+    assert not any("--resolve" in call for call in result["calls"])
 
 
 def test_a_clean_tick_closes_what_a_dirty_one_opened(bench) -> None:
