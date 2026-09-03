@@ -51,33 +51,59 @@ class SlotAgentParityTests(unittest.TestCase):
         (self.root / "worktrees").mkdir()
 
     def write_registry(self, slots: dict[str, dict]) -> None:
-        (self.root / "worktree-state.json").write_text(
+        """The LIVE wrkslots registry, which is what the gate now reads.
+
+        ⚠️ THESE TESTS USED TO WRITE worktree-state.json AND THEY PASSED WHILE THE
+        GATE REPORTED A FOSSIL. That file's producer, scripts/release-worktree.rs,
+        refuses every invocation in a project configured with .wrkslots.yml, so
+        the real one froze on 2026-08-28 and the gate reported that day's fleet
+        for six days. A fixture that writes a file nothing writes in production
+        cannot notice that; writing the same registry production writes is what
+        makes these tests measure the gate rather than themselves.
+        """
+        (self.root / ".wrkslots.yml").write_text(
+            json.dumps({"machine": "testhost", "worktrees_dir": "worktrees/slots"})
+        )
+        (self.root / "worktrees" / "ACTIVE.testhost.json").write_text(
             json.dumps(
                 {
-                    "version": 3,
-                    "updated": "2026-08-28T00:00:00Z",
-                    "slots": slots,
+                    "machine": "testhost",
+                    "revision": 1,
+                    "schema": 2,
+                    "slots": list(slots.values()),
                 }
             )
         )
 
-    def slot(self, name: str, agent: str | None, status: str = "active") -> dict:
+    def slot(
+        self,
+        name: str,
+        agent: str | None,
+        slot_type: str = "agent",
+    ) -> dict:
+        """One wrkslots ACTIVE row.
+
+        There is no `status` field and that is the point: the ACTIVE registry
+        holds exactly the live rows and finished ones move to ARCHIVED, so
+        PRESENCE is the active status the retired schema spelled out in a field.
+        """
+        subdir = "validate" if slot_type == "validate" else "slots"
         record: dict = {
-            "status": status,
-            "allocated": "2026-08-28T00:00:00Z",
-            "updated": "2026-08-28T00:00:00Z",
-            "hermit_path": f"worktrees/slots/{name}/hermit",
-            "hermit_branch": "detached",
-            "reverie_path": f"worktrees/slots/{name}/reverie",
-            "reverie_branch": "-",
-            "liteinst2_path": f"worktrees/slots/{name}/liteinst2",
-            "liteinst2_branch": "-",
-            "agents": [],
+            "slot": name,
+            "slot_type": slot_type,
+            "machine": "testhost",
+            "generation": 1,
+            "created_at": "2026-09-03T00:00:00Z",
+            "agent": agent,
+            "checkouts": [
+                {
+                    "name": "hermit",
+                    "repository": "hermit",
+                    "path": f"worktrees/{subdir}/{name}/hermit",
+                    "branch": "detached",
+                }
+            ],
         }
-        if agent is not None:
-            record["agents"] = [
-                {"name": agent, "read_only": False, "task": "task-a"}
-            ]
         return record
 
     # --- the predicate itself -------------------------------------------------
@@ -111,18 +137,81 @@ class SlotAgentParityTests(unittest.TestCase):
         self.assertEqual(fields["live_agents_examined"], "2")
         self.assertNotEqual(fields["live_agents_examined"], "0")
 
-    def test_non_active_slots_are_not_judged(self) -> None:
-        self.write_registry(
-            {
-                "live": self.slot("live", "hermit-001"),
-                "retired": self.slot(
-                    "retired", "hermit-999", status="quarantined-retired"
-                ),
-            }
+    def test_only_rows_in_the_active_registry_are_judged(self) -> None:
+        """A finished slot leaves ACTIVE for ARCHIVED, so it stops being judged
+        by being absent rather than by carrying a status."""
+        self.write_registry({"live": self.slot("live", "hermit-001")})
+        (self.root / "worktrees" / "ARCHIVED.testhost.json").write_text(
+            json.dumps(
+                {
+                    "machine": "testhost",
+                    "revision": 1,
+                    "schema": 2,
+                    "records": [self.slot("retired", "hermit-999")],
+                }
+            )
         )
         code, fields = run(self.root, "--test-live-agents", "hermit-001")
         self.assertEqual(code, 0, fields.get("summary"))
         self.assertEqual(fields["active_slots"], "1")
+
+    # --- the defect this gate had ---------------------------------------------
+
+    def test_the_figure_moves_when_a_slot_is_actually_reclaimed(self) -> None:
+        """THE DEFECT, PINNED. Measured on the live fleet 2026-09-03: a real
+        reclaim moved the wrkslots registry from 100 rows to 93 and the git
+        worktree census from 181 to 178, and this gate's active_slots stayed at
+        exactly 45 -- because it was reading a file whose producer had been
+        retired six days earlier. A number that does not move when the thing it
+        names is removed is not measuring that thing.
+        """
+        self.write_registry(
+            {
+                "alive": self.slot("alive", "hermit-001"),
+                "doomed": self.slot("doomed", "hermit-999"),
+            }
+        )
+        code, before = run(self.root, "--test-live-agents", "hermit-001")
+        self.assertEqual(code, 1)
+        self.assertEqual(before["active_slots"], "2")
+        self.assertEqual(before["active_slots_without_live_agent"], "1")
+
+        # Reclaim it, exactly as wrkslots does: the row leaves ACTIVE.
+        self.write_registry({"alive": self.slot("alive", "hermit-001")})
+
+        code, after = run(self.root, "--test-live-agents", "hermit-001")
+        self.assertEqual(after["active_slots"], "1", "the figure must follow the registry")
+        self.assertEqual(after["active_slots_without_live_agent"], "0")
+        self.assertEqual(code, 0, after.get("summary"))
+
+    def test_a_validation_slot_is_looked_for_where_it_actually_lives(self) -> None:
+        """Validation checkouts sit under worktrees/validate/, not
+        worktrees/slots/. Assuming the latter would make a live validation run
+        look unoccupied and therefore orphaned."""
+        row = self.slot("validate-fresh-abc", None, slot_type="validate")
+        self.write_registry({"validate-fresh-abc": row})
+        code, fields = run(self.root, "--test-live-agents", "hermit-001")
+        self.assertEqual(fields["active_slots"], "1")
+        # No live agent and no process inside, so it is named -- the point here
+        # is that it was searched for under the validate root without error.
+        self.assertEqual(code, 1)
+        self.assertIn("validate-fresh-abc", fields["summary"])
+
+    def test_an_empty_registry_refuses_rather_than_reporting_parity(self) -> None:
+        """Zero rows computes zero orphans and would read as perfect health, the
+        same reason a zero-agent census refuses."""
+        self.write_registry({})
+        code, fields = run(self.root, "--test-live-agents", "hermit-001")
+        self.assertEqual(code, 2)
+        self.assertEqual(fields["state"], "unknown")
+        self.assertIn("no slots", fields["summary"])
+
+    def test_an_unconfigured_machine_shard_refuses_rather_than_guessing(self) -> None:
+        self.write_registry({"alive": self.slot("alive", "hermit-001")})
+        (self.root / ".wrkslots.yml").write_text(json.dumps({"worktrees_dir": "x"}))
+        code, fields = run(self.root, "--test-live-agents", "hermit-001")
+        self.assertEqual(code, 2)
+        self.assertIn("machine shard", fields["summary"])
 
     # --- the refusals ---------------------------------------------------------
 

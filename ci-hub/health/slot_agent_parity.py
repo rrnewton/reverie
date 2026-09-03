@@ -50,7 +50,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
 
 import residue_sweep  # noqa: E402
 import agent_snapshot as agent_snapshot_contract  # noqa: E402
-from worktree_registry import RegistrySchemaError, read_registry  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
 STATE_ROOT = Path(os.environ.get("DEV_HERMIT_PARENT", ROOT)).resolve()
@@ -73,6 +72,110 @@ COUNTED_REPOS = (".", "hermit", "reverie", "liteinst2", "agent-utils")
 
 class ParityUnavailable(Exception):
     """The verdict could not be determined.  Never rendered as a pass."""
+
+
+# THE REGISTRY THIS GATE READS, AND WHY IT CHANGED.
+#
+# ⚠️ THIS GATE USED TO READ worktree-state.json AND REPORTED A FOSSIL. That file
+# is written by scripts/release-worktree.rs, which is a LEGACY INTERFACE that
+# refuses every invocation in a project configured with .wrkslots.yml -- as this
+# one is. The producer was retired by the migration to wrkslots and the readers
+# were not moved with it, so the file froze at its last legacy write, 2026-08-28
+# 07:40, and every gate reading it has reported that day's fleet ever since.
+#
+# It was not detectable by validating the bytes: the fossil passes
+# scripts/check-worktree-registry.rs perfectly, because it is a well-formed
+# document of a schema nobody writes any more. Valid and current are different
+# questions and only the first was being asked.
+#
+# MEASURED 2026-09-03, which is what makes this a defect and not a preference: a
+# real reclaim moved the wrkslots registry from 100 rows to 93 and the git
+# worktree census from 181 to 178, and this gate's `active_slots` stayed at
+# exactly 45 across the whole operation. A number that does not move when the
+# thing it names is removed is not measuring that thing.
+#
+# The live authority is the wrkslots registry, one file per machine shard. Its
+# ACTIVE file holds exactly the live rows -- finished ones move to ARCHIVED -- so
+# presence in it IS the active status the old schema spelled out in a field.
+WRKSLOTS_CONFIG = ".wrkslots.yml"
+WRKSLOTS_REGISTRY_DIR = "worktrees"
+
+
+def wrkslots_machine(root: Path) -> str:
+    """The configured machine shard, read rather than guessed.
+
+    Refusing here rather than globbing for any ACTIVE.*.json is deliberate: on a
+    host that has ever carried two shards, picking one by chance would report a
+    number for the wrong fleet, which is the failure this whole change is about.
+    """
+    override = os.environ.get("WRKSLOTS_MACHINE")
+    if override:
+        return override
+    path = root / WRKSLOTS_CONFIG
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ParityUnavailable(f"cannot read {path}: {exc}") from exc
+    machine = document.get("machine") if isinstance(document, dict) else None
+    if not isinstance(machine, str) or not machine:
+        raise ParityUnavailable(f"{path} records no machine shard")
+    return machine
+
+
+def read_slot_registry(root: Path) -> dict[str, dict]:
+    """Live slot rows from the wrkslots registry, keyed by slot name."""
+
+    machine = wrkslots_machine(root)
+    path = root / WRKSLOTS_REGISTRY_DIR / f"ACTIVE.{machine}.json"
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ParityUnavailable(f"cannot read slot registry {path}: {exc}") from exc
+    if not isinstance(document, dict):
+        raise ParityUnavailable(f"slot registry {path} root is not an object")
+    rows = document.get("slots")
+    if not isinstance(rows, list):
+        raise ParityUnavailable(f"slot registry {path} slots is not a list")
+    active: dict[str, dict] = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        name = row.get("slot")
+        if isinstance(name, str) and name:
+            active[name] = row
+    # An EMPTY registry is a refusal, not a clean bill of health. Zero rows and
+    # an unreadable registry produce the same verdict here for the same reason a
+    # zero-agent census does below: a denominator of zero computes zero orphans.
+    if not active:
+        raise ParityUnavailable(
+            f"slot registry {path} lists no slots; a fleet with no rows at all is "
+            "unverifiable rather than clean"
+        )
+    return active
+
+
+def slot_directories(root: Path, active: dict[str, dict]) -> dict[str, Path]:
+    """Where each slot's checkouts actually are.
+
+    Derived from the row rather than assumed to be worktrees/slots/<name>:
+    validation slots live under worktrees/validate/ and would otherwise never be
+    found to be occupied, so a live validation run would read as an orphan.
+    """
+    directories: dict[str, Path] = {}
+    for name, row in active.items():
+        checkouts = row.get("checkouts")
+        paths = []
+        if isinstance(checkouts, list):
+            for checkout in checkouts:
+                if isinstance(checkout, dict) and isinstance(checkout.get("path"), str):
+                    paths.append((root / checkout["path"]).resolve())
+        if paths:
+            # Every checkout of one slot sits under the slot directory.
+            directories[name] = Path(os.path.commonpath([str(p) for p in paths]))
+        else:
+            subdir = "validate" if row.get("slot_type") == "validate" else "slots"
+            directories[name] = (root / "worktrees" / subdir / name).resolve()
+    return directories
 
 
 def live_agents_from_fleet() -> set[str]:
@@ -129,17 +232,27 @@ def live_agents_from_snapshot(path: Path, max_age_secs: int, now: float) -> set[
 
 
 def slot_owner_names(record: dict) -> set[str]:
+    """The agent names a slot row claims are behind it.
+
+    The wrkslots row names one agent in `agent`; the older schema carried a list
+    under `agents`. Both are read so a row of either shape answers the same
+    question, and neither is invented when absent.
+    """
+    names: set[str] = set()
+    agent = record.get("agent")
+    if isinstance(agent, str) and agent:
+        names.add(agent)
     agents = record.get("agents")
-    if not isinstance(agents, list):
-        return set()
-    names = {
-        str(a.get("name") or "") for a in agents if isinstance(a, dict)
-    }
-    names.discard("")
+    if isinstance(agents, list):
+        for entry in agents:
+            if isinstance(entry, dict):
+                name = entry.get("name")
+                if isinstance(name, str) and name:
+                    names.add(name)
     return names
 
 
-def occupied_slots(root: Path, slot_names: set[str]) -> set[str]:
+def occupied_slots(directories: dict[str, Path]) -> set[str]:
     """Slots with a live same-uid process whose cwd is inside them.
 
     A process inside the slot is proof of use even when the registry's owner
@@ -152,8 +265,7 @@ def occupied_slots(root: Path, slot_names: set[str]) -> set[str]:
     except residue_sweep.SweepUnavailable as exc:
         raise ParityUnavailable(f"cannot enumerate process cwds: {exc}") from exc
     occupied: set[str] = set()
-    for name in slot_names:
-        slot_dir = (root / "worktrees" / "slots" / name).resolve()
+    for name, slot_dir in directories.items():
         for cwd in cwds:
             if cwd == slot_dir or slot_dir in cwd.parents:
                 occupied.add(name)
@@ -187,16 +299,8 @@ def git_worktree_counts(root: Path) -> dict[str, int | None]:
     return counts
 
 
-def evaluate(root: Path, live: set[str], registry: dict) -> tuple[str, str, dict]:
-    raw_slots = registry.get("slots")
-    if not isinstance(raw_slots, dict):
-        raise ParityUnavailable("worktree-state.json slots is not an object")
-    active = {
-        str(name): raw
-        for name, raw in raw_slots.items()
-        if isinstance(raw, dict) and raw.get("status") == "active"
-    }
-    occupied = occupied_slots(root, set(active))
+def evaluate(root: Path, live: set[str], active: dict[str, dict]) -> tuple[str, str, dict]:
+    occupied = occupied_slots(slot_directories(root, active))
 
     orphaned: list[str] = []
     for name, record in sorted(active.items()):
@@ -277,13 +381,7 @@ def main(argv: list[str] | None = None) -> int:
         else:
             live = live_agents_from_fleet()
 
-        registry_path = root / "worktree-state.json"
-        try:
-            registry = read_registry(registry_path)
-        except RegistrySchemaError as exc:
-            raise ParityUnavailable(f"cannot read {registry_path}: {exc}") from exc
-
-        state, summary, fields = evaluate(root, live, registry)
+        state, summary, fields = evaluate(root, live, read_slot_registry(root))
     except ParityUnavailable as exc:
         state = UNKNOWN
         summary = f"parity could not be determined: {' '.join(str(exc).split())}"

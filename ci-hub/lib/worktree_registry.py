@@ -101,12 +101,45 @@ def parse_registry_bytes(
     )
 
 
+# ⚠️ VALID AND CURRENT ARE DIFFERENT QUESTIONS, AND ONLY THE FIRST WAS ASKED.
+#
+# `worktree-state.json` is written by scripts/release-worktree.rs, which carries a
+# LEGACY INTERFACE banner and refuses every invocation in a project configured
+# with .wrkslots.yml. The migration to wrkslots retired the WRITERS and left the
+# READERS, so in a configured project this file has no producer at all and holds
+# whatever the last legacy invocation left.
+#
+# It passes the schema checker perfectly, because it is a well-formed document of
+# a schema nobody writes any more. Measured 2026-09-03: the real file had been
+# frozen since 2026-08-28 07:40 while five consumers read it as current state,
+# and a real reclaim that moved the live registry from 100 rows to 93 changed
+# nothing any of them reported.
+#
+# So the presence of .wrkslots.yml beside this file is itself proof that the
+# bytes cannot be current, and it is checked here rather than in five consumers
+# because a consumer moved to a live source while a dead producer stays in place
+# leaves the next reader to trip over the same thing.
+RETIRED_PRODUCER_MARKER = ".wrkslots.yml"
+
+
+def producer_is_retired(path: Path) -> bool:
+    return (path.parent / RETIRED_PRODUCER_MARKER).is_file()
+
+
 def read_registry(
     path: Path,
     *,
     checker: Path | None = None,
     include_owner_sidecars: bool = False,
 ) -> ValidatedRegistry:
+    if path.name == "worktree-state.json" and producer_is_retired(path):
+        raise RegistrySchemaError(
+            f"{path} has no producer in this project: scripts/release-worktree.rs "
+            f"writes it and refuses whenever {RETIRED_PRODUCER_MARKER} is present, "
+            "so these bytes are the last legacy invocation rather than current "
+            "state. Read the wrkslots registry at "
+            "worktrees/ACTIVE.<machine>.json instead"
+        )
     try:
         raw = path.read_bytes()
     except OSError as error:
