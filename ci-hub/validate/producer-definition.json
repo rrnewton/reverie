@@ -25,40 +25,17 @@
   "_rotation_2026_08_24_current_main": "Promoted after reading fetched Hermit main a28a49c7603750954d59ce614b39a312553c60bd and deriving all eight producer blobs from that exact tree. The superseded PR 2375 candidate named the pre-rebase head ca764b0266b789d4276ab73941318a0c6e5747a7; six blobs still match, while scripts/validate.rs and scripts/lib/validate_runtime.rs changed before the work landed and therefore correctly made exact whole-map resolution fail. A clean, boxed, exact-main full validation at a28a49c7 is required before landing this rotation. The outgoing 1f4e430c map is bounded to its registered commit as legacy, the stale transition is removed rather than relaxed, and unknown producer maps remain refused.",
   "_rotation_2026_08_28_constructed_plan": "Promoted after the owner ruled that changes unable to affect a cell outcome do not require another full run. Hermit main 7e45e6de7cd812e5466c389a13bb0bd193348e1a adds off-record selection from validate's constructed plan, changes the hosted grouping that consumes it, writes scorecard observations only after receipt production, and makes two lock-file opens explicitly non-truncating. Targeted evidence: all 61 constructed portable-only steps are assigned exactly once, all 20 rust-script entrypoints are clippy-clean, the split dry run selects 23 build-side plus 38 test-side steps, and the no-record status path writes nothing. The existing clean full receipt at 6450d9f89c872bf8e917befb8127a04d7c852e62 completed 76/76 outer gates, 21/21 test nodes, 2156 tests, and 307 selected cells; its exact eight-file producer map is retained below so that measured result can be published. The outgoing a28a49c7 map is bounded to its registered commit as legacy, and unknown producer maps remain refused.",
   "_transition_2026_09_03_pr2935": "Stages the exact eight-file producer map from Hermit PR 2935 head 64dbae5adf5935652ee5ed0752874968bbaccd9d after its clean boxed full validation completed 267/267 nodes and 2549/2549 tests with zero failures, skips, retries, flaky warnings, or peer validates in 22m08s. Hermit main 976c70986b3c4a301295d1e04351bff48e22fbe1 had changed all eight registered producer paths without rotating this map, so receipt publication correctly refused every resulting producer as unknown. The candidate keeps whole-map equality exact; it does not change the primary or accept any other commit.",
-  "registered_at": "7e45e6de7cd812e5466c389a13bb0bd193348e1a",
+  "registered_at": "5a87208bb75fc1a52aebdc19694abb3d25efdee7",
   "registered_coverage_status": "complete",
   "registered": {
-    ".config/nextest.toml": "026dc6f11dad42b4d39ec5400b6980dcb76d5253",
-    ".github/workflows/ci-portable.yml": "11265de8a08a9cf3d5649d234eec266cfcca8eab",
-    "ci/run-nextest-counted.sh": "9ac219a3f3f50a52ed8065b9ef85909a99cb8050",
-    "scripts/lib/validate_history.rs": "be2017bd8ebdf4e5e0952e14a6f2cc89c43fd8ca",
-    "scripts/lib/validate_plan.rs": "3422ec33ef9f8eaa7b7a98b17a7cd65d284f19a2",
-    "scripts/lib/validate_receipt.rs": "465f6c7e1f027ba81daf09f5011f84ebdd08deb0",
-    "scripts/lib/validate_runtime.rs": "59e94680525a16fb3c8d00d9284374a2ab54b5c3",
-    "scripts/validate.rs": "a7f92488b18717aa4f588a1eb89cb262f1167b27"
-  },
-  "transition": {
-    "id": "rrnewton-hermit-pr-2935",
-    "registered_at": "64dbae5adf5935652ee5ed0752874968bbaccd9d",
-    "provenance": {
-      "repository": "rrnewton/hermit",
-      "pull_request": 2935,
-      "head": "64dbae5adf5935652ee5ed0752874968bbaccd9d"
-    },
-    "finalize_after": "2026-09-03T04:35:00Z",
-    "expires_at": "2026-09-04T04:35:00Z",
-    "candidate_coverage_status": "complete",
-    "added_paths": [],
-    "candidate": {
-      ".config/nextest.toml": "5754a6d6983000ded67562250cedcc6c1ce53cf5",
-      ".github/workflows/ci-portable.yml": "78167c8dccfa757a5348d96d479f72b1c8e63a3d",
-      "ci/run-nextest-counted.sh": "ca88efe6d3d270881ecbe7205373f642369ce53d",
-      "scripts/lib/validate_history.rs": "fb5bda65ac9ceb16bd7ded72c4f8f1b1b1615bde",
-      "scripts/lib/validate_plan.rs": "f7ddea328cef00ac37b5b2a6381e656e0d9c3821",
-      "scripts/lib/validate_receipt.rs": "15fa8d4b4ecdf89bdeb6ce33f460de11cf43d79c",
-      "scripts/lib/validate_runtime.rs": "721df0c7330851ea4cc09516d3ee6a4f680943b3",
-      "scripts/validate.rs": "062d52b04e70c066d40bf5d89c7a7ee4f2a3c51e"
-    }
+    ".config/nextest.toml": "5754a6d6983000ded67562250cedcc6c1ce53cf5",
+    ".github/workflows/ci-portable.yml": "78167c8dccfa757a5348d96d479f72b1c8e63a3d",
+    "ci/run-nextest-counted.sh": "ca88efe6d3d270881ecbe7205373f642369ce53d",
+    "scripts/lib/validate_history.rs": "fb5bda65ac9ceb16bd7ded72c4f8f1b1b1615bde",
+    "scripts/lib/validate_plan.rs": "f7ddea328cef00ac37b5b2a6381e656e0d9c3821",
+    "scripts/lib/validate_receipt.rs": "15fa8d4b4ecdf89bdeb6ce33f460de11cf43d79c",
+    "scripts/lib/validate_runtime.rs": "721df0c7330851ea4cc09516d3ee6a4f680943b3",
+    "scripts/validate.rs": "062d52b04e70c066d40bf5d89c7a7ee4f2a3c51e"
   },
   "legacy": [
     {
@@ -278,6 +255,24 @@
         "scripts/lib/validate_history.rs": "2814723223adcf3e4f077cce325978036c599839",
         "scripts/lib/validate_receipt.rs": "465f6c7e1f027ba81daf09f5011f84ebdd08deb0",
         "scripts/validate.rs": "df03defdc9d09fd1eddc3a26b137c7a975c388f9"
+      }
+    },
+    {
+      "id": "pre-rrnewton-hermit-pr-2935",
+      "registered_at": "7e45e6de7cd812e5466c389a13bb0bd193348e1a",
+      "coverage_status": "complete",
+      "valid_commits": [
+        "7e45e6de7cd812e5466c389a13bb0bd193348e1a"
+      ],
+      "definition": {
+        ".config/nextest.toml": "026dc6f11dad42b4d39ec5400b6980dcb76d5253",
+        ".github/workflows/ci-portable.yml": "11265de8a08a9cf3d5649d234eec266cfcca8eab",
+        "ci/run-nextest-counted.sh": "9ac219a3f3f50a52ed8065b9ef85909a99cb8050",
+        "scripts/lib/validate_history.rs": "be2017bd8ebdf4e5e0952e14a6f2cc89c43fd8ca",
+        "scripts/lib/validate_plan.rs": "3422ec33ef9f8eaa7b7a98b17a7cd65d284f19a2",
+        "scripts/lib/validate_receipt.rs": "465f6c7e1f027ba81daf09f5011f84ebdd08deb0",
+        "scripts/lib/validate_runtime.rs": "59e94680525a16fb3c8d00d9284374a2ab54b5c3",
+        "scripts/validate.rs": "a7f92488b18717aa4f588a1eb89cb262f1167b27"
       }
     }
   ]
