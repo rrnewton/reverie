@@ -68,6 +68,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -370,7 +371,9 @@ def resolve(args: argparse.Namespace) -> int:
                     f"issue=https://github.com/{args.repo}/issues/{where}" if where else ""
                 )
             else:
-                outcome, where = resolve_taskgraph(args)
+                outcome, where = with_retry(
+                    lambda: resolve_taskgraph(args), attempts=args.tg_attempts
+                )
                 destination = f"queue-row={where} database={args.tg_db}" if where else ""
         except SinkUnavailable as error:
             failures += 1
@@ -471,7 +474,10 @@ def escalate(args: argparse.Namespace, message: str) -> int:
                 outcome, where = publish_github(args, key, digest, body)
                 destination = f"issue=https://github.com/{args.repo}/issues/{where}"
             else:
-                outcome, where = publish_taskgraph(args, key, digest, body)
+                outcome, where = with_retry(
+                    lambda: publish_taskgraph(args, key, digest, body),
+                    attempts=args.tg_attempts,
+                )
                 destination = f"queue-row={where} database={args.tg_db}"
         except SinkUnavailable as error:
             failures += 1
@@ -566,6 +572,26 @@ def publish_github(
 # ---------------------------------------------------------------- taskgraph sink
 
 
+def with_retry(action, *, attempts: int, pause: float = 2.0):
+    """Retry only what waiting can fix.
+
+    The whole operation is retried rather than the single failing command,
+    because the sink is idempotent by construction: it looks the row up before
+    it writes, so a second attempt after a partial first one finds the row and
+    continues rather than filing a duplicate.
+    """
+    last: SinkUnavailable | None = None
+    for attempt in range(max(1, attempts)):
+        try:
+            return action()
+        except SinkUnavailable as error:
+            last = error
+            if not looks_transient(str(error)) or attempt == attempts - 1:
+                raise
+            time.sleep(pause)
+    raise last  # unreachable; kept so the type is never Optional
+
+
 def taskgraph_database(name: str) -> Path:
     """The exact database file this alarm belongs in.
 
@@ -597,6 +623,29 @@ def taskgraph_database(name: str) -> Path:
     return path
 
 
+def tg_detail(text: str) -> str:
+    """The readable part of a `tg` failure.
+
+    tg reports errors as a boxed multi-line chain whose ROOT CAUSE is at the
+    bottom, so a head-clamped copy stops at the framing and says "database ope"
+    where it should say what actually went wrong. Keep the tail.
+    """
+    collapsed = " ".join(re.sub(r"\x1b\[[0-9;]*m", "", text).split())
+    return collapsed if len(collapsed) <= 500 else "..." + collapsed[-500:]
+
+
+def looks_transient(message: str) -> bool:
+    """A busy shared database is a condition to wait out, not a failure to report.
+
+    hermit2 is written by every agent on this box at once, so `database is
+    locked` says "try again in a moment", and reporting it as an undelivered
+    alarm would be both wrong and, repeated hourly, the kind of false alarm that
+    gets a channel muted.
+    """
+    lowered = message.lower()
+    return "database is locked" in lowered or "database table is locked" in lowered
+
+
 def run_tg(
     args: list[str], *, tg: str, database: str, db_path: Path, timeout: int
 ) -> str:
@@ -618,7 +667,7 @@ def run_tg(
     except (OSError, subprocess.TimeoutExpired) as error:
         raise TaskGraphUnavailable(f"tg {' '.join(args[:2])}: {error}") from error
     if completed.returncode != 0:
-        detail = " ".join((completed.stderr or completed.stdout or "").split())[:400]
+        detail = tg_detail(completed.stderr or completed.stdout or "")
         raise TaskGraphUnavailable(
             f"tg {' '.join(args[:2])} exited {completed.returncode}: {detail}"
         )
@@ -761,7 +810,7 @@ def append_task_note(local_id: str, body: str, *, args: argparse.Namespace, db_p
     except (OSError, subprocess.TimeoutExpired) as error:
         raise TaskGraphUnavailable(f"tg-note-verified: {error}") from error
     if completed.returncode != 0:
-        detail = " ".join((completed.stderr or completed.stdout or "").split())[:400]
+        detail = tg_detail(completed.stderr or completed.stdout or "")
         raise TaskGraphUnavailable(f"tg-note-verified exited {completed.returncode}: {detail}")
 
 
@@ -840,7 +889,7 @@ def resolve_taskgraph(args: argparse.Namespace) -> tuple[str, str]:
     except (OSError, subprocess.TimeoutExpired) as error:
         raise TaskGraphUnavailable(f"close-task: {error}") from error
     if completed.returncode != 0:
-        detail = " ".join((completed.stderr or completed.stdout or "").split())[:400]
+        detail = tg_detail(completed.stderr or completed.stdout or "")
         raise TaskGraphUnavailable(f"close-task exited {completed.returncode}: {detail}")
     still_open = find_open_task(args.key, **common)
     if still_open is not None:
@@ -924,6 +973,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--tg-blocks",
         default=DEFAULT_TG_BLOCKS,
         help="the goal the filed row blocks (default: %(default)s)",
+    )
+    parser.add_argument(
+        "--tg-attempts",
+        type=int,
+        default=3,
+        help=(
+            "how many times to retry a BUSY shared database before reporting the "
+            "alarm undelivered; other failures are never retried (default: %(default)s)"
+        ),
     )
     parser.add_argument("--tg-impact", type=int, default=60)
     parser.add_argument("--tg-effort", type=int, default=1)

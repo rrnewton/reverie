@@ -272,6 +272,69 @@ def test_an_absent_database_refuses_instead_of_inheriting_one(bench, tmp_path: P
     assert "refusing to file into" in completed.stderr
 
 
+def test_a_busy_shared_database_is_waited_out_not_reported_as_a_failure(
+    bench, tmp_path: Path
+) -> None:
+    """hermit2 is written by every agent on this box at once. `database is
+    locked` means try again in a moment; reporting it as an undelivered alarm
+    would be wrong, and repeated hourly it is how a channel gets muted."""
+    run, _db, _rows, _notes, _records = bench
+    counter = tmp_path / "attempts"
+    flaky = tmp_path / "tg-flaky"
+    flaky.write_text(
+        "#!/bin/sh\n"
+        f'n=$(cat {counter} 2>/dev/null || echo 0); n=$((n+1)); echo $n > {counter}\n'
+        'if [ "$n" -le 2 ]; then echo "database is locked" >&2; exit 1; fi\n'
+        f'exec {TG} "$@"\n'
+    )
+    flaky.chmod(0o755)
+    completed = run(
+        "--key", "gate-failed", "--title", "A gate failed", "--tg", str(flaky),
+        "--tg-attempts", "4", message="ACTION: x",
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert "outcome=published" in completed.stdout
+    assert int(counter.read_text()) > 2, "the first attempts must really have failed"
+
+
+def test_a_failure_waiting_cannot_fix_is_not_retried(bench, tmp_path: Path) -> None:
+    run, _db, _rows, _notes, _records = bench
+    counter = tmp_path / "attempts"
+    broken = tmp_path / "tg-broken"
+    broken.write_text(
+        "#!/bin/sh\n"
+        f'n=$(cat {counter} 2>/dev/null || echo 0); echo $((n+1)) > {counter}\n'
+        'echo "tg exploded for a reason waiting will not fix" >&2\nexit 1\n'
+    )
+    broken.chmod(0o755)
+    completed = run(
+        "--key", "gate-failed", "--title", "A gate failed", "--tg", str(broken),
+        "--tg-attempts", "4", message="ACTION: x",
+    )
+    assert completed.returncode == 1
+    assert int(counter.read_text()) == 1, "a permanent failure must not be retried"
+
+
+def test_a_tg_failure_reports_its_root_cause_not_its_framing(bench, tmp_path: Path) -> None:
+    """tg reports errors as a boxed chain whose root cause is at the BOTTOM, so a
+    head-clamped copy stops at the framing and says "database ope" where it
+    should say what went wrong. That happened once and cost a diagnosis."""
+    run, _db, _rows, _notes, _records = bench
+    noisy = tmp_path / "tg-noisy"
+    noisy.write_text(
+        "#!/bin/sh\n"
+        "i=0; while [ $i -lt 60 ]; do echo \"| framing line $i padding padding padding\" >&2; i=$((i+1)); done\n"
+        "echo 'the actual root cause is here at the end' >&2\nexit 1\n"
+    )
+    noisy.chmod(0o755)
+    completed = run(
+        "--key", "gate-failed", "--title", "A gate failed", "--tg", str(noisy),
+        message="ACTION: x",
+    )
+    assert completed.returncode == 1
+    assert "the actual root cause is here at the end" in completed.stderr
+
+
 def test_an_unreachable_queue_is_never_reported_as_published(bench, tmp_path: Path) -> None:
     run, _db, _rows, _notes, records = bench
     broken = tmp_path / "tg-broken"
