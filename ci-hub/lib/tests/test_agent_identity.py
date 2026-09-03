@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 
 LIB = Path(__file__).resolve().parents[1]
@@ -22,8 +23,22 @@ def stat_record(pid: int, ppid: int) -> str:
     return f"{pid} (fixture process) S {ppid} 0 0 0 0\n"
 
 
+#: The boot id every fixture row in this file is recorded under, matching the
+#: ``boot_id`` written by :meth:`IdentityFixture.registry_row`. The fixtures model
+#: a registry describing THIS boot, which is what makes their live agents live and
+#: their conflicts real. Without pinning the resolver's idea of the current boot to
+#: the same value, every fixture row would read as a record from a dead boot and be
+#: passed over, and the guardrail tests below would pass for the wrong reason.
+FIXTURE_BOOT_ID = "boot-a"
+
+
 class IdentityFixture(unittest.TestCase):
     def setUp(self) -> None:
+        boot_patch = unittest.mock.patch.object(
+            agent_identity, "current_boot_id", lambda: FIXTURE_BOOT_ID
+        )
+        boot_patch.start()
+        self.addCleanup(boot_patch.stop)
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
         self.proc = self.root / "proc"
@@ -83,6 +98,7 @@ class IdentityFixture(unittest.TestCase):
         task: str = "task-a",
         status: str = "active",
         sidecar_agent: str | None = None,
+        sidecar_boot_id: str = FIXTURE_BOOT_ID,
     ) -> dict[str, object]:
         agents = []
         for owner in owners:
@@ -107,7 +123,10 @@ class IdentityFixture(unittest.TestCase):
         }
         if sidecar_agent is not None:
             sidecar_cgroup = cgroup or "/agent.slice/a.scope"
-            generation = "boot-a:50:1"
+            # The generation names the boot it was issued on, so it must move
+            # with sidecar_boot_id or the sidecar fails validation and carries no
+            # readable boot id at all.
+            generation = f"{sidecar_boot_id}:50:1"
             sidecar: dict[str, object] = {
                 "schema_version": 1,
                 "source": "orc-tmux-pane-supervisor-v1",
@@ -117,7 +136,7 @@ class IdentityFixture(unittest.TestCase):
                 "recorded_at": "2026-08-28T00:00:00Z",
                 "generation": generation,
                 "supervisor_pid": 50,
-                "boot_id": "boot-a",
+                "boot_id": sidecar_boot_id,
                 "start_ticks": 1,
                 "tmux_pane_id": pane,
                 "cgroup_path": sidecar_cgroup,
@@ -378,6 +397,93 @@ class ResolutionTests(IdentityFixture):
         )
         self.assertEqual("agent-a", pane.agent)
         self.assertEqual("AGREEMENT", result.state)
+
+    def test_dead_boot_pane_claim_does_not_shadow_a_live_pane(self) -> None:
+        """A pane id recorded on a boot that has ended names a different pane now.
+
+        tmux restarts pane numbering when its server restarts, so after a reboot
+        a low pane id is handed to an unrelated session while a week-old record
+        still claims it. Measured 2026-09-03 on devbig014: 11 pane ids were
+        claimed and 10 came from boot c377f443 while the machine ran b597126a.
+        Two lanes drew one of those numbers, resolved DISAGREEMENT, and could not
+        post a finished review; each investigated its own state and found nothing
+        wrong, because the cause belonged to a slot they had never touched.
+
+        The claiming slot here is `active`, not `released`, which is the whole
+        point: the earlier released-only fix explicitly left this case in scope.
+        """
+        document = json.loads(self.state.read_text())
+        document["slots"]["dead-boot-slot"] = self.registry_row(
+            "dead-boot-slot",
+            owners=("ghost-agent",),
+            pane="%7",
+            status="active",
+            cgroup="/agent.slice/ghost.scope",
+            sidecar_agent="ghost-agent",
+            sidecar_boot_id="boot-from-a-previous-life",
+        )
+        self.state.write_text(json.dumps(document))
+        self.standard_processes()
+        result = self.resolve()
+        pane = next(signal for signal in result.signals if signal.source == "pane-owner")
+        self.assertNotIn("ghost-agent", (pane.candidates or ()))
+        self.assertEqual(
+            "resolved", pane.state, "a dead boot's record still shadowed a live pane"
+        )
+        self.assertEqual("agent-a", pane.agent)
+        self.assertEqual("AGREEMENT", result.state)
+
+    def test_same_boot_pane_conflict_STILL_REFUSES(self) -> None:
+        """The other direction, and the one that must not be traded away.
+
+        Suppressing a dead boot's record must not suppress a live conflict. This
+        is the identical fixture to the test above with ONE field changed -- the
+        recorded boot id is this boot -- so it isolates the boot check itself
+        rather than re-testing that two owners disagree.
+        """
+        document = json.loads(self.state.read_text())
+        document["slots"]["live-conflict-slot"] = self.registry_row(
+            "live-conflict-slot",
+            owners=("ghost-agent",),
+            pane="%7",
+            status="active",
+            cgroup="/agent.slice/ghost.scope",
+            sidecar_agent="ghost-agent",
+            sidecar_boot_id=FIXTURE_BOOT_ID,
+        )
+        self.state.write_text(json.dumps(document))
+        self.standard_processes()
+        result = self.resolve()
+        pane = next(signal for signal in result.signals if signal.source == "pane-owner")
+        self.assertEqual(
+            "ambiguous", pane.state, "a live same-boot pane conflict stopped dissenting"
+        )
+        self.assertIn("ghost-agent", (pane.candidates or ()))
+        self.assertEqual("DISAGREEMENT", result.state)
+
+    def test_a_record_that_cannot_prove_its_boot_keeps_dissenting(self) -> None:
+        """Failing to prove a record is obsolete is not proving it is current.
+
+        A row with no validated owner sidecar carries no boot id, so the resolver
+        cannot show it came from a dead boot. It must keep matching and keep
+        dissenting rather than being passed over on an assumption.
+        """
+        document = json.loads(self.state.read_text())
+        document["slots"]["no-sidecar-slot"] = self.registry_row(
+            "no-sidecar-slot",
+            owners=("ghost-agent",),
+            pane="%7",
+            status="active",
+            cgroup="/agent.slice/ghost.scope",
+            sidecar_agent=None,
+        )
+        self.state.write_text(json.dumps(document))
+        self.standard_processes()
+        result = self.resolve()
+        pane = next(signal for signal in result.signals if signal.source == "pane-owner")
+        self.assertEqual("ambiguous", pane.state)
+        self.assertIn("ghost-agent", (pane.candidates or ()))
+        self.assertEqual("DISAGREEMENT", result.state)
 
     def test_live_slot_pane_disagreement_STILL_REFUSES(self) -> None:
         """The other direction, and the more important one.

@@ -603,6 +603,35 @@ def slot_owner_signal(
     return Signal("cwd-slot-owner", "unavailable", detail=detail + " has no registered owner"), tuple(sorted(tasks))
 
 
+def current_boot_id() -> str | None:
+    """This boot's id, or None when it cannot be read."""
+    try:
+        return Path("/proc/sys/kernel/random/boot_id").read_text().strip() or None
+    except OSError:
+        return None
+
+
+def _recorded_on_a_past_boot(
+    registry: Registry, slot: str, row: Mapping[str, Any]
+) -> bool:
+    """True only when the row PROVES it was recorded on a boot that has ended.
+
+    Every path that cannot prove it returns False, which leaves the row matching
+    and the signal dissenting. Failing to prove a record is obsolete is not
+    proving it is current.
+    """
+    sidecar = _validated_owner_sidecar(registry, slot, row)
+    if sidecar is None:
+        return False
+    recorded = sidecar.get("boot_id")
+    if not isinstance(recorded, str) or not recorded:
+        return False
+    current = current_boot_id()
+    if current is None:
+        return False
+    return recorded != current
+
+
 def _registry_owner_matches(
     registry: Registry,
     predicate: Any,
@@ -639,6 +668,31 @@ def _registry_owner_matches(
         # unmeasured here. Skipping only the state that provably owns nothing
         # keeps this fail-closed.
         if row.get("status") == "released":
+            continue
+        # ⚠️ A RUNTIME HANDLE FROM A DEAD BOOT NAMES SOMETHING ELSE NOW. Every
+        # predicate routed through here matches on a handle the kernel or tmux
+        # REISSUES after a restart: a tmux pane id, a cgroup path carrying a pid,
+        # a supervisor pid. Across a boot boundary such a match is not merely
+        # stale, it is meaningless -- the number now belongs to an unrelated
+        # process. The path-based `cwd-slot-owner` signal deliberately does NOT
+        # come through this helper, because a slot DIRECTORY does survive a
+        # reboot and its owner record is what protects an unread handoff.
+        #
+        # Measured 2026-09-03 on devbig014: 11 pane ids were claimed in the
+        # registry and 10 of them came from boot c377f443 while the machine was
+        # running b597126a. tmux restarts pane numbering with its server, so
+        # panes %1 and %3 were reissued to unrelated live sessions. A lane that
+        # drew one of those numbers acquired a phantom second owner, resolved
+        # DISAGREEMENT, and could not post a review; two lanes hit this and each
+        # investigated its own state and found nothing wrong. Whether a lane
+        # could publish was decided by which pane number tmux handed it.
+        #
+        # THIS SKIPS NO STATUS AND WEAKENS NO DISSENT. The one same-boot claim in
+        # that measurement, agent hermit-146 on pane %3 in slot 141, still
+        # matches and still refuses. Only a record whose own recorded boot id
+        # differs from this boot's is passed over, and a row that cannot prove
+        # that is kept -- see `_recorded_on_a_past_boot`.
+        if _recorded_on_a_past_boot(registry, slot, row):
             continue
         for entry in row.get("agents", []):
             if not isinstance(entry, dict) or not predicate(slot, row, entry):
