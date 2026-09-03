@@ -57,28 +57,37 @@ Separate hard gate: every runnable-demo change needs an adversarial green-demo
 attestation before merge. See `demos/ADVERSARIAL-REVIEW-POLICY.md`, the CI job
 `demo-review-gate`, and `.githooks/commit-msg` (checker: `scripts/check-demo-review.sh`).
 
-## Machine-bearing final commit line
+## Canonical commit-body disclosure
 
-Every commit in the parent and its product repositories ends with exactly:
+Every new commit in the parent and its product repositories puts the exact
+output of `ci-hub/bin/who-am-i --tag --role ROLE` on the first body line:
 
 ```
-[<role>, <model>] [<team-slug>, devbigNNN]
+[<team>, <agent>, <model>, devbigNNN, role=<role>]
 ```
 
-The machine is a separate final field, not an inference from author email,
-branch name, host alias, or a free-form team string. `scripts/setup-hooks.sh`
-derives this clone's token from the hostname and installs a composite
-`commit-msg` hook in the common Git directory for the parent and every
-initialized submodule. Product worktrees share those common directories. The
-dispatcher runs the machine check and then delegates to each repository's own
-tracked `.githooks/<hook>`, so installing attribution never disables a product
-guard.
+The machine and agent are separate derived fields, not inferences from author
+email, branch name, host alias, or a free-form team string.
+`scripts/setup-hooks.sh` derives this clone's machine token from the hostname
+and installs a composite `commit-msg` hook in the common Git directory for the
+parent and every initialized submodule. Product worktrees share those common
+directories. The dispatcher checks the machine, agent, and model family and
+then delegates to each repository's own tracked `.githooks/<hook>`, so
+installing attribution never disables a product guard.
+
+The earlier final-line form `[<role>, <model>] [<team>, devbigNNN]` remains an
+explicit compatibility path for stored history and noninteractive producers
+that have not migrated. If a five-field disclosure is present, it is
+authoritative: it must appear exactly once on the first body line, and a legacy
+footer cannot contradict its machine or role. Legacy and canonical team slugs may differ;
+historical writers used an agent-specific legacy team before the canonical
+producer standardized the default team.
 
 For example, the exact machine-attribution history query for devbig030 is:
 
 ```
 git log --all --extended-regexp \
-  --grep='^\[(impl agent|adversarial-reviewer agent|coordinator|Human), [^][]+\] \[[^][]+, devbig030\]$'
+  --grep='^\[[^,]+, [^,]+, [^,]+, devbig030, role=[^]]+\]$'
 ```
 
 `scripts/check_commit_attribution.py --commit HEAD` is the CI/lint form;

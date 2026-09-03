@@ -15,9 +15,14 @@ import unittest
 ROOT = Path(__file__).resolve().parent.parent
 CHECKER = ROOT / "scripts" / "check_commit_attribution.py"
 DISPATCHER = ROOT / ".githooks" / "dev-hermit-hook-dispatch"
+COMMIT_HOOK = ROOT / ".githooks" / "commit-msg"
 INSTALLER = ROOT / "scripts" / "setup-hooks.sh"
 TRAILER_030 = "[impl agent, gpt-5.6-sol] [hermit-902, devbig030]"
 TRAILER_014 = "[coordinator, claude-opus-5] [hermit-coord, devbig014]"
+DISCLOSURE_030 = "[hermit-902, fixture-agent, gpt-5.6-sol, devbig030, role=impl]"
+DISCLOSURE_014 = (
+    "[hermit-coord, fixture-agent, claude-opus-5, devbig014, role=coordinator]"
+)
 QUERY_030 = (
     r"^\[(impl agent|adversarial-reviewer agent|coordinator|Human), [^][]+\] "
     r"\[[^][]+, devbig030\]$"
@@ -31,8 +36,8 @@ def run(*args: str, cwd: Path | None = None, env: dict[str, str] | None = None):
     )
 
 
-def tagged(subject: str, trailer: str = TRAILER_030) -> str:
-    return f"{subject}\n\n{trailer}\n"
+def tagged(subject: str, attribution: str = DISCLOSURE_030) -> str:
+    return f"{subject}\n\n{attribution}\n"
 
 
 class MessageValidationTests(unittest.TestCase):
@@ -53,27 +58,116 @@ class MessageValidationTests(unittest.TestCase):
         self.assertIn("machines=devbig030", result.stdout)
 
     def test_positive_other_machine_is_valid_when_preserving_provenance(self) -> None:
-        result = self.check(tagged("change", TRAILER_014))
+        result = self.check(tagged("change", DISCLOSURE_014))
         self.assertEqual(0, result.returncode, result.stderr)
 
     def test_negative_wrong_writer_machine_is_refused(self) -> None:
-        result = self.check(tagged("change", TRAILER_014), "--expected-machine", "auto")
+        result = self.check(
+            tagged("change", DISCLOSURE_014), "--expected-machine", "auto"
+        )
         self.assertEqual(1, result.returncode)
         self.assertIn("claims machine devbig014", result.stderr)
 
     def test_negative_missing_machine_field_is_refused(self) -> None:
-        result = self.check("change\n\n[impl agent, model] [hermit-902]\n")
+        result = self.check("change\n\n[hermit-902, fixture-agent, model, role=impl]\n")
         self.assertEqual(1, result.returncode)
-        self.assertIn("final commit line must be", result.stderr)
+        self.assertIn("is malformed", result.stderr)
 
     def test_negative_machine_embedded_in_team_slug_is_refused(self) -> None:
-        result = self.check("change\n\n[impl agent, model] [hermit-902-devbig030]\n")
+        result = self.check(
+            "change\n\n[hermit-902-devbig030, fixture-agent, model, role=impl]\n"
+        )
         self.assertEqual(1, result.returncode)
 
-    def test_negative_attribution_not_final_is_refused(self) -> None:
-        result = self.check(tagged("change") + "Validation: pass\n")
+    def test_negative_canonical_attribution_not_first_in_body_is_refused(self) -> None:
+        result = self.check(
+            f"change\n\nPlain Language Summary\n\n{DISCLOSURE_030}\n\n"
+            f"{TRAILER_030}\n"
+        )
         self.assertEqual(1, result.returncode)
-        self.assertIn("Validation: pass", result.stderr)
+        self.assertIn("not the first commit-body line", result.stderr)
+
+    def test_negative_canonical_attribution_in_subject_is_refused(self) -> None:
+        result = self.check(f"{DISCLOSURE_030}\n\nbody\n")
+        self.assertEqual(1, result.returncode)
+        self.assertIn("not the first commit-body line", result.stderr)
+
+    def test_negative_unknown_role_is_refused(self) -> None:
+        result = self.check(
+            "change\n\n[hermit-902, fixture-agent, model, devbig030, role=owner]\n"
+        )
+        self.assertEqual(1, result.returncode)
+        self.assertIn("role must be one of", result.stderr)
+
+    def test_negative_wrong_writer_agent_is_refused(self) -> None:
+        result = self.check(tagged("change"), "--expected-agent", "different-agent")
+        self.assertEqual(1, result.returncode)
+        self.assertIn("fixture-agent", result.stderr)
+        self.assertIn("different-agent", result.stderr)
+
+    def test_positive_prose_after_first_body_disclosure_is_accepted(self) -> None:
+        result = self.check(
+            tagged("change") + "\nPlain Language Summary\n\nThe change.\n"
+        )
+        self.assertEqual(0, result.returncode, result.stderr)
+
+    def test_positive_legacy_final_line_remains_explicitly_accepted(self) -> None:
+        result = self.check(
+            f"change\n\nbody\n\n{TRAILER_030}\n", "--expected-machine", "auto"
+        )
+        self.assertEqual(0, result.returncode, result.stderr)
+
+    def test_positive_legacy_form_keeps_its_original_position_compatibility(
+        self,
+    ) -> None:
+        result = self.check(TRAILER_030, "--expected-machine", "auto")
+        self.assertEqual(0, result.returncode, result.stderr)
+
+    def test_positive_consistent_hybrid_is_accepted(self) -> None:
+        result = self.check(
+            f"change\n\n{DISCLOSURE_030}\n\nbody\n\n{TRAILER_030}\n",
+            "--expected-machine",
+            "auto",
+            "--expected-agent",
+            "fixture-agent",
+        )
+        self.assertEqual(0, result.returncode, result.stderr)
+
+    def test_positive_historical_hybrid_team_difference_is_accepted(self) -> None:
+        result = self.check(
+            f"change\n\n{DISCLOSURE_030}\n\nbody\n\n"
+            "[impl agent, gpt-5.6-sol] [hermit-902-dagrun, devbig030]\n"
+        )
+        self.assertEqual(0, result.returncode, result.stderr)
+
+    def test_negative_conflicting_hybrid_is_refused(self) -> None:
+        result = self.check(
+            f"change\n\n{DISCLOSURE_030}\n\nbody\n\n"
+            "[impl agent, gpt-5.6-sol] [hermit-902, devbig014]\n"
+        )
+        self.assertEqual(1, result.returncode)
+        self.assertIn("conflicts with the canonical", result.stderr)
+
+    def test_negative_exact_duplicate_canonical_disclosure_is_refused(self) -> None:
+        result = self.check(f"change\n\n{DISCLOSURE_030}\n\nbody\n\n{DISCLOSURE_030}\n")
+        self.assertEqual(1, result.returncode)
+        self.assertIn("must appear exactly once", result.stderr)
+
+    def test_negative_conflicting_later_canonical_disclosure_is_refused(self) -> None:
+        result = self.check(
+            f"change\n\n{DISCLOSURE_030}\n\nbody\n\n"
+            "[other-team, other-agent, unresolved, devbig014, role=reviewer]\n"
+        )
+        self.assertEqual(1, result.returncode)
+        self.assertIn("must appear exactly once", result.stderr)
+
+    def test_negative_malformed_later_canonical_candidate_is_refused(self) -> None:
+        result = self.check(
+            f"change\n\n{DISCLOSURE_030}\n\nbody\n\n"
+            "[other-team, other-agent, unresolved, role=reviewer]\n"
+        )
+        self.assertEqual(1, result.returncode)
+        self.assertIn("must appear exactly once", result.stderr)
 
     def test_positive_trailing_editor_comments_do_not_hide_the_final_line(self) -> None:
         result = self.check(tagged("change") + "\n# Changes to be committed:\n")
@@ -115,7 +209,9 @@ class RepositoryRangeTests(unittest.TestCase):
             f"{base}..HEAD",
         )
         self.assertEqual(1, result.returncode)
-        self.assertIn("bad", run("git", "log", "-1", "--format=%s", cwd=self.repo).stdout)
+        self.assertIn(
+            "bad", run("git", "log", "-1", "--format=%s", cwd=self.repo).stdout
+        )
 
     def test_range_does_not_retroactively_reject_a_historical_author(self) -> None:
         base = self.commit("base", TRAILER_014)
@@ -152,8 +248,15 @@ class HookAndInstallerTests(unittest.TestCase):
         run("git", "init", "-q", "-b", "main", cwd=repo)
         run("git", "config", "user.name", name, cwd=repo)
         run("git", "config", "user.email", email, cwd=repo)
-        link = repo / ".git" / "hooks" / "commit-msg"
-        link.symlink_to(DISPATCHER)
+        hooks = repo / ".githooks"
+        scripts = repo / "scripts"
+        hooks.mkdir()
+        scripts.mkdir()
+        shutil.copy2(COMMIT_HOOK, hooks / "commit-msg")
+        shutil.copy2(CHECKER, scripts / CHECKER.name)
+        (hooks / "commit-msg").chmod(0o755)
+        (scripts / CHECKER.name).chmod(0o755)
+        run("git", "config", "core.hooksPath", ".githooks", cwd=repo)
 
     def real_commit(self, repo: Path, *extra: str):
         path = repo / "tracked"
@@ -167,7 +270,10 @@ class HookAndInstallerTests(unittest.TestCase):
             "-m",
             tagged("identity bracket"),
             cwd=repo,
-            env={"HERMIT_COMMIT_MACHINE": "devbig030"},
+            env={
+                "HERMIT_COMMIT_MACHINE": "devbig030",
+                "DG_AGENT_NAME": "fixture-agent",
+            },
         )
 
     def test_real_commit_accepts_owner_approved_oss_email(self) -> None:
@@ -187,6 +293,29 @@ class HookAndInstallerTests(unittest.TestCase):
             self.assertEqual(0, result.returncode, result.stderr)
             author = run("git", "show", "-s", "--format=%an <%ae>", cwd=repo)
             self.assertEqual("Test <test@example.com>", author.stdout.strip())
+
+    def test_real_commit_refuses_a_retyped_canonical_agent(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            self.hooked_repo(repo, "test@example.com", "Test")
+            path = repo / "tracked"
+            path.write_text("content\n")
+            run("git", "add", "--", path.name, cwd=repo)
+            result = run(
+                "git",
+                "commit",
+                "-q",
+                "-m",
+                tagged("identity bracket"),
+                cwd=repo,
+                env={
+                    "HERMIT_COMMIT_MACHINE": "devbig030",
+                    "DG_AGENT_NAME": "actual-agent",
+                },
+            )
+            self.assertEqual(1, result.returncode)
+            self.assertIn("fixture-agent", result.stderr)
+            self.assertIn("actual-agent", result.stderr)
 
     def test_real_commit_refuses_owner_name_with_reserved_fixture_email(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -209,25 +338,25 @@ class HookAndInstallerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             self.hooked_repo(repo, "rrnewton@gmail.com")
-            result = self.real_commit(
-                repo, "--author=Ryan Newton <rrnewton@meta.com>"
-            )
+            result = self.real_commit(repo, "--author=Ryan Newton <rrnewton@meta.com>")
             self.assertEqual(1, result.returncode)
             self.assertIn("<rrnewton@meta.com>", result.stderr)
 
     def test_dispatcher_refuses_a_wrong_machine_before_repo_hooks(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
-            run("git", "init", "-q", cwd=repo)
-            link = repo / "commit-msg"
-            link.symlink_to(DISPATCHER)
+            self.hooked_repo(repo, "test@example.com", "Test")
+            hook = repo / ".githooks" / "commit-msg"
             message = repo / "message"
-            message.write_text(tagged("change", TRAILER_014))
+            message.write_text(tagged("change", DISCLOSURE_014))
             result = run(
-                str(link),
+                str(hook),
                 str(message),
                 cwd=repo,
-                env={"HERMIT_COMMIT_MACHINE": "devbig030"},
+                env={
+                    "HERMIT_COMMIT_MACHINE": "devbig030",
+                    "DG_AGENT_NAME": "fixture-agent",
+                },
             )
             self.assertEqual(1, result.returncode)
             self.assertIn("claims machine devbig014", result.stderr)
@@ -250,7 +379,12 @@ class HookAndInstallerTests(unittest.TestCase):
             child = root / "child"
             run("git", "init", "-q", "-b", "main", str(child), cwd=root)
             run(
-                "git", "config", "-f", ".gitmodules", "submodule.child.path", "child",
+                "git",
+                "config",
+                "-f",
+                ".gitmodules",
+                "submodule.child.path",
+                "child",
                 cwd=root,
             )
             for repo in (root, child):
@@ -287,7 +421,7 @@ import check_commit_attribution as cca  # noqa: E402
 
 
 class AgentIdentityDisjointness(unittest.TestCase):
-    """Both-direction tests for the identity the role/team line cannot carry.
+    """Both-direction tests for identity carried by legacy Agent trailers.
 
     Measured 2026-08-11 across 32 PRs and 252 main commits: 8 of 32 PRs carried
     more than one team slug, the model field held 10 spellings for at most 3
@@ -346,7 +480,9 @@ class AgentIdentityDisjointness(unittest.TestCase):
 
     def test_agent_trailer_matching_the_writer_is_accepted(self):
         message = f"subject\n\nAgent: codex-1\n{TRAILER_014}\n"
-        self.assertEqual("devbig014", cca.validate_message(message, "devbig014", "codex-1"))
+        self.assertEqual(
+            "devbig014", cca.validate_message(message, "devbig014", "codex-1")
+        )
 
     def test_detect_agent_reads_the_environment_not_the_message(self):
         previous = os.environ.get("DG_AGENT_NAME")
@@ -362,18 +498,20 @@ class AgentIdentityDisjointness(unittest.TestCase):
                 os.environ["DG_AGENT_NAME"] = previous
 
 
-
 class ModelFamilyIsDerivedNotTyped(unittest.TestCase):
     """The model field was the one identity field nothing derived.
 
-    ``machine`` comes from the hostname and ``Agent:`` from ``DG_AGENT_NAME``,
-    and both are refused when retyped.  ``model`` was any bracket-free text --
-    and it is the only machine-readable discriminator between the Claude-family
-    and Codex-family approvals ``post-facto-review`` requires.
+    ``machine`` comes from the hostname and the canonical agent field (or
+    legacy ``Agent:`` trailer) from ``DG_AGENT_NAME``; both are refused when
+    retyped.  ``model`` was any bracket-free text -- and it is the only
+    machine-readable discriminator between the Claude-family and Codex-family
+    approvals ``post-facto-review`` requires.
     """
 
     def check(self, model: str, *extra: str, env: dict[str, str] | None = None):
-        message = f"subject\n\n[impl agent, {model}] [hermit2, devbig014]\n"
+        message = (
+            f"subject\n\n[hermit2, fixture-agent, {model}, " "devbig014, role=impl]\n"
+        )
         return subprocess.run(
             (sys.executable, str(CHECKER), "--stdin", *extra),
             input=message,
@@ -435,7 +573,9 @@ class ModelFamilyIsDerivedNotTyped(unittest.TestCase):
     def test_a_model_naming_both_families_is_accepted(self) -> None:
         result = self.check("claude-via-gpt-bridge", "--expected-family", "claude")
         self.assertEqual(0, result.returncode, result.stderr)
-        self.assertIsNone(checker_module().declared_model_family("claude-via-gpt-bridge"))
+        self.assertIsNone(
+            checker_module().declared_model_family("claude-via-gpt-bridge")
+        )
 
     # ⚠️ WITHOUT THE FLAG NOTHING IS CHECKED, which is what keeps this file's
     # verdict independent of who runs it.
@@ -454,14 +594,29 @@ class ModelFamilyIsDerivedNotTyped(unittest.TestCase):
             (repo / "f").write_text("x")
             run("git", "add", "f", cwd=repo)
             run(
-                "git", "commit", "-q", "--no-verify", "-m",
+                "git",
+                "commit",
+                "-q",
+                "--no-verify",
+                "-m",
                 f"subject\n\n{TRAILER_030}",
                 cwd=repo,
             )
             result = subprocess.run(
-                (sys.executable, str(CHECKER), "--commit", "HEAD",
-                 "--repo", str(repo), "--expected-family", "claude"),
-                text=True, capture_output=True, check=False, cwd=ROOT,
+                (
+                    sys.executable,
+                    str(CHECKER),
+                    "--commit",
+                    "HEAD",
+                    "--repo",
+                    str(repo),
+                    "--expected-family",
+                    "claude",
+                ),
+                text=True,
+                capture_output=True,
+                check=False,
+                cwd=ROOT,
                 env=dict(os.environ, HERMIT_COMMIT_MACHINE="devbig030"),
             )
         self.assertEqual(0, result.returncode, result.stderr)
@@ -474,12 +629,19 @@ class ModelFamilyIsDerivedNotTyped(unittest.TestCase):
     # variable that switches an identity check off is a bypass wearing the shape
     # of a test hook.
     def test_an_empty_override_does_not_disable_the_check(self) -> None:
+        family = checker_module().detect_model_family()
+        self.assertIn(family, ("claude", "codex"))
+        wrong_model = "gpt-5.6-sol" if family == "claude" else "claude-opus-5"
+        claimed_family = "codex" if family == "claude" else "claude"
         result = self.check(
-            "gpt-5.6-sol", "--expected-family", "auto",
+            wrong_model,
+            "--expected-family",
+            "auto",
             env={"HERMIT_COMMIT_MODEL_FAMILY": ""},
         )
         self.assertEqual(1, result.returncode, result.stdout)
-        self.assertIn("codex family", result.stderr)
+        self.assertIn(f"{claimed_family} family", result.stderr)
+        self.assertIn(f"{family} client", result.stderr)
 
 
 def checker_module():

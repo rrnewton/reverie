@@ -1,15 +1,13 @@
 #!/usr/bin/env bash
-# Local commit-message gates. Machine attribution is universal; the demo review
+# Local commit-message gates. Canonical process attribution is universal; the demo review
 # check applies only when the staged patch touches demos/**. The composite hook
 # dispatcher sets HERMIT_MACHINE_ATTRIBUTION_CHECKED after checking, so a parent
 # commit routed through it is not checked twice.
 #
 # Restored 2026-08-25. 4acd425b "Remove parent Git serialization blockers" took
-# this block out as collateral: attribution serializes nothing, and the same
-# commit left `.githooks/hygiene-policy.md`'s "Machine-bearing final commit
-# line" section mandating the trailer. Policy stayed, enforcement went, and the
-# failure mode is silence -- no error, no red, a clean-looking history. It went
-# unnoticed for 10 days and 107 commits.
+# this block out as collateral: attribution serializes nothing. Policy stayed,
+# enforcement went, and the failure mode is silence -- no error, no red, a
+# clean-looking history. It went unnoticed for 10 days and 107 commits.
 set -uo pipefail
 root=$(git rev-parse --show-toplevel 2>/dev/null) || exit 0
 
@@ -20,7 +18,7 @@ if [ "${HERMIT_MACHINE_ATTRIBUTION_CHECKED:-0}" != 1 ]; then
     exit 1
   }
   python3 "$attribution" --message-file "$1" --expected-machine auto \
-    --expected-family auto || exit $?
+    --expected-agent auto --expected-family auto || exit $?
 fi
 
 checker="$root/scripts/check-demo-review.sh"

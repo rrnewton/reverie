@@ -1,19 +1,20 @@
 #!/usr/bin/env python3
-"""Validate the final, machine-bearing role/team line of commit messages.
+"""Validate the canonical, machine-bearing disclosure in commit messages.
 
-The canonical line is intentionally both human-readable and grep-able:
+New commits put the exact output of ``ci-hub/bin/who-am-i --tag --role ROLE``
+on the first line of the body::
 
-    [<role>, <model>] [<team-slug>, <machine>]
+    [<team>, <agent>, <model>, <machine>, role=<role>]
 
-where ``machine`` is an exact ``devbigNNN`` token.  A comma-delimited final
-field is required; merely mentioning ``devbig030`` somewhere in a free-form
-team name would recreate the ambiguous attribution this checker replaces.
+``machine`` remains an exact ``devbigNNN`` token.  The earlier final-line form
+``[<role>, <model>] [<team>, <machine>]`` remains an explicit compatibility
+path for stored history and producers that have not migrated.  It must not hide
+a duplicate, malformed, misplaced, or conflicting five-field disclosure.
 
-Agent identity is a separate, derived ``Agent:`` trailer.  It is NOT the team
-slug: teams are shared between agents and one agent may legitimately change
-team, so a team label cannot answer "were these two commits written by two
-different agents?".  See :func:`reviewers_are_disjoint`, the single verifier
-any author-disjointness consumer should call.
+The five-field form carries agent identity directly.  The legacy form may also
+carry the separately derived ``Agent:`` trailer.  See
+:func:`reviewers_are_disjoint`, the single verifier any author-disjointness
+consumer should call.
 """
 
 from __future__ import annotations
@@ -30,20 +31,39 @@ import sys
 
 MACHINE_RE = re.compile(r"^devbig[0-9]+$")
 HOST_MACHINE_RE = re.compile(r"(?:^|[^a-z0-9])(devbig[0-9]+)(?:[^a-z0-9]|$)")
+# This is the exact field order and delimiter spelling emitted by
+# ci-hub/lib/disclosure_tag.py.  The machine is deliberately narrower here than
+# disclosure_tag's generic safe-token check: commit provenance has always
+# required the host's stable devbigNNN token.
+CANONICAL_DISCLOSURE_RE = re.compile(
+    r"^\[(?P<team>[A-Za-z0-9_.-]+), "
+    r"(?P<agent>[A-Za-z0-9_.-]+), "
+    r"(?P<model>[^,\[\]\r\n]+), "
+    r"(?P<machine>devbig[0-9]+), "
+    r"role=(?P<role>[A-Za-z0-9_.-]+)\]$"
+)
+CANONICAL_ROLES = frozenset(
+    {"impl", "debugger", "reviewer", "relay", "coordinator", "human"}
+)
 TRAILER_RE = re.compile(
     r"^\[(?P<role>impl agent|adversarial-reviewer agent|coordinator|Human), "
     r"(?P<model>[^\[\]\r\n]+)\] "
     r"\[(?P<team>[A-Za-z0-9][A-Za-z0-9._/@+-]*), "
     r"(?P<machine>devbig[0-9]+)\]$"
 )
+LEGACY_ROLE_FOR_CANONICAL = {
+    "impl": "impl agent",
+    "reviewer": "adversarial-reviewer agent",
+    "coordinator": "coordinator",
+    "human": "Human",
+}
 IDENT_RE = re.compile(
     r"^(?P<name>[^<>\r\n]+) <(?P<email>[^<>\r\n]+)> [0-9]+ [+-][0-9]{4}$"
 )
-# The role/team line carries no agent identity: ``team`` is a TEAM, which is
-# neither unique per agent nor stable across one agent's session, and ``model``
-# is unvalidated free text.  Agent identity therefore rides in its own derived
-# trailer, sourced from the process environment the way ``machine`` is sourced
-# from the hostname -- never typed from context by the committing model.
+# The legacy role/team line carries no agent identity: ``team`` is a TEAM,
+# which is neither unique per agent nor stable across one agent's session.
+# Legacy agent identity therefore rides in its own derived trailer.  The
+# canonical five-field disclosure carries the same derived identity directly.
 AGENT_TRAILER_RE = re.compile(r"^Agent:[ \t]*(?P<agent>[A-Za-z0-9][A-Za-z0-9._/@+-]*)$")
 AGENT_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/@+-]*$")
 ALLOWED_OSS_AUTHOR_EMAILS = frozenset({"rrnewton@gmail.com"})
@@ -64,8 +84,7 @@ def detect_machine() -> str:
     if override is not None:
         if not MACHINE_RE.fullmatch(override):
             raise AttributionError(
-                "HERMIT_COMMIT_MACHINE must match devbigNNN, "
-                f"got {override!r}"
+                "HERMIT_COMMIT_MACHINE must match devbigNNN, " f"got {override!r}"
             )
         return override
 
@@ -80,8 +99,9 @@ def detect_machine() -> str:
 
 
 # ⚠️ THE MODEL FIELD IS THE ONE LANE INDEPENDENCE RESTS ON, AND IT WAS THE ONE
-# FIELD NOTHING DERIVED. `machine` comes from the hostname and `Agent:` comes
-# from DG_AGENT_NAME -- both refused when retyped. `model` was
+# FIELD NOTHING DERIVED. `machine` comes from the hostname and the canonical
+# agent field (or legacy `Agent:` trailer) comes from DG_AGENT_NAME -- both are
+# refused when retyped. `model` was
 # `(?P<model>[^\[\]\r\n]+)`, any text without brackets, and this module's own
 # docstring said so. `post-facto-review` requires one Claude-family AND one
 # Codex-family exact-head approval, so the gate closed the spoof on WHICH AGENT
@@ -249,39 +269,54 @@ def final_message_line(message: str) -> str:
     return lines[-1]
 
 
-def validate_message(
-    message: str,
-    expected_machine: str | None = None,
-    expected_agent: str | None = None,
-    expected_family: str | None = None,
-) -> str:
-    """Validate one message and return its exact machine token.
+def first_body_line(message: str) -> tuple[int, str]:
+    """Return the first stored body line and its zero-based line index.
 
-    ``expected_agent`` cross-checks the ``Agent:`` trailer against the writer's
-    own environment, exactly as ``expected_machine`` does for the hostname.  A
-    message with no ``Agent:`` trailer is accepted: adoption is incremental and
-    a missing id is an absence of a claim, not a false one.  A present trailer
-    that disagrees with the writer IS rejected -- that is the spoof this closes.
+    A blank line must separate the concise subject from the body.  Git editor
+    comments are not stored in a commit, so they do not manufacture a body
+    line while this function examines ``COMMIT_EDITMSG`` in the hook.
     """
 
-    if expected_agent is not None:
-        claimed = agent_from_message(message)
-        if claimed is not None and canonical_identity(claimed) != canonical_identity(
-            expected_agent
-        ):
-            raise AttributionError(
-                f"commit claims agent {claimed!r}, but this writer is "
-                f"{expected_agent!r}; the Agent trailer is derived from "
-                "DG_AGENT_NAME and must not be retyped"
-            )
-    line = final_message_line(message)
-    match = TRAILER_RE.fullmatch(line)
-    if match is None:
+    lines = message.splitlines()
+    if not lines or not lines[0].strip():
         raise AttributionError(
-            "final commit line must be "
-            "[<role>, <model>] [<team-slug>, devbigNNN]; "
-            f"got {line!r}"
+            "commit message has no subject; expected first body line "
+            "[<team>, <agent>, <model>, devbigNNN, role=<role>]"
         )
+    if len(lines) < 2 or lines[1].strip():
+        raise AttributionError(
+            "commit subject must be followed by a blank line before "
+            "[<team>, <agent>, <model>, devbigNNN, role=<role>]"
+        )
+    for index in range(2, len(lines)):
+        line = lines[index]
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        return index, line
+    raise AttributionError(
+        "commit message has no body disclosure; expected first body line "
+        "[<team>, <agent>, <model>, devbigNNN, role=<role>]"
+    )
+
+
+def _looks_like_canonical_disclosure(line: str) -> bool:
+    """Whether ``line`` is trying to carry the five-field disclosure."""
+
+    stripped = line.strip()
+    return (
+        stripped.startswith("[")
+        and stripped.endswith("]")
+        and (
+            "role=" in stripped or ("] [" not in stripped and stripped.count(",") >= 4)
+        )
+    )
+
+
+def _validate_machine_and_model(
+    match: re.Match[str],
+    expected_machine: str | None,
+    expected_family: str | None,
+) -> str:
     machine = match.group("machine")
     if expected_machine is not None and machine != expected_machine:
         raise AttributionError(
@@ -299,13 +334,138 @@ def validate_message(
     return machine
 
 
+def validate_message(
+    message: str,
+    expected_machine: str | None = None,
+    expected_agent: str | None = None,
+    expected_family: str | None = None,
+) -> str:
+    """Validate one message and return its exact machine token.
+
+    ``expected_agent`` cross-checks the five-field agent or legacy ``Agent:``
+    trailer against the writer's environment, exactly as ``expected_machine``
+    does for the hostname.  A legacy message with no ``Agent:`` trailer remains
+    accepted for incremental adoption; a five-field disclosure always makes an
+    agent claim and is checked when the process identity is available.
+    """
+
+    trailer_agent = agent_from_message(message)
+    if expected_agent is not None:
+        if trailer_agent is not None and canonical_identity(
+            trailer_agent
+        ) != canonical_identity(expected_agent):
+            raise AttributionError(
+                f"commit claims agent {trailer_agent!r}, but this writer is "
+                f"{expected_agent!r}; the Agent trailer is derived from "
+                "DG_AGENT_NAME and must not be retyped"
+            )
+
+    lines = message.splitlines()
+    body_error: AttributionError | None = None
+    try:
+        body_index, body_line = first_body_line(message)
+    except AttributionError as error:
+        body_error = error
+        body_index, body_line = -1, ""
+    canonical = CANONICAL_DISCLOSURE_RE.fullmatch(body_line)
+    candidate_indexes = [
+        index
+        for index, line in enumerate(lines)
+        if not line.lstrip().startswith("#") and _looks_like_canonical_disclosure(line)
+    ]
+    try:
+        final_line = final_message_line(message)
+    except AttributionError:
+        final_line = ""
+    legacy = TRAILER_RE.fullmatch(final_line)
+
+    if canonical is not None:
+        if candidate_indexes != [body_index]:
+            raise AttributionError(
+                "the canonical five-field disclosure must appear exactly once, "
+                "as the first commit-body line"
+            )
+        role = canonical.group("role")
+        if role not in CANONICAL_ROLES:
+            raise AttributionError(
+                "canonical disclosure role must be one of "
+                f"{','.join(sorted(CANONICAL_ROLES))}; got {role!r}"
+            )
+        model = canonical.group("model")
+        if model != model.strip():
+            raise AttributionError(
+                f"canonical disclosure model must not have edge whitespace: {model!r}"
+            )
+        claimed_agent = canonical.group("agent")
+        if expected_agent is not None and canonical_identity(
+            claimed_agent
+        ) != canonical_identity(expected_agent):
+            raise AttributionError(
+                f"commit claims agent {claimed_agent!r}, but this writer is "
+                f"{expected_agent!r}; the canonical agent field is derived from "
+                "process identity and must not be retyped"
+            )
+        if trailer_agent is not None and canonical_identity(
+            trailer_agent
+        ) != canonical_identity(claimed_agent):
+            raise AttributionError(
+                f"canonical agent {claimed_agent!r} conflicts with legacy Agent "
+                f"trailer {trailer_agent!r}"
+            )
+
+        machine = _validate_machine_and_model(
+            canonical, expected_machine, expected_family
+        )
+        if legacy is not None and final_line != body_line:
+            # Recent history contains this transitional hybrid.  Preserve it,
+            # but never let the legacy footer contradict the canonical facts.
+            legacy_machine = _validate_machine_and_model(
+                legacy, expected_machine, expected_family
+            )
+            expected_legacy_role = LEGACY_ROLE_FOR_CANONICAL.get(role)
+            if (
+                legacy_machine != machine
+                or legacy.group("role") != expected_legacy_role
+            ):
+                raise AttributionError(
+                    "legacy final-line attribution conflicts with the canonical "
+                    "five-field disclosure"
+                )
+        return machine
+
+    if candidate_indexes:
+        if body_index in candidate_indexes:
+            detail = "is malformed"
+        else:
+            detail = "is not the first commit-body line"
+        raise AttributionError(
+            f"canonical five-field disclosure {detail}; expected exact "
+            "[<team>, <agent>, <model>, devbigNNN, role=<role>]"
+        )
+
+    if legacy is not None:
+        return _validate_machine_and_model(legacy, expected_machine, expected_family)
+    if body_error is not None:
+        raise body_error
+    raise AttributionError(
+        "first commit-body line must be the canonical disclosure "
+        "[<team>, <agent>, <model>, devbigNNN, role=<role>] "
+        "(or the final line must be the explicit legacy form "
+        "[<role>, <model>] [<team>, devbigNNN]); "
+        f"got first body line {body_line!r}"
+    )
+
+
 def validate_author_identity(name: str, email: str) -> None:
     """Refuse fabricated owner identities while permitting reserved fixtures."""
 
     if email in ALLOWED_OSS_AUTHOR_EMAILS:
         return
     domain = email.rpartition("@")[2].casefold()
-    if domain in RESERVED_FIXTURE_DOMAINS and name.strip().casefold() not in OWNER_AUTHOR_NAMES:
+    if (
+        domain in RESERVED_FIXTURE_DOMAINS
+        and name.strip().casefold() not in OWNER_AUTHOR_NAMES
+    ):
         return
     allowed = ",".join(sorted(ALLOWED_OSS_AUTHOR_EMAILS))
     raise AttributionError(
@@ -357,7 +517,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument(
         "--expected-agent",
         help=(
-            "reject an Agent trailer that disagrees with this id; "
+            "reject a canonical agent field or legacy Agent trailer that "
+            "disagrees with this id; "
             "use 'auto' for DG_AGENT_NAME"
         ),
     )
@@ -377,7 +538,9 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     args = parser.parse_args(argv)
     if args.detect_machine or args.detect_agent:
         if any((args.message_file, args.stdin, args.commit, args.commit_range)):
-            parser.error("--detect-machine/--detect-agent do not accept a message source")
+            parser.error(
+                "--detect-machine/--detect-agent do not accept a message source"
+            )
     elif not any((args.message_file, args.stdin, args.commit, args.commit_range)):
         parser.error("one message source is required")
     return args
@@ -429,13 +592,15 @@ def main(argv: list[str] | None = None) -> int:
         else:
             commits = [
                 line
-                for line in git(args.repo, "rev-list", "--reverse", args.commit_range).splitlines()
+                for line in git(
+                    args.repo, "rev-list", "--reverse", args.commit_range
+                ).splitlines()
                 if line
             ]
             records = messages_from_commits(args.repo, commits)
             # Historical commits are immutable evidence, not proposed writes.  Do
             # not retroactively reject legitimate collaborators while checking
-            # their machine-bearing trailers; the commit-msg path below guards
+            # their machine-bearing disclosures; the commit-msg path below guards
             # every new commit at creation time.
             author_records = []
 
