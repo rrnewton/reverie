@@ -19,6 +19,19 @@ set -uo pipefail
 ROOT="${HOME:?HOME must be set}/work/dev-hermit"
 FIRED_STATE="$ROOT/.tick-hub/fired-state"
 INVLOG="$HOME/.local/state/hermit-health-tick-invocations.log"
+# ⚠️ THE REPORT MUST EXIST ON DISK BEFORE THE TICK FINISHES, because the tick
+# does not always finish. It is run under an outer bound by both drivers -- 180s
+# from the ORC script registration, 300s from TimeoutStartSec -- and both kill
+# it. Capturing health-tick's output in a command substitution meant the entire
+# report lived in a shell variable of a process that was about to be killed, so
+# every finding it had already made was destroyed. Measured 2026-09-03: two runs
+# entered the gate loop, one of them for 508 seconds, and neither left a single
+# finding line behind. health-tick writes each gate's verdict as it is decided,
+# so redirecting to a file here means an interrupted tick still leaves the
+# partial report, and the trap below still records it.
+LIVE_REPORT="$HOME/.local/state/hermit-health-tick-last-report.txt"
+LIVE_REPORT_STAMP=""
+LIVE_REPORT_RECORDED=0
 TOOL_CACHE="${DEV_HERMIT_TOOL_CACHE:-${HERMIT_HEALTH_TOOL_CACHE:-$HOME/.local/state/hermit-health-tool}}"
 CANONICAL_REPOSITORY="rrnewton/dev-hermit"
 CANONICAL_REMOTE_URL="https://github.com/rrnewton/dev-hermit.git"
@@ -26,6 +39,28 @@ GIT_TRANSPORT_ALLOWLIST="https"
 GITHUB_CREDENTIAL_HELPER="/usr/bin/gh"
 
 ts() { date -u +%Y-%m-%dT%H:%M:%SZ; }
+
+# Copy whatever the tick has reported so far into the durable invocation log.
+#
+# Called on the ordinary path AND from the exit trap, which is what makes an
+# interrupted tick self-describing: SIGTERM from either outer bound runs the
+# trap, so the findings already on disk are recorded with the same start stamp
+# as the rest of the invocation. `LIVE_REPORT_RECORDED` keeps the two callers
+# from writing the same finding twice; a tick killed with SIGKILL records
+# nothing here, but the report itself is still readable at LIVE_REPORT.
+record_live_report_findings() {
+    [ "$LIVE_REPORT_RECORDED" -eq 1 ] && return 0
+    [ -n "$LIVE_REPORT_STAMP" ] || return 0
+    [ -s "$LIVE_REPORT" ] || return 0
+    LIVE_REPORT_RECORDED=1
+    while IFS= read -r finding || [ -n "$finding" ]; do
+        case "$finding" in
+            ACTION:*|NOTE:*|ERROR:*)
+                printf '%s finding=%s\n' "$LIVE_REPORT_STAMP" "$finding" >>"$INVLOG"
+                ;;
+        esac
+    done <"$LIVE_REPORT"
+}
 
 tool_root_is_complete() {
     local root=$1 expected=$2
@@ -2199,6 +2234,28 @@ fi
 start="$(ts)"
 mt_before="$(stat -c %Y "$FIRED_STATE" 2>/dev/null || echo 0)"
 
+# Start this run's report empty and stamped, so the exit trap can tell this
+# tick's partial findings from the previous tick's complete ones.
+LIVE_REPORT_STAMP="$start"
+LIVE_REPORT_RECORDED=0
+: >"$LIVE_REPORT" 2>/dev/null || true
+
+# --emit-output means the caller reads the report from stdout, so the report has
+# to reach stdout as it is produced for the same reason it has to reach the file:
+# the caller is the one holding the outer bound, and it kills this process.
+#
+# A DUPLICATED DESCRIPTOR, not the path /dev/stdout. `tee` opens its path
+# arguments with O_TRUNC, so teeing to /dev/stdout would truncate whatever this
+# script's stdout is redirected to -- a service log, a caller's capture file --
+# the moment the first line is written. Duplicating descriptor 1 writes to the
+# same open file at its current offset and cannot truncate anything.
+if [[ $emit_output -eq 1 ]]; then
+    exec 9>&1
+else
+    exec 9>/dev/null
+fi
+
+
 if ! cd "$ROOT" 2>/dev/null; then
     printf '%s rc=126 event=cd-failed root=%s\n' "$start" "$ROOT" >>"$INVLOG"
     exit 126
@@ -2231,6 +2288,10 @@ if [ "$parent_sync_rc" -ne 0 ]; then
     # a quoted Git path contains characters meaningful to the finding grammar.
     parent_sync_summary="$(printf '%s' "$parent_sync_out" | tr '\n' ';' | sed 's/["\\]/ /g; s/  */ /g; s/;$//')"
     parent_sync_finding="ACTION: hard-warn-coordinator component=parent-checkout-sync state=blocked before=$parent_before after=$parent_after summary=\"$parent_sync_summary\" title=\"parent checkout fast-forward skipped: before=$parent_before after=$parent_after; $parent_sync_summary\""
+    # Into the report file, not only into a variable: this finding is known
+    # before the gates start, so a tick killed during the gates must not lose
+    # the one thing it already knew.
+    printf '%s\n' "$parent_sync_finding" | tee -a "$LIVE_REPORT" >&9
 fi
 
 # The shared parent is mutable operational state, never executable authority.
@@ -2239,14 +2300,16 @@ fi
 materialize_current_tool_root
 tool_root_rc=$?
 if [[ $tool_root_rc -ne 0 ]]; then
-    out="ERROR: health-tick could not materialize current immutable tooling"
+    printf '%s\n' "ERROR: health-tick could not materialize current immutable tooling" \
+        | tee -a "$LIVE_REPORT" >&9
+    out="$(cat "$LIVE_REPORT" 2>/dev/null)"
     rc=$tool_root_rc
 else
     tool_root=$TOOL_ROOT_RESULT
     tool_root_sha=$TOOL_PARENT_SHA
     printf '%s tool_root=%s tool_root_sha=%s state_root=%s\n' \
         "$start" "$tool_root" "$tool_root_sha" "$ROOT" >>"$INVLOG"
-    out="$(DEV_HERMIT_PARENT="$ROOT" \
+    DEV_HERMIT_PARENT="$ROOT" \
         DEV_HERMIT_TOOL_ROOT="$tool_root" \
         DEV_HERMIT_TOOL_AUTHORITY="$TOOL_AUTHORITY_PATH" \
         DEV_HERMIT_TOOL_CONTENT_SHA256="$TOOL_CONTENT_SHA256" \
@@ -2255,14 +2318,16 @@ else
         DEV_HERMIT_TOOL_AGENT_UTILS_SHA="$TOOL_AGENT_UTILS_SHA" \
         DEV_HERMIT_TOOL_BOOTSTRAP_SHA256="$TOOL_BOOTSTRAP_SHA256" \
         PYTHONDONTWRITEBYTECODE=1 \
-        with-proxy "$tool_root/ci-hub/bin/health-tick" --flush --no-header 2>&1)"
-    rc=$?
-fi
-if [ -n "$parent_sync_finding" ]; then
-    out="$(printf '%s\n%s' "$parent_sync_finding" "$out")"
-fi
-if [[ $emit_output -eq 1 ]]; then
-    printf '%s\n' "$out"
+        with-proxy "$tool_root/ci-hub/bin/health-tick" --flush --no-header 2>&1 \
+        | tee -a "$LIVE_REPORT" >&9
+    # ⚠️ NOT `$?`. This is a pipeline, and `$?` would be `tee`'s status, which is
+    # almost always 0 -- the exact trap that once reported a rejected push as
+    # rc=0. PIPESTATUS[0] is health-tick's own status.
+    rc=${PIPESTATUS[0]}
+    # NOT a command substitution. The report reached the file and the caller
+    # line by line as each gate decided, so the copy below is a convenience for
+    # the code that follows rather than the only place the findings exist.
+    out="$(cat "$LIVE_REPORT" 2>/dev/null)"
 fi
 
 mt_after="$(stat -c %Y "$FIRED_STATE" 2>/dev/null || echo 0)"
@@ -2283,11 +2348,15 @@ advanced=no
 # stderr, so the service journal saw none of it. The detector worked; its
 # findings were destroyed before any human or agent could read them.
 #
-# ACTION: and NOTE: are the two line kinds tick-hub emits as findings (see
-# agent-utils/rs/tick-hub/src/emit.rs). Each is recorded verbatim on its own
-# line, tagged with the same start timestamp so a reader can join it to the
-# invocation record. A tick that finds nothing writes nothing here, so this
-# stays a log of findings rather than a transcript.
+# ACTION:, NOTE: and ERROR: are the line kinds tick-hub emits as findings. Each
+# is recorded verbatim on its own line, tagged with the same start timestamp so a
+# reader can join it to the invocation record. A tick that finds nothing writes
+# nothing here, so this stays a log of findings rather than a transcript.
+#
+# THE SAME RECORDING RUNS FROM THE EXIT TRAP. On the ordinary path this call
+# does the work and marks it done; on an interrupted tick the trap does it
+# instead, so the findings a killed tick had already made are recorded rather
+# than lost with the process.
 #
 # NOT `%q`. The summary field is shell-quoted, which renders "SLOT CAP BREACH"
 # as "SLOT\ CAP\ BREACH" and defeats a plain grep for the phrase -- recorded but
@@ -2302,11 +2371,7 @@ advanced=no
 # classified state into "WORK-STALLED (unexpected)". That reader is also
 # hardened to select the last invocation record explicitly, but the ordering
 # here keeps the file correct for any reader that has not been.
-printf '%s' "$out" | while IFS= read -r finding || [ -n "$finding" ]; do
-    case "$finding" in
-        ACTION:*|NOTE:*) printf '%s finding=%s\n' "$start" "$finding" >>"$INVLOG" ;;
-    esac
-done
+record_live_report_findings
 
 # Append-only invocation record so the next investigation has a HISTORY, not a
 # single mtime. (fired-state itself is gitignored and keeps no per-run history.)
@@ -2317,7 +2382,10 @@ printf '%s rc=%s advanced=%s fired_state_mtime=%s summary=%q\n' \
 exit "$rc"
 }
 
-trap cleanup_tool_roots EXIT
+# The findings first, then the tool roots: a trap that cleans up before it
+# records would lose the report of a tick that was interrupted, which is the
+# only case this trap exists for.
+trap 'record_live_report_findings; cleanup_tool_roots' EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 if [[ ${1:-} == --run-current-tool ]]; then
