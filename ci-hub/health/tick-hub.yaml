@@ -189,6 +189,49 @@ reminders:
         component: wrkslots-audit
       title: "wrkslots found worktree lifecycle work: {summary}"
 
+  # REGISTRY/STORAGE DISAGREEMENT. `wrkslots doctor` is read-only, exits 0
+  # whatever it finds, and prints only when a human runs it. Measured 2026-09-03:
+  # 122 findings were sitting there unreported -- 47 row-without-directory, 73
+  # dead-owner, 2 unregistered-directory -- because nothing ever asked. A check
+  # that reports 122 findings on demand and nothing otherwise is
+  # indistinguishable from a healthy system.
+  #
+  # THIS IS NOT THE SAME QUESTION AS `wrkslots_audit` ABOVE. That gate covers a
+  # DELETABLE slot, an interrupted operation, or an unregistered directory; it
+  # does NOT cover row-without-directory, which is 47 of the 122. It is also too
+  # slow to answer here: measured 2026-09-03 on a 93-row registry it had not
+  # finished at 400s while its own reminder allows 120s, where `doctor` answered
+  # the same registry in 31s.
+  #
+  # DELTA, NOT STANDING STATE, for the same reason worktree_disk_residue is:
+  # with 122 findings already present a standing-state gate would fire hourly
+  # forever and be filtered out within a week. It pages only on a NEW finding,
+  # the first run adopts the current set as a baseline without paging, and the
+  # standing counts ride along in the captured fields so the backlog stays
+  # visible without ever muting the line.
+  #
+  # DETECT ONLY. It retires, archives and reclaims nothing. Reclamation is a
+  # separate authorised decision and must stay one: a slot holding an unread
+  # HANDOFF.md is protected by the FILE, not by its registry row, so anything
+  # acting at the registry level would not see that protection.
+  #
+  # The standing population is NOT a lifecycle leak -- the archive is complete at
+  # 145 of 145 and the stuck rows were removed cleanly outside wrkslots -- so
+  # this line reports visibility, not a defect.
+  - name: wrkslots_doctor_findings
+    cadence_secs: 3600
+    gate:
+      timeout_secs: 180
+      cmd: python3 ci-hub/health/wrkslots_doctor_findings.py --gate --root "$DEV_HERMIT_PARENT" --wrkslots "$DEV_HERMIT_PARENT/ci-hub/bin/wrkslots" --state "$DEV_HERMIT_PARENT/.tick-hub/wrkslots-doctor-state.json" --timeout 120
+      when: failure
+      capture: true
+    emit:
+      kind: action
+      skill: hard-warn-coordinator
+      fields:
+        component: wrkslots-doctor-findings
+      title: "wrkslots registry and storage newly disagree: {summary}"
+
   # VALIDATE CHECKOUT CLEANUP MUST OUTLIVE THE PROCESS THAT STARTED THE RUN.
   # The launcher's waiter removes its checkout on the normal completion path,
   # but agents end, panes disappear, and waiters are killed while their detached
