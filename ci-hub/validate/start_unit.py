@@ -18,9 +18,9 @@ import subprocess
 import tempfile
 import sys
 import time
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
@@ -36,6 +36,7 @@ HOST_TMP_ROOT = Path("/tmp").resolve()
 # Linux permits 107 pathname bytes in an AF_UNIX address. Reverie's longest
 # current temporary socket fixture appends 77 bytes including its separator.
 MAX_RUNTIME_ROOT_BYTES = 30
+VALIDATE_CLEANUP_BATCH_LIMIT = 8
 
 
 def parent_checkout_head(tool_root: Path = ROOT) -> str | None:
@@ -634,6 +635,29 @@ finally:
         os.close(fd)
 """
 Runner = Callable[..., subprocess.CompletedProcess[str]]
+
+
+@dataclass(frozen=True)
+class WrkslotsIdentity:
+    slot: str
+    generation: int
+
+
+@dataclass
+class CleanupRow:
+    path: Path
+    record: dict[str, Any]
+    unit: str | None = None
+    archived: list[str] = field(default_factory=list)
+
+
+@dataclass
+class CleanupGroup:
+    checkout: Path
+    managed: bool
+    rows: list[CleanupRow] = field(default_factory=list)
+    reasons: list[str] = field(default_factory=list)
+    identity: WrkslotsIdentity | None = None
 TERMINAL_STATES = frozenset(("failed", "inactive"))
 # THE THREE OUTCOMES A CALLER MUST TELL APART, and one of them used to be
 # invisible.
@@ -1468,6 +1492,46 @@ def git_mutation_lock(source: Path, *, run: Runner):
 # never opens a ledger shard itself.
 
 
+def parse_wrkslots_create_result(
+    output: str, *, root: Path, path: Path, slot: str, target: str
+) -> WrkslotsIdentity:
+    try:
+        value = json.loads(output)
+    except json.JSONDecodeError as error:
+        raise RuntimeError(f"wrkslots create emitted invalid JSON: {error}") from error
+    fields = {
+        "agent", "checkouts", "generation", "owner_process",
+        "retained_storage_inconsistencies", "slot", "slot_type",
+    }
+    if not isinstance(value, dict) or set(value) != fields:
+        raise RuntimeError("wrkslots create emitted an unexpected result shape")
+    generation = value.get("generation")
+    checkouts = value.get("checkouts")
+    checkout = checkouts[0] if isinstance(checkouts, list) and len(checkouts) == 1 else None
+    valid = (
+        value.get("slot") == slot
+        and value.get("slot_type") == "validate"
+        and value.get("agent") == f"validate-{slot}"
+        and value.get("owner_process") == "bound"
+        and isinstance(value.get("retained_storage_inconsistencies"), list)
+        and isinstance(generation, int)
+        and not isinstance(generation, bool)
+        and generation > 0
+        and isinstance(checkout, dict)
+        and set(checkout) == {"head", "name", "path"}
+        and checkout.get("name") == "checkout"
+        and checkout.get("path") == str(path.resolve())
+        and checkout.get("head") == target
+    )
+    try:
+        path.resolve().relative_to(root.resolve())
+    except ValueError:
+        valid = False
+    if not valid:
+        raise RuntimeError("wrkslots create result does not identify the created checkout")
+    return WrkslotsIdentity(slot, generation)
+
+
 def prepare_fresh_checkout(
     source: Path,
     target: str,
@@ -1477,7 +1541,7 @@ def prepare_fresh_checkout(
     repo: str,
     tool_root: Path = ROOT,
     independent_refs: bool = False,
-) -> Path:
+) -> tuple[Path, WrkslotsIdentity | None]:
     """Materialize `target` into a private temp worktree and PROVE it is usable.
 
     WHY THIS IS THE DEFAULT. `validate_checkout` below refuses a dirty tree, so
@@ -1550,6 +1614,7 @@ def prepare_fresh_checkout(
     # root's contract is that only the checkout is visible, and admitting a
     # second host path so git can reach outward weakens the isolation that
     # assert-no-network and the fixed image exist to provide.
+    identity: WrkslotsIdentity | None = None
     with git_mutation_lock(source, run=run):
         if independent_refs:
             fresh.mkdir(mode=0o700)
@@ -1651,6 +1716,8 @@ def prepare_fresh_checkout(
                     f"checkout=wrkslots/validate/{slot}/checkout",
                     "--start",
                     f"checkout={target}",
+                    "--format",
+                    "json",
                 ],
                 check=False,
             )
@@ -1662,6 +1729,9 @@ def prepare_fresh_checkout(
                     "follow the wrkslots error, then rerun validate-run"
                     + (f": {detail}" if detail else "")
                 )
+            identity = parse_wrkslots_create_result(
+                created.stdout, root=state_root, path=fresh, slot=slot, target=target
+            )
         head = checked_output(
             ["git", "-C", str(fresh), "rev-parse", "HEAD^{commit}"],
             run=run,
@@ -1721,7 +1791,7 @@ def prepare_fresh_checkout(
             "that would exit fast for an environmental reason and read like a pass "
             "(retained for inspection)"
         )
-    return fresh
+    return fresh, identity
 
 
 def remove_fresh_checkout(
@@ -1731,26 +1801,16 @@ def remove_fresh_checkout(
     run: Runner,
     tool_root: Path = ROOT,
     completed_record: Path | None = None,
+    wrkslots: WrkslotsIdentity | None = None,
 ) -> bool:
     """Remove the temp worktree AND deregister it; return observed absence."""
-    # A frozen checkout is a standalone shared clone: `.git` is its own
-    # directory and it has no registration in the source repository. Ordinary
-    # fresh checkouts are worktrees, whose `.git` is a file naming the shared
-    # common directory.
-    if (fresh / ".git").is_dir():
-        try:
-            shutil.rmtree(fresh)
-        except OSError as error:
-            print(
-                f"validate-run: could not remove isolated checkout {fresh}: {error}",
-                file=sys.stderr,
-            )
-        return not fresh.exists()
     try:
         validate_parent = fresh.parent
         worktrees = validate_parent.parent
         if validate_parent.name == "validate" and worktrees.name == "worktrees":
             state_root = worktrees.parent
+            if wrkslots is None or wrkslots.slot != fresh.name:
+                raise RuntimeError("managed validation checkout has no matching identity")
             command = [
                 str(tool_root / "ci-hub/bin/wrkslots"),
                 "--project-root",
@@ -1762,7 +1822,7 @@ def remove_fresh_checkout(
                 "--coordinator-pid",
                 str(os.getpid()),
                 "--expected-generation",
-                "1",
+                str(wrkslots.generation),
             ]
         elif validate_parent.name == "ignored":
             state_root = validate_parent.parent
@@ -1800,9 +1860,15 @@ def remove_fresh_checkout(
                 "--repository",
                 repository_relative.as_posix(),
             ]
+        elif (
+            (fresh / ".git").is_dir()
+            and validate_parent == frozen_checkout_parent(source.parent)
+        ):
+            shutil.rmtree(fresh)
+            return not fresh.exists()
         else:
             raise RuntimeError(
-                f"checkout is outside worktrees/validate and the historical ignored layout: {fresh}"
+                f"checkout is outside the managed or frozen validation roots: {fresh}"
             )
         removal = run(command, check=False)
     except RuntimeError as error:
@@ -1832,6 +1898,113 @@ def remove_fresh_checkout(
         )
         return False
     return True
+
+
+def remove_fresh_checkouts_batch(
+    root: Path,
+    checkouts: Sequence[tuple[Path, WrkslotsIdentity]],
+    *,
+    run: Runner,
+    tool_root: Path = ROOT,
+) -> dict[str, str | None]:
+    if not checkouts or len(checkouts) > VALIDATE_CLEANUP_BATCH_LIMIT:
+        raise ValueError("validation cleanup batch size must be between one and eight")
+    parent = validate_checkout_parent(root.resolve())
+    requested: dict[tuple[str, int], Path] = {}
+    for raw_path, identity in checkouts:
+        path = raw_path.resolve()
+        generation = identity.generation
+        if (
+            path.parent != parent
+            or not path.name.startswith("validate-fresh-")
+            or identity.slot != path.name
+            or not isinstance(generation, int)
+            or isinstance(generation, bool)
+            or generation <= 0
+            or any(slot == identity.slot for slot, _generation in requested)
+        ):
+            raise ValueError(f"invalid validation cleanup identity for {path}")
+        requested[(identity.slot, generation)] = path
+    command = [
+        str(tool_root / "ci-hub/bin/wrkslots"),
+        "--project-root", str(root.resolve()),
+        "--allow-existing-unregistered-worktrees",
+        "remove-validate-batch", "--coordinator-authorized",
+        "--coordinator-pid", str(os.getpid()),
+    ]
+    for slot, generation in requested:
+        command.extend(("--slot", f"{slot}={generation}"))
+    result = run([*command, "--format", "json"], check=False)
+    error = result.stderr.strip() or result.stdout.strip() or f"exit {result.returncode}"
+    if result.returncode != 0:
+        return {str(path): error for path in requested.values()}
+    try:
+        value = json.loads(result.stdout)
+        fields = {
+            "batch_limit", "process_censuses", "removed", "requested",
+            "retained", "same_uid_process_censuses", "schema",
+            "shared_process_censuses",
+        }
+        if not isinstance(value, dict) or set(value) != fields:
+            raise ValueError("unexpected fields")
+        counts = [
+            value.get(name)
+            for name in (
+                "process_censuses", "shared_process_censuses",
+                "same_uid_process_censuses",
+            )
+        ]
+        metadata = [value.get(name) for name in ("schema", "batch_limit", "requested")]
+        if (
+            any(type(item) is not int for item in metadata)
+            or metadata != [1, VALIDATE_CLEANUP_BATCH_LIMIT, len(requested)]
+            or any(not isinstance(item, int) or isinstance(item, bool) or item < 0 for item in counts)
+            or counts[0] != counts[1]
+            or counts[1] not in (0, 1)
+            or counts[2] > len(requested)
+        ):
+            raise ValueError("invalid batch metadata")
+        outcomes: dict[tuple[str, int], str | None] = {}
+        for removed, rows in ((True, value.get("removed")), (False, value.get("retained"))):
+            if not isinstance(rows, list):
+                raise ValueError("outcomes are not lists")
+            for row in rows:
+                expected = {"generation", "slot"} if removed else {"generation", "reason", "slot"}
+                if not isinstance(row, dict) or set(row) != expected:
+                    raise ValueError("malformed outcome row")
+                slot, generation = row.get("slot"), row.get("generation")
+                reason = None if removed else row.get("reason")
+                if (
+                    not isinstance(slot, str)
+                    or not isinstance(generation, int)
+                    or isinstance(generation, bool)
+                ):
+                    raise ValueError("malformed outcome identity")
+                key = (slot, generation)
+                if key not in requested or key in outcomes or (
+                    not removed and (not isinstance(reason, str) or not reason.strip())
+                ):
+                    raise ValueError("unexpected or duplicate outcome identity")
+                outcomes[key] = reason
+        removed_count = sum(reason is None for reason in outcomes.values())
+        if (
+            set(outcomes) != set(requested)
+            or (counts[1] == 0 and removed_count)
+            or counts[2] < removed_count
+            or (counts[2] > 0 and counts[1] != 1)
+        ):
+            raise ValueError("batch census and outcomes disagree")
+    except (json.JSONDecodeError, ValueError) as parse_error:
+        error = f"wrkslots returned an invalid batch report: {parse_error}"
+        return {str(path): error for path in requested.values()}
+    return {
+        str(path): (
+            "wrkslots reported success but the checkout still exists"
+            if outcomes[identity] is None and path.exists()
+            else outcomes[identity]
+        )
+        for identity, path in requested.items()
+    }
 
 
 def archive_orphaned_receipts(
@@ -1978,6 +2151,27 @@ def recorded_checkout_parents(root: Path, record: Mapping[str, Any]) -> list[Pat
     return parents
 
 
+def recorded_wrkslots_identity(
+    record: Mapping[str, Any], checkout: Path
+) -> WrkslotsIdentity | None:
+    has_slot = "wrkslots_slot" in record
+    has_generation = "wrkslots_generation" in record
+    if not has_slot and not has_generation:
+        return None
+    slot, generation = record.get("wrkslots_slot"), record.get("wrkslots_generation")
+    if has_slot != has_generation:
+        raise ValueError("wrkslots slot and generation must be recorded together")
+    if not isinstance(slot, str) or slot != checkout.name:
+        raise ValueError("recorded wrkslots slot does not match the checkout")
+    if (
+        not isinstance(generation, int)
+        or isinstance(generation, bool)
+        or generation <= 0
+    ):
+        raise ValueError("recorded wrkslots generation is not positive")
+    return WrkslotsIdentity(slot, generation)
+
+
 def cleanup_recorded_checkout(
     root: Path,
     record: Mapping[str, Any],
@@ -1987,6 +2181,7 @@ def cleanup_recorded_checkout(
     run: Runner,
     tool_root: Path = ROOT,
     check_processes: bool = True,
+    wrkslots: WrkslotsIdentity | None = None,
 ) -> tuple[bool, list[str], str | None]:
     """Archive local receipt evidence and remove one terminal temp checkout."""
     raw_checkout = record.get("checkout")
@@ -1994,21 +2189,25 @@ def cleanup_recorded_checkout(
         return False, [], "run record has no checkout path"
     checkout = Path(raw_checkout).resolve()
     parents = recorded_checkout_parents(root, record)
-    temporary = record.get("temporary_checkout")
-    if temporary is False:
-        return False, [], None
+    if "temporary_checkout" in record and record["temporary_checkout"] is not True:
+        return False, [], "temporary_checkout must be true when present"
     if checkout.parent not in parents or not checkout.name.startswith("validate-fresh-"):
-        if temporary is True:
+        if record.get("temporary_checkout") is True:
             expected = " or ".join(str(parent) for parent in parents)
             return False, [], f"temporary checkout is outside {expected}"
         return False, [], None
     if not checkout.exists():
         return False, [], None
+    if checkout.parent == validate_checkout_parent(root) and wrkslots is None:
+        wrkslots = recorded_wrkslots_identity(record, checkout)
+        if wrkslots is None:
+            return False, [], "run record has no exact wrkslots identity"
     # Linked and historical worktrees are removed through wrkslots below, which
     # owns the final liveness proof.  Only a frozen standalone clone reaches
     # direct rmtree and therefore needs this wrapper's fail-closed procfs scan.
     if (
         check_processes
+        and checkout.parent == frozen_checkout_parent(root)
         and (checkout / ".git").is_dir()
         and path_may_have_live_process(checkout)
     ):
@@ -2027,6 +2226,7 @@ def cleanup_recorded_checkout(
         run=run,
         tool_root=tool_root,
         completed_record=record_path,
+        wrkslots=wrkslots,
     )
     return (
         removed,
@@ -2099,14 +2299,12 @@ def recorded_cleanup_path_exists(root: Path, record: Mapping[str, Any]) -> bool:
     raw_checkout = record.get("checkout")
     if isinstance(raw_checkout, str):
         checkout = Path(raw_checkout).resolve()
-        temporary = record.get("temporary_checkout")
         accepted_unmarked_checkout = (
             checkout.parent in recorded_checkout_parents(root, record)
             and checkout.name.startswith("validate-fresh-")
         )
         if checkout.exists() and (
-            temporary is True
-            or (temporary is not False and accepted_unmarked_checkout)
+            record.get("temporary_checkout") is True or accepted_unmarked_checkout
         ):
             return True
 
@@ -2114,29 +2312,166 @@ def recorded_cleanup_path_exists(root: Path, record: Mapping[str, Any]) -> bool:
     return isinstance(raw_cargo_home, str) and Path(raw_cargo_home).resolve().exists()
 
 
-def read_cleanup_record(path: Path) -> dict[str, Any]:
-    """Read only the fields needed to remove disposable run material safely.
-
-    Run handles are intentionally strict for verdict readers, but that contract
-    has acquired required fields without changing its schema version.  Applying
-    today's verdict schema to every historical row prevented cleanup before it
-    could discover that most rows had no checkout left, and one old admitted row
-    without a run number made the complete sweep return could-not-determine.
-
-    Cleanup does not interpret a verdict.  It independently requires an exact
-    disposable parent and name, terminal service or durable completion evidence,
-    and no live process.  Reading the versioned JSON object here preserves those
-    checks without making disk cleanup depend on every historical reporting field.
-    """
+def read_cleanup_record_object(path: Path) -> dict[str, Any]:
     try:
         value = json.loads(path.read_text())
     except (OSError, json.JSONDecodeError) as error:
         raise RuntimeError(f"cannot read validation handle {path}: {error}") from error
     if not isinstance(value, dict):
         raise RuntimeError(f"validation handle {path} is not an object")
+    return value
+
+
+def read_cleanup_record(path: Path) -> dict[str, Any]:
+    """Read cleanup fields without applying the evolving verdict schema."""
+    value = read_cleanup_record_object(path)
     if value.get("schema_version") != run_registry.SCHEMA_VERSION:
         raise RuntimeError(f"validation handle {path} has an unsupported schema")
     return value
+
+
+def cleanup_checkout_reference(root: Path, record: Mapping[str, Any]) -> Path | None:
+    raw = record.get("checkout")
+    if not isinstance(raw, str):
+        return None
+    checkout = Path(raw).resolve()
+    return (
+        checkout
+        if checkout.exists()
+        and checkout.name.startswith("validate-fresh-")
+        and checkout.parent in recorded_checkout_parents(root, record)
+        else None
+    )
+
+
+def discover_cleanup_groups(
+    root: Path, runs: Path
+) -> tuple[
+    dict[str, CleanupGroup], list[CleanupRow], list[CleanupRow], list[dict[str, str]]
+]:
+    groups: dict[str, CleanupGroup] = {}
+    singles: list[CleanupRow] = []
+    rows: list[CleanupRow] = []
+    retained: list[dict[str, str]] = []
+    unattributable = False
+    for path in sorted(runs.glob("*.json")):
+        try:
+            raw = read_cleanup_record_object(path)
+        except RuntimeError as error:
+            retained.append({"checkout": str(path), "reason": str(error)})
+            unattributable = True
+            continue
+        checkout = cleanup_checkout_reference(root, raw)
+        if raw.get("schema_version") != run_registry.SCHEMA_VERSION:
+            error = RuntimeError(f"validation handle {path} has an unsupported schema")
+            retained.append({"checkout": str(path), "reason": str(error)})
+            if checkout is not None:
+                managed = checkout.parent == validate_checkout_parent(root)
+                groups.setdefault(str(checkout), CleanupGroup(checkout, managed)).reasons.append(str(error))
+            continue
+        record = raw
+        row = CleanupRow(path, record)
+        if recorded_cleanup_path_exists(root, record):
+            rows.append(row)
+        if checkout is not None:
+            managed = checkout.parent == validate_checkout_parent(root)
+            groups.setdefault(str(checkout), CleanupGroup(checkout, managed)).rows.append(row)
+        elif row in rows:
+            singles.append(row)
+    if unattributable:
+        reason = "an unreadable validation handle prevents proving unique checkout ownership"
+        for group in groups.values():
+            group.reasons.append(reason)
+        for row in singles:
+            retained.append({"checkout": str(row.record.get("checkout", "")), "reason": reason})
+        singles.clear()
+        rows.clear()
+    return groups, singles, rows, retained
+
+
+def terminal_cleanup_unit(
+    path: Path, record: Mapping[str, Any], *, run: Runner
+) -> tuple[str | None, str | None]:
+    try:
+        unit = sanitize_unit(str(record.get("unit", path.stem)))
+        properties = service_properties(unit, run=run)
+    except (OSError, RuntimeError, ValueError) as error:
+        return None, str(error)
+    if properties is None and not service_result.is_evidenced_terminal(record):
+        return None, "unit state unavailable and run record is not terminal"
+    if properties is not None and properties.get("ActiveState") not in TERMINAL_STATES:
+        return None, "unit-running"
+    return unit, None
+
+
+def preflight_cleanup_group(group: CleanupGroup, *, run: Runner) -> list[str]:
+    found: list[str] = []
+    identities: set[WrkslotsIdentity] = set()
+    for row in group.rows:
+        row.unit, reason = terminal_cleanup_unit(row.path, row.record, run=run)
+        if reason is not None:
+            found.append(reason)
+        if "temporary_checkout" in row.record and row.record["temporary_checkout"] is not True:
+            found.append("temporary_checkout must be true when present")
+        if group.managed:
+            try:
+                identity = recorded_wrkslots_identity(row.record, group.checkout)
+            except ValueError as error:
+                found.append(str(error))
+            else:
+                if identity is None:
+                    found.append("run record has no exact wrkslots identity")
+                else:
+                    identities.add(identity)
+    if group.managed:
+        if len(identities) > 1:
+            found.append("run records disagree about the wrkslots generation")
+        elif len(identities) == 1 and not found and group.rows:
+            group.identity = next(iter(identities))
+    group.reasons.extend(found)
+    return found
+
+
+def select_cleanup_groups(
+    root: Path, groups: Mapping[str, CleanupGroup]
+) -> tuple[list[CleanupGroup], list[CleanupGroup]]:
+    keys = sorted(groups)
+    if not keys:
+        return [], []
+    cursor = root / "ignored" / "validate" / "checkout-cleanup-cursor.json"
+    cursor.parent.mkdir(parents=True, exist_ok=True)
+    with run_registry.exclusive_record(cursor, blocking=False):
+        after = ""
+        if cursor.is_symlink():
+            raise RuntimeError(f"validation cleanup cursor is a symlink: {cursor}")
+        if cursor.exists():
+            try:
+                value = json.loads(cursor.read_text())
+            except (OSError, json.JSONDecodeError) as error:
+                raise RuntimeError(f"cannot read validation cleanup cursor: {error}") from error
+            if not isinstance(value, dict) or set(value) != {"after", "schema"} or type(value.get("schema")) is not int or value["schema"] != 1 or not isinstance(value.get("after"), str) or not value["after"]:
+                raise RuntimeError("validation cleanup cursor has an invalid shape")
+            after = value["after"]
+        split = next((index for index, key in enumerate(keys) if key > after), 0)
+        ordered = keys[split:] + keys[:split]
+        chosen = ordered[:VALIDATE_CLEANUP_BATCH_LIMIT]
+        descriptor, temporary = tempfile.mkstemp(prefix=f".{cursor.name}.", dir=cursor.parent)
+        try:
+            with os.fdopen(descriptor, "w") as stream:
+                json.dump({"after": chosen[-1], "schema": 1}, stream, sort_keys=True)
+                stream.write("\n")
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, cursor)
+            directory = os.open(cursor.parent, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
+        finally:
+            with suppress(FileNotFoundError):
+                os.unlink(temporary)
+    return [groups[key] for key in chosen], [groups[key] for key in ordered[len(chosen):]]
 
 
 def sweep_completed_checkouts(
@@ -2147,100 +2482,146 @@ def sweep_completed_checkouts(
     removed: list[str] = []
     removed_cargo_homes: list[str] = []
     retained: list[dict[str, str]] = []
+    deferred: list[dict[str, str]] = []
     bookkeeping_errors: list[dict[str, str]] = []
     if not runs.is_dir():
         return {
             "removed": removed,
             "removed_cargo_homes": removed_cargo_homes,
             "retained": retained,
+            "deferred": deferred,
             "bookkeeping_errors": bookkeeping_errors,
         }
-    for path in sorted(runs.glob("*.json")):
-        try:
-            record = read_cleanup_record(path)
-            # The registry also contains bench handles and historical validation
-            # handles whose disposable paths are already gone.  Querying systemd
-            # for every one made the sweep scale with all retained history and
-            # made irrelevant bench unit names permanent failures.  Cleanup is
-            # needed only while a recorded disposable path still exists.
-            if not recorded_cleanup_path_exists(root, record):
-                continue
-            unit = sanitize_unit(str(record.get("unit", path.stem)))
-            properties = service_properties(unit, run=run)
-        except (OSError, RuntimeError, ValueError) as error:
-            retained.append({"checkout": str(path), "reason": str(error)})
-            continue
-        if properties is None:
-            if not service_result.is_evidenced_terminal(record):
-                retained.append(
-                    {
-                        "checkout": str(record.get("checkout", "")),
-                        "reason": "unit state unavailable and run record is not terminal",
-                    }
-                )
-                continue
-        elif properties.get("ActiveState") not in TERMINAL_STATES:
-            retained.append(
-                {"checkout": str(record.get("checkout", "")), "reason": "unit-running"}
-            )
+
+    groups, singles, _rows, discovery_errors = discover_cleanup_groups(root, runs)
+    retained.extend(discovery_errors)
+
+    for row in singles:
+        row.unit, reason = terminal_cleanup_unit(row.path, row.record, run=run)
+        if reason is not None or row.unit is None:
+            retained.append({"checkout": str(row.record.get("checkout", "")), "reason": reason or "unit state unavailable"})
             continue
         fields: dict[str, Any] = {}
         try:
             cleaned, archived, reason = cleanup_recorded_checkout(
-                root,
-                record,
-                record_path=path,
-                unit=unit,
-                run=run,
-                tool_root=tool_root,
-                check_processes=True,
+                root, row.record, record_path=row.path, unit=row.unit,
+                run=run, tool_root=tool_root, check_processes=True,
             )
         except (OSError, RuntimeError, ValueError) as error:
-            retained.append(
-                {"checkout": str(record.get("checkout", "")), "reason": str(error)}
-            )
+            retained.append({"checkout": str(row.record.get("checkout", "")), "reason": str(error)})
         else:
             if cleaned:
-                removed.append(str(record.get("checkout")))
-                fields.update(
-                    checkout_removed_at=datetime.now(timezone.utc).isoformat(),
-                    archived_orphaned_receipts=archived,
-                )
+                removed.append(str(row.record.get("checkout")))
+                fields.update(checkout_removed_at=datetime.now(timezone.utc).isoformat(), archived_orphaned_receipts=archived)
             if reason is not None:
-                retained.append(
-                    {"checkout": str(record.get("checkout", "")), "reason": reason}
-                )
-        try:
-            cargo_cleaned, cargo_reason = cleanup_recorded_cargo_home(
-                root,
-                record,
-                record_path=path,
-                run=run,
-                tool_root=tool_root,
-            )
-        except (OSError, RuntimeError, ValueError) as error:
-            retained.append(
-                {"checkout": str(record.get("cargo_home", "")), "reason": str(error)}
-            )
-        else:
-            if cargo_cleaned:
-                removed_cargo_homes.append(str(record.get("cargo_home")))
-                fields["cargo_home_removed_at"] = datetime.now(timezone.utc).isoformat()
-            if cargo_reason is not None:
-                retained.append(
-                    {"checkout": str(record.get("cargo_home", "")), "reason": cargo_reason}
-                )
+                retained.append({"checkout": str(row.record.get("checkout", "")), "reason": reason})
         if fields:
             try:
-                run_registry.update_record(path, blocking=False, **fields)
+                run_registry.update_record(row.path, blocking=False, **fields)
             except (OSError, RuntimeError, ValueError) as error:
-                bookkeeping_errors.append(
-                    {"record": str(path), "reason": str(error)}
+                bookkeeping_errors.append({"record": str(row.path), "reason": str(error)})
+
+    managed = {key: group for key, group in groups.items() if group.managed}
+    try:
+        selected, later = select_cleanup_groups(root, managed)
+    except (OSError, RuntimeError, ValueError) as error:
+        selected, later = [], list(managed.values())
+        bookkeeping_errors.append({"record": str(root / "ignored/validate/checkout-cleanup-cursor.json"), "reason": str(error)})
+    deferred.extend(
+        {"checkout": str(group.checkout), "reason": "deferred by the bounded validation cleanup batch"}
+        for group in later
+    )
+    selected.extend(group for group in groups.values() if not group.managed)
+
+    prepared: list[CleanupGroup] = []
+    for group in selected:
+        if group.reasons:
+            continue
+        for reason in preflight_cleanup_group(group, run=run):
+            retained.append({"checkout": str(group.checkout), "reason": reason})
+        if not group.managed and group.checkout.parent == frozen_checkout_parent(root) and path_may_have_live_process(group.checkout):
+            group.reasons.append("a live process may still use the checkout")
+            retained.append({"checkout": str(group.checkout), "reason": group.reasons[-1]})
+        if group.reasons:
+            continue
+        for row in group.rows:
+            try:
+                row.archived = archive_orphaned_receipts(
+                    root, group.checkout, orphaned_receipt_locations(group.checkout, run=run), unit=row.unit or row.path.stem
                 )
+            except (OSError, RuntimeError, ValueError) as error:
+                group.reasons.append(str(error))
+                retained.append({"checkout": str(group.checkout), "reason": str(error)})
+        if not group.reasons:
+            prepared.append(group)
+
+    for group in [item for item in prepared if not item.managed]:
+        row = group.rows[0]
+        source = Path(str(row.record.get("source_checkout", root / canonical_repo(str(row.record.get("repo", "rrnewton/hermit"))).rsplit("/", 1)[-1])))
+        if remove_fresh_checkout(source, group.checkout, run=run, tool_root=tool_root, completed_record=row.path):
+            removed.append(str(group.checkout))
+        else:
+            retained.append({"checkout": str(group.checkout), "reason": "checkout still exists after the removal attempt"})
+
+    batch_groups = [group for group in prepared if group.managed and group.identity is not None]
+    if batch_groups:
+        outcomes = remove_fresh_checkouts_batch(
+            root,
+            [(group.checkout, group.identity) for group in batch_groups],
+            run=run,
+            tool_root=tool_root,
+        )
+        for group in batch_groups:
+            reason = outcomes.get(str(group.checkout))
+            if reason is not None:
+                retained.append({"checkout": str(group.checkout), "reason": reason})
+            else:
+                removed.append(str(group.checkout))
+
+    for row in singles + [row for group in selected for row in group.rows]:
+        if row.unit is None:
+            continue
+        try:
+            cleaned, reason = cleanup_recorded_cargo_home(
+                root, row.record, record_path=row.path, run=run, tool_root=tool_root
+            )
+        except (OSError, RuntimeError, ValueError) as error:
+            retained.append({"checkout": str(row.record.get("cargo_home", "")), "reason": str(error)})
+            continue
+        if reason is not None:
+            retained.append({"checkout": str(row.record.get("cargo_home", "")), "reason": reason})
+        if not cleaned:
+            continue
+        removed_cargo_homes.append(str(row.record.get("cargo_home")))
+        try:
+            run_registry.update_record(
+                row.path,
+                blocking=False,
+                cargo_home_removed_at=datetime.now(timezone.utc).isoformat(),
+            )
+        except (OSError, RuntimeError, ValueError) as error:
+            bookkeeping_errors.append({"record": str(row.path), "reason": str(error)})
+
+    removed_set = set(removed)
+    for group in prepared:
+        if str(group.checkout) not in removed_set:
+            continue
+        removed_at = datetime.now(timezone.utc).isoformat()
+        for row in group.rows:
+            try:
+                run_registry.update_record(
+                    row.path,
+                    blocking=False,
+                    checkout_removed_at=removed_at,
+                    archived_orphaned_receipts=row.archived,
+                )
+            except (OSError, RuntimeError, ValueError) as error:
+                bookkeeping_errors.append({"record": str(row.path), "reason": str(error)})
     return {
         "removed": removed,
         "removed_cargo_homes": removed_cargo_homes,
         "retained": retained,
+        "deferred": deferred,
         "bookkeeping_errors": bookkeeping_errors,
     }
 
@@ -3139,12 +3520,14 @@ def emit_report(report: Mapping[str, Any], *, json_output: bool) -> None:
         removed = report.get("removed", [])
         removed_cargo_homes = report.get("removed_cargo_homes", [])
         retained = report.get("retained", [])
+        deferred = report.get("deferred", [])
         bookkeeping_errors = report.get("bookkeeping_errors", [])
         print(
             "validate-run: SWEEP-COMPLETED "
             f"removed={len(removed)} "
             f"removed-cargo-homes={len(removed_cargo_homes)} "
             f"retained={len(retained)} "
+            f"deferred={len(deferred)} "
             f"bookkeeping-errors={len(bookkeeping_errors)}",
             flush=True,
         )
@@ -4039,6 +4422,7 @@ def main(
         )
 
     fresh_checkout: Path | None = None
+    fresh_wrkslots: WrkslotsIdentity | None = None
     source_checkout: Path | None = None
     source_branch: str | None = None
     private_cargo_home: Path | None = None
@@ -4047,6 +4431,18 @@ def main(
     frozen_result: Path | None = None
     service_tool_prefix: list[str] | None = None
     service_acceptance = ServiceAcceptance.PRE_ACCEPT
+
+    def remove_current_fresh_checkout() -> bool:
+        if fresh_checkout is None or source_checkout is None:
+            return True
+        return remove_fresh_checkout(
+            source_checkout,
+            fresh_checkout,
+            run=run,
+            tool_root=tool_root,
+            wrkslots=fresh_wrkslots,
+        )
+
     try:
         if FD_TOOL_ROOT_RE.fullmatch(str(tool_root)) is not None:
             tool_authority = read_immutable_tool_authority(
@@ -4087,7 +4483,7 @@ def main(
                 if args.frozen_validate
                 else validate_checkout_parent(state_root)
             )
-            fresh_checkout = prepare_fresh_checkout(
+            fresh_checkout, fresh_wrkslots = prepare_fresh_checkout(
                 source_checkout,
                 args.target,
                 run=run,
@@ -4200,6 +4596,14 @@ def main(
                     "source_checkout": str(source_checkout),
                     **({"branch": source_branch} if source_branch is not None else {}),
                     "temporary_checkout": fresh_checkout is not None,
+                    **(
+                        {
+                            "wrkslots_slot": fresh_wrkslots.slot,
+                            "wrkslots_generation": fresh_wrkslots.generation,
+                        }
+                        if fresh_wrkslots is not None
+                        else {}
+                    ),
                     "cargo_home": str(private_cargo_home),
                     "log": str(log),
                     "agent": args.agent,
@@ -4317,10 +4721,7 @@ def main(
             )
         # Nothing was admitted, so the temp checkout holds no evidence and is
         # removed. Failures AFTER launch are handled below and RETAIN it.
-        if fresh_checkout is not None and source_checkout is not None:
-            remove_fresh_checkout(
-                source_checkout, fresh_checkout, run=run, tool_root=tool_root
-            )
+        remove_current_fresh_checkout()
         remove_private_cargo_home(private_cargo_home, run=run)
         remove_runtime_root(runtime_root, run=run)
         return refuse(
@@ -4370,10 +4771,7 @@ def main(
         if not args.json:
             print(f"PANE-PLAN workspace={pane_owner.WORKSPACE_LABEL} role=observer-only")
             print(f"COMMAND {shlex.join(command)}")
-        if fresh_checkout is not None and source_checkout is not None:
-            remove_fresh_checkout(
-                source_checkout, fresh_checkout, run=run, tool_root=tool_root
-            )
+        remove_current_fresh_checkout()
         remove_private_cargo_home(private_cargo_home, run=run)
         remove_runtime_root(runtime_root, run=run)
         return 0
@@ -4433,17 +4831,11 @@ def main(
                     "to write one.",
                     file=sys.stderr,
                 )
-                if fresh_checkout is not None and source_checkout is not None:
-                    remove_fresh_checkout(
-                        source_checkout, fresh_checkout, run=run, tool_root=tool_root
-                    )
+                remove_current_fresh_checkout()
                 remove_private_cargo_home(private_cargo_home, run=run)
                 remove_runtime_root(runtime_root, run=run)
                 return inner_exit
-            if fresh_checkout is not None and source_checkout is not None:
-                remove_fresh_checkout(
-                    source_checkout, fresh_checkout, run=run, tool_root=tool_root
-                )
+            remove_current_fresh_checkout()
             remove_private_cargo_home(private_cargo_home, run=run)
             remove_runtime_root(runtime_root, run=run)
             return could_not_determine(
@@ -4463,10 +4855,7 @@ def main(
                 f"exit={measured_exit} qualifying_receipt=false"
             )
             print(f"  {row[:160]}")
-        if fresh_checkout is not None and source_checkout is not None:
-            remove_fresh_checkout(
-                source_checkout, fresh_checkout, run=run, tool_root=tool_root
-            )
+        remove_current_fresh_checkout()
         remove_private_cargo_home(private_cargo_home, run=run)
         remove_runtime_root(runtime_root, run=run)
         emit_report(
@@ -4512,10 +4901,7 @@ def main(
                 "write one.",
                 file=sys.stderr,
             )
-            if fresh_checkout is not None and source_checkout is not None:
-                remove_fresh_checkout(
-                    source_checkout, fresh_checkout, run=run, tool_root=tool_root
-                )
+            remove_current_fresh_checkout()
             remove_private_cargo_home(private_cargo_home, run=run)
             remove_runtime_root(runtime_root, run=run)
             return inner_exit
@@ -4547,9 +4933,7 @@ def main(
                         f"RETAINED at {fresh_checkout}.",
                         "preserve the files manually before reclaiming the checkout",
                     )
-                removed = remove_fresh_checkout(
-                    source_checkout, fresh_checkout, run=run, tool_root=tool_root
-                )
+                removed = remove_current_fresh_checkout()
                 disposition = "removed" if removed else f"RETAINED at {fresh_checkout}"
                 remove_private_cargo_home(private_cargo_home, run=run)
                 remove_runtime_root(runtime_root, run=run)
@@ -4567,9 +4951,7 @@ def main(
                 "reclaiming it.",
                 file=sys.stderr,
             )
-            remove_fresh_checkout(
-                source_checkout, fresh_checkout, run=run, tool_root=tool_root
-            )
+            remove_current_fresh_checkout()
         remove_private_cargo_home(private_cargo_home, run=run)
         remove_runtime_root(runtime_root, run=run)
         # ⚠️ NOT "failed". No receipt means no verdict was ever recorded, so there
@@ -4613,10 +4995,7 @@ def main(
         scorecard_updated=scorecard_updated,
         run=run,
     )
-    if fresh_checkout is not None and source_checkout is not None:
-        remove_fresh_checkout(
-            source_checkout, fresh_checkout, run=run, tool_root=tool_root
-        )
+    remove_current_fresh_checkout()
     # The normal completion path, and the one that matters most: without this the
     # per-run cargo home leaks on EVERY successful validate.
     remove_private_cargo_home(private_cargo_home, run=run)

@@ -205,6 +205,12 @@ class FakeRun:
         self.commit_status_stderr = ""
         self.commit_status_launch_error: OSError | None = None
         self.ownerless_cargo_recovery_rc = 0
+        self.wrkslots_generation = 7
+        self.wrkslots_create_output: str | None = None
+        self.wrkslots_create_path: str | None = None
+        self.validate_batch_retained: dict[str, str] = {}
+        self.validate_batch_output: str | None = None
+        self.validate_batch_zero_census = False
 
     def default_ledger_row(self) -> dict[str, object]:
         return {
@@ -246,7 +252,73 @@ class FakeRun:
             project_root = Path(command[command.index("--project-root") + 1])
             self.fresh = project_root / "worktrees" / "validate" / slot
             self._materialize_fresh_checkout()
-            return completed(command, stdout=f"created slot={slot}\n")
+            if self.wrkslots_create_output is not None:
+                return completed(command, stdout=self.wrkslots_create_output)
+            return completed(
+                command,
+                stdout=json.dumps(
+                    {
+                        "agent": f"validate-{slot}",
+                        "checkouts": [
+                            {
+                                "head": SHA,
+                                "name": "checkout",
+                                "path": self.wrkslots_create_path
+                                or str(self.fresh.resolve()),
+                            }
+                        ],
+                        "generation": self.wrkslots_generation,
+                        "owner_process": "bound",
+                        "retained_storage_inconsistencies": [],
+                        "slot": slot,
+                        "slot_type": "validate",
+                    }
+                ),
+            )
+        if (
+            command[0].endswith("ci-hub/bin/wrkslots")
+            and "remove-validate-batch" in command
+        ):
+            if self.validate_batch_output is not None:
+                return completed(command, stdout=self.validate_batch_output)
+            project_root = Path(command[command.index("--project-root") + 1])
+            identities = [
+                value.rsplit("=", 1)
+                for index, value in enumerate(command)
+                if index > 0 and command[index - 1] == "--slot"
+            ]
+            removed_rows: list[dict[str, object]] = []
+            retained_rows: list[dict[str, object]] = []
+            for slot, raw_generation in identities:
+                generation = int(raw_generation)
+                reason = self.validate_batch_retained.get(slot)
+                if reason is not None:
+                    retained_rows.append(
+                        {"slot": slot, "generation": generation, "reason": reason}
+                    )
+                    continue
+                fresh = project_root / "worktrees" / "validate" / slot
+                self.removed.append(str(fresh))
+                shutil.rmtree(fresh, ignore_errors=True)
+                removed_rows.append({"slot": slot, "generation": generation})
+            shared_censuses = 0 if self.validate_batch_zero_census else 1
+            return completed(
+                command,
+                stdout=json.dumps(
+                    {
+                        "schema": 1,
+                        "batch_limit": start_unit.VALIDATE_CLEANUP_BATCH_LIMIT,
+                        "process_censuses": shared_censuses,
+                        "shared_process_censuses": shared_censuses,
+                        "same_uid_process_censuses": (
+                            0 if shared_censuses == 0 else len(removed_rows)
+                        ),
+                        "requested": len(identities),
+                        "removed": removed_rows,
+                        "retained": retained_rows,
+                    }
+                ),
+            )
         if command[0].endswith("ci-hub/bin/wrkslots") and "remove" in command:
             if self.fresh is not None:
                 self.removed.append(str(self.fresh))
@@ -322,6 +394,7 @@ class FakeRun:
     def _materialize_fresh_checkout(self) -> None:
         assert self.fresh is not None
         self.fresh.mkdir(parents=True, exist_ok=True)
+        (self.fresh / ".git").write_text("gitdir: shared/worktrees/fake\n")
         (self.fresh / "scripts").mkdir(parents=True, exist_ok=True)
         (self.fresh / "scripts/validate.rs").write_text("#!/usr/bin/env rust-script\n")
         source_schema = (
@@ -774,6 +847,42 @@ class StartUnitTest(unittest.TestCase):
             str(tool_root / "ci-hub/ledger/validate_rows.py"), readers[1][0][-2]
         )
         self.assertEqual([self.root, self.root], [cwd for _, cwd in readers])
+
+    def managed_cleanup_record(
+        self,
+        suffix: str,
+        *,
+        checkout: Path | None = None,
+        generation: int | None = 7,
+        state: str = "completed",
+        temporary: bool = True,
+    ) -> tuple[Path, Path]:
+        fresh = checkout or (
+            self.root / "worktrees/validate" / f"validate-fresh-{suffix}"
+        )
+        fresh.mkdir(parents=True, exist_ok=True)
+        git_file = fresh / ".git"
+        if not git_file.exists():
+            git_file.write_text("gitdir: shared/worktrees/fixture\n")
+        record_path = self.root / "ignored/validate/runs" / f"validate-{suffix}.json"
+        record: dict[str, object] = {
+            "schema_version": 1,
+            "unit": f"validate-{suffix}.service",
+            "checkout": str(fresh),
+            "source_checkout": str(self.checkout),
+            "temporary_checkout": temporary,
+            "repo": "rrnewton/hermit",
+            "state": state,
+            "exit_code": 0,
+            "final_validate_status": "PASSED",
+        }
+        if generation is not None:
+            record.update(
+                wrkslots_slot=fresh.name,
+                wrkslots_generation=generation,
+            )
+        start_unit.run_registry.write_record(record_path, record)
+        return fresh, record_path
 
     def removed_temporary_paths(self) -> list[Path]:
         return [
@@ -2249,6 +2358,8 @@ class StartUnitTest(unittest.TestCase):
                 "checkout": str(fresh),
                 "source_checkout": str(self.checkout),
                 "temporary_checkout": True,
+                "wrkslots_slot": fresh.name,
+                "wrkslots_generation": 7,
                 "cargo_home": str(cargo_home),
                 "repo": "rrnewton/hermit",
                 "state": "completed",
@@ -2312,6 +2423,563 @@ class StartUnitTest(unittest.TestCase):
                 "archived_orphaned_receipts"
             ],
         )
+
+    def test_sweep_bounds_backlog_and_advances_on_the_next_batch(self) -> None:
+        for index in range(130):
+            self.managed_cleanup_record(f"backlog-{index:03d}")
+
+        first = start_unit.sweep_completed_checkouts(
+            self.root, run=self.fake, tool_root=self.root
+        )
+
+        self.assertEqual(8, len(first["removed"]))
+        self.assertEqual(122, len(first["deferred"]))
+        self.assertEqual([], first["retained"])
+        batches = [
+            command
+            for command in self.fake.commands
+            if wrkslots_action(command, "remove-validate-batch")
+        ]
+        self.assertEqual(1, len(batches))
+        self.assertEqual(8, batches[0].count("--slot"))
+        self.assertTrue(all(value.endswith("=7") for value in batches[0] if "=" in value))
+        self.assertEqual(
+            8,
+            sum(
+                command[:3] == ["systemctl", "--user", "show"]
+                for command in self.fake.commands
+            ),
+            "deferred rows must not perform per-record service or receipt work",
+        )
+
+        second = start_unit.sweep_completed_checkouts(
+            self.root, run=self.fake, tool_root=self.root
+        )
+        self.assertEqual(8, len(second["removed"]))
+        self.assertEqual(114, len(second["deferred"]))
+
+    def test_zero_census_all_retained_batch_is_valid_evidence(self) -> None:
+        fresh, _record = self.managed_cleanup_record("zero-census")
+        self.fake.validate_batch_zero_census = True
+        self.fake.validate_batch_retained[fresh.name] = "slot no longer eligible"
+
+        report = start_unit.sweep_completed_checkouts(
+            self.root, run=self.fake, tool_root=self.root
+        )
+
+        self.assertEqual([], report["removed"])
+        self.assertEqual("slot no longer eligible", report["retained"][0]["reason"])
+        self.assertNotIn("invalid batch report", report["retained"][0]["reason"])
+        self.assertTrue(fresh.exists())
+
+    def test_malformed_batch_report_retains_every_requested_checkout(self) -> None:
+        first, _first_record = self.managed_cleanup_record("malformed-a")
+        second, _second_record = self.managed_cleanup_record("malformed-b")
+        self.fake.validate_batch_output = json.dumps(
+            {
+                "schema": 1,
+                "batch_limit": 8,
+                "process_censuses": 1,
+                "shared_process_censuses": 1,
+                "same_uid_process_censuses": 1,
+                "requested": 2,
+                "removed": [{"slot": first.name, "generation": 7}],
+                "retained": [],
+            }
+        )
+
+        report = start_unit.sweep_completed_checkouts(
+            self.root, run=self.fake, tool_root=self.root
+        )
+
+        self.assertEqual([], report["removed"])
+        self.assertEqual(2, len(report["retained"]))
+        self.assertTrue(
+            all("invalid batch report" in row["reason"] for row in report["retained"])
+        )
+        self.assertTrue(first.exists())
+        self.assertTrue(second.exists())
+
+    def test_batch_metadata_requires_exact_integer_types(self) -> None:
+        expected = {"schema": 1, "batch_limit": 8, "requested": 2}
+        malformed = {
+            "schema": (True, 1.0, "1"),
+            "batch_limit": (True, 8.0, "8"),
+            "requested": (True, 2.0, "2"),
+        }
+        for field, values in malformed.items():
+            for kind, value in zip(("bool", "float", "string"), values):
+                with self.subTest(field=field, kind=kind):
+                    suffix = f"metadata-{field}-{kind}"
+                    first, first_record = self.managed_cleanup_record(f"{suffix}-a")
+                    second, second_record = self.managed_cleanup_record(f"{suffix}-b")
+                    metadata = dict(expected)
+                    metadata[field] = value
+                    self.fake.validate_batch_output = json.dumps(
+                        {
+                            **metadata,
+                            "process_censuses": 1,
+                            "shared_process_censuses": 1,
+                            "same_uid_process_censuses": 2,
+                            "removed": [
+                                {"slot": first.name, "generation": 7},
+                                {"slot": second.name, "generation": 7},
+                            ],
+                            "retained": [],
+                        }
+                    )
+
+                    report = start_unit.sweep_completed_checkouts(
+                        self.root, run=self.fake, tool_root=self.root
+                    )
+
+                    self.assertEqual([], report["removed"])
+                    self.assertEqual([], report["bookkeeping_errors"])
+                    self.assertEqual(2, len(report["retained"]))
+                    self.assertTrue(
+                        all(
+                            "invalid batch report" in row["reason"]
+                            for row in report["retained"]
+                        )
+                    )
+                    self.assertTrue(first.exists())
+                    self.assertTrue(second.exists())
+                    for record_path in (first_record, second_record):
+                        self.assertNotIn(
+                            "checkout_removed_at",
+                            start_unit.run_registry.read_record(record_path),
+                        )
+                        record_path.unlink()
+                    shutil.rmtree(first)
+                    shutil.rmtree(second)
+
+        self.fake.validate_batch_output = None
+
+    def test_duplicate_batch_outcome_retains_every_requested_checkout(self) -> None:
+        first, _record = self.managed_cleanup_record("duplicate-outcome")
+        row = {"slot": first.name, "generation": 7}
+        self.fake.validate_batch_output = json.dumps(
+            {
+                "schema": 1,
+                "batch_limit": 8,
+                "process_censuses": 1,
+                "shared_process_censuses": 1,
+                "same_uid_process_censuses": 1,
+                "requested": 1,
+                "removed": [row, row],
+                "retained": [],
+            }
+        )
+
+        report = start_unit.sweep_completed_checkouts(
+            self.root, run=self.fake, tool_root=self.root
+        )
+
+        self.assertEqual([], report["removed"])
+        self.assertTrue(
+            all("invalid batch report" in item["reason"] for item in report["retained"])
+        )
+        self.assertTrue(first.exists())
+
+    def test_batch_report_cannot_claim_removal_without_both_censuses(self) -> None:
+        for shared, same_uid in ((0, 0), (1, 0)):
+            with self.subTest(shared=shared, same_uid=same_uid):
+                fresh = self.root / (
+                    f"worktrees/validate/validate-fresh-census-{shared}-{same_uid}"
+                )
+                fresh.mkdir(parents=True)
+                self.fake.validate_batch_output = json.dumps(
+                    {
+                        "schema": 1,
+                        "batch_limit": 8,
+                        "process_censuses": shared,
+                        "shared_process_censuses": shared,
+                        "same_uid_process_censuses": same_uid,
+                        "requested": 1,
+                        "removed": [{"slot": fresh.name, "generation": 7}],
+                        "retained": [],
+                    }
+                )
+
+                outcomes = start_unit.remove_fresh_checkouts_batch(
+                    self.root,
+                    [(fresh, start_unit.WrkslotsIdentity(fresh.name, 7))],
+                    run=self.fake,
+                    tool_root=self.root,
+                )
+
+                self.assertIn("invalid batch report", outcomes[str(fresh)] or "")
+                self.assertTrue(fresh.exists())
+
+    def test_mixed_batch_updates_only_the_removed_checkout(self) -> None:
+        first, first_record = self.managed_cleanup_record("mixed-a")
+        second, second_record = self.managed_cleanup_record("mixed-b")
+        self.fake.validate_batch_retained[second.name] = "live process still uses checkout"
+
+        report = start_unit.sweep_completed_checkouts(
+            self.root, run=self.fake, tool_root=self.root
+        )
+
+        self.assertEqual([str(first)], report["removed"])
+        self.assertEqual(str(second), report["retained"][0]["checkout"])
+        self.assertIn(
+            "checkout_removed_at", start_unit.run_registry.read_record(first_record)
+        )
+        self.assertNotIn(
+            "checkout_removed_at", start_unit.run_registry.read_record(second_record)
+        )
+
+    def test_unsafe_duplicate_record_vetoes_the_physical_checkout(self) -> None:
+        fresh, _safe = self.managed_cleanup_record("duplicate-safe")
+        self.managed_cleanup_record(
+            "duplicate-running", checkout=fresh, state="running"
+        )
+
+        def run(command: list[str], **kwargs: object):
+            if (
+                command[:3] == ["systemctl", "--user", "show"]
+                and "validate-duplicate-running.service" in command
+            ):
+                return completed(
+                    command,
+                    stdout=(
+                        "LoadState=loaded\nActiveState=active\nSubState=running\n"
+                        "InvocationID=running-fixture\n"
+                    ),
+                )
+            return self.fake(command, **kwargs)
+
+        report = start_unit.sweep_completed_checkouts(
+            self.root, run=run, tool_root=self.root
+        )
+
+        self.assertEqual([], report["removed"])
+        self.assertTrue(any(row["reason"] == "unit-running" for row in report["retained"]))
+        self.assertFalse(
+            any(wrkslots_action(command, "remove-validate-batch") for command in self.fake.commands)
+        )
+        self.assertTrue(fresh.exists())
+
+    def test_running_record_does_not_recover_existing_cargo_home(self) -> None:
+        fresh, record_path = self.managed_cleanup_record(
+            "running-cargo", state="running"
+        )
+        cargo_home = self.root / "ignored/validate/cargo-homes/validate-cargo-running"
+        cargo_home.mkdir(parents=True)
+        start_unit.run_registry.update_record(
+            record_path, blocking=False, cargo_home=str(cargo_home)
+        )
+
+        def run(command: list[str], **kwargs: object):
+            if command[:3] == ["systemctl", "--user", "show"]:
+                return completed(
+                    command,
+                    stdout=(
+                        "LoadState=loaded\nActiveState=active\nSubState=running\n"
+                        "InvocationID=running-cargo-fixture\n"
+                    ),
+                )
+            return self.fake(command, **kwargs)
+
+        report = start_unit.sweep_completed_checkouts(
+            self.root, run=run, tool_root=self.root
+        )
+
+        self.assertEqual([], report["removed"])
+        self.assertEqual([], report["removed_cargo_homes"])
+        self.assertTrue(
+            any(row["reason"] == "unit-running" for row in report["retained"])
+        )
+        self.assertTrue(fresh.exists())
+        self.assertTrue(cargo_home.exists())
+        self.assertFalse(
+            any(
+                "--ownerless-validate-cargo-home" in command
+                for command in self.fake.commands
+            )
+        )
+        self.assertFalse(
+            any(
+                wrkslots_action(command, "remove-validate-batch")
+                for command in self.fake.commands
+            )
+        )
+
+    def test_conflicting_duplicate_generation_vetoes_the_physical_checkout(self) -> None:
+        fresh, _first = self.managed_cleanup_record("generation-a", generation=7)
+        self.managed_cleanup_record("generation-b", checkout=fresh, generation=8)
+
+        report = start_unit.sweep_completed_checkouts(
+            self.root, run=self.fake, tool_root=self.root
+        )
+
+        self.assertEqual([], report["removed"])
+        self.assertTrue(any("disagree" in row["reason"] for row in report["retained"]))
+        self.assertFalse(
+            any(wrkslots_action(command, "remove-validate-batch") for command in self.fake.commands)
+        )
+        self.assertTrue(fresh.exists())
+
+    def test_duplicate_archive_failure_vetoes_the_physical_checkout(self) -> None:
+        fresh, _first = self.managed_cleanup_record("archive-a")
+        self.managed_cleanup_record("archive-b", checkout=fresh)
+
+        with mock.patch.object(
+            start_unit,
+            "archive_orphaned_receipts",
+            side_effect=[[], RuntimeError("archive failed")],
+        ):
+            report = start_unit.sweep_completed_checkouts(
+                self.root, run=self.fake, tool_root=self.root
+            )
+
+        self.assertEqual([], report["removed"])
+        self.assertTrue(any("archive failed" in row["reason"] for row in report["retained"]))
+        self.assertFalse(
+            any(wrkslots_action(command, "remove-validate-batch") for command in self.fake.commands)
+        )
+        self.assertTrue(fresh.exists())
+
+    def test_explicit_null_wrkslots_identity_is_not_treated_as_historical(self) -> None:
+        fresh, record_path = self.managed_cleanup_record("null-identity")
+        record = start_unit.run_registry.read_record(record_path)
+        record["wrkslots_slot"] = None
+        record["wrkslots_generation"] = None
+        start_unit.run_registry.write_record(record_path, record)
+
+        report = start_unit.sweep_completed_checkouts(
+            self.root, run=self.fake, tool_root=self.root
+        )
+
+        self.assertEqual([], report["removed"])
+        self.assertTrue(
+            any("wrkslots slot" in row["reason"] for row in report["retained"])
+        )
+        self.assertFalse(any(wrkslots_action(command, "status") for command in self.fake.commands))
+        self.assertTrue(fresh.exists())
+
+    def test_partial_wrkslots_identity_is_not_treated_as_historical(self) -> None:
+        fresh, record_path = self.managed_cleanup_record("partial-identity")
+        record = start_unit.run_registry.read_record(record_path)
+        record.pop("wrkslots_generation")
+        start_unit.run_registry.write_record(record_path, record)
+
+        report = start_unit.sweep_completed_checkouts(
+            self.root, run=self.fake, tool_root=self.root
+        )
+
+        self.assertEqual([], report["removed"])
+        self.assertTrue(any("together" in row["reason"] for row in report["retained"]))
+        self.assertFalse(any(wrkslots_action(command, "status") for command in self.fake.commands))
+        self.assertTrue(fresh.exists())
+
+    def test_malformed_duplicate_identity_vetoes_the_physical_checkout(self) -> None:
+        fresh, _valid = self.managed_cleanup_record("identity-valid")
+        _same, malformed_path = self.managed_cleanup_record(
+            "identity-null", checkout=fresh
+        )
+        malformed = start_unit.run_registry.read_record(malformed_path)
+        malformed["wrkslots_slot"] = None
+        malformed["wrkslots_generation"] = None
+        start_unit.run_registry.write_record(malformed_path, malformed)
+
+        report = start_unit.sweep_completed_checkouts(
+            self.root, run=self.fake, tool_root=self.root
+        )
+
+        self.assertEqual([], report["removed"])
+        self.assertFalse(
+            any(wrkslots_action(command, "remove-validate-batch") for command in self.fake.commands)
+        )
+        self.assertTrue(fresh.exists())
+
+    def test_unsupported_schema_duplicate_vetoes_the_physical_checkout(self) -> None:
+        fresh, _valid = self.managed_cleanup_record("schema-valid")
+        _same, invalid_path = self.managed_cleanup_record(
+            "schema-invalid", checkout=fresh
+        )
+        invalid = json.loads(invalid_path.read_text())
+        invalid["schema_version"] = 99
+        invalid_path.write_text(json.dumps(invalid))
+
+        report = start_unit.sweep_completed_checkouts(
+            self.root, run=self.fake, tool_root=self.root
+        )
+
+        self.assertEqual([], report["removed"])
+        self.assertTrue(any("unsupported schema" in row["reason"] for row in report["retained"]))
+        self.assertFalse(
+            any(wrkslots_action(command, "remove-validate-batch") for command in self.fake.commands)
+        )
+        self.assertTrue(fresh.exists())
+
+    def test_deferred_malformed_group_still_reports_failure(self) -> None:
+        for index in range(8):
+            self.managed_cleanup_record(f"schema-earlier-{index}")
+        fresh, record_path = self.managed_cleanup_record("schema-zz")
+        record = json.loads(record_path.read_text())
+        record["schema_version"] = 99
+        record_path.write_text(json.dumps(record))
+
+        report = start_unit.sweep_completed_checkouts(
+            self.root, run=self.fake, tool_root=self.root
+        )
+
+        self.assertTrue(any("unsupported schema" in row["reason"] for row in report["retained"]))
+        self.assertTrue(fresh.exists())
+
+    def test_unattributable_malformed_record_vetoes_the_batch(self) -> None:
+        fresh, _record = self.managed_cleanup_record("unattributable")
+        malformed = self.root / "ignored/validate/runs/broken.json"
+        malformed.write_text("{")
+
+        report = start_unit.sweep_completed_checkouts(
+            self.root, run=self.fake, tool_root=self.root
+        )
+
+        self.assertEqual([], report["removed"])
+        self.assertTrue(any("cannot read validation handle" in row["reason"] for row in report["retained"]))
+        self.assertFalse(
+            any(wrkslots_action(command, "remove-validate-batch") for command in self.fake.commands)
+        )
+        self.assertTrue(fresh.exists())
+
+    def test_present_temporary_flag_must_be_true(self) -> None:
+        paths: list[Path] = []
+        for index, value in enumerate((None, 0, "true")):
+            fresh, record_path = self.managed_cleanup_record(f"temporary-{index}")
+            record = json.loads(record_path.read_text())
+            record["temporary_checkout"] = value
+            record_path.write_text(json.dumps(record))
+            paths.append(fresh)
+
+        report = start_unit.sweep_completed_checkouts(
+            self.root, run=self.fake, tool_root=self.root
+        )
+
+        self.assertEqual([], report["removed"])
+        self.assertEqual(
+            3,
+            sum("temporary_checkout must be true" in row["reason"] for row in report["retained"]),
+        )
+        self.assertTrue(all(path.exists() for path in paths))
+
+    def test_managed_git_directory_still_routes_through_wrkslots(self) -> None:
+        fresh, _record = self.managed_cleanup_record("git-directory")
+        (fresh / ".git").unlink()
+        (fresh / ".git").mkdir()
+
+        def run(command: list[str], **kwargs: object):
+            if wrkslots_action(command, "remove-validate-batch"):
+                return completed(command, rc=2, stderr="registry shape refused")
+            return self.fake(command, **kwargs)
+
+        with mock.patch.object(
+            start_unit,
+            "path_may_have_live_process",
+            side_effect=AssertionError("managed cleanup must delegate liveness"),
+        ):
+            report = start_unit.sweep_completed_checkouts(
+                self.root, run=run, tool_root=self.root
+            )
+
+        self.assertEqual([], report["removed"])
+        self.assertTrue(any("registry shape refused" in row["reason"] for row in report["retained"]))
+        self.assertTrue(fresh.exists())
+
+    def test_malformed_cursor_refuses_without_removing(self) -> None:
+        fresh, _record = self.managed_cleanup_record("bad-cursor")
+        cursor = self.root / "ignored/validate/checkout-cleanup-cursor.json"
+        for kind, schema in (("bool", True), ("float", 1.0), ("string", "1")):
+            with self.subTest(kind=kind):
+                payload = json.dumps(
+                    {"after": "validate-fresh-prior", "schema": schema}, sort_keys=True
+                ) + "\n"
+                cursor.write_text(payload)
+                command_count = len(self.fake.commands)
+
+                report = start_unit.sweep_completed_checkouts(
+                    self.root, run=self.fake, tool_root=self.root
+                )
+
+                self.assertEqual([], report["removed"])
+                self.assertEqual(
+                    [str(fresh)], [row["checkout"] for row in report["deferred"]]
+                )
+                self.assertTrue(
+                    any(
+                        "invalid shape" in row["reason"]
+                        for row in report["bookkeeping_errors"]
+                    )
+                )
+                self.assertEqual(payload, cursor.read_text())
+                self.assertFalse(
+                    any(
+                        wrkslots_action(command, "remove-validate-batch")
+                        for command in self.fake.commands[command_count:]
+                    )
+                )
+                self.assertTrue(fresh.exists())
+
+    def test_cursor_advances_past_provider_retained_groups_and_wraps(self) -> None:
+        first: list[Path] = []
+        for index in range(8):
+            fresh, _record = self.managed_cleanup_record(f"retained-{index:02d}")
+            first.append(fresh)
+            self.fake.validate_batch_retained[fresh.name] = "provider retained"
+        later, _record = self.managed_cleanup_record("retained-zz")
+
+        initial = start_unit.sweep_completed_checkouts(
+            self.root, run=self.fake, tool_root=self.root
+        )
+        self.assertEqual([], initial["removed"])
+        self.assertEqual([str(later)], [row["checkout"] for row in initial["deferred"]])
+
+        following = start_unit.sweep_completed_checkouts(
+            self.root, run=self.fake, tool_root=self.root
+        )
+        self.assertEqual([str(later)], following["removed"])
+        self.assertFalse(later.exists())
+        self.assertTrue(all(path.exists() for path in first))
+
+    def test_persistently_running_early_groups_do_not_starve_a_later_checkout(self) -> None:
+        running_units: set[str] = set()
+        for index in range(8):
+            _fresh, record_path = self.managed_cleanup_record(f"fair-{index:02d}")
+            historical = json.loads(record_path.read_text())
+            historical["producer"] = start_unit.run_registry.PRODUCER
+            record_path.write_text(json.dumps(historical))
+            with self.assertRaises(RuntimeError):
+                start_unit.run_registry.read_record(record_path)
+            running_units.add(
+                str(historical["unit"])
+            )
+        ready, _ready_record = self.managed_cleanup_record("fair-zz-ready")
+
+        def run(command: list[str], **kwargs: object):
+            if command[:3] == ["systemctl", "--user", "show"] and any(
+                unit in command for unit in running_units
+            ):
+                return completed(
+                    command,
+                    stdout=(
+                        "LoadState=loaded\nActiveState=active\nSubState=running\n"
+                        "InvocationID=running-fixture\n"
+                    ),
+                )
+            return self.fake(command, **kwargs)
+
+        first = start_unit.sweep_completed_checkouts(
+            self.root, run=run, tool_root=self.root
+        )
+        self.assertEqual([], first["removed"])
+        self.assertEqual([str(ready)], [row["checkout"] for row in first["deferred"]])
+
+        second = start_unit.sweep_completed_checkouts(
+            self.root, run=run, tool_root=self.root
+        )
+        self.assertEqual([str(ready)], second["removed"])
+        self.assertFalse(ready.exists())
 
     def test_sweep_completed_human_report_does_not_require_launch_fields(self) -> None:
         out = io.StringIO()
@@ -2481,7 +3149,7 @@ class StartUnitTest(unittest.TestCase):
             any(command[:3] == ["systemctl", "--user", "show"] for command in self.fake.commands)
         )
 
-    def test_sweep_completed_removes_checkout_from_pre_run_number_record(self) -> None:
+    def test_sweep_retains_record_without_exact_wrkslots_identity(self) -> None:
         fresh = self.root / "worktrees/validate/validate-fresh-pre-run-number"
         fresh.mkdir(parents=True)
         self.fake.fresh = fresh
@@ -2539,12 +3207,14 @@ class StartUnitTest(unittest.TestCase):
                 root=self.root,
             )
 
-        self.assertEqual(0, rc)
+        self.assertEqual(start_unit.EXIT_COULD_NOT_DETERMINE, rc)
         report = json.loads(out.getvalue())
-        self.assertEqual([str(fresh)], report["removed"])
-        self.assertEqual([], report["retained"])
+        self.assertEqual([], report["removed"])
+        self.assertTrue(
+            any("no exact wrkslots identity" in row["reason"] for row in report["retained"])
+        )
         self.assertEqual([], report["bookkeeping_errors"])
-        self.assertFalse(fresh.exists())
+        self.assertTrue(fresh.exists())
 
     def test_sweep_completed_refuses_checkout_outside_validate_parent(self) -> None:
         checkout = self.root / "worktrees" / "slots" / "slot01" / "hermit"
@@ -2669,7 +3339,7 @@ class StartUnitTest(unittest.TestCase):
         )
         self.assertTrue(fresh.is_dir())
 
-    def test_sweep_completed_removes_frozen_checkout_from_short_lived_location(self) -> None:
+    def test_sweep_retains_frozen_checkout_from_managed_location_without_identity(self) -> None:
         fresh = self.root / "worktrees/validate/validate-fresh-frozen-old"
         (fresh / ".git").mkdir(parents=True)
         self.fake.fresh = fresh
@@ -2701,10 +3371,13 @@ class StartUnitTest(unittest.TestCase):
                 root=self.root,
             )
 
-        self.assertEqual(0, rc)
+        self.assertEqual(start_unit.EXIT_COULD_NOT_DETERMINE, rc)
         report = json.loads(out.getvalue())
-        self.assertEqual([str(fresh)], report["removed"])
-        self.assertFalse(fresh.exists())
+        self.assertEqual([], report["removed"])
+        self.assertTrue(
+            any("no exact wrkslots identity" in row["reason"] for row in report["retained"])
+        )
+        self.assertTrue(fresh.exists())
 
     def test_sweep_completed_retains_when_unit_and_terminal_record_are_absent(self) -> None:
         fresh = self.root / "worktrees/validate/validate-fresh-running"
@@ -2718,6 +3391,8 @@ class StartUnitTest(unittest.TestCase):
                 "checkout": str(fresh),
                 "source_checkout": str(self.checkout),
                 "temporary_checkout": True,
+                "wrkslots_slot": fresh.name,
+                "wrkslots_generation": 7,
                 "repo": "rrnewton/hermit",
                 "state": "running",
             },
@@ -2753,6 +3428,8 @@ class StartUnitTest(unittest.TestCase):
                 "checkout": str(fresh),
                 "source_checkout": str(self.checkout),
                 "temporary_checkout": True,
+                "wrkslots_slot": fresh.name,
+                "wrkslots_generation": 7,
                 "repo": "rrnewton/hermit",
                 "state": "completed",
                 "exit_code": 0,
@@ -3737,6 +4414,32 @@ class StartUnitTest(unittest.TestCase):
             f"checkout={SHA}",
             create[create.index("--start") + 1],
         )
+        self.assertEqual("json", create[create.index("--format") + 1])
+        records = list((self.root / "ignored/validate/runs").glob("*.json"))
+        self.assertEqual(1, len(records))
+        durable = start_unit.run_registry.read_record(records[0])
+        self.assertEqual(self.fake.fresh.name, durable["wrkslots_slot"])
+        self.assertEqual(
+            self.fake.wrkslots_generation, durable["wrkslots_generation"]
+        )
+
+    def test_malformed_wrkslots_create_result_refuses_before_admission(self) -> None:
+        self.fake.wrkslots_create_output = '{"slot":"wrong"}'
+
+        rc, _output, error = self.invoke(["--", "full"])
+
+        self.assertEqual(start_unit.EXIT_REFUSED, rc)
+        self.assertIn("unexpected result shape", error)
+        self.assertFalse(any(command[0] == "systemd-run" for command in self.fake.commands))
+
+    def test_wrkslots_create_result_for_another_path_refuses_before_admission(self) -> None:
+        self.fake.wrkslots_create_path = "/tmp/not-ours"
+
+        rc, _output, error = self.invoke(["--", "full"])
+
+        self.assertEqual(start_unit.EXIT_REFUSED, rc)
+        self.assertIn("does not identify the created checkout", error)
+        self.assertFalse(any(command[0] == "systemd-run" for command in self.fake.commands))
 
     def test_in_place_opt_out_still_validates_the_slot_tree(self) -> None:
         rc, _output, error = self.invoke(["--in-place", "--", "full"])
@@ -3795,7 +4498,8 @@ class StartUnitTest(unittest.TestCase):
             repo="rrnewton/hermit",
         )
 
-        self.assertEqual(self.fake.fresh, fresh)
+        self.assertEqual(self.fake.fresh, fresh[0])
+        self.assertEqual(self.fake.wrkslots_generation, fresh[1].generation)
 
     def test_fresh_checkout_uses_the_exact_tooling_wrkslots(self) -> None:
         linked_tooling = self.root / "worktrees/slots/linked-parent"
@@ -3935,6 +4639,8 @@ class StartUnitTest(unittest.TestCase):
                 "checkout": str(fresh),
                 "source_checkout": str(self.checkout),
                 "temporary_checkout": True,
+                "wrkslots_slot": fresh.name,
+                "wrkslots_generation": 7,
                 "e2e_result_root": str(
                     self.plant_per_cell_results("validate-run1563")
                 ),
@@ -3993,7 +4699,13 @@ class StartUnitTest(unittest.TestCase):
         tool_root = self.root / "linked-tooling"
 
         removed = start_unit.remove_fresh_checkout(
-            self.checkout, fresh, run=self.fake, tool_root=tool_root
+            self.checkout,
+            fresh,
+            run=self.fake,
+            tool_root=tool_root,
+            wrkslots=start_unit.WrkslotsIdentity(
+                fresh.name, self.fake.wrkslots_generation
+            ),
         )
 
         self.assertTrue(removed)
@@ -4007,6 +4719,26 @@ class StartUnitTest(unittest.TestCase):
                 for command in self.fake.commands
             )
         )
+
+    def test_immediate_cleanup_does_not_rmtree_managed_git_directory(self) -> None:
+        fresh = self.root / "worktrees/validate/validate-fresh-corrupt-git"
+        (fresh / ".git").mkdir(parents=True)
+
+        def run(command: list[str], **_kwargs: object):
+            self.fake.commands.append(command)
+            return completed(command, rc=2, stderr="registry shape refused")
+
+        removed = start_unit.remove_fresh_checkout(
+            self.checkout,
+            fresh,
+            run=run,
+            tool_root=self.root,
+            wrkslots=start_unit.WrkslotsIdentity(fresh.name, 7),
+        )
+
+        self.assertFalse(removed)
+        self.assertTrue(fresh.exists())
+        self.assertTrue(any(wrkslots_action(command, "remove") for command in self.fake.commands))
 
     def test_canonical_nonpass_is_a_real_receipt_not_an_orphan(self) -> None:
         """A nonpass is not landing authority, but it is still a receipt.

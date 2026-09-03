@@ -17,6 +17,7 @@ import start_unit  # noqa: E402
 
 def summarize(report: Mapping[str, Any]) -> tuple[str, str, list[Mapping[str, str]]]:
     retained = list(report.get("retained", []))
+    deferred = list(report.get("deferred", []))
     active = [row for row in retained if row.get("reason") == "unit-running"]
     failures = [row for row in retained if row.get("reason") != "unit-running"]
     failures.extend(report.get("bookkeeping_errors", []))
@@ -25,6 +26,7 @@ def summarize(report: Mapping[str, Any]) -> tuple[str, str, list[Mapping[str, st
         f"removed {len(report.get('removed', []))} checkout(s) and "
         f"{len(report.get('removed_cargo_homes', []))} Cargo home(s); "
         f"retained {len(active)} running checkout(s)"
+        f"; deferred {len(deferred)} checkout(s) to a later bounded batch"
     )
     if failures:
         def one_line(value: object) -> str:
@@ -72,6 +74,7 @@ def main(argv: list[str] | None = None) -> int:
         "removed": report.get("removed", []),
         "removed_cargo_homes": report.get("removed_cargo_homes", []),
         "retained": report.get("retained", []),
+        "deferred": report.get("deferred", []),
         "bookkeeping_errors": report.get("bookkeeping_errors", []),
         "cleanup_failures": len(failures),
     }
@@ -82,6 +85,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"summary={summary}")
         print(f"removed_checkouts={len(output['removed'])}")
         print(f"removed_cargo_homes={len(output['removed_cargo_homes'])}")
+        print(f"deferred_checkouts={len(output['deferred'])}")
         print(f"cleanup_failures={len(failures)}")
     return 1 if failures else 0
 

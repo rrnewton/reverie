@@ -154,6 +154,8 @@ class RunRecord(TypedDict, total=False):
     termination_requests: list[TerminationRequestRecord]
     measured_result: str
     checkout_removed_at: str
+    wrkslots_slot: str
+    wrkslots_generation: int
     archived_orphaned_receipts: list[str]
     cargo_home_removed_at: str
     host: str
@@ -306,6 +308,8 @@ VALIDATION_FIELDS = COMMON_FIELDS | frozenset(
         "commit_status_publication",
         "measured_result",
         "checkout_removed_at",
+        "wrkslots_slot",
+        "wrkslots_generation",
         "archived_orphaned_receipts",
         "cargo_home_removed_at",
         "host",
@@ -340,6 +344,7 @@ _OPTIONAL_TEXT_FIELDS = frozenset(
         "canonical_verdict",
         "measured_result",
         "checkout_removed_at",
+        "wrkslots_slot",
         "cargo_home_removed_at",
         "host",
         "results",
@@ -349,6 +354,7 @@ _OPTIONAL_TEXT_FIELDS = frozenset(
 _OPTIONAL_INTEGER_FIELDS = frozenset(
     {
         "pr",
+        "wrkslots_generation",
         "validate_lock_child_deadline_seconds",
         "hermit_run_timeout_seconds",
         "dag_jobs",
@@ -702,6 +708,16 @@ def parse_current_record(value: Mapping[str, Any]) -> RunHandle:
             raise _error("pane_role", "validation handles require observer-only")
         if not isinstance(value.get("temporary_checkout"), bool):
             raise _error("temporary_checkout", "must be a boolean")
+        has_slot = "wrkslots_slot" in value
+        has_generation = "wrkslots_generation" in value
+        if has_slot != has_generation:
+            raise _error(
+                "wrkslots_identity",
+                "wrkslots_slot and wrkslots_generation must be recorded together",
+            )
+        if has_slot:
+            _required_text(value, "wrkslots_slot")
+            _positive_integer(value, "wrkslots_generation")
         for field in (
             "source_checkout",
             "cargo_home",

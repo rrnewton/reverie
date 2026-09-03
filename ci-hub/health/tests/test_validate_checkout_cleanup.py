@@ -38,6 +38,7 @@ def test_running_checkout_is_expected_and_does_not_fail_the_recurring_cleanup() 
             "removed": [],
             "removed_cargo_homes": [],
             "retained": [{"checkout": "/run", "reason": "unit-running"}],
+            "deferred": [],
             "bookkeeping_errors": [],
         }
     )
@@ -52,6 +53,7 @@ def test_non_running_retention_fails_and_names_the_path_and_reason() -> None:
             "removed": ["/old"],
             "removed_cargo_homes": [],
             "retained": [{"checkout": "/held", "reason": "live process"}],
+            "deferred": [],
             "bookkeeping_errors": [],
         }
     )
@@ -67,6 +69,7 @@ def test_bookkeeping_failure_is_not_reported_as_clean() -> None:
             "removed": ["/old"],
             "removed_cargo_homes": [],
             "retained": [],
+            "deferred": [],
             "bookkeeping_errors": [
                 {"record": "/record.json", "reason": "old schema"}
             ],
@@ -100,6 +103,7 @@ def test_json_reports_the_same_counts() -> None:
         "removed": ["/old"],
         "removed_cargo_homes": ["/cargo"],
         "retained": [],
+        "deferred": [{"checkout": "/later", "reason": "bounded batch"}],
         "bookkeeping_errors": [],
     }
     output = io.StringIO()
@@ -111,4 +115,23 @@ def test_json_reports_the_same_counts() -> None:
     rendered = json.loads(output.getvalue())
     assert rendered["removed"] == ["/old"]
     assert rendered["removed_cargo_homes"] == ["/cargo"]
+    assert rendered["deferred"] == [
+        {"checkout": "/later", "reason": "bounded batch"}
+    ]
     assert rendered["cleanup_failures"] == 0
+
+
+def test_deferred_checkout_is_neutral_and_visible() -> None:
+    code, fields = run_with(
+        {
+            "removed": [],
+            "removed_cargo_homes": [],
+            "retained": [],
+            "deferred": [{"checkout": "/later", "reason": "bounded batch"}],
+            "bookkeeping_errors": [],
+        }
+    )
+    assert code == 0
+    assert fields["state"] == "ok"
+    assert fields["deferred_checkouts"] == "1"
+    assert "deferred 1 checkout(s)" in fields["summary"]

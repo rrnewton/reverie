@@ -96,6 +96,37 @@ class RunRegistryContractTests(unittest.TestCase):
                         validation_handle(branch=branch)
                     )
 
+    def test_validation_wrkslots_identity_is_paired_positive_and_optional(self) -> None:
+        historical = run_registry.parse_current_record(validation_handle())
+        self.assertNotIn("wrkslots_generation", historical.raw)
+
+        current = run_registry.parse_current_record(
+            validation_handle(
+                wrkslots_slot="validate-fresh-exact",
+                wrkslots_generation=7,
+            )
+        )
+        self.assertEqual("validate-fresh-exact", current.raw["wrkslots_slot"])
+        self.assertEqual(7, current.raw["wrkslots_generation"])
+
+        for updates in (
+            {"wrkslots_slot": "validate-fresh-exact"},
+            {"wrkslots_generation": 7},
+            {"wrkslots_slot": "validate-fresh-exact", "wrkslots_generation": 0},
+            {"wrkslots_slot": "validate-fresh-exact", "wrkslots_generation": True},
+        ):
+            with self.subTest(updates=updates):
+                with self.assertRaisesRegex(RuntimeError, "wrkslots"):
+                    run_registry.parse_current_record(validation_handle(**updates))
+
+        with self.assertRaisesRegex(RuntimeError, "unknown field.*wrkslots"):
+            run_registry.parse_current_record(
+                bench_handle(
+                    wrkslots_slot="validate-fresh-exact",
+                    wrkslots_generation=7,
+                )
+            )
+
     def test_termination_request_is_recorded_before_confirmation(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "validate-test.json"
