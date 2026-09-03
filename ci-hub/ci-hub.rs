@@ -472,8 +472,8 @@ struct ValidateStatusArgs {
         help_heading = "WHICH RESULTS"
     )]
     run_no: Option<u64>,
-    /// Number of recent completed ledger rows to show when no SHA or PR is
-    /// supplied. These rows may name any branch; live runs are additional.
+    /// Number of recent logical completed runs to show when no SHA or PR is
+    /// supplied. These runs may name any branch; live runs are additional.
     #[arg(
         long,
         default_value_t = DEFAULT_VALIDATE_HISTORY_LIMIT,
@@ -481,6 +481,22 @@ struct ValidateStatusArgs {
         help_heading = "WHICH RESULTS"
     )]
     limit: usize,
+    /// Show every logical completed validation run. Superseded correction
+    /// records are still one run, and live runs are reported separately.
+    #[arg(
+        long,
+        conflicts_with_all = [
+            "limit",
+            "sha_positional",
+            "sha",
+            "pr",
+            "run_no",
+            "commit_timeline",
+            "in_progress_only"
+        ],
+        help_heading = "WHICH RESULTS"
+    )]
+    show_all: bool,
     /// List every commit in the local Hermit origin/main first-parent history,
     /// including commits with no validation ledger row. Unlike the ordinary
     /// recent list, this view is restricted to that history.
@@ -7748,7 +7764,6 @@ fn recent_finished_validate_status_entries(
     current: &[ValidateStatusEntry],
     repo: &str,
     include_log_paths: bool,
-    limit: usize,
 ) -> Vec<ValidateStatusEntry> {
     let mut recent = rows
         .iter()
@@ -7774,7 +7789,6 @@ fn recent_finished_validate_status_entries(
                 && live.started_at.as_deref() == finished.started_at.as_deref()
         })
     });
-    recent.truncate(limit);
     recent
         .into_iter()
         .map(|(row, run_number)| {
@@ -7785,15 +7799,125 @@ fn recent_finished_validate_status_entries(
         .collect()
 }
 
-fn recent_validate_status_note(limit: usize, include_in_progress: bool) -> String {
-    let live_runs = if include_in_progress {
-        "run-handle records, including live in-progress runs and attributed terminations, may also appear"
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RecentHistoryWindow {
+    Limited(usize),
+    All,
+}
+
+impl RecentHistoryWindow {
+    fn limit(self) -> Option<usize> {
+        match self {
+            Self::Limited(limit) => Some(limit),
+            Self::All => None,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct RecentValidateStatusCounts {
+    window: RecentHistoryWindow,
+    completed_total: usize,
+    completed_displayed: usize,
+    completed_outside_window: usize,
+    live_total: usize,
+    live_displayed: usize,
+}
+
+struct RecentValidateStatusView {
+    entries: Vec<ValidateStatusEntry>,
+    counts: RecentValidateStatusCounts,
+}
+
+fn recent_validate_status_window_json(
+    counts: Option<RecentValidateStatusCounts>,
+) -> serde_json::Value {
+    match counts.map(|counts| counts.window) {
+        Some(RecentHistoryWindow::Limited(limit)) => {
+            serde_json::json!({"mode": "limited", "limit": limit})
+        }
+        Some(RecentHistoryWindow::All) => serde_json::json!({"mode": "all"}),
+        None => serde_json::Value::Null,
+    }
+}
+
+fn recent_validate_status_view(
+    mut completed: Vec<ValidateStatusEntry>,
+    current: Vec<ValidateStatusEntry>,
+    window: RecentHistoryWindow,
+    live_total: usize,
+) -> RecentValidateStatusView {
+    let mut live = current
+        .iter()
+        .filter(|entry| entry.in_progress)
+        .cloned()
+        .collect::<Vec<_>>();
+    completed.extend(current.into_iter().filter(|entry| !entry.in_progress));
+    completed.sort_by(|left, right| {
+        let left = left
+            .finished_at
+            .as_deref()
+            .or(left.started_at.as_deref())
+            .unwrap_or("");
+        let right = right
+            .finished_at
+            .as_deref()
+            .or(right.started_at.as_deref())
+            .unwrap_or("");
+        right.cmp(left)
+    });
+    let completed_total = completed.len();
+    if let Some(limit) = window.limit() {
+        completed.truncate(limit);
+    }
+    let completed_displayed = completed.len();
+    let live_displayed = live.len();
+    live.extend(completed);
+    RecentValidateStatusView {
+        entries: live,
+        counts: RecentValidateStatusCounts {
+            window,
+            completed_total,
+            completed_displayed,
+            completed_outside_window: completed_total - completed_displayed,
+            live_total,
+            live_displayed,
+        },
+    }
+}
+
+fn recent_validate_status_note(counts: RecentValidateStatusCounts) -> String {
+    let completed = if counts.completed_outside_window == 0 {
+        format!(
+            "showing all {} logical completed run(s)",
+            counts.completed_displayed
+        )
     } else {
-        "in-progress runs are excluded by --exclude-in-progress; attributed terminations remain visible"
+        format!(
+            "showing latest {} of {} logical completed run(s)",
+            counts.completed_displayed, counts.completed_total
+        )
     };
+    let live = format!(
+        "{} of {} live in-progress run(s) shown in addition",
+        counts.live_displayed, counts.live_total
+    );
     format!(
-        "RECENT VALIDATION RUNS: completed records are selected from completed ledger rows and attributed termination handles, ordered by completion time, limited to {limit}, and not restricted to {COMMIT_TIMELINE_REF}; the default MAIN column says exact-sha, tree:<main-sha>, no-match, or unverifiable; {live_runs}. Use --commit-timeline for the {COMMIT_TIMELINE_REF}-only view."
+        "RECENT VALIDATION RUNS: {completed}; {live}; completed records are selected from completed ledger rows and attributed termination handles, ordered by completion time, and not restricted to {COMMIT_TIMELINE_REF}; the default MAIN column says exact-sha, tree:<main-sha>, no-match, or unverifiable. Use --commit-timeline for the {COMMIT_TIMELINE_REF}-only view."
     )
+}
+
+fn recent_validate_status_footer(counts: RecentValidateStatusCounts) -> Option<String> {
+    (counts.completed_outside_window > 0).then(|| {
+        format!(
+            "RECENT VALIDATION WINDOW: {} older logical completed run(s) are outside --limit {}; use --show-all to include them.",
+            counts.completed_outside_window,
+            counts
+                .window
+                .limit()
+                .expect("an outside-window count requires a finite limit")
+        )
+    })
 }
 
 fn no_run_commit_timeline_entry(sha: &str, depth: usize) -> ValidateStatusEntry {
@@ -7978,6 +8102,7 @@ fn validate_status_history_json(
     args: &ValidateStatusArgs,
     commit_count: Option<usize>,
     unassigned_unreadable_count: usize,
+    recent_counts: Option<RecentValidateStatusCounts>,
 ) -> serde_json::Value {
     let in_progress_count = entries.iter().filter(|entry| entry.in_progress).count();
     if !args.commit_timeline {
@@ -7997,12 +8122,17 @@ fn validate_status_history_json(
             });
         }
         return serde_json::json!({
-            "schema_version": 6,
+            "schema_version": 9,
             "repo": repo,
             "count": entries.len(),
             "in_progress_count": in_progress_count,
             "finished_count": entries.len() - in_progress_count,
-            "limit": args.limit,
+            "window": recent_validate_status_window_json(recent_counts),
+            "completed_total": recent_counts.map(|counts| counts.completed_total),
+            "completed_displayed": recent_counts.map(|counts| counts.completed_displayed),
+            "completed_outside_window": recent_counts.map(|counts| counts.completed_outside_window),
+            "live_total": recent_counts.map(|counts| counts.live_total),
+            "live_displayed": recent_counts.map(|counts| counts.live_displayed),
             "columns": columns.iter().map(|column| column.to_possible_value().expect("value enum").get_name().to_string()).collect::<Vec<_>>(),
             "runs": entries,
             "unreadable_handles": unreadable_handles,
@@ -8049,7 +8179,7 @@ fn print_recent_validate_history(
     ledger: &Path,
     args: &ValidateStatusArgs,
 ) -> Result<i32, CiHubError> {
-    if !args.commit_timeline && args.limit == 0 {
+    if !args.commit_timeline && !args.show_all && args.limit == 0 {
         return Err(CiHubError::ValidateStatus(
             "--limit must be greater than zero".into(),
         ));
@@ -8068,6 +8198,7 @@ fn print_recent_validate_history(
     let now = chrono::Utc::now();
     let scan = live_validate_runs(tool_root, state_root, repo, now, args.log_paths)?;
     let mut current = scan.entries;
+    let live_total = current.iter().filter(|entry| entry.in_progress).count();
     if args.exclude_in_progress {
         current.retain(|entry| !entry.in_progress);
     } else if args.in_progress_only {
@@ -8075,6 +8206,7 @@ fn print_recent_validate_history(
     }
     let unreadable_handles = scan.unreadable_handles;
     let historical_run_numbers = historical_validate_run_numbers(rows);
+    let mut recent_counts = None;
     let (mut entries, commit_count) = if args.commit_timeline {
         let commits = match main_history.as_ref() {
             Some(ValidationMainHistory::Available { commits, .. }) => commits.clone(),
@@ -8137,36 +8269,21 @@ fn print_recent_validate_history(
         if args.in_progress_only {
             (current, None)
         } else {
-            let mut finished = recent_finished_validate_status_entries(
+            let finished = recent_finished_validate_status_entries(
                 rows,
                 &historical_run_numbers,
                 &current,
                 repo,
                 args.log_paths,
-                args.limit,
             );
-            let mut in_progress = current
-                .iter()
-                .filter(|entry| entry.in_progress)
-                .cloned()
-                .collect::<Vec<_>>();
-            finished.extend(current.into_iter().filter(|entry| !entry.in_progress));
-            finished.sort_by(|left, right| {
-                let left = left
-                    .finished_at
-                    .as_deref()
-                    .or(left.started_at.as_deref())
-                    .unwrap_or("");
-                let right = right
-                    .finished_at
-                    .as_deref()
-                    .or(right.started_at.as_deref())
-                    .unwrap_or("");
-                right.cmp(left)
-            });
-            finished.truncate(args.limit);
-            in_progress.extend(finished);
-            (in_progress, None)
+            let window = if args.show_all {
+                RecentHistoryWindow::All
+            } else {
+                RecentHistoryWindow::Limited(args.limit)
+            };
+            let view = recent_validate_status_view(finished, current, window, live_total);
+            recent_counts = Some(view.counts);
+            (view.entries, None)
         }
     };
     for entry in &mut entries {
@@ -8212,6 +8329,7 @@ fn print_recent_validate_history(
                 args,
                 commit_count,
                 unassigned_unreadable_count,
+                recent_counts,
             ))
             .expect("serialize recent validation history")
         );
@@ -8228,7 +8346,7 @@ fn print_recent_validate_history(
     if !args.commit_timeline && args.run_no.is_none() && !args.in_progress_only {
         println!(
             "{}",
-            recent_validate_status_note(args.limit, !args.exclude_in_progress)
+            recent_validate_status_note(recent_counts.expect("recent list has counts"))
         );
     }
     for unreadable in &unreadable_handles {
@@ -8267,6 +8385,9 @@ fn print_recent_validate_history(
         args.log_paths,
     ) {
         println!("{line}");
+    }
+    if let Some(footer) = recent_counts.and_then(recent_validate_status_footer) {
+        println!("{footer}");
     }
     Ok(0)
 }
@@ -10086,7 +10207,6 @@ mod tests {
             &[],
             CANONICAL_VALIDATE_REPO,
             false,
-            10,
         );
         assert_eq!(recent.len(), 2);
         assert_eq!(recent[0].sha.as_deref(), Some(off_main_sha.as_str()));
@@ -10101,22 +10221,31 @@ mod tests {
         );
         assert_eq!(timeline.len(), 1);
         assert_eq!(timeline[0].sha.as_deref(), Some(main_sha.as_str()));
-        let note = recent_validate_status_note(10, true);
+        let counts = RecentValidateStatusCounts {
+            window: RecentHistoryWindow::Limited(10),
+            completed_total: 2,
+            completed_displayed: 2,
+            completed_outside_window: 0,
+            live_total: 0,
+            live_displayed: 0,
+        };
+        let note = recent_validate_status_note(counts);
         assert!(
             note.contains("selected from completed ledger rows and attributed termination handles"),
             "{note}"
         );
-        assert!(note.contains("limited to 10"), "{note}");
+        assert!(
+            note.contains("showing all 2 logical completed run(s)"),
+            "{note}"
+        );
         assert!(note.contains("not restricted to origin/main"), "{note}");
         assert!(note.contains("ordered by completion time"), "{note}");
         assert!(note.contains("--commit-timeline"), "{note}");
         assert!(
-            note.contains("live in-progress runs and attributed terminations"),
+            note.contains("0 of 0 live in-progress run(s) shown in addition"),
             "{note}"
         );
-        let excluded = recent_validate_status_note(10, false);
-        assert!(excluded.contains("in-progress runs are excluded by --exclude-in-progress"));
-        assert!(excluded.contains("attributed terminations remain visible"));
+        assert!(recent_validate_status_footer(counts).is_none());
     }
 
     #[test]
@@ -10390,11 +10519,20 @@ mod tests {
             &args,
             None,
             0,
+            None,
         );
         assert_eq!(report["count"], 1);
         assert_eq!(report["runs"][0]["main_match"], "unverifiable");
         assert!(report["runs"][0]["sha"].is_string());
-        assert!(recent_validate_status_note(1, false).contains("or unverifiable"));
+        assert!(recent_validate_status_note(RecentValidateStatusCounts {
+            window: RecentHistoryWindow::Limited(1),
+            completed_total: 1,
+            completed_displayed: 1,
+            completed_outside_window: 0,
+            live_total: 0,
+            live_displayed: 0,
+        })
+        .contains("or unverifiable"));
 
         std::fs::remove_dir_all(fixture).unwrap();
     }
@@ -10634,7 +10772,7 @@ mod tests {
     }
 
     #[test]
-    fn run_numbers_bump_normal_recent_json_without_adding_selection_metadata() {
+    fn recent_history_json_names_its_logical_run_window() {
         let cli = Cli::try_parse_from(["ci-hub", "validate-status", "--json"]).unwrap();
         let HubCommand::ValidateStatus(args) = cli.command else {
             panic!("wrong command variant")
@@ -10649,6 +10787,14 @@ mod tests {
             &args,
             None,
             0,
+            Some(RecentValidateStatusCounts {
+                window: RecentHistoryWindow::Limited(DEFAULT_VALIDATE_HISTORY_LIMIT),
+                completed_total: 0,
+                completed_displayed: 0,
+                completed_outside_window: 0,
+                live_total: 0,
+                live_displayed: 0,
+            }),
         );
         let keys = report
             .as_object()
@@ -10656,7 +10802,7 @@ mod tests {
             .keys()
             .map(String::as_str)
             .collect::<BTreeSet<_>>();
-        assert_eq!(report["schema_version"], 6);
+        assert_eq!(report["schema_version"], 9);
         assert_eq!(
             keys,
             BTreeSet::from([
@@ -10665,7 +10811,12 @@ mod tests {
                 "count",
                 "in_progress_count",
                 "finished_count",
-                "limit",
+                "window",
+                "completed_total",
+                "completed_displayed",
+                "completed_outside_window",
+                "live_total",
+                "live_displayed",
                 "columns",
                 "runs",
                 "unreadable_handles",
@@ -10673,7 +10824,45 @@ mod tests {
                 "ledger",
             ])
         );
+        assert_eq!(
+            report["window"],
+            serde_json::json!({"mode": "limited", "limit": DEFAULT_VALIDATE_HISTORY_LIMIT})
+        );
+        assert_eq!(report["completed_total"], 0);
+        assert_eq!(report["live_total"], 0);
         assert_eq!(report["unreadable_handles"], serde_json::json!([]));
+
+        let cli =
+            Cli::try_parse_from(["ci-hub", "validate-status", "--show-all", "--json"]).unwrap();
+        let HubCommand::ValidateStatus(args) = cli.command else {
+            panic!("wrong command variant")
+        };
+        let all = RecentValidateStatusCounts {
+            window: RecentHistoryWindow::All,
+            completed_total: 3,
+            completed_displayed: 3,
+            completed_outside_window: 0,
+            live_total: 1,
+            live_displayed: 1,
+        };
+        let report = validate_status_history_json(
+            &[],
+            &[],
+            CANONICAL_VALIDATE_REPO,
+            &[ValidateStatusColumn::Sha],
+            Path::new("ledger"),
+            &GreenDepth::Unavailable { why: "test".into() },
+            &args,
+            None,
+            0,
+            Some(all),
+        );
+        assert_eq!(report["window"], serde_json::json!({"mode": "all"}));
+        assert_eq!(report["completed_total"], 3);
+        assert_eq!(report["completed_displayed"], 3);
+        assert_eq!(report["completed_outside_window"], 0);
+        assert_eq!(report["live_total"], 1);
+        assert_eq!(report["live_displayed"], 1);
     }
 
     #[test]
@@ -10701,6 +10890,7 @@ mod tests {
             &args,
             None,
             0,
+            None,
         );
 
         assert_eq!(report["count"], 1);
@@ -10737,6 +10927,7 @@ mod tests {
             &args,
             None,
             0,
+            None,
         );
 
         assert_eq!(report["schema_version"], 8);
@@ -11212,6 +11403,118 @@ mod tests {
                 .collect::<BTreeSet<_>>();
             assert_eq!(record_ids, BTreeSet::from(["finalized", "other"]));
         }
+    }
+
+    #[test]
+    fn recent_history_limits_logical_runs_and_counts_live_rows_separately() {
+        let row = |run_id: &str,
+                   record_id: &str,
+                   corrects: Option<&str>,
+                   commit_digit: char,
+                   finished_at: &str| {
+            let mut value = schema4_receipt_value();
+            value["run_id"] = serde_json::json!(run_id);
+            value["record_id"] = serde_json::json!(record_id);
+            value["commit"] = serde_json::json!(commit_digit.to_string().repeat(40));
+            value["started_at"] = serde_json::json!(finished_at);
+            value["finished_at"] = serde_json::json!(finished_at);
+            if let Some(corrects) = corrects {
+                value["corrects"] = serde_json::json!(corrects);
+            }
+            history_row(value)
+        };
+        let raw = vec![
+            row("run-a", "a-source", None, 'a', "2026-08-01T12:00:00Z"),
+            row(
+                "run-a",
+                "a-final",
+                Some("a-source"),
+                'a',
+                "2026-08-01T12:01:00Z",
+            ),
+            row("run-b", "b", None, 'b', "2026-08-01T12:02:00Z"),
+            row("run-c", "c", None, 'c', "2026-08-01T12:03:00Z"),
+            row("run-d", "d", None, 'd', "2026-08-01T12:04:00Z"),
+        ];
+        let logical = current_validation_run_rows(raw);
+        assert_eq!(
+            logical.len(),
+            4,
+            "five ledger events describe four logical runs"
+        );
+
+        let mut termination = finished_validate_status_entry(
+            CANONICAL_VALIDATE_REPO,
+            logical
+                .iter()
+                .find(|row| row.run_id.as_deref() == Some("run-b"))
+                .unwrap(),
+            false,
+        );
+        termination.finished_at = Some("2026-08-01T12:05:00Z".into());
+        let mut live = finished_validate_status_entry(
+            CANONICAL_VALIDATE_REPO,
+            &row("run-live", "live", None, 'e', "2026-08-01T12:06:00Z"),
+            false,
+        );
+        live.in_progress = true;
+        live.finished_at = None;
+        let current = vec![termination, live];
+        let run_numbers = historical_validate_run_numbers(&logical);
+        let completed = recent_finished_validate_status_entries(
+            &logical,
+            &run_numbers,
+            &current,
+            CANONICAL_VALIDATE_REPO,
+            false,
+        );
+        assert_eq!(
+            completed.len(),
+            3,
+            "the terminal handle replaces its ledger duplicate"
+        );
+
+        let limited = recent_validate_status_view(
+            completed.clone(),
+            current.clone(),
+            RecentHistoryWindow::Limited(2),
+            1,
+        );
+        assert_eq!(limited.entries.len(), 3, "two completed plus one live");
+        assert_eq!(limited.counts.completed_total, 4);
+        assert_eq!(limited.counts.completed_displayed, 2);
+        assert_eq!(limited.counts.completed_outside_window, 2);
+        assert_eq!(limited.counts.live_total, 1);
+        assert_eq!(limited.counts.live_displayed, 1);
+        let note = recent_validate_status_note(limited.counts);
+        assert!(
+            note.contains("showing latest 2 of 4 logical completed run(s)"),
+            "{note}"
+        );
+        assert!(
+            note.contains("1 of 1 live in-progress run(s) shown in addition"),
+            "{note}"
+        );
+        assert!(recent_validate_status_footer(limited.counts)
+            .unwrap()
+            .contains("2 older logical completed run(s) are outside --limit 2"));
+
+        let fewer_than_limit = recent_validate_status_view(
+            completed.clone(),
+            current.clone(),
+            RecentHistoryWindow::Limited(10),
+            1,
+        );
+        assert_eq!(fewer_than_limit.counts.completed_displayed, 4);
+        assert!(recent_validate_status_footer(fewer_than_limit.counts).is_none());
+
+        let all = recent_validate_status_view(completed, current, RecentHistoryWindow::All, 1);
+        assert_eq!(all.counts.completed_total, 4);
+        assert_eq!(all.counts.completed_displayed, 4);
+        assert_eq!(all.entries.len(), 5);
+        assert!(recent_validate_status_note(all.counts)
+            .contains("showing all 4 logical completed run(s)"));
+        assert!(recent_validate_status_footer(all.counts).is_none());
     }
 
     #[test]
@@ -13207,6 +13510,7 @@ mod tests {
         assert_eq!(args.pr, None);
         assert_eq!(args.run_no, None);
         assert_eq!(args.limit, DEFAULT_VALIDATE_HISTORY_LIMIT);
+        assert!(!args.show_all);
         assert_eq!(
             args.columns,
             [
@@ -13263,6 +13567,15 @@ mod tests {
             ]
         );
         assert!(args.exclude_in_progress);
+        let cli = Cli::try_parse_from(["ci-hub", "validate-status", "--show-all"]).unwrap();
+        let HubCommand::ValidateStatus(args) = cli.command else {
+            panic!("wrong command variant")
+        };
+        assert!(args.show_all);
+        assert!(
+            Cli::try_parse_from(["ci-hub", "validate-status", "--show-all", "--limit", "3",])
+                .is_err()
+        );
         assert!(Cli::try_parse_from([
             "ci-hub",
             "validate-status",
@@ -13329,10 +13642,14 @@ mod tests {
             .find_subcommand_mut("validate-status")
             .expect("validate-status subcommand");
         let help = validate_status.render_long_help().to_string();
+        assert!(
+            help.contains("Show every logical completed validation run"),
+            "{help}"
+        );
         let which = help.find("WHICH RESULTS:").expect("selection help group");
         let rendered = help.find("HOW RENDERED:").expect("rendering help group");
         assert!(which < rendered, "{help}");
-        for option in ["--run-no", "--in-progress-only", "--repo"] {
+        for option in ["--run-no", "--show-all", "--in-progress-only", "--repo"] {
             let position = help.find(option).expect("selection option");
             assert!(position > which && position < rendered, "{help}");
         }
