@@ -195,7 +195,11 @@ page() {
         if [ -x "$ESCALATE" ]; then
             local out2 rc2=0 tmp2; tmp2="$(mktemp)"
             printf '%s\n' "$msg" >"$tmp2"
-            out2="$(DG_AGENT_NAME="$ESCALATION_AGENT" "$ESCALATE" \
+            # Through with-proxy: this runs from a scheduled service, which
+            # inherits no proxy variables, and the host has no direct external
+            # route. Without it the publication fails with "network is
+            # unreachable" and the alarm goes no further than this file.
+            out2="$(DG_AGENT_NAME="$ESCALATION_AGENT" with-proxy "$ESCALATE" \
                 --key "$ESCALATION_KEY" \
                 --title "operational health tick is not reporting on $(uname -n)" \
                 --team "$ESCALATION_TEAM" --role relay --message-file "$tmp2" 2>&1)" || rc2=$?

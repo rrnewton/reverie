@@ -120,6 +120,21 @@ def test_a_missing_escalate_does_not_fail_the_tick(bench, tmp_path: Path) -> Non
     assert result["calls"] == []
 
 
+def test_the_publication_goes_through_the_proxy_wrapper() -> None:
+    """A scheduled service inherits no proxy variables and this host has no
+    direct external route. Measured 2026-09-03 from the real unit without it:
+    `dial tcp 140.82.112.5:443: connect: network is unreachable`. The tool
+    reported that honestly rather than claiming delivery, which is the design
+    working -- but needing that refusal every hour is not."""
+    function = extract_function()
+    invocations = [
+        line for line in function.splitlines() if "$ESCALATE" in line and "=" in line
+    ]
+    assert invocations, "the function no longer invokes $ESCALATE; this bracket is stale"
+    for line in invocations:
+        assert "with-proxy" in line, f"unproxied publication: {line.strip()}"
+
+
 def test_the_outcome_is_recorded_whatever_it_was(bench) -> None:
     """A tick that could not publish must say so in the same durable record that
     carries the findings, not only on a stream nobody kept."""

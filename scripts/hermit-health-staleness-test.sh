@@ -286,6 +286,13 @@ check "$([[ $out == *"alerted-coordinator (push OK)"* ]] && echo yes || echo no)
 check "$([[ $out == *"escalation-published rc=0"* ]] && echo yes || echo no)" \
       "both routes up: publication reported" "got: $out"
 
+# The publication runs from a scheduled service with no proxy variables and no
+# direct external route, so it has to go through the same wrapper the tick uses.
+# Measured 2026-09-03 without it: "network is unreachable", and the alarm reached
+# nobody.
+check "$(grep -q 'with-proxy "\$ESCALATE"' "$SCRIPT" && echo yes || echo no)" \
+      "the publication goes through the proxy wrapper"
+
 # --- report -------------------------------------------------------------------
 total=$(( PASS + ${#FAILURES[@]} ))
 if [ ${#FAILURES[@]} -gt 0 ]; then

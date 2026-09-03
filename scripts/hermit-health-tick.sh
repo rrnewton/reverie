@@ -100,6 +100,13 @@ record_live_report_findings() {
 # Bounded and never fatal: this runs from the exit trap as well, so it must fit
 # inside the stop timeout, and a tick whose findings could not be published is
 # still a tick that ran.
+#
+# ⚠️ THROUGH with-proxy, for the same reason health-tick is. A scheduled service
+# inherits no proxy variables and this host has no direct external route.
+# Measured 2026-09-03 without it, from the real unit: `dial tcp 140.82.112.5:443:
+# connect: network is unreachable`, and the alarm was recorded locally and
+# correctly reported as undelivered. That refusal is the design working; needing
+# it every hour is not.
 escalate_live_report_findings() {
     [ "$LIVE_REPORT_ESCALATED" -eq 1 ] && return 0
     [ -n "$LIVE_REPORT_STAMP" ] || return 0
@@ -118,12 +125,12 @@ escalate_live_report_findings() {
     if [ "$count" -eq 0 ]; then
         # Nothing to report. Close a previously opened issue rather than leaving
         # last week's alarm sitting beside this week's.
-        outcome=$(DG_AGENT_NAME="$ESCALATION_AGENT" "$ESCALATE" \
+        outcome=$(DG_AGENT_NAME="$ESCALATION_AGENT" with-proxy "$ESCALATE" \
             --key "$ESCALATION_KEY" --resolve --team "$ESCALATION_TEAM" \
             --role relay 2>&1)
         rc=$?
     else
-        outcome=$(DG_AGENT_NAME="$ESCALATION_AGENT" "$ESCALATE" \
+        outcome=$(DG_AGENT_NAME="$ESCALATION_AGENT" with-proxy "$ESCALATE" \
             --key "$ESCALATION_KEY" \
             --title "operational health tick reports $count finding(s) on $(uname -n)" \
             --team "$ESCALATION_TEAM" --role relay --message-file "$payload" 2>&1)
