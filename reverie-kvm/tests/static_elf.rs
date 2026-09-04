@@ -145,11 +145,21 @@ fn run_host_program(program: &str, argv: &[&str], cwd: &std::path::Path) {
 }
 
 fn compile_c_program(directory: &std::path::Path, name: &str, source: &str) -> PathBuf {
+    compile_c_program_with_args(directory, name, source, &[])
+}
+
+fn compile_c_program_with_args(
+    directory: &std::path::Path,
+    name: &str,
+    source: &str,
+    extra_args: &[&str],
+) -> PathBuf {
     let source_path = directory.join(format!("{name}.c"));
     let executable_path = directory.join(name);
     std::fs::write(&source_path, source).unwrap();
     let output = std::process::Command::new("/usr/bin/gcc")
         .args(["-O2", "-pthread"])
+        .args(extra_args)
         .arg(&source_path)
         .arg("-o")
         .arg(&executable_path)
@@ -430,6 +440,9 @@ fn kvm_available(test: &str) -> bool {
     match Kvm::new() {
         Ok(_) => true,
         Err(error) if kvm_is_unavailable(&error) => {
+            if std::env::var_os("REVERIE_REQUIRE_KVM").is_some() {
+                panic!("{test} requires usable /dev/kvm: {error}");
+            }
             eprintln!("skipping {test}: cannot open /dev/kvm: {error}");
             false
         }
@@ -2199,6 +2212,87 @@ fn static_elf_executes_avx_instruction() {
         .unwrap();
 
     assert_eq!(backend.run_static_elf().unwrap(), 0);
+}
+
+#[test]
+fn dynamic_c_guest_observes_indexed_xstate_cpuid_and_lazy_binding() {
+    if !kvm_available("dynamic_c_guest_observes_indexed_xstate_cpuid_and_lazy_binding") {
+        return;
+    }
+
+    let directory = TestDirectory::new();
+    let executable = compile_c_program_with_args(
+        &directory.0,
+        "indexed-xstate-cpuid",
+        r#"
+#include <cpuid.h>
+#include <stdint.h>
+#include <stdio.h>
+
+struct registers {
+  uint32_t eax;
+  uint32_t ebx;
+  uint32_t ecx;
+  uint32_t edx;
+};
+
+static struct registers cpuid_xstate(uint32_t subleaf) {
+  struct registers result;
+  __cpuid_count(0xd, subleaf, result.eax, result.ebx, result.ecx, result.edx);
+  return result;
+}
+
+static int matches(struct registers actual, struct registers expected) {
+  return actual.eax == expected.eax && actual.ebx == expected.ebx &&
+         actual.ecx == expected.ecx && actual.edx == expected.edx;
+}
+
+int main(void) {
+  static const struct {
+    uint32_t subleaf;
+    struct registers expected;
+  } cases[] = {
+      {0, {0x00000007, 0x00000340, 0x00000340, 0}},
+      {1, {0, 0, 0, 0}},
+      {2, {0x00000100, 0x00000240, 0, 0}},
+      {17, {0, 0, 0, 0}},
+      {18, {0, 0, 0, 0}},
+      {19, {0, 0, 0, 0}},
+  };
+
+  for (uint32_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {
+    if (!matches(cpuid_xstate(cases[i].subleaf), cases[i].expected)) {
+      return 10 + (int)i;
+    }
+  }
+
+  /* The executable is linked for lazy binding, so this first puts call makes
+     the dynamic linker resolve its PLT entry after all CPUID checks pass. */
+  if (puts("indexed xstate cpuid ok") < 0) {
+    return 20;
+  }
+  return 0;
+}
+"#,
+        &["-fno-builtin", "-Wl,-z,lazy"],
+    );
+    let image = std::fs::read(&executable).unwrap();
+    let elf = goblin::elf::Elf::parse(&image).unwrap();
+    assert!(elf.interpreter.is_some(), "test guest must be dynamic");
+    assert!(
+        elf.pltrelocs.iter().any(|relocation| {
+            elf.dynsyms
+                .get(relocation.r_sym)
+                .and_then(|symbol| elf.dynstrtab.get_at(symbol.st_name))
+                == Some("puts")
+        }),
+        "test guest must call puts through a PLT relocation"
+    );
+
+    let executable = executable.to_str().unwrap();
+    let (stdout, stderr) = run_host_program_captured(executable, &[executable], &directory.0);
+    assert_eq!(stdout, b"indexed xstate cpuid ok\n");
+    assert!(stderr.is_empty());
 }
 
 #[test]
