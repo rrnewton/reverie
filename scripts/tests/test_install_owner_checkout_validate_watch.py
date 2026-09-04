@@ -26,6 +26,13 @@ class InstallOwnerCheckoutValidateWatchTests(unittest.TestCase):
         self.log = base / "systemctl.log"
         self.home.mkdir()
         self.bin.mkdir()
+        self.github_helper_source = self.home / "opt" / "gh" / "bin" / "gh"
+        self.github_helper_source.parent.mkdir(parents=True)
+        self.github_helper_source.write_text("#!/bin/sh\nexit 0\n")
+        self.github_helper_source.chmod(0o755)
+        home_bin = self.home / "bin"
+        home_bin.mkdir()
+        (home_bin / "gh").symlink_to(self.github_helper_source)
         systemctl = self.bin / "systemctl"
         systemctl.write_text(
             "#!/usr/bin/env bash\n"
@@ -59,9 +66,14 @@ class InstallOwnerCheckoutValidateWatchTests(unittest.TestCase):
 
         self.assertEqual(0, result.returncode, result.stdout + result.stderr)
         bootstrap = self.home / ".local/libexec/dev-hermit/operational-tool"
+        github_helper = self.home / ".local/libexec/dev-hermit/gh"
         self.assertEqual(BOOTSTRAP_SOURCE.read_bytes(), bootstrap.read_bytes())
         self.assertTrue(os.access(bootstrap, os.X_OK))
         self.assertFalse(bootstrap.stat().st_mode & stat.S_IWUSR)
+        self.assertEqual(self.github_helper_source.read_bytes(), github_helper.read_bytes())
+        self.assertFalse(github_helper.is_symlink())
+        self.assertTrue(os.access(github_helper, os.X_OK))
+        self.assertFalse(github_helper.stat().st_mode & stat.S_IWUSR)
         installed_service = (
             self.config / "systemd/user/hermit-owner-checkout-validate.service"
         ).read_text()
@@ -85,6 +97,7 @@ class InstallOwnerCheckoutValidateWatchTests(unittest.TestCase):
         self.assertIn("timer enabled but not started", result.stdout)
         self.assertIn("source_parent_sha=", result.stdout)
         self.assertIn("bootstrap_sha256=", result.stdout)
+        self.assertIn("github_helper_sha256=", result.stdout)
 
     def test_start_is_explicit_and_follows_install_verification(self) -> None:
         result = self.install("--start")
@@ -102,24 +115,10 @@ class InstallOwnerCheckoutValidateWatchTests(unittest.TestCase):
         )
 
     def test_missing_fixed_credential_helper_refuses_before_installation(self) -> None:
-        fixture_root = Path(self.temporary.name) / "missing-helper-source"
-        fixture_scripts = fixture_root / "scripts"
-        fixture_scripts.mkdir(parents=True)
-        missing_helper = fixture_root / "missing-gh"
-        installer = fixture_scripts / INSTALLER.name
-        installer.write_text(
-            INSTALLER.read_text().replace("/usr/bin/gh", str(missing_helper))
-        )
-        installer.chmod(0o755)
+        missing_helper = self.home / "bin" / "gh"
+        missing_helper.unlink()
 
-        result = subprocess.run(
-            [str(installer)],
-            cwd=fixture_root,
-            env=self.env,
-            text=True,
-            capture_output=True,
-            check=False,
-        )
+        result = self.install()
 
         self.assertEqual(1, result.returncode, result.stdout + result.stderr)
         self.assertIn(
@@ -128,6 +127,9 @@ class InstallOwnerCheckoutValidateWatchTests(unittest.TestCase):
         )
         self.assertFalse(
             (self.home / ".local/libexec/dev-hermit/operational-tool").exists()
+        )
+        self.assertFalse(
+            (self.home / ".local/libexec/dev-hermit/gh").exists()
         )
         self.assertFalse(
             (

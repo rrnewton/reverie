@@ -27,6 +27,13 @@ class InstallWrkslotsAuditTests(unittest.TestCase):
         self.log = base / "systemctl.log"
         self.home.mkdir()
         self.bin.mkdir()
+        self.github_helper_source = self.home / "opt" / "gh" / "bin" / "gh"
+        self.github_helper_source.parent.mkdir(parents=True)
+        self.github_helper_source.write_text("#!/bin/sh\nexit 0\n")
+        self.github_helper_source.chmod(0o755)
+        home_bin = self.home / "bin"
+        home_bin.mkdir()
+        (home_bin / "gh").symlink_to(self.github_helper_source)
         systemctl = self.bin / "systemctl"
         systemctl.write_text(
             "#!/usr/bin/env bash\n"
@@ -57,9 +64,14 @@ class InstallWrkslotsAuditTests(unittest.TestCase):
 
         self.assertEqual(0, result.returncode, result.stdout + result.stderr)
         bootstrap = self.home / ".local/libexec/dev-hermit/operational-tool"
+        github_helper = self.home / ".local/libexec/dev-hermit/gh"
         self.assertEqual(BOOTSTRAP_SOURCE.read_bytes(), bootstrap.read_bytes())
         self.assertTrue(os.access(bootstrap, os.X_OK))
         self.assertFalse(bootstrap.stat().st_mode & stat.S_IWUSR)
+        self.assertEqual(self.github_helper_source.read_bytes(), github_helper.read_bytes())
+        self.assertFalse(github_helper.is_symlink())
+        self.assertTrue(os.access(github_helper, os.X_OK))
+        self.assertFalse(github_helper.stat().st_mode & stat.S_IWUSR)
         unit_dir = self.config / "systemd/user"
         service = (unit_dir / "hermit-wrkslots-audit.service").read_text()
         timer = (unit_dir / "hermit-wrkslots-audit.timer").read_text()
@@ -83,6 +95,14 @@ class InstallWrkslotsAuditTests(unittest.TestCase):
             "--tool-relative scripts/hermit-health-tick.sh",
             health_service,
         )
+        self.assertIn(
+            "Environment=FLEET_REAL_GH=%h/.local/libexec/dev-hermit/gh",
+            health_service,
+        )
+        self.assertIn(
+            "Environment=PATH=%h/.local/libexec/dev-hermit:%h/bin:",
+            health_service,
+        )
         self.assertEqual(
             [
                 "--user daemon-reload",
@@ -93,6 +113,7 @@ class InstallWrkslotsAuditTests(unittest.TestCase):
         self.assertIn("timer enabled but not started", result.stdout)
         self.assertIn("source_parent_sha=", result.stdout)
         self.assertIn("bootstrap_sha256=", result.stdout)
+        self.assertIn("github_helper_sha256=", result.stdout)
 
     def test_start_is_explicit(self) -> None:
         result = self.install("--start")
@@ -113,6 +134,24 @@ class InstallWrkslotsAuditTests(unittest.TestCase):
 
         self.assertEqual(2, result.returncode)
         self.assertIn("usage:", result.stderr)
+        self.assertFalse(self.log.exists())
+
+    def test_missing_github_helper_refuses_before_installation(self) -> None:
+        (self.home / "bin" / "gh").unlink()
+
+        result = self.install()
+
+        self.assertEqual(1, result.returncode, result.stdout + result.stderr)
+        self.assertIn(
+            f"required GitHub credential helper is unavailable: {self.home / 'bin' / 'gh'}",
+            result.stderr,
+        )
+        self.assertFalse(
+            (self.home / ".local/libexec/dev-hermit/operational-tool").exists()
+        )
+        self.assertFalse(
+            (self.home / ".local/libexec/dev-hermit/gh").exists()
+        )
         self.assertFalse(self.log.exists())
 
 

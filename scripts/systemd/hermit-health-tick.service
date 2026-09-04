@@ -7,7 +7,8 @@ Type=oneshot
 # %h, not a literal home and not $HOME: systemd does not expand shell variables
 # in ExecStart/WorkingDirectory, and a hardcoded owner path fails the parent's
 # portability gate.
-Environment=PATH=%h/.cargo/bin:%h/orc-bin:/usr/local/bin:/usr/bin:/bin
+Environment=PATH=%h/.local/libexec/dev-hermit:%h/bin:%h/.local/bin:%h/.cargo/bin:%h/orc-bin:/usr/local/bin:/usr/bin:/bin
+Environment=FLEET_REAL_GH=%h/.local/libexec/dev-hermit/gh
 WorkingDirectory=%h
 # The installed bootstrap materializes and verifies current origin/main before
 # it executes the version-controlled health wrapper. The shared parent checkout

@@ -2272,6 +2272,7 @@ class HealthTickParentSyncTests(unittest.TestCase):
         self.bin = base / "bin"
         self.log = self.home / ".local" / "state" / "hermit-health-tick-invocations.log"
         self.lock = base / "parent-main.lock"
+        self.github_helper = self.home / ".local" / "libexec" / "dev-hermit" / "gh"
 
         agent_utils = base / "agent-utils-source"
         git(base, "init", "--initial-branch=main", str(agent_utils))
@@ -2311,6 +2312,9 @@ class HealthTickParentSyncTests(unittest.TestCase):
         self.repo.mkdir(parents=True)
         self.bin.mkdir()
         self.log.parent.mkdir(parents=True)
+        self.github_helper.parent.mkdir(parents=True)
+        self.github_helper.write_text("#!/bin/sh\nexit 0\n")
+        self.github_helper.chmod(0o555)
         git(base, "init", "--bare", "--initial-branch=main", str(self.remote))
         git(self.repo, "init", "--initial-branch=main")
         git(self.repo, "config", "user.name", "Tick Test")
@@ -3360,7 +3364,7 @@ print(json.dumps({
             ")\n"
             "if is_wrapper_network:\n"
             "    configs = [args[index + 1] for index, value in enumerate(args[:-1]) if value == '-c']\n"
-            "    expected = 'credential.https://github.com.helper=!/usr/bin/gh auth git-credential'\n"
+            f"    expected = 'credential.https://github.com.helper=!{self.github_helper} auth git-credential'\n"
             "    if 'credential.https://github.com.helper=' not in configs or expected not in configs:\n"
             "        print('fatal: authentication required', file=sys.stderr)\n"
             "        raise SystemExit(128)\n"
@@ -3409,14 +3413,7 @@ print(json.dumps({
         self,
     ) -> None:
         bootstrap = self.installed_bootstrap()
-        bootstrap.chmod(0o755)
-        bootstrap.write_text(
-            bootstrap.read_text().replace(
-                'GITHUB_CREDENTIAL_HELPER="/usr/bin/gh"',
-                f'GITHUB_CREDENTIAL_HELPER="{self.base / "missing-gh"}"',
-            )
-        )
-        bootstrap.chmod(0o555)
+        self.github_helper.unlink()
 
         result = self.run_current_tool(
             bootstrap, "scripts/owner-checkout-validate-watch.py", "--dry-run"

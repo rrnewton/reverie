@@ -75,7 +75,7 @@ TOOL_CACHE="${DEV_HERMIT_TOOL_CACHE:-${HERMIT_HEALTH_TOOL_CACHE:-$HOME/.local/st
 CANONICAL_REPOSITORY="rrnewton/dev-hermit"
 CANONICAL_REMOTE_URL="https://github.com/rrnewton/dev-hermit.git"
 GIT_TRANSPORT_ALLOWLIST="https"
-GITHUB_CREDENTIAL_HELPER="/usr/bin/gh"
+GITHUB_CREDENTIAL_HELPER="${HOME:?HOME must be set}/.local/libexec/dev-hermit/gh"
 
 ts() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 

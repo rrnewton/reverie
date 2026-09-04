@@ -71,6 +71,11 @@ def test_health_tick_uses_the_installed_immutable_bootstrap() -> None:
     assert "--state-root %h/work/dev-hermit" in service
     assert "--tool-relative scripts/hermit-health-tick.sh" in service
     assert "ExecStart=%h/work/dev-hermit/scripts/hermit-health-tick.sh" not in service
+    assert (
+        "Environment=PATH=%h/.local/libexec/dev-hermit:%h/bin:%h/.local/bin:"
+        in service
+    )
+    assert "Environment=FLEET_REAL_GH=%h/.local/libexec/dev-hermit/gh" in service
 
 
 def test_staleness_alarm_preserves_three_missed_tick_threshold() -> None:

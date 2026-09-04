@@ -5,6 +5,8 @@ root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 unit_dir=${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user
 libexec_dir=$HOME/.local/libexec/dev-hermit
 bootstrap=$libexec_dir/operational-tool
+github_helper_source=$HOME/bin/gh
+github_helper=$libexec_dir/gh
 start=0
 
 if [[ ${1:-} == --start ]]; then
@@ -16,12 +18,29 @@ if [[ $# -ne 0 ]]; then
     exit 2
 fi
 
-if [[ -L /usr/bin/gh || ! -f /usr/bin/gh || ! -x /usr/bin/gh ]]; then
-    printf 'owner-watch install: required GitHub credential helper is unavailable: /usr/bin/gh\n' >&2
+github_helper_fd=
+if ! exec {github_helper_fd}<"$github_helper_source"; then
+    printf 'owner-watch install: required GitHub credential helper is unavailable: %s\n' \
+        "$github_helper_source" >&2
+    exit 1
+fi
+github_helper_source_fd=/proc/self/fd/$github_helper_fd
+if [[ ! -f $github_helper_source_fd || ! -x $github_helper_source_fd ]]; then
+    printf 'owner-watch install: required GitHub credential helper is unavailable: %s\n' \
+        "$github_helper_source" >&2
     exit 1
 fi
 
 install -d -m 0755 "$unit_dir" "$libexec_dir"
+github_helper_staging=$(mktemp "$libexec_dir/.gh.XXXXXX")
+trap '[[ -z ${github_helper_staging:-} ]] || rm -f -- "$github_helper_staging"' EXIT
+install -m 0555 "$github_helper_source_fd" "$github_helper_staging"
+cmp --silent "$github_helper_source_fd" "$github_helper_staging" || {
+    printf 'owner-watch install: staged GitHub credential helper differs from source\n' >&2
+    exit 1
+}
+mv -fT -- "$github_helper_staging" "$github_helper"
+github_helper_staging=
 install -m 0555 "$root/scripts/hermit-health-tick.sh" "$bootstrap"
 install -m 0644 "$root/scripts/systemd/hermit-owner-checkout-validate.service" "$unit_dir/"
 install -m 0644 "$root/scripts/systemd/hermit-owner-checkout-validate.timer" "$unit_dir/"
@@ -30,6 +49,15 @@ cmp --silent "$root/scripts/hermit-health-tick.sh" "$bootstrap" || {
     printf 'owner-watch install: installed operational bootstrap differs from source\n' >&2
     exit 1
 }
+[[ ! -L $github_helper && -f $github_helper && -x $github_helper ]] || {
+    printf 'owner-watch install: installed GitHub credential helper is not a regular executable\n' >&2
+    exit 1
+}
+cmp --silent "$github_helper_source_fd" "$github_helper" || {
+    printf 'owner-watch install: installed GitHub credential helper differs from source\n' >&2
+    exit 1
+}
+exec {github_helper_fd}<&-
 grep -Fq "ExecStart=%h/.local/libexec/dev-hermit/operational-tool --run-current-tool" \
     "$unit_dir/hermit-owner-checkout-validate.service" || {
     printf 'owner-watch install: service does not execute the installed bootstrap\n' >&2
@@ -41,8 +69,9 @@ systemctl --user enable hermit-owner-checkout-validate.timer
 
 source_head=$(git -C "$root" rev-parse --verify 'HEAD^{commit}')
 bootstrap_sha=$(sha256sum -- "$bootstrap" | awk '{print $1}')
-printf 'owner-watch install: source_parent_sha=%s bootstrap_sha256=%s bootstrap=%s\n' \
-    "$source_head" "$bootstrap_sha" "$bootstrap"
+github_helper_sha=$(sha256sum -- "$github_helper" | awk '{print $1}')
+printf 'owner-watch install: source_parent_sha=%s bootstrap_sha256=%s bootstrap=%s github_helper_sha256=%s github_helper=%s\n' \
+    "$source_head" "$bootstrap_sha" "$bootstrap" "$github_helper_sha" "$github_helper"
 
 if [[ $start -eq 1 ]]; then
     systemctl --user start hermit-owner-checkout-validate.timer
