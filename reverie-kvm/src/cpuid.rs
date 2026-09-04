@@ -7,6 +7,7 @@
  */
 
 use kvm_bindings::CpuId;
+use kvm_bindings::KVM_CPUID_FLAG_SIGNIFCANT_INDEX;
 use kvm_bindings::kvm_cpuid_entry2;
 
 use crate::Error;
@@ -106,6 +107,11 @@ fn deterministic_cpuid_table() -> CpuId {
         .filter(|(_, registers)| **registers != [0; 4])
         .map(|(function, registers)| cpuid_entry(function as u32, *registers))
         .chain(
+            DETERMINISTIC_XSTATE_CPUIDS
+                .iter()
+                .map(|(index, registers)| indexed_cpuid_entry(0xd, *index, *registers)),
+        )
+        .chain(
             DETERMINISTIC_EXTENDED_CPUIDS
                 .iter()
                 .enumerate()
@@ -113,7 +119,21 @@ fn deterministic_cpuid_table() -> CpuId {
                 .map(|(offset, registers)| cpuid_entry(0x8000_0000 + offset as u32, *registers)),
         )
         .collect::<Vec<_>>();
+    assert_unique_function_indices(&entries);
     CpuId::from_entries(&entries).expect("fixed CPUID profile must fit in KVM's table")
+}
+
+fn assert_unique_function_indices(entries: &[kvm_cpuid_entry2]) {
+    for (position, entry) in entries.iter().enumerate() {
+        assert!(
+            !entries[..position].iter().any(|previous| {
+                previous.function == entry.function && previous.index == entry.index
+            }),
+            "fixed CPUID profile contains duplicate leaf {:#x}, subleaf {:#x}",
+            entry.function,
+            entry.index,
+        );
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -195,6 +215,23 @@ fn cpuid_entry(function: u32, [eax, ebx, ecx, edx]: [u32; 4]) -> kvm_cpuid_entry
     }
 }
 
+fn indexed_cpuid_entry(
+    function: u32,
+    index: u32,
+    [eax, ebx, ecx, edx]: [u32; 4],
+) -> kvm_cpuid_entry2 {
+    kvm_cpuid_entry2 {
+        function,
+        index,
+        flags: KVM_CPUID_FLAG_SIGNIFCANT_INDEX,
+        eax,
+        ebx,
+        ecx,
+        edx,
+        ..Default::default()
+    }
+}
+
 // This starts from Detcore's fixed profile and narrows it to backend-safe
 // features. AVX remains enabled because the userspace-only guest must provide
 // the extended register state expected by host executables and dynamic
@@ -219,7 +256,6 @@ const DETERMINISTIC_STANDARD_CPUIDS: &[[u32; 4]] = &[
     [0x0000_0000, 0x0000_0000, 0x0000_0000, 0x0000_0000],
     [0x0000_0000, 0x0000_0001, 0x0000_0100, 0x0000_0001],
     [0x0000_0000, 0x0000_0000, 0x0000_0000, 0x0000_0000],
-    [0x0000_0007, 0x0000_0340, 0x0000_0340, 0x0000_0000],
     [0x0000_0000, 0x0000_0000, 0x0000_0000, 0x0000_0000],
     [0x0000_0000, 0x0000_0000, 0x0000_0000, 0x0000_0000],
     [0x0000_0000, 0x0000_0000, 0x0000_0000, 0x0000_0000],
@@ -227,6 +263,20 @@ const DETERMINISTIC_STANDARD_CPUIDS: &[[u32; 4]] = &[
     [0x0000_0000, 0x0000_0000, 0x0000_0000, 0x0000_0000],
     [0x0000_0000, 0x0000_0000, 0x0000_0000, 0x0000_0000],
     [0x0000_0000, 0x0000_0000, 0x0000_0000, 0x0000_0000],
+    [0x0000_0000, 0x0000_0000, 0x0000_0000, 0x0000_0000],
+];
+
+// CPUID leaf 0xd uses ECX as a subleaf selector. KVM only consults `index`
+// when KVM_CPUID_FLAG_SIGNIFCANT_INDEX is set, and it returns the first
+// matching row. Keep every subleaf in one table and reject duplicate keys so a
+// later row cannot become silently unreachable.
+const DETERMINISTIC_XSTATE_CPUIDS: &[(u32, [u32; 4])] = &[
+    (0, [0x0000_0007, 0x0000_0340, 0x0000_0340, 0x0000_0000]),
+    (1, [0x0000_0000, 0x0000_0000, 0x0000_0000, 0x0000_0000]),
+    (2, [0x0000_0100, 0x0000_0240, 0x0000_0000, 0x0000_0000]),
+    (17, [0x0000_0000, 0x0000_0000, 0x0000_0000, 0x0000_0000]),
+    (18, [0x0000_0000, 0x0000_0000, 0x0000_0000, 0x0000_0000]),
+    (19, [0x0000_0000, 0x0000_0000, 0x0000_0000, 0x0000_0000]),
 ];
 
 const DETERMINISTIC_EXTENDED_CPUIDS: &[[u32; 4]] = &[
@@ -301,29 +351,48 @@ mod tests {
                 .chain(DETERMINISTIC_EXTENDED_CPUIDS)
                 .filter(|registers| **registers != [0; 4])
                 .count()
+                + DETERMINISTIC_XSTATE_CPUIDS.len()
         );
-        let leaf = |function| {
+        let leaf = |function, index| {
             entries
                 .iter()
-                .find(|entry| entry.function == function)
+                .find(|entry| entry.function == function && entry.index == index)
                 .unwrap()
         };
-        assert_eq!(leaf(0).eax, 0x0000_000d);
-        assert_eq!(leaf(0).ebx, u32::from_le_bytes(*b"Genu"));
-        assert_eq!(leaf(0).ecx, u32::from_le_bytes(*b"ntel"));
-        assert_eq!(leaf(0).edx, u32::from_le_bytes(*b"ineI"));
-        assert_eq!(leaf(1).eax, 0x0000_0663);
-        assert_eq!(leaf(1).ecx & bit(30), 0);
+        assert_eq!(leaf(0, 0).eax, 0x0000_000d);
+        assert_eq!(leaf(0, 0).ebx, u32::from_le_bytes(*b"Genu"));
+        assert_eq!(leaf(0, 0).ecx, u32::from_le_bytes(*b"ntel"));
+        assert_eq!(leaf(0, 0).edx, u32::from_le_bytes(*b"ineI"));
+        assert_eq!(leaf(1, 0).eax, 0x0000_0663);
+        assert_eq!(leaf(1, 0).ecx & bit(30), 0);
         assert_eq!(
-            leaf(1).ecx & (bit(26) | bit(27) | bit(28)),
+            leaf(1, 0).ecx & (bit(26) | bit(27) | bit(28)),
             bit(26) | bit(27) | bit(28)
         );
         assert!(entries.iter().all(|entry| entry.function != 7));
-        assert_eq!(leaf(0xd).eax & 0x7, 0x7);
-        assert_eq!(leaf(0x8000_0000).eax, 0x8000_000a);
-        assert_eq!(leaf(0x8000_0000).ebx, u32::from_le_bytes(*b"Genu"));
-        assert_eq!(leaf(0x8000_0000).ecx, u32::from_le_bytes(*b"ntel"));
-        assert_eq!(leaf(0x8000_0000).edx, u32::from_le_bytes(*b"ineI"));
+        assert_eq!(leaf(0xd, 0).eax & 0x7, 0x7);
+        assert_eq!(leaf(0x8000_0000, 0).eax, 0x8000_000a);
+        assert_eq!(leaf(0x8000_0000, 0).ebx, u32::from_le_bytes(*b"Genu"));
+        assert_eq!(leaf(0x8000_0000, 0).ecx, u32::from_le_bytes(*b"ntel"));
+        assert_eq!(leaf(0x8000_0000, 0).edx, u32::from_le_bytes(*b"ineI"));
+    }
+
+    #[test]
+    fn deterministic_xstate_subleaves_are_indexed_and_unique() {
+        let cpuid = deterministic_cpuid_table();
+        let entries = cpuid.as_slice();
+
+        assert_unique_function_indices(entries);
+        let xstate = entries
+            .iter()
+            .filter(|entry| entry.function == 0xd)
+            .collect::<Vec<_>>();
+        assert_eq!(xstate.len(), DETERMINISTIC_XSTATE_CPUIDS.len());
+        for (entry, (index, registers)) in xstate.iter().zip(DETERMINISTIC_XSTATE_CPUIDS) {
+            assert_eq!(entry.index, *index);
+            assert_eq!(entry.flags, KVM_CPUID_FLAG_SIGNIFCANT_INDEX);
+            assert_eq!([entry.eax, entry.ebx, entry.ecx, entry.edx], *registers);
+        }
     }
 
     #[test]

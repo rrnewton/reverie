@@ -37,6 +37,20 @@ fn kvm_is_unavailable(error: &kvm_ioctls::Error) -> bool {
     matches!(error.errno(), libc::ENOENT | libc::EACCES | libc::EPERM)
 }
 
+fn kvm_available(test: &str) -> bool {
+    match Kvm::new() {
+        Ok(_) => true,
+        Err(error) if kvm_is_unavailable(&error) => {
+            if std::env::var_os("REVERIE_REQUIRE_KVM").is_some() {
+                panic!("{test} requires usable /dev/kvm: {error}");
+            }
+            eprintln!("skipping {test}: cannot open /dev/kvm: {error}");
+            false
+        }
+        Err(error) => panic!("failed to probe /dev/kvm: {error}"),
+    }
+}
+
 #[test]
 fn identifies_unavailable_kvm_errors() {
     for errno in [libc::ENOENT, libc::EACCES, libc::EPERM] {
@@ -50,13 +64,8 @@ fn identifies_unavailable_kvm_errors() {
 
 #[test]
 fn guest_write_syscall_is_intercepted_via_vmcall() {
-    match Kvm::new() {
-        Ok(_) => {}
-        Err(error) if kvm_is_unavailable(&error) => {
-            eprintln!("skipping KVM vmcall test: cannot open /dev/kvm: {error}");
-            return;
-        }
-        Err(error) => panic!("failed to probe /dev/kvm: {error}"),
+    if !kvm_available("guest_write_syscall_is_intercepted_via_vmcall") {
+        return;
     }
 
     let mut backend = KvmBackend::new(MEMORY_SIZE).unwrap();
@@ -88,13 +97,8 @@ fn guest_write_syscall_is_intercepted_via_vmcall() {
 
 #[test]
 fn guest_program_routes_required_syscalls_via_vmcall() {
-    match Kvm::new() {
-        Ok(_) => {}
-        Err(error) if kvm_is_unavailable(&error) => {
-            eprintln!("skipping KVM vmcall test: cannot open /dev/kvm: {error}");
-            return;
-        }
-        Err(error) => panic!("failed to probe /dev/kvm: {error}"),
+    if !kvm_available("guest_program_routes_required_syscalls_via_vmcall") {
+        return;
     }
 
     let expected = [
@@ -127,13 +131,8 @@ fn guest_program_routes_required_syscalls_via_vmcall() {
 
 #[test]
 fn deterministic_cpuid_policy_is_visible_inside_vm() {
-    match Kvm::new() {
-        Ok(_) => {}
-        Err(error) if kvm_is_unavailable(&error) => {
-            eprintln!("skipping KVM CPUID test: cannot open /dev/kvm: {error}");
-            return;
-        }
-        Err(error) => panic!("failed to probe /dev/kvm: {error}"),
+    if !kvm_available("deterministic_cpuid_policy_is_visible_inside_vm") {
+        return;
     }
 
     let mut program = Vec::new();
@@ -142,11 +141,16 @@ fn deterministic_cpuid_policy_is_visible_inside_vm() {
     append_cpuid_probe(&mut program, 7, 0, CPUID_RESULT_ADDRESS + 32);
     append_cpuid_probe(&mut program, 7, 1, CPUID_RESULT_ADDRESS + 48);
     append_cpuid_probe(&mut program, 0xd, 0, CPUID_RESULT_ADDRESS + 64);
-    append_cpuid_probe(&mut program, 2, 0, CPUID_RESULT_ADDRESS + 80);
-    append_cpuid_probe(&mut program, 0x8000_0000, 0, CPUID_RESULT_ADDRESS + 96);
-    append_cpuid_probe(&mut program, 0x8000_0001, 0, CPUID_RESULT_ADDRESS + 112);
-    append_cpuid_probe(&mut program, 0x15, 0, CPUID_RESULT_ADDRESS + 128);
-    append_cpuid_probe(&mut program, 0x8000_000b, 0, CPUID_RESULT_ADDRESS + 144);
+    append_cpuid_probe(&mut program, 0xd, 1, CPUID_RESULT_ADDRESS + 80);
+    append_cpuid_probe(&mut program, 0xd, 2, CPUID_RESULT_ADDRESS + 96);
+    append_cpuid_probe(&mut program, 0xd, 17, CPUID_RESULT_ADDRESS + 112);
+    append_cpuid_probe(&mut program, 0xd, 18, CPUID_RESULT_ADDRESS + 128);
+    append_cpuid_probe(&mut program, 0xd, 19, CPUID_RESULT_ADDRESS + 144);
+    append_cpuid_probe(&mut program, 2, 0, CPUID_RESULT_ADDRESS + 160);
+    append_cpuid_probe(&mut program, 0x8000_0000, 0, CPUID_RESULT_ADDRESS + 176);
+    append_cpuid_probe(&mut program, 0x8000_0001, 0, CPUID_RESULT_ADDRESS + 192);
+    append_cpuid_probe(&mut program, 0x15, 0, CPUID_RESULT_ADDRESS + 208);
+    append_cpuid_probe(&mut program, 0x8000_000b, 0, CPUID_RESULT_ADDRESS + 224);
     program.push(0xf4); // hlt
 
     let mut backend = KvmBackend::new(MEMORY_SIZE).unwrap();
@@ -180,27 +184,44 @@ fn deterministic_cpuid_policy_is_visible_inside_vm() {
     assert_eq!(leaf7_subleaf1, [0; 4]);
 
     let xstate = read_cpuid_result(&backend, CPUID_RESULT_ADDRESS + 64);
-    assert_eq!(xstate[0] & 0x7, 0x7);
-
+    // This real-mode program runs before the long-mode bootstrap enables the
+    // YMM state in XCR0, so KVM derives EBX from the currently enabled state
+    // while ECX continues to report the fixed maximum size.
+    assert_eq!(xstate, [0x0000_0007, 0x0000_0240, 0x0000_0340, 0]);
     assert_eq!(
         read_cpuid_result(&backend, CPUID_RESULT_ADDRESS + 80),
+        [0; 4],
+    );
+    assert_eq!(
+        read_cpuid_result(&backend, CPUID_RESULT_ADDRESS + 96),
+        [0x0000_0100, 0x0000_0240, 0, 0],
+    );
+    for offset in [112, 128, 144] {
+        assert_eq!(
+            read_cpuid_result(&backend, CPUID_RESULT_ADDRESS + offset),
+            [0; 4],
+        );
+    }
+
+    assert_eq!(
+        read_cpuid_result(&backend, CPUID_RESULT_ADDRESS + 160),
         [0x0000_0001, 0x0000_0000, 0x0000_004d, 0x002c_307d],
     );
-    let extended = read_cpuid_result(&backend, CPUID_RESULT_ADDRESS + 96);
+    let extended = read_cpuid_result(&backend, CPUID_RESULT_ADDRESS + 176);
     assert_eq!(extended[0], 0x8000_000a);
     assert_eq!(extended[1], u32::from_le_bytes(*b"Genu"));
     assert_eq!(extended[2], u32::from_le_bytes(*b"ntel"));
     assert_eq!(extended[3], u32::from_le_bytes(*b"ineI"));
     assert_eq!(
-        read_cpuid_result(&backend, CPUID_RESULT_ADDRESS + 112),
+        read_cpuid_result(&backend, CPUID_RESULT_ADDRESS + 192),
         [0x0000_0663, 0x0000_0000, 0x0000_0001, 0x2010_0800],
     );
     assert_eq!(
-        read_cpuid_result(&backend, CPUID_RESULT_ADDRESS + 128),
+        read_cpuid_result(&backend, CPUID_RESULT_ADDRESS + 208),
         xstate,
     );
     assert_eq!(
-        read_cpuid_result(&backend, CPUID_RESULT_ADDRESS + 144),
+        read_cpuid_result(&backend, CPUID_RESULT_ADDRESS + 224),
         xstate,
     );
 }
@@ -309,13 +330,8 @@ impl Tool for RecordingTool {
 
 #[test]
 fn guest_write_syscall_runs_shared_reverie_tool() {
-    match Kvm::new() {
-        Ok(_) => {}
-        Err(error) if kvm_is_unavailable(&error) => {
-            eprintln!("skipping KVM Reverie Tool test: cannot open /dev/kvm: {error}");
-            return;
-        }
-        Err(error) => panic!("failed to probe /dev/kvm: {error}"),
+    if !kvm_available("guest_write_syscall_runs_shared_reverie_tool") {
+        return;
     }
 
     let mut backend = KvmBackend::new(MEMORY_SIZE).unwrap();
@@ -343,13 +359,8 @@ fn guest_write_syscall_runs_shared_reverie_tool() {
 
 #[test]
 fn default_tool_handler_tail_injects_through_executor() {
-    match Kvm::new() {
-        Ok(_) => {}
-        Err(error) if kvm_is_unavailable(&error) => {
-            eprintln!("skipping KVM tail-injection test: cannot open /dev/kvm: {error}");
-            return;
-        }
-        Err(error) => panic!("failed to probe /dev/kvm: {error}"),
+    if !kvm_available("default_tool_handler_tail_injects_through_executor") {
+        return;
     }
 
     let mut backend = KvmBackend::new(MEMORY_SIZE).unwrap();
