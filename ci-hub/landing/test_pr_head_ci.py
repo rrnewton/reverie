@@ -48,10 +48,15 @@ class FakeRun:
         self.validation_stdout = validation_stdout
         self.validation_stderr = validation_stderr
         self.commands = []
+        self.environments = []
 
-    def __call__(self, command, **_kwargs):
+    def __call__(self, command, **kwargs):
         command = list(command)
         self.commands.append(command)
+        environment = kwargs.get("env")
+        self.environments.append(
+            dict(environment) if isinstance(environment, dict) else None
+        )
         if command[:5] == [
             "git",
             "--no-optional-locks",
@@ -159,6 +164,33 @@ class PrHeadCiTest(unittest.TestCase):
         self.assertIn("--materialize-target", command)
         self.assertNotEqual(command[0], str(P.ROOT / "ci-hub/ci-hub"))
 
+    def test_operational_tool_child_drops_ambient_git_repository_selectors(self):
+        hostile = {
+            **TEST_ENVIRONMENT,
+            "PATH": "/safe/bin",
+            **{
+                name: f"hostile-{name}"
+                for name in P.git_env.GIT_REPOSITORY_ENV
+            },
+        }
+        run = FakeRun(
+            heads=[OLD, OLD], verdicts=["NOT-VALIDATED", "VALIDATED"]
+        )
+
+        rc = P.main(self.args("--execute"), run=run, environment=hostile)
+
+        self.assertEqual(0, rc)
+        validation_index = next(
+            index
+            for index, command in enumerate(run.commands)
+            if "validate-run" in command
+        )
+        child = run.environments[validation_index]
+        self.assertIsNotNone(child)
+        assert child is not None
+        self.assertEqual("/safe/bin", child["PATH"])
+        self.assertTrue(P.git_env.GIT_REPOSITORY_ENV.isdisjoint(child))
+
     def test_launch_descriptor_binds_canonical_state_identity_and_executing_head(self):
         run = FakeRun()
 
@@ -244,6 +276,131 @@ class PrHeadCiTest(unittest.TestCase):
             )
         ]
         self.assertLess(parking.index("WT_MUTATED"), parking.index("git -C"))
+        self.assertLess(
+            parking.index("WT_LAST_OWNED_STATE"),
+            parking.index('checkout -q --detach "$ORIG"'),
+        )
+        restore = script[
+            script.index("restore_entry_checkout(){") : script.index(
+                "\n}\ntrap restore_entry_checkout", script.index("restore_entry_checkout(){")
+            )
+        ]
+        self.assertIn("lander_restore_owned_checkout", restore)
+        self.assertIn("MUTATION_FENCE_OWNER", restore)
+        outer = script[script.index('if [ "$INNER" -eq 0 ]; then') :]
+        self.assertIn('--_mutation-fence "$MUTATION_FENCE"', outer)
+        self.assertIn('--_mutation-token "$MUTATION_TOKEN"', outer)
+        self.assertLess(
+            outer.index("restore_entry_checkout", outer.index("rc=$?")),
+            outer.index('case "$rc" in'),
+        )
+
+    def test_outer_restores_killed_inner_only_while_fence_state_is_owned(self):
+        helper = P.ROOT / "ci-hub/landing/worktree-mutation-fence.sh"
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = Path(temporary) / "repo"
+            subprocess.run(
+                ["git", "init", "-b", "main", str(repo)],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            subprocess.run(
+                ["git", "-C", str(repo), "config", "user.name", "Test User"],
+                check=True,
+            )
+            subprocess.run(
+                ["git", "-C", str(repo), "config", "user.email", "test@example.com"],
+                check=True,
+            )
+            (repo / "state").write_text("main\n")
+            subprocess.run(["git", "-C", str(repo), "add", "state"], check=True)
+            subprocess.run(
+                ["git", "-C", str(repo), "commit", "-m", "main"],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            for branch in ("lander", "external"):
+                subprocess.run(
+                    ["git", "-C", str(repo), "checkout", "-q", "-b", branch, "main"],
+                    check=True,
+                )
+                (repo / "state").write_text(f"{branch}\n")
+                subprocess.run(["git", "-C", str(repo), "add", "state"], check=True)
+                subprocess.run(
+                    ["git", "-C", str(repo), "commit", "-m", branch],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+
+            harness = r'''
+set -uo pipefail
+helper=$1
+checkout=$2
+fence=$3
+token=$4
+external=$5
+source "$helper"
+entry=$(lander_checkout_state "$checkout")
+: >"$fence"
+bash -c '
+  set -uo pipefail
+  source "$1"
+  git -C "$2" checkout -q lander
+  lander_record_checkout_mutation "$2" "$3" "$4" "$5" lander
+  while :; do sleep 1; done
+' land-pr-inner "$helper" "$checkout" "$entry" "$fence" "$token" &
+inner=$!
+for _attempt in $(seq 1 100); do
+  [ -s "$fence" ] && break
+  sleep 0.01
+done
+[ -s "$fence" ] || { kill -KILL "$inner" 2>/dev/null || true; exit 9; }
+kill -KILL "$inner"
+wait "$inner" 2>/dev/null || true
+if [ "$external" -eq 1 ]; then
+  git -C "$checkout" checkout -q external
+fi
+lander_restore_owned_checkout "$checkout" main 0 "$entry" "$fence" "$token" 1
+'''
+            for external, expected in ((False, "main"), (True, "external")):
+                with self.subTest(external=external):
+                    subprocess.run(
+                        ["git", "-C", str(repo), "checkout", "-q", "main"],
+                        check=True,
+                    )
+                    fence = Path(temporary) / f"mutation-{int(external)}.state"
+                    token = ("ab" if external else "cd") * 16
+                    result = subprocess.run(
+                        [
+                            "bash",
+                            "-c",
+                            harness,
+                            "land-pr-outer",
+                            str(helper),
+                            str(repo),
+                            str(fence),
+                            token,
+                            "1" if external else "0",
+                        ],
+                        check=True,
+                        capture_output=True,
+                        text=True,
+                    )
+                    branch = subprocess.run(
+                        ["git", "-C", str(repo), "symbolic-ref", "--short", "HEAD"],
+                        check=True,
+                        capture_output=True,
+                        text=True,
+                    ).stdout.strip()
+                    self.assertEqual(expected, branch, result.stderr)
+                    if external:
+                        self.assertTrue(fence.is_file())
+                        self.assertIn("current state is not lander-owned", result.stderr)
+                    else:
+                        self.assertFalse(fence.exists())
 
     def test_could_not_run_relays_exact_refusal_without_becoming_product_failure(self):
         refusal = (

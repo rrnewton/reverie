@@ -251,6 +251,8 @@ class FakeRun:
     def __call__(self, command: list[str], **kwargs: object):
         self.commands.append(command)
         cwd = kwargs.get("cwd")
+        child_environment = kwargs.get("env")
+        self.last_child_environment = child_environment
         self.command_cwds.append(
             (command, cwd if isinstance(cwd, Path) else Path(cwd) if cwd else None)
         )
@@ -276,6 +278,11 @@ class FakeRun:
                     check=True,
                     capture_output=True,
                     text=True,
+                    env=(
+                        dict(child_environment)
+                        if isinstance(child_environment, dict)
+                        else None
+                    ),
                 )
             else:
                 self._materialize_fresh_checkout()
@@ -363,6 +370,11 @@ class FakeRun:
                         check=True,
                         capture_output=True,
                         text=True,
+                        env=(
+                            dict(child_environment)
+                            if isinstance(child_environment, dict)
+                            else None
+                        ),
                     )
                 else:
                     shutil.rmtree(self.fresh, ignore_errors=True)
@@ -470,6 +482,7 @@ class FakeRun:
             )
 
     def _run_after_checkout_setup(self, command: list[str]):
+        environment = getattr(self, "last_child_environment", None)
         if command[:2] == ["rm", "-rf"]:
             shutil.rmtree(command[-1], ignore_errors=True)
             return completed(command)
@@ -488,6 +501,11 @@ class FakeRun:
                 check=False,
                 capture_output=True,
                 text=True,
+                env=(
+                    dict(environment)
+                    if isinstance(environment, dict)
+                    else None
+                ),
             )
         if command[:5] == ["git", "-C", str(self.checkout), "remote", "get-url"]:
             return completed(command, stdout="https://github.com/rrnewton/hermit.git\n")
@@ -842,6 +860,7 @@ class StartUnitTest(unittest.TestCase):
         *,
         run: start_unit.Runner | None = None,
         target: str = SHA,
+        environment: dict[str, str] | None = None,
     ) -> tuple[int, str, str]:
         out = io.StringIO()
         err = io.StringIO()
@@ -862,7 +881,7 @@ class StartUnitTest(unittest.TestCase):
             rc = start_unit.main(
                 argv,
                 run=run or self.fake,
-                environment=self.environment,
+                environment=self.environment if environment is None else environment,
                 root=self.root,
                 sleep=lambda _seconds: None,
             )
@@ -993,6 +1012,87 @@ class StartUnitTest(unittest.TestCase):
         self.fake.source_target = target
         self.fake.real_source_git = True
         return target
+
+    def initialize_hostile_git_redirect(
+        self, *, dirty_source: bool
+    ) -> tuple[str, str, dict[str, str]]:
+        """Create a repository-selector environment that lies about source state."""
+        subprocess.run(
+            ["git", "init", "-b", "caller-branch", str(self.checkout)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        for key, value in (("user.name", "Test User"), ("user.email", "test@example.com")):
+            subprocess.run(
+                ["git", "-C", str(self.checkout), "config", key, value],
+                check=True,
+            )
+        subprocess.run(["git", "-C", str(self.checkout), "add", "."], check=True)
+        subprocess.run(
+            ["git", "-C", str(self.checkout), "commit", "-m", "source base"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        source_head = self.git_output(
+            self.checkout, "rev-parse", "HEAD^{commit}"
+        ).strip()
+        subprocess.run(
+            [
+                "git",
+                "-C",
+                str(self.checkout),
+                "commit",
+                "--allow-empty",
+                "-m",
+                "exact target",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        target = self.git_output(self.checkout, "rev-parse", "HEAD^{commit}").strip()
+        wrong = self.root / "hostile-git-dir"
+        subprocess.run(
+            ["git", "clone", "-q", str(self.checkout), str(wrong)], check=True
+        )
+        subprocess.run(
+            ["git", "-C", str(self.checkout), "checkout", "-q", source_head],
+            check=True,
+        )
+        if dirty_source:
+            dirty_payload = "scorecard\nhostile-index-content\n"
+            (self.checkout / "SCORECARD.md").write_text(dirty_payload)
+            (wrong / "SCORECARD.md").write_text(dirty_payload)
+            subprocess.run(["git", "-C", str(wrong), "add", "SCORECARD.md"], check=True)
+            subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    str(wrong),
+                    "-c",
+                    "user.name=Test User",
+                    "-c",
+                    "user.email=test@example.com",
+                    "commit",
+                    "-m",
+                    "hostile matching index",
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+        hostile = {
+            **self.environment,
+            "GIT_DIR": str(wrong / ".git"),
+            "GIT_WORK_TREE": str(self.checkout),
+            "GIT_INDEX_FILE": str(wrong / ".git/index"),
+        }
+        self.fake.real_source_git = True
+        self.fake.target = target
+        self.fake.fresh_head = target
+        return source_head, target, hostile
 
     def caller_git_state(self) -> dict[str, object]:
         return {
@@ -4675,8 +4775,8 @@ class StartUnitTest(unittest.TestCase):
         )
         self.assertFalse(any(command[0] == "systemd-run" for command in self.fake.commands))
 
-    def test_attach_terminal_materialized_scorecard_checkout_is_retained(self) -> None:
-        _record, fresh = self.materialized_attach_record()
+    def test_attach_terminal_materialized_scorecard_is_handed_off_then_cleaned(self) -> None:
+        record, fresh = self.materialized_attach_record()
         self.fake.scorecard_update = True
         out = io.StringIO()
         err = io.StringIO()
@@ -4691,10 +4791,38 @@ class StartUnitTest(unittest.TestCase):
             )
 
         self.assertEqual(start_unit.EXIT_PASSED, rc, err.getvalue())
-        self.assertTrue(fresh.is_dir())
-        self.assertEqual([], self.fake.removed)
-        self.assertTrue((fresh / "SCORECARD.md").read_text().endswith("updated\n"))
-        self.assertIn("scorecard write-back", err.getvalue())
+        self.assertFalse(fresh.exists())
+        self.assertEqual([str(fresh)], self.fake.removed)
+        handoff = start_unit.scorecard_handoff_path(self.root, "validate-test")
+        self.assertTrue((handoff / "SCORECARD.md").read_text().endswith("updated\n"))
+        self.assertEqual(
+            str(handoff),
+            start_unit.run_registry.read_record(record)["scorecard_handoff"],
+        )
+        self.assertIn(str(handoff), err.getvalue())
+        writer_count = sum(
+            command[0].endswith("scorecard.rs") for command in self.fake.commands
+        )
+
+        second_out = io.StringIO()
+        second_err = io.StringIO()
+        with contextlib.redirect_stdout(second_out), contextlib.redirect_stderr(
+            second_err
+        ):
+            second_rc = start_unit.main(
+                ["--attach", "validate-test"],
+                run=self.fake,
+                environment=self.environment,
+                root=self.root,
+                sleep=lambda _seconds: None,
+            )
+
+        self.assertEqual(start_unit.EXIT_PASSED, second_rc, second_err.getvalue())
+        self.assertEqual(
+            writer_count,
+            sum(command[0].endswith("scorecard.rs") for command in self.fake.commands),
+        )
+        self.assertIn("already-published output", second_err.getvalue())
 
     def test_attach_error_cleans_materialized_checkout_after_archiving_receipt(self) -> None:
         _record, fresh = self.materialized_attach_record()
@@ -4878,16 +5006,60 @@ class StartUnitTest(unittest.TestCase):
         exact_checkout = Path(self._working_directory())
         self.assertEqual(self.root / "worktrees/validate", exact_checkout.parent)
         self.assertEqual(target, self.fake.systemd_checkout_head)
-        self.assertEqual(
-            target,
-            self.git_output(exact_checkout, "rev-parse", "HEAD^{commit}").strip(),
-        )
-        self.assertEqual(
-            "exact target\n", (exact_checkout / "materialized-version").read_text()
+        self.assertFalse(exact_checkout.exists())
+        self.assertEqual([str(exact_checkout)], self.fake.removed)
+        self.assertTrue(
+            (
+                start_unit.scorecard_handoff_path(self.root, "validate-test")
+                / "handoff.json"
+            ).is_file()
         )
         self.assertEqual(
             "caller head\n", (self.checkout / "materialized-version").read_text()
         )
+
+    def test_full_start_unit_path_ignores_hostile_git_dir_for_head(self) -> None:
+        source_head, target, hostile = self.initialize_hostile_git_redirect(
+            dirty_source=False
+        )
+        self.assertNotEqual(source_head, target)
+
+        rc, _output, error = self.invoke(target=target, environment=hostile)
+
+        self.assertEqual(start_unit.EXIT_REFUSED, rc)
+        self.assertIn(f"checkout HEAD is {source_head}", error)
+        self.assertFalse(any(wrkslots_action(command, "create") for command in self.fake.commands))
+        for child in self.fake.command_envs:
+            self.assertIsNotNone(child)
+            assert child is not None
+            self.assertTrue(start_unit.git_env.GIT_REPOSITORY_ENV.isdisjoint(child))
+
+    def test_materialize_path_ignores_hostile_git_index_for_cleanliness(self) -> None:
+        source_head, target, hostile = self.initialize_hostile_git_redirect(
+            dirty_source=True
+        )
+        self.assertNotEqual(source_head, target)
+        actual_status = self.git_output(
+            self.checkout, "status", "--porcelain=v1"
+        )
+        self.assertIn("SCORECARD.md", actual_status)
+        hostile_status = subprocess.run(
+            ["git", "-C", str(self.checkout), "status", "--porcelain=v1"],
+            check=True,
+            capture_output=True,
+            text=True,
+            env=hostile,
+        ).stdout
+        self.assertEqual("", hostile_status)
+
+        rc, _output, error = self.invoke(
+            ["--materialize-target"], target=target, environment=hostile
+        )
+
+        self.assertEqual(start_unit.EXIT_REFUSED, rc)
+        self.assertIn("checkout is dirty", error)
+        self.assertIn("SCORECARD.md", error)
+        self.assertFalse(any(wrkslots_action(command, "create") for command in self.fake.commands))
 
     def test_materialize_target_preserves_real_caller_git_state_on_launcher_refusal(
         self,
@@ -4949,10 +5121,16 @@ class StartUnitTest(unittest.TestCase):
         self.assertEqual(str(exact_checkout), record["checkout"])
         self.assertTrue(record["materialized_target"])
         self.assertNotIn("branch", record)
-        self.assertEqual([], self.fake.removed)
-        self.assertTrue(exact_checkout.is_dir())
+        self.assertEqual([str(exact_checkout)], self.fake.removed)
+        self.assertFalse(exact_checkout.exists())
+        self.assertTrue(
+            (
+                start_unit.scorecard_handoff_path(self.root, "validate-test")
+                / "handoff.json"
+            ).is_file()
+        )
 
-    def test_materialized_scorecard_writeback_is_retained_not_deleted(self) -> None:
+    def test_materialized_scorecard_writeback_is_handed_off_before_cleanup(self) -> None:
         self.fake.source_head = "d" * 40
         self.fake.scorecard_update = True
         before = self.worktree_bytes(self.checkout)
@@ -4964,12 +5142,105 @@ class StartUnitTest(unittest.TestCase):
         self.assertIsNotNone(exact_checkout)
         assert exact_checkout is not None
         self.assertEqual(before, self.worktree_bytes(self.checkout))
-        self.assertEqual([], self.fake.removed)
-        self.assertTrue(exact_checkout.is_dir())
+        self.assertEqual([str(exact_checkout)], self.fake.removed)
+        self.assertFalse(exact_checkout.exists())
+        handoff = start_unit.scorecard_handoff_path(self.root, "validate-test")
+        self.assertTrue((handoff / "SCORECARD.md").read_text().endswith("updated\n"))
         self.assertTrue(
-            (exact_checkout / "SCORECARD.md").read_text().endswith("updated\n")
+            (handoff / "ci/compat-envelope/cells.json")
+            .read_text()
+            .endswith("updated\n")
         )
-        self.assertIn("scorecard write-back", error)
+        manifest = json.loads((handoff / "handoff.json").read_text())
+        self.assertEqual(SHA, manifest["target"])
+        self.assertEqual("validate-test", manifest["unit"])
+        self.assertTrue(manifest["writeback_completed"])
+        record = start_unit.run_registry.read_record(
+            self.root / "ignored/validate/runs/validate-test.json"
+        )
+        self.assertEqual(str(handoff), record["scorecard_handoff"])
+        self.assertIn(str(handoff), error)
+        sweep = start_unit.sweep_completed_checkouts(
+            self.root, run=self.fake, tool_root=self.root
+        )
+        self.assertEqual([], sweep["removed"])
+        self.assertTrue((handoff / "handoff.json").is_file())
+
+    def test_materialized_scorecard_handoff_failure_is_no_result_and_retains(self) -> None:
+        self.fake.source_head = "d" * 40
+        self.fake.scorecard_update = True
+        handoff = start_unit.scorecard_handoff_path(self.root, "validate-test")
+        handoff.parent.mkdir(parents=True)
+        handoff.write_text("conflicting handoff\n")
+
+        rc, _output, error = self.invoke(["--materialize-target", "--", "full"])
+
+        self.assertEqual(start_unit.EXIT_COULD_NOT_DETERMINE, rc)
+        exact_checkout = self.fake.fresh
+        self.assertIsNotNone(exact_checkout)
+        assert exact_checkout is not None
+        self.assertTrue(exact_checkout.is_dir())
+        self.assertEqual([], self.fake.removed)
+        self.assertIn("SCORECARD HANDOFF NOT PUBLISHED", error)
+        self.assertIn("retained for recovery", error)
+
+    def test_sweep_hands_off_pre_fix_materialized_scorecard_before_removal(self) -> None:
+        fresh, record_path = self.managed_cleanup_record("materialized-scorecard")
+        record = start_unit.run_registry.read_record(record_path)
+        record.update(
+            target=SHA,
+            materialized_target=True,
+            scorecard_writeback={"status": "completed"},
+        )
+        start_unit.run_registry.write_record(record_path, record)
+        (fresh / "SCORECARD.md").write_text("scorecard\nupdated\n")
+        cells = fresh / "ci/compat-envelope/cells.json"
+        cells.parent.mkdir(parents=True)
+        cells.write_text("{}\nupdated\n")
+
+        report = start_unit.sweep_completed_checkouts(
+            self.root, run=self.fake, tool_root=self.root
+        )
+
+        handoff = start_unit.scorecard_handoff_path(
+            self.root, "validate-materialized-scorecard"
+        )
+        self.assertEqual([str(fresh)], report["removed"])
+        self.assertEqual([str(handoff)], report["scorecard_handoffs"])
+        self.assertFalse(fresh.exists())
+        self.assertEqual("scorecard\nupdated\n", (handoff / "SCORECARD.md").read_text())
+        self.assertEqual("{}\nupdated\n", (handoff / "ci/compat-envelope/cells.json").read_text())
+        durable = start_unit.run_registry.read_record(record_path)
+        self.assertEqual(str(handoff), durable["scorecard_handoff"])
+
+    def test_sweep_retains_materialized_checkout_when_handoff_conflicts(self) -> None:
+        fresh, record_path = self.managed_cleanup_record("materialized-conflict")
+        record = start_unit.run_registry.read_record(record_path)
+        record.update(
+            target=SHA,
+            materialized_target=True,
+            scorecard_writeback={"status": "completed"},
+        )
+        start_unit.run_registry.write_record(record_path, record)
+        (fresh / "SCORECARD.md").write_text("updated\n")
+        cells = fresh / "ci/compat-envelope/cells.json"
+        cells.parent.mkdir(parents=True)
+        cells.write_text("{}\n")
+        handoff = start_unit.scorecard_handoff_path(
+            self.root, "validate-materialized-conflict"
+        )
+        handoff.parent.mkdir(parents=True)
+        handoff.write_text("conflict\n")
+
+        report = start_unit.sweep_completed_checkouts(
+            self.root, run=self.fake, tool_root=self.root
+        )
+
+        self.assertEqual([], report["removed"])
+        self.assertTrue(fresh.is_dir())
+        self.assertTrue(
+            any("scorecard handoff" in row["reason"] for row in report["retained"])
+        )
 
     def test_ordinary_mode_still_refuses_source_head_different_from_target(self) -> None:
         self.fake.source_head = "d" * 40

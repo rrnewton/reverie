@@ -312,6 +312,7 @@ def main(
         require_current_approval(args.repo, args.pr, run=run)
 
         launch = immutable_tool_launch(environment=environment, run=run)
+        validation_environment = git_env.sanitized_git_env(environment)
         validation = run(
             validate_command(
                 args.repo,
@@ -322,6 +323,7 @@ def main(
                 launch=launch,
             ),
             check=False,
+            env=validation_environment,
         )
         if validation.returncode != 0:
             # The canonical reread below supplies the product verdict, while a

@@ -107,6 +107,18 @@ class RunRegistryContractTests(unittest.TestCase):
             )
         )
         self.assertIs(current.raw["materialized_target"], True)
+        handed_off = run_registry.parse_current_record(
+            validation_handle(
+                materialized_target=True,
+                wrkslots_slot="validate-fresh-exact",
+                wrkslots_generation=7,
+                scorecard_handoff="/state/ignored/validate/scorecard-writebacks/validate-test",
+            )
+        )
+        self.assertEqual(
+            "/state/ignored/validate/scorecard-writebacks/validate-test",
+            handed_off.raw["scorecard_handoff"],
+        )
 
         for value in (None, 0, "true"):
             with self.subTest(value=value):
@@ -135,6 +147,29 @@ class RunRegistryContractTests(unittest.TestCase):
             with self.subTest(updates=updates):
                 with self.assertRaisesRegex(
                     RuntimeError, "validation-run-handle-materialized_target"
+                ):
+                    run_registry.parse_current_record(validation_handle(**updates))
+
+        for updates in (
+            {"scorecard_handoff": "/tmp/handoff"},
+            {
+                "repo": "rrnewton/reverie",
+                "kind": "reverie-validate",
+                "materialized_target": True,
+                "wrkslots_slot": "validate-fresh-exact",
+                "wrkslots_generation": 7,
+                "scorecard_handoff": "/tmp/handoff",
+            },
+            {
+                "materialized_target": True,
+                "wrkslots_slot": "validate-fresh-exact",
+                "wrkslots_generation": 7,
+                "scorecard_handoff": "",
+            },
+        ):
+            with self.subTest(scorecard_handoff=updates):
+                with self.assertRaisesRegex(
+                    RuntimeError, "validation-run-handle-scorecard_handoff"
                 ):
                     run_registry.parse_current_record(validation_handle(**updates))
 

@@ -55,6 +55,15 @@ RESULT_HELPER="$SCRIPT_DIR/union_rebase_result.py"
 WIP="_uwip_$$"           # PID-unique wip branch: no fleet-wide collision
 cd "$WT" || exit 9
 
+record_mutation() {
+  [ -n "${LANDER_MUTATION_FENCE:-}" ] || return 0
+  source "$SCRIPT_DIR/worktree-mutation-fence.sh"
+  lander_record_checkout_mutation \
+    "${LANDER_MUTATION_CHECKOUT:-$WT}" \
+    "${LANDER_MUTATION_ENTRY_STATE:-}" \
+    "$LANDER_MUTATION_FENCE" "${LANDER_MUTATION_TOKEN:-}" "$@"
+}
+
 MANAGED_PLAN="ci/expected-e2e-plan.json"
 BASE_SHA=""
 INPUT_SHA=""
@@ -92,6 +101,7 @@ finish() {
 detach_home() {
   git checkout -q --detach origin/main 2>/dev/null \
     || git checkout -q --detach HEAD 2>/dev/null || true
+  record_mutation DETACHED || true
   git branch -D "$WIP" >/dev/null 2>&1 || true
 }
 abort() { git rebase --abort >/dev/null 2>&1; detach_home; }
@@ -117,6 +127,7 @@ git branch -D "$WIP" >/dev/null 2>&1
 checkout_rc=0
 git checkout -q -B "$WIP" "origin/$BR" || checkout_rc=$?
 [ "$checkout_rc" -eq 0 ] || finish rebase-fail checkout "$checkout_rc"
+record_mutation "$WIP" || { abort; finish rebase-fail mutation-fence 2; }
 
 # --- rebase; resolve conflicts just enough to continue -----------------------
 # Managed conflicts: take main's side now (the authoritative pass rewrites them).
@@ -124,6 +135,7 @@ git checkout -q -B "$WIP" "origin/$BR" || checkout_rc=$?
 UNIONED=0
 GIT_EDITOR=true git rebase origin/main >/dev/null 2>&1
 rc=$?
+record_mutation "$WIP" DETACHED || { abort; finish rebase-fail mutation-fence 2; }
 while [ $rc -ne 0 ]; do
   mapfile -t U < <(git diff --name-only --diff-filter=U)
   if [ ${#U[@]} -eq 0 ]; then abort; finish rebase-fail stopped-no-conflict "$rc"; fi
@@ -135,8 +147,10 @@ while [ $rc -ne 0 ]; do
       abort; finish human "unmanaged-conflict:$f" "$rc"
     fi
   done
+  record_mutation "$WIP" DETACHED || { abort; finish rebase-fail mutation-fence 2; }
   GIT_EDITOR=true git rebase --continue >/dev/null 2>&1
   rc=$?
+  record_mutation "$WIP" DETACHED || { abort; finish rebase-fail mutation-fence 2; }
 done
 
 # --- authoritative pass: recompute every touched managed registry ------------
@@ -160,7 +174,10 @@ for f in "${TOUCHED[@]}"; do
   if ! cmp -s "$tmp/out" "$f"; then cp "$tmp/out" "$f"; git add -- "$f"; UNIONED=1; fi
   rm -rf "$tmp"
 done
-if ! git diff --cached --quiet; then GIT_EDITOR=true git commit -q --amend --no-edit; fi
+if ! git diff --cached --quiet; then
+  GIT_EDITOR=true git commit -q --amend --no-edit
+  record_mutation "$WIP" || { abort; finish rebase-fail mutation-fence 2; }
+fi
 
 # --- regenerate the derived plan from the merged manifests, amend if changed --
 plan_rc=0
@@ -172,6 +189,7 @@ jq -S '{schema:1, cells:(.|sort_by(.category,.test,.mode,.backend))}' /tmp/_upla
 rm -f /tmp/_uplan.$$ /tmp/_uperr.$$
 if ! git diff --quiet -- "$MANAGED_PLAN"; then
   git add -- "$MANAGED_PLAN"; GIT_EDITOR=true git commit -q --amend --no-edit; UNIONED=1
+  record_mutation "$WIP" || { abort; finish rebase-fail mutation-fence 2; }
 fi
 
 # --- prove self-consistency: #1518 symmetry lint + exact ratchet -------------

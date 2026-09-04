@@ -65,6 +65,7 @@ set -uo pipefail
 unset CI_HUB_VALIDATE_STATUS_BIN
 
 PR=""; BR=""; R=rrnewton/hermit; UNION=0; NO_REBASE=0; INNER=0; DETACHED_CHILD=0; FOREGROUND=0
+MUTATION_FENCE=""; MUTATION_TOKEN=""; MUTATION_FENCE_OWNER=0
 AGENT="${DG_AGENT_NAME:-hermit-lander}"
 TEAM="hermit2"
 CHECKOUT=""
@@ -88,6 +89,12 @@ while [ $# -gt 0 ]; do
     --foreground) FOREGROUND=1 ;;
     --_detached) DETACHED_CHILD=1 ;;
     --_inner) INNER=1 ;;
+    --_mutation-fence)
+      [ "$#" -ge 2 ] || { echo "land-pr: --_mutation-fence requires a path" >&2; exit 2; }
+      MUTATION_FENCE=$2; shift ;;
+    --_mutation-token)
+      [ "$#" -ge 2 ] || { echo "land-pr: --_mutation-token requires a token" >&2; exit 2; }
+      MUTATION_TOKEN=$2; shift ;;
     -h|--help) sed -n '1,50p' "$0"; exit 0 ;;
     -*) echo "land-pr: unknown flag $1" >&2; exit 2 ;;
     *) if [ -z "$PR" ]; then PR="$1"; elif [ -z "$BR" ]; then BR="$1"; else echo "land-pr: extra arg $1" >&2; exit 2; fi ;;
@@ -134,6 +141,7 @@ fi
 
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 ROOT=$(cd -- "$SCRIPT_DIR/../.." && pwd)
+source "$SCRIPT_DIR/worktree-mutation-fence.sh"
 if [ -n "$CHECKOUT" ]; then
   WT=$(cd -- "$CHECKOUT" 2>/dev/null && pwd) || {
     echo "land-pr: --checkout is not a readable directory: $CHECKOUT" >&2
@@ -171,12 +179,12 @@ normalize_github_remote(){
 # different tool. Recovery depended entirely on the agent having kept rescue
 # refs.
 #
-# So record the entry state and restore it on EVERY exit. A branch name is
-# restored as a branch; a detached HEAD is restored detached. Restoration is
-# best-effort and never changes the exit code -- a landing verdict must not turn
-# into a different one because a checkout could not be put back -- but it warns
-# loudly rather than failing silently, because a silent failure here is exactly
-# the defect being fixed.
+# So record the entry state and restore it only after this process observes one
+# of its own mutations. A second state snapshot fences that restoration: if the
+# checkout changed again after our last mutation, another actor owns the newer
+# state and the trap leaves it alone. A branch name is restored as a branch; a
+# detached HEAD is restored detached. Restoration is best-effort and never
+# changes the exit code, but every refusal is loud.
 ENTRY_REF=$(git -C "$WT" symbolic-ref -q --short HEAD 2>/dev/null || true)
 if [ -z "$ENTRY_REF" ]; then
   ENTRY_REF=$(git -C "$WT" rev-parse -q --verify HEAD 2>/dev/null || true)
@@ -184,20 +192,30 @@ if [ -z "$ENTRY_REF" ]; then
 else
   ENTRY_DETACHED=0
 fi
+ENTRY_STATE=$(lander_checkout_state "$WT" 2>/dev/null) || ENTRY_STATE=
+WT_MUTATED=0
+WT_LAST_OWNED_STATE=$ENTRY_STATE
+RESTORE_ATTEMPTED=0
+record_worktree_mutation(){
+  [ -n "$MUTATION_FENCE" ] && [ -n "$MUTATION_TOKEN" ] || return 2
+  lander_record_checkout_mutation \
+    "$WT" "$ENTRY_STATE" "$MUTATION_FENCE" "$MUTATION_TOKEN" "$@" \
+    || return $?
+  if [ -n "${LANDER_FENCE_OWNED_STATE:-}" ]; then
+    WT_MUTATED=1
+    WT_LAST_OWNED_STATE=$LANDER_FENCE_OWNED_STATE
+  fi
+}
 restore_entry_checkout(){
-  [ -n "$ENTRY_REF" ] || return 0
-  local now
-  now=$(git -C "$WT" symbolic-ref -q --short HEAD 2>/dev/null \
-        || git -C "$WT" rev-parse -q --verify HEAD 2>/dev/null || true)
-  [ "$now" = "$ENTRY_REF" ] && return 0
-  if [ "$ENTRY_DETACHED" -eq 1 ]; then
-    git -C "$WT" checkout -q --detach "$ENTRY_REF" 2>/dev/null
-  else
-    git -C "$WT" checkout -q "$ENTRY_REF" 2>/dev/null
-  fi || echo "land-pr: WARNING: could not restore $WT to $ENTRY_REF; it is left at ${now:-unknown}. Check the branch before your next force-push." >&2
+  [ "$RESTORE_ATTEMPTED" -eq 0 ] || return 0
+  RESTORE_ATTEMPTED=1
+  [ -n "$ENTRY_REF" ] && [ -n "$MUTATION_FENCE" ] \
+    && [ -n "$MUTATION_TOKEN" ] || return 0
+  lander_restore_owned_checkout \
+    "$WT" "$ENTRY_REF" "$ENTRY_DETACHED" "$ENTRY_STATE" \
+    "$MUTATION_FENCE" "$MUTATION_TOKEN" "$MUTATION_FENCE_OWNER"
 }
 trap restore_entry_checkout EXIT
-WT_MUTATED=0
 
 remote_url=$(git -C "$WT" remote get-url origin 2>/dev/null || true)
 checkout_repo=$(normalize_github_remote "$remote_url") || checkout_repo=
@@ -206,6 +224,25 @@ if [ "$checkout_repo" != "$R" ]; then
   exit 2
 fi
 say(){ echo "[land $R#$PR] $*"; }
+if [ -z "$ENTRY_STATE" ]; then
+  echo "land-pr: cannot snapshot the entry checkout state for restoration fencing" >&2
+  exit 2
+fi
+if { [ -n "$MUTATION_FENCE" ] && [ -z "$MUTATION_TOKEN" ]; } \
+   || { [ -z "$MUTATION_FENCE" ] && [ -n "$MUTATION_TOKEN" ]; }; then
+  echo "land-pr: mutation fence path and token must be supplied together" >&2
+  exit 2
+fi
+if [ -n "$MUTATION_FENCE" ] \
+   && ! lander_fence_arguments_are_valid \
+        "$WT" "$ENTRY_STATE" "$MUTATION_FENCE" "$MUTATION_TOKEN"; then
+  echo "land-pr: invalid mutation fence handoff" >&2
+  exit 2
+fi
+if [ "$INNER" -eq 1 ] && [ -z "$MUTATION_FENCE" ]; then
+  echo "land-pr: inner landing requires the outer mutation fence handoff" >&2
+  exit 2
+fi
 
 # BIND THE PR TO ITS REPOSITORY BEFORE DEREFERENCING ANY AUTHORITY.
 # A PR number is not an identity. The validated --repo, matching checkout
@@ -288,6 +325,9 @@ if [ "$INNER" -eq 0 ] && [ "$DETACHED_CHILD" -eq 0 ] && [ "$FOREGROUND" -eq 0 ];
   mkdir -p "$log_dir"
   detached_args=(--_detached "$PR" "$BR" --repo "$R" --agent "$AGENT" --team "$TEAM" --checkout "$WT" \
     --gate-deadline "$GATE_DEADLINE" --child-deadline "$CHILD_DEADLINE")
+  if [ -n "$MUTATION_FENCE" ] || [ -n "$MUTATION_TOKEN" ]; then
+    detached_args+=(--_mutation-fence "$MUTATION_FENCE" --_mutation-token "$MUTATION_TOKEN")
+  fi
   [ "$UNION" -eq 1 ] && detached_args+=(--union)
   [ "$NO_REBASE" -eq 1 ] && detached_args+=(--no-rebase)
   printf 'DETACHED LAND START repo=%s pr=%s branch=%s agent=%s started_at=%s\n' \
@@ -303,12 +343,30 @@ fi
 # child. `run` acquires (FIFO), heartbeats only while we live, and ALWAYS releases
 # on exit; --child-deadline hard-kills + releases if we ever wedge.
 if [ "$INNER" -eq 0 ]; then
+  if [ -z "$MUTATION_FENCE" ]; then
+    fence_dir="${CI_HUB_LANDING_LOG_DIR:-$ROOT/ignored/ci-hub/landing}"
+    mkdir -p "$fence_dir" || exit 2
+    MUTATION_FENCE=$(mktemp "$fence_dir/.land-pr-mutation-${PR}-XXXXXXXX") \
+      || { echo "land-pr: cannot allocate mutation fence" >&2; exit 2; }
+    MUTATION_TOKEN=$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')
+    if [[ ! $MUTATION_TOKEN =~ ^[0-9a-f]{32}$ ]]; then
+      rm -f -- "$MUTATION_FENCE"
+      echo "land-pr: cannot generate mutation fence token" >&2
+      exit 2
+    fi
+  fi
+  MUTATION_FENCE_OWNER=1
   args=(--_inner "$PR" "$BR" --repo "$R" --agent "$AGENT" --team "$TEAM" --checkout "$WT" --gate-deadline "$GATE_DEADLINE")
+  args+=(--_mutation-fence "$MUTATION_FENCE" --_mutation-token "$MUTATION_TOKEN")
   [ "$UNION" -eq 1 ] && args+=(--union)
   [ "$NO_REBASE" -eq 1 ] && args+=(--no-rebase)
   "$ROOT/ci-hub/ci-hub" land-lock run --agent "$AGENT" --pr "$PR" \
     --child-deadline "$CHILD_DEADLINE" -- "$0" "${args[@]}"
   rc=$?
+  # The inner normally restores itself. After SIGKILL it cannot run an EXIT
+  # trap, so consume its durable fence immediately, before network-facing
+  # abandonment reporting gives another actor time to take over the checkout.
+  restore_entry_checkout
   # The hard deadline kills the entire inner process group, so only this outer
   # supervisor remains able to emit the durable PR-side abandonment signal.
   case "$rc" in
@@ -365,8 +423,21 @@ park_worktree_off_main(){
   [ "${WT_MUTATED:-0}" -eq 1 ] || return 0
   [ -n "${WT:-}" ] && [ -n "${ORIG:-}" ] || return 0
   git -C "$WT" rev-parse --verify -q "${ORIG}^{commit}" >/dev/null 2>&1 || return 0
-  git -C "$WT" checkout -q --detach "$ORIG" 2>/dev/null \
-    || say "WARNING: could not park $WT at $ORIG; it may still be detached at main -- do not push HEAD:<branch> from it"
+  local now
+  if ! now=$(lander_checkout_state "$WT"); then
+    say "WARNING: refusing to park $WT: current checkout state is unreadable"
+    return 0
+  fi
+  if [ "$now" != "$WT_LAST_OWNED_STATE" ]; then
+    say "WARNING: refusing to park $WT: checkout changed after the lander's last mutation; leaving the external state untouched"
+    return 0
+  fi
+  if git -C "$WT" checkout -q --detach "$ORIG" 2>/dev/null; then
+    record_worktree_mutation DETACHED \
+      || say "WARNING: parked checkout but could not record the owned state; restoration will refuse"
+  else
+    say "WARNING: could not park $WT at $ORIG; it may still be detached at main -- do not push HEAD:<branch> from it"
+  fi
 }
 
 abandon(){
@@ -506,12 +577,17 @@ rebase_base=$(git -C "$WT" rev-parse --verify origin/main) \
 if [ "$NO_REBASE" -eq 1 ]; then
   say "no-rebase: skipping the local rebase + force-push; merging the authorized head as it stands"
 elif [ "$UNION" -eq 1 ]; then
-  WT_MUTATED=1
   ulog="/tmp/land-$PR-union.log"
   uresult=$(mktemp)
   union_rc=0
+  LANDER_MUTATION_FENCE="$MUTATION_FENCE" \
+  LANDER_MUTATION_TOKEN="$MUTATION_TOKEN" \
+  LANDER_MUTATION_ENTRY_STATE="$ENTRY_STATE" \
+  LANDER_MUTATION_CHECKOUT="$WT" \
   "$SCRIPT_DIR/union-rebase.sh" "$WT" "$BR" --push \
     --result-json "$uresult" >"$ulog" 2>&1 || union_rc=$?
+  record_worktree_mutation DETACHED \
+    || abandon "union-rebase returned in an unexpected or unrecordable checkout state" 3
   if [ "$union_rc" -ne 0 ]; then
     rm -f -- "$uresult"
     abandon "union-rebase could not write its result contract (rc=$union_rc; see $ulog)" 3
@@ -525,13 +601,21 @@ elif [ "$UNION" -eq 1 ]; then
     || abandon "union-rebase did not converge: ${RES:-see $ulog}" 3
 else
   plain_rebase=1
-  WT_MUTATED=1
-  git -C "$WT" checkout -q -B "_land_$PR" "origin/$BR" || abandon "checkout origin/$BR failed" 3
+  if git -C "$WT" checkout -q -B "_land_$PR" "origin/$BR"; then
+    record_worktree_mutation "_land_$PR" \
+      || abandon "could not record the checkout state after starting the plain rebase" 3
+  else
+    record_worktree_mutation "_land_$PR" "$ENTRY_REF" DETACHED
+    abandon "checkout origin/$BR failed" 3
+  fi
   if ! GIT_EDITOR=true git -C "$WT" rebase origin/main >/dev/null 2>&1; then
     git -C "$WT" rebase --abort >/dev/null 2>&1
     git -C "$WT" checkout -q --detach origin/main 2>/dev/null || true
+    record_worktree_mutation DETACHED
     abandon "plain rebase onto origin/main conflicted (needs owner/--union)" 3
   fi
+  record_worktree_mutation "_land_$PR" \
+    || abandon "could not record the checkout state after the plain rebase" 3
   # REFUSE TO PUBLISH A HEAD THAT IS NOT AHEAD OF MAIN. See the identical guard
   # in ci-hub/landing/union-rebase.sh. Detach sites are many and this push is
   # one of only three places in the tree that writes HEAD to a pull-request
@@ -557,6 +641,8 @@ else
   # main is what converts the next ordinary force-push into a branch wipe; HEAD
   # already equals origin/$BR here, so a stray repeat is idempotent.
   git -C "$WT" checkout -q --detach "$(git -C "$WT" rev-parse HEAD)" 2>/dev/null || true
+  record_worktree_mutation DETACHED \
+    || abandon "could not record the parked post-push checkout state" 3
 fi
 
 # 3. record the head that will actually be merged. Re-fetched from the remote in

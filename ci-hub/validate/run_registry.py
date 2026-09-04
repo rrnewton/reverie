@@ -147,6 +147,7 @@ class RunRecord(TypedDict, total=False):
     service_result_schema: int
     selection_mode: str | None
     scorecard_writeback: dict[str, str] | None
+    scorecard_handoff: str
     result_source: str
     observed_safe_ci_cgroups: list[str]
     canonical_verdict: str
@@ -303,6 +304,7 @@ VALIDATION_FIELDS = COMMON_FIELDS | frozenset(
         "service_result_schema",
         "selection_mode",
         "scorecard_writeback",
+        "scorecard_handoff",
         "result_source",
         "observed_safe_ci_cgroups",
         "canonical_verdict",
@@ -343,6 +345,7 @@ _OPTIONAL_TEXT_FIELDS = frozenset(
         "final_validate_status",
         "selection_mode",
         "result_source",
+        "scorecard_handoff",
         "canonical_verdict",
         "measured_result",
         "checkout_removed_at",
@@ -744,6 +747,18 @@ def parse_current_record(value: Mapping[str, Any]) -> RunHandle:
                 raise _error(
                     "materialized_target",
                     "is incompatible with frozen validation",
+                )
+        if "scorecard_handoff" in value:
+            _required_text(value, "scorecard_handoff")
+            if value.get("materialized_target") is not True:
+                raise _error(
+                    "scorecard_handoff",
+                    "requires materialized_target=true",
+                )
+            if repo != "rrnewton/hermit":
+                raise _error(
+                    "scorecard_handoff",
+                    "is valid only for Hermit validation handles",
                 )
         for field in (
             "source_checkout",
