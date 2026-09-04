@@ -595,7 +595,7 @@ class PublishedResidueTests(ParentMainWriteTests):
         )
         self.assertNotEqual(target, before)
 
-    def test_preserve_dirty_sync_refuses_an_incoming_gitlink_over_a_dirty_checkout(self) -> None:
+    def test_preserve_dirty_sync_advances_when_the_dirty_gitlink_already_matches_target(self) -> None:
         submodule = Path(self.temp.name) / "hermit-origin"
         git(Path(self.temp.name), "init", "--initial-branch=main", str(submodule))
         git(submodule, "config", "user.name", "Nested")
@@ -633,7 +633,88 @@ class PublishedResidueTests(ParentMainWriteTests):
         target = git(publisher, "rev-parse", "HEAD").stdout.strip()
 
         git(self.repo / "hermit", "checkout", "-q", new_gitlink)
+        (self.repo / "hermit" / "version.txt").write_text("uncommitted nested work\n")
+        (self.repo / "hermit" / "HANDOFF.md").write_text("unread nested handoff\n")
         self.assertIn("hermit", git(self.repo, "status", "--short").stdout)
+
+        result = self.writer("sync", "--preserve-dirty")
+
+        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+        combined = result.stdout + result.stderr
+        self.assertIn("gitlink-drift path=hermit", combined)
+        self.assertIn("state=already-at-target", combined)
+        self.assertIn("gitlink-drift=1", combined)
+        self.assertEqual(target, git(self.repo, "rev-parse", "HEAD").stdout.strip())
+        self.assertEqual(new_gitlink, git(self.repo / "hermit", "rev-parse", "HEAD").stdout.strip())
+        self.assertEqual(
+            "uncommitted nested work\n", (self.repo / "hermit" / "version.txt").read_text()
+        )
+        self.assertEqual(
+            "unread nested handoff\n", (self.repo / "hermit" / "HANDOFF.md").read_text()
+        )
+        self.assertNotEqual(target, before)
+
+        # The same identity may already be staged in the superproject index.
+        # That is still the target's value, and advancing HEAD must preserve the
+        # nested checkout and its untracked handoff exactly as above.
+        git(self.repo, "-c", "core.hooksPath=/dev/null", "reset", "--hard", before)
+        git(self.repo, "update-index", "--cacheinfo", f"160000,{new_gitlink},hermit")
+        staged = self.writer("sync", "--preserve-dirty")
+
+        self.assertEqual(0, staged.returncode, staged.stdout + staged.stderr)
+        self.assertIn("gitlink-drift path=hermit", staged.stdout + staged.stderr)
+        self.assertIn("state=already-at-target", staged.stdout + staged.stderr)
+        self.assertEqual(target, git(self.repo, "rev-parse", "HEAD").stdout.strip())
+        self.assertEqual(new_gitlink, git(self.repo / "hermit", "rev-parse", "HEAD").stdout.strip())
+        self.assertEqual(
+            "uncommitted nested work\n", (self.repo / "hermit" / "version.txt").read_text()
+        )
+        self.assertEqual(
+            "unread nested handoff\n", (self.repo / "hermit" / "HANDOFF.md").read_text()
+        )
+
+    def test_preserve_dirty_sync_refuses_an_incoming_gitlink_at_a_different_checkout(self) -> None:
+        submodule = Path(self.temp.name) / "hermit-origin-mismatch"
+        git(Path(self.temp.name), "init", "--initial-branch=main", str(submodule))
+        git(submodule, "config", "user.name", "Nested")
+        git(submodule, "config", "user.email", "nested@example.invalid")
+        (submodule / "version.txt").write_text("old\n")
+        git(submodule, "add", "version.txt")
+        git(submodule, "commit", "-m", "old nested head")
+        old_gitlink = git(submodule, "rev-parse", "HEAD").stdout.strip()
+        (submodule / "version.txt").write_text("target\n")
+        git(submodule, "commit", "-am", "target nested head")
+        target_gitlink = git(submodule, "rev-parse", "HEAD").stdout.strip()
+        (submodule / "version.txt").write_text("other\n")
+        git(submodule, "commit", "-am", "different nested head")
+        different_gitlink = git(submodule, "rev-parse", "HEAD").stdout.strip()
+
+        git(self.repo, "clone", "-q", str(submodule), "hermit")
+        git(self.repo / "hermit", "checkout", "-q", old_gitlink)
+        git(self.repo, "update-index", "--add", "--cacheinfo", f"160000,{old_gitlink},hermit")
+        git(
+            self.repo,
+            "-c", "core.hooksPath=/dev/null",
+            "commit", "-m", tagged("record nested checkout"),
+        )
+        git(
+            self.repo,
+            "-c", "core.hooksPath=/dev/null",
+            "push", "-q", "origin", "HEAD:main",
+        )
+        before = git(self.repo, "rev-parse", "HEAD").stdout.strip()
+
+        publisher = Path(self.temp.name) / "gitlink-mismatch-publisher"
+        git(Path(self.temp.name), "clone", "-q", str(self.remote), str(publisher))
+        git(publisher, "config", "user.name", "Other")
+        git(publisher, "config", "user.email", "other@example.invalid")
+        git(publisher, "update-index", "--cacheinfo", f"160000,{target_gitlink},hermit")
+        git(publisher, "commit", "-m", tagged("advance nested checkout"))
+        git(publisher, "push", "-q", "origin", "HEAD:main")
+        target = git(publisher, "rev-parse", "HEAD").stdout.strip()
+
+        git(self.repo / "hermit", "checkout", "-q", different_gitlink)
+        (self.repo / "hermit" / "HANDOFF.md").write_text("unread nested handoff\n")
 
         result = self.writer("sync", "--preserve-dirty")
 
@@ -642,8 +723,29 @@ class PublishedResidueTests(ParentMainWriteTests):
         self.assertIn("state=skipped reason=path-overlap", combined)
         self.assertIn("incoming=hermit dirty=hermit", combined)
         self.assertEqual(before, git(self.repo, "rev-parse", "HEAD").stdout.strip())
-        self.assertEqual(new_gitlink, git(self.repo / "hermit", "rev-parse", "HEAD").stdout.strip())
+        self.assertEqual(different_gitlink, git(self.repo / "hermit", "rev-parse", "HEAD").stdout.strip())
+        self.assertEqual(
+            "unread nested handoff\n", (self.repo / "hermit" / "HANDOFF.md").read_text()
+        )
+        self.assertNotEqual(target_gitlink, different_gitlink)
         self.assertNotEqual(target, before)
+
+        # Matching the target checkout is insufficient when the index carries
+        # a third, explicitly staged gitlink value. Preserve and report it.
+        git(self.repo / "hermit", "checkout", "-q", target_gitlink)
+        git(self.repo, "update-index", "--cacheinfo", f"160000,{different_gitlink},hermit")
+        staged = self.writer("sync", "--preserve-dirty")
+
+        self.assertNotEqual(0, staged.returncode)
+        self.assertIn("incoming=hermit dirty=hermit", staged.stdout + staged.stderr)
+        self.assertEqual(before, git(self.repo, "rev-parse", "HEAD").stdout.strip())
+        self.assertIn(
+            different_gitlink,
+            git(self.repo, "ls-files", "--stage", "--", "hermit").stdout,
+        )
+        self.assertEqual(
+            "unread nested handoff\n", (self.repo / "hermit" / "HANDOFF.md").read_text()
+        )
 
     def test_preserve_dirty_sync_refuses_divergence_without_reconciling(self) -> None:
         (self.repo / "local.md").write_text("local\n")

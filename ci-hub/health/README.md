@@ -56,11 +56,14 @@ Before it loads the versioned tick runner or configuration, the durable wrapper
 asks `scripts/parent-main-write sync --preserve-dirty` to fast-forward the
 shared parent checkout. It advances only when local `main` is an ancestor of
 freshly fetched `origin/main` and every incoming path is disjoint from every
-tracked, staged, untracked, ignored, or dirty-submodule path. Unrelated work
-remains in place; overlap and divergence are preserved and reported with the
-blocking paths and the before and after SHAs. It never adopts, stashes, resets,
-reconciles, or creates a merge commit. This ordering makes a landed ci-hub
-change available to the rest of the same tick.
+tracked, staged, untracked, ignored, or dirty-submodule path, except for a
+gitlink whose nested checkout already names the fetched target and whose index
+still names either endpoint. The fast-forward changes that superproject pointer
+without touching the nested checkout. Unrelated work remains in place; every
+other overlap and divergence is preserved and reported with the blocking paths
+and the before and after SHAs. It never adopts, stashes, resets, reconciles, or
+creates a merge commit. This ordering makes a landed ci-hub change available to
+the rest of the same tick.
 
 The tick then runs the same gentle primary-refresh routine as `make
 checkout-fresh`. Clean product checkouts fast-forward to `main`; a globally

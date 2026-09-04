@@ -127,14 +127,38 @@ fetch_expected() {
   export HERMIT_PARENT_MAIN_EXPECT
 }
 
+# A dirty gitlink whose checkout already names the fetched target is not an
+# overwrite. The fast-forward changes only the superproject's index entry; it
+# does not update, clean, or otherwise touch the nested checkout. Require all
+# three superproject entries to remain gitlinks and require the current index to
+# equal either endpoint. Any staged third value, missing checkout, or different
+# checkout remains an ordinary overlap and refuses.
+gitlink_overlap_matches_target() {
+  local root=$1 before=$2 target=$3 path=$4
+  local before_mode before_oid target_mode target_oid index_mode index_oid checkout_oid
+  before_mode=$(git -C "$root" ls-tree "$before" -- "$path" | awk 'NR == 1 { print $1 }')
+  before_oid=$(git -C "$root" ls-tree "$before" -- "$path" | awk 'NR == 1 { print $3 }')
+  target_mode=$(git -C "$root" ls-tree "$target" -- "$path" | awk 'NR == 1 { print $1 }')
+  target_oid=$(git -C "$root" ls-tree "$target" -- "$path" | awk 'NR == 1 { print $3 }')
+  index_mode=$(git -C "$root" ls-files --stage -- "$path" | awk '$3 == 0 { print $1 }')
+  index_oid=$(git -C "$root" ls-files --stage -- "$path" | awk '$3 == 0 { print $2 }')
+  [ "$before_mode" = 160000 ] && [ "$target_mode" = 160000 ] &&
+    [ "$index_mode" = 160000 ] || return 1
+  checkout_oid=$(git -C "$root/$path" rev-parse --verify 'HEAD^{commit}' 2>/dev/null) || return 1
+  [ "$checkout_oid" = "$target_oid" ] || return 1
+  [ "$index_oid" = "$before_oid" ] || [ "$index_oid" = "$target_oid" ]
+}
+
 # The operational tick may advance the shared parent around dirty paths only
-# when the exact fetched change is disjoint from them. It has no authority to
-# decide that local bytes are expendable, even when they happen to match
-# something already published. This is deliberately narrower than ordinary
-# `sync` and `sync --automatic`: it never calls the published-residue classifier
-# and therefore cannot adopt, stage, stash, discard, reset, or reconcile work.
+# when the exact fetched change is disjoint from them, or when an overlapping
+# gitlink is already checked out at the fetched target. It has no authority to
+# decide that local bytes are expendable. This is deliberately narrower than
+# ordinary `sync` and `sync --automatic`: it never calls the published-residue
+# classifier and therefore cannot adopt, stage, stash, discard, reset, or
+# reconcile work.
 sync_preserve_dirty() {
   local root=$1 before target after path_dir incoming dirty incoming_cmp dirty_cmp overlap
+  local matching_gitlinks=0 target_gitlink
   local -a incoming_paths=() dirty_paths=()
   before=$(git -C "$root" rev-parse HEAD) ||
     die "sync --preserve-dirty could not read HEAD; nothing was modified"
@@ -184,6 +208,14 @@ sync_preserve_dirty() {
       if [ "$incoming_cmp" = "$dirty_cmp" ] ||
          [[ "$incoming_cmp" == "$dirty_cmp/"* ]] ||
          [[ "$dirty_cmp" == "$incoming_cmp/"* ]]; then
+        if [ "$incoming_cmp" = "$dirty_cmp" ] &&
+           gitlink_overlap_matches_target "$root" "$before" "$target" "$incoming_cmp"; then
+          target_gitlink=$(git -C "$root" ls-tree "$target" -- "$incoming_cmp" | awk 'NR == 1 { print $3 }')
+          printf 'PARENT_MAIN_WRITE sync gitlink-drift path=%q checkout=%s target=%s state=already-at-target\n' \
+            "$incoming" "$target_gitlink" "$target_gitlink" >&2
+          matching_gitlinks=$((matching_gitlinks + 1))
+          continue
+        fi
         if [ "$overlap" = 0 ]; then
           printf 'PARENT_MAIN_WRITE sync state=skipped reason=path-overlap before=%s after=%s target=%s blocking-paths:\n' \
             "$before" "$before" "$target" >&2
@@ -210,8 +242,8 @@ sync_preserve_dirty() {
     die "sync --preserve-dirty advanced the checkout but could not read its new HEAD (before=$before target=$target)"
   [ "$after" = "$target" ] ||
     die "sync --preserve-dirty ended at $after instead of fetched origin/main $target (before=$before)"
-  printf 'PARENT_MAIN_WRITE sync state=fast-forwarded before=%s after=%s target=%s preserve-dirty=1 incoming=%s dirty=%s overlap=0\n' \
-    "$before" "$after" "$target" "${#incoming_paths[@]}" "${#dirty_paths[@]}"
+  printf 'PARENT_MAIN_WRITE sync state=fast-forwarded before=%s after=%s target=%s preserve-dirty=1 incoming=%s dirty=%s overlap=0 gitlink-drift=%s\n' \
+    "$before" "$after" "$target" "${#incoming_paths[@]}" "${#dirty_paths[@]}" "$matching_gitlinks"
 }
 
 attribution_checker() {
