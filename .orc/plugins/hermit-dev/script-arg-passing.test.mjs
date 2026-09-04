@@ -57,12 +57,12 @@ function check(name, cond, detail = "") {
 
 check(
   "operational workflow source line remains stable",
-  sourceLineOf("export async function operationalHealthHeartbeat") === 612,
+  sourceLineOf("export async function operationalHealthHeartbeat") === 613,
   String(sourceLineOf("export async function operationalHealthHeartbeat")),
 );
 check(
   "policy reload workflow source line remains stable",
-  sourceLineOf("export async function policyReloadHeartbeat") === 642,
+  sourceLineOf("export async function policyReloadHeartbeat") === 643,
   String(sourceLineOf("export async function policyReloadHeartbeat")),
 );
 
@@ -506,18 +506,29 @@ function compilePolicyReloadWorkflow(functionSource, orcStub) {
   )(7_200_000, "hermit-dev", orcStub);
 }
 
-async function probePolicyReload(activate) {
+async function probePolicyReload(activate, useCollidingFunction = false) {
   const wakeups = [];
   const sleeps = [];
   const activationReasons = [];
-  const workflowSource = sourceBetween(
+  const collisionCalls = [];
+  let workflowSource = sourceBetween(
     "export async function policyReloadHeartbeat",
     "\n// --- registered-script invocation",
   );
+  if (useCollidingFunction) {
+    workflowSource = workflowSource.replace(
+      'orc.hermitDevActivate("periodic")',
+      'orc[PLUGIN_NAME + ".activate"]("periodic")',
+    );
+  }
   const workflow = compilePolicyReloadWorkflow(workflowSource, {
-    "hermit-dev.activate": async (reason) => {
+    hermitDevActivate: async (reason) => {
       activationReasons.push(reason);
       return JSON.stringify(await activate(reason));
+    },
+    "hermit-dev.activate": async (reason) => {
+      collisionCalls.push(reason);
+      return "hermit-dev policies already activated from /workspace/AGENTS.md";
     },
     sendWakeup: async (targets, title, body) => {
       wakeups.push({ targets, title, body });
@@ -527,7 +538,7 @@ async function probePolicyReload(activate) {
     loop: async (body) => body(),
     sleep: async (milliseconds) => sleeps.push(milliseconds),
   });
-  return { activationReasons, sleeps, wakeups };
+  return { activationReasons, collisionCalls, sleeps, wakeups };
 }
 
 const reloadPassed = await probePolicyReload(async () => ({
@@ -542,6 +553,11 @@ check(
   reloadPassed.activationReasons.length === 1 &&
     reloadPassed.activationReasons[0] === "periodic",
   JSON.stringify(reloadPassed.activationReasons),
+);
+check(
+  "periodic reload ignores the colliding compatibility function",
+  reloadPassed.collisionCalls.length === 0,
+  JSON.stringify(reloadPassed.collisionCalls),
 );
 check(
   "periodic reload reports completed only after injection",
@@ -561,6 +577,42 @@ check(
     reloadRefused.wakeups[0].body.includes("context_injected=false") &&
     reloadRefused.wakeups[0].body.includes("no context delivery"),
   JSON.stringify(reloadRefused.wakeups),
+);
+
+const reloadFalseReceipt = await probePolicyReload(async () => ({
+  contextInjected: false,
+  injectionMethod: "direct-interjection",
+  policyCharacters: 123,
+  policyPath: "/workspace/AGENTS.md",
+}));
+check(
+  "periodic reload refuses a receipt without confirmed context injection",
+  reloadFalseReceipt.wakeups.length === 1 &&
+    reloadFalseReceipt.wakeups[0].title === "POLICY RELOAD FAILED" &&
+    reloadFalseReceipt.wakeups[0].body.includes("context_injected=false") &&
+    reloadFalseReceipt.wakeups[0].body.includes(
+      "policy reload did not confirm context injection",
+    ),
+  JSON.stringify(reloadFalseReceipt.wakeups),
+);
+
+const reloadCollision = await probePolicyReload(
+  async () => ({
+    contextInjected: true,
+    injectionMethod: "direct-interjection",
+    policyCharacters: 123,
+    policyPath: "/workspace/AGENTS.md",
+  }),
+  true,
+);
+check(
+  "the stale compatibility function response cannot report success",
+  reloadCollision.activationReasons.length === 0 &&
+    reloadCollision.collisionCalls.length === 1 &&
+    reloadCollision.wakeups.length === 1 &&
+    reloadCollision.wakeups[0].title === "POLICY RELOAD FAILED" &&
+    reloadCollision.wakeups[0].body.includes("context_injected=false"),
+  JSON.stringify(reloadCollision),
 );
 
 const registrationSource = sourceBetween(
@@ -731,7 +783,8 @@ const policyReloadSource = sourceBetween(
 check(
   "policy reload does not capture the policy registration helper",
   !policyReloadSource.includes("injectHermitDevPolicies") &&
-    policyReloadSource.includes('orc[PLUGIN_NAME + ".activate"]("periodic")'),
+    policyReloadSource.includes('orc.hermitDevActivate("periodic")') &&
+    !policyReloadSource.includes('orc[PLUGIN_NAME + ".activate"]("periodic")'),
 );
 
 // --- report ------------------------------------------------------------------

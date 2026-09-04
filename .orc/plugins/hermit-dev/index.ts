@@ -644,7 +644,13 @@ export async function policyReloadHeartbeat(wf: WfContext): Promise<void> {
   await wf.loop(async () => {
     await wf.sleep(POLICY_RELOAD_INTERVAL_MS);
     try {
-      const receipt = JSON.parse(String(await orc[PLUGIN_NAME + ".activate"]("periodic"))) as PolicyInjectionReceipt;
+      const parsedReceipt = JSON.parse(
+        String(await orc.hermitDevActivate("periodic")),
+      );
+      if (!parsedReceipt || parsedReceipt.contextInjected !== true) {
+        throw new Error("policy reload did not confirm context injection");
+      }
+      const receipt = parsedReceipt as PolicyInjectionReceipt;
       await orc.sendWakeup(
         [],
         "POLICY RELOAD COMPLETE",
