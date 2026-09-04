@@ -8,11 +8,12 @@ Type=oneshot
 # in ExecStart/WorkingDirectory, and a hardcoded owner path fails the parent's
 # portability gate.
 Environment=PATH=%h/.cargo/bin:%h/orc-bin:/usr/local/bin:/usr/bin:/bin
-WorkingDirectory=%h/work/dev-hermit
-# Runs the VERSION-CONTROLLED copy. This previously ran an untracked script
-# under ~/.local/bin, so the thing executing was not the thing reviewed and
-# could drift from the repository silently.
-ExecStart=%h/work/dev-hermit/scripts/hermit-health-tick.sh
+WorkingDirectory=%h
+# The installed bootstrap materializes and verifies current origin/main before
+# it executes the version-controlled health wrapper. The shared parent checkout
+# is mutable state and can be unable to fast-forward while another agent has a
+# nested checkout on a different revision; it must not select the wrapper code.
+ExecStart=%h/.local/libexec/dev-hermit/operational-tool --run-current-tool --state-root %h/work/dev-hermit --tool-relative scripts/hermit-health-tick.sh
 # The tick's own pin-guard exit is expected signal, not a unit failure.
 SuccessExitStatus=0 1
 # NOTE: a tick that exceeds this is KILLED before it can append its invocation

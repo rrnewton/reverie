@@ -63,6 +63,16 @@ def test_expensive_wrkslots_audit_has_a_persistent_calendar_schedule() -> None:
     assert "advance intentionally creates that visible NO_RESULT window" in config
 
 
+def test_health_tick_uses_the_installed_immutable_bootstrap() -> None:
+    service = read("scripts/systemd/hermit-health-tick.service")
+
+    assert "ExecStart=%h/.local/libexec/dev-hermit/operational-tool" in service
+    assert "--run-current-tool" in service
+    assert "--state-root %h/work/dev-hermit" in service
+    assert "--tool-relative scripts/hermit-health-tick.sh" in service
+    assert "ExecStart=%h/work/dev-hermit/scripts/hermit-health-tick.sh" not in service
+
+
 def test_staleness_alarm_preserves_three_missed_tick_threshold() -> None:
     source = read("scripts/hermit-health-staleness.sh")
     assert f"INTERVAL_MIN={TICK_MINUTES}" in source

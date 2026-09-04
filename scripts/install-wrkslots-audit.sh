@@ -7,6 +7,7 @@ libexec_dir=$HOME/.local/libexec/dev-hermit
 bootstrap=$libexec_dir/operational-tool
 service=hermit-wrkslots-audit.service
 timer=hermit-wrkslots-audit.timer
+health_service=hermit-health-tick.service
 start=0
 
 if [[ ${1:-} == --start ]]; then
@@ -27,6 +28,7 @@ install -d -m 0755 "$unit_dir" "$libexec_dir"
 install -m 0555 "$root/scripts/hermit-health-tick.sh" "$bootstrap"
 install -m 0644 "$root/scripts/systemd/$service" "$unit_dir/"
 install -m 0644 "$root/scripts/systemd/$timer" "$unit_dir/"
+install -m 0644 "$root/scripts/systemd/$health_service" "$unit_dir/"
 
 cmp --silent "$root/scripts/hermit-health-tick.sh" "$bootstrap" || {
     printf 'wrkslots-audit install: installed operational bootstrap differs from source\n' >&2
@@ -36,6 +38,12 @@ grep -Fq \
     'ExecStart=%h/.local/libexec/dev-hermit/operational-tool --run-current-tool' \
     "$unit_dir/$service" || {
     printf 'wrkslots-audit install: service does not execute the installed bootstrap\n' >&2
+    exit 1
+}
+grep -Fq \
+    'ExecStart=%h/.local/libexec/dev-hermit/operational-tool --run-current-tool --state-root %h/work/dev-hermit --tool-relative scripts/hermit-health-tick.sh' \
+    "$unit_dir/$health_service" || {
+    printf 'wrkslots-audit install: health service does not execute through the installed bootstrap\n' >&2
     exit 1
 }
 grep -Fxq 'OnCalendar=hourly' "$unit_dir/$timer" || {

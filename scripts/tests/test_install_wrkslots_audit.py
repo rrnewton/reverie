@@ -63,6 +63,7 @@ class InstallWrkslotsAuditTests(unittest.TestCase):
         unit_dir = self.config / "systemd/user"
         service = (unit_dir / "hermit-wrkslots-audit.service").read_text()
         timer = (unit_dir / "hermit-wrkslots-audit.timer").read_text()
+        health_service = (unit_dir / "hermit-health-tick.service").read_text()
         self.assertIn(
             "ExecStart=%h/.local/libexec/dev-hermit/operational-tool "
             "--run-current-tool",
@@ -76,6 +77,12 @@ class InstallWrkslotsAuditTests(unittest.TestCase):
         self.assertIn("OnActiveSec=30s", timer)
         self.assertIn("Persistent=true", timer)
         self.assertNotIn("OnUnitActiveSec", timer)
+        self.assertIn(
+            "ExecStart=%h/.local/libexec/dev-hermit/operational-tool "
+            "--run-current-tool --state-root %h/work/dev-hermit "
+            "--tool-relative scripts/hermit-health-tick.sh",
+            health_service,
+        )
         self.assertEqual(
             [
                 "--user daemon-reload",
