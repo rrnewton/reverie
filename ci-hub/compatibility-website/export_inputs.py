@@ -15,14 +15,16 @@ import importlib
 import json
 import os
 import re
+import selectors
+import signal
 import stat
 import subprocess
 import sys
 import tempfile
-from collections import Counter
+import time
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Any, Iterable, Sequence
+from typing import Any, Mapping, Sequence
 
 
 CI_HUB = Path(__file__).resolve().parents[1]
@@ -41,43 +43,213 @@ SCHEMA_VERSION = 1
 _SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 _MONTH_RE = re.compile(r"^[0-9]{4}-[0-9]{2}$")
 _OWNER_PATH_NEEDLE = "/" + "home" + "/"
-# Each fingerprint binds the canonical JSON for record_id, commit,
-# schema_version, run_id, and cell_results.  The narrow binding keeps a nearby
-# malformed supported-schema row visible to the fail-closed consumer.
-_WEBSITE_SELECTION_RETIREMENTS = {
-    "devbig014-1787003302-994556": {
-        "commit": "99e378524b9a6a22f5b74ab24192b906ab371a13",
-        "fingerprint": "b9a229ec66622b701f33adc8b608968075c4e946b951876416394320b2a6ac52",
-    },
-    "devbig014-1787005074-1930458": {
-        "commit": "88d4d61bfa9be43fa10513980485e9e55ef353dc",
-        "fingerprint": "64142a34df8d7d699e2b7567aee02236c472158fa554f5c6fb31275d50bd729e",
-    },
-}
+_HISTORICAL_TEST_ENVIRONMENT = (
+    "CI_HUB_VALIDATE_LEDGER_TEST_ROOT",
+    "HERMIT_VALIDATE_STOP_TEST_MODE",
+)
+_GIT_TIMEOUT_SECONDS = 60
+_MAX_GIT_STDOUT_BYTES = 256 << 20
+_MAX_GIT_STDERR_BYTES = 64 << 10
+_CHILD_EXIT_POLL_SECONDS = 0.05
+_PROCESS_GROUP_TERM_GRACE_SECONDS = 0.25
+_PROCESS_GROUP_POLL_SECONDS = 0.01
+_MAX_PROCESS_DETAIL_BYTES = 2_000
 _READER_PATHS = (
     Path("ci-hub/ci-hub"),
     Path("ci-hub/ci-hub.rs"),
     Path("ci-hub/compatibility-website/export_inputs.py"),
+    Path("ci-hub/ledger/check-ledger-parses.rs"),
     Path("ci-hub/ledger/check-ledger-events.rs"),
     Path("ci-hub/ledger/ledger.py"),
     Path("ci-hub/ledger/publisher.py"),
     Path("ci-hub/ledger/validate_rows.py"),
     Path("ci-hub/lib/bounded_capture.py"),
+    Path("ci-hub/lib/bounded_output.rs"),
+    Path("ci-hub/lib/compatibility_website.rs"),
+    Path("ci-hub/lib/failure_obligations.rs"),
+    Path("ci-hub/lib/history_queries.rs"),
+    Path("ci-hub/lib/landing_lock.rs"),
+    Path("ci-hub/lib/lease.rs"),
     Path("ci-hub/lib/ledger_event.rs"),
+    Path("ci-hub/lib/measured.rs"),
+    Path("ci-hub/lib/published_receipt.rs"),
+    Path("ci-hub/lib/qualifying_receipt.rs"),
+    Path("ci-hub/lib/records.rs"),
+    Path("ci-hub/lib/validate_lock.rs"),
+    Path("ci-hub/lib/validate_run_handle.rs"),
+    Path("ci-hub/lib/validate_status.rs"),
     Path("ci-hub/lib/validation_evidence.rs"),
     Path("ci-hub/qualifying_receipt.py"),
     Path("ci-hub/series/check-series-rows.rs"),
     Path("ci-hub/series/series.py"),
+    Path("ci-hub/validate/final_validate_status.py"),
     Path("ci-hub/validate/flake_class.py"),
     Path("ci-hub/validate/flaky_cells.py"),
     Path("ci-hub/validate/gate_completeness.py"),
     Path("ci-hub/validate/green_class.py"),
     Path("ci-hub/validate/qualifying-receipt.json"),
+    Path("ci-hub/validate/run_registry.py"),
+    Path("ci-hub/validate/service_result.py"),
 )
 
 
 class ExportRefused(Exception):
     """The inputs cannot support one reproducible canonical export."""
+
+
+class OutputLimitExceeded(Exception):
+    """A child produced more bytes than its caller's fixed capture bound."""
+
+    def __init__(self, stream: str, limit: int) -> None:
+        super().__init__(f"{stream} exceeded {limit} bytes")
+        self.stream = stream
+        self.limit = limit
+
+
+def _process_group_exists(process_group: int) -> bool:
+    try:
+        os.killpg(process_group, 0)
+    except ProcessLookupError:
+        return False
+    return True
+
+
+def _clean_process_group(process: subprocess.Popen[bytes]) -> None:
+    """Bound the lifetime of the private process group owned by ``process``."""
+
+    process_group = process.pid
+    try:
+        os.killpg(process_group, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+
+    deadline = time.monotonic() + _PROCESS_GROUP_TERM_GRACE_SECONDS
+    while _process_group_exists(process_group):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            try:
+                os.killpg(process_group, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            break
+        time.sleep(min(remaining, _PROCESS_GROUP_POLL_SECONDS))
+
+    if process.poll() is None:
+        try:
+            process.wait(timeout=_PROCESS_GROUP_TERM_GRACE_SECONDS)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(process_group, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            process.wait(timeout=_PROCESS_GROUP_TERM_GRACE_SECONDS)
+
+
+def capture_bounded_process(
+    command: Sequence[str],
+    *,
+    environment: Mapping[str, str],
+    timeout: float,
+    stdout_limit: int,
+    stderr_limit: int,
+    cwd: Path | None = None,
+) -> subprocess.CompletedProcess[bytes]:
+    """Capture one child without an unbounded pipe, file, or memory read.
+
+    Once the direct child exits, an inherited descriptor in a grandchild does
+    not keep this call waiting for EOF. While the child is live, output is read
+    incrementally and the fixed byte limits are enforced before it can finish.
+    """
+
+    if timeout <= 0:
+        raise ValueError("timeout must be positive")
+    if stdout_limit < 0 or stderr_limit < 0:
+        raise ValueError("output limits must be nonnegative")
+
+    process = subprocess.Popen(
+        list(command),
+        cwd=cwd,
+        env=environment,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        start_new_session=True,
+    )
+    selector: selectors.BaseSelector | None = None
+    deadline = time.monotonic() + timeout
+    try:
+        assert process.stdout is not None and process.stderr is not None
+        stdout_descriptor = process.stdout.fileno()
+        stderr_descriptor = process.stderr.fileno()
+        streams = {
+            stdout_descriptor: (
+                "stdout",
+                process.stdout,
+                bytearray(),
+                stdout_limit,
+            ),
+            stderr_descriptor: (
+                "stderr",
+                process.stderr,
+                bytearray(),
+                stderr_limit,
+            ),
+        }
+        selector = selectors.DefaultSelector()
+        for descriptor in streams:
+            os.set_blocking(descriptor, False)
+            selector.register(descriptor, selectors.EVENT_READ)
+        while selector.get_map():
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise subprocess.TimeoutExpired(command, timeout)
+            child_running = process.poll() is None
+            events = selector.select(
+                min(remaining, _CHILD_EXIT_POLL_SECONDS) if child_running else 0
+            )
+            if not events:
+                if process.poll() is None:
+                    continue
+                break
+            for key, _mask in events:
+                stream, handle, captured, limit = streams[key.fd]
+                chunk = os.read(key.fd, min(65536, limit - len(captured) + 1))
+                if not chunk:
+                    selector.unregister(key.fd)
+                    handle.close()
+                    continue
+                available = limit - len(captured)
+                captured.extend(chunk[:available])
+                if len(chunk) > available:
+                    raise OutputLimitExceeded(stream, limit)
+
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise subprocess.TimeoutExpired(command, timeout)
+        returncode = process.wait(timeout=remaining)
+        return subprocess.CompletedProcess(
+            list(command),
+            returncode,
+            bytes(streams[stdout_descriptor][2]),
+            bytes(streams[stderr_descriptor][2]),
+        )
+    finally:
+        _clean_process_group(process)
+        if selector is not None:
+            selector.close()
+        if process.stdout is not None:
+            process.stdout.close()
+        if process.stderr is not None:
+            process.stderr.close()
+
+
+def _process_detail(stderr: bytes, stdout: bytes) -> str:
+    encoded = stderr or stdout
+    truncated = len(encoded) > _MAX_PROCESS_DETAIL_BYTES
+    detail = encoded[:_MAX_PROCESS_DETAIL_BYTES].decode(errors="replace").strip()
+    if truncated:
+        detail += "... [truncated]"
+    return detail or "no output"
 
 
 def _refuse_authority_overrides() -> None:
@@ -114,18 +286,23 @@ class GitSource:
 
 def _git_environment() -> dict[str, str]:
     environment = {
-        name: value
-        for name, value in os.environ.items()
-        if not name.startswith("GIT_")
+        name: value for name, value in os.environ.items() if not name.startswith("GIT_")
     }
     environment["GIT_CONFIG_NOSYSTEM"] = "1"
     environment["GIT_CONFIG_GLOBAL"] = os.devnull
     return environment
 
 
+def _historical_reader_environment() -> dict[str, str]:
+    environment = _git_environment()
+    for name in _HISTORICAL_TEST_ENVIRONMENT:
+        environment.pop(name, None)
+    return environment
+
+
 def _git(checkout: Path, arguments: Sequence[str]) -> bytes:
     try:
-        result = subprocess.run(
+        result = capture_bounded_process(
             [
                 "git",
                 "--no-replace-objects",
@@ -133,18 +310,22 @@ def _git(checkout: Path, arguments: Sequence[str]) -> bytes:
                 str(checkout),
                 *arguments,
             ],
-            check=False,
-            capture_output=True,
-            timeout=60,
-            env=_git_environment(),
+            timeout=_GIT_TIMEOUT_SECONDS,
+            stdout_limit=_MAX_GIT_STDOUT_BYTES,
+            stderr_limit=_MAX_GIT_STDERR_BYTES,
+            environment=_git_environment(),
         )
-    except (OSError, subprocess.TimeoutExpired) as error:
+    except (OSError, subprocess.TimeoutExpired, OutputLimitExceeded) as error:
         raise ExportRefused(f"cannot run git in {checkout}: {error}") from error
     if result.returncode != 0:
-        detail = (result.stderr or result.stdout).decode(errors="replace").strip()
         raise ExportRefused(
             f"git {' '.join(arguments)} failed in {checkout}: "
-            f"{detail or f'exit {result.returncode} with no output'}"
+            f"{_process_detail(result.stderr, result.stdout)}"
+        )
+    if result.stderr:
+        raise ExportRefused(
+            f"git {' '.join(arguments)} wrote unexpected stderr in {checkout}: "
+            f"{_process_detail(result.stderr, b'')}"
         )
     return result.stdout
 
@@ -228,7 +409,9 @@ def _git_input_files(checkout: Path, commit: str) -> dict[str, GitSource]:
             metadata, raw_path = raw.split(b"\t", 1)
             mode, object_type, raw_object_id = metadata.decode().split()
         except (ValueError, UnicodeDecodeError) as error:
-            raise ExportRefused(f"git returned malformed ls-tree entry {raw!r}") from error
+            raise ExportRefused(
+                f"git returned malformed ls-tree entry {raw!r}"
+            ) from error
         relative = _safe_git_path(raw_path.decode(errors="strict"))
         selected = _input_store_and_location(relative)
         if object_type != "blob" or mode not in {"100644", "100755"}:
@@ -308,7 +491,9 @@ def _check_directory_path(root: Path, directory: Path) -> None:
         except FileNotFoundError:
             return
         except OSError as error:
-            raise ExportRefused(f"cannot inspect input path {current}: {error}") from error
+            raise ExportRefused(
+                f"cannot inspect input path {current}: {error}"
+            ) from error
         if stat.S_ISLNK(metadata.st_mode):
             raise ExportRefused(f"input path contains a symlink: {current}")
         if not stat.S_ISDIR(metadata.st_mode):
@@ -386,13 +571,11 @@ def _discover_mutable_sources(parent: Path, data_root: Path) -> list[MutableSour
 
 
 def _capture_mutable_sources(
-    parent: Path, data_root: Path,
+    parent: Path,
+    data_root: Path,
 ) -> list[tuple[MutableSource, bytes]]:
     before = _discover_mutable_sources(parent, data_root)
-    first = {
-        source.identity(): _stable_file_bytes(source.path)
-        for source in before
-    }
+    first = {source.identity(): _stable_file_bytes(source.path) for source in before}
     after = _discover_mutable_sources(parent, data_root)
     if [source.identity() for source in before] != [
         source.identity() for source in after
@@ -400,10 +583,7 @@ def _capture_mutable_sources(
         raise ExportRefused(
             "live or retained spool path set changed while inputs were captured"
         )
-    second = {
-        source.identity(): _stable_file_bytes(source.path)
-        for source in after
-    }
+    second = {source.identity(): _stable_file_bytes(source.path) for source in after}
     if first != second:
         raise ExportRefused(
             "live or retained spool content changed while inputs were captured"
@@ -493,10 +673,13 @@ def _unexpected_ci_hub_changes() -> list[str]:
     return sorted(unexpected)
 
 
-def _hermit_reader() -> dict[str, str]:
-    listing = _git(REPOSITORY, ["ls-tree", "HEAD", "--", "hermit"]).decode(
-        errors="strict"
-    ).strip()
+def _observed_hermit_reader() -> dict[str, str]:
+    """Return the two independently observed Hermit revisions after clean checks."""
+    listing = (
+        _git(REPOSITORY, ["ls-tree", "HEAD", "--", "hermit"])
+        .decode(errors="strict")
+        .strip()
+    )
     match = re.fullmatch(r"160000 commit ([0-9a-f]{40})\thermit", listing)
     if match is None:
         raise ExportRefused("reader commit does not contain one Hermit gitlink")
@@ -508,10 +691,6 @@ def _hermit_reader() -> dict[str, str]:
     if top != checkout.resolve():
         raise ExportRefused("the pinned Hermit path is not its own checkout")
     actual = _resolve_commit(checkout, "HEAD")
-    if actual != expected:
-        raise ExportRefused(
-            f"Hermit submodule is at {actual}, expected recorded gitlink {expected}"
-        )
     status = _git(
         checkout,
         ["status", "--porcelain=v1", "-z", "--untracked-files=all"],
@@ -519,6 +698,22 @@ def _hermit_reader() -> dict[str, str]:
     if status:
         raise ExportRefused("the pinned Hermit submodule has local changes")
     return {"checkout_commit": actual, "gitlink_commit": expected}
+
+
+def _hermit_reader() -> dict[str, str]:
+    """Live exports require the materialized checkout to equal the gitlink."""
+    observed = _observed_hermit_reader()
+    if observed["checkout_commit"] != observed["gitlink_commit"]:
+        raise ExportRefused(
+            f"Hermit submodule is at {observed['checkout_commit']}, expected "
+            f"recorded gitlink {observed['gitlink_commit']}"
+        )
+    return observed
+
+
+def _historical_hermit_reader() -> dict[str, str]:
+    """Historical builds bind a clean prerequisite checkout separately."""
+    return _observed_hermit_reader()
 
 
 def _reader_state() -> dict[str, Any]:
@@ -541,17 +736,37 @@ def _reader_state() -> dict[str, Any]:
     }
 
 
-def _load_authorities() -> dict[str, Any]:
+def _historical_reader_state() -> dict[str, Any]:
+    """Bind exact reader bytes without changing the live clean-tree contract."""
+    commit = _resolve_commit(REPOSITORY, "HEAD")
+    tree = _git_text(REPOSITORY, ["rev-parse", f"{commit}:ci-hub"])
+    if not re.fullmatch(r"[0-9a-f]{40,64}", tree):
+        raise ExportRefused(f"reader ci-hub tree has invalid object id {tree!r}")
+    files = _reader_files()
+    dirty_paths = _unexpected_ci_hub_changes()
+    hermit = _historical_hermit_reader()
+    identity = {
+        "ci_hub_tree": tree,
+        "commit": commit,
+        "dirty_paths": dirty_paths,
+        "files": files,
+        "hermit": hermit,
+        "worktree_clean": not dirty_paths,
+    }
+    return {
+        **identity,
+        "files_sha256": _value_sha256(files),
+        "source_identity_sha256": _value_sha256(identity),
+    }
+
+
+def _import_authorities(reader_state: Any) -> dict[str, Any]:
     global ledger_store
     global ledger_publisher
     global series_store
     global validation_ledger
-    global _AUTHORITY_IMPORT_READER_STATE
 
-    if _AUTHORITY_IMPORT_READER_STATE is not None:
-        return _AUTHORITY_IMPORT_READER_STATE
-
-    before = _reader_state()
+    before = reader_state()
     sys.path.insert(0, str(LEDGER_DIR))
     sys.path.insert(0, str(SERIES_DIR))
     try:
@@ -575,7 +790,7 @@ def _load_authorities() -> dict[str, Any]:
             raise ExportRefused(
                 f"imported {name} from {actual}, expected {expected[name]}"
             )
-    after = _reader_state()
+    after = reader_state()
     if _canonical_bytes(before) != _canonical_bytes(after):
         raise ExportRefused("reader commit or files changed while authorities loaded")
 
@@ -583,28 +798,19 @@ def _load_authorities() -> dict[str, Any]:
     ledger_publisher = loaded["publisher"]
     series_store = loaded["series"]
     validation_ledger = loaded["validate_rows"]
-    _AUTHORITY_IMPORT_READER_STATE = after
     return after
 
 
-def _schema_counts(rows: Iterable[dict], field: str) -> dict[str, int]:
-    counts = Counter(
-        str(row[field]) if field in row else "missing"
-        for row in rows
-    )
-    return dict(sorted(counts.items()))
+def _load_authorities() -> dict[str, Any]:
+    global _AUTHORITY_IMPORT_READER_STATE
+
+    if _AUTHORITY_IMPORT_READER_STATE is None:
+        _AUTHORITY_IMPORT_READER_STATE = _import_authorities(_reader_state)
+    return _AUTHORITY_IMPORT_READER_STATE
 
 
-def _represented_runs(rows: Iterable[dict]) -> int:
-    total = 0
-    for row in rows:
-        value = (row.get("series") or {}).get("num_runs", 1)
-        if not isinstance(value, int) or isinstance(value, bool) or value < 1:
-            raise ExportRefused(
-                f"canonical series row has invalid num_runs {value!r}"
-            )
-        total += value
-    return total
+def _load_historical_authorities() -> dict[str, Any]:
+    return _import_authorities(_historical_reader_state)
 
 
 def _contains_string(value: Any, needle: str) -> bool:
@@ -622,10 +828,7 @@ def _replace_string(value: Any, old: str, new: str) -> Any:
     if isinstance(value, str):
         return value.replace(old, new)
     if isinstance(value, dict):
-        return {
-            key: _replace_string(item, old, new)
-            for key, item in value.items()
-        }
+        return {key: _replace_string(item, old, new) for key, item in value.items()}
     if isinstance(value, list):
         return [_replace_string(item, old, new) for item in value]
     if isinstance(value, tuple):
@@ -679,158 +882,34 @@ def _incomplete_data() -> list[dict[str, str]]:
     ]
 
 
-def _website_current_validation_rows(
-    history_rows: list[dict],
-) -> tuple[list[dict], list[dict[str, str]]]:
-    """Keep two exact pre-comparison-field rows as history, not selection evidence."""
-    current_rows = validation_ledger.current_validation_run_rows(history_rows)
-    usable: list[dict] = []
-    incomplete: list[dict[str, str]] = []
-    fingerprint_fields = (
-        "record_id",
-        "commit",
-        "schema_version",
-        "run_id",
-        "cell_results",
-    )
-    for row in current_rows:
-        record_id = row.get("record_id")
-        retirement = _WEBSITE_SELECTION_RETIREMENTS.get(record_id)
-        if retirement is None:
-            usable.append(row)
-            continue
-        fingerprint = _value_sha256(
-            {field: row.get(field) for field in fingerprint_fields}
-        )
-        if (
-            row.get("schema_version") != 6
-            or row.get("commit") != retirement["commit"]
-            or fingerprint != retirement["fingerprint"]
-        ):
-            raise ExportRefused(
-                f"historical validation row {record_id!r} no longer matches "
-                "the exact pre-comparison-field evidence selected for retirement"
-            )
-        incomplete.append(
-            {
-                "field": "cell_results",
-                "input": "validation ledger",
-                "reason": (
-                    "schema-6 cell_results predate compare_io_buffers, "
-                    "display_name, record_envelope, and virtualize_time; the row "
-                    "remains in validation history but contributes no current "
-                    f"website selection evidence for Hermit commit {retirement['commit']}"
-                ),
-                "record_id": record_id,
-                "run_id": str(row.get("run_id")),
-                "schema": "6",
-            }
-        )
-    return usable, sorted(incomplete, key=lambda item: item["record_id"])
-
-
 def _validation_export(
     snapshot_root: Path,
-) -> tuple[dict[str, Any], list[dict[str, str]]]:
+) -> dict[str, Any]:
     events = validation_ledger.events(root=snapshot_root)
     history_rows = validation_ledger.rows(root=snapshot_root)
-    current_rows, incomplete = _website_current_validation_rows(history_rows)
     portable_history = _portable_history_rows(history_rows, snapshot_root)
-    portable_current = _portable_history_rows(current_rows, snapshot_root)
-    return (
-        {
-            "current_validation_run_row_count": len(portable_current),
-            "current_validation_run_rows": portable_current,
-            "current_validation_run_rows_sha256": _value_sha256(portable_current),
-            "event_count": len(events),
-            "event_schema_counts": _schema_counts(events, "schema"),
-            "events": events,
-            "events_sha256": _value_sha256(events),
-            "history_row_count": len(portable_history),
-            "history_row_schema_counts": _schema_counts(
-                portable_history,
-                "schema_version",
-            ),
-            "history_rows": portable_history,
-            "history_rows_sha256": _value_sha256(portable_history),
-        },
-        incomplete,
-    )
-
-
-def _projection_export(
-    rows: list[dict], rows_sha256: str, represented_run_count: int,
-) -> dict[str, Any]:
-    """Bind complete Hermit projection results to one exported row population."""
-    projection = series_store.projection_results(rows)
-    event_ids = [str(row.get("event_id", "")) for row in rows]
-    if projection.row_count != len(rows):
-        raise ExportRefused(
-            "series projection result row count disagrees with exported rows"
-        )
-    if set(projection.results) != set(event_ids):
-        raise ExportRefused(
-            "series projection result event ids disagree with exported rows"
-        )
-
-    schema_by_event_id = {
-        str(row["event_id"]): str(row.get("schema", "missing"))
-        for row in rows
-    }
-    represented_by_event_id = {
-        str(row["event_id"]): int((row.get("series") or {}).get("num_runs", 1))
-        for row in rows
-    }
-    excluded_physical = Counter()
-    excluded_represented = Counter()
-    admitted_physical = 0
-    admitted_represented = 0
-    for event_id, reason in projection.results.items():
-        represented = represented_by_event_id[event_id]
-        if reason is None:
-            admitted_physical += 1
-            admitted_represented += represented
-            continue
-        key = (schema_by_event_id[event_id], reason)
-        excluded_physical[key] += 1
-        excluded_represented[key] += represented
-    exclusion_counts = [
-        {
-            "physical_row_count": physical_count,
-            "reason": reason,
-            "represented_run_count": excluded_represented[(schema, reason)],
-            "schema": schema,
-        }
-        for (schema, reason), physical_count in sorted(excluded_physical.items())
-    ]
-    excluded_physical_total = sum(excluded_physical.values())
-    excluded_represented_total = sum(excluded_represented.values())
-    if admitted_physical + excluded_physical_total != len(rows):
-        raise ExportRefused(
-            "series projection admitted and excluded physical rows do not total "
-            "the exported row count"
-        )
-    if admitted_represented + excluded_represented_total != represented_run_count:
-        raise ExportRefused(
-            "series projection admitted and excluded represented runs do not total "
-            "the exported represented-run count"
-        )
+    history_jsonl = _opaque_jsonl(portable_history, "HistoryRow")
     return {
-        "projection_admitted_physical_row_count": admitted_physical,
-        "projection_admitted_represented_run_count": admitted_represented,
-        "projection_excluded_physical_row_count": excluded_physical_total,
-        "projection_excluded_represented_run_count": excluded_represented_total,
-        "projection_exclusion_counts": exclusion_counts,
-        "projection_result_physical_row_count": len(projection.results),
-        "projection_results": projection.results,
-        "projection_results_binding": {
-            "checker_input_jsonl_sha256": projection.input_jsonl_sha256,
-            "physical_row_count": len(rows),
-            "represented_run_count": represented_run_count,
-            "rows_sha256": rows_sha256,
-        },
-        "projection_results_sha256": _value_sha256(projection.results),
+        "event_count": len(events),
+        "events_sha256": _value_sha256(events),
+        "history_row_count": len(portable_history),
+        "history_rows_jsonl": history_jsonl.decode(),
+        "history_rows_sha256": _sha256(history_jsonl),
     }
+
+
+def _opaque_jsonl(rows: Any, label: str) -> bytes:
+    """Frame canonical-reader objects without interpreting their Rust fields."""
+    if not isinstance(rows, list):
+        raise ExportRefused(f"canonical {label} population is not an array")
+    encoded: list[bytes] = []
+    for index, row in enumerate(rows):
+        if not isinstance(row, dict):
+            raise ExportRefused(
+                f"canonical {label} population row {index} is not an object"
+            )
+        encoded.append(_canonical_bytes(row) + b"\n")
+    return b"".join(encoded)
 
 
 def _series_export(
@@ -850,15 +929,11 @@ def _series_export(
             "published series rows disagree with the captured parent commit files"
         )
     rows = series_store.union([*published_paths, *local_paths])
-    rows_sha256 = _value_sha256(rows)
-    represented_run_count = _represented_runs(rows)
+    rows_jsonl = _opaque_jsonl(rows, "SeriesRow")
     return {
-        **_projection_export(rows, rows_sha256, represented_run_count),
-        "represented_run_count": represented_run_count,
         "row_count": len(rows),
-        "rows": rows,
-        "rows_sha256": rows_sha256,
-        "schema_counts": _schema_counts(rows, "schema"),
+        "rows_jsonl": rows_jsonl.decode(),
+        "rows_sha256": _sha256(rows_jsonl),
     }
 
 
@@ -931,15 +1006,13 @@ def build_export(parent_value: Path, published_ref: str) -> dict[str, Any]:
         for source, data in mutable:
             _write_snapshot_file(snapshot_root, source.relative, data)
 
-        published_series_paths = sorted(
-            (snapshot_root / "series").glob("*/*/*.jsonl")
-        )
+        published_series_paths = sorted((snapshot_root / "series").glob("*/*/*.jsonl"))
         local_series_paths = [
             snapshot_root / source.relative
             for source, _data in mutable
             if source.store == "series"
         ]
-        validation, validation_incomplete = _validation_export(snapshot_root)
+        validation = _validation_export(snapshot_root)
         series = _series_export(
             parent,
             commit,
@@ -949,7 +1022,7 @@ def build_export(parent_value: Path, published_ref: str) -> dict[str, Any]:
         sources = _provenance_sources(snapshot_root, git_files, mutable)
 
         result = {
-            "incomplete_data": [*_incomplete_data(), *validation_incomplete],
+            "incomplete_data": _incomplete_data(),
             "provenance": {
                 "parent_commit": commit,
                 "published_ref": published_ref,
@@ -976,6 +1049,84 @@ def build_export(parent_value: Path, published_ref: str) -> dict[str, Any]:
     return result
 
 
+def build_historical_export(
+    parent_value: Path,
+    published_commit: str,
+    record_id: str,
+    run_id: str,
+) -> dict[str, Any]:
+    """Export one immutable published snapshot and bind its named HistoryRow."""
+    _refuse_authority_overrides()
+    if _SHA_RE.fullmatch(published_commit) is None:
+        raise ExportRefused(
+            "historical published commit must be a full lowercase 40-hex commit"
+        )
+    reader_before = _load_historical_authorities()
+    parent = _require_repository_root(parent_value)
+    commit = _resolve_commit(parent, published_commit)
+    if commit != published_commit:
+        raise ExportRefused(
+            f"historical published commit resolved to {commit}, expected {published_commit}"
+        )
+    git_files = _git_input_files(parent, commit)
+
+    with tempfile.TemporaryDirectory(
+        prefix="compatibility-website-historical-inputs-"
+    ) as raw_snapshot:
+        snapshot_root = Path(raw_snapshot)
+        for relative, source in git_files.items():
+            _write_snapshot_file(snapshot_root, relative, source.data)
+
+        published_series_paths = sorted((snapshot_root / "series").glob("*/*/*.jsonl"))
+        validation = _validation_export(snapshot_root)
+        series = _series_export(
+            parent,
+            commit,
+            published_series_paths,
+            [],
+        )
+        sources = _provenance_sources(snapshot_root, git_files, [])
+        result = {
+            "incomplete_data": _incomplete_data(),
+            "provenance": {
+                "historical": {
+                    "record_id": record_id,
+                    "run_id": run_id,
+                },
+                "mode": "historical",
+                "parent_commit": commit,
+                "published_only": True,
+                "published_ref": published_commit,
+                "reader_ci_hub_tree": reader_before["ci_hub_tree"],
+                "reader_commit": reader_before["commit"],
+                "reader_files": reader_before["files"],
+                "reader_files_sha256": reader_before["files_sha256"],
+                "reader_hermit": reader_before["hermit"],
+                "reader_source_identity_sha256": reader_before[
+                    "source_identity_sha256"
+                ],
+                "reader_worktree_clean": reader_before["worktree_clean"],
+                "reader_worktree_dirty_paths": reader_before["dirty_paths"],
+                "source_count": len(sources),
+                "sources": sources,
+                "sources_sha256": _value_sha256(sources),
+            },
+            "schema_version": SCHEMA_VERSION,
+            "series": series,
+            "validation_ledger": validation,
+        }
+    reader_after = _historical_reader_state()
+    if _canonical_bytes(reader_before) != _canonical_bytes(reader_after):
+        raise ExportRefused("reader commit or files changed during historical export")
+    if _contains_string(result, str(parent)):
+        raise ExportRefused(
+            "historical export contains the absolute parent checkout path"
+        )
+    if _contains_string(result, _OWNER_PATH_NEEDLE):
+        raise ExportRefused("historical export contains an absolute owner path")
+    return result
+
+
 def render_export(value: dict[str, Any]) -> bytes:
     return _canonical_bytes(value) + b"\n"
 
@@ -993,9 +1144,28 @@ def main(argv: Sequence[str] | None = None) -> int:
         required=True,
         help="explicit parent commit or ref; resolved once and never fetched",
     )
+    parser.add_argument(
+        "--historical",
+        action="store_true",
+        help="read only published bytes at a full immutable commit",
+    )
+    parser.add_argument("--record-id", help="unique historical HistoryRow record id")
+    parser.add_argument("--run-id", help="unique historical validation run id")
     arguments = parser.parse_args(argv)
     try:
-        value = build_export(arguments.parent, arguments.published_ref)
+        if arguments.historical:
+            if arguments.record_id is None or arguments.run_id is None:
+                raise ExportRefused("--historical requires --record-id and --run-id")
+            value = build_historical_export(
+                arguments.parent,
+                arguments.published_ref,
+                arguments.record_id,
+                arguments.run_id,
+            )
+        else:
+            if arguments.record_id is not None or arguments.run_id is not None:
+                raise ExportRefused("--record-id and --run-id require --historical")
+            value = build_export(arguments.parent, arguments.published_ref)
     except (ExportRefused, OSError, ValueError) as error:
         print(f"compatibility-website input export: REFUSED: {error}", file=sys.stderr)
         return 2

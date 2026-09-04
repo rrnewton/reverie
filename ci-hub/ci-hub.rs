@@ -50,6 +50,8 @@
 
 #[path = "lib/bounded_output.rs"]
 mod bounded_output;
+#[path = "lib/compatibility_website.rs"]
+mod compatibility_website;
 #[path = "lib/failure_obligations.rs"]
 mod failure_obligations;
 #[path = "lib/history_queries.rs"]
@@ -140,6 +142,10 @@ READ-ONLY STATUS AND HISTORY
   first-bad               Find a retained PASS -> FAIL transition for a cell or gate
   hosted-status           Check the registered exact-head GH Actions result
   receipt-digest          Recompute a HistoryRow's canonical exact-row digest
+  validate-evidence       Verify retained validation artifacts for JSONL rows
+  validation-row          Select one terminal HistoryRow from complete JSONL input
+  compatibility-website-projection
+                          Project shared Rust input types into the public website view
   history                 Query the retained GitHub Actions timeline
   green-time              Estimate carried-forward green/red time and densification gaps
   verify-landing          Verify a PR replay SHA or commit SHA on a fetched target
@@ -270,6 +276,10 @@ enum HubCommand {
     ReceiptDigest(ReceiptDigestArgs),
     /// Verify retained validation artifacts for a JSONL batch of exact rows.
     ValidateEvidence(ValidateEvidenceArgs),
+    /// Select one terminal typed HistoryRow from a complete JSONL population.
+    ValidationRow(ValidationRowArgs),
+    /// Project typed manifest, validation, and series inputs for the website.
+    CompatibilityWebsiteProjection(CompatibilityWebsiteProjectionArgs),
     /// Launch a detached validation whose service enters through validate-lock.
     ValidateRun(PassthroughArgs),
     /// Stop detached validate-* user units and verify they terminated.
@@ -676,6 +686,41 @@ struct ReceiptDigestArgs {
     /// Reverie object store containing `current_reverie_base`.
     #[arg(long)]
     reverie_checkout: Option<PathBuf>,
+}
+
+#[derive(Args, Clone, Debug)]
+struct ValidationRowArgs {
+    /// Exact stable record identity to select.
+    #[arg(long)]
+    record_id: String,
+    /// Exact stable validation-run identity to select.
+    #[arg(long)]
+    run_id: String,
+}
+
+#[derive(Args, Clone, Debug)]
+struct CompatibilityWebsiteProjectionArgs {
+    /// Exact manifest-metadata JSON emitted by Hermit.
+    #[arg(long)]
+    manifest_json: PathBuf,
+    /// Complete canonical HistoryRow JSONL population.
+    #[arg(long)]
+    history_jsonl: PathBuf,
+    /// Complete canonical SeriesRow JSONL population.
+    #[arg(long)]
+    series_jsonl: PathBuf,
+    /// Complete Hermit checkout used only for current-main ancestry decisions.
+    #[arg(long)]
+    hermit_checkout: PathBuf,
+    /// Exact lowercase Hermit main commit represented by the website.
+    #[arg(long)]
+    hermit_main_commit: String,
+    /// Exact stable historical record identity; pair with --run-id.
+    #[arg(long, requires = "run_id")]
+    record_id: Option<String>,
+    /// Exact stable historical validation-run identity; pair with --record-id.
+    #[arg(long, requires = "record_id")]
+    run_id: Option<String>,
 }
 
 #[derive(Args, Clone, Debug)]
@@ -1418,6 +1463,8 @@ impl HubCommand {
             | Self::ValidateStatus(_)
             | Self::ReceiptDigest(_)
             | Self::ValidateEvidence(_)
+            | Self::ValidationRow(_)
+            | Self::CompatibilityWebsiteProjection(_)
             | Self::ValidateRun(_)
             | Self::ValidateStop(_)
             | Self::CorrectOwnerWatchHandles(_)
@@ -1831,6 +1878,10 @@ fn execute(root: &Path, command: HubCommand) -> Result<i32, CiHubError> {
             validation_evidence::run_batch(&artifact_root)
                 .map(|()| 0)
                 .map_err(CiHubError::ValidateStatus)
+        }
+        HubCommand::ValidationRow(args) => run_validation_row(args),
+        HubCommand::CompatibilityWebsiteProjection(args) => {
+            run_compatibility_website_projection(args)
         }
         HubCommand::HostedStatus(args) => {
             let mut forwarded = vec![OsString::from("hosted-status")];
@@ -4109,14 +4160,220 @@ fn extra_str<'a>(row: &'a HistoryRow, key: &str) -> Option<&'a str> {
     row.extra.get(key).and_then(|value| value.as_str())
 }
 
-/// Return the current receipt for each stable validation run.
+fn required_nonblank_object_string<'a>(
+    object: &'a serde_json::Map<String, serde_json::Value>,
+    field: &str,
+    label: &str,
+) -> Result<&'a str, String> {
+    object
+        .get(field)
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| format!("{label}.{field} must be a nonempty string"))
+}
+
+fn is_canonical_rfc3339_z(value: &str) -> bool {
+    value.len() == 20
+        && value.ends_with('Z')
+        && chrono::DateTime::parse_from_rfc3339(value).is_ok_and(|parsed| {
+            parsed.offset().local_minus_utc() == 0
+                && parsed.to_rfc3339_opts(chrono::SecondsFormat::Secs, true) == value
+        })
+}
+
+fn validate_schema4_correction_object(
+    row: &HistoryRow,
+    object: &serde_json::Map<String, serde_json::Value>,
+) -> Result<(), String> {
+    if row.schema_version != Some(4) {
+        return Err("legacy corrects object is valid only for schema_version 4".into());
+    }
+    let expected = BTreeSet::from([
+        "commit",
+        "finished_at",
+        "host",
+        "slot",
+        "was_exit_code",
+        "was_result",
+    ]);
+    if object.keys().map(String::as_str).collect::<BTreeSet<_>>() != expected {
+        return Err("schema-4 HistoryRow corrects object has unexpected fields".into());
+    }
+    let commit = required_nonblank_object_string(object, "commit", "schema-4 corrects")?;
+    if !is_lowercase_oid(commit) {
+        return Err("schema-4 corrects.commit must be lowercase 40-hex".into());
+    }
+    let finished_at = required_nonblank_object_string(object, "finished_at", "schema-4 corrects")?;
+    if !is_canonical_rfc3339_z(finished_at) {
+        return Err("schema-4 corrects.finished_at must be canonical RFC3339-Z".into());
+    }
+    let host = required_nonblank_object_string(object, "host", "schema-4 corrects")?;
+    let slot = required_nonblank_object_string(object, "slot", "schema-4 corrects")?;
+    required_nonblank_object_string(object, "was_result", "schema-4 corrects")?;
+    if object
+        .get("was_exit_code")
+        .and_then(serde_json::Value::as_i64)
+        .is_none()
+    {
+        return Err("schema-4 corrects.was_exit_code must be an integer".into());
+    }
+    for (field, correction, source) in [
+        ("commit", commit, row.commit.as_deref()),
+        ("finished_at", finished_at, row.finished_at.as_deref()),
+        ("host", host, row.host.as_deref()),
+        ("slot", slot, row.slot.as_deref()),
+    ] {
+        if source.is_some_and(|source| source != correction) {
+            return Err(format!(
+                "schema-4 HistoryRow corrects.{field} disagrees with its row"
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Return the stable record-id correction edge, if this row carries one.
+///
+/// Missing and explicit null both mean no edge. The exact legacy schema-4
+/// object remains readable but is not a stable record-id edge.
+pub(crate) fn correction_record_id(row: &HistoryRow) -> Result<Option<&str>, String> {
+    match row.extra.get("corrects") {
+        None | Some(serde_json::Value::Null) => Ok(None),
+        Some(serde_json::Value::String(value)) if !value.trim().is_empty() => Ok(Some(value)),
+        Some(serde_json::Value::String(_)) => {
+            Err("validation correction names a blank record_id".into())
+        }
+        Some(serde_json::Value::Object(object)) => {
+            validate_schema4_correction_object(row, object)?;
+            Ok(None)
+        }
+        Some(_) => Err("HistoryRow corrects must be null, a nonempty record id, or the exact schema-4 legacy object".into()),
+    }
+}
+
+/// Return the source ordinals of the current receipt for each stable validation run.
 ///
 /// Finalization appends a more complete receipt instead of rewriting the
 /// producer's row. Both rows deliberately retain the same `run_id`, and the
 /// appended row names the exact source `record_id` in `corrects`. Recent status
 /// is a run view, not an event timeline, so a valid correction chain contributes
 /// its one terminal row. Legacy rows without a stable run identity stay distinct.
-/// Ambiguous or malformed chains remain visible rather than being guessed away.
+/// Ambiguous or malformed correction chains refuse instead of being guessed away.
+pub(crate) fn current_validation_run_indices(rows: &[HistoryRow]) -> Result<Vec<usize>, String> {
+    let mut groups: BTreeMap<String, Vec<usize>> = BTreeMap::new();
+    let mut record_ids = BTreeMap::new();
+    let corrections = rows
+        .iter()
+        .map(correction_record_id)
+        .collect::<Result<Vec<_>, _>>()?;
+    for (index, row) in rows.iter().enumerate() {
+        if row.extra.contains_key("record_id") {
+            let record_id = extra_str(row, "record_id")
+                .filter(|record_id| !record_id.trim().is_empty())
+                .ok_or("validation record_id must be a nonempty string")?;
+            if let Some(first) = record_ids.insert(record_id.to_owned(), index) {
+                return Err(format!(
+                    "validation rows {first} and {index} repeat record_id {record_id:?}"
+                ));
+            }
+        }
+        let run_id = row
+            .run_id
+            .as_deref()
+            .filter(|run_id| !run_id.trim().is_empty());
+        if let Some(run_id) = run_id {
+            groups.entry(run_id.to_string()).or_default().push(index);
+        }
+    }
+
+    let mut superseded = BTreeSet::new();
+    for (run_id, indices) in &groups {
+        if indices.len() == 1 && corrections[indices[0]].is_none() {
+            continue;
+        }
+        let mut records = BTreeMap::new();
+        for index in indices {
+            let Some(record_id) = extra_str(&rows[*index], "record_id")
+                .filter(|record_id| !record_id.trim().is_empty())
+            else {
+                return Err(format!("validation run {run_id:?} has no stable record_id"));
+            };
+            records.insert(record_id, *index);
+        }
+
+        let mut group_superseded = BTreeSet::new();
+        for index in indices {
+            let Some(corrects) = corrections[*index] else {
+                continue;
+            };
+            let Some(corrected_index) = records.get(corrects).copied() else {
+                return Err(format!(
+                    "validation correction in run {run_id:?} names record_id {corrects:?}, which is not a row in the same run"
+                ));
+            };
+            if corrected_index == *index {
+                return Err(format!(
+                    "validation record {corrects:?} in run {run_id:?} corrects itself"
+                ));
+            }
+            if !group_superseded.insert(corrected_index) {
+                return Err(format!(
+                    "validation run {run_id:?} has more than one correction for record_id {corrects:?}"
+                ));
+            }
+        }
+        let terminals = indices
+            .iter()
+            .copied()
+            .filter(|index| !group_superseded.contains(index))
+            .collect::<Vec<_>>();
+        if terminals.len() != 1 {
+            return Err(format!(
+                "validation run {run_id:?} has {} terminal rows; expected one",
+                terminals.len()
+            ));
+        }
+
+        let mut chain = BTreeSet::new();
+        let mut current = terminals[0];
+        loop {
+            if !chain.insert(current) {
+                return Err(format!("validation run {run_id:?} has a correction cycle"));
+            }
+            let Some(corrects) = corrections[current] else {
+                break;
+            };
+            current = records[corrects];
+        }
+        if chain.len() != indices.len() {
+            return Err(format!(
+                "validation run {run_id:?} has rows outside its terminal correction chain"
+            ));
+        }
+        superseded.extend(group_superseded);
+    }
+
+    Ok(rows
+        .iter()
+        .enumerate()
+        .filter_map(|(index, _)| (!superseded.contains(&index)).then_some(index))
+        .collect())
+}
+
+/// Return owned current rows for strict consumers such as immutable exports.
+fn strict_current_validation_run_rows(rows: Vec<HistoryRow>) -> Result<Vec<HistoryRow>, String> {
+    let indices = current_validation_run_indices(&rows)?;
+    Ok(indices
+        .into_iter()
+        .map(|index| rows[index].clone())
+        .collect())
+}
+
+/// Return the current receipt for each stable validation run.
+///
+/// Status keeps ambiguous or malformed chains visible instead of guessing
+/// which row supersedes another. Strict export consumers use
+/// `current_validation_run_indices` directly and refuse those inputs.
 fn current_validation_run_rows(rows: Vec<HistoryRow>) -> Vec<HistoryRow> {
     let mut groups: BTreeMap<String, Vec<usize>> = BTreeMap::new();
     for (index, row) in rows.iter().enumerate() {
@@ -4302,6 +4559,293 @@ fn canonical_row_json_and_sha256(row: &HistoryRow) -> Option<(String, String)> {
     let canonical_row_json = serde_json::to_string(row).ok()?;
     let digest = format!("{:x}", Sha256::digest(canonical_row_json.as_bytes()));
     Some((canonical_row_json, digest))
+}
+
+fn validation_row_report(
+    input: &str,
+    record_id: &str,
+    run_id: &str,
+) -> Result<serde_json::Value, String> {
+    if record_id.trim().is_empty() || run_id.trim().is_empty() {
+        return Err("validation-row record_id and run_id must be nonempty".into());
+    }
+    let mut rows = Vec::new();
+    for (index, line) in input.lines().enumerate() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let row = serde_json::from_str::<HistoryRow>(line).map_err(|error| {
+            format!(
+                "validation-row input line {} is not a HistoryRow: {error}",
+                index + 1
+            )
+        })?;
+        rows.push(row);
+    }
+    if rows.is_empty() {
+        return Err("validation-row input contains no HistoryRow values".into());
+    }
+    let input_row_count = rows.len();
+    let terminal = strict_current_validation_run_rows(rows)?;
+    let matches = terminal
+        .iter()
+        .filter(|row| {
+            extra_str(row, "record_id") == Some(record_id) && row.run_id.as_deref() == Some(run_id)
+        })
+        .collect::<Vec<_>>();
+    if matches.len() != 1 {
+        return Err(format!(
+            "validation-row record_id {record_id:?} and run_id {run_id:?} matched {} terminal rows; expected one",
+            matches.len()
+        ));
+    }
+    let row = matches[0];
+    if !row_matches_validation_repo(row, CANONICAL_VALIDATE_REPO) {
+        return Err("validation-row selected row is not a Hermit validation row".into());
+    }
+    let commit = row
+        .commit
+        .as_deref()
+        .filter(|value| is_oid(value) && !value.bytes().any(|byte| byte.is_ascii_uppercase()))
+        .ok_or_else(|| "validation-row selected row has no lowercase full commit".to_string())?;
+    let started_at = row
+        .started_at
+        .as_deref()
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "validation-row selected row has no started_at".to_string())?;
+    let finished_at = row
+        .finished_at
+        .as_deref()
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "validation-row selected row has no finished_at".to_string())?;
+    if row.profile.as_deref() != Some("full") || row.selection_mode.as_deref() != Some("full") {
+        return Err(
+            "validation-row selected row must record validate path full and selection_mode full"
+                .into(),
+        );
+    }
+    let evidence = row
+        .cell_results
+        .as_ref()
+        .and_then(|value| value.typed())
+        .ok_or_else(|| {
+            "validation-row selected row has no supported typed cell_results evidence".to_string()
+        })?;
+    if evidence.run_id != run_id || evidence.hermit_sha != commit {
+        return Err(
+            "validation-row cell_results identity disagrees with the selected HistoryRow".into(),
+        );
+    }
+    if evidence.selected_count != evidence.selected.len() as u64 {
+        return Err(
+            "validation-row selected_count disagrees with the selected cell population".into(),
+        );
+    }
+    let (canonical_row, row_sha256) = canonical_row_json_and_sha256(row)
+        .ok_or_else(|| "validation-row cannot canonicalize the selected HistoryRow".to_string())?;
+    let canonical_value = serde_json::from_str::<serde_json::Value>(&canonical_row)
+        .map_err(|error| format!("validation-row canonical row is invalid JSON: {error}"))?;
+    Ok(serde_json::json!({
+        "canonicalization": RECEIPT_CANONICALIZATION,
+        "canonical_row_json": canonical_row,
+        "input": {
+            "bytes": input.len(),
+            "row_count": input_row_count,
+            "sha256": format!("{:x}", Sha256::digest(input.as_bytes())),
+        },
+        "row": canonical_value,
+        "row_sha256": row_sha256,
+        "source": {
+            "finished_at": finished_at,
+            "measured_hermit_commit": commit,
+            "record_id": record_id,
+            "run_id": run_id,
+            "selected_by_full_cell_count": evidence.selected_count,
+            "started_at": started_at,
+            "validate_path": "full",
+        },
+    }))
+}
+
+fn run_validation_row(args: ValidationRowArgs) -> Result<i32, CiHubError> {
+    let mut input = String::new();
+    io::stdin().read_to_string(&mut input).map_err(|error| {
+        CiHubError::ValidateStatus(format!("cannot read validation-row input: {error}"))
+    })?;
+    let report = validation_row_report(&input, &args.record_id, &args.run_id)
+        .map_err(CiHubError::ValidateStatus)?;
+    println!(
+        "{}",
+        serde_json::to_string(&report).map_err(|error| {
+            CiHubError::ValidateStatus(format!("cannot serialize validation-row report: {error}"))
+        })?
+    );
+    Ok(0)
+}
+
+fn run_compatibility_website_projection(
+    args: CompatibilityWebsiteProjectionArgs,
+) -> Result<i32, CiHubError> {
+    let manifest = std::fs::read(&args.manifest_json).map_err(|error| {
+        CiHubError::ValidateStatus(format!(
+            "cannot read manifest metadata {}: {error}",
+            args.manifest_json.display()
+        ))
+    })?;
+    let history = std::fs::read_to_string(&args.history_jsonl).map_err(|error| {
+        CiHubError::ValidateStatus(format!(
+            "cannot read HistoryRow input {}: {error}",
+            args.history_jsonl.display()
+        ))
+    })?;
+    let series = std::fs::read_to_string(&args.series_jsonl).map_err(|error| {
+        CiHubError::ValidateStatus(format!(
+            "cannot read SeriesRow input {}: {error}",
+            args.series_jsonl.display()
+        ))
+    })?;
+    require_compatibility_projection_checkout(&args.hermit_checkout, &args.hermit_main_commit)
+        .map_err(CiHubError::ValidateStatus)?;
+    let historical_identity = args.record_id.as_deref().zip(args.run_id.as_deref());
+    let report =
+        compatibility_website::project(&manifest, &history, &series, historical_identity, |tree| {
+            compatibility_projection_ancestry(&args.hermit_checkout, &args.hermit_main_commit, tree)
+        })
+        .map_err(CiHubError::ValidateStatus)?;
+    println!(
+        "{}",
+        serde_json::to_string(&report).map_err(|error| {
+            CiHubError::ValidateStatus(format!(
+                "cannot serialize compatibility website projection: {error}"
+            ))
+        })?
+    );
+    Ok(0)
+}
+
+fn projection_git_command(checkout: &Path, arguments: &[&str]) -> Command {
+    let mut command = Command::new("git");
+    command
+        .arg("--no-replace-objects")
+        .arg("-C")
+        .arg(checkout)
+        .args(arguments)
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_NO_LAZY_FETCH", "1");
+    command
+}
+
+fn projection_git_output(
+    checkout: &Path,
+    arguments: &[&str],
+) -> Result<std::process::Output, String> {
+    projection_git_command(checkout, arguments)
+        .bounded_output()
+        .map_err(|error| format!("cannot run git in {}: {error}", checkout.display()))
+}
+
+fn projection_git_output_with_input(
+    checkout: &Path,
+    arguments: &[&str],
+    input: &[u8],
+) -> Result<std::process::Output, String> {
+    projection_git_command(checkout, arguments)
+        .bounded_output_with_input(input)
+        .map_err(|error| format!("cannot run git in {}: {error}", checkout.display()))
+}
+
+fn projection_commit_is_present(tree: &str, output: &std::process::Output) -> Result<bool, String> {
+    if !output.status.success() {
+        return Err(format!(
+            "cannot inspect Hermit object {tree}: git exited {}",
+            output.status
+        ));
+    }
+    if output.stdout == format!("{tree} missing\n").as_bytes() {
+        return Ok(false);
+    }
+    if output.stdout == format!("{tree} commit\n").as_bytes() {
+        return Ok(true);
+    }
+    Err(format!(
+        "Hermit object {tree} is present but is not exactly one commit"
+    ))
+}
+
+fn require_compatibility_projection_checkout(checkout: &Path, main: &str) -> Result<(), String> {
+    if !is_lowercase_oid(main) {
+        return Err("compatibility website Hermit main must be lowercase 40-hex".into());
+    }
+    let checkout = checkout.canonicalize().map_err(|error| {
+        format!(
+            "cannot resolve Hermit checkout {}: {error}",
+            checkout.display()
+        )
+    })?;
+    let root = projection_git_output(&checkout, &["rev-parse", "--show-toplevel"])?;
+    if !root.status.success()
+        || Path::new(String::from_utf8_lossy(&root.stdout).trim()) != checkout.as_path()
+    {
+        return Err("compatibility website Hermit checkout must name its Git root".into());
+    }
+    let shallow = projection_git_output(&checkout, &["rev-parse", "--is-shallow-repository"])?;
+    if !shallow.status.success() || shallow.stdout != b"false\n" {
+        return Err("compatibility website requires a complete Hermit commit graph".into());
+    }
+    let expression = format!("{main}^{{commit}}");
+    let resolved = projection_git_output(&checkout, &["rev-parse", "--verify", &expression])?;
+    if !resolved.status.success() || String::from_utf8_lossy(&resolved.stdout).trim() != main {
+        return Err(
+            "compatibility website Hermit main does not resolve to the requested commit".into(),
+        );
+    }
+    Ok(())
+}
+
+fn compatibility_projection_ancestry(
+    checkout: &Path,
+    main: &str,
+    tree: &str,
+) -> Result<Option<bool>, String> {
+    if !is_lowercase_oid(tree) {
+        return Err(format!(
+            "series Hermit tree {tree:?} must be lowercase 40-hex"
+        ));
+    }
+    let object = projection_git_output_with_input(
+        checkout,
+        &["cat-file", "--batch-check=%(objectname) %(objecttype)"],
+        format!("{tree}\n").as_bytes(),
+    )?;
+    if !projection_commit_is_present(tree, &object)? {
+        return Ok(None);
+    }
+    let complete = projection_git_output(
+        checkout,
+        &["rev-list", "--missing=error", "--count", main, tree, "--"],
+    )?;
+    if !complete.status.success() {
+        return Err(format!(
+            "cannot establish complete Hermit commit graph for {tree} and {main}"
+        ));
+    }
+    let ancestor = projection_git_output(checkout, &["merge-base", "--is-ancestor", tree, main])?;
+    match ancestor.status.code() {
+        Some(0) => Ok(Some(true)),
+        Some(1) => Ok(Some(false)),
+        _ => Err(format!(
+            "cannot decide Hermit ancestry {tree} -> {main}: git exited {}",
+            ancestor.status
+        )),
+    }
+}
+
+fn is_lowercase_oid(value: &str) -> bool {
+    value.len() == 40
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 fn positive_executed_tests(row: &HistoryRow) -> Option<i64> {
@@ -12679,10 +13223,17 @@ mod tests {
             "commit": RECEIPT_SHA,
             "result": "pass"
         }));
+        let middle = history_row(serde_json::json!({
+            "run_id": "same-run",
+            "record_id": "middle",
+            "corrects": "source",
+            "commit": RECEIPT_SHA,
+            "result": "pass"
+        }));
         let finalized = history_row(serde_json::json!({
             "run_id": "same-run",
             "record_id": "finalized",
-            "corrects": "source",
+            "corrects": "middle",
             "commit": RECEIPT_SHA,
             "result": "pass"
         }));
@@ -12693,11 +13244,31 @@ mod tests {
             "result": "pass"
         }));
 
-        for rows in [
-            vec![source.clone(), finalized.clone(), other_run.clone()],
-            vec![other_run.clone(), finalized.clone(), source.clone()],
+        for (rows, expected_indices) in [
+            (
+                vec![
+                    source.clone(),
+                    middle.clone(),
+                    finalized.clone(),
+                    other_run.clone(),
+                ],
+                vec![2, 3],
+            ),
+            (
+                vec![
+                    other_run.clone(),
+                    finalized.clone(),
+                    source.clone(),
+                    middle.clone(),
+                ],
+                vec![0, 1],
+            ),
         ] {
-            let current = current_validation_run_rows(rows);
+            assert_eq!(
+                current_validation_run_indices(&rows).unwrap(),
+                expected_indices
+            );
+            let current = strict_current_validation_run_rows(rows).unwrap();
             let record_ids = current
                 .iter()
                 .filter_map(|row| extra_str(row, "record_id"))
@@ -12819,7 +13390,138 @@ mod tests {
     }
 
     #[test]
-    fn recent_history_does_not_guess_through_ambiguous_run_identity() {
+    fn recent_history_does_not_fold_legacy_rows_without_a_stable_run() {
+        let source = history_row(serde_json::json!({
+            "record_id": "legacy-source",
+            "commit": RECEIPT_SHA,
+            "result": "pass"
+        }));
+        let correction = history_row(serde_json::json!({
+            "record_id": "legacy-correction",
+            "corrects": "legacy-source",
+            "commit": RECEIPT_SHA,
+            "result": "pass"
+        }));
+
+        assert_eq!(
+            correction_record_id(&correction).unwrap(),
+            Some("legacy-source")
+        );
+        assert_eq!(
+            current_validation_run_indices(&[source.clone(), correction.clone()]).unwrap(),
+            [0, 1]
+        );
+        let current = strict_current_validation_run_rows(vec![source, correction]).unwrap();
+        assert_eq!(current.len(), 2);
+        assert_eq!(
+            current
+                .iter()
+                .filter_map(|row| extra_str(row, "record_id"))
+                .collect::<Vec<_>>(),
+            ["legacy-source", "legacy-correction"]
+        );
+    }
+
+    #[test]
+    fn correction_record_id_distinguishes_absence_null_edges_and_legacy_metadata() {
+        let absent = history_row(serde_json::json!({
+            "schema_version": 1,
+            "commit": RECEIPT_SHA,
+        }));
+        assert_eq!(correction_record_id(&absent).unwrap(), None);
+
+        let explicit_null = history_row(serde_json::json!({
+            "schema_version": 1,
+            "commit": RECEIPT_SHA,
+            "corrects": null,
+        }));
+        assert_eq!(correction_record_id(&explicit_null).unwrap(), None);
+        assert_eq!(
+            current_validation_run_indices(&[explicit_null.clone()]).unwrap(),
+            [0]
+        );
+        assert_eq!(
+            strict_current_validation_run_rows(vec![explicit_null])
+                .unwrap()
+                .len(),
+            1
+        );
+
+        let edge = history_row(serde_json::json!({
+            "schema_version": 7,
+            "commit": RECEIPT_SHA,
+            "corrects": "source-record",
+        }));
+        assert_eq!(correction_record_id(&edge).unwrap(), Some("source-record"));
+
+        let legacy = history_row(serde_json::json!({
+            "schema_version": 4,
+            "commit": RECEIPT_SHA,
+            "finished_at": "2026-08-17T19:43:12Z",
+            "host": "fixture-host",
+            "slot": "fixture-slot",
+            "corrects": {
+                "commit": RECEIPT_SHA,
+                "finished_at": "2026-08-17T19:43:12Z",
+                "host": "fixture-host",
+                "slot": "fixture-slot",
+                "was_exit_code": 1,
+                "was_result": "fail",
+            },
+        }));
+        assert_eq!(correction_record_id(&legacy).unwrap(), None);
+
+        for value in [
+            serde_json::json!("  "),
+            serde_json::json!(3),
+            serde_json::json!([]),
+            serde_json::json!({"not": "schema-4 metadata"}),
+        ] {
+            let malformed = history_row(serde_json::json!({
+                "schema_version": 7,
+                "commit": RECEIPT_SHA,
+                "corrects": value,
+            }));
+            assert!(correction_record_id(&malformed).is_err());
+            assert!(strict_current_validation_run_rows(vec![malformed]).is_err());
+        }
+    }
+
+    #[test]
+    fn recent_history_refuses_a_correction_without_its_source() {
+        let correction = history_row(serde_json::json!({
+            "run_id": "same-run",
+            "record_id": "correction",
+            "corrects": "absent-source",
+            "commit": RECEIPT_SHA
+        }));
+
+        let error = strict_current_validation_run_rows(vec![correction]).unwrap_err();
+
+        assert!(error.contains("not a row in the same run"), "{error}");
+    }
+
+    #[test]
+    fn recent_history_refuses_a_correction_that_names_another_run() {
+        let source = history_row(serde_json::json!({
+            "run_id": "source-run",
+            "record_id": "source",
+            "commit": RECEIPT_SHA
+        }));
+        let correction = history_row(serde_json::json!({
+            "run_id": "correction-run",
+            "record_id": "correction",
+            "corrects": "source",
+            "commit": RECEIPT_SHA
+        }));
+
+        let error = strict_current_validation_run_rows(vec![source, correction]).unwrap_err();
+
+        assert!(error.contains("not a row in the same run"), "{error}");
+    }
+
+    #[test]
+    fn recent_history_refuses_an_ambiguous_correction_chain() {
         let first = history_row(serde_json::json!({
             "run_id": "same-run",
             "record_id": "first",
@@ -12837,9 +13539,12 @@ mod tests {
             "record_id": "terminal",
             "commit": RECEIPT_SHA
         }));
-        assert_eq!(
-            current_validation_run_rows(vec![first, second, terminal]).len(),
-            3
+
+        let error = strict_current_validation_run_rows(vec![first, second, terminal]).unwrap_err();
+
+        assert!(
+            error.contains("outside its terminal correction chain"),
+            "{error}"
         );
     }
 
@@ -12889,6 +13594,179 @@ mod tests {
                 .as_deref(),
             Some("hermit")
         );
+    }
+
+    #[test]
+    fn compatibility_projection_object_probe_distinguishes_missing_from_failure() {
+        let tree = "a".repeat(40);
+        let output = |status, stdout: String| std::process::Output {
+            status: ExitStatus::from_raw(status),
+            stdout: stdout.into_bytes(),
+            stderr: Vec::new(),
+        };
+
+        let missing = output(0, format!("{tree} missing\n"));
+        assert!(!projection_commit_is_present(&tree, &missing).unwrap());
+
+        let failed = output(1 << 8, String::new());
+        let error = projection_commit_is_present(&tree, &failed).unwrap_err();
+        assert!(error.contains("git exited"), "{error}");
+
+        let noncommit = output(0, format!("{tree} blob\n"));
+        let error = projection_commit_is_present(&tree, &noncommit).unwrap_err();
+        assert!(error.contains("not exactly one commit"), "{error}");
+    }
+
+    fn validation_row_value(record_id: &str, run_id: &str) -> serde_json::Value {
+        serde_json::json!({
+            "schema_version": 7,
+            "run_id": run_id,
+            "record_id": record_id,
+            "started_at": "2026-08-31T04:58:24Z",
+            "finished_at": "2026-08-31T05:22:05Z",
+            "repo": "hermit",
+            "profile": "full",
+            "selection_mode": "full",
+            "commit": RECEIPT_SHA,
+            "cell_results": {
+                "run_id": run_id,
+                "hermit_sha": RECEIPT_SHA,
+                "source_tree_dirty": false,
+                "selected_count": 1,
+                "recorded_count": 0,
+                "population_sha256": "a".repeat(64),
+                "artifact": {
+                    "path": format!(
+                        "ignored/validate/artifacts/{run_id}/cell-results.jsonl"
+                    ),
+                    "sha256": "b".repeat(64),
+                    "row_count": 0
+                },
+                "selected": [{
+                    "lane": "portable",
+                    "category": "c-programs",
+                    "test": "hello",
+                    "mode": "verify",
+                    "backend": "ptrace"
+                }],
+                "cells": []
+            }
+        })
+    }
+
+    fn validation_row_line(record_id: &str, run_id: &str) -> String {
+        serde_json::to_string(&validation_row_value(record_id, run_id)).unwrap()
+    }
+
+    #[test]
+    fn validation_row_selects_one_typed_terminal_row() {
+        let selected = validation_row_line("selected-record", "selected-run");
+        let other = validation_row_line("other-record", "other-run");
+        let input = format!("{other}\n{selected}\n");
+
+        let report = validation_row_report(&input, "selected-record", "selected-run").unwrap();
+        let selected_row = history_row(validation_row_value("selected-record", "selected-run"));
+        let (canonical_row, expected_row_sha256) =
+            canonical_row_json_and_sha256(&selected_row).unwrap();
+
+        assert_eq!(report["canonicalization"], RECEIPT_CANONICALIZATION);
+        assert_eq!(report["canonical_row_json"], canonical_row);
+        assert_eq!(report["input"]["row_count"], 2);
+        assert_eq!(report["row_sha256"], expected_row_sha256);
+        assert_eq!(
+            report["row"],
+            serde_json::from_str::<serde_json::Value>(&canonical_row).unwrap()
+        );
+        assert_eq!(
+            report["source"],
+            serde_json::json!({
+                "finished_at": "2026-08-31T05:22:05Z",
+                "measured_hermit_commit": RECEIPT_SHA,
+                "record_id": "selected-record",
+                "run_id": "selected-run",
+                "selected_by_full_cell_count": 1,
+                "started_at": "2026-08-31T04:58:24Z",
+                "validate_path": "full"
+            })
+        );
+    }
+
+    #[test]
+    fn validation_row_refuses_an_absent_identity_pair() {
+        let input = validation_row_line("present-record", "present-run");
+
+        let error = validation_row_report(&input, "absent-record", "absent-run").unwrap_err();
+
+        assert!(error.contains("matched 0 terminal rows"), "{error}");
+    }
+
+    #[test]
+    fn validation_row_refuses_duplicate_record_ids() {
+        let row = validation_row_line("duplicate-record", "duplicate-run");
+        let input = format!("{row}\n{row}\n");
+
+        let error = validation_row_report(&input, "duplicate-record", "duplicate-run").unwrap_err();
+
+        assert!(error.contains("repeat record_id"), "{error}");
+    }
+
+    #[test]
+    fn validation_row_selects_the_terminal_correction_and_refuses_its_source() {
+        let source = validation_row_value("source-record", "corrected-run");
+        let mut terminal = validation_row_value("terminal-record", "corrected-run");
+        terminal["corrects"] = serde_json::json!("source-record");
+        let input = format!(
+            "{}\n{}\n",
+            serde_json::to_string(&source).unwrap(),
+            serde_json::to_string(&terminal).unwrap()
+        );
+
+        let report = validation_row_report(&input, "terminal-record", "corrected-run").unwrap();
+        let source_error =
+            validation_row_report(&input, "source-record", "corrected-run").unwrap_err();
+
+        assert_eq!(report["source"]["record_id"], "terminal-record");
+        assert!(
+            source_error.contains("matched 0 terminal rows"),
+            "{source_error}"
+        );
+    }
+
+    #[test]
+    fn validation_row_refuses_any_malformed_input_row() {
+        let selected = validation_row_line("selected-record", "selected-run");
+        let input = format!("{selected}\n{{\"schema_version\":\"not-an-integer\"}}\n");
+
+        let error = validation_row_report(&input, "selected-record", "selected-run").unwrap_err();
+
+        assert!(
+            error.contains("input line 2 is not a HistoryRow"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn validation_row_binds_the_exact_complete_input_bytes() {
+        let row = validation_row_line("selected-record", "selected-run");
+        let compact = format!("{row}\n");
+        let padded = format!("\n{row}\n\n");
+
+        let compact_report =
+            validation_row_report(&compact, "selected-record", "selected-run").unwrap();
+        let padded_report =
+            validation_row_report(&padded, "selected-record", "selected-run").unwrap();
+
+        for (input, report) in [(&compact, &compact_report), (&padded, &padded_report)] {
+            assert_eq!(report["input"]["bytes"], input.len());
+            assert_eq!(report["input"]["row_count"], 1);
+            assert_eq!(
+                report["input"]["sha256"],
+                format!("{:x}", Sha256::digest(input.as_bytes()))
+            );
+        }
+        assert_ne!(compact_report["input"], padded_report["input"]);
+        assert_eq!(compact_report["row"], padded_report["row"]);
+        assert_eq!(compact_report["row_sha256"], padded_report["row_sha256"]);
     }
 
     #[test]
@@ -16302,6 +17180,39 @@ mod tests {
             .command;
         assert!(combined.cost_spec().is_none());
         assert!(!combined.accepts_ci_hub_advisory_stderr());
+    }
+
+    #[test]
+    fn parses_typed_compatibility_website_projection_command() {
+        let command = Cli::try_parse_from([
+            "ci-hub",
+            "compatibility-website-projection",
+            "--manifest-json",
+            "/tmp/manifest.json",
+            "--history-jsonl",
+            "/tmp/history.jsonl",
+            "--series-jsonl",
+            "/tmp/series.jsonl",
+            "--hermit-checkout",
+            "/tmp/hermit",
+            "--hermit-main-commit",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        ])
+        .unwrap()
+        .command;
+        let HubCommand::CompatibilityWebsiteProjection(args) = command else {
+            panic!("wrong command variant")
+        };
+        assert_eq!(args.manifest_json, PathBuf::from("/tmp/manifest.json"));
+        assert_eq!(args.history_jsonl, PathBuf::from("/tmp/history.jsonl"));
+        assert_eq!(args.series_jsonl, PathBuf::from("/tmp/series.jsonl"));
+        assert_eq!(args.hermit_checkout, PathBuf::from("/tmp/hermit"));
+        assert_eq!(
+            args.hermit_main_commit,
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        );
+        assert_eq!(args.record_id, None);
+        assert_eq!(args.run_id, None);
     }
 
     #[test]

@@ -12,15 +12,12 @@ import hashlib
 import importlib.util
 import json
 import os
-import selectors
 import signal
 import stat
 import subprocess
 import sys
-import time
-import types
 import uuid
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -43,23 +40,45 @@ SERVE_PATH = Path(__file__).resolve().with_name("serve.rs")
 SERVE_PRELUDE_PATH = REPOSITORY / "hermit/scripts/lib/rust_script_prelude.rs"
 DEFAULT_OUTPUT_ROOT = REPOSITORY.parent / f"{REPOSITORY.name}-compatibility-website"
 SCHEMA_VERSION = 1
+STAGE_1_SCHEMA_VERSION = 3
 MAX_BUILD_JSON_BYTES = 16 << 20
 MAX_ARTIFACT_BYTES = 1 << 30
 MAX_GIT_OID_STDOUT_BYTES = 128
 MAX_GIT_OID_STDERR_BYTES = 512
-FIXED_DIRECTORIES = ("assets", "cells", "data", "incomplete-data", "runs", "tests")
+FIXED_DIRECTORIES = ("assets", "cells", "data", "runs", "tests")
 CHECKOUT_MARKERS = frozenset({".git", ".hg", ".sl", ".svn", ".eden"})
 COORDINATOR_PATH = "ci-hub/compatibility-website/build_and_serve.py"
-FIXED_SITE_ARTIFACT_PATHS = frozenset(
+STAGE_1_DATA_PATHS = frozenset(
+    {
+        "data/cells.json.gz",
+        "data/runs.json.gz",
+        "data/tests.json.gz",
+    }
+)
+BROWSER_DATA_PATHS = frozenset(
+    {
+        "data/site-manifest.json.gz",
+        "data/site-summary.json.gz",
+        *(f"data/detail-{value}.json.gz" for value in "0123456789abcdef"),
+    }
+)
+FIXED_RENDERER_ARTIFACT_PATHS = frozenset(
     {
         "assets/favicon.svg",
         "assets/site.css",
         "assets/site.js",
+        "cells/detail.html",
         "cells/index.html",
-        "incomplete-data/index.html",
+        "cells/never-measured.html",
+        "cells/projection-audit.html",
         "index.html",
+        "runs/index.html",
+        "tests/custom-commands.html",
+        "tests/detail.html",
+        *BROWSER_DATA_PATHS,
     }
 )
+FIXED_SITE_ARTIFACT_PATHS = STAGE_1_DATA_PATHS | FIXED_RENDERER_ARTIFACT_PATHS
 GENERATOR_PATHS = (
     COORDINATOR_PATH,
     "ci-hub/compatibility-website/build_data.py",
@@ -82,21 +101,39 @@ GENERATOR_PATHS = (
     "ci-hub/validate/qualifying-receipt.json",
 )
 STAGE_1_READER_PATHS = (
+    "ci-hub/ci-hub.rs",
     "ci-hub/compatibility-website/export_inputs.py",
+    "ci-hub/ledger/check-ledger-parses.rs",
     "ci-hub/ledger/check-ledger-events.rs",
     "ci-hub/ledger/ledger.py",
     "ci-hub/ledger/publisher.py",
     "ci-hub/ledger/validate_rows.py",
     "ci-hub/lib/bounded_capture.py",
+    "ci-hub/lib/bounded_output.rs",
+    "ci-hub/lib/compatibility_website.rs",
+    "ci-hub/lib/failure_obligations.rs",
+    "ci-hub/lib/history_queries.rs",
+    "ci-hub/lib/landing_lock.rs",
+    "ci-hub/lib/lease.rs",
     "ci-hub/lib/ledger_event.rs",
+    "ci-hub/lib/measured.rs",
+    "ci-hub/lib/published_receipt.rs",
+    "ci-hub/lib/qualifying_receipt.rs",
+    "ci-hub/lib/records.rs",
+    "ci-hub/lib/validate_lock.rs",
+    "ci-hub/lib/validate_run_handle.rs",
+    "ci-hub/lib/validate_status.rs",
     "ci-hub/qualifying_receipt.py",
     "ci-hub/series/check-series-rows.rs",
     "ci-hub/series/series.py",
+    "ci-hub/validate/final_validate_status.py",
     "ci-hub/validate/flake_class.py",
     "ci-hub/validate/flaky_cells.py",
     "ci-hub/validate/gate_completeness.py",
     "ci-hub/validate/green_class.py",
     "ci-hub/validate/qualifying-receipt.json",
+    "ci-hub/validate/run_registry.py",
+    "ci-hub/validate/service_result.py",
 )
 CAPTURE_PATHS = tuple(dict.fromkeys((*GENERATOR_PATHS, *STAGE_1_READER_PATHS)))
 QUALIFICATION_OVERRIDE_ENVIRONMENT = (
@@ -110,18 +147,10 @@ class WebsiteRefused(Exception):
     """The requested website operation cannot preserve its exact contract."""
 
 
-class _OutputLimitExceeded(Exception):
-    """A child produced more bytes than its caller's fixed capture bound."""
-
-    def __init__(self, stream: str, limit: int) -> None:
-        super().__init__(f"{stream} exceeded {limit} bytes")
-        self.stream = stream
-        self.limit = limit
-
-
 @dataclass(frozen=True)
 class Modules:
     build_data: Any
+    export_inputs: Any
     writer: Any
     renderer: Any
     generator_files: tuple[dict[str, Any], ...]
@@ -294,28 +323,8 @@ def _captured_reader_modules(
         qualifying._ACTIVE = None
         _refuse_qualification_overrides()
         captured_policy = json.loads(_json_bytes(qualifying.active()))
-        qualifying_reader = types.ModuleType("qualifying_receipt")
-        for name in ("CellResultsVerdict", "_RFC3339_Z"):
-            setattr(qualifying_reader, name, getattr(qualifying, name))
-
-        def active() -> dict[str, Any]:
-            _refuse_qualification_overrides()
-            return captured_policy
-
-        def cell_results_verdict(*args: Any, **kwargs: Any) -> Any:
-            _refuse_qualification_overrides()
-            return qualifying.cell_results_verdict(*args, **kwargs)
-
-        qualifying_reader.active = active
-        qualifying_reader.cell_results_verdict = cell_results_verdict
-
-        def unavailable(name: str) -> None:
-            raise RuntimeError(
-                f"qualifying_receipt.{name} is not available to the website reader"
-            )
-
-        qualifying_reader.__getattr__ = unavailable
-        sys.modules["qualifying_receipt"] = qualifying_reader
+        qualifying.active = lambda: captured_policy
+        sys.modules["qualifying_receipt"] = qualifying
         publisher = load("publisher", "ci-hub/ledger/publisher.py")
         publisher._series_store = lambda: series
         validate_rows = load("validate_rows", "ci-hub/ledger/validate_rows.py")
@@ -327,7 +336,7 @@ def _captured_reader_modules(
             "green_class": green_class,
             "ledger": ledger,
             "publisher": publisher,
-            "qualifying_receipt": qualifying_reader,
+            "qualifying_receipt": qualifying,
             "series": series,
             "validate_rows": validate_rows,
         }
@@ -376,8 +385,7 @@ def _bind_export_authorities(
         for relative in export_inputs._READER_PATHS
     ]
 
-    def load_authorities() -> dict[str, Any]:
-        state = export_inputs._reader_state()
+    def bind(state: dict[str, Any]) -> dict[str, Any]:
         if state["files"] != expected_files:
             raise export_inputs.ExportRefused(
                 "canonical reader files differ from captured generator bytes"
@@ -388,7 +396,14 @@ def _bind_export_authorities(
         export_inputs.validation_ledger = readers["validate_rows"]
         return state
 
+    def load_authorities() -> dict[str, Any]:
+        return bind(export_inputs._reader_state())
+
+    def load_historical_authorities() -> dict[str, Any]:
+        return bind(export_inputs._historical_reader_state())
+
     export_inputs._load_authorities = load_authorities
+    export_inputs._load_historical_authorities = load_historical_authorities
 
 
 @functools.cache
@@ -416,8 +431,6 @@ def _modules() -> Modules:
     build_data._LOADED_MODULES = build_data.Modules(
         export_inputs=export_inputs,
         reducer=reducer,
-        qualifying_receipt=readers["qualifying_receipt"],
-        bounded_capture=readers["bounded_capture"],
     )
     writer = load(
         "compatibility_website_combined_writer",
@@ -445,6 +458,7 @@ def _modules() -> Modules:
         raise WebsiteRefused("website generator files changed while being captured")
     return Modules(
         build_data=build_data,
+        export_inputs=export_inputs,
         writer=writer,
         renderer=renderer,
         generator_files=tuple(_generator_rows(captured)),
@@ -660,11 +674,24 @@ def _stage_1_files(data: Mapping[str, Any]) -> dict[str, bytes]:
         files = modules.writer.render_tree(data)
     except modules.writer.WriteRefused as error:
         raise WebsiteRefused(f"cannot render the Stage 1 tree: {error}") from error
-    if set(files) != {"build.json", *modules.writer._DATA_PATHS}:
+    if set(modules.writer._DATA_PATHS) != STAGE_1_DATA_PATHS or set(files) != {
+        "build.json",
+        *STAGE_1_DATA_PATHS,
+    }:
         raise WebsiteRefused(
-            "Stage 1 renderer did not produce its exact five-file tree"
+            "Stage 1 renderer did not produce its exact four-file tree"
         )
     return dict(sorted(files.items()))
+
+
+def _require_wording_matches_stage_1(
+    wording: str, stage_1_build: Mapping[str, Any]
+) -> None:
+    provenance = _object(stage_1_build.get("provenance"), "Stage 1 build provenance")
+    if (wording == "historical") != ("historical" in provenance):
+        raise WebsiteRefused(
+            "historical wording must be used exactly for historical Stage 1 provenance"
+        )
 
 
 def _manifest(
@@ -675,6 +702,7 @@ def _manifest(
     *,
     wording: str,
 ) -> dict[str, Any]:
+    _require_exact_artifact_inventory(files, stage_1_build["counts"])
     artifacts = _artifact_rows(files)
     directories = _directory_rows(artifacts)
     artifacts_sha256 = _digest(artifacts)
@@ -711,7 +739,6 @@ def _manifest(
         "directories_sha256": directories_sha256,
         "freshness_sha256": _digest(freshness),
         "generator": generator,
-        "incomplete_data_categories": stage_1_build["incomplete_data_categories"],
         "inputs": inputs,
         "provenance": stage_1_build["provenance"],
         "schema_version": SCHEMA_VERSION,
@@ -733,6 +760,7 @@ def compose(
         stage_1_files = _stage_1_files(data)
         stage_1_build_bytes = stage_1_files["build.json"]
         stage_1_build = _object(json.loads(stage_1_build_bytes), "Stage 1 build.json")
+        _require_wording_matches_stage_1(wording, stage_1_build)
         pages = modules.renderer.render_site(stage_1_build, data, wording=wording)
         modules.renderer._validate_output_files(pages)
     except (
@@ -774,7 +802,7 @@ def _validated_generator(value: Any) -> dict[str, Any]:
     ):
         raise WebsiteRefused("website generator identity is unsupported")
     wording = generator["wording"]
-    if wording not in ("fixture", "live"):
+    if wording not in ("fixture", "historical", "live"):
         raise WebsiteRefused("website generator wording is unsupported")
     generator_files = _array(generator["files"], "website generator files")
     if [row.get("path") for row in generator_files if isinstance(row, Mapping)] != list(
@@ -815,6 +843,8 @@ def _validated_inputs(value: Any) -> tuple[dict[str, Any], Mapping[str, Any]]:
             "Stage 1 build.json identity disagrees with its exact bytes"
         )
     stage_1 = _object(inputs["stage_1_build_json"], "embedded Stage 1 build.json")
+    if stage_1.get("schema_version") != STAGE_1_SCHEMA_VERSION:
+        raise WebsiteRefused("embedded Stage 1 build.json schema is unsupported")
     return inputs, stage_1
 
 
@@ -868,6 +898,35 @@ def _validated_tree_digest(
     return tree_sha256
 
 
+def _is_run_artifact_path(path: str) -> bool:
+    parsed = PurePosixPath(path)
+    return (
+        len(parsed.parts) == 2
+        and parsed.parts[0] == "runs"
+        and parsed.name.endswith(".html")
+        and _is_sha256(parsed.name.removesuffix(".html"))
+    )
+
+
+def _require_exact_artifact_inventory(
+    paths: Collection[str], counts_value: Any
+) -> None:
+    counts = _object(counts_value, "website counts")
+    artifact_paths = set(paths)
+    run_paths = artifact_paths - FIXED_SITE_ARTIFACT_PATHS
+    expected_runs = _integer(
+        counts.get("validation_history_row_count"),
+        "website counts.validation_history_row_count",
+    )
+    if (
+        len(artifact_paths) != len(paths)
+        or not FIXED_SITE_ARTIFACT_PATHS <= artifact_paths
+        or len(run_paths) != expected_runs
+        or any(not _is_run_artifact_path(path) for path in run_paths)
+    ):
+        raise WebsiteRefused("website artifact inventory is not exact")
+
+
 def _validate_manifest(value: Any) -> dict[str, Any]:
     manifest = dict(_object(value, "website build.json"))
     _exact_fields(
@@ -881,7 +940,6 @@ def _validate_manifest(value: Any) -> dict[str, Any]:
                 "directories_sha256",
                 "freshness_sha256",
                 "generator",
-                "incomplete_data_categories",
                 "inputs",
                 "provenance",
                 "schema_version",
@@ -894,33 +952,15 @@ def _validate_manifest(value: Any) -> dict[str, Any]:
         raise WebsiteRefused("website build.json schema is unsupported")
     generator = _validated_generator(manifest["generator"])
     inputs, stage_1 = _validated_inputs(manifest["inputs"])
-    if (
-        manifest["counts"] != stage_1.get("counts")
-        or manifest["incomplete_data_categories"]
-        != stage_1.get("incomplete_data_categories")
-        or manifest["provenance"] != stage_1.get("provenance")
-    ):
+    _require_wording_matches_stage_1(str(generator["wording"]), stage_1)
+    if manifest["counts"] != stage_1.get("counts") or manifest[
+        "provenance"
+    ] != stage_1.get("provenance"):
         raise WebsiteRefused("website build.json disagrees with embedded Stage 1 facts")
     artifacts = _validated_artifacts(manifest["artifacts"])
-    counts = _object(manifest["counts"], "website counts")
-    fixed_artifacts = FIXED_SITE_ARTIFACT_PATHS | frozenset(
-        _modules().writer._DATA_PATHS
+    _require_exact_artifact_inventory(
+        [str(row["path"]) for row in artifacts], manifest["counts"]
     )
-    artifact_paths = {str(row["path"]) for row in artifacts}
-    if not fixed_artifacts <= artifact_paths:
-        raise WebsiteRefused("website fixed artifact inventory is incomplete")
-    expected_artifacts = len(fixed_artifacts) + sum(
-        _integer(counts.get(field), f"website counts.{field}")
-        for field in (
-            "in_manifest_cell_count",
-            "test_count",
-            "validation_history_row_count",
-        )
-    )
-    if len(artifacts) != expected_artifacts:
-        raise WebsiteRefused(
-            "website artifact count disagrees with cells in the manifest, tests, and validation history rows"
-        )
     tree_sha256 = _validated_tree_digest(manifest, artifacts)
     freshness = {
         "generator_files_sha256": generator["files_sha256"],
@@ -1524,99 +1564,14 @@ def _materialize(
             os.close(root)
 
 
-def _capture_bounded_process(
-    command: Sequence[str],
-    *,
-    environment: Mapping[str, str],
-    timeout: float,
-    stdout_limit: int,
-    stderr_limit: int,
-) -> subprocess.CompletedProcess[bytes]:
-    """Capture one child without an unbounded pipe, file, or memory read."""
-
-    process = subprocess.Popen(
-        list(command),
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        env=environment,
-    )
-    selector: selectors.BaseSelector | None = None
-    deadline = time.monotonic() + timeout
-    try:
-        assert process.stdout is not None and process.stderr is not None
-        stdout_descriptor = process.stdout.fileno()
-        stderr_descriptor = process.stderr.fileno()
-        streams = {
-            stdout_descriptor: (
-                "stdout",
-                process.stdout,
-                bytearray(),
-                stdout_limit,
-            ),
-            stderr_descriptor: (
-                "stderr",
-                process.stderr,
-                bytearray(),
-                stderr_limit,
-            ),
-        }
-        selector = selectors.DefaultSelector()
-        for descriptor in streams:
-            os.set_blocking(descriptor, False)
-            selector.register(descriptor, selectors.EVENT_READ)
-        while selector.get_map():
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise subprocess.TimeoutExpired(command, timeout)
-            events = selector.select(remaining if process.poll() is None else 0)
-            if not events:
-                if process.poll() is None:
-                    continue
-                break
-            for key, _mask in events:
-                stream, handle, captured, limit = streams[key.fd]
-                chunk = os.read(key.fd, min(65536, limit - len(captured) + 1))
-                if not chunk:
-                    selector.unregister(key.fd)
-                    handle.close()
-                    continue
-                available = limit - len(captured)
-                captured.extend(chunk[:available])
-                if len(chunk) > available:
-                    raise _OutputLimitExceeded(stream, limit)
-
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
-            raise subprocess.TimeoutExpired(command, timeout)
-        returncode = process.wait(timeout=remaining)
-        return subprocess.CompletedProcess(
-            list(command),
-            returncode,
-            bytes(streams[stdout_descriptor][2]),
-            bytes(streams[stderr_descriptor][2]),
-        )
-    except BaseException:
-        if process.poll() is None:
-            process.kill()
-        process.wait()
-        raise
-    finally:
-        if selector is not None:
-            selector.close()
-        if process.stdout is not None:
-            process.stdout.close()
-        if process.stderr is not None:
-            process.stderr.close()
-
-
 def _git_oid(checkout: Path, reference: str) -> str:
     environment = {
         name: value for name, value in os.environ.items() if not name.startswith("GIT_")
     }
     environment.update(GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull)
+    export_inputs = _modules().export_inputs
     try:
-        result = _capture_bounded_process(
+        result = export_inputs.capture_bounded_process(
             [
                 "git",
                 "--no-replace-objects",
@@ -1630,7 +1585,11 @@ def _git_oid(checkout: Path, reference: str) -> str:
             stdout_limit=MAX_GIT_OID_STDOUT_BYTES,
             stderr_limit=MAX_GIT_OID_STDERR_BYTES,
         )
-    except (OSError, subprocess.TimeoutExpired, _OutputLimitExceeded) as error:
+    except (
+        OSError,
+        subprocess.TimeoutExpired,
+        export_inputs.OutputLimitExceeded,
+    ) as error:
         raise WebsiteRefused(
             f"cannot resolve {reference} in {checkout}: {error}"
         ) from error
@@ -1761,6 +1720,50 @@ def build(output_root: Path = DEFAULT_OUTPUT_ROOT) -> ValidatedWebsite:
     )
 
 
+def build_historical(
+    parent: Path,
+    parent_commit: str,
+    record_id: str,
+    run_id: str,
+    manifest_hermit: Path,
+    manifest_commit: str,
+    output_root: Path = DEFAULT_OUTPUT_ROOT,
+) -> ValidatedWebsite:
+    modules = _modules()
+
+    def source_data() -> dict[str, Any]:
+        try:
+            return modules.build_data.build_historical_data(
+                parent,
+                parent_commit,
+                record_id,
+                run_id,
+                manifest_hermit,
+                manifest_commit,
+            )
+        except modules.build_data.BuildRefused as error:
+            raise WebsiteRefused(
+                f"historical Stage 1 build refused: {error}"
+            ) from error
+
+    data = json.loads(_json_bytes(source_data()))
+    expected_stage_1 = _stage_1_files(data)
+
+    def verify_historical_sources() -> None:
+        observed_stage_1 = _stage_1_files(source_data())
+        if observed_stage_1 != expected_stage_1:
+            raise WebsiteRefused(
+                "historical Stage 1 source bytes changed during website build"
+            )
+
+    return publish(
+        data,
+        output_root,
+        wording="historical",
+        verify_sources=verify_historical_sources,
+    )
+
+
 def _result(value: ValidatedWebsite) -> dict[str, Any]:
     encoded = _json_bytes(value.manifest)
     return {
@@ -1866,6 +1869,51 @@ def _parser() -> argparse.ArgumentParser:
     combined.add_argument(
         "--port", type=_port, default=0, help="loopback TCP port (default: 0)"
     )
+    for name, help_text in (
+        ("build-historical", "build or reuse one immutable historical snapshot"),
+        (
+            "build-historical-and-serve",
+            "build or reuse one immutable historical snapshot, then serve it",
+        ),
+    ):
+        historical = commands.add_parser(name, help=help_text, allow_abbrev=False)
+        historical.add_argument(
+            "--parent",
+            type=Path,
+            default=REPOSITORY,
+            help="dev-hermit Git repository containing the immutable ledger commit",
+        )
+        historical.add_argument(
+            "--parent-commit",
+            required=True,
+            help="full immutable dev-hermit commit containing published ledger and series",
+        )
+        historical.add_argument("--record-id", required=True)
+        historical.add_argument("--run-id", required=True)
+        historical.add_argument(
+            "--manifest-hermit",
+            required=True,
+            type=Path,
+            help="clean exact Hermit checkout providing manifest metadata",
+        )
+        historical.add_argument(
+            "--manifest-commit",
+            required=True,
+            help="full commit checked out by --manifest-hermit",
+        )
+        historical.add_argument(
+            "--output-root",
+            type=Path,
+            default=DEFAULT_OUTPUT_ROOT,
+            help="user-owned publication directory (default: checkout sibling)",
+        )
+        if name.endswith("and-serve"):
+            historical.add_argument(
+                "--port",
+                type=_port,
+                default=0,
+                help="loopback TCP port (default: 0)",
+            )
     return parser
 
 
@@ -1880,9 +1928,20 @@ def main(argv: Sequence[str] | None = None) -> int:
             website = validate_website(arguments.root)
             _exec_server(website, arguments.port)
             raise AssertionError("exec returned")
-        website = build(arguments.output_root)
+        if arguments.command in ("build-historical", "build-historical-and-serve"):
+            website = build_historical(
+                arguments.parent,
+                arguments.parent_commit,
+                arguments.record_id,
+                arguments.run_id,
+                arguments.manifest_hermit,
+                arguments.manifest_commit,
+                arguments.output_root,
+            )
+        else:
+            website = build(arguments.output_root)
         result = _result(website)
-        if arguments.command == "build":
+        if arguments.command in ("build", "build-historical"):
             try:
                 website.recheck()
                 sys.stdout.buffer.write(_json_bytes(result) + b"\n")

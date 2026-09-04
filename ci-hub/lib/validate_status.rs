@@ -2228,7 +2228,7 @@ mod tests {
         assert!(pred.coverage.per_node);
         assert_eq!(pred.coverage.applies_at_schema_min, COUNTS_SCHEMA);
         assert_eq!(pred.cell_results.applies_at_schema_min, 6);
-        assert_eq!(pred.cell_results.supported_schema_max, 7);
+        assert_eq!(pred.cell_results.supported_schema_max, 10);
     }
 
     #[test]

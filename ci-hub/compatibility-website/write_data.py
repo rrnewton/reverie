@@ -14,7 +14,6 @@ import os
 import pwd
 import stat
 import sys
-from collections import Counter
 from collections.abc import Mapping, Sequence
 from io import BytesIO
 from pathlib import Path
@@ -22,33 +21,67 @@ from typing import Any
 
 
 BUILD_DATA_PATH = Path(__file__).resolve().with_name("build_data.py")
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 3
 _RENAME_NOREPLACE, _RENAME_EXCHANGE = 1, 2
 _DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
 _FILE_FLAGS = os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW | os.O_CLOEXEC
 _DATA_PATHS = (
-    "data/cells.json.gz", "data/incomplete-data.json.gz",
-    "data/runs.json.gz", "data/tests.json.gz",
+    "data/cells.json.gz",
+    "data/runs.json.gz",
+    "data/tests.json.gz",
 )
 _DATA_NAMES = frozenset(Path(path).name for path in _DATA_PATHS)
 _ROOT_NAMES = frozenset({"build.json", "data"})
-_BUILD_FIELDS = frozenset({
-    "artifacts", "artifacts_sha256", "build_data_sha256", "counts",
-    "generator", "incomplete_data_categories", "provenance", "schema_version",
-})
-_GENERATOR_FIELDS = frozenset({
-    "build_data_schema_version", "name", "write_data_schema_version",
-})
-_ARTIFACT_FIELDS = frozenset({
-    "compressed_bytes", "compressed_sha256", "content_encoding",
-    "content_type", "path", "uncompressed_bytes", "uncompressed_sha256",
-})
+_BUILD_FIELDS = frozenset(
+    {
+        "artifacts",
+        "artifacts_sha256",
+        "build_data_sha256",
+        "counts",
+        "generator",
+        "provenance",
+        "schema_version",
+    }
+)
+_GENERATOR_FIELDS = frozenset(
+    {
+        "build_data_schema_version",
+        "name",
+        "write_data_schema_version",
+    }
+)
+_ARTIFACT_FIELDS = frozenset(
+    {
+        "compressed_bytes",
+        "compressed_sha256",
+        "content_encoding",
+        "content_type",
+        "path",
+        "uncompressed_bytes",
+        "uncompressed_sha256",
+    }
+)
 _CHECKOUT_MARKERS = frozenset({".git", ".hg", ".sl", ".svn", ".eden"})
 _SYSTEM_ROOTS = frozenset(
-    Path("/") / name for name in
-    (
-        "bin", "boot", "dev", "etc", "home", "lib", "lib64", "opt",
-        "proc", "root", "run", "sbin", "srv", "sys", "tmp", "usr", "var",
+    Path("/") / name
+    for name in (
+        "bin",
+        "boot",
+        "dev",
+        "etc",
+        "home",
+        "lib",
+        "lib64",
+        "opt",
+        "proc",
+        "root",
+        "run",
+        "sbin",
+        "srv",
+        "sys",
+        "tmp",
+        "usr",
+        "var",
     )
 )
 
@@ -63,7 +96,9 @@ class RollbackRefused(WriteRefused):
 
 @functools.cache
 def _build_data_module() -> Any:
-    spec = importlib.util.spec_from_file_location("compatibility_website_build_data_writer", BUILD_DATA_PATH)
+    spec = importlib.util.spec_from_file_location(
+        "compatibility_website_build_data_writer", BUILD_DATA_PATH
+    )
     if spec is None or spec.loader is None:
         raise WriteRefused(f"cannot load {BUILD_DATA_PATH}")
     module = importlib.util.module_from_spec(spec)
@@ -78,17 +113,25 @@ def _build_data_module() -> Any:
 
 def _json_bytes(value: Any) -> bytes:
     try:
-        return json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
+        return json.dumps(
+            value, sort_keys=True, separators=(",", ":"), allow_nan=False
+        ).encode()
     except (TypeError, ValueError, RecursionError) as error:
         raise WriteRefused(f"artifact value is not canonical JSON: {error}") from error
 
 
 def _gzip_bytes(value: bytes) -> bytes:
     output = BytesIO()
-    with gzip.GzipFile(filename="", mode="wb", compresslevel=6, fileobj=output, mtime=0) as stream:
+    with gzip.GzipFile(
+        filename="", mode="wb", compresslevel=6, fileobj=output, mtime=0
+    ) as stream:
         stream.write(value)
     encoded = output.getvalue()
-    if encoded[:4] != b"\x1f\x8b\x08\x00" or encoded[4:8] != b"\0" * 4 or encoded[9] != 255:
+    if (
+        encoded[:4] != b"\x1f\x8b\x08\x00"
+        or encoded[4:8] != b"\0" * 4
+        or encoded[9] != 255
+    ):
         raise WriteRefused("gzip implementation did not produce fixed metadata")
     return encoded
 
@@ -105,42 +148,42 @@ def _gunzip_bytes(value: bytes, limit: int) -> bytes:
 
 def _render_validated_tree(data: Mapping[str, Any]) -> dict[str, bytes]:
     files, artifacts = {}, []
-    for path, payload in sorted({
-        "data/cells.json.gz": {
-            "cells": data["cells"],
-            "in_manifest_cell_count": data["counts"]["in_manifest_cell_count"],
-            "schema_version": SCHEMA_VERSION,
-        },
-        "data/incomplete-data.json.gz": {
-            "incomplete_data": data["incomplete_data"],
-            "incomplete_data_count": data["counts"]["incomplete_data_count"],
-            "schema_version": SCHEMA_VERSION,
-        },
-        "data/runs.json.gz": data["runs"],
-        "data/tests.json.gz": {
-            "schema_version": SCHEMA_VERSION,
-            "selected_by_full_custom_command_count": data["counts"]["selected_by_full_custom_command_count"],
-            "selected_by_full_custom_commands": data["selected_by_full_custom_commands"],
-            "test_count": data["counts"]["test_count"],
-            "tests": data["tests"],
-        },
-    }.items()):
+    for path, payload in sorted(
+        {
+            "data/cells.json.gz": {
+                "cells": data["cells"],
+                "in_manifest_cell_count": data["counts"]["in_manifest_cell_count"],
+                "projection_audit": data["projection_audit"],
+                "schema_version": SCHEMA_VERSION,
+            },
+            "data/runs.json.gz": data["runs"],
+            "data/tests.json.gz": {
+                "schema_version": SCHEMA_VERSION,
+                "selected_by_full_custom_command_count": data["counts"][
+                    "selected_by_full_custom_command_count"
+                ],
+                "selected_by_full_custom_commands": data[
+                    "selected_by_full_custom_commands"
+                ],
+                "test_count": data["counts"]["test_count"],
+                "tests": data["tests"],
+            },
+        }.items()
+    ):
         uncompressed = _json_bytes(payload) + b"\n"
         compressed = _gzip_bytes(uncompressed)
         files[path] = compressed
-        artifacts.append({
-            "compressed_bytes": len(compressed),
-            "compressed_sha256": hashlib.sha256(compressed).hexdigest(),
-            "content_encoding": "gzip",
-            "content_type": "application/json",
-            "path": path,
-            "uncompressed_bytes": len(uncompressed),
-            "uncompressed_sha256": hashlib.sha256(uncompressed).hexdigest(),
-        })
-    categories = Counter(
-        (row["input"], row["field"], row["reason"])
-        for row in data["incomplete_data"]
-    )
+        artifacts.append(
+            {
+                "compressed_bytes": len(compressed),
+                "compressed_sha256": hashlib.sha256(compressed).hexdigest(),
+                "content_encoding": "gzip",
+                "content_type": "application/json",
+                "path": path,
+                "uncompressed_bytes": len(uncompressed),
+                "uncompressed_sha256": hashlib.sha256(uncompressed).hexdigest(),
+            }
+        )
     build = {
         "artifacts": artifacts,
         "artifacts_sha256": hashlib.sha256(_json_bytes(artifacts)).hexdigest(),
@@ -151,10 +194,6 @@ def _render_validated_tree(data: Mapping[str, Any]) -> dict[str, bytes]:
             "name": "compatibility-website-stage-1-data",
             "write_data_schema_version": SCHEMA_VERSION,
         },
-        "incomplete_data_categories": [
-            {"count": count, "field": field, "input": source, "reason": reason}
-            for (source, field, reason), count in sorted(categories.items())
-        ],
         "provenance": data["provenance"],
         "schema_version": SCHEMA_VERSION,
     }
@@ -179,13 +218,20 @@ def _destination(value: Path) -> Path:
         account_home = Path(pwd.getpwuid(os.geteuid()).pw_dir).resolve()
         environment_home = Path.home().resolve()
     except (KeyError, OSError, RuntimeError) as error:
-        raise WriteRefused(f"cannot identify protected home directories: {error}") from error
+        raise WriteRefused(
+            f"cannot identify protected home directories: {error}"
+        ) from error
     protected = {
-        Path(destination.anchor), account_home, environment_home,
-        Path.cwd().resolve(), *_SYSTEM_ROOTS,
+        Path(destination.anchor),
+        account_home,
+        environment_home,
+        Path.cwd().resolve(),
+        *_SYSTEM_ROOTS,
     }
     if destination in protected:
-        raise WriteRefused("output destination must not be a filesystem, system, home, or working-directory root")
+        raise WriteRefused(
+            "output destination must not be a filesystem, system, home, or working-directory root"
+        )
     try:
         parent = destination.parent.resolve(strict=True)
     except OSError as error:
@@ -247,7 +293,9 @@ def _read_file(directory: int, name: str, limit: int) -> bytes:
     try:
         metadata = os.fstat(descriptor)
         if metadata.st_size > limit:
-            raise WriteRefused(f"prior artifact file is not a bounded regular file: {name}")
+            raise WriteRefused(
+                f"prior artifact file is not a bounded regular file: {name}"
+            )
         with os.fdopen(descriptor, "rb", closefd=False) as source:
             value = source.read(limit + 1)
     finally:
@@ -274,7 +322,11 @@ def _write_file(directory: int, name: str, value: bytes) -> None:
 
 
 def _fsync_directory(path_or_fd: Path | int) -> None:
-    descriptor = os.dup(path_or_fd) if isinstance(path_or_fd, int) else os.open(path_or_fd, _DIR_FLAGS)
+    descriptor = (
+        os.dup(path_or_fd)
+        if isinstance(path_or_fd, int)
+        else os.open(path_or_fd, _DIR_FLAGS)
+    )
     try:
         os.fsync(descriptor)
     finally:
@@ -285,10 +337,18 @@ def _renameat2(directory: int, left: str, right: str, flags: int) -> None:
     renameat2 = getattr(ctypes.CDLL(None, use_errno=True), "renameat2", None)
     if renameat2 is None:
         raise WriteRefused("atomic directory rename is unavailable")
-    renameat2.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+    renameat2.argtypes = [
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_uint,
+    ]
     renameat2.restype = ctypes.c_int
     if renameat2(directory, os.fsencode(left), directory, os.fsencode(right), flags):
-        raise WriteRefused(f"atomic directory rename failed: {os.strerror(ctypes.get_errno())}")
+        raise WriteRefused(
+            f"atomic directory rename failed: {os.strerror(ctypes.get_errno())}"
+        )
 
 
 def _entry(directory: int, name: str) -> os.stat_result | None:
@@ -350,18 +410,20 @@ def _prior_manifest(raw: bytes) -> tuple[dict[str, Any], Mapping[str, Any], list
         or raw != _json_bytes(build) + b"\n"
         or build["schema_version"] != SCHEMA_VERSION
     ):
-        raise WriteRefused("existing output is not a canonical compatibility artifact tree")
+        raise WriteRefused(
+            "existing output is not a canonical compatibility artifact tree"
+        )
     if (
         set(generator) != _GENERATOR_FIELDS
         or generator["name"] != "compatibility-website-stage-1-data"
         or generator["write_data_schema_version"] != SCHEMA_VERSION
     ):
-        raise WriteRefused("existing output was not written by this compatibility artifact writer")
-    if (
-        [row["path"] for row in artifacts] != list(_DATA_PATHS)
-        or build["artifacts_sha256"]
-        != hashlib.sha256(_json_bytes(artifacts)).hexdigest()
-    ):
+        raise WriteRefused(
+            "existing output was not written by this compatibility artifact writer"
+        )
+    if [row["path"] for row in artifacts] != list(_DATA_PATHS) or build[
+        "artifacts_sha256"
+    ] != hashlib.sha256(_json_bytes(artifacts)).hexdigest():
         raise WriteRefused("existing output artifact inventory is invalid")
     return build, generator, artifacts
 
@@ -384,10 +446,11 @@ def _prior_payloads(
             or row["content_type"] != "application/json"
             or len(encoded) != size
             or hashlib.sha256(encoded).hexdigest() != row["compressed_sha256"]
-            or hashlib.sha256(decoded).hexdigest()
-            != row["uncompressed_sha256"]
+            or hashlib.sha256(decoded).hexdigest() != row["uncompressed_sha256"]
         ):
-            raise WriteRefused("existing output artifact bytes disagree with build.json")
+            raise WriteRefused(
+                "existing output artifact bytes disagree with build.json"
+            )
         value = json.loads(decoded)
         if decoded != _json_bytes(value) + b"\n":
             raise WriteRefused("existing output artifact is not canonical JSON")
@@ -409,31 +472,54 @@ def _recognize_prior(directory: int) -> dict[str, str]:
         _require_inventory(data, _DATA_NAMES, "existing output data")
         payloads, encoded_files = _prior_payloads(data, artifacts)
         source = {
-            "cells": payloads[_DATA_PATHS[0]]["cells"], "counts": build["counts"],
-            "incomplete_data": payloads[_DATA_PATHS[1]]["incomplete_data"],
-            "provenance": build["provenance"], "runs": payloads[_DATA_PATHS[2]],
+            "cells": payloads[_DATA_PATHS[0]]["cells"],
+            "counts": build["counts"],
+            "projection_audit": payloads[_DATA_PATHS[0]]["projection_audit"],
+            "provenance": build["provenance"],
+            "runs": payloads[_DATA_PATHS[1]],
             "schema_version": generator["build_data_schema_version"],
-            "selected_by_full_custom_commands": payloads[_DATA_PATHS[3]]["selected_by_full_custom_commands"],
-            "tests": payloads[_DATA_PATHS[3]]["tests"],
+            "selected_by_full_custom_commands": payloads[_DATA_PATHS[2]][
+                "selected_by_full_custom_commands"
+            ],
+            "tests": payloads[_DATA_PATHS[2]]["tests"],
         }
-        if hashlib.sha256(_json_bytes(source)).hexdigest() != build["build_data_sha256"]:
-            raise WriteRefused("existing output artifacts disagree with build-data digest")
+        if (
+            hashlib.sha256(_json_bytes(source)).hexdigest()
+            != build["build_data_sha256"]
+        ):
+            raise WriteRefused(
+                "existing output artifacts disagree with build-data digest"
+            )
         module = _build_data_module()
         try:
             validated = module.validate_build_data(source)
         except module.BuildRefused as error:
-            raise WriteRefused(f"existing output build data is invalid: {error}") from error
+            raise WriteRefused(
+                f"existing output build data is invalid: {error}"
+            ) from error
         files = {"build.json": raw, **encoded_files}
         if _render_validated_tree(validated) != files:
-            raise WriteRefused("existing output does not match its validated compatibility artifacts")
+            raise WriteRefused(
+                "existing output does not match its validated compatibility artifacts"
+            )
         _require_inventory(directory, _ROOT_NAMES, "existing output root")
         _require_inventory(data, _DATA_NAMES, "existing output data")
         return {
             path: hashlib.sha256(contents).hexdigest()
             for path, contents in sorted(files.items())
         }
-    except (KeyError, TypeError, ValueError, OSError, EOFError, RecursionError, json.JSONDecodeError) as error:
-        raise WriteRefused(f"existing output is not a recognized compatibility artifact tree: {error}") from error
+    except (
+        KeyError,
+        TypeError,
+        ValueError,
+        OSError,
+        EOFError,
+        RecursionError,
+        json.JSONDecodeError,
+    ) as error:
+        raise WriteRefused(
+            f"existing output is not a recognized compatibility artifact tree: {error}"
+        ) from error
     finally:
         if data is not None:
             os.close(data)
@@ -490,9 +576,7 @@ def _rollback(
     error: Exception,
 ) -> None:
     replaced = prior is not None
-    published = _endpoint_state(
-        temporary, destination, prior, new, published=True
-    )
+    published = _endpoint_state(temporary, destination, prior, new, published=True)
     try:
         _require_endpoint_state(directory, *published, "before rollback")
     except (OSError, WriteRefused) as verify_error:
@@ -519,9 +603,7 @@ def _rollback(
             f"{rollback_error}"
         ) from rollback_error
 
-    original = _endpoint_state(
-        temporary, destination, prior, new, published=False
-    )
+    original = _endpoint_state(temporary, destination, prior, new, published=False)
     try:
         _require_endpoint_state(
             directory,
@@ -543,11 +625,15 @@ def _rollback(
             f"cannot publish compatibility data; {state}, but its directory "
             f"sync failed: {rollback_sync}"
         ) from rollback_sync
-    raise WriteRefused(f"cannot publish compatibility data; {state}: {error}") from error
+    raise WriteRefused(
+        f"cannot publish compatibility data; {state}: {error}"
+    ) from error
 
 
 def _require_parent(directory: int, parent: Path, message: str) -> None:
-    if not os.path.samestat(os.fstat(directory), os.stat(parent, follow_symlinks=False)):
+    if not os.path.samestat(
+        os.fstat(directory), os.stat(parent, follow_symlinks=False)
+    ):
         raise WriteRefused(message)
 
 
@@ -564,13 +650,11 @@ def _publish_tree(
     exchanged = False
     displaced = None
     try:
-        _require_parent(directory, parent, "output parent changed before atomic replacement")
-        original = _endpoint_state(
-            temporary, destination, prior, new, published=False
+        _require_parent(
+            directory, parent, "output parent changed before atomic replacement"
         )
-        _require_endpoint_state(
-            directory, *original, "before atomic replacement"
-        )
+        original = _endpoint_state(temporary, destination, prior, new, published=False)
+        _require_endpoint_state(directory, *original, "before atomic replacement")
         _renameat2(
             directory,
             temporary,
@@ -578,21 +662,23 @@ def _publish_tree(
             _RENAME_EXCHANGE if replaced else _RENAME_NOREPLACE,
         )
         exchanged = True
-        published = _endpoint_state(
-            temporary, destination, prior, new, published=True
+        published = _endpoint_state(temporary, destination, prior, new, published=True)
+        _require_endpoint_state(directory, *published, "after atomic replacement")
+        _require_parent(
+            directory, parent, "output parent changed during atomic replacement"
         )
-        _require_endpoint_state(
-            directory, *published, "after atomic replacement"
-        )
-        _require_parent(directory, parent, "output parent changed during atomic replacement")
         if replaced:
             if prior_digests is None:
                 raise WriteRefused("captured prior digests are unavailable")
             displaced = _open_directory(directory, temporary)
             if not os.path.samestat(os.fstat(displaced), os.fstat(prior)):
-                raise WriteRefused("reopened prior tree disagrees with captured root inode")
+                raise WriteRefused(
+                    "reopened prior tree disagrees with captured root inode"
+                )
             if _recognize_prior(displaced) != prior_digests:
-                raise WriteRefused("displaced prior artifact bytes changed after recognition")
+                raise WriteRefused(
+                    "displaced prior artifact bytes changed after recognition"
+                )
         _fsync_directory(directory)
         return displaced
     except (OSError, WriteRefused) as publish_error:
@@ -649,7 +735,9 @@ def _remove_expected_tree(
             raise WriteRefused("retained output root changed during removal")
         if data is not None and _inventory(data) != data_names:
             raise WriteRefused("retained output data changed during removal")
-        for (owner, filename), descriptor in sorted(files.items(), key=lambda item: item[0][1]):
+        for (owner, filename), descriptor in sorted(
+            files.items(), key=lambda item: item[0][1]
+        ):
             _require_entry(
                 owner,
                 filename,
@@ -698,7 +786,11 @@ def _write_tree(files: Mapping[str, bytes], destination_value: Path) -> dict[str
         os.mkdir("data", 0o755, dir_fd=temporary_fd)
         data = _open_directory(temporary_fd, "data")
         for relative, contents in files.items():
-            _write_file(data if relative.startswith("data/") else temporary_fd, Path(relative).name, contents)
+            _write_file(
+                data if relative.startswith("data/") else temporary_fd,
+                Path(relative).name,
+                contents,
+            )
         _fsync_directory(data)
         os.close(data)
         data = None
@@ -723,7 +815,9 @@ def _write_tree(files: Mapping[str, bytes], destination_value: Path) -> dict[str
             os.close(data)
         if temporary and _entry(parent, temporary) is not None:
             try:
-                cleanup = displaced if published and displaced is not None else temporary_fd
+                cleanup = (
+                    displaced if published and displaced is not None else temporary_fd
+                )
                 if cleanup is None:
                     raise WriteRefused("retained tree could not be opened for removal")
                 _remove_expected_tree(
@@ -755,10 +849,11 @@ def write_data(value: Any, destination_value: Path) -> dict[str, Any]:
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter,
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""Publication:
   The complete data tree is validated before writing, then the whole
-  destination tree is replaced atomically. A refusal leaves an existing
+    destination tree is replaced atomically. A refusal leaves an existing
   destination unchanged or an absent destination absent and writes nothing to
   stdout. If rollback itself fails, stderr identifies the retained complete
   trees. The output parent directory must already exist. An existing output
@@ -776,31 +871,40 @@ Example, from a clean dev-hermit checkout:
     --output /tmp/compatibility-website-data""",
     )
     parser.add_argument(
-        "--parent", required=True, type=Path,
+        "--parent",
+        required=True,
+        type=Path,
         help="exact clean dev-hermit checkout whose canonical ledger and series are read",
     )
     parser.add_argument(
-        "--parent-commit", required=True,
+        "--parent-commit",
+        required=True,
         help="full dev-hermit commit currently checked out by --parent",
     )
     parser.add_argument(
-        "--hermit", required=True, type=Path,
+        "--hermit",
+        required=True,
+        type=Path,
         help="exact clean Hermit checkout used for manifest policy and ancestry",
     )
     parser.add_argument(
-        "--hermit-commit", required=True,
+        "--hermit-commit",
+        required=True,
         help="full Hermit commit currently checked out by --hermit",
     )
     parser.add_argument(
-        "--hermit-main-commit", required=True,
+        "--hermit-main-commit",
+        required=True,
         help=(
             "full Hermit ancestry target; must equal the checkout's stable "
             "refs/remotes/origin/main"
         ),
     )
     parser.add_argument(
-        "--output", required=True, type=Path,
-        help="destination directory for the complete five-file website data tree",
+        "--output",
+        required=True,
+        type=Path,
+        help="destination directory for the complete four-file website data tree",
     )
     arguments = parser.parse_args(argv)
     try:
@@ -815,7 +919,10 @@ Example, from a clean dev-hermit checkout:
             )
         except module.BuildRefused as error:
             raise WriteRefused(f"build data refused: {error}") from error
-        encoded = _json_bytes(_write_tree(_render_validated_tree(data), arguments.output)) + b"\n"
+        encoded = (
+            _json_bytes(_write_tree(_render_validated_tree(data), arguments.output))
+            + b"\n"
+        )
     except (WriteRefused, OSError, ValueError) as error:
         print(f"compatibility-website write data: REFUSED: {error}", file=sys.stderr)
         return 2

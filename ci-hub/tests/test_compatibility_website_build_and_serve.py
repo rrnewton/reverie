@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import errno
 import fcntl
+import gzip
 import importlib.util
 import json
 import os
@@ -64,6 +65,66 @@ def build_data(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any
     return renderer_test.representative_build_data(tmp_path, monkeypatch)
 
 
+def historical_build_data(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> dict[str, Any]:
+    data = build_data(tmp_path, monkeypatch)
+    row = next(
+        item
+        for item in data["runs"]["validation_history_rows"]
+        if item.get("run_id") == "validate-run-1"
+    )
+    source = {
+        "finished_at": row["finished_at"],
+        "history_row_sha256": row["history_row_sha256"],
+        "measured_hermit_commit": row["commit"],
+        "record_id": row["record_id"],
+        "run_id": row["run_id"],
+        "selected_by_full_cell_count": 1,
+        "started_at": row["started_at"],
+        "validate_path": "full",
+    }
+    manifest_commit = "d" * 40
+    canonical = data["provenance"]["canonical_input_provenance"]
+    canonical.update(
+        historical=copy.deepcopy(source),
+        mode="historical",
+        published_only=True,
+        reader_worktree_clean=True,
+        reader_worktree_dirty_paths=[],
+    )
+    canonical["reader_source_identity_sha256"] = website._digest(
+        {
+            "ci_hub_tree": canonical["reader_ci_hub_tree"],
+            "commit": canonical["reader_commit"],
+            "dirty_paths": canonical["reader_worktree_dirty_paths"],
+            "files": canonical["reader_files"],
+            "hermit": canonical["reader_hermit"],
+            "worktree_clean": canonical["reader_worktree_clean"],
+        }
+    )
+    data["provenance"]["hermit_commit"] = manifest_commit
+    data["provenance"]["historical"] = {
+        **source,
+        "ledger_commit": data["provenance"]["parent_commit"],
+        "ledger_ref": data["provenance"]["parent_commit"],
+        "manifest_source_commit": manifest_commit,
+    }
+    return website._modules().build_data.validate_build_data(data)
+
+
+def set_historical_finished_at(data: dict[str, Any], value: str | None) -> None:
+    sources = (
+        data["provenance"]["historical"],
+        data["provenance"]["canonical_input_provenance"]["historical"],
+    )
+    for source in sources:
+        if value is None:
+            source.pop("finished_at")
+        else:
+            source["finished_at"] = value
+
+
 def snapshot(root: Path) -> dict[str, tuple[int, int, bytes | str]]:
     result = {}
     for path in sorted(root.rglob("*")):
@@ -114,6 +175,38 @@ def test_git_oid_refuses_oversized_output_before_the_child_exits(
     assert not marker.exists()
 
 
+def test_git_oid_uses_the_captured_shared_bounded_process(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    expected = "a" * 40
+    observed: list[tuple[list[str], dict[str, Any]]] = []
+    export_inputs = website._modules().export_inputs
+
+    def capture(command: Any, **arguments: Any) -> subprocess.CompletedProcess[bytes]:
+        observed.append((list(command), arguments))
+        return subprocess.CompletedProcess(command, 0, f"{expected}\n".encode(), b"")
+
+    monkeypatch.setattr(export_inputs, "capture_bounded_process", capture)
+
+    assert website._git_oid(tmp_path, "HEAD") == expected
+    assert not hasattr(website, "_capture_bounded_process")
+    assert len(observed) == 1
+    command, arguments = observed[0]
+    assert command == [
+        "git",
+        "--no-replace-objects",
+        "-C",
+        str(tmp_path),
+        "rev-parse",
+        "HEAD^{commit}",
+    ]
+    assert arguments["timeout"] == 20
+    assert arguments["stdout_limit"] == website.MAX_GIT_OID_STDOUT_BYTES
+    assert arguments["stderr_limit"] == website.MAX_GIT_OID_STDERR_BYTES
+    assert arguments["environment"]["GIT_CONFIG_NOSYSTEM"] == "1"
+    assert arguments["environment"]["GIT_CONFIG_GLOBAL"] == os.devnull
+
+
 def write_read_only_tree(root: Path, files: dict[str, bytes]) -> None:
     root.mkdir()
     for child in website.FIXED_DIRECTORIES:
@@ -137,7 +230,7 @@ def test_compose_is_deterministic_and_exactly_binds_fixture_tree(
 
     assert first_manifest == second_manifest
     assert first == second
-    assert len(first) == 27
+    assert len(first) == len(first_manifest["artifacts"]) + 1
     assert set(first) == {
         "build.json",
         *(row["path"] for row in first_manifest["artifacts"]),
@@ -148,19 +241,12 @@ def test_compose_is_deterministic_and_exactly_binds_fixture_tree(
     assert (
         first_manifest["provenance"] == json.loads(stage_1["build.json"])["provenance"]
     )
-    assert (
-        first_manifest["incomplete_data_categories"]
-        == json.loads(stage_1["build.json"])["incomplete_data_categories"]
-    )
     for path in website._modules().writer._DATA_PATHS:
         assert first[path] == stage_1[path]
     html = "\n".join(
         value.decode() for path, value in first.items() if path.endswith(".html")
     )
-    assert (
-        "Recorded data — source commits are on Overview; incomplete data is on "
-        "Incomplete data"
-    ) in html
+    assert ("Recorded data — source commits are on Overview") in html
     assert "Build provenance" in html
     assert "Fixture data — not current Hermit main" not in html
     assert first_manifest["freshness_sha256"] == website._digest(
@@ -173,6 +259,228 @@ def test_compose_is_deterministic_and_exactly_binds_fixture_tree(
             "wording": "live",
         }
     )
+
+
+def test_compose_preserves_the_exact_four_file_stage_1_tree() -> None:
+    data = renderer_test.representative_build_data()
+    stage_1 = website._modules().writer.render_tree(data)
+
+    _manifest, files = website.compose(data)
+
+    raw_paths = {
+        "data/cells.json.gz",
+        "data/runs.json.gz",
+        "data/tests.json.gz",
+    }
+    assert set(stage_1) == {"build.json", *raw_paths}
+    assert all(files[path] == stage_1[path] for path in raw_paths)
+    assert "incomplete-data/index.html" not in files
+
+
+def test_compose_preserves_the_round_four_reader_facing_contract() -> None:
+    data = renderer_test.representative_build_data()
+
+    _manifest, files = website.compose(data)
+
+    raw_names = ("cells.json.gz", "runs.json.gz", "tests.json.gz")
+    for path, value in files.items():
+        if not path.endswith(".html"):
+            continue
+        source = value.decode()
+        links = renderer_test.Links()
+        links.feed(source)
+        assert "Raw Stage 1" not in source, path
+        assert "data-raw-artifact" not in source, path
+        assert "Test name" not in source, path
+        assert not any(
+            urlsplit(link).path.endswith(raw_names) for link in links.links
+        ), path
+
+    headings = renderer_test.ColumnHeadings()
+    headings.feed(files["cells/index.html"].decode())
+    matrix_labels = [column["label"] for column in headings.columns[:10]]
+    assert matrix_labels == [
+        "Category",
+        "TestName",
+        "Mode",
+        "Backend",
+        "Lane",
+        "Latest result",
+        "Latest result time",
+        "Latest result tree",
+        "Physical rows",
+        "Represented Hermit runs",
+    ]
+    assert "Selected by full" not in matrix_labels
+    assert "Selected by path" not in matrix_labels
+
+    one_page_lists = [
+        files["index.html"].decode(),
+        *(
+            value.decode()
+            for path, value in files.items()
+            if path.startswith("runs/") and path.endswith(".html")
+        ),
+    ]
+    assert one_page_lists
+    assert all('data-list-pagination=' not in source for source in one_page_lists)
+
+    for path in (
+        "cells/detail.html",
+        "cells/index.html",
+        "cells/never-measured.html",
+        "tests/detail.html",
+    ):
+        source = files[path].decode()
+        assert 'data-load-state="loading"' in source, path
+        assert "Loading verified local data…" in source, path
+    javascript = files["assets/site.js"].decode()
+    assert "['TestName', testName(cell.test, cell.category)]" in javascript
+    assert "['Test name'," not in javascript
+    assert "Verified local data loaded" not in javascript
+    assert "status.textContent = '';" in javascript
+    assert "status.hidden = true;" in javascript
+
+
+def test_compose_validates_the_consolidated_template_inventory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    data = build_data(tmp_path, monkeypatch)
+    stage_1 = website._modules().writer.render_tree(data)
+    stage_1_build = json.loads(stage_1["build.json"])
+    rendered = website._modules().renderer.render_site(stage_1_build, data)
+
+    manifest, files = website.compose(data)
+
+    history_count = data["counts"]["validation_history_row_count"]
+    assert len(rendered) == 29 + history_count
+    assert len(files) == 33 + history_count
+    assert len(manifest["artifacts"]) == 32 + history_count
+    assert manifest["schema_version"] == 1
+    assert manifest["generator"]["schema_version"] == 1
+    assert manifest["inputs"]["stage_1_build_json"]["schema_version"] == 3
+    raw_paths = {
+        "data/cells.json.gz",
+        "data/runs.json.gz",
+        "data/tests.json.gz",
+    }
+    for path in raw_paths:
+        assert files[path] == stage_1[path]
+        assert json.loads(gzip.decompress(files[path]))["schema_version"] == 3
+    browser_manifest = json.loads(gzip.decompress(files["data/site-manifest.json.gz"]))
+    assert browser_manifest["schema_version"] == 1
+    assert {path for path in files if path.startswith("cells/")} == {
+        "cells/detail.html",
+        "cells/index.html",
+        "cells/never-measured.html",
+        "cells/projection-audit.html",
+    }
+    assert {path for path in files if path.startswith("tests/")} == {
+        "tests/custom-commands.html",
+        "tests/detail.html"
+    }
+    assert {path for path in files if path.startswith("data/")} == {
+        *raw_paths,
+        "data/site-manifest.json.gz",
+        "data/site-summary.json.gz",
+        *(f"data/detail-{value}.json.gz" for value in "0123456789abcdef"),
+    }
+    run_paths = {path for path in files if path.startswith("runs/")}
+    assert "runs/index.html" in run_paths
+    run_detail_paths = run_paths - {"runs/index.html"}
+    assert len(run_detail_paths) == history_count
+    assert all(
+        path.startswith("runs/")
+        and path.endswith(".html")
+        and len(path.removeprefix("runs/").removesuffix(".html")) == 64
+        and all(
+            character in "0123456789abcdef"
+            for character in path.removeprefix("runs/").removesuffix(".html")
+        )
+        for path in run_detail_paths
+    )
+    assert "runs/index.html" in website.FIXED_RENDERER_ARTIFACT_PATHS
+    assert not website._is_run_artifact_path("runs/index.html")
+    artifacts = {row["path"]: row for row in manifest["artifacts"]}
+    assert set(artifacts) == set(files) - {"build.json"}
+    for path, value in files.items():
+        if path == "build.json":
+            continue
+        assert artifacts[path]["bytes"] == len(value)
+        assert artifacts[path]["sha256"] == website._sha256(value)
+    assert website._validate_manifest(manifest) == manifest
+
+
+def _retarget_manifest_artifact(
+    manifest: dict[str, Any], old: str, new: str
+) -> dict[str, Any]:
+    changed = copy.deepcopy(manifest)
+    row = next(item for item in changed["artifacts"] if item["path"] == old)
+    row["path"] = new
+    row["content_type"], row["content_encoding"] = website._media(new)
+    changed["artifacts"].sort(key=lambda item: item["path"])
+    changed["artifacts_sha256"] = website._digest(changed["artifacts"])
+    changed["directories"] = website._directory_rows(changed["artifacts"])
+    changed["directories_sha256"] = website._digest(changed["directories"])
+    changed["tree_sha256"] = website._digest(
+        {
+            "artifacts_sha256": changed["artifacts_sha256"],
+            "directories_sha256": changed["directories_sha256"],
+        }
+    )
+    changed["freshness_sha256"] = website._digest(
+        {
+            "generator_files_sha256": changed["generator"]["files_sha256"],
+            "stage_1_build_json_sha256": changed["inputs"]["stage_1_build_json_sha256"],
+            "tree_sha256": changed["tree_sha256"],
+            "wording": changed["generator"]["wording"],
+        }
+    )
+    return changed
+
+
+@pytest.mark.parametrize(
+    ("old", "new"),
+    [
+        ("cells/detail.html", f"cells/{'a' * 64}.html"),
+        ("runs/index.html", f"runs/{'c' * 64}.html"),
+        ("tests/detail.html", f"tests/{'b' * 64}.html"),
+        ("data/detail-0.json.gz", "data/stale.json.gz"),
+    ],
+)
+def test_manifest_refuses_identity_named_and_stale_artifacts(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    old: str,
+    new: str,
+) -> None:
+    manifest, _files = website.compose(build_data(tmp_path, monkeypatch))
+    changed = _retarget_manifest_artifact(manifest, old, new)
+
+    with pytest.raises(website.WebsiteRefused, match="artifact inventory"):
+        website._validate_manifest(changed)
+
+
+def test_manifest_requires_embedded_stage_1_schema_three(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manifest, _files = website.compose(build_data(tmp_path, monkeypatch))
+    changed = copy.deepcopy(manifest)
+    changed["inputs"]["stage_1_build_json"]["schema_version"] = 2
+    stage_1_bytes = website._json_bytes(changed["inputs"]["stage_1_build_json"]) + b"\n"
+    changed["inputs"]["stage_1_build_json_bytes"] = len(stage_1_bytes)
+    changed["inputs"]["stage_1_build_json_sha256"] = website._sha256(stage_1_bytes)
+    changed["freshness_sha256"] = website._digest(
+        {
+            "generator_files_sha256": changed["generator"]["files_sha256"],
+            "stage_1_build_json_sha256": changed["inputs"]["stage_1_build_json_sha256"],
+            "tree_sha256": changed["tree_sha256"],
+            "wording": changed["generator"]["wording"],
+        }
+    )
+
+    with pytest.raises(website.WebsiteRefused, match="Stage 1 build.json schema"):
+        website._validate_manifest(changed)
 
 
 def test_fixture_wording_remains_available_without_changing_non_html_bytes(
@@ -193,6 +501,282 @@ def test_fixture_wording_remains_available_without_changing_non_html_bytes(
         value.decode() for path, value in fixture.items() if path.endswith(".html")
     )
     assert "Fixture data — not current Hermit main" in fixture_html
+
+
+def test_historical_compose_is_self_validating_and_discloses_every_page(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    data = historical_build_data(tmp_path, monkeypatch)
+
+    manifest, files = website.compose(data, wording="historical")
+
+    assert manifest["generator"]["wording"] == "historical"
+    assert website._validate_manifest(manifest) == manifest
+    historical = manifest["provenance"]["historical"]
+    canonical = manifest["provenance"]["canonical_input_provenance"]
+    linked_facts = (
+        (
+            "Generator-base-recorded Hermit gitlink",
+            "hermit",
+            canonical["reader_hermit"]["gitlink_commit"],
+        ),
+        ("Ledger commit", "dev-hermit", historical["ledger_commit"]),
+        (
+            "Measured Hermit commit",
+            "hermit",
+            historical["measured_hermit_commit"],
+        ),
+        (
+            "Manifest source commit",
+            "hermit",
+            historical["manifest_source_commit"],
+        ),
+    )
+    unlinked_facts = (
+        ("Generator parent commit", canonical["reader_commit"]),
+        ("Generator parent source state", "clean"),
+        (
+            "Clean generator Hermit checkout",
+            canonical["reader_hermit"]["checkout_commit"],
+        ),
+        ("Ledger reference", historical["ledger_ref"]),
+        ("Ledger-era Hermit gitlink", manifest["provenance"]["hermit_main_commit"]),
+        ("Source validation record", historical["record_id"]),
+        ("Source validation run", historical["run_id"]),
+        ("Validate path", historical["validate_path"]),
+        (
+            f"Retained run selected by {historical['validate_path']}",
+            f"{historical['selected_by_full_cell_count']} cells",
+        ),
+        ("Run started", "2026-08-30 20:00:00 ET"),
+        ("Run finished", "2026-08-30 20:01:00 ET"),
+        ("Source history row SHA-256", historical["history_row_sha256"]),
+        (
+            "Manifest and measured commits",
+            "manifest source differs from measured Hermit",
+        ),
+        ("Reader files SHA-256", canonical["reader_files_sha256"]),
+        ("Reader identity SHA-256", canonical["reader_source_identity_sha256"]),
+        ("Captured source inventory SHA-256", canonical["sources_sha256"]),
+    )
+    historical_pages = {
+        path: value.decode()
+        for path, value in files.items()
+        if path.endswith(".html")
+    }
+    assert historical_pages
+    for path, value in files.items():
+        if path.endswith(".html"):
+            text = value.decode()
+            title = text.split("<title>", 1)[1].split("</title>", 1)[0]
+            assert title.endswith(" · Hermit compatibility snapshot"), path
+            assert "historical" not in title.lower(), path
+            assert "NOT CURRENT — historical compatibility snapshot" not in text, path
+            assert "A navigable historical snapshot" not in text, path
+            assert "not current" not in text.lower(), path
+            assert "immutable" not in text.lower(), path
+            assert '<p class="fixture-banner">' not in text, path
+            assert (
+                "<summary>Full snapshot provenance (2026-08-30 20:01 ET)</summary>"
+                in text
+            ), path
+            assert "Current reproducer" not in text, path
+            disclosure = text.split('<details class="snapshot-disclosure">', 1)[1]
+            disclosure = disclosure.split("</details>", 1)[0]
+            assert text.count('<details class="snapshot-disclosure">') == 1, path
+            assert "Build provenance" not in text, path
+            assert disclosure.count('href="https://github.com/rrnewton/') == 4, path
+            for label, repository, commit in linked_facts:
+                assert (
+                    f'<div><dt>{label}</dt><dd><a class="external-link" '
+                    f'href="https://github.com/rrnewton/{repository}/commit/{commit}" '
+                    f'aria-label="{commit} on GitHub (external link)">{commit}'
+                    '<span class="external-link-indicator" aria-hidden="true">↗</span>'
+                    "</a></dd></div>"
+                    in text
+                ), (path, label)
+            for label, fact in unlinked_facts:
+                assert f"<div><dt>{label}</dt><dd>{fact}</dd></div>" in text, (
+                    path,
+                    label,
+                )
+    assert (
+        historical_pages["index.html"].count(
+            "A navigable snapshot of recorded compatibility evidence."
+        )
+        == 1
+    )
+    assert all(
+        "A navigable snapshot of recorded compatibility evidence." not in text
+        for path, text in historical_pages.items()
+        if path != "index.html"
+    )
+
+
+@pytest.mark.parametrize(
+    ("finished_at", "expected"),
+    [
+        ("2026-07-01T16:34:56.123Z", "2026-07-01 12:34 ET"),
+        ("2026-01-01T16:34:56+00:00", "2026-01-01 11:34 ET"),
+    ],
+)
+def test_historical_disclosure_uses_the_source_run_finish_in_eastern_time(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    finished_at: str,
+    expected: str,
+) -> None:
+    data = historical_build_data(tmp_path, monkeypatch)
+    set_historical_finished_at(data, finished_at)
+
+    _manifest, files = website.compose(data, wording="historical")
+
+    for path, value in files.items():
+        if path.endswith(".html"):
+            assert (
+                f"<summary>Full snapshot provenance ({expected})</summary>"
+                in value.decode()
+            ), path
+
+
+@pytest.mark.parametrize(
+    "finished_at",
+    [
+        None,
+        "2026-07-01 16:34:56Z",
+        "2026-07-01T16:34:56-04:00",
+        "2026-13-01T16:34:56Z",
+    ],
+)
+def test_historical_compose_refuses_missing_or_non_utc_rfc3339_finished_at(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    finished_at: str | None,
+) -> None:
+    data = historical_build_data(tmp_path, monkeypatch)
+    set_historical_finished_at(data, finished_at)
+
+    with pytest.raises(website.WebsiteRefused, match="finished_at"):
+        website.compose(data, wording="historical")
+
+
+def test_compose_requires_historical_wording_exactly_for_historical_stage_1(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    live_root = tmp_path / "live"
+    historical_root = tmp_path / "historical"
+    live_root.mkdir()
+    historical_root.mkdir()
+    live = build_data(live_root, monkeypatch)
+    historical = historical_build_data(historical_root, monkeypatch)
+
+    with pytest.raises(website.WebsiteRefused, match="historical wording"):
+        website.compose(live, wording="historical")
+    with pytest.raises(website.WebsiteRefused, match="historical wording"):
+        website.compose(historical, wording="live")
+
+
+@pytest.mark.parametrize(
+    ("historical", "changed_wording"),
+    [(False, "historical"), (True, "live")],
+)
+def test_sealed_manifest_requires_historical_wording_exactly_for_stage_1(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    historical: bool,
+    changed_wording: str,
+) -> None:
+    data = (
+        historical_build_data(tmp_path, monkeypatch)
+        if historical
+        else build_data(tmp_path, monkeypatch)
+    )
+    wording = "historical" if historical else "live"
+    manifest, _files = website.compose(data, wording=wording)
+    changed = copy.deepcopy(manifest)
+    changed["generator"]["wording"] = changed_wording
+    changed["freshness_sha256"] = website._digest(
+        {
+            "generator_files_sha256": changed["generator"]["files_sha256"],
+            "stage_1_build_json_sha256": changed["inputs"]["stage_1_build_json_sha256"],
+            "tree_sha256": changed["tree_sha256"],
+            "wording": changed_wording,
+        }
+    )
+
+    with pytest.raises(website.WebsiteRefused, match="historical wording"):
+        website._validate_manifest(changed)
+
+
+def test_stage_1_reader_inventory_matches_the_exporter_exactly() -> None:
+    export_inputs = website._modules().build_data._modules().export_inputs
+    declared = tuple(path.as_posix() for path in export_inputs._READER_PATHS)
+
+    assert website.STAGE_1_READER_PATHS == declared
+
+
+def test_historical_build_uses_only_the_separate_source_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    data = historical_build_data(tmp_path, monkeypatch)
+    modules = website._modules()
+    calls: list[tuple[Any, ...]] = []
+
+    def source(*arguments: Any) -> dict[str, Any]:
+        calls.append(arguments)
+        return copy.deepcopy(data)
+
+    monkeypatch.setattr(modules.build_data, "build_historical_data", source)
+    monkeypatch.setattr(
+        website,
+        "_live_data",
+        lambda: pytest.fail("historical build called the live data path"),
+    )
+    expected = object()
+
+    def publish(
+        value: Any,
+        output_root: Path,
+        *,
+        wording: str,
+        verify_sources: Any,
+    ) -> object:
+        assert value == data
+        assert output_root == tmp_path / "site"
+        assert wording == "historical"
+        verify_sources()
+        return expected
+
+    monkeypatch.setattr(website, "publish", publish)
+    result = website.build_historical(
+        tmp_path / "parent",
+        "a" * 40,
+        "record-1",
+        "run-1",
+        tmp_path / "manifest-hermit",
+        "b" * 40,
+        tmp_path / "site",
+    )
+
+    assert result is expected
+    assert calls == [
+        (
+            tmp_path / "parent",
+            "a" * 40,
+            "record-1",
+            "run-1",
+            tmp_path / "manifest-hermit",
+            "b" * 40,
+        ),
+        (
+            tmp_path / "parent",
+            "a" * 40,
+            "record-1",
+            "run-1",
+            tmp_path / "manifest-hermit",
+            "b" * 40,
+        ),
+    ]
 
 
 def test_freshness_changes_with_generator_asset_and_stage1_input(
@@ -284,11 +868,11 @@ def test_captured_stage1_reader_inventory_refuses_an_added_reader() -> None:
     captured = website._capture_generator_bytes()
     relative = "ci-hub/compatibility-website/export_inputs.py"
     source = captured[relative]
-    closing_row = b'    Path("ci-hub/validate/qualifying-receipt.json"),\n)'
+    closing_row = b'    Path("ci-hub/validate/service_result.py"),\n)'
     assert source.count(closing_row) == 1
     changed = source.replace(
         closing_row,
-        b'    Path("ci-hub/validate/qualifying-receipt.json"),\n'
+        b'    Path("ci-hub/validate/service_result.py"),\n'
         b'    Path("ci-hub/validate/future-reader.py"),\n)',
     )
     name = "compatibility_website_combined_added_reader_test"
@@ -316,8 +900,7 @@ def test_captured_stage1_reader_chain_uses_the_real_captured_modules() -> None:
     )
     qualifying = readers["qualifying_receipt"]
     assert qualifying.CellResultsVerdict.SATISFIED.value == "satisfied"
-    with pytest.raises(RuntimeError, match="not available to the website reader"):
-        qualifying.row_qualification
+    assert callable(qualifying.row_qualification)
     assert sys.path == before_path
     for name in CAPTURED_READER_MODULE_NAMES:
         assert (name in sys.modules) is (name in present_modules)
@@ -325,17 +908,12 @@ def test_captured_stage1_reader_chain_uses_the_real_captured_modules() -> None:
             assert sys.modules[name] is before_modules[name]
 
 
-def test_captured_reader_graph_refuses_a_new_qualifying_receipt_import() -> None:
+def test_captured_reader_graph_uses_one_full_qualifying_receipt_module() -> None:
     captured = website._capture_generator_bytes()
     relative = "ci-hub/ledger/validate_rows.py"
     source = captured[relative]
     needle = b"import qualifying_receipt  # noqa: E402\n"
     assert source.count(needle) == 1
-    changed = dict(captured)
-    changed[relative] = source.replace(
-        needle,
-        needle + b"from qualifying_receipt import row_qualification\n",
-    )
     before_modules = {
         name: sys.modules.get(name) for name in CAPTURED_READER_MODULE_NAMES
     }
@@ -344,10 +922,8 @@ def test_captured_reader_graph_refuses_a_new_qualifying_receipt_import() -> None
     }
     before_path = list(sys.path)
 
-    with pytest.raises(
-        website.WebsiteRefused, match="not available to the website reader"
-    ):
-        website._captured_reader_modules(changed)
+    readers = website._captured_reader_modules(captured)
+    assert callable(readers["qualifying_receipt"].row_qualification)
     assert sys.path == before_path
     for name in CAPTURED_READER_MODULE_NAMES:
         assert (name in sys.modules) is (name in present_modules)
@@ -492,38 +1068,29 @@ def test_qualifying_receipt_reads_the_captured_policy_not_its_live_path(
     )
 
 
-def test_build_data_uses_only_the_captured_qualifying_receipt_surface(
+def test_build_data_has_no_private_qualifying_receipt_bridge(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     data = build_data(tmp_path, monkeypatch)
     builder = website._modules().build_data
-    qualifying = builder._modules().qualifying_receipt
-
-    def refuse_live_read(*_args: Any, **_kwargs: Any) -> str:
-        raise AssertionError("build data read qualifying policy from a live path")
-
-    monkeypatch.setattr(Path, "read_text", refuse_live_read)
-    row = data["runs"]["current_validation_run_rows"][0]
-    verdict = builder._cell_results_verdict(row)
-    assert verdict is qualifying.cell_results_verdict(dict(row), qualifying.active())
-    with pytest.raises(RuntimeError, match="not available to the website reader"):
-        qualifying.producer_definition_allowed
+    assert not hasattr(builder._modules(), "qualifying_receipt")
+    source = website._capture_generator_bytes()[
+        "ci-hub/compatibility-website/build_data.py"
+    ]
+    assert b"_RFC3339_Z" not in source
+    assert b"cell_results_verdict" not in source
+    assert data["runs"]["current_validation_run_rows"]
 
 
 @pytest.mark.parametrize("variable", website.QUALIFICATION_OVERRIDE_ENVIRONMENT)
-def test_direct_serve_refuses_qualification_authority_overrides(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-    variable: str,
+def test_build_reader_refuses_qualification_authority_overrides(
+    monkeypatch: pytest.MonkeyPatch, variable: str
 ) -> None:
-    built = website.publish(build_data(tmp_path, monkeypatch), tmp_path / "published")
-    target = built.path
-    built.close()
-    monkeypatch.setenv(variable, str(tmp_path / "external-authority"))
-
+    monkeypatch.setenv(variable, "/fixture/external-authority")
+    website._modules.cache_clear()
     with pytest.raises(website.WebsiteRefused, match="authority override"):
-        website.validate_website(target)
+        website._modules()
 
 
 def test_generator_capture_refuses_a_policy_restored_after_capture(
@@ -570,7 +1137,7 @@ def test_embedded_stage1_manifest_must_match_its_validated_data(
         website._reproduce_expected_bytes(changed_manifest, changed_files)
 
 
-def test_manifest_artifact_count_must_match_the_rows_that_require_pages(
+def test_manifest_refuses_a_missing_consolidated_artifact(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     data = build_data(tmp_path, monkeypatch)
@@ -595,7 +1162,7 @@ def test_manifest_artifact_count_must_match_the_rows_that_require_pages(
         }
     )
 
-    with pytest.raises(website.WebsiteRefused, match="artifact count"):
+    with pytest.raises(website.WebsiteRefused, match="artifact inventory"):
         website._validate_manifest(changed)
 
 
@@ -1233,7 +1800,7 @@ def test_source_change_refuses_and_preserves_the_complete_or_private_tree(
         ("build-and-serve", 4),
     ],
 )
-def test_build_recaptures_and_compares_all_five_stage1_files_at_final_boundaries(
+def test_build_recaptures_and_compares_all_four_stage1_files_at_final_boundaries(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -1245,9 +1812,9 @@ def test_build_recaptures_and_compares_all_five_stage1_files_at_final_boundaries
     changed["tests"][0]["description"] += " changed during recapture"
     builder = website._modules().build_data
     provenance = changed["provenance"]
-    projection = builder._manifest_data(
+    projection = builder._projected_manifest(
         {
-            "cells": changed["cells"],
+            "cells": {cell["cell"]: cell for cell in changed["cells"]},
             "manifest_schema": provenance["manifest_schema"],
             "manifest_sha256": provenance["manifest_sha256"],
             "schema": 1,
@@ -2314,7 +2881,7 @@ raise SystemExit(module._entrypoint(['build-and-serve', '--output-root', str(out
             process.communicate(timeout=5)
 
 
-def test_help_is_bounded_and_names_all_three_modes() -> None:
+def test_help_is_bounded_and_names_all_modes() -> None:
     result = subprocess.run(
         [sys.executable, str(SCRIPT), "--help"],
         cwd=REPOSITORY,
@@ -2329,9 +2896,21 @@ def test_help_is_bounded_and_names_all_three_modes() -> None:
     assert "build" in result.stdout
     assert "serve" in result.stdout
     assert "build-and-serve" in result.stdout
+    assert "build-historical" in result.stdout
+    assert "build-historical-and-serve" in result.stdout
 
 
-@pytest.mark.parametrize("mode", ["root", "build", "serve", "build-and-serve"])
+@pytest.mark.parametrize(
+    "mode",
+    [
+        "root",
+        "build",
+        "serve",
+        "build-and-serve",
+        "build-historical",
+        "build-historical-and-serve",
+    ],
+)
 def test_ci_hub_website_help_is_uncosted_and_side_effect_free(
     tmp_path: Path,
     mode: str,
@@ -2347,6 +2926,8 @@ def test_ci_hub_website_help_is_uncosted_and_side_effect_free(
             str(output_root),
             "--help",
         ],
+        "build-historical": ["build-historical", "--help"],
+        "build-historical-and-serve": ["build-historical-and-serve", "--help"],
     }[mode]
     result = subprocess.run(
         [str(REPOSITORY / "ci-hub/ci-hub"), "compatibility-website", *arguments],
@@ -2369,6 +2950,7 @@ def test_ci_hub_website_help_is_uncosted_and_side_effect_free(
     "command",
     [
         "./ci-hub/ci-hub compatibility-website build",
+        "./ci-hub/ci-hub compatibility-website build-historical --parent /absolute/path/to/dev-hermit --parent-commit 5bfa5d91f56e380631a549bf8dcf58631c97dabd --record-id devbig014-1788153725-3415639 --run-id validate-mega-lander-69b08cd09a60-1788152123591813608-3265480-d6eafa4c --manifest-hermit /absolute/path/to/hermit-pr2880 --manifest-commit bc04aa922e806e99222ee03ac81c87495be41f20",
         "./ci-hub/ci-hub compatibility-website serve --root /absolute/path/to/dev-hermit-compatibility-website/FRESHNESS_SHA256",
         "./ci-hub/ci-hub compatibility-website",
     ],
@@ -2422,6 +3004,31 @@ def test_docs_parse_only_accepts_exact_arguments_without_dispatch(
     assert result.returncode == 0
     assert result.stdout.startswith("DOCS PARSE OK: compatibility-website")
     assert result.stderr == ""
+
+
+def test_historical_parser_requires_all_immutable_source_coordinates() -> None:
+    parser = website._parser()
+    arguments = parser.parse_args(
+        [
+            "build-historical",
+            "--parent-commit",
+            "a" * 40,
+            "--record-id",
+            "record-1",
+            "--run-id",
+            "run-1",
+            "--manifest-hermit",
+            "/tmp/manifest-hermit",
+            "--manifest-commit",
+            "b" * 40,
+        ]
+    )
+
+    assert arguments.command == "build-historical"
+    assert arguments.parent_commit == "a" * 40
+    assert arguments.record_id == "record-1"
+    assert arguments.run_id == "run-1"
+    assert arguments.manifest_commit == "b" * 40
 
 
 @pytest.mark.parametrize(

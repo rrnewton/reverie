@@ -1,13 +1,10 @@
 #!/usr/bin/env python3
 """Render a deterministic static compatibility site from Stage 1 artifacts.
 
-The standalone renderer CLI and default API remain a fixture-backed prototype
-and do not claim current project status. The combined website builder supplies
-explicit live wording. Neither path reads a ledger or infers a result: the Stage 1
-artifacts have already done that work. This renderer validates those artifacts
-through the same build-data validator and presents their derived fields. Local
-JavaScript adds optional filtering and sorting; the complete table remains
-available without it.
+The renderer consumes only the validated Stage 1 projection.  It does not read
+the ledger and it does not decide which rows qualify: those decisions belong to
+the Rust projection and the reducer.  Local JavaScript loads verified data and
+keeps each live listing bounded to its current page.
 """
 
 from __future__ import annotations
@@ -18,16 +15,20 @@ import hashlib
 import html
 import importlib.util
 import json
+import math
 import os
 import posixpath
 import re
 import sys
 import uuid
+from collections import Counter
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 from pathlib import Path, PurePosixPath
 from typing import Any
 from urllib.parse import urlencode
+from zoneinfo import ZoneInfo
 
 
 WRITE_DATA_PATH = Path(__file__).resolve().with_name("write_data.py")
@@ -35,24 +36,32 @@ SITE_CSS_PATH = Path(__file__).resolve().parent / "assets/site.css"
 SITE_JS_PATH = Path(__file__).resolve().parent / "assets/site.js"
 FAVICON_PATH = Path(__file__).resolve().parent / "assets/favicon.svg"
 FAVICON_SHA256 = "f011d128a46779a767e70bce4d66431cbade170151663ddc36325abbb5e2c4da"
-STATE_ORDER = ("green", "red", "never-measured", "unavailable")
+STATE_ORDER = ("green", "red", "never-measured")
 STATE_LABELS = {
     "green": "Green",
     "red": "Red",
     "never-measured": "Never measured",
-    "unavailable": "Unavailable",
 }
-STATE_EXPLANATIONS = {
-    "green": "the latest qualifying execution passed after retries were reduced",
-    "red": (
-        "the latest qualifying execution ran and every retry ended in a "
-        "product failure"
-    ),
-    "never-measured": "no qualifying canonical row exists",
-    "unavailable": "the recorded evidence cannot support an honest green or red result",
-}
-DETAIL_DIRECTORIES = ("assets", "cells", "incomplete-data", "runs", "tests")
+DETAIL_DIRECTORIES = ("assets", "cells", "data", "runs", "tests")
+BROWSER_SCHEMA_VERSION = 1
 HEX_SHA256 = re.compile(r"[0-9a-f]{64}")
+RFC3339_UTC = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|\+00:00)")
+EASTERN_TIME_ZONE = ZoneInfo("America/New_York")
+LIST_PAGE_SIZE = 50
+SELECTED_GROUP_PAGE_SIZE = 8
+SELECTED_GROUP_CHILD_LIMIT = 25
+MAX_U64 = (1 << 64) - 1
+# The largest measured Stage 1 build record was 1,520,395 bytes in the
+# previously published 8,006-file site.  Keep four times that observed
+# file-count trajectory (32,024 files) while retaining a finite refusal bound.
+MEASURED_STAGE1_BUILD_JSON_BYTES = 1_520_395
+MEASURED_PUBLISHED_SITE_FILE_COUNT = 8_006
+SUPPORTED_PUBLISHED_SITE_FILE_COUNT = 4 * MEASURED_PUBLISHED_SITE_FILE_COUNT
+MAX_STAGE1_BUILD_JSON_BYTES = (
+    MEASURED_STAGE1_BUILD_JSON_BYTES * SUPPORTED_PUBLISHED_SITE_FILE_COUNT
+    + MEASURED_PUBLISHED_SITE_FILE_COUNT
+    - 1
+) // MEASURED_PUBLISHED_SITE_FILE_COUNT
 
 
 class RenderRefused(Exception):
@@ -60,17 +69,28 @@ class RenderRefused(Exception):
 
 
 @dataclass(frozen=True)
+class ProvenanceFact:
+    """One visible provenance fact, optionally linked to its commit."""
+
+    label: str
+    value: str
+    href: str | None = None
+
+
+@dataclass(frozen=True)
 class PageWording:
-    """The explicit fixture or live wording used throughout one rendered tree."""
+    """Explicit fixture, live, or historical wording for one rendered tree."""
 
     meta_description: str
     title_suffix: str
-    banner: str
+    banner: str | None
     footer: str
     provenance_heading: str
     landing_lead: str
     cell_table_caption: str
     cells_lead: str
+    disclosure_summary: str | None = None
+    disclosure: tuple[ProvenanceFact, ...] = ()
 
 
 PAGE_WORDING = {
@@ -86,46 +106,214 @@ PAGE_WORDING = {
         landing_lead=(
             "A navigable view of recorded facts in the deterministic Stage 1 fixture."
         ),
-        cell_table_caption=(
-            "Every cell in the fixture manifest. JavaScript can filter and reorder "
-            "these rendered rows without changing their recorded values."
-        ),
+        cell_table_caption=("Green and red result rows in the fixture."),
         cells_lead=(
-            "Every cell in the manifest and every public canonical series row in "
-            "the fixture."
+            "Cells that the Stage 1 projection can render, with links to their "
+            "admitted canonical series rows."
         ),
     ),
     "live": PageWording(
         meta_description="Hermit compatibility evidence from validated Stage 1 artifacts",
         title_suffix="Hermit compatibility",
-        banner=(
-            "Recorded data — source commits are on Overview; incomplete data is on "
-            "Incomplete data"
-        ),
+        banner="Recorded data — source commits are on Overview",
         footer=(
             "Generated locally from validated Stage 1 artifacts. "
             "No network resources are used."
         ),
         provenance_heading="Build provenance",
         landing_lead="A navigable view of the recorded facts in this build.",
-        cell_table_caption=(
-            "Every cell in the manifest for this build. JavaScript can filter and "
-            "reorder these rendered rows without changing their recorded values."
-        ),
+        cell_table_caption="Green and red result rows in this build.",
         cells_lead=(
-            "Every cell in the manifest and every public canonical series row in "
-            "this build."
+            "Cells that the Stage 1 projection can render, with links to their "
+            "admitted canonical series rows."
         ),
     ),
 }
 
 
-def _page_wording(value: str) -> PageWording:
+def _eastern_timestamp(value: Any, label: str, *, include_seconds: bool) -> str:
+    if not isinstance(value, str) or RFC3339_UTC.fullmatch(value) is None:
+        raise RenderRefused(f"{label} must be a UTC RFC3339 timestamp")
+    normalized = value[:-1] + "+00:00" if value.endswith("Z") else value
+    try:
+        instant = datetime.fromisoformat(normalized)
+    except ValueError as error:
+        raise RenderRefused(f"{label} must be a UTC RFC3339 timestamp") from error
+    if instant.utcoffset() != timedelta(0):
+        raise RenderRefused(f"{label} must be a UTC RFC3339 timestamp")
+    format_string = "%Y-%m-%d %H:%M:%S ET" if include_seconds else "%Y-%m-%d %H:%M ET"
+    return instant.astimezone(EASTERN_TIME_ZONE).strftime(format_string)
+
+
+def _historical_finished_at_label(value: Any) -> str:
+    return _eastern_timestamp(value, "historical finished_at", include_seconds=False)
+
+
+def _commit_url(repository: str, commit: str) -> str:
+    return f"https://github.com/rrnewton/{repository}/commit/{commit}"
+
+
+def _historical_wording(provenance: Mapping[str, Any]) -> PageWording:
+    historical = provenance.get("historical")
+    if not isinstance(historical, Mapping):
+        raise RenderRefused("historical page wording requires historical provenance")
+    fields = (
+        "ledger_ref",
+        "ledger_commit",
+        "record_id",
+        "run_id",
+        "validate_path",
+        "selected_by_full_cell_count",
+        "measured_hermit_commit",
+        "manifest_source_commit",
+        "started_at",
+        "finished_at",
+        "history_row_sha256",
+    )
+    strings = tuple(field for field in fields if field != "selected_by_full_cell_count")
+    if any(
+        not isinstance(historical.get(field), str) or not historical[field]
+        for field in strings
+    ) or not isinstance(historical.get("selected_by_full_cell_count"), int):
+        raise RenderRefused("historical page provenance is incomplete")
+    finished_at_label = _historical_finished_at_label(historical["finished_at"])
+    canonical = provenance.get("canonical_input_provenance")
+    if not isinstance(canonical, Mapping):
+        raise RenderRefused(
+            "historical page wording requires canonical input provenance"
+        )
+    reader = canonical.get("reader_hermit")
+    if not isinstance(reader, Mapping):
+        raise RenderRefused("historical page wording requires reader Hermit provenance")
+    hashes = (
+        canonical.get("reader_files_sha256"),
+        canonical.get("reader_source_identity_sha256"),
+        canonical.get("sources_sha256"),
+    )
+    commits = (
+        reader.get("checkout_commit"),
+        reader.get("gitlink_commit"),
+        canonical.get("reader_commit"),
+        provenance.get("hermit_main_commit"),
+    )
+    if any(
+        not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{40}", value) is None
+        for value in commits
+    ) or any(
+        not isinstance(value, str) or HEX_SHA256.fullmatch(value) is None
+        for value in hashes
+    ):
+        raise RenderRefused("historical generator provenance is incomplete")
+    clean = canonical.get("reader_worktree_clean")
+    dirty = canonical.get("reader_worktree_dirty_paths")
+    if (
+        not isinstance(clean, bool)
+        or not isinstance(dirty, list)
+        or any(not isinstance(path, str) or not path for path in dirty)
+        or clean != (not dirty)
+    ):
+        raise RenderRefused("historical generator source state is inconsistent")
+    measured = str(historical["measured_hermit_commit"])
+    manifest = str(historical["manifest_source_commit"])
+    source_state = "clean" if clean else "uncommitted/dirty (" + ", ".join(dirty) + ")"
+    disclosure = (
+        ProvenanceFact("Generator parent commit", str(canonical["reader_commit"])),
+        ProvenanceFact("Generator parent source state", source_state),
+        ProvenanceFact(
+            "Clean generator Hermit checkout", str(reader["checkout_commit"])
+        ),
+        ProvenanceFact(
+            "Generator-base-recorded Hermit gitlink",
+            str(reader["gitlink_commit"]),
+            _commit_url("hermit", str(reader["gitlink_commit"])),
+        ),
+        ProvenanceFact("Ledger reference", str(historical["ledger_ref"])),
+        ProvenanceFact(
+            "Ledger commit",
+            str(historical["ledger_commit"]),
+            _commit_url("dev-hermit", str(historical["ledger_commit"])),
+        ),
+        ProvenanceFact(
+            "Ledger-era Hermit gitlink", str(provenance["hermit_main_commit"])
+        ),
+        ProvenanceFact("Source validation record", str(historical["record_id"])),
+        ProvenanceFact("Source validation run", str(historical["run_id"])),
+        ProvenanceFact("Validate path", str(historical["validate_path"])),
+        ProvenanceFact(
+            f"Retained run selected by {historical['validate_path']}",
+            f"{historical['selected_by_full_cell_count']} cells",
+        ),
+        ProvenanceFact(
+            "Run started",
+            _eastern_timestamp(
+                historical["started_at"],
+                "historical started_at",
+                include_seconds=True,
+            ),
+        ),
+        ProvenanceFact(
+            "Run finished",
+            _eastern_timestamp(
+                historical["finished_at"],
+                "historical finished_at",
+                include_seconds=True,
+            ),
+        ),
+        ProvenanceFact(
+            "Source history row SHA-256", str(historical["history_row_sha256"])
+        ),
+        ProvenanceFact(
+            "Measured Hermit commit",
+            measured,
+            _commit_url("hermit", measured),
+        ),
+        ProvenanceFact(
+            "Manifest source commit",
+            manifest,
+            _commit_url("hermit", manifest),
+        ),
+        ProvenanceFact(
+            "Manifest and measured commits",
+            (
+                "manifest source differs from measured Hermit"
+                if manifest != measured
+                else "manifest source is the same as measured Hermit"
+            ),
+        ),
+        ProvenanceFact("Reader files SHA-256", str(hashes[0])),
+        ProvenanceFact("Reader identity SHA-256", str(hashes[1])),
+        ProvenanceFact("Captured source inventory SHA-256", str(hashes[2])),
+    )
+    return PageWording(
+        meta_description="Hermit compatibility evidence from a recorded snapshot",
+        title_suffix="Hermit compatibility snapshot",
+        banner=None,
+        footer=(
+            "Generated from the published evidence named in the provenance disclosure. "
+            "No external network resources are used."
+        ),
+        provenance_heading="Historical snapshot provenance",
+        landing_lead="A navigable snapshot of recorded compatibility evidence.",
+        cell_table_caption=(
+            "Green and red result rows in the separately identified manifest source."
+        ),
+        cells_lead=(
+            "Rendered cells from the separately identified manifest source, with "
+            "links to admitted canonical series rows in this snapshot."
+        ),
+        disclosure_summary=f"Full snapshot provenance ({finished_at_label})",
+        disclosure=disclosure,
+    )
+
+
+def _page_wording(value: str, provenance: Mapping[str, Any]) -> PageWording:
+    if value == "historical":
+        return _historical_wording(provenance)
     try:
         return PAGE_WORDING[value]
     except (KeyError, TypeError) as error:
         raise RenderRefused(
-            "page wording must be exactly 'fixture' or 'live'"
+            "page wording must be exactly 'fixture', 'live', or 'historical'"
         ) from error
 
 
@@ -136,20 +324,22 @@ class SiteModel:
     cells: tuple[Mapping[str, Any], ...]
     tests: tuple[Mapping[str, Any], ...]
     custom_commands: tuple[Mapping[str, Any], ...]
-    incomplete: tuple[Mapping[str, Any], ...]
     runs: Mapping[str, Any]
     series_rows: tuple[Mapping[str, Any], ...]
-    series_by_cell: Mapping[str, tuple[Mapping[str, Any], ...]]
     history_rows: tuple[Mapping[str, Any], ...]
-    current_history_ids: frozenset[str]
+    current_history_indices: tuple[int, ...]
     cell_by_id: Mapping[str, Mapping[str, Any]]
     test_by_id: Mapping[str, Mapping[str, Any]]
+    manifest_cell_ids: frozenset[str]
+    series_by_cell: Mapping[str, tuple[Mapping[str, Any], ...]]
+    series_by_event: Mapping[str, Mapping[str, Any]]
+    recorded_outside_manifest: tuple[Mapping[str, Any], ...]
     host_capability_names: tuple[str, ...]
-    custom_command_evidence: tuple[Mapping[str, Any], ...]
-    recorded_not_in_current_manifest: tuple[Mapping[str, Any], ...]
     cell_paths: Mapping[str, str]
     test_paths: Mapping[str, str]
-    run_paths: Mapping[str, str]
+    history_paths: tuple[str, ...]
+    selection_run_references: Mapping[tuple[str, str, str, str], Mapping[str, Any]]
+    event_run_references: Mapping[str, Mapping[str, Any]]
     wording: PageWording
 
 
@@ -175,10 +365,11 @@ def _artifact_source(
     generator: Mapping[str, Any],
     payloads: Mapping[str, Any],
 ) -> dict[str, Any]:
+    """Recompose the exact schema-v3 object from its four-file envelope."""
     return {
         "cells": payloads["data/cells.json.gz"]["cells"],
         "counts": build["counts"],
-        "incomplete_data": payloads["data/incomplete-data.json.gz"]["incomplete_data"],
+        "projection_audit": payloads["data/cells.json.gz"]["projection_audit"],
         "provenance": build["provenance"],
         "runs": payloads["data/runs.json.gz"],
         "schema_version": generator["build_data_schema_version"],
@@ -200,7 +391,9 @@ def load_artifacts(root_value: Path) -> tuple[dict[str, Any], dict[str, Any]]:
     try:
         directory = writer._open_parent(root)
         writer._require_inventory(directory, writer._ROOT_NAMES, "Stage 1 root")
-        raw_build = writer._read_file(directory, "build.json", 1 << 20)
+        raw_build = writer._read_file(
+            directory, "build.json", MAX_STAGE1_BUILD_JSON_BYTES
+        )
         build, generator, artifacts = writer._prior_manifest(raw_build)
         data_directory = writer._open_directory(directory, "data")
         writer._require_inventory(data_directory, writer._DATA_NAMES, "Stage 1 data")
@@ -232,17 +425,95 @@ def _escape(value: Any) -> str:
     return html.escape(str(value), quote=True)
 
 
-def _display(value: Any) -> str:
+def _test_name(test: Any, category: Any) -> str:
+    identity = str(test)
+    prefix = f"{category}/"
+    return identity[len(prefix) :] if identity.startswith(prefix) else identity
+
+
+def _display_timestamp(value: Any, label: str) -> str:
     if value is None or value == "":
-        return '<span class="unavailable">Unavailable</span>'
-    return _escape(value)
+        return "Not recorded"
+    return _eastern_timestamp(value, label, include_seconds=True)
 
 
-def _json_display(value: Any) -> str:
+def _time_element(value: Any, label: str) -> str:
+    if value is None or value == "":
+        return "Not recorded"
+    return (
+        f'<time datetime="{_escape(value)}">'
+        f"{_escape(_display_timestamp(value, label))}</time>"
+    )
+
+
+def _duration_seconds(value: Any, label: str) -> str:
+    """Render one recorded duration without deriving it from wall timestamps."""
     if value is None:
-        return _display(None)
-    encoded = json.dumps(value, indent=2, sort_keys=True, ensure_ascii=True)
-    return f"<pre><code>{_escape(encoded)}</code></pre>"
+        return "Not recorded"
+    if (
+        not isinstance(value, (int, float))
+        or isinstance(value, bool)
+        or not math.isfinite(value)
+        or value < 0
+    ):
+        raise RenderRefused(f"{label} must be a finite nonnegative number")
+    unit = "second" if value == 1 else "seconds"
+    return f"{value} {unit}"
+
+
+def _column_heading(
+    label: str,
+    description: str,
+    *,
+    sort: str | None = None,
+    sort_kind: str | None = None,
+) -> str:
+    if (sort is None) != (sort_kind is None):
+        raise RenderRefused("sortable column heading is incomplete")
+    if sort_kind not in {None, "cell", "list"}:
+        raise RenderRefused(f"unsupported sortable column kind {sort_kind!r}")
+    if sort is None:
+        tooltip_id = _fragment("column-help", f"{label}\0{description}")
+        body = (
+            f'<span class="column-heading"><span>{_escape(label)}</span>'
+            '<span class="column-help-wrap">'
+            f'<button type="button" class="column-help" title="{_escape(description)}" '
+            f'aria-label="Explain {_escape(label)}" aria-describedby="{tooltip_id}">'
+            '<span aria-hidden="true">?</span></button>'
+            f'<span class="column-tooltip" id="{tooltip_id}" role="tooltip">'
+            f"{_escape(description)}</span></span></span>"
+        )
+        return f'<th scope="col">{body}</th>'
+    attribute = "data-cell-sort" if sort_kind == "cell" else "data-list-sort"
+    return (
+        '<th scope="col" aria-sort="none">'
+        f'<button type="button" class="table-sort" {attribute}="{_escape(sort)}" '
+        f'title="{_escape(description)}" aria-label="Sort by {_escape(label)}. {_escape(description)}">'
+        f'<span>{_escape(label)}</span><span class="sort-indicator" aria-hidden="true"></span>'
+        "</button></th>"
+    )
+
+
+def _hermit_commit_link(commit: Any) -> str:
+    value = str(commit)
+    if re.fullmatch(r"[0-9a-f]{40}", value) is None:
+        raise RenderRefused(f"Hermit commit is not a full SHA: {value!r}")
+    return _github_link(_commit_url("hermit", value), value, code=True)
+
+
+def _github_link(href: str, label: str, *, code: bool = False) -> str:
+    if not href.startswith("https://github.com/rrnewton/"):
+        raise RenderRefused(f"external provenance link is not an approved GitHub URL: {href!r}")
+    visible = f"<code>{_escape(label)}</code>" if code else _escape(label)
+    return (
+        f'<a class="external-link" href="{_escape(href)}" '
+        f'aria-label="{_escape(label)} on GitHub (external link)">{visible}'
+        '<span class="external-link-indicator" aria-hidden="true">↗</span></a>'
+    )
+
+
+def _canonical(value: Any) -> str:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
 
 
 def _full_digest(value: str) -> str:
@@ -253,30 +524,51 @@ def _fragment(kind: str, value: str) -> str:
     return f"{kind}-{_full_digest(value)}"
 
 
-def _hashed_paths(directory: str, values: Sequence[str]) -> dict[str, str]:
-    paths: dict[str, str] = {}
-    owners: dict[str, str] = {}
-    for value in values:
-        digest = _full_digest(value)
-        if not HEX_SHA256.fullmatch(digest):
-            raise RenderRefused(f"cannot make a safe {directory} page path")
-        previous = owners.get(digest)
-        if previous is not None and previous != value:
-            raise RenderRefused(f"two {directory} identities have the same page path")
-        owners[digest] = value
-        paths[value] = f"{directory}/{digest}.html"
-    if len(paths) != len(values):
+def _hashed_paths(directory: str, identities: Sequence[str]) -> dict[str, str]:
+    paths = {
+        identity: f"{directory}/{_full_digest(identity)}.html"
+        for identity in identities
+    }
+    if len(set(paths.values())) != len(paths):
+        raise RenderRefused(f"duplicate {directory} identity")
+    return paths
+
+
+def _query_paths(
+    directory: str, parameter: str, identities: Sequence[str]
+) -> dict[str, str]:
+    paths = {
+        identity: f"{directory}/detail.html?{parameter}={_full_digest(identity)}"
+        for identity in identities
+    }
+    if len(set(paths.values())) != len(paths):
         raise RenderRefused(f"duplicate {directory} identity")
     return paths
 
 
 def _href(source: str, target: str, fragment: str | None = None) -> str:
-    source_path = PurePosixPath(source)
-    target_path = PurePosixPath(target)
-    if source_path == target_path and fragment is not None:
-        return f"#{fragment}"
+    source_parts = source.split("?", 1)[0].split("#", 1)[0]
+    target_before_fragment, separator, target_fragment = target.partition("#")
+    target_path_text, query_separator, target_query = target_before_fragment.partition(
+        "?"
+    )
+    source_path = PurePosixPath(source_parts)
+    target_path = PurePosixPath(target_path_text)
+    selected_fragment = (
+        fragment if fragment is not None else (target_fragment if separator else None)
+    )
+    if (
+        source_path == target_path
+        and selected_fragment is not None
+        and not target_query
+    ):
+        return f"#{selected_fragment}"
     relative = posixpath.relpath(target_path.as_posix(), source_path.parent.as_posix())
-    return f"{relative}#{fragment}" if fragment is not None else relative
+    if query_separator:
+        relative += f"?{target_query}"
+    return (
+        f"{relative}#{selected_fragment}" if selected_fragment is not None else relative
+    )
 
 
 def _query_href(
@@ -288,6 +580,122 @@ def _query_href(
     relative = _href(source, target)
     query = urlencode(values)
     return f"{relative}?{query}#{fragment}" if query else f"{relative}#{fragment}"
+
+
+def _cell_identity(row: Mapping[str, Any]) -> str:
+    return f"{row['test']}/{row['mode']}/{row['backend']}"
+
+
+def _positive_run_number(row: Mapping[str, Any]) -> int | None:
+    value = row.get("run_number")
+    if type(value) is int and 0 < value <= MAX_U64:
+        return value
+    return None
+
+
+def _run_display_label(row: Mapping[str, Any]) -> str:
+    run_number = _positive_run_number(row)
+    if run_number is not None:
+        return f"Run {run_number}"
+    return f"Run id {row['run_id']}"
+
+
+def _ledger_record_label(current: bool) -> str:
+    return "Current ledger record" if current else "Superseded ledger record"
+
+
+def _ledger_record_explanation(current: bool) -> str:
+    if current:
+        return (
+            "Current ledger record means this is the terminal row after applying "
+            "the ledger correction chain for this run id. It does not describe code age."
+        )
+    return (
+        "Superseded ledger record means a later correction replaced this retained row. "
+        "It does not describe code age, and a correction can preserve every measurement value."
+    )
+
+
+def _correction_partner_indices(
+    rows: Sequence[Mapping[str, Any]],
+) -> tuple[tuple[int | None, tuple[int, ...]], ...]:
+    by_record_id: dict[str, list[int]] = {}
+    corrected_by_record_id: dict[str, list[int]] = {}
+    for candidate_index, candidate in enumerate(rows):
+        record_id = str(candidate["record_id"])
+        by_record_id.setdefault(record_id, []).append(candidate_index)
+        corrects = candidate.get("corrects")
+        if corrects is None:
+            continue
+        if not isinstance(corrects, str) or not corrects:
+            raise RenderRefused(
+                "validation history corrects must be a nonempty record id"
+            )
+        corrected_by_record_id.setdefault(corrects, []).append(candidate_index)
+    result = []
+    for row in rows:
+        corrects = row.get("corrects")
+        candidates = () if corrects is None else by_record_id.get(str(corrects), ())
+        corrected_index = candidates[0] if len(candidates) == 1 else None
+        corrected_by = tuple(corrected_by_record_id.get(str(row["record_id"]), ()))
+        result.append((corrected_index, corrected_by))
+    return tuple(result)
+
+
+def _correction_partner_links(
+    model: SiteModel,
+    page: str,
+    index: int,
+    partners: Sequence[tuple[int | None, tuple[int, ...]]] | None = None,
+) -> str:
+    partner_indices = (
+        _correction_partner_indices(model.history_rows)
+        if partners is None
+        else partners
+    )
+    corrected, corrected_by = partner_indices[index]
+    links: list[str] = []
+    if corrected is not None:
+        row = model.history_rows[corrected]
+        links.append(
+            f'Corrects <a href="{_escape(_href(page, model.history_paths[corrected]))}">'
+            f"{_escape(_run_display_label(row))}</a>"
+        )
+    for partner in corrected_by:
+        row = model.history_rows[partner]
+        links.append(
+            f'Corrected by <a href="{_escape(_href(page, model.history_paths[partner]))}">'
+            f"{_escape(_run_display_label(row))}</a>"
+        )
+    return "<br>".join(links)
+
+
+def _run_reference(
+    row: Mapping[str, Any], *, path: str, selection: str
+) -> dict[str, Any]:
+    reference: dict[str, Any] = {
+        "commit": str(row["commit"]),
+        "history_row_sha256": str(row["history_row_sha256"]),
+        "path": path,
+        "run_id": str(row["run_id"]),
+        "selection": selection,
+    }
+    run_number = _positive_run_number(row)
+    if run_number is not None:
+        reference["run_number"] = run_number
+    return reference
+
+
+def _browser_run_reference(reference: Mapping[str, Any]) -> dict[str, Any]:
+    result = dict(reference)
+    run_number = _positive_run_number(reference)
+    if run_number is not None:
+        # JSON numbers above 2^53 cannot be represented exactly in JavaScript.
+        # This is display metadata, so retain the exact decimal text instead.
+        result["run_number"] = str(run_number)
+    else:
+        result.pop("run_number", None)
+    return result
 
 
 def _unique_rows(
@@ -302,541 +710,186 @@ def _unique_rows(
     return result
 
 
-def _cell_identity(row: Mapping[str, Any]) -> str:
-    return f"{row['test']}/{row['mode']}/{row['backend']}"
-
-
-def _cell_state(cell: Mapping[str, Any]) -> str:
-    value = cell.get("state")
-    if value is None:
-        return "unavailable"
-    if value not in STATE_LABELS:
+def _current_history_indices(
+    history: Sequence[Mapping[str, Any]], current: Sequence[Mapping[str, Any]]
+) -> tuple[int, ...]:
+    candidates: dict[str, list[int]] = {}
+    for index, row in enumerate(history):
+        candidates.setdefault(_canonical(row), []).append(index)
+    result: list[int] = []
+    for row in current:
+        matches = candidates.get(_canonical(row), [])
+        if not matches:
+            raise RenderRefused("a terminal validation row is absent from history")
+        result.append(matches.pop(0))
+    if len(set(result)) != len(result):
         raise RenderRefused(
-            f"cell {cell.get('cell')!r} has unsupported state {value!r}"
+            "terminal validation rows do not identify unique history rows"
         )
-    return str(value)
+    return tuple(sorted(result))
 
 
-def _result_token(cell: Mapping[str, Any]) -> str:
-    value = cell.get("latest_result")
-    if value is None:
-        return "unavailable"
-    if value not in {"pass", "product_failure"}:
-        raise RenderRefused(f"unsupported latest product result {value!r}")
-    return str(value)
-
-
-def _recorded_boolean(value: Any) -> str:
-    if value is True:
-        return "true"
-    if value is False:
-        return "false"
-    if value is None:
-        return "unavailable"
-    raise RenderRefused(f"recorded boolean value is invalid: {value!r}")
-
-
-def _series_filter_evidence(row: Mapping[str, Any]) -> dict[str, Any]:
-    capabilities = row["series"].get("host_capabilities")
-    if capabilities is None:
-        capabilities = {}
-    elif not isinstance(capabilities, Mapping):
-        raise RenderRefused("series host capabilities are malformed")
-    capability_values = {}
-    for name, value in capabilities.items():
-        if not isinstance(value, Mapping):
-            raise RenderRefused("series host capability is malformed")
-        capability_values[str(name)] = _recorded_boolean(value.get("present"))
-    return {
-        "current_main_ancestry": _recorded_boolean(row.get("current_main_ancestry")),
-        "host_capabilities": capability_values,
-    }
-
-
-def _series_filter_evidence_json(rows: Sequence[Mapping[str, Any]]) -> str:
-    values = [_series_filter_evidence(row) for row in rows]
-    return json.dumps(values, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
-
-
-def _recorded_values(values: Sequence[str], labels: Mapping[str, str]) -> str:
-    present = set(values)
-    if not present:
-        return _display(None)
-    return "; ".join(labels[value] for value in labels if value in present)
-
-
-def _ancestry_summary(rows: Sequence[Mapping[str, Any]]) -> str:
-    values = [_recorded_boolean(row.get("current_main_ancestry")) for row in rows]
-    return _recorded_values(
-        values,
-        {
-            "true": "True",
-            "false": "False",
-            "unavailable": "Unavailable",
-        },
-    )
-
-
-def _capability_summary(rows: Sequence[Mapping[str, Any]], names: Sequence[str]) -> str:
-    if not names:
-        return _display(None)
-    items = []
-    for name in names:
-        values = []
-        for row in rows:
-            capabilities = row["series"].get("host_capabilities", {})
-            fact = capabilities.get(name) if isinstance(capabilities, Mapping) else None
-            present = fact.get("present") if isinstance(fact, Mapping) else None
-            values.append(_recorded_boolean(present))
-        displayed = _recorded_values(
-            values,
-            {
-                "true": "present",
-                "false": "not present",
-                "unavailable": "Unavailable",
-            },
-        )
-        items.append(f"<li><code>{_escape(name)}</code>: {displayed}</li>")
-    return '<ul class="plain-list capability-list">' + "".join(items) + "</ul>"
-
-
-def _series_by_cell(
-    cells: Sequence[Mapping[str, Any]], rows: Sequence[Mapping[str, Any]]
-) -> dict[str, tuple[Mapping[str, Any], ...]]:
-    grouped: dict[str, list[Mapping[str, Any]]] = {
-        str(cell["cell"]): [] for cell in cells
-    }
+def _recorded_outside_manifest(
+    rows: Sequence[Mapping[str, Any]], manifest_cells: frozenset[str]
+) -> tuple[Mapping[str, Any], ...]:
+    grouped: dict[str, dict[str, Any]] = {}
     for row in rows:
         identity = str(row["series"]["cell"])
-        if identity in grouped:
-            grouped[identity].append(row)
-    result = {identity: tuple(values) for identity, values in grouped.items()}
-    for cell in cells:
-        identity = str(cell["cell"])
-        values = result[identity]
-        represented = sum(int(row["series"]["num_runs"]) for row in values)
-        if (
-            len(values) != cell["physical_row_count"]
-            or represented != cell["represented_run_count"]
-        ):
-            raise RenderRefused(f"cell {identity!r} series counts disagree")
-    return result
-
-
-def _validate_test_membership(
-    tests: Sequence[Mapping[str, Any]],
-    custom: Sequence[Mapping[str, Any]],
-    cells: Mapping[str, Mapping[str, Any]],
-) -> None:
-    tests_by_id = _unique_rows(tests, "id", "test id")
-    for test in tests:
-        test_id = str(test["id"])
-        for identity_value in test["cells"]:
-            identity = str(identity_value)
-            cell = cells.get(identity)
-            if cell is None or str(cell["test"]) != test_id:
-                raise RenderRefused(f"test {test_id!r} has an unknown cell")
-    seen_custom: set[str] = set()
-    for command in custom:
-        identity = str(command["cell"])
-        if identity in seen_custom:
-            raise RenderRefused(f"duplicate custom command {identity!r}")
-        seen_custom.add(identity)
-        if str(command["test"]) not in tests_by_id:
-            raise RenderRefused(f"custom command {identity!r} has an unknown test")
-
-
-def _history_evidence_cells(
-    row: Mapping[str, Any],
-) -> tuple[tuple[str, ...], tuple[str, ...]]:
-    results = row.get("cell_results")
-    if not isinstance(results, Mapping):
-        return (), ()
-    selected: set[str] = set()
-    selected_by = results.get("selected_by")
-    if selected_by is not None and not isinstance(selected_by, Mapping):
-        raise RenderRefused("validation selection evidence is malformed")
-    if selected_by is not None:
-        for selection in selected_by.values():
-            if not isinstance(selection, Mapping):
-                raise RenderRefused("validation selection evidence is malformed")
-            for cell in selection.get("cells", ()):
-                if not isinstance(cell, Mapping):
-                    raise RenderRefused("validation selection cell is malformed")
-                selected.add(_cell_identity(cell))
-    recorded: set[str] = set()
-    recorded_value = results.get("recorded")
-    if recorded_value is not None and not isinstance(recorded_value, Mapping):
-        raise RenderRefused("validation recorded-cell evidence is malformed")
-    if recorded_value is not None:
-        for cell in recorded_value.get("cells", ()):
-            if not isinstance(cell, Mapping):
-                raise RenderRefused("validation recorded cell is malformed")
-            recorded.add(_cell_identity(cell))
-    return tuple(sorted(selected)), tuple(sorted(recorded))
-
-
-def _recorded_identity_evidence(
-    identities: Sequence[str],
-    series_rows: Sequence[Mapping[str, Any]],
-    history_rows: Sequence[Mapping[str, Any]],
-) -> tuple[Mapping[str, Any], ...]:
-    evidence = {
-        identity: {
-            "cell": identity,
-            "series_rows": [],
-            "selected_history_rows": set(),
-            "recorded_history_rows": set(),
-        }
-        for identity in sorted(set(identities))
-    }
-
-    for row in series_rows:
-        identity = str(row["series"]["cell"])
-        if identity in evidence:
-            evidence[identity]["series_rows"].append(row)
-    for row in history_rows:
-        history_id = str(row["history_row_sha256"])
-        selected, recorded = _history_evidence_cells(row)
-        for identity in selected:
-            if identity in evidence:
-                evidence[identity]["selected_history_rows"].add(history_id)
-        for identity in recorded:
-            if identity in evidence:
-                evidence[identity]["recorded_history_rows"].add(history_id)
-
-    result = []
-    for identity in sorted(evidence):
-        value = evidence[identity]
-        rows = tuple(value["series_rows"])
-        result.append(
+        if identity in manifest_cells:
+            continue
+        item = grouped.setdefault(
+            identity,
             {
                 "cell": identity,
-                "series_rows": rows,
-                "physical_row_count": len(rows),
-                "represented_run_count": sum(
-                    int(row["series"]["num_runs"]) for row in rows
-                ),
-                "selected_history_rows": tuple(sorted(value["selected_history_rows"])),
-                "recorded_history_rows": tuple(sorted(value["recorded_history_rows"])),
-            }
+                "event_ids": [],
+                "physical_row_count": 0,
+                "represented_run_count": 0,
+            },
         )
-    return tuple(result)
-
-
-def _recorded_identities_not_in_current_manifest(
-    cells: Sequence[Mapping[str, Any]],
-    custom: Sequence[Mapping[str, Any]],
-    series_rows: Sequence[Mapping[str, Any]],
-    history_rows: Sequence[Mapping[str, Any]],
-) -> tuple[Mapping[str, Any], ...]:
-    current = {str(cell["cell"]) for cell in cells}
-    current.update(str(command["cell"]) for command in custom)
-    recorded = {str(row["series"]["cell"]) for row in series_rows}
-    for row in history_rows:
-        selected, executed = _history_evidence_cells(row)
-        recorded.update(selected)
-        recorded.update(executed)
-    return _recorded_identity_evidence(
-        tuple(recorded.difference(current)), series_rows, history_rows
-    )
-
-
-def _host_capability_names(
-    series_rows: Sequence[Mapping[str, Any]],
-) -> tuple[str, ...]:
-    names = set()
-    for row in series_rows:
-        capabilities = row["series"].get("host_capabilities")
-        if capabilities is None:
-            continue
-        if not isinstance(capabilities, Mapping):
-            raise RenderRefused("series host capabilities are malformed")
-        names.update(str(name) for name in capabilities)
-    return tuple(sorted(names))
-
-
-def _validate_counts(
-    build: Mapping[str, Any], data: Mapping[str, Any]
-) -> dict[str, tuple[Mapping[str, Any], ...]]:
-    cells = data["cells"]
-    runs = data["runs"]
-    counts = data["counts"]
-    if build["counts"] != counts or build["provenance"] != data["provenance"]:
-        raise RenderRefused("Stage 1 build manifest disagrees with rendered data")
-    expected_states = {
-        "green": counts["green_cell_count"],
-        "red": counts["red_cell_count"],
-        "never-measured": counts["never_measured_cell_count"],
-        "unavailable": counts["state_unavailable_cell_count"],
-    }
-    observed_states = {
-        state: sum(_cell_state(cell) == state for cell in cells)
-        for state in STATE_ORDER
-    }
-    if (
-        observed_states != expected_states
-        or len(cells) != counts["in_manifest_cell_count"]
-    ):
-        raise RenderRefused("Stage 1 cell counts disagree with rendered populations")
-    if (
-        len(data["tests"]) != counts["test_count"]
-        or len(data["selected_by_full_custom_commands"])
-        != counts["selected_by_full_custom_command_count"]
-        or len(data["incomplete_data"]) != counts["incomplete_data_count"]
-    ):
-        raise RenderRefused(
-            "Stage 1 test, custom-command, or incomplete counts disagree"
-        )
-    series_rows = runs["series_rows"]
-    represented = sum(int(row["series"]["num_runs"]) for row in series_rows)
-    if (
-        len(series_rows) != runs["series_physical_row_count"]
-        or represented != runs["series_represented_run_count"]
-        or len(runs["validation_history_rows"]) != runs["validation_history_row_count"]
-        or len(runs["current_validation_run_rows"])
-        != runs["current_validation_run_row_count"]
-    ):
-        raise RenderRefused("Stage 1 run counts disagree with rendered rows")
-    return _series_by_cell(cells, series_rows)
+        item["event_ids"].append(str(row["event_id"]))
+        item["physical_row_count"] += 1
+        item["represented_run_count"] += int(row["series"].get("num_runs", 1))
+    return tuple(grouped[key] for key in sorted(grouped))
 
 
 def _site_model(
-    build: Mapping[str, Any], data: Mapping[str, Any], *, wording: str = "fixture"
+    build: Mapping[str, Any], data: Mapping[str, Any], *, wording: str
 ) -> SiteModel:
-    cells = tuple(data["cells"])
-    tests = tuple(data["tests"])
-    custom = tuple(data["selected_by_full_custom_commands"])
-    incomplete = tuple(data["incomplete_data"])
-    runs = data["runs"]
+    writer = _writer()
+    validator = writer._build_data_module()
+    try:
+        validated = validator.validate_build_data(data)
+    except validator.BuildRefused as error:
+        raise RenderRefused(f"Stage 1 data is invalid: {error}") from error
+    schema_version = validator.SCHEMA_VERSION
+    if build.get("schema_version") != schema_version:
+        raise RenderRefused("Stage 1 build schema_version is unsupported")
+    if build.get("counts") != validated["counts"]:
+        raise RenderRefused("Stage 1 build counts disagree with its data")
+    if build.get("provenance") != validated["provenance"]:
+        raise RenderRefused("Stage 1 build provenance disagrees with its data")
+    generator = build.get("generator")
+    if (
+        not isinstance(generator, Mapping)
+        or generator.get("build_data_schema_version") != schema_version
+    ):
+        raise RenderRefused("Stage 1 generator schema_version is unsupported")
+
+    cells = tuple(validated["cells"])
+    tests = tuple(validated["tests"])
+    custom_commands = tuple(validated["selected_by_full_custom_commands"])
+    runs = validated["runs"]
     series_rows = tuple(runs["series_rows"])
     history_rows = tuple(runs["validation_history_rows"])
-    current_rows = tuple(runs["current_validation_run_rows"])
-    series_by_cell = _validate_counts(build, data)
+    current = tuple(runs["current_validation_run_rows"])
     cell_by_id = _unique_rows(cells, "cell", "cell")
-    test_by_id = _unique_rows(tests, "id", "test id")
-    history_by_id = _unique_rows(history_rows, "history_row_sha256", "history row")
-    current_by_id = _unique_rows(current_rows, "history_row_sha256", "current row")
-    for identity, row in history_by_id.items():
-        if not HEX_SHA256.fullmatch(identity):
-            raise RenderRefused(f"history row has an unsafe page identity {identity!r}")
-        if identity in current_by_id and current_by_id[identity] != row:
-            raise RenderRefused("current validation row disagrees with its history row")
-    if not set(current_by_id) <= set(history_by_id):
-        raise RenderRefused("current validation row is absent from validation history")
-    _validate_test_membership(tests, custom, cell_by_id)
-    custom_command_evidence = _recorded_identity_evidence(
-        tuple(str(command["cell"]) for command in custom), series_rows, history_rows
+    test_by_id = _unique_rows(tests, "id", "test")
+    manifest_cells = frozenset(
+        str(identity) for test in tests for identity in test["cells"]
     )
-    recorded_not_in_current_manifest = _recorded_identities_not_in_current_manifest(
-        cells, custom, series_rows, history_rows
-    )
+    if len(manifest_cells) != validated["counts"]["in_manifest_cell_count"]:
+        raise RenderRefused("in-manifest count disagrees with test cell identities")
+    if not set(cell_by_id).issubset(manifest_cells):
+        raise RenderRefused("a rendered cell is absent from the manifest")
+    series_by_cell: dict[str, list[Mapping[str, Any]]] = {
+        identity: [] for identity in cell_by_id
+    }
+    capability_names: set[str] = set()
+    for row in series_rows:
+        identity = str(row["series"]["cell"])
+        if identity in series_by_cell:
+            series_by_cell[identity].append(row)
+        capabilities = row["series"].get("host_capabilities")
+        if isinstance(capabilities, Mapping):
+            capability_names.update(str(name) for name in capabilities)
+    history_keys = [
+        _canonical(
+            {
+                "commit": row["commit"],
+                "history_row_sha256": row["history_row_sha256"],
+                "index": index,
+                "run_id": row["run_id"],
+                "selection": row["profile"],
+            }
+        )
+        for index, row in enumerate(history_rows)
+    ]
+    history_path_map = _hashed_paths("runs", history_keys)
+    history_paths = tuple(history_path_map[key] for key in history_keys)
+    selection_run_references: dict[tuple[str, str, str, str], dict[str, Any]] = {}
+    for row_index in _current_history_indices(history_rows, current):
+        row = history_rows[row_index]
+        for path, selection in row["cell_results"]["selected_by"].items():
+            for selected_cell in selection["cells"]:
+                key = (
+                    _cell_identity(selected_cell),
+                    str(path),
+                    str(row["run_id"]),
+                    str(row["commit"]),
+                )
+                if key in selection_run_references:
+                    raise RenderRefused(
+                        "run history does not uniquely bind cell selection"
+                    )
+                selection_run_references[key] = _run_reference(
+                    row, path=history_paths[row_index], selection=str(path)
+                )
+    event_run_references: dict[str, Mapping[str, Any]] = {}
+    for cell in cells:
+        identity = str(cell["cell"])
+        for path, facts in cell["selected_by"].items():
+            for fact in facts:
+                key = (
+                    identity,
+                    str(path),
+                    str(fact["run_id"]),
+                    str(fact["tree"]),
+                )
+                reference = selection_run_references.get(key)
+                if reference is None:
+                    raise RenderRefused(
+                        "selected_by fact has no exact terminal history binding"
+                    )
+                for event_id in fact["event_ids"]:
+                    previous = event_run_references.setdefault(str(event_id), reference)
+                    if previous != reference:
+                        raise RenderRefused(
+                            "series event has contradictory terminal history bindings"
+                        )
     return SiteModel(
         build=build,
-        data=data,
+        data=validated,
         cells=cells,
         tests=tests,
-        custom_commands=custom,
-        incomplete=incomplete,
+        custom_commands=custom_commands,
         runs=runs,
         series_rows=series_rows,
-        series_by_cell=series_by_cell,
         history_rows=history_rows,
-        current_history_ids=frozenset(current_by_id),
+        current_history_indices=_current_history_indices(history_rows, current),
         cell_by_id=cell_by_id,
         test_by_id=test_by_id,
-        host_capability_names=_host_capability_names(series_rows),
-        custom_command_evidence=custom_command_evidence,
-        recorded_not_in_current_manifest=recorded_not_in_current_manifest,
-        cell_paths=_hashed_paths("cells", tuple(cell_by_id)),
-        test_paths=_hashed_paths("tests", tuple(test_by_id)),
-        run_paths={identity: f"runs/{identity}.html" for identity in history_by_id},
-        wording=_page_wording(wording),
+        manifest_cell_ids=manifest_cells,
+        series_by_cell={key: tuple(value) for key, value in series_by_cell.items()},
+        series_by_event=_unique_rows(series_rows, "event_id", "series event"),
+        recorded_outside_manifest=_recorded_outside_manifest(
+            series_rows, manifest_cells
+        ),
+        host_capability_names=tuple(sorted(capability_names)),
+        cell_paths=_query_paths(
+            "cells",
+            "cell",
+            tuple(
+                identity
+                for identity, cell in cell_by_id.items()
+                if _cell_state(cell) != "never-measured"
+            ),
+        ),
+        test_paths=_query_paths("tests", "test", tuple(test_by_id)),
+        history_paths=history_paths,
+        selection_run_references=selection_run_references,
+        event_run_references=event_run_references,
+        wording=_page_wording(wording, validated["provenance"]),
     )
-
-
-def _reason(value: Any) -> str:
-    if value is None:
-        return ""
-    if isinstance(value, Mapping):
-        return "; ".join(
-            str(value[key])
-            for key in ("reason", "result", "evidence")
-            if value.get(key)
-        )
-    return str(value)
-
-
-def _selected_by_full(cell: Mapping[str, Any]) -> str:
-    if cell["selected_by_full"]:
-        return "<strong>Selected by full</strong>"
-    reason = _reason(cell.get("not_selected_by_full_reason"))
-    suffix = f'<span class="secondary">{_escape(reason)}</span>' if reason else ""
-    return f"<strong>Not selected by full</strong>{suffix}"
-
-
-def _state_badge(cell: Mapping[str, Any]) -> str:
-    state = _cell_state(cell)
-    return (
-        f'<span class="state state-{state}"><strong>{STATE_LABELS[state]}</strong>'
-        f"<span>{_escape(STATE_EXPLANATIONS[state])}</span></span>"
-    )
-
-
-def _latest_result(cell: Mapping[str, Any]) -> str:
-    value = _result_token(cell)
-    labels = {"pass": "Pass", "product_failure": "Product failure"}
-    if value == "unavailable":
-        return _display(None)
-    return labels[value]
-
-
-def _series_product_result(row: Mapping[str, Any]) -> str:
-    value = row.get("product_result")
-    if not row["product_result_available"] or value is None:
-        return _display(None)
-    labels = {"pass": "Pass", "product_failure": "Product failure"}
-    if value not in labels:
-        raise RenderRefused(f"unsupported series product result {value!r}")
-    return labels[value]
-
-
-def _reproducer(cell: Mapping[str, Any]) -> str:
-    value = cell.get("current_reproducer")
-    if isinstance(value, Mapping):
-        return f'<code class="command">{_escape(value["shell_command"])}</code>'
-    return _display(cell.get("current_reproducer_unavailable_reason"))
-
-
-def _series_position(payload: Mapping[str, Any]) -> str:
-    parts = []
-    if payload.get("attempt") is not None:
-        parts.append(f"Attempt {_escape(payload['attempt'])}")
-    if payload.get("run_index") is not None:
-        parts.append(f"Run index {_escape(payload['run_index'])}")
-    return "<br>".join(parts) if parts else _display(None)
-
-
-def _runtime(payload: Mapping[str, Any]) -> str:
-    runtime = payload.get("runtime")
-    if not isinstance(runtime, Mapping):
-        return _display(None)
-    parts = []
-    minimum = runtime.get("wall_time_min_ms")
-    maximum = runtime.get("wall_time_max_ms")
-    if minimum is not None or maximum is not None:
-        parts.append(f"Wall time: {_display(minimum)}–{_display(maximum)} ms")
-    for run in ("run1", "run2"):
-        counts = runtime.get(run)
-        if not isinstance(counts, Mapping):
-            continue
-        values = ", ".join(
-            f"{_escape(field.replace('_', ' '))}: {_escape(value)}"
-            for field in ("scheduler_turns", "syscalls", "virtual_nanoseconds")
-            if (value := counts.get(field)) is not None
-        )
-        if values:
-            parts.append(f"{_escape(run)}: {values}")
-    return "<br>".join(parts) if parts else _display(None)
-
-
-def _ancestry(value: Any) -> str:
-    if value is True:
-        return "On current main ancestry"
-    if value is False:
-        return "Not on current main ancestry"
-    return _display(None)
-
-
-def _cell_link(model: SiteModel, page: str, identity: str) -> str:
-    path = model.cell_paths.get(identity)
-    if path is None:
-        return (
-            f"<code>{_escape(identity)}</code>"
-            '<span class="secondary">Not in the current manifest</span>'
-        )
-    return (
-        f'<a href="{_escape(_href(page, path))}">'
-        f"<code>{_escape(identity)}</code></a>"
-    )
-
-
-def _test_link(model: SiteModel, page: str, identity: str) -> str:
-    return (
-        f'<a href="{_escape(_href(page, model.test_paths[identity]))}">'
-        f"<code>{_escape(identity)}</code></a>"
-    )
-
-
-def _run_selected_identities(
-    row: Mapping[str, Any], path: str
-) -> tuple[str, ...] | None:
-    results = row.get("cell_results")
-    if not isinstance(results, Mapping):
-        return None
-    selection = results["selected_by"].get(path)
-    if not isinstance(selection, Mapping):
-        return None
-    return tuple(_cell_identity(cell) for cell in selection["cells"])
-
-
-def _run_recorded_identities(row: Mapping[str, Any]) -> tuple[str, ...] | None:
-    results = row.get("cell_results")
-    if not isinstance(results, Mapping):
-        return None
-    return tuple(_cell_identity(cell) for cell in results["recorded"]["cells"])
-
-
-def _selection_run_path(
-    model: SiteModel,
-    identity: str,
-    path: str,
-    fact: Mapping[str, Any],
-) -> str | None:
-    matches = []
-    for row in model.history_rows:
-        if row.get("run_id") != fact.get("run_id") or row["commit"] != fact.get("tree"):
-            continue
-        selected = _run_selected_identities(row, path)
-        if selected is not None and identity in selected:
-            matches.append(model.run_paths[str(row["history_row_sha256"])])
-    return matches[0] if len(matches) == 1 else None
-
-
-def _event_run_path(
-    model: SiteModel, identity: str, event_id: str
-) -> tuple[str | None, str]:
-    cell = model.cell_by_id.get(identity)
-    if cell is None:
-        return None, "The series cell is not in the current manifest."
-    facts = []
-    for path, values in sorted(cell["selected_by"].items()):
-        for fact in values:
-            if event_id in fact["event_ids"]:
-                facts.append((str(path), fact))
-    if len(facts) != 1:
-        return None, "No single retained validation-run selection names this event."
-    path, fact = facts[0]
-    run_path = _selection_run_path(model, identity, path, fact)
-    if run_path is None:
-        return None, "No single validation history row matches the retained selection."
-    return run_path, f"Validation history row selected this cell by {path}."
-
-
-def _incomplete_run_path(model: SiteModel, row: Mapping[str, Any]) -> str | None:
-    record_id = row.get("record_id")
-    run_id = row.get("run_id")
-    if record_id is None and run_id is None:
-        return None
-    matches = [
-        item
-        for item in model.history_rows
-        if (record_id is None or item.get("record_id") == record_id)
-        and (run_id is None or item.get("run_id") == run_id)
-    ]
-    if len(matches) != 1:
-        return None
-    return model.run_paths[str(matches[0]["history_row_sha256"])]
 
 
 def _breadcrumbs(page: str, values: Sequence[tuple[str, str | None]]) -> str:
@@ -846,8 +899,7 @@ def _breadcrumbs(page: str, values: Sequence[tuple[str, str | None]]) -> str:
             items.append(f'<li aria-current="page">{_escape(label)}</li>')
         else:
             items.append(
-                f'<li><a href="{_escape(_href(page, target))}">'
-                f"{_escape(label)}</a></li>"
+                f'<li><a href="{_escape(_href(page, target))}">{_escape(label)}</a></li>'
             )
     return (
         '<nav class="breadcrumbs" aria-label="Breadcrumb"><ol>'
@@ -863,20 +915,52 @@ def _layout(
     content: str,
     breadcrumbs: Sequence[tuple[str, str | None]],
     wording: PageWording,
-    scripts: Sequence[str] = (),
+    scripts: Sequence[str] = ("assets/site.js",),
+    *,
+    page_kind: str = "static",
+    show_page_heading: bool = True,
 ) -> bytes:
     nav = (
         f'<a href="{_escape(_href(page, "index.html"))}">Overview</a>'
         f'<a href="{_escape(_href(page, "cells/index.html"))}">Cells</a>'
         f'<a href="{_escape(_href(page, "index.html", "tests"))}">Tests</a>'
-        f'<a href="{_escape(_href(page, "index.html", "validation-runs"))}">'
-        "Validation runs</a>"
-        f'<a href="{_escape(_href(page, "incomplete-data/index.html"))}">'
-        "Incomplete data</a>"
+        f'<a href="{_escape(_href(page, "runs/index.html"))}">Validation runs</a>'
     )
     script_tags = "".join(
         f'<script src="{_escape(_href(page, script))}" defer></script>'
         for script in scripts
+    )
+    banner = (
+        f'<p class="fixture-banner">{_escape(wording.banner)}</p>'
+        if wording.banner is not None
+        else ""
+    )
+    disclosure = ""
+    if wording.disclosure:
+        if wording.disclosure_summary is None:
+            raise RenderRefused("snapshot provenance disclosure has no summary")
+        disclosure = (
+            '<details class="snapshot-disclosure"><summary>'
+            + _escape(wording.disclosure_summary)
+            + "</summary><dl>"
+            + "".join(
+                (
+                    f"<div><dt>{_escape(fact.label)}</dt><dd>"
+                    + (
+                        _github_link(fact.href, fact.value)
+                        if fact.href is not None
+                        else _escape(fact.value)
+                    )
+                    + "</dd></div>"
+                )
+                for fact in wording.disclosure
+            )
+            + "</dl></details>"
+        )
+    page_heading = (
+        f'<header class="page-heading"><h1>{_escape(title)}</h1><p>{_escape(lead)}</p></header>'
+        if show_page_heading
+        else ""
     )
     source = f"""<!doctype html>
 <html lang="en">
@@ -889,16 +973,17 @@ def _layout(
   <link rel="stylesheet" href="{_escape(_href(page, 'assets/site.css'))}">
   {script_tags}
 </head>
-<body>
+<body data-page-kind="{_escape(page_kind)}" data-site-root="{_escape(_href(page, 'index.html'))}" data-site-manifest="{_escape(_href(page, 'data/site-manifest.json.gz'))}">
   <a class="skip-link" href="#main-content">Skip to main content</a>
   <header class="site-header">
-    <p class="fixture-banner">{_escape(wording.banner)}</p>
-    <p class="site-name">Hermit compatibility</p>
-    <nav aria-label="Primary navigation">{nav}</nav>
+    {banner}
+    {disclosure}
+    <div class="site-navigation"><p class="site-name">Hermit compatibility</p>
+    <nav class="primary-navigation" aria-label="Primary navigation">{nav}</nav></div>
   </header>
   {_breadcrumbs(page, breadcrumbs)}
   <main id="main-content" tabindex="-1">
-    <header class="page-heading"><h1>{_escape(title)}</h1><p>{_escape(lead)}</p></header>
+    {page_heading}
     {content}
   </main>
   <footer><p>{_escape(wording.footer)}</p></footer>
@@ -921,197 +1006,801 @@ def _count_link(
     )
     visible = f"<strong>{count}</strong> {_escape(label)}"
     if represented is not None:
-        visible += f" representing <strong>{represented}</strong> runs"
+        visible += f" representing <strong>{represented}</strong> Hermit runs"
     return (
         f'<a href="{_escape(_href(source, target, fragment))}" data-count="{count}"'
         f"{represented_attribute}>{visible}</a>"
     )
 
 
-def _filtered_count_link(
-    source: str,
-    values: Sequence[tuple[str, str]],
-    count: int,
-    label: str,
-    fragment: str = "all-cells",
+def _cell_state(cell: Mapping[str, Any]) -> str:
+    state = cell.get("state")
+    if state not in STATE_ORDER:
+        raise RenderRefused(
+            f"cell {cell.get('cell')!r} has unsupported state {state!r}"
+        )
+    return str(state)
+
+
+def _latest_result(cell: Mapping[str, Any]) -> str:
+    value = cell.get("latest_result")
+    if _cell_state(cell) == "never-measured":
+        if value is not None:
+            raise RenderRefused("never-measured cell contains a latest result")
+        return "Never measured"
+    labels = {"pass": "Pass", "product_failure": "Fail"}
+    if value not in labels:
+        raise RenderRefused(f"unsupported latest result {value!r}")
+    return labels[str(value)]
+
+
+def _cell_link(
+    model: SiteModel, page: str, identity: str, *, label: str | None = None
 ) -> str:
-    return (
-        f'<a href="{_escape(_query_href(source, "cells/index.html", values, fragment))}" '
-        f'data-count="{count}" data-cell-filter-link="1"><strong>{count}</strong> '
-        f"{_escape(label)}</a>"
-    )
+    visible = identity if label is None else label
+    path = model.cell_paths.get(identity)
+    if path is None:
+        return f"<code>{_escape(visible)}</code>"
+    return f'<a href="{_escape(_href(page, path))}"><code>{_escape(visible)}</code></a>'
+
+
+def _test_link(
+    model: SiteModel, page: str, identity: str, *, label: str | None = None
+) -> str:
+    visible = identity if label is None else label
+    path = model.test_paths.get(identity)
+    if path is None:
+        return f"<code>{_escape(visible)}</code>"
+    return f'<a href="{_escape(_href(page, path))}"><code>{_escape(visible)}</code></a>'
+
+
+def _series_filter_evidence(row: Mapping[str, Any]) -> dict[str, Any]:
+    capabilities = row["series"].get("host_capabilities")
+    if capabilities is None:
+        capabilities = {}
+    if not isinstance(capabilities, Mapping):
+        raise RenderRefused("series host capabilities are malformed")
+    values: dict[str, str] = {}
+    for name, evidence in capabilities.items():
+        if not isinstance(evidence, Mapping) or not isinstance(
+            evidence.get("present"), bool
+        ):
+            raise RenderRefused("series host capability is malformed")
+        values[str(name)] = str(evidence["present"]).lower()
+    ancestry = row.get("current_main_ancestry")
+    if ancestry is not None and not isinstance(ancestry, bool):
+        raise RenderRefused("series ancestry value is malformed")
+    return {
+        "current_main_ancestry": "" if ancestry is None else str(ancestry).lower(),
+        "host_capabilities": values,
+    }
+
+
+def _series_filter_facets_json(rows: Sequence[Mapping[str, Any]]) -> str:
+    values = {
+        _canonical(_series_filter_evidence(row)): _series_filter_evidence(row)
+        for row in rows
+    }
+    return _canonical([values[key] for key in sorted(values)])
 
 
 def _state_summary(model: SiteModel, page: str) -> str:
-    total = len(model.cells)
+    result_denominator = (
+        model.data["counts"]["green_cell_count"]
+        + model.data["counts"]["red_cell_count"]
+    )
     cards = []
     for state in STATE_ORDER:
         count = sum(_cell_state(cell) == state for cell in model.cells)
+        denominator = (
+            result_denominator if state in {"green", "red"} else len(model.cells)
+        )
+        target = (
+            "cells/never-measured.html"
+            if state == "never-measured"
+            else "cells/index.html"
+        )
+        filters = (
+            ()
+            if state == "never-measured"
+            else (("result", "pass" if state == "green" else "product_failure"),)
+        )
         cards.append(
-            f'<a class="metric state-{state}" '
-            f'href="{_escape(_query_href(page, "cells/index.html", (("state", state),), "all-cells"))}" '
-            f'data-count="{count}" data-cell-filter-link="1"><strong>{count} / {total}</strong>'
+            f'<a class="metric state-{state}" href="{_escape(_query_href(page, target, filters, "all-cells"))}" '
+            f'data-count="{count}" data-cell-filter-link="1"><strong>{count} / {denominator} cells</strong>'
             f"<span>{STATE_LABELS[state]}</span></a>"
         )
     return '<div class="metrics">' + "".join(cards) + "</div>"
 
 
 def _overview(model: SiteModel, page: str) -> str:
+    counts = model.data["counts"]
     runs = model.runs
-    selected = sum(bool(cell["selected_by_full"]) for cell in model.cells)
-    not_selected = len(model.cells) - selected
+    omitted = counts["in_manifest_cell_count"] - len(model.cells)
+    result_count = counts["green_cell_count"] + counts["red_cell_count"]
     return f"""
     <section id="overview">
       <h2>Overview</h2>
-      <p class="population">{_count_link(page, 'cells/index.html', 'all-cells', len(model.cells), 'cells in the manifest')}</p>
-      {_state_summary(model, page)}
       <div class="metrics compact-metrics">
-        {_filtered_count_link(page, (("selected_by_full", "true"),), selected, 'cells selected by full')}
-        {_filtered_count_link(page, (("selected_by_full", "false"),), not_selected, 'cells not selected by full')}
-        {_count_link(page, 'index.html', 'custom-commands', len(model.custom_commands), 'custom commands selected by full')}
-        {_filtered_count_link(page, (("population", "not_in_current_manifest"),), len(model.recorded_not_in_current_manifest), 'recorded cell identities not in the current manifest', 'recorded-not-in-current-manifest')}
+        <div class="metric"><strong>{counts['in_manifest_cell_count']}</strong><span>cells in the manifest</span></div>
+        <a class="metric" href="{_escape(_href(page, 'cells/index.html', 'all-cells'))}"><strong>{result_count}</strong><span>result rows shown by default</span></a>
+        <a class="metric" href="{_escape(_href(page, 'cells/never-measured.html', 'all-cells'))}"><strong>{counts['never_measured_cell_count']}</strong><span>never measured cells in the explicit view</span></a>
+        <a class="metric" href="{_escape(_href(page, 'cells/projection-audit.html', 'deliberate-omissions'))}"><strong>{omitted}</strong><span>in the manifest minus rows with a cell page</span></a>
+        <div class="metric"><strong>{result_count}</strong><span>green plus red result denominator</span></div>
       </div>
-      <div class="notice">
-        <p><strong>Cells selected by quick: Unavailable.</strong></p>
-        <p><strong>Cells selected by super: Unavailable.</strong></p>
-        <p>The Stage 1 manifest export records the complete population selected by full only.
-        A retained validation run may show that its named path selected a cell; that run evidence
-        is not a complete quick or super population.</p>
-      </div>
+      <p>The difference between cells in the manifest and rows with a cell page is retained as exact arithmetic. It is not assigned a cell result and has no cell row on this site.</p>
+      {_state_summary(model, page)}
       <p class="evidence-counts">
-        {_count_link(page, 'cells/index.html', 'series-rows', runs['series_physical_row_count'], 'public canonical series rows', runs['series_represented_run_count'])}.
-        {_count_link(page, 'cells/index.html', 'series-admitted', runs['projection_admitted_physical_row_count'], 'rows with no projection exclusion reason', runs['projection_admitted_represented_run_count'])};
-        {_count_link(page, 'cells/index.html', 'series-excluded', runs['projection_excluded_physical_row_count'], 'rows with a recorded projection exclusion reason', runs['projection_excluded_represented_run_count'])}.
-        Physical rows and represented runs are different denominators.
+        {_count_link(page, 'cells/index.html', 'series-rows', runs['series_physical_row_count'], 'admitted canonical series rows', runs['series_represented_run_count'])}.
+        {_count_link(page, 'runs/index.html', 'validation-runs', len(model.history_rows), 'admitted validation ledger rows')}.
+        {_count_link(page, 'cells/projection-audit.html', 'series-excluded', runs['projection_excluded_physical_row_count'], 'excluded physical series rows', runs['projection_excluded_represented_run_count'])}.
+        {_count_link(page, 'tests/custom-commands.html', 'custom-commands', len(model.custom_commands), 'custom commands selected by full')}.
+        The captured input contained {runs['projection_admitted_physical_row_count'] + runs['projection_excluded_physical_row_count']} physical series rows representing {runs['projection_admitted_represented_run_count'] + runs['projection_excluded_represented_run_count']} Hermit runs.
       </p>
     </section>"""
 
 
-def _custom_commands(model: SiteModel, page: str) -> str:
-    items = []
-    for command in model.custom_commands:
-        applicability = command.get("not_applicable_reason")
-        applicability_text = (
-            f'<span class="secondary">Not applicable: {_escape(applicability)}</span>'
-            if applicability
-            else '<span class="secondary">Applicable</span>'
+def _deliberate_omission_audit(model: SiteModel, page: str) -> str:
+    omissions = tuple(model.data["projection_audit"]["deliberate_omissions"])
+    physical = sum(int(item["physical_row_count"]) for item in omissions)
+    represented = sum(int(item["represented_run_count"]) for item in omissions)
+    rows = []
+    for item in omissions[:LIST_PAGE_SIZE]:
+        test = model.test_by_id[str(item["test"])]
+        event_references = tuple(item["event_references"])
+        visible_references = " ".join(
+            f'<span id="{_fragment("event", str(reference["event_id"]))}">'
+            f"Recorded evidence {index}</span>"
+            for index, reference in enumerate(event_references, start=1)
         )
-        items.append(
-            f'<li class="listing-card">{_test_link(model, page, str(command["test"]))}'
-            f'<span class="secondary"><code>{_escape(command["cell"])}</code></span>'
-            f'{applicability_text}<span class="secondary">Current reproducer</span>'
-            f"{_reproducer(command)}"
-            f'<a href="{_escape(_href(page, "cells/index.html", _fragment("custom-command", str(command["cell"]))))}">Recorded evidence</a></li>'
+        identifiers = "<br>".join(
+            f'<code class="audit-identifier">{_escape(reference["event_id"])}</code>'
+            for reference in event_references
         )
+        references = (
+            f"{visible_references}<details><summary>{len(event_references)} exact event "
+            f'{"reference" if len(event_references) == 1 else "references"}</summary>'
+            f"{identifiers}</details>"
+        )
+        rows.append(
+            f'<tr id="{_fragment("omission", str(item["cell"]))}"><th scope="row"><code>{_escape(item["cell"])}</code></th>'
+            f"<td>{_test_link(model, page, str(item['test']), label=_test_name(item['test'], test['category']))}</td>"
+            f"<td>{_escape(_omission_summary(model, item))}</td>"
+            f"<td>{_escape(item['physical_row_count'])}</td>"
+            f"<td>{_escape(item['represented_run_count'])}</td>"
+            f"<td>{references}</td></tr>"
+        )
+    headings = "".join(
+        (
+            _column_heading(
+                "Cell",
+                "The complete test, mode, and backend identity of the omitted manifest cell.",
+            ),
+            _column_heading(
+                "TestName",
+                "The test identifier with its Category prefix omitted.",
+            ),
+            _column_heading(
+                "Reason",
+                "The recorded reason this cell was deliberately omitted from published result rows.",
+            ),
+            _column_heading(
+                "Physical rows",
+                "The number of admitted stress-series/v3 observation rows retained for this cell; one row can represent several exactly equal Hermit runs.",
+            ),
+            _column_heading(
+                "Represented Hermit runs",
+                "The sum of num_runs across those rows. Explicit retry attempts stay separate; exactly equal repeated observations may share one row.",
+            ),
+            _column_heading(
+                "Exact event references",
+                "The ledger event identifiers for the rows behind this omission decision.",
+            ),
+        )
+    )
+    body = (
+        '<div class="table-scroll"><table><caption>Deliberate omissions from the '
+        f'published cell projection.</caption><thead><tr>{headings}</tr></thead><tbody>{"".join(rows)}</tbody></table></div>'
+        if rows
+        else "<p>No deliberate projection omission was recorded.</p>"
+    )
     return f"""
-    <section id="custom-commands" data-row-count="{len(items)}">
-      <h2>Custom commands selected by full</h2>
-      <p>These commands are not part of the {len(model.cells)}-cell manifest denominator.</p>
-      <ul class="card-list">{"".join(items)}</ul>
+    <section id="deliberate-omissions">
+      <h2>Deliberate projection omissions</h2>
+      <p>{len(omissions)} manifest cell identities are omitted from result rows by the recorded reducer decision: {physical} physical rows representing {represented} Hermit runs. Published cells plus these omissions equal the manifest population.</p>
+      {body}
+    </section>"""
+
+
+def _counted(count: int, singular: str, plural: str | None = None) -> str:
+    return f"{count} {singular if count == 1 else (plural or singular + 's')}"
+
+
+def _readable_recorded_term(value: Any) -> str:
+    return "not recorded" if value is None else str(value).replace("_", " ")
+
+
+def _joined_terms(values: Sequence[Any]) -> str:
+    terms = sorted({_readable_recorded_term(value) for value in values})
+    if not terms:
+        return "not recorded"
+    if len(terms) == 1:
+        return terms[0]
+    if len(terms) == 2:
+        return f"{terms[0]} and {terms[1]}"
+    return f"{', '.join(terms[:-1])}, and {terms[-1]}"
+
+
+def _attempt_evidence_summary(rows: Sequence[Mapping[str, Any]]) -> str:
+    evidence_rows = []
+    missing = 0
+    for row in rows:
+        payload = row["series"]
+        evidence = payload.get("no_verdict_evidence")
+        if evidence is None:
+            missing += 1
+            continue
+        if (
+            not isinstance(evidence, Mapping)
+            or set(evidence) != {"attempts", "evidence_sha256"}
+            or not isinstance(evidence.get("attempts"), list)
+            or not evidence["attempts"]
+        ):
+            raise RenderRefused("recorded no-verdict evidence is malformed")
+        evidence_rows.extend(evidence["attempts"])
+    if not evidence_rows:
+        return "No narrower cause was recorded for this evidence."
+    attempt_fields = {
+        "attempt_outcome",
+        "disposition",
+        "error_kind",
+        "index",
+        "kind",
+        "signal",
+        "status",
+        "timed_out",
+        "verification_report_sha256",
+    }
+    if any(
+        not isinstance(attempt, Mapping) or set(attempt) != attempt_fields
+        for attempt in evidence_rows
+    ):
+        raise RenderRefused("recorded no-verdict attempt evidence is malformed")
+
+    fields = (
+        ("attempt outcome", "attempt_outcome"),
+        ("disposition", "disposition"),
+        ("reason", "kind"),
+        ("error kind", "error_kind"),
+        ("status", "status"),
+        ("signal", "signal"),
+    )
+    parts = []
+    for label, field in fields:
+        values = [
+            attempt[field]
+            for attempt in evidence_rows
+            if attempt.get(field) is not None
+        ]
+        if values:
+            parts.append(f"{label} {_joined_terms(values)}")
+    if any("timed_out" not in attempt for attempt in evidence_rows):
+        raise RenderRefused("recorded no-verdict attempt omits timed_out")
+    parts.append(
+        "timed out "
+        + _joined_terms(
+            "yes" if attempt["timed_out"] else "no" for attempt in evidence_rows
+        )
+    )
+    summary = "Recorded attempt evidence: " + "; ".join(parts) + "."
+    if missing:
+        summary += (
+            " No narrower cause was recorded for "
+            f"{_counted(missing, 'other qualifying ledger row')}."
+        )
+    return summary
+
+
+def _omission_summary(model: SiteModel, item: Mapping[str, Any]) -> str:
+    event_ids = tuple(str(value) for value in item["qualifying_event_ids"])
+    if len(event_ids) != len(set(event_ids)) or any(
+        event_id not in model.series_by_event for event_id in event_ids
+    ):
+        raise RenderRefused("deliberate omission qualifying events are not exact")
+    rows = [model.series_by_event[event_id] for event_id in event_ids]
+    if len(rows) != int(item["qualifying_physical_row_count"]):
+        raise RenderRefused("deliberate omission qualifying row count is not exact")
+
+    reducer = _writer()._build_data_module()._modules().reducer
+    try:
+        normalised = [
+            reducer._normalise_series_row(row, index) for index, row in enumerate(rows)
+        ]
+        groups: dict[tuple[Any, ...], list[Mapping[str, Any]]] = {}
+        for row in normalised:
+            groups.setdefault(reducer._execution_key(row), []).append(row)
+        executions = [
+            (reducer._execution(groups[key]), groups[key]) for key in sorted(groups)
+        ]
+    except reducer.ReductionRefused as error:
+        raise RenderRefused(
+            f"cannot group deliberate omission evidence: {error}"
+        ) from error
+    execution_count = len(groups)
+    row_count = len(normalised)
+    represented = sum(int(row["num_runs"]) for row in normalised)
+    if represented != int(item["qualifying_represented_run_count"]):
+        raise RenderRefused(
+            "deliberate omission qualifying represented-run count is not exact"
+        )
+    explicit_attempt_rows = all(
+        row["attempt"] is not None and int(row["num_runs"]) == 1 for row in normalised
+    )
+    producers = sorted({str(row["producer"]) for row in normalised})
+    producer = producers[0] if len(producers) == 1 else " and ".join(producers)
+    scope = f"this {item['mode']}/{item['backend']} cell"
+    attempts_per_execution = {len(group) for group in groups.values()}
+    indexed_repetitions = all(
+        type(execution["run_index"]) is int for execution, _rows in executions
+    )
+    if explicit_attempt_rows and len(attempts_per_execution) == 1:
+        attempts = next(iter(attempts_per_execution))
+        population = (
+            f"{_counted(execution_count, 'qualifying repetition')} × "
+            f"{_counted(attempts, 'attempt')} ({_counted(row_count, 'attempt row')})"
+            if indexed_repetitions
+            else (
+                f"{_counted(execution_count, 'qualifying execution')} "
+                f"({_counted(row_count, 'attempt row')})"
+            )
+        )
+        evidence = f"For {scope}, {producer} recorded {population}."
+    else:
+        population_name = (
+            "qualifying repetition"
+            if indexed_repetitions
+            else "qualifying execution"
+        )
+        evidence = (
+            f"For {scope}, {producer} recorded "
+            f"{_counted(execution_count, population_name)} across "
+            f"{_counted(row_count, 'qualifying ledger row')} representing "
+            f"{_counted(represented, 'Hermit run')}."
+        )
+
+    execution_values = [execution for execution, _rows in executions]
+    latest = reducer._latest_execution(execution_values)
+    if latest is None:
+        newest = max(execution["observed_at"][0] for execution in execution_values)
+        latest_rows = [
+            model.series_by_event[event_id]
+            for execution, _grouped_rows in executions
+            if execution["observed_at"][0] == newest
+            for event_id in execution["event_ids"]
+        ]
+        latest_label = (
+            "The newest tied repetitions"
+            if indexed_repetitions
+            else "The newest tied executions"
+        )
+        latest_verb = "record"
+    else:
+        latest_rows = [
+            model.series_by_event[event_id] for event_id in latest["event_ids"]
+        ]
+        latest_label = (
+            "The latest repetition"
+            if indexed_repetitions
+            else "The latest execution"
+        )
+        latest_verb = "records"
+    outcomes = [row["series"]["outcome"] for row in latest_rows]
+    failure_classes = [row["series"].get("failure_class") for row in latest_rows]
+    recorded_values = (
+        f"{latest_label} {latest_verb} outcome {_joined_terms(outcomes)} and "
+        f"failure class {_joined_terms(failure_classes)}."
+    )
+    attempt_evidence = _attempt_evidence_summary(latest_rows)
+    reason = str(item["reason"])
+    if reason == reducer._NO_RESULT_REASON:
+        conclusion = (
+            "No pass or product failure result was recorded for that latest "
+            "execution, so this cell is excluded."
+        )
+    elif reason == reducer._AMBIGUOUS_LATEST_REASON:
+        conclusion = (
+            "The latest executions do not identify one unique latest execution, "
+            "so this cell is excluded."
+        )
+    else:
+        raise RenderRefused("deliberate omission reason is unsupported")
+    return f"{evidence} {recorded_values} {attempt_evidence} {conclusion}"
+
+
+def _section_heading(title: str, *, show_heading: bool) -> str:
+    return f"<h2>{_escape(title)}</h2>" if show_heading else ""
+
+
+def _exclusion_audit(
+    model: SiteModel, page: str, *, show_heading: bool = True
+) -> str:
+    runs = model.runs
+    items = tuple(runs["projection_exclusion_counts"])
+    rows = "".join(
+        f"<tr {_collection_item_attributes(filters={}, sorts={})}>"
+        f"<td>{_escape(item['schema'])}</td><td>{_escape(item['reason'])}</td>"
+        f"<td>{_escape(item['physical_row_count'])}</td>"
+        f"<td>{_escape(item['represented_run_count'])}</td></tr>"
+        for item in items
+    )
+    controls = _collection_controls(
+        "projection-audit",
+        "projection_",
+        "projection reasons",
+        filters=(
+            (
+                "schema",
+                "Schema",
+                tuple(sorted({str(item["schema"]) for item in items})),
+            ),
+            (
+                "reason",
+                "Reason",
+                tuple(sorted({str(item["reason"]) for item in items})),
+            ),
+        ),
+        sorts=(
+            ("schema", "Schema"),
+            ("reason", "Reason"),
+            ("physical", "Physical rows"),
+            ("represented", "Represented Hermit runs"),
+        ),
+        default_sort="schema",
+        filter_sources={"schema": "cell:0", "reason": "cell:1"},
+        sort_sources={
+            "schema": "cell:0",
+            "reason": "cell:1",
+            "physical": "cell:2",
+            "represented": "cell:3",
+        },
+        sort_in_table=True,
+        item_count=len(items),
+    )
+    headings = "".join(
+        (
+            _column_heading(
+                "Schema",
+                "The stress-series schema recorded on the excluded rows.",
+                sort="schema",
+                sort_kind="list",
+            ),
+            _column_heading(
+                "Reason",
+                "The exact projection rule that excluded these rows.",
+                sort="reason",
+                sort_kind="list",
+            ),
+            _column_heading(
+                "Physical rows",
+                "The number of captured series observation rows excluded for this schema and reason.",
+                sort="physical",
+                sort_kind="list",
+            ),
+            _column_heading(
+                "Represented Hermit runs",
+                "The sum of num_runs across those excluded rows; identical repeated observations may share one row.",
+                sort="represented",
+                sort_kind="list",
+            ),
+        )
+    )
+    body = (
+        f'{controls}<div class="table-scroll"><table><caption>Recorded exclusion reasons. A row can have more than one reason, so reason counts are not added.</caption>'
+        f"<thead><tr>{headings}</tr></thead><tbody>{rows}</tbody></table></div>"
+        if rows
+        else "<p>No projection exclusion reason was recorded.</p>"
+    )
+    heading = _section_heading("Projection audit", show_heading=show_heading)
+    return f"""
+    <section id="series-excluded">
+      {heading}
+      <p>{runs['projection_admitted_physical_row_count']} physical rows were admitted and {runs['projection_excluded_physical_row_count']} were excluded. Admitted and excluded counts are disjoint.</p>
+      {body}
     </section>"""
 
 
 def _test_listing(model: SiteModel, page: str) -> str:
     items = []
-    for test in model.tests:
-        test_id = str(test["id"])
+    omission_counts = Counter(
+        str(item["test"])
+        for item in model.data["projection_audit"]["deliberate_omissions"]
+    )
+    for index, test in enumerate(model.tests):
+        shown = sum(
+            identity in model.cell_by_id
+            and _cell_state(model.cell_by_id[str(identity)]) in {"green", "red"}
+            for identity in test["cells"]
+        )
+        identity = str(test["id"])
+        filters = {
+            "lane": str(test.get("lane") or ""),
+            "category": str(test.get("category") or ""),
+        }
         items.append(
-            '<li class="listing-card" data-test-row="1">'
-            f"<h3>{_test_link(model, page, test_id)}</h3>"
-            f"<p>{_escape(test['description'])}</p>"
-            f'<p class="secondary">{len(test["cells"])} cells in the manifest · '
-            f"lane {_escape(test['lane'])} · category {_escape(test['category'])}</p></li>"
+            f'<li class="listing-card" {_collection_item_attributes(filters=filters, sorts={"manifest": index, "test": identity, "cells": len(test["cells"]), "results": shown})}>{_test_link(model, page, identity)}'
+            f'<span class="secondary">{len(test["cells"])} cells in the manifest; {shown} result rows shown; {omission_counts[identity]} deliberate omissions</span></li>'
         )
-    return f"""
-    <section id="tests" data-row-count="{len(items)}">
-      <h2>Tests</h2>
-      <p>Each test page shows its retained manifest metadata, cells, current reproducers,
-      and facts the Stage 1 artifacts do not retain.</p>
-      <ul class="card-list">{"".join(items)}</ul>
-    </section>"""
+    controls = _collection_controls(
+        "tests",
+        "tests_",
+        "tests",
+        filters=(
+            (
+                "lane",
+                "Lane",
+                tuple(
+                    sorted(
+                        {
+                            str(test.get("lane") or "")
+                            for test in model.tests
+                            if test.get("lane")
+                        }
+                    )
+                ),
+            ),
+            (
+                "category",
+                "Category",
+                tuple(
+                    sorted(
+                        {
+                            str(test.get("category") or "")
+                            for test in model.tests
+                            if test.get("category")
+                        }
+                    )
+                ),
+            ),
+        ),
+        sorts=(
+            ("manifest", "Manifest order"),
+            ("test", "TestName"),
+            ("cells", "Manifest cells"),
+            ("results", "Result rows"),
+        ),
+        default_sort="manifest",
+        item_count=len(items),
+    )
+    return f'<section id="tests"><h2>Tests</h2>{controls}<ul class="card-list">{"".join(items)}</ul></section>'
 
 
-def _selection_count(row: Mapping[str, Any]) -> tuple[str, int | None]:
-    path = str(row["profile"])
-    values = _run_selected_identities(row, path)
-    return path, len(values) if values is not None else None
-
-
-def _run_listing_row(model: SiteModel, page: str, row: Mapping[str, Any]) -> str:
-    identity = str(row["history_row_sha256"])
-    target = model.run_paths[identity]
-    path, selected_count = _selection_count(row)
-    recorded = _run_recorded_identities(row)
-    selected = (
-        _count_link(
-            page,
-            target,
-            _fragment("selected-by", path),
-            selected_count,
-            f"cells selected by {path}",
+def _custom_commands(
+    model: SiteModel, page: str, *, show_heading: bool = True
+) -> str:
+    if not model.custom_commands:
+        return ""
+    items = []
+    for index, command in enumerate(model.custom_commands):
+        reason = command.get("not_applicable_reason")
+        detail = (
+            f'<span class="secondary">Not applicable: {_escape(reason)}</span>'
+            if reason
+            else ""
         )
-        if selected_count is not None
-        else _display(None)
+        reproducer = command.get("current_reproducer")
+        command_text = ""
+        if isinstance(reproducer, Mapping) and reproducer.get("shell_command"):
+            command_text = (
+                f'<code class="command">{_escape(reproducer["shell_command"])}</code>'
+            )
+        items.append(
+            f'<li class="listing-card" {_collection_item_attributes(filters={"applicability": "not-applicable" if reason else "applicable"}, sorts={"manifest": index, "test": command["test"], "cell": command["cell"]})}>{_test_link(model, page, str(command["test"]))}'
+            f'<span class="secondary"><code>{_escape(command["cell"])}</code></span>{detail}{command_text}</li>'
+        )
+    controls = _collection_controls(
+        "custom-commands",
+        "commands_",
+        "custom commands",
+        filters=(("applicability", "Applicability", ("applicable", "not-applicable")),),
+        sorts=(("manifest", "Manifest order"), ("test", "TestName"), ("cell", "Cell")),
+        default_sort="manifest",
+        item_count=len(items),
     )
-    recorded_link = (
-        _count_link(page, target, "recorded-cells", len(recorded), "recorded cells")
-        if recorded is not None
-        else _display(None)
+    heading = _section_heading(
+        "Custom commands selected by full", show_heading=show_heading
     )
-    current = identity in model.current_history_ids
-    return f"""
-      <tr data-run-row="1" data-run-current="{str(current).lower()}">
-        <th scope="row"><a href="{_escape(_href(page, target))}"><code>{_display(row.get('run_id'))}</code></a></th>
-        <td>{'Current' if current else 'Historical'}</td><td>{_escape(path)}</td>
-        <td>{selected}</td><td>{recorded_link}</td><td>{_display(row.get('result'))}</td>
-        <td><code>{_escape(row['commit'])}</code></td><td>{_display(row.get('started_at'))}</td>
-        <td>{_display(row.get('finished_at'))}</td>
-      </tr>"""
+    return f'<section id="custom-commands">{heading}{controls}<ul class="card-list">{"".join(items)}</ul></section>'
 
 
-def _run_listing(model: SiteModel, page: str) -> str:
-    current = list(model.runs["current_validation_run_rows"])
-    historical = [
-        row
-        for row in model.history_rows
-        if str(row["history_row_sha256"]) not in model.current_history_ids
-    ]
+def _run_listing(model: SiteModel, page: str, *, show_heading: bool = True) -> str:
+    current = set(model.current_history_indices)
+    correction_partners = _correction_partner_indices(model.history_rows)
+    rows = []
+    for index, row in enumerate(model.history_rows):
+        results = row["cell_results"]
+        selected = results["selected_by"].get(row["profile"], {"cell_count": 0})
+        record = "current" if index in current else "historical"
+        run_number = _positive_run_number(row)
+        collection_values = {
+            "commit": row["commit"],
+            "path": row["profile"],
+            "record": record,
+            "recorded": results["recorded"]["cell_count"],
+            "result": row["result"],
+            "run": run_number if run_number is not None else "",
+            "run_id": row["run_id"],
+            "selected": selected["cell_count"],
+            "started": row["started_at"],
+            "wall_clock": (
+                "" if row.get("real_seconds") is None else row["real_seconds"]
+            ),
+        }
+        partner_links = _correction_partner_links(
+            model, page, index, correction_partners
+        )
+        record_label = _ledger_record_label(index in current)
+        if partner_links:
+            record_label += (
+                f'<span class="secondary correction-partners">{partner_links}</span>'
+            )
+        run_label = _run_display_label(row)
+        run_link_attributes = (
+            f' class="run-id-link" title="{_escape(run_label)}"'
+            if run_number is None
+            else ""
+        )
+        rows.append(
+            f'<tr data-run-row="1" data-run-current="{str(index in current).lower()}" {_collection_item_attributes(filters={"record": record}, sorts=collection_values)}>'
+            f'<th scope="row"><a{run_link_attributes} href="{_escape(_href(page, model.history_paths[index]))}">{_escape(run_label)}</a></th>'
+            f'<td>{record_label}</td><td>{_escape(row["profile"])}</td>'
+            f'<td>{_escape(selected["cell_count"])}</td><td>{_escape(results["recorded"]["cell_count"])}</td>'
+            f'<td>{_escape(row["result"])}</td><td>{_hermit_commit_link(row["commit"])}</td>'
+            f'<td>{_time_element(row["started_at"], "validation run started_at")}</td>'
+            f'<td>{_escape(_duration_seconds(row.get("real_seconds"), "validation run real_seconds"))}</td></tr>'
+        )
+    controls = _collection_controls(
+        "validation-runs",
+        "runs_",
+        "validation runs",
+        filters=(
+            ("record", "Record", ("current", "historical")),
+            (
+                "path",
+                "Validate path",
+                tuple(sorted({str(row["profile"]) for row in model.history_rows})),
+            ),
+            (
+                "result",
+                "Run result",
+                tuple(sorted({str(row["result"]) for row in model.history_rows})),
+            ),
+        ),
+        sorts=(
+            ("history", "Recorded order"),
+            ("started", "Started date"),
+            ("wall_clock", "Wall clock"),
+            ("run", "Run number"),
+            ("path", "Validate path"),
+            ("selected", "Cells selected"),
+            ("recorded", "Cells recorded"),
+            ("result", "Run result"),
+            ("record", "Record"),
+            ("commit", "Hermit commit"),
+        ),
+        default_sort="started",
+        default_direction="desc",
+        filter_sources={
+            "record": "value:record",
+            "path": "value:path",
+            "result": "value:result",
+        },
+        filter_value_labels={
+            "record": {
+                "current": "Current ledger record",
+                "historical": "Superseded ledger record",
+            }
+        },
+        sort_sources={
+            "history": "ordinal",
+            "run": "value:run",
+            "path": "value:path",
+            "selected": "value:selected",
+            "recorded": "value:recorded",
+            "result": "value:result",
+            "record": "value:record",
+            "commit": "value:commit",
+            "started": "utc:started",
+            "wall_clock": "value:wall_clock",
+        },
+        tie_sort="started",
+        tie_direction="desc",
+        sort_in_table=True,
+        item_count=len(rows),
+    )
+    headings = "".join(
+        (
+            _column_heading(
+                "Run",
+                "The recorded positive run number when present; otherwise the full run id.",
+                sort="run",
+                sort_kind="list",
+            ),
+            _column_heading(
+                "Ledger record",
+                "Current means the terminal row selected after applying the ledger correction chain at this snapshot; superseded means an older row replaced by a later correction. It does not describe code age.",
+                sort="record",
+                sort_kind="list",
+            ),
+            _column_heading(
+                "Validate path",
+                "The quick, full, super, or other recorded validate path that selected this run's cells.",
+                sort="path",
+                sort_kind="list",
+            ),
+            _column_heading(
+                "Cells selected by that path",
+                "The number of cells this run's named validate path selected.",
+                sort="selected",
+                sort_kind="list",
+            ),
+            _column_heading(
+                "Cells recorded",
+                "The number of selected cells for which this validation row retained a CellResult.",
+                sort="recorded",
+                sort_kind="list",
+            ),
+            _column_heading(
+                "Run result",
+                "The terminal result recorded for the whole validation run, separate from each cell verdict.",
+                sort="result",
+                sort_kind="list",
+            ),
+            _column_heading(
+                "Hermit commit",
+                "The Hermit source commit measured by this validation run.",
+                sort="commit",
+                sort_kind="list",
+            ),
+            _column_heading(
+                "Started",
+                "When the validation run started, displayed in Eastern Time.",
+                sort="started",
+                sort_kind="list",
+            ),
+            _column_heading(
+                "Wall clock",
+                "The optional recorded outer makespan of the whole validation run, in seconds; it is not derived from the Started or Finished timestamps.",
+                sort="wall_clock",
+                sort_kind="list",
+            ),
+        )
+    )
+    heading = _section_heading("Validation runs", show_heading=show_heading)
     return f"""
     <section id="validation-runs">
-      <h2>Validation runs</h2>
-      <p>{_count_link(page, page, 'current-validation-runs', len(current), 'current validation rows')} and
-      {_count_link(page, page, 'historical-validation-runs', len(historical), 'historical validation rows')}.
-      Whole-run result and cells selected by each named path are separate facts.</p>
-      <div class="table-scroll"><table>
-        <caption>Retained current and historical validation rows.</caption>
-        <thead><tr><th scope="col">Run id</th><th scope="col">Record</th>
-        <th scope="col">Validate path</th><th scope="col">Cells selected by that path</th>
-        <th scope="col">Cells recorded</th><th scope="col">Run result</th>
-        <th scope="col">Hermit commit</th><th scope="col">Started</th><th scope="col">Finished</th></tr></thead>
-        <tbody id="current-validation-runs" data-row-count="{len(current)}">
-          {"".join(_run_listing_row(model, page, row) for row in current)}
-        </tbody>
-        <tbody id="historical-validation-runs" data-row-count="{len(historical)}">
-          {"".join(_run_listing_row(model, page, row) for row in historical)}
-        </tbody>
-      </table></div>
+      {heading}
+      <p>Whole-run result, the cells selected by its named validate path, and each cell verdict are separate recorded facts.</p>
+      {controls}
+      <div class="table-scroll"><table class="validation-runs-table"><caption>Current and superseded admitted validation ledger rows.</caption><colgroup><col class="run-column"><col class="record-column"><col class="path-column"><col class="count-column"><col class="count-column"><col class="result-column"><col class="commit-column"><col class="time-column"><col class="duration-column"></colgroup>
+        <thead><tr>{headings}</tr></thead>
+        <tbody>{"".join(rows)}</tbody></table></div>
     </section>"""
 
 
-def _provenance(model: SiteModel) -> str:
-    provenance = model.build["provenance"]
+def _provenance(model: SiteModel, page: str = "index.html") -> str:
+    provenance = model.data["provenance"]
     return f"""
     <section id="provenance">
       <h2>{_escape(model.wording.provenance_heading)}</h2>
-      <dl class="facts">
-        <div><dt>Hermit commit used for manifest policy</dt><dd><code>{_escape(provenance['hermit_commit'])}</code></dd></div>
-        <div><dt>Hermit main ancestry target</dt><dd><code>{_escape(provenance['hermit_main_commit'])}</code></dd></div>
-        <div><dt>dev-hermit commit</dt><dd><code>{_escape(provenance['parent_commit'])}</code></dd></div>
+      <details><summary>Full provenance</summary><dl class="facts">
+        <div><dt>Hermit commit used for manifest policy</dt><dd>{_github_link(_commit_url('hermit', str(provenance['hermit_commit'])), str(provenance['hermit_commit']), code=True)}</dd></div>
+        <div><dt>Hermit commit used for ancestry classification</dt><dd>{_github_link(_commit_url('hermit', str(provenance['hermit_main_commit'])), str(provenance['hermit_main_commit']), code=True)}</dd></div>
+        <div><dt>dev-hermit source commit</dt><dd>{_github_link(_commit_url('dev-hermit', str(provenance['parent_commit'])), str(provenance['parent_commit']), code=True)}</dd></div>
         <div><dt>Manifest digest</dt><dd><code>{_escape(provenance['manifest_sha256'])}</code></dd></div>
         <div><dt>Captured series source digest</dt><dd><code>{_escape(provenance['series_rows_sha256'])}</code></dd></div>
         <div><dt>Public series projection digest</dt><dd><code>{_escape(provenance['series_rows_projection_sha256'])}</code></dd></div>
         <div><dt>Stage 1 artifact digest</dt><dd><code>{_escape(model.build['build_data_sha256'])}</code></dd></div>
-      </dl>
+      </dl></details>
     </section>"""
 
 
@@ -1119,20 +1808,12 @@ def _landing_page(model: SiteModel) -> bytes:
     page = "index.html"
     content = (
         _overview(model, page)
-        + _custom_commands(model, page)
         + _test_listing(model, page)
-        + _run_listing(model, page)
-        + f"""
-        <section id="incomplete-data-summary">
-          <h2>Incomplete data</h2>
-          <p>{_count_link(page, 'incomplete-data/index.html', 'incomplete-entries', len(model.incomplete), 'incomplete-data entries')}.
-          Missing evidence is shown as unavailable, never as zero.</p>
-        </section>"""
-        + _provenance(model)
+        + ("" if model.wording.disclosure else _provenance(model))
     )
     return _layout(
         page,
-        "Hermit compatibility",
+        "Compatibility evidence",
         model.wording.landing_lead,
         content,
         (("Overview", None),),
@@ -1140,782 +1821,1309 @@ def _landing_page(model: SiteModel) -> bytes:
     )
 
 
-def _cell_table_row(model: SiteModel, page: str, cell: Mapping[str, Any]) -> str:
-    identity = str(cell["cell"])
-    rows = model.series_by_cell[identity]
-    test = model.test_by_id[str(cell["test"])]
-    incomplete = cell["incomplete_fields"]
-    incomplete_text = (
-        ", ".join(_escape(field) for field in incomplete)
-        if incomplete
-        else "None recorded"
-    )
-    applicability = cell.get("not_applicable_reason")
-    applicability_text = (
-        "<strong>Not applicable</strong>"
-        f'<span class="secondary">{_escape(applicability)}</span>'
-        if applicability
-        else "Applicable"
-    )
-    target = model.cell_paths[identity]
-    selected_paths = tuple(sorted(str(path) for path in cell["selected_by"]))
-    selected_path_text = (
-        ", ".join(f"Selected by {_escape(path)}" for path in selected_paths)
-        if selected_paths
-        else "None recorded"
-    )
-    attributes = {
-        "backend": str(cell["backend"]),
-        "category": str(cell["category"]),
-        "cell": identity,
-        "evidence": "incomplete" if incomplete else "complete",
-        "lane": str(cell["lane"]),
-        "latest_result_time": cell.get("latest_result_time") or "",
-        "latest_result_tree": cell.get("latest_result_tree") or "",
-        "mode": str(cell["mode"]),
-        "physical_row_count": str(cell["physical_row_count"]),
-        "represented_run_count": str(cell["represented_run_count"]),
-        "result": _result_token(cell),
-        "search": f"{cell['test']}\n{identity}",
-        "selected_by_full": str(bool(cell["selected_by_full"])).lower(),
-        "selected_by_paths": json.dumps(selected_paths, separators=(",", ":")),
-        "series_evidence": _series_filter_evidence_json(rows),
-        "state": _cell_state(cell),
-        "test": str(cell["test"]),
-    }
-    data_attributes = " ".join(
-        f'data-{name.replace("_", "-")}="{_escape(value)}"'
-        for name, value in attributes.items()
-    )
-    return f"""
-      <tr data-cell-row="1" data-population="in_manifest" {data_attributes}>
-        <th scope="row"><a href="{_escape(_href(page, target))}"><code>{_escape(identity)}</code></a></th>
-        <td>{_test_link(model, page, str(cell['test']))}<span class="secondary">{_escape(test['description'])}</span></td>
-        <td>{_escape(cell['lane'])}</td><td>{_escape(cell['category'])}</td>
-        <td>{_escape(cell['mode'])}</td><td>{_escape(cell['backend'])}</td>
-        <td>{applicability_text}</td><td>{_selected_by_full(cell)}</td>
-        <td>{selected_path_text}</td><td>{_state_badge(cell)}</td><td>{_latest_result(cell)}</td>
-        <td>{_display(cell.get('latest_result_time'))}</td>
-        <td>{_display(cell.get('latest_result_tree'))}</td>
-        <td>{_ancestry_summary(rows)}</td><td>{_capability_summary(rows, model.host_capability_names)}</td>
-        <td><a href="{_escape(_href(page, target, 'series-rows'))}" data-count="{cell['physical_row_count']}"
-        data-represented-count="{cell['represented_run_count']}">{cell['physical_row_count']} rows / {cell['represented_run_count']} runs</a></td>
-        <td>{incomplete_text}</td>
-      </tr>"""
-
-
-def _cell_table(model: SiteModel, page: str) -> str:
-    cells = sorted(
-        model.cells,
-        key=lambda cell: (
-            str(cell["test"]),
-            str(cell["mode"]),
-            str(cell["backend"]),
-            str(cell["cell"]),
+def _projection_audit_page(model: SiteModel) -> bytes:
+    page = "cells/projection-audit.html"
+    content = _exclusion_audit(
+        model, page, show_heading=False
+    ) + _deliberate_omission_audit(model, page)
+    return _layout(
+        page,
+        "Projection audit",
+        "Recorded exclusions from the published cell projection.",
+        content,
+        (
+            ("Overview", "index.html"),
+            ("Cells", "cells/index.html"),
+            ("Projection audit", None),
         ),
+        model.wording,
     )
-    return f"""
-      <div class="table-scroll"><table>
-        <caption>{_escape(model.wording.cell_table_caption)}</caption>
-        <thead><tr><th scope="col">Cell</th><th scope="col">Test id</th>
-        <th scope="col">Lane</th><th scope="col">Category</th><th scope="col">Mode</th>
-        <th scope="col">Backend</th><th scope="col">Applicability</th>
-        <th scope="col">Selected by full</th><th scope="col">Retained validation-run selection</th>
-        <th scope="col">State from qualifying canonical rows</th><th scope="col">Latest product result</th>
-        <th scope="col">Latest result time</th><th scope="col">Latest result tree</th>
-        <th scope="col">Current main ancestry in canonical rows</th><th scope="col">Host capabilities</th>
-        <th scope="col">Canonical rows / represented runs</th><th scope="col">Incomplete fields</th></tr></thead>
-        <tbody id="cell-results" data-row-count="{len(cells)}">{"".join(_cell_table_row(model, page, cell) for cell in cells)}</tbody>
-      </table></div>"""
 
 
-def _options(values: Sequence[str], labels: Mapping[str, str] | None = None) -> str:
-    display = labels or {}
-    return '<option value="">All</option>' + "".join(
-        f'<option value="{_escape(value)}">{_escape(display.get(value, value))}</option>'
+def _custom_commands_page(model: SiteModel) -> bytes:
+    page = "tests/custom-commands.html"
+    content = _custom_commands(model, page, show_heading=False)
+    if not content:
+        content = (
+            '<section id="custom-commands">'
+            "<p>No custom command was selected by full.</p></section>"
+        )
+    return _layout(
+        page,
+        "Custom commands selected by full",
+        "Custom commands recorded in the manifest and selected by full.",
+        content,
+        (
+            ("Overview", "index.html"),
+            ("Tests", "index.html#tests"),
+            ("Custom commands selected by full", None),
+        ),
+        model.wording,
+    )
+
+
+def _runs_index(model: SiteModel) -> bytes:
+    page = "runs/index.html"
+    return _layout(
+        page,
+        "Validation runs",
+        "Admitted validation ledger rows.",
+        _run_listing(model, page, show_heading=False),
+        (("Overview", "index.html"), ("Validation runs", None)),
+        model.wording,
+    )
+
+
+def _options(
+    values: Sequence[str],
+    labels: Mapping[str, str] | None = None,
+    *,
+    all_label: str = "All",
+) -> str:
+    labels = {} if labels is None else labels
+    return f'<option value="">{_escape(all_label)}</option>' + "".join(
+        f'<option value="{_escape(value)}">{_escape(labels.get(value, value))}</option>'
         for value in values
     )
 
 
-def _cell_filter_form(model: SiteModel) -> str:
-    distinct = lambda field: tuple(sorted({str(cell[field]) for cell in model.cells}))
-    capability_options = _options(model.host_capability_names)
-    return f"""
-      <form class="cell-filters" data-cell-filter-form action="index.html" method="get" hidden>
-        <fieldset><legend>Search cells in the manifest</legend>
-          <label>Test id or cell <input type="search" name="q" autocomplete="off"></label>
-        </fieldset>
-        <fieldset><legend>Recorded fields</legend>
-          <label>Lane <select name="lane">{_options(distinct('lane'))}</select></label>
-          <label>Category <select name="category">{_options(distinct('category'))}</select></label>
-          <label>Mode <select name="mode">{_options(distinct('mode'))}</select></label>
-          <label>Backend <select name="backend">{_options(distinct('backend'))}</select></label>
-          <label>State <select name="state">{_options(STATE_ORDER, STATE_LABELS)}</select></label>
-          <label>Latest product result <select name="result">{_options(('pass', 'product_failure', 'unavailable'), {'pass': 'Pass', 'product_failure': 'Product failure', 'unavailable': 'Unavailable'})}</select></label>
-          <label>Current manifest full selection <select name="selected_by_full">{_options(('true', 'false'), {'true': 'Selected by full', 'false': 'Not selected by full'})}</select></label>
-          <label>Retained validation-run selection <select name="selected_by_path">{_options(('quick', 'full', 'super'), {'quick': 'Selected by quick', 'full': 'Selected by full', 'super': 'Selected by super'})}</select></label>
-          <label>Current main ancestry <select name="current_main_ancestry">{_options(('true', 'false', 'unavailable'), {'true': 'True', 'false': 'False', 'unavailable': 'Unavailable'})}</select></label>
-          <label>Host capability <select name="host_capability">{capability_options}</select></label>
-          <label>Host capability present <select name="host_capability_present">{_options(('true', 'false', 'unavailable'), {'true': 'Present', 'false': 'Not present', 'unavailable': 'Unavailable'})}</select></label>
-          <label>Required evidence <select name="evidence">{_options(('complete', 'incomplete'), {'complete': 'No incomplete fields recorded', 'incomplete': 'Incomplete fields recorded'})}</select></label>
-        </fieldset>
-        <fieldset><legend>Listing</legend>
-          <label>Cells <select name="population">
-            <option value="in_manifest">In the manifest</option>
-            <option value="not_in_current_manifest">Recorded cell identities not in the current manifest</option>
-          </select></label>
-          <label>Sort by <select name="sort">
-            <option value="manifest">Manifest order</option><option value="cell">Cell</option>
-            <option value="test">Test id</option><option value="mode">Mode</option>
-            <option value="backend">Backend</option><option value="state">State</option>
-            <option value="result">Latest product result</option>
-            <option value="latest_result_time">Latest result time</option>
-            <option value="latest_result_tree">Latest result tree</option>
-            <option value="physical_row_count">Canonical rows</option>
-            <option value="represented_run_count">Represented runs</option>
-          </select></label>
-          <label>Direction <select name="direction"><option value="asc">Ascending</option>
-            <option value="desc">Descending</option></select></label>
-        </fieldset>
-        <div class="filter-actions"><button type="submit">Apply</button>
-          <button type="button" data-clear-cell-filters>Clear search and filters</button></div>
-      </form>
-      <div id="cell-filter-error" class="notice" role="alert" hidden></div>
-      <p id="cell-filter-counts" class="population" aria-live="polite">
-        <strong data-matching-count>{len(model.cells)}</strong>
-        <span data-matching-label>matching cells in the manifest</span>;
-        <span data-evidence-label>those cells have</span>
-        <strong data-physical-count>{sum(int(cell['physical_row_count']) for cell in model.cells)}</strong>
-        canonical rows representing <strong data-represented-count>{sum(int(cell['represented_run_count']) for cell in model.cells)}</strong> runs.
-      </p>
-      <p id="cell-filter-empty" class="notice" hidden>No rows match the current search and filters.</p>
-      <noscript><p class="notice">Search and sorting require JavaScript. The complete tables remain below.</p></noscript>"""
-
-
-def _selection_lists(model: SiteModel, page: str) -> str:
-    selected = [cell for cell in model.cells if cell["selected_by_full"]]
-    not_selected = [cell for cell in model.cells if not cell["selected_by_full"]]
-
-    def items(values: Sequence[Mapping[str, Any]]) -> str:
-        return "".join(
-            f"<li>{_cell_link(model, page, str(cell['cell']))}</li>" for cell in values
-        )
-
-    return f"""
-      <div class="selection-grid">
-        <section id="selected-by-full" data-row-count="{len(selected)}">
-          <h2>{len(selected)} / {len(model.cells)} cells selected by full</h2><ul>{items(selected)}</ul>
-        </section>
-        <section id="not-selected-by-full" data-row-count="{len(not_selected)}">
-          <h2>{len(not_selected)} / {len(model.cells)} cells not selected by full</h2><ul>{items(not_selected)}</ul>
-        </section>
-      </div>"""
-
-
-def _history_links(
-    model: SiteModel, page: str, identities: Sequence[str], label: str
-) -> str:
-    if not identities:
-        return "None recorded"
-    return ", ".join(
-        f'<a href="{_escape(_href(page, model.run_paths[identity]))}">{_escape(label)} {index}</a>'
-        for index, identity in enumerate(identities, start=1)
-    )
-
-
-def _series_evidence_links(page: str, rows: Sequence[Mapping[str, Any]]) -> str:
-    if not rows:
-        return '<span class="unavailable">No canonical series row retained</span>'
-    return ", ".join(
-        f'<a href="{_escape(_href(page, "cells/index.html", _fragment("series", str(row["event_id"]))))}"><code>{_escape(row["event_id"])}</code></a>'
-        for row in rows
-    )
-
-
-def _custom_command_evidence(model: SiteModel, page: str) -> str:
-    evidence_by_id = {
-        str(value["cell"]): value for value in model.custom_command_evidence
-    }
-    rows = []
-    for command in model.custom_commands:
-        identity = str(command["cell"])
-        evidence = evidence_by_id[identity]
-        rows.append(
-            f'<tr id="{_fragment("custom-command", identity)}" data-custom-command-evidence-row="1">'
-            f'<th scope="row"><code>{_escape(identity)}</code></th>'
-            f'<td>{_test_link(model, page, str(command["test"]))}</td>'
-            f"<td>{_selected_by_full(command)}</td>"
-            f'<td>{_series_evidence_links(page, evidence["series_rows"])}</td>'
-            f'<td>{evidence["physical_row_count"]}</td>'
-            f'<td>{evidence["represented_run_count"]}</td>'
-            f'<td>{_history_links(model, page, evidence["selected_history_rows"], "selection row")}</td>'
-            f'<td>{_history_links(model, page, evidence["recorded_history_rows"], "recorded row")}</td>'
-            "</tr>"
-        )
-    physical = sum(
-        int(value["physical_row_count"]) for value in model.custom_command_evidence
-    )
-    represented = sum(
-        int(value["represented_run_count"]) for value in model.custom_command_evidence
-    )
-    return f"""
-    <section id="custom-command-evidence" data-row-count="{len(rows)}"
-      data-represented-count="{represented}">
-      <h2>Recorded evidence for custom commands</h2>
-      <p>These commands are selected by full but are not cells in the manifest and do not
-      enter the cell denominator. Their recorded canonical and validation-history evidence
-      is shown without deriving a current cell state, never-measured result, or manifest membership.</p>
-      <div class="table-scroll"><table>
-        <caption>Custom commands and the evidence that records them.</caption>
-        <thead><tr><th scope="col">Custom command</th><th scope="col">Test id</th>
-        <th scope="col">Selected by full</th><th scope="col">Canonical series evidence</th>
-        <th scope="col">Physical canonical rows</th><th scope="col">Represented runs</th>
-        <th scope="col">Validation rows that selected it</th><th scope="col">Validation rows that recorded it</th></tr></thead>
-        <tbody>{''.join(rows)}</tbody>
-      </table></div>
-      <p><strong>{len(rows)}</strong> custom commands selected by full; their evidence has
-      <strong>{physical}</strong> canonical rows representing <strong>{represented}</strong> runs.</p>
-    </section>"""
-
-
-def _recorded_not_in_manifest_row(
-    model: SiteModel, page: str, value: Mapping[str, Any]
-) -> str:
-    identity = str(value["cell"])
-    rows = value["series_rows"]
-    events = _series_evidence_links(page, rows)
-    attributes = {
-        "cell": identity,
-        "physical_row_count": str(value["physical_row_count"]),
-        "represented_run_count": str(value["represented_run_count"]),
-        "search": identity,
-    }
-    data_attributes = " ".join(
-        f'data-{name.replace("_", "-")}="{_escape(item)}"'
-        for name, item in attributes.items()
-    )
-    return f"""
-      <tr data-recorded-not-in-manifest-row="1" data-population="not_in_current_manifest" {data_attributes}>
-        <th scope="row"><code>{_escape(identity)}</code></th>
-        <td>{events}</td><td>{value['physical_row_count']}</td>
-        <td>{value['represented_run_count']}</td>
-        <td>{_history_links(model, page, value['selected_history_rows'], 'selection row')}</td>
-        <td>{_history_links(model, page, value['recorded_history_rows'], 'recorded row')}</td>
-        <td>{_display(None)}</td><td>{_display(None)}</td>
-      </tr>"""
-
-
-def _recorded_not_in_current_manifest(model: SiteModel, page: str) -> str:
-    values = model.recorded_not_in_current_manifest
-    physical = sum(int(value["physical_row_count"]) for value in values)
-    represented = sum(int(value["represented_run_count"]) for value in values)
-    return f"""
-    <section id="recorded-not-in-current-manifest" data-row-count="{len(values)}"
-      data-represented-count="{represented}">
-      <h2>Recorded cell identities not in the current manifest</h2>
-      <p>These identities remain reachable because canonical series or validation-history
-      evidence names them. They do not enter the current manifest denominator. Current state,
-      result, and full-selection policy are unavailable rather than inferred.</p>
-      <div class="table-scroll"><table>
-        <caption>Recorded identities outside the current manifest.</caption>
-        <thead><tr><th scope="col">Cell identity</th><th scope="col">Canonical series evidence</th>
-        <th scope="col">Physical canonical rows</th><th scope="col">Represented runs</th>
-        <th scope="col">Validation rows that selected it</th><th scope="col">Validation rows that recorded it</th>
-        <th scope="col">Current state</th><th scope="col">Selected by full in the current manifest</th></tr></thead>
-        <tbody id="recorded-not-in-current-manifest-results" data-row-count="{len(values)}">{"".join(_recorded_not_in_manifest_row(model, page, value) for value in values)}</tbody>
-      </table></div>
-      <p><strong>{len(values)}</strong> recorded cell identities not in the current manifest;
-      those identities have <strong>{physical}</strong> canonical rows representing
-      <strong>{represented}</strong> runs.</p>
-    </section>"""
-
-
-def _series_table_row(model: SiteModel, page: str, row: Mapping[str, Any]) -> str:
-    payload = row["series"]
-    identity = str(payload["cell"])
-    run_path, run_reason = _event_run_path(model, identity, str(row["event_id"]))
-    run = (
-        f'<a href="{_escape(_href(page, run_path))}">{_escape(run_reason)}</a>'
-        if run_path is not None
-        else f'<span class="unavailable">Unavailable</span><span class="secondary">{_escape(run_reason)}</span>'
-    )
-    event = (
-        f'<a href="{_escape(_href(page, model.cell_paths[identity], _fragment("series", str(row["event_id"]))))}"><code>{_escape(row["event_id"])}</code></a>'
-        if identity in model.cell_paths
-        else f'<code>{_escape(row["event_id"])}</code>'
-    )
-    reason = row.get("projection_validation_reason")
-    return f"""
-      <tr id="{_fragment('series', str(row['event_id']))}" data-series-row="1"
-        data-in-current-manifest="{str(identity in model.cell_by_id).lower()}">
-        <th scope="row">{_cell_link(model, page, identity)}</th>
-        <td>{event}</td>
-        <td>{_escape(row['producer'])}<span class="secondary"><code>{_escape(row['run_id'])}</code></span></td>
-        <td>{run}</td><td>{_display(row.get('emitted_at'))}</td><td><code>{_escape(payload['tree'])}</code></td>
-        <td>{_ancestry(row.get('current_main_ancestry'))}</td><td>{_series_position(payload)}</td>
-        <td>{_display(payload.get('outcome'))}</td><td>{_display(payload.get('result'))}</td>
-        <td>{_series_product_result(row)}</td><td>{_display(payload.get('failure_class'))}</td>
-        <td>{_runtime(payload)}</td><td>1</td><td>{_escape(payload['num_runs'])}</td>
-        <td>{_display(reason) if reason is not None else 'None recorded'}</td>
-      </tr>"""
-
-
-def _series_group(
-    model: SiteModel,
-    page: str,
-    identity: str,
+def _collection_sort_button(
+    name: str,
     label: str,
-    rows: Sequence[Mapping[str, Any]],
+    *,
+    active: bool,
+    direction: str,
 ) -> str:
-    represented = sum(int(row["series"]["num_runs"]) for row in rows)
+    current_direction = "ascending" if direction == "asc" else "descending"
+    next_direction = (
+        "descending" if active and direction == "asc" else "ascending"
+    )
+    action = (
+        f"Sorted by {label} {current_direction}. Activate to sort {next_direction}."
+        if active
+        else f"Sort by {label} ascending."
+    )
+    indicator = "▲" if active and direction == "asc" else "▼" if active else ""
     return (
-        f'<tbody id="{identity}" data-row-count="{len(rows)}" '
-        f'data-represented-count="{represented}">'
-        f'<tr class="group-row"><th colspan="16" scope="rowgroup">{_escape(label)} — '
-        f"{len(rows)} canonical rows represent {represented} runs</th></tr>"
-        f'{"".join(_series_table_row(model, page, row) for row in rows)}</tbody>'
+        f'<button type="button" class="list-sort" data-list-sort="{_escape(name)}" '
+        f'data-list-sort-label="{_escape(label)}" aria-pressed="{str(active).lower()}" '
+        f'title="{_escape(action)}" aria-label="{_escape(action)}">'
+        f'<span>{_escape(label)}</span><span class="sort-indicator" aria-hidden="true">'
+        f"{indicator}</span></button>"
     )
 
 
-def _series_table(model: SiteModel, page: str) -> str:
-    admitted = [
-        row for row in model.series_rows if row["projection_validation_reason"] is None
-    ]
-    excluded = [
-        row
-        for row in model.series_rows
-        if row["projection_validation_reason"] is not None
-    ]
-    represented = sum(int(row["series"]["num_runs"]) for row in model.series_rows)
+def _collection_controls(
+    collection_id: str,
+    query_prefix: str,
+    noun: str,
+    *,
+    filters: Sequence[tuple[str, str, Sequence[str]]] = (),
+    sorts: Sequence[tuple[str, str]],
+    default_sort: str,
+    filter_sources: Mapping[str, str] | None = None,
+    filter_value_labels: Mapping[str, Mapping[str, str]] | None = None,
+    sort_sources: Mapping[str, str] | None = None,
+    default_direction: str = "asc",
+    tie_sort: str | None = None,
+    tie_source: str = "ordinal",
+    tie_direction: str = "asc",
+    page_size: int = LIST_PAGE_SIZE,
+    item_count: int,
+    child_limit: int | None = None,
+    sort_in_table: bool = False,
+) -> str:
+    if default_sort not in {name for name, _label in sorts}:
+        raise RenderRefused(f"collection {collection_id!r} has no default sort")
+    if tie_sort is not None and tie_sort not in {name for name, _label in sorts}:
+        raise RenderRefused(f"collection {collection_id!r} has no tie-break sort")
+    if default_direction not in {"asc", "desc"} or tie_direction not in {
+        "asc",
+        "desc",
+    }:
+        raise RenderRefused(f"collection {collection_id!r} has invalid direction")
+    if (
+        page_size <= 0
+        or item_count < 0
+        or child_limit is not None
+        and child_limit <= 0
+    ):
+        raise RenderRefused(f"collection {collection_id!r} has invalid limits")
+    filter_sources = {} if filter_sources is None else filter_sources
+    filter_value_labels = {} if filter_value_labels is None else filter_value_labels
+    sort_sources = {} if sort_sources is None else sort_sources
+    source_pattern = re.compile(
+        r"(?:ordinal|text|cell:[0-9]+|value:[a-z][a-z0-9_]*|utc:[a-z][a-z0-9_]*)"
+    )
+    if any(
+        not source_pattern.fullmatch(source)
+        for source in (*filter_sources.values(), *sort_sources.values(), tie_source)
+    ):
+        raise RenderRefused(f"collection {collection_id!r} has invalid value source")
+    filter_controls = "".join(
+        f'<label>{_escape(label)} <select name="{_escape(name)}" data-list-filter="{_escape(name)}" data-list-source="{_escape(filter_sources.get(name, f"value:{name}"))}">{_options(tuple(values), filter_value_labels.get(name))}</select></label>'
+        for name, label, values in filters
+    )
+    sort_options = "".join(
+        f'<option value="{_escape(name)}" data-list-source="{_escape(sort_sources.get(name, f"value:{name}"))}">{_escape(label)}</option>'
+        for name, label in sorts
+    )
+    hidden_sort_controls = (
+        f'<select name="sort" aria-label="Sort key for {_escape(noun)}" hidden>'
+        f"{sort_options}</select>"
+        f'<select name="direction" aria-label="Sort direction for {_escape(noun)}" hidden>'
+        '<option value="asc">Ascending</option><option value="desc">Descending</option></select>'
+    )
+    if sort_in_table:
+        sort_controls = hidden_sort_controls
+    else:
+        sort_buttons = "".join(
+            _collection_sort_button(
+                name,
+                label,
+                active=name == default_sort,
+                direction=default_direction,
+            )
+            for name, label in sorts
+        )
+        sort_controls = (
+            hidden_sort_controls
+            + f'<div class="list-order-controls" role="group" aria-label="Order {_escape(noun)}">'
+            '<span class="list-order-label">Order</span>'
+            f"{sort_buttons}</div>"
+        )
+    actions = '<div class="filter-actions"><button type="button" data-list-clear>Clear filters</button></div>'
+    child_attribute = (
+        f' data-child-limit="{child_limit}"' if child_limit is not None else ""
+    )
+    tie_sort_attribute = (
+        f' data-tie-sort="{_escape(tie_sort)}"' if tie_sort is not None else ""
+    )
+    pagination = (
+        f'<nav class="list-pagination" data-list-pagination="{_escape(collection_id)}" aria-label="{_escape(noun)} pages" hidden>'
+        '<button type="button" data-list-previous>Previous</button>'
+        f'<span aria-live="polite" data-list-summary>Showing all {_escape(noun)}.</span>'
+        '<button type="button" data-list-next>Next</button></nav>'
+        if item_count > page_size
+        else ""
+    )
     return f"""
-    <section id="series-rows" data-row-count="{len(model.series_rows)}" data-represented-count="{represented}">
-      <h2>Canonical series rows</h2>
-      <p>Each table row is one physical canonical row. Represented runs comes from the row's
-      recorded <code>num_runs</code>; neither number is inferred from the other.</p>
-      <div class="table-scroll"><table>
-        <caption>Public canonical series rows. Producer outcome, producer result, product result,
-        and the validation-history join remain separate.</caption>
-        <thead><tr><th scope="col">Cell</th><th scope="col">Event id</th>
-        <th scope="col">Producer and run id</th><th scope="col">Validation history row</th>
-        <th scope="col">Recorded at</th><th scope="col">Hermit tree</th>
-        <th scope="col">Current main ancestry</th><th scope="col">Attempt / run index</th>
-        <th scope="col">Producer outcome</th><th scope="col">Producer result</th>
-        <th scope="col">Product result</th><th scope="col">Failure class</th><th scope="col">Runtime</th>
-        <th scope="col">Physical rows</th><th scope="col">Represented runs</th>
-        <th scope="col">Projection exclusion reason</th></tr></thead>
-        {_series_group(model, page, 'series-admitted', 'No projection exclusion reason', admitted)}
-        {_series_group(model, page, 'series-excluded', 'Recorded projection exclusion reason', excluded)}
-      </table></div>
-    </section>"""
+      <form class="list-controls" data-list-controls="{_escape(collection_id)}" data-query-prefix="{_escape(query_prefix)}" data-page-size="{page_size}" data-default-sort="{_escape(default_sort)}" data-default-direction="{_escape(default_direction)}" data-tie-source="{_escape(tie_source)}" data-tie-direction="{_escape(tie_direction)}"{tie_sort_attribute}{child_attribute} hidden>
+        <fieldset><legend>Find and order {_escape(noun)}</legend>
+          <label>Search <input name="q" type="search" maxlength="256"></label>
+          {filter_controls}
+          {sort_controls}
+        </fieldset>
+        {actions}
+      </form>
+      <p class="notice" data-list-error="{_escape(collection_id)}" hidden></p>
+      <p data-list-empty="{_escape(collection_id)}" hidden>No {_escape(noun)} match these filters.</p>
+      {pagination}"""
+
+
+def _collection_item_attributes(
+    *,
+    filters: Mapping[str, Any],
+    sorts: Mapping[str, Any],
+) -> str:
+    values = dict(filters)
+    for name, value in sorts.items():
+        previous = values.setdefault(name, value)
+        if previous != value:
+            raise RenderRefused(f"collection item gives {name!r} contradictory values")
+    attributes = []
+    for name, value in sorted(values.items()):
+        if not re.fullmatch(r"[a-z][a-z0-9_]*", name):
+            raise RenderRefused(f"collection item has invalid field {name!r}")
+        attribute = name.replace("_", "-")
+        attributes.append(f'data-list-value-{attribute}="{_escape(value)}"')
+    return 'data-list-item="1" ' + " ".join(attributes)
+
+
+def _selection_paths(model: SiteModel) -> tuple[str, ...]:
+    return tuple(
+        sorted({str(path) for cell in model.cells for path in cell["selected_by"]})
+    )
+
+
+def _cell_filter_form(
+    model: SiteModel,
+    cells: Sequence[Mapping[str, Any]],
+    *,
+    fixed_state: str | None,
+) -> str:
+    values = lambda field: tuple(sorted({str(cell[field]) for cell in cells}))
+    state_control = (
+        '<input name="state" type="hidden" value="never-measured">'
+        if fixed_state == "never-measured"
+        else ('<input name="state" type="hidden" value="">')
+    )
+    return f"""
+    <form class="cell-filters" data-cell-filter-form hidden>
+      <fieldset><legend>Find cells</legend>
+        <label>Search <input name="q" type="search" maxlength="256"></label>
+        <input name="page" type="hidden" value="1">
+        <label>Lane <select name="lane">{_options(values('lane'))}</select></label>
+        <label>Category <select name="category">{_options(values('category'))}</select></label>
+        <label>Mode <select name="mode">{_options(values('mode'))}</select></label>
+        <label>Backend <select name="backend">{_options(values('backend'))}</select></label>
+        {state_control}
+        <label>Latest result <select name="result">{_options(('pass', 'product_failure'), {'pass': 'Pass', 'product_failure': 'Fail'})}</select></label>
+        <label>Selected by path <select name="selected_by_path">{_options(_selection_paths(model))}</select></label>
+        <label>Current main ancestry <select name="current_main_ancestry">{_options(('true', 'false'), {'true': 'True', 'false': 'False'})}</select></label>
+        <label>Host capability <select name="host_capability">{_options(model.host_capability_names)}</select></label>
+        <label>Host capability present <select name="host_capability_present">{_options(('true', 'false'), {'true': 'Present', 'false': 'Not present'})}</select></label>
+        <label>Population <select name="population"><option value="in_manifest">In the manifest</option><option value="not_in_current_manifest">Recorded identity outside current manifest</option></select></label>
+        <select name="evidence" hidden><option value=""></option><option value="complete">Recorded</option></select>
+      </fieldset>
+      <select name="sort" aria-label="Sort" hidden>
+        <option value="manifest">Manifest order</option><option value="cell">Cell</option><option value="test">TestName</option><option value="lane">Lane</option><option value="category">Category</option><option value="mode">Mode</option><option value="backend">Backend</option><option value="selected_by_path">Selected by path</option><option value="state">State</option><option value="result">Latest result</option><option value="latest_result_time">Latest result time</option><option value="latest_result_tree">Latest result tree</option><option value="physical_row_count">Physical rows</option><option value="represented_run_count">Represented Hermit runs</option>
+      </select>
+      <select name="direction" aria-label="Sort direction" hidden><option value="asc">Ascending</option><option value="desc">Descending</option></select>
+      <div class="filter-actions"><button type="button" data-clear-cell-filters>Clear filters</button></div>
+    </form>"""
+
+
+def _cell_table_row(model: SiteModel, page: str, cell: Mapping[str, Any]) -> str:
+    identity = str(cell["cell"])
+    state = _cell_state(cell)
+    result = str(cell.get("latest_result") or "")
+    selected_paths = sorted(str(path) for path in cell["selected_by"])
+    rows = model.series_by_cell[identity]
+    search = " ".join(
+        (
+            identity,
+            str(cell["test"]),
+            str(cell["lane"]),
+            str(cell["category"]),
+            str(cell["mode"]),
+            str(cell["backend"]),
+        )
+    )
+    latest_time = str(cell.get("latest_result_time") or "")
+    latest_tree = str(cell.get("latest_result_tree") or "")
+    test_name = _test_name(cell["test"], cell["category"])
+    test_link = _cell_link(model, page, identity, label=test_name)
+    latest_tree_link = (
+        _hermit_commit_link(latest_tree) if latest_tree else "No qualifying result"
+    )
+    return f"""
+      <tr data-cell-row="1" data-cell="{_escape(identity)}" data-test="{_escape(cell['test'])}" data-lane="{_escape(cell['lane'])}" data-category="{_escape(cell['category'])}" data-mode="{_escape(cell['mode'])}" data-backend="{_escape(cell['backend'])}" data-state="{_escape(state)}" data-result="{_escape(result)}" data-selected-by-paths="{_escape(_canonical(selected_paths))}" data-evidence="complete" data-latest-result-time="{_escape(latest_time)}" data-latest-result-tree="{_escape(latest_tree)}" data-search="{_escape(search)}" data-series-filter-facets="{_escape(_series_filter_facets_json(rows))}" data-physical-row-count="{_escape(cell['physical_row_count'])}" data-represented-run-count="{_escape(cell['represented_run_count'])}">
+        <td>{_escape(cell['category'])}</td><th scope="row">{test_link}</th><td>{_escape(cell['mode'])}</td><td>{_escape(cell['backend'])}</td><td>{_escape(cell['lane'])}</td><td>{_latest_result(cell)}</td><td>{_time_element(latest_time, 'cell latest_result_time')}</td><td>{latest_tree_link}</td><td>{_escape(cell['physical_row_count'])}</td><td>{_escape(cell['represented_run_count'])}</td>
+      </tr>"""
+
+
+def _outside_table(model: SiteModel, page: str) -> str:
+    rows = []
+    for item in model.recorded_outside_manifest[:LIST_PAGE_SIZE]:
+        identity = str(item["cell"])
+        rows.append(
+            f'<tr data-recorded-not-in-manifest-row="1" data-cell="{_escape(identity)}" data-search="{_escape(identity)}" data-physical-row-count="{item["physical_row_count"]}" data-represented-run-count="{item["represented_run_count"]}"><th scope="row"><code>{_escape(identity)}</code></th><td>{item["physical_row_count"]}</td><td>{item["represented_run_count"]}</td></tr>'
+        )
+    headings = "".join(
+        (
+            _column_heading(
+                "Cell",
+                "The complete recorded test, mode, and backend identity, which is not in the current manifest.",
+                sort="cell",
+                sort_kind="cell",
+            ),
+            _column_heading(
+                "Physical rows",
+                "The number of admitted stress-series/v3 observation rows retained for this identity.",
+                sort="physical_row_count",
+                sort_kind="cell",
+            ),
+            _column_heading(
+                "Represented Hermit runs",
+                "The sum of num_runs across those rows; exactly equal repeated observations may share one row.",
+                sort="represented_run_count",
+                sort_kind="cell",
+            ),
+        )
+    )
+    return f"""
+    <div id="recorded-not-in-current-manifest" hidden>
+      <h3>Recorded cell identities outside the current manifest</h3>
+      <div class="table-scroll"><table><caption>Recorded evidence whose cell identity is outside the current manifest.</caption><thead><tr>{headings}</tr></thead><tbody id="recorded-not-in-current-manifest-results">{"".join(rows)}</tbody></table></div>
+    </div>"""
+
+
+def _cell_table_headings() -> str:
+    definitions = (
+        (
+            "Category",
+            "The manifest group that prefixes the test identifier.",
+            "category",
+        ),
+        (
+            "TestName",
+            "The test identifier with its Category prefix omitted; the link opens this test, mode, and backend cell.",
+            "test",
+        ),
+        ("Mode", "The Hermit action used for this cell.", "mode"),
+        ("Backend", "The execution backend used for this cell.", "backend"),
+        ("Lane", "The manifest lane that owns this test.", "lane"),
+        (
+            "Latest result",
+            "The latest unambiguous qualifying logical execution: Pass or Fail. Never measured means no qualifying admitted row exists; a resultless or ambiguous latest execution is omitted.",
+            "result",
+        ),
+        (
+            "Latest result time",
+            "When that latest qualifying logical execution was recorded, displayed in Eastern Time.",
+            "latest_result_time",
+        ),
+        (
+            "Latest result tree",
+            "The Hermit source tree recorded for the chosen latest qualifying logical execution; the SHA links to that Hermit commit.",
+            "latest_result_tree",
+        ),
+        (
+            "Physical rows",
+            "The number of admitted stress-series/v3 records retained for this cell, whether or not they qualify for the latest result.",
+            "physical_row_count",
+        ),
+        (
+            "Represented Hermit runs",
+            "The sum of SeriesRow.num_runs: outer cell observations including stress repetitions and retries, not OS process invocations. A verify attempt counts once although Hermit runs twice internally.",
+            "represented_run_count",
+        ),
+    )
+    return "".join(
+        _column_heading(label, description, sort=sort, sort_kind="cell")
+        for label, description, sort in definitions
+    )
+
+
+def _cells_listing_page(
+    model: SiteModel,
+    *,
+    page: str,
+    title: str,
+    lead: str,
+    cells: Sequence[Mapping[str, Any]],
+    explicit_never_measured: bool,
+) -> bytes:
+    rows = "".join(
+        _cell_table_row(model, page, cell) for cell in cells[:LIST_PAGE_SIZE]
+    )
+    other_view = (
+        f'<a href="{_escape(_href(page, "cells/index.html", "all-cells"))}">Results</a>.'
+        if explicit_never_measured
+        else f'<a href="{_escape(_href(page, "cells/never-measured.html", "all-cells"))}">Never measured</a>.'
+    )
+    fixed_state = (
+        "<p><strong>State:</strong> Never measured.</p>"
+        if explicit_never_measured
+        else ""
+    )
+    table_explanation = (
+        "Every row below has zero qualifying admitted rows."
+        if explicit_never_measured
+        else "The default table contains only green and red result rows."
+    )
+    table_caption = (
+        "Cells in the manifest with no qualifying admitted row."
+        if explicit_never_measured
+        else model.wording.cell_table_caption
+    )
+    headings = _cell_table_headings()
+    pagination = f"""
+      <nav class="list-pagination matrix-pagination" data-cell-pagination data-page-size="{LIST_PAGE_SIZE}" aria-label="Cell result pages" hidden>
+        <button type="button" data-cell-previous>Previous</button>
+        <span aria-live="polite" data-cell-page-summary>Showing all cells.</span>
+        <button type="button" data-cell-next>Next</button>
+      </nav>"""
+    content = f"""
+    <p class="data-status" data-load-status data-load-state="loading" role="status">Loading verified local data…</p>
+    <section id="cell-filters"><h2>Search and filter</h2><p>{other_view}</p>{fixed_state}{_cell_filter_form(model, cells, fixed_state="never-measured" if explicit_never_measured else None)}
+      <p id="cell-filter-error" class="notice" hidden></p><p id="cell-filter-empty" hidden>No rows match these filters.</p>
+      <p id="cell-filter-counts" hidden><strong data-matching-count>0</strong> <span data-matching-label>matching cells in the manifest</span>; <span data-evidence-label>those cells have</span> <strong data-physical-count>0</strong> physical rows representing <strong data-represented-count>0</strong> Hermit runs.</p>
+    </section>
+    <section id="test-matrix"><h2>Test Matrix</h2>{pagination}
+      <div id="all-cells" data-in-manifest-listing>
+        <p>{model.data['counts']['in_manifest_cell_count']} cells are in the manifest; this table has {len(cells)} rows. {table_explanation}</p>
+        <div class="table-scroll"><table><caption>{_escape(table_caption)}</caption><thead><tr>{headings}</tr></thead><tbody id="cell-results">{rows}</tbody></table></div>
+      </div>
+      {_outside_table(model, page)}
+    </section>
+    <section id="series-rows" data-in-manifest-listing><h2>Recorded evidence</h2><p>{model.runs['series_physical_row_count']} admitted physical rows representing {model.runs['series_represented_run_count']} Hermit runs. Each cell row reports its qualifying count separately.</p></section>"""
+    return _layout(
+        page,
+        title,
+        lead,
+        content,
+        (("Overview", "index.html"), (title, None)),
+        model.wording,
+        ("assets/site.js",),
+        page_kind="never-list" if explicit_never_measured else "cell-list",
+    )
 
 
 def _cells_index(model: SiteModel) -> bytes:
-    page = "cells/index.html"
-    content = (
-        _cell_filter_form(model)
-        + f"""
-    <section id="all-cells" data-row-count="{len(model.cells)}" data-in-manifest-listing>
-      <h2>All cells in the manifest</h2>
-      <p>Manifest membership, selection by a named path, derived state, and product result
-      are distinct facts. A cell not selected by full is not a failed measurement.</p>
-      {_cell_table(model, page)}
-    </section>
-    <div data-in-manifest-listing>{_selection_lists(model, page)}</div>
-    {_custom_command_evidence(model, page)}
-    {_recorded_not_in_current_manifest(model, page)}
-    {_series_table(model, page)}"""
-    )
-    return _layout(
-        page,
-        "Cells and canonical rows",
-        model.wording.cells_lead,
-        content,
-        (("Overview", "index.html"), ("Cells", None)),
-        model.wording,
-        ("assets/site.js",),
+    cells = tuple(cell for cell in model.cells if _cell_state(cell) in {"green", "red"})
+    return _cells_listing_page(
+        model,
+        page="cells/index.html",
+        title="Cells",
+        lead=model.wording.cells_lead,
+        cells=cells,
+        explicit_never_measured=False,
     )
 
 
-def _cell_selection_details(
-    model: SiteModel, page: str, cell: Mapping[str, Any]
-) -> str:
-    items = []
-    identity = str(cell["cell"])
-    for path, facts in sorted(cell["selected_by"].items()):
-        for fact in facts:
-            run_path = _selection_run_path(model, identity, str(path), fact)
-            run = (
-                f'<a href="{_escape(_href(page, run_path))}">'
-                f'<code>{_escape(fact["run_id"])}</code></a>'
-                if run_path is not None
-                else (
-                    f'<code>{_escape(fact["run_id"])}</code>'
-                    '<span class="unavailable">Matching validation history row unavailable</span>'
-                )
-            )
-            events = ", ".join(_escape(value) for value in fact["event_ids"])
-            events = events or "None recorded"
-            items.append(
-                f"<li><strong>Selected by {_escape(path)}</strong>{run}"
-                f'<span class="secondary">Tree <code>{_escape(fact["tree"])}</code>; '
-                f"observed at {_display(fact.get('observed_at'))}; event ids: {events}</span></li>"
-            )
-    if not items:
-        return '<p class="unavailable">No retained validation-run selection</p>'
-    return '<ul class="card-list">' + "".join(items) + "</ul>"
-
-
-def _capabilities(payload: Mapping[str, Any]) -> str:
-    values = payload.get("host_capabilities")
-    if not isinstance(values, Mapping):
-        return _display(None)
-    if not values:
-        return "None recorded"
-    items = []
-    for name, facts in sorted(values.items()):
-        items.append(
-            f"<li><strong>{_escape(name)}</strong>: present={_display(facts.get('present'))}; "
-            f"evidence={_display(facts.get('evidence'))}</li>"
-        )
-    return "<ul>" + "".join(items) + "</ul>"
-
-
-def _cell_series_row(model: SiteModel, page: str, row: Mapping[str, Any]) -> str:
-    payload = row["series"]
-    run_path, reason = _event_run_path(
-        model, str(payload["cell"]), str(row["event_id"])
+def _never_measured_index(model: SiteModel) -> bytes:
+    cells = tuple(cell for cell in model.cells if _cell_state(cell) == "never-measured")
+    return _cells_listing_page(
+        model,
+        page="cells/never-measured.html",
+        title="Never measured",
+        lead="Cells in the manifest for which no qualifying admitted row exists.",
+        cells=cells,
+        explicit_never_measured=True,
     )
-    run = (
-        f'<a href="{_escape(_href(page, run_path))}">{_escape(reason)}</a>'
-        if run_path is not None
-        else f'<span class="unavailable">Unavailable</span><span class="secondary">{_escape(reason)}</span>'
-    )
-    projection_reason = row.get("projection_validation_reason")
-    return f"""
-      <article id="{_fragment('series', str(row['event_id']))}" class="evidence-card" data-series-row="1">
-        <h3><code>{_escape(row['event_id'])}</code></h3>
-        <dl class="facts">
-          <div><dt>Producer</dt><dd>{_escape(row['producer'])}</dd></div>
-          <div><dt>Run id</dt><dd><code>{_escape(row['run_id'])}</code></dd></div>
-          <div><dt>Validation history row</dt><dd>{run}</dd></div>
-          <div><dt>Recorded at</dt><dd>{_display(row.get('emitted_at'))}</dd></div>
-          <div><dt>Hermit tree</dt><dd><code>{_escape(payload['tree'])}</code></dd></div>
-          <div><dt>Current main ancestry</dt><dd>{_ancestry(row.get('current_main_ancestry'))}</dd></div>
-          <div><dt>Attempt / run index</dt><dd>{_series_position(payload)}</dd></div>
-          <div><dt>Producer outcome</dt><dd>{_display(payload.get('outcome'))}</dd></div>
-          <div><dt>Producer result</dt><dd>{_display(payload.get('result'))}</dd></div>
-          <div><dt>Product result</dt><dd>{_series_product_result(row)}</dd></div>
-          <div><dt>Failure class</dt><dd>{_display(payload.get('failure_class'))}</dd></div>
-          <div><dt>Runtime</dt><dd>{_runtime(payload)}</dd></div>
-          <div><dt>Machine</dt><dd>{_display(payload.get('machine_shortname'))}</dd></div>
-          <div><dt>Kernel</dt><dd>{_display(payload.get('kernel_version'))}</dd></div>
-          <div><dt>Host capabilities</dt><dd>{_capabilities(payload)}</dd></div>
-          <div><dt>Represented runs</dt><dd>{_escape(payload['num_runs'])}</dd></div>
-          <div><dt>Projection exclusion reason</dt><dd>{_display(projection_reason) if projection_reason is not None else 'None recorded'}</dd></div>
-        </dl>
-      </article>"""
-
-
-def _cell_incomplete(model: SiteModel, page: str, identity: str) -> str:
-    rows = [
-        (index, row)
-        for index, row in enumerate(model.incomplete)
-        if row.get("cell") == identity
-    ]
-    if not rows:
-        return "<p>None recorded for this cell.</p>"
-    return (
-        "<ul>"
-        + "".join(
-            f'<li><a href="{_escape(_href(page, "incomplete-data/index.html", f"incomplete-{index}"))}">'
-            f"{_escape(row['field'])}: {_escape(row['reason'])}</a></li>"
-            for index, row in rows
-        )
-        + "</ul>"
-    )
-
-
-def _cell_page(model: SiteModel, identity: str) -> bytes:
-    page = model.cell_paths[identity]
-    cell = model.cell_by_id[identity]
-    series_rows = model.series_by_cell[identity]
-    represented = sum(int(row["series"]["num_runs"]) for row in series_rows)
-    applicability = cell.get("not_applicable_reason")
-    content = f"""
-    <section id="cell-facts">
-      <h2>Manifest policy and result</h2>
-      <dl class="facts">
-        <div><dt>Test id</dt><dd>{_test_link(model, page, str(cell['test']))}</dd></div>
-        <div><dt>Mode</dt><dd>{_escape(cell['mode'])}</dd></div>
-        <div><dt>Backend</dt><dd>{_escape(cell['backend'])}</dd></div>
-        <div><dt>Lane</dt><dd>{_escape(cell['lane'])}</dd></div>
-        <div><dt>Category</dt><dd>{_escape(cell['category'])}</dd></div>
-        <div><dt>Applicability</dt><dd>{'Not applicable: ' + _escape(applicability) if applicability else 'Applicable'}</dd></div>
-        <div><dt>Selected by full</dt><dd>{_selected_by_full(cell)}</dd></div>
-        <div><dt>State from qualifying canonical rows</dt><dd>{_state_badge(cell)}</dd></div>
-        <div><dt>Latest product result</dt><dd>{_latest_result(cell)}</dd></div>
-        <div><dt>Latest tree</dt><dd><code>{_display(cell.get('latest_result_tree'))}</code></dd></div>
-        <div><dt>Latest result time</dt><dd>{_display(cell.get('latest_result_time'))}</dd></div>
-        <div><dt>Timeout</dt><dd>{_escape(cell['timeout_seconds'])} seconds</dd></div>
-        <div><dt>Working directory</dt><dd>{_display(cell.get('workdir'))}</dd></div>
-        <div><dt>Guest arguments</dt><dd>{_json_display(cell.get('guest_args'))}</dd></div>
-      </dl>
-    </section>
-    <section id="current-reproducer"><h2>Current reproducer</h2>{_reproducer(cell)}</section>
-    <section id="recorded-selection"><h2>Selection in retained validation runs</h2>
-      <p>These are per-run facts. They do not establish a complete quick or super population.</p>
-      {_cell_selection_details(model, page, cell)}
-    </section>
-    <section id="series-rows" data-row-count="{len(series_rows)}" data-represented-count="{represented}">
-      <h2>Canonical series rows</h2><p>{len(series_rows)} physical rows represent {represented} runs.</p>
-      {"".join(_cell_series_row(model, page, row) for row in series_rows) if series_rows else '<p>No qualifying canonical row exists.</p>'}
-    </section>
-    <section id="incomplete-data"><h2>Incomplete data for this cell</h2>{_cell_incomplete(model, page, identity)}</section>
-    <section class="notice" aria-labelledby="cell-unavailable"><h2 id="cell-unavailable">Unavailable from Stage 1 artifacts</h2>
-      <ul><li>Historical invocation</li><li>Raw retained logs</li><li>Syscall histogram</li></ul>
-    </section>"""
-    return _layout(
-        page,
-        identity,
-        "Manifest membership, path-specific selection, state, product result, and retained evidence.",
-        content,
-        (("Overview", "index.html"), ("Cells", "cells/index.html"), (identity, None)),
-        model.wording,
-    )
-
-
-def _test_metadata(test: Mapping[str, Any]) -> str:
-    requirements = ", ".join(_escape(item) for item in test["requires"])
-    return f"""
-    <dl class="facts">
-      <div><dt>Description</dt><dd>{_escape(test['description'])}</dd></div>
-      <div><dt>Category</dt><dd>{_escape(test['category'])}</dd></div>
-      <div><dt>Lane</dt><dd>{_escape(test['lane'])}</dd></div>
-      <div><dt>Program</dt><dd>{_display(test.get('program'))}</dd></div>
-      <div><dt>Requirements</dt><dd>{requirements or 'None recorded'}</dd></div>
-      <div><dt>Occasional</dt><dd>{_escape(str(test['occasional']).lower())}</dd></div>
-      <div><dt>Build</dt><dd>{_json_display(test.get('build'))}</dd></div>
-      <div><dt>Direct</dt><dd>{_json_display(test.get('direct'))}</dd></div>
-      <div><dt>Preprocessors</dt><dd>{_json_display(test.get('preprocessors'))}</dd></div>
-      <div><dt>Observation</dt><dd>{_json_display(test.get('observation'))}</dd></div>
-    </dl>"""
-
-
-def _test_cell_item(model: SiteModel, page: str, identity: str) -> str:
-    cell = model.cell_by_id[identity]
-    return f"""
-    <li class="listing-card" data-test-cell-row="1">
-      <h3>{_cell_link(model, page, identity)}</h3>
-      <dl class="facts compact-facts">
-        <div><dt>Selected by full</dt><dd>{_selected_by_full(cell)}</dd></div>
-        <div><dt>State</dt><dd>{_state_badge(cell)}</dd></div>
-        <div><dt>Latest product result</dt><dd>{_latest_result(cell)}</dd></div>
-        <div><dt>Current reproducer</dt><dd>{_reproducer(cell)}</dd></div>
-      </dl>
-    </li>"""
-
-
-def _test_page(model: SiteModel, identity: str) -> bytes:
-    page = model.test_paths[identity]
-    test = model.test_by_id[identity]
-    cell_ids = tuple(str(value) for value in test["cells"])
-    commands = [
-        command for command in model.custom_commands if str(command["test"]) == identity
-    ]
-    custom_items = "".join(
-        '<li class="listing-card" data-custom-row="1">'
-        f'<h3><code>{_escape(command["cell"])}</code></h3>{_reproducer(command)}'
-        f'<a href="{_escape(_href(page, "cells/index.html", _fragment("custom-command", str(command["cell"]))))}">Recorded evidence</a></li>'
-        for command in commands
-    )
-    content = f"""
-    <section id="manifest-metadata"><h2>Manifest metadata</h2>{_test_metadata(test)}</section>
-    <section id="cells" data-row-count="{len(cell_ids)}"><h2>Cells in the manifest</h2>
-      <ul class="card-list">{"".join(_test_cell_item(model, page, value) for value in cell_ids)}</ul>
-    </section>
-    <section id="custom-commands" data-row-count="{len(commands)}"><h2>Custom commands selected by full</h2>
-      <ul class="card-list">{custom_items}</ul>{'' if commands else '<p>None recorded for this test.</p>'}
-    </section>
-    <section class="notice" aria-labelledby="test-unavailable"><h2 id="test-unavailable">Unavailable from Stage 1 artifacts</h2>
-      <ul><li>Historical invocation</li><li>Raw retained logs</li><li>Syscall histogram</li></ul>
-    </section>"""
-    return _layout(
-        page,
-        identity,
-        "Retained manifest metadata and the cells belonging to this test.",
-        content,
-        (("Overview", "index.html"), ("Tests", "index.html#tests"), (identity, None)),
-        model.wording,
-    )
-
-
-def _run_cell_link(model: SiteModel, page: str, row: Mapping[str, Any]) -> str:
-    return _cell_link(model, page, _cell_identity(row))
 
 
 def _selected_groups(model: SiteModel, page: str, row: Mapping[str, Any]) -> str:
-    results = row.get("cell_results")
-    if not isinstance(results, Mapping):
-        return (
-            '<section id="selected-cells"><h2>Cells selected by a validate path</h2>'
-            '<p class="unavailable">Unavailable</p>'
-            "<p>The retained row has no usable cell_results.</p></section>"
-        )
     sections = []
-    for path, selection in sorted(results["selected_by"].items()):
-        cells = selection["cells"]
-        items = "".join(
-            f'<li data-selected-cell-row="1">{_run_cell_link(model, page, cell)}</li>'
-            for cell in cells
+    for path, selection in sorted(row["cell_results"]["selected_by"].items()):
+        shown = list(selection["cells"])
+        published_count = sum(
+            _cell_identity(cell) in model.cell_paths for cell in shown
+        )
+        path_text = str(path)
+        path_digest = _full_digest(path_text)
+        collection_id = f"run-selected-{path_digest}"
+        controls = _collection_controls(
+            collection_id,
+            f"selected_{path_digest}_",
+            f"{path_text} selected-cell groups",
+            filters=(
+                ("mode", "Mode", tuple(sorted({str(cell["mode"]) for cell in shown}))),
+                (
+                    "backend",
+                    "Backend",
+                    tuple(sorted({str(cell["backend"]) for cell in shown})),
+                ),
+                (
+                    "category",
+                    "Category",
+                    tuple(sorted({str(cell["category"]) for cell in shown})),
+                ),
+            ),
+            sorts=(
+                ("hierarchy", "Mode/backend/category"),
+                ("test", "TestName"),
+            ),
+            default_sort="hierarchy",
+            page_size=SELECTED_GROUP_PAGE_SIZE,
+            item_count=len(
+                {
+                    (str(cell["mode"]), str(cell["backend"]), str(cell["category"]))
+                    for cell in shown
+                }
+            ),
+            child_limit=SELECTED_GROUP_CHILD_LIMIT,
         )
         sections.append(
-            f'<section id="{_fragment("selected-by", str(path))}" '
-            f'data-row-count="{len(cells)}"><h2>Cells selected by {_escape(path)}</h2>'
-            f"<ul>{items}</ul></section>"
-        )
-    if not sections:
-        return (
-            '<section id="selected-cells"><h2>Cells selected by a validate path</h2>'
-            "<p>None recorded.</p></section>"
+            f'<section id="{_fragment("selected-by", str(path))}"><h2>Selected by {_escape(path)}</h2><p><strong>{selection["cell_count"]}</strong> cells were selected by {_escape(path)}. Of the selected cells in the manifest, {published_count} have published cell pages. Selected cells with no qualifying admitted row have no cell detail page and are listed as plain text.</p>'
+            f"{controls}{_grouped_cell_links(model, page, shown, collection_id=collection_id)}</section>"
         )
     return "".join(sections)
 
 
-def _recorded_cells(model: SiteModel, page: str, row: Mapping[str, Any]) -> str:
-    results = row.get("cell_results")
-    if not isinstance(results, Mapping):
-        return f"""
-        <section id="recorded-cells"><h2>Recorded cells</h2>
-          <p class="unavailable">Unavailable</p><p>The retained row has no usable cell_results.</p>
-        </section>"""
+def _grouped_cell_links(
+    model: SiteModel,
+    page: str,
+    cells: Sequence[Mapping[str, Any]],
+    *,
+    collection_id: str = "selected-cells",
+) -> str:
     rows = []
+    labels: dict[tuple[str, str, str, str], str] = {}
+    for cell in cells:
+        identity = _cell_identity(cell)
+        test = str(cell["test"])
+        _, separator, bare_test = test.rpartition("/")
+        if not separator or not bare_test:
+            raise RenderRefused(f"cell {identity!r} has no bare test label")
+        mode = str(cell["mode"])
+        backend = str(cell["backend"])
+        category = str(cell["category"])
+        label_key = (mode, backend, category, bare_test)
+        previous = labels.setdefault(label_key, identity)
+        if previous != identity:
+            raise RenderRefused(
+                f"bare test label {bare_test!r} identifies multiple cells "
+                f"in {mode}/{backend} {category!r}"
+            )
+        rows.append((mode, backend, category, bare_test, identity))
+
+    sections: dict[tuple[str, str], dict[str, list[tuple[str, str]]]] = {}
+    for mode, backend, category, bare_test, identity in sorted(rows):
+        groups = sections.setdefault((mode, backend), {})
+        groups.setdefault(category, []).append((bare_test, identity))
+
+    result = []
+    group_index = 0
+    for (mode, backend), groups in sections.items():
+        lines = []
+        for category, entries in groups.items():
+            links = ", ".join(
+                (
+                    f'<a href="{_escape(_href(page, detail_path))}">{_escape(bare_test)}</a>'
+                    if (detail_path := model.cell_paths.get(identity)) is not None
+                    else f'<span class="selected-cell-without-detail">{_escape(bare_test)}</span>'
+                )
+                for bare_test, identity in entries
+            )
+            group_id = f"g{group_index}"
+            group_index += 1
+            lines.append(
+                f'<div class="selected-cell-group" data-list-group="{group_id}" data-mode="{_escape(mode)}" data-backend="{_escape(backend)}" data-category="{_escape(category)}"><strong>{_escape(category)}:</strong> {links}</div>'
+            )
+        mode_label = mode[:1].upper() + mode[1:]
+        result.append(
+            '<section class="selected-cells-by-mode-backend" data-list-parent="1">'
+            f"<h3>{_escape(mode_label)}/{_escape(backend)}</h3>"
+            + "".join(lines)
+            + "</section>"
+        )
+    return "".join(result)
+
+
+def _not_selected_reason(cell: Mapping[str, Any] | None, path: str) -> str:
+    if path != "full" or cell is None or cell.get("not_selected_by_full_reason") is None:
+        return "No recorded reason for this validate path."
+    reason = cell["not_selected_by_full_reason"]
+    if not isinstance(reason, Mapping):
+        raise RenderRefused("validated not-selected-by-full reason is malformed")
+    keys = set(reason)
+    if keys not in ({"reason"}, {"reason", "evidence", "result"}):
+        raise RenderRefused("validated not-selected-by-full reason has unsupported fields")
+    if any(not isinstance(reason[key], str) or not reason[key] for key in keys):
+        raise RenderRefused("validated not-selected-by-full reason is incomplete")
+    values = [("Reason", str(reason["reason"]))]
+    if "evidence" in reason:
+        values.extend(
+            (("Evidence", str(reason["evidence"])), ("Result", str(reason["result"])))
+        )
+    facts = "".join(
+        f"<div><dt>{_escape(label)}</dt><dd>{_escape(value)}</dd></div>"
+        for label, value in values
+    )
+    return f"<details><summary>Recorded reason</summary><dl class=\"facts compact-facts\">{facts}</dl></details>"
+
+
+def _recorded_cells(model: SiteModel, page: str, row: Mapping[str, Any]) -> str:
+    results = row["cell_results"]
+    path_name = str(row["profile"])
+    selection = results["selected_by"].get(path_name, {"cells": ()})
+    selected_identities = {_cell_identity(cell) for cell in selection["cells"]}
+    records = []
     for cell in results["recorded"]["cells"]:
         verdict = cell["cell_verdict"]
-        compared = verdict.get("compared_log_messages")
-        info = (
-            f"left {_display(compared.get('left'))}; right {_display(compared.get('right'))}"
-            if isinstance(compared, Mapping)
-            else _display(None)
+        details = []
+        if "bitwise_parity" in verdict:
+            details.append(f"Bitwise parity: {str(verdict['bitwise_parity']).lower()}")
+        if "compared_log_messages" in verdict:
+            compared = verdict["compared_log_messages"]
+            if isinstance(compared, Mapping):
+                details.append(
+                    f"Compared INFO messages: left {compared['left']}; right {compared['right']}"
+                )
+        if verdict.get("reason"):
+            details.append(f"Reason: {verdict['reason']}")
+        identity = _cell_identity(cell)
+        detail_path = model.cell_paths.get(identity)
+        records.append(
+            {
+                "cell": identity,
+                "details": details,
+                "href": None if detail_path is None else _href(page, detail_path),
+                "selected": identity in selected_identities,
+                "selection_reason": _not_selected_reason(
+                    model.cell_by_id.get(identity), path_name
+                ),
+                "test_result": row["result"],
+                "tier": verdict["comparison_tier"],
+                "verdict": verdict["state"],
+            }
         )
-        rows.append(
-            f'<tr data-recorded-cell-row="1"><th scope="row">{_run_cell_link(model, page, cell)}</th>'
-            f"<td>{_display(verdict.get('state'))}</td><td>{_display(verdict.get('bitwise_parity'))}</td>"
-            f"<td>{info}</td><td>{_display(verdict.get('comparison_tier'))}</td></tr>"
+
+    selected_records = [record for record in records if record["selected"]]
+    other_records = [record for record in records if not record["selected"]]
+
+    def row_html(record: Mapping[str, Any], *, include_reason: bool) -> str:
+        attributes = _collection_item_attributes(
+            filters={
+                "test_result": record["test_result"],
+                "verdict": record["verdict"],
+                "tier": record["tier"],
+            },
+            sorts={
+                "cell": record["cell"],
+                "details": " ".join(record["details"]),
+            },
+        )
+        cell = (
+            f'<a href="{_escape(record["href"])}"><code>{_escape(record["cell"])}</code></a>'
+            if record["href"] is not None
+            else f'<code>{_escape(record["cell"])}</code>'
+        )
+        details = "<br>".join(_escape(value) for value in record["details"])
+        reason = f'<td>{record["selection_reason"]}</td>' if include_reason else ""
+        return (
+            f'<tr data-recorded-cell-row="1" {attributes}><th scope="row">{cell}</th>'
+            f'<td>{_escape(record["test_result"])}</td><td>{_escape(record["verdict"])}</td>'
+            f'<td>{_escape(record["tier"])}</td><td>{details}</td>{reason}</tr>'
+        )
+
+    def headings(*, include_reason: bool) -> str:
+        values = [
+            _column_heading(
+                "Cell",
+                "The complete test, mode, and backend identity recorded in this validation row.",
+                sort="cell",
+                sort_kind="list",
+            ),
+            _column_heading(
+                "TEST-RESULT",
+                "The process result recorded for this cell execution.",
+                sort="test_result",
+                sort_kind="list",
+            ),
+            _column_heading(
+                "COMMIT-VERDICT",
+                "Whether the recorded comparison supports the declared compatibility result at this commit.",
+                sort="verdict",
+                sort_kind="list",
+            ),
+            _column_heading(
+                "Comparison tier",
+                "The recorded comparison strength used to establish this cell verdict.",
+                sort="tier",
+                sort_kind="list",
+            ),
+            _column_heading(
+                "Recorded comparison details",
+                "The retained parity counts, reason, and other evidence used by the verdict.",
+                sort="details",
+                sort_kind="list",
+            ),
+        ]
+        if include_reason:
+            values.append(
+                _column_heading(
+                    f"Why not selected by {path_name}",
+                    f"The recorded reason this cell was not selected by the {path_name} validate path, when that reason exists.",
+                )
+            )
+        return "".join(values)
+
+    def controls(
+        subset: Sequence[Mapping[str, Any]], collection_id: str, prefix: str, noun: str
+    ) -> str:
+        return _collection_controls(
+            collection_id,
+            prefix,
+            noun,
+            filters=(
+                (
+                    "test_result",
+                    "TEST-RESULT",
+                    tuple(sorted({str(record["test_result"]) for record in subset})),
+                ),
+                (
+                    "verdict",
+                    "COMMIT-VERDICT",
+                    tuple(sorted({str(record["verdict"]) for record in subset})),
+                ),
+                (
+                    "tier",
+                    "Comparison tier",
+                    tuple(sorted({str(record["tier"]) for record in subset})),
+                ),
+            ),
+            sorts=(
+                ("recorded", "Recorded order"),
+                ("cell", "Cell"),
+                ("test_result", "TEST-RESULT"),
+                ("verdict", "COMMIT-VERDICT"),
+                ("tier", "Comparison tier"),
+                ("details", "Recorded comparison details"),
+            ),
+            default_sort="recorded",
+            filter_sources={
+                "test_result": "value:test_result",
+                "verdict": "value:verdict",
+                "tier": "value:tier",
+            },
+            sort_sources={
+                "recorded": "ordinal",
+                "cell": "value:cell",
+                "test_result": "value:test_result",
+                "verdict": "value:verdict",
+                "tier": "value:tier",
+                "details": "value:details",
+            },
+            sort_in_table=True,
+            item_count=len(subset),
+        )
+
+    sections = []
+    if selected_records:
+        inline_records = [
+            {key: value for key, value in record.items() if key not in {"selected", "selection_reason"}}
+            for record in selected_records
+        ]
+        sections.append(
+            f'<section id="recorded-cells"><h2>Recorded results for cells selected by {_escape(path_name)}</h2>'
+            f'<p>{len(selected_records)} selected cells have recorded results in this ledger row.</p>'
+            f'{controls(selected_records, "recorded-cells", "recorded_", "recorded selected cells")}'
+            f'<div class="table-scroll"><table><caption>TEST-RESULT and COMMIT-VERDICT are separate adjacent columns.</caption><thead><tr>{headings(include_reason=False)}</tr></thead>'
+            f'<tbody data-list-target="recorded-cells">{"".join(row_html(record, include_reason=False) for record in selected_records[:LIST_PAGE_SIZE])}</tbody></table></div>'
+            f'<template data-list-records="recorded-cells"><span data-list-records-json>{_escape(_canonical(inline_records))}</span></template></section>'
+        )
+    if other_records:
+        sections.append(
+            f'<section id="recorded-not-selected"><h2>Recorded but not selected by {_escape(path_name)}</h2>'
+            f'<p>{len(other_records)} recorded cells are absent from this run\'s {_escape(path_name)} selection.</p>'
+            f'{controls(other_records, "recorded-not-selected", "recorded_other_", "recorded cells not selected by this path")}'
+            f'<div class="table-scroll"><table><caption>Recorded cell results outside this run\'s named selection.</caption><thead><tr>{headings(include_reason=True)}</tr></thead>'
+            f'<tbody>{"".join(row_html(record, include_reason=True) for record in other_records)}</tbody></table></div></section>'
         )
     artifact = results["recorded"]["artifact"]
-    return f"""
-    <section id="recorded-cells" data-row-count="{len(rows)}">
-      <h2>Recorded cells</h2>
-      <p>Artifact rows: {_escape(artifact['row_count'])}; artifact digest <code>{_escape(artifact['sha256'])}</code>.</p>
-      <div class="table-scroll"><table>
-        <caption>Recorded cells and their retained cell verdict fields.</caption>
-        <thead><tr><th scope="col">Cell</th><th scope="col">Cell verdict state</th>
-        <th scope="col">Bitwise parity</th><th scope="col">Compared INFO messages</th>
-        <th scope="col">Comparison tier</th></tr></thead><tbody>{"".join(rows)}</tbody>
-      </table></div>
-    </section>"""
+    summary = (
+        f'<section id="recorded-cell-results"><h2>Recorded cell results</h2><p>Artifact rows: {artifact["row_count"]}; '
+        f'artifact digest <code>{_escape(artifact["sha256"])}</code>.</p></section>'
+    )
+    return summary + "".join(sections)
 
 
-def _run_page(model: SiteModel, row: Mapping[str, Any]) -> bytes:
-    identity = str(row["history_row_sha256"])
-    page = model.run_paths[identity]
-    results = row.get("cell_results")
-    current = identity in model.current_history_ids
-    if isinstance(results, Mapping):
-        result_details = f"""
-        <div><dt>Cell-results run id</dt><dd><code>{_escape(results['run_id'])}</code></dd></div>
-        <div><dt>Cell-results Hermit SHA</dt><dd><code>{_escape(results['hermit_sha'])}</code></dd></div>
-        <div><dt>Population digest</dt><dd><code>{_escape(results['population_sha256'])}</code></dd></div>
-        <div><dt>Source tree dirty</dt><dd>{_escape(str(results['source_tree_dirty']).lower())}</dd></div>"""
-    else:
-        result_details = (
-            '<div><dt>Cell results</dt><dd><span class="unavailable">Unavailable</span>'
-            '<span class="secondary">This retained history row has no usable cell_results.</span></dd></div>'
-        )
-    content = f"""
+def _run_page(model: SiteModel, index: int, row: Mapping[str, Any]) -> bytes:
+    page = model.history_paths[index]
+    current = index in model.current_history_indices
+    results = row["cell_results"]
+    run_number = _positive_run_number(row)
+    run_number_fact = (
+        f"<div><dt>Run number</dt><dd>{run_number}</dd></div>"
+        if run_number is not None
+        else ""
+    )
+    run_label = _run_display_label(row)
+    correction_links = _correction_partner_links(model, page, index)
+    correction_fact = (
+        f"<div><dt>Correction chain</dt><dd>{correction_links}</dd></div>"
+        if correction_links
+        else ""
+    )
+    facts = f"""
     <section id="run-facts"><h2>Retained validation row</h2>
-      <dl class="facts">
-        <div><dt>Record</dt><dd>{'Current' if current else 'Historical'}</dd></div>
-        <div><dt>Run id</dt><dd><code>{_display(row.get('run_id'))}</code></dd></div>
-        <div><dt>Record id</dt><dd><code>{_display(row.get('record_id'))}</code></dd></div>
-        <div><dt>Validate path</dt><dd>{_escape(row['profile'])}</dd></div>
-        <div><dt>Selection mode</dt><dd>{_escape(row['selection_mode'])}</dd></div>
-        <div><dt>Whole-run result</dt><dd>{_display(row.get('result'))}</dd></div>
-        <div><dt>Hermit commit</dt><dd><code>{_escape(row['commit'])}</code></dd></div>
-        <div><dt>Started</dt><dd>{_display(row.get('started_at'))}</dd></div>
-        <div><dt>Finished</dt><dd>{_display(row.get('finished_at'))}</dd></div>
-        <div><dt>Ledger schema</dt><dd>{_escape(row['schema_version'])}</dd></div>
-        <div><dt>History row digest</dt><dd><code>{_escape(identity)}</code></dd></div>
-        {result_details}
-      </dl>
-    </section>
-    {_selected_groups(model, page, row)}
-    {_recorded_cells(model, page, row)}
-    <section class="notice" aria-labelledby="run-unavailable"><h2 id="run-unavailable">Unavailable from Stage 1 artifacts</h2>
-      <ul><li>Historical invocation</li><li>Raw retained logs</li><li>Syscall histogram</li></ul>
-    </section>"""
-    title = str(row.get("run_id") or identity)
+      <p>{_escape(_ledger_record_explanation(current))}</p><dl class="facts">
+      <div><dt>Ledger record</dt><dd>{_ledger_record_label(current)}</dd></div>
+      {correction_fact}
+      {run_number_fact}
+      <div><dt>Run id</dt><dd><code>{_escape(row['run_id'])}</code></dd></div>
+      <div><dt>Record id</dt><dd><code>{_escape(row['record_id'])}</code></dd></div>
+      <div><dt>Validate path</dt><dd>{_escape(row['profile'])}</dd></div>
+      <div><dt>Selection mode</dt><dd>{_escape(row['selection_mode'])}</dd></div>
+      <div><dt>Whole-run result</dt><dd>{_escape(row['result'])}</dd></div>
+      <div><dt>Hermit commit</dt><dd>{_hermit_commit_link(row['commit'])}</dd></div>
+      <div><dt>Started</dt><dd>{_time_element(row['started_at'], 'validation run started_at')}</dd></div>
+      <div><dt>Wall clock</dt><dd>{_escape(_duration_seconds(row.get('real_seconds'), 'validation run real_seconds'))}</dd></div>
+      <div><dt>Ledger schema</dt><dd>{_escape(row['schema_version'])}</dd></div>
+      <div><dt>History row digest</dt><dd><code>{_escape(row['history_row_sha256'])}</code></dd></div>
+      <div><dt>Cell-results run id</dt><dd><code>{_escape(results['run_id'])}</code></dd></div>
+      <div><dt>Cell-results Hermit SHA</dt><dd>{_hermit_commit_link(results['hermit_sha'])}</dd></div>
+      <div><dt>Population digest</dt><dd><code>{_escape(results['population_sha256'])}</code></dd></div>
+      <div><dt>Source tree dirty</dt><dd>{_escape(str(results['source_tree_dirty']).lower())}</dd></div>
+    </dl></section>"""
+    content = (
+        facts + _selected_groups(model, page, row) + _recorded_cells(model, page, row)
+    )
     return _layout(
         page,
-        title,
-        "One retained validation history row. Whole-run result and per-cell verdict remain separate.",
+        run_label,
+        "One admitted validation history row. Whole-run result and per-cell verdict remain separate.",
         content,
         (
             ("Overview", "index.html"),
-            ("Validation runs", "index.html#validation-runs"),
-            (title, None),
+            ("Validation runs", "runs/index.html"),
+            (run_label, None),
         ),
         model.wording,
     )
 
 
-def _affected_evidence(model: SiteModel, page: str, row: Mapping[str, Any]) -> str:
-    values = []
-    cell = row.get("cell")
-    if cell is not None:
-        values.append(_cell_link(model, page, str(cell)))
-    run_path = _incomplete_run_path(model, row)
-    if run_path is not None:
-        values.append(
-            f'<a href="{_escape(_href(page, run_path))}">validation history row</a>'
-        )
-    elif row.get("run_id") is not None or row.get("record_id") is not None:
-        values.append(
-            '<span class="unavailable">Matching validation history row unavailable</span>'
-        )
-    for field in ("run_id", "record_id", "event_id", "path", "schema"):
-        if row.get(field) is not None:
-            values.append(f"{_escape(field)}={_escape(row[field])}")
-    return "<br>".join(values) if values else "All affected data"
+_BROWSER_FLAG_KEYS = frozenset({"admitted", "measured", "never_measured", "state"})
 
 
-def _incomplete_page(model: SiteModel) -> bytes:
-    page = "incomplete-data/index.html"
-    rows = []
-    for index, row in enumerate(model.incomplete):
-        rows.append(
-            f'<tr id="incomplete-{index}" data-incomplete-row="1">'
-            f"<td>{_escape(row['input'])}</td><td>{_escape(row['field'])}</td>"
-            f"<td>{_escape(row['reason'])}</td><td>{_affected_evidence(model, page, row)}</td></tr>"
+def _browser_copy(value: Any) -> Any:
+    """Copy JSON data, refusing unexpected reducer-only browser flags."""
+    if isinstance(value, Mapping):
+        result: dict[str, Any] = {}
+        for raw_key, item in value.items():
+            key = str(raw_key)
+            if key in _BROWSER_FLAG_KEYS:
+                raise RenderRefused(
+                    f"browser record contains an unexpected {key!r} field"
+                )
+            result[key] = _browser_copy(item)
+        return result
+    if isinstance(value, (list, tuple)):
+        return [_browser_copy(item) for item in value]
+    return value
+
+
+def _assert_browser_record(value: Any, label: str) -> None:
+    if isinstance(value, Mapping):
+        forbidden = _BROWSER_FLAG_KEYS.intersection(str(key) for key in value)
+        if forbidden:
+            raise RenderRefused(
+                f"{label} contains reducer-only browser keys: {sorted(forbidden)!r}"
+            )
+        for key, item in value.items():
+            _assert_browser_record(item, f"{label}.{key}")
+    elif isinstance(value, (list, tuple)):
+        for index, item in enumerate(value):
+            _assert_browser_record(item, f"{label}[{index}]")
+
+
+def _series_run_reference(
+    model: SiteModel, cell: Mapping[str, Any], row: Mapping[str, Any]
+) -> dict[str, Any] | None:
+    if row["producer"] != "validate":
+        return None
+    event_id = str(row["event_id"])
+    reference = model.event_run_references.get(event_id)
+    if reference is None:
+        raise RenderRefused(f"validate series event {event_id!r} has no exact run link")
+    if (
+        reference["run_id"] != row["run_id"]
+        or reference["commit"] != row["series"]["tree"]
+    ):
+        raise RenderRefused(
+            f"validate series event {event_id!r} disagrees with its run link"
         )
+    return _browser_run_reference(reference)
+
+
+def _browser_cell_record(model: SiteModel, cell: Mapping[str, Any]) -> dict[str, Any]:
+    identity = str(cell["cell"])
+    browser_data = _browser_copy(
+        {key: value for key, value in cell.items() if key != "state"}
+    )
+    for field in ("latest_result", "latest_result_time", "latest_result_tree"):
+        browser_data.setdefault(field, None)
+    evidence = []
+    for row in model.series_by_cell[identity]:
+        item = _browser_copy(row)
+        item["anchor"] = _fragment("event", str(row["event_id"]))
+        item["raw_path"] = "data/runs.json.gz"
+        run = _series_run_reference(model, cell, row)
+        if run is not None:
+            item["run"] = run
+        evidence.append(item)
+    selection: dict[str, list[dict[str, Any]]] = {}
+    for path, facts in sorted(cell["selected_by"].items()):
+        selected_facts = []
+        for fact in facts:
+            key = (identity, str(path), str(fact["run_id"]), str(fact["tree"]))
+            reference = model.selection_run_references.get(key)
+            if reference is None:
+                raise RenderRefused(
+                    "a selected_by fact did not match one exact terminal validation row"
+                )
+            selected_fact = _browser_copy(fact)
+            selected_fact["run"] = _browser_run_reference(reference)
+            selected_facts.append(selected_fact)
+        selection[str(path)] = selected_facts
+    result = {
+        "data": browser_data,
+        "digest": _full_digest(identity),
+        "evidence": evidence,
+        "identity": identity,
+        "kind": "cell",
+        "raw_path": "data/cells.json.gz",
+        "selection": selection,
+    }
+    _assert_browser_record(result, f"cell {identity!r}")
+    return result
+
+
+def _browser_test_record(
+    model: SiteModel,
+    test: Mapping[str, Any],
+    omission_ids: frozenset[str],
+) -> dict[str, Any]:
+    identity = str(test["id"])
+    published = [str(cell) for cell in test["cells"] if str(cell) in model.cell_by_id]
+    cell_digests = [
+        _full_digest(identity) for identity in published if identity in model.cell_paths
+    ]
+    omitted = [str(cell) for cell in test["cells"] if str(cell) in omission_ids]
+    if len(published) + len(omitted) != len(test["cells"]):
+        raise RenderRefused(
+            f"test {identity!r} does not reconcile to cells and omissions"
+        )
+    result = {
+        "cell_digests": cell_digests,
+        "data": _browser_copy(test),
+        "digest": _full_digest(identity),
+        "identity": identity,
+        "kind": "test",
+        "omitted_cells": omitted,
+        "raw_path": "data/tests.json.gz",
+    }
+    _assert_browser_record(result, f"test {identity!r}")
+    return result
+
+
+def _recent_passing_execution(
+    model: SiteModel, cell: Mapping[str, Any]
+) -> dict[str, Any] | None:
+    """Return counts only for the exact validate-to-verdict join we can prove."""
+    if cell.get("latest_result") != "pass":
+        return None
+    event_ids = cell.get("latest_event_ids")
+    if not isinstance(event_ids, Sequence) or isinstance(event_ids, (str, bytes)):
+        return None
+    if len(event_ids) != 1:
+        return None
+    event_id = str(event_ids[0])
+    rows = [
+        row
+        for row in model.series_by_cell[str(cell["cell"])]
+        if str(row["event_id"]) == event_id
+    ]
+    if len(rows) != 1:
+        return None
+    row = rows[0]
+    if row.get("producer") != "validate" or row.get("product_result") != "pass":
+        return None
+    reference = model.event_run_references.get(event_id)
+    if reference is None:
+        return None
+    if reference.get("run_id") != row.get("run_id") or reference.get("commit") != row[
+        "series"
+    ].get("tree"):
+        return None
+
+    path = str(reference["selection"])
+    selection_facts = cell.get("selected_by", {}).get(path, ())
+    matching_facts = [
+        fact
+        for fact in selection_facts
+        if fact.get("run_id") == row.get("run_id")
+        and fact.get("tree") == row["series"].get("tree")
+    ]
+    if len(matching_facts) != 1 or matching_facts[0].get("event_ids") != [event_id]:
+        return None
+
+    history_indices = [
+        index
+        for index, candidate_path in enumerate(model.history_paths)
+        if candidate_path == reference.get("path")
+    ]
+    if len(history_indices) != 1:
+        return None
+    history = model.history_rows[history_indices[0]]
+    if (
+        history.get("run_id") != row.get("run_id")
+        or history.get("commit") != row["series"].get("tree")
+        or history.get("profile") != path
+        or history.get("history_row_sha256") != reference.get("history_row_sha256")
+    ):
+        return None
+    verdict_rows = [
+        candidate
+        for candidate in history["cell_results"]["recorded"]["cells"]
+        if _cell_identity(candidate) == str(cell["cell"])
+        and candidate.get("category") == cell.get("category")
+        and candidate.get("lane") == cell.get("lane")
+    ]
+    if len(verdict_rows) != 1:
+        return None
+    verdict = verdict_rows[0]["cell_verdict"]
+    comparison = verdict.get("comparison")
+    counts = verdict.get("compared_log_messages")
+    if (
+        verdict.get("state") != "compared-and-matched"
+        or verdict.get("bitwise_parity") is not True
+        or not isinstance(comparison, Mapping)
+        or comparison.get("log_scope") != "info"
+        or not isinstance(counts, Mapping)
+    ):
+        return None
+    left = counts.get("left")
+    right = counts.get("right")
+    if (
+        type(left) is not int
+        or type(right) is not int
+        or left <= 0
+        or right <= 0
+        or left != right
+    ):
+        return None
+
+    runtime = row["series"].get("runtime")
+    if not isinstance(runtime, Mapping):
+        return None
+    syscall_counts: list[int] = []
+    for name in ("run1", "run2"):
+        measurement = runtime.get(name)
+        if not isinstance(measurement, Mapping):
+            return None
+        syscalls = measurement.get("syscalls")
+        if type(syscalls) is not int or syscalls < 0:
+            return None
+        syscall_counts.append(syscalls)
+
+    series = row["series"]
+    result: dict[str, Any] = {
+        "attempt": series.get("attempt"),
+        "emitted_at": row["emitted_at"],
+        "event_id": event_id,
+        "info_messages_run1": left,
+        "info_messages_run2": right,
+        "run": _browser_run_reference(reference),
+        "run_index": series["run_index"],
+        "syscalls_run1": syscall_counts[0],
+        "syscalls_run2": syscall_counts[1],
+    }
+    return result
+
+
+def _browser_summary(model: SiteModel, omission_ids: frozenset[str]) -> dict[str, Any]:
+    omissions = tuple(model.data["projection_audit"]["deliberate_omissions"])
+    omission_by_test = Counter(str(item["test"]) for item in omissions)
+    cells = [
+        {
+            "backend": cell["backend"],
+            "category": cell["category"],
+            "cell": cell["cell"],
+            "digest": _full_digest(str(cell["cell"])),
+            "lane": cell["lane"],
+            "latest_result": cell.get("latest_result"),
+            "latest_result_time": cell.get("latest_result_time"),
+            "latest_result_tree": cell.get("latest_result_tree"),
+            "mode": cell["mode"],
+            "not_selected_by_full_reason": cell["not_selected_by_full_reason"],
+            "physical_row_count": cell["physical_row_count"],
+            "recent_passing_execution": _recent_passing_execution(model, cell),
+            "qualifying_physical_row_count": cell["qualifying_physical_row_count"],
+            "qualifying_represented_run_count": cell[
+                "qualifying_represented_run_count"
+            ],
+            "represented_run_count": cell["represented_run_count"],
+            "selected_by_full": cell["selected_by_full"],
+            "selected_by_paths": sorted(str(path) for path in cell["selected_by"]),
+            "series_filter_facets": [
+                _series_filter_evidence(row)
+                for row in model.series_by_cell[str(cell["cell"])]
+            ],
+            "test": cell["test"],
+            "url": model.cell_paths.get(str(cell["cell"])),
+        }
+        for cell in model.cells
+    ]
+    tests = []
+    for test in model.tests:
+        identity = str(test["id"])
+        published = [
+            str(cell) for cell in test["cells"] if str(cell) in model.cell_by_id
+        ]
+        omitted_count = omission_by_test[identity]
+        if len(published) + omitted_count != len(test["cells"]):
+            raise RenderRefused(f"test {identity!r} cell counts do not reconcile")
+        tests.append(
+            {
+                "category": test["category"],
+                "digest": _full_digest(identity),
+                "id": identity,
+                "lane": test["lane"],
+                "manifest_cell_count": len(test["cells"]),
+                "omission_count": omitted_count,
+                "published_cell_count": len(published),
+                "qualifying_zero_cell_count": sum(
+                    model.cell_by_id[cell]["qualifying_physical_row_count"] == 0
+                    for cell in published
+                ),
+                "url": model.test_paths[identity],
+            }
+        )
+    runs = []
+    for index, row in enumerate(model.history_rows):
+        selected = row["cell_results"]["selected_by"].get(
+            row["profile"], {"cell_count": 0}
+        )
+        run: dict[str, Any] = {
+            "commit": row["commit"],
+            "digest": PurePosixPath(model.history_paths[index]).stem,
+            "finished_at": row["finished_at"],
+            "history_row_sha256": row["history_row_sha256"],
+            "path": model.history_paths[index],
+            "record": (
+                "current" if index in model.current_history_indices else "historical"
+            ),
+            "recorded_cell_count": row["cell_results"]["recorded"]["cell_count"],
+            "result": row["result"],
+            "run_id": row["run_id"],
+            "selected_cell_count": selected["cell_count"],
+            "selection": row["profile"],
+            "started_at": row["started_at"],
+        }
+        run_number = _positive_run_number(row)
+        if run_number is not None:
+            run["run_number"] = str(run_number)
+        runs.append(run)
+    if (
+        len(model.cells) + len(omissions)
+        != model.data["counts"]["in_manifest_cell_count"]
+    ):
+        raise RenderRefused("browser cell and omission counts do not reconcile")
+    browser_omissions = []
+    for omission in omissions:
+        item = _browser_copy(omission)
+        item["anchor"] = _fragment("omission", str(omission["cell"]))
+        item["display_reason"] = _omission_summary(model, omission)
+        for reference in item["event_references"]:
+            reference["anchor"] = _fragment("event", str(reference["event_id"]))
+        browser_omissions.append(item)
+    result = {
+        "cells": cells,
+        "counts": _browser_copy(model.data["counts"]),
+        "custom_commands": _browser_copy(model.custom_commands),
+        "omissions": browser_omissions,
+        "projection_audit": _browser_copy(model.data["projection_audit"]),
+        "provenance": _browser_copy(model.data["provenance"]),
+        "raw_artifacts": [
+            {"label": "Stage 1 build", "path": "build.json"},
+            {"label": "Stage 1 cells", "path": "data/cells.json.gz"},
+            {"label": "Stage 1 runs", "path": "data/runs.json.gz"},
+            {"label": "Stage 1 tests", "path": "data/tests.json.gz"},
+        ],
+        "recorded_outside_manifest": _browser_copy(model.recorded_outside_manifest),
+        "runs": runs,
+        "schema_version": BROWSER_SCHEMA_VERSION,
+        "tests": tests,
+    }
+    _assert_browser_record(result, "site summary")
+    return result
+
+
+def _browser_json_bytes(value: Any) -> bytes:
+    writer = _writer()
+    try:
+        return writer._json_bytes(value) + b"\n"
+    except writer.WriteRefused as error:
+        raise RenderRefused(
+            f"browser payload is not canonical JSON: {error}"
+        ) from error
+
+
+def _browser_data_files(model: SiteModel) -> dict[str, bytes]:
+    omissions = tuple(model.data["projection_audit"]["deliberate_omissions"])
+    omission_ids = frozenset(str(item["cell"]) for item in omissions)
+    if omission_ids.intersection(model.cell_by_id):
+        raise RenderRefused("browser cells and deliberate omissions overlap")
+    if omission_ids | set(model.cell_by_id) != model.manifest_cell_ids:
+        raise RenderRefused(
+            "browser cells and deliberate omissions do not exhaust manifest"
+        )
+
+    records: list[dict[str, Any]] = []
+    records.extend(
+        _browser_cell_record(model, cell)
+        for cell in model.cells
+        if str(cell["cell"]) in model.cell_paths
+    )
+    records.extend(
+        _browser_test_record(model, test, omission_ids) for test in model.tests
+    )
+    shards: dict[str, list[dict[str, Any]]] = {
+        prefix: [] for prefix in "0123456789abcdef"
+    }
+    for record in sorted(
+        records, key=lambda item: (str(item["digest"]), str(item["kind"]))
+    ):
+        digest = str(record["digest"])
+        if HEX_SHA256.fullmatch(digest) is None:
+            raise RenderRefused("browser detail record digest is invalid")
+        shards[digest[0]].append(record)
+
+    decoded: dict[str, bytes] = {
+        "data/site-summary.json.gz": _browser_json_bytes(
+            _browser_summary(model, omission_ids)
+        )
+    }
+    for prefix, shard_records in shards.items():
+        decoded[f"data/detail-{prefix}.json.gz"] = _browser_json_bytes(
+            {
+                "records": shard_records,
+                "schema_version": BROWSER_SCHEMA_VERSION,
+            }
+        )
+    artifacts = [
+        {
+            "decoded_bytes": len(value),
+            "decoded_sha256": hashlib.sha256(value).hexdigest(),
+            "path": path,
+        }
+        for path, value in sorted(decoded.items())
+    ]
+    manifest = _browser_json_bytes(
+        {"artifacts": artifacts, "schema_version": BROWSER_SCHEMA_VERSION}
+    )
+    writer = _writer()
+    return {
+        "data/site-manifest.json.gz": writer._gzip_bytes(manifest),
+        **{path: writer._gzip_bytes(value) for path, value in sorted(decoded.items())},
+    }
+
+
+def _detail_shell(model: SiteModel, kind: str) -> bytes:
+    if kind == "cell":
+        page = "cells/detail.html"
+        title = "Cell detail"
+        lead = (
+            "One manifest cell, its recorded evidence, and separate qualifying counts."
+        )
+        breadcrumbs = (
+            ("Overview", "index.html"),
+            ("Cells", "cells/index.html"),
+            (title, None),
+        )
+    elif kind == "test":
+        page = "tests/detail.html"
+        title = "Test detail"
+        lead = "One manifest test and its cells."
+        breadcrumbs = (
+            ("Overview", "index.html"),
+            ("Tests", "index.html#tests"),
+            (title, None),
+        )
+    else:
+        raise RenderRefused(f"unsupported detail shell {kind!r}")
+    fallback_provenance = "" if model.wording.disclosure else _provenance(model, page)
     content = f"""
-    <section id="incomplete-entries" data-row-count="{len(rows)}">
-      <h2>All incomplete-data entries</h2>
-      <p>Missing evidence is shown as unavailable, never as zero or as a stored measured flag.</p>
-      <div class="table-scroll"><table>
-        <caption>Every Stage 1 fact this static site cannot render completely.</caption>
-        <thead><tr><th scope="col">Input</th><th scope="col">Field</th>
-        <th scope="col">Reason</th><th scope="col">Affected evidence</th></tr></thead>
-        <tbody>{"".join(rows)}</tbody>
-      </table></div>
-    </section>"""
+    <section id="browser-detail" data-detail-kind="{_escape(kind)}">
+      <p class="data-status" data-load-status data-load-state="loading" role="status">Loading verified local data…</p>
+      <div data-detail-content></div>
+      <noscript><p class="notice">JavaScript is required to open this query-addressed detail.</p></noscript>
+    </section>
+    {fallback_provenance}"""
     return _layout(
         page,
-        "Incomplete data",
-        "Recorded gaps in the facts available to the compatibility site.",
+        title,
+        lead,
         content,
-        (("Overview", "index.html"), ("Incomplete data", None)),
+        breadcrumbs,
         model.wording,
+        page_kind=f"{kind}-detail",
+        show_page_heading=False,
     )
 
 
@@ -1938,10 +3146,15 @@ def _site_javascript() -> bytes:
     except OSError as error:
         raise RenderRefused(f"cannot read {SITE_JS_PATH}: {error}") from error
     lowered = value.lower()
+    hermit_commit_base = b"https://github.com/rrnewton/hermit/commit/"
+    if lowered.count(hermit_commit_base) != 1:
+        raise RenderRefused(
+            "site JavaScript must contain exactly one reviewed Hermit commit link base"
+        )
+    audited = lowered.replace(hermit_commit_base, b"")
     forbidden = (
         b"http:",
         b"https:",
-        b"fetch(",
         b"xmlhttprequest",
         b"websocket",
         b"innerhtml",
@@ -1950,10 +3163,8 @@ def _site_javascript() -> bytes:
         b"document.write",
         b"eval(",
     )
-    if not value or any(token in lowered for token in forbidden):
-        raise RenderRefused(
-            "site JavaScript is empty, uses HTML injection, or requests a resource"
-        )
+    if not value or any(token in audited for token in forbidden):
+        raise RenderRefused("site JavaScript is empty or uses an unsafe API")
     if b"textcontent" not in lowered:
         raise RenderRefused(
             "site JavaScript does not use textContent for visible updates"
@@ -1972,28 +3183,34 @@ def _site_favicon() -> bytes:
 
 
 def render_site(
-    build: Mapping[str, Any],
-    data: Mapping[str, Any],
-    *,
-    wording: str = "fixture",
+    build: Mapping[str, Any], data: Mapping[str, Any], *, wording: str = "fixture"
 ) -> dict[str, bytes]:
     model = _site_model(build, data, wording=wording)
     files = {
         "assets/favicon.svg": _site_favicon(),
         "assets/site.css": _site_css(),
         "assets/site.js": _site_javascript(),
+        "cells/detail.html": _detail_shell(model, "cell"),
         "cells/index.html": _cells_index(model),
-        "incomplete-data/index.html": _incomplete_page(model),
+        "cells/never-measured.html": _never_measured_index(model),
+        "cells/projection-audit.html": _projection_audit_page(model),
         "index.html": _landing_page(model),
+        "runs/index.html": _runs_index(model),
+        "tests/custom-commands.html": _custom_commands_page(model),
+        "tests/detail.html": _detail_shell(model, "test"),
+        **_browser_data_files(model),
     }
-    for identity, path in model.cell_paths.items():
-        files[path] = _cell_page(model, identity)
-    for identity, path in model.test_paths.items():
-        files[path] = _test_page(model, identity)
-    for row in model.history_rows:
-        identity = str(row["history_row_sha256"])
-        files[model.run_paths[identity]] = _run_page(model, row)
-    return dict(sorted(files.items()))
+    for index, row in enumerate(model.history_rows):
+        files[model.history_paths[index]] = _run_page(model, index, row)
+    files = dict(sorted(files.items()))
+    retired_placeholder = b"Unavail" + b"able"
+    if any(
+        retired_placeholder in value
+        for path, value in files.items()
+        if path.endswith(".html")
+    ):
+        raise RenderRefused("rendered output contains a retired placeholder")
+    return files
 
 
 def render_page(build: Mapping[str, Any], data: Mapping[str, Any]) -> bytes:
@@ -2116,7 +3333,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""This prototype always labels every page as fixture data. It reads the exact
-five-file Stage 1 artifact tree, writes only local JavaScript, performs no
+four-file Stage 1 artifact tree, writes only local JavaScript, performs no
 network request, and refuses an existing output directory.
 
 Example:
@@ -2128,7 +3345,7 @@ Example:
         "--artifacts",
         required=True,
         type=Path,
-        help="exact five-file Stage 1 fixture artifact directory",
+        help="exact four-file Stage 1 fixture artifact directory",
     )
     parser.add_argument(
         "--output",

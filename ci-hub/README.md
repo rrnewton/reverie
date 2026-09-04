@@ -91,6 +91,15 @@ reuses the exact output, reports its identities on stderr, and then serves it.
 ./ci-hub/ci-hub compatibility-website build
 ./ci-hub/ci-hub compatibility-website serve --root /absolute/path/to/dev-hermit-compatibility-website/FRESHNESS_SHA256
 ./ci-hub/ci-hub compatibility-website
+
+# Build one immutable historical snapshot from published ledger and series bytes.
+./ci-hub/ci-hub compatibility-website build-historical \
+  --parent /absolute/path/to/dev-hermit \
+  --parent-commit 5bfa5d91f56e380631a549bf8dcf58631c97dabd \
+  --record-id devbig014-1788153725-3415639 \
+  --run-id validate-mega-lander-69b08cd09a60-1788152123591813608-3265480-d6eafa4c \
+  --manifest-hermit /absolute/path/to/hermit-pr2880 \
+  --manifest-commit bc04aa922e806e99222ee03ac81c87495be41f20
 ```
 
 The `build` result's `path` field is the absolute value to pass to
@@ -119,6 +128,57 @@ stderr. Long-running `serve` and default `build-and-serve` do not add wrapper
 cost lines to their stream contracts. The generated pages keep cells in the manifest distinct
 from cells selected by each named validate path; no selection aggregate without
 its validate path is introduced.
+
+`build-historical` is a separate, fail-closed path. Its `--parent-commit` must
+be a full commit, not a moving branch or date. It copies only the tracked
+published ledger, ledger-recovery, and series bytes at that commit; it does not
+read live or retained spools. One bounded
+`compatibility-website-projection` invocation deserializes the exact captured
+manifest, HistoryRow JSONL, and SeriesRow JSONL through their shared Rust types.
+That Rust boundary applies correction semantics, requires the named
+`--record-id` and `--run-id` to identify one unique terminal row, decides
+projection and product results, and emits the deliberately public shape.
+Python packages that opaque validated result; it does not define or select any
+of those source schemas. The manifest comes from the separate clean checkout
+and exact `--manifest-commit`; that commit is not represented as the commit
+measured by the named run.
+
+The historical reader records the clean Hermit checkout that actually ran the
+export separately from the Hermit gitlink recorded by the generator's own base
+commit. Those commits may differ only on this historical path; the ordinary
+live build still requires them to match. The historical build binds the actual
+checkout to the manifest-source checkout, binds the gitlink to the exact
+generator commit in the source provenance, and retains the older ledger commit
+and its Hermit gitlink separately. It publishes both generator-side Hermit
+commits plus the exact reader-file and source-identity digests. It refuses a
+missing, dirty, or differently identified actual checkout.
+
+Every generated historical page carries a collapsed disclosure titled **Full
+snapshot provenance (YYYY-MM-DD HH:MM ET)**. Its timestamp is the selected
+validation row's required UTC RFC3339 `finished_at`, converted with the IANA
+`America/New_York` time zone; it is not the website generation time. The
+disclosure names the ledger ref and resolved commit, source row and run,
+validate path, exact cell count selected by full, measured Hermit commit,
+manifest-source commit, actual generator Hermit checkout, and
+generator-base-recorded Hermit gitlink, including which commits differ. The
+visible full ledger commit links to `rrnewton/dev-hermit`; the visible full
+measured, manifest-source, and generator-base-recorded Hermit commits link to
+`rrnewton/hermit`. It also displays whether the generator parent sources were
+committed or uncommitted/dirty and their exact source-byte digests. Cells in the
+manifest at the manifest-source commit remain distinct from cells selected by
+the named validate path and run. The retained-run count is labeled with that
+path and remains separate from the manifest-source selected-by-full count and
+manifest denominator. Use
+`build-historical-and-serve` with the same source arguments plus `--port` to
+serve the validated result immediately. The ordinary `build` and
+`build-and-serve` commands keep their live checkout and current-main guards.
+
+Older validation rows may omit `profile` or `selection_mode`. The Rust
+projection records each such absence as an incomplete-data entry bound to the
+exact `history_row_sha256`; Stage 1 retains that binding through reduction. A
+run page displays **Unavailable** only when the matching row-and-field entry is
+present, and links that display to the entry on the Incomplete data page. It
+does not infer `full` or any other validate path from a neighboring field.
 
 `validate-run` and the inner `validate-lock` call the same admission mechanism.
 To deliberately repeat an older Hermit SHA after main advances, add

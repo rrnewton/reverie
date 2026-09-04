@@ -541,6 +541,44 @@ fn validated_observation_evidence<'a>(
     }
 }
 
+/// The website's permitted view of one row's typed per-cell evidence.
+///
+/// The exact first schema-6 shape remains readable but unavailable for public
+/// cell-result claims: the four later comparison fields were not recorded, so
+/// absence must not be filled in or treated as a canonical observation.
+pub(crate) enum CellResultsForWebsite<'a> {
+    Absent,
+    Complete(Cow<'a, CellResultsEvidence>),
+    Schema6WithoutLaterComparisonFields,
+    UnsupportedSchema(u32),
+}
+
+pub(crate) fn cell_results_for_website(
+    row: &HistoryRow,
+) -> Result<CellResultsForWebsite<'_>, String> {
+    const SCHEMA_MIN: u32 = 6;
+    const SCHEMA_MAX: u32 = 8;
+    let schema_min = SCHEMA_MIN;
+    let schema_max = SCHEMA_MAX;
+    let schema = row.schema_version.unwrap_or(0);
+    if schema > schema_max && row.cell_results.is_some() {
+        return Ok(CellResultsForWebsite::UnsupportedSchema(schema));
+    }
+    let Some(evidence) = validated_evidence(row, schema_min, schema_max)? else {
+        return Ok(CellResultsForWebsite::Absent);
+    };
+    let lacks_later_comparison_fields = row.schema_version == Some(schema_min)
+        && evidence.cells.iter().any(|cell| {
+            canonical_observation(cell).is_none()
+                && comparison_without_later_fields_is_well_formed(cell)
+        });
+    if lacks_later_comparison_fields {
+        Ok(CellResultsForWebsite::Schema6WithoutLaterComparisonFields)
+    } else {
+        Ok(CellResultsForWebsite::Complete(evidence))
+    }
+}
+
 /// Reviewed calibration policy for cells whose observed failure is rarer than
 /// one ordinary verify pair can measure. Ledger rows cannot self-declare this:
 /// changing the budget is a code-reviewed policy change bound to an exact cell.

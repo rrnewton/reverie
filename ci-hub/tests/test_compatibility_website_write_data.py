@@ -108,8 +108,6 @@ def build_data_value() -> dict[str, Any]:
         "host": "ci-host",
         "producer": "validate",
         "product_result": "pass",
-        "product_result_available": True,
-        "projection_validation_reason": None,
         "run_id": "validate-run-1",
         "schema": "stress-series/v3",
         "series": {
@@ -140,10 +138,9 @@ def build_data_value() -> dict[str, Any]:
         "current_reproducer_unavailable_reason": None,
         "event_ids": ["event-1"],
         "guest_args": [],
-        "incomplete_fields": ["latest result time"],
         "latest_event_ids": ["event-1"],
         "latest_result": "pass",
-        "latest_result_time": None,
+        "latest_result_time": "2026-08-31T00:01:00Z",
         "latest_result_tree": TREE,
         "not_applicable_reason": None,
         "not_selected_by_full_reason": None,
@@ -156,7 +153,7 @@ def build_data_value() -> dict[str, Any]:
             "super": [
                 {
                     "event_ids": ["event-1"],
-                    "observed_at": None,
+                    "observed_at": "2026-08-31T00:01:00Z",
                     "run_id": "validate-run-1",
                     "tree": TREE,
                 }
@@ -190,13 +187,11 @@ def build_data_value() -> dict[str, Any]:
         "current_validation_run_row_count": 1,
         "green_cell_count": 1,
         "in_manifest_cell_count": 1,
-        "incomplete_data_count": 5,
         "never_measured_cell_count": 0,
         "physical_row_count": 1,
         "red_cell_count": 0,
         "represented_run_count": 1,
         "selected_by_full_custom_command_count": 0,
-        "state_unavailable_cell_count": 0,
         "test_count": 1,
         "validation_history_row_count": 1,
     }
@@ -208,15 +203,19 @@ def build_data_value() -> dict[str, Any]:
         "projection_admitted_represented_run_count": 1,
         "projection_excluded_physical_row_count": 0,
         "projection_excluded_represented_run_count": 0,
-        "schema_version": 1,
+        "projection_exclusion_counts": [],
+        "product_results": {"event-1": "pass"},
+        "projection_results": {"event-1": None},
+        "schema_version": 3,
         "series_physical_row_count": 1,
         "series_represented_run_count": 1,
         "series_rows": [series_row],
+        "validate_run_selection": {"event-1": {"path": "super", "selected": True}},
         "validation_history_row_count": 1,
         "validation_history_rows": [validation_row],
     }
     provenance = {
-        "build_data_schema_version": 1,
+        "build_data_schema_version": 3,
         "canonical_input_bytes_sha256": "5" * 64,
         "canonical_input_provenance": {
             "parent_commit": "6" * 40,
@@ -244,12 +243,11 @@ def build_data_value() -> dict[str, Any]:
         "manifest_metadata_schema": 1,
         "manifest_schema": 3,
         "manifest_sha256": "b" * 64,
-        "missing_executions_sha256": sha256(canonical_bytes([])),
         "parent_commit": "6" * 40,
         "product_results_sha256": sha256(canonical_bytes({"event-1": "pass"})),
         "projection_checker_input_jsonl_sha256": "e" * 64,
         "projection_results_sha256": sha256(canonical_bytes({"event-1": None})),
-        "reducer_schema_version": 1,
+        "reducer_schema_version": 3,
         "series_physical_row_count": 1,
         "series_represented_run_count": 1,
         "series_rows_projection_sha256": "0" * 64,
@@ -258,59 +256,39 @@ def build_data_value() -> dict[str, Any]:
         "validate_run_selection_sha256": sha256(
             canonical_bytes({"event-1": {"path": "super", "selected": True}})
         ),
-        "validation_cell_results_incomplete_data_sha256": "0" * 64,
         "validation_event_count": 1,
         "validation_events_sha256": "2" * 64,
         "validation_history_row_count": 1,
         "validation_history_rows_projection_sha256": "0" * 64,
         "validation_history_rows_sha256": "3" * 64,
     }
-    incomplete = [
-        {
-            "cell": CELL_ID,
-            "field": "latest result time",
-            "input": "series",
-            "reason": "the logical execution has no producer-owned observed_at",
-            "run_id": "validate-run-1",
-        },
-        *write_data._build_data_module()._STAGE_INCOMPLETE_DATA,
-    ]
-    incomplete.sort(key=canonical_bytes)
     value = {
         "cells": [cell],
         "counts": counts,
-        "incomplete_data": incomplete,
+        "projection_audit": {"deliberate_omissions": []},
         "provenance": provenance,
         "runs": runs,
-        "schema_version": 1,
+        "schema_version": 3,
         "selected_by_full_custom_commands": [],
         "tests": [test],
     }
     module = write_data._build_data_module()
     output = module._validated_output_runs(value)
-    manifest = module._manifest_data(
-        {
-            "cells": value["cells"],
-            "manifest_schema": provenance["manifest_schema"],
-            "manifest_sha256": provenance["manifest_sha256"],
-            "schema": 1,
-            "selected_by_full_custom_commands": value[
-                "selected_by_full_custom_commands"
-            ],
-            "tests": value["tests"],
-        }
-    )
+    manifest = {
+        "cells": {CELL_ID: {key: cell[key] for key in module._STAGE1_POLICY_CELL_KEYS}},
+        "manifest_schema": provenance["manifest_schema"],
+        "manifest_sha256": provenance["manifest_sha256"],
+        "selected_by_full_custom_commands": value["selected_by_full_custom_commands"],
+        "tests": value["tests"],
+    }
     provenance.update(
         current_validation_run_rows_projection_sha256=module._digest(
-            output["current"]
+            output["current_validation_run_rows"]
         ),
         manifest_metadata_projection_sha256=module._digest(manifest),
-        series_rows_projection_sha256=module._digest(output["runs"]["series_rows"]),
-        validation_cell_results_incomplete_data_sha256=module._digest(
-            output["cell_results_incomplete"]
-        ),
+        series_rows_projection_sha256=module._digest(output["series_rows"]),
         validation_history_rows_projection_sha256=module._digest(
-            output["history"]
+            output["validation_history_rows"]
         ),
     )
     return value
@@ -329,12 +307,17 @@ def test_cli_help_describes_authorities_and_atomic_refusal_contract() -> None:
     help_text = " ".join(result.stdout.split())
     usage = result.stdout.split("\n\n", 1)[0]
     usage_options = {
-        token for token in usage.replace("[", " ").replace("]", " ").split()
+        token
+        for token in usage.replace("[", " ").replace("]", " ").split()
         if token.startswith("--")
     }
     assert usage_options == {
-        "--parent", "--parent-commit", "--hermit", "--hermit-commit",
-        "--hermit-main-commit", "--output",
+        "--parent",
+        "--parent-commit",
+        "--hermit",
+        "--hermit-commit",
+        "--hermit-main-commit",
+        "--output",
     }
     for expected in (
         "Build, validate, and atomically publish the Stage 1 compatibility website data tree.",
@@ -343,7 +326,7 @@ def test_cli_help_describes_authorities_and_atomic_refusal_contract() -> None:
         "--hermit HERMIT exact clean Hermit checkout used for manifest policy and ancestry",
         "--hermit-commit HERMIT_COMMIT full Hermit commit currently checked out by --hermit",
         "--hermit-main-commit HERMIT_MAIN_COMMIT full Hermit ancestry target; must equal the checkout's stable refs/remotes/origin/main",
-        "--output OUTPUT destination directory for the complete five-file website data tree",
+        "--output OUTPUT destination directory for the complete four-file website data tree",
         "The complete data tree is validated before writing, then the whole destination tree is replaced atomically.",
         "A refusal leaves an existing destination unchanged or an absent destination absent and writes nothing to stdout.",
         "The output parent directory must already exist.",
@@ -366,7 +349,6 @@ def test_render_and_write_one_coherent_artifact_tree(tmp_path: Path) -> None:
     expected_paths = {
         "build.json",
         "data/cells.json.gz",
-        "data/incomplete-data.json.gz",
         "data/runs.json.gz",
         "data/tests.json.gz",
     }
@@ -378,16 +360,12 @@ def test_render_and_write_one_coherent_artifact_tree(tmp_path: Path) -> None:
         "data/cells.json.gz": {
             "cells": source["cells"],
             "in_manifest_cell_count": 1,
-            "schema_version": 1,
-        },
-        "data/incomplete-data.json.gz": {
-            "incomplete_data": source["incomplete_data"],
-            "incomplete_data_count": source["counts"]["incomplete_data_count"],
-            "schema_version": 1,
+            "projection_audit": {"deliberate_omissions": []},
+            "schema_version": 3,
         },
         "data/runs.json.gz": source["runs"],
         "data/tests.json.gz": {
-            "schema_version": 1,
+            "schema_version": 3,
             "selected_by_full_custom_command_count": 0,
             "selected_by_full_custom_commands": [],
             "test_count": 1,
@@ -403,15 +381,15 @@ def test_render_and_write_one_coherent_artifact_tree(tmp_path: Path) -> None:
 
     manifest = json.loads(first["build.json"])
     assert first["build.json"] == canonical_bytes(manifest) + b"\n"
-    assert manifest["schema_version"] == 1
+    assert manifest["schema_version"] == 3
     assert manifest["generator"] == {
-        "build_data_schema_version": 1,
+        "build_data_schema_version": 3,
         "name": "compatibility-website-stage-1-data",
-        "write_data_schema_version": 1,
+        "write_data_schema_version": 3,
     }
     assert manifest["provenance"] == source["provenance"]
     assert manifest["counts"] == source["counts"]
-    assert sum(row["count"] for row in manifest["incomplete_data_categories"]) == 5
+    assert "incomplete_data_categories" not in manifest
     assert manifest["build_data_sha256"] == sha256(canonical_bytes(source))
 
     artifacts = manifest["artifacts"]
@@ -440,12 +418,10 @@ def test_render_and_write_one_coherent_artifact_tree(tmp_path: Path) -> None:
         if path.is_file()
     }
     assert written_paths == expected_paths
-    assert {
-        path: (destination / path).read_bytes() for path in expected_paths
-    } == first
+    assert {path: (destination / path).read_bytes() for path in expected_paths} == first
 
 
-def test_private_renderer_matches_public_five_file_bytes_and_public_validates(
+def test_private_renderer_matches_public_four_file_bytes_and_public_validates(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     source = build_data_value()
@@ -464,15 +440,15 @@ def test_private_renderer_matches_public_five_file_bytes_and_public_validates(
     manifest = write_data.write_data(source, tmp_path / "site-data")
     assert manifest == json.loads(expected["build.json"])
     assert calls == [source, source]
-    assert len(expected) == 5
+    assert len(expected) == 4
 
 
 def test_public_write_refuses_mutation_without_partial_tree(tmp_path: Path) -> None:
     source = build_data_value()
-    source["cells"][0]["test"] = "tests/other"
+    source["counts"]["in_manifest_cell_count"] = 2
     destination = tmp_path / "site-data"
 
-    with pytest.raises(write_data.WriteRefused, match="invalid manifest cell identity"):
+    with pytest.raises(write_data.WriteRefused, match="exact persisted populations"):
         write_data.write_data(source, destination)
 
     assert not destination.exists()
@@ -492,7 +468,9 @@ def test_cli_private_renderer_receives_only_immediate_build_result(
     monkeypatch.setattr(
         module,
         "validate_build_data",
-        lambda _value: (_ for _ in ()).throw(AssertionError("CLI revalidated build_data result")),
+        lambda _value: (_ for _ in ()).throw(
+            AssertionError("CLI revalidated build_data result")
+        ),
     )
 
     def record(value: Any) -> dict[str, bytes]:
@@ -502,18 +480,29 @@ def test_cli_private_renderer_receives_only_immediate_build_result(
 
     monkeypatch.setattr(write_data, "_render_validated_tree", record)
     destination = tmp_path / "site-data"
-    result = write_data.main([
-        "--parent", "/unused", "--parent-commit", "1" * 40,
-        "--hermit", "/unused", "--hermit-commit", "2" * 40,
-        "--hermit-main-commit", "3" * 40, "--output", str(destination),
-    ])
+    result = write_data.main(
+        [
+            "--parent",
+            "/unused",
+            "--parent-commit",
+            "1" * 40,
+            "--hermit",
+            "/unused",
+            "--hermit-commit",
+            "2" * 40,
+            "--hermit-main-commit",
+            "3" * 40,
+            "--output",
+            str(destination),
+        ]
+    )
 
     captured = capfd.readouterr()
     assert result == 0
     assert captured.err == ""
-    assert json.loads(captured.out)["schema_version"] == 1
+    assert json.loads(captured.out)["schema_version"] == 3
     assert rendered == [built]
-    assert len(_tree_bytes(destination)) == 5
+    assert len(_tree_bytes(destination)) == 4
 
 
 def _changed_current_row(value: dict[str, Any]) -> None:
@@ -522,21 +511,26 @@ def _changed_current_row(value: dict[str, Any]) -> None:
     value["runs"]["current_validation_run_rows"][0] = current
 
 
-def _malformed_incomplete(value: dict[str, Any]) -> None:
-    value["incomplete_data"] = [{"field": None, "input": "series", "reason": "missing"}]
-    value["counts"]["incomplete_data_count"] = 1
-
-
 @pytest.mark.parametrize(
     ("mutation", "message"),
     [
-        (lambda value: value["cells"][0].update(test="tests/other"), "invalid manifest cell identity"),
-        (_changed_current_row, "disagree with validation history"),
-        (lambda value: value["runs"].update(projection_admitted_physical_row_count=0), "runs counts"),
-        (lambda value: value["cells"][0].update(raw_log="unsafe"), "authoritative reducer"),
+        (lambda value: value.update(cells={}), "cells must be an array"),
+        (_changed_current_row, "not a sub-multiset"),
+        (
+            lambda value: value["runs"].update(validation_history_row_count=0),
+            "runs validation history count",
+        ),
+        (
+            lambda value: value["cells"][0].update(measured=True),
+            "unknown field",
+        ),
         (lambda value: value["provenance"].update(token="secret"), "unknown field"),
-        (_malformed_incomplete, "must be a nonempty string"),
-        (lambda value: value["cells"][0]["selected_by"]["super"][0].update(event_ids=["missing"]), "authoritative reducer"),
+        (
+            lambda value: value["runs"]["current_main_ancestry"].update(
+                {"2" * 40: False}
+            ),
+            "provenance digests disagree",
+        ),
     ],
 )
 def test_render_refuses_invalid_build_data(mutation: Any, message: str) -> None:
@@ -550,13 +544,28 @@ def test_cli_reports_build_refusal_without_traceback_or_partial_stdout(
     monkeypatch: pytest.MonkeyPatch, capfd: pytest.CaptureFixture[str]
 ) -> None:
     module = write_data._build_data_module()
-    monkeypatch.setattr(module, "build_data", lambda *_args: (_ for _ in ()).throw(module.BuildRefused("invalid authority")))
+    monkeypatch.setattr(
+        module,
+        "build_data",
+        lambda *_args: (_ for _ in ()).throw(module.BuildRefused("invalid authority")),
+    )
 
-    result = write_data.main([
-        "--parent", "/unused", "--parent-commit", "1" * 40,
-        "--hermit", "/unused", "--hermit-commit", "2" * 40,
-        "--hermit-main-commit", "3" * 40, "--output", "/unused",
-    ])
+    result = write_data.main(
+        [
+            "--parent",
+            "/unused",
+            "--parent-commit",
+            "1" * 40,
+            "--hermit",
+            "/unused",
+            "--hermit-commit",
+            "2" * 40,
+            "--hermit-main-commit",
+            "3" * 40,
+            "--output",
+            "/unused",
+        ]
+    )
 
     captured = capfd.readouterr()
     assert result == 2
@@ -660,7 +669,11 @@ def test_parent_fsync_failure_rolls_back_without_partial_stdout(
 
     def fail_once(path: Path | int) -> None:
         nonlocal failed
-        if isinstance(path, int) and os.path.samestat(os.fstat(path), os.stat(destination.parent)) and not failed:
+        if (
+            isinstance(path, int)
+            and os.path.samestat(os.fstat(path), os.stat(destination.parent))
+            and not failed
+        ):
             failed = True
             raise OSError("injected parent fsync failure")
         real_fsync(path)
@@ -668,11 +681,22 @@ def test_parent_fsync_failure_rolls_back_without_partial_stdout(
     module = write_data._build_data_module()
     monkeypatch.setattr(module, "build_data", lambda *_args: build_data_value())
     monkeypatch.setattr(write_data, "_fsync_directory", fail_once)
-    result = write_data.main([
-        "--parent", "/unused", "--parent-commit", "1" * 40,
-        "--hermit", "/unused", "--hermit-commit", "2" * 40,
-        "--hermit-main-commit", "3" * 40, "--output", str(destination),
-    ])
+    result = write_data.main(
+        [
+            "--parent",
+            "/unused",
+            "--parent-commit",
+            "1" * 40,
+            "--hermit",
+            "/unused",
+            "--hermit-commit",
+            "2" * 40,
+            "--hermit-main-commit",
+            "3" * 40,
+            "--output",
+            str(destination),
+        ]
+    )
 
     captured = capfd.readouterr()
     assert result == 2
@@ -701,7 +725,11 @@ def test_failed_rollback_preserves_the_prior_tree_beside_complete_new_tree(
 
     def fsync(path: Path | int) -> None:
         nonlocal failed_sync
-        if isinstance(path, int) and os.path.samestat(os.fstat(path), os.stat(destination.parent)) and not failed_sync:
+        if (
+            isinstance(path, int)
+            and os.path.samestat(os.fstat(path), os.stat(destination.parent))
+            and not failed_sync
+        ):
             failed_sync = True
             raise OSError("injected parent fsync failure")
         real_fsync(path)
@@ -772,14 +800,19 @@ def test_failed_rollback_sync_reports_the_restored_prior_tree(
 
     def fsync(path: Path | int) -> None:
         nonlocal parent_syncs
-        if isinstance(path, int) and os.path.samestat(os.fstat(path), os.stat(destination.parent)):
+        if isinstance(path, int) and os.path.samestat(
+            os.fstat(path), os.stat(destination.parent)
+        ):
             parent_syncs += 1
             if parent_syncs <= 2:
                 raise OSError(f"injected parent fsync failure {parent_syncs}")
         real_fsync(path)
 
     monkeypatch.setattr(write_data, "_fsync_directory", fsync)
-    with pytest.raises(write_data.WriteRefused, match="prior tree restored, but its directory sync failed"):
+    with pytest.raises(
+        write_data.WriteRefused,
+        match="prior tree restored, but its directory sync failed",
+    ):
         write_data.write_data(build_data_value(), destination)
 
     assert _tree_bytes(destination) == before
@@ -802,7 +835,9 @@ def test_failed_initial_publish_rollback_does_not_invent_a_prior_tree(
         real_rename(directory, source, target, flags)
 
     def fsync(path: Path | int) -> None:
-        if isinstance(path, int) and os.path.samestat(os.fstat(path), os.stat(destination.parent)):
+        if isinstance(path, int) and os.path.samestat(
+            os.fstat(path), os.stat(destination.parent)
+        ):
             raise OSError("injected parent fsync failure")
         real_fsync(path)
 
@@ -820,7 +855,11 @@ def test_write_failure_and_symlink_destination_preserve_existing_bytes(
 ) -> None:
     destination = tmp_path / "site-data"
     before = _seed_prior_tree(destination)
-    monkeypatch.setattr(write_data, "_write_file", lambda *_args: (_ for _ in ()).throw(OSError("injected write failure")))
+    monkeypatch.setattr(
+        write_data,
+        "_write_file",
+        lambda *_args: (_ for _ in ()).throw(OSError("injected write failure")),
+    )
     with pytest.raises(write_data.WriteRefused, match="injected write failure"):
         write_data.write_data(build_data_value(), destination)
     assert _tree_bytes(destination) == before
@@ -896,7 +935,10 @@ def test_post_recognition_injection_rolls_back_without_deleting_prior_bytes(
         write_data.write_data(build_data_value(), destination)
 
     assert calls == 1
-    assert all((destination / path).read_bytes() == contents for path, contents in before.items())
+    assert all(
+        (destination / path).read_bytes() == contents
+        for path, contents in before.items()
+    )
     if injected == ".git":
         assert (destination / injected).is_dir()
     else:
@@ -929,9 +971,13 @@ def test_post_recognition_artifact_mutation_is_revalidated_before_deletion(
     after = _tree_bytes(destination)
     assert after["data/runs.json.gz"] == before["data/runs.json.gz"] + b"changed"
     assert {
-        path: contents for path, contents in after.items() if path != "data/runs.json.gz"
+        path: contents
+        for path, contents in after.items()
+        if path != "data/runs.json.gz"
     } == {
-        path: contents for path, contents in before.items() if path != "data/runs.json.gz"
+        path: contents
+        for path, contents in before.items()
+        if path != "data/runs.json.gz"
     }
     assert not list(tmp_path.glob(".site-data.tmp-*"))
 
@@ -968,20 +1014,31 @@ def test_roots_home_workspace_and_dot_are_refused(
     sentinel.write_bytes(b"keep\n")
     environment_home = tmp_path / "configured-home"
     environment_home.mkdir()
-    account_home = Path(
-        write_data.pwd.getpwuid(os.geteuid()).pw_dir
-    ).resolve()
+    account_home = Path(write_data.pwd.getpwuid(os.geteuid()).pw_dir).resolve()
     monkeypatch.setenv("HOME", str(environment_home))
     monkeypatch.chdir(tmp_path)
     module = write_data._build_data_module()
     monkeypatch.setattr(module, "build_data", lambda *_args: build_data_value())
-    result = write_data.main([
-        "--parent", "/unused", "--parent-commit", "1" * 40,
-        "--hermit", "/unused", "--hermit-commit", "2" * 40,
-        "--hermit-main-commit", "3" * 40, "--output", ".",
-    ])
+    result = write_data.main(
+        [
+            "--parent",
+            "/unused",
+            "--parent-commit",
+            "1" * 40,
+            "--hermit",
+            "/unused",
+            "--hermit-commit",
+            "2" * 40,
+            "--hermit-main-commit",
+            "3" * 40,
+            "--output",
+            ".",
+        ]
+    )
     captured = capfd.readouterr()
-    assert result == 2 and captured.out == "" and "working-directory root" in captured.err
+    assert (
+        result == 2 and captured.out == "" and "working-directory root" in captured.err
+    )
     for destination in (
         Path("/"),
         Path("/tmp"),
@@ -989,7 +1046,10 @@ def test_roots_home_workspace_and_dot_are_refused(
         account_home,
         REPOSITORY,
     ):
-        with pytest.raises(write_data.WriteRefused, match="root|recognized compatibility artifact tree|checkout or workspace"):
+        with pytest.raises(
+            write_data.WriteRefused,
+            match="root|recognized compatibility artifact tree|checkout or workspace",
+        ):
             write_data.write_data(build_data_value(), destination)
     assert sentinel.read_bytes() == b"keep\n"
 
@@ -1148,11 +1208,22 @@ def test_deep_prior_json_is_a_normal_cli_refusal_without_mutation(
 
     module = write_data._build_data_module()
     monkeypatch.setattr(module, "build_data", lambda *_args: build_data_value())
-    result = write_data.main([
-        "--parent", "/unused", "--parent-commit", "1" * 40,
-        "--hermit", "/unused", "--hermit-commit", "2" * 40,
-        "--hermit-main-commit", "3" * 40, "--output", str(destination),
-    ])
+    result = write_data.main(
+        [
+            "--parent",
+            "/unused",
+            "--parent-commit",
+            "1" * 40,
+            "--hermit",
+            "/unused",
+            "--hermit-commit",
+            "2" * 40,
+            "--hermit-main-commit",
+            "3" * 40,
+            "--output",
+            str(destination),
+        ]
+    )
 
     captured = capfd.readouterr()
     assert result == 2
@@ -1218,7 +1289,11 @@ def test_existing_destination_spoof_refuses_rollback_without_deleting_any_tree(
 def test_parent_symlink_race_rolls_back_through_bound_directory(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    parent, displaced, target = tmp_path / "publish", tmp_path / "moved", tmp_path / "target"
+    parent, displaced, target = (
+        tmp_path / "publish",
+        tmp_path / "moved",
+        tmp_path / "target",
+    )
     parent.mkdir()
     target.mkdir()
     destination = parent / "site-data"

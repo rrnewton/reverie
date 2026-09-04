@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-import copy
 import importlib.util
+import hashlib
 import json
 import os
 import re
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -27,12 +28,15 @@ REAL_READER_STATE = export_inputs._reader_state
 TEST_READER_STATE = {
     "ci_hub_tree": "a" * 40,
     "commit": "a" * 40,
+    "dirty_paths": [],
     "files": [],
     "files_sha256": export_inputs._value_sha256([]),
     "hermit": {
         "checkout_commit": "b" * 40,
         "gitlink_commit": "b" * 40,
     },
+    "source_identity_sha256": "c" * 64,
+    "worktree_clean": True,
 }
 export_inputs._reader_state = lambda: TEST_READER_STATE
 export_inputs._load_authorities()
@@ -48,7 +52,145 @@ def git(repo: Path, *arguments: str) -> str:
     return result.stdout.strip()
 
 
-def repository(tmp_path: Path, files: dict[str, bytes] | None = None) -> tuple[Path, str]:
+def write_fake_git(path: Path, body: str) -> None:
+    path.write_text("#!/usr/bin/python3\n" + body)
+    path.chmod(0o755)
+
+
+def assert_process_group_gone(marker: Path) -> None:
+    process_group = int(marker.read_text())
+    deadline = time.monotonic() + 2
+    while True:
+        try:
+            os.killpg(process_group, 0)
+        except ProcessLookupError:
+            return
+        if time.monotonic() >= deadline:
+            pytest.fail(f"process group {process_group} survived bounded capture")
+        time.sleep(0.01)
+
+
+@pytest.mark.parametrize("_iteration", range(5))
+def test_git_returns_when_a_descendant_holds_output_descriptors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _iteration: int
+) -> None:
+    marker = tmp_path / "process-group"
+    write_fake_git(
+        tmp_path / "git",
+        "import os, pathlib, signal, time\n"
+        "if os.fork() == 0:\n"
+        "    signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+        "    time.sleep(30)\n"
+        "    os._exit(0)\n"
+        "pathlib.Path(os.environ['WEBSITE_PROCESS_GROUP']).write_text(str(os.getpgrp()))\n"
+        "os.write(1, b'ready\\n')\n"
+        "os._exit(0)\n",
+    )
+    monkeypatch.setenv("PATH", str(tmp_path))
+    monkeypatch.setenv("WEBSITE_PROCESS_GROUP", str(marker))
+
+    started = time.monotonic()
+    assert export_inputs._git(tmp_path, ["fixture"]) == b"ready\n"
+    assert time.monotonic() - started < 2
+    assert_process_group_gone(marker)
+
+
+def test_git_timeout_kills_the_direct_child_before_it_finishes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    marker = tmp_path / "finished"
+    write_fake_git(
+        tmp_path / "git",
+        "import os, pathlib, time\n"
+        "time.sleep(30)\n"
+        "pathlib.Path(os.environ['WEBSITE_TEST_MARKER']).write_bytes(b'finished')\n",
+    )
+    monkeypatch.setenv("PATH", str(tmp_path))
+    monkeypatch.setenv("WEBSITE_TEST_MARKER", str(marker))
+    monkeypatch.setattr(export_inputs, "_GIT_TIMEOUT_SECONDS", 0.05)
+
+    with pytest.raises(export_inputs.ExportRefused, match="timed out"):
+        export_inputs._git(tmp_path, ["fixture"])
+    assert not marker.exists()
+
+
+@pytest.mark.parametrize(
+    ("body", "message"),
+    [
+        (
+            "import os; os.write(2, b'failure detail\\n'); raise SystemExit(7)\n",
+            "failure detail",
+        ),
+        (
+            "import os; os.write(1, b'ok\\n'); os.write(2, b'unexpected detail\\n')\n",
+            "wrote unexpected stderr",
+        ),
+    ],
+)
+def test_git_refuses_nonzero_and_success_stderr(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    body: str,
+    message: str,
+) -> None:
+    write_fake_git(tmp_path / "git", body)
+    monkeypatch.setenv("PATH", str(tmp_path))
+
+    with pytest.raises(export_inputs.ExportRefused, match=message):
+        export_inputs._git(tmp_path, ["fixture"])
+
+
+def test_git_failure_diagnostic_is_bounded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    write_fake_git(
+        tmp_path / "git",
+        "import os\n"
+        f"os.write(2, b'x' * {export_inputs._MAX_PROCESS_DETAIL_BYTES + 1000})\n"
+        "raise SystemExit(7)\n",
+    )
+    monkeypatch.setenv("PATH", str(tmp_path))
+
+    with pytest.raises(export_inputs.ExportRefused) as raised:
+        export_inputs._git(tmp_path, ["fixture"])
+
+    message = str(raised.value)
+    assert message.endswith("... [truncated]")
+    assert len(message) < export_inputs._MAX_PROCESS_DETAIL_BYTES + 200
+
+
+@pytest.mark.parametrize(
+    ("stream", "descriptor"),
+    [("stdout", 1), ("stderr", 2)],
+)
+def test_git_refuses_output_over_the_cap_before_the_child_finishes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    stream: str,
+    descriptor: int,
+) -> None:
+    marker = tmp_path / "finished"
+    write_fake_git(
+        tmp_path / "git",
+        "import os, pathlib, time\n"
+        f"os.write({descriptor}, b'x' * 9)\n"
+        "time.sleep(30)\n"
+        "pathlib.Path(os.environ['WEBSITE_TEST_MARKER']).write_bytes(b'finished')\n",
+    )
+    monkeypatch.setenv("PATH", str(tmp_path))
+    monkeypatch.setenv("WEBSITE_TEST_MARKER", str(marker))
+    monkeypatch.setattr(export_inputs, f"_MAX_GIT_{stream.upper()}_BYTES", 8)
+
+    with pytest.raises(
+        export_inputs.ExportRefused, match=rf"{stream} exceeded 8 bytes"
+    ):
+        export_inputs._git(tmp_path, ["fixture"])
+    assert not marker.exists()
+
+
+def repository(
+    tmp_path: Path, files: dict[str, bytes] | None = None
+) -> tuple[Path, str]:
     repo = tmp_path / "parent"
     repo.mkdir()
     git(repo, "init", "-q")
@@ -88,8 +230,7 @@ def source_fixture(tmp_path: Path) -> tuple[Path, str]:
     )
     write_spool(
         repo,
-        "ignored/ci-hub/validate-ledger-spool/"
-        "hermit__hosta__2026-08__live.jsonl",
+        "ignored/ci-hub/validate-ledger-spool/" "hermit__hosta__2026-08__live.jsonl",
     )
     write_spool(
         repo,
@@ -250,6 +391,45 @@ def august_17_pre_comparison_field_rows() -> list[dict[str, Any]]:
     ]
 
 
+def historical_validation_row(
+    record_id: str = "record-1", run_id: str = "run-1"
+) -> dict[str, Any]:
+    return {
+        "cell_results": {
+            "artifact": {
+                "path": f"ignored/validate/artifacts/{run_id}/cell-results.jsonl",
+                "row_count": 0,
+                "sha256": "b" * 64,
+            },
+            "cells": [],
+            "hermit_sha": "c" * 40,
+            "population_sha256": "a" * 64,
+            "recorded_count": 0,
+            "run_id": run_id,
+            "selected": [
+                {
+                    "backend": "ptrace",
+                    "category": "c-programs",
+                    "lane": "portable",
+                    "mode": "verify",
+                    "test": "tests/hello",
+                }
+            ],
+            "selected_count": 1,
+            "source_tree_dirty": False,
+        },
+        "commit": "c" * 40,
+        "finished_at": "2026-08-30T01:00:00Z",
+        "profile": "full",
+        "record_id": record_id,
+        "repo": "hermit",
+        "run_id": run_id,
+        "schema_version": 7,
+        "selection_mode": "full",
+        "started_at": "2026-08-30T00:00:00Z",
+    }
+
+
 def series_row(**changes: Any) -> dict[str, Any]:
     row = {
         "schema": "stress-series/v1",
@@ -395,8 +575,7 @@ def install_authority_fixtures(
         paths = list(paths)
         union_calls.append(paths)
         has_local = any(
-            "ignored/ci-hub/series-spool" in path.as_posix()
-            for path in paths
+            "ignored/ci-hub/series-spool" in path.as_posix() for path in paths
         )
         has_published = any("/series/" in path.as_posix() for path in paths)
         if has_local and has_published:
@@ -451,6 +630,10 @@ def recursive_keys(value: Any) -> set[str]:
     return set()
 
 
+def jsonl_rows(value: str) -> list[dict[str, Any]]:
+    return [json.loads(line) for line in value.splitlines()]
+
+
 def test_empty_inputs_stay_empty_without_a_stored_measurement_state(tmp_path: Path):
     repo, commit = repository(tmp_path)
 
@@ -459,29 +642,18 @@ def test_empty_inputs_stay_empty_without_a_stored_measurement_state(tmp_path: Pa
 
     assert export_inputs.render_export(first) == export_inputs.render_export(second)
     assert first["schema_version"] == 1
-    assert first["validation_ledger"]["event_count"] == 0
-    assert first["validation_ledger"]["history_row_count"] == 0
-    assert first["validation_ledger"]["current_validation_run_row_count"] == 0
-    assert first["series"]["row_count"] == 0
-    assert first["series"]["represented_run_count"] == 0
-    assert first["series"]["projection_results"] == {}
-    assert first["series"]["projection_result_physical_row_count"] == 0
-    assert first["series"]["projection_admitted_physical_row_count"] == 0
-    assert first["series"]["projection_admitted_represented_run_count"] == 0
-    assert first["series"]["projection_excluded_physical_row_count"] == 0
-    assert first["series"]["projection_excluded_represented_run_count"] == 0
-    assert first["series"]["projection_exclusion_counts"] == []
-    assert (
-        first["series"]["projection_results_binding"]["physical_row_count"] == 0
-    )
-    assert (
-        first["series"]["projection_results_binding"]["represented_run_count"]
-        == 0
-    )
-    assert (
-        first["series"]["projection_results_binding"]["rows_sha256"]
-        == first["series"]["rows_sha256"]
-    )
+    assert first["validation_ledger"] == {
+        "event_count": 0,
+        "events_sha256": export_inputs._value_sha256([]),
+        "history_row_count": 0,
+        "history_rows_jsonl": "",
+        "history_rows_sha256": hashlib.sha256(b"").hexdigest(),
+    }
+    assert first["series"] == {
+        "row_count": 0,
+        "rows_jsonl": "",
+        "rows_sha256": hashlib.sha256(b"").hexdigest(),
+    }
     assert first["provenance"]["source_count"] == 0
     assert {"measured", "measurement_state", "never_measured"}.isdisjoint(
         recursive_keys(first)
@@ -546,8 +718,10 @@ def test_export_includes_valid_rows_from_a_partially_rejected_pressure_campaign(
     output = build_export(repo, commit)
 
     assert output["series"]["row_count"] == 2
-    assert output["series"]["represented_run_count"] == 2
-    assert output["series"]["rows"] == retained
+    assert len(output["series"]["rows_jsonl"].splitlines()) == 2
+    assert [
+        json.loads(line) for line in output["series"]["rows_jsonl"].splitlines()
+    ] == retained
     assert {
         (source["store"], source["location"])
         for source in output["provenance"]["sources"]
@@ -581,27 +755,12 @@ def test_real_nonempty_readers_keep_v1_and_deduplicate_published_and_live(
 
     assert output["validation_ledger"]["event_count"] == 1
     assert output["validation_ledger"]["history_row_count"] == 1
-    assert output["validation_ledger"]["current_validation_run_row_count"] == 1
     assert output["series"]["row_count"] == 1
-    assert output["series"]["represented_run_count"] == 1
-    assert output["series"]["schema_counts"] == {"stress-series/v1": 1}
-    assert output["series"]["projection_results"] == {
-        "series-event-1": (
-            "stress-series/v1 does not record machine_shortname, "
-            "kernel_version, and host_capabilities"
-        )
-    }
-    assert output["series"]["projection_exclusion_counts"] == [
-        {
-            "reason": (
-                "stress-series/v1 does not record machine_shortname, "
-                "kernel_version, and host_capabilities"
-            ),
-            "physical_row_count": 1,
-            "represented_run_count": 1,
-            "schema": "stress-series/v1",
-        }
-    ]
+    assert jsonl_rows(output["series"]["rows_jsonl"]) == [observed]
+    assert (
+        output["series"]["rows_sha256"]
+        == hashlib.sha256(output["series"]["rows_jsonl"].encode()).hexdigest()
+    )
     assert output["provenance"]["source_count"] == 3
 
 
@@ -621,61 +780,23 @@ def test_export_delegates_to_authorities_and_records_all_source_locations(
 
     assert fixtures["published_calls"] == [(repo.resolve(), commit)]
     assert len(fixtures["union_calls"]) == 2
-    assert all(
-        "/series/" in path.as_posix()
-        for path in fixtures["union_calls"][0]
-    )
-    assert any(
-        "/series/" in path.as_posix()
-        for path in fixtures["union_calls"][1]
-    )
+    assert all("/series/" in path.as_posix() for path in fixtures["union_calls"][0])
+    assert any("/series/" in path.as_posix() for path in fixtures["union_calls"][1])
     assert any(
         "ignored/ci-hub/series-spool" in path.as_posix()
         for path in fixtures["union_calls"][1]
     )
-    assert output["validation_ledger"]["events"] == [fixtures["event"]]
     assert output["validation_ledger"]["history_row_count"] == 2
-    assert output["validation_ledger"]["current_validation_run_row_count"] == 1
-    [current] = output["validation_ledger"]["current_validation_run_rows"]
-    assert current["record_id"] == "new"
-    assert output["validation_ledger"]["history_rows"][0][
-        "unknown_history_field"
-    ] == {"kept": True}
-    assert output["validation_ledger"]["history_rows"][0]["cwd"].startswith(
-        "{{WORKSPACE_ROOT}}/"
-    )
-    assert "{{WORKSPACE_ROOT}}" not in json.dumps(fixtures["current_inputs"])
-    assert "/tmp/" in json.dumps(fixtures["current_inputs"])
+    history_rows = jsonl_rows(output["validation_ledger"]["history_rows_jsonl"])
+    assert history_rows[0]["unknown_history_field"] == {"kept": True}
+    assert history_rows[0]["cwd"].startswith("{{WORKSPACE_ROOT}}/")
+    assert fixtures["current_inputs"] == []
 
-    assert output["series"]["rows"] == [
+    assert jsonl_rows(output["series"]["rows_jsonl"]) == [
         fixtures["published_series"],
         fixtures["local_series"],
     ]
-    assert output["series"]["represented_run_count"] == 4
-    assert output["series"]["schema_counts"] == {
-        "stress-series/v1": 1,
-        "stress-series/v3": 1,
-    }
-    assert fixtures["projection_calls"] == [[
-        fixtures["published_series"],
-        fixtures["local_series"],
-    ]]
-    assert output["series"]["projection_result_physical_row_count"] == 2
-    assert output["series"]["projection_admitted_physical_row_count"] == 1
-    assert output["series"]["projection_admitted_represented_run_count"] == 3
-    assert output["series"]["projection_excluded_physical_row_count"] == 1
-    assert output["series"]["projection_excluded_represented_run_count"] == 1
-    assert output["series"]["projection_results"] == {
-        "series-local": None,
-        "series-published": (
-            "stress-series/v1 does not record machine_shortname, "
-            "kernel_version, and host_capabilities"
-        ),
-    }
-    assert (
-        output["series"]["projection_results_binding"]["rows_sha256"]
-        == output["series"]["rows_sha256"]
-    )
+    assert fixtures["projection_calls"] == []
 
     locations = {
         (source["store"], source["location"])
@@ -702,7 +823,7 @@ def test_export_delegates_to_authorities_and_records_all_source_locations(
     ]
 
 
-def test_projection_results_keep_excluded_history_and_count_schema_reason_pairs(
+def test_exporter_keeps_series_opaque_for_the_single_rust_projection(
     tmp_path: Path,
 ):
     legacy = series_row(event_id="legacy")
@@ -729,79 +850,19 @@ def test_projection_results_keep_excluded_history_and_count_schema_reason_pairs(
     output = build_export(repo, commit)
     exported = output["series"]
 
-    assert {row["event_id"] for row in exported["rows"]} == {
+    assert {row["event_id"] for row in jsonl_rows(exported["rows_jsonl"])} == {
         "current",
         "dirty",
         "legacy",
     }
-    assert exported["projection_results"] == {
-        "current": None,
-        "dirty": "source_tree_dirty is true; dirty source is not checked-in evidence",
-        "legacy": (
-            "stress-series/v1 does not record machine_shortname, "
-            "kernel_version, and host_capabilities"
-        ),
-    }
-    assert exported["projection_results_sha256"] == export_inputs._value_sha256(
-        exported["projection_results"]
-    )
-    assert exported["projection_result_physical_row_count"] == exported["row_count"] == 3
-    assert exported["projection_admitted_physical_row_count"] == 1
-    assert exported["projection_admitted_represented_run_count"] == 1
-    assert exported["projection_excluded_physical_row_count"] == 2
-    assert exported["projection_excluded_represented_run_count"] == 2
+    assert set(exported) == {"row_count", "rows_jsonl", "rows_sha256"}
     assert (
-        exported["projection_admitted_physical_row_count"]
-        + exported["projection_excluded_physical_row_count"]
-        == exported["row_count"]
-    )
-    assert (
-        exported["projection_admitted_represented_run_count"]
-        + exported["projection_excluded_represented_run_count"]
-        == exported["represented_run_count"]
-    )
-    assert exported["projection_exclusion_counts"] == [
-        {
-            "reason": (
-                "stress-series/v1 does not record machine_shortname, "
-                "kernel_version, and host_capabilities"
-            ),
-            "physical_row_count": 1,
-            "represented_run_count": 1,
-            "schema": "stress-series/v1",
-        },
-        {
-            "reason": (
-                "source_tree_dirty is true; dirty source is not checked-in evidence"
-            ),
-            "physical_row_count": 1,
-            "represented_run_count": 1,
-            "schema": "stress-series/v3",
-        },
-    ]
-    assert (
-        exported["projection_results_binding"]["physical_row_count"]
-        == exported["row_count"]
-    )
-    assert (
-        exported["projection_results_binding"]["represented_run_count"]
-        == exported["represented_run_count"]
-    )
-    assert (
-        exported["projection_results_binding"]["rows_sha256"]
-        == exported["rows_sha256"]
-    )
-    assert re.fullmatch(
-        r"[0-9a-f]{64}",
-        exported["projection_results_binding"]["checker_input_jsonl_sha256"],
-    )
-    assert all(
-        item["field"] != "projection validation reason"
-        for item in output["incomplete_data"]
+        exported["rows_sha256"]
+        == hashlib.sha256(exported["rows_jsonl"].encode()).hexdigest()
     )
 
 
-def test_one_series_field_mutation_changes_both_exported_row_bindings(tmp_path: Path):
+def test_one_series_field_mutation_changes_the_exact_jsonl_binding(tmp_path: Path):
     original = current_series_row()
     mutated = current_series_row(emitted_at="2026-08-30T01:00:01Z")
     outputs = []
@@ -819,15 +880,11 @@ def test_one_series_field_mutation_changes_both_exported_row_bindings(tmp_path: 
         outputs.append(build_export(repo, commit)["series"])
 
     before, after = outputs
-    assert before["projection_results"] == after["projection_results"]
     assert before["rows_sha256"] != after["rows_sha256"]
-    assert (
-        before["projection_results_binding"]["checker_input_jsonl_sha256"]
-        != after["projection_results_binding"]["checker_input_jsonl_sha256"]
-    )
+    assert before["rows_jsonl"] != after["rows_jsonl"]
 
 
-def test_series_export_refuses_projection_result_count_or_event_id_disagreement(
+def test_exporter_never_calls_the_python_projection_classifier(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ):
@@ -840,142 +897,28 @@ def test_series_export_refuses_projection_result_count_or_event_id_disagreement(
             ),
         },
     )
-    cases = [
-        (
-            export_inputs.series_store.ProjectionResults(
-                row_count=2,
-                input_jsonl_sha256="c" * 64,
-                results={fixture["event_id"]: None},
-            ),
-            "row count disagrees",
-        ),
-        (
-            export_inputs.series_store.ProjectionResults(
-                row_count=1,
-                input_jsonl_sha256="c" * 64,
-                results={"unknown": None},
-            ),
-            "event ids disagree",
-        ),
-    ]
-    for projection, error in cases:
-        with monkeypatch.context() as context:
-            context.setattr(
-                export_inputs.series_store,
-                "projection_results",
-                lambda _rows, value=projection: value,
-            )
-            with pytest.raises(export_inputs.ExportRefused, match=error):
-                build_export(repo, commit)
+    monkeypatch.setattr(
+        export_inputs.series_store,
+        "projection_results",
+        lambda _rows: pytest.fail("Python classified a SeriesRow"),
+    )
+    assert build_export(repo, commit)["series"]["row_count"] == 1
 
 
-def test_exact_august_17_rows_stay_in_history_without_selection_authority(
+def test_exact_august_17_rows_stay_in_opaque_history(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ):
     rows = august_17_pre_comparison_field_rows()
     monkeypatch.setattr(export_inputs.validation_ledger, "events", lambda *, root: [])
     monkeypatch.setattr(export_inputs.validation_ledger, "rows", lambda *, root: rows)
 
-    validation, incomplete = export_inputs._validation_export(tmp_path)
-
-    assert validation["history_rows"] == rows
-    assert validation["history_row_count"] == 2
-    assert validation["current_validation_run_rows"] == []
-    assert validation["current_validation_run_row_count"] == 0
-    assert [item["record_id"] for item in incomplete] == [
-        "devbig014-1787003302-994556",
-        "devbig014-1787005074-1930458",
+    validation = export_inputs._validation_export(tmp_path)
+    exported_rows = [
+        json.loads(line) for line in validation["history_rows_jsonl"].splitlines()
     ]
-    assert all(item["field"] == "cell_results" for item in incomplete)
-    assert all(item["schema"] == "6" for item in incomplete)
-    assert all(
-        "contributes no current website selection evidence" in item["reason"]
-        for item in incomplete
-    )
 
-
-def test_august_17_retirement_refuses_a_partially_updated_comparison():
-    [row, _other] = august_17_pre_comparison_field_rows()
-    row["cell_results"]["cells"][0]["cell_verdict"]["comparison"][
-        "display_name"
-    ] = "BitwiseInfoV1"
-
-    with pytest.raises(export_inputs.ExportRefused, match="no longer matches"):
-        export_inputs._website_current_validation_rows([row])
-
-
-def test_other_pre_comparison_field_row_remains_visible_to_fail_closed_consumers():
-    [row, _other] = august_17_pre_comparison_field_rows()
-    row["record_id"] = "nearby-malformed-row"
-
-    current, incomplete = export_inputs._website_current_validation_rows([row])
-
-    assert current == [row]
-    assert incomplete == []
-
-
-def test_schema8_exported_rows_are_admitted_by_the_real_cell_reader():
-    row = {
-        "schema_version": 8,
-        "commit": "a" * 40,
-        "tree_dirty": False,
-        "record_id": "schema8-run",
-        "run_id": "schema8-run",
-        "profile": "quick",
-        "selection_mode": "full",
-        "cell_results": {
-            "path": "quick",
-            "run_id": "schema8-run",
-            "hermit_sha": "a" * 40,
-            "source_tree_dirty": False,
-            "selected_count": 2,
-            "recorded_count": 1,
-            "population_sha256": "b" * 64,
-            "artifact": {
-                "path": "ignored/validate/artifacts/schema8-run/cell-results.jsonl",
-                "sha256": "c" * 64,
-                "row_count": 1,
-            },
-            "selected": [
-                {"lane": "portable", "category": "c-programs", "test": "one", "mode": "verify", "backend": "ptrace"},
-                {"lane": "portable", "category": "c-programs", "test": "two", "mode": "verify", "backend": "ptrace"},
-            ],
-            "cells": [
-                {"lane": "portable", "category": "c-programs", "test": "one", "mode": "verify", "backend": "ptrace", "cell_verdict": {"state": "unavailable-with-reason", "comparison_tier": "declared-but-unverifiable", "reason": "fixture"}},
-            ],
-        },
-    }
-    reader = export_inputs.validation_ledger.qualifying_receipt
-    predicate = copy.deepcopy(reader.active())
-    predicate["cell_results"]["supported_schema_max"] = 8
-    row["cell_results"]["population_sha256"] = reader.cell_population_sha256(
-        row["cell_results"]["selected"]
-    )
-
-    # Keep the real current-run reader and pass the actual exported payload to
-    # the canonical cell reader. Export alone does not imply cell admission.
-    current, incomplete = export_inputs._website_current_validation_rows([row])
-    assert incomplete == []
-    assert len(current) == 1
-    assert (
-        reader.cell_results_verdict(current[0], predicate)
-        is reader.CellResultsVerdict.SATISFIED
-    )
-    projection = reader.cell_scorecard_projection(current[0], predicate)
-    assert projection["eligible"] is True
-    assert projection["path"] == "quick"
-    assert projection["selected"] == row["cell_results"]["selected"]
-    assert len(projection["selected"]) == 2
-    assert len(projection["cells"]) == 1
-    assert projection["green_count"] == 0
-
-    changed = copy.deepcopy(current[0])
-    changed["cell_results"]["path"] = "super"
-    assert (
-        reader.cell_results_verdict(changed, predicate)
-        is reader.CellResultsVerdict.PATH_MISMATCH
-    )
-    assert reader.cell_scorecard_projection(changed, predicate)["eligible"] is False
+    assert exported_rows == rows
+    assert validation["history_row_count"] == 2
 
 
 def test_validation_acceptance_fixture_is_excluded_by_the_canonical_reader(
@@ -994,8 +937,8 @@ def test_validation_acceptance_fixture_is_excluded_by_the_canonical_reader(
 
     output = build_export(repo, commit)
 
-    assert output["validation_ledger"]["events"] == []
-    assert output["validation_ledger"]["history_rows"] == []
+    assert output["validation_ledger"]["event_count"] == 0
+    assert output["validation_ledger"]["history_rows_jsonl"] == ""
     assert output["provenance"]["source_count"] == 1
 
 
@@ -1081,9 +1024,7 @@ def test_symlinked_spool_batch_refuses(tmp_path: Path):
     repo, _commit = repository(tmp_path)
     outside = tmp_path / "outside.jsonl"
     outside.write_text("{}\n")
-    batch = repo / (
-        "ignored/ci-hub/series-spool/hermit__hosta__2026-08__link.jsonl"
-    )
+    batch = repo / ("ignored/ci-hub/series-spool/hermit__hosta__2026-08__link.jsonl")
     batch.parent.mkdir(parents=True)
     batch.symlink_to(outside)
 
@@ -1106,9 +1047,7 @@ def test_symlinked_spool_directory_refuses(tmp_path: Path):
 
 def test_fifo_spool_entry_refuses_without_opening_it(tmp_path: Path):
     repo, _commit = repository(tmp_path)
-    fifo = repo / (
-        "ignored/ci-hub/series-spool/hermit__hosta__2026-08__fifo.jsonl"
-    )
+    fifo = repo / ("ignored/ci-hub/series-spool/hermit__hosta__2026-08__fifo.jsonl")
     fifo.parent.mkdir(parents=True)
     os.mkfifo(fifo)
 
@@ -1241,9 +1180,7 @@ def test_owner_path_in_authority_row_refuses(
     monkeypatch.setattr(
         export_inputs.validation_ledger,
         "rows",
-        lambda *, root: [
-            {"cwd": "/" + "home" + "/person/private/hermit"}
-        ],
+        lambda *, root: [{"cwd": "/" + "home" + "/person/private/hermit"}],
     )
     monkeypatch.setattr(
         export_inputs.series_store,
@@ -1278,6 +1215,183 @@ def test_main_refuses_without_partial_stdout(
     assert result == 2
     assert captured.out == ""
     assert "REFUSED: fixture refusal" in captured.err
+
+
+def test_historical_export_reads_only_published_bytes_and_binds_one_row(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, commit = source_fixture(tmp_path)
+    row = historical_validation_row()
+    monkeypatch.setattr(
+        export_inputs, "_historical_reader_state", lambda: TEST_READER_STATE
+    )
+    monkeypatch.setattr(export_inputs.validation_ledger, "events", lambda *, root: [])
+    monkeypatch.setattr(export_inputs.validation_ledger, "rows", lambda *, root: [row])
+    monkeypatch.setattr(
+        export_inputs,
+        "_discover_mutable_sources",
+        lambda *_args: pytest.fail("historical export discovered a mutable spool"),
+    )
+    monkeypatch.setattr(
+        export_inputs,
+        "_capture_mutable_sources",
+        lambda *_args: pytest.fail("historical export captured a mutable spool"),
+    )
+    monkeypatch.setattr(
+        export_inputs.series_store,
+        "published_snapshot_at",
+        lambda _parent, reference: export_inputs.series_store.PublishedSnapshot(
+            commit=reference, rows=[]
+        ),
+    )
+
+    def published_union(paths):
+        paths = list(paths)
+        assert all("ignored/" not in path.as_posix() for path in paths)
+        return []
+
+    monkeypatch.setattr(export_inputs.series_store, "union", published_union)
+    value = export_inputs.build_historical_export(repo, commit, "record-1", "run-1")
+
+    assert value["provenance"]["mode"] == "historical"
+    assert value["provenance"]["published_only"] is True
+    assert value["provenance"]["published_ref"] == commit
+    assert value["provenance"]["parent_commit"] == commit
+    assert value["provenance"]["historical"] == {
+        "record_id": "record-1",
+        "run_id": "run-1",
+    }
+    assert jsonl_rows(value["validation_ledger"]["history_rows_jsonl"]) == [row]
+    assert value["provenance"]["reader_source_identity_sha256"] == "c" * 64
+    assert value["provenance"]["reader_worktree_clean"] is True
+    assert value["provenance"]["reader_worktree_dirty_paths"] == []
+    assert {source["location"] for source in value["provenance"]["sources"]} <= {
+        "published",
+        "recovery",
+    }
+
+
+def test_historical_export_requires_full_commit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, commit = repository(tmp_path)
+    with pytest.raises(export_inputs.ExportRefused, match="full lowercase 40-hex"):
+        export_inputs.build_historical_export(repo, "HEAD", "record-1", "run-1")
+
+
+def _install_hermit_reader_observation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    actual: str,
+    recorded: str,
+    status: bytes = b"",
+    reported_root: Path | None = None,
+) -> Path:
+    repository = tmp_path / "reader-parent"
+    checkout = repository / "hermit"
+    checkout.mkdir(parents=True)
+    monkeypatch.setattr(export_inputs, "REPOSITORY", repository)
+
+    def fake_git(root: Path, arguments: list[str]) -> bytes:
+        if root == repository and arguments == ["ls-tree", "HEAD", "--", "hermit"]:
+            return f"160000 commit {recorded}\thermit\n".encode()
+        if root == checkout and arguments[0] == "status":
+            return status
+        pytest.fail(f"unexpected git call: {root} {arguments}")
+
+    monkeypatch.setattr(export_inputs, "_git", fake_git)
+    monkeypatch.setattr(
+        export_inputs,
+        "_git_text",
+        lambda root, arguments: str(reported_root or checkout),
+    )
+    monkeypatch.setattr(export_inputs, "_resolve_commit", lambda *_args: actual)
+    return checkout
+
+
+def test_historical_reader_records_mismatch_while_live_reader_refuses(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    actual = "a" * 40
+    recorded = "b" * 40
+    _install_hermit_reader_observation(
+        tmp_path, monkeypatch, actual=actual, recorded=recorded
+    )
+
+    assert export_inputs._historical_hermit_reader() == {
+        "checkout_commit": actual,
+        "gitlink_commit": recorded,
+    }
+    with pytest.raises(export_inputs.ExportRefused, match="expected recorded gitlink"):
+        export_inputs._hermit_reader()
+
+
+def test_historical_reader_refuses_missing_checkout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repository = tmp_path / "reader-parent"
+    repository.mkdir()
+    monkeypatch.setattr(export_inputs, "REPOSITORY", repository)
+    monkeypatch.setattr(
+        export_inputs,
+        "_git",
+        lambda *_args: f"160000 commit {'b' * 40}\thermit\n".encode(),
+    )
+    with pytest.raises(export_inputs.ExportRefused, match="not materialized"):
+        export_inputs._historical_hermit_reader()
+
+
+def test_historical_reader_refuses_dirty_checkout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _install_hermit_reader_observation(
+        tmp_path,
+        monkeypatch,
+        actual="a" * 40,
+        recorded="b" * 40,
+        status=b" M tracked.txt\0",
+    )
+    with pytest.raises(export_inputs.ExportRefused, match="has local changes"):
+        export_inputs._historical_hermit_reader()
+
+
+def test_historical_reader_refuses_checkout_with_wrong_git_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    wrong_root = tmp_path / "other"
+    _install_hermit_reader_observation(
+        tmp_path,
+        monkeypatch,
+        actual="a" * 40,
+        recorded="b" * 40,
+        reported_root=wrong_root,
+    )
+    with pytest.raises(export_inputs.ExportRefused, match="not its own checkout"):
+        export_inputs._historical_hermit_reader()
+
+
+def test_opaque_jsonl_frames_without_interpreting_rust_fields() -> None:
+    rows = [{"future": {"field": True}}, {"schema_version": "not-an-integer"}]
+    encoded = export_inputs._opaque_jsonl(rows, "HistoryRow")
+    assert jsonl_rows(encoded.decode()) == rows
+    assert encoded.endswith(b"\n")
+
+
+def test_exporter_source_contains_no_projection_or_historyrow_mini_contract() -> None:
+    source = SCRIPT.read_text()
+    forbidden = (
+        "_projection_export",
+        "_represented_runs",
+        "_schema_counts",
+        "_run_history_row_checker",
+        "_run_validation_row_selector",
+        "_validation_row_report",
+        "projection_results(",
+        "current_validation_run_rows(",
+        "require_recorded_gitlink",
+    )
+    assert not [name for name in forbidden if name in source]
 
 
 def test_reader_state_refuses_a_reported_dirty_ci_hub_path(

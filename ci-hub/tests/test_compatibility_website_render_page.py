@@ -1,18 +1,21 @@
 from __future__ import annotations
 
 import copy
+import gzip
 import hashlib
+import html
 import importlib.util
 import json
 import os
-import posixpath
 import re
 import subprocess
 import sys
 import xml.etree.ElementTree as ET
 from collections import Counter
+from dataclasses import replace
 from html.parser import HTMLParser
-from pathlib import Path
+from pathlib import Path, PurePosixPath
+from types import SimpleNamespace
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -21,13 +24,11 @@ import pytest
 
 REPOSITORY = Path(__file__).resolve().parents[2]
 SCRIPT = REPOSITORY / "ci-hub/compatibility-website/render_page.py"
-STAGE1_TEST = REPOSITORY / "ci-hub/tests/test_compatibility_website_build_data.py"
+WRITE_TEST = REPOSITORY / "ci-hub/tests/test_compatibility_website_write_data.py"
 FIXTURE = REPOSITORY / "ci-hub/tests/fixtures/compatibility-website-stage-1"
-SITE_JS = REPOSITORY / "ci-hub/compatibility-website/assets/site.js"
-FAVICON = REPOSITORY / "ci-hub/compatibility-website/assets/favicon.svg"
 
 
-def load_module(name: str, path: Path) -> Any:
+def _load(name: str, path: Path) -> Any:
     spec = importlib.util.spec_from_file_location(name, path)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
@@ -36,185 +37,29 @@ def load_module(name: str, path: Path) -> Any:
     return module
 
 
-render_page = load_module("compatibility_website_render_page_test", SCRIPT)
-stage1 = load_module("compatibility_website_stage1_fixture_source", STAGE1_TEST)
-
-
-GREEN = "fixture/green/verify/ptrace"
-RED = "fixture/red/verify/kvm"
-NEVER = "fixture/never-measured/verify/dbt"
-UNAVAILABLE = "fixture/unavailable/verify/ptrace"
-HISTORICAL = "fixture/historical/verify/ptrace"
-CUSTOM = "fixture/custom-command/custom/ptrace"
-CELLS = (GREEN, RED, NEVER, UNAVAILABLE, HISTORICAL)
-
-
-def _validation_row(
-    commit: str,
-    *,
-    run_id: str,
-    profile: str,
-    cell: str,
-    record_id: str,
-    result: str,
-    minute: int,
-    diverged: bool = False,
-) -> dict[str, Any]:
-    row = stage1.validation_row(
-        commit,
-        run_id=run_id,
-        profile=profile,
-        selected=[cell],
-        record_id=record_id,
-    )
-    row.update(
-        started_at=f"2026-08-31T00:0{minute}:00Z",
-        finished_at=f"2026-08-31T00:0{minute}:30Z",
-        result=result,
-    )
-    if diverged:
-        verdict = row["cell_results"]["cells"][0]["cell_verdict"]
-        verdict["state"] = "compared-and-diverged"
-        verdict["bitwise_parity"] = False
-    return row
+render_page = _load("compatibility_website_render_page_test", SCRIPT)
+writer_test = _load("compatibility_website_render_writer_fixture", WRITE_TEST)
 
 
 def representative_build_data(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    _tmp_path: Path | None = None,
+    _monkeypatch: pytest.MonkeyPatch | None = None,
 ) -> dict[str, Any]:
-    monkeypatch.setenv("GIT_AUTHOR_DATE", "2026-08-31T00:00:00Z")
-    monkeypatch.setenv("GIT_COMMITTER_DATE", "2026-08-31T00:00:00Z")
-    parent, parent_commit, hermit, hermit_commit = stage1.make_checkouts(tmp_path)
-    manifest = stage1.manifest_metadata(*CELLS, CUSTOM)
-    manifest["selected_by_full_custom_commands"] = [
-        cell for cell in manifest["cells"] if cell["mode"] == "custom"
-    ]
-    manifest["cells"] = [cell for cell in manifest["cells"] if cell["mode"] != "custom"]
-    for cell in manifest["cells"]:
-        if cell["test"] in {"fixture/never-measured", "fixture/historical"}:
-            cell["selected_by_full"] = False
-            cell["not_selected_by_full_reason"] = {
-                "reason": "not selected by full in this fixture"
-            }
+    """Return one complete schema-v3 fixture for renderer and combined tests."""
+    return copy.deepcopy(writer_test.build_data_value())
 
-    rows = [
-        stage1.series_row(
-            "green-retry-1",
-            hermit_commit,
-            run_id="fixture-super-current",
-            cell=GREEN,
-            run_index=1,
-            outcome="diverged",
-            result="determinism-failure",
-            failure_class="product_failure",
-        ),
-        stage1.series_row(
-            "green-retry-2",
-            hermit_commit,
-            run_id="fixture-super-current",
-            cell=GREEN,
-            run_index=2,
-            outcome="passed",
-            result="pass",
-        ),
-        stage1.series_row(
-            "red-attempt",
-            hermit_commit,
-            run_id="fixture-quick-current",
-            cell=RED,
-            outcome="diverged",
-            result="determinism-failure",
-            failure_class="product_failure",
-        ),
-        stage1.series_row(
-            "historical-pressure",
-            hermit_commit,
-            producer="pressure-test",
-            run_id="fixture-pressure-history",
-            cell=HISTORICAL,
-            num_runs=4,
-            outcome="passed",
-            result="pass",
-        ),
-    ]
-    rows[0]["series"].update(
-        attempt=1,
-        first_divergent_messages={
-            "left": "source-only fixture message from run 1",
-            "right": "source-only fixture message from run 2",
-        },
-        main_ancestry=False,
-    )
-    rows[1]["series"].update(
-        attempt=2,
-        runtime={
-            "run1": {
-                "scheduler_turns": 11,
-                "syscalls": 22,
-                "virtual_nanoseconds": 33,
-            },
-            "run2": {
-                "scheduler_turns": 12,
-                "syscalls": 23,
-                "virtual_nanoseconds": 34,
-            },
-            "wall_time_max_ms": 9,
-            "wall_time_min_ms": 7,
-        },
-    )
-    historical = _validation_row(
-        hermit_commit,
-        run_id="fixture-full-history",
-        profile="full",
-        cell=HISTORICAL,
-        record_id="fixture-record-history",
-        result="pass",
-        minute=0,
-    )
-    unavailable_history = stage1.unavailable_schema6_row(
-        hermit_commit, "renderer-fixture"
-    )
-    current = [
-        _validation_row(
-            hermit_commit,
-            run_id="fixture-super-current",
-            profile="super",
-            cell=GREEN,
-            record_id="fixture-record-super",
-            result="pass",
-            minute=1,
-        ),
-        _validation_row(
-            hermit_commit,
-            run_id="fixture-quick-current",
-            profile="quick",
-            cell=RED,
-            record_id="fixture-record-quick",
-            result="fail",
-            minute=2,
-            diverged=True,
-        ),
-        _validation_row(
-            hermit_commit,
-            run_id="fixture-full-current",
-            profile="full",
-            cell=UNAVAILABLE,
-            record_id="fixture-record-full",
-            result="pass",
-            minute=3,
-        ),
-    ]
-    canonical = stage1.canonical_input(
-        parent_commit,
-        rows,
-        validation_rows=[unavailable_history, historical, *current],
-        current_validation_rows=current,
-        incomplete_data=[stage1.cell_results_gap(unavailable_history)],
-    )
-    stage1.install_inputs(monkeypatch, canonical, manifest)
-    return stage1.build_data.build_data(
-        parent, parent_commit, hermit, hermit_commit, hermit_commit
-    )
+
+def _validated(data: dict[str, Any]) -> dict[str, Any]:
+    module = render_page._writer()._build_data_module()
+    return module.validate_build_data(data)
+
+
+def _tree(data: dict[str, Any]) -> dict[str, bytes]:
+    return render_page._writer().render_tree(_validated(data))
+
+
+def _build(data: dict[str, Any]) -> dict[str, Any]:
+    return json.loads(_tree(data)["build.json"])
 
 
 def fixture_files() -> dict[str, bytes]:
@@ -225,1407 +70,3945 @@ def fixture_files() -> dict[str, bytes]:
     }
 
 
-def copy_fixture(destination: Path) -> None:
-    for relative, value in fixture_files().items():
-        path = destination / relative
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(value)
+def _digest(value: Any) -> str:
+    return hashlib.sha256(
+        json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
 
 
-def tree_snapshot(root: Path) -> dict[str, tuple[str, bytes]]:
-    snapshot = {}
-    for path in sorted(root.rglob("*")):
-        relative = path.relative_to(root).as_posix()
-        snapshot[relative] = (
-            ("directory", b"") if path.is_dir() else ("file", path.read_bytes())
-        )
-    return snapshot
+def _digest_for_identity(value: str) -> str:
+    return hashlib.sha256(value.encode()).hexdigest()
 
 
-class PageParser(HTMLParser):
+def _identity(test: str, mode: str = "verify") -> str:
+    return f"{test}/{mode}/ptrace"
+
+
+def _policy_cell(source: dict[str, Any], identity: str) -> dict[str, Any]:
+    test, mode, backend = identity.rsplit("/", 2)
+    return {
+        **{
+            key: copy.deepcopy(value)
+            for key, value in source.items()
+            if key
+            in {
+                "category",
+                "current_reproducer",
+                "current_reproducer_unavailable_reason",
+                "guest_args",
+                "lane",
+                "not_applicable_reason",
+                "not_selected_by_full_reason",
+                "selected_by_full",
+                "timeout_seconds",
+                "workdir",
+            }
+        },
+        "backend": backend,
+        "cell": identity,
+        "mode": mode,
+        "test": test,
+    }
+
+
+def _refresh_projection_digests(data: dict[str, Any]) -> None:
+    runs = data["runs"]
+    provenance = data["provenance"]
+    module = render_page._writer()._build_data_module()
+    for field, value in (
+        ("current_main_ancestry_sha256", runs["current_main_ancestry"]),
+        ("product_results_sha256", runs["product_results"]),
+        ("projection_results_sha256", runs["projection_results"]),
+        ("validate_run_selection_sha256", runs["validate_run_selection"]),
+        ("series_rows_projection_sha256", runs["series_rows"]),
+        (
+            "current_validation_run_rows_projection_sha256",
+            runs["current_validation_run_rows"],
+        ),
+        (
+            "validation_history_rows_projection_sha256",
+            runs["validation_history_rows"],
+        ),
+    ):
+        provenance[field] = module._digest(value)
+
+
+_ABSENT = object()
+
+
+def _set_run_number(data: dict[str, Any], value: Any = _ABSENT) -> None:
+    for field in ("validation_history_rows", "current_validation_run_rows"):
+        for row in data["runs"][field]:
+            if value is _ABSENT:
+                row.pop("run_number", None)
+            else:
+                row["run_number"] = copy.deepcopy(value)
+    _refresh_projection_digests(data)
+
+
+def data_with_all_three_states_and_one_omitted_row() -> dict[str, Any]:
+    data = representative_build_data()
+    green = data["cells"][0]
+    test = data["tests"][0]
+
+    never_id = _identity(str(test["id"]), "run")
+    never = _policy_cell(green, never_id)
+    never.update(
+        event_ids=[],
+        physical_row_count=0,
+        qualifying_event_ids=[],
+        qualifying_physical_row_count=0,
+        qualifying_represented_run_count=0,
+        represented_run_count=0,
+        selected_by={},
+        state="never-measured",
+    )
+    never.pop("latest_result", None)
+    never.pop("latest_event_ids", None)
+    never.pop("latest_result_time", None)
+    never.pop("latest_result_tree", None)
+    data["cells"].append(never)
+
+    omitted_id = _identity(str(test["id"]), "chaos")
+    test["cells"].extend((never_id, omitted_id))
+    row = copy.deepcopy(data["runs"]["series_rows"][0])
+    row.update(
+        event_id="event-without-result",
+        producer="pressure-test",
+        run_id="pressure-run",
+        product_result=None,
+    )
+    row["series"].update(
+        cell=omitted_id,
+        outcome="skipped",
+        result=None,
+        failure_class="understood_prerequisite_failure",
+    )
+    data["runs"]["series_rows"].append(row)
+    data["runs"]["product_results"][row["event_id"]] = None
+    data["runs"]["projection_results"][row["event_id"]] = None
+    data["projection_audit"]["deliberate_omissions"] = [
+        {
+            "backend": "ptrace",
+            "cell": omitted_id,
+            "event_ids": [row["event_id"]],
+            "event_references": [
+                {
+                    "event_id": row["event_id"],
+                    "observed_at": row["emitted_at"],
+                    "product_result": None,
+                    "run_id": row["run_id"],
+                    "tree": row["series"]["tree"],
+                }
+            ],
+            "mode": "chaos",
+            "physical_row_count": 1,
+            "qualifying_event_ids": [row["event_id"]],
+            "qualifying_physical_row_count": 1,
+            "qualifying_represented_run_count": 1,
+            "reason": "the latest qualifying execution does not establish pass or product failure",
+            "represented_run_count": 1,
+            "test": test["id"],
+        }
+    ]
+    for field in (
+        "projection_admitted_physical_row_count",
+        "projection_admitted_represented_run_count",
+        "series_physical_row_count",
+        "series_represented_run_count",
+    ):
+        data["runs"][field] += 1
+    data["counts"].update(
+        in_manifest_cell_count=3,
+        never_measured_cell_count=1,
+        physical_row_count=2,
+        represented_run_count=2,
+    )
+    data["provenance"].update(
+        series_physical_row_count=2,
+        series_represented_run_count=2,
+    )
+    _refresh_projection_digests(data)
+    return _validated(data)
+
+
+def _replace_verdict_with_reason(data: dict[str, Any]) -> dict[str, Any]:
+    verdict = {
+        "comparison_tier": "execution-only-self-consistent",
+        "reason": "fixture does not compare",
+        "state": "performs-no-comparison-by-design",
+    }
+    for field in ("validation_history_rows", "current_validation_run_rows"):
+        data["runs"][field][0]["cell_results"]["recorded"]["cells"][0][
+            "cell_verdict"
+        ] = copy.deepcopy(verdict)
+    _refresh_projection_digests(data)
+    return _validated(data)
+
+
+def _add_runtime_counts(data: dict[str, Any]) -> dict[str, Any]:
+    data["runs"]["series_rows"][0]["series"]["runtime"] = {
+        "run1": {
+            "scheduler_turns": 11,
+            "syscalls": 12,
+            "virtual_nanoseconds": 13,
+        },
+        "run2": {
+            "scheduler_turns": 21,
+            "syscalls": 22,
+            "virtual_nanoseconds": 23,
+        },
+        "wall_time_max_ms": 2.0,
+        "wall_time_min_ms": 1.0,
+    }
+    _refresh_projection_digests(data)
+    return _validated(data)
+
+
+class Links(HTMLParser):
     def __init__(self) -> None:
         super().__init__()
         self.ids: set[str] = set()
-        self.hrefs: list[str] = []
-        self.count_links: list[tuple[str, int]] = []
-        self.filter_count_links: list[tuple[str, int]] = []
-        self.row_counts: dict[str, int] = {}
-        self.represented_links: list[tuple[str, int]] = []
-        self.represented_counts: dict[str, int] = {}
-        self.cell_states: Counter[str] = Counter()
-        self.series_rows = 0
-        self.scripts = 0
-        self.script_sources: list[str] = []
-        self.icon_links: list[tuple[str | None, str]] = []
-        self.cell_rows: list[dict[str, str]] = []
-        self.recorded_not_in_manifest_rows: list[dict[str, str]] = []
-        self.tags: Counter[str] = Counter()
-        self.html_lang: str | None = None
-        self.h1_count = 0
-        self.th_scopes: list[str | None] = []
-        self.aria_labels: list[str] = []
-        self.represented_link_texts: list[tuple[int, int, list[str]]] = []
-        self._active_represented_link: list[str] | None = None
+        self.links: list[str] = []
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         values = dict(attrs)
-        self.tags[tag] += 1
-        if tag == "html":
-            self.html_lang = values.get("lang")
-        if tag == "h1":
-            self.h1_count += 1
-        if tag == "th":
-            self.th_scopes.append(values.get("scope"))
-        if values.get("aria-label") is not None:
-            self.aria_labels.append(str(values["aria-label"]))
-        identity = values.get("id")
-        if identity is not None:
-            assert identity not in self.ids
-            self.ids.add(identity)
-            if values.get("data-row-count") is not None:
-                self.row_counts[identity] = int(values["data-row-count"])
-            if values.get("data-represented-count") is not None:
-                self.represented_counts[identity] = int(
-                    values["data-represented-count"]
-                )
-        href = values.get("href")
-        if href is not None:
-            self.hrefs.append(href)
-            if values.get("data-count") is not None:
-                destination = (
-                    self.filter_count_links
-                    if values.get("data-cell-filter-link") == "1"
-                    else self.count_links
-                )
-                destination.append((href, int(values["data-count"])))
-            if values.get("data-represented-count") is not None:
-                self.represented_links.append(
-                    (href, int(values["data-represented-count"]))
-                )
-                assert values.get("data-count") is not None
-                text_parts: list[str] = []
-                self.represented_link_texts.append(
-                    (
-                        int(values["data-count"]),
-                        int(values["data-represented-count"]),
-                        text_parts,
-                    )
-                )
-                self._active_represented_link = text_parts
-        if values.get("data-cell-row") == "1":
-            self.cell_states[str(values["data-state"])] += 1
-            self.cell_rows.append({key: str(value) for key, value in values.items()})
-        if values.get("data-recorded-not-in-manifest-row") == "1":
-            self.recorded_not_in_manifest_rows.append(
-                {key: str(value) for key, value in values.items()}
-            )
-        if values.get("data-series-row") == "1":
-            self.series_rows += 1
-        if tag == "script":
-            self.scripts += 1
-            if values.get("src") is not None:
-                self.script_sources.append(str(values["src"]))
-        if tag == "link" and values.get("rel") == "icon":
-            assert values.get("href") is not None
-            self.icon_links.append((values.get("type"), str(values["href"])))
+        if values.get("id"):
+            self.ids.add(str(values["id"]))
+        if tag in {"a", "link", "script"}:
+            target = values.get("href") or values.get("src")
+            if target:
+                self.links.append(str(target))
 
-    def handle_endtag(self, tag: str) -> None:
-        if tag == "a":
-            self._active_represented_link = None
+
+class ListingStructure(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self.selects: dict[str, list[tuple[str, str]]] = {}
+        self.inputs: set[str] = set()
+        self.links: list[tuple[str, str]] = []
+        self.captions: list[str] = []
+        self.headings: list[str] = []
+        self._select: str | None = None
+        self._option: tuple[str, list[str]] | None = None
+        self._link: tuple[str, list[str]] | None = None
+        self._caption: list[str] | None = None
+        self._heading: list[str] | None = None
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        values = dict(attrs)
+        if tag == "select" and values.get("name"):
+            self._select = str(values["name"])
+            self.selects[self._select] = []
+        elif tag == "option" and self._select is not None:
+            self._option = (str(values.get("value") or ""), [])
+        elif tag == "input" and values.get("name"):
+            self.inputs.add(str(values["name"]))
+        elif tag == "a" and values.get("href"):
+            self._link = (str(values["href"]), [])
+        elif tag == "caption":
+            self._caption = []
+        elif tag == "h1":
+            self._heading = []
 
     def handle_data(self, data: str) -> None:
-        if self._active_represented_link is not None:
-            self._active_represented_link.append(data)
+        if self._option is not None:
+            self._option[1].append(data)
+        if self._link is not None:
+            self._link[1].append(data)
+        if self._caption is not None:
+            self._caption.append(data)
+        if self._heading is not None:
+            self._heading.append(data)
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == "option" and self._select is not None and self._option is not None:
+            value, text = self._option
+            self.selects[self._select].append((value, "".join(text).strip()))
+            self._option = None
+        elif tag == "select":
+            self._select = None
+        elif tag == "a" and self._link is not None:
+            href, text = self._link
+            self.links.append((href, "".join(text).strip()))
+            self._link = None
+        elif tag == "caption" and self._caption is not None:
+            self.captions.append("".join(self._caption).strip())
+            self._caption = None
+        elif tag == "h1" and self._heading is not None:
+            self.headings.append("".join(self._heading).strip())
+            self._heading = None
 
 
-def parse_site(files: dict[str, bytes]) -> dict[str, PageParser]:
-    parsed = {}
-    for path, value in files.items():
+class CollectionStructure(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self.controls: dict[str, dict[str, str | None]] = {}
+        self.items: Counter[str] = Counter()
+        self.item_attributes: list[dict[str, str | None]] = []
+        self.children: Counter[str] = Counter()
+        self.scripts: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        values = dict(attrs)
+        collection = values.get("data-list-controls")
+        if collection:
+            self.controls[str(collection)] = values
+        item = values.get("data-list-item")
+        if item:
+            self.items[str(item)] += 1
+            self.item_attributes.append(values)
+        child = values.get("data-list-child")
+        if child:
+            self.children[str(child)] += 1
+        if tag == "script" and values.get("src"):
+            self.scripts.append(str(values["src"]))
+
+
+class ColumnHeadings(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self.columns: list[dict[str, str]] = []
+        self._column: dict[str, str] | None = None
+        self._text: list[str] = []
+        self._help_depth = 0
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        values = dict(attrs)
+        if tag == "th" and values.get("scope") == "col":
+            self._column = {"help": "", "sort": "", "title": ""}
+            self._text = []
+        if self._column is None:
+            return
+        if values.get("title"):
+            self._column["title"] = str(values["title"])
+        if tag == "span" and "column-help-wrap" in str(values.get("class", "")):
+            self._help_depth = 1
+        elif self._help_depth:
+            self._help_depth += 1
+        if tag == "button" and "column-help" in str(values.get("class", "")):
+            if values.get("aria-describedby"):
+                self._column["help"] = str(values["aria-describedby"])
+        sort = values.get("data-cell-sort") or values.get("data-list-sort")
+        if sort:
+            self._column["sort"] = str(sort)
+
+    def handle_data(self, data: str) -> None:
+        if self._column is not None and not self._help_depth:
+            self._text.append(data)
+
+    def handle_endtag(self, tag: str) -> None:
+        if self._help_depth:
+            self._help_depth -= 1
+            return
+        if tag == "th" and self._column is not None:
+            self._column["label"] = "".join(self._text).strip()
+            self.columns.append(self._column)
+            self._column = None
+            self._text = []
+
+
+class MatrixStructure(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self.matrix_sections = 0
+        self.pagination = 0
+        self.current_tables = 0
+        self.outside_tables = 0
+        self._section_depth = 0
+        self._matrix_depth: int | None = None
+        self._div_depth = 0
+        self._current_depth: int | None = None
+        self._outside_depth: int | None = None
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        values = dict(attrs)
+        if tag == "section":
+            self._section_depth += 1
+            if values.get("id") == "test-matrix":
+                self.matrix_sections += 1
+                self._matrix_depth = self._section_depth
+
+        in_matrix = self._matrix_depth is not None
+        if in_matrix and tag == "nav" and "data-cell-pagination" in values:
+            self.pagination += 1
+
+        if tag == "div":
+            self._div_depth += 1
+            if in_matrix and values.get("id") == "all-cells":
+                self._current_depth = self._div_depth
+            elif in_matrix and values.get("id") == "recorded-not-in-current-manifest":
+                self._outside_depth = self._div_depth
+        elif tag == "table":
+            if in_matrix and self._current_depth is not None:
+                self.current_tables += 1
+            if in_matrix and self._outside_depth is not None:
+                self.outside_tables += 1
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == "div":
+            if self._current_depth == self._div_depth:
+                self._current_depth = None
+            if self._outside_depth == self._div_depth:
+                self._outside_depth = None
+            self._div_depth -= 1
+        elif tag == "section":
+            if self._matrix_depth == self._section_depth:
+                self._matrix_depth = None
+            self._section_depth -= 1
+
+
+def _collection_structure(source: bytes) -> CollectionStructure:
+    parser = CollectionStructure()
+    parser.feed(source.decode())
+    return parser
+
+
+def test_renderer_emits_v3_inventory_without_retired_route_or_placeholder() -> None:
+    data = representative_build_data()
+    files = render_page.render_site(_build(data), data)
+
+    assert "incomplete-data/index.html" not in files
+    assert {
+        "cells/projection-audit.html",
+        "runs/index.html",
+        "tests/custom-commands.html",
+    } <= files.keys()
+    assert set(path.split("/", 1)[0] for path in files if "/" in path) == {
+        "assets",
+        "cells",
+        "data",
+        "runs",
+        "tests",
+    }
+    assert all(
+        b"Unavailable" not in value
+        for path, value in files.items()
+        if path.endswith(".html")
+    )
+    assert "incomplete-data" not in SCRIPT.read_text()
+    assert "validation_incomplete_data" not in SCRIPT.read_text()
+    assert "missing_executions" not in SCRIPT.read_text()
+
+
+def test_cell_populations_and_result_denominator_remain_separate() -> None:
+    data = data_with_all_three_states_and_one_omitted_row()
+    files = render_page.render_site(_build(data), data)
+    landing = files["index.html"].decode()
+    cells = files["cells/index.html"].decode()
+    audit = files["cells/projection-audit.html"].decode()
+
+    assert "<strong>3</strong><span>cells in the manifest</span>" in landing
+    assert "<strong>1</strong><span>result rows shown by default</span>" in landing
+    assert (
+        "<strong>1</strong><span>never measured cells in the explicit view</span>"
+        in landing
+    )
+    assert (
+        "<strong>1</strong><span>in the manifest minus rows with a cell page</span>"
+        in landing
+    )
+    assert "<strong>1</strong><span>green plus red result denominator</span>" in landing
+    assert 'data-state="green"' in cells
+    assert 'data-state="never-measured"' not in cells
+    never = files["cells/never-measured.html"].decode()
+    assert 'data-state="never-measured"' in never
+    assert "event-without-result" not in landing
+    assert "event-without-result" in audit
+    assert (
+        "No pass or product failure result was recorded for that latest execution"
+        in audit
+    )
+    summary = _browser_payload(files, "data/site-summary.json.gz")
+    assert summary["projection_audit"] == data["projection_audit"]
+    omission = data["projection_audit"]["deliberate_omissions"][0]
+    assert omission["event_references"] == [
+        {
+            "event_id": "event-without-result",
+            "observed_at": omission["event_references"][0]["observed_at"],
+            "product_result": None,
+            "run_id": "pressure-run",
+            "tree": omission["event_references"][0]["tree"],
+        }
+    ]
+    shard_records = [
+        item
+        for prefix in "0123456789abcdef"
+        for item in _browser_payload(files, f"data/detail-{prefix}.json.gz")["records"]
+    ]
+    assert not any(
+        item["kind"] == "cell" and item["identity"] == omission["cell"]
+        for item in shard_records
+    )
+    assert "state-unavailable" not in landing
+
+
+def test_series_counts_explicitly_name_hermit_runs() -> None:
+    data = data_with_all_three_states_and_one_omitted_row()
+    files = render_page.render_site(_build(data), data)
+    html_sources = "\n".join(
+        value.decode() for path, value in files.items() if path.endswith(".html")
+    )
+    javascript = files["assets/site.js"].decode()
+
+    assert "representing <strong>2</strong> Hermit runs" in html_sources
+    assert "Represented Hermit runs" in html_sources
+    assert "physical rows representing 2 Hermit runs" in html_sources
+    assert ">Represented runs<" not in html_sources
+    assert "physical rows representing 2 runs" not in html_sources
+    assert "['Represented Hermit runs', cell.represented_run_count]" in javascript
+    assert (
+        "['Qualifying represented Hermit runs', "
+        "cell.qualifying_represented_run_count]" in javascript
+    )
+    assert "['Represented runs', cell.represented_run_count]" not in javascript
+
+
+def test_test_matrix_uses_compact_columns_links_and_measure_definitions() -> None:
+    data = data_with_all_three_states_and_one_omitted_row()
+    files = render_page.render_site(_build(data), data)
+    source = files["cells/index.html"].decode()
+    headings = ColumnHeadings()
+    headings.feed(source)
+    matrix = headings.columns[:10]
+
+    assert [column["label"] for column in matrix] == [
+        "Category",
+        "TestName",
+        "Mode",
+        "Backend",
+        "Lane",
+        "Latest result",
+        "Latest result time",
+        "Latest result tree",
+        "Physical rows",
+        "Represented Hermit runs",
+    ]
+    for path, encoded in files.items():
         if not path.endswith(".html"):
             continue
-        parser = PageParser()
-        parser.feed(value.decode())
-        parsed[path] = parser
-    return parsed
-
-
-def link_target(source: str, href: str) -> tuple[str, str, str]:
-    split = urlsplit(href)
-    assert split.scheme == ""
-    assert split.netloc == ""
-    target = (
-        source
-        if split.path == ""
-        else posixpath.normpath(posixpath.join(posixpath.dirname(source), split.path))
-    )
-    assert not target.startswith("../")
-    return target, split.query, split.fragment
-
-
-def cell_filter_records(files: dict[str, bytes]) -> list[dict[str, Any]]:
-    parser = parse_site(files)["cells/index.html"]
-    records = []
-    for index, row in enumerate(parser.cell_rows):
-        records.append(
-            {
-                "population": "in_manifest",
-                "manifest": index,
-                "cell": row["data-cell"],
-                "test": row["data-test"],
-                "lane": row["data-lane"],
-                "category": row["data-category"],
-                "mode": row["data-mode"],
-                "backend": row["data-backend"],
-                "state": row["data-state"],
-                "result": row["data-result"],
-                "selected_by_full": row["data-selected-by-full"],
-                "selected_by_paths": json.loads(row["data-selected-by-paths"]),
-                "evidence": row["data-evidence"],
-                "latest_result_time": row["data-latest-result-time"],
-                "latest_result_tree": row["data-latest-result-tree"],
-                "search": row["data-search"],
-                "series_evidence": json.loads(row["data-series-evidence"]),
-                "physical_row_count": int(row["data-physical-row-count"]),
-                "represented_run_count": int(row["data-represented-run-count"]),
-            }
-        )
-    for index, row in enumerate(parser.recorded_not_in_manifest_rows):
-        records.append(
-            {
-                "population": "not_in_current_manifest",
-                "manifest": index,
-                "cell": row["data-cell"],
-                "search": row["data-search"],
-                "series_evidence": [],
-                "physical_row_count": int(row["data-physical-row-count"]),
-                "represented_run_count": int(row["data-represented-run-count"]),
-            }
-        )
-    return records
-
-
-def filter_allowed(model: Any) -> dict[str, list[str]]:
-    return {
-        "lane": sorted({str(cell["lane"]) for cell in model.cells}),
-        "category": sorted({str(cell["category"]) for cell in model.cells}),
-        "mode": sorted({str(cell["mode"]) for cell in model.cells}),
-        "backend": sorted({str(cell["backend"]) for cell in model.cells}),
-        "host_capability": list(model.host_capability_names),
-    }
-
-
-def run_filter_javascript(operation: str, payload: dict[str, Any]) -> dict[str, Any]:
-    program = r"""
-const fs = require("fs");
-const api = require(process.argv[1]);
-const input = JSON.parse(fs.readFileSync(0, "utf8"));
-let output;
-if (input.operation === "query") {
-  const parsed = api.parseQuery(input.query, input.allowed);
-  if (!parsed.ok) {
-    output = parsed;
-  } else {
-    const matching = api.sortRecords(
-      input.records.filter((record) => api.matches(record, parsed.state)),
-      parsed.state,
-    );
-    output = {
-      ok: true,
-      state: parsed.state,
-      serialized: api.serializeState(parsed.state),
-      cells: matching.map((record) => record.cell),
-      summary: api.summarize(matching),
-    };
-  }
-} else if (input.operation === "sort") {
-  output = { cells: api.sortRecords(input.records, input.state).map((record) => record.cell) };
-} else {
-  throw new Error(`unknown operation ${input.operation}`);
-}
-process.stdout.write(JSON.stringify(output));
-"""
-    result = subprocess.run(
-        ["node", "-e", program, str(SITE_JS)],
-        input=json.dumps({"operation": operation, **payload}),
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    assert result.returncode == 0, result.stderr
-    assert result.stderr == ""
-    return json.loads(result.stdout)
-
-
-def test_checked_in_fixture_is_exact_current_stage1_output(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    value = representative_build_data(tmp_path, monkeypatch)
-    expected = render_page._writer().render_tree(value)
-
-    assert fixture_files() == expected
-
-
-def test_fixture_exercises_the_distinctions_the_page_must_preserve() -> None:
-    build, data = render_page.load_artifacts(FIXTURE)
-    cells = {cell["cell"]: cell for cell in data["cells"]}
-    series_rows = {row["event_id"]: row for row in data["runs"]["series_rows"]}
-    provenance = data["provenance"]
-
-    assert build["counts"] == {
-        "current_validation_run_row_count": 3,
-        "green_cell_count": 2,
-        "in_manifest_cell_count": 5,
-        "incomplete_data_count": 11,
-        "never_measured_cell_count": 1,
-        "physical_row_count": 4,
-        "red_cell_count": 1,
-        "represented_run_count": 7,
-        "selected_by_full_custom_command_count": 1,
-        "state_unavailable_cell_count": 1,
-        "test_count": 6,
-        "validation_history_row_count": 5,
-    }
-    assert cells[GREEN]["state"] == "green"
-    assert cells[GREEN]["selected_by"].keys() == {"super"}
-    assert cells[RED]["state"] == "red"
-    assert cells[RED]["selected_by"].keys() == {"quick"}
-    assert cells[NEVER]["state"] == "never-measured"
-    assert cells[NEVER]["physical_row_count"] == 0
-    assert cells[NEVER]["selected_by_full"] is False
-    assert cells[UNAVAILABLE]["state"] is None
-    assert cells[UNAVAILABLE]["selected_by"].keys() == {"full"}
-    assert cells[HISTORICAL]["state"] == "green"
-    assert cells[HISTORICAL]["selected_by_full"] is False
-    assert cells[HISTORICAL]["physical_row_count"] == 1
-    assert cells[HISTORICAL]["represented_run_count"] == 4
-    assert data["runs"]["current_validation_run_row_count"] == 3
-    assert data["runs"]["validation_history_row_count"] == 5
-    unavailable_row = next(
-        row
-        for row in data["runs"]["validation_history_rows"]
-        if row["run_id"] == "retired-renderer-fixture"
-    )
-    assert unavailable_row["profile"] == "quick"
-    assert unavailable_row["cell_results"] is None
-    assert [item["cell"] for item in data["selected_by_full_custom_commands"]] == [
-        CUSTOM
-    ]
-    assert provenance[
-        "series_rows_projection_sha256"
-    ] == render_page._writer()._build_data_module()._digest(data["runs"]["series_rows"])
+        page_headings = ColumnHeadings()
+        page_headings.feed(encoded.decode())
+        assert all(column["title"] for column in page_headings.columns), path
+        assert all(
+            column["title"] != column["label"] for column in page_headings.columns
+        ), path
+        assert all(
+            column["sort"] or column["help"] for column in page_headings.columns
+        ), path
+        help_ids = [
+            column["help"] for column in page_headings.columns if column["help"]
+        ]
+        assert len(help_ids) == len(set(help_ids)), path
+        assert all(
+            f'id="{help_id}" role="tooltip"' in encoded.decode() for help_id in help_ids
+        ), path
+    by_label = {column["label"]: column for column in matrix}
+    assert "admitted stress-series/v3 records" in by_label["Physical rows"]["title"]
+    assert "SeriesRow.num_runs" in by_label["Represented Hermit runs"]["title"]
+    assert "not OS process invocations" in by_label["Represented Hermit runs"]["title"]
     assert (
-        provenance["series_rows_sha256"] != provenance["series_rows_projection_sha256"]
+        "chosen latest qualifying logical execution"
+        in by_label["Latest result tree"]["title"]
     )
-    assert "main_ancestry" not in series_rows["green-retry-1"]["series"]
-    assert "first_divergent_messages" not in series_rows["green-retry-1"]["series"]
-    assert series_rows["green-retry-1"]["current_main_ancestry"] is True
-
-
-def test_site_is_deterministic_and_truthful() -> None:
-    build, data = render_page.load_artifacts(FIXTURE)
-    first = render_page.render_site(build, data)
-    second = render_page.render_site(build, data)
-    model = render_page._site_model(build, data)
-    all_text = "\n".join(
-        value.decode() for path, value in first.items() if path.endswith(".html")
-    )
-    landing = first["index.html"].decode()
-    cells = first["cells/index.html"].decode()
-    cells_parser = parse_site(first)["cells/index.html"]
-
-    assert first == second
-    assert len(first) == 22
-    assert first["assets/favicon.svg"] == FAVICON.read_bytes()
-    assert set(model.cell_paths.values()) <= set(first)
-    assert set(model.test_paths.values()) <= set(first)
-    assert set(model.run_paths.values()) <= set(first)
-    assert cells_parser.cell_states == Counter(
-        {"green": 2, "red": 1, "never-measured": 1, "unavailable": 1}
-    )
-    assert cells_parser.series_rows == 4
-    assert cells_parser.scripts == 1
-    assert cells_parser.script_sources == ["../assets/site.js"]
-    assert all_text.count("Fixture data — not current Hermit main") == 19
-    assert "3</strong> cells selected by full" in landing
-    assert "2</strong> cells not selected by full" in landing
-    assert "Cells selected by quick: Unavailable" in landing
-    assert "Cells selected by super: Unavailable" in landing
-    assert "Selected by quick" in all_text
-    assert "Selected by full" in all_text
-    assert "Selected by super" in all_text
-    assert CUSTOM in landing
-    unavailable_history = landing.index("retired-renderer-fixture")
-    unavailable_history_row = landing[unavailable_history : unavailable_history + 900]
-    assert "<td>quick</td>" in unavailable_history_row
-    assert unavailable_history_row.count('class="unavailable">Unavailable') >= 2
-    assert "Never measured" in all_text
-    assert "no qualifying canonical row exists" in all_text
-    assert "Product failure" in all_text
-    assert "No projection exclusion reason — 4 canonical rows represent 7 runs" in cells
+    assert "State" not in by_label and "Cell" not in by_label
+    assert "Selected by full" not in by_label and "Selected by path" not in by_label
+    assert "Latest product result" not in source
+    assert "Test name" not in source
+    assert "<h2>Test Matrix</h2>" in source
+    structure = MatrixStructure()
+    structure.feed(source)
+    assert structure.matrix_sections == 1
+    assert structure.pagination == 1
+    assert structure.current_tables == 1
+    assert structure.outside_tables == 1
     assert (
-        "Recorded projection exclusion reason — 0 canonical rows represent 0 runs"
-        in cells
-    )
-    assert "green-retry-1" in cells
-    assert "green-retry-2" in cells
-    assert "Run index 1" in cells
-    assert "Run index 2" in cells
-    assert "Attempt 1" in cells
-    assert "Attempt 2" in cells
-    assert "Wall time: 7–9 ms" in cells
-    assert "scheduler turns: 11" in cells
-    assert cells.index("Producer outcome") < cells.index("Producer result")
-    assert cells.index("Producer result") < cells.index("Product result")
-    assert 'scope="rowgroup"' in cells
-    assert 'scope="colgroup"' not in all_text
-    assert "Captured series source digest" in landing
-    assert "Public series projection digest" in landing
-    assert "source-only fixture message" not in all_text
-    assert "/home/" not in all_text
-    assert cells.index(
-        '<th scope="col">State from qualifying canonical rows'
-    ) < cells.index('<th scope="col">Latest product result')
-    assert "enabled" not in all_text.casefold()
-    assert "selected_count" not in all_text
-    assert render_page.render_page(build, data) == first["index.html"]
-
-
-def test_live_wording_is_explicit_and_fixture_default_is_unchanged() -> None:
-    build, data = render_page.load_artifacts(FIXTURE)
-    fixture = render_page.render_site(build, data)
-    live = render_page.render_site(build, data, wording="live")
-    fixture_html = "\n".join(
-        value.decode() for path, value in fixture.items() if path.endswith(".html")
-    )
-    live_html = "\n".join(
-        value.decode() for path, value in live.items() if path.endswith(".html")
-    )
-
-    assert set(live) == set(fixture)
-    assert all(
-        live[path] == value
-        for path, value in fixture.items()
-        if not path.endswith(".html")
-    )
-    assert fixture_html.count("Fixture data — not current Hermit main") == 19
-    assert "Fixture provenance" in fixture_html
-    assert "fixture manifest" in fixture_html
-    live_banner = (
-        "Recorded data — source commits are on Overview; incomplete data is on "
-        "Incomplete data"
-    )
-    for path, value in live.items():
-        if path.endswith(".html"):
-            assert live_banner in value.decode(), path
-            assert (
-                "source commits and incomplete data are named below"
-                not in value.decode()
+        'button type="submit"'
+        not in source[
+            source.index('<form class="cell-filters"') : source.index(
+                "</form>", source.index('<form class="cell-filters"')
             )
-    assert "Build provenance" in live_html
-    assert "manifest for this build" in live_html
-    for fixture_only in (
-        "Fixture data — not current Hermit main",
-        "Fixture provenance",
-        "Stage 1 fixture",
-        "fixture manifest",
-        "compatibility fixture",
-    ):
-        assert fixture_only not in live_html
-
-    with pytest.raises(render_page.RenderRefused, match="exactly 'fixture' or 'live'"):
-        render_page.render_site(build, data, wording="current")
-
-
-def test_every_artifact_is_read_and_bound(monkeypatch: pytest.MonkeyPatch) -> None:
-    writer = render_page._writer()
-    observed = []
-    original = writer._read_file
-
-    def record(directory: int, name: str, limit: int) -> bytes:
-        observed.append(name)
-        return original(directory, name, limit)
-
-    monkeypatch.setattr(writer, "_read_file", record)
-    render_page.load_artifacts(FIXTURE)
-
-    assert Counter(observed) == Counter(
-        {
-            "build.json": 1,
-            "cells.json.gz": 1,
-            "incomplete-data.json.gz": 1,
-            "runs.json.gz": 1,
-            "tests.json.gz": 1,
-        }
+        ]
     )
 
-
-def test_dynamic_text_is_html_escaped() -> None:
-    build, data = render_page.load_artifacts(FIXTURE)
-    mutated = copy.deepcopy(data)
-    mutated["tests"][0]["description"] = '<script src="https://bad.invalid/x"></script>'
-
-    text = render_page.render_page(build, mutated).decode()
-
-    assert '<script src="https://bad.invalid/x"></script>' not in text
-    assert "&lt;script src=&quot;https://bad.invalid/x&quot;&gt;" in text
-
-
-def test_renderer_refuses_unknown_product_results() -> None:
-    build, data = render_page.load_artifacts(FIXTURE)
-    cell_mutation = copy.deepcopy(data)
-    cell_mutation["cells"][0]["latest_result"] = "unknown"
-    with pytest.raises(render_page.RenderRefused, match="latest product result"):
-        render_page.render_page(build, cell_mutation)
-
-    series_mutation = copy.deepcopy(data)
-    series_mutation["runs"]["series_rows"][0]["product_result"] = "unknown"
-    with pytest.raises(render_page.RenderRefused, match="series product result"):
-        render_page.render_page(build, series_mutation)
-
-
-def test_css_is_local_and_preserves_non_color_state_labels() -> None:
-    css = render_page._site_css().decode()
-
-    assert "http:" not in css.casefold()
-    assert "https:" not in css.casefold()
-    assert "@import" not in css.casefold()
-    assert "url(" not in css.casefold()
-    assert ":focus-visible" in css
-    assert ".state-green" in css
-    assert ".state-red" in css
-
-
-def test_javascript_is_local_and_uses_safe_visible_updates() -> None:
-    javascript = render_page._site_javascript().decode()
-    check = subprocess.run(
-        ["node", "--check", str(SITE_JS)],
-        check=False,
-        capture_output=True,
-        text=True,
+    cell = next(item for item in data["cells"] if item["latest_result"] == "pass")
+    digest = _digest_for_identity(cell["cell"])
+    assert f'href="detail.html?cell={digest}"' in source
+    assert (
+        f"><code>{render_page._test_name(cell['test'], cell['category'])}</code></a>"
+        in source
     )
-
-    assert check.returncode == 0, check.stderr
-    assert check.stdout == ""
-    assert check.stderr == ""
-    lowered = javascript.casefold()
-    assert "textcontent" in lowered
-    assert "innerhtml" not in lowered
-    assert "outerhtml" not in lowered
-    assert "insertadjacenthtml" not in lowered
-    assert "document.write" not in lowered
-    assert "fetch(" not in lowered
-    assert "xmlhttprequest" not in lowered
-    assert "websocket" not in lowered
-    assert "http:" not in lowered
-    assert "https:" not in lowered
+    assert (
+        f'href="https://github.com/rrnewton/hermit/commit/{cell["latest_result_tree"]}"'
+        in source
+    )
+    assert re.search(r"<time datetime=\"[^\"]+\">[^<]+ ET</time>", source)
 
 
-@pytest.mark.parametrize(
-    "source",
-    [
-        b"fetch('x'); textContent = 'x';\n",
-        b"node.innerHTML = 'x'; textContent = 'x';\n",
-        b"const value = 'no visible update';\n",
-    ],
-)
-def test_javascript_asset_refuses_network_html_injection_or_no_text_updates(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, source: bytes
-) -> None:
-    path = tmp_path / "site.js"
-    path.write_bytes(source)
-    monkeypatch.setattr(render_page, "SITE_JS_PATH", path)
-
-    with pytest.raises(render_page.RenderRefused, match="site JavaScript"):
-        render_page._site_javascript()
-
-
-def test_favicon_is_the_fixed_geometric_h_slash_slash_i_asset(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    favicon = render_page._site_favicon()
-    root = ET.fromstring(favicon)
-    elements = list(root.iter())
-    local_names = [element.tag.rsplit("}", 1)[-1] for element in elements]
-
-    assert favicon == FAVICON.read_bytes()
-    assert hashlib.sha256(favicon).hexdigest() == render_page.FAVICON_SHA256
-    assert root.attrib == {
-        "viewBox": "0 0 64 64",
-    }
-    assert local_names == ["svg", "rect", "path", "path", "rect"]
-    assert {element.attrib.get("fill") for element in elements[1:]} == {
-        "#17202a",
-        "#f5f2ea",
-    }
-    assert elements[1].attrib["rx"] == "32"
-    assert elements[1].attrib["ry"] == "32"
-    assert all(element.text is None or not element.text.strip() for element in elements)
-    lowered = favicon.lower()
-    for forbidden in (
-        b"<text",
-        b"font",
-        b"<script",
-        b"<style",
-        b"<image",
-        b"<use",
-        b"foreignobject",
-        b"href",
-        b"xlink",
-        b"url(",
-        b"data:",
-        b"javascript",
-        b"https:",
-    ):
-        assert forbidden not in lowered
-    assert lowered.count(b"http://") == 1
-    assert b'xmlns="http://www.w3.org/2000/svg"' in lowered
-
-    changed = tmp_path / "favicon.svg"
-    changed.write_bytes(favicon.replace(b"#f5f2ea", b"#ffffff", 1))
-    monkeypatch.setattr(render_page, "FAVICON_PATH", changed)
-    with pytest.raises(render_page.RenderRefused, match="favicon bytes"):
-        render_page._site_favicon()
+def test_never_measured_is_only_zero_qualifying_rows() -> None:
+    data = data_with_all_three_states_and_one_omitted_row()
+    never = next(cell for cell in data["cells"] if cell["state"] == "never-measured")
+    assert never["qualifying_physical_row_count"] == 0
+    assert never["qualifying_represented_run_count"] == 0
+    files = render_page.render_site(_build(data), data)
+    digest = _digest_for_identity(never["cell"])
+    shard = _browser_payload(files, f"data/detail-{digest[0]}.json.gz")
+    assert not any(
+        item["kind"] == "cell" and item["digest"] == digest for item in shard["records"]
+    )
+    summary = _browser_payload(files, "data/site-summary.json.gz")
+    browser_cell = next(
+        item for item in summary["cells"] if item["cell"] == never["cell"]
+    )
+    assert browser_cell["qualifying_physical_row_count"] == 0
+    assert browser_cell["latest_result"] is None
+    assert browser_cell["url"] is None
+    assert "derivedCellState" in files["assets/site.js"].decode()
 
 
-def test_every_internal_link_fragment_and_aggregate_resolves() -> None:
-    files = render_page.render_site(*render_page.load_artifacts(FIXTURE))
-    parsers = parse_site(files)
+def test_never_measured_is_reachable_without_javascript_but_not_default() -> None:
+    data = data_with_all_three_states_and_one_omitted_row()
+    files = render_page.render_site(_build(data), data)
+    default = files["cells/index.html"].decode()
+    explicit = files["cells/never-measured.html"].decode()
+    never = next(cell for cell in data["cells"] if cell["state"] == "never-measured")
+    model = render_page._site_model(_build(data), data, wording="fixture")
 
-    for source, parser in parsers.items():
-        for href in parser.hrefs:
-            target, _query, fragment = link_target(source, href)
-            assert target in files
-            if fragment:
-                assert target in parsers
-                assert fragment in parsers[target].ids
-        for href, count in parser.count_links:
-            target, query, fragment = link_target(source, href)
-            assert query == ""
-            assert fragment
-            assert parsers[target].row_counts[fragment] == count
-        for href, count in parser.represented_links:
-            target, query, fragment = link_target(source, href)
-            assert query == ""
-            assert fragment
-            assert parsers[target].represented_counts[fragment] == count
-        for physical, represented, text_parts in parser.represented_link_texts:
-            visible_numbers = re.findall(r"\d+", " ".join(text_parts))
-            required = Counter((str(physical), str(represented)))
-            assert Counter(visible_numbers) >= required
+    assert never["cell"] not in default
+    assert never["cell"] in explicit
+    assert never["cell"] not in model.cell_paths
+    assert f'data-cell="{never["cell"]}"' in explicit
+    assert f"cell={_digest_for_identity(never['cell'])}" not in explicit
+    assert "site.js" in explicit
+    assert "tests/detail.html" in files
+    test_digest = _digest_for_identity(data["tests"][0]["id"])
+    shard = _browser_payload(files, f"data/detail-{test_digest[0]}.json.gz")
+    test_record = next(
+        item
+        for item in shard["records"]
+        if item["kind"] == "test" and item["digest"] == test_digest
+    )
+    assert _digest_for_identity(never["cell"]) not in test_record["cell_digests"]
 
 
-def test_every_html_page_has_one_resolving_local_favicon_link() -> None:
-    files = render_page.render_site(*render_page.load_artifacts(FIXTURE))
-    parsers = parse_site(files)
+def test_result_and_never_measured_pages_have_one_latest_result_control() -> None:
+    data = data_with_all_three_states_and_one_omitted_row()
+    files = render_page.render_site(_build(data), data)
+    result_page = ListingStructure()
+    result_page.feed(files["cells/index.html"].decode())
+    never_page = ListingStructure()
+    never_page.feed(files["cells/never-measured.html"].decode())
 
-    assert len(parsers) == 19
-    for source, parser in parsers.items():
-        assert len(parser.icon_links) == 1
-        media_type, href = parser.icon_links[0]
-        assert media_type == "image/svg+xml"
-        assert not href.startswith(("data:", "about:", "#"))
-        target, query, fragment = link_target(source, href)
-        assert target == "assets/favicon.svg"
-        assert target in files
-        assert query == ""
-        assert fragment == ""
-
-
-def test_landing_filter_links_resolve_to_exact_matching_rows() -> None:
-    build, data = render_page.load_artifacts(FIXTURE)
-    model = render_page._site_model(build, data)
-    files = render_page.render_site(build, data)
-    parsers = parse_site(files)
-    records = cell_filter_records(files)
-    allowed = filter_allowed(model)
-
-    links = [
-        (source, href, count)
-        for source, parser in parsers.items()
-        for href, count in parser.filter_count_links
+    assert "state" not in result_page.selects
+    assert "state" in result_page.inputs
+    assert result_page.selects["result"] == [
+        ("", "All"),
+        ("pass", "Pass"),
+        ("product_failure", "Fail"),
     ]
-    assert len(links) == 7
-    for source, href, count in links:
-        target, query, fragment = link_target(source, href)
-        assert target == "cells/index.html"
-        assert query
-        result = run_filter_javascript(
-            "query", {"query": query, "allowed": allowed, "records": records}
-        )
-        assert result["ok"] is True
-        assert result["summary"]["matching"] == count
-        expected_fragment = (
-            "recorded-not-in-current-manifest"
-            if result["state"]["population"] == "not_in_current_manifest"
-            else "all-cells"
-        )
-        assert fragment == expected_fragment
-
-
-@pytest.mark.parametrize(
-    ("query", "cells", "physical", "represented"),
-    [
-        ("", list(CELLS), 4, 7),
-        ("state=green", [GREEN, HISTORICAL], 3, 6),
-        ("state=red", [RED], 1, 1),
-        ("state=never-measured", [NEVER], 0, 0),
-        ("state=unavailable", [UNAVAILABLE], 0, 0),
-        ("selected_by_full=true", [GREEN, RED, UNAVAILABLE], 3, 3),
-        ("selected_by_full=false", [HISTORICAL, NEVER], 1, 4),
-        ("selected_by_path=quick", [RED], 1, 1),
-        ("selected_by_path=full", [UNAVAILABLE], 0, 0),
-        ("selected_by_path=super", [GREEN], 2, 2),
-        ("result=pass", [GREEN, HISTORICAL], 3, 6),
-        ("result=product_failure", [RED], 1, 1),
-        ("result=unavailable", [NEVER, UNAVAILABLE], 0, 0),
-        ("evidence=complete", [NEVER], 0, 0),
-        ("evidence=incomplete", [GREEN, HISTORICAL, RED, UNAVAILABLE], 4, 7),
-        ("backend=ptrace", [GREEN, HISTORICAL, UNAVAILABLE], 3, 6),
-        ("backend=dbt", [NEVER], 0, 0),
-        ("backend=kvm", [RED], 1, 1),
-        ("current_main_ancestry=true", [GREEN, HISTORICAL, RED], 4, 7),
-        ("current_main_ancestry=false", [], 0, 0),
-        ("current_main_ancestry=unavailable", [NEVER, UNAVAILABLE], 0, 0),
-        (
-            "host_capability=kvm&host_capability_present=true",
-            [GREEN, HISTORICAL, RED],
-            4,
-            7,
-        ),
-        (
-            "host_capability=kvm&host_capability_present=false",
-            [],
-            0,
-            0,
-        ),
-        (
-            "host_capability=kvm&host_capability_present=unavailable",
-            [NEVER, UNAVAILABLE],
-            0,
-            0,
-        ),
-        ("q=fixture%2Fgreen", [GREEN], 2, 2),
-        ("q=green%2Fverify", [GREEN], 2, 2),
-        ("q=Fixture+for", [], 0, 0),
-        ("q=not+selected+by+full", [], 0, 0),
-    ],
-)
-def test_cell_filters_use_only_the_recorded_fields_for_each_axis(
-    query: str, cells: list[str], physical: int, represented: int
-) -> None:
-    build, data = render_page.load_artifacts(FIXTURE)
-    model = render_page._site_model(build, data)
-    files = render_page.render_site(build, data)
-    result = run_filter_javascript(
-        "query",
-        {
-            "query": query,
-            "allowed": filter_allowed(model),
-            "records": cell_filter_records(files),
-        },
-    )
-
-    assert result["ok"] is True
-    assert set(result["cells"]) == set(cells)
-    assert result["summary"] == {
-        "matching": len(cells),
-        "physical": physical,
-        "represented": represented,
-    }
-
-
-def test_row_scoped_filters_require_one_same_canonical_row() -> None:
-    allowed = {
-        "lane": [],
-        "category": [],
-        "mode": [],
-        "backend": [],
-        "host_capability": ["kvm"],
-    }
-    template = {
-        "population": "in_manifest",
-        "manifest": 0,
-        "cell": "fixture/synthetic/verify/ptrace",
-        "test": "fixture/synthetic",
-        "lane": "portable",
-        "category": "tests",
-        "mode": "verify",
-        "backend": "ptrace",
-        "state": "green",
-        "result": "pass",
-        "selected_by_full": "true",
-        "selected_by_paths": [],
-        "evidence": "complete",
-        "latest_result_time": "",
-        "latest_result_tree": "tree",
-        "search": "fixture/synthetic fixture/synthetic/verify/ptrace",
-        "physical_row_count": 2,
-        "represented_run_count": 2,
-    }
-    split_evidence = {
-        **template,
-        "series_evidence": [
-            {
-                "current_main_ancestry": "true",
-                "host_capabilities": {"kvm": "false"},
-            },
-            {
-                "current_main_ancestry": "false",
-                "host_capabilities": {"kvm": "true"},
-            },
-        ],
-    }
-    zero_rows = {
-        **template,
-        "cell": "fixture/no-rows/verify/ptrace",
-        "physical_row_count": 0,
-        "represented_run_count": 0,
-        "series_evidence": [],
-    }
-    impossible = run_filter_javascript(
-        "query",
-        {
-            "query": (
-                "current_main_ancestry=true&host_capability=kvm&"
-                "host_capability_present=true"
-            ),
-            "allowed": allowed,
-            "records": [split_evidence, zero_rows],
-        },
-    )
-    unavailable = run_filter_javascript(
-        "query",
-        {
-            "query": (
-                "current_main_ancestry=unavailable&host_capability=kvm&"
-                "host_capability_present=unavailable"
-            ),
-            "allowed": allowed,
-            "records": [split_evidence, zero_rows],
-        },
-    )
-
-    assert impossible["cells"] == []
-    assert unavailable["cells"] == [zero_rows["cell"]]
-    assert unavailable["summary"] == {"matching": 1, "physical": 0, "represented": 0}
-
-
-@pytest.mark.parametrize(
-    "query",
-    [
-        "unknown=value",
-        "state=green&state=red",
-        "state=blue",
-        "q=",
-        "q=%zz",
-        "host_capability=kvm",
-        "host_capability_present=true",
-        "population=not_in_current_manifest&state=green",
-        "population=not_in_current_manifest&sort=state",
-    ],
-)
-def test_invalid_url_filter_state_is_refused(query: str) -> None:
-    model = render_page._site_model(*render_page.load_artifacts(FIXTURE))
-    result = run_filter_javascript(
-        "query", {"query": query, "allowed": filter_allowed(model), "records": []}
-    )
-
-    assert result["ok"] is False
-    assert result["error"]
-
-
-def test_filter_url_round_trip_is_canonical_and_shareable() -> None:
-    model = render_page._site_model(*render_page.load_artifacts(FIXTURE))
-    allowed = filter_allowed(model)
-    query = (
-        "direction=desc&state=green&q=fixture%2Fgreen&"
-        "sort=represented_run_count&backend=ptrace"
-    )
-    first = run_filter_javascript(
-        "query", {"query": query, "allowed": allowed, "records": []}
-    )
-    second = run_filter_javascript(
-        "query", {"query": first["serialized"], "allowed": allowed, "records": []}
-    )
-    outside = run_filter_javascript(
-        "query",
-        {
-            "query": "population=not_in_current_manifest",
-            "allowed": allowed,
-            "records": [],
-        },
-    )
-
-    assert first["ok"] is True
-    assert first["serialized"] == (
-        "q=fixture%2Fgreen&backend=ptrace&state=green&"
-        "sort=represented_run_count&direction=desc"
-    )
-    assert second["state"] == first["state"]
-    assert second["serialized"] == first["serialized"]
-    assert outside["state"]["sort"] == "cell"
-    assert outside["serialized"] == "population=not_in_current_manifest"
-
-
-def test_sorting_has_explicit_ties_and_unavailable_values_last() -> None:
-    records = [
-        {"cell": "b", "latest_result_time": "", "represented_run_count": 1},
-        {
-            "cell": "d",
-            "latest_result_time": "2026-09-01T00:00:00Z",
-            "represented_run_count": 3,
-        },
-        {
-            "cell": "c",
-            "latest_result_time": "2026-08-31T00:00:00Z",
-            "represented_run_count": 2,
-        },
-        {
-            "cell": "a",
-            "latest_result_time": "2026-08-31T00:00:00Z",
-            "represented_run_count": 2,
-        },
+    assert ("never-measured.html#all-cells", "Never measured") in result_page.links
+    assert result_page.captions == [
+        "Green and red result rows in the fixture.",
+        "Recorded evidence whose cell identity is outside the current manifest.",
     ]
-    ascending = run_filter_javascript(
-        "sort",
-        {
-            "records": records,
-            "state": {"sort": "latest_result_time", "direction": "asc"},
-        },
+
+    assert never_page.headings == ["Never measured"]
+    assert "state" not in never_page.selects
+    assert "state" in never_page.inputs
+    assert (
+        "<strong>State:</strong> Never measured"
+        in files["cells/never-measured.html"].decode()
     )
-    descending = run_filter_javascript(
-        "sort",
-        {
-            "records": records,
-            "state": {"sort": "latest_result_time", "direction": "desc"},
-        },
-    )
-    numeric_descending = run_filter_javascript(
-        "sort",
-        {
-            "records": records,
-            "state": {"sort": "represented_run_count", "direction": "desc"},
-        },
-    )
-
-    assert ascending["cells"] == ["a", "c", "d", "b"]
-    assert descending["cells"] == ["d", "a", "c", "b"]
-    assert numeric_descending["cells"] == ["d", "a", "c", "b"]
+    assert ("index.html#all-cells", "Results") in never_page.links
+    assert never_page.captions == [
+        "Cells in the manifest with no qualifying admitted row.",
+        "Recorded evidence whose cell identity is outside the current manifest.",
+    ]
+    assert "q" in never_page.inputs
 
 
-def test_custom_commands_and_outside_identities_keep_separate_evidence() -> None:
-    series_only = "fixture/series-only/verify/ptrace"
-    ledger_only = "fixture/ledger-only/verify/kvm"
-    current = "fixture/current/verify/ptrace"
-    custom = "fixture/custom/custom/ptrace"
-    history_id = "a" * 64
-    series_rows = (
-        {
-            "event_id": "outside-event",
-            "series": {"cell": series_only, "num_runs": 3},
-        },
-        {"event_id": "current-event", "series": {"cell": current, "num_runs": 1}},
-        {"event_id": "custom-event", "series": {"cell": custom, "num_runs": 2}},
-    )
-    history_rows = (
-        {
-            "history_row_sha256": history_id,
-            "cell_results": {
-                "selected_by": {
-                    "quick": {
-                        "cells": [
-                            {
-                                "test": "fixture/ledger-only",
-                                "mode": "verify",
-                                "backend": "kvm",
-                            },
-                            {
-                                "test": "fixture/custom",
-                                "mode": "custom",
-                                "backend": "ptrace",
-                            },
-                        ]
-                    }
-                },
-                "recorded": {
-                    "cells": [
-                        {
-                            "test": "fixture/ledger-only",
-                            "mode": "verify",
-                            "backend": "kvm",
-                        },
-                        {
-                            "test": "fixture/current",
-                            "mode": "verify",
-                            "backend": "ptrace",
-                        },
-                        {
-                            "test": "fixture/custom",
-                            "mode": "custom",
-                            "backend": "ptrace",
-                        },
-                    ]
-                },
-            },
-        },
-    )
-    outside = render_page._recorded_identities_not_in_current_manifest(
-        ({"cell": current},),
-        ({"cell": custom},),
-        series_rows,
-        history_rows,
-    )
-    custom_evidence = render_page._recorded_identity_evidence(
-        (custom,), series_rows, history_rows
-    )
-
-    assert [value["cell"] for value in outside] == [ledger_only, series_only]
-    assert outside[0]["physical_row_count"] == 0
-    assert outside[0]["represented_run_count"] == 0
-    assert outside[0]["selected_history_rows"] == (history_id,)
-    assert outside[0]["recorded_history_rows"] == (history_id,)
-    assert outside[1]["physical_row_count"] == 1
-    assert outside[1]["represented_run_count"] == 3
-    assert custom_evidence == (
-        {
-            "cell": custom,
-            "series_rows": (series_rows[2],),
-            "physical_row_count": 1,
-            "represented_run_count": 2,
-            "selected_history_rows": (history_id,),
-            "recorded_history_rows": (history_id,),
-        },
-    )
-
-
-def test_custom_command_evidence_is_visible_linked_and_outside_cell_counts() -> None:
-    build, data = render_page.load_artifacts(FIXTURE)
-    changed_build = copy.deepcopy(build)
-    changed = copy.deepcopy(data)
-
-    event = copy.deepcopy(changed["runs"]["series_rows"][-1])
-    event.update(event_id="custom-evidence", run_id="fixture-custom-history")
-    event["series"].update(cell=CUSTOM, num_runs=3)
-    changed["runs"]["series_rows"].append(event)
-    for field, amount in (
-        ("series_physical_row_count", 1),
-        ("series_represented_run_count", 3),
-        ("projection_admitted_physical_row_count", 1),
-        ("projection_admitted_represented_run_count", 3),
-    ):
-        changed["runs"][field] += amount
-    changed["counts"]["physical_row_count"] += 1
-    changed["counts"]["represented_run_count"] += 3
-
-    history = copy.deepcopy(changed["runs"]["validation_history_rows"][1])
-    history_id = "f" * 64
-    history.update(
-        history_row_sha256=history_id,
-        record_id="fixture-record-custom",
-        run_id="fixture-custom-history",
-    )
-    identity = {
-        "backend": "ptrace",
-        "category": "tests",
-        "lane": "portable",
-        "mode": "custom",
-        "test": "fixture/custom-command",
-    }
-    results = history["cell_results"]
-    results["run_id"] = "fixture-custom-history"
-    results["selected_by"] = {
-        "full": {"cell_count": 1, "cells": [copy.deepcopy(identity)]}
-    }
-    recorded = copy.deepcopy(identity)
-    recorded["cell_verdict"] = copy.deepcopy(
-        results["recorded"]["cells"][0]["cell_verdict"]
-    )
-    results["recorded"]["cell_count"] = 1
-    results["recorded"]["cells"] = [recorded]
-    changed["runs"]["validation_history_rows"].append(history)
-    changed["runs"]["validation_history_row_count"] += 1
-    changed["counts"]["validation_history_row_count"] += 1
-    changed_build["counts"] = copy.deepcopy(changed["counts"])
-
-    model = render_page._site_model(changed_build, changed)
-    files = render_page.render_site(changed_build, changed)
-    cells = files["cells/index.html"].decode()
-    fragment = render_page._fragment("custom-command", CUSTOM)
-    row_start = cells.index(f'id="{fragment}"')
-    row = cells[row_start : cells.index("</tr>", row_start)]
-
-    assert len(model.cells) == len(CELLS)
-    assert CUSTOM not in {
-        value["cell"] for value in model.recorded_not_in_current_manifest
-    }
-    assert [value["cell"] for value in model.custom_command_evidence] == [CUSTOM]
-    assert "Recorded evidence for custom commands" in cells
-    assert "selected by full but are not cells in the manifest" in cells
-    assert "without deriving a current cell state, never-measured result" in cells
-    assert "custom-evidence" in row
-    assert "Selected by full" in row
-    assert ">1</td><td>3</td>" in row
-    assert f'href="#{render_page._fragment("series", "custom-evidence")}"' in row
-    assert f'href="../{model.run_paths[history_id]}"' in row
-    assert f'href="../{model.test_paths["fixture/custom-command"]}"' in row
-    assert CUSTOM not in {record["cell"] for record in cell_filter_records(files)}
-
-
-def test_no_javascript_keeps_complete_tables_and_anchors_useful() -> None:
-    files = render_page.render_site(*render_page.load_artifacts(FIXTURE))
-    text = files["cells/index.html"].decode()
-    parser = parse_site(files)["cells/index.html"]
-
-    assert 'data-cell-filter-form action="index.html" method="get" hidden' in text
-    assert len(parser.cell_rows) == len(CELLS)
-    assert all("hidden" not in row for row in parser.cell_rows)
-    assert 'id="all-cells"' in text
-    assert 'id="recorded-not-in-current-manifest"' in text
-    assert 'id="selected-by-full"' in text
-    assert 'id="not-selected-by-full"' in text
-    assert "The complete tables remain below" in text
-
-
-def test_detail_paths_are_full_sha256_and_collision_safe(
+def test_result_and_never_measured_population_split_retains_626_and_5103(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    build, data = render_page.load_artifacts(FIXTURE)
-    model = render_page._site_model(build, data)
-    pattern = re.compile(r"(?:cells|tests|runs)/[0-9a-f]{64}\.html")
+    cells = tuple({"state": "green"} for _ in range(596))
+    cells += tuple({"state": "red"} for _ in range(30))
+    cells += tuple({"state": "never-measured"} for _ in range(5103))
+    model = SimpleNamespace(cells=cells, wording=SimpleNamespace(cells_lead=""))
+    captured: dict[str, tuple[dict[str, str], ...]] = {}
 
-    assert all(pattern.fullmatch(path) for path in model.cell_paths.values())
-    assert all(pattern.fullmatch(path) for path in model.test_paths.values())
-    assert all(pattern.fullmatch(path) for path in model.run_paths.values())
-    assert len(set(model.cell_paths.values())) == len(model.cells)
-    assert len(set(model.test_paths.values())) == len(model.tests)
-    assert len(set(model.run_paths.values())) == len(model.history_rows)
-    assert all("fixture/" not in path for path in render_page.render_site(build, data))
+    def capture_listing(
+        _model: Any, *, title: str, cells: Any, **_arguments: Any
+    ) -> bytes:
+        captured[title] = tuple(cells)
+        return b""
 
-    monkeypatch.setattr(render_page, "_full_digest", lambda _value: "0" * 64)
-    with pytest.raises(render_page.RenderRefused, match="same page path"):
-        render_page._site_model(build, data)
+    monkeypatch.setattr(render_page, "_cells_listing_page", capture_listing)
 
+    render_page._cells_index(model)
+    render_page._never_measured_index(model)
 
-def test_pages_have_accessible_structure_and_no_external_resources() -> None:
-    files = render_page.render_site(*render_page.load_artifacts(FIXTURE))
-    parsers = parse_site(files)
-
-    for path, parser in parsers.items():
-        text = files[path].decode()
-        assert parser.html_lang == "en"
-        assert parser.h1_count == 1
-        assert parser.tags["header"] >= 2
-        assert parser.tags["main"] == 1
-        assert parser.tags["footer"] == 1
-        assert parser.tags["nav"] >= 2
-        assert parser.tags["table"] == parser.tags["caption"]
-        assert set(parser.th_scopes) <= {"col", "row", "rowgroup"}
-        assert {"Primary navigation", "Breadcrumb"} <= set(parser.aria_labels)
-        expected_scripts = 1 if path == "cells/index.html" else 0
-        assert parser.scripts == expected_scripts
-        assert "Fixture data — not current Hermit main" in text
-        for source in parser.script_sources:
-            target, query, fragment = link_target(path, source)
-            assert query == ""
-            assert fragment == ""
-            assert target == "assets/site.js"
-            assert target in files
-        assert "http:" not in text.casefold()
-        assert "https:" not in text.casefold()
-        assert "file:" not in text.casefold()
-        assert "/home/" not in text
-        assert "token=" not in text.casefold()
-        assert "secret=" not in text.casefold()
+    assert len(captured["Cells"]) == 626
+    assert sum(cell["state"] == "green" for cell in captured["Cells"]) == 596
+    assert sum(cell["state"] == "red" for cell in captured["Cells"]) == 30
+    assert len(captured["Never measured"]) == 5103
+    assert all(cell["state"] == "never-measured" for cell in captured["Never measured"])
 
 
-def test_detail_pages_preserve_evidence_and_unavailable_joins() -> None:
-    build, data = render_page.load_artifacts(FIXTURE)
-    model = render_page._site_model(build, data)
+def test_every_generated_data_collection_has_file_safe_controls() -> None:
+    data = data_with_all_three_states_and_one_omitted_row()
+    build = _build(data)
+    model = render_page._site_model(build, data, wording="fixture")
     files = render_page.render_site(build, data)
-    green = files[model.cell_paths[GREEN]].decode()
-    historical = files[model.cell_paths[HISTORICAL]].decode()
-    unavailable_cell = files[model.cell_paths[UNAVAILABLE]].decode()
-    green_test = files[model.test_paths["fixture/green"]].decode()
-    unavailable_run = next(
-        row for row in model.history_rows if row["run_id"] == "retired-renderer-fixture"
+
+    for path, source in files.items():
+        if not path.endswith(".html"):
+            continue
+        structure = _collection_structure(source)
+        assert len(structure.scripts) == 1
+        assert structure.scripts[0].endswith("assets/site.js")
+
+    landing = _collection_structure(files["index.html"])
+    runs = _collection_structure(files["runs/index.html"])
+    audit = _collection_structure(files["cells/projection-audit.html"])
+    commands = _collection_structure(files["tests/custom-commands.html"])
+    assert set(landing.controls) == {"tests"}
+    assert set(runs.controls) == {"validation-runs"}
+    if data["runs"]["projection_exclusion_counts"]:
+        assert set(audit.controls) == {"projection-audit"}
+    else:
+        assert not audit.controls
+    if data["selected_by_full_custom_commands"]:
+        assert set(commands.controls) == {"custom-commands"}
+    else:
+        assert not commands.controls
+        assert 'id="custom-commands"' in files["tests/custom-commands.html"].decode()
+    assert runs.controls["validation-runs"]["data-page-size"] == "50"
+    assert landing.items["1"] == len(data["tests"])
+    assert runs.items["1"] == len(data["runs"]["validation_history_rows"])
+    assert commands.items["1"] == len(data["selected_by_full_custom_commands"])
+
+    default_cells = files["cells/index.html"].decode()
+    never_cells = files["cells/never-measured.html"].decode()
+    for source in (default_cells, never_cells):
+        assert 'name="page" type="hidden" value="1"' in source
+        assert "data-cell-pagination" in source
+        assert 'data-page-size="50"' in source
+
+    assert 'data-detail-kind="cell"' in files["cells/detail.html"].decode()
+    assert 'data-detail-kind="test"' in files["tests/detail.html"].decode()
+
+    run = _collection_structure(files[model.history_paths[0]])
+    selected = [name for name in run.controls if name.startswith("run-selected-")]
+    assert selected
+    for name in selected:
+        assert run.controls[name]["data-page-size"] == "8"
+        assert run.controls[name]["data-child-limit"] == "25"
+    assert "recorded-cells" in run.controls
+    assert run.controls["recorded-cells"]["data-page-size"] == "50"
+
+    javascript = files["assets/site.js"].decode()
+    assert javascript.count("fetch(") == 1
+    assert not re.search(
+        r"\b(?:XMLHttpRequest|WebSocket|EventSource|sendBeacon|Worker)\b",
+        javascript,
     )
-    unavailable_page = files[
-        model.run_paths[str(unavailable_run["history_row_sha256"])]
+
+
+def test_generic_collection_metadata_is_canonical_and_content_remains_embedded() -> (
+    None
+):
+    data = representative_build_data()
+    build = _build(data)
+    files = render_page.render_site(build, data)
+    landing_source = files["index.html"].decode()
+    landing = _collection_structure(files["index.html"])
+    runs_source = files["runs/index.html"].decode()
+    runs = _collection_structure(files["runs/index.html"])
+
+    assert landing.items["1"] == len(data["tests"])
+    assert runs.items["1"] == len(data["runs"]["validation_history_rows"])
+    assert 'data-list-item="1"' in landing_source
+    assert "data-filter-values" not in landing_source
+    assert "data-sort-values" not in landing_source
+    assert 'data-query-prefix="runs_"' not in landing_source
+    assert 'data-query-prefix="runs_"' in runs_source
+    assert "data-list-previous" not in landing_source
+    assert "data-list-next" not in landing_source
+    assert "data-list-clear" in landing_source
+
+
+def test_landing_keeps_only_tests_and_moved_pages_preserve_content_and_navigation() -> (
+    None
+):
+    data = data_with_all_three_states_and_one_omitted_row()
+    build = _build(data)
+    model = render_page._site_model(build, data, wording="fixture")
+    files = render_page.render_site(build, data)
+    landing = files["index.html"].decode()
+    runs = files["runs/index.html"].decode()
+    audit = files["cells/projection-audit.html"].decode()
+    commands = files["tests/custom-commands.html"].decode()
+
+    assert set(_collection_structure(files["index.html"]).controls) == {"tests"}
+    assert 'id="overview"' in landing
+    assert 'id="tests"' in landing
+    for section in (
+        "validation-runs",
+        "series-excluded",
+        "deliberate-omissions",
+        "custom-commands",
+    ):
+        assert f'id="{section}"' not in landing
+
+    assert (
+        render_page._run_listing(model, "runs/index.html", show_heading=False)
+        in runs
+    )
+    assert (
+        render_page._exclusion_audit(
+            model, "cells/projection-audit.html", show_heading=False
+        )
+        in audit
+    )
+    assert (
+        render_page._deliberate_omission_audit(
+            model, "cells/projection-audit.html"
+        )
+        in audit
+    )
+    assert 'id="custom-commands"' in commands
+    assert "No custom command was selected by full." in commands
+
+    assert 'href="runs/index.html#validation-runs"' in landing
+    assert 'href="cells/projection-audit.html#series-excluded"' in landing
+    assert 'href="cells/projection-audit.html#deliberate-omissions"' in landing
+    assert 'href="tests/custom-commands.html#custom-commands"' in landing
+    assert 'href="../index.html">Overview</a>' in runs
+    assert 'href="../index.html">Overview</a>' in audit
+    assert 'href="index.html">Cells</a>' in audit
+    assert 'href="../index.html#tests">Tests</a>' in commands
+
+    run_page = files[model.history_paths[0]].decode()
+    assert '<a href="index.html">Validation runs</a>' in run_page
+    test_detail = files["tests/detail.html"].decode()
+    assert '<a href="../index.html#tests">Tests</a>' in test_detail
+
+    for path, title in (
+        ("runs/index.html", "Validation runs"),
+        ("cells/projection-audit.html", "Projection audit"),
+        ("tests/custom-commands.html", "Custom commands selected by full"),
+    ):
+        source = files[path].decode()
+        assert source.count(f"<h1>{title}</h1>") == 1
+        assert f"<h2>{title}</h2>" not in source
+    assert "<h2>Tests</h2>" in landing
+
+    command = {
+        "cell": "applications/custom/verify/ptrace",
+        "current_reproducer": None,
+        "not_applicable_reason": None,
+        "test": "applications/custom",
+    }
+    command_model = replace(model, custom_commands=(command,))
+    custom_listing = render_page._custom_commands(
+        command_model, "tests/custom-commands.html", show_heading=False
+    )
+    assert custom_listing in render_page._custom_commands_page(command_model).decode()
+    assert "<h2>Custom commands selected by full</h2>" in render_page._custom_commands(
+        command_model, "index.html"
+    )
+
+
+def test_non_table_collections_render_compact_order_buttons_and_hidden_state() -> None:
+    data = representative_build_data()
+    model = render_page._site_model(_build(data), data, wording="fixture")
+    row = model.history_rows[0]
+    command = {
+        "cell": "applications/custom/verify/ptrace",
+        "current_reproducer": None,
+        "not_applicable_reason": None,
+        "test": "applications/custom",
+    }
+    sources = (
+        (
+            render_page._test_listing(model, "index.html"),
+            (
+                ("manifest", "Manifest order"),
+                ("test", "TestName"),
+                ("cells", "Manifest cells"),
+                ("results", "Result rows"),
+            ),
+        ),
+        (
+            render_page._custom_commands(
+                replace(model, custom_commands=(command,)), "index.html"
+            ),
+            (
+                ("manifest", "Manifest order"),
+                ("test", "TestName"),
+                ("cell", "Cell"),
+            ),
+        ),
+        (
+            render_page._selected_groups(model, model.history_paths[0], row),
+            (("hierarchy", "Mode/backend/category"), ("test", "TestName")),
+        ),
+    )
+
+    for source, expected_sorts in sources:
+        form = re.search(r'<form class="list-controls".*?</form>', source, re.DOTALL)
+        assert form is not None
+        controls = form.group(0)
+        assert re.search(r'<select name="sort"[^>]* hidden>', controls)
+        assert re.search(r'<select name="direction"[^>]* hidden>', controls)
+        assert '<label>Sort ' not in controls
+        assert '<label>Direction ' not in controls
+        assert 'type="submit"' not in controls
+        assert controls.count("data-list-clear") == 1
+        assert ">Clear filters</button>" in controls
+        assert controls.count('class="list-order-controls"') == 1
+        assert controls.count('aria-pressed="true"') == 1
+        assert re.findall(
+            r'data-list-sort="([^"]+)"[^>]*><span>([^<]+)</span>', controls
+        ) == list(expected_sorts)
+    assert "TestName" in sources[0][0]
+    assert "TestName" in sources[1][0]
+    assert "Test name" not in "".join(source for source, _sorts in sources)
+
+
+def test_validation_run_record_control_uses_exact_canonical_row_values() -> None:
+    row = representative_build_data()["runs"]["validation_history_rows"][0]
+    row["run_number"] = 10
+    historical = copy.deepcopy(row)
+    historical["run_id"] = "validate-run-historical"
+    historical["run_number"] = 2
+    duplicate_number = copy.deepcopy(historical)
+    duplicate_number["run_id"] = "validate-run-other-occurrence"
+    invalid_number = copy.deepcopy(historical)
+    invalid_number["run_id"] = "validate-run-without-number"
+    invalid_number["run_number"] = True
+    model = SimpleNamespace(
+        current_history_indices=(0,),
+        history_paths=(
+            "runs/current.html",
+            "runs/historical.html",
+            "runs/other-occurrence.html",
+            "runs/without-number.html",
+        ),
+        history_rows=(row, historical, duplicate_number, invalid_number),
+    )
+    source = render_page._run_listing(model, "runs/index.html")
+    listing = ListingStructure()
+    listing.feed(source)
+    structure = _collection_structure(source.encode())
+    run_rows = [
+        attributes
+        for attributes in structure.item_attributes
+        if attributes.get("data-run-row") == "1"
+    ]
+
+    assert listing.selects["record"] == [
+        ("", "All"),
+        ("current", "Current ledger record"),
+        ("historical", "Superseded ledger record"),
+    ]
+    assert 'data-list-filter="record" data-list-source="value:record"' in source
+    for value, _label in listing.selects["record"][1:]:
+        matching = [
+            attributes
+            for attributes in run_rows
+            if attributes["data-list-value-record"] == value
+        ]
+        expected = 1 if value == "current" else 3
+        assert len(matching) == expected
+        assert all(
+            item["data-run-current"] == str(value == "current").lower()
+            for item in matching
+        )
+    assert ("current.html", "Run 10") in listing.links
+    assert ("historical.html", "Run 2") in listing.links
+    assert ("other-occurrence.html", "Run 2") in listing.links
+    assert (
+        "without-number.html",
+        "Run id validate-run-without-number",
+    ) in listing.links
+    run_links = [item for item in listing.links if item[0].endswith(".html")]
+    assert len(run_links) == 4
+    assert sum(label == "Run 2" for _target, label in run_links) == 2
+    assert len({target for target, _label in run_links}) == 4
+    assert ("run", "Run number") in listing.selects["sort"]
+    assert [item["data-list-value-run"] for item in run_rows] == ["10", "2", "2", ""]
+    assert [item["data-list-value-run-id"] for item in run_rows] == [
+        "validate-run-1",
+        "validate-run-historical",
+        "validate-run-other-occurrence",
+        "validate-run-without-number",
+    ]
+
+
+def test_positive_run_number_is_the_primary_label_without_becoming_identity() -> None:
+    data = representative_build_data()
+    _set_run_number(data, render_page.MAX_U64)
+    build = _build(data)
+    model = render_page._site_model(build, data, wording="fixture")
+    files = render_page.render_site(build, data)
+    run_path = model.history_paths[0]
+    runs = ListingStructure()
+    runs.feed(files["runs/index.html"].decode())
+
+    assert (
+        PurePosixPath(run_path).name,
+        f"Run {render_page.MAX_U64}",
+    ) in runs.links
+    run_page = files[run_path].decode()
+    assert f"<h1>Run {render_page.MAX_U64}</h1>" in run_page
+    assert f"<dt>Run number</dt><dd>{render_page.MAX_U64}</dd>" in run_page
+    assert "<dt>Run id</dt><dd><code>validate-run-1</code></dd>" in run_page
+
+    summary = _browser_payload(files, "data/site-summary.json.gz")
+    assert summary["runs"][0]["run_number"] == str(render_page.MAX_U64)
+    assert summary["runs"][0]["run_id"] == "validate-run-1"
+    cell_record = next(
+        record
+        for prefix in "0123456789abcdef"
+        for record in _browser_payload(files, f"data/detail-{prefix}.json.gz")[
+            "records"
+        ]
+        if record["kind"] == "cell"
+    )
+    run_references = [
+        fact["run"] for facts in cell_record["selection"].values() for fact in facts
+    ] + [item["run"] for item in cell_record["evidence"] if "run" in item]
+    assert run_references
+    assert all(
+        reference["run_number"] == str(render_page.MAX_U64)
+        and reference["run_id"] == "validate-run-1"
+        and reference["path"] == run_path
+        for reference in run_references
+    )
+
+    assert not any(
+        target in {"data/cells.json.gz", "data/runs.json.gz", "data/tests.json.gz"}
+        for target, _label in runs.links
+    )
+
+
+@pytest.mark.parametrize(
+    "value",
+    [_ABSENT, None, True, "17", 17.0, 0, -1, render_page.MAX_U64 + 1],
+    ids=("absent", "null", "bool", "string", "float", "zero", "negative", "over-u64"),
+)
+def test_invalid_or_missing_run_number_falls_back_without_refusal(value: Any) -> None:
+    data = representative_build_data()
+    _set_run_number(data, value)
+    build = _build(data)
+    model = render_page._site_model(build, data, wording="fixture")
+    files = render_page.render_site(build, data)
+    run_path = model.history_paths[0]
+
+    assert "Run id validate-run-1" in files["runs/index.html"].decode()
+    assert "<h1>Run id validate-run-1</h1>" in files[run_path].decode()
+    assert "<dt>Run number</dt>" not in files[run_path].decode()
+    assert (
+        "run_number"
+        not in _browser_payload(files, "data/site-summary.json.gz")["runs"][0]
+    )
+
+
+def test_generic_collection_items_use_only_compact_scalar_metadata() -> None:
+    data = data_with_all_three_states_and_one_omitted_row()
+    files = render_page.render_site(_build(data), data)
+
+    for path, source in files.items():
+        if not path.endswith(".html"):
+            continue
+        structure = _collection_structure(source)
+        for attributes in structure.item_attributes:
+            assert attributes["data-list-item"] == "1"
+            assert all(
+                name == "data-list-item"
+                or name.startswith("data-list-value-")
+                or name
+                in {
+                    "class",
+                    "data-recorded-cell-row",
+                    "data-run-current",
+                    "data-run-row",
+                }
+                for name in attributes
+            )
+            assert all(
+                "{" not in str(value) and "[" not in str(value)
+                for name, value in attributes.items()
+                if name.startswith("data-list-")
+            )
+
+    javascript = files["assets/site.js"].decode()
+    assert "element.textContent" in javascript
+    assert "Object.values(values)" in javascript
+
+
+def test_dense_group_controls_preserve_all_links_and_exact_caps() -> None:
+    cells = [
+        {
+            "test": f"backend-parity-c/test-{index:03d}",
+            "category": "backend-parity-c",
+            "mode": "verify",
+            "backend": "ptrace",
+        }
+        for index in range(60)
+    ]
+    model = _grouped_link_model(cells)
+    source = render_page._grouped_cell_links(
+        model,
+        "runs/example.html",
+        cells,
+        collection_id="run-selected-example",
+    )
+    root = ET.fromstring(f"<root>{source}</root>")
+
+    links = root.findall("section/div/a")
+    assert len(links) == len(cells)
+    assert len({link.attrib["href"] for link in links}) == len(cells)
+    groups = root.findall("section/div")
+    assert len(groups) == 1
+    assert groups[0].attrib["data-list-group"] == "g0"
+
+
+@pytest.mark.parametrize(
+    "reason",
+    [
+        {"reason": "full does not select <this> & cell"},
+        {
+            "evidence": 'recorded <evidence> & "details"',
+            "reason": "full does not select <this> & cell",
+            "result": "timeout",
+        },
+    ],
+)
+def test_not_selected_by_full_reason_renders_structured_escaped_fields(
+    reason: dict[str, str],
+) -> None:
+    data = representative_build_data()
+    data["cells"][0]["selected_by_full"] = False
+    data["cells"][0]["not_selected_by_full_reason"] = reason
+    data = _validated(data)
+    build = _build(data)
+    model = render_page._site_model(build, data, wording="fixture")
+    files = render_page.render_site(build, data)
+    row = copy.deepcopy(model.history_rows[0])
+    row["profile"] = "full"
+    row["cell_results"]["selected_by"] = {"full": {"cell_count": 0, "cells": []}}
+    page = render_page._run_page(model, 0, row).decode()
+
+    assert "{'reason':" not in page
+    assert "Recorded but not selected by full" in page
+    assert "<summary>Recorded reason</summary>" in page
+    assert "<dt>Reason</dt><dd>full does not select &lt;this&gt; &amp; cell</dd>" in page
+    if "evidence" in reason:
+        assert (
+            '<dt>Evidence</dt><dd>recorded &lt;evidence&gt; &amp; '
+            '&quot;details&quot;</dd>'
+        ) in page
+        assert "<dt>Result</dt><dd>timeout</dd>" in page
+    else:
+        assert "<dt>Evidence</dt>" not in page
+        assert "<dt>Result</dt>" not in page
+    matrix = files["cells/index.html"].decode()
+    assert "Selected by full" not in matrix
+    assert "Not selected by full" not in matrix
+    digest = _digest_for_identity(data["cells"][0]["cell"])
+    shard = _browser_payload(files, f"data/detail-{digest[0]}.json.gz")
+    record = next(
+        item
+        for item in shard["records"]
+        if item["kind"] == "cell" and item["digest"] == digest
+    )
+    assert record["data"]["not_selected_by_full_reason"] == reason
+
+
+def test_renderer_refuses_malformed_selection_reason_at_stage1_boundary() -> None:
+    original = representative_build_data()
+    changed = copy.deepcopy(original)
+    changed["cells"][0]["selected_by_full"] = False
+    changed["cells"][0]["not_selected_by_full_reason"] = {
+        "reason": "why",
+        "unexpected": "field",
+    }
+
+    with pytest.raises(
+        render_page.RenderRefused,
+        match=r"Stage 1 data is invalid: .*unknown field",
+    ):
+        render_page.render_site(_build(original), changed)
+
+
+def test_selected_by_path_is_distinct_from_in_manifest_population() -> None:
+    data = data_with_all_three_states_and_one_omitted_row()
+    page = render_page.render_site(_build(data), data)["cells/index.html"].decode()
+
+    assert '<option value="in_manifest">In the manifest</option>' in page
+    assert "Selected by path" in page
+    assert '<option value="super">super</option>' in page
+    assert "enabled" not in page.lower()
+
+
+def test_noncomparison_verdict_keeps_reason_and_omits_comparison_details() -> None:
+    data = _replace_verdict_with_reason(representative_build_data())
+    build = _build(data)
+    model = render_page._site_model(build, data, wording="fixture")
+    page = render_page.render_site(build, data)[model.history_paths[0]].decode()
+
+    assert "fixture does not compare" in page
+    assert "performs-no-comparison-by-design" in page
+    assert "Bitwise parity:" not in page
+    assert "Compared INFO messages:" not in page
+
+
+def test_run_page_places_test_result_beside_commit_verdict() -> None:
+    data = representative_build_data()
+    build = _build(data)
+    model = render_page._site_model(build, data, wording="fixture")
+    page = render_page.render_site(build, data)[model.history_paths[0]].decode()
+
+    assert re.search(
+        r'data-list-sort="test_result"[^>]*>.*?TEST-RESULT.*?'
+        r'data-list-sort="verdict"[^>]*>.*?COMMIT-VERDICT',
+        page,
+        flags=re.DOTALL,
+    )
+    assert "Selected by super" in page
+    assert "Recorded results for cells selected by super" in page
+    assert "Recorded but not selected by super" not in page
+    assert (
+        "Current ledger record means this is the terminal row after applying the "
+        "ledger correction chain for this run id." in page
+    )
+
+
+def test_superseded_run_page_explains_correction_position_not_code_age() -> None:
+    data = representative_build_data()
+    build = _build(data)
+    model = render_page._site_model(build, data, wording="fixture")
+    model = replace(model, current_history_indices=())
+    page = render_page._run_page(model, 0, model.history_rows[0]).decode()
+
+    assert "Superseded ledger record" in page
+    assert "a later correction replaced this retained row" in page
+    assert "does not describe code age" in page
+
+
+def test_run_listing_links_direct_correction_partners() -> None:
+    old = copy.deepcopy(
+        representative_build_data()["runs"]["validation_history_rows"][0]
+    )
+    old.update(record_id="record-old", run_id="run-old")
+    current = copy.deepcopy(old)
+    current.update(
+        record_id="record-current", run_id="run-current", corrects="record-old"
+    )
+    model = SimpleNamespace(
+        current_history_indices=(1,),
+        history_paths=("runs/old.html", "runs/current.html"),
+        history_rows=(old, current),
+    )
+
+    source = render_page._run_listing(model, "runs/index.html")
+
+    assert (
+        'Superseded ledger record<span class="secondary correction-partners">'
+        'Corrected by <a href="current.html">Run id run-current</a>' in source
+    )
+    assert (
+        'Current ledger record<span class="secondary correction-partners">'
+        'Corrects <a href="old.html">Run id run-old</a>' in source
+    )
+
+
+def _run_page_with_recorded_cells(count: int) -> tuple[render_page.SiteModel, bytes]:
+    data = representative_build_data()
+    model = render_page._site_model(_build(data), data, wording="fixture")
+    row = copy.deepcopy(model.history_rows[0])
+    source = row["cell_results"]["recorded"]["cells"][0]
+    selected_source = row["cell_results"]["selected_by"][row["profile"]]["cells"][0]
+    recorded = []
+    selected = []
+    for index in range(count):
+        cell = copy.deepcopy(source)
+        cell["backend"] = f"ptrace-{index:03d}"
+        recorded.append(cell)
+        selected_cell = copy.deepcopy(selected_source)
+        selected_cell["backend"] = cell["backend"]
+        selected.append(selected_cell)
+    row["cell_results"]["recorded"].update(
+        cell_count=count,
+        cells=recorded,
+    )
+    row["cell_results"]["selected_by"][row["profile"]].update(
+        cell_count=count,
+        cells=selected,
+    )
+    row["cell_results"]["recorded"]["artifact"]["row_count"] = count
+    model = replace(
+        model,
+        current_history_indices=(0,),
+        history_paths=("runs/recorded.html",),
+        history_rows=(row,),
+    )
+    return model, render_page._run_page(model, 0, row)
+
+
+def test_run_page_embeds_all_records_but_only_renders_the_first_slice() -> None:
+    _model, page = _run_page_with_recorded_cells(125)
+    source = page.decode()
+    match = re.search(
+        r'<template data-list-records="recorded-cells"><span '
+        r"data-list-records-json>(.*?)</span></template>",
+        source,
+        flags=re.DOTALL,
+    )
+
+    assert match is not None
+    records = json.loads(html.unescape(match.group(1)))
+    assert len(records) == 125
+    assert source.count('data-recorded-cell-row="1"') == render_page.LIST_PAGE_SIZE
+    assert source.count('data-list-target="recorded-cells"') == 1
+
+
+def test_run_page_pagination_replaces_the_active_dom_slice_without_fetch(
+    chromium_browser: Any,
+) -> None:
+    _model, run_page = _run_page_with_recorded_cells(125)
+    files = render_page.render_site(
+        _build(representative_build_data()), representative_build_data()
+    )
+    files["runs/recorded.html"] = run_page
+    page = chromium_browser.new_page()
+    page.add_init_script(
+        "window.__fetchCalls = 0; const originalFetch = window.fetch; "
+        "window.fetch = (...args) => { window.__fetchCalls += 1; "
+        "return originalFetch(...args); };"
+    )
+    _browser_route(page, files)
+    page.goto("http://127.0.0.1/runs/recorded.html")
+    controls = page.locator('[data-list-controls="recorded-cells"]')
+    rows = page.locator('[data-list-target="recorded-cells"] > tr')
+
+    assert rows.count() == 50
+    assert page.evaluate("window.__fetchCalls") == 0
+    page.locator('[data-list-pagination="recorded-cells"] [data-list-next]').click()
+    assert rows.count() == 50
+    assert "recorded_page=2" in page.url
+    page.locator('[data-list-pagination="recorded-cells"] [data-list-next]').click()
+    assert rows.count() == 25
+    assert "recorded_page=3" in page.url
+
+    controls.locator('[name="q"]').fill("ptrace-117")
+    assert rows.count() == 1
+    assert "ptrace-117" in rows.inner_text()
+    assert page.evaluate("window.__fetchCalls") == 0
+    page.close()
+
+
+def _grouped_link_model(
+    cells: list[dict[str, str]],
+) -> render_page.SiteModel:
+    data = representative_build_data()
+    model = render_page._site_model(_build(data), data, wording="fixture")
+    identities = [render_page._cell_identity(cell) for cell in cells]
+    return replace(
+        model,
+        cell_by_id=dict(zip(identities, cells, strict=True)),
+        cell_paths={
+            identity: f"cells/{index:064x}.html"
+            for index, identity in enumerate(identities, start=1)
+        },
+    )
+
+
+def test_grouped_cell_links_render_exact_hierarchy_order_and_escaped_labels() -> None:
+    cells = [
+        {
+            "test": "applications/zeta & last",
+            "category": "applications",
+            "mode": "verify",
+            "backend": "ptrace",
+        },
+        {
+            "test": "applications/kvm-first",
+            "category": "applications",
+            "mode": "verify",
+            "backend": "kvm",
+        },
+        {
+            "test": "language-runtimes/python<3",
+            "category": "language & runtimes",
+            "mode": "verify",
+            "backend": "ptrace",
+        },
+        {
+            "test": "applications/alpha",
+            "category": "applications",
+            "mode": "verify",
+            "backend": "ptrace",
+        },
+        {
+            "test": "applications/run-first",
+            "category": "applications",
+            "mode": "run",
+            "backend": "ptrace",
+        },
+    ]
+    model = _grouped_link_model(cells)
+
+    source = render_page._grouped_cell_links(model, "runs/example.html", cells)
+    root = ET.fromstring(f"<root>{source}</root>")
+
+    sections = root.findall("section")
+    assert [section.attrib["class"] for section in sections] == [
+        "selected-cells-by-mode-backend",
+        "selected-cells-by-mode-backend",
+        "selected-cells-by-mode-backend",
+    ]
+    assert all(section.attrib["data-list-parent"] == "1" for section in sections)
+    assert [section.findtext("h3") for section in sections] == [
+        "Run/ptrace",
+        "Verify/kvm",
+        "Verify/ptrace",
+    ]
+    assert [
+        [strong.text for strong in section.findall("div/strong")]
+        for section in sections
+    ] == [
+        ["applications:"],
+        ["applications:"],
+        ["applications:", "language & runtimes:"],
+    ]
+    links = root.findall("section/div/a")
+    assert ["".join(link.itertext()) for link in links] == [
+        "run-first",
+        "kvm-first",
+        "alpha",
+        "zeta & last",
+        "python<3",
+    ]
+    expected_hrefs = [
+        render_page._href("runs/example.html", model.cell_paths[identity])
+        for identity in (
+            "applications/run-first/run/ptrace",
+            "applications/kvm-first/verify/kvm",
+            "applications/alpha/verify/ptrace",
+            "applications/zeta & last/verify/ptrace",
+            "language-runtimes/python<3/verify/ptrace",
+        )
+    ]
+    assert [link.attrib["href"] for link in links] == expected_hrefs
+    assert len(links) == len(cells)
+    assert len({link.attrib["href"] for link in links}) == len(cells)
+    assert "zeta &amp; last" in source
+    assert "language &amp; runtimes:" in source
+    assert "python&lt;3" in source
+    visible_link_text = "".join("".join(link.itertext()) for link in links)
+    assert "/verify/" not in visible_link_text
+
+
+def test_grouped_cell_links_refuse_ambiguous_bare_test_labels() -> None:
+    cells = [
+        {
+            "test": "one/same-name",
+            "category": "applications",
+            "mode": "verify",
+            "backend": "ptrace",
+        },
+        {
+            "test": "two/same-name",
+            "category": "applications",
+            "mode": "verify",
+            "backend": "ptrace",
+        },
+    ]
+    model = _grouped_link_model(cells)
+
+    with pytest.raises(render_page.RenderRefused, match="bare test label"):
+        render_page._grouped_cell_links(model, "runs/example.html", cells)
+
+
+def test_selected_groups_use_the_same_grouping_for_each_validate_path() -> None:
+    cells = [
+        {
+            "test": "applications/alpha",
+            "category": "applications",
+            "mode": "verify",
+            "backend": "ptrace",
+        },
+        {
+            "test": "applications/beta",
+            "category": "applications",
+            "mode": "verify",
+            "backend": "ptrace",
+        },
+    ]
+    model = _grouped_link_model(cells)
+    missing = {
+        "test": "applications/not-on-site",
+        "category": "applications",
+        "mode": "verify",
+        "backend": "ptrace",
+    }
+    missing_identity = render_page._cell_identity(missing)
+    row = {
+        "cell_results": {
+            "selected_by": {
+                "full": {"cell_count": 3, "cells": [cells[1], missing, cells[0]]},
+                "cell-requalification": {"cell_count": 1, "cells": [cells[0]]},
+            }
+        }
+    }
+
+    source = render_page._selected_groups(model, "runs/example.html", row)
+    parser = ListingStructure()
+    parser.feed(source)
+
+    assert source.index("Selected by cell-requalification") < source.index(
+        "Selected by full"
+    )
+    assert (
+        "<strong>1</strong> cells were selected by cell-requalification. Of the "
+        "selected cells in the manifest, 1 have published cell pages." in source
+    )
+    assert (
+        "<strong>3</strong> cells were selected by full. Of the selected cells "
+        "in the manifest, 2 have published cell pages." in source
+    )
+    assert (
+        "Selected cells with no qualifying admitted row have no cell detail page "
+        "and are listed as plain text." in source
+    )
+    assert [text for _href, text in parser.links] == ["alpha", "alpha", "beta"]
+    assert (
+        '<span class="selected-cell-without-detail">not-on-site</span>' in source
+    )
+    assert missing_identity not in model.cell_paths
+
+
+def test_grouped_cell_links_reduce_repeated_identity_bytes() -> None:
+    cells = [
+        {
+            "test": f"backend-parity-c/test-{index:03d}",
+            "category": "backend-parity-c",
+            "mode": "verify",
+            "backend": "ptrace",
+        }
+        for index in range(100)
+    ]
+    model = _grouped_link_model(cells)
+
+    grouped = render_page._grouped_cell_links(model, "runs/example.html", cells)
+    flat = (
+        "<ul>"
+        + "".join(
+            f"<li>{render_page._cell_link(model, 'runs/example.html', render_page._cell_identity(cell))}</li>"
+            for cell in cells
+        )
+        + "</ul>"
+    )
+
+    assert grouped.count("<a ") == flat.count("<a ") == len(cells)
+    assert len(grouped.encode()) * 4 < len(flat.encode()) * 3
+
+
+def test_optional_manifest_details_are_omitted() -> None:
+    data = representative_build_data()
+    data["tests"][0]["build"] = None
+    data["tests"][0]["direct"] = None
+    data["cells"][0]["current_reproducer"] = None
+    data["cells"][0]["current_reproducer_unavailable_reason"] = "not recorded"
+    data = _validated(data)
+    files = render_page.render_site(_build(data), data)
+    model = render_page._site_model(_build(data), data, wording="fixture")
+
+    records = [
+        item
+        for prefix in "0123456789abcdef"
+        for item in _browser_payload(files, f"data/detail-{prefix}.json.gz")["records"]
+    ]
+    test_record = next(item for item in records if item["kind"] == "test")
+    cell_record = next(item for item in records if item["kind"] == "cell")
+    assert test_record["data"]["build"] is None
+    assert test_record["data"]["direct"] is None
+    assert (
+        cell_record["data"]["current_reproducer_unavailable_reason"] == "not recorded"
+    )
+
+
+def test_projection_audit_preserves_disjoint_totals_and_overlapping_reasons() -> None:
+    data = representative_build_data()
+    data["runs"].update(
+        projection_excluded_physical_row_count=1,
+        projection_excluded_represented_run_count=2,
+        projection_exclusion_counts=[
+            {
+                "physical_row_count": 1,
+                "reason": "projection rejected the row",
+                "represented_run_count": 2,
+                "schema": "stress-series/v1",
+            },
+            {
+                "physical_row_count": 1,
+                "reason": "schema is not stress-series/v3",
+                "represented_run_count": 2,
+                "schema": "stress-series/v1",
+            },
+        ],
+    )
+    data = _validated(data)
+    page = render_page.render_site(_build(data), data)[
+        "cells/projection-audit.html"
     ].decode()
 
-    assert green.index("State from qualifying canonical rows") < green.index(
-        "Latest product result"
-    )
-    assert "Selected by super" in green
-    assert "green-retry-1" in green
-    assert "green-retry-2" in green
-    assert "fixture-kernel" in green
-    assert "cpuid-faulting" in green
-    assert "Wall time: 7–9 ms" in green
-    assert "Validation history row selected this cell by super" in green
-    assert "Guest arguments</dt><dd><pre><code>[]</code></pre>" in green
-    assert "Preprocessors</dt><dd><pre><code>[]</code></pre>" in green_test
-    assert "event ids: None recorded" in unavailable_cell
-    assert "No single retained validation-run selection names this event" in historical
-    assert "Historical invocation" in historical
-    assert "Raw retained logs" in historical
-    assert "Syscall histogram" in historical
-    assert "Validate path</dt><dd>quick" in unavailable_page
-    assert "This retained history row has no usable cell_results" in unavailable_page
-    assert unavailable_page.count('class="unavailable">Unavailable') >= 2
+    assert "1 physical rows were admitted and 1 were excluded" in page
+    assert "reason counts are not added" in page
+    assert page.count("<td>stress-series/v1</td>") == 2
 
 
-def test_ambiguous_validation_history_join_is_unavailable() -> None:
-    build, data = render_page.load_artifacts(FIXTURE)
-    changed_build = copy.deepcopy(build)
-    changed = copy.deepcopy(data)
-    duplicate = copy.deepcopy(changed["runs"]["validation_history_rows"][2])
-    duplicate["history_row_sha256"] = "f" * 64
-    changed["runs"]["validation_history_rows"].append(duplicate)
-    changed["runs"]["validation_history_row_count"] += 1
-    changed["counts"]["validation_history_row_count"] += 1
-    changed_build["counts"]["validation_history_row_count"] += 1
-
-    model = render_page._site_model(changed_build, changed)
-    page = render_page.render_site(changed_build, changed)[
-        model.cell_paths[GREEN]
-    ].decode()
-
-    assert "Matching validation history row unavailable" in page
-    assert "No single validation history row matches the retained selection" in page
+def test_schema_v1_data_refuses_closed() -> None:
+    data = representative_build_data()
+    data["schema_version"] = 1
+    with pytest.raises(render_page.RenderRefused, match="schema_version"):
+        render_page.render_site(_build(representative_build_data()), data)
 
 
-def test_path_traversal_and_unsafe_generated_paths_refuse(tmp_path: Path) -> None:
-    with pytest.raises(render_page.RenderRefused, match="path traversal"):
-        render_page.load_artifacts(FIXTURE / ".." / FIXTURE.name)
-    with pytest.raises(render_page.RenderRefused, match="path traversal"):
-        render_page.write_page(FIXTURE, tmp_path / "safe" / ".." / "escape")
+def test_build_manifest_must_match_validated_data() -> None:
+    data = representative_build_data()
+    build = _build(data)
+    build["counts"]["green_cell_count"] += 1
+    with pytest.raises(render_page.RenderRefused, match="counts disagree"):
+        render_page.render_site(build, data)
+
+
+def test_render_is_deterministic_and_every_internal_link_resolves() -> None:
+    data = data_with_all_three_states_and_one_omitted_row()
+    build = _build(data)
+    first = render_page.render_site(build, data)
+    assert first == render_page.render_site(build, data)
+    complete_tree = {**_tree(data), **first}
+    parsers: dict[str, Links] = {}
+    for path, value in first.items():
+        if path.endswith(".html"):
+            parser = Links()
+            parser.feed(value.decode())
+            parsers[path] = parser
+    for source, parser in parsers.items():
+        for link in parser.links:
+            split = urlsplit(link)
+            if split.scheme or split.netloc:
+                assert re.fullmatch(
+                    r"https://github\.com/rrnewton/(?:hermit|dev-hermit)/commit/[0-9a-f]{40}",
+                    link,
+                )
+                continue
+            target = PurePosixPath(source).parent.joinpath(
+                split.path or PurePosixPath(source).name
+            )
+            normalized = PurePosixPath(os.path.normpath(target.as_posix())).as_posix()
+            assert normalized in complete_tree
+            if split.fragment and normalized in parsers:
+                assert split.fragment in parsers[normalized].ids
+
+
+def test_assets_are_local_and_only_commit_navigation_is_external() -> None:
+    data = representative_build_data()
+    files = render_page.render_site(_build(data), data)
+    inventories = render_page._validate_output_files(files)
+
+    assert inventories["assets"] == frozenset({"favicon.svg", "site.css", "site.js"})
+    assert "incomplete-data" not in inventories[""]
+    for path, value in files.items():
+        if path.endswith(".html"):
+            source = value.decode()
+            parser = Links()
+            parser.feed(source)
+            external = [link for link in parser.links if urlsplit(link).scheme]
+            assert all(
+                re.fullmatch(
+                    r"https://github\.com/rrnewton/(?:hermit|dev-hermit)/commit/[0-9a-f]{40}",
+                    link,
+                )
+                for link in external
+            )
+            external_markup = re.findall(
+                r'<a class="external-link"[^>]+href="https://github\.com/rrnewton/'
+                r'(?:hermit|dev-hermit)/commit/[0-9a-f]{40}"[^>]*>.*?</a>',
+                source,
+                flags=re.DOTALL,
+            )
+            assert len(external_markup) == len(external)
+            assert all('(external link)"' in link for link in external_markup)
+            assert all('class="external-link-indicator"' in link for link in external_markup)
+            assert not re.search(
+                r'href="[^"]*data/(?:cells|runs|tests)\.json\.gz', source
+            )
+            assert "Raw Stage 1" not in source
+    javascript = files["assets/site.js"]
+    assert javascript.count(b"https://") == 1
+    assert b"https://github.com/rrnewton/hermit/commit/" in javascript
+    assert b"external-link-indicator" in javascript
+    stage_one = _tree(data)
+    assert {
+        "data/cells.json.gz",
+        "data/runs.json.gz",
+        "data/tests.json.gz",
+    } <= set(stage_one)
+
+
+def test_artifact_source_recomposes_only_four_file_v2_shape() -> None:
+    data = representative_build_data()
+    files = _tree(data)
+    build = json.loads(files["build.json"])
+    payloads = {
+        path: json.loads(gzip.decompress(value))
+        for path, value in files.items()
+        if path.endswith(".gz")
+    }
+    source = render_page._artifact_source(build, build["generator"], payloads)
+
+    assert set(payloads) == {
+        "data/cells.json.gz",
+        "data/runs.json.gz",
+        "data/tests.json.gz",
+    }
+    assert source == _validated(data)
+
+
+def test_checked_fixture_exactly_matches_the_v2_generator() -> None:
+    data = representative_build_data()
+
+    assert fixture_files() == _tree(data)
+    build, loaded = render_page.load_artifacts(FIXTURE)
+    assert loaded == _validated(data)
+    assert build == json.loads(_tree(data)["build.json"])
+
+
+def test_load_artifacts_reads_and_binds_every_v2_file(tmp_path: Path) -> None:
+    data = representative_build_data()
+    files = _tree(data)
+    root = tmp_path / "stage1"
+    for path, value in files.items():
+        target = root / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(value)
+
+    build, loaded = render_page.load_artifacts(root)
+    assert loaded == _validated(data)
+    assert build == json.loads(files["build.json"])
+
+
+def test_load_artifacts_refuses_extra_retired_artifact(tmp_path: Path) -> None:
+    data = representative_build_data()
+    files = _tree(data)
+    root = tmp_path / "stage1"
+    for path, value in files.items():
+        target = root / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(value)
+    (root / "data/incomplete-data.json.gz").write_bytes(b"retired")
+
+    with pytest.raises(render_page.RenderRefused, match="inventory"):
+        render_page.load_artifacts(root)
+
+
+def test_output_paths_refuse_traversal() -> None:
     with pytest.raises(render_page.RenderRefused, match="unsafe path"):
         render_page._validate_output_files({"../index.html": b"x"})
 
 
-def test_output_below_artifact_tree_refuses_without_changing_source(
-    tmp_path: Path,
-) -> None:
-    artifacts = tmp_path / "artifact-copy"
-    copy_fixture(artifacts)
-    before = tree_snapshot(artifacts)
+def test_write_page_publishes_once_and_refuses_existing_output(tmp_path: Path) -> None:
+    data = representative_build_data()
+    artifact = tmp_path / "stage1"
+    for path, value in _tree(data).items():
+        target = artifact / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(value)
+    output = tmp_path / "site"
 
-    result = subprocess.run(
-        [
-            sys.executable,
-            str(SCRIPT),
-            "--artifacts",
-            str(artifacts),
-            "--output",
-            str(artifacts / "site"),
-        ],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-
-    assert result.returncode == 2
-    assert result.stdout == ""
-    assert "overlaps the Stage 1 artifact tree" in result.stderr
-    assert tree_snapshot(artifacts) == before
+    page = render_page.write_page(artifact, output)
+    assert page == output / "index.html"
+    assert page.is_file()
+    with pytest.raises(render_page.RenderRefused, match="already exists"):
+        render_page.write_page(artifact, output)
 
 
-def test_output_ancestor_and_symlinked_descendant_refuse_without_changes(
-    tmp_path: Path,
-) -> None:
-    container = tmp_path / "container"
-    artifacts = container / "artifacts"
-    copy_fixture(artifacts)
-    before = tree_snapshot(artifacts)
-
-    ancestor = subprocess.run(
-        [
-            sys.executable,
-            str(SCRIPT),
-            "--artifacts",
-            str(artifacts),
-            "--output",
-            str(container),
-        ],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    link = tmp_path / "artifact-link"
-    link.symlink_to(artifacts, target_is_directory=True)
-    through_link = subprocess.run(
-        [
-            sys.executable,
-            str(SCRIPT),
-            "--artifacts",
-            str(artifacts),
-            "--output",
-            str(link / "site"),
-        ],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-
-    assert ancestor.returncode == 2
-    assert ancestor.stdout == ""
-    assert "overlaps the Stage 1 artifact tree" in ancestor.stderr
-    assert through_link.returncode == 2
-    assert through_link.stdout == ""
-    assert "output destination" in through_link.stderr
-    assert tree_snapshot(artifacts) == before
-
-
-def test_symlink_loop_output_parent_refuses_without_traceback_or_changes(
-    tmp_path: Path,
-) -> None:
-    artifacts = tmp_path / "artifact-copy"
-    copy_fixture(artifacts)
-    before = tree_snapshot(artifacts)
-    loop = tmp_path / "loop"
-    loop.symlink_to("loop")
-
-    result = subprocess.run(
-        [
-            sys.executable,
-            str(SCRIPT),
-            "--artifacts",
-            str(artifacts),
-            "--output",
-            str(loop / "site"),
-        ],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-
-    assert result.returncode == 2
-    assert result.stdout == ""
-    assert "compatibility-website render page: REFUSED:" in result.stderr
-    assert "Traceback" not in result.stderr
-    assert tree_snapshot(artifacts) == before
-    assert loop.is_symlink()
-
-
-def test_cli_writes_deterministic_site_and_refuses_existing_output(
-    tmp_path: Path,
-) -> None:
-    output = tmp_path / "prototype"
-    command = [
-        sys.executable,
-        str(SCRIPT),
-        "--artifacts",
-        str(FIXTURE),
-        "--output",
-        str(output),
-    ]
-    first = subprocess.run(command, check=False, capture_output=True, text=True)
-
-    assert first.returncode == 0
-    assert first.stderr == ""
-    assert first.stdout.strip() == (output / "index.html").resolve().as_uri()
-    before = {
-        path.relative_to(output).as_posix(): path.read_bytes()
-        for path in output.rglob("*")
-        if path.is_file()
-    }
-    model = render_page._site_model(*render_page.load_artifacts(FIXTURE))
-    assert set(before) == {
-        "assets/favicon.svg",
-        "assets/site.css",
-        "assets/site.js",
-        "cells/index.html",
-        "incomplete-data/index.html",
-        "index.html",
-        *model.cell_paths.values(),
-        *model.test_paths.values(),
-        *model.run_paths.values(),
-    }
-    other = tmp_path / "prototype-second"
-    repeated = subprocess.run(
-        [*command[:-1], str(other)], check=False, capture_output=True, text=True
-    )
-    assert repeated.returncode == 0
-    assert repeated.stderr == ""
-    assert before == {
-        path.relative_to(other).as_posix(): path.read_bytes()
-        for path in other.rglob("*")
-        if path.is_file()
-    }
-
-    second = subprocess.run(command, check=False, capture_output=True, text=True)
-
-    assert second.returncode == 2
-    assert second.stdout == ""
-    assert "output destination already exists" in second.stderr
-    assert before == {
-        path.relative_to(output).as_posix(): path.read_bytes()
-        for path in output.rglob("*")
-        if path.is_file()
-    }
-
-
-@pytest.mark.parametrize(
-    "relative",
-    [
-        "build.json",
-        "data/cells.json.gz",
-        "data/incomplete-data.json.gz",
-        "data/runs.json.gz",
-        "data/tests.json.gz",
-    ],
-)
-def test_changed_artifact_refuses_without_output(tmp_path: Path, relative: str) -> None:
-    artifacts = tmp_path / "artifacts"
-    for path, value in fixture_files().items():
-        destination = artifacts / path
-        destination.parent.mkdir(parents=True, exist_ok=True)
-        destination.write_bytes(value)
-    changed = artifacts / relative
-    changed.write_bytes(changed.read_bytes() + b"changed")
-    output = tmp_path / "prototype"
-
-    result = subprocess.run(
-        [
-            sys.executable,
-            str(SCRIPT),
-            "--artifacts",
-            str(artifacts),
-            "--output",
-            str(output),
-        ],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-
-    assert result.returncode == 2
-    assert result.stdout == ""
-    assert not output.exists()
-
-
-def test_cli_help_names_fixture_boundary_and_no_server() -> None:
+def test_cli_help_names_four_file_fixture_boundary() -> None:
     result = subprocess.run(
         [sys.executable, str(SCRIPT), "--help"],
         check=False,
         capture_output=True,
         text=True,
     )
-
-    assert result.returncode == 0
-    assert result.stderr == ""
-    help_text = " ".join(result.stdout.split())
-    assert "fixture-backed prototype" in help_text
-    assert "exact five-file Stage 1 fixture artifact directory" in help_text
-    assert "writes only local JavaScript" in help_text
-    assert "performs no network request" in help_text
-    assert "performs no network request" in help_text
-    assert "refuses an existing output directory" in help_text
+    assert result.returncode == 0 and result.stderr == ""
+    assert "four-file Stage 1" in result.stdout
+    assert "five-file Stage 1" not in result.stdout
 
 
-def test_no_destructive_cleanup_operation_is_present() -> None:
+def test_source_contains_no_retired_placeholder_literal() -> None:
     source = SCRIPT.read_text()
+    assert "Unavail" + "able" not in source
+    assert "state_" + "unavailable" not in source
+    assert "incomplete" + "-data" not in source
 
-    for forbidden in ("unlink(", "rmdir(", "rmtree(", "remove("):
-        assert forbidden not in source
+
+def test_renderer_emits_compact_query_routes_and_fixed_data_shards() -> None:
+    data = representative_build_data()
+    files = render_page.render_site(_build(data), data)
+    model = render_page._site_model(_build(data), data, wording="fixture")
+
+    assert {"cells/detail.html", "tests/detail.html"} <= files.keys()
+    identity_pages = {
+        path
+        for path in files
+        if re.fullmatch(r"(?:cells|tests)/[0-9a-f]{64}\.html", path)
+    }
+    assert identity_pages == set()
+    for identity, url in model.cell_paths.items():
+        assert url == f"cells/detail.html?cell={_digest_for_identity(identity)}"
+    for identity, url in model.test_paths.items():
+        assert url == f"tests/detail.html?test={_digest_for_identity(identity)}"
+    assert {path for path in files if path.startswith("data/")} == {
+        "data/site-manifest.json.gz",
+        "data/site-summary.json.gz",
+        *(f"data/detail-{prefix}.json.gz" for prefix in "0123456789abcdef"),
+    }
+
+
+def _browser_payload(files: dict[str, bytes], path: str) -> Any:
+    return json.loads(gzip.decompress(files[path]))
+
+
+def _replace_browser_payload(files: dict[str, bytes], path: str, payload: Any) -> None:
+    decoded = render_page._browser_json_bytes(payload)
+    files[path] = render_page._writer()._gzip_bytes(decoded)
+    manifest = _browser_payload(files, "data/site-manifest.json.gz")
+    artifact = next(item for item in manifest["artifacts"] if item["path"] == path)
+    artifact["decoded_bytes"] = len(decoded)
+    artifact["decoded_sha256"] = hashlib.sha256(decoded).hexdigest()
+    files["data/site-manifest.json.gz"] = render_page._writer()._gzip_bytes(
+        render_page._browser_json_bytes(manifest)
+    )
+
+
+def _browser_route(
+    page: Any,
+    files: dict[str, bytes],
+    *,
+    automatically_decode_gzip: bool = False,
+    requests: list[str] | None = None,
+) -> None:
+    def serve(route: Any) -> None:
+        path = urlsplit(route.request.url).path.lstrip("/") or "index.html"
+        if requests is not None:
+            requests.append(path)
+        value = files.get(path)
+        if value is None:
+            route.fulfill(status=404, body=b"not found")
+            return
+        if automatically_decode_gzip and path.endswith(".json.gz"):
+            value = gzip.decompress(value)
+        content_type = (
+            "text/html; charset=utf-8"
+            if path.endswith(".html")
+            else (
+                "text/javascript; charset=utf-8"
+                if path.endswith(".js")
+                else (
+                    "text/css; charset=utf-8"
+                    if path.endswith(".css")
+                    else (
+                        "application/json"
+                        if path.endswith(".json.gz")
+                        else "image/svg+xml"
+                    )
+                )
+            )
+        )
+        route.fulfill(status=200, body=value, headers={"content-type": content_type})
+
+    page.route("**/*", serve)
+
+
+def _wait_for_verified_data(page: Any) -> None:
+    page.wait_for_function(
+        "document.querySelector('[data-load-status]').dataset.loadState === 'verified'"
+    )
+    status = page.locator("[data-load-status]")
+    assert status.get_attribute("aria-busy") == "false"
+    assert status.is_hidden()
+    assert status.inner_text() == ""
+
+
+@pytest.fixture(scope="module")
+def chromium_browser() -> Any:
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError as error:  # pragma: no cover - required host dependency
+        pytest.fail(f"Playwright is required for browser regressions: {error}")
+    with sync_playwright() as playwright:
+        try:
+            browser = playwright.chromium.launch(headless=True)
+        except Exception as error:  # pragma: no cover - host installation failure
+            pytest.fail(f"Chromium is required for browser regressions: {error}")
+        yield browser
+        browser.close()
+
+
+def test_selected_membership_keeps_linked_and_unlinked_cells_accessible_after_hydration(
+    chromium_browser: Any,
+) -> None:
+    cells = [
+        {
+            "test": "applications/charlie",
+            "category": "applications",
+            "mode": "verify",
+            "backend": "ptrace",
+        },
+        {
+            "test": "applications/alpha",
+            "category": "applications",
+            "mode": "verify",
+            "backend": "ptrace",
+        },
+    ]
+    missing = {
+        "test": "applications/bravo-no-detail",
+        "category": "applications",
+        "mode": "verify",
+        "backend": "ptrace",
+    }
+    model = _grouped_link_model(cells)
+    row = copy.deepcopy(model.history_rows[0])
+    row["profile"] = "full"
+    row["cell_results"]["selected_by"] = {
+        "full": {"cell_count": 3, "cells": [cells[0], missing, cells[1]]}
+    }
+    model = replace(
+        model,
+        current_history_indices=(0,),
+        history_paths=("runs/mixed-membership.html",),
+        history_rows=(row,),
+    )
+    data = representative_build_data()
+    files = render_page.render_site(_build(data), data)
+    files["runs/mixed-membership.html"] = render_page._run_page(model, 0, row)
+
+    page = chromium_browser.new_page()
+    _browser_route(page, files)
+    page.goto("http://127.0.0.1/runs/mixed-membership.html")
+    selected = page.locator(
+        f'#{render_page._fragment("selected-by", "full")}'
+    )
+    group = selected.locator(".selected-cell-group")
+    members = group.locator(
+        ":scope > a:not([hidden]), "
+        ":scope > .selected-cell-without-detail:not([hidden])"
+    )
+
+    assert "3 cells were selected by full" in selected.inner_text()
+    assert members.all_inner_texts() == ["alpha", "bravo-no-detail", "charlie"]
+    assert group.inner_text() == "applications: alpha, bravo-no-detail, charlie"
+    assert group.get_by_role("link").all_inner_texts() == ["alpha", "charlie"]
+    assert group.get_by_text("bravo-no-detail", exact=True).is_visible()
+    assert page.locator('[data-list-pagination^="run-selected-"]').count() == 0
+    accessibility = group.aria_snapshot()
+    for text in ("applications:", "alpha", "bravo-no-detail", "charlie", ","):
+        assert text in accessibility
+
+    controls = selected.locator('[data-list-controls^="run-selected-"]')
+    controls.locator('[name="q"]').fill("bravo-no-detail")
+    assert group.inner_text() == "applications: bravo-no-detail"
+    assert members.all_inner_texts() == ["bravo-no-detail"]
+
+    controls.locator('[name="q"]').fill("")
+    assert controls.locator('[name="sort"]').is_hidden()
+    assert controls.locator('[name="direction"]').is_hidden()
+    assert controls.locator('button[type="submit"]').count() == 0
+    test_order = controls.locator('[data-list-sort="test"]')
+    test_order.click()
+    query_prefix = controls.get_attribute("data-query-prefix")
+    assert query_prefix is not None
+    assert f"{query_prefix}sort=test" in page.url
+    assert test_order.get_attribute("aria-pressed") == "true"
+    assert test_order.locator(".sort-indicator").inner_text() == "▲"
+    assert "Activate to sort descending" in (test_order.get_attribute("title") or "")
+    assert members.all_inner_texts() == ["alpha", "bravo-no-detail", "charlie"]
+
+    test_order.press("Space")
+    assert f"{query_prefix}direction=desc" in page.url
+    assert test_order.locator(".sort-indicator").inner_text() == "▼"
+    assert "Activate to sort ascending" in (
+        test_order.get_attribute("aria-label") or ""
+    )
+    assert members.all_inner_texts() == ["charlie", "bravo-no-detail", "alpha"]
+    assert group.inner_text() == "applications: charlie, bravo-no-detail, alpha"
+    page.close()
+
+
+def test_custom_command_cards_use_compact_order_buttons_and_url_state(
+    chromium_browser: Any,
+) -> None:
+    data = representative_build_data()
+    model = render_page._site_model(_build(data), data, wording="fixture")
+    commands = (
+        {
+            "cell": "applications/zeta/verify/ptrace",
+            "current_reproducer": None,
+            "not_applicable_reason": None,
+            "test": "applications/zeta",
+        },
+        {
+            "cell": "applications/alpha/verify/ptrace",
+            "current_reproducer": None,
+            "not_applicable_reason": None,
+            "test": "applications/alpha",
+        },
+    )
+    fragment = render_page._custom_commands(
+        replace(model, custom_commands=commands), "index.html"
+    )
+    javascript = (
+        REPOSITORY / "ci-hub/compatibility-website/assets/site.js"
+    ).read_text()
+    stylesheet = (
+        REPOSITORY / "ci-hub/compatibility-website/assets/site.css"
+    ).read_text()
+    page = chromium_browser.new_page(viewport={"width": 360, "height": 700})
+    page.set_content(
+        f"<!doctype html><html><head><style>{stylesheet}</style></head>"
+        "<body data-page-kind='custom-command-test'>"
+        f"{fragment}<script>{javascript}</script></body></html>"
+    )
+    controls = page.locator('[data-list-controls="custom-commands"]')
+    cards = page.locator("#custom-commands .listing-card:not([hidden])")
+    test_order = controls.locator('[data-list-sort="test"]')
+
+    assert controls.is_visible()
+    assert controls.locator('select[name="sort"]').is_hidden()
+    assert controls.locator('select[name="direction"]').is_hidden()
+    assert controls.locator('button[type="submit"]').count() == 0
+    assert controls.locator("[data-list-clear]").inner_text() == "Clear filters"
+    assert controls.locator(".list-order-controls").evaluate(
+        "element => getComputedStyle(element).display"
+    ) == "flex"
+    clear_box = controls.locator("[data-list-clear]").bounding_box()
+    controls_box = controls.bounding_box()
+    assert clear_box is not None and controls_box is not None
+    assert clear_box["width"] < controls_box["width"] / 2
+    assert cards.all_inner_texts()[0].startswith("applications/zeta")
+    assert test_order.inner_text() == "TestName"
+
+    test_order.click()
+    assert "commands_sort=test" in page.url
+    assert cards.all_inner_texts()[0].startswith("applications/alpha")
+    assert test_order.get_attribute("aria-pressed") == "true"
+    assert test_order.locator(".sort-indicator").inner_text() == "▲"
+
+    test_order.press("Space")
+    assert "commands_direction=desc" in page.url
+    assert cards.all_inner_texts()[0].startswith("applications/zeta")
+    assert test_order.locator(".sort-indicator").inner_text() == "▼"
+
+    controls.locator("[data-list-clear]").click()
+    assert "commands_sort=" not in page.url
+    assert "commands_direction=" not in page.url
+    assert cards.all_inner_texts()[0].startswith("applications/zeta")
+    page.close()
+
+
+def _all_mapping_keys(value: Any) -> list[str]:
+    if isinstance(value, dict):
+        return [
+            key
+            for name, item in value.items()
+            for key in (name, *_all_mapping_keys(item))
+        ]
+    if isinstance(value, list):
+        return [key for item in value for key in _all_mapping_keys(item)]
+    return []
+
+
+def test_non_sortable_column_help_is_visible_on_keyboard_focus(
+    chromium_browser: Any,
+) -> None:
+    data = data_with_all_three_states_and_one_omitted_row()
+    files = render_page.render_site(_build(data), data)
+    page = chromium_browser.new_page()
+    _browser_route(page, files)
+    page.goto("http://127.0.0.1/cells/projection-audit.html")
+    help_button = page.locator(".column-help").first
+    described_by = help_button.get_attribute("aria-describedby")
+
+    assert described_by
+    assert help_button.get_attribute("aria-label").startswith("Explain ")
+    assert help_button.inner_text() == "?"
+    tooltip = page.locator(f"#{described_by}")
+    assert tooltip.get_attribute("role") == "tooltip"
+    assert tooltip.text_content()
+    assert (
+        tooltip.evaluate("element => getComputedStyle(element).visibility") == "hidden"
+    )
+
+    help_button.focus()
+    assert help_button.evaluate("element => document.activeElement === element")
+    assert (
+        tooltip.evaluate("element => getComputedStyle(element).visibility") == "visible"
+    )
+    assert tooltip.is_visible()
+    assert tooltip.inner_text()
+    assert (
+        float(tooltip.evaluate("element => getComputedStyle(element).opacity")) == 1.0
+    )
+    page.keyboard.press("Tab")
+    assert not help_button.evaluate("element => document.activeElement === element")
+    page.close()
+
+
+def test_cell_detail_omits_run_selection_aggregate_but_preserves_authority(
+    chromium_browser: Any,
+) -> None:
+    data = representative_build_data()
+    data["cells"][0]["selected_by_full"] = False
+    data["cells"][0]["not_selected_by_full_reason"] = {
+        "evidence": 'recorded <evidence> & "detail"',
+        "reason": "full excludes <unsafe> & this cell",
+        "result": "timeout",
+    }
+    data = _validated(data)
+    build = _build(data)
+    model = render_page._site_model(build, data, wording="fixture")
+    files = render_page.render_site(build, data)
+    page = chromium_browser.new_page()
+    _browser_route(page, files)
+    page.goto(f"http://127.0.0.1/{model.cell_paths[data['cells'][0]['cell']]}")
+    _wait_for_verified_data(page)
+    text = page.locator("[data-detail-content]").inner_text()
+
+    assert "Selection" not in text
+    assert "Selected by full" not in text
+    assert "not_selected_by_full_reason" not in text
+    digest = _digest_for_identity(data["cells"][0]["cell"])
+    record = next(
+        item
+        for item in _browser_payload(files, f"data/detail-{digest[0]}.json.gz")[
+            "records"
+        ]
+        if item["kind"] == "cell" and item["digest"] == digest
+    )
+    assert record["data"]["not_selected_by_full_reason"] == data["cells"][0][
+        "not_selected_by_full_reason"
+    ]
+    page.goto(f"http://127.0.0.1/{model.test_paths[data['tests'][0]['id']]}")
+    _wait_for_verified_data(page)
+    assert page.locator(".population-control").count() == 0
+    page.close()
+
+
+def test_cell_matrix_has_no_per_cell_selection_columns_before_or_after_hydration(
+    chromium_browser: Any,
+) -> None:
+    data = data_with_all_three_states_and_one_omitted_row()
+    files = render_page.render_site(_build(data), data)
+    page = chromium_browser.new_page()
+    _browser_route(page, files)
+
+    for path in ("cells/index.html", "cells/never-measured.html"):
+        headings = ColumnHeadings()
+        headings.feed(files[path].decode())
+        labels = [column["label"] for column in headings.columns[:10]]
+        assert "Selected by full" not in labels
+        assert "Selected by path" not in labels
+
+        page.goto(f"http://127.0.0.1/{path}")
+        _wait_for_verified_data(page)
+        table = page.locator("#test-matrix table").first
+        browser_labels = table.locator("thead th").all_inner_texts()
+        assert all("Selected by" not in label for label in browser_labels)
+        rows = table.locator("tbody tr")
+        assert rows.count() > 0
+        assert rows.evaluate_all(
+            "(values, width) => values.every(row => row.children.length === width)",
+            len(browser_labels),
+        )
+        assert all(
+            table.locator(f"tbody tr > :nth-child({index})").evaluate_all(
+                "values => values.some(value => value.textContent.trim().length > 0)"
+            )
+            for index in range(1, len(browser_labels) + 1)
+        )
+    page.close()
+
+
+def test_detail_has_one_reader_title_and_omits_one_page_pagination(
+    chromium_browser: Any,
+) -> None:
+    data = representative_build_data()
+    files = render_page.render_site(_build(data), data)
+    model = render_page._site_model(_build(data), data, wording="fixture")
+    source = files["tests/detail.html"].decode()
+
+    assert "<h1>Test detail</h1>" not in source
+    assert "<h2>Recorded detail</h2>" not in source
+    assert "data-raw-artifact" not in source
+
+    page = chromium_browser.new_page()
+    _browser_route(page, files)
+    test = data["tests"][0]
+    page.goto(f"http://127.0.0.1/{model.test_paths[test['id']]}")
+    _wait_for_verified_data(page)
+    assert page.locator("main h1").all_inner_texts() == [
+        render_page._test_name(test["id"], test["category"])
+    ]
+    assert page.locator("[data-detail-content] .list-pagination").count() == 0
+    page.close()
+
+
+def test_run_number_sort_is_numeric_and_keeps_fallback_rows_last(
+    chromium_browser: Any,
+) -> None:
+    row = representative_build_data()["runs"]["validation_history_rows"][0]
+    rows = []
+    for run_id, run_number in (
+        ("validate-run-u64-max", render_page.MAX_U64),
+        ("validate-run-ten", 10),
+        ("validate-run-two-a", 2),
+        ("validate-run-two-b", 2),
+        ("validate-run-without-number", True),
+    ):
+        item = copy.deepcopy(row)
+        item["run_id"] = run_id
+        item["run_number"] = run_number
+        rows.append(item)
+    model = SimpleNamespace(
+        current_history_indices=(0,),
+        history_paths=tuple(f"runs/{index}.html" for index in range(len(rows))),
+        history_rows=tuple(rows),
+    )
+    listing = render_page._run_listing(model, "runs/index.html")
+    javascript = (
+        REPOSITORY / "ci-hub/compatibility-website/assets/site.js"
+    ).read_text()
+    source = (
+        "<!doctype html><html><body data-page-kind='run-list-test'>"
+        f"{listing}<script>{javascript}</script></body></html>"
+    )
+    page = chromium_browser.new_page()
+    page.set_content(source)
+
+    controls = page.locator('[data-list-controls="validation-runs"]')
+    run_heading = page.locator('[data-list-sort="run"]')
+    run_heading.click()
+    assert run_heading.locator(".sort-indicator").inner_text() == "▲"
+    assert run_heading.locator("xpath=..").get_attribute("aria-sort") == "ascending"
+    assert "runs_sort=run" in page.url
+    assert page.locator("tbody tr:not([hidden]) th a").all_inner_texts() == [
+        "Run 2",
+        "Run 2",
+        "Run 10",
+        f"Run {render_page.MAX_U64}",
+        "Run id validate-run-without-number",
+    ]
+    assert page.locator("tbody tr:not([hidden]) th a").evaluate_all(
+        "links => links.map(link => link.getAttribute('href'))"
+    )[:2] == ["2.html", "3.html"]
+
+    run_heading.click()
+    assert run_heading.locator(".sort-indicator").inner_text() == "▼"
+    assert run_heading.locator("xpath=..").get_attribute("aria-sort") == "descending"
+    assert "runs_sort=run" in page.url
+    assert "runs_direction=" not in page.url
+    assert page.locator("tbody tr:not([hidden]) th a").all_inner_texts() == [
+        f"Run {render_page.MAX_U64}",
+        "Run 10",
+        "Run 2",
+        "Run 2",
+        "Run id validate-run-without-number",
+    ]
+
+    controls.locator('[name="q"]').fill("validate-run-two-b")
+    assert page.locator("tbody tr:not([hidden]) th a").all_inner_texts() == ["Run 2"]
+    assert page.locator("tbody tr:not([hidden]) th a").get_attribute("href") == (
+        "3.html"
+    )
+    page.close()
+
+
+def test_validation_runs_default_to_started_descending_and_use_recorded_wall_clock(
+    chromium_browser: Any,
+) -> None:
+    template = representative_build_data()["runs"]["validation_history_rows"][0]
+    rows = []
+    for index, (started_at, real_seconds) in enumerate(
+        (
+            ("2026-08-31T00:01:00Z", 999.5),
+            ("2026-08-31T00:03:00Z", None),
+            ("2026-08-31T00:03:00Z", 7.25),
+        ),
+        1,
+    ):
+        row = copy.deepcopy(template)
+        row.update(
+            record_id=f"record-{index}",
+            run_id=f"run-{index}",
+            run_number=index,
+            started_at=started_at,
+            finished_at="2026-08-31T00:03:01Z",
+        )
+        row.pop("corrects", None)
+        if real_seconds is None:
+            row.pop("real_seconds", None)
+        else:
+            row["real_seconds"] = real_seconds
+        rows.append(row)
+    model = SimpleNamespace(
+        current_history_indices=(0, 1, 2),
+        history_paths=tuple(f"runs/{index}.html" for index in range(len(rows))),
+        history_rows=tuple(rows),
+    )
+    listing = render_page._run_listing(model, "runs/index.html")
+    javascript = (
+        REPOSITORY / "ci-hub/compatibility-website/assets/site.js"
+    ).read_text()
+    stylesheet = (
+        REPOSITORY / "ci-hub/compatibility-website/assets/site.css"
+    ).read_text()
+    source = (
+        "<!doctype html><html><head>"
+        f"<style>{stylesheet}</style></head>"
+        "<body data-page-kind='run-list-test'>"
+        f"{listing}<script>{javascript}</script></body></html>"
+    )
+    page = chromium_browser.new_page(viewport={"width": 600, "height": 700})
+    page.set_content(source)
+
+    started = page.locator('[data-list-sort="started"]')
+    assert started.locator("xpath=..").get_attribute("aria-sort") == "descending"
+    assert page.locator("tbody tr:not([hidden]) th a").all_inner_texts() == [
+        "Run 3",
+        "Run 2",
+        "Run 1",
+    ]
+    visible_rows = page.locator("tbody tr:not([hidden])")
+    assert visible_rows.nth(0).locator("td").last.inner_text() == "7.25 seconds"
+    assert visible_rows.nth(1).locator("td").last.inner_text() == "Not recorded"
+    assert visible_rows.nth(2).locator("td").last.inner_text() == "999.5 seconds"
+    assert "Finished" not in page.locator("#validation-runs").inner_text()
+    table = page.locator(".validation-runs-table")
+    assert table.count() == 1
+    assert table.locator("col.run-column").count() == 1
+    assert table.evaluate("element => getComputedStyle(element).tableLayout") == "fixed"
+    scroll = page.locator("#validation-runs .table-scroll")
+    assert scroll.evaluate("element => element.scrollWidth > element.clientWidth")
+    assert (
+        table.locator("tbody th").first.evaluate(
+            "element => element.getBoundingClientRect().width"
+        )
+        < 250
+    )
+    wall_clock = page.locator('[data-list-sort="wall_clock"]')
+    assert wall_clock.get_attribute("title") == (
+        "The optional recorded outer makespan of the whole validation run, in "
+        "seconds; it is not derived from the Started or Finished timestamps."
+    )
+    wall_clock.click()
+    assert page.locator("tbody tr:not([hidden]) th a").all_inner_texts() == [
+        "Run 3",
+        "Run 1",
+        "Run 2",
+    ]
+    page.close()
+
+
+@pytest.mark.parametrize(
+    "viewport",
+    ({"width": 1280, "height": 800}, {"width": 360, "height": 700}),
+    ids=("desktop", "mobile"),
+)
+def test_long_fallback_run_id_is_single_line_clipped_and_fully_accessible(
+    chromium_browser: Any, viewport: dict[str, int]
+) -> None:
+    template = representative_build_data()["runs"]["validation_history_rows"][0]
+    long_run_id = "validate-" + "very-long-run-identifier-" * 12
+    fallback = copy.deepcopy(template)
+    fallback.update(record_id="record-fallback", run_id=long_run_id)
+    fallback.pop("run_number", None)
+    numbered = copy.deepcopy(template)
+    numbered.update(record_id="record-numbered", run_id="numbered-run", run_number=42)
+    for row in (fallback, numbered):
+        row.pop("corrects", None)
+    history_path = f"runs/{'a' * 64}.html"
+    model = SimpleNamespace(
+        current_history_indices=(0, 1),
+        history_paths=(history_path, f"runs/{'b' * 64}.html"),
+        history_rows=(fallback, numbered),
+    )
+    listing = render_page._run_listing(
+        model, "runs/index.html", show_heading=False
+    )
+    javascript = (
+        REPOSITORY / "ci-hub/compatibility-website/assets/site.js"
+    ).read_text()
+    stylesheet = (
+        REPOSITORY / "ci-hub/compatibility-website/assets/site.css"
+    ).read_text()
+    page = chromium_browser.new_page(viewport=viewport)
+    page.set_content(
+        "<!doctype html><html><head>"
+        f"<style>{stylesheet}</style></head>"
+        "<body data-page-kind='run-list-test'>"
+        f"{listing}<script>{javascript}</script></body></html>"
+    )
+
+    link = page.locator("a.run-id-link")
+    cell = link.locator("xpath=..")
+    full_label = f"Run id {long_run_id}"
+    assert link.inner_text() == full_label
+    assert link.get_attribute("title") == full_label
+    assert link.get_attribute("href") == PurePosixPath(history_path).name
+    assert full_label in link.aria_snapshot()
+    assert link.evaluate(
+        "element => ({"
+        "overflow: getComputedStyle(element).overflow, "
+        "textOverflow: getComputedStyle(element).textOverflow, "
+        "whiteSpace: getComputedStyle(element).whiteSpace, "
+        "clipped: element.scrollWidth > element.clientWidth"
+        "})"
+    ) == {
+        "overflow": "hidden",
+        "textOverflow": "ellipsis",
+        "whiteSpace": "nowrap",
+        "clipped": True,
+    }
+    cell_box = cell.bounding_box()
+    link_box = link.bounding_box()
+    assert cell_box is not None
+    assert link_box is not None
+    assert cell_box["width"] <= 190
+    assert link_box["height"] <= 26
+    assert cell_box["height"] <= 80
+
+    numbered_link = page.get_by_role("link", name="Run 42", exact=True)
+    assert numbered_link.get_attribute("class") is None
+    assert numbered_link.get_attribute("title") is None
+    controls = page.locator('[data-list-controls="validation-runs"]')
+    controls.locator('[name="q"]').fill(long_run_id)
+    assert page.locator("tbody tr:not([hidden])").count() == 1
+    assert page.locator("tbody tr:not([hidden]) a.run-id-link").inner_text() == full_label
+    page.close()
+
+
+def test_invalid_run_query_restores_one_consistent_default_without_fetch(
+    chromium_browser: Any,
+) -> None:
+    template = representative_build_data()["runs"]["validation_history_rows"][0]
+    rows = []
+    for index, started_at in enumerate(
+        (
+            "2026-08-31T00:01:00Z",
+            "2026-08-31T00:03:00Z",
+            "2026-08-31T00:03:00Z",
+        ),
+        1,
+    ):
+        row = copy.deepcopy(template)
+        row.update(
+            record_id=f"record-{index}",
+            run_id=f"run-{index}",
+            run_number=index,
+            started_at=started_at,
+        )
+        row.pop("corrects", None)
+        rows.append(row)
+    model = SimpleNamespace(
+        current_history_indices=(0, 1, 2),
+        history_paths=tuple(f"runs/{index}.html" for index in range(len(rows))),
+        history_rows=tuple(rows),
+    )
+    listing = render_page._run_listing(model, "runs/index.html")
+    javascript = (
+        REPOSITORY / "ci-hub/compatibility-website/assets/site.js"
+    ).read_bytes()
+    files = {
+        "runs/index.html": (
+            "<!doctype html><html><body data-page-kind='run-list-test'>"
+            f"{listing}<script src='../assets/site.js'></script></body></html>"
+        ).encode(),
+        "assets/site.js": javascript,
+    }
+    requests: list[str] = []
+    page = chromium_browser.new_page()
+    _browser_route(page, files, requests=requests)
+    page.goto(
+        "http://127.0.0.1/runs/index.html?runs_sort=unsupported&runs_direction=asc"
+    )
+    controls = page.locator('[data-list-controls="validation-runs"]')
+    error = page.locator('[data-list-error="validation-runs"]')
+    started = page.locator('[data-list-sort="started"]')
+    page.wait_for_function(
+        "!document.querySelector('[data-list-controls=\"validation-runs\"]')"
+        ".hidden"
+    )
+
+    assert error.is_visible()
+    assert "runs_sort has unsupported value unsupported" in error.inner_text()
+    assert page.locator("tbody tr:not([hidden]) th a").all_inner_texts() == [
+        "Run 3",
+        "Run 2",
+        "Run 1",
+    ]
+    assert controls.locator('[name="sort"]').input_value() == "started"
+    assert controls.locator('[name="direction"]').input_value() == "desc"
+    assert started.locator("xpath=..").get_attribute("aria-sort") == "descending"
+    assert started.locator(".sort-indicator").inner_text() == "▼"
+    assert page.url.endswith("?runs_sort=unsupported&runs_direction=asc")
+    assert not any(path.startswith("data/") for path in requests)
+    page.close()
+
+
+def test_run_detail_uses_recorded_wall_clock_and_does_not_derive_duration() -> None:
+    data = representative_build_data()
+    for field in ("validation_history_rows", "current_validation_run_rows"):
+        data["runs"][field][0]["real_seconds"] = 7.25
+        data["runs"][field][0]["started_at"] = "2026-08-31T00:00:00Z"
+        data["runs"][field][0]["finished_at"] = "2026-08-31T00:59:59Z"
+    _refresh_projection_digests(data)
+    data = _validated(data)
+    model = render_page._site_model(_build(data), data, wording="fixture")
+    source = render_page.render_site(_build(data), data)[model.history_paths[0]].decode()
+
+    assert "<dt>Wall clock</dt><dd>7.25 seconds</dd>" in source
+    assert "<dt>Finished</dt>" not in source
+    assert "2026-08-30 20:00:00 ET" in source
+
+
+def test_live_search_change_keeps_result_links_clickable(
+    chromium_browser: Any,
+) -> None:
+    data = representative_build_data()
+    _set_run_number(data, 10)
+    build = _build(data)
+    model = render_page._site_model(build, data, wording="fixture")
+    files = render_page.render_site(build, data)
+    page = chromium_browser.new_page()
+    _browser_route(page, files)
+
+    page.goto("http://127.0.0.1/runs/index.html")
+    controls = page.locator('[data-list-controls="validation-runs"]')
+    search = controls.locator('[name="q"]')
+    search.fill("validate-run-1")
+    run_link = page.locator("tbody tr:not([hidden]) th a")
+    assert run_link.count() == 1
+    run_handle = run_link.element_handle()
+    assert run_handle is not None
+    search.blur()
+    assert run_handle.evaluate("element => element.isConnected")
+
+    search.focus()
+    with page.expect_navigation():
+        run_link.click()
+    assert page.url == f"http://127.0.0.1/{model.history_paths[0]}"
+    assert page.locator("h1").inner_text() == "Run 10"
+
+    page.goto("http://127.0.0.1/runs/index.html")
+    controls = page.locator('[data-list-controls="validation-runs"]')
+    search = controls.locator('[name="q"]')
+    search.fill("validate-run-1")
+    search.press("Enter")
+    assert page.locator("tbody tr:not([hidden]) th a").count() == 1
+    record = controls.locator('[name="record"]')
+    record.select_option("historical")
+    assert page.locator("tbody tr:not([hidden]) th a").count() == 0
+    record.select_option("current")
+    assert page.locator("tbody tr:not([hidden]) th a").count() == 1
+
+    page.goto("http://127.0.0.1/cells/index.html#all-cells")
+    _wait_for_verified_data(page)
+    cell_search = page.locator("[data-cell-filter-form] [name='q']")
+    cell_search.fill(data["cells"][0]["cell"])
+    cell_link = page.locator('#cell-results a[href*="?cell="]')
+    assert cell_link.count() == 1
+    cell_handle = cell_link.element_handle()
+    assert cell_handle is not None
+    cell_search.blur()
+    assert cell_handle.evaluate("element => element.isConnected")
+    cell_search.focus()
+    with page.expect_navigation():
+        cell_link.click()
+    assert page.url == f"http://127.0.0.1/{model.cell_paths[data['cells'][0]['cell']]}"
+    page.close()
+
+
+def test_browser_manifest_binds_every_fixed_payload_before_json_parse() -> None:
+    data = representative_build_data()
+    files = render_page.render_site(_build(data), data)
+    manifest = _browser_payload(files, "data/site-manifest.json.gz")
+    expected = {
+        "data/site-summary.json.gz",
+        *(f"data/detail-{prefix}.json.gz" for prefix in "0123456789abcdef"),
+    }
+
+    assert manifest["schema_version"] == 1
+    assert {item["path"] for item in manifest["artifacts"]} == expected
+    for item in manifest["artifacts"]:
+        assert set(item) == {"decoded_bytes", "decoded_sha256", "path"}
+        decoded = gzip.decompress(files[item["path"]])
+        assert item["decoded_bytes"] == len(decoded)
+        assert item["decoded_sha256"] == hashlib.sha256(decoded).hexdigest()
+
+
+def test_browser_records_derive_state_and_preserve_structured_manifest_values() -> None:
+    data = representative_build_data()
+    files = render_page.render_site(_build(data), data)
+    payloads = [
+        _browser_payload(files, "data/site-summary.json.gz"),
+        *(
+            _browser_payload(files, f"data/detail-{prefix}.json.gz")
+            for prefix in "0123456789abcdef"
+        ),
+    ]
+    records = [record for payload in payloads[1:] for record in payload["records"]]
+    cell = next(record for record in records if record["kind"] == "cell")
+    test = next(record for record in records if record["kind"] == "test")
+    all_states = data_with_all_three_states_and_one_omitted_row()
+    all_state_files = render_page.render_site(_build(all_states), all_states)
+    never_measured = next(
+        record
+        for record in _browser_payload(all_state_files, "data/site-summary.json.gz")[
+            "cells"
+        ]
+        if record["qualifying_physical_row_count"] == 0
+    )
+
+    assert {"measured", "admitted", "state", "never_measured"}.isdisjoint(
+        key for payload in payloads for key in _all_mapping_keys(payload)
+    )
+    assert cell["data"]["qualifying_physical_row_count"] >= 0
+    assert test["data"]["build"] == data["tests"][0]["build"]
+    assert test["data"]["direct"] == data["tests"][0]["direct"]
+    for field in (
+        "category",
+        "current_reproducer",
+        "current_reproducer_unavailable_reason",
+        "lane",
+        "not_selected_by_full_reason",
+        "physical_row_count",
+        "qualifying_physical_row_count",
+        "qualifying_represented_run_count",
+        "represented_run_count",
+        "selected_by",
+        "selected_by_full",
+    ):
+        assert cell["data"][field] == data["cells"][0][field]
+    assert all(
+        set(fact["run"])
+        == {"commit", "history_row_sha256", "path", "run_id", "selection"}
+        for facts in cell["selection"].values()
+        for fact in facts
+    )
+    for field in (
+        "observation",
+        "occasional",
+        "preprocessors",
+        "requires",
+    ):
+        assert test["data"][field] == data["tests"][0][field]
+    assert {
+        field: never_measured[field]
+        for field in ("latest_result", "latest_result_time", "latest_result_tree")
+    } == {
+        "latest_result": None,
+        "latest_result_time": None,
+        "latest_result_tree": None,
+    }
+
+
+def test_recent_passing_execution_requires_the_exact_validate_verdict_join() -> None:
+    data = _add_runtime_counts(representative_build_data())
+    model = render_page._site_model(_build(data), data, wording="fixture")
+    cell = model.cells[0]
+
+    assert render_page._recent_passing_execution(model, cell) == {
+        "attempt": None,
+        "emitted_at": "2026-08-31T00:01:00Z",
+        "event_id": "event-1",
+        "info_messages_run1": 1,
+        "info_messages_run2": 1,
+        "run": {
+            "commit": "1" * 40,
+            "history_row_sha256": "4" * 64,
+            "path": model.history_paths[0],
+            "run_id": "validate-run-1",
+            "selection": "super",
+        },
+        "run_index": 1,
+        "syscalls_run1": 12,
+        "syscalls_run2": 22,
+    }
+
+    zero_index_row = copy.deepcopy(model.series_by_cell[str(cell["cell"])][0])
+    zero_index_row["series"]["run_index"] = 0
+    zero_index = replace(model, series_by_cell={str(cell["cell"]): (zero_index_row,)})
+    assert render_page._recent_passing_execution(zero_index, cell)["run_index"] == 0
+
+    assert (
+        render_page._recent_passing_execution(
+            replace(model, event_run_references={}), cell
+        )
+        is None
+    )
+
+    retry_ambiguous = copy.deepcopy(cell)
+    retry_ambiguous["selected_by"]["super"][0]["event_ids"].append("event-retry")
+    assert render_page._recent_passing_execution(model, retry_ambiguous) is None
+
+    selection_mismatch = copy.deepcopy(cell)
+    selection_mismatch["selected_by"]["super"][0]["run_id"] = "other-run"
+    assert render_page._recent_passing_execution(model, selection_mismatch) is None
+
+    history = copy.deepcopy(model.history_rows[0])
+    history["cell_results"]["recorded"]["cells"][0]["cell_verdict"] = {
+        "comparison_tier": "unavailable",
+        "reason": "the comparison was not recorded",
+        "state": "cell-verdict-unavailable",
+    }
+    unavailable = replace(model, history_rows=(history,))
+    assert render_page._recent_passing_execution(unavailable, cell) is None
+
+
+def test_detail_shards_only_hold_runtime_detail_records_and_keep_evidence() -> None:
+    data = data_with_all_three_states_and_one_omitted_row()
+    files = render_page.render_site(_build(data), data)
+    records = [
+        record
+        for prefix in "0123456789abcdef"
+        for record in _browser_payload(files, f"data/detail-{prefix}.json.gz")[
+            "records"
+        ]
+    ]
+
+    assert {record["kind"] for record in records} == {"cell", "test"}
+    published_events = {
+        event_id for cell in data["cells"] for event_id in cell["event_ids"]
+    }
+    detail_events = {
+        item["event_id"]
+        for record in records
+        if record["kind"] == "cell"
+        for item in record["evidence"]
+    }
+    omitted_events = {
+        reference["event_id"]
+        for omission in data["projection_audit"]["deliberate_omissions"]
+        for reference in omission["event_references"]
+    }
+    assert detail_events == published_events
+    assert omitted_events == {"event-without-result"}
+
+
+def test_recorded_evidence_is_not_mislabeled_as_qualifying_evidence(
+    chromium_browser: Any,
+) -> None:
+    data = representative_build_data()
+    cell = data["cells"][0]
+    row = copy.deepcopy(data["runs"]["series_rows"][0])
+    row.update(
+        event_id="event-admitted-but-not-qualifying",
+        producer="pressure-test",
+        product_result=None,
+        run_id="pressure-run",
+    )
+    row["series"].update(
+        failure_class="understood_prerequisite_failure",
+        outcome="skipped",
+        result=None,
+        tree="3333333333333333333333333333333333333333",
+    )
+    row["current_main_ancestry"] = False
+    data["runs"]["series_rows"].append(row)
+    data["runs"]["product_results"][row["event_id"]] = None
+    data["runs"]["projection_results"][row["event_id"]] = None
+    data["runs"]["current_main_ancestry"][row["series"]["tree"]] = False
+    cell["event_ids"].append(row["event_id"])
+    cell["physical_row_count"] += 1
+    cell["represented_run_count"] += 1
+    for field in (
+        "projection_admitted_physical_row_count",
+        "projection_admitted_represented_run_count",
+        "series_physical_row_count",
+        "series_represented_run_count",
+    ):
+        data["runs"][field] += 1
+    data["counts"]["physical_row_count"] += 1
+    data["counts"]["represented_run_count"] += 1
+    data["provenance"]["series_physical_row_count"] += 1
+    data["provenance"]["series_represented_run_count"] += 1
+    _refresh_projection_digests(data)
+    data = _validated(data)
+    files = render_page.render_site(_build(data), data)
+    digest = _digest_for_identity(cell["cell"])
+    shard = _browser_payload(files, f"data/detail-{digest[0]}.json.gz")
+    record = next(item for item in shard["records"] if item["digest"] == digest)
+
+    assert len(record["evidence"]) == 2
+    assert record["data"]["qualifying_physical_row_count"] == 1
+    unlinked = next(
+        item
+        for item in record["evidence"]
+        if item["event_id"] == "event-admitted-but-not-qualifying"
+    )
+    assert unlinked["run_id"] == "pressure-run"
+    assert "run" not in unlinked
+
+    model = render_page._site_model(_build(data), data, wording="fixture")
+    page = chromium_browser.new_page()
+    _browser_route(page, files)
+    page.goto(f"http://127.0.0.1/{model.cell_paths[cell['cell']]}")
+    _wait_for_verified_data(page)
+    evidence = page.locator(
+        f"#{render_page._fragment('event', 'event-admitted-but-not-qualifying')}"
+    )
+    assert "Run id pressure-run (no exact validation row link)" in evidence.inner_text()
+    assert evidence.locator("a", has_text="pressure-run").count() == 0
+    page.close()
+
+
+def test_omission_rows_have_stable_event_anchors_without_raw_links() -> None:
+    data = data_with_all_three_states_and_one_omitted_row()
+    page = render_page.render_site(_build(data), data)[
+        "cells/projection-audit.html"
+    ].decode()
+
+    event_anchor = render_page._fragment("event", "event-without-result")
+    omission_anchor = render_page._fragment(
+        "omission", data["projection_audit"]["deliberate_omissions"][0]["cell"]
+    )
+    assert f'id="{event_anchor}"' in page
+    assert f'id="{omission_anchor}"' in page
+    assert f'href="data/runs.json.gz#{event_anchor}"' not in page
+    assert "event-without-result</code>" in page
+    assert (
+        "For this chaos/ptrace cell, pressure-test recorded 1 qualifying "
+        "repetition across 1 qualifying ledger row representing 1 Hermit run. "
+        "The latest repetition records outcome skipped and failure class "
+        "understood prerequisite failure. No narrower cause was recorded for this "
+        "evidence. No pass or product failure result was recorded for that "
+        "latest execution, so this cell is excluded." in page
+    )
+    assert "<summary>1 exact event reference</summary>" in page
+    assert (
+        "Recorded evidence whose cell identity is outside the current manifest."
+        in render_page.render_site(_build(data), data)["cells/index.html"].decode()
+    )
+
+
+def _omission_summary_for_rows(
+    specifications: list[tuple[int, int | None, int]],
+    *,
+    producer: str = "pressure-test",
+) -> str:
+    data = data_with_all_three_states_and_one_omitted_row()
+    model = render_page._site_model(_build(data), data, wording="fixture")
+    omission = copy.deepcopy(data["projection_audit"]["deliberate_omissions"][0])
+    template = model.series_by_event["event-without-result"]
+    generated = []
+    for ordinal, (run_index, attempt, num_runs) in enumerate(specifications):
+        row = copy.deepcopy(template)
+        row["event_id"] = f"omission-{ordinal:02d}"
+        row["emitted_at"] = f"2026-08-31T00:{run_index:02d}:00Z"
+        row["producer"] = producer
+        row["series"]["run_index"] = run_index
+        row["series"]["attempt"] = attempt
+        row["series"]["num_runs"] = num_runs
+        generated.append(row)
+    events = dict(model.series_by_event)
+    events.pop("event-without-result")
+    events.update((str(row["event_id"]), row) for row in generated)
+    model = replace(
+        model,
+        series_by_event=events,
+        series_rows=tuple(
+            row
+            for row in model.series_rows
+            if row["event_id"] != "event-without-result"
+        )
+        + tuple(generated),
+    )
+    omission.update(
+        qualifying_event_ids=sorted(str(row["event_id"]) for row in generated),
+        qualifying_physical_row_count=len(generated),
+        qualifying_represented_run_count=sum(
+            int(row["series"]["num_runs"]) for row in generated
+        ),
+    )
+    return render_page._omission_summary(model, omission)
+
+
+def test_omission_summary_counts_canonical_executions_and_explicit_attempt_rows() -> (
+    None
+):
+    summary = _omission_summary_for_rows(
+        [
+            (run_index, attempt, 1)
+            for run_index in range(1, 4)
+            for attempt in range(1, 3)
+        ]
+    )
+
+    assert summary == (
+        "For this chaos/ptrace cell, pressure-test recorded 3 qualifying "
+        "repetitions × 2 attempts (6 attempt rows). The latest repetition "
+        "records outcome skipped and failure class understood prerequisite failure. "
+        "No narrower cause was recorded for this evidence. No pass or product "
+        "failure result was recorded for that latest execution, so this "
+        "cell is excluded."
+    )
+
+
+def test_omission_summary_does_not_call_compressed_or_unlabeled_rows_attempts() -> None:
+    summary = _omission_summary_for_rows(
+        [(1, 1, 1), (1, 2, 1), (2, None, 3), (3, 1, 1)]
+    )
+
+    assert summary == (
+        "For this chaos/ptrace cell, pressure-test recorded 3 qualifying "
+        "repetitions across 4 qualifying ledger rows representing 6 Hermit runs. "
+        "The latest repetition records outcome skipped and failure class "
+        "understood prerequisite failure. No narrower cause was recorded for this "
+        "evidence. No pass or product failure result was recorded for that "
+        "latest execution, so this cell is excluded."
+    )
+    assert "attempt" not in summary
+
+
+def test_omission_summary_uses_execution_for_rows_without_a_repetition_index() -> None:
+    summary = _omission_summary_for_rows([(1, None, 3)], producer="validate")
+
+    assert (
+        "validate recorded 1 qualifying execution across 1 qualifying ledger row "
+        "representing 3 Hermit runs" in summary
+    )
+    assert "The latest execution records outcome skipped" in summary
+    assert "repetition" not in summary
+
+
+def test_omission_summary_reports_typed_attempt_evidence_without_inference() -> None:
+    data = data_with_all_three_states_and_one_omitted_row()
+    model = render_page._site_model(_build(data), data, wording="fixture")
+    omission = data["projection_audit"]["deliberate_omissions"][0]
+    source = copy.deepcopy(model.series_by_event["event-without-result"])
+    source["series"].update(
+        attempt=1,
+        outcome="no_result",
+        failure_class="no_result",
+        no_verdict_evidence={
+            "attempts": [
+                {
+                    "attempt_outcome": "ERROR",
+                    "disposition": "timeout",
+                    "error_kind": "incomplete-verification-evidence",
+                    "index": "seed-1",
+                    "kind": "missing_report_timeout",
+                    "signal": 15,
+                    "status": None,
+                    "timed_out": True,
+                    "verification_report_sha256": None,
+                }
+            ],
+            "evidence_sha256": "a" * 64,
+        },
+    )
+    model = replace(
+        model,
+        series_by_event={**model.series_by_event, source["event_id"]: source},
+        series_rows=tuple(
+            source if row["event_id"] == source["event_id"] else row
+            for row in model.series_rows
+        ),
+    )
+
+    summary = render_page._omission_summary(model, omission)
+
+    assert (
+        "pressure-test recorded 1 qualifying repetition × 1 attempt "
+        "(1 attempt row)" in summary
+    )
+    assert "outcome no result and failure class no result" in summary
+    assert (
+        "Recorded attempt evidence: attempt outcome ERROR; disposition timeout; "
+        "reason missing report timeout; error kind incomplete-verification-evidence; "
+        "signal 15; timed out yes." in summary
+    )
+    assert "No narrower cause was recorded" not in summary
+
+
+def test_omission_summary_does_not_call_a_compressed_row_an_attempt_row() -> None:
+    data = data_with_all_three_states_and_one_omitted_row()
+    model = render_page._site_model(_build(data), data, wording="fixture")
+    omission = copy.deepcopy(data["projection_audit"]["deliberate_omissions"][0])
+    template = model.series_by_event["event-without-result"]
+    typed = copy.deepcopy(template)
+    typed["event_id"] = "typed-attempt"
+    typed["series"].update(
+        attempt=1,
+        num_runs=1,
+        no_verdict_evidence={
+            "attempts": [
+                {
+                    "attempt_outcome": "ERROR",
+                    "disposition": "timeout",
+                    "error_kind": "incomplete-verification-evidence",
+                    "index": "seed-1",
+                    "kind": "missing_report_timeout",
+                    "signal": 15,
+                    "status": None,
+                    "timed_out": True,
+                    "verification_report_sha256": None,
+                }
+            ],
+            "evidence_sha256": "a" * 64,
+        },
+    )
+    compressed = copy.deepcopy(template)
+    compressed["event_id"] = "compressed-row"
+    compressed["series"].update(attempt=None, num_runs=3)
+    compressed["series"].pop("no_verdict_evidence", None)
+    rows = (typed, compressed)
+    events = dict(model.series_by_event)
+    events.pop("event-without-result")
+    events.update((row["event_id"], row) for row in rows)
+    model = replace(
+        model,
+        series_by_event=events,
+        series_rows=tuple(
+            row
+            for row in model.series_rows
+            if row["event_id"] != "event-without-result"
+        )
+        + rows,
+    )
+    omission.update(
+        qualifying_event_ids=sorted(row["event_id"] for row in rows),
+        qualifying_physical_row_count=2,
+        qualifying_represented_run_count=4,
+    )
+
+    summary = render_page._omission_summary(model, omission)
+
+    assert (
+        "1 qualifying repetition across 2 qualifying ledger rows "
+        "representing 4 Hermit runs" in summary
+    )
+    assert "Recorded attempt evidence:" in summary
+    assert (
+        "No narrower cause was recorded for 1 other qualifying ledger row."
+        in summary
+    )
+    assert "other attempt row" not in summary
+
+
+def test_stage1_build_bound_covers_authentic_size_and_refuses_over_bound(
+    tmp_path: Path,
+) -> None:
+    assert render_page.MEASURED_STAGE1_BUILD_JSON_BYTES == 1_520_395
+    assert render_page.MEASURED_PUBLISHED_SITE_FILE_COUNT == 8_006
+    assert (
+        render_page.MAX_STAGE1_BUILD_JSON_BYTES
+        >= 4 * render_page.MEASURED_STAGE1_BUILD_JSON_BYTES
+    )
+    root = tmp_path / "build-bound"
+    root.mkdir()
+    build = root / "build.json"
+    build.write_bytes(b"x" * render_page.MEASURED_STAGE1_BUILD_JSON_BYTES)
+    directory = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        assert (
+            len(
+                render_page._writer()._read_file(
+                    directory, "build.json", render_page.MAX_STAGE1_BUILD_JSON_BYTES
+                )
+            )
+            == render_page.MEASURED_STAGE1_BUILD_JSON_BYTES
+        )
+        build.write_bytes(b"x" * (render_page.MAX_STAGE1_BUILD_JSON_BYTES + 1))
+        with pytest.raises(
+            render_page._writer().WriteRefused, match="not a bounded regular file"
+        ):
+            render_page._writer()._read_file(
+                directory, "build.json", render_page.MAX_STAGE1_BUILD_JSON_BYTES
+            )
+    finally:
+        os.close(directory)
+
+
+def test_file_url_refuses_before_fetch_and_removes_partial_preview(
+    tmp_path: Path, chromium_browser: Any
+) -> None:
+    data = data_with_all_three_states_and_one_omitted_row()
+    files = render_page.render_site(_build(data), data)
+    root = tmp_path / "site"
+    for path, value in files.items():
+        target = root / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(value)
+
+    page = chromium_browser.new_page()
+    page.add_init_script(
+        "window.__fetchCalls = 0; const originalFetch = window.fetch; "
+        "window.fetch = (...args) => { window.__fetchCalls += 1; return originalFetch(...args); };"
+    )
+    page.goto((root / "cells/index.html").as_uri())
+    page.wait_for_function(
+        "document.querySelector('[data-load-status]').textContent.includes('python3 -m http.server')"
+    )
+
+    status = page.locator("[data-load-status]").inner_text()
+    assert page.evaluate("window.__fetchCalls") == 0
+    assert (
+        "python3 -m http.server 8000 --bind 127.0.0.1 "
+        "--directory /absolute/path/to/output" in status
+    )
+    assert "convenience" in status.lower()
+    assert "not equivalent to the Rust server" in status
+    assert page.locator("#cell-results > tr").count() == 0
+    assert page.locator("[data-in-manifest-listing]").evaluate_all(
+        "elements => elements.every(element => element.hidden)"
+    )
+    assert page.locator("button, input, select").evaluate_all(
+        "elements => elements.every(element => element.disabled)"
+    )
+    page.close()
+
+
+@pytest.mark.parametrize("automatically_decode_gzip", [False, True])
+def test_verified_http_detail_restores_metadata_labels_and_event_links(
+    chromium_browser: Any, automatically_decode_gzip: bool
+) -> None:
+    data = _add_runtime_counts(data_with_all_three_states_and_one_omitted_row())
+    _set_run_number(data, render_page.MAX_U64)
+    files = render_page.render_site(_build(data), data)
+    model = render_page._site_model(_build(data), data, wording="fixture")
+    requests: list[str] = []
+    page = chromium_browser.new_page()
+    page.add_init_script(
+        "window.__fetchOptions = []; const originalFetch = window.fetch; "
+        "window.fetch = (input, options) => { "
+        "window.__fetchOptions.push({...options}); return originalFetch(input, options); };"
+    )
+    _browser_route(
+        page,
+        files,
+        automatically_decode_gzip=automatically_decode_gzip,
+        requests=requests,
+    )
+    cell = data["cells"][0]
+    page.goto(f"http://127.0.0.1/{model.cell_paths[cell['cell']]}")
+    _wait_for_verified_data(page)
+
+    text = page.locator("[data-detail-content]").inner_text()
+    assert "Latest result\nPass" in text
+    assert "State derived from qualifying evidence" not in text
+    assert f"TestName\n{render_page._test_name(cell['test'], cell['category'])}" in text
+    tree_href = (
+        "https://github.com/rrnewton/hermit/commit/"
+        f'{cell["latest_result_tree"]}'
+    )
+    all_tree_links = page.locator(f'a[href="{tree_href}"]')
+    assert all_tree_links.count() > 1
+    assert all_tree_links.evaluate_all(
+        "links => links.every(link => "
+        "link.classList.contains('external-link') && "
+        "link.getAttribute('aria-label')?.endsWith('(external link)') && "
+        "link.querySelector('.external-link-indicator[aria-hidden=\"true\"]')?.textContent === '↗')"
+    )
+    tree_link = page.locator("[data-detail-content]").locator(
+        f'a[href="{tree_href}"]'
+    )
+    assert tree_link.count() == 2
+    assert tree_link.locator(".external-link-indicator").all_inner_texts() == ["↗", "↗"]
+    assert tree_link.evaluate_all(
+        "links => links.every(link => link.getAttribute('aria-label').endsWith('(external link)'))"
+    )
+    assert page.locator("[data-detail-content] time").evaluate_all(
+        "values => values.every(value => value.textContent.endsWith(' ET'))"
+    )
+    for label in (
+        "Recorded evidence",
+        "Qualifying physical rows",
+        "Qualifying represented Hermit runs",
+        "Physical rows",
+        "Represented Hermit runs",
+        "Lane",
+        "Category",
+        "Reproducer",
+    ):
+        assert label in text
+    assert "Guest arguments" not in text
+    assert "Command\n./ci/test-harness.rs --exact-cell" in text
+    assert "Working directory\nNot recorded" in text
+    assert page.locator(".evidence-row").count() == len(
+        next(
+            record
+            for prefix in "0123456789abcdef"
+            for record in _browser_payload(files, f"data/detail-{prefix}.json.gz")[
+                "records"
+            ]
+            if record["kind"] == "cell" and record["identity"] == cell["cell"]
+        )["evidence"]
+    )
+    event_anchor = render_page._fragment("event", cell["event_ids"][0])
+    assert page.locator(f"#{event_anchor}").count() == 1
+    assert page.locator(f"#{event_anchor} a", has_text="Raw Stage 1 runs").count() == 0
+    evidence_row = page.locator(f"#{event_anchor}")
+    assert (
+        cell["event_ids"][0]
+        not in evidence_row.locator(":scope > .evidence-context").inner_text()
+    )
+    assert (
+        evidence_row.locator("details code", has_text=cell["event_ids"][0]).count() == 1
+    )
+    assert not any(
+        heading.startswith("series-")
+        for heading in page.locator(
+            "[data-detail-content] h2, [data-detail-content] h3"
+        ).all_inner_texts()
+    )
+    run_links = page.locator(
+        "[data-detail-content] a", has_text=f"Run {render_page.MAX_U64}"
+    )
+    assert run_links.count() == 2
+    assert set(run_links.evaluate_all("links => links.map(link => link.href)")) == {
+        f"http://127.0.0.1/{model.history_paths[0]}"
+    }
+    assert requests.count("data/site-manifest.json.gz") == 1
+    assert requests.count("data/site-summary.json.gz") == 1
+    assert sum(path.startswith("data/detail-") for path in requests) == 1
+    options = page.evaluate("window.__fetchOptions")
+    assert len(options) == 3
+    assert all("cache" not in item for item in options)
+    assert all(item["credentials"] == "same-origin" for item in options)
+    assert all(item["redirect"] == "error" for item in options)
+
+    never_measured = next(
+        item for item in data["cells"] if item["qualifying_physical_row_count"] == 0
+    )
+    assert never_measured["cell"] not in model.cell_paths
+    page.close()
+
+    page = chromium_browser.new_page()
+    _browser_route(page, files, automatically_decode_gzip=automatically_decode_gzip)
+    test = data["tests"][0]
+    page.goto(f"http://127.0.0.1/{model.test_paths[test['id']]}")
+    _wait_for_verified_data(page)
+    metadata = page.locator("[data-detail-content]").inner_text()
+    for label in (
+        "Observation hash",
+        "Occasional",
+        "Preprocessors",
+        "Required host capabilities",
+        "Description",
+        "Category",
+        "Lane",
+    ):
+        assert label in metadata
+    for expected in (
+        "Recent passing execution with recorded counts",
+        "does not include stdout or stderr bytes, or a public INFO-log file",
+    ):
+        assert expected in metadata
+    count_groups = page.locator(".execution-count-group")
+    assert count_groups.count() == 2
+    comparison_counts = count_groups.nth(0).locator("table.execution-counts")
+    activity_counts = count_groups.nth(1).locator("table.execution-counts")
+    assert comparison_counts.locator("caption").inner_text() == (
+        "Canonical comparison population"
+    )
+    assert activity_counts.locator("caption").inner_text() == (
+        "Execution activity totals"
+    )
+    for table in (comparison_counts, activity_counts):
+        assert table.locator("thead th").all_inner_texts() == [
+            "Count",
+            "Run 1",
+            "Run 2",
+        ]
+        assert table.locator("tbody tr").count() == 1
+    assert comparison_counts.locator("tbody tr").locator(
+        "th, td"
+    ).all_inner_texts() == ["INFO messages", "1", "1"]
+    assert activity_counts.locator("tbody tr").locator(
+        "th, td"
+    ).all_inner_texts() == ["Hermit syscalls", "12", "22"]
+    assert (
+        "These are the INFO-message populations evaluated by the canonical comparison."
+        in count_groups.nth(0).inner_text()
+    )
+    assert (
+        "They may differ between runs and are not comparison evidence."
+        in count_groups.nth(1).inner_text()
+    )
+    assert page.locator(".population-control").inner_text() == (
+        "Include 1 never measured cells"
+    )
+    assert "run · ptrace" not in metadata
+    include = page.locator(".population-control input")
+    include.check()
+    page.wait_for_function("location.search.includes('include_never_measured=true')")
+    _wait_for_verified_data(page)
+    never_row = page.locator(".browser-record-list li", has_text="run · ptrace")
+    assert never_row.count() == 1
+    assert never_row.locator("a").count() == 0
+    omission_anchor = render_page._fragment(
+        "omission", data["projection_audit"]["deliberate_omissions"][0]["cell"]
+    )
+    omission = page.locator(f"#{omission_anchor}")
+    assert omission.count() == 1
+    assert omission.locator("span", has_text="Recorded evidence 1").count() == 1
+    assert omission.locator("a").count() == 0
+    assert "1 qualifying repetition" in omission.inner_text()
+    assert "outcome skipped" in omission.inner_text()
+    assert "failure class understood prerequisite failure" in omission.inner_text()
+    page.close()
+
+
+def test_cell_detail_refuses_retired_selection_pagination_parameter(
+    chromium_browser: Any,
+) -> None:
+    data = representative_build_data()
+    files = render_page.render_site(_build(data), data)
+    model = render_page._site_model(_build(data), data, wording="fixture")
+    cell = data["cells"][0]
+    digest = _digest_for_identity(cell["cell"])
+    parameter = f"selection_{digest[:12]}_0_page"
+    page = chromium_browser.new_page()
+    _browser_route(page, files)
+
+    page.goto(
+        f"http://127.0.0.1/{model.cell_paths[cell['cell']]}&{parameter}=1"
+    )
+    page.wait_for_function(
+        "document.querySelector('[data-load-status]').dataset.loadState === 'error'"
+    )
+
+    assert (
+        f"the detail URL contains unsupported parameter {parameter}"
+        in page.locator("[data-load-status]").inner_text()
+    )
+    assert page.locator("[data-detail-content]").inner_text() == ""
+    page.close()
+
+
+def test_cell_detail_selection_page_parameter_requires_rendered_records(
+    chromium_browser: Any,
+) -> None:
+    data = representative_build_data()
+    files = render_page.render_site(_build(data), data)
+    model = render_page._site_model(_build(data), data, wording="fixture")
+    cell = data["cells"][0]
+    digest = _digest_for_identity(cell["cell"])
+    shard_path = f"data/detail-{digest[0]}.json.gz"
+    shard = _browser_payload(files, shard_path)
+    record = next(item for item in shard["records"] if item["digest"] == digest)
+    [path] = record["selection"]
+    [template] = record["selection"][path]
+    record["selection"] = {}
+    _replace_browser_payload(files, shard_path, shard)
+
+    page = chromium_browser.new_page()
+    _browser_route(page, files)
+    page.goto(
+        f"http://127.0.0.1/{model.cell_paths[cell['cell']]}"
+        "&selection_records_page=1"
+    )
+    page.wait_for_function(
+        "document.querySelector('[data-load-status]').dataset.loadState === 'error'"
+    )
+    assert (
+        "the detail URL contains unsupported parameter selection_records_page"
+        in page.locator("[data-load-status]").inner_text()
+    )
+    assert page.locator("[data-detail-content]").inner_text() == ""
+    page.close()
+
+    facts = []
+    for run_number in range(1, render_page.LIST_PAGE_SIZE + 2):
+        fact = copy.deepcopy(template)
+        fact.update(
+            event_ids=[f"selection-event-{run_number}"],
+            observed_at=f"2026-08-31T00:{run_number - 1:02d}:00Z",
+            run_id=f"selection-run-{run_number}",
+            tree=f"{run_number:040x}",
+        )
+        fact["run"].update(
+            commit=fact["tree"],
+            run_id=fact["run_id"],
+            run_number=str(run_number),
+            selection=path,
+        )
+        facts.append(fact)
+    record["selection"] = {path: facts}
+    _replace_browser_payload(files, shard_path, shard)
+    page = chromium_browser.new_page()
+    _browser_route(page, files)
+    page.goto(
+        f"http://127.0.0.1/{model.cell_paths[cell['cell']]}"
+        "&selection_records_page=2"
+    )
+    _wait_for_verified_data(page)
+    assert page.locator(".selection-record").count() == 1
+    assert page.locator(".selection-record a").first.inner_text() == "Run 1"
+    assert page.url.endswith("&selection_records_page=2")
+    page.close()
+
+
+def test_cell_detail_lists_selection_records_newest_first_and_hides_argv(
+    chromium_browser: Any,
+) -> None:
+    data = representative_build_data()
+    files = render_page.render_site(_build(data), data)
+    model = render_page._site_model(_build(data), data, wording="fixture")
+    cell = data["cells"][0]
+    digest = _digest_for_identity(cell["cell"])
+    shard_path = f"data/detail-{digest[0]}.json.gz"
+    shard = _browser_payload(files, shard_path)
+    record = next(item for item in shard["records"] if item["digest"] == digest)
+    [path] = record["selection"]
+    [template] = record["selection"][path]
+    facts = []
+    for run_number, observed_at, tree in (
+        (2, "2026-08-31T02:00:00Z", "2" * 40),
+        (3, "2026-08-31T03:00:00Z", "3" * 40),
+        (1, "2026-08-31T01:00:00Z", "1" * 40),
+    ):
+        fact = copy.deepcopy(template)
+        fact.update(
+            event_ids=[f"selection-event-{run_number}"],
+            observed_at=observed_at,
+            run_id=f"selection-run-{run_number}",
+            tree=tree,
+        )
+        fact["run"].update(
+            commit=tree,
+            run_id=fact["run_id"],
+            run_number=str(run_number),
+            selection=path,
+        )
+        facts.append(fact)
+    record["selection"][path] = facts
+    record["data"]["guest_args"] = ["GUEST_ARGV_ONLY_TOKEN"]
+    record["data"]["current_reproducer"]["argv"].append(
+        "REPRODUCER_ARGV_ONLY_TOKEN"
+    )
+    record["data"]["current_reproducer"]["shell_command"] = (
+        "./ci/test-harness.rs --exact-cell visible-shell-command"
+    )
+    _replace_browser_payload(files, shard_path, shard)
+    page = chromium_browser.new_page()
+    _browser_route(page, files)
+    page.goto(f"http://127.0.0.1/{model.cell_paths[cell['cell']]}")
+    _wait_for_verified_data(page)
+
+    selection = page.locator(".selection-record")
+    assert selection.count() == 3
+    assert selection.locator(
+        "a", has_text=re.compile(r"Run [123]$")
+    ).all_inner_texts() == ["Run 3", "Run 2", "Run 1"]
+    assert selection.locator("dt", has_text="Validate path").count() == 3
+    assert selection.locator("dd", has_text=path).count() == 3
+    assert selection.locator("time").all_inner_texts() == [
+        "2026-08-30 23:00:00 ET",
+        "2026-08-30 22:00:00 ET",
+        "2026-08-30 21:00:00 ET",
+    ]
+    assert selection.locator("a.external-link").count() == 3
+    text = page.locator("[data-detail-content]").inner_text()
+    assert "Guest arguments" not in text
+    assert "GUEST_ARGV_ONLY_TOKEN" not in text
+    assert "REPRODUCER_ARGV_ONLY_TOKEN" not in text
+    assert "visible-shell-command" in text
+    retained = _browser_payload(files, shard_path)
+    retained_record = next(
+        item for item in retained["records"] if item["digest"] == digest
+    )
+    assert retained_record["data"]["guest_args"] == ["GUEST_ARGV_ONLY_TOKEN"]
+    assert "REPRODUCER_ARGV_ONLY_TOKEN" in retained_record["data"][
+        "current_reproducer"
+    ]["argv"]
+    page.close()
+
+
+def test_test_detail_omits_argv_direct_command_but_keeps_shell_command(
+    chromium_browser: Any,
+) -> None:
+    def rendered_text(direct: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+        data = representative_build_data()
+        data["tests"][0]["program"] = None
+        data["tests"][0]["direct"] = direct
+        data = _validated(data)
+        files = render_page.render_site(_build(data), data)
+        model = render_page._site_model(_build(data), data, wording="fixture")
+        page = chromium_browser.new_page()
+        _browser_route(page, files)
+        page.goto(f"http://127.0.0.1/{model.test_paths[data['tests'][0]['id']]}")
+        _wait_for_verified_data(page)
+        text = page.locator("[data-detail-content]").inner_text()
+        digest = _digest_for_identity(data["tests"][0]["id"])
+        payload = _browser_payload(files, f"data/detail-{digest[0]}.json.gz")
+        page.close()
+        return text, next(
+            item for item in payload["records"] if item["digest"] == digest
+        )
+
+    argv_text, argv_record = rendered_text(
+        {"kind": "argv", "argv": ["/bin/echo", "ARGV_ONLY_TOKEN"]}
+    )
+    assert "Direct command" not in argv_text
+    assert "ARGV_ONLY_TOKEN" not in argv_text
+    assert argv_record["data"]["direct"] == {
+        "kind": "argv",
+        "argv": ["/bin/echo", "ARGV_ONLY_TOKEN"],
+    }
+
+    shell_text, shell_record = rendered_text(
+        {"kind": "shell", "command": "/bin/echo readable-shell-command"}
+    )
+    assert "Direct command\n/bin/echo readable-shell-command" in shell_text
+    assert shell_record["data"]["direct"]["command"] == (
+        "/bin/echo readable-shell-command"
+    )
+
+
+def _many_browser_cells(files: dict[str, bytes], count: int) -> None:
+    summary = _browser_payload(files, "data/site-summary.json.gz")
+    original = summary["cells"][0]
+    cells = []
+    for index in range(count):
+        cell = copy.deepcopy(original)
+        identity = f"tests/hello/verify/ptrace-{index:03d}"
+        cell["cell"] = identity
+        cell["digest"] = _digest_for_identity(identity)
+        cell["url"] = f"cells/detail.html?cell={cell['digest']}"
+        cells.append(cell)
+    summary["cells"] = cells
+    _replace_browser_payload(files, "data/site-summary.json.gz", summary)
+
+
+def test_cell_listing_uses_only_visible_dom_and_transactional_bounded_history(
+    chromium_browser: Any,
+) -> None:
+    data = representative_build_data()
+    files = render_page.render_site(_build(data), data)
+    _many_browser_cells(files, 125)
+    page = chromium_browser.new_page()
+    _browser_route(page, files)
+    page.goto("http://127.0.0.1/cells/index.html#all-cells")
+    _wait_for_verified_data(page)
+
+    assert page.locator("#cell-results > tr").count() == 50
+    assert page.locator("[data-cell-filter-form]").get_attribute(
+        "data-dependent-filter-visited-records"
+    ) == str(125)
+    assert page.evaluate(
+        "!Object.prototype.hasOwnProperty.call(document.getElementById('cell-results'), 'compatibilityRows')"
+    )
+    initial_history = page.evaluate("history.length")
+    page.locator("[data-cell-next]").click()
+    page.wait_for_url(re.compile(r"[?&]page=2(?:&|#|$)"))
+    assert page.locator("#cell-results > tr").count() == 50
+    assert page.evaluate("history.length") == initial_history + 1
+    page.go_back()
+    page.wait_for_function("document.querySelector(\"[name='page']\").value === '1'")
+
+    pre_search_url = page.url
+    search = page.locator("[name='q']")
+    search.press_sequentially("h")
+    page.wait_for_function("location.search.includes('q=h')")
+    search.press_sequentially("ello")
+    page.wait_for_function("location.search.includes('q=hello')")
+    search_url = page.url
+    history_after_search = page.evaluate("history.length")
+    search.press("Enter")
+    assert page.url == search_url
+    assert page.evaluate("history.length") == history_after_search
+    page.go_back()
+    page.wait_for_function("!location.search.includes('q=')")
+    assert page.url == pre_search_url
+    page.go_forward()
+    page.wait_for_function("location.search.includes('q=hello')")
+    assert page.url == search_url
+
+    capability = page.locator("[name='host_capability']")
+    presence = page.locator("[name='host_capability_present']")
+    url_before_pair = page.url
+    history_before_pair = page.evaluate("history.length")
+    capability.select_option("cpuid-faulting")
+    assert page.url == url_before_pair
+    assert page.locator("#cell-filter-error").is_hidden()
+    assert not presence.is_disabled()
+    presence.select_option("true")
+    page.wait_for_function(
+        "location.search.includes('host_capability=cpuid-faulting') && "
+        "location.search.includes('host_capability_present=true')"
+    )
+    paired_url = page.url
+    page.go_back()
+    page.wait_for_function(
+        "!location.search.includes('host_capability=') && location.search.includes('q=hello')"
+    )
+    page.go_forward()
+    page.wait_for_function(
+        "location.search.includes('host_capability=cpuid-faulting') && "
+        "location.search.includes('host_capability_present=true')"
+    )
+    assert page.url == paired_url
+    assert page.evaluate("history.length") >= history_before_pair
+
+    sort_heading = page.locator('[data-cell-sort="test"]')
+    sort_heading.click()
+    page.wait_for_function("location.search.includes('sort=test')")
+    assert sort_heading.locator(".sort-indicator").inner_text() == "▲"
+    assert sort_heading.locator("xpath=..").get_attribute("aria-sort") == "ascending"
+    sort_heading.click()
+    page.wait_for_function("location.search.includes('direction=desc')")
+    assert sort_heading.locator(".sort-indicator").inner_text() == "▼"
+    assert sort_heading.locator("xpath=..").get_attribute("aria-sort") == "descending"
+    before_bounded = page.evaluate("history.length")
+    for _index in range(30):
+        sort_heading.click()
+    assert 1 <= page.evaluate("history.length") - before_bounded <= 24
+    assert page.locator("#cell-results > tr").count() <= 50
+    page.close()
+
+
+def test_verified_payload_yields_a_loading_macrotask_before_dom_initialization(
+    chromium_browser: Any,
+) -> None:
+    data = representative_build_data()
+    files = render_page.render_site(_build(data), data)
+    _many_browser_cells(files, 125)
+    page = chromium_browser.new_page()
+    page.add_init_script(
+        "window.__postVerifiedParseState = null; "
+        "const originalParse = JSON.parse.bind(JSON); "
+        "JSON.parse = (...args) => { "
+        "const value = originalParse(...args); "
+        "if (value && value.schema_version === 1 && Array.isArray(value.cells)) { "
+        "const channel = new MessageChannel(); "
+        "channel.port1.onmessage = () => { "
+        "const form = document.querySelector('[data-cell-filter-form]'); "
+        "const status = document.querySelector('[data-load-status]'); "
+        "window.__postVerifiedParseState = { "
+        "formHidden: form.hidden, "
+        "statusBusy: status.getAttribute('aria-busy'), "
+        "statusText: status.textContent, "
+        "visibleRows: document.querySelectorAll('[data-cell-row=\"1\"]:not([hidden])').length "
+        "}; channel.port1.close(); channel.port2.close(); }; "
+        "channel.port2.postMessage(null); } "
+        "return value; };"
+    )
+    _browser_route(page, files)
+    page.goto("http://127.0.0.1/cells/index.html#all-cells")
+    page.wait_for_function(
+        "window.__postVerifiedParseState !== null && "
+        "document.querySelector('[data-load-status]').textContent !== "
+        "'Loading verified local data…'"
+    )
+
+    assert page.evaluate("window.__postVerifiedParseState") == {
+        "formHidden": True,
+        "statusBusy": "true",
+        "statusText": "Loading verified local data…",
+        "visibleRows": 1,
+    }
+    _wait_for_verified_data(page)
+    assert page.locator("[data-cell-filter-form]").is_visible()
+    page.close()
+
+
+def test_latest_result_filter_replaces_redundant_state_filter(
+    chromium_browser: Any,
+) -> None:
+    data = data_with_all_three_states_and_one_omitted_row()
+    files = render_page.render_site(_build(data), data)
+    summary = _browser_payload(files, "data/site-summary.json.gz")
+    second = summary["cells"][1]
+    second["qualifying_physical_row_count"] = 1
+    second["qualifying_represented_run_count"] = 1
+    second["latest_result"] = "product_failure"
+    second["latest_result_time"] = "2025-01-02T00:00:00Z"
+    second["latest_result_tree"] = "2" * 40
+    second["url"] = f"cells/detail.html?cell={second['digest']}"
+    _replace_browser_payload(files, "data/site-summary.json.gz", summary)
+
+    page = chromium_browser.new_page()
+    _browser_route(page, files)
+    page.goto("http://127.0.0.1/cells/index.html#all-cells")
+    _wait_for_verified_data(page)
+    result = page.locator("[name='result']")
+
+    assert page.locator("select[name='state']").count() == 0
+    assert page.locator("input[name='state'][type='hidden']").count() == 1
+    result.select_option("product_failure")
+    page.wait_for_function("location.search.includes('result=product_failure')")
+    assert page.locator("#cell-results > tr").count() == 1
+    assert page.locator("#cell-results > tr").get_attribute("data-state") == "red"
+    assert "Fail" in page.locator("#cell-results > tr").inner_text()
+    page.close()
+
+
+def test_detail_pagination_uses_namespaced_queries_and_evidence_only_fragments(
+    chromium_browser: Any,
+) -> None:
+    data = data_with_all_three_states_and_one_omitted_row()
+    files = render_page.render_site(_build(data), data)
+    model = render_page._site_model(_build(data), data, wording="fixture")
+    _many_browser_cells(files, 51)
+    summary = _browser_payload(files, "data/site-summary.json.gz")
+    omission = copy.deepcopy(summary["projection_audit"]["deliberate_omissions"][0])
+    browser_omission = copy.deepcopy(summary["omissions"][0])
+    omissions = []
+    browser_omissions = []
+    for index in range(51):
+        item = copy.deepcopy(omission)
+        item["cell"] = f"tests/hello/chaos/ptrace-{index:03d}"
+        item["event_references"][0]["event_id"] = f"omitted-event-{index:03d}"
+        omissions.append(item)
+        browser_item = copy.deepcopy(browser_omission)
+        browser_item["cell"] = item["cell"]
+        browser_item["anchor"] = render_page._fragment("omission", item["cell"])
+        browser_item["event_references"][0]["event_id"] = item["event_references"][0][
+            "event_id"
+        ]
+        browser_item["event_references"][0]["anchor"] = render_page._fragment(
+            "event", item["event_references"][0]["event_id"]
+        )
+        browser_omissions.append(browser_item)
+    summary["projection_audit"]["deliberate_omissions"] = omissions
+    summary["omissions"] = browser_omissions
+    _replace_browser_payload(files, "data/site-summary.json.gz", summary)
+
+    page = chromium_browser.new_page()
+    _browser_route(page, files)
+    test_url = model.test_paths[data["tests"][0]["id"]]
+    page.goto(
+        f"http://127.0.0.1/{test_url}" "&published_cells_page=2&omitted_cells_page=2"
+    )
+    _wait_for_verified_data(page)
+    lists = page.locator(".browser-record-list")
+    assert lists.nth(0).locator(":scope > li").count() == 1
+    assert lists.nth(1).locator(":scope > li").count() == 1
+    assert page.url.endswith("&published_cells_page=2&omitted_cells_page=2")
+    page.reload()
+    _wait_for_verified_data(page)
+    assert lists.nth(0).locator(":scope > li").count() == 1
+    assert lists.nth(1).locator(":scope > li").count() == 1
+
+    page.locator("nav[aria-label='published cells pages']").get_by_text(
+        "Previous"
+    ).click()
+    page.wait_for_function(
+        "!location.search.includes('published_cells_page=') && "
+        "location.search.includes('omitted_cells_page=2')"
+    )
+    assert lists.nth(0).locator(":scope > li").count() == 50
+    assert lists.nth(1).locator(":scope > li").count() == 1
+    page.locator("nav[aria-label='omitted cells pages']").get_by_text(
+        "Previous"
+    ).click()
+    page.wait_for_function(
+        "!location.search.includes('published_cells_page=') && "
+        "!location.search.includes('omitted_cells_page=')"
+    )
+    assert lists.nth(0).locator(":scope > li").count() == 50
+    assert lists.nth(1).locator(":scope > li").count() == 50
+    page.go_back()
+    page.wait_for_function("location.search.includes('omitted_cells_page=2')")
+    assert lists.nth(0).locator(":scope > li").count() == 50
+    assert lists.nth(1).locator(":scope > li").count() == 1
+    page.go_back()
+    page.wait_for_function("location.search.includes('published_cells_page=2')")
+    assert lists.nth(0).locator(":scope > li").count() == 1
+    assert lists.nth(1).locator(":scope > li").count() == 1
+    page.go_forward()
+    page.wait_for_function("!location.search.includes('published_cells_page=')")
+    assert lists.nth(0).locator(":scope > li").count() == 50
+    assert lists.nth(1).locator(":scope > li").count() == 1
+
+    final_event = browser_omissions[-1]["event_references"][0]["anchor"]
+    page.goto(f"http://127.0.0.1/{test_url}#{final_event}")
+    _wait_for_verified_data(page)
+    assert page.locator(f"#{final_event}").is_visible()
+    assert lists.nth(1).locator(":scope > li").count() == 1
+    assert "_page=" not in page.url
+    assert page.url.endswith(f"#{final_event}")
+    page.close()
+
+
+def test_generic_collections_push_committed_changes_and_preserve_route_state(
+    chromium_browser: Any,
+) -> None:
+    data = representative_build_data()
+    files = render_page.render_site(_build(data), data)
+    page = chromium_browser.new_page()
+    _browser_route(page, files)
+    page.goto("http://127.0.0.1/index.html#tests")
+
+    tests = page.locator("form[data-list-controls='tests']")
+    assert page.locator("form[data-list-controls='validation-runs']").count() == 0
+    pre_search_url = page.url
+    search = tests.locator("[name='q']")
+    search.press_sequentially("h")
+    page.wait_for_function("location.search.includes('tests_q=h')")
+    search.press_sequentially("ello")
+    page.wait_for_function("location.search.includes('tests_q=hello')")
+    search_url = page.url
+    history_after_search = page.evaluate("history.length")
+    assert tests.locator("button[type='submit']").count() == 0
+    assert tests.locator("select[name='sort']").is_hidden()
+    assert tests.locator("select[name='direction']").is_hidden()
+    search.press("Enter")
+    assert page.url == search_url
+    assert page.evaluate("history.length") == history_after_search
+    page.go_back()
+    page.wait_for_function("!location.search.includes('tests_q=')")
+    assert page.url == pre_search_url
+    page.go_forward()
+    page.wait_for_function("location.search.includes('tests_q=hello')")
+    assert page.url == search_url
+
+    test_order = tests.locator("[data-list-sort='test']")
+    assert test_order.inner_text() == "TestName"
+    test_order.click()
+    page.wait_for_function("location.search.includes('tests_sort=test')")
+    assert test_order.get_attribute("aria-pressed") == "true"
+    assert test_order.locator(".sort-indicator").inner_text() == "▲"
+    assert "Activate to sort descending" in (test_order.get_attribute("title") or "")
+    test_order.press("Space")
+    page.wait_for_function("location.search.includes('tests_direction=desc')")
+    assert test_order.locator(".sort-indicator").inner_text() == "▼"
+    assert "Activate to sort ascending" in (
+        test_order.get_attribute("aria-label") or ""
+    )
+    page.reload()
+    assert tests.locator("[name='q']").input_value() == "hello"
+    assert tests.locator("[name='sort']").input_value() == "test"
+    assert tests.locator("[name='direction']").input_value() == "desc"
+    assert test_order.locator(".sort-indicator").inner_text() == "▼"
+
+    page.goto("http://127.0.0.1/runs/index.html")
+    runs = page.locator("form[data-list-controls='validation-runs']")
+    assert page.locator("form[data-list-controls='tests']").count() == 0
+    runs.locator("[name='result']").select_option("pass")
+    page.wait_for_function("location.search.includes('runs_result=pass')")
+    assert "tests_" not in page.url
+    assert runs.locator("[name='result']").input_value() == "pass"
+    page.reload()
+    assert runs.locator("[name='result']").input_value() == "pass"
+    page.close()
+
+
+def test_moved_static_collections_work_from_file_urls_without_fetch(
+    tmp_path: Path, chromium_browser: Any
+) -> None:
+    data = representative_build_data()
+    data["runs"].update(
+        projection_excluded_physical_row_count=1,
+        projection_excluded_represented_run_count=2,
+        projection_exclusion_counts=[
+            {
+                "physical_row_count": 1,
+                "reason": "projection rejected the row",
+                "represented_run_count": 2,
+                "schema": "stress-series/v1",
+            }
+        ],
+    )
+    data = _validated(data)
+    build = _build(data)
+    model = render_page._site_model(build, data, wording="fixture")
+    files = render_page.render_site(build, data)
+    command = {
+        "cell": "applications/custom/verify/ptrace",
+        "current_reproducer": None,
+        "not_applicable_reason": None,
+        "test": "applications/custom",
+    }
+    files["tests/custom-commands.html"] = render_page._custom_commands_page(
+        replace(model, custom_commands=(command,))
+    )
+    root = tmp_path / "static-pages"
+    for path, value in files.items():
+        target = root / path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(value)
+
+    errors: list[str] = []
+    page = chromium_browser.new_page()
+    page.on("pageerror", lambda error: errors.append(str(error)))
+    page.on(
+        "console",
+        lambda message: errors.append(message.text)
+        if message.type == "error"
+        else None,
+    )
+    page.add_init_script(
+        "window.__fetchCalls = 0; const originalFetch = window.fetch; "
+        "window.fetch = (...args) => { window.__fetchCalls += 1; return originalFetch(...args); };"
+    )
+    cases = (
+        (
+            "runs/index.html",
+            "Validation runs",
+            "validation-runs",
+            "runs_result=pass",
+            "result",
+            "pass",
+        ),
+        (
+            "cells/projection-audit.html",
+            "Projection audit",
+            "projection-audit",
+            "projection_sort=reason&projection_direction=desc",
+            "sort",
+            "reason",
+        ),
+        (
+            "tests/custom-commands.html",
+            "Custom commands selected by full",
+            "custom-commands",
+            "commands_sort=test&commands_direction=desc",
+            "sort",
+            "test",
+        ),
+    )
+    for path, heading, collection, query, field, expected in cases:
+        page.goto(f"{(root / path).as_uri()}?{query}")
+        controls = page.locator(f'[data-list-controls="{collection}"]')
+        assert page.locator("h1").inner_text() == heading
+        assert controls.locator(f'[name="{field}"]').input_value() == expected
+        assert page.evaluate("window.__fetchCalls") == 0
+        page.reload()
+        assert controls.locator(f'[name="{field}"]').input_value() == expected
+        assert page.evaluate("window.__fetchCalls") == 0
+    assert errors == []
+    page.close()
+
+
+def test_renderer_removes_retired_private_detail_helpers() -> None:
+    for name in (
+        "_cell_page",
+        "_test_page",
+        "_optional_fact",
+        "_selection_run_path",
+        "_selection_run_reference",
+        "_selection_details",
+        "_series_result",
+        "_series_row",
+        "_filtered_count_link",
+    ):
+        assert not hasattr(render_page, name)
