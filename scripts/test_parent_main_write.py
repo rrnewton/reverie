@@ -2414,6 +2414,24 @@ class HealthTickParentSyncTests(unittest.TestCase):
     def run_tick(self) -> subprocess.CompletedProcess[str]:
         return run(str(self.repo / "scripts/hermit-health-tick.sh"), cwd=self.repo, env=self.env)
 
+    def test_concurrent_tick_is_skipped_before_shared_report_is_truncated(self) -> None:
+        run_lock = self.home / ".local" / "state" / "hermit-health-tick.lock"
+        report = self.home / ".local" / "state" / "hermit-health-tick-last-report.txt"
+        report.write_text("first run still owns this report\n")
+        with run_lock.open("w") as held_lock:
+            fcntl.flock(held_lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            result = run(
+                str(self.repo / "scripts/hermit-health-tick.sh"),
+                "--emit-output",
+                cwd=self.repo,
+                env=self.env,
+            )
+
+        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+        self.assertIn("concurrent invocation skipped", result.stdout)
+        self.assertEqual("first run still owns this report\n", report.read_text())
+        self.assertFalse(self.log.exists())
+
     def run_current_tool(
         self, bootstrap: Path, relative: str, *args: str
     ) -> subprocess.CompletedProcess[str]:

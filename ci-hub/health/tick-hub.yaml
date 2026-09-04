@@ -1,6 +1,6 @@
 description: |-
   Operational health polling for the dev-hermit coordinator. The outer ORC
-  workflow runs one tick every sixty minutes; this config owns each check's
+  workflow runs one tick every thirty minutes; this config owns each check's
   cadence and only emits actions when a hard warning is required. No active
   reminder declares a cadence below the outer interval: such a value cannot be
   honored and would read as configuration while controlling nothing.
@@ -904,7 +904,7 @@ reminders:
   #
   # >>> INACTIVE / NOT YET WIRED <<<  This reminder is committed but DISABLED.
   # Uncommenting the block below is what takes the mechanical layer LIVE: the
-  # existing operationalHealthHeartbeat re-reads this file every 60 min and will
+  # existing operationalHealthHeartbeat re-reads this file every 30 min and will
   # begin firing the hourly memory<->skill hard-warn. Activation is the owner's
   # call. TO ACTIVATE: remove the leading '# ' from the block below (no ORC
   # restart needed; the next heartbeat tick picks it up).

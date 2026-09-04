@@ -108,17 +108,17 @@ check "$([[ $out == *"OK heartbeat_age="* ]] && echo yes || echo no)" \
       "healthy: logs OK" "got: $out"
 check "$([[ $out != *ALARM* ]] && echo yes || echo no)" "healthy: no ALARM"
 
-# The wider threshold is intentional: 179 minutes is still fewer than three
-# missed hourly ticks and must not page as a dead timer.
-near_threshold_age=10740
+# The wider threshold is intentional: 89 minutes is still fewer than three
+# missed 30-minute ticks and must not page as a dead timer.
+near_threshold_age=5340
 near="$(date -d @$(( $(date +%s) - near_threshold_age )))"
 out="$(run_case "$near_threshold_age" "$near_threshold_age" "$near" inactive)"
 check "$([[ $out != *ALARM* ]] && echo yes || echo no)" \
-      "below three missed hourly ticks: no ALARM" "got: $out"
+      "below three missed 30-minute ticks: no ALARM" "got: $out"
 
 # --- 2. GENUINE dead timer still fires (the >3x cadence gap must survive) ----
-# Heartbeat 181 min stale, nothing running, timer itself last fired 181 min ago.
-stale_age=10860
+# Heartbeat 91 min stale, nothing running, timer itself last fired 91 min ago.
+stale_age=5460
 old="$(date -d @$(( $(date +%s) - stale_age )))"
 out="$(run_case "$stale_age" "$stale_age" "$old" inactive)"
 check "$([[ $out == *"ALARM: TIMER DEAD"* ]] && echo yes || echo no)" \
@@ -182,7 +182,7 @@ target="${!#}"
 if [ "${1:-}" = "-c" ] && [ "${2:-}" = "%Y" ] && [[ "$target" == *heartbeat ]]; then
   n="${HB_STAT_COUNTER:?stat shim requires HB_STAT_COUNTER}"; c=0; [ -f "$n" ] && c="$(cat "$n")"
   echo $(( c + 1 )) > "$n"
-  if [ "$c" -eq 0 ]; then echo $(( $(date +%s) - 10860 )); else echo $(( $(date +%s) - 30 )); fi
+  if [ "$c" -eq 0 ]; then echo $(( $(date +%s) - 5460 )); else echo $(( $(date +%s) - 30 )); fi
   exit 0
 fi
 exec "$real" "$@"
@@ -246,7 +246,7 @@ check "$([[ $out != *"WORK-STALLED"* ]] && echo yes || echo no)" \
 # This is the condition the whole second route exists for, so it is tested with
 # the Orc route FAILING rather than succeeding. A test that passes only while
 # the coordinator is reachable would be measuring the defect, not the fix.
-stale_age=10860
+stale_age=5460
 old_trigger="$(date -d @$(( $(date +%s) - stale_age )))"
 
 payload="$(mktemp)"

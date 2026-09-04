@@ -3,14 +3,14 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[2]
-TICK_MINUTES = 60
+TICK_MINUTES = 30
 
 
 def read(relative: str) -> str:
     return (ROOT / relative).read_text(encoding="utf-8")
 
 
-def test_every_outer_tick_frequency_source_says_sixty_minutes() -> None:
+def test_every_outer_tick_frequency_source_says_thirty_minutes() -> None:
     assert (
         f"const OPERATIONAL_TICK_INTERVAL_MS = {TICK_MINUTES} * 60 * 1000;"
         in read(".orc/plugins/hermit-dev/index.ts")

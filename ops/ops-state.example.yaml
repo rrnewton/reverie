@@ -2,7 +2,7 @@
 # gitignored because it records local operational disposition, not repository
 # policy.
 enabled: true
-tick_frequency_min: 60
+tick_frequency_min: 30
 label: dev-hermit
 flags:
   # false means zero GitHub Actions runs are expected. Checks still inspect any

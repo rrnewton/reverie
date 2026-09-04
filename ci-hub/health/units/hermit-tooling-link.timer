@@ -1,6 +1,6 @@
 # Cadence rationale: the job costs wall=0.25s / cpu=0.23s / 7.7MB steady-state
 # (measured 2026-08-07, 3 managed paths), so a 15-minute period is ~0.03% of one
-# core. It is deliberately independent of the hourly health tick: this publishes
+# core. It is deliberately independent of the 30-minute health tick: this publishes
 # landed tooling, which changes only when parent main advances, so a tighter
 # loop would buy nothing.
 [Unit]

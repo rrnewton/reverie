@@ -3,7 +3,7 @@
 # symlink for a managed path that is ABSENT; an existing or primary-owned file
 # is refused and left byte-identical.
 #
-# WHY A DEDICATED UNIT rather than a hook in the health tick: the hourly tick
+# WHY A DEDICATED UNIT rather than a hook in the health tick: the 30-minute tick
 # is driven by ~/.local/bin/hermit-health-tick.sh, which is NOT in any
 # repository -- putting a landed-tooling guarantee behind an unversioned file
 # would defeat the point. Hooking versioned ci-hub/bin/health-tick instead would

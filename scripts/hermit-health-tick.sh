@@ -9,8 +9,9 @@
 # stale reminder-only hermit-dev-pr-health spec, which never calls health-tick.
 # fired-state froze for ~38h and the silence looked exactly like health.
 #
-# This script is invoked by a systemd --user timer (Linger=yes) so it survives
-# logout, reboot, and session recycling.
+# This script is also invoked by a systemd --user timer (Linger=yes) so health
+# continues across logout, reboot, and session recycling. The ORC workflow is
+# retained for its direct wakeup path; main() serializes their complete runs.
 set -uo pipefail
 
 # $HOME, not a literal: this file is version-controlled and the parent's
@@ -30,6 +31,7 @@ INVLOG="$HOME/.local/state/hermit-health-tick-invocations.log"
 # so redirecting to a file here means an interrupted tick still leaves the
 # partial report, and the trap below still records it.
 LIVE_REPORT="$HOME/.local/state/hermit-health-tick-last-report.txt"
+RUN_LOCK="$HOME/.local/state/hermit-health-tick.lock"
 LIVE_REPORT_STAMP=""
 LIVE_REPORT_RECORDED=0
 LIVE_REPORT_ESCALATED=0
@@ -2551,6 +2553,24 @@ if [[ ${1:-} == --emit-output ]]; then
     emit_output=1
     shift
 fi
+
+# The durable systemd timer and the ORC workflow are independent schedulers.
+# Serialize the complete stateful run before truncating LIVE_REPORT: otherwise
+# phase-aligned firings can erase each other's report and duplicate gates or
+# escalations. A duplicate is expected redundancy, not a failed health check.
+mkdir -p -- "$(dirname -- "$RUN_LOCK")" || {
+    printf 'ERROR: health-tick could not create run-lock directory: %s\n' "$RUN_LOCK" >&2
+    return 73
+}
+exec 7>"$RUN_LOCK" || {
+    printf 'ERROR: health-tick could not open run lock: %s\n' "$RUN_LOCK" >&2
+    return 73
+}
+if ! flock -n 7; then
+    printf 'NOTE: operational health tick already running; concurrent invocation skipped\n'
+    return 0
+fi
+
 start="$(ts)"
 mt_before="$(stat -c %Y "$FIRED_STATE" 2>/dev/null || echo 0)"
 

@@ -10,6 +10,7 @@ github_helper=$libexec_dir/gh
 service=hermit-wrkslots-audit.service
 timer=hermit-wrkslots-audit.timer
 health_service=hermit-health-tick.service
+health_timer=hermit-health-tick.timer
 start=0
 
 if [[ ${1:-} == --start ]]; then
@@ -48,6 +49,7 @@ install -m 0555 "$root/scripts/hermit-health-tick.sh" "$bootstrap"
 install -m 0644 "$root/scripts/systemd/$service" "$unit_dir/"
 install -m 0644 "$root/scripts/systemd/$timer" "$unit_dir/"
 install -m 0644 "$root/scripts/systemd/$health_service" "$unit_dir/"
+install -m 0644 "$root/scripts/systemd/$health_timer" "$unit_dir/"
 
 cmp --silent "$root/scripts/hermit-health-tick.sh" "$bootstrap" || {
     printf 'wrkslots-audit install: installed operational bootstrap differs from source\n' >&2
@@ -74,6 +76,14 @@ grep -Fq \
     printf 'wrkslots-audit install: health service does not execute through the installed bootstrap\n' >&2
     exit 1
 }
+grep -Fxq 'OnUnitActiveSec=30min' "$unit_dir/$health_timer" || {
+    printf 'wrkslots-audit install: health timer does not carry the 30-minute cadence\n' >&2
+    exit 1
+}
+grep -Fxq 'Persistent=true' "$unit_dir/$health_timer" || {
+    printf 'wrkslots-audit install: health timer lacks persistent catch-up\n' >&2
+    exit 1
+}
 grep -Fxq 'OnCalendar=hourly' "$unit_dir/$timer" || {
     printf 'wrkslots-audit install: timer lacks the hourly calendar schedule\n' >&2
     exit 1
@@ -84,7 +94,7 @@ grep -Fxq 'Persistent=true' "$unit_dir/$timer" || {
 }
 
 systemctl --user daemon-reload
-systemctl --user enable "$timer"
+systemctl --user enable "$timer" "$health_timer"
 
 source_head=$(git -C "$root" rev-parse --verify 'HEAD^{commit}')
 bootstrap_sha=$(sha256sum -- "$bootstrap" | awk '{print $1}')
@@ -94,7 +104,10 @@ printf 'wrkslots-audit install: source_parent_sha=%s bootstrap_sha256=%s bootstr
 
 if [[ $start -eq 1 ]]; then
     systemctl --user start "$timer"
-    systemctl --user status --no-pager "$timer"
+    # Restart, rather than start, so an already-active timer recalculates its
+    # next firing from the newly installed 30-minute interval immediately.
+    systemctl --user restart "$health_timer"
+    systemctl --user status --no-pager "$timer" "$health_timer"
 else
-    printf 'wrkslots-audit install: timer enabled but not started; rerun with --start after verifying the installed unit\n'
+    printf 'wrkslots-audit install: timers enabled but not started; rerun with --start after verifying the installed units\n'
 fi

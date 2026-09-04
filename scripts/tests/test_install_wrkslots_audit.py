@@ -76,6 +76,7 @@ class InstallWrkslotsAuditTests(unittest.TestCase):
         service = (unit_dir / "hermit-wrkslots-audit.service").read_text()
         timer = (unit_dir / "hermit-wrkslots-audit.timer").read_text()
         health_service = (unit_dir / "hermit-health-tick.service").read_text()
+        health_timer = (unit_dir / "hermit-health-tick.timer").read_text()
         self.assertIn(
             "ExecStart=%h/.local/libexec/dev-hermit/operational-tool "
             "--run-current-tool",
@@ -104,13 +105,19 @@ class InstallWrkslotsAuditTests(unittest.TestCase):
             health_service,
         )
         self.assertEqual(
+            (ROOT / "scripts/systemd/hermit-health-tick.timer").read_text(),
+            health_timer,
+        )
+        self.assertIn("OnUnitActiveSec=30min", health_timer)
+        self.assertIn("Persistent=true", health_timer)
+        self.assertEqual(
             [
                 "--user daemon-reload",
-                "--user enable hermit-wrkslots-audit.timer",
+                "--user enable hermit-wrkslots-audit.timer hermit-health-tick.timer",
             ],
             self.log.read_text().splitlines(),
         )
-        self.assertIn("timer enabled but not started", result.stdout)
+        self.assertIn("timers enabled but not started", result.stdout)
         self.assertIn("source_parent_sha=", result.stdout)
         self.assertIn("bootstrap_sha256=", result.stdout)
         self.assertIn("github_helper_sha256=", result.stdout)
@@ -122,9 +129,10 @@ class InstallWrkslotsAuditTests(unittest.TestCase):
         self.assertEqual(
             [
                 "--user daemon-reload",
-                "--user enable hermit-wrkslots-audit.timer",
+                "--user enable hermit-wrkslots-audit.timer hermit-health-tick.timer",
                 "--user start hermit-wrkslots-audit.timer",
-                "--user status --no-pager hermit-wrkslots-audit.timer",
+                "--user restart hermit-health-tick.timer",
+                "--user status --no-pager hermit-wrkslots-audit.timer hermit-health-tick.timer",
             ],
             self.log.read_text().splitlines(),
         )

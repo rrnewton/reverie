@@ -327,7 +327,7 @@ generic, add it there and link/use it here.
 - pending current-main work is displayed as pending and must not be claimed
   green.
 
-The outer ORC workflow calls `bin/health-tick` every sixty minutes. The pinned
+The outer ORC workflow calls `bin/health-tick` every thirty minutes. The pinned
 tick engine reads `health/tick-hub.yaml`; dev-hermit probes live beside it.
 
 ## The lander restores the checkout it was handed

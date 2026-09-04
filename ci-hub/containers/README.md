@@ -50,8 +50,9 @@ not evidence that an environment is abandoned.
 
 ## Reconciliation
 
-The hourly operational tick runs the NON-applying form. `tick-hub.yaml`
-invokes exactly this, and it carries no `--apply`:
+The operational tick runs every thirty minutes, but this hourly reminder runs
+the NON-applying form on every other tick. `tick-hub.yaml` invokes exactly this,
+and it carries no `--apply`:
 
 ```bash
 ./scripts/agent-podman.rs reconcile --agents-json ignored/ci-hub/agent-snapshot.json

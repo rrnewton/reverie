@@ -1,5 +1,5 @@
 [Unit]
-Description=dev-hermit operational health tick (durable replacement for ORC session-bound wf.loop)
+Description=dev-hermit operational health tick (durable peer of ORC session-bound wf.loop)
 Documentation=https://github.com/rrnewton/dev-hermit/blob/main/scripts/hermit-health-tick.sh
 
 [Service]

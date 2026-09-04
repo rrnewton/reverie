@@ -130,7 +130,7 @@ set +e
     --config "$TOOL_ROOT/ci-hub/health/tick-hub.yaml" \
     --state "$STATE_ROOT/.ops-state.yaml" \
     --fired-state "$STATE_ROOT/.tick-hub/fired-state" \
-    --current-tick-min 60 \
+    --current-tick-min 30 \
     --report-pending \
     "$@" | emit_with_evaluation_provenance
 pipeline_status=("${PIPESTATUS[@]}")

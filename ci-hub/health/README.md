@@ -29,8 +29,12 @@ health polling. Project policy stays in this repository:
   primary that owns the materialized Hermit/agent-utils checkouts. The wrapper
   provisions the pinned Python runtime dependency into the ignored
   `.tick-hub/venv` when needed, then invokes the real tick-hub CLI.
-- `.orc/plugins/hermit-dev/index.ts` is the outer sixty-minute scheduler and
+- `.orc/plugins/hermit-dev/index.ts` is the outer thirty-minute scheduler and
   wakeup delivery adapter.
+- `scripts/systemd/hermit-health-tick.timer` independently invokes the same
+  tick every thirty minutes so it survives coordinator-session loss. The
+  wrapper serializes complete runs from the two schedulers before touching
+  shared reports or gate state.
 
 ## Timing-sensitive load precondition
 
@@ -51,7 +55,8 @@ was unavailable. It reports its cost directly and avoids the `rust-script`
 cache, so this is the canonical 3pai/BpfJailer entrypoint. The typed
 `./ci-hub/ci-hub load-probe` alias is also available outside that restriction.
 
-The hub checks GitHub current-main health and open-PR red counts once per hour.
+The outer hub runs every thirty minutes; the GitHub current-main health and
+open-PR red-count reminders remain hourly and therefore run every other tick.
 Before it loads the versioned tick runner or configuration, the durable wrapper
 asks the current immutable tool root's `scripts/parent-main-write sync
 --preserve-dirty` to fast-forward the shared parent checkout. A direct/manual

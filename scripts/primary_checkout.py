@@ -1107,7 +1107,7 @@ def _checkout_fresh_impl(
 
         # Reuse the tracking ref populated by the fetch above. `git pull` would
         # perform a second fetch of the same branch and was the dominant
-        # multiplicative source of SCM telemetry during the hourly tick.
+        # multiplicative source of SCM telemetry during the 30-minute tick.
         fast_forward = run_git(repo, "merge", "--ff-only", "origin/main")
         print_command_output(
             fast_forward, out if fast_forward.returncode == 0 else err
