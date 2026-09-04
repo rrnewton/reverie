@@ -151,6 +151,10 @@ fn deterministic_cpuid_policy_is_visible_inside_vm() {
     append_cpuid_probe(&mut program, 0x8000_0001, 0, CPUID_RESULT_ADDRESS + 192);
     append_cpuid_probe(&mut program, 0x15, 0, CPUID_RESULT_ADDRESS + 208);
     append_cpuid_probe(&mut program, 0x8000_000b, 0, CPUID_RESULT_ADDRESS + 224);
+    append_cpuid_probe(&mut program, 4, 0, CPUID_RESULT_ADDRESS + 240);
+    append_cpuid_probe(&mut program, 4, 1, CPUID_RESULT_ADDRESS + 256);
+    append_cpuid_probe(&mut program, 0xb, 0, CPUID_RESULT_ADDRESS + 272);
+    append_cpuid_probe(&mut program, 0xb, 1, CPUID_RESULT_ADDRESS + 288);
     program.push(0xf4); // hlt
 
     let mut backend = KvmBackend::new(MEMORY_SIZE).unwrap();
@@ -224,6 +228,22 @@ fn deterministic_cpuid_policy_is_visible_inside_vm() {
     assert_eq!(
         read_cpuid_result(&backend, CPUID_RESULT_ADDRESS + 224),
         xstate,
+    );
+    assert_eq!(
+        read_cpuid_result(&backend, CPUID_RESULT_ADDRESS + 240),
+        [0x0000_0120, 0x01c0_003f, 0x0000_003f, 0x0000_0001],
+    );
+    assert_eq!(
+        read_cpuid_result(&backend, CPUID_RESULT_ADDRESS + 256),
+        [0; 4],
+    );
+    assert_eq!(
+        read_cpuid_result(&backend, CPUID_RESULT_ADDRESS + 272),
+        [0x0000_0000, 0x0000_0001, 0x0000_0100, 0x0000_0001],
+    );
+    assert_eq!(
+        read_cpuid_result(&backend, CPUID_RESULT_ADDRESS + 288),
+        [0; 4],
     );
 }
 
