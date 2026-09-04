@@ -47,6 +47,7 @@ pub const COORDINATOR_ENV: &str = "REVERIE_LITEINST_COORDINATOR";
 pub const STATS_COORDINATOR_ENV: &str = "REVERIE_LITEINST_STATS_COORDINATOR";
 
 const PRELOAD_BOOTSTRAP_MAGIC: &[u8; 16] = b"REVERIE-LI-V1\0\0\0";
+const LOG_BOOTSTRAP_MAGIC: &[u8; 16] = b"REVERIE-LI-V2\0\0\0";
 const PRELOAD_BOOTSTRAP_HEADER_BYTES: usize = PRELOAD_BOOTSTRAP_MAGIC.len() + 4;
 const PRELOAD_BOOTSTRAP_MAX_BYTES: usize = 4096;
 const RPC_CONNECTION_DRAIN_TIMEOUT: Duration = Duration::from_secs(30);
@@ -58,6 +59,8 @@ pub struct PreloadBootstrap {
     pub coordinator: PathBuf,
     /// Opaque bytes supplied by the tool-specific coordinator launcher.
     pub tool_data: Vec<u8>,
+    /// Optional protected logging channel authenticated by the sealed bootstrap.
+    pub log: Option<crate::GuestLog>,
 }
 
 // TODO-HUMAN-REVIEW(PR-139): Review the public inherited preload bootstrap consumer.
@@ -127,16 +130,23 @@ fn read_preload_bootstrap(fd: libc::c_int) -> io::Result<Option<PreloadBootstrap
     };
     let mut packet = vec![0_u8; size];
     let read = unsafe { libc::pread(fd, packet.as_mut_ptr().cast(), packet.len(), 0) };
-    if read != size as isize
-        || packet.get(..PRELOAD_BOOTSTRAP_MAGIC.len()) != Some(PRELOAD_BOOTSTRAP_MAGIC)
-    {
+    let magic = packet.get(..PRELOAD_BOOTSTRAP_MAGIC.len());
+    let logged = magic == Some(LOG_BOOTSTRAP_MAGIC);
+    if read != size as isize || (!logged && magic != Some(PRELOAD_BOOTSTRAP_MAGIC)) {
         return Ok(None);
     }
 
     let lengths = &packet[PRELOAD_BOOTSTRAP_MAGIC.len()..PRELOAD_BOOTSTRAP_HEADER_BYTES];
     let path_len = u16::from_le_bytes([lengths[0], lengths[1]]) as usize;
     let data_len = u16::from_le_bytes([lengths[2], lengths[3]]) as usize;
-    if packet.len() != PRELOAD_BOOTSTRAP_HEADER_BYTES + path_len + data_len || path_len == 0 {
+    let log_bytes = if logged {
+        crate::guest_log::IDENTITY_BYTES
+    } else {
+        0
+    };
+    if packet.len() != PRELOAD_BOOTSTRAP_HEADER_BYTES + path_len + data_len + log_bytes
+        || path_len == 0
+    {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "invalid LiteInst preload bootstrap lengths",
@@ -147,11 +157,24 @@ fn read_preload_bootstrap(fd: libc::c_int) -> io::Result<Option<PreloadBootstrap
         coordinator: PathBuf::from(OsString::from_vec(
             packet[PRELOAD_BOOTSTRAP_HEADER_BYTES..path_end].to_vec(),
         )),
-        tool_data: packet[path_end..].to_vec(),
+        tool_data: packet[path_end..path_end + data_len].to_vec(),
+        log: if logged {
+            Some(unsafe { crate::guest_log::from_identity(&packet[path_end + data_len..]) }?)
+        } else {
+            None
+        },
     }))
 }
 
 fn create_preload_bootstrap(coordinator: &Path, tool_data: &[u8]) -> io::Result<OwnedFd> {
+    create_logged_preload_bootstrap(coordinator, tool_data, None)
+}
+
+fn create_logged_preload_bootstrap(
+    coordinator: &Path,
+    tool_data: &[u8],
+    log_fd: Option<i32>,
+) -> io::Result<OwnedFd> {
     let path = coordinator.as_os_str().as_bytes();
     let path_len = u16::try_from(path.len()).map_err(|_| {
         io::Error::new(
@@ -167,11 +190,18 @@ fn create_preload_bootstrap(coordinator: &Path, tool_data: &[u8]) -> io::Result<
     })?;
     let mut packet =
         Vec::with_capacity(PRELOAD_BOOTSTRAP_HEADER_BYTES + path.len() + tool_data.len());
-    packet.extend_from_slice(PRELOAD_BOOTSTRAP_MAGIC);
+    packet.extend_from_slice(if log_fd.is_some() {
+        LOG_BOOTSTRAP_MAGIC
+    } else {
+        PRELOAD_BOOTSTRAP_MAGIC
+    });
     packet.extend_from_slice(&path_len.to_le_bytes());
     packet.extend_from_slice(&data_len.to_le_bytes());
     packet.extend_from_slice(path);
     packet.extend_from_slice(tool_data);
+    if let Some(fd) = log_fd {
+        packet.extend_from_slice(&crate::guest_log::identity(fd)?);
+    }
     if packet.len() > PRELOAD_BOOTSTRAP_MAX_BYTES {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -202,6 +232,39 @@ fn create_preload_bootstrap(coordinator: &Path, tool_data: &[u8]) -> io::Result<
 pub struct LiteinstBackend;
 
 impl LiteinstBackend {
+    /// Runs a typed preload with a bounded, separately retained guest log.
+    ///
+    /// The constructor must install the bootstrap log before its Tool. A missing
+    /// completion frame, transport failure, or truncation is returned in `log.error`,
+    /// even when the application exits successfully. Such logs cannot qualify parity.
+    pub async fn run_with_output_and_preload_data_and_log<T>(
+        mut command: Command,
+        config: <T::GlobalState as GlobalTool>::Config,
+        preload: impl Into<PathBuf>,
+        tool_data: impl Into<Vec<u8>>,
+        log_limit: usize,
+    ) -> Result<(Output, T::GlobalState, crate::CapturedGuestLog), Error>
+    where
+        T: Tool + 'static,
+    {
+        command.stdout(reverie::process::Stdio::piped());
+        command.stderr(reverie::process::Stdio::piped());
+        let (wait, global, _, log) = launch_logged::<T>(
+            command,
+            config,
+            preload.into(),
+            true,
+            Some(tool_data.into()),
+            BackendStatsRequest::DISABLED,
+            Some(log_limit),
+        )
+        .await?;
+        match wait {
+            ChildWait::Output(output) => Ok((output, global, log.expect("log requested"))),
+            ChildWait::Status(_) => unreachable!("output run returned only a status"),
+        }
+    }
+
     /// Runs a Tool under the ptrace-owned LiteInst hybrid runtime.
     ///
     /// Ptrace owns the sole Tool and GlobalTool from exec onward; the preload
@@ -788,7 +851,7 @@ async fn unwrap_global_after_connections<G>(mut global: Arc<G>) -> io::Result<G>
 }
 
 async fn launch<T>(
-    mut command: Command,
+    command: Command,
     config: <T::GlobalState as GlobalTool>::Config,
     preload: PathBuf,
     capture_output: bool,
@@ -799,6 +862,39 @@ async fn launch<T>(
         ChildWait,
         T::GlobalState,
         Option<crate::LiteinstBackendStatsSource>,
+    ),
+    Error,
+>
+where
+    T: Tool + 'static,
+{
+    let (wait, global, stats, _) = launch_logged::<T>(
+        command,
+        config,
+        preload,
+        capture_output,
+        tool_data,
+        stats_request,
+        None,
+    )
+    .await?;
+    Ok((wait, global, stats))
+}
+
+async fn launch_logged<T>(
+    mut command: Command,
+    config: <T::GlobalState as GlobalTool>::Config,
+    preload: PathBuf,
+    capture_output: bool,
+    tool_data: Option<Vec<u8>>,
+    stats_request: BackendStatsRequest,
+    log_limit: Option<usize>,
+) -> Result<
+    (
+        ChildWait,
+        T::GlobalState,
+        Option<crate::LiteinstBackendStatsSource>,
+        Option<crate::CapturedGuestLog>,
     ),
     Error,
 >
@@ -845,6 +941,10 @@ where
 
     configure_in_guest_command_preload(&mut command, preload);
 
+    let mut log_task = None;
+    let mut log = None;
+    let log_exited = Arc::new(AtomicBool::new(false));
+
     let wait = match tool_data {
         Some(tool_data) => {
             let mut child_command = command.try_into_std()?;
@@ -853,28 +953,67 @@ where
                 child_command.env(STATS_COORDINATOR_ENV, stats_socket);
             }
 
-            let bootstrap = create_preload_bootstrap(&socket, &tool_data)?;
+            let log_pair = log_limit
+                .map(|_| crate::guest_log::channel_pair())
+                .transpose()?;
+            let log_fd = log_pair.as_ref().map(|(_, guest)| guest.as_raw_fd());
+            let bootstrap = if let Some(fd) = log_fd {
+                create_logged_preload_bootstrap(&socket, &tool_data, Some(fd))?
+            } else {
+                create_preload_bootstrap(&socket, &tool_data)?
+            };
             let bootstrap_fd = bootstrap.as_raw_fd();
             unsafe {
                 child_command.pre_exec(move || {
                     if libc::fcntl(bootstrap_fd, libc::F_SETFD, 0) == -1 {
                         return Err(io::Error::last_os_error());
                     }
+                    if let Some(fd) = log_fd
+                        && libc::fcntl(fd, libc::F_SETFD, 0) == -1
+                    {
+                        return Err(io::Error::last_os_error());
+                    }
                     Ok(())
                 });
             }
+            let log_guest = if let Some((host, guest)) = log_pair {
+                let limit = log_limit.expect("log requested");
+                let exited = log_exited.clone();
+                let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(0);
+                log_task = Some(tokio::task::spawn_blocking(move || {
+                    let _ = ready_tx.send(());
+                    crate::guest_log::collect(host, limit, &exited)
+                }));
+                ready_rx
+                    .recv()
+                    .map_err(|error| io::Error::other(error.to_string()))?;
+                Some(guest)
+            } else {
+                None
+            };
             let mut child = child_command.spawn()?;
             drop(bootstrap);
+            drop(log_guest);
             let wait = tokio::task::spawn_blocking(move || {
-                if capture_output {
+                let result = if capture_output {
                     child.wait_with_output().map(ChildWait::Output)
                 } else {
                     child.wait().map(ChildWait::Status)
-                }
+                };
+                log_exited.store(true, Ordering::Release);
+                result
             });
-            serve_rpc_until(server, stats_server, connection_monitors, async move {
-                wait.await
-                    .map_err(|error| io::Error::other(error.to_string()))?
+            serve_rpc_until(server, stats_server, connection_monitors, async {
+                let result = wait
+                    .await
+                    .map_err(|error| io::Error::other(error.to_string()))?;
+                if let Some(task) = log_task.take() {
+                    log = Some(
+                        task.await
+                            .map_err(|error| io::Error::other(error.to_string()))?,
+                    );
+                }
+                result
             })
             .await?
         }
@@ -912,7 +1051,7 @@ where
         Some(stats) => Some(unwrap_global_after_connections(stats).await?.into_source()),
         None => None,
     };
-    Ok((wait, global, stats))
+    Ok((wait, global, stats, log))
 }
 
 fn tool_preload_path() -> io::Result<PathBuf> {
@@ -931,6 +1070,29 @@ fn tool_preload_path() -> io::Result<PathBuf> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn guest_log_bootstrap_round_trip() {
+        use std::os::fd::AsRawFd;
+        use std::os::fd::IntoRawFd;
+        let (guest, _peer) = crate::guest_log::channel_pair().unwrap();
+        let fd = guest.into_raw_fd();
+        let packet = super::create_logged_preload_bootstrap(
+            std::path::Path::new("/tmp/coordinator"),
+            b"typed-tool",
+            Some(fd),
+        )
+        .unwrap();
+        let decoded = super::read_preload_bootstrap(packet.as_raw_fd())
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            decoded.coordinator,
+            std::path::Path::new("/tmp/coordinator")
+        );
+        assert_eq!(decoded.tool_data, b"typed-tool");
+        assert!(decoded.log.is_some());
+    }
+
     use std::sync::Mutex;
     use std::sync::atomic::AtomicU64;
     use std::time::Duration;

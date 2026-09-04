@@ -2075,6 +2075,10 @@ pub(crate) fn signal_action_supported(number: i64, args: [u64; 6]) -> bool {
 // AUTONOMOUS-BOT-IMPLEMENTED
 // TODO-HUMAN-REVIEW(PR-133): Review nested Tool syscall guards and raw forwarding.
 fn forward_nested_tool_syscall(event: &mut SyscallEvent) {
+    if crate::rpc::allows_channel_io(event.number, event.args[0] as i32) {
+        event.result = unsafe { raw_syscall6(event.number, event.args) };
+        return;
+    }
     let unsupported_process =
         // AUTONOMOUS-BOT-IMPLEMENTED
         event.number == libc::SYS_clone
@@ -2112,7 +2116,7 @@ fn forward_nested_tool_syscall(event: &mut SyscallEvent) {
     } else if unsupported_signal_state {
         event.result = -i64::from(libc::EPERM);
     } else if !(protect_runtime_control(event) || unsafe { protect_coordinator_channel(event) }) {
-        event.result = unsafe { raw_syscall6(event.number, event.args) };
+        event.result = guarded_raw_syscall(event.number, event.args);
         observe_mapping_generation(event);
     }
 }
@@ -2930,21 +2934,71 @@ fn clone_is_fork_like(flags: u64, child_stack: u64) -> bool {
 }
 
 unsafe fn protect_coordinator_channel(event: &mut SyscallEvent) -> bool {
-    let fd = COORDINATOR_FD.load(Ordering::Acquire);
-    if fd < 0 {
-        return false;
+    if let Some(result) = crate::protected_fd::indirect_result(
+        event.number,
+        event.args,
+        &[
+            COORDINATOR_FD.load(Ordering::Acquire),
+            crate::guest_log::LOG_FD.load(Ordering::Acquire),
+        ],
+    ) {
+        event.result = result;
+        return true;
     }
-    let fd = fd as u64;
-    if event.number == libc::SYS_close && event.args[0] == fd {
-        event.result = 0;
-    } else if event.number == libc::SYS_close_range && event.args[0] <= fd && fd <= event.args[1] {
-        event.result = unsafe { close_range_preserving_event_fd(event, fd) };
-    } else if syscall_targets_event_fd(event, fd) {
-        event.result = -i64::from(libc::EBADF);
+    let first = u64::from(event.args[0] as u32);
+    let second = u64::from(event.args[1] as u32);
+    for fd in [
+        COORDINATOR_FD.load(Ordering::Acquire),
+        crate::guest_log::LOG_FD.load(Ordering::Acquire),
+    ] {
+        if fd < 0 {
+            continue;
+        }
+        let fd = fd as u64;
+        if event.number == libc::SYS_close && first == fd {
+            event.result = 0;
+        } else if event.number == libc::SYS_close_range && first <= fd && fd <= second {
+            event.result = unsafe { close_range_preserving_event_fd(event, fd) };
+        } else if syscall_targets_event_fd(event, fd) {
+            event.result = -i64::from(libc::EBADF);
+        } else {
+            continue;
+        }
+        return true;
+    }
+    false
+}
+
+pub(crate) fn protected_injected_syscall(number: i64, args: [u64; 6]) -> Option<i64> {
+    let mut event = SyscallEvent {
+        number,
+        args,
+        instruction_pointer: 0,
+        result: 0,
+        context: 0,
+    };
+    if unsafe { protect_coordinator_channel(&mut event) } {
+        Some(event.result)
     } else {
-        return false;
+        None
     }
-    true
+}
+
+pub(crate) fn guarded_raw_syscall(number: i64, args: [u64; 6]) -> i64 {
+    if let Some(result) = protected_injected_syscall(number, args) {
+        return result;
+    }
+    match crate::protected_fd::batch_args(
+        number,
+        args,
+        &[
+            COORDINATOR_FD.load(Ordering::Acquire),
+            crate::guest_log::LOG_FD.load(Ordering::Acquire),
+        ],
+    ) {
+        Ok(args) => unsafe { raw_syscall6(number, args) },
+        Err(error) => error,
+    }
 }
 
 unsafe fn protect_compatibility_event_channel(event: &mut SyscallEvent) -> bool {
@@ -2975,9 +3029,9 @@ unsafe fn close_range_preserving_event_fd(event: &SyscallEvent, event_fd: u64) -
     const CLOSE_RANGE_UNSHARE: u64 = 1 << 1;
     const CLOSE_RANGE_CLOEXEC: u64 = 1 << 2;
 
-    let first = event.args[0];
-    let last = event.args[1];
-    let mut flags = event.args[2];
+    let mut first = u64::from(event.args[0] as u32);
+    let last = u64::from(event.args[1] as u32);
+    let mut flags = u64::from(event.args[2] as u32);
     if flags & !(CLOSE_RANGE_UNSHARE | CLOSE_RANGE_CLOEXEC) != 0 {
         return -i64::from(libc::EINVAL);
     }
@@ -2990,16 +3044,27 @@ unsafe fn close_range_preserving_event_fd(event: &SyscallEvent, event_fd: u64) -
         flags &= !CLOSE_RANGE_UNSHARE;
     }
 
-    if first < event_fd {
-        let result =
-            unsafe { raw_syscall6(libc::SYS_close_range, [first, event_fd - 1, flags, 0, 0, 0]) };
-        if result < 0 {
-            return result;
+    let mut reserved = [
+        event_fd,
+        COORDINATOR_FD.load(Ordering::Acquire) as u64,
+        crate::guest_log::LOG_FD.load(Ordering::Acquire) as u64,
+    ];
+    reserved.sort_unstable();
+    for fd in reserved {
+        if fd < first || fd > last {
+            continue;
         }
+        if first < fd {
+            let result =
+                unsafe { raw_syscall6(libc::SYS_close_range, [first, fd - 1, flags, 0, 0, 0]) };
+            if result < 0 {
+                return result;
+            }
+        }
+        first = fd + 1;
     }
-    if event_fd < last {
-        let result =
-            unsafe { raw_syscall6(libc::SYS_close_range, [event_fd + 1, last, flags, 0, 0, 0]) };
+    if first <= last {
+        let result = unsafe { raw_syscall6(libc::SYS_close_range, [first, last, flags, 0, 0, 0]) };
         if result < 0 {
             return result;
         }
@@ -3008,6 +3073,7 @@ unsafe fn close_range_preserving_event_fd(event: &SyscallEvent, event_fd: u64) -
 }
 
 fn syscall_targets_event_fd(event: &SyscallEvent, event_fd: u64) -> bool {
+    let args = event.args.map(|arg| u64::from(arg as u32));
     match event.number {
         libc::SYS_read
         | libc::SYS_readv
@@ -3020,15 +3086,27 @@ fn syscall_targets_event_fd(event: &SyscallEvent, event_fd: u64) -> bool {
         | libc::SYS_pwritev
         | libc::SYS_pwritev2
         | libc::SYS_vmsplice
-        | libc::SYS_sendfile
+        | libc::SYS_lseek
+        | libc::SYS_ftruncate
+        | libc::SYS_fallocate
+        | libc::SYS_shutdown
+        | libc::SYS_sendto
+        | libc::SYS_recvfrom
+        | libc::SYS_sendmsg
+        | libc::SYS_recvmsg
+        | libc::SYS_sendmmsg
+        | libc::SYS_recvmmsg
+        | libc::SYS_setsockopt
+        | libc::SYS_getsockopt
         | libc::SYS_fcntl
         | libc::SYS_ioctl
-        | libc::SYS_dup => event.args[0] == event_fd,
-        libc::SYS_dup2 | libc::SYS_dup3 => event.args[0] == event_fd || event.args[1] == event_fd,
-        libc::SYS_splice | libc::SYS_copy_file_range => {
-            event.args[0] == event_fd || event.args[2] == event_fd
+        | libc::SYS_dup => args[0] == event_fd,
+        libc::SYS_dup2 | libc::SYS_dup3 | libc::SYS_sendfile => {
+            args[0] == event_fd || args[1] == event_fd
         }
-        libc::SYS_tee => event.args[0] == event_fd || event.args[1] == event_fd,
+        libc::SYS_mmap => args[3] & libc::MAP_ANONYMOUS as u64 == 0 && args[4] == event_fd,
+        libc::SYS_splice | libc::SYS_copy_file_range => args[0] == event_fd || args[2] == event_fd,
+        libc::SYS_tee => args[0] == event_fd || args[1] == event_fd,
         _ => false,
     }
 }
@@ -3326,6 +3404,78 @@ impl StackLine {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn protected_guest_log_descriptors() {
+        use std::os::fd::AsRawFd;
+        if std::env::var_os("LITEINST_LOG_GUARD_TEST").is_none() {
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "runtime::tests::protected_guest_log_descriptors"])
+                .env("LITEINST_LOG_GUARD_TEST", "1")
+                .status()
+                .unwrap();
+            assert!(status.success());
+            return;
+        }
+        let (socket, _peer) = std::os::unix::net::UnixStream::pair().unwrap();
+        for fd in [200, 201, 202] {
+            assert_eq!(
+                unsafe { libc::dup3(socket.as_raw_fd(), fd, libc::O_CLOEXEC) },
+                fd
+            );
+        }
+        super::reserve_coordinator_fd(200).unwrap();
+        crate::guest_log::LOG_FD.store(202, Ordering::Release);
+        {
+            let _channel = crate::rpc::ChannelIoGuard::enter(200);
+            assert!(crate::rpc::allows_channel_io(libc::SYS_sendto, 200));
+            assert!(!crate::rpc::allows_channel_io(libc::SYS_sendto, 202));
+            assert_eq!(
+                super::protected_injected_syscall(libc::SYS_sendto, [200, 0, 0, 0, 0, 0]),
+                Some(-i64::from(libc::EBADF))
+            );
+            assert!(!crate::rpc::allows_channel_io(libc::SYS_close, 200));
+        }
+        assert!(!crate::rpc::allows_channel_io(libc::SYS_sendto, 200));
+        for (number, args) in [
+            (libc::SYS_write, [202, 0, 0, 0, 0, 0]),
+            (libc::SYS_read, [202, 0, 0, 0, 0, 0]),
+            (libc::SYS_lseek, [202, 0, 0, 0, 0, 0]),
+            (libc::SYS_fcntl, [202, libc::F_DUPFD as u64, 0, 0, 0, 0]),
+            (libc::SYS_dup2, [1, 202, 0, 0, 0, 0]),
+            (libc::SYS_dup3, [202, 205, 0, 0, 0, 0]),
+            (libc::SYS_shutdown, [202, 0, 0, 0, 0, 0]),
+            (libc::SYS_sendfile, [1, 202, 0, 0, 0, 0]),
+        ] {
+            let mut event = super::SyscallEvent {
+                number,
+                args,
+                instruction_pointer: 0,
+                result: 1,
+                context: 0,
+            };
+            assert!(unsafe { super::protect_coordinator_channel(&mut event) });
+            assert_eq!(event.result, -i64::from(libc::EBADF));
+        }
+        for (number, args) in [
+            (libc::SYS_close, [202, 0, 0, 0, 0, 0]),
+            (libc::SYS_close_range, [200, 202, 4, 0, 0, 0]),
+            (libc::SYS_close_range, [200, 202, 0, 0, 0, 0]),
+        ] {
+            let mut event = super::SyscallEvent {
+                number,
+                args,
+                instruction_pointer: 0,
+                result: 1,
+                context: 0,
+            };
+            assert!(unsafe { super::protect_coordinator_channel(&mut event) });
+            assert_eq!(event.result, 0);
+        }
+        assert!(unsafe { libc::fcntl(200, libc::F_GETFD) } >= 0);
+        assert!(unsafe { libc::fcntl(202, libc::F_GETFD) } >= 0);
+        assert_eq!(unsafe { libc::fcntl(201, libc::F_GETFD) }, -1);
+    }
+
     use core::sync::atomic::Ordering;
     use std::ffi::OsStr;
 
