@@ -27,7 +27,7 @@
   "_transition_2026_09_03_pr2935": "Stages the exact eight-file producer map from Hermit PR 2935 head 64dbae5adf5935652ee5ed0752874968bbaccd9d after its clean boxed full validation completed 267/267 nodes and 2549/2549 tests with zero failures, skips, retries, flaky warnings, or peer validates in 22m08s. Hermit main 976c70986b3c4a301295d1e04351bff48e22fbe1 had changed all eight registered producer paths without rotating this map, so receipt publication correctly refused every resulting producer as unknown. The candidate keeps whole-map equality exact; it does not change the primary or accept any other commit.",
   "_transition_2026_09_04_pr2944": "Stages the exact eight-file producer map from Hermit PR 2944 head 084cf4a336f6f929826ee9f239f2352f0eca3f1f after canonical full run 1703 completed 267/267 nodes and 2564/2564 tests with zero failures, skips, or retries. Current Hermit base c51f0bf55b372a9028b621e416ca0c0fb199d545 already carries the landed PR 2941 validate.rs description-only drift; PR 2944 adds only result-manifest compatibility fields and patterns in the two changed producer paths. The candidate keeps whole-map equality exact, leaves the primary unchanged, and accepts only the validated PR head before expiry.",
   "_transition_2026_09_04_pr2946": "Stages the exact eight-file producer map from Hermit PR 2946 head 646c62fcd68ff88fb8b8bd9e8468b9eb8b3293c6 after canonical full run 1711 completed 267/267 nodes and 2752/2752 tests with zero failing nodes. All 192 selected KVM verification cells passed on the first attempt with zero KVM retries. Only scripts/validate.rs changes within the registered producer map: its node-vacuity check raises the exact expected selected count for the privileged backend-parity-c bucket from one to two after adding kvm/cpuid-probe, while retaining the capability and runs-nothing checks. The candidate keeps whole-map equality exact, leaves the primary unchanged, and accepts only the validated PR head before expiry.",
-  "registered_at": "2d3876bdf5d310eb4cd55e7a3613d3dbc39bdc5c",
+  "registered_at": "4d8f866102882b6eeabdf99cc7e81433cc3c95c5",
   "registered_coverage_status": "complete",
   "registered": {
     ".config/nextest.toml": "5754a6d6983000ded67562250cedcc6c1ce53cf5",
@@ -37,30 +37,7 @@
     "scripts/lib/validate_plan.rs": "820806e5a50d7044175ed8d0822b1fe979e2358d",
     "scripts/lib/validate_receipt.rs": "15fa8d4b4ecdf89bdeb6ce33f460de11cf43d79c",
     "scripts/lib/validate_runtime.rs": "721df0c7330851ea4cc09516d3ee6a4f680943b3",
-    "scripts/validate.rs": "5c72a835bd766af63e35b9219eac077c1b927db7"
-  },
-  "transition": {
-    "id": "rrnewton-hermit-pr-2946",
-    "registered_at": "646c62fcd68ff88fb8b8bd9e8468b9eb8b3293c6",
-    "provenance": {
-      "repository": "rrnewton/hermit",
-      "pull_request": 2946,
-      "head": "646c62fcd68ff88fb8b8bd9e8468b9eb8b3293c6"
-    },
-    "finalize_after": "2026-09-04T17:50:00Z",
-    "expires_at": "2026-09-05T17:50:00Z",
-    "candidate_coverage_status": "complete",
-    "added_paths": [],
-    "candidate": {
-      ".config/nextest.toml": "5754a6d6983000ded67562250cedcc6c1ce53cf5",
-      ".github/workflows/ci-portable.yml": "78167c8dccfa757a5348d96d479f72b1c8e63a3d",
-      "ci/run-nextest-counted.sh": "ca88efe6d3d270881ecbe7205373f642369ce53d",
-      "scripts/lib/validate_history.rs": "fb5bda65ac9ceb16bd7ded72c4f8f1b1b1615bde",
-      "scripts/lib/validate_plan.rs": "820806e5a50d7044175ed8d0822b1fe979e2358d",
-      "scripts/lib/validate_receipt.rs": "15fa8d4b4ecdf89bdeb6ce33f460de11cf43d79c",
-      "scripts/lib/validate_runtime.rs": "721df0c7330851ea4cc09516d3ee6a4f680943b3",
-      "scripts/validate.rs": "66681b61cda77c79a61634973f3d887bc424b428"
-    }
+    "scripts/validate.rs": "66681b61cda77c79a61634973f3d887bc424b428"
   },
   "legacy": [
     {
@@ -316,6 +293,24 @@
         "scripts/lib/validate_receipt.rs": "15fa8d4b4ecdf89bdeb6ce33f460de11cf43d79c",
         "scripts/lib/validate_runtime.rs": "721df0c7330851ea4cc09516d3ee6a4f680943b3",
         "scripts/validate.rs": "062d52b04e70c066d40bf5d89c7a7ee4f2a3c51e"
+      }
+    },
+    {
+      "id": "pre-rrnewton-hermit-pr-2946",
+      "registered_at": "2d3876bdf5d310eb4cd55e7a3613d3dbc39bdc5c",
+      "coverage_status": "complete",
+      "valid_commits": [
+        "2d3876bdf5d310eb4cd55e7a3613d3dbc39bdc5c"
+      ],
+      "definition": {
+        ".config/nextest.toml": "5754a6d6983000ded67562250cedcc6c1ce53cf5",
+        ".github/workflows/ci-portable.yml": "78167c8dccfa757a5348d96d479f72b1c8e63a3d",
+        "ci/run-nextest-counted.sh": "ca88efe6d3d270881ecbe7205373f642369ce53d",
+        "scripts/lib/validate_history.rs": "fb5bda65ac9ceb16bd7ded72c4f8f1b1b1615bde",
+        "scripts/lib/validate_plan.rs": "820806e5a50d7044175ed8d0822b1fe979e2358d",
+        "scripts/lib/validate_receipt.rs": "15fa8d4b4ecdf89bdeb6ce33f460de11cf43d79c",
+        "scripts/lib/validate_runtime.rs": "721df0c7330851ea4cc09516d3ee6a4f680943b3",
+        "scripts/validate.rs": "5c72a835bd766af63e35b9219eac077c1b927db7"
       }
     }
   ]
