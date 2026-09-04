@@ -141,6 +141,8 @@ fi
 
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 ROOT=$(cd -- "$SCRIPT_DIR/../.." && pwd)
+# This shared boundary clears ambient Git repository selectors before the first
+# checkout query below and before every detached/inner child is spawned.
 source "$SCRIPT_DIR/worktree-mutation-fence.sh"
 if [ -n "$CHECKOUT" ]; then
   WT=$(cd -- "$CHECKOUT" 2>/dev/null && pwd) || {

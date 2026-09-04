@@ -4,6 +4,7 @@ from __future__ import annotations
 import importlib.util
 import io
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -28,6 +29,33 @@ TEST_ENVIRONMENT = {
     "DEV_HERMIT_PARENT": str(P.ROOT),
     "DEV_HERMIT_TOOL_PARENT_SHA": PARENT,
 }
+
+
+def git(
+    path: Path, *arguments: object, capture: bool = False
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["git", "-C", str(path), *(str(argument) for argument in arguments)],
+        check=True,
+        capture_output=capture,
+        text=True,
+    )
+
+
+def create_repo(path: Path, marker: str) -> str:
+    path.mkdir()
+    subprocess.run(
+        ["git", "init", "-b", "main", str(path)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    git(path, "config", "user.name", "Test User")
+    git(path, "config", "user.email", "test@example.com")
+    (path / "marker").write_text(marker)
+    git(path, "add", "marker")
+    git(path, "commit", "-m", marker, capture=True)
+    return git(path, "rev-parse", "HEAD^{commit}", capture=True).stdout.strip()
 
 
 class FakeRun:
@@ -164,7 +192,7 @@ class PrHeadCiTest(unittest.TestCase):
         self.assertIn("--materialize-target", command)
         self.assertNotEqual(command[0], str(P.ROOT / "ci-hub/ci-hub"))
 
-    def test_operational_tool_child_drops_ambient_git_repository_selectors(self):
+    def test_every_child_drops_ambient_git_repository_selectors(self):
         hostile = {
             **TEST_ENVIRONMENT,
             "PATH": "/safe/bin",
@@ -180,16 +208,12 @@ class PrHeadCiTest(unittest.TestCase):
         rc = P.main(self.args("--execute"), run=run, environment=hostile)
 
         self.assertEqual(0, rc)
-        validation_index = next(
-            index
-            for index, command in enumerate(run.commands)
-            if "validate-run" in command
-        )
-        child = run.environments[validation_index]
-        self.assertIsNotNone(child)
-        assert child is not None
-        self.assertEqual("/safe/bin", child["PATH"])
-        self.assertTrue(P.git_env.GIT_REPOSITORY_ENV.isdisjoint(child))
+        for command, child in zip(run.commands, run.environments, strict=True):
+            with self.subTest(command=command):
+                self.assertIsNotNone(child)
+                assert child is not None
+                self.assertEqual("/safe/bin", child["PATH"])
+                self.assertTrue(P.git_env.GIT_REPOSITORY_ENV.isdisjoint(child))
 
     def test_launch_descriptor_binds_canonical_state_identity_and_executing_head(self):
         run = FakeRun()
@@ -208,37 +232,6 @@ class PrHeadCiTest(unittest.TestCase):
             P.immutable_tool_launch(environment=environment, run=FakeRun())
 
     def test_launch_descriptor_ignores_ambient_git_repository_redirects(self):
-        def create_repo(path: Path, marker: str) -> str:
-            path.mkdir()
-            subprocess.run(
-                ["git", "init", "-b", "main", str(path)],
-                check=True,
-                capture_output=True,
-                text=True,
-            )
-            subprocess.run(
-                ["git", "-C", str(path), "config", "user.name", "Test User"],
-                check=True,
-            )
-            subprocess.run(
-                ["git", "-C", str(path), "config", "user.email", "test@example.com"],
-                check=True,
-            )
-            (path / "marker").write_text(marker)
-            subprocess.run(["git", "-C", str(path), "add", "marker"], check=True)
-            subprocess.run(
-                ["git", "-C", str(path), "commit", "-m", marker],
-                check=True,
-                capture_output=True,
-                text=True,
-            )
-            return subprocess.run(
-                ["git", "-C", str(path), "rev-parse", "HEAD^{commit}"],
-                check=True,
-                capture_output=True,
-                text=True,
-            ).stdout.strip()
-
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             canonical = root / "canonical"
@@ -261,6 +254,188 @@ class PrHeadCiTest(unittest.TestCase):
             self.assertEqual(canonical.resolve(), launch.state_root)
             self.assertEqual(canonical_head, launch.parent_sha)
             self.assertNotEqual(wrong_head, launch.parent_sha)
+
+    def test_full_pr_head_authority_ignores_real_repository_redirect(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            canonical = root / "canonical"
+            wrong = root / "wrong"
+            create_repo(canonical, "canonical")
+            wrong_head = create_repo(wrong, "wrong")
+            authority = canonical / "ci-hub/ci-hub"
+            authority.parent.mkdir()
+            authority.write_text(
+                """#!/usr/bin/env python3
+import json
+import pathlib
+import subprocess
+import sys
+
+root = pathlib.Path(__file__).resolve().parents[1]
+marker = subprocess.run(
+    ["git", "-C", str(root), "show", "HEAD:marker"],
+    check=True,
+    capture_output=True,
+    text=True,
+).stdout.strip()
+if marker != "canonical":
+    print(f"redirected authority read: {marker}", file=sys.stderr)
+    raise SystemExit(2)
+validated = (root / "validated").is_file()
+print(json.dumps({"verdict": "VALIDATED" if validated else "NOT-VALIDATED"}))
+raise SystemExit(0 if validated else 4)
+"""
+            )
+            authority.chmod(0o755)
+            git(canonical, "add", "ci-hub/ci-hub")
+            git(canonical, "commit", "-m", "authority fixture", capture=True)
+            canonical_head = git(
+                canonical, "rev-parse", "HEAD^{commit}", capture=True
+            ).stdout.strip()
+            hostile = {
+                **dict(os.environ),
+                "HOME": str(root / "home"),
+                "DEV_HERMIT_PARENT": str(canonical),
+                "DEV_HERMIT_TOOL_PARENT_SHA": canonical_head,
+                "GIT_DIR": str(wrong / ".git"),
+                "GIT_WORK_TREE": str(wrong),
+            }
+            seen_environments: list[dict[str, str]] = []
+            fake = FakeRun(heads=[OLD, OLD])
+
+            def run(command, **kwargs):
+                command = list(command)
+                child_environment = kwargs.get("env", hostile)
+                seen_environments.append(dict(child_environment))
+                if command[0] == "git" or command[0] == str(authority):
+                    return subprocess.run(
+                        command,
+                        check=kwargs.get("check", False),
+                        capture_output=True,
+                        text=True,
+                        env=child_environment,
+                    )
+                if "validate-run" in command:
+                    (canonical / "validated").write_text("yes\n")
+                return fake(command, **{**kwargs, "env": child_environment})
+
+            arguments = [
+                "--repo",
+                "rrnewton/hermit",
+                "--pr",
+                "7",
+                "--expected-head",
+                OLD,
+                "--checkout",
+                str(canonical),
+                "--agent",
+                "agent",
+                "--execute",
+            ]
+            with mock.patch.object(P, "ROOT", canonical):
+                rc = P.main(arguments, run=run, environment=hostile)
+
+            self.assertEqual(0, rc)
+            self.assertNotEqual(canonical_head, wrong_head)
+            self.assertTrue(seen_environments)
+            self.assertTrue(
+                all(
+                    P.git_env.GIT_REPOSITORY_ENV.isdisjoint(environment)
+                    for environment in seen_environments
+                )
+            )
+
+    def test_shell_git_selector_set_matches_python_authority(self):
+        helper = P.ROOT / "ci-hub/landing/worktree-mutation-fence.sh"
+        result = subprocess.run(
+            [
+                "bash",
+                "-c",
+                'source "$1"; printf "%s\\n" "${LANDER_GIT_REPOSITORY_ENV[@]}"',
+                "git-env-contract",
+                str(helper),
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(
+            P.git_env.GIT_REPOSITORY_ENV, frozenset(result.stdout.splitlines())
+        )
+
+    def test_land_pr_entry_ignores_real_repository_redirect(self):
+        lander = P.ROOT / "ci-hub/landing/land-pr.sh"
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            canonical = root / "canonical"
+            wrong = root / "wrong"
+            create_repo(canonical, "canonical")
+            create_repo(wrong, "wrong")
+            git(
+                canonical,
+                "remote",
+                "add",
+                "origin",
+                "https://github.com/rrnewton/hermit.git",
+            )
+            git(
+                wrong,
+                "remote",
+                "add",
+                "origin",
+                "https://github.com/attacker/wrong.git",
+            )
+            commands = root / "bin"
+            commands.mkdir()
+            with_proxy = commands / "with-proxy"
+            proxy_environment = root / "with-proxy-environment"
+            checks = "\n".join(
+                f'if [ "${{{name}+x}}" = x ]; then state=hostile; fi'
+                for name in sorted(P.git_env.GIT_REPOSITORY_ENV)
+            )
+            with_proxy.write_text(
+                "#!/usr/bin/env bash\n"
+                "state=clean\n"
+                f"{checks}\n"
+                'printf "%s\\n" "$state" >"$PROXY_ENV_MARKER"\n'
+                "exit 91\n"
+            )
+            with_proxy.chmod(0o755)
+            fence = root / "mutation.state"
+            hostile = {
+                **dict(os.environ),
+                "PATH": f"{commands}:{os.environ['PATH']}",
+                "PROXY_ENV_MARKER": str(proxy_environment),
+                "GIT_DIR": str(wrong / ".git"),
+                "GIT_WORK_TREE": str(wrong),
+            }
+
+            result = subprocess.run(
+                [
+                    str(lander),
+                    "7",
+                    "feature",
+                    "--repo",
+                    "rrnewton/hermit",
+                    "--checkout",
+                    str(canonical),
+                    "--foreground",
+                    "--_inner",
+                    "--_mutation-fence",
+                    str(fence),
+                    "--_mutation-token",
+                    "ab" * 16,
+                ],
+                text=True,
+                capture_output=True,
+                timeout=20,
+                env=hostile,
+            )
+
+            self.assertEqual(2, result.returncode, result.stderr)
+            self.assertIn("ABANDON: fetch origin/main failed", result.stdout)
+            self.assertNotIn("checkout origin", result.stderr)
+            self.assertEqual("clean\n", proxy_environment.read_text())
 
     def test_lander_does_not_move_caller_checkout_for_jit(self):
         script = (P.ROOT / "ci-hub/landing/land-pr.sh").read_text(encoding="utf-8")
@@ -299,6 +474,7 @@ class PrHeadCiTest(unittest.TestCase):
         helper = P.ROOT / "ci-hub/landing/worktree-mutation-fence.sh"
         with tempfile.TemporaryDirectory() as temporary:
             repo = Path(temporary) / "repo"
+            wrong = Path(temporary) / "wrong"
             subprocess.run(
                 ["git", "init", "-b", "main", str(repo)],
                 check=True,
@@ -334,6 +510,12 @@ class PrHeadCiTest(unittest.TestCase):
                     capture_output=True,
                     text=True,
                 )
+            create_repo(wrong, "wrong")
+            hostile = {
+                **dict(os.environ),
+                "GIT_DIR": str(wrong / ".git"),
+                "GIT_WORK_TREE": str(wrong),
+            }
 
             harness = r'''
 set -uo pipefail
@@ -388,6 +570,7 @@ lander_restore_owned_checkout "$checkout" main 0 "$entry" "$fence" "$token" 1
                         check=True,
                         capture_output=True,
                         text=True,
+                        env=hostile,
                     )
                     branch = subprocess.run(
                         ["git", "-C", str(repo), "symbolic-ref", "--short", "HEAD"],

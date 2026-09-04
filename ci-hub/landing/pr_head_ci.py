@@ -275,14 +275,27 @@ def main(
     parser.add_argument("--execute", action="store_true")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
-    environment = os.environ if environment is None else environment
+    environment = git_env.sanitized_git_env(
+        os.environ if environment is None else environment
+    )
+
+    # Bind every child in this authority path to the same scrubbed environment.
+    # Git repository selectors override even explicit ``git -C`` arguments, and
+    # validate-status itself locates the workspace through Git.  Sanitizing only
+    # the eventual validator would therefore leave both canonical reads and the
+    # live-identity/approval boundaries redirectable.
+    def child_run(
+        command: Sequence[str], **kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        kwargs["env"] = environment
+        return run(command, **kwargs)
 
     if args.pr <= 0 or not full_sha(args.expected_head):
         print("pr-head-ci: REFUSED: --pr must be positive and --expected-head exact 40-hex", file=sys.stderr)
         return 2
     expected = args.expected_head.lower()
     try:
-        before = live_pr(args.repo, args.pr, run=run)
+        before = live_pr(args.repo, args.pr, run=child_run)
         if before.state != "OPEN":
             emit("UNKNOWN", repo=args.repo, pr=args.pr, head=expected,
                  detail=f"PR state is {before.state}, not OPEN", as_json=args.json)
@@ -292,7 +305,7 @@ def main(
                  detail=f"expected head {expected} moved before admission", as_json=args.json)
             return 4
 
-        verdict, _ = canonical_status(args.repo, expected, run=run)
+        verdict, _ = canonical_status(args.repo, expected, run=child_run)
         if verdict == "VALIDATED":
             emit("VALIDATED", repo=args.repo, pr=args.pr, head=expected,
                  detail="canonical exact-head receipt already qualifies", as_json=args.json)
@@ -309,11 +322,10 @@ def main(
             emit("NO_RESULT", repo=args.repo, pr=args.pr, head=expected,
                  detail="draft PR is not at the landing frontier", as_json=args.json)
             return 4
-        require_current_approval(args.repo, args.pr, run=run)
+        require_current_approval(args.repo, args.pr, run=child_run)
 
-        launch = immutable_tool_launch(environment=environment, run=run)
-        validation_environment = git_env.sanitized_git_env(environment)
-        validation = run(
+        launch = immutable_tool_launch(environment=environment, run=child_run)
+        validation = child_run(
             validate_command(
                 args.repo,
                 args.pr,
@@ -323,7 +335,6 @@ def main(
                 launch=launch,
             ),
             check=False,
-            env=validation_environment,
         )
         if validation.returncode != 0:
             # The canonical reread below supplies the product verdict, while a
@@ -335,12 +346,12 @@ def main(
                     sys.stderr.write(output)
             sys.stderr.flush()
 
-        after = live_pr(args.repo, args.pr, run=run)
+        after = live_pr(args.repo, args.pr, run=child_run)
         if after.head != expected:
             emit("SUPERSEDED", repo=args.repo, pr=args.pr, head=after.head,
                  detail=f"validation was bound to {expected}; live head moved and has no inherited verdict", as_json=args.json)
             return 4
-        verdict, _ = canonical_status(args.repo, expected, run=run)
+        verdict, _ = canonical_status(args.repo, expected, run=child_run)
         if validation.returncode == 75:
             emit(
                 "NO_RESULT",

@@ -7,6 +7,23 @@
 # atomic rename. A restorer acts only when its token, checkout, entry state, and
 # current state all match; any later external change is left untouched.
 
+# Keep this exact set synchronized with ci-hub/lib/git_env.py. These selectors
+# override even `git -C <checkout>` and are inherited by every Git subprocess.
+# Sourcing the fence is the shell authority boundary used by both land-pr and
+# standalone union-rebase, so clear them before either can inspect a checkout.
+LANDER_GIT_REPOSITORY_ENV=(
+  GIT_INDEX_FILE
+  GIT_DIR
+  GIT_WORK_TREE
+  GIT_COMMON_DIR
+  GIT_OBJECT_DIRECTORY
+  GIT_ALTERNATE_OBJECT_DIRECTORIES
+  GIT_NAMESPACE
+  GIT_PREFIX
+  GIT_INDEX_VERSION
+)
+unset "${LANDER_GIT_REPOSITORY_ENV[@]}"
+
 lander_checkout_state() {
   local checkout=$1 ref head status
   ref=$(git -C "$checkout" symbolic-ref -q --short HEAD 2>/dev/null || echo DETACHED)

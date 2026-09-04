@@ -50,6 +50,9 @@ done
 # Resolve the parent-repo resolver relative to this script, not a hardcoded home.
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 PARENT_ROOT=$(cd -- "$SCRIPT_DIR/../.." && pwd)
+# Standalone callers receive the same repository-selector scrub as land-pr,
+# before this script's first Git operation.
+source "$SCRIPT_DIR/worktree-mutation-fence.sh"
 RESOLVER="$PARENT_ROOT/scripts/e2e-union-resolve.py"
 RESULT_HELPER="$SCRIPT_DIR/union_rebase_result.py"
 WIP="_uwip_$$"           # PID-unique wip branch: no fleet-wide collision
@@ -57,7 +60,6 @@ cd "$WT" || exit 9
 
 record_mutation() {
   [ -n "${LANDER_MUTATION_FENCE:-}" ] || return 0
-  source "$SCRIPT_DIR/worktree-mutation-fence.sh"
   lander_record_checkout_mutation \
     "${LANDER_MUTATION_CHECKOUT:-$WT}" \
     "${LANDER_MUTATION_ENTRY_STATE:-}" \

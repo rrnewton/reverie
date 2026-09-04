@@ -23,6 +23,39 @@ SHA_C = "c" * 40
 SHA_D = "d" * 40
 
 
+def git(path: Path, *arguments: object) -> None:
+    subprocess.run(
+        ["git", "-C", str(path), *(str(argument) for argument in arguments)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+
+def repository_with_remote(
+    root: Path, name: str, *, feature: str | None = None
+) -> tuple[Path, Path]:
+    remote = root / f"{name}.git"
+    checkout = root / name
+    subprocess.run(["git", "init", "--bare", "-q", remote], check=True)
+    subprocess.run(["git", "init", "-q", checkout], check=True)
+    git(checkout, "config", "user.email", "test@example.com")
+    git(checkout, "config", "user.name", "Test")
+    (checkout / "README").write_text(f"{name} main\n", encoding="utf-8")
+    git(checkout, "add", "README")
+    git(checkout, "commit", "-q", "-m", f"{name} main")
+    git(checkout, "branch", "-M", "main")
+    git(checkout, "remote", "add", "origin", remote)
+    git(checkout, "push", "-q", "-u", "origin", "main")
+    if feature is not None:
+        git(checkout, "checkout", "-q", "-b", feature)
+        (checkout / "README").write_text(f"{name} feature\n", encoding="utf-8")
+        git(checkout, "add", "README")
+        git(checkout, "commit", "-q", "-m", f"{name} feature")
+        git(checkout, "push", "-q", "-u", "origin", feature)
+    return remote, checkout
+
+
 def current(**changes: object) -> dict[str, object]:
     row: dict[str, object] = {
         "schema_version": 1,
@@ -58,34 +91,16 @@ class UnionRebaseResultTest(unittest.TestCase):
     def test_producer_writes_a_typed_fetch_refusal(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            remote = root / "remote.git"
-            checkout = root / "checkout"
+            _remote, checkout = repository_with_remote(root, "checkout")
+            _wrong_remote, wrong = repository_with_remote(
+                root, "wrong", feature="missing-branch"
+            )
             result_path = root / "result.json"
-            subprocess.run(["git", "init", "--bare", "-q", remote], check=True)
-            subprocess.run(["git", "init", "-q", checkout], check=True)
-            subprocess.run(
-                ["git", "-C", checkout, "config", "user.email", "test@example.com"],
-                check=True,
-            )
-            subprocess.run(
-                ["git", "-C", checkout, "config", "user.name", "Test"], check=True
-            )
-            (checkout / "README").write_text("fixture\n", encoding="utf-8")
-            subprocess.run(["git", "-C", checkout, "add", "README"], check=True)
-            subprocess.run(
-                ["git", "-C", checkout, "commit", "-q", "-m", "fixture"], check=True
-            )
-            subprocess.run(
-                ["git", "-C", checkout, "branch", "-M", "main"], check=True
-            )
-            subprocess.run(
-                ["git", "-C", checkout, "remote", "add", "origin", str(remote)],
-                check=True,
-            )
-            subprocess.run(
-                ["git", "-C", checkout, "push", "-q", "origin", "main"], check=True
-            )
-            env = dict(os.environ)
+            env = {
+                **dict(os.environ),
+                "GIT_DIR": str(wrong / ".git"),
+                "GIT_WORK_TREE": str(wrong),
+            }
             run = subprocess.run(
                 [
                     str(HERE / "union-rebase.sh"),
