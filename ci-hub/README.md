@@ -250,6 +250,13 @@ ci-hub review-attest --repo rrnewton/hermit --pr 1234 \
   --round 1 --who hermit-coordinator --team hermit2
 ```
 
+An unattributed review remains visible but cannot be attested. Do not weaken the
+identity check, edit the old comment, or wait for its original author: another
+independent reviewer may inspect the exact current head and publish their own
+verdict through `ci-hub/bin/gh` with its validated five-field disclosure. A
+different coordinator then attests that new comment. A moved head still requires
+a fresh review.
+
 Approval and refusal both apply the numbered `adversarial-review-<family><N>`
 activity label. Approval additionally applies `passed-review-<family>`; refusal
 removes that approval label if it is present. The accepted families, rounds,

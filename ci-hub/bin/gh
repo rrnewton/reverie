@@ -87,7 +87,12 @@ MALFORMED_FIVE_FIELD_RE = re.compile(
     r"role=[^\]\n]+\](?=\n|\Z)"
 )
 LEGACY_DISCLOSURE_RE = re.compile(
-    r"^(?:\[[^,\]\n]+, [^,\]\n]+, [^,\]\n]+, role=[^\]\n]+\]"
+    # The first alternative is the oldest role/model-only tag. It cannot name
+    # an agent, so accepting it as pre-attributed would make later review
+    # attestation impossible. After it is removed, the writer supplies the
+    # canonical tag instead.
+    r"^(?:\[(?:impl agent|adversarial-reviewer agent|coordinator|Human), [^\]\n]+\]"
+    r"|\[[^,\]\n]+, [^,\]\n]+, [^,\]\n]+, role=[^\]\n]+\]"
     r"|\[[^,\]\n]+, [^\]\n]+\] \[[^,\]\n]+, [^\]\n]+\])"
 )
 

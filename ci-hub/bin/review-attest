@@ -218,9 +218,18 @@ def _verify_reviewer_comment(args: argparse.Namespace, runner: Runner) -> None:
     if not isinstance(body, str):
         raise RuntimeError("reviewer comment has no readable body")
     issuer = approval_authority.comment_issuer(body)
-    if issuer is None or issuer.casefold() != args.reviewer.casefold():
+    if issuer is None:
         raise RuntimeError(
-            f"reviewer comment issuer is {issuer or 'missing'}, expected {args.reviewer}"
+            "reviewer comment issuer is missing, expected "
+            f"{args.reviewer}; the comment cannot be attested and must remain visible. "
+            "Do not wait for the original reviewer: another independent reviewer may "
+            "evaluate the exact current head and publish their own verdict through "
+            "ci-hub/bin/gh with a validated five-field disclosure. A different "
+            "coordinator can then attest the new comment"
+        )
+    if issuer.casefold() != args.reviewer.casefold():
+        raise RuntimeError(
+            f"reviewer comment issuer is {issuer}, expected {args.reviewer}"
         )
 
     markers = [

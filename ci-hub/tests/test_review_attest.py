@@ -24,6 +24,10 @@ SPEC.loader.exec_module(R)
 HEAD = "a" * 40
 COMMENT_ID = "5432109876"
 COMMENT_URL = f"https://github.com/rrnewton/hermit/pull/42#issuecomment-{COMMENT_ID}"
+SUCCESSOR_COMMENT_ID = "6543210987"
+SUCCESSOR_COMMENT_URL = (
+    f"https://github.com/rrnewton/hermit/pull/42#issuecomment-{SUCCESSOR_COMMENT_ID}"
+)
 BASE_ARGS = [
     "--pr", "42",
     "--head", HEAD,
@@ -44,6 +48,7 @@ class FakeGh:
         heads: list[str] | None = None,
         missing: dict[str, set[str]] | None = None,
         comment_body: str | None = None,
+        comment_url: str = COMMENT_URL,
         pr_labels: set[str] | None = None,
     ) -> None:
         self.heads = iter(heads or [HEAD, HEAD, HEAD])
@@ -57,6 +62,7 @@ class FakeGh:
             f"[hermit2, codex-2, unresolved, devbig014, role=reviewer]\n"
             f"APPROVED-AT: codex {HEAD}"
         )
+        self.comment_url = comment_url
         self.pr_labels = set(pr_labels or ())
 
     def __call__(self, args: list[str], **_: object) -> subprocess.CompletedProcess[str]:
@@ -73,7 +79,7 @@ class FakeGh:
                 }
             )
         elif args[1] == "api":
-            out = json.dumps({"html_url": COMMENT_URL, "body": self.comment_body})
+            out = json.dumps({"html_url": self.comment_url, "body": self.comment_body})
         elif args[1:3] == ["pr", "edit"]:
             for index, arg in enumerate(args):
                 if arg == "--add-label":
@@ -186,6 +192,42 @@ def assert_exact_reviewer_comment_is_required() -> None:
     )
 
 
+def assert_unattributed_review_refuses_and_independent_successor_attests() -> None:
+    invalid = FakeGh(
+        comment_body=(
+            "[adversarial-reviewer agent, gpt-5.6-sol]\n"
+            f"APPROVED-AT: codex {HEAD}"
+        )
+    )
+    stderr = io.StringIO()
+    with redirect_stderr(stderr):
+        assert R.main(BASE_ARGS, invalid) == 1
+    refusal = stderr.getvalue().casefold()
+    assert "reviewer comment issuer is missing" in refusal
+    assert "do not wait for the original reviewer" in refusal
+    assert "another independent reviewer" in refusal
+    assert all(
+        "comment" not in call and call[1:3] != ["pr", "edit"]
+        for call in invalid.calls
+    )
+
+    successor = "codex-9"
+    replacement = FakeGh(
+        comment_body=(
+            f"[hermit2, {successor}, unresolved, devbig014, role=reviewer]\n"
+            f"APPROVED-AT: codex {HEAD}"
+        ),
+        comment_url=SUCCESSOR_COMMENT_URL,
+    )
+    args = replace_arg(BASE_ARGS, "--comment-url", SUCCESSOR_COMMENT_URL)
+    args = replace_arg(args, "--reviewer", successor)
+    assert R.main(args, replacement) == 0
+    attestation = next(call for call in replacement.calls if "comment" in call)
+    body = attestation[attestation.index("--body") + 1]
+    assert f"reviewer: {successor}" in body
+    assert f"review-comment: {SUCCESSOR_COMMENT_URL}" in body
+
+
 def assert_missing_label_and_head_drift_refuse() -> None:
     missing = FakeGh(missing={"rrnewton/reverie": {"adversarial-review-codex4"}})
     assert R.main(BASE_ARGS, missing) == 1
@@ -244,6 +286,7 @@ def main() -> None:
     assert_refusal_records_activity_without_approval()
     assert_critical_path()
     assert_exact_reviewer_comment_is_required()
+    assert_unattributed_review_refuses_and_independent_successor_attests()
     assert_missing_label_and_head_drift_refuse()
     assert_named_reviewer_cannot_self_attest()
     assert_family_validation_mutation_is_observable()
@@ -251,6 +294,7 @@ def main() -> None:
         "review-attest: unknown-family-refusal=1/1 round-outcome-refusal=2/2 "
         "repository-contract=2/2 approval=1/1 refusal=1/1 "
         "critical=1/1 exact-comment-refusal=1/1 "
+        "unattributed-refusal=1/1 successor-recovery=1/1 "
         "missing-label-refusal=1/1 head-drift-refusal=1/1 "
         "reviewer-self-attestation-refusal=1/1 mutation=1/1"
     )

@@ -904,6 +904,16 @@ class FleetGhTest(unittest.TestCase):
         self.assertIn("legacy who-is-talking prefix", result.stderr)
         self.assertFalse(self.capture.exists())
 
+    def test_legacy_role_model_prefix_is_refused_not_nested(self) -> None:
+        result = self.run_shim(
+            *self.identity(role="reviewer"),
+            "pr", "comment", "42", "--body",
+            "[adversarial-reviewer agent, gpt-5.6-sol]\nold review",
+        )
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("legacy who-is-talking prefix", result.stderr)
+        self.assertFalse(self.capture.exists())
+
     def test_malformed_five_field_prefix_is_refused_not_nested(self) -> None:
         result = self.run_shim(
             *self.identity(), "pr", "comment", "42", "--body",
