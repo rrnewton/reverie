@@ -119,6 +119,20 @@ impl Tool for InstructionTool {
 }
 
 #[derive(Default)]
+struct CpuidTool;
+
+#[reverie::tool]
+impl Tool for CpuidTool {
+    type GlobalState = super::CounterGlobal;
+    type ThreadState = ();
+    fn subscriptions(_: &()) -> Subscription {
+        let mut subscriptions = Subscription::default();
+        subscriptions.cpuid();
+        subscriptions
+    }
+}
+
+#[derive(Default)]
 struct VdsoTool;
 
 #[reverie::tool]
@@ -135,7 +149,7 @@ unsafe extern "C" fn text_site() -> i64 {
     core::arch::naked_asm!("syscall", "ret");
 }
 
-fn deny_ptrace() {
+pub(super) fn deny_ptrace() {
     let mut instructions = [
         libc::sock_filter {
             code: 0x20,
@@ -250,8 +264,59 @@ fn probe(site: usize, number: i64, expected: i64) {
 
 extern "C" fn unused_handler(_: i32) {}
 
+fn install_refusal_tool<T>(path: &Path, bootstrap: bool) -> std::io::Result<()>
+where
+    T: Tool + 'static,
+{
+    unsafe {
+        if bootstrap {
+            reverie_liteinst::install_tool_from_bootstrap_with_mode::<T>(
+                path,
+                SyscallMode::UserDispatchWithoutPatching,
+            )
+        } else {
+            reverie_liteinst::install_tool_with_mode::<T>(
+                path,
+                SyscallMode::UserDispatchWithoutPatching,
+            )
+        }
+    }
+}
+
 pub(super) fn run(path: &Path, mode: &str) {
     deny_ptrace();
+    if mode == "sud-cpuid-public" {
+        let read_mask = || {
+            let mut mask = 0u64;
+            assert_eq!(
+                unsafe {
+                    raw_syscall6(
+                        libc::SYS_rt_sigprocmask,
+                        [0, 0, (&raw mut mask) as u64, 8, 0, 0],
+                    )
+                },
+                0
+            );
+            mask
+        };
+        let original_mask = read_mask();
+        let original_cpuid = unsafe { raw_syscall6(libc::SYS_arch_prctl, [0x1011, 0, 0, 0, 0, 0]) };
+        let error = unsafe {
+            reverie_liteinst::install_tool_with_mode::<CpuidTool>(
+                path,
+                SyscallMode::UserDispatchWithoutPatching,
+            )
+        }
+        .unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::Unsupported);
+        assert_eq!(read_mask(), original_mask);
+        assert_eq!(
+            unsafe { raw_syscall6(libc::SYS_arch_prctl, [0x1011, 0, 0, 0, 0, 0]) },
+            original_cpuid
+        );
+        println!("sud-cpuid-public: refused before activation mask=preserved");
+        return;
+    }
     if mode == "sud-ptrace-control" {
         unsafe { raw_syscall6(libc::SYS_ptrace, [0; 6]) };
         panic!("ptrace denial failed");
@@ -270,50 +335,32 @@ pub(super) fn run(path: &Path, mode: &str) {
         super::sud_masks::policy_probe(path, mode);
         return;
     }
-    if mode == "sud-clock" {
+    let (refusal_mode, bootstrap_refusal) = mode
+        .strip_prefix("bootstrap-")
+        .map_or((mode, false), |mode| (mode, true));
+    if refusal_mode == "sud-clock" {
         let prior = unsafe { reverie_liteinst::__clock_constructor_begin() };
-        let result = unsafe {
-            reverie_liteinst::install_tool_with_mode::<RawTool>(
-                path,
-                SyscallMode::UserDispatchWithoutPatching,
-            )
-        };
+        let result = install_refusal_tool::<RawTool>(path, bootstrap_refusal);
         unsafe { reverie_liteinst::__clock_constructor_finish(0, prior) };
         assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::Unsupported);
-        println!("sud-clock: refused");
+        println!("{mode}: refused");
         return;
     }
-    if mode == "sud-handler" {
+    if refusal_mode == "sud-handler" {
         assert_ne!(
             unsafe { libc::signal(libc::SIGUSR1, unused_handler as *const () as usize) },
             libc::SIG_ERR
         );
-        let error = unsafe {
-            reverie_liteinst::install_tool_with_mode::<RawTool>(
-                path,
-                SyscallMode::UserDispatchWithoutPatching,
-            )
-        }
-        .unwrap_err();
+        let error = install_refusal_tool::<RawTool>(path, bootstrap_refusal).unwrap_err();
         assert_eq!(error.kind(), std::io::ErrorKind::Unsupported);
-        println!("sud-handler: refused");
+        println!("{mode}: refused");
         return;
     }
-    if mode == "sud-instructions" || mode == "sud-vdso" {
-        let result = if mode == "sud-instructions" {
-            unsafe {
-                reverie_liteinst::install_tool_with_mode::<InstructionTool>(
-                    path,
-                    SyscallMode::UserDispatchWithoutPatching,
-                )
-            }
+    if refusal_mode == "sud-instructions" || refusal_mode == "sud-vdso" {
+        let result = if refusal_mode == "sud-instructions" {
+            install_refusal_tool::<InstructionTool>(path, bootstrap_refusal)
         } else {
-            unsafe {
-                reverie_liteinst::install_tool_with_mode::<VdsoTool>(
-                    path,
-                    SyscallMode::UserDispatchWithoutPatching,
-                )
-            }
+            install_refusal_tool::<VdsoTool>(path, bootstrap_refusal)
         };
         assert_eq!(result.unwrap_err().kind(), std::io::ErrorKind::Unsupported);
         println!("{mode}: refused");
@@ -329,13 +376,28 @@ pub(super) fn run(path: &Path, mode: &str) {
     let page = unsafe { libc::sysconf(libc::_SC_PAGESIZE) } as usize;
     let page_end = mapped_site(page - 2, 2);
     let page_bytes = snapshot(page_end - (page - 2), 2 * page);
-    unsafe {
-        reverie_liteinst::install_tool_with_mode::<RawTool>(
-            path,
-            SyscallMode::UserDispatchWithoutPatching,
-        )
+    if mode == "sud-bootstrap-only" {
+        unsafe {
+            std::env::set_var(reverie_liteinst::COORDINATOR_ENV, "guest-value");
+            reverie_liteinst::install_tool_from_bootstrap_with_mode::<RawTool>(
+                path,
+                SyscallMode::UserDispatchWithoutPatching,
+            )
+        }
+        .unwrap();
+        assert_eq!(
+            std::env::var(reverie_liteinst::COORDINATOR_ENV).unwrap(),
+            "guest-value"
+        );
+    } else {
+        unsafe {
+            reverie_liteinst::install_tool_with_mode::<RawTool>(
+                path,
+                SyscallMode::UserDispatchWithoutPatching,
+            )
+        }
+        .unwrap();
     }
-    .unwrap();
     if mode == "sud-x32" {
         unsafe { libc::syscall(0x4000_0000 | libc::SYS_getpid) };
         panic!("x32 was decoded as native");
@@ -346,7 +408,7 @@ pub(super) fn run(path: &Path, mode: &str) {
         }
         panic!("compat was decoded as native");
     }
-    assert_eq!(mode, "sud-only");
+    assert!(matches!(mode, "sud-only" | "sud-bootstrap-only"));
     assert_eq!(unsafe { libc::syscall(-1i64) }, -1);
     assert_eq!(unsafe { *libc::__errno_location() }, libc::ENOSYS);
     let anonymous = mapped_site(32, 1);
@@ -393,6 +455,6 @@ pub(super) fn run(path: &Path, mode: &str) {
         (0, 0, 0, 0)
     );
     println!(
-        "sud-only: guest_probes=15 rpc=16 bytes=unchanged abi=preserved timer_requests_refused=6 injected_fork=refused {stats:?}"
+        "{mode}: guest_probes=15 rpc=16 bytes=unchanged abi=preserved timer_requests_refused=6 injected_fork=refused {stats:?}"
     );
 }

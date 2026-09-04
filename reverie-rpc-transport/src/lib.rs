@@ -65,6 +65,7 @@
 
 mod blocking_client;
 pub mod codec;
+pub mod guest_log;
 
 mod client;
 mod envelope;
@@ -75,6 +76,10 @@ pub use blocking_client::BlockingRpcClient;
 pub use client::RpcClient;
 pub use envelope::RequestEnvelope;
 pub use error::RpcError;
+pub use server::ConnectionFailure;
+pub use server::ConnectionIssue;
 pub use server::ConnectionMonitor;
+pub use server::PanicPayload;
+pub use server::RpcIssueMonitor;
 pub use server::RpcServer;
 pub use server::serve_connection;

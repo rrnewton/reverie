@@ -2,18 +2,12 @@
 
 use std::ffi::OsStr;
 use std::ffi::OsString;
-use std::fs::File;
 use std::future::Future;
 use std::io;
-use std::io::Write;
-use std::mem::MaybeUninit;
 use std::os::fd::AsRawFd;
-use std::os::fd::FromRawFd;
-use std::os::fd::OwnedFd;
-use std::os::unix::ffi::OsStrExt;
-use std::os::unix::ffi::OsStringExt;
 use std::os::unix::process::CommandExt;
 use std::os::unix::process::ExitStatusExt;
+#[cfg(test)]
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Output;
@@ -37,208 +31,154 @@ use reverie_rpc_transport::ConnectionMonitor;
 use reverie_rpc_transport::RpcError;
 use reverie_rpc_transport::RpcServer;
 
-/// Environment variable naming the tool-specific preload DSO for a backend run.
-pub const TOOL_PRELOAD_ENV: &str = "REVERIE_LITEINST_TOOL_PRELOAD";
-/// Environment variable passed to legacy tool preloads with the coordinator path.
-///
-/// The tool-data launcher uses a sealed inherited bootstrap instead.
-pub const COORDINATOR_ENV: &str = "REVERIE_LITEINST_COORDINATOR";
-/// Environment variable naming the optional, stats-only coordinator socket.
-pub const STATS_COORDINATOR_ENV: &str = "REVERIE_LITEINST_STATS_COORDINATOR";
+mod logged;
+pub use logged::LoggedRunError;
+pub use logged::owned::PreparedCommand;
+pub use logged::run_evidence;
+use reverie_liteinst_runtime::bootstrap::*;
 
-const PRELOAD_BOOTSTRAP_MAGIC: &[u8; 16] = b"REVERIE-LI-V1\0\0\0";
-const LOG_BOOTSTRAP_MAGIC: &[u8; 16] = b"REVERIE-LI-V2\0\0\0";
-const PRELOAD_BOOTSTRAP_HEADER_BYTES: usize = PRELOAD_BOOTSTRAP_MAGIC.len() + 4;
-const PRELOAD_BOOTSTRAP_MAX_BYTES: usize = 4096;
 const RPC_CONNECTION_DRAIN_TIMEOUT: Duration = Duration::from_secs(30);
-
-// TODO-HUMAN-REVIEW(PR-139): Review the public inherited preload bootstrap contract.
-/// Coordinator path and tool-specific bytes consumed by a preload constructor.
-pub struct PreloadBootstrap {
-    /// Unix-domain socket path for the generic tool coordinator.
-    pub coordinator: PathBuf,
-    /// Opaque bytes supplied by the tool-specific coordinator launcher.
-    pub tool_data: Vec<u8>,
-    /// Optional protected logging channel authenticated by the sealed bootstrap.
-    pub log: Option<crate::GuestLog>,
-}
-
-// TODO-HUMAN-REVIEW(PR-139): Review the public inherited preload bootstrap consumer.
-/// Consumes the inherited generic-tool bootstrap, if one is present.
-///
-/// # Safety
-///
-/// Call only from a preload constructor launched by LiteinstBackend; this scans
-/// inherited descriptors and consumes only a sealed, protocol-matching memfd.
-pub unsafe fn take_preload_bootstrap() -> io::Result<Option<PreloadBootstrap>> {
-    let mut found = Vec::new();
-    for entry in std::fs::read_dir("/proc/self/fd")? {
-        let entry = entry?;
-        let Some(fd) = entry
-            .file_name()
-            .to_str()
-            .and_then(|name| name.parse::<libc::c_int>().ok())
-        else {
-            continue;
-        };
-        if fd <= libc::STDERR_FILENO {
-            continue;
-        }
-        match read_preload_bootstrap(fd) {
-            Ok(Some(bootstrap)) => {
-                found.push((unsafe { OwnedFd::from_raw_fd(fd) }, bootstrap));
-            }
-            Ok(None) => {}
-            Err(error) => {
-                let _matching_fd = unsafe { OwnedFd::from_raw_fd(fd) };
-                return Err(error);
-            }
-        }
-    }
-    match found.len() {
-        0 => Ok(None),
-        1 => {
-            let (_fd, bootstrap) = found.pop().unwrap();
-            Ok(Some(bootstrap))
-        }
-        _ => Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "multiple LiteInst preload bootstraps",
-        )),
-    }
-}
-
-fn read_preload_bootstrap(fd: libc::c_int) -> io::Result<Option<PreloadBootstrap>> {
-    let required_seals =
-        libc::F_SEAL_SEAL | libc::F_SEAL_SHRINK | libc::F_SEAL_GROW | libc::F_SEAL_WRITE;
-    let seals = unsafe { libc::fcntl(fd, libc::F_GET_SEALS) };
-    if seals == -1 || seals & required_seals != required_seals {
-        return Ok(None);
-    }
-
-    let mut stat = MaybeUninit::<libc::stat>::uninit();
-    if unsafe { libc::fstat(fd, stat.as_mut_ptr()) } == -1 {
-        return Ok(None);
-    }
-    let size = match usize::try_from(unsafe { stat.assume_init() }.st_size) {
-        Ok(size)
-            if (PRELOAD_BOOTSTRAP_HEADER_BYTES..=PRELOAD_BOOTSTRAP_MAX_BYTES).contains(&size) =>
-        {
-            size
-        }
-        _ => return Ok(None),
-    };
-    let mut packet = vec![0_u8; size];
-    let read = unsafe { libc::pread(fd, packet.as_mut_ptr().cast(), packet.len(), 0) };
-    let magic = packet.get(..PRELOAD_BOOTSTRAP_MAGIC.len());
-    let logged = magic == Some(LOG_BOOTSTRAP_MAGIC);
-    if read != size as isize || (!logged && magic != Some(PRELOAD_BOOTSTRAP_MAGIC)) {
-        return Ok(None);
-    }
-
-    let lengths = &packet[PRELOAD_BOOTSTRAP_MAGIC.len()..PRELOAD_BOOTSTRAP_HEADER_BYTES];
-    let path_len = u16::from_le_bytes([lengths[0], lengths[1]]) as usize;
-    let data_len = u16::from_le_bytes([lengths[2], lengths[3]]) as usize;
-    let log_bytes = if logged {
-        crate::guest_log::IDENTITY_BYTES
-    } else {
-        0
-    };
-    if packet.len() != PRELOAD_BOOTSTRAP_HEADER_BYTES + path_len + data_len + log_bytes
-        || path_len == 0
-    {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "invalid LiteInst preload bootstrap lengths",
-        ));
-    }
-    let path_end = PRELOAD_BOOTSTRAP_HEADER_BYTES + path_len;
-    Ok(Some(PreloadBootstrap {
-        coordinator: PathBuf::from(OsString::from_vec(
-            packet[PRELOAD_BOOTSTRAP_HEADER_BYTES..path_end].to_vec(),
-        )),
-        tool_data: packet[path_end..path_end + data_len].to_vec(),
-        log: if logged {
-            Some(unsafe { crate::guest_log::from_identity(&packet[path_end + data_len..]) }?)
-        } else {
-            None
-        },
-    }))
-}
-
-fn create_preload_bootstrap(coordinator: &Path, tool_data: &[u8]) -> io::Result<OwnedFd> {
-    create_logged_preload_bootstrap(coordinator, tool_data, None)
-}
-
-fn create_logged_preload_bootstrap(
-    coordinator: &Path,
-    tool_data: &[u8],
-    log_fd: Option<i32>,
-) -> io::Result<OwnedFd> {
-    let path = coordinator.as_os_str().as_bytes();
-    let path_len = u16::try_from(path.len()).map_err(|_| {
-        io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "LiteInst coordinator path exceeds the bootstrap limit",
-        )
-    })?;
-    let data_len = u16::try_from(tool_data.len()).map_err(|_| {
-        io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "LiteInst tool bootstrap data exceeds the bootstrap limit",
-        )
-    })?;
-    let mut packet =
-        Vec::with_capacity(PRELOAD_BOOTSTRAP_HEADER_BYTES + path.len() + tool_data.len());
-    packet.extend_from_slice(if log_fd.is_some() {
-        LOG_BOOTSTRAP_MAGIC
-    } else {
-        PRELOAD_BOOTSTRAP_MAGIC
-    });
-    packet.extend_from_slice(&path_len.to_le_bytes());
-    packet.extend_from_slice(&data_len.to_le_bytes());
-    packet.extend_from_slice(path);
-    packet.extend_from_slice(tool_data);
-    if let Some(fd) = log_fd {
-        packet.extend_from_slice(&crate::guest_log::identity(fd)?);
-    }
-    if packet.len() > PRELOAD_BOOTSTRAP_MAX_BYTES {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "LiteInst preload bootstrap exceeds its size limit",
-        ));
-    }
-
-    let fd = unsafe {
-        libc::memfd_create(
-            c"reverie-liteinst-bootstrap".as_ptr(),
-            libc::MFD_CLOEXEC | libc::MFD_ALLOW_SEALING,
-        )
-    };
-    if fd == -1 {
-        return Err(io::Error::last_os_error());
-    }
-    let mut file = unsafe { File::from_raw_fd(fd) };
-    file.write_all(&packet)?;
-    let seals = libc::F_SEAL_SEAL | libc::F_SEAL_SHRINK | libc::F_SEAL_GROW | libc::F_SEAL_WRITE;
-    if unsafe { libc::fcntl(file.as_raw_fd(), libc::F_ADD_SEALS, seals) } == -1 {
-        return Err(io::Error::last_os_error());
-    }
-    Ok(file.into())
-}
 
 // TODO-HUMAN-REVIEW(PR-127): Review LiteInst Backend lifecycle and preload contract.
 /// Online LiteInst backend with a coordinator-owned `GlobalTool`.
 pub struct LiteinstBackend;
 
 impl LiteinstBackend {
+    pub fn prepare_with_owned_configuration<T, O, F>(
+        command: PreparedCommand<O>,
+        config: <T::GlobalState as GlobalTool>::Config,
+        tool_data: Vec<u8>,
+        sink: reverie_rpc_transport::guest_log::LogSink,
+        mode: run_evidence::StdioMode,
+        configure: F,
+    ) -> (
+        run_evidence::RunObserver,
+        impl Future<Output = Result<(Output, T::GlobalState), LoggedRunError>>,
+    )
+    where
+        T: Tool + 'static,
+        O: Send + 'static,
+        F: FnOnce(
+                &mut O,
+                &std::process::Command,
+                &mut <T::GlobalState as GlobalTool>::Config,
+            ) -> Result<(), Error>
+            + Send
+            + 'static,
+    {
+        logged::owned::prepare_configured::<T, O, F>(
+            command, config, tool_data, sink, mode, configure,
+        )
+    }
+
+    pub fn prepare_with_owned_command_data_and_log_sink<T, O>(
+        command: PreparedCommand<O>,
+        config: <T::GlobalState as GlobalTool>::Config,
+        tool_data: impl Into<Vec<u8>>,
+        sink: reverie_rpc_transport::guest_log::LogSink,
+        mode: run_evidence::StdioMode,
+    ) -> (
+        run_evidence::RunObserver,
+        impl Future<Output = Result<(Output, T::GlobalState), LoggedRunError>>,
+    )
+    where
+        T: Tool + 'static,
+        O: Send + 'static,
+    {
+        logged::owned::prepare::<T, O>(command, config, tool_data.into(), sink, mode)
+    }
+
+    /// Buffered logging with caller-owned evidence outside this future's lifetime.
+    /// Application stdin is unchanged; stdout and stderr are captured separately.
+    pub fn run_with_output_and_preload_data_and_log_sink<T>(
+        command: Command,
+        config: <T::GlobalState as GlobalTool>::Config,
+        preload: impl Into<PathBuf>,
+        tool_data: impl Into<Vec<u8>>,
+        sink: reverie_rpc_transport::guest_log::LogSink,
+    ) -> impl Future<Output = Result<(Output, T::GlobalState), LoggedRunError>>
+    where
+        T: Tool + 'static,
+    {
+        Self::prepare_with_output_and_preload_data_and_log_sink::<T>(
+            command, config, preload, tool_data, sink,
+        )
+        .1
+    }
+
+    pub fn prepare_with_output_and_preload_data_and_log_sink<T>(
+        mut command: Command,
+        config: <T::GlobalState as GlobalTool>::Config,
+        preload: impl Into<PathBuf>,
+        tool_data: impl Into<Vec<u8>>,
+        sink: reverie_rpc_transport::guest_log::LogSink,
+    ) -> (
+        run_evidence::RunObserver,
+        impl Future<Output = Result<(Output, T::GlobalState), LoggedRunError>>,
+    )
+    where
+        T: Tool + 'static,
+    {
+        command.stdout(ReverieStdio::piped());
+        command.stderr(ReverieStdio::piped());
+        logged::prepare_run::<T>(
+            command,
+            config,
+            preload.into(),
+            tool_data.into(),
+            sink,
+            run_evidence::StdioMode::Captured,
+        )
+    }
+
+    /// Buffered logs without redirecting or re-emitting any inherited stdio.
+    pub fn run_with_inherited_stdio_and_preload_data_and_log_sink<T>(
+        command: Command,
+        config: <T::GlobalState as GlobalTool>::Config,
+        preload: impl Into<PathBuf>,
+        tool_data: impl Into<Vec<u8>>,
+        sink: reverie_rpc_transport::guest_log::LogSink,
+    ) -> impl Future<Output = Result<(Output, T::GlobalState), LoggedRunError>>
+    where
+        T: Tool + 'static,
+    {
+        Self::prepare_with_inherited_stdio_and_preload_data_and_log_sink::<T>(
+            command, config, preload, tool_data, sink,
+        )
+        .1
+    }
+
+    pub fn prepare_with_inherited_stdio_and_preload_data_and_log_sink<T>(
+        mut command: Command,
+        config: <T::GlobalState as GlobalTool>::Config,
+        preload: impl Into<PathBuf>,
+        tool_data: impl Into<Vec<u8>>,
+        sink: reverie_rpc_transport::guest_log::LogSink,
+    ) -> (
+        run_evidence::RunObserver,
+        impl Future<Output = Result<(Output, T::GlobalState), LoggedRunError>>,
+    )
+    where
+        T: Tool + 'static,
+    {
+        inherit_stdio(&mut command);
+        logged::prepare_run::<T>(
+            command,
+            config,
+            preload.into(),
+            tool_data.into(),
+            sink,
+            run_evidence::StdioMode::Inherited,
+        )
+    }
+
     /// Runs a typed preload with a bounded, separately retained guest log.
     ///
     /// The constructor must install the bootstrap log before its Tool. A missing
     /// completion frame, transport failure, or truncation is returned in `log.error`,
     /// even when the application exits successfully. Such logs cannot qualify parity.
     pub async fn run_with_output_and_preload_data_and_log<T>(
-        mut command: Command,
+        command: Command,
         config: <T::GlobalState as GlobalTool>::Config,
         preload: impl Into<PathBuf>,
         tool_data: impl Into<Vec<u8>>,
@@ -247,22 +187,28 @@ impl LiteinstBackend {
     where
         T: Tool + 'static,
     {
-        command.stdout(reverie::process::Stdio::piped());
-        command.stderr(reverie::process::Stdio::piped());
-        let (wait, global, _, log) = launch_logged::<T>(
-            command,
-            config,
-            preload.into(),
-            true,
-            Some(tool_data.into()),
-            BackendStatsRequest::DISABLED,
-            Some(log_limit),
+        let (sink, handle) = reverie_rpc_transport::guest_log::retained_log(
+            reverie_rpc_transport::guest_log::Options::bounded(log_limit),
+        );
+        let (output, global) = Self::run_with_output_and_preload_data_and_log_sink::<T>(
+            command, config, preload, tool_data, sink,
         )
-        .await?;
-        match wait {
-            ChildWait::Output(output) => Ok((output, global, log.expect("log requested"))),
-            ChildWait::Status(_) => unreachable!("output run returned only a status"),
-        }
+        .await
+        .map_err(|error| Error::from(io::Error::other(error)))?;
+        let report = handle.snapshot();
+        let error = if report.streams.len() > 1 {
+            Some("multi-producer diagnostic concatenation is not canonical order; use the retained sink API".to_owned())
+        } else if !report.qualifies() {
+            Some(format!("{report:?}"))
+        } else {
+            None
+        };
+        let bytes = report
+            .streams
+            .into_iter()
+            .flat_map(|stream| stream.bytes)
+            .collect();
+        Ok((output, global, crate::CapturedGuestLog { bytes, error }))
     }
 
     /// Runs a Tool under the ptrace-owned LiteInst hybrid runtime.
@@ -646,17 +592,27 @@ fn configure_in_guest_command_preload(command: &mut Command, preload: PathBuf) {
 
 fn configure_in_guest_address_space(command: &mut Command) {
     unsafe {
-        command.pre_exec(|| {
-            let current = libc::personality(0xffff_ffff);
-            if current == -1 {
-                return Err(reverie::syscalls::Errno::last());
-            }
-            let personality = current as libc::c_ulong | libc::ADDR_NO_RANDOMIZE as libc::c_ulong;
-            if libc::personality(personality) == -1 {
-                return Err(reverie::syscalls::Errno::last());
-            }
-            Ok(())
-        });
+        command.pre_exec(set_in_guest_address_space);
+    }
+}
+
+fn configure_owned_in_guest_address_space(command: &mut std::process::Command) {
+    unsafe {
+        command.pre_exec(|| set_in_guest_address_space().map_err(Into::into));
+    }
+}
+
+fn set_in_guest_address_space() -> Result<(), reverie::syscalls::Errno> {
+    unsafe {
+        let current = libc::personality(0xffff_ffff);
+        if current == -1 {
+            return Err(reverie::syscalls::Errno::last());
+        }
+        let personality = current as libc::c_ulong | libc::ADDR_NO_RANDOMIZE as libc::c_ulong;
+        if libc::personality(personality) == -1 {
+            return Err(reverie::syscalls::Errno::last());
+        }
+        Ok(())
     }
 }
 
@@ -1087,6 +1043,83 @@ fn tool_preload_path() -> io::Result<PathBuf> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn buffered_bootstrap_preserves_closed_stdin() {
+        const CHILD: &str = "REVERIE_TEST_BUFFERED_CLOSED_STDIN";
+        if std::env::var_os(CHILD).is_some() {
+            let (_host, guest) = reverie_rpc_transport::guest_log::channel_pair(
+                reverie_rpc_transport::guest_log::Options::bounded(1024),
+            )
+            .unwrap();
+            assert_eq!(unsafe { libc::close(libc::STDIN_FILENO) }, 0);
+            let packet = super::create_log_bootstrap(
+                std::path::Path::new("/tmp/rpc"),
+                b"tool",
+                Some(guest.as_raw_fd()),
+                true,
+            )
+            .unwrap();
+            assert!(packet.as_raw_fd() > libc::STDERR_FILENO);
+            assert_eq!(
+                unsafe { libc::fcntl(libc::STDIN_FILENO, libc::F_GETFD) },
+                -1
+            );
+            assert_eq!(
+                std::io::Error::last_os_error().raw_os_error(),
+                Some(libc::EBADF)
+            );
+            return;
+        }
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "backend::tests::buffered_bootstrap_preserves_closed_stdin",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains("1 passed"),
+            "{output:?}"
+        );
+    }
+    #[test]
+    fn buffered_guest_log_bootstrap_is_distinct_and_round_trips() {
+        use std::os::fd::AsRawFd;
+        use std::os::fd::IntoRawFd;
+        let (host, guest) = reverie_rpc_transport::guest_log::channel_pair(
+            reverie_rpc_transport::guest_log::Options::bounded(1024),
+        )
+        .unwrap();
+        let fd = guest.into_raw_fd();
+        let packet =
+            super::create_log_bootstrap(std::path::Path::new("/tmp/rpc"), b"tool", Some(fd), true)
+                .unwrap();
+        let mut magic = [0u8; 16];
+        assert_eq!(
+            unsafe {
+                libc::pread(
+                    packet.as_raw_fd(),
+                    magic.as_mut_ptr().cast(),
+                    magic.len(),
+                    0,
+                )
+            },
+            16
+        );
+        assert_eq!(&magic, super::BUFFERED_LOG_BOOTSTRAP_MAGIC);
+        assert_ne!(&magic, super::LOG_BOOTSTRAP_MAGIC);
+        let decoded = super::read_preload_bootstrap(packet.as_raw_fd())
+            .unwrap()
+            .unwrap();
+        assert_eq!(decoded.coordinator, std::path::Path::new("/tmp/rpc"));
+        assert_eq!(decoded.tool_data, b"tool");
+        assert!(decoded.log.is_some());
+        drop(decoded);
+        drop(host);
+    }
     #[test]
     fn guest_log_bootstrap_round_trip() {
         use std::os::fd::AsRawFd;

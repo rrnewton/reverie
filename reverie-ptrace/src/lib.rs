@@ -52,7 +52,6 @@ mod task;
 pub mod testing;
 mod timer;
 mod tracer;
-mod validation;
 mod vdso;
 
 pub use backend::PtraceBackend;
@@ -65,11 +64,12 @@ pub use injected_syscall::InjectedSyscallFrame;
 pub use liteinst_stats::LiteinstInstrumentationStats;
 pub use liteinst_stats::LiteinstInstrumentationStatsHandle;
 pub use perf::is_perf_supported;
+pub use reverie::pmu::PmuConfig;
+pub use reverie::pmu::set_pmu_config;
+pub use reverie::ret_without_perf;
 pub use stats::PtraceBackendStatsSnapshot;
 pub use stats::PtraceBackendStatsSource;
-pub use timer::PmuConfig;
 pub use timer::SKID_OVERSHOOT_MARKER;
-pub use timer::set_pmu_config;
 pub use tracer::GdbConnection;
 pub use tracer::Tracer;
 pub use tracer::TracerBuilder;
@@ -77,3 +77,23 @@ pub use tracer::spawn_fn;
 pub use tracer::spawn_fn_with_config;
 pub use vdso::VdsoSyscallSite;
 pub use vdso::patch_current_vdso;
+
+#[cfg(test)]
+mod pmu_reexport_tests {
+    #[test]
+    fn old_paths_have_shared_type_identity() {
+        fn same_type<Shared: 'static, Legacy: 'static>() {
+            assert_eq!(
+                std::any::TypeId::of::<Shared>(),
+                std::any::TypeId::of::<Legacy>()
+            );
+        }
+
+        same_type::<reverie::pmu::InGuestRcbCounter, super::InGuestRcbCounter>();
+        same_type::<reverie::pmu::InGuestRcbTimer, super::InGuestRcbTimer>();
+        same_type::<reverie::pmu::InGuestRcbDeadline, super::InGuestRcbDeadline>();
+        same_type::<reverie::pmu::InGuestRcbDeadlineStatus, super::InGuestRcbDeadlineStatus>();
+        same_type::<reverie::pmu::InGuestRcbSample, super::InGuestRcbSample>();
+        same_type::<reverie::pmu::PmuConfig, super::PmuConfig>();
+    }
+}

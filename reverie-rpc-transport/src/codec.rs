@@ -92,11 +92,30 @@ pub async fn read_message<R>(reader: &mut R, max_len: usize) -> Result<Vec<u8>, 
 where
     R: AsyncRead + Unpin,
 {
+    read_message_with_eof_policy(reader, max_len, false).await
+}
+
+pub(crate) async fn read_message_with_eof_policy<R>(
+    reader: &mut R,
+    max_len: usize,
+    retain_partial_header: bool,
+) -> Result<Vec<u8>, RpcError>
+where
+    R: AsyncRead + Unpin,
+{
     let mut header = [0u8; 4];
-    match reader.read_exact(&mut header).await {
+    let offset = if retain_partial_header {
+        if reader.read(&mut header[..1]).await? == 0 {
+            return Err(RpcError::Closed);
+        }
+        1
+    } else {
+        0
+    };
+    match reader.read_exact(&mut header[offset..]).await {
         Ok(_) => {}
         // A clean EOF *before any byte of the header* is a graceful close.
-        Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
+        Err(e) if !retain_partial_header && e.kind() == std::io::ErrorKind::UnexpectedEof => {
             return Err(RpcError::Closed);
         }
         Err(e) => return Err(RpcError::Io(e)),

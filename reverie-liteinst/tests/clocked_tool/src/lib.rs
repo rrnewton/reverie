@@ -15,6 +15,11 @@ use reverie::syscalls::Sysno;
 use reverie_preload::clock_boundary::Continuation;
 use reverie_preload::trap::raw_syscall6;
 
+#[cfg(all(feature = "logged-inactive", feature = "logged-clocked"))]
+compile_error!("select exactly one logged fixture startup profile");
+#[cfg(any(feature = "logged-inactive", feature = "logged-clocked"))]
+pub mod logged;
+
 static WORK: AtomicU64 = AtomicU64::new(0);
 static CALLBACKS: AtomicU64 = AtomicU64::new(0);
 static NOTIFICATIONS: AtomicU64 = AtomicU64::new(0);
@@ -149,7 +154,7 @@ impl Drop for Cleanup {
     }
 }
 
-#[derive(Default)]
+#[derive(Debug, Default)]
 pub struct ClockGlobal;
 
 #[reverie::global_tool]
@@ -158,13 +163,25 @@ impl GlobalTool for ClockGlobal {
     type Response = u64;
     type Config = ();
 
+    async fn init_global_state(_: &()) -> Self {
+        #[cfg(any(feature = "logged-inactive", feature = "logged-clocked"))]
+        logged::v4::global_init();
+        Self
+    }
+
     async fn receive_rpc(&self, _from: reverie::Tid, request: u64) -> u64 {
+        #[cfg(any(feature = "logged-inactive", feature = "logged-clocked"))]
+        logged::v4::rpc_entry(request);
+        #[cfg(any(feature = "logged-inactive", feature = "logged-clocked"))]
+        logged::GLOBAL_RPCS.fetch_add(1, Ordering::Relaxed);
+        #[cfg(any(feature = "logged-inactive", feature = "logged-clocked"))]
+        assert_ne!(request, u64::MAX, "logged fixture RPC failure after prefix");
         request + 1
     }
 }
 
 #[derive(Default)]
-struct ClockTool;
+pub struct ClockTool;
 
 async fn sample<G: Guest<ClockTool>>(guest: &mut G) -> u64 {
     let _cleanup = Cleanup;
@@ -274,6 +291,10 @@ impl Tool for ClockTool {
     }
 
     fn subscriptions(_config: &()) -> Subscription {
+        #[cfg(any(feature = "logged-inactive", feature = "logged-clocked"))]
+        if logged::selected() {
+            return [Sysno::getpid].into_iter().collect();
+        }
         let mut subscriptions: Subscription = [Sysno::getpid, Sysno::getuid].into_iter().collect();
         if SUD.load(Ordering::Relaxed) == 0 || FORCE_INSTRUCTION.load(Ordering::Relaxed) != 0 {
             subscriptions.rdtsc();
@@ -286,6 +307,10 @@ impl Tool for ClockTool {
         guest: &mut G,
         syscall: Syscall,
     ) -> Result<i64, Error> {
+        #[cfg(any(feature = "logged-inactive", feature = "logged-clocked"))]
+        if logged::selected() {
+            return logged::callback(guest, syscall).await;
+        }
         if syscall.number() == Sysno::getpid {
             Ok(sample(guest).await as i64)
         } else {
@@ -302,6 +327,19 @@ impl Tool for ClockTool {
             tsc: sample(guest).await,
             aux: None,
         })
+    }
+
+    async fn on_exit_process<R: reverie::GlobalRPC<Self::GlobalState>>(
+        self,
+        _pid: Pid,
+        _rpc: &R,
+        _status: reverie::ExitStatus,
+    ) -> Result<(), Error> {
+        #[cfg(any(feature = "logged-inactive", feature = "logged-clocked"))]
+        if logged::selected() {
+            logged::verify_exit();
+        }
+        Ok(())
     }
 }
 
@@ -492,7 +530,13 @@ unsafe fn install_notification() -> bool {
     true
 }
 
-unsafe extern "C" fn initialize() -> i32 {
+/// # Safety
+/// Called only by the existing clocked constructor before application threads.
+pub unsafe extern "C" fn initialize() -> i32 {
+    #[cfg(feature = "logged-clocked")]
+    if let Some(result) = unsafe { logged::initialize() } {
+        return result;
+    }
     let Some(socket) = std::env::var_os("CLOCK_FIXTURE_SOCKET") else {
         return 0;
     };
@@ -645,4 +689,21 @@ unsafe extern "C" fn initialize() -> i32 {
     1
 }
 
+#[cfg(not(feature = "logged-inactive"))]
 reverie_liteinst::clocked_initializer!(CLOCK_FIXTURE_INIT, initialize);
+
+#[cfg(feature = "logged-inactive")]
+#[used]
+#[unsafe(link_section = ".init_array")]
+static LOG_INACTIVE_INIT: unsafe extern "C" fn() = {
+    unsafe extern "C" fn ordinary() {
+        if let Some(result) = unsafe { logged::initialize() }
+            && result != 1
+        {
+            unsafe {
+                libc::_exit(127);
+            }
+        }
+    }
+    ordinary
+};

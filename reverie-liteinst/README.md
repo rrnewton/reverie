@@ -4,7 +4,80 @@
 standalone `liteinst2` patching library, the shared `reverie-preload` runtime,
 and `reverie-rpc-transport`.
 
+The in-process implementation now lives once in `reverie-liteinst-runtime`;
+this package reexports its existing runtime APIs and retains the coordinator,
+all inherent `LiteinstBackend` methods, command configuration and cdylib target.
+Host tracer launches and backtrace support remain here. Custom tool runtimes
+can depend directly on the leaf with default features disabled; see the leaf
+README for initialization, linkage and Cargo export synchronization obligations.
+
 ## Event path
+
+### Retained guest logs
+
+`retained_guest_log::retained_log(Options::bounded(byte_limit))` returns a
+single-use sink and a caller-owned handle. Pass the sink to
+`LiteinstBackend::run_with_output_and_preload_data_and_log_sink` or
+`run_with_inherited_stdio_and_preload_data_and_log_sink`. Keep the handle outside
+the cancelled future and Tokio runtime. Captured stdin keeps its configured
+behavior; captured stdout/stderr remain separate exact byte streams. Inherited
+stdio uses the actual inherited descriptors, not host re-emission. No-log APIs
+retain their existing behavior. The older captured-log convenience delegates to
+this path; errors retain a `LoggedRunError` inside the Reverie I/O error.
+
+The V3 sealed bootstrap and `RLG3` descriptor handshake attach one fixed shared
+mapping with bounded per-process rings. Both host and preload must be rebuilt
+together; V2 packet logs do not fall back to or decode as V3 buffered records.
+The shared implementation is in `reverie-rpc-transport::guest_log`, separate from
+synchronous GlobalRPC; no per-record ACK or host-determined Tool ordering is
+introduced. Free slots accept BEGIN/DATA/END publication; Full retries the same
+frame under the process writer lock. Waiting uses the trusted gate only with the
+existing guest counter paused (or no active/requested counter). It does not reset,
+subtract from, or drive guest virtual time. Exhaustion/failure is not successful
+logging. Reentry fails explicitly. Actual retained RPC failures have 64 reserved
+evidence slots shared with outstanding connections; capacity exhaustion refuses
+another dispatch rather than discarding an original cause. Default RPC handling
+is unchanged, including its historical partial-header EOF limitation.
+
+Snapshots keep complete bytes, unfinished fragments, producer incarnation/order,
+unread-frame counts, original RPC causes, run state and collection state. The
+snapshots separately retain the first rejected committed frame per producer:
+its exact 40-byte header fields and up to 256 declared payload bytes, with an
+explicit omitted-byte count. This diagnostic budget is separate from canonical
+bytes and accepted fragments; it does not make an invalid stream complete. Clean
+collection requires all registrations/resolved forks and FINISH records **plus
+real lifetime peer closure** and no failure. FINISH, root reaping, ring emptiness
+and whole-tree exit are not interchangeable. The endpoint stays protected through
+process teardown and admitted COW forks; failed forks consume tombstones, while a
+successful fork followed by wait failure remains a real child. Exec/image handoff
+is not added. SUD-only private admissions remain single-thread/no-fork.
+
+Use a handle-bound per-producer `cursor().write_to(...)` to advance only for bytes
+actually written; destination failure retains the remaining bytes and a failure
+status. The destination's file budget is still the caller's shared budget, not a
+new allowance per publication. Multiple producer streams are not concatenated
+into a deterministic canonical order. The old convenience API labels its
+multi-producer concatenation diagnostic-only. `Report::qualifies()` requires
+clean collection and run completion; it does not establish backend parity.
+
+Both logged adapters await cancellation-aware collector readiness before spawning
+the producer. A saturated blocking pool therefore cannot strand a published
+prefix behind a revocable queued collector. Common transport users must likewise
+wait for readiness before independently scheduling producers (exclusive,
+non-cancellable synchronous prepopulation is a separate startup contract).
+Cancellation revokes a queued collector before it can append, or requests a
+single non-resetting 30-second drain deadline from the active collector. Root
+kill/reap and stdio/RPC drains have separate bounded waits. Runtime destruction
+can leave reaping unknown. Arbitrary blocking `pre_exec` callbacks remain
+synchronous and cannot be made cancellable by this API. Mappings and additional
+descriptors (above fd2), formatter allocations, TLS/cache activity, backpressure
+and startup allocation order remain guest perturbations; they are not invisible.
+The byte limit bounds retained logical record data, not exact host RSS (snapshots
+and publication copies also consume bounded memory). Native buffered logging
+under instrumentation/clock pressure still needs independent qualification;
+this change does not port DBT or admit additional Detcore capabilities.
+
+### Instruction and syscall dispatch
 
 1. A tool-specific DSO calls `install_tool::<T>` from its preload constructor.
    It connects to the coordinator and receives `T::GlobalState::Config` before
@@ -214,6 +287,9 @@ counters (round 7); LiteInst hosts its own dispatcher rather than the shared
 The unsafe `install_tool_with_mode` API can select
 `SyscallMode::UserDispatchWithoutPatching`. Existing installation APIs still use
 seccomp and retain optional site patching. There is no Hermit CLI activation.
+The environment-preserving `install_tool_from_bootstrap_with_mode` API accepts
+the same explicit mode without removing a caller-provided coordinator variable;
+`install_tool_from_bootstrap` still selects `SeccompWithPatching`.
 This bounded mode handles native x86-64 syscall instructions after installation:
 validated SUD enters the existing deferred fallback, returns through the trusted
 kernel signal restorer, then runs the shared Tool driver and coordinator RPC in
@@ -271,6 +347,27 @@ compat), subscription/signal/clock refusal and inherited ptrace denial. These ar
 typed raw-syscall Tool tests, not Hermit Detcore, L2, deterministic time or corpus
 coverage evidence. vDSO fast paths, nondeterministic instructions and legacy
 vsyscall fault emulation are not established by the syscall fixture.
+
+### Private owned syscall qualification
+
+The default-off `test-owned-cpuid` feature also exposes the unsafe finite
+`__install_owned_syscall_timer_fixture` contract. It admits only native x86-64
+`getpid` and ready bounded pipe `read`, optionally alongside the existing private
+instruction subscriptions. Authentic SUD frames transfer to the same owned
+runtime, Tool/thread state, CoordinatorRPC and direct return as precise timers.
+The syscall number comes from siginfo; saved RIP is already the continuation.
+Only RAX is edited for a result. An authenticated pending SYSCALL cancels rather
+than retires a step; owned TF removal from flags/R11 checks the exact profile.
+
+Unarmed SIGSYS must be qualified before armed ordering on each native profile.
+Unexpected sources or clobbers fail closed and retain bounded raw frame evidence.
+The new tests use real native injection, a distinct second pipe block as the
+once-only read oracle, full seeded XSAVE comparisons, and complete clock vectors
+across first ThreadStart, syscall/timer callbacks, and final guest return. Evidence
+collection after that return holds a terminal-only runtime guard until exit.
+No public/default capability, blocking/restart/lifecycle/vDSO support, arbitrary
+TF stepping, Detcore first-event or CLI qualification follows. Existing original
+zero/unseeded FP comparison obligations are unchanged and remain unresolved.
 
 ## Corpus sweep scorecard
 

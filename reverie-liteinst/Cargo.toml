@@ -12,7 +12,9 @@ crate-type = ["cdylib", "rlib"]
 
 [features]
 default = ["preload-constructor"]
-preload-constructor = []
+preload-constructor = ["reverie-liteinst-runtime/preload-constructor"]
+test-owned-cpuid = ["reverie-liteinst-runtime/test-owned-cpuid"]
+test-guest-log = ["reverie-rpc-transport/test-guest-log", "reverie-liteinst-runtime/test-guest-log"]
 
 [[bin]]
 name = "reverie-liteinst-strace"
@@ -27,6 +29,8 @@ name = "reverie-liteinst-lifecycle-guest"
 path = "src/bin/lifecycle_guest.rs"
 
 [dependencies]
+reverie-liteinst-runtime = { version = "0.2.0", path = "../reverie-liteinst-runtime", default-features = false }
+iced-x86 = { version = "=1.21.0", default-features = false, features = ["std", "decoder", "instr_info"] }
 bincode = { version = "2", features = ["serde"] }
 libc = "0.2.186"
 liteinst2 = { version = "0.1.0", git = "https://github.com/rrnewton/liteinst2", rev = "95ee5e6917fa33191eb41c3f1606ea8b03c1b78c" }
@@ -35,13 +39,18 @@ reverie-preload = { version = "0.2.0", path = "../reverie-preload", default-feat
 reverie-ptrace = { version = "0.2.0", path = "../reverie-ptrace" }
 reverie-rpc-transport = { version = "0.2.0", path = "../reverie-rpc-transport" }
 serde = { version = "1.0.219", features = ["derive"] }
-tokio = { version = "1.52.4", features = ["macros", "net", "rt", "time"] }
+tokio = { version = "1.52.4", features = ["io-util", "macros", "net", "process", "rt", "time"] }
 tempfile = "3.27.0"
 tracing = "0.1.41"
 
 [dev-dependencies]
 tokio = { version = "1.52.4", features = ["test-util"] }
 tracing-subscriber = "0.3.23"
+
+[[bin]]
+name = "reverie-liteinst-owned-compiled-step"
+path = "src/bin/owned_compiled_step.rs"
+required-features = ["test-owned-cpuid"]
 
 [[bin]]
 name = "reverie-liteinst-trap-count-guest"

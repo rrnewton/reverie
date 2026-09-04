@@ -6,9 +6,863 @@ const STANDARD: Format = Format::StandardXsave {
     xfeatures: 7,
     xstate_size: 832,
 };
+const MODELED_PC: u64 = 0x10be;
+
+fn modeled_context(flags: u64) -> ModeledReadContext {
+    ModeledReadContext {
+        pc: MODELED_PC,
+        general: [
+            0x0808_0808_0808_0808,
+            0x0909_0909_0909_0909,
+            0x1010_1010_1010_1010,
+            0x1111_1111_1111_1111,
+            0x1212_1212_1212_1212,
+            0x1313_1313_1313_1313,
+            0x1414_1414_1414_1414,
+            0x1515_1515_1515_1515,
+            0xd1d1_d1d1_d1d1_d1d1,
+            0x5151_5151_5151_5151,
+            0xbaba_baba_baba_baba,
+            0xbbbb_bbbb_bbbb_bbbb,
+            0xd2d2_d2d2_d2d2_d2d2,
+            0xaaaa_aaaa_aaaa_aaaa,
+            0xcccc_cccc_cccc_cccc,
+            0x5a5a_5a5a_5a5a_5a5a,
+        ],
+        flags,
+    }
+}
+
+fn modeled_image<'destination>(
+    actual: ModeledReadContext,
+    destination: &'destination mut Storage,
+) -> RelocatedFrame<'destination> {
+    let mut source = fixture(FRAME, FLOATING, STANDARD);
+    for (index, register) in actual.general.into_iter().enumerate() {
+        put_u64(&mut source.0, FRAME + GENERAL_OFFSET + index * 8, register);
+    }
+    put_u64(&mut source.0, FRAME + 176, actual.pc);
+    put_u64(&mut source.0, FRAME + 184, actual.flags);
+    let address = source.0.as_ptr() as usize + FRAME;
+    relocate(
+        &source.0,
+        address,
+        address + 8,
+        STANDARD,
+        &mut destination.0,
+    )
+    .unwrap()
+}
+
+fn assert_modeled_refusal(
+    actual: ModeledReadContext,
+    expected: ModeledReadContext,
+    operation: ModeledReadOperation,
+    value: ModeledReadValue,
+    error: Error,
+) {
+    let mut destination = Storage([0xa7; 2048]);
+    let image = modeled_image(actual, &mut destination);
+    let before = image.bytes.to_vec();
+    assert_eq!(
+        image
+            .complete_owned_modeled_read(expected, operation, value)
+            .unwrap_err(),
+        error
+    );
+    assert_eq!(&destination.0[..before.len()], before);
+}
+
+#[test]
+fn vdso_getrandom_modeled_ready_compare_covers_every_byte_and_uses_byte_sign() {
+    for initial_arithmetic in [0, 0x8d5] {
+        for rf in [0, 0x10000] {
+            for ready in 0..=u8::MAX {
+                let context = modeled_context(0xa5a4_0202 | initial_arithmetic | rf);
+                assert_eq!(context.flags & 0x10000, rf);
+                let mut destination = Storage([0xa7; 2048]);
+                let image = modeled_image(context, &mut destination);
+                let mut expected = image.bytes.to_vec();
+                let affected = (u64::from(ready.count_ones().is_multiple_of(2)) << 2)
+                    | (u64::from(ready == 0) << 6)
+                    | (u64::from(ready & 0x80 != 0) << 7);
+                put_u64(
+                    &mut expected,
+                    DEST_FRAME + 176,
+                    context.pc + MODELED_READ_LENGTH,
+                );
+                put_u64(
+                    &mut expected,
+                    DEST_FRAME + 184,
+                    (context.flags & !(0x8d5 | 0x10000)) | affected,
+                );
+                let image = image
+                    .complete_owned_modeled_read(
+                        context,
+                        ModeledReadOperation::CompareReadyWithZero,
+                        ModeledReadValue::Ready(ready),
+                    )
+                    .unwrap();
+                assert_eq!(image.bytes, expected);
+                if ready == 0x80 {
+                    assert_ne!(read_u64(image.frame_bytes(), 184).unwrap() & 0x80, 0);
+                    assert_eq!(read_u64(image.frame_bytes(), 184).unwrap() & 0x800, 0);
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn vdso_getrandom_modeled_generation_compare_matches_independent_qword_boundary_table() {
+    const CASES: &[(u64, u64, u64)] = &[
+        (0, 0, 0x044),
+        (1, 0, 0x000),
+        (4, 1, 0x004),
+        (0, 1, 0x095),
+        (0x10, 1, 0x014),
+        (0x11, 1, 0x000),
+        (0x7fff_ffff_ffff_ffff, u64::MAX, 0x885),
+        (0x8000_0000_0000_0000, 1, 0x814),
+        (u64::MAX, 0, 0x084),
+        (u64::MAX, u64::MAX, 0x044),
+    ];
+
+    for initial_arithmetic in [0, 0x8d5] {
+        for rf in [0, 0x10000] {
+            for &(rax, generation, affected) in CASES {
+                let mut context = modeled_context(0x5a5a_1202 | initial_arithmetic | rf);
+                assert_eq!(context.flags & 0x10000, rf);
+                context.general[13] = rax;
+                let mut destination = Storage([0xa7; 2048]);
+                let image = modeled_image(context, &mut destination);
+                let mut expected = image.bytes.to_vec();
+                put_u64(
+                    &mut expected,
+                    DEST_FRAME + 176,
+                    context.pc + MODELED_READ_LENGTH,
+                );
+                put_u64(
+                    &mut expected,
+                    DEST_FRAME + 184,
+                    (context.flags & !(0x8d5 | 0x10000)) | affected,
+                );
+                let image = image
+                    .complete_owned_modeled_read(
+                        context,
+                        ModeledReadOperation::CompareRaxWithGeneration,
+                        ModeledReadValue::Generation(generation),
+                    )
+                    .unwrap();
+                assert_eq!(image.bytes, expected);
+            }
+        }
+    }
+}
+
+#[test]
+fn vdso_getrandom_modeled_generation_load_writes_full_rcx_and_preserves_every_other_byte() {
+    for rf in [0, 0x10000] {
+        for generation in [0, 0x1_0000_0000, 0xfedc_ba98_7654_3210, u64::MAX] {
+            let context = modeled_context(0x246 | rf);
+            let mut destination = Storage([0xa7; 2048]);
+            let image = modeled_image(context, &mut destination);
+            let mut expected = image.bytes.to_vec();
+            put_u64(&mut expected, DEST_FRAME + 160, generation);
+            put_u64(
+                &mut expected,
+                DEST_FRAME + 176,
+                context.pc + MODELED_READ_LENGTH,
+            );
+            put_u64(&mut expected, DEST_FRAME + 184, context.flags & !0x10000);
+            let image = image
+                .complete_owned_modeled_read(
+                    context,
+                    ModeledReadOperation::LoadGenerationToRcx,
+                    ModeledReadValue::Generation(generation),
+                )
+                .unwrap();
+            assert_eq!(image.bytes, expected);
+            assert_eq!(read_u64(image.frame_bytes(), 160).unwrap(), generation);
+        }
+    }
+}
+
+#[test]
+fn vdso_getrandom_modeled_read_wrong_value_variants_never_mutate() {
+    let context = modeled_context(0x10202);
+    for (operation, value) in [
+        (
+            ModeledReadOperation::CompareReadyWithZero,
+            ModeledReadValue::Generation(1),
+        ),
+        (
+            ModeledReadOperation::LoadGenerationToRcx,
+            ModeledReadValue::Ready(1),
+        ),
+        (
+            ModeledReadOperation::CompareRaxWithGeneration,
+            ModeledReadValue::Ready(1),
+        ),
+    ] {
+        assert_modeled_refusal(context, context, operation, value, Error::Metadata);
+    }
+}
+
+#[test]
+fn vdso_getrandom_modeled_read_binds_pc_every_gpr_full_flags_and_disarmed_tf() {
+    let expected = modeled_context(0x10202);
+
+    let mut actual = expected;
+    actual.pc += 1;
+    assert_modeled_refusal(
+        actual,
+        expected,
+        ModeledReadOperation::CompareReadyWithZero,
+        ModeledReadValue::Ready(1),
+        Error::InstructionPointer,
+    );
+    for index in 0..expected.general.len() {
+        let mut actual = expected;
+        actual.general[index] ^= 1;
+        assert_modeled_refusal(
+            actual,
+            expected,
+            ModeledReadOperation::CompareReadyWithZero,
+            ModeledReadValue::Ready(1),
+            Error::Metadata,
+        );
+    }
+    let mut actual = expected;
+    actual.flags ^= 1;
+    assert_modeled_refusal(
+        actual,
+        expected,
+        ModeledReadOperation::CompareReadyWithZero,
+        ModeledReadValue::Ready(1),
+        Error::Flags,
+    );
+    let tf = modeled_context(0x10302);
+    assert_modeled_refusal(
+        tf,
+        tf,
+        ModeledReadOperation::CompareReadyWithZero,
+        ModeledReadValue::Ready(1),
+        Error::Flags,
+    );
+}
+
+#[test]
+fn vdso_getrandom_modeled_read_refuses_bad_pc_or_successor_without_mutation() {
+    for pc in [0, (1 << 47) - MODELED_READ_LENGTH, 1 << 47, u64::MAX] {
+        let mut context = modeled_context(0x202);
+        context.pc = pc;
+        assert_modeled_refusal(
+            context,
+            context,
+            ModeledReadOperation::LoadGenerationToRcx,
+            ModeledReadValue::Generation(1),
+            Error::InstructionPointer,
+        );
+    }
+}
+
+#[test]
+fn vdso_getrandom_modeled_read_repeated_completion_rejects_stale_original_pc() {
+    let context = modeled_context(0x10202);
+    let mut destination = Storage([0xa7; 2048]);
+    let image = modeled_image(context, &mut destination)
+        .complete_owned_modeled_read(
+            context,
+            ModeledReadOperation::LoadGenerationToRcx,
+            ModeledReadValue::Generation(0xfedc_ba98_7654_3210),
+        )
+        .unwrap();
+    let completed = image.bytes.to_vec();
+    assert_eq!(
+        image
+            .complete_owned_modeled_read(
+                context,
+                ModeledReadOperation::LoadGenerationToRcx,
+                ModeledReadValue::Generation(0xfedc_ba98_7654_3210),
+            )
+            .unwrap_err(),
+        Error::InstructionPointer
+    );
+    assert_eq!(&destination.0[..completed.len()], completed);
+}
+
+#[cfg(feature = "coordinator-rpc")]
+#[test]
+fn owned_instruction_retires_only_rf_with_exact_typed_outputs() {
+    for value in [0, 0x8000_0001_1234_5678, u64::MAX] {
+        for result in [
+            InstructionResult::Cpuid(reverie::CpuIdResult {
+                eax: value as u32,
+                ebx: u32::MAX,
+                ecx: 3,
+                edx: (value >> 32) as u32,
+            }),
+            InstructionResult::Rdtsc {
+                request: reverie::Rdtsc::Tsc,
+                result: reverie::RdtscResult {
+                    tsc: value,
+                    aux: Some(u32::MAX),
+                },
+            },
+            InstructionResult::Rdtsc {
+                request: reverie::Rdtsc::Tscp,
+                result: reverie::RdtscResult {
+                    tsc: value,
+                    aux: None,
+                },
+            },
+            InstructionResult::Rdtsc {
+                request: reverie::Rdtsc::Tscp,
+                result: reverie::RdtscResult {
+                    tsc: value,
+                    aux: Some(u32::MAX),
+                },
+            },
+        ] {
+            for flags in [0x10202, 0x10ed7, 0x202] {
+                let mut source = fixture(FRAME, FLOATING, STANDARD);
+                put_u64(&mut source.0, FRAME + 176, 0x4000);
+                put_u64(&mut source.0, FRAME + 184, flags);
+                let original = source.0;
+                let address = source.0.as_ptr() as usize + FRAME;
+                let mut destination = Storage([0xa7; 2048]);
+                let image = relocate(
+                    &source.0,
+                    address,
+                    address + 8,
+                    STANDARD,
+                    &mut destination.0,
+                )
+                .unwrap();
+                let mut expected = image.bytes.to_vec();
+                let length = match result {
+                    InstructionResult::Cpuid(result) => {
+                        for (offset, value) in [
+                            (152, result.eax),
+                            (136, result.ebx),
+                            (160, result.ecx),
+                            (144, result.edx),
+                        ] {
+                            put_u64(&mut expected, DEST_FRAME + offset, u64::from(value));
+                        }
+                        2
+                    }
+                    InstructionResult::Rdtsc { request, result } => {
+                        put_u64(
+                            &mut expected,
+                            DEST_FRAME + 152,
+                            u64::from(result.tsc as u32),
+                        );
+                        put_u64(&mut expected, DEST_FRAME + 144, result.tsc >> 32);
+                        if request == reverie::Rdtsc::Tscp {
+                            put_u64(
+                                &mut expected,
+                                DEST_FRAME + 160,
+                                u64::from(result.aux.unwrap_or(0)),
+                            );
+                            3
+                        } else {
+                            2
+                        }
+                    }
+                };
+                put_u64(&mut expected, DEST_FRAME + 176, 0x4000 + length);
+                put_u64(&mut expected, DEST_FRAME + 184, flags & !0x10000);
+                let image = image
+                    .complete_owned_instruction(0x4000, flags, result)
+                    .unwrap();
+                assert_eq!(image.bytes, expected);
+                assert_eq!(source.0, original);
+            }
+        }
+    }
+}
+
+#[cfg(feature = "coordinator-rpc")]
+#[test]
+fn owned_instruction_rejects_wrong_flags_tf_or_pc_without_mutation() {
+    for mode in 0..4 {
+        let flags = if mode == 1 { 0x10302 } else { 0x10202 };
+        let mut source = fixture(FRAME, FLOATING, STANDARD);
+        put_u64(&mut source.0, FRAME + 176, 0x4000);
+        put_u64(&mut source.0, FRAME + 184, flags);
+        let address = source.0.as_ptr() as usize + FRAME;
+        let mut destination = Storage([0xa7; 2048]);
+        let image = relocate(
+            &source.0,
+            address,
+            address + 8,
+            STANDARD,
+            &mut destination.0,
+        )
+        .unwrap();
+        let before = image.bytes.to_vec();
+        let expected_flags = flags
+            ^ match mode {
+                0 => 1,
+                3 => 0x10000,
+                _ => 0,
+            };
+        let result = InstructionResult::Cpuid(reverie::CpuIdResult {
+            eax: 1,
+            ebx: 2,
+            ecx: 3,
+            edx: 4,
+        });
+        let error = image
+            .complete_owned_instruction(
+                if mode == 2 { 0x4001 } else { 0x4000 },
+                expected_flags,
+                result,
+            )
+            .unwrap_err();
+        assert_eq!(
+            error,
+            if mode == 2 {
+                Error::InstructionPointer
+            } else {
+                Error::Flags
+            }
+        );
+        assert_eq!(&destination.0[..before.len()], before);
+    }
+}
+
+#[test]
+fn vdso_return_preserves_every_other_register_and_fp_byte() {
+    for owned_tf in [false, true] {
+        let flags = 0x10202 | if owned_tf { 0x100 } else { 0 };
+        let mut source = fixture(FRAME, FLOATING, STANDARD);
+        for (offset, value) in [(176, 0x10800), (168, 0x20008), (184, flags)] {
+            put_u64(&mut source.0, FRAME + offset, value);
+        }
+        let address = source.0.as_ptr() as usize + FRAME;
+        let mut destination = Storage([0xa7; 2048]);
+        let image = relocate(
+            &source.0,
+            address,
+            address + 8,
+            STANDARD,
+            &mut destination.0,
+        )
+        .unwrap();
+        let mut expected = image.bytes.to_vec();
+        for (offset, value) in [
+            (176, 0x30000),
+            (168, 0x20010),
+            (184, 0x202),
+            (152, (-22i64) as u64),
+        ] {
+            put_u64(&mut expected, DEST_FRAME + offset, value);
+        }
+        let image = image
+            .complete_vdso_call(FunctionReturn {
+                entry: 0x10800,
+                stack: 0x20008,
+                target: 0x30000,
+                flags,
+                result: -22,
+                owned_tf,
+            })
+            .unwrap();
+        assert_eq!(image.bytes, expected);
+    }
+}
+
+#[test]
+fn vdso_return_rejects_mismatched_binding_without_any_mutation() {
+    for mode in 0..8 {
+        let mut source = fixture(FRAME, FLOATING, STANDARD);
+        for (offset, value) in [(176, 0x10800), (168, 0x20008), (184, 0x10202)] {
+            put_u64(&mut source.0, FRAME + offset, value);
+        }
+        let address = source.0.as_ptr() as usize + FRAME;
+        let mut destination = Storage([0xa7; 2048]);
+        let image = relocate(
+            &source.0,
+            address,
+            address + 8,
+            STANDARD,
+            &mut destination.0,
+        )
+        .unwrap();
+        let before = image.bytes.to_vec();
+        let mut call = FunctionReturn {
+            entry: 0x10800,
+            stack: 0x20008,
+            target: 0x30000,
+            flags: 0x10202,
+            result: 0,
+            owned_tf: false,
+        };
+        match mode {
+            0 => call.entry += 1,
+            1 => call.stack += 8,
+            2 => call.target = 0,
+            3 => call.target = 1 << 47,
+            4 => call.flags &= !0x10000,
+            5 => call.flags |= 0x20000,
+            6 => call.owned_tf = true,
+            _ => call.stack = u64::MAX,
+        }
+        assert!(image.complete_vdso_call(call).is_err());
+        assert_eq!(&destination.0[..before.len()], before);
+    }
+}
+
+#[test]
+fn private_start_editor_changes_only_bound_pc_and_fault_rf() {
+    let mut source = fixture(FRAME, FLOATING, STANDARD);
+    put_u64(&mut source.0, FRAME + 176, 0x4000);
+    put_u64(&mut source.0, FRAME + 184, 0x10202);
+    let address = source.0.as_ptr() as usize + FRAME;
+    let mut destination = Storage([0xa7; 2048]);
+    let image = relocate(
+        &source.0,
+        address,
+        address + 8,
+        STANDARD,
+        &mut destination.0,
+    )
+    .unwrap();
+    let mut expected = image.bytes.to_vec();
+    put_u64(&mut expected, DEST_FRAME + 176, 0x6000);
+    put_u64(&mut expected, DEST_FRAME + 184, 0x202);
+    let image = image
+        .complete_private_start(0x4000, 0x10202, 0x6000)
+        .unwrap();
+    assert_eq!(image.bytes, expected);
+}
+
+#[test]
+fn private_start_editor_refusals_do_not_change_bytes() {
+    for (fault, flags, target) in [
+        (0x4001, 0x10202, 0x6000),
+        (0, 0x10202, 0x6000),
+        (0x4000, 0x202, 0x6000),
+        (0x4000, 0x10302, 0x6000),
+        (0x4000, 0x10202, 0),
+        (0x4000, 0x10202, 1 << 47),
+    ] {
+        let mut source = fixture(FRAME, FLOATING, STANDARD);
+        put_u64(&mut source.0, FRAME + 176, 0x4000);
+        put_u64(&mut source.0, FRAME + 184, 0x10202);
+        let address = source.0.as_ptr() as usize + FRAME;
+        let mut destination = Storage([0xa7; 2048]);
+        let image = relocate(
+            &source.0,
+            address,
+            address + 8,
+            STANDARD,
+            &mut destination.0,
+        )
+        .unwrap();
+        let expected = image.bytes.to_vec();
+        assert!(image.complete_private_start(fault, flags, target).is_err());
+        assert_eq!(&destination.0[..expected.len()], expected);
+    }
+}
+
+#[test]
+fn syscall_result_and_owned_tf_edit_only_checked_fields() {
+    let mut source = fixture(FRAME, FLOATING, STANDARD);
+    for (offset, value) in [(176, 0x4002), (184, 0x302), (72, 0x302), (160, 0x4002)] {
+        put_u64(&mut source.0, FRAME + offset, value);
+    }
+    let address = source.0.as_ptr() as usize + FRAME;
+    let mut destination = Storage([0xa7; 2048]);
+    let image = relocate(
+        &source.0,
+        address,
+        address + 8,
+        STANDARD,
+        &mut destination.0,
+    )
+    .unwrap();
+    let mut expected = image.frame_bytes().to_vec();
+    let floating = image.fp_bytes().to_vec();
+    let image = image.owned_syscall_tf(0x4002, 0x302, 0x302).unwrap();
+    put_u64(&mut expected, 184, 0x202);
+    put_u64(&mut expected, 72, 0x202);
+    assert_eq!(image.frame_bytes(), expected);
+    let image = image.complete_syscall(0x4002, -libc::EIO as i64).unwrap();
+    put_u64(&mut expected, 152, (-libc::EIO as i64) as u64);
+    assert_eq!(image.frame_bytes(), expected);
+    assert_eq!(image.fp_bytes(), floating);
+}
+
+#[test]
+fn syscall_edit_refuses_wrong_resume_or_unowned_tf_without_mutation() {
+    for mode in 0..5 {
+        let mut source = fixture(FRAME, FLOATING, STANDARD);
+        for (offset, value) in [(176, 0x4002), (184, 0x302), (72, 0x202)] {
+            put_u64(&mut source.0, FRAME + offset, value);
+        }
+        let address = source.0.as_ptr() as usize + FRAME;
+        let mut destination = Storage([0xa7; 2048]);
+        let image = relocate(
+            &source.0,
+            address,
+            address + 8,
+            STANDARD,
+            &mut destination.0,
+        )
+        .unwrap();
+        let before = image.bytes.to_vec();
+        let result = match mode {
+            0 => image.complete_syscall(0x4004, 42),
+            1 => image.complete_syscall(0, 42),
+            2 => image.owned_syscall_tf(0x4002, 0x302, 0x202),
+            3 => image.owned_syscall_tf(0x4002, 0x302, 0x302),
+            _ => image.owned_syscall_tf(0x4002, 0x202, 0x202),
+        };
+        assert!(result.is_err());
+        assert_eq!(&destination.0[..before.len()], before);
+    }
+}
+
+#[test]
+fn owned_tf_editor_changes_only_tf_and_keeps_full_fp_image() {
+    let mut source = fixture(FRAME, FLOATING, STANDARD);
+    put_u64(&mut source.0, FRAME + 176, 0x4000);
+    put_u64(&mut source.0, FRAME + 184, 0xed7);
+    let address = source.0.as_ptr() as usize + FRAME;
+    let mut destination = Storage([0xa7; 2048]);
+    let image = relocate(
+        &source.0,
+        address,
+        address + 8,
+        STANDARD,
+        &mut destination.0,
+    )
+    .unwrap();
+    let original = image.frame_bytes().to_vec();
+    let floating = image.fp_bytes().to_vec();
+    let mut expected = original.clone();
+    put_u64(&mut expected, 184, 0xfd7);
+    let image = image.owned_single_step(0x4000, 0xed7, true).unwrap();
+    assert_eq!(image.frame_bytes(), expected);
+    assert_eq!(image.fp_bytes(), floating);
+    let image = image.owned_single_step(0x4000, 0xfd7, false).unwrap();
+    assert_eq!(image.frame_bytes(), original);
+    assert_eq!(image.fp_bytes(), floating);
+    assert_eq!(read_u64(&source.0, FRAME + 184).unwrap(), 0xed7);
+}
+
+#[test]
+fn owned_tf_editor_refuses_wrong_pc_flags_or_transition_without_mutation() {
+    for (pc, expected_flags, enable, error) in [
+        (0x4001, 0xed7, true, Error::InstructionPointer),
+        (0, 0xed7, true, Error::InstructionPointer),
+        (0x4000, 0x202, true, Error::Flags),
+        (0x4000, 0xed7, false, Error::Flags),
+    ] {
+        let mut source = fixture(FRAME, FLOATING, STANDARD);
+        put_u64(&mut source.0, FRAME + 176, 0x4000);
+        put_u64(&mut source.0, FRAME + 184, 0xed7);
+        let address = source.0.as_ptr() as usize + FRAME;
+        let mut destination = Storage([0xa7; 2048]);
+        let image = relocate(
+            &source.0,
+            address,
+            address + 8,
+            STANDARD,
+            &mut destination.0,
+        )
+        .unwrap();
+        let before = image.bytes.to_vec();
+        assert_eq!(
+            image
+                .owned_single_step(pc, expected_flags, enable)
+                .unwrap_err(),
+            error
+        );
+        assert_eq!(&destination.0[..before.len()], before);
+    }
+}
+
+#[cfg(feature = "coordinator-rpc")]
+#[test]
+fn cpuid_completion_changes_only_outputs_and_checked_next_pc() {
+    let mut source = fixture(FRAME, FLOATING, STANDARD);
+    put_u64(&mut source.0, FRAME + 176, 0x4000);
+    let address = source.0.as_ptr() as usize + FRAME;
+    let mut destination = Storage([0xa7; 2048]);
+    let image = relocate(
+        &source.0,
+        address,
+        address + 8,
+        STANDARD,
+        &mut destination.0,
+    )
+    .unwrap();
+    let mut expected = image.frame_bytes().to_vec();
+    let floating = image.fp_bytes().to_vec();
+    let result = reverie::CpuIdResult {
+        eax: u32::MAX,
+        ebx: 2,
+        ecx: 3,
+        edx: 4,
+    };
+    for (offset, value) in [
+        (152, u64::from(u32::MAX)),
+        (136, 2),
+        (160, 3),
+        (144, 4),
+        (176, 0x4002),
+    ] {
+        put_u64(&mut expected, offset, value);
+    }
+    let image = image.complete_cpuid(0x4000, result).unwrap();
+    assert_eq!(image.frame_bytes(), expected);
+    assert_eq!(image.fp_bytes(), floating);
+    assert_eq!(read_u64(&source.0, FRAME + 176).unwrap(), 0x4000);
+}
+
+#[cfg(feature = "coordinator-rpc")]
+#[test]
+fn cpuid_completion_refuses_invalid_pc_without_partial_update() {
+    for (captured, supplied) in [
+        (0, 0),
+        (0x4000, 0x4002),
+        (u64::MAX, u64::MAX),
+        ((1 << 47) - 2, (1 << 47) - 2),
+    ] {
+        let mut source = fixture(FRAME, FLOATING, STANDARD);
+        put_u64(&mut source.0, FRAME + 176, captured);
+        let address = source.0.as_ptr() as usize + FRAME;
+        let mut destination = Storage([0xa7; 2048]);
+        let image = relocate(
+            &source.0,
+            address,
+            address + 8,
+            STANDARD,
+            &mut destination.0,
+        )
+        .unwrap();
+        let before = image.frame_bytes().to_vec();
+        assert_eq!(
+            image
+                .complete_cpuid(
+                    supplied,
+                    reverie::CpuIdResult {
+                        eax: 1,
+                        ebx: 2,
+                        ecx: 3,
+                        edx: 4
+                    }
+                )
+                .unwrap_err(),
+            Error::InstructionPointer
+        );
+        assert_eq!(
+            &destination.0[DEST_FRAME..DEST_FRAME + PREFIX_BYTES],
+            before
+        );
+    }
+}
 
 #[repr(align(64))]
 struct Storage([u8; 2048]);
+
+#[cfg(feature = "coordinator-rpc")]
+#[test]
+fn rdtsc_completion_changes_only_typed_outputs_and_checked_next_pc() {
+    for request in [reverie::Rdtsc::Tsc, reverie::Rdtsc::Tscp] {
+        for tsc in [0, 0xfedc_ba98_7654_3210, u64::MAX] {
+            for aux in [None, Some(0), Some(u32::MAX)] {
+                let mut source = fixture(FRAME, FLOATING, STANDARD);
+                put_u64(&mut source.0, FRAME + 176, 0x4000);
+                put_u64(&mut source.0, FRAME + 160, 0xfedc_ba98_7654_3210);
+                let original = source.0;
+                let address = source.0.as_ptr() as usize + FRAME;
+                let mut destination = Storage([0xa7; 2048]);
+                let image = relocate(
+                    &source.0,
+                    address,
+                    address + 8,
+                    STANDARD,
+                    &mut destination.0,
+                )
+                .unwrap();
+                let mut expected = image.frame_bytes().to_vec();
+                let floating = image.fp_bytes().to_vec();
+                put_u64(&mut expected, 152, u64::from(tsc as u32));
+                put_u64(&mut expected, 144, tsc >> 32);
+                let length = if request == reverie::Rdtsc::Tscp {
+                    put_u64(&mut expected, 160, u64::from(aux.unwrap_or(0)));
+                    3
+                } else {
+                    2
+                };
+                put_u64(&mut expected, 176, 0x4000 + length);
+                let image = image
+                    .complete_rdtsc(0x4000, request, reverie::RdtscResult { tsc, aux })
+                    .unwrap();
+                assert_eq!(image.frame_bytes(), expected);
+                assert_eq!(image.fp_bytes(), floating);
+                assert_eq!(source.0, original);
+            }
+        }
+    }
+}
+
+#[cfg(feature = "coordinator-rpc")]
+#[test]
+fn rdtsc_completion_refuses_invalid_pc_without_partial_update() {
+    for request in [reverie::Rdtsc::Tsc, reverie::Rdtsc::Tscp] {
+        let length = if request == reverie::Rdtsc::Tscp {
+            3
+        } else {
+            2
+        };
+        for (captured, supplied) in [
+            (0, 0),
+            (0x4000, 0x4001),
+            (u64::MAX, u64::MAX),
+            ((1 << 47) - length, (1 << 47) - length),
+        ] {
+            let mut source = fixture(FRAME, FLOATING, STANDARD);
+            put_u64(&mut source.0, FRAME + 176, captured);
+            let address = source.0.as_ptr() as usize + FRAME;
+            let mut destination = Storage([0xa7; 2048]);
+            let image = relocate(
+                &source.0,
+                address,
+                address + 8,
+                STANDARD,
+                &mut destination.0,
+            )
+            .unwrap();
+            let before = image.frame_bytes().to_vec();
+            let floating = image.fp_bytes().to_vec();
+            assert_eq!(
+                image
+                    .complete_rdtsc(
+                        supplied,
+                        request,
+                        reverie::RdtscResult {
+                            tsc: 1,
+                            aux: Some(2)
+                        }
+                    )
+                    .unwrap_err(),
+                Error::InstructionPointer
+            );
+            assert_eq!(
+                &destination.0[DEST_FRAME..DEST_FRAME + PREFIX_BYTES],
+                before
+            );
+            assert_eq!(&destination.0[DEST_FP..DEST_FP + floating.len()], floating);
+        }
+    }
+}
 
 fn put_u32(bytes: &mut [u8], offset: usize, value: u32) {
     bytes[offset..offset + 4].copy_from_slice(&value.to_le_bytes());

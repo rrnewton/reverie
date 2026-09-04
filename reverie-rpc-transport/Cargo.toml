@@ -11,7 +11,11 @@ repository = "https://github.com/facebookexperimental/reverie"
 license = "BSD-2-Clause"
 description = "Cross-process transport for the Reverie GlobalTool RPC (Unix-domain sockets + bincode). Shared by non-ptrace backends (DBT, KVM, ...) that must run GlobalState in a separate coordinator process."
 
+[features]
+test-guest-log = []
+
 [dependencies]
+libc = "0.2.186"
 async-trait = "0.1.86"
 bincode = { version = "2", features = ["serde"] }
 reverie = { version = "0.2.0", path = "../reverie", package = "reverie-core" }
@@ -21,3 +25,7 @@ tokio = { version = "1.52.4", features = ["io-util", "net", "rt", "sync", "macro
 
 [dev-dependencies]
 tokio = { version = "1.52.4", features = ["full", "test-util"] }
+
+[[test]]
+name = "guest_log_lifecycle"
+harness = false

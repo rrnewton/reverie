@@ -22,10 +22,9 @@ libc = "0.2.186"
 nix = { version = "0.30.1", features = ["dir", "event", "hostname", "inotify", "ioctl", "mman", "mount", "net", "poll", "ptrace", "reboot", "resource", "sched", "signal", "term", "time", "user", "zerocopy"] }
 num-traits = { version = "0.2.19", default-features = false }
 paste = "1.0.14"
-perf-event-open-sys = "5.0"
 procfs = "0.18.0"
 raw-cpuid = "10.7.0"
-reverie = { version = "0.2.0", path = "../reverie", package = "reverie-core" }
+reverie = { version = "0.2.0", path = "../reverie", package = "reverie-core", features = ["pmu"] }
 safeptrace = { version = "0.2.0", path = "../safeptrace", features = ["memory", "notifier"] }
 serde = { version = "1.0.219", features = ["derive", "rc"] }
 thiserror = "2.0.18"

@@ -55,6 +55,9 @@ pub mod backend_stats;
 mod backtrace;
 mod error;
 mod guest;
+pub mod liteinst_stats;
+#[cfg(feature = "pmu")]
+pub mod pmu;
 #[cfg(target_arch = "x86_64")]
 mod rdtsc;
 mod regs;
@@ -62,6 +65,7 @@ mod stack;
 mod subscription;
 mod timer;
 mod tool;
+pub mod vdso;
 
 pub use auxv::*;
 pub use backend::*;
