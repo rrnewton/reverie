@@ -62,6 +62,32 @@ class OperationalHealthTest(unittest.TestCase):
         self.assertTrue(reminder["gate"]["capture"])
         self.assertIn("{summary}", reminder["emit"]["title"])
 
+    def test_only_independent_github_gates_may_overlap(self) -> None:
+        config = yaml.safe_load(
+            (Path(__file__).resolve().parents[1] / "tick-hub.yaml").read_text()
+        )
+        parallel = {
+            row["name"]
+            for row in config["reminders"]
+            if row.get("gate", {}).get("parallel", False)
+        }
+        self.assertEqual(
+            {
+                "merge_gate_refire_due",
+                "pr_tip_reachability",
+                "github_main_health",
+                "pull_request_health",
+                "pr_head_never_evaluated",
+                "approval_no_longer_binds_to_head",
+                "approvals_unverifiable_against_head",
+                "landing_observability",
+            },
+            parallel,
+        )
+        self.assertNotIn("wrkslots_audit", parallel)
+        self.assertNotIn("wrkslots_doctor_findings", parallel)
+        self.assertNotIn("validate_checkout_cleanup", parallel)
+
     def test_github_main_red_is_a_warning(self) -> None:
         repos = [SimpleNamespace(repo="example/project", state="red", available=True)]
         with mock.patch.object(

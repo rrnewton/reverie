@@ -23,6 +23,11 @@ description: |-
   fact leaves the decision where the authority is.
 
   `tick-hub list` is the canonical reminder count.
+  Gates remain serial unless their gate block explicitly sets `parallel: true`.
+  That permission is limited below to eight GitHub checks whose commands do
+  not share a local lock or state file. Measured 2026-09-03, those eight used
+  112 seconds of one 439-second tick, mostly waiting for GitHub. The wrkslots
+  gates are deliberately excluded because they contend for one state lock.
   The ledger spool backlog joins the local-but-ORC-invisible measurements because
   only the filesystem carries unpublished batch age. Four ORC-internal gates were
   removed on 2026-08-08; the removal record is inline below, above
@@ -60,6 +65,7 @@ reminders:
     cadence_secs: 3600
     gate:
       cmd: python3 ci-hub/health/gate_refire.py --repo rrnewton/hermit --gate --state "$DEV_HERMIT_PARENT/.tick-hub/gate-refire-due.json"
+      parallel: true
       when: failure
       capture: true
     emit:
@@ -323,6 +329,7 @@ reminders:
     gate:
       timeout_secs: 300
       cmd: python3 ci-hub/health/pr_tip_reachability.py --gate
+      parallel: true
       when: failure
       capture: true
     emit:
@@ -655,6 +662,7 @@ reminders:
     cadence_secs: 3600
     gate:
       cmd: ./ci-hub/health/operational_health.py github-main
+      parallel: true
       when: failure
       capture: true
     emit:
@@ -688,6 +696,7 @@ reminders:
     cadence_secs: 3600
     gate:
       cmd: ./ci-hub/health/operational_health.py pull-requests --census-cache-dir "$DEV_HERMIT_PARENT/ignored/ci-hub/pr-census-cache"
+      parallel: true
       # 90s, against a measured 19.49s wall. Raised from the 30s
       # DEFAULT_GATE_TIMEOUT_SECS on 2026-08-20 after per-gate measurement
       # (experiments/tick-cost-budget_20260820/) found this gate had a 1.5x
@@ -927,6 +936,7 @@ reminders:
     cadence_secs: 3600
     gate:
       cmd: python3 ci-hub/health/unevaluated_head.py --repo rrnewton/hermit --limit 40 --gate
+      parallel: true
       when: failure
       capture: true
     emit:
@@ -955,6 +965,7 @@ reminders:
     cadence_secs: 3600
     gate:
       cmd: python3 ci-hub/health/approval_binding.py --repo rrnewton/hermit --gate --gate-on superseded
+      parallel: true
       when: failure
       capture: true
     emit:
@@ -982,6 +993,7 @@ reminders:
     cadence_secs: 86400
     gate:
       cmd: python3 ci-hub/health/approval_binding.py --repo rrnewton/hermit --gate --gate-on unverifiable
+      parallel: true
       when: failure
       capture: true
     emit:
@@ -1016,6 +1028,7 @@ reminders:
     gate:
       timeout_secs: 300
       cmd: python3 ci-hub/health/approval_binding.py --repo rrnewton/hermit --checkout hermit --landing-observability --since "1 day ago"
+      parallel: true
       when: always
       capture: true
     emit:
