@@ -2517,6 +2517,30 @@ class HealthTickParentSyncTests(unittest.TestCase):
             .endswith("# fetched wrapper version\n")
         )
 
+    def test_installed_bootstrap_uses_current_parent_writer(self) -> None:
+        bootstrap = self.installed_bootstrap()
+        marker = self.base / "current-parent-writer-ran"
+        writer = (SOURCE / "scripts" / "parent-main-write").read_text()
+        writer = writer.replace(
+            "#!/usr/bin/env bash\n",
+            f"#!/usr/bin/env bash\nprintf current > {marker!s}\n",
+            1,
+        )
+        target = self.advance_remote(
+            extra_executables={"scripts/parent-main-write": writer}
+        )
+
+        result = self.run_current_tool(
+            bootstrap, "scripts/hermit-health-tick.sh"
+        )
+
+        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+        self.assertEqual("current", marker.read_text())
+        self.assertEqual(target, git(self.repo, "rev-parse", "HEAD").stdout.strip())
+        log = self.log.read_text()
+        self.assertIn(f"parent_sync_rc=0 before={self.before} after={target}", log)
+        self.assertIn("state=fast-forwarded", log)
+
     def test_empty_private_run_root_is_reused_without_accumulation(self) -> None:
         self.advance_remote()
 

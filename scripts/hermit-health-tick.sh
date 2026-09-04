@@ -47,13 +47,12 @@ TICK_REPORT_COMPLETE=0
 # rather than create one. A scheduled service inherits no identity -- measured
 # 2026-09-03, all nine identity signals resolve `unavailable` under systemd --
 # so it is named here.
-# From the parent checkout, deliberately, and not from the immutable tool root:
-# this wrapper is itself the parent's version-controlled copy -- the unit runs
-# %h/work/dev-hermit/scripts/hermit-health-tick.sh -- and it already runs
-# ./scripts/parent-main-write from the same place. The tool-root discipline is
-# about the GATES and the tick runner, which are still materialized separately.
-# It also has to keep working in the one case that most needs reporting: when
-# materializing the tool root is what failed.
+# Use the immutable tool root when the installed bootstrap supplied one. The
+# parent checkout can be behind precisely because this writer has not advanced
+# it yet; taking the writer from that checkout makes a landed sync repair unable
+# to deploy itself. Direct/manual runs have no immutable root and retain the
+# parent copy as their fallback.
+PARENT_MAIN_WRITE="${DEV_HERMIT_TOOL_ROOT:-$ROOT}/scripts/parent-main-write"
 ESCALATE="${HERMIT_HEALTH_ESCALATE:-$ROOT/ci-hub/bin/escalate}"
 ESCALATION_AGENT="health-tick"
 # BOTH SINKS, because they cover different outages and neither one covers the
@@ -2598,7 +2597,7 @@ retry_pending_health_escalations
 # tick still runs so this refusal cannot turn the rest of operational health into
 # silence.
 parent_before="$(run_git -C "$ROOT" rev-parse HEAD 2>/dev/null || printf unreadable)"
-parent_sync_out="$(./scripts/parent-main-write sync --preserve-dirty 2>&1)"
+parent_sync_out="$("$PARENT_MAIN_WRITE" sync --preserve-dirty 2>&1)"
 parent_sync_rc=$?
 parent_after="$(run_git -C "$ROOT" rev-parse HEAD 2>/dev/null || printf unreadable)"
 

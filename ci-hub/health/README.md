@@ -53,8 +53,10 @@ cache, so this is the canonical 3pai/BpfJailer entrypoint. The typed
 
 The hub checks GitHub current-main health and open-PR red counts once per hour.
 Before it loads the versioned tick runner or configuration, the durable wrapper
-asks `scripts/parent-main-write sync --preserve-dirty` to fast-forward the
-shared parent checkout. It advances only when local `main` is an ancestor of
+asks the current immutable tool root's `scripts/parent-main-write sync
+--preserve-dirty` to fast-forward the shared parent checkout. A direct/manual
+wrapper run falls back to the writer in the shared parent. It advances only when
+local `main` is an ancestor of
 freshly fetched `origin/main` and every incoming path is disjoint from every
 tracked, staged, untracked, ignored, or dirty-submodule path, except for a
 gitlink whose nested checkout already names the fetched target and whose index
