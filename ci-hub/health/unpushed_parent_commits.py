@@ -373,7 +373,7 @@ def rescue(
 
 def main() -> int:
     global PARENT
-    ap = argparse.ArgumentParser(description=__doc__,
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0],
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument(
         "--root",

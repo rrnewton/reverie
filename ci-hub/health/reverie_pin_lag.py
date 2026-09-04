@@ -159,7 +159,8 @@ def render(result: dict) -> str:
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(
-        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+        description=__doc__.splitlines()[0],
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     ap.add_argument("--gate", action="store_true", help="exit nonzero inside the lag band")
     ap.add_argument("--min-lag", type=int, default=1, help="band floor, inclusive")

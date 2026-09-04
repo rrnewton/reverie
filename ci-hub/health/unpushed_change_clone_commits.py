@@ -262,7 +262,7 @@ def inspect_all(
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description=__doc__)
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--search-root", default=str(DEFAULT_SEARCH_ROOT),
                     help="directory whose immediate children are inspected for change clones")
     ap.add_argument("--json", action="store_true")

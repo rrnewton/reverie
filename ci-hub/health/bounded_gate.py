@@ -72,7 +72,7 @@ def _no_result(name: str, outcome: str, bound: str, detail: str = "") -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--name", required=True)
     parser.add_argument("--timeout-secs", required=True, type=_positive_seconds)
     parser.add_argument("command", nargs=argparse.REMAINDER)

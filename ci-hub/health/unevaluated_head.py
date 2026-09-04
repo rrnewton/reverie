@@ -876,7 +876,7 @@ def collect_fixture(path: str) -> list[dict[str, Any]]:
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description=__doc__)
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--repo", default="rrnewton/hermit")
     ap.add_argument("--limit", type=int, default=40)
     ap.add_argument("--from-json", dest="fixture")

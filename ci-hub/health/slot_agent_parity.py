@@ -342,7 +342,7 @@ def evaluate(root: Path, live: set[str], active: dict[str, dict]) -> tuple[str, 
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--gate", action="store_true", help="emit gate key=value output")
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--root", default=None, help="repository root (tests)")

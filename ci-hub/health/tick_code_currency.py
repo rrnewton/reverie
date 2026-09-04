@@ -322,7 +322,8 @@ def render(verdicts: Sequence[Verdict], ref: str = TARGET_REF) -> tuple[int, str
 
 def main(argv: Sequence[str] | None = None) -> int:
     ap = argparse.ArgumentParser(
-        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+        description=__doc__.splitlines()[0],
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     ap.add_argument("--ref", default=TARGET_REF, help="currency target (default origin/main)")
     ap.add_argument("--config", type=Path, default=TICK_CONFIG)

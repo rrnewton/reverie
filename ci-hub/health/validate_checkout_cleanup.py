@@ -46,7 +46,7 @@ def summarize(report: Mapping[str, Any]) -> tuple[str, str, list[Mapping[str, st
 
 
 def parser() -> argparse.ArgumentParser:
-    result = argparse.ArgumentParser(description=__doc__)
+    result = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     result.add_argument("--state-root", type=Path, default=ROOT)
     result.add_argument("--json", action="store_true")
     return result

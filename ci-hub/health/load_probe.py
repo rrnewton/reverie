@@ -337,7 +337,7 @@ def human_bytes(value: int) -> str:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--sample-seconds", type=float, default=DEFAULT_SAMPLE_SECONDS)
     parser.add_argument(
         "--max-executing-percent",

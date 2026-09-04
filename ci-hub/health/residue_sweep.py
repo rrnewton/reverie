@@ -581,7 +581,7 @@ def build_report() -> tuple[list[Residue], set[str]]:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--json", action="store_true", help="emit the complete typed report")
     parser.add_argument("--gate", action="store_true", help="exit 1 when actionable residue exists")
     parser.add_argument("--route", action="store_true", help="append typed routes to authority tasks")

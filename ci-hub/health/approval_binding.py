@@ -2334,35 +2334,54 @@ def emit_landing_observability(report: dict[str, Any], as_json: bool) -> None:
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--repo", default="rrnewton/hermit")
+    ap = argparse.ArgumentParser(
+        description=__doc__.splitlines()[0],
+        epilog=(
+            "examples:\n"
+            "  approval_binding.py --repo rrnewton/hermit --json\n"
+            "  approval_binding.py --repo rrnewton/hermit --pr 123 --gate\n"
+            "  approval_binding.py --repo rrnewton/hermit --gate "
+            "--gate-on superseded --reconcile-review-labels\n\n"
+            "Detailed rationale and state definitions are in this file's module docstring."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    ap.add_argument(
+        "--repo",
+        default="rrnewton/hermit",
+        help="GitHub owner/name to inspect (default: rrnewton/hermit)",
+    )
     ap.add_argument(
         "--pr",
         type=int,
         help="Restrict live verification to one PR (used by the final landing boundary)",
     )
-    ap.add_argument("--from-json", dest="fixture")
-    ap.add_argument("--gate", action="store_true")
+    ap.add_argument(
+        "--from-json",
+        dest="fixture",
+        help="read an offline fixture instead of GitHub",
+    )
+    ap.add_argument(
+        "--gate",
+        action="store_true",
+        help="exit nonzero when the selected binding check fails",
+    )
     ap.add_argument(
         "--gate-on",
         default="all",
         choices=["all", "superseded", "unverifiable"],
         help=(
-            "Which states make --gate exit non-zero. Default 'all' (anything not "
-            "BOUND_CURRENT) is the standalone contract and is unchanged. "
-            "'superseded' gates only on approvals we can prove were earned "
-            "against a different head, plus the combined approved-and-unevaluated "
-            "state -- both per-PR and actionable today. 'unverifiable' gates only "
-            "on UNDETERMINED. The split exists because UNDETERMINED is currently a "
-            "STANDING condition, not an event: no reviewer emits APPROVED-AT yet, "
-            "so every approval reads unverifiable and a per-tick page would be "
-            "pure noise that trains people to ignore the check. tick-hub.yaml "
-            "already draws exactly this distinction for validate_wall_regression "
-            "(gates the event) versus validate_wall_series_readiness (surfaces the "
-            "standing blocker daily so it cannot go silently inert)."
+            "states that make --gate exit nonzero: all non-current labels "
+            "(default), only labels bound to an older head, or only labels "
+            "whose exact-head authority cannot be established"
         ),
     )
-    ap.add_argument("--json", dest="as_json", action="store_true")
+    ap.add_argument(
+        "--json",
+        dest="as_json",
+        action="store_true",
+        help="emit the complete report as JSON",
+    )
     ap.add_argument(
         "--reconcile-review-labels",
         action="store_true",
@@ -2374,7 +2393,7 @@ def main() -> int:
     ap.add_argument(
         "--notification-team",
         default="hermit2",
-        help="team disclosure used for the moved-head pull-request notice",
+        help="team disclosure used for the moved-head notice (default: hermit2)",
     )
     ap.add_argument(
         "--landing-observability",
@@ -2389,7 +2408,10 @@ def main() -> int:
     ap.add_argument(
         "--since",
         default="1 day ago",
-        help="window start for --landing-observability, any git --since expression",
+        help=(
+            "window start for --landing-observability, any git --since expression "
+            "(default: 1 day ago)"
+        ),
     )
     ap.add_argument(
         "--checkout",
@@ -2397,7 +2419,8 @@ def main() -> int:
         default=".",
         help=(
             "DIRECTORY of the checkout whose commits form the window. A path, not "
-            "a commit. Must be a checkout of --repo; mixing them is refused."
+            "a commit. Must be a checkout of --repo; mixing them is refused "
+            "(default: current directory)."
         ),
     )
     a = ap.parse_args()

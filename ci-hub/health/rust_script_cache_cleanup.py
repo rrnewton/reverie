@@ -287,7 +287,7 @@ def cleanup(cache: Path, maximum: int, apply: bool, proc_root: Path) -> tuple[in
 
 
 def parser() -> argparse.ArgumentParser:
-    result = argparse.ArgumentParser(description=__doc__)
+    result = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     result.add_argument("--cache-root", type=Path, default=default_cache_root())
     result.add_argument("--max-gib", type=float, default=DEFAULT_MAX_GIB)
     result.add_argument("--apply", action="store_true")

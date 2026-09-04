@@ -2362,7 +2362,7 @@ def render_report(statuses: Sequence[RepoStatus], warn_threshold: int, engine: s
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument(
         "--repo",
         dest="repos",

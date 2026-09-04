@@ -252,7 +252,7 @@ def self_test() -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    p = argparse.ArgumentParser(description=__doc__)
+    p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     p.add_argument("--repo", default=REPO_DEFAULT)
     p.add_argument("--gate", action="store_true",
                    help="exit 1 when any open head has an unreachable tip")

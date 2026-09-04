@@ -410,7 +410,7 @@ def report_lines(aggregate: str, service: str, install_root, surfaces: list[Surf
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description=__doc__,
+    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0],
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--install-root", default=DEFAULT_INSTALL_ROOT)
     ap.add_argument("--service", default=DEFAULT_SERVICE)

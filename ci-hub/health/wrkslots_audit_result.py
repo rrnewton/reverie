@@ -114,7 +114,7 @@ def evaluate(
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--result", type=Path)
     parser.add_argument("--max-age-secs", type=int, default=DEFAULT_MAX_AGE_SECONDS)
     parser.add_argument("--expected-parent-sha")
