@@ -1,14 +1,25 @@
 from __future__ import annotations
 
 import json
+import signal
 import subprocess
 import sys
 import tempfile
+import textwrap
+import time
 import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[3]
 TOOL = ROOT / "ci-hub/bin/tool-cost"
+
+
+def process_active(pid: int) -> bool:
+    try:
+        fields = Path(f"/proc/{pid}/stat").read_text().split()
+    except FileNotFoundError:
+        return False
+    return len(fields) > 2 and fields[2] != "Z"
 
 
 class ToolCostTest(unittest.TestCase):
@@ -95,6 +106,84 @@ class ToolCostTest(unittest.TestCase):
             self.assertEqual(payload["actual"]["exit"], "3")
             self.assertGreaterEqual(payload["actual"]["wall_seconds"], 0)
             self.assertGreaterEqual(payload["actual"]["cpu_seconds"], 0)
+
+    def test_term_is_forwarded_and_still_publishes_actual(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            temporary = Path(directory)
+            leader_ready = temporary / "leader.pid"
+            descendant_ready = temporary / "descendant.pid"
+            delayed = temporary / "descendant-survived"
+            actual = temporary / "cost.json"
+            process = subprocess.Popen(
+                [
+                    str(TOOL),
+                    "--tool",
+                    "test/tool",
+                    "--estimate-wall-seconds",
+                    "12",
+                    "--estimate-cpu-seconds",
+                    "3",
+                    "--basis",
+                    "derived from the TERM regression fixture",
+                    "--actual-json",
+                    str(actual),
+                    "--",
+                    sys.executable,
+                    "-c",
+                    textwrap.dedent(
+                        f"""\
+                        import os
+                        from pathlib import Path
+                        import time
+
+                        if os.fork() == 0:
+                            Path({str(descendant_ready)!r}).write_text(str(os.getpid()))
+                            for descriptor in (0, 1, 2):
+                                try:
+                                    os.close(descriptor)
+                                except OSError:
+                                    pass
+                            time.sleep(0.5)
+                            Path({str(delayed)!r}).write_text("survived")
+                            os._exit(0)
+                        Path({str(leader_ready)!r}).write_text(str(os.getpid()))
+                        time.sleep(60)
+                        """
+                    ),
+                ],
+                cwd=ROOT,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            deadline = time.monotonic() + 5
+            while (
+                not leader_ready.exists() or not descendant_ready.exists()
+            ) and time.monotonic() < deadline:
+                time.sleep(0.01)
+            self.assertTrue(leader_ready.exists(), "tool-cost group leader did not start")
+            self.assertTrue(
+                descendant_ready.exists(), "same-group descendant did not start"
+            )
+            leader_pid = int(leader_ready.read_text())
+            descendant_pid = int(descendant_ready.read_text())
+
+            process.send_signal(signal.SIGTERM)
+            _stdout, stderr = process.communicate(timeout=5)
+
+            self.assertEqual(143, process.returncode, stderr)
+            self.assertIn("COST ACTUAL", stderr)
+            self.assertIn("exit=signal:15", stderr)
+            self.assertEqual("signal:15", json.loads(actual.read_text())["actual"]["exit"])
+            deadline = time.monotonic() + 1
+            while (
+                process_active(leader_pid) or process_active(descendant_pid)
+            ) and time.monotonic() < deadline:
+                time.sleep(0.01)
+            self.assertFalse(process_active(leader_pid))
+            self.assertFalse(process_active(descendant_pid))
+            time.sleep(0.55)
+            self.assertFalse(delayed.exists(), "same-group descendant survived TERM")
 
     def test_unknown_estimate_prints_nothing_and_is_persisted_as_null(self) -> None:
         """An unknown estimate is RECORDED and not PRINTED.

@@ -5,12 +5,14 @@ from __future__ import annotations
 
 import json
 import hashlib
+import datetime as dt
 import os
 import shutil
 import subprocess
 import sys
 import tempfile
 import textwrap
+import time
 import unittest
 from pathlib import Path
 
@@ -69,9 +71,21 @@ class HealthTickEvaluationProvenanceTests(unittest.TestCase):
                         printf 'HEALTH: evaluated\\n'
                         printf 'ACTION: investigate component=pin title="Reverie pin is stale"\\n'
                         printf 'NOTE: pin lag is within the note band\\n'
+                        printf 'NOTE: emitted 1 instruction(s) this tick\\n'
                         ;;
                     quiet)
                         printf 'HEALTH: quiet evaluation\\n'
+                        printf 'NOTE: emitted 0 instruction(s) this tick\\n'
+                        ;;
+                    note-only)
+                        printf 'NOTE: ops-state enabled label=fixture tick_frequency_min=60 flags=0\\n'
+                        ;;
+                    clean)
+                        printf 'CLEAN: fixture_gate ran and found nothing to report\\n'
+                        ;;
+                    clean-complete)
+                        printf 'CLEAN: fixture_gate ran and found nothing to report\\n'
+                        printf 'NOTE: emitted 0 instruction(s) this tick\\n'
                         ;;
                     *) exit 64 ;;
                 esac
@@ -250,20 +264,25 @@ class HealthTickEvaluationProvenanceTests(unittest.TestCase):
                 "ACTION: investigate component=pin "
                 f'title="Reverie pin is stale {provenance}"',
                 f"NOTE: pin lag is within the note band {provenance}",
+                f"NOTE: emitted 1 instruction(s) this tick {provenance}",
             ],
             result.stdout.splitlines(),
         )
         self.assertEqual(1, result.stdout.count("ACTION:"))
-        self.assertEqual(1, result.stdout.count("NOTE:"))
+        self.assertEqual(2, result.stdout.count("NOTE:"))
 
     def test_quiet_evaluation_remains_quiet(self) -> None:
         result = self._run(mode="quiet")
 
         self.assertEqual(0, result.returncode)
         self.assertEqual("fake-agent stderr\n", result.stderr)
-        self.assertEqual("HEALTH: quiet evaluation\n", result.stdout)
+        self.assertEqual(
+            "HEALTH: quiet evaluation\n"
+            f"NOTE: emitted 0 instruction(s) this tick "
+            f"observed_at={OBSERVED_AT} input_sha={self.input_sha}\n",
+            result.stdout,
+        )
         self.assertNotIn("ACTION:", result.stdout)
-        self.assertNotIn("NOTE:", result.stdout)
 
     def test_failed_producer_names_its_exit_and_every_unobserved_check(self) -> None:
         (self.repo / "ci-hub" / "health" / "tick-hub.yaml").write_text(
@@ -273,12 +292,17 @@ class HealthTickEvaluationProvenanceTests(unittest.TestCase):
 
         self.assertEqual(64, result.returncode)
         self.assertIn(
-            "ERROR: tick exited 64 before reporting; 2 configured check(s) DID NOT RUN",
+            "ERROR: tick exited 64 before completion; complete evaluation of "
+            "2 configured check(s) was not established",
             result.stdout,
         )
         action = next(line for line in result.stdout.splitlines() if line.startswith("ACTION:"))
-        self.assertIn("detail=\"producer exit 64; 2 configured check(s) unobserved", action)
-        self.assertIn("the tick exited 64 before running any gate", action)
+        self.assertIn(
+            "detail=\"producer exit 64; complete evaluation of 2 configured "
+            "check(s) was not established",
+            action,
+        )
+        self.assertIn("the tick exited 64 before completing all gates", action)
         self.assertNotIn("producer exit ;", action)
         self.assertEqual(1, result.stdout.count("ACTION:"))
 
@@ -287,8 +311,50 @@ class HealthTickEvaluationProvenanceTests(unittest.TestCase):
         result = self._run(mode="does-not-run", exit_status=64)
 
         self.assertEqual(64, result.returncode)
-        self.assertIn("unknown configured check(s) DID NOT RUN", result.stdout)
+        self.assertIn(
+            "complete evaluation of unknown configured check(s) was not established",
+            result.stdout,
+        )
         self.assertNotIn("0 configured check(s)", result.stdout)
+
+    def test_ops_state_note_does_not_hide_a_producer_that_never_reached_gates(
+        self,
+    ) -> None:
+        (self.repo / "ci-hub" / "health" / "tick-hub.yaml").write_text(
+            "checks:\n  - name: first\n  - name: second\n"
+        )
+        result = self._run(mode="note-only", exit_status=64)
+
+        self.assertEqual(64, result.returncode)
+        self.assertIn("NOTE: ops-state enabled", result.stdout)
+        self.assertIn(
+            "ERROR: tick exited 64 before completion; complete evaluation of "
+            "2 configured check(s) was not established",
+            result.stdout,
+        )
+        self.assertIn("outcome=NO-SIGNAL gate=ALL", result.stdout)
+
+    def test_partial_clean_reminder_does_not_hide_incomplete_evaluation(self) -> None:
+        result = self._run(mode="clean", exit_status=64)
+
+        self.assertEqual(64, result.returncode)
+        self.assertIn(
+            "CLEAN: fixture_gate ran and found nothing to report", result.stdout
+        )
+        self.assertIn("gate=ALL", result.stdout)
+        self.assertIn("before completing all gates", result.stdout)
+        self.assertIn("partial verdicts above remain valid", result.stdout)
+
+    def test_completion_marker_prevents_false_incomplete_alarm(self) -> None:
+        result = self._run(mode="clean-complete", exit_status=64)
+
+        self.assertEqual(64, result.returncode)
+        self.assertIn(
+            "CLEAN: fixture_gate ran and found nothing to report", result.stdout
+        )
+        self.assertIn("NOTE: emitted 0 instruction(s) this tick", result.stdout)
+        self.assertNotIn("gate=ALL", result.stdout)
+        self.assertNotIn("before completing all gates", result.stdout)
 
     def test_scheduled_snapshot_is_passed_to_cache_agents(self) -> None:
         snapshot = '[{"name":"worker","tmux_pane_id":"%7"}]'
@@ -301,7 +367,8 @@ class HealthTickEvaluationProvenanceTests(unittest.TestCase):
         result = self._run(mode="quiet", snapshot="[]", cache_exit=1)
 
         self.assertEqual(1, result.returncode)
-        self.assertEqual("HEALTH: quiet evaluation\n", result.stdout)
+        self.assertIn("HEALTH: quiet evaluation\n", result.stdout)
+        self.assertIn("NOTE: emitted 0 instruction(s) this tick", result.stdout)
         self.assertIn("could not cache the ORC agent snapshot", result.stderr)
 
     def test_tool_cost_path_runs_real_relative_gate_only_from_tool_root(self) -> None:
@@ -353,6 +420,7 @@ class HealthTickEvaluationProvenanceTests(unittest.TestCase):
         self.assertIn(f"pwd={self.repo}\n", recorded)
         self.assertIn(f"--config {self.repo}/ci-hub/health/tick-hub.yaml", recorded)
         self.assertIn(f"--state {state_root}/.ops-state.yaml", recorded)
+        self.assertIn("--report-pending", recorded)
         self.assertIn(f"HEALTH: real-gate cwd={self.repo}", result.stdout)
         self.assertIn(f"snapshot={snapshot}", result.stdout)
         self.assertEqual(
@@ -454,7 +522,10 @@ class HealthTickEvaluationProvenanceTests(unittest.TestCase):
         }
         expected = {
             "deleted_tool_absent": '--root "$DEV_HERMIT_PARENT"',
-            "wrkslots_audit": '--project-root "$DEV_HERMIT_PARENT"',
+            "wrkslots_audit": (
+                '--result "$DEV_HERMIT_PARENT/ignored/ci-hub/'
+                'wrkslots-audit/latest.json"'
+            ),
             "ledger_spool_backlog": '--root "$DEV_HERMIT_PARENT"',
             "series_spool_backlog": '--root "$DEV_HERMIT_PARENT"',
             "validate_wall_regression": (
@@ -749,17 +820,81 @@ class HealthTickEvaluationProvenanceTests(unittest.TestCase):
             "flags:\n  github_actions_enabled: false\n", encoding="utf-8"
         )
 
-        wrkslots_tool = self.records / "wrkslots-tool-root"
-        (wrkslots_tool / "ci-hub" / "bin").mkdir(parents=True)
-        shutil.copy2(
-            ROOT / "ci-hub" / "bin" / "wrkslots",
-            wrkslots_tool / "ci-hub" / "bin" / "wrkslots",
-        )
-        wrkslots_package = wrkslots_tool / "hermit" / "agent-utils" / "py" / "wrkslots"
-        wrkslots_package.mkdir(parents=True)
-        (wrkslots_package / "__init__.py").write_text("", encoding="utf-8")
-        (wrkslots_package / "__main__.py").write_text(
-            "import json, sys\nprint(json.dumps(sys.argv[1:]))\n", encoding="utf-8"
+        provenance = {
+            "parent_sha": "a" * 40,
+            "hermit_sha": "b" * 40,
+            "agent_utils_sha": "c" * 40,
+        }
+        audit_result = state_root / "ignored/ci-hub/wrkslots-audit/latest.json"
+        audit_result.parent.mkdir(parents=True)
+        observed_epoch = time.time()
+        started_epoch = observed_epoch - 1
+        audit_result.write_text(
+            json.dumps(
+                {
+                    "schema": "wrkslots-audit-result/v1",
+                    "started_at": dt.datetime.fromtimestamp(
+                        started_epoch, dt.timezone.utc
+                    ).isoformat().replace("+00:00", "Z"),
+                    "started_at_epoch_seconds": started_epoch,
+                    "observed_at": dt.datetime.fromtimestamp(
+                        observed_epoch, dt.timezone.utc
+                    ).isoformat().replace("+00:00", "Z"),
+                    "observed_at_epoch_seconds": observed_epoch,
+                    "producer": provenance,
+                    "limits": {
+                        "cpu_budget_seconds": 240,
+                        "wall_backstop_seconds": 1800,
+                    },
+                    "verdict": "OK",
+                    "summary": "no worktree slot currently needs coordinator attention",
+                    "exit_code": 0,
+                    "audit": {
+                        "schema": 2,
+                        "state": "ok",
+                        "summary": "no worktree slot currently needs coordinator attention",
+                        "worktree_count": 0,
+                        "running_agent_count": 0,
+                        "attention_count": 0,
+                        "attention_slots": [],
+                        "unknown_count": 0,
+                        "unknown_slots": [],
+                    },
+                    "cost": {
+                        "schema": "wrkslots-audit-cost/v1",
+                        "wall_seconds": 1,
+                        "cpu_seconds": 1,
+                        "wall_source": "outer monotonic observer",
+                        "cpu_source": "cgroup-v2 cpu.stat usage_usec",
+                        "cpu_budget_seconds": 240,
+                        "wall_backstop_seconds": 1800,
+                        "cgroup_usage_usec": 1_000_000,
+                        "scope": "hermit-box-run-123-456.scope",
+                        "reaped": False,
+                        "termination": "completed",
+                        "exit_code": 0,
+                    },
+                    "observer_cost": {
+                        "schema_version": 1,
+                        "tool": "ci-hub/wrkslots-audit",
+                        "estimate": {
+                            "kind": "derived",
+                            "wall_seconds": 190,
+                            "cpu_seconds": 179,
+                            "basis": "derived from one completed contention audit",
+                        },
+                        "actual": {
+                            "wall_seconds": 1,
+                            "cpu_seconds": 1,
+                            "cpu_user_seconds": 1,
+                            "cpu_system_seconds": 0,
+                            "exit": "0",
+                        },
+                    },
+                    "stderr_sha256": "0" * 64,
+                }
+            ),
+            encoding="utf-8",
         )
 
         def snapshot(path: Path):
@@ -795,11 +930,13 @@ class HealthTickEvaluationProvenanceTests(unittest.TestCase):
         environment = os.environ | {
             "DEV_HERMIT_PARENT": str(state_root),
             "DEV_HERMIT_TOOL_ROOT": str(ROOT),
+            "DEV_HERMIT_TOOL_PARENT_SHA": provenance["parent_sha"],
+            "DEV_HERMIT_TOOL_HERMIT_SHA": provenance["hermit_sha"],
+            "DEV_HERMIT_TOOL_AGENT_UTILS_SHA": provenance["agent_utils_sha"],
             "PYTHONDONTWRITEBYTECODE": "1",
         }
         environment.pop("DEV_HERMIT_OPS_STATE", None)
         state_before = snapshot(state_root)
-        wrapper_before = snapshot(wrkslots_tool)
         tool_state_paths = (
             ROOT / ".ops-state.yaml",
             ROOT / "ignored" / "ci-hub" / "validate-ledger-spool",
@@ -861,17 +998,15 @@ class HealthTickEvaluationProvenanceTests(unittest.TestCase):
 
         wrkslots_result = subprocess.run(
             ["bash", "-c", commands["wrkslots_audit"]],
-            cwd=wrkslots_tool,
+            cwd=ROOT,
             env=environment,
             check=False,
             capture_output=True,
             text=True,
         )
         self.assertEqual(0, wrkslots_result.returncode, wrkslots_result.stderr)
-        self.assertEqual(
-            ["--project-root", str(state_root), "audit", "--gate"],
-            json.loads(wrkslots_result.stdout),
-        )
+        self.assertIn("state=ok", wrkslots_result.stdout)
+        self.assertIn("producer_parent_sha=" + provenance["parent_sha"], wrkslots_result.stdout)
 
         ops_probe = subprocess.run(
             [
@@ -898,7 +1033,6 @@ class HealthTickEvaluationProvenanceTests(unittest.TestCase):
         )
 
         self.assertEqual(state_before, snapshot(state_root))
-        self.assertEqual(wrapper_before, snapshot(wrkslots_tool))
         self.assertEqual(
             tool_state_before,
             {path: snapshot(path) for path in tool_state_paths},

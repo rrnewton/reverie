@@ -1,0 +1,469 @@
+#!/usr/bin/env python3
+"""Run the expensive wrkslots audit once and publish one typed result.
+
+The systemd timer invokes this file through the installed ``operational-tool``.
+Consequently this code, ``tool-cost``, ``hermit-box-run``, and ``wrkslots`` all
+come from one verified private checkout.  Mutable registry/result state remains
+under ``DEV_HERMIT_PARENT``.
+
+``tool-cost`` deliberately wraps the box rather than running inside it.  The
+box may kill its complete cgroup on a CPU or wall breach; its observer must
+remain outside that kill domain long enough to persist the cost and outcome.
+"""
+
+from __future__ import annotations
+
+import argparse
+import datetime as dt
+import hashlib
+import json
+import math
+import os
+from pathlib import Path
+import re
+import subprocess
+import sys
+import tempfile
+import time
+from typing import Any
+
+sys.path.insert(0, str(Path(__file__).parents[1] / "health"))
+from wrkslots_audit_contract import (  # noqa: E402
+    ContractError,
+    RECEIPT_SCHEMA,
+    SCOPE,
+    validate_audit_payload,
+    validate_audit_cost,
+    validate_observer_cost,
+    validate_receipt,
+)
+
+
+SCHEMA = RECEIPT_SCHEMA
+# Measured under a concurrent full validation at parent aa1b4601: the complete
+# audit consumed 185.411597 cgroup CPU-seconds. 240 leaves 54.588403 seconds
+# (29.44%) of CPU headroom. The 1800-second wall limit remains only a blocked-
+# process backstop; it is not an aggregate performance guarantee.
+CPU_BUDGET_SECONDS = 240
+WALL_BACKSTOP_SECONDS = 1800
+ESTIMATE_WALL_SECONDS = 190
+ESTIMATE_CPU_SECONDS = 179
+ESTIMATE_BASIS = (
+    "derived from a completed audit concurrent with full validation at "
+    "parent aa1b4601af68df3775eec7d9664aa58634fef36e: "
+    "188.373s outer wall, 178.802s outer wait4 CPU, and 185.412s boxed "
+    "cgroup CPU (the cap source)"
+)
+DEFAULT_RESULT = Path("ignored/ci-hub/wrkslots-audit/latest.json")
+SHA = re.compile(r"^[0-9a-f]{40}$")
+BOX_ACTUAL_FIELDS = {
+    "schema",
+    "label",
+    "scope",
+    "cpu_source",
+    "cgroup_usage_usec",
+    "cpu_seconds",
+    "cpu_budget_seconds",
+    "wall_backstop_seconds",
+    "reaped",
+    "termination",
+    "exit_code",
+}
+
+
+class ConfigurationError(RuntimeError):
+    """The exact-tool/state boundary is absent or inconsistent."""
+
+
+def _utc(epoch: float) -> str:
+    return (
+        dt.datetime.fromtimestamp(epoch, dt.timezone.utc)
+        .isoformat()
+        .replace("+00:00", "Z")
+    )
+
+
+def _sha_from_environment(name: str) -> str:
+    value = os.environ.get(name, "")
+    if not SHA.fullmatch(value):
+        raise ConfigurationError(
+            f"{name} is absent or invalid; launch through the installed operational-tool"
+        )
+    return value
+
+
+def _roots(state_root_arg: Path | None) -> tuple[Path, Path]:
+    source_root = Path(__file__).parents[2]
+    tool_raw = os.environ.get("DEV_HERMIT_TOOL_ROOT")
+    if not tool_raw:
+        raise ConfigurationError(
+            "DEV_HERMIT_TOOL_ROOT is absent; mutable checkout execution is refused"
+        )
+    tool_root = Path(tool_raw)
+    if not tool_root.is_absolute():
+        raise ConfigurationError("DEV_HERMIT_TOOL_ROOT must be absolute")
+    source_identity = os.stat(source_root, follow_symlinks=False)
+    tool_identity = os.stat(tool_root, follow_symlinks=False)
+    if (source_identity.st_dev, source_identity.st_ino) != (
+        tool_identity.st_dev,
+        tool_identity.st_ino,
+    ):
+        raise ConfigurationError(
+            f"entrypoint root {source_root} differs from verified tool root {tool_root}"
+        )
+
+    state_raw = state_root_arg or (
+        Path(os.environ["DEV_HERMIT_PARENT"])
+        if os.environ.get("DEV_HERMIT_PARENT")
+        else None
+    )
+    if state_raw is None:
+        raise ConfigurationError("state root is absent; pass --state-root")
+    state_root = state_raw.resolve(strict=True)
+    if state_root == tool_root:
+        raise ConfigurationError(
+            "mutable state root must differ from private tool root"
+        )
+    return tool_root, state_root
+
+
+def _atomic_json(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary_name = tempfile.mkstemp(
+        dir=path.parent, prefix=f".{path.name}.", suffix=".tmp"
+    )
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, indent=2, sort_keys=True)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+        directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    except BaseException:
+        try:
+            temporary.unlink()
+        except FileNotFoundError:
+            pass
+        raise
+
+
+def _read_json(path: Path) -> dict[str, Any] | None:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def _typed_integer(value: object, field: str, *, positive: bool = False) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ContractError(f"boxed {field} is not an integer")
+    if value < (1 if positive else 0):
+        raise ContractError(f"boxed {field} is outside its allowed range")
+    return value
+
+
+def _typed_number(value: object, field: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ContractError(f"boxed {field} is not numeric")
+    number = float(value)
+    if not math.isfinite(number) or number < 0:
+        raise ContractError(f"boxed {field} is not finite and non-negative")
+    return number
+
+
+def _read_audit_cost(
+    path: Path,
+    *,
+    observer_cost: dict[str, Any],
+    exit_code: int,
+    cpu_budget: int,
+    wall_backstop: int,
+) -> dict[str, Any]:
+    boxed = _read_json(path)
+    if boxed is None:
+        raise ContractError("boxed cost record is absent or unreadable")
+    if set(boxed) != BOX_ACTUAL_FIELDS:
+        raise ContractError("boxed cost record has unexpected fields")
+    if boxed["schema"] != "hermit-box-run-actual/v1":
+        raise ContractError("boxed cost schema is not hermit-box-run-actual/v1")
+    if boxed["label"] != "wrkslots-audit":
+        raise ContractError("boxed cost label is not wrkslots-audit")
+    scope = boxed["scope"]
+    if not isinstance(scope, str) or not SCOPE.fullmatch(scope):
+        raise ContractError("boxed cost scope is invalid")
+    if boxed["cpu_source"] != "cgroup-v2 cpu.stat usage_usec":
+        raise ContractError("boxed cost has unknown CPU source")
+    boxed_cpu_budget = _typed_integer(
+        boxed["cpu_budget_seconds"], "CPU budget", positive=True
+    )
+    boxed_wall_backstop = _typed_integer(
+        boxed["wall_backstop_seconds"], "wall backstop", positive=True
+    )
+    usage_usec = _typed_integer(boxed["cgroup_usage_usec"], "CPU usage")
+    boxed_cpu_seconds = _typed_number(boxed["cpu_seconds"], "CPU seconds")
+    if not math.isclose(
+        boxed_cpu_seconds, usage_usec / 1_000_000, rel_tol=0, abs_tol=1e-9
+    ):
+        raise ContractError("boxed CPU seconds contradict cgroup usage_usec")
+    boxed_exit = _typed_integer(boxed["exit_code"], "exit")
+    if boxed_cpu_budget != cpu_budget:
+        raise ContractError("boxed CPU budget contradicts requested limit")
+    if boxed_wall_backstop != wall_backstop:
+        raise ContractError("boxed wall backstop contradicts requested limit")
+    if boxed_exit != exit_code:
+        raise ContractError("boxed exit contradicts outer observer exit")
+    if not isinstance(boxed["reaped"], bool):
+        raise ContractError("boxed reaped field is not boolean")
+
+    record = {
+        "schema": "wrkslots-audit-cost/v1",
+        "wall_seconds": observer_cost["actual"]["wall_seconds"],
+        "cpu_seconds": usage_usec / 1_000_000,
+        "wall_source": "outer monotonic observer",
+        "cpu_source": "cgroup-v2 cpu.stat usage_usec",
+        "cpu_budget_seconds": boxed_cpu_budget,
+        "wall_backstop_seconds": boxed_wall_backstop,
+        "cgroup_usage_usec": usage_usec,
+        "scope": scope,
+        "reaped": boxed["reaped"],
+        "termination": boxed["termination"],
+        "exit_code": boxed_exit,
+    }
+    return validate_audit_cost(
+        record,
+        observer_cost=observer_cost,
+        exit_code=exit_code,
+        cpu_budget_seconds=cpu_budget,
+        wall_backstop_seconds=wall_backstop,
+    )
+
+
+def _classify(
+    returncode: int,
+    stdout: str,
+    stderr: str,
+    cost: dict[str, Any] | None,
+    cost_error: str | None,
+) -> tuple[str, str, dict[str, Any] | None]:
+    if returncode < 0:
+        return "NO_RESULT", f"tool-cost was killed by signal {-returncode}", None
+    if cost is not None and cost["termination"] == "cpu_budget":
+        return "NO_RESULT", "CPU budget exhausted before the audit completed", None
+    if cost is not None and cost["termination"] == "wall_backstop":
+        return "NO_RESULT", "wall backstop expired before the audit completed", None
+    if returncode == 3:
+        if (
+            "cgroup boxing unavailable" in stderr
+            or "could not establish reaper cgroup" in stderr
+        ):
+            return "NO_RESULT", "cgroup containment was unavailable", None
+        if "authoritative cgroup CPU unavailable" in stderr:
+            return "NO_RESULT", "cgroup CPU measurement was unavailable", None
+        return "NO_RESULT", "wrkslots audit refused or exited 3", None
+    if returncode not in (0, 1, 2):
+        return "NO_RESULT", f"audit execution exited {returncode}", None
+    if cost is None:
+        detail = f": {cost_error}" if cost_error else ""
+        return "NO_RESULT", f"audit cost evidence was unavailable{detail}", None
+
+    try:
+        payload = validate_audit_payload(json.loads(stdout), exit_code=returncode)
+    except (json.JSONDecodeError, ContractError) as error:
+        return "NO_RESULT", f"audit output violated its contract: {error}", None
+    state = payload["state"]
+    verdict = {
+        "ok": "OK",
+        "actionable": "ACTIONABLE",
+        "unknown": "NO_RESULT",
+    }[state]
+    return verdict, payload["summary"], payload
+
+
+def _command(
+    tool_root: Path,
+    state_root: Path,
+    actual_json: Path,
+    box_actual: Path,
+    *,
+    cpu_budget: int,
+    wall_backstop: int,
+) -> list[str]:
+    return [
+        str(tool_root / "ci-hub/bin/tool-cost"),
+        "--tool",
+        "ci-hub/wrkslots-audit",
+        "--estimate-wall-seconds",
+        str(ESTIMATE_WALL_SECONDS),
+        "--estimate-cpu-seconds",
+        str(ESTIMATE_CPU_SECONDS),
+        "--basis",
+        ESTIMATE_BASIS,
+        "--actual-json",
+        str(actual_json),
+        "--",
+        str(tool_root / "scripts/hermit-box-run"),
+        "--passthrough",
+        "--cpu-budget",
+        str(cpu_budget),
+        "--wall",
+        str(wall_backstop),
+        "--label",
+        "wrkslots-audit",
+        "--actual-json",
+        str(box_actual),
+        "--diag-fd",
+        "2",
+        "--",
+        str(tool_root / "ci-hub/bin/wrkslots"),
+        "--project-root",
+        str(state_root),
+        "audit",
+        "--format",
+        "json",
+        "--gate",
+    ]
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--state-root", type=Path)
+    parser.add_argument("--result", type=Path)
+    parser.add_argument("--cpu-budget", type=int, default=CPU_BUDGET_SECONDS)
+    parser.add_argument("--wall", type=int, default=WALL_BACKSTOP_SECONDS)
+    args = parser.parse_args(argv)
+    if args.cpu_budget <= 0 or args.wall <= 0:
+        parser.error("--cpu-budget and --wall must be positive")
+
+    try:
+        tool_root, state_root = _roots(args.state_root)
+        provenance = {
+            "parent_sha": _sha_from_environment("DEV_HERMIT_TOOL_PARENT_SHA"),
+            "hermit_sha": _sha_from_environment("DEV_HERMIT_TOOL_HERMIT_SHA"),
+            "agent_utils_sha": _sha_from_environment("DEV_HERMIT_TOOL_AGENT_UTILS_SHA"),
+        }
+    except (ConfigurationError, OSError) as error:
+        print(f"wrkslots-audit: REFUSED: {error}", file=sys.stderr)
+        return 3
+
+    result_path = args.result or state_root / DEFAULT_RESULT
+    try:
+        result_path.resolve().relative_to(state_root)
+    except (OSError, ValueError):
+        print(
+            "wrkslots-audit: REFUSED: result path must remain under state root",
+            file=sys.stderr,
+        )
+        return 3
+
+    started = time.time()
+    with tempfile.TemporaryDirectory(prefix="wrkslots-audit-") as directory:
+        temporary = Path(directory)
+        observer_cost_path = temporary / "observer-cost.json"
+        box_actual_path = temporary / "box-actual.json"
+        command = _command(
+            tool_root,
+            state_root,
+            observer_cost_path,
+            box_actual_path,
+            cpu_budget=args.cpu_budget,
+            wall_backstop=args.wall,
+        )
+        try:
+            completed = subprocess.run(
+                command,
+                cwd=tool_root,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+        except OSError as error:
+            completed = subprocess.CompletedProcess(command, 127, "", str(error))
+        exit_code = (
+            128 + abs(completed.returncode)
+            if completed.returncode < 0
+            else completed.returncode
+        )
+        observer_cost = _read_json(observer_cost_path)
+        cost_errors: list[str] = []
+        if observer_cost is not None:
+            try:
+                observer_cost = validate_observer_cost(
+                    observer_cost, exit_code=exit_code
+                )
+            except ContractError as error:
+                observer_cost = None
+                cost_errors.append(str(error))
+        else:
+            cost_errors.append("outer observer cost is absent or unreadable")
+        cost = None
+        if observer_cost is not None:
+            try:
+                cost = _read_audit_cost(
+                    box_actual_path,
+                    observer_cost=observer_cost,
+                    exit_code=exit_code,
+                    cpu_budget=args.cpu_budget,
+                    wall_backstop=args.wall,
+                )
+            except ContractError as error:
+                cost_errors.append(str(error))
+        cost_error = "; ".join(cost_errors) or None
+
+    if completed.stdout:
+        sys.stdout.write(completed.stdout)
+    if completed.stderr:
+        sys.stderr.write(completed.stderr)
+    finished = time.time()
+    verdict, summary, audit = _classify(
+        completed.returncode,
+        completed.stdout,
+        completed.stderr,
+        cost,
+        cost_error,
+    )
+    receipt = {
+        "schema": SCHEMA,
+        "started_at": _utc(started),
+        "started_at_epoch_seconds": started,
+        "observed_at": _utc(finished),
+        "observed_at_epoch_seconds": finished,
+        "producer": provenance,
+        "limits": {
+            "cpu_budget_seconds": args.cpu_budget,
+            "wall_backstop_seconds": args.wall,
+        },
+        "verdict": verdict,
+        "summary": summary,
+        "exit_code": exit_code,
+        "audit": audit,
+        "cost": cost,
+        "observer_cost": observer_cost,
+        "stderr_sha256": hashlib.sha256(completed.stderr.encode()).hexdigest(),
+    }
+    try:
+        validate_receipt(receipt)
+        _atomic_json(result_path, receipt)
+    except (ContractError, OSError) as error:
+        print(
+            f"wrkslots-audit: could not publish a valid result at {result_path}: {error}",
+            file=sys.stderr,
+        )
+        return 3
+
+    print(
+        f"wrkslots-audit-result: verdict={verdict} result={result_path} "
+        f"parent_sha={provenance['parent_sha']}"
+    )
+    return 0 if audit is not None else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

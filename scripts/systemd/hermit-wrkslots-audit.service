@@ -1,0 +1,30 @@
+[Unit]
+Description=Bounded wrkslots lifecycle audit from an exact current tool tree
+Documentation=https://github.com/rrnewton/dev-hermit/blob/main/ci-hub/bin/wrkslots-audit
+
+[Service]
+Type=oneshot
+Environment=PATH=%h/bin:%h/.local/bin:%h/.cargo/bin:%h/orc-bin:/usr/local/bin:/usr/bin:/bin
+# `wrkslots audit` and the tick's `wrkslots doctor` gate both hold compatible
+# shared registry locks, so neither waits on the other. Their complete scans can
+# still overlap in CPU and filesystem traffic. Keep the independently scheduled
+# audit at background priority so an overlap cannot consume the ordinary tick's
+# fixed wall budget; this changes scheduling priority, not either check's scope.
+Nice=19
+IOSchedulingClass=idle
+# The installed bootstrap selects and verifies one current parent -> Hermit ->
+# agent-utils tree, then executes the producer from that immutable copy. The
+# primary checkout is state only and may be dirty without changing tool code.
+WorkingDirectory=%h
+ExecStart=%h/.local/libexec/dev-hermit/operational-tool --run-current-tool --state-root %h/work/dev-hermit --tool-relative ci-hub/bin/wrkslots-audit
+
+# tool-cost remains outside hermit-box-run's cgroup so a box reap can still
+# publish COST ACTUAL. The inner CPU-time cap is authoritative; this generous
+# wall limit is only an operational backstop for blocked work.
+TimeoutStartSec=1920
+TimeoutStopSec=2s
+KillMode=control-group
+SuccessExitStatus=0
+
+[Install]
+WantedBy=default.target

@@ -43,6 +43,26 @@ def test_no_tick_hub_reminder_claims_a_faster_cadence_than_the_outer_tick() -> N
     assert min(cadences) >= TICK_MINUTES * 60
 
 
+def test_expensive_wrkslots_audit_has_a_persistent_calendar_schedule() -> None:
+    timer = read("scripts/systemd/hermit-wrkslots-audit.timer")
+    service = read("scripts/systemd/hermit-wrkslots-audit.service")
+    config = read("ci-hub/health/tick-hub.yaml")
+
+    assert "OnCalendar=hourly" in timer
+    assert "OnActiveSec=30s" in timer
+    assert "Persistent=true" in timer
+    assert "OnUnitActiveSec" not in timer
+    assert "Unit=hermit-wrkslots-audit.service" in timer
+    assert "operational-tool --run-current-tool" in service
+    assert "--tool-relative ci-hub/bin/wrkslots-audit" in service
+    assert "KillMode=control-group" in service
+    assert "Nice=19" in service
+    assert "IOSchedulingClass=idle" in service
+    assert "ci-hub/health/wrkslots_audit_result.py" in config
+    assert 'cmd: ci-hub/bin/wrkslots --project-root' not in config
+    assert "advance intentionally creates that visible NO_RESULT window" in config
+
+
 def test_staleness_alarm_preserves_three_missed_tick_threshold() -> None:
     source = read("scripts/hermit-health-staleness.sh")
     assert f"INTERVAL_MIN={TICK_MINUTES}" in source

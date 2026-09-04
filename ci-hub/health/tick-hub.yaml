@@ -169,17 +169,18 @@ reminders:
         component: worktree-disk-residue
       title: "worktree slots are idle on disk and reclaimable: {summary}"
 
-  # WRKSLOTS IS THE LIFECYCLE AUTHORITY. This read-only gate asks the same
-  # append-only record and reclaim preconditions used by remove; it does not
-  # reproduce those decisions in the reminder. A DELETABLE slot, interrupted
-  # operation, or unregistered directory needs coordinator attention. A live,
-  # TTL-fresh, held, or unverifiable slot remains visible but does not page as
-  # reclaimable. The command itself names the next evidence-based operation.
+  # WRKSLOTS IS THE LIFECYCLE AUTHORITY. The expensive audit now runs from an
+  # independent persistent calendar timer, outside this tick's 180-second
+  # aggregate wall cap. This cheap gate consumes only its typed atomic result.
+  # Missing, stale, malformed, or wrong-provenance evidence is NO_RESULT: an
+  # absent audit can never make the ordinary health tick green. A parent-main
+  # advance intentionally creates that visible NO_RESULT window until the next
+  # independent audit publishes evidence from the same exact tool revision.
   - name: wrkslots_audit
     cadence_secs: 3600
     gate:
-      timeout_secs: 120
-      cmd: ci-hub/bin/wrkslots --project-root "$DEV_HERMIT_PARENT" audit --gate
+      timeout_secs: 10
+      cmd: python3 ci-hub/health/wrkslots_audit_result.py --result "$DEV_HERMIT_PARENT/ignored/ci-hub/wrkslots-audit/latest.json" --max-age-secs 7200
       when: failure
       capture: true
     emit:
@@ -187,7 +188,7 @@ reminders:
       skill: hard-warn-coordinator
       fields:
         component: wrkslots-audit
-      title: "wrkslots found worktree lifecycle work: {summary}"
+      title: "wrkslots audit result needs attention: {summary}"
 
   # REGISTRY/STORAGE DISAGREEMENT. `wrkslots doctor` is read-only, exits 0
   # whatever it finds, and prints only when a human runs it. Measured 2026-09-03:

@@ -55,21 +55,23 @@ TICK_REPORT_COMPLETE=0
 # It also has to keep working in the one case that most needs reporting: when
 # materializing the tool root is what failed.
 ESCALATE="${HERMIT_HEALTH_ESCALATE:-$ROOT/ci-hub/bin/escalate}"
-ESCALATION_KEY="operational-tick-findings"
 ESCALATION_AGENT="health-tick"
-ESCALATION_TEAM="hermit2"
 # BOTH SINKS, because they cover different outages and neither one covers the
 # other. The fork is off this host and survives the whole fleet being down, which
 # is the coordinator being ABSENT. The work queue gets the alarm DISPATCHED
 # rather than needing to be noticed, which is the coordinator being PRESENT AND
 # NOT LOOKING -- the failure this project actually had. When Orc is down nobody
 # reads the queue either, so the queue sink is an addition and not a replacement.
-ESCALATION_SINKS=(--sink github --sink taskgraph)
+# run-health-escalation drains one chronological queue and sends each event to
+# TaskGraph before GitHub. A slow external request therefore cannot overtake an
+# older queue update or prevent the work-queue sink from running first.
 # ⚠️ NAMED, NEVER INHERITED. Measured 2026-09-03 from this very unit: with no
 # TG_DB_PATH, `tg db current` answers "(no active database - using tasks)", while
 # every coordinator and agent reads this one. A row filed into the database a
 # scheduled service happens to inherit is an invisible alarm, not a quiet one.
 ESCALATION_TG_DB="hermit2"
+ESCALATION_PENDING_DIR="$ROOT/ignored/ci-hub/health-escalation-pending"
+ESCALATION_LOG="$HOME/.local/state/hermit-health-escalation.log"
 TOOL_CACHE="${DEV_HERMIT_TOOL_CACHE:-${HERMIT_HEALTH_TOOL_CACHE:-$HOME/.local/state/hermit-health-tool}}"
 CANONICAL_REPOSITORY="rrnewton/dev-hermit"
 CANONICAL_REMOTE_URL="https://github.com/rrnewton/dev-hermit.git"
@@ -160,7 +162,7 @@ record_live_report_findings() {
     LIVE_REPORT_RECORDED=1
     while IFS= read -r finding || [ -n "$finding" ]; do
         case "$finding" in
-            ACTION:*|NOTE:*|ERROR:*)
+            ACTION:*|NOTE:*|ERROR:*|NO_RESULT:*|CLEAN:*|SUPPRESSED:*)
                 printf '%s finding=%s\n' "$LIVE_REPORT_STAMP" "$finding" >>"$INVLOG"
                 ;;
         esac
@@ -197,17 +199,17 @@ record_live_report_findings() {
 escalate_live_report_findings() {
     [ "$LIVE_REPORT_ESCALATED" -eq 1 ] && return 0
     [ -n "$LIVE_REPORT_STAMP" ] || return 0
-    [ -x "$ESCALATE" ] || return 0
     LIVE_REPORT_ESCALATED=1
-    local payload count outcome rc
-    payload=$(mktemp "${TMPDIR:-/tmp}/hermit-tick-findings.XXXXXX") || return 0
+    local temporary event kind count suffix
+    mkdir -p -- "$ESCALATION_PENDING_DIR" 2>/dev/null || return 0
+    temporary=$(mktemp "$ESCALATION_PENDING_DIR/.event-$(date -u +%Y%m%dT%H%M%S%NZ)-$$-XXXXXX") || return 0
     if [ -s "$LIVE_REPORT" ]; then
-        grep -E '^(ACTION|ERROR):' "$LIVE_REPORT" >"$payload" 2>/dev/null || true
+        grep -E '^(ACTION|ERROR):' "$LIVE_REPORT" >"$temporary" 2>/dev/null || true
     fi
     # NOT `grep -c ... || echo 0`: grep prints 0 AND exits 1 on no match, so the
     # fallback would append a second 0 and the arithmetic below would then fail
     # with "integer expression expected" -- on exactly the clean-tick path.
-    count=$(grep -c . "$payload" 2>/dev/null)
+    count=$(grep -c . "$temporary" 2>/dev/null)
     [[ $count =~ ^[0-9]+$ ]] || count=0
     if [ "$count" -eq 0 ] && [ "$TICK_REPORT_COMPLETE" -ne 1 ]; then
         # NOT a clean tick -- an unfinished one. Retracting an alarm requires
@@ -215,36 +217,58 @@ escalate_live_report_findings() {
         # true warning because the check was killed is worse than saying nothing.
         printf '%s escalation_skipped=incomplete-report findings=0\n' \
             "$LIVE_REPORT_STAMP" >>"$INVLOG"
+        rm -f -- "$temporary"
         return 0
     fi
     if [ "$count" -eq 0 ]; then
-        # A COMPLETE tick with nothing to report. Close what an earlier one
-        # opened, rather than leaving last week's alarm beside this week's.
-        outcome=$(DG_AGENT_NAME="$ESCALATION_AGENT" with-proxy "$ESCALATE" \
-            "${ESCALATION_SINKS[@]}" --tg-db "$ESCALATION_TG_DB" \
-            --key "$ESCALATION_KEY" --resolve --team "$ESCALATION_TEAM" \
-            --role relay 2>&1)
-        rc=$?
+        kind=resolve
     else
-        # ⚠️ THE TWO --digest-ignore PATTERNS ARE LOAD-BEARING. health-tick stamps
-        # every ACTION and NOTE with `observed_at=` and `input_sha=` provenance,
-        # so without these an unchanged condition looks new on every cycle and
-        # the sink becomes an hourly comment nobody reads. They affect change
-        # detection only; the published text keeps the timestamps, which is
-        # where they are actually useful.
-        outcome=$(DG_AGENT_NAME="$ESCALATION_AGENT" with-proxy "$ESCALATE" \
-            "${ESCALATION_SINKS[@]}" --tg-db "$ESCALATION_TG_DB" \
-            --key "$ESCALATION_KEY" \
-            --title "operational health tick reports $count finding(s) on $(uname -n)" \
-            --digest-ignore 'observed_at=[0-9TZ:+-]+' \
-            --digest-ignore 'input_sha=[0-9a-f]{7,40}' \
-            --team "$ESCALATION_TEAM" --role relay --message-file "$payload" 2>&1)
-        rc=$?
+        kind=alarm
     fi
-    rm -f "$payload"
-    printf '%s escalation_rc=%s findings=%s detail=%q\n' \
-        "$LIVE_REPORT_STAMP" "$rc" "$count" \
-        "$(printf '%s' "$outcome" | tr '\n' ';' | cut -c1-300)" >>"$INVLOG"
+    suffix=${temporary##*-}
+    event="$ESCALATION_PENDING_DIR/event-$(date -u +%Y%m%dT%H%M%S%NZ)-$$-$suffix.$kind"
+    mv -- "$temporary" "$event" || { rm -f -- "$temporary"; return 0; }
+    if launch_health_escalation; then
+        printf '%s escalation=queued event=%q kind=%s findings=%s\n' \
+            "$LIVE_REPORT_STAMP" "$event" "$kind" "$count" >>"$INVLOG"
+    else
+        printf '%s escalation=retained event=%q kind=%s findings=%s reason=detached-launch-refused\n' \
+            "$LIVE_REPORT_STAMP" "$event" "$kind" "$count" >>"$INVLOG"
+    fi
+}
+
+launch_health_escalation() {
+    local unit launch_error
+    unit="hermit-health-escalation-$(date -u +%Y%m%dT%H%M%S%NZ)-$$-$RANDOM"
+    mkdir -p -- "$ESCALATION_PENDING_DIR" 2>/dev/null || return 1
+    if launch_error=$(systemd-run --user --quiet --collect \
+        --unit="$unit" \
+        --description="deliver retained operational health findings" \
+        --property=CPUQuota=100% \
+        --property=RuntimeMaxSec=180 \
+        --property="StandardOutput=append:$ESCALATION_LOG" \
+        --property="StandardError=append:$ESCALATION_LOG" \
+        --working-directory="$ROOT" \
+        --setenv="PATH=$PATH" \
+        --setenv="DG_AGENT_NAME=$ESCALATION_AGENT" \
+        --setenv="DEV_HERMIT_PARENT=$ROOT" \
+        --setenv="HERMIT_HEALTH_ESCALATE=$ESCALATE" \
+        --setenv="HERMIT_HEALTH_TG_DB=$ESCALATION_TG_DB" \
+        -- "$ROOT/ci-hub/bin/run-health-escalation" --queue "$ESCALATION_PENDING_DIR" \
+        2>&1 >/dev/null); then
+        return 0
+    fi
+    printf '%s detached_escalation_refused queue=%q detail=%q\n' \
+        "$(ts)" "$ESCALATION_PENDING_DIR" "$launch_error" >>"$INVLOG"
+    return 1
+}
+
+retry_pending_health_escalations() {
+    [[ -d $ESCALATION_PENDING_DIR ]] || return 0
+    find "$ESCALATION_PENDING_DIR" -maxdepth 1 -type f \
+        \( -name 'event-*.alarm' -o -name 'event-*.resolve' \) -print -quit \
+        | grep -q . || return 0
+    launch_health_escalation || true
 }
 
 tool_root_is_complete() {
@@ -492,10 +516,87 @@ TOOL_PARENT_SHA=""
 TOOL_HERMIT_SHA=""
 TOOL_AGENT_UTILS_SHA=""
 TOOL_BOOTSTRAP_SHA256=""
+TICK_CHILD_PID=""
+TICK_OUTPUT_FD=""
+TICK_OUTPUT_HOLD_FD=""
+TICK_OUTPUT_DIR=""
+TICK_OUTPUT_PIPE=""
+TICK_OUTPUT_READY=""
+TICK_CHILD_SPAWN_PENDING=0
+TICK_CANCEL_SIGNAL=""
+TICK_CANCEL_STATUS=""
+
+close_tick_output() {
+    if [[ -n $TICK_OUTPUT_FD ]]; then
+        exec {TICK_OUTPUT_FD}<&-
+        TICK_OUTPUT_FD=""
+    fi
+    if [[ -n $TICK_OUTPUT_HOLD_FD ]]; then
+        exec {TICK_OUTPUT_HOLD_FD}>&-
+        TICK_OUTPUT_HOLD_FD=""
+    fi
+    if [[ -n $TICK_OUTPUT_PIPE ]]; then
+        rm -f -- "$TICK_OUTPUT_PIPE"
+        TICK_OUTPUT_PIPE=""
+    fi
+    if [[ -n $TICK_OUTPUT_READY ]]; then
+        rm -f -- "$TICK_OUTPUT_READY"
+        TICK_OUTPUT_READY=""
+    fi
+    if [[ -n $TICK_OUTPUT_DIR ]]; then
+        rmdir -- "$TICK_OUTPUT_DIR" 2>/dev/null || true
+        TICK_OUTPUT_DIR=""
+    fi
+}
+
+finish_tick_cancellation() {
+    local state="" _
+    trap - INT TERM HUP
+    if [[ -n $TICK_CHILD_PID ]]; then
+        kill -s "$TICK_CANCEL_SIGNAL" -- "-$TICK_CHILD_PID" 2>/dev/null || true
+        # Hand the already-streamed report to an independent service before
+        # waiting for the child. Delivery then runs concurrently with teardown
+        # and survives the wrapper's two-second hard-kill window.
+        record_live_report_findings
+        escalate_live_report_findings
+        # ORC gives this wrapper two seconds before SIGKILL. Give the measured
+        # child one second to finish its signal handler, then reap the complete
+        # process group before the wrapper releases its private tool tree.
+        for _ in {1..50}; do
+            if [[ ! -r /proc/$TICK_CHILD_PID/stat ]] || \
+               ! read -r _ _ state _ < "/proc/$TICK_CHILD_PID/stat" || \
+               [[ $state == Z ]]; then
+                break
+            fi
+            sleep 0.02
+        done
+        kill -KILL -- "-$TICK_CHILD_PID" 2>/dev/null || true
+        wait "$TICK_CHILD_PID" 2>/dev/null || true
+        TICK_CHILD_PID=""
+    fi
+    close_tick_output
+    exit "$TICK_CANCEL_STATUS"
+}
+
+record_tick_cancellation() {
+    TICK_CANCEL_SIGNAL=$1
+    TICK_CANCEL_STATUS=$2
+    if [[ -n $TICK_CHILD_PID ]]; then
+        finish_tick_cancellation
+    fi
+    # Between declaring spawn intent and assigning $!, returning is the only
+    # safe action. The launcher checks this latch immediately after assignment
+    # and forwards the signal to the now-observable child session.
+    if [[ $TICK_CHILD_SPAWN_PENDING -eq 1 ]]; then
+        return 0
+    fi
+    exit "$TICK_CANCEL_STATUS"
+}
 
 cleanup_tool_roots() {
-    local rc=$?
-    trap - EXIT INT TERM
+    local rc=${1:-$?}
+    trap - EXIT INT TERM HUP
+    close_tick_output
     if [[ -n $TOOL_HOLDER_PID ]]; then
         local entry_matched_before=0 holder_status="" holder_ready_to_release=0
         if [[ -n $TOOL_RUN_ENTRY_NAME ]] && held_directory_entry_matches \
@@ -553,6 +654,17 @@ cleanup_tool_roots() {
     [[ -z $TOOL_TREES_FD ]] || exec {TOOL_TREES_FD}<&-
     [[ -z $TOOL_CACHE_FD ]] || exec {TOOL_CACHE_FD}<&-
     exit "$rc"
+}
+
+finish_wrapper() {
+    local rc=$?
+    # Preserve the wrapper's status across the report-delivery calls. Without
+    # this handoff, cleanup would see the final delivery helper's status and a
+    # terminated tick could be rewritten from 143 to 0.
+    trap - EXIT
+    record_live_report_findings
+    escalate_live_report_findings
+    cleanup_tool_roots "$rc"
 }
 
 stop_staging_holder() {
@@ -2453,6 +2565,12 @@ if ! cd "$ROOT" 2>/dev/null; then
     exit 126
 fi
 
+# A cancelled earlier run may have retained a payload because its detached
+# publisher could not be started or did not complete. Relaunching is safe: the
+# escalation key and digest make repeated delivery idempotent, and the payload
+# disappears only after both sinks succeed.
+retry_pending_health_escalations
+
 # Pull landed parent changes BEFORE loading the tick runner or its configuration.
 # This is the deployment half of a parent-main landing: the writer serializes the
 # ref update, freshly fetches origin/main, and permits only a fast-forward whose
@@ -2502,21 +2620,60 @@ else
     tool_root_sha=$TOOL_PARENT_SHA
     printf '%s tool_root=%s tool_root_sha=%s state_root=%s\n' \
         "$start" "$tool_root" "$tool_root_sha" "$ROOT" >>"$INVLOG"
-    DEV_HERMIT_PARENT="$ROOT" \
-        DEV_HERMIT_TOOL_ROOT="$tool_root" \
-        DEV_HERMIT_TOOL_AUTHORITY="$TOOL_AUTHORITY_PATH" \
-        DEV_HERMIT_TOOL_CONTENT_SHA256="$TOOL_CONTENT_SHA256" \
-        DEV_HERMIT_TOOL_PARENT_SHA="$TOOL_PARENT_SHA" \
-        DEV_HERMIT_TOOL_HERMIT_SHA="$TOOL_HERMIT_SHA" \
-        DEV_HERMIT_TOOL_AGENT_UTILS_SHA="$TOOL_AGENT_UTILS_SHA" \
-        DEV_HERMIT_TOOL_BOOTSTRAP_SHA256="$TOOL_BOOTSTRAP_SHA256" \
-        PYTHONDONTWRITEBYTECODE=1 \
-        with-proxy "$tool_root/ci-hub/bin/health-tick" --flush --no-header 2>&1 \
-        | tee -a "$LIVE_REPORT" >&9
-    # ⚠️ NOT `$?`. This is a pipeline, and `$?` would be `tee`'s status, which is
-    # almost always 0 -- the exact trap that once reported a rejected push as
-    # rc=0. PIPESTATUS[0] is health-tick's own status.
-    rc=${PIPESTATUS[0]}
+    # Keep the measured tick in its own process group so either outer bound can
+    # stop every gate descendant without also killing this wrapper before its
+    # exit trap records and escalates the report already received. A dedicated
+    # read descriptor preserves tick-hub's line-by-line delivery; unlike the old
+    # command substitution, it does not hold findings until the final gate exits.
+    TICK_OUTPUT_DIR=$(mktemp -d "${TMPDIR:-/tmp}/hermit-health-tick.$$.XXXXXX") || exit 1
+    TICK_OUTPUT_PIPE="$TICK_OUTPUT_DIR/report"
+    TICK_OUTPUT_READY="$TICK_OUTPUT_DIR/writer-ready"
+    mkfifo -- "$TICK_OUTPUT_PIPE" || exit 1
+    # The temporary read/write descriptor lets both one-way FIFO opens finish
+    # without either side blocking before the child exists. It is closed as
+    # soon as the real writer starts, so EOF still means the measured tick and
+    # all descendants have closed their output.
+    exec {TICK_OUTPUT_HOLD_FD}<>"$TICK_OUTPUT_PIPE"
+    exec {TICK_OUTPUT_FD}<"$TICK_OUTPUT_PIPE"
+    TICK_CHILD_SPAWN_PENDING=1
+    setsid sh -c ': > "$1"; shift; exec "$@"' sh "$TICK_OUTPUT_READY" \
+        env DEV_HERMIT_PARENT="$ROOT" \
+            DEV_HERMIT_TOOL_ROOT="$tool_root" \
+            DEV_HERMIT_TOOL_AUTHORITY="$TOOL_AUTHORITY_PATH" \
+            DEV_HERMIT_TOOL_CONTENT_SHA256="$TOOL_CONTENT_SHA256" \
+            DEV_HERMIT_TOOL_PARENT_SHA="$TOOL_PARENT_SHA" \
+            DEV_HERMIT_TOOL_HERMIT_SHA="$TOOL_HERMIT_SHA" \
+            DEV_HERMIT_TOOL_AGENT_UTILS_SHA="$TOOL_AGENT_UTILS_SHA" \
+            DEV_HERMIT_TOOL_BOOTSTRAP_SHA256="$TOOL_BOOTSTRAP_SHA256" \
+            PYTHONDONTWRITEBYTECODE=1 \
+            with-proxy "$tool_root/ci-hub/bin/health-tick" --flush --no-header \
+            >"$TICK_OUTPUT_PIPE" 2>&1 &
+    TICK_CHILD_PID=$!
+    TICK_CHILD_SPAWN_PENDING=0
+    if [[ -n $TICK_CANCEL_SIGNAL ]]; then
+        finish_tick_cancellation
+    fi
+    # The child creates this marker only after the shell has opened its stdout
+    # FIFO. Until then the temporary writer must remain open: closing it first
+    # could let the reader observe a false EOF and remove the FIFO before the
+    # child reaches its redirection.
+    while [[ ! -e $TICK_OUTPUT_READY && -d /proc/$TICK_CHILD_PID ]]; do
+        sleep 0.005
+    done
+    exec {TICK_OUTPUT_HOLD_FD}>&-
+    TICK_OUTPUT_HOLD_FD=""
+    while IFS= read -r tick_line <&"$TICK_OUTPUT_FD" || [[ -n $tick_line ]]; do
+        printf '%s\n' "$tick_line" >>"$LIVE_REPORT"
+        printf '%s\n' "$tick_line" >&9
+        tick_line=""
+    done
+    close_tick_output
+    rc=0
+    wait "$TICK_CHILD_PID" || rc=$?
+    TICK_CHILD_PID=""
+    if [[ -n $TICK_CANCEL_SIGNAL ]]; then
+        exit "$TICK_CANCEL_STATUS"
+    fi
     # The runner returned, so whatever it was going to say is now in the file.
     # This is deliberately not conditional on rc: a tick that ran its gates and
     # failed has still REPORTED, and health-tick emits an explicit gate=ALL line
@@ -2584,9 +2741,10 @@ exit "$rc"
 # The findings first, then the tool roots: a trap that cleans up before it
 # records would lose the report of a tick that was interrupted, which is the
 # only case this trap exists for.
-trap 'record_live_report_findings; escalate_live_report_findings; cleanup_tool_roots' EXIT
-trap 'exit 130' INT
-trap 'exit 143' TERM
+trap finish_wrapper EXIT
+trap 'record_tick_cancellation INT 130' INT
+trap 'record_tick_cancellation TERM 143' TERM
+trap 'record_tick_cancellation HUP 129' HUP
 if [[ ${1:-} == --run-current-tool ]]; then
     run_current_tool "$@"
 else

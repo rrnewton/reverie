@@ -1,0 +1,16 @@
+[Unit]
+Description=Run the wrkslots lifecycle audit hourly, independently of ORC
+Documentation=https://github.com/rrnewton/dev-hermit/blob/main/ci-hub/bin/wrkslots-audit
+
+[Timer]
+# Calendar persistence, unlike a monotonic unit-active timer, schedules one
+# catch-up after downtime. systemd never starts a second instance while this
+# service is active.
+OnActiveSec=30s
+OnCalendar=hourly
+Persistent=true
+AccuracySec=30s
+Unit=hermit-wrkslots-audit.service
+
+[Install]
+WantedBy=timers.target

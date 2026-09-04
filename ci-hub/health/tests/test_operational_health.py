@@ -45,7 +45,7 @@ class OperationalHealthTest(unittest.TestCase):
             self.assertEqual(row["emit"]["kind"], "note")
             self.assertNotIn("skill", row["emit"])
 
-    def test_wrkslots_audit_is_a_bounded_coordinator_reminder(self) -> None:
+    def test_wrkslots_audit_consumes_only_the_scheduled_result(self) -> None:
         config = yaml.safe_load(
             (Path(__file__).resolve().parents[1] / "tick-hub.yaml").read_text()
         )
@@ -53,11 +53,11 @@ class OperationalHealthTest(unittest.TestCase):
             row for row in config["reminders"] if row["name"] == "wrkslots_audit"
         )
         self.assertEqual(3600, reminder["cadence_secs"])
-        self.assertEqual(
-            'ci-hub/bin/wrkslots --project-root "$DEV_HERMIT_PARENT" audit --gate',
-            reminder["gate"]["cmd"],
-        )
-        self.assertEqual(120, reminder["gate"]["timeout_secs"])
+        command = reminder["gate"]["cmd"]
+        self.assertIn("ci-hub/health/wrkslots_audit_result.py", command)
+        self.assertIn('$DEV_HERMIT_PARENT/ignored/ci-hub/wrkslots-audit/latest.json', command)
+        self.assertNotIn("wrkslots --project-root", command)
+        self.assertEqual(10, reminder["gate"]["timeout_secs"])
         self.assertEqual("failure", reminder["gate"]["when"])
         self.assertTrue(reminder["gate"]["capture"])
         self.assertIn("{summary}", reminder["emit"]["title"])

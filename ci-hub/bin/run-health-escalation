@@ -1,0 +1,88 @@
+#!/usr/bin/env bash
+# Drain retained operational-health events in chronological order. A single
+# detached service owns the queue so an older alarm cannot race a newer resolve.
+set -uo pipefail
+
+ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
+ESCALATE=${HERMIT_HEALTH_ESCALATE:-$ROOT/ci-hub/bin/escalate}
+TG_DB=${HERMIT_HEALTH_TG_DB:-hermit2}
+LOG=${HERMIT_HEALTH_ESCALATION_LOG:-$HOME/.local/state/hermit-health-escalation.log}
+
+usage() {
+    cat <<'EOF'
+usage: run-health-escalation --queue DIR
+
+Publish retained operational-health events to TaskGraph and GitHub in filename
+order. Successfully delivered events are removed; failures remain for retry.
+EOF
+}
+
+queue=
+while (($#)); do
+    case $1 in
+        -h|--help) usage; exit 0 ;;
+        --queue) [[ $# -ge 2 ]] || { printf 'run-health-escalation: --queue requires DIR\n' >&2; exit 2; }; queue=$2; shift 2 ;;
+        --queue=*) queue=${1#*=}; shift ;;
+        *) printf 'run-health-escalation: unknown argument %s; run --help for usage\n' "$1" >&2; exit 2 ;;
+    esac
+done
+[[ -n $queue ]] || { printf 'run-health-escalation: --queue DIR is required; run --help for usage\n' >&2; exit 2; }
+[[ -d $queue ]] || { printf 'run-health-escalation: queue is not a directory: %s; create it or pass the retained queue path\n' "$queue" >&2; exit 2; }
+[[ -x $ESCALATE ]] || { printf 'run-health-escalation: publisher is unavailable at %s; retain the queue and retry after restoring it\n' "$ESCALATE" >&2; exit 2; }
+
+mkdir -p -- "$(dirname -- "$LOG")"
+exec 9>"$queue/.worker.lock"
+flock -x 9
+failures=0
+for sink in taskgraph github; do
+    while IFS= read -r -d '' event; do
+        acknowledgement="$event.$sink.done"
+        [[ ! -e $acknowledgement ]] || continue
+        count=0
+        case $event in
+            *.alarm)
+                count=$(grep -c . "$event" 2>/dev/null)
+                if [[ ! $count =~ ^[1-9][0-9]*$ ]]; then
+                    printf 'run-health-escalation: alarm event has no findings: %s; inspect it and remove it only if empty is intended\n' "$event" >&2
+                    exit 2
+                fi
+                args=(
+                    --sink "$sink" --tg-db "$TG_DB"
+                    --key operational-tick-findings
+                    --title "operational health tick reports $count finding(s) on $(uname -n)"
+                    --digest-ignore 'observed_at=[0-9TZ:+-]+'
+                    --digest-ignore 'input_sha=[0-9a-f]{7,40}'
+                    --team hermit2 --role relay --message-file "$event"
+                )
+                ;;
+            *.resolve)
+                args=(
+                    --sink "$sink" --tg-db "$TG_DB"
+                    --key operational-tick-findings --resolve
+                    --team hermit2 --role relay
+                )
+                ;;
+            *) continue ;;
+        esac
+        outcome=$(DG_AGENT_NAME=${DG_AGENT_NAME:-health-tick} \
+            with-proxy "$ESCALATE" "${args[@]}" 2>&1)
+        rc=$?
+        printf '%s event=%q sink=%s escalation_rc=%s findings=%s detail=%q\n' \
+            "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$event" "$sink" "$rc" "$count" \
+            "$(printf '%s' "$outcome" | tr '\n' ';' | cut -c1-300)" >>"$LOG"
+        if [[ $rc -ne 0 ]]; then
+            failures=1
+            break
+        fi
+        : >"$acknowledgement"
+    done < <(find "$queue" -maxdepth 1 -type f \
+        \( -name 'event-*.alarm' -o -name 'event-*.resolve' \) -print0 | sort -z)
+done
+
+while IFS= read -r -d '' event; do
+    if [[ -e $event.taskgraph.done && -e $event.github.done ]]; then
+        rm -f -- "$event" "$event.taskgraph.done" "$event.github.done"
+    fi
+done < <(find "$queue" -maxdepth 1 -type f \
+    \( -name 'event-*.alarm' -o -name 'event-*.resolve' \) -print0 | sort -z)
+exit "$failures"

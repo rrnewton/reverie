@@ -7,6 +7,7 @@ import fcntl
 import json
 import os
 from pathlib import Path
+import select
 import signal
 import shutil
 import subprocess
@@ -2176,6 +2177,10 @@ class HealthTickParentSyncTests(unittest.TestCase):
         git(agent_utils, "config", "user.email", "tick@example.invalid")
         (agent_utils / "bin").mkdir()
         (agent_utils / "bin" / "tick-hub").write_text("pinned agent-utils\n")
+        shutil.copytree(
+            SOURCE / "hermit" / "agent-utils" / "py" / "tick_hub",
+            agent_utils / "py" / "tick_hub",
+        )
         git(agent_utils, "add", ".")
         git(agent_utils, "commit", "-m", "seed agent-utils")
         self.agent_utils_head = git(agent_utils, "rev-parse", "HEAD").stdout.strip()
@@ -2728,6 +2733,136 @@ class HealthTickParentSyncTests(unittest.TestCase):
         )
         self.assertTrue((cached / ".git").is_dir())
         self.assertFalse((cached / ".git" / "commondir").exists())
+        self.assert_private_run_pool_is_reusable()
+
+    def test_installed_bootstrap_runs_entire_wrkslots_audit_chain_from_current_tool(
+        self,
+    ) -> None:
+        bootstrap = self.installed_bootstrap()
+        tool_cost = """#!/usr/bin/env python3
+import json
+from pathlib import Path
+import subprocess
+import sys
+
+args = sys.argv[1:]
+separator = args.index("--")
+actual_path = Path(args[args.index("--actual-json") + 1])
+completed = subprocess.run(args[separator + 1 :], check=False)
+actual_path.write_text(json.dumps({
+    "schema_version": 1,
+    "tool": "ci-hub/wrkslots-audit",
+    "estimate": {
+        "kind": "derived",
+        "wall_seconds": 190.0,
+        "cpu_seconds": 179.0,
+        "basis": "derived from one completed contention audit",
+    },
+    "actual": {
+        "wall_seconds": 1.0,
+        "cpu_seconds": 0.0,
+        "cpu_user_seconds": 0.0,
+        "cpu_system_seconds": 0.0,
+        "exit": str(completed.returncode),
+    },
+}))
+raise SystemExit(completed.returncode)
+"""
+        box = """#!/usr/bin/env python3
+import json
+import os
+from pathlib import Path
+import sys
+
+args = sys.argv[1:]
+separator = args.index("--")
+actual_path = Path(args[args.index("--actual-json") + 1])
+usage_usec = 1_000_000
+actual_path.write_text(json.dumps({
+    "schema": "hermit-box-run-actual/v1",
+    "label": "wrkslots-audit",
+    "scope": "hermit-box-run-123-456.scope",
+    "cpu_source": "cgroup-v2 cpu.stat usage_usec",
+    "cgroup_usage_usec": usage_usec,
+    "cpu_seconds": usage_usec / 1_000_000,
+    "cpu_budget_seconds": int(args[args.index("--cpu-budget") + 1]),
+    "wall_backstop_seconds": int(args[args.index("--wall") + 1]),
+    "reaped": False,
+    "termination": "completed",
+    "exit_code": 0,
+}))
+Path(os.environ["DEV_HERMIT_PARENT"], ".tick-hub").mkdir(exist_ok=True)
+Path(os.environ["DEV_HERMIT_PARENT"], ".tick-hub", "audit-chain.json").write_text(
+    json.dumps({
+        "tool_root": os.environ["DEV_HERMIT_TOOL_ROOT"],
+        "entrypoint": str(Path(__file__)),
+        "inner": args[separator + 1 :],
+    })
+)
+os.execv(args[separator + 1], args[separator + 1 :])
+"""
+        wrkslots = """#!/usr/bin/env python3
+import json
+print(json.dumps({
+    "schema": 2,
+    "state": "ok",
+    "summary": "no worktree slot currently needs coordinator attention",
+    "worktree_count": 0,
+    "running_agent_count": 0,
+    "attention_count": 0,
+    "attention_slots": [],
+    "unknown_count": 0,
+    "unknown_slots": [],
+}))
+"""
+        target = self.advance_remote(
+            extra_executables={
+                "ci-hub/bin/wrkslots-audit": (
+                    SOURCE / "ci-hub/bin/wrkslots-audit"
+                ).read_text(),
+                "ci-hub/bin/tool-cost": tool_cost,
+                "ci-hub/health/wrkslots_audit_contract.py": (
+                    SOURCE / "ci-hub/health/wrkslots_audit_contract.py"
+                ).read_text(),
+                "scripts/hermit-box-run": box,
+                "ci-hub/bin/wrkslots": wrkslots,
+            }
+        )
+        stale_marker = self.repo / ".tick-hub/stale-audit-ran"
+        stale = self.repo / "ci-hub/bin/wrkslots-audit"
+        stale.write_text(
+            "#!/usr/bin/env bash\n"
+            f": > {stale_marker}\n"
+            "exit 97\n"
+        )
+        stale.chmod(0o755)
+        result_path = self.repo / "ignored/ci-hub/wrkslots-audit/latest.json"
+        stale_before = stale.read_bytes()
+
+        completed = self.run_current_tool(
+            bootstrap,
+            "ci-hub/bin/wrkslots-audit",
+            "--result",
+            str(result_path),
+        )
+
+        self.assertEqual(0, completed.returncode, completed.stdout + completed.stderr)
+        self.assertFalse(stale_marker.exists())
+        receipt = json.loads(result_path.read_text())
+        self.assertEqual(target, receipt["producer"]["parent_sha"])
+        self.assertEqual(self.hermit_head, receipt["producer"]["hermit_sha"])
+        self.assertEqual(
+            self.agent_utils_head, receipt["producer"]["agent_utils_sha"]
+        )
+        chain = json.loads((self.repo / ".tick-hub/audit-chain.json").read_text())
+        self.assertRegex(chain["tool_root"], r"^/proc/[0-9]+/fd/[0-9]+$")
+        self.assertEqual(
+            f"{chain['tool_root']}/scripts/hermit-box-run", chain["entrypoint"]
+        )
+        self.assertEqual(
+            f"{chain['tool_root']}/ci-hub/bin/wrkslots", chain["inner"][0]
+        )
+        self.assertEqual(stale_before, stale.read_bytes())
         self.assert_private_run_pool_is_reusable()
 
     def test_primary_executable_git_config_is_never_consulted_by_immutable_tool(
@@ -3914,6 +4049,319 @@ class HealthTickParentSyncTests(unittest.TestCase):
             Path(self.env["HERMIT_HEALTH_TOOL_CACHE"]).glob(".run.*")
         )
         self.assertEqual(first_identity, (reused.stat().st_dev, reused.stat().st_ino))
+
+    def test_orc_direct_pid_term_reaches_measured_tick_and_reaps_it(self) -> None:
+        ready = self.repo / ".tick-hub/orc-cancel-ready"
+        tick_term = self.repo / ".tick-hub/orc-tick-term"
+        delayed = self.repo / ".tick-hub/orc-delayed-fired-state"
+        taskgraph_delivered = self.repo / ".tick-hub/orc-taskgraph-delivered"
+        github_started = self.repo / ".tick-hub/orc-github-started"
+        github_finished = self.repo / ".tick-hub/orc-github-finished"
+        invocation_log = self.home / ".local/state/hermit-health-tick-invocations.log"
+        systemd_run = self.bin / "systemd-run"
+        systemd_run.write_text(
+            "#!/usr/bin/env bash\n"
+            "set -eu\n"
+            "while (( $# )); do\n"
+            "  if [[ $1 == -- ]]; then shift; break; fi\n"
+            "  shift\n"
+            "done\n"
+            "python3 - \"$@\" <<'PY'\n"
+            "import subprocess, sys\n"
+            "subprocess.Popen(sys.argv[1:], stdin=subprocess.DEVNULL, "
+            "stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, "
+            "start_new_session=True, close_fds=True)\n"
+            "PY\n"
+        )
+        systemd_run.chmod(0o755)
+        systemctl = self.bin / "systemctl"
+        systemctl.write_text("#!/bin/sh\nexit 1\n")
+        systemctl.chmod(0o755)
+        payload = (
+            "#!/usr/bin/env bash\n"
+            "set -u\n"
+            "state=$DEV_HERMIT_PARENT/.tick-hub\n"
+            "mkdir -p \"$state\"\n"
+            "on_term() { printf 'term\\n' > \"$state/orc-tick-term\"; exit 143; }\n"
+            "trap on_term TERM INT HUP\n"
+            "(\n"
+            "  trap '' TERM INT HUP\n"
+            "  printf '%s\\n' \"$BASHPID\" > \"$state/orc-descendant-pid\"\n"
+            "  sleep 1\n"
+            "  printf 'late\\n' > \"$state/orc-delayed-fired-state\"\n"
+            ") &\n"
+            "descendant=$!\n"
+            "printf 'ACTION: fixture component=streamed title=preserve-me\\n'\n"
+            "printf 'CLEAN: first gate completed\\n'\n"
+            "printf 'SUPPRESSED: second gate disabled\\n'\n"
+            "printf 'NO_RESULT: third gate unavailable\\n'\n"
+            "printf '%s %s\\n' \"$$\" \"$descendant\" > \"$state/orc-cancel-ready\"\n"
+            "wait \"$descendant\"\n"
+        )
+        escalation = (
+            "#!/usr/bin/env bash\n"
+            "set -eu\n"
+            "state=$HOME/work/dev-hermit/.tick-hub\n"
+            "while (( $# )); do\n"
+            "  if [[ $1 == --sink ]]; then\n"
+            "    sink=$2; shift 2\n"
+            "    if [[ $sink == taskgraph ]]; then\n"
+            "      : > \"$state/orc-taskgraph-delivered\"\n"
+            "    elif [[ $sink == github ]]; then\n"
+            "      : > \"$state/orc-github-started\"\n"
+            "      sleep 2.2\n"
+            "      : > \"$state/orc-github-finished\"\n"
+            "    fi\n"
+            "  else\n"
+            "    shift\n"
+            "  fi\n"
+            "done\n"
+        )
+        self.advance_remote(
+            health_script=payload,
+            extra_executables={
+                "ci-hub/bin/escalate": escalation,
+                "ci-hub/bin/run-health-escalation": (
+                    SOURCE / "ci-hub/bin/run-health-escalation"
+                ).read_text(),
+            },
+        )
+        command = (
+            f'cd "{self.repo}" && '
+            'HERMIT_AGENT_SNAPSHOT_JSON="$1" '
+            "./scripts/hermit-health-tick.sh --emit-output"
+        )
+        process = subprocess.Popen(
+            ["setsid", "sh", "-c", command, "hermitOperationalTick", "[]"],
+            cwd=self.home,
+            env=self.env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        stdout = stderr = ""
+        try:
+            deadline = time.monotonic() + 15
+            while not ready.exists() and process.poll() is None:
+                if time.monotonic() >= deadline:
+                    self.fail("exact ORC command did not reach the cancellation barrier")
+                time.sleep(0.01)
+            if process.poll() is not None:
+                stdout, stderr = process.communicate()
+                self.fail(
+                    "exact ORC command exited before the cancellation barrier: "
+                    f"rc={process.returncode}\nstdout:\n{stdout}\nstderr:\n{stderr}"
+                )
+            command_line = Path(f"/proc/{process.pid}/cmdline").read_bytes()
+            self.assertEqual(
+                "bash",
+                Path(f"/proc/{process.pid}/exe").resolve().name,
+                "the outer sh -c did not tail-exec the Bash health-tick wrapper",
+            )
+            self.assertIn(
+                b"scripts/hermit-health-tick.sh",
+                command_line,
+                "the outer sh -c did not tail-exec the health-tick wrapper",
+            )
+            tick_pid, descendant_pid = map(int, ready.read_text().split())
+            for pid in (tick_pid, descendant_pid):
+                fields = Path(f"/proc/{pid}/stat").read_text().split()
+                self.assertNotEqual("Z", fields[2])
+            self.assertEqual(process.pid, os.getpgid(process.pid))
+            self.assertEqual(tick_pid, os.getpgid(tick_pid))
+            self.assertEqual(tick_pid, os.getpgid(descendant_pid))
+            self.assertNotEqual(process.pid, tick_pid)
+
+            started = time.monotonic()
+            process.send_signal(signal.SIGTERM)
+            try:
+                stdout, stderr = process.communicate(timeout=2)
+                required_kill = False
+            except subprocess.TimeoutExpired:
+                required_kill = True
+                process.kill()
+                stdout, stderr = process.communicate(timeout=2)
+
+            self.assertFalse(
+                required_kill,
+                "health-tick did not forward and reap before ORC's two-second KILL",
+            )
+            self.assertLess(time.monotonic() - started, 2)
+            self.assertEqual(143, process.returncode, stdout + stderr)
+            self.assertTrue(tick_term.is_file(), stdout + stderr)
+            durable = invocation_log.read_text()
+            for verdict in (
+                "ACTION: fixture component=streamed title=preserve-me",
+                "CLEAN: first gate completed",
+                "SUPPRESSED: second gate disabled",
+                "NO_RESULT: third gate unavailable",
+            ):
+                self.assertIn(f"finding={verdict}", durable)
+            delivery_deadline = time.monotonic() + 2
+            while not taskgraph_delivered.exists() and time.monotonic() < delivery_deadline:
+                time.sleep(0.02)
+            self.assertTrue(
+                taskgraph_delivered.is_file(),
+                "the detached publisher did not reach TaskGraph",
+            )
+            self.assertTrue(github_started.is_file())
+            self.assertFalse(
+                github_finished.exists(),
+                "the wrapper waited for the slow GitHub sink instead of detaching it",
+            )
+            completion_deadline = time.monotonic() + 4
+            pending = self.repo / "ignored/ci-hub/health-escalation-pending"
+            while (
+                not github_finished.exists() or list(pending.glob("event-*"))
+            ) and time.monotonic() < completion_deadline:
+                time.sleep(0.02)
+            self.assertTrue(
+                github_finished.is_file(),
+                "the detached publisher did not outlive the cancelled wrapper",
+            )
+            self.assertEqual([], list(pending.glob("event-*")))
+            time.sleep(1.05)
+            self.assertFalse(delayed.exists(), "cancelled tick wrote delayed state")
+            for pid in (tick_pid, descendant_pid):
+                stat_path = Path(f"/proc/{pid}/stat")
+                if stat_path.exists():
+                    self.assertEqual("Z", stat_path.read_text().split()[2])
+            self.assertEqual(
+                [],
+                list(Path("/tmp").glob(f"mega-lander-hermit-health-tick.{process.pid}.*")),
+            )
+            self.assertEqual(
+                [], list(Path("/tmp").glob(f"hermit-health-tick.{process.pid}.*"))
+            )
+            self.assert_private_run_pool_is_reusable()
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.communicate()
+
+    def test_tick_hub_gate_verdict_reaches_caller_before_later_gate_finishes(
+        self,
+    ) -> None:
+        second_running = self.repo / ".tick-hub/streaming-second-running"
+        second_release = self.repo / ".tick-hub/streaming-second-release"
+        config = json.dumps(
+            {
+                "reminders": [
+                    {
+                        "name": "streaming_first",
+                        "cadence_secs": 0,
+                        "gate": {
+                            "cmd": "printf 'summary=first-finished\\n'; exit 1",
+                            "when": "failure",
+                            "capture": True,
+                        },
+                        "emit": {
+                            "kind": "action",
+                            "skill": "hard-warn-coordinator",
+                            "title": "first gate reported: {summary}",
+                        },
+                    },
+                    {
+                        "name": "streaming_second",
+                        "cadence_secs": 0,
+                        "gate": {
+                            "cmd": (
+                                'mkdir -p "$DEV_HERMIT_PARENT/.tick-hub"; '
+                                ': > "$DEV_HERMIT_PARENT/.tick-hub/'
+                                'streaming-second-running"; '
+                                'while [ ! -e "$DEV_HERMIT_PARENT/.tick-hub/'
+                                'streaming-second-release" ]; do sleep 0.02; done'
+                            ),
+                            "when": "failure",
+                            "capture": False,
+                        },
+                        "emit": {
+                            "kind": "action",
+                            "skill": "hard-warn-coordinator",
+                            "title": "second gate failed",
+                        },
+                    },
+                ]
+            }
+        )
+        health_script = (
+            "#!/usr/bin/env bash\n"
+            "set -euo pipefail\n"
+            'export PYTHONPATH="$DEV_HERMIT_TOOL_ROOT/agent-utils/py"\n'
+            'exec python3 -m tick_hub tick --no-header --flush '
+            '--report-pending '
+            '--config "$DEV_HERMIT_TOOL_ROOT/ci-hub/health/streaming-test.json" '
+            '--fired-state "$DEV_HERMIT_PARENT/.tick-hub/streaming-fired-state"\n'
+        )
+        self.advance_remote(
+            health_script=health_script,
+            extra_executables={"ci-hub/health/streaming-test.json": config},
+        )
+        process = subprocess.Popen(
+            [str(self.repo / "scripts/hermit-health-tick.sh"), "--emit-output"],
+            cwd=self.repo,
+            env=self.env,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        prefix: list[str] = []
+        stdout = stderr = ""
+        try:
+            deadline = time.monotonic() + 15
+            while not second_running.exists() and process.poll() is None:
+                if time.monotonic() >= deadline:
+                    self.fail("real tick-hub did not reach its second gate")
+                time.sleep(0.01)
+            self.assertIsNone(process.poll())
+            self.assertIsNotNone(process.stdout)
+            stream_fd = process.stdout.fileno()
+            os.set_blocking(stream_fd, False)
+            stream_deadline = time.monotonic() + 1
+            streamed = b""
+            while time.monotonic() < stream_deadline:
+                readable, _, _ = select.select([stream_fd], [], [], 0.05)
+                if not readable:
+                    continue
+                try:
+                    chunk = os.read(stream_fd, 65536)
+                except BlockingIOError:
+                    continue
+                if not chunk:
+                    break
+                streamed += chunk
+                if b"first gate reported: first-finished" in streamed:
+                    break
+            prefix.append(streamed.decode())
+            self.assertIn(
+                "first gate reported: first-finished",
+                "".join(prefix),
+                "the parent wrapper buffered a verdict that tick-hub had already emitted",
+            )
+            self.assertIsNone(process.poll(), "the later gate was not still running")
+            second_release.touch()
+            stdout, stderr = process.communicate(timeout=15)
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.communicate()
+
+        combined_stdout = "".join(prefix) + stdout
+        self.assertEqual(0, process.returncode, combined_stdout + stderr)
+        self.assertIn("first gate reported: first-finished", combined_stdout)
+        self.assertIn(
+            "CLEAN: streaming_second ran and found nothing to report",
+            combined_stdout,
+        )
+        self.assertIn("emitted 1 instruction(s) this tick", combined_stdout)
+        fired = (
+            self.repo / ".tick-hub/streaming-fired-state"
+        ).read_text().splitlines()
+        self.assertTrue(any(line.startswith("streaming_first=") for line in fired))
+        self.assertTrue(any(line.startswith("streaming_second=") for line in fired))
+        self.assertEqual(
+            [], list(Path("/tmp").glob(f"hermit-health-tick.{process.pid}.*"))
+        )
 
     def test_private_run_replacement_cannot_execute_or_delete_poison(self) -> None:
         started = self.repo / ".tick-hub" / "held-run-started"
