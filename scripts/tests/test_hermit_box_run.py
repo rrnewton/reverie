@@ -104,11 +104,10 @@ class HermitBoxRunTests(unittest.TestCase):
         )
         return completed, actual, diag
 
-    def assert_fast_exit_series_is_measured_or_refused(
+    def assert_fast_exit_series_is_measured(
         self, *, command: list[str], exit_code: int, attempts: int = 10
     ) -> None:
         measured = 0
-        refused = 0
         for attempt in range(attempts):
             with self.subTest(exit_code=exit_code, attempt=attempt):
                 completed, actual, diag = self.run_actual_probe(
@@ -116,16 +115,6 @@ class HermitBoxRunTests(unittest.TestCase):
                     command=command,
                 )
                 diagnostic = diag.read_text()
-                if completed.returncode == 3:
-                    refused += 1
-                    self.assertFalse(actual.exists())
-                    self.assertRegex(
-                        diagnostic,
-                        r"authoritative cgroup CPU unavailable|"
-                        r"could not establish reaper cgroup",
-                    )
-                    continue
-
                 measured += 1
                 self.assertEqual(
                     exit_code, completed.returncode, completed.stderr + diagnostic
@@ -138,20 +127,20 @@ class HermitBoxRunTests(unittest.TestCase):
                 )
                 self.assertIs(type(boxed["cgroup_usage_usec"]), int)
                 self.assertGreaterEqual(boxed["cgroup_usage_usec"], 0)
-        self.assertEqual(attempts, measured + refused)
+        self.assertEqual(attempts, measured)
 
     def test_repeated_fast_success_never_synthesizes_cgroup_cpu(self) -> None:
-        self.assert_fast_exit_series_is_measured_or_refused(
+        self.assert_fast_exit_series_is_measured(
             command=["/bin/true"], exit_code=0
         )
 
     def test_repeated_fast_failure_never_synthesizes_cgroup_cpu(self) -> None:
-        self.assert_fast_exit_series_is_measured_or_refused(
+        self.assert_fast_exit_series_is_measured(
             command=["/bin/false"], exit_code=1
         )
 
     def test_repeated_fast_exit_seven_preserves_nondomain_status(self) -> None:
-        self.assert_fast_exit_series_is_measured_or_refused(
+        self.assert_fast_exit_series_is_measured(
             command=["/bin/sh", "-c", "exit 7"], exit_code=7
         )
 

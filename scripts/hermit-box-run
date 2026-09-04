@@ -257,6 +257,7 @@ PY
 
   local unit runner_pid="" cgpath=""
   local cgroup_resolved=0 final_usage_observed=0 runner_waited=0
+  local payload_completed=0 payload_status_file="" payload_release_file="" hold_dir=""
   local budget_usec=$(( cpu_budget * 1000000 ))
   local reaped=0 last_usage=0 termination="completed" status=0
   unit="hermit-box-run-$$-$(date +%s%N).scope"
@@ -314,6 +315,20 @@ PY
     fi
     return 1
   }
+  _pt_freeze_and_capture() {
+    local attempt
+    [ -n "$cgpath" ] && [ -w "$cgpath/cgroup.freeze" ] || return 1
+    echo 1 >"$cgpath/cgroup.freeze" 2>/dev/null || return 1
+    for attempt in $(seq 1 40); do
+      if awk '$1 == "frozen" && $2 == "1" { found=1 } END { exit !found }' \
+          "$cgpath/cgroup.events" 2>/dev/null; then
+        _pt_capture_final_usage
+        return $?
+      fi
+      sleep 0.01
+    done
+    return 1
+  }
   _pt_kill_scope() {
     local attempts=${1:-20} attempt
     for attempt in $(seq 1 "$attempts"); do
@@ -344,13 +359,48 @@ PY
     if [ -n "$runner_pid" ]; then
       wait "$runner_pid" 2>/dev/null || true
     fi
+    if [ -n "$hold_dir" ]; then
+      rm -f -- "$payload_status_file" "$payload_status_file.tmp" \
+        "$payload_release_file" 2>/dev/null || true
+      rmdir -- "$hold_dir" 2>/dev/null || true
+    fi
     exit "$status"
   }
   trap '_pt_teardown 143' TERM
   trap '_pt_teardown 130' INT
   trap '_pt_teardown 129' HUP
 
-  "${sr[@]}" -- "$@" 1>&7 2>&8 7>&- 8>&- 9>&- &
+  local -a scope_command=("$@")
+  if [ -n "$actual_json" ]; then
+    hold_dir="$(mktemp -d -t hermit-box-run-hold.XXXXXX)" || {
+      echo "hermit-box-run: could not create cgroup receipt hold directory (exit 3)" >&8
+      exit 3
+    }
+    payload_status_file="$hold_dir/status"
+    payload_release_file="$hold_dir/release"
+    mkfifo -- "$payload_release_file" || {
+      echo "hermit-box-run: could not create cgroup receipt hold pipe (exit 3)" >&8
+      rmdir -- "$hold_dir" 2>/dev/null || true
+      exit 3
+    }
+    # Keep one inert process in the scope after the payload exits. Otherwise
+    # systemd can remove the transient cgroup between wait(2) and the final
+    # cpu.stat read, making a completed run lose its receipt. The parent freezes
+    # the held cgroup, reads the final total, and then kills its own scope.
+    scope_command=(bash -c '
+      status_file=$1
+      release_file=$2
+      shift 2
+      rc=0
+      "$@" || rc=$?
+      printf "%s\n" "$rc" >"$status_file.tmp"
+      mv -- "$status_file.tmp" "$status_file"
+      IFS= read -r _ <"$release_file"
+      exit "$rc"
+    ' bash "$payload_status_file" "$payload_release_file" "$@")
+  fi
+
+  "${sr[@]}" -- "${scope_command[@]}" 1>&7 2>&8 7>&- 8>&- 9>&- &
   runner_pid=$!
 
   # Resolve the scope's cgroup path (may take a beat to register).
@@ -400,15 +450,25 @@ PY
     # Monitor loop: poll CPU-time usage + wall deadline; reap cgroup.kill-first on overrun.
     while kill -0 "$runner_pid" 2>/dev/null; do
       local usage_sample=""
+      if [ -n "$payload_status_file" ] && [ -f "$payload_status_file" ]; then
+        if IFS= read -r status <"$payload_status_file" && \
+           [[ $status =~ ^[0-9]+$ ]] && [ "$status" -le 255 ]; then
+          payload_completed=1
+        else
+          status=3
+          diag "ERROR: payload exit status was absent or malformed."
+        fi
+        _pt_freeze_and_capture || true
+        _pt_kill_scope
+        break
+      fi
       if usage_sample="$(_pt_read_usage)"; then
         last_usage="$usage_sample"
       fi
       if [ "${last_usage:-0}" -gt "$budget_usec" ]; then
         diag "CPU-TIMEOUT: usage_usec=$last_usage exceeded budget=${budget_usec} (${cpu_budget}s) — reaping via cgroup.kill"
         termination="cpu_budget"
-        # This is the last read before destructive teardown can remove the
-        # transient cgroup. A later post-wait read, when available, supersedes it.
-        _pt_capture_final_usage || true
+        _pt_freeze_and_capture || true
         _pt_kill_scope
         reaped=1
         break
@@ -416,7 +476,7 @@ PY
       if [ "$wall_deadline" -gt 0 ] && [ "$(date +%s)" -ge "$wall_deadline" ]; then
         diag "WALL-TIMEOUT: exceeded ${wall}s wall-clock — reaping via cgroup.kill"
         termination="wall_backstop"
-        _pt_capture_final_usage || true
+        _pt_freeze_and_capture || true
         _pt_kill_scope
         reaped=1
         break
@@ -426,7 +486,11 @@ PY
   fi
 
   if [ "$runner_waited" -eq 0 ]; then
-    wait "$runner_pid" 2>/dev/null || status=$?
+    local runner_status=0
+    wait "$runner_pid" 2>/dev/null || runner_status=$?
+    if [ "$payload_completed" -eq 0 ]; then
+      status=$runner_status
+    fi
     runner_waited=1
   fi
   # On normal completion, capture the final subtree total while the cgroup
@@ -441,6 +505,11 @@ PY
   # leak this wrapper prevents. Sweep the whole scope subtree unconditionally on exit so no
   # process survives us. (Only ever our OWN scope's cgroup.kill; never an external/broad kill.)
   _pt_kill_scope 1
+  if [ -n "$hold_dir" ]; then
+    rm -f -- "$payload_status_file" "$payload_status_file.tmp" \
+      "$payload_release_file" 2>/dev/null || true
+    rmdir -- "$hold_dir" 2>/dev/null || true
+  fi
   local actual_refused=0
   if [ -n "$actual_json" ] && { [ "$cgroup_resolved" -eq 0 ] || [ "$final_usage_observed" -eq 0 ]; }; then
     actual_refused=1
