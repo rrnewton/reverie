@@ -1160,6 +1160,47 @@ class StartUnitTest(unittest.TestCase):
         start_unit.run_registry.write_record(record_path, record)
         return fresh, record_path
 
+    def current_unknown_cleanup_record(
+        self, suffix: str, admission_result: dict[str, object] | None
+    ) -> tuple[Path, dict[str, object]]:
+        fresh = self.root / "worktrees/validate" / f"validate-fresh-{suffix}"
+        fresh.mkdir(parents=True)
+        record = {
+            "schema_version": start_unit.run_registry.SCHEMA_VERSION,
+            "kind": "validate",
+            "state": "unknown",
+            "result": "unknown",
+            "detail": "the validation result was not recorded",
+            "unit": f"validate-{suffix}.service",
+            "target": SHA,
+            "repo": "rrnewton/hermit",
+            "checkout": str(fresh),
+            "source_checkout": str(self.checkout),
+            "temporary_checkout": True,
+            "wrkslots_slot": fresh.name,
+            "wrkslots_generation": 7,
+            "cargo_home": str(
+                self.root / "ignored/validate/cargo-homes" / f"validate-cargo-{suffix}"
+            ),
+            "log": str(self.root / "ignored/validate" / f"validate-{suffix}.log"),
+            "agent": "cleanup-test",
+            "started_at": "2026-09-04T12:00:00+00:00",
+            "finished_at": "2026-09-04T12:01:00+00:00",
+            "producer": start_unit.run_registry.PRODUCER,
+            "admission": "ci-hub validate-lock",
+            "pane_role": "observer-only",
+            "parent_checkout_head": None,
+            "validate_lock_child_deadline_seconds": 3600,
+            "e2e_result_root": str(self.root / "ignored/validate/artifacts/e2e"),
+            "safe_ci_dag_runner_log_dir": str(
+                self.root / "ignored/validate/artifacts/safe-ci-dag-runner"
+            ),
+            "hermit_run_timeout_seconds": 3239,
+        }
+        if admission_result is not None:
+            record["admission_result"] = admission_result
+        return fresh, record
+
     def removed_temporary_paths(self) -> list[Path]:
         return [
             Path(command[-1])
@@ -3887,6 +3928,9 @@ class StartUnitTest(unittest.TestCase):
                 "wrkslots_generation": 7,
                 "repo": "rrnewton/hermit",
                 "state": "running",
+                # A historical writer once stamped this field while the unit
+                # kept running. It is never cleanup authority by itself.
+                "finished_at": "2026-09-04T12:01:00+00:00",
             },
         )
 
@@ -3907,6 +3951,162 @@ class StartUnitTest(unittest.TestCase):
             report["retained"][0]["reason"],
         )
         self.assertTrue(fresh.is_dir())
+
+    def test_cleanup_accepts_collected_current_run_with_typed_admission(self) -> None:
+        self.fake.collected_unit = True
+        for suffix, admission in (
+            (
+                "admitted",
+                {
+                    "state": "admitted",
+                    "recorded_at": "2026-09-04T12:00:00+00:00",
+                    "run_number": 7,
+                },
+            ),
+            (
+                "refused",
+                {
+                    "state": "refused",
+                    "recorded_at": "2026-09-04T12:00:00+00:00",
+                    "reason": "stale-base",
+                    "exit_code": 3,
+                },
+            ),
+        ):
+            with self.subTest(admission=admission["state"]):
+                _fresh, record = self.current_unknown_cleanup_record(
+                    suffix, admission
+                )
+                unit, reason = start_unit.terminal_cleanup_unit(
+                    self.root / f"validate-{suffix}.json",
+                    record,
+                    run=self.fake,
+                )
+                self.assertEqual(f"validate-{suffix}", unit)
+                self.assertIsNone(reason)
+                self.assertEqual("unknown", record["state"])
+                self.assertEqual("unknown", record["result"])
+
+    def test_cleanup_retains_unknown_run_when_unit_query_fails(self) -> None:
+        _fresh, record = self.current_unknown_cleanup_record(
+            "query-failed",
+            {
+                "state": "admitted",
+                "recorded_at": "2026-09-04T12:00:00+00:00",
+                "run_number": 7,
+            },
+        )
+
+        def failed_query(command: list[str], **_kwargs: object):
+            return completed(command, rc=1, stderr="systemd unavailable")
+
+        unit, reason = start_unit.terminal_cleanup_unit(
+            self.root / "validate-query-failed.json", record, run=failed_query
+        )
+
+        self.assertIsNone(unit)
+        self.assertEqual(
+            "unit state unavailable and run record is not terminal", reason
+        )
+
+    def test_cleanup_allows_refused_admission_when_unit_query_fails(self) -> None:
+        _fresh, record = self.current_unknown_cleanup_record(
+            "refused-query-failed",
+            {
+                "state": "refused",
+                "recorded_at": "2026-09-04T12:00:00+00:00",
+                "reason": "stale-base",
+                "exit_code": 3,
+            },
+        )
+
+        def failed_query(command: list[str], **_kwargs: object):
+            return completed(command, rc=1, stderr="systemd unavailable")
+
+        unit, reason = start_unit.terminal_cleanup_unit(
+            self.root / "validate-refused-query-failed.json",
+            record,
+            run=failed_query,
+        )
+
+        self.assertEqual("validate-refused-query-failed", unit)
+        self.assertIsNone(reason)
+        self.assertEqual("unknown", record["state"])
+        self.assertEqual("unknown", record["result"])
+
+    def test_cleanup_retains_unknown_run_with_malformed_admission(self) -> None:
+        self.fake.collected_unit = True
+        _fresh, record = self.current_unknown_cleanup_record(
+            "malformed-admission",
+            {
+                "state": "admitted",
+                "recorded_at": "not-a-timestamp",
+                "run_number": 7,
+            },
+        )
+
+        unit, reason = start_unit.terminal_cleanup_unit(
+            self.root / "validate-malformed-admission.json",
+            record,
+            run=self.fake,
+        )
+
+        self.assertIsNone(unit)
+        self.assertEqual(
+            "unit state unavailable and run record is not terminal", reason
+        )
+
+    def test_cleanup_retains_running_run_with_typed_admission(self) -> None:
+        self.fake.collected_unit = True
+        _fresh, record = self.current_unknown_cleanup_record(
+            "running",
+            {
+                "state": "admitted",
+                "recorded_at": "2026-09-04T12:00:00+00:00",
+                "run_number": 7,
+            },
+        )
+        record["state"] = "running"
+        record.pop("result")
+        record.pop("detail")
+        record.pop("finished_at")
+
+        unit, reason = start_unit.terminal_cleanup_unit(
+            self.root / "validate-running.json", record, run=self.fake
+        )
+
+        self.assertIsNone(unit)
+        self.assertEqual(
+            "unit state unavailable and run record is not terminal", reason
+        )
+
+    def test_running_unit_vetoes_a_typed_admission_refusal(self) -> None:
+        _fresh, record = self.current_unknown_cleanup_record(
+            "still-running",
+            {
+                "state": "refused",
+                "recorded_at": "2026-09-04T12:00:00+00:00",
+                "reason": "stale-base",
+                "exit_code": 3,
+            },
+        )
+
+        def active_unit(command: list[str], **_kwargs: object):
+            return completed(
+                command,
+                stdout=(
+                    "LoadState=loaded\nActiveState=active\nSubState=running\n"
+                    "ExecMainCode=0\nExecMainStatus=0\nResult=success\n"
+                    "InvocationID=still-running\n"
+                ),
+            )
+
+        unit, reason = start_unit.terminal_cleanup_unit(
+            self.root / "validate-still-running.json", record, run=active_unit
+        )
+
+        self.assertIsNone(unit)
+        self.assertEqual("unit-running", reason)
 
     def test_sweep_defers_linked_checkout_liveness_to_wrkslots(self) -> None:
         fresh = self.root / "worktrees/validate/validate-fresh-held"

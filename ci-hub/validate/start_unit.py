@@ -2474,13 +2474,19 @@ def terminal_cleanup_unit(
 ) -> tuple[str | None, str | None]:
     try:
         unit = sanitize_unit(str(record.get("unit", path.stem)))
-        properties = service_properties(unit, run=run)
+        properties, unit_absent = service_properties_with_absence(unit, run=run)
     except (OSError, RuntimeError, ValueError) as error:
         return None, str(error)
-    if properties is None and not service_result.is_evidenced_terminal(record):
-        return None, "unit state unavailable and run record is not terminal"
     if properties is not None and properties.get("ActiveState") not in TERMINAL_STATES:
         return None, "unit-running"
+    if (
+        properties is None
+        and not service_result.is_evidenced_terminal(record)
+        and not cleanup_record_allows_removal_attempt(
+            record, unit_absent=unit_absent
+        )
+    ):
+        return None, "unit state unavailable and run record is not terminal"
     return unit, None
 
 
@@ -3538,9 +3544,11 @@ def build_systemd_command(
     ]
 
 
-def service_properties(
+def service_properties_with_absence(
     unit: str, *, run: Runner
-) -> dict[str, str] | None:
+) -> tuple[dict[str, str] | None, bool]:
+    """Return loaded properties and whether systemd positively reports no unit."""
+
     result = run(
         [
             "systemctl",
@@ -3559,15 +3567,51 @@ def service_properties(
         check=False,
     )
     if result.returncode != 0:
-        return None
+        return None, False
     properties = dict(
         line.split("=", 1) for line in result.stdout.splitlines() if "=" in line
     )
     # `systemctl show` succeeds even after --collect has unloaded the unit.  Its
     # synthetic not-found object says success/0 and is not execution evidence.
     if properties.get("LoadState") != "loaded" or not properties.get("InvocationID"):
-        return None
+        return (
+            None,
+            properties.get("LoadState") == "not-found"
+            and properties.get("ActiveState") == "inactive"
+            and not properties.get("InvocationID"),
+        )
+    return properties, False
+
+
+def service_properties(
+    unit: str, *, run: Runner
+) -> dict[str, str] | None:
+    properties, _absent = service_properties_with_absence(unit, run=run)
     return properties
+
+
+def cleanup_record_allows_removal_attempt(
+    record: Mapping[str, Any], *, unit_absent: bool
+) -> bool:
+    """Allow the downstream liveness-checked removal without changing a verdict.
+
+    Refused admission proves that no validation payload started, but the
+    validate-lock supervisor may still be returning.  The wrkslots removal
+    path remains responsible for proving that no process uses the target.
+    """
+
+    try:
+        handle = run_registry.parse_current_record(record)
+    except RuntimeError:
+        return False
+    if handle.state is not run_registry.RunState.UNKNOWN:
+        return False
+    admission = handle.admission_result
+    if admission is None:
+        return False
+    if admission.state is run_registry.AdmissionState.REFUSED:
+        return True
+    return unit_absent and admission.state is run_registry.AdmissionState.ADMITTED
 
 
 class LogTail:
