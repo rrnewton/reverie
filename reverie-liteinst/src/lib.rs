@@ -13,6 +13,7 @@ mod backend;
 mod patch_alloc;
 mod stats;
 mod straddler;
+mod syscall_fallback;
 
 pub use backend::COORDINATOR_ENV;
 pub use backend::LiteinstBackend;

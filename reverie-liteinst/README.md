@@ -27,6 +27,43 @@ and `reverie-rpc-transport`.
 The regression proof reports `calls=32 traps=1 hooks=32` and sends a real
 Reverie tool RPC for every callback.
 
+### In-process unpatchable syscall fallback
+
+The typed Tool path also defers unpatchable syscall sites until after SIGSYS
+returns. It leaves the syscall instruction and following guest bytes untouched.
+The ordinary-context callback uses the same Tool, RPC, injection and restart
+driver as installed hooks; it does not substitute native execution or ptrace.
+If instruction-faulting policy cannot be restored after a patch attempt, the
+runtime still refuses rather than executing with weakened instrumentation.
+
+`syscall_fallback.rs` initializes two private pages per supported guest thread
+before interception: an RX return stub and a separate RW continuation slot.
+They remain allocated for the process lifetime and are inherited privately by
+supported single-threaded fork children. The entry saves the guest GPRs, flags,
+red-zone and the same x87/SSE/AVX/AVX-512/PKRU state selected by the pinned
+LiteInst2 trampoline. Callbacks must preserve TLS bases and excluded extended
+state, including AMX. The fallback additionally preserves libc `errno` around
+Tool dispatch. It requires adequate writable guest-stack space.
+
+Actual RSP restoration follows the saved assembly frame, not
+`HookContext.stack_pointer`; IP/SP in that structure remain metadata. The
+return stub restores R11/flags/RSP and jumps through its thread's continuation
+slot without consuming a guest return address or constructing a signal frame.
+This is a syscall return: RAX receives the result, RCX the post-syscall address,
+and R11 the saved flags. It is not an arbitrary-PC timer restoration API.
+
+The focused `unpatchable_syscall_dispatches_tool_after_signal_return` test uses
+a two-byte syscall followed by `ret` at an executable page end. It requires
+non-native results and RPC receipts, unchanged bytes, repeated traps without
+hooks, errno/six-argument/tail/restart behavior, register/red-zone/XMM preservation
+and nested Tool-internal syscalls. These are Reverie-only tests, not Hermit L2.
+Integration with timer delivery remains unqualified: callback clock brackets do
+not cover assembly entry and return. No calibrated offsets or clock relaxation
+are used. The exact assembly range is `fallback_entry..fallback_entry_end`;
+each private return stub copies `fallback_return_template..fallback_return_template_end`.
+Timer handling must distinguish its internal correction trap from guest SIGTRAP
+and coordinate the shared syscall/fault handoff before redirecting a kernel frame.
+
 ## Backend launcher
 
 `LiteinstBackend` implements Reverie's `Backend` trait. It owns the single
@@ -123,9 +160,10 @@ trap path. Quiescent publication is never selected from this route.
 - Rust tool futures must make progress synchronously. Coordinator RPC and guest
   syscall injection do so; a tool future that depends on an unrelated executor
   can stall.
-- The five-byte patch window and executable mapping must be supported by
-  `liteinst2`. Dynamic executable mappings without a prepared reachable arena
-  fail closed.
+- Installing a hook requires a five-byte patch window and an executable
+  mapping supported by `liteinst2`. The typed syscall path falls back without
+  patching when those conditions are absent; other instruction kinds retain
+  their existing refusal policy.
 - `execve` cannot safely cross the inherited filter because the handler and DSO
   mappings disappear. It remains fail closed; completing exec requires a
   non-seccomp in-guest coverage mechanism or another bootstrap that does not
@@ -141,13 +179,13 @@ preload DSO on the same landed revisions.
 ## Fallback-surface observability
 
 The runtime exports C-ABI counters that make the size and shape of the residual
-fallback surface — the trapped syscalls the runtime could not route to the Tool
+fallback surface — the trapped syscalls that did not receive an installed hook
 — observable from the guest:
 
 - `reverie_liteinst_site_trap_count(address)` / `reverie_liteinst_site_hook_count(address)`
   — the per-**site** breakdown keyed by the un-patched instruction's address.
 - `reverie_liteinst_fallback_dispatch_count()` — the process-wide total of
-  syscalls that reached the fail-closed escape surface.
+  syscalls that reached fallback dispatch (including successful typed fallback).
 - `reverie_liteinst_fallback_syscall_count(number)` — the per-syscall-number
   breakdown, keyed the same way as `reverie_e9patch_fallback_syscall_count` so
   the two ld-preload backends expose a symmetric metric.
