@@ -36,6 +36,9 @@ def bench(tmp_path: Path):
         '#!/bin/sh\nprintf \'%s\\n\' "$@" > "$SYSTEMD_RUN_ARGS"\n'
     )
     (fake_bin / "systemd-run").chmod(0o755)
+    operational_tool = tmp_path / "operational-tool"
+    operational_tool.write_text("#!/bin/sh\nexit 0\n")
+    operational_tool.chmod(0o555)
 
     functions = "\n".join(
         extract_function(name)
@@ -61,6 +64,8 @@ def bench(tmp_path: Path):
                 f"ESCALATION_PENDING_DIR={queue}",
                 f"ESCALATION_LOG={tmp_path / 'delivery.log'}",
                 f"ESCALATE={tmp_path / 'escalate'}",
+                f"DEV_HERMIT_OPERATIONAL_TOOL={operational_tool}",
+                f"DEV_HERMIT_TOOL_PARENT_SHA={'a' * 40}",
                 "ts() { printf '2026-09-03T00:00:00Z\\n'; }",
             ]
         )
@@ -82,6 +87,7 @@ def bench(tmp_path: Path):
             "events": sorted(queue.glob("event-*")) if queue.exists() else [],
             "calls": calls.read_text().splitlines(),
             "invlog": invlog.read_text(),
+            "root": tmp_path,
         }
 
     return run
@@ -144,7 +150,17 @@ def test_detached_worker_has_durable_output_and_exact_queue(bench) -> None:
     arguments = result["calls"]
     assert any(arg.startswith("--property=StandardOutput=append:") for arg in arguments)
     assert any(arg.startswith("--property=StandardError=append:") for arg in arguments)
-    assert str(ROOT / "ci-hub/bin/run-health-escalation") not in arguments
-    assert any(arg.endswith("ci-hub/bin/run-health-escalation") for arg in arguments)
+    command_index = arguments.index("--")
+    assert arguments[command_index + 1].endswith("operational-tool")
+    assert arguments[command_index + 2 : command_index + 10] == [
+        "--run-current-tool",
+        "--state-root",
+        str(result["root"]),
+        "--tool-parent-sha",
+        "a" * 40,
+        "--tool-relative",
+        "ci-hub/bin/run-health-escalation",
+        "--",
+    ]
     queue_index = arguments.index("--queue")
     assert arguments[queue_index + 1].endswith("queue")

@@ -505,7 +505,10 @@ class HealthTickEvaluationProvenanceTests(unittest.TestCase):
         )
         service = SYSTEMD_SERVICE.read_text(encoding="utf-8")
         self.assertIn(
-            "ExecStart=%h/work/dev-hermit/scripts/hermit-health-tick.sh", service
+            "ExecStart=%h/.local/libexec/dev-hermit/operational-tool "
+            "--run-current-tool --state-root %h/work/dev-hermit "
+            "--tool-relative scripts/hermit-health-tick.sh",
+            service,
         )
         self.assertNotIn("ExecStart=%h/work/dev-hermit/ci-hub/bin/health-tick", service)
         health_tick = HEALTH_TICK.read_text(encoding="utf-8")

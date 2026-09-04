@@ -239,8 +239,27 @@ escalate_live_report_findings() {
 
 launch_health_escalation() {
     local unit launch_error
+    local -a delivery_command
     unit="hermit-health-escalation-$(date -u +%Y%m%dT%H%M%S%NZ)-$$-$RANDOM"
     mkdir -p -- "$ESCALATION_PENDING_DIR" 2>/dev/null || return 1
+    if [[ -n ${DEV_HERMIT_OPERATIONAL_TOOL:-} && \
+          -x ${DEV_HERMIT_OPERATIONAL_TOOL:-} && \
+          ${DEV_HERMIT_TOOL_PARENT_SHA:-} =~ ^[0-9a-f]{40}$ ]]; then
+        delivery_command=(
+            "$DEV_HERMIT_OPERATIONAL_TOOL"
+            --run-current-tool
+            --state-root "$ROOT"
+            --tool-parent-sha "$DEV_HERMIT_TOOL_PARENT_SHA"
+            --tool-relative ci-hub/bin/run-health-escalation
+            --
+            --queue "$ESCALATION_PENDING_DIR"
+        )
+    else
+        delivery_command=(
+            "$ROOT/ci-hub/bin/run-health-escalation"
+            --queue "$ESCALATION_PENDING_DIR"
+        )
+    fi
     if launch_error=$(systemd-run --user --quiet --collect \
         --unit="$unit" \
         --description="deliver retained operational health findings" \
@@ -254,7 +273,7 @@ launch_health_escalation() {
         --setenv="DEV_HERMIT_PARENT=$ROOT" \
         --setenv="HERMIT_HEALTH_ESCALATE=$ESCALATE" \
         --setenv="HERMIT_HEALTH_TG_DB=$ESCALATION_TG_DB" \
-        -- "$ROOT/ci-hub/bin/run-health-escalation" --queue "$ESCALATION_PENDING_DIR" \
+        -- "${delivery_command[@]}" \
         2>&1 >/dev/null); then
         return 0
     fi
