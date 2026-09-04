@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import argparse
-from datetime import datetime, timezone
 import importlib.util
 import json
 from pathlib import Path
@@ -54,56 +53,45 @@ TRANSITION = {
 }
 
 LIVE_REGISTRY = MODULE.parents[1] / "validate" / "producer-definition.json"
+OUTGOING_PRIMARY = {
+    ".config/nextest.toml": "5754a6d6983000ded67562250cedcc6c1ce53cf5",
+    ".github/workflows/ci-portable.yml": "78167c8dccfa757a5348d96d479f72b1c8e63a3d",
+    "ci/run-nextest-counted.sh": "ca88efe6d3d270881ecbe7205373f642369ce53d",
+    "scripts/lib/validate_history.rs": "fb5bda65ac9ceb16bd7ded72c4f8f1b1b1615bde",
+    "scripts/lib/validate_plan.rs": "f7ddea328cef00ac37b5b2a6381e656e0d9c3821",
+    "scripts/lib/validate_receipt.rs": "15fa8d4b4ecdf89bdeb6ce33f460de11cf43d79c",
+    "scripts/lib/validate_runtime.rs": "721df0c7330851ea4cc09516d3ee6a4f680943b3",
+    "scripts/validate.rs": "062d52b04e70c066d40bf5d89c7a7ee4f2a3c51e",
+}
 LIVE_PRIMARY = {
-    ".config/nextest.toml": "ec47795a8289a1f3ea62424b686217c942427b18",
-    ".github/workflows/ci-portable.yml": "8f56ca222078f831e85c86ec743cb3feacb0381a",
-    "ci/run-nextest-counted.sh": "5fcfc77bb7264f9631312ebb4f24f635e464364c",
-    "scripts/lib/validate_history.rs": "0255c492791fba04aa9000efb18ec3f57dd6a8ad",
-    "scripts/lib/validate_receipt.rs": "465f6c7e1f027ba81daf09f5011f84ebdd08deb0",
-    "scripts/validate.rs": "4eb0538868c13f9d5545a09d31dbd80cbae7d6e0",
-}
-LIVE_CANDIDATE = {
-    ".config/nextest.toml": "ec47795a8289a1f3ea62424b686217c942427b18",
-    ".github/workflows/ci-portable.yml": "76f36a751302aaed0eb721970efaab5c915b7370",
-    "ci/run-nextest-counted.sh": "1268ba21f7916f8b6269f059726c7edbce2ef0d2",
-    "scripts/lib/validate_history.rs": "0255c492791fba04aa9000efb18ec3f57dd6a8ad",
-    "scripts/lib/validate_plan.rs": "37fef2cd948c3bec1bf533bd5abf74c03d343ca6",
-    "scripts/lib/validate_receipt.rs": "465f6c7e1f027ba81daf09f5011f84ebdd08deb0",
-    "scripts/lib/validate_runtime.rs": "33fa5a529a1cac8adc4b19333fa6c627df8176e6",
-    "scripts/validate.rs": "e91c0cd306d8a8cdd83fe3cd015fc037a7bfb41e",
+    **OUTGOING_PRIMARY,
+    "scripts/lib/validate_plan.rs": "820806e5a50d7044175ed8d0822b1fe979e2358d",
+    "scripts/validate.rs": "5c72a835bd766af63e35b9219eac077c1b927db7",
 }
 
 
-def test_live_registry_replaces_expired_transition_without_advancing_primary():
+def test_live_registry_tracks_landed_primary_without_half_applied_transition():
     registry = json.loads(LIVE_REGISTRY.read_text())
-    transition = registry["transition"]
 
-    assert registry["registered_at"] == "1f4e430c135204591daa0c0cba84f77dae679a78"
+    assert registry["registered_at"] == "2d3876bdf5d310eb4cd55e7a3613d3dbc39bdc5c"
     assert registry["registered_coverage_status"] == "complete"
     assert registry["registered"] == LIVE_PRIMARY
+    assert "transition" not in registry
 
-    assert transition["id"] == "rrnewton-hermit-pr-2375"
-    assert transition["registered_at"] == "ca764b0266b789d4276ab73941318a0c6e5747a7"
-    assert transition["provenance"] == {
-        "repository": "rrnewton/hermit",
-        "pull_request": 2375,
-        "head": "ca764b0266b789d4276ab73941318a0c6e5747a7",
-    }
-    assert transition["candidate_coverage_status"] == "complete"
-    assert transition["added_paths"] == [
-        "scripts/lib/validate_plan.rs",
-        "scripts/lib/validate_runtime.rs",
+    outgoing = [
+        record
+        for record in registry["legacy"]
+        if record["id"] == "pre-rrnewton-hermit-pr-2944"
     ]
-    assert transition["candidate"] == LIVE_CANDIDATE
-    assert set(LIVE_CANDIDATE) == set(LIVE_PRIMARY) | set(transition["added_paths"])
-
-    finalize_after = datetime.strptime(
-        transition["finalize_after"], "%Y-%m-%dT%H:%M:%SZ"
-    ).replace(tzinfo=timezone.utc)
-    expires_at = datetime.strptime(
-        transition["expires_at"], "%Y-%m-%dT%H:%M:%SZ"
-    ).replace(tzinfo=timezone.utc)
-    assert (expires_at - finalize_after).total_seconds() == 24 * 60 * 60
+    assert outgoing == [
+        {
+            "id": "pre-rrnewton-hermit-pr-2944",
+            "registered_at": "5a87208bb75fc1a52aebdc19694abb3d25efdee7",
+            "coverage_status": "complete",
+            "valid_commits": ["5a87208bb75fc1a52aebdc19694abb3d25efdee7"],
+            "definition": OUTGOING_PRIMARY,
+        }
+    ]
 
 
 def landing_payload(*, head: str = HEAD) -> dict[str, object]:

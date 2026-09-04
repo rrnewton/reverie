@@ -52,19 +52,24 @@ export PRODUCER_DEFINITION_REGISTRY=$tmp/producer-registry.json
 # transition is malformed.
 production_registry=$script_dir/../validate/producer-definition.json
 production_repo=$root/hermit
-production_registered_at=a28a49c7603750954d59ce614b39a312553c60bd
-production_rust=3321ae6354b7d0d927c158f04768bf6dfcbfb85a
-production_history=0255c492791fba04aa9000efb18ec3f57dd6a8ad
-production_plan=37fef2cd948c3bec1bf533bd5abf74c03d343ca6
-production_receipt=465f6c7e1f027ba81daf09f5011f84ebdd08deb0
-production_runtime=4620bf5219aa6113a71c374958fd0ccb01450403
-production_portable=76f36a751302aaed0eb721970efaab5c915b7370
-production_nextest_config=ec47795a8289a1f3ea62424b686217c942427b18
-production_nextest_wrapper=1268ba21f7916f8b6269f059726c7edbce2ef0d2
-outgoing_registered_at=1f4e430c135204591daa0c0cba84f77dae679a78
-outgoing_rust=4eb0538868c13f9d5545a09d31dbd80cbae7d6e0
-outgoing_portable=8f56ca222078f831e85c86ec743cb3feacb0381a
-outgoing_nextest_wrapper=5fcfc77bb7264f9631312ebb4f24f635e464364c
+production_registered_at=2d3876bdf5d310eb4cd55e7a3613d3dbc39bdc5c
+production_rust=5c72a835bd766af63e35b9219eac077c1b927db7
+production_history=fb5bda65ac9ceb16bd7ded72c4f8f1b1b1615bde
+production_plan=820806e5a50d7044175ed8d0822b1fe979e2358d
+production_receipt=15fa8d4b4ecdf89bdeb6ce33f460de11cf43d79c
+production_runtime=721df0c7330851ea4cc09516d3ee6a4f680943b3
+production_portable=78167c8dccfa757a5348d96d479f72b1c8e63a3d
+production_nextest_config=5754a6d6983000ded67562250cedcc6c1ce53cf5
+production_nextest_wrapper=ca88efe6d3d270881ecbe7205373f642369ce53d
+outgoing_registered_at=5a87208bb75fc1a52aebdc19694abb3d25efdee7
+outgoing_rust=062d52b04e70c066d40bf5d89c7a7ee4f2a3c51e
+outgoing_history=fb5bda65ac9ceb16bd7ded72c4f8f1b1b1615bde
+outgoing_plan=f7ddea328cef00ac37b5b2a6381e656e0d9c3821
+outgoing_receipt=15fa8d4b4ecdf89bdeb6ce33f460de11cf43d79c
+outgoing_runtime=721df0c7330851ea4cc09516d3ee6a4f680943b3
+outgoing_portable=78167c8dccfa757a5348d96d479f72b1c8e63a3d
+outgoing_nextest_config=5754a6d6983000ded67562250cedcc6c1ce53cf5
+outgoing_nextest_wrapper=ca88efe6d3d270881ecbe7205373f642369ce53d
 previous_rust=15879c97c0ddcfeafaed18deaab0cba2fab30312
 previous_portable=0fb49d65b8b6571a681b253d076f57a82f2edb55
 if ! jq -e \
@@ -323,15 +328,19 @@ PRODUCER_DEFINITION_REGISTRY=$production_registry \
 retarget_receipt "$tmp/production-current.json" \
     "$tmp/production-outgoing-retargeted.json" "$outgoing_registered_at"
 jq -cS --arg rust "$outgoing_rust" \
-  --arg history "$production_history" \
-  --arg receipt "$production_receipt" \
+  --arg history "$outgoing_history" \
+  --arg plan "$outgoing_plan" \
+  --arg receipt "$outgoing_receipt" \
+  --arg runtime "$outgoing_runtime" \
   --arg portable "$outgoing_portable" \
-  --arg nextest_config "$production_nextest_config" \
+  --arg nextest_config "$outgoing_nextest_config" \
   --arg nextest_wrapper "$outgoing_nextest_wrapper" '
   .producer.definition = {
     "scripts/validate.rs": $rust,
     "scripts/lib/validate_history.rs": $history,
+    "scripts/lib/validate_plan.rs": $plan,
     "scripts/lib/validate_receipt.rs": $receipt,
+    "scripts/lib/validate_runtime.rs": $runtime,
     ".github/workflows/ci-portable.yml": $portable,
     ".config/nextest.toml": $nextest_config,
     "ci/run-nextest-counted.sh": $nextest_wrapper
