@@ -185,8 +185,9 @@ fn deterministic_cpuid_policy_is_visible_inside_vm() {
 
     let xstate = read_cpuid_result(&backend, CPUID_RESULT_ADDRESS + 64);
     // This real-mode program runs before the long-mode bootstrap enables the
-    // YMM state in XCR0, so KVM derives EBX from the currently enabled state
-    // while ECX continues to report the fixed maximum size.
+    // YMM state in XCR0. KVM ignores the table's subleaf-0 EBX field and
+    // derives the guest-visible EBX from the currently enabled state, while
+    // ECX continues to report the fixed maximum size.
     assert_eq!(xstate, [0x0000_0007, 0x0000_0240, 0x0000_0340, 0]);
     assert_eq!(
         read_cpuid_result(&backend, CPUID_RESULT_ADDRESS + 80),

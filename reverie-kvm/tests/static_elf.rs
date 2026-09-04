@@ -2248,11 +2248,18 @@ static int matches(struct registers actual, struct registers expected) {
 }
 
 int main(void) {
+  struct registers xstate = cpuid_xstate(0);
+  /* KVM recomputes subleaf 0 EBX from XCR0 and the host-supported component
+     layout. With x87, SSE, and AVX enabled, the guest-visible size is 0x340. */
+  if (xstate.eax != 0x00000007 || xstate.ebx != 0x00000340 ||
+      xstate.ecx != 0x00000340 || xstate.edx != 0) {
+    return 10;
+  }
+
   static const struct {
     uint32_t subleaf;
     struct registers expected;
   } cases[] = {
-      {0, {0x00000007, 0x00000340, 0x00000340, 0}},
       {1, {0, 0, 0, 0}},
       {2, {0x00000100, 0x00000240, 0, 0}},
       {17, {0, 0, 0, 0}},
@@ -2262,7 +2269,7 @@ int main(void) {
 
   for (uint32_t i = 0; i < sizeof(cases) / sizeof(cases[0]); ++i) {
     if (!matches(cpuid_xstate(cases[i].subleaf), cases[i].expected)) {
-      return 10 + (int)i;
+      return 11 + (int)i;
     }
   }
 
@@ -2279,6 +2286,27 @@ int main(void) {
     let image = std::fs::read(&executable).unwrap();
     let elf = goblin::elf::Elf::parse(&image).unwrap();
     assert!(elf.interpreter.is_some(), "test guest must be dynamic");
+    let dynamic = elf
+        .dynamic
+        .as_ref()
+        .expect("test guest must have a dynamic section");
+    assert!(
+        dynamic
+            .dyns
+            .iter()
+            .all(|entry| entry.d_tag != goblin::elf::dynamic::DT_BIND_NOW),
+        "test guest must not contain DT_BIND_NOW"
+    );
+    assert_eq!(
+        dynamic.info.flags & goblin::elf::dynamic::DF_BIND_NOW,
+        0,
+        "test guest must not contain DF_BIND_NOW"
+    );
+    assert_eq!(
+        dynamic.info.flags_1 & goblin::elf::dynamic::DF_1_NOW,
+        0,
+        "test guest must not contain DF_1_NOW"
+    );
     assert!(
         elf.pltrelocs.iter().any(|relocation| {
             elf.dynsyms

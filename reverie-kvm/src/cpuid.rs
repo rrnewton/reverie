@@ -269,9 +269,12 @@ const DETERMINISTIC_STANDARD_CPUIDS: &[[u32; 4]] = &[
 // CPUID leaf 0xd uses ECX as a subleaf selector. KVM only consults `index`
 // when KVM_CPUID_FLAG_SIGNIFCANT_INDEX is set, and it returns the first
 // matching row. Keep every subleaf in one table and reject duplicate keys so a
-// later row cannot become silently unreachable.
+// later row cannot become silently unreachable. KVM ignores the supplied EBX
+// for subleaf 0 and recomputes the guest-visible value from the enabled XCR0
+// state and the host-supported component layout, so keep that dead field zero
+// instead of presenting it as part of the fixed profile.
 const DETERMINISTIC_XSTATE_CPUIDS: &[(u32, [u32; 4])] = &[
-    (0, [0x0000_0007, 0x0000_0340, 0x0000_0340, 0x0000_0000]),
+    (0, [0x0000_0007, 0x0000_0000, 0x0000_0340, 0x0000_0000]),
     (1, [0x0000_0000, 0x0000_0000, 0x0000_0000, 0x0000_0000]),
     (2, [0x0000_0100, 0x0000_0240, 0x0000_0000, 0x0000_0000]),
     (17, [0x0000_0000, 0x0000_0000, 0x0000_0000, 0x0000_0000]),
