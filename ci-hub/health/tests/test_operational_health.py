@@ -79,6 +79,7 @@ class OperationalHealthTest(unittest.TestCase):
                 "pull_request_health",
                 "pr_head_never_evaluated",
                 "approval_no_longer_binds_to_head",
+                "reverie_approval_no_longer_binds_to_head",
                 "approvals_unverifiable_against_head",
                 "landing_observability",
             },

@@ -958,13 +958,15 @@ reminders:
   # up together.
   #
   # GATED ON `superseded`, WHICH ALSO COVERS THE COMBINED STATE, deliberately NOT
-  # on `unverifiable`: see the daily entry below for why. Nothing is ever deleted
-  # by this check -- a superseded review or local-validation cache simply stops
-  # satisfying the gate and stays visible with its exact-head evidence.
+  # on `unverifiable`: see the daily entry below for why. Exact-head comments are
+  # never deleted. A superseded passed-review-* cache label is removed after a
+  # fresh per-PR check and the action names the change author and reviewer for the
+  # coordinator; locally-validated remains detect-only and is reconciled by its
+  # receipt-backed command.
   - name: approval_no_longer_binds_to_head
     cadence_secs: 3600
     gate:
-      cmd: python3 ci-hub/health/approval_binding.py --repo rrnewton/hermit --gate --gate-on superseded
+      cmd: DG_AGENT_NAME=health-tick python3 ci-hub/health/approval_binding.py --repo rrnewton/hermit --gate --gate-on superseded --reconcile-review-labels
       parallel: true
       when: failure
       capture: true
@@ -973,7 +975,26 @@ reminders:
       skill: hard-warn-coordinator
       fields:
         component: approval-binding
-      title: "passed-review-* or locally-validated label(s) bound to a different head, including a head with no workflow run: {summary}"
+      title: "review cache reconciled after a moved head, or locally-validated no longer binds; notify {reconciliation_owners}: {summary}"
+
+  # Reverie uses the same exact-head review labels and marker grammar. PR #521
+  # is the measured failure: both labels survived 034797c8 -> dd07a830 while the
+  # gate correctly stopped accepting the old markers. Keep the same action on
+  # both repositories so a moved head is not visible in one and silent in the
+  # other.
+  - name: reverie_approval_no_longer_binds_to_head
+    cadence_secs: 3600
+    gate:
+      cmd: DG_AGENT_NAME=health-tick python3 ci-hub/health/approval_binding.py --repo rrnewton/reverie --gate --gate-on superseded --reconcile-review-labels
+      parallel: true
+      when: failure
+      capture: true
+    emit:
+      kind: action
+      skill: hard-warn-coordinator
+      fields:
+        component: reverie-approval-binding
+      title: "Reverie review cache reconciled after a moved head; notify {reconciliation_owners}: {summary}"
 
   # THE STANDING BLOCKER behind the gate above, surfaced ONCE A DAY so it stays
   # visible instead of the check being silently inert -- the same treatment

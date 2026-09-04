@@ -30,12 +30,14 @@ the head moved, the comparison simply fails. It is also what policy already says
 these artifacts mean -- "role-tagged review comments carrying the full head SHA
 are authority; numbered review and `passed-review-*` labels are caches."
 
-*** NOTHING IS DELETED. *** A superseded approval stops satisfying the gate and
-stays visible forever as the record of what was reviewed and when. That is
-deliberate: PR #1874's review history was permanently lost on 2026-08-09 by
-stripping labels, and the existing merge-gate job DELETES, which is the same
-mistake automated. Invalidation and erasure are different operations and only
-the first is wanted.
+*** APPROVAL COMMENTS ARE NEVER DELETED. *** A superseded approval stops
+satisfying the gate and stays visible forever as the record of what was reviewed
+and when. With ``--reconcile-review-labels``, only the stale ``passed-review-*``
+cache label is removed. The exact-head comment remains the authority and the
+history. This distinction matters: PR #1874's review history was permanently
+lost on 2026-08-09 by deleting review evidence, while removing a label whose own
+description says "at current PR head" makes the visible cache agree with that
+evidence.
 
 States, three not two -- the same discipline as `unevaluated_head.py`:
 
@@ -77,7 +79,7 @@ import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
-from typing import Sequence
+from typing import Callable, Sequence
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
 import bounded_capture  # noqa: E402
@@ -289,6 +291,28 @@ def gh_json(args: list[str]) -> Any:
         raise GitHubUnavailable(
             f"gh {' '.join(args)} returned malformed JSON"
         ) from error
+
+
+def gh_mutate(args: list[str]) -> None:
+    """Run one GitHub label mutation through the repository's gh boundary."""
+    try:
+        out = subprocess.run(
+            [
+                "with-proxy",
+                str(Path(__file__).resolve().parents[1] / "bin" / "gh"),
+                *args,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=300,
+        )
+    except subprocess.TimeoutExpired as error:
+        raise GitHubUnavailable(f"gh {' '.join(args)} timed out") from error
+    if out.returncode != 0:
+        detail = (out.stderr or out.stdout).strip()[:300]
+        raise GitHubUnavailable(
+            f"gh {' '.join(args)} failed with exit {out.returncode}: {detail}"
+        )
 
 
 def github_actions_enabled(repo: str) -> bool:
@@ -1601,12 +1625,12 @@ def collect_live(
     if pr_number is None:
         prs = gh_json(
             ["pr", "list", "--repo", repo, "--state", "open", "--limit", "300",
-             "--json", "number,headRefOid,labels,mergeable"]
+             "--json", "number,headRefOid,labels,mergeable,body,state,isDraft"]
         ) or []
     else:
         pr = gh_json(
             ["pr", "view", str(pr_number), "--repo", repo,
-             "--json", "number,headRefOid,labels,mergeable"]
+             "--json", "number,headRefOid,labels,mergeable,body,state,isDraft"]
         )
         prs = [pr] if isinstance(pr, dict) else []
     # Same concurrency rationale as unevaluated_head.py: the per-PR comment and
@@ -1642,6 +1666,7 @@ def collect_live(
         for label in tracked:
             refusals: list[str] = []
             unanswered: list[tuple[str, "str | None"]] = []
+            issuers: list[tuple[str, "str | None"]] = []
             if label == LOCALLY_VALIDATED_LABEL:
                 lane = "local-validation"
                 shas = local_receipt_heads(comments, repo)
@@ -1649,7 +1674,7 @@ def collect_live(
                 lane = label.rsplit("-", 1)[-1]
                 shas = lane_shas(
                     comments, lane, malformed, pr["number"], malformed_prs,
-                    refusals=refusals, unanswered=unanswered,
+                    refusals=refusals, unanswered=unanswered, issuers=issuers,
                 )
             rows.append(
                 {
@@ -1659,6 +1684,7 @@ def collect_live(
                     "lane": lane,
                     "head": head,
                     "bound_to": shas[-1] if shas else None,
+                    "binding_issuer": issuers[-1][1] if issuers else None,
                     "refused_at": refusals[-1] if refusals else None,
                     "state": classify_approval(
                         head, shas, refused=bool(refusals),
@@ -1717,9 +1743,10 @@ def collect_live(
                 continue
             refusals = []
             unanswered: list[tuple[str, "str | None"]] = []
+            issuers: list[tuple[str, "str | None"]] = []
             shas = lane_shas(
                 comments, lane, malformed, pr["number"], malformed_prs,
-                refusals=refusals, unanswered=unanswered,
+                refusals=refusals, unanswered=unanswered, issuers=issuers,
             )
             # ⚠️ `if not shas` ALONE DROPPED EVERY UNLABELLED REFUSAL. A refusal
             # contributes no SHA, so the row that would have carried it was
@@ -1738,6 +1765,7 @@ def collect_live(
                     "lane": lane,
                     "head": head,
                     "bound_to": shas[-1] if shas else None,
+                    "binding_issuer": issuers[-1][1] if issuers else None,
                     "refused_at": refusals[-1] if refusals else None,
                     "state": classify_approval(
                         head, shas, refused=bool(refusals),
@@ -1772,6 +1800,10 @@ def collect_live(
             "number": item["pr"]["number"],
             "head": item["head"],
             "labels": labels,
+            "state": item["pr"].get("state"),
+            "draft": item["pr"].get("isDraft") is True,
+            "change_author": comment_author(item["pr"].get("body") or ""),
+            "comments": item["comments"],
             "critical_classes": sorted(
                 critical_classes_at_head(item["comments"], item["head"])
             ),
@@ -1829,6 +1861,10 @@ def collect_fixture(
                 "number": pr["number"],
                 "head": pr["head"],
                 "labels": list(pr["labels"]),
+                "state": pr.get("state", "OPEN"),
+                "draft": pr.get("draft", False) is True,
+                "change_author": comment_author(pr.get("body") or ""),
+                "comments": comments,
                 "critical_classes": sorted(
                     critical_classes_at_head(comments, pr["head"])
                 ),
@@ -1845,6 +1881,7 @@ def collect_fixture(
             )
             refusals = []
             unanswered: list[tuple[str, "str | None"]] = []
+            issuers: list[tuple[str, "str | None"]] = []
             if label == LOCALLY_VALIDATED_LABEL and "comments" in pr:
                 shas = local_receipt_heads(comments, pr.get("repo", "rrnewton/hermit"))
             elif "comments" in pr:
@@ -1854,7 +1891,7 @@ def collect_fixture(
                     malformed,
                     pr["number"],
                     malformed_prs,
-                    refusals=refusals, unanswered=unanswered,
+                    refusals=refusals, unanswered=unanswered, issuers=issuers,
                 )
             else:
                 shas = pr.get("lane_shas", {}).get(lane, [])
@@ -1871,6 +1908,7 @@ def collect_fixture(
                     "lane": lane,
                     "head": pr["head"],
                     "bound_to": shas[-1] if shas else None,
+                    "binding_issuer": issuers[-1][1] if issuers else None,
                     "refused_at": refusals[-1] if refusals else None,
                     "state": classify_approval(
                         pr["head"], shas, refused=bool(refusals),
@@ -1912,10 +1950,11 @@ def collect_fixture(
                 continue
             refusals = []
             unanswered: list[tuple[str, "str | None"]] = []
+            issuers: list[tuple[str, "str | None"]] = []
             if "comments" in pr:
                 shas = lane_shas(
                     comments, lane, malformed, pr["number"], malformed_prs,
-                    refusals=refusals, unanswered=unanswered,
+                    refusals=refusals, unanswered=unanswered, issuers=issuers,
                 )
             else:
                 shas = pr.get("lane_shas", {}).get(lane, [])
@@ -1930,6 +1969,7 @@ def collect_fixture(
                     "lane": lane,
                     "head": pr["head"],
                     "bound_to": shas[-1] if shas else None,
+                    "binding_issuer": issuers[-1][1] if issuers else None,
                     "refused_at": refusals[-1] if refusals else None,
                     "state": classify_approval(
                         pr["head"], shas, refused=bool(refusals),
@@ -1957,6 +1997,201 @@ def collect_fixture(
                 }
             )
     return rows, selected, actions_enabled, fixture_evaluated
+
+
+def stale_review_label_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Review cache labels proven to name a head other than the current one."""
+    return [
+        row
+        for row in rows
+        if row.get("source") == "label"
+        and row.get("label") in {"passed-review-claude", "passed-review-codex"}
+        and row.get("state") == SUPERSEDED
+    ]
+
+
+def _live_pr_snapshot(
+    repo: str, number: int
+) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
+    malformed: list[tuple[str, str]] = []
+    malformed_prs: dict[tuple[str, str], int] = {}
+    return collect_live(repo, malformed, malformed_prs, number)
+
+
+def _edit_review_label(repo: str, number: int, label: str, add: bool) -> None:
+    operation = "--add-label" if add else "--remove-label"
+    gh_mutate(
+        ["pr", "edit", str(number), "--repo", repo, operation, label]
+    )
+
+
+def reconciliation_marker(
+    repo: str, number: int, head: str, labels: Sequence[str]
+) -> str:
+    label_text = ",".join(sorted(labels))
+    return (
+        f"<!-- review-label-reconciled repo={repo} pr={number} head={head} "
+        f"labels={label_text} -->"
+    )
+
+
+def _post_reconciliation_notice(
+    repo: str,
+    action: dict[str, Any],
+    who: str,
+    team: str,
+) -> None:
+    owners = ", ".join(f"agent({owner})" for owner in action["owners"])
+    if not owners:
+        owners = "unavailable from disclosure tags"
+    bindings = ", ".join(head[:12] for head in action["bound_to"])
+    labels = ", ".join(action["labels"])
+    body = (
+        "Review labels no longer bind after the pull request head moved.\n\n"
+        f"Current head: `{action['head']}`\n"
+        f"Earlier approved head(s): `{bindings}`\n"
+        f"Stale label(s): `{labels}`\n"
+        f"Affected owners: {owners}\n\n"
+        "The exact-head review comments remain as history. The stale labels are "
+        "being reconciled; a lane needs a new approval at the current head unless "
+        "one arrives while reconciliation is running.\n\n"
+        + action["marker"]
+    )
+    gh_mutate(
+        [
+            "--who",
+            who,
+            "--team",
+            team,
+            "--role",
+            "relay",
+            "pr",
+            "comment",
+            str(action["pr"]),
+            "--repo",
+            repo,
+            "--body",
+            body,
+        ]
+    )
+
+
+def reconcile_stale_review_labels(
+    repo: str,
+    initial_rows: list[dict[str, Any]],
+    *,
+    snapshot: Callable[
+        [str, int], tuple[list[dict[str, Any]], dict[str, Any] | None]
+    ] = _live_pr_snapshot,
+    edit_label: Callable[[str, int, str, bool], None] = _edit_review_label,
+    notify: Callable[[str, dict[str, Any]], None] | None = None,
+) -> list[dict[str, Any]]:
+    """Remove stale review cache labels after a fresh exact-head check.
+
+    The first fleet scan only selects candidates. Each candidate is read again
+    immediately before mutation. After removal it is read once more; if an
+    exact-head approval arrived in the interval, its label is restored and the
+    final state is verified. A head that never moved has no ``SUPERSEDED`` row,
+    so it causes neither a label write nor an owner notification.
+
+    Returned rows are the notification payload for the health tick. The change
+    author and the reviewer whose old binding was invalidated are both named
+    when their disclosure tags are available.
+    """
+    candidates = sorted(
+        {int(row["number"]) for row in stale_review_label_rows(initial_rows)}
+    )
+    notifications: list[dict[str, Any]] = []
+    for number in candidates:
+        before_rows, before = snapshot(repo, number)
+        if before is None or str(before.get("state") or "").lower() != "open":
+            continue
+        stale = stale_review_label_rows(before_rows)
+        if not stale:
+            continue
+
+        removed_labels = [str(row["label"]) for row in stale]
+        owners = {
+            str(owner)
+            for owner in [
+                before.get("change_author"),
+                *(row.get("binding_issuer") for row in stale),
+            ]
+            if owner
+        }
+        action = {
+            "pr": number,
+            "head": str(before.get("head") or ""),
+            "labels": sorted(set(removed_labels)),
+            "owners": sorted(owners),
+            "bound_to": sorted(
+                {
+                    str(row["bound_to"])
+                    for row in stale
+                    if row.get("bound_to")
+                }
+            ),
+        }
+        action["marker"] = reconciliation_marker(
+            repo, number, str(action["head"]), action["labels"]
+        )
+        comments = before.get("comments") or []
+        already_notified = any(
+            action["marker"] in str(comment.get("body") or "")
+            for comment in comments
+            if isinstance(comment, dict)
+        )
+        if not already_notified:
+            if notify is None:
+                raise GitHubUnavailable(
+                    f"PR #{number} stale review labels cannot be removed without "
+                    "notifying their owners"
+                )
+            notify(repo, action)
+
+        for label in removed_labels:
+            edit_label(repo, number, label, False)
+
+        after_rows, after = snapshot(repo, number)
+        if after is None:
+            raise GitHubUnavailable(
+                f"PR #{number} disappeared while stale review labels were reconciled"
+            )
+        after_labels = set(after.get("labels") or [])
+        restored: list[str] = []
+        for row in stale:
+            label = str(row["label"])
+            lane = str(row["lane"])
+            current_binding = any(
+                candidate.get("lane") == lane
+                and candidate.get("state") == BOUND_CURRENT
+                for candidate in after_rows
+            )
+            if current_binding and label not in after_labels:
+                edit_label(repo, number, label, True)
+                restored.append(label)
+            elif not current_binding and label in after_labels:
+                raise GitHubUnavailable(
+                    f"PR #{number} still carries stale {label} after removal"
+                )
+
+        if restored:
+            _final_rows, final = snapshot(repo, number)
+            final_labels = set((final or {}).get("labels") or [])
+            missing = sorted(set(restored) - final_labels)
+            if missing:
+                raise GitHubUnavailable(
+                    f"PR #{number} exact-head approval label restore did not hold: "
+                    + ",".join(missing)
+                )
+
+        removed = sorted(set(removed_labels) - set(restored))
+        action["head"] = str(after.get("head") or before.get("head") or "")
+        action["removed"] = removed
+        action["restored"] = sorted(restored)
+        action["notified"] = not already_notified
+        notifications.append(action)
+    return notifications
 
 
 def locally_evaluated_heads(root: Path) -> frozenset[str]:
@@ -2128,6 +2363,19 @@ def main() -> int:
     )
     ap.add_argument("--json", dest="as_json", action="store_true")
     ap.add_argument(
+        "--reconcile-review-labels",
+        action="store_true",
+        help=(
+            "remove passed-review-* labels whose newest approval names a different "
+            "head, after a fresh per-PR check; exact-head comments are never changed"
+        ),
+    )
+    ap.add_argument(
+        "--notification-team",
+        default="hermit2",
+        help="team disclosure used for the moved-head pull-request notice",
+    )
+    ap.add_argument(
         "--landing-observability",
         action="store_true",
         help=(
@@ -2152,6 +2400,8 @@ def main() -> int:
         ),
     )
     a = ap.parse_args()
+    if a.fixture and a.reconcile_review_labels:
+        ap.error("--reconcile-review-labels requires live GitHub state")
     if a.landing_observability:
         return report_landing_observability(a.repo, a.since, a.as_json, a.checkout)
     a.gate_on = getattr(a, "gate_on", "all")
@@ -2177,10 +2427,66 @@ def main() -> int:
         if a.gate and not a.as_json:
             print("state=unavailable")
             print(f"summary={summary}")
+            if a.reconcile_review_labels:
+                print("reconciliation_owners=unavailable")
+                print(f"reconciliation_summary={summary}")
         elif a.as_json:
             print(json.dumps({"state": "unavailable", "summary": summary}))
         print(f"NO RESULT: {summary}", file=sys.stderr)
         return 75 if a.gate else 1
+
+    reconciled: list[dict[str, Any]] = []
+    if a.reconcile_review_labels and stale_review_label_rows(rows):
+        notification_agent = os.environ.get("DG_AGENT_NAME", "").strip()
+        if not notification_agent:
+            summary = (
+                "stale review-label reconciliation refused: DG_AGENT_NAME is "
+                "unset, so an owner notice could not be attributed"
+            )
+            if a.gate and not a.as_json:
+                print("state=unavailable")
+                print(f"summary={summary}")
+                print("reconciliation_owners=unavailable")
+                print(f"reconciliation_summary={summary}")
+            elif a.as_json:
+                print(json.dumps({"state": "unavailable", "summary": summary}))
+            print(f"NO RESULT: {summary}", file=sys.stderr)
+            return 75 if a.gate else 1
+        try:
+            reconciled = reconcile_stale_review_labels(
+                a.repo,
+                rows,
+                notify=lambda repo, action: _post_reconciliation_notice(
+                    repo,
+                    action,
+                    notification_agent,
+                    a.notification_team,
+                ),
+            )
+        except GitHubUnavailable as error:
+            summary = (
+                "stale review-label reconciliation could not be determined: "
+                + " ".join(str(error).split()).replace("{", "(").replace("}", ")")
+            )
+            if a.gate and not a.as_json:
+                print("state=unavailable")
+                print(f"summary={summary}")
+                print("reconciliation_owners=unavailable")
+                print(f"reconciliation_summary={summary}")
+            elif a.as_json:
+                print(json.dumps({"state": "unavailable", "summary": summary}))
+            print(f"NO RESULT: {summary}", file=sys.stderr)
+            return 75 if a.gate else 1
+        removed_keys = {
+            (action["pr"], label)
+            for action in reconciled
+            for label in action["removed"]
+        }
+        rows = [
+            row
+            for row in rows
+            if (row.get("number"), row.get("label")) not in removed_keys
+        ]
     # The final landing boundary always selects exactly one PR with --pr.  An
     # empty row set there means the PR supplied no passed-review-* cache label
     # at all.  That is absence of review evidence, not a population with zero
@@ -2266,6 +2572,10 @@ def main() -> int:
                           "malformed_source_lines": len(malformed),
                           "malformed_affected_labels": len(malformed_affected_labels),
                           "malformed_affected_prs": sorted(malformed_prs),
+                          "reconciled_review_labels": sum(
+                              len(action["removed"]) for action in reconciled
+                          ),
+                          "reconciliation_notifications": reconciled,
                           "malformed_details": [
                               {
                                   "pr": malformed_pr_by_source.get((where, line)),
@@ -2276,6 +2586,35 @@ def main() -> int:
                           ],
                           "rows": rows}, indent=2))
     else:
+        reconciled_count = sum(len(action["removed"]) for action in reconciled)
+        affected_owners = sorted(
+            {
+                owner
+                for action in reconciled
+                for owner in action["owners"]
+            }
+        )
+        print(f"reconciled_review_labels={reconciled_count}")
+        print(
+            "reconciliation_owners="
+            + (",".join(affected_owners) if affected_owners else "none")
+        )
+        if reconciled:
+            print(
+                "reconciliation_summary="
+                + "; ".join(
+                    f"PR #{action['pr']} removed {','.join(action['removed'])} "
+                    f"after head moved to {action['head'][:12]}; notify "
+                    + (
+                        ",".join(action["owners"])
+                        if action["owners"]
+                        else "owner unavailable"
+                    )
+                    for action in reconciled
+                )
+            )
+        else:
+            print("reconciliation_summary=no stale review label was removed")
         print(f"actions_enabled={str(actions_enabled).lower()}")
         if not actions_enabled:
             print(
@@ -2420,7 +2759,7 @@ def main() -> int:
                     + "); the review exists and the cache label does not"
                 )
         else:
-            state = "unbound" if gating else "ok"
+            state = "unbound" if gating else ("reconciled" if reconciled else "ok")
             remedies = []
             # ⚠️ THE REMEDY IS CHOSEN BY WHY THE ROW GATES, NOT BY WHICH LABEL IT
             # CARRIES, AND GETTING THAT WRONG COST FOUR RE-REVIEWS. A
@@ -2456,11 +2795,33 @@ def main() -> int:
                 )
             if not remedies:
                 remedies.append("no binding repair is required")
-            summary = (
-                f"{len(gating)}/{len(label_rows)} passed-review-* / locally-validated labels fail the "
-                f"{a.gate_on} binding check; affected={affected}; they do not bind "
-                f"the current head and are not deleted; remedy: {'; '.join(remedies)}"
-            )
+            if reconciled:
+                removed = sum(len(action["removed"]) for action in reconciled)
+                owners = sorted(
+                    {
+                        owner
+                        for action in reconciled
+                        for owner in action["owners"]
+                    }
+                )
+                reconciliation_text = (
+                    f"removed {removed} stale passed-review label(s) after a head "
+                    f"move; affected owners={','.join(owners) if owners else 'unavailable'}"
+                )
+            else:
+                reconciliation_text = ""
+            if gating:
+                summary = (
+                    f"{len(gating)}/{len(label_rows)} passed-review-* / locally-validated labels fail the "
+                    f"{a.gate_on} binding check; affected={affected}; they do not bind "
+                    f"the current head; remedy: {'; '.join(remedies)}"
+                )
+                if reconciliation_text:
+                    summary = reconciliation_text + "; " + summary
+            elif reconciliation_text:
+                summary = reconciliation_text
+            else:
+                summary = "every passed-review-* / locally-validated label binds to the current head"
         print(f"state={state}")
         print(f"summary={summary}")
         if malformed:
@@ -2547,11 +2908,19 @@ def main() -> int:
             file=sys.stderr,
         )
         return 1
-    if a.gate and gating:
+    if a.gate and (gating or reconciled):
+        if reconciled:
+            print(
+                "GATE NOTICE: stale passed-review label(s) were removed after a "
+                "head move; the affected owners are named in reconciliation_owners.",
+                file=sys.stderr,
+            )
+        if not gating:
+            return 1
         print(
             f"GATE FAIL ({a.gate_on}): {len(gating)} of {len(label_rows)} passed-review-* / locally-validated label(s) do not bind "
-            "to the current head. They are NOT deleted -- they simply must not satisfy the review "
-            "or local-validation head-binding gate.",
+            "to the current head. Stale review labels are reconciled when requested; "
+            "other labels do not satisfy the review or local-validation head-binding gate.",
             file=sys.stderr,
         )
         return 1
