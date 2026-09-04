@@ -68,15 +68,33 @@ LIVE_PRIMARY = {
     "scripts/lib/validate_plan.rs": "820806e5a50d7044175ed8d0822b1fe979e2358d",
     "scripts/validate.rs": "5c72a835bd766af63e35b9219eac077c1b927db7",
 }
+PR_2946_HEAD = "646c62fcd68ff88fb8b8bd9e8468b9eb8b3293c6"
+LIVE_CANDIDATE = {
+    **LIVE_PRIMARY,
+    "scripts/validate.rs": "66681b61cda77c79a61634973f3d887bc424b428",
+}
 
 
-def test_live_registry_tracks_landed_primary_without_half_applied_transition():
+def test_live_registry_stages_pr_2946_without_advancing_primary():
     registry = json.loads(LIVE_REGISTRY.read_text())
 
     assert registry["registered_at"] == "2d3876bdf5d310eb4cd55e7a3613d3dbc39bdc5c"
     assert registry["registered_coverage_status"] == "complete"
     assert registry["registered"] == LIVE_PRIMARY
-    assert "transition" not in registry
+    assert registry["transition"] == {
+        "id": "rrnewton-hermit-pr-2946",
+        "registered_at": PR_2946_HEAD,
+        "provenance": {
+            "repository": "rrnewton/hermit",
+            "pull_request": 2946,
+            "head": PR_2946_HEAD,
+        },
+        "finalize_after": "2026-09-04T17:50:00Z",
+        "expires_at": "2026-09-05T17:50:00Z",
+        "candidate_coverage_status": "complete",
+        "added_paths": [],
+        "candidate": LIVE_CANDIDATE,
+    }
 
     outgoing = [
         record
