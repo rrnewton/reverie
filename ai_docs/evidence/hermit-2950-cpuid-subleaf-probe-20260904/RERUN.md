@@ -65,8 +65,15 @@ afterwards restores from the index and therefore restores the wrong content.
 `git checkout HEAD -- <paths>` is the one that undoes it. Confirm with
 `git status --short` before you trust the rebuilt binary.
 
-⚠️ Rebuild between legs. A reverted source file with a stale binary measures the
-binary you did not change.
+⚠️ Rebuild between legs, and **check the binary hash rather than the tree**. A
+clean `git status` says nothing about which binary is on disk; a reverted source
+file with a stale binary measures the binary you did not change. Capture
+`sha256sum target/debug/hermit` alongside every leg and refuse to continue if the
+base and head legs hash the same, or if the restored binary does not hash back to
+the head build. `bin/safehermit` also records the hash of the binary that
+actually ran, under `ignored/safehermit/registry/`, which is the independent
+record to settle an argument with. This trap is not hypothetical here: see
+`CORRECTION.md`.
 
 ## The manifest cell
 

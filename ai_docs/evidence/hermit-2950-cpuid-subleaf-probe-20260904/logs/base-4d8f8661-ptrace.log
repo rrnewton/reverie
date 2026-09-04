@@ -1,5 +1,8 @@
-# hermit with detcore/src/cpuid.rs and detcore/src/lib.rs reverted to base 4d8f866102882b6eeabdf99cc7e81433cc3c95c5, ptrace backend
-# bin/safehermit <slot hermit> run --base-env=minimal --backend ptrace -- subleaf_probe
+# backend: ptrace
+# hermit source state: detcore/src/cpuid.rs and detcore/src/lib.rs reverted to 4d8f866102882b6eeabdf99cc7e81433cc3c95c5
+# hermit binary sha256: 458329500c4b55d846d38042a1a075d19e733c38571336b1ef07e4bcbbc9928f
+# probe binary sha256: c3d3349eba9f6c9b8a6121203d4931c6f07419295f947b2f3a551eb7a64ab259
+# command: bin/safehermit <hermit> run --base-env=minimal --backend ptrace -- subleaf_probe
 leaf=04 sub=0 eax=00000120 ebx=01c0003f ecx=0000003f edx=00000001
 leaf=04 sub=1 eax=00000120 ebx=01c0003f ecx=0000003f edx=00000001
 leaf=07 sub=0 eax=00000000 ebx=00180fb9 ecx=00000000 edx=00000000

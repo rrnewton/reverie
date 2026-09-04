@@ -1,9 +1,10 @@
 # no hermit: the probe run directly on the devbig014 host CPU, for contrast only
+# probe binary sha256: c3d3349eba9f6c9b8a6121203d4931c6f07419295f947b2f3a551eb7a64ab259
 leaf=04 sub=0 eax=00000000 ebx=00000000 ecx=00000000 edx=00000000
 leaf=04 sub=1 eax=00000000 ebx=00000000 ecx=00000000 edx=00000000
 leaf=07 sub=0 eax=00000001 ebx=f1bf97ab ecx=19415fde edx=10000110
 leaf=07 sub=1 eax=00000030 ebx=00000000 ecx=00000000 edx=00000000
-leaf=0b sub=0 eax=00000001 ebx=00000002 ecx=00000100 edx=000000c6
-leaf=0b sub=1 eax=00000009 ebx=0000013c ecx=00000201 edx=000000c6
+leaf=0b sub=0 eax=00000001 ebx=00000002 ecx=00000100 edx=00000036
+leaf=0b sub=1 eax=00000009 ebx=0000013c ecx=00000201 edx=00000036
 leaf=0d sub=0 eax=000002e7 ebx=00000988 ecx=00000988 edx=00000000
 leaf=0d sub=1 eax=0000000f ebx=000009b0 ecx=00001800 edx=00000000

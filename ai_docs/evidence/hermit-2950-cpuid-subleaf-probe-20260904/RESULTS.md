@@ -7,7 +7,12 @@ leaves that hermit's table treats as selected by ECX and that hold a non-zero
 subleaf-0 row, plus leaf `0x0d`. Only the `sub=1` rows matter; `sub=0` is printed
 so a reader can see what the aliased answer was aliasing to.
 
-Raw output is in `logs/`. Subleaf 1 only, side by side:
+Raw output is in `logs/`. Each log names the sha256 of the hermit binary that
+produced it: `05c7db82a852…` is the head build, `458329500c4b…` the
+base-reverted build. Check a claim against that header, not against the file
+name — see `CORRECTION.md` for why the file name alone was not enough once.
+
+Subleaf 1 only, side by side:
 
 | leaf | base `4d8f8661`, ptrace | head `c3a85da2`, ptrace | head `c3a85da2`, KVM |
 |---|---|---|---|
