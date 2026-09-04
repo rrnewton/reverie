@@ -1,0 +1,18 @@
+===== /probe-head =====
+0xd.0 00000007 00000340 00000340 00000000
+0xd.1 00000000 00000000 00000000 00000000
+0xd.2 00000100 00000240 00000000 00000000
+test probe_eager_puts_only ... --- EAGER PUTS exit=0 stdout="eager puts ok\n" stderr="" ---
+test probe_host_xstate_leaf ... host 0xd.0 000002e7 00000988 00000988 00000000
+host 0xd.1 0000000f 000009b0 00001800 00000000
+host 0xd.2 00000100 00000240 00000000 00000000
+test probe_lazy_puts_only ... --- LAZY PUTS exit=0 stdout="lazy puts ok\n" stderr="" ---
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.51s
+===== /probe-base =====
+called `Result::unwrap()` on an `Err` value: GuestException { vector: 13, instruction_pointer: 16862636, fault_address: 0 }
+test probe_eager_puts_only ... --- EAGER PUTS exit=0 stdout="eager puts ok\n" stderr="" ---
+test probe_host_xstate_leaf ... host 0xd.0 000002e7 00000988 00000988 00000000
+host 0xd.1 0000000f 000009b0 00001800 00000000
+host 0xd.2 00000100 00000240 00000000 00000000
+called `Result::unwrap()` on an `Err` value: GuestException { vector: 13, instruction_pointer: 16862636, fault_address: 0 }
+test result: FAILED. 3 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.61s

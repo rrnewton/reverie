@@ -1,0 +1,38 @@
+   Compiling reverie-kvm v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/review-520b/reverie-kvm)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.01s
+     Running unittests src/lib.rs (target/debug/deps/reverie_kvm-0228129aa094afc8)
+
+running 5 tests
+test cpuid::tests::deterministic_xstate_subleaves_are_indexed_and_unique ... FAILED
+test cpuid::tests::deterministic_policy_rejects_missing_required_features ... FAILED
+test cpuid::tests::host_supported_policy_preserves_entries ... ok
+test cpuid::tests::deterministic_policy_replaces_host_identity_and_features ... FAILED
+test cpuid::tests::duplicate_function_index_is_rejected - should panic ... ok
+
+failures:
+
+---- cpuid::tests::deterministic_xstate_subleaves_are_indexed_and_unique stdout ----
+
+thread 'cpuid::tests::deterministic_xstate_subleaves_are_indexed_and_unique' (3537786) panicked at reverie-kvm/src/cpuid.rs:128:9:
+fixed CPUID profile contains duplicate leaf 0xd, subleaf 0x0
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- cpuid::tests::deterministic_policy_rejects_missing_required_features stdout ----
+
+thread 'cpuid::tests::deterministic_policy_rejects_missing_required_features' (3537784) panicked at reverie-kvm/src/cpuid.rs:128:9:
+fixed CPUID profile contains duplicate leaf 0xd, subleaf 0x0
+
+---- cpuid::tests::deterministic_policy_replaces_host_identity_and_features stdout ----
+
+thread 'cpuid::tests::deterministic_policy_replaces_host_identity_and_features' (3537785) panicked at reverie-kvm/src/cpuid.rs:128:9:
+fixed CPUID profile contains duplicate leaf 0xd, subleaf 0x0
+
+
+failures:
+    cpuid::tests::deterministic_policy_rejects_missing_required_features
+    cpuid::tests::deterministic_policy_replaces_host_identity_and_features
+    cpuid::tests::deterministic_xstate_subleaves_are_indexed_and_unique
+
+test result: FAILED. 2 passed; 3 failed; 0 ignored; 0 measured; 195 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `-p reverie-kvm --lib`

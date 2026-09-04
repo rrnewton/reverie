@@ -1,0 +1,17 @@
+--- is -z now actually eager here? ---
+/tmp/e.now: 2 now-markers
+/tmp/e.lazy: 0 now-markers
+===== /probe-head =====
+test probe_dump_all_xstate_subleaves ... --- GUEST DUMP exit=0 ---
+test probe_eager_puts_only ... --- EAGER PUTS exit=0 stdout="eager puts ok\n" stderr="" ---
+test probe_host_xstate_leaf ... host 0xd.0 000002e7 00000988 00000988 00000000
+test probe_lazy_puts_only ... --- LAZY PUTS exit=0 stdout="lazy puts ok\n" stderr="" ---
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.38s
+===== /probe-base =====
+test probe_dump_all_xstate_subleaves ... 
+called `Result::unwrap()` on an `Err` value: GuestException { vector: 13, instruction_pointer: 16862636, fault_address: 0 }
+test probe_eager_puts_only ... --- EAGER PUTS exit=0 stdout="eager puts ok\n" stderr="" ---
+test probe_host_xstate_leaf ... host 0xd.0 000002e7 00000988 00000988 00000000
+test probe_lazy_puts_only ... 
+called `Result::unwrap()` on an `Err` value: GuestException { vector: 13, instruction_pointer: 16862636, fault_address: 0 }
+test result: FAILED. 2 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.39s

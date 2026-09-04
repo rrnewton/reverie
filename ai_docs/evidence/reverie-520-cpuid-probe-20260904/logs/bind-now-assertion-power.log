@@ -1,0 +1,22 @@
+   Compiling reverie-kvm v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/review-520b/reverie-kvm)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.88s
+     Running tests/static_elf.rs (target/debug/deps/static_elf-2508e5db31f6fd82)
+
+running 1 test
+test dynamic_c_guest_observes_indexed_xstate_cpuid_and_lazy_binding ... FAILED
+
+failures:
+
+---- dynamic_c_guest_observes_indexed_xstate_cpuid_and_lazy_binding stdout ----
+
+thread 'dynamic_c_guest_observes_indexed_xstate_cpuid_and_lazy_binding' (299063) panicked at reverie-kvm/tests/static_elf.rs:2293:5:
+test guest must not contain DT_BIND_NOW
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    dynamic_c_guest_observes_indexed_xstate_cpuid_and_lazy_binding
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 39 filtered out; finished in 0.04s
+
+error: test failed, to rerun pass `-p reverie-kvm --test static_elf`

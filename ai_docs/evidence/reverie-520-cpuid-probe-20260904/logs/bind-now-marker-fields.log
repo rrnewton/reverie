@@ -1,0 +1,11 @@
+   Compiling reverie-kvm v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/review-520b/reverie-kvm)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.44s
+     Running tests/review520_probe.rs (target/debug/deps/review520_probe-09d524f88ffa0d5e)
+
+running 1 test
+ lazy: DT_BIND_NOW=false  flags=0x0 (DF_BIND_NOW set: false)  flags_1=0x0 (DF_1_NOW set: false)
+  now: DT_BIND_NOW=true  flags=0x0 (DF_BIND_NOW set: false)  flags_1=0x1 (DF_1_NOW set: true)
+test probe_bind_now_markers_on_an_eager_binary ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.06s
+

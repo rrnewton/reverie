@@ -1,0 +1,13 @@
+   Compiling reverie-kvm v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/review-520b/reverie-kvm)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.99s
+     Running unittests src/lib.rs (target/debug/deps/reverie_kvm-0228129aa094afc8)
+
+running 5 tests
+test cpuid::tests::deterministic_policy_rejects_missing_required_features ... ok
+test cpuid::tests::deterministic_xstate_subleaves_are_indexed_and_unique ... ok
+test cpuid::tests::deterministic_policy_replaces_host_identity_and_features ... ok
+test cpuid::tests::host_supported_policy_preserves_entries ... ok
+test cpuid::tests::duplicate_function_index_is_rejected - should panic ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 195 filtered out; finished in 0.00s
+

@@ -1,0 +1,70 @@
+===== /probe-head =====
+
+running 3 tests
+test probe_dump_all_xstate_subleaves ... --- GUEST DUMP exit=0 ---
+0xd.0 00000007 00000340 00000340 00000000
+0xd.1 00000000 00000000 00000000 00000000
+0xd.2 00000100 00000240 00000000 00000000
+0xd.3 00000000 00000000 00000000 00000000
+0xd.4 00000000 00000000 00000000 00000000
+0xd.5 00000000 00000000 00000000 00000000
+0xd.6 00000000 00000000 00000000 00000000
+0xd.7 00000000 00000000 00000000 00000000
+0xd.8 00000000 00000000 00000000 00000000
+0xd.9 00000000 00000000 00000000 00000000
+0xd.10 00000000 00000000 00000000 00000000
+0xd.11 00000000 00000000 00000000 00000000
+0xd.12 00000000 00000000 00000000 00000000
+0xd.13 00000000 00000000 00000000 00000000
+0xd.14 00000000 00000000 00000000 00000000
+0xd.15 00000000 00000000 00000000 00000000
+0xd.16 00000000 00000000 00000000 00000000
+0xd.17 00000000 00000000 00000000 00000000
+0xd.18 00000000 00000000 00000000 00000000
+0xd.19 00000000 00000000 00000000 00000000
+0xd.20 00000000 00000000 00000000 00000000
+0xd.63 00000000 00000000 00000000 00000000
+0x1.0 00000663 00000800 1c982201 078bfbfd
+0x15.0 00000007 00000340 00000340 00000000
+0x15.5 00000000 00000000 00000000 00000000
+ok
+test probe_host_xstate_leaf ... host 0xd.0 000002e7 00000988 00000988 00000000
+host 0xd.1 0000000f 000009b0 00001800 00000000
+host 0xd.2 00000100 00000240 00000000 00000000
+host 0xd.3 00000000 00000000 00000000 00000000
+
+ok
+test probe_lazy_puts_only ... --- LAZY PUTS exit=0 stdout="lazy puts ok\n" stderr="" ---
+ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.29s
+
+exit=0
+===== /probe-base =====
+
+running 3 tests
+test probe_dump_all_xstate_subleaves ... 
+thread 'probe_dump_all_xstate_subleaves' (81) panicked at reverie-kvm/tests/review520_probe.rs:48:39:
+called `Result::unwrap()` on an `Err` value: GuestException { vector: 13, instruction_pointer: 16862636, fault_address: 0 }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+FAILED
+test probe_host_xstate_leaf ... host 0xd.0 000002e7 00000988 00000988 00000000
+host 0xd.1 0000000f 000009b0 00001800 00000000
+host 0xd.2 00000100 00000240 00000000 00000000
+host 0xd.3 00000000 00000000 00000000 00000000
+
+ok
+test probe_lazy_puts_only ... 
+thread 'probe_lazy_puts_only' (131) panicked at reverie-kvm/tests/review520_probe.rs:48:39:
+called `Result::unwrap()` on an `Err` value: GuestException { vector: 13, instruction_pointer: 16862636, fault_address: 0 }
+FAILED
+
+failures:
+
+failures:
+    probe_dump_all_xstate_subleaves
+    probe_lazy_puts_only
+
+test result: FAILED. 1 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.29s
+
+exit=101

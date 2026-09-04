@@ -1,0 +1,21 @@
+   Compiling reverie-kvm v0.2.0 (/home/newton/work/dev-hermit/worktrees/slots/review-520b/reverie-kvm)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.13s
+     Running tests/vmcall.rs (target/debug/deps/vmcall-f3e47ca9eec3604e)
+
+running 1 test
+
+thread 'deterministic_cpuid_policy_is_visible_inside_vm' (3392866) panicked at reverie-kvm/tests/vmcall.rs:191:5:
+assertion `left == right` failed
+  left: [7, 576, 832, 0]
+ right: [0, 0, 0, 0]
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test deterministic_cpuid_policy_is_visible_inside_vm ... FAILED
+
+failures:
+
+failures:
+    deterministic_cpuid_policy_is_visible_inside_vm
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 5 filtered out; finished in 0.02s
+
+error: test failed, to rerun pass `-p reverie-kvm --test vmcall`
