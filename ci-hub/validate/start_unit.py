@@ -4096,7 +4096,13 @@ def publish_recorded_scorecard_handoff(
     checkout: Path,
     unit: str,
 ) -> Path | None:
-    """Preserve a completed materialized Hermit scorecard before cleanup."""
+    """Preserve a completed materialized Hermit scorecard before cleanup.
+
+    An inactive service is not enough: the waiter may not yet have copied the
+    service result into the durable run handle.  Cleanup owns the checkout only
+    after that handle records both a completed run and the writer's typed
+    completion.  In particular, an absent writeback is pending, not ``False``.
+    """
     if (
         record.get("materialized_target") is not True
         or canonical_repo(str(record.get("repo", "rrnewton/hermit")))
@@ -4114,28 +4120,28 @@ def publish_recorded_scorecard_handoff(
         raise RuntimeError(
             "recorded scorecard handoff does not match the canonical state-root path"
         )
-    writeback = record.get("scorecard_writeback")
-    completed = isinstance(writeback, dict) and writeback.get("status") == "completed"
-    if destination.is_dir() and not destination.is_symlink():
-        manifest_path = destination / "handoff.json"
-        try:
-            manifest = json.loads(manifest_path.read_text())
-        except (OSError, json.JSONDecodeError) as error:
-            raise RuntimeError(
-                f"cannot read existing scorecard handoff manifest {manifest_path}: {error}"
-            ) from error
-        recorded_completion = manifest.get("writeback_completed")
-        if not isinstance(recorded_completion, bool):
-            raise RuntimeError(
-                f"existing scorecard handoff has invalid completion state: {manifest_path}"
-            )
-        completed = recorded_completion
+    try:
+        writeback = service_result.read_scorecard_writeback_value(
+            record.get("scorecard_writeback")
+        )
+    except RuntimeError as error:
+        raise RuntimeError(
+            "materialized scorecard cleanup requires a typed completed "
+            f"scorecard_writeback in the durable run handle: {error}"
+        ) from error
+    if record.get("state") != "completed" or writeback != {"status": "completed"}:
+        raise RuntimeError(
+            "materialized scorecard cleanup requires a completed "
+            "scorecard_writeback in a completed durable run handle; got "
+            f"state={record.get('state')!r}, scorecard_writeback={writeback!r}. "
+            "Reattach so the waiter can consume the service result before cleanup"
+        )
     return publish_scorecard_handoff(
         root,
         checkout,
         target,
         unit,
-        writeback_completed=completed,
+        writeback_completed=True,
     )
 
 

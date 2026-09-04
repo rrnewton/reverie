@@ -4727,6 +4727,27 @@ class StartUnitTest(unittest.TestCase):
         )
         return record, fresh
 
+    def plant_completed_materialized_service_result(self, record: Path) -> None:
+        durable = start_unit.run_registry.read_record(record)
+        durable["service_result_schema"] = start_unit.service_result.SCHEMA_VERSION
+        start_unit.run_registry.write_record(record, durable)
+        start_unit.service_result.result_path(record).write_text(
+            json.dumps(
+                {
+                    "schema_version": start_unit.service_result.SCHEMA_VERSION,
+                    "commit": SHA,
+                    "profile": "full",
+                    "selection_mode": "full",
+                    "final_validate_status": "PASSED",
+                    "exit_code": 0,
+                    "executed_nodes": 55,
+                    "executed_tests": 862,
+                    "scorecard_writeback": {"status": "completed"},
+                }
+            )
+            + "\n"
+        )
+
     def test_attach_waits_on_existing_handle_without_relaunching(self) -> None:
         self.fake.validate_status_calls = 1
         self.fake.scorecard_update = True
@@ -4823,6 +4844,94 @@ class StartUnitTest(unittest.TestCase):
             sum(command[0].endswith("scorecard.rs") for command in self.fake.commands),
         )
         self.assertIn("already-published output", second_err.getvalue())
+
+    def test_sweep_retains_inactive_materialized_run_until_writeback_is_recorded(
+        self,
+    ) -> None:
+        record, fresh = self.materialized_attach_record()
+        self.plant_completed_materialized_service_result(record)
+        (fresh / "SCORECARD.md").write_text("scorecard\nupdated-by-inner\n")
+        cells = fresh / "ci/compat-envelope/cells.json"
+        cells.write_text("{}\nupdated-by-inner\n")
+
+        report = start_unit.sweep_completed_checkouts(
+            self.root, run=self.fake, tool_root=self.root
+        )
+
+        self.assertEqual([], report["removed"])
+        self.assertTrue(fresh.is_dir())
+        self.assertFalse(
+            start_unit.scorecard_handoff_path(self.root, "validate-test").exists()
+        )
+        self.assertNotIn(
+            "scorecard_writeback", start_unit.run_registry.read_record(record)
+        )
+        self.assertTrue(
+            any(
+                "completed scorecard_writeback" in row["reason"]
+                for row in report["retained"]
+            ),
+            report["retained"],
+        )
+
+    def test_sweep_never_treats_absent_writeback_as_completed(self) -> None:
+        fresh, record = self.managed_cleanup_record("materialized-no-writeback")
+        durable = start_unit.run_registry.read_record(record)
+        durable.update(target=SHA, materialized_target=True)
+        start_unit.run_registry.write_record(record, durable)
+
+        report = start_unit.sweep_completed_checkouts(
+            self.root, run=self.fake, tool_root=self.root
+        )
+
+        self.assertEqual([], report["removed"])
+        self.assertTrue(fresh.is_dir())
+        self.assertFalse(
+            start_unit.scorecard_handoff_path(
+                self.root, "validate-materialized-no-writeback"
+            ).exists()
+        )
+        self.assertTrue(
+            any(
+                "scorecard_writeback=None" in row["reason"]
+                for row in report["retained"]
+            ),
+            report["retained"],
+        )
+
+    def test_attach_after_inactive_sweep_copies_writeback_then_hands_off(self) -> None:
+        record, fresh = self.materialized_attach_record()
+        self.plant_completed_materialized_service_result(record)
+        self.fake.scorecard_update = True
+
+        report = start_unit.sweep_completed_checkouts(
+            self.root, run=self.fake, tool_root=self.root
+        )
+        self.assertEqual([], report["removed"])
+        self.assertTrue(fresh.is_dir())
+
+        out = io.StringIO()
+        err = io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = start_unit.main(
+                ["--attach", "validate-test"],
+                run=self.fake,
+                environment=self.environment,
+                root=self.root,
+                sleep=lambda _seconds: None,
+            )
+
+        self.assertEqual(start_unit.EXIT_PASSED, rc, err.getvalue())
+        self.assertFalse(fresh.exists())
+        durable = start_unit.run_registry.read_record(record)
+        self.assertEqual(
+            {"status": "completed"}, durable["scorecard_writeback"]
+        )
+        handoff = start_unit.scorecard_handoff_path(self.root, "validate-test")
+        self.assertEqual(str(handoff), durable["scorecard_handoff"])
+        self.assertTrue(
+            json.loads((handoff / "handoff.json").read_text())["writeback_completed"]
+        )
 
     def test_attach_error_cleans_materialized_checkout_after_archiving_receipt(self) -> None:
         _record, fresh = self.materialized_attach_record()
